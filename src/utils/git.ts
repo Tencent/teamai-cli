@@ -10,6 +10,26 @@ export async function cloneRepo(remote: string, localPath: string): Promise<void
   await git.clone(remote, localPath);
 }
 
+const DEFAULT_EMAIL_DOMAIN = 'tencent.com';
+
+/**
+ * Configure git user.name and user.email for a repo.
+ * Email defaults to `<username>@tencent.com` but can be overridden.
+ */
+export async function configureGitUser(
+  localPath: string,
+  username: string,
+  displayName?: string,
+  email?: string,
+): Promise<void> {
+  const git = createGit(localPath);
+  const name = displayName || username;
+  const resolvedEmail = email || `${username}@${DEFAULT_EMAIL_DOMAIN}`;
+  await git.addConfig('user.name', name);
+  await git.addConfig('user.email', resolvedEmail);
+  log.debug(`Git user configured: ${name} <${resolvedEmail}>`);
+}
+
 export async function pullRepo(localPath: string): Promise<string> {
   const git = createGit(localPath);
   const result = await git.pull();

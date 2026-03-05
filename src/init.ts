@@ -3,7 +3,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { saveLocalConfig, loadTeamConfig } from './config.js';
 import { injectHooksToAllTools } from './hooks.js';
-import { cloneRepo } from './utils/git.js';
+import { cloneRepo, configureGitUser } from './utils/git.js';
 import { pushRepo } from './utils/git.js';
 import { verifyToken, getCurrentUser, getProject, isRepoEmpty, createProject, getNamespaceId } from './utils/tgit-api.js';
 import { parseRepoInput, type RepoInfo } from './utils/repo-url.js';
@@ -118,6 +118,9 @@ export async function init(options: GlobalOptions & { repo?: string }): Promise<
       process.exit(1);
     }
   }
+
+  // Step 3.5: Configure git user for the team repo
+  await configureGitUser(localPath, user.username, user.name);
 
   // Step 4: Load team config
   const teamConfig = await loadTeamConfig(localPath);
