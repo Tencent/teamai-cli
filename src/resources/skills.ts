@@ -14,6 +14,9 @@ export class SkillsHandler extends ResourceHandler {
     const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills');
     const teamSkills = new Set(await listDirs(teamSkillsDir));
 
+    // Read tombstones to skip previously deleted resources
+    const tombstones = await this.readTombstones(localConfig);
+
     const localSkills: ResourceItem[] = [];
     const seen = new Set<string>();
 
@@ -25,6 +28,7 @@ export class SkillsHandler extends ResourceHandler {
       const dirs = await listDirs(skillsDir);
       for (const dir of dirs) {
         if (seen.has(dir) || teamSkills.has(dir)) continue;
+        if (tombstones.has(dir)) continue;
         // Check for SKILL.md to confirm it's a valid skill
         const skillMd = path.join(skillsDir, dir, 'SKILL.md');
         if (!await pathExists(skillMd)) continue;
@@ -99,6 +103,9 @@ export class SkillsHandler extends ResourceHandler {
       await remove(teamDir);
       removed.push(teamDir);
     }
+
+    // Record tombstone so the resource won't be re-pushed
+    await this.addTombstone(name, localConfig);
 
     // Remove from each tool's skills directory
     const syncTargets = teamConfig.sharing.skills.syncTargets;

@@ -20,6 +20,9 @@ export class RulesHandler extends ResourceHandler {
         : [],
     );
 
+    // Read tombstones to skip previously deleted resources
+    const tombstones = await this.readTombstones(localConfig);
+
     const items: ResourceItem[] = [];
     const seen = new Set<string>();
 
@@ -33,11 +36,13 @@ export class RulesHandler extends ResourceHandler {
       const files = await listFiles(rulesDir);
       for (const file of files) {
         if (!file.endsWith('.md')) continue;
+        const name = file.replace(/\.md$/, '');
         if (seen.has(file) || teamRules.has(file)) continue;
+        if (tombstones.has(name)) continue;
 
         seen.add(file);
         items.push({
-          name: file.replace(/\.md$/, ''),
+          name,
           type: 'rules',
           sourcePath: path.join(rulesDir, file),
           relativePath: `rules/${file}`,
@@ -104,6 +109,9 @@ export class RulesHandler extends ResourceHandler {
       await remove(teamFile);
       removed.push(teamFile);
     }
+
+    // Record tombstone so the resource won't be re-pushed
+    await this.addTombstone(name, localConfig);
 
     // Remove from each tool's rules directory
     for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {

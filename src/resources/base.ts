@@ -1,4 +1,8 @@
+import path from 'node:path';
 import type { ResourceType, ResourceItem, ResourceDiff, TeamaiConfig, LocalConfig } from '../types.js';
+import { readFileSafe, writeFile, ensureDir } from '../utils/fs.js';
+
+const TOMBSTONE_FILE = '.removed';
 
 /**
  * Abstract base class for resource handlers.
@@ -52,6 +56,32 @@ export abstract class ResourceHandler {
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<string[]>;
+
+  /**
+   * Read the tombstone file (`<type>/.removed`) from the team repo.
+   * Returns a Set of resource names that have been explicitly deleted.
+   */
+  async readTombstones(localConfig: LocalConfig): Promise<Set<string>> {
+    const tombstonePath = path.join(localConfig.repo.localPath, this.type, TOMBSTONE_FILE);
+    const content = await readFileSafe(tombstonePath);
+    if (!content) return new Set();
+    return new Set(
+      content.split('\n').map((l) => l.trim()).filter((l) => l.length > 0),
+    );
+  }
+
+  /**
+   * Append a resource name to the tombstone file, deduplicating and sorting.
+   */
+  async addTombstone(name: string, localConfig: LocalConfig): Promise<void> {
+    const dir = path.join(localConfig.repo.localPath, this.type);
+    await ensureDir(dir);
+    const tombstonePath = path.join(dir, TOMBSTONE_FILE);
+    const existing = await this.readTombstones(localConfig);
+    existing.add(name);
+    const sorted = [...existing].sort();
+    await writeFile(tombstonePath, sorted.join('\n') + '\n');
+  }
 
   /**
    * Compute diff between local and team repo for this resource type.
