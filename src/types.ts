@@ -40,19 +40,10 @@ export type TeamaiConfig = z.infer<typeof TeamaiConfigSchema>;
 
 // ─── Member config (members/<user>.yaml) ────────────────
 
-export const MemberRole = z.enum(['readonly', 'write']);
-export type MemberRole = z.infer<typeof MemberRole>;
-
-export const ROLE_TO_ACCESS_LEVEL: Record<MemberRole, number> = {
-  readonly: 30,  // TGit Developer
-  write: 40,     // TGit Master
-};
-
 export const MemberConfigSchema = z.object({
   username: z.string(),
   displayName: z.string().default(''),
   registeredAt: z.string(),
-  role: MemberRole.default('readonly'),
 });
 
 export type MemberConfig = z.infer<typeof MemberConfigSchema>;

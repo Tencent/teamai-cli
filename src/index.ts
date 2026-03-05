@@ -92,15 +92,6 @@ membersCmd
     await listMembers(globalOpts);
   });
 
-membersCmd
-  .command('add')
-  .description('Add a team member (requires write role)')
-  .action(async () => {
-    const globalOpts = program.opts() as GlobalOptions;
-    const { addMember } = await import('./members.js');
-    await addMember(globalOpts);
-  });
-
 program
   .command('remove <type> <name>')
   .description('Remove a resource from team repo and all local AI tools (type: skills|rules)')

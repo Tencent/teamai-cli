@@ -56,8 +56,7 @@ teamai status
 | `teamai sync` | 双向同步（push + pull） |
 | `teamai status` | 查看本地 vs 团队仓库差异 |
 | `teamai list [type]` | 列出资源（skills\|rules\|hooks\|docs\|instincts） |
-| `teamai members` | 列出团队成员 |
-| `teamai members add` | 添加团队成员（需 write 角色） |
+| `teamai members` | 列出已注册的团队成员 |
 | `teamai remove <type> <name>` | 从团队仓库和本地删除资源（skills\|rules） |
 | `teamai doctor` | 诊断配置问题 |
 

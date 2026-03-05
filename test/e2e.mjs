@@ -48,88 +48,81 @@ function runCLI(args, stdin = '') {
   });
 }
 
-// ─── Test 1: teamai members — should show role tags ──────
+// ─── Test 1: teamai members — should list members without role tags ──────
 async function testMembersList() {
-  console.log('\n== Test 1: teamai members — role tags in output ==');
+  console.log('\n== Test 1: teamai members — list members without role tags ==');
   const { output } = await runCLI(['members']);
-  assert(output.includes('[write]') || output.includes('[readonly]'), 'Output contains role tag [write] or [readonly]');
+  assert(!output.includes('[write]') && !output.includes('[readonly]'), 'Output does not contain role tags');
   assert(output.includes('jeffyxu'), 'Output contains member username');
   assert(output.includes('(you)'), 'Output contains (you) marker');
   assert(output.includes('Team members'), 'Output contains "Team members" header');
 }
 
-// ─── Test 2: teamai members add — readonly user denied ───
-async function testMembersAddDenied() {
-  console.log('\n== Test 2: teamai members add — permission denied for readonly ==');
-
-  // Temporarily remove role field to test default readonly
-  const memberPath = path.join(process.env.HOME, '.teamai', 'team-repo', 'members', 'jeffyxu.yaml');
-  const original = fs.readFileSync(memberPath, 'utf-8');
-  const withoutRole = original.replace(/role: write\n?/, '');
-  fs.writeFileSync(memberPath, withoutRole);
-
-  const { output } = await runCLI(['members', 'add'], 'testuser\n');
-  assert(output.includes('Permission denied'), 'Permission denied for readonly user');
-
-  // Restore
-  fs.writeFileSync(memberPath, original);
+// ─── Test 2: teamai members list — same as default members ──────
+async function testMembersListSubcommand() {
+  console.log('\n== Test 2: teamai members list — subcommand works ==');
+  const { output } = await runCLI(['members', 'list']);
+  assert(output.includes('jeffyxu'), 'Output contains member username');
+  assert(output.includes('Team members'), 'Output contains "Team members" header');
+  assert(!output.includes('[write]') && !output.includes('[readonly]'), 'Output does not contain role tags');
 }
 
-// ─── Test 3: teamai members add — write user can proceed ─
-async function testMembersAddWriteUser() {
-  console.log('\n== Test 3: teamai members add — write user proceeds past permission check ==');
-  const { output } = await runCLI(['members', 'add', '--dry-run'], 'zhifengxu\nreadonly\n');
-  assert(!output.includes('Permission denied'), 'No permission denied for write user');
-  assert(
-    output.includes('Found user') || output.includes('not found') || output.includes('Searching'),
-    'TGit user search was attempted',
-  );
+// ─── Test 3: teamai members add — command no longer triggers add flow ──────
+async function testMembersAddRemoved() {
+  console.log('\n== Test 3: teamai members add — add flow no longer exists ==');
+  const { output } = await runCLI(['members', 'add']);
+  // With the add subcommand removed, "members add" falls through to the default
+  // list action. The key assertion is that no interactive add flow is triggered.
+  assert(!output.includes('Username to add'), 'No "Username to add" prompt appears');
+  assert(!output.includes('Role (readonly/write)'), 'No role prompt appears');
+  assert(!output.includes('Searching for user'), 'No TGit user search is triggered');
 }
 
-// ─── Test 4: teamai members add — existing member rejected
-async function testMembersAddExisting() {
-  console.log('\n== Test 4: teamai members add — existing member rejected ==');
-  const { output } = await runCLI(['members', 'add', '--dry-run'], 'jeffyxu\n');
-  assert(output.includes('already a team member'), 'Existing member correctly rejected');
-}
-
-// ─── Test 5: teamai members add — empty username aborts ──
-async function testMembersAddEmpty() {
-  console.log('\n== Test 5: teamai members add — empty username aborts ==');
-  const { output } = await runCLI(['members', 'add', '--dry-run'], '\n');
-  assert(
-    output.includes('No username') || output.includes('aborting'),
-    'Empty username aborts gracefully',
-  );
-}
-
-// ─── Test 6: teamai init --dry-run — self-register with write role
-async function testInitDryRun() {
-  console.log('\n== Test 6: teamai init --dry-run — verifies self-registration has write role ==');
-  // Instead of testing the full interactive init flow (which has spinner/TTY issues),
-  // verify that init creates a member YAML with role:write by using an existing team-repo.
-  // The existing ~/.teamai/team-repo/members/jeffyxu.yaml was set to role:write for tests.
-  const memberPath = path.join(process.env.HOME, '.teamai', 'team-repo', 'members', 'jeffyxu.yaml');
-  const content = fs.readFileSync(memberPath, 'utf-8');
-  assert(content.includes('role: write'), 'Existing member file has role: write');
-
-  // Also verify that the init.ts source code sets role:'write' for self-registration
+// ─── Test 4: init source code — no role, no addMemberDuringInit ──────
+async function testInitSourceNoRole() {
+  console.log('\n== Test 4: init.ts source — no role in self-registration ==');
   const initSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'init.ts'), 'utf-8');
-  assert(initSrc.includes("role: 'write'"), "init.ts sets role: 'write' for self-registration");
-  assert(initSrc.includes('addMemberDuringInit'), 'init.ts calls addMemberDuringInit');
-  assert(initSrc.includes('Would you like to add team members now'), 'init.ts prompts for adding members');
+  assert(!initSrc.includes("role:"), 'init.ts does not set role for self-registration');
+  assert(!initSrc.includes('addMemberDuringInit'), 'init.ts does not call addMemberDuringInit');
+  assert(!initSrc.includes('Would you like to add team members now'), 'init.ts does not prompt for adding members');
+}
+
+// ─── Test 5: members.ts source — no role functions ──────
+async function testMembersSourceSimplified() {
+  console.log('\n== Test 5: members.ts source — role functions removed ==');
+  const membersSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'members.ts'), 'utf-8');
+  assert(!membersSrc.includes('requireWriteRole'), 'members.ts does not contain requireWriteRole');
+  assert(!membersSrc.includes('addMember'), 'members.ts does not contain addMember');
+  assert(!membersSrc.includes('addMemberDuringInit'), 'members.ts does not contain addMemberDuringInit');
+  assert(!membersSrc.includes('roleTag'), 'members.ts does not contain roleTag');
+  assert(!membersSrc.includes('ROLE_TO_ACCESS_LEVEL'), 'members.ts does not contain ROLE_TO_ACCESS_LEVEL');
+  assert(!membersSrc.includes('searchUsers'), 'members.ts does not import searchUsers');
+}
+
+// ─── Test 6: tgit-api.ts source — member management APIs removed ──────
+async function testTgitApiSimplified() {
+  console.log('\n== Test 6: tgit-api.ts source — member management APIs removed ==');
+  const tgitSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'utils', 'tgit-api.ts'), 'utf-8');
+  assert(!tgitSrc.includes('searchUsers'), 'tgit-api.ts does not contain searchUsers');
+  assert(!tgitSrc.includes('addProjectMember'), 'tgit-api.ts does not contain addProjectMember');
+  assert(!tgitSrc.includes('updateProjectMember'), 'tgit-api.ts does not contain updateProjectMember');
+  assert(!tgitSrc.includes('TGitSearchUser'), 'tgit-api.ts does not contain TGitSearchUser');
+  // Verify retained APIs still exist
+  assert(tgitSrc.includes('verifyToken'), 'tgit-api.ts still contains verifyToken');
+  assert(tgitSrc.includes('getProject'), 'tgit-api.ts still contains getProject');
+  assert(tgitSrc.includes('createProject'), 'tgit-api.ts still contains createProject');
 }
 
 // ─── Run all ─────────────────────────────────────────────
 async function main() {
-  console.log('Running E2E tests for member role management...');
+  console.log('Running E2E tests for simplified member management...');
 
   await testMembersList();
-  await testMembersAddDenied();
-  await testMembersAddWriteUser();
-  await testMembersAddExisting();
-  await testMembersAddEmpty();
-  await testInitDryRun();
+  await testMembersListSubcommand();
+  await testMembersAddRemoved();
+  await testInitSourceNoRole();
+  await testMembersSourceSimplified();
+  await testTgitApiSimplified();
 
   console.log(`\n${'─'.repeat(50)}`);
   console.log(`Results: ${passed} passed, ${failed} failed`);

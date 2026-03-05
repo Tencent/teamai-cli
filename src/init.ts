@@ -10,7 +10,6 @@ import { parseRepoInput, type RepoInfo } from './utils/repo-url.js';
 import { ensureDir, writeFile, pathExists, expandHome } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { TEAMAI_HOME, type GlobalOptions, type LocalConfig } from './types.js';
-import { addMemberDuringInit } from './members.js';
 
 function askQuestion(prompt: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -157,10 +156,9 @@ export async function init(options: GlobalOptions & { repo?: string }): Promise<
       username: user.username,
       displayName: user.name || user.username,
       registeredAt: new Date().toISOString(),
-      role: 'write',
     });
     await writeFile(memberPath, memberYaml);
-    log.success(`Registered as team member: ${user.username} (write)`);
+    log.success(`Registered as team member: ${user.username}`);
 
     if (!options.dryRun) {
       try {
@@ -181,12 +179,6 @@ export async function init(options: GlobalOptions & { repo?: string }): Promise<
     }
   } else {
     log.info(`Member ${user.username} already registered`);
-  }
-
-  // Step 5.5: Optionally add team members
-  const addMembers = await askQuestion('\nWould you like to add team members now? [y/N] ');
-  if (addMembers.toLowerCase() === 'y') {
-    await addMemberDuringInit(localPath, repoUrl, options.dryRun);
   }
 
   // Step 6: Save local config
