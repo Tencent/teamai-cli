@@ -1,13 +1,17 @@
+import { createRequire } from 'node:module';
 import { Command } from 'commander';
 import { setVerbose, setSilent } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
+
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json');
 
 const program = new Command();
 
 program
   .name('teamai')
   .description('Team AI DevKit — 团队 AI 经验共享框架')
-  .version('0.1.11')
+  .version(version)
   .option('--dry-run', 'Preview mode, no changes made')
   .option('-v, --verbose', 'Verbose output')
   .hook('preAction', (thisCommand) => {
