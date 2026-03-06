@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.14] - 2026-03-06
+
+### Added
+- 团队环境变量同步：新增 `env` 资源类型，支持从团队仓库 `env/env.yaml` 同步环境变量到成员的 shell 配置文件 (!23)
+- `teamai env list` — 列出团队环境变量
+- `teamai env add <key> <value>` — 添加/更新环境变量（通过 branch + MR 流程）
+- `teamai env remove <key>` — 删除环境变量（通过 branch + MR 流程）
+- `teamai pull` 自动将 env 变量注入 ~/.bashrc 或 ~/.zshrc，使用标记注释 `[teamai:env:start/end]` 实现幂等更新
+- `teamai pull` 同时写入 `~/.teamai/env` 作为 KEY=VALUE 格式备份
+- `teamai status` 显示 env 变量计数，`teamai list env` 显示变量详情
+- `teamai doctor` 新增 shell profile env 注入检查项
+- `teamai init` 创建 `env/` 目录，默认配置含 `env: { injectShellProfile: true }`
+- 支持 `sharing.env.shellProfilePath` 自定义注入路径，`sharing.env.injectShellProfile: false` 禁用注入
+
 ## [0.1.13] - 2026-03-06
 
 ### Added
