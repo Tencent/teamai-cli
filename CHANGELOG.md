@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.12] - 2026-03-06
+
+### Added
+- `teamai pull` 输出详情：显示 skills/instincts 的新增/更新数量（如 `3 new, 29 updated`），hooks 显示实际条目数 (!20)
+- TGit API `fileExistsInRepo` 辅助函数：检查远程仓库文件是否存在 (!18)
+
+### Fixed
+- 修复 MR 创建时 `web_url` 返回 undefined 及 reviewer 未设置的问题（TGit v3 API 兼容） (!17)
+- `teamai init` 对已有 teamai 仓库/已注册成员跳过多余确认提示 (!18, !19)
+- `teamai init` 使用 `default_branch` 替代硬编码 `master` 检查远程文件 (!19)
+- Session start hook 去掉 `--silent`，新会话启动时可见 pull 输出；`teamai init` 自动更新旧版 hook command (!20)
+- `teamai pull` docs 目录只有 `.gitkeep` 时跳过同步，复制时过滤 dot 文件 (!20)
+
 ## [0.1.11] - 2026-03-05
 
 ### Added
