@@ -135,6 +135,20 @@ export async function isRepoEmpty(projectId: string): Promise<boolean> {
   return tree.length === 0;
 }
 
+/**
+ * Check whether a specific file exists in the repo's default branch.
+ */
+export async function fileExistsInRepo(projectId: string, filePath: string): Promise<boolean> {
+  const token = getToken();
+  const encodedPath = encodeURIComponent(filePath);
+  const url = `${TGIT_API_BASE}/projects/${projectId}/repository/files/${encodedPath}?private_token=${token}&ref=master`;
+  log.debug(`TGit API: GET /projects/${projectId}/repository/files/${encodedPath}`);
+  const resp = await fetch(url, {
+    headers: { 'Content-Type': 'application/json' },
+  });
+  return resp.ok;
+}
+
 export interface TGitNamespace {
   id: number;
   name: string;

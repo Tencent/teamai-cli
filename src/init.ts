@@ -5,7 +5,7 @@ import { saveLocalConfig, loadTeamConfig } from './config.js';
 import { injectHooksToAllTools } from './hooks.js';
 import { cloneRepo, configureGitUser } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
-import { verifyToken, getCurrentUser, getProject, isRepoEmpty, createProject, getNamespaceId } from './utils/tgit-api.js';
+import { verifyToken, getCurrentUser, getProject, isRepoEmpty, fileExistsInRepo, createProject, getNamespaceId } from './utils/tgit-api.js';
 import { parseRepoInput, type RepoInfo } from './utils/repo-url.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
@@ -50,11 +50,17 @@ async function resolveRepo(info: RepoInfo): Promise<string> {
     if (empty) {
       spin.succeed(`Repo ${info.owner}/${info.repo} exists (empty, ready to use)`);
     } else {
-      spin.warn(`Repo ${info.owner}/${info.repo} exists and is non-empty`);
-      const answer = await askQuestion('Continue using this repo? [Y/n] ');
-      if (answer && answer.toLowerCase() !== 'y') {
-        log.error('Aborted.');
-        process.exit(1);
+      // Check if repo is already a teamai repo (has teamai.yaml)
+      const isTeamaiRepo = await fileExistsInRepo(info.projectId, 'teamai.yaml');
+      if (isTeamaiRepo) {
+        spin.succeed(`Repo ${info.owner}/${info.repo} is an existing teamai repo`);
+      } else {
+        spin.warn(`Repo ${info.owner}/${info.repo} exists and is non-empty`);
+        const answer = await askQuestion('Continue using this repo? [Y/n] ');
+        if (answer && answer.toLowerCase() !== 'y') {
+          log.error('Aborted.');
+          process.exit(1);
+        }
       }
     }
   }
@@ -151,7 +157,8 @@ export async function init(options: GlobalOptions & { repo?: string }): Promise<
 
   // Step 5: Create member file
   const memberPath = path.join(localPath, 'members', `${user.username}.yaml`);
-  if (!await pathExists(memberPath)) {
+  const isNewMember = !await pathExists(memberPath);
+  if (isNewMember) {
     const memberYaml = YAML.stringify({
       username: user.username,
       displayName: user.name || user.username,
@@ -181,33 +188,35 @@ export async function init(options: GlobalOptions & { repo?: string }): Promise<
     log.info(`Member ${user.username} already registered`);
   }
 
-  // Step 5.5: Configure default MR reviewers
-  const configureReviewers = await askQuestion('\nWould you like to configure default MR reviewers? [y/N] ');
-  if (configureReviewers.toLowerCase() === 'y') {
-    const reviewerInput = await askQuestion('Reviewers (comma-separated usernames): ');
-    const reviewers = reviewerInput
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
+  // Step 5.5: Configure default MR reviewers (only for new members / fresh setup)
+  if (isNewMember) {
+    const configureReviewers = await askQuestion('\nWould you like to configure default MR reviewers? [y/N] ');
+    if (configureReviewers.toLowerCase() === 'y') {
+      const reviewerInput = await askQuestion('Reviewers (comma-separated usernames): ');
+      const reviewers = reviewerInput
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
 
-    if (reviewers.length > 0) {
-      // Update teamai.yaml with reviewers
-      const configPath = path.join(localPath, 'teamai.yaml');
-      const configContent = await readFileSafe(configPath);
-      if (configContent) {
-        const configData = YAML.parse(configContent) as Record<string, unknown>;
-        configData.reviewers = reviewers;
-        await writeFile(configPath, YAML.stringify(configData));
-        log.success(`Configured ${reviewers.length} reviewer(s): ${reviewers.join(', ')}`);
+      if (reviewers.length > 0) {
+        // Update teamai.yaml with reviewers
+        const configPath = path.join(localPath, 'teamai.yaml');
+        const configContent = await readFileSafe(configPath);
+        if (configContent) {
+          const configData = YAML.parse(configContent) as Record<string, unknown>;
+          configData.reviewers = reviewers;
+          await writeFile(configPath, YAML.stringify(configData));
+          log.success(`Configured ${reviewers.length} reviewer(s): ${reviewers.join(', ')}`);
 
-        if (!options.dryRun) {
-          try {
-            await pushRepoDirectly(localPath, `[teamai] Configure reviewers: ${reviewers.join(', ')}`, [
-              'teamai.yaml',
-            ]);
-            log.success('Reviewer config pushed to team repo');
-          } catch (e) {
-            log.warn(`Push failed (you can push manually later): ${(e as Error).message}`);
+          if (!options.dryRun) {
+            try {
+              await pushRepoDirectly(localPath, `[teamai] Configure reviewers: ${reviewers.join(', ')}`, [
+                'teamai.yaml',
+              ]);
+              log.success('Reviewer config pushed to team repo');
+            } catch (e) {
+              log.warn(`Push failed (you can push manually later): ${(e as Error).message}`);
+            }
           }
         }
       }
