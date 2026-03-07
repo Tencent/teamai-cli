@@ -55,22 +55,6 @@ export async function status(options: GlobalOptions): Promise<void> {
   const docsExists = await pathExists(path.join(repoPath, 'docs'));
   counts.docs = docsExists ? (await listDirs(path.join(repoPath, 'docs'))).length : 0;
 
-  // Instincts
-  const instinctsDir = path.join(repoPath, 'instincts');
-  let instinctCount = 0;
-  if (await pathExists(instinctsDir)) {
-    const memberDirs = await listDirs(instinctsDir);
-    for (const m of memberDirs) {
-      const files = await listFiles(path.join(instinctsDir, m));
-      instinctCount += files.filter(f => f.endsWith('.yaml') || f.endsWith('.yml') || f.endsWith('.md')).length;
-    }
-  }
-  counts.instincts = instinctCount;
-
-  // Hooks
-  const hooksYaml = await pathExists(path.join(repoPath, 'hooks', 'hooks.yaml'));
-  counts.hooks = hooksYaml ? 1 : 0;
-
   // Env
   const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
   let envCount = 0;
@@ -120,7 +104,7 @@ export async function list(type: string | undefined, options: GlobalOptions): Pr
 
   const types: ResourceType[] = type
     ? [type as ResourceType]
-    : ['skills', 'rules', 'hooks', 'docs', 'instincts', 'env'];
+    : ['skills', 'rules', 'docs', 'env'];
 
   for (const t of types) {
     console.log('');

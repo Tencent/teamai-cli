@@ -2,8 +2,8 @@ import path from 'node:path';
 import { requireInit, loadState, saveState } from './config.js';
 import { pullRepo } from './utils/git.js';
 import { log, spinner } from './utils/logger.js';
-import { pathExists, remove, listFiles } from './utils/fs.js';
-import { getHandler, RulesHandler, HooksConfigHandler, EnvHandler } from './resources/index.js';
+import { pathExists, remove } from './utils/fs.js';
+import { getHandler, RulesHandler, EnvHandler } from './resources/index.js';
 import type { GlobalOptions, ResourceType, ResourceItem, TeamaiConfig } from './types.js';
 
 /**
@@ -34,22 +34,7 @@ async function getExistingLocalNames(
       // Only need to check the first available target
       break;
     }
-  } else if (type === 'instincts') {
-    // Check ~/.claude/homunculus/instincts/inherited/
-    const inheritedDir = path.join(home, '.claude/homunculus/instincts/inherited');
-    if (await pathExists(inheritedDir)) {
-      const files = await listFiles(inheritedDir);
-      const fileNames = new Set(files.map(f => f.replace(/\.(yaml|yml|md)$/, '')));
-      for (const item of items) {
-        // item.name is like "member/instinct-name", the local file is just the basename
-        const basename = path.basename(item.sourcePath).replace(/\.(yaml|yml|md)$/, '');
-        if (fileNames.has(basename)) {
-          existing.add(item.name);
-        }
-      }
-    }
   }
-  // docs and hooks are single-item, no need for new/updated distinction
 
   return existing;
 }
@@ -99,7 +84,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
   const { teamConfig: freshConfig } = await requireInit();
 
   // Step 2: Sync each resource type
-  const resourceTypes: ResourceType[] = ['skills', 'rules', 'hooks', 'docs', 'instincts', 'env'];
+  const resourceTypes: ResourceType[] = ['skills', 'rules', 'docs', 'env'];
   let totalSynced = 0;
 
   for (const type of resourceTypes) {
@@ -124,7 +109,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
     const items = await handler.scanTeamForPull(freshConfig, localConfig);
     if (items.length === 0) continue;
 
-    // Env uses special handling (similar to hooks)
+    // Env uses special handling
     if (type === 'env') {
       const envHandler = handler as EnvHandler;
       const varCount = await envHandler.countEnvVars(items[0].sourcePath);
@@ -147,11 +132,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
       const added = items.filter(i => !existingNames.has(i.name));
       const updated = items.filter(i => existingNames.has(i.name));
 
-      if (type === 'hooks') {
-        const hooksHandler = handler as HooksConfigHandler;
-        const entryCount = await hooksHandler.countHookEntries(items[0].sourcePath);
-        log.info(`[dry-run] Would sync ${entryCount} hook entries`);
-      } else if (added.length > 0 && (type === 'skills' || type === 'instincts')) {
+      if (added.length > 0 && type === 'skills') {
         log.info(`[dry-run] Would pull ${items.length} ${type} (${added.length} new, ${updated.length} updated)`);
         log.dim(`    new: ${added.map(i => i.name).join(', ')}`);
       } else {
@@ -167,11 +148,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
         await handler.pullItem(item, freshConfig, localConfig);
       }
 
-      if (type === 'hooks') {
-        const hooksHandler = handler as HooksConfigHandler;
-        const entryCount = await hooksHandler.countHookEntries(items[0].sourcePath);
-        log.success(`Synced ${entryCount} hook entries`);
-      } else if (type === 'skills' || type === 'instincts') {
+      if (type === 'skills') {
         logSyncDetail(type, items, existingNames, !!options.verbose);
       } else {
         log.success(`Synced ${items.length} ${type}`);

@@ -109,7 +109,7 @@ export async function init(options: GlobalOptions & { repo?: string }): Promise<
     await writeFile(path.join(localPath, 'teamai.yaml'), defaultConfig);
 
     // Create standard directories
-    for (const dir of ['members', 'skills', 'rules', 'docs', 'hooks', 'hooks/scripts', 'instincts', 'env']) {
+    for (const dir of ['members', 'skills', 'rules', 'docs', 'env']) {
       await ensureDir(path.join(localPath, dir));
       const gitkeep = path.join(localPath, dir, '.gitkeep');
       if (!await pathExists(gitkeep)) {
@@ -138,9 +138,6 @@ export async function init(options: GlobalOptions & { repo?: string }): Promise<
           'skills/.gitkeep',
           'rules/.gitkeep',
           'docs/.gitkeep',
-          'hooks/.gitkeep',
-          'hooks/scripts/.gitkeep',
-          'instincts/.gitkeep',
           'env/.gitkeep',
         ]);
         log.success('Member registration pushed to team repo');

@@ -71,7 +71,6 @@ export type LocalConfig = z.infer<typeof LocalConfigSchema>;
 export const StateSchema = z.object({
   lastPush: z.string().nullable().default(null),
   lastPull: z.string().nullable().default(null),
-  pushedInstincts: z.array(z.string()).default([]),
   pushedRules: z.array(z.string()).default([]),
   pushedSkills: z.array(z.string()).default([]),
   pushedEnvVars: z.array(z.string()).default([]),
@@ -81,7 +80,7 @@ export type State = z.infer<typeof StateSchema>;
 
 // ─── Resource types ─────────────────────────────────────
 
-export type ResourceType = 'skills' | 'rules' | 'hooks' | 'docs' | 'instincts' | 'env';
+export type ResourceType = 'skills' | 'rules' | 'docs' | 'env';
 
 export interface ResourceItem {
   name: string;
@@ -111,7 +110,7 @@ export const TEAMAI_CONFIG_PATH = `${TEAMAI_HOME}/config.yaml`;
 export const TEAMAI_STATE_PATH = `${TEAMAI_HOME}/state.json`;
 export const TEAMAI_TOKEN_PATH = `${TEAMAI_HOME}/token`;
 
-export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'hooks', 'docs', 'instincts', 'env'];
+export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env'];
 
 export const TEAMAI_RULES_START = '<!-- [teamai:rules:start] -->';
 export const TEAMAI_RULES_END = '<!-- [teamai:rules:end] -->';

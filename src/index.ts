@@ -70,7 +70,7 @@ program
 
 program
   .command('list [type]')
-  .description('List resources (skills|rules|hooks|docs|instincts|env)')
+  .description('List resources (skills|rules|docs|env)')
   .action(async (type) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { list } = await import('./status.js');
