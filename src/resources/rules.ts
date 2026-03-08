@@ -9,7 +9,7 @@ export class RulesHandler extends ResourceHandler {
   readonly type = 'rules' as const;
 
   /**
-   * Scan for local rule .md files that are not yet in the team repo.
+   * Scan for local rule .md files that are new or modified compared to the team repo.
    * Looks in each tool's configured rules/ directory (e.g. ~/.claude/rules/).
    */
   async scanLocalForPush(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
@@ -37,14 +37,23 @@ export class RulesHandler extends ResourceHandler {
       for (const file of files) {
         if (!file.endsWith('.md')) continue;
         const name = file.replace(/\.md$/, '');
-        if (seen.has(file) || teamRules.has(file)) continue;
+        if (seen.has(file)) continue;
         if (tombstones.has(name)) continue;
+
+        const localFilePath = path.join(rulesDir, file);
+
+        if (teamRules.has(file)) {
+          // Compare content to detect modifications
+          const localContent = await readFileSafe(localFilePath);
+          const teamContent = await readFileSafe(path.join(teamRulesDir, file));
+          if (localContent === teamContent) continue;
+        }
 
         seen.add(file);
         items.push({
           name,
           type: 'rules',
-          sourcePath: path.join(rulesDir, file),
+          sourcePath: localFilePath,
           relativePath: `rules/${file}`,
         });
       }
