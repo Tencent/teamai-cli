@@ -63,15 +63,6 @@ describe('EnvHandler', () => {
     await fse.remove(tmpDir);
   });
 
-  // ─── scanLocalForPush ────────────────────────────────────
-
-  describe('scanLocalForPush', () => {
-    it('should always return empty array', async () => {
-      const items = await handler.scanLocalForPush(teamConfig, localConfig);
-      expect(items).toEqual([]);
-    });
-  });
-
   // ─── scanTeamForPull ─────────────────────────────────────
 
   describe('scanTeamForPull', () => {
@@ -191,24 +182,35 @@ describe('EnvHandler', () => {
   // ─── generateShellBlock ──────────────────────────────────
 
   describe('generateShellBlock', () => {
-    it('should generate correct shell block with markers', () => {
-      const block = handler.generateShellBlock([
-        { key: 'API_URL', value: 'https://example.com' },
-        { key: 'TOKEN', value: 'abc123' },
-      ]);
+    it('should generate source line block with markers', () => {
+      const block = handler.generateShellBlock();
 
       expect(block).toContain(TEAMAI_ENV_START);
       expect(block).toContain(TEAMAI_ENV_END);
       expect(block).toContain('# DO NOT EDIT: This section is auto-managed by teamai');
-      expect(block).toContain('export API_URL="https://example.com"');
-      expect(block).toContain('export TOKEN="abc123"');
+      expect(block).toContain('[ -f ~/.teamai/env.sh ] && source ~/.teamai/env.sh');
+      // Should NOT contain inline export lines
+      expect(block).not.toMatch(/^export /m);
+    });
+  });
+
+  // ─── generateEnvFile ─────────────────────────────────────
+
+  describe('generateEnvFile', () => {
+    it('should generate export lines for env.sh', () => {
+      const content = handler.generateEnvFile([
+        { key: 'API_URL', value: 'https://example.com' },
+        { key: 'TOKEN', value: 'abc123' },
+      ]);
+
+      expect(content).toBe(
+        'export API_URL="https://example.com"\nexport TOKEN="abc123"\n',
+      );
     });
 
-    it('should handle empty variables array', () => {
-      const block = handler.generateShellBlock([]);
-      expect(block).toContain(TEAMAI_ENV_START);
-      expect(block).toContain(TEAMAI_ENV_END);
-      expect(block).not.toContain('export');
+    it('should return just a newline for empty variables', () => {
+      const content = handler.generateEnvFile([]);
+      expect(content).toBe('\n');
     });
   });
 
@@ -245,7 +247,17 @@ describe('EnvHandler', () => {
       expect(content).toContain('MODEL_ENDPOINT=https://api.example.com');
     });
 
-    it('should inject env block into shell profile (bash)', async () => {
+    it('should write ~/.teamai/env.sh with export lines', async () => {
+      await handler.pullItem(item, teamConfig, localConfig);
+
+      const envShPath = path.join(homeDir, '.teamai', 'env.sh');
+      expect(await fse.pathExists(envShPath)).toBe(true);
+      const content = await fse.readFile(envShPath, 'utf-8');
+      expect(content).toContain('export TGIT_API_BASE="https://git.woa.com/api/v3"');
+      expect(content).toContain('export MODEL_ENDPOINT="https://api.example.com"');
+    });
+
+    it('should inject source line into shell profile (bash)', async () => {
       vi.stubEnv('SHELL', '/bin/bash');
       const bashrcPath = path.join(homeDir, '.bashrc');
       await fse.writeFile(bashrcPath, '# existing config\nexport PATH=$PATH\n');
@@ -255,12 +267,13 @@ describe('EnvHandler', () => {
       const content = await fse.readFile(bashrcPath, 'utf-8');
       expect(content).toContain('# existing config');
       expect(content).toContain(TEAMAI_ENV_START);
-      expect(content).toContain('export TGIT_API_BASE="https://git.woa.com/api/v3"');
-      expect(content).toContain('export MODEL_ENDPOINT="https://api.example.com"');
+      expect(content).toContain('[ -f ~/.teamai/env.sh ] && source ~/.teamai/env.sh');
       expect(content).toContain(TEAMAI_ENV_END);
+      // Should NOT have inline export lines in the profile
+      expect(content).not.toContain('export TGIT_API_BASE');
     });
 
-    it('should inject env block into .zshrc for zsh users', async () => {
+    it('should inject source line into .zshrc for zsh users', async () => {
       vi.stubEnv('SHELL', '/bin/zsh');
       const zshrcPath = path.join(homeDir, '.zshrc');
       await fse.writeFile(zshrcPath, '# zsh config\n');
@@ -269,14 +282,14 @@ describe('EnvHandler', () => {
 
       const content = await fse.readFile(zshrcPath, 'utf-8');
       expect(content).toContain(TEAMAI_ENV_START);
-      expect(content).toContain('export TGIT_API_BASE="https://git.woa.com/api/v3"');
+      expect(content).toContain('[ -f ~/.teamai/env.sh ] && source ~/.teamai/env.sh');
     });
 
-    it('should idempotently replace existing env block', async () => {
+    it('should idempotently replace existing block (including old-style with exports)', async () => {
       vi.stubEnv('SHELL', '/bin/bash');
       const bashrcPath = path.join(homeDir, '.bashrc');
 
-      // Existing content with old env block
+      // Existing content with OLD-style env block (inline exports)
       const existingContent = [
         '# my config',
         TEAMAI_ENV_START,
@@ -290,11 +303,10 @@ describe('EnvHandler', () => {
       await handler.pullItem(item, teamConfig, localConfig);
 
       const content = await fse.readFile(bashrcPath, 'utf-8');
-      // Old var should be gone
+      // Old inline export should be gone
       expect(content).not.toContain('OLD_VAR');
-      // New vars should be present
-      expect(content).toContain('export TGIT_API_BASE="https://git.woa.com/api/v3"');
-      expect(content).toContain('export MODEL_ENDPOINT="https://api.example.com"');
+      // Source line should be present instead
+      expect(content).toContain('[ -f ~/.teamai/env.sh ] && source ~/.teamai/env.sh');
       // Surrounding content preserved
       expect(content).toContain('# my config');
       expect(content).toContain('# other config');
@@ -330,9 +342,11 @@ describe('EnvHandler', () => {
 
       await handler.pullItem(item, noInjectConfig, localConfig);
 
-      // Backup should still be written
+      // Backup and env.sh should still be written
       const backupPath = path.join(homeDir, '.teamai', 'env');
       expect(await fse.pathExists(backupPath)).toBe(true);
+      const envShPath = path.join(homeDir, '.teamai', 'env.sh');
+      expect(await fse.pathExists(envShPath)).toBe(true);
 
       // Shell profile should NOT be modified
       const content = await fse.readFile(bashrcPath, 'utf-8');
@@ -356,7 +370,7 @@ describe('EnvHandler', () => {
 
       const content = await fse.readFile(customPath, 'utf-8');
       expect(content).toContain(TEAMAI_ENV_START);
-      expect(content).toContain('export TGIT_API_BASE');
+      expect(content).toContain('[ -f ~/.teamai/env.sh ] && source ~/.teamai/env.sh');
     });
 
     it('should skip when env.yaml has no variables', async () => {

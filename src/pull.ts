@@ -116,10 +116,10 @@ export async function pull(options: GlobalOptions): Promise<void> {
       if (varCount === 0) continue;
 
       if (options.dryRun) {
-        log.info(`[dry-run] Would sync ${varCount} env variable(s) to shell profile`);
+        log.info(`[dry-run] Would sync ${varCount} env variable(s)`);
       } else {
         await envHandler.pullItem(items[0], freshConfig, localConfig);
-        log.success(`Synced ${varCount} env variable(s) to shell profile`);
+        log.success(`Synced ${varCount} env variable(s) to ~/.teamai/env.sh`);
       }
       totalSynced += 1;
       continue;

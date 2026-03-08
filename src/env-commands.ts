@@ -1,9 +1,7 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { requireInit } from './config.js';
-import { pullRepo, pushRepoBranch, generateBranchName } from './utils/git.js';
-import { gfMrCreate } from './utils/gf-cli.js';
-import { parseRepoInput } from './utils/repo-url.js';
+import { pullRepo } from './utils/git.js';
 import { ensureDir, readFileSafe, writeFile, pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { EnvHandler } from './resources/env.js';
@@ -42,56 +40,15 @@ export async function envList(options: GlobalOptions): Promise<void> {
 }
 
 /**
- * Helper: create MR via gf CLI for env changes.
- */
-async function createEnvMr(
-  repoPath: string,
-  branchName: string,
-  commitMsg: string,
-  description: string,
-  teamConfig: { repo: string; reviewers?: string[] },
-  localConfig: { repo: { remote: string } },
-): Promise<void> {
-  const hasChanges = await pushRepoBranch(repoPath, commitMsg, ['env/'], branchName);
-  if (!hasChanges) {
-    log.success('No changes (variable already up to date)');
-    return;
-  }
-  log.success(`Pushed branch ${branchName}`);
-
-  const mrSpin = spinner('Creating Merge Request...').start();
-  try {
-    let repoInfo;
-    try {
-      repoInfo = parseRepoInput(teamConfig.repo);
-    } catch {
-      repoInfo = parseRepoInput(localConfig.repo.remote);
-    }
-
-    const mrUrl = gfMrCreate({
-      repo: `${repoInfo.owner}/${repoInfo.repo}`,
-      source: branchName,
-      target: 'master',
-      title: commitMsg,
-      description,
-      reviewers: teamConfig.reviewers?.length ? teamConfig.reviewers : undefined,
-    });
-    mrSpin.succeed(`Merge Request created: ${mrUrl}`);
-  } catch (e) {
-    mrSpin.fail(`Failed to create MR: ${(e as Error).message}`);
-    log.info(`Branch ${branchName} has been pushed. You can create a MR manually.`);
-  }
-}
-
-/**
- * Add or update an env variable via branch + MR.
+ * Add or update an env variable locally.
+ * Changes are deferred — run `teamai push` to sync to team repo.
  */
 export async function envAdd(
   key: string,
   value: string,
   options: GlobalOptions & { description?: string },
 ): Promise<void> {
-  const { localConfig, teamConfig } = await requireInit();
+  const { localConfig } = await requireInit();
   const repoPath = localConfig.repo.localPath;
   const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
 
@@ -133,32 +90,17 @@ export async function envAdd(
   await ensureDir(path.join(repoPath, 'env'));
   await envHandler.writeEnvYaml(envYamlPath, envConfig);
 
-  // Create branch + MR
-  const action = isUpdate ? 'Update' : 'Add';
-  const branchName = generateBranchName(localConfig.username);
-  const commitMsg = `[teamai] ${action} env variable: ${key}`;
-
-  const pushSpin = spinner('Creating branch and MR...').start();
-  try {
-    await createEnvMr(
-      repoPath,
-      branchName,
-      commitMsg,
-      `${action} env variable:\n- \`${key}=${value}\`${options.description ? `\n- Description: ${options.description}` : ''}`,
-      teamConfig,
-      localConfig,
-    );
-    pushSpin.stop();
-  } catch (e) {
-    pushSpin.fail(`Push failed: ${(e as Error).message}`);
-  }
+  const action = isUpdate ? 'Updated' : 'Added';
+  log.success(`${action} env variable: ${key}=${value}`);
+  log.info('Run `teamai push` to sync to team repo.');
 }
 
 /**
- * Remove an env variable via branch + MR.
+ * Remove an env variable locally.
+ * Changes are deferred — run `teamai push` to sync to team repo.
  */
 export async function envRemove(key: string, options: GlobalOptions): Promise<void> {
-  const { localConfig, teamConfig } = await requireInit();
+  const { localConfig } = await requireInit();
   const repoPath = localConfig.repo.localPath;
   const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
 
@@ -192,22 +134,6 @@ export async function envRemove(key: string, options: GlobalOptions): Promise<vo
   envConfig.variables.splice(idx, 1);
   await envHandler.writeEnvYaml(envYamlPath, envConfig);
 
-  // Create branch + MR
-  const branchName = generateBranchName(localConfig.username);
-  const commitMsg = `[teamai] Remove env variable: ${key}`;
-
-  const pushSpin = spinner('Creating branch and MR...').start();
-  try {
-    await createEnvMr(
-      repoPath,
-      branchName,
-      commitMsg,
-      `Remove env variable: \`${key}\``,
-      teamConfig,
-      localConfig,
-    );
-    pushSpin.stop();
-  } catch (e) {
-    pushSpin.fail(`Push failed: ${(e as Error).message}`);
-  }
+  log.success(`Removed env variable: ${key}`);
+  log.info('Run `teamai push` to sync to team repo.');
 }

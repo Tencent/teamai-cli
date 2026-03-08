@@ -23,7 +23,7 @@ export async function push(options: GlobalOptions & { all?: boolean }): Promise<
   const spin = spinner('Scanning local resources...').start();
 
   // Scan for pushable resources
-  const pushableTypes: ResourceType[] = ['skills', 'rules'];
+  const pushableTypes: ResourceType[] = ['skills', 'rules', 'env'];
   const allItems: ResourceItem[] = [];
 
   for (const type of pushableTypes) {
@@ -86,7 +86,7 @@ export async function push(options: GlobalOptions & { all?: boolean }): Promise<
 
   // Create branch, commit, and push
   try {
-    const gitFiles = ['skills/', 'rules/'];
+    const gitFiles = ['skills/', 'rules/', 'env/'];
     const branchName = generateBranchName(localConfig.username);
     const commitMsg = `[teamai] Push ${allItems.length} resource(s) from ${localConfig.username}`;
 
@@ -141,6 +141,9 @@ export async function push(options: GlobalOptions & { all?: boolean }): Promise<
     }
     if (item.type === 'rules' && !state.pushedRules.includes(item.name)) {
       state.pushedRules.push(item.name);
+    }
+    if (item.type === 'env' && !state.pushedEnvVars.includes(item.name)) {
+      state.pushedEnvVars.push(item.name);
     }
   }
   await saveState(state);

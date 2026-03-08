@@ -80,6 +80,12 @@ export async function doctor(options: GlobalOptions): Promise<void> {
       name: 'Env variables injected in shell profile',
       check: async () => {
         const home = process.env.HOME ?? '';
+
+        // Check if env.sh exists
+        const envShPath = path.join(home, '.teamai', 'env.sh');
+        if (!await pathExists(envShPath)) return false;
+
+        // Check for source line in shell profile
         const shell = process.env.SHELL ?? '';
         const profilePath = shell.includes('zsh')
           ? path.join(home, '.zshrc')

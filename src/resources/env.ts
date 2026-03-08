@@ -28,10 +28,38 @@ export class EnvHandler extends ResourceHandler {
   readonly type = 'env' as const;
 
   /**
-   * Env vars are managed via dedicated CLI commands, not auto-scanned for push.
+   * Scan for local env changes that need to be pushed.
+   * Compares local env/env.yaml against the committed version.
    */
-  async scanLocalForPush(_teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<ResourceItem[]> {
-    return [];
+  async scanLocalForPush(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
+    const envYamlPath = path.join(localConfig.repo.localPath, 'env', 'env.yaml');
+    if (!await pathExists(envYamlPath)) return [];
+
+    // Check if env.yaml has uncommitted changes via git diff
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const execFileAsync = promisify(execFile);
+
+    try {
+      // git diff exits 0 if no changes, non-zero otherwise when used with --exit-code
+      await execFileAsync('git', ['diff', '--exit-code', 'env/env.yaml'], {
+        cwd: localConfig.repo.localPath,
+      });
+      // Also check if the file is untracked
+      const { stdout } = await execFileAsync('git', ['ls-files', '--others', '--exclude-standard', 'env/env.yaml'], {
+        cwd: localConfig.repo.localPath,
+      });
+      if (!stdout.trim()) return [];
+    } catch {
+      // git diff --exit-code returns 1 when there are changes — that's what we want
+    }
+
+    return [{
+      name: 'env.yaml',
+      type: 'env',
+      sourcePath: envYamlPath,
+      relativePath: 'env/env.yaml',
+    }];
   }
 
   async scanTeamForPull(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
@@ -47,11 +75,11 @@ export class EnvHandler extends ResourceHandler {
   }
 
   async pushItem(_item: ResourceItem, _teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<void> {
-    // No-op — env is managed via dedicated CLI commands
+    // No-op — env.yaml is already in the repo dir; push.ts handles git commit
   }
 
   /**
-   * Pull env variables: parse env.yaml, write backup, inject into shell profile.
+   * Pull env variables: parse env.yaml, write env.sh, inject source line into shell profile.
    */
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<void> {
     const content = await readFileSafe(item.sourcePath);
@@ -68,14 +96,18 @@ export class EnvHandler extends ResourceHandler {
 
     if (envConfig.variables.length === 0) return;
 
-    // Write backup to ~/.teamai/env (KEY=VALUE format, for loadEnvFile compatibility)
+    // Write ~/.teamai/env (KEY=VALUE backup for loadEnvFile compatibility)
     const home = process.env.HOME ?? '';
     const teamaiHome = path.join(home, '.teamai');
     const backupLines = envConfig.variables.map(v => `${v.key}=${v.value}`);
     await ensureDir(teamaiHome);
     await writeFile(path.join(teamaiHome, 'env'), backupLines.join('\n') + '\n');
 
-    // Inject into shell profile if enabled
+    // Write ~/.teamai/env.sh (sourceable export file)
+    const envShContent = this.generateEnvFile(envConfig.variables);
+    await writeFile(path.join(teamaiHome, 'env.sh'), envShContent);
+
+    // Inject source line into shell profile if enabled
     const inject = teamConfig.sharing.env.injectShellProfile !== false;
 
     if (inject) {
@@ -83,7 +115,7 @@ export class EnvHandler extends ResourceHandler {
         ? teamConfig.sharing.env.shellProfilePath
         : this.detectShellProfile();
 
-      const shellBlock = this.generateShellBlock(envConfig.variables);
+      const shellBlock = this.generateShellBlock();
       await this.injectShellProfile(profilePath, shellBlock);
     }
   }
@@ -128,16 +160,24 @@ export class EnvHandler extends ResourceHandler {
   }
 
   /**
-   * Generate the shell block with export statements wrapped in markers.
+   * Generate the shell block with a source line (instead of inline exports).
    */
-  generateShellBlock(variables: EnvVariable[]): string {
+  generateShellBlock(): string {
     const lines = [
       TEAMAI_ENV_START,
       '# DO NOT EDIT: This section is auto-managed by teamai',
-      ...variables.map(v => `export ${v.key}="${v.value}"`),
+      '[ -f ~/.teamai/env.sh ] && source ~/.teamai/env.sh',
       TEAMAI_ENV_END,
     ];
     return lines.join('\n');
+  }
+
+  /**
+   * Generate the content of ~/.teamai/env.sh with export statements.
+   */
+  generateEnvFile(variables: EnvVariable[]): string {
+    const lines = variables.map(v => `export ${v.key}="${v.value}"`);
+    return lines.join('\n') + '\n';
   }
 
   /**

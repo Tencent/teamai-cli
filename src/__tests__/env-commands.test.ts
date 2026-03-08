@@ -11,16 +11,6 @@ vi.mock('../config.js', () => ({
 
 vi.mock('../utils/git.js', () => ({
   pullRepo: vi.fn().mockResolvedValue('Already up to date.'),
-  pushRepoBranch: vi.fn().mockResolvedValue(true),
-  generateBranchName: vi.fn().mockReturnValue('teamai/push/test/20260305-120000'),
-}));
-
-vi.mock('../utils/gf-cli.js', () => ({
-  gfMrCreate: vi.fn().mockReturnValue('https://git.woa.com/mr/1'),
-}));
-
-vi.mock('../utils/repo-url.js', () => ({
-  parseRepoInput: vi.fn().mockReturnValue({ owner: 'test', repo: 'repo', projectId: 'test%2Frepo' }),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -44,8 +34,6 @@ vi.mock('../utils/logger.js', () => ({
 
 import { envList, envAdd, envRemove } from '../env-commands.js';
 import { requireInit } from '../config.js';
-import { pushRepoBranch } from '../utils/git.js';
-import { gfMrCreate } from '../utils/gf-cli.js';
 import { log } from '../utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
@@ -83,9 +71,8 @@ describe('env-commands', () => {
     };
 
     vi.mocked(requireInit).mockResolvedValue({ localConfig, teamConfig });
-    vi.mocked(pushRepoBranch).mockReset().mockResolvedValue(true);
-    vi.mocked(gfMrCreate).mockReset().mockReturnValue('https://git.woa.com/mr/1');
     vi.mocked(log.info).mockClear();
+    vi.mocked(log.success).mockClear();
     vi.mocked(log.error).mockClear();
     vi.mocked(log.dim).mockClear();
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -153,7 +140,7 @@ describe('env-commands', () => {
   // ─── envAdd ──────────────────────────────────────────────
 
   describe('envAdd', () => {
-    it('should add a new variable and create branch + MR', async () => {
+    it('should add a new variable locally and show push hint', async () => {
       await envAdd('NEW_VAR', 'new_value', {});
 
       // Verify env.yaml was written
@@ -163,16 +150,9 @@ describe('env-commands', () => {
       expect(parsed.variables).toHaveLength(1);
       expect(parsed.variables[0]).toEqual({ key: 'NEW_VAR', value: 'new_value' });
 
-      // Verify branch push
-      expect(pushRepoBranch).toHaveBeenCalledWith(
-        repoPath,
-        '[teamai] Add env variable: NEW_VAR',
-        ['env/'],
-        expect.any(String),
-      );
-
-      // Verify MR creation
-      expect(gfMrCreate).toHaveBeenCalled();
+      // Verify success message and push hint
+      expect(log.success).toHaveBeenCalledWith('Added env variable: NEW_VAR=new_value');
+      expect(log.info).toHaveBeenCalledWith('Run `teamai push` to sync to team repo.');
     });
 
     it('should add variable with description', async () => {
@@ -188,7 +168,7 @@ describe('env-commands', () => {
       });
     });
 
-    it('should update existing variable', async () => {
+    it('should update existing variable locally and show push hint', async () => {
       // Pre-populate env.yaml
       await fse.writeFile(
         path.join(repoPath, 'env', 'env.yaml'),
@@ -205,39 +185,26 @@ describe('env-commands', () => {
       expect(parsed.variables).toHaveLength(1);
       expect(parsed.variables[0].value).toBe('new_value');
 
-      // Should use "Update" in commit message
-      expect(pushRepoBranch).toHaveBeenCalledWith(
-        repoPath,
-        '[teamai] Update env variable: EXIST_VAR',
-        ['env/'],
-        expect.any(String),
-      );
+      // Verify success message uses "Updated"
+      expect(log.success).toHaveBeenCalledWith('Updated env variable: EXIST_VAR=new_value');
+      expect(log.info).toHaveBeenCalledWith('Run `teamai push` to sync to team repo.');
     });
 
-    it('should not write or push in dry-run mode', async () => {
+    it('should not write in dry-run mode', async () => {
       await envAdd('DRY_VAR', 'dry_value', { dryRun: true });
 
       // env.yaml should NOT exist
       const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
       expect(await fse.pathExists(envYamlPath)).toBe(false);
 
-      expect(pushRepoBranch).not.toHaveBeenCalled();
       expect(log.info).toHaveBeenCalledWith(expect.stringContaining('[dry-run]'));
-    });
-
-    it('should handle no changes gracefully', async () => {
-      vi.mocked(pushRepoBranch).mockResolvedValueOnce(false);
-
-      await envAdd('NO_CHANGE', 'val', {});
-
-      expect(gfMrCreate).not.toHaveBeenCalled();
     });
   });
 
   // ─── envRemove ───────────────────────────────────────────
 
   describe('envRemove', () => {
-    it('should remove existing variable and create branch + MR', async () => {
+    it('should remove existing variable locally and show push hint', async () => {
       await fse.writeFile(
         path.join(repoPath, 'env', 'env.yaml'),
         YAML.stringify({
@@ -256,15 +223,9 @@ describe('env-commands', () => {
       expect(parsed.variables).toHaveLength(1);
       expect(parsed.variables[0].key).toBe('KEEP');
 
-      // Verify branch push
-      expect(pushRepoBranch).toHaveBeenCalledWith(
-        repoPath,
-        '[teamai] Remove env variable: REMOVE_ME',
-        ['env/'],
-        expect.any(String),
-      );
-
-      expect(gfMrCreate).toHaveBeenCalled();
+      // Verify success message and push hint
+      expect(log.success).toHaveBeenCalledWith('Removed env variable: REMOVE_ME');
+      expect(log.info).toHaveBeenCalledWith('Run `teamai push` to sync to team repo.');
     });
 
     it('should error when env.yaml does not exist', async () => {
@@ -274,7 +235,6 @@ describe('env-commands', () => {
       await envRemove('MISSING', {});
 
       expect(log.error).toHaveBeenCalledWith(expect.stringContaining('not found'));
-      expect(pushRepoBranch).not.toHaveBeenCalled();
     });
 
     it('should error when variable key does not exist', async () => {
@@ -288,10 +248,9 @@ describe('env-commands', () => {
       await envRemove('NONEXIST', {});
 
       expect(log.error).toHaveBeenCalledWith(expect.stringContaining('"NONEXIST" not found'));
-      expect(pushRepoBranch).not.toHaveBeenCalled();
     });
 
-    it('should not modify or push in dry-run mode', async () => {
+    it('should not modify in dry-run mode', async () => {
       await fse.writeFile(
         path.join(repoPath, 'env', 'env.yaml'),
         YAML.stringify({
@@ -306,7 +265,6 @@ describe('env-commands', () => {
       const parsed = YAML.parse(content);
       expect(parsed.variables).toHaveLength(1);
 
-      expect(pushRepoBranch).not.toHaveBeenCalled();
       expect(log.info).toHaveBeenCalledWith(expect.stringContaining('[dry-run]'));
     });
   });
