@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import fse from 'fs-extra';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import { log } from './logger.js';
@@ -51,7 +52,16 @@ export async function pullRepo(localPath: string): Promise<string> {
  */
 export async function pushRepoDirectly(localPath: string, message: string, files: string[]): Promise<void> {
   const git = createGit(localPath);
-  await git.add(files);
+  const existingFiles = [];
+  for (const f of files) {
+    const fullPath = fs.existsSync(`${localPath}/${f}`);
+    if (fullPath) existingFiles.push(f);
+  }
+  if (existingFiles.length === 0) {
+    log.debug('No files to add');
+    return;
+  }
+  await git.add(existingFiles);
   const status = await git.status();
   if (status.staged.length === 0) {
     log.debug('Nothing to commit');

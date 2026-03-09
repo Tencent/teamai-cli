@@ -25,6 +25,12 @@ vi.mock('fs-extra', () => ({
   },
 }));
 
+vi.mock('node:fs', () => ({
+  default: {
+    existsSync: vi.fn(() => true),
+  },
+}));
+
 vi.mock('../utils/logger.js', () => ({
   log: {
     info: vi.fn(),
