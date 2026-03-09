@@ -1,6 +1,6 @@
 import readline from 'node:readline';
 import { requireInit, loadState, saveState } from './config.js';
-import { pullRepo, pushRepoBranch, generateBranchName } from './utils/git.js';
+import { pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
 import { gfMrCreate } from './utils/gf-cli.js';
 import { parseRepoInput } from './utils/repo-url.js';
 import { log, spinner } from './utils/logger.js';
@@ -97,6 +97,7 @@ export async function remove(
       spin.succeed(`Removed [${type}] ${name} from ${removedPaths.length} location(s)`);
 
       // Create MR via gf CLI
+      // HEAD is still on branchName so gf's internal push sees the right branch
       const mrSpin = spinner('Creating Merge Request...').start();
       try {
         let repoInfo;
@@ -120,6 +121,9 @@ export async function remove(
         mrSpin.fail(`Failed to create MR: ${(e as Error).message}`);
         log.info(`Branch ${branchName} has been pushed. You can create a MR manually.`);
       }
+
+      // Switch back to master after MR creation
+      await checkoutMaster(localConfig.repo.localPath);
     }
   } catch (e) {
     spin.fail(`Git push failed: ${(e as Error).message}`);

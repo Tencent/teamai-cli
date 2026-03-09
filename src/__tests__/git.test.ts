@@ -42,7 +42,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { generateBranchName, pushRepoBranch, pushRepoDirectly, initRepo, configureGitUser } from '../utils/git.js';
+import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser } from '../utils/git.js';
 import fse from 'fs-extra';
 
 describe('generateBranchName', () => {
@@ -77,7 +77,7 @@ describe('pushRepoBranch', () => {
     vi.clearAllMocks();
   });
 
-  it('should create branch, commit, push, and return to master when there are changes', async () => {
+  it('should create branch, commit, push, and stay on branch when there are changes', async () => {
     mockGit.status.mockResolvedValue({ staged: ['file.txt'] });
 
     const result = await pushRepoBranch('/repo', 'commit msg', ['file.txt'], 'teamai/push/test/123');
@@ -87,7 +87,8 @@ describe('pushRepoBranch', () => {
     expect(mockGit.add).toHaveBeenCalledWith(['file.txt']);
     expect(mockGit.commit).toHaveBeenCalledWith('commit msg');
     expect(mockGit.push).toHaveBeenCalledWith(['-u', 'origin', 'teamai/push/test/123']);
-    expect(mockGit.checkout).toHaveBeenCalledWith('master');
+    // Should NOT switch back to master — caller does that after gfMrCreate
+    expect(mockGit.checkout).not.toHaveBeenCalled();
   });
 
   it('should return false and clean up branch when no changes to commit', async () => {
@@ -100,6 +101,17 @@ describe('pushRepoBranch', () => {
     expect(mockGit.deleteLocalBranch).toHaveBeenCalledWith('teamai/push/test/456', true);
     expect(mockGit.commit).not.toHaveBeenCalled();
     expect(mockGit.push).not.toHaveBeenCalled();
+  });
+});
+
+describe('checkoutMaster', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should checkout master branch', async () => {
+    await checkoutMaster('/repo');
+    expect(mockGit.checkout).toHaveBeenCalledWith('master');
   });
 });
 

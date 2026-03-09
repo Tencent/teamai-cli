@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.7] - 2026-03-09
+
+### Fixed
+- `gf mr create` 创建 MR 时 PushNotFastForward 错误：`pushRepoBranch` 在 push 后切回 master，导致 gf 内部 push HEAD 时分支不匹配。现在保持 HEAD 在 source branch 直到 MR 创建完成
+
 ## [0.3.6] - 2026-03-09
 
 ### Fixed

@@ -76,7 +76,9 @@ export async function pushRepoDirectly(localPath: string, message: string, files
 /**
  * Create a new branch, commit files, and push the branch to remote.
  * Returns false if there are no changes to commit.
- * Leaves the local repo on master after pushing.
+ * Leaves the local repo on the new branch after pushing so that
+ * `gf mr create` (which internally pushes HEAD) sees the correct branch.
+ * Callers should call `checkoutMaster()` when they are done.
  */
 export async function pushRepoBranch(
   localPath: string,
@@ -103,10 +105,15 @@ export async function pushRepoBranch(
   await git.commit(message);
   await git.push(['-u', 'origin', branchName]);
 
-  // Switch back to master
-  await git.checkout('master');
-
   return true;
+}
+
+/**
+ * Switch the repo back to master. Used after pushRepoBranch + gfMrCreate.
+ */
+export async function checkoutMaster(localPath: string): Promise<void> {
+  const git = createGit(localPath);
+  await git.checkout('master');
 }
 
 /**
