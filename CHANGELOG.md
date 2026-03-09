@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.6] - 2026-03-09
+
+### Fixed
+- `teamai remove` 创建 MR 失败（"remote not found"）：`gfMrCreate` 调用缺少 `cwd` 参数，导致 gf CLI 在错误目录下执行
+
 ## [0.3.5] - 2026-03-09
 
 ### Fixed

@@ -113,6 +113,7 @@ export async function remove(
           title: commitMsg,
           description: `Remove [${type}] ${name}`,
           reviewers: teamConfig.reviewers?.length ? teamConfig.reviewers : undefined,
+          cwd: localConfig.repo.localPath,
         });
         mrSpin.succeed(`Merge Request created: ${mrUrl}`);
       } catch (e) {
