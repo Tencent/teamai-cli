@@ -8,25 +8,18 @@
 npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
 ```
 
-
 ## 快速开始
+
 ### 团队成员
+
 ```bash
-# 1. 初始化（关联团队仓库、注册成员、注入 hooks）
+# 初始化（关联团队仓库、注册成员、注入 hooks）
 teamai init --repo yourteam/yourproject
-
-# 2. 拉取团队资源
-teamai pull
-
-# 3. 推送本地新 skills 到团队
-teamai push
-
-# 4. 查看状态
-teamai status
 ```
 
 ### 管理员
-需要先在 git.woa.com 上创建好团队共享经验的仓库，并把所有团队的成员都加入到 master(可通过 user group 帮忙组织快捷添加)
+
+需要先在 git.woa.com 上创建好团队共享经验的仓库，并把所有团队的成员都加入到 master(可通过 user group 快捷添加)
 
 ## 命令
 
@@ -37,7 +30,7 @@ teamai status
 | `teamai pull [--silent]` | 拉取团队资源并注入到本地 AI 工具 |
 | `teamai sync` | 双向同步（push + pull） |
 | `teamai status` | 查看本地 vs 团队仓库差异 |
-| `teamai list [type]` | 列出资源（skills\|rules\|hooks\|docs\|instincts） |
+| `teamai list [type]` | 列出资源（skills\|rules\|docs） |
 | `teamai members` | 列出已注册的团队成员 |
 | `teamai remove <type> <name>` | 从团队仓库和本地删除资源并创建 MR（skills\|rules） |
 | `teamai doctor` | 诊断配置问题 |
@@ -58,7 +51,7 @@ teamai status
     ▼                                     ▼
   创建分支 + MR                       创建分支 + MR
     │                                     │
-    └──────► TGit 团队仓库 ◄──────────────┘
+    └──────► 团队git仓库 ◄──────────────┘
                   │         ▲
                   │         │ reviewer 审批合并 MR
                   ▼
@@ -76,9 +69,5 @@ teamai status
 ## 更新
 
 ```bash
-# tnpm 安装的用户
 npm update -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
-
-# 源码安装的用户
-cd ~/.teamai/teamai-cli && git pull && npm install && npm run build
 ```
