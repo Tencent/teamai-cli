@@ -276,16 +276,22 @@ export async function gfCreateRepo(owner: string, repo: string): Promise<void> {
     'Authorization': `Bearer ${token}`,
   };
 
-  // Look up namespace ID for the owner (group or user)
+  // Look up namespace ID for the owner (group or user).
+  // For multi-segment paths like "HyperAI/ElasticLLM", the API's `path` field
+  // only contains the last segment ("ElasticLLM"), so we search by the last
+  // segment and match against `full_path` which includes parent groups.
+  const searchTerm = owner.includes('/') ? owner.split('/').pop()! : owner;
   const nsResp = await fetch(
-    `https://git.woa.com/api/v3/namespaces?search=${encodeURIComponent(owner)}`,
+    `https://git.woa.com/api/v3/namespaces?search=${encodeURIComponent(searchTerm)}`,
     { headers: authHeaders },
   );
   if (!nsResp.ok) {
     throw new Error(`Failed to look up namespace "${owner}": ${nsResp.status}`);
   }
-  const namespaces = (await nsResp.json()) as Array<{ id: number; path: string }>;
-  const ns = namespaces.find((n) => n.path.toLowerCase() === owner.toLowerCase());
+  const namespaces = (await nsResp.json()) as Array<{ id: number; path: string; full_path?: string }>;
+  const ns = namespaces.find(
+    (n) => (n.full_path ?? n.path).toLowerCase() === owner.toLowerCase(),
+  );
 
   const body: Record<string, unknown> = { name: repo };
   if (ns) {
@@ -319,9 +325,39 @@ export class RepoNotFoundError extends Error {
  * The remote URL will have the OAuth token embedded, so subsequent
  * git pull/push via simple-git will work without extra auth.
  *
+ * For multi-segment group paths (e.g. "group/subgroup/repo"), `gf repo clone`
+ * does not work — it only accepts two-segment "namespace/repo" format.
+ * In that case we fall back to `git clone` with the OAuth token embedded in the URL.
+ *
  * Throws RepoNotFoundError when the remote repo does not exist.
  */
 export function gfRepoClone(repo: string, localPath: string): void {
+  const segments = repo.split('/');
+
+  // Multi-segment path: gf repo clone only supports "namespace/repo"
+  if (segments.length > 2) {
+    const token = gfGetOAuthToken();
+    if (!token) {
+      throw new Error('Cannot retrieve OAuth token for git clone. Please run `gf auth login` first.');
+    }
+    const cloneUrl = `https://oauth2:${token}@git.woa.com/${repo}.git`;
+    const result = spawnSync('git', ['clone', cloneUrl, localPath], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 120_000,
+    });
+    const allOutput = `${result.stderr ?? ''} ${result.stdout ?? ''}`;
+    if (allOutput.includes('not found') || allOutput.includes('does not exist') || allOutput.includes('Repository not found')) {
+      throw new RepoNotFoundError(repo);
+    }
+    if (result.status !== 0) {
+      // Sanitize output to avoid leaking the token
+      const sanitized = allOutput.replace(/oauth2:[^@]+@/g, 'oauth2:***@');
+      throw new Error(`git clone failed: ${sanitized.trim()}`);
+    }
+    return;
+  }
+
   const result = gfExec(['repo', 'clone', repo, localPath]);
   const allOutput = `${result.stderr} ${result.stdout}`;
   // Only match gf's own "not found" message, not git's object stats (e.g. "reused 404")

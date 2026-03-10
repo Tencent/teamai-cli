@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.9] - 2026-03-10
+
+### Fixed
+- `teamai init --repo group/subgroup/repo` 多级路径支持：`gf repo clone` 不支持三级及以上路径，改为回退到带 OAuth token 的 `git clone`
+- `gfCreateRepo` 查找 namespace 时使用 `full_path` 匹配，修复多级 group 下创建仓库 namespace 匹配失败的问题
+
+## [0.3.8] - 2026-03-10
+
+### Added
+- `teamai push` skill 推送时自动维护 CONTRIBUTORS 文件，记录每个 skill 的贡献者 (!46)
+
+### Fixed
+- `gfGetOAuthToken` 返回用户密码而非 OAuth token (!47)
+- OAuth token 改为从 `~/.netrc` 读取，替代不可靠的 `git credential fill` (!48)
+- 修正 OAuth token 相关的误导性注释 (!49)
+- `gf mr create` MR title/description 使用 shell 单引号，修复换行符丢失问题 (!50)
+- 支持多级 group 路径的仓库 URL 解析（如 `group/subgroup/repo`）(!42)
+
+### Changed
+- 简化 README，按角色（管理员/成员）分离快速上手指南 (!43, !45)
+
 ## [0.3.7] - 2026-03-09
 
 ### Fixed
