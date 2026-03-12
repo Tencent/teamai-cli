@@ -3,7 +3,7 @@ import { requireInit, loadState, saveState } from './config.js';
 import { pullRepo } from './utils/git.js';
 import { log, spinner } from './utils/logger.js';
 import { pathExists, remove } from './utils/fs.js';
-import { getHandler, RulesHandler, EnvHandler } from './resources/index.js';
+import { getHandler, RulesHandler, DocsHandler, EnvHandler } from './resources/index.js';
 import type { GlobalOptions, ResourceType, ResourceItem, TeamaiConfig } from './types.js';
 
 /**
@@ -122,6 +122,21 @@ export async function pull(options: GlobalOptions): Promise<void> {
         log.success(`Synced ${varCount} env variable(s) to ~/.teamai/env.sh`);
       }
       totalSynced += 1;
+      continue;
+    }
+
+    // Docs: display actual file count instead of directory count
+    if (type === 'docs') {
+      const docsHandler = handler as DocsHandler;
+      const fileCount = await docsHandler.countDocFiles(items[0].sourcePath);
+
+      if (options.dryRun) {
+        log.info(`[dry-run] Would sync ${fileCount} docs`);
+      } else {
+        await docsHandler.pullItem(items[0], freshConfig, localConfig);
+        log.success(`Synced ${fileCount} docs`);
+      }
+      totalSynced += fileCount;
       continue;
     }
 

@@ -54,7 +54,8 @@ export async function status(options: GlobalOptions): Promise<void> {
 
   // Docs
   const docsExists = await pathExists(path.join(repoPath, 'docs'));
-  counts.docs = docsExists ? (await listDirs(path.join(repoPath, 'docs'))).length : 0;
+  const docFiles = docsExists ? (await listFiles(path.join(repoPath, 'docs'))).filter(f => !f.startsWith('.')) : [];
+  counts.docs = docFiles.length;
 
   // Env
   const envYamlPath = path.join(repoPath, 'env', 'env.yaml');

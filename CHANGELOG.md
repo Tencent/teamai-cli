@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.12] - 2026-03-12
+
+### Fixed
+- `teamai pull` docs 数量显示修复：之前始终显示 "Synced 1 docs"，现在正确显示实际文件数（如 "Synced 2 docs"）
+- `teamai status` docs 计数修复：之前用 `listDirs` 统计目录数（结果为 0），改为用 `listFiles` 统计实际文档文件数
+
 ## [0.3.11] - 2026-03-12
 
 ### Fixed

@@ -30,6 +30,11 @@ export class DocsHandler extends ResourceHandler {
     }];
   }
 
+  async countDocFiles(sourcePath: string): Promise<number> {
+    const files = await listFiles(sourcePath);
+    return files.filter(f => !f.startsWith('.')).length;
+  }
+
   async pushItem(_item: ResourceItem, _teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<void> {
     // No-op
   }
