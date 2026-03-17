@@ -69,7 +69,7 @@ describe('ResourceHandler.isToolInstalled', () => {
   });
 
   it('should return false for nested path when root does not exist', async () => {
-    expect(await ResourceHandler.isToolInstalled('.cursor/skills-cursor')).toBe(false);
+    expect(await ResourceHandler.isToolInstalled('.cursor/skills')).toBe(false);
   });
 
   it('should return true after tool directory is created', async () => {
@@ -207,7 +207,7 @@ describe('RulesHandler.pullItem — skip uninstalled tools', () => {
       },
       toolPaths: {
         claude: { skills: '.claude/skills', rules: '.claude/rules', claudemd: '.claude/CLAUDE.md' },
-        cursor: { skills: '.cursor/skills-cursor', rules: '.cursor/rules' },
+        cursor: { skills: '.cursor/skills', rules: '.cursor/rules' },
       },
     };
 
