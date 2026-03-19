@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.14] - 2026-03-19
+
+### Added
+- 自动更新功能：新增 `teamai update [--check]` 命令，支持从 tnpm 检查并安装最新版本
+  - 24 小时版本检查缓存，避免频繁请求 registry
+  - 可配置更新策略：`auto`（自动安装）、`prompt`（提示确认）、`skip`（跳过）
+  - PID 文件锁防止并发安装冲突
+- Session 结束自动检查更新：`teamai init` 自动注入 Stop/SessionEnd hook，AI 工具会话结束时自动检测新版本
+
 ## [0.3.13] - 2026-03-17
 
 ### Added
