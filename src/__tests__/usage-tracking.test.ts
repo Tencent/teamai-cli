@@ -341,6 +341,25 @@ describe('trackFromStdin', () => {
     expect(events[0].tool).toBe('cursor');
   });
 
+  it('tracks Cursor Read tool using file_path field (Cursor native format)', async () => {
+    const hookData = JSON.stringify({
+      tool_name: 'Read',
+      tool_input: { file_path: '/root/.cursor/skills/code-review-expert/SKILL.md' },
+      tool_output: '{"file_path":"...","content_length":194}',
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackFromStdin();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].skill).toBe('code-review-expert');
+    expect(events[0].tool).toBe('cursor');
+  });
+
   it('ignores Cursor Read tool for non-SKILL.md files', async () => {
     const hookData = JSON.stringify({
       tool_name: 'Read',

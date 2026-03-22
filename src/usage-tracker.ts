@@ -282,7 +282,9 @@ export async function trackFromStdin(): Promise<void> {
     skillName = extractSkillName(toolInput);
     toolSource = 'claude';
   } else if (toolName === 'Read') {
-    const filePath = typeof toolInput.path === 'string' ? toolInput.path : null;
+    const filePath =
+      (typeof toolInput.file_path === 'string' ? toolInput.file_path : null) ??
+      (typeof toolInput.path === 'string' ? toolInput.path : null);
     if (filePath && /\/SKILL\.md$/i.test(filePath)) {
       skillName = extractSkillName({ skill: filePath });
       toolSource = 'cursor';
