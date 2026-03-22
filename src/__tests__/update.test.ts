@@ -283,9 +283,12 @@ describe('doUpdate', () => {
     );
   });
 
-  // ─── Test #8: Policy=prompt + --check mode ────────────
+  // ─── Test #8: Policy=prompt + non-TTY (hook context) ───
 
-  it('should print hint and not install when policy is prompt and in check mode', async () => {
+  it('should print hint and not install when policy is prompt and stdin is not TTY', async () => {
+    const origIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: undefined, configurable: true });
+
     mockedLoadLocalConfig.mockResolvedValue({
       repo: { localPath: '/tmp/repo', remote: 'https://...' },
       username: 'testuser',
@@ -293,17 +296,22 @@ describe('doUpdate', () => {
     });
     mockedExecSync.mockReturnValueOnce('99.0.0\n');
 
-    await doUpdate({ check: true });
+    await doUpdate();
 
     expect(mockedLog.info).toHaveBeenCalledWith(
       expect.stringContaining('Run "teamai update" to upgrade'),
     );
     expect(mockedExecSync).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(process.stdin, 'isTTY', { value: origIsTTY, configurable: true });
   });
 
-  // ─── Test #9: Policy=prompt + manual mode, user confirms
+  // ─── Test #9: Policy=prompt + TTY mode, user confirms
 
   it('should ask user and proceed when policy is prompt and user confirms', async () => {
+    const origIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+
     readlineAnswer = 'y';
     mockedLoadLocalConfig.mockResolvedValue({
       repo: { localPath: '/tmp/repo', remote: 'https://...' },
@@ -318,6 +326,8 @@ describe('doUpdate', () => {
 
     expect(mockedExecSync).toHaveBeenCalledTimes(2);
     expect(mockedLog.success).toHaveBeenCalled();
+
+    Object.defineProperty(process.stdin, 'isTTY', { value: origIsTTY, configurable: true });
   });
 
   // ─── Test #10: Policy=skip, exit without action ───────
@@ -458,14 +468,15 @@ describe('update', () => {
     expect(mockedExecSync).toHaveBeenCalledTimes(1);
   });
 
-  it('should not print anything when --check and no update', async () => {
+  it('should print up to date when --check and no update', async () => {
     const current = getCurrentVersion();
     mockedExecSync.mockReturnValueOnce(`${current}\n`);
 
     await update({ check: true });
 
-    const infoCalls = mockedLog.info.mock.calls.map((c: unknown[]) => c[0]);
-    expect(infoCalls.every((msg: unknown) => !(msg as string).includes('Update available'))).toBe(true);
+    expect(mockedLog.info).toHaveBeenCalledWith(
+      expect.stringContaining('Already up to date'),
+    );
   });
 
   it('should run full update flow without --check', async () => {

@@ -185,7 +185,7 @@ function askConfirmation(question: string): Promise<boolean> {
 /**
  * Perform the actual update (check + install based on policy)
  */
-export async function doUpdate(options?: { check?: boolean }): Promise<void> {
+export async function doUpdate(): Promise<void> {
   const result = await checkForUpdate();
   if (!result.available) {
     log.info(`Already up to date (v${result.current})`);
@@ -202,12 +202,10 @@ export async function doUpdate(options?: { check?: boolean }): Promise<void> {
   }
 
   if (policy === 'prompt') {
-    if (options?.check) {
-      // Hook context — no interactive terminal, degrade to hint
+    if (!process.stdin.isTTY) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
       return;
     }
-    // Manual context — ask user
     const confirmed = await askConfirmation(
       `Update available: v${result.current} → v${result.latest}. Update now? (y/N) `,
     );
@@ -256,7 +254,7 @@ export interface UpdateOptions {
 
 /**
  * Main entry point for `teamai update` command.
- * --check: only check and print notification (used by hooks)
+ * --check: only check and print whether an update is available
  * default: full update flow (check + install)
  */
 export async function update(options: UpdateOptions): Promise<void> {
@@ -264,9 +262,11 @@ export async function update(options: UpdateOptions): Promise<void> {
     const result = await checkForUpdate();
     if (result.available) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
+    } else {
+      log.info(`Already up to date (v${result.current})`);
     }
     return;
   }
 
-  await doUpdate(options);
+  await doUpdate();
 }

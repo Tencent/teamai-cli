@@ -108,7 +108,7 @@ program
 program
   .command('update')
   .description('Check for updates and upgrade teamai CLI')
-  .option('--check', 'Check only, do not install (used by hooks)')
+  .option('--check', 'Only check if an update is available, do not install')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { update } = await import('./update.js');

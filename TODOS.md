@@ -1,12 +1,10 @@
 # TODOS
 
-## Cursor PostToolUse Hook Support
-**What:** 当 Cursor hook API 稳定后，扩展 usage-tracker 支持 Cursor 的 skill 调用追踪。
-**Why:** 目前只追踪 Claude Code 的 Skill 工具调用，Cursor 用户的 usage 数据会缺失。
-**Pros:** 团队 usage 数据更完整。
-**Cons:** Cursor hook API 可能还会变，过早实现可能要返工。
-**Context:** Cursor 目前的 hooks.json 只支持 sessionStart，不确定是否支持 postToolUse 事件。等 Cursor hooks API 文档更新后再评估。
-**Depends on:** Feature 2 (usage-tracker) 完成。
+## ~~Cursor PostToolUse Hook Support~~ ✅ DONE
+**Completed:** 2026-03-22 — Cursor hooks API 已稳定支持 postToolUse。已实现：
+- `hooks.ts`: 注入 postToolUse hook (matcher: Read) 到 Cursor hooks.json
+- `usage-tracker.ts`: trackFromStdin 支持 Read 工具 + SKILL.md 路径检测，tool 字段区分 cursor/claude
+- 完整测试覆盖
 **Added:** 2026-03-19 by /plan-eng-review
 
 ## Digest 自动推送到企微群

@@ -321,6 +321,93 @@ describe('trackFromStdin', () => {
     const known = await readKnownSkills();
     expect(known.has('code-review')).toBe(true);
   });
+
+  it('tracks Cursor Read tool when path is SKILL.md', async () => {
+    const hookData = JSON.stringify({
+      tool_name: 'Read',
+      tool_input: { path: '/root/.cursor/skills/tdd/SKILL.md' },
+      tool_output: '# TDD Skill\n...',
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackFromStdin();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].skill).toBe('tdd');
+    expect(events[0].tool).toBe('cursor');
+  });
+
+  it('ignores Cursor Read tool for non-SKILL.md files', async () => {
+    const hookData = JSON.stringify({
+      tool_name: 'Read',
+      tool_input: { path: '/root/project/src/index.ts' },
+      tool_output: 'console.log("hello");',
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackFromStdin();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toEqual([]);
+  });
+
+  it('extracts skill name from nested Cursor skill paths', async () => {
+    const hookData = JSON.stringify({
+      tool_name: 'Read',
+      tool_input: { path: '/home/user/.cursor/skills/plan-eng-review/SKILL.md' },
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackFromStdin();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].skill).toBe('plan-eng-review');
+    expect(events[0].tool).toBe('cursor');
+  });
+
+  it('records tool as claude for Skill tool calls', async () => {
+    const hookData = JSON.stringify({
+      tool_name: 'Skill',
+      tool_input: { skill: 'tdd' },
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackFromStdin();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tool).toBe('claude');
+  });
+
+  it('ignores Read tool when path has no SKILL.md suffix', async () => {
+    const hookData = JSON.stringify({
+      tool_name: 'Read',
+      tool_input: { path: '/root/.cursor/skills/tdd/README.md' },
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackFromStdin();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toEqual([]);
+  });
 });
 
 // ─── known-skills tests ───────────────────────────────

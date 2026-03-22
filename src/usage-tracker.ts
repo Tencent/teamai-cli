@@ -19,28 +19,26 @@ function getKnownSkillsPath(): string {
 
 // ─── Data flow ─────────────────────────────────────────
 //
-//  PostToolUse hook (Claude Code)
-//      │
-//      ▼
-//  STDIN → JSON { tool_name, tool_input, ... }
-//      │
-//      ▼
-//  teamai track --stdin
-//      │
-//      ▼
-//  [read STDIN JSON]
-//      │
-//      ▼
-//  [tool_name == "Skill"?] ──No──▶ exit(0)
-//      │Yes
-//      ▼
-//  [extract & validate skill name from tool_input]
-//      │
-//      ▼
-//  appendFile(usage.jsonl, JSON line)
-//      │
-//      ▼
-//  updateKnownSkills(skill) → known-skills.json
+//  Claude Code / Claude Internal / CodeBuddy       Cursor
+//  ─────────────────────────────────────────       ──────
+//  PostToolUse hook (matcher: "Skill")             PostToolUse hook (matcher: "Read")
+//      │                                               │
+//      ▼                                               ▼
+//  { tool_name: "Skill",                          { tool_name: "Read",
+//    tool_input: { skill: "tdd" } }                 tool_input: { path: "…/SKILL.md" } }
+//      │                                               │
+//      └────────────────┬──────────────────────────────┘
+//                       ▼
+//               teamai track --stdin
+//                       │
+//                       ▼
+//               [extract & validate skill name]
+//                       │
+//                       ▼
+//               appendFile(usage.jsonl, JSON line)
+//                       │
+//                       ▼
+//               updateKnownSkills(skill) → known-skills.json
 //
 
 /**
@@ -245,10 +243,11 @@ export async function track(toolName: string, toolInput: string): Promise<void> 
 
 /**
  * Handle the `teamai track --stdin` mode.
- * Reads Claude Code hook JSON from STDIN and extracts tool usage info.
+ * Reads PostToolUse hook JSON from STDIN and extracts tool usage info.
  *
- * STDIN JSON format (Claude Code PostToolUse):
- *   { tool_name: string, tool_input: object, tool_output?: string, ... }
+ * Supports two tool formats:
+ *   - Claude Code "Skill" tool:  { tool_name: "Skill", tool_input: { skill: "tdd" } }
+ *   - Cursor "Read" tool:        { tool_name: "Read",  tool_input: { path: "…/SKILL.md" } }
  */
 export async function trackFromStdin(): Promise<void> {
   const raw = await readStdin();
@@ -266,17 +265,32 @@ export async function trackFromStdin(): Promise<void> {
   }
 
   const toolName = hookData.tool_name;
-  if (typeof toolName !== 'string' || toolName !== 'Skill') {
-    return;
-  }
+  if (typeof toolName !== 'string') return;
 
   const toolInput = hookData.tool_input;
   if (!toolInput || typeof toolInput !== 'object') {
-    log.debug('Missing or invalid tool_input in STDIN JSON');
+    if (toolName === 'Skill' || toolName === 'Read') {
+      log.debug('Missing or invalid tool_input in STDIN JSON');
+    }
     return;
   }
 
-  const skillName = extractSkillName(toolInput);
+  let skillName: string | null = null;
+  let toolSource = 'claude';
+
+  if (toolName === 'Skill') {
+    skillName = extractSkillName(toolInput);
+    toolSource = 'claude';
+  } else if (toolName === 'Read') {
+    const filePath = typeof toolInput.path === 'string' ? toolInput.path : null;
+    if (filePath && /\/SKILL\.md$/i.test(filePath)) {
+      skillName = extractSkillName({ skill: filePath });
+      toolSource = 'cursor';
+    }
+  } else {
+    return;
+  }
+
   if (!skillName) {
     log.debug('Could not extract skill name from STDIN tool_input');
     return;
@@ -290,7 +304,7 @@ export async function trackFromStdin(): Promise<void> {
   const event: UsageEvent = {
     skill: skillName,
     timestamp: new Date().toISOString(),
-    tool: 'claude',
+    tool: toolSource,
   };
 
   await appendUsageEvent(event);
