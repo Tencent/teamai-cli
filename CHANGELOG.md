@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.7] - 2026-03-24
+
+### Fixed
+- **彻底清理重复 hooks**：`cleanupLegacyHooks` 现在清理所有命令含 teamai 的条目（无论有无 description），修复了 description 关键词改名（如 "Check for updates" → "Auto-update"）导致的重复问题
+
+### Tests
+- 新增过时 description 清理测试，全量 340 测试通过
+
 ## [0.4.6] - 2026-03-24
 
 ### Fixed
