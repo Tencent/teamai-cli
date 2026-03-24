@@ -20,6 +20,11 @@ vi.mock('../config.js', () => ({
   loadState: vi.fn(),
   saveState: vi.fn(),
   loadLocalConfig: vi.fn(),
+  loadTeamConfig: vi.fn(),
+}));
+
+vi.mock('../hooks.js', () => ({
+  injectHooksToAllTools: vi.fn(),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -57,7 +62,8 @@ vi.mock('node:readline', () => ({
 
 import { execSync } from 'node:child_process';
 import fse from 'fs-extra';
-import { loadState, saveState, loadLocalConfig } from '../config.js';
+import { loadState, saveState, loadLocalConfig, loadTeamConfig } from '../config.js';
+import { injectHooksToAllTools } from '../hooks.js';
 import { log } from '../utils/logger.js';
 
 import {
@@ -77,6 +83,8 @@ const mockedExecSync = execSync as Mock;
 const mockedLoadState = loadState as Mock;
 const mockedSaveState = saveState as Mock;
 const mockedLoadLocalConfig = loadLocalConfig as Mock;
+const mockedLoadTeamConfig = loadTeamConfig as Mock;
+const mockedInjectHooksToAllTools = injectHooksToAllTools as Mock;
 const mockedFse = fse as unknown as {
   pathExists: Mock;
   readFile: Mock;
@@ -115,6 +123,13 @@ beforeEach(() => {
     username: 'testuser',
     updatePolicy: 'auto',
   });
+  mockedLoadTeamConfig.mockResolvedValue({
+    toolPaths: {
+      claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
+      'claude-internal': { settings: '.claude-internal/settings.json', skills: '.claude-internal/skills' },
+    },
+  });
+  mockedInjectHooksToAllTools.mockResolvedValue(undefined);
   mockedFse.pathExists.mockResolvedValue(false);
   mockedFse.readFile.mockResolvedValue('');
   mockedFse.writeFile.mockResolvedValue(undefined);
@@ -488,6 +503,61 @@ describe('update', () => {
 
     expect(mockedExecSync).toHaveBeenCalledTimes(2);
     expect(mockedLog.success).toHaveBeenCalled();
+  });
+});
+
+// ─── Hook refresh after update tests ────────────────────
+
+describe('hook refresh after update', () => {
+  it('should refresh hooks after successful update', async () => {
+    mockedExecSync
+      .mockReturnValueOnce('99.0.0\n') // npm view
+      .mockReturnValueOnce('');          // npm install
+
+    await doUpdate();
+
+    expect(mockedLog.success).toHaveBeenCalledWith(
+      expect.stringContaining('Updated teamai to v99.0.0'),
+    );
+    expect(mockedLoadTeamConfig).toHaveBeenCalledWith('/tmp/repo');
+    expect(mockedInjectHooksToAllTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        claude: expect.any(Object),
+        'claude-internal': expect.any(Object),
+      }),
+    );
+  });
+
+  it('should silently skip hook refresh when not initialized', async () => {
+    mockedLoadLocalConfig
+      .mockResolvedValueOnce({
+        repo: { localPath: '/tmp/repo', remote: 'https://...' },
+        username: 'testuser',
+        updatePolicy: 'auto',
+      })
+      .mockResolvedValueOnce(null); // second call (after install) returns null
+
+    mockedExecSync
+      .mockReturnValueOnce('99.0.0\n')
+      .mockReturnValueOnce('');
+
+    await doUpdate();
+
+    expect(mockedLog.success).toHaveBeenCalled();
+    expect(mockedInjectHooksToAllTools).not.toHaveBeenCalled();
+  });
+
+  it('should silently skip hook refresh when teamConfig is missing', async () => {
+    mockedLoadTeamConfig.mockResolvedValue(null);
+
+    mockedExecSync
+      .mockReturnValueOnce('99.0.0\n')
+      .mockReturnValueOnce('');
+
+    await doUpdate();
+
+    expect(mockedLog.success).toHaveBeenCalled();
+    expect(mockedInjectHooksToAllTools).not.toHaveBeenCalled();
   });
 });
 

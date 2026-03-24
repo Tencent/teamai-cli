@@ -159,13 +159,14 @@ program
   .command('track [toolName] [toolInput]')
   .description('Track a tool usage event (called by PostToolUse hook)')
   .option('--stdin', 'Read hook data from STDIN (Claude Code hook format)')
+  .option('--tool <name>', 'Tool identifier for usage attribution (e.g. claude, claude-internal)')
   .action(async (toolName, toolInput, cmdOpts) => {
     if (cmdOpts.stdin) {
       const { trackFromStdin } = await import('./usage-tracker.js');
-      await trackFromStdin();
+      await trackFromStdin(cmdOpts.tool);
     } else {
       const { track } = await import('./usage-tracker.js');
-      await track(toolName ?? '', toolInput ?? '{}');
+      await track(toolName ?? '', toolInput ?? '{}', cmdOpts.tool);
     }
   });
 
@@ -173,10 +174,11 @@ program
   .command('track-slash')
   .description('Track a slash command usage (called by UserPromptSubmit hook)')
   .option('--stdin', 'Read hook data from STDIN')
+  .option('--tool <name>', 'Tool identifier for usage attribution (e.g. claude, claude-internal)')
   .action(async (cmdOpts) => {
     if (cmdOpts.stdin) {
       const { trackSlashCommand } = await import('./usage-tracker.js');
-      await trackSlashCommand();
+      await trackSlashCommand(cmdOpts.tool);
     }
   });
 

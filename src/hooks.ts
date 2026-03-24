@@ -5,8 +5,16 @@ import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 
 const TEAMAI_PULL_COMMAND = 'bash -lc "teamai pull" 2>/dev/null || true';
 const TEAMAI_UPDATE_COMMAND = 'bash -lc "teamai update" 2>/dev/null || true';
-const TEAMAI_TRACK_COMMAND = 'bash -lc "teamai track --stdin" 2>>~/.teamai/debug.log || true';
-const TEAMAI_TRACK_SLASH_COMMAND = 'bash -lc "teamai track-slash --stdin" 2>>~/.teamai/debug.log || true';
+
+/** Generate the track command with tool identifier for correct usage attribution. */
+function getTrackCommand(tool: string): string {
+  return `bash -lc "teamai track --stdin --tool ${tool}" 2>>~/.teamai/debug.log || true`;
+}
+
+/** Generate the track-slash command with tool identifier. */
+function getTrackSlashCommand(tool: string): string {
+  return `bash -lc "teamai track-slash --stdin --tool ${tool}" 2>>~/.teamai/debug.log || true`;
+}
 
 // ─── Claude Code / Claude Internal format (settings.json) ───
 
@@ -45,44 +53,47 @@ interface ClaudeHookDef {
   hook: HookMatcher;
 }
 
-const CLAUDE_HOOKS: ClaudeHookDef[] = [
-  {
-    eventType: 'SessionStart',
-    descriptionKeyword: 'Auto-pull',
-    hook: {
-      matcher: '*',
-      hooks: [{ type: 'command', command: TEAMAI_PULL_COMMAND }],
-      description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Auto-pull team resources on session start`,
+/** Build Claude hook definitions with the correct --tool identifier. */
+function getClaudeHooks(tool: string): ClaudeHookDef[] {
+  return [
+    {
+      eventType: 'SessionStart',
+      descriptionKeyword: 'Auto-pull',
+      hook: {
+        matcher: '*',
+        hooks: [{ type: 'command', command: TEAMAI_PULL_COMMAND }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Auto-pull team resources on session start`,
+      },
     },
-  },
-  {
-    eventType: 'Stop',
-    descriptionKeyword: 'Auto-update',
-    hook: {
-      matcher: '*',
-      hooks: [{ type: 'command', command: TEAMAI_UPDATE_COMMAND }],
-      description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Auto-update on session end`,
+    {
+      eventType: 'Stop',
+      descriptionKeyword: 'Auto-update',
+      hook: {
+        matcher: '*',
+        hooks: [{ type: 'command', command: TEAMAI_UPDATE_COMMAND }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Auto-update on session end`,
+      },
     },
-  },
-  {
-    eventType: 'PostToolUse',
-    descriptionKeyword: 'Track skill',
-    hook: {
-      matcher: 'Skill',
-      hooks: [{ type: 'command', command: TEAMAI_TRACK_COMMAND }],
-      description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Track skill usage`,
+    {
+      eventType: 'PostToolUse',
+      descriptionKeyword: 'Track skill',
+      hook: {
+        matcher: 'Skill',
+        hooks: [{ type: 'command', command: getTrackCommand(tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Track skill usage`,
+      },
     },
-  },
-  {
-    eventType: 'UserPromptSubmit',
-    descriptionKeyword: 'Track slash',
-    hook: {
-      matcher: '*',
-      hooks: [{ type: 'command', command: TEAMAI_TRACK_SLASH_COMMAND }],
-      description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Track slash command usage`,
+    {
+      eventType: 'UserPromptSubmit',
+      descriptionKeyword: 'Track slash',
+      hook: {
+        matcher: '*',
+        hooks: [{ type: 'command', command: getTrackSlashCommand(tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Track slash command usage`,
+      },
     },
-  },
-];
+  ];
+}
 
 // ─── Cursor format (hooks.json) ─────────────────────────────
 
@@ -108,7 +119,7 @@ const CURSOR_STOP_HOOK: CursorHookEntry = {
 };
 
 const CURSOR_POST_TOOL_USE_HOOK: CursorHookEntry = {
-  command: TEAMAI_TRACK_COMMAND,
+  command: getTrackCommand('cursor'),
   timeout: 10,
   matcher: 'Read',
 };
@@ -168,13 +179,13 @@ function ensureClaudeHook(
   return false;
 }
 
-async function injectClaudeHooks(settingsPath: string): Promise<void> {
+async function injectClaudeHooks(settingsPath: string, tool: string): Promise<void> {
   const expanded = expandHome(settingsPath);
   await ensureDir(path.dirname(expanded));
   const settings: ClaudeSettingsJson = (await readJson<ClaudeSettingsJson>(expanded)) ?? {};
 
   let changed = false;
-  for (const def of CLAUDE_HOOKS) {
+  for (const def of getClaudeHooks(tool)) {
     if (ensureClaudeHook(settings, def)) {
       changed = true;
     }
@@ -291,11 +302,12 @@ async function removeCursorHooks(hooksPath: string): Promise<void> {
  * Inject teamai hooks into a tool's settings/hooks file
  */
 export async function injectHooks(settingsPath: string, tool?: string): Promise<void> {
-  const format = detectFormat(tool ?? '');
+  const toolName = tool ?? 'claude';
+  const format = detectFormat(toolName);
   if (format === 'cursor') {
     await injectCursorHooks(settingsPath);
   } else {
-    await injectClaudeHooks(settingsPath);
+    await injectClaudeHooks(settingsPath, toolName);
   }
 }
 

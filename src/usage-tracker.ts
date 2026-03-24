@@ -29,10 +29,11 @@ function getKnownSkillsPath(): string {
 //      │                                               │
 //      └────────────────┬──────────────────────────────┘
 //                       ▼
-//               teamai track --stdin
+//         teamai track --stdin --tool <name>
 //                       │
 //                       ▼
 //               [extract & validate skill name]
+//               [toolArg → toolSource; Read+SKILL.md → 'cursor']
 //                       │
 //                       ▼
 //               appendFile(usage.jsonl, JSON line)
@@ -48,7 +49,7 @@ function getKnownSkillsPath(): string {
 //  { prompt: "/plan-eng-review args..." }
 //      │
 //      ▼
-//  teamai track-slash --stdin
+//  teamai track-slash --stdin --tool <name>
 //      │
 //      ▼
 //  [starts with "/"?] ──No──▶ exit(0)
@@ -233,7 +234,7 @@ async function readStdin(): Promise<string> {
  * Handle the `teamai track` CLI command.
  * Called by PostToolUse hook with CLI args (legacy) or STDIN JSON (current).
  */
-export async function track(toolName: string, toolInput: string): Promise<void> {
+export async function track(toolName: string, toolInput: string, tool?: string): Promise<void> {
   // Only track Skill tool calls
   if (toolName !== 'Skill') {
     return;
@@ -253,7 +254,7 @@ export async function track(toolName: string, toolInput: string): Promise<void> 
   const event: UsageEvent = {
     skill: skillName,
     timestamp: new Date().toISOString(),
-    tool: 'claude',
+    tool: tool ?? 'claude',
   };
 
   await appendUsageEvent(event);
@@ -267,8 +268,13 @@ export async function track(toolName: string, toolInput: string): Promise<void> 
  * Supports two tool formats:
  *   - Claude Code "Skill" tool:  { tool_name: "Skill", tool_input: { skill: "tdd" } }
  *   - Cursor "Read" tool:        { tool_name: "Read",  tool_input: { path: "…/SKILL.md" } }
+ *
+ * @param toolArg - Optional tool identifier from --tool CLI flag.
+ *                  When provided, used as the toolSource (e.g. 'claude-internal').
+ *                  When absent, defaults to 'claude' for backward compatibility.
+ *                  Exception: Read + SKILL.md always overrides to 'cursor'.
  */
-export async function trackFromStdin(): Promise<void> {
+export async function trackFromStdin(toolArg?: string): Promise<void> {
   const raw = await readStdin();
   if (!raw.trim()) {
     log.debug('No STDIN data received');
@@ -295,11 +301,10 @@ export async function trackFromStdin(): Promise<void> {
   }
 
   let skillName: string | null = null;
-  let toolSource = 'claude';
+  let toolSource = toolArg ?? 'claude';
 
   if (toolName === 'Skill') {
     skillName = extractSkillName(toolInput);
-    toolSource = 'claude';
   } else if (toolName === 'Read') {
     const filePath =
       (typeof toolInput.file_path === 'string' ? toolInput.file_path : null) ??
@@ -340,8 +345,11 @@ export async function trackFromStdin(): Promise<void> {
  *   { prompt: "/plan-eng-review args...", session_id: "...", hook_event_name: "UserPromptSubmit" }
  *
  * Extracts the first word after "/" as the skill name.
+ *
+ * @param toolArg - Optional tool identifier from --tool CLI flag.
+ *                  Defaults to 'claude' for backward compatibility.
  */
-export async function trackSlashCommand(): Promise<void> {
+export async function trackSlashCommand(toolArg?: string): Promise<void> {
   const raw = await readStdin();
   if (!raw.trim()) {
     log.debug('No STDIN data for slash tracking');
@@ -378,7 +386,7 @@ export async function trackSlashCommand(): Promise<void> {
   const event: UsageEvent = {
     skill: skillName,
     timestamp: new Date().toISOString(),
-    tool: 'claude',
+    tool: toolArg ?? 'claude',
   };
 
   await appendUsageEvent(event);

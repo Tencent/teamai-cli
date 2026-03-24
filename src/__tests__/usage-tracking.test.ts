@@ -413,6 +413,74 @@ describe('trackFromStdin', () => {
     expect(events[0].tool).toBe('claude');
   });
 
+  it('uses --tool argument as tool source when provided', async () => {
+    const hookData = JSON.stringify({
+      tool_name: 'Skill',
+      tool_input: { skill: 'tdd' },
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackFromStdin('claude-internal');
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tool).toBe('claude-internal');
+  });
+
+  it('uses codebuddy as tool source when --tool codebuddy', async () => {
+    const hookData = JSON.stringify({
+      tool_name: 'Skill',
+      tool_input: { skill: 'code-review' },
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackFromStdin('codebuddy');
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tool).toBe('codebuddy');
+  });
+
+  it('defaults to claude when no --tool argument (backward compat)', async () => {
+    const hookData = JSON.stringify({
+      tool_name: 'Skill',
+      tool_input: { skill: 'tdd' },
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackFromStdin();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tool).toBe('claude');
+  });
+
+  it('Read + SKILL.md always records cursor regardless of --tool argument', async () => {
+    const hookData = JSON.stringify({
+      tool_name: 'Read',
+      tool_input: { path: '/root/.cursor/skills/tdd/SKILL.md' },
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackFromStdin('some-other-tool');
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tool).toBe('cursor');
+  });
+
   it('ignores Read tool when path has no SKILL.md suffix', async () => {
     const hookData = JSON.stringify({
       tool_name: 'Read',
@@ -879,6 +947,106 @@ describe('trackSlashCommand', () => {
 
     const known = await readKnownSkills();
     expect(known.has('tdd')).toBe(true);
+  });
+
+  it('uses --tool argument as tool source', async () => {
+    const hookData = JSON.stringify({
+      prompt: '/plan-eng-review args',
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackSlashCommand('claude-internal');
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tool).toBe('claude-internal');
+  });
+
+  it('defaults to claude when no --tool argument (backward compat)', async () => {
+    const hookData = JSON.stringify({
+      prompt: '/tdd',
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackSlashCommand();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tool).toBe('claude');
+  });
+});
+
+// ─── track() with --tool tests ────────────────────────
+
+describe('track with tool parameter', () => {
+  it('uses provided tool parameter', async () => {
+    await track('Skill', JSON.stringify({ skill: 'code-review' }), 'claude-internal');
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tool).toBe('claude-internal');
+  });
+
+  it('defaults to claude when tool not provided', async () => {
+    await track('Skill', JSON.stringify({ skill: 'tdd' }));
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tool).toBe('claude');
+  });
+});
+
+// ─── hook command string tests ────────────────────────
+
+describe('hook command strings', () => {
+  it('generates track commands with --tool parameter', async () => {
+    // Import the module to test hook injection
+    const { injectHooks } = await import('../hooks.js');
+    const settingsPath = path.join(tmpDir, '.test-claude', 'settings.json');
+    await fse.ensureDir(path.dirname(settingsPath));
+
+    await injectHooks(settingsPath, 'claude-internal');
+
+    const settings = JSON.parse(await fs.promises.readFile(settingsPath, 'utf-8'));
+
+    // Check PostToolUse hook has --tool claude-internal
+    const postToolUse = settings.hooks?.PostToolUse;
+    expect(postToolUse).toBeDefined();
+    const trackHook = postToolUse.find((h: { description?: string }) =>
+      h.description?.includes('Track skill'),
+    );
+    expect(trackHook).toBeDefined();
+    expect(trackHook.hooks[0].command).toContain('--tool claude-internal');
+
+    // Check UserPromptSubmit hook has --tool claude-internal
+    const userPrompt = settings.hooks?.UserPromptSubmit;
+    expect(userPrompt).toBeDefined();
+    const slashHook = userPrompt.find((h: { description?: string }) =>
+      h.description?.includes('Track slash'),
+    );
+    expect(slashHook).toBeDefined();
+    expect(slashHook.hooks[0].command).toContain('--tool claude-internal');
+  });
+
+  it('generates track commands with --tool claude for default tool', async () => {
+    const { injectHooks } = await import('../hooks.js');
+    const settingsPath = path.join(tmpDir, '.test-claude2', 'settings.json');
+    await fse.ensureDir(path.dirname(settingsPath));
+
+    await injectHooks(settingsPath, 'claude');
+
+    const settings = JSON.parse(await fs.promises.readFile(settingsPath, 'utf-8'));
+    const postToolUse = settings.hooks?.PostToolUse;
+    const trackHook = postToolUse.find((h: { description?: string }) =>
+      h.description?.includes('Track skill'),
+    );
+    expect(trackHook.hooks[0].command).toContain('--tool claude');
   });
 });
 

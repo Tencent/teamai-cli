@@ -2,7 +2,8 @@ import { createRequire } from 'node:module';
 import { execSync } from 'node:child_process';
 import readline from 'node:readline';
 import fse from 'fs-extra';
-import { loadState, saveState, loadLocalConfig } from './config.js';
+import { loadState, saveState, loadLocalConfig, loadTeamConfig } from './config.js';
+import { injectHooksToAllTools } from './hooks.js';
 import { log } from './utils/logger.js';
 import { expandHome } from './utils/fs.js';
 import { TEAMAI_UPDATE_LOCK_PATH } from './types.js';
@@ -228,6 +229,19 @@ export async function doUpdate(): Promise<void> {
       { timeout: INSTALL_TIMEOUT, stdio: 'pipe' },
     );
     log.success(`Updated teamai to v${result.latest}`);
+
+    // Refresh hooks in all tool settings to pick up new hook commands
+    try {
+      const localConfig = await loadLocalConfig();
+      if (localConfig) {
+        const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+        if (teamConfig) {
+          await injectHooksToAllTools(teamConfig.toolPaths);
+        }
+      }
+    } catch (e) {
+      log.debug(`Hook refresh after update skipped: ${(e as Error).message}`);
+    }
   } catch (e) {
     const error = e as NodeJS.ErrnoException;
     const msg = error.message ?? '';
