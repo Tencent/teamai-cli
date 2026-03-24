@@ -16,6 +16,11 @@ function getTrackSlashCommand(tool: string): string {
   return `bash -lc "teamai track-slash --stdin --tool ${tool}" 2>>~/.teamai/debug.log || true`;
 }
 
+/** Generate the dashboard-report command with tool identifier. */
+function getDashboardReportCommand(tool: string): string {
+  return `bash -lc "teamai dashboard-report --stdin --tool ${tool}" 2>>~/.teamai/debug.log || true`;
+}
+
 // ─── Claude Code / Claude Internal format (settings.json) ───
 
 interface HookEntry {
@@ -38,12 +43,16 @@ interface ClaudeSettingsJson {
 //
 //  Hook injection matrix:
 //
-//  Event Type          Matcher   Command               Description keyword
-//  ──────────────────  ────────  ────────────────────   ──────────────────
-//  SessionStart        *         teamai pull            "Auto-pull"
-//  Stop                *         teamai update          "Auto-update"
-//  PostToolUse         Skill     teamai track --stdin   "Track skill"
-//  UserPromptSubmit    *         teamai track-slash     "Track slash"
+//  Event Type          Matcher   Command                          Description keyword
+//  ──────────────────  ────────  ─────────────────────────────    ──────────────────
+//  SessionStart        *         teamai pull                      "Auto-pull"
+//  SessionStart        *         teamai dashboard-report --stdin  "Dashboard report"
+//  Stop                *         teamai update                    "Auto-update"
+//  Stop                *         teamai dashboard-report --stdin  "Dashboard stop"
+//  PostToolUse         Skill     teamai track --stdin             "Track skill"
+//  PostToolUse         *         teamai dashboard-report --stdin  "Dashboard tool"
+//  UserPromptSubmit    *         teamai track-slash               "Track slash"
+//  UserPromptSubmit    *         teamai dashboard-report --stdin  "Dashboard prompt"
 //
 
 /** Identifies a teamai hook by its description keyword (substring match). */
@@ -92,6 +101,43 @@ function getClaudeHooks(tool: string): ClaudeHookDef[] {
         description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Track slash command usage`,
       },
     },
+    // ─── Dashboard hooks (independent from tracking) ────────
+    {
+      eventType: 'SessionStart',
+      descriptionKeyword: 'Dashboard report',
+      hook: {
+        matcher: '*',
+        hooks: [{ type: 'command', command: getDashboardReportCommand(tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Dashboard report on session start`,
+      },
+    },
+    {
+      eventType: 'Stop',
+      descriptionKeyword: 'Dashboard stop',
+      hook: {
+        matcher: '*',
+        hooks: [{ type: 'command', command: getDashboardReportCommand(tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Dashboard report on session stop`,
+      },
+    },
+    {
+      eventType: 'PostToolUse',
+      descriptionKeyword: 'Dashboard tool',
+      hook: {
+        matcher: '*',
+        hooks: [{ type: 'command', command: getDashboardReportCommand(tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Dashboard report on tool use`,
+      },
+    },
+    {
+      eventType: 'UserPromptSubmit',
+      descriptionKeyword: 'Dashboard prompt',
+      hook: {
+        matcher: '*',
+        hooks: [{ type: 'command', command: getDashboardReportCommand(tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Dashboard report on prompt submit`,
+      },
+    },
   ];
 }
 
@@ -136,14 +182,22 @@ function detectFormat(tool: string): ToolFormat {
 
 // ─── Claude Code hooks injection ────────────────────────────
 
-/** Known teamai command substrings used to identify legacy hooks without description. */
-const TEAMAI_COMMAND_MARKERS = ['teamai pull', 'teamai update', 'teamai track'];
+/** Known teamai command substrings used to identify teamai-managed hooks. */
+const TEAMAI_COMMAND_MARKERS = ['teamai pull', 'teamai update', 'teamai track', 'teamai dashboard'];
 
 /**
- * Remove legacy teamai hooks that were injected without a description field.
- * Early versions of teamai-cli did not add `description` to hooks, so
- * `ensureClaudeHook` could not find them and kept appending duplicates.
- * This function cleans up those orphans before re-injecting proper hooks.
+ * Remove all teamai-managed hooks (identified by command content).
+ *
+ * This handles two cases:
+ *   1. Legacy hooks injected without `description` — caused duplicates because
+ *      `ensureClaudeHook` couldn't find them.
+ *   2. Hooks with outdated `description` keywords (e.g. "Check for updates"
+ *      renamed to "Auto-update") — `ensureClaudeHook` couldn't match them
+ *      and appended a new entry.
+ *
+ * After cleanup, `ensureClaudeHook` re-injects fresh hooks with correct
+ * descriptions and commands. Non-teamai hooks are preserved.
+ *
  * Returns true if any entries were removed.
  */
 function cleanupLegacyHooks(settings: ClaudeSettingsJson): boolean {
@@ -152,12 +206,9 @@ function cleanupLegacyHooks(settings: ClaudeSettingsJson): boolean {
   let changed = false;
   for (const [event, matchers] of Object.entries(settings.hooks)) {
     const filtered = matchers.filter((h) => {
-      // Keep hooks that have a description (they are managed by ensureClaudeHook)
-      if (h.description) return true;
-      // Keep hooks whose command does not match any teamai marker
       const cmd = h.hooks?.[0]?.command ?? '';
-      const isLegacyTeamai = TEAMAI_COMMAND_MARKERS.some((marker) => cmd.includes(marker));
-      return !isLegacyTeamai;
+      const isTeamai = TEAMAI_COMMAND_MARKERS.some((marker) => cmd.includes(marker));
+      return !isTeamai;
     });
     if (filtered.length !== matchers.length) {
       settings.hooks[event] = filtered;

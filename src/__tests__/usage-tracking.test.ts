@@ -1077,12 +1077,14 @@ describe('hook command strings', () => {
 
     const result = JSON.parse(await fs.promises.readFile(settingsPath, 'utf-8'));
 
-    // Legacy duplicates should be cleaned, replaced by single hooks with description
-    expect(result.hooks.SessionStart).toHaveLength(1);
-    expect(result.hooks.SessionStart[0].description).toBeDefined();
+    // Legacy duplicates should be cleaned, replaced by proper hooks with description
+    // SessionStart has 2 hooks: Auto-pull + Dashboard report
+    expect(result.hooks.SessionStart).toHaveLength(2);
+    expect(result.hooks.SessionStart.every((h: { description?: string }) => h.description)).toBe(true);
 
-    expect(result.hooks.Stop).toHaveLength(1);
-    expect(result.hooks.Stop[0].description).toBeDefined();
+    // Stop has 2 hooks: Auto-update + Dashboard stop
+    expect(result.hooks.Stop).toHaveLength(2);
+    expect(result.hooks.Stop.every((h: { description?: string }) => h.description)).toBe(true);
 
     // Non-teamai hooks should be preserved
     expect(result.hooks.PreToolUse).toHaveLength(1);
@@ -1120,6 +1122,43 @@ describe('hook command strings', () => {
     );
     expect(trackHooks).toHaveLength(1);
     expect(trackHooks[0].hooks[0].command).toContain('--tool claude');
+  });
+
+  it('cleans up hooks with outdated description keywords', async () => {
+    const { injectHooks } = await import('../hooks.js');
+    const settingsPath = path.join(tmpDir, '.test-outdated-desc', 'settings.json');
+    await fse.ensureDir(path.dirname(settingsPath));
+
+    // Simulate: old description "Check for updates" + current "Auto-update" both present
+    const outdatedSettings = {
+      hooks: {
+        Stop: [
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: 'bash -lc "teamai update" 2>/dev/null || true' }],
+            description: '[teamai] Check for updates on session end',
+          },
+          {
+            matcher: '*',
+            hooks: [{ type: 'command', command: 'bash -lc "teamai update" 2>/dev/null || true' }],
+            description: '[teamai] Auto-update on session end',
+          },
+        ],
+      },
+    };
+    await fs.promises.writeFile(settingsPath, JSON.stringify(outdatedSettings, null, 2));
+
+    await injectHooks(settingsPath, 'codebuddy');
+
+    const result = JSON.parse(await fs.promises.readFile(settingsPath, 'utf-8'));
+
+    // Both old entries cleaned, replaced by fresh hooks (update + dashboard-report = 2)
+    expect(result.hooks.Stop).toHaveLength(2);
+    const updateHook = result.hooks.Stop.find((h: { description?: string }) =>
+      h.description?.includes('Auto-update'),
+    );
+    expect(updateHook).toBeDefined();
+    expect(updateHook.hooks[0].command).toContain('teamai update');
   });
 });
 
