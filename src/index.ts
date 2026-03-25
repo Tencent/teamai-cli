@@ -208,4 +208,27 @@ program
     await generateDigest(globalOpts);
   });
 
+// ─── Dashboard commands ─────────────────────────────────
+
+program
+  .command('dashboard')
+  .description('Start the AI coding session dashboard (Web UI)')
+  .option('-p, --port <port>', 'Port number', String(3721))
+  .action(async (cmdOpts) => {
+    const { startDashboard } = await import('./dashboard.js');
+    await startDashboard(Number(cmdOpts.port));
+  });
+
+program
+  .command('dashboard-report')
+  .description('Report session state to dashboard (called by hooks)')
+  .option('--stdin', 'Read hook data from STDIN')
+  .option('--tool <name>', 'Tool identifier (e.g. claude, claude-internal)')
+  .action(async (cmdOpts) => {
+    if (cmdOpts.stdin) {
+      const { dashboardReport } = await import('./dashboard-collector.js');
+      await dashboardReport(cmdOpts.tool);
+    }
+  });
+
 program.parse();

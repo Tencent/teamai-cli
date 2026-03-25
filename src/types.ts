@@ -163,4 +163,75 @@ export interface SessionRecord {
   toolsUsed: string[];
   hasValue: boolean;
   errors?: string[];
-};
+}
+
+// ─── Dashboard ──────────────────────────────────────
+//
+//  Data flow (hook-based, zero external dependencies):
+//
+//  Claude Code session
+//      │ hooks: SessionStart / PostToolUse / UserPromptSubmit / Stop
+//      ▼
+//  teamai dashboard-report --stdin --tool <name>
+//      │ parse STDIN JSON → DashboardEvent
+//      ▼
+//  ~/.teamai/dashboard/events.jsonl  (append-only)
+//      │ fs.watch
+//      ▼
+//  dashboard server (localhost:3721)
+//      │ rebuild DashboardSession[] from events
+//      ▼
+//  SSE → browser (session cards with status lights)
+//
+
+export type DashboardSessionStatus = 'running' | 'waiting_for_input' | 'error' | 'idle' | 'stopped';
+
+export type DashboardEventType = 'session_start' | 'tool_use' | 'prompt_submit' | 'stop';
+
+export interface DashboardEvent {
+  /** Event type mapped from hook event */
+  type: DashboardEventType;
+  /** ISO 8601 timestamp */
+  timestamp: string;
+  /** Unique session identifier (Claude Code session_id preferred, PID+cwd fallback) */
+  sessionId: string;
+  /** AI tool name: claude, claude-internal, cursor, codebuddy, etc. */
+  tool: string;
+  /** Working directory of the session */
+  cwd?: string;
+  /** First user prompt (captured from UserPromptSubmit) */
+  promptSummary?: string;
+  /** Tool name from PostToolUse (e.g. "Edit", "Bash", "Read") */
+  toolName?: string;
+  /** Inferred session status at event time */
+  status?: DashboardSessionStatus;
+}
+
+export interface DashboardSession {
+  /** Unique session identifier */
+  sessionId: string;
+  /** AI tool name */
+  tool: string;
+  /** Current session status */
+  status: DashboardSessionStatus;
+  /** Working directory */
+  cwd: string;
+  /** First user prompt summary */
+  promptSummary: string;
+  /** ISO 8601 timestamp of last activity */
+  lastActivity: string;
+  /** ISO 8601 timestamp of session start */
+  startedAt: string;
+  /** Last tool used (e.g. "Edit", "Bash") */
+  lastTool: string;
+}
+
+export const DASHBOARD_EVENTS_DIR = `${TEAMAI_HOME}/dashboard`;
+export const DASHBOARD_EVENTS_PATH = `${DASHBOARD_EVENTS_DIR}/events.jsonl`;
+export const DASHBOARD_DEFAULT_PORT = 3721;
+/** Sessions with no activity for this long (ms) are marked idle */
+export const DASHBOARD_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+/** Sessions idle for this long (ms) are removed from the dashboard */
+export const DASHBOARD_STALE_TIMEOUT_MS = 30 * 60 * 1000;
+/** Compact JSONL when it exceeds this many lines */
+export const DASHBOARD_COMPACTION_THRESHOLD = 10_000;
