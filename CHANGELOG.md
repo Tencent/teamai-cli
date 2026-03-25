@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.5.1](https://git.woa.com/teamai/teamai-cli/compare/v0.5.0...v0.5.1) (2026-03-25)
+
+### Bug Fixes
+
+* skip tracking slash commands for non-existent skills (merge request !70) ([8eb2778](https://git.woa.com/teamai/teamai-cli/commit/8eb2778))
+  - 输入 `/data` 等不存在的 skill 不再被计入 `teamai stats` 统计
+  - 新增 `skillExistsOnDisk()` 检查，验证 SKILL.md 存在后才记录
+  - 仅影响 slash command 路径，Skill tool 调用不受影响
+
 ## [0.5.0](https://git.woa.com/teamai/teamai-cli/compare/v0.4.5...v0.5.0) (2026-03-25)
 
 ### 🚀 AI Coding Session Dashboard (Phase 1)
