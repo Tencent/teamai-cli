@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.6.2](https://git.woa.com/teamai/teamai-cli/compare/v0.6.1...v0.6.2) (2026-03-27)
+
+
+### Improvements
+
+* **contribute-check**: rename `hinted` → `evaluated`, add `smartScore` field ([!78](https://git.woa.com/teamai/teamai-cli/-/merge_requests/78))
+  - `hinted` 语义不准确（实际含义是"已评估"而非"已提示用户"），重命名为 `evaluated`
+  - 新增 `smartScore` 字段，持久化评估分数便于排查 session 为何未触发 hint
+  - `readContributeState` 向后兼容旧格式，自动迁移 `hinted` → `evaluated`
+  - Cursor 端补上遗漏的 `contribute-check` hook
+
 ### [0.6.1](https://git.woa.com/teamai/teamai-cli/compare/v0.6.0...v0.6.1) (2026-03-27)
 
 
