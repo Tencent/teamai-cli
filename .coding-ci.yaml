@@ -114,3 +114,7 @@ notifications:
 maximum_builds: 1
 is_no_revert: 0
 is_auto_cancel: 1
+worker:
+  label: JOB_MATRIX_DEVCLOUD
+  tools: []
+  language: node_js-22.19.0
