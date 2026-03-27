@@ -231,4 +231,30 @@ program
     }
   });
 
+// ─── Contribute commands ──────────────────────────────────
+
+program
+  .command('contribute-check')
+  .description('Check if session qualifies for contribution (called by PostToolUse hook)')
+  .option('--stdin', 'Read hook data from STDIN')
+  .option('--tool <name>', 'Tool identifier (e.g. claude, claude-internal)')
+  .action(async (cmdOpts) => {
+    if (cmdOpts.stdin) {
+      const { contributeCheck } = await import('./contribute-check.js');
+      await contributeCheck(cmdOpts.tool);
+    }
+  });
+
+program
+  .command('contribute')
+  .description('Contribute session knowledge to team repo')
+  .option('--file <path>', 'Path to the contribution document')
+  .option('--title <title>', 'Title for the contribution document')
+  .option('--session-id <id>', 'Session ID for dedup tracking')
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { contribute } = await import('./contribute.js');
+    await contribute({ ...globalOpts, ...cmdOpts });
+  });
+
 program.parse();

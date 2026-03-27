@@ -21,8 +21,13 @@ function getDashboardReportCommand(tool: string): string {
   return `bash -lc "teamai dashboard-report --stdin --tool ${tool}" 2>>~/.teamai/debug.log || true`;
 }
 
+/** Generate the contribute-check command with tool identifier. */
+function getContributeCheckCommand(tool: string): string {
+  return `bash -lc "teamai contribute-check --stdin --tool ${tool}" 2>>~/.teamai/debug.log || true`;
+}
+
 /** Subcommands expected in each tool settings file (for `teamai doctor`). */
-export const TEAMAI_HOOK_SUBCOMMANDS = ['pull', 'update', 'track', 'track-slash', 'dashboard-report'] as const;
+export const TEAMAI_HOOK_SUBCOMMANDS = ['pull', 'update', 'track', 'track-slash', 'dashboard-report', 'contribute-check'] as const;
 
 /** Claude PascalCase event → Cursor camelCase event (for tests / docs). */
 export const CLAUDE_TO_CURSOR_EVENTS: Record<string, string> = {
@@ -54,16 +59,17 @@ interface ClaudeSettingsJson {
 //
 //  Hook injection matrix:
 //
-//  Event Type          Matcher   Command                          Description keyword
-//  ──────────────────  ────────  ─────────────────────────────    ──────────────────
-//  SessionStart        *         teamai pull                      "Auto-pull"
-//  SessionStart        *         teamai dashboard-report --stdin  "Dashboard report"
-//  Stop                *         teamai update                    "Auto-update"
-//  Stop                *         teamai dashboard-report --stdin  "Dashboard stop"
-//  PostToolUse         Skill     teamai track --stdin             "Track skill"
-//  PostToolUse         *         teamai dashboard-report --stdin  "Dashboard tool"
-//  UserPromptSubmit    *         teamai track-slash               "Track slash"
-//  UserPromptSubmit    *         teamai dashboard-report --stdin  "Dashboard prompt"
+//  Event Type          Matcher   Command                                Description keyword
+//  ──────────────────  ────────  ─────────────────────────────────────  ──────────────────
+//  SessionStart        *         teamai pull                            "Auto-pull"
+//  SessionStart        *         teamai dashboard-report --stdin        "Dashboard report"
+//  Stop                *         teamai update                          "Auto-update"
+//  Stop                *         teamai dashboard-report --stdin        "Dashboard stop"
+//  PostToolUse         Skill     teamai track --stdin                   "Track skill"
+//  PostToolUse         *         teamai dashboard-report --stdin        "Dashboard tool"
+//  PostToolUse         *         teamai contribute-check --stdin        "Contribute check"
+//  UserPromptSubmit    *         teamai track-slash                     "Track slash"
+//  UserPromptSubmit    *         teamai dashboard-report --stdin        "Dashboard prompt"
 //
 
 /** Identifies a teamai hook by its description keyword (substring match). */
@@ -110,6 +116,16 @@ function getClaudeHooks(tool: string): ClaudeHookDef[] {
         matcher: '*',
         hooks: [{ type: 'command', command: getTrackSlashCommand(tool) }],
         description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Track slash command usage`,
+      },
+    },
+    // ─── Contribute check (smart threshold hint) ────────
+    {
+      eventType: 'PostToolUse',
+      descriptionKeyword: 'Contribute check',
+      hook: {
+        matcher: '*',
+        hooks: [{ type: 'command', command: getContributeCheckCommand(tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Contribute check on tool use`,
       },
     },
     // ─── Dashboard hooks (independent from tracking) ────────
@@ -210,11 +226,7 @@ function isTeamaiHookCommand(command: string): boolean {
 
 /** Known teamai command substrings used to identify teamai-managed hooks. */
 const TEAMAI_COMMAND_MARKERS = [
-  'teamai pull',
-  'teamai update',
-  'teamai track',
-  'teamai track-slash',
-  'teamai dashboard-report',
+  'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check',
 ];
 
 /**

@@ -62,7 +62,7 @@ describe('hooks', () => {
   });
 
   describe('inject — empty file', () => {
-    it('Claude format: injects 4 events with 8 hooks into empty settings.json', async () => {
+    it('Claude format: injects 4 events with 9 hooks into empty settings.json', async () => {
       await injectHooks('/test/settings.json', 'claude');
 
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, unknown[]> };
@@ -71,9 +71,12 @@ describe('hooks', () => {
       const events = Object.keys(result.hooks);
       expect(events).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit']);
 
-      for (const event of events) {
-        expect(result.hooks[event]).toHaveLength(2);
-      }
+      // PostToolUse has 3 hooks (track-skill, dashboard-tool, contribute-check)
+      // Others have 2 each
+      expect(result.hooks['SessionStart']).toHaveLength(2);
+      expect(result.hooks['Stop']).toHaveLength(2);
+      expect(result.hooks['PostToolUse']).toHaveLength(3);
+      expect(result.hooks['UserPromptSubmit']).toHaveLength(2);
     });
 
     it('Cursor format: injects 4 events with 8 hooks into empty hooks.json', async () => {
@@ -114,9 +117,11 @@ describe('hooks', () => {
       await injectHooks('/test/settings.json', 'claude');
 
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, unknown[]> };
-      for (const event of Object.values(result.hooks)) {
-        expect(event).toHaveLength(2);
-      }
+      // PostToolUse has 3 hooks, others have 2
+      expect(result.hooks['SessionStart']).toHaveLength(2);
+      expect(result.hooks['Stop']).toHaveLength(2);
+      expect(result.hooks['PostToolUse']).toHaveLength(3);
+      expect(result.hooks['UserPromptSubmit']).toHaveLength(2);
     });
 
     it('double inject for Cursor does not duplicate hooks', async () => {
@@ -302,7 +307,7 @@ describe('hooks', () => {
   });
 
   describe('format alignment', () => {
-    it('Claude and Cursor inject the same set of teamai subcommands', async () => {
+    it('Claude and Cursor inject the same set of teamai subcommands (except Claude-only hooks)', async () => {
       await injectHooks('/test/claude.json', 'claude');
       await injectHooks('/test/cursor.json', 'cursor');
 
@@ -312,8 +317,12 @@ describe('hooks', () => {
       const claudeSubcmds = extractTeamaiSubcommands(claudeResult.hooks);
       const cursorSubcmds = extractTeamaiSubcommands(cursorResult.hooks);
 
-      expect(claudeSubcmds).toEqual(cursorSubcmds);
+      // Claude has contribute-check (STDOUT hint) which Cursor doesn't support
       expect(claudeSubcmds).toEqual([...TEAMAI_HOOK_SUBCOMMANDS].sort());
+      // Cursor is a subset of Claude (without Claude-only hooks like contribute-check)
+      for (const cmd of cursorSubcmds) {
+        expect(claudeSubcmds).toContain(cmd);
+      }
     });
 
     it('Claude PascalCase events map 1:1 to Cursor camelCase events', async () => {
@@ -335,7 +344,7 @@ describe('hooks', () => {
       }
     });
 
-    it('same number of hooks per corresponding event', async () => {
+    it('Cursor hooks are a subset of Claude hooks per event (Claude may have extra hooks)', async () => {
       await injectHooks('/test/claude.json', 'claude');
       await injectHooks('/test/cursor.json', 'cursor');
 
@@ -343,8 +352,9 @@ describe('hooks', () => {
       const cursorResult = mockFiles['/test/cursor.json'] as { hooks: Record<string, unknown[]> };
 
       for (const [claudeEvent, cursorEvent] of Object.entries(CLAUDE_TO_CURSOR_EVENTS)) {
-        expect(claudeResult.hooks[claudeEvent].length).toBe(
-          cursorResult.hooks[cursorEvent].length
+        // Cursor has <= Claude hooks per event (Claude may have extra like contribute-check)
+        expect(cursorResult.hooks[cursorEvent].length).toBeLessThanOrEqual(
+          claudeResult.hooks[claudeEvent].length
         );
       }
     });

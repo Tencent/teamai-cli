@@ -235,3 +235,38 @@ export const DASHBOARD_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 export const DASHBOARD_STALE_TIMEOUT_MS = 30 * 60 * 1000;
 /** Compact JSONL when it exceeds this many lines */
 export const DASHBOARD_COMPACTION_THRESHOLD = 10_000;
+
+// ─── Contribute (session auto-contribute) ────────────
+//
+//  Two-layer threshold detection:
+//
+//  Layer 1 (fast): toolCount in contribute-state.json
+//      │ < BASE_THRESHOLD → exit early (~1ms per PostToolUse)
+//      ▼
+//  Layer 2 (lazy): read events.jsonl, compute smart score
+//      │ score = f(uniqueTools, hasSkills, hasErrors, duration)
+//      │ < SMART_THRESHOLD → exit
+//      ▼
+//  STDOUT hint → AI suggests /contribute to user
+//
+
+/** Per-session contribute state, persisted to ~/.teamai/contribute-state.json */
+export interface ContributeState {
+  /** Session ID this state belongs to */
+  sessionId: string;
+  /** Total tool calls counted so far */
+  toolCount: number;
+  /** Whether the contribute hint has already been shown */
+  hinted: boolean;
+  /** Whether the user has already contributed this session */
+  contributed: boolean;
+}
+
+/** Base threshold: minimum tool calls before smart evaluation triggers */
+export const CONTRIBUTE_BASE_THRESHOLD = 100;
+
+/** Smart score threshold: minimum score to show contribute hint */
+export const CONTRIBUTE_SMART_THRESHOLD = 60;
+
+/** Path to per-session contribute state */
+export const CONTRIBUTE_STATE_PATH = `${TEAMAI_HOME}/contribute-state.json`;
