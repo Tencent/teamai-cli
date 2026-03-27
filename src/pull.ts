@@ -209,7 +209,20 @@ export async function pull(options: GlobalOptions): Promise<void> {
     await saveState(state);
   }
 
-  // Step 4: Auto-report usage data to team repo (best-effort, non-blocking)
+  // Step 4: Deploy CLI built-in skills (e.g. teamai-contribute)
+  if (!options.dryRun) {
+    try {
+      const { deployBuiltinSkills } = await import('./builtin-skills.js');
+      const deployed = await deployBuiltinSkills(freshConfig);
+      if (deployed > 0) {
+        log.debug(`Deployed ${deployed} built-in skill(s)`);
+      }
+    } catch (e) {
+      log.debug(`Built-in skills deployment skipped: ${(e as Error).message}`);
+    }
+  }
+
+  // Step 5: Auto-report usage data to team repo (best-effort, non-blocking)
   if (!options.dryRun) {
     try {
       const { reportUsageToTeam } = await import('./team-push.js');
