@@ -236,6 +236,14 @@ export async function init(options: GlobalOptions & { repo?: string }): Promise<
   const reloadedTeamConfig = await loadTeamConfig(localPath);
   if (reloadedTeamConfig) {
     await injectHooksToAllTools(reloadedTeamConfig.toolPaths);
+
+    // Deploy CLI built-in skills (e.g. teamai-contribute)
+    try {
+      const { deployBuiltinSkills } = await import('./builtin-skills.js');
+      await deployBuiltinSkills(reloadedTeamConfig);
+    } catch {
+      // Non-critical — skills will be deployed on next pull
+    }
   }
 
   log.success('teamai initialized successfully!');

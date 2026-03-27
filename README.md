@@ -32,6 +32,7 @@ teamai init --repo yourteam/yourproject
 | `teamai list [type]` | 列出资源（skills\|rules\|docs） |
 | `teamai members` | 列出已注册的团队成员 |
 | `teamai remove <type> <name>` | 从团队仓库和本地删除资源并创建 MR（skills\|rules） |
+| `teamai contribute --file <path>` | 将 AI 生成的经验文档推送到团队仓库 ai-docs/ |
 | `teamai doctor` | 诊断配置问题 |
 
 全局选项：
@@ -64,6 +65,40 @@ teamai init --repo yourteam/yourproject
 - Skills 同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.claude-internal/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/`
 - Rules 同步到各工具的 rules 目录，并通过标记注释合并到 `CLAUDE.md`（支持 claude、claude-internal、codebuddy）
 - Docs 同步到 `~/.teamai/docs/`
+
+## 经验自动分享
+
+当一次 AI coding session 使用超过 100 次工具调用时，系统会智能评估 session 价值并提示分享：
+
+```
+AI coding session (持续工作中...)
+    │
+    ▼  PostToolUse hook 每次工具调用自动计数
+    │
+    ├─ < 100 次 → 静默计数（~1ms，不影响性能）
+    │
+    ▼  达到 100 次
+    │
+    ├─ 智能评分：工具多样性 + skill 使用 + 错误重试 + session 时长
+    │  （从 dashboard events.jsonl 提取，一次性评估）
+    │
+    ├─ 分数不够 → 不打扰（只是重复调用同一个工具，没有总结价值）
+    │
+    ▼  分数达标
+    │
+    AI 提示："本次 session 内容丰富，建议运行 /teamai-share-learnings 分享经验"
+    │
+    ▼  用户同意
+    │
+    /teamai-share-learnings (AI sub-agent)
+    ├─ AI 总结本次 session 的经验
+    ├─ 生成 Markdown 文档
+    └─ teamai contribute --file <path> → 直接 push 到团队仓库 ai-docs/
+```
+
+- `/teamai-share-learnings` 是 CLI 内置 skill，随 `teamai pull/init` 自动部署到本地
+- 每个 session 最多提示一次（去重），用户可以忽略
+- 文档直接 push 到 master 的 `ai-docs/` 目录，团队成员下次 pull 时可见
 
 ## 更新
 

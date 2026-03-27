@@ -3,6 +3,7 @@ import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { listDirs, pathExists, copyDir, remove, dirContentEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 
 /** File name used to track who has contributed (pushed) a skill. */
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
@@ -34,6 +35,7 @@ export class SkillsHandler extends ResourceHandler {
       const dirs = await listDirs(skillsDir);
       for (const dir of dirs) {
         if (tombstones.has(dir)) continue;
+        if (BUILTIN_SKILL_NAMES.has(dir)) continue; // Skip CLI built-in skills
         // Check for SKILL.md to confirm it's a valid skill
         const skillMd = path.join(skillsDir, dir, 'SKILL.md');
         if (!await pathExists(skillMd)) continue;
