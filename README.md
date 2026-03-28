@@ -32,7 +32,10 @@ teamai init --repo yourteam/yourproject
 | `teamai list [type]` | 列出资源（skills\|rules\|docs） |
 | `teamai members` | 列出已注册的团队成员 |
 | `teamai remove <type> <name>` | 从团队仓库和本地删除资源并创建 MR（skills\|rules） |
-| `teamai contribute --file <path>` | 将 AI 生成的经验文档推送到团队仓库 ai-docs/ |
+| `teamai contribute --file <path>` | 将 AI 生成的经验文档推送到团队仓库 learnings/ |
+| `teamai recall <query>` | 搜索团队知识库，返回按相关性排名的结果 |
+| `teamai digest` | 生成团队 AI 使用周报（skill 排行、新增/更新 skill、session 摘要） |
+| `teamai hooks` | 管理 AI 工具 hooks（list / inject / remove） |
 | `teamai doctor` | 诊断配置问题 |
 
 全局选项：
@@ -68,16 +71,16 @@ teamai init --repo yourteam/yourproject
 
 ## 经验自动分享
 
-当一次 AI coding session 使用超过 100 次工具调用时，系统会智能评估 session 价值并提示分享：
+当一次 AI coding session 使用超过 50 次工具调用时，系统会智能评估 session 价值并提示分享：
 
 ```
 AI coding session (持续工作中...)
     │
     ▼  PostToolUse hook 每次工具调用自动计数
     │
-    ├─ < 100 次 → 静默计数（~1ms，不影响性能）
+    ├─ < 50 次 → 静默计数（~1ms，不影响性能）
     │
-    ▼  达到 100 次
+    ▼  达到 50 次
     │
     ├─ 智能评分：工具多样性 + skill 使用 + 错误重试 + session 时长
     │  （从 dashboard events.jsonl 提取，一次性评估）
@@ -93,12 +96,29 @@ AI coding session (持续工作中...)
     /teamai-share-learnings (AI sub-agent)
     ├─ AI 总结本次 session 的经验
     ├─ 生成 Markdown 文档
-    └─ teamai contribute --file <path> → 直接 push 到团队仓库 ai-docs/
+    └─ teamai contribute --file <path> → 直接 push 到团队仓库 learnings/
 ```
 
 - `/teamai-share-learnings` 是 CLI 内置 skill，随 `teamai pull/init` 自动部署到本地
 - 每个 session 最多提示一次（去重），用户可以忽略
-- 文档直接 push 到 master 的 `ai-docs/` 目录，团队成员下次 pull 时可见
+- 文档直接 push 到 master 的 `learnings/` 目录，团队成员下次 pull 时可见
+
+## 团队知识回忆
+
+`teamai recall` 实现知识飞轮的"读出路径"——AI 可以自动搜索团队积累的经验文档：
+
+```
+contribute(写入) → pull(同步+索引) → recall(搜索) → upvote(投票) → 排序优化
+```
+
+```bash
+$ teamai recall "fuse 端口"
+[1/1] MR 审查发现 FUSE 端口冲突 Bug ★1
+Author: jeffyxu | Score: 18.5 | Tags: troubleshooting, fuse, k8s
+```
+
+- Hybrid 中英文搜索（Intl.Segmenter + CJK bigrams）
+- 搜索自动投票，好文档自然浮到顶部
 
 ## 更新
 

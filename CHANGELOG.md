@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.8.1](https://git.woa.com/teamai/teamai-cli/compare/v0.8.0...v0.8.1) (2026-03-28)
+
+### Digest 隐私改进 + Skill 动态展示
+
+#### 隐私改进
+
+* **移除 digest 中的个人可推断信息** — `(142 uses by 3 member(s))` → `(142 uses)`，小团队中不再能反推谁用了什么
+* **移除 skill 推荐中的百分比** — `used by 57% of team` → `popular with your team`，同理保护隐私
+
+#### 新功能
+
+* **Digest 新增 Skill 动态** — `teamai digest` 现在展示近 7 天新增和更新的 Skill
+  - 🆕 New Skills This Week — 新创建的 skill，显示作者
+  - 🔄 Recently Updated Skills — 有内容更新的 skill
+  - 数据来源：team repo 的 git log，零额外配置
+
+#### 示例
+
+```
+🆕 New Skills This Week:
+  • hai-gpu-sold-report (by jeffyxu)
+  • hai-prod-db (by keitewang)
+
+🔄 Recently Updated Skills:
+  • tke-deploy
+  • hai-deploy-quick
+  • tapd-tech-design
+```
+
 ## [0.8.0](https://git.woa.com/teamai/teamai-cli/compare/v0.7.1...v0.8.0) (2026-03-28)
 
 ### 🧠 Git-Native Memory — 团队知识回忆系统

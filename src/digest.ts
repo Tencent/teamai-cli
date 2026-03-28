@@ -5,7 +5,14 @@ import { log } from './utils/logger.js';
 import { readFileSafe, listFiles } from './utils/fs.js';
 import { requireInit } from './config.js';
 import { calculateTeamHealth } from './skill-health.js';
+import { createGit } from './utils/git.js';
 import type { GlobalOptions, UserStats } from './types.js';
+
+interface SkillChange {
+  name: string;
+  author: string;
+  type: 'new' | 'updated';
+}
 
 // ─── Weekly Team Digest ────────────────────────────────
 //
@@ -48,6 +55,104 @@ async function loadTeamStats(repoPath: string): Promise<UserStats[]> {
   }
 
   return stats;
+}
+
+/**
+ * Parse raw git log output (format: hash|author|message, followed by file paths).
+ */
+function parseGitLogOutput(output: string): Array<{ author: string; message: string; files: string[] }> {
+  const commits: Array<{ author: string; message: string; files: string[] }> = [];
+  const lines = output.trim().split('\n');
+  let current: { author: string; message: string; files: string[] } | null = null;
+
+  for (const line of lines) {
+    if (line.includes('|')) {
+      const parts = line.split('|');
+      if (parts.length >= 3) {
+        if (current) commits.push(current);
+        current = { author: parts[1], message: parts.slice(2).join('|'), files: [] };
+        continue;
+      }
+    }
+    if (current && line.trim().length > 0) {
+      current.files.push(line.trim());
+    }
+  }
+  if (current) commits.push(current);
+
+  return commits;
+}
+
+/**
+ * Detect new and updated skills in the team repo from the past 7 days
+ * by inspecting git log for changes under skills/SKILL.md paths.
+ */
+async function getRecentSkillChanges(repoPath: string): Promise<SkillChange[]> {
+  const seen = new Set<string>();
+  const changes: SkillChange[] = [];
+
+  try {
+    const git = createGit(repoPath);
+
+    // Get all commits touching skills SKILL.md in the last 7 days (Added or Modified)
+    const rawOutput = await git.raw([
+      'log', '--since=7 days ago', '--diff-filter=AM',
+      '--name-only', '--pretty=format:%H|%an|%s',
+      '--', 'skills/*/SKILL.md',
+    ]);
+
+    if (!rawOutput.trim()) return changes;
+
+    const commits = parseGitLogOutput(rawOutput);
+
+    for (const commit of commits) {
+      for (const file of commit.files) {
+        const match = file.match(/^skills\/([^/]+)\/SKILL\.md$/);
+        if (!match) continue;
+        const skillName = match[1];
+        if (seen.has(skillName)) continue;
+        seen.add(skillName);
+
+        // Extract author from commit message pattern: "from <username>"
+        const authorMatch = commit.message.match(/from (\S+)/);
+        const author = authorMatch ? authorMatch[1] : commit.author;
+
+        changes.push({ name: skillName, author, type: 'updated' });
+      }
+    }
+
+    // Distinguish new vs updated: check if SKILL.md was first Added within the week
+    if (changes.length > 0) {
+      const addedOutput = await git.raw([
+        'log', '--since=7 days ago', '--diff-filter=A',
+        '--name-only', '--pretty=format:%H|%an|%s',
+        '--', 'skills/*/SKILL.md',
+      ]);
+
+      const newSkills = new Set<string>();
+      if (addedOutput.trim()) {
+        const addedCommits = parseGitLogOutput(addedOutput);
+        for (const commit of addedCommits) {
+          for (const file of commit.files) {
+            const match = file.match(/^skills\/([^/]+)\/SKILL\.md$/);
+            if (match) {
+              newSkills.add(match[1]);
+            }
+          }
+        }
+      }
+
+      for (const change of changes) {
+        if (newSkills.has(change.name)) {
+          change.type = 'new';
+        }
+      }
+    }
+  } catch {
+    log.debug('Could not read skill changelog from git log');
+  }
+
+  return changes;
 }
 
 /**
@@ -115,7 +220,7 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     // Most used skills
     console.log('🏆 Most Used Skills:');
     for (const item of health.slice(0, 10)) {
-      console.log(`  ${item.stars}  ${item.skill} (${item.totalCount} uses by ${item.contributors} member(s))`);
+      console.log(`  ${item.stars}  ${item.skill} (${item.totalCount} uses)`);
     }
     console.log('');
 
@@ -133,6 +238,27 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
       console.log('📝 Session Highlights:');
       for (const session of sessions.slice(0, 5)) {
         console.log(`  ${session.slice(0, 120)}...`);
+      }
+      console.log('');
+    }
+
+    // Skill changelog
+    const skillChanges = await getRecentSkillChanges(repoPath);
+    const newSkills = skillChanges.filter((c) => c.type === 'new');
+    const updatedSkills = skillChanges.filter((c) => c.type === 'updated');
+
+    if (newSkills.length > 0) {
+      console.log('🆕 New Skills This Week:');
+      for (const skill of newSkills) {
+        console.log(`  • ${skill.name} (by ${skill.author})`);
+      }
+      console.log('');
+    }
+
+    if (updatedSkills.length > 0) {
+      console.log('🔄 Recently Updated Skills:');
+      for (const skill of updatedSkills) {
+        console.log(`  • ${skill.name}`);
       }
       console.log('');
     }

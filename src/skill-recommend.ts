@@ -63,7 +63,7 @@ export async function getRecommendations(
     recommendations.push({
       skill: item.skill,
       percentage: item.percentage,
-      reason: `used by ${item.percentage}% of team (you haven't tried it)`,
+      reason: 'popular with your team (you haven\'t tried it)',
     });
   }
 
