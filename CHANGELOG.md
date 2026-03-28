@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.7.0](https://git.woa.com/teamai/teamai-cli/compare/v0.6.2...v0.7.0) (2026-03-28)
+
+### 🚀 `teamai hooks` 子命令 + update 钩子刷新修复
+
+CLI 升级后新钩子永远无法自动注入的 bug 终于修复。根因：`update.ts` 在 `npm install -g` 后直接调用内存中的 `injectHooksToAllTools()`，但 Node.js 进程仍加载旧版代码，新版代码在磁盘上却不会被重新加载。
+
+**新命令：**
+- `teamai hooks inject` — 将 teamai 钩子注入所有 AI 工具的 settings 文件（支持 `--silent` 静默模式）
+- `teamai hooks remove` — 从所有 AI 工具的 settings 文件中移除 teamai 钩子
+
+**Bug Fix：**
+- `teamai update` 安装新版后，改为 spawn `teamai hooks inject --silent` 子进程，确保加载磁盘上的新版代码，而非旧进程内存中的过时代码
+
+**Doctor 增强：**
+- `teamai doctor` 钩子检查从只检查 `pull` / description prefix 改为校验全部 6 个子命令（pull, update, track, track-slash, dashboard-report, contribute-check）
+- 缺失子命令时建议运行 `teamai hooks inject`
+
+**新 CLI 命令：**
+| Command | Description |
+|---------|-------------|
+| `teamai hooks inject` | 注入 teamai 钩子到所有 AI 工具 settings |
+| `teamai hooks remove` | 移除所有 AI 工具 settings 中的 teamai 钩子 |
+
+**测试：**
+- 新增 11 个测试用例（hooks-cmd 7 + doctor 4），全量 413 测试通过
+
+**For Existing Users：**
+无需手动操作。下次 `teamai update` 时新版代码会正确刷新钩子。如需手动修复，运行 `teamai hooks inject`。
+
 ### [0.6.2](https://git.woa.com/teamai/teamai-cli/compare/v0.6.1...v0.6.2) (2026-03-27)
 
 
