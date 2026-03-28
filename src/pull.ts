@@ -251,6 +251,19 @@ export async function pull(options: GlobalOptions): Promise<void> {
     }
   }
 
+  // Step 4.5: Deploy CLI built-in rules (e.g. teamai-recall)
+  if (!options.dryRun) {
+    try {
+      const { deployBuiltinRules } = await import('./builtin-rules.js');
+      const deployed = await deployBuiltinRules(freshConfig);
+      if (deployed > 0) {
+        log.debug(`Deployed built-in rules to ${deployed} tool(s)`);
+      }
+    } catch (e) {
+      log.debug(`Built-in rules deployment skipped: ${(e as Error).message}`);
+    }
+  }
+
   // Step 5: Auto-report usage data to team repo (best-effort, non-blocking)
   if (!options.dryRun) {
     try {

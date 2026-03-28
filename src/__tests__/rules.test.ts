@@ -224,6 +224,14 @@ describe('RulesHandler.scanLocalForPush — modified rule detection', () => {
     // Should still find the claude rule, and not crash on the norules tool
     expect(items.find((i) => i.name === 'my-rule')).toBeDefined();
   });
+
+  it('should NOT include built-in rules (teamai-recall) in push candidates', async () => {
+    await fse.writeFile(path.join(homeDir, '.claude/rules', 'teamai-recall.md'), 'auto-generated recall rule');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const names = items.map((i) => i.name);
+    expect(names).not.toContain('teamai-recall');
+  });
 });
 
 describe('RulesHandler.scanLocalForPush — subdirectory support', () => {
@@ -559,5 +567,21 @@ describe('RulesHandler.pullAllRules — stale file cleanup', () => {
 
     // .json file should NOT be removed
     expect(await fse.pathExists(path.join(localRulesDir, 'some-config.json'))).toBe(true);
+  });
+
+  it('should not remove built-in rules (teamai-recall) during stale cleanup', async () => {
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.writeFile(path.join(teamRulesDir, 'team-rule.md'), 'team content');
+
+    const localRulesDir = path.join(homeDir, '.claude/rules');
+    await fse.writeFile(path.join(localRulesDir, 'team-rule.md'), 'old');
+    await fse.writeFile(path.join(localRulesDir, 'teamai-recall.md'), 'recall rule content');
+    await fse.writeFile(path.join(localRulesDir, 'old-user-rule.md'), 'stale');
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.pathExists(path.join(localRulesDir, 'team-rule.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(localRulesDir, 'teamai-recall.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(localRulesDir, 'old-user-rule.md'))).toBe(false);
   });
 });

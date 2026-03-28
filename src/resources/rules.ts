@@ -4,6 +4,7 @@ import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from
 import { listFilesRecursive, pathExists, readFileSafe, writeFile, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END } from '../types.js';
+import { BUILTIN_RULE_NAMES } from '../builtin-rules.js';
 
 export class RulesHandler extends ResourceHandler {
   readonly type = 'rules' as const;
@@ -42,6 +43,7 @@ export class RulesHandler extends ResourceHandler {
         // name includes subdirectory path, e.g. "common/coding-standards"
         const name = file.replace(/\.md$/, '');
         if (tombstones.has(name)) continue;
+        if (BUILTIN_RULE_NAMES.has(name)) continue; // Skip CLI built-in rules
 
         const localFilePath = path.join(rulesDir, file);
 
@@ -199,6 +201,9 @@ export class RulesHandler extends ResourceHandler {
       const localFiles = await listFilesRecursive(destDir);
       for (const localFile of localFiles) {
         if (!localFile.endsWith('.md')) continue;
+        // Skip built-in rules (managed by CLI, not team repo)
+        const ruleName = localFile.replace(/\.md$/, '');
+        if (BUILTIN_RULE_NAMES.has(ruleName)) continue;
         if (!teamRuleFiles.has(localFile)) {
           const fullPath = path.join(destDir, localFile);
           await remove(fullPath);
