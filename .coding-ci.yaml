@@ -47,14 +47,13 @@ stages:
         - "if [ -n \"$TEAMAI_TEST_TOKEN\" ] && [ -n \"$TEAMAI_TEST_REPO_URL\" ]; then\n\
           \  echo \"Setting up teamai for remote E2E tests...\"\n  mkdir -p ~/.teamai\n\
           \  REPO_LOCAL=~/.teamai/team-repo\n  if [ ! -d \"$REPO_LOCAL\" ]; then\n\
-          \    case \"$TEAMAI_TEST_REPO_URL\" in\n      http://*|https://*)\n       \
-          \ CLONE_URL=$(echo \"$TEAMAI_TEST_REPO_URL\" | sed \"s#https://#https://oauth2:${TEAMAI_TEST_TOKEN}@#\"\
-          \ | sed \"s#http://#http://oauth2:${TEAMAI_TEST_TOKEN}@#\");;\n      *)\n\
-          \        CLONE_URL=\"https://oauth2:${TEAMAI_TEST_TOKEN}@git.woa.com/${TEAMAI_TEST_REPO_URL}.git\"\
-          ;;\n    esac\n    git clone \"$CLONE_URL\" \"$REPO_LOCAL\" || { echo \"Clone\
-          \ failed\"; exit 1; }\n  fi\n  cat > ~/.teamai/config.yaml <<EOFCFG\nrepo:\n\
-          \  localPath: \"$REPO_LOCAL\"\n  remote: \"$TEAMAI_TEST_REPO_URL\"\nusername:\
-          \ ci\nEOFCFG\n  echo \"teamai config ready\"\nfi\n"
+          \    case \"$TEAMAI_TEST_REPO_URL\" in\n      http://*|https://*) BASE_URL=\"\
+          $TEAMAI_TEST_REPO_URL\";;\n      *) BASE_URL=\"https://git.woa.com/${TEAMAI_TEST_REPO_URL}.git\"\
+          ;;\n    esac\n    CLONE_URL=$(echo \"$BASE_URL\" | sed \"s#://\
+          #://private-token:${TEAMAI_TEST_TOKEN}@#\")\n    git clone \"$CLONE_URL\"\
+          \ \"$REPO_LOCAL\" || { echo \"Clone failed\"; exit 1; }\n  fi\n  cat > ~/.teamai/config.yaml\
+          \ <<EOFCFG\nrepo:\n  localPath: \"$REPO_LOCAL\"\n  remote: \"$TEAMAI_TEST_REPO_URL\"\
+          \nusername: ci\nEOFCFG\n  echo \"teamai config ready\"\nfi\n"
         - npx vitest run --config vitest.e2e.config.ts
 - stage: publish
   tasks:
