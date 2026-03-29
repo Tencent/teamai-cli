@@ -1,6 +1,6 @@
 {
   "name": "@tencent/teamai-cli",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "TeamAI — 团队 AI 经验共享框架",
   "type": "module",
   "bin": {

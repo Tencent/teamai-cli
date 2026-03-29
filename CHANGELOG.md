@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.9.0](https://git.woa.com/teamai/teamai-cli/compare/v0.8.1...v0.9.0) (2026-03-29)
+
+### 🔌 内置规则自动部署 — AI 工具零配置接入团队知识库
+
+`teamai pull` 现在会自动将 CLI 内置的 AI 规则（rules）部署到所有已安装的 AI 工具目录中，**团队成员无需手动配置**，pull 一次即可让 Claude Code / Cursor 等工具自动搜索团队知识库。
+
+#### 工作原理
+
+1. `teamai pull` 执行时，自动检测已安装的 AI 工具（Claude Code、Cursor 等）
+2. 将内置规则写入各工具的 `rules/` 目录：
+   - `~/.claude/rules/teamai-recall.md`
+   - `~/.claude-internal/rules/teamai-recall.md`
+   - `~/.cursor/rules/teamai-recall.md`
+3. 规则内容随 CLI 版本更新，每次 pull 自动同步最新版本
+
+#### 首个内置规则：`teamai-recall`
+
+该规则指导 AI 在遇到错误、部署问题或不熟悉的模式时，**先搜索团队知识库**再从零开始解决：
+
+```bash
+teamai recall "API timeout retry"
+teamai recall "K8s OOM pod restart"
+```
+
+#### 设计要点
+
+- **零配置** — pull 即生效，团队成员不需要手动复制规则文件
+- **跳过未安装工具** — 自动检测，只部署到已安装的 AI 工具
+- **与团队规则隔离** — `teamai push` 不会误将内置规则推送到团队仓库
+- **可扩展** — 后续可轻松添加更多内置规则
+
+#### 完善知识飞轮闭环
+
+```
+contribute(写入) → pull(同步+索引+部署规则) → AI 自动 recall(搜索) → upvote(投票)
+                                    ↑ NEW
+```
+
 ## [0.8.1](https://git.woa.com/teamai/teamai-cli/compare/v0.8.0...v0.8.1) (2026-03-28)
 
 ### Digest 隐私改进 + Skill 动态展示
