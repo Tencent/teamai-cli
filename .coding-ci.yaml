@@ -9,25 +9,18 @@ env:
 stages:
 - stage: validate
   tasks:
-  - task: lint
-    cmds:
-    - plugin: cmds
-      params:
-        cmds:
-        - echo "=== Lint (typecheck) ==="
-        - node --version && npm --version
-        - npm ci --ignore-scripts
-        - npx tsc --noEmit
-  - task: test
+  - task: lint-and-test
     artifacts:
     - coverage/cobertura-coverage.xml
     cmds:
     - plugin: cmds
       params:
         cmds:
-        - echo "=== Unit Tests + Coverage ==="
         - node --version && npm --version
         - npm ci --ignore-scripts
+        - echo "=== Lint (typecheck) ==="
+        - npx tsc --noEmit
+        - echo "=== Unit Tests + Coverage ==="
         - npx vitest run --coverage
 - stage: build
   tasks:
