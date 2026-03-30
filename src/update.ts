@@ -43,7 +43,7 @@ export async function fetchLatestVersion(
     if (!version) return null;
     return version;
   } catch (e) {
-    log.debug(`Version check failed: ${(e as Error).message}`);
+    log.error(`Version check failed: ${(e as Error).message}`);
     return null;
   }
 }
@@ -237,7 +237,7 @@ export async function doUpdate(): Promise<void> {
       });
       log.success('Refreshed hooks with new version');
     } catch (e) {
-      log.debug(`Hook refresh after update skipped: ${(e as Error).message}`);
+      log.error(`Hook refresh after update skipped: ${(e as Error).message}`);
     }
   } catch (e) {
     const error = e as NodeJS.ErrnoException;

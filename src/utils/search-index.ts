@@ -123,7 +123,7 @@ function parseLearningDoc(
     return { meta, bodyExcerpt };
   } catch {
     // Fallback: treat entire content as body, derive title from filename
-    log.debug(`Failed to parse frontmatter for ${filename}, using fallback`);
+    log.error(`Failed to parse frontmatter for ${filename}, using fallback`);
     return {
       meta: {},
       bodyExcerpt: content.slice(0, MAX_BODY_CHARS),
@@ -165,7 +165,7 @@ async function aggregateVotes(votesDir: string): Promise<Map<string, number>> {
         }
       }
     } catch {
-      log.debug(`Failed to parse votes file: ${file}`);
+      log.error(`Failed to parse votes file: ${file}`);
     }
   }
 

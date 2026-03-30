@@ -104,7 +104,7 @@ export async function deployBuiltinRules(teamConfig: TeamaiConfig): Promise<numb
 
             deployed++;
         } catch (e) {
-            log.debug(`Failed to deploy built-in rules to ${tool}: ${(e as Error).message}`);
+            log.error(`Failed to deploy built-in rules to ${tool}: ${(e as Error).message}`);
         }
     }
 

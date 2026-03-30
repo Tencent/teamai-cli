@@ -120,7 +120,7 @@ export async function autoUpvote(
 
     log.debug(`autoUpvote: recorded ${newVotes} new vote(s) for ${username}`);
   } catch (e) {
-    log.debug(`autoUpvote failed: ${(e as Error).message}`);
+    log.error(`autoUpvote failed: ${(e as Error).message}`);
   }
 }
 
@@ -157,7 +157,7 @@ export async function recall(
         index = await loadIndex();
       }
     } catch (e) {
-      log.debug(`Index build failed: ${(e as Error).message}`);
+      log.error(`Index build failed: ${(e as Error).message}`);
     }
 
     if (!index) {
@@ -189,7 +189,7 @@ export async function recall(
       const { localConfig } = await requireInit();
       await autoUpvote(results, localConfig.username, localConfig.repo.localPath);
     } catch (e) {
-      log.debug(`autoUpvote skipped: ${(e as Error).message}`);
+      log.error(`autoUpvote skipped: ${(e as Error).message}`);
     }
   }
 }

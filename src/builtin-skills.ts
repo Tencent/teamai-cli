@@ -101,7 +101,7 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig): Promise<num
 
         deployed++;
       } catch (e) {
-        log.debug(`Failed to deploy built-in skill ${skillName} to ${toolPath.skills}: ${(e as Error).message}`);
+        log.error(`Failed to deploy built-in skill ${skillName} to ${toolPath.skills}: ${(e as Error).message}`);
       }
     }
   }

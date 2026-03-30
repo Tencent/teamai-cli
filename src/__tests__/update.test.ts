@@ -218,7 +218,7 @@ describe('checkForUpdate', () => {
     const result = await checkForUpdate({ force: true });
 
     expect(result.available).toBe(false);
-    expect(mockedLog.debug).toHaveBeenCalled();
+    expect(mockedLog.error).toHaveBeenCalled();
   });
 
   // ─── Test #4: npm view network error ──────────────────
@@ -532,7 +532,7 @@ describe('hook refresh after update', () => {
     expect(mockedLog.success).toHaveBeenCalledWith(
       expect.stringContaining('Updated teamai to v99.0.0'),
     );
-    expect(mockedLog.debug).toHaveBeenCalledWith(
+    expect(mockedLog.error).toHaveBeenCalledWith(
       expect.stringContaining('Hook refresh after update skipped'),
     );
   });

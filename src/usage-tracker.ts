@@ -145,7 +145,7 @@ export async function appendUsageEvent(event: UsageEvent): Promise<void> {
     await fs.promises.appendFile(getUsagePath(), line, 'utf-8');
     log.debug(`Tracked skill: ${event.skill}`);
   } catch (e) {
-    log.debug(`Failed to write usage event: ${(e as Error).message}`);
+    log.error(`Failed to write usage event: ${(e as Error).message}`);
   }
 }
 
@@ -193,7 +193,7 @@ export async function truncateUsageAfterReport(reportedCount: number): Promise<v
     }
     log.debug(`Truncated usage.jsonl: removed ${reportedCount} reported events`);
   } catch (e) {
-    log.debug(`Failed to truncate usage.jsonl: ${(e as Error).message}`);
+    log.error(`Failed to truncate usage.jsonl: ${(e as Error).message}`);
   }
 }
 
@@ -211,7 +211,7 @@ export async function updateKnownSkills(skillName: string): Promise<void> {
     await writeJson(knownPath, Array.from(skills).sort());
     log.debug(`Added ${skillName} to known-skills.json`);
   } catch (e) {
-    log.debug(`Failed to update known-skills: ${(e as Error).message}`);
+    log.error(`Failed to update known-skills: ${(e as Error).message}`);
   }
 }
 
@@ -313,7 +313,7 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
   try {
     hookData = JSON.parse(raw);
   } catch {
-    log.debug('Failed to parse STDIN JSON');
+    log.error('Failed to parse STDIN JSON');
     return;
   }
 
@@ -388,7 +388,7 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
   try {
     hookData = JSON.parse(raw);
   } catch {
-    log.debug('Failed to parse slash command STDIN JSON');
+    log.error('Failed to parse slash command STDIN JSON');
     return;
   }
 

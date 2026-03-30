@@ -91,7 +91,7 @@ export function parseHookEvent(
   try {
     hookData = JSON.parse(raw);
   } catch {
-    log.debug('dashboard-collector: failed to parse STDIN JSON');
+    log.error('dashboard-collector: failed to parse STDIN JSON');
     return null;
   }
 
@@ -149,7 +149,7 @@ export async function appendEvent(event: DashboardEvent): Promise<void> {
     await fs.promises.appendFile(eventsPath, line, 'utf-8');
     log.debug(`dashboard: recorded ${event.type} for session ${event.sessionId.slice(0, 16)}`);
   } catch (e) {
-    log.debug(`dashboard: failed to write event: ${(e as Error).message}`);
+    log.error(`dashboard: failed to write event: ${(e as Error).message}`);
   }
 }
 
@@ -301,7 +301,7 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
 
     log.debug(`dashboard: compacted ${lines.length} → ${kept.length} events`);
   } catch (e) {
-    log.debug(`dashboard: compaction failed: ${(e as Error).message}`);
+    log.error(`dashboard: compaction failed: ${(e as Error).message}`);
   }
 }
 

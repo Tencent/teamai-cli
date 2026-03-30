@@ -81,7 +81,7 @@ export async function writeContributeState(sessionId: string, state: ContributeS
     // Best-effort cleanup of stale session files (>24h)
     await cleanupStaleSessions(path.dirname(filePath), sessionId);
   } catch (e) {
-    log.debug(`Failed to write contribute state: ${(e as Error).message}`);
+    log.error(`Failed to write contribute state: ${(e as Error).message}`);
   }
 }
 

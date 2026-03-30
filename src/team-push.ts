@@ -141,7 +141,7 @@ export async function reportUsageToTeam(
         }
       }
     } catch (e) {
-      log.debug(`Vote staging skipped: ${(e as Error).message}`);
+      log.error(`Vote staging skipped: ${(e as Error).message}`);
     }
 
     // Commit and push with timeout
@@ -161,6 +161,6 @@ export async function reportUsageToTeam(
     await truncateUsageAfterReport(events.length);
     log.debug(`Reported ${events.length} usage events to team repo`);
   } catch (e) {
-    log.debug(`Auto-report skipped: ${(e as Error).message}`);
+    log.error(`Auto-report skipped: ${(e as Error).message}`);
   }
 }

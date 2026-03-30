@@ -41,7 +41,7 @@ export async function loadLocalConfig(): Promise<LocalConfig | null> {
     const raw = YAML.parse(content);
     return LocalConfigSchema.parse(raw);
   } catch (e) {
-    log.debug(`Invalid local config: ${(e as Error).message}`);
+    log.error(`Invalid local config: ${(e as Error).message}`);
     return null;
   }
 }

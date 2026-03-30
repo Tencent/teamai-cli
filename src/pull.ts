@@ -270,7 +270,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
       const { reportUsageToTeam } = await import('./team-push.js');
       await reportUsageToTeam(localConfig.repo.localPath, localConfig.username);
     } catch (e) {
-      log.debug(`Auto-report skipped: ${(e as Error).message}`);
+      log.error(`Auto-report skipped: ${(e as Error).message}`);
     }
   }
 
