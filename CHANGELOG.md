@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.9.1](https://git.woa.com/teamai/teamai-cli/compare/v0.9.0...v0.9.1) (2026-03-30)
+
+### 🔧 修复 debug.log 始终为空的问题
+
+`~/.teamai/debug.log` 现在能正确记录所有 hook 运行时的调试和错误信息，方便排查 teamai 后台行为。
+
+#### 问题根因
+
+Hook 命令通过 `2>>~/.teamai/debug.log` 捕获 stderr，但代码中所有日志（包括错误）都写到 stdout（`console.log`），且 `--verbose` 默认关闭——三重静默导致 debug.log 永远为空。
+
+#### 修复方案
+
+- **File Transport**：所有 `log.debug()` 和 `log.error()` 调用现在同时写入 `~/.teamai/debug.log`，不再依赖 shell 的 stderr 重定向
+- **ISO 时间戳**：每行日志带 `2026-03-30T06:32:14.123Z [DEBUG]` 格式前缀
+- **错误级别拆分**：catch 块中的失败信息从 `log.debug` 改为 `log.error`，方便 `grep ERROR ~/.teamai/debug.log` 快速定位问题
+- **自动 Rotation**：debug.log 超过 5MB 自动轮转为 `debug.log.1`，总占用不超过 10MB
+- **同步写入**：使用 `appendFileSync` 确保短命 hook 进程不丢日志
+
+#### 使用方式
+
+```bash
+# 查看最近的调试日志
+tail -20 ~/.teamai/debug.log
+
+# 快速找错误
+grep ERROR ~/.teamai/debug.log
+```
+
+---
+
 ## [0.9.0](https://git.woa.com/teamai/teamai-cli/compare/v0.8.1...v0.9.0) (2026-03-29)
 
 ### 🔌 内置规则自动部署 — AI 工具零配置接入团队知识库
