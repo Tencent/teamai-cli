@@ -87,13 +87,13 @@ describe('hooks', () => {
       expect(result.hooks).toBeDefined();
 
       const events = Object.keys(result.hooks);
-      expect(events).toEqual(['sessionStart', 'stop', 'postToolUse', 'userPromptSubmit']);
+      expect(events).toEqual(['sessionStart', 'stop', 'postToolUse', 'beforeSubmitPrompt']);
 
       // postToolUse has 3 hooks (track, dashboard, contribute-check), others have 2
       expect(result.hooks['sessionStart']).toHaveLength(2);
       expect(result.hooks['stop']).toHaveLength(2);
       expect(result.hooks['postToolUse']).toHaveLength(3);
-      expect(result.hooks['userPromptSubmit']).toHaveLength(2);
+      expect(result.hooks['beforeSubmitPrompt']).toHaveLength(2);
     });
 
     it('Claude uses PascalCase event names', async () => {
@@ -135,7 +135,7 @@ describe('hooks', () => {
       expect(result.hooks['sessionStart']).toHaveLength(2);
       expect(result.hooks['stop']).toHaveLength(2);
       expect(result.hooks['postToolUse']).toHaveLength(3);
-      expect(result.hooks['userPromptSubmit']).toHaveLength(2);
+      expect(result.hooks['beforeSubmitPrompt']).toHaveLength(2);
     });
 
     it('updates command when content changes (Claude)', async () => {
@@ -253,7 +253,7 @@ describe('hooks', () => {
       expect(after.hooks.sessionStart[0]).toEqual(userHook);
       expect(after.hooks.stop).toHaveLength(0);
       expect(after.hooks.postToolUse).toHaveLength(0);
-      expect(after.hooks.userPromptSubmit).toHaveLength(0);
+      expect(after.hooks.beforeSubmitPrompt).toHaveLength(0);
     });
   });
 

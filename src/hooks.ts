@@ -34,7 +34,7 @@ export const CLAUDE_TO_CURSOR_EVENTS: Record<string, string> = {
   SessionStart: 'sessionStart',
   Stop: 'stop',
   PostToolUse: 'postToolUse',
-  UserPromptSubmit: 'userPromptSubmit',
+  UserPromptSubmit: 'beforeSubmitPrompt',
 };
 
 // ─── Claude Code / Claude Internal format (settings.json) ───
@@ -197,7 +197,7 @@ function buildCursorHooks(tool: string): Record<string, CursorHookEntry[]> {
       { command: getDashboardReportCommand(tool), timeout: 10 },
       { command: getContributeCheckCommand(tool), timeout: 10 },
     ],
-    userPromptSubmit: [
+    beforeSubmitPrompt: [
       { command: getTrackSlashCommand(tool), timeout: 10 },
       { command: getDashboardReportCommand(tool), timeout: 10 },
     ],

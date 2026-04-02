@@ -61,11 +61,11 @@ describe('hooks E2E — real file I/O', () => {
       expect(result.version).toBe(1);
       const hooks = result.hooks as Record<string, unknown[]>;
 
-      expect(Object.keys(hooks)).toEqual(['sessionStart', 'stop', 'postToolUse', 'userPromptSubmit']);
+      expect(Object.keys(hooks)).toEqual(['sessionStart', 'stop', 'postToolUse', 'beforeSubmitPrompt']);
       expect(hooks.sessionStart).toHaveLength(2);
       expect(hooks.stop).toHaveLength(2);
       expect(hooks.postToolUse).toHaveLength(3);
-      expect(hooks.userPromptSubmit).toHaveLength(2);
+      expect(hooks.beforeSubmitPrompt).toHaveLength(2);
     });
 
     it('all TEAMAI_HOOK_SUBCOMMANDS present in Claude output', async () => {
@@ -241,7 +241,7 @@ describe('hooks E2E — real file I/O', () => {
       expect(hooks.sessionStart).toHaveLength(1);
       expect(hooks.stop).toHaveLength(0);
       expect(hooks.postToolUse).toHaveLength(0);
-      expect(hooks.userPromptSubmit).toHaveLength(0);
+      expect(hooks.beforeSubmitPrompt).toHaveLength(0);
 
       const content = await fse.readFile(p, 'utf-8');
       expect(content).not.toContain('teamai pull');
