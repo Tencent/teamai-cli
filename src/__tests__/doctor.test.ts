@@ -142,6 +142,7 @@ describe('doctor — hook checks', () => {
         expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('track-slash');
         expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('dashboard-report');
         expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('contribute-check');
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toHaveLength(6);
+        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('auto-recall');
+        expect(TEAMAI_HOOK_SUBCOMMANDS).toHaveLength(7);
     });
 });

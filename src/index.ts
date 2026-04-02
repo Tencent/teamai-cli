@@ -297,4 +297,15 @@ program
     await recall(query, globalOpts);
   });
 
+program
+  .command('auto-recall')
+  .description('Auto-recall team knowledge on tool errors (called by PostToolUse hook)')
+  .option('--stdin', 'Read hook data from STDIN')
+  .action(async (cmdOpts) => {
+    if (cmdOpts.stdin) {
+      const { autoRecall } = await import('./auto-recall.js');
+      await autoRecall();
+    }
+  });
+
 program.parse();

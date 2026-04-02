@@ -45,7 +45,7 @@ interface ScopedSearchResult extends SearchResult {
  * Output uses delimiters so AI treats content as reference, not instruction.
  * Each entry includes a scope label (user/project) when source is known.
  */
-function formatResults(results: ScopedSearchResult[]): string {
+export function formatResults(results: ScopedSearchResult[]): string {
   const lines: string[] = [];
   lines.push(`--- [teamai:recall:start] --- (${results.length} result${results.length !== 1 ? 's' : ''})`);
   lines.push('');
