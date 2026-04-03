@@ -293,11 +293,21 @@ export async function readStdin(): Promise<HookInput | null> {
         const data = JSON.parse(raw) as Record<string, unknown>;
 
         const toolName = typeof data.tool_name === 'string' ? data.tool_name : '';
+
+        // Claude Code PostToolUse STDIN format:
+        //   { tool_name, tool_input, tool_response: { stdout, stderr } }
+        // Other formats may use tool_output or tool_result directly.
+        const toolResponse = data.tool_response as Record<string, unknown> | undefined;
         const toolOutput = typeof data.tool_output === 'string'
             ? data.tool_output
             : typeof data.tool_result === 'string'
                 ? data.tool_result
-                : '';
+                : toolResponse
+                    ? [
+                        typeof toolResponse.stdout === 'string' ? toolResponse.stdout : '',
+                        typeof toolResponse.stderr === 'string' ? toolResponse.stderr : '',
+                    ].filter(Boolean).join('\n')
+                    : '';
 
         // Derive session ID (same logic as contribute-check)
         const sessionId =
