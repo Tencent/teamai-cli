@@ -73,7 +73,7 @@ interface ClaudeSettingsJson {
 //  PostToolUse         Skill     teamai track --stdin                   "Track skill"
 //  PostToolUse         *         teamai dashboard-report --stdin        "Dashboard tool"
 //  PostToolUse         *         teamai contribute-check --stdin        "Contribute check"
-//  PostToolUse         *         teamai auto-recall --stdin             "Auto-recall"
+//  PostToolUse         Bash      teamai auto-recall --stdin             "Auto-recall"
 //  UserPromptSubmit    *         teamai track-slash                     "Track slash"
 //  UserPromptSubmit    *         teamai dashboard-report --stdin        "Dashboard prompt"
 //
@@ -139,9 +139,9 @@ function getClaudeHooks(tool: string): ClaudeHookDef[] {
       eventType: 'PostToolUse',
       descriptionKeyword: 'Auto-recall',
       hook: {
-        matcher: '*',
+        matcher: 'Bash',
         hooks: [{ type: 'command', command: getAutoRecallCommand(tool) }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Auto-recall on error`,
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Auto-recall on Bash error`,
       },
     },
     // ─── Dashboard hooks (independent from tracking) ────────
@@ -212,7 +212,7 @@ function buildCursorHooks(tool: string): Record<string, CursorHookEntry[]> {
       { command: getTrackCommand(tool), timeout: 10, matcher: 'Skill' },
       { command: getDashboardReportCommand(tool), timeout: 10 },
       { command: getContributeCheckCommand(tool), timeout: 10 },
-      { command: getAutoRecallCommand(tool), timeout: 3 },
+      { command: getAutoRecallCommand(tool), timeout: 3, matcher: 'Bash' },
     ],
     beforeSubmitPrompt: [
       { command: getTrackSlashCommand(tool), timeout: 10 },
