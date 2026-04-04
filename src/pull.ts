@@ -9,6 +9,99 @@ import { loadTagsConfig, filterByTags } from './utils/tags.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import type { GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, TagsConfig } from './types.js';
 import { LEARNINGS_LOCAL_DIR, resolveBaseDir, getTeamaiHome } from './types.js';
+import { loadRolesManifest, resolveRoleResourceBuckets, type ResourceBuckets } from './roles.js';
+
+interface RolePullContext {
+  activeBuckets: ResourceBuckets;
+  activeSkillNames: Set<string>;
+  inactiveSkillNames: Set<string>;
+}
+
+async function buildRolePullContext(localConfig: LocalConfig): Promise<RolePullContext | null> {
+  if (!localConfig.primaryRole) return null;
+
+  const manifest = await loadRolesManifest(localConfig.repo.localPath);
+  const activeBuckets = resolveRoleResourceBuckets({
+    manifest,
+    primaryRole: localConfig.primaryRole,
+    additionalRoles: localConfig.additionalRoles ?? [],
+  });
+
+  const allSkillBuckets = new Set(
+    manifest.roles.flatMap((role) => role.resources.skills),
+  );
+  const inactiveSkillBuckets = [...allSkillBuckets].filter((bucket) => !activeBuckets.skills.includes(bucket));
+  const activeSkillNames = new Set<string>();
+  const inactiveSkillNames = new Set<string>();
+
+  for (const bucket of activeBuckets.skills) {
+    const bucketDir = path.join(localConfig.repo.localPath, 'skills', bucket);
+    const names = await listDirs(bucketDir);
+    for (const name of names) {
+      activeSkillNames.add(name);
+    }
+  }
+
+  for (const bucket of inactiveSkillBuckets) {
+    const bucketDir = path.join(localConfig.repo.localPath, 'skills', bucket);
+    const names = await listDirs(bucketDir);
+    for (const name of names) {
+      inactiveSkillNames.add(name);
+    }
+  }
+
+  return { activeBuckets, activeSkillNames, inactiveSkillNames };
+}
+
+export async function scanRoleAwareSkills(localConfig: LocalConfig, buckets: ResourceBuckets): Promise<ResourceItem[]> {
+  const items = new Map<string, ResourceItem>();
+
+  for (const bucket of buckets.skills) {
+    const bucketDir = path.join(localConfig.repo.localPath, 'skills', bucket);
+    const dirs = await listDirs(bucketDir);
+    for (const dir of dirs) {
+      const existing = items.get(dir);
+      if (existing) {
+        throw new Error(`Duplicate skill "${dir}" found in active buckets "${existing.bucket}" and "${bucket}"`);
+      }
+
+      items.set(dir, {
+        name: dir,
+        type: 'skills',
+        sourcePath: path.join(bucketDir, dir),
+        relativePath: `skills/${bucket}/${dir}`,
+        bucket,
+      });
+    }
+  }
+
+  return [...items.values()];
+}
+
+export async function cleanupInactiveBucketSkills(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  activeSkillNames: Set<string>,
+  inactiveSkillNames: Set<string>,
+): Promise<void> {
+  const baseDir = resolveBaseDir(localConfig);
+
+  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    if (!toolPath.skills) continue;
+    if (!await pathExists(path.join(baseDir, toolPath.skills))) continue;
+
+    const localSkillNames = await listDirs(path.join(baseDir, toolPath.skills));
+    for (const skillName of localSkillNames) {
+      if (BUILTIN_SKILL_NAMES.has(skillName)) continue;
+      if (activeSkillNames.has(skillName)) continue;
+      if (!inactiveSkillNames.has(skillName)) continue;
+
+      const localSkillDir = path.join(baseDir, toolPath.skills, skillName);
+      await remove(localSkillDir);
+      log.debug(`[${localConfig.scope}] Removed inactive role skill ${skillName} from ${tool}`);
+    }
+  }
+}
 
 /**
  * Collect names of resources that already exist locally (before pull).
@@ -110,6 +203,15 @@ async function pullForScope(
     return;
   }
 
+  // Load role context (if primaryRole configured)
+  let roleContext: RolePullContext | null = null;
+  try {
+    roleContext = await buildRolePullContext(localConfig);
+  } catch (e) {
+    log.error(`[${scopeLabel}] ${(e as Error).message}`);
+    return;
+  }
+
   // Load tags config for filtering
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
   const subscribedTags = localConfig.subscribedTags;
@@ -117,6 +219,8 @@ async function pullForScope(
   // Step 2: Sync each resource type
   const resourceTypes: ResourceType[] = ['skills', 'rules', 'docs', 'env'];
   let totalSynced = 0;
+  let desiredSkillNames: Set<string> | null = null;
+  let knownRepoSkillNames: Set<string> | null = null;
 
   for (const type of resourceTypes) {
     const handler = getHandler(type);
@@ -137,21 +241,33 @@ async function pullForScope(
       continue;
     }
 
-    const allItems = await handler.scanTeamForPull(freshConfig, localConfig);
-    if (allItems.length === 0) continue;
+    // Skills: directory (role bucket) first, then tags, union of both
+    let items: ResourceItem[];
+    let skippedByTags = 0;
+    if (type === 'skills') {
+      const directoryItems = roleContext
+        ? await scanRoleAwareSkills(localConfig, roleContext.activeBuckets)
+        : await handler.scanTeamForPull(freshConfig, localConfig);
 
-    // Apply tag filtering for skills (docs/env don't need filtering)
-    const isFilterable = type === 'skills';
-    const { included: items, skipped } = isFilterable
-      ? filterByTags(allItems, tagsConfig, subscribedTags, 'skills')
-      : { included: allItems, skipped: [] as ResourceItem[] };
+      const allTeamSkills = await handler.scanTeamForPull(freshConfig, localConfig);
+      const { included: tagIncluded, skipped: tagSkipped } = filterByTags(
+        allTeamSkills, tagsConfig, subscribedTags, 'skills',
+      );
+      skippedByTags = tagSkipped.length;
 
-    if (items.length === 0) {
-      if (skipped.length > 0) {
-        log.success(`Synced 0 ${type} (skipped ${skipped.length} by tags)`);
+      // Union: merge directory items with tag-matched items
+      const merged = new Map<string, ResourceItem>();
+      for (const item of directoryItems) merged.set(item.name, item);
+      for (const item of tagIncluded) {
+        if (!merged.has(item.name)) merged.set(item.name, item);
       }
-      continue;
+      items = [...merged.values()];
+      desiredSkillNames = new Set(items.map((i) => i.name));
+      knownRepoSkillNames = new Set(allTeamSkills.map((i) => i.name));
+    } else {
+      items = await handler.scanTeamForPull(freshConfig, localConfig);
     }
+    if (items.length === 0) continue;
 
     if (type === 'env') {
       const envHandler = handler as EnvHandler;
@@ -207,7 +323,7 @@ async function pullForScope(
       }
 
       if (type === 'skills') {
-        logSyncDetail(type, items, existingNames, !!options.verbose, scopeLabel, skipped.length);
+        logSyncDetail(type, items, existingNames, !!options.verbose, scopeLabel, skippedByTags);
       } else {
         log.success(`[${scopeLabel}] Synced ${items.length} ${type}`);
       }
@@ -242,29 +358,34 @@ async function pullForScope(
         }
       }
     }
+
+    if (roleContext) {
+      await cleanupInactiveBucketSkills(
+        freshConfig,
+        localConfig,
+        roleContext.activeSkillNames,
+        roleContext.inactiveSkillNames,
+      );
+    }
   }
 
-  // Step 3b: Clean up local skills that are now filtered out by tags
-  if (!options.dryRun && tagsConfig && subscribedTags && subscribedTags.length > 0) {
-    const home = process.env.HOME ?? '';
-    // Get the full list of team skills and determine which are filtered out
-    const skillsHandler = getHandler('skills');
-    const allTeamSkills = await skillsHandler.scanTeamForPull(freshConfig, localConfig);
-    const { skipped: filteredOut } = filterByTags(allTeamSkills, tagsConfig, subscribedTags, 'skills');
-    const filteredNames = new Set(filteredOut.map((i) => i.name));
+  // Step 3b: Clean up local skills not in the desired union set (role + tags)
+  if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
+    const baseDir = resolveBaseDir(localConfig);
 
     for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
       if (!toolPath.skills) continue;
-      const skillsDir = path.join(home, toolPath.skills);
+      const skillsDir = path.join(baseDir, toolPath.skills);
       if (!await pathExists(skillsDir)) continue;
 
       const localDirs = await listDirs(skillsDir);
       for (const dir of localDirs) {
-        if (!filteredNames.has(dir)) continue;
         if (BUILTIN_SKILL_NAMES.has(dir)) continue;
+        if (desiredSkillNames.has(dir)) continue;
+        if (!knownRepoSkillNames.has(dir)) continue;
         const skillDir = path.join(skillsDir, dir);
         await remove(skillDir);
-        log.debug(`Removed tag-filtered skill ${dir} from ${tool}`);
+        log.debug(`Removed excluded skill ${dir} from ${tool}`);
       }
     }
   }

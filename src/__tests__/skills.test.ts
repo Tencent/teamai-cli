@@ -52,7 +52,8 @@ describe('SkillsHandler.scanLocalForPush', () => {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser',
       updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
     };
   });
 
@@ -264,6 +265,20 @@ describe('SkillsHandler.scanLocalForPush', () => {
     const items = await handler.scanLocalForPush(teamConfig, localConfig);
     expect(items.find((i) => i.name === 'my-skill')).toBeDefined();
   });
+
+  it('scans role-scoped team skill buckets when a primary role is configured', async () => {
+    localConfig.primaryRole = 'hai';
+    localConfig.additionalRoles = ['pm'];
+    await fse.ensureDir(path.join(localConfig.repo.localPath, 'skills', 'hai', 'role-skill'));
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'skills', 'hai', 'role-skill', 'SKILL.md'), '# v1');
+
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'role-skill');
+    await fse.ensureDir(localSkillDir);
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# v2');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    expect(items.find((item) => item.name === 'role-skill')?.status).toBe('modified');
+  });
 });
 
 describe('SkillsHandler.pushItem', () => {
@@ -301,7 +316,8 @@ describe('SkillsHandler.pushItem', () => {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser',
       updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
     };
   });
 
@@ -394,6 +410,27 @@ describe('SkillsHandler.pushItem', () => {
     const contribPath = path.join(destDir, 'CONTRIBUTORS');
     const content = await fse.readFile(contribPath, 'utf-8');
     expect(content).toBe('alice\ntestuser\n');
+  });
+
+  it('pushes role-scoped skills into skills/<role>/<name>', async () => {
+    localConfig.primaryRole = 'hai';
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'my-skill');
+    await fse.ensureDir(localSkillDir);
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# My Skill');
+
+    const item = {
+      name: 'my-skill',
+      type: 'skills' as const,
+      sourcePath: localSkillDir,
+      relativePath: 'skills/hai/my-skill',
+      bucket: 'hai',
+    };
+
+    await handler.pushItem(item, teamConfig, localConfig);
+
+    const contribPath = path.join(localConfig.repo.localPath, 'skills', 'hai', 'my-skill', 'CONTRIBUTORS');
+    const content = await fse.readFile(contribPath, 'utf-8');
+    expect(content).toBe('testuser\n');
   });
 });
 

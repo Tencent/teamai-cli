@@ -33,13 +33,13 @@ teamai init --repo yourteam/yourproject --scope project
 | 命令 | 说明 |
 |------|------|
 | `teamai init [--scope <user\|project>]` | 初始化（自动安装 gf CLI、OAuth 登录、关联仓库、注册成员、配置 reviewers、注入 hooks） |
-| `teamai push [--all]` | 推送本地新资源到独立分支并创建 Merge Request |
+| `teamai push [--all] [--role <id>]` | 推送本地新资源到独立分支并创建 Merge Request；项目 skill 默认推送到 `primaryRole`，可用 `--role` 覆盖 |
 | `teamai pull [--silent]` | 拉取团队资源并注入到本地 AI 工具（支持双 scope 依次拉取） |
 | `teamai status` | 查看本地 vs 团队仓库差异 |
 | `teamai list [type]` | 列出资源（skills\|rules\|docs） |
 | `teamai members` | 列出已注册的团队成员 |
 | `teamai remove <type> <name>` | 从团队仓库和本地删除资源并创建 MR（skills\|rules） |
-| `teamai contribute --file <path> [--scope <user\|project>]` | 将 AI 生成的经验文档推送到团队仓库 learnings/（可指定目标 scope） |
+| `teamai contribute --file <path> [--scope <user\|project>]` | 将 AI 生成的经验文档推送到团队仓库 |
 | `teamai recall <query>` | 搜索团队知识库，自动合并 user + project 双 scope 结果 |
 | `teamai digest` | 生成团队 AI 使用周报（skill 排行、新增/更新 skill、session 摘要） |
 | `teamai hooks` | 管理 AI 工具 hooks（list / inject / remove） |
@@ -74,7 +74,52 @@ teamai init --repo yourteam/yourproject --scope project
 - `teamai init` 会自动注入与各工具格式对齐的 hooks（含 `sessionStart`、`stop`、`postToolUse`、`userPromptSubmit` 等），会话中会执行 `teamai pull`、`teamai update`、追踪与仪表盘等（支持 Claude Code、Codex、Claude Code Internal、Cursor、CodeBuddy IDE）
 - Skills 同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.claude-internal/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/`
 - Rules 同步到各工具的 rules 目录，并通过标记注释合并到 `CLAUDE.md`（支持 claude、claude-internal、codebuddy）
-- Docs 同步到 `~/.teamai/docs/`
+- Knowledge 同步到 `~/.teamai/docs/`
+- Learnings 同步到 `~/.teamai/learnings/`，并基于该目录构建 recall 索引
+
+## 角色化 Skills
+
+当团队资源仓库启用角色化目录后，Skills 按角色 bucket 组织，CLI 在 `teamai init` 时要求选择 `primaryRole` 和可选的 `additionalRoles`，并写入本地 `config.yaml`。
+
+远端仓库目录约定：
+
+```text
+manifest/roles.yaml        # 角色定义
+skills/<bucket>/<skill>/   # 按 bucket 组织的 skills
+rules/                     # 全局，不做角色拆分
+```
+
+- `teamai pull` 读取 `manifest/roles.yaml`，只同步 `primaryRole + additionalRoles` 对应 bucket 中的 skills（同时保留 tag 过滤的并集）。
+- Skills 从 `skills/<bucket>/<skill-name>/` 拍平安装到本地 `<tool>/skills/<skill-name>/`，用户无感知 bucket 结构。
+- 如果激活 bucket 中出现同名 skill，`pull` 会直接失败，避免隐式覆盖。
+- 不在激活 bucket 中、也不在 tag 过滤结果中的 skills 会被自动清理。
+- `rules/`、`docs/`、`learnings/` 仍然保持原有逻辑，不做角色拆分。
+
+配置示例：
+
+```yaml
+primaryRole: hai
+additionalRoles:
+  - pm
+resourceProfileVersion: 1
+```
+
+这会同步 `skills/common/`、`skills/hai/`、`skills/pm/` 三个 bucket 中的所有 skills。
+
+## 角色化推送
+
+角色化仓库下，推送 skill 的默认目标是 `primaryRole` 对应的 bucket。
+
+```bash
+# 项目 skill 默认推送到 skills/<primaryRole>/<skill-name>/
+teamai push
+
+# 显式把本次 skill 推送到指定角色 bucket
+teamai push --role pm
+```
+
+- `teamai push --role <id>` 影响 project skill 的目标目录，写入 `skills/<role>/<skill-name>/`。
+- 如果 `--role` 不在 `manifest/roles.yaml` 中，CLI 会直接报错。
 
 ## Scope（作用域）
 
@@ -125,7 +170,7 @@ AI coding session (持续工作中...)
 
 - `/teamai-share-learnings` 是 CLI 内置 skill，随 `teamai pull/init` 自动部署到本地
 - 每个 session 最多提示一次（去重），用户可以忽略
-- 文档直接 push 到 master 的 `learnings/` 目录，团队成员下次 pull 时可见
+- 文档直接 push 到 `learnings/` 目录，团队成员下次 pull 时可见
 
 ## 团队知识回忆
 

@@ -9,6 +9,20 @@ import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 /** File name used to track who has contributed (pushed) a skill. */
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
 
+function resolveSkillBuckets(localConfig: LocalConfig): string[] {
+  if (localConfig.primaryRole) {
+    return [localConfig.primaryRole, ...(localConfig.additionalRoles ?? [])];
+  }
+  return [];
+}
+
+function getSkillDestination(localConfig: LocalConfig, skillName: string, bucket?: string): string {
+  if (bucket) {
+    return path.join(localConfig.repo.localPath, 'skills', bucket, skillName);
+  }
+  return path.join(localConfig.repo.localPath, 'skills', skillName);
+}
+
 export class SkillsHandler extends ResourceHandler {
   readonly type = 'skills' as const;
 
@@ -18,8 +32,26 @@ export class SkillsHandler extends ResourceHandler {
    * the one with the latest mtime when multiple dirs have modifications.
    */
   async scanLocalForPush(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
-    const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills');
-    const teamSkills = new Set(await listDirs(teamSkillsDir));
+    const scopedBuckets = resolveSkillBuckets(localConfig);
+    const teamSkills = new Map<string, { dir: string; bucket?: string }>();
+
+    if (scopedBuckets.length > 0) {
+      for (const bucket of scopedBuckets) {
+        const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills', bucket);
+        const names = await listDirs(teamSkillsDir);
+        for (const name of names) {
+          if (!teamSkills.has(name)) {
+            teamSkills.set(name, { dir: path.join(teamSkillsDir, name), bucket });
+          }
+        }
+      }
+    } else {
+      const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills');
+      const names = await listDirs(teamSkillsDir);
+      for (const name of names) {
+        teamSkills.set(name, { dir: path.join(teamSkillsDir, name) });
+      }
+    }
 
     // Read tombstones to skip previously deleted resources
     const tombstones = await this.readTombstones(localConfig);
@@ -45,7 +77,7 @@ export class SkillsHandler extends ResourceHandler {
 
         if (teamSkills.has(dir)) {
           // Skill exists in team repo — check if content differs
-          const teamDirPath = path.join(teamSkillsDir, dir);
+          const teamDirPath = teamSkills.get(dir)!.dir;
           const equal = await dirContentEqual(localDirPath, teamDirPath, [CONTRIBUTORS_FILE]);
           if (equal) continue; // This tool dir's copy is identical, skip
 
@@ -81,6 +113,7 @@ export class SkillsHandler extends ResourceHandler {
         sourcePath: candidate.sourcePath,
         relativePath: `skills/${name}`,
         status: candidate.status,
+        bucket: localConfig.primaryRole,
       });
     }
 
@@ -89,24 +122,47 @@ export class SkillsHandler extends ResourceHandler {
 
   /**
    * Scan team repo for skills to pull.
+   * Handles both flat layout (skills/<name>/) and bucketed layout (skills/<bucket>/<name>/).
+   * A directory is treated as a bucket if it does not contain SKILL.md.
    */
-  async scanTeamForPull(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
+  async scanTeamForPull(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
     const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills');
     const dirs = await listDirs(teamSkillsDir);
+    const items: ResourceItem[] = [];
 
-    return dirs.map((dir) => ({
-      name: dir,
-      type: 'skills' as const,
-      sourcePath: path.join(teamSkillsDir, dir),
-      relativePath: `skills/${dir}`,
-    }));
+    for (const dir of dirs) {
+      const dirPath = path.join(teamSkillsDir, dir);
+      const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
+
+      if (hasSkillMd) {
+        items.push({
+          name: dir,
+          type: 'skills',
+          sourcePath: dirPath,
+          relativePath: `skills/${dir}`,
+        });
+      } else {
+        const subDirs = await listDirs(dirPath);
+        for (const subDir of subDirs) {
+          items.push({
+            name: subDir,
+            type: 'skills',
+            sourcePath: path.join(dirPath, subDir),
+            relativePath: `skills/${dir}/${subDir}`,
+            bucket: dir,
+          });
+        }
+      }
+    }
+
+    return items;
   }
 
   /**
    * Copy a local skill to the team repo.
    */
   async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    const dest = path.join(localConfig.repo.localPath, 'skills', item.name);
+    const dest = getSkillDestination(localConfig, item.name, item.bucket ?? localConfig.primaryRole);
     await copyDir(item.sourcePath, dest);
     log.debug(`Copied skill ${item.name} → team repo`);
 
@@ -156,10 +212,21 @@ export class SkillsHandler extends ResourceHandler {
     const baseDir = resolveBaseDir(localConfig);
 
     // Remove from team repo
-    const teamDir = path.join(localConfig.repo.localPath, 'skills', name);
-    if (await pathExists(teamDir)) {
-      await remove(teamDir);
-      removed.push(teamDir);
+    const scopedBuckets = resolveSkillBuckets(localConfig);
+    if (scopedBuckets.length > 0) {
+      for (const bucket of scopedBuckets) {
+        const bucketDir = path.join(localConfig.repo.localPath, 'skills', bucket, name);
+        if (await pathExists(bucketDir)) {
+          await remove(bucketDir);
+          removed.push(bucketDir);
+        }
+      }
+    } else {
+      const teamDir = path.join(localConfig.repo.localPath, 'skills', name);
+      if (await pathExists(teamDir)) {
+        await remove(teamDir);
+        removed.push(teamDir);
+      }
     }
 
     // Record tombstone so the resource won't be re-pushed

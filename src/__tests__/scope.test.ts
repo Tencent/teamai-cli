@@ -95,7 +95,8 @@ describe('resolveBaseDir', () => {
       repo: { localPath: '/tmp/repo', remote: 'https://example.com' },
       username: 'test',
       updatePolicy: 'auto',
-      scope: 'user',
+additionalRoles: [],
+scope: 'user',
     };
     expect(resolveBaseDir(config)).toBe('/Users/testuser');
   });
@@ -105,7 +106,8 @@ describe('resolveBaseDir', () => {
       repo: { localPath: '/tmp/repo', remote: 'https://example.com' },
       username: 'test',
       updatePolicy: 'auto',
-      scope: 'project',
+additionalRoles: [],
+scope: 'project',
       projectRoot: '/Users/testuser/my-project',
     };
     expect(resolveBaseDir(config)).toBe('/Users/testuser/my-project');
@@ -116,7 +118,8 @@ describe('resolveBaseDir', () => {
       repo: { localPath: '/tmp/repo', remote: 'https://example.com' },
       username: 'test',
       updatePolicy: 'auto',
-      scope: 'project',
+additionalRoles: [],
+scope: 'project',
     };
     expect(resolveBaseDir(config)).toBe('/Users/testuser');
   });
@@ -250,7 +253,8 @@ describe('loadLocalConfigForScope / saveLocalConfigForScope', () => {
       repo: { localPath: '/tmp/repo', remote: 'https://example.com' },
       username: 'test',
       updatePolicy: 'auto',
-      scope: 'user',
+additionalRoles: [],
+scope: 'user',
     };
     await fse.ensureDir(path.join(tmpDir, '.teamai'));
     await saveLocalConfigForScope(config, 'user');
@@ -268,7 +272,8 @@ describe('loadLocalConfigForScope / saveLocalConfigForScope', () => {
       repo: { localPath: path.join(projectRoot, '.teamai/team-repo'), remote: 'https://example.com' },
       username: 'projuser',
       updatePolicy: 'auto',
-      scope: 'project',
+additionalRoles: [],
+scope: 'project',
       projectRoot,
     };
     await saveLocalConfigForScope(config, 'project', projectRoot);
@@ -276,6 +281,105 @@ describe('loadLocalConfigForScope / saveLocalConfigForScope', () => {
     expect(loaded).not.toBeNull();
     expect(loaded!.scope).toBe('project');
     expect(loaded!.projectRoot).toBe(projectRoot);
+  });
+
+  it('migrates a legacy user config without roles to default hai role and persists it', async () => {
+    const repoPath = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(path.join(repoPath, 'manifest'));
+    await fse.writeFile(
+      path.join(repoPath, 'manifest', 'roles.yaml'),
+      YAML.stringify({
+        version: 1,
+        roles: [
+          {
+            id: 'hai',
+            name: 'HAI R&D',
+            description: 'default migration target',
+            resources: {
+              knowledge: ['common', 'hai'],
+              skills: ['common', 'hai'],
+              learnings: ['common', 'hai'],
+            },
+          },
+        ],
+        defaults: { shareTarget: 'primary-role' },
+      }),
+    );
+
+    await fse.ensureDir(path.join(tmpDir, '.teamai'));
+    await fse.writeFile(
+      path.join(tmpDir, '.teamai', 'config.yaml'),
+      YAML.stringify({
+        repo: { localPath: repoPath, remote: 'https://example.com' },
+        username: 'legacy-user',
+        updatePolicy: 'auto',
+        scope: 'user',
+      }),
+    );
+
+    const loaded = await loadLocalConfigForScope('user');
+    const persisted = YAML.parse(await fse.readFile(path.join(tmpDir, '.teamai', 'config.yaml'), 'utf8')) as LocalConfig;
+
+    expect(loaded).not.toBeNull();
+    expect(loaded!.primaryRole).toBe('hai');
+    expect(loaded!.additionalRoles).toEqual([]);
+    expect(loaded!.resourceProfileVersion).toBe(1);
+    expect(persisted.primaryRole).toBe('hai');
+    expect(persisted.additionalRoles).toEqual([]);
+    expect(persisted.resourceProfileVersion).toBe(1);
+  });
+
+  it('does not overwrite an existing role profile during config load', async () => {
+    const repoPath = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(path.join(repoPath, 'manifest'));
+    await fse.writeFile(
+      path.join(repoPath, 'manifest', 'roles.yaml'),
+      YAML.stringify({
+        version: 2,
+        roles: [
+          {
+            id: 'hai',
+            name: 'HAI R&D',
+            resources: {
+              knowledge: ['common', 'hai'],
+              skills: ['common', 'hai'],
+              learnings: ['common', 'hai'],
+            },
+          },
+          {
+            id: 'pm',
+            name: 'Product Manager',
+            resources: {
+              knowledge: ['common', 'pm'],
+              skills: ['common', 'pm'],
+              learnings: ['common', 'pm'],
+            },
+          },
+        ],
+        defaults: { shareTarget: 'primary-role' },
+      }),
+    );
+
+    await fse.ensureDir(path.join(tmpDir, '.teamai'));
+    await fse.writeFile(
+      path.join(tmpDir, '.teamai', 'config.yaml'),
+      YAML.stringify({
+        repo: { localPath: repoPath, remote: 'https://example.com' },
+        username: 'configured-user',
+        updatePolicy: 'auto',
+        scope: 'user',
+        primaryRole: 'pm',
+        additionalRoles: ['hai'],
+        resourceProfileVersion: 1,
+      }),
+    );
+
+    const loaded = await loadLocalConfigForScope('user');
+
+    expect(loaded).not.toBeNull();
+    expect(loaded!.primaryRole).toBe('pm');
+    expect(loaded!.additionalRoles).toEqual(['hai']);
+    expect(loaded!.resourceProfileVersion).toBe(1);
   });
 });
 
@@ -466,7 +570,7 @@ describe('recall dual-scope merge', () => {
     const { buildIndex, loadIndex } = await import('../utils/search-index.js');
 
     // User scope learnings
-    const userLearnings = path.join(tmpDir, '.teamai', 'learnings');
+    const userLearnings = path.join(tmpDir, '.teamai', 'docs', 'learnings');
     await fse.ensureDir(userLearnings);
     await fse.writeFile(
       path.join(userLearnings, 'user-doc-2026-04-01-aaa.md'),
@@ -505,7 +609,7 @@ describe('recall dual-scope merge', () => {
     const { buildIndex, loadIndex, search } = await import('../utils/search-index.js');
 
     // User scope learnings
-    const userLearnings = path.join(tmpDir, '.teamai', 'learnings');
+    const userLearnings = path.join(tmpDir, '.teamai', 'docs', 'learnings');
     await fse.ensureDir(userLearnings);
     await fse.writeFile(
       path.join(userLearnings, 'api-timeout-user-2026-04-01-aaa.md'),
@@ -552,7 +656,7 @@ describe('recall dual-scope merge', () => {
     const docContent = '---\ntitle: "Shared Doc"\nauthor: alice\ndate: 2026-04-01\ntags: [shared]\n---\n\nSame content.\n';
 
     // Same filename in both scopes
-    const userLearnings = path.join(tmpDir, '.teamai', 'learnings');
+    const userLearnings = path.join(tmpDir, '.teamai', 'docs', 'learnings');
     await fse.ensureDir(userLearnings);
     await fse.writeFile(path.join(userLearnings, 'shared-doc-2026-04-01-xyz.md'), docContent);
 
@@ -620,7 +724,7 @@ describe('recall dual-scope merge', () => {
 
   it('formatResults should output correct file path per scope', () => {
     // 直接测试 user scope 和 project scope 的 File 路径输出不同
-    const userLearningsBase = path.join(tmpDir, '.teamai', 'learnings');
+    const userLearningsBase = path.join(tmpDir, '.teamai', 'docs', 'learnings');
     const projectLearningsBase = '/tmp/my-project/.teamai/team-repo/learnings';
 
     // 构造 ScopedSearchResult 数据

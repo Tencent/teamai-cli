@@ -9,6 +9,7 @@ import { getProvider, detectProvider, RepoNotFoundError } from './providers/inde
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { TEAMAI_HOME, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath, resolveBaseDir } from './types.js';
+import { describeRoles, loadRolesManifest } from './roles.js';
 
 function askQuestion(prompt: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -18,6 +19,65 @@ function askQuestion(prompt: string): Promise<string> {
       resolve(answer.trim());
     });
   });
+}
+
+function parseRoleSelection(answer: string, max: number): number[] {
+  if (!answer.trim()) return [];
+
+  const selections = answer
+    .split(',')
+    .map((item) => Number.parseInt(item.trim(), 10))
+    .filter((value) => !Number.isNaN(value));
+
+  if (selections.length === 0) {
+    throw new Error('Please enter one or more role numbers, separated by commas.');
+  }
+
+  for (const selection of selections) {
+    if (selection < 1 || selection > max) {
+      throw new Error(`Role selection out of range. Choose numbers between 1 and ${max}.`);
+    }
+  }
+
+  return [...new Set(selections)];
+}
+
+async function promptForRoleProfile(repoPath: string): Promise<Pick<LocalConfig, 'primaryRole' | 'additionalRoles' | 'resourceProfileVersion'>> {
+  const manifest = await loadRolesManifest(repoPath);
+  const roleLabels = describeRoles(manifest.roles);
+
+  log.info('Available roles:');
+  roleLabels.forEach((label, index) => {
+    log.info(`  ${index + 1}. ${label}`);
+  });
+
+  const primaryAnswer = await askQuestion('Primary role (number): ');
+  const [primaryIndex] = parseRoleSelection(primaryAnswer, manifest.roles.length);
+  if (!primaryIndex) {
+    throw new Error('A primary role is required.');
+  }
+
+  const primaryRole = manifest.roles[primaryIndex - 1];
+  const additionalCandidates = manifest.roles.filter((role) => role.id !== primaryRole.id);
+  let additionalRoles: string[] = [];
+
+  if (additionalCandidates.length > 0) {
+    log.info('Additional roles (optional):');
+    additionalCandidates.forEach((role, index) => {
+      const suffix = role.description ? `: ${role.description}` : '';
+      log.info(`  ${index + 1}. ${role.id} - ${role.name}${suffix}`);
+    });
+
+    const additionalAnswer = await askQuestion('Additional roles (comma-separated numbers, blank to skip): ');
+    const additionalIndexes = parseRoleSelection(additionalAnswer, additionalCandidates.length);
+    additionalRoles = additionalIndexes.map((selection) => additionalCandidates[selection - 1].id);
+  }
+
+  return {
+    primaryRole: primaryRole.id,
+    additionalRoles,
+    resourceProfileVersion: manifest.version,
+  };
 }
 
 /**
@@ -288,7 +348,16 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
     updatePolicy: 'auto',
     scope,
     projectRoot,
+    additionalRoles: [],
   };
+
+  try {
+    Object.assign(localConfig, await promptForRoleProfile(localPath));
+  } catch (error) {
+    log.error((error as Error).message);
+    process.exit(1);
+  }
+
   await ensureDir(teamaiHome);
 
   if (scope === 'project') {

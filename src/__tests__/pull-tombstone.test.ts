@@ -38,11 +38,54 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-import { pull } from '../pull.js';
+import { pull, cleanupInactiveBucketSkills } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig } from '../config.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
-describe('pull tombstone cleanup', () => {
+vi.mock('../roles.js', () => ({
+  loadRolesManifest: vi.fn().mockResolvedValue({
+    version: 1,
+    roles: [
+      {
+        id: 'hai',
+        name: 'HAI R&D',
+        description: 'HyperAI research and development resources',
+        resources: {
+          knowledge: ['common', 'hai'],
+          skills: ['common', 'hai'],
+          learnings: ['common', 'hai'],
+        },
+      },
+      {
+        id: 'pm',
+        name: 'Product Manager',
+        description: 'Product planning and collaboration resources',
+        resources: {
+          knowledge: ['common', 'pm'],
+          skills: ['common', 'pm'],
+          learnings: ['common', 'pm'],
+        },
+      },
+    ],
+    defaults: { shareTarget: 'primary-role' },
+  }),
+  resolveRoleResourceBuckets: vi.fn(({ manifest, primaryRole, additionalRoles }) => {
+    const allRoles = [primaryRole, ...additionalRoles].map((id: string) =>
+      manifest.roles.find((role: { id: string }) => role.id === id),
+    );
+    if (allRoles.some((role: unknown) => !role)) {
+      throw new Error('Unknown role in config');
+    }
+    const dedupe = (values: string[]) => [...new Set(values)];
+    return {
+      knowledge: dedupe(allRoles.flatMap((role: { resources: { knowledge: string[] } }) => role.resources.knowledge)),
+      skills: dedupe(allRoles.flatMap((role: { resources: { skills: string[] } }) => role.resources.skills)),
+      learnings: dedupe(allRoles.flatMap((role: { resources: { learnings: string[] } }) => role.resources.learnings)),
+    };
+  }),
+}));
+
+describe('pull role-aware sync and cleanup', () => {
   let tmpDir: string;
   let homeDir: string;
   let repoPath: string;
@@ -54,6 +97,14 @@ describe('pull tombstone cleanup', () => {
 
     await fse.ensureDir(path.join(repoPath, 'rules'));
     await fse.ensureDir(path.join(repoPath, 'skills'));
+    await fse.ensureDir(path.join(repoPath, 'skills', 'common'));
+    await fse.ensureDir(path.join(repoPath, 'skills', 'hai'));
+    await fse.ensureDir(path.join(repoPath, 'skills', 'pm'));
+    await fse.ensureDir(path.join(repoPath, 'learnings', 'common'));
+    await fse.ensureDir(path.join(repoPath, 'learnings', 'hai'));
+    await fse.ensureDir(path.join(repoPath, 'learnings', 'pm'));
+    await fse.ensureDir(path.join(repoPath, 'manifest'));
+    await fse.writeFile(path.join(repoPath, 'manifest', 'roles.yaml'), 'version: 1\n');
     await fse.ensureDir(path.join(homeDir, '.claude', 'rules'));
     await fse.ensureDir(path.join(homeDir, '.claude', 'skills'));
     await fse.ensureDir(path.join(homeDir, '.codex', 'rules'));
@@ -83,6 +134,9 @@ describe('pull tombstone cleanup', () => {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser',
       updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
       scope: 'user',
     };
 
@@ -165,5 +219,78 @@ describe('pull tombstone cleanup', () => {
     await pull({});
 
     expect(await fse.pathExists(path.join(homeDir, '.claude/rules', 'my-rule.md'))).toBe(true);
+  });
+
+  it('pulls only the active skill buckets for the saved role profile', async () => {
+    await fse.ensureDir(path.join(repoPath, 'skills', 'common', 'shared-skill'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'common', 'shared-skill', 'SKILL.md'), '# Shared');
+    await fse.ensureDir(path.join(repoPath, 'skills', 'hai', 'hai-skill'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'hai', 'hai-skill', 'SKILL.md'), '# HAI');
+    await fse.ensureDir(path.join(repoPath, 'skills', 'pm', 'pm-skill'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'pm', 'pm-skill', 'SKILL.md'), '# PM');
+
+    await pull({});
+
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills', 'shared-skill', 'SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills', 'hai-skill', 'SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills', 'pm-skill', 'SKILL.md'))).toBe(false);
+  });
+
+  it('removes stale skills from buckets that are no longer active', async () => {
+    await fse.ensureDir(path.join(homeDir, '.claude/skills', 'pm-skill'));
+    await fse.writeFile(path.join(homeDir, '.claude/skills', 'pm-skill', 'SKILL.md'), '# PM');
+    const teamConfig = vi.mocked(loadTeamConfig).mock.results.at(-1)?.value;
+    const localConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto' as const,
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user' as const,
+    };
+
+    await cleanupInactiveBucketSkills(
+      await teamConfig,
+      await localConfig,
+      new Set(['shared-skill', 'hai-skill']),
+      new Set(['pm-skill']),
+    );
+
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills', 'pm-skill'))).toBe(false);
+  });
+
+  it('aborts pull when the roles manifest is malformed', async () => {
+    const { loadRolesManifest } = await import('../roles.js');
+    vi.mocked(loadRolesManifest).mockRejectedValueOnce(new Error('Invalid roles manifest'));
+
+    await pull({});
+
+    const { log } = await import('../utils/logger.js');
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Invalid roles manifest'));
+  });
+
+  it('aborts pull when the same skill exists in multiple active buckets', async () => {
+    await fse.ensureDir(path.join(repoPath, 'skills', 'common', 'shared-skill'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'common', 'shared-skill', 'SKILL.md'), '# Common');
+    await fse.ensureDir(path.join(repoPath, 'skills', 'hai', 'shared-skill'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'hai', 'shared-skill', 'SKILL.md'), '# HAI');
+
+    const teamConfig = await vi.mocked(loadTeamConfig).mock.results.at(-1)?.value;
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+    };
+    const { scanRoleAwareSkills } = await import('../pull.js');
+
+    await expect(scanRoleAwareSkills(
+      localConfig,
+      { knowledge: ['common', 'hai'], skills: ['common', 'hai'], learnings: ['common', 'hai'] },
+    )).rejects.toThrow(/Duplicate skill "shared-skill"/);
   });
 });

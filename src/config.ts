@@ -16,6 +16,36 @@ import {
 } from './types.js';
 import { readFileSafe, readJson, writeFile, writeJson, expandHome, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { loadRolesManifest } from './roles.js';
+
+async function migrateLegacyRoleConfig(config: LocalConfig, configPath: string): Promise<LocalConfig> {
+  if (config.primaryRole) {
+    return config;
+  }
+
+  let manifest;
+  try {
+    manifest = await loadRolesManifest(config.repo.localPath);
+  } catch {
+    return config;
+  }
+
+  const haiRole = manifest.roles.find((role) => role.id === 'hai');
+  if (!haiRole) {
+    return config;
+  }
+
+  const migrated: LocalConfig = {
+    ...config,
+    primaryRole: 'hai',
+    additionalRoles: config.additionalRoles ?? [],
+    resourceProfileVersion: manifest.version,
+  };
+
+  await writeFile(expandHome(configPath), YAML.stringify(migrated));
+  log.info('Migrated legacy teamai config to default role profile: hai');
+  return migrated;
+}
 
 /**
  * Load the team config (teamai.yaml) from the team repo
@@ -39,11 +69,13 @@ export async function loadTeamConfig(repoPath: string): Promise<TeamaiConfig | n
  * Load the local config (~/.teamai/config.yaml)
  */
 export async function loadLocalConfig(): Promise<LocalConfig | null> {
-  const content = await readFileSafe(expandHome(TEAMAI_CONFIG_PATH));
+  const configPath = expandHome(TEAMAI_CONFIG_PATH);
+  const content = await readFileSafe(configPath);
   if (!content) return null;
   try {
     const raw = YAML.parse(content);
-    return LocalConfigSchema.parse(raw);
+    const parsed = LocalConfigSchema.parse(raw);
+    return await migrateLegacyRoleConfig(parsed, configPath);
   } catch (e) {
     log.error(`Invalid local config: ${(e as Error).message}`);
     return null;
@@ -104,7 +136,8 @@ export async function loadLocalConfigForScope(
   if (!content) return null;
   try {
     const raw = YAML.parse(content);
-    return LocalConfigSchema.parse(raw);
+    const parsed = LocalConfigSchema.parse(raw);
+    return await migrateLegacyRoleConfig(parsed, configPath);
   } catch (e) {
     log.error(`Invalid ${scope} config at ${configPath}: ${(e as Error).message}`);
     return null;

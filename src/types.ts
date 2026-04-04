@@ -74,6 +74,9 @@ export const LocalConfigSchema = z.object({
   username: z.string(),
   updatePolicy: z.enum(['auto', 'prompt', 'skip']).default('auto'),
   scope: ScopeEnum.default('user'),
+  primaryRole: z.string().min(1).optional(),
+  additionalRoles: z.array(z.string()).default([]),
+  resourceProfileVersion: z.number().int().positive().optional(),
   /** Absolute path to project root; required when scope is 'project'. */
   projectRoot: z.string().optional(),
   /** Tags the user has subscribed to. If empty/undefined, pull all resources. */
@@ -81,6 +84,7 @@ export const LocalConfigSchema = z.object({
 });
 
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;
+export type LocalConfigInput = z.input<typeof LocalConfigSchema>;
 
 // ─── Local state (~/.teamai/state.json) ────────────────────
 
@@ -128,6 +132,7 @@ export interface ResourceItem {
   sourcePath: string;
   relativePath: string;
   status?: ResourceItemStatus;
+  bucket?: string;
 }
 
 export interface ResourceDiff {

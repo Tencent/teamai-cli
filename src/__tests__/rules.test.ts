@@ -77,7 +77,8 @@ describe('RulesHandler.scanLocalForPush — modified rule detection', () => {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser',
       updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
     };
   });
 
@@ -270,7 +271,8 @@ describe('RulesHandler.scanLocalForPush — subdirectory support', () => {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser',
       updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
     };
   });
 
@@ -382,7 +384,8 @@ describe('RulesHandler.scanTeamForPull — subdirectory support', () => {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser',
       updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
     };
   });
 
@@ -453,7 +456,8 @@ describe('RulesHandler.pullAllRules — stale file cleanup', () => {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser',
       updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
     };
   });
 

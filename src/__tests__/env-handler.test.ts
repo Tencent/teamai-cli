@@ -57,7 +57,8 @@ describe('EnvHandler', () => {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser',
       updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
     };
   });
 

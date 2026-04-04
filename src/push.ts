@@ -5,6 +5,7 @@ import { getProvider } from './providers/index.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
 import type { GlobalOptions, ResourceItem, ResourceType } from './types.js';
+import { loadRolesManifest, listRoleIds } from './roles.js';
 
 function askConfirm(prompt: string): Promise<boolean> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -57,7 +58,7 @@ async function createPrWithFallback(
 
 export { createPrWithFallback };
 
-export async function push(options: GlobalOptions & { all?: boolean }): Promise<void> {
+export async function push(options: GlobalOptions & { all?: boolean; role?: string }): Promise<void> {
   // Auto-detect scope: project scope if cwd has project config, else user scope
   const { localConfig, teamConfig } = await autoDetectInit();
   const scopeLabel = localConfig.scope;
@@ -72,6 +73,21 @@ export async function push(options: GlobalOptions & { all?: boolean }): Promise<
   }
 
   const spin = spinner('Scanning local resources...').start();
+
+  let resolvedRole: string | undefined;
+  if (options.role || localConfig.primaryRole) {
+    try {
+      const manifest = await loadRolesManifest(localConfig.repo.localPath);
+      const validRoles = new Set(listRoleIds(manifest));
+      resolvedRole = options.role ?? localConfig.primaryRole;
+      if (!resolvedRole || !validRoles.has(resolvedRole)) {
+        throw new Error(`Invalid role "${resolvedRole ?? ''}". Valid roles: ${[...validRoles].join(', ')}`);
+      }
+    } catch (e) {
+      spin.fail((e as Error).message);
+      return;
+    }
+  }
 
   // Scan for pushable resources
   const pushableTypes: ResourceType[] = ['skills', 'rules', 'env'];
@@ -120,6 +136,10 @@ export async function push(options: GlobalOptions & { all?: boolean }): Promise<
   const pushedFiles: string[] = [];
 
   for (const item of allItems) {
+    if (item.type === 'skills' && resolvedRole) {
+      item.bucket = resolvedRole;
+      item.relativePath = `skills/${resolvedRole}/${item.name}`;
+    }
     const handler = getHandler(item.type);
     await handler.pushItem(item, teamConfig, localConfig);
     pushedFiles.push(item.relativePath);
@@ -127,7 +147,11 @@ export async function push(options: GlobalOptions & { all?: boolean }): Promise<
 
   // Create branch, commit, and push
   try {
-    const gitFiles = ['skills/', 'rules/', 'env/'];
+    const gitFiles = [...new Set([
+      ...pushedFiles,
+      'rules/',
+      'env/',
+    ])];
     const branchName = generateBranchName(localConfig.username);
     const commitMsg = `[teamai] Push ${allItems.length} resource(s) from ${localConfig.username}`;
 

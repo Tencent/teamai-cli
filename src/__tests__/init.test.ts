@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import path from 'node:path';
 
 // ── Mocks ────────────────────────────────────────────────
 
@@ -102,11 +103,54 @@ vi.mock('../utils/gf-cli.js', () => {
 
 vi.mock('../config.js', () => ({
   saveLocalConfig: vi.fn(),
+  saveLocalConfigForScope: vi.fn(),
   loadTeamConfig: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('../hooks.js', () => ({
   injectHooksToAllTools: vi.fn(),
+}));
+
+vi.mock('../roles.js', () => ({
+  loadRolesManifest: vi.fn().mockResolvedValue({
+    version: 1,
+    roles: [
+      {
+        id: 'hai',
+        name: 'HAI R&D',
+        description: 'HyperAI research and development resources',
+        resources: {
+          knowledge: ['common', 'hai'],
+          skills: ['common', 'hai'],
+          learnings: ['common', 'hai'],
+        },
+      },
+      {
+        id: 'pm',
+        name: 'Product Manager',
+        description: 'Product planning and collaboration resources',
+        resources: {
+          knowledge: ['common', 'pm'],
+          skills: ['common', 'pm'],
+          learnings: ['common', 'pm'],
+        },
+      },
+      {
+        id: 'thpc',
+        name: 'THPC R&D',
+        description: 'THPC project resources',
+        resources: {
+          knowledge: ['common', 'thpc'],
+          skills: ['common', 'thpc'],
+          learnings: ['common', 'thpc'],
+        },
+      },
+    ],
+    defaults: { shareTarget: 'primary-role' },
+  }),
+  describeRoles: vi.fn((roles: Array<{ id: string; name: string; description?: string }>) =>
+    roles.map((role) => role.description ? `${role.id} - ${role.name}: ${role.description}` : `${role.id} - ${role.name}`),
+  ),
 }));
 
 vi.mock('../utils/repo-url.js', () => ({
@@ -163,6 +207,7 @@ const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as
 
 import { init } from '../init.js';
 import { RepoNotFoundError } from '../providers/types.js';
+import { saveLocalConfig } from '../config.js';
 
 describe('init', () => {
   const HOME = process.env.HOME ?? '';
@@ -246,8 +291,8 @@ describe('init', () => {
         cloneDone = true;
       });
 
-      // Answers: create repo confirm (Y), configure reviewers (n)
-      questionAnswers = ['Y', 'n'];
+      // Answers: create repo confirm (Y), configure reviewers (n), primary role (1), no additional roles
+      questionAnswers = ['Y', 'n', '1', ''];
 
       await init({ repo: 'HyperAI/new-repo' });
 
@@ -305,6 +350,60 @@ describe('init', () => {
 
       expect(mockExit).toHaveBeenCalledWith(1);
       expect(mockGfCreateRepo).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('role persistence', () => {
+    it('writes primaryRole, additionalRoles, and resourceProfileVersion when roles are selected', async () => {
+      let cloneDone = false;
+      pathExistsFn = (p: string) => {
+        if (p === localPath) return cloneDone;
+        if (p === path.join(localPath, 'members', 'testuser.yaml')) return false;
+        return false;
+      };
+
+      mockGfRepoClone.mockImplementation(() => {
+        cloneDone = true;
+      });
+
+      const mockedLoadTeamConfig = vi.mocked(await import('../config.js')).loadTeamConfig;
+      mockedLoadTeamConfig
+        .mockResolvedValueOnce({
+          team: 'my-team',
+          repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+          provider: 'tgit',
+          reviewers: [],
+          sharing: {
+            skills: {},
+            rules: { enforced: [] },
+            docs: { localDir: '~/.teamai/docs' },
+            env: { injectShellProfile: true },
+          },
+          toolPaths: {},
+        } as never)
+        .mockResolvedValueOnce({
+          team: 'my-team',
+          repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+          provider: 'tgit',
+          reviewers: [],
+          sharing: {
+            skills: {},
+            rules: { enforced: [] },
+            docs: { localDir: '~/.teamai/docs' },
+            env: { injectShellProfile: true },
+          },
+          toolPaths: {},
+        } as never);
+
+      questionAnswers = ['n', '1', '1'];
+
+      await init({ repo: 'HyperAI/teamai-test' });
+
+      expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({
+        primaryRole: 'hai',
+        additionalRoles: ['pm'],
+        resourceProfileVersion: 1,
+      }));
     });
   });
 });

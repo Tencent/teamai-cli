@@ -87,7 +87,8 @@ describe('RulesHandler.removeItem', () => {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser',
       updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
     };
   });
 
@@ -187,7 +188,8 @@ describe('SkillsHandler.removeItem', () => {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
       username: 'testuser',
       updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
     };
   });
 
@@ -286,7 +288,8 @@ describe('Tombstone mechanism', () => {
         repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
         username: 'testuser',
         updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
       };
     });
 
@@ -407,7 +410,8 @@ describe('Tombstone mechanism', () => {
         repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
         username: 'testuser',
         updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
       };
     });
 
@@ -462,7 +466,8 @@ describe('Tombstone mechanism', () => {
         repo: { localPath: tmpDir, remote: '' },
         username: 'testuser',
         updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
       };
     });
 
@@ -537,7 +542,8 @@ describe('Tombstone mechanism', () => {
         repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
         username: 'testuser',
         updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
       };
     });
 
@@ -609,7 +615,8 @@ describe('Tombstone mechanism', () => {
         repo: { localPath: path.join(tmpDir, 'team-repo'), remote: '' },
         username: 'testuser',
         updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
       };
       const teamConfig: TeamaiConfig = {
         team: 'test', description: '', repo: '', provider: 'tgit' as const, reviewers: [],
@@ -630,7 +637,8 @@ describe('Tombstone mechanism', () => {
         repo: { localPath: path.join(tmpDir, 'team-repo'), remote: '' },
         username: 'testuser',
         updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
       };
       const teamConfig: TeamaiConfig = {
         team: 'test', description: '', repo: '', provider: 'tgit' as const, reviewers: [],
@@ -675,7 +683,8 @@ describe('Tombstone mechanism', () => {
         repo: { localPath: repoPath, remote: '' },
         username: 'testuser',
         updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
       };
 
       const handler = new RulesHandler();
@@ -711,7 +720,8 @@ describe('Tombstone mechanism', () => {
         repo: { localPath: repoPath, remote: '' },
         username: 'testuser',
         updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
       };
 
       const handler = new SkillsHandler();
@@ -762,7 +772,8 @@ describe('Tombstone mechanism', () => {
         repo: { localPath: repoPath, remote: '' },
         username: 'testuser',
         updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
       };
 
       const handler = new RulesHandler();
@@ -794,7 +805,8 @@ describe('Tombstone mechanism', () => {
         repo: { localPath: repoPath, remote: '' },
         username: 'testuser',
         updatePolicy: 'auto',
-    scope: 'user',
+additionalRoles: [],
+scope: 'user',
       };
 
       const handler = new SkillsHandler();

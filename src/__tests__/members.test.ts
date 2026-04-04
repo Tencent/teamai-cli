@@ -42,7 +42,8 @@ function mockRequireInit(tmpDir: string, username = 'alice') {
       repo: { localPath: tmpDir, remote: 'https://git.woa.com/team/repo.git' },
       username,
       updatePolicy: 'auto',
-      scope: 'user',
+additionalRoles: [],
+scope: 'user',
     },
     teamConfig: {
       team: 'test',

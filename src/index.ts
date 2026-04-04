@@ -34,6 +34,7 @@ program
   .command('push')
   .description('Push local resources to team repo')
   .option('--all', 'Push all without confirmation')
+  .option('--role <id>', 'Target role bucket for pushed project skills')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { push } = await import('./push.js');
