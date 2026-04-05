@@ -246,12 +246,9 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
     `总结文档将保存到团队仓库的 learnings/ 目录。`,
   ].join('');
 
-  // Output via Stop hook additionalContext JSON so Claude sees it
+  // Output via Stop hook — use stopReason (Stop schema has no hookSpecificOutput)
   const hookOutput = JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'Stop',
-      additionalContext: hint,
-    },
+    stopReason: hint,
   });
   process.stdout.write(hookOutput);
 }
