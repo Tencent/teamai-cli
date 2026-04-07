@@ -163,6 +163,41 @@ scope: 'user',
     expect(names).not.toContain('removed-skill');
   });
 
+  it('should not detect a new skill listed in ~/.teamai/pushignore', async () => {
+    const ignoredSkillDir = path.join(homeDir, '.claude/skills', 'ignored-skill');
+    await fse.ensureDir(ignoredSkillDir);
+    await fse.writeFile(path.join(ignoredSkillDir, 'SKILL.md'), '# Ignored');
+
+    const trackedSkillDir = path.join(homeDir, '.claude/skills', 'tracked-skill');
+    await fse.ensureDir(trackedSkillDir);
+    await fse.writeFile(path.join(trackedSkillDir, 'SKILL.md'), '# Tracked');
+
+    await fse.ensureDir(path.join(homeDir, '.teamai'));
+    await fse.writeFile(path.join(homeDir, '.teamai', 'pushignore'), 'ignored-skill\n');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const names = items.map((i) => i.name);
+    expect(names).not.toContain('ignored-skill');
+    expect(names).toContain('tracked-skill');
+  });
+
+  it('should not detect a modified skill listed in ~/.teamai/pushignore', async () => {
+    const teamSkillDir = path.join(localConfig.repo.localPath, 'skills', 'ignored-skill');
+    await fse.ensureDir(teamSkillDir);
+    await fse.writeFile(path.join(teamSkillDir, 'SKILL.md'), '# v1');
+
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'ignored-skill');
+    await fse.ensureDir(localSkillDir);
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# v2');
+
+    await fse.ensureDir(path.join(homeDir, '.teamai'));
+    await fse.writeFile(path.join(homeDir, '.teamai', 'pushignore'), '\n  ignored-skill  \n');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const names = items.map((i) => i.name);
+    expect(names).not.toContain('ignored-skill');
+  });
+
   it('should detect both new and modified skills together', async () => {
     // Modified
     const teamSkillDir = path.join(localConfig.repo.localPath, 'skills', 'existing');

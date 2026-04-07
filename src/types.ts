@@ -178,6 +178,7 @@ export const SKILL_NAME_REGEX = /^[a-zA-Z0-9_\-:.]{1,200}$/;
 
 export const TEAMAI_USAGE_PATH = `${TEAMAI_HOME}/usage.jsonl`;
 export const TEAMAI_KNOWN_SKILLS_PATH = `${TEAMAI_HOME}/known-skills.json`;
+export const TEAMAI_PUSHIGNORE_PATH = `${TEAMAI_HOME}/pushignore`;
 export const TEAMAI_SESSIONS_DIR = `${TEAMAI_HOME}/sessions`;
 
 export interface UsageEvent {
@@ -409,4 +410,11 @@ export function getConfigPath(scope: Scope, projectRoot?: string): string {
  */
 export function getStatePath(scope: Scope, projectRoot?: string): string {
   return path.join(getTeamaiHome(scope, projectRoot), 'state.json');
+}
+
+/**
+ * Get the user-level pushignore path.
+ */
+export function getPushignorePath(): string {
+  return path.join(process.env.HOME ?? '', '.teamai', 'pushignore');
 }

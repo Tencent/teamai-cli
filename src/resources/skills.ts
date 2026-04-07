@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
-import { resolveBaseDir } from '../types.js';
+import { resolveBaseDir, getPushignorePath } from '../types.js';
 import { listDirs, pathExists, copyDir, remove, dirContentEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
@@ -9,7 +9,17 @@ import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 /** File name used to track who has contributed (pushed) a skill. */
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
 
+async function readPushIgnoredSkills(): Promise<Set<string>> {
+  const content = await readFileSafe(getPushignorePath());
+  if (!content) return new Set();
+
+  return new Set(
+    content.split('\n').map((line) => line.trim()).filter((line) => line.length > 0),
+  );
+}
+
 function resolveSkillNamespaces(localConfig: LocalConfig): string[] {
+
   if (localConfig.primaryRole) {
     return [localConfig.primaryRole, ...(localConfig.additionalRoles ?? [])];
   }
@@ -55,6 +65,7 @@ export class SkillsHandler extends ResourceHandler {
 
     // Read tombstones to skip previously deleted resources
     const tombstones = await this.readTombstones(localConfig);
+    const pushIgnoredSkills = await readPushIgnoredSkills();
 
     // Collect the best candidate for each skill name across all tool directories
     const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus }>();
@@ -68,6 +79,7 @@ export class SkillsHandler extends ResourceHandler {
       const dirs = await listDirs(skillsDir);
       for (const dir of dirs) {
         if (tombstones.has(dir)) continue;
+        if (pushIgnoredSkills.has(dir)) continue;
         if (BUILTIN_SKILL_NAMES.has(dir)) continue; // Skip CLI built-in skills
         // Check for SKILL.md to confirm it's a valid skill
         const skillMd = path.join(skillsDir, dir, 'SKILL.md');
