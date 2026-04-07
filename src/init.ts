@@ -354,8 +354,13 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
   try {
     Object.assign(localConfig, await promptForRoleProfile(localPath));
   } catch (error) {
-    log.error((error as Error).message);
-    process.exit(1);
+    const msg = (error as Error).message;
+    if (msg.includes('Roles manifest not found')) {
+      log.debug('No roles manifest found — skipping role selection');
+    } else {
+      log.error(msg);
+      process.exit(1);
+    }
   }
 
   await ensureDir(teamaiHome);
