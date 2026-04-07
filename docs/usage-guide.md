@@ -96,8 +96,8 @@ teamai init --repo <group>/TeamAi-<team>
 
 如果仓库启用了角色化 skills（存在 `manifest/roles.yaml`），`teamai init` 还会交互式要求你选择：
 
-- `primaryRole`：默认 skill 同步和推送的目标 bucket
-- `additionalRoles`：额外需要同步的 skill bucket
+- `primaryRole`：默认 skill 同步和推送的目标 namespace
+- `additionalRoles`：额外需要同步的 skill namespace
 
 本地配置示例：
 
@@ -191,7 +191,7 @@ teamai pull --dry-run    # 试运行，不实际修改
 
 > 如果你同时有 user 和 project scope，`pull` 会依次拉取两个 scope 的资源，互不冲突。
 
-启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<bucket>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 bucket，拍平安装到本地各 AI 工具 skills 目录。`rules/`、`docs/`、`learnings/` 仍然保持原有全局同步逻辑。
+启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/`、`docs/`、`learnings/` 仍然保持原有全局同步逻辑。
 
 ### 推送本地资源
 
@@ -201,7 +201,7 @@ teamai push --all    # 跳过确认，直接推送
 teamai push --role pm  # 将本次 project skill 推送到 skills/pm/<skill-name>/
 ```
 
-如果本地配置包含 `primaryRole`，`teamai push` 在推送 project skill 时默认写入 `skills/<primaryRole>/<skill-name>/`。使用 `--role <id>` 可临时覆盖目标 bucket；角色 id 必须存在于 `manifest/roles.yaml`。
+如果本地配置包含 `primaryRole`，`teamai push` 在推送 project skill 时默认写入 `skills/<primaryRole>/<skill-name>/`。使用 `--role <id>` 可临时覆盖目标 namespace；角色 id 必须存在于 `manifest/roles.yaml`。
 
 ### 查看状态
 
@@ -236,7 +236,7 @@ EOF
 # 推送到团队
 teamai push
 
-# 推送到指定角色 bucket
+# 推送到指定角色 namespace
 teamai push --role pm
 ```
 

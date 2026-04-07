@@ -38,7 +38,7 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-import { pull, cleanupInactiveBucketSkills } from '../pull.js';
+import { pull, cleanupInactiveNamespaceSkills } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig } from '../config.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
@@ -69,7 +69,7 @@ vi.mock('../roles.js', () => ({
     ],
     defaults: { shareTarget: 'primary-role' },
   }),
-  resolveRoleResourceBuckets: vi.fn(({ manifest, primaryRole, additionalRoles }) => {
+  resolveRoleResourceNamespaces: vi.fn(({ manifest, primaryRole, additionalRoles }) => {
     const allRoles = [primaryRole, ...additionalRoles].map((id: string) =>
       manifest.roles.find((role: { id: string }) => role.id === id),
     );
@@ -221,7 +221,7 @@ describe('pull role-aware sync and cleanup', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude/rules', 'my-rule.md'))).toBe(true);
   });
 
-  it('pulls only the active skill buckets for the saved role profile', async () => {
+  it('pulls only the active skill namespaces for the saved role profile', async () => {
     await fse.ensureDir(path.join(repoPath, 'skills', 'common', 'shared-skill'));
     await fse.writeFile(path.join(repoPath, 'skills', 'common', 'shared-skill', 'SKILL.md'), '# Shared');
     await fse.ensureDir(path.join(repoPath, 'skills', 'hai', 'hai-skill'));
@@ -236,7 +236,7 @@ describe('pull role-aware sync and cleanup', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude/skills', 'pm-skill', 'SKILL.md'))).toBe(false);
   });
 
-  it('removes stale skills from buckets that are no longer active', async () => {
+  it('removes stale skills from namespaces that are no longer active', async () => {
     await fse.ensureDir(path.join(homeDir, '.claude/skills', 'pm-skill'));
     await fse.writeFile(path.join(homeDir, '.claude/skills', 'pm-skill', 'SKILL.md'), '# PM');
     const teamConfig = vi.mocked(loadTeamConfig).mock.results.at(-1)?.value;
@@ -250,7 +250,7 @@ describe('pull role-aware sync and cleanup', () => {
       scope: 'user' as const,
     };
 
-    await cleanupInactiveBucketSkills(
+    await cleanupInactiveNamespaceSkills(
       await teamConfig,
       await localConfig,
       new Set(['shared-skill', 'hai-skill']),
@@ -270,7 +270,7 @@ describe('pull role-aware sync and cleanup', () => {
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Invalid roles manifest'));
   });
 
-  it('aborts pull when the same skill exists in multiple active buckets', async () => {
+  it('aborts pull when the same skill exists in multiple active namespaces', async () => {
     await fse.ensureDir(path.join(repoPath, 'skills', 'common', 'shared-skill'));
     await fse.writeFile(path.join(repoPath, 'skills', 'common', 'shared-skill', 'SKILL.md'), '# Common');
     await fse.ensureDir(path.join(repoPath, 'skills', 'hai', 'shared-skill'));

@@ -134,7 +134,7 @@ export interface ResourceItem {
   sourcePath: string;
   relativePath: string;
   status?: ResourceItemStatus;
-  bucket?: string;
+  namespace?: string;
 }
 
 export interface ResourceDiff {

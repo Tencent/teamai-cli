@@ -266,7 +266,7 @@ scope: 'user',
     expect(items.find((i) => i.name === 'my-skill')).toBeDefined();
   });
 
-  it('scans role-scoped team skill buckets when a primary role is configured', async () => {
+  it('scans role-scoped team skill namespaces when a primary role is configured', async () => {
     localConfig.primaryRole = 'hai';
     localConfig.additionalRoles = ['pm'];
     await fse.ensureDir(path.join(localConfig.repo.localPath, 'skills', 'hai', 'role-skill'));
@@ -423,7 +423,7 @@ scope: 'user',
       type: 'skills' as const,
       sourcePath: localSkillDir,
       relativePath: 'skills/hai/my-skill',
-      bucket: 'hai',
+      namespace: 'hai',
     };
 
     await handler.pushItem(item, teamConfig, localConfig);

@@ -7,7 +7,7 @@ const ROLE_RESOURCE_TYPES = ['knowledge', 'skills', 'learnings'] as const;
 
 export type RoleResourceType = typeof ROLE_RESOURCE_TYPES[number];
 
-const RoleResourceBucketsSchema = z.object({
+const RoleResourceNamespacesSchema = z.object({
   knowledge: z.array(z.string().min(1)),
   skills: z.array(z.string().min(1)),
   learnings: z.array(z.string().min(1)),
@@ -17,7 +17,7 @@ const RoleSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   description: z.string().default(''),
-  resources: RoleResourceBucketsSchema,
+  resources: RoleResourceNamespacesSchema,
 });
 
 const RolesManifestSchema = z.object({
@@ -30,7 +30,7 @@ const RolesManifestSchema = z.object({
 
 export type TeamRole = z.infer<typeof RoleSchema>;
 export type RolesManifest = z.infer<typeof RolesManifestSchema>;
-export type ResourceBuckets = Record<RoleResourceType, string[]>;
+export type ResourceNamespaces = Record<RoleResourceType, string[]>;
 
 function validateManifestShape(raw: unknown): RolesManifest {
   if (!raw || typeof raw !== 'object') {
@@ -107,17 +107,17 @@ function getRoleOrThrow(manifest: RolesManifest, roleId: string): TeamRole {
   return role;
 }
 
-export function resolveRoleResourceBuckets(input: {
+export function resolveRoleResourceNamespaces(input: {
   manifest: RolesManifest;
   primaryRole: string;
   additionalRoles: string[];
-}): ResourceBuckets {
+}): ResourceNamespaces {
   const resolvedRoles = [
     getRoleOrThrow(input.manifest, input.primaryRole),
     ...input.additionalRoles.map((roleId) => getRoleOrThrow(input.manifest, roleId)),
   ];
 
-  const buckets: ResourceBuckets = {
+  const namespaces: ResourceNamespaces = {
     knowledge: [],
     skills: [],
     learnings: [],
@@ -126,14 +126,13 @@ export function resolveRoleResourceBuckets(input: {
   for (const type of ROLE_RESOURCE_TYPES) {
     const seen = new Set<string>();
     for (const role of resolvedRoles) {
-      for (const bucket of role.resources[type]) {
-        if (seen.has(bucket)) continue;
-        seen.add(bucket);
-        buckets[type].push(bucket);
+      for (const namespace of role.resources[type]) {
+        if (seen.has(namespace)) continue;
+        seen.add(namespace);
+        namespaces[type].push(namespace);
       }
     }
   }
 
-  return buckets;
+  return namespaces;
 }
-

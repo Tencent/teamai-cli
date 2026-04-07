@@ -52,7 +52,7 @@ vi.mock('../roles.js', () => ({
     ],
     defaults: { shareTarget: 'primary-role' },
   }),
-  resolveRoleResourceBuckets: vi.fn(({ manifest, primaryRole, additionalRoles }) => {
+  resolveRoleResourceNamespaces: vi.fn(({ manifest, primaryRole, additionalRoles }) => {
     const allRoles = [primaryRole, ...additionalRoles].map((id: string) =>
       manifest.roles.find((role: { id: string }) => role.id === id),
     );
@@ -154,9 +154,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
   });
 
   it('should do full sync when HEAD rev differs from lastPullRev', async () => {
-    // Add a skill so totalSynced > 0 and state gets saved
-    await fse.ensureDir(path.join(repoPath, 'skills', 'common', 'my-skill'));
-    await fse.writeFile(path.join(repoPath, 'skills', 'common', 'my-skill', 'SKILL.md'), '# My Skill');
+    await fse.writeFile(path.join(repoPath, 'rules', 'my-rule.md'), '# rule');
 
     vi.mocked(getHeadRev).mockResolvedValue('def5678');
     vi.mocked(loadStateForScope).mockResolvedValue({
@@ -179,9 +177,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
   });
 
   it('should do full sync when lastPullRev is null (first pull)', async () => {
-    // Add a skill so totalSynced > 0
-    await fse.ensureDir(path.join(repoPath, 'skills', 'common', 'my-skill'));
-    await fse.writeFile(path.join(repoPath, 'skills', 'common', 'my-skill', 'SKILL.md'), '# My Skill');
+    await fse.writeFile(path.join(repoPath, 'rules', 'my-rule.md'), '# rule');
 
     vi.mocked(getHeadRev).mockResolvedValue('abc1234');
     vi.mocked(loadStateForScope).mockResolvedValue({
@@ -202,9 +198,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
   });
 
   it('should do full sync when --force is set even if rev matches', async () => {
-    // Add a skill so totalSynced > 0
-    await fse.ensureDir(path.join(repoPath, 'skills', 'common', 'my-skill'));
-    await fse.writeFile(path.join(repoPath, 'skills', 'common', 'my-skill', 'SKILL.md'), '# My Skill');
+    await fse.writeFile(path.join(repoPath, 'rules', 'my-rule.md'), '# rule');
 
     vi.mocked(getHeadRev).mockResolvedValue('abc1234');
     vi.mocked(loadStateForScope).mockResolvedValue({

@@ -97,7 +97,7 @@ describe('push role routing', () => {
     });
   });
 
-  it('routes pushed skills to the primary role bucket by default', async () => {
+  it('routes pushed skills to the primary role namespace by default', async () => {
     const pushedItems: Array<Record<string, unknown>> = [];
     mockAutoDetectInit.mockResolvedValue({
       localConfig: {
@@ -135,7 +135,7 @@ describe('push role routing', () => {
     const { push } = await import('../push.js');
     await push({ all: true });
 
-    expect(pushedItems[0].bucket).toBe('hai');
+    expect(pushedItems[0].namespace).toBe('hai');
     expect(pushedItems[0].relativePath).toBe('skills/hai/skill-a');
     expect(mockPushRepoBranch).toHaveBeenCalledWith(
       '/tmp/team-repo',

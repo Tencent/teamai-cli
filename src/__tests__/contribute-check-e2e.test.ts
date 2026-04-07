@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFile } from 'node:child_process';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { execFile, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -126,6 +126,13 @@ function buildTrivialSessionEvents(sessionId: string): Record<string, unknown>[]
 
 describe('contribute-check E2E', () => {
   let tmpHome: string;
+
+  beforeAll(() => {
+    execSync('npm run build', {
+      cwd: path.resolve(__dirname, '../..'),
+      stdio: 'ignore',
+    });
+  });
 
   beforeEach(() => {
     tmpHome = makeTmpHome();

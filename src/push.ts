@@ -137,7 +137,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 
   for (const item of allItems) {
     if (item.type === 'skills' && resolvedRole) {
-      item.bucket = resolvedRole;
+      item.namespace = resolvedRole;
       item.relativePath = `skills/${resolvedRole}/${item.name}`;
     }
     const handler = getHandler(item.type);

@@ -79,20 +79,20 @@ teamai init --repo yourteam/yourproject --scope project
 
 ## 角色化 Skills
 
-当团队资源仓库启用角色化目录后，Skills 按角色 bucket 组织，CLI 在 `teamai init` 时要求选择 `primaryRole` 和可选的 `additionalRoles`，并写入本地 `config.yaml`。
+当团队资源仓库启用角色化目录后，Skills 按角色 namespace 组织，CLI 在 `teamai init` 时要求选择 `primaryRole` 和可选的 `additionalRoles`，并写入本地 `config.yaml`。
 
 远端仓库目录约定：
 
 ```text
 manifest/roles.yaml        # 角色定义
-skills/<bucket>/<skill>/   # 按 bucket 组织的 skills
+skills/<namespace>/<skill>/   # 按 namespace 组织的 skills
 rules/                     # 全局，不做角色拆分
 ```
 
-- `teamai pull` 读取 `manifest/roles.yaml`，只同步 `primaryRole + additionalRoles` 对应 bucket 中的 skills（同时保留 tag 过滤的并集）。
-- Skills 从 `skills/<bucket>/<skill-name>/` 拍平安装到本地 `<tool>/skills/<skill-name>/`，用户无感知 bucket 结构。
-- 如果激活 bucket 中出现同名 skill，`pull` 会直接失败，避免隐式覆盖。
-- 不在激活 bucket 中、也不在 tag 过滤结果中的 skills 会被自动清理。
+- `teamai pull` 读取 `manifest/roles.yaml`，只同步 `primaryRole + additionalRoles` 对应 namespace 中的 skills（同时保留 tag 过滤的并集）。
+- Skills 从 `skills/<namespace>/<skill-name>/` 拍平安装到本地 `<tool>/skills/<skill-name>/`，用户无感知 namespace 结构。
+- 如果激活 namespace 中出现同名 skill，`pull` 会直接失败，避免隐式覆盖。
+- 不在激活 namespace 中、也不在 tag 过滤结果中的 skills 会被自动清理。
 - `rules/`、`docs/`、`learnings/` 仍然保持原有逻辑，不做角色拆分。
 
 配置示例：
@@ -104,17 +104,17 @@ additionalRoles:
 resourceProfileVersion: 1
 ```
 
-这会同步 `skills/common/`、`skills/hai/`、`skills/pm/` 三个 bucket 中的所有 skills。
+这会同步 `skills/common/`、`skills/hai/`、`skills/pm/` 三个 namespace 中的所有 skills。
 
 ## 角色化推送
 
-角色化仓库下，推送 skill 的默认目标是 `primaryRole` 对应的 bucket。
+角色化仓库下，推送 skill 的默认目标是 `primaryRole` 对应的 namespace。
 
 ```bash
 # 项目 skill 默认推送到 skills/<primaryRole>/<skill-name>/
 teamai push
 
-# 显式把本次 skill 推送到指定角色 bucket
+# 显式把本次 skill 推送到指定角色 namespace
 teamai push --role pm
 ```
 

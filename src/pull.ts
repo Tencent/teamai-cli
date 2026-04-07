@@ -9,10 +9,10 @@ import { loadTagsConfig, filterByTags } from './utils/tags.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import type { GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, TagsConfig } from './types.js';
 import { LEARNINGS_LOCAL_DIR, resolveBaseDir, getTeamaiHome } from './types.js';
-import { loadRolesManifest, resolveRoleResourceBuckets, type ResourceBuckets } from './roles.js';
+import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
 
 interface RolePullContext {
-  activeBuckets: ResourceBuckets;
+  activeNamespaces: ResourceNamespaces;
   activeSkillNames: Set<string>;
   inactiveSkillNames: Set<string>;
 }
@@ -21,56 +21,56 @@ async function buildRolePullContext(localConfig: LocalConfig): Promise<RolePullC
   if (!localConfig.primaryRole) return null;
 
   const manifest = await loadRolesManifest(localConfig.repo.localPath);
-  const activeBuckets = resolveRoleResourceBuckets({
+  const activeNamespaces = resolveRoleResourceNamespaces({
     manifest,
     primaryRole: localConfig.primaryRole,
     additionalRoles: localConfig.additionalRoles ?? [],
   });
 
-  const allSkillBuckets = new Set(
+  const allSkillNamespaces = new Set(
     manifest.roles.flatMap((role) => role.resources.skills),
   );
-  const inactiveSkillBuckets = [...allSkillBuckets].filter((bucket) => !activeBuckets.skills.includes(bucket));
+  const inactiveSkillNamespaces = [...allSkillNamespaces].filter((namespace) => !activeNamespaces.skills.includes(namespace));
   const activeSkillNames = new Set<string>();
   const inactiveSkillNames = new Set<string>();
 
-  for (const bucket of activeBuckets.skills) {
-    const bucketDir = path.join(localConfig.repo.localPath, 'skills', bucket);
-    const names = await listDirs(bucketDir);
+  for (const namespace of activeNamespaces.skills) {
+    const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace);
+    const names = await listDirs(namespaceDir);
     for (const name of names) {
       activeSkillNames.add(name);
     }
   }
 
-  for (const bucket of inactiveSkillBuckets) {
-    const bucketDir = path.join(localConfig.repo.localPath, 'skills', bucket);
-    const names = await listDirs(bucketDir);
+  for (const namespace of inactiveSkillNamespaces) {
+    const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace);
+    const names = await listDirs(namespaceDir);
     for (const name of names) {
       inactiveSkillNames.add(name);
     }
   }
 
-  return { activeBuckets, activeSkillNames, inactiveSkillNames };
+  return { activeNamespaces, activeSkillNames, inactiveSkillNames };
 }
 
-export async function scanRoleAwareSkills(localConfig: LocalConfig, buckets: ResourceBuckets): Promise<ResourceItem[]> {
+export async function scanRoleAwareSkills(localConfig: LocalConfig, namespaces: ResourceNamespaces): Promise<ResourceItem[]> {
   const items = new Map<string, ResourceItem>();
 
-  for (const bucket of buckets.skills) {
-    const bucketDir = path.join(localConfig.repo.localPath, 'skills', bucket);
-    const dirs = await listDirs(bucketDir);
+  for (const namespace of namespaces.skills) {
+    const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace);
+    const dirs = await listDirs(namespaceDir);
     for (const dir of dirs) {
       const existing = items.get(dir);
       if (existing) {
-        throw new Error(`Duplicate skill "${dir}" found in active buckets "${existing.bucket}" and "${bucket}"`);
+        throw new Error(`Duplicate skill "${dir}" found in active namespaces "${existing.namespace}" and "${namespace}"`);
       }
 
       items.set(dir, {
         name: dir,
         type: 'skills',
-        sourcePath: path.join(bucketDir, dir),
-        relativePath: `skills/${bucket}/${dir}`,
-        bucket,
+        sourcePath: path.join(namespaceDir, dir),
+        relativePath: `skills/${namespace}/${dir}`,
+        namespace,
       });
     }
   }
@@ -78,7 +78,7 @@ export async function scanRoleAwareSkills(localConfig: LocalConfig, buckets: Res
   return [...items.values()];
 }
 
-export async function cleanupInactiveBucketSkills(
+export async function cleanupInactiveNamespaceSkills(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   activeSkillNames: Set<string>,
@@ -98,7 +98,7 @@ export async function cleanupInactiveBucketSkills(
 
       const localSkillDir = path.join(baseDir, toolPath.skills, skillName);
       await remove(localSkillDir);
-      log.debug(`[${localConfig.scope}] Removed inactive role skill ${skillName} from ${tool}`);
+      log.debug(`[${localConfig.scope}] Removed inactive role-scoped skill ${skillName} from ${tool}`);
     }
   }
 }
@@ -256,12 +256,12 @@ async function pullForScope(
       continue;
     }
 
-    // Skills: directory (role bucket) first, then tags, union of both
+    // Skills: directory (role namespace) first, then tags, union of both
     let items: ResourceItem[];
     let skippedByTags = 0;
     if (type === 'skills') {
       const directoryItems = roleContext
-        ? await scanRoleAwareSkills(localConfig, roleContext.activeBuckets)
+        ? await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces)
         : await handler.scanTeamForPull(freshConfig, localConfig);
 
       const allTeamSkills = await handler.scanTeamForPull(freshConfig, localConfig);
@@ -375,7 +375,7 @@ async function pullForScope(
     }
 
     if (roleContext) {
-      await cleanupInactiveBucketSkills(
+      await cleanupInactiveNamespaceSkills(
         freshConfig,
         localConfig,
         roleContext.activeSkillNames,

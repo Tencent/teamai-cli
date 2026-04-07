@@ -5,7 +5,7 @@ import path from 'node:path';
 import {
   describeRoles,
   loadRolesManifest,
-  resolveRoleResourceBuckets,
+  resolveRoleResourceNamespaces,
 } from '../roles.js';
 
 describe('loadRolesManifest', () => {
@@ -109,7 +109,7 @@ defaults:
   });
 });
 
-describe('resolveRoleResourceBuckets', () => {
+describe('resolveRoleResourceNamespaces', () => {
   const manifest = {
     version: 1,
     roles: [
@@ -149,24 +149,24 @@ describe('resolveRoleResourceBuckets', () => {
     },
   };
 
-  it('resolves buckets for the primary role only', () => {
-    expect(resolveRoleResourceBuckets({ manifest, primaryRole: 'hai', additionalRoles: [] })).toEqual({
+  it('resolves namespaces for the primary role only', () => {
+    expect(resolveRoleResourceNamespaces({ manifest, primaryRole: 'hai', additionalRoles: [] })).toEqual({
       knowledge: ['common', 'hai'],
       skills: ['common', 'hai'],
       learnings: ['common', 'hai'],
     });
   });
 
-  it('resolves buckets for primary and additional roles', () => {
-    expect(resolveRoleResourceBuckets({ manifest, primaryRole: 'hai', additionalRoles: ['pm', 'thpc'] })).toEqual({
+  it('resolves namespaces for primary and additional roles', () => {
+    expect(resolveRoleResourceNamespaces({ manifest, primaryRole: 'hai', additionalRoles: ['pm', 'thpc'] })).toEqual({
       knowledge: ['common', 'hai', 'pm', 'thpc'],
       skills: ['common', 'hai', 'pm', 'thpc'],
       learnings: ['common', 'hai', 'pm', 'thpc'],
     });
   });
 
-  it('deduplicates repeated buckets across roles', () => {
-    expect(resolveRoleResourceBuckets({ manifest, primaryRole: 'hai', additionalRoles: ['pm', 'hai'] })).toEqual({
+  it('deduplicates repeated namespaces across roles', () => {
+    expect(resolveRoleResourceNamespaces({ manifest, primaryRole: 'hai', additionalRoles: ['pm', 'hai'] })).toEqual({
       knowledge: ['common', 'hai', 'pm'],
       skills: ['common', 'hai', 'pm'],
       learnings: ['common', 'hai', 'pm'],
@@ -174,7 +174,7 @@ describe('resolveRoleResourceBuckets', () => {
   });
 
   it('rejects unknown saved role ids', () => {
-    expect(() => resolveRoleResourceBuckets({ manifest, primaryRole: 'unknown', additionalRoles: [] })).toThrow(/unknown role/i);
+    expect(() => resolveRoleResourceNamespaces({ manifest, primaryRole: 'unknown', additionalRoles: [] })).toThrow(/unknown role/i);
   });
 });
 

@@ -24,7 +24,7 @@ import fs from 'node:fs/promises';
 export const BUILTIN_RULE_NAMES = new Set<string>();
 
 /** Names of previously deployed rules that should be cleaned up. */
-const LEGACY_RULE_NAMES = ['teamai-recall'];
+export const LEGACY_RULE_NAMES = ['teamai-recall'];
 
 /**
  * Names that scanLocalForPush and stale-cleanup should skip.

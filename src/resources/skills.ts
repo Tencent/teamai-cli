@@ -9,16 +9,16 @@ import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 /** File name used to track who has contributed (pushed) a skill. */
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
 
-function resolveSkillBuckets(localConfig: LocalConfig): string[] {
+function resolveSkillNamespaces(localConfig: LocalConfig): string[] {
   if (localConfig.primaryRole) {
     return [localConfig.primaryRole, ...(localConfig.additionalRoles ?? [])];
   }
   return [];
 }
 
-function getSkillDestination(localConfig: LocalConfig, skillName: string, bucket?: string): string {
-  if (bucket) {
-    return path.join(localConfig.repo.localPath, 'skills', bucket, skillName);
+function getSkillDestination(localConfig: LocalConfig, skillName: string, namespace?: string): string {
+  if (namespace) {
+    return path.join(localConfig.repo.localPath, 'skills', namespace, skillName);
   }
   return path.join(localConfig.repo.localPath, 'skills', skillName);
 }
@@ -32,16 +32,16 @@ export class SkillsHandler extends ResourceHandler {
    * the one with the latest mtime when multiple dirs have modifications.
    */
   async scanLocalForPush(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
-    const scopedBuckets = resolveSkillBuckets(localConfig);
-    const teamSkills = new Map<string, { dir: string; bucket?: string }>();
+    const scopedNamespaces = resolveSkillNamespaces(localConfig);
+    const teamSkills = new Map<string, { dir: string; namespace?: string }>();
 
-    if (scopedBuckets.length > 0) {
-      for (const bucket of scopedBuckets) {
-        const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills', bucket);
+    if (scopedNamespaces.length > 0) {
+      for (const namespace of scopedNamespaces) {
+        const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills', namespace);
         const names = await listDirs(teamSkillsDir);
         for (const name of names) {
           if (!teamSkills.has(name)) {
-            teamSkills.set(name, { dir: path.join(teamSkillsDir, name), bucket });
+            teamSkills.set(name, { dir: path.join(teamSkillsDir, name), namespace });
           }
         }
       }
@@ -113,7 +113,7 @@ export class SkillsHandler extends ResourceHandler {
         sourcePath: candidate.sourcePath,
         relativePath: `skills/${name}`,
         status: candidate.status,
-        bucket: localConfig.primaryRole,
+        namespace: localConfig.primaryRole,
       });
     }
 
@@ -122,8 +122,8 @@ export class SkillsHandler extends ResourceHandler {
 
   /**
    * Scan team repo for skills to pull.
-   * Handles both flat layout (skills/<name>/) and bucketed layout (skills/<bucket>/<name>/).
-   * A directory is treated as a bucket if it does not contain SKILL.md.
+   * Handles both flat layout (skills/<name>/) and namespaced layout (skills/<namespace>/<name>/).
+   * A directory is treated as a namespace if it does not contain SKILL.md.
    */
   async scanTeamForPull(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
     const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills');
@@ -149,7 +149,7 @@ export class SkillsHandler extends ResourceHandler {
             type: 'skills',
             sourcePath: path.join(dirPath, subDir),
             relativePath: `skills/${dir}/${subDir}`,
-            bucket: dir,
+            namespace: dir,
           });
         }
       }
@@ -162,7 +162,7 @@ export class SkillsHandler extends ResourceHandler {
    * Copy a local skill to the team repo.
    */
   async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    const dest = getSkillDestination(localConfig, item.name, item.bucket ?? localConfig.primaryRole);
+    const dest = getSkillDestination(localConfig, item.name, item.namespace ?? localConfig.primaryRole);
     await copyDir(item.sourcePath, dest);
     log.debug(`Copied skill ${item.name} → team repo`);
 
@@ -212,13 +212,13 @@ export class SkillsHandler extends ResourceHandler {
     const baseDir = resolveBaseDir(localConfig);
 
     // Remove from team repo
-    const scopedBuckets = resolveSkillBuckets(localConfig);
-    if (scopedBuckets.length > 0) {
-      for (const bucket of scopedBuckets) {
-        const bucketDir = path.join(localConfig.repo.localPath, 'skills', bucket, name);
-        if (await pathExists(bucketDir)) {
-          await remove(bucketDir);
-          removed.push(bucketDir);
+    const scopedNamespaces = resolveSkillNamespaces(localConfig);
+    if (scopedNamespaces.length > 0) {
+      for (const namespace of scopedNamespaces) {
+        const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace, name);
+        if (await pathExists(namespaceDir)) {
+          await remove(namespaceDir);
+          removed.push(namespaceDir);
         }
       }
     } else {
