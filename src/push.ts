@@ -90,7 +90,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
   }
 
   // Scan for pushable resources
-  const pushableTypes: ResourceType[] = ['skills', 'rules', 'env', 'wiki'];
+  const pushableTypes: ResourceType[] = ['skills', 'rules', 'env'];
   const allItems: ResourceItem[] = [];
 
   for (const type of pushableTypes) {

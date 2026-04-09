@@ -232,7 +232,7 @@ async function pullForScope(
   const subscribedTags = localConfig.subscribedTags;
 
   // Step 2: Sync each resource type
-  const resourceTypes: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'wiki'];
+  const resourceTypes: ResourceType[] = ['skills', 'rules', 'docs', 'env'];
   let totalSynced = 0;
   let desiredSkillNames: Set<string> | null = null;
   let knownRepoSkillNames: Set<string> | null = null;
