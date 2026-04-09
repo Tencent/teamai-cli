@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [0.13.2](https://git.woa.com/teamai/teamai-cli/compare/v0.13.1...v0.13.2) (2026-04-10)
+
+### 🐛 修复
+
+- 修复 Cursor hooks.json 中残留已废弃的 `userPromptSubmit` 事件 key 导致 "Invalid hooks.json" 报错的问题 (!122)
+
+---
+
 ## [0.13.1](https://git.woa.com/teamai/teamai-cli/compare/v0.11.2...v0.13.1) (2026-04-09)
 
 ### ✨ 新功能
