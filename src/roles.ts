@@ -3,14 +3,16 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import { readFileSafe, ensureDir, writeFile } from './utils/fs.js';
 
-const ROLE_RESOURCE_TYPES = ['knowledge', 'skills', 'learnings'] as const;
+const ROLE_RESOURCE_TYPES = ['knowledge', 'skills'] as const;
 
 export type RoleResourceType = typeof ROLE_RESOURCE_TYPES[number];
 
 const RoleResourceNamespacesSchema = z.object({
   knowledge: z.array(z.string().min(1)),
   skills: z.array(z.string().min(1)),
-  learnings: z.array(z.string().min(1)),
+  // learnings is accepted for backward compatibility but ignored at runtime.
+  // All learnings are shared flat across the entire team (no namespace isolation).
+  learnings: z.array(z.string()).optional(),
 });
 
 const RoleSchema = z.object({
@@ -22,9 +24,9 @@ const RoleSchema = z.object({
 const RolesManifestSchema = z.object({
   version: z.number(),
   roles: z.array(RoleSchema).min(1),
-  defaults: z.object({
-    shareTarget: z.literal('primary-role').default('primary-role'),
-  }).default({ shareTarget: 'primary-role' }),
+  // defaults.shareTarget was removed: learnings are flat, no namespace routing needed.
+  // Old manifests with a defaults block are still parseable (z.passthrough on object level).
+  defaults: z.object({}).passthrough().optional(),
 });
 
 export type TeamRole = z.infer<typeof RoleSchema>;
@@ -52,8 +54,10 @@ function validateManifestShape(raw: unknown): RolesManifest {
       throw new Error(`Invalid roles manifest: role ${(role as Record<string, unknown>).id ?? '<unknown>'} is missing resources`);
     }
 
+    // Accept 'learnings' for backward compatibility but only validate active types
+    const ALLOWED_RESOURCE_KEYS = new Set<string>([...ROLE_RESOURCE_TYPES, 'learnings']);
     for (const key of Object.keys(resources)) {
-      if (!ROLE_RESOURCE_TYPES.includes(key as RoleResourceType)) {
+      if (!ALLOWED_RESOURCE_KEYS.has(key)) {
         throw new Error(`Invalid roles manifest: unknown resource type "${key}"`);
       }
     }
@@ -136,7 +140,6 @@ export function resolveRoleResourceNamespaces(input: {
   const namespaces: ResourceNamespaces = {
     knowledge: [],
     skills: [],
-    learnings: [],
   };
 
   for (const type of ROLE_RESOURCE_TYPES) {

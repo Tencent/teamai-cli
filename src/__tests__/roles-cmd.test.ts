@@ -99,7 +99,6 @@ describe('roles set — validation', () => {
 
     expect(result.skills).toEqual(['common', 'hai']);
     expect(result.knowledge).toEqual(['common', 'hai']);
-    expect(result.learnings).toEqual(['common', 'hai']);
 
     rmSync(repoDir, { recursive: true, force: true });
   });

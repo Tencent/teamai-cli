@@ -102,13 +102,14 @@ export async function rolesInit(options: GlobalOptions): Promise<void> {
 
     // Interactive: collect roles
     log.info('Define team roles. Each role has an id, description, and resource namespaces.');
-    log.info('Resource namespaces determine which subdirectories of skills/, knowledge/, learnings/ each role accesses.');
+    log.info('Resource namespaces determine which subdirectories of skills/ and knowledge/ each role accesses.');
+    log.info('Learnings are shared flat across the entire team (no namespace isolation).');
     log.info('');
 
     const roles: Array<{
         id: string;
         description: string;
-        resources: { knowledge: string[]; skills: string[]; learnings: string[] };
+        resources: { knowledge: string[]; skills: string[] };
     }> = [];
 
     let addMore = true;
@@ -142,7 +143,6 @@ export async function rolesInit(options: GlobalOptions): Promise<void> {
             resources: {
                 knowledge: namespaces,
                 skills: namespaces,
-                learnings: namespaces,
             },
         });
 
@@ -161,7 +161,6 @@ export async function rolesInit(options: GlobalOptions): Promise<void> {
     const manifest: RolesManifest = {
         version: 1,
         roles: roles.map((r) => ({ ...r, description: r.description || '' })),
-        defaults: { shareTarget: 'primary-role' },
     };
 
     if (options.dryRun) {
@@ -217,7 +216,6 @@ export async function rolesList(options: GlobalOptions): Promise<void> {
         console.log(`  ${role.id}${desc}`);
         console.log(`    skills:    ${role.resources.skills.join(', ')}`);
         console.log(`    knowledge: ${role.resources.knowledge.join(', ')}`);
-        console.log(`    learnings: ${role.resources.learnings.join(', ')}`);
         console.log('');
     }
 
@@ -326,7 +324,6 @@ export async function rolesAdd(
         resources: {
             knowledge: namespaces,
             skills: namespaces,
-            learnings: namespaces,
         },
     };
 
@@ -477,7 +474,6 @@ export async function rolesUpdate(
         resources: {
             knowledge: updatedNamespaces,
             skills: updatedNamespaces,
-            learnings: updatedNamespaces,
         },
     };
 

@@ -21,7 +21,8 @@ describe('loadRolesManifest', () => {
     return repoDir;
   }
 
-  it('parses a valid manifest', async () => {
+  it('parses a valid manifest (with legacy learnings + shareTarget)', async () => {
+    // Old manifests with learnings and shareTarget should still parse without error
     const repoDir = writeManifest(`
 version: 1
 roles:
@@ -37,18 +38,35 @@ defaults:
 
     await expect(loadRolesManifest(repoDir)).resolves.toMatchObject({
       version: 1,
-      defaults: { shareTarget: 'primary-role' },
       roles: [
         {
           id: 'hai',
           resources: {
             knowledge: ['common', 'hai'],
             skills: ['common', 'hai'],
-            learnings: ['common', 'hai'],
           },
         },
       ],
     });
+
+    rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('parses a manifest without learnings or defaults', async () => {
+    const repoDir = writeManifest(`
+version: 1
+roles:
+  - id: hai
+    description: HyperAI
+    resources:
+      knowledge: [common, hai]
+      skills: [common, hai]
+`);
+
+    const result = await loadRolesManifest(repoDir);
+    expect(result.version).toBe(1);
+    expect(result.roles[0].resources.skills).toEqual(['common', 'hai']);
+    expect(result.roles[0].resources.learnings).toBeUndefined();
 
     rmSync(repoDir, { recursive: true, force: true });
   });
@@ -58,8 +76,6 @@ defaults:
 version: 1
 roles:
   - id: hai
-defaults:
-  shareTarget: primary-role
 `);
 
     await expect(loadRolesManifest(repoDir)).rejects.toThrow(/resources/i);
@@ -74,10 +90,7 @@ roles:
     resources:
       knowledge: [common, hai]
       skills: [common, hai]
-      learnings: [common, hai]
       docs: [common, hai]
-defaults:
-  shareTarget: primary-role
 `);
 
     await expect(loadRolesManifest(repoDir)).rejects.toThrow(/unknown resource type/i);
@@ -92,14 +105,10 @@ roles:
     resources:
       knowledge: [common, hai]
       skills: [common, hai]
-      learnings: [common, hai]
   - id: hai
     resources:
       knowledge: [common, hai]
       skills: [common, hai]
-      learnings: [common, hai]
-defaults:
-  shareTarget: primary-role
 `);
 
     await expect(loadRolesManifest(repoDir)).rejects.toThrow(/duplicate role id/i);
@@ -117,7 +126,6 @@ describe('resolveRoleResourceNamespaces', () => {
         resources: {
           knowledge: ['common', 'hai'],
           skills: ['common', 'hai'],
-          learnings: ['common', 'hai'],
         },
       },
       {
@@ -126,7 +134,6 @@ describe('resolveRoleResourceNamespaces', () => {
         resources: {
           knowledge: ['common', 'pm'],
           skills: ['common', 'pm'],
-          learnings: ['common', 'pm'],
         },
       },
       {
@@ -135,20 +142,15 @@ describe('resolveRoleResourceNamespaces', () => {
         resources: {
           knowledge: ['common', 'thpc'],
           skills: ['common', 'thpc'],
-          learnings: ['common', 'thpc'],
         },
       },
     ],
-    defaults: {
-      shareTarget: 'primary-role' as const,
-    },
   };
 
   it('resolves namespaces for the primary role only', () => {
     expect(resolveRoleResourceNamespaces({ manifest, primaryRole: 'hai', additionalRoles: [] })).toEqual({
       knowledge: ['common', 'hai'],
       skills: ['common', 'hai'],
-      learnings: ['common', 'hai'],
     });
   });
 
@@ -156,7 +158,6 @@ describe('resolveRoleResourceNamespaces', () => {
     expect(resolveRoleResourceNamespaces({ manifest, primaryRole: 'hai', additionalRoles: ['pm', 'thpc'] })).toEqual({
       knowledge: ['common', 'hai', 'pm', 'thpc'],
       skills: ['common', 'hai', 'pm', 'thpc'],
-      learnings: ['common', 'hai', 'pm', 'thpc'],
     });
   });
 
@@ -164,7 +165,6 @@ describe('resolveRoleResourceNamespaces', () => {
     expect(resolveRoleResourceNamespaces({ manifest, primaryRole: 'hai', additionalRoles: ['pm', 'hai'] })).toEqual({
       knowledge: ['common', 'hai', 'pm'],
       skills: ['common', 'hai', 'pm'],
-      learnings: ['common', 'hai', 'pm'],
     });
   });
 
@@ -196,10 +196,8 @@ function makeManifest(roles: Array<{ id: string; namespaces: string[] }>): Roles
       resources: {
         knowledge: r.namespaces,
         skills: r.namespaces,
-        learnings: r.namespaces,
       },
     })),
-    defaults: { shareTarget: 'primary-role' },
   };
 }
 
@@ -232,7 +230,7 @@ describe('saveRolesManifest', () => {
 
   it('rejects an invalid manifest (empty roles array)', async () => {
     const repoDir = mkdtempSync(path.join(os.tmpdir(), 'teamai-roles-save-'));
-    const badManifest = { version: 1, roles: [], defaults: { shareTarget: 'primary-role' as const } };
+    const badManifest = { version: 1, roles: [] };
 
     await expect(saveRolesManifest(repoDir, badManifest as RolesManifest)).rejects.toThrow();
 
