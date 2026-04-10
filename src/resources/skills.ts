@@ -55,12 +55,17 @@ export class SkillsHandler extends ResourceHandler {
    * Scan local AI tool skill directories for skills that are new or modified
    * compared to the team repo. Compares across ALL tool directories and picks
    * the one with the latest mtime when multiple dirs have modifications.
+   *
+   * When roles are configured, skips skills that exist in non-allowed namespaces
+   * to enforce role-based access control.
    */
   async scanLocalForPush(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
     const scopedNamespaces = await resolveSkillNamespaces(localConfig);
     const teamSkills = new Map<string, { dir: string; namespace?: string }>();
+    const blockedSkills = new Set<string>(); // Skills in non-allowed namespaces (role-based)
 
     if (scopedNamespaces.length > 0) {
+      // Role-based mode: load allowed namespaces and track blocked ones
       for (const namespace of scopedNamespaces) {
         const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills', namespace);
         const names = await listDirs(teamSkillsDir);
@@ -70,7 +75,22 @@ export class SkillsHandler extends ResourceHandler {
           }
         }
       }
+
+      // Scan all namespaces to find skills in non-allowed ones
+      const allSkillsDir = path.join(localConfig.repo.localPath, 'skills');
+      const allNamespaces = await listDirs(allSkillsDir);
+      for (const namespace of allNamespaces) {
+        if (scopedNamespaces.includes(namespace)) continue; // Already processed as allowed
+        const nonAllowedDir = path.join(allSkillsDir, namespace);
+        const names = await listDirs(nonAllowedDir);
+        for (const name of names) {
+          if (!teamSkills.has(name)) {
+            blockedSkills.add(name);
+          }
+        }
+      }
     } else {
+      // Legacy mode (no roles): load all skills from flat structure
       const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills');
       const names = await listDirs(teamSkillsDir);
       for (const name of names) {
@@ -95,6 +115,7 @@ export class SkillsHandler extends ResourceHandler {
       for (const dir of dirs) {
         if (tombstones.has(dir)) continue;
         if (pushIgnoredSkills.has(dir)) continue;
+        if (blockedSkills.has(dir)) continue; // Skip skills in non-allowed namespaces
         if (BUILTIN_SKILL_NAMES.has(dir)) continue; // Skip CLI built-in skills
         // Check for SKILL.md to confirm it's a valid skill
         const skillMd = path.join(skillsDir, dir, 'SKILL.md');

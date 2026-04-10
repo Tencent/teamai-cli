@@ -314,6 +314,48 @@ scope: 'user',
     const items = await handler.scanLocalForPush(teamConfig, localConfig);
     expect(items.find((item) => item.name === 'role-skill')?.status).toBe('modified');
   });
+
+  it('blocks skills that exist in non-allowed namespaces', async () => {
+    localConfig.primaryRole = 'hai';
+    localConfig.additionalRoles = [];
+
+    // Create a skill in a non-allowed namespace (thpc_dev)
+    await fse.ensureDir(path.join(localConfig.repo.localPath, 'skills', 'thpc_dev', 'blocked-skill'));
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'skills', 'thpc_dev', 'blocked-skill', 'SKILL.md'), '# v1');
+
+    // Create the same skill locally
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'blocked-skill');
+    await fse.ensureDir(localSkillDir);
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# v2 - local version');
+
+    // Scan should NOT include this skill because it's in a non-allowed namespace
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    expect(items.find((item) => item.name === 'blocked-skill')).toBeUndefined();
+  });
+
+  it('allows skills in allowed namespaces and new skills', async () => {
+    localConfig.primaryRole = 'hai';
+    localConfig.additionalRoles = [];
+
+    // Create a skill in an allowed namespace
+    await fse.ensureDir(path.join(localConfig.repo.localPath, 'skills', 'hai', 'allowed-skill'));
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'skills', 'hai', 'allowed-skill', 'SKILL.md'), '# v1');
+
+    // Create a new skill locally that doesn't exist in team repo
+    const newSkillDir = path.join(homeDir, '.claude/skills', 'new-skill');
+    await fse.ensureDir(newSkillDir);
+    await fse.writeFile(path.join(newSkillDir, 'SKILL.md'), '# new');
+
+    // Create local version of allowed skill (modified)
+    const localAllowedDir = path.join(homeDir, '.claude/skills', 'allowed-skill');
+    await fse.ensureDir(localAllowedDir);
+    await fse.writeFile(path.join(localAllowedDir, 'SKILL.md'), '# v2 - modified');
+
+    // Scan should include allowed skill (modified) and new skill
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    expect(items.find((item) => item.name === 'allowed-skill')?.status).toBe('modified');
+    expect(items.find((item) => item.name === 'new-skill')?.status).toBe('new');
+  });
 });
 
 describe('SkillsHandler.pushItem', () => {
