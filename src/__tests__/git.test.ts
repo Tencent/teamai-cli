@@ -13,6 +13,8 @@ const mockGit = {
   addRemote: vi.fn(),
   addConfig: vi.fn(),
   revparse: vi.fn().mockResolvedValue('main'),
+  reset: vi.fn(),
+  merge: vi.fn(),
 };
 
 vi.mock('simple-git', () => ({
@@ -43,7 +45,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev } from '../utils/git.js';
+import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster } from '../utils/git.js';
 import fse from 'fs-extra';
 
 describe('generateBranchName', () => {
@@ -197,5 +199,84 @@ describe('getHeadRev', () => {
 
     expect(rev).toBe('a1b2c3d');
     expect(mockGit.revparse).toHaveBeenCalledWith(['--short', 'HEAD']);
+  });
+});
+
+describe('resetToCleanMaster', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should do nothing when repo is clean and on master', async () => {
+    mockGit.status.mockResolvedValue({
+      modified: [],
+      not_added: [],
+      created: [],
+      conflicted: [],
+    });
+    mockGit.revparse.mockResolvedValue('master');
+
+    await resetToCleanMaster(mockGit as any);
+
+    expect(mockGit.reset).not.toHaveBeenCalled();
+    expect(mockGit.checkout).not.toHaveBeenCalled();
+  });
+
+  it('should reset --hard when conflicted files exist (no MERGE_HEAD)', async () => {
+    mockGit.status.mockResolvedValue({
+      modified: [],
+      not_added: [],
+      created: [],
+      conflicted: ['votes/jeffyxu.yaml'],
+    });
+    mockGit.revparse.mockResolvedValue('master');
+
+    await resetToCleanMaster(mockGit as any);
+
+    expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+    expect(mockGit.checkout).not.toHaveBeenCalled();
+  });
+
+  it('should reset --hard when modified files exist', async () => {
+    mockGit.status.mockResolvedValue({
+      modified: ['some-file.txt'],
+      not_added: [],
+      created: [],
+      conflicted: [],
+    });
+    mockGit.revparse.mockResolvedValue('master');
+
+    await resetToCleanMaster(mockGit as any);
+
+    expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+  });
+
+  it('should checkout master when stuck on a stale push branch', async () => {
+    mockGit.status.mockResolvedValue({
+      modified: [],
+      not_added: [],
+      created: [],
+      conflicted: [],
+    });
+    mockGit.revparse.mockResolvedValue('teamai/push/jeffyxu/20260411-225746');
+
+    await resetToCleanMaster(mockGit as any);
+
+    expect(mockGit.checkout).toHaveBeenCalledWith('master');
+  });
+
+  it('should reset and checkout master when both dirty and on wrong branch', async () => {
+    mockGit.status.mockResolvedValue({
+      modified: [],
+      not_added: [],
+      created: ['new-file.txt'],
+      conflicted: ['votes/user.yaml'],
+    });
+    mockGit.revparse.mockResolvedValue('teamai/push/user/20260411-123456');
+
+    await resetToCleanMaster(mockGit as any);
+
+    expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+    expect(mockGit.checkout).toHaveBeenCalledWith('master');
   });
 });

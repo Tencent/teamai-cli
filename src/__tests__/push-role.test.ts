@@ -44,12 +44,15 @@ const mockCreateGit = vi.fn().mockReturnValue({
   stash: mockStash,
 });
 
+const mockResetToCleanMaster = vi.fn();
+
 vi.mock('../utils/git.js', () => ({
   createGit: (...args: unknown[]) => mockCreateGit(...args),
   pullRepo: (...args: unknown[]) => mockPullRepo(...args),
   pushRepoBranch: (...args: unknown[]) => mockPushRepoBranch(...args),
   checkoutMaster: (...args: unknown[]) => mockCheckoutMaster(...args),
   generateBranchName: (...args: unknown[]) => mockGenerateBranchName(...args),
+  resetToCleanMaster: (...args: unknown[]) => mockResetToCleanMaster(...args),
 }));
 
 vi.mock('../roles.js', async () => {
@@ -422,26 +425,7 @@ it('blocks skills that exist in non-allowed namespaces', async () => {
     consoleSpy.mockRestore();
   });
 
-  it('aborts stale merge when conflicted files exist before pull', async () => {
-    // Simulate conflicted files in team repo (e.g. votes/user.yaml)
-    const conflictedStatus = {
-      modified: [],
-      not_added: [],
-      created: [],
-      conflicted: ['votes/jeffyxu.yaml'],
-      staged: [],
-    };
-    const cleanStatus = {
-      modified: [],
-      not_added: [],
-      created: [],
-      conflicted: [],
-      staged: [],
-    };
-    mockGitStatus
-      .mockResolvedValueOnce(conflictedStatus)  // first call: sees conflict
-      .mockResolvedValueOnce(cleanStatus);       // after merge --abort: clean
-
+  it('resets dirty team repo to clean master before pull', async () => {
     mockAutoDetectInit.mockResolvedValue({
       localConfig: makeLocalConfig({ primaryRole: undefined }),
       teamConfig: makeTeamConfig(),
@@ -451,9 +435,12 @@ it('blocks skills that exist in non-allowed namespaces', async () => {
 
     await push({ all: true });
 
-    // Should have called merge --abort
-    expect(mockMerge).toHaveBeenCalledWith(['--abort']);
-    // Pull should still proceed
+    // Should have called resetToCleanMaster before pull
+    expect(mockResetToCleanMaster).toHaveBeenCalled();
     expect(mockPullRepo).toHaveBeenCalled();
+    // resetToCleanMaster must be called before pullRepo
+    const resetOrder = mockResetToCleanMaster.mock.invocationCallOrder[0];
+    const pullOrder = mockPullRepo.mock.invocationCallOrder[0];
+    expect(resetOrder).toBeLessThan(pullOrder);
   });
 });

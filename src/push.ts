@@ -1,6 +1,6 @@
 import readline from 'node:readline';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
-import { createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
+import { createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName, resetToCleanMaster } from './utils/git.js';
 import { getProvider } from './providers/index.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
@@ -98,46 +98,18 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
   const scopeLabel = localConfig.scope;
 
   // Pull latest master BEFORE scanning so detection runs against up-to-date repo.
-  // Handle two classes of dirty state that block git pull:
-  // 1. Unmerged (conflicted) files from a previous failed merge — abort the merge
-  // 2. Uncommitted changes (e.g. votes written by autoUpvote) — stash and restore
+  // The team repo may be in various broken states from previous failed pushes:
+  //   - Unmerged (conflicted) files without MERGE_HEAD (incomplete merge)
+  //   - Stuck on a stale push branch instead of master
+  //   - Uncommitted changes (e.g. votes written by autoUpvote)
+  // We recover from all of these before pulling.
   const pullSpin = spinner('Pulling latest master...').start();
   try {
     const repoPath = localConfig.repo.localPath;
     const git = createGit(repoPath);
-    let status = await git.status();
-
-    // Abort any in-progress merge that left unmerged (conflicted) files.
-    // These are typically votes/*.yaml from a previous pull that collided.
-    // Aborting is safe — the next pull will re-fetch everything.
-    if (status.conflicted.length > 0) {
-      log.debug(`Aborting stale merge (${status.conflicted.length} conflicted file(s))`);
-      await git.merge(['--abort']);
-      status = await git.status();
-    }
-
-    const isDirty = status.modified.length > 0
-      || status.not_added.length > 0
-      || status.created.length > 0;
-    if (isDirty) {
-      await git.stash(['push', '-m', 'teamai-push: auto-stash before pull']);
-    }
-    try {
-      await pullRepo(repoPath);
-      pullSpin.succeed('Master up to date');
-    } finally {
-      // Restore stashed changes regardless of pull success/failure
-      if (isDirty) {
-        try {
-          await git.stash(['pop']);
-        } catch {
-          // Stash pop conflict — drop the stash to avoid accumulation;
-          // the dirty files were likely outdated anyway.
-          log.debug('Stash pop conflict, dropping stashed changes');
-          await git.stash(['drop']);
-        }
-      }
-    }
+    await resetToCleanMaster(git);
+    await pullRepo(repoPath);
+    pullSpin.succeed('Master up to date');
   } catch (e) {
     pullSpin.warn(`Pull failed: ${(e as Error).message}`);
   }

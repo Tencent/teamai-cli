@@ -153,6 +153,44 @@ export function generateBranchName(username: string): string {
   return `teamai/push/${username}/${timestamp}`;
 }
 
+/**
+ * Reset the team repo to a clean master state.
+ *
+ * The team repo is a local cache — any uncommitted or conflicted state is
+ * safe to discard. This handles multiple failure modes:
+ *
+ *  1. Unmerged files WITHOUT MERGE_HEAD (incomplete merge where HEAD was
+ *     removed but conflict markers remain) — `merge --abort` would fail,
+ *     so we use `git reset --hard HEAD`.
+ *  2. Active merge with MERGE_HEAD — `merge --abort` works, but
+ *     `reset --hard` handles this too.
+ *  3. Stuck on a stale push branch — switch back to master.
+ *  4. Uncommitted modifications — reset discards them.
+ */
+export async function resetToCleanMaster(git: SimpleGit): Promise<void> {
+  const status = await git.status();
+  const hasConflicts = status.conflicted.length > 0;
+  const isDirty = hasConflicts
+    || status.modified.length > 0
+    || status.not_added.length > 0
+    || status.created.length > 0;
+
+  if (isDirty) {
+    log.debug(
+      `Resetting dirty team repo (${status.conflicted.length} conflicted, `
+      + `${status.modified.length} modified, ${status.not_added.length} untracked)`,
+    );
+    await git.reset(['--hard', 'HEAD']);
+  }
+
+  // Ensure we're on master (previous push may have left us on a feature branch)
+  const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+  if (branch !== 'master') {
+    log.debug(`Switching from stale branch '${branch}' back to master`);
+    await git.checkout('master');
+  }
+}
+
 export async function getRepoStatus(localPath: string): Promise<{ ahead: number; behind: number; modified: string[] }> {
   const git = createGit(localPath);
   await git.fetch();
