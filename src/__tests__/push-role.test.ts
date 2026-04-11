@@ -67,6 +67,14 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
+vi.mock('../resources/skills.js', () => ({
+  scanTeamRepoNamespaces: vi.fn().mockResolvedValue([]),
+}));
+
+const mockScanTeamRepoNamespaces = vi.mocked(
+  (await import('../resources/skills.js')).scanTeamRepoNamespaces,
+);
+
 vi.mock('../providers/index.js', () => ({
   getProvider: vi.fn().mockReturnValue({
     parseRepoInput: vi.fn().mockReturnValue({ owner: 'test', repo: 'repo' }),
@@ -102,7 +110,7 @@ function mockSkillHandler(pushedItems?: Array<Record<string, unknown>>) {
     if (type === 'skills') {
       return {
         scanLocalForPush: vi.fn().mockResolvedValue([
-          { name: 'skill-a', type: 'skills', sourcePath: '/tmp/skill-a', relativePath: 'skills/skill-a' },
+          { name: 'skill-a', type: 'skills', sourcePath: '/tmp/skill-a', relativePath: 'skills/skill-a', status: 'new' },
         ]),
         pushItem: vi.fn().mockImplementation(async (item: Record<string, unknown>) => {
           pushedItems?.push(item);
@@ -139,6 +147,7 @@ describe('push namespace routing', () => {
       ],
     });
     readlineAnswer = '1';
+    mockScanTeamRepoNamespaces.mockResolvedValue([]);
   });
 
   it('auto-selects namespace when role has only one skill namespace', async () => {
@@ -314,6 +323,68 @@ it('blocks skills that exist in non-allowed namespaces', async () => {
 
     // The push should have been called (since we have --all)
     // but the mocked handler is already filtering it
+  });
+
+  it('prompts for namespace when no primaryRole but team repo has namespaces', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig({ primaryRole: undefined }),
+      teamConfig: makeTeamConfig(),
+    });
+    mockSkillHandler(pushedItems);
+    mockScanTeamRepoNamespaces.mockResolvedValue(['tencent', 'hai_dev']);
+
+    // User selects "2" → hai_dev
+    readlineAnswer = '2';
+    await push({ all: true });
+
+    expect(pushedItems[0].namespace).toBe('hai_dev');
+    expect(pushedItems[0].relativePath).toBe('skills/hai_dev/skill-a');
+  });
+
+  it('auto-selects single namespace when no primaryRole', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig({ primaryRole: undefined }),
+      teamConfig: makeTeamConfig(),
+    });
+    mockSkillHandler(pushedItems);
+    mockScanTeamRepoNamespaces.mockResolvedValue(['only-ns']);
+
+    await push({ all: true });
+
+    expect(pushedItems[0].namespace).toBe('only-ns');
+    expect(pushedItems[0].relativePath).toBe('skills/only-ns/skill-a');
+  });
+
+  it('does flat push when no primaryRole and no namespaces in team repo', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig({ primaryRole: undefined }),
+      teamConfig: makeTeamConfig(),
+    });
+    mockSkillHandler(pushedItems);
+    mockScanTeamRepoNamespaces.mockResolvedValue([]);
+
+    await push({ all: true });
+
+    // No namespace should be set — flat push
+    expect(pushedItems[0].namespace).toBeUndefined();
+  });
+
+  it('uses first namespace in silent mode when no primaryRole', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig({ primaryRole: undefined }),
+      teamConfig: makeTeamConfig(),
+    });
+    mockSkillHandler(pushedItems);
+    mockScanTeamRepoNamespaces.mockResolvedValue(['tencent', 'hai_dev']);
+
+    await push({ all: true, silent: true });
+
+    expect(pushedItems[0].namespace).toBe('tencent');
+    expect(pushedItems[0].relativePath).toBe('skills/tencent/skill-a');
   });
 
   it('shows destination path in item display', async () => {

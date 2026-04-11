@@ -4,6 +4,7 @@ import { pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './
 import { getProvider } from './providers/index.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
+import { scanTeamRepoNamespaces } from './resources/skills.js';
 import type { GlobalOptions, ResourceItem, ResourceType } from './types.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
 
@@ -107,68 +108,8 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 
   const spin = spinner('Scanning local resources...').start();
 
-  // Resolve the target namespace for skill push.
-  //
-  // A "namespace" is a subdirectory under skills/ in the team repo (e.g. skills/common/,
-  // skills/hai/). Each role defines which namespaces it can access via resources.skills.
-  // Example: role "hai" with resources.skills: [common, hai] can push to either namespace.
-  //
-  // Resolution order:
-  //   1. --role flag → use as namespace directly (backward compat)
-  //   2. Single namespace available → use it automatically
-  //   3. Multiple namespaces + interactive → prompt user to choose
-  //   4. Multiple namespaces + silent → use primaryRole as namespace
-  let resolvedNamespace: string | undefined;
-  if (options.role || localConfig.primaryRole) {
-    try {
-      if (options.role) {
-        // Explicit --role flag: use as namespace directly
-        resolvedNamespace = options.role;
-      } else {
-        // Resolve all skill namespaces the user has access to
-        const skillNamespaces = await resolveSkillNamespaces(
-          localConfig.repo.localPath,
-          localConfig.primaryRole!,
-          localConfig.additionalRoles ?? [],
-        );
-
-        if (skillNamespaces.length === 0) {
-          // No namespaces configured — flat push
-          resolvedNamespace = undefined;
-        } else if (skillNamespaces.length === 1) {
-          // Single namespace — use it directly
-          resolvedNamespace = skillNamespaces[0];
-        } else if (options.silent) {
-          // Multiple namespaces in silent mode — default to primaryRole
-          resolvedNamespace = localConfig.primaryRole;
-        } else {
-          // Multiple namespaces — ask user which one to push to
-          spin.stop();
-          console.log('');
-          console.log('Which namespace should these skills be pushed to?');
-          skillNamespaces.forEach((ns, index) => {
-            console.log(`  ${index + 1}. ${ns}`);
-          });
-          console.log('');
-          const answer = await askQuestion(
-            `Choose namespace [1-${skillNamespaces.length}] (default: 1 = ${skillNamespaces[0]}): `,
-          );
-          const selection = answer ? Number.parseInt(answer, 10) : 1;
-          if (Number.isNaN(selection) || selection < 1 || selection > skillNamespaces.length) {
-            log.error(`Invalid selection. Choose a number between 1 and ${skillNamespaces.length}.`);
-            return;
-          }
-          resolvedNamespace = skillNamespaces[selection - 1];
-          spin.start();
-        }
-      }
-    } catch (e) {
-      spin.fail((e as Error).message);
-      return;
-    }
-  }
-
-  // Scan for pushable resources
+  // Scan for pushable resources first, then resolve namespace for new skills only.
+  // Modified skills already carry their namespace from scanLocalForPush.
   const pushableTypes: ResourceType[] = ['skills', 'rules', 'env'];
   const allItems: ResourceItem[] = [];
 
@@ -185,6 +126,92 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
     return;
   }
 
+  // Resolve namespace for NEW skills only.
+  // Modified skills already have their namespace set by scanLocalForPush.
+  const newSkills = allItems.filter((i) => i.type === 'skills' && i.status === 'new');
+  let resolvedNamespaceForNew: string | undefined;
+
+  if (newSkills.length > 0) {
+    if (options.role) {
+      // Explicit --role flag: use as namespace directly (backward compat)
+      resolvedNamespaceForNew = options.role;
+    } else if (localConfig.primaryRole) {
+      try {
+        const skillNamespaces = await resolveSkillNamespaces(
+          localConfig.repo.localPath,
+          localConfig.primaryRole,
+          localConfig.additionalRoles ?? [],
+        );
+
+        if (skillNamespaces.length === 0) {
+          resolvedNamespaceForNew = undefined;
+        } else if (skillNamespaces.length === 1) {
+          resolvedNamespaceForNew = skillNamespaces[0];
+        } else if (options.silent) {
+          resolvedNamespaceForNew = localConfig.primaryRole;
+        } else {
+          console.log('');
+          console.log('Which namespace should new skills be pushed to?');
+          skillNamespaces.forEach((ns, index) => {
+            console.log(`  ${index + 1}. ${ns}`);
+          });
+          console.log('');
+          const answer = await askQuestion(
+            `Choose namespace [1-${skillNamespaces.length}] (default: 1 = ${skillNamespaces[0]}): `,
+          );
+          const selection = answer ? Number.parseInt(answer, 10) : 1;
+          if (Number.isNaN(selection) || selection < 1 || selection > skillNamespaces.length) {
+            log.error(`Invalid selection. Choose a number between 1 and ${skillNamespaces.length}.`);
+            return;
+          }
+          resolvedNamespaceForNew = skillNamespaces[selection - 1];
+        }
+      } catch (e) {
+        log.error((e as Error).message);
+        return;
+      }
+    } else {
+      // No role configured — auto-detect namespaces from team repo structure
+      try {
+        const detectedNamespaces = await scanTeamRepoNamespaces(localConfig.repo.localPath);
+
+        if (detectedNamespaces.length === 0) {
+          resolvedNamespaceForNew = undefined;
+        } else if (detectedNamespaces.length === 1) {
+          resolvedNamespaceForNew = detectedNamespaces[0];
+        } else if (options.silent) {
+          resolvedNamespaceForNew = detectedNamespaces[0];
+        } else {
+          console.log('');
+          console.log('Which namespace should new skills be pushed to?');
+          detectedNamespaces.forEach((ns, index) => {
+            console.log(`  ${index + 1}. ${ns}`);
+          });
+          console.log('');
+          const answer = await askQuestion(
+            `Choose namespace [1-${detectedNamespaces.length}] (default: 1 = ${detectedNamespaces[0]}): `,
+          );
+          const selection = answer ? Number.parseInt(answer, 10) : 1;
+          if (Number.isNaN(selection) || selection < 1 || selection > detectedNamespaces.length) {
+            log.error(`Invalid selection. Choose a number between 1 and ${detectedNamespaces.length}.`);
+            return;
+          }
+          resolvedNamespaceForNew = detectedNamespaces[selection - 1];
+        }
+      } catch {
+        resolvedNamespaceForNew = undefined;
+      }
+    }
+
+    // Apply namespace to new skills
+    for (const item of newSkills) {
+      if (resolvedNamespaceForNew) {
+        item.namespace = resolvedNamespaceForNew;
+        item.relativePath = `skills/${resolvedNamespaceForNew}/${item.name}`;
+      }
+    }
+  }
+
   // Display items
   console.log('');
   console.log(`Found ${allItems.length} resource(s) to push:`);
@@ -193,8 +220,8 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
     const statusLabel = item.status === 'modified' ? ' (modified)' : ' (new)';
     console.log(`  [${item.type}] ${item.name}${statusLabel}`);
     console.log(`    from: ${item.sourcePath}`);
-    if (item.type === 'skills' && resolvedNamespace) {
-      console.log(`    to:   skills/${resolvedNamespace}/${item.name}`);
+    if (item.type === 'skills' && item.namespace) {
+      console.log(`    to:   skills/${item.namespace}/${item.name}`);
     }
   }
   console.log('');
@@ -218,10 +245,6 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
   const pushedFiles: string[] = [];
 
   for (const item of allItems) {
-    if (item.type === 'skills' && resolvedNamespace) {
-      item.namespace = resolvedNamespace;
-      item.relativePath = `skills/${resolvedNamespace}/${item.name}`;
-    }
     const handler = getHandler(item.type);
     await handler.pushItem(item, teamConfig, localConfig);
     pushedFiles.push(item.relativePath);

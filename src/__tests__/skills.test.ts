@@ -15,6 +15,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { SkillsHandler } from '../resources/skills.js';
+import { scanTeamRepoNamespaces } from '../resources/skills.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 describe('SkillsHandler.scanLocalForPush', () => {
@@ -333,6 +334,92 @@ scope: 'user',
     expect(items.find((item) => item.name === 'blocked-skill')).toBeUndefined();
   });
 
+  it('detects modified skill in namespaced team repo when no primaryRole is set', async () => {
+    // No primaryRole — legacy mode
+    // Team repo uses namespaced layout: skills/tencent/tgit/SKILL.md
+    const namespacedSkillDir = path.join(localConfig.repo.localPath, 'skills', 'tencent', 'tgit');
+    await fse.ensureDir(namespacedSkillDir);
+    await fse.writeFile(path.join(namespacedSkillDir, 'SKILL.md'), '# v1');
+
+    // Local has modified version
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'tgit');
+    await fse.ensureDir(localSkillDir);
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# v2');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const item = items.find((i) => i.name === 'tgit');
+    expect(item).toBeDefined();
+    expect(item!.status).toBe('modified');
+    // Modified skill should carry its original namespace from team repo
+    expect(item!.namespace).toBe('tencent');
+    expect(item!.relativePath).toBe('skills/tencent/tgit');
+  });
+
+  it('detects unchanged skill in namespaced team repo when no primaryRole is set', async () => {
+    // No primaryRole — legacy mode
+    const content = '# Same Skill';
+    const namespacedSkillDir = path.join(localConfig.repo.localPath, 'skills', 'tencent', 'same-skill');
+    await fse.ensureDir(namespacedSkillDir);
+    await fse.writeFile(path.join(namespacedSkillDir, 'SKILL.md'), content);
+
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'same-skill');
+    await fse.ensureDir(localSkillDir);
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), content);
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    expect(items.map((i) => i.name)).not.toContain('same-skill');
+  });
+
+  it('handles mixed flat and namespaced layout without primaryRole', async () => {
+    // Flat skill
+    const flatSkillDir = path.join(localConfig.repo.localPath, 'skills', 'flat-skill');
+    await fse.ensureDir(flatSkillDir);
+    await fse.writeFile(path.join(flatSkillDir, 'SKILL.md'), '# v1');
+
+    // Namespaced skill
+    const nsSkillDir = path.join(localConfig.repo.localPath, 'skills', 'myns', 'ns-skill');
+    await fse.ensureDir(nsSkillDir);
+    await fse.writeFile(path.join(nsSkillDir, 'SKILL.md'), '# v1');
+
+    // Local has modified versions of both
+    const localFlat = path.join(homeDir, '.claude/skills', 'flat-skill');
+    await fse.ensureDir(localFlat);
+    await fse.writeFile(path.join(localFlat, 'SKILL.md'), '# v2');
+
+    const localNs = path.join(homeDir, '.claude/skills', 'ns-skill');
+    await fse.ensureDir(localNs);
+    await fse.writeFile(path.join(localNs, 'SKILL.md'), '# v2');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const flatItem = items.find((i) => i.name === 'flat-skill');
+    const nsItem = items.find((i) => i.name === 'ns-skill');
+    expect(flatItem?.status).toBe('modified');
+    expect(flatItem?.namespace).toBeUndefined(); // flat skill has no namespace
+    expect(nsItem?.status).toBe('modified');
+    expect(nsItem?.namespace).toBe('myns'); // carries original namespace
+    expect(nsItem?.relativePath).toBe('skills/myns/ns-skill');
+  });
+
+  it('does not treat namespace directories as new skills', async () => {
+    // Team repo has namespace dir "tencent" with a skill inside
+    const nsSkillDir = path.join(localConfig.repo.localPath, 'skills', 'tencent', 'tgit');
+    await fse.ensureDir(nsSkillDir);
+    await fse.writeFile(path.join(nsSkillDir, 'SKILL.md'), '# TGit');
+
+    // Local has a completely unrelated skill
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'my-new-skill');
+    await fse.ensureDir(localSkillDir);
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# New');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    // "tencent" should NOT appear as a skill name
+    expect(items.map((i) => i.name)).not.toContain('tencent');
+    // "my-new-skill" should be detected as new with no namespace
+    const newItem = items.find((i) => i.name === 'my-new-skill');
+    expect(newItem?.status).toBe('new');
+    expect(newItem?.namespace).toBeUndefined();
+  });
+
   it('allows skills in allowed namespaces and new skills', async () => {
     localConfig.primaryRole = 'hai';
     localConfig.additionalRoles = [];
@@ -555,5 +642,63 @@ describe('SkillsHandler.readContributors', () => {
 
     const contributors = await SkillsHandler.readContributors(skillDir);
     expect(contributors).toEqual(['alice', 'bob']);
+  });
+});
+
+describe('scanTeamRepoNamespaces', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-ns-'));
+  });
+
+  afterEach(async () => {
+    await fse.remove(tmpDir);
+  });
+
+  it('returns namespace directories (those without SKILL.md)', async () => {
+    const repoPath = path.join(tmpDir, 'repo');
+    // Namespace dir
+    await fse.ensureDir(path.join(repoPath, 'skills', 'tencent', 'tgit'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'tencent', 'tgit', 'SKILL.md'), '# TGit');
+    // Flat skill
+    await fse.ensureDir(path.join(repoPath, 'skills', 'flat-skill'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'flat-skill', 'SKILL.md'), '# Flat');
+
+    const namespaces = await scanTeamRepoNamespaces(repoPath);
+    expect(namespaces).toContain('tencent');
+    expect(namespaces).not.toContain('flat-skill');
+  });
+
+  it('returns empty array for purely flat layout', async () => {
+    const repoPath = path.join(tmpDir, 'repo');
+    await fse.ensureDir(path.join(repoPath, 'skills', 'skill-a'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'skill-a', 'SKILL.md'), '# A');
+    await fse.ensureDir(path.join(repoPath, 'skills', 'skill-b'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'skill-b', 'SKILL.md'), '# B');
+
+    const namespaces = await scanTeamRepoNamespaces(repoPath);
+    expect(namespaces).toEqual([]);
+  });
+
+  it('returns empty array when skills dir does not exist', async () => {
+    const repoPath = path.join(tmpDir, 'repo');
+    await fse.ensureDir(repoPath);
+
+    const namespaces = await scanTeamRepoNamespaces(repoPath);
+    expect(namespaces).toEqual([]);
+  });
+
+  it('detects multiple namespaces', async () => {
+    const repoPath = path.join(tmpDir, 'repo');
+    await fse.ensureDir(path.join(repoPath, 'skills', 'tencent', 'tgit'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'tencent', 'tgit', 'SKILL.md'), '# TGit');
+    await fse.ensureDir(path.join(repoPath, 'skills', 'hai_dev', 'hai-log'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'hai_dev', 'hai-log', 'SKILL.md'), '# Log');
+
+    const namespaces = await scanTeamRepoNamespaces(repoPath);
+    expect(namespaces).toContain('tencent');
+    expect(namespaces).toContain('hai_dev');
+    expect(namespaces).toHaveLength(2);
   });
 });

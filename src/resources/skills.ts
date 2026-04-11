@@ -10,6 +10,30 @@ import { loadRolesManifest, resolveRoleResourceNamespaces } from '../roles.js';
 /** File name used to track who has contributed (pushed) a skill. */
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
 
+/**
+ * Scan the team repo skills/ directory to discover namespace subdirectories.
+ * A directory is a namespace if it does NOT contain SKILL.md (i.e. it contains
+ * skill subdirectories rather than being a skill itself).
+ * Returns the list of namespace names found, or [] if layout is purely flat.
+ */
+export async function scanTeamRepoNamespaces(repoPath: string): Promise<string[]> {
+  const teamSkillsDir = path.join(repoPath, 'skills');
+  if (!await pathExists(teamSkillsDir)) return [];
+
+  const topDirs = await listDirs(teamSkillsDir);
+  const namespaces: string[] = [];
+
+  for (const dir of topDirs) {
+    const dirPath = path.join(teamSkillsDir, dir);
+    const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
+    if (!hasSkillMd) {
+      namespaces.push(dir);
+    }
+  }
+
+  return namespaces;
+}
+
 async function readPushIgnoredSkills(): Promise<Set<string>> {
   const content = await readFileSafe(getPushignorePath());
   if (!content) return new Set();
@@ -90,11 +114,25 @@ export class SkillsHandler extends ResourceHandler {
         }
       }
     } else {
-      // Legacy mode (no roles): load all skills from flat structure
+      // Legacy mode (no roles): detect flat vs namespaced layout automatically.
+      // A directory is a namespace if it does NOT contain SKILL.md; otherwise it's a flat skill.
       const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills');
-      const names = await listDirs(teamSkillsDir);
-      for (const name of names) {
-        teamSkills.set(name, { dir: path.join(teamSkillsDir, name) });
+      const topDirs = await listDirs(teamSkillsDir);
+      for (const dir of topDirs) {
+        const dirPath = path.join(teamSkillsDir, dir);
+        const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
+        if (hasSkillMd) {
+          // Flat skill
+          teamSkills.set(dir, { dir: dirPath });
+        } else {
+          // Namespace directory — scan subdirectories as skills
+          const subDirs = await listDirs(dirPath);
+          for (const subDir of subDirs) {
+            if (!teamSkills.has(subDir)) {
+              teamSkills.set(subDir, { dir: path.join(dirPath, subDir), namespace: dir });
+            }
+          }
+        }
       }
     }
 
@@ -103,7 +141,7 @@ export class SkillsHandler extends ResourceHandler {
     const pushIgnoredSkills = await readPushIgnoredSkills();
 
     // Collect the best candidate for each skill name across all tool directories
-    const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus }>();
+    const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus; namespace?: string }>();
 
     // Scan each tool's skills directory
     for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
@@ -133,7 +171,7 @@ export class SkillsHandler extends ResourceHandler {
           const mtime = await getDirLatestMtime(localDirPath);
           const existing = candidates.get(dir);
           if (!existing || mtime > existing.mtime) {
-            candidates.set(dir, { sourcePath: localDirPath, mtime, status: 'modified' });
+            candidates.set(dir, { sourcePath: localDirPath, mtime, status: 'modified', namespace: teamSkills.get(dir)!.namespace });
           }
         } else {
           // Skill does not exist in team repo — candidate for "new"
@@ -155,13 +193,15 @@ export class SkillsHandler extends ResourceHandler {
     // Convert candidates map to items array
     const items: ResourceItem[] = [];
     for (const [name, candidate] of candidates) {
+      const ns = candidate.namespace ?? (candidate.status === 'new' ? undefined : undefined);
+      const relPath = ns ? `skills/${ns}/${name}` : `skills/${name}`;
       items.push({
         name,
         type: 'skills',
         sourcePath: candidate.sourcePath,
-        relativePath: `skills/${name}`,
+        relativePath: relPath,
         status: candidate.status,
-        namespace: localConfig.primaryRole,
+        namespace: ns,
       });
     }
 
