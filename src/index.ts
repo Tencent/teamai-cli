@@ -273,6 +273,16 @@ program
     await update({ ...globalOpts, ...cmdOpts });
   });
 
+program
+  .command('uninstall')
+  .description('Remove all teamai-managed resources and hooks from this machine')
+  .option('--force', 'Skip confirmation prompt')
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { uninstall } = await import('./uninstall.js');
+    await uninstall({ ...globalOpts, ...cmdOpts });
+  });
+
 const envCmd = program
   .command('env')
   .description('Manage team environment variables')
