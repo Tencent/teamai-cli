@@ -99,6 +99,19 @@ teamai init --repo <group>/TeamAi-<team>
 - `primaryRole`：默认 skill 同步和推送的目标 namespace
 - `additionalRoles`：额外需要同步的 skill namespace
 
+也可以通过 CLI 参数跳过交互，实现完全非交互式初始化（适合 CI/CD 或 AI agent）：
+
+```bash
+teamai init --repo <group>/TeamAi-<team> --scope user --role hai_dev --force
+```
+
+| 参数 | 说明 |
+|------|------|
+| `--repo <url>` | 团队仓库地址（必填） |
+| `--scope <user\|project>` | 作用域，默认 `user` |
+| `--role <id>` | 直接指定 primaryRole，跳过角色交互选择 |
+| `--force` | 覆盖已有配置，跳过确认提示 |
+
 本地配置示例：
 
 ```yaml
@@ -445,6 +458,38 @@ projectRoot: /path/to/project  # 仅 project scope
 
 ---
 
+## 卸载
+
+`teamai uninstall` 会智能清理所有 teamai 管理的资源，**保留用户自建内容**。
+
+```bash
+# 预览将要移除的内容（不做实际变更）
+teamai uninstall --dry-run
+
+# 交互式确认卸载
+teamai uninstall
+
+# 跳过确认直接卸载（适合脚本/CI）
+teamai uninstall --force
+```
+
+移除内容：
+- AI 工具 settings 中的 teamai hooks
+- CLAUDE.md 中的 teamai rules 块（保留用户自写内容）
+- 团队同步的 skills（保留用户自建 skills）
+- 团队同步的 rules
+- Shell profile 中的 env 块
+- `~/.teamai/` 目录
+
+卸载后如需重新加入：
+
+```bash
+teamai init --repo <group>/TeamAi-<team> --scope user --role <role_id> --force
+teamai pull
+```
+
+---
+
 ## 常见问题 FAQ
 
 **Q: User scope 和 Project scope 可以共存吗？**
@@ -453,7 +498,11 @@ projectRoot: /path/to/project  # 仅 project scope
 
 **Q: `teamai init` 提示已初始化？**
 
-交互模式下会提示是否覆盖，输入 `y` 即可。
+交互模式下会提示是否覆盖，输入 `y` 即可。也可用 `--force` 跳过确认：
+
+```bash
+teamai init --repo <group>/<repo> --force
+```
 
 **Q: Hooks 没有自动触发？**
 

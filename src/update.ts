@@ -1,11 +1,11 @@
 import { createRequire } from 'node:module';
 import { execSync } from 'node:child_process';
-import readline from 'node:readline';
 import fse from 'fs-extra';
 import { loadState, saveState, loadLocalConfig } from './config.js';
 import { log } from './utils/logger.js';
 import { expandHome } from './utils/fs.js';
 import { TEAMAI_UPDATE_LOCK_PATH } from './types.js';
+import { askConfirmation } from './utils/prompt.js';
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -164,22 +164,6 @@ export async function checkForUpdate(options?: { force?: boolean }): Promise<Che
   });
 
   return { available, current, latest };
-}
-
-/**
- * Ask user for confirmation via readline (for manual prompt mode)
- */
-function askConfirmation(question: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
-    });
-  });
 }
 
 /**

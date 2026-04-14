@@ -1,5 +1,4 @@
 import path from 'node:path';
-import readline from 'node:readline';
 import { autoDetectInit } from './config.js';
 import { removeHooks } from './hooks.js';
 import {
@@ -24,6 +23,7 @@ import {
   expandHome,
 } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { askConfirmation } from './utils/prompt.js';
 
 // ─── Types ─────────────────────────────────────────────
 
@@ -51,16 +51,6 @@ interface RemovalPlan {
 }
 
 // ─── Helpers ───────────────────────────────────────────
-
-function askConfirmation(message: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(message, (answer) => {
-      rl.close();
-      resolve(answer.trim().toLowerCase() === 'y');
-    });
-  });
-}
 
 function detectShellProfile(): string | null {
   const home = process.env.HOME;

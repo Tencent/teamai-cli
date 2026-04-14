@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### ✨ 新功能
 
+- **Uninstall 命令**：`teamai uninstall [--force]` 智能清理所有 teamai 管理的资源（hooks、CLAUDE.md 块、skills、rules、env、docs、~/.teamai/），保留用户自建内容，支持 `--dry-run` 预览 (!137)
+- **Init 非交互模式**：新增 `--role <id>` 和 `--force` 参数，支持完全非交互式初始化，适合 CI/CD 和 AI agent 自动化 (!138)
+  - `teamai init --repo owner/repo --scope user --role hai_dev --force`
+  - 非 TTY 环境下自动使用默认值，不再 hang
+- **共享 Prompt 工具**：统一 6 个模块（init/uninstall/update/remove/push/roles-cmd）的 readline 实现为单例模式，修复管道输入兼容性问题 (!138)
 - **Push 交互式命名空间选择**：推送新 skill 时，CLI 自动检测团队仓库中的命名空间并提供交互式选择，无需手动指定 `--role` (!128)
   - 有 `primaryRole` 时，从 manifest 展开可用 namespace 列表
   - 无 `primaryRole` 时，自动扫描团队仓库目录结构

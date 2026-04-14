@@ -42,15 +42,16 @@ vi.mock('../types.js', () => ({
 }));
 
 let readlineAnswer = 'n';
-vi.mock('node:readline', () => ({
-  default: {
-    createInterface: () => ({
-      question: (_prompt: string, cb: (answer: string) => void) => {
-        cb(readlineAnswer);
-      },
-      close: vi.fn(),
-    }),
-  },
+vi.mock('../utils/prompt.js', () => ({
+  askQuestion: vi.fn((_prompt: string, defaultValue?: string) => {
+    return Promise.resolve(readlineAnswer || defaultValue || '');
+  }),
+  askConfirmation: vi.fn(() => {
+    return Promise.resolve(
+      readlineAnswer.toLowerCase() === 'y' || readlineAnswer.toLowerCase() === 'yes',
+    );
+  }),
+  closePrompt: vi.fn(),
 }));
 
 // ─── Imports (after mocks) ──────────────────────────────

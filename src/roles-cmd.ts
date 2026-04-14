@@ -1,4 +1,3 @@
-import readline from 'node:readline';
 import path from 'node:path';
 import YAML from 'yaml';
 import { autoDetectInit, loadLocalConfig, saveLocalConfig, loadTeamConfig, saveLocalConfigForScope } from './config.js';
@@ -9,16 +8,7 @@ import { ensureDir, pathExists, writeFile, expandHome } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { createPrWithFallback } from './push.js';
 import type { GlobalOptions, TeamaiConfig, LocalConfig } from './types.js';
-
-function askQuestion(prompt: string): Promise<string> {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    return new Promise((resolve) => {
-        rl.question(prompt, (answer) => {
-            rl.close();
-            resolve(answer.trim());
-        });
-    });
-}
+import { askQuestion, askConfirmation } from './utils/prompt.js';
 
 /**
  * Parse a comma-separated string into a trimmed, non-empty string array.
@@ -93,8 +83,8 @@ export async function rolesInit(options: GlobalOptions): Promise<void> {
     const manifestPath = path.join(repoPath, 'manifest', 'roles.yaml');
     if (await pathExists(manifestPath)) {
         log.warn(`Roles manifest already exists at ${manifestPath}`);
-        const overwrite = await askQuestion('Overwrite existing manifest? [y/N] ');
-        if (overwrite.toLowerCase() !== 'y') {
+        const overwrite = await askConfirmation('Overwrite existing manifest? [y/N] ');
+        if (!overwrite) {
             log.info('Aborted. Existing manifest is unchanged.');
             return;
         }
@@ -148,8 +138,8 @@ export async function rolesInit(options: GlobalOptions): Promise<void> {
 
         log.success(`Added role: ${id} (namespaces: ${namespaces.join(', ')})`);
 
-        const more = await askQuestion('Add another role? [y/N] ');
-        addMore = more.toLowerCase() === 'y';
+        const more = await askConfirmation('Add another role? [y/N] ');
+        addMore = more;
     }
 
     if (roles.length === 0) {

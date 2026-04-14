@@ -22,6 +22,9 @@ teamai init --repo yourteam/yourproject
 # 项目级初始化（资源安装到项目目录下）
 cd /path/to/my-project
 teamai init --repo yourteam/yourproject --scope project
+
+# 非交互模式（适合 CI/CD 或 AI agent 自动化）
+teamai init --repo yourteam/yourproject --scope user --role hai_dev --force
 ```
 
 ### 管理员
@@ -32,7 +35,7 @@ teamai init --repo yourteam/yourproject --scope project
 
 | 命令 | 说明 |
 |------|------|
-| `teamai init [--scope <user\|project>]` | 初始化（自动安装 gf CLI、OAuth 登录、关联仓库、注册成员、配置 reviewers、注入 hooks） |
+| `teamai init [--scope <user\|project>] [--role <id>] [--force]` | 初始化（自动安装 gf CLI、OAuth 登录、关联仓库、注册成员、配置 reviewers、注入 hooks） |
 | `teamai push [--all] [--role <id>]` | 推送本地新资源到独立分支并创建 Merge Request；新 skill 交互式选择目标命名空间，可用 `--role` 覆盖 |
 | `teamai pull [--silent]` | 拉取团队资源并注入到本地 AI 工具（支持双 scope 依次拉取） |
 | `teamai status` | 查看本地 vs 团队仓库差异 |
@@ -44,6 +47,7 @@ teamai init --repo yourteam/yourproject --scope project
 | `teamai recall <query>` | 搜索团队知识库，自动合并 user + project 双 scope 结果 |
 | `teamai digest` | 生成团队 AI 使用周报（skill 排行、新增/更新 skill、session 摘要） |
 | `teamai hooks` | 管理 AI 工具 hooks（list / inject / remove） |
+| `teamai uninstall [--force]` | 卸载 teamai：移除 hooks、rules、skills、env、docs、~/.teamai/ |
 | `teamai doctor` | 诊断配置问题 |
 
 全局选项：

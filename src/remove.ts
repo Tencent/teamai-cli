@@ -1,20 +1,10 @@
-import readline from 'node:readline';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
 import { pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
 import { createPrWithFallback } from './push.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
 import type { GlobalOptions, ResourceType } from './types.js';
-
-function askConfirm(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(`${prompt} [y/N] `, (answer) => {
-      rl.close();
-      resolve(answer.toLowerCase() === 'y');
-    });
-  });
-}
+import { askConfirmation } from './utils/prompt.js';
 
 const REMOVABLE_TYPES: ResourceType[] = ['skills', 'rules'];
 
@@ -86,7 +76,7 @@ export async function remove(
     return;
   }
 
-  const confirmed = await askConfirm('Are you sure?');
+  const confirmed = await askConfirmation('Are you sure? [y/N] ');
   if (!confirmed) {
     log.info('Cancelled');
     return;

@@ -21,9 +21,17 @@ interface RunResult {
 }
 
 function runCLI(args: string[], stdin = ''): Promise<RunResult> {
+  return runCLIWithEnv(args, {}, stdin);
+}
+
+function runCLIWithEnv(
+  args: string[],
+  envOverrides: Record<string, string> = {},
+  stdin = '',
+): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn('node', [CLI, ...args], {
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: { ...process.env, FORCE_COLOR: '0', ...envOverrides },
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: ROOT,
     });
@@ -72,9 +80,29 @@ describe('CLI basics', () => {
 
   it('--help should list core commands', async () => {
     const { output } = await runCLI(['--help']);
-    for (const cmd of ['init', 'pull', 'push', 'status', 'members', 'tags']) {
+    for (const cmd of ['init', 'pull', 'push', 'status', 'members', 'tags', 'uninstall']) {
       expect(output).toContain(cmd);
     }
+  });
+});
+
+// ─── Uninstall CLI (no token needed) ────────────────────
+
+describe('uninstall CLI', () => {
+  it('teamai uninstall --help should show options', async () => {
+    const { output, code } = await runCLI(['uninstall', '--help']);
+    expect(code).toBe(0);
+    expect(output).toContain('--force');
+    expect(output).toContain('Remove all teamai-managed resources');
+  });
+
+  it('teamai uninstall --dry-run should not crash when no config', async () => {
+    // Run with a fake HOME to simulate no teamai installation
+    const result = await runCLIWithEnv(['uninstall', '--dry-run', '--force'], {
+      HOME: path.join(ROOT, 'dist', '__nonexistent_home__'),
+    });
+    // Should exit 0 with "nothing to uninstall" or show plan
+    expect(result.code).toBe(0);
   });
 });
 
@@ -240,6 +268,62 @@ describe('remote commands', () => {
       const unsub = await runCLI(['tags', 'unsubscribe', '__e2e_test_tag__']);
       expect(unsub.code).toBe(0);
       expect(unsub.output).toContain('Unsubscribed');
+    },
+  );
+
+  it.skipIf(!CAN_RUN_REMOTE)(
+    'teamai uninstall --dry-run — previews resources without changes',
+    async () => {
+      const { code, output } = await runCLI(['uninstall', '--dry-run']);
+      expect(code).toBe(0);
+      expect(output).toContain('Dry run');
+      // Should list at least one resource category
+      expect(output).toMatch(/Hooks|CLAUDE\.md|Skills|Rules|Shell profile|Docs|TeamAI/);
+    },
+  );
+
+  it.skipIf(!CAN_RUN_REMOTE)(
+    'teamai uninstall --force — cleans up and exits successfully',
+    async () => {
+      // Step 1: Uninstall everything
+      const uninstallResult = await runCLI(['uninstall', '--force']);
+      expect(uninstallResult.code).toBe(0);
+      expect(uninstallResult.output).toContain('卸载完成');
+
+      // Step 2: Verify cleanup — config.yaml should not exist
+      const teamaiHome = path.join(process.env.HOME ?? '', '.teamai');
+      expect(fs.existsSync(path.join(teamaiHome, 'config.yaml'))).toBe(false);
+
+      // Step 3: Restore for subsequent CI steps — write minimal config + clone repo
+      const testRepoUrl = process.env.TEAMAI_TEST_REPO_URL ?? '';
+      const repoPath = path.join(teamaiHome, 'team-repo');
+      fs.mkdirSync(teamaiHome, { recursive: true });
+
+      // Clone the repo back (uninstall removed it)
+      const { execSync } = await import('node:child_process');
+      const cloneUrl = testRepoUrl.startsWith('http')
+        ? testRepoUrl
+        : `https://git.woa.com/${testRepoUrl}.git`;
+      execSync(
+        `git clone -c "http.extraHeader=PRIVATE-TOKEN: ${process.env.TEAMAI_TEST_TOKEN}" "${cloneUrl}" "${repoPath}"`,
+        { stdio: 'pipe' },
+      );
+
+      fs.writeFileSync(
+        path.join(teamaiHome, 'config.yaml'),
+        [
+          `repo:`,
+          `  localPath: ${repoPath}`,
+          `  remote: ${testRepoUrl}`,
+          `username: ci`,
+          `updatePolicy: auto`,
+        ].join('\n'),
+      );
+
+      // Verify pull works after restore (may sync skills or report no resources depending on test repo)
+      const pullResult = await runCLI(['pull']);
+      expect(pullResult.code).toBe(0);
+      expect(pullResult.output).toMatch(/Synced \d+ skills|No resources to sync|already up to date/);
     },
   );
 });

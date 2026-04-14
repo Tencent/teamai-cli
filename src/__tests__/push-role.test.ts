@@ -12,15 +12,16 @@ const mockLoadRolesManifest = vi.fn();
 const mockGetHandler = vi.fn();
 
 let readlineAnswer = '1';
-vi.mock('node:readline', () => ({
-  default: {
-    createInterface: () => ({
-      question: (_prompt: string, cb: (answer: string) => void) => {
-        cb(readlineAnswer);
-      },
-      close: vi.fn(),
-    }),
-  },
+vi.mock('../utils/prompt.js', () => ({
+  askQuestion: vi.fn((_prompt: string, defaultValue?: string) => {
+    return Promise.resolve(readlineAnswer || defaultValue || '');
+  }),
+  askConfirmation: vi.fn(() => {
+    return Promise.resolve(
+      !readlineAnswer || readlineAnswer.toLowerCase() === 'y',
+    );
+  }),
+  closePrompt: vi.fn(),
 }));
 
 vi.mock('../config.js', () => ({

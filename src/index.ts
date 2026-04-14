@@ -24,6 +24,8 @@ program
   .description('Initialize teamai (configure TGit, clone repo, register member)')
   .option('--repo <repo>', 'Team repo (owner/repo or full URL)')
   .option('--scope <scope>', 'Scope: user (default) or project')
+  .option('--role <id>', 'Primary role ID (e.g. hai_dev) for non-interactive setup')
+  .option('--force', 'Overwrite existing config without confirmation')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { init } = await import('./init.js');

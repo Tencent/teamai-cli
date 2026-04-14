@@ -189,17 +189,21 @@ vi.mock('../types.js', async (importOriginal) => {
   };
 });
 
-// Mock readline to auto-answer prompts
+// Mock prompt to auto-answer prompts
 let questionAnswers: string[] = [];
-vi.mock('node:readline', () => ({
-  default: {
-    createInterface: () => ({
-      question: (_prompt: string, cb: (answer: string) => void) => {
-        cb(questionAnswers.shift() ?? '');
-      },
-      close: vi.fn(),
-    }),
-  },
+vi.mock('../utils/prompt.js', () => ({
+  askQuestion: vi.fn((_prompt: string, defaultValue?: string) => {
+    const answer = questionAnswers.shift();
+    return Promise.resolve(answer ?? defaultValue ?? '');
+  }),
+  askConfirmation: vi.fn((_prompt: string, defaultValue?: boolean) => {
+    const answer = questionAnswers.shift();
+    if (answer !== undefined) {
+      return Promise.resolve(answer.toLowerCase() === 'y');
+    }
+    return Promise.resolve(defaultValue ?? false);
+  }),
+  closePrompt: vi.fn(),
 }));
 
 // Prevent process.exit from actually exiting
@@ -238,7 +242,7 @@ describe('init', () => {
 
       questionAnswers = ['n'];
 
-      await init({ repo: 'HyperAI/teamai-test' });
+      await init({ repo: 'HyperAI/teamai-test', scope: 'user' });
 
       expect(mockGfRepoClone).toHaveBeenCalledWith('HyperAI/teamai-test', localPath);
       expect(mockGit.init).toHaveBeenCalled();
@@ -261,7 +265,7 @@ describe('init', () => {
 
       questionAnswers = ['n'];
 
-      await init({ repo: 'HyperAI/existing-repo' });
+      await init({ repo: 'HyperAI/existing-repo', scope: 'user' });
 
       expect(mockGfRepoClone).toHaveBeenCalled();
       expect(mockGit.init).not.toHaveBeenCalled();
@@ -294,7 +298,7 @@ describe('init', () => {
       // Answers: create repo confirm (Y), configure reviewers (n), primary role (1), no additional roles
       questionAnswers = ['Y', 'n', '1', ''];
 
-      await init({ repo: 'HyperAI/new-repo' });
+      await init({ repo: 'HyperAI/new-repo', scope: 'user' });
 
       expect(mockGfCreateRepo).toHaveBeenCalledWith('HyperAI', 'new-repo');
       expect(mockGfRepoClone).toHaveBeenCalledTimes(2);
@@ -311,7 +315,7 @@ describe('init', () => {
       // Answers: decline creation (n)
       questionAnswers = ['n'];
 
-      await init({ repo: 'HyperAI/new-repo' });
+      await init({ repo: 'HyperAI/new-repo', scope: 'user' });
 
       // process.exit(1) should be called when user declines
       expect(mockExit).toHaveBeenCalledWith(1);
@@ -329,7 +333,7 @@ describe('init', () => {
       // Answers: confirm creation (Y)
       questionAnswers = ['Y'];
 
-      await init({ repo: 'HyperAI/new-repo' });
+      await init({ repo: 'HyperAI/new-repo', scope: 'user' });
 
       expect(mockGfCreateRepo).toHaveBeenCalledWith('HyperAI', 'new-repo');
       expect(mockExit).toHaveBeenCalledWith(1);
@@ -346,7 +350,7 @@ describe('init', () => {
 
       questionAnswers = [];
 
-      await init({ repo: 'HyperAI/broken-repo' });
+      await init({ repo: 'HyperAI/broken-repo', scope: 'user' });
 
       expect(mockExit).toHaveBeenCalledWith(1);
       expect(mockGfCreateRepo).not.toHaveBeenCalled();
@@ -397,7 +401,7 @@ describe('init', () => {
 
       questionAnswers = ['n', '1', '1'];
 
-      await init({ repo: 'HyperAI/teamai-test' });
+      await init({ repo: 'HyperAI/teamai-test', scope: 'user' });
 
       expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({
         primaryRole: 'hai',

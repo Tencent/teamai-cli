@@ -1,6 +1,5 @@
 import YAML from 'yaml';
 import path from 'node:path';
-import readline from 'node:readline';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope } from './config.js';
 import { injectHooksToAllTools } from './hooks.js';
 import { configureGitUser, initRepo } from './utils/git.js';
@@ -10,16 +9,7 @@ import { ensureDir, writeFile, pathExists, expandHome, readFileSafe } from './ut
 import { log, spinner } from './utils/logger.js';
 import { TEAMAI_HOME, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath, resolveBaseDir } from './types.js';
 import { describeRoles, loadRolesManifest } from './roles.js';
-
-function askQuestion(prompt: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
-}
+import { askQuestion, askConfirmation } from './utils/prompt.js';
 
 function parseRoleSelection(answer: string, max: number): number[] {
   if (!answer.trim()) return [];
@@ -42,9 +32,27 @@ function parseRoleSelection(answer: string, max: number): number[] {
   return [...new Set(selections)];
 }
 
-async function promptForRoleProfile(repoPath: string): Promise<Pick<LocalConfig, 'primaryRole' | 'additionalRoles' | 'resourceProfileVersion'>> {
+async function promptForRoleProfile(
+  repoPath: string,
+  roleFlag?: string,
+): Promise<Pick<LocalConfig, 'primaryRole' | 'additionalRoles' | 'resourceProfileVersion'>> {
   const manifest = await loadRolesManifest(repoPath);
   const roleLabels = describeRoles(manifest.roles);
+
+  // If --role flag provided, resolve it directly by ID
+  if (roleFlag) {
+    const match = manifest.roles.find((r) => r.id === roleFlag);
+    if (!match) {
+      throw new Error(
+        `Unknown role "${roleFlag}". Available roles: ${manifest.roles.map((r) => r.id).join(', ')}`,
+      );
+    }
+    return {
+      primaryRole: match.id,
+      additionalRoles: [],
+      resourceProfileVersion: manifest.version,
+    };
+  }
 
   log.info('Available roles:');
   roleLabels.forEach((label, index) => {
@@ -68,7 +76,10 @@ async function promptForRoleProfile(repoPath: string): Promise<Pick<LocalConfig,
       log.info(`  ${index + 1}. ${role.id}${suffix}`);
     });
 
-    const additionalAnswer = await askQuestion('Additional roles (comma-separated numbers, blank to skip): ');
+    const additionalAnswer = await askQuestion(
+      'Additional roles (comma-separated numbers, blank to skip): ',
+      '',
+    );
     const additionalIndexes = parseRoleSelection(additionalAnswer, additionalCandidates.length);
     additionalRoles = additionalIndexes.map((selection) => additionalCandidates[selection - 1].id);
   }
@@ -95,15 +106,15 @@ export function validateScopeMatch(remoteScope: Scope | undefined, localScope: S
   }
 }
 
-export async function init(options: GlobalOptions & { repo?: string; scope?: string }): Promise<void> {
+export async function init(options: GlobalOptions & { repo?: string; scope?: string; role?: string; force?: boolean }): Promise<void> {
   log.info('Initializing teamai...');
 
   // Step 0: Determine scope (user or project)
   let scope: Scope = 'user';
   if (options.scope === 'project' || options.scope === 'user') {
     scope = options.scope as Scope;
-  } else if (process.stdin.isTTY) {
-    const scopeAnswer = await askQuestion('Scope [user/project] (default: user): ');
+  } else {
+    const scopeAnswer = await askQuestion('Scope [user/project] (default: user): ', 'user');
     if (scopeAnswer.toLowerCase() === 'project') {
       scope = 'project';
     }
@@ -118,15 +129,14 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
   const existingConfigPath = getConfigPath(scope, projectRoot);
   if (await pathExists(existingConfigPath)) {
     log.warn(`teamai is already initialized for ${scope} scope at ${existingConfigPath}`);
-    if (process.stdin.isTTY) {
-      const overwrite = await askQuestion('Overwrite existing config? [y/N] ');
-      if (overwrite.toLowerCase() !== 'y') {
+    if (options.force) {
+      log.info('Overwriting existing config (--force)');
+    } else {
+      const confirmed = await askConfirmation('Overwrite existing config? [y/N] ');
+      if (!confirmed) {
         log.info('Aborted. Existing config is unchanged.');
         return;
       }
-    } else {
-      log.error('Cannot confirm overwrite in non-interactive mode. Aborting.');
-      process.exit(1);
     }
   }
 
@@ -192,8 +202,11 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
     } catch (e) {
       if (e instanceof RepoNotFoundError) {
         cloneSpin.info(`Repo ${repoInfo.owner}/${repoInfo.repo} does not exist`);
-        const answer = await askQuestion(`Create repo ${repoInfo.owner}/${repoInfo.repo}? [Y/n] `);
-        if (answer && answer.toLowerCase() !== 'y') {
+        const confirmed = await askConfirmation(
+          `Create repo ${repoInfo.owner}/${repoInfo.repo}? [Y/n] `,
+          true,
+        );
+        if (!confirmed) {
           log.error('Aborted. Please provide an existing repo or confirm creation.');
           process.exit(1);
         }
@@ -309,9 +322,11 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
   const currentConfig = await loadTeamConfig(localPath);
   const hasReviewers = currentConfig?.reviewers && currentConfig.reviewers.length > 0;
   if (isNewMember && !hasReviewers) {
-    const configureReviewers = await askQuestion('\nWould you like to configure default MR reviewers? [y/N] ');
-    if (configureReviewers.toLowerCase() === 'y') {
-      const reviewerInput = await askQuestion('Reviewers (comma-separated usernames): ');
+    const wantReviewers = await askConfirmation(
+      '\nWould you like to configure default MR reviewers? [y/N] ',
+    );
+    if (wantReviewers) {
+      const reviewerInput = await askQuestion('Reviewers (comma-separated usernames): ', '');
       const reviewers = reviewerInput
         .split(',')
         .map((s) => s.trim())
@@ -352,7 +367,7 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
   };
 
   try {
-    Object.assign(localConfig, await promptForRoleProfile(localPath));
+    Object.assign(localConfig, await promptForRoleProfile(localPath, options.role));
   } catch (error) {
     const msg = (error as Error).message;
     if (msg.includes('Roles manifest not found')) {

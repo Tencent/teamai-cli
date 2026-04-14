@@ -1,4 +1,3 @@
-import readline from 'node:readline';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
 import { createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName, resetToCleanMaster } from './utils/git.js';
 import { getProvider } from './providers/index.js';
@@ -7,26 +6,7 @@ import { getHandler } from './resources/index.js';
 import { scanTeamRepoNamespaces } from './resources/skills.js';
 import type { GlobalOptions, ResourceItem, ResourceType } from './types.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
-
-function askConfirm(prompt: string): Promise<boolean> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(`${prompt} [Y/n] `, (answer) => {
-      rl.close();
-      resolve(!answer || answer.toLowerCase() === 'y');
-    });
-  });
-}
-
-function askQuestion(prompt: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
-}
+import { askQuestion, askConfirmation } from './utils/prompt.js';
 
 /**
  * Resolve available skill namespaces for the current user.
@@ -241,7 +221,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 
   // Confirm
   if (!options.all && !options.silent) {
-    const confirmed = await askConfirm('Push these resources to team repo?');
+    const confirmed = await askConfirmation('Push these resources to team repo? [Y/n] ', true);
     if (!confirmed) {
       log.info('Cancelled');
       return;
