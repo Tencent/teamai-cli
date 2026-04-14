@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### ✨ 新功能
 
+- **团队文化注入（Culture Engine Phase 1）**：在团队仓库创建 `culture.md`，`teamai pull` 时自动编译并注入到各 AI 工具的 `CLAUDE.md` 中 (!84)
+  - 支持 YAML frontmatter 定义公司/团队信息（name, mission, vision, values, goals）
+  - Markdown body 部分作为团队文化指引正文注入
+  - 通用 CLAUDE.md section 注入工具（`utils/claudemd.ts`），被 rules 和 culture 共用
 - **Uninstall 命令**：`teamai uninstall [--force]` 智能清理所有 teamai 管理的资源（hooks、CLAUDE.md 块、skills、rules、env、docs、~/.teamai/），保留用户自建内容，支持 `--dry-run` 预览 (!137)
 - **Init 非交互模式**：新增 `--role <id>` 和 `--force` 参数，支持完全非交互式初始化，适合 CI/CD 和 AI agent 自动化 (!138)
   - `teamai init --repo owner/repo --scope user --role hai_dev --force`

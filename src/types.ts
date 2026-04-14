@@ -60,6 +60,7 @@ export const MemberConfigSchema = z.object({
   username: z.string(),
   displayName: z.string().default(''),
   registeredAt: z.string(),
+  role: z.string().optional(),
 });
 
 export type MemberConfig = z.infer<typeof MemberConfigSchema>;
@@ -170,6 +171,9 @@ export const TEAMAI_HOOK_DESCRIPTION_PREFIX = '[teamai]';
 
 export const TEAMAI_ENV_START = '# [teamai:env:start]';
 export const TEAMAI_ENV_END = '# [teamai:env:end]';
+
+export const TEAMAI_CULTURE_START = '<!-- [teamai:culture:start] -->';
+export const TEAMAI_CULTURE_END = '<!-- [teamai:culture:end] -->';
 
 // ─── Usage tracking ────────────────────────────────────
 
@@ -371,6 +375,23 @@ export interface UserVotes {
 export const LEARNINGS_LOCAL_DIR = `${TEAMAI_HOME}/learnings`;
 export const SEARCH_INDEX_PATH = `${TEAMAI_HOME}/search-index.json`;
 export const VOTES_LOCAL_DIR = `${TEAMAI_HOME}/votes`;
+
+export const CultureCompanySchema = z.object({
+  name: z.string(),
+  mission: z.string().optional(),
+  vision: z.string().optional(),
+  values: z.array(z.string()).optional(),
+});
+export const CultureTeamSchema = z.object({
+  name: z.string(),
+  mission: z.string().optional(),
+  goals: z.array(z.string()).optional(),
+});
+export const CultureFrontmatterSchema = z.object({
+  company: CultureCompanySchema.optional(),
+  team: CultureTeamSchema.optional(),
+});
+export type CultureFrontmatter = z.infer<typeof CultureFrontmatterSchema>;
 
 // ─── Scope helpers ─────────────────────────────────────
 

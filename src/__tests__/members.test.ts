@@ -103,7 +103,7 @@ describe('getMemberConfig', () => {
     expect(result!.displayName).toBe('');
   });
 
-  it('should ignore extra fields like legacy role', async () => {
+  it('should parse role field from member config', async () => {
     const legacyData = {
       username: 'bob',
       displayName: 'Bob Li',
@@ -119,8 +119,8 @@ describe('getMemberConfig', () => {
     expect(result).not.toBeNull();
     expect(result!.username).toBe('bob');
     expect(result!.displayName).toBe('Bob Li');
-    // role field should not exist on the parsed result
-    expect(result).not.toHaveProperty('role');
+    // role field should now be parsed
+    expect(result!.role).toBe('write');
   });
 
   it('should return null for invalid YAML content', async () => {

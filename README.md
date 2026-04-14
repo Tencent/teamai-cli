@@ -81,6 +81,7 @@ teamai init --repo yourteam/yourproject --scope user --role hai_dev --force
 - Rules 同步到各工具的 rules 目录，并通过标记注释合并到 `CLAUDE.md`（支持 claude、claude-internal、codebuddy）
 - Knowledge 同步到 `~/.teamai/docs/`
 - Learnings 同步到 `~/.teamai/learnings/`，并基于该目录构建 recall 索引（全团队共享，不按角色拆分）
+- Culture 同步团队文化文件（`culture.md`），编译 frontmatter 和 body 后注入到各 AI 工具的 `CLAUDE.md`
 
 ## 角色化 Skills
 
@@ -136,6 +137,35 @@ teamai push --role pm
 - 修改已有 skill 时自动保持原 namespace，无需重新选择
 
 推送时 CLI 会自动检查 `SKILL.md` 的 YAML frontmatter（`name`/`description`），缺失则自动补全，无需手动维护。
+
+## 团队文化（Culture）
+
+在团队仓库根目录创建 `culture.md`，用 YAML frontmatter 定义公司和团队信息，body 部分写团队文化指引：
+
+```markdown
+---
+company:
+  name: Acme Corp
+  mission: Build great things
+  values:
+    - Innovation
+    - Integrity
+team:
+  name: Platform
+  mission: Enable developers
+  goals:
+    - Ship v2.0
+    - Improve test coverage
+---
+
+## 编码准则
+
+- 所有 PR 必须有至少一个 reviewer 审批
+- 禁止直接 push master
+- 测试覆盖率不低于 80%
+```
+
+`teamai pull` 时会自动将 culture.md 编译为结构化内容，注入到各 AI 工具的 `CLAUDE.md` 中（`<!-- [teamai:culture:start] -->` / `<!-- [teamai:culture:end] -->` 标记之间）。AI 编码助手在每次会话中都能感知团队文化。
 
 ## Scope（作用域）
 

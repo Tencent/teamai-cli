@@ -18,6 +18,7 @@
 - [日常使用](#日常使用)
 - [共享团队资源](#共享团队资源)
 - [知识沉淀与检索](#知识沉淀与检索)
+- [团队文化](#团队文化culture)
 - [进阶功能](#进阶功能)
 - [配置文件参考](#配置文件参考)
 - [常见问题 FAQ](#常见问题-faq)
@@ -379,6 +380,120 @@ teamai recall "GPU 内存不足"
 - 支持中英文混合搜索
 - 自动合并 user + project 双 scope 的知识库，结果标注 `[user]`/`[project]` 来源
 - 被查阅的知识自动 upvote，好文档浮到顶部
+
+---
+
+## 团队文化（Culture）
+
+TeamAI 支持将团队文化注入到 AI 工具中，让 AI 编码助手在每次会话中都能感知你的团队文化、价值观和编码准则。
+
+### 创建 culture.md
+
+管理员在团队仓库根目录创建 `culture.md` 文件：
+
+```markdown
+---
+company:
+  name: Acme Corp
+  mission: Build great things
+  vision: A world where AI helps everyone
+  values:
+    - Innovation
+    - Integrity
+    - User First
+team:
+  name: Platform Team
+  mission: Enable developers to ship faster
+  goals:
+    - Ship v2.0 by Q2
+    - Improve test coverage to 90%
+---
+
+## 编码准则
+
+- 所有 PR 必须有至少一个 reviewer 审批
+- 禁止直接 push master
+- 测试覆盖率不低于 80%
+
+## 协作规范
+
+- 使用 conventional commits 格式
+- PR 描述必须包含 ## Summary 和 ## Test Plan
+- 重大变更需要先写设计文档
+```
+
+### frontmatter 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `company.name` | string (必填) | 公司名称 |
+| `company.mission` | string | 公司使命 |
+| `company.vision` | string | 公司愿景 |
+| `company.values` | string[] | 公司核心价值观 |
+| `team.name` | string (必填) | 团队名称 |
+| `team.mission` | string | 团队使命 |
+| `team.goals` | string[] | 团队目标 |
+
+frontmatter 之后的 markdown body 部分会作为团队文化指引的正文内容，整体注入到 CLAUDE.md 中。
+
+### 工作原理
+
+```
+团队仓库
+├── culture.md          ← 管理员维护
+├── skills/
+├── rules/
+└── ...
+
+teamai pull
+    │
+    ▼  解析 culture.md
+    │  ├─ frontmatter → 结构化公司/团队信息
+    │  └─ body → 团队文化指引正文
+    │
+    ▼  编译为 CLAUDE.md 注入块
+    │
+    ▼  注入到各 AI 工具的 CLAUDE.md
+       ├─ ~/.claude/CLAUDE.md
+       ├─ ~/.cursor/CLAUDE.md
+       └─ ...
+```
+
+注入的内容位于 `<!-- [teamai:culture:start] -->` 和 `<!-- [teamai:culture:end] -->` 标记之间，每次 pull 时自动更新，不会影响文件中的其他内容。
+
+### 查看效果
+
+pull 后可以直接查看 AI 工具的 CLAUDE.md：
+
+```bash
+teamai pull
+cat ~/.claude/CLAUDE.md
+```
+
+你会看到类似这样的注入块：
+
+```markdown
+<!-- [teamai:culture:start] -->
+<!-- DO NOT EDIT: This section is auto-managed by teamai -->
+
+## Team Culture (teamai)
+
+## Company: Acme Corp
+**Mission:** Build great things
+**Vision:** A world where AI helps everyone
+**Values:** Innovation, Integrity, User First
+
+## Team: Platform Team
+**Mission:** Enable developers to ship faster
+**Goals:**
+- Ship v2.0 by Q2
+- Improve test coverage to 90%
+
+## 编码准则
+- 所有 PR 必须有至少一个 reviewer 审批
+...
+<!-- [teamai:culture:end] -->
+```
 
 ---
 

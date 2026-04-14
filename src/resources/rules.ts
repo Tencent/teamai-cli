@@ -1,10 +1,11 @@
 import path from 'node:path';
 import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
-import { listFilesRecursive, pathExists, readFileSafe, writeFile, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs } from '../utils/fs.js';
+import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir } from '../types.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
+import { injectClaudeMdSection } from '../utils/claudemd.js';
 
 export class RulesHandler extends ResourceHandler {
   readonly type = 'rules' as const;
@@ -252,19 +253,9 @@ export class RulesHandler extends ResourceHandler {
       ].join('\n');
 
       const claudeMdPath = path.join(baseDir, toolPath.claudemd);
-      let existing = await readFileSafe(claudeMdPath) ?? '';
-
-      const startIdx = existing.indexOf(TEAMAI_RULES_START);
-      const endIdx = existing.indexOf(TEAMAI_RULES_END);
-
-      if (startIdx !== -1 && endIdx !== -1) {
-        existing = existing.substring(0, startIdx) + rulesBlock + existing.substring(endIdx + TEAMAI_RULES_END.length);
-      } else {
-        existing = existing.trimEnd() + '\n\n' + rulesBlock + '\n';
-      }
 
       try {
-        await writeFile(claudeMdPath, existing);
+        await injectClaudeMdSection(claudeMdPath, TEAMAI_RULES_START, TEAMAI_RULES_END, rulesBlock);
         log.debug(`Updated rules references in ${tool} CLAUDE.md`);
       } catch (e) {
         log.warn(`Failed to update ${tool} CLAUDE.md: ${(e as Error).message}`);

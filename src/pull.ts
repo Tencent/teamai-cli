@@ -1,15 +1,25 @@
 import path from 'node:path';
 import fse from 'fs-extra';
+import matter from 'gray-matter';
 import { requireInit, loadState, saveState, detectProjectConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
 import { pullRepo, getHeadRev } from './utils/git.js';
 import { log, spinner } from './utils/logger.js';
-import { pathExists, remove, listFiles, listDirs } from './utils/fs.js';
+import { pathExists, remove, listFiles, listDirs, readFileSafe } from './utils/fs.js';
+import { injectClaudeMdSection } from './utils/claudemd.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler } from './resources/index.js';
 import { ResourceHandler } from './resources/base.js';
 import { loadTagsConfig, filterByTags } from './utils/tags.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import type { GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, TagsConfig } from './types.js';
-import { LEARNINGS_LOCAL_DIR, resolveBaseDir, getTeamaiHome } from './types.js';
+import {
+  LEARNINGS_LOCAL_DIR,
+  TEAMAI_CULTURE_START,
+  TEAMAI_CULTURE_END,
+  CultureFrontmatterSchema,
+  resolveBaseDir,
+  getTeamaiHome,
+} from './types.js';
+import type { CultureFrontmatter } from './types.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
 
 interface RolePullContext {
@@ -464,6 +474,37 @@ async function pullForScope(
     }
   }
 
+  // Step 3.6: Inject team culture into CLAUDE.md
+  if (!options.dryRun) {
+    try {
+      const culturePath = path.join(localConfig.repo.localPath, 'culture.md');
+      if (await pathExists(culturePath)) {
+        const cultureContent = await readFileSafe(culturePath);
+        if (cultureContent) {
+          const compiled = compileCulture(cultureContent);
+          if (compiled) {
+            const baseDir = resolveBaseDir(localConfig);
+            for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
+              if (!toolPath.claudemd) continue;
+              if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
+
+              const claudeMdPath = path.join(baseDir, toolPath.claudemd);
+              try {
+                await injectClaudeMdSection(claudeMdPath, TEAMAI_CULTURE_START, TEAMAI_CULTURE_END, compiled);
+                log.debug(`Injected culture into ${tool} CLAUDE.md`);
+              } catch (e) {
+                log.warn(`Failed to inject culture into ${tool} CLAUDE.md: ${(e as Error).message}`);
+              }
+            }
+            log.success('Synced team culture');
+          }
+        }
+      }
+    } catch (e) {
+      log.debug(`Culture sync skipped: ${(e as Error).message}`);
+    }
+  }
+
   // Step 4: Deploy CLI built-in skills
   if (!options.dryRun) {
     try {
@@ -526,6 +567,77 @@ async function pullForScope(
       // Recommendations are optional — don't fail pull
     }
   }
+}
+
+/**
+/**
+ * Compile culture.md frontmatter + body into a CLAUDE.md injection block.
+ *
+ * The culture.md file uses gray-matter frontmatter for structured data (company,
+ * team) and markdown body for prose guidelines.
+ *
+ * Returns null if the culture.md cannot be parsed or has no useful content.
+ */
+export function compileCulture(raw: string): string | null {
+    let parsed: { data: Record<string, unknown>; content: string };
+    try {
+        parsed = matter(raw);
+    } catch {
+        return null;
+    }
+
+    const fm = CultureFrontmatterSchema.safeParse(parsed.data);
+    if (!fm.success) return null;
+
+    const frontmatter: CultureFrontmatter = fm.data;
+    const lines: string[] = [];
+
+    // Company section
+    if (frontmatter.company) {
+        const c = frontmatter.company;
+        lines.push(`## Company: ${c.name}`);
+        if (c.mission) lines.push(`**Mission:** ${c.mission}`);
+        if (c.vision) lines.push(`**Vision:** ${c.vision}`);
+        if (c.values && c.values.length > 0) {
+            lines.push(`**Values:** ${c.values.join(', ')}`);
+        }
+        lines.push('');
+    }
+
+    // Team section
+    if (frontmatter.team) {
+        const t = frontmatter.team;
+        lines.push(`## Team: ${t.name}`);
+        if (t.mission) lines.push(`**Mission:** ${t.mission}`);
+        if (t.goals && t.goals.length > 0) {
+            lines.push('**Goals:**');
+            for (const g of t.goals) {
+                lines.push(`- ${g}`);
+            }
+        }
+        lines.push('');
+    }
+
+    // Body: include all prose content as-is
+    const body = parsed.content.trim();
+    if (body) {
+        lines.push(body);
+        lines.push('');
+    }
+
+    if (lines.length === 0) return null;
+
+    const block = [
+        TEAMAI_CULTURE_START,
+        '<!-- DO NOT EDIT: This section is auto-managed by teamai -->',
+        '',
+        '## Team Culture (teamai)',
+        '',
+        ...lines,
+        TEAMAI_CULTURE_END,
+    ].join('\n');
+
+    return block;
 }
 
 /**
