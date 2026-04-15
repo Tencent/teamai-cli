@@ -263,6 +263,53 @@ tagsCmd
     await tagsRemove(type, name, tags, globalOpts);
   });
 
+// ─── Source subcommands (cross-team subscription) ────────
+
+const sourceCmd = program
+  .command('source')
+  .description('Manage cross-team skill sources')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { sourceList } = await import('./source.js');
+    await sourceList();
+  });
+
+sourceCmd
+  .command('add <repo>')
+  .description('Add a cross-team source repo')
+  .option('--name <name>', 'Alias for this source')
+  .action(async (repo: string, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { sourceAdd } = await import('./source.js');
+    await sourceAdd(repo, { ...globalOpts, ...cmdOpts });
+  });
+
+sourceCmd
+  .command('remove <name>')
+  .description('Remove a source and clean up its skills')
+  .action(async (name: string) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { sourceRemove } = await import('./source.js');
+    await sourceRemove(name, globalOpts);
+  });
+
+sourceCmd
+  .command('list')
+  .description('List all configured sources')
+  .action(async () => {
+    const { sourceList } = await import('./source.js');
+    await sourceList();
+  });
+
+sourceCmd
+  .command('browse <name>')
+  .description('Browse public skills from a source')
+  .action(async (name: string) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { sourceBrowse } = await import('./source.js');
+    await sourceBrowse(name, globalOpts);
+  });
+
 // ─── Other subcommands ────────────────────────────────────
 
 program

@@ -216,6 +216,15 @@ export class SkillsHandler extends ResourceHandler {
     const tombstones = await this.readTombstones(localConfig);
     const pushIgnoredSkills = await readPushIgnoredSkills();
 
+    // Load source skill names to exclude from push candidates (Codex finding #1)
+    let sourceSkillNames: Set<string>;
+    try {
+      const { getAllSourceSkillNames } = await import('../source.js');
+      sourceSkillNames = await getAllSourceSkillNames();
+    } catch {
+      sourceSkillNames = new Set();
+    }
+
     // Collect the best candidate for each skill name across all tool directories
     const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus; namespace?: string }>();
 
@@ -231,6 +240,7 @@ export class SkillsHandler extends ResourceHandler {
         if (pushIgnoredSkills.has(dir)) continue;
         if (blockedSkills.has(dir)) continue; // Skip skills in non-allowed namespaces
         if (BUILTIN_SKILL_NAMES.has(dir)) continue; // Skip CLI built-in skills
+        if (sourceSkillNames.has(dir)) continue; // Skip cross-team source skills
         // Check for SKILL.md to confirm it's a valid skill
         const skillMd = path.join(skillsDir, dir, 'SKILL.md');
         if (!await pathExists(skillMd)) continue;

@@ -647,8 +647,9 @@ export function compileCulture(raw: string): string | null {
  */
 export async function pull(options: GlobalOptions): Promise<void> {
   // 1. Always try to pull user scope
+  let userConfig: LocalConfig | null = null;
   try {
-    const userConfig = await loadLocalConfigForScope('user');
+    userConfig = await loadLocalConfigForScope('user');
     if (userConfig) {
       await pullForScope(userConfig, options);
     } else {
@@ -666,5 +667,15 @@ export async function pull(options: GlobalOptions): Promise<void> {
     }
   } catch (e) {
     log.warn(`Project-scope pull error: ${(e as Error).message}`);
+  }
+
+  // 3. Pull cross-team source skills (runs outside pullForScope to bypass fast-path)
+  if (userConfig) {
+    try {
+      const { pullSources } = await import('./source.js');
+      await pullSources(userConfig, options);
+    } catch (e) {
+      log.debug(`Source pull skipped: ${(e as Error).message}`);
+    }
   }
 }

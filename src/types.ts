@@ -31,6 +31,47 @@ export const SharingConfigSchema = z.object({
   }).default({}),
 });
 
+// ─── Source config (cross-team subscription) ─────────
+//
+//  Data flow:
+//
+//  teamai.yaml (source team)           teamai.yaml (consumer team)
+//    publicSkills: [skill-a, skill-b]    sources:
+//                                          - name: other-team
+//                                            repo: git@git.woa.com:other/repo.git
+//            │                                        │
+//            │    teamai source browse <name>          │  teamai pull
+//            │             │                           │
+//            ▼             ▼                           ▼
+//  ~/.teamai/sources/<name>/repo/  ← git clone
+//  ~/.teamai/sources/<name>/installed.json ← manifest
+//            │
+//            ▼
+//  ~/.claude/skills/<skill-name>/  ← copy (original name, local team wins on conflict)
+//
+
+export const SourceConfigSchema = z.object({
+  /** Alias name for this source (e.g. "platform-team"). */
+  name: z.string().min(1),
+  /** Git remote URL (e.g. "git@git.woa.com:other/repo.git"). */
+  repo: z.string().min(1),
+});
+
+export type SourceConfig = z.infer<typeof SourceConfigSchema>;
+
+/** Installed skill manifest for a single source. Persisted to sources/<name>/installed.json. */
+export interface SourceInstallManifest {
+  /** ISO timestamp of last successful pull. */
+  lastPull: string;
+  /** Skill names currently deployed from this source. */
+  installedSkills: string[];
+}
+
+/** TTL for source repo pull: don't re-pull within this duration (ms). */
+export const SOURCE_PULL_TTL_MS = 24 * 60 * 60 * 1000;
+
+export const TEAMAI_SOURCES_DIR = `${process.env.HOME}/.teamai/sources`;
+
 export const TeamaiConfigSchema = z.object({
   team: z.string(),
   description: z.string().default(''),
@@ -40,6 +81,10 @@ export const TeamaiConfigSchema = z.object({
   /** Repo scope set at creation time; undefined = legacy repo (no restriction). */
   scope: ScopeEnum.optional(),
   reviewers: z.array(z.string()).default([]),
+  /** Skills this team makes available to other teams via cross-team subscription. */
+  publicSkills: z.array(z.string()).optional(),
+  /** External team repos to pull skills from. Managed by team admin. */
+  sources: z.array(SourceConfigSchema).optional(),
   sharing: SharingConfigSchema.default({}),
   toolPaths: z.record(z.string(), ToolPathsSchema).default({
     claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md' },
