@@ -144,5 +144,5 @@ export function spinner(text: string): Ora {
     // return a no-op spinner in silent mode
     return ora({ text, isSilent: true });
   }
-  return ora({ text, color: 'cyan' });
+  return ora({ text, color: 'cyan', discardStdin: false });
 }

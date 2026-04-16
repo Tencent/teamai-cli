@@ -9,7 +9,7 @@ import { ensureDir, writeFile, pathExists, expandHome, readFileSafe } from './ut
 import { log, spinner } from './utils/logger.js';
 import { TEAMAI_HOME, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath, resolveBaseDir } from './types.js';
 import { describeRoles, loadRolesManifest } from './roles.js';
-import { askQuestion, askConfirmation } from './utils/prompt.js';
+import { askQuestion, askConfirmation, closePrompt } from './utils/prompt.js';
 
 function parseRoleSelection(answer: string, max: number): number[] {
   if (!answer.trim()) return [];
@@ -432,4 +432,7 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
   log.success('teamai initialized successfully!');
   log.info('Skills, rules, env and docs will auto-sync on each session start (via hooks).');
   log.info('Run `teamai status` to check current config.');
+
+  // Close the readline singleton so the process can exit cleanly.
+  closePrompt();
 }

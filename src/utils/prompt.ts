@@ -22,7 +22,6 @@ function getReadline(): readline.Interface {
       input: process.stdin,
       output: process.stdout,
     });
-    // Prevent readline from keeping the process alive
     _rl.on('close', () => { _rl = null; });
   }
   return _rl;
@@ -34,6 +33,26 @@ export function closePrompt(): void {
     _rl.close();
     _rl = null;
   }
+}
+
+// ─── Internal helpers ───────────────────────────────────
+
+/**
+ * Wrap rl.question with ref/unref bookkeeping.
+ *
+ * While waiting for user input, stdin must be ref()'d so the event loop
+ * stays alive.  Once the answer arrives, we unref() so that stdin alone
+ * does not prevent the process from exiting when all other async work
+ * is done.
+ */
+function question(rl: readline.Interface, prompt: string): Promise<string> {
+  process.stdin.ref();
+  return new Promise((resolve) => {
+    rl.question(prompt, (answer) => {
+      process.stdin.unref();
+      resolve(answer.trim());
+    });
+  });
 }
 
 // ─── Public API ──────────────────────────────────────────
@@ -55,12 +74,7 @@ export function askQuestion(prompt: string, defaultValue?: string): Promise<stri
     );
   }
 
-  const rl = getReadline();
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      resolve(answer.trim());
-    });
-  });
+  return question(getReadline(), prompt);
 }
 
 /**
@@ -76,12 +90,8 @@ export function askConfirmation(
     return Promise.resolve(defaultValue);
   }
 
-  const rl = getReadline();
-  return new Promise((resolve) => {
-    rl.question(prompt, (answer) => {
-      resolve(answer.trim().toLowerCase() === 'y');
-    });
-  });
+  return question(getReadline(), prompt)
+    .then((answer) => answer.toLowerCase() === 'y');
 }
 
 // ─── Multi-select ───────────────────────────────────────
