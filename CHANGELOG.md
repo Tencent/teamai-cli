@@ -2,15 +2,23 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
-## [Unreleased]
+## [0.14.0] (2026-04-16)
 
 ### ✨ 新功能
 
+- **跨团队 Skill 订阅（Cross-team Source）**：`teamai source add/remove/list/browse` 订阅其他团队的公共 skill 仓库，pull 时自动同步订阅源的 skills (!141)
+  - `teamai source add <repo> [--name <alias>]` — 添加订阅源
+  - `teamai source remove <name>` — 移除订阅源并清理其 skills
+  - `teamai source list` — 列出已配置的订阅源
+  - `teamai source browse <name>` — 浏览订阅源的公共 skills
 - **团队文化注入（Culture Engine Phase 1）**：在团队仓库创建 `culture.md`，`teamai pull` 时自动编译并注入到各 AI 工具的 `CLAUDE.md` 中 (!84)
   - 支持 YAML frontmatter 定义公司/团队信息（name, mission, vision, values, goals）
   - Markdown body 部分作为团队文化指引正文注入
   - 通用 CLAUDE.md section 注入工具（`utils/claudemd.ts`），被 rules 和 culture 共用
 - **Uninstall 命令**：`teamai uninstall [--force]` 智能清理所有 teamai 管理的资源（hooks、CLAUDE.md 块、skills、rules、env、docs、~/.teamai/），保留用户自建内容，支持 `--dry-run` 预览 (!137)
+- **Dashboard 全生命周期会话展示**：dashboard 新增完整 session 生命周期追踪，支持展开查看会话详情（prompt 摘要、工具调用序列、时间线） (!140)
+- **codex-internal 工具支持**：hooks 注入和资源同步新增对 codex-internal 的适配，与 claude-internal 同等待遇 (!143)
+- **CLAUDE.md 团队知识库引用**：pull 时自动在 CLAUDE.md 中添加 `~/.teamai/learnings/` 目录引用，AI 工具可直接发现团队知识库 (!139)
 - **Init 非交互模式**：新增 `--role <id>` 和 `--force` 参数，支持完全非交互式初始化，适合 CI/CD 和 AI agent 自动化 (!138)
   - `teamai init --repo owner/repo --scope user --role hai_dev --force`
   - 非 TTY 环境下自动使用默认值，不再 hang
@@ -25,6 +33,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 🐛 修复
 
+- **Pull cache 失效修复**：切换 role 后自动清理过期 skills 缓存，确保新角色立即生效 (!142)
 - **Learnings 改为扁平共享模型**：learnings 不再按角色 namespace 隔离，全团队共享 (!126)
 - **Push role 模式过滤修正**：修复 role 模式下误显示非允许命名空间 skill 的问题 (!127)
 - **Push 支持无 role 的 namespaced 仓库**：无 `primaryRole` 配置时也能正确推送到有命名空间结构的团队仓库 (!129)

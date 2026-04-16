@@ -43,6 +43,7 @@ teamai init --repo yourteam/yourproject --scope user --role hai_dev --force
 | `teamai members` | 列出已注册的团队成员 |
 | `teamai remove <type> <name>` | 从团队仓库和本地删除资源并创建 MR（skills\|rules） |
 | `teamai roles` | 管理团队角色（`init`/`list`/`set`/`add`/`remove`/`update`） |
+| `teamai source` | 管理跨团队 skill 订阅源（`add`/`remove`/`list`/`browse`） |
 | `teamai contribute --file <path> [--scope <user\|project>]` | 将 AI 生成的经验文档推送到团队仓库 |
 | `teamai recall <query>` | 搜索团队知识库，自动合并 user + project 双 scope 结果 |
 | `teamai digest` | 生成团队 AI 使用周报（skill 排行、新增/更新 skill、session 摘要） |
@@ -76,8 +77,8 @@ teamai init --repo yourteam/yourproject --scope user --role hai_dev --force
 
 - `teamai push` 会创建独立分支（`teamai/push/<user>/<timestamp>`），推送后自动创建 Merge Request 并指派 reviewers
 - `teamai init` 初始化时可配置默认 reviewers（记录在 `teamai.yaml` 的 `reviewers` 字段）
-- `teamai init` 会自动注入与各工具格式对齐的 hooks（含 `sessionStart`、`stop`、`postToolUse`、`userPromptSubmit` 等），会话中会执行 `teamai pull`、`teamai update`、追踪与仪表盘等（支持 Claude Code、Codex、Claude Code Internal、Cursor、CodeBuddy IDE）
-- Skills 同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.claude-internal/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/`
+- `teamai init` 会自动注入与各工具格式对齐的 hooks（含 `sessionStart`、`stop`、`postToolUse`、`userPromptSubmit` 等），会话中会执行 `teamai pull`、`teamai update`、追踪与仪表盘等（支持 Claude Code、Codex、Codex Internal、Claude Code Internal、Cursor、CodeBuddy IDE）
+- Skills 同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.codex-internal/skills/`、`~/.claude-internal/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/`
 - Rules 同步到各工具的 rules 目录，并通过标记注释合并到 `CLAUDE.md`（支持 claude、claude-internal、codebuddy）
 - Knowledge 同步到 `~/.teamai/docs/`
 - Learnings 同步到 `~/.teamai/learnings/`，并基于该目录构建 recall 索引（全团队共享，不按角色拆分）
@@ -166,6 +167,26 @@ team:
 ```
 
 `teamai pull` 时会自动将 culture.md 编译为结构化内容，注入到各 AI 工具的 `CLAUDE.md` 中（`<!-- [teamai:culture:start] -->` / `<!-- [teamai:culture:end] -->` 标记之间）。AI 编码助手在每次会话中都能感知团队文化。
+
+## 跨团队 Skill 订阅
+
+通过 `teamai source` 订阅其他团队的公共 skill 仓库，pull 时自动同步订阅源的 skills：
+
+```bash
+# 添加订阅源
+teamai source add https://git.woa.com/other-team/teamai-public.git --name other-team
+
+# 查看已订阅的源
+teamai source list
+
+# 浏览订阅源的 skills
+teamai source browse other-team
+
+# 移除订阅（同时清理其 skills）
+teamai source remove other-team
+```
+
+订阅源的 skills 在 `teamai pull` 时自动同步到本地，与团队自有 skills 共存。
 
 ## Scope（作用域）
 

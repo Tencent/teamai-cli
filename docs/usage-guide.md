@@ -534,6 +534,26 @@ teamai remove skills <name>   # 删除资源
 teamai remove rules <name>
 ```
 
+### 跨团队 Skill 订阅
+
+`teamai source` 让你订阅其他团队的公共 skill 仓库，pull 时自动获取最新 skills：
+
+```bash
+# 添加订阅源
+teamai source add https://git.woa.com/other-team/teamai-public.git --name other-team
+
+# 查看订阅列表
+teamai source list
+
+# 浏览订阅源的 skills
+teamai source browse other-team
+
+# 移除订阅（同时清理其 skills）
+teamai source remove other-team
+```
+
+订阅源的 skills 在 `teamai pull` 时自动同步到本地，与团队自有 skills 共存。配置存储在本地 `config.yaml` 的 `sources` 字段中。
+
 ---
 
 ## 配置文件参考
