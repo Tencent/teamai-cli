@@ -77,6 +77,12 @@ describe('ResourceHandler.isToolInstalled', () => {
     await fse.ensureDir(path.join(homeDir, '.codex'));
     expect(await ResourceHandler.isToolInstalled('.codex/skills')).toBe(true);
   });
+
+  it('should detect codex-internal tool installation', async () => {
+    expect(await ResourceHandler.isToolInstalled('.codex-internal/skills')).toBe(false);
+    await fse.ensureDir(path.join(homeDir, '.codex-internal'));
+    expect(await ResourceHandler.isToolInstalled('.codex-internal/skills')).toBe(true);
+  });
 });
 
 describe('SkillsHandler.pullItem — skip uninstalled tools', () => {

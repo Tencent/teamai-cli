@@ -20,6 +20,7 @@ import { ResourceHandler } from './resources/base.js';
 //      ▼  (teamai pull / teamai init)
 //    ~/.claude/skills/teamai-contribute/SKILL.md
 //    ~/.claude-internal/skills/teamai-contribute/SKILL.md
+//    ~/.codex-internal/skills/teamai-contribute/SKILL.md
 //    ~/.cursor/skills/teamai-contribute/SKILL.md
 //    ...
 //

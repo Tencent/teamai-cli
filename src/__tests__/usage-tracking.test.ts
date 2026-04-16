@@ -457,6 +457,23 @@ describe('trackFromStdin', () => {
     expect(events[0].tool).toBe('codebuddy');
   });
 
+  it('uses codex-internal as tool source when --tool codex-internal', async () => {
+    const hookData = JSON.stringify({
+      tool_name: 'Skill',
+      tool_input: { skill: 'code-review' },
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackFromStdin('codex-internal');
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tool).toBe('codex-internal');
+  });
+
   it('defaults to claude when no --tool argument (backward compat)', async () => {
     const hookData = JSON.stringify({
       tool_name: 'Skill',
@@ -994,6 +1011,23 @@ describe('trackSlashCommand', () => {
     const events = await readUsageEvents();
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude-internal');
+  });
+
+  it('uses codex-internal as tool source when --tool codex-internal', async () => {
+    await createFakeSkill('plan-eng-review');
+    const hookData = JSON.stringify({
+      prompt: '/plan-eng-review args',
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackSlashCommand('codex-internal');
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tool).toBe('codex-internal');
   });
 
   it('defaults to claude when no --tool argument (backward compat)', async () => {

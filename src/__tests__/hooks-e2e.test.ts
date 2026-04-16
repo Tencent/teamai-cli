@@ -288,5 +288,24 @@ describe('hooks E2E — real file I/O', () => {
       expect(JSON.stringify(claudeResult)).toContain('--tool claude');
       expect(JSON.stringify(cursorResult)).toContain('--tool cursor');
     });
+
+    it('skips codex-internal (no settings path) in multi-tool injection', async () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = tmpDir;
+
+      await injectHooksToAllTools({
+        claude: { settings: '.claude/settings.json' },
+        'codex-internal': {},
+      });
+
+      process.env.HOME = originalHome;
+
+      const claudeFile = path.join(tmpDir, '.claude', 'settings.json');
+      expect(await fse.pathExists(claudeFile)).toBe(true);
+
+      // codex-internal has no settings → no hooks file created
+      const codexInternalFile = path.join(tmpDir, '.codex-internal', 'settings.json');
+      expect(await fse.pathExists(codexInternalFile)).toBe(false);
+    });
   });
 });

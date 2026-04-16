@@ -115,6 +115,7 @@ const SKILL_DIRS = [
   '.cursor/skills',
   '.codebuddy/skills',
   '.codex/skills',
+  '.codex-internal/skills',
   '.openclaw/skills',
 ];
 
