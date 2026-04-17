@@ -213,6 +213,9 @@ export function getDashboardHtml(port: number): string {
       max-height: 80px;
       overflow: hidden;
     }
+    .stopped-output.waiting-output {
+      border-left-color: var(--yellow);
+    }
     .card-footer {
       display: flex;
       align-items: center;
@@ -346,11 +349,11 @@ export function getDashboardHtml(port: number): string {
 
     function statusLabel(status) {
       switch (status) {
-        case 'running': return 'Running';
-        case 'waiting_for_input': return 'Waiting';
+        case 'running': return 'AI Working';
+        case 'waiting_for_input': return 'Your Turn';
         case 'error': return 'Error';
         case 'idle': return 'Idle';
-        case 'stopped': return 'Stopped';
+        case 'stopped': return 'Ended';
         default: return status;
       }
     }
@@ -391,10 +394,10 @@ export function getDashboardHtml(port: number): string {
       }
 
       statsEl.innerHTML = '<div class="stats-bar">' +
-        (running > 0 ? '<div class="stat-item"><span class="stat-dot running"></span>' + running + ' active</div>' : '') +
-        (waiting > 0 ? '<div class="stat-item"><span class="stat-dot waiting"></span>' + waiting + ' waiting</div>' : '') +
+        (running > 0 ? '<div class="stat-item"><span class="stat-dot running"></span>' + running + ' working</div>' : '') +
+        (waiting > 0 ? '<div class="stat-item"><span class="stat-dot waiting"></span>' + waiting + ' your turn</div>' : '') +
         (idle > 0 ? '<div class="stat-item"><span class="stat-dot idle"></span>' + idle + ' idle</div>' : '') +
-        (stopped > 0 ? '<div class="stat-item"><span class="stat-dot stopped"></span>' + stopped + ' stopped</div>' : '') +
+        (stopped > 0 ? '<div class="stat-item"><span class="stat-dot stopped"></span>' + stopped + ' ended</div>' : '') +
         '</div>';
     }
 
@@ -418,8 +421,10 @@ export function getDashboardHtml(port: number): string {
         detail = '<div class="card-detail open">' + promptsHtml + outputHtml + '</div>';
       }
 
-      const stoppedOutputPreview = (isStopped && s.stoppedOutput && !isExpanded)
-        ? '<div class="stopped-output">' + escapeHtml(s.stoppedOutput) + '</div>'
+      const hasOutputPreview = (isStopped || s.status === 'waiting_for_input') && s.stoppedOutput && !isExpanded;
+      const outputPreviewClass = s.status === 'waiting_for_input' ? 'stopped-output waiting-output' : 'stopped-output';
+      const stoppedOutputPreview = hasOutputPreview
+        ? '<div class="' + outputPreviewClass + '">' + escapeHtml(s.stoppedOutput) + '</div>'
         : '';
 
       return '<div class="card ' + (isStopped ? 'stopped' : '') + '" data-session-id="' + escapeAttr(s.sessionId) + '">'+
@@ -465,7 +470,7 @@ export function getDashboardHtml(port: number): string {
       }
 
       if (stopped.length > 0) {
-        html += '<div class="section-header">Recently Stopped</div>';
+        html += '<div class="section-header">Recently Ended</div>';
         html += '<div class="grid">' + stopped.map(renderCard).join('') + '</div>';
       }
 
