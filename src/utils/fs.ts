@@ -210,6 +210,18 @@ async function fileHash(filePath: string): Promise<string | null> {
 }
 
 /**
+ * Compare a file's content against a Buffer by SHA-256 hash.
+ * Returns true if the file has identical content to the buffer.
+ * Returns false if the file does not exist.
+ */
+export async function fileContentEqualToBuffer(filePath: string, buffer: Buffer): Promise<boolean> {
+  const fileHashVal = await fileHash(expandHome(filePath));
+  if (fileHashVal === null) return false;
+  const bufHash = crypto.createHash('sha256').update(buffer).digest('hex');
+  return fileHashVal === bufHash;
+}
+
+/**
  * Compare two files by content. Returns true if they have identical content.
  * Returns false if either file does not exist or content differs.
  */

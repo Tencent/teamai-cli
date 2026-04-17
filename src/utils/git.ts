@@ -191,6 +191,25 @@ export async function resetToCleanMaster(git: SimpleGit): Promise<void> {
   }
 }
 
+/**
+ * Get the raw content of a file at a specific git revision.
+ * Uses `git show <rev>:<path>` to retrieve historical file content.
+ * Returns null if the file doesn't exist at that revision or if the rev is invalid.
+ */
+export async function getFileContentAtRev(
+  repoPath: string,
+  rev: string,
+  filePath: string,
+): Promise<Buffer | null> {
+  const git = createGit(repoPath);
+  try {
+    const result = await git.show([`${rev}:${filePath}`]);
+    return Buffer.from(result);
+  } catch {
+    return null;
+  }
+}
+
 export async function getRepoStatus(localPath: string): Promise<{ ahead: number; behind: number; modified: string[] }> {
   const git = createGit(localPath);
   await git.fetch();

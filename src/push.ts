@@ -1,5 +1,6 @@
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
 import { createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName, resetToCleanMaster } from './utils/git.js';
+import { syncTeamUpdatesToLocal } from './utils/pre-push-sync.js';
 import { getProvider } from './providers/index.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
@@ -92,6 +93,15 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
     pullSpin.succeed('Master up to date');
   } catch (e) {
     pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+  }
+
+  // Sync team repo updates to local tool directories before scanning.
+  // This prevents files changed by teammates from being falsely flagged as "modified".
+  try {
+    const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, state.lastPullRev);
+  } catch (e) {
+    log.debug(`Pre-push sync skipped: ${(e as Error).message}`);
   }
 
   const spin = spinner('Scanning local resources...').start();
