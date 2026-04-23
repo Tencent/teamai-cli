@@ -8,6 +8,7 @@ export const ToolPathsSchema = z.object({
   rules: z.string().optional(),
   settings: z.string().optional(),
   claudemd: z.string().optional(),
+  wiki: z.string().optional(),
 });
 
 // ─── Scope ──────────────────────────────────────────────
@@ -87,10 +88,10 @@ export const TeamaiConfigSchema = z.object({
   sources: z.array(SourceConfigSchema).optional(),
   sharing: SharingConfigSchema.default({}),
   toolPaths: z.record(z.string(), ToolPathsSchema).default({
-    claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md' },
+    claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', wiki: '.claude/wiki' },
     codex: { skills: '.codex/skills', rules: '.codex/rules' },
     'codex-internal': { skills: '.codex-internal/skills', rules: '.codex-internal/rules' },
-    'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md' },
+    'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', wiki: '.claude-internal/wiki' },
     cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json' },
     codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md' },
     openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules' },
@@ -171,7 +172,7 @@ export interface TagsConfig {
 
 // ─── Resource types ─────────────────────────────────────
 
-export type ResourceType = 'skills' | 'rules' | 'docs' | 'env';
+export type ResourceType = 'skills' | 'rules' | 'docs' | 'env' | 'wiki';
 
 export type ResourceItemStatus = 'new' | 'modified';
 
@@ -208,7 +209,7 @@ export const TEAMAI_STATE_PATH = `${TEAMAI_HOME}/state.json`;
 export const TEAMAI_TOKEN_PATH = `${TEAMAI_HOME}/token`;
 export const TEAMAI_UPDATE_LOCK_PATH = `${TEAMAI_HOME}/.update-lock`;
 
-export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env'];
+export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'wiki'];
 
 export const TEAMAI_RULES_START = '<!-- [teamai:rules:start] -->';
 export const TEAMAI_RULES_END = '<!-- [teamai:rules:end] -->';

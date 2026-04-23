@@ -109,7 +109,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 
   // Scan for pushable resources first, then resolve namespace for new skills only.
   // Modified skills already carry their namespace from scanLocalForPush.
-  const pushableTypes: ResourceType[] = ['skills', 'rules', 'env'];
+  const pushableTypes: ResourceType[] = ['skills', 'rules', 'env', 'wiki'];
   const allItems: ResourceItem[] = [];
 
   for (const type of pushableTypes) {
