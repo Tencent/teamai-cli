@@ -1,12 +1,12 @@
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
 import { pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
-import { createPrWithFallback } from './push.js';
+import { createPrWithFallback, filterExistingTopLevelPaths } from './push.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
 import type { GlobalOptions, ResourceType } from './types.js';
 import { askConfirmation } from './utils/prompt.js';
 
-const REMOVABLE_TYPES: ResourceType[] = ['skills', 'rules'];
+const REMOVABLE_TYPES: ResourceType[] = ['skills', 'rules', 'wiki'];
 
 export async function remove(
   type: string,
@@ -117,10 +117,15 @@ export async function remove(
       : `${found.slice(0, 3).map((n) => `"${n}"`).join(', ')} and ${found.length - 3} more`;
     const commitMsg = `[teamai] Remove ${found.length} ${type}: ${nameList} by ${localConfig.username}`;
 
+    const candidateDirs = [`${type}/`, 'rules/', '.codebuddy-plugin/'];
+    const gitFiles = await filterExistingTopLevelPaths(
+      localConfig.repo.localPath,
+      candidateDirs,
+    );
     const hasChanges = await pushRepoBranch(
       localConfig.repo.localPath,
       commitMsg,
-      [`${type}/`, 'rules/', '.codebuddy-plugin/'],
+      gitFiles,
       branchName,
     );
 
@@ -154,5 +159,6 @@ export async function remove(
   if (type === 'rules') {
     state.pushedRules = state.pushedRules.filter((r) => !found.includes(r));
   }
+  // `wiki` is not tracked in pushedX state; nothing to clean here.
   await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
 }

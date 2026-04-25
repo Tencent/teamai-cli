@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
 import { createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName, resetToCleanMaster, getDefaultBranch } from './utils/git.js';
 import { syncTeamUpdatesToLocal } from './utils/pre-push-sync.js';
@@ -8,6 +9,33 @@ import { scanTeamRepoNamespaces } from './resources/skills.js';
 import type { GlobalOptions, ResourceItem, ResourceType } from './types.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
 import { askQuestion, askSelection } from './utils/prompt.js';
+import { pathExists } from './utils/fs.js';
+
+/**
+ * Filter a list of repo-root-relative paths (e.g. "rules/", "env/") down to
+ * those that actually exist on disk. `git add` throws `pathspec did not match
+ * any files` when any argument doesn't exist, so we guard against that when
+ * passing "sweeper" directories that may or may not be present in a given
+ * team repo (e.g. a pure-wiki team has no rules/ or env/).
+ */
+export async function filterExistingTopLevelPaths(
+  repoPath: string,
+  candidates: string[],
+): Promise<string[]> {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    const trimmed = candidate.replace(/\/+$/, '');
+    // Empty string (e.g. from "/" only) is nonsense; skip.
+    if (!trimmed) continue;
+    if (await pathExists(path.join(repoPath, trimmed))) {
+      result.push(candidate);
+    }
+  }
+  return result;
+}
 
 /**
  * Resolve available skill namespaces for the current user.
@@ -250,36 +278,47 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
   }
 
   // ── Step 5: Push each selected item to local repo ──────────────────
+  // pushItem copies files into the team repo's working tree. If any later
+  // step (refreshMarketplace, pushRepoBranch, createPullRequest) fails, we
+  // must wipe those copies + any staging so the next `teamai push` scans
+  // cleanly instead of reporting "No new resources" (BUG #2).
   const pushSpin = spinner('Pushing resources...').start();
   const pushedFiles: string[] = [];
+  let workingTreeDirtied = false;
 
-  for (const item of selectedItems) {
-    const handler = getHandler(item.type);
-    await handler.pushItem(item, teamConfig, localConfig);
-    pushedFiles.push(item.relativePath);
-  }
-
-  // Refresh marketplace.json if it exists and skills were pushed
-  if (selectedItems.some((i) => i.type === 'skills')) {
-    try {
-      const { refreshMarketplace } = await import('./resources/marketplace.js');
-      const updated = await refreshMarketplace(localConfig.repo.localPath);
-      if (updated) {
-        pushedFiles.push('.codebuddy-plugin/marketplace.json');
-        log.debug('Refreshed marketplace.json');
-      }
-    } catch (e) {
-      log.debug(`Marketplace refresh skipped: ${(e as Error).message}`);
-    }
-  }
-
-  // Create branch, commit, and push
   try {
-    const gitFiles = [...new Set([
-      ...pushedFiles,
-      'rules/',
-      'env/',
-    ])];
+    for (const item of selectedItems) {
+      const handler = getHandler(item.type);
+      await handler.pushItem(item, teamConfig, localConfig);
+      workingTreeDirtied = true;
+      pushedFiles.push(item.relativePath);
+    }
+
+    // Refresh marketplace.json if it exists and skills were pushed
+    if (selectedItems.some((i) => i.type === 'skills')) {
+      try {
+        const { refreshMarketplace } = await import('./resources/marketplace.js');
+        const updated = await refreshMarketplace(localConfig.repo.localPath);
+        if (updated) {
+          pushedFiles.push('.codebuddy-plugin/marketplace.json');
+          log.debug('Refreshed marketplace.json');
+        }
+      } catch (e) {
+        log.debug(`Marketplace refresh skipped: ${(e as Error).message}`);
+      }
+    }
+
+    // Create branch, commit, and push.
+    // Only include "sweeper" directories (rules/, env/, wiki/) that actually
+    // exist — otherwise `git add 'rules/'` throws `pathspec did not match
+    // any files` and the whole push aborts (BUG #1). Pure-wiki teams may
+    // not have rules/ or env/.
+    const sweeperCandidates = ['rules/', 'env/', 'wiki/', '.codebuddy-plugin/'];
+    const existingSweepers = await filterExistingTopLevelPaths(
+      localConfig.repo.localPath,
+      sweeperCandidates,
+    );
+    const gitFiles = [...new Set([...pushedFiles, ...existingSweepers])];
     const branchName = generateBranchName(localConfig.username);
     const commitMsg = `[teamai] Push ${selectedItems.length} resource(s) from ${localConfig.username}`;
 
@@ -289,6 +328,9 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
       gitFiles,
       branchName,
     );
+    // pushRepoBranch committed (or deleted the branch) — working tree is
+    // clean either way from the branch's perspective.
+    workingTreeDirtied = false;
 
     if (!hasChanges) {
       pushSpin.succeed('No changes to push (files already up to date)');
@@ -310,6 +352,18 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
     await checkoutMaster(localConfig.repo.localPath);
   } catch (e) {
     pushSpin.fail(`Push failed: ${(e as Error).message}`);
+    if (workingTreeDirtied) {
+      try {
+        const git = createGit(localConfig.repo.localPath);
+        await git.reset(['--hard', 'HEAD']);
+        await git.clean('f', ['-d']);
+        log.debug('Rolled back team repo working tree after failed push');
+      } catch (cleanupErr) {
+        log.warn(
+          `Warning: team repo may be in a dirty state. Run \`git -C ${localConfig.repo.localPath} reset --hard && git clean -fd\` manually. (${(cleanupErr as Error).message})`,
+        );
+      }
+    }
     return;
   }
 

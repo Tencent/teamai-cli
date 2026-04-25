@@ -385,19 +385,27 @@ async function pullForScope(
 
   // Step 3: Clean up tombstoned resources
   if (!options.dryRun) {
-    const tombstoneTypes: { type: ResourceType; ext?: string }[] = [
-      { type: 'rules', ext: '.md' },
-      { type: 'skills' },
+    // Each entry maps a resource type to (a) the field on toolPath that names
+    // the tool-side directory and (b) the filename suffix used for that
+    // resource on disk (e.g. rules/wiki pages are files, skills are dirs).
+    const tombstoneTypes: {
+      type: ResourceType;
+      ext?: string;
+      toolPathField: 'rules' | 'skills' | 'wiki';
+    }[] = [
+      { type: 'rules', ext: '.md', toolPathField: 'rules' },
+      { type: 'skills', toolPathField: 'skills' },
+      { type: 'wiki', ext: '.md', toolPathField: 'wiki' },
     ];
 
     const baseDir = resolveBaseDir(localConfig);
-    for (const { type, ext } of tombstoneTypes) {
+    for (const { type, ext, toolPathField } of tombstoneTypes) {
       const handler = getHandler(type);
       const tombstones = await handler.readTombstones(localConfig);
       if (tombstones.size === 0) continue;
 
       for (const [_tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
-        const dir = type === 'rules' ? toolPath.rules : toolPath.skills;
+        const dir = toolPath[toolPathField];
         if (!dir) continue;
         if (!await ResourceHandler.isToolInstalled(dir, baseDir)) continue;
 
