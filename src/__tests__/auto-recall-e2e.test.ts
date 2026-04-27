@@ -71,6 +71,9 @@ function runAutoRecall(
     stdinPayload: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
     return new Promise((resolve) => {
+        let stdout = '';
+        let stderr = '';
+
         const child = execFile(
             'node',
             [CLI_PATH, 'auto-recall', '--stdin'],
@@ -78,16 +81,26 @@ function runAutoRecall(
                 env: { ...process.env, HOME: homeDir, TEAMAI_LOG_LEVEL: 'silent' },
                 timeout: 10000,
             },
-            (error, stdout, stderr) => {
-                resolve({
-                    stdout: stdout ?? '',
-                    stderr: stderr ?? '',
-                    code: error?.code ? Number(error.code) : (child.exitCode ?? 0),
-                });
+            (_error, out, err) => {
+                // Capture buffered output from the callback (most reliable source)
+                stdout = out ?? '';
+                stderr = err ?? '';
             },
         );
+
         child.stdin?.write(stdinPayload);
         child.stdin?.end();
+
+        // Wait for 'close' so child.exitCode is guaranteed to be set.
+        // The execFile callback fires on 'exit' which can race with stdio
+        // drain; 'close' fires after both exit + stdio close.
+        child.on('close', (exitCode) => {
+            resolve({
+                stdout,
+                stderr,
+                code: exitCode ?? 0,
+            });
+        });
     });
 }
 
