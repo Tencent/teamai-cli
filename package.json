@@ -1,6 +1,6 @@
 {
   "name": "teamai-cli",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "description": "TeamAI — team AI experience sharing framework (skills, rules, docs, env sync across Claude Code, Cursor, Codex, etc.)",
   "type": "module",
   "bin": {
