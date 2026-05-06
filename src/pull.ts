@@ -80,6 +80,29 @@ async function buildRolePullContext(localConfig: LocalConfig): Promise<RolePullC
   return { activeNamespaces, activeSkillNames, inactiveSkillNames };
 }
 
+/**
+ * Filter rules by the user's active knowledge namespaces.
+ *
+ * Rules whose name starts with a namespace path (e.g. "common/coding-style")
+ * are filtered: only those in activeKnowledgeNamespaces pass through.
+ * Root-level rules (no "/" in name) are always included.
+ *
+ * When knowledgeNamespaces is null (no role configured), all rules pass through.
+ */
+export function filterRulesByKnowledgeNamespaces(
+  rules: ResourceItem[],
+  knowledgeNamespaces: string[] | null,
+): ResourceItem[] {
+  if (!knowledgeNamespaces) return rules;
+
+  return rules.filter((rule) => {
+    const slashIndex = rule.name.indexOf('/');
+    if (slashIndex === -1) return true; // root-level rule, always include
+    const namespace = rule.name.slice(0, slashIndex);
+    return knowledgeNamespaces.includes(namespace);
+  });
+}
+
 export async function scanRoleAwareSkills(localConfig: LocalConfig, namespaces: ResourceNamespaces): Promise<ResourceItem[]> {
   const items = new Map<string, ResourceItem>();
 
@@ -271,7 +294,10 @@ async function pullForScope(
     if (type === 'rules') {
       const rulesHandler = handler as RulesHandler;
       const allItems = await rulesHandler.scanTeamForPull(freshConfig, localConfig);
-      const { included: items, skipped } = filterByTags(allItems, tagsConfig, subscribedTags, 'rules');
+      // Filter by role knowledge namespaces first, then by tags
+      const knowledgeNs = roleContext ? roleContext.activeNamespaces.knowledge : null;
+      const roleFiltered = filterRulesByKnowledgeNamespaces(allItems, knowledgeNs);
+      const { included: items, skipped } = filterByTags(roleFiltered, tagsConfig, subscribedTags, 'rules');
       if (items.length > 0) {
         if (options.dryRun) {
           log.info(`[${scopeLabel}] [dry-run] Would sync ${items.length} rule(s)${skipped.length > 0 ? ` (skipped ${skipped.length} by tags)` : ''}`);
