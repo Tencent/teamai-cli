@@ -5,13 +5,11 @@
 [![CI](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
 [![npm downloads](https://img.shields.io/npm/dm/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
-[![Node.js](https://img.shields.io/node/v/teamai-cli.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 基于 Git 的团队 AI 经验共享工具。自动在团队成员之间同步 skills、rules、docs 等 AI 工具配置。
 
-支持的 AI 工具：Claude Code、Codex、Cursor、CodeBuddy IDE（及各自的 Internal 版本），以及 Gemini CLI、Windsurf、Trae、Aider、Amp、OpenClaw 等 20+ 种 AI 编程工具（Skills 同步）。
-支持的 git 托管平台：**GitHub**、腾讯工蜂 TGit（`git.woa.com`），根据 repo URL 或安装来源自动识别。
+支持的 AI 工具：Claude Code、Codex、Cursor、CodeBuddy IDE，以及 Gemini CLI、Windsurf、Trae、Aider、Amp、OpenClaw 等 20+ 种 AI 编程工具（Skills 同步）。
 
 > 📖 **完整使用指南**：[docs/usage-guide.md](docs/usage-guide.md) — 涵盖从团队创建到日常使用的全流程。
 > 📚 **Provider 说明**：[docs/providers.md](docs/providers.md) — GitHub / TGit 差异与认证配置。
