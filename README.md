@@ -12,6 +12,7 @@ Make every AI coding agent work by the same harness. Git-native management of sk
 **Supports:** Claude Code, Codex, Cursor, CodeBuddy IDE, as well as Gemini CLI, Windsurf, Trae, Aider, Amp, OpenClaw, and 20+ other AI coding tools (skills sync).
 
 > 📖 **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) — covers everything from team creation to day-to-day use.
+
 > 📚 **Provider notes:** [docs/providers.md](docs/providers.md) — GitHub / TGit differences and auth setup.
 
 Questions or suggestions are welcome — please open a PR or an Issue and help build this project together.
