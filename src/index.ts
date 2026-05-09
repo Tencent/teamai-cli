@@ -10,7 +10,7 @@ const program = new Command();
 
 program
   .name('teamai')
-  .description('TeamAI — 团队 AI 经验共享框架')
+  .description('TeamAI — The team harness for AI agents')
   .version(version)
   .option('--dry-run', 'Preview mode, no changes made')
   .option('-v, --verbose', 'Verbose output')

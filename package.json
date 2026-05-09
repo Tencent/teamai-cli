@@ -1,7 +1,7 @@
 {
   "name": "teamai-cli",
-  "version": "0.16.2",
-  "description": "TeamAI — team AI experience sharing framework (skills, rules, docs, env sync across Claude Code, Cursor, Codex, etc.)",
+  "version": "0.16.3",
+  "description": "TeamAI — the team harness for AI agents (skill sync + shared knowledge base, powered by Git)",
   "type": "module",
   "bin": {
     "teamai": "dist/index.js"
