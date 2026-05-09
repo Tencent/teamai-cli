@@ -8,10 +8,12 @@ export default defineConfig({
     ],
     testTimeout: 60_000,
     hookTimeout: 30_000,
-    // E2E tests spawn child processes and touch the real filesystem; a few
-    // (notably auto-recall-e2e) are inherently slightly flaky on CI runners
-    // due to timing/state. Retry once: flaky tests recover, real bugs stay
-    // failed (since they'll fail both runs).
+    // E2E tests spawn child processes and touch the real filesystem.
+    // Run test files sequentially to avoid race conditions (parallel
+    // file-level execution causes intermittent "Cannot find module
+    // dist/index.js" on GitHub Actions CI runners).
+    fileParallelism: false,
+    // Retry once: flaky tests recover, real bugs stay failed.
     retry: 1,
   },
 });

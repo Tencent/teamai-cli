@@ -668,19 +668,25 @@ describe('init project scope (sandboxed)', () => {
         const stdinAllBlanks = '\n\n\n\n\n';
 
         const result = await runCLIWithEnv(
-          ['init', '--scope', 'project', '--repo', fullUrl, '--force'],
+          ['init', '--scope', 'project', '--repo', fullUrl, '--role', 'common', '--force'],
           {
             // GitHub: gh CLI / REST honors GITHUB_TOKEN
             // TGit: gf CLI honors TGIT_TOKEN
             GITHUB_TOKEN: process.env.TEAMAI_TEST_TOKEN ?? '',
             TGIT_TOKEN: process.env.TEAMAI_TEST_TOKEN ?? '',
             HOME: sandbox, // isolate from user-scope ~/.teamai
+            // Git identity must be set explicitly because HOME override
+            // hides the global .gitconfig written by CI setup steps.
+            GIT_AUTHOR_NAME: 'TeamAI CI',
+            GIT_AUTHOR_EMAIL: 'ci@teamai.test',
+            GIT_COMMITTER_NAME: 'TeamAI CI',
+            GIT_COMMITTER_EMAIL: 'ci@teamai.test',
           },
           stdinAllBlanks,
           sandbox, // cwd = sandbox, so .teamai/ lands here
         );
 
-        expect(result.code).toBe(0);
+        expect(result.code, `init failed with output:\n${result.output}`).toBe(0);
         expect(fs.existsSync(path.join(sandbox, '.teamai', 'config.yaml'))).toBe(true);
 
         // Verify the project-scope config has the expected shape
