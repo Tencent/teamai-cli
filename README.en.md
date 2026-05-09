@@ -7,9 +7,9 @@
 [![npm downloads](https://img.shields.io/npm/dm/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A Git-native tool for sharing AI experience across your team. Automatically syncs skills, rules, docs, and other AI-tool configuration between team members.
+Make every AI coding agent work by the same harness. Git-native management of skills, rules, and docs across 20+ AI tools — for you or your whole team.
 
-**Supported AI tools:** Claude Code, Codex, Cursor, CodeBuddy IDE, as well as Gemini CLI, Windsurf, Trae, Aider, Amp, OpenClaw, and 20+ other AI coding tools (skills sync).
+**Supports:** Claude Code, Codex, Cursor, CodeBuddy IDE, as well as Gemini CLI, Windsurf, Trae, Aider, Amp, OpenClaw, and 20+ other AI coding tools (skills sync).
 
 > 📖 **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) — covers everything from team creation to day-to-day use.
 > 📚 **Provider notes:** [docs/providers.md](docs/providers.md) — GitHub / TGit differences and auth setup.
