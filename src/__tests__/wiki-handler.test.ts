@@ -19,20 +19,18 @@ import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 describe('WikiHandler', () => {
     let tmpDir: string;
-    let homeDir: string;
+    let teamaiHome: string;
     let handler: WikiHandler;
     let teamConfig: TeamaiConfig;
     let localConfig: LocalConfig;
 
     beforeEach(async () => {
         tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-wiki-test-'));
-        homeDir = path.join(tmpDir, 'home');
+        teamaiHome = path.join(tmpDir, '.teamai');
 
         const repoPath = path.join(tmpDir, 'team-repo');
         await fse.ensureDir(path.join(repoPath, 'wiki'));
-        await fse.ensureDir(path.join(homeDir, '.claude-internal', 'wiki'));
-
-        vi.stubEnv('HOME', homeDir);
+        await fse.ensureDir(path.join(teamaiHome, 'wiki'));
 
         handler = new WikiHandler();
 
@@ -49,14 +47,14 @@ describe('WikiHandler', () => {
                 env: { injectShellProfile: true },
             },
             toolPaths: {
-                'claude-internal': {
-                    skills: '.claude-internal/skills',
-                    rules: '.claude-internal/rules',
-                    wiki: '.claude-internal/wiki',
+                claude: {
+                    skills: '.claude/skills',
+                    rules: '.claude/rules',
                 },
             },
         };
 
+        // Use project scope with projectRoot so getTeamaiHome returns the test tmpDir
         localConfig = {
             repo: {
                 localPath: repoPath,
@@ -65,19 +63,19 @@ describe('WikiHandler', () => {
             username: 'testuser',
             updatePolicy: 'auto',
             additionalRoles: [],
-            scope: 'user',
+            scope: 'project',
+            projectRoot: tmpDir,
         };
     });
 
     afterEach(async () => {
-        vi.unstubAllEnvs();
         await fse.remove(tmpDir);
     });
 
     describe('scanLocalForPush', () => {
         it('detects new wiki page not in team repo', async () => {
-            // Create local wiki page
-            const localWiki = path.join(homeDir, '.claude-internal', 'wiki');
+            // Create local wiki page in shared location
+            const localWiki = path.join(teamaiHome, 'wiki');
             await fse.ensureDir(path.join(localWiki, 'entities'));
             await fse.writeFile(
                 path.join(localWiki, 'entities', 'test-module.md'),
@@ -102,7 +100,7 @@ describe('WikiHandler', () => {
             );
 
             // Create same page locally with different content
-            const localWiki = path.join(homeDir, '.claude-internal', 'wiki');
+            const localWiki = path.join(teamaiHome, 'wiki');
             await fse.ensureDir(path.join(localWiki, 'entities'));
             await fse.writeFile(
                 path.join(localWiki, 'entities', 'test-module.md'),
@@ -124,7 +122,7 @@ describe('WikiHandler', () => {
             await fse.ensureDir(path.join(teamWiki, 'entities'));
             await fse.writeFile(path.join(teamWiki, 'entities', 'test-module.md'), content);
 
-            const localWiki = path.join(homeDir, '.claude-internal', 'wiki');
+            const localWiki = path.join(teamaiHome, 'wiki');
             await fse.ensureDir(path.join(localWiki, 'entities'));
             await fse.writeFile(path.join(localWiki, 'entities', 'test-module.md'), content);
 
@@ -134,7 +132,7 @@ describe('WikiHandler', () => {
         });
 
         it('excludes _metadata.json from push', async () => {
-            const localWiki = path.join(homeDir, '.claude-internal', 'wiki');
+            const localWiki = path.join(teamaiHome, 'wiki');
             await fse.writeFile(
                 path.join(localWiki, '_metadata.json'),
                 '{"version":1}',
@@ -185,7 +183,7 @@ describe('WikiHandler', () => {
 
     describe('pushItem', () => {
         it('copies wiki page to team repo', async () => {
-            const localWiki = path.join(homeDir, '.claude-internal', 'wiki');
+            const localWiki = path.join(teamaiHome, 'wiki');
             await fse.ensureDir(path.join(localWiki, 'entities'));
             const sourcePath = path.join(localWiki, 'entities', 'test.md');
             await fse.writeFile(sourcePath, '# Test');
@@ -209,7 +207,7 @@ describe('WikiHandler', () => {
     });
 
     describe('pullItem', () => {
-        it('copies wiki page to local tool directory', async () => {
+        it('copies wiki page to shared wiki location', async () => {
             const teamWiki = path.join(localConfig.repo.localPath, 'wiki');
             await fse.ensureDir(path.join(teamWiki, 'entities'));
             const sourcePath = path.join(teamWiki, 'entities', 'test.md');
@@ -226,7 +224,7 @@ describe('WikiHandler', () => {
                 localConfig,
             );
 
-            const dest = path.join(homeDir, '.claude-internal', 'wiki', 'entities', 'test.md');
+            const dest = path.join(teamaiHome, 'wiki', 'entities', 'test.md');
             expect(await fse.pathExists(dest)).toBe(true);
             expect(await fse.readFile(dest, 'utf-8')).toBe('# Test from team');
         });
@@ -234,7 +232,7 @@ describe('WikiHandler', () => {
 
     describe('rebuildMetadata', () => {
         it('rebuilds metadata from wiki pages', async () => {
-            const wikiDir = path.join(tmpDir, 'test-wiki');
+            const wikiDir = path.join(teamaiHome, 'wiki');
             await fse.ensureDir(path.join(wikiDir, 'entities'));
             await fse.writeFile(
                 path.join(wikiDir, 'entities', 'foo.md'),
@@ -245,7 +243,7 @@ describe('WikiHandler', () => {
                 '---\ntitle: Bar\ncategory: entity\ntags: [util]\nupdated: 2026-04-08\n---\n\n# Bar\n\n## Related\n\n## Backlinks\n',
             );
 
-            await WikiHandler.rebuildMetadata(wikiDir);
+            await WikiHandler.rebuildMetadata(localConfig);
 
             const metadataPath = path.join(wikiDir, '_metadata.json');
             expect(await fse.pathExists(metadataPath)).toBe(true);

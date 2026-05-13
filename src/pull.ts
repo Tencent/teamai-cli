@@ -417,11 +417,10 @@ async function pullForScope(
     const tombstoneTypes: {
       type: ResourceType;
       ext?: string;
-      toolPathField: 'rules' | 'skills' | 'wiki';
+      toolPathField: 'rules' | 'skills';
     }[] = [
       { type: 'rules', ext: '.md', toolPathField: 'rules' },
       { type: 'skills', toolPathField: 'skills' },
-      { type: 'wiki', ext: '.md', toolPathField: 'wiki' },
     ];
 
     const baseDir = resolveBaseDir(localConfig);
@@ -443,6 +442,25 @@ async function pullForScope(
           }
         }
       }
+    }
+
+    // Wiki tombstone cleanup: wiki is now in shared location, not per-tool
+    try {
+      const wikiHandler = getHandler('wiki');
+      const wikiTombstones = await wikiHandler.readTombstones(localConfig);
+      if (wikiTombstones.size > 0) {
+        const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
+        const wikiDir = path.join(teamaiHome, 'wiki');
+        for (const name of wikiTombstones) {
+          const wikiPath = path.join(wikiDir, `${name}.md`);
+          if (await pathExists(wikiPath)) {
+            await remove(wikiPath);
+            log.debug(`[${scopeLabel}] Cleaned up tombstoned wiki ${name} from shared wiki`);
+          }
+        }
+      }
+    } catch (e) {
+      log.debug(`[${scopeLabel}] Wiki tombstone cleanup skipped: ${(e as Error).message}`);
     }
 
     if (roleContext) {
