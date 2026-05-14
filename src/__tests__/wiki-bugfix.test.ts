@@ -12,6 +12,11 @@
  *            `REMOVABLE_TYPES` didn't include 'wiki'.
  *   BUG #4 — `teamai pull` didn't honor wiki tombstones: a `wiki/.removed`
  *            entry in the team repo never deleted the local copy.
+ *
+ *   NOTE (refactored for shared wiki location):
+ *   With the wiki refactoring, BUG #4 no longer iterates through per-tool
+ *   wiki directories. Instead, pull.ts has a dedicated wiki tombstone cleanup
+ *   block that removes pages from the shared wiki location (~/.teamai/wiki/).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -38,10 +43,9 @@ vi.mock('../utils/logger.js', () => ({
 
 import { filterExistingTopLevelPaths } from '../push.js';
 import { WikiHandler } from '../resources/wiki.js';
-import { ResourceHandler } from '../resources/base.js';
-import { resolveBaseDir } from '../types.js';
 import { remove as removeFile } from '../utils/fs.js';
-import type { TeamaiConfig, LocalConfig, ResourceType } from '../types.js';
+import { getTeamaiHome } from '../types.js';
+import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // BUG #1 — filterExistingTopLevelPaths
@@ -107,6 +111,8 @@ describe('remove.ts REMOVABLE_TYPES (BUG #3 regression)', () => {
         try {
             const repoPath = path.join(tmpDir, 'team-repo');
             await fse.ensureDir(path.join(repoPath, 'wiki'));
+            const teamaiHome = path.join(tmpDir, '.teamai');
+            await fse.ensureDir(path.join(teamaiHome, 'wiki'));
 
             const teamConfig: TeamaiConfig = {
                 team: 'test',
@@ -124,7 +130,6 @@ describe('remove.ts REMOVABLE_TYPES (BUG #3 regression)', () => {
                     claude: {
                         skills: '.claude/skills',
                         rules: '.claude/rules',
-                        wiki: '.claude/wiki',
                     },
                 },
             } as TeamaiConfig;
@@ -133,7 +138,8 @@ describe('remove.ts REMOVABLE_TYPES (BUG #3 regression)', () => {
                 username: 'tester',
                 updatePolicy: 'auto',
                 additionalRoles: [],
-                scope: 'user',
+                scope: 'project',
+                projectRoot: tmpDir,
             } as LocalConfig;
 
             const removed = await handler.removeItem('entities/alpha', teamConfig, localConfig);
@@ -153,18 +159,18 @@ describe('remove.ts REMOVABLE_TYPES (BUG #3 regression)', () => {
 // ─────────────────────────────────────────────────────────────────────────
 describe('pull tombstone cleanup for wiki (BUG #4 regression)', () => {
     let tmpDir: string;
-    let homeDir: string;
     let repoPath: string;
+    let teamaiHome: string;
     let teamConfig: TeamaiConfig;
     let localConfig: LocalConfig;
 
     beforeEach(async () => {
         tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-pullts-'));
-        homeDir = path.join(tmpDir, 'home');
         repoPath = path.join(tmpDir, 'team-repo');
+        teamaiHome = path.join(tmpDir, '.teamai');
+
         await fse.ensureDir(path.join(repoPath, 'wiki'));
-        await fse.ensureDir(path.join(homeDir, '.claude', 'wiki', 'entities'));
-        vi.stubEnv('HOME', homeDir);
+        await fse.ensureDir(path.join(teamaiHome, 'wiki', 'entities'));
 
         teamConfig = {
             team: 'test',
@@ -182,7 +188,6 @@ describe('pull tombstone cleanup for wiki (BUG #4 regression)', () => {
                 claude: {
                     skills: '.claude/skills',
                     rules: '.claude/rules',
-                    wiki: '.claude/wiki',
                 },
             },
         } as TeamaiConfig;
@@ -192,20 +197,20 @@ describe('pull tombstone cleanup for wiki (BUG #4 regression)', () => {
             username: 'tester',
             updatePolicy: 'auto',
             additionalRoles: [],
-            scope: 'user',
+            scope: 'project',
+            projectRoot: tmpDir,
         } as LocalConfig;
     });
 
     afterEach(async () => {
-        vi.unstubAllEnvs();
         await fse.remove(tmpDir);
     });
 
     /**
-     * Reproduces the exact loop pull.ts runs after the fix (tombstoneTypes
-     * now includes wiki with toolPathField='wiki'). We keep the check at
-     * this layer instead of end-to-end because pullForScope touches git,
-     * spinners, and file-system fetches that are costly to mock.
+     * Reproduces the new wiki tombstone cleanup logic in pull.ts.
+     * With the refactoring, wiki tombstones are cleaned up from the shared
+     * ~/.teamai/wiki/ location (or <projectRoot>/.teamai/wiki/ for project scope)
+     * instead of iterating through per-tool directories.
      */
     it('removes local wiki pages that are listed in wiki/.removed', async () => {
         // Simulate a team member running `teamai remove wiki entities/alpha`:
@@ -214,36 +219,21 @@ describe('pull tombstone cleanup for wiki (BUG #4 regression)', () => {
             path.join(repoPath, 'wiki', '.removed'),
             'entities/alpha\n',
         );
-        // Local copy that should be cleaned up.
-        const localAlpha = path.join(homeDir, '.claude', 'wiki', 'entities', 'alpha.md');
+        // Local copy in shared wiki location that should be cleaned up.
+        const localAlpha = path.join(teamaiHome, 'wiki', 'entities', 'alpha.md');
         await fse.writeFile(localAlpha, '# alpha');
 
-        // Mimic pull.ts tombstone loop with the fixed config
-        const tombstoneTypes: {
-            type: ResourceType;
-            ext?: string;
-            toolPathField: 'rules' | 'skills' | 'wiki';
-        }[] = [
-            { type: 'rules', ext: '.md', toolPathField: 'rules' },
-            { type: 'skills', toolPathField: 'skills' },
-            { type: 'wiki', ext: '.md', toolPathField: 'wiki' },
-        ];
-
+        // Mimic pull.ts wiki tombstone cleanup with the new architecture
         const handler = new WikiHandler();
-        const baseDir = resolveBaseDir(localConfig);
+        const wikiTombstones = await handler.readTombstones(localConfig);
 
-        for (const { type, ext, toolPathField } of tombstoneTypes) {
-            if (type !== 'wiki') continue;
-            const tombstones = await handler.readTombstones(localConfig);
-            for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
-                const dir = toolPath[toolPathField];
-                if (!dir) continue;
-                if (!await ResourceHandler.isToolInstalled(dir, baseDir)) continue;
-                for (const name of tombstones) {
-                    const p = path.join(baseDir, dir, ext ? `${name}${ext}` : name);
-                    if (await fse.pathExists(p)) {
-                        await removeFile(p);
-                    }
+        if (wikiTombstones.size > 0) {
+            const sharedWikiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
+            const wikiDir = path.join(sharedWikiHome, 'wiki');
+            for (const name of wikiTombstones) {
+                const wikiPath = path.join(wikiDir, `${name}.md`);
+                if (await fse.pathExists(wikiPath)) {
+                    await removeFile(wikiPath);
                 }
             }
         }
@@ -256,21 +246,22 @@ describe('pull tombstone cleanup for wiki (BUG #4 regression)', () => {
             path.join(repoPath, 'wiki', '.removed'),
             'entities/alpha\n',
         );
-        const localAlpha = path.join(homeDir, '.claude', 'wiki', 'entities', 'alpha.md');
-        const localBeta = path.join(homeDir, '.claude', 'wiki', 'entities', 'beta.md');
+        const localAlpha = path.join(teamaiHome, 'wiki', 'entities', 'alpha.md');
+        const localBeta = path.join(teamaiHome, 'wiki', 'entities', 'beta.md');
         await fse.writeFile(localAlpha, '# alpha');
         await fse.writeFile(localBeta, '# beta');
 
         const handler = new WikiHandler();
-        const baseDir = resolveBaseDir(localConfig);
-        const tombstones = await handler.readTombstones(localConfig);
+        const wikiTombstones = await handler.readTombstones(localConfig);
 
-        for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
-            if (!toolPath.wiki) continue;
-            if (!await ResourceHandler.isToolInstalled(toolPath.wiki, baseDir)) continue;
-            for (const name of tombstones) {
-                const p = path.join(baseDir, toolPath.wiki, `${name}.md`);
-                if (await fse.pathExists(p)) await removeFile(p);
+        if (wikiTombstones.size > 0) {
+            const sharedWikiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
+            const wikiDir = path.join(sharedWikiHome, 'wiki');
+            for (const name of wikiTombstones) {
+                const wikiPath = path.join(wikiDir, `${name}.md`);
+                if (await fse.pathExists(wikiPath)) {
+                    await removeFile(wikiPath);
+                }
             }
         }
 

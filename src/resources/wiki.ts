@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
-import { resolveBaseDir } from '../types.js';
+import { resolveBaseDir, getTeamaiHome } from '../types.js';
 import {
     listFilesRecursive,
     pathExists,
@@ -9,7 +9,6 @@ import {
     remove,
     ensureDir,
     readFileSafe,
-    getFileMtime,
     fileContentEqual,
 } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -18,13 +17,20 @@ import { log } from '../utils/logger.js';
 /**
  * Wiki resource handler.
  *
- * Unlike skills (directory-based), wiki pages are individual .md files
- * stored in category subdirectories (entities/, concepts/, etc.).
- * The handler treats the entire wiki/ tree as flat files keyed by
- * their relative path within wiki/ (e.g. "entities/message-builder").
+ * Wiki pages are now stored in a centralized shared location:
+ * - User scope  → ~/.teamai/wiki/
+ * - Project scope → <projectRoot>/.teamai/wiki/
+ *
+ * Individual pages are stored as .md files in category subdirectories
+ * (entities/, concepts/, etc.). The handler treats the entire wiki/ tree
+ * as flat files keyed by their relative path within wiki/.
  *
  * _metadata.json is NOT synced via push/pull — it is rebuilt locally
  * by the /wiki skill after each pull.
+ *
+ * BREAKING CHANGE: Wiki is no longer distributed to individual tool
+ * directories (e.g., ~/.claude/wiki/, ~/.cursor/wiki/). All tools now
+ * reference the single shared wiki at ~/.teamai/wiki/.
  */
 export class WikiHandler extends ResourceHandler {
     readonly type = 'wiki' as const;
@@ -55,7 +61,17 @@ export class WikiHandler extends ResourceHandler {
     }
 
     /**
-     * Scan local AI tool wiki directories for pages that are new or modified
+     * Get the shared wiki directory for the current scope.
+     * - User scope  → ~/.teamai/wiki/
+     * - Project scope → <projectRoot>/.teamai/wiki/
+     */
+    private static getSharedWikiDir(localConfig: LocalConfig): string {
+        const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
+        return path.join(teamaiHome, 'wiki');
+    }
+
+    /**
+     * Scan the shared wiki directory for pages that are new or modified
      * compared to the team repo.
      */
     async scanLocalForPush(
@@ -76,74 +92,42 @@ export class WikiHandler extends ResourceHandler {
             }
         }
 
+        const sharedWikiDir = WikiHandler.getSharedWikiDir(localConfig);
+        if (!await pathExists(sharedWikiDir)) return [];
+
         const tombstones = await this.readTombstones(localConfig);
-
-        // Collect best candidate for each page across all tool directories
-        const candidates = new Map<
-            string,
-            { sourcePath: string; mtime: number; status: ResourceItemStatus }
-        >();
-
-        for (const [__, toolPath] of Object.entries(teamConfig.toolPaths)) {
-            if (!toolPath.wiki) continue;
-            const wikiDir = path.join(resolveBaseDir(localConfig), toolPath.wiki);
-            if (!await pathExists(wikiDir)) continue;
-
-            const files = await listFilesRecursive(wikiDir);
-            for (const file of files) {
-                if (!WikiHandler.isWikiPage(file)) continue;
-
-                const name = WikiHandler.pathToName(file);
-                if (tombstones.has(name)) continue;
-
-                const localFilePath = path.join(wikiDir, file);
-
-                if (teamPages.has(name)) {
-                    const teamFilePath = teamPages.get(name)!;
-                    const equal = await fileContentEqual(localFilePath, teamFilePath);
-                    if (equal) continue;
-
-                    const mtime = await getFileMtime(localFilePath);
-                    const existing = candidates.get(name);
-                    if (!existing || mtime > existing.mtime) {
-                        candidates.set(name, {
-                            sourcePath: localFilePath,
-                            mtime,
-                            status: 'modified',
-                        });
-                    }
-                } else {
-                    const existing = candidates.get(name);
-                    if (!existing) {
-                        const mtime = await getFileMtime(localFilePath);
-                        candidates.set(name, {
-                            sourcePath: localFilePath,
-                            mtime,
-                            status: 'new',
-                        });
-                    } else if (existing.status === 'new') {
-                        const mtime = await getFileMtime(localFilePath);
-                        if (mtime > existing.mtime) {
-                            candidates.set(name, {
-                                sourcePath: localFilePath,
-                                mtime,
-                                status: 'new',
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
         const items: ResourceItem[] = [];
-        for (const [name, candidate] of candidates) {
-            items.push({
-                name,
-                type: 'wiki',
-                sourcePath: candidate.sourcePath,
-                relativePath: `wiki/${name}.md`,
-                status: candidate.status,
-            });
+
+        const files = await listFilesRecursive(sharedWikiDir);
+        for (const file of files) {
+            if (!WikiHandler.isWikiPage(file)) continue;
+
+            const name = WikiHandler.pathToName(file);
+            if (tombstones.has(name)) continue;
+
+            const localFilePath = path.join(sharedWikiDir, file);
+
+            if (teamPages.has(name)) {
+                const teamFilePath = teamPages.get(name)!;
+                const equal = await fileContentEqual(localFilePath, teamFilePath);
+                if (equal) continue;
+
+                items.push({
+                    name,
+                    type: 'wiki',
+                    sourcePath: localFilePath,
+                    relativePath: `wiki/${name}.md`,
+                    status: 'modified',
+                });
+            } else {
+                items.push({
+                    name,
+                    type: 'wiki',
+                    sourcePath: localFilePath,
+                    relativePath: `wiki/${name}.md`,
+                    status: 'new',
+                });
+            }
         }
 
         return items;
@@ -185,50 +169,38 @@ export class WikiHandler extends ResourceHandler {
     }
 
     /**
-     * Pull a wiki page from team repo to all configured AI tool wiki directories.
+     * Pull a wiki page from team repo to the shared wiki directory.
      */
     async pullItem(
         item: ResourceItem,
-        teamConfig: TeamaiConfig,
+        _teamConfig: TeamaiConfig,
         localConfig: LocalConfig,
     ): Promise<void> {
-        const baseDir = resolveBaseDir(localConfig);
-
-        for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
-            if (!toolPath.wiki) continue;
-
-            if (!await ResourceHandler.isToolInstalled(toolPath.wiki, baseDir)) {
-                log.debug(`Skipping wiki sync for ${tool}: tool not installed`);
-                continue;
-            }
-
-            const dest = path.join(baseDir, toolPath.wiki, `${item.name}.md`);
-            await ensureDir(path.dirname(dest));
-            try {
-                await copyFile(item.sourcePath, dest);
-                log.debug(`Synced wiki page ${item.name} → ${tool}`);
-            } catch (e) {
-                log.warn(
-                    `Failed to sync wiki page ${item.name} to ${tool}: ${(e as Error).message}`,
-                );
-            }
+        const sharedWikiDir = WikiHandler.getSharedWikiDir(localConfig);
+        const dest = path.join(sharedWikiDir, `${item.name}.md`);
+        await ensureDir(path.dirname(dest));
+        try {
+            await copyFile(item.sourcePath, dest);
+            log.debug(`Synced wiki page ${item.name} → shared wiki`);
+        } catch (e) {
+            log.warn(
+                `Failed to sync wiki page ${item.name}: ${(e as Error).message}`,
+            );
         }
     }
 
     /**
-     * Remove a wiki page from the team repo and all local AI tool wiki directories.
+     * Remove a wiki page from the team repo and the shared wiki directory.
      */
     async removeItem(
         name: string,
-        teamConfig: TeamaiConfig,
+        _teamConfig: TeamaiConfig,
         localConfig: LocalConfig,
     ): Promise<string[]> {
         const removed: string[] = [];
-        const baseDir = resolveBaseDir(localConfig);
-        const fileName = `${name}.md`;
 
         // Remove from team repo
-        const teamFile = path.join(localConfig.repo.localPath, 'wiki', fileName);
+        const teamFile = path.join(localConfig.repo.localPath, 'wiki', `${name}.md`);
         if (await pathExists(teamFile)) {
             await remove(teamFile);
             removed.push(teamFile);
@@ -236,25 +208,24 @@ export class WikiHandler extends ResourceHandler {
 
         await this.addTombstone(name, localConfig);
 
-        // Remove from each tool's wiki directory
-        for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
-            if (!toolPath.wiki) continue;
-            const filePath = path.join(baseDir, toolPath.wiki, fileName);
-            if (await pathExists(filePath)) {
-                await remove(filePath);
-                removed.push(filePath);
-                log.debug(`Removed wiki page ${name} from ${tool}`);
-            }
+        // Remove from shared wiki directory
+        const sharedWikiDir = WikiHandler.getSharedWikiDir(localConfig);
+        const sharedFile = path.join(sharedWikiDir, `${name}.md`);
+        if (await pathExists(sharedFile)) {
+            await remove(sharedFile);
+            removed.push(sharedFile);
+            log.debug(`Removed wiki page ${name} from shared wiki`);
         }
 
         return removed;
     }
 
     /**
-     * Rebuild _metadata.json from wiki pages on disk.
+     * Rebuild _metadata.json from wiki pages in the shared wiki directory.
      * Called after pull to reconstruct local metadata.
      */
-    static async rebuildMetadata(wikiDir: string): Promise<void> {
+    static async rebuildMetadata(localConfig: LocalConfig): Promise<void> {
+        const wikiDir = WikiHandler.getSharedWikiDir(localConfig);
         if (!await pathExists(wikiDir)) return;
 
         const files = await listFilesRecursive(wikiDir);
