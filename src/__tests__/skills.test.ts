@@ -654,6 +654,30 @@ scope: 'user',
     const content = await fse.readFile(contribPath, 'utf-8');
     expect(content).toBe('testuser\n');
   });
+
+  it('should NOT copy .git directory when skill source is a git repo', async () => {
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'git-skill');
+    await fse.ensureDir(localSkillDir);
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# Git Skill\nContent here');
+    await fse.writeFile(path.join(localSkillDir, 'helper.py'), 'print("hello")');
+    // Simulate a .git directory (as if skill was cloned from a git repo)
+    await fse.ensureDir(path.join(localSkillDir, '.git', 'objects'));
+    await fse.writeFile(path.join(localSkillDir, '.git', 'HEAD'), 'ref: refs/heads/main');
+
+    const item = {
+      name: 'git-skill',
+      type: 'skills' as const,
+      sourcePath: localSkillDir,
+      relativePath: 'skills/git-skill',
+    };
+
+    await handler.pushItem(item, teamConfig, localConfig);
+
+    const destDir = path.join(localConfig.repo.localPath, 'skills', 'git-skill');
+    expect(await fse.pathExists(path.join(destDir, 'SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(destDir, 'helper.py'))).toBe(true);
+    expect(await fse.pathExists(path.join(destDir, '.git'))).toBe(false);
+  });
 });
 
 describe('SkillsHandler.readContributors', () => {
