@@ -8,6 +8,7 @@ const IGNORED_NAMES = new Set([
   '.pyc',
   '.DS_Store',
   'node_modules',
+  '.git',
 ]);
 
 function isIgnored(name: string): boolean {
