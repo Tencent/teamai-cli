@@ -243,10 +243,7 @@ When invoked, first determine the subcommand (init/ingest/query/lint/status/expo
 
 #### Step 1 — Parse arguments
 
-- `WIKI_DIR`: wiki 目录路径。按以下顺序检测：
-  1. team repo 中的 `wiki/` 目录（如果当前项目已通过 `teamai init` 配置）→ 首选
-  2. `~/.claude-internal/wiki/` 或 `~/.claude/wiki/`（本地 AI 工具 wiki 目录）
-  3. 当前目录的 `./wiki/`（fallback）
+- `WIKI_DIR`: 固定为 `~/.teamai/wiki/`（teamai push/pull 同步的标准路径）
 - `SOURCE_DIR`: 可选的 `dir` 参数
 
 如果 `WIKI_DIR` 已经存在且包含 `_metadata.json`，提示用户已经初始化过，询问是否要重新初始化。
@@ -1009,7 +1006,7 @@ Wiki exported to: <path>
 8. **_metadata.json 是真相来源** — 页面列表、文件哈希、链接图都以此为准。
 9. **命名一致性** — 文件名 kebab-case，标题 Title Case 或人类可读中文。
 10. **幂等性** — 重复 ingest 同一源目录应产生相同结果（不会重复创建页面）。
-11. **wiki 路径推断** — 优先使用 team repo 的 wiki/ 目录（通过 `teamai pull` 同步到本地）；其次检查 `~/.claude-internal/wiki/` 或 `~/.claude/wiki/`；最后 fallback 到 `./wiki/`。
+11. **wiki 路径** — 固定使用 `~/.teamai/wiki/`，与 teamai push/pull 对齐。
 12. **Obsidian 兼容** — 所有 `[[links]]` 使用 Obsidian 格式，方便用户在 Obsidian 中直接浏览。
 13. **语言** — Wiki 页面内容默认使用中文撰写，技术术语保持英文原文。
 14. **智能分类** — LLM 根据内容自动判断页面归属哪个分类目录，无需用户指定。
