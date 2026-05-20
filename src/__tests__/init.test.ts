@@ -410,4 +410,58 @@ describe('init', () => {
       }));
     });
   });
+
+  describe('scope path display', () => {
+    it('should display storage paths when scope is not provided via flag', async () => {
+      let cloneDone = false;
+      pathExistsFn = (p: string) => {
+        if (p === localPath) return cloneDone;
+        return false;
+      };
+
+      mockGfRepoClone.mockImplementation(() => {
+        cloneDone = true;
+      });
+
+      // Answers: scope (user via default), configure reviewers (n), primary role (1), no additional
+      questionAnswers = ['user', 'n', '1', ''];
+
+      const { log } = await import('../utils/logger.js');
+
+      await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git' });
+
+      // Verify that path hints were displayed
+      expect(log.info).toHaveBeenCalledWith(expect.stringContaining('user'));
+      expect(log.info).toHaveBeenCalledWith(expect.stringContaining('.teamai/'));
+      expect(log.info).toHaveBeenCalledWith(expect.stringContaining('project'));
+    });
+
+    it('should not display storage paths when scope is provided via --scope flag', async () => {
+      let cloneDone = false;
+      pathExistsFn = (p: string) => {
+        if (p === localPath) return cloneDone;
+        return false;
+      };
+
+      mockGfRepoClone.mockImplementation(() => {
+        cloneDone = true;
+      });
+
+      // Answers: configure reviewers (n), primary role (1), no additional
+      questionAnswers = ['n', '1', ''];
+
+      const { log } = await import('../utils/logger.js');
+      vi.mocked(log.info).mockClear();
+
+      await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git', scope: 'user' });
+
+      // When --scope is provided, the path hints are NOT shown before the prompt
+      // (they appear in the "Scope: user" line only)
+      const infoCalls = vi.mocked(log.info).mock.calls.map(c => c[0]);
+      const pathHintCalls = infoCalls.filter(
+        (msg: string) => msg.includes('user    →') || msg.includes('project →'),
+      );
+      expect(pathHintCalls).toHaveLength(0);
+    });
+  });
 });
