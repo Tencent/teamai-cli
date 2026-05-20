@@ -114,6 +114,10 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
   if (options.scope === 'project' || options.scope === 'user') {
     scope = options.scope as Scope;
   } else {
+    const userPath = getTeamaiHome('user');
+    const projectPath = getTeamaiHome('project', process.cwd());
+    log.info(`  user    → ${userPath}/`);
+    log.info(`  project → ${projectPath}/`);
     const scopeAnswer = await askQuestion('Scope [user/project] (default: user): ', 'user');
     if (scopeAnswer.toLowerCase() === 'project') {
       scope = 'project';
