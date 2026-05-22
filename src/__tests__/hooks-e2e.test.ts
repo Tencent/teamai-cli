@@ -39,7 +39,7 @@ async function readResult(filePath: string): Promise<Record<string, unknown>> {
 
 describe('hooks E2E — real file I/O', () => {
   describe('inject — full injection to temp directories', () => {
-    it('creates Claude settings.json with all 4 events and 13 hooks', async () => {
+    it('creates Claude settings.json with all 4 events and 9 dispatch hooks', async () => {
       const p = claudePath();
       await injectHooks(p, 'claude');
 
@@ -47,13 +47,13 @@ describe('hooks E2E — real file I/O', () => {
       const hooks = result.hooks as Record<string, unknown[]>;
 
       expect(Object.keys(hooks)).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit']);
-      expect(hooks.SessionStart).toHaveLength(2);
-      expect(hooks.Stop).toHaveLength(3);
+      expect(hooks.SessionStart).toHaveLength(1);
+      expect(hooks.Stop).toHaveLength(1);
       expect(hooks.PostToolUse).toHaveLength(6);
-      expect(hooks.UserPromptSubmit).toHaveLength(2);
+      expect(hooks.UserPromptSubmit).toHaveLength(1);
     });
 
-    it('creates Cursor hooks.json with all 4 events and 13 hooks', async () => {
+    it('creates Cursor hooks.json with all 4 events and 9 dispatch hooks', async () => {
       const p = cursorPath();
       await injectHooks(p, 'cursor');
 
@@ -62,10 +62,10 @@ describe('hooks E2E — real file I/O', () => {
       const hooks = result.hooks as Record<string, unknown[]>;
 
       expect(Object.keys(hooks)).toEqual(['sessionStart', 'stop', 'postToolUse', 'beforeSubmitPrompt']);
-      expect(hooks.sessionStart).toHaveLength(2);
-      expect(hooks.stop).toHaveLength(3);
+      expect(hooks.sessionStart).toHaveLength(1);
+      expect(hooks.stop).toHaveLength(1);
       expect(hooks.postToolUse).toHaveLength(6);
-      expect(hooks.beforeSubmitPrompt).toHaveLength(2);
+      expect(hooks.beforeSubmitPrompt).toHaveLength(1);
     });
 
     it('all TEAMAI_HOOK_SUBCOMMANDS present in Claude output', async () => {
@@ -123,7 +123,7 @@ describe('hooks E2E — real file I/O', () => {
       }
     });
 
-    it('PostToolUse track hook uses Skill matcher in both formats', async () => {
+    it('PostToolUse dispatch hook uses Skill matcher in both formats', async () => {
       const cp = claudePath();
       const kp = cursorPath();
       await injectHooks(cp, 'claude');
@@ -138,11 +138,9 @@ describe('hooks E2E — real file I/O', () => {
       const claudeSkillHook = claudePostTool.find((h) => h.matcher === 'Skill');
       expect(claudeSkillHook).toBeDefined();
 
-      const cursorTrackHook = cursorPostTool.find(
-        (h) => h.command.includes('teamai track') && !h.command.includes('track-slash')
-      );
-      expect(cursorTrackHook).toBeDefined();
-      expect(cursorTrackHook?.matcher).toBe('Skill');
+      const cursorSkillHook = cursorPostTool.find((h) => h.matcher === 'Skill');
+      expect(cursorSkillHook).toBeDefined();
+      expect(cursorSkillHook?.command).toContain('hook-dispatch');
     });
 
     it('tool-specific commands use the correct --tool parameter', async () => {
