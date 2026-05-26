@@ -30,6 +30,11 @@ export const SharingConfigSchema = z.object({
     injectShellProfile: z.boolean().default(true),
     shellProfilePath: z.string().optional(),
   }).default({}),
+  wiki: z.object({
+    enabled: z.boolean().default(true),
+    /** Hint message shown when wiki is disabled */
+    disabledHint: z.string().optional(),
+  }).optional(),
 });
 
 // ─── Source config (cross-team subscription) ─────────
@@ -133,6 +138,8 @@ export const LocalConfigSchema = z.object({
   projectRoot: z.string().optional(),
   /** Tags the user has subscribed to. If empty/undefined, pull all resources. */
   subscribedTags: z.array(z.string()).optional(),
+  /** Override team-level wiki setting. undefined = follow team config. */
+  wikiEnabled: z.boolean().optional(),
 });
 
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;
@@ -533,4 +540,18 @@ export function getStatePath(scope: Scope, projectRoot?: string): string {
  */
 export function getPushignorePath(): string {
   return path.join(process.env.HOME ?? '', '.teamai', 'pushignore');
+}
+
+/**
+ * Resolve whether wiki is enabled, considering team config + local override.
+ * Local override takes precedence over team config.
+ * Defaults to enabled for backward compatibility.
+ */
+export function resolveWikiEnabled(teamConfig: TeamaiConfig, localConfig: LocalConfig): boolean {
+  // Environment variable takes highest priority (zero-config approach)
+  if (process.env.TEAMAI_WIKI_DISABLED === '1' || process.env.TEAMAI_WIKI_DISABLED === 'true') return false;
+  if (process.env.TEAMAI_WIKI_ENABLED === '0' || process.env.TEAMAI_WIKI_ENABLED === 'false') return false;
+  if (localConfig.wikiEnabled !== undefined) return localConfig.wikiEnabled;
+  const wiki = (teamConfig.sharing as Record<string, unknown>)?.wiki as { enabled?: boolean } | undefined;
+  return wiki?.enabled ?? true;
 }

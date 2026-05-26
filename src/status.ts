@@ -16,6 +16,7 @@ import {
   type AgentSkillsView,
 } from './agent-skills.js';
 import type { GlobalOptions, ResourceType } from './types.js';
+import { resolveWikiEnabled } from './types.js';
 
 export interface ListOptions extends GlobalOptions {
   /** Where to look for resources: 'repo' (default for backwards compat),
@@ -99,6 +100,17 @@ export async function status(options: GlobalOptions): Promise<void> {
   for (const [type, count] of Object.entries(counts)) {
     console.log(`  ${type}: ${count}`);
   }
+
+  // Wiki feature status
+  const wikiEnabled = resolveWikiEnabled(teamConfig, localConfig);
+  const envDisabled = process.env.TEAMAI_WIKI_DISABLED === '1' || process.env.TEAMAI_WIKI_DISABLED === 'true' || process.env.TEAMAI_WIKI_ENABLED === '0' || process.env.TEAMAI_WIKI_ENABLED === 'false';
+  const wikiSource = envDisabled
+    ? 'disabled (TEAMAI_WIKI_DISABLED=1) — wiki routing handled by external plugin'
+    : localConfig.wikiEnabled !== undefined
+    ? (wikiEnabled ? 'enabled (local override)' : 'disabled (local override)')
+    : (wikiEnabled ? 'enabled (team default)' : 'disabled (team config)');
+  console.log('');
+  log.info(`Wiki: ${wikiSource}`);
 
   // Local pushable items
   console.log('');
