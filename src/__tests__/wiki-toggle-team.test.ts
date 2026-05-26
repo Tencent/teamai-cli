@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolveWikiEnabled, LocalConfigSchema, TeamaiConfigSchema } from '../types.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
@@ -177,5 +177,96 @@ describe('builtin-skills skips teamai-wiki when disabled', () => {
       ? skillNames.filter(name => name !== 'teamai-wiki')
       : skillNames;
     expect(filteredSkills).toEqual(['teamai-share-learnings', 'teamai-wiki']);
+  });
+});
+
+describe('resolveWikiEnabled - environment variable override', () => {
+  const baseLocalConfig = {
+    repo: { localPath: '/tmp/repo', remote: 'https://git.woa.com/test/repo.git' },
+    username: 'testuser',
+    scope: 'user' as const,
+    additionalRoles: [] as string[],
+  };
+
+  const baseTeamConfig = {
+    team: 'test-team',
+    description: '',
+    repo: 'https://git.woa.com/test/repo.git',
+    provider: 'tgit' as const,
+    reviewers: [] as string[],
+    sharing: {
+      skills: {},
+      rules: { enforced: [] as string[] },
+      docs: { localDir: '~/.teamai/docs' },
+      env: { injectShellProfile: true },
+    },
+    toolPaths: {},
+  };
+
+  let originalWikiDisabled: string | undefined;
+  let originalWikiEnabled: string | undefined;
+
+  beforeEach(() => {
+    originalWikiDisabled = process.env.TEAMAI_WIKI_DISABLED;
+    originalWikiEnabled = process.env.TEAMAI_WIKI_ENABLED;
+    delete process.env.TEAMAI_WIKI_DISABLED;
+    delete process.env.TEAMAI_WIKI_ENABLED;
+  });
+
+  afterEach(() => {
+    if (originalWikiDisabled !== undefined) {
+      process.env.TEAMAI_WIKI_DISABLED = originalWikiDisabled;
+    } else {
+      delete process.env.TEAMAI_WIKI_DISABLED;
+    }
+    if (originalWikiEnabled !== undefined) {
+      process.env.TEAMAI_WIKI_ENABLED = originalWikiEnabled;
+    } else {
+      delete process.env.TEAMAI_WIKI_ENABLED;
+    }
+  });
+
+  it('returns true by default (no env vars, no config)', () => {
+    expect(resolveWikiEnabled(baseTeamConfig as any, baseLocalConfig as any)).toBe(true);
+  });
+
+  it('returns false when TEAMAI_WIKI_DISABLED=1', () => {
+    process.env.TEAMAI_WIKI_DISABLED = '1';
+    expect(resolveWikiEnabled(baseTeamConfig as any, baseLocalConfig as any)).toBe(false);
+  });
+
+  it('returns false when TEAMAI_WIKI_DISABLED=true', () => {
+    process.env.TEAMAI_WIKI_DISABLED = 'true';
+    expect(resolveWikiEnabled(baseTeamConfig as any, baseLocalConfig as any)).toBe(false);
+  });
+
+  it('returns false when TEAMAI_WIKI_ENABLED=0', () => {
+    process.env.TEAMAI_WIKI_ENABLED = '0';
+    expect(resolveWikiEnabled(baseTeamConfig as any, baseLocalConfig as any)).toBe(false);
+  });
+
+  it('returns false when TEAMAI_WIKI_ENABLED=false', () => {
+    process.env.TEAMAI_WIKI_ENABLED = 'false';
+    expect(resolveWikiEnabled(baseTeamConfig as any, baseLocalConfig as any)).toBe(false);
+  });
+
+  it('env var overrides local config wikiEnabled=true', () => {
+    process.env.TEAMAI_WIKI_DISABLED = '1';
+    const localConfig = { ...baseLocalConfig, wikiEnabled: true };
+    expect(resolveWikiEnabled(baseTeamConfig as any, localConfig as any)).toBe(false);
+  });
+
+  it('env var overrides team config wiki.enabled=true', () => {
+    process.env.TEAMAI_WIKI_DISABLED = '1';
+    const teamConfig = {
+      ...baseTeamConfig,
+      sharing: { ...baseTeamConfig.sharing, wiki: { enabled: true } },
+    };
+    expect(resolveWikiEnabled(teamConfig as any, baseLocalConfig as any)).toBe(false);
+  });
+
+  it('returns true when TEAMAI_WIKI_DISABLED=0 (not a disable value)', () => {
+    process.env.TEAMAI_WIKI_DISABLED = '0';
+    expect(resolveWikiEnabled(baseTeamConfig as any, baseLocalConfig as any)).toBe(true);
   });
 });
