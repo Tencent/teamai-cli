@@ -19,6 +19,7 @@ import {
   TEAMAI_CLAUDEMD_END,
   CultureFrontmatterSchema,
   resolveBaseDir,
+  isWikiEnabled,
   getTeamaiHome,
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
@@ -260,7 +261,10 @@ async function pullForScope(
   const subscribedTags = localConfig.subscribedTags;
 
   // Step 2: Sync each resource type
-  const resourceTypes: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'wiki'];
+  const wikiEnabled = isWikiEnabled();
+  const resourceTypes: ResourceType[] = wikiEnabled
+    ? ['skills', 'rules', 'docs', 'env', 'wiki']
+    : ['skills', 'rules', 'docs', 'env'];
   let totalSynced = 0;
   let desiredSkillNames: Set<string> | null = null;
   let knownRepoSkillNames: Set<string> | null = null;
@@ -555,7 +559,7 @@ async function pullForScope(
   if (!options.dryRun) {
     try {
       const { deployBuiltinSkills } = await import('./builtin-skills.js');
-      const deployed = await deployBuiltinSkills(freshConfig, localConfig);
+      const deployed = await deployBuiltinSkills(freshConfig, localConfig, { skipWiki: !wikiEnabled });
       if (deployed > 0) {
         log.debug(`[${scopeLabel}] Deployed ${deployed} built-in skill(s)`);
       }
