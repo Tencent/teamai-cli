@@ -16,6 +16,7 @@ import {
   type AgentSkillsView,
 } from './agent-skills.js';
 import type { GlobalOptions, ResourceType } from './types.js';
+import { isWikiEnabledByConfig } from './types.js';
 
 export interface ListOptions extends GlobalOptions {
   /** Where to look for resources: 'repo' (default for backwards compat),
@@ -98,6 +99,12 @@ export async function status(options: GlobalOptions): Promise<void> {
 
   for (const [type, count] of Object.entries(counts)) {
     console.log(`  ${type}: ${count}`);
+  }
+
+  // Wiki feature status
+  if (!isWikiEnabledByConfig(localConfig)) {
+    console.log('');
+    log.info('ℹ Wiki: disabled (wikiEnabled: false in ~/.teamai/config.yaml)');
   }
 
   // Local pushable items

@@ -133,6 +133,9 @@ export const LocalConfigSchema = z.object({
   projectRoot: z.string().optional(),
   /** Tags the user has subscribed to. If empty/undefined, pull all resources. */
   subscribedTags: z.array(z.string()).optional(),
+  /** Whether the built-in wiki feature is enabled. Set to false to disable
+   *  wiki sync/push and avoid conflicts with external wiki plugins. */
+  wikiEnabled: z.boolean().optional(),
 });
 
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;
@@ -533,4 +536,13 @@ export function getStatePath(scope: Scope, projectRoot?: string): string {
  */
 export function getPushignorePath(): string {
   return path.join(process.env.HOME ?? '', '.teamai', 'pushignore');
+}
+
+/**
+ * Check if wiki feature is enabled based on local config.
+ * Returns false only when explicitly disabled by the user.
+ * Defaults to true for backward compatibility.
+ */
+export function isWikiEnabledByConfig(localConfig: LocalConfig): boolean {
+  return localConfig.wikiEnabled !== false;
 }
