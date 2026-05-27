@@ -7,6 +7,7 @@ import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
 import { scanTeamRepoNamespaces } from './resources/skills.js';
 import type { GlobalOptions, ResourceItem, ResourceType } from './types.js';
+import { isWikiEnabled } from './types.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
 import { askQuestion, askSelection } from './utils/prompt.js';
 import { pathExists } from './utils/fs.js';
@@ -137,7 +138,9 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 
   // Scan for pushable resources first, then resolve namespace for new skills only.
   // Modified skills already carry their namespace from scanLocalForPush.
-  const pushableTypes: ResourceType[] = ['skills', 'rules', 'env', 'wiki'];
+  const pushableTypes: ResourceType[] = isWikiEnabled()
+    ? ['skills', 'rules', 'env', 'wiki']
+    : ['skills', 'rules', 'env'];
   const allItems: ResourceItem[] = [];
 
   for (const type of pushableTypes) {

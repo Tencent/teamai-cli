@@ -534,3 +534,14 @@ export function getStatePath(scope: Scope, projectRoot?: string): string {
 export function getPushignorePath(): string {
   return path.join(process.env.HOME ?? '', '.teamai', 'pushignore');
 }
+
+/**
+ * Check if wiki feature is enabled.
+ * Disable by setting TEAMAI_WIKI_DISABLED=1 or TEAMAI_WIKI_ENABLED=false.
+ * Defaults to enabled for backward compatibility.
+ */
+export function isWikiEnabled(): boolean {
+  if (process.env.TEAMAI_WIKI_DISABLED === '1' || process.env.TEAMAI_WIKI_DISABLED === 'true') return false;
+  if (process.env.TEAMAI_WIKI_ENABLED === '0' || process.env.TEAMAI_WIKI_ENABLED === 'false') return false;
+  return true;
+}

@@ -50,7 +50,7 @@ export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'teamai-wi
  * - Built-in skills directory doesn't exist (dev environment without build)
  * - A tool's skills directory is not configured
  */
-export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?: LocalConfig): Promise<number> {
+export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?: LocalConfig, options?: { skipWiki?: boolean }): Promise<number> {
   const builtinDir = getBuiltinSkillsDir();
 
   if (!await pathExists(builtinDir)) {
@@ -76,6 +76,12 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
 
   if (skillNames.length === 0) return 0;
 
+  // Skip teamai-wiki deployment when wiki feature is disabled
+  const filteredSkills = options?.skipWiki
+    ? skillNames.filter(name => name !== 'teamai-wiki')
+    : skillNames;
+  if (filteredSkills.length === 0) return 0;
+
   const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');
   let deployed = 0;
 
@@ -90,7 +96,7 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
 
     const targetSkillsDir = path.join(baseDir, toolPath.skills);
 
-    for (const skillName of skillNames) {
+    for (const skillName of filteredSkills) {
       const srcDir = path.join(builtinDir, skillName);
       const destDir = path.join(targetSkillsDir, skillName);
 
