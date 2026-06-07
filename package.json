@@ -9,6 +9,7 @@
   "files": [
     "dist/**/*.js",
     "skills",
+    "agents",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

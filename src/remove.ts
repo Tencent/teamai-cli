@@ -6,7 +6,7 @@ import { getHandler } from './resources/index.js';
 import type { GlobalOptions, ResourceType } from './types.js';
 import { askConfirmation } from './utils/prompt.js';
 
-const REMOVABLE_TYPES: ResourceType[] = ['skills', 'rules', 'wiki'];
+const REMOVABLE_TYPES: ResourceType[] = ['skills', 'rules', 'wiki', 'agents'];
 
 export async function remove(
   type: string,

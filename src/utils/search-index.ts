@@ -1,12 +1,14 @@
 import path from 'node:path';
 import matter from 'gray-matter';
-import { readFileSafe, readJson, writeJson, listFiles } from './fs.js';
+import { readFileSafe, readJson, writeJson, listFiles, listFilesRecursive, listDirs, pathExists } from './fs.js';
 import { log } from './logger.js';
-import type {
-  LearningDocMeta,
-  SearchIndex,
-  SearchIndexEntry,
-  UserVotes,
+import {
+  SEARCH_INDEX_VERSION,
+  type LearningDocMeta,
+  type SearchIndex,
+  type SearchIndexEntry,
+  type UserVotes,
+  type KnowledgeType,
 } from '../types.js';
 
 /** Resolve search index path dynamically (respects HOME changes in tests). */
@@ -173,6 +175,144 @@ async function aggregateVotes(votesDir: string): Promise<Map<string, number>> {
 }
 
 /**
+ * Read a markdown file, truncate oversized content, and convert it to a
+ * SearchIndexEntry of the given category. Used by all four collectors.
+ * Returns null when the file is empty/unreadable.
+ */
+async function entryFromMdFile(
+  absPath: string,
+  filenameForId: string,
+  type: KnowledgeType,
+  voteCounts: Map<string, number>,
+): Promise<SearchIndexEntry | null> {
+  let content = await readFileSafe(absPath);
+  if (!content) return null;
+
+  if (Buffer.byteLength(content, 'utf-8') > MAX_DOC_BYTES) {
+    content = content.slice(0, MAX_DOC_BYTES);
+    log.debug(`Truncated oversized ${type} doc: ${filenameForId}`);
+  }
+
+  const parsed = parseLearningDoc(content, filenameForId);
+  if (!parsed) return null;
+
+  const { meta, bodyExcerpt } = parsed;
+  const title = meta.title ?? titleFromFilename(filenameForId);
+  const tags = meta.tags ?? [];
+
+  const titleTokens = tokenize(title);
+  const tagTokens = tags.flatMap((tag) => tokenize(tag));
+  const bodyTokens = tokenize(bodyExcerpt);
+
+  const tokens = [
+    ...titleTokens.map((t) => `title:${t}`),
+    ...titleTokens,
+    ...tagTokens.map((t) => `tag:${t}`),
+    ...tagTokens,
+    ...bodyTokens,
+    // Type-prefixed token enables future filtered searches (e.g. type:skills).
+    `type:${type}`,
+  ];
+
+  const docId = filenameForId.replace(/\.md$/i, '');
+
+  return {
+    filename: filenameForId,
+    title,
+    author: meta.author ?? '',
+    date: meta.date ?? '',
+    tags,
+    tokens: [...new Set(tokens)],
+    votes: voteCounts.get(docId) ?? 0,
+    type,
+    path: absPath,
+  };
+}
+
+/** Collect entries from a flat *.md directory (used for `learnings`). */
+async function collectFlatMdEntries(
+  dir: string,
+  type: KnowledgeType,
+  voteCounts: Map<string, number>,
+): Promise<SearchIndexEntry[]> {
+  if (!await pathExists(dir)) return [];
+  const files = await listFiles(dir);
+  const out: SearchIndexEntry[] = [];
+  for (const filename of files) {
+    if (!filename.endsWith('.md')) continue;
+    const e = await entryFromMdFile(path.join(dir, filename), filename, type, voteCounts);
+    if (e) out.push(e);
+  }
+  return out;
+}
+
+/**
+ * Collect entries from a recursive *.md directory (used for `docs` and
+ * `rules`, which may have subdirectories like `rules/common/`).
+ */
+async function collectRecursiveMdEntries(
+  dir: string,
+  type: KnowledgeType,
+  voteCounts: Map<string, number>,
+): Promise<SearchIndexEntry[]> {
+  if (!await pathExists(dir)) return [];
+  const files = await listFilesRecursive(dir);
+  const out: SearchIndexEntry[] = [];
+  for (const rel of files) {
+    if (!rel.endsWith('.md')) continue;
+    // Use the relative path as the filename so the entry id is unique
+    // across subdirectories, e.g. `common/coding-style.md`.
+    const e = await entryFromMdFile(path.join(dir, rel), rel, type, voteCounts);
+    if (e) out.push(e);
+  }
+  return out;
+}
+
+/**
+ * Collect entries from a skills directory whose layout is
+ *   skills/<name>/SKILL.md            (flat)
+ *   skills/<namespace>/<name>/SKILL.md (namespaced)
+ *
+ * Each entry's `filename` is `<skill-name>.md` (so doc_id = skill name).
+ */
+async function collectSkillEntries(
+  dir: string,
+  voteCounts: Map<string, number>,
+): Promise<SearchIndexEntry[]> {
+  if (!await pathExists(dir)) return [];
+  const out: SearchIndexEntry[] = [];
+
+  async function walk(current: string): Promise<void> {
+    const subdirs = await listDirs(current);
+    for (const sub of subdirs) {
+      if (sub.startsWith('.')) continue;
+      const subPath = path.join(current, sub);
+      const skillMd = path.join(subPath, 'SKILL.md');
+      if (await pathExists(skillMd)) {
+        const e = await entryFromMdFile(skillMd, `${sub}.md`, 'skills', voteCounts);
+        if (e) out.push(e);
+      } else {
+        // Treat as a namespace directory and recurse one level.
+        await walk(subPath);
+      }
+    }
+  }
+
+  await walk(dir);
+  return out;
+}
+
+/** Options for the multi-category build. */
+export interface BuildIndexOptions {
+  learningsDir?: string;
+  docsDir?: string;
+  rulesDir?: string;
+  skillsDir?: string;
+  votesDir?: string;
+  indexPath?: string;
+}
+
+/**
  * Build the search index from local learning documents.
  *
  * @param learningsDir - Path to ~/.teamai/learnings/
@@ -180,81 +320,65 @@ async function aggregateVotes(votesDir: string): Promise<Map<string, number>> {
  * @returns elapsed ms
  */
 export async function buildIndex(
-  learningsDir: string,
+  optionsOrLearningsDir: BuildIndexOptions | string,
   votesDir?: string,
   indexPath?: string,
 ): Promise<number> {
   const start = Date.now();
-  const files = await listFiles(learningsDir);
-  const mdFiles = files.filter((f) => f.endsWith('.md'));
 
-  // Aggregate votes if votesDir provided
-  const voteCounts = votesDir
-    ? await aggregateVotes(votesDir)
+  // Backward compatibility: original signature was
+  //   buildIndex(learningsDir: string, votesDir?: string, indexPath?: string)
+  // The Phase 1 multi-category form takes a single options object instead.
+  const opts: BuildIndexOptions = typeof optionsOrLearningsDir === 'string'
+    ? { learningsDir: optionsOrLearningsDir, votesDir, indexPath }
+    : optionsOrLearningsDir;
+
+  // Aggregate votes once and reuse across all collectors.
+  const voteCounts = opts.votesDir
+    ? await aggregateVotes(opts.votesDir)
     : new Map<string, number>();
 
   const entries: SearchIndexEntry[] = [];
 
-  for (const filename of mdFiles) {
-    const filePath = path.join(learningsDir, filename);
-    let content = await readFileSafe(filePath);
-    if (!content) continue;
-
-    // Truncate oversized documents
-    if (Buffer.byteLength(content, 'utf-8') > MAX_DOC_BYTES) {
-      content = content.slice(0, MAX_DOC_BYTES);
-      log.debug(`Truncated oversized learning doc: ${filename}`);
-    }
-
-    const parsed = parseLearningDoc(content, filename);
-    if (!parsed) continue;
-
-    const { meta, bodyExcerpt } = parsed;
-    const title = meta.title ?? titleFromFilename(filename);
-    const tags = meta.tags ?? [];
-
-    // Build tokens from title + tags + body excerpt
-    const titleTokens = tokenize(title);
-    const tagTokens = tags.flatMap((tag) => tokenize(tag));
-    const bodyTokens = tokenize(bodyExcerpt);
-
-    // Prefix title and tag tokens for boosted matching
-    const tokens = [
-      ...titleTokens.map((t) => `title:${t}`),
-      ...titleTokens, // Also include raw for body-level matching
-      ...tagTokens.map((t) => `tag:${t}`),
-      ...tagTokens,
-      ...bodyTokens,
-    ];
-
-    // Derive doc ID from filename (without .md) for vote lookup
-    const docId = filename.replace(/\.md$/i, '');
-
-    entries.push({
-      filename,
-      title,
-      author: meta.author ?? '',
-      date: meta.date ?? '',
-      tags,
-      tokens: [...new Set(tokens)],
-      votes: voteCounts.get(docId) ?? 0,
-    });
+  if (opts.learningsDir) {
+    entries.push(...await collectFlatMdEntries(opts.learningsDir, 'learnings', voteCounts));
+  }
+  if (opts.docsDir) {
+    entries.push(...await collectRecursiveMdEntries(opts.docsDir, 'docs', voteCounts));
+  }
+  if (opts.rulesDir) {
+    entries.push(...await collectRecursiveMdEntries(opts.rulesDir, 'rules', voteCounts));
+  }
+  if (opts.skillsDir) {
+    entries.push(...await collectSkillEntries(opts.skillsDir, voteCounts));
   }
 
   const elapsed = Date.now() - start;
   const index: SearchIndex = {
+    version: SEARCH_INDEX_VERSION,
     builtAt: new Date().toISOString(),
     elapsedMs: elapsed,
     entries,
   };
 
-  await writeJson(indexPath ?? getSearchIndexPath(), index);
+  await writeJson(opts.indexPath ?? getSearchIndexPath(), index);
 
   if (elapsed > 2000) {
     log.warn(`Search index build took ${elapsed}ms — consider incremental updates for large knowledge bases`);
   }
 
   return elapsed;
+}
+
+/**
+ * Returns true when the on-disk index pre-dates Phase 1 (no version field,
+ * version below current schema, or any entry missing the `type` field). The
+ * caller should rebuild such an index using the multi-category collectors.
+ */
+export function isLegacyIndex(index: SearchIndex | null): boolean {
+  if (!index) return false;
+  if (typeof index.version !== 'number' || index.version < SEARCH_INDEX_VERSION) return true;
+  return index.entries.some((e) => !e.type);
 }
 
 /**

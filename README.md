@@ -292,6 +292,51 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 - Searches implicitly upvote matched docs; good docs naturally float up over time.
 - Votes are written to each scope's own repo, so attribution stays correct.
 
+### Recall via subagent (Phase 1)
+
+For tools that support subagents (Claude Code, Claude Code Internal, CodeBuddy IDE), `teamai pull` deploys a built-in `teamai-recall` subagent under each tool's `agents/` directory and injects a `<!-- [teamai:recall-rules:*] -->` block into `CLAUDE.md`. The main conversation is then asked to:
+
+1. **Before** any task, invoke the `teamai-recall` subagent via the Agent tool. The subagent runs `teamai recall <keywords>`, reads the matched files, and returns a compact summary — without polluting the main context with raw content.
+2. **After** the task, declare which entries were actually consulted via an HTML comment: `<!-- teamai:referenced-doc-ids: [doc-1, doc-2] -->`.
+
+For tools without subagent support (Cursor, Codex, Codex Internal, OpenClaw, WorkBuddy), recall still works through `teamai recall <query>` directly and the auto-recall hook — the rules block is intentionally **not** injected for these tools to avoid cluttering their instruction surface.
+
+`teamai recall` results now carry a `[<type>]` tag so callers can quickly tell which knowledge bucket a hit came from. The shared search index covers four categories:
+
+| Type | Source | Notes |
+|------|--------|-------|
+| `[learnings]` | `~/.teamai/learnings/*.md` | session experience documents |
+| `[docs]` | team repo `docs/**/*.md` | shared project knowledge |
+| `[rules]` | team repo `rules/**/*.md` | coding rules and conventions |
+| `[skills]` | team repo `skills/<name>/SKILL.md` | reusable AI skills |
+
+The index is rebuilt automatically on every `teamai pull`. Indexes built by older versions (no `version` field or missing `type`) are detected and rebuilt transparently on first use.
+
+### TodoWrite reminder hook
+
+`teamai pull` registers a PostToolUse hook on the `TodoWrite` tool. The first time a session writes a TODO list, the hook injects a one-time reminder asking the agent to invoke `teamai-recall` if it has not already done so. Per-session deduplication uses `~/.teamai/sessions/<sid>-todowrite-hint.json` (24 h TTL).
+
+To disable the reminder globally, set:
+
+```bash
+export TEAMAI_RECALL_DISABLED=1
+```
+
+The same env var also disables the auto-recall hook.
+
+### `agents` resource type
+
+The team repo can ship custom subagent definitions under a flat `agents/` directory (one `*.md` file per agent). They follow the same push / pull / remove semantics as `rules`:
+
+```text
+team-repo/
+  agents/
+    code-reviewer.md      # team-authored subagent
+    .removed              # tombstone (auto-managed by `teamai remove agents <name>`)
+```
+
+`teamai pull` copies them into every Tier-1 tool's `agents/` directory (e.g. `~/.claude/agents/`). The CLI built-in `teamai-recall.md` is deployed alongside team agents and is **excluded** from `teamai push` (it is CLI-managed, not team-managed).
+
 ## Update
 
 ```bash

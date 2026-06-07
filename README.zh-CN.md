@@ -292,6 +292,51 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 - 搜索自动投票，好文档自然浮到顶部
 - 投票按 scope 分别写入各自的 repo，归属正确
 
+### 通过 subagent 检索（Phase 1）
+
+对支持 subagent 的工具（Claude Code、Claude Code Internal、CodeBuddy IDE），`teamai pull` 会把内置的 `teamai-recall` subagent 部署到该工具的 `agents/` 目录，并在 `CLAUDE.md` 中注入一段 `<!-- [teamai:recall-rules:*] -->` 提示块，要求主对话：
+
+1. **任务前**：通过 Agent 工具调用 `teamai-recall` subagent；该 subagent 自己执行 `teamai recall <关键词>`、读取命中文件，并把要点压缩后返回，不污染主上下文
+2. **任务后**：通过 `<!-- teamai:referenced-doc-ids: [doc-1, doc-2] -->` 注释声明本次实际引用了哪些知识条目
+
+对不支持 subagent 的工具（Cursor、Codex、Codex Internal、OpenClaw、WorkBuddy），仍可通过 `teamai recall <query>` 命令和 auto-recall hook 完成检索；为避免影响这些工具的指令体感，**不会** 向其注入规则块
+
+`teamai recall` 的输出现在会给每条命中前置 `[<type>]` 标签，方便调用方快速判断知识来源。共享检索索引覆盖四类内容：
+
+| 类型 | 源路径 | 说明 |
+|------|--------|------|
+| `[learnings]` | `~/.teamai/learnings/*.md` | session 经验文档 |
+| `[docs]` | 团队仓库 `docs/**/*.md` | 共享项目知识 |
+| `[rules]` | 团队仓库 `rules/**/*.md` | 编码规则和约定 |
+| `[skills]` | 团队仓库 `skills/<name>/SKILL.md` | 可复用 AI skill |
+
+索引在每次 `teamai pull` 时自动重建。旧版索引（无 `version` 字段或缺少 `type`）会在首次使用时被自动检测并重建，对调用方透明
+
+### TodoWrite 提醒 hook
+
+`teamai pull` 会在 `TodoWrite` 工具上注册一个 PostToolUse hook。当 session 第一次写 TODO 列表时，hook 会注入一次性提醒，要求 agent 在尚未调用 `teamai-recall` 时先调用一次。session 级去重通过 `~/.teamai/sessions/<sid>-todowrite-hint.json` 实现（TTL 24 小时）
+
+如果要全局关闭该提醒，请设置：
+
+```bash
+export TEAMAI_RECALL_DISABLED=1
+```
+
+该环境变量同时也会关闭 auto-recall hook
+
+### `agents` 资源类型
+
+团队仓库可以在扁平的 `agents/` 目录下放置自定义 subagent 定义（每个 agent 一个 `*.md`），push / pull / remove 语义与 `rules` 保持一致：
+
+```text
+team-repo/
+  agents/
+    code-reviewer.md      # 团队作者编写的 subagent
+    .removed              # tombstone（由 `teamai remove agents <name>` 自动管理）
+```
+
+`teamai pull` 会把它们复制到每个 Tier-1 工具的 `agents/` 目录（例如 `~/.claude/agents/`）。CLI 内置的 `teamai-recall.md` 会与团队 agents 一起部署，并在 `teamai push` 时被自动排除（由 CLI 管理，不归团队仓库）
+
 ## 更新
 
 ```bash

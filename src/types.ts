@@ -9,6 +9,9 @@ export const ToolPathsSchema = z.object({
   settings: z.string().optional(),
   claudemd: z.string().optional(),
   wiki: z.string().optional(),
+  /** Per-tool agents directory (Phase 1: teamai-recall subagent target).
+   * Optional — tools without subagent support omit this and agents sync skips them. */
+  agents: z.string().optional(),
 });
 
 // ─── Scope ──────────────────────────────────────────────
@@ -92,12 +95,12 @@ export const TeamaiConfigSchema = z.object({
    * opinion (preserves legacy behavior). */
   autoUpdate: z.boolean().optional(),
   toolPaths: z.record(z.string(), ToolPathsSchema).default({
-    claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', wiki: '.claude/wiki' },
+    claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', wiki: '.claude/wiki', agents: '.claude/agents' },
     codex: { skills: '.codex/skills', rules: '.codex/rules' },
     'codex-internal': { skills: '.codex-internal/skills', rules: '.codex-internal/rules' },
-    'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', wiki: '.claude-internal/wiki' },
+    'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', wiki: '.claude-internal/wiki', agents: '.claude-internal/agents' },
     cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json' },
-    codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md' },
+    codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents' },
     openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules' },
     workbuddy: { skills: '.workbuddy/skills', rules: '.workbuddy/rules' },
   }),
@@ -176,7 +179,7 @@ export interface TagsConfig {
 
 // ─── Resource types ─────────────────────────────────────
 
-export type ResourceType = 'skills' | 'rules' | 'docs' | 'env' | 'wiki';
+export type ResourceType = 'skills' | 'rules' | 'docs' | 'env' | 'wiki' | 'agents';
 
 export type ResourceItemStatus = 'new' | 'modified';
 
@@ -219,7 +222,7 @@ export const TEAMAI_STATE_PATH = `${TEAMAI_HOME}/state.json`;
 export const TEAMAI_TOKEN_PATH = `${TEAMAI_HOME}/token`;
 export const TEAMAI_UPDATE_LOCK_PATH = `${TEAMAI_HOME}/.update-lock`;
 
-export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'wiki'];
+export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'wiki', 'agents'];
 
 export const TEAMAI_RULES_START = '<!-- [teamai:rules:start] -->';
 export const TEAMAI_RULES_END = '<!-- [teamai:rules:end] -->';
@@ -234,6 +237,10 @@ export const TEAMAI_CULTURE_END = '<!-- [teamai:culture:end] -->';
 
 export const TEAMAI_CLAUDEMD_START = '<!-- [teamai:claudemd:start] -->';
 export const TEAMAI_CLAUDEMD_END = '<!-- [teamai:claudemd:end] -->';
+
+// Phase 1: marker section for the recall-subagent rules block injected by `teamai pull`.
+export const TEAMAI_RECALL_RULES_START = '<!-- [teamai:recall-rules:start] -->';
+export const TEAMAI_RECALL_RULES_END = '<!-- [teamai:recall-rules:end] -->';
 
 // ─── Usage tracking ────────────────────────────────────
 
@@ -434,6 +441,9 @@ export interface LearningDocMeta {
   tags?: string[];
 }
 
+/** Knowledge category for search index entries (Phase 1 expansion). */
+export type KnowledgeType = 'learnings' | 'docs' | 'rules' | 'skills';
+
 /** One entry in the local search index (search-index.json). */
 export interface SearchIndexEntry {
   /** Original filename (e.g. "api-timeout-修复-2026-03-20-abc123.md") */
@@ -450,10 +460,21 @@ export interface SearchIndexEntry {
   tokens: string[];
   /** Vote count (aggregated at index build time) */
   votes: number;
+  /** Source category: which knowledge bucket this entry came from. */
+  type: KnowledgeType;
+  /** Absolute path to the source file (Phase 4.3 hot/cold path support). */
+  path?: string;
+  /** Optional hotness score reserved for Phase 4.3 hot/cold splitting. */
+  hotness?: number;
 }
+
+/** Schema version of the on-disk search-index.json (bump on breaking change). */
+export const SEARCH_INDEX_VERSION = 2;
 
 /** Shape of the search-index.json file. */
 export interface SearchIndex {
+  /** Schema version. Phase 1 introduces v2 (multi-category index). */
+  version?: number;
   /** ISO timestamp of when the index was built */
   builtAt: string;
   /** Elapsed ms to build the index */

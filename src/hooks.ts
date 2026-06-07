@@ -26,13 +26,18 @@ function getAutoRecallCommand(tool: string): string {
   return `bash -lc "teamai auto-recall --stdin 2>/dev/null" || true`;
 }
 
+/** Generate the todowrite-hint command with tool identifier. */
+function getTodoWriteHintCommand(tool: string): string {
+  return `bash -lc "teamai todowrite-hint --stdin --tool ${tool} 2>/dev/null" || true`;
+}
+
 /** Generate the contribute-check command with tool identifier. */
 function getContributeCheckCommand(tool: string): string {
   return `bash -lc "teamai contribute-check --stdin --tool ${tool} 2>/dev/null" || true`;
 }
 
 /** Subcommands expected in each tool settings file (for `teamai doctor`). */
-export const TEAMAI_HOOK_SUBCOMMANDS = ['pull', 'update', 'track', 'track-slash', 'dashboard-report', 'contribute-check', 'auto-recall'] as const;
+export const TEAMAI_HOOK_SUBCOMMANDS = ['pull', 'update', 'track', 'track-slash', 'dashboard-report', 'contribute-check', 'auto-recall', 'todowrite-hint'] as const;
 
 /** Claude PascalCase event → Cursor camelCase event (for tests / docs). */
 export const CLAUDE_TO_CURSOR_EVENTS: Record<string, string> = {
@@ -153,6 +158,16 @@ function getClaudeHooks(tool: string): ClaudeHookDef[] {
         description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Auto-recall on ${matcher}`,
       },
     })),
+    // ─── TodoWrite hint (Phase 1 reminder to call teamai-recall subagent) ────────
+    {
+      eventType: 'PostToolUse',
+      descriptionKeyword: 'TodoWrite hint',
+      hook: {
+        matcher: 'TodoWrite',
+        hooks: [{ type: 'command', command: getTodoWriteHintCommand(tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} TodoWrite hint to call teamai-recall subagent`,
+      },
+    },
     // ─── Dashboard hooks (independent from tracking) ────────
     {
       eventType: 'SessionStart',
@@ -226,6 +241,7 @@ function buildCursorHooks(tool: string): Record<string, CursorHookEntry[]> {
         timeout: 3,
         matcher,
       })),
+      { command: getTodoWriteHintCommand(tool), timeout: 3, matcher: 'TodoWrite' },
     ],
     beforeSubmitPrompt: [
       { command: getTrackSlashCommand(tool), timeout: 10 },
@@ -270,7 +286,7 @@ function isTeamaiHookCommand(command: string): boolean {
 
 /** Known teamai command substrings used to identify teamai-managed hooks. */
 const TEAMAI_COMMAND_MARKERS = [
-  'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check', 'teamai auto-recall',
+  'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check', 'teamai auto-recall', 'teamai todowrite-hint',
 ];
 
 /**

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { requireInit, detectProjectConfig } from './config.js';
-import { loadIndex, buildIndex, search } from './utils/search-index.js';
+import { loadIndex, buildIndex, search, isLegacyIndex } from './utils/search-index.js';
 import type { SearchResult } from './utils/search-index.js';
 import { readFileSafe, writeFile, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -43,7 +43,8 @@ interface ScopedSearchResult extends SearchResult {
  * Format search results for CLI / AI consumption.
  *
  * Output uses delimiters so AI treats content as reference, not instruction.
- * Each entry includes a scope label (user/project) when source is known.
+ * Each entry includes a scope label (user/project) when source is known and
+ * a type tag (skills/learnings/docs/rules) introduced in Phase 1.
  */
 export function formatResults(results: ScopedSearchResult[]): string {
   const lines: string[] = [];
@@ -54,14 +55,23 @@ export function formatResults(results: ScopedSearchResult[]): string {
     const { entry, score, scope, learningsBase } = results[i];
     const voteStr = entry.votes > 0 ? ` ★${entry.votes}` : '';
     const scopeStr = scope ? ` [${scope}]` : '';
-    lines.push(`[${i + 1}/${results.length}] ${entry.title}${voteStr}${scopeStr}`);
+    // Phase 1: prepend a [type] tag so callers can quickly tell which knowledge
+    // bucket each hit came from. Falls back to no tag for legacy entries that
+    // pre-date the schema bump (these are auto-rebuilt on the next pull).
+    const typeTag = entry.type ? `[${entry.type}] ` : '';
+    lines.push(`[${i + 1}/${results.length}] ${typeTag}${entry.title}${voteStr}${scopeStr}`);
     lines.push(`Author: ${entry.author || 'unknown'} | Date: ${entry.date || 'unknown'} | Score: ${score.toFixed(1)}`);
     if (entry.tags.length > 0) {
       lines.push(`Tags: ${entry.tags.join(', ')}`);
     }
-    const filePath = learningsBase
-      ? `${learningsBase}/${entry.filename}`
-      : `~/.teamai/learnings/${entry.filename}`;
+    // Prefer the absolute path captured at index build time when available
+    // (Phase 1 entries from docs/rules/skills carry it); otherwise fall back
+    // to the legacy ~/.teamai/learnings/<filename> rendering.
+    const filePath = entry.path
+      ? entry.path
+      : learningsBase
+        ? `${learningsBase}/${entry.filename}`
+        : `~/.teamai/learnings/${entry.filename}`;
     lines.push(`File: ${filePath}`);
     lines.push('');
   }
@@ -165,15 +175,26 @@ async function loadOrBuildScopeIndex(
   }
 
   let index = await loadIndex(indexPath);
-  if (!index && effectiveLearningsDir) {
+
+  // Auto-rebuild legacy / missing indexes (Phase 1 schema bump): the old
+  // index only covered learnings, the new one covers four categories. Same
+  // condition triggers rebuild when the file is missing entirely.
+  const needsRebuild = !index || isLegacyIndex(index);
+  if (needsRebuild && (effectiveLearningsDir || await pathExists(path.join(localConfig.repo.localPath, 'docs')) || await pathExists(path.join(localConfig.repo.localPath, 'rules')) || await pathExists(path.join(localConfig.repo.localPath, 'skills')))) {
     const votesDir = path.join(localConfig.repo.localPath, 'votes');
     const votesExist = await pathExists(votesDir);
+    const docsDir = path.join(localConfig.repo.localPath, 'docs');
+    const rulesDir = path.join(localConfig.repo.localPath, 'rules');
+    const skillsDir = path.join(localConfig.repo.localPath, 'skills');
     try {
-      await buildIndex(
-        effectiveLearningsDir,
-        votesExist ? votesDir : undefined,
+      await buildIndex({
+        learningsDir: effectiveLearningsDir ?? undefined,
+        docsDir: await pathExists(docsDir) ? docsDir : undefined,
+        rulesDir: await pathExists(rulesDir) ? rulesDir : undefined,
+        skillsDir: await pathExists(skillsDir) ? skillsDir : undefined,
+        votesDir: votesExist ? votesDir : undefined,
         indexPath,
-      );
+      });
       index = await loadIndex(indexPath);
     } catch (e) {
       log.debug(`Index build failed for ${scopeLabel}: ${(e as Error).message}`);

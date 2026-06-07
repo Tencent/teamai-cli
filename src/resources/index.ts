@@ -4,6 +4,7 @@ import { RulesHandler } from './rules.js';
 import { DocsHandler } from './docs.js';
 import { EnvHandler } from './env.js';
 import { WikiHandler } from './wiki.js';
+import { AgentsHandler } from './agents.js';
 import type { ResourceType } from '../types.js';
 
 const handlers: Record<ResourceType, ResourceHandler> = {
@@ -12,6 +13,7 @@ const handlers: Record<ResourceType, ResourceHandler> = {
   docs: new DocsHandler(),
   env: new EnvHandler(),
   wiki: new WikiHandler(),
+  agents: new AgentsHandler(),
 };
 
 export function getHandler(type: ResourceType): ResourceHandler {
@@ -22,4 +24,4 @@ export function getAllHandlers(): ResourceHandler[] {
   return Object.values(handlers);
 }
 
-export { SkillsHandler, RulesHandler, DocsHandler, EnvHandler, WikiHandler };
+export { SkillsHandler, RulesHandler, DocsHandler, EnvHandler, WikiHandler, AgentsHandler };

@@ -554,4 +554,16 @@ program
     }
   });
 
+program
+  .command('todowrite-hint')
+  .description('Remind the agent to invoke teamai-recall when TodoWrite is used (PostToolUse hook)')
+  .option('--stdin', 'Read hook data from STDIN')
+  .option('--tool <name>', 'Source AI tool (claude / codebuddy / cursor)')
+  .action(async (cmdOpts) => {
+    if (cmdOpts.stdin) {
+      const { todoWriteHint } = await import('./todowrite-hint.js');
+      await todoWriteHint();
+    }
+  });
+
 program.parse();

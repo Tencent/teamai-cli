@@ -17,6 +17,8 @@ import {
   TEAMAI_CULTURE_END,
   TEAMAI_CLAUDEMD_START,
   TEAMAI_CLAUDEMD_END,
+  TEAMAI_RECALL_RULES_START,
+  TEAMAI_RECALL_RULES_END,
   CultureFrontmatterSchema,
   resolveBaseDir,
   isWikiEnabled,
@@ -286,8 +288,8 @@ async function pullForScope(
   // Step 2: Sync each resource type
   const wikiEnabled = isWikiEnabled();
   const resourceTypes: ResourceType[] = wikiEnabled
-    ? ['skills', 'rules', 'docs', 'env', 'wiki']
-    : ['skills', 'rules', 'docs', 'env'];
+    ? ['skills', 'rules', 'docs', 'env', 'wiki', 'agents']
+    : ['skills', 'rules', 'docs', 'env', 'agents'];
   let totalSynced = 0;
   let desiredSkillNames: Set<string> | null = null;
   let knownRepoSkillNames: Set<string> | null = null;
@@ -421,10 +423,11 @@ async function pullForScope(
     const tombstoneTypes: {
       type: ResourceType;
       ext?: string;
-      toolPathField: 'rules' | 'skills';
+      toolPathField: 'rules' | 'skills' | 'agents';
     }[] = [
       { type: 'rules', ext: '.md', toolPathField: 'rules' },
       { type: 'skills', toolPathField: 'skills' },
+      { type: 'agents', ext: '.md', toolPathField: 'agents' },
     ];
 
     const baseDir = resolveBaseDir(localConfig);
@@ -513,30 +516,53 @@ async function pullForScope(
     await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
   }
 
-  // Step 3.5: Sync learnings and rebuild search index (user scope only)
+  // Step 3.5: Sync learnings and rebuild the multi-category search index
+  // (Phase 1: covers learnings + docs + rules + skills). user scope only.
   if (!options.dryRun && localConfig.scope === 'user') {
     try {
       const learningsRepoDir = path.join(localConfig.repo.localPath, 'learnings');
+      const docsRepoDir = path.join(localConfig.repo.localPath, 'docs');
+      const rulesRepoDir = path.join(localConfig.repo.localPath, 'rules');
+      const skillsRepoDir = path.join(localConfig.repo.localPath, 'skills');
+      const votesDir = path.join(localConfig.repo.localPath, 'votes');
+
+      // Always sync learnings to ~/.teamai/learnings/ when present (legacy behavior)
+      let learningsCount = 0;
       if (await pathExists(learningsRepoDir)) {
         await fse.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
           overwrite: true,
           filter: (src: string) => !path.basename(src).startsWith('.'),
         });
         const allFiles = await listFiles(learningsRepoDir);
-        const mdFiles = allFiles.filter((f) => f.endsWith('.md'));
-        if (mdFiles.length > 0) {
-          const votesDir = path.join(localConfig.repo.localPath, 'votes');
-          const votesExist = await pathExists(votesDir);
-          const { buildIndex } = await import('./utils/search-index.js');
-          const elapsed = await buildIndex(
-            LEARNINGS_LOCAL_DIR,
-            votesExist ? votesDir : undefined,
-          );
-          log.success(`Synced ${mdFiles.length} learnings (index: ${elapsed}ms)`);
+        learningsCount = allFiles.filter((f) => f.endsWith('.md')).length;
+      }
+
+      // Build the index when ANY of the four categories has content. Missing
+      // categories are silently skipped by the collectors.
+      const hasAnySource =
+        await pathExists(LEARNINGS_LOCAL_DIR) ||
+        await pathExists(docsRepoDir) ||
+        await pathExists(rulesRepoDir) ||
+        await pathExists(skillsRepoDir);
+
+      if (hasAnySource) {
+        const votesExist = await pathExists(votesDir);
+        const { buildIndex } = await import('./utils/search-index.js');
+        const elapsed = await buildIndex({
+          learningsDir: await pathExists(LEARNINGS_LOCAL_DIR) ? LEARNINGS_LOCAL_DIR : undefined,
+          docsDir: await pathExists(docsRepoDir) ? docsRepoDir : undefined,
+          rulesDir: await pathExists(rulesRepoDir) ? rulesRepoDir : undefined,
+          skillsDir: await pathExists(skillsRepoDir) ? skillsRepoDir : undefined,
+          votesDir: votesExist ? votesDir : undefined,
+        });
+        if (learningsCount > 0) {
+          log.success(`Synced ${learningsCount} learnings (index: ${elapsed}ms)`);
+        } else {
+          log.debug(`[${scopeLabel}] Built multi-category search index in ${elapsed}ms`);
         }
       }
     } catch (e) {
-      log.debug(`Learnings sync skipped: ${(e as Error).message}`);
+      log.debug(`Learnings/index sync skipped: ${(e as Error).message}`);
     }
   }
 
@@ -599,6 +625,43 @@ async function pullForScope(
     }
   }
 
+  // Step 3.8: Inject teamai-recall subagent rules block (Phase 1)
+  //
+  // Only injected for Tier-1 tools that have BOTH `agents` and `claudemd`
+  // configured. Tools without subagent support (cursor / codex / openclaw /
+  // workbuddy) are skipped — for them the recall flow runs purely via hooks
+  // (auto-recall, TodoWrite hint) and the manual `teamai recall` command.
+  if (!options.dryRun) {
+    try {
+      const baseDir = resolveBaseDir(localConfig);
+      const recallBlock = compileRecallRulesBlock();
+      let injected = 0;
+      for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
+        if (!toolPath.claudemd || !toolPath.agents) continue;
+        if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
+
+        const claudeMdPath = path.join(baseDir, toolPath.claudemd);
+        try {
+          await injectClaudeMdSection(
+            claudeMdPath,
+            TEAMAI_RECALL_RULES_START,
+            TEAMAI_RECALL_RULES_END,
+            recallBlock,
+          );
+          injected++;
+          log.debug(`Injected recall rules into ${tool} CLAUDE.md`);
+        } catch (e) {
+          log.warn(`Failed to inject recall rules into ${tool} CLAUDE.md: ${(e as Error).message}`);
+        }
+      }
+      if (injected > 0) {
+        log.debug(`[${scopeLabel}] Injected recall rules into ${injected} tool(s) CLAUDE.md`);
+      }
+    } catch (e) {
+      log.debug(`[${scopeLabel}] Recall rules injection skipped: ${(e as Error).message}`);
+    }
+  }
+
   // Step 4: Deploy CLI built-in skills
   if (!options.dryRun) {
     try {
@@ -622,6 +685,19 @@ async function pullForScope(
       }
     } catch (e) {
       log.debug(`[${scopeLabel}] Built-in rules deployment skipped: ${(e as Error).message}`);
+    }
+  }
+
+  // Step 4.6: Deploy CLI built-in agents (e.g. teamai-recall subagent)
+  if (!options.dryRun) {
+    try {
+      const { deployBuiltinAgents } = await import('./builtin-agents.js');
+      const deployed = await deployBuiltinAgents(freshConfig, localConfig);
+      if (deployed > 0) {
+        log.debug(`[${scopeLabel}] Deployed built-in agents to ${deployed} location(s)`);
+      }
+    } catch (e) {
+      log.debug(`[${scopeLabel}] Built-in agents deployment skipped: ${(e as Error).message}`);
     }
   }
 
@@ -754,6 +830,46 @@ export function compileClaudemd(contents: string[]): string | null {
         '',
         TEAMAI_CLAUDEMD_END,
     ].join('\n');
+}
+
+/**
+ * Build the CLAUDE.md block that instructs the main conversation to:
+ *   1. Invoke the `teamai-recall` subagent before starting any task that
+ *      involves code changes / troubleshooting / design.
+ *   2. Declare which doc_ids were actually consulted at task completion.
+ *
+ * Only injected for Tier-1 tools (those with both `agents` and `claudemd`
+ * paths configured) — see pull.ts Step 3.8.
+ */
+export function compileRecallRulesBlock(): string {
+    const lines = [
+        TEAMAI_RECALL_RULES_START,
+        '<!-- DO NOT EDIT: This section is auto-managed by teamai -->',
+        '',
+        '## Team Knowledge Recall (teamai)',
+        '',
+        '**Before** starting any task that involves code changes, debugging,',
+        'or design decisions, you **MUST** first invoke the `teamai-recall`',
+        'subagent via the Agent tool with a concise natural-language',
+        'description of the task. The subagent will return a compact summary',
+        'of relevant team knowledge (skills, learnings, docs, rules) without',
+        'polluting this conversation with raw content.',
+        '',
+        '**After** completing the task, in your final reply you **MUST**',
+        'declare which knowledge entries were actually referenced, using an',
+        'HTML comment of the form:',
+        '',
+        '```',
+        '<!-- teamai:referenced-doc-ids: [doc-id-1, doc-id-2] -->',
+        '```',
+        '',
+        'If the recall returned no relevant hits, declare an empty list',
+        '(`<!-- teamai:referenced-doc-ids: [] -->`). Do not skip the',
+        'declaration — downstream tooling parses it to credit knowledge use.',
+        '',
+        TEAMAI_RECALL_RULES_END,
+    ];
+    return lines.join('\n');
 }
 
 /**
