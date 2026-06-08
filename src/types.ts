@@ -482,7 +482,7 @@ export interface SearchIndexEntry {
 }
 
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
-export const SEARCH_INDEX_VERSION = 3;
+export const SEARCH_INDEX_VERSION = 4;
 
 /** Shape of the search-index.json file. */
 export interface SearchIndex {
@@ -494,6 +494,10 @@ export interface SearchIndex {
   elapsedMs: number;
   /** Index entries, one per learning document */
   entries: SearchIndexEntry[];
+  /** Document-frequency map: token → number of entries containing that token.
+   *  Used for IDF weighting in search(). Optional for backward compatibility
+   *  with indexes built before this field was introduced. */
+  df?: Record<string, number>;
 }
 
 /** Per-user vote file (votes/<user>.yaml). */

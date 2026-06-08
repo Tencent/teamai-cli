@@ -217,6 +217,7 @@ describe('isLegacyIndex', () => {
           domain: 'technical' as const, // P1.4 domain field present
         },
       ],
+      df: {}, // v4: df map required
     };
     expect(isLegacyIndex(current)).toBe(false);
   });

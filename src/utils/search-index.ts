@@ -82,13 +82,38 @@ const TECHNICAL_PATH_PATTERNS = ['docs/architecture/', 'docs/design/', 'docs/api
 const OPS_PATH_PATTERNS = ['learnings/ops/', 'docs/ops/', 'docs/deploy/', 'docs/sre/'];
 const SUPPORT_PATH_PATTERNS = ['docs/support/', 'docs/faq/', 'docs/guide/', 'learnings/support/'];
 
-// Domain weights applied on top of the base relevance score.
-const DOMAIN_WEIGHT: Record<KnowledgeDomain, number> = {
-  technical: 1.0,  // baseline
-  neutral: 0.85,   // slight downweight \u2014 unclassified content
-  ops: 0.5,        // operational SOPs are less relevant for general coding queries
-  support: 0.3,    // user-facing guides rarely answer engineering questions
+// Query-aware domain weights.
+//
+// Rows = inferred domain of the *query*; columns = domain of the *entry*.
+// When the query looks like an ops question (contains k8s/deploy/... tokens),
+// ops entries are no longer penalised. When the query is neutral/unknown, a
+// mild penalty is kept so technical entries still rank slightly higher.
+const DOMAIN_WEIGHT: Record<KnowledgeDomain, Record<KnowledgeDomain, number>> = {
+  //               entry domain \u2192
+  // query domain \u2193  technical  neutral  ops   support
+  technical:       { technical: 1.0, neutral: 0.85, ops: 0.5,  support: 0.3 },
+  ops:             { technical: 0.7, neutral: 0.85, ops: 1.0,  support: 0.3 },
+  neutral:         { technical: 1.0, neutral: 0.85, ops: 0.75, support: 0.3 },
+  support:         { technical: 0.8, neutral: 0.85, ops: 0.5,  support: 1.0 },
 };
+
+/**
+ * Infer the domain of a query from its tokens.
+ * Uses the same tag sets used for document domain inference so the two sides
+ * of the matching are symmetric.
+ */
+function inferQueryDomain(queryTokens: string[]): KnowledgeDomain {
+  let techScore = 0;
+  let opsScore = 0;
+  for (const t of queryTokens) {
+    if (TECHNICAL_TAGS.has(t)) techScore++;
+    if (OPS_TAGS.has(t)) opsScore++;
+  }
+  if (opsScore > techScore) return 'ops';
+  if (techScore > opsScore) return 'technical';
+  if (techScore > 0) return 'technical'; // tie \u2192 technical
+  return 'neutral';
+}
 
 // Type bonuses: skills/rules already represent curated, high-confidence knowledge.
 const TYPE_BONUS: Record<KnowledgeType, number> = {
@@ -480,12 +505,22 @@ export async function buildIndex(
     entries.push(...await collectSkillEntries(opts.skillsDir, voteCounts));
   }
 
+  // Build document-frequency map for IDF weighting.
+  // Count how many *entries* contain each token (not raw term frequency).
+  const df: Record<string, number> = {};
+  for (const entry of entries) {
+    for (const token of new Set(entry.tokens)) {
+      df[token] = (df[token] ?? 0) + 1;
+    }
+  }
+
   const elapsed = Date.now() - start;
   const index: SearchIndex = {
     version: SEARCH_INDEX_VERSION,
     builtAt: new Date().toISOString(),
     elapsedMs: elapsed,
     entries,
+    df,
   };
 
   await writeJson(opts.indexPath ?? getSearchIndexPath(), index);
@@ -506,7 +541,7 @@ export function isLegacyIndex(index: SearchIndex | null): boolean {
   if (!index) return false;
   if (typeof index.version !== 'number' || index.version < SEARCH_INDEX_VERSION) return true;
   // Any entry missing type or domain → legacy; domain was added in v3.
-  return index.entries.some((e) => !e.type || e.domain === undefined);
+  return index.entries.some((e) => !e.type || e.domain === undefined) || !index.df;
 }
 
 /**
@@ -549,6 +584,26 @@ export function search(
   const queryTokens = tokenize(query);
   if (queryTokens.length === 0) return [];
 
+  // Infer query domain for adaptive weighting (改动 A).
+  const queryDomain = inferQueryDomain(queryTokens);
+  const domainWeightRow = DOMAIN_WEIGHT[queryDomain];
+
+  // IDF helpers (改动 B).
+  // N = total number of indexed entries; df = per-token document frequency.
+  // Falls back gracefully when df is absent (legacy index built before v4).
+  const N = index.entries.length;
+  const df = index.df ?? {};
+
+  /**
+   * IDF score for a token: log((N + 1) / (docFreq + 1)).
+   * Returns 1.0 when df map is unavailable (no-op for legacy indexes).
+   */
+  const idf = (token: string): number => {
+    if (!index.df) return 1.0;
+    const docFreq = df[token] ?? 0;
+    return Math.log((N + 1) / (docFreq + 1)) + 1; // +1 smoothing keeps score ≥ 1
+  };
+
   const results: SearchResult[] = [];
 
   for (const entry of index.entries) {
@@ -557,27 +612,30 @@ export function search(
     const entryTokens = new Set(entry.tokens);
 
     for (const qt of queryTokens) {
-      if (entryTokens.has(`title:${qt}`)) {
-        score += 3;
+      const titleToken = `title:${qt}`;
+      const tagToken = `tag:${qt}`;
+
+      if (entryTokens.has(titleToken)) {
+        score += 3 * idf(titleToken);
         hasTitleOrTagMatch = true;
       }
-      if (entryTokens.has(`tag:${qt}`)) {
-        score += 2;
+      if (entryTokens.has(tagToken)) {
+        score += 2 * idf(tagToken);
         hasTitleOrTagMatch = true;
       }
       if (entryTokens.has(qt)) {
-        score += 1;
+        score += 1 * idf(qt);
       }
     }
 
-    // Require at least one title or tag match to filter out body-only noise
+    // Require at least one title or tag match to filter out body-only noise.
     if (score > 0 && hasTitleOrTagMatch) {
-      // Vote bonus: +0.5 per vote, max 5 points
+      // Vote bonus: +0.5 per vote, max 5 points (unchanged).
       score += Math.min(entry.votes * 0.5, 5);
 
-      // P1.4: Apply domain × type weighting.
-      // Missing domain (legacy index entry) degrades gracefully to 'neutral'.
-      const domainMultiplier = DOMAIN_WEIGHT[entry.domain ?? 'neutral'];
+      // Query-aware domain weight (改动 A) × type bonus (unchanged).
+      // Missing domain degrades gracefully to 'neutral'.
+      const domainMultiplier = domainWeightRow[entry.domain ?? 'neutral'];
       const typeMultiplier = TYPE_BONUS[entry.type];
       score *= domainMultiplier * typeMultiplier;
 
@@ -585,7 +643,7 @@ export function search(
     }
   }
 
-  // Sort by score descending, then by date descending for ties
+  // Sort by score descending, then by date descending for ties.
   results.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     return (b.entry.date || '').localeCompare(a.entry.date || '');

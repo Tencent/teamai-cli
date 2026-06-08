@@ -115,22 +115,25 @@ describe('domain-weighted search scoring', () => {
   it('frontmatter domain:technical overrides tag-inferred ops and boosts ranking', async () => {
     // Entry A has ops tags but declares domain:technical in frontmatter
     // Entry B has ops tags with no frontmatter override → inferred ops
-    // Entry A should rank higher despite same raw score
+    // Query uses a technical keyword ("timeout") so the query domain is
+    // inferred as technical → technical entries are ranked above ops entries.
+    // Entry A (frontmatter technical) should therefore outrank Entry B (ops).
     const learningsDir = path.join(tmpDir, 'learnings');
     await fse.ensureDir(learningsDir);
 
     await fse.writeFile(
       path.join(learningsDir, 'deploy-override.md'),
-      '---\ntitle: "deploy flow"\ndomain: technical\ntags: [deploy]\n---\nDeploy steps with technical context.\n',
+      '---\ntitle: "deploy timeout"\ndomain: technical\ntags: [deploy, timeout]\n---\nDeploy steps with technical context.\n',
     );
     await fse.writeFile(
       path.join(learningsDir, 'deploy-normal.md'),
-      '---\ntitle: "deploy flow"\ntags: [deploy]\n---\nDeploy steps.\n',
+      '---\ntitle: "deploy timeout"\ntags: [deploy]\n---\nDeploy steps.\n',
     );
 
     await buildIndex({ learningsDir, indexPath });
     const index = await loadIndex(indexPath);
-    const results = search('deploy', index!);
+    // "timeout" is in TECHNICAL_TAGS → query domain inferred as technical
+    const results = search('deploy timeout', index!);
 
     expect(results.length).toBe(2);
 
@@ -146,7 +149,7 @@ describe('domain-weighted search scoring', () => {
     expect(overrideResult!.score).toBeGreaterThan(normalResult!.score);
   });
 
-  it('built index carries domain field on every entry (version 3)', async () => {
+  it('built index carries domain field on every entry (version 4)', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
     await fse.ensureDir(learningsDir);
 
@@ -159,7 +162,7 @@ describe('domain-weighted search scoring', () => {
     const index = await loadIndex(indexPath);
 
     expect(index).not.toBeNull();
-    expect(index!.version).toBe(3);
+    expect(index!.version).toBe(4);
 
     for (const entry of index!.entries) {
       expect(entry.domain).toBeDefined();
