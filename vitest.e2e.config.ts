@@ -5,6 +5,7 @@ export default defineConfig({
     include: [
       'src/__tests__/e2e/**/*.test.ts',
       'src/__tests__/*-e2e.test.ts',
+      'validation/*.test.ts',
     ],
     testTimeout: 60_000,
     hookTimeout: 30_000,

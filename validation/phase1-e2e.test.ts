@@ -22,29 +22,32 @@ import fse from 'fs-extra';
 
 // ─── Mock external dependencies ───────────────────────────
 
-vi.mock('../config.js', () => ({
+vi.mock('../src/config.js', () => ({
   requireInit: vi.fn(),
-  loadState: vi.fn().mockResolvedValue({ lastPull: null }),
+  loadState: vi.fn().mockImplementation(async () => ({ lastPull: null })),
   saveState: vi.fn(),
   loadLocalConfigForScope: vi.fn(),
   loadTeamConfig: vi.fn(),
   detectProjectConfig: vi.fn().mockResolvedValue(null),
-  loadStateForScope: vi.fn().mockResolvedValue({ lastPull: null }),
+  // Return a fresh object each call so mutations in one test don't leak into
+  // the next (e.g. pull() sets state.lastPullRev, which would trigger the
+  // rev-based early-exit in subsequent tests sharing the same mock object).
+  loadStateForScope: vi.fn().mockImplementation(async () => ({ lastPull: null })),
   saveStateForScope: vi.fn(),
 }));
 
-vi.mock('../utils/git.js', () => ({
+vi.mock('../src/utils/git.js', () => ({
   pullRepo: vi.fn().mockResolvedValue('Already up to date.'),
   getHeadRev: vi.fn().mockResolvedValue('deadbeef'),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('../src/utils/logger.js', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
+    warn: vi.fn((msg: string) => { process.stderr.write(`[WARN] ${msg}\n`); }),
+    error: vi.fn((msg: string) => { process.stderr.write(`[ERROR] ${msg}\n`); }),
+    debug: vi.fn((msg: string) => { process.stderr.write(`[DEBUG] ${msg}\n`); }),
     dim: vi.fn(),
   },
   spinner: vi.fn(() => ({
@@ -58,39 +61,39 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 // Skip auto-report (it tries to push to a remote that doesn't exist)
-vi.mock('../team-push.js', () => ({
+vi.mock('../src/team-push.js', () => ({
   reportUsageToTeam: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Skip cross-team source pull (no fixtures here)
-vi.mock('../source.js', () => ({
+vi.mock('../src/source.js', () => ({
   pullSources: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Skip skill-recommend (it imports from stats and needs more fixtures)
-vi.mock('../skill-recommend.js', () => ({
+vi.mock('../src/skill-recommend.js', () => ({
   getRecommendations: vi.fn().mockResolvedValue([]),
   displayRecommendations: vi.fn(),
 }));
 
 // Skip role manifest loading — keep the test focused on Phase 1 wiring
-vi.mock('../roles.js', () => ({
+vi.mock('../src/roles.js', () => ({
   loadRolesManifest: vi.fn().mockRejectedValue(new Error('no roles in fixture')),
   resolveRoleResourceNamespaces: vi.fn(),
 }));
 
-import { pull } from '../pull.js';
-import { recall } from '../recall.js';
+import { pull } from '../src/pull.js';
+import { recall } from '../src/recall.js';
 import {
   loadLocalConfigForScope,
   loadTeamConfig,
   requireInit,
-} from '../config.js';
+} from '../src/config.js';
 import {
   TEAMAI_RECALL_RULES_START,
   TEAMAI_RECALL_RULES_END,
-} from '../types.js';
-import type { TeamaiConfig, LocalConfig } from '../types.js';
+} from '../src/types.js';
+import type { TeamaiConfig, LocalConfig } from '../src/types.js';
 
 // ─── Fixture: build a complete mock team repo ─────────────
 

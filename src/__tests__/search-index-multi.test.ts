@@ -154,6 +154,7 @@ describe('isLegacyIndex', () => {
   });
 
   it('detects v2 indexes whose entries are missing type field', () => {
+    // A v3-version index (SEARCH_INDEX_VERSION) that still lacks 'type' — treated as legacy
     const partial = {
       version: SEARCH_INDEX_VERSION,
       builtAt: '2026-01-01T00:00:00Z',
@@ -174,7 +175,31 @@ describe('isLegacyIndex', () => {
     expect(isLegacyIndex(partial)).toBe(true);
   });
 
-  it('returns false for fully populated v2 index', () => {
+  it('detects old v2 (Phase 1.3) indexes missing domain field as legacy', () => {
+    // Simulates an index built before P1.4 (version=2, has type but no domain).
+    // isLegacyIndex() must return true so teamai pull rebuilds the index.
+    const v2Index = {
+      version: 2, // old pre-P1.4 version
+      builtAt: '2026-01-01T00:00:00Z',
+      elapsedMs: 10,
+      entries: [
+        {
+          filename: 'has-type-no-domain.md',
+          title: 'some learning',
+          author: '',
+          date: '',
+          tags: [],
+          tokens: ['type:learnings'],
+          votes: 0,
+          type: 'learnings' as const,
+          // domain: undefined ← missing, as in pre-P1.4 indexes
+        } as unknown as import('../types.js').SearchIndexEntry,
+      ],
+    };
+    expect(isLegacyIndex(v2Index)).toBe(true);
+  });
+
+  it('returns false for fully populated v3 index (type + domain present)', () => {
     const current = {
       version: SEARCH_INDEX_VERSION,
       builtAt: '2026-01-01T00:00:00Z',
@@ -189,6 +214,7 @@ describe('isLegacyIndex', () => {
           tokens: ['type:learnings'],
           votes: 0,
           type: 'learnings' as const,
+          domain: 'technical' as const, // P1.4 domain field present
         },
       ],
     };

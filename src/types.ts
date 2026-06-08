@@ -444,6 +444,17 @@ export interface LearningDocMeta {
 /** Knowledge category for search index entries (Phase 1 expansion). */
 export type KnowledgeType = 'learnings' | 'docs' | 'rules' | 'skills';
 
+/**
+ * Content domain of a knowledge entry (Phase 1.4).
+ * Used to weight search results: technical > neutral > ops > support.
+ *
+ * - technical: code bugs, API design, architecture decisions, debugging
+ * - ops:       deployment SOPs, cluster operations, monitoring, CI/CD
+ * - support:   user FAQs, product guides, onboarding materials
+ * - neutral:   unclassifiable — no matching tags/path/type signal
+ */
+export type KnowledgeDomain = 'technical' | 'ops' | 'support' | 'neutral';
+
 /** One entry in the local search index (search-index.json). */
 export interface SearchIndexEntry {
   /** Original filename (e.g. "api-timeout-修复-2026-03-20-abc123.md") */
@@ -462,6 +473,8 @@ export interface SearchIndexEntry {
   votes: number;
   /** Source category: which knowledge bucket this entry came from. */
   type: KnowledgeType;
+  /** Content domain inferred from frontmatter / tags / path (Phase 1.4). */
+  domain?: KnowledgeDomain;
   /** Absolute path to the source file (Phase 4.3 hot/cold path support). */
   path?: string;
   /** Optional hotness score reserved for Phase 4.3 hot/cold splitting. */
@@ -469,7 +482,7 @@ export interface SearchIndexEntry {
 }
 
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
-export const SEARCH_INDEX_VERSION = 2;
+export const SEARCH_INDEX_VERSION = 3;
 
 /** Shape of the search-index.json file. */
 export interface SearchIndex {

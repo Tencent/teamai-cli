@@ -4,6 +4,7 @@ import { readFileSafe, readJson, writeJson, listFiles, listFilesRecursive, listD
 import { log } from './logger.js';
 import {
   SEARCH_INDEX_VERSION,
+  type KnowledgeDomain,
   type LearningDocMeta,
   type SearchIndex,
   type SearchIndexEntry,
@@ -43,6 +44,119 @@ function getSearchIndexPath(): string {
 const CJK_RANGE = /[\u4e00-\u9fff]/;
 const MAX_BODY_CHARS = 2000;
 const MAX_DOC_BYTES = 50 * 1024; // 50KB
+
+// \u2500\u2500\u2500 P1.4 Domain inference \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+//
+// Tags that signal each domain category. Built from real-world learnings tags.
+// Ties resolved by: technical > ops > support.
+
+const TECHNICAL_TAGS = new Set([
+  'api', 'sdk', 'typescript', 'python', 'golang', 'rust', 'javascript',
+  'bug', 'debug', 'error', 'exception', 'fix', 'patch', 'refactor',
+  'architecture', 'framework', 'database', 'db', 'cache', 'redis',
+  'async', 'concurrent', 'thread', 'performance', 'latency', 'timeout',
+  'http', 'grpc', 'proto', 'json', 'schema', 'migration', 'index',
+  'test', 'unittest', 'e2e', 'mock', 'lint', 'typecheck',
+  'docker', 'build', 'package', 'dependency', 'import', 'module',
+]);
+
+const OPS_TAGS = new Set([
+  'k8s', 'kubernetes', 'deploy', 'deployment', 'cluster', 'node', 'pod',
+  'sop', 'upgrade', 'rollout', 'rollback', 'restart', 'scale',
+  'monitor', 'alert', 'metrics', 'grafana', 'prometheus', 'log',
+  'pipeline', 'ci', 'cd', 'cicd', 'release', 'publish',
+  'nginx', 'lb', 'ingress', 'service', 'network', 'firewall',
+  'backup', 'restore', 'disaster', 'incident', 'oncall',
+  'gpu', 'resource', 'quota', 'tke', 'tcr', 'cos',
+]);
+
+const SUPPORT_TAGS = new Set([
+  'faq', 'support', 'user', 'customer', 'guide', 'tutorial',
+  'onboard', 'onboarding', 'help', 'howto', 'usage', 'example',
+  'feedback', 'issue', 'complaint', 'request', 'ticket',
+]);
+
+// Directory path sub-strings that signal a domain.
+// Checked in priority order: technical > ops > support.
+const TECHNICAL_PATH_PATTERNS = ['docs/architecture/', 'docs/design/', 'docs/api/', 'docs/adr/'];
+const OPS_PATH_PATTERNS = ['learnings/ops/', 'docs/ops/', 'docs/deploy/', 'docs/sre/'];
+const SUPPORT_PATH_PATTERNS = ['docs/support/', 'docs/faq/', 'docs/guide/', 'learnings/support/'];
+
+// Domain weights applied on top of the base relevance score.
+const DOMAIN_WEIGHT: Record<KnowledgeDomain, number> = {
+  technical: 1.0,  // baseline
+  neutral: 0.85,   // slight downweight \u2014 unclassified content
+  ops: 0.5,        // operational SOPs are less relevant for general coding queries
+  support: 0.3,    // user-facing guides rarely answer engineering questions
+};
+
+// Type bonuses: skills/rules already represent curated, high-confidence knowledge.
+const TYPE_BONUS: Record<KnowledgeType, number> = {
+  skills: 1.1,
+  rules: 1.1,
+  learnings: 1.0,
+  docs: 1.0,
+};
+
+/**
+ * Infer the content domain of a knowledge entry from four signals (priority order):
+ * 1. Explicit `domain:` frontmatter field
+ * 2. Tag keyword matching (TECHNICAL_TAGS / OPS_TAGS / SUPPORT_TAGS)
+ * 3. Directory path patterns (e.g. docs/architecture/ \u2192 technical)
+ * 4. Knowledge type fallback (skills/rules \u2192 technical; everything else \u2192 neutral)
+ *
+ * In case of a score tie between domains, technical beats ops beats support.
+ */
+export function inferDomain(
+  frontmatterDomain: string | undefined,
+  tags: string[],
+  filePath: string,
+  type: KnowledgeType,
+): KnowledgeDomain {
+  // 1. Explicit frontmatter override
+  if (
+    frontmatterDomain === 'technical' ||
+    frontmatterDomain === 'ops' ||
+    frontmatterDomain === 'support' ||
+    frontmatterDomain === 'neutral'
+  ) {
+    return frontmatterDomain;
+  }
+
+  // 2. Tags keyword matching
+  const normalizedTags = tags.map((t) => t.toLowerCase());
+  let techScore = 0;
+  let opsScore = 0;
+  let supportScore = 0;
+  for (const tag of normalizedTags) {
+    if (TECHNICAL_TAGS.has(tag)) techScore++;
+    if (OPS_TAGS.has(tag)) opsScore++;
+    if (SUPPORT_TAGS.has(tag)) supportScore++;
+  }
+  const maxScore = Math.max(techScore, opsScore, supportScore);
+  if (maxScore > 0) {
+    // Tie-breaking: technical > ops > support
+    if (techScore === maxScore) return 'technical';
+    if (opsScore === maxScore) return 'ops';
+    return 'support';
+  }
+
+  // 3. Directory path matching
+  const normalizedPath = filePath.replace(/\\/g, '/').toLowerCase();
+  for (const pattern of TECHNICAL_PATH_PATTERNS) {
+    if (normalizedPath.includes(pattern)) return 'technical';
+  }
+  for (const pattern of OPS_PATH_PATTERNS) {
+    if (normalizedPath.includes(pattern)) return 'ops';
+  }
+  for (const pattern of SUPPORT_PATH_PATTERNS) {
+    if (normalizedPath.includes(pattern)) return 'support';
+  }
+
+  // 4. Type fallback
+  if (type === 'skills' || type === 'rules') return 'technical';
+  return 'neutral';
+}
 
 /**
  * Hybrid tokenizer: Intl.Segmenter for word boundaries + CJK bigrams.
@@ -200,6 +314,18 @@ async function entryFromMdFile(
   const title = meta.title ?? titleFromFilename(filenameForId);
   const tags = meta.tags ?? [];
 
+  // Infer domain for P1.4 search weighting.
+  // parseLearningDoc only populates the LearningDocMeta fields; read the raw
+  // `domain` frontmatter field directly from the raw gray-matter parse.
+  const rawFrontmatterDomain = (() => {
+    try {
+      return (matter(content).data['domain'] as string | undefined);
+    } catch {
+      return undefined;
+    }
+  })();
+  const domain = inferDomain(rawFrontmatterDomain, tags, absPath, type);
+
   const titleTokens = tokenize(title);
   const tagTokens = tags.flatMap((tag) => tokenize(tag));
   const bodyTokens = tokenize(bodyExcerpt);
@@ -225,6 +351,7 @@ async function entryFromMdFile(
     tokens: [...new Set(tokens)],
     votes: voteCounts.get(docId) ?? 0,
     type,
+    domain,
     path: absPath,
   };
 }
@@ -371,14 +498,15 @@ export async function buildIndex(
 }
 
 /**
- * Returns true when the on-disk index pre-dates Phase 1 (no version field,
- * version below current schema, or any entry missing the `type` field). The
- * caller should rebuild such an index using the multi-category collectors.
+ * Returns true when the on-disk index pre-dates the current schema version.
+ * Covers both pre-Phase-1 (no version/type) and pre-Phase-1.4 (no domain) indexes.
+ * The caller should rebuild such an index using the multi-category collectors.
  */
 export function isLegacyIndex(index: SearchIndex | null): boolean {
   if (!index) return false;
   if (typeof index.version !== 'number' || index.version < SEARCH_INDEX_VERSION) return true;
-  return index.entries.some((e) => !e.type);
+  // Any entry missing type or domain → legacy; domain was added in v3.
+  return index.entries.some((e) => !e.type || e.domain === undefined);
 }
 
 /**
@@ -401,11 +529,13 @@ export interface SearchResult {
 /**
  * Search the index with a query string.
  *
- * Scoring:
+ * Scoring (P1.4 domain-weighted):
  * - Title token match: 3 points
  * - Tag token match: 2 points
  * - Body token match: 1 point
  * - Vote bonus: +0.5 per vote (caps at 5 points)
+ * - Domain multiplier: technical ×1.0, neutral ×0.85, ops ×0.5, support ×0.3
+ * - Type bonus: skills/rules ×1.1 (curated high-confidence knowledge)
  *
  * @returns Results sorted by score descending, limited to top N.
  */
@@ -444,6 +574,13 @@ export function search(
     if (score > 0 && hasTitleOrTagMatch) {
       // Vote bonus: +0.5 per vote, max 5 points
       score += Math.min(entry.votes * 0.5, 5);
+
+      // P1.4: Apply domain × type weighting.
+      // Missing domain (legacy index entry) degrades gracefully to 'neutral'.
+      const domainMultiplier = DOMAIN_WEIGHT[entry.domain ?? 'neutral'];
+      const typeMultiplier = TYPE_BONUS[entry.type];
+      score *= domainMultiplier * typeMultiplier;
+
       results.push({ entry, score });
     }
   }
