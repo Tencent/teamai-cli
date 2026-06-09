@@ -96,34 +96,55 @@ ${diff3000}`;
 /**
  * 构造 codebase.md 建议提炼 prompt。
  *
- * @param mr  MR 数据对象
- * @returns   用于 callClaude 的完整提示词字符串
+ * 传入现有 codebase.md 内容时，AI 会参考其格式和粒度生成风格一致的增量条目；
+ * 未传入时使用示例格式引导。
+ *
+ * @param mr                  MR 数据对象
+ * @param existingCodebaseMd  现有 codebase.md 全文（可选）
+ * @returns                   用于 callClaude 的完整提示词字符串
  */
-function extractCodebaseSuggestionPrompt(mr: MRData): string {
+function extractCodebaseSuggestionPrompt(mr: MRData, existingCodebaseMd?: string): string {
   const diff2000 = mr.diff.slice(0, 2000);
+
+  // 构造现有文档上下文：有则注入全文，无则给一个示例格式
+  const existingContext = existingCodebaseMd
+    ? `以下是现有的 codebase.md 全文，你必须参考其格式、粒度和分组逻辑：
+<existing_codebase>
+${existingCodebaseMd.slice(0, 4000)}
+</existing_codebase>`
+    : `参考以下格式示例（按功能分组，每条含路径和功能说明）：
+## 主要模块
+- **src/utils/git.ts** — git 操作工具（simple-git 封装）
+- **src/utils/fs.ts** — 文件系统工具（fs-extra 封装）
+- **src/providers/** — Git provider 抽象层（GitHub / TGit）
+- **src/resources/** — 六类资源处理器（skills/rules/docs/env/wiki/agents）`;
 
   return `分析以下 MR 变更，判断是否需要更新 codebase.md。
 
+${existingContext}
+
 请返回严格 JSON（不要加 markdown 代码块）：
-{"needsUpdate":true,"suggestions":[{"section":"主要模块","action":"add","content":"**文件或目录路径** — 功能说明（例如：**src/utils/ai-client.ts** — claude -p 子进程封装）"}]}
+{"needsUpdate":true,"suggestions":[{"section":"主要模块","action":"add","content":"多行 Markdown 条目，见格式要求"}]}
 或
 {"needsUpdate":false,"suggestions":[]}
 
 action 取值：
-- "add"：新增内容到该 section
-- "update"：修改该 section 已有内容
+- "add"：在该 section 末尾追加新条目
+- "update"：替换该 section 中某条已有内容（content 中包含原文和新文）
 - "noop"：无需变更
 
 判断规则：
-- 有新文件/模块 → add/update "主要模块"
-- 有接口变更 → add/update "关键路径"或新增接口说明
+- 有新文件/模块 → add "主要模块"
+- 有接口/调用链变更 → add/update "关键路径"（用 → 串联的流程描述）
 - 有架构决策 → add "备注"（带 ✅ 标注）
 - 纯内部实现（重构、bug fix、性能优化）→ needsUpdate=false
 
-【格式要求】"主要模块" section 的 content 必须使用路径格式：**文件或目录路径** — 功能说明
-  正确：**src/utils/ai-client.ts** — claude -p 子进程封装，支持并发 ≤ 3
-  正确：**src/providers/** — Git provider 抽象层（GitHub / TGit）
-  错误：**AI 客户端模块** — 功能说明（禁止只写模块名，必须带路径）
+【格式要求】严格参照现有 codebase.md 的风格和粒度：
+1. 若现有条目是目录级（**src/utils/**），新增条目也用目录级
+2. 若现有条目是文件级（**src/utils/git.ts**），新增条目也用文件级
+3. 同一个 MR 新增的相关文件可合并为一条 suggestion 的多行 content，而非每文件一条
+4. content 字段使用 Markdown 列表格式（每行 "- **路径** — 说明"）
+5. 关键路径的 content 使用 "N. **触发点**：步骤1 → 步骤2 → 结果" 格式
 
 MR 标题：${mr.title}
 MR 描述：${mr.description}
@@ -156,6 +177,7 @@ async function promptConfirm(question: string): Promise<boolean> {
  * @param opts.all               跳过交互确认，全部接受
  * @param opts.outputDir         输出模式：写到此目录（learning.md + codebase-suggestions.json）
  * @param opts.repoPath          团队 repo 路径（outputDir 未设时写入 learnings/）
+ * @param opts.existingCodebaseMd 现有 codebase.md 全文，用于生成风格一致的增量建议（可选）
  * @param opts.dryRun            试运行，不写磁盘
  * @returns                      提炼结果，包含 learning 草稿和 codebase 建议
  */
@@ -165,6 +187,7 @@ export async function importFromMR(opts: {
   all?: boolean;
   outputDir?: string;
   repoPath?: string;
+  existingCodebaseMd?: string;
   dryRun?: boolean;
 }): Promise<{ learning?: LearningDraft; codebaseSuggestions?: CodebaseSuggestion[] }> {
   const learningsDir = opts.learningsDir ?? DEFAULT_LEARNINGS_DIR;
@@ -199,7 +222,7 @@ export async function importFromMR(opts: {
           parse: (output: string) => output,
         },
         {
-          prompt: extractCodebaseSuggestionPrompt(mr),
+          prompt: extractCodebaseSuggestionPrompt(mr, opts.existingCodebaseMd),
           parse: (output: string) => {
             try {
               // AI 可能在 JSON 前附加说明文字，提取第一个 { ... } 块

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
 
 import { autoDetectInit } from './config.js';
 import { generateCodebaseMd } from './codebase.js';
@@ -52,19 +53,30 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
     } else if (opts.fromMr) {
       // 分支 1：--from-mr <url>，从已合并 MR 提取学习内容
       const { localConfig } = await autoDetectInit();
+
+      // 尝试读取现有 codebase.md，用于生成风格一致的增量建议
+      const codebasePath = path.join(localConfig.repo.localPath, 'docs', 'codebase.md');
+      let existingCodebaseMd: string | undefined;
+      try {
+        existingCodebaseMd = await fs.readFile(codebasePath, 'utf-8');
+        log.debug(`已加载现有 codebase.md（${existingCodebaseMd.length} 字符）`);
+      } catch {
+        log.debug('未找到现有 codebase.md，将使用默认格式示例');
+      }
+
       await importFromMR({
         url: opts.fromMr,
         learningsDir: path.join(localConfig.repo.localPath, 'learnings'),
         all: opts.all,
         outputDir: opts.output,
         repoPath: opts.dryRun ? undefined : localConfig.repo.localPath,
+        existingCodebaseMd,
         dryRun: opts.dryRun,
       });
     } else if (opts.workspace) {
       // 分支 2：--workspace，从当前 git 工作区生成 codebase.md
       const codebaseMd = await generateCodebaseMd({ repoPath: process.cwd() });
       if (opts.output) {
-        const fs = await import('fs/promises');
         await fs.writeFile(opts.output, codebaseMd, 'utf-8');
         log.info(`已写入：${opts.output}`);
       } else {
