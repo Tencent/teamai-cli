@@ -1473,7 +1473,7 @@ $ node dist/index.js import \
 ✔ AI 分析完成
 ℹ ✅ Learning 草稿已生成：AI 客户端子进程测试的最佳实践与模式
 ℹ    Tags: typescript, testing, tool-usage, best-practice, workflow
-ℹ 📝 Codebase.md 建议 8 条（涉及：主要模块、备注）
+ℹ 📝 Codebase.md 建议 11 条（涉及：主要模块、关键路径、备注）
 ℹ 已写入 learning：/tmp/pr2-demo/final/learning.md
 ℹ 已写入 codebase 建议：/tmp/pr2-demo/final/codebase-suggestions.json
 ```
@@ -1524,42 +1524,57 @@ source_mr: "https://github.com/m0Nst3r873/teamai-cli/pull/2"
   {
     "section": "主要模块",
     "action": "add",
-    "content": "**AI 客户端模块** — 封装 claude -p 子进程调用，支持并发控制和超时管理"
+    "content": "**src/utils/ai-client.ts** — claude -p 子进程封装，支持并发 ≤ 3，60s 超时"
   },
   {
     "section": "主要模块",
     "action": "add",
-    "content": "**去重检测模块** — 基于 Jaccard 相似度的内容去重，支持 14 天检测窗口"
+    "content": "**src/utils/dedup.ts** — Jaccard 相似度重复检测，14 天窗口，≥ 60% 标记 superseded"
   },
   {
     "section": "主要模块",
     "action": "add",
-    "content": "**企业Wiki 客户端模块** — 企业Wiki MCP HTTP 客户端，JSON-RPC 2.0 协议"
+    "content": "**src/utils/iwiki-client.ts** — iWiki MCP HTTP 客户端，JSON-RPC 2.0，零外部依赖"
   },
   {
     "section": "主要模块",
     "action": "add",
-    "content": "**导入模块** — 支持本地文件扫描/AI 分类/交互确认/推送功能"
+    "content": "**src/import-local.ts** — 本地文件扫描/AI 分类/交互确认/推送"
   },
   {
     "section": "主要模块",
     "action": "add",
-    "content": "**MR 导入模块** — 支持 MR 三层解析/双路 AI 提炼/去重/推送"
+    "content": "**src/import-mr.ts** — MR 三层解析/双路 AI 提炼/dedup/推送"
   },
   {
     "section": "主要模块",
     "action": "add",
-    "content": "**企业Wiki 导入模块** — 支持从企业Wiki Space 批量导入文档"
+    "content": "**src/import-iwiki.ts** — iWiki 导入，复用 import-local.ts 基础设施"
   },
   {
     "section": "主要模块",
     "action": "add",
-    "content": "**Git 提供商扩展** — 扩展 GitProvider 接口支持 MR 数据获取"
+    "content": "**src/codebase.ts** — codebase.md 生成/增量更新"
+  },
+  {
+    "section": "主要模块",
+    "action": "add",
+    "content": "**src/providers/github/mr-fetch.ts** — gh pr view 实现"
+  },
+  {
+    "section": "主要模块",
+    "action": "add",
+    "content": "**src/providers/tgit/mr-fetch.ts** — gf mr 实现"
+  },
+  {
+    "section": "关键路径",
+    "action": "add",
+    "content": "**GitProvider.fetchMergeRequest()** — 新增可选方法，支持 MR 数据获取"
   },
   {
     "section": "备注",
     "action": "add",
-    "content": "✅ **新增知识导入功能** — 支持 5 种知识来源：本地目录、Claude 规则、git 仓库、MR 提炼、企业Wiki Space"
+    "content": "✅ 新增 teamai import 命令，支持五种知识来源导入：--dir、--from-claude、--workspace、--from-mr、--from-iwiki"
   }
 ]
 ```
@@ -1590,18 +1605,26 @@ source_mr: "https://github.com/m0Nst3r873/teamai-cli/pull/2"
 - **src/roles** — 角色管理与状态同步
 - **src/hooks** — Git 钩子与自动同步
 - **src/dashboard** — 团队资源可视化面板
-- **AI 客户端模块** — 封装 claude -p 子进程调用，支持并发控制和超时管理
-- **去重检测模块** — 基于 Jaccard 相似度的内容去重，支持 14 天检测窗口
-- **企业Wiki 客户端模块** — 企业Wiki MCP HTTP 客户端，JSON-RPC 2.0 协议
-- **导入模块** — 支持本地文件扫描/AI 分类/交互确认/推送功能
-- **MR 导入模块** — 支持 MR 三层解析/双路 AI 提炼/去重/推送
-- **企业Wiki 导入模块** — 支持从企业Wiki Space 批量导入文档
-- **Git 提供商扩展** — 扩展 GitProvider 接口支持 MR 数据获取
+- **src/utils/ai-client.ts** — claude -p 子进程封装，支持并发 ≤ 3，60s 超时
+- **src/utils/dedup.ts** — Jaccard 相似度重复检测，14 天窗口，≥ 60% 标记 superseded
+- **src/utils/iwiki-client.ts** — iWiki MCP HTTP 客户端，JSON-RPC 2.0，零外部依赖
+- **src/import-local.ts** — 本地文件扫描/AI 分类/交互确认/推送
+- **src/import-mr.ts** — MR 三层解析/双路 AI 提炼/dedup/推送
+- **src/import-iwiki.ts** — iWiki 导入，复用 import-local.ts 基础设施
+- **src/codebase.ts** — codebase.md 生成/增量更新
+- **src/providers/github/mr-fetch.ts** — gh pr view 实现
+- **src/providers/tgit/mr-fetch.ts** — gf mr 实现
+
+## 关键路径
+1. **团队初始化**：`teamai init` → 检测 Git 提供商 → 创建 teamai.yaml → 首次 pull 同步资源
+2. **资源推送**：`teamai push` → 验证变更 → 创建 MR → 触发 CI/CD 发布流程
+3. **自动同步**：Git 钩子触发 → 增量 pull → 更新本地 Skills/Rules → 注入 AI 工具配置
+4. **GitProvider.fetchMergeRequest()** — 新增可选方法，支持 MR 数据获取
 
 ## 备注
 - ✅ 有文档佐证的信息（README、使用指南、Provider 说明）
 - ⚠️ 基于代码结构推断的信息（模块功能描述基于文件结构分析）
-- ✅ **新增知识导入功能** — 支持 5 种知识来源：本地目录、Claude 规则、git 仓库、MR 提炼、企业Wiki Space
+- ✅ 新增 teamai import 命令，支持五种知识来源导入：--dir、--from-claude、--workspace、--from-mr、--from-iwiki
 ```
 
 ---
@@ -1622,10 +1645,10 @@ Step 2  PR #2 合入 main（2026-06-09）  ✅ 已完成（真实 MR）
 Step 3  teamai import --from-mr .../pull/2 --all
         ├─ gh CLI 不可用 → 自动降级到 REST API  ✅ 已完成（真实运行）
         ├─ AI Task A → learning.md  ✅ 已完成（真实 AI 输出）
-        └─ AI Task B → codebase-suggestions.json（8 条）  ✅ 已完成（真实 AI 输出）
+        └─ AI Task B → codebase-suggestions.json（11 条）  ✅ 已完成（真实 AI 输出）
 
-Step 4  applyCodebaseSuggestions() 将 8 条建议合并到 codebase.md
-        → codebase-after.md（模块数：7 → 15，新增 3 条备注）
+Step 4  applyCodebaseSuggestions() 将 11 条建议合并到 codebase.md
+        → codebase-after.md（模块数：7 → 16，关键路径新增 1 条，备注新增 1 条）
 
 Step 5  teamai push → learning.md 进入 team repo learnings/
                     → codebase.md 更新推送
@@ -1642,8 +1665,8 @@ Step 6  团队成员 teamai pull → 本地索引重建
 
 - ✅ **自动降级**：gh CLI 不可用时自动回落至 REST API，保证流程不中断
 - ✅ **AI 双路提炼**：并行分析 learning 内容和 codebase 更新建议，效率提升 2 倍
-- ✅ **8 条建议**：自动识别新增的 6 个核心模块 + 1 个 Git provider 扩展 + 1 条功能说明
-- ✅ **模块库增长**：从 7 个核心模块扩展到 15 个，知识库自动演进
+- ✅ **11 条建议**：自动识别新增的 9 个具体模块文件（带路径） + 1 个 GitProvider 扩展 + 1 条功能说明
+- ✅ **模块库增长**：从 7 个核心模块扩展到 16 个具体模块文件，知识库自动演进
 - ✅ **飞轮闭环**：新人可通过 recall 快速查询 "import 如何测试子进程"，直接复用团队知识
 
 ---

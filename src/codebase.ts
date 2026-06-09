@@ -141,7 +141,7 @@ export async function generateCodebaseMd(opts: {
       `## 技术栈\n` +
       `（列表）\n\n` +
       `## 主要模块\n` +
-      `（每个模块一行：**模块名** — 功能说明）\n\n` +
+      `（每个模块一行：**文件或目录路径** — 功能说明，例如：**src/utils/git.ts** — git 操作封装）\n\n` +
       `## 关键路径\n` +
       `（2-3 条核心业务流程）\n\n` +
       `## 备注\n` +

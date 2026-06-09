@@ -105,7 +105,7 @@ function extractCodebaseSuggestionPrompt(mr: MRData): string {
   return `分析以下 MR 变更，判断是否需要更新 codebase.md。
 
 请返回严格 JSON（不要加 markdown 代码块）：
-{"needsUpdate":true,"suggestions":[{"section":"主要模块","action":"add","content":"**新模块名** — 功能说明"}]}
+{"needsUpdate":true,"suggestions":[{"section":"主要模块","action":"add","content":"**文件或目录路径** — 功能说明（例如：**src/utils/ai-client.ts** — claude -p 子进程封装）"}]}
 或
 {"needsUpdate":false,"suggestions":[]}
 
@@ -115,10 +115,15 @@ action 取值：
 - "noop"：无需变更
 
 判断规则：
-- 有新服务/模块 → add/update "主要模块"
+- 有新文件/模块 → add/update "主要模块"
 - 有接口变更 → add/update "关键路径"或新增接口说明
 - 有架构决策 → add "备注"（带 ✅ 标注）
 - 纯内部实现（重构、bug fix、性能优化）→ needsUpdate=false
+
+【格式要求】"主要模块" section 的 content 必须使用路径格式：**文件或目录路径** — 功能说明
+  正确：**src/utils/ai-client.ts** — claude -p 子进程封装，支持并发 ≤ 3
+  正确：**src/providers/** — Git provider 抽象层（GitHub / TGit）
+  错误：**AI 客户端模块** — 功能说明（禁止只写模块名，必须带路径）
 
 MR 标题：${mr.title}
 MR 描述：${mr.description}
