@@ -90,6 +90,16 @@ export interface GitProvider {
    */
   createPullRequest(opts: PrCreateOptions): Promise<string>;
 
+  /**
+   * 获取指定 MR/PR 的完整数据（标题、描述、提交列表、diff）。
+   *
+   * 此方法为可选实现，不支持的 provider 可不实现（接口中用 ? 标记）。
+   * url 为 MR/PR 的完整 web URL，例如：
+   *   GitHub: https://github.com/owner/repo/pull/123
+   *   TGit:   https://git.woa.com/group/repo/merge_requests/456
+   */
+  fetchMergeRequest?(url: string): Promise<import('../types.js').MRData>;
+
   // ─── Utilities ────────────────────────────────────────
 
   /**

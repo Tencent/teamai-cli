@@ -583,3 +583,107 @@ export function isWikiEnabled(): boolean {
   if (process.env.TEAMAI_WIKI_ENABLED === '0' || process.env.TEAMAI_WIKI_ENABLED === 'false') return false;
   return true;
 }
+
+// ============================================================
+// Phase 0 + P4.4：Import 相关类型定义
+// ============================================================
+
+/**
+ * Git MR/PR 的完整数据结构，由 provider.fetchMergeRequest() 返回。
+ */
+export interface MRData {
+  /** MR 标题 */
+  title: string;
+  /** MR 描述正文（Markdown） */
+  description: string;
+  /** 关联的提交列表 */
+  commits: Array<{ hash: string; message: string }>;
+  /** git diff 全文，截断至 50KB */
+  diff: string;
+  /** 合并时间（ISO 8601），可选 */
+  mergedAt?: string;
+  /** MR 作者用户名，可选 */
+  author?: string;
+  /** MR 原始 URL */
+  url: string;
+}
+
+/**
+ * AI 对单个候选文件的分类结果。
+ */
+export interface ClassifiedItem {
+  /** 源文件路径 */
+  sourcePath: string;
+  /** 原始文件内容（前 3000 字） */
+  rawContent: string;
+  /** 知识类型判断 */
+  type: 'rule' | 'doc' | 'learning';
+  /** AI 建议标题 */
+  title: string;
+  /** AI 生成的摘要 */
+  summary: string;
+  /** AI 建议的 tags */
+  tags: string[];
+  /** 分类置信度 0-1 */
+  confidence: number;
+  /** 是否为个人偏好/环境特定配置（true 则过滤，不导入团队库） */
+  isPersonal: boolean;
+}
+
+/**
+ * 待推送的 learning 草稿（含完整 Markdown + frontmatter）。
+ */
+export interface LearningDraft {
+  /** 文档标题 */
+  title: string;
+  /** 完整 Markdown 内容（含 YAML frontmatter） */
+  content: string;
+  /** 被本 draft 取代的 session learning 文件名列表 */
+  supersedes?: string[];
+}
+
+/**
+ * codebase.md 的单条变更建议（由 MR 提炼产生）。
+ */
+export interface CodebaseSuggestion {
+  /** 要更新的 codebase.md 段落名称 */
+  section: string;
+  /** 操作类型 */
+  action: 'add' | 'update' | 'noop';
+  /** 建议写入的 Markdown 内容 */
+  content: string;
+}
+
+/**
+ * 单条 import 会话条目，记录每个候选项的处理状态。
+ */
+export interface ImportSessionItem {
+  /** 条目唯一 ID */
+  id: string;
+  /** 来源文件路径（本地文件导入时） */
+  sourcePath?: string;
+  /** MR URL（MR 导入时） */
+  mrUrl?: string;
+  /** 处理状态 */
+  status: 'pending' | 'accepted' | 'skipped' | 'edited';
+  /** AI 生成的 learning 草稿 */
+  learningDraft?: LearningDraft;
+  /** AI 生成的 codebase 变更建议 */
+  codebaseSuggestions?: CodebaseSuggestion[];
+}
+
+/**
+ * import 会话的完整状态，持久化到 ~/.teamai/import-session.json 支持 --resume。
+ */
+export interface ImportSession {
+  /** 会话唯一 ID */
+  id: string;
+  /** 创建时间（ISO 8601） */
+  createdAt: string;
+  /** 导入模式 */
+  mode: 'local' | 'mr' | 'workspace';
+  /** 所有候选条目 */
+  items: ImportSessionItem[];
+  /** 已处理条目数（用于 --resume 进度恢复） */
+  progress: number;
+}
