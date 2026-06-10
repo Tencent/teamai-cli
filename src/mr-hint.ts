@@ -425,7 +425,17 @@ export async function mrHint(): Promise<void> {
   void sessionId;
 
   // Detect git remote
-  const cwd = process.env.TEAMAI_MR_HINT_CWD ?? process.cwd();
+  const rawCwd = process.env.TEAMAI_MR_HINT_CWD ?? process.cwd();
+  const cwd = path.resolve(rawCwd);
+  try {
+    if (!fs.statSync(cwd).isDirectory()) {
+      // 不是目录，静默跳过（避免误报）
+      return;
+    }
+  } catch {
+    // 路径不存在，静默跳过
+    return;
+  }
   const remoteUrl = getGitRemote(cwd);
   if (!remoteUrl) {
     log.debug('mr-hint: no git remote, skipping');

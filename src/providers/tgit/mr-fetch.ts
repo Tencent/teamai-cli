@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { type MRData } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { gfExec, gfGetOAuthToken } from './gf-cli.js';
@@ -122,10 +122,10 @@ export async function fetchTGitMR(url: string): Promise<MRData> {
   // ── 2. 获取 diff ─────────────────────────────────────────
   let diff: string;
   try {
-    const rawDiff = execSync(
-      `gf mr diff ${mrIid} -R ${repoArg}`,
-      { maxBuffer: 50 * 1024 * 1024, encoding: 'utf8' },
-    );
+    const rawDiff = execFileSync('gf', ['mr', 'diff', String(mrIid), '-R', repoArg], {
+      maxBuffer: 50 * 1024 * 1024,
+      encoding: 'utf8',
+    });
     // 截断至约 50KB（50000 字符）
     diff = rawDiff.slice(0, 50000);
   } catch (err) {

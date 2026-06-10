@@ -1,4 +1,5 @@
 import { spawn, execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 
 /** 默认 AI 调用超时时间（毫秒）。 */
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -6,52 +7,63 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 /** 默认并发数量上限。 */
 const DEFAULT_CONCURRENCY = 3;
 
-/**
- * 用单引号包裹字符串以在 shell 中安全传递。
- * 内部的单引号用 '\'' 序列转义。
- */
-function shellEscape(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
+/** CLI 探测结果，包含命令名和绝对路径。 */
+interface CliInfo {
+  cmd: string;
+  absPath: string;
 }
 
 /**
- * 按优先级探测可用的 AI CLI 可执行文件名。
+ * 按优先级探测可用的 AI CLI，返回命令名与绝对路径。
  *
- * 依次通过以下方式探测，确保覆盖各类 shell 环境：
- *   1. `bash -lc` —— login shell，覆盖 ~/.nvm/ 等路径
- *   2. `zsh -lc`  —— macOS 默认 shell fallback
+ * 各 CLI 非交互调用语法不同：
+ *   - claude / claude-internal / codebuddy / workbuddy / openclaw：`<cli> -p <prompt>`
+ *   - codex / codex-internal：`<cli> exec <prompt>`
+ *
+ * 依次通过以下方式获取绝对路径，确保覆盖各类 shell 环境：
+ *   1. `bash -lc command -v <cmd>` —— login shell，覆盖 ~/.nvm/ 等路径
+ *   2. `zsh -lc command -v <cmd>`  —— macOS 默认 shell fallback
  *   3. `which <cmd>` —— 最终 fallback，使用 process.env.PATH 直接查找
  *
  * 探测顺序：`claude` → `claude-internal` → `codex` → `codex-internal` → `codebuddy` → `workbuddy` → `openclaw`。
  * 结果缓存，进程生命周期内只探测一次。
  *
- * @returns 可用的 CLI 命令名
+ * @returns 含 cmd 与 absPath 的 CliInfo 对象
  * @throws  所有候选均不可用时抛出 Error
  */
-function detectClaudeCli(): string {
+function detectClaudeCli(): CliInfo {
   const candidates = ['claude', 'claude-internal', 'codex', 'codex-internal', 'codebuddy', 'workbuddy', 'openclaw'];
 
   for (const cmd of candidates) {
     // 策略 1：bash login shell
     try {
-      execFileSync('bash', ['-lc', `${cmd} --version`], { stdio: 'ignore' });
-      return cmd;
+      const p = execFileSync('bash', ['-lc', `command -v ${cmd}`], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (p && existsSync(p)) return { cmd, absPath: p };
     } catch {
       // 继续尝试下一策略
     }
 
     // 策略 2：zsh login shell（macOS 默认 shell / bash 不可用时）
     try {
-      execFileSync('zsh', ['-lc', `${cmd} --version`], { stdio: 'ignore' });
-      return cmd;
+      const p = execFileSync('zsh', ['-lc', `command -v ${cmd}`], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (p && existsSync(p)) return { cmd, absPath: p };
     } catch {
       // 继续尝试下一策略
     }
 
     // 策略 3：which 命令（使用 process.env.PATH，覆盖 fish / CI 容器等环境）
     try {
-      execFileSync('which', [cmd], { stdio: 'ignore' });
-      return cmd;
+      const p = execFileSync('which', [cmd], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (p && existsSync(p)) return { cmd, absPath: p };
     } catch {
       // 此候选不可用，尝试下一个
     }
@@ -63,13 +75,31 @@ function detectClaudeCli(): string {
   );
 }
 
-/** 缓存探测到的 CLI 命令名，避免重复 execFileSync。 */
-let _claudeCmd: string | undefined;
+/**
+ * 根据 CLI 类型构建非交互参数数组。
+ *
+ * 各 CLI 非交互调用语法：
+ *   - codex / codex-internal：`exec <prompt>`
+ *   - 其他（claude 系、codebuddy 等）：`-p <prompt>`
+ *
+ * @param cmd    CLI 命令名
+ * @param prompt 传递给 CLI 的提示词
+ * @returns      参数数组
+ */
+function buildCliArgs(cmd: string, prompt: string): string[] {
+  if (cmd === 'codex' || cmd === 'codex-internal') {
+    return ['exec', prompt];
+  }
+  return ['-p', prompt];
+}
+
+/** 缓存探测到的 CLI 信息，避免重复 execFileSync。 */
+let _cliInfo: CliInfo | undefined;
 
 /**
- * 通过 `bash -lc` 调用 AI CLI（`claude -p` 或其他已探测到的 CLI），返回 stdout 文本。
+ * 通过子进程直接调用 AI CLI（claude/codex 等），返回 stdout 文本。
  *
- * 使用 `bash -lc` 确保 login shell PATH 生效，从而能访问 ~/.nvm/ 等路径下安装的 CLI。
+ * 按 CLI 类型自动选择 -p 或 exec 子命令，直接 spawn 绝对路径，不走 bash -lc，彻底消除 shell 拼接。
  * CLI 探测优先级：`claude` → `claude-internal` → `codex` → `codex-internal` → `codebuddy` → `workbuddy` → `openclaw`，
  * 结果缓存，进程内只探测一次。
  *
@@ -90,10 +120,10 @@ export async function callClaude(
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
 
-    if (_claudeCmd === undefined) {
-      _claudeCmd = detectClaudeCli();
+    if (_cliInfo === undefined) {
+      _cliInfo = detectClaudeCli();
     }
-    const child = spawn('bash', ['-lc', `${_claudeCmd} -p ${shellEscape(prompt)}`], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(_cliInfo.absPath, buildCliArgs(_cliInfo.cmd, prompt), { stdio: ['ignore', 'pipe', 'pipe'] });
 
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => errChunks.push(chunk));

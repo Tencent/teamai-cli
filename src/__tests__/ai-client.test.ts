@@ -8,9 +8,14 @@ import type { EventEmitter } from 'node:events';
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
-  // detectClaudeCli 通过 execFileSync('bash', ['-lc', '<cmd> --version']) 探测 CLI，
-  // 测试环境中直接返回空字符串（不抛出）即可让探测成功并选中第一个候选 'claude'。
-  execFileSync: vi.fn(() => ''),
+  // detectClaudeCli 通过 execFileSync('bash', ['-lc', 'command -v <cmd>']) 获取绝对路径，
+  // 测试环境中返回伪路径，配合 existsSync mock 让探测成功并选中第一个候选 'claude'。
+  execFileSync: vi.fn(() => '/usr/local/bin/claude\n'),
+}));
+
+// mock existsSync，使探测到的伪路径被视为存在
+vi.mock('node:fs', () => ({
+  existsSync: vi.fn(() => true),
 }));
 
 import { spawn } from 'node:child_process';
