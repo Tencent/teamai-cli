@@ -1208,8 +1208,8 @@ describe('hook command strings', () => {
     const result = JSON.parse(await fs.promises.readFile(settingsPath, 'utf-8'));
 
     // Legacy duplicates should be cleaned, replaced by proper hooks with description
-    // SessionStart has 2 hooks: Auto-pull + Dashboard report
-    expect(result.hooks.SessionStart).toHaveLength(2);
+    // SessionStart has 3 hooks: Auto-pull + MR hint + Dashboard report
+    expect(result.hooks.SessionStart).toHaveLength(3);
     expect(result.hooks.SessionStart.every((h: { description?: string }) => h.description)).toBe(true);
 
     // Stop has 3 hooks: Auto-update + Dashboard stop + Contribute check

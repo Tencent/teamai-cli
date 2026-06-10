@@ -36,8 +36,13 @@ function getContributeCheckCommand(tool: string): string {
   return `bash -lc "teamai contribute-check --stdin --tool ${tool} 2>/dev/null" || true`;
 }
 
+/** Generate the mr-hint command with tool identifier. */
+function getMrHintCommand(tool: string): string {
+  return `bash -lc "teamai mr-hint --stdin --tool ${tool} 2>/dev/null" || true`;
+}
+
 /** Subcommands expected in each tool settings file (for `teamai doctor`). */
-export const TEAMAI_HOOK_SUBCOMMANDS = ['pull', 'update', 'track', 'track-slash', 'dashboard-report', 'contribute-check', 'auto-recall', 'todowrite-hint'] as const;
+export const TEAMAI_HOOK_SUBCOMMANDS = ['pull', 'update', 'track', 'track-slash', 'dashboard-report', 'contribute-check', 'auto-recall', 'todowrite-hint', 'mr-hint'] as const;
 
 /** Claude PascalCase event → Cursor camelCase event (for tests / docs). */
 export const CLAUDE_TO_CURSOR_EVENTS: Record<string, string> = {
@@ -168,6 +173,16 @@ function getClaudeHooks(tool: string): ClaudeHookDef[] {
         description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} TodoWrite hint to call teamai-recall subagent`,
       },
     },
+    // ─── MR hint (alert AI about recently merged but un-imported MRs) ────────
+    {
+      eventType: 'SessionStart',
+      descriptionKeyword: 'MR hint',
+      hook: {
+        matcher: '*',
+        hooks: [{ type: 'command', command: getMrHintCommand(tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} MR hint on session start`,
+      },
+    },
     // ─── Dashboard hooks (independent from tracking) ────────
     {
       eventType: 'SessionStart',
@@ -226,6 +241,7 @@ function buildCursorHooks(tool: string): Record<string, CursorHookEntry[]> {
   return {
     sessionStart: [
       { command: TEAMAI_PULL_COMMAND, timeout: 30 },
+      { command: getMrHintCommand(tool), timeout: 10 },
       { command: getDashboardReportCommand(tool), timeout: 10 },
     ],
     stop: [
@@ -286,7 +302,7 @@ function isTeamaiHookCommand(command: string): boolean {
 
 /** Known teamai command substrings used to identify teamai-managed hooks. */
 const TEAMAI_COMMAND_MARKERS = [
-  'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check', 'teamai auto-recall', 'teamai todowrite-hint',
+  'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check', 'teamai auto-recall', 'teamai todowrite-hint', 'teamai mr-hint',
 ];
 
 /**

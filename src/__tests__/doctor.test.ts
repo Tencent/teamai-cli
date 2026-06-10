@@ -144,6 +144,8 @@ describe('doctor — hook checks', () => {
         expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('dashboard-report');
         expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('contribute-check');
         expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('auto-recall');
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toHaveLength(7);
+        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('todowrite-hint');
+        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('mr-hint');
+        expect(TEAMAI_HOOK_SUBCOMMANDS).toHaveLength(9);
     });
 });
