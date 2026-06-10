@@ -8,6 +8,9 @@ import type { EventEmitter } from 'node:events';
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
+  // detectClaudeCli 通过 execFileSync('bash', ['-lc', '<cmd> --version']) 探测 CLI，
+  // 测试环境中直接返回空字符串（不抛出）即可让探测成功并选中第一个候选 'claude'。
+  execFileSync: vi.fn(() => ''),
 }));
 
 import { spawn } from 'node:child_process';

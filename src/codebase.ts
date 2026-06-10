@@ -270,7 +270,11 @@ export async function applyCodebaseSuggestions(
     `请将以下变更建议合并到 codebase.md 中，保持原有格式和风格：\n\n` +
     `当前 codebase.md：\n<current>\n${current}\n</current>\n\n` +
     `变更建议（JSON 列表）：\n<suggestions>\n${suggestionsJson}\n</suggestions>\n\n` +
-    `输出完整更新后的 codebase.md，不要加额外说明。`;
+    `【输出格式要求】\n` +
+    `- 直接输出完整的 Markdown 文档，从文档第一行（通常是 # 开头的标题）开始\n` +
+    `- 不要输出任何前缀说明、总结、"我已经..."、"更新内容包括..."等描述性文字\n` +
+    `- 保留原文档的所有已有内容，仅按建议新增或修改对应部分\n` +
+    `- 输出必须是可以直接写入文件的完整 codebase.md`;
 
   log.debug(`applyCodebaseSuggestions: 应用 ${effectiveSuggestions.length} 条建议`);
   const result = await callClaude(prompt);

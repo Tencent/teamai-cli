@@ -31,6 +31,8 @@ interface ImportOptions extends GlobalOptions {
   all?: boolean;
   /** 将草稿写入指定目录而非推送至团队仓库 */
   output?: string;
+  /** 显式指定现有 codebase.md 路径（优先于从团队仓库自动读取） */
+  existingCodebase?: string;
 }
 
 /**
@@ -55,13 +57,23 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       const { localConfig } = await autoDetectInit();
 
       // 尝试读取现有 codebase.md，用于生成风格一致的增量建议
-      const codebasePath = path.join(localConfig.repo.localPath, 'docs', 'codebase.md');
+      // 优先使用 --existing-codebase 显式指定的路径，其次从团队仓库读取
       let existingCodebaseMd: string | undefined;
-      try {
-        existingCodebaseMd = await fs.readFile(codebasePath, 'utf-8');
-        log.debug(`已加载现有 codebase.md（${existingCodebaseMd.length} 字符）`);
-      } catch {
-        log.debug('未找到现有 codebase.md，将使用默认格式示例');
+      if (opts.existingCodebase) {
+        try {
+          existingCodebaseMd = await fs.readFile(opts.existingCodebase, 'utf-8');
+          log.debug(`已加载指定 codebase.md（${existingCodebaseMd.length} 字符）：${opts.existingCodebase}`);
+        } catch {
+          log.warn(`无法读取 --existing-codebase 指定的文件：${opts.existingCodebase}`);
+        }
+      } else {
+        const codebasePath = path.join(localConfig.repo.localPath, 'docs', 'codebase.md');
+        try {
+          existingCodebaseMd = await fs.readFile(codebasePath, 'utf-8');
+          log.debug(`已加载现有 codebase.md（${existingCodebaseMd.length} 字符）`);
+        } catch {
+          log.debug('未找到现有 codebase.md，将使用默认格式示例');
+        }
       }
 
       await importFromMR({

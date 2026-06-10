@@ -578,6 +578,7 @@ program
   .option('--resume', 'Resume an interrupted import session')
   .option('--all', 'Accept all suggestions without interactive confirmation')
   .option('--output <path>', 'Write drafts to this directory instead of pushing to team repo')
+  .option('--existing-codebase <path>', 'Path to existing codebase.md (used with --from-mr; overrides auto-detection from team repo)')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { importCmd } = await import('./import.js');

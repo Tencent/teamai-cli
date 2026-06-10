@@ -1,32 +1,41 @@
 import { spawn, execFileSync } from 'node:child_process';
 
 /** 默认 AI 调用超时时间（毫秒）。 */
-const DEFAULT_TIMEOUT_MS = 180_000;
+const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** 默认并发数量上限。 */
 const DEFAULT_CONCURRENCY = 3;
 
 /**
- * 按优先级探测可用的 Claude CLI 可执行文件名。
+ * 用单引号包裹字符串以在 shell 中安全传递。
+ * 内部的单引号用 '\'' 序列转义。
+ */
+function shellEscape(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * 按优先级探测可用的 AI CLI 可执行文件名。
  *
- * 探测顺序：`claude` → `claude-internal`。
+ * 通过 `bash -lc` 以 login shell 方式运行探测命令，确保 ~/.nvm/ 等路径下的 CLI 均可被发现。
+ * 探测顺序：`claude` → `claude-internal` → `codex` → `codex-internal` → `codebuddy` → `workbuddy` → `openclaw`。
  * 结果缓存，进程生命周期内只探测一次。
  *
  * @returns 可用的 CLI 命令名
- * @throws  两者均不可用时抛出 Error
+ * @throws  所有候选均不可用时抛出 Error
  */
 function detectClaudeCli(): string {
-  for (const cmd of ['claude', 'claude-internal']) {
+  for (const cmd of ['claude', 'claude-internal', 'codex', 'codex-internal', 'codebuddy', 'workbuddy', 'openclaw']) {
     try {
-      execFileSync(cmd, ['--version'], { stdio: 'ignore' });
+      execFileSync('bash', ['-lc', `${cmd} --version`], { stdio: 'ignore' });
       return cmd;
     } catch {
       // 继续尝试下一个
     }
   }
   throw new Error(
-    'Claude CLI 不可用：请安装 claude 或 claude-internal，' +
-    '详见 https://docs.anthropic.com/claude-code'
+    'AI CLI 不可用：请安装以下任意一个 CLI 工具：' +
+    'claude / claude-internal / codex / codex-internal / codebuddy / workbuddy / openclaw'
   );
 }
 
@@ -34,16 +43,18 @@ function detectClaudeCli(): string {
 let _claudeCmd: string | undefined;
 
 /**
- * 通过 `claude -p`（或 `claude-internal -p`）子进程调用 Claude CLI，返回 stdout 文本。
+ * 通过 `bash -lc` 调用 AI CLI（`claude -p` 或其他已探测到的 CLI），返回 stdout 文本。
  *
- * CLI 探测优先级：`claude` → `claude-internal`，结果缓存，进程内只探测一次。
+ * 使用 `bash -lc` 确保 login shell PATH 生效，从而能访问 ~/.nvm/ 等路径下安装的 CLI。
+ * CLI 探测优先级：`claude` → `claude-internal` → `codex` → `codex-internal` → `codebuddy` → `workbuddy` → `openclaw`，
+ * 结果缓存，进程内只探测一次。
  *
- * @param prompt   传递给 claude 的提示词
- * @param opts     可选参数：timeout 超时毫秒数，默认 60000
- * @returns        claude 输出的 stdout（已 trim）
+ * @param prompt   传递给 CLI 的提示词
+ * @param opts     可选参数：timeout 超时毫秒数，默认 120000
+ * @returns        CLI 输出的 stdout（已 trim）
  * @throws         超时时抛出 `Error('AI call timed out after Xs')`
  * @throws         退出码非 0 时抛出 `Error('AI call failed: <stderr>')`
- * @throws         claude / claude-internal 均不可用时抛出 Error
+ * @throws         所有候选 CLI 均不可用时抛出 Error
  */
 export async function callClaude(
   prompt: string,
@@ -58,7 +69,7 @@ export async function callClaude(
     if (_claudeCmd === undefined) {
       _claudeCmd = detectClaudeCli();
     }
-    const child = spawn(_claudeCmd, ['-p', prompt], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('bash', ['-lc', `${_claudeCmd} -p ${shellEscape(prompt)}`], { stdio: ['ignore', 'pipe', 'pipe'] });
 
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => errChunks.push(chunk));
