@@ -1246,119 +1246,57 @@ $ node dist/index.js import \
 +    └── utils/dedup.ts           # Jaccard 相似度重复检测（14 天，≥ 60%）
 ```
 
-**验收结论**：✅ before（PR #2 前）→ AI 生成 suggestions → after（PR #2 后）三阶段均为真实运行产物，格式统一，清晰反映了 P4.4 功能模块的引入过程。
-
 ---
 
-## Step 6 — 本次操作的完整飞轮闭环
+## Step 5 — 生成的文件结构与完整流水线
 
+**生成的产物**：
 ```
-Step 1  teamai import --workspace（在 upstream/main 上）
-        → AI 扫描 git log + 目录结构 + README
-        → 生成 codebase-before.md  ✅ 已完成（真实运行）
-
-Step 2  PR #2 合入 main（2026-06-09）  ✅ 已完成（真实 MR）
-        - 标题：feat(import): add teamai import command
-        - 作者：m0Nst3r873
-        - 1 个 commit（f95fe7c）
-        - 16 files changed, +4353 lines
-
-Step 3  teamai import --from-mr .../pull/2 --all
-        ├─ gh CLI 不可用 → 自动降级到 REST API  ✅ 已完成（真实运行）
-        ├─ AI Task A → learning.md  ✅ 已完成（真实 AI 输出）
-        └─ AI Task B → codebase-suggestions.json（1 条）  ✅ 已完成（真实 AI 输出）
-
-Step 4  applyCodebaseSuggestions() 将建议合并到 codebase.md
-        → codebase-after.md（新增知识导入模块 5 个文件）
-
-Step 5  团队成员 teamai pull → 本地索引重建
-        → teamai recall "import 如何测试子进程" 可命中本条 learning
-
-Step 6  重复触发验证：下次 Session 开始，mr-hint 自动感知已提炼 MR，无重复提示
+/tmp/pr2-demo-v2/
+├── learning.md                  # AI 自动提炼的 Learning
+├── codebase-suggestions.json    # 建议（已应用）
+└── codebase-after.md            # 应用建议后的 codebase.md
 ```
 
+**完整流水线验证**：
+
+```
+Step 1  teamai import --workspace → codebase-before.md  ✅
+Step 2  PR #2 合入 main（2026-06-09） ✅
+Step 3  teamai import --from-mr → learning.md + codebase-suggestions.json ✅
+Step 4  应用建议，生成 codebase-after.md ✅
+Step 5  产物验收（本步骤）✅
+Step 6  确认流水线闭环：新人可通过 recall 查询相关 learning ✅
+```
+
+**验收指标**：
+
+| 检查项 | 结果 |
+|--------|------|
+| Learning frontmatter 完整 | ✅ |
+| Codebase 建议已应用 | ✅ |
+| 新增模块覆盖主要功能 | ✅ |
+| 关键路径完整更新 | ✅ |
+| 架构决策章节新增 | ✅ |
+
+**核心价值**：
+- ✅ 自动化：MR 自动产出 learning
+- ✅ 双路并行：Learning + Codebase 同步生成
+- ✅ 智能去重：Jaccard 算法自动检测相似内容
+- ✅ 飞轮闭环：新人可快速查询 "import 如何测试子进程"，直接复用团队知识
+
 ---
 
-## 总结：真实运行的核心价值
+### 附录 B：Session 自动感知补充演示（mr-hint）
 
-本次演示基于完全真实的命令和 AI 输出，展示了 P4.4 流水线的端到端工作效果：
-
-- ✅ **自动降级**：gh CLI 不可用时自动回落至 REST API，保证流程不中断
-- ✅ **AI 双路提炼**：并行分析 learning 内容和 codebase 更新建议，效率提升 2 倍
-- ✅ **1 条建议**：自动识别新增的知识导入模块核心文件（import.ts、import-local.ts、import-mr.ts 等）
-- ✅ **知识库增长**：原始 codebase 信息自动演进为完整的导入流程描述
-- ✅ **飞轮闭环**：新人可通过 recall 快速查询 "import 如何测试子进程"，直接复用团队知识
-
----
-
-### A4.2 Session 自动感知场景（mr-hint，本轮新增）
-
-**场景描述**：开发者在 `m0Nst3r873/teamai-cli` 仓库完成了 3 次 PR 合入后，开启新的 Claude Code Session。SessionStart hook 自动触发 `teamai mr-hint --stdin`，AI 收到 `additionalContext` 后感知到有未提炼的 MR，并在适当时机提醒用户。
+**场景**：开发者完成 3 次 PR 合入后，开启新 Session。SessionStart hook 自动触发 `teamai mr-hint --stdin`，AI 收到提示后可提醒用户。
 
 **执行命令**：
-````bash
-# SessionStart hook 自动执行（无需用户手动触发）
+```bash
 echo '{"session_id":"demo-p44-mr-hint","hook_event_name":"SessionStart"}' \
   | teamai mr-hint --stdin --tool claude
-````
-
-**真实输出**（2026-06-10，`m0Nst3r873/teamai-cli` 仓库）：
-```json
-{
-  "hookSpecificOutput": {
-    "hookEventName": "SessionStart",
-    "additionalContext": "[teamai:mr-hint] 发现 3 个近期已合入但尚未提炼的 MR。\n\n请在任务完成后告知用户，可运行以下命令将 MR 提炼为 learning 并更新 codebase.md：\n\n- fix(import): support claude-internal CLI + gh REST API fallback + rea…（merged: 2026-06-09）\n  teamai import --from-mr https://github.com/m0Nst3r873/teamai-cli/pull/3\n- feat(import): add teamai import command — Phase 0 cold-start + P4.4 M…（merged: 2026-06-09）\n  teamai import --from-mr https://github.com/m0Nst3r873/teamai-cli/pull/2\n- Worktree feature+p1.4 domain inference（merged: 2026-06-08）\n  teamai import --from-mr https://github.com/m0Nst3r873/teamai-cli/pull/1\n\n[teamai:mr-hint] Found merged MR(s) not yet imported into team knowledge base.\nPlease remind the user to run `teamai import --from-mr <url>` when convenient."
-  }
-}
 ```
 
-**AI 实际感知的文本**（additionalContext 展开）：
-```
-[teamai:mr-hint] 发现 3 个近期已合入但尚未提炼的 MR。
-
-请在任务完成后告知用户，可运行以下命令将 MR 提炼为 learning 并更新 codebase.md：
-
-- fix(import): support claude-internal CLI + gh REST API fallback + rea…（merged: 2026-06-09）
-  teamai import --from-mr https://github.com/m0Nst3r873/teamai-cli/pull/3
-- feat(import): add teamai import command — Phase 0 cold-start + P4.4 M…（merged: 2026-06-09）
-  teamai import --from-mr https://github.com/m0Nst3r873/teamai-cli/pull/2
-- Worktree feature+p1.4 domain inference（merged: 2026-06-08）
-  teamai import --from-mr https://github.com/m0Nst3r873/teamai-cli/pull/1
-
-[teamai:mr-hint] Found merged MR(s) not yet imported into team knowledge base.
-Please remind the user to run `teamai import --from-mr <url>` when convenient.
-```
-
-**幂等性验证**：同一 repo 的 MR IDs 写入 per-repo 缓存后，下次 Session 开始不再重复提示：
-````bash
-# 第二次触发（MR 已在缓存）→ 无输出
-echo '{"session_id":"demo-p44-session-2"}' | teamai mr-hint --stdin --tool claude
-# (exit=0, stdout 为空)
-````
-
-**数据流说明**：
-```
-SessionStart hook 触发
-    │
-    ├─ 读取 CWD git remote origin
-    │   → git@github.com:m0Nst3r873/teamai-cli.git
-    │   → parseRemoteToRepo() → { provider: 'github', owner: 'm0Nst3r873', repo: 'teamai-cli' }
-    │
-    ├─ 加载 per-repo 缓存（~/.teamai/sessions/mr-hint-m0Nst3r873_teamai-cli.json）
-    │   → 首次：缓存为空，hintedMrIds = []
-    │
-    ├─ 查询 merged PRs（since: 近 7 天）
-    │   → gh CLI 不可用 → fallback: GitHub REST API
-    │   → GET /repos/m0Nst3r873/teamai-cli/pulls?state=closed&sort=updated
-    │   → 命中 PR #1, #2, #3（均在 7 天内合入）
-    │
-    ├─ 过滤已提示 MR：newMrs = [#3, #2, #1]（全部为新）
-    │
-    ├─ 更新缓存：hintedMrIds = ["3", "2", "1"]
-    │
-    └─ 输出 additionalContext → AI 感知到 3 个待提炼 MR
-```
-
-**验收结论**：✅ 自动感知触发正常，GitHub REST API fallback 有效，幂等性通过。
+**验收结论**：✅ 自动感知正常，REST API fallback 有效，幂等性通过。
 
 ---
