@@ -655,6 +655,32 @@ export interface CodebaseSuggestion {
 }
 
 /**
+ * codebase.md lint 检查的单条问题。
+ */
+export interface LintIssue {
+  /** 问题严重程度 */
+  severity: 'high' | 'medium' | 'low';
+  /** 问题类型 */
+  category: 'contradiction' | 'outdated' | 'orphan' | 'missing';
+  /** 问题位置（章节名或行号区间） */
+  location: string;
+  /** 问题描述 */
+  description: string;
+  /** 修复建议 */
+  suggestion: string;
+}
+
+/**
+ * lintCodebaseMd 的返回结构，包含所有发现的问题与总体摘要。
+ */
+export interface LintReport {
+  /** 所有 lint 问题列表 */
+  issues: LintIssue[];
+  /** 一句话总结 */
+  summary: string;
+}
+
+/**
  * 单条 import 会话条目，记录每个候选项的处理状态。
  */
 export interface ImportSessionItem {

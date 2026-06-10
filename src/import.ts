@@ -1,8 +1,9 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 
 import { autoDetectInit } from './config.js';
-import { generateCodebaseMd } from './codebase.js';
+import { generateCodebaseMd, generateCodebaseIndex, lintCodebaseMd } from './codebase.js';
 import { scanCandidates, classifyWithAI, interactiveReview, pushAccepted } from './import-local.js';
 import { importFromIWiki } from './import-iwiki.js';
 import { importFromMR } from './import-mr.js';
@@ -87,12 +88,55 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       });
     } else if (opts.workspace) {
       // 分支 2：--workspace，从当前 git 工作区生成 codebase.md
-      const codebaseMd = await generateCodebaseMd({ repoPath: process.cwd() });
+      const repoPath = process.cwd();
+
+      // 尝试使用默认 learnings 目录（不增加 CLI flag）
+      const defaultLearningsDir = path.join(repoPath, 'learnings');
+      const learningsDir = fsSync.existsSync(defaultLearningsDir) ? defaultLearningsDir : undefined;
+
+      const codebaseMd = await generateCodebaseMd({ repoPath, learningsDir });
+
+      // 决定 codebase.md 的写出路径
+      let codebaseOutputPath: string | undefined;
       if (opts.output) {
         await fs.writeFile(opts.output, codebaseMd, 'utf-8');
         log.info(`已写入：${opts.output}`);
+        codebaseOutputPath = opts.output;
       } else {
         log.info(codebaseMd);
+        // stdout 模式：把索引写到 cwd/codebase-index.md
+        codebaseOutputPath = path.join(repoPath, 'codebase.md');
+      }
+
+      // 生成并写出索引
+      try {
+        const indexMd = await generateCodebaseIndex(codebaseMd);
+        const indexDir = opts.output ? path.dirname(codebaseOutputPath) : repoPath;
+        const indexPath = path.join(indexDir, 'codebase-index.md');
+        await fs.writeFile(indexPath, indexMd, 'utf-8');
+        log.info(`索引已写入：${indexPath}`);
+      } catch (indexErr) {
+        log.debug(`生成索引失败（不中断流程）：${String(indexErr)}`);
+      }
+
+      // 执行 lint 检查（只打印不写文件，不因失败中断）
+      try {
+        const lintReport = await lintCodebaseMd(codebaseMd);
+        const highIssues = lintReport.issues.filter((i) => i.severity === 'high');
+        log.info(`[lint] ${lintReport.summary}（共 ${lintReport.issues.length} 个问题）`);
+        if (highIssues.length > 0) {
+          const displayCount = Math.min(highIssues.length, 5);
+          log.info(`[lint] 高严重度问题（${highIssues.length} 条）：`);
+          for (let idx = 0; idx < displayCount; idx++) {
+            const issue = highIssues[idx]!;
+            log.info(`  ⚠️  [${issue.category}] ${issue.location}: ${issue.description}`);
+          }
+          if (highIssues.length > 5) {
+            log.info(`  … 还有 ${highIssues.length - 5} 条 high 级 lint 问题，请查阅完整报告`);
+          }
+        }
+      } catch (lintErr) {
+        log.debug(`lint 检查失败（不中断流程）：${String(lintErr)}`);
       }
     } else if (opts.dir || opts.fromClaude) {
       // 分支 3：--dir 或 --from-claude，扫描本地文件并交互式导入

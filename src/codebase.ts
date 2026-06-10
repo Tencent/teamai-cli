@@ -2,10 +2,12 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import matter from 'gray-matter';
+
 import { callClaude } from './utils/ai-client.js';
 import { createGit } from './utils/git.js';
 import { log } from './utils/logger.js';
-import type { CodebaseSuggestion } from './types.js';
+import type { CodebaseSuggestion, LintIssue, LintReport } from './types.js';
 
 /** 文件扫描截断上限（字符数）。 */
 const FILE_TREE_MAX_CHARS = 5000;
@@ -21,6 +23,12 @@ const GIT_LOG_MAX_COUNT = 20;
 
 /** package.json / types 文件读取上限（字符数）。 */
 const META_MAX_CHARS = 2500;
+
+/** learnings 目录最多读取的 .md 文件数量。 */
+const LEARNINGS_MAX_FILES = 50;
+
+/** lint 报告中展示的高频 tag 数量上限。 */
+const TOP_TAGS_COUNT = 10;
 
 /**
  * 收集 git 仓库上下文信息。
@@ -150,20 +158,150 @@ async function gatherRepoContext(repoPath: string): Promise<string> {
 }
 
 /**
+ * 聚合 learnings 相关上下文，用于注入 codebase.md 生成 prompt。
+ *
+ * 若有 learningsSuggestions，则拼出最近 MR 建议小节；
+ * 若有 learningsDir 且目录存在，则统计 frontmatter tags 高频词。
+ *
+ * @param opts.learningsSuggestions  来自 P4.4 的 codebase suggestions
+ * @param opts.learningsDir          learnings 目录路径
+ * @returns                          拼接好的上下文段落，无内容时返回空字符串
+ */
+async function gatherLearningsContext(opts: {
+  learningsSuggestions?: CodebaseSuggestion[];
+  learningsDir?: string;
+}): Promise<string> {
+  const { learningsSuggestions, learningsDir } = opts;
+
+  if (!learningsSuggestions?.length && !learningsDir) {
+    return '';
+  }
+
+  const parts: string[] = [];
+
+  // ── 最近 MR 提炼建议 ────────────────────────────────────
+  if (learningsSuggestions && learningsSuggestions.length > 0) {
+    const lines = learningsSuggestions.map(
+      (s) => `- [${s.action}] ${s.section}: ${s.content.slice(0, 200)}`,
+    );
+    parts.push(`## 最近 MR 提炼建议（参考）\n${lines.join('\n')}`);
+  }
+
+  // ── learnings 目录高频 tags ──────────────────────────────
+  if (learningsDir && fs.existsSync(learningsDir)) {
+    try {
+      const entries = fs.readdirSync(learningsDir);
+      const tagFreq: Record<string, number> = {};
+      let fileCount = 0;
+
+      for (const entry of entries) {
+        if (fileCount >= LEARNINGS_MAX_FILES) break;
+        if (!entry.endsWith('.md')) continue;
+
+        try {
+          const filePath = path.join(learningsDir, entry);
+          const raw = fs.readFileSync(filePath, 'utf-8');
+          const parsed = matter(raw);
+          const tags: unknown = parsed.data['tags'];
+          if (Array.isArray(tags)) {
+            for (const tag of tags) {
+              if (typeof tag === 'string') {
+                tagFreq[tag] = (tagFreq[tag] ?? 0) + 1;
+              }
+            }
+          }
+          fileCount++;
+        } catch (err) {
+          log.debug(`gatherLearningsContext: 解析 ${entry} 失败 — ${String(err)}`);
+        }
+      }
+
+      const topTags = Object.entries(tagFreq)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, TOP_TAGS_COUNT)
+        .map(([tag, count]) => `${tag}(${count})`)
+        .join(', ');
+
+      if (topTags) {
+        parts.push(`## Learnings 高频标签\n高频标签：${topTags}`);
+      }
+    } catch (err) {
+      log.debug(`gatherLearningsContext: 读取 learningsDir 失败 — ${String(err)}`);
+    }
+  }
+
+  return parts.join('\n\n');
+}
+
+/**
+ * 生成 codebase.md 的 YAML frontmatter 头部。
+ *
+ * @param repoPath  仓库根目录绝对路径
+ * @returns         frontmatter 字符串（含尾部换行）
+ */
+function buildFrontmatter(repoPath: string): string {
+  const now = new Date().toISOString();
+  return [
+    '---',
+    'title: Codebase 概览',
+    `lastUpdated: ${now}`,
+    `source: ${repoPath}`,
+    'generator: teamai-cli',
+    'schemaVersion: 1',
+    '---',
+    '',
+    '',
+  ].join('\n');
+}
+
+/**
+ * 若 Markdown 内容顶部存在 frontmatter（以 `---\n` 开头），则剥离并返回正文。
+ *
+ * @param md  原始 Markdown 字符串
+ * @returns   剥离 frontmatter 后的正文
+ */
+function stripExistingFrontmatter(md: string): string {
+  if (!md.startsWith('---\n')) {
+    return md;
+  }
+  // 找到第二个 `---` 行的结束位置
+  const secondDash = md.indexOf('\n---\n', 4);
+  if (secondDash === -1) {
+    return md;
+  }
+  // 跳过 `\n---\n`（5 个字符），再跳过可能的空行
+  const afterFrontmatter = md.slice(secondDash + 5);
+  return afterFrontmatter.replace(/^\n+/, '');
+}
+
+/**
  * 扫描 git 仓库信息，用 AI 生成 codebase.md 初稿。
  *
- * @param opts.repoPath           仓库根目录绝对路径
- * @param opts.existingCodebaseMd 已有 codebase.md 内容（存在时执行增量更新）
- * @returns                       AI 生成的 codebase.md 完整内容
+ * @param opts.repoPath              仓库根目录绝对路径
+ * @param opts.existingCodebaseMd    已有 codebase.md 内容（存在时执行增量更新）
+ * @param opts.learningsSuggestions  来自 P4.4 的 codebase suggestions（已 apply 后的版本仍可作为提示）
+ * @param opts.learningsDir          learnings 目录路径，函数会读取该目录下所有 .md 文件提取 frontmatter tags 做高频统计
+ * @returns                          AI 生成的 codebase.md 完整内容（含 frontmatter）
  */
 export async function generateCodebaseMd(opts: {
   repoPath: string;
   existingCodebaseMd?: string;
+  /** 来自 P4.4 的 codebase suggestions（已 apply 后的版本仍可作为提示） */
+  learningsSuggestions?: CodebaseSuggestion[];
+  /** learnings 目录路径，函数会读取该目录下所有 .md 文件提取 frontmatter tags 做高频统计 */
+  learningsDir?: string;
 }): Promise<string> {
-  const { repoPath, existingCodebaseMd } = opts;
+  const { repoPath, existingCodebaseMd, learningsSuggestions, learningsDir } = opts;
 
   log.debug(`generateCodebaseMd: 收集仓库上下文，路径=${repoPath}`);
   const context = await gatherRepoContext(repoPath);
+
+  // 聚合 learnings 上下文（可能为空）
+  const learningsContext = await gatherLearningsContext({ learningsSuggestions, learningsDir });
+  const learningsInjection =
+    learningsContext
+      ? `\n以下是最近 MR 提炼出的更新提示与团队关注点，请融合进文档相应章节：\n<learnings>\n${learningsContext}\n</learnings>\n`
+      : '';
 
   let prompt: string;
 
@@ -172,8 +310,9 @@ export async function generateCodebaseMd(opts: {
     prompt =
       `已有 codebase.md 如下，请根据新的仓库上下文更新它（保留已有内容，补充或修正变更部分）：\n` +
       `<existing>\n${existingCodebaseMd}\n</existing>\n\n` +
-      `新的仓库上下文：\n<context>\n${context}\n</context>\n\n` +
-      `输出完整更新后的 codebase.md，不要加额外说明。`;
+      `新的仓库上下文：\n<context>\n${context}\n</context>\n` +
+      learningsInjection +
+      `\n输出完整更新后的 codebase.md，不要加额外说明。`;
   } else {
     // 全量生成模式：提供完整格式骨架，引导 AI 生成 A1 级别文档
     prompt =
@@ -229,6 +368,10 @@ export async function generateCodebaseMd(opts: {
       `（说明配置优先级、scope 检测逻辑、关键配置结构示例）\n\n` +
       `## 性能与可靠性\n` +
       `（表格列出关键性能设计：并发控制、超时、缓存、降级等）\n\n` +
+      `## 架构决策与权衡\n` +
+      `（列出 3-5 条主要设计选择的"为什么"，格式如"为什么选择 X 而不是 Y：原因说明"）\n\n` +
+      `## 已知限制与演进方向\n` +
+      `（列出 3-5 条当前实现的局限与下一步可能的优化）\n\n` +
       `## 测试覆盖\n` +
       `（表格列出测试层级、用例数、覆盖率）\n\n` +
       `## 备注\n` +
@@ -237,12 +380,116 @@ export async function generateCodebaseMd(opts: {
       `== 以上是格式骨架，根据实际仓库内容填充。若某章节确实无法从上下文推断，可简略但不得省略章节标题。==\n\n` +
       `---\n` +
       `以下是仓库上下文：\n` +
-      `<context>\n${context}\n</context>`;
+      `<context>\n${context}\n</context>` +
+      learningsInjection;
   }
 
   log.debug('generateCodebaseMd: 调用 AI 生成文档');
-  const result = await callClaude(prompt);
-  return result;
+  const rawResult = await callClaude(prompt);
+
+  // 剥离 AI 可能自行附加的 frontmatter，再 prepend 标准 frontmatter
+  const body = stripExistingFrontmatter(rawResult);
+  return buildFrontmatter(repoPath) + body;
+}
+
+/**
+ * 基于 codebase.md 生成精简索引文档。
+ * 索引让 LLM 跨会话快速定位章节，无需重读全文。
+ *
+ * @param codebaseMd  完整 codebase.md 内容（包含 frontmatter）
+ * @returns           Markdown 索引（含表格：章节 / 一句摘要 / 关键词）
+ */
+export async function generateCodebaseIndex(codebaseMd: string): Promise<string> {
+  const prompt =
+    `请分析以下 codebase.md 文档，提取所有二级章节（## 开头的标题），` +
+    `为每个章节生成：一句摘要（≤30 字）和 3-5 个关键词。\n\n` +
+    `【输出格式要求】严格输出 JSON 数组，不要加任何额外说明：\n` +
+    `[{"section": "章节名", "summary": "摘要", "keywords": ["词1", "词2", "词3"]}]\n\n` +
+    `文档内容：\n<codebase>\n${codebaseMd}\n</codebase>`;
+
+  log.debug('generateCodebaseIndex: 调用 AI 生成索引');
+  const raw = await callClaude(prompt);
+
+  const now = new Date().toISOString();
+  const frontmatter = `---\ntitle: Codebase 索引\nlastUpdated: ${now}\n---\n\n`;
+
+  interface IndexEntry {
+    section: string;
+    summary: string;
+    keywords: string[];
+  }
+
+  try {
+    // 从输出中提取 JSON（AI 可能包裹在代码块里）
+    const jsonMatch = raw.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      throw new Error('未找到 JSON 数组');
+    }
+    const entries: IndexEntry[] = JSON.parse(jsonMatch[0]);
+
+    const tableRows = entries
+      .map((e) => `| ${e.section} | ${e.summary} | ${e.keywords.join(', ')} |`)
+      .join('\n');
+
+    return (
+      frontmatter +
+      `# Codebase 索引\n\n` +
+      `| 章节 | 摘要 | 关键词 |\n` +
+      `| ---- | ---- | ------ |\n` +
+      tableRows +
+      '\n'
+    );
+  } catch (err) {
+    log.debug(`generateCodebaseIndex: 解析 JSON 失败 — ${String(err)}，原始输出：${raw.slice(0, 200)}`);
+    return (
+      frontmatter +
+      `# Codebase 索引\n\n` +
+      `> ⚠️ 索引生成失败，请重新运行 \`teamai import --workspace\` 以重新生成。\n`
+    );
+  }
+}
+
+/**
+ * 健康检查：让 AI 检测 codebase.md 中的矛盾、过时声明、孤儿模块、缺失关键概念。
+ *
+ * 不修改文档，只返回问题清单。
+ *
+ * @param codebaseMd  完整 codebase.md 内容
+ * @returns           LintReport，含 issues 数组
+ */
+export async function lintCodebaseMd(codebaseMd: string): Promise<LintReport> {
+  const prompt =
+    `请对以下 codebase.md 文档做健康检查，检测：\n` +
+    `1. 矛盾（contradiction）：文档内部自相矛盾的陈述\n` +
+    `2. 过时（outdated）：可能已经不准确的声明\n` +
+    `3. 孤儿（orphan）：提到了但文档其他地方没有解释的模块或概念\n` +
+    `4. 缺失（missing）：重要章节或关键概念未被覆盖\n\n` +
+    `【输出格式要求】严格输出 JSON，不要加任何额外说明：\n` +
+    `{"summary": "一句话总结", "issues": [` +
+    `{"severity": "high|medium|low", "category": "contradiction|outdated|orphan|missing", ` +
+    `"location": "章节名或行号区间", "description": "问题描述", "suggestion": "修复建议"}` +
+    `]}\n\n` +
+    `文档内容：\n<codebase>\n${codebaseMd}\n</codebase>`;
+
+  log.debug('lintCodebaseMd: 调用 AI 做 lint 检查');
+
+  try {
+    const raw = await callClaude(prompt);
+
+    // 从输出中提取 JSON 对象
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('未找到 JSON 对象');
+    }
+    const parsed = JSON.parse(jsonMatch[0]) as { summary?: string; issues?: LintIssue[] };
+    return {
+      issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+      summary: typeof parsed.summary === 'string' ? parsed.summary : '检查完成',
+    };
+  } catch (err) {
+    log.debug(`lintCodebaseMd: 解析失败 — ${String(err)}`);
+    return { issues: [], summary: '解析失败，无法 lint' };
+  }
 }
 
 /**
