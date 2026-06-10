@@ -17,7 +17,11 @@ function shellEscape(s: string): string {
 /**
  * 按优先级探测可用的 AI CLI 可执行文件名。
  *
- * 通过 `bash -lc` 以 login shell 方式运行探测命令，确保 ~/.nvm/ 等路径下的 CLI 均可被发现。
+ * 依次通过以下方式探测，确保覆盖各类 shell 环境：
+ *   1. `bash -lc` —— login shell，覆盖 ~/.nvm/ 等路径
+ *   2. `zsh -lc`  —— macOS 默认 shell fallback
+ *   3. `which <cmd>` —— 最终 fallback，使用 process.env.PATH 直接查找
+ *
  * 探测顺序：`claude` → `claude-internal` → `codex` → `codex-internal` → `codebuddy` → `workbuddy` → `openclaw`。
  * 结果缓存，进程生命周期内只探测一次。
  *
@@ -25,14 +29,34 @@ function shellEscape(s: string): string {
  * @throws  所有候选均不可用时抛出 Error
  */
 function detectClaudeCli(): string {
-  for (const cmd of ['claude', 'claude-internal', 'codex', 'codex-internal', 'codebuddy', 'workbuddy', 'openclaw']) {
+  const candidates = ['claude', 'claude-internal', 'codex', 'codex-internal', 'codebuddy', 'workbuddy', 'openclaw'];
+
+  for (const cmd of candidates) {
+    // 策略 1：bash login shell
     try {
       execFileSync('bash', ['-lc', `${cmd} --version`], { stdio: 'ignore' });
       return cmd;
     } catch {
-      // 继续尝试下一个
+      // 继续尝试下一策略
+    }
+
+    // 策略 2：zsh login shell（macOS 默认 shell / bash 不可用时）
+    try {
+      execFileSync('zsh', ['-lc', `${cmd} --version`], { stdio: 'ignore' });
+      return cmd;
+    } catch {
+      // 继续尝试下一策略
+    }
+
+    // 策略 3：which 命令（使用 process.env.PATH，覆盖 fish / CI 容器等环境）
+    try {
+      execFileSync('which', [cmd], { stdio: 'ignore' });
+      return cmd;
+    } catch {
+      // 此候选不可用，尝试下一个
     }
   }
+
   throw new Error(
     'AI CLI 不可用：请安装以下任意一个 CLI 工具：' +
     'claude / claude-internal / codex / codex-internal / codebuddy / workbuddy / openclaw'
