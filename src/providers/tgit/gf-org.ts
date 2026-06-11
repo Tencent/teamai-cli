@@ -5,6 +5,8 @@ import { log } from '../../utils/logger.js';
 const TGIT_API_BASE = 'https://git.woa.com/api/v3';
 const DEFAULT_PER_PAGE = 100;
 const DEFAULT_MAX_REPOS = 200;
+// 响应体最大 50 MB，防止恶意服务器返回超大响应导致 OOM
+const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
 
 interface TgitProjectApiItem {
     id: number;
@@ -76,8 +78,12 @@ export async function gfListOrgRepos(
 
     while (collected.length < maxRepos) {
         const url = `${TGIT_API_BASE}/groups/${encodedGroup}/projects?per_page=${perPage}&page=${page}`;
-        const resp = await fetch(url, { headers });
+        // redirect: 'manual' 防止跟随重定向到内网地址（SSRF）
+        const resp = await fetch(url, { headers, redirect: 'manual' });
 
+        if (resp.status >= 300 && resp.status < 400) {
+            throw new Error(`Unexpected redirect from TGit API: ${resp.status}`);
+        }
         if (resp.status === 404) {
             throw new Error(`TGit group ${group} not found or no access`);
         }
@@ -85,7 +91,24 @@ export async function gfListOrgRepos(
             throw new Error(`TGit API HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
         }
 
-        const items = (await resp.json()) as TgitProjectApiItem[];
+        // 流式读取响应体，限制最大 50 MB 防止 OOM
+        const reader = resp.body?.getReader();
+        let received = 0;
+        const chunks: Uint8Array[] = [];
+        if (reader) {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                received += value.length;
+                if (received > MAX_RESPONSE_BYTES) {
+                    await reader.cancel();
+                    throw new Error(`TGit API response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+                }
+                chunks.push(value);
+            }
+        }
+        const bodyText = Buffer.concat(chunks).toString('utf-8');
+        const items = JSON.parse(bodyText) as TgitProjectApiItem[];
         if (!Array.isArray(items) || items.length === 0) break;
 
         for (const item of items) {

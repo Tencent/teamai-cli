@@ -204,3 +204,46 @@ describe('patchManagedSection', () => {
         );
     });
 });
+
+// ─── --from-iwiki 锚点兼容性（Blocker 1 修复验证）────────
+
+describe('parseSections — 接受 --from-iwiki 锚点', () => {
+    const iwikiMd = [
+        '# 外部知识源',
+        '',
+        '<!-- managed-by: import --from-iwiki, section: external-knowledge, source: iwiki://456, syncedAt: 2024-01-01T00:00:00.000Z -->',
+        '## 外部知识',
+        'iwiki 章节内容',
+        '<!-- /managed-by: external-knowledge -->',
+        '',
+        '<!-- managed-by: import --from-iwiki, section: glossary, source: iwiki://456, syncedAt: 2024-01-01T00:00:00.000Z -->',
+        '## 术语表',
+        '| 术语 | 说明 |',
+        '<!-- /managed-by: glossary -->',
+    ].join('\n');
+
+    it('parseSections 能正确解析含 --from-iwiki 锚点的 md', () => {
+        const { prelude, sections } = parseSections(iwikiMd);
+
+        expect(prelude).toContain('外部知识源');
+        expect(sections).toHaveLength(2);
+        expect(sections[0].slug).toBe('external-knowledge');
+        expect(sections[0].body).toContain('iwiki 章节内容');
+        expect(sections[1].slug).toBe('glossary');
+    });
+
+    it('patchManagedSection 在含 --from-iwiki 锚点的 md 上 patch 成功', () => {
+        const result = patchManagedSection(
+            iwikiMd,
+            'external-knowledge',
+            '## 外部知识\n已 patch 的新内容',
+            { source: 'iwiki://456', syncedAt: '2024-06-01T00:00:00.000Z' },
+        );
+
+        expect(result).toContain('已 patch 的新内容');
+        expect(result).not.toContain('iwiki 章节内容');
+        // 术语表章节不受影响
+        expect(result).toContain('| 术语 | 说明 |');
+    });
+});
+

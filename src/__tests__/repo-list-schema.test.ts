@@ -77,4 +77,15 @@ describe('loadRepoList', () => {
         const loaded = await loadRepoList(filePath);
         expect(loaded.version).toBe(1);
     });
+
+    it('文件超过 10 MB 时抛出 size 超限错误', async () => {
+        const filePath = path.join(tmpDir, 'huge.yaml');
+        // 写入 11 MB 内容（真实文件，非 mock fs.stat）
+        const chunk = 'a'.repeat(1024 * 1024);
+        let content = '';
+        for (let i = 0; i < 11; i++) content += chunk;
+        await fs.writeFile(filePath, content, 'utf8');
+
+        await expect(loadRepoList(filePath)).rejects.toThrow('exceeds max allowed size 10MB');
+    });
 });

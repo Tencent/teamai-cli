@@ -168,4 +168,18 @@ describe('domains store', () => {
             expect(await fs.pathExists(historyPath)).toBe(true);
         });
     });
+
+    describe('loadDomains — 文件大小限制', () => {
+        it('文件超过 10 MB 时抛出 size 超限错误', async () => {
+            const domainsPath = path.join(tmpDir, '.teamai', 'domains.yaml');
+            await fs.ensureDir(path.join(tmpDir, '.teamai'));
+            // 写入 11 MB 内容（真实文件，非 mock fs.stat）
+            const chunk = 'a'.repeat(1024 * 1024); // 1 MB
+            let content = '';
+            for (let i = 0; i < 11; i++) content += chunk;
+            await fs.writeFile(domainsPath, content, 'utf8');
+
+            await expect(loadDomains(tmpDir)).rejects.toThrow('exceeds max allowed size 10MB');
+        });
+    });
 });

@@ -7,6 +7,8 @@ import type { DomainsFile, HistoryEvent } from './schema.js';
 const DOMAINS_PATH = '.teamai/domains.yaml';
 const DRAFT_PATH = '.teamai/domains.draft.yaml';
 const HISTORY_PATH = '.teamai/domains.history.jsonl';
+/** 反序列化大小上限：10 MB，防止超大文件导致 OOM。 */
+const MAX_CONFIG_FILE_BYTES = 10 * 1024 * 1024;
 
 /**
  * 从 YAML 字符串解析并校验 DomainsFile，校验失败时抛出含字段信息的错误。
@@ -34,6 +36,10 @@ export async function loadDomains(cwd: string): Promise<DomainsFile> {
     if (!exists) {
         return DomainsFileSchema.parse({});
     }
+    const stat = await fs.stat(filePath);
+    if (stat.size > MAX_CONFIG_FILE_BYTES) {
+        throw new Error(`${filePath} exceeds max allowed size 10MB`);
+    }
     const content = await fs.readFile(filePath, 'utf8');
     return parseAndValidate(content, filePath);
 }
@@ -48,6 +54,10 @@ export async function loadDomainsDraft(cwd: string): Promise<DomainsFile | null>
     const exists = await fs.pathExists(filePath);
     if (!exists) {
         return null;
+    }
+    const stat = await fs.stat(filePath);
+    if (stat.size > MAX_CONFIG_FILE_BYTES) {
+        throw new Error(`${filePath} exceeds max allowed size 10MB`);
     }
     const content = await fs.readFile(filePath, 'utf8');
     return parseAndValidate(content, filePath);

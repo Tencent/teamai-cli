@@ -138,4 +138,38 @@ describe('importFromRepo — section merge', () => {
         const content2 = await fs.readFile(repoMdPath, 'utf8');
         expect(content2).toBe(content1);
     });
+
+    it('旧文件含未闭合锚点 → fallback 时备份旧文件、产物使用新 codebase', async () => {
+        const repoMdPath = path.join(workdir, 'docs', 'team-codebase', 'repos', 'github__owner__mergetest.md');
+        await fs.ensureDir(path.dirname(repoMdPath));
+
+        // 准备含未闭合锚点的旧文件
+        const unclosedOldFile = [
+            '# Old Content',
+            '',
+            '<!-- managed-by: import --from-repo, section: 项目概述, source: old@aabbccdd, syncedAt: 2024-01-01T00:00:00Z -->',
+            '## 项目概述',
+            '旧内容，这是旧内容。',
+            // 故意缺少 <!-- /managed-by: 项目概述 --> 闭锚
+        ].join('\n');
+
+        await fs.writeFile(repoMdPath, unclosedOldFile, 'utf8');
+
+        // 执行 importFromRepo，此时 parseSections 会因未闭合锚点抛错 → fallback
+        await importFromRepo({
+            url: TEST_URL,
+            interactive: false,
+        });
+
+        // 1. 验证备份文件存在且内容等于旧文件
+        const bakPath = `${repoMdPath}.bak`;
+        expect(await fs.pathExists(bakPath)).toBe(true);
+        const bakContent = await fs.readFile(bakPath, 'utf8');
+        expect(bakContent).toBe(unclosedOldFile);
+
+        // 2. 验证产物文件包含新 codebase 内容（fallback 全量重写）
+        const newContent = await fs.readFile(repoMdPath, 'utf8');
+        expect(newContent).toContain('项目概述');
+        expect(newContent).toContain('固定的项目概述内容');
+    });
 });

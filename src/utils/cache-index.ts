@@ -11,6 +11,8 @@ const INDEX_FILENAME = '.cache-index.json';
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
 const DEFAULT_TARGET_RATIO = 0.8;
 const DEFAULT_STALE_DAYS = 30;
+/** 反序列化大小上限：10 MB，防止超大文件导致 OOM。 */
+const MAX_CONFIG_FILE_BYTES = 10 * 1024 * 1024;
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -91,6 +93,10 @@ function keyToAbsPath(key: string): string {
 export async function loadCacheIndex(): Promise<CacheIndex> {
     const indexPath = path.join(getCacheRoot(), INDEX_FILENAME);
     try {
+        const stat = await fs.stat(indexPath);
+        if (stat.size > MAX_CONFIG_FILE_BYTES) {
+            throw new Error(`${indexPath} exceeds max allowed size 10MB`);
+        }
         const raw = await fs.readFile(indexPath, 'utf8');
         const parsed = JSON.parse(raw) as CacheIndex;
         if (parsed.version !== 1 || !Array.isArray(parsed.entries)) {
