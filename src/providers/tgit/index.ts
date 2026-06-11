@@ -1,4 +1,4 @@
-import type { GitProvider, PrCreateOptions, RepoInfo } from '../types.js';
+import type { GitProvider, PrCreateOptions, RepoInfo, OrgRepoInfo } from '../types.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   ensureGfInstalled,
@@ -66,6 +66,12 @@ export class TGitProvider implements GitProvider {
 
   getDefaultEmailDomain(): string | null {
     return 'tencent.com';
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async listOrgRepos(_org: string, _opts?: { maxRepos?: number }): Promise<OrgRepoInfo[]> {
+    log.warn('TGit listOrgRepos not yet supported');
+    throw new Error('TGit listOrgRepos not yet supported');
   }
 }
 

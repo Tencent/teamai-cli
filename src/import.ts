@@ -7,6 +7,10 @@ import { generateCodebaseMd, generateCodebaseIndex, lintCodebaseMd } from './cod
 import { scanCandidates, classifyWithAI, interactiveReview, pushAccepted } from './import-local.js';
 import { importFromIWiki } from './import-iwiki.js';
 import { importFromMR } from './import-mr.js';
+import { importFromRepo } from './import-repo.js';
+import { importFromRepoList } from './import-repo-list.js';
+import { importFromOrg } from './import-org.js';
+import { importFromIWikiDual } from './iwiki-dual.js';
 import { GlobalOptions } from './types.js';
 import { log } from './utils/logger.js';
 
@@ -34,6 +38,40 @@ interface ImportOptions extends GlobalOptions {
   output?: string;
   /** 显式指定现有 codebase.md 路径（优先于从团队仓库自动读取） */
   existingCodebase?: string;
+  /** 拉取远端仓库并生成单仓 codebase 摘要 */
+  fromRepo?: string;
+  /** --from-repo 的 shallow clone 深度（字符串，需 parseInt），默认 1 */
+  depth?: string;
+  /** 强制 SSH clone（即使 HTTPS token 可用） */
+  ssh?: boolean;
+  /** 跳过 AI 推荐，直接将仓库归入指定域 */
+  domain?: string;
+  /** 批量从 yaml 白名单导入多个仓库 */
+  fromRepoList?: string;
+  /** --from-repo-list 的并发数（字符串，需 parseInt），默认 3 */
+  concurrency?: string;
+  /** 跳过 domain-*.md / index.md 重生（仅做单仓） */
+  skipAggregate?: boolean;
+  /** 增量模式：缓存命中时仅 fetch+reset，未命中时 fallback 到全量 clone */
+  incremental?: boolean;
+  /** --from-org：org URL 或 group 路径 */
+  fromOrg?: string;
+  /** --bootstrap：在 --from-org 后进入交互 review */
+  bootstrap?: boolean;
+  /** --max-repos：--from-org 拉取仓库上限（字符串，需 parseInt） */
+  maxRepos?: string;
+  /** --exclude-archived：排除 archived 仓库 */
+  excludeArchived?: boolean;
+  /** --include-pattern：仅纳入匹配此正则的仓库 */
+  includePattern?: string;
+  /** --exclude-pattern：排除匹配此正则的仓库 */
+  excludePattern?: string;
+  /** --skip-import：只写草稿，跳过批量导入 */
+  skipImport?: boolean;
+  /** --iwiki-dual：iWiki 双路模式，同时产出 codebase sections */
+  iwikiDual?: boolean;
+  /** --require-review：codebase sections 落到 pending-review.jsonl */
+  requireReview?: boolean;
 }
 
 /**
@@ -43,7 +81,48 @@ interface ImportOptions extends GlobalOptions {
  */
 export async function importCmd(opts: ImportOptions): Promise<void> {
   try {
-    if (opts.fromIwiki) {
+    if (opts.fromOrg) {
+      // 分支：--from-org <org>，组织级一键初始化
+      await importFromOrg({
+        org: opts.fromOrg,
+        bootstrap: opts.bootstrap ?? false,
+        maxRepos: opts.maxRepos ? parseInt(opts.maxRepos, 10) : 200,
+        excludeArchived: opts.excludeArchived ?? true,
+        includePattern: opts.includePattern,
+        excludePattern: opts.excludePattern,
+        skipImport: opts.skipImport ?? false,
+        dryRun: opts.dryRun,
+        output: opts.output,
+        forceSsh: opts.ssh ?? false,
+      });
+      return;
+    } else if (opts.fromRepo) {
+      // 分支：--from-repo <url>，拉取远端仓库并生成单仓 codebase 摘要
+      await importFromRepo({
+        url: opts.fromRepo,
+        depth: opts.depth ? parseInt(opts.depth, 10) : 1,
+        forceSsh: opts.ssh ?? false,
+        explicitDomain: opts.domain,
+        dryRun: opts.dryRun,
+        output: opts.output,
+        incremental: opts.incremental ?? false,
+      });
+      return;
+    } else if (opts.fromRepoList) {
+      // 分支：--from-repo-list <yaml>，批量导入
+      const result = await importFromRepoList({
+        listPath: opts.fromRepoList,
+        concurrency: opts.concurrency ? parseInt(opts.concurrency, 10) : 3,
+        forceSsh: opts.ssh ?? false,
+        dryRun: opts.dryRun,
+        output: opts.output,
+        skipAggregate: opts.skipAggregate ?? false,
+        incremental: opts.incremental ?? false,
+      });
+      log.info(`完成：成功 ${result.succeeded}，失败 ${result.failed.length}，跳过 ${result.skipped.length}`);
+      if (result.failed.length > 0) process.exitCode = 1;
+      return;
+    } else if (opts.fromIwiki) {
       // 分支 0：--from-iwiki，从 iWiki Space 或单页批量导入
       const { localConfig } = await autoDetectInit();
       await importFromIWiki({
@@ -53,6 +132,23 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         repoPath: opts.dryRun ? undefined : localConfig.repo.localPath,
         dryRun: opts.dryRun,
       });
+      // 若启用双路模式，追加调用 importFromIWikiDual
+      if (opts.iwikiDual) {
+        try {
+          const dualResult = await importFromIWikiDual({
+            input: opts.fromIwiki,
+            output: opts.output,
+            dryRun: opts.dryRun,
+            requireReview: opts.requireReview ?? false,
+          });
+          log.info(
+            `iWiki 双路完成：更新章节 [${dualResult.sectionsUpdated.join(', ')}]` +
+            (dualResult.pendingReview ? '（待 review）' : ''),
+          );
+        } catch (dualErr) {
+          log.warn(`iWiki 双路模式出错（不影响 learning 路径）：${String(dualErr)}`);
+        }
+      }
     } else if (opts.fromMr) {
       // 分支 1：--from-mr <url>，从已合并 MR 提取学习内容
       const { localConfig } = await autoDetectInit();

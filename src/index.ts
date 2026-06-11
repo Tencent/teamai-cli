@@ -579,6 +579,23 @@ program
   .option('--all', 'Accept all suggestions without interactive confirmation')
   .option('--output <path>', 'Write drafts to this directory instead of pushing to team repo')
   .option('--existing-codebase <path>', 'Path to existing codebase.md (used with --from-mr; overrides auto-detection from team repo)')
+  .option('--from-repo <url>', 'Clone a remote repo and generate per-repo codebase summary')
+  .option('--depth <n>', 'Shallow clone depth for --from-repo (default 1)', '1')
+  .option('--ssh', 'Force SSH clone even if HTTPS token is available')
+  .option('--domain <name>', 'Skip AI recommendation and assign repo to this domain explicitly')
+  .option('--from-repo-list <path>', 'Batch import repos from a YAML whitelist')
+  .option('--concurrency <n>', 'Concurrent repos for --from-repo-list (default 3)', '3')
+  .option('--skip-aggregate', 'Skip domain-*.md / index.md regeneration')
+  .option('--incremental', 'Use cached clone with fetch+reset (with --from-repo or --from-repo-list)')
+  .option('--from-org <org>', 'List repos under an org and bootstrap whitelist + domains')
+  .option('--bootstrap', 'Run interactive review after --from-org')
+  .option('--max-repos <n>', 'Cap on repos pulled from --from-org (default 200)', '200')
+  .option('--exclude-archived', 'Exclude archived repos from --from-org (default true)')
+  .option('--include-pattern <re>', 'Regex to include repos by full name (used with --from-org)')
+  .option('--exclude-pattern <re>', 'Regex to exclude repos by full name (used with --from-org)')
+  .option('--skip-import', 'Only write drafts; skip the actual --from-repo-list run')
+  .option('--iwiki-dual', 'Enable dual-output mode for --from-iwiki (write codebase sections in addition to learning)')
+  .option('--require-review', 'Defer codebase section writes to .teamai/pending-review.jsonl for human review')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { importCmd } = await import('./import.js');
