@@ -775,6 +775,461 @@ skills / rules 类型额外 × 1.1（类型本身已是可信信号）
 
 ---
 
+### Phase 5：远端整仓导入与团队级 codebase 知识库
+
+**背景与目标**
+
+当前 codebase 知识库的来源能力存在结构性缺口：
+
+| 已有能力 | 缺口 |
+|---------|------|
+| `--workspace` 扫描本地 git 工作区 → codebase.md | 本地工作区只是团队仓库的子集，无法覆盖整个团队的代码资产 |
+| `--from-mr` 双路产物（learning + codebase 建议） | 仅 MR 粒度，无法初始化 / 全量重建 |
+| `--from-iwiki` 单路（learning） | 业务接口、外部知识源等章节无法落入 codebase.md |
+| 无远端整仓导入 | 团队多仓库、跨业务域的全局视图缺失 |
+
+Phase 5 的目标是把 teamai-cli 维护的 codebase 知识库从「单仓本地视角」升级为「团队多仓全局视角」，并打通 iwiki 的双路产物，使 codebase.md 成为 agent 运行时可信赖的团队级知识入口。
+
+**核心设计原则**
+
+1. **AI 推荐 + 人工确认**：业务域字典、仓库归属、白名单等关键决策由 AI 给草稿，人工在 review 卡点确认，不依赖纯人工维护，也不放任 AI 自主决策
+2. **白名单驱动**：组织级发现产出的仓库列表必须经白名单过滤，避免 archive/demo/个人 fork 污染知识库
+3. **按业务域聚合**：codebase 文档按域拆分为多文件，避免单文件过大，并为 agent 检索提供更精确的入口
+4. **复用现有能力**：远端整仓扫描复用 `--workspace` 的扫描器；产物结构对齐 `--from-mr` 的双路约定；认证复用 GitProvider
+
+**目录与产物结构**
+
+```
+docs/
+  codebase.md                       # 顶层索引：业务域地图 + 全局元数据 + 知识体系坐标
+  codebase/
+    domain-<name>.md                # 域聚合视图（含该域所有仓的目录/接口/调用链摘要）
+    repos/
+      <repo-slug>.md                # 单仓详细视图（自动生成，被域文件引用）
+
+.teamai/
+  domains.yaml                      # 最终生效的业务域字典（人工确认后）
+  domains.draft.yaml                # AI 生成的草稿，待 review
+  domains.history.jsonl             # AI 推荐与人工决定的审计日志
+  repo-whitelist.yaml               # 仓库白名单（含 domain / iwiki_space / auth 等元数据）
+  cache/
+    repos/<provider>/<org>/<repo>/  # shallow clone 缓存
+      LAST_SYNC                     # 上次同步 commit SHA
+      .scan-result.json             # 扫描结果缓存
+```
+
+**章节锚点与溯源元数据约定**
+
+每个 codebase/*.md 章节使用 HTML 注释声明维护方与来源，import 同步时按锚点定位、原地更新：
+
+```markdown
+## 业务接口
+<!-- managed-by: import --from-iwiki, source: iwiki://space/123, syncedAt: 2026-06-11T10:00:00Z -->
+
+## 模块依赖
+<!-- managed-by: import --from-repo, source: github.com/team/foo@<sha>, syncedAt: ... -->
+```
+
+`managed-by: manual` 的章节不参与自动同步，由人工维护。
+
+#### P5.0　业务域字典基础设施
+
+引入 `.teamai/domains.yaml` schema、AI 聚类 prompt、CLI review 交互。**这是 Phase 5 所有后续步骤的前置依赖**。
+
+**Schema 关键字段**：
+
+```yaml
+domains:
+  - name: 推理
+    description: AI 推理服务、模型部署、推理优化
+    confidence: 0.92        # AI 给定，人工确认后保留作为审计字段
+    repos:
+      - url: github.com/team/inference-core
+        confidence: 0.95
+        signal: "README 关键词: vllm, tensorrt"
+        locked: false       # locked=true 时 AI 不再建议变更
+```
+
+**AI 聚类输入信号**（按权重排序）：
+
+1. README 首段 + 标题
+2. package.json `description`/`keywords`、setup.py `description`
+3. 仓库名 token 拆分
+4. iwiki 关联页（若白名单标注 `iwiki_space`）
+5. 主语言 + 主框架推断
+
+**CLI review 交互**：
+
+```
+$ teamai import --bootstrap-domains --review
+
+发现 5 个推荐业务域：
+  [1] 推理   (12 仓库, 平均 confidence 0.89)
+  [2] 训练   (8 仓库, 平均 0.82)
+  [3] 平台   (15 仓库, 平均 0.71)  含 3 个低置信
+  [4] 数据   (4 仓库, 平均 0.78)
+  [5] 未分类 (6 仓库, 必须处理)
+
+> a (全部接受) / r (review 低置信) / m (合并 N M) / e (编辑) / q (保存草稿退出)
+```
+
+**置信度阈值与兜底**：`confidence < 0.6` 强制进「未分类」域，必须人工处理；`locked: true` 锁定后续 AI 推荐；所有决策记入 `domains.history.jsonl` 审计日志。
+
+**首版仅支持一级域**，二级层次（如「AI/推理」）作为 Phase 6 演进事项。
+
+**复用现有 LLM 调用层**（与 import-mr 共用），保持模型选择与 token 预算一致。
+
+**验收**：在样例 org 上跑 `--bootstrap-domains` 输出可读的 draft yaml；review CLI 可完成接受/合并/拆分/重命名；确认后 `.teamai/domains.yaml` 生效；`domains.history.jsonl` 记录完整决策链。
+
+#### P5.1　单仓远端导入 `--from-repo`
+
+实现单仓全量导入，作为 Phase 5 的最小验证单元。
+
+**命令**：`teamai import --from-repo <url> [--domain <name>] [--ssh] [--depth <n>]`
+
+**实现要点**：
+
+1. **shallow clone 缓存**：clone 到 `~/.teamai/cache/repos/<provider>/<org>/<repo>`，默认 `--depth=1`；扫描完成后保留缓存以支持后续增量
+2. **认证三层兜底**：
+   - 第一层：复用 GitProvider 现有 token（GITHUB_TOKEN / TAI_PAT_TOKEN）
+   - 第二层：SSH key（`~/.ssh/id_*` + ssh-agent），用户显式 `--ssh` 或 token 失败时启用
+   - 第三层：白名单 per-repo `auth: ssh|token|public` 字段显式覆盖
+   - 失败明确报告"仓库 X 因认证失败跳过，请检查 token 或加入 SSH"，不静默吞错
+3. **域归属推荐**：未指定 `--domain` 时 AI 给单点推荐，CLI 单步确认（`Y/n/o (其他域)/u (未分类)`）
+4. **产物落点**：写入 `docs/codebase/repos/<repo-slug>.md`（单仓详细视图）+ 更新 `domain-<name>.md` 索引节点
+5. **扫描器复用**：`--workspace` 的目录/模块/调用链扫描逻辑直接复用，输入路径替换为缓存目录
+6. **磁盘上限**：默认 5GB 缓存上限，超过时 LRU 淘汰并提示用户
+
+**双路产物**：除 codebase 章节更新外，AI 同步分析跨仓复用模式 / 重复实现 / 架构异味，作为 learning 草稿（这是远端整仓相对本地 `--workspace` 的独特价值）。
+
+**前置依赖**：P5.0（域字典基础设施）。
+
+**验收**：给定一个 GitHub 仓库 URL，命令 5 分钟内完成 clone + 扫描 + 产物落盘；`docs/codebase/repos/<repo>.md` 生成且含正确的 source / syncedAt 元数据；GitHub 与工蜂仓库均可成功导入；认证失败有明确错误。
+
+#### P5.2　多仓批量导入 + 业务域聚合输出
+
+引入仓库白名单与多仓批量调度，并完成 codebase.md 多文件结构的产出。
+
+**命令**：`teamai import --from-repo-list .teamai/repo-whitelist.yaml`
+
+**白名单 schema**：
+
+```yaml
+repos:
+  - url: https://github.com/team/inference-core
+    domain: 推理
+    iwiki_space: SPC123          # 可选，关联到该仓的 iwiki 文档空间
+    auth: token                  # token | ssh | public
+    priority: high
+  - org: https://github.com/team-org
+    include_pattern: "^(prod|core)-.*"
+    exclude_pattern: ".*-archive$"
+    default_domain: 平台
+```
+
+**实现要点**：
+
+1. **并发调度**：默认并发 3 仓，支持 `--concurrency N`；单仓失败不阻塞整体
+2. **域聚合输出**：每个 `domain-<name>.md` 由该域下所有 repo 的扫描结果合并而成，含目录索引、跨仓接口对照表、调用链摘要
+3. **顶层 codebase.md 重构**：升级为索引文件 + 业务域地图 + 全局元数据，原 teamai-cli 自身的 codebase.md 内容**保留为独立条目**（不被覆盖），新结构用于"团队整仓汇总"
+4. **未分类兜底**：白名单未标 `domain` 且 AI 推荐 `confidence < 0.6` 的仓进 `domain-未分类.md`
+5. **冲突检测**：同一 repo 在多个域下出现 → 报错并要求 review 白名单
+
+**前置依赖**：P5.0、P5.1。
+
+**验收**：给定一个含 10+ 仓的白名单，命令完成全部导入；产物按域正确拆分到 `domain-*.md`；顶层 codebase.md 正确呈现业务域地图与索引；teamai-cli 自身的 codebase 内容未被破坏。
+
+#### P5.3　增量同步 + CI 调度 + 域漂移检测
+
+把全量扫描升级为增量模式，并接入 CI 自动调度。
+
+**增量模式**：`teamai import --from-repo-list <yaml> --incremental`
+
+实现要点：
+
+1. **状态记录**：`~/.teamai/cache/repos/<...>/LAST_SYNC` 记录上次扫描的 commit SHA
+2. **diff 范围裁剪**：`git fetch --depth=50` → `git diff <LAST_SYNC>..HEAD --name-only` → 仅重扫变更涉及的模块
+3. **章节级更新**：按 codebase 章节锚点定位、原地替换，未变更章节保留
+4. **状态推进**：扫描成功后更新 `LAST_SYNC`；失败时不推进，保证下次重试
+5. **域漂移检测**：repo README 大改后 AI 重算 confidence，若与现有 domain 偏差 > 0.4，提示「该仓库可能需要重新分类」（不自动改），写入 `domains.history.jsonl`
+
+**CI 调度策略**：
+
+| 触发 | 命令 | 频率 |
+|------|------|------|
+| MR 合并 | `--from-mr` | 即时（已有） |
+| 定时 | `--from-repo-list <yaml> --incremental` | 每日 |
+| 手动 | `--from-org <org>` 全量 | 季度 |
+| 新仓加入白名单 | `--from-repo <url>` | 触发式 |
+
+**前置依赖**：P5.2。
+
+**验收**：在已扫描的仓库上跑 `--incremental` 仅处理变更模块，耗时显著低于全量；CI 配置示例（GitHub Actions / Coding CI）随代码提交；连续 3 天定时同步无回归；域漂移触发时正确写入 history。
+
+#### P5.4　组织级一键初始化 + iwiki 双路升级
+
+完成两件事：把组织级发现 + 域 bootstrap 串成"一键初始化"；把 `--from-iwiki` 升级为双路产物，使业务接口、外部知识源章节自动维护。
+
+**一键初始化命令**：`teamai import --from-org <org-or-group> --bootstrap`
+
+执行序列：
+
+1. 通过 GitProvider 列出 org / group 下所有仓库
+2. 拉取每个仓的 README + meta，AI 同时产出：
+   - `repo-whitelist.draft.yaml`（含 include/exclude 建议）
+   - `domains.draft.yaml`（聚类结果）
+3. 进入 P5.0 的 review CLI，用户确认两份草稿
+4. 写入正式配置后自动调用 P5.2 的 `--from-repo-list` 完成首次全量
+
+**iwiki 双路升级**：
+
+修改 `import-iwiki.ts` 复用 `import-mr.ts` 的双路输出范式，使 iwiki 同步同时产出：
+
+- learning 草稿（已有）
+- codebase suggestions：自动写入 `## 业务接口`、`## 外部知识源入口`、`## 业务术语表` 三个章节，按 `<!-- managed-by: import --from-iwiki, source: iwiki://... -->` 锚点定位
+
+**iwiki ↔ MR ↔ repo 的多源协同**：
+
+同一逻辑单元（如某业务接口）可能同时被多源更新，import 流程需识别冲突：
+
+- 同一锚点本轮被多源更新 → suggestions 标 `conflict: true`，等 reviewer 介入
+- 高风险章节（架构、模块依赖、外部知识源索引）默认 require reviewer 确认；低风险章节可自动 apply
+
+**前置依赖**：P5.0、P5.2、P5.3。
+
+**验收**：给定一个 org URL，`--bootstrap` 一键完成白名单 + 域字典 + 首次全量导入；`--from-iwiki` 在 iwiki 文档变更后正确更新对应 codebase 章节；多源冲突场景被识别并标注；高风险章节的 reviewer 卡点生效。
+
+**Phase 5 整体验收**
+
+1. 在真实团队 org（≥ 10 仓 + ≥ 3 个 iwiki space）上完整跑通 `--bootstrap` → review → 全量 → 增量
+2. 产物包含 5+ 业务域文件、所有仓库的 detail 文件、业务接口章节自动同步
+3. CI 定时 + MR 触发 + iwiki 同步三条流水线并存无冲突
+4. agent 运行时通过 codebase.md 顶层索引可在 3 跳内定位到任意仓库的模块详情或业务接口
+
+**遗留至 Phase 6 的事项**
+
+- 二级业务域层次（如「AI/推理」「平台/CI」）
+- 跨仓重复实现的自动检测与 learning 沉淀（P5 仅做被动收集）
+- codebase 文档的健康度 lint（章节缺失、源失效、syncedAt 过期等）
+
+---
+
+### Phase 6：Phase 5 遗留加固
+
+**背景与目标**
+
+Phase 5 把 codebase 知识库从「单仓本地」升级到「团队多仓全局」。在落地过程中，为了保持每一步可交付，把若干"知道但暂不做"的事项推给了 Phase 6。Phase 6 的目标不是新增大块能力，而是**把 Phase 5 已落地的能力打磨成可在生产长期运行的状态**：补齐被裁剪的可靠性机制、把 stub 实现转为真实实现、把"标记不应用"的检测升级为"可治理的闭环"、给文档质量装上自动 lint。
+
+**核心原则**
+
+1. **不扩展能力面**：Phase 6 只加固 Phase 5 已声明的功能，不引入新命令或新数据源
+2. **可观测性优先**：每条加固都伴随明确的失败信号（log / lint 报告 / pending-review 队列）
+3. **向后兼容**：所有改动默认行为与 Phase 5 一致，新行为通过 flag / 配置启用
+4. **小步可独立交付**：6 个子步骤之间最大化解耦，任一子步骤可先合入而不阻塞其他
+
+**子步骤总览**
+
+| 步骤 | 主题 | Phase 5 痛点 |
+|------|------|--------------|
+| P6.0 | TGit listOrgRepos 真实实现 | 当前是 stub throw |
+| P6.1 | 缓存生命周期管理（LRU + 容量上限） | 无淘汰策略，长期累积会爆盘 |
+| P6.2 | 章节级 diff 与原地锚点更新 | 全文重生成成本高，且对未变章节做无意义改写 |
+| P6.3 | 多源冲突治理流程（pending-review CLI） | 已写 jsonl 但无 review 工具 |
+| P6.4 | 域漂移自动应用工作流 | P5.3 只 flag 不 apply，长期堆积 |
+| P6.5 | codebase 文档健康度 lint | 章节缺失 / 源失效 / syncedAt 过期无检查 |
+
+#### P6.0　TGit listOrgRepos 真实实现
+
+**Phase 5 现状**：`src/providers/tgit/index.ts.listOrgRepos()` 直接抛 `Error('TGit listOrgRepos not yet supported')`；GitHub 的 `--from-org` 已可用，工蜂用户无法用同一命令一键 bootstrap。
+
+**实现要点**：
+
+1. 通过工蜂 OpenAPI（`/api/v3/groups/<id>/projects?per_page=100&page=N`）分页拉取
+2. 复用 `src/providers/tgit/gf-cli.ts` 的 token 解析（netrc → TAI_PAT_TOKEN 兜底）
+3. 字段映射：
+   - `http_url_to_repo` → url
+   - `path_with_namespace` → fullName
+   - `name` → name
+   - `description` / `default_branch` / `archived`（工蜂称 archived） / `last_activity_at` → 对应 OrgRepoInfo 字段
+4. group 路径支持多级（如 `team/sub/sub2`）需要 URL encode
+5. 与 GitHub 实现对齐：archived 默认排除、maxRepos 默认 200、404 时给清晰错误提示（区分"group 不存在"与"无权限"）
+
+**测试**：用 fetch mock 覆盖分页 / 多级 group / archived 过滤 / 404 fallback。
+
+**前置依赖**：—（独立子步骤）
+
+**验收**：在真实工蜂 group 上跑 `teamai import --from-org git.woa.com/<group> --bootstrap` 与 GitHub 体验一致，且产物（domains.draft.yaml + repo-whitelist.draft.yaml）正确生成。
+
+#### P6.1　缓存生命周期管理（LRU + 容量上限）
+
+**Phase 5 现状**：`~/.teamai/cache/repos/` 只增不减；新仓被加入白名单后旧的不会清理；磁盘上限只在文档里写了 5GB 但代码无强制。
+
+**实现要点**：
+
+1. 引入元数据文件 `~/.teamai/cache/repos/.cache-index.json`：
+   ```json
+   {
+     "version": 1,
+     "entries": [
+       {
+         "key": "github/owner/repo",
+         "size_bytes": 12345678,
+         "last_used": "2026-06-11T10:00:00Z",
+         "last_synced_sha": "abc123"
+       }
+     ]
+   }
+   ```
+2. 每次 shallowClone / shallowFetch 完成时刷新 `last_used` 与 `size_bytes`（用 `fs.stat` 递归累加，跳过 .git 内容则用 `du -sb` 等价的简单递归）
+3. **淘汰触发时机**：
+   - 每次单仓导入完成后异步检查（不阻塞主流程）
+   - 总容量 > 阈值（默认 5GB，可配 `TEAMAI_CACHE_MAX_BYTES`）→ 按 last_used 升序删除直到回到阈值的 80%
+   - 30 天未访问的 entry 不论容量都标为可淘汰
+4. 增加 `teamai cache --status` / `teamai cache --gc [--dry-run]` 子命令，让用户手动查看与触发
+5. 删除时同时移除 `.cache-index.json` 中对应 entry，避免残留
+
+**测试**：tmpdir 注入 cache root，构造多 entry + 不同 last_used，断言 GC 后剩余条目正确。
+
+**前置依赖**：—
+
+**验收**：在 6GB 缓存场景下 GC 自动回到 ≤ 4GB；30 天未用 entry 被清理；`teamai cache --status` 正确输出表格。
+
+#### P6.2　章节级 diff 与原地锚点更新
+
+**Phase 5 现状**：`generateCodebaseMd()` 永远整体重生成；`repos/<slug>.md` 即使仓库无变化也会被覆写，导致每次 `--incremental` 仍产生大量"伪 diff"；`domain-*.md` 与 `index.md` 同样是全量重写。
+
+**实现要点**：
+
+1. 在 `repos/<slug>.md` 与 `domain-*.md` 内统一使用 HTML 注释锚点：
+   ```markdown
+   <!-- managed-by: import --workspace, section: modules, source: <repo>@<sha>, syncedAt: ... -->
+   <内容>
+   <!-- /managed-by: modules -->
+   ```
+2. 新建 `src/section-patcher.ts`：
+   ```ts
+   export function patchManagedSection(
+       content: string,
+       sectionKey: string,
+       newBody: string,
+       meta: { source: string; syncedAt: string },
+   ): string;
+
+   export function listManagedSections(content: string): SectionInfo[];
+   ```
+3. 改造 `generateCodebaseMd` 为分章节产出：
+   - 现有内容拆为 `{ overview, modules, entrypoints, dependencies, ... }` 各 section
+   - 每 section 与现有文件中对应锚点的 body 做 hash 比较
+   - 仅替换 hash 变化的章节，其余保留（含其原 syncedAt）
+4. 对 P4.4 已有的 `applyCodebaseSuggestions`（按 `## 标题` 匹配）保持兼容：新锚点机制只用于 team-codebase/ 下的产物，docs/codebase.md（teamai-cli 自身）走原路径
+5. **增量场景的真实收益**：单仓如仅 docs 变更，重扫后 `modules` 章节 hash 不变，整个文件不写入磁盘 → git status 干净
+
+**测试**：构造已有锚点的 md + 新 body，验证只动目标章节、其他锚点 syncedAt 不变；hash 相同时跳过写入。
+
+**前置依赖**：与 P5.3 的 `--incremental` 协同（增量模式下章节级 diff 收益最大）。
+
+**验收**：相同输入跑两次 `--from-repo --incremental`，第二次产物文件 mtime 不变（无实际改写）；只 README 变更的仓只引发一个章节的 syncedAt 更新。
+
+#### P6.3　多源冲突治理流程（pending-review CLI）
+
+**Phase 5 现状**：`.teamai/pending-review.jsonl` 与 `source-marks.jsonl` 已写但无消费工具；高风险章节 / 多源冲突的 review 卡点缺少落地手段。
+
+**实现要点**：
+
+1. 新增子命令 `teamai review`：
+   ```
+   teamai review                    # 列出待 review 项
+   teamai review <id>               # 展开单条详情（diff 视图）
+   teamai review <id> --apply       # 接受应用到目标文件 + 写 history
+   teamai review <id> --reject [msg] # 拒绝 + 写 history.details.reject_reason
+   teamai review --all-apply        # 一键接受全部低风险项（confidence > 阈值）
+   ```
+2. pending-review.jsonl 的统一 schema：
+   ```ts
+   { id, ts, kind: 'codebase-section'|'domain-drift'|'multi-source-conflict',
+     target: { file, section }, payload: {...}, source, risk: 'high'|'medium'|'low' }
+   ```
+3. `--apply` 时调用 P6.2 的 `patchManagedSection` 落盘
+4. 命令产出 review 完成的事件追加到 `domains.history.jsonl`（统一审计）
+5. 与 P5.4 iwiki dual 的 `--require-review` 完整闭环：require-review 写 jsonl → 用户跑 `teamai review` 处理
+
+**测试**：构造 jsonl + 目标文件，验证 apply / reject 路径写盘 + history 正确。
+
+**前置依赖**：P6.2（patchManagedSection 是 apply 的底座）。
+
+**验收**：跑一次 `--from-iwiki --iwiki-dual --require-review` 产生 review 项，再跑 `teamai review` 能正常浏览、应用、拒绝；history 记录完整决策链。
+
+#### P6.4　域漂移自动应用工作流
+
+**Phase 5 现状**：P5.3 的 `detectDomainDrift` 只把建议写入 history，长期堆积；用户没有"批量应用 / 拒绝"的入口；新发现的域名不会被自动加入 domains.yaml。
+
+**实现要点**：
+
+1. drift 事件改为同时写入 `pending-review.jsonl`（kind: `domain-drift`），与 P6.3 的 review 工具天然打通
+2. 新增子命令 `teamai domains drift`：
+   ```
+   teamai domains drift                  # 列出所有未处理 drift
+   teamai domains drift --apply <repoUrl>      # 把该 repo 重分类到推荐域
+   teamai domains drift --apply-all --threshold 0.8   # 自动应用高置信项
+   teamai domains drift --lock <repoUrl>       # 锁定该仓不再触发 drift（写 locked: true）
+   ```
+3. 当推荐的目标域不在现有 domains.yaml 中时：提示用户确认是否新建该域（或手动指派到现有域）
+4. apply 时同步更新 RepoEntry 的 confidence / signal / 域归属，并触发一次 P5.2 的 `regenerateAggregate` 让聚合文件跟上
+5. drift 事件去重：同一仓 24h 内只产一个 review item，新的 drift 信号覆盖旧的
+
+**测试**：构造 history 中多条 drift，验证 list / apply / lock 行为；apply 后 domains.yaml 正确变更、aggregate 文件被刷新。
+
+**前置依赖**：P6.3（pending-review CLI 是承载工具）。
+
+**验收**：连续 3 次 `--incremental` 触发 drift，`teamai domains drift` 列出 1 项（去重正确），apply 后下次 incremental 不再 drift。
+
+#### P6.5　codebase 文档健康度 lint
+
+**Phase 5 现状**：codebase 文档可能出现章节缺失、源失效（iwiki 页面被删 / 仓库 archive 但仍在白名单）、syncedAt 长期未更新等"沉默坏味"，但无任何检测；agent 在过期信息上做决策时无预警。
+
+**实现要点**：
+
+1. 新增子命令 `teamai codebase --lint [--fix]`：
+   ```
+   --lint               扫描所有 docs/team-codebase/**.md + docs/codebase.md，输出问题清单
+   --fix                自动修复可机械修复的问题（删除孤儿 repo entry、统一 frontmatter 字段名等）
+   --severity high      只报指定级别
+   --json               机器可读输出（供 CI 消费）
+   ```
+2. 检查项（每项给 high/medium/low/info 级别）：
+   - **high**: 章节锚点 `<!-- managed-by ... -->` 缺失闭合 `<!-- /managed-by ... -->`
+   - **high**: domains.yaml 中 repo 在 docs/team-codebase/repos/ 下找不到对应 .md
+   - **high**: docs/team-codebase/repos/<slug>.md 中 frontmatter `source` 指向的 url 已不在白名单
+   - **medium**: 章节 syncedAt 距今 > 60 天
+   - **medium**: index.md 列出的 repo 在 domains.yaml 找不到归属域
+   - **low**: domain-*.md 中 repos 表格行数与 domains.yaml 中该域 repos 数量不一致
+   - **info**: pending-review.jsonl 项数 > 10（提醒消费）
+3. 与 Phase 4 已有的 `lintCodebaseMd`（per-file lint）整合，不重复造轮子；本步骤的 lint 是**全局视角**（跨文件一致性）
+4. CI 集成：在 examples/ci/ 下追加 `teamai-lint.yml`，定时跑 `teamai codebase --lint --json` 并在有 high 项时失败
+
+**测试**：构造各类违规场景，断言 lint 报告正确分类；`--fix` 仅在白名单清理 / frontmatter 规范化等"低风险机械动作"上生效。
+
+**前置依赖**：—（独立，但与 P6.3 review CLI 协同更顺：lint 报告中的 high 项可一键转入 pending-review）
+
+**验收**：在一个真实 team-codebase 上跑 `--lint` 输出可读报告；`--fix` 不会破坏正常文件；CI 在引入新违规时正确失败。
+
+**Phase 6 整体验收**
+
+1. 6 个子步骤独立合入，每步独立验收通过
+2. 在真实团队仓上跑完整闭环：`--from-org --bootstrap` → 长期定时 `--incremental` → 偶发 drift → `teamai review` / `teamai domains drift` 处理 → `teamai codebase --lint` 通过
+3. 缓存目录稳定保持在容量阈值以下；30 天后自动清理未访问 repo
+4. 章节级 diff 让无变化的同步成本接近零；git status 不再产生伪 diff
+5. agent 通过 codebase 检索决策时，syncedAt 过期 / 源失效的内容会被 lint 拦截，不进入产物
+
+**遗留至 Phase 7 的事项**
+
+- 二级业务域层次（如「AI/推理」「平台/CI」）
+- 跨仓重复实现的主动检测与 learning 沉淀
+- codebase.md 与 search-index/recall 的检索联动
+- agent 检索效果量化指标（这是端到端价值的最终衡量）
+
+---
+
 ## 附录 C：步骤依赖一览
 
 | 步骤 | 核心目标 | 前置依赖 |
@@ -802,6 +1257,17 @@ skills / rules 类型额外 × 1.1（类型本身已是可信信号）
 | <span style="color:#0969da">P4.4</span> | <span style="color:#0969da">MR 合入统一流水线（learning 提炼 + codebase 更新，触发时机改为 merged）</span> | <span style="color:#0969da">—（随时可并行；复用 P0.5 解析逻辑）</span> |
 | P4.5 | docs/rules/skills 质量自动更新 | P1.3、P3.3、P4.1 |
 | P4.6 | learning 晋升机制（confidence 达阈值 → 按内容类别沉淀为 docs / skills / rules） | P4.1、P4.3（晋升后原 learning 进 cold/） |
+| P5.0 | 业务域字典基础设施（schema + AI 聚类 + review CLI） | — |
+| P5.1 | 单仓远端导入 `--from-repo`（认证三层 + shallow clone + 域单点确认） | P5.0；复用 P0.3 `--workspace` 扫描器 |
+| P5.2 | 多仓批量 `--from-repo-list` + 业务域聚合多文件输出 | P5.0、P5.1 |
+| P5.3 | 增量同步 + CI 调度 + 域漂移检测 | P5.2 |
+| P5.4 | 组织级 `--bootstrap` 一键初始化 + iwiki 双路升级 | P5.0、P5.2、P5.3；复用 P4.4 双路产物范式 |
+| P6.0 | TGit listOrgRepos 真实实现 | — |
+| P6.1 | 缓存生命周期管理（LRU + 容量上限 + GC 命令） | — |
+| P6.2 | 章节级 diff 与原地锚点更新 | 与 P5.3 `--incremental` 协同 |
+| P6.3 | 多源冲突治理流程（pending-review CLI） | P6.2（patchManagedSection 是 apply 底座） |
+| P6.4 | 域漂移自动应用工作流（teamai domains drift） | P6.3 |
+| P6.5 | codebase 文档健康度 lint（全局一致性） | — |
 
 ---
 
