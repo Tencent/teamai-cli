@@ -175,8 +175,10 @@ export function joinSections(prelude: string, sections: ManagedSection[]): strin
  *   - 不存在任何锚点 → 返回 { prelude: 整篇, sections: [] }
  */
 export function parseSections(md: string): { prelude: string; sections: ManagedSection[] } {
-    const openRe = /<!--\s*managed-by:\s*import\s+--from-repo,\s*section:\s*([^,>\s]+)([^>]*)-->/g;
-    const closeRe = /<!--\s*\/managed-by:\s*([^>\s]+)\s*-->/g;
+    // 同时接受 --from-repo 和 --from-iwiki 来源（保持写入侧锚点不变，解析侧放宽）。
+    // [^>\n]{0,256}? 限制字符种类（不含换行）与长度上限（256），防止恶意输入触发 ReDoS 回溯。
+    const openRe = /<!--\s*managed-by:\s*import\s+--from-(?:repo|iwiki),\s*section:\s*([^,>\s]+)([^>\n]{0,256}?)-->/g;
+    const closeRe = /<!--\s*\/managed-by:\s*([^>\n\s]{0,256}?)\s*-->/g;
 
     // 收集所有开锚
     const opens: Array<{ slug: string; extra: string; index: number; end: number }> = [];
@@ -272,10 +274,13 @@ export function patchManagedSection(
     newBody: string,
     meta: { source?: string; syncedAt?: string },
 ): string {
+    // 同时接受 --from-repo 和 --from-iwiki 来源（写入侧锚点保持原样，解析侧放宽匹配）。
+    // [^>\n]{0,256}? 限制字符种类与长度上限，防止 ReDoS 回溯。
+    const fromVariants = '--from-(?:repo|iwiki)';
     const openRe = new RegExp(
-        `<!--\\s*managed-by:\\s*import\\s+--from-repo,\\s*section:\\s*${escapeRegex(slug)}([^>]*)-->`,
+        `<!--\\s*managed-by:\\s*import\\s+${fromVariants},\\s*section:\\s*${escapeRegex(slug)}([^>\\n]{0,256}?)-->`,
     );
-    const closeRe = new RegExp(`<!--\\s*/managed-by:\\s*${escapeRegex(slug)}\\s*-->`);
+    const closeRe = new RegExp(`<!--\\s*/managed-by:\\s*${escapeRegex(slug)}[^>\\n]{0,256}?\\s*-->`);
 
     const openMatch = openRe.exec(md);
     if (!openMatch) {
@@ -368,20 +373,9 @@ export function mergeWithAnchors(
         const parsed = parseSections(oldFile);
         oldPrelude = parsed.prelude;
         oldSections = parsed.sections;
-    } catch {
-        // 解析失败：视为首次写入
-        const allSections = freshSections.map((s) => ({
-            ...s,
-            source: meta.source,
-            syncedAt: meta.syncedAt,
-        }));
-        return {
-            mergedMd: joinSections(freshPrelude, allSections),
-            changedSlugs: [],
-            keptSlugs: [],
-            addedSlugs: allSections.map((s) => s.slug),
-            removedSlugs: [],
-        };
+    } catch (err) {
+        // 解析失败（如未闭合锚点）：重新抛出，由调用方（import-repo）决定是否备份后 fallback
+        throw err;
     }
 
     // 无旧锚点：视为首次写入

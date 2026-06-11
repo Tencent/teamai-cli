@@ -26,6 +26,7 @@ import {
 } from './domains/index.js';
 import { askQuestion } from './utils/prompt.js';
 import { log } from './utils/logger.js';
+import { assertSafePath } from './utils/path-safety.js';
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -500,6 +501,8 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     // 4. 确定产物输出路径
     const outputRoot = output ?? path.join(process.cwd(), 'docs', 'team-codebase');
     const repoMdPath = path.join(outputRoot, 'repos', `${slug}.md`);
+    // path-safety：确保写入路径在 reposDir 内，防止 slug 含路径分隔符导致目录穿越
+    assertSafePath(repoMdPath, [path.join(outputRoot, 'repos')]);
 
     // 章节级 diff + 锚点合并
     const sourceTag = `${url}@${cloneSha.slice(0, 8)}`;
@@ -515,13 +518,25 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     }
 
     let merged: ReturnType<typeof mergeWithAnchors>;
+    let toWrite: string;
     try {
         merged = mergeWithAnchors(oldFile, codebaseMd, { source: sourceTag, syncedAt });
+        toWrite = merged.mergedMd;
     } catch (err) {
         log.warn(`[section-merge] ${err instanceof Error ? err.message : err}；fallback 到全量重写`);
+        // fallback 前备份旧文件，防止已有章节数据丢失
+        if (oldFile !== null && !dryRun) {
+            const bakPath = `${repoMdPath}.bak`;
+            try {
+                await fs.writeFile(bakPath, oldFile, 'utf8');
+                log.warn(`[section-merge] 旧文件已备份至：${bakPath}`);
+            } catch (bakErr) {
+                log.debug(`[section-merge] 备份失败：${bakErr instanceof Error ? bakErr.message : bakErr}`);
+            }
+        }
         merged = mergeWithAnchors(null, codebaseMd, { source: sourceTag, syncedAt });
+        toWrite = merged.mergedMd;
     }
-    const toWrite = merged.mergedMd;
 
     if (dryRun) {
         console.log(chalk.yellow(`[dry-run] 产物路径: ${repoMdPath}`));

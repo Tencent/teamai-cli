@@ -36,6 +36,8 @@ const HIGH_RISK_SECTIONS = new Set([
     '目录结构与模块职责', '模块依赖', 'modules', 'dependencies',
     'external-knowledge', '外部知识源',
 ]);
+/** 反序列化大小上限：10 MB，防止超大文件导致 OOM。 */
+const MAX_CONFIG_FILE_BYTES = 10 * 1024 * 1024;
 
 // ─── 工具函数 ────────────────────────────────────────────
 
@@ -139,6 +141,11 @@ export async function loadPendingReview(cwd: string): Promise<PendingReviewItem[
     const filePath = getPendingReviewPath(cwd);
     if (!await fs.pathExists(filePath)) {
         return [];
+    }
+
+    const stat = await fs.stat(filePath);
+    if (stat.size > MAX_CONFIG_FILE_BYTES) {
+        throw new Error(`${filePath} exceeds max allowed size 10MB`);
     }
 
     const text = await fs.readFile(filePath, 'utf8');

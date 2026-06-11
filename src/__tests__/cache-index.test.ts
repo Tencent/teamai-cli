@@ -184,4 +184,21 @@ describe('cache-index', () => {
             expect(size).toBeGreaterThan(0);
         });
     });
+
+    describe('loadCacheIndex — 文件大小限制', () => {
+        it('索引文件超过 10 MB 时返回空索引（size 超限走 catch → 返回 emptyIndex）', async () => {
+            const indexPath = path.join(tmpDir, '.cache-index.json');
+            // 写入 11 MB 内容（真实文件，非 mock fs.stat）
+            const chunk = 'x'.repeat(1024 * 1024);
+            let content = '';
+            for (let i = 0; i < 11; i++) content += chunk;
+            await fs.writeFile(indexPath, content, 'utf8');
+
+            // loadCacheIndex 内部 catch 会返回 emptyIndex 而非抛出
+            // 但 size 超限路径会 throw，被 catch 捕获后返回空
+            const idx = await loadCacheIndex();
+            expect(idx.version).toBe(1);
+            expect(idx.entries).toHaveLength(0);
+        });
+    });
 });

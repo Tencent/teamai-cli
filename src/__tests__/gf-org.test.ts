@@ -34,11 +34,27 @@ function makeProject(overrides: Record<string, unknown> = {}) {
 }
 
 function makeResponse(body: unknown, status = 200): Response {
+    const bodyText = JSON.stringify(body);
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(bodyText);
+    let readerDone = false;
     return {
         ok: status >= 200 && status < 300,
         status,
         json: () => Promise.resolve(body),
-        text: () => Promise.resolve(JSON.stringify(body)),
+        text: () => Promise.resolve(bodyText),
+        body: {
+            getReader: () => ({
+                read: async () => {
+                    if (!readerDone) {
+                        readerDone = true;
+                        return { done: false, value: bytes };
+                    }
+                    return { done: true, value: undefined };
+                },
+                cancel: async () => {},
+            }),
+        },
     } as unknown as Response;
 }
 

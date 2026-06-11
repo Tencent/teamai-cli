@@ -41,19 +41,45 @@ function ghApiPage(endpoint: string): GhRepoApiItem[] {
  * @param url    完整 API URL
  * @param token  GitHub personal access token
  */
+// 响应体最大 50 MB，防止恶意服务器返回超大响应导致 OOM
+const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
+
 async function fetchApiPage(url: string, token: string): Promise<GhRepoApiItem[]> {
+  // redirect: 'manual' 防止跟随重定向到内网地址（SSRF）
   const resp = await fetch(url, {
     headers: {
       'Accept': 'application/vnd.github+json',
       'Authorization': `Bearer ${token}`,
       'X-GitHub-Api-Version': '2022-11-28',
     },
+    redirect: 'manual',
   });
+  if (resp.status >= 300 && resp.status < 400) {
+    throw new Error(`Unexpected redirect from GitHub API: ${resp.status}`);
+  }
   if (!resp.ok) {
     const body = await resp.text().catch(() => '');
     throw new Error(`GitHub API error ${resp.status}: ${body}`);
   }
-  return (await resp.json()) as GhRepoApiItem[];
+
+  // 流式读取响应体，限制最大 50 MB 防止 OOM
+  const reader = resp.body?.getReader();
+  let received = 0;
+  const chunks: Uint8Array[] = [];
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.length;
+      if (received > MAX_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new Error(`GitHub API response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+      }
+      chunks.push(value);
+    }
+  }
+  const body = Buffer.concat(chunks).toString('utf-8');
+  return JSON.parse(body) as GhRepoApiItem[];
 }
 
 // ─── 转换函数 ─────────────────────────────────────────────
@@ -103,7 +129,8 @@ export async function ghListOrgRepos(
     const tryEndpointPrefix = async (prefix: string): Promise<boolean> => {
       let page = 1;
       while (results.length < maxRepos) {
-        const endpoint = `${prefix}?per_page=${perPage}&type=public&page=${page}`;
+        // 不加 type=public，依赖调用者认证（gh CLI）可见范围；GitHub API 默认 type=all
+        const endpoint = `${prefix}?per_page=${perPage}&page=${page}`;
         let items: GhRepoApiItem[];
         try {
           items = ghApiPage(endpoint);
@@ -115,6 +142,8 @@ export async function ghListOrgRepos(
           }
           throw err;
         }
+        // 第一页空视为 endpoint 不通（触发 fallback），而非"仓库为零"
+        if (items.length === 0 && page === 1) return false;
         if (items.length === 0) break;
         results.push(...items.map(mapToOrgRepoInfo));
         if (items.length < perPage) break;
@@ -141,7 +170,8 @@ export async function ghListOrgRepos(
     const tryUrl = async (urlPrefix: string): Promise<boolean> => {
       let page = 1;
       while (results.length < maxRepos) {
-        const url = `${urlPrefix}?per_page=${perPage}&type=public&page=${page}`;
+        // 不加 type=public，依赖 GITHUB_TOKEN 可见范围；GitHub API 默认 type=all
+        const url = `${urlPrefix}?per_page=${perPage}&page=${page}`;
         let items: GhRepoApiItem[];
         try {
           items = await fetchApiPage(url, token);
@@ -152,6 +182,8 @@ export async function ghListOrgRepos(
           }
           throw err;
         }
+        // 第一页空视为 endpoint 不通（触发 fallback），而非"仓库为零"
+        if (items.length === 0 && page === 1) return false;
         if (items.length === 0) break;
         results.push(...items.map(mapToOrgRepoInfo));
         if (items.length < perPage) break;
