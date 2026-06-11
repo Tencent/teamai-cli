@@ -37,17 +37,33 @@ function isSshUrl(url: string): boolean {
 }
 
 /**
- * 把 HTTPS url 注入 GitHub x-access-token 认证头，返回带 token 的 url。
+ * 将 URL 中的认证信息脱敏，用于日志和错误消息。
+ * 替换 https://[anything]@ 为 https://***@
+ *
+ * @param msg  可能含有 token 的字符串
+ * @returns    脱敏后的字符串
  */
-function injectGitHubToken(httpsUrl: string, token: string): string {
-    return httpsUrl.replace(/^https:\/\//, `https://x-access-token:${token}@`);
+export function sanitizeGitUrl(msg: string): string {
+    return msg.replace(/https?:\/\/[^@\s]+@/g, 'https://***@');
 }
 
 /**
  * 对日志/错误信息中的 token 进行脱敏。
  */
 function redactToken(msg: string): string {
-    return msg.replace(/x-access-token:[^@]+@/g, 'x-access-token:***@');
+    return sanitizeGitUrl(msg);
+}
+
+/**
+ * 构建携带 GitHub token 的 git -c http.extraHeader 参数值。
+ * 避免将 token 嵌入 URL，防止其出现在进程列表或日志中。
+ *
+ * @param token  GitHub token
+ * @returns      Authorization header 值，格式为 `Authorization: Basic <base64>`
+ */
+function buildAuthHeader(token: string): string {
+    const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
+    return `Authorization: Basic ${encoded}`;
 }
 
 /**
@@ -137,6 +153,7 @@ export async function shallowClone(
     // 确定克隆 URL 和认证方式
     let cloneUrl = url;
     let cloneMethod: CloneResult['cloneMethod'];
+    let githubToken: string | undefined;
 
     if (forceSsh || isSshUrl(url)) {
         cloneUrl = url;
@@ -149,7 +166,8 @@ export async function shallowClone(
     } else if (provider === 'github') {
         const token = getGitHubToken();
         if (token) {
-            cloneUrl = injectGitHubToken(url, token);
+            cloneUrl = url;
+            githubToken = token;
             cloneMethod = 'https-token';
             log.debug(`shallowClone: 使用 HTTPS+token 克隆 github 仓库`);
         } else {
@@ -164,13 +182,18 @@ export async function shallowClone(
         log.debug(`shallowClone: 使用 HTTPS (~/.netrc) 克隆 ${provider} 仓库`);
     }
 
-    const cloneArgs = [
+    // 构建 clone 参数：若有 token 则通过 http.extraHeader 注入，避免 token 出现在 URL 中
+    const cloneArgs: string[] = [];
+    if (githubToken) {
+        cloneArgs.push('-c', `http.extraHeader=${buildAuthHeader(githubToken)}`);
+    }
+    cloneArgs.push(
         'clone',
         `--depth=${depth}`,
         '--single-branch',
         cloneUrl,
         localPath,
-    ];
+    );
 
     try {
         const { code, stderr } = await runCommand('git', cloneArgs, { timeoutMs });

@@ -96,10 +96,10 @@ export const TeamaiConfigSchema = z.object({
   autoUpdate: z.boolean().optional(),
   toolPaths: z.record(z.string(), ToolPathsSchema).default({
     claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', wiki: '.claude/wiki', agents: '.claude/agents' },
-    codex: { skills: '.codex/skills', rules: '.codex/rules' },
-    'codex-internal': { skills: '.codex-internal/skills', rules: '.codex-internal/rules' },
+    codex: { skills: '.codex/skills', rules: '.codex/rules', agents: '.codex/agents' },
+    'codex-internal': { skills: '.codex-internal/skills', rules: '.codex-internal/rules', agents: '.codex-internal/agents' },
     'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', wiki: '.claude-internal/wiki', agents: '.claude-internal/agents' },
-    cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json' },
+    cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents' },
     codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents' },
     openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules' },
     workbuddy: { skills: '.workbuddy/skills', rules: '.workbuddy/rules' },

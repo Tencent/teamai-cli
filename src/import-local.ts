@@ -5,6 +5,7 @@ import readline from 'node:readline';
 import { callClaudeParallel } from './utils/ai-client.js';
 import { listFilesRecursive, readFileSafe, writeFile, expandHome, ensureDir } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { assertSafePath, defaultAllowedRoots } from './utils/path-safety.js';
 import type { ClassifiedItem, ImportSession, ImportSessionItem } from './types.js';
 
 // ─── 常量 ──────────────────────────────────────────────────
@@ -215,6 +216,12 @@ export async function scanCandidates(opts: {
 
   if (opts.dir) {
     const expandedDir = expandHome(opts.dir);
+    // 安全校验：拒绝用户目录之外的路径（防止路径遍历）
+    try {
+      assertSafePath(expandedDir, defaultAllowedRoots());
+    } catch (err: unknown) {
+      throw new Error(`拒绝扫描目录：${String(err)}`);
+    }
     const relPaths = await listFilesRecursive(expandedDir);
     for (const relPath of relPaths) {
       // 跳过路径中含隐藏段（以 . 开头）的文件
@@ -506,6 +513,14 @@ export async function pushAccepted(
     let destDir: string;
     if (opts.outputDir) {
       destDir = expandHome(opts.outputDir);
+      // 安全校验：防止写出到用户目录范围之外
+      try {
+        assertSafePath(destDir, defaultAllowedRoots());
+      } catch (err: unknown) {
+        log.error(`拒绝写出到目录 [${destDir}]: ${String(err)}`);
+        skipped++;
+        continue;
+      }
     } else {
       // 根据 content frontmatter 判断 type，决定写入子目录
       const typeInContent = detectTypeFromContent(draft.content);

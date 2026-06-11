@@ -365,20 +365,22 @@ program
 const envCmd = program
   .command('env')
   .description('Manage team environment variables')
-  .action(async () => {
+  .option('--reveal', 'Show env variable values in plaintext (default: masked)')
+  .action(async (cmdOpts) => {
     // Default action: list env vars (backward compatible)
     const globalOpts = program.opts() as GlobalOptions;
     const { envList } = await import('./env-commands.js');
-    await envList(globalOpts);
+    await envList({ ...globalOpts, ...cmdOpts });
   });
 
 envCmd
   .command('list')
   .description('List team environment variables')
-  .action(async () => {
+  .option('--reveal', 'Show env variable values in plaintext (default: masked)')
+  .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { envList } = await import('./env-commands.js');
-    await envList(globalOpts);
+    await envList({ ...globalOpts, ...cmdOpts });
   });
 
 envCmd

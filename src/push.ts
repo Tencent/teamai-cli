@@ -8,6 +8,7 @@ import { getHandler } from './resources/index.js';
 import { scanTeamRepoNamespaces } from './resources/skills.js';
 import type { GlobalOptions, ResourceItem, ResourceType } from './types.js';
 import { isWikiEnabled } from './types.js';
+import { assertSafePath, assertSafeResourceName, defaultAllowedRoots } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
 import { askQuestion, askSelection } from './utils/prompt.js';
 import { pathExists } from './utils/fs.js';
@@ -153,6 +154,21 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 
   // ── Handle --skill parameter: filter to a single specific skill ──────
   if (options.skill) {
+    // 校验 skill 名称安全性：从输入路径中提取 basename 作为资源名，
+    // 防御路径遍历、URL 编码绕过、非法字符等攻击
+    const skillBasename = path.basename(
+      options.skill.startsWith('~')
+        ? options.skill.slice(1).replace(/^[/\\]+/, '')
+        : options.skill,
+    );
+    try {
+      assertSafeResourceName(skillBasename);
+    } catch (e) {
+      console.error(`[push] --skill 参数不合法: ${(e as Error).message}`);
+      process.exitCode = 2;
+      return;
+    }
+
     // Normalize the input path (expand ~, resolve to absolute)
     const os = await import('node:os');
     const skillPath = options.skill.startsWith('~')

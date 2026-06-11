@@ -1,6 +1,14 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
+/** 白名单：允许探测的 CLI 名称，防止意外执行任意命令。 */
+const ALLOWED_CLI_CANDIDATES = [
+  'claude', 'claude-internal', 'codex', 'codex-internal', 'codebuddy', 'workbuddy', 'openclaw',
+] as const;
+
+/** CLI 探测超时（毫秒），防止 execFileSync 挂死。 */
+const CLI_DETECT_TIMEOUT_MS = 5_000;
+
 /** 默认 AI 调用超时时间（毫秒）。 */
 const DEFAULT_TIMEOUT_MS = 120_000;
 
@@ -32,14 +40,16 @@ interface CliInfo {
  * @throws  所有候选均不可用时抛出 Error
  */
 function detectClaudeCli(): CliInfo {
-  const candidates = ['claude', 'claude-internal', 'codex', 'codex-internal', 'codebuddy', 'workbuddy', 'openclaw'];
+  const candidates = ALLOWED_CLI_CANDIDATES;
 
   for (const cmd of candidates) {
-    // 策略 1：bash login shell
+    // 策略 1：bash login shell（shell: false 是 execFileSync 默认行为，此处显式标注）
     try {
       const p = execFileSync('bash', ['-lc', `command -v ${cmd}`], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
+        shell: false,
+        timeout: CLI_DETECT_TIMEOUT_MS,
       }).trim();
       if (p && existsSync(p)) return { cmd, absPath: p };
     } catch {
@@ -51,6 +61,8 @@ function detectClaudeCli(): CliInfo {
       const p = execFileSync('zsh', ['-lc', `command -v ${cmd}`], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
+        shell: false,
+        timeout: CLI_DETECT_TIMEOUT_MS,
       }).trim();
       if (p && existsSync(p)) return { cmd, absPath: p };
     } catch {
@@ -62,6 +74,8 @@ function detectClaudeCli(): CliInfo {
       const p = execFileSync('which', [cmd], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
+        shell: false,
+        timeout: CLI_DETECT_TIMEOUT_MS,
       }).trim();
       if (p && existsSync(p)) return { cmd, absPath: p };
     } catch {
