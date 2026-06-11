@@ -39,6 +39,26 @@ export interface PrCreateOptions {
   cwd?: string;
 }
 
+/**
+ * 轻量级仓库元信息，用于 listOrgRepos 返回。
+ */
+export interface OrgRepoInfo {
+  /** HTTPS clone URL */
+  url: string;
+  /** owner/repo（含可能的多级 group） */
+  fullName: string;
+  /** 仅 repo 名 */
+  name: string;
+  /** 来自 GitHub topic / TGit description */
+  description?: string;
+  primaryLanguage?: string;
+  /** 已 archive 的仓库（默认排除） */
+  archived?: boolean;
+  stars?: number;
+  /** ISO 时间 */
+  pushedAt?: string;
+}
+
 export interface GitProvider {
   /** Provider identifier: 'github' | 'tgit' */
   readonly name: string;
@@ -99,6 +119,17 @@ export interface GitProvider {
    *   TGit:   https://git.woa.com/group/repo/merge_requests/456
    */
   fetchMergeRequest?(url: string): Promise<import('../types.js').MRData>;
+
+  /**
+   * 列出 org / group / namespace 下的所有仓库（轻量元信息）。
+   *
+   * 实现可分页拉取，但本调用应返回完整列表（或 maxRepos 上限）。
+   *
+   * @param org      组织或 group 路径（如 "team-org" / "team-group/sub"）
+   * @param opts.maxRepos  上限保护，默认 200
+   * @throws Error 当未实现或 API 调用失败
+   */
+  listOrgRepos?(org: string, opts?: { maxRepos?: number }): Promise<OrgRepoInfo[]>;
 
   // ─── Utilities ────────────────────────────────────────
 

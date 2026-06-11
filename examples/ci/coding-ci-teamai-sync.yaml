@@ -1,0 +1,18 @@
+# 复制到 .coding-ci.yaml 或合并到现有配置
+schedule:
+    - cron: '17 2 * * *'
+      job: teamai-sync
+
+jobs:
+    teamai-sync:
+        runs-on: docker
+        image: node:20
+        steps:
+            - checkout
+            - run: npm install -g teamai-cli
+            - run: teamai import --from-repo-list .teamai/repo-whitelist.yaml --incremental
+              env:
+                  TAI_PAT_TOKEN: ${{ secrets.TAI_PAT_TOKEN }}
+            - run: |
+                  git add docs/team-codebase .teamai/domains.yaml .teamai/domains.history.jsonl
+                  git diff --cached --quiet || (git commit -m "chore(team-codebase): scheduled sync" && git push)
