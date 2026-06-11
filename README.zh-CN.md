@@ -79,6 +79,14 @@ CLI 会根据用户传入的 repo URL 自动选择 provider：
 | `teamai source` | 管理跨团队 skill 订阅源（`add`/`remove`/`list`/`browse`） |
 | `teamai contribute --file <path> [--scope <user\|project>]` | 将 AI 生成的经验文档推送到团队仓库 |
 | `teamai recall <query>` | 搜索团队知识库，自动合并 user + project 双 scope 结果 |
+| `teamai import --from-repo <url>` | 拉取远端仓库并生成单仓视图 `docs/team-codebase/repos/<slug>.md`；AI 推荐业务域并写入 `.teamai/domains.yaml` |
+| `teamai import --from-repo-list <yaml>` | 按白名单批量导入多个仓库（支持并发），并按业务域聚合产出 |
+| `teamai import --from-org <org> --bootstrap` | 列出组织/group 下所有仓库（GitHub / TGit），AI 聚类为业务域，交互式 review 后完成首次全量同步 |
+| `teamai import --from-iwiki <id> [--iwiki-dual]` | 把 iWiki 文档导入为 learnings；dual 模式同时把业务接口 / 外部知识源 / 术语表抽取到 `docs/team-codebase/external-knowledge.md` |
+| `teamai cache --status \| --gc` | 查看或回收 shallow-clone 缓存目录 `~/.teamai/cache/repos/`（LRU + 容量上限，默认 5GB） |
+| `teamai codebase --lint [--fix]` | 对 `docs/team-codebase` 与 `.teamai/` 做跨文件一致性 lint；报告锚点 / 孤儿 / 源失效 / 同步陈旧等问题；`--fix` 应用低风险机械修复 |
+| `teamai review [id] [--apply \| --reject \| --all-apply]` | 浏览并处理 `.teamai/pending-review.jsonl` 中的待审 codebase 变更；`--apply` 通过章节锚点原地写入 |
+| `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | 浏览并处理域漂移信号；`--apply` 把仓库重新归类到推荐域并刷新聚合视图 |
 | `teamai digest` | 生成团队 AI 使用周报（skill 排行、新增/更新 skill、session 摘要） |
 | `teamai hooks` | 管理 AI 工具 hooks（list / inject / remove） |
 | `teamai uninstall [--force]` | 卸载 teamai：移除 hooks、rules、skills、env、docs、~/.teamai/ |
@@ -110,9 +118,9 @@ CLI 会根据用户传入的 repo URL 自动选择 provider：
 
 - `teamai push` 会创建独立分支（`teamai/push/<user>/<timestamp>`），推送后自动创建 Merge Request 并指派 reviewers
 - `teamai init` 初始化时可配置默认 reviewers（记录在 `teamai.yaml` 的 `reviewers` 字段）
-- `teamai init` 会自动注入与各工具格式对齐的 hooks（含 `SessionStart`、`Stop`、`PostToolUse`、`UserPromptSubmit` 等），会话中会执行 `teamai pull`、`teamai update`、追踪与仪表盘等（支持 Claude Code、Codex、Claude Code Internal、Codex Internal、Cursor、CodeBuddy IDE、OpenClaw、WorkBuddy）
-- Skills 同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.codex-internal/skills/`、`~/.claude-internal/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/`
-- Rules 同步到各工具的 rules 目录，并通过标记注释合并到 `CLAUDE.md`（支持 claude、claude-internal、codebuddy）
+- `teamai init` 会自动注入与各工具格式对齐的 hooks（含 `SessionStart`、`Stop`、`PostToolUse`、`UserPromptSubmit` 等），会话中会执行 `teamai pull`、`teamai update`、追踪与仪表盘等（支持 Claude Code、Codex、Cursor、CodeBuddy IDE、OpenClaw、WorkBuddy）
+- Skills 同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/`
+- Rules 同步到各工具的 rules 目录，并通过标记注释合并到 `CLAUDE.md`（支持 claude、codebuddy）
 - Knowledge 同步到 `~/.teamai/docs/`
 - Learnings 同步到 `~/.teamai/learnings/`，并基于该目录构建 recall 索引（全团队共享，不按角色拆分）
 - Culture 同步团队文化文件（`culture.md`），编译 frontmatter 和 body 后注入到各 AI 工具的 `CLAUDE.md`
@@ -292,16 +300,7 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 - 搜索自动投票，好文档自然浮到顶部
 - 投票按 scope 分别写入各自的 repo，归属正确
 
-### 通过 subagent 检索（Phase 1）
-
-对支持 subagent 的工具（Claude Code、Claude Code Internal、CodeBuddy IDE），`teamai pull` 会把内置的 `teamai-recall` subagent 部署到该工具的 `agents/` 目录，并在 `CLAUDE.md` 中注入一段 `<!-- [teamai:recall-rules:*] -->` 提示块，要求主对话：
-
-1. **任务前**：通过 Agent 工具调用 `teamai-recall` subagent；该 subagent 自己执行 `teamai recall <关键词>`、读取命中文件，并把要点压缩后返回，不污染主上下文
-2. **任务后**：通过 `<!-- teamai:referenced-doc-ids: [doc-1, doc-2] -->` 注释声明本次实际引用了哪些知识条目
-
-对不支持 subagent 的工具（Cursor、Codex、Codex Internal、OpenClaw、WorkBuddy），仍可通过 `teamai recall <query>` 命令和 auto-recall hook 完成检索；为避免影响这些工具的指令体感，**不会** 向其注入规则块
-
-`teamai recall` 的输出现在会给每条命中前置 `[<type>]` 标签，方便调用方快速判断知识来源。共享检索索引覆盖四类内容：
+`teamai recall` 的输出会给每条命中前置 `[<type>]` 标签，方便调用方快速判断知识来源。共享检索索引覆盖四类内容：
 
 | 类型 | 源路径 | 说明 |
 |------|--------|------|

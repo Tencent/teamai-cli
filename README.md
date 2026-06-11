@@ -79,6 +79,14 @@ The CLI picks a provider automatically from the repo URL:
 | `teamai source` | Manage cross-team skill subscription sources (`add`/`remove`/`list`/`browse`) |
 | `teamai contribute --file <path> [--scope <user\|project>]` | Push an AI-generated experience document to the team repo |
 | `teamai recall <query>` | Search the team knowledge base, automatically merging user + project scope results |
+| `teamai import --from-repo <url>` | Clone a remote repo and generate a per-repo summary under `docs/team-codebase/repos/<slug>.md`; AI recommends a business domain and persists the assignment to `.teamai/domains.yaml` |
+| `teamai import --from-repo-list <yaml>` | Batch import a whitelist of repos with concurrency control, then aggregate the results into per-domain views |
+| `teamai import --from-org <org> --bootstrap` | List every repo under an organization (GitHub or TGit), AI-cluster them into business domains, and run an interactive review before the first full sync |
+| `teamai import --from-iwiki <id> [--iwiki-dual]` | Import iWiki documents as learnings; in dual mode also extract business-API / external-knowledge / glossary sections into `docs/team-codebase/external-knowledge.md` |
+| `teamai cache --status \| --gc` | Inspect or garbage-collect the shallow-clone cache at `~/.teamai/cache/repos/` (LRU + size cap, default 5GB) |
+| `teamai codebase --lint [--fix]` | Cross-file consistency lint over `docs/team-codebase` and `.teamai/`; reports anchor / orphan / source-invalid / sync-stale issues; `--fix` applies low-risk mechanical fixes |
+| `teamai review [id] [--apply \| --reject \| --all-apply]` | Inspect and process pending codebase changes from `.teamai/pending-review.jsonl`; `--apply` patches in place via section anchors |
+| `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | Inspect and resolve domain-drift signals; `--apply` reassigns the repo to the recommended domain and refreshes the aggregate views |
 | `teamai digest` | Generate a team AI usage weekly digest (skill leaderboard, new/updated skills, session summaries) |
 | `teamai hooks` | Manage AI-tool hooks (list / inject / remove) |
 | `teamai uninstall [--force]` | Uninstall teamai: remove hooks, rules, skills, env, docs, and `~/.teamai/` |
@@ -110,9 +118,9 @@ Member A                             Member B
 
 - `teamai push` creates a dedicated branch (`teamai/push/<user>/<timestamp>`), pushes it, then opens a Merge Request and assigns reviewers automatically.
 - `teamai init` lets you configure default reviewers (stored in the `reviewers` field of `teamai.yaml`).
-- `teamai init` injects hooks tailored to each tool's format (`SessionStart`, `Stop`, `PostToolUse`, `UserPromptSubmit`, etc.). During sessions the hooks run `teamai pull`, `teamai update`, tracking, dashboard updates, and so on (supports Claude Code, Codex, Claude Code Internal, Codex Internal, Cursor, CodeBuddy IDE, OpenClaw, WorkBuddy).
-- Skills sync to `~/.claude/skills/`, `~/.codex/skills/`, `~/.codex-internal/skills/`, `~/.claude-internal/skills/`, `~/.cursor/skills/`, `~/.codebuddy/skills/`.
-- Rules sync to each tool's rules directory and are merged into `CLAUDE.md` via marker comments (supported for claude, claude-internal, codebuddy).
+- `teamai init` injects hooks tailored to each tool's format (`SessionStart`, `Stop`, `PostToolUse`, `UserPromptSubmit`, etc.). During sessions the hooks run `teamai pull`, `teamai update`, tracking, dashboard updates, and so on (supports Claude Code, Codex, Cursor, CodeBuddy IDE, OpenClaw, WorkBuddy).
+- Skills sync to `~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`, `~/.codebuddy/skills/`.
+- Rules sync to each tool's rules directory and are merged into `CLAUDE.md` via marker comments (supported for claude, codebuddy).
 - Knowledge syncs to `~/.teamai/docs/`.
 - Learnings sync to `~/.teamai/learnings/` and back the recall index (shared team-wide, not partitioned by role).
 - Culture syncs the team culture file (`culture.md`): its frontmatter and body are compiled and injected into every AI tool's `CLAUDE.md`.
@@ -292,16 +300,7 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 - Searches implicitly upvote matched docs; good docs naturally float up over time.
 - Votes are written to each scope's own repo, so attribution stays correct.
 
-### Recall via subagent (Phase 1)
-
-For tools that support subagents (Claude Code, Claude Code Internal, CodeBuddy IDE), `teamai pull` deploys a built-in `teamai-recall` subagent under each tool's `agents/` directory and injects a `<!-- [teamai:recall-rules:*] -->` block into `CLAUDE.md`. The main conversation is then asked to:
-
-1. **Before** any task, invoke the `teamai-recall` subagent via the Agent tool. The subagent runs `teamai recall <keywords>`, reads the matched files, and returns a compact summary — without polluting the main context with raw content.
-2. **After** the task, declare which entries were actually consulted via an HTML comment: `<!-- teamai:referenced-doc-ids: [doc-1, doc-2] -->`.
-
-For tools without subagent support (Cursor, Codex, Codex Internal, OpenClaw, WorkBuddy), recall still works through `teamai recall <query>` directly and the auto-recall hook — the rules block is intentionally **not** injected for these tools to avoid cluttering their instruction surface.
-
-`teamai recall` results now carry a `[<type>]` tag so callers can quickly tell which knowledge bucket a hit came from. The shared search index covers four categories:
+`teamai recall` results carry a `[<type>]` tag so callers can quickly tell which knowledge bucket a hit came from. The shared search index covers four categories:
 
 | Type | Source | Notes |
 |------|--------|-------|
