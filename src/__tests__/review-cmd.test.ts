@@ -134,7 +134,7 @@ describe('review-cmd', () => {
         await reviewCmd({ idArg: 'abc123def456', apply: true });
 
         expect(patchManagedSection).toHaveBeenCalledOnce();
-        expect(removePendingReview).toHaveBeenCalledWith(cwd, 'abc123def456');
+        expect(removePendingReview).toHaveBeenCalledWith(expect.stringContaining('teamai-review-cmd-test-'), 'abc123def456');
         expect(appendHistory).toHaveBeenCalledOnce();
         const histCall = (appendHistory as ReturnType<typeof vi.fn>).mock.calls[0][1];
         expect(histCall.action).toBe('accept');
@@ -164,7 +164,7 @@ describe('review-cmd', () => {
 
         await reviewCmd({ idArg: 'abc123def456', reject: true, reason: '内容不准确' });
 
-        expect(removePendingReview).toHaveBeenCalledWith(cwd, 'abc123def456');
+        expect(removePendingReview).toHaveBeenCalledWith(expect.stringContaining('teamai-review-cmd-test-'), 'abc123def456');
         expect(appendHistory).toHaveBeenCalledOnce();
         const histCall = (appendHistory as ReturnType<typeof vi.fn>).mock.calls[0][1];
         expect(histCall.action).toBe('reject');
@@ -190,9 +190,9 @@ describe('review-cmd', () => {
 
         // 只对 mediumItem 调用 patchManagedSection
         expect(patchManagedSection).toHaveBeenCalledOnce();
-        expect(removePendingReview).toHaveBeenCalledWith(cwd, 'mediumitem001');
+        expect(removePendingReview).toHaveBeenCalledWith(expect.stringContaining('teamai-review-cmd-test-'), 'mediumitem001');
         // highItem 不应该被移除
-        expect(removePendingReview).not.toHaveBeenCalledWith(cwd, 'highriskitem1');
+        expect(removePendingReview).not.toHaveBeenCalledWith(expect.stringContaining('teamai-review-cmd-test-'), 'highriskitem1');
 
         const output = consoleSpy.mock.calls.map((c) => c.join(' ')).join('\n');
         expect(output).toContain('跳过');
