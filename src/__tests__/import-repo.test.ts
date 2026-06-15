@@ -32,6 +32,10 @@ vi.mock('../utils/prompt.js', () => ({
     askConfirmation: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock('../config.js', () => ({
+    autoDetectInit: vi.fn().mockRejectedValue(new Error('not initialized in test')),
+}));
+
 // ─── Imports（after mocks）──────────────────────────────
 
 import { importFromRepo, buildRepoMetaFromPath } from '../import-repo.js';

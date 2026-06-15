@@ -186,12 +186,17 @@ async function loadOrBuildScopeIndex(
     const docsDir = path.join(localConfig.repo.localPath, 'docs');
     const rulesDir = path.join(localConfig.repo.localPath, 'rules');
     const skillsDir = path.join(localConfig.repo.localPath, 'skills');
+    const cwdCodebaseDir = path.join(process.cwd(), 'docs', 'team-codebase');
+    const repoCodebaseDir = path.join(localConfig.repo.localPath, 'docs', 'team-codebase');
+    const codebaseDir = await pathExists(cwdCodebaseDir) ? cwdCodebaseDir
+      : await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
     try {
       await buildIndex({
         learningsDir: effectiveLearningsDir ?? undefined,
         docsDir: await pathExists(docsDir) ? docsDir : undefined,
         rulesDir: await pathExists(rulesDir) ? rulesDir : undefined,
         skillsDir: await pathExists(skillsDir) ? skillsDir : undefined,
+        codebaseDir,
         votesDir: votesExist ? votesDir : undefined,
         indexPath,
       });

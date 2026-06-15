@@ -22,10 +22,14 @@ upstream API"). Treat this as your query.
 
 ### Step 1 — Read the codebase manifest (optional but preferred)
 
-If `~/.teamai/docs/codebase.md` exists, read it first. It lists the team's
-repositories and their purposes. Extract a one-sentence repo-list summary
-to prepend to your final output. If the file does not exist, **silently
-skip** this step — never error out.
+If `~/.teamai/docs/codebase.md` OR `docs/team-codebase/index.md` (in the
+current project) exists, read it first. It lists the team's repositories
+and their purposes. Extract a one-sentence repo-list summary to prepend to
+your final output. If neither file exists, **silently skip** this step —
+never error out.
+
+> Note: `teamai recall` already indexes team-codebase documents
+> (repos/*.md), so Step 3 will return codebase knowledge matches directly.
 
 ### Step 2 — Extract keywords from the task description
 

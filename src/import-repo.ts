@@ -488,6 +488,17 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
 
     log.info(`Clone/Fetch 完成: SHA=${cloneSha.slice(0, 8)}, branch=${cloneBranch}`);
 
+    // 2.5 SHA 未变化时跳过 AI 扫描（增量模式快速路径）
+    if (useIncremental && oldSha && cloneSha === oldSha) {
+        log.info(`[incremental] SHA 未变化 (${cloneSha.slice(0, 8)})，跳过 AI 扫描`);
+        await writeLastSync(cacheDir, cloneSha);
+        try {
+            await touchCacheEntry({ provider: providerName, owner, repo: repoName, lastSyncedSha: cloneSha });
+        } catch {}
+        log.info(chalk.green(`✓ 仓库 ${owner}/${repoName} 无变化，跳过`));
+        return;
+    }
+
     // 3. 扫描生成 codebase.md
     log.info(`扫描仓库内容...`);
     let codebaseMd: string;
@@ -579,7 +590,20 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
 
     // 5. 业务域推荐
     const cwd = process.cwd();
-    const existingDomains = await loadDomains(cwd);
+    // 当无 --output 时，domains.yaml 写入团队仓库（共享），否则写入 cwd
+    let domainsBase = cwd;
+    if (!output) {
+        try {
+            // 优先使用团队仓库路径（多人共享 domains.yaml）
+            const { autoDetectInit } = await import('./config.js');
+            const { localConfig: lc } = await autoDetectInit();
+            // 确认团队仓库的 .teamai/ 目录可访问
+            const teamaiDir = path.join(lc.repo.localPath, '.teamai');
+            await fs.ensureDir(teamaiDir);
+            domainsBase = lc.repo.localPath;
+        } catch { /* fallback: cwd */ }
+    }
+    const existingDomains = await loadDomains(domainsBase);
 
     // 检查 url 是否已在其他域
     const existingDomainName = findExistingDomain(existingDomains, url);
@@ -588,7 +612,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     if (existingDomainName && !dryRun) {
         const newMeta = await buildRepoMetaFromPath(cacheDir, url, repoName);
         await detectDomainDrift({
-            cwd,
+            cwd: domainsBase,
             url,
             newMeta,
             domains: existingDomains,
@@ -604,6 +628,16 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             log.debug(`[cache-index] touchCacheEntry 失败（不阻塞主流程）: ${String(touchErr)}`);
         }
         log.info(chalk.green(`✓ 仓库 ${owner}/${repoName} 增量同步完成`));
+        // 增量同步后也更新聚合文件
+        if (!dryRun) {
+            try {
+                const { regenerateAggregate } = await import('./aggregate.js');
+                const { getTeamCodebasePaths } = await import('./utils/team-codebase-paths.js');
+                const aggPaths = getTeamCodebasePaths(cwd, output);
+                const freshDomains = await loadDomains(domainsBase);
+                await regenerateAggregate({ paths: aggPaths, domains: freshDomains });
+            } catch { /* 非关键路径 */ }
+        }
         return;
     }
 
@@ -695,11 +729,11 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             return { ...domain, repos: [...domain.repos, newEntry] };
         });
 
-        await saveDomains(cwd, updatedDomains);
+        await saveDomains(domainsBase, updatedDomains);
         log.info(`已将仓库 ${repoName} 归入域「${finalDomainName}」`);
 
         // appendHistory
-        await appendHistory(cwd, {
+        await appendHistory(domainsBase, {
             ts: new Date().toISOString(),
             actor: historyActor,
             action: rejectReason ? 'reject' : 'accept',
@@ -726,4 +760,16 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     }
 
     log.info(chalk.green(`✓ 仓库 ${owner}/${repoName} 导入完成`));
+
+    // 8. 更新聚合文件（domain-*.md + index.md）
+    if (!dryRun) {
+        try {
+            const { regenerateAggregate } = await import('./aggregate.js');
+            const { getTeamCodebasePaths } = await import('./utils/team-codebase-paths.js');
+            const aggPaths = getTeamCodebasePaths(cwd, output);
+            const freshDomains = await loadDomains(domainsBase);
+            await regenerateAggregate({ paths: aggPaths, domains: freshDomains });
+            log.info(`聚合文件已更新`);
+        } catch { /* 非关键路径 */ }
+    }
 }

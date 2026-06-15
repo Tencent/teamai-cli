@@ -487,6 +487,7 @@ export interface BuildIndexOptions {
   docsDir?: string;
   rulesDir?: string;
   skillsDir?: string;
+  codebaseDir?: string;
   votesDir?: string;
   indexPath?: string;
 }
@@ -530,6 +531,9 @@ export async function buildIndex(
   }
   if (opts.skillsDir) {
     entries.push(...await collectSkillEntries(opts.skillsDir, voteCounts));
+  }
+  if (opts.codebaseDir) {
+    entries.push(...await collectRecursiveMdEntries(opts.codebaseDir, 'docs', voteCounts));
   }
 
   // Build document-frequency map for IDF weighting.
