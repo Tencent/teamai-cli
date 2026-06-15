@@ -33,5 +33,7 @@ docs/superpowers/
 docs/designs/auto-update.md
 docs/designs/ci-pipeline.md
 docs/designs/knowledge-feed.md
+docs/codebase.md
+docs/llm-wiki.md
 roadmap_jael.md
 validation/
