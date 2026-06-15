@@ -300,14 +300,25 @@ interface RecallCache {
     queries: string[];
     count: number;
     updatedAt: string;
+    /** Phase 2: 本 session 所有 recall 中的最高匹配分 */
+    topScore: number;
+    /** Phase 2: 有结果返回的 recall 次数 */
+    hitCount: number;
+    /** Phase 2: 无结果返回的 recall 次数 */
+    missCount: number;
+}
+
+function sanitizeSessionId(sessionId: string): string {
+    return sessionId.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
 function getCachePath(sessionId: string): string {
+    const safeName = sanitizeSessionId(sessionId);
     return path.join(
         process.env.HOME ?? '',
         '.teamai',
         'sessions',
-        `${sessionId}-recall-cache.json`,
+        `${safeName}-recall-cache.json`,
     );
 }
 
@@ -321,13 +332,24 @@ function readCache(sessionId: string): RecallCache | null {
         if (!fs.existsSync(cachePath)) return null;
 
         const raw = fs.readFileSync(cachePath, 'utf-8');
-        const parsed = JSON.parse(raw) as RecallCache;
+        const parsed = JSON.parse(raw) as Partial<RecallCache>;
 
         // Check TTL
-        const age = Date.now() - new Date(parsed.updatedAt).getTime();
+        const age = Date.now() - new Date(parsed.updatedAt ?? '').getTime();
         if (age > CACHE_TTL_MS) return null;
 
-        return parsed;
+        // Backward compat: old cache files lack quality fields; validate queries array
+        const queries = Array.isArray(parsed.queries) && parsed.queries.every((q) => typeof q === 'string')
+            ? parsed.queries
+            : [];
+        return {
+            queries,
+            count: typeof parsed.count === 'number' ? parsed.count : 0,
+            updatedAt: parsed.updatedAt ?? new Date().toISOString(),
+            topScore: typeof parsed.topScore === 'number' ? parsed.topScore : 0,
+            hitCount: typeof parsed.hitCount === 'number' ? parsed.hitCount : 0,
+            missCount: typeof parsed.missCount === 'number' ? parsed.missCount : 0,
+        };
     } catch {
         return null;
     }
@@ -358,6 +380,9 @@ export function shouldSkipQuery(sessionId: string, query: string): boolean {
         queries: [],
         count: 0,
         updatedAt: new Date().toISOString(),
+        topScore: 0,
+        hitCount: 0,
+        missCount: 0,
     };
 
     // Rate limit: max N recalls per session
@@ -376,6 +401,9 @@ export function shouldSkipQuery(sessionId: string, query: string): boolean {
         queries: [...cache.queries, normalized],
         count: cache.count + 1,
         updatedAt: new Date().toISOString(),
+        topScore: cache.topScore,
+        hitCount: cache.hitCount,
+        missCount: cache.missCount,
     };
     writeCache(sessionId, updated);
 
@@ -528,12 +556,39 @@ export async function autoRecall(): Promise<void> {
     const index = await loadIndex();
     if (!index || index.entries.length === 0) {
         log.debug('auto-recall: no search index available');
+        // Phase 2: record miss even when index is empty/missing
+        const cache = readCache(sessionId) ?? {
+            queries: [], count: 0, updatedAt: new Date().toISOString(),
+            topScore: 0, hitCount: 0, missCount: 0,
+        };
+        writeCache(sessionId, { ...cache, missCount: cache.missCount + 1, updatedAt: new Date().toISOString() });
         return;
     }
 
     // Search
     const searchStart = Date.now();
     const results = search(query, index, 3);
+
+    // ─── Phase 2: update recall-cache quality fields ────
+    {
+        const cache = readCache(sessionId) ?? {
+            queries: [],
+            count: 0,
+            updatedAt: new Date().toISOString(),
+            topScore: 0,
+            hitCount: 0,
+            missCount: 0,
+        };
+        const bestScore = results.length > 0 ? results[0].score : 0;
+        const updatedCache: RecallCache = {
+            ...cache,
+            topScore: Math.max(cache.topScore, bestScore),
+            hitCount: results.length > 0 ? cache.hitCount + 1 : cache.hitCount,
+            missCount: results.length > 0 ? cache.missCount : cache.missCount + 1,
+            updatedAt: new Date().toISOString(),
+        };
+        writeCache(sessionId, updatedCache);
+    }
 
     // ─── Eval harness: write structured log ────────────
     // Intentionally placed BEFORE the "no results" early return so that
@@ -591,4 +646,21 @@ export async function autoRecall(): Promise<void> {
     } catch {
         // Silent: upvote failure should never affect hook output
     }
+}
+
+/**
+ * Read recall quality metrics for a session (Phase 2).
+ * Used by contribute-check to determine knowledge gap signal.
+ * Returns null if no recall activity recorded for this session.
+ */
+export function readRecallQuality(sessionId: string): { topScore: number; hitCount: number; missCount: number } | null {
+    const cache = readCache(sessionId);
+    if (!cache) return null;
+    // Only return quality data if at least one recall was actually executed
+    if (cache.hitCount === 0 && cache.missCount === 0) return null;
+    return {
+        topScore: cache.topScore,
+        hitCount: cache.hitCount,
+        missCount: cache.missCount,
+    };
 }
