@@ -48,23 +48,38 @@ async function parseRepoMd(filePath: string, slug: string): Promise<RepoSummary>
         : typeof fm.url === 'string' ? fm.url
         : '';
 
-    // 仓库名：frontmatter.repo_name 或首个 # 标题
+    // 仓库名：frontmatter.repo_name > 从 URL 提取 > slug
     let name = typeof fm.repo_name === 'string' ? fm.repo_name : '';
+    if (!name && url) {
+        const repoMatch = url.match(/\/([^/]+?)(?:\.git)?$/);
+        if (repoMatch) name = repoMatch[1];
+    }
     if (!name) {
-        const titleMatch = content.match(/^#\s+(.+)/m);
-        name = titleMatch ? titleMatch[1].trim() : slug;
+        name = slug;
     }
 
     const primaryLanguage = typeof fm.primary_language === 'string' ? fm.primary_language : 'N/A';
     const lineCount = fm.line_count != null ? String(fm.line_count) : 'N/A';
     const lastSynced = typeof fm.last_synced === 'string' ? fm.last_synced
         : typeof fm.generated_at === 'string' ? fm.generated_at
+        : typeof fm.lastUpdated === 'string' ? fm.lastUpdated
         : 'N/A';
 
-    // 摘要：去掉标题行，取首段前 200 字
-    const bodyWithoutTitle = content.replace(/^#[^\n]*\n/m, '').trim();
-    const firstPara = bodyWithoutTitle.split(/\n\n+/)[0] ?? '';
-    const excerpt = firstPara.slice(0, 200);
+    // 摘要：找到 ## 项目概述 章节的首个非空文本段落
+    let excerpt = '';
+    const overviewMatch = content.match(/## 项目概述\n+([\s\S]*?)(?=\n## |\n# |$)/);
+    if (overviewMatch) {
+        const overviewBody = overviewMatch[1];
+        const lines = overviewBody.split('\n')
+            .filter(l => l.trim() && !l.trim().startsWith('<!--') && !l.trim().startsWith('-->'));
+        excerpt = lines.slice(0, 3).join(' ').slice(0, 200);
+    }
+    if (!excerpt) {
+        const bodyWithoutTitle = content.replace(/^#[^\n]*\n/m, '').trim();
+        const paras = bodyWithoutTitle.split(/\n\n+/)
+            .filter(p => p.trim() && !p.trim().startsWith('<!--'));
+        excerpt = (paras[0] ?? '').slice(0, 200);
+    }
 
     return { slug, url, name, primaryLanguage, lineCount, lastSynced, excerpt };
 }

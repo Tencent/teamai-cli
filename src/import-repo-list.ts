@@ -1,4 +1,5 @@
 // -*- coding: utf-8 -*-
+import path from 'node:path';
 import { loadRepoList } from './repo-list/store.js';
 import { isOrgEntry, type RepoListEntry } from './repo-list/schema.js';
 import { importFromRepo } from './import-repo.js';
@@ -148,8 +149,19 @@ export async function importFromRepoList(
     if (!skipAggregate && !dryRun) {
         try {
             const cwd = process.cwd();
-            const paths = getTeamCodebasePaths(cwd, output);
-            const domains = await loadDomains(cwd);
+            // 优先使用 team-repo 路径读取 domains 和写入聚合产物
+            let resolvedOutput = output;
+            let domainsBase = cwd;
+            if (!resolvedOutput) {
+                try {
+                    const { autoDetectInit } = await import('./config.js');
+                    const { localConfig: lc } = await autoDetectInit();
+                    resolvedOutput = path.join(lc.repo.localPath, 'docs', 'team-codebase');
+                    domainsBase = lc.repo.localPath;
+                } catch { /* fallback to cwd */ }
+            }
+            const paths = getTeamCodebasePaths(cwd, resolvedOutput);
+            const domains = await loadDomains(domainsBase);
             await regenerateAggregate({ paths, domains });
             aggregateGenerated = true;
             log.info(`聚合文件已生成：${paths.index}`);
