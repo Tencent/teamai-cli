@@ -25,11 +25,9 @@ describe('builtin-rules', () => {
     });
 
     describe('deployBuiltinRules', () => {
-        it('should clean up legacy teamai-recall.md files', async () => {
-            // Arrange: create tool rules directories with legacy rule
+        it('should deploy teamai-recall.md rule to tool rules directory', async () => {
             const claudeRulesDir = path.join(tmpDir, '.claude', 'rules');
             fs.mkdirSync(claudeRulesDir, { recursive: true });
-            fs.writeFileSync(path.join(claudeRulesDir, 'teamai-recall.md'), 'old recall rule', 'utf-8');
 
             const teamConfig = {
                 toolPaths: {
@@ -42,12 +40,14 @@ describe('builtin-rules', () => {
                 },
             } as any;
 
-            // Act
             const { deployBuiltinRules } = await import('../builtin-rules.js');
             await deployBuiltinRules(teamConfig);
 
-            // Assert: legacy file is removed
-            expect(fs.existsSync(path.join(claudeRulesDir, 'teamai-recall.md'))).toBe(false);
+            const deployed = path.join(claudeRulesDir, 'teamai-recall.md');
+            expect(fs.existsSync(deployed)).toBe(true);
+            const content = fs.readFileSync(deployed, 'utf-8');
+            expect(content).toContain('Team Knowledge Recall');
+            expect(content).toContain('teamai recall');
         });
 
         it('should skip tool directories that do not exist (tool not installed)', async () => {
@@ -103,9 +103,9 @@ describe('builtin-rules', () => {
     });
 
     describe('BUILTIN_RULE_NAMES', () => {
-        it('should be empty (no built-in rules deployed after recall rule removal)', async () => {
+        it('should contain teamai-recall', async () => {
             const { BUILTIN_RULE_NAMES } = await import('../builtin-rules.js');
-            expect(BUILTIN_RULE_NAMES.size).toBe(0);
+            expect(BUILTIN_RULE_NAMES.has('teamai-recall')).toBe(true);
         });
     });
 });
