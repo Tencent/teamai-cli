@@ -114,6 +114,8 @@ describe('gfListOrgRepos', () => {
     });
 
     it('404 — 抛 TGit group not found or no access', async () => {
+        // 策略 1（/groups/<id>/projects）和策略 2（/groups/<id>）均返回 404
+        mockFetch.mockResolvedValueOnce(makeResponse('Not Found', 404));
         mockFetch.mockResolvedValueOnce(makeResponse('Not Found', 404));
 
         await expect(gfListOrgRepos('nonexistent-group')).rejects.toThrow(

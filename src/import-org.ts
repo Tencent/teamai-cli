@@ -101,6 +101,11 @@ function parseOrgInput(org: string): { providerName: string; orgPath: string } {
         return { providerName: getProviderFromUrl('').name, orgPath: trimmed };
     }
 
+    // 纯数字 → TGit group ID（GitHub 不支持数字 org ID）
+    if (/^\d+$/.test(trimmed)) {
+        return { providerName: 'tgit', orgPath: trimmed };
+    }
+
     // 裸 org 名
     const providerName = getProvider().name;
     return { providerName, orgPath: trimmed };
