@@ -660,7 +660,9 @@ export function search(
     }
 
     // Require at least one title or tag match to filter out body-only noise.
-    if (score > 0 && hasTitleOrTagMatch) {
+    // Codebase docs (from team-codebase/) lack tags, so allow body-only matches for them.
+    const isCodebaseDoc = entry.type === 'docs' && (entry.path ?? entry.filename ?? '').includes('team-codebase');
+    if (score > 0 && (hasTitleOrTagMatch || isCodebaseDoc)) {
       // Vote bonus: +0.5 per vote, max 5 points (unchanged).
       score += Math.min(entry.votes * 0.5, 5);
 
