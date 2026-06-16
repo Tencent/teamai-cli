@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { log } from './utils/logger.js';
+import { getTeamaiHome } from './types.js';
 
 // ─── Auto-recall data flow ──────────────────────────────
 //
@@ -552,8 +553,15 @@ export async function autoRecall(): Promise<void> {
     const { loadIndex, search } = await import('./utils/search-index.js');
     const { formatResults } = await import('./recall.js');
 
-    // Load search index
-    const index = await loadIndex();
+    // Load search index (try project scope first, fallback to user scope)
+    let indexPath: string | undefined;
+    try {
+        const { autoDetectInit } = await import('./config.js');
+        const { localConfig } = await autoDetectInit();
+        const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
+        indexPath = path.join(teamaiHome, 'search-index.json');
+    } catch { /* fallback to default user scope path */ }
+    const index = await loadIndex(indexPath);
     if (!index || index.entries.length === 0) {
         log.debug('auto-recall: no search index available');
         // Phase 2: record miss even when index is empty/missing

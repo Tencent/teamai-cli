@@ -546,6 +546,15 @@ export async function buildIndex(
   }
 
   const elapsed = Date.now() - start;
+
+  // Guard: don't overwrite a healthy index with a significantly smaller one
+  const targetPath = opts.indexPath ?? getSearchIndexPath();
+  const existingIndex = await loadIndex(targetPath);
+  if (existingIndex && existingIndex.entries.length > 5 && entries.length < existingIndex.entries.length * 0.5) {
+    log.warn(`Index rebuild skipped: new index (${entries.length} entries) much smaller than existing (${existingIndex.entries.length})`);
+    return elapsed;
+  }
+
   const index: SearchIndex = {
     version: SEARCH_INDEX_VERSION,
     builtAt: new Date().toISOString(),
@@ -554,7 +563,7 @@ export async function buildIndex(
     df,
   };
 
-  await writeJson(opts.indexPath ?? getSearchIndexPath(), index);
+  await writeJson(targetPath, index);
 
   if (elapsed > 2000) {
     log.warn(`Search index build took ${elapsed}ms — consider incremental updates for large knowledge bases`);
