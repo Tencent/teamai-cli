@@ -402,6 +402,12 @@ export interface ContributeState {
    * Prevents repeated hints when Layer 2 cache is hit on subsequent Stop hooks.
    */
   hinted?: boolean;
+  /** Phase 2: ISO timestamp of session start (for git commit detection in cache-hit path) */
+  sessionStartIso?: string;
+  /** Phase 2: whether git commit was detected during this session */
+  hasGitCommit?: boolean;
+  /** Phase 2: whether knowledge gap was detected (all recalls missed) */
+  isKnowledgeGap?: boolean;
 }
 
 /** Layer 1 (fast-path) threshold: if toolCount < this, skip reading events.jsonl */
@@ -412,6 +418,18 @@ export const CONTRIBUTE_SMART_THRESHOLD = 35;
 
 /** Cache smart score for this many ms (6 hours) */
 export const CONTRIBUTE_SCORE_CACHE_MS = 6 * 60 * 60 * 1000;
+
+/** Phase 2: bonus when all recalls return zero results (knowledge gap) */
+export const CONTRIBUTE_KNOWLEDGE_GAP_BONUS = 20;
+
+/** Phase 2: bonus when recalls return results but top score is very low */
+export const CONTRIBUTE_LOW_QUALITY_BONUS = 10;
+
+/** Phase 2: threshold below which recall results are considered low quality */
+export const CONTRIBUTE_LOW_QUALITY_THRESHOLD = 5.0;
+
+/** Phase 2: score deduction when session has git commits and recall had hits */
+export const CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT = 15;
 
 /** Directory for per-session contribute state files */
 export const CONTRIBUTE_SESSIONS_DIR = `${TEAMAI_HOME}/sessions`;

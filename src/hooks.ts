@@ -302,7 +302,7 @@ function isTeamaiHookCommand(command: string): boolean {
 
 /** Known teamai command substrings used to identify teamai-managed hooks. */
 const TEAMAI_COMMAND_MARKERS = [
-  'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check', 'teamai auto-recall', 'teamai todowrite-hint', 'teamai mr-hint',
+  'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check', 'teamai auto-recall', 'teamai todowrite-hint', 'teamai mr-hint', 'teamai hook-dispatch',
 ];
 
 /**

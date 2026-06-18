@@ -74,24 +74,27 @@ export async function gfListOrgRepos(
     };
 
     const collected: OrgRepoInfo[] = [];
+
+    // 策略 1: 尝试 /groups/<id>/projects 分页接口（标准 GitLab API）
+    let useProjectsEndpoint = true;
     let page = 1;
 
-    while (collected.length < maxRepos) {
+    while (useProjectsEndpoint && collected.length < maxRepos) {
         const url = `${TGIT_API_BASE}/groups/${encodedGroup}/projects?per_page=${perPage}&page=${page}`;
-        // redirect: 'manual' 防止跟随重定向到内网地址（SSRF）
         const resp = await fetch(url, { headers, redirect: 'manual' });
 
         if (resp.status >= 300 && resp.status < 400) {
             throw new Error(`Unexpected redirect from TGit API: ${resp.status}`);
         }
         if (resp.status === 404) {
-            throw new Error(`TGit group ${group} not found or no access`);
+            // 工蜂部分版本不支持 /groups/<id>/projects，fallback 到策略 2
+            useProjectsEndpoint = false;
+            break;
         }
         if (!resp.ok) {
             throw new Error(`TGit API HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
         }
 
-        // 流式读取响应体，限制最大 50 MB 防止 OOM
         const reader = resp.body?.getReader();
         let received = 0;
         const chunks: Uint8Array[] = [];
@@ -118,6 +121,49 @@ export async function gfListOrgRepos(
 
         if (items.length < perPage) break;
         page++;
+    }
+
+    // 策略 2: 从 /groups/<id> 响应中提取内嵌 projects 数组（工蜂兼容）
+    if (!useProjectsEndpoint && collected.length === 0) {
+        const url = `${TGIT_API_BASE}/groups/${encodedGroup}`;
+        const resp = await fetch(url, { headers, redirect: 'manual' });
+
+        if (resp.status >= 300 && resp.status < 400) {
+            throw new Error(`Unexpected redirect from TGit API: ${resp.status}`);
+        }
+        if (resp.status === 404) {
+            throw new Error(`TGit group ${group} not found or no access`);
+        }
+        if (!resp.ok) {
+            throw new Error(`TGit API HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
+        }
+
+        const reader = resp.body?.getReader();
+        let received = 0;
+        const chunks: Uint8Array[] = [];
+        if (reader) {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                received += value.length;
+                if (received > MAX_RESPONSE_BYTES) {
+                    await reader.cancel();
+                    throw new Error(`TGit API response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+                }
+                chunks.push(value);
+            }
+        }
+        const bodyText = Buffer.concat(chunks).toString('utf-8');
+        const groupData = JSON.parse(bodyText) as { projects?: TgitProjectApiItem[] };
+
+        if (groupData.projects && Array.isArray(groupData.projects)) {
+            for (const item of groupData.projects) {
+                collected.push(mapItem(item));
+                if (collected.length >= maxRepos) break;
+            }
+        } else {
+            throw new Error(`TGit group ${group} not found or no access`);
+        }
     }
 
     log.debug(`gfListOrgRepos: ${group} 共 ${collected.length} 项`);

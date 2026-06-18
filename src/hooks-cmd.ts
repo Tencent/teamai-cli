@@ -15,6 +15,12 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
     const baseDir = resolveBaseDir(localConfig);
     await injectHooksToAllTools(teamConfig.toolPaths, baseDir);
 
+    // Project scope: also inject into user scope (~/) so hooks work from subdirectories
+    if (localConfig.scope === 'project') {
+        const userBaseDir = process.env.HOME ?? '';
+        await injectHooksToAllTools(teamConfig.toolPaths, userBaseDir);
+    }
+
     if (!options.silent) {
         log.success('Hooks injected into all AI tool settings');
     }

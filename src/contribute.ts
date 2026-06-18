@@ -96,13 +96,12 @@ export async function contribute(
   }
 
   const pushSpin = spinner('Contributing session knowledge...').start();
+  const filename = generateFilename(options.title);
 
   try {
     // Prepare destination
     const aiDocsDir = path.join(repoPath, 'learnings');
     await ensureDir(aiDocsDir);
-
-    const filename = generateFilename(options.title);
     const destPath = path.join(aiDocsDir, filename);
 
     // Write file to repo
@@ -139,7 +138,16 @@ export async function contribute(
 
     log.info(`Your session knowledge has been shared with the team.`);
   } catch (e) {
-    pushSpin.fail(`Contribution failed: ${(e as Error).message}`);
-    log.info('You can retry with: teamai contribute --file <path>');
+    // 确保文件至少被本地 commit（防止 resetToCleanMaster 丢失数据）
+    try {
+      const { execFileSync } = await import('node:child_process');
+      const commitMsg = `[teamai] Contribute: ${options.title || 'session knowledge'}`;
+      execFileSync('git', ['add', `learnings/${filename}`], { cwd: repoPath, timeout: 5000 });
+      execFileSync('git', ['commit', '-m', commitMsg], { cwd: repoPath, timeout: 5000 });
+      pushSpin.warn(`已保存到本地（推送失败: ${(e as Error).message}）。下次 pull 时将自动重试推送。`);
+    } catch {
+      pushSpin.fail(`Contribution failed: ${(e as Error).message}`);
+      log.info('You can retry with: teamai contribute --file <path>');
+    }
   }
 }

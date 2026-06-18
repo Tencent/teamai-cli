@@ -257,6 +257,15 @@ async function pullForScope(
       const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
       if (state.lastPullRev && state.lastPullRev === currentRev) {
         log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
+        // 即使 repo 未变化，仍部署 CLI 内置资源（确保 CLI 升级后新版本 agent/rules 生效）
+        if (!options.dryRun) {
+          const cfg = await loadTeamConfig(localConfig.repo.localPath);
+          if (cfg) {
+            try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig); } catch {}
+            try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig); } catch {}
+            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { skipWiki: !isWikiEnabled() }); } catch {}
+          }
+        }
         return;
       }
     } catch {
@@ -517,8 +526,8 @@ async function pullForScope(
   }
 
   // Step 3.5: Sync learnings and rebuild the multi-category search index
-  // (Phase 1: covers learnings + docs + rules + skills). user scope only.
-  if (!options.dryRun && localConfig.scope === 'user') {
+  // (Phase 1: covers learnings + docs + rules + skills). Both scopes supported.
+  if (!options.dryRun) {
     try {
       const learningsRepoDir = path.join(localConfig.repo.localPath, 'learnings');
       const docsRepoDir = path.join(localConfig.repo.localPath, 'docs');
@@ -526,34 +535,54 @@ async function pullForScope(
       const skillsRepoDir = path.join(localConfig.repo.localPath, 'skills');
       const votesDir = path.join(localConfig.repo.localPath, 'votes');
 
-      // Always sync learnings to ~/.teamai/learnings/ when present (legacy behavior)
+      // user scope: sync learnings to ~/.teamai/learnings/ (legacy behavior)
+      // project scope: use learnings directly from repo
       let learningsCount = 0;
-      if (await pathExists(learningsRepoDir)) {
-        await fse.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
-          overwrite: true,
-          filter: (src: string) => !path.basename(src).startsWith('.'),
-        });
-        const allFiles = await listFiles(learningsRepoDir);
-        learningsCount = allFiles.filter((f) => f.endsWith('.md')).length;
+      let effectiveLearningsDir: string | undefined;
+      if (localConfig.scope === 'user') {
+        if (await pathExists(learningsRepoDir)) {
+          await fse.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
+            overwrite: true,
+            filter: (src: string) => !path.basename(src).startsWith('.'),
+          });
+          const allFiles = await listFiles(learningsRepoDir);
+          learningsCount = allFiles.filter((f) => f.endsWith('.md')).length;
+        }
+        effectiveLearningsDir = await pathExists(LEARNINGS_LOCAL_DIR) ? LEARNINGS_LOCAL_DIR : undefined;
+      } else {
+        effectiveLearningsDir = await pathExists(learningsRepoDir) ? learningsRepoDir : undefined;
+        if (effectiveLearningsDir) {
+          const allFiles = await listFiles(learningsRepoDir);
+          learningsCount = allFiles.filter((f) => f.endsWith('.md')).length;
+        }
       }
 
-      // Build the index when ANY of the four categories has content. Missing
-      // categories are silently skipped by the collectors.
+      // Build the index when ANY of the four categories has content.
       const hasAnySource =
-        await pathExists(LEARNINGS_LOCAL_DIR) ||
+        effectiveLearningsDir ||
         await pathExists(docsRepoDir) ||
         await pathExists(rulesRepoDir) ||
         await pathExists(skillsRepoDir);
 
-      if (hasAnySource) {
+      // Resolve codebase directory (project cwd or team repo)
+      const cwdCodebaseDir = path.join(process.cwd(), 'docs', 'team-codebase');
+      const repoCodebaseDir = path.join(localConfig.repo.localPath, 'docs', 'team-codebase');
+      const effectiveCodebaseDir = await pathExists(cwdCodebaseDir) ? cwdCodebaseDir
+        : await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
+
+      if (hasAnySource || effectiveCodebaseDir) {
         const votesExist = await pathExists(votesDir);
+        const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
+        const indexPath = path.join(teamaiHome, 'search-index.json');
         const { buildIndex } = await import('./utils/search-index.js');
         const elapsed = await buildIndex({
-          learningsDir: await pathExists(LEARNINGS_LOCAL_DIR) ? LEARNINGS_LOCAL_DIR : undefined,
+          learningsDir: effectiveLearningsDir,
           docsDir: await pathExists(docsRepoDir) ? docsRepoDir : undefined,
           rulesDir: await pathExists(rulesRepoDir) ? rulesRepoDir : undefined,
           skillsDir: await pathExists(skillsRepoDir) ? skillsRepoDir : undefined,
+          codebaseDir: effectiveCodebaseDir,
           votesDir: votesExist ? votesDir : undefined,
+          indexPath,
         });
         if (learningsCount > 0) {
           log.success(`Synced ${learningsCount} learnings (index: ${elapsed}ms)`);
@@ -564,6 +593,18 @@ async function pullForScope(
     } catch (e) {
       log.debug(`Learnings/index sync skipped: ${(e as Error).message}`);
     }
+  }
+
+  // Step 3.5b: Sync domains.yaml from team repo to local .teamai/
+  if (!options.dryRun) {
+    try {
+      const teamDomainsPath = path.join(localConfig.repo.localPath, '.teamai', 'domains.yaml');
+      if (await pathExists(teamDomainsPath)) {
+        const localDomainsDir = path.join(process.cwd(), '.teamai');
+        await fse.ensureDir(localDomainsDir);
+        await fse.copy(teamDomainsPath, path.join(localDomainsDir, 'domains.yaml'), { overwrite: true });
+      }
+    } catch { /* non-critical */ }
   }
 
   // Step 3.6: Inject team culture into CLAUDE.md
@@ -854,6 +895,21 @@ export function compileRecallRulesBlock(): string {
         'description of the task. The subagent will return a compact summary',
         'of relevant team knowledge (skills, learnings, docs, rules) without',
         'polluting this conversation with raw content.',
+        '',
+        '**Important constraints on agent sequencing:**',
+        '1. Always invoke `teamai-recall` subagent **first and alone** — never',
+        '   launch it in parallel with Explore or other research agents.',
+        '2. After recall returns results, use Read to get full content of the',
+        '   returned files if you need more detail. Do NOT launch Explore agents',
+        '   to search for the same topics — recall results + Read is the complete',
+        '   workflow for accessing team knowledge.',
+        '3. Explore/research agents have their own scope and must NOT overlap',
+        '   with recall:',
+        '   - **recall subagent covers:** team learnings, codebase docs, skills,',
+        '     rules, and anything under `.teamai/`, `learnings/`, `docs/team-codebase/`.',
+        '   - **Explore agents cover:** navigating source code in the current',
+        '     working directory, and web search for external information.',
+        '   - Explore agents must never search paths covered by recall.',
         '',
         '**After** completing the task, in your final reply you **MUST**',
         'declare which knowledge entries were actually referenced, using an',

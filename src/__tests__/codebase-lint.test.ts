@@ -77,7 +77,7 @@ async function scaffold(opts: ScaffoldOptions): Promise<void> {
         const fm = {
             title: 'Codebase 概览',
             lastUpdated: isoAgo(1),
-            source: path.join(os.homedir(), '.teamai', 'cache', 'repos', 'placeholder'),
+            source: opts.cwd,
             generator: 'teamai-cli',
             schemaVersion: 1,
             ...(opts.repoFrontmatter ?? {}),

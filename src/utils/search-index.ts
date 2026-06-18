@@ -487,6 +487,7 @@ export interface BuildIndexOptions {
   docsDir?: string;
   rulesDir?: string;
   skillsDir?: string;
+  codebaseDir?: string;
   votesDir?: string;
   indexPath?: string;
 }
@@ -531,6 +532,9 @@ export async function buildIndex(
   if (opts.skillsDir) {
     entries.push(...await collectSkillEntries(opts.skillsDir, voteCounts));
   }
+  if (opts.codebaseDir) {
+    entries.push(...await collectRecursiveMdEntries(opts.codebaseDir, 'docs', voteCounts));
+  }
 
   // Build document-frequency map for IDF weighting.
   // Count how many *entries* contain each token (not raw term frequency).
@@ -542,6 +546,15 @@ export async function buildIndex(
   }
 
   const elapsed = Date.now() - start;
+
+  // Guard: don't overwrite a healthy index with a significantly smaller one
+  const targetPath = opts.indexPath ?? getSearchIndexPath();
+  const existingIndex = await loadIndex(targetPath);
+  if (existingIndex && existingIndex.entries.length > 5 && entries.length < existingIndex.entries.length * 0.5) {
+    log.warn(`Index rebuild skipped: new index (${entries.length} entries) much smaller than existing (${existingIndex.entries.length})`);
+    return elapsed;
+  }
+
   const index: SearchIndex = {
     version: SEARCH_INDEX_VERSION,
     builtAt: new Date().toISOString(),
@@ -550,7 +563,7 @@ export async function buildIndex(
     df,
   };
 
-  await writeJson(opts.indexPath ?? getSearchIndexPath(), index);
+  await writeJson(targetPath, index);
 
   if (elapsed > 2000) {
     log.warn(`Search index build took ${elapsed}ms — consider incremental updates for large knowledge bases`);
@@ -656,7 +669,9 @@ export function search(
     }
 
     // Require at least one title or tag match to filter out body-only noise.
-    if (score > 0 && hasTitleOrTagMatch) {
+    // Codebase docs (from team-codebase/) lack tags, so allow body-only matches for them.
+    const isCodebaseDoc = entry.type === 'docs' && (entry.path ?? entry.filename ?? '').includes('team-codebase');
+    if (score > 0 && (hasTitleOrTagMatch || isCodebaseDoc)) {
       // Vote bonus: +0.5 per vote, max 5 points (unchanged).
       score += Math.min(entry.votes * 0.5, 5);
 

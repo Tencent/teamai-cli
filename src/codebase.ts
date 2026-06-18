@@ -388,7 +388,19 @@ export async function generateCodebaseMd(opts: {
   const rawResult = await callClaude(prompt);
 
   // 剥离 AI 可能自行附加的 frontmatter，再 prepend 标准 frontmatter
-  const body = stripExistingFrontmatter(rawResult);
+  let body = stripExistingFrontmatter(rawResult);
+
+  // 去除 AI 可能在首个标题前输出的过渡性文字（如"文件写入需要权限确认…"）
+  const h1Idx = body.indexOf('# ');
+  const h2Idx = body.indexOf('## ');
+  const titleIdx = h1Idx >= 0 ? h1Idx : h2Idx;
+  if (titleIdx > 0) {
+    body = body.slice(titleIdx);
+  } else if (titleIdx < 0) {
+    // 完全没有标题，尝试去除明显的 AI 过渡文字行
+    body = body.replace(/^.*(?:文件写入|请授权|权限确认|以下是生成的|完整内容|文档已准备|由于无法).*\n*/gm, '').trim();
+  }
+
   return buildFrontmatter(repoPath) + body;
 }
 

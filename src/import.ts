@@ -28,8 +28,6 @@ interface ImportOptions extends GlobalOptions {
   fromMr?: string;
   /** iWiki Space ID 或页面 URL，用于批量导入 iWiki 文档 */
   fromIwiki?: string;
-  /** 批量模式下最多扫描的 MR 数量（字符串，需 parseInt） */
-  limit?: string;
   /** 是否恢复中断的导入会话 */
   resume?: boolean;
   /** 是否导入全部候选（跳过交互确认） */
@@ -244,11 +242,14 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       const classified = await classifyWithAI(candidates);
       const session = await interactiveReview(classified, { all: opts.all, resume: opts.resume });
       const { localConfig } = await autoDetectInit();
-      await pushAccepted(session, localConfig.repo.localPath, {
+      const { pushed } = await pushAccepted(session, localConfig.repo.localPath, {
         dryRun: opts.dryRun,
         outputDir: opts.output,
       });
       log.success('导入完成');
+      if (pushed > 0 && !opts.dryRun && !opts.output) {
+        log.info('文件已写入本地团队仓库，运行 `teamai push` 推送到远程仓库');
+      }
     } else {
       // 默认：未指定来源，提示用户
       log.info('请指定导入来源：--dir <path>、--from-claude、--workspace、--from-mr <url> 或 --from-iwiki <space-id-or-url>');
