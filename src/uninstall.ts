@@ -4,6 +4,12 @@ import { removeHooks } from './hooks.js';
 import {
   TEAMAI_RULES_START,
   TEAMAI_RULES_END,
+  TEAMAI_CULTURE_START,
+  TEAMAI_CULTURE_END,
+  TEAMAI_CLAUDEMD_START,
+  TEAMAI_CLAUDEMD_END,
+  TEAMAI_RECALL_RULES_START,
+  TEAMAI_RECALL_RULES_END,
   TEAMAI_ENV_START,
   TEAMAI_ENV_END,
   getTeamaiHome,
@@ -51,6 +57,13 @@ interface RemovalPlan {
 }
 
 // ─── Helpers ───────────────────────────────────────────
+
+const CLAUDEMD_MARKER_PAIRS: Array<[string, string]> = [
+  [TEAMAI_RULES_START, TEAMAI_RULES_END],
+  [TEAMAI_CULTURE_START, TEAMAI_CULTURE_END],
+  [TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END],
+  [TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END],
+];
 
 function detectShellProfile(): string | null {
   const home = process.env.HOME;
@@ -140,11 +153,11 @@ async function buildRemovalPlan(
       }
     }
 
-    // (b) CLAUDE.md teamai rules block
+    // (b) CLAUDE.md teamai section blocks
     if (toolPath.claudemd) {
       const claudeMdPath = path.join(baseDir, toolPath.claudemd);
       const content = await readFileSafe(claudeMdPath);
-      if (content && content.includes(TEAMAI_RULES_START)) {
+      if (content && CLAUDEMD_MARKER_PAIRS.some(([start]) => content.includes(start))) {
         plan.claudeMdFiles.push(claudeMdPath);
       }
     }
@@ -283,24 +296,27 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
     }
   }
 
-  // (b) Clean CLAUDE.md teamai rules blocks
+  // (b) Clean CLAUDE.md teamai section blocks
   for (const claudeMdPath of plan.claudeMdFiles) {
     try {
-      const content = await readFileSafe(claudeMdPath);
-      if (!content) continue;
+      const raw = await readFileSafe(claudeMdPath);
+      if (!raw) continue;
 
-      const startIdx = content.indexOf(TEAMAI_RULES_START);
-      const endIdx = content.indexOf(TEAMAI_RULES_END);
-      if (startIdx === -1 || endIdx === -1) continue;
+      let content: string = raw;
+      for (const [startMarker, endMarker] of CLAUDEMD_MARKER_PAIRS) {
+        const startIdx = content.indexOf(startMarker);
+        const endIdx = content.indexOf(endMarker);
+        if (startIdx === -1 || endIdx === -1) continue;
 
-      const before = content.substring(0, startIdx).replace(/\n+$/, '\n');
-      const after = content.substring(endIdx + TEAMAI_RULES_END.length).replace(/^\n+/, '\n');
-      const newContent = (before + after).trim();
+        const before = content.substring(0, startIdx).replace(/\n+$/, '\n');
+        const after = content.substring(endIdx + endMarker.length).replace(/^\n+/, '\n');
+        content = (before + after).trim();
+      }
 
-      if (newContent.length === 0) {
+      if (content.length === 0) {
         await remove(claudeMdPath);
       } else {
-        await writeFile(claudeMdPath, newContent + '\n');
+        await writeFile(claudeMdPath, content + '\n');
       }
       log.success(`清理 CLAUDE.md: ${claudeMdPath}`);
     } catch (e) {
