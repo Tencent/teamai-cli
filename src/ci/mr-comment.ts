@@ -207,13 +207,38 @@ interface TGitNote {
   body: string;
 }
 
+interface TGitMRInfo {
+  id: number;
+  iid: number;
+}
+
+/**
+ * TGit Notes API 使用 MR 的全局 id（而非项目内 iid），
+ * 需要先查询 MR 列表获取全局 id。
+ */
+async function getMrGlobalId(projectId: string, mrIid: string): Promise<number> {
+  const resp = await tgitRequest(
+    `/projects/${projectId}/merge_requests?iid=${mrIid}`,
+    'GET',
+  );
+  if (!resp.ok) {
+    throw new Error(`TGit 查询 MR 失败 (${resp.status})`);
+  }
+  const mrs = (await resp.json()) as TGitMRInfo[];
+  const mr = mrs.find((m) => String(m.iid) === mrIid);
+  if (!mr) {
+    throw new Error(`TGit MR !${mrIid} 不存在`);
+  }
+  return mr.id;
+}
+
 async function findTGitComment(
   projectId: string,
-  mrIid: string,
+  mrGlobalId: number,
   marker: string,
 ): Promise<TGitNote | null> {
   const resp = await tgitRequest(
-    `/projects/${projectId}/merge_requests/${mrIid}/notes?per_page=100`,
+    `/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100`,
     'GET',
   );
   if (!resp.ok) return null;
@@ -223,11 +248,11 @@ async function findTGitComment(
 
 async function postTGitComment(
   projectId: string,
-  mrIid: string,
+  mrGlobalId: number,
   body: string,
 ): Promise<CommentResult> {
   const resp = await tgitRequest(
-    `/projects/${projectId}/merge_requests/${mrIid}/notes`,
+    `/projects/${projectId}/merge_requests/${mrGlobalId}/notes`,
     'POST',
     { body },
   );
@@ -240,12 +265,12 @@ async function postTGitComment(
 
 async function updateTGitComment(
   projectId: string,
-  mrIid: string,
+  mrGlobalId: number,
   noteId: number,
   body: string,
 ): Promise<CommentResult> {
   const resp = await tgitRequest(
-    `/projects/${projectId}/merge_requests/${mrIid}/notes/${noteId}`,
+    `/projects/${projectId}/merge_requests/${mrGlobalId}/notes/${noteId}`,
     'PUT',
     { body },
   );
@@ -303,12 +328,13 @@ export async function postOrUpdateMrComment(
     return postGitHubComment(parsed.owner, parsed.repo, parsed.number, body);
   }
 
-  // TGit
+  // TGit — Notes API 使用 MR 全局 id
   const projectId = encodeURIComponent(`${parsed.owner}/${parsed.repo}`);
-  const existing = await findTGitComment(projectId, parsed.number, effectiveMarker);
+  const mrGlobalId = await getMrGlobalId(projectId, parsed.number);
+  const existing = await findTGitComment(projectId, mrGlobalId, effectiveMarker);
   if (existing) {
     log.debug(`发现已有 note #${existing.id}，更新中...`);
-    return updateTGitComment(projectId, parsed.number, existing.id, body);
+    return updateTGitComment(projectId, mrGlobalId, existing.id, body);
   }
-  return postTGitComment(projectId, parsed.number, body);
+  return postTGitComment(projectId, mrGlobalId, body);
 }

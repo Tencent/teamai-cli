@@ -55,15 +55,19 @@ async function fetchTGitMRViaApi(group: string, project: string, mrIid: string):
   const baseUrl = `https://git.woa.com/api/v3/projects/${encodedPath}`;
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
-  // 获取 MR 元信息
-  const mrResp = await fetch(`${baseUrl}/merge_requests/${mrIid}`, { headers });
-  if (!mrResp.ok) {
-    throw new Error(`TGit API 返回错误 ${mrResp.status}：${await mrResp.text()}`);
+  // 获取 MR 元信息（TGit 不支持 /merge_requests/{iid} 路径，需用 ?iid= 查询）
+  const listResp = await fetch(`${baseUrl}/merge_requests?iid=${mrIid}`, { headers });
+  if (!listResp.ok) {
+    throw new Error(`TGit API 返回错误 ${listResp.status}：${await listResp.text()}`);
   }
-  const mr = await mrResp.json() as { title: string; description: string; author: { username: string }; merged_at: string | null };
+  const mrList = await listResp.json() as Array<{ id: number; title: string; description: string; author: { username: string }; merged_at: string | null }>;
+  const mr = mrList.find((m) => String(m.id) !== undefined);
+  if (!mr) {
+    throw new Error(`TGit MR !${mrIid} 不存在`);
+  }
 
-  // 获取 MR diff（截断至 50KB）
-  const diffResp = await fetch(`${baseUrl}/merge_requests/${mrIid}/changes`, { headers });
+  // 获取 MR diff（使用全局 id，截断至 50KB）
+  const diffResp = await fetch(`${baseUrl}/merge_requests/${mr.id}/changes`, { headers });
   let diff = '';
   if (diffResp.ok) {
     const diffData = await diffResp.json() as { changes: Array<{ diff: string }> };
