@@ -118,9 +118,9 @@ Member A                             Member B
 
 - `teamai push` creates a dedicated branch (`teamai/push/<user>/<timestamp>`), pushes it, then opens a Merge Request and assigns reviewers automatically.
 - `teamai init` lets you configure default reviewers (stored in the `reviewers` field of `teamai.yaml`).
-- `teamai init` injects hooks tailored to each tool's format (`SessionStart`, `Stop`, `PostToolUse`, `UserPromptSubmit`, etc.). During sessions the hooks run `teamai pull`, `teamai update`, tracking, dashboard updates, and so on (supports Claude Code, Codex, Cursor, CodeBuddy IDE, OpenClaw, WorkBuddy).
-- Skills sync to `~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`, `~/.codebuddy/skills/`.
-- Rules sync to each tool's rules directory and are merged into `CLAUDE.md` via marker comments (supported for claude, codebuddy).
+- `teamai init` injects hooks tailored to each tool's format (`SessionStart`, `Stop`, `PostToolUse`, `UserPromptSubmit`, etc.). During sessions the hooks run `teamai pull`, `teamai update`, tracking, dashboard updates, and so on (supports Claude Code, Codex, Claude Code Internal, Codex Internal, Cursor, CodeBuddy IDE, OpenClaw, WorkBuddy).
+- Skills sync to `~/.claude/skills/`, `~/.codex/skills/`, `~/.codex-internal/skills/`, `~/.claude-internal/skills/`, `~/.cursor/skills/`, `~/.codebuddy/skills/`.
+- Rules sync to each tool's rules directory and are merged into `CLAUDE.md` via marker comments (supported for claude, claude-internal, codebuddy).
 - Knowledge syncs to `~/.teamai/docs/`.
 - Learnings sync to `~/.teamai/learnings/` and back the recall index (shared team-wide, not partitioned by role).
 - Culture syncs the team culture file (`culture.md`): its frontmatter and body are compiled and injected into every AI tool's `CLAUDE.md`.

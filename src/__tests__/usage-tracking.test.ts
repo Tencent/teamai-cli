@@ -1135,7 +1135,7 @@ describe('track with tool parameter', () => {
 // ─── hook command string tests ────────────────────────
 
 describe('hook command strings', () => {
-  it('generates track commands with --tool parameter', async () => {
+  it('generates dispatch commands with --tool parameter', async () => {
     // Import the module to test hook injection
     const { injectHooks } = await import('../hooks.js');
     const settingsPath = path.join(tmpDir, '.test-claude', 'settings.json');
@@ -1145,26 +1145,26 @@ describe('hook command strings', () => {
 
     const settings = JSON.parse(await fs.promises.readFile(settingsPath, 'utf-8'));
 
-    // Check PostToolUse hook has --tool claude-internal
+    // Check PostToolUse hooks have --tool claude-internal
     const postToolUse = settings.hooks?.PostToolUse;
     expect(postToolUse).toBeDefined();
-    const trackHook = postToolUse.find((h: { description?: string }) =>
-      h.description?.includes('Track skill'),
+    const skillHook = postToolUse.find((h: { description?: string }) =>
+      h.description?.includes('Hook dispatch post-tool-use Skill'),
     );
-    expect(trackHook).toBeDefined();
-    expect(trackHook.hooks[0].command).toContain('--tool claude-internal');
+    expect(skillHook).toBeDefined();
+    expect(skillHook.hooks[0].command).toContain('--tool claude-internal');
 
     // Check UserPromptSubmit hook has --tool claude-internal
     const userPrompt = settings.hooks?.UserPromptSubmit;
     expect(userPrompt).toBeDefined();
-    const slashHook = userPrompt.find((h: { description?: string }) =>
-      h.description?.includes('Track slash'),
+    const promptHook = userPrompt.find((h: { description?: string }) =>
+      h.description?.includes('Hook dispatch prompt-submit'),
     );
-    expect(slashHook).toBeDefined();
-    expect(slashHook.hooks[0].command).toContain('--tool claude-internal');
+    expect(promptHook).toBeDefined();
+    expect(promptHook.hooks[0].command).toContain('--tool claude-internal');
   });
 
-  it('generates track commands with --tool claude for default tool', async () => {
+  it('generates dispatch commands with --tool claude for default tool', async () => {
     const { injectHooks } = await import('../hooks.js');
     const settingsPath = path.join(tmpDir, '.test-claude2', 'settings.json');
     await fse.ensureDir(path.dirname(settingsPath));
@@ -1173,10 +1173,10 @@ describe('hook command strings', () => {
 
     const settings = JSON.parse(await fs.promises.readFile(settingsPath, 'utf-8'));
     const postToolUse = settings.hooks?.PostToolUse;
-    const trackHook = postToolUse.find((h: { description?: string }) =>
-      h.description?.includes('Track skill'),
+    const skillHook = postToolUse.find((h: { description?: string }) =>
+      h.description?.includes('Hook dispatch post-tool-use Skill'),
     );
-    expect(trackHook.hooks[0].command).toContain('--tool claude');
+    expect(skillHook.hooks[0].command).toContain('--tool claude');
   });
 
   it('cleans up legacy hooks without description on inject', async () => {
@@ -1207,22 +1207,16 @@ describe('hook command strings', () => {
 
     const result = JSON.parse(await fs.promises.readFile(settingsPath, 'utf-8'));
 
-    // Legacy duplicates should be cleaned, replaced by proper hooks with description
-    // SessionStart has 3 hooks: Auto-pull + MR hint + Dashboard report
-    expect(result.hooks.SessionStart).toHaveLength(3);
-    expect(result.hooks.SessionStart.every((h: { description?: string }) => h.description)).toBe(true);
+    // Legacy duplicates should be cleaned, replaced by single dispatch entry with description
+    // SessionStart has 1 hook (hook-dispatch session-start)
+    expect(result.hooks.SessionStart).toHaveLength(1);
+    expect(result.hooks.SessionStart[0].description).toContain('[teamai]');
+    expect(result.hooks.SessionStart[0].hooks[0].command).toContain('hook-dispatch');
 
-    // Stop has 3 hooks: Auto-update + Dashboard stop + Contribute check
-    expect(result.hooks.Stop).toHaveLength(3);
-    expect(result.hooks.Stop.every((h: { description?: string }) => h.description)).toBe(true);
-
-    // Auto-update hook must have a 10s timeout — npm registry call should not
-    // delay session shutdown by Claude Code's default 60s if it stalls.
-    const updateHook = result.hooks.Stop.find((h: { description?: string }) =>
-      h.description?.includes('Auto-update'),
-    );
-    expect(updateHook).toBeDefined();
-    expect(updateHook.hooks[0].timeout).toBe(10);
+    // Stop has 1 hook (hook-dispatch stop)
+    expect(result.hooks.Stop).toHaveLength(1);
+    expect(result.hooks.Stop[0].description).toContain('[teamai]');
+    expect(result.hooks.Stop[0].hooks[0].command).toContain('hook-dispatch');
 
     // Non-teamai hooks should be preserved
     expect(result.hooks.PreToolUse).toHaveLength(1);
@@ -1248,18 +1242,18 @@ describe('hook command strings', () => {
 
     const result = JSON.parse(await fs.promises.readFile(settingsPath, 'utf-8'));
 
-    // continuous-learning hook preserved, legacy teamai track removed + replaced with proper one
+    // continuous-learning hook preserved, legacy teamai track removed + replaced with dispatch
     const observeHooks = result.hooks.PostToolUse.filter(
       (h: { hooks?: Array<{ command: string }> }) => h.hooks?.[0]?.command?.includes('observe.sh'),
     );
     expect(observeHooks).toHaveLength(1);
 
-    // teamai track hook should have description now
-    const trackHooks = result.hooks.PostToolUse.filter(
-      (h: { description?: string }) => h.description?.includes('Track skill'),
+    // teamai dispatch hook should exist with Skill matcher
+    const skillHooks = result.hooks.PostToolUse.filter(
+      (h: { description?: string }) => h.description?.includes('Hook dispatch post-tool-use Skill'),
     );
-    expect(trackHooks).toHaveLength(1);
-    expect(trackHooks[0].hooks[0].command).toContain('--tool claude');
+    expect(skillHooks).toHaveLength(1);
+    expect(skillHooks[0].hooks[0].command).toContain('--tool claude');
   });
 
   it('cleans up hooks with outdated description keywords', async () => {
@@ -1267,8 +1261,7 @@ describe('hook command strings', () => {
     const settingsPath = path.join(tmpDir, '.test-outdated-desc', 'settings.json');
     await fse.ensureDir(path.dirname(settingsPath));
 
-    // Simulate: old description "Check for updates" + current "Auto-update" both present
-    // CodeBuddy uses PascalCase keys (same as Claude) — HookExecutor looks up by PascalCase
+    // Simulate: old description hooks that should be cleaned up
     const outdatedSettings = {
       hooks: {
         Stop: [
@@ -1291,14 +1284,10 @@ describe('hook command strings', () => {
 
     const result = JSON.parse(await fs.promises.readFile(settingsPath, 'utf-8'));
 
-    // Legacy entries cleaned up, fresh hooks injected under PascalCase "Stop" key
-    // (update + dashboard-report + contribute-check = 3)
-    expect(result.hooks.Stop).toHaveLength(3);
-    const updateHook = result.hooks.Stop.find((h: { description?: string }) =>
-      h.description?.includes('Auto-update'),
-    );
-    expect(updateHook).toBeDefined();
-    expect(updateHook.hooks[0].command).toContain('teamai update');
+    // Legacy entries cleaned up, replaced with single dispatch entry
+    expect(result.hooks.Stop).toHaveLength(1);
+    expect(result.hooks.Stop[0].hooks[0].command).toContain('hook-dispatch stop');
+    expect(result.hooks.Stop[0].hooks[0].command).toContain('--tool codebuddy');
   });
 });
 

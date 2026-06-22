@@ -3,46 +3,17 @@ import { readJson, writeJson, expandHome, ensureDir } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 
-const TEAMAI_PULL_COMMAND = 'bash -lc "teamai pull 2>/dev/null" || true';
-const TEAMAI_UPDATE_COMMAND = 'bash -lc "teamai update 2>/dev/null" || true';
-
-/** Generate the track command with tool identifier for correct usage attribution. */
-function getTrackCommand(tool: string): string {
-  return `bash -lc "teamai track --stdin --tool ${tool} 2>/dev/null" || true`;
-}
-
-/** Generate the track-slash command with tool identifier. */
-function getTrackSlashCommand(tool: string): string {
-  return `bash -lc "teamai track-slash --stdin --tool ${tool} 2>/dev/null" || true`;
-}
-
-/** Generate the dashboard-report command with tool identifier. */
-function getDashboardReportCommand(tool: string): string {
-  return `bash -lc "teamai dashboard-report --stdin --tool ${tool} 2>/dev/null" || true`;
-}
-
-/** Generate the auto-recall command with tool identifier. */
-function getAutoRecallCommand(tool: string): string {
-  return `bash -lc "teamai auto-recall --stdin 2>/dev/null" || true`;
-}
-
-/** Generate the todowrite-hint command with tool identifier. */
-function getTodoWriteHintCommand(tool: string): string {
-  return `bash -lc "teamai todowrite-hint --stdin --tool ${tool} 2>/dev/null" || true`;
-}
-
-/** Generate the contribute-check command with tool identifier. */
-function getContributeCheckCommand(tool: string): string {
-  return `bash -lc "teamai contribute-check --stdin --tool ${tool} 2>/dev/null" || true`;
-}
-
-/** Generate the mr-hint command with tool identifier. */
-function getMrHintCommand(tool: string): string {
-  return `bash -lc "teamai mr-hint --stdin --tool ${tool} 2>/dev/null" || true`;
+/** Generate the hook-dispatch command for a given event, tool, and optional matcher. */
+function getDispatchCommand(event: string, tool: string, matcher?: string): string {
+  const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
+  return `bash -lc "teamai hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
 }
 
 /** Subcommands expected in each tool settings file (for `teamai doctor`). */
-export const TEAMAI_HOOK_SUBCOMMANDS = ['pull', 'update', 'track', 'track-slash', 'dashboard-report', 'contribute-check', 'auto-recall', 'todowrite-hint', 'mr-hint'] as const;
+export const TEAMAI_HOOK_SUBCOMMANDS = ['hook-dispatch'] as const;
+
+/** Legacy subcommands that are cleaned up during migration. */
+export const TEAMAI_LEGACY_HOOK_SUBCOMMANDS = ['pull', 'update', 'track', 'track-slash', 'dashboard-report', 'contribute-check', 'auto-recall', 'todowrite-hint', 'mr-hint'] as const;
 
 /** Claude PascalCase event → Cursor camelCase event (for tests / docs). */
 export const CLAUDE_TO_CURSOR_EVENTS: Record<string, string> = {
@@ -103,121 +74,74 @@ interface ClaudeHookDef {
 /** Build Claude hook definitions with the correct --tool identifier. */
 function getClaudeHooks(tool: string): ClaudeHookDef[] {
   return [
+    // ─── SessionStart: single dispatcher handles pull + dashboard-report ────
     {
       eventType: 'SessionStart',
-      descriptionKeyword: 'Auto-pull',
+      descriptionKeyword: 'Hook dispatch session-start',
       hook: {
         matcher: '*',
-        hooks: [{ type: 'command', command: TEAMAI_PULL_COMMAND }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Auto-pull team resources on session start`,
+        hooks: [{ type: 'command', command: getDispatchCommand('session-start', tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Hook dispatch session-start`,
       },
     },
+    // ─── Stop: single dispatcher handles update + contribute-check + dashboard-report ────
     {
       eventType: 'Stop',
-      descriptionKeyword: 'Auto-update',
+      descriptionKeyword: 'Hook dispatch stop',
       hook: {
         matcher: '*',
-        // 10s timeout: npm registry call typically <5s; cap at 10s so a stalled
-        // call cannot delay session shutdown by the default 60s.
-        hooks: [{ type: 'command', command: TEAMAI_UPDATE_COMMAND, timeout: 10 }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Auto-update on session end`,
+        hooks: [{ type: 'command', command: getDispatchCommand('stop', tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Hook dispatch stop`,
       },
     },
-    // ─── Contribute check (smart threshold hint at session end) ────────
-    {
-      eventType: 'Stop',
-      descriptionKeyword: 'Contribute check',
-      hook: {
-        matcher: '*',
-        hooks: [{ type: 'command', command: getContributeCheckCommand(tool) }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Contribute check on session end`,
-      },
-    },
+    // ─── PostToolUse (*): dashboard-report ────
     {
       eventType: 'PostToolUse',
-      descriptionKeyword: 'Track skill',
+      descriptionKeyword: 'Hook dispatch post-tool-use wildcard',
+      hook: {
+        matcher: '*',
+        hooks: [{ type: 'command', command: getDispatchCommand('post-tool-use', tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Hook dispatch post-tool-use wildcard`,
+      },
+    },
+    // ─── PostToolUse (Skill): track ────
+    {
+      eventType: 'PostToolUse',
+      descriptionKeyword: 'Hook dispatch post-tool-use Skill',
       hook: {
         matcher: 'Skill',
-        hooks: [{ type: 'command', command: getTrackCommand(tool) }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Track skill usage`,
+        hooks: [{ type: 'command', command: getDispatchCommand('post-tool-use', tool, 'Skill') }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Hook dispatch post-tool-use Skill`,
       },
     },
-    {
-      eventType: 'UserPromptSubmit',
-      descriptionKeyword: 'Track slash',
-      hook: {
-        matcher: '*',
-        hooks: [{ type: 'command', command: getTrackSlashCommand(tool) }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Track slash command usage`,
-      },
-    },
-    // ─── Auto-recall (search knowledge base on search tools + Bash errors) ────────
-    // Split into 4 precise matchers to avoid spawning a process for tools that
-    // would immediately exit (auto-recall only handles Bash/Grep/WebSearch/WebFetch).
+    // ─── PostToolUse (Bash/Grep/WebSearch/WebFetch): auto-recall ────
     ...(['Bash', 'Grep', 'WebSearch', 'WebFetch'] as const).map((matcher) => ({
       eventType: 'PostToolUse' as const,
-      descriptionKeyword: `Auto-recall ${matcher}`,
+      descriptionKeyword: `Hook dispatch post-tool-use ${matcher}`,
       hook: {
         matcher,
-        hooks: [{ type: 'command', command: getAutoRecallCommand(tool) }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Auto-recall on ${matcher}`,
+        hooks: [{ type: 'command', command: getDispatchCommand('post-tool-use', tool, matcher) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Hook dispatch post-tool-use ${matcher}`,
       },
     })),
-    // ─── TodoWrite hint (Phase 1 reminder to call teamai-recall subagent) ────────
+    // ─── PostToolUse (TodoWrite): todowrite-hint ────
     {
       eventType: 'PostToolUse',
-      descriptionKeyword: 'TodoWrite hint',
+      descriptionKeyword: 'Hook dispatch post-tool-use TodoWrite',
       hook: {
         matcher: 'TodoWrite',
-        hooks: [{ type: 'command', command: getTodoWriteHintCommand(tool) }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} TodoWrite hint to call teamai-recall subagent`,
+        hooks: [{ type: 'command', command: getDispatchCommand('post-tool-use', tool, 'TodoWrite') }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Hook dispatch post-tool-use TodoWrite`,
       },
     },
-    // ─── MR hint (alert AI about recently merged but un-imported MRs) ────────
-    {
-      eventType: 'SessionStart',
-      descriptionKeyword: 'MR hint',
-      hook: {
-        matcher: '*',
-        hooks: [{ type: 'command', command: getMrHintCommand(tool) }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} MR hint on session start`,
-      },
-    },
-    // ─── Dashboard hooks (independent from tracking) ────────
-    {
-      eventType: 'SessionStart',
-      descriptionKeyword: 'Dashboard report',
-      hook: {
-        matcher: '*',
-        hooks: [{ type: 'command', command: getDashboardReportCommand(tool) }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Dashboard report on session start`,
-      },
-    },
-    {
-      eventType: 'Stop',
-      descriptionKeyword: 'Dashboard stop',
-      hook: {
-        matcher: '*',
-        hooks: [{ type: 'command', command: getDashboardReportCommand(tool) }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Dashboard report on session stop`,
-      },
-    },
-    {
-      eventType: 'PostToolUse',
-      descriptionKeyword: 'Dashboard tool',
-      hook: {
-        matcher: '*',
-        hooks: [{ type: 'command', command: getDashboardReportCommand(tool) }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Dashboard report on tool use`,
-      },
-    },
+    // ─── UserPromptSubmit: track-slash + dashboard-report ────
     {
       eventType: 'UserPromptSubmit',
-      descriptionKeyword: 'Dashboard prompt',
+      descriptionKeyword: 'Hook dispatch prompt-submit',
       hook: {
         matcher: '*',
-        hooks: [{ type: 'command', command: getDashboardReportCommand(tool) }],
-        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Dashboard report on prompt submit`,
+        hooks: [{ type: 'command', command: getDispatchCommand('prompt-submit', tool) }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Hook dispatch prompt-submit`,
       },
     },
   ];
@@ -240,28 +164,23 @@ interface CursorHooksJson {
 function buildCursorHooks(tool: string): Record<string, CursorHookEntry[]> {
   return {
     sessionStart: [
-      { command: TEAMAI_PULL_COMMAND, timeout: 30 },
-      { command: getMrHintCommand(tool), timeout: 10 },
-      { command: getDashboardReportCommand(tool), timeout: 10 },
+      { command: getDispatchCommand('session-start', tool), timeout: 60 },
     ],
     stop: [
-      { command: TEAMAI_UPDATE_COMMAND, timeout: 10 },
-      { command: getDashboardReportCommand(tool), timeout: 10 },
-      { command: getContributeCheckCommand(tool), timeout: 10 },
+      { command: getDispatchCommand('stop', tool), timeout: 15 },
     ],
     postToolUse: [
-      { command: getTrackCommand(tool), timeout: 10, matcher: 'Skill' },
-      { command: getDashboardReportCommand(tool), timeout: 10 },
+      { command: getDispatchCommand('post-tool-use', tool), timeout: 10 },
+      { command: getDispatchCommand('post-tool-use', tool, 'Skill'), timeout: 10, matcher: 'Skill' },
       ...(['Bash', 'Grep', 'WebSearch', 'WebFetch'] as const).map((matcher) => ({
-        command: getAutoRecallCommand(tool),
-        timeout: 3,
+        command: getDispatchCommand('post-tool-use', tool, matcher),
+        timeout: 10,
         matcher,
       })),
-      { command: getTodoWriteHintCommand(tool), timeout: 3, matcher: 'TodoWrite' },
+      { command: getDispatchCommand('post-tool-use', tool, 'TodoWrite'), timeout: 3, matcher: 'TodoWrite' },
     ],
     beforeSubmitPrompt: [
-      { command: getTrackSlashCommand(tool), timeout: 10 },
-      { command: getDashboardReportCommand(tool), timeout: 10 },
+      { command: getDispatchCommand('prompt-submit', tool), timeout: 10 },
     ],
   };
 }
@@ -302,7 +221,7 @@ function isTeamaiHookCommand(command: string): boolean {
 
 /** Known teamai command substrings used to identify teamai-managed hooks. */
 const TEAMAI_COMMAND_MARKERS = [
-  'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check', 'teamai auto-recall', 'teamai todowrite-hint', 'teamai mr-hint',
+  'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check', 'teamai auto-recall', 'teamai todowrite-hint', 'teamai mr-hint', 'teamai hook-dispatch',
 ];
 
 /**
@@ -455,6 +374,26 @@ async function injectCursorHooks(hooksPath: string, tool: string): Promise<void>
 
   const desiredHooks = buildCursorHooks(tool);
   let changed = false;
+
+  // Clean up legacy individual teamai hooks (pull, track, dashboard-report, etc.)
+  // that are being replaced by unified hook-dispatch entries.
+  for (const event of Object.keys(hooksJson.hooks)) {
+    const entries = hooksJson.hooks[event];
+    const filtered = entries.filter((h) => {
+      if (!isTeamaiHookCommand(h.command)) return true;
+      // Keep hook-dispatch entries, remove all legacy individual subcommand entries
+      const subcmd = extractTeamaiSubcommand(h.command);
+      return subcmd === 'hook-dispatch';
+    });
+    if (filtered.length !== entries.length) {
+      changed = true;
+      if (filtered.length === 0) {
+        delete hooksJson.hooks[event];
+      } else {
+        hooksJson.hooks[event] = filtered;
+      }
+    }
+  }
 
   // Clean up stale event keys no longer in the desired set (e.g. userPromptSubmit → beforeSubmitPrompt rename)
   const desiredEvents = new Set(Object.keys(desiredHooks));

@@ -99,10 +99,11 @@ describe('doctor — hook checks', () => {
     });
 
     it('should fail when a subcommand is missing from settings', async () => {
-        // Missing 'contribute-check' subcommand
+        // Missing 'hook-dispatch' subcommand (the only required one now)
         mockedReadFileSafe.mockImplementation(async (filePath: string) => {
             if (filePath.includes('settings.json')) {
-                return buildPartialHooksContent(['contribute-check']);
+                // Return settings without hook-dispatch
+                return '{ "hooks": { "command": "bash -lc \\"teamai pull\\"" } }';
             }
             if (filePath.includes('.zshrc') || filePath.includes('.bashrc')) {
                 return '# [teamai:env:start]';
@@ -136,16 +137,8 @@ describe('doctor — hook checks', () => {
     });
 
     it('should check all TEAMAI_HOOK_SUBCOMMANDS', () => {
-        // Verify the subcommands list is what we expect
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('pull');
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('update');
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('track');
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('track-slash');
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('dashboard-report');
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('contribute-check');
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('auto-recall');
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('todowrite-hint');
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('mr-hint');
-        expect(TEAMAI_HOOK_SUBCOMMANDS).toHaveLength(9);
+        // With the merged dispatch format, only hook-dispatch is needed
+        expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('hook-dispatch');
+        expect(TEAMAI_HOOK_SUBCOMMANDS).toHaveLength(1);
     });
 });

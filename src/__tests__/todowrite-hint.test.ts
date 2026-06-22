@@ -93,12 +93,11 @@ describe('hooks.ts — TodoWrite hint registration', () => {
 
     const settings = await fse.readJson(settingsPath);
     const postToolUse = settings.hooks?.PostToolUse ?? [];
-    const hint = postToolUse.find((h: { description?: string }) =>
-      h.description?.includes('TodoWrite hint'),
-    );
+    const hint = postToolUse.find((h: { matcher?: string }) => h.matcher === 'TodoWrite');
     expect(hint).toBeDefined();
     expect(hint.matcher).toBe('TodoWrite');
-    expect(hint.hooks?.[0]?.command).toContain('teamai todowrite-hint');
+    expect(hint.hooks?.[0]?.command).toContain('teamai hook-dispatch post-tool-use');
+    expect(hint.hooks?.[0]?.command).toContain('--matcher TodoWrite');
     expect(hint.hooks?.[0]?.command).toContain('--tool claude');
   });
 
@@ -109,11 +108,11 @@ describe('hooks.ts — TodoWrite hint registration', () => {
 
     const settings = await fse.readJson(settingsPath);
     const postToolUse = settings.hooks?.PostToolUse ?? [];
-    const hint = postToolUse.find((h: { description?: string }) =>
-      h.description?.includes('TodoWrite hint'),
-    );
+    const hint = postToolUse.find((h: { matcher?: string }) => h.matcher === 'TodoWrite');
     expect(hint).toBeDefined();
     expect(hint.matcher).toBe('TodoWrite');
+    expect(hint.hooks?.[0]?.command).toContain('teamai hook-dispatch post-tool-use');
+    expect(hint.hooks?.[0]?.command).toContain('--matcher TodoWrite');
     expect(hint.hooks?.[0]?.command).toContain('--tool codebuddy');
   });
 
@@ -126,9 +125,10 @@ describe('hooks.ts — TodoWrite hint registration', () => {
     const postToolUse = hooksJson.hooks?.postToolUse ?? [];
     const hint = postToolUse.find(
       (h: { command: string; matcher?: string }) =>
-        h.command.includes('teamai todowrite-hint') && h.matcher === 'TodoWrite',
+        h.command.includes('teamai hook-dispatch post-tool-use') && h.matcher === 'TodoWrite',
     );
     expect(hint).toBeDefined();
+    expect(hint.command).toContain('--matcher TodoWrite');
     expect(hint.command).toContain('--tool cursor');
   });
 
@@ -141,7 +141,7 @@ describe('hooks.ts — TodoWrite hint registration', () => {
     const settings = await fse.readJson(settingsPath);
     const postToolUse = settings.hooks?.PostToolUse ?? [];
     const hits = postToolUse.filter(
-      (h: { description?: string }) => h.description?.includes('TodoWrite hint'),
+      (h: { matcher?: string }) => h.matcher === 'TodoWrite',
     );
     expect(hits.length).toBe(1);
   });

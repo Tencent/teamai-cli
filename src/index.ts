@@ -682,4 +682,16 @@ program
         await driftCmd({ ...globalOpts, ...cmdOpts, repoUrlArg });
     });
 
+// ─── Unified hook dispatch (replaces individual hook subcommands) ────
+
+program
+  .command('hook-dispatch <event>')
+  .description('Unified hook dispatcher — handles all teamai hooks for a given event in one process')
+  .option('--tool <name>', 'Tool identifier (e.g. claude, claude-internal, cursor)')
+  .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
+  .action(async (event: string, cmdOpts: { tool?: string; matcher?: string }) => {
+    const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
+    await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
+  });
+
 program.parse();

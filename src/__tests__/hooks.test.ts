@@ -23,7 +23,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { injectHooks, removeHooks, injectHooksToAllTools, TEAMAI_HOOK_SUBCOMMANDS, CLAUDE_TO_CURSOR_EVENTS } from '../hooks.js';
+import { injectHooks, removeHooks, injectHooksToAllTools, TEAMAI_HOOK_SUBCOMMANDS, TEAMAI_LEGACY_HOOK_SUBCOMMANDS, CLAUDE_TO_CURSOR_EVENTS } from '../hooks.js';
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ describe('hooks', () => {
   });
 
   describe('inject — empty file', () => {
-    it('Claude format: injects 4 events with 15 hooks into empty settings.json', async () => {
+    it('Claude format: injects 4 events with 10 dispatch hooks into empty settings.json', async () => {
       await injectHooks('/test/settings.json', 'claude');
 
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, unknown[]> };
@@ -71,16 +71,16 @@ describe('hooks', () => {
       const events = Object.keys(result.hooks);
       expect(events).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit']);
 
-      // Stop has 3 hooks (update, dashboard-stop, contribute-check)
-      // PostToolUse has 7 hooks (track-skill, dashboard-tool, 4x auto-recall per tool, todowrite-hint)
-      // Others have 2 each
-      expect(result.hooks['SessionStart']).toHaveLength(3);
-      expect(result.hooks['Stop']).toHaveLength(3);
+      // Merged dispatch format: one dispatch entry per event+matcher.
+      // SessionStart(*:1), Stop(*:1),
+      // PostToolUse(*:1, Skill:1, TodoWrite:1, Bash:1, Grep:1, WebSearch:1, WebFetch:1), UserPromptSubmit(*:1)
+      expect(result.hooks['SessionStart']).toHaveLength(1);
+      expect(result.hooks['Stop']).toHaveLength(1);
       expect(result.hooks['PostToolUse']).toHaveLength(7);
-      expect(result.hooks['UserPromptSubmit']).toHaveLength(2);
+      expect(result.hooks['UserPromptSubmit']).toHaveLength(1);
     });
 
-    it('Cursor format: injects 4 events with 15 hooks into empty hooks.json', async () => {
+    it('Cursor format: injects 4 events with 10 dispatch hooks into empty hooks.json', async () => {
       await injectHooks('/test/hooks.json', 'cursor');
 
       const result = mockFiles['/test/hooks.json'] as { version: number; hooks: Record<string, unknown[]> };
@@ -90,12 +90,11 @@ describe('hooks', () => {
       const events = Object.keys(result.hooks);
       expect(events).toEqual(['sessionStart', 'stop', 'postToolUse', 'beforeSubmitPrompt']);
 
-      // stop has 3 hooks (update, dashboard-stop, contribute-check)
-      // postToolUse has 7 hooks (track, dashboard, 4x auto-recall per tool, todowrite-hint)
-      expect(result.hooks['sessionStart']).toHaveLength(3);
-      expect(result.hooks['stop']).toHaveLength(3);
+      // Same merged structure (with TodoWrite dispatch entry)
+      expect(result.hooks['sessionStart']).toHaveLength(1);
+      expect(result.hooks['stop']).toHaveLength(1);
       expect(result.hooks['postToolUse']).toHaveLength(7);
-      expect(result.hooks['beforeSubmitPrompt']).toHaveLength(2);
+      expect(result.hooks['beforeSubmitPrompt']).toHaveLength(1);
     });
 
     it('Claude uses PascalCase event names', async () => {
@@ -121,10 +120,10 @@ describe('hooks', () => {
       await injectHooks('/test/settings.json', 'claude');
 
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, unknown[]> };
-      expect(result.hooks['SessionStart']).toHaveLength(3);
-      expect(result.hooks['Stop']).toHaveLength(3);
+      expect(result.hooks['SessionStart']).toHaveLength(1);
+      expect(result.hooks['Stop']).toHaveLength(1);
       expect(result.hooks['PostToolUse']).toHaveLength(7);
-      expect(result.hooks['UserPromptSubmit']).toHaveLength(2);
+      expect(result.hooks['UserPromptSubmit']).toHaveLength(1);
     });
 
     it('double inject for Cursor does not duplicate hooks', async () => {
@@ -132,13 +131,14 @@ describe('hooks', () => {
       await injectHooks('/test/hooks.json', 'cursor');
 
       const result = mockFiles['/test/hooks.json'] as { hooks: Record<string, unknown[]> };
-      expect(result.hooks['sessionStart']).toHaveLength(3);
-      expect(result.hooks['stop']).toHaveLength(3);
+      expect(result.hooks['sessionStart']).toHaveLength(1);
+      expect(result.hooks['stop']).toHaveLength(1);
       expect(result.hooks['postToolUse']).toHaveLength(7);
-      expect(result.hooks['beforeSubmitPrompt']).toHaveLength(2);
+      expect(result.hooks['beforeSubmitPrompt']).toHaveLength(1);
     });
 
     it('updates command when content changes (Claude)', async () => {
+      // Simulate legacy hook that will be cleaned up and replaced with dispatch
       mockFiles['/test/settings.json'] = {
         hooks: {
           SessionStart: [
@@ -155,11 +155,12 @@ describe('hooks', () => {
 
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, unknown[]> };
       const sessionStart = result.hooks.SessionStart as Array<{ hooks: Array<{ command: string }> }>;
-      expect(sessionStart[0].hooks[0].command).toContain('teamai pull');
-      expect(sessionStart[0].hooks[0].command).not.toContain('--silent');
+      // Legacy format cleaned up, replaced with hook-dispatch
+      expect(sessionStart[0].hooks[0].command).toContain('hook-dispatch');
     });
 
     it('updates command when content changes (Cursor)', async () => {
+      // Simulate legacy hook
       mockFiles['/test/hooks.json'] = {
         version: 1,
         hooks: {
@@ -172,8 +173,8 @@ describe('hooks', () => {
       await injectHooks('/test/hooks.json', 'cursor');
 
       const result = mockFiles['/test/hooks.json'] as { hooks: Record<string, Array<{ command: string }>> };
-      const pullHook = result.hooks.sessionStart.find((h) => h.command.includes('teamai pull'));
-      expect(pullHook?.command).not.toContain('--silent');
+      // Legacy format cleaned up, replaced with hook-dispatch
+      expect(result.hooks.sessionStart[0].command).toContain('hook-dispatch');
     });
   });
 
@@ -195,7 +196,8 @@ describe('hooks', () => {
         hooks: Record<string, unknown[]>;
         language: string;
       };
-      expect(result.hooks.SessionStart).toHaveLength(4);
+      // User hook + 1 dispatch entry
+      expect(result.hooks.SessionStart).toHaveLength(2);
       expect(result.hooks.SessionStart[0]).toEqual(userHook);
       expect(result.language).toBe('en');
     });
@@ -210,7 +212,8 @@ describe('hooks', () => {
       await injectHooks('/test/hooks.json', 'cursor');
 
       const result = mockFiles['/test/hooks.json'] as { hooks: Record<string, unknown[]> };
-      expect(result.hooks.sessionStart).toHaveLength(4);
+      // User hook + 1 dispatch entry
+      expect(result.hooks.sessionStart).toHaveLength(2);
       expect(result.hooks.sessionStart[0]).toEqual(userHook);
     });
   });
@@ -273,7 +276,8 @@ describe('hooks', () => {
 
       const result = mockFiles['/test/hooks.json'] as { hooks: Record<string, unknown[]> };
       expect(result.hooks['userPromptSubmit']).toBeUndefined();
-      expect(result.hooks['beforeSubmitPrompt']).toHaveLength(2);
+      // New merged format: single dispatch entry
+      expect(result.hooks['beforeSubmitPrompt']).toHaveLength(1);
     });
 
     it('Cursor inject preserves user hooks in stale event keys', async () => {
@@ -399,20 +403,21 @@ describe('hooks', () => {
       }
     });
 
-    it('PostToolUse/postToolUse track hook uses Skill matcher in both formats', async () => {
+    it('PostToolUse/postToolUse Skill matcher dispatch hook exists in both formats', async () => {
       await injectHooks('/test/claude.json', 'claude');
       await injectHooks('/test/cursor.json', 'cursor');
 
       const claudeResult = mockFiles['/test/claude.json'] as { hooks: Record<string, Array<{ matcher: string }>> };
       const cursorResult = mockFiles['/test/cursor.json'] as { hooks: Record<string, Array<{ matcher?: string; command: string }>> };
 
-      const claudeTrack = claudeResult.hooks.PostToolUse.find((h) => h.matcher === 'Skill');
-      expect(claudeTrack).toBeDefined();
+      const claudeSkill = claudeResult.hooks.PostToolUse.find((h) => h.matcher === 'Skill');
+      expect(claudeSkill).toBeDefined();
 
-      const cursorTrack = cursorResult.hooks.postToolUse.find(
-        (h) => h.command.includes('teamai track') && !h.command.includes('track-slash')
+      const cursorSkill = cursorResult.hooks.postToolUse.find(
+        (h) => h.matcher === 'Skill'
       );
-      expect(cursorTrack?.matcher).toBe('Skill');
+      expect(cursorSkill).toBeDefined();
+      expect(cursorSkill!.command).toContain('hook-dispatch');
     });
 
     it('Cursor hooks have timeout values', async () => {
@@ -457,12 +462,19 @@ describe('hooks', () => {
   });
 
   describe('TEAMAI_HOOK_SUBCOMMANDS export', () => {
-    it('contains all expected subcommands', () => {
-      expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('pull');
-      expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('update');
-      expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('track');
-      expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('track-slash');
-      expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('dashboard-report');
+    it('contains hook-dispatch as the unified subcommand', () => {
+      expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('hook-dispatch');
+      expect(TEAMAI_HOOK_SUBCOMMANDS).toHaveLength(1);
+    });
+
+    it('TEAMAI_LEGACY_HOOK_SUBCOMMANDS contains all old subcommands for cleanup', () => {
+      expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('pull');
+      expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('update');
+      expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('track');
+      expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('track-slash');
+      expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('dashboard-report');
+      expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('contribute-check');
+      expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('auto-recall');
     });
   });
 

@@ -509,9 +509,11 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         throw new Error(`codebase 扫描失败: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // 4. 确定产物输出路径
+    // 4. 确定产物输出路径（优先写入 team-repo/docs/team-codebase）
+    // 注：outputRoot 使用后续步骤 5 中 domainsBase 同源的 team-repo 路径
+    // 这里先用临时值，待 domainsBase 确定后再修正
     const outputRoot = output ?? path.join(process.cwd(), 'docs', 'team-codebase');
-    const repoMdPath = path.join(outputRoot, 'repos', `${slug}.md`);
+    let repoMdPath = path.join(outputRoot, 'repos', `${slug}.md`);
     // path-safety：确保写入路径在 reposDir 内，防止 slug 含路径分隔符导致目录穿越
     assertSafePath(repoMdPath, [path.join(outputRoot, 'repos')]);
 
@@ -547,6 +549,14 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         }
         merged = mergeWithAnchors(null, codebaseMd, { source: sourceTag, syncedAt });
         toWrite = merged.mergedMd;
+    }
+
+    // 注入 repo_url 到 frontmatter，供 aggregate 映射 domain
+    if (toWrite.startsWith('---\n') && !toWrite.includes('\nrepo_url:')) {
+        const fmEnd = toWrite.indexOf('\n---\n', 4);
+        if (fmEnd !== -1) {
+            toWrite = toWrite.slice(0, fmEnd) + `\nrepo_url: ${url}` + toWrite.slice(fmEnd);
+        }
     }
 
     if (dryRun) {
@@ -605,6 +615,13 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     }
     const existingDomains = await loadDomains(domainsBase);
 
+    // 修正产物路径：使用 domainsBase（team-repo）作为输出根
+    if (!output && domainsBase !== cwd) {
+        const correctedRoot = path.join(domainsBase, 'docs', 'team-codebase');
+        repoMdPath = path.join(correctedRoot, 'repos', `${slug}.md`);
+        assertSafePath(repoMdPath, [path.join(correctedRoot, 'repos')]);
+    }
+
     // 检查 url 是否已在其他域
     const existingDomainName = findExistingDomain(existingDomains, url);
 
@@ -633,7 +650,8 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             try {
                 const { regenerateAggregate } = await import('./aggregate.js');
                 const { getTeamCodebasePaths } = await import('./utils/team-codebase-paths.js');
-                const aggPaths = getTeamCodebasePaths(cwd, output);
+                const aggOutput = output ?? path.join(domainsBase, 'docs', 'team-codebase');
+                const aggPaths = getTeamCodebasePaths(cwd, aggOutput);
                 const freshDomains = await loadDomains(domainsBase);
                 await regenerateAggregate({ paths: aggPaths, domains: freshDomains });
             } catch { /* 非关键路径 */ }
@@ -766,7 +784,8 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         try {
             const { regenerateAggregate } = await import('./aggregate.js');
             const { getTeamCodebasePaths } = await import('./utils/team-codebase-paths.js');
-            const aggPaths = getTeamCodebasePaths(cwd, output);
+            const aggOutput = output ?? path.join(domainsBase, 'docs', 'team-codebase');
+            const aggPaths = getTeamCodebasePaths(cwd, aggOutput);
             const freshDomains = await loadDomains(domainsBase);
             await regenerateAggregate({ paths: aggPaths, domains: freshDomains });
             log.info(`聚合文件已更新`);

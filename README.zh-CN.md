@@ -118,9 +118,9 @@ CLI 会根据用户传入的 repo URL 自动选择 provider：
 
 - `teamai push` 会创建独立分支（`teamai/push/<user>/<timestamp>`），推送后自动创建 Merge Request 并指派 reviewers
 - `teamai init` 初始化时可配置默认 reviewers（记录在 `teamai.yaml` 的 `reviewers` 字段）
-- `teamai init` 会自动注入与各工具格式对齐的 hooks（含 `SessionStart`、`Stop`、`PostToolUse`、`UserPromptSubmit` 等），会话中会执行 `teamai pull`、`teamai update`、追踪与仪表盘等（支持 Claude Code、Codex、Cursor、CodeBuddy IDE、OpenClaw、WorkBuddy）
-- Skills 同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/`
-- Rules 同步到各工具的 rules 目录，并通过标记注释合并到 `CLAUDE.md`（支持 claude、codebuddy）
+- `teamai init` 会自动注入与各工具格式对齐的 hooks（含 `SessionStart`、`Stop`、`PostToolUse`、`UserPromptSubmit` 等），会话中会执行 `teamai pull`、`teamai update`、追踪与仪表盘等（支持 Claude Code、Codex、Claude Code Internal、Codex Internal、Cursor、CodeBuddy IDE、OpenClaw、WorkBuddy）
+- Skills 同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.codex-internal/skills/`、`~/.claude-internal/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/`
+- Rules 同步到各工具的 rules 目录，并通过标记注释合并到 `CLAUDE.md`（支持 claude、claude-internal、codebuddy）
 - Knowledge 同步到 `~/.teamai/docs/`
 - Learnings 同步到 `~/.teamai/learnings/`，并基于该目录构建 recall 索引（全团队共享，不按角色拆分）
 - Culture 同步团队文化文件（`culture.md`），编译 frontmatter 和 body 后注入到各 AI 工具的 `CLAUDE.md`

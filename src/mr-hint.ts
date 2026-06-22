@@ -400,29 +400,14 @@ export function buildHintMessage(mrs: MRSummary[]): string {
  * - Silently exits when API/CLI calls fail (best-effort, non-blocking).
  * - Per-repo cache prevents re-hinting the same MR across sessions.
  */
-export async function mrHint(): Promise<void> {
-  if (process.env.TEAMAI_MR_HINT_DISABLED === '1') return;
-
-  // Read STDIN (may be absent in non-hook invocations)
-  let sessionId = process.env.CLAUDE_SESSION_ID ?? '';
-  if (!process.stdin.isTTY) {
-    try {
-      const chunks: Buffer[] = [];
-      for await (const chunk of process.stdin) {
-        chunks.push(chunk as Buffer);
-      }
-      const raw = Buffer.concat(chunks).toString('utf-8').trim();
-      if (raw) {
-        const data = JSON.parse(raw) as Record<string, unknown>;
-        if (typeof data.session_id === 'string') sessionId = data.session_id;
-      }
-    } catch {
-      // non-critical, continue
-    }
-  }
-
-  // Suppress unused-variable lint: sessionId is reserved for future dedup use
-  void sessionId;
+/**
+ * Core MR-hint computation: detect repo, query merged MRs, update cache, and
+ * build the SessionStart hookSpecificOutput JSON. Returns null when there is
+ * nothing to hint. Does NOT read STDIN — safe to call from the hook dispatcher
+ * (which has already consumed STDIN) as well as from the standalone command.
+ */
+export async function computeMrHintOutput(): Promise<string | null> {
+  if (process.env.TEAMAI_MR_HINT_DISABLED === '1') return null;
 
   // Detect git remote
   const rawCwd = process.env.TEAMAI_MR_HINT_CWD ?? process.cwd();
@@ -430,22 +415,22 @@ export async function mrHint(): Promise<void> {
   try {
     if (!fs.statSync(cwd).isDirectory()) {
       // 不是目录，静默跳过（避免误报）
-      return;
+      return null;
     }
   } catch {
     // 路径不存在，静默跳过
-    return;
+    return null;
   }
   const remoteUrl = getGitRemote(cwd);
   if (!remoteUrl) {
     log.debug('mr-hint: no git remote, skipping');
-    return;
+    return null;
   }
 
   const repoInfo = parseRemoteToRepo(remoteUrl);
   if (!repoInfo) {
     log.debug(`mr-hint: unrecognized remote URL: ${remoteUrl}`);
-    return;
+    return null;
   }
 
   const { provider, owner, repo } = repoInfo;
@@ -468,20 +453,36 @@ export async function mrHint(): Promise<void> {
   const newMrs = allMrs.filter((mr) => !alreadyHinted.has(mr.id));
   if (newMrs.length === 0) {
     log.debug('mr-hint: no new merged MRs to hint');
-    return;
+    return null;
   }
 
   // Update cache with all MR IDs seen this round
   const updatedIds = [...alreadyHinted, ...newMrs.map((mr) => mr.id)];
   saveCache(owner, repo, { hintedMrIds: updatedIds, updatedAt: new Date().toISOString() });
 
-  // Output additionalContext hint
+  // Build additionalContext hint
   const hintText = buildHintMessage(newMrs);
-  const hookOutput = JSON.stringify({
+  return JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
       additionalContext: hintText,
     },
   });
-  process.stdout.write(hookOutput + '\n');
+}
+
+export async function mrHint(): Promise<void> {
+  // Drain STDIN when piped (hook invocation) so the caller doesn't block.
+  // Session metadata is not yet used by the hint logic.
+  if (!process.stdin.isTTY) {
+    try {
+      for await (const _chunk of process.stdin) {
+        void _chunk;
+      }
+    } catch {
+      // non-critical
+    }
+  }
+
+  const output = await computeMrHintOutput();
+  if (output) process.stdout.write(output + '\n');
 }
