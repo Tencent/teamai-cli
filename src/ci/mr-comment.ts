@@ -67,7 +67,9 @@ export function formatComment(
     lines.push('### Learning', '');
     lines.push(`**${learning.title}**`, '');
     lines.push('<details>', '<summary>展开完整内容</summary>', '');
+    lines.push('```markdown');
     lines.push(learning.content);
+    lines.push('```');
     lines.push('', '</details>', '');
   }
 
