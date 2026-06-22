@@ -86,8 +86,8 @@ describe('hooks — merged dispatch format', () => {
         totalEntries += matchers.length;
       }
 
-      // Should have: SessionStart(1) + Stop(1) + PostToolUse(Skill:1, *:1, Bash:1, Grep:1, WebSearch:1, WebFetch:1) + UserPromptSubmit(1) = 9
-      expect(totalEntries).toBeLessThanOrEqual(9);
+      // Should have: SessionStart(1) + Stop(1) + PostToolUse(Skill:1, *:1, TodoWrite:1, Bash:1, Grep:1, WebSearch:1, WebFetch:1) + UserPromptSubmit(1) = 10
+      expect(totalEntries).toBeLessThanOrEqual(10);
     });
 
     it('SessionStart has exactly one entry with wildcard matcher', async () => {
@@ -116,7 +116,7 @@ describe('hooks — merged dispatch format', () => {
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, ClaudeHookMatcher[]> };
       const postToolUse = result.hooks.PostToolUse;
       const matchers = postToolUse.map((m: ClaudeHookMatcher) => m.matcher).sort();
-      expect(matchers).toEqual(['*', 'Bash', 'Grep', 'Skill', 'WebFetch', 'WebSearch']);
+      expect(matchers).toEqual(['*', 'Bash', 'Grep', 'Skill', 'TodoWrite', 'WebFetch', 'WebSearch']);
     });
 
     it('UserPromptSubmit has exactly one entry with wildcard matcher', async () => {

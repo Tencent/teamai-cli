@@ -67,6 +67,7 @@ describe('autoUpvote', () => {
         tags: [],
         tokens: [],
         votes: 0,
+        type: 'learnings',
       },
       score: 5,
     };

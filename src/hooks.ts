@@ -13,7 +13,7 @@ function getDispatchCommand(event: string, tool: string, matcher?: string): stri
 export const TEAMAI_HOOK_SUBCOMMANDS = ['hook-dispatch'] as const;
 
 /** Legacy subcommands that are cleaned up during migration. */
-export const TEAMAI_LEGACY_HOOK_SUBCOMMANDS = ['pull', 'update', 'track', 'track-slash', 'dashboard-report', 'contribute-check', 'auto-recall'] as const;
+export const TEAMAI_LEGACY_HOOK_SUBCOMMANDS = ['pull', 'update', 'track', 'track-slash', 'dashboard-report', 'contribute-check', 'auto-recall', 'todowrite-hint', 'mr-hint'] as const;
 
 /** Claude PascalCase event → Cursor camelCase event (for tests / docs). */
 export const CLAUDE_TO_CURSOR_EVENTS: Record<string, string> = {
@@ -124,6 +124,16 @@ function getClaudeHooks(tool: string): ClaudeHookDef[] {
         description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Hook dispatch post-tool-use ${matcher}`,
       },
     })),
+    // ─── PostToolUse (TodoWrite): todowrite-hint ────
+    {
+      eventType: 'PostToolUse',
+      descriptionKeyword: 'Hook dispatch post-tool-use TodoWrite',
+      hook: {
+        matcher: 'TodoWrite',
+        hooks: [{ type: 'command', command: getDispatchCommand('post-tool-use', tool, 'TodoWrite') }],
+        description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} Hook dispatch post-tool-use TodoWrite`,
+      },
+    },
     // ─── UserPromptSubmit: track-slash + dashboard-report ────
     {
       eventType: 'UserPromptSubmit',
@@ -167,6 +177,7 @@ function buildCursorHooks(tool: string): Record<string, CursorHookEntry[]> {
         timeout: 10,
         matcher,
       })),
+      { command: getDispatchCommand('post-tool-use', tool, 'TodoWrite'), timeout: 3, matcher: 'TodoWrite' },
     ],
     beforeSubmitPrompt: [
       { command: getDispatchCommand('prompt-submit', tool), timeout: 10 },
@@ -210,7 +221,7 @@ function isTeamaiHookCommand(command: string): boolean {
 
 /** Known teamai command substrings used to identify teamai-managed hooks. */
 const TEAMAI_COMMAND_MARKERS = [
-  'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check', 'teamai auto-recall',
+  'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check', 'teamai auto-recall', 'teamai todowrite-hint', 'teamai mr-hint', 'teamai hook-dispatch',
 ];
 
 /**

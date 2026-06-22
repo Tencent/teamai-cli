@@ -79,6 +79,14 @@ The CLI picks a provider automatically from the repo URL:
 | `teamai source` | Manage cross-team skill subscription sources (`add`/`remove`/`list`/`browse`) |
 | `teamai contribute --file <path> [--scope <user\|project>]` | Push an AI-generated experience document to the team repo |
 | `teamai recall <query>` | Search the team knowledge base, automatically merging user + project scope results |
+| `teamai import --from-repo <url>` | Clone a remote repo and generate a per-repo summary under `docs/team-codebase/repos/<slug>.md`; AI recommends a business domain and persists the assignment to `.teamai/domains.yaml` |
+| `teamai import --from-repo-list <yaml>` | Batch import a whitelist of repos with concurrency control, then aggregate the results into per-domain views |
+| `teamai import --from-org <org> --bootstrap` | List every repo under an organization (GitHub or TGit), AI-cluster them into business domains, and run an interactive review before the first full sync |
+| `teamai import --from-iwiki <id> [--iwiki-dual]` | Import iWiki documents as learnings; in dual mode also extract business-API / external-knowledge / glossary sections into `docs/team-codebase/external-knowledge.md` |
+| `teamai cache --status \| --gc` | Inspect or garbage-collect the shallow-clone cache at `~/.teamai/cache/repos/` (LRU + size cap, default 5GB) |
+| `teamai codebase --lint [--fix]` | Cross-file consistency lint over `docs/team-codebase` and `.teamai/`; reports anchor / orphan / source-invalid / sync-stale issues; `--fix` applies low-risk mechanical fixes |
+| `teamai review [id] [--apply \| --reject \| --all-apply]` | Inspect and process pending codebase changes from `.teamai/pending-review.jsonl`; `--apply` patches in place via section anchors |
+| `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | Inspect and resolve domain-drift signals; `--apply` reassigns the repo to the recommended domain and refreshes the aggregate views |
 | `teamai digest` | Generate a team AI usage weekly digest (skill leaderboard, new/updated skills, session summaries) |
 | `teamai hooks` | Manage AI-tool hooks (list / inject / remove) |
 | `teamai uninstall [--force]` | Uninstall teamai: remove hooks, rules, skills, env, docs, and `~/.teamai/` |
@@ -291,6 +299,42 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 - Hybrid CJK + English search (Intl.Segmenter + CJK bigrams).
 - Searches implicitly upvote matched docs; good docs naturally float up over time.
 - Votes are written to each scope's own repo, so attribution stays correct.
+
+`teamai recall` results carry a `[<type>]` tag so callers can quickly tell which knowledge bucket a hit came from. The shared search index covers four categories:
+
+| Type | Source | Notes |
+|------|--------|-------|
+| `[learnings]` | `~/.teamai/learnings/*.md` | session experience documents |
+| `[docs]` | team repo `docs/**/*.md` | shared project knowledge |
+| `[rules]` | team repo `rules/**/*.md` | coding rules and conventions |
+| `[skills]` | team repo `skills/<name>/SKILL.md` | reusable AI skills |
+
+The index is rebuilt automatically on every `teamai pull`. Indexes built by older versions (no `version` field or missing `type`) are detected and rebuilt transparently on first use.
+
+### TodoWrite reminder hook
+
+`teamai pull` registers a PostToolUse hook on the `TodoWrite` tool. The first time a session writes a TODO list, the hook injects a one-time reminder asking the agent to invoke `teamai-recall` if it has not already done so. Per-session deduplication uses `~/.teamai/sessions/<sid>-todowrite-hint.json` (24 h TTL).
+
+To disable the reminder globally, set:
+
+```bash
+export TEAMAI_RECALL_DISABLED=1
+```
+
+The same env var also disables the auto-recall hook.
+
+### `agents` resource type
+
+The team repo can ship custom subagent definitions under a flat `agents/` directory (one `*.md` file per agent). They follow the same push / pull / remove semantics as `rules`:
+
+```text
+team-repo/
+  agents/
+    code-reviewer.md      # team-authored subagent
+    .removed              # tombstone (auto-managed by `teamai remove agents <name>`)
+```
+
+`teamai pull` copies them into every Tier-1 tool's `agents/` directory (e.g. `~/.claude/agents/`). The CLI built-in `teamai-recall.md` is deployed alongside team agents and is **excluded** from `teamai push` (it is CLI-managed, not team-managed).
 
 ## Update
 

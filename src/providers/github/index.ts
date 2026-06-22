@@ -1,4 +1,4 @@
-import type { GitProvider, PrCreateOptions, RepoInfo } from '../types.js';
+import type { GitProvider, PrCreateOptions, RepoInfo, OrgRepoInfo } from '../types.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   ensureGhAvailable,
@@ -10,6 +10,7 @@ import {
   ghPrCreate,
   RepoNotFoundError as GhRepoNotFoundError,
 } from './gh-cli.js';
+import { ghListOrgRepos } from './gh-org.js';
 import { parseGitHubRepoInput } from './repo-url.js';
 
 export class GitHubProvider implements GitProvider {
@@ -64,6 +65,10 @@ export class GitHubProvider implements GitProvider {
 
   getDefaultEmailDomain(): string | null {
     return null;
+  }
+
+  async listOrgRepos(org: string, opts?: { maxRepos?: number }): Promise<OrgRepoInfo[]> {
+    return ghListOrgRepos(org, opts);
   }
 }
 

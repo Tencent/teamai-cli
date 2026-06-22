@@ -79,6 +79,14 @@ CLI 会根据用户传入的 repo URL 自动选择 provider：
 | `teamai source` | 管理跨团队 skill 订阅源（`add`/`remove`/`list`/`browse`） |
 | `teamai contribute --file <path> [--scope <user\|project>]` | 将 AI 生成的经验文档推送到团队仓库 |
 | `teamai recall <query>` | 搜索团队知识库，自动合并 user + project 双 scope 结果 |
+| `teamai import --from-repo <url>` | 拉取远端仓库并生成单仓视图 `docs/team-codebase/repos/<slug>.md`；AI 推荐业务域并写入 `.teamai/domains.yaml` |
+| `teamai import --from-repo-list <yaml>` | 按白名单批量导入多个仓库（支持并发），并按业务域聚合产出 |
+| `teamai import --from-org <org> --bootstrap` | 列出组织/group 下所有仓库（GitHub / TGit），AI 聚类为业务域，交互式 review 后完成首次全量同步 |
+| `teamai import --from-iwiki <id> [--iwiki-dual]` | 把 iWiki 文档导入为 learnings；dual 模式同时把业务接口 / 外部知识源 / 术语表抽取到 `docs/team-codebase/external-knowledge.md` |
+| `teamai cache --status \| --gc` | 查看或回收 shallow-clone 缓存目录 `~/.teamai/cache/repos/`（LRU + 容量上限，默认 5GB） |
+| `teamai codebase --lint [--fix]` | 对 `docs/team-codebase` 与 `.teamai/` 做跨文件一致性 lint；报告锚点 / 孤儿 / 源失效 / 同步陈旧等问题；`--fix` 应用低风险机械修复 |
+| `teamai review [id] [--apply \| --reject \| --all-apply]` | 浏览并处理 `.teamai/pending-review.jsonl` 中的待审 codebase 变更；`--apply` 通过章节锚点原地写入 |
+| `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | 浏览并处理域漂移信号；`--apply` 把仓库重新归类到推荐域并刷新聚合视图 |
 | `teamai digest` | 生成团队 AI 使用周报（skill 排行、新增/更新 skill、session 摘要） |
 | `teamai hooks` | 管理 AI 工具 hooks（list / inject / remove） |
 | `teamai uninstall [--force]` | 卸载 teamai：移除 hooks、rules、skills、env、docs、~/.teamai/ |
@@ -291,6 +299,42 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 - Hybrid 中英文搜索（Intl.Segmenter + CJK bigrams）
 - 搜索自动投票，好文档自然浮到顶部
 - 投票按 scope 分别写入各自的 repo，归属正确
+
+`teamai recall` 的输出会给每条命中前置 `[<type>]` 标签，方便调用方快速判断知识来源。共享检索索引覆盖四类内容：
+
+| 类型 | 源路径 | 说明 |
+|------|--------|------|
+| `[learnings]` | `~/.teamai/learnings/*.md` | session 经验文档 |
+| `[docs]` | 团队仓库 `docs/**/*.md` | 共享项目知识 |
+| `[rules]` | 团队仓库 `rules/**/*.md` | 编码规则和约定 |
+| `[skills]` | 团队仓库 `skills/<name>/SKILL.md` | 可复用 AI skill |
+
+索引在每次 `teamai pull` 时自动重建。旧版索引（无 `version` 字段或缺少 `type`）会在首次使用时被自动检测并重建，对调用方透明
+
+### TodoWrite 提醒 hook
+
+`teamai pull` 会在 `TodoWrite` 工具上注册一个 PostToolUse hook。当 session 第一次写 TODO 列表时，hook 会注入一次性提醒，要求 agent 在尚未调用 `teamai-recall` 时先调用一次。session 级去重通过 `~/.teamai/sessions/<sid>-todowrite-hint.json` 实现（TTL 24 小时）
+
+如果要全局关闭该提醒，请设置：
+
+```bash
+export TEAMAI_RECALL_DISABLED=1
+```
+
+该环境变量同时也会关闭 auto-recall hook
+
+### `agents` 资源类型
+
+团队仓库可以在扁平的 `agents/` 目录下放置自定义 subagent 定义（每个 agent 一个 `*.md`），push / pull / remove 语义与 `rules` 保持一致：
+
+```text
+team-repo/
+  agents/
+    code-reviewer.md      # 团队作者编写的 subagent
+    .removed              # tombstone（由 `teamai remove agents <name>` 自动管理）
+```
+
+`teamai pull` 会把它们复制到每个 Tier-1 工具的 `agents/` 目录（例如 `~/.claude/agents/`）。CLI 内置的 `teamai-recall.md` 会与团队 agents 一起部署，并在 `teamai push` 时被自动排除（由 CLI 管理，不归团队仓库）
 
 ## 更新
 

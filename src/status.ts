@@ -2,6 +2,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { autoDetectInit, loadStateForScope } from './config.js';
 import { getRepoStatus } from './utils/git.js';
+import { assertSafeResourceName } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
 import { getAllHandlers } from './resources/index.js';
 import { listDirs, listFiles, pathExists, readFileSafe } from './utils/fs.js';
@@ -16,6 +17,7 @@ import {
   type AgentSkillsView,
 } from './agent-skills.js';
 import type { GlobalOptions, ResourceType } from './types.js';
+import { isWikiEnabled } from './types.js';
 
 export interface ListOptions extends GlobalOptions {
   /** Where to look for resources: 'repo' (default for backwards compat),
@@ -100,6 +102,12 @@ export async function status(options: GlobalOptions): Promise<void> {
     console.log(`  ${type}: ${count}`);
   }
 
+  // Wiki feature status
+  if (!isWikiEnabled()) {
+    console.log('');
+    log.info('ℹ Wiki: disabled (TEAMAI_WIKI_DISABLED=1) — wiki routing handled by external plugin');
+  }
+
   // Local pushable items
   console.log('');
   log.info('Local resources not yet pushed:');
@@ -133,6 +141,17 @@ export async function list(type: string | undefined, options: ListOptions): Prom
     log.error(`Invalid --source: ${source}. Must be one of: repo, local, all.`);
     process.exitCode = 1;
     return;
+  }
+
+  // Validate --agent to prevent path traversal attacks
+  if (options.agent != null) {
+    try {
+      assertSafeResourceName(options.agent);
+    } catch (err) {
+      log.error(`Invalid --agent: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 2;
+      return;
+    }
   }
 
   // --agent / --source local restrict the output to local skill scanning,

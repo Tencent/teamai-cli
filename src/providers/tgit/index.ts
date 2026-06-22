@@ -1,4 +1,4 @@
-import type { GitProvider, PrCreateOptions, RepoInfo } from '../types.js';
+import type { GitProvider, PrCreateOptions, RepoInfo, OrgRepoInfo } from '../types.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   ensureGfInstalled,
@@ -11,8 +11,8 @@ import {
   gfGetOAuthToken,
   RepoNotFoundError as GfRepoNotFoundError,
 } from './gf-cli.js';
+import { gfListOrgRepos } from './gf-org.js';
 import { parseTGitRepoInput } from './repo-url.js';
-import { log } from '../../utils/logger.js';
 
 export class TGitProvider implements GitProvider {
   readonly name = 'tgit';
@@ -66,6 +66,10 @@ export class TGitProvider implements GitProvider {
 
   getDefaultEmailDomain(): string | null {
     return 'tencent.com';
+  }
+
+  async listOrgRepos(org: string, opts?: { maxRepos?: number }): Promise<OrgRepoInfo[]> {
+    return gfListOrgRepos(org, opts);
   }
 }
 

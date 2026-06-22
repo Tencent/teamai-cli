@@ -34,6 +34,10 @@ const DASHBOARD_TIMEOUT_MS = 5_000;
 const CONTRIBUTE_CHECK_TIMEOUT_MS = 10_000;
 /** Auto-recall involves search index lookup — usually <200ms. */
 const AUTO_RECALL_TIMEOUT_MS = 10_000;
+/** TodoWrite hint is a local dedup-cache check — very fast. */
+const TODOWRITE_HINT_TIMEOUT_MS = 5_000;
+/** MR-hint queries a remote MR/PR API — allow a network round-trip. */
+const MR_HINT_TIMEOUT_MS = 10_000;
 
 // ─── Handler implementations ────────────────────────────
 //
@@ -149,7 +153,8 @@ const contributeCheckHandler: HookHandler = {
     const sessionId = typeof stdin.session_id === 'string' ? stdin.session_id : null;
     if (!sessionId) return null;
 
-    const { hint } = await contributeCheckForSession(sessionId);
+    const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
+    const { hint } = await contributeCheckForSession(sessionId, cwd);
     if (hint) {
       // Stop event format: { stopReason: "..." }
       return JSON.stringify({ stopReason: hint });
@@ -192,6 +197,39 @@ const autoRecallHandler: HookHandler = {
   },
 };
 
+const todowriteHintHandler: HookHandler = {
+  name: 'todowrite-hint',
+  async execute(stdin, _tool) {
+    if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
+
+    const toolName = typeof stdin.tool_name === 'string' ? stdin.tool_name : '';
+    if (toolName !== 'TodoWrite') return null;
+
+    const { shouldSkipTodoWriteHint, buildHintMessage } = await import('./todowrite-hint.js');
+    const sessionId =
+      (typeof stdin.session_id === 'string' && stdin.session_id) ||
+      process.env.CLAUDE_SESSION_ID ||
+      `pid-${process.ppid ?? process.pid}`;
+
+    if (shouldSkipTodoWriteHint(sessionId)) return null;
+
+    return JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: buildHintMessage(),
+      },
+    });
+  },
+};
+
+const mrHintHandler: HookHandler = {
+  name: 'mr-hint',
+  async execute(_stdin, _tool) {
+    const { computeMrHintOutput } = await import('./mr-hint.js');
+    return computeMrHintOutput();
+  },
+};
+
 // ─── Registry builder ───────────────────────────────────
 
 /**
@@ -203,6 +241,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // ─── SessionStart ─────────────────────────────────
     { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: MR_HINT_TIMEOUT_MS },
 
     // ─── Stop ─────────────────────────────────────────
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS },
@@ -212,6 +251,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // ─── PostToolUse ──────────────────────────────────
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: TRACK_TIMEOUT_MS },
+    { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
     ...(['Bash', 'Grep', 'WebSearch', 'WebFetch'] as const).map((m) => ({
       event: 'post-tool-use' as const,
       matcher: m,

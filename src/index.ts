@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { Command } from 'commander';
-import { setVerbose, setSilent } from './utils/logger.js';
+import { setVerbose, setSilent, log } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
 
 const require = createRequire(import.meta.url);
@@ -365,20 +365,22 @@ program
 const envCmd = program
   .command('env')
   .description('Manage team environment variables')
-  .action(async () => {
+  .option('--reveal', 'Show env variable values in plaintext (default: masked)')
+  .action(async (cmdOpts) => {
     // Default action: list env vars (backward compatible)
     const globalOpts = program.opts() as GlobalOptions;
     const { envList } = await import('./env-commands.js');
-    await envList(globalOpts);
+    await envList({ ...globalOpts, ...cmdOpts });
   });
 
 envCmd
   .command('list')
   .description('List team environment variables')
-  .action(async () => {
+  .option('--reveal', 'Show env variable values in plaintext (default: masked)')
+  .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { envList } = await import('./env-commands.js');
-    await envList(globalOpts);
+    await envList({ ...globalOpts, ...cmdOpts });
   });
 
 envCmd
@@ -553,6 +555,132 @@ program
       await autoRecall();
     }
   });
+
+program
+  .command('todowrite-hint')
+  .description('Remind the agent to invoke teamai-recall when TodoWrite is used (PostToolUse hook)')
+  .option('--stdin', 'Read hook data from STDIN')
+  .option('--tool <name>', 'Source AI tool (claude / codebuddy / cursor)')
+  .action(async (cmdOpts) => {
+    if (cmdOpts.stdin) {
+      const { todoWriteHint } = await import('./todowrite-hint.js');
+      await todoWriteHint();
+    }
+  });
+
+program
+  .command('import')
+  .description('Import knowledge from local files, Claude/Cursor rules, git workspace, MRs, or iWiki')
+  .option('--dir <path>', 'Scan local directory for importable Markdown files')
+  .option('--from-claude', 'Scan Claude/Cursor rule directories (~/.claude/rules, ~/.cursor/rules)')
+  .option('--workspace', 'Generate codebase.md from current git workspace')
+  .option('--from-mr <url>', 'Extract learning and codebase suggestions from a merged MR/PR URL')
+  .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)')
+  .option('--resume', 'Resume an interrupted import session')
+  .option('--all', 'Accept all suggestions without interactive confirmation')
+  .option('--output <path>', 'Write drafts to this directory instead of pushing to team repo')
+  .option('--existing-codebase <path>', 'Path to existing codebase.md (used with --from-mr; overrides auto-detection from team repo)')
+  .option('--from-repo <url>', 'Clone a remote repo and generate per-repo codebase summary')
+  .option('--depth <n>', 'Shallow clone depth for --from-repo (default 1)', '1')
+  .option('--ssh', 'Force SSH clone even if HTTPS token is available')
+  .option('--domain <name>', 'Skip AI recommendation and assign repo to this domain explicitly')
+  .option('--from-repo-list <path>', 'Batch import repos from a YAML whitelist')
+  .option('--concurrency <n>', 'Concurrent repos for --from-repo-list (default 3)', '3')
+  .option('--skip-aggregate', 'Skip domain-*.md / index.md regeneration')
+  .option('--incremental', 'Use cached clone with fetch+reset (with --from-repo or --from-repo-list)')
+  .option('--from-org <org>', 'List repos under an org and bootstrap whitelist + domains')
+  .option('--bootstrap', 'Run interactive review after --from-org')
+  .option('--max-repos <n>', 'Cap on repos pulled from --from-org (default 200)', '200')
+  .option('--exclude-archived', 'Exclude archived repos from --from-org (default true)')
+  .option('--include-pattern <re>', 'Regex to include repos by full name (used with --from-org)')
+  .option('--exclude-pattern <re>', 'Regex to exclude repos by full name (used with --from-org)')
+  .option('--skip-import', 'Only write drafts; skip the actual --from-repo-list run')
+  .option('--iwiki-dual', 'Enable dual-output mode for --from-iwiki (write codebase sections in addition to learning)')
+  .option('--require-review', 'Defer codebase section writes to .teamai/pending-review.jsonl for human review')
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { importCmd } = await import('./import.js');
+    await importCmd({ ...globalOpts, ...cmdOpts });
+  });
+
+program
+  .command('mr-hint')
+  .description('Hint AI about recently merged but un-imported MRs (SessionStart hook)')
+  .option('--stdin', 'Read hook data from STDIN')
+  .option('--tool <name>', 'Source AI tool (claude / codebuddy / cursor)')
+  .action(async (cmdOpts) => {
+    if (cmdOpts.stdin) {
+      const { mrHint } = await import('./mr-hint.js');
+      await mrHint();
+    }
+  });
+
+program
+  .command('codebase')
+  .description('Inspect and maintain team-codebase outputs')
+  .option('--lint', 'Run global consistency lint over docs/team-codebase')
+  .option('--fix', 'Apply low-risk mechanical fixes (only with --lint)')
+  .option('--severity <level>', 'Minimum severity to report: high|medium|low|info', 'info')
+  .option('--stale-days <n>', 'Threshold for sync-stale check', '60')
+  .option('--pending-review-threshold <n>', 'Threshold for pending-review backlog', '10')
+  .option('--json', 'Output report as JSON (suitable for CI)')
+  .option('--output <path>', 'Custom team-codebase root (mirrors --from-repo)')
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { codebaseCmd } = await import('./codebase-cmd.js');
+    await codebaseCmd({ ...globalOpts, ...cmdOpts });
+  });
+
+program
+  .command('cache')
+  .description('Inspect and clean ~/.teamai/cache/repos')
+  .option('--status', 'Print cache status (default action)')
+  .option('--gc', 'Run garbage collection')
+  .option('--max-bytes <n>', 'Override capacity cap for --gc')
+  .option('--stale-days <n>', 'Threshold for stale-eviction (default 30)', '30')
+  .option('--dry-run', 'Report actions without removing files')
+  .option('--json', 'Machine-readable output')
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { cacheCmd } = await import('./cache-cmd.js');
+    await cacheCmd({ ...globalOpts, ...cmdOpts });
+  });
+
+program
+    .command('review [id]')
+    .description('Inspect and process .teamai/pending-review.jsonl items')
+    .option('--apply', 'Apply the change for the given id (only for codebase-section)')
+    .option('--reject', 'Reject the given id without applying')
+    .option('--reason <msg>', 'Reason for reject')
+    .option('--all-apply', 'Apply all items at or below --max-risk')
+    .option('--max-risk <level>', 'Risk ceiling for --all-apply: high|medium|low (default medium)', 'medium')
+    .option('--json', 'Machine-readable output')
+    .action(async (idArg, cmdOpts) => {
+        const globalOpts = program.opts() as GlobalOptions;
+        const { reviewCmd } = await import('./review-cmd.js');
+        await reviewCmd({ ...globalOpts, ...cmdOpts, idArg });
+    });
+
+program
+    .command('domains <subcommand> [repoUrl]')
+    .description('Inspect / accept / reject domain-drift signals (subcommand: drift)')
+    .option('--apply', 'Apply drift for the given repoUrl')
+    .option('--apply-all', 'Apply all drift items above confidence threshold')
+    .option('--threshold <n>', 'Confidence threshold for --apply-all (default 0.8)', '0.8')
+    .option('--lock', 'Lock the repo against future drift signals')
+    .option('--output <path>', 'Custom team-codebase root (mirrors --from-repo)')
+    .option('--skip-aggregate', 'Skip regenerateAggregate after apply')
+    .option('--json', 'Machine-readable output')
+    .action(async (subcommand, repoUrlArg, cmdOpts) => {
+        if (subcommand !== 'drift') {
+            log.error(`Unknown subcommand: ${subcommand}（仅支持 drift）`);
+            process.exitCode = 2;
+            return;
+        }
+        const globalOpts = program.opts() as GlobalOptions;
+        const { driftCmd } = await import('./drift-cmd.js');
+        await driftCmd({ ...globalOpts, ...cmdOpts, repoUrlArg });
+    });
 
 // ─── Unified hook dispatch (replaces individual hook subcommands) ────
 
