@@ -313,6 +313,11 @@ export async function importFromMR(opts: {
   }
 
   // ── 步骤 3：解析 learning 草稿 + dedup ─────────────────
+  // AI 可能在 frontmatter 前输出对话性废话，截取从第一个 `---` 开始的内容
+  const frontmatterStart = learningContent.indexOf('---');
+  if (frontmatterStart > 0) {
+    learningContent = learningContent.slice(frontmatterStart);
+  }
   const parsed = matter(learningContent);
   const learningTitle = (parsed.data['title'] as string | undefined) ?? mr.title;
 

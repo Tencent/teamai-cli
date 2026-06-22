@@ -6,7 +6,12 @@
 # 使用前请配置：
 #   1. Repository Secret: TEAMAI_SYNC_TOKEN（对团队知识仓库有写权限的 PAT）
 #   2. 修改 write job 中的 <owner>/<team-knowledge-repo> 为你的团队仓库路径
-#   3. 如有 AI API key 需求，配置对应环境变量（参见 teamai CLI 文档）
+#   3. 配置 Repository Variables（Settings → Secrets and variables → Variables）：
+#      - ANTHROPIC_BASE_URL: AI API 基础地址（如 https://api.anthropic.com）
+#      - ANTHROPIC_DEFAULT_SONNET_MODEL: 默认 sonnet 模型名
+#      - ANTHROPIC_DEFAULT_HAIKU_MODEL: 默认 haiku 模型名
+#      - ANTHROPIC_DEFAULT_OPUS_MODEL: 默认 opus 模型名
+#   4. 配置 Repository Secret: ANTHROPIC_AUTH_TOKEN（AI API 认证 Token）
 
 name: TeamAI MR Knowledge Extract
 
@@ -15,6 +20,12 @@ on:
     types: [opened, synchronize]
   pull_request_target:
     types: [closed]
+
+env:
+  ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+  ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ vars.ANTHROPIC_DEFAULT_SONNET_MODEL }}
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ vars.ANTHROPIC_DEFAULT_HAIKU_MODEL }}
+  ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ vars.ANTHROPIC_DEFAULT_OPUS_MODEL }}
 
 jobs:
   # ── PR 创建/更新时：提炼知识并以 comment 形式展示 ──────────
@@ -32,6 +43,9 @@ jobs:
       - name: Install teamai-cli
         run: npm install -g teamai-cli
 
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
       - name: Extract and Comment
         run: |
           teamai ci extract-mr \
@@ -39,6 +53,7 @@ jobs:
             --mode comment
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
 
   # ── PR 合入后：将知识写入团队仓库 ─────────────────────────
   write:
@@ -58,6 +73,9 @@ jobs:
       - name: Install teamai-cli
         run: npm install -g teamai-cli
 
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
       - name: Write Knowledge to Repo
         run: |
           teamai ci extract-mr \
@@ -67,6 +85,7 @@ jobs:
             --write-mode direct
         env:
           GITHUB_TOKEN: ${{ secrets.TEAMAI_SYNC_TOKEN }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
 
       - name: Commit and Push
         run: |
