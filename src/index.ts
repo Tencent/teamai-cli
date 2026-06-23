@@ -710,6 +710,7 @@ ciCmd
   .option('--comment-marker <marker>', 'HTML comment anchor for idempotent updates', '<!-- teamai:ci-extract -->')
   .option('--write-mode <mode>', 'Write strategy: direct | pending-review', 'direct')
   .option('--output <dir>', 'Write artifacts to directory')
+  .option('--individual-comments', 'Post each suggestion as separate comment with reaction/resolve support')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { ciExtractMr } = await import('./ci/extract-mr.js');
