@@ -53,8 +53,8 @@ stages:
             --write-mode direct
         - |
           cd team-repo
-          git config user.name "teamai-ci"
-          git config user.email "teamai-ci@tencent.com"
+          # git user.name/email 由 teamai ci extract-mr 自动从 token 对应账号获取
+          # 确保 TAI_PAT_TOKEN 对应的账号对知识仓库有 push 权限即可
           git add learnings/ docs/ .teamai/
           git diff --cached --quiet || \
             git commit -m "[teamai] Extract knowledge from MR !${CI_MERGE_REQUEST_IID}"
