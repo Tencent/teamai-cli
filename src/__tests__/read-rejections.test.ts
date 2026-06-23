@@ -46,18 +46,18 @@ describe('shouldWrite', () => {
     });
   });
 
-  describe('TGit (默认不写入，点"解决" = approve)', () => {
-    it('在 approvedIds 中 → 写入', () => {
+  describe('TGit (默认写入，🚫 emoji = reject)', () => {
+    it('不在 rejectedIds 中 → 写入', () => {
       expect(shouldWrite('learning', rejections, 'tgit')).toBe(true);
       expect(shouldWrite('suggestion:1', rejections, 'tgit')).toBe(true);
     });
 
-    it('不在 approvedIds 中 → 不写入', () => {
+    it('在 rejectedIds 中 → 不写入', () => {
       expect(shouldWrite('suggestion:2', rejections, 'tgit')).toBe(false);
     });
 
-    it('未知 id（不在任何集合中）→ 不写入（默认）', () => {
-      expect(shouldWrite('suggestion:99', rejections, 'tgit')).toBe(false);
+    it('未知 id（不在任何集合中）→ 写入（默认）', () => {
+      expect(shouldWrite('suggestion:99', rejections, 'tgit')).toBe(true);
     });
   });
 });

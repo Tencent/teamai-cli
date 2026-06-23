@@ -95,11 +95,20 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
 
 // ─── TGit ───────────────────────────────────────────────
 
+/** TGit emoji 编号 8 = "no" 🚫，作为 reject 信号 */
+const TGIT_REJECT_EMOJI = 8;
+
+interface TGitNoteComment {
+  comment: number;
+  author: { username: string };
+}
+
 interface TGitNote {
   id: number;
   body: string;
   resolve_state: number;
   file_path: string | null;
+  comments: TGitNoteComment[];
 }
 
 function getTGitToken(): string {
@@ -146,11 +155,12 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
     if (!markerId) continue;
     result.allIds.add(markerId);
 
-    // TGit: resolve_state=1 = approve, resolve_state=0 = reject（默认不写入）
-    if (note.resolve_state === 1) {
-      result.approvedIds.add(markerId);
-    } else {
+    // TGit: emoji 编号 8 (🚫 no) = reject，无 emoji = approve（默认写入）
+    const hasRejectEmoji = (note.comments ?? []).some((c) => c.comment === TGIT_REJECT_EMOJI);
+    if (hasRejectEmoji) {
       result.rejectedIds.add(markerId);
+    } else {
+      result.approvedIds.add(markerId);
     }
   }
 
@@ -174,20 +184,17 @@ export async function readRejections(mrUrl: string): Promise<RejectionResult> {
     return readGitHubRejections(parsed.owner, parsed.repo, parsed.number);
   }
 
-  log.debug('读取 TGit resolve_state...');
+  log.debug('读取 TGit emoji reactions...');
   return readTGitRejections(parsed.owner, parsed.repo, parsed.number);
 }
 
 /**
- * 根据 rejection 结果和平台判断某条建议是否应该写入。
+ * 根据 rejection 结果判断某条建议是否应该写入。
  *
- * - GitHub: 不在 rejectedIds 中 = 写入
- * - TGit: 在 approvedIds 中 = 写入
+ * 两个平台逻辑统一：默认写入，被 reject 的不写入。
+ * - GitHub: 👎 reaction = reject
+ * - TGit: 🚫 emoji (编号 8) = reject
  */
-export function shouldWrite(markerId: string, rejections: RejectionResult, provider: 'github' | 'tgit'): boolean {
-  if (provider === 'github') {
-    return !rejections.rejectedIds.has(markerId);
-  }
-  // TGit: 必须被 approve（点"解决"）才写入
-  return rejections.approvedIds.has(markerId);
+export function shouldWrite(markerId: string, rejections: RejectionResult, _provider: 'github' | 'tgit'): boolean {
+  return !rejections.rejectedIds.has(markerId);
 }
