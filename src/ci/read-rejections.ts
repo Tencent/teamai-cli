@@ -95,7 +95,7 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
 
 // ─── TGit ───────────────────────────────────────────────
 
-/** TGit emoji 编号 8 = "no" 🚫，作为 reject 信号 */
+/** TGit emoji 编号 8 = ☝️（竖起食指），作为 reject 信号 */
 const TGIT_REJECT_EMOJI = 8;
 
 interface TGitNoteComment {
@@ -155,7 +155,7 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
     if (!markerId) continue;
     result.allIds.add(markerId);
 
-    // TGit: emoji 编号 8 (🚫 no) = reject，无 emoji = approve（默认写入）
+    // TGit: emoji 编号 8 (☝️) = reject，无 emoji = approve（默认写入）
     const hasRejectEmoji = (note.comments ?? []).some((c) => c.comment === TGIT_REJECT_EMOJI);
     if (hasRejectEmoji) {
       result.rejectedIds.add(markerId);
@@ -193,7 +193,7 @@ export async function readRejections(mrUrl: string): Promise<RejectionResult> {
  *
  * 两个平台逻辑统一：默认写入，被 reject 的不写入。
  * - GitHub: 👎 reaction = reject
- * - TGit: 🚫 emoji (编号 8) = reject
+ * - TGit: ☝️ emoji (编号 8) = reject
  */
 export function shouldWrite(markerId: string, rejections: RejectionResult, _provider: 'github' | 'tgit'): boolean {
   return !rejections.rejectedIds.has(markerId);
