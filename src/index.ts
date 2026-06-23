@@ -694,4 +694,26 @@ program
     await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
   });
 
+// ─── CI 命令组 ──────────────────────────────────────────
+
+const ciCmd = program
+  .command('ci')
+  .description('CI pipeline integration commands');
+
+ciCmd
+  .command('extract-mr')
+  .description('Extract knowledge from MR/PR and post as comment or write to team repo')
+  .requiredOption('--url <url>', 'MR/PR web URL')
+  .option('--mode <mode>', 'Operation mode: comment | write | both', 'comment')
+  .option('--team-repo <path>', 'Team knowledge repo path (required for write mode)')
+  .option('--existing-codebase <path>', 'Existing codebase.md for style consistency')
+  .option('--comment-marker <marker>', 'HTML comment anchor for idempotent updates', '<!-- teamai:ci-extract -->')
+  .option('--write-mode <mode>', 'Write strategy: direct | pending-review', 'direct')
+  .option('--output <dir>', 'Write artifacts to directory')
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { ciExtractMr } = await import('./ci/extract-mr.js');
+    await ciExtractMr({ ...globalOpts, ...cmdOpts });
+  });
+
 program.parse();

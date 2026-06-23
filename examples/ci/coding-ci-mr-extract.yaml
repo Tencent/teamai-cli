@@ -1,0 +1,69 @@
+# TeamAI MR Knowledge Extract — Coding CI (TGit)
+#
+# 在 MR 创建/更新时自动提炼知识建议并以 note 贴到 MR 上；
+# MR 合入后自动将 learning 和 codebase 建议写入团队知识仓库。
+#
+# 使用前请配置：
+#   1. Pipeline Secret: TAI_PAT_TOKEN（对团队知识仓库有写权限的 TGit Personal Access Token）
+#   2. 修改 post-merge-write 中的 <team>/<knowledge-repo> 为你的团队仓库路径
+#   3. 如有 AI API key 需求，配置对应环境变量
+
+version: 2
+
+env:
+  TAI_PAT_TOKEN:
+    secret: ${TAI_PAT_TOKEN_SECRET}
+
+stages:
+# ── MR 创建/更新时：提炼知识并以 comment 形式展示 ──────────
+- stage: extract-comment
+  tasks:
+  - task: extract-and-comment
+    when:
+      event: merge_request
+      action: [opened, updated]
+    cmds:
+    - plugin: cmds
+      params:
+        cmds:
+        - npm install -g teamai-cli
+        - |
+          teamai ci extract-mr \
+            --url "${CI_MERGE_REQUEST_URL}" \
+            --mode comment
+
+# ── MR 合入后：将知识写入团队知识仓库 ─────────────────────
+- stage: post-merge-write
+  tasks:
+  - task: write-knowledge
+    when:
+      event: merge_request
+      action: [merged]
+    cmds:
+    - plugin: cmds
+      params:
+        cmds:
+        - npm install -g teamai-cli
+        - git clone "https://oauth2:${TAI_PAT_TOKEN}@git.woa.com/<team>/<knowledge-repo>.git" team-repo
+        - |
+          teamai ci extract-mr \
+            --url "${CI_MERGE_REQUEST_URL}" \
+            --mode write \
+            --team-repo ./team-repo \
+            --write-mode direct
+        - |
+          cd team-repo
+          git config user.name "teamai-ci"
+          git config user.email "teamai-ci@tencent.com"
+          git add learnings/ docs/ .teamai/
+          git diff --cached --quiet || \
+            git commit -m "[teamai] Extract knowledge from MR !${CI_MERGE_REQUEST_IID}"
+          git push
+
+mr:
+  is_block_mr: 0
+
+worker:
+  label: JOB_MATRIX_DEVCLOUD
+  tools: []
+  language: node_js-22.19.0
