@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { requireInit, detectProjectConfig, loadTeamConfig, loadLocalConfigForScope } from './config.js';
+import { assertNotReadOnly } from './read-only.js';
 import { pushRepoDirectly, pullRepo } from './utils/git.js';
 import { ensureDir } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
@@ -86,6 +87,7 @@ export async function contribute(
     const projectConfig = await detectProjectConfig();
     localConfig = projectConfig ?? (await requireInit()).localConfig;
   }
+  assertNotReadOnly(localConfig, 'teamai contribute');
   const repoPath = localConfig.repo.localPath;
   const username = localConfig.username;
 

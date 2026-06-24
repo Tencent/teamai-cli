@@ -148,6 +148,10 @@ export const LocalConfigSchema = z.object({
   repo: z.object({
     localPath: z.string(),
     remote: z.string(),
+    /** Team repo backend. Defaults to 'git' for backward compatibility. */
+    kind: z.enum(['git', 'http']).optional(),
+    /** Base URL of the HTTP team repo (only when kind === 'http'). */
+    url: z.string().optional(),
   }),
   username: z.string(),
   updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),

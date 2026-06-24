@@ -33,6 +33,46 @@ interface RolePullContext {
   inactiveSkillNames: Set<string>;
 }
 
+/**
+ * Refresh the local team-repo tree, abstracting the two backends.
+ *
+ * - git:  `git pull` into localPath; version = current HEAD rev.
+ * - http: re-materialize `GET /repo` into localPath; version = server version.
+ *
+ * Returns a display label and the opaque version string used as the
+ * incremental-sync cache key (state.lastPullRev). `version` is null only when
+ * the git backend can't resolve a rev.
+ */
+async function refreshTeamRepo(
+  localConfig: LocalConfig,
+): Promise<{ label: string; version: string | null }> {
+  if (localConfig.repo.kind === 'http') {
+    const { resolveApiKey } = await import('./api-key.js');
+    const { materializeHttpRepo } = await import('./source-http.js');
+    const apiKey = resolveApiKey();
+    if (!apiKey) {
+      throw new Error('No API key configured. Run `teamai login <key>` or set TEAMAI_API_TOKEN.');
+    }
+    const baseUrl = localConfig.repo.url;
+    if (!baseUrl) {
+      throw new Error('HTTP team repo has no url configured.');
+    }
+    const version = await materializeHttpRepo(baseUrl, localConfig.repo.localPath, apiKey);
+    return { label: `HTTP ${version ?? '(no version)'}`, version };
+  }
+
+  const result = await pullRepo(localConfig.repo.localPath);
+  let version: string | null = null;
+  try {
+    version = await getHeadRev(localConfig.repo.localPath);
+  } catch {
+    // Can't resolve a rev → skip the incremental fast-path and do a full sync.
+    log.debug('Rev check failed, proceeding with full sync');
+    version = null;
+  }
+  return { label: result, version };
+}
+
 async function buildRolePullContext(localConfig: LocalConfig): Promise<RolePullContext | null> {
   if (!localConfig.primaryRole) return null;
 
@@ -240,22 +280,23 @@ async function pullForScope(
     return;
   }
 
-  // Step 1: git pull
+  // Step 1: refresh team repo (git pull, or HTTP /repo materialization)
   const pullSpin = spinner(`[${scopeLabel}] Pulling team repo...`).start();
+  let currentRev: string | null = null;
   try {
-    const result = await pullRepo(localConfig.repo.localPath);
-    pullSpin.succeed(`[${scopeLabel}] Team repo: ${result}`);
+    const { label, version } = await refreshTeamRepo(localConfig);
+    currentRev = version;
+    pullSpin.succeed(`[${scopeLabel}] Team repo: ${label}`);
   } catch (e) {
     pullSpin.fail(`[${scopeLabel}] Pull failed: ${(e as Error).message}`);
     return;
   }
 
-  // Step 1b: Skip sync if repo HEAD hasn't changed since last pull
+  // Step 1b: Skip sync if the repo version hasn't changed since last pull
   if (!options.force && !options.dryRun) {
     try {
-      const currentRev = await getHeadRev(localConfig.repo.localPath);
       const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
-      if (state.lastPullRev && state.lastPullRev === currentRev) {
+      if (currentRev && state.lastPullRev && state.lastPullRev === currentRev) {
         log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
         // 即使 repo 未变化，仍部署 CLI 内置资源（确保 CLI 升级后新版本 agent/rules 生效）
         if (!options.dryRun) {
@@ -516,11 +557,16 @@ async function pullForScope(
   } else if (!options.dryRun) {
     const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
     state.lastPull = new Date().toISOString();
-    try {
-      state.lastPullRev = await getHeadRev(localConfig.repo.localPath);
-    } catch {
-      // Non-critical: if we can't get the rev, just clear it
-      state.lastPullRev = null;
+    if (currentRev !== null) {
+      // HTTP mode: server version already resolved during refresh.
+      state.lastPullRev = currentRev;
+    } else {
+      try {
+        state.lastPullRev = await getHeadRev(localConfig.repo.localPath);
+      } catch {
+        // Non-critical: if we can't get the rev, just clear it
+        state.lastPullRev = null;
+      }
     }
     await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
   }

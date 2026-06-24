@@ -40,6 +40,8 @@ const AUTO_RECALL_TIMEOUT_MS = 10_000;
 const TODOWRITE_HINT_TIMEOUT_MS = 5_000;
 /** MR-hint queries a remote MR/PR API — allow a network round-trip. */
 const MR_HINT_TIMEOUT_MS = 10_000;
+/** Status reporter does report/sync/ack + skill commands — allow network + download. */
+const STATUS_REPORT_TIMEOUT_MS = 30_000;
 
 // ─── Handler implementations ────────────────────────────
 //
@@ -204,6 +206,26 @@ const mrHintHandler: HookHandler = {
   },
 };
 
+/** SessionStart: report + sync (→ commands → ack). Never blocks the agent. */
+const statusReportSessionHandler: HookHandler = {
+  name: 'status-report-session',
+  async execute(stdin, tool) {
+    const { runStatusReport } = await import('./status-report.js');
+    await runStatusReport({ stdin, tool, phase: 'session' });
+    return null;
+  },
+};
+
+/** UserPromptSubmit: sync only (→ commands → ack). */
+const statusReportMessageHandler: HookHandler = {
+  name: 'status-report-message',
+  async execute(stdin, tool) {
+    const { runStatusReport } = await import('./status-report.js');
+    await runStatusReport({ stdin, tool, phase: 'message' });
+    return null;
+  },
+};
+
 // ─── Registry builder ───────────────────────────────────
 
 /**
@@ -216,6 +238,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: MR_HINT_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: statusReportSessionHandler, timeoutMs: STATUS_REPORT_TIMEOUT_MS },
 
     // ─── Stop ─────────────────────────────────────────
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS },
@@ -236,5 +259,6 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: TRACK_TIMEOUT_MS },
     { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
+    { event: 'prompt-submit', matcher: '*', handler: statusReportMessageHandler, timeoutMs: STATUS_REPORT_TIMEOUT_MS },
   ];
 }

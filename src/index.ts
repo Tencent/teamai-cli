@@ -23,6 +23,7 @@ program
   .command('init')
   .description('Initialize teamai (configure TGit, clone repo, register member)')
   .option('--repo <repo>', 'Team repo (owner/repo or full URL)')
+  .option('--http <url>', 'Git-free HTTP team repo (read-only consumer; only needs an API key)')
   .option('--scope <scope>', 'Scope: user (default) or project')
   .option('--role <id>', 'Primary role ID (e.g. hai_dev) for non-interactive setup')
   .option('--force', 'Overwrite existing config without confirmation')
@@ -30,6 +31,15 @@ program
     const globalOpts = program.opts() as GlobalOptions;
     const { init } = await import('./init.js');
     await init({ ...globalOpts, ...cmdOpts });
+  });
+
+program
+  .command('login <apiKey>')
+  .description('Save the API key for HTTP team repo / status reporting (stored 0600, never committed)')
+  .action(async (apiKey: string) => {
+    const { saveApiKey, getApiKeyPath } = await import('./api-key.js');
+    await saveApiKey(apiKey);
+    log.success(`API key saved to ${getApiKeyPath()}`);
   });
 
 program

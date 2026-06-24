@@ -1,11 +1,17 @@
 import path from 'node:path';
-import { readJson, writeJson, expandHome, ensureDir } from './utils/fs.js';
+import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, getManagedHooksPath, resolveBaseDir } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
 import { builtinHookDefs, applyBuiltinOverride } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { resolveTeamHooks } from './resources/hooks.js';
+
+/**
+ * Lobster-family agents (OpenClaw engine) that use HOOK.md + handler.ts instead
+ * of settings.json. WorkBuddy is the phase-1 target (issue #1, 方案二 §四).
+ */
+const OPENCLAW_TOOLS = new Set(['workbuddy', 'openclaw', 'qclaw', 'easyclaw', 'autoclaw']);
 
 /** Subcommands expected in each tool settings file (for `teamai doctor`). */
 export const TEAMAI_HOOK_SUBCOMMANDS = ['hook-dispatch'] as const;
@@ -406,6 +412,18 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         await injectHooks(settingsPath, tool);
       } catch (e) {
         log.warn(`Failed to inject hook into ${tool}: ${(e as Error).message}`);
+      }
+    } else if (OPENCLAW_TOOLS.has(tool)) {
+      // Lobster family uses HOOK.md + handler.ts. Only inject when the agent is
+      // actually installed (its root dir exists) to avoid creating stray dirs.
+      const agentRoot = path.join(resolvedBaseDir, `.${tool}`);
+      if (await pathExists(agentRoot)) {
+        try {
+          const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
+          await injectOpenClawHooks(path.join(agentRoot, 'hooks'), tool);
+        } catch (e) {
+          log.warn(`Failed to inject OpenClaw hook into ${tool}: ${(e as Error).message}`);
+        }
       }
     }
   }
