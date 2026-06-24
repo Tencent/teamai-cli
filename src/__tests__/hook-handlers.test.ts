@@ -33,9 +33,13 @@ vi.mock('../usage-tracker.js', () => ({
   updateKnownSkills: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../auto-recall.js', () => ({
-  autoRecall: mockAutoRecallFromParsed,
-}));
+vi.mock('../auto-recall.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../auto-recall.js')>();
+  return {
+    ...actual,
+    autoRecallFromInput: mockAutoRecallFromParsed,
+  };
+});
 
 vi.mock('../contribute-check.js', () => ({
   contributeCheck: vi.fn().mockResolvedValue(undefined),
@@ -119,6 +123,32 @@ describe('hook-handlers registry', () => {
         .map((r) => r.handler.name);
       expect(handlers).toContain('auto-recall');
     }
+  });
+
+  it('auto-recall handler parses stdin and delegates to autoRecallFromInput', async () => {
+    const registry = buildHandlerRegistry();
+    const bashHandler = registry.find(
+      (r) => r.event === 'post-tool-use' && r.matcher === 'Bash',
+    )!.handler;
+
+    const stdin = {
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test' },
+      tool_output: 'Error: module not found',
+      session_id: 'session-123',
+    };
+    const expectedOutput = JSON.stringify({ hookSpecificOutput: { additionalContext: 'context' } });
+    mockAutoRecallFromParsed.mockResolvedValueOnce(expectedOutput);
+
+    const result = await bashHandler.execute(stdin, 'claude');
+
+    expect(mockAutoRecallFromParsed).toHaveBeenCalledWith({
+      toolName: 'Bash',
+      toolInput: { command: 'npm test' },
+      toolOutput: 'Error: module not found',
+      sessionId: 'session-123',
+    });
+    expect(result).toBe(expectedOutput);
   });
 
   it('prompt-submit has track-slash and dashboard-report', () => {
