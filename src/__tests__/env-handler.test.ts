@@ -208,8 +208,24 @@ scope: 'user',
       ]);
 
       expect(content).toBe(
-        'export API_URL="https://example.com"\nexport TOKEN="abc123"\n',
+        "export API_URL='https://example.com'\nexport TOKEN='abc123'\n",
       );
+    });
+
+    it('should shell-quote values containing shell metacharacters', () => {
+      // Values flow from the team repo's env/env.yaml into env.sh, which every
+      // member sources from their shell profile. Quotes / `$` / backticks must
+      // be taken literally and must not break or inject into the sourced shell.
+      const content = handler.generateEnvFile([
+        { key: 'CONN', value: 'a"b$c' },
+        { key: 'GREETING', value: "it's" },
+      ]);
+
+      expect(content).toBe(
+        "export CONN='a\"b$c'\nexport GREETING='it'\\''s'\n",
+      );
+      // No raw double-quote wrapping that the old code produced.
+      expect(content).not.toContain('="a');
     });
 
     it('should return just a newline for empty variables', () => {
@@ -257,8 +273,8 @@ scope: 'user',
       const envShPath = path.join(homeDir, '.teamai', 'env.sh');
       expect(await fse.pathExists(envShPath)).toBe(true);
       const content = await fse.readFile(envShPath, 'utf-8');
-      expect(content).toContain('export TGIT_API_BASE="https://git.woa.com/api/v3"');
-      expect(content).toContain('export MODEL_ENDPOINT="https://api.example.com"');
+      expect(content).toContain("export TGIT_API_BASE='https://git.woa.com/api/v3'");
+      expect(content).toContain("export MODEL_ENDPOINT='https://api.example.com'");
     });
 
     it('should inject source line into shell profile (bash)', async () => {
