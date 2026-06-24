@@ -22,6 +22,16 @@ const EnvYamlSchema = z.object({
 export type EnvVariable = z.infer<typeof EnvVariableSchema>;
 export type EnvYaml = z.infer<typeof EnvYamlSchema>;
 
+/**
+ * Quote a string so it is safe to interpolate into a POSIX shell (bash/zsh/sh).
+ * Wraps the value in single quotes and encodes any embedded single quote as
+ * `'\''`, leaving all other characters (including `"`, `$`, `` ` ``, `\`)
+ * literal. Used when generating env.sh, which every team member sources.
+ */
+function shellQuoteValue(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 // ─── Handler ─────────────────────────────────────────────
 
 export class EnvHandler extends ResourceHandler {
@@ -173,9 +183,15 @@ export class EnvHandler extends ResourceHandler {
 
   /**
    * Generate the content of ~/.teamai/env.sh with export statements.
+   *
+   * Values are single-quoted so shell metacharacters in an env value (quotes,
+   * `$`, backticks, `\`, …) are taken literally and cannot break or inject into
+   * the sourced script. An embedded single quote is encoded with the standard
+   * `'\''` sequence. env.sh is sourced from every team member's shell profile,
+   * so values (which originate from the team repo's env/env.yaml) must be safe.
    */
   generateEnvFile(variables: EnvVariable[]): string {
-    const lines = variables.map(v => `export ${v.key}="${v.value}"`);
+    const lines = variables.map(v => `export ${v.key}=${shellQuoteValue(v.value)}`);
     return lines.join('\n') + '\n';
   }
 
