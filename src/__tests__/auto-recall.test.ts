@@ -11,12 +11,58 @@ import {
     extractWebFetchQuery,
     shouldSkipQuery,
     isReadOnlyCommand,
+    autoRecallFromInput,
 } from '../auto-recall.js';
 
 // ─── Test helpers ──────────────────────────────────────────
 
 function makeTmpDir(): string {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-auto-recall-test-'));
+}
+
+/** Write a minimal search-index.json under a temp HOME directory. */
+function writeSearchIndex(homeDir: string): void {
+    const indexDir = path.join(homeDir, '.teamai');
+    fs.mkdirSync(indexDir, { recursive: true });
+
+    const index = {
+        builtAt: new Date().toISOString(),
+        elapsedMs: 10,
+        entries: [
+            {
+                filename: 'k8s-oom-fix-2026-03-20-abc123.md',
+                title: 'K8s Pod OOMKilled 排查与修复',
+                author: 'testuser',
+                date: '2026-03-20',
+                tags: ['k8s', 'oom', 'troubleshooting'],
+                tokens: [
+                    'title:k8s', 'title:pod', 'title:oomkilled', 'title:排查', 'title:修复',
+                    'tag:k8s', 'tag:oom', 'tag:troubleshooting',
+                    'oom', 'killed', 'memory', 'limit', 'container', 'restart',
+                ],
+                votes: 3,
+            },
+            {
+                filename: 'module-not-found-fix-2026-03-22-def456.md',
+                title: 'ModuleNotFoundError 常见解决方案',
+                author: 'testuser',
+                date: '2026-03-22',
+                tags: ['python', 'import', 'modulenotfounderror'],
+                tokens: [
+                    'title:modulenotfounderror', 'title:常见', 'title:解决方案',
+                    'tag:python', 'tag:import', 'tag:modulenotfounderror',
+                    'module', 'not', 'found', 'import', 'pip', 'install',
+                ],
+                votes: 2,
+            },
+        ],
+    };
+
+    fs.writeFileSync(
+        path.join(indexDir, 'search-index.json'),
+        JSON.stringify(index),
+        'utf-8',
+    );
 }
 
 // ─── containsError ─────────────────────────────────────────
@@ -395,6 +441,105 @@ describe('shouldSkipQuery', () => {
     it('sessions do not interfere with each other', () => {
         shouldSkipQuery('session-5a', 'same error');
         expect(shouldSkipQuery('session-5b', 'same error')).toBe(false);
+    });
+});
+
+// ─── autoRecallFromInput ───────────────────────────────────
+
+describe('autoRecallFromInput', () => {
+    let tmpHome: string;
+    const originalHome = process.env.HOME;
+    const originalDisabled = process.env.TEAMAI_RECALL_DISABLED;
+
+    beforeEach(() => {
+        tmpHome = makeTmpDir();
+        process.env.HOME = tmpHome;
+        delete process.env.TEAMAI_RECALL_DISABLED;
+    });
+
+    afterEach(() => {
+        process.env.HOME = originalHome;
+        if (originalDisabled === undefined) {
+            delete process.env.TEAMAI_RECALL_DISABLED;
+        } else {
+            process.env.TEAMAI_RECALL_DISABLED = originalDisabled;
+        }
+        fs.rmSync(tmpHome, { recursive: true, force: true });
+    });
+
+    it('returns null when TEAMAI_RECALL_DISABLED=1', async () => {
+        process.env.TEAMAI_RECALL_DISABLED = '1';
+        const result = await autoRecallFromInput({
+            toolName: 'Bash',
+            toolInput: { command: 'npm test' },
+            toolOutput: 'Error: failed',
+            sessionId: 'disabled-session',
+        });
+        expect(result).toBeNull();
+    });
+
+    it('returns null for unknown tools', async () => {
+        const result = await autoRecallFromInput({
+            toolName: 'Write',
+            toolInput: { file_path: '/tmp/test.ts' },
+            toolOutput: '',
+            sessionId: 'unknown-tool-session',
+        });
+        expect(result).toBeNull();
+    });
+
+    it('returns null for read-only Bash commands', async () => {
+        writeSearchIndex(tmpHome);
+        const result = await autoRecallFromInput({
+            toolName: 'Bash',
+            toolInput: { command: 'cat error.log' },
+            toolOutput: 'Error: something failed\nTraceback (most recent call last):',
+            sessionId: 'readonly-session',
+        });
+        expect(result).toBeNull();
+    });
+
+    it('returns null when Bash output contains no error', async () => {
+        writeSearchIndex(tmpHome);
+        const result = await autoRecallFromInput({
+            toolName: 'Bash',
+            toolInput: { command: 'npm test' },
+            toolOutput: 'All tests passed',
+            sessionId: 'no-error-session',
+        });
+        expect(result).toBeNull();
+    });
+
+    it('returns hook output JSON when Bash error matches search index', async () => {
+        writeSearchIndex(tmpHome);
+        const result = await autoRecallFromInput({
+            toolName: 'Bash',
+            toolInput: { command: 'kubectl get pods' },
+            toolOutput: 'Error: pod my-pod OOMKilled\nContainer killed due to OOM',
+            sessionId: 'bash-error-session',
+        });
+
+        expect(result).not.toBeNull();
+        const parsed = JSON.parse(result!);
+        expect(parsed.hookSpecificOutput).toBeDefined();
+        expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+        expect(parsed.hookSpecificOutput.additionalContext).toContain('[teamai:auto-recall]');
+        expect(parsed.hookSpecificOutput.additionalContext).toContain('OOM');
+    });
+
+    it('returns hook output JSON for Grep tool input', async () => {
+        writeSearchIndex(tmpHome);
+        const result = await autoRecallFromInput({
+            toolName: 'Grep',
+            toolInput: { pattern: 'ModuleNotFoundError' },
+            toolOutput: '',
+            sessionId: 'grep-session',
+        });
+
+        expect(result).not.toBeNull();
+        const parsed = JSON.parse(result!);
+        expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+        expect(parsed.hookSpecificOutput.additionalContext).toContain('[teamai:auto-recall]');
     });
 });
 

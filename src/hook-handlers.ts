@@ -166,34 +166,33 @@ const contributeCheckHandler: HookHandler = {
 const autoRecallHandler: HookHandler = {
   name: 'auto-recall',
   async execute(stdin, _tool) {
-    // Auto-recall has complex internal logic (tool dispatch, error detection, rate limiting)
-    // For now, delegate to the existing function by temporarily mocking STDIN.
-    // TODO: Refactor autoRecall to accept parsed data directly.
-    const { autoRecall } = await import('./auto-recall.js');
+    const { autoRecallFromInput } = await import('./auto-recall.js');
 
-    // The auto-recall function reads STDIN internally. To avoid changing its signature
-    // in this phase, we capture its STDOUT output via a process.stdout.write intercept.
-    let capturedOutput: string | null = null;
-    const originalWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk: unknown) => {
-      if (typeof chunk === 'string') {
-        capturedOutput = chunk;
-      } else if (Buffer.isBuffer(chunk)) {
-        capturedOutput = chunk.toString();
-      }
-      return true;
-    }) as typeof process.stdout.write;
+    const toolName = typeof stdin.tool_name === 'string' ? stdin.tool_name : '';
+    const rawInput = stdin.tool_input;
+    const toolInput: Record<string, unknown> =
+      rawInput !== null && typeof rawInput === 'object' && !Array.isArray(rawInput)
+        ? (rawInput as Record<string, unknown>)
+        : {};
 
-    try {
-      // We can't easily pipe stdin to the function, so for this handler
-      // we'll rely on the environment (process.stdin being piped from Claude Code).
-      // In the dispatcher, auto-recall will be invoked with the raw data.
-      await autoRecall();
-    } finally {
-      process.stdout.write = originalWrite;
-    }
+    const toolResponse = stdin.tool_response as Record<string, unknown> | undefined;
+    const toolOutput = typeof stdin.tool_output === 'string'
+      ? stdin.tool_output
+      : typeof stdin.tool_result === 'string'
+        ? stdin.tool_result
+        : toolResponse
+          ? [
+              typeof toolResponse.stdout === 'string' ? toolResponse.stdout : '',
+              typeof toolResponse.stderr === 'string' ? toolResponse.stderr : '',
+            ].filter(Boolean).join('\n')
+          : '';
 
-    return capturedOutput;
+    const sessionId =
+      (typeof stdin.session_id === 'string' && stdin.session_id) ||
+      process.env.CLAUDE_SESSION_ID ||
+      `pid-${process.ppid ?? process.pid}`;
+
+    return autoRecallFromInput({ toolName, toolInput, toolOutput, sessionId });
   },
 };
 

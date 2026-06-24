@@ -413,7 +413,7 @@ export function shouldSkipQuery(sessionId: string, query: string): boolean {
 
 // ─── STDIN parsing ───────────────────────────────────────
 
-interface HookInput {
+export interface HookInput {
     toolName: string;
     toolInput: Record<string, unknown>;
     toolOutput: string;
@@ -476,8 +476,8 @@ export async function readStdin(): Promise<HookInput | null> {
 // ─── Main entry point ────────────────────────────────────
 
 /**
- * Handle `teamai auto-recall --stdin`.
- * Called by PostToolUse hook on every tool call.
+ * Core auto-recall logic given a parsed hook input.
+ * Called by `autoRecall()` (CLI entry) and by `autoRecallHandler` (hook dispatcher).
  *
  * Dispatch by tool type:
  * - Bash: error detection → extract error keywords → search
@@ -489,26 +489,20 @@ export async function readStdin(): Promise<HookInput | null> {
  * - Known tool, no query: < 5ms
  * - Known tool + search: < 200ms typical
  *
- * Output: STDOUT JSON with hookSpecificOutput.additionalContext when matching results found.
- * Claude Code reads additionalContext and passes it to AI as context.
+ * Returns: JSON string with hookSpecificOutput.additionalContext when matching
+ * results found; otherwise null.
  */
-export async function autoRecall(): Promise<void> {
+export async function autoRecallFromInput(input: HookInput): Promise<string | null> {
     // ─── Eval harness: disable flag ────────────────────
     if (process.env.TEAMAI_RECALL_DISABLED === '1') {
-        return;
-    }
-
-    const input = await readStdin();
-    if (!input) {
-        log.debug('auto-recall: no STDIN data');
-        return;
+        return null;
     }
 
     const { toolName, toolInput, toolOutput, sessionId } = input;
 
     // Fast path: unknown tools → exit immediately
     if (!RECALL_TOOLS.has(toolName)) {
-        return;
+        return null;
     }
 
     // ─── Extract query based on tool type ────────────────
@@ -518,16 +512,16 @@ export async function autoRecall(): Promise<void> {
         // Read-only commands output file content, not errors — skip
         const command = typeof toolInput.command === 'string' ? toolInput.command : '';
         if (isReadOnlyCommand(command)) {
-            return;
+            return null;
         }
         // Skip our own output — prevents recursive false positives when
         // Bash output contains auto-recall / recall results markers
         if (toolOutput.includes('[teamai:')) {
-            return;
+            return null;
         }
         // Bash: only recall on errors
         if (!containsError(toolOutput)) {
-            return;
+            return null;
         }
         query = extractQuery(toolOutput);
     } else if (toolName === 'Grep') {
@@ -540,13 +534,13 @@ export async function autoRecall(): Promise<void> {
 
     if (!query) {
         log.debug(`auto-recall: no query extracted from ${toolName}`);
-        return;
+        return null;
     }
 
     // Dedup: skip if same query already recalled in this session
     if (shouldSkipQuery(sessionId, query)) {
         log.debug(`auto-recall: skipping duplicate/rate-limited query: ${query.slice(0, 50)}`);
-        return;
+        return null;
     }
 
     // Lazy load search modules (only when we actually need to search)
@@ -570,7 +564,7 @@ export async function autoRecall(): Promise<void> {
             topScore: 0, hitCount: 0, missCount: 0,
         };
         writeCache(sessionId, { ...cache, missCount: cache.missCount + 1, updatedAt: new Date().toISOString() });
-        return;
+        return null;
     }
 
     // Search
@@ -624,7 +618,7 @@ export async function autoRecall(): Promise<void> {
 
     if (results.length === 0) {
         log.debug(`auto-recall: no results for query: ${query.slice(0, 50)}`);
-        return;
+        return null;
     }
 
     // Log successful recall with titles for debuggability
@@ -643,7 +637,6 @@ export async function autoRecall(): Promise<void> {
             additionalContext: context,
         },
     });
-    process.stdout.write(hookOutput + '\n');
 
     // Best-effort auto-upvote (non-blocking)
     try {
@@ -653,6 +646,31 @@ export async function autoRecall(): Promise<void> {
         await autoUpvote(results, localConfig.username, localConfig.repo.localPath);
     } catch {
         // Silent: upvote failure should never affect hook output
+    }
+
+    return hookOutput;
+}
+
+/**
+ * Handle `teamai auto-recall --stdin`.
+ * Called by PostToolUse hook on every tool call.
+ * Reads STDIN, runs the core auto-recall logic, and writes any hook output to STDOUT.
+ */
+export async function autoRecall(): Promise<void> {
+    // Fast exit for eval harness / disabled mode before touching STDIN
+    if (process.env.TEAMAI_RECALL_DISABLED === '1') {
+        return;
+    }
+
+    const input = await readStdin();
+    if (!input) {
+        log.debug('auto-recall: no STDIN data');
+        return;
+    }
+
+    const output = await autoRecallFromInput(input);
+    if (output) {
+        process.stdout.write(output + '\n');
     }
 }
 
