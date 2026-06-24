@@ -330,6 +330,23 @@ export interface UserStats {
   username: string;
   updatedAt: string;
   skills: Record<string, { count: number; lastUsed: string }>;
+  /**
+   * Aggregated Human Intervention metric for this user (Issue #34).
+   * Cumulative across all reported sessions. Privacy: counts only, no prompt text.
+   */
+  interventions?: UserInterventionStats;
+}
+
+/** Per-user cumulative intervention totals, persisted to stats/<user>.yaml. */
+export interface UserInterventionStats {
+  /** Number of distinct sessions counted into these totals. */
+  sessions: number;
+  /** Total user interrupts (ESC) across all sessions. */
+  interrupt: number;
+  /** Total tool rejections (permission deny) across all sessions. */
+  toolReject: number;
+  /** Total corrections (re-prompt after stop) across all sessions. */
+  correction: number;
 }
 
 // ─── Session records ───────────────────────────────────
@@ -388,6 +405,14 @@ export interface DashboardEvent {
   transcriptPath?: string;
   /** Resolved PID of the AI tool main process (for liveness monitoring) */
   monitorPid?: number;
+  /**
+   * Cumulative human-intervention counts scanned from the transcript at Stop time.
+   * Full snapshot (idempotent): each Stop event carries the running total for the
+   * whole session, so a later Stop overrides an earlier one in rebuildSessions.
+   * `correction` is NOT derived from the transcript — it is computed in
+   * rebuildSessions from the stop→prompt_submit event pattern.
+   */
+  interventions?: { interrupt: number; toolReject: number };
 }
 
 export interface DashboardSession {
@@ -415,6 +440,15 @@ export interface DashboardSession {
   stoppedAt: string;
   /** Resolved PID of the AI tool main process (for liveness monitoring) */
   monitorPid?: number;
+  /**
+   * Per-session human-intervention breakdown (Human Intervention metric).
+   * - interrupt: user interrupted the agent mid-turn (ESC)
+   * - toolReject: user denied a tool call (permission deny)
+   * - correction: user re-prompted to correct the agent right after a stop
+   */
+  interventions: { interrupt: number; toolReject: number; correction: number };
+  /** Total intervention count (interrupt + toolReject + correction), for sorting/badges */
+  interventionCount: number;
 }
 
 export const DASHBOARD_EVENTS_DIR = `${TEAMAI_HOME}/dashboard`;
@@ -430,6 +464,30 @@ export const DASHBOARD_COMPACTION_THRESHOLD = 5_000;
 export const DASHBOARD_STOPPED_DISPLAY_MS = 30 * 1000;
 /** Interval (ms) between PID liveness checks in the dashboard server */
 export const DASHBOARD_PID_CHECK_INTERVAL_MS = 15_000;
+
+// ─── Human Intervention metric ───────────────────────
+//
+//  A `correction` is counted when the user submits a new prompt within
+//  CORRECTION_WINDOW_MS after the agent stopped AND the prompt looks like a
+//  course-correction (contains one of CORRECTION_KEYWORDS) rather than a new task.
+//
+
+/** Max time (ms) between a stop and the next prompt for it to count as a correction. */
+export const CORRECTION_WINDOW_MS = 60 * 1000;
+/** Substrings (lowercased) that mark a prompt as a course-correction, not a new task. */
+export const CORRECTION_KEYWORDS = [
+  '不对', '不是', '错了', '错误', '重来', '重新', '撤销', '回退', '别这样', '不要',
+  'wrong', 'redo', 'undo', 'revert', 'mistake', 'instead', "don't", "that's not", 'not what',
+];
+/** Max bytes to scan from a transcript when counting interventions (guards huge files). */
+export const INTERVENTION_SCAN_MAX_BYTES = 50 * 1024 * 1024;
+/** Marker that prefixes a user-interrupt entry in the Claude Code transcript. */
+export const TRANSCRIPT_INTERRUPT_PREFIX = '[Request interrupted by user';
+/** Substrings that mark a tool_result as a user rejection (permission deny). */
+export const TRANSCRIPT_REJECT_MARKERS = [
+  'The tool use was rejected',
+  "doesn't want to proceed with this tool use",
+];
 
 // ─── Contribute (session auto-contribute) ────────────
 //

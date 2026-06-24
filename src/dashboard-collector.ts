@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline';
 import { log } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { ensureDir } from './utils/fs.js';
@@ -12,6 +13,11 @@ import {
   DASHBOARD_IDLE_TIMEOUT_MS,
   DASHBOARD_STALE_TIMEOUT_MS,
   DASHBOARD_STOPPED_DISPLAY_MS,
+  CORRECTION_WINDOW_MS,
+  CORRECTION_KEYWORDS,
+  INTERVENTION_SCAN_MAX_BYTES,
+  TRANSCRIPT_INTERRUPT_PREFIX,
+  TRANSCRIPT_REJECT_MARKERS,
   type DashboardEvent,
   type DashboardEventType,
   type DashboardSession,
@@ -103,6 +109,78 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
 }
 
 /**
+ * Scan a full transcript and count cumulative human-intervention signals:
+ * - interrupt:  user message whose text starts with "[Request interrupted by user"
+ * - toolReject: tool_result with is_error=true marked as a user rejection
+ *
+ * Uses a streaming line reader so large transcripts don't load fully into memory.
+ * Returns zero counts on any error (file missing, too large, permission denied).
+ */
+export async function countInterventions(
+  transcriptPath: string,
+): Promise<{ interrupt: number; toolReject: number }> {
+  let interrupt = 0;
+  let toolReject = 0;
+
+  try {
+    const stat = await fs.promises.stat(transcriptPath);
+    if (stat.size === 0) return { interrupt, toolReject };
+    if (stat.size > INTERVENTION_SCAN_MAX_BYTES) {
+      log.warn(`dashboard: transcript too large to scan for interventions (${stat.size} bytes)`);
+      return { interrupt, toolReject };
+    }
+
+    const rl = readline.createInterface({
+      input: fs.createReadStream(transcriptPath, { encoding: 'utf-8' }),
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      const trimmed = line.trim();
+      // Cheap pre-filter: intervention signals only ever live in `user` entries,
+      // so skip JSON.parse on the (vast majority of) other lines.
+      if (!trimmed || !trimmed.includes('"user"')) continue;
+
+      let entry: { type?: string; message?: { content?: unknown } };
+      try {
+        entry = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      if (entry.type !== 'user' || !Array.isArray(entry.message?.content)) continue;
+
+      for (const item of entry.message.content as Array<Record<string, unknown>>) {
+        if (item?.type === 'text' && typeof item.text === 'string'
+          && item.text.startsWith(TRANSCRIPT_INTERRUPT_PREFIX)) {
+          interrupt++;
+        } else if (item?.type === 'tool_result' && item.is_error === true) {
+          const text = typeof item.content === 'string'
+            ? item.content
+            : Array.isArray(item.content)
+              ? (item.content as Array<{ text?: string }>)
+                .map((c) => (typeof c?.text === 'string' ? c.text : '')).join(' ')
+              : '';
+          if (TRANSCRIPT_REJECT_MARKERS.some((m) => text.includes(m))) {
+            toolReject++;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    log.warn(`dashboard: failed to scan interventions: ${(e as Error).message}`);
+  }
+
+  return { interrupt, toolReject };
+}
+
+/** True when a prompt looks like a course-correction (vs. a fresh task). */
+function isCorrectionPrompt(text?: string): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return CORRECTION_KEYWORDS.some((k) => lower.includes(k));
+}
+
+/**
  * Map hook event names to dashboard event types.
  * Supports Claude Code (PascalCase), Cursor and CodeBuddy (camelCase) formats.
  */
@@ -190,12 +268,17 @@ export async function parseHookEvent(
     event.promptSummary = hookData.prompt.slice(0, 200);
   }
 
-  // Extract transcript path and AI output from Stop event
+  // Extract transcript path, AI output and intervention counts from Stop event
   if (eventType === 'stop' && typeof hookData.transcript_path === 'string') {
     event.transcriptPath = hookData.transcript_path;
     const output = await readLastAssistantOutput(hookData.transcript_path);
     if (output) {
       event.stoppedOutput = output;
+    }
+    // Full-transcript snapshot of interrupt/tool_reject counts (idempotent).
+    const iv = await countInterventions(hookData.transcript_path);
+    if (iv.interrupt > 0 || iv.toolReject > 0) {
+      event.interventions = iv;
     }
   }
 
@@ -299,6 +382,8 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
         prompts: [],
         stoppedOutput: '',
         stoppedAt: '',
+        interventions: { interrupt: 0, toolReject: 0, correction: 0 },
+        interventionCount: 0,
       };
       sessions.set(event.sessionId, session);
     }
@@ -346,6 +431,16 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
     }
   }
 
+  // Fill per-session intervention counts (single source of truth: aggregate fold)
+  const interventionMap = aggregateSessionInterventions(events);
+  for (const session of sessions.values()) {
+    const iv = interventionMap.get(session.sessionId);
+    if (iv) {
+      session.interventions = iv;
+      session.interventionCount = iv.interrupt + iv.toolReject + iv.correction;
+    }
+  }
+
   // Apply timeouts
   const result: DashboardSession[] = [];
   for (const session of sessions.values()) {
@@ -387,6 +482,51 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
     return bRuntime - aRuntime;
   });
   return result;
+}
+
+/**
+ * Aggregate per-session intervention counts from raw events (no timeout filtering).
+ *
+ * - interrupt / toolReject: taken from the latest Stop event's snapshot (idempotent —
+ *   a later Stop overrides an earlier one, so re-scanning never double-counts).
+ * - correction: a prompt_submit arriving within CORRECTION_WINDOW_MS of a Stop AND
+ *   matching a correction keyword. Each Stop is consumed by the next prompt only once.
+ *
+ * Used both by rebuildSessions (live dashboard) and by the team-stats reporter.
+ */
+export function aggregateSessionInterventions(
+  events: DashboardEvent[],
+): Map<string, { interrupt: number; toolReject: number; correction: number }> {
+  const map = new Map<string, { interrupt: number; toolReject: number; correction: number }>();
+  const lastStopAt = new Map<string, number>();
+
+  for (const event of events) {
+    let iv = map.get(event.sessionId);
+    if (!iv) {
+      iv = { interrupt: 0, toolReject: 0, correction: 0 };
+      map.set(event.sessionId, iv);
+    }
+
+    if (event.type === 'stop') {
+      if (event.interventions) {
+        iv.interrupt = event.interventions.interrupt;
+        iv.toolReject = event.interventions.toolReject;
+      }
+      lastStopAt.set(event.sessionId, new Date(event.timestamp).getTime());
+    } else if (event.type === 'prompt_submit') {
+      const stopAt = lastStopAt.get(event.sessionId);
+      if (stopAt !== undefined) {
+        const gap = new Date(event.timestamp).getTime() - stopAt;
+        if (gap >= 0 && gap <= CORRECTION_WINDOW_MS && isCorrectionPrompt(event.promptSummary)) {
+          iv.correction++;
+        }
+        // Each stop is consumed once — a later prompt is a new task, not a correction.
+        lastStopAt.delete(event.sessionId);
+      }
+    }
+  }
+
+  return map;
 }
 
 // ─── JSONL compaction ───────────────────────────────────

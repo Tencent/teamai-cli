@@ -239,6 +239,59 @@ async function getRecentLearnings(repoPath: string): Promise<{ recent: LearningI
   return { recent, total };
 }
 
+/** Aggregated team-wide Human Intervention summary (Issue #34). */
+export interface InterventionSummary {
+  totalSessions: number;
+  totalInterventions: number;
+  interrupt: number;
+  toolReject: number;
+  correction: number;
+  /** Team-wide mean interventions per session. */
+  avgPerSession: number;
+  /** Per-user ranking by intervention rate (highest first = least autonomous). */
+  ranked: Array<{ username: string; sessions: number; total: number; rate: number }>;
+}
+
+/**
+ * Summarize the Human Intervention metric across all reported team stats.
+ * Returns null when no user has reported any interventions yet.
+ */
+export function summarizeInterventions(teamStats: UserStats[]): InterventionSummary | null {
+  const users = teamStats.filter((u) => u.interventions && u.interventions.sessions > 0);
+  if (users.length === 0) return null;
+
+  let totalSessions = 0;
+  let interrupt = 0;
+  let toolReject = 0;
+  let correction = 0;
+
+  const ranked = users.map((u) => {
+    const iv = u.interventions!;
+    const total = iv.interrupt + iv.toolReject + iv.correction;
+    totalSessions += iv.sessions;
+    interrupt += iv.interrupt;
+    toolReject += iv.toolReject;
+    correction += iv.correction;
+    return {
+      username: u.username,
+      sessions: iv.sessions,
+      total,
+      rate: iv.sessions > 0 ? total / iv.sessions : 0,
+    };
+  }).sort((a, b) => b.rate - a.rate);
+
+  const totalInterventions = interrupt + toolReject + correction;
+  return {
+    totalSessions,
+    totalInterventions,
+    interrupt,
+    toolReject,
+    correction,
+    avgPerSession: totalSessions > 0 ? totalInterventions / totalSessions : 0,
+    ranked,
+  };
+}
+
 /**
  * Generate and display weekly team digest.
  */
@@ -329,6 +382,24 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
       console.log('🔄 Recently Updated Skills:');
       for (const skill of updatedSkills) {
         console.log(`  • ${skill.name}`);
+      }
+      console.log('');
+    }
+
+    // Session autonomy — Human Intervention metric (Issue #34)
+    const interventions = summarizeInterventions(teamStats);
+    if (interventions) {
+      console.log('🤖 会话自主性 (Human Intervention):');
+      console.log(
+        `  团队均值: ${interventions.avgPerSession.toFixed(2)} 次干预/会话 ` +
+        `(${interventions.totalSessions} 会话, ${interventions.totalInterventions} 次干预)`,
+      );
+      console.log(
+        `  分解: 中断 ${interventions.interrupt} · 拒绝 ${interventions.toolReject} · 纠偏 ${interventions.correction}`,
+      );
+      console.log('  干预率排行 (高 → 低, 越低自主性越强):');
+      for (const r of interventions.ranked.slice(0, 10)) {
+        console.log(`    • ${r.username}: ${r.rate.toFixed(2)}/会话 (${r.total} 次 / ${r.sessions} 会话)`);
       }
       console.log('');
     }
