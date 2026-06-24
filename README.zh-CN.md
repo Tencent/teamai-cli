@@ -89,6 +89,7 @@ CLI 会根据用户传入的 repo URL 自动选择 provider：
 | `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | 浏览并处理域漂移信号；`--apply` 把仓库重新归类到推荐域并刷新聚合视图 |
 | `teamai digest` | 生成团队 AI 使用周报（skill 排行、新增/更新 skill、session 摘要） |
 | `teamai hooks` | 管理 AI 工具 hooks（list / inject / remove） |
+| `teamai ci extract-mr --url <url> [--mode comment\|write\|both] [--individual-comments]` | CI 流水线集成：从 MR/PR 中提取知识，发布为评论，合并后写入团队知识仓库。使用 `--individual-comments` 时每条建议单独发布，支持 reaction/reject 交互（GitHub 👎 / TGit ☝️） |
 | `teamai uninstall [--force]` | 卸载 teamai：移除 hooks、rules、skills、env、docs、~/.teamai/ |
 | `teamai doctor` | 诊断配置问题 |
 
@@ -360,6 +361,42 @@ npm update -g teamai-cli   # 或手动触发 npm 升级
 | 用户覆盖 | `~/.teamai/config.yaml` | `updatePolicy` | `auto` / `prompt` / `skip` |
 
 用户级 `updatePolicy` 始终优先于团队级 `autoUpdate`。
+
+## CI 集成
+
+TeamAI 可以集成到 CI 流水线中，从每次 MR/PR 自动提取知识：
+
+```
+MR 创建/更新 → CI 提取 learning + codebase 建议 → 以评论形式发布
+    → Reviewer 拒绝不需要的建议（GitHub 👎 / TGit ☝️）
+    → MR 合并 → CI 将已通过的条目写入团队知识仓库
+```
+
+### 快速开始
+
+```bash
+# Comment 模式：将建议发布到 MR（在 PR 打开/更新时运行）
+teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
+
+# Write 模式：将已通过的条目写入知识仓库（在合并后运行）
+teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ./team-repo --individual-comments
+```
+
+### CI 模板
+
+`examples/ci/` 目录下提供了开箱即用的模板：
+
+| 文件 | 平台 |
+|------|------|
+| `github-actions-mr-extract.yml` | GitHub Actions |
+| `coding-ci-mr-extract.yaml` | Coding CI（TGit + 智研 QCI） |
+
+### 拒绝交互
+
+| 平台 | 拒绝方式 | 默认行为 |
+|------|---------|---------|
+| GitHub | 对建议评论添加 👎 reaction | 全部写入 |
+| TGit | 对建议 note 添加 ☝️ emoji | 全部写入 |
 
 ## 许可证
 
