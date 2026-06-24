@@ -10,6 +10,7 @@
  */
 
 import type { HookHandler } from './hook-dispatch.js';
+import { deriveSessionId } from './utils/session-id.js';
 
 // ─── Public types ───────────────────────────────────────
 
@@ -166,33 +167,12 @@ const contributeCheckHandler: HookHandler = {
 const autoRecallHandler: HookHandler = {
   name: 'auto-recall',
   async execute(stdin, _tool) {
-    const { autoRecallFromInput } = await import('./auto-recall.js');
+    const { autoRecallFromInput, parseHookInput } = await import('./auto-recall.js');
 
-    const toolName = typeof stdin.tool_name === 'string' ? stdin.tool_name : '';
-    const rawInput = stdin.tool_input;
-    const toolInput: Record<string, unknown> =
-      rawInput !== null && typeof rawInput === 'object' && !Array.isArray(rawInput)
-        ? (rawInput as Record<string, unknown>)
-        : {};
+    const input = parseHookInput(stdin);
+    if (!input) return null;
 
-    const toolResponse = stdin.tool_response as Record<string, unknown> | undefined;
-    const toolOutput = typeof stdin.tool_output === 'string'
-      ? stdin.tool_output
-      : typeof stdin.tool_result === 'string'
-        ? stdin.tool_result
-        : toolResponse
-          ? [
-              typeof toolResponse.stdout === 'string' ? toolResponse.stdout : '',
-              typeof toolResponse.stderr === 'string' ? toolResponse.stderr : '',
-            ].filter(Boolean).join('\n')
-          : '';
-
-    const sessionId =
-      (typeof stdin.session_id === 'string' && stdin.session_id) ||
-      process.env.CLAUDE_SESSION_ID ||
-      `pid-${process.ppid ?? process.pid}`;
-
-    return autoRecallFromInput({ toolName, toolInput, toolOutput, sessionId });
+    return autoRecallFromInput(input);
   },
 };
 
@@ -205,12 +185,8 @@ const todowriteHintHandler: HookHandler = {
     if (toolName !== 'TodoWrite') return null;
 
     const { shouldSkipTodoWriteHint, buildHintMessage } = await import('./todowrite-hint.js');
-    const sessionId =
-      (typeof stdin.session_id === 'string' && stdin.session_id) ||
-      process.env.CLAUDE_SESSION_ID ||
-      `pid-${process.ppid ?? process.pid}`;
 
-    if (shouldSkipTodoWriteHint(sessionId)) return null;
+    if (shouldSkipTodoWriteHint(deriveSessionId(stdin))) return null;
 
     return JSON.stringify({
       hookSpecificOutput: {

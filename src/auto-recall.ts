@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { log } from './utils/logger.js';
 import { getTeamaiHome } from './types.js';
+import { deriveSessionId } from './utils/session-id.js';
 
 // ─── Auto-recall data flow ──────────────────────────────
 //
@@ -411,13 +412,48 @@ export function shouldSkipQuery(sessionId: string, query: string): boolean {
     return false;
 }
 
-// ─── STDIN parsing ───────────────────────────────────────
+// ─── Hook input parsing ──────────────────────────────────
 
 export interface HookInput {
     toolName: string;
     toolInput: Record<string, unknown>;
     toolOutput: string;
     sessionId: string;
+}
+
+/**
+ * Parse a raw hook payload into a structured HookInput.
+ * Normalizes multiple STDIN conventions (tool_output, tool_result,
+ * tool_response.stdout/stderr) and derives a session ID.
+ * Returns null when the payload does not identify a tool.
+ */
+export function parseHookInput(data: Record<string, unknown>): HookInput | null {
+    const toolName = typeof data.tool_name === 'string' ? data.tool_name : '';
+    if (!toolName) return null;
+
+    // Parse tool_input (the parameters passed to the tool)
+    const rawInput = data.tool_input;
+    const toolInput: Record<string, unknown> =
+        rawInput !== null && typeof rawInput === 'object' && !Array.isArray(rawInput)
+            ? rawInput as Record<string, unknown>
+            : {};
+
+    // Claude Code PostToolUse STDIN format:
+    //   { tool_name, tool_input, tool_response: { stdout, stderr } }
+    // Other formats may use tool_output or tool_result directly.
+    const toolResponse = data.tool_response as Record<string, unknown> | undefined;
+    const toolOutput = typeof data.tool_output === 'string'
+        ? data.tool_output
+        : typeof data.tool_result === 'string'
+            ? data.tool_result
+            : toolResponse
+                ? [
+                    typeof toolResponse.stdout === 'string' ? toolResponse.stdout : '',
+                    typeof toolResponse.stderr === 'string' ? toolResponse.stderr : '',
+                ].filter(Boolean).join('\n')
+                : '';
+
+    return { toolName, toolInput, toolOutput, sessionId: deriveSessionId(data) };
 }
 
 /**
@@ -436,38 +472,7 @@ export async function readStdin(): Promise<HookInput | null> {
 
     try {
         const data = JSON.parse(raw) as Record<string, unknown>;
-
-        const toolName = typeof data.tool_name === 'string' ? data.tool_name : '';
-
-        // Parse tool_input (the parameters passed to the tool)
-        const rawInput = data.tool_input;
-        const toolInput: Record<string, unknown> =
-            rawInput !== null && typeof rawInput === 'object' && !Array.isArray(rawInput)
-                ? rawInput as Record<string, unknown>
-                : {};
-
-        // Claude Code PostToolUse STDIN format:
-        //   { tool_name, tool_input, tool_response: { stdout, stderr } }
-        // Other formats may use tool_output or tool_result directly.
-        const toolResponse = data.tool_response as Record<string, unknown> | undefined;
-        const toolOutput = typeof data.tool_output === 'string'
-            ? data.tool_output
-            : typeof data.tool_result === 'string'
-                ? data.tool_result
-                : toolResponse
-                    ? [
-                        typeof toolResponse.stdout === 'string' ? toolResponse.stdout : '',
-                        typeof toolResponse.stderr === 'string' ? toolResponse.stderr : '',
-                    ].filter(Boolean).join('\n')
-                    : '';
-
-        // Derive session ID (same logic as contribute-check)
-        const sessionId =
-            (typeof data.session_id === 'string' && data.session_id) ||
-            process.env.CLAUDE_SESSION_ID ||
-            `pid-${process.ppid ?? process.pid}`;
-
-        return { toolName, toolInput, toolOutput, sessionId };
+        return parseHookInput(data);
     } catch {
         return null;
     }

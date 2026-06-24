@@ -33,9 +33,13 @@ vi.mock('../usage-tracker.js', () => ({
   updateKnownSkills: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../auto-recall.js', () => ({
-  autoRecallFromInput: mockAutoRecallFromParsed,
-}));
+vi.mock('../auto-recall.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../auto-recall.js')>();
+  return {
+    ...actual,
+    autoRecallFromInput: mockAutoRecallFromParsed,
+  };
+});
 
 vi.mock('../contribute-check.js', () => ({
   contributeCheck: vi.fn().mockResolvedValue(undefined),

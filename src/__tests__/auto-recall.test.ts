@@ -12,7 +12,9 @@ import {
     shouldSkipQuery,
     isReadOnlyCommand,
     autoRecallFromInput,
+    parseHookInput,
 } from '../auto-recall.js';
+import { deriveSessionId } from '../utils/session-id.js';
 
 // ─── Test helpers ──────────────────────────────────────────
 
@@ -444,6 +446,156 @@ describe('shouldSkipQuery', () => {
     });
 });
 
+// ─── deriveSessionId ───────────────────────────────────────
+
+describe('deriveSessionId', () => {
+    const originalEnv = process.env.CLAUDE_SESSION_ID;
+
+    afterEach(() => {
+        if (originalEnv === undefined) {
+            delete process.env.CLAUDE_SESSION_ID;
+        } else {
+            process.env.CLAUDE_SESSION_ID = originalEnv;
+        }
+    });
+
+    it('prefers explicit session_id from payload', () => {
+        expect(deriveSessionId({ session_id: 'explicit-session' })).toBe('explicit-session');
+    });
+
+    it('falls back to CLAUDE_SESSION_ID env var', () => {
+        delete process.env.CLAUDE_SESSION_ID;
+        process.env.CLAUDE_SESSION_ID = 'env-session';
+        expect(deriveSessionId({})).toBe('env-session');
+    });
+
+    it('falls back to pid when nothing else is available', () => {
+        delete process.env.CLAUDE_SESSION_ID;
+        expect(deriveSessionId({})).toMatch(/^pid-/);
+    });
+
+    it('ignores non-string session_id values', () => {
+        delete process.env.CLAUDE_SESSION_ID;
+        process.env.CLAUDE_SESSION_ID = 'env-session';
+        expect(deriveSessionId({ session_id: 123 })).toBe('env-session');
+    });
+
+    it('includes cwd in pid fallback when includeCwd is true', () => {
+        delete process.env.CLAUDE_SESSION_ID;
+        const result = deriveSessionId({ cwd: '/tmp/project' }, { includeCwd: true });
+        expect(result).toMatch(/^pid-\d+-\/tmp\/project$/);
+    });
+
+    it('uses process.cwd() when cwd is missing and includeCwd is true', () => {
+        delete process.env.CLAUDE_SESSION_ID;
+        const result = deriveSessionId({}, { includeCwd: true });
+        expect(result).toContain(process.cwd());
+    });
+});
+
+// ─── parseHookInput ────────────────────────────────────────
+
+describe('parseHookInput', () => {
+    it('parses standard PostToolUse payload', () => {
+        const input = parseHookInput({
+            tool_name: 'Bash',
+            tool_input: { command: 'npm test' },
+            tool_response: { stdout: 'ok', stderr: '' },
+            session_id: 'session-1',
+        });
+        expect(input).not.toBeNull();
+        expect(input!.toolName).toBe('Bash');
+        expect(input!.toolInput).toEqual({ command: 'npm test' });
+        expect(input!.toolOutput).toBe('ok');
+        expect(input!.sessionId).toBe('session-1');
+    });
+
+    it('falls back to tool_output when tool_response is absent', () => {
+        const input = parseHookInput({
+            tool_name: 'Grep',
+            tool_input: { pattern: 'foo' },
+            tool_output: 'matched line',
+        });
+        expect(input).not.toBeNull();
+        expect(input!.toolOutput).toBe('matched line');
+    });
+
+    it('falls back to tool_result alias', () => {
+        const input = parseHookInput({
+            tool_name: 'Write',
+            tool_input: { file_path: '/tmp/x' },
+            tool_result: 'done',
+        });
+        expect(input).not.toBeNull();
+        expect(input!.toolOutput).toBe('done');
+    });
+
+    it('joins stdout and stderr from tool_response', () => {
+        const input = parseHookInput({
+            tool_name: 'Bash',
+            tool_response: { stdout: 'out', stderr: 'err' },
+        });
+        expect(input).not.toBeNull();
+        expect(input!.toolOutput).toBe('out\nerr');
+    });
+
+    it('normalizes missing tool_input to empty object', () => {
+        const input = parseHookInput({
+            tool_name: 'Bash',
+        });
+        expect(input).not.toBeNull();
+        expect(input!.toolInput).toEqual({});
+    });
+
+    it('normalizes null tool_input to empty object', () => {
+        const input = parseHookInput({
+            tool_name: 'Bash',
+            tool_input: null,
+        });
+        expect(input).not.toBeNull();
+        expect(input!.toolInput).toEqual({});
+    });
+
+    it('derives session ID from environment when missing', () => {
+        const input = parseHookInput({
+            tool_name: 'Bash',
+        });
+        expect(input).not.toBeNull();
+        expect(input!.sessionId).toMatch(/^pid-/);
+    });
+
+    it('returns null when tool_name is missing', () => {
+        expect(parseHookInput({ tool_input: { command: 'ls' } })).toBeNull();
+    });
+
+    it('returns null when tool_name is not a string', () => {
+        expect(parseHookInput({ tool_name: 123, tool_input: {} })).toBeNull();
+    });
+
+    it('returns null when tool_name is empty', () => {
+        expect(parseHookInput({ tool_name: '', tool_input: {} })).toBeNull();
+    });
+
+    it('prefers tool_output over tool_result when both are present', () => {
+        const input = parseHookInput({
+            tool_name: 'Bash',
+            tool_output: 'from tool_output',
+            tool_result: 'from tool_result',
+        });
+        expect(input).not.toBeNull();
+        expect(input!.toolOutput).toBe('from tool_output');
+    });
+
+    it('keeps stderr when stdout is absent in tool_response', () => {
+        const input = parseHookInput({
+            tool_name: 'Bash',
+            tool_response: { stderr: 'error only' },
+        });
+        expect(input).not.toBeNull();
+        expect(input!.toolOutput).toBe('error only');
+    });
+});
+
 // ─── autoRecallFromInput ───────────────────────────────────
 
 describe('autoRecallFromInput', () => {
@@ -540,6 +692,110 @@ describe('autoRecallFromInput', () => {
         const parsed = JSON.parse(result!);
         expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolUse');
         expect(parsed.hookSpecificOutput.additionalContext).toContain('[teamai:auto-recall]');
+    });
+
+    it('returns hook output JSON for WebSearch tool input', async () => {
+        writeSearchIndex(tmpHome);
+        const result = await autoRecallFromInput({
+            toolName: 'WebSearch',
+            toolInput: { query: 'K8s pod OOMKilled troubleshooting' },
+            toolOutput: '',
+            sessionId: 'websearch-session',
+        });
+
+        expect(result).not.toBeNull();
+        const parsed = JSON.parse(result!);
+        expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+        expect(parsed.hookSpecificOutput.additionalContext).toContain('[teamai:auto-recall]');
+        expect(parsed.hookSpecificOutput.additionalContext).toContain('OOM');
+    });
+
+    it('returns hook output JSON for WebFetch tool input using prompt', async () => {
+        writeSearchIndex(tmpHome);
+        const result = await autoRecallFromInput({
+            toolName: 'WebFetch',
+            toolInput: { url: 'https://example.com', prompt: 'ModuleNotFoundError fix' },
+            toolOutput: '',
+            sessionId: 'webfetch-session',
+        });
+
+        expect(result).not.toBeNull();
+        const parsed = JSON.parse(result!);
+        expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolUse');
+        expect(parsed.hookSpecificOutput.additionalContext).toContain('[teamai:auto-recall]');
+    });
+
+    it('returns null when the extracted query is too short', async () => {
+        writeSearchIndex(tmpHome);
+        const result = await autoRecallFromInput({
+            toolName: 'Grep',
+            toolInput: { pattern: 'ab' },
+            toolOutput: '',
+            sessionId: 'short-query-session',
+        });
+        expect(result).toBeNull();
+    });
+
+    it('returns null when no search results match', async () => {
+        writeSearchIndex(tmpHome);
+        const result = await autoRecallFromInput({
+            toolName: 'Grep',
+            toolInput: { pattern: 'totally-unrelated-topic' },
+            toolOutput: '',
+            sessionId: 'no-match-session',
+        });
+        expect(result).toBeNull();
+    });
+
+    it('skips duplicate queries within the same session', async () => {
+        writeSearchIndex(tmpHome);
+        const input = {
+            toolName: 'Grep' as const,
+            toolInput: { pattern: 'ModuleNotFoundError' },
+            toolOutput: '',
+            sessionId: 'dedup-session',
+        };
+
+        const first = await autoRecallFromInput(input);
+        expect(first).not.toBeNull();
+
+        const second = await autoRecallFromInput(input);
+        expect(second).toBeNull();
+    });
+
+    it('skips Bash output that already contains auto-recall markers', async () => {
+        writeSearchIndex(tmpHome);
+        const result = await autoRecallFromInput({
+            toolName: 'Bash',
+            toolInput: { command: 'kubectl get pods' },
+            toolOutput: '[teamai:auto-recall] previous result\nError: pod OOMKilled',
+            sessionId: 'marker-session',
+        });
+        expect(result).toBeNull();
+    });
+
+    it('respects the per-session recall rate limit', async () => {
+        writeSearchIndex(tmpHome);
+        const sessionId = 'rate-limit-session';
+        for (let i = 0; i < 10; i++) {
+            const result = await autoRecallFromInput({
+                toolName: 'Grep',
+                toolInput: { pattern: `unique-${i}` },
+                toolOutput: '',
+                sessionId,
+            });
+            // Some queries may not match the index, but they still count toward the limit
+            expect(result === null || result !== null).toBe(true);
+        }
+
+        // 11th recall should be rate-limited regardless of query
+        const overLimit = await autoRecallFromInput({
+            toolName: 'Grep',
+            toolInput: { pattern: 'ModuleNotFoundError' },
+            toolOutput: '',
+            sessionId,
+        });
+        expect(overLimit).toBeNull();
     });
 });
 

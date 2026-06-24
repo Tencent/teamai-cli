@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './utils/logger.js';
+import { deriveSessionId } from './utils/session-id.js';
 import { ensureDir } from './utils/fs.js';
 import { resolveMonitorPid } from './pid-monitor.js';
 import {
@@ -101,25 +102,6 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
 }
 
 /**
- * Derive session ID from hook data.
- * Priority: session_id field > CLAUDE_SESSION_ID env > PID+cwd composite.
- */
-function deriveSessionId(hookData: Record<string, unknown>): string {
-  // 1. Explicit session_id from hook STDIN
-  if (typeof hookData.session_id === 'string' && hookData.session_id) {
-    return hookData.session_id;
-  }
-  // 2. Environment variable (Claude Code sets this)
-  if (process.env.CLAUDE_SESSION_ID) {
-    return process.env.CLAUDE_SESSION_ID;
-  }
-  // 3. Fallback: PID + cwd composite
-  const cwd = typeof hookData.cwd === 'string' ? hookData.cwd : process.cwd();
-  const ppid = process.ppid ?? process.pid;
-  return `pid-${ppid}-${cwd}`;
-}
-
-/**
  * Map hook event names to dashboard event types.
  * Supports Claude Code (PascalCase), Cursor and CodeBuddy (camelCase) formats.
  */
@@ -172,7 +154,7 @@ export async function parseHookEvent(
     return null;
   }
 
-  const sessionId = deriveSessionId(hookData);
+  const sessionId = deriveSessionId(hookData, { includeCwd: true });
   const cwd = typeof hookData.cwd === 'string' ? hookData.cwd : undefined;
 
   const event: DashboardEvent = {

@@ -5,6 +5,7 @@ import { log } from './utils/logger.js';
 import { readJson, writeJson, ensureDir } from './utils/fs.js';
 import { readEvents } from './dashboard-collector.js';
 import { readRecallQuality } from './auto-recall.js';
+import { deriveSessionId } from './utils/session-id.js';
 import type { ContributeState, DashboardEvent } from './types.js';
 import {
   CONTRIBUTE_SMART_THRESHOLD,
@@ -307,11 +308,8 @@ async function readStdinAndDeriveSession(): Promise<{ sessionId: string; cwd?: s
 
   try {
     const hookData = JSON.parse(raw) as Record<string, unknown>;
-    // Derive session ID: session_id field > env > PID fallback
-    const sessionId =
-      (typeof hookData.session_id === 'string' && hookData.session_id) ||
-      process.env.CLAUDE_SESSION_ID ||
-      `pid-${process.ppid ?? process.pid}-${typeof hookData.cwd === 'string' ? hookData.cwd : process.cwd()}`;
+    // Derive session ID: session_id field > env > PID+cwd fallback
+    const sessionId = deriveSessionId(hookData, { includeCwd: true });
     const cwd = typeof hookData.cwd === 'string' ? hookData.cwd : undefined;
     return { sessionId, cwd };
   } catch {

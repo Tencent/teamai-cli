@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { log } from './utils/logger.js';
+import { deriveSessionId } from './utils/session-id.js';
 
 // ─── TodoWrite hint data flow ───────────────────────────
 //
@@ -98,11 +99,7 @@ export async function readStdin(): Promise<HookInput | null> {
   try {
     const data = JSON.parse(raw) as Record<string, unknown>;
     const toolName = typeof data.tool_name === 'string' ? data.tool_name : '';
-    const sessionId =
-      (typeof data.session_id === 'string' && data.session_id) ||
-      process.env.CLAUDE_SESSION_ID ||
-      `pid-${process.ppid ?? process.pid}`;
-    return { toolName, sessionId };
+    return { toolName, sessionId: deriveSessionId(data) };
   } catch {
     return null;
   }
