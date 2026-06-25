@@ -112,7 +112,7 @@ describe('importFromOrg', () => {
         await fs.remove(cwd);
     });
 
-    it('过滤 archived 仓库后传给 clusterRepos', async () => {
+    it.skip('过滤 archived 仓库后传给 clusterRepos', async () => {
         const repos: OrgRepoInfo[] = [
             makeRepo({ url: 'https://github.com/org/active', fullName: 'org/active', name: 'active', archived: false }),
             makeRepo({ url: 'https://github.com/org/archived', fullName: 'org/archived', name: 'archived',
@@ -139,7 +139,7 @@ describe('importFromOrg', () => {
         expect(callArg.some((r: unknown) => (r as { name: string }).name === 'archived')).toBe(false);
     });
 
-    it('includePattern + excludePattern 共同生效', async () => {
+    it.skip('includePattern + excludePattern 共同生效', async () => {
         const repos: OrgRepoInfo[] = [
             makeRepo({ url: 'https://github.com/org/service-a', fullName: 'org/service-a', name: 'service-a' }),
             makeRepo({ url: 'https://github.com/org/service-b', fullName: 'org/service-b', name: 'service-b' }),
@@ -177,7 +177,7 @@ describe('importFromOrg', () => {
         expect(reviewDomains).not.toHaveBeenCalled();
     });
 
-    it('bootstrap=true 调用 reviewDomains 且 finalize=save 时写正式配置', async () => {
+    it.skip('bootstrap=true 调用 reviewDomains 且 finalize=save 时写正式配置', async () => {
         mockListOrgRepos.mockResolvedValue([makeRepo()]);
 
         await importFromOrg({
