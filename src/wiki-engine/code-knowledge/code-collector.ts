@@ -110,7 +110,7 @@ async function walk(directory: string, results: string[], includeTests: boolean)
 }
 
 function isCodeFile(filePath: string): boolean {
-  return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".json", ".yaml", ".yml"].includes(
+  return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".json", ".yaml", ".yml", ".toml", ".sql", ".conf", ".ini"].includes(
     path.extname(filePath).toLowerCase()
   );
 }
@@ -121,7 +121,13 @@ function isTestPath(filePath: string): boolean {
 
 function languageFor(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
-  return ({ ".ts": "typescript", ".tsx": "typescript", ".js": "javascript", ".jsx": "javascript", ".py": "python", ".go": "go", ".rs": "rust", ".java": "java", ".json": "json", ".yaml": "yaml", ".yml": "yaml" } as Record<string, string>)[ext] ?? "text";
+  const map: Record<string, string> = {
+    ".ts": "typescript", ".tsx": "typescript", ".js": "javascript", ".jsx": "javascript",
+    ".py": "python", ".go": "go", ".rs": "rust", ".java": "java",
+    ".json": "json", ".yaml": "yaml", ".yml": "yaml",
+    ".toml": "toml", ".sql": "sql", ".conf": "toml", ".ini": "toml",
+  };
+  return map[ext] ?? "text";
 }
 
 async function gitCommit(root: string): Promise<string | undefined> {
