@@ -317,6 +317,42 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 
 索引在每次 `teamai pull` 时自动重建。旧版索引（无 `version` 字段或缺少 `type`）会在首次使用时被自动检测并重建，对调用方透明
 
+### 代码库知识图谱（teamwiki/）
+
+`teamai codebase --extract`（或 `teamai import --from-repo`）解析源码仓库，将结构化知识图谱写入 `teamwiki/` 目录：
+
+```
+teamwiki/
+├── router.md               # 导航枢纽，列出所有已导入仓库
+├── index.md                # 全局索引（自动生成，含时间戳）
+├── hot.md                  # 活跃工作记忆（Phase 4 hot/cold 预留）
+├── source-manifest.json    # 源文件哈希清单（增量提取用）
+├── .indices/
+│   └── graph-index.json    # 知识图谱：nodes + edges（JSON 格式）
+├── evidence/
+│   └── code/
+│       └── <project>/      # 每个导入的仓库一个目录
+│           ├── index.md    # 项目摘要（facts 总数 + 页面列表）
+│           ├── component.md  # 函数 / 类 / 组件
+│           ├── interface.md  # 接口和类型定义
+│           ├── config.md   # 配置项（环境变量、TOML key 等）
+│           ├── error.md    # 错误处理模式
+│           └── relation-<dir>.md  # 按顶级目录分组的 import 依赖关系
+└── gaps/
+    └── detected.md         # 知识缺口检测结果（IMPL_MISSING / LOW_CONNECTIVITY / …）
+```
+
+**graph-index.json** 存储提取出的知识图谱。真实数据参考：HAI 团队 11 个仓库 → **2 218 个节点，852 条边**。
+
+| 字段 | 说明 |
+|------|------|
+| `nodes[].kind` | `component`（函数/类）或 `config`（配置项） |
+| `edges[].relation` | `imports` —— 跨文件或跨仓库依赖关系 |
+
+跨仓 edge 通过 PascalCase 标签匹配自动检测，无需手动配置。
+
+`teamai recall` 利用此图谱进行 **BM25 + graph-boost** 检索：关键词命中后按图结构邻近度重排序，结果兼具文本相关性和结构相关性。
+
 ### TodoWrite 提醒 hook
 
 `teamai pull` 会在 `TodoWrite` 工具上注册一个 PostToolUse hook。当 session 第一次写 TODO 列表时，hook 会注入一次性提醒，要求 agent 在尚未调用 `teamai-recall` 时先调用一次。session 级去重通过 `~/.teamai/sessions/<sid>-todowrite-hint.json` 实现（TTL 24 小时）

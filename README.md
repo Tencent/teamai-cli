@@ -317,6 +317,42 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 
 The index is rebuilt automatically on every `teamai pull`. Indexes built by older versions (no `version` field or missing `type`) are detected and rebuilt transparently on first use.
 
+### Codebase Knowledge Graph (teamwiki/)
+
+`teamai codebase --extract` (or `teamai import --from-repo`) parses your source repos and writes a structured knowledge graph under `teamwiki/`:
+
+```
+teamwiki/
+├── router.md               # Navigation hub — lists every imported repo
+├── index.md                # Global index (auto-generated, with timestamp)
+├── hot.md                  # Active working memory (reserved for Phase 4)
+├── source-manifest.json    # Per-file hash manifest for incremental extraction
+├── .indices/
+│   └── graph-index.json    # Knowledge graph: nodes + edges (JSON)
+├── evidence/
+│   └── code/
+│       └── <project>/      # One directory per imported repo
+│           ├── index.md    # Project summary (fact count + page list)
+│           ├── component.md  # Functions / classes / components
+│           ├── interface.md  # Interface and type definitions
+│           ├── config.md   # Config keys (env vars, TOML keys, etc.)
+│           ├── error.md    # Error-handling patterns
+│           └── relation-<dir>.md  # Import relationships grouped by top-level dir
+└── gaps/
+    └── detected.md         # Detected knowledge gaps (IMPL_MISSING, LOW_CONNECTIVITY, …)
+```
+
+**graph-index.json** stores the extracted graph. A real example: 11 HAI team repos → **2 218 nodes, 852 edges**.
+
+| Field | Description |
+|-------|-------------|
+| `nodes[].kind` | `component` (function/class) or `config` (config key) |
+| `edges[].relation` | `imports` — cross-file and cross-repo dependency |
+
+Cross-repo edges are detected automatically by PascalCase label matching.
+
+`teamai recall` uses this graph for **BM25 + graph-boost** retrieval: keyword hits are re-ranked by graph proximity, so you get structurally relevant results, not just textual matches.
+
 ### TodoWrite reminder hook
 
 `teamai pull` registers a PostToolUse hook on the `TodoWrite` tool. The first time a session writes a TODO list, the hook injects a one-time reminder asking the agent to invoke `teamai-recall` if it has not already done so. Per-session deduplication uses `~/.teamai/sessions/<sid>-todowrite-hint.json` (24 h TTL).
