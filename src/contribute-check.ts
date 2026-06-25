@@ -201,35 +201,37 @@ export function computeSmartScore(events: DashboardEvent[]): number {
 
   let score = 0;
 
-  // Tool count — gradient (max 20 points)
-  // 30+ calls → 10, scales linearly up to 80+ → 20
-  if (totalToolCalls >= 30) {
-    score += Math.min(20, Math.round(((totalToolCalls - 30) / 50) * 10) + 10);
+  // Tool count — gradient (max 25 points)
+  // 20+ calls → 5, scales linearly up to 80+ → 25
+  if (totalToolCalls >= 20) {
+    score += Math.min(25, Math.round(((totalToolCalls - 20) / 60) * 20) + 5);
   }
 
-  // Tool diversity (max 30 points)
+  // Tool diversity (max 20 points)
   if (totalToolCalls > 0) {
-    const diversity = toolNames.size / Math.min(totalToolCalls, 20); // Cap denominator at 20
-    score += Math.min(Math.round(diversity * 30), 30);
+    const diversity = toolNames.size / Math.min(totalToolCalls, 10);
+    score += Math.min(Math.round(diversity * 20), 20);
   }
 
-  // Skill usage (15 points)
+  // Skill usage (10 points)
   if (hasSkills) {
-    score += 15;
+    score += 10;
   }
 
-  // Error indicators (15 points)
+  // Error indicators (10 points)
   if (hasErrors) {
-    score += 15;
+    score += 10;
   }
 
-  // Session duration (20 points if > 30 min)
+  // Session duration (max 20 points)
   if (events.length >= 2) {
     const first = new Date(events[0].timestamp).getTime();
     const last = new Date(events[events.length - 1].timestamp).getTime();
     const durationMin = (last - first) / (1000 * 60);
     if (durationMin > 30) {
       score += 20;
+    } else if (durationMin > 15) {
+      score += 10;
     }
   }
 
