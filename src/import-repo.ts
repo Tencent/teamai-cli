@@ -134,6 +134,36 @@ function detectCrossRepoEdges(
         }
     }
 
+    // 配置仓库关联：config/data 节点的 label 与另一仓库的组件/接口节点 label 完全匹配
+    const overlayConfigs = overlay.nodes.filter(n => n.kind === 'config' || n.kind === 'data');
+    const existingConfigs = existing.nodes.filter(n => n.kind === 'config' || n.kind === 'data');
+
+    for (const cfg of overlayConfigs) {
+        const cfgName = cfg.label.toLowerCase();
+        if (cfgName.length < 5) continue;
+        const match = existingIndex.get(cfgName);
+        if (match) {
+            const key = `${match}|${cfg.id}`;
+            if (!edgeSet.has(key)) {
+                edgeSet.add(key);
+                crossEdges.push({ from: match, to: cfg.id, relation: 'DEPENDS_ON' });
+            }
+        }
+    }
+
+    for (const cfg of existingConfigs) {
+        const cfgName = cfg.label.toLowerCase();
+        if (cfgName.length < 5) continue;
+        const match = overlayIndex.get(cfgName);
+        if (match) {
+            const key = `${match}|${cfg.id}`;
+            if (!edgeSet.has(key)) {
+                edgeSet.add(key);
+                crossEdges.push({ from: match, to: cfg.id, relation: 'DEPENDS_ON' });
+            }
+        }
+    }
+
     return crossEdges;
 }
 
