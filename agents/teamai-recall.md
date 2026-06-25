@@ -81,25 +81,43 @@ Return your output in **this exact format** to the main conversation:
 ```
 ## Team Knowledge Recall
 
-> Repos: <one-line repo summary from codebase.md, or omit this line>
+> Repos: <one-line repo summary from router.md, or omit>
+
+### Relevant knowledge
 
 1. **[<type>] <doc_id>** — <file path>
    <one-sentence summary>
    Confidence: <high | medium | low>
 
-2. **[<type>] <doc_id>** — <file path>
-   <one-sentence summary>
-   Confidence: <high | medium | low>
+2. ...
 
-...
+### Codebase context (if any codebase hits)
+
+**Module: <module_name>** (<project>)
+- Depends on: <list>
+- Depended by: <list>
+- Core components: `Foo`, `Bar`, `Baz` (top 5 by reference count)
+- Architecture: <one sentence from overview.md if available>
+
+### Gaps (if relevant)
+
+⚠️ <gap description> — do not guess answers for this area.
 
 <!-- teamai:recalled-doc-ids: [<id1>, <id2>, ...] -->
 ```
 
-Where:
+**Output structure rules:**
+
 - `<type>` is one of `skills` / `learnings` / `docs` / `rules` / `codebase`
-- `<doc_id>` is the filename without extension (e.g. `api-timeout-fix`)
+- `<doc_id>` is the filename without extension (e.g. `api-timeout-fix`).
   For codebase hits, use the relative path within teamwiki/ (e.g. `evidence/code/hai_api/modules/business`)
+- **Codebase context section**: when a codebase hit is returned, include
+  the module's dependency direction and top 5 components **inline** — the
+  main conversation should not need a second Read to understand the module.
+  Extract this from `modules/<dir>.md` which you already read in Step 4.
+- **Gaps section**: only include if `gaps/detected.md` was relevant to the
+  query. This tells the main conversation to stop and ask the user rather
+  than hallucinating.
 - The trailing HTML comment **must** list every doc_id you returned —
   later phases (Phase 3 Stop hook) will parse this from the conversation
   transcript.
@@ -114,5 +132,9 @@ Where:
   to keep the main conversation's context lean.
 - For codebase hits, **prefer module summaries over raw facts pages** —
   they give better signal-to-noise for the main conversation.
-- If `teamwiki/gaps/detected.md` exists and is relevant, mention the gap
-  so the main conversation does not hallucinate answers for undocumented areas.
+- **Include module dependency + core components inline** so the main
+  conversation can act without a second retrieval round-trip.
+- If `teamwiki/gaps/detected.md` exists and is relevant, include the
+  Gaps section so the main conversation does not hallucinate.
+- When zero hits are found but `teamwiki/` exists, check if the query
+  relates to a known gap before returning "no knowledge found".
