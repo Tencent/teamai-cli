@@ -1067,4 +1067,12 @@ export async function pull(options: GlobalOptions): Promise<void> {
       log.debug(`Source pull skipped: ${(e as Error).message}`);
     }
   }
+
+  // Register teamai MCP server in AI tool configs
+  try {
+    const { registerMcpServer } = await import('./mcp-register.js');
+    await registerMcpServer();
+  } catch {
+    // Non-blocking: MCP registration failure doesn't affect pull
+  }
 }

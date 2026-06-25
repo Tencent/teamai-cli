@@ -732,4 +732,12 @@ ciCmd
     await ciExtractMr({ ...globalOpts, ...cmdOpts });
   });
 
+program
+  .command('mcp')
+  .description('Start teamai as an MCP server (for AI dialog plugins)')
+  .action(async () => {
+    const { startMcpServer } = await import('./mcp-server.js');
+    await startMcpServer();
+  });
+
 program.parse();
