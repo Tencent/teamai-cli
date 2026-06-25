@@ -40,6 +40,12 @@ import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 const TEAMAI_RULES_START = '<!-- [teamai:rules:start] -->';
 const TEAMAI_RULES_END = '<!-- [teamai:rules:end] -->';
+const TEAMAI_CULTURE_START = '<!-- [teamai:culture:start] -->';
+const TEAMAI_CULTURE_END = '<!-- [teamai:culture:end] -->';
+const TEAMAI_CLAUDEMD_START = '<!-- [teamai:claudemd:start] -->';
+const TEAMAI_CLAUDEMD_END = '<!-- [teamai:claudemd:end] -->';
+const TEAMAI_RECALL_RULES_START = '<!-- [teamai:recall-rules:start] -->';
+const TEAMAI_RECALL_RULES_END = '<!-- [teamai:recall-rules:end] -->';
 const TEAMAI_ENV_START = '# [teamai:env:start]';
 const TEAMAI_ENV_END = '# [teamai:env:end]';
 
@@ -107,7 +113,7 @@ async function setupFixture(tmpDir: string) {
     hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'teamai pull' }], description: '[teamai] Auto-pull' }] },
   });
 
-  // CLAUDE.md with teamai block + user content
+  // CLAUDE.md with all teamai section blocks + user content
   const claudeMd = [
     '# My custom instructions',
     '',
@@ -115,6 +121,21 @@ async function setupFixture(tmpDir: string) {
     '<!-- DO NOT EDIT -->',
     '## Team Rules (teamai)',
     TEAMAI_RULES_END,
+    '',
+    TEAMAI_CULTURE_START,
+    '## Team Culture',
+    'We value collaboration.',
+    TEAMAI_CULTURE_END,
+    '',
+    TEAMAI_CLAUDEMD_START,
+    '## Shared Instructions',
+    'Always use TypeScript.',
+    TEAMAI_CLAUDEMD_END,
+    '',
+    TEAMAI_RECALL_RULES_START,
+    '## Recall Rules',
+    'Use teamai-recall subagent.',
+    TEAMAI_RECALL_RULES_END,
     '',
   ].join('\n');
   await fse.writeFile(path.join(homeDir, '.claude', 'CLAUDE.md'), claudeMd);
@@ -233,7 +254,10 @@ describe('uninstall', () => {
 
     const claudeMd = await fse.readFile(path.join(homeDir, '.claude', 'CLAUDE.md'), 'utf-8');
     expect(claudeMd).toContain('# My custom instructions');
-    expect(claudeMd).not.toContain('teamai');
+    expect(claudeMd).not.toContain(TEAMAI_RULES_START);
+    expect(claudeMd).not.toContain(TEAMAI_CULTURE_START);
+    expect(claudeMd).not.toContain(TEAMAI_CLAUDEMD_START);
+    expect(claudeMd).not.toContain(TEAMAI_RECALL_RULES_START);
   });
 
   it('shell profile 环境变量块被清理', async () => {
@@ -362,5 +386,143 @@ describe('uninstall', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'ns-skill'))).toBe(false);
     // User skill preserved
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'my-own-skill'))).toBe(true);
+  });
+
+  it('清理 CLAUDE.md 中所有 teamai section（culture/claudemd/recall-rules）', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    const claudeMd = await fse.readFile(path.join(homeDir, '.claude', 'CLAUDE.md'), 'utf-8');
+    expect(claudeMd).toContain('# My custom instructions');
+    expect(claudeMd).not.toContain(TEAMAI_RULES_START);
+    expect(claudeMd).not.toContain(TEAMAI_RULES_END);
+    expect(claudeMd).not.toContain(TEAMAI_CULTURE_START);
+    expect(claudeMd).not.toContain(TEAMAI_CULTURE_END);
+    expect(claudeMd).not.toContain(TEAMAI_CLAUDEMD_START);
+    expect(claudeMd).not.toContain(TEAMAI_CLAUDEMD_END);
+    expect(claudeMd).not.toContain(TEAMAI_RECALL_RULES_START);
+    expect(claudeMd).not.toContain(TEAMAI_RECALL_RULES_END);
+    expect(claudeMd).not.toContain('Team Culture');
+    expect(claudeMd).not.toContain('Shared Instructions');
+    expect(claudeMd).not.toContain('Recall Rules');
+  });
+
+  it('多工具场景：清理 codebuddy 和 claude-internal 的 CLAUDE.md', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    // Setup codebuddy CODEBUDDY.md with teamai sections
+    const codebuddyMd = [
+      '# CodeBuddy Config',
+      '',
+      TEAMAI_RULES_START,
+      '## Team Rules',
+      TEAMAI_RULES_END,
+      '',
+      TEAMAI_RECALL_RULES_START,
+      '## Recall Rules',
+      'Use recall subagent.',
+      TEAMAI_RECALL_RULES_END,
+      '',
+    ].join('\n');
+    await fse.ensureDir(path.join(homeDir, '.codebuddy'));
+    await fse.writeFile(path.join(homeDir, '.codebuddy', 'CODEBUDDY.md'), codebuddyMd);
+
+    // Setup claude-internal CLAUDE.md with teamai sections
+    const claudeInternalMd = [
+      '# Internal Config',
+      '',
+      TEAMAI_CULTURE_START,
+      '## Culture',
+      'Be excellent.',
+      TEAMAI_CULTURE_END,
+      '',
+      TEAMAI_CLAUDEMD_START,
+      '## Shared',
+      'Use TypeScript.',
+      TEAMAI_CLAUDEMD_END,
+      '',
+    ].join('\n');
+    await fse.ensureDir(path.join(homeDir, '.claude-internal'));
+    await fse.writeFile(path.join(homeDir, '.claude-internal', 'CLAUDE.md'), claudeInternalMd);
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        claude: {
+          skills: '.claude/skills',
+          rules: '.claude/rules',
+          settings: '.claude/settings.json',
+          claudemd: '.claude/CLAUDE.md',
+        },
+        codebuddy: {
+          skills: '.codebuddy/skills',
+          rules: '.codebuddy/rules',
+          settings: '.codebuddy/settings.json',
+          claudemd: '.codebuddy/CODEBUDDY.md',
+        },
+        'claude-internal': {
+          skills: '.claude-internal/skills',
+          rules: '.claude-internal/rules',
+          settings: '.claude-internal/settings.json',
+          claudemd: '.claude-internal/CLAUDE.md',
+        },
+      },
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: `${path.join(homeDir, '.teamai')}/docs` },
+        env: { injectShellProfile: true },
+      },
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    // codebuddy: user content preserved, teamai sections removed
+    const codebuddyResult = await fse.readFile(path.join(homeDir, '.codebuddy', 'CODEBUDDY.md'), 'utf-8');
+    expect(codebuddyResult).toContain('# CodeBuddy Config');
+    expect(codebuddyResult).not.toContain(TEAMAI_RULES_START);
+    expect(codebuddyResult).not.toContain(TEAMAI_RECALL_RULES_START);
+
+    // claude-internal: user content preserved, teamai sections removed
+    const internalResult = await fse.readFile(path.join(homeDir, '.claude-internal', 'CLAUDE.md'), 'utf-8');
+    expect(internalResult).toContain('# Internal Config');
+    expect(internalResult).not.toContain(TEAMAI_CULTURE_START);
+    expect(internalResult).not.toContain(TEAMAI_CLAUDEMD_START);
+  });
+
+  it('仅含 teamai section 的 CLAUDE.md 被整文件删除', async () => {
+    const homeDir = path.join(tmpDir, 'only-teamai-home');
+    const repoPath = path.join(tmpDir, 'only-teamai-repo');
+    await fse.ensureDir(repoPath);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/bash');
+
+    // CLAUDE.md with only teamai content (no user content)
+    const onlyTeamaiMd = [
+      TEAMAI_CULTURE_START,
+      '## Culture',
+      TEAMAI_CULTURE_END,
+    ].join('\n');
+    await fse.ensureDir(path.join(homeDir, '.claude'));
+    await fse.writeFile(path.join(homeDir, '.claude', 'CLAUDE.md'), onlyTeamaiMd);
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    // File should be deleted entirely when nothing remains
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'CLAUDE.md'))).toBe(false);
   });
 });

@@ -21,6 +21,7 @@ __pycache__/
 .gstack/
 .worktrees/
 .codebuddy/
+.teamai/
 
 # Local-only drafts and scratch notes (kept out of the open-source repo)
 eval/

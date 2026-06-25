@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="470" height="160" viewBox="0 0 470 160" role="img" aria-label="teamai-cli — The team harness for AI agents">
+  <rect x="0.5" y="0.5" width="469" height="159" rx="28" fill="#15161a" stroke="#ffffff" stroke-opacity="0.06"></rect>
+  <g transform="translate(40,36) scale(0.91667)">
+    <g stroke="#FAFAFB" stroke-width="2.6" stroke-linecap="round" opacity="0.9">
+      <line x1="30" y1="30" x2="48" y2="48"></line>
+      <line x1="66" y1="30" x2="48" y2="48"></line>
+      <line x1="30" y1="66" x2="48" y2="48"></line>
+      <line x1="66" y1="66" x2="48" y2="48"></line>
+    </g>
+    <g fill="#FAFAFB">
+      <circle cx="30" cy="30" r="5.6"></circle>
+      <circle cx="66" cy="30" r="5.6"></circle>
+      <circle cx="30" cy="66" r="5.6"></circle>
+      <circle cx="66" cy="66" r="5.6"></circle>
+    </g>
+    <rect x="39" y="39" width="18" height="18" rx="2.6" fill="#3D96EA"></rect>
+  </g>
+  <text x="166" y="76" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="46" font-weight="700" letter-spacing="-1.5">
+    <tspan fill="#FAFAFB">teamai</tspan><tspan fill="#3D96EA">-cli</tspan>
+  </text>
+  <text x="168" y="108" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14.5" letter-spacing="0.2" fill="#ffffff" fill-opacity="0.5">The team harness for AI agents</text>
+</svg>

@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 
 // ── Mocks ────────────────────────────────────────────────
@@ -54,6 +55,18 @@ const mockTeamConfig = {
     },
 };
 
+function mockHome(home: string): () => void {
+    const originalHome = process.env.HOME;
+    process.env.HOME = home;
+    return () => {
+        if (originalHome === undefined) {
+            delete process.env.HOME;
+        } else {
+            process.env.HOME = originalHome;
+        }
+    };
+}
+
 // ── Setup ────────────────────────────────────────────────
 
 beforeEach(() => {
@@ -92,7 +105,8 @@ describe('hooksInject', () => {
         await expect(hooksInject({})).rejects.toThrow('not initialized');
     });
 
-    it('should use project scope baseDir when project config detected', async () => {
+    it('should inject into project and user base dirs when project config detected', async () => {
+        const restoreHome = mockHome('/home/testuser');
         const projectConfig = {
             ...mockLocalConfig,
             scope: 'project',
@@ -100,11 +114,22 @@ describe('hooksInject', () => {
         };
         mockedAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig: mockTeamConfig });
 
-        await hooksInject({});
+        try {
+            await hooksInject({});
+        } finally {
+            restoreHome();
+        }
 
-        expect(mockedInjectHooksToAllTools).toHaveBeenCalledWith(
+        expect(mockedInjectHooksToAllTools).toHaveBeenCalledTimes(2);
+        expect(mockedInjectHooksToAllTools).toHaveBeenNthCalledWith(
+            1,
             mockTeamConfig.toolPaths,
             '/path/to/project',
+        );
+        expect(mockedInjectHooksToAllTools).toHaveBeenNthCalledWith(
+            2,
+            mockTeamConfig.toolPaths,
+            '/home/testuser',
         );
     });
 });
@@ -131,6 +156,66 @@ describe('hooksRemove', () => {
             expect.stringContaining('Failed to remove hooks from claude-internal'),
         );
         expect(mockedLog.success).toHaveBeenCalled();
+    });
+
+    it('should remove hooks from project and user base dirs when project config detected', async () => {
+        const restoreHome = mockHome('/home/testuser');
+        const projectConfig = {
+            ...mockLocalConfig,
+            scope: 'project',
+            projectRoot: '/path/to/project',
+        };
+        mockedAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig: mockTeamConfig });
+
+        try {
+            await hooksRemove({});
+        } finally {
+            restoreHome();
+        }
+
+        expect(mockedRemoveHooks).toHaveBeenCalledTimes(6);
+        expect(mockedRemoveHooks).toHaveBeenCalledWith(
+            path.join('/path/to/project', '.claude/settings.json'),
+            'claude',
+        );
+        expect(mockedRemoveHooks).toHaveBeenCalledWith(
+            path.join('/path/to/project', '.claude-internal/settings.json'),
+            'claude-internal',
+        );
+        expect(mockedRemoveHooks).toHaveBeenCalledWith(
+            path.join('/path/to/project', '.cursor/hooks.json'),
+            'cursor',
+        );
+        expect(mockedRemoveHooks).toHaveBeenCalledWith(
+            path.join('/home/testuser', '.claude/settings.json'),
+            'claude',
+        );
+        expect(mockedRemoveHooks).toHaveBeenCalledWith(
+            path.join('/home/testuser', '.claude-internal/settings.json'),
+            'claude-internal',
+        );
+        expect(mockedRemoveHooks).toHaveBeenCalledWith(
+            path.join('/home/testuser', '.cursor/hooks.json'),
+            'cursor',
+        );
+    });
+
+    it('should not duplicate hook operations when HOME equals projectRoot', async () => {
+        const restoreHome = mockHome('/path/to/project');
+        const projectConfig = {
+            ...mockLocalConfig,
+            scope: 'project',
+            projectRoot: '/path/to/project',
+        };
+        mockedAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig: mockTeamConfig });
+
+        try {
+            await hooksRemove({});
+        } finally {
+            restoreHome();
+        }
+
+        expect(mockedRemoveHooks).toHaveBeenCalledTimes(3);
     });
 
     it('should propagate error when not initialized', async () => {

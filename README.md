@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/teamai-cli-logo.svg" alt="teamai-cli" width="430">
+</p>
+
 # TeamAI — The team harness for AI agents
 
 > [English](README.md) | [简体中文](README.zh-CN.md)
@@ -89,6 +93,7 @@ The CLI picks a provider automatically from the repo URL:
 | `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | Inspect and resolve domain-drift signals; `--apply` reassigns the repo to the recommended domain and refreshes the aggregate views |
 | `teamai digest` | Generate a team AI usage weekly digest (skill leaderboard, new/updated skills, session summaries) |
 | `teamai hooks` | Manage AI-tool hooks (list / inject / remove) |
+| `teamai ci extract-mr --url <url> [--mode comment\|write\|both] [--individual-comments]` | CI pipeline integration: extract knowledge from MR/PR, post as comments, and write to team repo after merge. With `--individual-comments`, each suggestion is posted separately with reaction/reject support (GitHub 👎 / TGit ☝️) |
 | `teamai uninstall [--force]` | Uninstall teamai: remove hooks, rules, skills, env, docs, and `~/.teamai/` |
 | `teamai doctor` | Diagnose configuration problems |
 
@@ -360,6 +365,42 @@ Auto-update runs on the Stop hook at the end of a session. It can be controlled 
 | User override | `~/.teamai/config.yaml` | `updatePolicy` | `auto` / `prompt` / `skip` |
 
 The user-level `updatePolicy` always wins over the team-level `autoUpdate`.
+
+## CI Integration
+
+TeamAI can integrate into your CI pipeline to automatically extract knowledge from every MR/PR:
+
+```
+MR opened/updated → CI extracts learning + codebase suggestions → posts as comments
+    → Reviewer rejects unwanted suggestions (GitHub 👎 / TGit ☝️)
+    → MR merged → CI writes approved items to team knowledge repo
+```
+
+### Quick Start
+
+```bash
+# Comment mode: post suggestions to MR (run on PR open/update)
+teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
+
+# Write mode: write approved items to knowledge repo (run after merge)
+teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ./team-repo --individual-comments
+```
+
+### CI Templates
+
+Ready-to-use templates in `examples/ci/`:
+
+| File | Platform |
+|------|----------|
+| `github-actions-mr-extract.yml` | GitHub Actions |
+| `coding-ci-mr-extract.yaml` | Coding CI (TGit + ZhiYan QCI) |
+
+### Reject Interaction
+
+| Platform | How to reject | Default |
+|----------|--------------|---------|
+| GitHub | Add 👎 reaction to the suggestion comment | Write all |
+| TGit | Add ☝️ emoji to the suggestion note | Write all |
 
 ## License
 
