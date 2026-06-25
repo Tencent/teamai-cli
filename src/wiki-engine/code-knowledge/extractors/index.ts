@@ -1,5 +1,6 @@
 import { type CodeCollectedFile } from "../code-collector.js";
 import { type CodeFact } from "../code-extractors.js";
+import { extractToml, extractSql } from "./config.js";
 import { extractGo } from "./go.js";
 import { extractJava } from "./java.js";
 import { extractPython } from "./python.js";
@@ -18,6 +19,8 @@ const EXTRACTOR_REGISTRY: Record<string, LanguageExtractor> = {
   python: extractPython,
   java: extractJava,
   rust: extractRust,
+  toml: extractToml,
+  sql: extractSql,
 };
 
 /**
