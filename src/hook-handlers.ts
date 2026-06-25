@@ -10,6 +10,7 @@
  */
 
 import type { HookHandler } from './hook-dispatch.js';
+import { deriveSessionId } from './utils/session-id.js';
 
 // ─── Public types ───────────────────────────────────────
 
@@ -166,34 +167,12 @@ const contributeCheckHandler: HookHandler = {
 const autoRecallHandler: HookHandler = {
   name: 'auto-recall',
   async execute(stdin, _tool) {
-    // Auto-recall has complex internal logic (tool dispatch, error detection, rate limiting)
-    // For now, delegate to the existing function by temporarily mocking STDIN.
-    // TODO: Refactor autoRecall to accept parsed data directly.
-    const { autoRecall } = await import('./auto-recall.js');
+    const { autoRecallFromInput, parseHookInput } = await import('./auto-recall.js');
 
-    // The auto-recall function reads STDIN internally. To avoid changing its signature
-    // in this phase, we capture its STDOUT output via a process.stdout.write intercept.
-    let capturedOutput: string | null = null;
-    const originalWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk: unknown) => {
-      if (typeof chunk === 'string') {
-        capturedOutput = chunk;
-      } else if (Buffer.isBuffer(chunk)) {
-        capturedOutput = chunk.toString();
-      }
-      return true;
-    }) as typeof process.stdout.write;
+    const input = parseHookInput(stdin);
+    if (!input) return null;
 
-    try {
-      // We can't easily pipe stdin to the function, so for this handler
-      // we'll rely on the environment (process.stdin being piped from Claude Code).
-      // In the dispatcher, auto-recall will be invoked with the raw data.
-      await autoRecall();
-    } finally {
-      process.stdout.write = originalWrite;
-    }
-
-    return capturedOutput;
+    return autoRecallFromInput(input);
   },
 };
 
@@ -206,12 +185,8 @@ const todowriteHintHandler: HookHandler = {
     if (toolName !== 'TodoWrite') return null;
 
     const { shouldSkipTodoWriteHint, buildHintMessage } = await import('./todowrite-hint.js');
-    const sessionId =
-      (typeof stdin.session_id === 'string' && stdin.session_id) ||
-      process.env.CLAUDE_SESSION_ID ||
-      `pid-${process.ppid ?? process.pid}`;
 
-    if (shouldSkipTodoWriteHint(sessionId)) return null;
+    if (shouldSkipTodoWriteHint(deriveSessionId(stdin))) return null;
 
     return JSON.stringify({
       hookSpecificOutput: {

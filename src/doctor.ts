@@ -59,7 +59,7 @@ export async function doctor(options: GlobalOptions): Promise<void> {
 
   const checks: Check[] = [];
 
-  // Provider-specific checks: gf CLI only needed for TGit
+  // Provider-specific checks: gf CLI only needed for TGit, gh CLI for GitHub
   if (providerName === 'tgit') {
     // Dynamic import to avoid loading gf-cli code when not needed
     const { isGfInstalled, gfIsAuthenticated } = await import('./providers/tgit/index.js');
@@ -73,6 +73,21 @@ export async function doctor(options: GlobalOptions): Promise<void> {
         name: 'gf CLI is authenticated',
         check: async () => gfIsAuthenticated(),
         fix: 'Run `teamai init` to authenticate via gf auth login',
+      },
+    );
+  } else if (providerName === 'github') {
+    // Dynamic import to avoid loading gh-cli code when not needed
+    const { isGhInstalled, ghIsAuthenticated } = await import('./providers/github/index.js');
+    checks.push(
+      {
+        name: 'gh CLI is installed',
+        check: async () => isGhInstalled(),
+        fix: 'Install from https://cli.github.com/ or run `brew install gh`',
+      },
+      {
+        name: 'gh CLI is authenticated',
+        check: async () => ghIsAuthenticated(),
+        fix: 'Run `gh auth login` to authenticate',
       },
     );
   }

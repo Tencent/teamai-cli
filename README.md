@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/teamai-cli-logo.svg" alt="teamai-cli" width="430">
+</p>
+
 # TeamAI — The team harness for AI agents
 
 > [English](README.md) | [简体中文](README.zh-CN.md)
