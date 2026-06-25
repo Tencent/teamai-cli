@@ -411,7 +411,7 @@ export interface ContributeState {
 }
 
 /** Layer 1 (fast-path) threshold: if toolCount < this, skip reading events.jsonl */
-export const CONTRIBUTE_BASE_THRESHOLD = 20;
+export const CONTRIBUTE_BASE_THRESHOLD = 15;
 
 /** Smart score threshold: minimum score to show contribute hint */
 export const CONTRIBUTE_SMART_THRESHOLD = 35;
@@ -428,8 +428,8 @@ export const CONTRIBUTE_LOW_QUALITY_BONUS = 10;
 /** Phase 2: threshold below which recall results are considered low quality */
 export const CONTRIBUTE_LOW_QUALITY_THRESHOLD = 5.0;
 
-/** Phase 2: score deduction when session has git commits and recall had hits */
-export const CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT = 15;
+/** Phase 2: git commit is neutral (no bonus, no penalty) */
+export const CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT = 0;
 
 /** Directory for per-session contribute state files */
 export const CONTRIBUTE_SESSIONS_DIR = `${TEAMAI_HOME}/sessions`;
