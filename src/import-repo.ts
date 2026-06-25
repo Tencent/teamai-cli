@@ -697,10 +697,11 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     }
     } // end if (codebaseMd)
 
-    // 4b. 生成 teamwiki/ 知识图谱产物
+    // 4b. 生成 teamwiki/ 知识图谱产物（写入 team-repo 以便自动 push）
+    const teamRepoDir = path.join(process.cwd(), '.teamai', 'team-repo');
     const teamwikiRoot = output
         ? path.resolve(output, '..', 'teamwiki')
-        : path.join(process.cwd(), 'teamwiki');
+        : path.join(teamRepoDir, 'teamwiki');
     if (!dryRun) {
         const cacheWiki = path.join(cacheDir, 'teamwiki');
         try {
@@ -783,7 +784,18 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         }
     }
 
-    // 5. 业务域推荐
+    // 5. 自动推送所有产物到团队仓库
+    if (!dryRun) {
+        const pushTarget = path.join(process.cwd(), '.teamai', 'team-repo');
+        if (await fs.pathExists(pushTarget)) {
+            const { autoPushTeamRepo } = await import('./utils/git.js');
+            await autoPushTeamRepo(pushTarget, `[teamai] Import codebase knowledge from ${owner}/${repoName}`);
+        }
+    }
+
+    log.info(chalk.green(`✓ 仓库 ${owner}/${repoName} 导入完成`));
+
+    // 5-legacy. 业务域推荐（旧 docs/team-codebase 体系，保留兼容）
     const cwd = process.cwd();
     // 当无 --output 时，domains.yaml 写入团队仓库（共享），否则写入 cwd
     let domainsBase = cwd;
@@ -968,7 +980,6 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         console.log(chalk.yellow('[dry-run] 跳过写盘（domains.yaml / LAST_SYNC）'));
     }
 
-    log.info(chalk.green(`✓ 仓库 ${owner}/${repoName} 导入完成`));
 
     // 8. 更新聚合文件（domain-*.md + index.md）
     if (!dryRun) {
@@ -982,11 +993,6 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             log.info(`聚合文件已更新`);
         } catch { /* 非关键路径 */ }
 
-        // 9. 自动推送所有产物到团队仓库
-        const teamRepoPath = path.join(domainsBase, '.teamai', 'team-repo');
-        if (await fs.pathExists(teamRepoPath)) {
-            const { autoPushTeamRepo } = await import('./utils/git.js');
-            await autoPushTeamRepo(teamRepoPath, `[teamai] Import codebase knowledge from ${owner}/${repoName}`);
-        }
+        // push 已在步骤 5 执行，此处不再重复
     }
 }
