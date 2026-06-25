@@ -2,6 +2,7 @@
 name: teamai-recall
 description: Search the team knowledge base (skills + learnings + docs + rules + codebase graph) and return a compact, structured summary with doc_ids — instead of dumping full knowledge content into the main conversation. Invoke this BEFORE any task involving code changes, troubleshooting, or design.
 tools: Bash, Read, Grep, Glob
+model_hint: mid-tier
 ---
 
 # teamai-recall

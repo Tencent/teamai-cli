@@ -106,6 +106,10 @@ or design decisions, you **MUST** first search the team knowledge base.
 调用 \`teamai-recall\` subagent（位于 agents/ 目录），传入任务的自然语言描述。
 Subagent 会返回结构化的团队知识摘要（skills、learnings、docs、rules、codebase）。
 
+**模型选择：** recall 是检索 + 摘要格式化任务，不需要深度推理，但需要具备工具
+调用和结构化输出能力。调用时应优先选用当前工具支持的中低档模型（非默认顶级模型），
+在保证能力满足的前提下降低成本和延迟。
+
 ### 方式二：通过 Bash 命令（适用于所有工具）
 
 \`\`\`bash
