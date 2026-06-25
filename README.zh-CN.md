@@ -82,18 +82,19 @@ CLI 会根据用户传入的 repo URL 自动选择 provider：
 | `teamai roles` | 管理团队角色（`init`/`list`/`set`/`add`/`remove`/`update`） |
 | `teamai source` | 管理跨团队 skill 订阅源（`add`/`remove`/`list`/`browse`） |
 | `teamai contribute --file <path> [--scope <user\|project>]` | 将 AI 生成的经验文档推送到团队仓库 |
-| `teamai recall <query>` | 搜索团队知识库，自动合并 user + project 双 scope 结果 |
-| `teamai import --from-repo <url>` | 拉取远端仓库并生成单仓视图 `docs/team-codebase/repos/<slug>.md`；AI 推荐业务域并写入 `.teamai/domains.yaml` |
-| `teamai import --from-repo-list <yaml>` | 按白名单批量导入多个仓库（支持并发），并按业务域聚合产出 |
-| `teamai import --from-org <org> --bootstrap` | 列出组织/group 下所有仓库（GitHub / TGit），AI 聚类为业务域，交互式 review 后完成首次全量同步 |
-| `teamai import --from-iwiki <id> [--iwiki-dual]` | 把 iWiki 文档导入为 learnings；dual 模式同时把业务接口 / 外部知识源 / 术语表抽取到 `docs/team-codebase/external-knowledge.md` |
+| `teamai recall <query> [--depth route\|context\|lookup]` | 搜索团队知识库（learnings + skills + docs + rules + codebase 图谱）。代码知识使用 BM25 + 图谱邻居加权检索 |
+| `teamai import --from-repo <url>` | 拉取远端仓库，构建代码知识图谱（`teamwiki/`），自动推送到团队仓库。提取组件、接口、配置、错误类型和 import 依赖关系 |
+| `teamai import --from-repo-list <yaml>` | 按白名单批量导入多个仓库（支持并发）；自动检测跨仓依赖边 |
+| `teamai import --from-org <org>` | 列出组织/group 下所有仓库（GitHub / TGit），AI 聚类为业务域，批量构建知识图谱 |
+| `teamai import --from-iwiki <id>` | 把 iWiki 文档导入为 learnings；自动与代码知识图谱建立 MAPS_TO 映射关系 |
+| `teamai codebase --extract [path]` | 确定性代码知识提取（TS/Python/Go/Rust/Java）→ `teamwiki/` 产物：evidence 页面 + graph-index.json + 知识缺口检测 |
+| `teamai codebase --lint` | 知识图谱健康度检查：节点连通性、manifest 过期、导航文件完整性、孤立节点 |
+| `teamai codebase --upgrade-wiki` | 从旧 `docs/team-codebase/` 格式迁移到新 `teamwiki/` 知识图谱 |
 | `teamai cache --status \| --gc` | 查看或回收 shallow-clone 缓存目录 `~/.teamai/cache/repos/`（LRU + 容量上限，默认 5GB） |
-| `teamai codebase --lint [--fix]` | 对 `docs/team-codebase` 与 `.teamai/` 做跨文件一致性 lint；报告锚点 / 孤儿 / 源失效 / 同步陈旧等问题；`--fix` 应用低风险机械修复 |
-| `teamai review [id] [--apply \| --reject \| --all-apply]` | 浏览并处理 `.teamai/pending-review.jsonl` 中的待审 codebase 变更；`--apply` 通过章节锚点原地写入 |
-| `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | 浏览并处理域漂移信号；`--apply` 把仓库重新归类到推荐域并刷新聚合视图 |
+| `teamai review [id] [--apply \| --reject \| --all-apply]` | 浏览并处理 `.teamai/pending-review.jsonl` 中的待审变更 |
 | `teamai digest` | 生成团队 AI 使用周报（skill 排行、新增/更新 skill、session 摘要） |
 | `teamai hooks` | 管理 AI 工具 hooks（list / inject / remove） |
-| `teamai ci extract-mr --url <url> [--mode comment\|write\|both] [--individual-comments]` | CI 流水线集成：从 MR/PR 中提取知识，发布为评论，合并后写入团队知识仓库。使用 `--individual-comments` 时每条建议单独发布，支持 reaction/reject 交互（GitHub 👎 / TGit ☝️） |
+| `teamai ci extract-mr --url <url> [--mode comment\|write\|both] [--individual-comments]` | CI 流水线：从 MR/PR 提取 learning + 图谱变更，发布评论（支持 reaction/reject），合并后写入团队仓库 |
 | `teamai uninstall [--force]` | 卸载 teamai：移除 hooks、rules、skills、env、docs、~/.teamai/ |
 | `teamai doctor` | 诊断配置问题 |
 

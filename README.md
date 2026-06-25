@@ -82,18 +82,19 @@ The CLI picks a provider automatically from the repo URL:
 | `teamai roles` | Manage team roles (`init`/`list`/`set`/`add`/`remove`/`update`) |
 | `teamai source` | Manage cross-team skill subscription sources (`add`/`remove`/`list`/`browse`) |
 | `teamai contribute --file <path> [--scope <user\|project>]` | Push an AI-generated experience document to the team repo |
-| `teamai recall <query>` | Search the team knowledge base, automatically merging user + project scope results |
-| `teamai import --from-repo <url>` | Clone a remote repo and generate a per-repo summary under `docs/team-codebase/repos/<slug>.md`; AI recommends a business domain and persists the assignment to `.teamai/domains.yaml` |
-| `teamai import --from-repo-list <yaml>` | Batch import a whitelist of repos with concurrency control, then aggregate the results into per-domain views |
-| `teamai import --from-org <org> --bootstrap` | List every repo under an organization (GitHub or TGit), AI-cluster them into business domains, and run an interactive review before the first full sync |
-| `teamai import --from-iwiki <id> [--iwiki-dual]` | Import iWiki documents as learnings; in dual mode also extract business-API / external-knowledge / glossary sections into `docs/team-codebase/external-knowledge.md` |
+| `teamai recall <query> [--depth route\|context\|lookup]` | Search the team knowledge base (learnings + skills + docs + rules + codebase graph). Codebase results use BM25 + graph-neighbor boosting |
+| `teamai import --from-repo <url>` | Clone a remote repo, build a code knowledge graph (`teamwiki/`), and auto-push to team repo. Extracts components, interfaces, configs, errors, and import relations |
+| `teamai import --from-repo-list <yaml>` | Batch import repos from a whitelist with concurrency control; cross-repo dependency edges auto-detected |
+| `teamai import --from-org <org>` | List every repo under an organization (GitHub or TGit), AI-cluster into domains, then batch import with knowledge graph construction |
+| `teamai import --from-iwiki <id>` | Import iWiki documents as learnings; auto-reconcile MAPS_TO edges between doc terms and code knowledge graph nodes |
+| `teamai codebase --extract [path]` | Deterministic code fact extraction (TS/Python/Go/Rust/Java) → `teamwiki/` with evidence pages + graph-index.json + knowledge gaps |
+| `teamai codebase --lint` | Knowledge graph health check: node connectivity, stale manifest, navigation files, orphan detection |
+| `teamai codebase --upgrade-wiki` | Migrate from old `docs/team-codebase/` format to the new `teamwiki/` knowledge graph |
 | `teamai cache --status \| --gc` | Inspect or garbage-collect the shallow-clone cache at `~/.teamai/cache/repos/` (LRU + size cap, default 5GB) |
-| `teamai codebase --lint [--fix]` | Cross-file consistency lint over `docs/team-codebase` and `.teamai/`; reports anchor / orphan / source-invalid / sync-stale issues; `--fix` applies low-risk mechanical fixes |
-| `teamai review [id] [--apply \| --reject \| --all-apply]` | Inspect and process pending codebase changes from `.teamai/pending-review.jsonl`; `--apply` patches in place via section anchors |
-| `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | Inspect and resolve domain-drift signals; `--apply` reassigns the repo to the recommended domain and refreshes the aggregate views |
+| `teamai review [id] [--apply \| --reject \| --all-apply]` | Inspect and process pending codebase changes from `.teamai/pending-review.jsonl` |
 | `teamai digest` | Generate a team AI usage weekly digest (skill leaderboard, new/updated skills, session summaries) |
 | `teamai hooks` | Manage AI-tool hooks (list / inject / remove) |
-| `teamai ci extract-mr --url <url> [--mode comment\|write\|both] [--individual-comments]` | CI pipeline integration: extract knowledge from MR/PR, post as comments, and write to team repo after merge. With `--individual-comments`, each suggestion is posted separately with reaction/reject support (GitHub 👎 / TGit ☝️) |
+| `teamai ci extract-mr --url <url> [--mode comment\|write\|both] [--individual-comments]` | CI pipeline: extract learning + graph changes from MR/PR, post as comments (with reaction/reject), write to team repo after merge |
 | `teamai uninstall [--force]` | Uninstall teamai: remove hooks, rules, skills, env, docs, and `~/.teamai/` |
 | `teamai doctor` | Diagnose configuration problems |
 
