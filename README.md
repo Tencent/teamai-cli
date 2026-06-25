@@ -71,36 +71,42 @@ The CLI picks a provider automatically from the repo URL:
 
 | Command | Description |
 |---------|-------------|
-| `teamai init [--scope <user\|project>] [--role <id>] [--force]` | Initialize (auto-installs gf CLI, OAuth login, links repo, registers member, configures reviewers, injects hooks) |
-| `teamai push [--all] [--role <id>]` | Push local new resources to a dedicated branch and open a Merge Request; new skills prompt interactively for a target namespace (override with `--role`) |
-| `teamai pull [--silent]` | Pull team resources and inject them into local AI tools (both scopes pulled sequentially) |
-| `teamai status` | Show the diff between local and the team repo |
-| `teamai list [type] [--source repo\|local\|all] [--agent <id>]` | List resources (skills\|rules\|docs\|env\|wiki). With `--source local` or `all`, scans skills directories of installed AI agents and tags each skill's origin (`[team]` / `[builtin]` / `[source:<name>]` / `[local-only]`) |
-| `teamai skill [list\|show <name>]` | List all skills by default; `show <name>` prints the skill's origin, contributors, installed-agent list, and description summary |
-| `teamai members` | List registered team members |
-| `teamai remove <type> <name>` | Remove a resource from both the team repo and local, then open an MR (skills\|rules\|wiki) |
-| `teamai roles` | Manage team roles (`init`/`list`/`set`/`add`/`remove`/`update`) |
-| `teamai source` | Manage cross-team skill subscription sources (`add`/`remove`/`list`/`browse`) |
-| `teamai contribute --file <path> [--scope <user\|project>]` | Push an AI-generated experience document to the team repo |
-| `teamai recall <query> [--depth route\|context\|lookup]` | Search the team knowledge base (learnings + skills + docs + rules + codebase graph). Codebase results use BM25 + graph-neighbor boosting |
-| `teamai import --from-repo <url>` | Clone a remote repo, build a code knowledge graph (`teamwiki/`), and auto-push to team repo. Extracts components, interfaces, configs, errors, and import relations |
-| `teamai import --from-repo-list <yaml>` | Batch import repos from a whitelist with concurrency control; cross-repo dependency edges auto-detected |
-| `teamai import --from-org <org>` | List every repo under an organization (GitHub or TGit), AI-cluster into domains, then batch import with knowledge graph construction |
-| `teamai import --from-iwiki <id>` | Import iWiki documents as learnings; auto-reconcile MAPS_TO edges between doc terms and code knowledge graph nodes |
-| `teamai codebase --extract [path]` | Deterministic code fact extraction (TS/Python/Go/Rust/Java) → `teamwiki/` with evidence pages + graph-index.json + knowledge gaps |
-| `teamai codebase --lint` | Knowledge graph health check: node connectivity, stale manifest, navigation files, orphan detection |
-| `teamai codebase --upgrade-wiki` | Migrate from old `docs/team-codebase/` format to the new `teamwiki/` knowledge graph |
-| `teamai cache --status \| --gc` | Inspect or garbage-collect the shallow-clone cache at `~/.teamai/cache/repos/` (LRU + size cap, default 5GB) |
-| `teamai review [id] [--apply \| --reject \| --all-apply]` | Inspect and process pending codebase changes from `.teamai/pending-review.jsonl` |
-| `teamai digest` | Generate a team AI usage weekly digest (skill leaderboard, new/updated skills, session summaries) |
-| `teamai hooks` | Manage AI-tool hooks (list / inject / remove) |
-| `teamai ci extract-mr --url <url> [--mode comment\|write\|both] [--individual-comments]` | CI pipeline: extract learning + graph changes from MR/PR, post as comments (with reaction/reject), write to team repo after merge |
-| `teamai uninstall [--force]` | Uninstall teamai: remove hooks, rules, skills, env, docs, and `~/.teamai/` |
-| `teamai doctor` | Diagnose configuration problems |
+| `teamai init` | Initialize (OAuth login, link repo, register member, inject hooks) |
+| `teamai push` | Push local resources to a branch and open a Merge Request |
+| `teamai pull` | Pull team resources and inject into local AI tools |
+| `teamai status` | Show local vs team repo diff |
+| `teamai recall <query>` | Search the team knowledge base (BM25 + graph-boost) |
+| `teamai import --from-repo <url>` | Import a repo's code knowledge graph (`teamwiki/`) |
+| `teamai import --from-org <org>` | Batch import all repos under an organization |
+| `teamai import --from-repo-list <yaml>` | Batch import repos from a whitelist |
+| `teamai import --from-mr <url>` | Extract learning from a merged MR/PR |
+| `teamai import --from-iwiki <id>` | Import iWiki documents as learnings |
+| `teamai codebase --lint` | Knowledge graph health check |
+| `teamai contribute` | Share session experience to team repo |
+| `teamai doctor` | Diagnose configuration issues |
+| `teamai uninstall` | Remove all teamai resources and hooks |
 
-Global options:
-- `--dry-run` — preview mode, no real changes
-- `--verbose, -v` — verbose output
+Global options: `--dry-run`, `--verbose`
+
+<details>
+<summary>More commands (management, CI, analytics)</summary>
+
+| Command | Description |
+|---------|-------------|
+| `teamai list [type]` | List resources (skills\|rules\|docs\|env\|wiki) |
+| `teamai skill [show <name>]` | Inspect skill metadata and contributors |
+| `teamai members` | List team members |
+| `teamai remove <type> <name>` | Remove a resource and open MR |
+| `teamai roles` | Manage team roles and namespaces |
+| `teamai source` | Manage cross-team skill subscriptions |
+| `teamai tags` | Manage tag-based resource filtering |
+| `teamai env` | Manage team environment variables |
+| `teamai hooks` | Manage AI-tool hooks |
+| `teamai cache --gc` | Garbage-collect clone cache |
+| `teamai digest` | Generate weekly team usage digest |
+| `teamai ci extract-mr --url <url>` | CI: extract knowledge from MR, post comments, write after merge |
+
+</details>
 
 ## How It Works
 
