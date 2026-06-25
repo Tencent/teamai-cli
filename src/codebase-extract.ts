@@ -221,6 +221,117 @@ function buildEvidencePages(facts: CodeFact[], project: string): Map<string, str
   return pages;
 }
 
+function buildModuleSummaries(
+  facts: CodeFact[],
+  graph: CodeGraphIndex,
+  project: string,
+): Map<string, string> {
+  const modules = new Map<string, CodeFact[]>();
+
+  // 按顶层目录分组（排除 relation facts）
+  for (const fact of facts) {
+    if (fact.kind === 'relation') continue;
+    const parts = fact.file.split('/');
+    const module = parts.length > 1 ? parts[0] : '_root';
+    const existing = modules.get(module) ?? [];
+    existing.push(fact);
+    modules.set(module, existing);
+  }
+
+  const summaries = new Map<string, string>();
+
+  // 只为有 5+ 个 facts 的模块生成摘要
+  for (const [module, moduleFacts] of modules) {
+    if (moduleFacts.length < 5) continue;
+
+    // 统计该模块的引用次数（作为 edge target 的次数）
+    const fileRefs = new Map<string, number>();
+    for (const edge of graph.edges) {
+      if (edge.to.startsWith(module + '/') || edge.to === module) {
+        fileRefs.set(edge.to, (fileRefs.get(edge.to) ?? 0) + 1);
+      }
+    }
+
+    // 按 kind 统计
+    const kindCounts: Record<string, number> = {};
+    for (const f of moduleFacts) {
+      kindCounts[f.kind] = (kindCounts[f.kind] ?? 0) + 1;
+    }
+
+    // 按引用次数排序，取 top 20 核心组件
+    const ranked = moduleFacts
+      .filter(f => f.kind === 'component' || f.kind === 'interface')
+      .map(f => ({ ...f, refs: fileRefs.get(f.file) ?? 0 }))
+      .sort((a, b) => b.refs - a.refs)
+      .slice(0, 20);
+
+    // 该模块依赖的其他模块
+    const depsTo = new Set<string>();
+    const depsFrom = new Set<string>();
+    for (const edge of graph.edges) {
+      if (edge.from.startsWith(module + '/')) {
+        const targetMod = edge.to.split('/')[0];
+        if (targetMod !== module) depsTo.add(targetMod);
+      }
+      if (edge.to.startsWith(module + '/')) {
+        const sourceMod = edge.from.split('/')[0];
+        if (sourceMod !== module) depsFrom.add(sourceMod);
+      }
+    }
+
+    const lines = [
+      '---',
+      `title: ${project} — ${module} module`,
+      'domain: code-knowledge',
+      `source: [${module}/]`,
+      '---',
+      '',
+      `# ${module}`,
+      '',
+      `**${moduleFacts.length} facts** (${Object.entries(kindCounts).map(([k, v]) => `${k}: ${v}`).join(', ')})`,
+      '',
+    ];
+
+    if (depsTo.size > 0) {
+      lines.push(`**Depends on**: ${[...depsTo].join(', ')}`);
+    }
+    if (depsFrom.size > 0) {
+      lines.push(`**Depended by**: ${[...depsFrom].join(', ')}`);
+    }
+    if (depsTo.size > 0 || depsFrom.size > 0) lines.push('');
+
+    lines.push('## Core components');
+    lines.push('');
+    for (const item of ranked) {
+      const refStr = item.refs > 0 ? ` (${item.refs} refs)` : '';
+      lines.push(`- \`${item.name}\` ← ${item.file}:${item.lineStart}${refStr}`);
+    }
+
+    if (moduleFacts.some(f => f.kind === 'config')) {
+      lines.push('');
+      lines.push('## Config');
+      lines.push('');
+      for (const f of moduleFacts.filter(f => f.kind === 'config').slice(0, 10)) {
+        lines.push(`- \`${f.name}\` ← ${f.file}`);
+      }
+    }
+
+    if (moduleFacts.some(f => f.kind === 'error')) {
+      lines.push('');
+      lines.push('## Errors');
+      lines.push('');
+      for (const f of moduleFacts.filter(f => f.kind === 'error').slice(0, 10)) {
+        lines.push(`- \`${f.name}\` ← ${f.file}`);
+      }
+    }
+
+    lines.push('');
+    summaries.set(`${module}.md`, lines.join('\n'));
+  }
+
+  return summaries;
+}
+
 export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<void> {
   const root = path.resolve(opts.path || '.');
   const project = opts.project || path.basename(root);
@@ -281,6 +392,16 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     JSON.stringify(graph, null, 2),
     'utf-8',
   );
+
+  // 生成模块级摘要页（按顶层目录聚合）
+  const moduleSummaries = buildModuleSummaries(facts, graph, project);
+  if (moduleSummaries.size > 0) {
+    const modulesDir = path.join(evidenceDir, 'modules');
+    await mkdir(modulesDir, { recursive: true });
+    for (const [filename, content] of moduleSummaries) {
+      await writeFile(path.join(modulesDir, filename), content, 'utf-8');
+    }
+  }
 
   // 生成 team-wiki 标准入口文件
   const proj = [{ slug: project, label: project }];

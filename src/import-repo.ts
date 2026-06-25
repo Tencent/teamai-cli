@@ -712,6 +712,19 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 const evidenceDest = path.join(teamwikiRoot, 'evidence', 'code', slug);
                 await fs.ensureDir(evidenceDest);
                 await fs.copy(evidenceSrc, evidenceDest, { overwrite: true });
+                // 如果 AI 扫描成功，将架构概述写入 overview.md
+                if (codebaseMd) {
+                    const overviewContent = [
+                        '---',
+                        `title: ${slug} overview`,
+                        'domain: code-knowledge',
+                        `source: [${url}]`,
+                        '---',
+                        '',
+                        codebaseMd.replace(/^---[\s\S]*?---\n*/m, ''),
+                    ].join('\n');
+                    await fs.writeFile(path.join(evidenceDest, 'overview.md'), overviewContent, 'utf8');
+                }
                 // 合并 graph-index
                 const srcGraph = path.join(cacheWiki, '.indices', 'graph-index.json');
                 const destGraph = path.join(teamwikiRoot, '.indices', 'graph-index.json');
