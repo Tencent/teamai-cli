@@ -366,7 +366,7 @@ export async function loadGraphIndex(wikiRoot: string): Promise<GraphIndex | nul
  * Save graph-index.json to the wiki's indices directory.
  */
 export async function saveGraphIndex(wikiRoot: string, graph: GraphIndex): Promise<string> {
-  const dir = path.join(wikiRoot, ".teamwiki", ".indices");
+  const dir = path.join(wikiRoot, ".indices");
   await mkdir(dir, { recursive: true });
   const outPath = path.join(dir, "graph-index.json");
   await writeFile(outPath, JSON.stringify(graph, null, 2), "utf8");

@@ -116,16 +116,32 @@ function findEntryNodes(queryTokens: string[], graph: CodeGraphIndex): Set<strin
 function computeGraphBoost(pagePath: string, entryNodes: Set<string>, graph: CodeGraphIndex): number {
   if (entryNodes.has(pagePath)) return ENTRY_NODE_BOOST;
 
+  // Use formal BFS (2-hop) to find neighbors of entry nodes
+  // Then check if pagePath is within the neighbor set
   let maxBoost = 0;
-  for (const edge of graph.edges) {
-    let isNeighbor = false;
-    if (edge.from === pagePath && entryNodes.has(edge.to)) isNeighbor = true;
-    if (edge.to === pagePath && entryNodes.has(edge.from)) isNeighbor = true;
+  for (const entry of entryNodes) {
+    // findNeighborsNHop works with GraphIndex (slug-based), adapt for CodeGraphIndex (file-based)
+    // Direct edge check: 1-hop neighbors of entry node
+    for (const edge of graph.edges) {
+      const neighbor = edge.from === entry ? edge.to : (edge.to === entry ? edge.from : null);
+      if (!neighbor) continue;
 
-    if (isNeighbor) {
-      const relWeight = RELATION_WEIGHT[edge.relation] ?? 1;
-      const boost = relWeight * 0.8;
-      if (boost > maxBoost) maxBoost = boost;
+      // 1-hop: direct neighbor
+      if (neighbor === pagePath) {
+        const relWeight = RELATION_WEIGHT[edge.relation] ?? 1;
+        const boost = relWeight * 0.8;
+        if (boost > maxBoost) maxBoost = boost;
+      }
+
+      // 2-hop: neighbor's neighbor
+      for (const edge2 of graph.edges) {
+        const hop2 = edge2.from === neighbor ? edge2.to : (edge2.to === neighbor ? edge2.from : null);
+        if (hop2 === pagePath && hop2 !== entry) {
+          const relWeight = RELATION_WEIGHT[edge2.relation] ?? 1;
+          const boost = relWeight * 0.4; // 2-hop gets half weight
+          if (boost > maxBoost) maxBoost = boost;
+        }
+      }
     }
   }
   return maxBoost;
