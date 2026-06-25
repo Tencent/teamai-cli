@@ -313,6 +313,10 @@ export async function importFromMR(opts: {
   }
 
   // ── 步骤 3：解析 learning 草稿 + dedup ─────────────────
+  // AI 可能用 markdown 代码块包裹输出，先剥离
+  learningContent = learningContent
+    .replace(/^```(?:markdown|md|yaml)?\s*\n/m, '')
+    .replace(/\n```\s*$/, '');
   // AI 可能在 frontmatter 前输出对话性废话，截取从第一个 `---` 开始的内容
   const frontmatterStart = learningContent.indexOf('---');
   if (frontmatterStart > 0) {
