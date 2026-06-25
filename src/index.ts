@@ -538,11 +538,12 @@ program
 program
   .command('recall [query...]')
   .description('Search team learnings knowledge base')
-  .action(async (queryParts) => {
+  .option('--depth <level>', 'Recall depth for codebase: route / context / lookup', 'context')
+  .action(async (queryParts, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const query = (queryParts as string[]).join(' ');
     const { recall } = await import('./recall.js');
-    await recall(query, globalOpts);
+    await recall(query, { ...globalOpts, depth: cmdOpts.depth });
   });
 
 program
@@ -581,7 +582,6 @@ program
   .option('--output <path>', 'Write drafts to this directory instead of pushing to team repo')
   .option('--existing-codebase <path>', 'Path to existing codebase.md (used with --from-mr; overrides auto-detection from team repo)')
   .option('--from-repo <url>', 'Clone a remote repo and generate per-repo codebase summary')
-  .option('--depth <n>', 'Shallow clone depth for --from-repo (default 1)', '1')
   .option('--ssh', 'Force SSH clone even if HTTPS token is available')
   .option('--domain <name>', 'Skip AI recommendation and assign repo to this domain explicitly')
   .option('--from-repo-list <path>', 'Batch import repos from a YAML whitelist')
@@ -618,6 +618,11 @@ program
 program
   .command('codebase')
   .description('Inspect and maintain team-codebase outputs')
+  .option('--extract [path]', 'Extract code knowledge and build graph from source')
+  .option('--incremental', 'Only re-extract changed files (requires prior manifest)')
+  .option('--project <name>', 'Project slug for extract output (default: directory name)')
+  .option('--max-files <n>', 'Max source files to scan (default: 200)')
+  .option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format')
   .option('--lint', 'Run global consistency lint over docs/team-codebase')
   .option('--fix', 'Apply low-risk mechanical fixes (only with --lint)')
   .option('--severity <level>', 'Minimum severity to report: high|medium|low|info', 'info')

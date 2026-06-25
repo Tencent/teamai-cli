@@ -557,6 +557,29 @@ async function pullForScope(
         }
       }
 
+      // Sync teamwiki/ directory (codebase knowledge graph)
+      const teamwikiRepoDir = path.join(localConfig.repo.localPath, 'teamwiki');
+      if (await pathExists(teamwikiRepoDir)) {
+        const syncTarget = localConfig.projectRoot ?? process.cwd();
+        const localTeamwikiDir = path.join(syncTarget, 'teamwiki');
+        // 检查本地 graph-index 是否比远端更新（避免覆盖未推送的本地产物）
+        const localGraph = path.join(localTeamwikiDir, '.indices', 'graph-index.json');
+        const remoteGraph = path.join(teamwikiRepoDir, '.indices', 'graph-index.json');
+        let shouldSync = true;
+        if (await pathExists(localGraph) && await pathExists(remoteGraph)) {
+          const localStat = await fse.stat(localGraph);
+          const remoteStat = await fse.stat(remoteGraph);
+          if (localStat.mtimeMs > remoteStat.mtimeMs) {
+            log.warn(`[${scopeLabel}] 本地 teamwiki/ 比远端更新，跳过覆盖（请先 teamai push）`);
+            shouldSync = false;
+          }
+        }
+        if (shouldSync) {
+          await fse.copy(teamwikiRepoDir, localTeamwikiDir, { overwrite: true });
+          log.debug(`[${scopeLabel}] Synced teamwiki/ knowledge graph`);
+        }
+      }
+
       // Build the index when ANY of the four categories has content.
       const hasAnySource =
         effectiveLearningsDir ||
@@ -580,7 +603,7 @@ async function pullForScope(
           docsDir: await pathExists(docsRepoDir) ? docsRepoDir : undefined,
           rulesDir: await pathExists(rulesRepoDir) ? rulesRepoDir : undefined,
           skillsDir: await pathExists(skillsRepoDir) ? skillsRepoDir : undefined,
-          codebaseDir: effectiveCodebaseDir,
+          codebaseDir: undefined, // codebase now served by teamwiki/ graph engine
           votesDir: votesExist ? votesDir : undefined,
           indexPath,
         });

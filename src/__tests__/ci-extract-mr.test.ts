@@ -73,10 +73,11 @@ describe('ciExtractMr', () => {
       all: true,
       dryRun: true,
     }));
+    // codebase suggestions 不再通过 comment 发布（由图谱变更 comment 替代）
     expect(mockPostOrUpdateMrComment).toHaveBeenCalledWith(
       'https://github.com/org/repo/pull/1',
       expect.objectContaining({ title: 'Test Learning' }),
-      expect.arrayContaining([expect.objectContaining({ section: 'arch' })]),
+      undefined,
       undefined,
       undefined,
     );
@@ -106,14 +107,14 @@ describe('ciExtractMr', () => {
     expect(learnings.length).toBe(1);
     expect(learnings[0]).toContain('Test-Learning');
 
-    // codebase 被更新
-    expect(mockApplyCodebaseSuggestions).toHaveBeenCalled();
+    // codebase direct 模式已被图谱引擎替代，不再调用 applyCodebaseSuggestions
+    // mockApplyCodebaseSuggestions 不应被调用
 
-    // push 被调用
+    // push 被调用（仅含 learning，不含 docs/codebase.md）
     expect(mockPushRepoDirectly).toHaveBeenCalledWith(
       teamRepo,
       expect.stringContaining('[teamai]'),
-      expect.arrayContaining(['docs/codebase.md']),
+      expect.not.arrayContaining(['docs/codebase.md']),
     );
   });
 
@@ -175,7 +176,7 @@ describe('ciExtractMr', () => {
     expect(mockPostOrUpdateMrComment).toHaveBeenCalledWith(
       expect.any(String),
       expect.anything(),
-      expect.anything(),
+      undefined,
       undefined,
       true,
     );
