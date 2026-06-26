@@ -24,6 +24,7 @@ import {
 } from './wiki-engine/adapters/index.js';
 import type { CodeFact, CodeGraphIndex, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
 import { routerTemplate, indexTemplate, HOT_TEMPLATE } from './wiki-engine/adapters/templates.js';
+import type { DomainGroup, IndexStats } from './wiki-engine/adapters/templates.js';
 
 export interface ExtractCodebaseOptions {
   path?: string;
@@ -490,6 +491,42 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     'utf-8',
   );
 
+  // AI enrichment (optional, non-blocking)
+  let aiDomains: DomainGroup[] = [];
+  try {
+    const { enrichWithAI, writeManifest } = await import('./enrich-with-ai.js');
+    const modules = new Map<string, CodeFact[]>();
+    for (const fact of facts) {
+      if (fact.kind === 'relation') continue;
+      const mod = fact.file.split('/')[0] || '_root';
+      const existing = modules.get(mod) ?? [];
+      existing.push(fact);
+      modules.set(mod, existing);
+    }
+
+    const enrichResult = await enrichWithAI({ project, facts, interfaceInventory, modules });
+    if (enrichResult) {
+      await writeManifest(enrichResult.manifest, evidenceDir);
+      aiDomains = enrichResult.domains;
+      // Persist AI-inferred domain classification for rebuildWikiIndex
+      const domainMeta = {
+        domain: enrichResult.repoDomain || (enrichResult.domains[0]?.name ?? ''),
+        description: enrichResult.repoDescription || '',
+        keywords: enrichResult.repoKeywords || [],
+        components: enrichResult.domains[0]?.components ?? [],
+      };
+      await writeFile(path.join(evidenceDir, '_domains.json'), JSON.stringify(domainMeta, null, 2), 'utf-8');
+      if (!opts.json) {
+        const domainLabel = domainMeta.domain || '未分类';
+        console.log(`  AI 增强: ${enrichResult.manifest.components.length} 模块, 域=${domainLabel}`);
+      }
+    }
+  } catch (e) {
+    if (!opts.json) {
+      console.log(chalk.dim(`  [AI 增强跳过: ${(e as Error).message}]`));
+    }
+  }
+
   // 生成模块级摘要页（按顶层目录聚合）
   const moduleSummaries = buildModuleSummaries(facts, graph, project);
   if (moduleSummaries.size > 0) {
@@ -502,9 +539,20 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
 
   // 生成 team-wiki 标准入口文件
   const proj = [{ slug: project, label: project }];
-  await writeFile(path.join(wikiRoot, 'router.md'), routerTemplate(proj), 'utf-8');
+  const ifByType: Record<string, number> = {};
+  for (const e of interfaceInventory.entries) {
+    ifByType[e.type] = (ifByType[e.type] ?? 0) + e.count;
+  }
+  const indexStats: IndexStats = {
+    totalFacts: facts.length,
+    totalNodes: mergedGraph.nodes.length,
+    totalEdges: mergedGraph.edges.length,
+    interfaces: Object.keys(ifByType).length > 0 ? ifByType : undefined,
+    callChains: callChains.length > 0 ? callChains.length : undefined,
+  };
+  await writeFile(path.join(wikiRoot, 'router.md'), routerTemplate(proj, aiDomains.length > 0 ? aiDomains : undefined), 'utf-8');
   await writeFile(path.join(wikiRoot, 'hot.md'), HOT_TEMPLATE, 'utf-8');
-  await writeFile(path.join(wikiRoot, 'index.md'), indexTemplate(proj), 'utf-8');
+  await writeFile(path.join(wikiRoot, 'index.md'), indexTemplate(proj, indexStats), 'utf-8');
 
   // 生成 gaps/ — 知识缺口追踪
   const gaps = detectKnowledgeGaps(facts, graph, files);
