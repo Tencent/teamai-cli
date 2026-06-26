@@ -28,8 +28,17 @@ function writeSearchIndex(homeDir: string): void {
     fs.mkdirSync(indexDir, { recursive: true });
 
     const index = {
+        version: 4,
         builtAt: new Date().toISOString(),
         elapsedMs: 10,
+        df: {
+            'title:k8s': 1, 'title:pod': 1, 'title:oomkilled': 1, 'title:排查': 1, 'title:修复': 1,
+            'tag:k8s': 1, 'tag:oom': 1, 'tag:troubleshooting': 1,
+            'oom': 1, 'killed': 1, 'memory': 1, 'limit': 1, 'container': 1, 'restart': 1,
+            'title:modulenotfounderror': 1, 'title:常见': 1, 'title:解决方案': 1,
+            'tag:python': 1, 'tag:import': 1, 'tag:modulenotfounderror': 1,
+            'module': 1, 'not': 1, 'found': 1, 'import': 1, 'pip': 1, 'install': 1,
+        },
         entries: [
             {
                 filename: 'k8s-oom-fix-2026-03-20-abc123.md',
@@ -43,6 +52,8 @@ function writeSearchIndex(homeDir: string): void {
                     'oom', 'killed', 'memory', 'limit', 'container', 'restart',
                 ],
                 votes: 3,
+                type: 'learnings',
+                domain: 'technical',
             },
             {
                 filename: 'module-not-found-fix-2026-03-22-def456.md',
@@ -56,6 +67,8 @@ function writeSearchIndex(homeDir: string): void {
                     'module', 'not', 'found', 'import', 'pip', 'install',
                 ],
                 votes: 2,
+                type: 'learnings',
+                domain: 'technical',
             },
         ],
     };
