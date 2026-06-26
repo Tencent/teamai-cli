@@ -13,6 +13,7 @@ import { importFromOrg } from './import-org.js';
 import { importFromIWikiDual } from './iwiki-dual.js';
 import { GlobalOptions } from './types.js';
 import { log } from './utils/logger.js';
+import { autoPushTeamRepo } from './utils/git.js';
 
 /**
  * import 命令的扩展选项，合并全局选项与子命令专属选项。
@@ -180,6 +181,9 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         existingCodebaseMd,
         dryRun: opts.dryRun,
       });
+      if (!opts.dryRun && !opts.output) {
+        await autoPushTeamRepo(localConfig.repo.localPath, `[teamai] Import from MR: ${opts.fromMr}`);
+      }
     } else if (opts.workspace) {
       // 分支 2：--workspace，从当前 git 工作区生成 codebase.md
       const repoPath = process.cwd();
@@ -248,12 +252,12 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       });
       log.success('导入完成');
       if (pushed > 0 && !opts.dryRun && !opts.output) {
-        log.info('文件已写入本地团队仓库，运行 `teamai push` 推送到远程仓库');
+        await autoPushTeamRepo(localConfig.repo.localPath, `[teamai] Import from local: ${opts.dir ?? 'claude-rules'}`);
       }
     } else {
       // 默认：未指定来源，提示用户
       log.info('请指定导入来源：--dir <path>、--from-claude、--workspace、--from-mr <url> 或 --from-iwiki <space-id-or-url>');
-      process.exit(0);
+      return;
     }
   } catch (err: unknown) {
     log.error((err as Error).message);

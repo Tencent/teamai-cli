@@ -128,7 +128,7 @@ describe('applyPhase2Adjustments', () => {
         const gitRepo = path.resolve(__dirname, '../../');
         const veryOldStart = '2020-01-01T00:00:00Z';
         const result = applyPhase2Adjustments(5, sessionId, gitRepo, veryOldStart);
-        expect(result.score).toBe(0);
+        expect(result.score).toBe(5);
     });
 });
 

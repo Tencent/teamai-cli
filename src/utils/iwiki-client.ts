@@ -110,7 +110,7 @@ export class IWikiClient {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.token}`,
-          'Accept': 'application/json',
+          'Accept': 'application/json, text/event-stream',
           'Content-Length': Buffer.byteLength(payload),
         },
       };

@@ -1,6 +1,6 @@
 ---
 name: teamai-recall
-description: Search the team knowledge base (skills + learnings + docs + rules) and return a compact, structured summary with doc_ids — instead of dumping full knowledge content into the main conversation. Invoke this BEFORE any task involving code changes, troubleshooting, or design.
+description: Search the team knowledge base (skills + learnings + docs + rules + codebase graph) and return a compact, structured summary with doc_ids — instead of dumping full knowledge content into the main conversation. Invoke this BEFORE any task involving code changes, troubleshooting, or design.
 tools: Bash, Read, Grep, Glob
 ---
 
@@ -20,16 +20,23 @@ upstream API"). Treat this as your query.
 
 ## What you must do — step by step
 
-### Step 1 — Read the codebase manifest (optional but preferred)
+### Step 1 — Read codebase context (optional but preferred)
 
-If `~/.teamai/docs/codebase.md` OR `docs/team-codebase/index.md` (in the
-current project) exists, read it first. It lists the team's repositories
-and their purposes. Extract a one-sentence repo-list summary to prepend to
-your final output. If neither file exists, **silently skip** this step —
-never error out.
+Check for the team's code knowledge graph in this order:
 
-> Note: `teamai recall` already indexes team-codebase documents
-> (repos/*.md), so Step 3 will return codebase knowledge matches directly.
+1. `teamwiki/router.md` — if exists, read it to understand available repos
+2. `teamwiki/index.md` — global navigation with domain links
+
+If `teamwiki/` exists, the team has a structured knowledge graph. After
+Step 3 returns codebase hits, you can **drill into** module summaries:
+- `teamwiki/evidence/code/<project>/modules/<dir>.md` — module-level overview with dependency direction and top components
+- `teamwiki/evidence/code/<project>/overview.md` — AI-generated architecture context (why/how, not just what)
+
+Fallback: if no `teamwiki/`, check `~/.teamai/docs/codebase.md` or
+`docs/team-codebase/index.md`. If none exists, silently skip.
+
+> `teamai recall` automatically searches both flat knowledge (learnings/
+> skills/docs/rules) and codebase graph (teamwiki/) with BM25 + graph-boost.
 
 ### Step 2 — Extract keywords from the task description
 
@@ -51,12 +58,21 @@ If the command fails, knowledge base is empty, or returns zero hits,
 emit a single line `No relevant team knowledge found for: <query>` and
 stop.
 
-### Step 4 — Read the top hits
+### Step 4 — Read the top hits and drill into codebase
 
 For each hit returned by `teamai recall`, read the source file directly
-(use `Read`) and condense each into **one or two sentences**. Cap your
-total summary at ~1500 characters. Drop hits that on closer inspection
-are clearly off-topic.
+(use `Read`) and condense each into **one or two sentences**.
+
+**For codebase hits** (path contains `teamwiki/evidence/`):
+- If the hit is a raw facts page (component.md, interface.md), prefer
+  reading the corresponding **module summary** (`modules/<dir>.md`) instead —
+  it's more concise and shows dependencies.
+- If you need architectural context (why a module exists, design decisions),
+  check `overview.md` in the same project directory.
+- If the hit mentions a knowledge gap (from `gaps/detected.md`), relay
+  it to the user: "This area is not fully documented in the knowledge base."
+
+Cap your total summary at ~2000 characters. Drop hits that are off-topic.
 
 ### Step 5 — Emit a structured response
 
@@ -65,24 +81,43 @@ Return your output in **this exact format** to the main conversation:
 ```
 ## Team Knowledge Recall
 
-> Repos: <one-line repo summary from codebase.md, or omit this line>
+> Repos: <one-line repo summary from router.md, or omit>
+
+### Relevant knowledge
 
 1. **[<type>] <doc_id>** — <file path>
    <one-sentence summary>
    Confidence: <high | medium | low>
 
-2. **[<type>] <doc_id>** — <file path>
-   <one-sentence summary>
-   Confidence: <high | medium | low>
+2. ...
 
-...
+### Codebase context (if any codebase hits)
+
+**Module: <module_name>** (<project>)
+- Depends on: <list>
+- Depended by: <list>
+- Core components: `Foo`, `Bar`, `Baz` (top 5 by reference count)
+- Architecture: <one sentence from overview.md if available>
+
+### Gaps (if relevant)
+
+⚠️ <gap description> — do not guess answers for this area.
 
 <!-- teamai:recalled-doc-ids: [<id1>, <id2>, ...] -->
 ```
 
-Where:
-- `<type>` is one of `skills` / `learnings` / `docs` / `rules`
-- `<doc_id>` is the filename without extension (e.g. `api-timeout-fix`)
+**Output structure rules:**
+
+- `<type>` is one of `skills` / `learnings` / `docs` / `rules` / `codebase`
+- `<doc_id>` is the filename without extension (e.g. `api-timeout-fix`).
+  For codebase hits, use the relative path within teamwiki/ (e.g. `evidence/code/hai_api/modules/business`)
+- **Codebase context section**: when a codebase hit is returned, include
+  the module's dependency direction and top 5 components **inline** — the
+  main conversation should not need a second Read to understand the module.
+  Extract this from `modules/<dir>.md` which you already read in Step 4.
+- **Gaps section**: only include if `gaps/detected.md` was relevant to the
+  query. This tells the main conversation to stop and ask the user rather
+  than hallucinating.
 - The trailing HTML comment **must** list every doc_id you returned —
   later phases (Phase 3 Stop hook) will parse this from the conversation
   transcript.
@@ -93,5 +128,13 @@ Where:
 - **Do not** call `teamai recall` more than 3 times in one invocation.
 - **Do not** invoke other subagents.
 - If `teamai` CLI is not on PATH, return `teamai CLI not available` and stop.
-- Output total ≤ ~2000 characters. The whole point of using a subagent is
+- Output total ≤ ~2500 characters. The whole point of using a subagent is
   to keep the main conversation's context lean.
+- For codebase hits, **prefer module summaries over raw facts pages** —
+  they give better signal-to-noise for the main conversation.
+- **Include module dependency + core components inline** so the main
+  conversation can act without a second retrieval round-trip.
+- If `teamwiki/gaps/detected.md` exists and is relevant, include the
+  Gaps section so the main conversation does not hallucinate.
+- When zero hits are found but `teamwiki/` exists, check if the query
+  relates to a known gap before returning "no knowledge found".
