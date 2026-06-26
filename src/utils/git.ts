@@ -143,6 +143,18 @@ export async function pushRepoDirectly(localPath: string, message: string, files
 }
 
 /**
+ * Best-effort push all changes in a team repo clone.
+ * Logs success/failure without throwing.
+ */
+export async function autoPushTeamRepo(repoPath: string, message: string): Promise<void> {
+  try {
+    await pushRepoDirectly(repoPath, message, ['.']);
+  } catch {
+    // non-blocking: user can manually run teamai push
+  }
+}
+
+/**
  * Create a new branch, commit files, and push the branch to remote.
  * Returns false if there are no changes to commit.
  * Leaves the local repo on the new branch after pushing so that
