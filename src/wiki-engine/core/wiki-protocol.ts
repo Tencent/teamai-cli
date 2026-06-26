@@ -137,6 +137,7 @@ export const WIKI_CATEGORIES: WikiCategory[] = [
 const SAFE_IGNORE_SEGMENTS = new Set([
   ".git",
   ".teamwiki",
+  "teamwiki",
   "node_modules",
   "dist",
   "build",
@@ -151,10 +152,6 @@ const SENSITIVE_FILE_NAMES = new Set(["credentials.json"]);
 
 export function safeIgnore(filePath: string): boolean {
   const normalized = toPosix(filePath);
-  // Compiled code evidence pages live under .teamwiki/evidence/ and must be writable.
-  if (normalized.startsWith(".teamwiki/evidence/")) {
-    return false;
-  }
   const parts = normalized.split("/").filter(Boolean);
   if (parts.some((part) => SAFE_IGNORE_SEGMENTS.has(part))) {
     return true;

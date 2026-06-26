@@ -9,38 +9,68 @@ import {
   createGraphIndex,
   addNode,
   addEdge,
+  saveGraphIndex,
   GRAPH_INDEX_SCHEMA_VERSION,
 } from "../core/graph-index.schema.js";
 
-export interface CodeGraphIndex {
-  schemaVersion: "team-wiki.code-graph.v1";
-  generatedAt: string;
-  nodes: Array<{ id: string; kind: CodeFact["kind"]; label: string; file: string }>;
-  edges: Array<{ from: string; to: string; relation: "imports" | "mentions" }>;
-}
+/**
+ * @deprecated Use GraphIndex directly. Kept for backward compatibility during migration.
+ */
+export type CodeGraphIndex = GraphIndex;
 
-export async function writeCodeGraph(wikiRoot: string, project: string, facts: CodeFact[]): Promise<{ graph: CodeGraphIndex; path: string }> {
+export async function writeCodeGraph(wikiRoot: string, project: string, facts: CodeFact[]): Promise<{ graph: GraphIndex; path: string }> {
   const graph = buildCodeGraph(facts);
-  const graphPath = path.join(wikiRoot, "graph", `${project}-graph-index.json`);
-  await mkdir(path.dirname(graphPath), { recursive: true });
-  await writeFile(graphPath, `${JSON.stringify(graph, null, 2)}\n`, "utf8");
+  const graphPath = await saveGraphIndex(wikiRoot, graph);
   return { graph, path: graphPath };
 }
 
-export function buildCodeGraph(facts: CodeFact[]): CodeGraphIndex {
-  const nodes = facts
+/**
+ * Build a GraphIndex from raw code facts.
+ * Nodes: one per unique component/interface/config/error fact.
+ * Edges: DEPENDS_ON edges from relation facts (internal imports only).
+ */
+export function buildCodeGraph(facts: CodeFact[]): GraphIndex {
+  const nodes: GraphNode[] = facts
     .filter((fact) => fact.kind !== "relation")
-    .map((fact) => ({ id: `${fact.kind}:${fact.name}:${fact.file}`, kind: fact.kind, label: fact.name, file: fact.file }));
-  const nodeFiles = new Set(nodes.map((node) => node.file));
-  const edges = facts
+    .map((fact) => ({
+      slug: `${fact.kind}/${fact.name}`,
+      type: mapFactKindToCategory(fact.kind),
+      confidence: fact.confidence === "EXTRACTED" ? "EXTRACTED" as const : "INFERRED" as const,
+      title: fact.name,
+      domain: path.dirname(fact.file).split('/')[0] || undefined,
+    }));
+
+  const nodeFiles = new Set(facts.filter(f => f.kind !== "relation").map(f => f.file));
+  const edges: GraphEdge[] = facts
     .filter((fact) => fact.kind === "relation")
-    .flatMap((fact) => [...nodeFiles].filter((file) => relationMayTarget(fact.name, file)).map((file) => ({ from: fact.file, to: file, relation: "imports" as const })));
-  return { schemaVersion: "team-wiki.code-graph.v1", generatedAt: new Date().toISOString(), nodes, edges };
+    .flatMap((fact) => {
+      const targets = [...nodeFiles].filter((file) => relationMayTarget(fact.name, file));
+      return targets.map((file) => ({
+        from: fact.file,
+        to: file,
+        relation: "DEPENDS_ON" as const,
+        weight: 0.8,
+        source: "code-heuristic" as const,
+      }));
+    });
+
+  return createGraphIndex(nodes, edges);
 }
 
 function relationMayTarget(importTarget: string, file: string): boolean {
-  const normalized = importTarget.replace(/^\.\//u, "").replace(/\.(ts|tsx|js|jsx)$/u, "");
+  const normalized = importTarget.replace(/^\.\//u, "").replace(/\.\.\//g, "").replace(/\.(ts|tsx|js|jsx)$/u, "");
+  if (normalized.length < 3) return false; // Skip very short matches to reduce false positives
   return file.includes(normalized);
+}
+
+function mapFactKindToCategory(kind: string): "component" | "interface" | "config" | "error" {
+  switch (kind) {
+    case "component": return "component";
+    case "interface": return "interface";
+    case "config": return "config";
+    case "error": return "error";
+    default: return "component";
+  }
 }
 
 // ─── Unified Graph Compiler: build a full GraphIndex from component-level data ──

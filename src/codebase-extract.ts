@@ -21,8 +21,10 @@ import {
   buildIndexHubOverlay,
   mergeGraphs,
   createGraphIndex,
+  saveGraphIndex,
 } from './wiki-engine/adapters/index.js';
-import type { CodeFact, CodeGraphIndex, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
+import type { CodeFact, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
+import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { routerTemplate, indexTemplate, HOT_TEMPLATE } from './wiki-engine/adapters/templates.js';
 
 export interface ExtractCodebaseOptions {
@@ -51,12 +53,12 @@ interface KnowledgeGap {
 
 function detectKnowledgeGaps(
   facts: CodeFact[],
-  graph: CodeGraphIndex,
+  graph: GraphIndex,
   files: Array<{ relativePath: string }>,
 ): KnowledgeGap[] {
   const gaps: KnowledgeGap[] = [];
   const scannedFiles = new Set(files.map((f) => f.relativePath));
-  const nodeFiles = new Set(graph.nodes.map((n) => n.file));
+  const nodeSlugs = new Set(graph.nodes.map((n) => n.slug));
   const connectedNodes = new Set<string>();
   for (const edge of graph.edges) {
     connectedNodes.add(edge.from);
@@ -109,7 +111,7 @@ function detectKnowledgeGaps(
 
   // 3. 孤立组件：有节点但与图谱中其他节点无任何连接
   const orphanNodes = graph.nodes.filter(
-    (n) => !connectedNodes.has(n.id) && !connectedNodes.has(n.file),
+    (n) => !connectedNodes.has(n.slug),
   );
   if (orphanNodes.length > 5 && orphanNodes.length > graph.nodes.length * 0.3) {
     gaps.push({
@@ -231,17 +233,19 @@ function buildEvidencePages(
     pages.set('interfaces.md', ifLines.join('\n'));
   }
 
-  // Call Chains page
+  // Dependency Paths page
   if (callChains && callChains.length > 0) {
     const ccLines = [
       '---',
-      `title: ${project} call chains`,
+      `title: ${project} dependency paths`,
       'domain: code-knowledge',
       '---',
       '',
-      '# Call Chains',
+      '# Dependency Paths',
       '',
-      `${callChains.length} call chain(s) traced from entry points (max depth 4).`,
+      'Static import dependency paths (not runtime call traces).',
+      '',
+      `${callChains.length} dependency path(s) traced from entry points (max depth 4).`,
       '',
     ];
     for (const chain of callChains.slice(0, 20)) {
@@ -253,7 +257,7 @@ function buildEvidencePages(
       }
       ccLines.push('');
     }
-    pages.set('call-chains.md', ccLines.join('\n'));
+    pages.set('dependency-paths.md', ccLines.join('\n'));
   }
 
   const indexLines = [
@@ -296,7 +300,7 @@ function buildEvidencePages(
 
 function buildModuleSummaries(
   facts: CodeFact[],
-  graph: CodeGraphIndex,
+  graph: GraphIndex,
   project: string,
 ): Map<string, string> {
   const modules = new Map<string, CodeFact[]>();
@@ -405,6 +409,102 @@ function buildModuleSummaries(
   return summaries;
 }
 
+/**
+ * Generate a deterministic overview.md from facts + graph (B16).
+ * Provides basic architecture context without AI calls.
+ */
+function buildOverview(
+  facts: CodeFact[],
+  graph: GraphIndex,
+  project: string,
+  interfaceInventory: InterfaceInventory,
+  callChains: CallChain[],
+): string {
+  const modules = new Map<string, CodeFact[]>();
+  for (const fact of facts) {
+    if (fact.kind === 'relation') continue;
+    const mod = fact.file.split('/')[0] || '_root';
+    const existing = modules.get(mod) ?? [];
+    existing.push(fact);
+    modules.set(mod, existing);
+  }
+
+  const lines = [
+    '---',
+    `title: ${project} overview`,
+    'domain: code-knowledge',
+    '---',
+    '',
+    `# ${project}`,
+    '',
+    `**${facts.length} facts** extracted from ${new Set(facts.map(f => f.file)).size} files.`,
+    `Graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges.`,
+    '',
+    '## Module Structure',
+    '',
+    '| Module | Facts | Components | Interfaces |',
+    '|--------|-------|------------|------------|',
+  ];
+
+  const sortedModules = [...modules.entries()]
+    .filter(([, mf]) => mf.length >= 3)
+    .sort((a, b) => b[1].length - a[1].length);
+
+  for (const [mod, mf] of sortedModules) {
+    const comps = mf.filter(f => f.kind === 'component').length;
+    const ifaces = mf.filter(f => f.kind === 'interface').length;
+    lines.push(`| ${mod} | ${mf.length} | ${comps} | ${ifaces} |`);
+  }
+
+  // Module dependency direction
+  lines.push('');
+  lines.push('## Dependencies');
+  lines.push('');
+  const depMap = new Map<string, Set<string>>();
+  for (const edge of graph.edges) {
+    const fromMod = edge.from.split('/')[0] || '_root';
+    const toMod = edge.to.split('/')[0] || '_root';
+    if (fromMod !== toMod) {
+      const existing = depMap.get(fromMod) ?? new Set();
+      existing.add(toMod);
+      depMap.set(fromMod, existing);
+    }
+  }
+  if (depMap.size > 0) {
+    for (const [mod, deps] of depMap) {
+      lines.push(`- **${mod}** → ${[...deps].join(', ')}`);
+    }
+  } else {
+    lines.push('(No cross-module dependencies detected)');
+  }
+
+  // Interface summary
+  if (interfaceInventory.entries.length > 0) {
+    lines.push('');
+    lines.push('## Interfaces');
+    lines.push('');
+    const byType: Record<string, number> = {};
+    for (const e of interfaceInventory.entries) {
+      byType[e.type] = (byType[e.type] ?? 0) + e.count;
+    }
+    lines.push(`Types: ${Object.entries(byType).map(([t, c]) => `${t}(${c})`).join(', ')}`);
+  }
+
+  // Dependency paths summary
+  if (callChains.length > 0) {
+    lines.push('');
+    lines.push('## Key Dependency Paths');
+    lines.push('');
+    for (const chain of callChains.slice(0, 5)) {
+      const path = chain.steps.map(s => s.symbol).join(' → ');
+      lines.push(`- ${chain.entryPoint}: ${path}`);
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
+
 export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<void> {
   const root = path.resolve(opts.path || '.');
   const project = opts.project || path.basename(root);
@@ -412,7 +512,6 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
 
   const wikiRoot = path.join(root, 'teamwiki');
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code', project);
-  const indicesDir = path.join(wikiRoot, '.indices');
   const manifestPath = path.join(wikiRoot, 'source-manifest.json');
 
   let changedFiles: string[] | undefined;
@@ -449,7 +548,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   }
 
   const facts = extractCodeFacts(files);
-  const graph: CodeGraphIndex = buildCodeGraph(facts);
+  const graph: GraphIndex = buildCodeGraph(facts);
 
   // Interface detection (HTTP/MQ/RPC)
   const interfaceInventory = await scanInterfaces(files);
@@ -460,7 +559,6 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   const pages = buildEvidencePages(facts, project, interfaceInventory, callChains);
 
   await mkdir(evidenceDir, { recursive: true });
-  await mkdir(indicesDir, { recursive: true });
 
   for (const [filename, content] of pages) {
     await writeFile(path.join(evidenceDir, filename), content, 'utf-8');
@@ -470,25 +568,11 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   const pageSlugs = [...pages.keys()].map(p => `evidence/code/${project}/${p.replace('.md', '')}`);
   const overlay = buildIndexHubOverlay(project, 'evidence/code', pageSlugs);
 
-  // Merge overlay nodes/edges into CodeGraphIndex format
-  const overlayNodes = overlay.nodes
-    .filter(n => !graph.nodes.some(gn => gn.id === n.slug))
-    .map(n => ({ id: n.slug, kind: 'component' as const, label: n.title, file: '' }));
-  const overlayEdges = overlay.edges
-    .map(e => ({ from: e.from, to: e.to, relation: 'mentions' as const }));
+  // Merge overlay into the unified GraphIndex
+  const mergedGraph = mergeGraphs(graph, overlay);
 
-  const mergedGraph: CodeGraphIndex = {
-    schemaVersion: graph.schemaVersion ?? 'team-wiki.graph-index.v1',
-    generatedAt: new Date().toISOString(),
-    nodes: [...graph.nodes, ...overlayNodes],
-    edges: [...graph.edges, ...overlayEdges],
-  };
-
-  await writeFile(
-    path.join(indicesDir, 'graph-index.json'),
-    JSON.stringify(mergedGraph, null, 2),
-    'utf-8',
-  );
+  // Write graph-index.json using protocol function (B5)
+  await saveGraphIndex(wikiRoot, mergedGraph);
 
   // 生成模块级摘要页（按顶层目录聚合）
   const moduleSummaries = buildModuleSummaries(facts, graph, project);
@@ -499,6 +583,10 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
       await writeFile(path.join(modulesDir, filename), content, 'utf-8');
     }
   }
+
+  // 生成 overview.md — 确定性架构概览 (B16)
+  const overview = buildOverview(facts, mergedGraph, project, interfaceInventory, callChains);
+  await writeFile(path.join(evidenceDir, 'overview.md'), overview, 'utf-8');
 
   // 生成 team-wiki 标准入口文件
   const proj = [{ slug: project, label: project }];

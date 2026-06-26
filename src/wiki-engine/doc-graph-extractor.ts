@@ -111,7 +111,7 @@ export function extractDocEntities(
   const edges: GraphEdge[] = [];
   const seenEntitySlugs = new Set<string>();
 
-  const apiPattern = /(GET|POST|PUT|DELETE|PATCH)\s+(\/v?\d*\/[a-z0-9/_\-{}:.]+)/gi;
+  const apiPattern = /(GET|POST|PUT|DELETE|PATCH)\s+(\/[a-z0-9/_\-{}:.]+)/gi;
   let match: RegExpExecArray | null;
   while ((match = apiPattern.exec(content)) !== null) {
     const method = match[1].toUpperCase();
@@ -138,7 +138,7 @@ export function extractDocEntities(
     addEntity(entitySlugFor("config", key.toLowerCase()), "config", key, match.index);
   }
 
-  const configAssignPattern = /(?:^|\n)\s*([a-z][a-z0-9_.-]{2,})\s*[:=]\s*/gim;
+  const configAssignPattern = /^\s*([A-Z][A-Z0-9_]{2,})\s*[:=]\s*/gm;
   while ((match = configAssignPattern.exec(content)) !== null) {
     const key = match[1];
     if (/^(http|https|get|post|put|delete|patch)$/i.test(key)) {

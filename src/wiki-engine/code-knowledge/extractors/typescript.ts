@@ -74,20 +74,25 @@ export function extractTypescript(files: CodeCollectedFile[]): CodeFact[] {
         facts.push(makeFact("error", errorConst[1], file.relativePath, lineNumber, line, "INFERRED"));
       }
 
-      // --- Relations ---
+      // --- Relations (only internal/relative imports, skip third-party packages) ---
       const importFrom = /^import\s+.*?from\s+["']([^"']+)["']/u.exec(line);
-      if (importFrom) {
+      if (importFrom && isProjectRelativeImport(importFrom[1])) {
         facts.push(makeFact("relation", importFrom[1], file.relativePath, lineNumber, line, "EXTRACTED"));
       }
 
       const dynamicImport = /(?:await\s+)?import\s*\(\s*["']([^"']+)["']\s*\)/u.exec(line);
-      if (dynamicImport && !importFrom) {
+      if (dynamicImport && !importFrom && isProjectRelativeImport(dynamicImport[1])) {
         facts.push(makeFact("relation", dynamicImport[1], file.relativePath, lineNumber, line, "INFERRED"));
       }
     }
   }
 
   return facts;
+}
+
+/** Only keep project-relative imports (starts with . or /) — skip npm packages */
+function isProjectRelativeImport(target: string): boolean {
+  return target.startsWith('.') || target.startsWith('/');
 }
 
 function makeFact(

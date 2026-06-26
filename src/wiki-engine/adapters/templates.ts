@@ -1,5 +1,5 @@
 export function routerTemplate(projects: Array<{ slug: string; label: string }>): string {
-  const links = projects.map(p => `- [[code/${p.slug}/index]] — ${p.label} 代码知识`).join('\n');
+  const links = projects.map(p => `- [[evidence/code/${p.slug}/index]] — ${p.label} 代码知识`).join('\n');
   return `# Team Wiki Router\n\nRoute broad questions to the relevant domain entrypoint.\n\n${links}\n`;
 }
 

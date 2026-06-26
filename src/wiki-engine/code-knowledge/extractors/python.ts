@@ -21,10 +21,14 @@ export function extractPython(files: CodeCollectedFile[]): CodeFact[] {
         facts.push(makeFact("component", classDecl[1], file.relativePath, lineNumber, line, "EXTRACTED"));
       }
 
-      // Module-level function (not indented)
+      // Module-level function: only promote to component if it matches service patterns
       const funcDecl = /^(?:async\s+)?def\s+([a-z_][a-z0-9_]*)\s*\(/u.exec(line);
       if (funcDecl) {
-        facts.push(makeFact("component", funcDecl[1], file.relativePath, lineNumber, line, "EXTRACTED"));
+        const name = funcDecl[1];
+        const isServiceFunc = /(?:handler|service|controller|command|worker|task|process|execute|dispatch|route)/i.test(name);
+        if (isServiceFunc) {
+          facts.push(makeFact("component", name, file.relativePath, lineNumber, line, "EXTRACTED"));
+        }
       }
 
       // --- Interfaces ---

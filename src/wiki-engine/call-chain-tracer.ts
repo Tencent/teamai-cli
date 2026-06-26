@@ -66,6 +66,8 @@ function classifyLayer(filePath: string, symbol: string): CallChainLayer {
  * Trace call chains from entry points through the codebase.
  * Simplified version of codebase-mind's 3-layer penetration analysis.
  *
+ * Note: traces import/dependency edges, not runtime call sites. Output represents static dependency paths.
+ *
  * 1. Find entry points (handlers, routes, main functions)
  * 2. For each entry point, trace through relations (imports/calls)
  * 3. Classify each step by layer (entry -> orchestration -> service -> data)

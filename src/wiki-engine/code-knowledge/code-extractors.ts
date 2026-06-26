@@ -42,11 +42,20 @@ export interface CodeFact {
  */
 export function extractCodeFacts(files: CodeCollectedFile[]): CodeFact[] {
   const byLanguage = groupByLanguage(files);
-  const facts: CodeFact[] = [];
+  const allFacts: CodeFact[] = [];
   for (const [language, langFiles] of byLanguage) {
-    facts.push(...extractForLanguage(language, langFiles));
+    allFacts.push(...extractForLanguage(language, langFiles));
   }
-  return dedupe(facts);
+  // Deduplicate facts by kind:name (keep first occurrence)
+  const seen = new Set<string>();
+  const deduped = allFacts.filter(f => {
+    if (f.kind === 'relation') return true; // relations are always unique by file context
+    const key = `${f.kind}:${f.name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return deduped;
 }
 
 function groupByLanguage(files: CodeCollectedFile[]): Map<string, CodeCollectedFile[]> {

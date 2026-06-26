@@ -52,7 +52,20 @@ export async function collectCode(options: CollectCodeOptions): Promise<{ manife
   const filePaths: string[] = [];
   await walk(root, filePaths, options.includeTests ?? false);
 
-  let filtered = filePaths.sort();
+  // Sort: key files first, then by directory depth (shallow first)
+  let filtered = filePaths.sort((a, b) => {
+    const relA = toPosix(path.relative(root, a));
+    const relB = toPosix(path.relative(root, b));
+    const langA = languageFor(a);
+    const langB = languageFor(b);
+    const keyA = isKeyFile(relA, langA) ? 0 : 1;
+    const keyB = isKeyFile(relB, langB) ? 0 : 1;
+    if (keyA !== keyB) return keyA - keyB;
+    const depthA = relA.split('/').length;
+    const depthB = relB.split('/').length;
+    if (depthA !== depthB) return depthA - depthB;
+    return relA.localeCompare(relB);
+  });
 
   // Filter to only changed files if specified
   if (options.changedFiles && options.changedFiles.length > 0) {

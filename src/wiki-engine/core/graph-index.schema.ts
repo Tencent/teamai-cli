@@ -345,28 +345,25 @@ export function computeGraphHealth(graph: GraphIndex): GraphHealthMetrics {
 
 /**
  * Load graph-index.json from the wiki's indices directory.
+ * Canonical path: wikiRoot/.indices/graph-index.json
  * Returns null if the file doesn't exist.
  */
 export async function loadGraphIndex(wikiRoot: string): Promise<GraphIndex | null> {
-  const paths = [
-    path.join(wikiRoot, ".teamwiki", ".indices", "graph-index.json"),
-    path.join(wikiRoot, ".indices", "graph-index.json"),
-    path.join(wikiRoot, "graph", "graph-index.json"),
-  ];
-  for (const p of paths) {
-    try {
-      const raw = await readFile(p, "utf8");
-      return JSON.parse(raw) as GraphIndex;
-    } catch { /* continue */ }
+  const graphPath = path.join(wikiRoot, ".indices", "graph-index.json");
+  try {
+    const raw = await readFile(graphPath, "utf8");
+    return JSON.parse(raw) as GraphIndex;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 /**
  * Save graph-index.json to the wiki's indices directory.
+ * Canonical path: wikiRoot/.indices/graph-index.json
  */
 export async function saveGraphIndex(wikiRoot: string, graph: GraphIndex): Promise<string> {
-  const dir = path.join(wikiRoot, ".teamwiki", ".indices");
+  const dir = path.join(wikiRoot, ".indices");
   await mkdir(dir, { recursive: true });
   const outPath = path.join(dir, "graph-index.json");
   await writeFile(outPath, JSON.stringify(graph, null, 2), "utf8");
