@@ -295,7 +295,7 @@ async function runPhaseComponents(
   log.info(`deep-enrich[${project}]: Phase 1 — 生成 ${pending.length} 个组件设计文档`);
 
   // 每批 2 个并发
-  const BATCH = 2;
+  const BATCH = 5;
   for (let i = 0; i < pending.length; i += BATCH) {
     const batch = pending.slice(i, i + BATCH);
     const tasks = batch.map((comp) => {

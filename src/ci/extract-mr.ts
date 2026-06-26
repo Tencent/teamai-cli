@@ -301,7 +301,7 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
         const facts = extractCodeFacts(files);
         const graph = buildCodeGraph(facts);
         graphChangeSummary = {
-          added: graph.nodes.map(n => `\`${n.kind}:${n.label}\` ← ${n.file}`),
+          added: graph.nodes.map(n => `\`${n.type}:${n.title}\` (${n.slug})`),
           removed: [],
         };
 

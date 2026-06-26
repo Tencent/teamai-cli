@@ -8,7 +8,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { CodeGraphIndex } from './wiki-engine/adapters/index.js';
+import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 
 export interface CodeKnowledgeResult {
   page: string;
@@ -29,22 +29,39 @@ interface PageDoc {
   title: string;
   content: string;
   tokens: string[];
+  tokenCount: number; // B10: raw (non-deduplicated) token count for BM25 dl
 }
 
 const BM25_K1 = 1.5;
 const BM25_B = 0.75;
 const TITLE_BOOST = 3.0;
-const RELATION_WEIGHT: Record<string, number> = { imports: 3, mentions: 1, contains: 1 };
+const RELATION_WEIGHT: Record<string, number> = { DEPENDS_ON: 3, REFERENCES: 2, MAPS_TO: 2, CONTAINS: 1 };
 const ENTRY_NODE_BOOST = 8;
 
 function tokenize(text: string): string[] {
   const tokens: string[] = [];
   const lower = text.toLowerCase();
-  const words = lower.split(/[^a-z0-9一-鿿]+/).filter((w) => w.length >= 2);
+  // Split camelCase before tokenizing (B4 fix: camelCase splitting)
+  const camelSplit = lower.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
+  const words = camelSplit.split(/[^a-z0-9一-鿿]+/).filter((w) => w.length >= 2);
   for (const w of words) {
     tokens.push(w);
   }
+  // B14: CJK bigram segmentation
+  const cjkRuns = lower.match(/[一-鿿]+/g) ?? [];
+  for (const run of cjkRuns) {
+    for (let i = 0; i < run.length - 1; i++) {
+      tokens.push(run.slice(i, i + 2));
+    }
+  }
   return [...new Set(tokens)];
+}
+
+/** Raw (non-deduplicated) token count for BM25 dl (B10 fix) */
+function rawTokenCount(text: string): number {
+  const lower = text.toLowerCase();
+  const camelSplit = lower.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
+  return camelSplit.split(/[^a-z0-9一-鿿]+/).filter((w) => w.length >= 2).length;
 }
 
 function countOccurrences(text: string, token: string): number {
@@ -65,7 +82,7 @@ function buildCorpusStats(pages: PageDoc[]): CorpusStats {
   let totalLength = 0;
 
   for (const page of pages) {
-    totalLength += page.tokens.length;
+    totalLength += page.tokenCount; // B10: use raw token count for avgDocLength
     const seen = new Set<string>();
     for (const token of page.tokens) {
       if (!seen.has(token)) {
@@ -84,7 +101,7 @@ function buildCorpusStats(pages: PageDoc[]): CorpusStats {
 
 function scoreBM25(page: PageDoc, queryTokens: string[], stats: CorpusStats): number {
   let score = 0;
-  const dl = page.tokens.length;
+  const dl = page.tokenCount; // B10: use raw count, not unique count
   const { totalDocs, avgDocLength, df } = stats;
 
   for (const token of queryTokens) {
@@ -99,13 +116,17 @@ function scoreBM25(page: PageDoc, queryTokens: string[], stats: CorpusStats): nu
   return score;
 }
 
-function findEntryNodes(queryTokens: string[], graph: CodeGraphIndex): Set<string> {
+/**
+ * B8 fix: Match graph nodes to pages by slug/title instead of raw file paths.
+ * Returns a set of node slugs that match the query.
+ */
+function findEntryNodes(queryTokens: string[], graph: GraphIndex): Set<string> {
   const entries = new Set<string>();
   for (const node of graph.nodes) {
-    const text = `${node.id} ${node.label}`.toLowerCase();
+    const text = `${node.slug} ${node.title}`.toLowerCase();
     for (const token of queryTokens) {
       if (token.length > 1 && text.includes(token)) {
-        entries.add(node.file);
+        entries.add(node.slug);
         break;
       }
     }
@@ -113,19 +134,52 @@ function findEntryNodes(queryTokens: string[], graph: CodeGraphIndex): Set<strin
   return entries;
 }
 
-function computeGraphBoost(pagePath: string, entryNodes: Set<string>, graph: CodeGraphIndex): number {
-  if (entryNodes.has(pagePath)) return ENTRY_NODE_BOOST;
+/**
+ * B8 fix: Match page paths to graph node slugs via title/filename matching.
+ * B24 fix: Use 2-hop neighbors (halved weight for second hop).
+ */
+function computeGraphBoost(page: PageDoc, entryNodes: Set<string>, graph: GraphIndex): number {
+  // Match page to graph nodes by title
+  const pageTitle = page.title.toLowerCase();
+  const pageFile = page.path.replace(/^evidence\/code\/[^/]+\//, '').replace('.md', '');
 
+  // Check if this page IS an entry node (by title or slug match)
+  for (const slug of entryNodes) {
+    const slugParts = slug.split('/');
+    const slugName = (slugParts.pop() ?? '').toLowerCase();
+    if (slugName && (pageTitle.includes(slugName) || pageFile.includes(slugName))) {
+      return ENTRY_NODE_BOOST;
+    }
+  }
+
+  // Check 1-hop and 2-hop neighbors
   let maxBoost = 0;
   for (const edge of graph.edges) {
-    let isNeighbor = false;
-    if (edge.from === pagePath && entryNodes.has(edge.to)) isNeighbor = true;
-    if (edge.to === pagePath && entryNodes.has(edge.from)) isNeighbor = true;
+    const isFrom = entryNodes.has(edge.from);
+    const isTo = entryNodes.has(edge.to);
+    if (!isFrom && !isTo) continue;
 
-    if (isNeighbor) {
+    const neighborSlug = isFrom ? edge.to : edge.from;
+    const neighborParts = neighborSlug.split('/');
+    const neighborName = (neighborParts.pop() ?? '').toLowerCase();
+
+    if (neighborName && (pageTitle.includes(neighborName) || pageFile.includes(neighborName))) {
       const relWeight = RELATION_WEIGHT[edge.relation] ?? 1;
-      const boost = relWeight * 0.8;
+      const boost = relWeight * 0.8; // 1-hop
       if (boost > maxBoost) maxBoost = boost;
+    }
+
+    // 2-hop: check neighbors of this neighbor (B24)
+    for (const edge2 of graph.edges) {
+      if (edge2.from !== neighborSlug && edge2.to !== neighborSlug) continue;
+      const hop2Slug = edge2.from === neighborSlug ? edge2.to : edge2.from;
+      const hop2Parts = hop2Slug.split('/');
+      const hop2Name = (hop2Parts.pop() ?? '').toLowerCase();
+      if (hop2Name && (pageTitle.includes(hop2Name) || pageFile.includes(hop2Name))) {
+        const relWeight = RELATION_WEIGHT[edge2.relation] ?? 1;
+        const boost = relWeight * 0.4; // 2-hop: half weight
+        if (boost > maxBoost) maxBoost = boost;
+      }
     }
   }
   return maxBoost;
@@ -180,6 +234,7 @@ async function loadWikiPages(wikiRoot: string): Promise<PageDoc[]> {
           title,
           content,
           tokens: tokenize(content),
+          tokenCount: rawTokenCount(content), // B10: raw count for BM25 dl
         });
       } catch {
         continue;
@@ -190,14 +245,10 @@ async function loadWikiPages(wikiRoot: string): Promise<PageDoc[]> {
   return pages;
 }
 
-async function loadGraphIndex(wikiRoot: string): Promise<CodeGraphIndex | null> {
-  const graphPath = path.join(wikiRoot, '.indices', 'graph-index.json');
-  try {
-    const raw = await readFile(graphPath, 'utf-8');
-    return JSON.parse(raw) as CodeGraphIndex;
-  } catch {
-    return null;
-  }
+// B7: Use protocol loadGraphIndex instead of local implementation
+async function loadGraph(wikiRoot: string): Promise<GraphIndex | null> {
+  const { loadGraphIndex } = await import('./wiki-engine/core/graph-index.schema.js');
+  return loadGraphIndex(wikiRoot);
 }
 
 export interface QueryCodeKnowledgeOptions {
@@ -215,7 +266,7 @@ export async function queryCodeKnowledge(
   const pages = await loadWikiPages(wikiRoot);
   if (pages.length === 0) return [];
 
-  const graph = await loadGraphIndex(wikiRoot);
+  const graph = await loadGraph(wikiRoot);
   const queryTokens = tokenize(query);
   if (queryTokens.length === 0) return [];
 
@@ -226,8 +277,7 @@ export async function queryCodeKnowledge(
   for (const page of pages) {
     let score = scoreBM25(page, queryTokens, stats);
     if (graph) {
-      const pageFile = page.path.replace(/^evidence\/code\/[^/]+\//, '').replace('.md', '');
-      score += computeGraphBoost(pageFile, entryNodes, graph);
+      score += computeGraphBoost(page, entryNodes, graph);
     }
     if (score > 0) {
       scored.push({ page, score });

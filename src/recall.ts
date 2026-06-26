@@ -283,6 +283,9 @@ export async function recall(
   const wikiRoot = path.join(process.cwd(), 'teamwiki');
   try {
     const codeResults = await queryCodeKnowledge(query, { wikiRoot, limit: 3, depth: options.depth });
+    // B11: Normalize BM25 scores to 0-10 range before merging with learnings scores
+    const maxCodeScore = codeResults.length > 0 ? Math.max(...codeResults.map(r => r.score)) : 1;
+    const normalizer = maxCodeScore > 0 ? 10 / maxCodeScore : 1;
     for (const cr of codeResults) {
       allResults.push({
         entry: {
@@ -297,7 +300,7 @@ export async function recall(
           domain: 'technical' as const,
           path: path.join(wikiRoot, cr.page),
         },
-        score: cr.score,
+        score: cr.score * normalizer, // B11: normalized to learnings score scale
         scope: 'project',
         learningsBase: wikiRoot,
       });

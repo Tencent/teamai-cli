@@ -164,13 +164,13 @@ export async function lintTeamwiki(opts: {
   // Graph health metrics
   let graphHealth = { nodeCount: 0, edgeCount: 0, orphanNodes: 0, connectivity: 0 };
   if (graph) {
-    const nodeIds = new Set(graph.nodes.map(n => n.id));
+    const nodeSlugs = new Set(graph.nodes.map(n => n.slug));
     const connectedNodes = new Set<string>();
     for (const edge of graph.edges) {
       connectedNodes.add(edge.from);
       connectedNodes.add(edge.to);
     }
-    const orphans = graph.nodes.filter(n => !connectedNodes.has(n.id) && !connectedNodes.has(n.file));
+    const orphans = graph.nodes.filter(n => !connectedNodes.has(n.slug));
     const connectivity = graph.nodes.length > 0
       ? (graph.nodes.length - orphans.length) / graph.nodes.length
       : 0;
