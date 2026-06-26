@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import fs from 'fs-extra';
 
 import { getGitHubToken } from './providers/github/gh-cli.js';
+import { gfGetOAuthToken } from './providers/tgit/gf-cli.js';
 import { log } from './utils/logger.js';
 
 // ─── Types ──────────────────────────────────────────────
@@ -34,6 +35,18 @@ export interface CloneResult {
  */
 function isSshUrl(url: string): boolean {
     return url.startsWith('git@') || (!url.includes('://') && url.includes(':'));
+}
+
+/**
+ * 将 HTTP/HTTPS URL 转换为 SSH 格式。
+ * 如 https://git.woa.com/HAI/hai_api.git → git@git.woa.com:HAI/hai_api.git
+ */
+function convertHttpToSsh(url: string): string {
+    const match = url.match(/^https?:\/\/([^/]+)\/(.+)$/);
+    if (match) {
+        return `git@${match[1]}:${match[2]}`;
+    }
+    return url;
 }
 
 /**
@@ -156,9 +169,9 @@ export async function shallowClone(
     let githubToken: string | undefined;
 
     if (forceSsh || isSshUrl(url)) {
-        cloneUrl = url;
+        cloneUrl = isSshUrl(url) ? url : convertHttpToSsh(url);
         cloneMethod = 'ssh';
-        log.debug(`shallowClone: 使用 SSH 克隆 ${url}`);
+        log.debug(`shallowClone: 使用 SSH 克隆 ${cloneUrl}`);
     } else if (forceAnonymous) {
         cloneUrl = url;
         cloneMethod = 'https-anonymous';
@@ -175,9 +188,21 @@ export async function shallowClone(
             cloneMethod = 'https-anonymous';
             log.debug(`shallowClone: 使用匿名 HTTPS 克隆 github 仓库`);
         }
+    } else if (provider === 'tgit') {
+        // TGit: 使用 OAuth token 嵌入 URL（netrc 非标准字段导致 git credential 不稳定）
+        const tgitToken = gfGetOAuthToken();
+        cloneUrl = url.replace(/^http:\/\//, 'https://');
+        if (tgitToken) {
+            cloneUrl = cloneUrl.replace('https://', `https://oauth2:${tgitToken}@`);
+            cloneMethod = 'https-token';
+            log.debug(`shallowClone: 使用 HTTPS+token 克隆 tgit 仓库`);
+        } else {
+            cloneMethod = 'https-anonymous';
+            log.debug(`shallowClone: 无 TGit token，尝试匿名 HTTPS 克隆`);
+        }
     } else {
-        // tgit 或其他 provider，依赖 ~/.netrc
-        cloneUrl = url;
+        // 其他 provider，依赖 ~/.netrc
+        cloneUrl = url.replace(/^http:\/\//, 'https://');
         cloneMethod = 'https-anonymous';
         log.debug(`shallowClone: 使用 HTTPS (~/.netrc) 克隆 ${provider} 仓库`);
     }

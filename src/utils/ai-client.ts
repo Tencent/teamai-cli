@@ -10,7 +10,7 @@ const ALLOWED_CLI_CANDIDATES = [
 const CLI_DETECT_TIMEOUT_MS = 5_000;
 
 /** 默认 AI 调用超时时间（毫秒）。仓库初始化等大文档生成场景需要较长时间。 */
-const DEFAULT_TIMEOUT_MS = 720_000;
+const DEFAULT_TIMEOUT_MS = 1200_000;
 
 /** 默认并发数量上限。 */
 const DEFAULT_CONCURRENCY = 3;

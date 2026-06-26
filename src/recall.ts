@@ -7,6 +7,8 @@ import { readFileSafe, writeFile, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, UserVotes, SearchIndex, LocalConfig } from './types.js';
 import { getTeamaiHome } from './types.js';
+import { queryCodeKnowledge } from './code-knowledge-recall.js';
+import type { CodeKnowledgeResult } from './code-knowledge-recall.js';
 
 /** Resolve votes dir dynamically (respects HOME changes in tests). */
 function getVotesLocalDir(): string {
@@ -221,7 +223,7 @@ async function loadOrBuildScopeIndex(
  */
 export async function recall(
   query: string,
-  options: GlobalOptions,
+  options: GlobalOptions & { depth?: 'route' | 'context' | 'lookup' },
 ): Promise<void> {
   if (!query || !query.trim()) {
     log.error('Usage: teamai recall <query>');
@@ -256,7 +258,8 @@ export async function recall(
     log.debug('recall: project scope not available');
   }
 
-  if (scopeIndexes.length === 0) {
+  const hasWiki = await pathExists(path.join(process.cwd(), 'teamwiki'));
+  if (scopeIndexes.length === 0 && !hasWiki) {
     log.info('No learnings available. Run `teamai pull` first to sync team knowledge.');
     return;
   }
@@ -274,6 +277,33 @@ export async function recall(
         allResults.push({ ...r, scope, learningsBase });
       }
     }
+  }
+
+  // ── Codebase knowledge graph recall ──────────────────────
+  const wikiRoot = path.join(process.cwd(), 'teamwiki');
+  try {
+    const codeResults = await queryCodeKnowledge(query, { wikiRoot, limit: 3, depth: options.depth });
+    for (const cr of codeResults) {
+      allResults.push({
+        entry: {
+          filename: cr.page,
+          title: cr.title,
+          author: '',
+          date: '',
+          tags: [],
+          tokens: [],
+          votes: 0,
+          type: 'docs' as const,
+          domain: 'technical' as const,
+          path: path.join(wikiRoot, cr.page),
+        },
+        score: cr.score,
+        scope: 'project',
+        learningsBase: wikiRoot,
+      });
+    }
+  } catch {
+    log.warn('recall: 代码图谱检索不可用，可运行 teamai codebase --lint 诊断');
   }
 
   // Re-sort merged results by score descending, then date descending
