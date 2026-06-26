@@ -147,18 +147,17 @@ const trackSlashHandler: HookHandler = {
 
 const contributeCheckHandler: HookHandler = {
   name: 'contribute-check',
-  async execute(stdin, _tool) {
+  async execute(stdin, tool) {
     const { contributeCheckForSession } = await import('./contribute-check.js');
+    const { formatStopHookOutput } = await import('./utils/hook-output.js');
 
-    // Derive session ID from STDIN
     const sessionId = typeof stdin.session_id === 'string' ? stdin.session_id : null;
     if (!sessionId) return null;
 
     const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
     const { hint } = await contributeCheckForSession(sessionId, cwd);
     if (hint) {
-      // Stop event format: { stopReason: "..." }
-      return JSON.stringify({ stopReason: hint });
+      return formatStopHookOutput(hint, tool);
     }
     return null;
   },

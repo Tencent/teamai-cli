@@ -13,12 +13,12 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { importFromMR } from '../import-mr.js';
-import { applyCodebaseSuggestions } from '../codebase.js';
+// applyCodebaseSuggestions removed: codebase updates now handled by teamwiki/ graph engine
 import { appendPendingReview } from '../review-store.js';
 import { pushRepoDirectly } from '../utils/git.js';
 import { log } from '../utils/logger.js';
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
-import { postOrUpdateMrComment, postIndividualComments, parseMrUrl } from './mr-comment.js';
+import { postOrUpdateMrComment, postIndividualComments, postCodebaseGraphComment, parseMrUrl } from './mr-comment.js';
 import { readRejections, shouldWrite } from './read-rejections.js';
 
 // ─── 类型 ────────────────────────────────────────────────
@@ -102,8 +102,13 @@ async function writeKnowledgeToRepo(
   writeMode: 'direct' | 'pending-review',
   mrUrl: string,
   dryRun?: boolean,
+  graphWritten?: boolean,
 ): Promise<void> {
   const changedFiles: string[] = [];
+
+  if (graphWritten) {
+    changedFiles.push('teamwiki');
+  }
 
   // 写入 learning
   if (learning) {
@@ -125,20 +130,11 @@ async function writeKnowledgeToRepo(
   }
 
   // 处理 codebase suggestions
+  // NOTE: direct 模式的 AI 重写已被 teamwiki/ 图谱增量更新替代（Phase 3.3）
+  // suggestions 仅在 pending-review 模式下写入 jsonl 供人工审阅
   if (suggestions && suggestions.length > 0) {
     if (writeMode === 'direct') {
-      const codebasePath = path.join(teamRepo, 'docs', 'codebase.md');
-      try {
-        const existing = await fs.readFile(codebasePath, 'utf-8');
-        const updated = await applyCodebaseSuggestions(existing, suggestions);
-        if (!dryRun) {
-          await fs.writeFile(codebasePath, updated, 'utf-8');
-        }
-        log.success('Codebase.md 已更新');
-        changedFiles.push('docs/codebase.md');
-      } catch {
-        log.warn('docs/codebase.md 不存在或读取失败，跳过 codebase 更新');
-      }
+      log.debug('Codebase suggestions (direct mode): 图谱变更已在 comment/write 阶段处理，跳过 AI 重写');
     } else {
       // pending-review 模式
       for (const s of suggestions) {
@@ -243,15 +239,16 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
   }
 
   // 执行 comment
+  // NOTE: codebase suggestions 不再作为独立 comment 发布，已被图谱变更 comment 替代
   if (opts.mode === 'comment' || opts.mode === 'both') {
     if (opts.individualComments) {
-      const { posted } = await postIndividualComments(opts.url, learning, suggestions, opts.dryRun);
+      const { posted } = await postIndividualComments(opts.url, learning, undefined, opts.dryRun);
       log.success(`已发布 ${posted} 条独立建议 comment`);
     } else {
       const result = await postOrUpdateMrComment(
         opts.url,
         learning,
-        suggestions,
+        undefined,
         opts.commentMarker,
         opts.dryRun,
       );
@@ -264,6 +261,57 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
         log.info(`Comment URL: ${result.url}`);
       }
     }
+  }
+
+  // ── Codebase 图谱变更 ──────────────────────────────────────
+  let graphChangeSummary: { added: string[]; removed: string[] } | undefined;
+  try {
+    const { collectCode, extractCodeFacts, buildCodeGraph } = await import('../wiki-engine/adapters/index.js');
+    const { execFileSync } = await import('node:child_process');
+    const businessRepo = process.cwd();
+
+    // 从 git 获取当前 MR/PR 的变更文件列表
+    // 尝试多种方式，兼容 shallow clone（depth=1 时 HEAD~1 不存在）
+    let changedFiles: string[] = [];
+    const diffCommands = [
+      ['diff', '--name-only', 'HEAD~1', 'HEAD'],
+      ['show', '--name-only', '--format=', 'HEAD'],
+      ['diff', '--name-only', 'origin/master...HEAD'],
+    ];
+    for (const args of diffCommands) {
+      try {
+        const diffOutput = execFileSync(
+          'git', args,
+          { cwd: businessRepo, encoding: 'utf-8', timeout: 10_000 },
+        );
+        changedFiles = diffOutput.trim().split('\n')
+          .filter(f => f && /\.(ts|tsx|js|jsx|py|go|rs|java)$/.test(f));
+        if (changedFiles.length > 0) break;
+      } catch {
+        continue;
+      }
+    }
+    if (changedFiles.length === 0) {
+      log.debug('[codebase-graph] 所有 git diff 方式均失败或无源文件变更');
+    }
+
+    if (changedFiles.length > 0) {
+      const { files } = await collectCode({ root: businessRepo, changedFiles, maxFiles: 50 });
+      if (files.length > 0) {
+        const facts = extractCodeFacts(files);
+        const graph = buildCodeGraph(facts);
+        graphChangeSummary = {
+          added: graph.nodes.map(n => `\`${n.kind}:${n.label}\` ← ${n.file}`),
+          removed: [],
+        };
+
+        if ((opts.mode === 'comment' || opts.mode === 'both') && graphChangeSummary.added.length > 0) {
+          await postCodebaseGraphComment(opts.url, graphChangeSummary, opts.dryRun);
+        }
+      }
+    }
+  } catch (err) {
+    log.debug(`[codebase-graph] 图谱变更提取失败（非阻塞）: ${err instanceof Error ? err.message : err}`);
   }
 
   // 执行 write
@@ -296,6 +344,43 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
       }
     }
 
+    // ── 图谱变更写入 team-repo/teamwiki/ ───────────────────
+    let graphWritten = false;
+    if (graphChangeSummary && graphChangeSummary.added.length > 0 && !opts.dryRun) {
+      let graphRejected = false;
+      if (opts.individualComments) {
+        const parsed = parseMrUrl(opts.url);
+        const rejections = await readRejections(opts.url);
+        if (!shouldWrite('codebase-graph', rejections, parsed.provider)) {
+          graphRejected = true;
+          log.info('Codebase 图谱变更被 reject，跳过写入');
+        }
+      }
+
+      if (!graphRejected) {
+        try {
+          const { extractCodebase } = await import('../codebase-extract.js');
+          const businessRepo = process.cwd();
+          const parsed = parseMrUrl(opts.url);
+          const projectName = parsed.repo;
+
+          await extractCodebase({ path: businessRepo, project: projectName });
+
+          const fse = await import('fs-extra');
+          const srcWiki = path.join(businessRepo, 'teamwiki');
+          const teamWikiRoot = path.join(path.resolve(opts.teamRepo!), 'teamwiki');
+          if (await fse.pathExists(srcWiki)) {
+            await fse.copy(srcWiki, teamWikiRoot, { overwrite: true });
+            await fse.remove(srcWiki).catch(() => {});
+            graphWritten = true;
+            log.success(`teamwiki/ 图谱已更新到团队仓库`);
+          }
+        } catch (err) {
+          log.debug(`[codebase-graph] 图谱写入失败（非阻塞）: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+    }
+
     await writeKnowledgeToRepo(
       opts.teamRepo!,
       filteredLearning,
@@ -303,6 +388,7 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
       opts.writeMode ?? 'direct',
       opts.url,
       opts.dryRun,
+      graphWritten,
     );
   }
 

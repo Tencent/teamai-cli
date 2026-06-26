@@ -5,10 +5,14 @@
  * 分类、审查、推送均复用 import-local.ts 的现有函数。
  */
 
+import path from 'node:path';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
+
 import { classifyWithAI, interactiveReview, pushAccepted } from './import-local.js';
 import { IWikiClient } from './utils/iwiki-client.js';
 import type { IWikiDocument, IWikiPage } from './utils/iwiki-client.js';
 import { log, spinner } from './utils/logger.js';
+import { pathExists } from './utils/fs.js';
 
 // ─── 内部辅助函数 ──────────────────────────────────────────────
 
@@ -193,5 +197,167 @@ export async function importFromIWiki(opts: {
     outputDir: opts.outputDir,
   });
 
+  // 10. 与 teamwiki 代码知识建立 MAPS_TO 关系（在 push 之前，确保结果被推送）
+  const teamwikiRoot = path.join(repoPath, 'teamwiki');
+  if (await pathExists(path.join(teamwikiRoot, '.indices', 'graph-index.json'))) {
+    try {
+      const mapsToEdges = await reconcileIwikiWithCodebase(documents, teamwikiRoot);
+      if (mapsToEdges.length > 0) {
+        log.success(`建立 ${mapsToEdges.length} 条 iWiki↔代码 MAPS_TO 关系`);
+      } else {
+        log.info('[reconcile] 未发现 iWiki 文档与代码知识的匹配关系（文档内容可能与代码无关）');
+      }
+    } catch (err) {
+      log.debug(`[reconcile] iWiki↔代码关系建立失败（非阻塞）: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  // 11. 自动推送所有产物到团队仓库
+  if (!opts.dryRun) {
+    const { autoPushTeamRepo } = await import('./utils/git.js');
+    await autoPushTeamRepo(repoPath, `[teamai] Import from iWiki: ${documents.map(d => d.title).slice(0, 3).join(', ')}`);
+  }
+
   log.success('iWiki 导入完成');
+}
+
+// ─── iWiki↔Codebase Reconciliation ────────────────────────────
+
+interface MapsToEdge {
+  from: string;
+  to: string;
+  relation: 'MAPS_TO';
+  term: string;
+  confidence: number;
+}
+
+/**
+ * 将 iWiki 文档与 teamwiki 代码知识图谱进行对账，建立 MAPS_TO 关系。
+ *
+ * 基于 team-wiki reconciler 的核心逻辑（by @lurkacai）：
+ * - 从文档中提取关键术语（API path、类名、模块名）
+ * - 在代码事实页面中搜索匹配
+ * - 匹配成功则建立 MAPS_TO 边
+ */
+async function reconcileIwikiWithCodebase(
+  documents: IWikiDocument[],
+  teamwikiRoot: string,
+): Promise<MapsToEdge[]> {
+  const graphPath = path.join(teamwikiRoot, '.indices', 'graph-index.json');
+  const graphRaw = await readFile(graphPath, 'utf-8');
+  const graph = JSON.parse(graphRaw);
+
+  // 收集代码节点的标签用于匹配
+  const codeLabels = new Map<string, string>();
+  for (const node of graph.nodes) {
+    codeLabels.set(node.label.toLowerCase(), node.id);
+    // 也索引 PascalCase 拆分后的单词
+    const words = node.label.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+    codeLabels.set(words, node.id);
+  }
+
+  // 加载代码事实页面内容用于全文匹配
+  const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code');
+  const codePageContents = new Map<string, string>();
+  if (await pathExists(evidenceDir)) {
+    const { readdir } = await import('node:fs/promises');
+    const projects = await readdir(evidenceDir);
+    for (const project of projects) {
+      const projectDir = path.join(evidenceDir, project);
+      const files = await readdir(projectDir).catch(() => [] as string[]);
+      for (const file of files) {
+        if (!file.endsWith('.md')) continue;
+        const content = await readFile(path.join(projectDir, file), 'utf-8').catch(() => '');
+        codePageContents.set(`evidence/code/${project}/${file}`, content);
+      }
+    }
+  }
+
+  const mapsToEdges: MapsToEdge[] = [];
+  const edgeSet = new Set<string>();
+
+  for (const doc of documents) {
+    const docSlug = `iwiki/p/${doc.docid}`;
+    const terms = extractKeyTermsFromDoc(doc.content);
+
+    for (const term of terms) {
+      // 方式 1：术语直接匹配代码节点标签
+      const directMatch = codeLabels.get(term.toLowerCase());
+      if (directMatch) {
+        const key = `${docSlug}|${directMatch}`;
+        if (!edgeSet.has(key)) {
+          edgeSet.add(key);
+          mapsToEdges.push({ from: docSlug, to: directMatch, relation: 'MAPS_TO', term, confidence: 0.8 });
+        }
+        continue;
+      }
+
+      // 方式 2：术语在代码事实页面全文中出现
+      for (const [pagePath, content] of codePageContents) {
+        if (content.toLowerCase().includes(term.toLowerCase()) && term.length > 3) {
+          const key = `${docSlug}|${pagePath}`;
+          if (!edgeSet.has(key)) {
+            edgeSet.add(key);
+            mapsToEdges.push({ from: docSlug, to: pagePath, relation: 'MAPS_TO', term, confidence: 0.6 });
+          }
+          break; // 每个术语最多匹配一个 code page
+        }
+      }
+    }
+  }
+
+  // 写入 graph-index.json（去重：按 from+to+relation 三元组）
+  if (mapsToEdges.length > 0) {
+    const existingKeys = new Set(
+      graph.edges.map((e: { from: string; to: string; relation: string }) => `${e.from}|${e.to}|${e.relation}`),
+    );
+    for (const edge of mapsToEdges) {
+      const key = `${edge.from}|${edge.to}|${edge.relation}`;
+      if (!existingKeys.has(key)) {
+        existingKeys.add(key);
+        graph.edges.push(edge);
+      }
+    }
+    await writeFile(graphPath, JSON.stringify(graph, null, 2), 'utf-8');
+  }
+
+  return mapsToEdges;
+}
+
+/**
+ * 从文档内容中提取关键术语，用于与代码知识匹配。
+ *
+ * 提取规则：
+ * - API 路径：/api/v1/xxx 形式
+ * - 代码标识符：PascalCase 或 camelCase 标识符
+ * - 反引号包裹的代码片段
+ */
+function extractKeyTermsFromDoc(content: string): string[] {
+  const terms = new Set<string>();
+
+  // API 路径
+  const apiPaths = content.match(/\/api\/[a-z0-9/_-]+/gi);
+  if (apiPaths) {
+    for (const p of apiPaths) terms.add(p);
+  }
+
+  // 反引号内的代码标识符（任意格式：PascalCase、camelCase、snake_case）
+  const codeRefs = content.matchAll(/`([a-zA-Z_][a-zA-Z0-9_]{2,})`/g);
+  for (const m of codeRefs) {
+    if (m[1]) terms.add(m[1]);
+  }
+
+  // PascalCase 标识符（独立出现）
+  const pascalMatches = content.matchAll(/(?:^|[\s(,])([A-Z][a-z]+(?:[A-Z][a-z]+)+)/gm);
+  for (const m of pascalMatches) {
+    if (m[1]) terms.add(m[1]);
+  }
+
+  // snake_case 标识符（2+ 段，如 user_token、create_session）
+  const snakeMatches = content.matchAll(/\b([a-z][a-z0-9]+(?:_[a-z0-9]+){1,})\b/g);
+  for (const m of snakeMatches) {
+    if (m[1] && m[1].length > 4) terms.add(m[1]);
+  }
+
+  return [...terms];
 }
