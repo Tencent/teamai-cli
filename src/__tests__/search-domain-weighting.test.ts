@@ -149,6 +149,41 @@ describe('domain-weighted search scoring', () => {
     expect(overrideResult!.score).toBeGreaterThan(normalResult!.score);
   });
 
+  it('support-domain query boosts support entries above neutral (query domain inferred from support tokens)', async () => {
+    // inferQueryDomain must recognise SUPPORT_TAGS (faq/onboarding/guide/…).
+    // A query made of support tokens should be classified as a 'support' query,
+    // so a support entry (DOMAIN_WEIGHT.support.support = 1.0) outranks a neutral
+    // entry (DOMAIN_WEIGHT.support.neutral = 0.85) even with an equal raw score.
+    // Both entries below are identical except for their frontmatter domain.
+    const learningsDir = path.join(tmpDir, 'learnings');
+    await fse.ensureDir(learningsDir);
+
+    await fse.writeFile(
+      path.join(learningsDir, 'onboarding-faq-support.md'),
+      '---\ntitle: "onboarding faq"\ndomain: support\n---\nDetails.\n',
+    );
+    await fse.writeFile(
+      path.join(learningsDir, 'onboarding-faq-neutral.md'),
+      '---\ntitle: "onboarding faq"\ndomain: neutral\n---\nDetails.\n',
+    );
+
+    await buildIndex({ learningsDir, indexPath });
+    const index = await loadIndex(indexPath);
+    expect(index).not.toBeNull();
+
+    // "onboarding" and "faq" are both SUPPORT_TAGS → query domain = support
+    const results = search('onboarding faq', index!);
+    expect(results.length).toBe(2);
+
+    const supportEntry = results.find((r) => r.entry.domain === 'support');
+    const neutralEntry = results.find((r) => r.entry.domain === 'neutral');
+    expect(supportEntry).toBeDefined();
+    expect(neutralEntry).toBeDefined();
+
+    expect(supportEntry!.score).toBeGreaterThan(neutralEntry!.score);
+    expect(results[0].entry.domain).toBe('support');
+  });
+
   it('built index carries domain field on every entry (version 4)', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
     await fse.ensureDir(learningsDir);
