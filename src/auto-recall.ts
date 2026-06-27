@@ -421,6 +421,48 @@ interface HookInput {
 }
 
 /**
+ * Build a {@link HookInput} from an already-parsed STDIN object.
+ *
+ * Factored out of {@link readStdin} so callers that already hold the parsed
+ * JSON (notably the hook dispatcher, which reads STDIN once and fans out to
+ * every handler) can construct the input directly instead of re-reading the
+ * now-drained `process.stdin` stream.
+ */
+export function parseHookInput(data: Record<string, unknown>): HookInput {
+    const toolName = typeof data.tool_name === 'string' ? data.tool_name : '';
+
+    // Parse tool_input (the parameters passed to the tool)
+    const rawInput = data.tool_input;
+    const toolInput: Record<string, unknown> =
+        rawInput !== null && typeof rawInput === 'object' && !Array.isArray(rawInput)
+            ? rawInput as Record<string, unknown>
+            : {};
+
+    // Claude Code PostToolUse STDIN format:
+    //   { tool_name, tool_input, tool_response: { stdout, stderr } }
+    // Other formats may use tool_output or tool_result directly.
+    const toolResponse = data.tool_response as Record<string, unknown> | undefined;
+    const toolOutput = typeof data.tool_output === 'string'
+        ? data.tool_output
+        : typeof data.tool_result === 'string'
+            ? data.tool_result
+            : toolResponse
+                ? [
+                    typeof toolResponse.stdout === 'string' ? toolResponse.stdout : '',
+                    typeof toolResponse.stderr === 'string' ? toolResponse.stderr : '',
+                ].filter(Boolean).join('\n')
+                : '';
+
+    // Derive session ID (same logic as contribute-check)
+    const sessionId =
+        (typeof data.session_id === 'string' && data.session_id) ||
+        process.env.CLAUDE_SESSION_ID ||
+        `pid-${process.ppid ?? process.pid}`;
+
+    return { toolName, toolInput, toolOutput, sessionId };
+}
+
+/**
  * Read and parse STDIN hook JSON.
  * Returns null if STDIN is a TTY or JSON is invalid.
  */
@@ -436,38 +478,7 @@ export async function readStdin(): Promise<HookInput | null> {
 
     try {
         const data = JSON.parse(raw) as Record<string, unknown>;
-
-        const toolName = typeof data.tool_name === 'string' ? data.tool_name : '';
-
-        // Parse tool_input (the parameters passed to the tool)
-        const rawInput = data.tool_input;
-        const toolInput: Record<string, unknown> =
-            rawInput !== null && typeof rawInput === 'object' && !Array.isArray(rawInput)
-                ? rawInput as Record<string, unknown>
-                : {};
-
-        // Claude Code PostToolUse STDIN format:
-        //   { tool_name, tool_input, tool_response: { stdout, stderr } }
-        // Other formats may use tool_output or tool_result directly.
-        const toolResponse = data.tool_response as Record<string, unknown> | undefined;
-        const toolOutput = typeof data.tool_output === 'string'
-            ? data.tool_output
-            : typeof data.tool_result === 'string'
-                ? data.tool_result
-                : toolResponse
-                    ? [
-                        typeof toolResponse.stdout === 'string' ? toolResponse.stdout : '',
-                        typeof toolResponse.stderr === 'string' ? toolResponse.stderr : '',
-                    ].filter(Boolean).join('\n')
-                    : '';
-
-        // Derive session ID (same logic as contribute-check)
-        const sessionId =
-            (typeof data.session_id === 'string' && data.session_id) ||
-            process.env.CLAUDE_SESSION_ID ||
-            `pid-${process.ppid ?? process.pid}`;
-
-        return { toolName, toolInput, toolOutput, sessionId };
+        return parseHookInput(data);
     } catch {
         return null;
     }
@@ -492,19 +503,24 @@ export async function readStdin(): Promise<HookInput | null> {
  * Output: STDOUT JSON with hookSpecificOutput.additionalContext when matching results found.
  * Claude Code reads additionalContext and passes it to AI as context.
  */
-export async function autoRecall(): Promise<void> {
+export async function autoRecall(input?: HookInput | null): Promise<void> {
     // ─── Eval harness: disable flag ────────────────────
     if (process.env.TEAMAI_RECALL_DISABLED === '1') {
         return;
     }
 
-    const input = await readStdin();
-    if (!input) {
+    // Accept a pre-parsed input when the caller already has it (the hook
+    // dispatcher reads STDIN once and passes the parsed object through).
+    // Fall back to reading STDIN for the legacy `teamai auto-recall --stdin`
+    // command path. Without this, the dispatcher's drained process.stdin would
+    // yield no data and auto-recall would never fire.
+    const resolved = input ?? (await readStdin());
+    if (!resolved) {
         log.debug('auto-recall: no STDIN data');
         return;
     }
 
-    const { toolName, toolInput, toolOutput, sessionId } = input;
+    const { toolName, toolInput, toolOutput, sessionId } = resolved;
 
     // Fast path: unknown tools → exit immediately
     if (!RECALL_TOOLS.has(toolName)) {
