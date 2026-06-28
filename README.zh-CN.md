@@ -92,7 +92,7 @@ CLI 会根据用户传入的 repo URL 自动选择 provider：
 | `teamai review [id] [--apply \| --reject \| --all-apply]` | 浏览并处理 `.teamai/pending-review.jsonl` 中的待审 codebase 变更；`--apply` 通过章节锚点原地写入 |
 | `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | 浏览并处理域漂移信号；`--apply` 把仓库重新归类到推荐域并刷新聚合视图 |
 | `teamai digest` | 生成团队 AI 使用周报（skill 排行、新增/更新 skill、session 摘要） |
-| `teamai hooks` | 管理 AI 工具 hooks（list / inject / remove） |
+| `teamai hooks` | 管理 AI 工具 hooks（`list` 查看安装状态；`inject`/`remove` 更新配置） |
 | `teamai ci extract-mr --url <url> [--mode comment\|write\|both] [--individual-comments]` | CI 流水线集成：从 MR/PR 中提取知识，发布为评论，合并后写入团队知识仓库。使用 `--individual-comments` 时每条建议单独发布，支持 reaction/reject 交互（GitHub 👎 / TGit ☝️） |
 | `teamai uninstall [--force]` | 卸载 teamai：移除 hooks、rules、skills、env、docs、~/.teamai/ |
 | `teamai doctor` | 诊断配置问题 |

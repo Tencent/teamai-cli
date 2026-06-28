@@ -200,12 +200,31 @@ function buildCursorHooks(tool: string): Record<string, CursorHookEntry[]> {
 // ─── Tool format detection ──────────────────────────────────
 
 type ToolFormat = 'claude' | 'cursor';
+export type HookStatus = 'installed' | 'missing';
 
 const CURSOR_TOOLS = new Set(['cursor']);
 
 function detectFormat(tool: string): ToolFormat {
   if (CURSOR_TOOLS.has(tool)) return 'cursor';
   return 'claude';
+}
+
+function hasExpectedClaudeHook(settings: ClaudeSettingsJson, def: ClaudeHookDef): boolean {
+  const matchers = settings.hooks?.[def.eventType] ?? [];
+  const expectedCmd = def.hook.hooks[0].command;
+  const expectedMatcher = def.hook.matcher;
+
+  return matchers.some((h) =>
+    h.matcher === expectedMatcher &&
+    h.hooks?.some((hook) => hook.command === expectedCmd),
+  );
+}
+
+function hasExpectedCursorHook(entries: CursorHookEntry[], expected: CursorHookEntry): boolean {
+  return entries.some((entry) =>
+    entry.command === expected.command &&
+    entry.matcher === expected.matcher,
+  );
 }
 
 function extractTeamaiSubcommand(command: string): string | null {
@@ -494,6 +513,37 @@ export async function removeHooks(settingsPath: string, tool?: string): Promise<
     // Both claude and codebuddy use the same settings.json structure for removal
     await removeClaudeHooks(settingsPath);
   }
+}
+
+/**
+ * Report whether the current teamai hook set is present in a tool settings file.
+ */
+export async function getHookStatus(settingsPath: string, tool?: string): Promise<HookStatus> {
+  const toolName = tool ?? 'claude';
+  const format = detectFormat(toolName);
+  const expanded = expandHome(settingsPath);
+
+  if (format === 'cursor') {
+    const hooksJson = await readJson<CursorHooksJson>(expanded);
+    if (!hooksJson?.hooks) return 'missing';
+
+    const desiredHooks = buildCursorHooks(toolName);
+    const installed = Object.entries(desiredHooks).every(([event, expectedEntries]) => {
+      const entries = hooksJson.hooks[event] ?? [];
+      return expectedEntries.every((expected) => hasExpectedCursorHook(entries, expected));
+    });
+
+    return installed ? 'installed' : 'missing';
+  }
+
+  const settings = await readJson<ClaudeSettingsJson>(expanded);
+  if (!settings?.hooks) return 'missing';
+
+  const installed = getClaudeHooks(toolName).every((def) =>
+    hasExpectedClaudeHook(settings, def),
+  );
+
+  return installed ? 'installed' : 'missing';
 }
 
 /**
