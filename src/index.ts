@@ -409,6 +409,15 @@ const hooksCmd = program
   .description('Manage teamai hooks in AI tool settings');
 
 hooksCmd
+  .command('list')
+  .description('List teamai hook installation status')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { hooksList } = await import('./hooks-cmd.js');
+    await hooksList(globalOpts);
+  });
+
+hooksCmd
   .command('inject')
   .description('Inject teamai hooks into all AI tool settings')
   .option('--silent', 'Silent mode (suppress success message)')

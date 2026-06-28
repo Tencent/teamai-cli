@@ -8,6 +8,7 @@ vi.mock('../config.js', () => ({
 }));
 
 vi.mock('../hooks.js', () => ({
+    getHookStatus: vi.fn(),
     injectHooksToAllTools: vi.fn(),
     removeHooks: vi.fn(),
 }));
@@ -25,11 +26,12 @@ vi.mock('../utils/logger.js', () => ({
 // ── Imports (after mocks) ────────────────────────────────
 
 import { autoDetectInit } from '../config.js';
-import { injectHooksToAllTools, removeHooks } from '../hooks.js';
+import { getHookStatus, injectHooksToAllTools, removeHooks } from '../hooks.js';
 import { log } from '../utils/logger.js';
-import { hooksInject, hooksRemove } from '../hooks-cmd.js';
+import { hooksInject, hooksList, hooksRemove } from '../hooks-cmd.js';
 
 const mockedAutoDetectInit = autoDetectInit as Mock;
+const mockedGetHookStatus = getHookStatus as Mock;
 const mockedInjectHooksToAllTools = injectHooksToAllTools as Mock;
 const mockedRemoveHooks = removeHooks as Mock;
 const mockedLog = log as unknown as {
@@ -52,6 +54,7 @@ const mockTeamConfig = {
         claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
         'claude-internal': { settings: '.claude-internal/settings.json', skills: '.claude-internal/skills' },
         cursor: { settings: '.cursor/hooks.json', skills: '.cursor/skills' },
+        codex: { skills: '.codex/skills' },
     },
 };
 
@@ -72,6 +75,7 @@ function mockHome(home: string): () => void {
 beforeEach(() => {
     vi.clearAllMocks();
     mockedAutoDetectInit.mockResolvedValue({ localConfig: mockLocalConfig, teamConfig: mockTeamConfig });
+    mockedGetHookStatus.mockResolvedValue('missing');
     mockedInjectHooksToAllTools.mockResolvedValue(undefined);
     mockedRemoveHooks.mockResolvedValue(undefined);
 });
@@ -131,6 +135,81 @@ describe('hooksInject', () => {
             mockTeamConfig.toolPaths,
             '/home/testuser',
         );
+    });
+});
+
+describe('hooksList', () => {
+    it('should list hook status for configured tools', async () => {
+        const restoreHome = mockHome('/home/testuser');
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+        mockedGetHookStatus
+            .mockResolvedValueOnce('installed')
+            .mockResolvedValueOnce('missing')
+            .mockResolvedValueOnce('installed');
+
+        try {
+            await hooksList({});
+
+            expect(mockedGetHookStatus).toHaveBeenCalledTimes(3);
+            expect(mockedGetHookStatus).toHaveBeenCalledWith(
+                path.join('/home/testuser', '.claude/settings.json'),
+                'claude',
+            );
+            expect(mockedGetHookStatus).toHaveBeenCalledWith(
+                path.join('/home/testuser', '.claude-internal/settings.json'),
+                'claude-internal',
+            );
+            expect(mockedGetHookStatus).toHaveBeenCalledWith(
+                path.join('/home/testuser', '.cursor/hooks.json'),
+                'cursor',
+            );
+
+            const output = consoleLog.mock.calls.map((call) => String(call[0])).join('\n');
+            expect(output).toContain('claude');
+            expect(output).toContain('installed');
+            expect(output).toContain('claude-internal');
+            expect(output).toContain('missing');
+            expect(output).toContain('codex');
+            expect(output).toContain('not configured');
+            expect(output).toContain('no settings configured');
+        } finally {
+            restoreHome();
+            consoleLog.mockRestore();
+        }
+    });
+
+    it('should list project and user base dirs when project config detected', async () => {
+        const restoreHome = mockHome('/home/testuser');
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+        const projectConfig = {
+            ...mockLocalConfig,
+            scope: 'project',
+            projectRoot: '/path/to/project',
+        };
+        mockedAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig: mockTeamConfig });
+
+        try {
+            await hooksList({});
+
+            expect(mockedGetHookStatus).toHaveBeenCalledTimes(6);
+            expect(mockedGetHookStatus).toHaveBeenCalledWith(
+                path.join('/path/to/project', '.claude/settings.json'),
+                'claude',
+            );
+            expect(mockedGetHookStatus).toHaveBeenCalledWith(
+                path.join('/home/testuser', '.claude/settings.json'),
+                'claude',
+            );
+        } finally {
+            restoreHome();
+            consoleLog.mockRestore();
+        }
+    });
+
+    it('should propagate error when not initialized', async () => {
+        mockedAutoDetectInit.mockRejectedValue(new Error('teamai is not initialized'));
+
+        await expect(hooksList({})).rejects.toThrow('not initialized');
     });
 });
 

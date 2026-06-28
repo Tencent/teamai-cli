@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'node:path';
 
 // ── Mocks ────────────────────────────────────────────────
 
@@ -23,7 +24,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { injectHooks, removeHooks, injectHooksToAllTools, TEAMAI_HOOK_SUBCOMMANDS, TEAMAI_LEGACY_HOOK_SUBCOMMANDS, CLAUDE_TO_CURSOR_EVENTS } from '../hooks.js';
+import { getHookStatus, injectHooks, removeHooks, injectHooksToAllTools, TEAMAI_HOOK_SUBCOMMANDS, TEAMAI_LEGACY_HOOK_SUBCOMMANDS, CLAUDE_TO_CURSOR_EVENTS } from '../hooks.js';
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -338,17 +339,19 @@ describe('hooks', () => {
       const originalHome = process.env.HOME;
       process.env.HOME = '/test-home';
 
-      await injectHooksToAllTools({
-        claude: { settings: '.claude/settings.json' },
-        codex: {},
-        cursor: { settings: '.cursor/hooks.json' },
-      });
+      try {
+        await injectHooksToAllTools({
+          claude: { settings: '.claude/settings.json' },
+          codex: {},
+          cursor: { settings: '.cursor/hooks.json' },
+        });
 
-      expect(mockFiles['/test-home/.claude/settings.json']).toBeDefined();
-      expect(mockFiles['/test-home/.cursor/hooks.json']).toBeDefined();
-      expect(Object.keys(mockFiles)).toHaveLength(2);
-
-      process.env.HOME = originalHome;
+        expect(mockFiles[path.join('/test-home', '.claude/settings.json')]).toBeDefined();
+        expect(mockFiles[path.join('/test-home', '.cursor/hooks.json')]).toBeDefined();
+        expect(Object.keys(mockFiles)).toHaveLength(2);
+      } finally {
+        process.env.HOME = originalHome;
+      }
     });
   });
 
@@ -475,6 +478,26 @@ describe('hooks', () => {
       expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('dashboard-report');
       expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('contribute-check');
       expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('auto-recall');
+    });
+  });
+
+  describe('getHookStatus', () => {
+    it('reports installed for current Claude hooks', async () => {
+      await injectHooks('/test/settings.json', 'claude');
+
+      await expect(getHookStatus('/test/settings.json', 'claude')).resolves.toBe('installed');
+    });
+
+    it('reports installed for current Cursor hooks', async () => {
+      await injectHooks('/test/hooks.json', 'cursor');
+
+      await expect(getHookStatus('/test/hooks.json', 'cursor')).resolves.toBe('installed');
+    });
+
+    it('reports missing when settings exist without teamai hooks', async () => {
+      mockFiles['/test/settings.json'] = { hooks: {} };
+
+      await expect(getHookStatus('/test/settings.json', 'claude')).resolves.toBe('missing');
     });
   });
 

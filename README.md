@@ -92,7 +92,7 @@ The CLI picks a provider automatically from the repo URL:
 | `teamai review [id] [--apply \| --reject \| --all-apply]` | Inspect and process pending codebase changes from `.teamai/pending-review.jsonl`; `--apply` patches in place via section anchors |
 | `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | Inspect and resolve domain-drift signals; `--apply` reassigns the repo to the recommended domain and refreshes the aggregate views |
 | `teamai digest` | Generate a team AI usage weekly digest (skill leaderboard, new/updated skills, session summaries) |
-| `teamai hooks` | Manage AI-tool hooks (list / inject / remove) |
+| `teamai hooks` | Manage AI-tool hooks (`list` shows installation status; `inject`/`remove` update settings) |
 | `teamai ci extract-mr --url <url> [--mode comment\|write\|both] [--individual-comments]` | CI pipeline integration: extract knowledge from MR/PR, post as comments, and write to team repo after merge. With `--individual-comments`, each suggestion is posted separately with reaction/reject support (GitHub 👎 / TGit ☝️) |
 | `teamai uninstall [--force]` | Uninstall teamai: remove hooks, rules, skills, env, docs, and `~/.teamai/` |
 | `teamai doctor` | Diagnose configuration problems |
