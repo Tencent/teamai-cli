@@ -105,14 +105,18 @@ const DOMAIN_WEIGHT: Record<KnowledgeDomain, Record<KnowledgeDomain, number>> = 
 function inferQueryDomain(queryTokens: string[]): KnowledgeDomain {
   let techScore = 0;
   let opsScore = 0;
+  let supportScore = 0;
   for (const t of queryTokens) {
     if (TECHNICAL_TAGS.has(t)) techScore++;
     if (OPS_TAGS.has(t)) opsScore++;
+    if (SUPPORT_TAGS.has(t)) supportScore++;
   }
-  if (opsScore > techScore) return 'ops';
-  if (techScore > opsScore) return 'technical';
-  if (techScore > 0) return 'technical'; // tie \u2192 technical
-  return 'neutral';
+  const maxScore = Math.max(techScore, opsScore, supportScore);
+  if (maxScore === 0) return 'neutral';
+  // Tie-breaking mirrors inferDomain: technical > ops > support.
+  if (techScore === maxScore) return 'technical';
+  if (opsScore === maxScore) return 'ops';
+  return 'support';
 }
 
 // Type bonuses: skills/rules already represent curated, high-confidence knowledge.
