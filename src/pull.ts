@@ -48,7 +48,7 @@ async function refreshTeamRepo(
 ): Promise<{ label: string; version: string | null }> {
   if (localConfig.repo.kind === 'http') {
     const { resolveApiKey } = await import('./api-key.js');
-    const { materializeHttpRepo } = await import('./source-http.js');
+    const { materializeHttpRepo, RepoNotAvailableError } = await import('./source-http.js');
     const apiKey = resolveApiKey();
     if (!apiKey) {
       throw new Error('No API key configured. Run `teamai login <key>` or set TEAMAI_API_TOKEN.');
@@ -57,8 +57,18 @@ async function refreshTeamRepo(
     if (!baseUrl) {
       throw new Error('HTTP team repo has no url configured.');
     }
-    const version = await materializeHttpRepo(baseUrl, localConfig.repo.localPath, apiKey);
-    return { label: `HTTP ${version ?? '(no version)'}`, version };
+    try {
+      const version = await materializeHttpRepo(baseUrl, localConfig.repo.localPath, apiKey);
+      return { label: `HTTP ${version ?? '(no version)'}`, version };
+    } catch (e) {
+      if (e instanceof RepoNotAvailableError) {
+        // Reporting-only endpoint: /repo not live yet. Skip skill/rule sync
+        // quietly (status reporting still runs via its own hook handler).
+        log.debug(`[pull] ${(e as Error).message} — skipping repo sync (reporting-only)`);
+        return { label: 'HTTP (reporting-only, no /repo yet)', version: null };
+      }
+      throw e;
+    }
   }
 
   const result = await pullRepo(localConfig.repo.localPath);

@@ -116,7 +116,7 @@ export async function initHttp(
   options: GlobalOptions & { scope?: string; role?: string; force?: boolean },
 ): Promise<void> {
   const { resolveApiKey } = await import('./api-key.js');
-  const { materializeHttpRepo } = await import('./source-http.js');
+  const { materializeHttpRepo, RepoNotAvailableError } = await import('./source-http.js');
 
   log.info('Initializing teamai (HTTP read-only consumer)...');
 
@@ -143,18 +143,37 @@ export async function initHttp(
     process.exit(1);
   }
 
-  // Step 2: materialize repo from HTTP
+  // Step 2: materialize repo from HTTP. If the endpoint doesn't serve /repo yet
+  // (404 / non-JSON), fall back to "reporting-only" mode: the endpoint + key are
+  // still configured so status reporting works now, and skills will sync once
+  // /repo comes online (no re-init needed). Auth/transport errors still abort.
   const localPath = expandHome(path.join(teamaiHome, 'team-repo'));
   const matSpin = spinner('Fetching team repo over HTTP...').start();
+  let reportingOnly = false;
   try {
     await materializeHttpRepo(url, localPath, apiKey!);
     matSpin.succeed('Team repo materialized');
   } catch (e) {
-    matSpin.fail(`HTTP fetch failed: ${(e as Error).message}`);
-    process.exit(1);
+    if (e instanceof RepoNotAvailableError) {
+      reportingOnly = true;
+      matSpin.warn('No /repo at this endpoint yet — configuring for status reporting only.');
+      log.info('Skills/rules will sync automatically once /repo is available (no re-init needed).');
+    } else {
+      matSpin.fail(`HTTP fetch failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
   }
 
-  // Step 3: validate teamai.yaml
+  // Step 3: load teamai.yaml. In reporting-only mode the endpoint hasn't shipped
+  // one yet, so write a minimal local stub (default toolPaths) to drive hook
+  // injection + the reporter. A real /repo will overwrite it on the next pull.
+  if (reportingOnly) {
+    await ensureDir(localPath);
+    const stubPath = path.join(localPath, 'teamai.yaml');
+    if (!(await pathExists(stubPath))) {
+      await writeFile(stubPath, YAML.stringify({ team: 'http-reporting', repo: url, sharing: {} }));
+    }
+  }
   const teamConfig = await loadTeamConfig(localPath);
   if (!teamConfig) {
     log.error('Materialized repo has no valid teamai.yaml. Check the endpoint.');
@@ -199,8 +218,13 @@ export async function initHttp(
   // Step 5: inject hooks (unchanged)
   await injectHooksToAllTools(teamConfig.toolPaths, resolveBaseDir(localConfig));
 
-  log.success('teamai initialized (HTTP read-only)!');
-  log.info('Skills/rules will auto-sync on each session start. This team is read-only (no push).');
+  if (reportingOnly) {
+    log.success('teamai initialized (HTTP, reporting-only — /repo not live yet)!');
+    log.info('Status reporting is active now; skills/rules will sync automatically once /repo is available.');
+  } else {
+    log.success('teamai initialized (HTTP read-only)!');
+    log.info('Skills/rules will auto-sync on each session start. This team is read-only (no push).');
+  }
   closePrompt();
 }
 

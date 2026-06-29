@@ -30,7 +30,26 @@ export interface RepoSnapshot {
   commands: SkillCommand[];
 }
 
-/** Fetch the team repo snapshot. Throws on auth/transport errors. */
+/**
+ * Raised when the endpoint is reachable and authenticated, but does NOT serve a
+ * usable `/repo` yet (HTTP 404, or 200 with a non-JSON body such as an SPA HTML
+ * shell). This is an EXPECTED state for a reporter-only backend whose `/repo`
+ * will come online later — callers can fall back to "reporting-only" setup
+ * instead of hard-failing. Auth (401/403) and transport errors are NOT this.
+ */
+export class RepoNotAvailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RepoNotAvailableError';
+  }
+}
+
+/**
+ * Fetch the team repo snapshot.
+ * - 401/403 → throws Error (bad API key).
+ * - 404 or non-JSON 200 body → throws {@link RepoNotAvailableError} (/repo not live yet).
+ * - other non-2xx / transport errors → throws Error.
+ */
 export async function fetchRepoSnapshot(baseUrl: string, apiKey: string): Promise<RepoSnapshot> {
   const url = `${baseUrl.replace(/\/$/, '')}/repo`;
   const res = await fetch(url, {
@@ -39,10 +58,21 @@ export async function fetchRepoSnapshot(baseUrl: string, apiKey: string): Promis
   if (res.status === 401 || res.status === 403) {
     throw new Error('Authentication failed — check your API key (run `teamai login <key>`).');
   }
+  if (res.status === 404) {
+    throw new RepoNotAvailableError(`/repo not available yet (HTTP 404) at ${url}`);
+  }
   if (!res.ok) {
     throw new Error(`GET /repo failed: HTTP ${res.status}`);
   }
-  const raw = (await res.json()) as Partial<RepoSnapshot>;
+  // A reporter-only backend may answer 200 with an SPA HTML shell. Treat any
+  // non-JSON body as "/repo not live yet" rather than a hard parse failure.
+  const text = await res.text();
+  let raw: Partial<RepoSnapshot>;
+  try {
+    raw = JSON.parse(text) as Partial<RepoSnapshot>;
+  } catch {
+    throw new RepoNotAvailableError(`/repo returned a non-JSON body (likely not implemented yet) at ${url}`);
+  }
   return {
     version: typeof raw.version === 'string' ? raw.version : null,
     files: Array.isArray(raw.files) ? raw.files : [],
