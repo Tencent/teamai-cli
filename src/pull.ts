@@ -45,7 +45,7 @@ interface RolePullContext {
  */
 async function refreshTeamRepo(
   localConfig: LocalConfig,
-): Promise<{ label: string; version: string | null }> {
+): Promise<{ label: string; version: string | null; reportingOnly: boolean }> {
   if (localConfig.repo.kind === 'http') {
     const { resolveApiKey } = await import('./api-key.js');
     const { materializeHttpRepo, RepoNotAvailableError } = await import('./source-http.js');
@@ -59,13 +59,13 @@ async function refreshTeamRepo(
     }
     try {
       const version = await materializeHttpRepo(baseUrl, localConfig.repo.localPath, apiKey);
-      return { label: `HTTP ${version ?? '(no version)'}`, version };
+      return { label: `HTTP ${version ?? '(no version)'}`, version, reportingOnly: false };
     } catch (e) {
       if (e instanceof RepoNotAvailableError) {
         // Reporting-only endpoint: /repo not live yet. Skip skill/rule sync
         // quietly (status reporting still runs via its own hook handler).
         log.debug(`[pull] ${(e as Error).message} — skipping repo sync (reporting-only)`);
-        return { label: 'HTTP (reporting-only, no /repo yet)', version: null };
+        return { label: 'HTTP (reporting-only, no /repo yet)', version: null, reportingOnly: true };
       }
       throw e;
     }
@@ -80,7 +80,7 @@ async function refreshTeamRepo(
     log.debug('Rev check failed, proceeding with full sync');
     version = null;
   }
-  return { label: result, version };
+  return { label: result, version, reportingOnly: false };
 }
 
 async function buildRolePullContext(localConfig: LocalConfig): Promise<RolePullContext | null> {
@@ -293,9 +293,14 @@ async function pullForScope(
   // Step 1: refresh team repo (git pull, or HTTP /repo materialization)
   const pullSpin = spinner(`[${scopeLabel}] Pulling team repo...`).start();
   let currentRev: string | null = null;
+  // Reporting-only HTTP endpoints have no team repo to write to, so the
+  // team-repo-dependent built-in skills (teamai-share-learnings, teamai-wiki)
+  // are useless there and must not be injected.
+  let reportingOnly = false;
   try {
-    const { label, version } = await refreshTeamRepo(localConfig);
+    const { label, version, reportingOnly: ro } = await refreshTeamRepo(localConfig);
     currentRev = version;
+    reportingOnly = ro;
     pullSpin.succeed(`[${scopeLabel}] Team repo: ${label}`);
   } catch (e) {
     pullSpin.fail(`[${scopeLabel}] Pull failed: ${(e as Error).message}`);
@@ -314,7 +319,7 @@ async function pullForScope(
           if (cfg) {
             try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig); } catch {}
             try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig); } catch {}
-            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { skipWiki: !isWikiEnabled() }); } catch {}
+            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { skipWiki: !isWikiEnabled(), reportingOnly }); } catch {}
           }
         }
         return;
@@ -786,7 +791,7 @@ async function pullForScope(
   if (!options.dryRun) {
     try {
       const { deployBuiltinSkills } = await import('./builtin-skills.js');
-      const deployed = await deployBuiltinSkills(freshConfig, localConfig, { skipWiki: !wikiEnabled });
+      const deployed = await deployBuiltinSkills(freshConfig, localConfig, { skipWiki: !wikiEnabled, reportingOnly });
       if (deployed > 0) {
         log.debug(`[${scopeLabel}] Deployed ${deployed} built-in skill(s)`);
       }

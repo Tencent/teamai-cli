@@ -50,7 +50,15 @@ export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'teamai-wi
  * - Built-in skills directory doesn't exist (dev environment without build)
  * - A tool's skills directory is not configured
  */
-export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?: LocalConfig, options?: { skipWiki?: boolean }): Promise<number> {
+export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?: LocalConfig, options?: { skipWiki?: boolean; reportingOnly?: boolean }): Promise<number> {
+  // Reporting-only HTTP mode has no team repo to write to, so both built-in
+  // skills (teamai-share-learnings → shares to team repo; teamai-wiki →
+  // persists to team repo) are non-functional. Skip them entirely.
+  if (options?.reportingOnly) {
+    log.debug('Reporting-only mode (no team repo): skipping built-in skills (teamai-share-learnings, teamai-wiki)');
+    return 0;
+  }
+
   const builtinDir = getBuiltinSkillsDir();
 
   if (!await pathExists(builtinDir)) {
