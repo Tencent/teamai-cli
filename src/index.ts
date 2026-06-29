@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { setVerbose, setSilent, log } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
 
@@ -627,6 +627,10 @@ program
 program
   .command('codebase')
   .description('Inspect and maintain team-codebase outputs')
+  .addOption(new Option('--extract [path]', 'Extract code knowledge and build graph from source'))
+  .addOption(new Option('--incremental', 'Only re-extract changed files (requires prior manifest)'))
+  .addOption(new Option('--project <name>', 'Project slug for extract output (default: directory name)'))
+  .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)'))
   .option('--lint', 'Run global consistency lint over docs/team-codebase')
   .option('--fix', 'Apply low-risk mechanical fixes (only with --lint)')
   .option('--severity <level>', 'Minimum severity to report: high|medium|low|info', 'info')

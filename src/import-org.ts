@@ -242,80 +242,25 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
         return;
     }
 
-    log.info(`过滤后剩余 ${filteredRepos.length} 个仓库，开始 AI 聚类...`);
+    log.info(`过滤后剩余 ${filteredRepos.length} 个仓库，生成白名单...`);
 
-    // 4. 转换 RepoMeta 并聚类
-    const repoMetas: RepoMeta[] = filteredRepos.map(toRepoMeta);
-    let domainsDraft: DomainsFile;
-    try {
-        domainsDraft = await clusterRepos(repoMetas);
-    } catch (err) {
-        throw new Error(`AI 聚类失败: ${String(err)}`);
-    }
-
-    // 5. 写草稿
+    // 4. 生成白名单（跳过 AI 聚类，知识图谱通过 nodes/edges 自动组织关系）
+    const whitelistDraftPath = path.join(cwd, WHITELIST_DRAFT_PATH);
     if (!opts.dryRun) {
-        await saveDomainsDraft(cwd, domainsDraft);
-        const whitelistDraftPath = path.join(cwd, WHITELIST_DRAFT_PATH);
         await fs.ensureDir(path.dirname(whitelistDraftPath));
-        await fs.writeFile(
-            whitelistDraftPath,
-            buildWhitelistYaml(filteredRepos, domainsDraft),
-            'utf8',
-        );
-        log.info(`草稿已写入：.teamai/domains.draft.yaml + .teamai/repo-whitelist.draft.yaml`);
-    } else {
-        log.info('[dry-run] 跳过草稿写入');
-    }
-
-    let finalAction: 'save' | 'draft' | 'abort' = 'draft';
-
-    // 6. 若 bootstrap=true，进 reviewDomains
-    if (opts.bootstrap) {
-        const { result, finalize } = await reviewDomains(domainsDraft);
-        finalAction = finalize;
-
-        if (finalize === 'save') {
-            if (!opts.dryRun) {
-                await saveDomains(cwd, result);
-                // 写正式白名单
-                const whitelistPath = path.join(cwd, WHITELIST_PATH);
-                await fs.ensureDir(path.dirname(whitelistPath));
-                await fs.writeFile(
-                    whitelistPath,
-                    buildWhitelistYaml(filteredRepos, result),
-                    'utf8',
-                );
-                // 删除草稿
-                const draftPath = path.join(cwd, WHITELIST_DRAFT_PATH);
-                if (await fs.pathExists(draftPath)) {
-                    await fs.remove(draftPath);
-                }
-                log.success('正式配置已写入：.teamai/domains.yaml + .teamai/repo-whitelist.yaml');
-            } else {
-                log.info('[dry-run] 跳过正式配置写入');
-            }
-        } else if (finalize === 'abort') {
-            // 删除两份草稿
-            if (!opts.dryRun) {
-                const draftDomains = path.join(cwd, '.teamai/domains.draft.yaml');
-                const draftWhitelist = path.join(cwd, WHITELIST_DRAFT_PATH);
-                const removeDraft = async (p: string): Promise<void> => {
-                    if (await fs.pathExists(p)) await fs.remove(p);
-                };
-                await Promise.all([removeDraft(draftDomains), removeDraft(draftWhitelist)]);
-                log.info('已放弃，草稿已删除');
-            }
-        } else {
-            log.info('已保留草稿，可稍后手动编辑后导入');
+        const lines = ['version: 1', 'repos:'];
+        for (const repo of filteredRepos) {
+            lines.push(`  - url: ${repo.url}`);
+            lines.push(`    auth: token`);
+            lines.push(`    priority: normal`);
         }
+        await fs.writeFile(whitelistDraftPath, lines.join('\n') + '\n', 'utf8');
+        log.info(`白名单已写入：${WHITELIST_DRAFT_PATH}（${filteredRepos.length} 个仓库）`);
     }
 
-    // 7. 若未 abort 且非 skipImport，调 importFromRepoList
-    if (!opts.skipImport && finalAction !== 'abort') {
-        const whitelistPath = opts.dryRun
-            ? path.join(cwd, WHITELIST_DRAFT_PATH)
-            : path.join(cwd, finalAction === 'save' ? WHITELIST_PATH : WHITELIST_DRAFT_PATH);
+    // 5. 批量导入
+    if (!opts.skipImport) {
+        const whitelistPath = whitelistDraftPath;
 
         if (await fs.pathExists(whitelistPath)) {
             log.info(`开始批量导入（白名单：${whitelistPath}）...`);
@@ -332,6 +277,20 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
                 log.info(
                     `批量导入完成：成功 ${result.succeeded}，失败 ${result.failed.length}，跳过 ${result.skipped.length}`,
                 );
+                // Rebuild global router.md / index.md with full stats
+                try {
+                    const { rebuildWikiIndex } = await import('./rebuild-wiki-index.js');
+                    const teamRepoPath = path.join(cwd, '.teamai', 'team-repo');
+                    const teamRepoWiki = path.join(teamRepoPath, 'teamwiki');
+                    if (await fs.pathExists(teamRepoWiki)) {
+                        await rebuildWikiIndex(teamRepoWiki);
+                        log.info('teamwiki router.md / index.md 已重建');
+                        const { autoPushTeamRepo } = await import('./utils/git.js');
+                        await autoPushTeamRepo(teamRepoPath, '[teamai] Rebuild teamwiki index after batch import');
+                    }
+                } catch (e) {
+                    log.debug(`wiki index rebuild/push failed: ${(e as Error).message}`);
+                }
             } catch (err) {
                 log.warn(`批量导入出错（不中断流程）：${String(err)}`);
             }
@@ -349,10 +308,10 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
             event: 'bootstrap-complete',
             org: opts.org,
             repo_count: filteredRepos.length,
-            domain_count: domainsDraft.domains.length,
-            final_action: finalAction,
+            
+            
         },
     });
 
-    log.success(`组织级初始化完成（${filteredRepos.length} 仓库 / ${domainsDraft.domains.length} 个域）`);
+    log.success(`组织级初始化完成（${filteredRepos.length} 仓库）`);
 }
