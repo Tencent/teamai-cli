@@ -5,7 +5,7 @@
  * Resolution order (first non-empty wins):
  *   1. env TEAMAI_API_TOKEN
  *   2. env TEAMAI_API_KEY            (legacy alias accepted for convenience)
- *   3. ~/.teamai/apikey              (written by `teamai login`)
+ *   3. ~/.teamai/apikey              (written by `teamai init --http --token`)
  *
  * The key is NEVER stored in teamai.yaml / local config and NEVER reported in
  * any payload. The on-disk file is created with 0600 permissions and is covered
@@ -23,7 +23,7 @@ export function getApiKeyPath(): string {
 
 /**
  * Resolve the API key from env or the local file. Returns null when no key is
- * configured (callers surface a friendly "run `teamai login`" hint).
+ * configured (callers surface a friendly "pass --token to init" hint).
  */
 export function resolveApiKey(): string | null {
   const fromEnv = process.env.TEAMAI_API_TOKEN || process.env.TEAMAI_API_KEY;

@@ -56,7 +56,7 @@ export async function fetchRepoSnapshot(baseUrl: string, apiKey: string): Promis
     headers: { Authorization: `Bearer ${apiKey}` },
   });
   if (res.status === 401 || res.status === 403) {
-    throw new Error('Authentication failed — check your API key (run `teamai login <key>`).');
+    throw new Error('Authentication failed — check your API key (pass --token to `teamai init --http`, or set TEAMAI_API_TOKEN).');
   }
   if (res.status === 404) {
     throw new RepoNotAvailableError(`/repo not available yet (HTTP 404) at ${url}`);

@@ -113,9 +113,9 @@ export function validateScopeMatch(remoteScope: Scope | undefined, localScope: S
  */
 export async function initHttp(
   url: string,
-  options: GlobalOptions & { scope?: string; role?: string; force?: boolean },
+  options: GlobalOptions & { scope?: string; role?: string; force?: boolean; token?: string },
 ): Promise<void> {
-  const { resolveApiKey } = await import('./api-key.js');
+  const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
   const { materializeHttpRepo, RepoNotAvailableError } = await import('./source-http.js');
 
   log.info('Initializing teamai (HTTP read-only consumer)...');
@@ -136,10 +136,15 @@ export async function initHttp(
     }
   }
 
-  // Step 1: API key
+  // Step 1: API key. Persist --token when given (one command sets endpoint+key),
+  // otherwise fall back to TEAMAI_API_TOKEN / an existing ~/.teamai/apikey.
+  if (options.token && options.token.trim()) {
+    await saveApiKey(options.token.trim());
+    log.success(`API key saved to ${getApiKeyPath()}`);
+  }
   const apiKey = resolveApiKey();
   if (!apiKey) {
-    log.error('No API key found. Set TEAMAI_API_TOKEN or run `teamai login <key>` first.');
+    log.error('No API key found. Pass --token <key> to `teamai init --http`, or set TEAMAI_API_TOKEN.');
     process.exit(1);
   }
 
@@ -228,7 +233,7 @@ export async function initHttp(
   closePrompt();
 }
 
-export async function init(options: GlobalOptions & { repo?: string; scope?: string; role?: string; force?: boolean; http?: string }): Promise<void> {
+export async function init(options: GlobalOptions & { repo?: string; scope?: string; role?: string; force?: boolean; http?: string; token?: string }): Promise<void> {
   if (options.http) {
     return initHttp(options.http, options);
   }

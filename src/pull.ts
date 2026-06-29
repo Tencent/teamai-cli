@@ -51,7 +51,7 @@ async function refreshTeamRepo(
     const { materializeHttpRepo, RepoNotAvailableError } = await import('./source-http.js');
     const apiKey = resolveApiKey();
     if (!apiKey) {
-      throw new Error('No API key configured. Run `teamai login <key>` or set TEAMAI_API_TOKEN.');
+      throw new Error('No API key configured. Re-run `teamai init --http <url> --token <key>` or set TEAMAI_API_TOKEN.');
     }
     const baseUrl = localConfig.repo.url;
     if (!baseUrl) {
