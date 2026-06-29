@@ -39,9 +39,27 @@ describe('installSkillZip', () => {
     expect(fs.readFileSync(path.join(skillsDir, 'weather', 'scripts', 'run.sh'), 'utf-8')).toBe('echo hi');
   });
 
-  it('rejects a package missing <slug>/SKILL.md', async () => {
+  it('rejects a package with no SKILL.md anywhere', async () => {
     const zip = zipSync({ 'weather/README.md': strToU8('no skill md') });
     await expect(installSkillZip(zip, 'weather', skillsDir)).rejects.toThrow(/missing weather\/SKILL\.md/);
+  });
+
+  it('accepts a flat zip (SKILL.md at root) and installs into <slug>/', async () => {
+    // skillhub/clawpro package layout: files at the zip root, no wrapping dir.
+    const zip = zipSync({
+      'SKILL.md': strToU8('---\nname: find-skills\ndescription: test\n---\nbody'),
+      '_meta.json': strToU8('{"slug":"find-skills-skill"}'),
+      'scripts/run.sh': strToU8('echo hi'),
+    });
+    await installSkillZip(zip, 'find-skills-skill', skillsDir);
+    expect(fs.existsSync(path.join(skillsDir, 'find-skills-skill', 'SKILL.md'))).toBe(true);
+    expect(fs.readFileSync(path.join(skillsDir, 'find-skills-skill', 'scripts', 'run.sh'), 'utf-8')).toBe('echo hi');
+  });
+
+  it('accepts a nested zip whose top-level dir name differs from the slug', async () => {
+    const zip = zipSync({ 'find-skills/SKILL.md': strToU8('---\nname: find-skills\n---\nbody') });
+    await installSkillZip(zip, 'find-skills-skill', skillsDir);
+    expect(fs.existsSync(path.join(skillsDir, 'find-skills-skill', 'SKILL.md'))).toBe(true);
   });
 
   it('is overwrite-idempotent (re-install replaces prior content)', async () => {

@@ -85,10 +85,32 @@ async function downloadZip(downloadUrl: string): Promise<Uint8Array> {
 }
 
 /**
+ * Locate the SKILL.md inside a skill ZIP and return the path prefix that should
+ * be stripped when installing. Tolerates the layouts seen in the wild:
+ *
+ *   1. `<slug>/SKILL.md ...`  → prefix `<slug>/`  (teamai contract)
+ *   2. `SKILL.md ...`         → prefix `''`        (flat zip, e.g. skillhub/clawpro)
+ *   3. `<anyDir>/SKILL.md`    → prefix `<anyDir>/` (nested dir whose name ≠ slug)
+ *
+ * Returns null when no SKILL.md is present at all (truly malformed package).
+ */
+function resolveSkillPrefix(entries: Record<string, Uint8Array>, slug: string): string | null {
+  const has = (k: string) => Object.prototype.hasOwnProperty.call(entries, k);
+  if (has(`${slug}/SKILL.md`)) return `${slug}/`;
+  if (has('SKILL.md')) return '';
+  for (const key of Object.keys(entries)) {
+    const m = key.match(/^([^/]+)\/SKILL\.md$/);
+    if (m) return `${m[1]}/`;
+  }
+  return null;
+}
+
+/**
  * Decompress a skill ZIP and install it into `targetSkillsDir/<slug>/`.
  *
- * Validates that the archive contains `<slug>/SKILL.md` and that every entry
- * stays within the destination (path-traversal protection). Install is
+ * Accepts both the nested (`<slug>/SKILL.md`) and the flat (`SKILL.md` at root)
+ * package layouts (see {@link resolveSkillPrefix}). Every entry is verified to
+ * stay within the destination (path-traversal protection). Install is
  * overwrite-idempotent: any pre-existing `<slug>/` is removed first.
  */
 export async function installSkillZip(
@@ -105,10 +127,9 @@ export async function installSkillZip(
     throw new Error(`failed to unzip skill package: ${(e as Error).message}`);
   }
 
-  const prefix = `${slug}/`;
-  const skillMdPath = `${slug}/SKILL.md`;
-  if (!Object.prototype.hasOwnProperty.call(entries, skillMdPath)) {
-    throw new Error(`skill package missing ${skillMdPath} (slug mismatch or malformed package)`);
+  const prefix = resolveSkillPrefix(entries, slug);
+  if (prefix === null) {
+    throw new Error(`skill package missing ${slug}/SKILL.md (no SKILL.md found at zip root or under any top-level dir — malformed package)`);
   }
 
   const destRoot = path.join(targetSkillsDir, slug);
@@ -118,12 +139,14 @@ export async function installSkillZip(
 
   const resolvedRoot = path.resolve(destRoot);
   for (const [entryPath, bytes] of Object.entries(entries)) {
-    // Only extract the single <slug>/ subtree; ignore anything else in the zip.
-    if (!entryPath.startsWith(prefix)) continue;
+    // For a nested layout, only extract the chosen subtree; for a flat layout
+    // (prefix === '') every entry belongs to the skill.
+    if (prefix && !entryPath.startsWith(prefix)) continue;
     // Directory entries have a trailing slash and empty bytes — ensureDir handles parents.
     if (entryPath.endsWith('/')) continue;
 
-    const rel = entryPath.slice(prefix.length);
+    const rel = prefix ? entryPath.slice(prefix.length) : entryPath;
+    if (!rel) continue;
     const outPath = path.resolve(destRoot, rel);
     if (outPath !== resolvedRoot && !outPath.startsWith(resolvedRoot + path.sep)) {
       throw new Error(`path traversal detected in skill package: ${entryPath}`);
