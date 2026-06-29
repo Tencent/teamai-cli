@@ -63,9 +63,19 @@ function assertAllowedDownloadHost(downloadUrl: string): void {
  */
 async function downloadZip(downloadUrl: string): Promise<Uint8Array> {
   assertAllowedDownloadHost(downloadUrl);
+  log.debug(`[skill-command] downloading skill package: ${downloadUrl}`);
   const res = await fetch(downloadUrl, { redirect: 'follow' });
   if (!res.ok) {
-    throw new Error(`download failed: HTTP ${res.status}`);
+    // Surface the server's response body (truncated) + the URL so a failed
+    // install is actually diagnosable from debug.log / the ack error field.
+    let detail = '';
+    try {
+      const body = (await res.text()).trim();
+      if (body) detail = `: ${body.slice(0, 300)}`;
+    } catch {
+      // body may be unreadable — best-effort only
+    }
+    throw new Error(`download failed: HTTP ${res.status}${detail} (url: ${downloadUrl})`);
   }
   const buf = new Uint8Array(await res.arrayBuffer());
   if (buf.byteLength > MAX_ZIP_BYTES) {

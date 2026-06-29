@@ -337,6 +337,10 @@ async function runStatusReportInner(opts: StatusReportOptions): Promise<void> {
     log.debug(`[status-report] sync returned ${commands.length} command(s) for ${agentType} (${localAgentId})`);
   }
   for (const cmd of commands) {
+    const label = `${cmd.type} ${cmd.skill_slug}@${cmd.skill_version || '?'}`;
+    // Log what the server told us to do (incl. the signed download_url) so a
+    // failed install is diagnosable: you can see exactly what was fetched.
+    log.debug(`[status-report] command: ${label}${cmd.download_url ? ` url=${cmd.download_url}` : ''}`);
     // ③ execute + ack each command (terminal — no retry).
     let status: 'success' | 'failed' = 'success';
     let error = '';
@@ -344,11 +348,11 @@ async function runStatusReportInner(opts: StatusReportOptions): Promise<void> {
       await executeSkillCommand(cmd, skillsDir);
       // Maintain clawpro bookkeeping so future reports tag the slug correctly.
       await recordClawproSlug(localAgentId, cmd.skill_slug, cmd.type !== 'uninstall_skill');
-      log.debug(`[status-report] ${cmd.type} ${cmd.skill_slug}@${cmd.skill_version ?? '?'} → ${skillsDir} OK`);
+      log.debug(`[status-report] ${label} → ${skillsDir} OK`);
     } catch (e) {
       status = 'failed';
       error = (e as Error).message;
-      log.error(`[status-report] ${cmd.type} ${cmd.skill_slug}@${cmd.skill_version ?? '?'} FAILED: ${error}`);
+      log.error(`[status-report] ${label} FAILED: ${error}`);
     }
     if (cmd.id != null) {
       const ackBody = { id: cmd.id, status, error };
