@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 
 /** 白名单：允许探测的 CLI 名称，防止意外执行任意命令。 */
 const ALLOWED_CLI_CANDIDATES = [
-  'claude', 'claude-internal', 'codex', 'codex-internal', 'codebuddy', 'workbuddy', 'openclaw',
+  'claude', 'claude-internal', 'tclaude', 'codex', 'codex-internal', 'tcodex', 'codebuddy', 'workbuddy', 'openclaw',
 ] as const;
 
 /** CLI 探测超时（毫秒），防止 execFileSync 挂死。 */
@@ -101,7 +101,7 @@ function detectClaudeCli(): CliInfo {
  * @returns      参数数组
  */
 function buildCliArgs(cmd: string, prompt: string): string[] {
-  if (cmd === 'codex' || cmd === 'codex-internal') {
+  if (cmd === 'codex' || cmd === 'codex-internal' || cmd === 'tcodex') {
     return ['exec', prompt];
   }
   return ['-p', prompt];
