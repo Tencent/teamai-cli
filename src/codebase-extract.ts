@@ -34,6 +34,7 @@ export interface ExtractCodebaseOptions {
   json?: boolean;
   project?: string;
   maxFiles?: number;
+  skipEnrich?: boolean;
 }
 
 interface ExtractResult {
@@ -575,9 +576,11 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   // Write graph-index.json using protocol function (B5)
   await saveGraphIndex(wikiRoot, mergedGraph);
 
-  // AI enrichment (optional, non-blocking)
+  // AI enrichment (optional, non-blocking; skipped with --skip-enrich)
   let aiDomains: DomainGroup[] = [];
-  try {
+  if (opts.skipEnrich) {
+    if (!opts.json) console.log(chalk.dim('  [AI 增强: 已跳过 (--skip-enrich)]'));
+  } else try {
     const { enrichWithAI, writeManifest } = await import('./enrich-with-ai.js');
     const modules = new Map<string, CodeFact[]>();
     for (const fact of facts) {

@@ -71,6 +71,8 @@ interface ImportOptions extends GlobalOptions {
   iwikiDual?: boolean;
   /** --require-review：codebase sections 落到 pending-review.jsonl */
   requireReview?: boolean;
+  /** --skip-enrich：跳过 AI enrichment，只做 clone + extract + graph */
+  skipEnrich?: boolean;
 }
 
 /**
@@ -105,6 +107,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         dryRun: opts.dryRun,
         output: opts.output,
         incremental: opts.incremental ?? false,
+        skipEnrich: opts.skipEnrich ?? false,
       });
       return;
     } else if (opts.fromRepoList) {

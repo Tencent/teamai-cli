@@ -149,8 +149,8 @@ export async function pushRepoDirectly(localPath: string, message: string, files
 export async function autoPushTeamRepo(repoPath: string, message: string): Promise<void> {
   try {
     await pushRepoDirectly(repoPath, message, ['.']);
-  } catch {
-    // non-blocking: user can manually run teamai push
+  } catch (err) {
+    log.warn(`[git] autoPush failed (non-blocking): ${(err as Error).message}`);
   }
 }
 

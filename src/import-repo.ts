@@ -54,12 +54,23 @@ export interface ImportFromRepoOptions {
     interactive?: boolean;
     /** 增量模式：缓存命中时仅 fetch+reset，未命中时 fallback 到全量 clone */
     incremental?: boolean;
+    /** batch 模式下跳过 per-repo 的 autoPushTeamRepo（由调用方统一处理） */
+    skipAutoPush?: boolean;
+    /** 跳过 AI enrichment（只做 clone + extract + graph，不调用 LLM） */
+    skipEnrich?: boolean;
 }
 
 // ─── Cross-Repo Edge Detection ─────────────────────────
 
+interface SimpleGraphNode {
+    id?: string; slug?: string;
+    kind?: string; type?: string;
+    label?: string; title?: string;
+    file?: string;
+}
+
 interface SimpleGraphIndex {
-    nodes: Array<{ id: string; kind: string; label: string; file: string }>;
+    nodes: SimpleGraphNode[];
     edges: Array<{ from: string; to: string; relation: string }>;
 }
 
@@ -72,43 +83,47 @@ interface SimpleGraphIndex {
  *
  * 基于 team-wiki 的 buildCodeGraphIndex 中 exportIndex 匹配思想。
  */
-function detectCrossRepoEdges(
+export function detectCrossRepoEdges(
     overlay: SimpleGraphIndex,
     existing: SimpleGraphIndex,
-    _newProject: string,
-): Array<{ from: string; to: string; relation: string }> {
-    const crossEdges: Array<{ from: string; to: string; relation: string }> = [];
+): Array<{ from: string; to: string; relation: 'DEPENDS_ON' }> {
+    const crossEdges: Array<{ from: string; to: string; relation: 'DEPENDS_ON' }> = [];
     const edgeSet = new Set<string>();
+
+    const nodeId = (n: SimpleGraphNode): string => n.id ?? n.slug ?? '';
+    const nodeLabel = (n: SimpleGraphNode): string => n.label ?? n.title ?? '';
+    const nodeKind = (n: SimpleGraphNode): string => n.kind ?? n.type ?? '';
 
     // 建立已有图谱的组件/接口名索引
     const existingIndex = new Map<string, string>();
     for (const node of existing.nodes) {
-        existingIndex.set(node.label.toLowerCase(), node.id);
+        const label = nodeLabel(node);
+        if (label) existingIndex.set(label.toLowerCase(), nodeId(node));
     }
 
     // 建立新图谱的组件/接口名索引
     const overlayIndex = new Map<string, string>();
     for (const node of overlay.nodes) {
-        overlayIndex.set(node.label.toLowerCase(), node.id);
+        const label = nodeLabel(node);
+        if (label) overlayIndex.set(label.toLowerCase(), nodeId(node));
     }
 
     // 检查新仓库的 import 边目标是否有同名组件在已有仓库中
     for (const edge of overlay.edges) {
         if (edge.relation !== 'imports') continue;
-        // 从 edge.to 文件路径提取可能的模块名
         const segments = edge.to.split('/');
         const fileName = segments[segments.length - 1]?.replace(/\.(ts|tsx|js|jsx|py|go|rs|java)$/, '') ?? '';
-        // 将 kebab-case 转为 PascalCase 来匹配类名
         const pascalName = fileName.split(/[-_]/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('');
 
         const match = existingIndex.get(pascalName.toLowerCase());
         if (match) {
-            const fromNode = overlay.nodes.find(n => n.file === edge.from);
+            const fromNode = overlay.nodes.find(n => (n.file ?? n.id ?? n.slug ?? '') === edge.from);
             if (fromNode) {
-                const key = `${fromNode.id}|${match}`;
+                const fromId = nodeId(fromNode);
+                const key = `${fromId}|${match}`;
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
-                    crossEdges.push({ from: fromNode.id, to: match, relation: 'DEPENDS_ON' });
+                    crossEdges.push({ from: fromId, to: match, relation: 'DEPENDS_ON' });
                 }
             }
         }
@@ -123,43 +138,46 @@ function detectCrossRepoEdges(
 
         const match = overlayIndex.get(pascalName.toLowerCase());
         if (match) {
-            const fromNode = existing.nodes.find(n => n.file === edge.from);
+            const fromNode = existing.nodes.find(n => (n.file ?? n.id ?? n.slug ?? '') === edge.from);
             if (fromNode) {
-                const key = `${fromNode.id}|${match}`;
+                const fromId = nodeId(fromNode);
+                const key = `${fromId}|${match}`;
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
-                    crossEdges.push({ from: fromNode.id, to: match, relation: 'DEPENDS_ON' });
+                    crossEdges.push({ from: fromId, to: match, relation: 'DEPENDS_ON' });
                 }
             }
         }
     }
 
     // 配置仓库关联：config/data 节点的 label 与另一仓库的组件/接口节点 label 完全匹配
-    const overlayConfigs = overlay.nodes.filter(n => n.kind === 'config' || n.kind === 'data');
-    const existingConfigs = existing.nodes.filter(n => n.kind === 'config' || n.kind === 'data');
+    const overlayConfigs = overlay.nodes.filter(n => nodeKind(n) === 'config' || nodeKind(n) === 'data');
+    const existingConfigs = existing.nodes.filter(n => nodeKind(n) === 'config' || nodeKind(n) === 'data');
 
     for (const cfg of overlayConfigs) {
-        const cfgName = cfg.label.toLowerCase();
+        const cfgName = nodeLabel(cfg).toLowerCase();
         if (cfgName.length < 5) continue;
+        const cfgId = nodeId(cfg);
         const match = existingIndex.get(cfgName);
         if (match) {
-            const key = `${match}|${cfg.id}`;
+            const key = `${match}|${cfgId}`;
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
-                crossEdges.push({ from: match, to: cfg.id, relation: 'DEPENDS_ON' });
+                crossEdges.push({ from: match, to: cfgId, relation: 'DEPENDS_ON' });
             }
         }
     }
 
     for (const cfg of existingConfigs) {
-        const cfgName = cfg.label.toLowerCase();
+        const cfgName = nodeLabel(cfg).toLowerCase();
         if (cfgName.length < 5) continue;
+        const cfgId = nodeId(cfg);
         const match = overlayIndex.get(cfgName);
         if (match) {
-            const key = `${match}|${cfg.id}`;
+            const key = `${match}|${cfgId}`;
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
-                crossEdges.push({ from: match, to: cfg.id, relation: 'DEPENDS_ON' });
+                crossEdges.push({ from: match, to: cfgId, relation: 'DEPENDS_ON' });
             }
         }
     }
@@ -520,7 +538,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     const {
         url, depth = 1, forceSsh = false, forceAnonymous = false,
         explicitDomain, dryRun = false, output, interactive = true,
-        incremental = false,
+        incremental = false, skipAutoPush = false, skipEnrich = false,
     } = opts;
 
     // 1. 解析 provider 和仓库信息
@@ -614,10 +632,14 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     // 3. 扫描生成 codebase.md（AI 扫描失败不阻断后续图谱提取）
     log.info(`扫描仓库内容...`);
     let codebaseMd: string | undefined;
-    try {
-        codebaseMd = await generateCodebaseMd({ repoPath: cacheDir });
-    } catch (err) {
-        log.warn(`AI codebase 扫描失败（不阻断图谱提取）: ${err instanceof Error ? err.message : String(err)}`);
+    if (skipEnrich) {
+        log.debug('AI enrichment skipped (--skip-enrich)');
+    } else {
+        try {
+            codebaseMd = await generateCodebaseMd({ repoPath: cacheDir });
+        } catch (err) {
+            log.warn(`AI codebase 扫描失败（不阻断图谱提取）: ${err instanceof Error ? err.message : String(err)}`);
+        }
     }
 
     // 4. 写入 docs/team-codebase 叙事文档（AI 扫描成功时）
@@ -698,14 +720,21 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     } // end if (codebaseMd)
 
     // 4b. 生成 teamwiki/ 知识图谱产物（写入 team-repo 以便自动 push）
-    const teamRepoDir = path.join(process.cwd(), '.teamai', 'team-repo');
+    let teamRepoDir: string;
+    try {
+        const { autoDetectInit } = await import('./config.js');
+        const { localConfig: lc } = await autoDetectInit();
+        teamRepoDir = lc.repo.localPath;
+    } catch {
+        teamRepoDir = path.join(process.cwd(), '.teamai', 'team-repo');
+    }
     const teamwikiRoot = output
         ? path.resolve(output, '..', 'teamwiki')
         : path.join(teamRepoDir, 'teamwiki');
     if (!dryRun) {
         const cacheWiki = path.join(cacheDir, 'teamwiki');
         try {
-            await extractCodebase({ path: cacheDir, project: slug, json: false });
+            await extractCodebase({ path: cacheDir, project: slug, json: false, skipEnrich });
             // 将产物从 cacheDir/teamwiki/ 移动到目标 teamwikiRoot
             if (await fs.pathExists(cacheWiki)) {
                 const evidenceSrc = path.join(cacheWiki, 'evidence', 'code', slug);
@@ -725,38 +754,25 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                     ].join('\n');
                     await fs.writeFile(path.join(evidenceDest, 'overview.md'), overviewContent, 'utf8');
                 }
-                // 合并 graph-index
+                // Per-repo graph: copy to evidence/<slug>/.indices/ (no global merge here — done in batch)
                 const srcGraph = path.join(cacheWiki, '.indices', 'graph-index.json');
-                const destGraph = path.join(teamwikiRoot, '.indices', 'graph-index.json');
-                await fs.ensureDir(path.join(teamwikiRoot, '.indices'));
-                if (await fs.pathExists(destGraph)) {
-                    const { mergeGraphs } = await import('./wiki-engine/adapters/index.js');
-                    let existing, overlay;
-                    try {
-                        existing = JSON.parse(await fs.readFile(destGraph, 'utf8'));
-                    } catch (parseErr) {
-                        log.warn(`[wiki-engine] graph-index.json 解析失败，将重建: ${(parseErr as Error).message}`);
-                        existing = null;
-                    }
-                    try {
-                        overlay = JSON.parse(await fs.readFile(srcGraph, 'utf8'));
-                    } catch (parseErr) {
-                        log.warn(`[wiki-engine] 源图谱解析失败，跳过合并: ${(parseErr as Error).message}`);
-                        overlay = null;
-                    }
-                    if (overlay) {
-                        const merged2 = existing ? mergeGraphs(existing, overlay) : overlay;
-                        const crossRepoEdges = detectCrossRepoEdges(overlay, existing ?? { nodes: [], edges: [] }, slug);
-                        if (crossRepoEdges.length > 0) {
-                            (merged2 as { edges: Array<{ from: string; to: string; relation: string }> }).edges.push(...crossRepoEdges);
-                            log.debug(`[wiki-engine] 检测到 ${crossRepoEdges.length} 条跨仓关系`);
-                        }
-                        await fs.writeFile(destGraph, JSON.stringify(merged2, null, 2), 'utf8');
-                    }
-                } else {
-                    await fs.copy(srcGraph, destGraph);
-                }
+                const evidenceGraphDir = path.join(teamwikiRoot, 'evidence', 'code', slug, '.indices');
+                await fs.ensureDir(evidenceGraphDir);
+                await fs.copy(srcGraph, path.join(evidenceGraphDir, 'graph-index.json'));
                 await fs.remove(cacheWiki);
+            }
+            // 白名单显式 domain 覆盖 AI 推断
+            if (explicitDomain) {
+                const domainsJsonPath = path.join(teamwikiRoot, 'evidence', 'code', slug, '_domains.json');
+                if (await fs.pathExists(domainsJsonPath)) {
+                    try {
+                        const existing = JSON.parse(await fs.readFile(domainsJsonPath, 'utf8'));
+                        existing.domain = explicitDomain;
+                        await fs.writeFile(domainsJsonPath, JSON.stringify(existing, null, 2), 'utf8');
+                    } catch { /* skip */ }
+                } else {
+                    await fs.writeFile(domainsJsonPath, JSON.stringify({ domain: explicitDomain }, null, 2), 'utf8');
+                }
             }
             // 更新顶层 router.md 和 index.md（追加新项目，不覆盖）
             const { routerTemplate, indexTemplate, HOT_TEMPLATE } = await import('./wiki-engine/adapters/templates.js');
@@ -809,18 +825,25 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         }
     }
 
-    // 5. 自动推送所有产物到团队仓库
-    if (!dryRun) {
-        const pushTarget = path.join(process.cwd(), '.teamai', 'team-repo');
-        if (await fs.pathExists(pushTarget)) {
+    // 5. 聚合全局图谱 + 自动推送（单仓模式；batch 模式由 import-repo-list 统一处理）
+    if (!dryRun && !skipAutoPush) {
+        if (teamwikiRoot) {
+            try {
+                const { aggregateGlobalGraph } = await import('./graph-aggregate.js');
+                await aggregateGlobalGraph(teamwikiRoot);
+            } catch (e) {
+                log.debug(`[graph] 单仓聚合跳过: ${(e as Error).message}`);
+            }
+        }
+        if (await fs.pathExists(teamRepoDir)) {
             const { autoPushTeamRepo } = await import('./utils/git.js');
-            await autoPushTeamRepo(pushTarget, `[teamai] Import codebase knowledge from ${owner}/${repoName}`);
+            await autoPushTeamRepo(teamRepoDir, `[teamai] Import codebase knowledge from ${owner}/${repoName}`);
         }
     }
 
     log.info(chalk.green(`✓ 仓库 ${owner}/${repoName} 导入完成`));
 
-    // 5b. 后台深度生成（不阻塞）
+    // 5b. 后台深度生成（不阻塞；batch 模式下跳过 push 由调用方统一处理）
     if (!dryRun && teamwikiRoot) {
         const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code', slug);
         if (await fs.pathExists(path.join(evidenceDir, '_manifest.json'))) {
@@ -828,10 +851,11 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 try {
                     const { deepEnrich } = await import('./deep-enrich.js');
                     await deepEnrich({ project: slug, evidenceDir, wikiRoot: teamwikiRoot, cacheDir });
-                    const { autoPushTeamRepo } = await import('./utils/git.js');
-                    const pushTarget = path.join(process.cwd(), '.teamai', 'team-repo');
-                    if (await fs.pathExists(pushTarget)) {
-                        await autoPushTeamRepo(pushTarget, `[teamai] Deep enrich: ${slug}`);
+                    if (!skipAutoPush) {
+                        const { autoPushTeamRepo } = await import('./utils/git.js');
+                        if (await fs.pathExists(teamRepoDir)) {
+                            await autoPushTeamRepo(teamRepoDir, `[teamai] Deep enrich: ${slug}`);
+                        }
                     }
                     log.info(chalk.green(`✓ 深度生成完成: ${slug}`));
                 } catch (e) {

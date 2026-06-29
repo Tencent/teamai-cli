@@ -92,6 +92,8 @@ The CLI picks a provider automatically from the repo URL:
 
 Global options: `--dry-run`, `--verbose`
 
+Import options: `--incremental`, `--skip-enrich` (skip AI calls, only extract + graph)
+
 <details>
 <summary>More commands (management, CI, analytics)</summary>
 

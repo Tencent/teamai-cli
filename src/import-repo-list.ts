@@ -1,5 +1,6 @@
 // -*- coding: utf-8 -*-
 import path from 'node:path';
+import fs from 'fs-extra';
 import { loadRepoList } from './repo-list/store.js';
 import { isOrgEntry, type RepoListEntry } from './repo-list/schema.js';
 import { importFromRepo } from './import-repo.js';
@@ -114,6 +115,7 @@ export async function importFromRepoList(
                 output,
                 interactive: false,
                 incremental,
+                skipAutoPush: true,
             });
             succeeded.push(1);
         } catch (err) {
@@ -144,12 +146,26 @@ export async function importFromRepoList(
     // 等待全部完成
     await Promise.all(inFlight);
 
+    // 4. 统一聚合全局 graph-index.json（避免并发竞态）
+    if (!dryRun && succeeded.length > 0) {
+        try {
+            const { autoDetectInit } = await import('./config.js');
+            const { localConfig: lc } = await autoDetectInit();
+            const teamRepoPath = lc.repo.localPath;
+            const teamwikiRoot = path.join(teamRepoPath, 'teamwiki');
+
+            const { aggregateGlobalGraph } = await import('./graph-aggregate.js');
+            await aggregateGlobalGraph(teamwikiRoot);
+        } catch (e) {
+            log.warn(`[graph] 全局图谱聚合失败（不中断流程）：${(e as Error).message}`);
+        }
+    }
+
     // 5. 重建聚合文件
     let aggregateGenerated = false;
     if (!skipAggregate && !dryRun) {
         try {
             const cwd = process.cwd();
-            // 优先使用 team-repo 路径读取 domains 和写入聚合产物
             let resolvedOutput = output;
             let domainsBase = cwd;
             if (!resolvedOutput) {
@@ -168,6 +184,18 @@ export async function importFromRepoList(
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             log.warn(`聚合文件生成失败（不中断流程）：${message}`);
+        }
+    }
+
+    // 6. 统一推送（graph + aggregate 一次性提交）
+    if (!dryRun && succeeded.length > 0) {
+        try {
+            const { autoDetectInit } = await import('./config.js');
+            const { localConfig: lc } = await autoDetectInit();
+            const { autoPushTeamRepo } = await import('./utils/git.js');
+            await autoPushTeamRepo(lc.repo.localPath, '[teamai] Batch import: graph + aggregate');
+        } catch (e) {
+            log.warn(`[git] 批量推送失败（不中断流程）：${(e as Error).message}`);
         }
     }
 
