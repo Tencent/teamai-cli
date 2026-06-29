@@ -384,6 +384,45 @@ team-repo/
 
 `teamai pull` 会把它们复制到每个 Tier-1 工具的 `agents/` 目录（例如 `~/.claude/agents/`）。CLI 内置的 `teamai-recall.md` 会与团队 agents 一起部署，并在 `teamai push` 时被自动排除（由 CLI 管理，不归团队仓库）
 
+### `hooks` 资源类型（团队自定义 hooks）
+
+除了 CLI 内置的运维 hooks，团队还可以在仓库里**声明一次自己的 hooks**，由 `teamai pull` 自动适配下发到各 AI 工具（Claude Code、CodeBuddy、Cursor……）。在 `hooks/hooks.yaml` 中声明：
+
+```yaml
+hooks:
+  - id: block-secret            # 唯一，^[a-z0-9-]+$，用于 marker 与清单索引
+    description: 提交前扫描密钥     # 写进 hook 的 description
+    event: PreToolUse           # Claude 规范事件名（跨工具中立语言）
+    matcher: Bash               # 可选，工具 matcher
+    command: 'bash -lc "~/.teamai/team-scripts/scan-secret.sh" || true'
+    timeout: 15                 # 可选，秒
+    tools: [claude, cursor]     # 可选，缺省 = 所有支持 hooks 的工具
+
+# 可选：有限度地调整 CLI 自身的内置 hooks（仅白名单字段）
+builtin:
+  disabled: [Hook dispatch post-tool-use TodoWrite]   # 关闭某条内置 hook
+  overrides:
+    Hook dispatch stop: { timeout: 20 }               # 仅允许覆盖 timeout
+```
+
+- `teamai pull` 每次会话开始都会把内置（A）+ 团队（B）hooks 对齐注入到各工具（绕过「已同步」快路径，新增/变更的 hook 自动自愈生效）。
+- 团队 hooks 通过 `[teamai:hook:<id>]` marker 与内置 hooks 隔离，并记录在 `~/.teamai/managed-hooks.json` 中；从 `hooks.yaml` 删除某条后，下次 pull 会从所有工具干净移除，且**绝不误伤内置 hooks**。
+- 写到磁盘的内容对内置 hooks **逐字节不变**，老机器升级 CLI 是零 diff、零回归。
+
+审计、强制注入或清除当前生效的 hooks：
+
+```bash
+teamai hooks list      # 列出生效的内置（A）+ 团队（B）hooks
+teamai hooks inject    # 强制对齐注入 A + B
+teamai hooks remove    # 移除所有 teamai 托管的 hooks（A + B）
+```
+
+> **安全提示**：团队 hooks 是会随会话事件自动执行的任意 shell 命令——请把仓库写权限视为一个执行面（同 `env.yaml`，受 MR review 治理）。护栏：
+> - 注入时逐条打印将执行的命令（`--silent` 时静默）。
+> - `teamai.yaml` 中 `sharing.hooks.autoApply: false`：`pull` 时只提示、不自动应用，需用户手动 `teamai hooks inject` 同意。
+> - `sharing.hooks.requireTeamScripts: true`：拒绝命令不在 `~/.teamai/team-scripts/` 下的团队 hook。
+> - 设置 `TEAMAI_HOOKS_DISABLED=1` 可在本机否决所有团队 hooks（内置 hooks 仍生效）。
+
 ## 更新
 
 ```bash

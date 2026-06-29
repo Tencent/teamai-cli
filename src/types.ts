@@ -33,7 +33,28 @@ export const SharingConfigSchema = z.object({
     injectShellProfile: z.boolean().default(true),
     shellProfilePath: z.string().optional(),
   }).default({}),
+  // Optional (not .default) so existing TeamaiConfig literals stay valid; use
+  // getHooksSharing() for the defaulted view.
+  hooks: z.object({
+    /** Auto-apply team hooks during `teamai pull`. When false, pull only hints;
+     *  the user must run `teamai hooks inject` to apply (explicit consent). */
+    autoApply: z.boolean().default(true),
+    /** Restrict team hook commands to scripts under ~/.teamai/team-scripts/. */
+    requireTeamScripts: z.boolean().default(false),
+  }).optional(),
 });
+
+/** Defaulted view of the optional `sharing.hooks` config. */
+export function getHooksSharing(config: { sharing?: { hooks?: { autoApply?: boolean; requireTeamScripts?: boolean } } }): {
+  autoApply: boolean;
+  requireTeamScripts: boolean;
+} {
+  const h = config.sharing?.hooks;
+  return {
+    autoApply: h?.autoApply ?? true,
+    requireTeamScripts: h?.requireTeamScripts ?? false,
+  };
+}
 
 // ─── Source config (cross-team subscription) ─────────
 //
@@ -181,7 +202,7 @@ export interface TagsConfig {
 
 // ─── Resource types ─────────────────────────────────────
 
-export type ResourceType = 'skills' | 'rules' | 'docs' | 'env' | 'wiki' | 'agents';
+export type ResourceType = 'skills' | 'rules' | 'docs' | 'env' | 'wiki' | 'agents' | 'hooks';
 
 export type ResourceItemStatus = 'new' | 'modified';
 
@@ -198,6 +219,35 @@ export interface ResourceDiff {
   added: ResourceItem[];
   modified: ResourceItem[];
   removed: ResourceItem[];
+}
+
+// ─── Hook definitions (unified model, issue #19) ─────────
+//
+//  A single declarative model for both built-in operational hooks (source:
+//  'builtin', the teamai pull/dispatch hooks shipped with the CLI) and
+//  team-defined hooks (source: 'team', declared in the team repo's
+//  hooks/hooks.yaml). One `reconcileHooks()` engine injects both.
+//
+//  `event` is always the Claude PascalCase name (the cross-tool lingua
+//  franca); the engine maps it to Cursor's camelCase via CLAUDE_TO_CURSOR_EVENTS.
+
+export interface HookDef {
+  /** Distinguishes CLI built-in (A) from team-declared (B) hooks. */
+  source: 'builtin' | 'team';
+  /** Stable identity: builtin = description keyword, team = yaml `id`. */
+  key: string;
+  /** Claude PascalCase event name (SessionStart/Stop/PostToolUse/UserPromptSubmit). */
+  event: string;
+  /** Optional tool matcher (e.g. "Bash", "Skill"). "*" or undefined = all. */
+  matcher?: string;
+  /** Shell command to run. */
+  command: string;
+  /** Per-hook timeout in seconds (tool-specific; omitted = tool default). */
+  timeout?: number;
+  /** settings.json description. builtin: "[teamai] <key>"; team: "[teamai:hook:<id>] ...". */
+  description: string;
+  /** Team hooks only: restrict to these tools (default = all hook-capable tools). */
+  tools?: string[];
 }
 
 // ─── Global options ─────────────────────────────────────
@@ -224,12 +274,20 @@ export const TEAMAI_STATE_PATH = `${TEAMAI_HOME}/state.json`;
 export const TEAMAI_TOKEN_PATH = `${TEAMAI_HOME}/token`;
 export const TEAMAI_UPDATE_LOCK_PATH = `${TEAMAI_HOME}/.update-lock`;
 
-export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'wiki', 'agents'];
+export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'wiki', 'agents', 'hooks'];
 
 export const TEAMAI_RULES_START = '<!-- [teamai:rules:start] -->';
 export const TEAMAI_RULES_END = '<!-- [teamai:rules:end] -->';
 
 export const TEAMAI_HOOK_DESCRIPTION_PREFIX = '[teamai]';
+
+/**
+ * Description prefix for team-declared (B) hooks. Deliberately NOT starting with
+ * a bare "[teamai]" token boundary so the two marker namespaces never collide:
+ * built-in detection matches "[teamai] " / command markers, team detection
+ * matches "[teamai:hook:". Format: "[teamai:hook:<id>] <description>".
+ */
+export const TEAMAI_CUSTOM_HOOK_PREFIX = '[teamai:hook:';
 
 export const TEAMAI_ENV_START = '# [teamai:env:start]';
 export const TEAMAI_ENV_END = '# [teamai:env:end]';
@@ -587,6 +645,15 @@ export function getStatePath(scope: Scope, projectRoot?: string): string {
 }
 
 /**
+ * Get the managed-hooks manifest path for a given scope. This file indexes the
+ * team (B) hooks injected into each tool, so reconcile can clean up hooks that
+ * were removed from hooks.yaml (esp. for Cursor, whose entries carry no marker).
+ */
+export function getManagedHooksPath(scope: Scope, projectRoot?: string): string {
+  return path.join(getTeamaiHome(scope, projectRoot), 'managed-hooks.json');
+}
+
+/**
  * Get the user-level pushignore path.
  */
 export function getPushignorePath(): string {
@@ -602,6 +669,14 @@ export function isWikiEnabled(): boolean {
   if (process.env.TEAMAI_WIKI_DISABLED === '1' || process.env.TEAMAI_WIKI_DISABLED === 'true') return false;
   if (process.env.TEAMAI_WIKI_ENABLED === '0' || process.env.TEAMAI_WIKI_ENABLED === 'false') return false;
   return true;
+}
+
+/**
+ * Local kill-switch for team (B) hooks. Set TEAMAI_HOOKS_DISABLED=1 to veto
+ * team-declared hooks on this machine (built-in operational hooks still apply).
+ */
+export function areTeamHooksDisabled(): boolean {
+  return process.env.TEAMAI_HOOKS_DISABLED === '1' || process.env.TEAMAI_HOOKS_DISABLED === 'true';
 }
 
 // ============================================================
