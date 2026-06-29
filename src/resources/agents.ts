@@ -358,7 +358,7 @@ export class AgentsHandler extends ResourceHandler {
     teamConfig: TeamaiConfig,
     baseDir: string,
   ): Promise<void> {
-    const legacyTools = new Set(['claude', 'claude-internal', 'codebuddy']);
+    const legacyTools = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy']);
 
     for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
       if (!legacyTools.has(tool)) continue;
@@ -410,11 +410,13 @@ function reverseByTool(tool: ToolName, filePath: string, content: string): Rever
   switch (tool) {
     case 'claude':
     case 'claude-internal':
+    case 'tclaude':
       return reverseFromClaude(filePath, content);
     case 'codebuddy':
       return reverseFromCodebuddy(filePath, content);
     case 'codex':
     case 'codex-internal':
+    case 'tcodex':
       return reverseFromCodex(filePath, content);
     case 'cursor':
       return reverseFromCursor(filePath, content);

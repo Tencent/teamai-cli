@@ -112,10 +112,12 @@ export function isValidSkillName(name: string): boolean {
 const SKILL_DIRS = [
   '.claude/skills',
   '.claude-internal/skills',
+  '.tclaude/skills',
   '.cursor/skills',
   '.codebuddy/skills',
   '.codex/skills',
   '.codex-internal/skills',
+  '.tcodex/skills',
   '.openclaw/skills',
 ];
 

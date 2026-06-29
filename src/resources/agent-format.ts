@@ -5,14 +5,16 @@ import { stringify as stringifyToml, parse as parseToml } from 'smol-toml';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
-export type ToolName = 'claude' | 'claude-internal' | 'codebuddy' | 'codex' | 'codex-internal' | 'cursor';
+export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor';
 
 export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'claude',
   'claude-internal',
+  'tclaude',
   'codebuddy',
   'codex',
   'codex-internal',
+  'tcodex',
   'cursor',
 ];
 
@@ -42,9 +44,11 @@ export interface AgentSpec {
   tool_extras?: {
     claude?: Record<string, unknown>;
     'claude-internal'?: Record<string, unknown>;
+    tclaude?: Record<string, unknown>;
     codebuddy?: Record<string, unknown>;
     codex?: Record<string, unknown>;
     'codex-internal'?: Record<string, unknown>;
+    tcodex?: Record<string, unknown>;
     cursor?: Record<string, unknown>;
   };
   /**
@@ -489,9 +493,11 @@ export function renderForTool(spec: AgentSpec, tool: ToolName): RenderResult {
   switch (tool) {
     case 'claude': return renderForClaude(spec);
     case 'claude-internal': return renderForClaudeInternal(spec);
+    case 'tclaude': return renderForClaude(spec);
     case 'codebuddy': return renderForCodebuddy(spec);
     case 'codex': return renderForCodex(spec);
     case 'codex-internal': return renderForCodexInternal(spec);
+    case 'tcodex': return renderForCodex(spec);
     case 'cursor': return renderForCursor(spec);
   }
 }

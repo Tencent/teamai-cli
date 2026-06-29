@@ -99,6 +99,8 @@ export const TeamaiConfigSchema = z.object({
     codex: { skills: '.codex/skills', rules: '.codex/rules', agents: '.codex/agents' },
     'codex-internal': { skills: '.codex-internal/skills', rules: '.codex-internal/rules', agents: '.codex-internal/agents' },
     'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', wiki: '.claude-internal/wiki', agents: '.claude-internal/agents' },
+    tclaude: { skills: '.tclaude/skills', rules: '.tclaude/rules', settings: '.tclaude/settings.json', claudemd: '.tclaude/CLAUDE.md', wiki: '.tclaude/wiki', agents: '.tclaude/agents' },
+    tcodex: { skills: '.tcodex/skills', rules: '.tcodex/rules', agents: '.tcodex/agents' },
     cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents' },
     codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents' },
     openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules' },

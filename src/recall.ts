@@ -231,21 +231,11 @@ export async function recall(
     return;
   }
 
-  // Collect indexes from both scopes
+  // Collect indexes from both scopes (project first — when both scopes share
+  // the same team repo, project wins dedup so results show project-local paths)
   const scopeIndexes: Array<{ index: SearchIndex; scope: 'user' | 'project'; config: LocalConfig; learningsBase: string }> = [];
 
-  // Try user scope
-  try {
-    const { localConfig: userConfig } = await requireInit();
-    const result = await loadOrBuildScopeIndex(userConfig, 'user');
-    if (result && result.index.entries.length > 0) {
-      scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
-    }
-  } catch {
-    log.debug('recall: user scope not available');
-  }
-
-  // Try project scope (only when cwd has project-scope config)
+  // Try project scope first (only when cwd has project-scope config)
   try {
     const projectConfig = await detectProjectConfig();
     if (projectConfig) {
@@ -256,6 +246,17 @@ export async function recall(
     }
   } catch {
     log.debug('recall: project scope not available');
+  }
+
+  // Try user scope
+  try {
+    const { localConfig: userConfig } = await requireInit();
+    const result = await loadOrBuildScopeIndex(userConfig, 'user');
+    if (result && result.index.entries.length > 0) {
+      scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
+    }
+  } catch {
+    log.debug('recall: user scope not available');
   }
 
   const hasWiki = await pathExists(path.join(process.cwd(), 'teamwiki'));
