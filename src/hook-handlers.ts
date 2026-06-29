@@ -11,6 +11,7 @@
 
 import type { HookHandler } from './hook-dispatch.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { normalizeToolName } from './utils/tool-names.js';
 
 // ─── Public types ───────────────────────────────────────
 
@@ -88,26 +89,25 @@ const trackHandler: HookHandler = {
   async execute(stdin, tool) {
     const { extractSkillName, isValidSkillName, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
 
-    const toolName = stdin.tool_name;
-    if (typeof toolName !== 'string') return null;
+    const rawToolName = stdin.tool_name;
+    if (typeof rawToolName !== 'string') return null;
+    const toolName = normalizeToolName(rawToolName);
 
     const toolInput = stdin.tool_input;
     if (!toolInput || typeof toolInput !== 'object') return null;
 
-    // Only track Skill (Claude) or Read+SKILL.md (Cursor)
+    // Only track Skill (Claude/CodeBuddy) or Read+SKILL.md (Cursor)
     let skillName: string | null = null;
     let toolSource = tool;
 
     if (toolName === 'Skill') {
       skillName = extractSkillName(toolInput as Record<string, unknown>);
     } else if (toolName === 'Read') {
+      const input = toolInput as Record<string, unknown>;
       const filePath =
-        (typeof (toolInput as Record<string, unknown>).file_path === 'string'
-          ? (toolInput as Record<string, unknown>).file_path
-          : null) ??
-        (typeof (toolInput as Record<string, unknown>).path === 'string'
-          ? (toolInput as Record<string, unknown>).path
-          : null);
+        (typeof input.file_path === 'string' ? input.file_path : null) ??
+        (typeof input.filePath === 'string' ? input.filePath : null) ??
+        (typeof input.path === 'string' ? input.path : null);
       if (typeof filePath === 'string' && /\/SKILL\.md$/i.test(filePath)) {
         skillName = extractSkillName({ skill: filePath });
         toolSource = 'cursor';
@@ -180,7 +180,7 @@ const todowriteHintHandler: HookHandler = {
   async execute(stdin, _tool) {
     if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
 
-    const toolName = typeof stdin.tool_name === 'string' ? stdin.tool_name : '';
+    const toolName = normalizeToolName(typeof stdin.tool_name === 'string' ? stdin.tool_name : '');
     if (toolName !== 'TodoWrite') return null;
 
     const { shouldSkipTodoWriteHint, buildHintMessage } = await import('./todowrite-hint.js');

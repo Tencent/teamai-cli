@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './utils/logger.js';
+import { normalizeToolName } from './utils/tool-names.js';
 import {
   SKILL_NAME_REGEX,
   type UsageEvent,
@@ -274,7 +275,8 @@ async function readStdin(): Promise<string> {
  * Handle the `teamai track` CLI command.
  * Called by PostToolUse hook with CLI args (legacy) or STDIN JSON (current).
  */
-export async function track(toolName: string, toolInput: string, tool?: string): Promise<void> {
+export async function track(rawToolName: string, toolInput: string, tool?: string): Promise<void> {
+  const toolName = normalizeToolName(rawToolName);
   // Only track Skill tool calls
   if (toolName !== 'Skill') {
     return;
@@ -329,8 +331,9 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
     return;
   }
 
-  const toolName = hookData.tool_name;
-  if (typeof toolName !== 'string') return;
+  const rawName = hookData.tool_name;
+  if (typeof rawName !== 'string') return;
+  const toolName = normalizeToolName(rawName);
 
   const toolInput = hookData.tool_input;
   if (!toolInput || typeof toolInput !== 'object') {
@@ -348,6 +351,7 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
   } else if (toolName === 'Read') {
     const filePath =
       (typeof toolInput.file_path === 'string' ? toolInput.file_path : null) ??
+      (typeof toolInput.filePath === 'string' ? toolInput.filePath : null) ??
       (typeof toolInput.path === 'string' ? toolInput.path : null);
     if (filePath && /\/SKILL\.md$/i.test(filePath)) {
       skillName = extractSkillName({ skill: filePath });

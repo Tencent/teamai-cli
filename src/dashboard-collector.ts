@@ -4,6 +4,7 @@ import { log } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { ensureDir } from './utils/fs.js';
 import { resolveMonitorPid } from './pid-monitor.js';
+import { normalizeToolName } from './utils/tool-names.js';
 import {
   DASHBOARD_EVENTS_PATH,
   DASHBOARD_EVENTS_DIR,
@@ -165,9 +166,9 @@ export async function parseHookEvent(
     cwd,
   };
 
-  // Extract tool name from PostToolUse
+  // Extract tool name from PostToolUse (normalize IDE-style names)
   if (eventType === 'tool_use' && typeof hookData.tool_name === 'string') {
-    event.toolName = hookData.tool_name;
+    event.toolName = normalizeToolName(hookData.tool_name);
   }
 
   // Resolve AI tool PID for liveness monitoring on session start

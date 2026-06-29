@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { log } from './utils/logger.js';
 import { getTeamaiHome } from './types.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { normalizeToolName } from './utils/tool-names.js';
 
 // ─── Auto-recall data flow ──────────────────────────────
 //
@@ -428,8 +429,9 @@ export interface HookInput {
  * Returns null when the payload does not identify a tool.
  */
 export function parseHookInput(data: Record<string, unknown>): HookInput | null {
-    const toolName = typeof data.tool_name === 'string' ? data.tool_name : '';
-    if (!toolName) return null;
+    const rawToolName = typeof data.tool_name === 'string' ? data.tool_name : '';
+    if (!rawToolName) return null;
+    const toolName = normalizeToolName(rawToolName);
 
     // Parse tool_input (the parameters passed to the tool)
     const rawInput = data.tool_input;
