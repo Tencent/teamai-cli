@@ -299,6 +299,11 @@ async function runStatusReportInner(opts: StatusReportOptions): Promise<void> {
   const localAgentId = deriveLocalAgentId(agentType, machineId, installPath);
   const endpoints = resolveEndpoints();
 
+  // Make every invocation visible: which agent/phase/endpoint actually ran.
+  // Without this there is no trace that a UserPromptSubmit/SessionStart hook
+  // fired at all, so "sync never triggered" is impossible to diagnose.
+  log.debug(`[status-report] run: agent=${agentType} phase=${opts.phase} id=${localAgentId} endpoint=${endpoint}`);
+
   // Best-effort: replay anything stuck in the offline queue first.
   await flushQueue(apiKey).catch(() => {});
 
@@ -315,7 +320,7 @@ async function runStatusReportInner(opts: StatusReportOptions): Promise<void> {
       started_at: new Date().toISOString(),
       skills,
     };
-    await sendOrQueue(`${endpoint}${endpoints.report}`, apiKey, reportBody);
+    await sendOrQueue(`${endpoint}${endpoints.report}`, apiKey, reportBody, 'report');
   }
 
   // ② sync — both phases. Returns commands to execute.
@@ -327,15 +332,14 @@ async function runStatusReportInner(opts: StatusReportOptions): Promise<void> {
   let syncResp: unknown;
   try {
     syncResp = await postJson(`${endpoint}${endpoints.sync}`, apiKey, syncBody);
-  } catch {
+  } catch (e) {
+    log.debug(`[status-report] sync FAILED (queued, phase=${opts.phase}): ${(e as Error).message}`);
     await enqueue({ url: `${endpoint}${endpoints.sync}`, body: syncBody });
     return; // no commands to act on
   }
 
   const commands = extractCommands(syncResp);
-  if (commands.length > 0) {
-    log.debug(`[status-report] sync returned ${commands.length} command(s) for ${agentType} (${localAgentId})`);
-  }
+  log.debug(`[status-report] sync OK (phase=${opts.phase}): ${commands.length} command(s)`);
   for (const cmd of commands) {
     const label = `${cmd.type} ${cmd.skill_slug}@${cmd.skill_version || '?'}`;
     // Log what the server told us to do (incl. the signed download_url) so a
@@ -356,15 +360,17 @@ async function runStatusReportInner(opts: StatusReportOptions): Promise<void> {
     }
     if (cmd.id != null) {
       const ackBody = { id: cmd.id, status, error };
-      await sendOrQueue(`${endpoint}${endpoints.ack}`, apiKey, ackBody);
+      await sendOrQueue(`${endpoint}${endpoints.ack}`, apiKey, ackBody, `ack#${cmd.id}(${status})`);
     }
   }
 }
 
-async function sendOrQueue(url: string, apiKey: string, body: unknown): Promise<void> {
+async function sendOrQueue(url: string, apiKey: string, body: unknown, label: string): Promise<void> {
   try {
     await postJson(url, apiKey, body);
-  } catch {
+    log.debug(`[status-report] ${label} OK`);
+  } catch (e) {
+    log.debug(`[status-report] ${label} FAILED (queued): ${(e as Error).message}`);
     await enqueue({ url, body });
   }
 }
