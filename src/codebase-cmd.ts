@@ -13,11 +13,15 @@ import type { Severity, LintReport, FixResult } from './codebase-lint.js';
 export interface CodebaseCmdOptions extends GlobalOptions {
     lint?: boolean;
     fix?: boolean;
+    extract?: boolean | string;
+    incremental?: boolean;
     severity?: Severity;
     staleDays?: string;
     pendingReviewThreshold?: string;
     json?: boolean;
     output?: string;
+    project?: string;
+    maxFiles?: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -57,10 +61,25 @@ function hasHighIssues(report: LintReport): boolean {
 export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
     const cwd = process.cwd();
 
+    if (opts.extract) {
+        const { extractCodebase } = await import('./codebase-extract.js');
+        const extractPath = typeof opts.extract === 'string' ? opts.extract : cwd;
+        await extractCodebase({
+            path: extractPath,
+            incremental: opts.incremental,
+            json: opts.json,
+            project: opts.project,
+            maxFiles: opts.maxFiles ? parseInt(opts.maxFiles, 10) : undefined,
+        });
+        return;
+    }
+
     if (!opts.lint) {
         console.log('teamai codebase — 团队 codebase 文档健康度管理');
         console.log('');
         console.log('用法：');
+        console.log('  teamai codebase --extract [path]        提取代码知识 + 构建图谱');
+        console.log('  teamai codebase --extract --incremental 增量模式');
         console.log('  teamai codebase --lint                  运行全局一致性检查');
         console.log('  teamai codebase --lint --fix            检查并自动修复低风险问题');
         console.log('  teamai codebase --lint --json           输出 JSON 报告（适合 CI）');

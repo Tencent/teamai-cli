@@ -112,31 +112,20 @@ describe('importFromOrg', () => {
         await fs.remove(cwd);
     });
 
-    it('过滤 archived 仓库后传给 clusterRepos', async () => {
+    it('过滤 archived 仓库后生成白名单', async () => {
         const repos: OrgRepoInfo[] = [
             makeRepo({ url: 'https://github.com/org/active', fullName: 'org/active', name: 'active', archived: false }),
             makeRepo({ url: 'https://github.com/org/archived', fullName: 'org/archived', name: 'archived',
                 archived: true }),
         ];
         mockListOrgRepos.mockResolvedValue(repos);
-        (clusterRepos as ReturnType<typeof vi.fn>).mockResolvedValue({
-            ...makeDomains(),
-            domains: [{
-                name: '基础设施',
-                description: '',
-                repos: [{ url: 'https://github.com/org/active', locked: false }],
-            }],
-        });
 
-        await importFromOrg({ org: 'github.com/org', skipImport: true, bootstrap: false, dryRun: true });
+        await importFromOrg({ org: 'github.com/org', skipImport: true, bootstrap: false, dryRun: false });
 
-        expect(clusterRepos).toHaveBeenCalledWith(
-            expect.arrayContaining([
-                expect.objectContaining({ name: 'active' }),
-            ]),
-        );
-        const callArg = (clusterRepos as ReturnType<typeof vi.fn>).mock.calls[0][0] as Array<unknown>;
-        expect(callArg.some((r: unknown) => (r as { name: string }).name === 'archived')).toBe(false);
+        const whitelistPath = path.join(cwd, '.teamai', 'repo-whitelist.draft.yaml');
+        const content = await fs.readFile(whitelistPath, 'utf8');
+        expect(content).toContain('https://github.com/org/active');
+        expect(content).not.toContain('https://github.com/org/archived');
     });
 
     it('includePattern + excludePattern 共同生效', async () => {
@@ -153,12 +142,14 @@ describe('importFromOrg', () => {
             excludePattern: 'service-b',
             skipImport: true,
             bootstrap: false,
-            dryRun: true,
+            dryRun: false,
         });
 
-        const callArg = (clusterRepos as ReturnType<typeof vi.fn>).mock.calls[0][0] as Array<unknown>;
-        expect(callArg).toHaveLength(1);
-        expect((callArg[0] as { name: string }).name).toBe('service-a');
+        const whitelistPath = path.join(cwd, '.teamai', 'repo-whitelist.draft.yaml');
+        const content = await fs.readFile(whitelistPath, 'utf8');
+        expect(content).toContain('https://github.com/org/service-a');
+        expect(content).not.toContain('https://github.com/org/service-b');
+        expect(content).not.toContain('https://github.com/org/tool-x');
     });
 
     it('skipImport=true 跳过 importFromRepoList', async () => {
@@ -177,18 +168,16 @@ describe('importFromOrg', () => {
         expect(reviewDomains).not.toHaveBeenCalled();
     });
 
-    it('bootstrap=true 调用 reviewDomains 且 finalize=save 时写正式配置', async () => {
+    it('skipImport=false 调用 importFromRepoList', async () => {
         mockListOrgRepos.mockResolvedValue([makeRepo()]);
 
-        await importFromOrg({
-            org: 'github.com/org',
-            bootstrap: true,
-            skipImport: true,
-            dryRun: false,
-        });
+        await importFromOrg({ org: 'github.com/org', skipImport: false, bootstrap: false, dryRun: false });
 
-        expect(reviewDomains).toHaveBeenCalled();
-        expect(saveDomains).toHaveBeenCalled();
+        expect(importFromRepoList).toHaveBeenCalledWith(
+            expect.objectContaining({
+                listPath: expect.stringContaining('repo-whitelist.draft.yaml'),
+            }),
+        );
     });
 
     it('appendHistory 被调用两次（start + complete）', async () => {
