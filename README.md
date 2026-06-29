@@ -384,6 +384,45 @@ team-repo/
 
 `teamai pull` copies them into every Tier-1 tool's `agents/` directory (e.g. `~/.claude/agents/`). The CLI built-in `teamai-recall.md` is deployed alongside team agents and is **excluded** from `teamai push` (it is CLI-managed, not team-managed).
 
+### `hooks` resource type (team-declared hooks)
+
+Beyond the built-in operational hooks the CLI injects, a team can declare its **own** hooks once in the repo and have `teamai pull` adapt and deliver them to every AI tool (Claude Code, CodeBuddy, Cursor, …). Declare them in `hooks/hooks.yaml`:
+
+```yaml
+hooks:
+  - id: block-secret            # unique, ^[a-z0-9-]+$ — used for the marker + manifest
+    description: 提交前扫描密钥     # written into the hook description
+    event: PreToolUse           # Claude PascalCase event name (the cross-tool lingua franca)
+    matcher: Bash               # optional tool matcher
+    command: 'bash -lc "~/.teamai/team-scripts/scan-secret.sh" || true'
+    timeout: 15                 # optional, seconds
+    tools: [claude, cursor]     # optional; default = all hook-capable tools
+
+# Optional: tune the CLI's own built-in hooks (whitelisted fields only)
+builtin:
+  disabled: [Hook dispatch post-tool-use TodoWrite]   # drop a built-in hook
+  overrides:
+    Hook dispatch stop: { timeout: 20 }               # only `timeout` may be overridden
+```
+
+- `teamai pull` reconciles built-in (A) + team (B) hooks into each tool on every session start (it bypasses the "already synced" fast-path, so new/changed hooks self-heal automatically).
+- Team hooks are isolated from built-in hooks by a `[teamai:hook:<id>]` marker and tracked in `~/.teamai/managed-hooks.json`, so removing one from `hooks.yaml` cleanly removes it from every tool on the next pull — built-in hooks are never disturbed.
+- Disk format is unchanged and byte-identical for built-in hooks, so upgrading the CLI is a zero-diff, zero-regression operation for already-installed machines.
+
+Audit, force-apply, or strip the effective hooks:
+
+```bash
+teamai hooks list      # list effective built-in (A) + team (B) hooks
+teamai hooks inject    # force-reconcile A + B into all tools
+teamai hooks remove    # remove all teamai-managed hooks (A + B)
+```
+
+> **Security.** Team hooks are arbitrary shell commands that run automatically on session events — treat the repo's write access as an execution surface (governed by MR review, same as `env.yaml`). Guards:
+> - Commands are printed for transparency when applied (unless `--silent`).
+> - `sharing.hooks.autoApply: false` (in `teamai.yaml`) holds team hooks during `pull` and only hints — the user must run `teamai hooks inject` to consent.
+> - `sharing.hooks.requireTeamScripts: true` rejects any team hook whose command is not under `~/.teamai/team-scripts/`.
+> - Set `TEAMAI_HOOKS_DISABLED=1` to veto all team hooks locally (built-in hooks still apply).
+
 ## Update
 
 ```bash

@@ -1049,14 +1049,21 @@ export async function pull(options: GlobalOptions): Promise<void> {
   }
 
   // 2. Detect and pull project scope if cwd has .teamai/config.yaml with scope='project'
+  let projectConfig: LocalConfig | null = null;
   try {
-    const projectConfig = await detectProjectConfig();
+    projectConfig = await detectProjectConfig();
     if (projectConfig) {
       await pullForScope(projectConfig, options);
     }
   } catch (e) {
     log.warn(`Project-scope pull error: ${(e as Error).message}`);
   }
+
+  // 2.5. Reconcile built-in + team hooks for every scope. Runs OUTSIDE
+  // pullForScope so it bypasses the "Already synced" rev fast-path — this is
+  // what self-heals new built-in hooks and applies hooks.yaml changes on every
+  // session start.
+  await reconcileHooksAllScopes(userConfig, projectConfig, options);
 
   // 3. Pull cross-team source skills (runs outside pullForScope to bypass fast-path)
   if (userConfig) {
@@ -1065,6 +1072,36 @@ export async function pull(options: GlobalOptions): Promise<void> {
       await pullSources(userConfig, options);
     } catch (e) {
       log.debug(`Source pull skipped: ${(e as Error).message}`);
+    }
+  }
+}
+
+/**
+ * Reconcile built-in (A) + team (B) hooks across all active scopes. Bypasses the
+ * rev fast-path so team hook changes and newly shipped built-in hooks apply even
+ * when "Already synced, skipping" short-circuited pullForScope.
+ */
+async function reconcileHooksAllScopes(
+  userConfig: LocalConfig | null,
+  projectConfig: LocalConfig | null,
+  options: GlobalOptions,
+): Promise<void> {
+  if (options.dryRun) return;
+  const scopes = [userConfig, projectConfig].filter((c): c is LocalConfig => !!c);
+  for (const localConfig of scopes) {
+    try {
+      const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+      if (!teamConfig) continue;
+      const { reconcileTeamHooksForConfig } = await import('./hooks.js');
+      const teamDefs = await reconcileTeamHooksForConfig(teamConfig, localConfig, {
+        auto: true,
+        silent: options.silent,
+      });
+      if (teamDefs.length > 0) {
+        log.debug(`[${localConfig.scope}] Reconciled ${teamDefs.length} team hook(s)`);
+      }
+    } catch (e) {
+      log.debug(`[${localConfig.scope}] Hook reconcile skipped: ${(e as Error).message}`);
     }
   }
 }

@@ -11,10 +11,10 @@ vi.mock('../config.js', () => ({
   autoDetectInit: (...args: unknown[]) => mockAutoDetectInit(...args),
 }));
 
-const mockRemoveHooks = vi.fn();
+const mockReconcileHooks = vi.fn();
 
 vi.mock('../hooks.js', () => ({
-  removeHooks: (...args: unknown[]) => mockRemoveHooks(...args),
+  reconcileHooks: (...args: unknown[]) => mockReconcileHooks(...args),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -172,7 +172,7 @@ describe('uninstall', () => {
   beforeEach(async () => {
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-uninstall-test-'));
     mockAutoDetectInit.mockReset();
-    mockRemoveHooks.mockReset();
+    mockReconcileHooks.mockReset();
   });
 
   afterEach(async () => {
@@ -198,10 +198,13 @@ describe('uninstall', () => {
 
     await uninstall({ force: true });
 
-    // hooks: removeHooks was called
-    expect(mockRemoveHooks).toHaveBeenCalledWith(
+    // hooks: reconcileHooks(removeAll) was called for the tool settings file,
+    // with the managed-hooks manifest so team (B) hooks are cleaned up too.
+    expect(mockReconcileHooks).toHaveBeenCalledWith(
       path.join(homeDir, '.claude', 'settings.json'),
       'claude',
+      [],
+      expect.objectContaining({ removeAll: true, manifestPath: expect.stringContaining('managed-hooks.json') }),
     );
 
     // CLAUDE.md: teamai block removed, user content preserved
@@ -290,7 +293,7 @@ describe('uninstall', () => {
     await uninstall({ dryRun: true, force: true });
 
     // Nothing should be changed
-    expect(mockRemoveHooks).not.toHaveBeenCalled();
+    expect(mockReconcileHooks).not.toHaveBeenCalled();
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(true);
     expect(await fse.pathExists(teamaiHome)).toBe(true);
 

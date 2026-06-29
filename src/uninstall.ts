@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { removeHooks } from './hooks.js';
+import { reconcileHooks } from './hooks.js';
 import {
   TEAMAI_RULES_START,
   TEAMAI_RULES_END,
@@ -13,6 +13,7 @@ import {
   TEAMAI_ENV_START,
   TEAMAI_ENV_END,
   getTeamaiHome,
+  getManagedHooksPath,
   resolveBaseDir,
   type GlobalOptions,
   type TeamaiConfig,
@@ -54,6 +55,8 @@ interface RemovalPlan {
   teamaiHome: string;
   /** Whether teamaiHome exists on disk. */
   teamaiHomeExists: boolean;
+  /** Managed-hooks manifest path (for team-hook cleanup). */
+  managedHooksPath: string;
 }
 
 // ─── Helpers ───────────────────────────────────────────
@@ -137,6 +140,7 @@ async function buildRemovalPlan(
     docsDir: null,
     teamaiHome,
     teamaiHomeExists: await pathExists(teamaiHome),
+    managedHooksPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
   };
 
   // Discover team repo resource names for targeted removal
@@ -287,10 +291,10 @@ function printSummary(plan: RemovalPlan): void {
 // ─── Execution ─────────────────────────────────────────
 
 async function executeRemoval(plan: RemovalPlan): Promise<void> {
-  // (a) Remove hooks from tool settings
+  // (a) Remove hooks from tool settings (built-in A + team B via the manifest)
   for (const { path: settingsPath, tool } of plan.hookFiles) {
     try {
-      await removeHooks(settingsPath, tool);
+      await reconcileHooks(settingsPath, tool, [], { removeAll: true, manifestPath: plan.managedHooksPath });
     } catch (e) {
       log.warn(`移除 hooks 失败 ${settingsPath}: ${(e as Error).message}`);
     }

@@ -9,8 +9,12 @@ vi.mock('../config.js', () => ({
 
 vi.mock('../hooks.js', () => ({
     getHookStatus: vi.fn(),
-    injectHooksToAllTools: vi.fn(),
-    removeHooks: vi.fn(),
+    reconcileHooksToAllTools: vi.fn(),
+}));
+
+vi.mock('../resources/hooks.js', () => ({
+    parseTeamHooks: vi.fn(),
+    resolveTeamHooks: vi.fn(),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -26,21 +30,17 @@ vi.mock('../utils/logger.js', () => ({
 // ── Imports (after mocks) ────────────────────────────────
 
 import { autoDetectInit } from '../config.js';
-import { getHookStatus, injectHooksToAllTools, removeHooks } from '../hooks.js';
+import { getHookStatus, reconcileHooksToAllTools } from '../hooks.js';
+import { parseTeamHooks, resolveTeamHooks } from '../resources/hooks.js';
 import { log } from '../utils/logger.js';
-import { hooksInject, hooksList, hooksRemove } from '../hooks-cmd.js';
+import { hooksInject, hooksRemove, hooksList } from '../hooks-cmd.js';
 
 const mockedAutoDetectInit = autoDetectInit as Mock;
 const mockedGetHookStatus = getHookStatus as Mock;
-const mockedInjectHooksToAllTools = injectHooksToAllTools as Mock;
-const mockedRemoveHooks = removeHooks as Mock;
-const mockedLog = log as unknown as {
-    info: Mock;
-    success: Mock;
-    warn: Mock;
-    error: Mock;
-    debug: Mock;
-};
+const mockedReconcile = reconcileHooksToAllTools as Mock;
+const mockedParseTeamHooks = parseTeamHooks as Mock;
+const mockedResolveTeamHooks = resolveTeamHooks as Mock;
+const mockedLog = log as unknown as { info: Mock; success: Mock; warn: Mock; error: Mock; debug: Mock };
 
 const mockLocalConfig = {
     repo: { localPath: '/tmp/repo', remote: 'https://git.woa.com/team/repo.git' },
@@ -58,83 +58,91 @@ const mockTeamConfig = {
     },
 };
 
+const TEAM_DEFS = [{ source: 'team', key: 'x', event: 'Stop', command: 'echo x', description: '[teamai:hook:x] x' }];
+
 function mockHome(home: string): () => void {
     const originalHome = process.env.HOME;
     process.env.HOME = home;
     return () => {
-        if (originalHome === undefined) {
-            delete process.env.HOME;
-        } else {
-            process.env.HOME = originalHome;
-        }
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
     };
 }
-
-// ── Setup ────────────────────────────────────────────────
 
 beforeEach(() => {
     vi.clearAllMocks();
     mockedAutoDetectInit.mockResolvedValue({ localConfig: mockLocalConfig, teamConfig: mockTeamConfig });
     mockedGetHookStatus.mockResolvedValue('missing');
-    mockedInjectHooksToAllTools.mockResolvedValue(undefined);
-    mockedRemoveHooks.mockResolvedValue(undefined);
+    mockedReconcile.mockResolvedValue(undefined);
+    mockedParseTeamHooks.mockResolvedValue(TEAM_DEFS);
+    mockedResolveTeamHooks.mockResolvedValue({ defs: TEAM_DEFS, builtin: undefined });
 });
 
-// ── Tests ────────────────────────────────────────────────
-
 describe('hooksInject', () => {
-    it('should inject hooks into all tools when config exists', async () => {
+    it('reconciles built-in + team hooks across all tools (user scope)', async () => {
         await hooksInject({});
 
         expect(mockedAutoDetectInit).toHaveBeenCalled();
-        expect(mockedInjectHooksToAllTools).toHaveBeenCalledWith(
+        expect(mockedResolveTeamHooks).toHaveBeenCalledWith(mockTeamConfig, '/tmp/repo', expect.objectContaining({ auto: false }));
+        expect(mockedReconcile).toHaveBeenCalledTimes(1);
+        expect(mockedReconcile).toHaveBeenCalledWith(
             mockTeamConfig.toolPaths,
             expect.any(String),
+            TEAM_DEFS,
+            expect.stringContaining('managed-hooks.json'),
+            { builtinOverride: undefined },
         );
-        expect(mockedLog.success).toHaveBeenCalledWith(
-            expect.stringContaining('Hooks injected'),
-        );
+        expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Hooks injected'));
     });
 
-    it('should suppress success message with --silent option', async () => {
+    it('suppresses success message with --silent', async () => {
         await hooksInject({ silent: true });
-
-        expect(mockedInjectHooksToAllTools).toHaveBeenCalled();
+        expect(mockedReconcile).toHaveBeenCalled();
         expect(mockedLog.success).not.toHaveBeenCalled();
     });
 
-    it('should propagate error when not initialized', async () => {
+    it('propagates error when not initialized', async () => {
         mockedAutoDetectInit.mockRejectedValue(new Error('teamai is not initialized'));
-
         await expect(hooksInject({})).rejects.toThrow('not initialized');
     });
 
-    it('should inject into project and user base dirs when project config detected', async () => {
+    it('reconciles into project and user base dirs when project config detected', async () => {
         const restoreHome = mockHome('/home/testuser');
-        const projectConfig = {
-            ...mockLocalConfig,
-            scope: 'project',
-            projectRoot: '/path/to/project',
-        };
-        mockedAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig: mockTeamConfig });
-
+        mockedAutoDetectInit.mockResolvedValue({
+            localConfig: { ...mockLocalConfig, scope: 'project', projectRoot: '/path/to/project' },
+            teamConfig: mockTeamConfig,
+        });
         try {
             await hooksInject({});
         } finally {
             restoreHome();
         }
 
-        expect(mockedInjectHooksToAllTools).toHaveBeenCalledTimes(2);
-        expect(mockedInjectHooksToAllTools).toHaveBeenNthCalledWith(
-            1,
-            mockTeamConfig.toolPaths,
-            '/path/to/project',
-        );
-        expect(mockedInjectHooksToAllTools).toHaveBeenNthCalledWith(
-            2,
-            mockTeamConfig.toolPaths,
-            '/home/testuser',
-        );
+        expect(mockedReconcile).toHaveBeenCalledTimes(2);
+        expect(mockedReconcile).toHaveBeenNthCalledWith(1, mockTeamConfig.toolPaths, '/path/to/project', TEAM_DEFS, expect.any(String), { builtinOverride: undefined });
+        expect(mockedReconcile).toHaveBeenNthCalledWith(2, mockTeamConfig.toolPaths, '/home/testuser', TEAM_DEFS, expect.any(String), { builtinOverride: undefined });
+    });
+});
+
+describe('hooksList', () => {
+    it('prints built-in hooks and team hooks from hooks.yaml', async () => {
+        mockedParseTeamHooks.mockResolvedValue([
+            { source: 'team', key: 'lint', event: 'Stop', command: 'npm run lint', description: '[teamai:hook:lint] lint', tools: ['claude'] },
+        ]);
+        const out: string[] = [];
+        const spy = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
+        try {
+            await hooksList({});
+        } finally {
+            spy.mockRestore();
+        }
+        const text = out.join('\n');
+        expect(text).toContain('Built-in hooks (A)');
+        expect(text).toContain('hook-dispatch');
+        expect(text).toContain('Team hooks (B)');
+        expect(text).toContain('[lint] Stop');
+        expect(text).toContain('npm run lint');
+        expect(text).toContain('(tools: claude)');
     });
 });
 
@@ -214,92 +222,50 @@ describe('hooksList', () => {
 });
 
 describe('hooksRemove', () => {
-    it('should remove hooks from all tools with settings', async () => {
+    it('removes all teamai hooks (built-in + team) across tools', async () => {
         await hooksRemove({});
 
-        expect(mockedRemoveHooks).toHaveBeenCalledTimes(3); // claude, claude-internal, cursor
-        expect(mockedLog.success).toHaveBeenCalledWith(
-            expect.stringContaining('Hooks removed'),
+        expect(mockedReconcile).toHaveBeenCalledTimes(1);
+        expect(mockedReconcile).toHaveBeenCalledWith(
+            mockTeamConfig.toolPaths,
+            expect.any(String),
+            [],
+            expect.stringContaining('managed-hooks.json'),
+            { removeAll: true },
         );
+        expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Hooks removed'));
     });
 
-    it('should warn on removal failure for individual tools', async () => {
-        mockedRemoveHooks
-            .mockResolvedValueOnce(undefined) // claude OK
-            .mockRejectedValueOnce(new Error('ENOENT')) // claude-internal fails
-            .mockResolvedValueOnce(undefined); // cursor OK
-
-        await hooksRemove({});
-
-        expect(mockedLog.warn).toHaveBeenCalledWith(
-            expect.stringContaining('Failed to remove hooks from claude-internal'),
-        );
-        expect(mockedLog.success).toHaveBeenCalled();
-    });
-
-    it('should remove hooks from project and user base dirs when project config detected', async () => {
+    it('removes from project and user base dirs when project config detected', async () => {
         const restoreHome = mockHome('/home/testuser');
-        const projectConfig = {
-            ...mockLocalConfig,
-            scope: 'project',
-            projectRoot: '/path/to/project',
-        };
-        mockedAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig: mockTeamConfig });
-
+        mockedAutoDetectInit.mockResolvedValue({
+            localConfig: { ...mockLocalConfig, scope: 'project', projectRoot: '/path/to/project' },
+            teamConfig: mockTeamConfig,
+        });
         try {
             await hooksRemove({});
         } finally {
             restoreHome();
         }
-
-        expect(mockedRemoveHooks).toHaveBeenCalledTimes(6);
-        expect(mockedRemoveHooks).toHaveBeenCalledWith(
-            path.join('/path/to/project', '.claude/settings.json'),
-            'claude',
-        );
-        expect(mockedRemoveHooks).toHaveBeenCalledWith(
-            path.join('/path/to/project', '.claude-internal/settings.json'),
-            'claude-internal',
-        );
-        expect(mockedRemoveHooks).toHaveBeenCalledWith(
-            path.join('/path/to/project', '.cursor/hooks.json'),
-            'cursor',
-        );
-        expect(mockedRemoveHooks).toHaveBeenCalledWith(
-            path.join('/home/testuser', '.claude/settings.json'),
-            'claude',
-        );
-        expect(mockedRemoveHooks).toHaveBeenCalledWith(
-            path.join('/home/testuser', '.claude-internal/settings.json'),
-            'claude-internal',
-        );
-        expect(mockedRemoveHooks).toHaveBeenCalledWith(
-            path.join('/home/testuser', '.cursor/hooks.json'),
-            'cursor',
-        );
+        expect(mockedReconcile).toHaveBeenCalledTimes(2);
     });
 
-    it('should not duplicate hook operations when HOME equals projectRoot', async () => {
+    it('does not duplicate when HOME equals projectRoot', async () => {
         const restoreHome = mockHome('/path/to/project');
-        const projectConfig = {
-            ...mockLocalConfig,
-            scope: 'project',
-            projectRoot: '/path/to/project',
-        };
-        mockedAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig: mockTeamConfig });
-
+        mockedAutoDetectInit.mockResolvedValue({
+            localConfig: { ...mockLocalConfig, scope: 'project', projectRoot: '/path/to/project' },
+            teamConfig: mockTeamConfig,
+        });
         try {
             await hooksRemove({});
         } finally {
             restoreHome();
         }
-
-        expect(mockedRemoveHooks).toHaveBeenCalledTimes(3);
+        expect(mockedReconcile).toHaveBeenCalledTimes(1);
     });
 
-    it('should propagate error when not initialized', async () => {
+    it('propagates error when not initialized', async () => {
         mockedAutoDetectInit.mockRejectedValue(new Error('teamai is not initialized'));
-
         await expect(hooksRemove({})).rejects.toThrow('not initialized');
     });
 });
