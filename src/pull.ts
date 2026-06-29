@@ -821,8 +821,10 @@ async function pullForScope(
     }
   }
 
-  // Step 5: Auto-report usage data (user scope only)
-  if (!options.dryRun && localConfig.scope === 'user') {
+  // Step 5: Auto-report usage data (user scope only). This pushes usage back to
+  // the team git repo, so it only applies to git-backed repos — HTTP consumers
+  // have no local git checkout and are read-only, so skip it entirely.
+  if (!options.dryRun && localConfig.scope === 'user' && localConfig.repo.kind !== 'http') {
     try {
       const { reportUsageToTeam } = await import('./team-push.js');
       await reportUsageToTeam(localConfig.repo.localPath, localConfig.username);
