@@ -38,7 +38,7 @@ function getBuiltinSkillsDir(): string {
 }
 
 /** Names of CLI built-in skills. Used by push to exclude them from team repo push. */
-export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'teamai-wiki']);
+export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'teamai-wiki', 'team-wiki-codebase']);
 
 /**
  * Deploy CLI built-in skills to all configured AI tool skill directories.

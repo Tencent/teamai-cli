@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import chalk from 'chalk';
 
 import type { GlobalOptions } from './types.js';
@@ -15,6 +17,7 @@ export interface CodebaseCmdOptions extends GlobalOptions {
     fix?: boolean;
     extract?: boolean | string;
     incremental?: boolean;
+    upgradeWiki?: boolean;
     severity?: Severity;
     staleDays?: string;
     pendingReviewThreshold?: string;
@@ -61,6 +64,13 @@ function hasHighIssues(report: LintReport): boolean {
 export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
     const cwd = process.cwd();
 
+    if (opts.upgradeWiki) {
+        const { upgradeCodebaseWiki } = await import('./codebase-upgrade-wiki.js');
+        await upgradeCodebaseWiki({ cwd, dryRun: opts.dryRun, json: opts.json });
+        return;
+    }
+
+
     if (opts.extract) {
         const { extractCodebase } = await import('./codebase-extract.js');
         const extractPath = typeof opts.extract === 'string' ? opts.extract : cwd;
@@ -87,9 +97,24 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         return;
     }
 
-    const staleDays = opts.staleDays ? parseInt(opts.staleDays, 10) : 60;
+    // 若 teamwiki/ 存在，优先使用图谱 lint
+    const { pathExists } = await import('./utils/fs.js');
+    const teamwikiDir = path.join(cwd, 'teamwiki');
+    if (await pathExists(teamwikiDir)) {
+        const { lintTeamwiki, formatWikiLintReport } = await import('./codebase-wiki-lint.js');
+        const report = await lintTeamwiki({ cwd, severity: opts.severity as 'high' | 'medium' | 'low' | 'info' });
+        if (opts.json) {
+            console.log(JSON.stringify(report, null, 2));
+        } else {
+            console.log(formatWikiLintReport(report));
+        }
+        if (report.summary.high > 0) process.exitCode = 1;
+        return;
+    }
+
+    const staleDays = opts.staleDays ? (parseInt(opts.staleDays, 10) || 60) : 60;
     const pendingThreshold = opts.pendingReviewThreshold
-        ? parseInt(opts.pendingReviewThreshold, 10)
+        ? (parseInt(opts.pendingReviewThreshold, 10) || 10)
         : 10;
     const severity = opts.severity ?? 'info';
 

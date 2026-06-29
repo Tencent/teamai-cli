@@ -505,3 +505,73 @@ export async function postIndividualComments(
   log.success(`已发布 ${posted} 条独立建议`);
   return { posted };
 }
+
+// ─── Codebase Graph Change Comment ──────────────────────
+
+const CODEBASE_GRAPH_MARKER = '<!-- teamai:ci-extract:codebase-graph -->';
+
+function formatGraphComment(summary: { added: string[]; removed: string[] }): string {
+  const lines: string[] = [];
+  lines.push('## 📊 Codebase 知识图谱变更');
+  lines.push('');
+  lines.push('本次 MR 触发了以下代码知识更新：');
+  lines.push('');
+
+  if (summary.added.length > 0) {
+    lines.push(`### 新增节点 (${summary.added.length})`);
+    for (const item of summary.added.slice(0, 20)) {
+      lines.push(`- ${item}`);
+    }
+    if (summary.added.length > 20) {
+      lines.push(`- _...及另外 ${summary.added.length - 20} 项_`);
+    }
+    lines.push('');
+  }
+
+  if (summary.removed.length > 0) {
+    lines.push(`### 删除节点 (${summary.removed.length})`);
+    for (const item of summary.removed.slice(0, 10)) {
+      lines.push(`- ${item}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('---');
+  lines.push('> 👎 对本条 comment 添加 reaction 将阻止本次图谱更新写入团队知识库');
+  lines.push(CODEBASE_GRAPH_MARKER);
+  return lines.join('\n');
+}
+
+export async function postCodebaseGraphComment(
+  mrUrl: string,
+  summary: { added: string[]; removed: string[] },
+  dryRun?: boolean,
+): Promise<void> {
+  const body = formatGraphComment(summary);
+  const parsed = parseMrUrl(mrUrl);
+
+  if (dryRun) {
+    log.info('[dry-run] Codebase graph comment:');
+    console.log(body);
+    return;
+  }
+
+  if (parsed.provider === 'github') {
+    const existing = await findGitHubComment(parsed.owner, parsed.repo, parsed.number, CODEBASE_GRAPH_MARKER);
+    if (existing) {
+      await updateGitHubComment(parsed.owner, parsed.repo, existing.id, body);
+    } else {
+      await postGitHubComment(parsed.owner, parsed.repo, parsed.number, body);
+    }
+  } else {
+    const projectId = encodeURIComponent(`${parsed.owner}/${parsed.repo}`);
+    const mrGlobalId = await getMrGlobalId(projectId, parsed.number);
+    const existing = await findTGitComment(projectId, mrGlobalId, CODEBASE_GRAPH_MARKER);
+    if (existing) {
+      await updateTGitComment(projectId, mrGlobalId, existing.id, body);
+    } else {
+      await postTGitComment(projectId, mrGlobalId, body);
+    }
+  }
+  log.success('Codebase 图谱变更 comment 已发布');
+}

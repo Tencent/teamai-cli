@@ -71,35 +71,42 @@ CLI 会根据用户传入的 repo URL 自动选择 provider：
 
 | 命令 | 说明 |
 |------|------|
-| `teamai init [--scope <user\|project>] [--role <id>] [--force]` | 初始化（自动安装 gf CLI、OAuth 登录、关联仓库、注册成员、配置 reviewers、注入 hooks） |
-| `teamai push [--all] [--role <id>]` | 推送本地新资源到独立分支并创建 Merge Request；新 skill 交互式选择目标命名空间，可用 `--role` 覆盖 |
-| `teamai pull [--silent]` | 拉取团队资源并注入到本地 AI 工具（支持双 scope 依次拉取） |
+| `teamai init` | 初始化（OAuth 登录、关联仓库、注册成员、注入 hooks） |
+| `teamai push` | 推送本地资源到独立分支并创建 MR |
+| `teamai pull` | 拉取团队资源并注入到本地 AI 工具 |
 | `teamai status` | 查看本地 vs 团队仓库差异 |
-| `teamai list [type] [--source repo\|local\|all] [--agent <id>]` | 列出资源（skills\|rules\|docs\|env\|wiki）；`--source local` 或 `all` 时会扫描已安装 AI agent 下的 skills 目录，并标注每个 skill 的来源 (`[team]` / `[builtin]` / `[source:<name>]` / `[local-only]`) |
-| `teamai skill [list\|show <name>]` | 默认列出全部 skill；`show <name>` 输出指定 skill 的来源、贡献者、已安装的 agent 列表与描述摘要 |
-| `teamai members` | 列出已注册的团队成员 |
-| `teamai remove <type> <name>` | 从团队仓库和本地删除资源并创建 MR（skills\|rules\|wiki） |
-| `teamai roles` | 管理团队角色（`init`/`list`/`set`/`add`/`remove`/`update`） |
-| `teamai source` | 管理跨团队 skill 订阅源（`add`/`remove`/`list`/`browse`） |
-| `teamai contribute --file <path> [--scope <user\|project>]` | 将 AI 生成的经验文档推送到团队仓库 |
-| `teamai recall <query>` | 搜索团队知识库，自动合并 user + project 双 scope 结果 |
-| `teamai import --from-repo <url>` | 拉取远端仓库并生成单仓视图 `docs/team-codebase/repos/<slug>.md`；AI 推荐业务域并写入 `.teamai/domains.yaml` |
-| `teamai import --from-repo-list <yaml>` | 按白名单批量导入多个仓库（支持并发），并按业务域聚合产出 |
-| `teamai import --from-org <org> --bootstrap` | 列出组织/group 下所有仓库（GitHub / TGit），AI 聚类为业务域，交互式 review 后完成首次全量同步 |
-| `teamai import --from-iwiki <id> [--iwiki-dual]` | 把 iWiki 文档导入为 learnings；dual 模式同时把业务接口 / 外部知识源 / 术语表抽取到 `docs/team-codebase/external-knowledge.md` |
-| `teamai cache --status \| --gc` | 查看或回收 shallow-clone 缓存目录 `~/.teamai/cache/repos/`（LRU + 容量上限，默认 5GB） |
-| `teamai codebase --lint [--fix]` | 对 `docs/team-codebase` 与 `.teamai/` 做跨文件一致性 lint；报告锚点 / 孤儿 / 源失效 / 同步陈旧等问题；`--fix` 应用低风险机械修复 |
-| `teamai review [id] [--apply \| --reject \| --all-apply]` | 浏览并处理 `.teamai/pending-review.jsonl` 中的待审 codebase 变更；`--apply` 通过章节锚点原地写入 |
-| `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | 浏览并处理域漂移信号；`--apply` 把仓库重新归类到推荐域并刷新聚合视图 |
-| `teamai digest` | 生成团队 AI 使用周报（skill 排行、新增/更新 skill、session 摘要） |
-| `teamai hooks` | 管理 AI 工具 hooks（`list` 查看安装状态；`inject`/`remove` 更新配置） |
-| `teamai ci extract-mr --url <url> [--mode comment\|write\|both] [--individual-comments]` | CI 流水线集成：从 MR/PR 中提取知识，发布为评论，合并后写入团队知识仓库。使用 `--individual-comments` 时每条建议单独发布，支持 reaction/reject 交互（GitHub 👎 / TGit ☝️） |
-| `teamai uninstall [--force]` | 卸载 teamai：移除 hooks、rules、skills、env、docs、~/.teamai/ |
+| `teamai recall <query>` | 搜索团队知识库（BM25 + 图谱加权） |
+| `teamai import --from-repo <url>` | 导入仓库代码知识图谱（`teamwiki/`） |
+| `teamai import --from-org <org>` | 批量导入组织下所有仓库 |
+| `teamai import --from-repo-list <yaml>` | 按白名单批量导入 |
+| `teamai import --from-mr <url>` | 从已合并 MR 提取 learning |
+| `teamai import --from-iwiki <id>` | 从 iWiki 导入文档为 learnings |
+| `teamai codebase --lint` | 知识图谱健康度检查 |
+| `teamai contribute` | 分享本次 session 经验到团队仓库 |
+| `teamai members` | 列出团队成员 |
+| `teamai roles` | 管理团队角色和命名空间 |
+| `teamai remove <type> <name>` | 删除资源并创建 MR |
+| `teamai digest` | 生成团队使用周报 |
 | `teamai doctor` | 诊断配置问题 |
+| `teamai uninstall` | 卸载所有 teamai 资源和 hooks |
 
-全局选项：
-- `--dry-run` — 预览模式，不做实际变更
-- `--verbose, -v` — 详细输出
+全局选项：`--dry-run`、`--verbose`
+
+<details>
+<summary>更多命令（管理、CI、分析）</summary>
+
+| 命令 | 说明 |
+|------|------|
+| `teamai list [type]` | 列出资源（skills\|rules\|docs\|env\|wiki） |
+| `teamai skill [show <name>]` | 查看 skill 元数据和贡献者 |
+| `teamai source` | 管理跨团队 skill 订阅 |
+| `teamai tags` | 管理基于标签的资源过滤 |
+| `teamai env` | 管理团队环境变量 |
+| `teamai hooks` | 管理 AI 工具 hooks |
+| `teamai cache --gc` | 回收 clone 缓存 |
+| `teamai ci extract-mr --url <url>` | CI：从 MR 提取知识，发布评论，合并后写入团队仓库 |
+
+</details>
 
 ## 工作原理
 
@@ -315,6 +322,42 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 | `[skills]` | 团队仓库 `skills/<name>/SKILL.md` | 可复用 AI skill |
 
 索引在每次 `teamai pull` 时自动重建。旧版索引（无 `version` 字段或缺少 `type`）会在首次使用时被自动检测并重建，对调用方透明
+
+### 代码库知识图谱（teamwiki/）
+
+`teamai codebase --extract`（或 `teamai import --from-repo`）解析源码仓库，将结构化知识图谱写入 `teamwiki/` 目录：
+
+```
+teamwiki/
+├── router.md               # 导航枢纽，列出所有已导入仓库
+├── index.md                # 全局索引（自动生成，含时间戳）
+├── hot.md                  # 活跃工作记忆（Phase 4 hot/cold 预留）
+├── source-manifest.json    # 源文件哈希清单（增量提取用）
+├── .indices/
+│   └── graph-index.json    # 知识图谱：nodes + edges（JSON 格式）
+├── evidence/
+│   └── code/
+│       └── <project>/      # 每个导入的仓库一个目录
+│           ├── index.md    # 项目摘要（facts 总数 + 页面列表）
+│           ├── component.md  # 函数 / 类 / 组件
+│           ├── interface.md  # 接口和类型定义
+│           ├── config.md   # 配置项（环境变量、TOML key 等）
+│           ├── error.md    # 错误处理模式
+│           └── relation-<dir>.md  # 按顶级目录分组的 import 依赖关系
+└── gaps/
+    └── detected.md         # 知识缺口检测结果（IMPL_MISSING / LOW_CONNECTIVITY / …）
+```
+
+**graph-index.json** 存储提取出的知识图谱。真实数据参考：HAI 团队 11 个仓库 → **2 218 个节点，852 条边**。
+
+| 字段 | 说明 |
+|------|------|
+| `nodes[].kind` | `component`（函数/类）或 `config`（配置项） |
+| `edges[].relation` | `imports` —— 跨文件或跨仓库依赖关系 |
+
+跨仓 edge 通过 PascalCase 标签匹配自动检测，无需手动配置。
+
+`teamai recall` 利用此图谱进行 **BM25 + graph-boost** 检索：关键词命中后按图结构邻近度重排序，结果兼具文本相关性和结构相关性。
 
 ### TodoWrite 提醒 hook
 

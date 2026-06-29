@@ -71,35 +71,42 @@ The CLI picks a provider automatically from the repo URL:
 
 | Command | Description |
 |---------|-------------|
-| `teamai init [--scope <user\|project>] [--role <id>] [--force]` | Initialize (auto-installs gf CLI, OAuth login, links repo, registers member, configures reviewers, injects hooks) |
-| `teamai push [--all] [--role <id>]` | Push local new resources to a dedicated branch and open a Merge Request; new skills prompt interactively for a target namespace (override with `--role`) |
-| `teamai pull [--silent]` | Pull team resources and inject them into local AI tools (both scopes pulled sequentially) |
-| `teamai status` | Show the diff between local and the team repo |
-| `teamai list [type] [--source repo\|local\|all] [--agent <id>]` | List resources (skills\|rules\|docs\|env\|wiki). With `--source local` or `all`, scans skills directories of installed AI agents and tags each skill's origin (`[team]` / `[builtin]` / `[source:<name>]` / `[local-only]`) |
-| `teamai skill [list\|show <name>]` | List all skills by default; `show <name>` prints the skill's origin, contributors, installed-agent list, and description summary |
-| `teamai members` | List registered team members |
-| `teamai remove <type> <name>` | Remove a resource from both the team repo and local, then open an MR (skills\|rules\|wiki) |
-| `teamai roles` | Manage team roles (`init`/`list`/`set`/`add`/`remove`/`update`) |
-| `teamai source` | Manage cross-team skill subscription sources (`add`/`remove`/`list`/`browse`) |
-| `teamai contribute --file <path> [--scope <user\|project>]` | Push an AI-generated experience document to the team repo |
-| `teamai recall <query>` | Search the team knowledge base, automatically merging user + project scope results |
-| `teamai import --from-repo <url>` | Clone a remote repo and generate a per-repo summary under `docs/team-codebase/repos/<slug>.md`; AI recommends a business domain and persists the assignment to `.teamai/domains.yaml` |
-| `teamai import --from-repo-list <yaml>` | Batch import a whitelist of repos with concurrency control, then aggregate the results into per-domain views |
-| `teamai import --from-org <org> --bootstrap` | List every repo under an organization (GitHub or TGit), AI-cluster them into business domains, and run an interactive review before the first full sync |
-| `teamai import --from-iwiki <id> [--iwiki-dual]` | Import iWiki documents as learnings; in dual mode also extract business-API / external-knowledge / glossary sections into `docs/team-codebase/external-knowledge.md` |
-| `teamai cache --status \| --gc` | Inspect or garbage-collect the shallow-clone cache at `~/.teamai/cache/repos/` (LRU + size cap, default 5GB) |
-| `teamai codebase --lint [--fix]` | Cross-file consistency lint over `docs/team-codebase` and `.teamai/`; reports anchor / orphan / source-invalid / sync-stale issues; `--fix` applies low-risk mechanical fixes |
-| `teamai review [id] [--apply \| --reject \| --all-apply]` | Inspect and process pending codebase changes from `.teamai/pending-review.jsonl`; `--apply` patches in place via section anchors |
-| `teamai domains drift [url] [--apply \| --lock \| --apply-all]` | Inspect and resolve domain-drift signals; `--apply` reassigns the repo to the recommended domain and refreshes the aggregate views |
-| `teamai digest` | Generate a team AI usage weekly digest (skill leaderboard, new/updated skills, session summaries) |
-| `teamai hooks` | Manage AI-tool hooks (`list` shows installation status; `inject`/`remove` update settings) |
-| `teamai ci extract-mr --url <url> [--mode comment\|write\|both] [--individual-comments]` | CI pipeline integration: extract knowledge from MR/PR, post as comments, and write to team repo after merge. With `--individual-comments`, each suggestion is posted separately with reaction/reject support (GitHub 👎 / TGit ☝️) |
-| `teamai uninstall [--force]` | Uninstall teamai: remove hooks, rules, skills, env, docs, and `~/.teamai/` |
-| `teamai doctor` | Diagnose configuration problems |
+| `teamai init` | Initialize (OAuth login, link repo, register member, inject hooks) |
+| `teamai push` | Push local resources to a branch and open a Merge Request |
+| `teamai pull` | Pull team resources and inject into local AI tools |
+| `teamai status` | Show local vs team repo diff |
+| `teamai recall <query>` | Search the team knowledge base (BM25 + graph-boost) |
+| `teamai import --from-repo <url>` | Import a repo's code knowledge graph (`teamwiki/`) |
+| `teamai import --from-org <org>` | Batch import all repos under an organization |
+| `teamai import --from-repo-list <yaml>` | Batch import repos from a whitelist |
+| `teamai import --from-mr <url>` | Extract learning from a merged MR/PR |
+| `teamai import --from-iwiki <id>` | Import iWiki documents as learnings |
+| `teamai codebase --lint` | Knowledge graph health check |
+| `teamai contribute` | Share session experience to team repo |
+| `teamai members` | List team members |
+| `teamai roles` | Manage team roles and namespaces |
+| `teamai remove <type> <name>` | Remove a resource and open MR |
+| `teamai digest` | Generate weekly team usage digest |
+| `teamai doctor` | Diagnose configuration issues |
+| `teamai uninstall` | Remove all teamai resources and hooks |
 
-Global options:
-- `--dry-run` — preview mode, no real changes
-- `--verbose, -v` — verbose output
+Global options: `--dry-run`, `--verbose`
+
+<details>
+<summary>More commands (management, CI, analytics)</summary>
+
+| Command | Description |
+|---------|-------------|
+| `teamai list [type]` | List resources (skills\|rules\|docs\|env\|wiki) |
+| `teamai skill [show <name>]` | Inspect skill metadata and contributors |
+| `teamai source` | Manage cross-team skill subscriptions |
+| `teamai tags` | Manage tag-based resource filtering |
+| `teamai env` | Manage team environment variables |
+| `teamai hooks` | Manage AI-tool hooks |
+| `teamai cache --gc` | Garbage-collect clone cache |
+| `teamai ci extract-mr --url <url>` | CI: extract knowledge from MR, post comments, write after merge |
+
+</details>
 
 ## How It Works
 
@@ -315,6 +322,42 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 | `[skills]` | team repo `skills/<name>/SKILL.md` | reusable AI skills |
 
 The index is rebuilt automatically on every `teamai pull`. Indexes built by older versions (no `version` field or missing `type`) are detected and rebuilt transparently on first use.
+
+### Codebase Knowledge Graph (teamwiki/)
+
+`teamai codebase --extract` (or `teamai import --from-repo`) parses your source repos and writes a structured knowledge graph under `teamwiki/`:
+
+```
+teamwiki/
+├── router.md               # Navigation hub — lists every imported repo
+├── index.md                # Global index (auto-generated, with timestamp)
+├── hot.md                  # Active working memory (reserved for Phase 4)
+├── source-manifest.json    # Per-file hash manifest for incremental extraction
+├── .indices/
+│   └── graph-index.json    # Knowledge graph: nodes + edges (JSON)
+├── evidence/
+│   └── code/
+│       └── <project>/      # One directory per imported repo
+│           ├── index.md    # Project summary (fact count + page list)
+│           ├── component.md  # Functions / classes / components
+│           ├── interface.md  # Interface and type definitions
+│           ├── config.md   # Config keys (env vars, TOML keys, etc.)
+│           ├── error.md    # Error-handling patterns
+│           └── relation-<dir>.md  # Import relationships grouped by top-level dir
+└── gaps/
+    └── detected.md         # Detected knowledge gaps (IMPL_MISSING, LOW_CONNECTIVITY, …)
+```
+
+**graph-index.json** stores the extracted graph. A real example: 11 HAI team repos → **2 218 nodes, 852 edges**.
+
+| Field | Description |
+|-------|-------------|
+| `nodes[].kind` | `component` (function/class) or `config` (config key) |
+| `edges[].relation` | `imports` — cross-file and cross-repo dependency |
+
+Cross-repo edges are detected automatically by PascalCase label matching.
+
+`teamai recall` uses this graph for **BM25 + graph-boost** retrieval: keyword hits are re-ranked by graph proximity, so you get structurally relevant results, not just textual matches.
 
 ### TodoWrite reminder hook
 

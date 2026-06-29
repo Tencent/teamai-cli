@@ -731,16 +731,28 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 await fs.ensureDir(path.join(teamwikiRoot, '.indices'));
                 if (await fs.pathExists(destGraph)) {
                     const { mergeGraphs } = await import('./wiki-engine/adapters/index.js');
-                    const existing = JSON.parse(await fs.readFile(destGraph, 'utf8'));
-                    const overlay = JSON.parse(await fs.readFile(srcGraph, 'utf8'));
-                    const merged2 = mergeGraphs(existing, overlay);
-                    // 跨仓关系检测：检查新仓库的 relation facts 是否引用了已有仓库的文件/包
-                    const crossRepoEdges = detectCrossRepoEdges(overlay, existing, slug);
-                    if (crossRepoEdges.length > 0) {
-                        (merged2 as { edges: Array<{ from: string; to: string; relation: string }> }).edges.push(...crossRepoEdges);
-                        log.debug(`[wiki-engine] 检测到 ${crossRepoEdges.length} 条跨仓关系`);
+                    let existing, overlay;
+                    try {
+                        existing = JSON.parse(await fs.readFile(destGraph, 'utf8'));
+                    } catch (parseErr) {
+                        log.warn(`[wiki-engine] graph-index.json 解析失败，将重建: ${(parseErr as Error).message}`);
+                        existing = null;
                     }
-                    await fs.writeFile(destGraph, JSON.stringify(merged2, null, 2), 'utf8');
+                    try {
+                        overlay = JSON.parse(await fs.readFile(srcGraph, 'utf8'));
+                    } catch (parseErr) {
+                        log.warn(`[wiki-engine] 源图谱解析失败，跳过合并: ${(parseErr as Error).message}`);
+                        overlay = null;
+                    }
+                    if (overlay) {
+                        const merged2 = existing ? mergeGraphs(existing, overlay) : overlay;
+                        const crossRepoEdges = detectCrossRepoEdges(overlay, existing ?? { nodes: [], edges: [] }, slug);
+                        if (crossRepoEdges.length > 0) {
+                            (merged2 as { edges: Array<{ from: string; to: string; relation: string }> }).edges.push(...crossRepoEdges);
+                            log.debug(`[wiki-engine] 检测到 ${crossRepoEdges.length} 条跨仓关系`);
+                        }
+                        await fs.writeFile(destGraph, JSON.stringify(merged2, null, 2), 'utf8');
+                    }
                 } else {
                     await fs.copy(srcGraph, destGraph);
                 }
@@ -807,6 +819,28 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     }
 
     log.info(chalk.green(`✓ 仓库 ${owner}/${repoName} 导入完成`));
+
+    // 5b. 后台深度生成（不阻塞）
+    if (!dryRun && teamwikiRoot) {
+        const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code', slug);
+        if (await fs.pathExists(path.join(evidenceDir, '_manifest.json'))) {
+            setImmediate(async () => {
+                try {
+                    const { deepEnrich } = await import('./deep-enrich.js');
+                    await deepEnrich({ project: slug, evidenceDir, wikiRoot: teamwikiRoot, cacheDir });
+                    const { autoPushTeamRepo } = await import('./utils/git.js');
+                    const pushTarget = path.join(process.cwd(), '.teamai', 'team-repo');
+                    if (await fs.pathExists(pushTarget)) {
+                        await autoPushTeamRepo(pushTarget, `[teamai] Deep enrich: ${slug}`);
+                    }
+                    log.info(chalk.green(`✓ 深度生成完成: ${slug}`));
+                } catch (e) {
+                    log.debug(`deep-enrich background failed for ${slug}: ${(e as Error).message}`);
+                }
+            });
+        }
+    }
+
 
     // 6. 写 LAST_SYNC
     if (!dryRun) {
