@@ -1,13 +1,13 @@
 import YAML from 'yaml';
 import path from 'node:path';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadStateForScope, saveStateForScope } from './config.js';
-import { injectHooksToAllTools } from './hooks.js';
+import { reconcileTeamHooksForConfig } from './hooks.js';
 import { configureGitUser, initRepo } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
 import { getProvider, detectProvider, RepoNotFoundError } from './providers/index.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
-import { TEAMAI_HOME, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath, resolveBaseDir } from './types.js';
+import { TEAMAI_HOME, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath } from './types.js';
 import { describeRoles, loadRolesManifest } from './roles.js';
 import { askQuestion, askConfirmation, closePrompt } from './utils/prompt.js';
 
@@ -427,10 +427,10 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
     // Non-critical: state file may not exist yet on first init
   }
 
-  // Step 7: Inject hooks into AI tools
+  // Step 7: Inject built-in + team hooks into AI tools
   const reloadedTeamConfig = await loadTeamConfig(localPath);
   if (reloadedTeamConfig) {
-    await injectHooksToAllTools(reloadedTeamConfig.toolPaths, resolveBaseDir(localConfig));
+    await reconcileTeamHooksForConfig(reloadedTeamConfig, localConfig);
   }
 
   log.success('teamai initialized successfully!');

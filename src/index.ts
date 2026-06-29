@@ -410,7 +410,7 @@ const hooksCmd = program
 
 hooksCmd
   .command('list')
-  .description('List teamai hook installation status')
+  .description('List hook install status + effective built-in (A) and team (B) hooks')
   .action(async () => {
     const globalOpts = program.opts() as GlobalOptions;
     const { hooksList } = await import('./hooks-cmd.js');

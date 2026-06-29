@@ -98,6 +98,12 @@ export async function status(options: GlobalOptions): Promise<void> {
   }
   counts.env = envCount;
 
+  // Hooks (team-declared, hooks/hooks.yaml)
+  const hooksHandler = getAllHandlers().find((h) => h.type === 'hooks') as
+    | { countHooks: (repoPath: string) => Promise<number> }
+    | undefined;
+  counts.hooks = hooksHandler ? await hooksHandler.countHooks(repoPath) : 0;
+
   for (const [type, count] of Object.entries(counts)) {
     console.log(`  ${type}: ${count}`);
   }
