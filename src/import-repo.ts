@@ -644,10 +644,12 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
 
     // Resolve team-repo directory (needed for both docs/team-codebase and teamwiki)
     let teamRepoDir: string;
+    let teamRepoRemote = '';
     try {
         const { autoDetectInit } = await import('./config.js');
         const { localConfig: lc } = await autoDetectInit();
         teamRepoDir = lc.repo.localPath;
+        teamRepoRemote = lc.repo.remote;
     } catch {
         teamRepoDir = path.join(process.cwd(), '.teamai', 'team-repo');
     }
@@ -840,6 +842,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         if (await fs.pathExists(teamRepoDir)) {
             const { autoPushTeamRepo } = await import('./utils/git.js');
             await autoPushTeamRepo(teamRepoDir, `[teamai] Import codebase knowledge from ${owner}/${repoName}`);
+            log.success(`已推送到团队知识仓库${teamRepoRemote ? ` (${teamRepoRemote})` : ''}`);
         }
     }
 

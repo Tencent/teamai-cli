@@ -40,6 +40,7 @@ vi.mock('../utils/git.js', () => ({
 // ─── mock utils/ai-client ─────────────────────────────────────────────────
 vi.mock('../utils/ai-client.js', () => ({
   callClaude: vi.fn(),
+  getAICliName: () => 'claude',
 }));
 
 import fs from 'node:fs';

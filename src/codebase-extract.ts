@@ -35,6 +35,8 @@ export interface ExtractCodebaseOptions {
   project?: string;
   maxFiles?: number;
   skipEnrich?: boolean;
+  /** 产出根目录（teamwiki/ 写到此目录下）。默认与 path 相同。 */
+  outputRoot?: string;
 }
 
 interface ExtractResult {
@@ -511,8 +513,9 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   const root = path.resolve(opts.path || '.');
   const project = opts.project || path.basename(root);
   const maxFiles = opts.maxFiles || 200;
+  const outputBase = opts.outputRoot ? path.resolve(opts.outputRoot) : root;
 
-  const wikiRoot = path.join(root, 'teamwiki');
+  const wikiRoot = path.join(outputBase, 'teamwiki');
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code', project);
   const manifestPath = path.join(wikiRoot, 'source-manifest.json');
 

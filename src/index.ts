@@ -589,10 +589,9 @@ program
 
 program
   .command('import')
-  .description('Import knowledge from local files, Claude/Cursor rules, git workspace, MRs, or iWiki')
-  .option('--dir <path>', 'Scan local directory for importable Markdown files')
+  .description('Import knowledge from local directories, remote repos, organizations, MRs, or iWiki')
+  .option('--dir <path>', 'Extract code knowledge from a local directory (same as --from-repo but no clone)')
   .addOption(new Option('--from-claude', 'Scan Claude/Cursor rule directories (~/.claude/rules, ~/.cursor/rules)').hideHelp())
-  .addOption(new Option('--workspace', 'Generate codebase.md from current git workspace').hideHelp())
   .option('--from-mr <url>', 'Extract learning and codebase suggestions from a merged MR/PR URL')
   .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)')
   .addOption(new Option('--resume', 'Resume an interrupted import session').hideHelp())

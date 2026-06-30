@@ -10,8 +10,13 @@ const ALLOWED_CLI_CANDIDATES = [
 /** CLI 探测超时（毫秒），防止 execFileSync 挂死。 */
 const CLI_DETECT_TIMEOUT_MS = 5_000;
 
-/** 默认 AI 调用超时时间（毫秒）。 */
-const DEFAULT_TIMEOUT_MS = 120_000;
+/**
+ * 默认 AI 调用超时时间（毫秒）。
+ * 10 分钟适用于大型仓库（200+ 文件）的 codebase 文档生成场景。
+ * 小型操作（enrichWithAI 单模块）通常在 30s 内完成。
+ * 批量场景中 callClaudeParallel 限制并发为 3，单任务超时不影响其他。
+ */
+const DEFAULT_TIMEOUT_MS = 600_000;
 
 /** 默认并发数量上限。 */
 const DEFAULT_CONCURRENCY = 3;
@@ -111,6 +116,14 @@ function buildCliArgs(cmd: string, prompt: string): string[] {
 /** 缓存探测到的 CLI 信息，避免重复 execFileSync。 */
 let _cliInfo: CliInfo | undefined;
 
+/** 获取当前使用的 AI CLI 名称（用于日志显示）。 */
+export function getAICliName(): string {
+  if (_cliInfo === undefined) {
+    _cliInfo = detectClaudeCli();
+  }
+  return _cliInfo.cmd;
+}
+
 /**
  * 通过子进程直接调用 AI CLI（claude/codex 等），返回 stdout 文本。
  *
@@ -137,7 +150,9 @@ export async function callClaude(
 
     if (_cliInfo === undefined) {
       _cliInfo = detectClaudeCli();
+      log.debug(`[ai-client] using CLI: ${_cliInfo.cmd} (${_cliInfo.absPath})`);
     }
+    log.debug(`[ai-client] calling ${_cliInfo.cmd}, timeout=${Math.round(timeoutMs / 1000)}s, prompt=${prompt.slice(0, 60).replace(/\n/g, ' ')}...`);
     const child = spawn(_cliInfo.absPath, buildCliArgs(_cliInfo.cmd, prompt), { stdio: ['ignore', 'pipe', 'pipe'] });
 
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));

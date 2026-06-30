@@ -1,9 +1,8 @@
 import path from 'node:path';
-import fs from 'node:fs/promises';
-import fsSync from 'node:fs';
+import os from 'node:os';
+import fs from 'fs-extra';
 
 import { autoDetectInit } from './config.js';
-import { generateCodebaseMd, generateCodebaseIndex, lintCodebaseMd } from './codebase.js';
 import { scanCandidates, classifyWithAI, interactiveReview, pushAccepted } from './import-local.js';
 import { importFromIWiki } from './import-iwiki.js';
 import { importFromMR } from './import-mr.js';
@@ -23,8 +22,6 @@ interface ImportOptions extends GlobalOptions {
   dir?: string;
   /** 是否扫描 Claude/Cursor rule 目录 */
   fromClaude?: boolean;
-  /** 是否从当前 git 工作区生成 codebase.md */
-  workspace?: boolean;
   /** 从已合并 MR/PR URL 提取知识 */
   fromMr?: string;
   /** iWiki Space ID 或页面 URL，用于批量导入 iWiki 文档 */
@@ -76,7 +73,7 @@ interface ImportOptions extends GlobalOptions {
 }
 
 /**
- * import 命令主入口，根据选项组合 local、workspace、MR 三条导入流程。
+ * import 命令主入口，根据选项组合 dir、MR、org 等导入流程。
  *
  * @param opts - 合并了全局选项与子命令选项的参数对象
  */
@@ -95,6 +92,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         dryRun: opts.dryRun,
         output: opts.output,
         forceSsh: opts.ssh ?? false,
+        skipEnrich: opts.skipEnrich ?? false,
       });
       return;
     } else if (opts.fromRepo) {
@@ -120,6 +118,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         output: opts.output,
         skipAggregate: opts.skipAggregate ?? false,
         incremental: opts.incremental ?? false,
+        skipEnrich: opts.skipEnrich ?? false,
       });
       log.info(`完成：成功 ${result.succeeded}，失败 ${result.failed.length}，跳过 ${result.skipped.length}`);
       if (result.failed.length > 0) process.exitCode = 1;
@@ -187,61 +186,78 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       if (!opts.dryRun && !opts.output) {
         await autoPushTeamRepo(localConfig.repo.localPath, `[teamai] Import from MR: ${opts.fromMr}`);
       }
-    } else if (opts.workspace) {
-      // 分支 2：--workspace，从当前 git 工作区生成 codebase.md
-      const repoPath = process.cwd();
+    } else if (opts.dir) {
+      // 分支 3：--dir <path>，代码知识提取（等同于 --from-repo 但跳过 clone）
+      const dirPath = path.resolve(opts.dir);
+      if (!(await fs.pathExists(dirPath))) {
+        throw new Error(`目录不存在: ${dirPath}`);
+      }
+      const slug = path.basename(dirPath);
+      log.info(`扫描本地目录: ${dirPath} (project: ${slug})`);
 
-      // 尝试使用默认 learnings 目录（不增加 CLI flag）
-      const defaultLearningsDir = path.join(repoPath, 'learnings');
-      const learningsDir = fsSync.existsSync(defaultLearningsDir) ? defaultLearningsDir : undefined;
-
-      const codebaseMd = await generateCodebaseMd({ repoPath, learningsDir });
-
-      // 决定 codebase.md 的写出路径
-      let codebaseOutputPath: string | undefined;
-      if (opts.output) {
-        await fs.writeFile(opts.output, codebaseMd, 'utf-8');
-        log.info(`已写入：${opts.output}`);
-        codebaseOutputPath = opts.output;
-      } else {
-        log.info(codebaseMd);
-        // stdout 模式：把索引写到 cwd/codebase-index.md
-        codebaseOutputPath = path.join(repoPath, 'codebase.md');
+      if (opts.dryRun) {
+        log.info(`[dry-run] 跳过代码提取，不执行实际操作`);
+        log.success(`本地目录 ${slug} 导入完成 (dry-run)`);
+        return;
       }
 
-      // 生成并写出索引
+      // 使用临时目录承接 extractCodebase 产物，避免污染源码目录已有的 teamwiki/
+      const tmpExtractDir = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-extract-'));
       try {
-        const indexMd = await generateCodebaseIndex(codebaseMd);
-        const indexDir = opts.output ? path.dirname(codebaseOutputPath) : repoPath;
-        const indexPath = path.join(indexDir, 'codebase-index.md');
-        await fs.writeFile(indexPath, indexMd, 'utf-8');
-        log.info(`索引已写入：${indexPath}`);
-      } catch (indexErr) {
-        log.debug(`生成索引失败（不中断流程）：${String(indexErr)}`);
-      }
+        const { extractCodebase } = await import('./codebase-extract.js');
+        await extractCodebase({
+          path: dirPath,
+          project: slug,
+          json: false,
+          skipEnrich: opts.skipEnrich ?? false,
+          outputRoot: tmpExtractDir,
+        });
 
-      // 执行 lint 检查（只打印不写文件，不因失败中断）
-      try {
-        const lintReport = await lintCodebaseMd(codebaseMd);
-        const highIssues = lintReport.issues.filter((i) => i.severity === 'high');
-        log.info(`[lint] ${lintReport.summary}（共 ${lintReport.issues.length} 个问题）`);
-        if (highIssues.length > 0) {
-          const displayCount = Math.min(highIssues.length, 5);
-          log.info(`[lint] 高严重度问题（${highIssues.length} 条）：`);
-          for (let idx = 0; idx < displayCount; idx++) {
-            const issue = highIssues[idx]!;
-            log.info(`  ⚠️  [${issue.category}] ${issue.location}: ${issue.description}`);
+        const srcWiki = path.join(tmpExtractDir, 'teamwiki');
+
+        if (opts.output) {
+            // --output 模式：写到指定目录，不碰团队仓库
+            const outputWiki = path.join(opts.output, 'teamwiki');
+            if (await fs.pathExists(srcWiki)) {
+              await fs.copy(srcWiki, outputWiki, { overwrite: true });
+              log.info(`产物已写入：${outputWiki}`);
+            }
+          } else {
+            // 默认模式：写入 team-repo 并推送
+            const { localConfig } = await autoDetectInit();
+            const teamRepoPath = localConfig.repo.localPath;
+            const teamwikiRoot = path.join(teamRepoPath, 'teamwiki');
+
+            if (await fs.pathExists(srcWiki)) {
+              const evidenceSrc = path.join(srcWiki, 'evidence', 'code', slug);
+              const evidenceDest = path.join(teamwikiRoot, 'evidence', 'code', slug);
+              if (await fs.pathExists(evidenceSrc)) {
+                await fs.ensureDir(path.dirname(evidenceDest));
+                await fs.copy(evidenceSrc, evidenceDest, { overwrite: true });
+              }
+              const srcGraph = path.join(srcWiki, '.indices', 'graph-index.json');
+              if (await fs.pathExists(srcGraph)) {
+                const destGraphDir = path.join(evidenceDest, '.indices');
+                await fs.ensureDir(destGraphDir);
+                await fs.copy(srcGraph, path.join(destGraphDir, 'graph-index.json'), { overwrite: true });
+              }
+              log.info(`teamwiki/ 知识图谱已更新: ${slug}`);
+            }
+
+            const { aggregateGlobalGraph } = await import('./graph-aggregate.js');
+            await aggregateGlobalGraph(teamwikiRoot);
+
+            const { autoPushTeamRepo } = await import('./utils/git.js');
+            await autoPushTeamRepo(teamRepoPath, `[teamai] Import from local dir: ${slug}`);
+            log.success(`已推送到团队知识仓库 (${localConfig.repo.remote})`);
           }
-          if (highIssues.length > 5) {
-            log.info(`  … 还有 ${highIssues.length - 5} 条 high 级 lint 问题，请查阅完整报告`);
-          }
-        }
-      } catch (lintErr) {
-        log.debug(`lint 检查失败（不中断流程）：${String(lintErr)}`);
+      } finally {
+        await fs.remove(tmpExtractDir);
       }
-    } else if (opts.dir || opts.fromClaude) {
-      // 分支 3：--dir 或 --from-claude，扫描本地文件并交互式导入
-      const candidates = await scanCandidates({ dir: opts.dir, fromClaude: opts.fromClaude });
+      log.success(`本地目录 ${slug} 导入完成`);
+    } else if (opts.fromClaude) {
+      // 分支 3b：--from-claude，扫描规则文件并交互式导入
+      const candidates = await scanCandidates({ fromClaude: true });
       if (candidates.length === 0) {
         log.info('未发现可导入的文件');
         return;
@@ -255,11 +271,11 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       });
       log.success('导入完成');
       if (pushed > 0 && !opts.dryRun && !opts.output) {
-        await autoPushTeamRepo(localConfig.repo.localPath, `[teamai] Import from local: ${opts.dir ?? 'claude-rules'}`);
+        await autoPushTeamRepo(localConfig.repo.localPath, `[teamai] Import from local: claude-rules`);
       }
     } else {
       // 默认：未指定来源，提示用户
-      log.info('请指定导入来源：--dir <path>、--from-claude、--workspace、--from-mr <url> 或 --from-iwiki <space-id-or-url>');
+      log.info('请指定导入来源：--dir <path>、--from-repo <url>、--from-repo-list <yaml>、--from-org <org>、--from-mr <url> 或 --from-iwiki <id>');
       return;
     }
   } catch (err: unknown) {

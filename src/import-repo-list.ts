@@ -25,6 +25,8 @@ export interface ImportFromRepoListOptions {
     skipAggregate?: boolean;
     /** 增量模式：缓存命中时仅 fetch+reset，未命中时 fallback 到全量 clone */
     incremental?: boolean;
+    /** 跳过 AI enrichment（只做 clone + extract + graph，不调用 LLM） */
+    skipEnrich?: boolean;
 }
 
 /** importFromRepoList 汇总结果。 */
@@ -74,6 +76,7 @@ export async function importFromRepoList(
         output,
         skipAggregate = false,
         incremental = false,
+        skipEnrich = false,
     } = opts;
 
     // 1. 加载白名单
@@ -116,6 +119,7 @@ export async function importFromRepoList(
                 interactive: false,
                 incremental,
                 skipAutoPush: true,
+                skipEnrich,
             });
             succeeded.push(1);
         } catch (err) {
@@ -194,6 +198,7 @@ export async function importFromRepoList(
             const { localConfig: lc } = await autoDetectInit();
             const { autoPushTeamRepo } = await import('./utils/git.js');
             await autoPushTeamRepo(lc.repo.localPath, '[teamai] Batch import: graph + aggregate');
+            log.success(`已推送到团队知识仓库 (${lc.repo.remote})`);
         } catch (e) {
             log.warn(`[git] 批量推送失败（不中断流程）：${(e as Error).message}`);
         }

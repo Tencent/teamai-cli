@@ -60,6 +60,8 @@ export interface ImportFromOrgOptions {
     dryRun?: boolean;
     output?: string;
     forceSsh?: boolean;
+    /** 跳过 AI enrichment */
+    skipEnrich?: boolean;
 }
 
 // ─── 辅助函数 ────────────────────────────────────────────
@@ -273,6 +275,7 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
                     output: opts.output,
                     skipAggregate: false,
                     incremental: false,
+                    skipEnrich: opts.skipEnrich ?? false,
                 });
                 log.info(
                     `批量导入完成：成功 ${result.succeeded}，失败 ${result.failed.length}，跳过 ${result.skipped.length}`,
