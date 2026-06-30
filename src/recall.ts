@@ -216,8 +216,9 @@ async function loadOrBuildScopeIndex(
 /**
  * Handle `teamai recall <query>`.
  *
- * Searches both user and project scope learnings indexes, merges results,
- * and displays ranked results. Auto-upvotes returned documents.
+ * Scope isolation (issue #73): queries the project-scope index when a project
+ * install is detected in cwd, otherwise the user-scope index. Displays ranked
+ * results and auto-upvotes returned documents.
  */
 export async function recall(
   query: string,
@@ -229,32 +230,39 @@ export async function recall(
     return;
   }
 
-  // Collect indexes from both scopes (project first — when both scopes share
-  // the same team repo, project wins dedup so results show project-local paths)
+  // Scope isolation (issue #73): when a project-scope install is detected in
+  // cwd, recall queries the project index ONLY. Otherwise it falls back to the
+  // user scope. The two scopes are never merged anymore.
   const scopeIndexes: Array<{ index: SearchIndex; scope: 'user' | 'project'; config: LocalConfig; learningsBase: string }> = [];
 
-  // Try project scope first (only when cwd has project-scope config)
+  let projectConfig: LocalConfig | null = null;
   try {
-    const projectConfig = await detectProjectConfig();
-    if (projectConfig) {
+    projectConfig = await detectProjectConfig();
+  } catch {
+    log.debug('recall: project scope detection failed');
+  }
+
+  if (projectConfig) {
+    // Project mode: project scope only.
+    try {
       const result = await loadOrBuildScopeIndex(projectConfig, 'project');
       if (result && result.index.entries.length > 0) {
         scopeIndexes.push({ index: result.index, scope: 'project', config: projectConfig, learningsBase: result.learningsBase });
       }
+    } catch {
+      log.debug('recall: project scope not available');
     }
-  } catch {
-    log.debug('recall: project scope not available');
-  }
-
-  // Try user scope
-  try {
-    const { localConfig: userConfig } = await requireInit();
-    const result = await loadOrBuildScopeIndex(userConfig, 'user');
-    if (result && result.index.entries.length > 0) {
-      scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
+  } else {
+    // User mode: user scope only.
+    try {
+      const { localConfig: userConfig } = await requireInit();
+      const result = await loadOrBuildScopeIndex(userConfig, 'user');
+      if (result && result.index.entries.length > 0) {
+        scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
+      }
+    } catch {
+      log.debug('recall: user scope not available');
     }
-  } catch {
-    log.debug('recall: user scope not available');
   }
 
   // Resolve teamwiki path from team-repo (prefer project scope, fallback to user scope)

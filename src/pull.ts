@@ -1062,8 +1062,12 @@ async function autoMigrateHooksIfNeeded(): Promise<void> {
 
 /**
  * Main pull entry point.
- * Implements Scheme B: user scope is always pulled (baseline),
- * project scope is additionally pulled if detected in cwd.
+ *
+ * Scope isolation (issue #73): when a project-scope install is detected in cwd,
+ * the user scope is **not** touched — pull and reconcile run for the project
+ * scope only. When no project scope is present, the user scope is pulled as
+ * before. Cross-team source skills are always pulled, against whichever scope
+ * is active.
  */
 export async function pull(options: GlobalOptions): Promise<void> {
   // 0. Auto-migrate hooks if settings.json has old format (pre-dispatch era).
@@ -1075,41 +1079,55 @@ export async function pull(options: GlobalOptions): Promise<void> {
     // Non-fatal — pull continues even if hook migration fails
   }
 
-  // 1. Always try to pull user scope
-  let userConfig: LocalConfig | null = null;
-  try {
-    userConfig = await loadLocalConfigForScope('user');
-    if (userConfig) {
-      await pullForScope(userConfig, options);
-    } else {
-      log.debug('No user-scope config found, skipping user pull');
-    }
-  } catch (e) {
-    log.warn(`User-scope pull error: ${(e as Error).message}`);
-  }
-
-  // 2. Detect and pull project scope if cwd has .teamai/config.yaml with scope='project'
+  // 1. Detect project scope first. Its presence decides whether user scope is
+  //    processed at all (issue #73: project install isolates from user).
   let projectConfig: LocalConfig | null = null;
   try {
     projectConfig = await detectProjectConfig();
-    if (projectConfig) {
-      await pullForScope(projectConfig, options);
-    }
   } catch (e) {
-    log.warn(`Project-scope pull error: ${(e as Error).message}`);
+    log.warn(`Project-scope detection error: ${(e as Error).message}`);
+  }
+  const projectMode = projectConfig !== null;
+
+  // 2. User scope — only when NOT in project mode.
+  let userConfig: LocalConfig | null = null;
+  if (projectMode) {
+    log.info('检测到 project scope，已跳过 user scope');
+  } else {
+    try {
+      userConfig = await loadLocalConfigForScope('user');
+      if (userConfig) {
+        await pullForScope(userConfig, options);
+      } else {
+        log.debug('No user-scope config found, skipping user pull');
+      }
+    } catch (e) {
+      log.warn(`User-scope pull error: ${(e as Error).message}`);
+    }
   }
 
-  // 2.5. Reconcile built-in + team hooks for every scope. Runs OUTSIDE
+  // 3. Project scope.
+  if (projectConfig) {
+    try {
+      await pullForScope(projectConfig, options);
+    } catch (e) {
+      log.warn(`Project-scope pull error: ${(e as Error).message}`);
+    }
+  }
+
+  // 3.5. Reconcile built-in + team hooks for the active scope only. Runs OUTSIDE
   // pullForScope so it bypasses the "Already synced" rev fast-path — this is
   // what self-heals new built-in hooks and applies hooks.yaml changes on every
-  // session start.
-  await reconcileHooksAllScopes(userConfig, projectConfig, options);
+  // session start. In project mode user is null, so user hooks are left alone.
+  await reconcileHooksAllScopes(projectMode ? null : userConfig, projectConfig, options);
 
-  // 3. Pull cross-team source skills (runs outside pullForScope to bypass fast-path)
-  if (userConfig) {
+  // 4. Pull cross-team source skills (always — even in project mode), against
+  //    the active scope so deploys land in the right base dir.
+  const sourceConfig = projectConfig ?? userConfig;
+  if (sourceConfig) {
     try {
       const { pullSources } = await import('./source.js');
-      await pullSources(userConfig, options);
+      await pullSources(sourceConfig, options);
     } catch (e) {
       log.debug(`Source pull skipped: ${(e as Error).message}`);
     }
