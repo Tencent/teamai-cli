@@ -614,8 +614,24 @@ program
   .addOption(new Option('--skip-import', 'Only write drafts; skip the actual --from-repo-list run').hideHelp())
   .addOption(new Option('--iwiki-dual', 'Enable dual-output mode for --from-iwiki (write codebase sections in addition to learning)').hideHelp())
   .addOption(new Option('--require-review', 'Defer codebase section writes to .teamai/pending-review.jsonl for human review').hideHelp())
+  .option('--cache-status', 'Show import cache status (repos cached, disk usage)')
+  .option('--cache-gc', 'Garbage-collect stale import cache entries')
+  .addOption(new Option('--max-bytes <n>', 'Override capacity cap for --cache-gc').hideHelp())
+  .addOption(new Option('--stale-days <n>', 'Threshold for stale-eviction in days (default 30)').default('30').hideHelp())
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
+    if (cmdOpts.cacheStatus || cmdOpts.cacheGc) {
+      const { cacheCmd } = await import('./cache-cmd.js');
+      await cacheCmd({
+        ...globalOpts,
+        status: cmdOpts.cacheStatus,
+        gc: cmdOpts.cacheGc,
+        maxBytes: cmdOpts.maxBytes,
+        staleDays: cmdOpts.staleDays,
+        json: cmdOpts.json,
+      });
+      return;
+    }
     const { importCmd } = await import('./import.js');
     await importCmd({ ...globalOpts, ...cmdOpts });
   });
@@ -636,11 +652,11 @@ program
 program
   .command('codebase')
   .description('Inspect and maintain team-codebase outputs')
-  .addOption(new Option('--extract [path]', 'Extract code knowledge and build graph from source'))
-  .addOption(new Option('--incremental', 'Only re-extract changed files (requires prior manifest)'))
-  .addOption(new Option('--project <name>', 'Project slug for extract output (default: directory name)'))
-  .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)'))
-  .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format'))
+  .addOption(new Option('--extract [path]', 'Extract code knowledge and build graph from source').hideHelp())
+  .addOption(new Option('--incremental', 'Only re-extract changed files (requires prior manifest)').hideHelp())
+  .addOption(new Option('--project <name>', 'Project slug for extract output (default: directory name)').hideHelp())
+  .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)').hideHelp())
+  .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
   .option('--lint', 'Run global consistency lint over docs/team-codebase')
   .option('--fix', 'Apply low-risk mechanical fixes (only with --lint)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
@@ -654,20 +670,6 @@ program
     await codebaseCmd({ ...globalOpts, ...cmdOpts });
   });
 
-program
-  .command('cache')
-  .description('Inspect and clean ~/.teamai/cache/repos')
-  .option('--status', 'Print cache status (default action)')
-  .option('--gc', 'Run garbage collection')
-  .option('--max-bytes <n>', 'Override capacity cap for --gc')
-  .option('--stale-days <n>', 'Threshold for stale-eviction (default 30)', '30')
-  .option('--dry-run', 'Report actions without removing files')
-  .option('--json', 'Machine-readable output')
-  .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
-    const { cacheCmd } = await import('./cache-cmd.js');
-    await cacheCmd({ ...globalOpts, ...cmdOpts });
-  });
 
 program
     .command('review [id]')
