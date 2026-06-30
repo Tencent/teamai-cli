@@ -247,7 +247,6 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
             const { aggregateGlobalGraph } = await import('./graph-aggregate.js');
             await aggregateGlobalGraph(teamwikiRoot);
 
-            const { autoPushTeamRepo } = await import('./utils/git.js');
             await autoPushTeamRepo(teamRepoPath, `[teamai] Import from local dir: ${slug}`);
             log.success(`已推送到团队知识仓库 (${localConfig.repo.remote})`);
           }

@@ -868,7 +868,7 @@ export interface ImportSession {
   /** 创建时间（ISO 8601） */
   createdAt: string;
   /** 导入模式 */
-  mode: 'local' | 'mr' | 'workspace';
+  mode: 'local' | 'mr' | 'dir';
   /** 所有候选条目 */
   items: ImportSessionItem[];
   /** 已处理条目数（用于 --resume 进度恢复） */

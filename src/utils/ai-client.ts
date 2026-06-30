@@ -132,7 +132,7 @@ export function getAICliName(): string {
  * 结果缓存，进程内只探测一次。
  *
  * @param prompt   传递给 CLI 的提示词
- * @param opts     可选参数：timeout 超时毫秒数，默认 120000
+ * @param opts     可选参数：timeout 超时毫秒数，默认 600000（10 分钟）
  * @returns        CLI 输出的 stdout（已 trim）
  * @throws         超时时抛出 `Error('AI call timed out after Xs')`
  * @throws         退出码非 0 时抛出 `Error('AI call failed: <stderr>')`
