@@ -652,11 +652,11 @@ program
 program
   .command('codebase')
   .description('Inspect and maintain team-codebase outputs')
-  .addOption(new Option('--extract [path]', 'Extract code knowledge and build graph from source'))
-  .addOption(new Option('--incremental', 'Only re-extract changed files (requires prior manifest)'))
-  .addOption(new Option('--project <name>', 'Project slug for extract output (default: directory name)'))
-  .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)'))
-  .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format'))
+  .addOption(new Option('--extract [path]', 'Extract code knowledge and build graph from source').hideHelp())
+  .addOption(new Option('--incremental', 'Only re-extract changed files (requires prior manifest)').hideHelp())
+  .addOption(new Option('--project <name>', 'Project slug for extract output (default: directory name)').hideHelp())
+  .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)').hideHelp())
+  .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
   .option('--lint', 'Run global consistency lint over docs/team-codebase')
   .option('--fix', 'Apply low-risk mechanical fixes (only with --lint)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
@@ -670,21 +670,6 @@ program
     await codebaseCmd({ ...globalOpts, ...cmdOpts });
   });
 
-// `teamai cache` → alias kept for backward compatibility, hidden from help
-program
-  .command('cache', { hidden: true })
-  .description('Alias for: teamai import cache')
-  .option('--status', 'Print cache status (default action)')
-  .option('--gc', 'Run garbage collection')
-  .option('--max-bytes <n>', 'Override capacity cap for --gc')
-  .option('--stale-days <n>', 'Threshold for stale-eviction (default 30)', '30')
-  .option('--dry-run', 'Report actions without removing files')
-  .option('--json', 'Machine-readable output')
-  .action(async (cmdOpts) => {
-    const globalOpts = program.opts() as GlobalOptions;
-    const { cacheCmd } = await import('./cache-cmd.js');
-    await cacheCmd({ ...globalOpts, ...cmdOpts });
-  });
 
 program
     .command('review [id]')
