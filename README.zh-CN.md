@@ -92,6 +92,8 @@ CLI 会根据用户传入的 repo URL 自动选择 provider：
 
 全局选项：`--dry-run`、`--verbose`
 
+Import 选项：`--incremental`、`--skip-enrich`（跳过 AI 调用，仅做代码提取 + 图谱构建）
+
 <details>
 <summary>更多命令（管理、CI、分析）</summary>
 

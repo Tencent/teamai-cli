@@ -1,5 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { log } from './logger.js';
 
 /** 白名单：允许探测的 CLI 名称，防止意外执行任意命令。 */
 const ALLOWED_CLI_CANDIDATES = [
@@ -9,8 +10,8 @@ const ALLOWED_CLI_CANDIDATES = [
 /** CLI 探测超时（毫秒），防止 execFileSync 挂死。 */
 const CLI_DETECT_TIMEOUT_MS = 5_000;
 
-/** 默认 AI 调用超时时间（毫秒）。仓库初始化等大文档生成场景需要较长时间。 */
-const DEFAULT_TIMEOUT_MS = 1200_000;
+/** 默认 AI 调用超时时间（毫秒）。 */
+const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** 默认并发数量上限。 */
 const DEFAULT_CONCURRENCY = 3;
@@ -146,7 +147,8 @@ export async function callClaude(
     const timer = setTimeout(() => {
       child.kill();
       const seconds = Math.round(timeoutMs / 1000);
-      reject(new Error(`AI call timed out after ${seconds}s`));
+      log.debug(`[ai-client] timeout after ${seconds}s, cli=${_cliInfo!.cmd}, prompt=${prompt.slice(0, 80)}...`);
+      reject(new Error(`AI call timed out after ${seconds}s (cli: ${_cliInfo!.cmd})`));
     }, timeoutMs);
 
     child.on('error', (err: Error) => {

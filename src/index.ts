@@ -604,6 +604,7 @@ program
   .addOption(new Option('--concurrency <n>', 'Concurrent repos for --from-repo-list (default 3)').default('3').hideHelp())
   .addOption(new Option('--skip-aggregate', 'Skip domain-*.md / index.md regeneration').hideHelp())
   .option('--incremental', 'Use cached clone with fetch+reset (with --from-repo or --from-repo-list)')
+  .option('--skip-enrich', 'Skip AI enrichment (only clone + extract + graph, no LLM calls)')
   .option('--from-org <org>', 'List repos under an org and bootstrap whitelist + domains')
   .addOption(new Option('--bootstrap', 'Run interactive review after --from-org').hideHelp())
   .addOption(new Option('--max-repos <n>', 'Cap on repos pulled from --from-org (default 200)').default('200').hideHelp())
