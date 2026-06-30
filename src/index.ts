@@ -614,8 +614,24 @@ program
   .addOption(new Option('--skip-import', 'Only write drafts; skip the actual --from-repo-list run').hideHelp())
   .addOption(new Option('--iwiki-dual', 'Enable dual-output mode for --from-iwiki (write codebase sections in addition to learning)').hideHelp())
   .addOption(new Option('--require-review', 'Defer codebase section writes to .teamai/pending-review.jsonl for human review').hideHelp())
+  .option('--cache-status', 'Show import cache status (repos cached, disk usage)')
+  .option('--cache-gc', 'Garbage-collect stale import cache entries')
+  .addOption(new Option('--max-bytes <n>', 'Override capacity cap for --cache-gc').hideHelp())
+  .addOption(new Option('--stale-days <n>', 'Threshold for stale-eviction in days (default 30)').default('30').hideHelp())
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
+    if (cmdOpts.cacheStatus || cmdOpts.cacheGc) {
+      const { cacheCmd } = await import('./cache-cmd.js');
+      await cacheCmd({
+        ...globalOpts,
+        status: cmdOpts.cacheStatus,
+        gc: cmdOpts.cacheGc,
+        maxBytes: cmdOpts.maxBytes,
+        staleDays: cmdOpts.staleDays,
+        json: cmdOpts.json,
+      });
+      return;
+    }
     const { importCmd } = await import('./import.js');
     await importCmd({ ...globalOpts, ...cmdOpts });
   });
@@ -654,9 +670,10 @@ program
     await codebaseCmd({ ...globalOpts, ...cmdOpts });
   });
 
+// `teamai cache` → alias kept for backward compatibility, hidden from help
 program
-  .command('cache')
-  .description('Inspect and clean ~/.teamai/cache/repos')
+  .command('cache', { hidden: true })
+  .description('Alias for: teamai import cache')
   .option('--status', 'Print cache status (default action)')
   .option('--gc', 'Run garbage collection')
   .option('--max-bytes <n>', 'Override capacity cap for --gc')
