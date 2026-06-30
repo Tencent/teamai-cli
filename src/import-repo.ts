@@ -44,7 +44,7 @@ export interface ImportFromRepoOptions {
     explicitDomain?: string;
     /** Dry-run 模式：跳过写盘但执行 clone+扫描 */
     dryRun?: boolean;
-    /** 自定义产物根目录；默认 cwd/docs/team-codebase */
+    /** 自定义产物根目录；默认 .teamai/team-repo/docs/team-codebase */
     output?: string;
     /**
      * 是否启用交互式确认。
@@ -527,7 +527,7 @@ export async function detectDomainDrift(args: {
  *  1. 解析 url → provider + RepoInfo（owner/repo）
  *  2. shallow clone（或增量 fetch+reset）到 ~/.teamai/cache/repos/<provider>/<owner>/<repo>
  *  3. generateCodebaseMd({ repoPath: cacheDir })
- *  4. 写出到 <outputRoot>/repos/<slug>.md（默认 outputRoot=cwd/docs/team-codebase）
+ *  4. 写出到 <outputRoot>/repos/<slug>.md（默认 outputRoot=.teamai/team-repo/docs/team-codebase）
  *  5. 推荐业务域（或使用 --domain 显式指定）
  *  6. 写入 .teamai/domains.yaml + appendHistory
  *  7. 写 LAST_SYNC
@@ -642,8 +642,18 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         }
     }
 
+    // Resolve team-repo directory (needed for both docs/team-codebase and teamwiki)
+    let teamRepoDir: string;
+    try {
+        const { autoDetectInit } = await import('./config.js');
+        const { localConfig: lc } = await autoDetectInit();
+        teamRepoDir = lc.repo.localPath;
+    } catch {
+        teamRepoDir = path.join(process.cwd(), '.teamai', 'team-repo');
+    }
+
     // 4. 写入 docs/team-codebase 叙事文档（AI 扫描成功时）
-    const outputRoot = output ?? path.join(process.cwd(), 'docs', 'team-codebase');
+    const outputRoot = output ?? path.join(teamRepoDir, 'docs', 'team-codebase');
     let repoMdPath = path.join(outputRoot, 'repos', `${slug}.md`);
 
     if (codebaseMd) {
@@ -720,14 +730,6 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     } // end if (codebaseMd)
 
     // 4b. 生成 teamwiki/ 知识图谱产物（写入 team-repo 以便自动 push）
-    let teamRepoDir: string;
-    try {
-        const { autoDetectInit } = await import('./config.js');
-        const { localConfig: lc } = await autoDetectInit();
-        teamRepoDir = lc.repo.localPath;
-    } catch {
-        teamRepoDir = path.join(process.cwd(), '.teamai', 'team-repo');
-    }
     const teamwikiRoot = output
         ? path.resolve(output, '..', 'teamwiki')
         : path.join(teamRepoDir, 'teamwiki');

@@ -188,10 +188,8 @@ async function loadOrBuildScopeIndex(
     const docsDir = path.join(localConfig.repo.localPath, 'docs');
     const rulesDir = path.join(localConfig.repo.localPath, 'rules');
     const skillsDir = path.join(localConfig.repo.localPath, 'skills');
-    const cwdCodebaseDir = path.join(process.cwd(), 'docs', 'team-codebase');
     const repoCodebaseDir = path.join(localConfig.repo.localPath, 'docs', 'team-codebase');
-    const codebaseDir = await pathExists(cwdCodebaseDir) ? cwdCodebaseDir
-      : await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
+    const codebaseDir = await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
     try {
       await buildIndex({
         learningsDir: effectiveLearningsDir ?? undefined,
@@ -259,7 +257,12 @@ export async function recall(
     log.debug('recall: user scope not available');
   }
 
-  const hasWiki = await pathExists(path.join(process.cwd(), 'teamwiki'));
+  // Resolve teamwiki path from team-repo (prefer project scope, fallback to user scope)
+  const wikiConfig = scopeIndexes[0]?.config;
+  const wikiRoot = wikiConfig
+    ? path.join(wikiConfig.repo.localPath, 'teamwiki')
+    : path.join(process.cwd(), '.teamai', 'team-repo', 'teamwiki');
+  const hasWiki = await pathExists(wikiRoot);
   if (scopeIndexes.length === 0 && !hasWiki) {
     log.info('No learnings available. Run `teamai pull` first to sync team knowledge.');
     return;
@@ -281,7 +284,6 @@ export async function recall(
   }
 
   // ── Codebase knowledge graph recall ──────────────────────
-  const wikiRoot = path.join(process.cwd(), 'teamwiki');
   try {
     const codeResults = await queryCodeKnowledge(query, { wikiRoot, limit: 3, depth: options.depth });
     // B11: Normalize BM25 scores to 0-10 range before merging with learnings scores

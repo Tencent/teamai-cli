@@ -87,7 +87,7 @@ describe('importFromRepo — section merge', () => {
             interactive: false,
         });
 
-        const repoMdPath = path.join(workdir, 'docs', 'team-codebase', 'repos', 'github__owner__mergetest.md');
+        const repoMdPath = path.join(workdir, '.teamai', 'team-repo', 'docs', 'team-codebase', 'repos', 'github__owner__mergetest.md');
         const exists = await fs.pathExists(repoMdPath);
         expect(exists).toBe(true);
 
@@ -105,7 +105,7 @@ describe('importFromRepo — section merge', () => {
             interactive: false,
         });
 
-        const repoMdPath = path.join(workdir, 'docs', 'team-codebase', 'repos', 'github__owner__mergetest.md');
+        const repoMdPath = path.join(workdir, '.teamai', 'team-repo', 'docs', 'team-codebase', 'repos', 'github__owner__mergetest.md');
         const stat1 = await fs.stat(repoMdPath);
         const mtime1 = stat1.mtimeMs;
 
@@ -140,7 +140,7 @@ describe('importFromRepo — section merge', () => {
     });
 
     it('旧文件含未闭合锚点 → fallback 时备份旧文件、产物使用新 codebase', async () => {
-        const repoMdPath = path.join(workdir, 'docs', 'team-codebase', 'repos', 'github__owner__mergetest.md');
+        const repoMdPath = path.join(workdir, '.teamai', 'team-repo', 'docs', 'team-codebase', 'repos', 'github__owner__mergetest.md');
         await fs.ensureDir(path.dirname(repoMdPath));
 
         // 准备含未闭合锚点的旧文件

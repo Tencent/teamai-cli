@@ -33,10 +33,11 @@ export interface WikiLintReport {
 }
 
 export async function lintTeamwiki(opts: {
-  cwd: string;
+  cwd?: string;
+  wikiRoot?: string;
   severity?: WikiLintSeverity;
 }): Promise<WikiLintReport> {
-  const wikiRoot = path.join(opts.cwd, 'teamwiki');
+  const wikiRoot = opts.wikiRoot ?? path.join(opts.cwd ?? process.cwd(), 'teamwiki');
   const issues: WikiLintIssue[] = [];
   const minSeverity = opts.severity ?? 'info';
   const severityOrder: WikiLintSeverity[] = ['info', 'low', 'medium', 'high'];

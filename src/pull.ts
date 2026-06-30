@@ -618,28 +618,7 @@ async function pullForScope(
         }
       }
 
-      // Sync teamwiki/ directory (codebase knowledge graph)
-      const teamwikiRepoDir = path.join(localConfig.repo.localPath, 'teamwiki');
-      if (await pathExists(teamwikiRepoDir)) {
-        const syncTarget = localConfig.projectRoot ?? process.cwd();
-        const localTeamwikiDir = path.join(syncTarget, 'teamwiki');
-        // 检查本地 graph-index 是否比远端更新（避免覆盖未推送的本地产物）
-        const localGraph = path.join(localTeamwikiDir, '.indices', 'graph-index.json');
-        const remoteGraph = path.join(teamwikiRepoDir, '.indices', 'graph-index.json');
-        let shouldSync = true;
-        if (await pathExists(localGraph) && await pathExists(remoteGraph)) {
-          const localStat = await fse.stat(localGraph);
-          const remoteStat = await fse.stat(remoteGraph);
-          if (localStat.mtimeMs > remoteStat.mtimeMs) {
-            log.warn(`[${scopeLabel}] 本地 teamwiki/ 比远端更新，跳过覆盖（请先 teamai push）`);
-            shouldSync = false;
-          }
-        }
-        if (shouldSync) {
-          await fse.copy(teamwikiRepoDir, localTeamwikiDir, { overwrite: true });
-          log.debug(`[${scopeLabel}] Synced teamwiki/ knowledge graph`);
-        }
-      }
+      // teamwiki/ stays inside .teamai/team-repo/ — no copy to project root
 
       // Build the index when ANY of the four categories has content.
       const hasAnySource =
@@ -649,10 +628,8 @@ async function pullForScope(
         await pathExists(skillsRepoDir);
 
       // Resolve codebase directory (project cwd or team repo)
-      const cwdCodebaseDir = path.join(process.cwd(), 'docs', 'team-codebase');
       const repoCodebaseDir = path.join(localConfig.repo.localPath, 'docs', 'team-codebase');
-      const effectiveCodebaseDir = await pathExists(cwdCodebaseDir) ? cwdCodebaseDir
-        : await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
+      const effectiveCodebaseDir = await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
 
       if (hasAnySource || effectiveCodebaseDir) {
         const votesExist = await pathExists(votesDir);

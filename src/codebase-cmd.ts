@@ -97,12 +97,19 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         return;
     }
 
-    // 若 teamwiki/ 存在，优先使用图谱 lint
+    // 若 teamwiki/ 存在（team-repo 内），优先使用图谱 lint
     const { pathExists } = await import('./utils/fs.js');
-    const teamwikiDir = path.join(cwd, 'teamwiki');
+    let teamwikiDir: string;
+    try {
+        const { autoDetectInit } = await import('./config.js');
+        const { localConfig: lc } = await autoDetectInit();
+        teamwikiDir = path.join(lc.repo.localPath, 'teamwiki');
+    } catch {
+        teamwikiDir = path.join(cwd, '.teamai', 'team-repo', 'teamwiki');
+    }
     if (await pathExists(teamwikiDir)) {
         const { lintTeamwiki, formatWikiLintReport } = await import('./codebase-wiki-lint.js');
-        const report = await lintTeamwiki({ cwd, severity: opts.severity as 'high' | 'medium' | 'low' | 'info' });
+        const report = await lintTeamwiki({ wikiRoot: teamwikiDir, severity: opts.severity as 'high' | 'medium' | 'low' | 'info' });
         if (opts.json) {
             console.log(JSON.stringify(report, null, 2));
         } else {
