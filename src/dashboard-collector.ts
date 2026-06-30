@@ -117,6 +117,12 @@ export interface TranscriptScanResult {
   interrupt: number;
   toolReject: number;
   tokens: TokenUsage;
+  /**
+   * Cumulative count of genuine human prompt turns in the transcript. Sourced here
+   * (not from compactable prompt_submit events) so the reported baseline stays
+   * monotonic across compaction + same-session resume — same guarantee as `tokens`.
+   */
+  prompts: number;
 }
 
 /**
@@ -125,9 +131,11 @@ export interface TranscriptScanResult {
  * - interrupt:  user message whose text starts with "[Request interrupted by user"
  * - toolReject: tool_result with is_error=true marked as a user rejection
  * - tokens:     usage.{input,output,cache_*}_tokens summed across assistant messages,
- *               deduplicated by `message.id` (Claude Code repeats the same usage on
- *               every content-block line of a single turn, so naive summing would
- *               massively over-count).
+ *               deduplicated by `message.id` (falling back to top-level `requestId`)
+ *               because Claude Code repeats the same usage on every content-block
+ *               line of a single turn, so naive summing would massively over-count.
+ * - prompts:    genuine human prompt turns (user entries with real text, excluding
+ *               interrupts, tool_results, and meta/sidechain entries).
  *
  * Uses a streaming line reader so large transcripts don't load fully into memory.
  * Returns zero counts on any error (file missing, too large, permission denied).
@@ -137,16 +145,18 @@ export async function scanTranscriptStop(
 ): Promise<TranscriptScanResult> {
   let interrupt = 0;
   let toolReject = 0;
+  let prompts = 0;
   const tokens = emptyTokenUsage();
-  // Dedup assistant usage by message id (one turn spans many JSONL lines).
-  const countedMessageIds = new Set<string>();
+  // Dedup assistant usage per message (one turn spans many JSONL lines that repeat
+  // the same usage). Prefer message.id; fall back to the top-level requestId.
+  const countedUsageKeys = new Set<string>();
 
   try {
     const stat = await fs.promises.stat(transcriptPath);
-    if (stat.size === 0) return { interrupt, toolReject, tokens };
+    if (stat.size === 0) return { interrupt, toolReject, tokens, prompts };
     if (stat.size > INTERVENTION_SCAN_MAX_BYTES) {
       log.warn(`dashboard: transcript too large to scan (${stat.size} bytes)`);
-      return { interrupt, toolReject, tokens };
+      return { interrupt, toolReject, tokens, prompts };
     }
 
     const rl = readline.createInterface({
@@ -156,12 +166,15 @@ export async function scanTranscriptStop(
 
     for await (const line of rl) {
       const trimmed = line.trim();
-      // Cheap pre-filter: we only care about `user` entries (interventions) and
-      // `assistant` entries (token usage); skip JSON.parse on anything else.
+      // Cheap pre-filter: we only care about `user` entries (interventions/prompts)
+      // and `assistant` entries (token usage); skip JSON.parse on anything else.
       if (!trimmed || (!trimmed.includes('"user"') && !trimmed.includes('"assistant"'))) continue;
 
       let entry: {
         type?: string;
+        isMeta?: unknown;
+        isSidechain?: unknown;
+        requestId?: unknown;
         message?: { content?: unknown; id?: unknown; usage?: Record<string, unknown> };
       };
       try {
@@ -172,9 +185,13 @@ export async function scanTranscriptStop(
 
       if (entry.type === 'assistant') {
         const usage = entry.message?.usage;
-        const id = entry.message?.id;
-        if (usage && typeof id === 'string' && !countedMessageIds.has(id)) {
-          countedMessageIds.add(id);
+        const dedupKey = typeof entry.message?.id === 'string'
+          ? entry.message.id
+          : typeof entry.requestId === 'string'
+            ? entry.requestId
+            : undefined;
+        if (usage && dedupKey && !countedUsageKeys.has(dedupKey)) {
+          countedUsageKeys.add(dedupKey);
           tokens.input += toNum(usage.input_tokens);
           tokens.output += toNum(usage.output_tokens);
           tokens.cacheRead += toNum(usage.cache_read_input_tokens);
@@ -183,12 +200,28 @@ export async function scanTranscriptStop(
         continue;
       }
 
-      if (entry.type !== 'user' || !Array.isArray(entry.message?.content)) continue;
+      if (entry.type !== 'user') continue;
 
-      for (const item of entry.message.content as Array<Record<string, unknown>>) {
-        if (item?.type === 'text' && typeof item.text === 'string'
-          && item.text.startsWith(TRANSCRIPT_INTERRUPT_PREFIX)) {
-          interrupt++;
+      const isMeta = entry.isMeta === true || entry.isSidechain === true;
+      const content = entry.message?.content;
+
+      // Plain-string user content = a genuine human prompt (older transcript shape).
+      if (typeof content === 'string') {
+        if (!isMeta && content.trim() && !content.startsWith(TRANSCRIPT_INTERRUPT_PREFIX)) {
+          prompts++;
+        }
+        continue;
+      }
+      if (!Array.isArray(content)) continue;
+
+      let hasHumanText = false;
+      for (const item of content as Array<Record<string, unknown>>) {
+        if (item?.type === 'text' && typeof item.text === 'string') {
+          if (item.text.startsWith(TRANSCRIPT_INTERRUPT_PREFIX)) {
+            interrupt++;
+          } else if (item.text.trim()) {
+            hasHumanText = true;
+          }
         } else if (item?.type === 'tool_result' && item.is_error === true) {
           const text = typeof item.content === 'string'
             ? item.content
@@ -201,12 +234,14 @@ export async function scanTranscriptStop(
           }
         }
       }
+      // One human turn per user entry (tool_result-only entries have no human text).
+      if (hasHumanText && !isMeta) prompts++;
     }
   } catch (e) {
     log.warn(`dashboard: failed to scan transcript: ${(e as Error).message}`);
   }
 
-  return { interrupt, toolReject, tokens };
+  return { interrupt, toolReject, tokens, prompts };
 }
 
 /** Coerce an unknown usage field to a non-negative finite number (0 otherwise). */
@@ -326,7 +361,8 @@ export async function parseHookEvent(
     if (output) {
       event.stoppedOutput = output;
     }
-    // Full-transcript snapshot of interrupt/tool_reject counts + token usage (idempotent).
+    // Full-transcript snapshot of interrupt/tool_reject counts + token usage +
+    // human prompt count (all idempotent, sourced from the non-compactable transcript).
     const scan = await scanTranscriptStop(hookData.transcript_path);
     if (scan.interrupt > 0 || scan.toolReject > 0) {
       event.interventions = { interrupt: scan.interrupt, toolReject: scan.toolReject };
@@ -334,6 +370,9 @@ export async function parseHookEvent(
     if (scan.tokens.input > 0 || scan.tokens.output > 0
       || scan.tokens.cacheRead > 0 || scan.tokens.cacheCreation > 0) {
       event.tokens = scan.tokens;
+    }
+    if (scan.prompts > 0) {
+      event.prompts = scan.prompts;
     }
   }
 
@@ -560,6 +599,11 @@ export function aggregateSessionMetrics(
 ): Map<string, SessionMetrics> {
   const map = new Map<string, SessionMetrics>();
   const lastStopAt = new Map<string, number>();
+  // Two prompt-count sources, kept separate then reconciled with max():
+  // - submitCount: live prompt_submit events (real-time, but compactable).
+  // - stopPrompts: latest Stop transcript snapshot (compaction/resume-proof).
+  const submitCount = new Map<string, number>();
+  const stopPrompts = new Map<string, number>();
 
   for (const event of events) {
     let m = map.get(event.sessionId);
@@ -573,13 +617,16 @@ export function aggregateSessionMetrics(
         m.interrupt = event.interventions.interrupt;
         m.toolReject = event.interventions.toolReject;
       }
-      // Token snapshot is a full cumulative total for the session — latest wins.
+      // Token + prompt snapshots are full cumulative totals — latest wins.
       if (event.tokens) {
         m.tokens = { ...event.tokens };
       }
+      if (typeof event.prompts === 'number') {
+        stopPrompts.set(event.sessionId, event.prompts);
+      }
       lastStopAt.set(event.sessionId, new Date(event.timestamp).getTime());
     } else if (event.type === 'prompt_submit') {
-      m.prompts++;
+      submitCount.set(event.sessionId, (submitCount.get(event.sessionId) ?? 0) + 1);
       const stopAt = lastStopAt.get(event.sessionId);
       if (stopAt !== undefined) {
         const gap = new Date(event.timestamp).getTime() - stopAt;
@@ -590,6 +637,13 @@ export function aggregateSessionMetrics(
         lastStopAt.delete(event.sessionId);
       }
     }
+  }
+
+  // Reconcile prompt count: the Stop transcript snapshot is the durable baseline
+  // (survives compaction + resume); live submit events cover the period before the
+  // first Stop. max() keeps the count monotonic across both.
+  for (const [sid, m] of map) {
+    m.prompts = Math.max(submitCount.get(sid) ?? 0, stopPrompts.get(sid) ?? 0);
   }
 
   return map;

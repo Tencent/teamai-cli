@@ -489,6 +489,13 @@ export interface DashboardEvent {
    * no transcript (e.g. Cursor) and for sessions with no recorded usage.
    */
   tokens?: TokenUsage;
+  /**
+   * Cumulative count of human prompt turns scanned from the transcript at Stop time.
+   * Full snapshot (idempotent), sourced from the non-compactable transcript so the
+   * reported baseline survives compaction + same-session resume. Absent for tools
+   * with no transcript (e.g. Cursor); for those, prompt_submit events are counted.
+   */
+  prompts?: number;
 }
 
 export interface DashboardSession {

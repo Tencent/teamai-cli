@@ -82,6 +82,44 @@ describe('scanTranscriptStop — token usage', () => {
     const { tokens } = await scanTranscriptStop(p);
     expect(tokens).toEqual({ input: 0, output: 7, cacheRead: 0, cacheCreation: 0 });
   });
+
+  it('falls back to requestId for dedup when message.id is missing', async () => {
+    const line = (extra: object) => JSON.stringify({
+      type: 'assistant',
+      requestId: 'req_1',
+      message: { usage: { input_tokens: 100, output_tokens: 10 }, content: [extra] },
+    });
+    // Same requestId across two content-block lines → counted once.
+    const p = writeTranscript([line({ type: 'text', text: 'a' }), line({ type: 'tool_use', id: 't' })]);
+    const { tokens } = await scanTranscriptStop(p);
+    expect(tokens).toEqual({ input: 100, output: 10, cacheRead: 0, cacheCreation: 0 });
+  });
+});
+
+// ─── scanTranscriptStop: human prompt counting ──────────
+
+describe('scanTranscriptStop — prompt counting', () => {
+  const userText = (text: string) => JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text }] } });
+  const userString = (text: string) => JSON.stringify({ type: 'user', message: { content: text } });
+  const toolResult = () => JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] } });
+  const interruptLine = () => JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: '[Request interrupted by user]' }] } });
+  const metaLine = (text: string) => JSON.stringify({ type: 'user', isMeta: true, message: { content: [{ type: 'text', text }] } });
+  const sidechainLine = (text: string) => JSON.stringify({ type: 'user', isSidechain: true, message: { content: [{ type: 'text', text }] } });
+
+  it('counts genuine human turns and excludes tool_results, interrupts, meta/sidechain', async () => {
+    const p = writeTranscript([
+      userText('first real prompt'),
+      toolResult(),               // not a human turn
+      userString('second prompt'), // plain string content counts
+      interruptLine(),            // interrupt, not a prompt
+      metaLine('injected reminder'), // meta, excluded
+      sidechainLine('sub-agent'), // sidechain, excluded
+      userText('third prompt'),
+    ]);
+    const { prompts, interrupt } = await scanTranscriptStop(p);
+    expect(prompts).toBe(3);
+    expect(interrupt).toBe(1);
+  });
 });
 
 // ─── aggregateSessionMetrics: prompts + tokens ──────────
@@ -107,6 +145,49 @@ describe('aggregateSessionMetrics', () => {
     ];
     const m = aggregateSessionMetrics(events).get('s1')!;
     expect(m.tokens).toEqual({ input: 30, output: 4, cacheRead: 2, cacheCreation: 1 });
+  });
+
+  it('prefers the Stop prompt snapshot over the live submit count (max)', () => {
+    const ts = new Date().toISOString();
+    // Only 2 prompt_submit events survive in the log, but the transcript snapshot
+    // says 12 — the durable snapshot wins.
+    const events: DashboardEvent[] = [
+      { type: 'prompt_submit', timestamp: ts, sessionId: 's1', tool: 'claude', promptSummary: 'a' },
+      { type: 'prompt_submit', timestamp: ts, sessionId: 's1', tool: 'claude', promptSummary: 'b' },
+      { type: 'stop', timestamp: ts, sessionId: 's1', tool: 'claude', prompts: 12 },
+    ];
+    expect(aggregateSessionMetrics(events).get('s1')!.prompts).toBe(12);
+  });
+
+  it('uses live submit count before any Stop snapshot exists', () => {
+    const ts = new Date().toISOString();
+    const events: DashboardEvent[] = [
+      { type: 'prompt_submit', timestamp: ts, sessionId: 's1', tool: 'claude', promptSummary: 'a' },
+      { type: 'prompt_submit', timestamp: ts, sessionId: 's1', tool: 'claude', promptSummary: 'b' },
+    ];
+    expect(aggregateSessionMetrics(events).get('s1')!.prompts).toBe(2);
+  });
+
+  // Regression for the PR #78 review: a session compacted out of events.jsonl and
+  // resumed under the same id must keep reporting new prompts. The Stop transcript
+  // snapshot (compaction-proof) keeps cur.prompts above the reported baseline so the
+  // delta stays positive — unlike the old compactable prompt_submit count.
+  it('keeps prompts reportable after compaction + same-session resume', () => {
+    const ts = new Date().toISOString();
+    // Post-compaction + resume: only the resumed events remain in the log, but the
+    // Stop snapshot reflects the full transcript (10 old + 2 new = 12 prompts).
+    const resumedEvents: DashboardEvent[] = [
+      { type: 'prompt_submit', timestamp: ts, sessionId: 's1', tool: 'claude', promptSummary: 'new-1' },
+      { type: 'prompt_submit', timestamp: ts, sessionId: 's1', tool: 'claude', promptSummary: 'new-2' },
+      { type: 'stop', timestamp: ts, sessionId: 's1', tool: 'claude', prompts: 12 },
+    ];
+    const metrics = aggregateSessionMetrics(resumedEvents);
+    expect(metrics.get('s1')!.prompts).toBe(12);
+
+    // Baseline already reported 10 prompts before compaction.
+    const reported = { s1: { prompts: 10, tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 } } };
+    const { delta } = computePromptTokenDelta(metrics, reported);
+    expect(delta.prompts).toBe(2); // the 2 post-resume turns are still reported
   });
 });
 
