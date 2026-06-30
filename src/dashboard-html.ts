@@ -172,6 +172,15 @@ export function getDashboardHtml(port: number): string {
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
+    .intervention-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: rgba(245, 158, 11, 0.15);
+      color: #f59e0b;
+      font-weight: 600;
+      cursor: help;
+    }
     .status-text {
       font-size: 12px;
       color: var(--text-muted);
@@ -541,10 +550,19 @@ export function getDashboardHtml(port: number): string {
         '</div>';
     }
 
+    function interventionTitle(s) {
+      const iv = s.interventions || { interrupt: 0, toolReject: 0, correction: 0 };
+      return '人工干预 ' + (s.interventionCount || 0) + ' 次 — ' +
+        '中断 ' + (iv.interrupt || 0) + ' · 拒绝 ' + (iv.toolReject || 0) + ' · 纠偏 ' + (iv.correction || 0);
+    }
+
     function renderCard(s) {
       const isExpanded = expandedCards.has(s.sessionId);
       const isStopped = s.status === 'stopped';
       const dur = durationStr(s.startedAt, isStopped ? s.stoppedAt || s.lastActivity : null);
+      const interventionBadge = (s.interventionCount > 0)
+        ? '<span class="intervention-badge" title="' + escapeAttr(interventionTitle(s)) + '">⚠ ' + s.interventionCount + '</span>'
+        : '';
 
       // ─── Expanded detail panel ───
       let detail = '';
@@ -594,6 +612,7 @@ export function getDashboardHtml(port: number): string {
           '<span class="status-light ' + escapeAttr(s.status) + '"></span>' +
           '<span class="tool-badge">' + escapeHtml(s.tool) + '</span>' +
           '<span class="duration">' + dur + '</span>' +
+          interventionBadge +
           '<span class="status-text">' + statusLabel(s.status) + '</span>' +
         '</div>' +
         '<div class="cwd" title="' + escapeAttr(s.cwd) + '">' + escapeHtml(shortPath(s.cwd)) + '</div>' +
