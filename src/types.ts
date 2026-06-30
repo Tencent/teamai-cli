@@ -343,6 +343,16 @@ export interface UserStats {
    * Cumulative across all reported sessions. Privacy: counts only, no prompt text.
    */
   interventions?: UserInterventionStats;
+  /**
+   * Cumulative count of human conversation turns (UserPromptSubmit events) across
+   * all reported sessions. Privacy: count only, no prompt text.
+   */
+  prompts?: number;
+  /**
+   * Cumulative token usage across all reported sessions (Claude Code transcripts
+   * only; tools without transcripts contribute nothing). Privacy: counts only.
+   */
+  tokens?: TokenUsage;
 }
 
 /** Per-user cumulative intervention totals, persisted to stats/<user>.yaml. */
@@ -386,6 +396,57 @@ export interface SessionRecord {
 //  SSE → browser (session cards with status lights)
 //
 
+/**
+ * Token usage breakdown for a session/user, summed from Claude Code transcript
+ * `message.usage` records (deduplicated by message id). All fields are cumulative
+ * token counts; tools without a transcript (e.g. Cursor) leave these at zero.
+ */
+export interface TokenUsage {
+  /** Sum of usage.input_tokens. */
+  input: number;
+  /** Sum of usage.output_tokens. */
+  output: number;
+  /** Sum of usage.cache_read_input_tokens. */
+  cacheRead: number;
+  /** Sum of usage.cache_creation_input_tokens. */
+  cacheCreation: number;
+}
+
+/** A fresh zeroed TokenUsage. */
+export function emptyTokenUsage(): TokenUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+}
+
+/** Grand total of all token buckets (input + output + cache read + cache creation). */
+export function totalTokens(t: TokenUsage | undefined): number {
+  if (!t) return 0;
+  return t.input + t.output + t.cacheRead + t.cacheCreation;
+}
+
+/** Add two TokenUsage values field-by-field (does not mutate inputs). */
+export function addTokenUsage(a: TokenUsage | undefined, b: TokenUsage | undefined): TokenUsage {
+  return {
+    input: (a?.input ?? 0) + (b?.input ?? 0),
+    output: (a?.output ?? 0) + (b?.output ?? 0),
+    cacheRead: (a?.cacheRead ?? 0) + (b?.cacheRead ?? 0),
+    cacheCreation: (a?.cacheCreation ?? 0) + (b?.cacheCreation ?? 0),
+  };
+}
+
+/**
+ * Per-session rolled-up metrics, derived from the dashboard event log.
+ * Used by both the live dashboard (rebuildSessions) and the team-stats reporter.
+ */
+export interface SessionMetrics {
+  interrupt: number;
+  toolReject: number;
+  correction: number;
+  /** Number of human conversation turns (UserPromptSubmit events). */
+  prompts: number;
+  /** Cumulative token usage (latest Stop snapshot). */
+  tokens: TokenUsage;
+}
+
 export type DashboardSessionStatus = 'running' | 'waiting_for_input' | 'error' | 'idle' | 'stopped';
 
 export type DashboardEventType = 'session_start' | 'tool_use' | 'prompt_submit' | 'stop' | 'process_exit';
@@ -421,6 +482,13 @@ export interface DashboardEvent {
    * rebuildSessions from the stop→prompt_submit event pattern.
    */
   interventions?: { interrupt: number; toolReject: number };
+  /**
+   * Cumulative token usage scanned from the transcript at Stop time. Full snapshot
+   * (idempotent): each Stop carries the running total for the whole session, so a
+   * later Stop overrides an earlier one in rebuildSessions. Absent for tools with
+   * no transcript (e.g. Cursor) and for sessions with no recorded usage.
+   */
+  tokens?: TokenUsage;
 }
 
 export interface DashboardSession {
@@ -457,6 +525,10 @@ export interface DashboardSession {
   interventions: { interrupt: number; toolReject: number; correction: number };
   /** Total intervention count (interrupt + toolReject + correction), for sorting/badges */
   interventionCount: number;
+  /** Number of human conversation turns (UserPromptSubmit events) in this session. */
+  promptCount: number;
+  /** Cumulative token usage for this session (zero when no transcript usage). */
+  tokens: TokenUsage;
 }
 
 export const DASHBOARD_EVENTS_DIR = `${TEAMAI_HOME}/dashboard`;

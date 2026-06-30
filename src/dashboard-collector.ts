@@ -18,10 +18,14 @@ import {
   INTERVENTION_SCAN_MAX_BYTES,
   TRANSCRIPT_INTERRUPT_PREFIX,
   TRANSCRIPT_REJECT_MARKERS,
+  emptyTokenUsage,
+  addTokenUsage,
   type DashboardEvent,
   type DashboardEventType,
   type DashboardSession,
   type DashboardSessionStatus,
+  type TokenUsage,
+  type SessionMetrics,
 } from './types.js';
 
 // ─── Event collection data flow ─────────────────────────
@@ -108,26 +112,41 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
   }
 }
 
+/** Result of a full-transcript scan at session Stop: cumulative, idempotent snapshot. */
+export interface TranscriptScanResult {
+  interrupt: number;
+  toolReject: number;
+  tokens: TokenUsage;
+}
+
 /**
- * Scan a full transcript and count cumulative human-intervention signals:
+ * Scan a full transcript once at Stop time and collect cumulative, idempotent
+ * snapshots of:
  * - interrupt:  user message whose text starts with "[Request interrupted by user"
  * - toolReject: tool_result with is_error=true marked as a user rejection
+ * - tokens:     usage.{input,output,cache_*}_tokens summed across assistant messages,
+ *               deduplicated by `message.id` (Claude Code repeats the same usage on
+ *               every content-block line of a single turn, so naive summing would
+ *               massively over-count).
  *
  * Uses a streaming line reader so large transcripts don't load fully into memory.
  * Returns zero counts on any error (file missing, too large, permission denied).
  */
-export async function countInterventions(
+export async function scanTranscriptStop(
   transcriptPath: string,
-): Promise<{ interrupt: number; toolReject: number }> {
+): Promise<TranscriptScanResult> {
   let interrupt = 0;
   let toolReject = 0;
+  const tokens = emptyTokenUsage();
+  // Dedup assistant usage by message id (one turn spans many JSONL lines).
+  const countedMessageIds = new Set<string>();
 
   try {
     const stat = await fs.promises.stat(transcriptPath);
-    if (stat.size === 0) return { interrupt, toolReject };
+    if (stat.size === 0) return { interrupt, toolReject, tokens };
     if (stat.size > INTERVENTION_SCAN_MAX_BYTES) {
-      log.warn(`dashboard: transcript too large to scan for interventions (${stat.size} bytes)`);
-      return { interrupt, toolReject };
+      log.warn(`dashboard: transcript too large to scan (${stat.size} bytes)`);
+      return { interrupt, toolReject, tokens };
     }
 
     const rl = readline.createInterface({
@@ -137,16 +156,33 @@ export async function countInterventions(
 
     for await (const line of rl) {
       const trimmed = line.trim();
-      // Cheap pre-filter: intervention signals only ever live in `user` entries,
-      // so skip JSON.parse on the (vast majority of) other lines.
-      if (!trimmed || !trimmed.includes('"user"')) continue;
+      // Cheap pre-filter: we only care about `user` entries (interventions) and
+      // `assistant` entries (token usage); skip JSON.parse on anything else.
+      if (!trimmed || (!trimmed.includes('"user"') && !trimmed.includes('"assistant"'))) continue;
 
-      let entry: { type?: string; message?: { content?: unknown } };
+      let entry: {
+        type?: string;
+        message?: { content?: unknown; id?: unknown; usage?: Record<string, unknown> };
+      };
       try {
         entry = JSON.parse(trimmed);
       } catch {
         continue;
       }
+
+      if (entry.type === 'assistant') {
+        const usage = entry.message?.usage;
+        const id = entry.message?.id;
+        if (usage && typeof id === 'string' && !countedMessageIds.has(id)) {
+          countedMessageIds.add(id);
+          tokens.input += toNum(usage.input_tokens);
+          tokens.output += toNum(usage.output_tokens);
+          tokens.cacheRead += toNum(usage.cache_read_input_tokens);
+          tokens.cacheCreation += toNum(usage.cache_creation_input_tokens);
+        }
+        continue;
+      }
+
       if (entry.type !== 'user' || !Array.isArray(entry.message?.content)) continue;
 
       for (const item of entry.message.content as Array<Record<string, unknown>>) {
@@ -167,9 +203,24 @@ export async function countInterventions(
       }
     }
   } catch (e) {
-    log.warn(`dashboard: failed to scan interventions: ${(e as Error).message}`);
+    log.warn(`dashboard: failed to scan transcript: ${(e as Error).message}`);
   }
 
+  return { interrupt, toolReject, tokens };
+}
+
+/** Coerce an unknown usage field to a non-negative finite number (0 otherwise). */
+function toNum(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+/**
+ * Backward-compatible intervention-only scan. Delegates to {@link scanTranscriptStop}.
+ */
+export async function countInterventions(
+  transcriptPath: string,
+): Promise<{ interrupt: number; toolReject: number }> {
+  const { interrupt, toolReject } = await scanTranscriptStop(transcriptPath);
   return { interrupt, toolReject };
 }
 
@@ -275,10 +326,14 @@ export async function parseHookEvent(
     if (output) {
       event.stoppedOutput = output;
     }
-    // Full-transcript snapshot of interrupt/tool_reject counts (idempotent).
-    const iv = await countInterventions(hookData.transcript_path);
-    if (iv.interrupt > 0 || iv.toolReject > 0) {
-      event.interventions = iv;
+    // Full-transcript snapshot of interrupt/tool_reject counts + token usage (idempotent).
+    const scan = await scanTranscriptStop(hookData.transcript_path);
+    if (scan.interrupt > 0 || scan.toolReject > 0) {
+      event.interventions = { interrupt: scan.interrupt, toolReject: scan.toolReject };
+    }
+    if (scan.tokens.input > 0 || scan.tokens.output > 0
+      || scan.tokens.cacheRead > 0 || scan.tokens.cacheCreation > 0) {
+      event.tokens = scan.tokens;
     }
   }
 
@@ -384,6 +439,8 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
         stoppedAt: '',
         interventions: { interrupt: 0, toolReject: 0, correction: 0 },
         interventionCount: 0,
+        promptCount: 0,
+        tokens: emptyTokenUsage(),
       };
       sessions.set(event.sessionId, session);
     }
@@ -431,13 +488,15 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
     }
   }
 
-  // Fill per-session intervention counts (single source of truth: aggregate fold)
-  const interventionMap = aggregateSessionInterventions(events);
+  // Fill per-session metrics (single source of truth: aggregate fold)
+  const metricsMap = aggregateSessionMetrics(events);
   for (const session of sessions.values()) {
-    const iv = interventionMap.get(session.sessionId);
-    if (iv) {
-      session.interventions = iv;
-      session.interventionCount = iv.interrupt + iv.toolReject + iv.correction;
+    const m = metricsMap.get(session.sessionId);
+    if (m) {
+      session.interventions = { interrupt: m.interrupt, toolReject: m.toolReject, correction: m.correction };
+      session.interventionCount = m.interrupt + m.toolReject + m.correction;
+      session.promptCount = m.prompts;
+      session.tokens = m.tokens;
     }
   }
 
@@ -485,40 +544,47 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
 }
 
 /**
- * Aggregate per-session intervention counts from raw events (no timeout filtering).
+ * Aggregate per-session metrics from raw events (no timeout filtering).
  *
- * - interrupt / toolReject: taken from the latest Stop event's snapshot (idempotent —
- *   a later Stop overrides an earlier one, so re-scanning never double-counts).
+ * - interrupt / toolReject / tokens: taken from the latest Stop event's snapshot
+ *   (idempotent — a later Stop overrides an earlier one, so re-scanning never
+ *   double-counts).
  * - correction: a prompt_submit arriving within CORRECTION_WINDOW_MS of a Stop AND
  *   matching a correction keyword. Each Stop is consumed by the next prompt only once.
+ * - prompts: total number of prompt_submit events (human conversation turns).
  *
  * Used both by rebuildSessions (live dashboard) and by the team-stats reporter.
  */
-export function aggregateSessionInterventions(
+export function aggregateSessionMetrics(
   events: DashboardEvent[],
-): Map<string, { interrupt: number; toolReject: number; correction: number }> {
-  const map = new Map<string, { interrupt: number; toolReject: number; correction: number }>();
+): Map<string, SessionMetrics> {
+  const map = new Map<string, SessionMetrics>();
   const lastStopAt = new Map<string, number>();
 
   for (const event of events) {
-    let iv = map.get(event.sessionId);
-    if (!iv) {
-      iv = { interrupt: 0, toolReject: 0, correction: 0 };
-      map.set(event.sessionId, iv);
+    let m = map.get(event.sessionId);
+    if (!m) {
+      m = { interrupt: 0, toolReject: 0, correction: 0, prompts: 0, tokens: emptyTokenUsage() };
+      map.set(event.sessionId, m);
     }
 
     if (event.type === 'stop') {
       if (event.interventions) {
-        iv.interrupt = event.interventions.interrupt;
-        iv.toolReject = event.interventions.toolReject;
+        m.interrupt = event.interventions.interrupt;
+        m.toolReject = event.interventions.toolReject;
+      }
+      // Token snapshot is a full cumulative total for the session — latest wins.
+      if (event.tokens) {
+        m.tokens = { ...event.tokens };
       }
       lastStopAt.set(event.sessionId, new Date(event.timestamp).getTime());
     } else if (event.type === 'prompt_submit') {
+      m.prompts++;
       const stopAt = lastStopAt.get(event.sessionId);
       if (stopAt !== undefined) {
         const gap = new Date(event.timestamp).getTime() - stopAt;
         if (gap >= 0 && gap <= CORRECTION_WINDOW_MS && isCorrectionPrompt(event.promptSummary)) {
-          iv.correction++;
+          m.correction++;
         }
         // Each stop is consumed once — a later prompt is a new task, not a correction.
         lastStopAt.delete(event.sessionId);
@@ -527,6 +593,19 @@ export function aggregateSessionInterventions(
   }
 
   return map;
+}
+
+/**
+ * Backward-compatible intervention-only view. Delegates to {@link aggregateSessionMetrics}.
+ */
+export function aggregateSessionInterventions(
+  events: DashboardEvent[],
+): Map<string, { interrupt: number; toolReject: number; correction: number }> {
+  const out = new Map<string, { interrupt: number; toolReject: number; correction: number }>();
+  for (const [sid, m] of aggregateSessionMetrics(events)) {
+    out.set(sid, { interrupt: m.interrupt, toolReject: m.toolReject, correction: m.correction });
+  }
+  return out;
 }
 
 // ─── JSONL compaction ───────────────────────────────────

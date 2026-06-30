@@ -181,6 +181,24 @@ export function getDashboardHtml(port: number): string {
       font-weight: 600;
       cursor: help;
     }
+    .convo-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: rgba(59, 130, 246, 0.15);
+      color: #3b82f6;
+      font-weight: 600;
+      cursor: help;
+    }
+    .token-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #10b981;
+      font-weight: 600;
+      cursor: help;
+    }
     .status-text {
       font-size: 12px;
       color: var(--text-muted);
@@ -556,12 +574,38 @@ export function getDashboardHtml(port: number): string {
         '中断 ' + (iv.interrupt || 0) + ' · 拒绝 ' + (iv.toolReject || 0) + ' · 纠偏 ' + (iv.correction || 0);
     }
 
+    function fmtTokens(n) {
+      n = n || 0;
+      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+      return String(n);
+    }
+
+    function tokenTotal(t) {
+      t = t || {};
+      return (t.input || 0) + (t.output || 0) + (t.cacheRead || 0) + (t.cacheCreation || 0);
+    }
+
+    function tokenTitle(t) {
+      t = t || {};
+      return 'Token 总量 ' + fmtTokens(tokenTotal(t)) + ' — ' +
+        '输入 ' + fmtTokens(t.input) + ' · 输出 ' + fmtTokens(t.output) +
+        ' · 缓存读 ' + fmtTokens(t.cacheRead) + ' · 缓存写 ' + fmtTokens(t.cacheCreation);
+    }
+
     function renderCard(s) {
       const isExpanded = expandedCards.has(s.sessionId);
       const isStopped = s.status === 'stopped';
       const dur = durationStr(s.startedAt, isStopped ? s.stoppedAt || s.lastActivity : null);
       const interventionBadge = (s.interventionCount > 0)
         ? '<span class="intervention-badge" title="' + escapeAttr(interventionTitle(s)) + '">⚠ ' + s.interventionCount + '</span>'
+        : '';
+      const convoBadge = (s.promptCount > 0)
+        ? '<span class="convo-badge" title="人工对话 ' + s.promptCount + ' 轮">💬 ' + s.promptCount + '</span>'
+        : '';
+      const tokenSum = tokenTotal(s.tokens);
+      const tokenBadge = (tokenSum > 0)
+        ? '<span class="token-badge" title="' + escapeAttr(tokenTitle(s.tokens)) + '">⛁ ' + fmtTokens(tokenSum) + '</span>'
         : '';
 
       // ─── Expanded detail panel ───
@@ -612,6 +656,8 @@ export function getDashboardHtml(port: number): string {
           '<span class="status-light ' + escapeAttr(s.status) + '"></span>' +
           '<span class="tool-badge">' + escapeHtml(s.tool) + '</span>' +
           '<span class="duration">' + dur + '</span>' +
+          convoBadge +
+          tokenBadge +
           interventionBadge +
           '<span class="status-text">' + statusLabel(s.status) + '</span>' +
         '</div>' +
