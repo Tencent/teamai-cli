@@ -514,6 +514,20 @@ teamai dashboard --port 8080
 
 实时查看团队成员的 AI 编码会话状态。
 
+#### 人工干预指标（Human Intervention）
+
+每个会话卡片会显示一个 `⚠ N` 徽标，统计该对话中用户的**人工干预次数**——干预越少，说明 agent 一次把事做对的能力越强。鼠标悬停可看分类明细，三类信号各计一次：
+
+| 类型 | 含义 | 数据来源 |
+|------|------|----------|
+| `interrupt` | 用户在 agent 执行中途按 ESC 打断 | transcript 中被中断的 turn |
+| `toolReject` | 用户拒绝某个工具调用（permission deny） | transcript 中标记拒绝的 tool_result |
+| `correction` | agent stop 后 60s 内用户追加含「不对 / 重来 / 错了 / wrong / redo」等纠偏词的 prompt | stop → prompt_submit 事件模式 |
+
+> 隐私：只统计**次数**，不落地任何 prompt 或 transcript 原文。
+
+干预数据会随 `teamai pull` 自动聚合上报到团队 `stats/<user>.yaml`，并在 `teamai digest` 的「会话自主性」榜单中给出团队均值与人均干预率排行，可用于验证某个 skill / rule 上线后干预率是否下降。无 transcript 的工具（如 Cursor）会优雅降级，只统计 `correction`。
+
 ### Hooks
 
 `teamai init` 自动注入的 Hooks：
