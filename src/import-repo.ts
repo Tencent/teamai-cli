@@ -44,7 +44,7 @@ export interface ImportFromRepoOptions {
     explicitDomain?: string;
     /** Dry-run 模式：跳过写盘但执行 clone+扫描 */
     dryRun?: boolean;
-    /** 自定义产物根目录；默认 cwd/docs/team-codebase */
+    /** 自定义产物根目录；默认 .teamai/team-repo/docs/team-codebase */
     output?: string;
     /**
      * 是否启用交互式确认。
@@ -527,7 +527,7 @@ export async function detectDomainDrift(args: {
  *  1. 解析 url → provider + RepoInfo（owner/repo）
  *  2. shallow clone（或增量 fetch+reset）到 ~/.teamai/cache/repos/<provider>/<owner>/<repo>
  *  3. generateCodebaseMd({ repoPath: cacheDir })
- *  4. 写出到 <outputRoot>/repos/<slug>.md（默认 outputRoot=cwd/docs/team-codebase）
+ *  4. 写出到 <outputRoot>/repos/<slug>.md（默认 outputRoot=.teamai/team-repo/docs/team-codebase）
  *  5. 推荐业务域（或使用 --domain 显式指定）
  *  6. 写入 .teamai/domains.yaml + appendHistory
  *  7. 写 LAST_SYNC
