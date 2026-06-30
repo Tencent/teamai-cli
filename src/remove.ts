@@ -1,4 +1,5 @@
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
+import { assertNotReadOnly } from './read-only.js';
 import { pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
 import { createPrWithFallback, filterExistingTopLevelPaths } from './push.js';
 import { log, spinner } from './utils/logger.js';
@@ -25,6 +26,7 @@ export async function remove(
 
   // Auto-detect scope
   const { localConfig, teamConfig } = await autoDetectInit();
+  assertNotReadOnly(localConfig, 'teamai remove');
 
   // Pull latest before making changes
   try {

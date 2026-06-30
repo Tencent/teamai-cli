@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
 import { reconcileHooks } from './hooks.js';
+import { removeOpenClawHooks, OPENCLAW_HOOK_DIR } from './openclaw-hooks.js';
 import {
   TEAMAI_RULES_START,
   TEAMAI_RULES_END,
@@ -41,6 +42,8 @@ interface UninstallOptions extends GlobalOptions {
 interface RemovalPlan {
   /** Tool settings files that contain teamai hooks. */
   hookFiles: Array<{ path: string; tool: string }>;
+  /** OpenClaw-style hook dirs (<base>/.<tool>/hooks) holding teamai HOOK.md+handler.ts. */
+  openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
   /** CLAUDE.md files with teamai rules blocks. */
   claudeMdFiles: string[];
   /** Skill directories synced from team repo. */
@@ -133,6 +136,7 @@ async function buildRemovalPlan(
 
   const plan: RemovalPlan = {
     hookFiles: [],
+    openclawHookDirs: [],
     claudeMdFiles: [],
     skillDirs: [],
     ruleFiles: [],
@@ -154,6 +158,13 @@ async function buildRemovalPlan(
       const settingsPath = path.join(baseDir, toolPath.settings);
       if (await pathExists(settingsPath)) {
         plan.hookFiles.push({ path: settingsPath, tool });
+      }
+    } else {
+      // OpenClaw-style agents (no settings file) inject a HOOK.md + handler.ts
+      // under <base>/.<tool>/hooks/<OPENCLAW_HOOK_DIR>. Mirror that for removal.
+      const hooksDir = path.join(baseDir, `.${tool}`, 'hooks');
+      if (await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) {
+        plan.openclawHookDirs.push({ hooksDir, tool });
       }
     }
 
@@ -229,6 +240,7 @@ async function buildRemovalPlan(
 function isPlanEmpty(plan: RemovalPlan): boolean {
   return (
     plan.hookFiles.length === 0 &&
+    plan.openclawHookDirs.length === 0 &&
     plan.claudeMdFiles.length === 0 &&
     plan.skillDirs.length === 0 &&
     plan.ruleFiles.length === 0 &&
@@ -247,6 +259,14 @@ function printSummary(plan: RemovalPlan): void {
     console.log(`   Hooks (${plan.hookFiles.length} 个文件):`);
     for (const { path: p } of plan.hookFiles) {
       console.log(`     ${p}`);
+    }
+    console.log('');
+  }
+
+  if (plan.openclawHookDirs.length > 0) {
+    console.log(`   OpenClaw Hooks (${plan.openclawHookDirs.length} 个目录):`);
+    for (const { hooksDir } of plan.openclawHookDirs) {
+      console.log(`     ${path.join(hooksDir, OPENCLAW_HOOK_DIR)}/`);
     }
     console.log('');
   }
@@ -297,6 +317,15 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
       await reconcileHooks(settingsPath, tool, [], { removeAll: true, manifestPath: plan.managedHooksPath });
     } catch (e) {
       log.warn(`移除 hooks 失败 ${settingsPath}: ${(e as Error).message}`);
+    }
+  }
+
+  // (a2) Remove OpenClaw-style hook dirs
+  for (const { hooksDir } of plan.openclawHookDirs) {
+    try {
+      await removeOpenClawHooks(hooksDir);
+    } catch (e) {
+      log.warn(`移除 OpenClaw hook 失败 ${hooksDir}: ${(e as Error).message}`);
     }
   }
 

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
+import { assertNotReadOnly } from './read-only.js';
 import { createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName, resetToCleanMaster, getDefaultBranch } from './utils/git.js';
 import { syncTeamUpdatesToLocal } from './utils/pre-push-sync.js';
 import { getProvider } from './providers/index.js';
@@ -107,6 +108,7 @@ export { createPrWithFallback };
 export async function push(options: GlobalOptions & { all?: boolean; role?: string }): Promise<void> {
   // Auto-detect scope: project scope if cwd has project config, else user scope
   const { localConfig, teamConfig } = await autoDetectInit();
+  assertNotReadOnly(localConfig, 'teamai push');
   const scopeLabel = localConfig.scope;
 
   // Pull latest default branch BEFORE scanning so detection runs against up-to-date repo.

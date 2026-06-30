@@ -67,6 +67,61 @@ The CLI picks a provider automatically from the repo URL:
 - `yourorg/yourrepo` or `https://github.com/yourorg/yourrepo` → GitHub
 - `https://git.woa.com/yourteam/yourrepo` → TGit
 
+### Read-only consumers (HTTP team repo, no git)
+
+Some users or agents only need to *consume* a team's skills/rules — no git clone, no push. Onboard them over plain HTTP with just an API key:
+
+```bash
+teamai init --http https://your-team-host/api --token <api-key>
+```
+
+- **Read-only:** `push` / `contribute` / `remove` are disabled for HTTP repos.
+- The API key is stored `0600` (never written to config, never committed); `TEAMAI_API_TOKEN` is also honored.
+- If the team-repo endpoint (`/repo`) is not live yet, init falls back to **reporting-only mode** — hooks and status reporting are wired immediately, and skills/rules begin syncing automatically once the endpoint is available.
+
+#### Agent status reporting
+
+Once initialized, supported agents (CodeBuddy / WorkBuddy) report their installed-skill state on session start and pull down server-managed skill install / update / uninstall commands, driven by the existing hook dispatch (`session-start` → report + sync, `prompt-submit` → sync). Failed deliveries are buffered to an offline queue and retried next time.
+
+> **Privacy.** The install path and machine id are only hashed *locally* to derive a stable `local_agent_id` — neither is ever uploaded.
+
+<details>
+<summary><b>HTTP contract</b> (for backend implementers) — what the <code>--http</code> endpoint must serve</summary>
+
+The value you pass to `--http <baseUrl>` is the base; every endpoint is relative to it and authenticated with `Authorization: Bearer <api-key>`.
+
+| Endpoint | Method | Purpose | Path |
+|----------|--------|---------|------|
+| `{baseUrl}/repo` | GET | Team-repo snapshot (skills + rules/docs) | **fixed** |
+| `{baseUrl}/api/local-agent/report` | POST | Session start: upsert agent + installed skills | default, configurable |
+| `{baseUrl}/api/local-agent/sync` | POST | Report status + return pending skill commands | default, configurable |
+| `{baseUrl}/api/local-agent/commands/ack` | POST | Ack one command (`{ id, status, error }`) | default, configurable |
+
+`GET /repo` returns JSON (a 404 or non-JSON 200 ⇒ the client enters reporting-only mode):
+
+```json
+{
+  "version": "<opaque cache key, e.g. a commit hash>",
+  "files":   [{ "path": "rules/foo.md", "content": "..." }],
+  "commands":[{ "type": "install_skill", "skill_slug": "x", "skill_version": "1.0.0", "download_url": "https://signed-url/..." }]
+}
+```
+
+- `files[]` are written verbatim into the local repo tree (path-traversal guarded); `commands[]` install/update/uninstall skills.
+- A skill `download_url` is fetched **directly** — it carries its own signed auth in the query string, so no `Bearer` header is sent. It must resolve to a `.zip` whose root is either `<slug>/SKILL.md …` or a flat `SKILL.md …`.
+
+**Fixed vs configurable.** The `/repo` path is fixed; the three reporter paths are defaults you can override. The JSON shapes above are the contract. Knobs (env vars):
+
+| Variable | Effect |
+|----------|--------|
+| `TEAMAI_API_TOKEN` | API key (alternative to `--token`) |
+| `TEAMAI_REPORT_ENDPOINT` | Reporter base URL (defaults to the `--http` URL) |
+| `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }` to override the three reporter paths |
+| `TEAMAI_REPORT_AGENTS` | Comma-separated agents that report (default `workbuddy,codebuddy`) |
+| `TEAMAI_SKILL_DOWNLOAD_HOSTS` | Comma-separated host allowlist for skill `download_url` (empty = allow all) |
+
+</details>
+
 ## Commands
 
 | Command | Description |

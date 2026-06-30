@@ -33,6 +33,56 @@ interface RolePullContext {
   inactiveSkillNames: Set<string>;
 }
 
+/**
+ * Refresh the local team-repo tree, abstracting the two backends.
+ *
+ * - git:  `git pull` into localPath; version = current HEAD rev.
+ * - http: re-materialize `GET /repo` into localPath; version = server version.
+ *
+ * Returns a display label and the opaque version string used as the
+ * incremental-sync cache key (state.lastPullRev). `version` is null only when
+ * the git backend can't resolve a rev.
+ */
+async function refreshTeamRepo(
+  localConfig: LocalConfig,
+): Promise<{ label: string; version: string | null; reportingOnly: boolean }> {
+  if (localConfig.repo.kind === 'http') {
+    const { resolveApiKey } = await import('./api-key.js');
+    const { materializeHttpRepo, RepoNotAvailableError } = await import('./source-http.js');
+    const apiKey = resolveApiKey();
+    if (!apiKey) {
+      throw new Error('No API key configured. Re-run `teamai init --http <url> --token <key>` or set TEAMAI_API_TOKEN.');
+    }
+    const baseUrl = localConfig.repo.url;
+    if (!baseUrl) {
+      throw new Error('HTTP team repo has no url configured.');
+    }
+    try {
+      const version = await materializeHttpRepo(baseUrl, localConfig.repo.localPath, apiKey);
+      return { label: `HTTP ${version ?? '(no version)'}`, version, reportingOnly: false };
+    } catch (e) {
+      if (e instanceof RepoNotAvailableError) {
+        // Reporting-only endpoint: /repo not live yet. Skip skill/rule sync
+        // quietly (status reporting still runs via its own hook handler).
+        log.debug(`[pull] ${(e as Error).message} — skipping repo sync (reporting-only)`);
+        return { label: 'HTTP (reporting-only, no /repo yet)', version: null, reportingOnly: true };
+      }
+      throw e;
+    }
+  }
+
+  const result = await pullRepo(localConfig.repo.localPath);
+  let version: string | null = null;
+  try {
+    version = await getHeadRev(localConfig.repo.localPath);
+  } catch {
+    // Can't resolve a rev → skip the incremental fast-path and do a full sync.
+    log.debug('Rev check failed, proceeding with full sync');
+    version = null;
+  }
+  return { label: result, version, reportingOnly: false };
+}
+
 async function buildRolePullContext(localConfig: LocalConfig): Promise<RolePullContext | null> {
   if (!localConfig.primaryRole) return null;
 
@@ -240,22 +290,28 @@ async function pullForScope(
     return;
   }
 
-  // Step 1: git pull
+  // Step 1: refresh team repo (git pull, or HTTP /repo materialization)
   const pullSpin = spinner(`[${scopeLabel}] Pulling team repo...`).start();
+  let currentRev: string | null = null;
+  // Reporting-only HTTP endpoints have no team repo to write to, so the
+  // team-repo-dependent built-in skills (teamai-share-learnings, teamai-wiki)
+  // are useless there and must not be injected.
+  let reportingOnly = false;
   try {
-    const result = await pullRepo(localConfig.repo.localPath);
-    pullSpin.succeed(`[${scopeLabel}] Team repo: ${result}`);
+    const { label, version, reportingOnly: ro } = await refreshTeamRepo(localConfig);
+    currentRev = version;
+    reportingOnly = ro;
+    pullSpin.succeed(`[${scopeLabel}] Team repo: ${label}`);
   } catch (e) {
     pullSpin.fail(`[${scopeLabel}] Pull failed: ${(e as Error).message}`);
     return;
   }
 
-  // Step 1b: Skip sync if repo HEAD hasn't changed since last pull
+  // Step 1b: Skip sync if the repo version hasn't changed since last pull
   if (!options.force && !options.dryRun) {
     try {
-      const currentRev = await getHeadRev(localConfig.repo.localPath);
       const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
-      if (state.lastPullRev && state.lastPullRev === currentRev) {
+      if (currentRev && state.lastPullRev && state.lastPullRev === currentRev) {
         log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
         // 即使 repo 未变化，仍部署 CLI 内置资源（确保 CLI 升级后新版本 agent/rules 生效）
         if (!options.dryRun) {
@@ -263,7 +319,7 @@ async function pullForScope(
           if (cfg) {
             try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig); } catch {}
             try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig); } catch {}
-            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { skipWiki: !isWikiEnabled() }); } catch {}
+            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { skipWiki: !isWikiEnabled(), reportingOnly }); } catch {}
           }
         }
         return;
@@ -516,11 +572,16 @@ async function pullForScope(
   } else if (!options.dryRun) {
     const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
     state.lastPull = new Date().toISOString();
-    try {
-      state.lastPullRev = await getHeadRev(localConfig.repo.localPath);
-    } catch {
-      // Non-critical: if we can't get the rev, just clear it
-      state.lastPullRev = null;
+    if (currentRev !== null) {
+      // HTTP mode: server version already resolved during refresh.
+      state.lastPullRev = currentRev;
+    } else {
+      try {
+        state.lastPullRev = await getHeadRev(localConfig.repo.localPath);
+      } catch {
+        // Non-critical: if we can't get the rev, just clear it
+        state.lastPullRev = null;
+      }
     }
     await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
   }
@@ -730,7 +791,7 @@ async function pullForScope(
   if (!options.dryRun) {
     try {
       const { deployBuiltinSkills } = await import('./builtin-skills.js');
-      const deployed = await deployBuiltinSkills(freshConfig, localConfig, { skipWiki: !wikiEnabled });
+      const deployed = await deployBuiltinSkills(freshConfig, localConfig, { skipWiki: !wikiEnabled, reportingOnly });
       if (deployed > 0) {
         log.debug(`[${scopeLabel}] Deployed ${deployed} built-in skill(s)`);
       }
@@ -765,8 +826,10 @@ async function pullForScope(
     }
   }
 
-  // Step 5: Auto-report usage data (user scope only)
-  if (!options.dryRun && localConfig.scope === 'user') {
+  // Step 5: Auto-report usage data (user scope only). This pushes usage back to
+  // the team git repo, so it only applies to git-backed repos — HTTP consumers
+  // have no local git checkout and are read-only, so skip it entirely.
+  if (!options.dryRun && localConfig.scope === 'user' && localConfig.repo.kind !== 'http') {
     try {
       const { reportUsageToTeam } = await import('./team-push.js');
       await reportUsageToTeam(localConfig.repo.localPath, localConfig.username);

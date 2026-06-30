@@ -229,6 +229,38 @@ describe('uninstall', () => {
     expect(await fse.pathExists(teamaiHome)).toBe(false);
   });
 
+  it('移除 OpenClaw 系 agent 的 HOOK.md 目录（无 settings 路径）', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    // Simulate an installed OpenClaw-family agent with teamai HOOK.md injected.
+    const ocHookDir = path.join(homeDir, '.openclaw', 'hooks', 'teamai-status-report');
+    await fse.ensureDir(ocHookDir);
+    await fse.writeFile(path.join(ocHookDir, 'HOOK.md'), '---\nname: [teamai] status-report\n---\n');
+    await fse.writeFile(path.join(ocHookDir, 'handler.ts'), '// teamai');
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md' },
+        openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules' }, // no settings → OpenClaw HOOK.md path
+      },
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: `${teamaiHome}/docs` },
+        env: { injectShellProfile: true },
+      },
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    // The OpenClaw HOOK.md dir must be removed (regression: previously leaked).
+    expect(await fse.pathExists(ocHookDir)).toBe(false);
+  });
+
   it('保留用户自建的 skills', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);
