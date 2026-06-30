@@ -16,6 +16,7 @@
 
 import path from 'node:path';
 import { writeFile, remove, ensureDir } from './utils/fs.js';
+import { assertWithinRoot } from './utils/path-safety.js';
 import { executeSkillCommand, type SkillCommand } from './skill-command.js';
 import { log } from './utils/logger.js';
 
@@ -85,11 +86,8 @@ export async function fetchRepoSnapshot(baseUrl: string, apiKey: string): Promis
  * Throws if the resolved destination escapes localPath.
  */
 async function writeRepoFile(localPath: string, file: RepoFile): Promise<void> {
-  const resolvedRoot = path.resolve(localPath);
   const outPath = path.resolve(localPath, file.path);
-  if (outPath !== resolvedRoot && !outPath.startsWith(resolvedRoot + path.sep)) {
-    throw new Error(`path traversal detected in /repo file: ${file.path}`);
-  }
+  assertWithinRoot(localPath, outPath, `path traversal detected in /repo file: ${file.path}`);
   await ensureDir(path.dirname(outPath));
   await writeFile(outPath, file.content);
 }

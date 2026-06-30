@@ -28,6 +28,28 @@ export function assertSafePath(target: string, allowedRoots: string[]): void {
 }
 
 /**
+ * Assert that `candidate` stays within `root`, comparing resolved paths WITHOUT
+ * following symlinks on either side.
+ *
+ * Use this for "write a new file under root" guards: the candidate need not exist
+ * yet, and because neither side is symlink-resolved the check stays consistent
+ * even when `root` is reached through a symlink (e.g. macOS `/var` → `/private/var`
+ * tmpdirs). When symlink resolution IS required, use {@link assertSafePath}.
+ *
+ * @param root       The directory the candidate must stay inside.
+ * @param candidate  The path to validate.
+ * @param message    Optional custom error message thrown on violation.
+ * @throws Error if `candidate` resolves outside `root`.
+ */
+export function assertWithinRoot(root: string, candidate: string, message?: string): void {
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  if (resolvedCandidate !== resolvedRoot && !resolvedCandidate.startsWith(resolvedRoot + path.sep)) {
+    throw new Error(message ?? `path traversal detected: "${candidate}" is outside "${root}"`);
+  }
+}
+
+/**
  * Resolve a path to its real absolute form.
  *
  * Uses fs.realpathSync when the path exists (follows symlinks).
