@@ -67,6 +67,24 @@ CLI 会根据用户传入的 repo URL 自动选择 provider：
 - `yourorg/yourrepo` 或 `https://github.com/yourorg/yourrepo` → GitHub
 - `https://git.woa.com/yourteam/yourrepo` → TGit
 
+### 只读消费者（HTTP 团队仓库，免 git）
+
+有些用户或 agent 只需要*消费*团队的 skills/rules——不需要 git clone，也不需要 push。用一个 API key 即可通过纯 HTTP 接入：
+
+```bash
+teamai init --http https://your-team-host/api --token <api-key>
+```
+
+- **只读**：HTTP 仓库下 `push` / `contribute` / `remove` 均被禁用。
+- API key 以 `0600` 权限保存（不写入 config，也不会被提交）；同时支持 `TEAMAI_API_TOKEN` 环境变量。
+- 如果团队仓库端点（`/repo`）尚未上线，init 会回落到 **reporting-only 模式**——hooks 和状态上报立即生效，待端点可用后 skills/rules 会自动开始同步。
+
+#### Agent 状态上报
+
+初始化后，受支持的 agent（CodeBuddy / WorkBuddy）会在 session 启动时上报本地已安装 skill 的状态，并拉取服务端下发的 skill 安装 / 更新 / 卸载命令，全部挂在既有 hook dispatch 上（`session-start` → report + sync，`prompt-submit` → sync）。下发失败会进离线队列，下次重试。
+
+> **隐私**：install path 和 machine id 仅在*本地*哈希以派生稳定的 `local_agent_id`，二者都不会上报。
+
 ## 命令
 
 | 命令 | 说明 |

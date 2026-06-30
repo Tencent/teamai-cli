@@ -67,6 +67,24 @@ The CLI picks a provider automatically from the repo URL:
 - `yourorg/yourrepo` or `https://github.com/yourorg/yourrepo` → GitHub
 - `https://git.woa.com/yourteam/yourrepo` → TGit
 
+### Read-only consumers (HTTP team repo, no git)
+
+Some users or agents only need to *consume* a team's skills/rules — no git clone, no push. Onboard them over plain HTTP with just an API key:
+
+```bash
+teamai init --http https://your-team-host/api --token <api-key>
+```
+
+- **Read-only:** `push` / `contribute` / `remove` are disabled for HTTP repos.
+- The API key is stored `0600` (never written to config, never committed); `TEAMAI_API_TOKEN` is also honored.
+- If the team-repo endpoint (`/repo`) is not live yet, init falls back to **reporting-only mode** — hooks and status reporting are wired immediately, and skills/rules begin syncing automatically once the endpoint is available.
+
+#### Agent status reporting
+
+Once initialized, supported agents (CodeBuddy / WorkBuddy) report their installed-skill state on session start and pull down server-managed skill install / update / uninstall commands, driven by the existing hook dispatch (`session-start` → report + sync, `prompt-submit` → sync). Failed deliveries are buffered to an offline queue and retried next time.
+
+> **Privacy.** The install path and machine id are only hashed *locally* to derive a stable `local_agent_id` — neither is ever uploaded.
+
 ## Commands
 
 | Command | Description |
