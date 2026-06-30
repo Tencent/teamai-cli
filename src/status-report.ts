@@ -26,6 +26,8 @@ import {
   pathExists,
   readFileSafe,
   ensureDir,
+  writeFile,
+  remove,
 } from './utils/fs.js';
 import { resolveBaseDir, type LocalConfig, type TeamaiConfig } from './types.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
@@ -122,21 +124,18 @@ async function readSkillMeta(skillMdPath: string): Promise<{ name: string; versi
  */
 export async function scanReportableSkills(skillsDir: string): Promise<ReportedSkill[]> {
   if (!(await pathExists(skillsDir))) return [];
-  const dirs = await listDirs(skillsDir);
-  const skills: ReportedSkill[] = [];
-  for (const slug of dirs) {
-    if (slug.startsWith('.')) continue;
-    const skillMd = path.join(skillsDir, slug, 'SKILL.md');
-    if (!(await pathExists(skillMd))) continue;
-    const meta = await readSkillMeta(skillMd);
-    skills.push({
-      slug,
-      version: meta.version,
-      display_name: meta.name || slug,
-    });
-  }
-  skills.sort((a, b) => a.slug.localeCompare(b.slug));
-  return skills;
+  const dirs = (await listDirs(skillsDir)).filter((slug) => !slug.startsWith('.'));
+  const skills = await Promise.all(
+    dirs.map(async (slug): Promise<ReportedSkill | null> => {
+      const skillMd = path.join(skillsDir, slug, 'SKILL.md');
+      if (!(await pathExists(skillMd))) return null;
+      const meta = await readSkillMeta(skillMd);
+      return { slug, version: meta.version, display_name: meta.name || slug };
+    }),
+  );
+  return skills
+    .filter((s): s is ReportedSkill => s !== null)
+    .sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
 // ─── Offline queue ──────────────────────────────────────────
@@ -177,11 +176,10 @@ async function flushQueue(apiKey: string): Promise<void> {
       remaining.push(line);
     }
   }
-  const fse = await import('fs-extra');
   if (remaining.length === 0) {
-    await fse.default.remove(p);
+    await remove(p);
   } else {
-    await fse.default.writeFile(p, remaining.join('\n') + '\n', 'utf-8');
+    await writeFile(p, remaining.join('\n') + '\n');
   }
 }
 

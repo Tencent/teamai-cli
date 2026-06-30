@@ -15,7 +15,7 @@
 import path from 'node:path';
 import { unzipSync } from 'fflate';
 import { ensureDir, remove, writeFile, pathExists } from './utils/fs.js';
-import { assertSafeResourceName } from './utils/path-safety.js';
+import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
 
 /** Command types in the iWiki/clawpro contract. */
@@ -137,7 +137,6 @@ export async function installSkillZip(
   await remove(destRoot);
   await ensureDir(destRoot);
 
-  const resolvedRoot = path.resolve(destRoot);
   for (const [entryPath, bytes] of Object.entries(entries)) {
     // For a nested layout, only extract the chosen subtree; for a flat layout
     // (prefix === '') every entry belongs to the skill.
@@ -148,9 +147,7 @@ export async function installSkillZip(
     const rel = prefix ? entryPath.slice(prefix.length) : entryPath;
     if (!rel) continue;
     const outPath = path.resolve(destRoot, rel);
-    if (outPath !== resolvedRoot && !outPath.startsWith(resolvedRoot + path.sep)) {
-      throw new Error(`path traversal detected in skill package: ${entryPath}`);
-    }
+    assertWithinRoot(destRoot, outPath, `path traversal detected in skill package: ${entryPath}`);
     await ensureDir(path.dirname(outPath));
     await writeFile(outPath, Buffer.from(bytes).toString('utf-8'));
   }

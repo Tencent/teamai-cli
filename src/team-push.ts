@@ -4,7 +4,7 @@ import { readUsageEvents, truncateUsageAfterReport } from './usage-tracker.js';
 import { aggregateUsage } from './stats.js';
 import { readEvents, aggregateSessionInterventions } from './dashboard-collector.js';
 import { createGit, pushRepoDirectly, pullRepo, resetToCleanMaster } from './utils/git.js';
-import { writeFile, readFileSafe, ensureDir, pathExists, listFiles } from './utils/fs.js';
+import { writeFile, readFileSafe, ensureDir, pathExists, listFiles, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { UserStats, UserInterventionStats } from './types.js';
 import { VOTES_LOCAL_DIR } from './types.js';
@@ -111,21 +111,13 @@ function getReportedInterventionsPath(): string {
 }
 
 async function readReportedInterventions(): Promise<ReportedInterventions> {
-  try {
-    const content = await readFileSafe(getReportedInterventionsPath());
-    if (!content) return {};
-    const parsed = JSON.parse(content);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
+  const parsed = await readJson<ReportedInterventions>(getReportedInterventionsPath());
+  return parsed && typeof parsed === 'object' ? parsed : {};
 }
 
 async function writeReportedInterventions(data: ReportedInterventions): Promise<void> {
   try {
-    const p = getReportedInterventionsPath();
-    await ensureDir(path.dirname(p));
-    await writeFile(p, JSON.stringify(data));
+    await writeJson(getReportedInterventionsPath(), data);
   } catch (e) {
     log.error(`Failed to persist reported interventions: ${(e as Error).message}`);
   }
