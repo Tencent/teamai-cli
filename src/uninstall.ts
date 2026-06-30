@@ -19,6 +19,7 @@ import {
   type GlobalOptions,
   type TeamaiConfig,
   type LocalConfig,
+  type Scope,
 } from './types.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import {
@@ -60,6 +61,8 @@ interface RemovalPlan {
   teamaiHomeExists: boolean;
   /** Managed-hooks manifest path (for team-hook cleanup). */
   managedHooksPath: string;
+  /** Scope being uninstalled (issue #73: surfaced to the user). */
+  scope: Scope;
 }
 
 // ─── Helpers ───────────────────────────────────────────
@@ -145,6 +148,7 @@ async function buildRemovalPlan(
     teamaiHome,
     teamaiHomeExists: await pathExists(teamaiHome),
     managedHooksPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
+    scope: localConfig.scope,
   };
 
   // Discover team repo resource names for targeted removal
@@ -251,7 +255,9 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
 }
 
 function printSummary(plan: RemovalPlan): void {
+  const cn = plan.scope === 'project' ? '项目级' : '用户级';
   console.log('');
+  console.log(`⚠  正在卸载 ${plan.scope} scope（${cn}）— ${plan.teamaiHome}`);
   console.log('⚠  以下 teamai 资源将被移除:');
   console.log('');
 
@@ -475,6 +481,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     }
 
     console.log('');
+    console.log('⚠  正在卸载 user scope（用户级，未检测到有效配置，仅清理主目录）');
     console.log('⚠  将移除 TeamAI 主目录:');
     console.log(`     ${home}/`);
     console.log('');
