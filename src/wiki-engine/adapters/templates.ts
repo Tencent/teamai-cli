@@ -26,7 +26,8 @@ export function routerTemplate(
   for (const p of projects) {
     if (p.keywords) p.keywords.forEach(k => allKeywords.add(k));
   }
-  const anchorTerms = ['路由', '索引', '入口', '知识库', '代码知识', 'architecture', 'module', 'dependency', ...allKeywords].slice(0, 20);
+  const baseTerms = ['路由', '索引', '入口', '知识库', '代码知识', 'architecture', 'module', 'dependency'];
+  const anchorTerms = [...baseTerms, ...allKeywords].slice(0, 20);
 
   const lines = [
     '# Team Wiki Router',

@@ -283,30 +283,38 @@ async function loadWikiPages(wikiRoot: string, depth: 'route' | 'context' | 'loo
   return pages;
 }
 
+const MAX_RECURSION_DEPTH = 10;
+
 async function loadPagesRecursive(
   dir: string,
   relativePath: string,
   pages: PageDoc[],
   depth: 'route' | 'context' | 'lookup',
+  currentDepth: number = 0,
 ): Promise<void> {
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [] as import('node:fs').Dirent[]);
+  if (currentDepth >= MAX_RECURSION_DEPTH) return;
+  const entries = await readdir(dir, { withFileTypes: true })
+    .catch(() => [] as import('node:fs').Dirent[]);
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      await loadPagesRecursive(fullPath, `${relativePath}/${entry.name}`, pages, depth);
+      await loadPagesRecursive(
+        fullPath, `${relativePath}/${entry.name}`,
+        pages, depth, currentDepth + 1,
+      );
     } else if (entry.name.endsWith('.md')) {
       const relFilePath = `${relativePath}/${entry.name}`;
-      // depth=context 模式下，排除导航文件并限制搜索范围
       if (depth === 'context') {
+        // 排除项目内部的导航/索引文件（如 index.md）和原始 facts 页面
         if (NAVIGATION_FILES.has(entry.name)) continue;
         if (!CONTEXT_ALLOWED_PATTERNS.some(p => p.test(relFilePath))) continue;
       }
-      // depth=route 不走 recursive 加载，由 loadWikiPages 单独处理
-      // depth=lookup 不做任何过滤
       try {
         const content = await readFile(fullPath, 'utf-8');
         const titleMatch = content.match(/^title:\s*(.+)$/m);
-        const title = titleMatch ? titleMatch[1].trim() : entry.name.replace('.md', '');
+        const title = titleMatch
+          ? titleMatch[1].trim()
+          : entry.name.replace('.md', '');
         pages.push({
           path: relFilePath,
           title,
@@ -344,17 +352,13 @@ export async function queryCodeKnowledge(
   if (pages.length === 0) return [];
 
   if (depth === 'route') {
-    // route 模式：返回路由建议而非 BM25 搜索结果
-    if (pages.length > 0) {
-      return [{
-        page: pages[0].path,
-        title: 'Question Router',
-        score: 10,
-        snippet: pages[0].content.slice(0, 800),
-        kind: 'codebase',
-      }];
-    }
-    return [];
+    return [{
+      page: pages[0].path,
+      title: 'Question Router',
+      score: 10,
+      snippet: pages[0].content.slice(0, 800),
+      kind: 'codebase',
+    }];
   }
 
   const graph = await loadGraph(wikiRoot);

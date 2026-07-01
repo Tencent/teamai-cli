@@ -101,7 +101,8 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
             await fs.ensureDir(evidenceDir);
             await fs.ensureDir(indicesDir);
             await fs.writeFile(path.join(evidenceDir, 'overview.md'), DETERMINISTIC_OVERVIEW, 'utf8');
-            await fs.writeFile(path.join(indicesDir, 'graph-index.json'), JSON.stringify({ nodes: [], edges: [] }), 'utf8');
+            const emptyGraph = JSON.stringify({ nodes: [], edges: [] });
+            await fs.writeFile(path.join(indicesDir, 'graph-index.json'), emptyGraph, 'utf8');
         });
     });
 

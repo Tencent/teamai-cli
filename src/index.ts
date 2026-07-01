@@ -654,7 +654,7 @@ program
   .addOption(new Option('--stale-days <n>', 'Threshold for sync-stale check').default('60').hideHelp())
   .addOption(new Option('--pending-review-threshold <n>', 'Threshold for pending-review backlog').default('10').hideHelp())
   .option('--json', 'Output report as JSON (suitable for CI)')
-  .addOption(new Option('--output <path>', 'Custom team-codebase root (mirrors --from-repo)').hideHelp())
+  .addOption(new Option('--output <path>', 'Custom teamwiki output root directory').hideHelp())
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { codebaseCmd } = await import('./codebase-cmd.js');
@@ -685,7 +685,7 @@ program
     .option('--apply-all', 'Apply all drift items above confidence threshold')
     .option('--threshold <n>', 'Confidence threshold for --apply-all (default 0.8)', '0.8')
     .option('--lock', 'Lock the repo against future drift signals')
-    .option('--output <path>', 'Custom team-codebase root (mirrors --from-repo)')
+    .option('--output <path>', 'Custom teamwiki output root directory')
     .option('--skip-aggregate', 'Skip regenerateAggregate after apply')
     .option('--json', 'Machine-readable output')
     .action(async (subcommand, repoUrlArg, cmdOpts) => {

@@ -20,9 +20,7 @@ import {
   traceCallChains,
   buildIndexHubOverlay,
   mergeGraphs,
-  createGraphIndex,
   saveGraphIndex,
-  loadGraphIndex,
 } from './wiki-engine/adapters/index.js';
 import type { CodeFact, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
@@ -577,12 +575,9 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   // Merge overlay into the per-repo graph
   const repoGraph = mergeGraphs(graph, overlay);
 
-  // Load existing global graph and merge to avoid overwriting other repos' data
-  const existingGraph = await loadGraphIndex(wikiRoot) ?? createGraphIndex();
-  const mergedGraph = mergeGraphs(existingGraph, repoGraph);
-
-  // Write graph-index.json using protocol function (B5)
-  await saveGraphIndex(wikiRoot, mergedGraph);
+  // Write per-repo graph only; global aggregation is done by aggregateGlobalGraph()
+  // in import-repo.ts after all per-repo graphs are in place (avoids write races).
+  await saveGraphIndex(wikiRoot, repoGraph);
 
   // AI enrichment (optional, non-blocking; skipped with --skip-enrich)
   let aiDomains: DomainGroup[] = [];
@@ -633,7 +628,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   }
 
   // 生成 overview.md — 确定性架构概览 (B16)
-  const overview = buildOverview(facts, mergedGraph, project, interfaceInventory, callChains);
+  const overview = buildOverview(facts, repoGraph, project, interfaceInventory, callChains);
   await writeFile(path.join(evidenceDir, 'overview.md'), overview, 'utf-8');
 
   // 生成 team-wiki 标准入口文件
@@ -644,8 +639,8 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   }
   const indexStats: IndexStats = {
     totalFacts: facts.length,
-    totalNodes: mergedGraph.nodes.length,
-    totalEdges: mergedGraph.edges.length,
+    totalNodes: repoGraph.nodes.length,
+    totalEdges: repoGraph.edges.length,
     interfaces: Object.keys(ifByType).length > 0 ? ifByType : undefined,
     callChains: callChains.length > 0 ? callChains.length : undefined,
   };
@@ -700,7 +695,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     project,
     filesScanned: files.length,
     facts: { total: facts.length, byKind },
-    graph: { nodes: mergedGraph.nodes.length, edges: mergedGraph.edges.length },
+    graph: { nodes: repoGraph.nodes.length, edges: repoGraph.edges.length },
     incremental: !!opts.incremental && !!changedFiles,
     outputDir: wikiRoot,
   };

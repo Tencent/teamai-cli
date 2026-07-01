@@ -104,7 +104,10 @@ function progressPath(evidenceDir: string): string {
   return path.join(evidenceDir, PROGRESS_PATH_SUBDIR, PROGRESS_FILENAME);
 }
 
-const VALID_PHASES = new Set<string>(['pending', 'components', 'architecture', 'graph', 'ai-graph', 'index-enhance', 'done']);
+const VALID_PHASES = new Set<string>([
+  'pending', 'components', 'architecture', 'graph',
+  'ai-graph', 'index-enhance', 'done',
+]);
 
 function isValidProgressState(v: unknown, project: string): v is ProgressState {
   if (typeof v !== 'object' || v === null) return false;
@@ -230,7 +233,13 @@ ${interfaceSummary}
 function buildG1RelationsDoc(manifest: Manifest): string {
   const edges = manifest.edges ?? [];
   if (edges.length === 0) {
-    return '# 组件关系矩阵\n\n（暂无依赖边数据）\n\n> 可能原因：AI enrich 未执行（skipEnrich=true）或未检测到组件间依赖关系。\n> 尝试：重新运行 `teamai import --from-repo <url>`（不带 --skip-enrich）。\n';
+    return [
+      '# 组件关系矩阵', '',
+      '（暂无依赖边数据）', '',
+      '> 可能原因：AI enrich 未执行（skipEnrich=true）或未检测到组件间依赖关系。',
+      '> 尝试：重新运行 `teamai import --from-repo <url>`（不带 --skip-enrich）。',
+      '',
+    ].join('\n');
   }
 
   const components = new Set<string>();
@@ -508,10 +517,11 @@ ${callChains.slice(0, 1500)}
 ${modules.slice(0, 1000)}
 
 要求：
-1. 识别 5 个最重要的业务场景（如用户请求处理、数据同步、错误恢复等）
+1. 识别项目中真实存在的核心业务场景（最多 5 个，如果项目较小则按实际数量输出，不要虚构）
 2. 每个场景生成一个 mermaid sequenceDiagram
 3. 每个图后附 2-3 句文字说明关键决策点
 4. 参与者使用实际模块名/组件名
+5. 如果可识别的真实场景少于 3 个，只输出实际存在的场景
 
 输出格式：
 # 核心业务场景序列图
@@ -537,8 +547,9 @@ function buildG6Content(project: string, manifest: Manifest): string {
   const adj = new Map<string, Set<string>>();
   const inDegree = new Map<string, number>();
   for (const e of edges) {
-    if (!adj.has(e.from)) adj.set(e.from, new Set());
-    adj.get(e.from)!.add(e.to);
+    const existing = adj.get(e.from) ?? new Set<string>();
+    existing.add(e.to);
+    adj.set(e.from, existing);
     inDegree.set(e.to, (inDegree.get(e.to) ?? 0) + 1);
     if (!inDegree.has(e.from)) inDegree.set(e.from, 0);
   }
@@ -588,7 +599,9 @@ function buildG6Content(project: string, manifest: Manifest): string {
     lines.push(`| 2-hop | ${hopResults[1].slice(0, 8).join(', ') || '—'} | ${hopResults[1].length} |`);
     lines.push(`| 3-hop | ${hopResults[2].slice(0, 8).join(', ') || '—'} | ${hopResults[2].length} |`);
     lines.push('');
-    lines.push(`**爆炸半径**: ${node} 变更可能影响 ${visited.size - 1} 个组件（${Math.round((visited.size - 1) / allNodes.length * 100)}% 覆盖率）`);
+    const affected = visited.size - 1;
+    const pct = Math.round(affected / allNodes.length * 100);
+    lines.push(`**爆炸半径**: ${node} 变更可能影响 ${affected} 个组件（${pct}% 覆盖率）`);
     lines.push('');
   }
 
@@ -610,7 +623,11 @@ async function runPhaseAiGraph(
   await writeFile(path.join(docsDir, 'graph-g6-multihop.md'), g6, 'utf-8');
   log.debug(`deep-enrich[${project}]: G6 多跳路径写入完成`);
 
-  // G5: AI 生成场景序列图
+  // G5: AI 生成场景序列图（需要足够的模块数据）
+  if (ctx.moduleDocs.size < 2) {
+    log.warn(`deep-enrich[${project}]: 模块数不足（${ctx.moduleDocs.size} < 2），跳过 G5`);
+    return;
+  }
   const architectureMd = await readFileSafe(path.join(docsDir, 'architecture.md'));
   if (!architectureMd.trim()) {
     log.warn(`deep-enrich[${project}]: 无架构文档，跳过 G5 场景序列图生成`);
