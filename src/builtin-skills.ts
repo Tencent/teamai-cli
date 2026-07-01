@@ -40,7 +40,7 @@ function getBuiltinSkillsDir(): string {
 }
 
 /** Names of CLI built-in skills. Used by push to exclude them from team repo push. */
-export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'team-wiki-codebase']);
+export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'team-wiki-codebase', 'teamai-workflow', 'teamai-import']);
 
 async function copyBuiltinSkillDir(srcDir: string, destDir: string): Promise<void> {
   await fse.copy(srcDir, destDir, {
