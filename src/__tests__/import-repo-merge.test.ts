@@ -91,8 +91,8 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
         });
 
         // Mock extractCodebase to simulate writing teamwiki evidence files
-        vi.mocked(extractCodebase).mockImplementation(async (opts: { path: string; project?: string }) => {
-            const cacheDir = opts.path;
+        vi.mocked(extractCodebase).mockImplementation(async (opts) => {
+            const cacheDir = opts.path ?? '.';
             const project = opts.project || 'test';
             const wikiRoot = path.join(cacheDir, 'teamwiki');
             const evidenceDir = path.join(wikiRoot, 'evidence', 'code', project);

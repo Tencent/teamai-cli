@@ -232,21 +232,100 @@ function buildG1RelationsDoc(manifest: Manifest): string {
   if (edges.length === 0) {
     return '# 组件关系矩阵\n\n（暂无依赖边数据）\n\n> 可能原因：AI enrich 未执行（skipEnrich=true）或未检测到组件间依赖关系。\n> 尝试：重新运行 `teamai import --from-repo <url>`（不带 --skip-enrich）。\n';
   }
-  const rows = edges.map(e => `| ${e.from} | ${e.to} | ${e.relation ?? 'DEPENDS_ON'} |`).join('\n');
-  return `# 组件关系矩阵\n\n| 来源组件 | 目标组件 | 关系类型 |\n|----------|----------|----------|\n${rows}\n`;
+
+  const components = new Set<string>();
+  const forwardDeps = new Map<string, string[]>();
+  const reverseDeps = new Map<string, string[]>();
+
+  for (const e of edges) {
+    components.add(e.from);
+    components.add(e.to);
+    const fwd = forwardDeps.get(e.from) ?? [];
+    fwd.push(`${e.to} (${e.relation ?? 'DEPENDS_ON'})`);
+    forwardDeps.set(e.from, fwd);
+    const rev = reverseDeps.get(e.to) ?? [];
+    rev.push(`${e.from} (${e.relation ?? 'DEPENDS_ON'})`);
+    reverseDeps.set(e.to, rev);
+  }
+
+  const lines = [
+    '# 组件关系矩阵',
+    '<!-- search-anchor: 依赖, 关系, 上游, 下游, DEPENDS_ON, imports, 模块关系 -->',
+    '',
+    `共 ${components.size} 个组件，${edges.length} 条边。`,
+    '',
+    '## 依赖表',
+    '',
+    '| 来源组件 | 目标组件 | 关系类型 |',
+    '|----------|----------|----------|',
+    ...edges.slice(0, 50).map(e => `| ${e.from} | ${e.to} | ${e.relation ?? 'DEPENDS_ON'} |`),
+    '',
+    '## 正向依赖索引（X 依赖→）',
+    '',
+  ];
+
+  for (const [mod, deps] of [...forwardDeps.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 20)) {
+    lines.push(`- **${mod}** → ${deps.join(', ')}`);
+  }
+
+  lines.push('', '## 反向依赖索引（→X 被谁依赖）', '');
+
+  for (const [mod, deps] of [...reverseDeps.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 20)) {
+    lines.push(`- **${mod}** ← ${deps.join(', ')}`);
+  }
+
+  lines.push('');
+  return lines.join('\n');
 }
 
 function buildG2DataflowDoc(callChains: string): string {
   if (!callChains.trim()) {
     return '# 数据流图\n\n（暂无调用链数据）\n\n> 可能原因：代码中未检测到入口→服务→数据层的多层调用链。\n> 常见于纯库项目或单层架构项目。\n';
   }
-  // 提取 entry→data 路径行（以 → 或 -> 连接的行）
-  const lines = callChains.split('\n').filter(l => /→|->/.test(l));
-  if (lines.length === 0) {
-    return `# 数据流图\n\n\`\`\`\n${callChains.slice(0, 2000)}\n\`\`\`\n`;
+
+  const lines = [
+    '# 数据流图',
+    '<!-- search-anchor: 调用链, 数据流, 请求路径, entry, flow, 入口, 链路 -->',
+    '',
+  ];
+
+  const rawLines = callChains.split('\n');
+  const chainBlocks: Array<{ entry: string; steps: string[] }> = [];
+  let currentBlock: { entry: string; steps: string[] } | null = null;
+
+  for (const line of rawLines) {
+    const entryMatch = line.match(/^##?\s+(.+)/);
+    if (entryMatch) {
+      if (currentBlock) chainBlocks.push(currentBlock);
+      currentBlock = { entry: entryMatch[1], steps: [] };
+    } else if (currentBlock && line.trim()) {
+      currentBlock.steps.push(line.trim());
+    }
   }
-  const flowRows = lines.slice(0, 30).map(l => `| ${l.trim()} |`).join('\n');
-  return `# 数据流图\n\n| 调用链路径 |\n|------------|\n${flowRows}\n`;
+  if (currentBlock) chainBlocks.push(currentBlock);
+
+  if (chainBlocks.length > 0) {
+    for (const block of chainBlocks.slice(0, 15)) {
+      lines.push(`## ${block.entry}`, '');
+      for (const step of block.steps.slice(0, 10)) {
+        lines.push(`  ${step}`);
+      }
+      lines.push('');
+    }
+  } else {
+    const flowLines = rawLines.filter(l => /→|->/.test(l));
+    if (flowLines.length > 0) {
+      lines.push('| 调用链路径 |', '|------------|');
+      for (const l of flowLines.slice(0, 30)) {
+        lines.push(`| ${l.trim()} |`);
+      }
+    } else {
+      lines.push('```', callChains.slice(0, 2000), '```');
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
 }
 
 function buildG3InterfacesDoc(interfacesMd: string): string {

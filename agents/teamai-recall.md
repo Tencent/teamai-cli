@@ -20,23 +20,29 @@ upstream API"). Treat this as your query.
 
 ## What you must do — step by step
 
-### Step 1 — Read codebase context (optional but preferred)
+### Step 1 — Classify question type and choose retrieval depth
 
-Check for the team's code knowledge graph in this order:
+Determine if the query matches a G-document category:
 
-1. `teamwiki/router.md` — if exists, read it to understand available repos
-2. `teamwiki/index.md` — global navigation with domain links
+| 问题关键词 | 类型 | 直接读取 |
+|-----------|------|---------|
+| 依赖/上游/下游/谁调用 | G1 | `teamwiki/evidence/code/<project>/docs/graph-g1-relations.md` |
+| 调用链/数据流/请求路径 | G2 | `teamwiki/evidence/code/<project>/docs/graph-g2-dataflow.md` |
+| 流程/场景/完整流程 | G5 | `teamwiki/evidence/code/<project>/docs/graph-g5-scenarios.md` |
+| 传递依赖/爆炸半径/影响 | G6 | `teamwiki/evidence/code/<project>/docs/graph-g6-multihop.md` |
 
-If `teamwiki/` exists, the team has a structured knowledge graph. After
-Step 3 returns codebase hits, you can **drill into** module summaries:
-- `teamwiki/evidence/code/<project>/modules/<dir>.md` — module-level overview with dependency direction and top components
-- `teamwiki/evidence/code/<project>/overview.md` — AI-generated architecture context (why/how, not just what)
+**If the query clearly matches a G-document type**: directly Read the
+corresponding file and extract relevant sections. Skip BM25 search.
 
-Fallback: if no `teamwiki/`, check `~/.teamai/docs/codebase.md` or
-`docs/team-codebase/index.md`. If none exists, silently skip.
+**Otherwise**: proceed to Step 2–3 for BM25 keyword search.
 
-> `teamai recall` automatically searches both flat knowledge (learnings/
-> skills/docs/rules) and codebase graph (teamwiki/) with BM25 + graph-boost.
+> `teamai recall` supports three depth levels:
+> - `--depth context` (default): searches overview + modules + docs (best for most queries)
+> - `--depth lookup`: searches ALL evidence pages including raw symbol lists (for precise file:line lookups)
+> - `--depth route`: returns the router table only (use when you need to discover what projects exist)
+
+Fallback: if no `teamwiki/`, check `~/.teamai/docs/codebase.md`. If
+none exists, silently skip.
 
 ### Step 2 — Extract keywords from the task description
 
@@ -45,14 +51,22 @@ Pick 3–6 high-signal keywords from the user query. Strip filler words
 
 ### Step 3 — Run the teamai recall command
 
-Execute:
+Execute with the appropriate depth:
 
 ```bash
+# Default: searches overview, modules, and docs (context layer)
 teamai recall "<keyword1> <keyword2> ..."
+
+# For precise symbol/line-number lookups, use lookup depth:
+teamai recall --depth lookup "<keyword1> <keyword2> ..."
 ```
 
 This searches all four knowledge categories (`skills`, `learnings`,
-`docs`, `rules`) via the local search index. Capture the full output.
+`docs`, `rules`) via the local search index, plus the codebase graph
+in `teamwiki/` with BM25 + graph-boost. Capture the full output.
+
+If the first call returns insufficient results, you may retry once with
+`--depth lookup` to broaden the search to raw symbol pages.
 
 If the command fails, knowledge base is empty, or returns zero hits,
 emit a single line `No relevant team knowledge found for: <query>` and
