@@ -146,3 +146,39 @@ jobs:
             git reset --hard HEAD || true
             git clean -fdx || true
           fi
+
+  e2e-live-tools:
+    name: E2E (live AI-tool hook integration)
+    needs: build
+    runs-on: ubuntu-latest
+    # Real CLIs + real (cheap) model calls against a configurable Anthropic-
+    # compatible endpoint. Skip when the API key secret isn't configured
+    # (e.g. PRs from forks).
+    if: ${{ secrets.TEAMAI_E2E_ANTHROPIC_API_KEY != '' }}
+    env:
+      TEAMAI_E2E_LIVE_TOOLS: '1'
+      TEAMAI_E2E_ANTHROPIC_API_KEY: ${{ secrets.TEAMAI_E2E_ANTHROPIC_API_KEY }}
+      TEAMAI_E2E_ANTHROPIC_BASE_URL: ${{ vars.TEAMAI_E2E_ANTHROPIC_BASE_URL || 'https://api.model.haihub.cn' }}
+      TEAMAI_E2E_CLAUDE_MODEL: ${{ vars.TEAMAI_E2E_CLAUDE_MODEL || 'MiniMax-M2.7' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      - name: Install claude + codebuddy CLIs
+        run: |
+          npm install -g @anthropic-ai/claude-code @tencent-ai/codebuddy-code
+
+      - name: Run live AI-tool hook integration E2E
+        run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/tool-integration-e2e.test.ts --reporter=verbose
