@@ -623,10 +623,12 @@ export interface SearchIndexEntry {
   path?: string;
   /** Optional hotness score reserved for Phase 4.3 hot/cold splitting. */
   hotness?: number;
+  /** Snippet from codebase graph recall (depth-dependent content preview). */
+  snippet?: string;
 }
 
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
-export const SEARCH_INDEX_VERSION = 4;
+export const SEARCH_INDEX_VERSION = 5;
 
 /** Shape of the search-index.json file. */
 export interface SearchIndex {

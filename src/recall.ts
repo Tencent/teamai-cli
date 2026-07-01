@@ -66,15 +66,15 @@ export function formatResults(results: ScopedSearchResult[]): string {
     if (entry.tags.length > 0) {
       lines.push(`Tags: ${entry.tags.join(', ')}`);
     }
-    // Prefer the absolute path captured at index build time when available
-    // (Phase 1 entries from docs/rules/skills carry it); otherwise fall back
-    // to the legacy ~/.teamai/learnings/<filename> rendering.
     const filePath = entry.path
       ? entry.path
       : learningsBase
         ? `${learningsBase}/${entry.filename}`
         : `~/.teamai/learnings/${entry.filename}`;
     lines.push(`File: ${filePath}`);
+    if (entry.snippet) {
+      lines.push(`Snippet: ${entry.snippet}`);
+    }
     lines.push('');
   }
 
@@ -294,9 +294,8 @@ export async function recall(
   // ── Codebase knowledge graph recall ──────────────────────
   try {
     const codeResults = await queryCodeKnowledge(query, { wikiRoot, limit: 3, depth: options.depth });
-    // B11: Normalize BM25 scores to 0-10 range before merging with learnings scores
-    const maxCodeScore = codeResults.length > 0 ? Math.max(...codeResults.map(r => r.score)) : 1;
-    const normalizer = maxCodeScore > 0 ? 10 / maxCodeScore : 1;
+    // B11 fix: log-dampening instead of min-max normalization
+    // Codebase BM25 scores (0-50+) mapped to learnings scale (0-10) via log curve
     for (const cr of codeResults) {
       allResults.push({
         entry: {
@@ -310,8 +309,9 @@ export async function recall(
           type: 'docs' as const,
           domain: 'technical' as const,
           path: path.join(wikiRoot, cr.page),
+          snippet: cr.snippet,
         },
-        score: cr.score * normalizer, // B11: normalized to learnings score scale
+        score: Math.min(10, Math.log2(cr.score + 1) * 2),
         scope: 'project',
         learningsBase: wikiRoot,
       });

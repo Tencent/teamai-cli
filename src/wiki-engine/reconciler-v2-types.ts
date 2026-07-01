@@ -35,10 +35,10 @@ export function labelFromScore(score: number): WikiConfidence {
   return "AMBIGUOUS";
 }
 
-/** Build a NumericConfidence from factors (average of weights) */
+/** Build a NumericConfidence from factors (max of weights) */
 export function buildConfidence(factors: ConfidenceFactor[]): NumericConfidence {
   if (factors.length === 0) return { score: 0, label: "AMBIGUOUS", factors: [] };
-  const score = factors.reduce((sum, f) => sum + f.weight, 0) / factors.length;
+  const score = Math.max(...factors.map(f => f.weight));
   const clamped = Math.min(1, Math.max(0, score));
   return { score: clamped, label: labelFromScore(clamped), factors };
 }

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import matter from 'gray-matter';
 import { readFileSafe, readJson, writeJson, listFiles, listFilesRecursive, listDirs, pathExists } from './fs.js';
+import { tokenize } from './tokenizer.js';
 import { log } from './logger.js';
 import {
   SEARCH_INDEX_VERSION,
@@ -41,7 +42,6 @@ function getSearchIndexPath(): string {
 //      └─ return sorted results
 //
 
-const CJK_RANGE = /[\u4e00-\u9fff]/;
 const MAX_BODY_CHARS = 2000;
 const MAX_DOC_BYTES = 50 * 1024; // 50KB
 
@@ -203,55 +203,8 @@ export function inferDomain(
   return 'neutral';
 }
 
-/**
- * Hybrid tokenizer: Intl.Segmenter for word boundaries + CJK bigrams.
- *
- * Intl.Segmenter splits Chinese characters individually ("超时" → ["超","时"]),
- * so we additionally generate bigrams for CJK runs to capture compound words
- * ("超时" bigram matches query "超时").
- */
-export function tokenize(text: string): string[] {
-  if (!text) return [];
-
-  const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' });
-  const segments = [...segmenter.segment(text)];
-  const tokens: string[] = [];
-
-  // Collect CJK characters in runs for bigram generation
-  let cjkRun: string[] = [];
-
-  const flushCjkRun = (): void => {
-    if (cjkRun.length >= 2) {
-      for (let i = 0; i < cjkRun.length - 1; i++) {
-        tokens.push(cjkRun[i] + cjkRun[i + 1]);
-      }
-    }
-    cjkRun = [];
-  };
-
-  for (const seg of segments) {
-    if (!seg.isWordLike) {
-      flushCjkRun();
-      continue;
-    }
-
-    const word = seg.segment.toLowerCase();
-    tokens.push(word);
-
-    // Track CJK runs for bigram generation
-    const chars = [...word];
-    for (const ch of chars) {
-      if (CJK_RANGE.test(ch)) {
-        cjkRun.push(ch);
-      } else {
-        flushCjkRun();
-      }
-    }
-  }
-  flushCjkRun();
-
-  return [...new Set(tokens)];
-}
+// Re-export for external callers that previously imported tokenize from this module
+export { tokenize };
 
 /**
  * Parse a learning document's frontmatter and body.
@@ -554,8 +507,8 @@ export async function buildIndex(
   // Guard: don't overwrite a healthy index with a significantly smaller one
   const targetPath = opts.indexPath ?? getSearchIndexPath();
   const existingIndex = await loadIndex(targetPath);
-  if (existingIndex && existingIndex.entries.length > 5 && entries.length < existingIndex.entries.length * 0.5) {
-    log.warn(`Index rebuild skipped: new index (${entries.length} entries) much smaller than existing (${existingIndex.entries.length})`);
+  if (existingIndex && existingIndex.entries.length > 0 && entries.length === 0) {
+    log.warn(`Index rebuild skipped: refusing to overwrite ${existingIndex.entries.length} entries with empty index`);
     return elapsed;
   }
 

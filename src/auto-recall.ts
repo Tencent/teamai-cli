@@ -648,8 +648,8 @@ export async function autoRecallFromInput(input: HookInput): Promise<string | nu
     // Best-effort auto-upvote (non-blocking)
     try {
         const { autoUpvote } = await import('./recall.js');
-        const { requireInit } = await import('./config.js');
-        const { localConfig } = await requireInit();
+        const { autoDetectInit } = await import('./config.js');
+        const { localConfig } = await autoDetectInit();
         await autoUpvote(results, localConfig.username, localConfig.repo.localPath);
     } catch {
         // Silent: upvote failure should never affect hook output

@@ -9,6 +9,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
+import { tokenize } from './utils/tokenizer.js';
 
 export interface CodeKnowledgeResult {
   page: string;
@@ -28,7 +29,7 @@ interface PageDoc {
   path: string;
   title: string;
   content: string;
-  tokens: string[];
+  uniqueTokens: Set<string>;
   tokenCount: number; // B10: raw (non-deduplicated) token count for BM25 dl
 }
 
@@ -38,31 +39,14 @@ const TITLE_BOOST = 3.0;
 const RELATION_WEIGHT: Record<string, number> = { DEPENDS_ON: 3, REFERENCES: 2, MAPS_TO: 2, CONTAINS: 1 };
 const ENTRY_NODE_BOOST = 8;
 
-function tokenize(text: string): string[] {
-  const tokens: string[] = [];
-  const lower = text.toLowerCase();
-  // Split camelCase before tokenizing (B4 fix: camelCase splitting)
-  const camelSplit = lower.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
-  const words = camelSplit.split(/[^a-z0-9一-鿿]+/).filter((w) => w.length >= 2);
-  for (const w of words) {
-    tokens.push(w);
-  }
-  // B14: CJK bigram segmentation
-  const cjkRuns = lower.match(/[一-鿿]+/g) ?? [];
-  for (const run of cjkRuns) {
-    for (let i = 0; i < run.length - 1; i++) {
-      tokens.push(run.slice(i, i + 2));
-    }
-  }
-  return [...new Set(tokens)];
-}
-
 /** Raw (non-deduplicated) token count for BM25 dl (B10 fix) */
 function rawTokenCount(text: string): number {
-  const lower = text.toLowerCase();
-  const camelSplit = lower.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
+  const safe = text.length > MAX_INDEX_CHARS ? text.slice(0, MAX_INDEX_CHARS) : text;
+  const camelSplit = safe.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
   return camelSplit.split(/[^a-z0-9一-鿿]+/).filter((w) => w.length >= 2).length;
 }
+
+const MAX_INDEX_CHARS = 100_000;
 
 function countOccurrences(text: string, token: string): number {
   let count = 0;
@@ -82,13 +66,9 @@ function buildCorpusStats(pages: PageDoc[]): CorpusStats {
   let totalLength = 0;
 
   for (const page of pages) {
-    totalLength += page.tokenCount; // B10: use raw token count for avgDocLength
-    const seen = new Set<string>();
-    for (const token of page.tokens) {
-      if (!seen.has(token)) {
-        seen.add(token);
-        df.set(token, (df.get(token) ?? 0) + 1);
-      }
+    totalLength += page.tokenCount;
+    for (const token of page.uniqueTokens) {
+      df.set(token, (df.get(token) ?? 0) + 1);
     }
   }
 
@@ -203,42 +183,46 @@ function extractSnippet(content: string, queryTokens: string[], maxLen: number =
   return snippet;
 }
 
+async function collectMdFiles(dir: string): Promise<string[]> {
+  const results: string[] = [];
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...await collectMdFiles(fullPath));
+    } else if (entry.name.endsWith('.md')) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
 async function loadWikiPages(wikiRoot: string): Promise<PageDoc[]> {
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code');
   const pages: PageDoc[] = [];
 
-  let projects: string[];
-  try {
-    projects = await readdir(evidenceDir);
-  } catch {
-    return pages;
-  }
-
-  for (const project of projects) {
-    const projectDir = path.join(evidenceDir, project);
-    let files: string[];
+  const allMdFiles = await collectMdFiles(evidenceDir);
+  for (const mdPath of allMdFiles) {
     try {
-      files = await readdir(projectDir);
+      const content = await readFile(mdPath, 'utf-8');
+      const titleMatch = content.match(/^title:\s*(.+)$/m);
+      const fileName = path.basename(mdPath, '.md');
+      const title = titleMatch ? titleMatch[1].trim() : fileName;
+      const relativePath = path.relative(path.join(wikiRoot, 'evidence', 'code'), mdPath);
+      pages.push({
+        path: `evidence/code/${relativePath}`,
+        title,
+        content,
+        uniqueTokens: new Set(tokenize(content)),
+        tokenCount: rawTokenCount(content),
+      });
     } catch {
       continue;
-    }
-    for (const file of files) {
-      if (!file.endsWith('.md')) continue;
-      try {
-        const filePath = path.join(projectDir, file);
-        const content = await readFile(filePath, 'utf-8');
-        const titleMatch = content.match(/^title:\s*(.+)$/m);
-        const title = titleMatch ? titleMatch[1].trim() : file.replace('.md', '');
-        pages.push({
-          path: `evidence/code/${project}/${file}`,
-          title,
-          content,
-          tokens: tokenize(content),
-          tokenCount: rawTokenCount(content), // B10: raw count for BM25 dl
-        });
-      } catch {
-        continue;
-      }
     }
   }
 
@@ -286,7 +270,7 @@ export async function queryCodeKnowledge(
 
   scored.sort((a, b) => b.score - a.score);
 
-  const TOKEN_BUDGET: Record<string, number> = { route: 500, context: 5000, lookup: 3000 };
+  const TOKEN_BUDGET: Record<string, number> = { route: 1500, context: 5000, lookup: 20000 };
   const budget = TOKEN_BUDGET[depth] ?? 5000;
   const estimateTokens = (text: string) => Math.ceil(text.length / 3.5);
 
@@ -298,9 +282,9 @@ export async function queryCodeKnowledge(
 
     let snippet: string;
     if (depth === 'route') {
-      snippet = page.title;
-    } else if (depth === 'lookup' && results.length === 0) {
-      const maxChars = Math.floor(budget * 3.5 * 0.7);
+      snippet = `${page.title} (${page.path})`;
+    } else if (depth === 'lookup') {
+      const maxChars = Math.floor(budget * 3.5 * 0.7 / Math.max(limit, 1));
       snippet = page.content.slice(0, maxChars);
     } else {
       snippet = extractSnippet(page.content, queryTokens);
