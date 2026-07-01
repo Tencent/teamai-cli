@@ -21,7 +21,6 @@ import {
   TEAMAI_RECALL_RULES_END,
   CultureFrontmatterSchema,
   resolveBaseDir,
-  isWikiEnabled,
   getTeamaiHome,
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
@@ -294,8 +293,8 @@ async function pullForScope(
   const pullSpin = spinner(`[${scopeLabel}] Pulling team repo...`).start();
   let currentRev: string | null = null;
   // Reporting-only HTTP endpoints have no team repo to write to, so the
-  // team-repo-dependent built-in skills (teamai-share-learnings, teamai-wiki)
-  // are useless there and must not be injected.
+  // team-repo-dependent built-in skill (teamai-share-learnings) is useless
+  // there and must not be injected.
   let reportingOnly = false;
   try {
     const { label, version, reportingOnly: ro } = await refreshTeamRepo(localConfig);
@@ -319,7 +318,7 @@ async function pullForScope(
           if (cfg) {
             try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig); } catch {}
             try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig); } catch {}
-            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { skipWiki: !isWikiEnabled(), reportingOnly }); } catch {}
+            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { reportingOnly }); } catch {}
           }
         }
         return;
@@ -351,10 +350,7 @@ async function pullForScope(
   const subscribedTags = localConfig.subscribedTags;
 
   // Step 2: Sync each resource type
-  const wikiEnabled = isWikiEnabled();
-  const resourceTypes: ResourceType[] = wikiEnabled
-    ? ['skills', 'rules', 'docs', 'env', 'wiki', 'agents']
-    : ['skills', 'rules', 'docs', 'env', 'agents'];
+  const resourceTypes: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'agents'];
   let totalSynced = 0;
   let desiredSkillNames: Set<string> | null = null;
   let knownRepoSkillNames: Set<string> | null = null;
@@ -514,25 +510,6 @@ async function pullForScope(
           }
         }
       }
-    }
-
-    // Wiki tombstone cleanup: wiki is now in shared location, not per-tool
-    try {
-      const wikiHandler = getHandler('wiki');
-      const wikiTombstones = await wikiHandler.readTombstones(localConfig);
-      if (wikiTombstones.size > 0) {
-        const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
-        const wikiDir = path.join(teamaiHome, 'wiki');
-        for (const name of wikiTombstones) {
-          const wikiPath = path.join(wikiDir, `${name}.md`);
-          if (await pathExists(wikiPath)) {
-            await remove(wikiPath);
-            log.debug(`[${scopeLabel}] Cleaned up tombstoned wiki ${name} from shared wiki`);
-          }
-        }
-      }
-    } catch (e) {
-      log.debug(`[${scopeLabel}] Wiki tombstone cleanup skipped: ${(e as Error).message}`);
     }
 
     if (roleContext) {
@@ -791,7 +768,7 @@ async function pullForScope(
   if (!options.dryRun) {
     try {
       const { deployBuiltinSkills } = await import('./builtin-skills.js');
-      const deployed = await deployBuiltinSkills(freshConfig, localConfig, { skipWiki: !wikiEnabled, reportingOnly });
+      const deployed = await deployBuiltinSkills(freshConfig, localConfig, { reportingOnly });
       if (deployed > 0) {
         log.debug(`[${scopeLabel}] Deployed ${deployed} built-in skill(s)`);
       }

@@ -8,7 +8,6 @@ export const ToolPathsSchema = z.object({
   rules: z.string().optional(),
   settings: z.string().optional(),
   claudemd: z.string().optional(),
-  wiki: z.string().optional(),
   /** Per-tool agents directory (Phase 1: teamai-recall subagent target).
    * Optional — tools without subagent support omit this and agents sync skips them. */
   agents: z.string().optional(),
@@ -116,11 +115,11 @@ export const TeamaiConfigSchema = z.object({
    * opinion (preserves legacy behavior). */
   autoUpdate: z.boolean().optional(),
   toolPaths: z.record(z.string(), ToolPathsSchema).default({
-    claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', wiki: '.claude/wiki', agents: '.claude/agents' },
+    claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', agents: '.claude/agents' },
     codex: { skills: '.codex/skills', rules: '.codex/rules', agents: '.codex/agents' },
     'codex-internal': { skills: '.codex-internal/skills', rules: '.codex-internal/rules', agents: '.codex-internal/agents' },
-    'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', wiki: '.claude-internal/wiki', agents: '.claude-internal/agents' },
-    tclaude: { skills: '.tclaude/skills', rules: '.tclaude/rules', settings: '.tclaude/settings.json', claudemd: '.tclaude/CLAUDE.md', wiki: '.tclaude/wiki', agents: '.tclaude/agents' },
+    'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', agents: '.claude-internal/agents' },
+    tclaude: { skills: '.tclaude/skills', rules: '.tclaude/rules', settings: '.tclaude/settings.json', claudemd: '.tclaude/CLAUDE.md', agents: '.tclaude/agents' },
     tcodex: { skills: '.tcodex/skills', rules: '.tcodex/rules', agents: '.tcodex/agents' },
     cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents' },
     codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents' },
@@ -210,7 +209,7 @@ export interface TagsConfig {
 
 // ─── Resource types ─────────────────────────────────────
 
-export type ResourceType = 'skills' | 'rules' | 'docs' | 'env' | 'wiki' | 'agents' | 'hooks';
+export type ResourceType = 'skills' | 'rules' | 'docs' | 'env' | 'agents' | 'hooks';
 
 export type ResourceItemStatus = 'new' | 'modified';
 
@@ -282,7 +281,7 @@ export const TEAMAI_STATE_PATH = `${TEAMAI_HOME}/state.json`;
 export const TEAMAI_TOKEN_PATH = `${TEAMAI_HOME}/token`;
 export const TEAMAI_UPDATE_LOCK_PATH = `${TEAMAI_HOME}/.update-lock`;
 
-export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'wiki', 'agents', 'hooks'];
+export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'agents', 'hooks'];
 
 export const TEAMAI_RULES_START = '<!-- [teamai:rules:start] -->';
 export const TEAMAI_RULES_END = '<!-- [teamai:rules:end] -->';
@@ -724,17 +723,6 @@ export function getManagedHooksPath(scope: Scope, projectRoot?: string): string 
  */
 export function getPushignorePath(): string {
   return path.join(process.env.HOME ?? '', '.teamai', 'pushignore');
-}
-
-/**
- * Check if wiki feature is enabled.
- * Disable by setting TEAMAI_WIKI_DISABLED=1 or TEAMAI_WIKI_ENABLED=false.
- * Defaults to enabled for backward compatibility.
- */
-export function isWikiEnabled(): boolean {
-  if (process.env.TEAMAI_WIKI_DISABLED === '1' || process.env.TEAMAI_WIKI_DISABLED === 'true') return false;
-  if (process.env.TEAMAI_WIKI_ENABLED === '0' || process.env.TEAMAI_WIKI_ENABLED === 'false') return false;
-  return true;
 }
 
 /**

@@ -69,7 +69,7 @@ program
 
 program
   .command('list [type]')
-  .description('List resources (skills|rules|docs|env|wiki). For skills, --source local/all also scans installed AI agent skill directories.')
+  .description('List resources (skills|rules|docs|env). For skills, --source local/all also scans installed AI agent skill directories.')
   .option('--source <src>', 'Where to look for skills: repo | local | all', 'all')
   .option('--agent <name>', 'Filter local agents by id (only applies to skills)')
   .action(async (type, cmdOpts) => {
@@ -126,7 +126,7 @@ membersCmd
 
 program
   .command('remove <type> <names...>')
-  .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules|wiki)')
+  .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules)')
   .action(async (type, names) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { remove } = await import('./remove.js');

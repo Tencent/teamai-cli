@@ -38,7 +38,7 @@ function getBuiltinSkillsDir(): string {
 }
 
 /** Names of CLI built-in skills. Used by push to exclude them from team repo push. */
-export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'teamai-wiki', 'team-wiki-codebase']);
+export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'team-wiki-codebase']);
 
 /**
  * Deploy CLI built-in skills to all configured AI tool skill directories.
@@ -50,12 +50,12 @@ export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'teamai-wi
  * - Built-in skills directory doesn't exist (dev environment without build)
  * - A tool's skills directory is not configured
  */
-export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?: LocalConfig, options?: { skipWiki?: boolean; reportingOnly?: boolean }): Promise<number> {
-  // Reporting-only HTTP mode has no team repo to write to, so both built-in
-  // skills (teamai-share-learnings → shares to team repo; teamai-wiki →
-  // persists to team repo) are non-functional. Skip them entirely.
+export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?: LocalConfig, options?: { reportingOnly?: boolean }): Promise<number> {
+  // Reporting-only HTTP mode has no team repo to write to, so the team-repo-
+  // dependent built-in skill (teamai-share-learnings) is non-functional there.
+  // Skip built-in skills entirely.
   if (options?.reportingOnly) {
-    log.debug('Reporting-only mode (no team repo): skipping built-in skills (teamai-share-learnings, teamai-wiki)');
+    log.debug('Reporting-only mode (no team repo): skipping built-in skills (teamai-share-learnings)');
     return 0;
   }
 
@@ -84,12 +84,6 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
 
   if (skillNames.length === 0) return 0;
 
-  // Skip teamai-wiki deployment when wiki feature is disabled
-  const filteredSkills = options?.skipWiki
-    ? skillNames.filter(name => name !== 'teamai-wiki')
-    : skillNames;
-  if (filteredSkills.length === 0) return 0;
-
   const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');
   let deployed = 0;
 
@@ -104,7 +98,7 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
 
     const targetSkillsDir = path.join(baseDir, toolPath.skills);
 
-    for (const skillName of filteredSkills) {
+    for (const skillName of skillNames) {
       const srcDir = path.join(builtinDir, skillName);
       const destDir = path.join(targetSkillsDir, skillName);
 

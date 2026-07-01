@@ -14,7 +14,6 @@ describe('tclaude/tcodex adapter integration', () => {
         rules: '.tclaude/rules',
         settings: '.tclaude/settings.json',
         claudemd: '.tclaude/CLAUDE.md',
-        wiki: '.tclaude/wiki',
         agents: '.tclaude/agents',
       });
     });
