@@ -667,12 +667,15 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 const evidenceDest = path.join(teamwikiRoot, 'evidence', 'code', slug);
                 await fs.ensureDir(evidenceDest);
                 await fs.copy(evidenceSrc, evidenceDest, { overwrite: true });
-                // 将 AI 叙事追加到确定性 overview.md 末尾（buildOverview 生成表格在前，AI 叙事在后）
+                // 将 AI 叙事写入 overview.md（幂等：已有则替换，无则追加）
                 if (codebaseMd) {
                     const overviewPath = path.join(evidenceDest, 'overview.md');
                     const existing = await fs.readFile(overviewPath, 'utf8').catch(() => '');
                     const aiNarrative = codebaseMd.replace(/^---[\s\S]*?---\n*/m, '');
-                    const combined = existing.trimEnd() + '\n\n---\n\n## AI 架构叙事\n\n' + aiNarrative;
+                    const marker = '## AI 架构叙事';
+                    const markerIdx = existing.indexOf(marker);
+                    const base = markerIdx >= 0 ? existing.slice(0, markerIdx).trimEnd() : existing.trimEnd();
+                    const combined = base + '\n\n---\n\n' + marker + '\n\n' + aiNarrative;
                     await fs.writeFile(overviewPath, combined, 'utf8');
                 }
                 // Per-repo graph: copy to evidence/<slug>/.indices/ (no global merge here — done in batch)
@@ -699,7 +702,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             const { routerTemplate, indexTemplate, HOT_TEMPLATE } = await import('./wiki-engine/adapters/templates.js');
             const routerPath = path.join(teamwikiRoot, 'router.md');
             const indexPath = path.join(teamwikiRoot, 'index.md');
-            const projectLink = `[[code/${slug}/index]]`;
+            const projectLink = `[[evidence/code/${slug}/index]]`;
             if (await fs.pathExists(routerPath)) {
                 const router = await fs.readFile(routerPath, 'utf8');
                 if (!router.includes(projectLink)) {
@@ -766,7 +769,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     log.info(chalk.green(`✓ 仓库 ${owner}/${repoName} 导入完成`));
 
     // 5b. 后台深度生成（不阻塞；batch 模式下跳过 push 由调用方统一处理）
-    if (!dryRun && teamwikiRoot) {
+    if (!dryRun && !skipEnrich && teamwikiRoot) {
         const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code', slug);
         if (await fs.pathExists(path.join(evidenceDir, '_manifest.json'))) {
             setImmediate(async () => {

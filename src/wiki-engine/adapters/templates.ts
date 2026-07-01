@@ -106,13 +106,9 @@ export function indexTemplate(
     ? `\n<!-- search-anchor: ${allKeywords.join(', ')} -->`
     : '';
 
-  const sections = [
-    '# Team Wiki Index',
-    searchAnchor,
-    '',
-    `Last updated: ${new Date().toISOString()}`,
-    '',
-  ];
+  const sections = ['# Team Wiki Index'];
+  if (searchAnchor) sections.push(searchAnchor);
+  sections.push('', `Last updated: ${new Date().toISOString()}`, '');
 
   if (stats) {
     sections.push('## Stats', '');
