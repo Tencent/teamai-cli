@@ -70,7 +70,7 @@ async function loadContext(evidenceDir: string): Promise<EnrichContext> {
 
   const [indexMd, callChains, overview] = await Promise.all([
     readFileSafe(path.join(evidenceDir, 'index.md')),
-    readFileSafe(path.join(evidenceDir, 'call-chains.md')),
+    readFileSafe(path.join(evidenceDir, 'dependency-paths.md')),
     readFileSafe(path.join(evidenceDir, 'overview.md')),
   ]);
 
@@ -230,7 +230,7 @@ ${interfaceSummary}
 function buildG1RelationsDoc(manifest: Manifest): string {
   const edges = manifest.edges ?? [];
   if (edges.length === 0) {
-    return '# 组件关系矩阵\n\n（暂无依赖边数据）\n';
+    return '# 组件关系矩阵\n\n（暂无依赖边数据）\n\n> 可能原因：AI enrich 未执行（skipEnrich=true）或未检测到组件间依赖关系。\n> 尝试：重新运行 `teamai import --from-repo <url>`（不带 --skip-enrich）。\n';
   }
   const rows = edges.map(e => `| ${e.from} | ${e.to} | ${e.relation ?? 'DEPENDS_ON'} |`).join('\n');
   return `# 组件关系矩阵\n\n| 来源组件 | 目标组件 | 关系类型 |\n|----------|----------|----------|\n${rows}\n`;
@@ -238,7 +238,7 @@ function buildG1RelationsDoc(manifest: Manifest): string {
 
 function buildG2DataflowDoc(callChains: string): string {
   if (!callChains.trim()) {
-    return '# 数据流图\n\n（暂无调用链数据）\n';
+    return '# 数据流图\n\n（暂无调用链数据）\n\n> 可能原因：代码中未检测到入口→服务→数据层的多层调用链。\n> 常见于纯库项目或单层架构项目。\n';
   }
   // 提取 entry→data 路径行（以 → 或 -> 连接的行）
   const lines = callChains.split('\n').filter(l => /→|->/.test(l));
@@ -251,7 +251,7 @@ function buildG2DataflowDoc(callChains: string): string {
 
 function buildG3InterfacesDoc(interfacesMd: string): string {
   if (!interfacesMd.trim()) {
-    return '# 接口映射表\n\n（暂无接口数据）\n';
+    return '# 接口映射表\n\n（暂无接口数据）\n\n> 可能原因：未检测到 HTTP/gRPC/MQ 等对外接口定义。\n> 仅当代码中存在路由注册、Proto 定义或消息队列声明时才会提取接口。\n';
   }
   return `# 接口映射表\n\n${interfacesMd}\n`;
 }
