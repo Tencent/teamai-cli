@@ -80,27 +80,6 @@ vi.mock('../providers/tgit/gf-cli.js', () => {
   };
 });
 
-// Also mock the backward-compat re-export (for the RepoNotFoundError import in this test)
-vi.mock('../utils/gf-cli.js', () => {
-  class RepoNotFoundError extends Error {
-    constructor(repo: string) {
-      super(`Repo "${repo}" not found on TGit.`);
-      this.name = 'RepoNotFoundError';
-    }
-  }
-  return {
-    gfRepoClone: (...args: unknown[]) => mockGfRepoClone(...args),
-    gfCreateRepo: (...args: unknown[]) => mockGfCreateRepo(...args),
-    gfIsAuthenticated: () => mockGfIsAuthenticated(),
-    gfAuthWhoami: () => mockGfAuthWhoami(),
-    gfGetOAuthToken: vi.fn().mockReturnValue('mock-oauth-token'),
-    ensureGfInstalled: () => mockEnsureGfInstalled(),
-    ensureAuthenticated: vi.fn().mockReturnValue('testuser'),
-    isGfInstalled: vi.fn().mockReturnValue(true),
-    RepoNotFoundError,
-  };
-});
-
 vi.mock('../config.js', () => ({
   saveLocalConfig: vi.fn(),
   saveLocalConfigForScope: vi.fn(),
@@ -151,18 +130,6 @@ vi.mock('../roles.js', () => ({
   describeRoles: vi.fn((roles: Array<{ id: string; name: string; description?: string }>) =>
     roles.map((role) => role.description ? `${role.id} - ${role.name}: ${role.description}` : `${role.id} - ${role.name}`),
   ),
-}));
-
-vi.mock('../utils/repo-url.js', () => ({
-  parseRepoInput: (input: string) => {
-    const [owner, repo] = input.split('/');
-    return {
-      owner,
-      repo,
-      projectId: `${owner}%2F${repo}`,
-      httpsUrl: `https://git.woa.com/${owner}/${repo}.git`,
-    };
-  },
 }));
 
 // Track pathExists calls to simulate directory states

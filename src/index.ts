@@ -479,16 +479,6 @@ program
   });
 
 program
-  .command('save-session', { hidden: true })
-  
-  .description('Save current session tool usage summary')
-  .option('--summary <text>', 'Session summary text')
-  .action(async (cmdOpts) => {
-    const { saveSession } = await import('./session-collector.js');
-    await saveSession(cmdOpts.summary);
-  });
-
-program
   .command('digest')
   .description('Generate weekly team activity digest')
   .action(async () => {

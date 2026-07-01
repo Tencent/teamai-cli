@@ -366,16 +366,6 @@ export interface UserInterventionStats {
   correction: number;
 }
 
-// ─── Session records ───────────────────────────────────
-
-export interface SessionRecord {
-  date: string;
-  summary: string;
-  toolsUsed: string[];
-  hasValue: boolean;
-  errors?: string[];
-}
-
 // ─── Dashboard ──────────────────────────────────────
 //
 //  Data flow (hook-based, zero external dependencies):

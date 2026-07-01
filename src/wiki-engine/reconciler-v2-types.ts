@@ -14,20 +14,6 @@ export interface NumericConfidence {
   factors: ConfidenceFactor[];
 }
 
-/** Convert legacy WikiConfidence string to NumericConfidence */
-export function fromLegacyConfidence(confidence: WikiConfidence): NumericConfidence {
-  const DEFAULTS: Record<WikiConfidence, number> = {
-    EXTRACTED: 1.0,
-    INFERRED: 0.75,
-    AMBIGUOUS: 0.2
-  };
-  return {
-    score: DEFAULTS[confidence],
-    label: confidence,
-    factors: [{ name: "legacy_conversion", weight: DEFAULTS[confidence], detail: `Converted from ${confidence}` }]
-  };
-}
-
 /** Derive label from numeric score */
 export function labelFromScore(score: number): WikiConfidence {
   if (score >= 0.8) return "EXTRACTED";
