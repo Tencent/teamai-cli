@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 //      silently degrading to the user's home.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..', '..');
+const ROOT = path.resolve(__dirname, '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
 
 interface RunResult {
