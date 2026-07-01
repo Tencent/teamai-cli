@@ -121,6 +121,17 @@ describe('hooksInject', () => {
         expect(mockedReconcile).toHaveBeenCalledTimes(2);
         expect(mockedReconcile).toHaveBeenNthCalledWith(1, mockTeamConfig.toolPaths, '/path/to/project', TEAM_DEFS, expect.any(String), { builtinOverride: undefined });
         expect(mockedReconcile).toHaveBeenNthCalledWith(2, mockTeamConfig.toolPaths, '/home/testuser', TEAM_DEFS, expect.any(String), { builtinOverride: undefined });
+
+        // #85: the user-home target must be reconciled against the USER's own
+        // manifest, not the project's — otherwise `pull`'s per-scope reconcile
+        // (which always uses each scope's own manifest) diverges from `inject`,
+        // causing duplicate injection / wrongful cleanup of the shared file.
+        const projectManifestPath = mockedReconcile.mock.calls[0][3] as string;
+        const userManifestPath = mockedReconcile.mock.calls[1][3] as string;
+        expect(userManifestPath).not.toBe(projectManifestPath);
+        expect(projectManifestPath).toContain('/path/to/project');
+        expect(userManifestPath).toContain('/home/testuser');
+        expect(userManifestPath).not.toContain('/path/to/project');
     });
 });
 
@@ -248,6 +259,12 @@ describe('hooksRemove', () => {
             restoreHome();
         }
         expect(mockedReconcile).toHaveBeenCalledTimes(2);
+
+        // #85: same per-scope manifest requirement as `hooksInject`.
+        const projectManifestPath = mockedReconcile.mock.calls[0][3] as string;
+        const userManifestPath = mockedReconcile.mock.calls[1][3] as string;
+        expect(userManifestPath).not.toBe(projectManifestPath);
+        expect(userManifestPath).not.toContain('/path/to/project');
     });
 
     it('does not duplicate when HOME equals projectRoot', async () => {

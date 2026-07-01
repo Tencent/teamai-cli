@@ -758,7 +758,13 @@ export type CultureFrontmatter = z.infer<typeof CultureFrontmatterSchema>;
  * - project scope → localConfig.projectRoot (e.g. /Users/xxx/my-project)
  */
 export function resolveBaseDir(localConfig: LocalConfig): string {
-  if (localConfig.scope === 'project' && localConfig.projectRoot) {
+  if (localConfig.scope === 'project') {
+    if (!localConfig.projectRoot) {
+      throw new Error(
+        'resolveBaseDir: localConfig.scope is "project" but projectRoot is missing — ' +
+        'refusing to silently fall back to the user home directory. Re-run `teamai init` in this project.',
+      );
+    }
     return localConfig.projectRoot;
   }
   return process.env.HOME!;
@@ -770,7 +776,13 @@ export function resolveBaseDir(localConfig: LocalConfig): string {
  * - project scope → <projectRoot>/.teamai
  */
 export function getTeamaiHome(scope: Scope, projectRoot?: string): string {
-  if (scope === 'project' && projectRoot) {
+  if (scope === 'project') {
+    if (!projectRoot) {
+      throw new Error(
+        'getTeamaiHome: scope is "project" but projectRoot is missing — ' +
+        'refusing to silently fall back to the user home directory.',
+      );
+    }
     return path.join(projectRoot, '.teamai');
   }
   return path.join(process.env.HOME ?? '', '.teamai');

@@ -1,12 +1,56 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import fse from 'fs-extra';
 import { requireInit, detectProjectConfig, loadTeamConfig, loadLocalConfigForScope } from './config.js';
 import { assertNotReadOnly } from './read-only.js';
 import { pushRepoDirectly, pullRepo } from './utils/git.js';
-import { ensureDir } from './utils/fs.js';
+import { ensureDir, pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { markContributed } from './contribute-check.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
+import { LEARNINGS_LOCAL_DIR, getTeamaiHome } from './types.js';
+
+/**
+ * Rebuild this scope's local search index so the freshly-written contribution
+ * (and anything pulled just before it) is immediately recallable — otherwise
+ * `recall` only picks it up after the next `teamai pull` rebuilds the index (#85).
+ * Mirrors the per-scope indexing pull.ts does after syncing learnings.
+ */
+async function rebuildIndexAfterContribute(localConfig: LocalConfig): Promise<void> {
+  const repoPath = localConfig.repo.localPath;
+  const learningsRepoDir = path.join(repoPath, 'learnings');
+  const docsRepoDir = path.join(repoPath, 'docs');
+  const rulesRepoDir = path.join(repoPath, 'rules');
+  const skillsRepoDir = path.join(repoPath, 'skills');
+  const votesDir = path.join(repoPath, 'votes');
+
+  // user scope mirrors learnings/ into ~/.teamai/learnings/ (legacy behavior,
+  // same as pull.ts); project scope indexes the repo's learnings/ directly.
+  let effectiveLearningsDir: string | undefined;
+  if (localConfig.scope === 'user') {
+    if (await pathExists(learningsRepoDir)) {
+      await fse.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
+        overwrite: true,
+        filter: (src: string) => !path.basename(src).startsWith('.'),
+      });
+    }
+    effectiveLearningsDir = (await pathExists(LEARNINGS_LOCAL_DIR)) ? LEARNINGS_LOCAL_DIR : undefined;
+  } else {
+    effectiveLearningsDir = (await pathExists(learningsRepoDir)) ? learningsRepoDir : undefined;
+  }
+
+  const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
+  const indexPath = path.join(teamaiHome, 'search-index.json');
+  const { buildIndex } = await import('./utils/search-index.js');
+  await buildIndex({
+    learningsDir: effectiveLearningsDir,
+    docsDir: (await pathExists(docsRepoDir)) ? docsRepoDir : undefined,
+    rulesDir: (await pathExists(rulesRepoDir)) ? rulesRepoDir : undefined,
+    skillsDir: (await pathExists(skillsRepoDir)) ? skillsRepoDir : undefined,
+    votesDir: (await pathExists(votesDir)) ? votesDir : undefined,
+    indexPath,
+  });
+}
 
 // ─── Contribute data flow ─────────────────────────────────
 //
@@ -114,6 +158,14 @@ export async function contribute(
       await pullRepo(repoPath);
     } catch {
       log.debug('contribute: pull failed, continuing with local state');
+    }
+
+    // Rebuild the index now so recall can find this contribution immediately,
+    // independent of whether the push below succeeds.
+    try {
+      await rebuildIndexAfterContribute(localConfig);
+    } catch (e) {
+      log.debug(`contribute: index rebuild skipped: ${(e as Error).message}`);
     }
 
     // Push directly to master with timeout

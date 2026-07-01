@@ -15,18 +15,37 @@ interface HookListRow {
     settingsPath: string;
 }
 
-function resolveHookBaseDirs(localConfig: LocalConfig): string[] {
+interface HookScopeTarget {
+    baseDir: string;
+    manifestPath: string;
+}
+
+/**
+ * Resolve every (baseDir, manifestPath) pair that hook reconciliation must
+ * touch for this config's scope. Project scope also targets the user's home
+ * directory (so hooks fire from subdirectories, see #44) — but that target
+ * MUST use the user's own manifest, not the project's. Attributing the
+ * user-home write to the project's manifest is what let `hooks inject`
+ * diverge from `pull`'s per-scope reconcile (each scope's own baseDir +
+ * manifest, see reconcileHooksAllScopes in pull.ts) and caused duplicate
+ * injection / wrongful cleanup of ~/.cursor/hooks.json et al. (#85).
+ */
+function resolveHookScopeTargets(localConfig: LocalConfig): HookScopeTarget[] {
     const baseDir = resolveBaseDir(localConfig) ?? '';
+    const manifestPath = getManagedHooksPath(localConfig.scope, localConfig.projectRoot);
     if (localConfig.scope !== 'project') {
-        return [baseDir];
+        return [{ baseDir, manifestPath }];
     }
 
     const userBaseDir = process.env.HOME ?? '';
     if (!userBaseDir || userBaseDir === baseDir) {
-        return [baseDir];
+        return [{ baseDir, manifestPath }];
     }
 
-    return [baseDir, userBaseDir];
+    return [
+        { baseDir, manifestPath },
+        { baseDir: userBaseDir, manifestPath: getManagedHooksPath('user') },
+    ];
 }
 
 function formatDisplayPath(settingsPath: string): string {
@@ -70,8 +89,7 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
         auto: false,
         silent: options.silent,
     });
-    const manifestPath = getManagedHooksPath(localConfig.scope, localConfig.projectRoot);
-    for (const baseDir of resolveHookBaseDirs(localConfig)) {
+    for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
         await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin });
     }
 
@@ -87,7 +105,7 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
  */
 export async function hooksList(_options: GlobalOptions): Promise<void> {
     const { localConfig, teamConfig } = await autoDetectInit();
-    const baseDirs = resolveHookBaseDirs(localConfig);
+    const baseDirs = resolveHookScopeTargets(localConfig).map((t) => t.baseDir);
     const rows: HookListRow[] = [];
 
     for (const [tool, paths] of Object.entries(teamConfig.toolPaths)) {
@@ -137,8 +155,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
 export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     const { localConfig, teamConfig } = await autoDetectInit();
 
-    const manifestPath = getManagedHooksPath(localConfig.scope, localConfig.projectRoot);
-    for (const baseDir of resolveHookBaseDirs(localConfig)) {
+    for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
         await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true });
     }
 
