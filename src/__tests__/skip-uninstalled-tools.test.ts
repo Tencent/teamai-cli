@@ -446,4 +446,41 @@ describe('deployBuiltinSkills — skip uninstalled tools', () => {
 
     expect(await fse.pathExists(path.join(homeDir, '.claude'))).toBe(true);
   });
+
+  it('should recursively deploy nested built-in skill files', async () => {
+    const { deployBuiltinSkills } = await import('../builtin-skills.js');
+
+    const teamConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        claude: { skills: '.claude/skills' },
+      },
+    };
+
+    const localConfig = {
+      repo: { localPath: path.join(tmpDir, 'repo'), remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto' as const,
+      additionalRoles: [],
+      scope: 'user' as const,
+    };
+
+    const deployed = await deployBuiltinSkills(teamConfig, localConfig);
+    const skillDir = path.join(homeDir, '.claude/skills/team-wiki-codebase');
+
+    expect(deployed).toBeGreaterThan(0);
+    expect(await fse.pathExists(path.join(skillDir, 'SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(skillDir, 'references/methodology/phase0-collection.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(skillDir, 'scripts/scan_repo.py'))).toBe(true);
+  });
 });
