@@ -32,8 +32,6 @@ interface ImportOptions extends GlobalOptions {
   all?: boolean;
   /** 将草稿写入指定目录而非推送至团队仓库 */
   output?: string;
-  /** 显式指定现有 codebase.md 路径（优先于从团队仓库自动读取） */
-  existingCodebase?: string;
   /** 拉取远端仓库并生成单仓 codebase 摘要 */
   fromRepo?: string;
   /** --from-repo 的 shallow clone 深度（字符串，需 parseInt），默认 1 */
@@ -151,40 +149,57 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         }
       }
     } else if (opts.fromMr) {
-      // 分支 1：--from-mr <url>，从已合并 MR 提取学习内容
-      const { localConfig } = await autoDetectInit();
+      // 分支 1：--from-mr <url>，提取 learning + 增量更新 teamwiki
+      const { localConfig, teamConfig } = await autoDetectInit();
 
-      // 尝试读取现有 codebase.md，用于生成风格一致的增量建议
-      // 优先使用 --existing-codebase 显式指定的路径，其次从团队仓库读取
-      let existingCodebaseMd: string | undefined;
-      if (opts.existingCodebase) {
-        try {
-          existingCodebaseMd = await fs.readFile(opts.existingCodebase, 'utf-8');
-          log.debug(`已加载指定 codebase.md（${existingCodebaseMd.length} 字符）：${opts.existingCodebase}`);
-        } catch {
-          log.warn(`无法读取 --existing-codebase 指定的文件：${opts.existingCodebase}`);
-        }
-      } else {
-        const codebasePath = path.join(localConfig.repo.localPath, 'docs', 'codebase.md');
-        try {
-          existingCodebaseMd = await fs.readFile(codebasePath, 'utf-8');
-          log.debug(`已加载现有 codebase.md（${existingCodebaseMd.length} 字符）`);
-        } catch {
-          log.debug('未找到现有 codebase.md，将使用默认格式示例');
-        }
-      }
-
-      await importFromMR({
+      const { learning, repoUrl } = await importFromMR({
         url: opts.fromMr,
         learningsDir: path.join(localConfig.repo.localPath, 'learnings'),
         all: opts.all,
         outputDir: opts.output,
         repoPath: opts.dryRun ? undefined : localConfig.repo.localPath,
-        existingCodebaseMd,
         dryRun: opts.dryRun,
       });
-      if (!opts.dryRun && !opts.output) {
-        await autoPushTeamRepo(localConfig.repo.localPath, `[teamai] Import from MR: ${opts.fromMr}`);
+
+      // 增量更新 teamwiki（如果受影响仓库已有 evidence）
+      let didUpdate = !!learning;
+      if (!opts.dryRun && !opts.output && repoUrl) {
+        const teamwikiRoot = path.join(localConfig.repo.localPath, 'teamwiki');
+        try {
+          const { detectProvider, getProvider } = await import('./providers/registry.js');
+          const { getRepoSlug } = await import('./utils/repo-cache.js');
+          const providerName = detectProvider(repoUrl);
+          const provider = getProvider(providerName);
+          const repoInfo = provider.parseRepoInput(repoUrl);
+          const slug = getRepoSlug(providerName, repoInfo.owner, repoInfo.repo);
+          const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code', slug);
+
+          if (await fs.pathExists(evidenceDir)) {
+            log.info(`MR 属于已导入仓库 ${slug}，触发增量 teamwiki 更新...`);
+            await importFromRepo({
+              url: repoUrl,
+              incremental: true,
+              interactive: false,
+              skipAutoPush: true,
+            });
+            didUpdate = true;
+            log.success(`teamwiki 增量更新完成: ${slug}`);
+          }
+        } catch (e) {
+          log.warn(`teamwiki 增量更新失败（不阻断）: ${(e as Error).message}`);
+        }
+      }
+
+      // 通过 MR 提交所有变更（learning + teamwiki 更新）
+      if (!opts.dryRun && !opts.output && didUpdate) {
+        const { autoPushViaMR } = await import('./utils/git.js');
+        await autoPushViaMR(
+          localConfig.repo.localPath,
+          `[teamai] Import from MR: ${opts.fromMr}`,
+          ['.'],
+          { repo: teamConfig.repo, provider: teamConfig.provider, reviewers: teamConfig.reviewers },
+          { repo: localConfig.repo, username: localConfig.username },
+        );
       }
     } else if (opts.dir) {
       // 分支 3：--dir <path>，代码知识提取（等同于 --from-repo 但跳过 clone）

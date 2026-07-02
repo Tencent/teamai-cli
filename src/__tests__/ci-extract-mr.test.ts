@@ -52,7 +52,7 @@ describe('ciExtractMr', () => {
 
     mockImportFromMR.mockResolvedValue({
       learning: { title: 'Test Learning', content: '# Test\n\nContent' },
-      codebaseSuggestions: [{ section: 'arch', action: 'update', content: 'New info' }],
+      repoUrl: 'https://github.com/org/repo.git',
     });
     mockPostOrUpdateMrComment.mockResolvedValue({ created: true, url: 'https://example.com/comment' });
     mockApplyCodebaseSuggestions.mockResolvedValue('# Updated codebase');
@@ -118,7 +118,7 @@ describe('ciExtractMr', () => {
     );
   });
 
-  it('write 模式 pending-review: 调用 appendPendingReview', async () => {
+  it('write 模式 pending-review: 写入 learning，不调用 appendPendingReview（codebase suggestions 已移除）', async () => {
     const teamRepo = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(path.join(teamRepo, 'learnings'));
 
@@ -129,13 +129,11 @@ describe('ciExtractMr', () => {
       writeMode: 'pending-review',
     });
 
-    expect(mockAppendPendingReview).toHaveBeenCalledWith(
-      teamRepo,
-      expect.objectContaining({
-        kind: 'codebase-section',
-        source: expect.stringContaining('ci:extract-mr:'),
-      }),
-    );
+    // codebase suggestion 链路已移除，appendPendingReview 不再被调用
+    expect(mockAppendPendingReview).not.toHaveBeenCalled();
+    // learning 仍然写入
+    const learnings = await fse.readdir(path.join(teamRepo, 'learnings'));
+    expect(learnings.length).toBe(1);
   });
 
   it('both 模式同时调用 comment 和 write', async () => {
@@ -163,7 +161,8 @@ describe('ciExtractMr', () => {
     });
 
     expect(await fse.pathExists(path.join(outputDir, 'learning.md'))).toBe(true);
-    expect(await fse.pathExists(path.join(outputDir, 'codebase-suggestions.json'))).toBe(true);
+    // codebase suggestion 链路已移除，不再输出 codebase-suggestions.json
+    expect(await fse.pathExists(path.join(outputDir, 'codebase-suggestions.json'))).toBe(false);
   });
 
   it('dry-run 不调用 API', async () => {

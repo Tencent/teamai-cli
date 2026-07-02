@@ -328,3 +328,16 @@ async function collectFiles(base: string, prefix: string, ignore?: Set<string>):
   }
   return result;
 }
+
+/**
+ * Write content only if it differs from existing file (by SHA-256 hash).
+ * Avoids mtime updates on unchanged files. Returns true if written.
+ */
+export async function writeIfChanged(filePath: string, content: string): Promise<boolean> {
+  const newHash = crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
+  const existingHash = await fileHash(filePath);
+  if (existingHash === newHash) return false;
+  await fse.ensureDir(path.dirname(filePath));
+  await fse.writeFile(filePath, content, 'utf-8');
+  return true;
+}
