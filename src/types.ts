@@ -559,6 +559,10 @@ export const CORRECTION_KEYWORDS = [
 export const INTERVENTION_SCAN_MAX_BYTES = 50 * 1024 * 1024;
 /** Marker that prefixes a user-interrupt entry in the Claude Code transcript. */
 export const TRANSCRIPT_INTERRUPT_PREFIX = '[Request interrupted by user';
+/** Prefixes of system-injected user messages that are NOT genuine human prompts. */
+export const TRANSCRIPT_SYSTEM_PREFIXES = [
+  '<task-notification>',
+];
 /** Substrings that mark a tool_result as a user rejection (permission deny). */
 export const TRANSCRIPT_REJECT_MARKERS = [
   'The tool use was rejected',

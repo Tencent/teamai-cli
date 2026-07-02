@@ -17,6 +17,7 @@ import {
   CORRECTION_KEYWORDS,
   INTERVENTION_SCAN_MAX_BYTES,
   TRANSCRIPT_INTERRUPT_PREFIX,
+  TRANSCRIPT_SYSTEM_PREFIXES,
   TRANSCRIPT_REJECT_MARKERS,
   emptyTokenUsage,
   addTokenUsage,
@@ -207,7 +208,13 @@ export async function scanTranscriptStop(
 
       // Plain-string user content = a genuine human prompt (older transcript shape).
       if (typeof content === 'string') {
-        if (!isMeta && content.trim() && !content.startsWith(TRANSCRIPT_INTERRUPT_PREFIX)) {
+        const trimContent = content.trim();
+        if (
+          !isMeta &&
+          trimContent &&
+          !trimContent.startsWith(TRANSCRIPT_INTERRUPT_PREFIX) &&
+          !TRANSCRIPT_SYSTEM_PREFIXES.some((p) => trimContent.startsWith(p))
+        ) {
           prompts++;
         }
         continue;
@@ -217,9 +224,10 @@ export async function scanTranscriptStop(
       let hasHumanText = false;
       for (const item of content as Array<Record<string, unknown>>) {
         if (item?.type === 'text' && typeof item.text === 'string') {
+          const txt = item.text.trim();
           if (item.text.startsWith(TRANSCRIPT_INTERRUPT_PREFIX)) {
             interrupt++;
-          } else if (item.text.trim()) {
+          } else if (txt && !TRANSCRIPT_SYSTEM_PREFIXES.some((p) => txt.startsWith(p))) {
             hasHumanText = true;
           }
         } else if (item?.type === 'tool_result' && item.is_error === true) {
