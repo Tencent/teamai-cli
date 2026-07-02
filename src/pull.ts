@@ -1093,18 +1093,32 @@ export async function pull(options: GlobalOptions): Promise<void> {
   // 4. Auto-report usage data to all active scopes. Events live in a single
   //    shared file (~/.teamai/usage.jsonl), so we report to each repo with
   //    skipTruncate=true first, then truncate once at the end.
+  //    Scope filtering: project scope only gets sessions whose cwd is under
+  //    projectRoot; user scope excludes those sessions.
   if (!options.dryRun) {
     try {
       const { reportUsageToTeam } = await import('./team-push.js');
       const { truncateUsageAfterReport, readUsageEvents } = await import('./usage-tracker.js');
-      const targets: Array<{ repoPath: string; username: string }> = [];
-      if (projectConfig) targets.push({ repoPath: projectConfig.repo.localPath, username: projectConfig.username });
-      if (userConfig && userConfig.repo.kind !== 'http') targets.push({ repoPath: userConfig.repo.localPath, username: userConfig.username });
+      const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[] } }> = [];
+      if (projectConfig) {
+        targets.push({
+          repoPath: projectConfig.repo.localPath,
+          username: projectConfig.username,
+          opts: { skipTruncate: true, projectRoot: projectConfig.projectRoot },
+        });
+      }
+      if (userConfig && userConfig.repo.kind !== 'http') {
+        targets.push({
+          repoPath: userConfig.repo.localPath,
+          username: userConfig.username,
+          opts: { skipTruncate: true, excludeProjectRoots: projectConfig?.projectRoot ? [projectConfig.projectRoot] : [] },
+        });
+      }
 
       const eventCount = (await readUsageEvents()).length;
       for (const t of targets) {
         try {
-          await reportUsageToTeam(t.repoPath, t.username, { skipTruncate: true });
+          await reportUsageToTeam(t.repoPath, t.username, t.opts);
         } catch (e) {
           log.error(`Auto-report to ${t.repoPath} skipped: ${(e as Error).message}`);
         }

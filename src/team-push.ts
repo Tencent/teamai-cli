@@ -6,7 +6,7 @@ import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
 import { createGit, pushRepoDirectly, pullRepo, resetToCleanMaster } from './utils/git.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, listFiles, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage } from './types.js';
+import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent } from './types.js';
 import { VOTES_LOCAL_DIR, emptyTokenUsage, addTokenUsage } from './types.js';
 
 /** Snapshot of already-reported per-session intervention counts (idempotency basis). */
@@ -263,6 +263,33 @@ function hasPromptTokenDelta(d: PromptTokenDelta): boolean {
 }
 
 /**
+ * Filter dashboard events by scope:
+ * - projectRoot set: keep only events whose cwd is under that root.
+ * - excludeProjectRoots set: exclude events whose cwd is under any listed root.
+ * - Neither: return all events (backward-compatible).
+ */
+export function filterEventsByScope(
+  events: DashboardEvent[],
+  opts?: { projectRoot?: string; excludeProjectRoots?: string[] },
+): DashboardEvent[] {
+  if (!opts) return events;
+  if (opts.projectRoot) {
+    const root = opts.projectRoot.replace(/\/$/, '');
+    const prefix = root + '/';
+    return events.filter((e) => e.cwd === root || e.cwd?.startsWith(prefix));
+  }
+  if (opts.excludeProjectRoots && opts.excludeProjectRoots.length > 0) {
+    const normalized = opts.excludeProjectRoots.map((r) => r.replace(/\/$/, ''));
+    const prefixes = normalized.map((r) => r + '/');
+    return events.filter((e) => {
+      if (!e.cwd) return true;
+      return !normalized.some((r, i) => e.cwd === r || e.cwd!.startsWith(prefixes[i]));
+    });
+  }
+  return events;
+}
+
+/**
  * Auto-report usage data to team repo during pull.
  * Merges new events with existing stats to preserve historical data.
  * Best-effort: silently fails on any error.
@@ -271,7 +298,7 @@ function hasPromptTokenDelta(d: PromptTokenDelta): boolean {
 export async function reportUsageToTeam(
   repoPath: string,
   username: string,
-  options?: { skipTruncate?: boolean },
+  options?: { skipTruncate?: boolean; projectRoot?: string; excludeProjectRoots?: string[] },
 ): Promise<void> {
   try {
     const events = await readUsageEvents();
@@ -279,7 +306,9 @@ export async function reportUsageToTeam(
 
     // Fold the local dashboard event log into per-session metrics once, then derive
     // both the intervention delta and the prompt-count/token delta from it.
-    const dashboardEvents = await readEvents();
+    // Filter by scope so project repos only receive project sessions and vice versa.
+    const allDashboardEvents = await readEvents();
+    const dashboardEvents = filterEventsByScope(allDashboardEvents, options);
     const metrics = aggregateSessionMetrics(dashboardEvents);
 
     const currentInterventions = new Map(
@@ -379,12 +408,15 @@ export async function reportUsageToTeam(
       log.debug(`Reported ${events.length} usage events to team repo (kept local copy)`);
     }
     // Success — advance the reported snapshots so we don't re-count.
+    // Merge (not overwrite) because each scope only touches its own sessions.
     if (hasInterventions) {
-      await writeReportedInterventions(nextReported);
+      const existingIv = await readReportedInterventions();
+      await writeReportedInterventions({ ...existingIv, ...nextReported });
       log.debug(`Reported intervention delta (${interventionDelta.sessions} new sessions) to team repo`);
     }
     if (hasPromptTokens) {
-      await writeReportedPromptTokens(nextReportedPromptTokens);
+      const existingPt = await readReportedPromptTokens();
+      await writeReportedPromptTokens({ ...existingPt, ...nextReportedPromptTokens });
       log.debug(`Reported prompt/token delta (${promptTokenDelta.prompts} prompts) to team repo`);
     }
     if (!hasUsage && !hasInterventions && !hasPromptTokens) {
