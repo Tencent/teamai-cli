@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import path from 'node:path';
 import { readUsageEvents } from './usage-tracker.js';
 import { readFileSafe } from './utils/fs.js';
-import { loadLocalConfig } from './config.js';
+import { loadLocalConfig, detectProjectConfig } from './config.js';
 import type { UsageEvent, UserStats } from './types.js';
 
 interface SkillStats {
@@ -45,7 +45,7 @@ export function aggregateUsage(events: UsageEvent[]): SkillStats[] {
  */
 async function loadReportedStats(): Promise<UserStats | null> {
   try {
-    const config = await loadLocalConfig();
+    const config = await detectProjectConfig() ?? await loadLocalConfig();
     if (!config) return null;
     const statsPath = path.join(config.repo.localPath, 'stats', `${config.username}.yaml`);
     const content = await readFileSafe(statsPath);

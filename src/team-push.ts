@@ -271,6 +271,7 @@ function hasPromptTokenDelta(d: PromptTokenDelta): boolean {
 export async function reportUsageToTeam(
   repoPath: string,
   username: string,
+  options?: { skipTruncate?: boolean },
 ): Promise<void> {
   try {
     const events = await readUsageEvents();
@@ -370,10 +371,12 @@ export async function reportUsageToTeam(
 
     await Promise.race([pushPromise, timeoutPromise]);
 
-    // Success — truncate reported usage events (only if we had any)
-    if (hasUsage) {
+    // Success — truncate reported usage events (only if caller allows it)
+    if (hasUsage && !options?.skipTruncate) {
       await truncateUsageAfterReport(events.length);
       log.debug(`Reported ${events.length} usage events to team repo`);
+    } else if (hasUsage) {
+      log.debug(`Reported ${events.length} usage events to team repo (kept local copy)`);
     }
     // Success — advance the reported snapshots so we don't re-count.
     if (hasInterventions) {
