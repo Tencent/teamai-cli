@@ -92,11 +92,11 @@
 
 | # | Proposal | Effort | Decision | Reasoning |
 |---|----------|--------|----------|-----------|
-| 1 | Auto-Recall on SessionStart | M | DEFERRED | 等基线 recall 跑起来再加自动触发 |
+| 1 | Auto-Recall on SessionStart | M | SUPERSEDED | 已被 `teamai-recall` subagent + builtin-rules 主动检索替代 |
 | 2 | Recall 自动投票 (Upvote) | S | **ACCEPTED** | 零冲突，飞轮反馈机制的关键一环 |
 | 3 | Frontmatter 标准化 | S | **ACCEPTED** | 提升搜索质量，向后兼容 |
 | 4 | Reflect 层 | L | DEFERRED | 知识库冷启动阶段，数据不足 |
 
 ## Deferred to TODOS.md
-- **Auto-Recall on SessionStart (P2)** — SessionStart hook 自动运行 recall，零摩擦知识注入
+- ~~**Auto-Recall on SessionStart (P2)**~~ — 已被 `teamai-recall` subagent + builtin-rules 主动检索替代（#106）
 - **Reflect 层 (P3)** — LLM 分析 learnings 生成 meta-insights，需知识库积累到 20+ 篇
