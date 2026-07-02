@@ -44,7 +44,7 @@ export interface ImportFromRepoOptions {
     explicitDomain?: string;
     /** Dry-run 模式：跳过写盘但执行 clone+扫描 */
     dryRun?: boolean;
-    /** 自定义产物根目录；默认 cwd/docs/team-codebase */
+    /** 自定义产物根目录；默认 .teamai/team-repo/docs/team-codebase */
     output?: string;
     /**
      * 是否启用交互式确认。
@@ -390,7 +390,7 @@ async function interactiveConfirmDomain(
 
     if (lower === 'o') {
         const existingDomains = domains.domains.map((d, idx) => `  ${idx + 1}. ${d.name}`);
-        console.log('已有域列表：');
+        console.log('existing domains:');
         console.log(existingDomains.join('\n'));
         const numStr = await askQuestion('请输入编号：', '');
         const num = parseInt(numStr, 10);
@@ -479,7 +479,7 @@ export async function detectDomainDrift(args: {
         });
 
         log.warn(
-            `[drift] 仓库 ${url} 可能需要重新分类` +
+            `[drift] repo ${url} may need reclassification` +
             `（推荐域 ${recommendResult.domain}，confidence ${recommendResult.confidence.toFixed(2)}），` +
             `已记入 history。请人工 review，自动归属未变。`,
         );
@@ -527,7 +527,7 @@ export async function detectDomainDrift(args: {
  *  1. 解析 url → provider + RepoInfo（owner/repo）
  *  2. shallow clone（或增量 fetch+reset）到 ~/.teamai/cache/repos/<provider>/<owner>/<repo>
  *  3. generateCodebaseMd({ repoPath: cacheDir })
- *  4. 写出到 <outputRoot>/repos/<slug>.md（默认 outputRoot=cwd/docs/team-codebase）
+ *  4. 写出到 <outputRoot>/repos/<slug>.md（默认 outputRoot=.teamai/team-repo/docs/team-codebase）
  *  5. 推荐业务域（或使用 --domain 显式指定）
  *  6. 写入 .teamai/domains.yaml + appendHistory
  *  7. 写 LAST_SYNC
@@ -580,7 +580,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
 
     if (useIncremental) {
         oldSha = lastSync.sha;
-        log.info(`[incremental] 缓存命中 ${cacheDir}，从 ${oldSha.slice(0, 8)} 增量同步`);
+        log.info(`[incremental] cache hit ${cacheDir}, syncing from ${oldSha.slice(0, 8)}`);
         try {
             const fetchResult = await shallowFetch(cacheDir);
             cloneSha = fetchResult.sha;
@@ -588,7 +588,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             log.info(`[incremental] Fetch 完成: SHA=${cloneSha.slice(0, 8)}`);
         } catch (fetchErr) {
             log.warn(
-                `[incremental] fetch 失败，fallback 到全量 clone：` +
+                `[incremental] fetch failed, falling back to full clone: ` +
                 `${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`,
             );
             try {
@@ -620,12 +620,12 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
 
     // 2.5 SHA 未变化时跳过 AI 扫描（增量模式快速路径）
     if (useIncremental && oldSha && cloneSha === oldSha) {
-        log.info(`[incremental] SHA 未变化 (${cloneSha.slice(0, 8)})，跳过 AI 扫描`);
+        log.info(`[incremental] SHA unchanged (${cloneSha.slice(0, 8)}), skipping AI scan`);
         await writeLastSync(cacheDir, cloneSha);
         try {
             await touchCacheEntry({ provider: providerName, owner, repo: repoName, lastSyncedSha: cloneSha });
         } catch {}
-        log.info(chalk.green(`✓ 仓库 ${owner}/${repoName} 无变化，跳过`));
+        log.info(chalk.green(`✓ repo ${owner}/${repoName} unchanged, skipped`));
         return;
     }
 
@@ -642,8 +642,24 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         }
     }
 
+    // Resolve team-repo directory (needed for both docs/team-codebase and teamwiki)
+    let teamRepoDir: string;
+    let teamRepoRemote = '';
+    let mrTeamConfig: { repo: string; provider?: string; reviewers?: string[] } | null = null;
+    let mrLocalConfig: { repo: { remote: string; localPath: string }; username: string } | null = null;
+    try {
+        const { autoDetectInit } = await import('./config.js');
+        const { localConfig: lc, teamConfig: tc } = await autoDetectInit();
+        teamRepoDir = lc.repo.localPath;
+        teamRepoRemote = lc.repo.remote;
+        mrTeamConfig = { repo: tc.repo, provider: tc.provider, reviewers: tc.reviewers };
+        mrLocalConfig = { repo: lc.repo, username: lc.username };
+    } catch {
+        teamRepoDir = path.join(process.cwd(), '.teamai', 'team-repo');
+    }
+
     // 4. 写入 docs/team-codebase 叙事文档（AI 扫描成功时）
-    const outputRoot = output ?? path.join(process.cwd(), 'docs', 'team-codebase');
+    const outputRoot = output ?? path.join(teamRepoDir, 'docs', 'team-codebase');
     let repoMdPath = path.join(outputRoot, 'repos', `${slug}.md`);
 
     if (codebaseMd) {
@@ -662,7 +678,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             merged = mergeWithAnchors(oldFile, codebaseMd, { source: sourceTag, syncedAt });
             toWrite = merged.mergedMd;
         } catch (err) {
-            log.warn(`[section-merge] ${err instanceof Error ? err.message : err}；fallback 到全量重写`);
+            log.warn(`[section-merge] ${err instanceof Error ? err.message : err}; falling back to full rewrite`);
             if (oldFile !== null && !dryRun) {
                 const bakPath = `${repoMdPath}.bak`;
                 try { await fs.writeFile(bakPath, oldFile, 'utf8'); } catch {}
@@ -720,14 +736,6 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     } // end if (codebaseMd)
 
     // 4b. 生成 teamwiki/ 知识图谱产物（写入 team-repo 以便自动 push）
-    let teamRepoDir: string;
-    try {
-        const { autoDetectInit } = await import('./config.js');
-        const { localConfig: lc } = await autoDetectInit();
-        teamRepoDir = lc.repo.localPath;
-    } catch {
-        teamRepoDir = path.join(process.cwd(), '.teamai', 'team-repo');
-    }
     const teamwikiRoot = output
         ? path.resolve(output, '..', 'teamwiki')
         : path.join(teamRepoDir, 'teamwiki');
@@ -818,14 +826,14 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             const { reconcileKnowledge } = await import('./wiki-engine/adapters/index.js');
             const result = await reconcileKnowledge({ wikiRoot: teamwikiRoot, dryRun: false });
             if (result.mappings > 0 || result.gaps.length > 0) {
-                log.info(`  对账: ${result.mappings} 映射, ${result.gaps.length} 缺口, ${result.graphEdges.length} MAPS_TO 边`);
+                log.info(`  reconcile: ${result.mappings} mappings, ${result.gaps.length} gaps, ${result.graphEdges.length} MAPS_TO edges`);
             }
         } catch (e) {
             log.debug(`reconcile skipped: ${(e as Error).message}`);
         }
     }
 
-    // 5. 聚合全局图谱 + 自动推送（单仓模式；batch 模式由 import-repo-list 统一处理）
+    // 5. 聚合全局图谱 + 创建 MR（单仓模式；batch 模式由 import-repo-list 统一处理）
     if (!dryRun && !skipAutoPush) {
         if (teamwikiRoot) {
             try {
@@ -835,9 +843,20 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 log.debug(`[graph] 单仓聚合跳过: ${(e as Error).message}`);
             }
         }
-        if (await fs.pathExists(teamRepoDir)) {
-            const { autoPushTeamRepo } = await import('./utils/git.js');
-            await autoPushTeamRepo(teamRepoDir, `[teamai] Import codebase knowledge from ${owner}/${repoName}`);
+        if (await fs.pathExists(teamRepoDir) && mrTeamConfig && mrLocalConfig) {
+            const { autoPushViaMR } = await import('./utils/git.js');
+            const prUrl = await autoPushViaMR(
+                teamRepoDir,
+                `[teamai] Import codebase knowledge from ${owner}/${repoName}`,
+                ['.'],
+                mrTeamConfig,
+                mrLocalConfig,
+            );
+            if (prUrl) {
+                log.success(`已创建 MR: ${prUrl}`);
+            } else {
+                log.success(`已推送分支到团队知识仓库${teamRepoRemote ? ` (${teamRepoRemote})` : ''}`);
+            }
         }
     }
 
@@ -851,10 +870,13 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 try {
                     const { deepEnrich } = await import('./deep-enrich.js');
                     await deepEnrich({ project: slug, evidenceDir, wikiRoot: teamwikiRoot, cacheDir });
-                    if (!skipAutoPush) {
-                        const { autoPushTeamRepo } = await import('./utils/git.js');
+                    if (!skipAutoPush && mrTeamConfig && mrLocalConfig) {
+                        const { autoPushViaMR } = await import('./utils/git.js');
                         if (await fs.pathExists(teamRepoDir)) {
-                            await autoPushTeamRepo(teamRepoDir, `[teamai] Deep enrich: ${slug}`);
+                            await autoPushViaMR(
+                                teamRepoDir, `[teamai] Deep enrich: ${slug}`,
+                                ['.'], mrTeamConfig, mrLocalConfig,
+                            );
                         }
                     }
                     log.info(chalk.green(`✓ 深度生成完成: ${slug}`));

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { writeFile, mkdir } from 'node:fs/promises';
-import { callClaudeParallel } from './utils/ai-client.js';
+import { callClaudeParallel, getAICliName } from './utils/ai-client.js';
 import { log } from './utils/logger.js';
 import type { CodeFact } from './wiki-engine/adapters/index.js';
 import type { InterfaceInventory } from './wiki-engine/interface-scanner.js';
@@ -92,6 +92,8 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
     log.debug('enrichWithAI: no qualifying modules, skipping');
     return null;
   }
+
+  log.debug(`enrichWithAI: ${moduleEntries.length} modules, AI model: ${getAICliName()}`);
 
   // Step 1: AI enrichment per module (parallel)
   const tasks = moduleEntries.map(([moduleName, moduleFacts]) => ({

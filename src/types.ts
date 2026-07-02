@@ -8,7 +8,6 @@ export const ToolPathsSchema = z.object({
   rules: z.string().optional(),
   settings: z.string().optional(),
   claudemd: z.string().optional(),
-  wiki: z.string().optional(),
   /** Per-tool agents directory (Phase 1: teamai-recall subagent target).
    * Optional — tools without subagent support omit this and agents sync skips them. */
   agents: z.string().optional(),
@@ -116,11 +115,11 @@ export const TeamaiConfigSchema = z.object({
    * opinion (preserves legacy behavior). */
   autoUpdate: z.boolean().optional(),
   toolPaths: z.record(z.string(), ToolPathsSchema).default({
-    claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', wiki: '.claude/wiki', agents: '.claude/agents' },
+    claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', agents: '.claude/agents' },
     codex: { skills: '.codex/skills', rules: '.codex/rules', settings: '.codex/hooks.json', agents: '.codex/agents' },
     'codex-internal': { skills: '.codex-internal/skills', rules: '.codex-internal/rules', settings: '.codex-internal/hooks.json', agents: '.codex-internal/agents' },
-    'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', wiki: '.claude-internal/wiki', agents: '.claude-internal/agents' },
-    tclaude: { skills: '.tclaude/skills', rules: '.tclaude/rules', settings: '.tclaude/settings.json', claudemd: '.tclaude/CLAUDE.md', wiki: '.tclaude/wiki', agents: '.tclaude/agents' },
+    'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', agents: '.claude-internal/agents' },
+    tclaude: { skills: '.tclaude/skills', rules: '.tclaude/rules', settings: '.tclaude/settings.json', claudemd: '.tclaude/CLAUDE.md', agents: '.tclaude/agents' },
     tcodex: { skills: '.tcodex/skills', rules: '.tcodex/rules', settings: '.tcodex/hooks.json', agents: '.tcodex/agents' },
     cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents' },
     codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents' },
@@ -210,7 +209,7 @@ export interface TagsConfig {
 
 // ─── Resource types ─────────────────────────────────────
 
-export type ResourceType = 'skills' | 'rules' | 'docs' | 'env' | 'wiki' | 'agents' | 'hooks';
+export type ResourceType = 'skills' | 'rules' | 'docs' | 'env' | 'agents' | 'hooks';
 
 export type ResourceItemStatus = 'new' | 'modified';
 
@@ -282,7 +281,7 @@ export const TEAMAI_STATE_PATH = `${TEAMAI_HOME}/state.json`;
 export const TEAMAI_TOKEN_PATH = `${TEAMAI_HOME}/token`;
 export const TEAMAI_UPDATE_LOCK_PATH = `${TEAMAI_HOME}/.update-lock`;
 
-export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'wiki', 'agents', 'hooks'];
+export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'agents', 'hooks'];
 
 export const TEAMAI_RULES_START = '<!-- [teamai:rules:start] -->';
 export const TEAMAI_RULES_END = '<!-- [teamai:rules:end] -->';
@@ -343,6 +342,16 @@ export interface UserStats {
    * Cumulative across all reported sessions. Privacy: counts only, no prompt text.
    */
   interventions?: UserInterventionStats;
+  /**
+   * Cumulative count of human conversation turns (UserPromptSubmit events) across
+   * all reported sessions. Privacy: count only, no prompt text.
+   */
+  prompts?: number;
+  /**
+   * Cumulative token usage across all reported sessions (Claude Code transcripts
+   * only; tools without transcripts contribute nothing). Privacy: counts only.
+   */
+  tokens?: TokenUsage;
 }
 
 /** Per-user cumulative intervention totals, persisted to stats/<user>.yaml. */
@@ -355,16 +364,6 @@ export interface UserInterventionStats {
   toolReject: number;
   /** Total corrections (re-prompt after stop) across all sessions. */
   correction: number;
-}
-
-// ─── Session records ───────────────────────────────────
-
-export interface SessionRecord {
-  date: string;
-  summary: string;
-  toolsUsed: string[];
-  hasValue: boolean;
-  errors?: string[];
 }
 
 // ─── Dashboard ──────────────────────────────────────
@@ -385,6 +384,57 @@ export interface SessionRecord {
 //      ▼
 //  SSE → browser (session cards with status lights)
 //
+
+/**
+ * Token usage breakdown for a session/user, summed from Claude Code transcript
+ * `message.usage` records (deduplicated by message id). All fields are cumulative
+ * token counts; tools without a transcript (e.g. Cursor) leave these at zero.
+ */
+export interface TokenUsage {
+  /** Sum of usage.input_tokens. */
+  input: number;
+  /** Sum of usage.output_tokens. */
+  output: number;
+  /** Sum of usage.cache_read_input_tokens. */
+  cacheRead: number;
+  /** Sum of usage.cache_creation_input_tokens. */
+  cacheCreation: number;
+}
+
+/** A fresh zeroed TokenUsage. */
+export function emptyTokenUsage(): TokenUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+}
+
+/** Grand total of all token buckets (input + output + cache read + cache creation). */
+export function totalTokens(t: TokenUsage | undefined): number {
+  if (!t) return 0;
+  return t.input + t.output + t.cacheRead + t.cacheCreation;
+}
+
+/** Add two TokenUsage values field-by-field (does not mutate inputs). */
+export function addTokenUsage(a: TokenUsage | undefined, b: TokenUsage | undefined): TokenUsage {
+  return {
+    input: (a?.input ?? 0) + (b?.input ?? 0),
+    output: (a?.output ?? 0) + (b?.output ?? 0),
+    cacheRead: (a?.cacheRead ?? 0) + (b?.cacheRead ?? 0),
+    cacheCreation: (a?.cacheCreation ?? 0) + (b?.cacheCreation ?? 0),
+  };
+}
+
+/**
+ * Per-session rolled-up metrics, derived from the dashboard event log.
+ * Used by both the live dashboard (rebuildSessions) and the team-stats reporter.
+ */
+export interface SessionMetrics {
+  interrupt: number;
+  toolReject: number;
+  correction: number;
+  /** Number of human conversation turns (UserPromptSubmit events). */
+  prompts: number;
+  /** Cumulative token usage (latest Stop snapshot). */
+  tokens: TokenUsage;
+}
 
 export type DashboardSessionStatus = 'running' | 'waiting_for_input' | 'error' | 'idle' | 'stopped';
 
@@ -421,6 +471,20 @@ export interface DashboardEvent {
    * rebuildSessions from the stop→prompt_submit event pattern.
    */
   interventions?: { interrupt: number; toolReject: number };
+  /**
+   * Cumulative token usage scanned from the transcript at Stop time. Full snapshot
+   * (idempotent): each Stop carries the running total for the whole session, so a
+   * later Stop overrides an earlier one in rebuildSessions. Absent for tools with
+   * no transcript (e.g. Cursor) and for sessions with no recorded usage.
+   */
+  tokens?: TokenUsage;
+  /**
+   * Cumulative count of human prompt turns scanned from the transcript at Stop time.
+   * Full snapshot (idempotent), sourced from the non-compactable transcript so the
+   * reported baseline survives compaction + same-session resume. Absent for tools
+   * with no transcript (e.g. Cursor); for those, prompt_submit events are counted.
+   */
+  prompts?: number;
 }
 
 export interface DashboardSession {
@@ -457,6 +521,10 @@ export interface DashboardSession {
   interventions: { interrupt: number; toolReject: number; correction: number };
   /** Total intervention count (interrupt + toolReject + correction), for sorting/badges */
   interventionCount: number;
+  /** Number of human conversation turns (UserPromptSubmit events) in this session. */
+  promptCount: number;
+  /** Cumulative token usage for this session (zero when no transcript usage). */
+  tokens: TokenUsage;
 }
 
 export const DASHBOARD_EVENTS_DIR = `${TEAMAI_HOME}/dashboard`;
@@ -623,10 +691,12 @@ export interface SearchIndexEntry {
   path?: string;
   /** Optional hotness score reserved for Phase 4.3 hot/cold splitting. */
   hotness?: number;
+  /** Snippet from codebase graph recall (depth-dependent content preview). */
+  snippet?: string;
 }
 
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
-export const SEARCH_INDEX_VERSION = 4;
+export const SEARCH_INDEX_VERSION = 5;
 
 /** Shape of the search-index.json file. */
 export interface SearchIndex {
@@ -678,7 +748,13 @@ export type CultureFrontmatter = z.infer<typeof CultureFrontmatterSchema>;
  * - project scope → localConfig.projectRoot (e.g. /Users/xxx/my-project)
  */
 export function resolveBaseDir(localConfig: LocalConfig): string {
-  if (localConfig.scope === 'project' && localConfig.projectRoot) {
+  if (localConfig.scope === 'project') {
+    if (!localConfig.projectRoot) {
+      throw new Error(
+        'resolveBaseDir: localConfig.scope is "project" but projectRoot is missing — ' +
+        'refusing to silently fall back to the user home directory. Re-run `teamai init` in this project.',
+      );
+    }
     return localConfig.projectRoot;
   }
   return process.env.HOME!;
@@ -690,7 +766,13 @@ export function resolveBaseDir(localConfig: LocalConfig): string {
  * - project scope → <projectRoot>/.teamai
  */
 export function getTeamaiHome(scope: Scope, projectRoot?: string): string {
-  if (scope === 'project' && projectRoot) {
+  if (scope === 'project') {
+    if (!projectRoot) {
+      throw new Error(
+        'getTeamaiHome: scope is "project" but projectRoot is missing — ' +
+        'refusing to silently fall back to the user home directory.',
+      );
+    }
     return path.join(projectRoot, '.teamai');
   }
   return path.join(process.env.HOME ?? '', '.teamai');
@@ -724,17 +806,6 @@ export function getManagedHooksPath(scope: Scope, projectRoot?: string): string 
  */
 export function getPushignorePath(): string {
   return path.join(process.env.HOME ?? '', '.teamai', 'pushignore');
-}
-
-/**
- * Check if wiki feature is enabled.
- * Disable by setting TEAMAI_WIKI_DISABLED=1 or TEAMAI_WIKI_ENABLED=false.
- * Defaults to enabled for backward compatibility.
- */
-export function isWikiEnabled(): boolean {
-  if (process.env.TEAMAI_WIKI_DISABLED === '1' || process.env.TEAMAI_WIKI_DISABLED === 'true') return false;
-  if (process.env.TEAMAI_WIKI_ENABLED === '0' || process.env.TEAMAI_WIKI_ENABLED === 'false') return false;
-  return true;
 }
 
 /**
@@ -868,7 +939,7 @@ export interface ImportSession {
   /** 创建时间（ISO 8601） */
   createdAt: string;
   /** 导入模式 */
-  mode: 'local' | 'mr' | 'workspace';
+  mode: 'local' | 'mr' | 'dir';
   /** 所有候选条目 */
   items: ImportSessionItem[];
   /** 已处理条目数（用于 --resume 进度恢复） */

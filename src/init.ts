@@ -247,10 +247,12 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
   } else {
     const userPath = getTeamaiHome('user');
     const projectPath = getTeamaiHome('project', process.cwd());
-    log.info(`  user    → ${userPath}/`);
-    log.info(`  project → ${projectPath}/`);
-    const scopeAnswer = await askQuestion('Scope [user/project] (default: user): ', 'user');
-    if (scopeAnswer.toLowerCase() === 'project') {
+    log.info('Select scope:');
+    log.info(`  1. user    → ${userPath}/`);
+    log.info(`  2. project → ${projectPath}/`);
+    const scopeAnswer = await askQuestion('Scope [1/2] (default: 1): ', '1');
+    const normalizedScope = scopeAnswer.trim().toLowerCase();
+    if (normalizedScope === '2' || normalizedScope === 'project') {
       scope = 'project';
     }
   }

@@ -195,7 +195,7 @@ describe('review-cmd', () => {
         expect(removePendingReview).not.toHaveBeenCalledWith(expect.stringContaining('teamai-review-cmd-test-'), 'highriskitem1');
 
         const output = consoleSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-        expect(output).toContain('跳过');
+        expect(output).toContain('skipped');
     });
 
     it('--json 输出有效 JSON（apply 模式）', async () => {

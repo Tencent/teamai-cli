@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import matter from 'gray-matter';
 
-import { callClaude } from './utils/ai-client.js';
+import { callClaude, getAICliName } from './utils/ai-client.js';
 import { createGit } from './utils/git.js';
 import { log } from './utils/logger.js';
 import type { CodebaseSuggestion, LintIssue, LintReport } from './types.js';
@@ -384,7 +384,7 @@ export async function generateCodebaseMd(opts: {
       learningsInjection;
   }
 
-  log.debug('generateCodebaseMd: 调用 AI 生成文档');
+  log.debug(`generateCodebaseMd: 调用 AI 生成文档 (model: ${getAICliName()})`);
   const rawResult = await callClaude(prompt);
 
   // 剥离 AI 可能自行附加的 frontmatter，再 prepend 标准 frontmatter
@@ -456,7 +456,7 @@ export async function generateCodebaseIndex(codebaseMd: string): Promise<string>
     return (
       frontmatter +
       `# Codebase 索引\n\n` +
-      `> ⚠️ 索引生成失败，请重新运行 \`teamai import --workspace\` 以重新生成。\n`
+      `> ⚠️ 索引生成失败，请重新运行 \`teamai import --dir <path>\` 以重新生成。\n`
     );
   }
 }

@@ -22,6 +22,7 @@ import {
   mergeGraphs,
   createGraphIndex,
   saveGraphIndex,
+  loadGraphIndex,
 } from './wiki-engine/adapters/index.js';
 import type { CodeFact, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
@@ -35,6 +36,8 @@ export interface ExtractCodebaseOptions {
   project?: string;
   maxFiles?: number;
   skipEnrich?: boolean;
+  /** 产出根目录（teamwiki/ 写到此目录下）。默认与 path 相同。 */
+  outputRoot?: string;
 }
 
 interface ExtractResult {
@@ -511,8 +514,9 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   const root = path.resolve(opts.path || '.');
   const project = opts.project || path.basename(root);
   const maxFiles = opts.maxFiles || 200;
+  const outputBase = opts.outputRoot ? path.resolve(opts.outputRoot) : root;
 
-  const wikiRoot = path.join(root, 'teamwiki');
+  const wikiRoot = path.join(outputBase, 'teamwiki');
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code', project);
   const manifestPath = path.join(wikiRoot, 'source-manifest.json');
 
@@ -524,17 +528,17 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
         if (opts.json) {
           console.log(JSON.stringify({ status: 'up-to-date', project }));
         } else {
-          console.log(chalk.green(`[extract] ${project}: 无变更，跳过。`));
+          console.log(chalk.green(`[extract] ${project}: no changes, skipped.`));
         }
         return;
       }
       changedFiles = [...changes.added, ...changes.changed];
       if (!opts.json) {
-        console.log(chalk.dim(`[extract] 增量模式：${changedFiles.length} 文件变更`));
+        console.log(chalk.dim(`[extract] incremental: ${changedFiles.length} files changed`));
       }
     } catch {
       if (!opts.json) {
-        console.log(chalk.dim('[extract] 无历史 manifest，执行全量提取'));
+        console.log(chalk.dim('[extract] no manifest history, running full extraction'));
       }
     }
   }
@@ -544,7 +548,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     if (opts.json) {
       console.log(JSON.stringify({ status: 'no-files', project }));
     } else {
-      console.log(chalk.yellow(`[extract] ${project}: 未发现可提取的源代码文件。`));
+      console.log(chalk.yellow(`[extract] ${project}: no extractable source files found.`));
     }
     return;
   }
@@ -570,8 +574,12 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   const pageSlugs = [...pages.keys()].map(p => `evidence/code/${project}/${p.replace('.md', '')}`);
   const overlay = buildIndexHubOverlay(project, 'evidence/code', pageSlugs);
 
-  // Merge overlay into the unified GraphIndex
-  const mergedGraph = mergeGraphs(graph, overlay);
+  // Merge overlay into the per-repo graph
+  const repoGraph = mergeGraphs(graph, overlay);
+
+  // Load existing global graph and merge to avoid overwriting other repos' data
+  const existingGraph = await loadGraphIndex(wikiRoot) ?? createGraphIndex();
+  const mergedGraph = mergeGraphs(existingGraph, repoGraph);
 
   // Write graph-index.json using protocol function (B5)
   await saveGraphIndex(wikiRoot, mergedGraph);
@@ -579,7 +587,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   // AI enrichment (optional, non-blocking; skipped with --skip-enrich)
   let aiDomains: DomainGroup[] = [];
   if (opts.skipEnrich) {
-    if (!opts.json) console.log(chalk.dim('  [AI 增强: 已跳过 (--skip-enrich)]'));
+    if (!opts.json) console.log(chalk.dim('  [AI enrich: skipped (--skip-enrich)]'));
   } else try {
     const { enrichWithAI, writeManifest } = await import('./enrich-with-ai.js');
     const modules = new Map<string, CodeFact[]>();
@@ -605,12 +613,12 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
       await writeFile(path.join(evidenceDir, '_domains.json'), JSON.stringify(domainMeta, null, 2), 'utf-8');
       if (!opts.json) {
         const domainLabel = domainMeta.domain || '未分类';
-        console.log(`  AI 增强: ${enrichResult.manifest.components.length} 模块, 域=${domainLabel}`);
+        console.log(`  AI enrich: ${enrichResult.manifest.components.length} modules, domain=${domainLabel}`);
       }
     }
   } catch (e) {
     if (!opts.json) {
-      console.log(chalk.dim(`  [AI 增强跳过: ${(e as Error).message}]`));
+      console.log(chalk.dim(`  [AI enrich skipped: ${(e as Error).message}]`));
     }
   }
 

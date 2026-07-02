@@ -6,7 +6,7 @@ export const TEAM_CODEBASE_DIR = 'team-codebase';
 
 /** 团队 codebase 各层路径集合。 */
 export interface TeamCodebasePaths {
-    /** <cwd>/docs/team-codebase */
+    /** .teamai/team-repo/docs/team-codebase (or custom --output path) */
     root: string;
     /** <root>/index.md */
     index: string;

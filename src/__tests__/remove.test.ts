@@ -16,14 +16,6 @@ vi.mock('../utils/git.js', () => ({
   generateBranchName: vi.fn().mockReturnValue('teamai/push/test/20260305-120000'),
 }));
 
-vi.mock('../utils/gf-cli.js', () => ({
-  gfMrCreate: vi.fn().mockReturnValue('https://git.woa.com/mr/1'),
-}));
-
-vi.mock('../utils/repo-url.js', () => ({
-  parseRepoInput: vi.fn().mockReturnValue({ owner: 'test', repo: 'repo', projectId: 'test%2Frepo' }),
-}));
-
 vi.mock('../utils/logger.js', () => ({
   log: {
     info: vi.fn(),

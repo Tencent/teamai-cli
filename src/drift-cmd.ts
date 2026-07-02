@@ -54,10 +54,10 @@ function truncate(str: string, maxLen: number): string {
 function renderDriftList(items: PendingReviewItem[]): void {
     const driftItems = items.filter((item) => item.kind === 'domain-drift');
     if (driftItems.length === 0) {
-        console.log(chalk.gray('[drift] 暂无待处理漂移项'));
+        console.log(chalk.gray('[drift] no pending drift items'));
         return;
     }
-    console.log(chalk.cyan(`[drift] 共 ${driftItems.length} 项`));
+    console.log(chalk.cyan(`[drift] ${driftItems.length} items`));
     const header = [
         '  ' + 'URL'.padEnd(40),
         '旧域'.padEnd(12),
@@ -252,7 +252,7 @@ export async function driftCmd(opts: DriftCmdOptions): Promise<void> {
             console.log(
                 chalk.cyan('[drift] apply-all 完成：') +
                 chalk.green(`${okCount} 成功`) + '  ' +
-                chalk.yellow(`${skippedCount} 跳过`) + '  ' +
+                chalk.yellow(`${skippedCount} skipped`) + '  ' +
                 chalk.red(`${failedCount} 失败`),
             );
         }
@@ -268,7 +268,7 @@ export async function driftCmd(opts: DriftCmdOptions): Promise<void> {
 
         if (apply) {
             if (driftItems.length === 0) {
-                log.error(`[drift] 未找到 ${repoUrlArg} 的漂移项`);
+                log.error(`[drift] no drift items found for ${repoUrlArg}`);
                 process.exitCode = 1;
                 return;
             }
@@ -296,7 +296,7 @@ export async function driftCmd(opts: DriftCmdOptions): Promise<void> {
 
         // show 单条
         if (driftItems.length === 0) {
-            console.log(chalk.gray(`[drift] 未找到 ${repoUrlArg} 的漂移项`));
+            console.log(chalk.gray(`[drift] no drift items found for ${repoUrlArg}`));
             return;
         }
         if (json) {

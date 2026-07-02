@@ -92,7 +92,7 @@ async function downloadDocuments(
       if (result.status === 'fulfilled') {
         documents.push(result.value);
       } else {
-        log.warn(`下载文档失败，已跳过: ${String(result.reason)}`);
+        log.warn(`download failed, skipped: ${String(result.reason)}`);
       }
     }
   }
@@ -156,7 +156,7 @@ export async function importFromIWiki(opts: {
   }
 
   if (pages.length === 0) {
-    log.warn('未找到任何页面，导入终止');
+    log.warn('no pages found, import aborted');
     return;
   }
 
@@ -172,7 +172,7 @@ export async function importFromIWiki(opts: {
   }
 
   if (documents.length === 0) {
-    log.warn('所有文档下载失败，导入终止');
+    log.warn('all document downloads failed, import aborted');
     return;
   }
 
@@ -183,7 +183,7 @@ export async function importFromIWiki(opts: {
   const classified = await classifyWithAI(candidates);
 
   if (classified.length === 0) {
-    log.warn('AI 分类后无有效条目，导入终止');
+    log.warn('no valid entries after AI classification, import aborted');
     return;
   }
 
@@ -205,10 +205,10 @@ export async function importFromIWiki(opts: {
       if (mapsToEdges.length > 0) {
         log.success(`建立 ${mapsToEdges.length} 条 iWiki↔代码 MAPS_TO 关系`);
       } else {
-        log.info('[reconcile] 未发现 iWiki 文档与代码知识的匹配关系（文档内容可能与代码无关）');
+        log.info('[reconcile] no matches found between iWiki docs and code knowledge');
       }
     } catch (err) {
-      log.debug(`[reconcile] iWiki↔代码关系建立失败（非阻塞）: ${err instanceof Error ? err.message : err}`);
+      log.debug(`[reconcile] iWiki↔code relation failed (non-blocking): ${err instanceof Error ? err.message : err}`);
     }
   }
 

@@ -9,8 +9,7 @@ export type { CodeCollectedFile, CollectCodeOptions } from '../code-knowledge/co
 export { extractCodeFacts } from '../code-knowledge/code-extractors.js';
 export type { CodeFact, CodeFactKind, CodeEvidenceType } from '../code-knowledge/code-extractors.js';
 
-export { buildCodeGraph, buildCodeGraphIndex } from '../code-knowledge/code-graph.js';
-export type { CodeGraphIndex } from '../code-knowledge/code-graph.js'; // deprecated alias for GraphIndex
+export { buildCodeGraph } from '../code-knowledge/code-graph.js';
 
 export { detectCodeIncrementalChanges } from '../code-knowledge/code-incremental.js';
 

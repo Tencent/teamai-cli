@@ -69,7 +69,7 @@ program
 
 program
   .command('list [type]')
-  .description('List resources (skills|rules|docs|env|wiki). For skills, --source local/all also scans installed AI agent skill directories.')
+  .description('List resources (skills|rules|docs|env). For skills, --source local/all also scans installed AI agent skill directories.')
   .option('--source <src>', 'Where to look for skills: repo | local | all', 'all')
   .option('--agent <name>', 'Filter local agents by id (only applies to skills)')
   .action(async (type, cmdOpts) => {
@@ -126,7 +126,7 @@ membersCmd
 
 program
   .command('remove <type> <names...>')
-  .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules|wiki)')
+  .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules)')
   .action(async (type, names) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { remove } = await import('./remove.js');
@@ -479,16 +479,6 @@ program
   });
 
 program
-  .command('save-session', { hidden: true })
-  
-  .description('Save current session tool usage summary')
-  .option('--summary <text>', 'Session summary text')
-  .action(async (cmdOpts) => {
-    const { saveSession } = await import('./session-collector.js');
-    await saveSession(cmdOpts.summary);
-  });
-
-program
   .command('digest')
   .description('Generate weekly team activity digest')
   .action(async () => {
@@ -589,10 +579,9 @@ program
 
 program
   .command('import')
-  .description('Import knowledge from local files, Claude/Cursor rules, git workspace, MRs, or iWiki')
-  .option('--dir <path>', 'Scan local directory for importable Markdown files')
+  .description('Import knowledge from local directories, remote repos, organizations, MRs, or iWiki')
+  .option('--dir <path>', 'Extract code knowledge from a local directory (same as --from-repo but no clone)')
   .addOption(new Option('--from-claude', 'Scan Claude/Cursor rule directories (~/.claude/rules, ~/.cursor/rules)').hideHelp())
-  .addOption(new Option('--workspace', 'Generate codebase.md from current git workspace').hideHelp())
   .option('--from-mr <url>', 'Extract learning and codebase suggestions from a merged MR/PR URL')
   .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)')
   .addOption(new Option('--resume', 'Resume an interrupted import session').hideHelp())

@@ -9,6 +9,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
+import { tokenize, tokenCount, MAX_TOKENIZE_CHARS } from './utils/tokenizer.js';
 
 export interface CodeKnowledgeResult {
   page: string;
@@ -38,36 +39,10 @@ const TITLE_BOOST = 3.0;
 const RELATION_WEIGHT: Record<string, number> = { DEPENDS_ON: 3, REFERENCES: 2, MAPS_TO: 2, CONTAINS: 1 };
 const ENTRY_NODE_BOOST = 8;
 
-function tokenize(text: string): string[] {
-  const tokens: string[] = [];
-  const lower = text.toLowerCase();
-  // Split camelCase before tokenizing (B4 fix: camelCase splitting)
-  const camelSplit = lower.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
-  const words = camelSplit.split(/[^a-z0-9一-鿿]+/).filter((w) => w.length >= 2);
-  for (const w of words) {
-    tokens.push(w);
-  }
-  // B14: CJK bigram segmentation
-  const cjkRuns = lower.match(/[一-鿿]+/g) ?? [];
-  for (const run of cjkRuns) {
-    for (let i = 0; i < run.length - 1; i++) {
-      tokens.push(run.slice(i, i + 2));
-    }
-  }
-  return [...new Set(tokens)];
-}
-
-/** Raw (non-deduplicated) token count for BM25 dl (B10 fix) */
-function rawTokenCount(text: string): number {
-  const lower = text.toLowerCase();
-  const camelSplit = lower.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
-  return camelSplit.split(/[^a-z0-9一-鿿]+/).filter((w) => w.length >= 2).length;
-}
-
 function countOccurrences(text: string, token: string): number {
   let count = 0;
   let idx = 0;
-  const lower = text.toLowerCase();
+  const lower = (text.length > MAX_TOKENIZE_CHARS ? text.slice(0, MAX_TOKENIZE_CHARS) : text).toLowerCase();
   while (true) {
     idx = lower.indexOf(token, idx);
     if (idx === -1) break;
@@ -82,7 +57,7 @@ function buildCorpusStats(pages: PageDoc[]): CorpusStats {
   let totalLength = 0;
 
   for (const page of pages) {
-    totalLength += page.tokenCount; // B10: use raw token count for avgDocLength
+    totalLength += page.tokenCount;
     const seen = new Set<string>();
     for (const token of page.tokens) {
       if (!seen.has(token)) {
@@ -207,42 +182,45 @@ async function loadWikiPages(wikiRoot: string): Promise<PageDoc[]> {
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code');
   const pages: PageDoc[] = [];
 
-  let projects: string[];
+  let projectDirs: string[];
   try {
-    projects = await readdir(evidenceDir);
+    const entries = await readdir(evidenceDir, { withFileTypes: true });
+    projectDirs = entries.filter(e => e.isDirectory()).map(e => e.name);
   } catch {
     return pages;
   }
 
-  for (const project of projects) {
+  for (const project of projectDirs) {
     const projectDir = path.join(evidenceDir, project);
-    let files: string[];
-    try {
-      files = await readdir(projectDir);
-    } catch {
-      continue;
-    }
-    for (const file of files) {
-      if (!file.endsWith('.md')) continue;
+    await loadPagesRecursive(projectDir, `evidence/code/${project}`, pages);
+  }
+
+  return pages;
+}
+
+async function loadPagesRecursive(dir: string, relativePath: string, pages: PageDoc[]): Promise<void> {
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [] as import('node:fs').Dirent[]);
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await loadPagesRecursive(fullPath, `${relativePath}/${entry.name}`, pages);
+    } else if (entry.name.endsWith('.md')) {
       try {
-        const filePath = path.join(projectDir, file);
-        const content = await readFile(filePath, 'utf-8');
+        const content = await readFile(fullPath, 'utf-8');
         const titleMatch = content.match(/^title:\s*(.+)$/m);
-        const title = titleMatch ? titleMatch[1].trim() : file.replace('.md', '');
+        const title = titleMatch ? titleMatch[1].trim() : entry.name.replace('.md', '');
         pages.push({
-          path: `evidence/code/${project}/${file}`,
+          path: `${relativePath}/${entry.name}`,
           title,
           content,
           tokens: tokenize(content),
-          tokenCount: rawTokenCount(content), // B10: raw count for BM25 dl
+          tokenCount: tokenCount(content),
         });
       } catch {
         continue;
       }
     }
   }
-
-  return pages;
 }
 
 // B7: Use protocol loadGraphIndex instead of local implementation
@@ -286,7 +264,7 @@ export async function queryCodeKnowledge(
 
   scored.sort((a, b) => b.score - a.score);
 
-  const TOKEN_BUDGET: Record<string, number> = { route: 500, context: 5000, lookup: 3000 };
+  const TOKEN_BUDGET: Record<string, number> = { route: 1500, context: 5000, lookup: 20000 };
   const budget = TOKEN_BUDGET[depth] ?? 5000;
   const estimateTokens = (text: string) => Math.ceil(text.length / 3.5);
 
@@ -298,9 +276,9 @@ export async function queryCodeKnowledge(
 
     let snippet: string;
     if (depth === 'route') {
-      snippet = page.title;
-    } else if (depth === 'lookup' && results.length === 0) {
-      const maxChars = Math.floor(budget * 3.5 * 0.7);
+      snippet = `${page.title} (${page.path})`;
+    } else if (depth === 'lookup') {
+      const maxChars = Math.floor(budget * 3.5 * 0.7 / Math.max(limit, 1));
       snippet = page.content.slice(0, maxChars);
     } else {
       snippet = extractSnippet(page.content, queryTokens);

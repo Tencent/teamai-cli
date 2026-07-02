@@ -21,7 +21,6 @@ import {
   TEAMAI_RECALL_RULES_END,
   CultureFrontmatterSchema,
   resolveBaseDir,
-  isWikiEnabled,
   getTeamaiHome,
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
@@ -294,8 +293,8 @@ async function pullForScope(
   const pullSpin = spinner(`[${scopeLabel}] Pulling team repo...`).start();
   let currentRev: string | null = null;
   // Reporting-only HTTP endpoints have no team repo to write to, so the
-  // team-repo-dependent built-in skills (teamai-share-learnings, teamai-wiki)
-  // are useless there and must not be injected.
+  // team-repo-dependent built-in skill (teamai-share-learnings) is useless
+  // there and must not be injected.
   let reportingOnly = false;
   try {
     const { label, version, reportingOnly: ro } = await refreshTeamRepo(localConfig);
@@ -319,7 +318,7 @@ async function pullForScope(
           if (cfg) {
             try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig); } catch {}
             try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig); } catch {}
-            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { skipWiki: !isWikiEnabled(), reportingOnly }); } catch {}
+            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { reportingOnly }); } catch {}
           }
         }
         return;
@@ -351,10 +350,7 @@ async function pullForScope(
   const subscribedTags = localConfig.subscribedTags;
 
   // Step 2: Sync each resource type
-  const wikiEnabled = isWikiEnabled();
-  const resourceTypes: ResourceType[] = wikiEnabled
-    ? ['skills', 'rules', 'docs', 'env', 'wiki', 'agents']
-    : ['skills', 'rules', 'docs', 'env', 'agents'];
+  const resourceTypes: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'agents'];
   let totalSynced = 0;
   let desiredSkillNames: Set<string> | null = null;
   let knownRepoSkillNames: Set<string> | null = null;
@@ -516,25 +512,6 @@ async function pullForScope(
       }
     }
 
-    // Wiki tombstone cleanup: wiki is now in shared location, not per-tool
-    try {
-      const wikiHandler = getHandler('wiki');
-      const wikiTombstones = await wikiHandler.readTombstones(localConfig);
-      if (wikiTombstones.size > 0) {
-        const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
-        const wikiDir = path.join(teamaiHome, 'wiki');
-        for (const name of wikiTombstones) {
-          const wikiPath = path.join(wikiDir, `${name}.md`);
-          if (await pathExists(wikiPath)) {
-            await remove(wikiPath);
-            log.debug(`[${scopeLabel}] Cleaned up tombstoned wiki ${name} from shared wiki`);
-          }
-        }
-      }
-    } catch (e) {
-      log.debug(`[${scopeLabel}] Wiki tombstone cleanup skipped: ${(e as Error).message}`);
-    }
-
     if (roleContext) {
       await cleanupInactiveNamespaceSkills(
         freshConfig,
@@ -618,28 +595,7 @@ async function pullForScope(
         }
       }
 
-      // Sync teamwiki/ directory (codebase knowledge graph)
-      const teamwikiRepoDir = path.join(localConfig.repo.localPath, 'teamwiki');
-      if (await pathExists(teamwikiRepoDir)) {
-        const syncTarget = localConfig.projectRoot ?? process.cwd();
-        const localTeamwikiDir = path.join(syncTarget, 'teamwiki');
-        // 检查本地 graph-index 是否比远端更新（避免覆盖未推送的本地产物）
-        const localGraph = path.join(localTeamwikiDir, '.indices', 'graph-index.json');
-        const remoteGraph = path.join(teamwikiRepoDir, '.indices', 'graph-index.json');
-        let shouldSync = true;
-        if (await pathExists(localGraph) && await pathExists(remoteGraph)) {
-          const localStat = await fse.stat(localGraph);
-          const remoteStat = await fse.stat(remoteGraph);
-          if (localStat.mtimeMs > remoteStat.mtimeMs) {
-            log.warn(`[${scopeLabel}] 本地 teamwiki/ 比远端更新，跳过覆盖（请先 teamai push）`);
-            shouldSync = false;
-          }
-        }
-        if (shouldSync) {
-          await fse.copy(teamwikiRepoDir, localTeamwikiDir, { overwrite: true });
-          log.debug(`[${scopeLabel}] Synced teamwiki/ knowledge graph`);
-        }
-      }
+      // teamwiki/ stays inside .teamai/team-repo/ — no copy to project root
 
       // Build the index when ANY of the four categories has content.
       const hasAnySource =
@@ -649,10 +605,8 @@ async function pullForScope(
         await pathExists(skillsRepoDir);
 
       // Resolve codebase directory (project cwd or team repo)
-      const cwdCodebaseDir = path.join(process.cwd(), 'docs', 'team-codebase');
       const repoCodebaseDir = path.join(localConfig.repo.localPath, 'docs', 'team-codebase');
-      const effectiveCodebaseDir = await pathExists(cwdCodebaseDir) ? cwdCodebaseDir
-        : await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
+      const effectiveCodebaseDir = await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
 
       if (hasAnySource || effectiveCodebaseDir) {
         const votesExist = await pathExists(votesDir);
@@ -791,7 +745,7 @@ async function pullForScope(
   if (!options.dryRun) {
     try {
       const { deployBuiltinSkills } = await import('./builtin-skills.js');
-      const deployed = await deployBuiltinSkills(freshConfig, localConfig, { skipWiki: !wikiEnabled, reportingOnly });
+      const deployed = await deployBuiltinSkills(freshConfig, localConfig, { reportingOnly });
       if (deployed > 0) {
         log.debug(`[${scopeLabel}] Deployed ${deployed} built-in skill(s)`);
       }
@@ -1085,8 +1039,12 @@ async function autoMigrateHooksIfNeeded(): Promise<void> {
 
 /**
  * Main pull entry point.
- * Implements Scheme B: user scope is always pulled (baseline),
- * project scope is additionally pulled if detected in cwd.
+ *
+ * Scope isolation (issue #73): when a project-scope install is detected in cwd,
+ * the user scope is **not** touched — pull and reconcile run for the project
+ * scope only. When no project scope is present, the user scope is pulled as
+ * before. Cross-team source skills are always pulled, against whichever scope
+ * is active.
  */
 export async function pull(options: GlobalOptions): Promise<void> {
   // 0. Auto-migrate hooks if settings.json has old format (pre-dispatch era).
@@ -1098,41 +1056,55 @@ export async function pull(options: GlobalOptions): Promise<void> {
     // Non-fatal — pull continues even if hook migration fails
   }
 
-  // 1. Always try to pull user scope
-  let userConfig: LocalConfig | null = null;
-  try {
-    userConfig = await loadLocalConfigForScope('user');
-    if (userConfig) {
-      await pullForScope(userConfig, options);
-    } else {
-      log.debug('No user-scope config found, skipping user pull');
-    }
-  } catch (e) {
-    log.warn(`User-scope pull error: ${(e as Error).message}`);
-  }
-
-  // 2. Detect and pull project scope if cwd has .teamai/config.yaml with scope='project'
+  // 1. Detect project scope first. Its presence decides whether user scope is
+  //    processed at all (issue #73: project install isolates from user).
   let projectConfig: LocalConfig | null = null;
   try {
     projectConfig = await detectProjectConfig();
-    if (projectConfig) {
-      await pullForScope(projectConfig, options);
-    }
   } catch (e) {
-    log.warn(`Project-scope pull error: ${(e as Error).message}`);
+    log.warn(`Project-scope detection error: ${(e as Error).message}`);
+  }
+  const projectMode = projectConfig !== null;
+
+  // 2. User scope — only when NOT in project mode.
+  let userConfig: LocalConfig | null = null;
+  if (projectMode) {
+    log.info('project scope detected, skipped user scope');
+  } else {
+    try {
+      userConfig = await loadLocalConfigForScope('user');
+      if (userConfig) {
+        await pullForScope(userConfig, options);
+      } else {
+        log.debug('No user-scope config found, skipping user pull');
+      }
+    } catch (e) {
+      log.warn(`User-scope pull error: ${(e as Error).message}`);
+    }
   }
 
-  // 2.5. Reconcile built-in + team hooks for every scope. Runs OUTSIDE
+  // 3. Project scope.
+  if (projectConfig) {
+    try {
+      await pullForScope(projectConfig, options);
+    } catch (e) {
+      log.warn(`Project-scope pull error: ${(e as Error).message}`);
+    }
+  }
+
+  // 3.5. Reconcile built-in + team hooks for the active scope only. Runs OUTSIDE
   // pullForScope so it bypasses the "Already synced" rev fast-path — this is
   // what self-heals new built-in hooks and applies hooks.yaml changes on every
-  // session start.
-  await reconcileHooksAllScopes(userConfig, projectConfig, options);
+  // session start. In project mode user is null, so user hooks are left alone.
+  await reconcileHooksAllScopes(projectMode ? null : userConfig, projectConfig, options);
 
-  // 3. Pull cross-team source skills (runs outside pullForScope to bypass fast-path)
-  if (userConfig) {
+  // 4. Pull cross-team source skills (always — even in project mode), against
+  //    the active scope so deploys land in the right base dir.
+  const sourceConfig = projectConfig ?? userConfig;
+  if (sourceConfig) {
     try {
       const { pullSources } = await import('./source.js');
-      await pullSources(userConfig, options);
+      await pullSources(sourceConfig, options);
     } catch (e) {
       log.debug(`Source pull skipped: ${(e as Error).message}`);
     }

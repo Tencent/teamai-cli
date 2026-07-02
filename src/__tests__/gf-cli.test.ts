@@ -43,7 +43,7 @@ vi.mock('node:fs', () => ({
 
 import { spawnSync } from 'node:child_process';
 import { execSync } from 'node:child_process';
-import { gfGetOAuthToken, gfMrCreate } from '../utils/gf-cli.js';
+import { gfGetOAuthToken, gfMrCreate } from '../providers/tgit/gf-cli.js';
 
 describe('gfGetOAuthToken', () => {
   beforeEach(() => {

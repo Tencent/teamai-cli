@@ -14,20 +14,6 @@ export interface NumericConfidence {
   factors: ConfidenceFactor[];
 }
 
-/** Convert legacy WikiConfidence string to NumericConfidence */
-export function fromLegacyConfidence(confidence: WikiConfidence): NumericConfidence {
-  const DEFAULTS: Record<WikiConfidence, number> = {
-    EXTRACTED: 1.0,
-    INFERRED: 0.75,
-    AMBIGUOUS: 0.2
-  };
-  return {
-    score: DEFAULTS[confidence],
-    label: confidence,
-    factors: [{ name: "legacy_conversion", weight: DEFAULTS[confidence], detail: `Converted from ${confidence}` }]
-  };
-}
-
 /** Derive label from numeric score */
 export function labelFromScore(score: number): WikiConfidence {
   if (score >= 0.8) return "EXTRACTED";
@@ -35,12 +21,11 @@ export function labelFromScore(score: number): WikiConfidence {
   return "AMBIGUOUS";
 }
 
-/** Build a NumericConfidence from factors (average of weights) */
+/** Build a NumericConfidence from factors (cumulative evidence, capped at 1.0) */
 export function buildConfidence(factors: ConfidenceFactor[]): NumericConfidence {
   if (factors.length === 0) return { score: 0, label: "AMBIGUOUS", factors: [] };
-  const score = factors.reduce((sum, f) => sum + f.weight, 0) / factors.length;
-  const clamped = Math.min(1, Math.max(0, score));
-  return { score: clamped, label: labelFromScore(clamped), factors };
+  const score = Math.min(1, factors.reduce((sum, f) => sum + f.weight, 0));
+  return { score, label: labelFromScore(score), factors };
 }
 
 // ─── API↔Interface Matching ─────────────────────────────────────────────────

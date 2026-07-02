@@ -131,6 +131,7 @@ teamai init --http https://your-team-host/api --token <api-key>
 | `teamai pull` | 拉取团队资源并注入到本地 AI 工具 |
 | `teamai status` | 查看本地 vs 团队仓库差异 |
 | `teamai recall <query>` | 搜索团队知识库（BM25 + 图谱加权） |
+| `teamai import --dir <path>` | 从本地目录提取代码知识图谱 |
 | `teamai import --from-repo <url>` | 导入仓库代码知识图谱（`teamwiki/`） |
 | `teamai import --from-org <org>` | 批量导入组织下所有仓库 |
 | `teamai import --from-repo-list <yaml>` | 按白名单批量导入 |

@@ -1,17 +1,39 @@
 import path from 'node:path';
 import YAML from 'yaml';
-import { requireInit, saveLocalConfig } from './config.js';
+import { requireInit, saveLocalConfig, saveLocalConfigForScope, detectProjectConfig } from './config.js';
 import { loadTagsConfig, collectTagStats, saveTagsConfig } from './utils/tags.js';
 import { log } from './utils/logger.js';
 import { readFileSafe } from './utils/fs.js';
-import type { GlobalOptions, TagsConfig } from './types.js';
+import type { GlobalOptions, LocalConfig, TagsConfig } from './types.js';
+
+/**
+ * Resolve the active scope for tag operations: project scope when the cwd has
+ * a project-scope install, otherwise user scope. Mirrors recall.ts/contribute.ts
+ * so `tags list/subscribe/unsubscribe` agree with what `recall` actually queries
+ * instead of always reading/writing ~/.teamai/config.yaml (#85).
+ */
+async function resolveTagsScope(): Promise<LocalConfig> {
+    const projectConfig = await detectProjectConfig();
+    return projectConfig ?? (await requireInit()).localConfig;
+}
+
+/**
+ * Persist a LocalConfig back to whichever scope it was loaded from.
+ */
+async function saveTagsScopeConfig(localConfig: LocalConfig): Promise<void> {
+    if (localConfig.scope === 'project') {
+        await saveLocalConfigForScope(localConfig, 'project', localConfig.projectRoot);
+    } else {
+        await saveLocalConfig(localConfig);
+    }
+}
 
 /**
  * List all available tags from the team repo's tags.yaml.
  * Shows tag name, skill count, and rule count.
  */
 export async function tagsList(options: GlobalOptions): Promise<void> {
-    const { localConfig } = await requireInit();
+    const localConfig = await resolveTagsScope();
     const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
 
     if (!tagsConfig) {
@@ -67,7 +89,7 @@ export async function tagsSubscribe(tags: string[], options: GlobalOptions): Pro
         return;
     }
 
-    const { localConfig } = await requireInit();
+    const localConfig = await resolveTagsScope();
     const existing = new Set(localConfig.subscribedTags ?? []);
 
     const newTags: string[] = [];
@@ -87,7 +109,7 @@ export async function tagsSubscribe(tags: string[], options: GlobalOptions): Pro
         ...localConfig,
         subscribedTags: [...existing].sort(),
     };
-    await saveLocalConfig(updatedConfig);
+    await saveTagsScopeConfig(updatedConfig);
     log.success(`Subscribed to: ${newTags.join(', ')}`);
     log.dim('Run `teamai pull` to sync matching resources.');
 }
@@ -101,7 +123,7 @@ export async function tagsUnsubscribe(tags: string[], options: GlobalOptions): P
         return;
     }
 
-    const { localConfig } = await requireInit();
+    const localConfig = await resolveTagsScope();
     const existing = new Set(localConfig.subscribedTags ?? []);
 
     const removed: string[] = [];
@@ -121,7 +143,7 @@ export async function tagsUnsubscribe(tags: string[], options: GlobalOptions): P
         ...localConfig,
         subscribedTags: existing.size > 0 ? [...existing].sort() : undefined,
     };
-    await saveLocalConfig(updatedConfig);
+    await saveTagsScopeConfig(updatedConfig);
     log.success(`Unsubscribed from: ${removed.join(', ')}`);
     log.dim('Run `teamai pull` to clean up filtered-out resources.');
 }
@@ -141,7 +163,7 @@ export async function tagsAdd(
         return;
     }
 
-    const { localConfig } = await requireInit();
+    const localConfig = await resolveTagsScope();
     const repoPath = localConfig.repo.localPath;
 
     let tagsConfig = await loadTagsConfig(repoPath);
@@ -180,7 +202,7 @@ export async function tagsRemove(
         return;
     }
 
-    const { localConfig } = await requireInit();
+    const localConfig = await resolveTagsScope();
     const repoPath = localConfig.repo.localPath;
 
     const tagsConfig = await loadTagsConfig(repoPath);

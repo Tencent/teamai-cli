@@ -126,7 +126,7 @@ function parseClassifyOutput(
     };
   } catch (parseErr: unknown) {
     // 解析失败 → 保守策略：标记为个人（不导入团队库），confidence=0
-    log.warn(`AI 分类结果解析失败，使用保守默认值（isPersonal=true）：${String(parseErr)}`);
+    log.warn(`AI classification parse failed, using conservative default (isPersonal=true): ${String(parseErr)}`);
     return {
       sourcePath,
       rawContent,
@@ -188,7 +188,7 @@ async function persistSession(session: ImportSession, sessionPath: string): Prom
   try {
     await writeFile(sessionPath, JSON.stringify(session, null, 2) + '\n');
   } catch (err: unknown) {
-    log.error(`会话持久化失败 [${sessionPath}]: ${String(err)}`);
+    log.error(`session persist failed [${sessionPath}]: ${String(err)}`);
   }
 }
 
@@ -233,7 +233,7 @@ export async function scanCandidates(opts: {
         const stat = fs.statSync(absPath);
         if (stat.size > MAX_FILE_SIZE_BYTES) continue;
       } catch (statErr: unknown) {
-        log.warn(`无法读取文件信息，跳过: ${absPath}（${String(statErr)}）`);
+        log.warn(`cannot stat file, skipped: ${absPath} (${String(statErr)})`);
         continue;
       }
       const raw = await readFileSafe(absPath);
@@ -257,7 +257,7 @@ export async function scanCandidates(opts: {
           const stat = fs.statSync(absPath);
           if (stat.size > MAX_FILE_SIZE_BYTES) continue;
         } catch (statErr: unknown) {
-          log.warn(`无法读取文件信息，跳过: ${absPath}（${String(statErr)}）`);
+          log.warn(`cannot stat file, skipped: ${absPath} (${String(statErr)})`);
           continue;
         }
         const raw = await readFileSafe(absPath);
@@ -295,7 +295,7 @@ export async function classifyWithAI(
     classified = await callClaudeParallel(tasks, AI_CONCURRENCY);
   } catch (err: unknown) {
     // AggregateError：部分失败，已在 parse 阶段尝试降级处理；此处全量 fallback 保守处理
-    log.error(`AI 分类部分失败，对所有条目使用保守策略: ${String(err)}`);
+    log.error(`AI classification partially failed, using conservative strategy for all entries: ${String(err)}`);
     classified = candidates.map((c) => ({
       sourcePath: c.path,
       rawContent: c.rawContent,
@@ -347,7 +347,7 @@ export async function interactiveReview(
       session = JSON.parse(raw) as ImportSession;
     } catch (loadErr: unknown) {
       // 文件不存在或解析失败 → 新建会话
-      log.warn(`加载会话文件失败，将新建会话: ${String(loadErr)}`);
+      log.warn(`failed to load session file, creating new session: ${String(loadErr)}`);
     }
   }
 
@@ -398,7 +398,7 @@ export async function interactiveReview(
   const total = session.items.length;
 
   if (pendingItems.length === 0) {
-    log.info('所有条目已处理完毕，无需继续交互。');
+    log.info('all entries processed, no further interaction needed.');
     return session;
   }
 
@@ -517,7 +517,7 @@ export async function pushAccepted(
       try {
         assertSafePath(destDir, defaultAllowedRoots());
       } catch (err: unknown) {
-        log.error(`拒绝写出到目录 [${destDir}]: ${String(err)}`);
+        log.error(`refused to write to directory [${destDir}]: ${String(err)}`);
         skipped++;
         continue;
       }
@@ -534,7 +534,7 @@ export async function pushAccepted(
     const destPath = path.join(destDir, filename);
 
     if (opts.dryRun) {
-      log.info(`[dry-run] 将写入: ${destPath}`);
+      log.info(`[dry-run] would write: ${destPath}`);
       pushed++;
       continue;
     }

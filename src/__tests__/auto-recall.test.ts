@@ -615,14 +615,18 @@ describe('autoRecallFromInput', () => {
     let tmpHome: string;
     const originalHome = process.env.HOME;
     const originalDisabled = process.env.TEAMAI_RECALL_DISABLED;
+    let cwdSpy: ReturnType<typeof vi.spyOn>;
 
     beforeEach(() => {
         tmpHome = makeTmpDir();
         process.env.HOME = tmpHome;
+        // Mock cwd so autoDetectInit won't find the real project config
+        cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(tmpHome);
         delete process.env.TEAMAI_RECALL_DISABLED;
     });
 
     afterEach(() => {
+        cwdSpy.mockRestore();
         process.env.HOME = originalHome;
         if (originalDisabled === undefined) {
             delete process.env.TEAMAI_RECALL_DISABLED;
