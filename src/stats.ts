@@ -3,7 +3,10 @@ import path from 'node:path';
 import { readUsageEvents } from './usage-tracker.js';
 import { readFileSafe } from './utils/fs.js';
 import { loadLocalConfig } from './config.js';
-import type { UsageEvent, UserStats } from './types.js';
+import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
+import { totalTokens, addTokenUsage, emptyTokenUsage } from './types.js';
+import { formatTokenCount } from './digest.js';
+import type { UsageEvent, UserStats, TokenUsage, SessionMetrics } from './types.js';
 
 interface SkillStats {
   name: string;
@@ -108,41 +111,119 @@ function formatRelativeTime(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+interface AggregatedDashboardStats {
+  sessions: number;
+  prompts: number;
+  tokens: TokenUsage;
+  interrupt: number;
+  toolReject: number;
+  correction: number;
+}
+
+function aggregateDashboardStats(metrics: Map<string, SessionMetrics>): AggregatedDashboardStats {
+  let prompts = 0, interrupt = 0, toolReject = 0, correction = 0;
+  let tokens = emptyTokenUsage();
+  for (const m of metrics.values()) {
+    prompts += m.prompts;
+    interrupt += m.interrupt;
+    toolReject += m.toolReject;
+    correction += m.correction;
+    tokens = addTokenUsage(tokens, m.tokens);
+  }
+  return { sessions: metrics.size, prompts, tokens, interrupt, toolReject, correction };
+}
+
+function mergeDashboardAndReported(
+  local: AggregatedDashboardStats,
+  reported: UserStats | null,
+): AggregatedDashboardStats {
+  const merged = { ...local };
+  if (reported?.interventions) {
+    merged.sessions += reported.interventions.sessions;
+    merged.interrupt += reported.interventions.interrupt;
+    merged.toolReject += reported.interventions.toolReject;
+    merged.correction += reported.interventions.correction;
+  }
+  if (reported?.prompts) merged.prompts += reported.prompts;
+  if (reported?.tokens) merged.tokens = addTokenUsage(merged.tokens, reported.tokens);
+  return merged;
+}
+
 /**
- * CLI: Show skill usage statistics.
+ * CLI: Show skill usage and session/token statistics.
  * Merges local unreported events with reported team stats for a complete view.
  */
 export async function showStats(): Promise<void> {
   const events = await readUsageEvents();
   const localStats = aggregateUsage(events);
   const reported = await loadReportedStats();
-
   const stats = mergeLocalAndReported(localStats, reported);
 
-  if (stats.length === 0) {
-    console.log('No skill usage data yet.');
-    console.log('Usage tracking starts automatically via PostToolUse hook.');
+  const dashboardEvents = await readEvents();
+  const metricsMap = aggregateSessionMetrics(dashboardEvents);
+  const localDashboard = aggregateDashboardStats(metricsMap);
+  const dashboard = mergeDashboardAndReported(localDashboard, reported);
+  const hasDashboardData =
+    dashboard.sessions > 0 || dashboard.prompts > 0 || totalTokens(dashboard.tokens) > 0;
+
+  if (stats.length === 0 && !hasDashboardData) {
+    console.log('No usage data yet.');
+    console.log('Usage tracking starts automatically via hooks.');
     return;
   }
 
-  console.log('');
-  console.log('Skill Usage Statistics:');
-  console.log('');
+  // ─── Skill usage section ───
+  if (stats.length > 0) {
+    console.log('');
+    console.log('Skill Usage Statistics:');
+    console.log('');
 
-  const maxNameLen = Math.max(...stats.map((s) => s.name.length), 4);
-  const maxCountLen = Math.max(...stats.map((s) => String(s.count).length), 4);
+    const maxNameLen = Math.max(...stats.map((s) => s.name.length), 4);
+    const maxCountLen = Math.max(...stats.map((s) => String(s.count).length), 4);
 
-  for (const stat of stats) {
-    const name = stat.name.padEnd(maxNameLen);
-    const count = String(stat.count).padStart(maxCountLen);
-    const recency = formatRelativeTime(stat.lastUsed);
-    console.log(`  ${name}  ${count} uses   last: ${recency}`);
+    for (const stat of stats) {
+      const name = stat.name.padEnd(maxNameLen);
+      const count = String(stat.count).padStart(maxCountLen);
+      const recency = formatRelativeTime(stat.lastUsed);
+      console.log(`  ${name}  ${count} uses   last: ${recency}`);
+    }
+
+    const totalEvents = stats.reduce((sum, s) => sum + s.count, 0);
+    console.log('');
+    console.log(`Total: ${totalEvents} events across ${stats.length} skill(s)`);
+    if (events.length > 0) {
+      console.log(`  (${events.length} pending upload)`);
+    }
   }
 
-  const totalEvents = stats.reduce((sum, s) => sum + s.count, 0);
-  console.log('');
-  console.log(`Total: ${totalEvents} events across ${stats.length} skill(s)`);
-  if (events.length > 0) {
-    console.log(`  (${events.length} pending upload)`);
+  // ─── Session & usage section ───
+  if (hasDashboardData) {
+    console.log('');
+    console.log('Session & Usage Statistics:');
+    console.log('');
+    console.log(`  Sessions:           ${dashboard.sessions}`);
+    console.log(`  Conversation turns: ${dashboard.prompts}`);
+
+    const total = totalTokens(dashboard.tokens);
+    if (total > 0) {
+      console.log(`  Tokens (total):     ${formatTokenCount(total)}`);
+      console.log(`    Input:            ${formatTokenCount(dashboard.tokens.input)}`);
+      console.log(`    Output:           ${formatTokenCount(dashboard.tokens.output)}`);
+      if (dashboard.tokens.cacheRead > 0) {
+        console.log(`    Cache read:       ${formatTokenCount(dashboard.tokens.cacheRead)}`);
+      }
+      if (dashboard.tokens.cacheCreation > 0) {
+        console.log(`    Cache creation:   ${formatTokenCount(dashboard.tokens.cacheCreation)}`);
+      }
+    }
+
+    const totalInterventions = dashboard.interrupt + dashboard.toolReject + dashboard.correction;
+    if (totalInterventions > 0) {
+      console.log('');
+      console.log(`  Interventions:      ${totalInterventions}`);
+      if (dashboard.interrupt > 0) console.log(`    Interrupts:       ${dashboard.interrupt}`);
+      if (dashboard.toolReject > 0) console.log(`    Tool rejects:     ${dashboard.toolReject}`);
+      if (dashboard.correction > 0) console.log(`    Corrections:      ${dashboard.correction}`);
+    }
   }
 }
