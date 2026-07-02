@@ -141,4 +141,28 @@ describe('doctor — hook checks', () => {
         expect(TEAMAI_HOOK_SUBCOMMANDS).toContain('hook-dispatch');
         expect(TEAMAI_HOOK_SUBCOMMANDS).toHaveLength(1);
     });
+
+    it('should skip tools whose parent directory does not exist', async () => {
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            toolPaths: {
+                claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
+                'codex-internal': { settings: '.codex-internal/hooks.json', skills: '.codex-internal/skills' },
+            },
+        });
+
+        mockedPathExists.mockImplementation(async (filePath: string) => {
+            // .codex-internal directory does not exist
+            if (filePath.includes('.codex-internal')) return false;
+            return true;
+        });
+
+        await doctor({});
+
+        // Should NOT show codex-internal check at all (skipped)
+        const allCalls = consoleSpy.mock.calls.map((c) => c[0]);
+        expect(allCalls.some((msg: string) => msg.includes('codex-internal'))).toBe(false);
+        // Should still show claude check
+        expect(allCalls.some((msg: string) => msg.includes('claude'))).toBe(true);
+    });
 });

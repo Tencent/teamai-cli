@@ -503,14 +503,17 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (paths.settings) {
       const settingsPath = path.join(resolvedBaseDir, paths.settings);
+      const parentDir = path.dirname(settingsPath);
+      if (!await pathExists(parentDir)) {
+        log.debug(`Skipping ${tool}: directory ${parentDir} does not exist (tool not installed)`);
+        continue;
+      }
       try {
         await injectHooks(settingsPath, tool);
       } catch (e) {
         log.warn(`Failed to inject hook into ${tool}: ${(e as Error).message}`);
       }
     } else if (OPENCLAW_TOOLS.has(tool)) {
-      // Lobster family uses HOOK.md + handler.ts. Only inject when the agent is
-      // actually installed (its root dir exists) to avoid creating stray dirs.
       const agentRoot = path.join(resolvedBaseDir, `.${tool}`);
       if (await pathExists(agentRoot)) {
         try {
