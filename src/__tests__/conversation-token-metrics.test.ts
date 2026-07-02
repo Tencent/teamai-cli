@@ -120,6 +120,18 @@ describe('scanTranscriptStop — prompt counting', () => {
     expect(prompts).toBe(3);
     expect(interrupt).toBe(1);
   });
+
+  it('excludes <task-notification> system messages from prompt count', async () => {
+    const taskNotif = '<task-notification>\n<task-id>abc123</task-id>\n<tool-use-id>toolu_01X</tool-use-id>\n<output-file>/tmp/out</output-file>\n</task-notification>';
+    const p = writeTranscript([
+      userText('real prompt from user'),
+      userString(taskNotif),       // system-injected, not human
+      userText(taskNotif),         // also system-injected in array form
+      userText('another real prompt'),
+    ]);
+    const { prompts } = await scanTranscriptStop(p);
+    expect(prompts).toBe(2);
+  });
 });
 
 // ─── aggregateSessionMetrics: prompts + tokens ──────────
