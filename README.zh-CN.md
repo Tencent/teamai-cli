@@ -427,7 +427,7 @@ teamwiki/
 export TEAMAI_RECALL_DISABLED=1
 ```
 
-该环境变量同时也会关闭 auto-recall hook
+该环境变量同时也会关闭 `teamai recall` 的召回质量记录（用于 contribute-check 知识空白检测）
 
 ### `agents` 资源类型
 

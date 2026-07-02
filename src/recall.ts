@@ -9,6 +9,8 @@ import type { GlobalOptions, UserVotes, SearchIndex, LocalConfig } from './types
 import { getTeamaiHome } from './types.js';
 import { queryCodeKnowledge } from './code-knowledge-recall.js';
 import type { CodeKnowledgeResult } from './code-knowledge-recall.js';
+import { recordRecallQuality } from './recall-quality.js';
+import { deriveSessionId } from './utils/session-id.js';
 
 /** Resolve votes dir dynamically (respects HOME changes in tests). */
 function getVotesLocalDir(): string {
@@ -34,6 +36,10 @@ interface ScopedSearchResult extends SearchResult {
 //      │
 //      ├─ formatResults(results)
 //      │   └─ STDOUT (AI-consumable format)
+//      │
+//      ├─ recordRecallQuality(sessionId, results)
+//      │   └─ ~/.teamai/sessions/<sid>-recall-cache.json
+//      │      (read by contribute-check's knowledge-gap detection)
 //      │
 //      └─ autoUpvote(results, username, repoPath)
 //          ├─ write ~/.teamai/votes/<user>.yaml (local)
@@ -328,6 +334,12 @@ export async function recall(
 
   // Limit to top 5
   const topResults = allResults.slice(0, 5);
+
+  // Record quality signal for contribute-check's knowledge-gap detection.
+  // Best-effort and independent of dry-run/verbosity — misses matter too.
+  if (process.env.TEAMAI_RECALL_DISABLED !== '1') {
+    recordRecallQuality(deriveSessionId({}), topResults);
+  }
 
   if (topResults.length === 0) {
     log.info(`No matching learnings found for "${query}".`);

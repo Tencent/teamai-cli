@@ -34,8 +34,6 @@ const TRACK_TIMEOUT_MS = 5_000;
 const DASHBOARD_TIMEOUT_MS = 5_000;
 /** Contribute-check reads local state + events.jsonl — generally fast. */
 const CONTRIBUTE_CHECK_TIMEOUT_MS = 10_000;
-/** Auto-recall involves search index lookup — usually <200ms. */
-const AUTO_RECALL_TIMEOUT_MS = 10_000;
 /** TodoWrite hint is a local dedup-cache check — very fast. */
 const TODOWRITE_HINT_TIMEOUT_MS = 5_000;
 /** MR-hint queries a remote MR/PR API — allow a network round-trip. */
@@ -165,18 +163,6 @@ const contributeCheckHandler: HookHandler = {
   },
 };
 
-const autoRecallHandler: HookHandler = {
-  name: 'auto-recall',
-  async execute(stdin, _tool) {
-    const { autoRecallFromInput, parseHookInput } = await import('./auto-recall.js');
-
-    const input = parseHookInput(stdin);
-    if (!input) return null;
-
-    return autoRecallFromInput(input);
-  },
-};
-
 const todowriteHintHandler: HookHandler = {
   name: 'todowrite-hint',
   async execute(stdin, _tool) {
@@ -249,12 +235,6 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: TRACK_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
-    ...(['Bash', 'Grep', 'WebSearch', 'WebFetch'] as const).map((m) => ({
-      event: 'post-tool-use' as const,
-      matcher: m,
-      handler: autoRecallHandler,
-      timeoutMs: AUTO_RECALL_TIMEOUT_MS,
-    })),
 
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: TRACK_TIMEOUT_MS },

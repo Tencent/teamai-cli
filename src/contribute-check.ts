@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { log } from './utils/logger.js';
 import { readJson, writeJson, ensureDir } from './utils/fs.js';
 import { readEvents } from './dashboard-collector.js';
-import { readRecallQuality } from './auto-recall.js';
+import { readRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
 import type { ContributeState, DashboardEvent } from './types.js';
 import {

@@ -2,13 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { builtinHookDefs, applyBuiltinOverride } from '../builtin-hooks.js';
 
 describe('builtinHookDefs — unified built-in hook model', () => {
-  it('returns 10 built-in defs in canonical order, all tagged source=builtin', () => {
+  it('returns 6 built-in defs in canonical order, all tagged source=builtin', () => {
     const defs = builtinHookDefs('claude');
-    expect(defs).toHaveLength(10);
+    expect(defs).toHaveLength(6);
     expect(defs.every((d) => d.source === 'builtin')).toBe(true);
     expect(defs.map((d) => d.event)).toEqual([
       'SessionStart', 'Stop',
-      'PostToolUse', 'PostToolUse', 'PostToolUse', 'PostToolUse', 'PostToolUse', 'PostToolUse', 'PostToolUse',
+      'PostToolUse', 'PostToolUse', 'PostToolUse',
       'UserPromptSubmit',
     ]);
   });
@@ -38,7 +38,7 @@ describe('applyBuiltinOverride (§4.8)', () => {
     const defs = applyBuiltinOverride(builtinHookDefs('claude'), {
       disabled: ['Hook dispatch post-tool-use TodoWrite'],
     });
-    expect(defs).toHaveLength(9);
+    expect(defs).toHaveLength(5);
     expect(defs.some((d) => d.key === 'Hook dispatch post-tool-use TodoWrite')).toBe(false);
   });
 

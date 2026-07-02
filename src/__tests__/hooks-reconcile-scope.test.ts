@@ -152,8 +152,8 @@ builtin:
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     const cursor = await cursorSettings();
-    // TodoWrite dropped → 6 built-in postToolUse entries instead of 7.
-    expect(cursor.hooks.postToolUse).toHaveLength(6);
+    // TodoWrite dropped → 2 built-in postToolUse entries instead of 3.
+    expect(cursor.hooks.postToolUse).toHaveLength(2);
     expect(cursor.hooks.postToolUse.some((h) => h.command.includes('TodoWrite'))).toBe(false);
     // Stop timeout overridden.
     expect((cursor.hooks.stop[0] as { timeout?: number }).timeout).toBe(99);

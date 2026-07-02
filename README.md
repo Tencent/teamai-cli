@@ -427,7 +427,7 @@ To disable the reminder globally, set:
 export TEAMAI_RECALL_DISABLED=1
 ```
 
-The same env var also disables the auto-recall hook.
+The same env var also disables `teamai recall`'s quality tracking (used by contribute-check's knowledge-gap detection).
 
 ### `agents` resource type
 

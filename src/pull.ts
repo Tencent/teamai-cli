@@ -708,8 +708,8 @@ async function pullForScope(
   //
   // Only injected for Tier-1 tools that have BOTH `agents` and `claudemd`
   // configured. Tools without subagent support (cursor / codex / openclaw /
-  // workbuddy) are skipped — for them the recall flow runs purely via hooks
-  // (auto-recall, TodoWrite hint) and the manual `teamai recall` command.
+  // workbuddy) are skipped — for them the recall flow runs purely via the
+  // TodoWrite hint hook and the manual `teamai recall` command.
   if (!options.dryRun) {
     try {
       const baseDir = resolveBaseDir(localConfig);

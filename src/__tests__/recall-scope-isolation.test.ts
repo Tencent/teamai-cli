@@ -16,6 +16,7 @@ import { recall } from '../recall.js';
 import { detectProjectConfig, requireInit } from '../config.js';
 import { buildIndex } from '../utils/search-index.js';
 import { getTeamaiHome, type LocalConfig } from '../types.js';
+import { readRecallQuality } from '../recall-quality.js';
 
 const PROJECT_TITLE = 'Project Deployment Timeout Fix';
 const USER_TITLE = 'User Deployment Timeout Fix';
@@ -107,5 +108,27 @@ describe('recall scope isolation (issue #73)', () => {
     expect(captured).toContain(USER_TITLE);
     expect(captured).not.toContain(PROJECT_TITLE);
     expect(captured).toContain('[user]');
+  });
+
+  it('records recall quality (hit) for contribute-check knowledge-gap detection', async () => {
+    vi.stubEnv('CLAUDE_SESSION_ID', 'recall-quality-hit-session');
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+
+    await recall('deployment timeout', { dryRun: true });
+
+    expect(readRecallQuality('recall-quality-hit-session')).toEqual(
+      expect.objectContaining({ hitCount: 1, missCount: 0 }),
+    );
+  });
+
+  it('records recall quality (miss) when nothing matches', async () => {
+    vi.stubEnv('CLAUDE_SESSION_ID', 'recall-quality-miss-session');
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+
+    await recall('completely unrelated gibberish query xyzzy', { dryRun: true });
+
+    expect(readRecallQuality('recall-quality-miss-session')).toEqual(
+      expect.objectContaining({ hitCount: 0, missCount: 1 }),
+    );
   });
 });
