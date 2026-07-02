@@ -11,11 +11,13 @@
  */
 export const MAX_TOKENIZE_CHARS = 50_000;
 
+const sharedSegmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' });
+
 export function tokenize(text: string): string[] {
   if (!text) return [];
 
   const input = text.length > MAX_TOKENIZE_CHARS ? text.slice(0, MAX_TOKENIZE_CHARS) : text;
-  const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' });
+  const segmenter = sharedSegmenter;
   const tokens: string[] = [];
 
   // Collect CJK characters in runs for bigram generation
@@ -72,10 +74,10 @@ export function tokenize(text: string): string[] {
 /** Non-deduplicated word-like token count (for BM25 document length). */
 export function tokenCount(text: string): number {
   if (!text) return 0;
-  const input = text.length > MAX_TOKENIZE_CHARS ? text.slice(0, MAX_TOKENIZE_CHARS) : text;
-  const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' });
+  const input = text.length > MAX_TOKENIZE_CHARS
+    ? text.slice(0, MAX_TOKENIZE_CHARS) : text;
   let count = 0;
-  for (const seg of segmenter.segment(input)) {
+  for (const seg of sharedSegmenter.segment(input)) {
     if (seg.isWordLike) count++;
   }
   return count;

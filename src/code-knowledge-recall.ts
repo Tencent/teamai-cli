@@ -39,6 +39,16 @@ const TITLE_BOOST = 3.0;
 const RELATION_WEIGHT: Record<string, number> = { DEPENDS_ON: 3, REFERENCES: 2, MAPS_TO: 2, CONTAINS: 1 };
 const ENTRY_NODE_BOOST = 8;
 
+/** 导航文件：在 context 模式下排除，避免模板文案干扰 BM25 */
+const NAVIGATION_FILES = new Set(['router.md', 'index.md', 'hot.md']);
+
+/** context 模式允许搜索的文件模式（白名单，覆盖 overview + modules + docs 含 G1-G6） */
+const CONTEXT_ALLOWED_PATTERNS = [
+  /overview\.md$/,
+  /modules\/.+\.md$/,
+  /docs\/.+\.md$/,
+];
+
 function countOccurrences(text: string, token: string): number {
   let count = 0;
   let idx = 0;
@@ -109,11 +119,40 @@ function findEntryNodes(queryTokens: string[], graph: GraphIndex): Set<string> {
   return entries;
 }
 
+interface AdjEntry {
+  neighbor: string;
+  relation: string;
+}
+
+function buildAdjacencyMap(graph: GraphIndex): Map<string, AdjEntry[]> {
+  const adj = new Map<string, AdjEntry[]>();
+  for (const edge of graph.edges) {
+    const fromList = adj.get(edge.from);
+    if (fromList) {
+      fromList.push({ neighbor: edge.to, relation: edge.relation });
+    } else {
+      adj.set(edge.from, [{ neighbor: edge.to, relation: edge.relation }]);
+    }
+    const toList = adj.get(edge.to);
+    if (toList) {
+      toList.push({ neighbor: edge.from, relation: edge.relation });
+    } else {
+      adj.set(edge.to, [{ neighbor: edge.from, relation: edge.relation }]);
+    }
+  }
+  return adj;
+}
+
 /**
  * B8 fix: Match page paths to graph node slugs via title/filename matching.
  * B24 fix: Use 2-hop neighbors (halved weight for second hop).
  */
-function computeGraphBoost(page: PageDoc, entryNodes: Set<string>, graph: GraphIndex): number {
+function computeGraphBoost(
+  page: PageDoc,
+  entryNodes: Set<string>,
+  graph: GraphIndex,
+  adj: Map<string, AdjEntry[]>,
+): number {
   // Match page to graph nodes by title
   const pageTitle = page.title.toLowerCase();
   const pageFile = page.path.replace(/^evidence\/code\/[^/]+\//, '').replace('.md', '');
@@ -127,33 +166,33 @@ function computeGraphBoost(page: PageDoc, entryNodes: Set<string>, graph: GraphI
     }
   }
 
-  // Check 1-hop and 2-hop neighbors
+  // Check 1-hop and 2-hop neighbors using adjacency map
   let maxBoost = 0;
-  for (const edge of graph.edges) {
-    const isFrom = entryNodes.has(edge.from);
-    const isTo = entryNodes.has(edge.to);
-    if (!isFrom && !isTo) continue;
+  for (const entrySlug of entryNodes) {
+    const neighbors = adj.get(entrySlug);
+    if (!neighbors) continue;
 
-    const neighborSlug = isFrom ? edge.to : edge.from;
-    const neighborParts = neighborSlug.split('/');
-    const neighborName = (neighborParts.pop() ?? '').toLowerCase();
+    for (const { neighbor: neighborSlug, relation } of neighbors) {
+      const neighborParts = neighborSlug.split('/');
+      const neighborName = (neighborParts.pop() ?? '').toLowerCase();
 
-    if (neighborName && (pageTitle.includes(neighborName) || pageFile.includes(neighborName))) {
-      const relWeight = RELATION_WEIGHT[edge.relation] ?? 1;
-      const boost = relWeight * 0.8; // 1-hop
-      if (boost > maxBoost) maxBoost = boost;
-    }
-
-    // 2-hop: check neighbors of this neighbor (B24)
-    for (const edge2 of graph.edges) {
-      if (edge2.from !== neighborSlug && edge2.to !== neighborSlug) continue;
-      const hop2Slug = edge2.from === neighborSlug ? edge2.to : edge2.from;
-      const hop2Parts = hop2Slug.split('/');
-      const hop2Name = (hop2Parts.pop() ?? '').toLowerCase();
-      if (hop2Name && (pageTitle.includes(hop2Name) || pageFile.includes(hop2Name))) {
-        const relWeight = RELATION_WEIGHT[edge2.relation] ?? 1;
-        const boost = relWeight * 0.4; // 2-hop: half weight
+      if (neighborName && (pageTitle.includes(neighborName) || pageFile.includes(neighborName))) {
+        const relWeight = RELATION_WEIGHT[relation] ?? 1;
+        const boost = relWeight * 0.8; // 1-hop
         if (boost > maxBoost) maxBoost = boost;
+      }
+
+      // 2-hop: check neighbors of this neighbor
+      const hop2Neighbors = adj.get(neighborSlug);
+      if (!hop2Neighbors) continue;
+      for (const { neighbor: hop2Slug, relation: rel2 } of hop2Neighbors) {
+        const hop2Parts = hop2Slug.split('/');
+        const hop2Name = (hop2Parts.pop() ?? '').toLowerCase();
+        if (hop2Name && (pageTitle.includes(hop2Name) || pageFile.includes(hop2Name))) {
+          const relWeight = RELATION_WEIGHT[rel2] ?? 1;
+          const boost = relWeight * 0.4; // 2-hop: half weight
+          if (boost > maxBoost) maxBoost = boost;
+        }
       }
     }
   }
@@ -178,10 +217,30 @@ function extractSnippet(content: string, queryTokens: string[], maxLen: number =
   return snippet;
 }
 
-async function loadWikiPages(wikiRoot: string): Promise<PageDoc[]> {
-  const evidenceDir = path.join(wikiRoot, 'evidence', 'code');
+async function loadWikiPages(wikiRoot: string, depth: 'route' | 'context' | 'lookup'): Promise<PageDoc[]> {
   const pages: PageDoc[] = [];
 
+  if (depth === 'route') {
+    // route 模式：只加载 router.md（路由入口）
+    const routerPath = path.join(wikiRoot, 'router.md');
+    try {
+      const content = await readFile(routerPath, 'utf-8');
+      const titleMatch = content.match(/^title:\s*(.+)$/m);
+      const title = titleMatch ? titleMatch[1].trim() : 'Team Wiki Router';
+      pages.push({
+        path: 'router.md',
+        title,
+        content,
+        tokens: tokenize(content),
+        tokenCount: tokenCount(content),
+      });
+    } catch {
+      // router.md 不存在则跳过
+    }
+    return pages;
+  }
+
+  const evidenceDir = path.join(wikiRoot, 'evidence', 'code');
   let projectDirs: string[];
   try {
     const entries = await readdir(evidenceDir, { withFileTypes: true });
@@ -192,25 +251,49 @@ async function loadWikiPages(wikiRoot: string): Promise<PageDoc[]> {
 
   for (const project of projectDirs) {
     const projectDir = path.join(evidenceDir, project);
-    await loadPagesRecursive(projectDir, `evidence/code/${project}`, pages);
+    await loadPagesRecursive(projectDir, `evidence/code/${project}`, pages, depth);
   }
 
   return pages;
 }
 
-async function loadPagesRecursive(dir: string, relativePath: string, pages: PageDoc[]): Promise<void> {
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [] as import('node:fs').Dirent[]);
+const MAX_RECURSION_DEPTH = 10;
+
+async function loadPagesRecursive(
+  dir: string,
+  relativePath: string,
+  pages: PageDoc[],
+  depth: 'route' | 'context' | 'lookup',
+  currentDepth: number = 0,
+): Promise<void> {
+  if (currentDepth >= MAX_RECURSION_DEPTH) return;
+  const entries = await readdir(dir, { withFileTypes: true })
+    .catch(() => [] as import('node:fs').Dirent[]);
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      await loadPagesRecursive(fullPath, `${relativePath}/${entry.name}`, pages);
+      await loadPagesRecursive(
+        fullPath, `${relativePath}/${entry.name}`,
+        pages, depth, currentDepth + 1,
+      );
     } else if (entry.name.endsWith('.md')) {
+      const relFilePath = `${relativePath}/${entry.name}`;
+      if (depth === 'context') {
+        // 先检查白名单模式（overview/modules/docs 下的文件）
+        if (!CONTEXT_ALLOWED_PATTERNS.some(p => p.test(relFilePath))) continue;
+        // 仅排除项目根层级的导航文件（不影响 docs/index.md 等嵌套文件）
+        const relSegments = relFilePath.split('/');
+        const depthFromProject = relSegments.length - 3; // evidence/code/<project>/ = 3 segments
+        if (depthFromProject <= 1 && NAVIGATION_FILES.has(entry.name)) continue;
+      }
       try {
         const content = await readFile(fullPath, 'utf-8');
         const titleMatch = content.match(/^title:\s*(.+)$/m);
-        const title = titleMatch ? titleMatch[1].trim() : entry.name.replace('.md', '');
+        const title = titleMatch
+          ? titleMatch[1].trim()
+          : entry.name.replace('.md', '');
         pages.push({
-          path: `${relativePath}/${entry.name}`,
+          path: relFilePath,
           title,
           content,
           tokens: tokenize(content),
@@ -232,6 +315,7 @@ async function loadGraph(wikiRoot: string): Promise<GraphIndex | null> {
 export interface QueryCodeKnowledgeOptions {
   wikiRoot: string;
   limit?: number;
+  /** route: 只返回路由建议；context: 搜索 overview+modules+docs；lookup: 全量搜索 */
   depth?: 'route' | 'context' | 'lookup';
 }
 
@@ -241,8 +325,18 @@ export async function queryCodeKnowledge(
 ): Promise<CodeKnowledgeResult[]> {
   const { wikiRoot, limit = 5, depth = 'context' } = options;
 
-  const pages = await loadWikiPages(wikiRoot);
+  const pages = await loadWikiPages(wikiRoot, depth);
   if (pages.length === 0) return [];
+
+  if (depth === 'route') {
+    return [{
+      page: pages[0].path,
+      title: pages[0].title,
+      score: 10,
+      snippet: pages[0].content.slice(0, 800),
+      kind: 'codebase',
+    }];
+  }
 
   const graph = await loadGraph(wikiRoot);
   const queryTokens = tokenize(query);
@@ -250,12 +344,13 @@ export async function queryCodeKnowledge(
 
   const stats = buildCorpusStats(pages);
   const entryNodes = graph ? findEntryNodes(queryTokens, graph) : new Set<string>();
+  const adj = graph ? buildAdjacencyMap(graph) : new Map<string, AdjEntry[]>();
 
   const scored: Array<{ page: PageDoc; score: number }> = [];
   for (const page of pages) {
     let score = scoreBM25(page, queryTokens, stats);
     if (graph) {
-      score += computeGraphBoost(page, entryNodes, graph);
+      score += computeGraphBoost(page, entryNodes, graph, adj);
     }
     if (score > 0) {
       scored.push({ page, score });
@@ -264,7 +359,7 @@ export async function queryCodeKnowledge(
 
   scored.sort((a, b) => b.score - a.score);
 
-  const TOKEN_BUDGET: Record<string, number> = { route: 1500, context: 5000, lookup: 20000 };
+  const TOKEN_BUDGET: Record<string, number> = { route: 2000, context: 5000, lookup: 20000 };
   const budget = TOKEN_BUDGET[depth] ?? 5000;
   const estimateTokens = (text: string) => Math.ceil(text.length / 3.5);
 
@@ -275,9 +370,7 @@ export async function queryCodeKnowledge(
     if (results.length >= limit) break;
 
     let snippet: string;
-    if (depth === 'route') {
-      snippet = `${page.title} (${page.path})`;
-    } else if (depth === 'lookup') {
+    if (depth === 'lookup') {
       const maxChars = Math.floor(budget * 3.5 * 0.7 / Math.max(limit, 1));
       snippet = page.content.slice(0, maxChars);
     } else {

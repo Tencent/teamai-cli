@@ -15,7 +15,7 @@ export interface DeepEnrichOptions {
 
 interface ProgressState {
   project: string;
-  phase: 'pending' | 'components' | 'architecture' | 'graph' | 'done';
+  phase: 'pending' | 'components' | 'architecture' | 'graph' | 'ai-graph' | 'index-enhance' | 'done';
   componentsDone: string[];
   componentsPending: string[];
   startedAt: string;
@@ -70,7 +70,7 @@ async function loadContext(evidenceDir: string): Promise<EnrichContext> {
 
   const [indexMd, callChains, overview] = await Promise.all([
     readFileSafe(path.join(evidenceDir, 'index.md')),
-    readFileSafe(path.join(evidenceDir, 'call-chains.md')),
+    readFileSafe(path.join(evidenceDir, 'dependency-paths.md')),
     readFileSafe(path.join(evidenceDir, 'overview.md')),
   ]);
 
@@ -104,7 +104,10 @@ function progressPath(evidenceDir: string): string {
   return path.join(evidenceDir, PROGRESS_PATH_SUBDIR, PROGRESS_FILENAME);
 }
 
-const VALID_PHASES = new Set<string>(['pending', 'components', 'architecture', 'graph', 'done']);
+const VALID_PHASES = new Set<string>([
+  'pending', 'components', 'architecture', 'graph',
+  'ai-graph', 'index-enhance', 'done',
+]);
 
 function isValidProgressState(v: unknown, project: string): v is ProgressState {
   if (typeof v !== 'object' || v === null) return false;
@@ -230,28 +233,113 @@ ${interfaceSummary}
 function buildG1RelationsDoc(manifest: Manifest): string {
   const edges = manifest.edges ?? [];
   if (edges.length === 0) {
-    return '# 组件关系矩阵\n\n（暂无依赖边数据）\n';
+    return [
+      '# 组件关系矩阵', '',
+      '（暂无依赖边数据）', '',
+      '> 可能原因：AI enrich 未执行（skipEnrich=true）或未检测到组件间依赖关系。',
+      '> 尝试：重新运行 `teamai import --from-repo <url>`（不带 --skip-enrich）。',
+      '',
+    ].join('\n');
   }
-  const rows = edges.map(e => `| ${e.from} | ${e.to} | ${e.relation ?? 'DEPENDS_ON'} |`).join('\n');
-  return `# 组件关系矩阵\n\n| 来源组件 | 目标组件 | 关系类型 |\n|----------|----------|----------|\n${rows}\n`;
+
+  const components = new Set<string>();
+  const forwardDeps = new Map<string, string[]>();
+  const reverseDeps = new Map<string, string[]>();
+
+  for (const e of edges) {
+    components.add(e.from);
+    components.add(e.to);
+    const fwd = forwardDeps.get(e.from) ?? [];
+    fwd.push(`${e.to} (${e.relation ?? 'DEPENDS_ON'})`);
+    forwardDeps.set(e.from, fwd);
+    const rev = reverseDeps.get(e.to) ?? [];
+    rev.push(`${e.from} (${e.relation ?? 'DEPENDS_ON'})`);
+    reverseDeps.set(e.to, rev);
+  }
+
+  const lines = [
+    '# 组件关系矩阵',
+    '<!-- search-anchor: 依赖, 关系, 上游, 下游, DEPENDS_ON, imports, 模块关系 -->',
+    '',
+    `共 ${components.size} 个组件，${edges.length} 条边。`,
+    '',
+    '## 依赖表',
+    '',
+    '| 来源组件 | 目标组件 | 关系类型 |',
+    '|----------|----------|----------|',
+    ...edges.slice(0, 50).map(e => `| ${e.from} | ${e.to} | ${e.relation ?? 'DEPENDS_ON'} |`),
+    '',
+    '## 正向依赖索引（X 依赖→）',
+    '',
+  ];
+
+  for (const [mod, deps] of [...forwardDeps.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 20)) {
+    lines.push(`- **${mod}** → ${deps.join(', ')}`);
+  }
+
+  lines.push('', '## 反向依赖索引（→X 被谁依赖）', '');
+
+  for (const [mod, deps] of [...reverseDeps.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 20)) {
+    lines.push(`- **${mod}** ← ${deps.join(', ')}`);
+  }
+
+  lines.push('');
+  return lines.join('\n');
 }
 
 function buildG2DataflowDoc(callChains: string): string {
   if (!callChains.trim()) {
-    return '# 数据流图\n\n（暂无调用链数据）\n';
+    return '# 数据流图\n\n（暂无调用链数据）\n\n> 可能原因：代码中未检测到入口→服务→数据层的多层调用链。\n> 常见于纯库项目或单层架构项目。\n';
   }
-  // 提取 entry→data 路径行（以 → 或 -> 连接的行）
-  const lines = callChains.split('\n').filter(l => /→|->/.test(l));
-  if (lines.length === 0) {
-    return `# 数据流图\n\n\`\`\`\n${callChains.slice(0, 2000)}\n\`\`\`\n`;
+
+  const lines = [
+    '# 数据流图',
+    '<!-- search-anchor: 调用链, 数据流, 请求路径, entry, flow, 入口, 链路 -->',
+    '',
+  ];
+
+  const rawLines = callChains.split('\n');
+  const chainBlocks: Array<{ entry: string; steps: string[] }> = [];
+  let currentBlock: { entry: string; steps: string[] } | null = null;
+
+  for (const line of rawLines) {
+    const entryMatch = line.match(/^##?\s+(.+)/);
+    if (entryMatch) {
+      if (currentBlock) chainBlocks.push(currentBlock);
+      currentBlock = { entry: entryMatch[1], steps: [] };
+    } else if (currentBlock && line.trim()) {
+      currentBlock.steps.push(line.trim());
+    }
   }
-  const flowRows = lines.slice(0, 30).map(l => `| ${l.trim()} |`).join('\n');
-  return `# 数据流图\n\n| 调用链路径 |\n|------------|\n${flowRows}\n`;
+  if (currentBlock) chainBlocks.push(currentBlock);
+
+  if (chainBlocks.length > 0) {
+    for (const block of chainBlocks.slice(0, 15)) {
+      lines.push(`## ${block.entry}`, '');
+      for (const step of block.steps.slice(0, 10)) {
+        lines.push(`  ${step}`);
+      }
+      lines.push('');
+    }
+  } else {
+    const flowLines = rawLines.filter(l => /→|->/.test(l));
+    if (flowLines.length > 0) {
+      lines.push('| 调用链路径 |', '|------------|');
+      for (const l of flowLines.slice(0, 30)) {
+        lines.push(`| ${l.trim()} |`);
+      }
+    } else {
+      lines.push('```', callChains.slice(0, 2000), '```');
+    }
+  }
+
+  lines.push('');
+  return lines.join('\n');
 }
 
 function buildG3InterfacesDoc(interfacesMd: string): string {
   if (!interfacesMd.trim()) {
-    return '# 接口映射表\n\n（暂无接口数据）\n';
+    return '# 接口映射表\n\n（暂无接口数据）\n\n> 可能原因：未检测到 HTTP/gRPC/MQ 等对外接口定义。\n> 仅当代码中存在路由注册、Proto 定义或消息队列声明时才会提取接口。\n';
   }
   return `# 接口映射表\n\n${interfacesMd}\n`;
 }
@@ -412,15 +500,197 @@ async function runPhaseGraph(
   log.debug(`deep-enrich[${project}]: 图谱文档写入 ${docsDir}`);
 }
 
+// ─── Phase 4: AI 图谱（G5 场景序列图 + G6 多跳路径）──────────
+
+function buildG5Prompt(project: string, architecture: string, callChains: string, modules: string): string {
+  return `你是一个高级架构师。基于以下项目信息，为 Top-5 核心业务场景生成 mermaid sequenceDiagram。
+
+项目：${project}
+
+架构文档摘要（前2000字）：
+${architecture.slice(0, 2000)}
+
+调用链数据：
+${callChains.slice(0, 1500)}
+
+模块列表：
+${modules.slice(0, 1000)}
+
+要求：
+1. 识别项目中真实存在的核心业务场景（最多 5 个，如果项目较小则按实际数量输出，不要虚构）
+2. 每个场景生成一个 mermaid sequenceDiagram
+3. 每个图后附 2-3 句文字说明关键决策点
+4. 参与者使用实际模块名/组件名
+5. 如果可识别的真实场景少于 3 个，只输出实际存在的场景
+
+输出格式：
+# 核心业务场景序列图
+<!-- search-anchor: 流程, 场景, 序列图, sequence, 业务流, 完整流程 -->
+
+## 场景 1: <名称>
+\`\`\`mermaid
+sequenceDiagram
+...
+\`\`\`
+<说明>
+
+## 场景 2: ...
+`;
+}
+
+function buildG6Content(project: string, manifest: Manifest): string {
+  const edges = manifest.edges ?? [];
+  if (edges.length === 0) {
+    return '# 多跳传递依赖分析\n<!-- search-anchor: 传递依赖, 爆炸半径, 影响范围, blast radius, transitive -->\n\n（暂无依赖边数据，无法计算传递依赖）\n';
+  }
+
+  // 正向邻接表（from→to）和反向邻接表（to→from，用于爆炸半径 BFS）
+  const adj = new Map<string, Set<string>>();
+  const revAdj = new Map<string, Set<string>>();
+  for (const e of edges) {
+    const fwd = adj.get(e.from) ?? new Set<string>();
+    fwd.add(e.to);
+    adj.set(e.from, fwd);
+    const rev = revAdj.get(e.to) ?? new Set<string>();
+    rev.add(e.from);
+    revAdj.set(e.to, rev);
+  }
+
+  const allNodes = [...new Set([...adj.keys(), ...revAdj.keys()])];
+  const degree = allNodes.map(n => ({
+    node: n,
+    total: (adj.get(n)?.size ?? 0) + (revAdj.get(n)?.size ?? 0),
+  })).sort((a, b) => b.total - a.total);
+
+  const topNodes = degree.slice(0, 5);
+
+  const lines = [
+    `# ${project} — 多跳传递依赖分析`,
+    '<!-- search-anchor: 传递依赖, 爆炸半径, 影响范围, blast radius, transitive, 级联 -->',
+    '',
+    `基于 ${edges.length} 条边、${allNodes.length} 个节点的 3-hop BFS 分析。`,
+    '',
+  ];
+
+  for (const { node, total } of topNodes) {
+    lines.push(`## ${node}（degree: ${total}）`, '');
+
+    // 3-hop BFS on reverse edges: find who transitively depends on this node
+    const visited = new Set<string>([node]);
+    let frontier = [node];
+    const hopResults: string[][] = [[], [], []];
+    for (let hop = 0; hop < 3; hop++) {
+      const nextFrontier: string[] = [];
+      for (const curr of frontier) {
+        const dependents = revAdj.get(curr);
+        if (!dependents) continue;
+        for (const next of dependents) {
+          if (!visited.has(next)) {
+            visited.add(next);
+            nextFrontier.push(next);
+            hopResults[hop].push(next);
+          }
+        }
+      }
+      frontier = nextFrontier;
+    }
+
+    lines.push('| Hop | 可达组件 | 数量 |');
+    lines.push('|-----|---------|------|');
+    lines.push(`| 1-hop | ${hopResults[0].slice(0, 8).join(', ') || '—'} | ${hopResults[0].length} |`);
+    lines.push(`| 2-hop | ${hopResults[1].slice(0, 8).join(', ') || '—'} | ${hopResults[1].length} |`);
+    lines.push(`| 3-hop | ${hopResults[2].slice(0, 8).join(', ') || '—'} | ${hopResults[2].length} |`);
+    lines.push('');
+    const affected = visited.size - 1;
+    const pct = Math.round(affected / allNodes.length * 100);
+    lines.push(`**爆炸半径**: ${node} 变更可能影响 ${affected} 个组件（${pct}% 覆盖率）`);
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+async function runPhaseAiGraph(
+  opts: DeepEnrichOptions,
+  ctx: EnrichContext,
+  docsDir: string,
+): Promise<{ g5Generated: boolean; g6Generated: boolean }> {
+  const { project, evidenceDir } = opts;
+  log.info(`deep-enrich[${project}]: Phase 4 — 生成 AI 图谱文档（G5/G6）`);
+
+  await mkdir(docsDir, { recursive: true });
+
+  // G6: 确定性 BFS（不需要 AI）
+  const g6HasEdges = (ctx.manifest.edges ?? []).length > 0;
+  const g6 = buildG6Content(project, ctx.manifest);
+  await writeFile(path.join(docsDir, 'graph-g6-multihop.md'), g6, 'utf-8');
+  log.debug(`deep-enrich[${project}]: G6 多跳路径写入完成`);
+
+  // G5: AI 生成场景序列图（需要足够的模块数据）
+  let g5Generated = false;
+  if (ctx.moduleDocs.size < 2) {
+    log.warn(`deep-enrich[${project}]: 模块数不足（${ctx.moduleDocs.size} < 2），跳过 G5`);
+    return { g5Generated, g6Generated: g6HasEdges };
+  }
+  const architectureMd = await readFileSafe(path.join(docsDir, 'architecture.md'));
+  if (!architectureMd.trim()) {
+    log.warn(`deep-enrich[${project}]: 无架构文档，跳过 G5 场景序列图生成`);
+    return { g5Generated, g6Generated: g6HasEdges };
+  }
+
+  const moduleList = [...ctx.moduleDocs.entries()]
+    .map(([name, content]) => `${name}: ${content.slice(0, 200)}`)
+    .join('\n');
+
+  const prompt = buildG5Prompt(project, architectureMd, ctx.callChains, moduleList);
+
+  try {
+    const g5Content = await callClaude(prompt);
+    if (g5Content.trim()) {
+      await writeFile(path.join(docsDir, 'graph-g5-scenarios.md'), g5Content, 'utf-8');
+      log.debug(`deep-enrich[${project}]: G5 场景序列图写入完成`);
+      g5Generated = true;
+    }
+  } catch (e) {
+    log.warn(`deep-enrich[${project}]: G5 场景序列图生成失败，跳过: ${(e as Error).message}`);
+  }
+  return { g5Generated, g6Generated: g6HasEdges };
+}
+
+// ─── Phase 5: 索引增强（router.md + per-project index.md 重写）──
+
+async function runPhaseIndexEnhance(
+  opts: DeepEnrichOptions,
+  ctx: EnrichContext,
+  docsDir: string,
+  graphFlags?: { g5Generated: boolean; g6Generated: boolean },
+): Promise<void> {
+  const { project, evidenceDir } = opts;
+  log.info(`deep-enrich[${project}]: Phase 5 — 索引增强`);
+
+  const { graphReadmeTemplate } = await import('./wiki-engine/adapters/templates.js');
+
+  // 写入 graph/README.md 路由分发表（按实际生成情况动态渲染）
+  await mkdir(docsDir, { recursive: true });
+  const graphReadme = graphReadmeTemplate(project, {
+    hasG5: graphFlags?.g5Generated ?? false,
+    hasG6: graphFlags?.g6Generated ?? true,
+  });
+  await writeFile(path.join(docsDir, 'README.md'), graphReadme, 'utf-8');
+  log.debug(`deep-enrich[${project}]: graph/README.md 路由表写入完成`);
+}
+
 // ─── 主函数 ─────────────────────────────────────────────────
 
 /**
  * 对已导入仓库执行深度 AI 知识生成。
  *
- * 读取 evidenceDir 中已有的确定性提取结果，并发调用 AI 生成：
- * - Phase 1: 每个组件的设计文档（concurrency=2）
- * - Phase 2: 整体架构总览文档（单次调用）
- * - Phase 3: 确定性图谱文档（无需 AI，直接渲染）
+ * 读取 evidenceDir 中已有的确定性提取结果，分阶段生成：
+ * - Phase 1: 每个组件的设计文档（AI，concurrency=2）
+ * - Phase 2: 整体架构总览文档（AI，单次调用）
+ * - Phase 3: 确定性图谱文档（G1/G2/G3，无需 AI）
+ * - Phase 4: AI 图谱文档（G5 场景序列图 + G6 多跳路径）
+ * - Phase 5: 索引增强（graph/README.md 路由分发表）
  *
  * 支持断点续传：通过 _review/progress.json 记录已完成组件。
  *
@@ -465,14 +735,29 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<void> {
     await runPhaseArchitecture(opts, ctx, docsDir);
   }
 
-  // 5. Phase 3: 图谱文档
+  // 5. Phase 3: 确定性图谱文档
   if (progress.phase === 'architecture' || progress.phase === 'graph') {
     progress.phase = 'graph';
     await saveProgress(evidenceDir, progress);
     await runPhaseGraph(opts, ctx, docsDir);
   }
 
-  // 6. 完成
+  // 6. Phase 4: AI 图谱（G5 场景序列图 + G6 多跳路径）
+  let graphFlags = { g5Generated: false, g6Generated: true };
+  if (progress.phase === 'graph' || progress.phase === 'ai-graph') {
+    progress.phase = 'ai-graph';
+    await saveProgress(evidenceDir, progress);
+    graphFlags = await runPhaseAiGraph(opts, ctx, docsDir);
+  }
+
+  // 7. Phase 5: 索引增强（graph/README.md 路由表）
+  if (progress.phase === 'ai-graph' || progress.phase === 'index-enhance') {
+    progress.phase = 'index-enhance';
+    await saveProgress(evidenceDir, progress);
+    await runPhaseIndexEnhance(opts, ctx, docsDir, graphFlags);
+  }
+
+  // 8. 完成
   progress.phase = 'done';
   await saveProgress(evidenceDir, progress);
   log.success(`deep-enrich[${project}]: 深度知识生成完成`);

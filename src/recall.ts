@@ -230,6 +230,12 @@ export async function recall(
     return;
   }
 
+  const VALID_DEPTHS = new Set(['route', 'context', 'lookup']);
+  if (options.depth && !VALID_DEPTHS.has(options.depth)) {
+    log.warn(`Invalid --depth "${options.depth}", falling back to "context". Valid: route, context, lookup`);
+    options.depth = 'context';
+  }
+
   // Scope isolation (issue #73): when a project-scope install is detected in
   // cwd, recall queries the project index ONLY. Otherwise it falls back to the
   // user scope. The two scopes are never merged anymore.

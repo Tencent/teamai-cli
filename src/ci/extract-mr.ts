@@ -370,8 +370,17 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
           const srcWiki = path.join(businessRepo, 'teamwiki');
           const teamWikiRoot = path.join(path.resolve(opts.teamRepo!), 'teamwiki');
           if (await fse.pathExists(srcWiki)) {
-            await fse.copy(srcWiki, teamWikiRoot, { overwrite: true });
+            // Copy per-repo evidence only (not global .indices/) to avoid overwriting aggregated graph
+            const evidenceSrc = path.join(srcWiki, 'evidence', 'code', projectName);
+            const evidenceDest = path.join(teamWikiRoot, 'evidence', 'code', projectName);
+            if (await fse.pathExists(evidenceSrc)) {
+              await fse.ensureDir(evidenceDest);
+              await fse.copy(evidenceSrc, evidenceDest, { overwrite: true });
+            }
             await fse.remove(srcWiki).catch(() => {});
+            // Re-aggregate global graph from all per-repo graphs
+            const { aggregateGlobalGraph } = await import('../graph-aggregate.js');
+            await aggregateGlobalGraph(teamWikiRoot);
             graphWritten = true;
             log.success(`teamwiki/ 图谱已更新到团队仓库`);
           }
