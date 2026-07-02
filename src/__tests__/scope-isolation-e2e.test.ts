@@ -21,7 +21,7 @@ const CLI = path.join(ROOT, 'dist', 'index.js');
 
 const PROJECT_TITLE = 'Project Deployment Timeout Fix';
 const USER_TITLE = 'User Deployment Timeout Fix';
-const SKIP_MSG = '检测到 project scope，已跳过 user scope';
+const SKIP_MSG = 'project scope detected, skipped user scope';
 
 interface RunResult {
   code: number | null;
