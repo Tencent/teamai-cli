@@ -104,7 +104,7 @@ describe('hooks', () => {
       const result = mockFiles['/test/codex-hooks.json'] as { hooks: Record<string, Array<{ matcher?: string; description?: string; hooks: Array<{ command: string }> }>> };
       expect(result.hooks).toBeDefined();
       expect(Object.keys(result.hooks)).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit']);
-      expect(result.hooks.PostToolUse).toHaveLength(7);
+      expect(result.hooks.PostToolUse).toHaveLength(3);
       expect(result.hooks.SessionStart[0].hooks[0].command).toContain('--tool codex');
       expect(result.hooks.SessionStart[0].description).toBeUndefined();
     });
