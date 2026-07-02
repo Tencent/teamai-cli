@@ -23,6 +23,15 @@ import {
   saveGraphIndex,
 } from './wiki-engine/adapters/index.js';
 import type { CodeFact, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
+import {
+  loadFactsCache,
+  saveFactsCache,
+  loadInterfacesCache,
+  saveInterfacesCache,
+  pruneFactsByFiles,
+  mergeInterfaceInventories,
+} from './wiki-engine/code-knowledge/code-incremental.js';
+import { writeIfChanged } from './utils/fs.js';
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { routerTemplate, indexTemplate, HOT_TEMPLATE } from './wiki-engine/adapters/templates.js';
 import type { DomainGroup, IndexStats } from './wiki-engine/adapters/templates.js';
@@ -519,6 +528,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   const manifestPath = path.join(wikiRoot, 'source-manifest.json');
 
   let changedFiles: string[] | undefined;
+  let deletedFiles: string[] = [];
   if (opts.incremental) {
     try {
       const changes = await detectCodeIncrementalChanges(root, manifestPath, project);
@@ -531,8 +541,9 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
         return;
       }
       changedFiles = [...changes.added, ...changes.changed];
+      deletedFiles = changes.deleted;
       if (!opts.json) {
-        console.log(chalk.dim(`[extract] incremental: ${changedFiles.length} files changed`));
+        console.log(chalk.dim(`[extract] incremental: ${changedFiles.length} files changed, ${deletedFiles.length} deleted`));
       }
     } catch {
       if (!opts.json) {
@@ -541,8 +552,9 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     }
   }
 
-  const { files } = await collectCode({ root, maxFiles, changedFiles });
-  if (files.length === 0) {
+  const { files, manifest: collectionManifest } = await collectCode({ root, maxFiles, changedFiles });
+  if (files.length === 0 && !changedFiles) {
+    // 全量模式下无文件
     if (opts.json) {
       console.log(JSON.stringify({ status: 'no-files', project }));
     } else {
@@ -551,21 +563,76 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     return;
   }
 
-  const facts = extractCodeFacts(files);
+  // 提取变更文件的新 facts
+  const newFacts = files.length > 0 ? extractCodeFacts(files) : [];
+
+  // 增量模式：加载缓存 → 剪除 → 合并
+  let facts: CodeFact[];
+  let interfaceInventory: InterfaceInventory;
+  const indicesDir = path.join(wikiRoot, '.indices');
+
+  if (changedFiles !== undefined) {
+    // 增量模式（含 changedFiles=[] 即仅删除场景）
+    const oldFacts = await loadFactsCache(indicesDir);
+    const oldInterfaces = await loadInterfacesCache(indicesDir);
+
+    // 剪除已变更/删除的旧数据
+    const filesToRemove = new Set([...changedFiles, ...deletedFiles]);
+    const remainingFacts = pruneFactsByFiles(oldFacts, filesToRemove);
+
+    // 合并：旧的保留 facts + 新提取的 facts
+    const merged = [...remainingFacts, ...newFacts];
+    // 去重（kind:name:file，同一文件中同名同类型只保留一份）
+    const seen = new Set<string>();
+    facts = [];
+    for (const f of merged) {
+      if (f.kind === 'relation') {
+        facts.push(f);
+      } else {
+        const key = `${f.kind}:${f.name}:${f.file}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          facts.push(f);
+        }
+      }
+    }
+
+    // 合并 interfaces（按 component+type 去重，新覆盖旧）
+    const newInterfaces = files.length > 0 ? await scanInterfaces(files) : { entries: [], scannedAt: '' };
+    interfaceInventory = mergeInterfaceInventories(oldInterfaces, newInterfaces);
+  } else {
+    // 全量模式
+    facts = newFacts;
+    interfaceInventory = await scanInterfaces(files);
+  }
+
   const graph: GraphIndex = buildCodeGraph(facts);
 
-  // Interface detection (HTTP/MQ/RPC)
-  const interfaceInventory = await scanInterfaces(files);
-
   // Call chain tracing (entry → orchestration → service → data)
-  const callChains = traceCallChains(facts, files);
+  // 增量模式下跳过 traceCallChains（只有变更文件的 content，无法完整追踪）
+  // 读取已有的 dependency-paths.md 内容，避免因少量文件变更而清空调用链
+  let callChains: CallChain[];
+  const depPathsFile = path.join(evidenceDir, 'dependency-paths.md');
+  if (changedFiles) {
+    callChains = [];
+  } else {
+    callChains = traceCallChains(facts, files);
+  }
 
   const pages = buildEvidencePages(facts, project, interfaceInventory, callChains);
 
   await mkdir(evidenceDir, { recursive: true });
 
+  // 增量模式下复用已有 dependency-paths.md（仅有变更文件 content，无法重新追踪）
+  if (changedFiles && !pages.has('dependency-paths.md')) {
+    try {
+      const existing = await readFile(depPathsFile, 'utf-8');
+      pages.set('dependency-paths.md', existing);
+    } catch { /* 无历史文件，跳过 */ }
+  }
+
   for (const [filename, content] of pages) {
-    await writeFile(path.join(evidenceDir, filename), content, 'utf-8');
+    await writeIfChanged(path.join(evidenceDir, filename), content);
   }
 
   // Build architecture overlay (directory-level contains edges)
@@ -623,13 +690,13 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     const modulesDir = path.join(evidenceDir, 'modules');
     await mkdir(modulesDir, { recursive: true });
     for (const [filename, content] of moduleSummaries) {
-      await writeFile(path.join(modulesDir, filename), content, 'utf-8');
+      await writeIfChanged(path.join(modulesDir, filename), content);
     }
   }
 
   // 生成 overview.md — 确定性架构概览 (B16)
   const overview = buildOverview(facts, repoGraph, project, interfaceInventory, callChains);
-  await writeFile(path.join(evidenceDir, 'overview.md'), overview, 'utf-8');
+  await writeIfChanged(path.join(evidenceDir, 'overview.md'), overview);
 
   // 生成 team-wiki 标准入口文件
   const proj = [{ slug: project, label: project }];
@@ -644,9 +711,9 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     interfaces: Object.keys(ifByType).length > 0 ? ifByType : undefined,
     callChains: callChains.length > 0 ? callChains.length : undefined,
   };
-  await writeFile(path.join(wikiRoot, 'router.md'), routerTemplate(proj, aiDomains.length > 0 ? aiDomains : undefined), 'utf-8');
-  await writeFile(path.join(wikiRoot, 'hot.md'), HOT_TEMPLATE, 'utf-8');
-  await writeFile(path.join(wikiRoot, 'index.md'), indexTemplate(proj, indexStats), 'utf-8');
+  await writeIfChanged(path.join(wikiRoot, 'router.md'), routerTemplate(proj, aiDomains.length > 0 ? aiDomains : undefined));
+  await writeIfChanged(path.join(wikiRoot, 'hot.md'), HOT_TEMPLATE);
+  await writeIfChanged(path.join(wikiRoot, 'index.md'), indexTemplate(proj, indexStats));
 
   // 生成 gaps/ — 知识缺口追踪
   const gaps = detectKnowledgeGaps(facts, graph, files);
@@ -673,18 +740,46 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     gapLines.push('| — | — | — | 未发现明显知识缺口 | — |');
   }
   gapLines.push('');
-  await writeFile(path.join(gapsDir, 'detected.md'), gapLines.join('\n'), 'utf-8');
+  await writeIfChanged(path.join(gapsDir, 'detected.md'), gapLines.join('\n'));
 
-  const manifest = {
-    version: 1,
-    lastScan: new Date().toISOString(),
-    files: files.map((f) => ({
-      relativePath: f.relativePath,
-      sha256: f.sha256,
-      language: f.language,
-    })),
-  };
-  await writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+  // 更新 facts 和 interfaces 缓存
+  await saveFactsCache(indicesDir, facts);
+  await saveInterfacesCache(indicesDir, interfaceInventory);
+
+  // 构建完整的 manifest 文件列表
+  let allManifestFiles = collectionManifest.files.map((f) => ({
+    relativePath: f.relativePath,
+    sha256: f.sha256,
+    language: f.language,
+  }));
+  if (changedFiles !== undefined && changedFiles.length > 0) {
+    // 有变更/新增文件：合并旧 manifest 中未变更的记录 + 新扫描的记录
+    try {
+      const oldManifestRaw = await readFile(manifestPath, 'utf-8');
+      const oldManifest = JSON.parse(oldManifestRaw) as {
+        files?: Array<{ relativePath: string; sha256: string; language?: string }>;
+      };
+      const changedSet = new Set([...changedFiles, ...deletedFiles]);
+      const unchanged = (oldManifest.files ?? [])
+        .filter((f) => !changedSet.has(f.relativePath))
+        .map((f) => ({ relativePath: f.relativePath, sha256: f.sha256, language: f.language ?? '' }));
+      allManifestFiles = [...unchanged, ...allManifestFiles];
+    } catch { /* 无旧 manifest，只用当前的 */ }
+  } else if (changedFiles !== undefined && changedFiles.length === 0 && deletedFiles.length > 0) {
+    // 仅删除：从旧 manifest 过滤已删除文件（collectCode 返回全量，不需要合并）
+    const deletedSet = new Set(deletedFiles);
+    allManifestFiles = allManifestFiles.filter(f => !deletedSet.has(f.relativePath));
+  }
+  const manifestContent = JSON.stringify(
+    {
+      version: 1,
+      lastScan: new Date().toISOString(),
+      files: allManifestFiles,
+    },
+    null,
+    2,
+  );
+  await writeFile(manifestPath, manifestContent, 'utf-8');
 
   const byKind: Record<string, number> = {};
   for (const fact of facts) {

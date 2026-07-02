@@ -664,11 +664,35 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     if (!dryRun) {
         const cacheWiki = path.join(cacheDir, 'teamwiki');
         try {
-            await extractCodebase({ path: cacheDir, project: slug, json: false, skipEnrich });
+            // 增量模式：将已有的缓存文件复制到 cacheDir 供 extractCodebase 读取
+            if (incremental) {
+                const destIndices = path.join(teamwikiRoot, '.indices');
+                const cacheIndices = path.join(cacheDir, 'teamwiki', '.indices');
+                await fs.ensureDir(cacheIndices);
+                for (const f of ['facts-cache.json', 'interfaces-cache.json']) {
+                    const src = path.join(destIndices, f);
+                    if (await fs.pathExists(src)) {
+                        await fs.copy(src, path.join(cacheIndices, f));
+                    }
+                }
+                const existingManifest = path.join(teamwikiRoot, 'source-manifest.json');
+                if (await fs.pathExists(existingManifest)) {
+                    await fs.copy(existingManifest, path.join(cacheDir, 'teamwiki', 'source-manifest.json'));
+                }
+            }
+            await extractCodebase({ path: cacheDir, project: slug, json: false, skipEnrich, incremental });
             // 将产物从 cacheDir/teamwiki/ 移动到目标 teamwikiRoot
             if (await fs.pathExists(cacheWiki)) {
                 const evidenceSrc = path.join(cacheWiki, 'evidence', 'code', slug);
                 const evidenceDest = path.join(teamwikiRoot, 'evidence', 'code', slug);
+                // 先清除旧 evidence（保留 .indices/ 子目录），防止已删除的页面残留
+                if (await fs.pathExists(evidenceDest)) {
+                    const entries = await fs.readdir(evidenceDest);
+                    for (const entry of entries) {
+                        if (entry === '.indices') continue;
+                        await fs.remove(path.join(evidenceDest, entry));
+                    }
+                }
                 await fs.ensureDir(evidenceDest);
                 await fs.copy(evidenceSrc, evidenceDest, { overwrite: true });
                 // 将 AI 叙事写入 overview.md（幂等：已有则替换，无则追加）
@@ -695,6 +719,20 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                     await fs.copy(srcGraph, path.join(evidenceGraphDir, 'graph-index.json'));
                 } else {
                     log.debug(`[graph] per-repo graph-index.json not found, skipping copy`);
+                }
+                // 持久化增量缓存文件到 teamwikiRoot（供后续 incremental 使用）
+                const cacheIndices = path.join(cacheWiki, '.indices');
+                const destIndices = path.join(teamwikiRoot, '.indices');
+                for (const cacheFile of ['facts-cache.json', 'interfaces-cache.json']) {
+                    const src = path.join(cacheIndices, cacheFile);
+                    if (await fs.pathExists(src)) {
+                        await fs.ensureDir(destIndices);
+                        await fs.copy(src, path.join(destIndices, cacheFile), { overwrite: true });
+                    }
+                }
+                const srcManifest = path.join(cacheWiki, 'source-manifest.json');
+                if (await fs.pathExists(srcManifest)) {
+                    await fs.copy(srcManifest, path.join(teamwikiRoot, 'source-manifest.json'), { overwrite: true });
                 }
                 await fs.remove(cacheWiki);
             }

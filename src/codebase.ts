@@ -510,6 +510,7 @@ export async function lintCodebaseMd(codebaseMd: string): Promise<LintReport> {
  * @param current     当前 codebase.md 完整内容
  * @param suggestions MR 提炼的变更建议列表
  * @returns           AI 合并建议后的 codebase.md 完整内容
+ * @deprecated 已被 teamwiki 增量更新（extractCodebase + deepEnrich）替代。保留供 `teamai codebase --apply` 使用。
  */
 export async function applyCodebaseSuggestions(
   current: string,

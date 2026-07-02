@@ -678,6 +678,53 @@ async function runPhaseIndexEnhance(
   });
   await writeFile(path.join(docsDir, 'README.md'), graphReadme, 'utf-8');
   log.debug(`deep-enrich[${project}]: graph/README.md 路由表写入完成`);
+
+  // 增量更新顶层 router.md 和 index.md（追加/更新当前项目条目，不覆盖其他项目）
+  const { wikiRoot } = opts;
+  const domainsJson = await readFileSafe(path.join(evidenceDir, '_domains.json'));
+  let keywords: string[] = [];
+  let description = '';
+  try {
+    const domains = JSON.parse(domainsJson) as { keywords?: string[]; description?: string };
+    keywords = domains.keywords ?? [];
+    description = domains.description ?? '';
+  } catch { /* no _domains.json */ }
+
+  // router.md: 检查当前项目是否已有条目，无则追加
+  const routerPath = path.join(wikiRoot, 'router.md');
+  const routerContent = await readFileSafe(routerPath);
+  const projectLink = `[[evidence/code/${project}/index]]`;
+  if (routerContent && !routerContent.includes(projectLink)) {
+    const kw = keywords.length > 0 ? ` [${keywords.slice(0, 5).join(', ')}]` : '';
+    const desc = description ? ` — ${description}` : ' — 代码知识';
+    const line = `- ${projectLink}${desc}${kw}\n`;
+    await writeFile(routerPath, routerContent.trimEnd() + '\n' + line, 'utf-8');
+  }
+
+  // index.md: 检查当前项目是否已有条目，无则追加导航块
+  const indexPath = path.join(wikiRoot, 'index.md');
+  const indexContent = await readFileSafe(indexPath);
+  if (indexContent && !indexContent.includes(`evidence/code/${project}/`)) {
+    const navBlock = [
+      `### ${project}`, '',
+      `- [overview.md](./evidence/code/${project}/overview.md) — 架构概览`,
+      `- [modules/](./evidence/code/${project}/modules/) — 模块级摘要`,
+      `- [docs/](./evidence/code/${project}/docs/) — G-document`,
+      '',
+    ].join('\n');
+    const navHeader = '## Navigation';
+    const navSection = indexContent.indexOf(navHeader);
+    if (navSection > 0) {
+      // 插入在 ## Navigation 标题行之后
+      const afterHeader = navSection + navHeader.length;
+      const updated = indexContent.slice(0, afterHeader) + '\n\n' + navBlock + indexContent.slice(afterHeader);
+      await writeFile(indexPath, updated, 'utf-8');
+    } else {
+      await writeFile(indexPath, indexContent.trimEnd() + '\n\n' + navBlock, 'utf-8');
+    }
+  }
+
+  log.debug(`deep-enrich[${project}]: 索引增量更新完成`);
 }
 
 // ─── 主函数 ─────────────────────────────────────────────────
