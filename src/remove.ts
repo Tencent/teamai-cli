@@ -1,4 +1,5 @@
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
+import { assertNotReadOnly } from './read-only.js';
 import { pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
 import { createPrWithFallback, filterExistingTopLevelPaths } from './push.js';
 import { log, spinner } from './utils/logger.js';
@@ -6,7 +7,7 @@ import { getHandler } from './resources/index.js';
 import type { GlobalOptions, ResourceType } from './types.js';
 import { askConfirmation } from './utils/prompt.js';
 
-const REMOVABLE_TYPES: ResourceType[] = ['skills', 'rules', 'wiki'];
+const REMOVABLE_TYPES: ResourceType[] = ['skills', 'rules', 'agents'];
 
 export async function remove(
   type: string,
@@ -25,6 +26,7 @@ export async function remove(
 
   // Auto-detect scope
   const { localConfig, teamConfig } = await autoDetectInit();
+  assertNotReadOnly(localConfig, 'teamai remove');
 
   // Pull latest before making changes
   try {

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
+import { assertNotReadOnly } from './read-only.js';
 import { createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName, resetToCleanMaster, getDefaultBranch } from './utils/git.js';
 import { syncTeamUpdatesToLocal } from './utils/pre-push-sync.js';
 import { getProvider } from './providers/index.js';
@@ -7,6 +8,7 @@ import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
 import { scanTeamRepoNamespaces } from './resources/skills.js';
 import type { GlobalOptions, ResourceItem, ResourceType } from './types.js';
+import { assertSafePath, assertSafeResourceName, defaultAllowedRoots } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
 import { askQuestion, askSelection } from './utils/prompt.js';
 import { pathExists } from './utils/fs.js';
@@ -105,6 +107,7 @@ export { createPrWithFallback };
 export async function push(options: GlobalOptions & { all?: boolean; role?: string }): Promise<void> {
   // Auto-detect scope: project scope if cwd has project config, else user scope
   const { localConfig, teamConfig } = await autoDetectInit();
+  assertNotReadOnly(localConfig, 'teamai push');
   const scopeLabel = localConfig.scope;
 
   // Pull latest default branch BEFORE scanning so detection runs against up-to-date repo.
@@ -137,7 +140,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 
   // Scan for pushable resources first, then resolve namespace for new skills only.
   // Modified skills already carry their namespace from scanLocalForPush.
-  const pushableTypes: ResourceType[] = ['skills', 'rules', 'env', 'wiki'];
+  const pushableTypes: ResourceType[] = ['skills', 'rules', 'env', 'agents'];
   const allItems: ResourceItem[] = [];
 
   for (const type of pushableTypes) {
@@ -150,6 +153,21 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 
   // ── Handle --skill parameter: filter to a single specific skill ──────
   if (options.skill) {
+    // 校验 skill 名称安全性：从输入路径中提取 basename 作为资源名，
+    // 防御路径遍历、URL 编码绕过、非法字符等攻击
+    const skillBasename = path.basename(
+      options.skill.startsWith('~')
+        ? options.skill.slice(1).replace(/^[/\\]+/, '')
+        : options.skill,
+    );
+    try {
+      assertSafeResourceName(skillBasename);
+    } catch (e) {
+      console.error(`[push] --skill 参数不合法: ${(e as Error).message}`);
+      process.exitCode = 2;
+      return;
+    }
+
     // Normalize the input path (expand ~, resolve to absolute)
     const os = await import('node:os');
     const skillPath = options.skill.startsWith('~')
@@ -412,11 +430,11 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
     }
 
     // Create branch, commit, and push.
-    // Only include "sweeper" directories (rules/, env/, wiki/) that actually
+    // Only include "sweeper" directories (rules/, env/) that actually
     // exist — otherwise `git add 'rules/'` throws `pathspec did not match
-    // any files` and the whole push aborts (BUG #1). Pure-wiki teams may
-    // not have rules/ or env/.
-    const sweeperCandidates = ['rules/', 'env/', 'wiki/', '.codebuddy-plugin/'];
+    // any files` and the whole push aborts (BUG #1). A team may not have
+    // rules/ or env/ yet.
+    const sweeperCandidates = ['rules/', 'env/', '.codebuddy-plugin/'];
     const existingSweepers = await filterExistingTopLevelPaths(
       localConfig.repo.localPath,
       sweeperCandidates,

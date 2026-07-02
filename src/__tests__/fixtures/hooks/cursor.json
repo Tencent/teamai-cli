@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "bash -lc \"teamai hook-dispatch session-start --tool cursor 2>/dev/null\" || true",
+        "timeout": 60
+      }
+    ],
+    "stop": [
+      {
+        "command": "bash -lc \"teamai hook-dispatch stop --tool cursor 2>/dev/null\" || true",
+        "timeout": 15
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool cursor 2>/dev/null\" || true",
+        "timeout": 10
+      },
+      {
+        "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool cursor --matcher Skill 2>/dev/null\" || true",
+        "timeout": 10,
+        "matcher": "Skill"
+      },
+      {
+        "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool cursor --matcher TodoWrite 2>/dev/null\" || true",
+        "timeout": 3,
+        "matcher": "TodoWrite"
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "bash -lc \"teamai hook-dispatch prompt-submit --tool cursor 2>/dev/null\" || true",
+        "timeout": 10
+      }
+    ]
+  }
+}

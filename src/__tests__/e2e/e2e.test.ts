@@ -304,18 +304,6 @@ describe('remote commands', () => {
   );
 
   it.skipIf(!CAN_RUN_REMOTE)(
-    'teamai save-session --summary — records session',
-    async () => {
-      const { code } = await runCLI([
-        'save-session',
-        '--summary',
-        'CI e2e: dummy session for coverage',
-      ]);
-      expect(code).toBe(0);
-    },
-  );
-
-  it.skipIf(!CAN_RUN_REMOTE)(
     'teamai track — records tool usage event',
     async () => {
       const { code } = await runCLI([

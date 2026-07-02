@@ -5,12 +5,49 @@ import os from 'node:os';
 import {
   parseHookEvent,
   readLastAssistantOutput,
+  countInterventions,
   appendEvent,
   readEvents,
   rebuildSessions,
+  aggregateSessionInterventions,
   compactEvents,
 } from '../dashboard-collector.js';
 import type { DashboardEvent } from '../types.js';
+
+// ─── Transcript fixtures for intervention scanning ──────
+const INTERRUPT_LINE = JSON.stringify({
+  type: 'user',
+  message: { content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+});
+const INTERRUPT_TOOL_LINE = JSON.stringify({
+  type: 'user',
+  message: { content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] },
+});
+const REJECT_LINE = JSON.stringify({
+  type: 'user',
+  message: {
+    content: [{
+      type: 'tool_result',
+      is_error: true,
+      tool_use_id: 'toolu_1',
+      content: "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit).",
+    }],
+  },
+});
+const NORMAL_USER_LINE = JSON.stringify({
+  type: 'user',
+  message: { content: [{ type: 'text', text: 'please continue' }] },
+});
+const ASSISTANT_LINE = JSON.stringify({
+  type: 'assistant',
+  message: { content: [{ type: 'text', text: 'done' }] },
+});
+const TOOL_ERROR_LINE = JSON.stringify({
+  type: 'user',
+  message: {
+    content: [{ type: 'tool_result', is_error: true, tool_use_id: 'toolu_2', content: 'Error: command not found' }],
+  },
+});
 
 // Use a temp dir for each test to avoid cross-test interference
 let tmpDir: string;
@@ -474,6 +511,191 @@ describe('rebuildSessions', () => {
     const sessions = rebuildSessions(events);
     // s1 has longer total runtime, should come first
     expect(sessions[0].sessionId).toBe('s1');
+  });
+});
+
+// ─── countInterventions (Issue #34) ─────────────────────
+
+describe('countInterventions', () => {
+  function writeTranscript(name: string, lines: string[]): string {
+    const p = path.join(tmpDir, name);
+    fs.writeFileSync(p, lines.join('\n') + '\n');
+    return p;
+  }
+
+  it('counts user interrupts (both variants)', async () => {
+    const p = writeTranscript('t1.jsonl', [ASSISTANT_LINE, INTERRUPT_LINE, INTERRUPT_TOOL_LINE]);
+    const iv = await countInterventions(p);
+    expect(iv.interrupt).toBe(2);
+    expect(iv.toolReject).toBe(0);
+  });
+
+  it('counts tool rejections', async () => {
+    const p = writeTranscript('t2.jsonl', [ASSISTANT_LINE, REJECT_LINE, ASSISTANT_LINE, REJECT_LINE]);
+    const iv = await countInterventions(p);
+    expect(iv.toolReject).toBe(2);
+    expect(iv.interrupt).toBe(0);
+  });
+
+  it('does not count ordinary tool errors as rejections', async () => {
+    const p = writeTranscript('t3.jsonl', [TOOL_ERROR_LINE, NORMAL_USER_LINE, ASSISTANT_LINE]);
+    const iv = await countInterventions(p);
+    expect(iv.toolReject).toBe(0);
+    expect(iv.interrupt).toBe(0);
+  });
+
+  it('counts a mix of interrupts and rejections', async () => {
+    const p = writeTranscript('t4.jsonl', [INTERRUPT_LINE, REJECT_LINE, NORMAL_USER_LINE, ASSISTANT_LINE, REJECT_LINE]);
+    const iv = await countInterventions(p);
+    expect(iv.interrupt).toBe(1);
+    expect(iv.toolReject).toBe(2);
+  });
+
+  it('returns zeros for nonexistent file', async () => {
+    const iv = await countInterventions('/nonexistent/transcript.jsonl');
+    expect(iv).toEqual({ interrupt: 0, toolReject: 0 });
+  });
+
+  it('returns zeros for empty file', async () => {
+    const p = writeTranscript('empty.jsonl', []);
+    fs.writeFileSync(p, '');
+    const iv = await countInterventions(p);
+    expect(iv).toEqual({ interrupt: 0, toolReject: 0 });
+  });
+
+  it('skips malformed lines gracefully', async () => {
+    const p = writeTranscript('t5.jsonl', ['NOT JSON', INTERRUPT_LINE, '{bad', REJECT_LINE]);
+    const iv = await countInterventions(p);
+    expect(iv.interrupt).toBe(1);
+    expect(iv.toolReject).toBe(1);
+  });
+});
+
+// ─── parseHookEvent: interventions on Stop ──────────────
+
+describe('parseHookEvent interventions', () => {
+  it('attaches intervention snapshot from transcript on Stop', async () => {
+    const transcriptPath = path.join(tmpDir, 'stop-transcript.jsonl');
+    fs.writeFileSync(transcriptPath, [ASSISTANT_LINE, INTERRUPT_LINE, REJECT_LINE].join('\n') + '\n');
+    const raw = JSON.stringify({
+      hook_event_name: 'Stop',
+      session_id: 'sess-iv',
+      transcript_path: transcriptPath,
+    });
+    const event = await parseHookEvent(raw, 'claude');
+    expect(event!.interventions).toEqual({ interrupt: 1, toolReject: 1 });
+  });
+
+  it('omits interventions field when transcript has none', async () => {
+    const transcriptPath = path.join(tmpDir, 'clean-transcript.jsonl');
+    fs.writeFileSync(transcriptPath, [ASSISTANT_LINE, NORMAL_USER_LINE].join('\n') + '\n');
+    const raw = JSON.stringify({
+      hook_event_name: 'Stop',
+      session_id: 'sess-clean',
+      transcript_path: transcriptPath,
+    });
+    const event = await parseHookEvent(raw, 'claude');
+    expect(event!.interventions).toBeUndefined();
+  });
+});
+
+// ─── rebuildSessions: intervention aggregation ──────────
+
+describe('rebuildSessions interventions', () => {
+  const now = new Date().toISOString();
+
+  it('defaults to zero interventions', () => {
+    const sessions = rebuildSessions([
+      { type: 'session_start', timestamp: now, sessionId: 's1', tool: 'claude', cwd: '/p' },
+    ]);
+    expect(sessions[0].interventions).toEqual({ interrupt: 0, toolReject: 0, correction: 0 });
+    expect(sessions[0].interventionCount).toBe(0);
+  });
+
+  it('takes interrupt/toolReject from the latest stop snapshot (idempotent)', () => {
+    const sessions = rebuildSessions([
+      { type: 'session_start', timestamp: now, sessionId: 's1', tool: 'claude', cwd: '/p' },
+      { type: 'stop', timestamp: now, sessionId: 's1', tool: 'claude', interventions: { interrupt: 1, toolReject: 0 } },
+      { type: 'tool_use', timestamp: now, sessionId: 's1', tool: 'claude', toolName: 'Bash' },
+      { type: 'stop', timestamp: now, sessionId: 's1', tool: 'claude', interventions: { interrupt: 2, toolReject: 1 } },
+    ]);
+    // Latest snapshot wins — not summed
+    expect(sessions[0].interventions.interrupt).toBe(2);
+    expect(sessions[0].interventions.toolReject).toBe(1);
+    expect(sessions[0].interventionCount).toBe(3);
+  });
+
+  it('counts a correction: prompt within window with keyword', () => {
+    const t0 = new Date();
+    const stopT = t0.toISOString();
+    const promptT = new Date(t0.getTime() + 10_000).toISOString(); // +10s
+    const sessions = rebuildSessions([
+      { type: 'session_start', timestamp: stopT, sessionId: 's1', tool: 'claude', cwd: '/p' },
+      { type: 'stop', timestamp: stopT, sessionId: 's1', tool: 'claude' },
+      { type: 'prompt_submit', timestamp: promptT, sessionId: 's1', tool: 'claude', promptSummary: '不对，重来' },
+    ]);
+    expect(sessions[0].interventions.correction).toBe(1);
+    expect(sessions[0].interventionCount).toBe(1);
+  });
+
+  it('does not count a normal follow-up prompt as correction', () => {
+    const t0 = new Date();
+    const sessions = rebuildSessions([
+      { type: 'session_start', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude', cwd: '/p' },
+      { type: 'stop', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude' },
+      { type: 'prompt_submit', timestamp: new Date(t0.getTime() + 5_000).toISOString(), sessionId: 's1', tool: 'claude', promptSummary: '继续下一步，部署到测试环境' },
+    ]);
+    expect(sessions[0].interventions.correction).toBe(0);
+  });
+
+  it('does not count a correction-keyword prompt outside the time window', () => {
+    const t0 = new Date();
+    const sessions = rebuildSessions([
+      { type: 'session_start', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude', cwd: '/p' },
+      { type: 'stop', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude' },
+      { type: 'prompt_submit', timestamp: new Date(t0.getTime() + 120_000).toISOString(), sessionId: 's1', tool: 'claude', promptSummary: '错了，改一下' },
+    ]);
+    expect(sessions[0].interventions.correction).toBe(0);
+  });
+
+  it('aggregates all three intervention types together', () => {
+    const t0 = new Date();
+    const sessions = rebuildSessions([
+      { type: 'session_start', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude', cwd: '/p' },
+      { type: 'stop', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude', interventions: { interrupt: 1, toolReject: 2 } },
+      { type: 'prompt_submit', timestamp: new Date(t0.getTime() + 3_000).toISOString(), sessionId: 's1', tool: 'claude', promptSummary: 'wrong, redo it' },
+    ]);
+    expect(sessions[0].interventions).toEqual({ interrupt: 1, toolReject: 2, correction: 1 });
+    expect(sessions[0].interventionCount).toBe(4);
+  });
+});
+
+// ─── aggregateSessionInterventions ──────────────────────
+
+describe('aggregateSessionInterventions', () => {
+  const now = new Date().toISOString();
+
+  it('returns counts per session without timeout filtering', () => {
+    const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago (would be dropped by rebuild)
+    const map = aggregateSessionInterventions([
+      { type: 'session_start', timestamp: stale, sessionId: 's1', tool: 'claude', cwd: '/p' },
+      { type: 'stop', timestamp: stale, sessionId: 's1', tool: 'claude', interventions: { interrupt: 3, toolReject: 0 } },
+      { type: 'session_start', timestamp: now, sessionId: 's2', tool: 'claude', cwd: '/p' },
+    ]);
+    // s1 retained even though stale
+    expect(map.get('s1')).toEqual({ interrupt: 3, toolReject: 0, correction: 0 });
+    expect(map.get('s2')).toEqual({ interrupt: 0, toolReject: 0, correction: 0 });
+  });
+
+  it('consumes each stop once for correction detection', () => {
+    const t0 = new Date();
+    const map = aggregateSessionInterventions([
+      { type: 'stop', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude' },
+      { type: 'prompt_submit', timestamp: new Date(t0.getTime() + 1_000).toISOString(), sessionId: 's1', tool: 'claude', promptSummary: '不对' },
+      { type: 'prompt_submit', timestamp: new Date(t0.getTime() + 2_000).toISOString(), sessionId: 's1', tool: 'claude', promptSummary: '不对' },
+    ]);
+    // Only the first prompt consumes the stop
+    expect(map.get('s1')!.correction).toBe(1);
   });
 });
 

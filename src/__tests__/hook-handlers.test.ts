@@ -9,7 +9,6 @@ const mockParseHookEvent = vi.fn().mockResolvedValue({ type: 'session_start', ti
 const mockAppendEvent = vi.fn().mockResolvedValue(undefined);
 const mockTrackFromParsed = vi.fn().mockResolvedValue(undefined);
 const mockTrackSlashFromParsed = vi.fn().mockResolvedValue(undefined);
-const mockAutoRecallFromParsed = vi.fn().mockResolvedValue(null);
 const mockContributeCheckForSession = vi.fn().mockResolvedValue({ hint: null });
 const mockDoUpdate = vi.fn().mockResolvedValue(undefined);
 
@@ -31,10 +30,6 @@ vi.mock('../usage-tracker.js', () => ({
   isValidSkillName: vi.fn().mockReturnValue(true),
   appendUsageEvent: vi.fn().mockResolvedValue(undefined),
   updateKnownSkills: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock('../auto-recall.js', () => ({
-  autoRecall: mockAutoRecallFromParsed,
 }));
 
 vi.mock('../contribute-check.js', () => ({
@@ -111,13 +106,11 @@ describe('hook-handlers registry', () => {
     expect(skillHandlers).toContain('track');
   });
 
-  it('post-tool-use Bash/Grep/WebSearch/WebFetch have auto-recall', () => {
+  it('post-tool-use Bash/Grep/WebSearch/WebFetch have no registered handlers', () => {
     const registry = buildHandlerRegistry();
     for (const matcher of ['Bash', 'Grep', 'WebSearch', 'WebFetch']) {
-      const handlers = registry
-        .filter((r) => r.event === 'post-tool-use' && r.matcher === matcher)
-        .map((r) => r.handler.name);
-      expect(handlers).toContain('auto-recall');
+      const handlers = registry.filter((r) => r.event === 'post-tool-use' && r.matcher === matcher);
+      expect(handlers).toHaveLength(0);
     }
   });
 

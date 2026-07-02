@@ -1,13 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { log } from './utils/logger.js';
 import { readJson, writeJson, ensureDir } from './utils/fs.js';
 import { readEvents } from './dashboard-collector.js';
+import { readRecallQuality } from './recall-quality.js';
+import { deriveSessionId } from './utils/session-id.js';
 import type { ContributeState, DashboardEvent } from './types.js';
 import {
   CONTRIBUTE_SMART_THRESHOLD,
   CONTRIBUTE_BASE_THRESHOLD,
   CONTRIBUTE_SCORE_CACHE_MS,
+  CONTRIBUTE_KNOWLEDGE_GAP_BONUS,
+  CONTRIBUTE_LOW_QUALITY_BONUS,
+  CONTRIBUTE_LOW_QUALITY_THRESHOLD,
+  CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT,
 } from './types.js';
 
 // ─── Contribute check data flow (Stop hook) ────────────────
@@ -91,6 +98,9 @@ export async function readContributeState(sessionId: string): Promise<Contribute
         uniqueTools: typeof raw.uniqueTools === 'number' ? raw.uniqueTools : undefined,
         lastEvaluated: typeof raw.lastEvaluated === 'number' ? raw.lastEvaluated : undefined,
         hinted: typeof raw.hinted === 'boolean' ? raw.hinted : undefined,
+        sessionStartIso: typeof raw.sessionStartIso === 'string' ? raw.sessionStartIso : undefined,
+        hasGitCommit: typeof raw.hasGitCommit === 'boolean' ? raw.hasGitCommit : undefined,
+        isKnowledgeGap: typeof raw.isKnowledgeGap === 'boolean' ? raw.isKnowledgeGap : undefined,
       };
     }
     return defaultState();
@@ -191,43 +201,104 @@ export function computeSmartScore(events: DashboardEvent[]): number {
 
   let score = 0;
 
-  // Tool count — gradient (max 20 points)
-  // 30+ calls → 10, scales linearly up to 80+ → 20
-  if (totalToolCalls >= 30) {
-    score += Math.min(20, Math.round(((totalToolCalls - 30) / 50) * 10) + 10);
+  // Tool count — gradient (max 25 points)
+  // 20+ calls → 5, scales linearly up to 80+ → 25
+  if (totalToolCalls >= 20) {
+    score += Math.min(25, Math.round(((totalToolCalls - 20) / 60) * 20) + 5);
   }
 
-  // Tool diversity (max 30 points)
+  // Tool diversity (max 20 points)
   if (totalToolCalls > 0) {
-    const diversity = toolNames.size / Math.min(totalToolCalls, 20); // Cap denominator at 20
-    score += Math.min(Math.round(diversity * 30), 30);
+    const diversity = toolNames.size / Math.min(totalToolCalls, 10);
+    score += Math.min(Math.round(diversity * 20), 20);
   }
 
-  // Skill usage (15 points)
+  // Skill usage (10 points)
   if (hasSkills) {
-    score += 15;
+    score += 10;
   }
 
-  // Error indicators (15 points)
+  // Error indicators (10 points)
   if (hasErrors) {
-    score += 15;
+    score += 10;
   }
 
-  // Session duration (20 points if > 30 min)
+  // Session duration (max 20 points)
   if (events.length >= 2) {
     const first = new Date(events[0].timestamp).getTime();
     const last = new Date(events[events.length - 1].timestamp).getTime();
     const durationMin = (last - first) / (1000 * 60);
     if (durationMin > 30) {
       score += 20;
+    } else if (durationMin > 15) {
+      score += 10;
     }
   }
 
   return score;
 }
 
+// ─── Phase 2: Knowledge gap + git commit detection ─────
+
+/**
+ * Check if a git commit was made in the given cwd since sessionStartIso.
+ * Returns false if cwd is not a git repo or git is unavailable.
+ */
+export function hasGitCommitInSession(cwd: string, sessionStartIso: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?$/.test(sessionStartIso)) {
+    return false;
+  }
+  try {
+    const result = execFileSync(
+      'git',
+      ['log', '--oneline', `--after=${sessionStartIso}`, '--format=%H', '-1'],
+      { cwd, encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+    return result.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Apply Phase 2 score adjustments based on recall quality and git commit status.
+ * Returns the adjusted score and metadata flags.
+ */
+export function applyPhase2Adjustments(
+  baseScore: number,
+  sessionId: string,
+  cwd?: string,
+  sessionStartIso?: string,
+): { score: number; isKnowledgeGap: boolean; hasGitCommit: boolean } {
+  let score = baseScore;
+  let isKnowledgeGap = false;
+  let gitCommitDetected = false;
+
+  const recallQuality = readRecallQuality(sessionId);
+
+  if (recallQuality) {
+    const totalRecalls = recallQuality.hitCount + recallQuality.missCount;
+    if (totalRecalls > 0 && recallQuality.hitCount === 0) {
+      score += CONTRIBUTE_KNOWLEDGE_GAP_BONUS;
+      isKnowledgeGap = true;
+    } else if (recallQuality.topScore < CONTRIBUTE_LOW_QUALITY_THRESHOLD && recallQuality.hitCount > 0) {
+      score += CONTRIBUTE_LOW_QUALITY_BONUS;
+      isKnowledgeGap = true;
+    }
+  }
+
+  if (cwd && sessionStartIso) {
+    gitCommitDetected = hasGitCommitInSession(cwd, sessionStartIso);
+    if (gitCommitDetected && recallQuality && recallQuality.hitCount > 0) {
+      score -= CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT;
+    }
+  }
+
+  return { score: Math.max(0, score), isKnowledgeGap, hasGitCommit: gitCommitDetected };
+}
+
 /** Read STDIN and extract sessionId from hook JSON. */
-async function readStdinAndDeriveSession(): Promise<{ sessionId: string } | null> {
+async function readStdinAndDeriveSession(): Promise<{ sessionId: string; cwd?: string } | null> {
   if (process.stdin.isTTY) return null;
 
   const chunks: Buffer[] = [];
@@ -239,12 +310,10 @@ async function readStdinAndDeriveSession(): Promise<{ sessionId: string } | null
 
   try {
     const hookData = JSON.parse(raw) as Record<string, unknown>;
-    // Derive session ID: session_id field > env > PID fallback
-    const sessionId =
-      (typeof hookData.session_id === 'string' && hookData.session_id) ||
-      process.env.CLAUDE_SESSION_ID ||
-      `pid-${process.ppid ?? process.pid}-${typeof hookData.cwd === 'string' ? hookData.cwd : process.cwd()}`;
-    return { sessionId };
+    // Derive session ID: session_id field > env > PID+cwd fallback
+    const sessionId = deriveSessionId(hookData, { includeCwd: true });
+    const cwd = typeof hookData.cwd === 'string' ? hookData.cwd : undefined;
+    return { sessionId, cwd };
   } catch {
     return null;
   }
@@ -261,7 +330,14 @@ function countUniqueTools(events: DashboardEvent[]): number {
 }
 
 /** Build the STDOUT hint string from pre-computed display values. */
-function buildHint(totalToolCalls: number, uniqueTools: number): string {
+function buildHint(totalToolCalls: number, uniqueTools: number, isKnowledgeGap: boolean): string {
+  if (isKnowledgeGap) {
+    return [
+      `[teamai] 本次 session 涉及知识库尚未覆盖的领域（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
+      `建议运行 /teamai-share-learnings 将本次经验总结分享给团队，帮助填补知识库空白。`,
+      `下次遇到类似任务时，团队成员将直接受益于您的经验。`,
+    ].join('');
+  }
   return [
     `[teamai] 本次 session 内容丰富（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
     `建议运行 /teamai-share-learnings 总结本次 session 的经验并分享给团队。`,
@@ -298,7 +374,10 @@ function buildHint(totalToolCalls: number, uniqueTools: number): string {
  *
  * Returns the hint string (caller writes to stdout) or null if no hint.
  */
-export async function contributeCheckForSession(sessionId: string): Promise<{ hint: string | null }> {
+export async function contributeCheckForSession(
+  sessionId: string,
+  cwd?: string,
+): Promise<{ hint: string | null }> {
   const state = await readContributeState(sessionId);
   const now = Date.now();
 
@@ -328,6 +407,7 @@ export async function contributeCheckForSession(sessionId: string): Promise<{ hi
   let toolCount: number;
   let uniqueTools: number;
   let needsPersist: boolean;
+  let sessionStartIso: string | undefined;
 
   const cachedDisplayAvailable =
     cacheFresh
@@ -340,6 +420,7 @@ export async function contributeCheckForSession(sessionId: string): Promise<{ hi
     score = state.smartScore!;
     toolCount = state.toolCount!;
     uniqueTools = state.uniqueTools!;
+    sessionStartIso = state.sessionStartIso;
     needsPersist = false;
   } else {
     const allEvents = await readEvents();
@@ -348,7 +429,21 @@ export async function contributeCheckForSession(sessionId: string): Promise<{ hi
     toolCount = countToolUseEvents(sessionEvents);
     uniqueTools = countUniqueTools(sessionEvents);
     needsPersist = true;
+    if (sessionEvents.length > 0) {
+      sessionStartIso = sessionEvents[0].timestamp;
+    }
     log.debug(`contribute-check: session ${sessionId.slice(0, 16)} smart score = ${score} (threshold: ${CONTRIBUTE_SMART_THRESHOLD})`);
+  }
+
+  // Phase 2: apply knowledge gap + git commit adjustments
+  const phase2 = applyPhase2Adjustments(score, sessionId, cwd, sessionStartIso);
+  score = phase2.score;
+  const { isKnowledgeGap, hasGitCommit } = phase2;
+  if (isKnowledgeGap || hasGitCommit) {
+    needsPersist = true;
+    log.debug(
+      `contribute-check: phase2 adjustments applied (gap=${isKnowledgeGap}, commit=${hasGitCommit}, adjusted=${score})`,
+    );
   }
 
   const willHint = score >= CONTRIBUTE_SMART_THRESHOLD;
@@ -363,9 +458,10 @@ export async function contributeCheckForSession(sessionId: string): Promise<{ hi
       toolCount,
       uniqueTools,
       lastEvaluated: needsPersist ? now : (latest.lastEvaluated ?? now),
+      sessionStartIso: sessionStartIso ?? latest.sessionStartIso,
+      isKnowledgeGap,
+      hasGitCommit,
     };
-    // Only persist hinted=true; never write hinted=false (semantically same as
-    // undefined and would surprise tests / consumers expecting absence).
     if (latest.hinted || willHint) {
       updated.hinted = true;
     }
@@ -377,7 +473,7 @@ export async function contributeCheckForSession(sessionId: string): Promise<{ hi
     return { hint: null };
   }
 
-  return { hint: buildHint(toolCount, uniqueTools) };
+  return { hint: buildHint(toolCount, uniqueTools, isKnowledgeGap) };
 }
 
 /**
@@ -398,7 +494,7 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
     return;
   }
 
-  const { hint } = await contributeCheckForSession(stdinData.sessionId);
+  const { hint } = await contributeCheckForSession(stdinData.sessionId, stdinData.cwd);
   if (hint !== null) {
     // Stop schema has no hookSpecificOutput; use stopReason
     process.stdout.write(JSON.stringify({ stopReason: hint }));

@@ -1,0 +1,72 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch session-start --tool codebuddy 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch session-start"
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch stop --tool codebuddy 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch stop"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool codebuddy 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch post-tool-use wildcard"
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool codebuddy --matcher Skill 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch post-tool-use Skill"
+      },
+      {
+        "matcher": "TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool codebuddy --matcher TodoWrite 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch post-tool-use TodoWrite"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch prompt-submit --tool codebuddy 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch prompt-submit"
+      }
+    ]
+  }
+}

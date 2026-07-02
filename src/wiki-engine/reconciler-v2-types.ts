@@ -1,0 +1,100 @@
+import type { WikiConfidence } from './core/wiki-protocol.js';
+
+// ─── Numeric Confidence ─────────────────────────────────────────────────────
+
+export interface ConfidenceFactor {
+  name: string;
+  weight: number;
+  detail?: string;
+}
+
+export interface NumericConfidence {
+  score: number;
+  label: WikiConfidence;
+  factors: ConfidenceFactor[];
+}
+
+/** Derive label from numeric score */
+export function labelFromScore(score: number): WikiConfidence {
+  if (score >= 0.8) return "EXTRACTED";
+  if (score >= 0.5) return "INFERRED";
+  return "AMBIGUOUS";
+}
+
+/** Build a NumericConfidence from factors (cumulative evidence, capped at 1.0) */
+export function buildConfidence(factors: ConfidenceFactor[]): NumericConfidence {
+  if (factors.length === 0) return { score: 0, label: "AMBIGUOUS", factors: [] };
+  const score = Math.min(1, factors.reduce((sum, f) => sum + f.weight, 0));
+  return { score, label: labelFromScore(score), factors };
+}
+
+// ─── API↔Interface Matching ─────────────────────────────────────────────────
+
+export interface ApiInterfaceMatch {
+  apiPagePath: string;
+  interfacePagePath: string;
+  method: string;
+  path: string;
+  confidence: NumericConfidence;
+}
+
+// ─── Rule↔Code Matching ─────────────────────────────────────────────────────
+
+export interface RuleCodeMatch {
+  rulePagePath: string;
+  codePagePath: string;
+  matchedPattern: string;
+  confidence: NumericConfidence;
+}
+
+// ─── Stale Warning ──────────────────────────────────────────────────────────
+
+export interface ReconcileStaleWarning {
+  mappingFrom: string;
+  mappingTo: string;
+  fromUpdated: string;
+  toUpdated: string;
+  daysDrift: number;
+  severity: "warning" | "critical";
+}
+
+// ─── Reconcile Log Entry ────────────────────────────────────────────────────
+
+export interface ReconcileLogEntry {
+  timestamp: string;
+  runId: string;
+  dryRun: boolean;
+  mappingsCount: number;
+  gapsCount: number;
+  conflictsCount: number;
+  staleWarningsCount: number;
+  apiMatchesCount: number;
+  ruleMatchesCount: number;
+  durationMs: number;
+  summary: string;
+}
+
+// ─── Reconcile Stats ────────────────────────────────────────────────────────
+
+export interface ReconcileStats {
+  totalProductPages: number;
+  totalCodePages: number;
+  mappingsCreated: number;
+  gapsDetected: number;
+  conflictsDetected: number;
+  apiMatchesFound: number;
+  ruleMatchesFound: number;
+  staleWarningsRaised: number;
+  averageConfidence: number;
+  durationMs: number;
+}
+
+// ─── Enhanced ReconcileFullResult (V2 extension fields) ─────────────────────
+
+export interface ReconcileV2Extensions {
+  staleWarnings: ReconcileStaleWarning[];
+  apiMatches: ApiInterfaceMatch[];
+  ruleMatches: RuleCodeMatch[];
+  reconcileLogPath?: string;
+  stats: ReconcileStats;
+}

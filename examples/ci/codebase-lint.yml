@@ -1,0 +1,27 @@
+name: Team Codebase Lint
+on:
+    pull_request:
+        paths:
+            - 'docs/team-codebase/**'
+            - '.teamai/**'
+    schedule:
+        - cron: '37 4 * * *'
+    workflow_dispatch:
+
+jobs:
+    lint:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: '20'
+            - run: npm install -g teamai-cli
+            - run: teamai codebase --lint --severity high --json > lint-report.json
+              continue-on-error: false
+            - name: Upload report
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: codebase-lint-report
+                  path: lint-report.json

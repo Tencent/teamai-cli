@@ -1,0 +1,72 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch session-start --tool claude 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch session-start"
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch stop --tool claude 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch stop"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch post-tool-use wildcard"
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude --matcher Skill 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch post-tool-use Skill"
+      },
+      {
+        "matcher": "TodoWrite",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude --matcher TodoWrite 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch post-tool-use TodoWrite"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc \"teamai hook-dispatch prompt-submit --tool claude 2>/dev/null\" || true"
+          }
+        ],
+        "description": "[teamai] Hook dispatch prompt-submit"
+      }
+    ]
+  }
+}

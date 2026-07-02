@@ -1,13 +1,13 @@
 import YAML from 'yaml';
 import path from 'node:path';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadStateForScope, saveStateForScope } from './config.js';
-import { injectHooksToAllTools } from './hooks.js';
+import { reconcileTeamHooksForConfig } from './hooks.js';
 import { configureGitUser, initRepo } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
 import { getProvider, detectProvider, RepoNotFoundError } from './providers/index.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
-import { TEAMAI_HOME, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath, resolveBaseDir } from './types.js';
+import { TEAMAI_HOME, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath } from './types.js';
 import { describeRoles, loadRolesManifest } from './roles.js';
 import { askQuestion, askConfirmation, closePrompt } from './utils/prompt.js';
 
@@ -106,7 +106,138 @@ export function validateScopeMatch(remoteScope: Scope | undefined, localScope: S
   }
 }
 
-export async function init(options: GlobalOptions & { repo?: string; scope?: string; role?: string; force?: boolean }): Promise<void> {
+/**
+ * Git-free HTTP onboarding (issue #1, 方案一). A read-only consumer only needs
+ * an API key: no git auth, no clone, no member/reviewer push. The team repo is
+ * materialized from `GET {url}/repo` into the same on-disk layout a clone yields.
+ */
+export async function initHttp(
+  url: string,
+  options: GlobalOptions & { scope?: string; role?: string; force?: boolean; token?: string },
+): Promise<void> {
+  const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
+  const { materializeHttpRepo, RepoNotAvailableError } = await import('./source-http.js');
+
+  log.info('Initializing teamai (HTTP read-only consumer)...');
+
+  // Step 0: scope
+  let scope: Scope = options.scope === 'project' ? 'project' : 'user';
+  const projectRoot = scope === 'project' ? process.cwd() : undefined;
+  const teamaiHome = getTeamaiHome(scope, projectRoot);
+  log.info(`Scope: ${scope}${scope === 'project' ? ` (${projectRoot})` : ''}`);
+
+  // Re-init guard
+  const existingConfigPath = getConfigPath(scope, projectRoot);
+  if (await pathExists(existingConfigPath) && !options.force) {
+    const confirmed = await askConfirmation(`teamai already initialized at ${existingConfigPath}. Overwrite? [y/N] `);
+    if (!confirmed) {
+      log.info('Aborted. Existing config is unchanged.');
+      return;
+    }
+  }
+
+  // Step 1: API key. Persist --token when given (one command sets endpoint+key),
+  // otherwise fall back to TEAMAI_API_TOKEN / an existing ~/.teamai/apikey.
+  if (options.token && options.token.trim()) {
+    await saveApiKey(options.token.trim());
+    log.success(`API key saved to ${getApiKeyPath()}`);
+  }
+  const apiKey = resolveApiKey();
+  if (!apiKey) {
+    log.error('No API key found. Pass --token <key> to `teamai init --http`, or set TEAMAI_API_TOKEN.');
+    process.exit(1);
+  }
+
+  // Step 2: materialize repo from HTTP. If the endpoint doesn't serve /repo yet
+  // (404 / non-JSON), fall back to "reporting-only" mode: the endpoint + key are
+  // still configured so status reporting works now, and skills will sync once
+  // /repo comes online (no re-init needed). Auth/transport errors still abort.
+  const localPath = expandHome(path.join(teamaiHome, 'team-repo'));
+  const matSpin = spinner('Fetching team repo over HTTP...').start();
+  let reportingOnly = false;
+  try {
+    await materializeHttpRepo(url, localPath, apiKey!);
+    matSpin.succeed('Team repo materialized');
+  } catch (e) {
+    if (e instanceof RepoNotAvailableError) {
+      reportingOnly = true;
+      matSpin.warn('No /repo at this endpoint yet — configuring for status reporting only.');
+      log.info('Skills/rules will sync automatically once /repo is available (no re-init needed).');
+    } else {
+      matSpin.fail(`HTTP fetch failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  }
+
+  // Step 3: load teamai.yaml. In reporting-only mode the endpoint hasn't shipped
+  // one yet, so write a minimal local stub (default toolPaths) to drive hook
+  // injection + the reporter. A real /repo will overwrite it on the next pull.
+  if (reportingOnly) {
+    await ensureDir(localPath);
+    const stubPath = path.join(localPath, 'teamai.yaml');
+    if (!(await pathExists(stubPath))) {
+      await writeFile(stubPath, YAML.stringify({ team: 'http-reporting', repo: url, sharing: {} }));
+    }
+  }
+  const teamConfig = await loadTeamConfig(localPath);
+  if (!teamConfig) {
+    log.error('Materialized repo has no valid teamai.yaml. Check the endpoint.');
+    process.exit(1);
+  }
+
+  // Step 4: save local config (kind: http; only the URL is stored, never the key)
+  const localConfig: LocalConfig = {
+    repo: { localPath, remote: url, kind: 'http', url },
+    username: 'http-consumer',
+    scope,
+    projectRoot,
+    additionalRoles: [],
+  };
+  try {
+    Object.assign(localConfig, await promptForRoleProfile(localPath, options.role));
+  } catch (error) {
+    const msg = (error as Error).message;
+    if (!msg.includes('Roles manifest not found')) {
+      log.debug(`Role selection skipped: ${msg}`);
+    }
+  }
+
+  await ensureDir(teamaiHome);
+  if (scope === 'project') {
+    await saveLocalConfigForScope(localConfig, scope, projectRoot);
+  } else {
+    await ensureDir(TEAMAI_HOME);
+    await saveLocalConfig(localConfig);
+  }
+  log.success(`Local config saved to ${teamaiHome}/config.yaml`);
+
+  // Invalidate cache so the next pull does a full sync.
+  try {
+    const state = await loadStateForScope(scope, projectRoot);
+    state.lastPullRev = null;
+    await saveStateForScope(state, scope, projectRoot);
+  } catch {
+    // state may not exist yet
+  }
+
+  // Step 5: inject hooks (built-in dispatch incl. the reporter) via the same
+  // authoritative path the git init uses, so HTTP consumers behave identically.
+  await reconcileTeamHooksForConfig(teamConfig, localConfig);
+
+  if (reportingOnly) {
+    log.success('teamai initialized (HTTP, reporting-only — /repo not live yet)!');
+    log.info('Status reporting is active now; skills/rules will sync automatically once /repo is available.');
+  } else {
+    log.success('teamai initialized (HTTP read-only)!');
+    log.info('Skills/rules will auto-sync on each session start. This team is read-only (no push).');
+  }
+  closePrompt();
+}
+
+export async function init(options: GlobalOptions & { repo?: string; scope?: string; role?: string; force?: boolean; http?: string; token?: string }): Promise<void> {
+  if (options.http) {
+    return initHttp(options.http, options);
+  }
   log.info('Initializing teamai...');
 
   // Step 0: Determine scope (user or project)
@@ -116,10 +247,12 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
   } else {
     const userPath = getTeamaiHome('user');
     const projectPath = getTeamaiHome('project', process.cwd());
-    log.info(`  user    → ${userPath}/`);
-    log.info(`  project → ${projectPath}/`);
-    const scopeAnswer = await askQuestion('Scope [user/project] (default: user): ', 'user');
-    if (scopeAnswer.toLowerCase() === 'project') {
+    log.info('Select scope:');
+    log.info(`  1. user    → ${userPath}/`);
+    log.info(`  2. project → ${projectPath}/`);
+    const scopeAnswer = await askQuestion('Scope [1/2] (default: 1): ', '1');
+    const normalizedScope = scopeAnswer.trim().toLowerCase();
+    if (normalizedScope === '2' || normalizedScope === 'project') {
       scope = 'project';
     }
   }
@@ -427,10 +560,10 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
     // Non-critical: state file may not exist yet on first init
   }
 
-  // Step 7: Inject hooks into AI tools
+  // Step 7: Inject built-in + team hooks into AI tools
   const reloadedTeamConfig = await loadTeamConfig(localPath);
   if (reloadedTeamConfig) {
-    await injectHooksToAllTools(reloadedTeamConfig.toolPaths, resolveBaseDir(localConfig));
+    await reconcileTeamHooksForConfig(reloadedTeamConfig, localConfig);
   }
 
   log.success('teamai initialized successfully!');

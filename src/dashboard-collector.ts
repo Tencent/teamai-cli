@@ -1,8 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline';
 import { log } from './utils/logger.js';
+import { deriveSessionId } from './utils/session-id.js';
 import { ensureDir } from './utils/fs.js';
 import { resolveMonitorPid } from './pid-monitor.js';
+import { normalizeToolName } from './utils/tool-names.js';
 import {
   DASHBOARD_EVENTS_PATH,
   DASHBOARD_EVENTS_DIR,
@@ -10,10 +13,20 @@ import {
   DASHBOARD_IDLE_TIMEOUT_MS,
   DASHBOARD_STALE_TIMEOUT_MS,
   DASHBOARD_STOPPED_DISPLAY_MS,
+  CORRECTION_WINDOW_MS,
+  CORRECTION_KEYWORDS,
+  INTERVENTION_SCAN_MAX_BYTES,
+  TRANSCRIPT_INTERRUPT_PREFIX,
+  TRANSCRIPT_SYSTEM_PREFIXES,
+  TRANSCRIPT_REJECT_MARKERS,
+  emptyTokenUsage,
+  addTokenUsage,
   type DashboardEvent,
   type DashboardEventType,
   type DashboardSession,
   type DashboardSessionStatus,
+  type TokenUsage,
+  type SessionMetrics,
 } from './types.js';
 
 // ─── Event collection data flow ─────────────────────────
@@ -100,23 +113,268 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
   }
 }
 
+/** Result of a full-transcript scan at session Stop: cumulative, idempotent snapshot. */
+export interface TranscriptScanResult {
+  interrupt: number;
+  toolReject: number;
+  tokens: TokenUsage;
+  /**
+   * Cumulative count of genuine human prompt turns in the transcript. Sourced here
+   * (not from compactable prompt_submit events) so the reported baseline stays
+   * monotonic across compaction + same-session resume — same guarantee as `tokens`.
+   */
+  prompts: number;
+}
+
 /**
- * Derive session ID from hook data.
- * Priority: session_id field > CLAUDE_SESSION_ID env > PID+cwd composite.
+ * Scan a full transcript once at Stop time and collect cumulative, idempotent
+ * snapshots of:
+ * - interrupt:  user message whose text starts with "[Request interrupted by user"
+ * - toolReject: tool_result with is_error=true marked as a user rejection
+ * - tokens:     usage.{input,output,cache_*}_tokens summed across assistant messages,
+ *               deduplicated by `message.id` (falling back to top-level `requestId`)
+ *               because Claude Code repeats the same usage on every content-block
+ *               line of a single turn, so naive summing would massively over-count.
+ * - prompts:    genuine human prompt turns (user entries with real text, excluding
+ *               interrupts, tool_results, and meta/sidechain entries).
+ *
+ * Uses a streaming line reader so large transcripts don't load fully into memory.
+ * Returns zero counts on any error (file missing, too large, permission denied).
  */
-function deriveSessionId(hookData: Record<string, unknown>): string {
-  // 1. Explicit session_id from hook STDIN
-  if (typeof hookData.session_id === 'string' && hookData.session_id) {
-    return hookData.session_id;
+export async function scanTranscriptStop(
+  transcriptPath: string,
+): Promise<TranscriptScanResult> {
+  let interrupt = 0;
+  let toolReject = 0;
+  let prompts = 0;
+  const tokens = emptyTokenUsage();
+  // Dedup assistant usage per message (one turn spans many JSONL lines that repeat
+  // the same usage). Prefer message.id; fall back to the top-level requestId.
+  const countedUsageKeys = new Set<string>();
+
+  // CodeBuddy persists its transcript as a single `index.json` document (a JSON
+  // object with `requests[].usage` + `messages[]`), NOT the Claude Code JSONL
+  // schema the streaming scanner below expects. Detect and parse that shape
+  // separately — otherwise every line fails JSON.parse and tokens stay 0.
+  if (path.basename(transcriptPath) === 'index.json') {
+    const cb = await scanCodebuddyIndex(transcriptPath);
+    if (cb) return cb;
   }
-  // 2. Environment variable (Claude Code sets this)
-  if (process.env.CLAUDE_SESSION_ID) {
-    return process.env.CLAUDE_SESSION_ID;
+
+  try {
+    const stat = await fs.promises.stat(transcriptPath);
+    if (stat.size === 0) return { interrupt, toolReject, tokens, prompts };
+    if (stat.size > INTERVENTION_SCAN_MAX_BYTES) {
+      log.warn(`dashboard: transcript too large to scan (${stat.size} bytes)`);
+      return { interrupt, toolReject, tokens, prompts };
+    }
+
+    const rl = readline.createInterface({
+      input: fs.createReadStream(transcriptPath, { encoding: 'utf-8' }),
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      const trimmed = line.trim();
+      // Cheap pre-filter: we only care about `user` entries (interventions/prompts)
+      // and `assistant` entries (token usage); skip JSON.parse on anything else.
+      if (!trimmed || (!trimmed.includes('"user"') && !trimmed.includes('"assistant"'))) continue;
+
+      let entry: {
+        type?: string;
+        isMeta?: unknown;
+        isSidechain?: unknown;
+        requestId?: unknown;
+        message?: { content?: unknown; id?: unknown; usage?: Record<string, unknown> };
+      };
+      try {
+        entry = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+
+      if (entry.type === 'assistant') {
+        const usage = entry.message?.usage;
+        const dedupKey = typeof entry.message?.id === 'string'
+          ? entry.message.id
+          : typeof entry.requestId === 'string'
+            ? entry.requestId
+            : undefined;
+        if (usage && dedupKey && !countedUsageKeys.has(dedupKey)) {
+          countedUsageKeys.add(dedupKey);
+          tokens.input += toNum(usage.input_tokens);
+          tokens.output += toNum(usage.output_tokens);
+          tokens.cacheRead += toNum(usage.cache_read_input_tokens);
+          tokens.cacheCreation += toNum(usage.cache_creation_input_tokens);
+        }
+        continue;
+      }
+
+      if (entry.type !== 'user') continue;
+
+      const isMeta = entry.isMeta === true || entry.isSidechain === true;
+      const content = entry.message?.content;
+
+      // Plain-string user content = a genuine human prompt (older transcript shape).
+      if (typeof content === 'string') {
+        const trimContent = content.trim();
+        if (
+          !isMeta &&
+          trimContent &&
+          !trimContent.startsWith(TRANSCRIPT_INTERRUPT_PREFIX) &&
+          !TRANSCRIPT_SYSTEM_PREFIXES.some((p) => trimContent.startsWith(p))
+        ) {
+          prompts++;
+        }
+        continue;
+      }
+      if (!Array.isArray(content)) continue;
+
+      let hasHumanText = false;
+      for (const item of content as Array<Record<string, unknown>>) {
+        if (item?.type === 'text' && typeof item.text === 'string') {
+          const txt = item.text.trim();
+          if (item.text.startsWith(TRANSCRIPT_INTERRUPT_PREFIX)) {
+            interrupt++;
+          } else if (txt && !TRANSCRIPT_SYSTEM_PREFIXES.some((p) => txt.startsWith(p))) {
+            hasHumanText = true;
+          }
+        } else if (item?.type === 'tool_result' && item.is_error === true) {
+          const text = typeof item.content === 'string'
+            ? item.content
+            : Array.isArray(item.content)
+              ? (item.content as Array<{ text?: string }>)
+                .map((c) => (typeof c?.text === 'string' ? c.text : '')).join(' ')
+              : '';
+          if (TRANSCRIPT_REJECT_MARKERS.some((m) => text.includes(m))) {
+            toolReject++;
+          }
+        }
+      }
+      // One human turn per user entry (tool_result-only entries have no human text).
+      if (hasHumanText && !isMeta) prompts++;
+    }
+  } catch (e) {
+    log.warn(`dashboard: failed to scan transcript: ${(e as Error).message}`);
   }
-  // 3. Fallback: PID + cwd composite
-  const cwd = typeof hookData.cwd === 'string' ? hookData.cwd : process.cwd();
-  const ppid = process.ppid ?? process.pid;
-  return `pid-${ppid}-${cwd}`;
+
+  return { interrupt, toolReject, tokens, prompts };
+}
+
+/**
+ * Read a CodeBuddy `index.json` transcript once. CodeBuddy's schema differs from
+ * Claude Code:
+ *
+ *   {
+ *     "messages": [{ "role": "user" | "assistant" | "tool", ... }],
+ *     "requests": [{ "usage": { "inputTokens", "outputTokens", "totalTokens" } }]
+ *   }
+ *
+ * - tokens:  summed across `requests[].usage` (same per-turn accumulation model as
+ *            the Claude scan, so re-sent context is counted each request). CodeBuddy
+ *            reports no cache-read/creation split at the request level, so those map
+ *            to 0 and `input + output` matches CodeBuddy's own `totalTokens`.
+ * - prompts: count of `messages[]` entries with role === 'user' (human turns).
+ *
+ * Returns null when the file is missing, too large, unparseable (e.g. read mid-write),
+ * or not a CodeBuddy index document.
+ */
+async function readCodebuddyIndexOnce(
+  transcriptPath: string,
+): Promise<TranscriptScanResult | null> {
+  try {
+    const stat = await fs.promises.stat(transcriptPath);
+    if (stat.size === 0 || stat.size > INTERVENTION_SCAN_MAX_BYTES) return null;
+
+    const content = await fs.promises.readFile(transcriptPath, 'utf-8');
+    const data = JSON.parse(content) as {
+      messages?: Array<{ role?: unknown }>;
+      requests?: Array<{ usage?: Record<string, unknown> }>;
+    };
+    if (!data || !Array.isArray(data.requests)) return null;
+
+    const tokens = emptyTokenUsage();
+    for (const req of data.requests) {
+      const usage = req?.usage;
+      if (!usage) continue;
+      tokens.input += toNum(usage.inputTokens);
+      tokens.output += toNum(usage.outputTokens);
+    }
+
+    const prompts = Array.isArray(data.messages)
+      ? data.messages.filter((m) => m?.role === 'user').length
+      : 0;
+
+    // CodeBuddy transcripts don't expose interrupt / tool-reject markers.
+    return { interrupt: 0, toolReject: 0, tokens, prompts };
+  } catch (e) {
+    log.warn(`dashboard: failed to scan CodeBuddy index: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/** Total token count across all four buckets. */
+function totalTokenCount(t: TokenUsage): number {
+  return t.input + t.output + t.cacheRead + t.cacheCreation;
+}
+
+/** Retry budget for waiting on CodeBuddy's post-Stop token-usage flush. */
+const CODEBUDDY_USAGE_MAX_ATTEMPTS = 8;
+const CODEBUDDY_USAGE_RETRY_MS = 250;
+
+/**
+ * Scan a CodeBuddy `index.json` for a cumulative, idempotent token + prompt
+ * snapshot, with a bounded retry.
+ *
+ * CodeBuddy flushes per-request token usage into `index.json` *shortly after* it
+ * fires the Stop hook, so the first read frequently sees the human `messages`
+ * already written (prompts are captured) but `requests[].usage` still zero. Without
+ * a retry, single-turn / last-turn sessions would permanently record 0 tokens. We
+ * re-read (up to ~1.75s, well within the 60s hook timeout) until usage appears.
+ *
+ * Returns null only when the file never parses as a CodeBuddy index — the caller
+ * then falls back to the Claude JSONL scanner.
+ */
+async function scanCodebuddyIndex(
+  transcriptPath: string,
+): Promise<TranscriptScanResult | null> {
+  let last: TranscriptScanResult | null = null;
+  for (let attempt = 0; attempt < CODEBUDDY_USAGE_MAX_ATTEMPTS; attempt++) {
+    const result = await readCodebuddyIndexOnce(transcriptPath);
+    if (result) {
+      last = result;
+      // Usage has been flushed — the snapshot is complete, stop waiting.
+      if (totalTokenCount(result.tokens) > 0) return result;
+    }
+    if (attempt < CODEBUDDY_USAGE_MAX_ATTEMPTS - 1) {
+      await new Promise((resolve) => setTimeout(resolve, CODEBUDDY_USAGE_RETRY_MS));
+    }
+  }
+  // Never observed non-zero usage: return the best (zero-token) snapshot we have,
+  // or null so the caller falls back to the Claude JSONL scanner.
+  return last;
+}
+
+/** Coerce an unknown usage field to a non-negative finite number (0 otherwise). */
+function toNum(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+/**
+ * Backward-compatible intervention-only scan. Delegates to {@link scanTranscriptStop}.
+ */
+export async function countInterventions(
+  transcriptPath: string,
+): Promise<{ interrupt: number; toolReject: number }> {
+  const { interrupt, toolReject } = await scanTranscriptStop(transcriptPath);
+  return { interrupt, toolReject };
+}
+
+/** True when a prompt looks like a course-correction (vs. a fresh task). */
+function isCorrectionPrompt(text?: string): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return CORRECTION_KEYWORDS.some((k) => lower.includes(k));
 }
 
 /**
@@ -172,7 +430,7 @@ export async function parseHookEvent(
     return null;
   }
 
-  const sessionId = deriveSessionId(hookData);
+  const sessionId = deriveSessionId(hookData, { includeCwd: true });
   const cwd = typeof hookData.cwd === 'string' ? hookData.cwd : undefined;
 
   const event: DashboardEvent = {
@@ -183,9 +441,9 @@ export async function parseHookEvent(
     cwd,
   };
 
-  // Extract tool name from PostToolUse
+  // Extract tool name from PostToolUse (normalize IDE-style names)
   if (eventType === 'tool_use' && typeof hookData.tool_name === 'string') {
-    event.toolName = hookData.tool_name;
+    event.toolName = normalizeToolName(hookData.tool_name);
   }
 
   // Resolve AI tool PID for liveness monitoring on session start
@@ -207,12 +465,25 @@ export async function parseHookEvent(
     event.promptSummary = hookData.prompt.slice(0, 200);
   }
 
-  // Extract transcript path and AI output from Stop event
+  // Extract transcript path, AI output and intervention counts from Stop event
   if (eventType === 'stop' && typeof hookData.transcript_path === 'string') {
     event.transcriptPath = hookData.transcript_path;
     const output = await readLastAssistantOutput(hookData.transcript_path);
     if (output) {
       event.stoppedOutput = output;
+    }
+    // Full-transcript snapshot of interrupt/tool_reject counts + token usage +
+    // human prompt count (all idempotent, sourced from the non-compactable transcript).
+    const scan = await scanTranscriptStop(hookData.transcript_path);
+    if (scan.interrupt > 0 || scan.toolReject > 0) {
+      event.interventions = { interrupt: scan.interrupt, toolReject: scan.toolReject };
+    }
+    if (scan.tokens.input > 0 || scan.tokens.output > 0
+      || scan.tokens.cacheRead > 0 || scan.tokens.cacheCreation > 0) {
+      event.tokens = scan.tokens;
+    }
+    if (scan.prompts > 0) {
+      event.prompts = scan.prompts;
     }
   }
 
@@ -316,6 +587,10 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
         prompts: [],
         stoppedOutput: '',
         stoppedAt: '',
+        interventions: { interrupt: 0, toolReject: 0, correction: 0 },
+        interventionCount: 0,
+        promptCount: 0,
+        tokens: emptyTokenUsage(),
       };
       sessions.set(event.sessionId, session);
     }
@@ -363,6 +638,18 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
     }
   }
 
+  // Fill per-session metrics (single source of truth: aggregate fold)
+  const metricsMap = aggregateSessionMetrics(events);
+  for (const session of sessions.values()) {
+    const m = metricsMap.get(session.sessionId);
+    if (m) {
+      session.interventions = { interrupt: m.interrupt, toolReject: m.toolReject, correction: m.correction };
+      session.interventionCount = m.interrupt + m.toolReject + m.correction;
+      session.promptCount = m.prompts;
+      session.tokens = m.tokens;
+    }
+  }
+
   // Apply timeouts
   const result: DashboardSession[] = [];
   for (const session of sessions.values()) {
@@ -404,6 +691,86 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
     return bRuntime - aRuntime;
   });
   return result;
+}
+
+/**
+ * Aggregate per-session metrics from raw events (no timeout filtering).
+ *
+ * - interrupt / toolReject / tokens: taken from the latest Stop event's snapshot
+ *   (idempotent — a later Stop overrides an earlier one, so re-scanning never
+ *   double-counts).
+ * - correction: a prompt_submit arriving within CORRECTION_WINDOW_MS of a Stop AND
+ *   matching a correction keyword. Each Stop is consumed by the next prompt only once.
+ * - prompts: total number of prompt_submit events (human conversation turns).
+ *
+ * Used both by rebuildSessions (live dashboard) and by the team-stats reporter.
+ */
+export function aggregateSessionMetrics(
+  events: DashboardEvent[],
+): Map<string, SessionMetrics> {
+  const map = new Map<string, SessionMetrics>();
+  const lastStopAt = new Map<string, number>();
+  // Two prompt-count sources, kept separate then reconciled with max():
+  // - submitCount: live prompt_submit events (real-time, but compactable).
+  // - stopPrompts: latest Stop transcript snapshot (compaction/resume-proof).
+  const submitCount = new Map<string, number>();
+  const stopPrompts = new Map<string, number>();
+
+  for (const event of events) {
+    let m = map.get(event.sessionId);
+    if (!m) {
+      m = { interrupt: 0, toolReject: 0, correction: 0, prompts: 0, tokens: emptyTokenUsage() };
+      map.set(event.sessionId, m);
+    }
+
+    if (event.type === 'stop') {
+      if (event.interventions) {
+        m.interrupt = event.interventions.interrupt;
+        m.toolReject = event.interventions.toolReject;
+      }
+      // Token + prompt snapshots are full cumulative totals — latest wins.
+      if (event.tokens) {
+        m.tokens = { ...event.tokens };
+      }
+      if (typeof event.prompts === 'number') {
+        stopPrompts.set(event.sessionId, event.prompts);
+      }
+      lastStopAt.set(event.sessionId, new Date(event.timestamp).getTime());
+    } else if (event.type === 'prompt_submit') {
+      submitCount.set(event.sessionId, (submitCount.get(event.sessionId) ?? 0) + 1);
+      const stopAt = lastStopAt.get(event.sessionId);
+      if (stopAt !== undefined) {
+        const gap = new Date(event.timestamp).getTime() - stopAt;
+        if (gap >= 0 && gap <= CORRECTION_WINDOW_MS && isCorrectionPrompt(event.promptSummary)) {
+          m.correction++;
+        }
+        // Each stop is consumed once — a later prompt is a new task, not a correction.
+        lastStopAt.delete(event.sessionId);
+      }
+    }
+  }
+
+  // Reconcile prompt count: the Stop transcript snapshot is the durable baseline
+  // (survives compaction + resume); live submit events cover the period before the
+  // first Stop. max() keeps the count monotonic across both.
+  for (const [sid, m] of map) {
+    m.prompts = Math.max(submitCount.get(sid) ?? 0, stopPrompts.get(sid) ?? 0);
+  }
+
+  return map;
+}
+
+/**
+ * Backward-compatible intervention-only view. Delegates to {@link aggregateSessionMetrics}.
+ */
+export function aggregateSessionInterventions(
+  events: DashboardEvent[],
+): Map<string, { interrupt: number; toolReject: number; correction: number }> {
+  const out = new Map<string, { interrupt: number; toolReject: number; correction: number }>();
+  for (const [sid, m] of aggregateSessionMetrics(events)) {
+    out.set(sid, { interrupt: m.interrupt, toolReject: m.toolReject, correction: m.correction });
+  }
+  return out;
 }
 
 // ─── JSONL compaction ───────────────────────────────────

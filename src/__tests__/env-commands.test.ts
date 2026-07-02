@@ -107,7 +107,7 @@ scope: 'user',
       expect(log.info).toHaveBeenCalledWith('No env variables defined');
     });
 
-    it('should list variables', async () => {
+    it('should list variables with masked values by default', async () => {
       await fse.writeFile(
         path.join(repoPath, 'env', 'env.yaml'),
         YAML.stringify({
@@ -119,6 +119,27 @@ scope: 'user',
       );
 
       await envList({});
+
+      const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
+      expect(allOutput).toContain('Team env variables (2)');
+      // Default: values should be masked
+      expect(allOutput).toContain('API_URL=ht****');
+      expect(allOutput).toContain('TOKEN=se****');
+      expect(allOutput).not.toContain('https://api.example.com');
+    });
+
+    it('should reveal plaintext values when reveal=true', async () => {
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [
+            { key: 'API_URL', value: 'https://api.example.com', description: 'API endpoint' },
+            { key: 'TOKEN', value: 'secret' },
+          ],
+        }),
+      );
+
+      await envList({ reveal: true });
 
       const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
       expect(allOutput).toContain('Team env variables (2)');

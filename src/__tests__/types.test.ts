@@ -61,6 +61,7 @@ describe('TeamaiConfigSchema', () => {
     expect(result.toolPaths.codebuddy).toEqual({
       skills: '.codebuddy/skills',
       rules: '.codebuddy/rules',
+      agents: '.codebuddy/agents',
       settings: '.codebuddy/settings.json',
       claudemd: '.codebuddy/CODEBUDDY.md',
     });
@@ -97,6 +98,8 @@ describe('TeamaiConfigSchema', () => {
     expect(result.toolPaths['codex-internal']).toEqual({
       skills: '.codex-internal/skills',
       rules: '.codex-internal/rules',
+      settings: '.codex-internal/hooks.json',
+      agents: '.codex-internal/agents',
     });
   });
 

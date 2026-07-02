@@ -1,12 +1,16 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { requireInit, detectProjectConfig } from './config.js';
-import { loadIndex, buildIndex, search } from './utils/search-index.js';
+import { loadIndex, buildIndex, search, isLegacyIndex } from './utils/search-index.js';
 import type { SearchResult } from './utils/search-index.js';
 import { readFileSafe, writeFile, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, UserVotes, SearchIndex, LocalConfig } from './types.js';
 import { getTeamaiHome } from './types.js';
+import { queryCodeKnowledge } from './code-knowledge-recall.js';
+import type { CodeKnowledgeResult } from './code-knowledge-recall.js';
+import { recordRecallQuality } from './recall-quality.js';
+import { deriveSessionId } from './utils/session-id.js';
 
 /** Resolve votes dir dynamically (respects HOME changes in tests). */
 function getVotesLocalDir(): string {
@@ -33,6 +37,10 @@ interface ScopedSearchResult extends SearchResult {
 //      ├─ formatResults(results)
 //      │   └─ STDOUT (AI-consumable format)
 //      │
+//      ├─ recordRecallQuality(sessionId, results)
+//      │   └─ ~/.teamai/sessions/<sid>-recall-cache.json
+//      │      (read by contribute-check's knowledge-gap detection)
+//      │
 //      └─ autoUpvote(results, username, repoPath)
 //          ├─ write ~/.teamai/votes/<user>.yaml (local)
 //          └─ copy to <repoPath>/votes/<user>.yaml
@@ -43,7 +51,8 @@ interface ScopedSearchResult extends SearchResult {
  * Format search results for CLI / AI consumption.
  *
  * Output uses delimiters so AI treats content as reference, not instruction.
- * Each entry includes a scope label (user/project) when source is known.
+ * Each entry includes a scope label (user/project) when source is known and
+ * a type tag (skills/learnings/docs/rules) introduced in Phase 1.
  */
 export function formatResults(results: ScopedSearchResult[]): string {
   const lines: string[] = [];
@@ -54,15 +63,24 @@ export function formatResults(results: ScopedSearchResult[]): string {
     const { entry, score, scope, learningsBase } = results[i];
     const voteStr = entry.votes > 0 ? ` ★${entry.votes}` : '';
     const scopeStr = scope ? ` [${scope}]` : '';
-    lines.push(`[${i + 1}/${results.length}] ${entry.title}${voteStr}${scopeStr}`);
+    // Phase 1: prepend a [type] tag so callers can quickly tell which knowledge
+    // bucket each hit came from. Falls back to no tag for legacy entries that
+    // pre-date the schema bump (these are auto-rebuilt on the next pull).
+    const typeTag = entry.type ? `[${entry.type}] ` : '';
+    lines.push(`[${i + 1}/${results.length}] ${typeTag}${entry.title}${voteStr}${scopeStr}`);
     lines.push(`Author: ${entry.author || 'unknown'} | Date: ${entry.date || 'unknown'} | Score: ${score.toFixed(1)}`);
     if (entry.tags.length > 0) {
       lines.push(`Tags: ${entry.tags.join(', ')}`);
     }
-    const filePath = learningsBase
-      ? `${learningsBase}/${entry.filename}`
-      : `~/.teamai/learnings/${entry.filename}`;
+    const filePath = entry.path
+      ? entry.path
+      : learningsBase
+        ? `${learningsBase}/${entry.filename}`
+        : `~/.teamai/learnings/${entry.filename}`;
     lines.push(`File: ${filePath}`);
+    if (entry.snippet) {
+      lines.push(`Snippet: ${entry.snippet}`);
+    }
     lines.push('');
   }
 
@@ -165,15 +183,29 @@ async function loadOrBuildScopeIndex(
   }
 
   let index = await loadIndex(indexPath);
-  if (!index && effectiveLearningsDir) {
+
+  // Auto-rebuild legacy / missing indexes (Phase 1 schema bump): the old
+  // index only covered learnings, the new one covers four categories. Same
+  // condition triggers rebuild when the file is missing entirely.
+  const needsRebuild = !index || isLegacyIndex(index);
+  if (needsRebuild && (effectiveLearningsDir || await pathExists(path.join(localConfig.repo.localPath, 'docs')) || await pathExists(path.join(localConfig.repo.localPath, 'rules')) || await pathExists(path.join(localConfig.repo.localPath, 'skills')))) {
     const votesDir = path.join(localConfig.repo.localPath, 'votes');
     const votesExist = await pathExists(votesDir);
+    const docsDir = path.join(localConfig.repo.localPath, 'docs');
+    const rulesDir = path.join(localConfig.repo.localPath, 'rules');
+    const skillsDir = path.join(localConfig.repo.localPath, 'skills');
+    const repoCodebaseDir = path.join(localConfig.repo.localPath, 'docs', 'team-codebase');
+    const codebaseDir = await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
     try {
-      await buildIndex(
-        effectiveLearningsDir,
-        votesExist ? votesDir : undefined,
+      await buildIndex({
+        learningsDir: effectiveLearningsDir ?? undefined,
+        docsDir: await pathExists(docsDir) ? docsDir : undefined,
+        rulesDir: await pathExists(rulesDir) ? rulesDir : undefined,
+        skillsDir: await pathExists(skillsDir) ? skillsDir : undefined,
+        codebaseDir,
+        votesDir: votesExist ? votesDir : undefined,
         indexPath,
-      );
+      });
       index = await loadIndex(indexPath);
     } catch (e) {
       log.debug(`Index build failed for ${scopeLabel}: ${(e as Error).message}`);
@@ -190,12 +222,13 @@ async function loadOrBuildScopeIndex(
 /**
  * Handle `teamai recall <query>`.
  *
- * Searches both user and project scope learnings indexes, merges results,
- * and displays ranked results. Auto-upvotes returned documents.
+ * Scope isolation (issue #73): queries the project-scope index when a project
+ * install is detected in cwd, otherwise the user-scope index. Displays ranked
+ * results and auto-upvotes returned documents.
  */
 export async function recall(
   query: string,
-  options: GlobalOptions,
+  options: GlobalOptions & { depth?: 'route' | 'context' | 'lookup' },
 ): Promise<void> {
   if (!query || !query.trim()) {
     log.error('Usage: teamai recall <query>');
@@ -203,34 +236,54 @@ export async function recall(
     return;
   }
 
-  // Collect indexes from both scopes
-  const scopeIndexes: Array<{ index: SearchIndex; scope: 'user' | 'project'; config: LocalConfig; learningsBase: string }> = [];
-
-  // Try user scope
-  try {
-    const { localConfig: userConfig } = await requireInit();
-    const result = await loadOrBuildScopeIndex(userConfig, 'user');
-    if (result && result.index.entries.length > 0) {
-      scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
-    }
-  } catch {
-    log.debug('recall: user scope not available');
+  const VALID_DEPTHS = new Set(['route', 'context', 'lookup']);
+  if (options.depth && !VALID_DEPTHS.has(options.depth)) {
+    log.warn(`Invalid --depth "${options.depth}", falling back to "context". Valid: route, context, lookup`);
+    options.depth = 'context';
   }
 
-  // Try project scope (only when cwd has project-scope config)
+  // Scope isolation (issue #73): when a project-scope install is detected in
+  // cwd, recall queries the project index ONLY. Otherwise it falls back to the
+  // user scope. The two scopes are never merged anymore.
+  const scopeIndexes: Array<{ index: SearchIndex; scope: 'user' | 'project'; config: LocalConfig; learningsBase: string }> = [];
+
+  let projectConfig: LocalConfig | null = null;
   try {
-    const projectConfig = await detectProjectConfig();
-    if (projectConfig) {
+    projectConfig = await detectProjectConfig();
+  } catch {
+    log.debug('recall: project scope detection failed');
+  }
+
+  if (projectConfig) {
+    // Project mode: project scope only.
+    try {
       const result = await loadOrBuildScopeIndex(projectConfig, 'project');
       if (result && result.index.entries.length > 0) {
         scopeIndexes.push({ index: result.index, scope: 'project', config: projectConfig, learningsBase: result.learningsBase });
       }
+    } catch {
+      log.debug('recall: project scope not available');
     }
-  } catch {
-    log.debug('recall: project scope not available');
+  } else {
+    // User mode: user scope only.
+    try {
+      const { localConfig: userConfig } = await requireInit();
+      const result = await loadOrBuildScopeIndex(userConfig, 'user');
+      if (result && result.index.entries.length > 0) {
+        scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
+      }
+    } catch {
+      log.debug('recall: user scope not available');
+    }
   }
 
-  if (scopeIndexes.length === 0) {
+  // Resolve teamwiki path from team-repo (prefer project scope, fallback to user scope)
+  const wikiConfig = scopeIndexes[0]?.config;
+  const wikiRoot = wikiConfig
+    ? path.join(wikiConfig.repo.localPath, 'teamwiki')
+    : path.join(process.cwd(), '.teamai', 'team-repo', 'teamwiki');
+  const hasWiki = await pathExists(wikiRoot);
+  if (scopeIndexes.length === 0 && !hasWiki) {
     log.info('No learnings available. Run `teamai pull` first to sync team knowledge.');
     return;
   }
@@ -250,6 +303,35 @@ export async function recall(
     }
   }
 
+  // ── Codebase knowledge graph recall ──────────────────────
+  try {
+    const codeResults = await queryCodeKnowledge(query, { wikiRoot, limit: 3, depth: options.depth });
+    // B11 fix: log-dampening instead of min-max normalization
+    // Codebase BM25 scores (0-50+) mapped to learnings scale (0-10) via log curve
+    for (const cr of codeResults) {
+      allResults.push({
+        entry: {
+          filename: cr.page,
+          title: cr.title,
+          author: '',
+          date: '',
+          tags: [],
+          tokens: [],
+          votes: 0,
+          type: 'docs' as const,
+          domain: 'technical' as const,
+          path: path.join(wikiRoot, cr.page),
+          snippet: cr.snippet,
+        },
+        score: Math.min(10, Math.log2(cr.score + 1) * 2),
+        scope: 'project',
+        learningsBase: wikiRoot,
+      });
+    }
+  } catch {
+    log.warn('recall: code graph retrieval unavailable, run teamai codebase --lint to diagnose');
+  }
+
   // Re-sort merged results by score descending, then date descending
   allResults.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
@@ -258,6 +340,12 @@ export async function recall(
 
   // Limit to top 5
   const topResults = allResults.slice(0, 5);
+
+  // Record quality signal for contribute-check's knowledge-gap detection.
+  // Best-effort and independent of dry-run/verbosity — misses matter too.
+  if (process.env.TEAMAI_RECALL_DISABLED !== '1') {
+    recordRecallQuality(deriveSessionId({}), topResults);
+  }
 
   if (topResults.length === 0) {
     log.info(`No matching learnings found for "${query}".`);

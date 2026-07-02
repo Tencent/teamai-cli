@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
-import { Command } from 'commander';
-import { setVerbose, setSilent } from './utils/logger.js';
+import { Command, Option } from 'commander';
+import { setVerbose, setSilent, log } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
 
 const require = createRequire(import.meta.url);
@@ -23,6 +23,8 @@ program
   .command('init')
   .description('Initialize teamai (configure TGit, clone repo, register member)')
   .option('--repo <repo>', 'Team repo (owner/repo or full URL)')
+  .option('--http <url>', 'Git-free HTTP team repo (read-only consumer; only needs an API key)')
+  .option('--token <key>', 'API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.')
   .option('--scope <scope>', 'Scope: user (default) or project')
   .option('--role <id>', 'Primary role ID (e.g. hai_dev) for non-interactive setup')
   .option('--force', 'Overwrite existing config without confirmation')
@@ -67,7 +69,7 @@ program
 
 program
   .command('list [type]')
-  .description('List resources (skills|rules|docs|env|wiki). For skills, --source local/all also scans installed AI agent skill directories.')
+  .description('List resources (skills|rules|docs|env). For skills, --source local/all also scans installed AI agent skill directories.')
   .option('--source <src>', 'Where to look for skills: repo | local | all', 'all')
   .option('--agent <name>', 'Filter local agents by id (only applies to skills)')
   .action(async (type, cmdOpts) => {
@@ -124,7 +126,7 @@ membersCmd
 
 program
   .command('remove <type> <names...>')
-  .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules|wiki)')
+  .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules)')
   .action(async (type, names) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { remove } = await import('./remove.js');
@@ -365,20 +367,22 @@ program
 const envCmd = program
   .command('env')
   .description('Manage team environment variables')
-  .action(async () => {
+  .option('--reveal', 'Show env variable values in plaintext (default: masked)')
+  .action(async (cmdOpts) => {
     // Default action: list env vars (backward compatible)
     const globalOpts = program.opts() as GlobalOptions;
     const { envList } = await import('./env-commands.js');
-    await envList(globalOpts);
+    await envList({ ...globalOpts, ...cmdOpts });
   });
 
 envCmd
   .command('list')
   .description('List team environment variables')
-  .action(async () => {
+  .option('--reveal', 'Show env variable values in plaintext (default: masked)')
+  .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { envList } = await import('./env-commands.js');
-    await envList(globalOpts);
+    await envList({ ...globalOpts, ...cmdOpts });
   });
 
 envCmd
@@ -407,6 +411,15 @@ const hooksCmd = program
   .description('Manage teamai hooks in AI tool settings');
 
 hooksCmd
+  .command('list')
+  .description('List hook install status + effective built-in (A) and team (B) hooks')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { hooksList } = await import('./hooks-cmd.js');
+    await hooksList(globalOpts);
+  });
+
+hooksCmd
   .command('inject')
   .description('Inject teamai hooks into all AI tool settings')
   .option('--silent', 'Silent mode (suppress success message)')
@@ -429,7 +442,8 @@ hooksCmd
 // ─── Usage tracking commands ────────────────────────────
 
 program
-  .command('track [toolName] [toolInput]')
+  .command('track [toolName] [toolInput]', { hidden: true })
+  
   .description('Track a tool usage event (called by PostToolUse hook)')
   .option('--stdin', 'Read hook data from STDIN (Claude Code hook format)')
   .option('--tool <name>', 'Tool identifier for usage attribution (e.g. claude, claude-internal)')
@@ -444,7 +458,8 @@ program
   });
 
 program
-  .command('track-slash')
+  .command('track-slash', { hidden: true })
+  
   .description('Track a slash command usage (called by UserPromptSubmit hook)')
   .option('--stdin', 'Read hook data from STDIN')
   .option('--tool <name>', 'Tool identifier for usage attribution (e.g. claude, claude-internal)')
@@ -461,15 +476,6 @@ program
   .action(async () => {
     const { showStats } = await import('./stats.js');
     await showStats();
-  });
-
-program
-  .command('save-session')
-  .description('Save current session tool usage summary')
-  .option('--summary <text>', 'Session summary text')
-  .action(async (cmdOpts) => {
-    const { saveSession } = await import('./session-collector.js');
-    await saveSession(cmdOpts.summary);
   });
 
 program
@@ -493,7 +499,8 @@ program
   });
 
 program
-  .command('dashboard-report')
+  .command('dashboard-report', { hidden: true })
+  
   .description('Report session state to dashboard (called by hooks)')
   .option('--stdin', 'Read hook data from STDIN')
   .option('--tool <name>', 'Tool identifier (e.g. claude, claude-internal)')
@@ -507,7 +514,8 @@ program
 // ─── Contribute commands ──────────────────────────────────
 
 program
-  .command('contribute-check')
+  .command('contribute-check', { hidden: true })
+  
   .description('Check if session qualifies for contribution (called by PostToolUse hook)')
   .option('--stdin', 'Read hook data from STDIN')
   .option('--tool <name>', 'Tool identifier (e.g. claude, claude-internal)')
@@ -536,34 +544,197 @@ program
 program
   .command('recall [query...]')
   .description('Search team learnings knowledge base')
-  .action(async (queryParts) => {
+  .option('--depth <level>', 'Recall depth: route (entry-points only) | context (module-level, default) | lookup (full graph traversal)', 'context')
+  .action(async (queryParts, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const query = (queryParts as string[]).join(' ');
     const { recall } = await import('./recall.js');
-    await recall(query, globalOpts);
+    await recall(query, { ...globalOpts, depth: cmdOpts.depth });
   });
 
 program
-  .command('auto-recall')
-  .description('Auto-recall team knowledge on tool errors (called by PostToolUse hook)')
+  .command('todowrite-hint', { hidden: true })
+  
+  .description('Remind the agent to invoke teamai-recall when TodoWrite is used (PostToolUse hook)')
   .option('--stdin', 'Read hook data from STDIN')
+  .option('--tool <name>', 'Source AI tool (claude / codebuddy / cursor)')
   .action(async (cmdOpts) => {
     if (cmdOpts.stdin) {
-      const { autoRecall } = await import('./auto-recall.js');
-      await autoRecall();
+      const { todoWriteHint } = await import('./todowrite-hint.js');
+      await todoWriteHint();
     }
   });
+
+program
+  .command('import')
+  .description('Import knowledge from local directories, remote repos, organizations, MRs, or iWiki')
+  .option('--dir <path>', 'Extract code knowledge from a local directory (same as --from-repo but no clone)')
+  .addOption(new Option('--from-claude', 'Scan Claude/Cursor rule directories (~/.claude/rules, ~/.cursor/rules)').hideHelp())
+  .option('--from-mr <url>', 'Extract learning and codebase suggestions from a merged MR/PR URL')
+  .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)')
+  .addOption(new Option('--resume', 'Resume an interrupted import session').hideHelp())
+  .option('--all', 'Accept all suggestions without interactive confirmation')
+  .addOption(new Option('--output <path>', 'Write drafts to this directory instead of pushing to team repo').hideHelp())
+  .addOption(new Option('--existing-codebase <path>', 'Path to existing codebase.md (used with --from-mr; overrides auto-detection from team repo)').hideHelp())
+  .option('--from-repo <url>', 'Clone a remote repo and generate per-repo codebase summary')
+  .addOption(new Option('--ssh', 'Force SSH clone even if HTTPS token is available').hideHelp())
+  .addOption(new Option('--domain <name>', 'Skip AI recommendation and assign repo to this domain explicitly').hideHelp())
+  .option('--from-repo-list <path>', 'Batch import repos from a YAML whitelist')
+  .addOption(new Option('--concurrency <n>', 'Concurrent repos for --from-repo-list (default 3)').default('3').hideHelp())
+  .addOption(new Option('--skip-aggregate', 'Skip domain-*.md / index.md regeneration').hideHelp())
+  .option('--incremental', 'Use cached clone with fetch+reset (with --from-repo or --from-repo-list)')
+  .option('--skip-enrich', 'Skip AI enrichment (only clone + extract + graph, no LLM calls)')
+  .option('--from-org <org>', 'List repos under an org and bootstrap whitelist + domains')
+  .addOption(new Option('--bootstrap', 'Run interactive review after --from-org').hideHelp())
+  .addOption(new Option('--max-repos <n>', 'Cap on repos pulled from --from-org (default 200)').default('200').hideHelp())
+  .addOption(new Option('--exclude-archived', 'Exclude archived repos from --from-org (default true)').hideHelp())
+  .addOption(new Option('--include-pattern <re>', 'Regex to include repos by full name (used with --from-org)').hideHelp())
+  .addOption(new Option('--exclude-pattern <re>', 'Regex to exclude repos by full name (used with --from-org)').hideHelp())
+  .addOption(new Option('--skip-import', 'Only write drafts; skip the actual --from-repo-list run').hideHelp())
+  .addOption(new Option('--iwiki-dual', 'Enable dual-output mode for --from-iwiki (write codebase sections in addition to learning)').hideHelp())
+  .addOption(new Option('--require-review', 'Defer codebase section writes to .teamai/pending-review.jsonl for human review').hideHelp())
+  .option('--cache-status', 'Show import cache status (repos cached, disk usage)')
+  .option('--cache-gc', 'Garbage-collect stale import cache entries')
+  .addOption(new Option('--max-bytes <n>', 'Override capacity cap for --cache-gc').hideHelp())
+  .addOption(new Option('--stale-days <n>', 'Threshold for stale-eviction in days (default 30)').default('30').hideHelp())
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    if (cmdOpts.cacheStatus || cmdOpts.cacheGc) {
+      const { cacheCmd } = await import('./cache-cmd.js');
+      await cacheCmd({
+        ...globalOpts,
+        status: cmdOpts.cacheStatus,
+        gc: cmdOpts.cacheGc,
+        maxBytes: cmdOpts.maxBytes,
+        staleDays: cmdOpts.staleDays,
+        json: cmdOpts.json,
+      });
+      return;
+    }
+    const { importCmd } = await import('./import.js');
+    await importCmd({ ...globalOpts, ...cmdOpts });
+  });
+
+program
+  .command('mr-hint', { hidden: true })
+  
+  .description('Hint AI about recently merged but un-imported MRs (SessionStart hook)')
+  .option('--stdin', 'Read hook data from STDIN')
+  .option('--tool <name>', 'Source AI tool (claude / codebuddy / cursor)')
+  .action(async (cmdOpts) => {
+    if (cmdOpts.stdin) {
+      const { mrHint } = await import('./mr-hint.js');
+      await mrHint();
+    }
+  });
+
+program
+  .command('codebase')
+  .description('Inspect and maintain team-codebase outputs')
+  .addOption(new Option('--extract [path]', 'Extract code knowledge and build graph from source').hideHelp())
+  .addOption(new Option('--incremental', 'Only re-extract changed files (requires prior manifest)').hideHelp())
+  .addOption(new Option('--project <name>', 'Project slug for extract output (default: directory name)').hideHelp())
+  .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)').hideHelp())
+  .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
+  .option('--lint', 'Run global consistency lint over docs/team-codebase')
+  .option('--fix', 'Apply low-risk mechanical fixes (only with --lint)')
+  .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
+  .addOption(new Option('--stale-days <n>', 'Threshold for sync-stale check').default('60').hideHelp())
+  .addOption(new Option('--pending-review-threshold <n>', 'Threshold for pending-review backlog').default('10').hideHelp())
+  .option('--json', 'Output report as JSON (suitable for CI)')
+  .addOption(new Option('--output <path>', 'Custom teamwiki output root directory').hideHelp())
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { codebaseCmd } = await import('./codebase-cmd.js');
+    await codebaseCmd({ ...globalOpts, ...cmdOpts });
+  });
+
+
+program
+    .command('review [id]')
+    .description('Inspect and process .teamai/pending-review.jsonl items')
+    .option('--apply', 'Apply the change for the given id (only for codebase-section)')
+    .option('--reject', 'Reject the given id without applying')
+    .option('--reason <msg>', 'Reason for reject')
+    .option('--all-apply', 'Apply all items at or below --max-risk')
+    .option('--max-risk <level>', 'Risk ceiling for --all-apply: high|medium|low (default medium)', 'medium')
+    .option('--json', 'Machine-readable output')
+    .action(async (idArg, cmdOpts) => {
+        const globalOpts = program.opts() as GlobalOptions;
+        const { reviewCmd } = await import('./review-cmd.js');
+        await reviewCmd({ ...globalOpts, ...cmdOpts, idArg });
+    });
+
+program
+    .command('domains <subcommand> [repoUrl]', { hidden: true })
+    
+    .description('Inspect / accept / reject domain-drift signals (subcommand: drift)')
+    .option('--apply', 'Apply drift for the given repoUrl')
+    .option('--apply-all', 'Apply all drift items above confidence threshold')
+    .option('--threshold <n>', 'Confidence threshold for --apply-all (default 0.8)', '0.8')
+    .option('--lock', 'Lock the repo against future drift signals')
+    .option('--output <path>', 'Custom teamwiki output root directory')
+    .option('--skip-aggregate', 'Skip regenerateAggregate after apply')
+    .option('--json', 'Machine-readable output')
+    .action(async (subcommand, repoUrlArg, cmdOpts) => {
+        if (subcommand !== 'drift') {
+            log.error(`Unknown subcommand: ${subcommand}（仅支持 drift）`);
+            process.exitCode = 2;
+            return;
+        }
+        const globalOpts = program.opts() as GlobalOptions;
+        const { driftCmd } = await import('./drift-cmd.js');
+        await driftCmd({ ...globalOpts, ...cmdOpts, repoUrlArg });
+    });
 
 // ─── Unified hook dispatch (replaces individual hook subcommands) ────
 
 program
-  .command('hook-dispatch <event>')
+  .command('hook-dispatch <event>', { hidden: true })
+  
   .description('Unified hook dispatcher — handles all teamai hooks for a given event in one process')
   .option('--tool <name>', 'Tool identifier (e.g. claude, claude-internal, cursor)')
   .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
   .action(async (event: string, cmdOpts: { tool?: string; matcher?: string }) => {
     const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
     await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
+  });
+
+// ─── CI 命令组 ──────────────────────────────────────────
+
+const ciCmd = program
+  .command('ci')
+  .description('CI pipeline integration commands');
+
+ciCmd
+  .command('extract-mr')
+  .description('Extract knowledge from MR/PR and post as comment or write to team repo')
+  .requiredOption('--url <url>', 'MR/PR web URL')
+  .option('--mode <mode>', 'Operation mode: comment | write | both', 'comment')
+  .option('--team-repo <path>', 'Team knowledge repo path (required for write mode)')
+  .option('--existing-codebase <path>', 'Existing codebase.md for style consistency')
+  .option('--comment-marker <marker>', 'HTML comment anchor for idempotent updates', '<!-- teamai:ci-extract -->')
+  .option('--write-mode <mode>', 'Write strategy: direct | pending-review', 'direct')
+  .option('--output <dir>', 'Write artifacts to directory')
+  .option('--individual-comments', 'Post each suggestion as separate comment with reaction/resolve support')
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { ciExtractMr } = await import('./ci/extract-mr.js');
+    await ciExtractMr({ ...globalOpts, ...cmdOpts });
+  });
+
+program
+  .command('deep-enrich', { hidden: true })
+  .description('Run deep AI knowledge generation for an imported repo')
+  .requiredOption('--project <slug>', 'Project slug (directory name in evidence/code/)')
+  .option('--wiki-root <path>', 'Teamwiki root path')
+  .option('--max-modules <n>', 'Max modules to process (cost control)', parseInt)
+  .action(async (cmdOpts: { project: string; wikiRoot?: string; maxModules?: number }) => {
+    const p = await import('node:path');
+    const wikiRoot = cmdOpts.wikiRoot ?? p.join(process.cwd(), '.teamai', 'team-repo', 'teamwiki');
+    const evidenceDir = p.join(wikiRoot, 'evidence', 'code', cmdOpts.project);
+    const { deepEnrich } = await import('./deep-enrich.js');
+    await deepEnrich({ project: cmdOpts.project, evidenceDir, wikiRoot, maxModules: cmdOpts.maxModules });
   });
 
 program.parse();

@@ -1,0 +1,98 @@
+# TeamAI MR Knowledge Extract — GitHub Actions
+#
+# 在 PR 创建/更新时自动提炼知识建议并以 comment 贴到 PR 上；
+# PR 合入后自动将 learning 和 codebase 建议写入团队知识仓库。
+#
+# 使用前请配置：
+#   1. Repository Secret: TEAMAI_SYNC_TOKEN（对团队知识仓库有写权限的 PAT）
+#   2. 修改 write job 中的 <owner>/<team-knowledge-repo> 为你的团队仓库路径
+#   3. 配置 Repository Variables（Settings → Secrets and variables → Variables）：
+#      - ANTHROPIC_BASE_URL: AI API 基础地址（如 https://api.anthropic.com）
+#      - ANTHROPIC_DEFAULT_SONNET_MODEL: 默认 sonnet 模型名
+#      - ANTHROPIC_DEFAULT_HAIKU_MODEL: 默认 haiku 模型名
+#      - ANTHROPIC_DEFAULT_OPUS_MODEL: 默认 opus 模型名
+#   4. 配置 Repository Secret: ANTHROPIC_AUTH_TOKEN（AI API 认证 Token）
+
+name: TeamAI MR Knowledge Extract
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  pull_request_target:
+    types: [closed]
+
+env:
+  ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+  ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ vars.ANTHROPIC_DEFAULT_SONNET_MODEL }}
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ vars.ANTHROPIC_DEFAULT_HAIKU_MODEL }}
+  ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ vars.ANTHROPIC_DEFAULT_OPUS_MODEL }}
+
+jobs:
+  # ── PR 创建/更新时：提炼知识并以 comment 形式展示 ──────────
+  comment:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install teamai-cli
+        run: npm install -g teamai-cli
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Extract and Comment
+        run: |
+          teamai ci extract-mr \
+            --url "${{ github.event.pull_request.html_url }}" \
+            --mode comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+
+  # ── PR 合入后：将知识写入团队仓库 ─────────────────────────
+  write:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: <owner>/<team-knowledge-repo>
+          token: ${{ secrets.TEAMAI_SYNC_TOKEN }}
+          path: team-repo
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install teamai-cli
+        run: npm install -g teamai-cli
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Write Knowledge to Repo
+        run: |
+          teamai ci extract-mr \
+            --url "${{ github.event.pull_request.html_url }}" \
+            --mode write \
+            --team-repo ./team-repo \
+            --write-mode direct
+        env:
+          GITHUB_TOKEN: ${{ secrets.TEAMAI_SYNC_TOKEN }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+
+      - name: Commit and Push
+        run: |
+          cd team-repo
+          git config user.name "teamai-ci"
+          git config user.email "teamai-ci@users.noreply.github.com"
+          git add learnings/ docs/ .teamai/
+          git diff --cached --quiet || \
+            git commit -m "[teamai] Extract knowledge from PR #${{ github.event.pull_request.number }}"
+          git push

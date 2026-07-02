@@ -1,0 +1,26 @@
+# 复制到 .github/workflows/teamai-sync.yml 启用
+name: Team Codebase Sync
+on:
+    schedule:
+        - cron: '17 2 * * *'    # 每日 02:17 UTC
+    workflow_dispatch:
+
+jobs:
+    sync:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: '20'
+            - run: npm install -g teamai-cli
+            - run: teamai import --from-repo-list .teamai/repo-whitelist.yaml --incremental
+              env:
+                  GITHUB_TOKEN: ${{ secrets.TEAMAI_SYNC_TOKEN }}
+            - name: Commit & push if changed
+              run: |
+                  git config user.name "teamai-sync"
+                  git config user.email "teamai-sync@users.noreply.github.com"
+                  git add docs/team-codebase .teamai/domains.yaml .teamai/domains.history.jsonl
+                  git diff --cached --quiet || git commit -m "chore(team-codebase): scheduled sync"
+                  git push

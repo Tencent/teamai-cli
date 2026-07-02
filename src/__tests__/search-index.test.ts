@@ -372,3 +372,91 @@ describe('buildIndex with votes', () => {
     expect(entry.votes).toBe(2);
   });
 });
+
+// ─── codebase-index.md 跳过与权重 boost ──────────────────────
+
+describe('codebase-index skip and weight boost', () => {
+  let tmpDir: string;
+  let docsDir: string;
+  const originalHome = process.env.HOME;
+
+  const CODEBASE_FULL_CONTENT = `---
+title: "Codebase Full Document"
+tags: [codebase, architecture]
+---
+
+## Overview
+This is the full codebase documentation with all details.
+`;
+
+  const CODEBASE_INDEX_CONTENT = `---
+title: "Codebase Index"
+tags: [codebase, architecture]
+---
+
+## Overview
+This is the codebase index with chapter summaries.
+`;
+
+  const NORMAL_DOC_CONTENT = `---
+title: "Normal Architecture Doc"
+tags: [codebase, architecture]
+---
+
+## Overview
+This is a normal documentation file about architecture.
+`;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    docsDir = path.join(tmpDir, 'docs');
+    fs.mkdirSync(docsDir, { recursive: true });
+    process.env.HOME = tmpDir;
+  });
+
+  afterEach(() => {
+    process.env.HOME = originalHome;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('skips codebase.md when codebase-index.md exists in same directory', async () => {
+    fs.writeFileSync(path.join(docsDir, 'codebase.md'), CODEBASE_FULL_CONTENT);
+    fs.writeFileSync(path.join(docsDir, 'codebase-index.md'), CODEBASE_INDEX_CONTENT);
+
+    await buildIndex({ docsDir });
+    const index = await loadIndex();
+    expect(index).not.toBeNull();
+
+    const filenames = index!.entries.map((e) => e.filename);
+    expect(filenames).not.toContain('codebase.md');
+    expect(filenames).toContain('codebase-index.md');
+  });
+
+  it('includes codebase.md when codebase-index.md does not exist', async () => {
+    fs.writeFileSync(path.join(docsDir, 'codebase.md'), CODEBASE_FULL_CONTENT);
+
+    await buildIndex({ docsDir });
+    const index = await loadIndex();
+    expect(index).not.toBeNull();
+
+    const filenames = index!.entries.map((e) => e.filename);
+    expect(filenames).toContain('codebase.md');
+  });
+
+  it('codebase-index.md scores higher than a normal docs file with same query', async () => {
+    fs.writeFileSync(path.join(docsDir, 'codebase-index.md'), CODEBASE_INDEX_CONTENT);
+    fs.writeFileSync(path.join(docsDir, 'normal-doc.md'), NORMAL_DOC_CONTENT);
+
+    await buildIndex({ docsDir });
+    const index = await loadIndex();
+    expect(index).not.toBeNull();
+
+    const results = search('codebase architecture', index!, 10);
+    const indexEntry = results.find((r) => r.entry.filename === 'codebase-index.md');
+    const normalEntry = results.find((r) => r.entry.filename === 'normal-doc.md');
+
+    expect(indexEntry).toBeDefined();
+    expect(normalEntry).toBeDefined();
+    expect(indexEntry!.score).toBeGreaterThan(normalEntry!.score);
+  });
+});

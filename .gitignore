@@ -20,6 +20,8 @@ __pycache__/
 .claude/
 .gstack/
 .worktrees/
+.codebuddy/
+.teamai/
 
 # Local-only drafts and scratch notes (kept out of the open-source repo)
 eval/
@@ -32,3 +34,8 @@ docs/superpowers/
 docs/designs/auto-update.md
 docs/designs/ci-pipeline.md
 docs/designs/knowledge-feed.md
+docs/codebase.md
+docs/llm-wiki.md
+roadmap_jael.md
+validation/
+teamwiki/

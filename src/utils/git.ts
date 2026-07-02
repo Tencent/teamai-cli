@@ -143,6 +143,53 @@ export async function pushRepoDirectly(localPath: string, message: string, files
 }
 
 /**
+ * Best-effort push all changes in a team repo clone.
+ * Logs success/failure without throwing.
+ * @deprecated Use autoPushViaMR instead for import flows.
+ */
+export async function autoPushTeamRepo(repoPath: string, message: string): Promise<void> {
+  try {
+    await pushRepoDirectly(repoPath, message, ['.']);
+  } catch (err) {
+    log.warn(`[git] autoPush failed (non-blocking): ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Push changes via branch + MR/PR instead of direct push to main.
+ * Creates a branch, commits, pushes, creates MR, then returns to default branch.
+ * Non-blocking: logs warnings on failure without throwing.
+ */
+export async function autoPushViaMR(
+  repoPath: string,
+  message: string,
+  files: string[],
+  teamConfig: { repo: string; provider?: string; reviewers?: string[] },
+  localConfig: { repo: { remote: string; localPath: string }; username: string },
+): Promise<string | null> {
+  try {
+    const branchName = generateBranchName(localConfig.username);
+    const pushed = await pushRepoBranch(repoPath, message, files, branchName);
+    if (!pushed) {
+      log.debug('[git] autoPushViaMR: nothing to commit');
+      return null;
+    }
+
+    const { createPrWithFallback } = await import('../push.js');
+    const prUrl = await createPrWithFallback(
+      teamConfig, localConfig, branchName, message, message,
+    );
+
+    await checkoutMaster(repoPath);
+    return prUrl;
+  } catch (err) {
+    log.warn(`[git] autoPushViaMR failed (non-blocking): ${(err as Error).message}`);
+    try { await checkoutMaster(repoPath); } catch { /* best effort */ }
+    return null;
+  }
+}
+
+/**
  * Create a new branch, commit files, and push the branch to remote.
  * Returns false if there are no changes to commit.
  * Leaves the local repo on the new branch after pushing so that

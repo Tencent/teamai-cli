@@ -10,9 +10,23 @@ import type { GlobalOptions } from './types.js';
 const envHandler = new EnvHandler();
 
 /**
- * List all team env variables from env.yaml.
+ * Mask an env variable value for display.
+ * Shows first 2 chars + "****", or "****" for very short values.
+ *
+ * @param value  Original value string.
+ * @returns      Masked string.
  */
-export async function envList(options: GlobalOptions): Promise<void> {
+function maskValue(value: string): string {
+  if (value.length < 4) return '****';
+  return `${value.slice(0, 2)}****`;
+}
+
+/**
+ * List all team env variables from env.yaml.
+ *
+ * By default, values are masked. Pass `reveal: true` to show plaintext.
+ */
+export async function envList(options: GlobalOptions & { reveal?: boolean }): Promise<void> {
   const projectConfig = await detectProjectConfig();
   const localConfig = projectConfig ?? (await requireInit()).localConfig;
   const envYamlPath = path.join(localConfig.repo.localPath, 'env', 'env.yaml');
@@ -28,11 +42,16 @@ export async function envList(options: GlobalOptions): Promise<void> {
     return;
   }
 
+  if (options.reveal) {
+    process.stderr.write('[warn] 敏感信息将明文输出，请确认环境无录屏\n');
+  }
+
   console.log('');
   console.log(`Team env variables (${envConfig.variables.length}):`);
   console.log('');
   for (const v of envConfig.variables) {
-    console.log(`  ${v.key}=${v.value}`);
+    const displayValue = options.reveal ? v.value : maskValue(v.value);
+    console.log(`  ${v.key}=${displayValue}`);
     if (v.description && options.verbose) {
       log.dim(`    ${v.description}`);
     }

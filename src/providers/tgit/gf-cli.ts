@@ -35,7 +35,11 @@ export function gfExec(
   options?: { inheritStdio?: boolean; cwd?: string },
 ): { stdout: string; stderr: string; status: number } {
   const gfPath = getGfPath();
-  const cmd = `${gfPath} ${args.join(' ')}`;
+  // Shell-quote every token (including the binary path) so values such as repo
+  // paths, branch names, titles, and descriptions cannot inject shell
+  // metacharacters (`;`, `|`, `$()`, …) into the `bash -c` string. Callers pass
+  // raw values; quoting centrally here keeps every entry point safe.
+  const cmd = [shellQuote(gfPath), ...args.map(shellQuote)].join(' ');
   log.debug(`gf exec: ${cmd}`);
 
   if (options?.inheritStdio) {
@@ -398,11 +402,11 @@ export function gfMrCreate(opts: GfMrCreateOptions): string {
     '-R', opts.repo,
     '-s', opts.source,
     '-T', opts.target,
-    '-t', shellQuote(opts.title),
+    '-t', opts.title,
   ];
 
   if (opts.description) {
-    args.push('-d', shellQuote(opts.description));
+    args.push('-d', opts.description);
   }
 
   if (opts.reviewers && opts.reviewers.length > 0) {

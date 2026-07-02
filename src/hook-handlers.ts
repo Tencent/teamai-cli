@@ -10,6 +10,8 @@
  */
 
 import type { HookHandler } from './hook-dispatch.js';
+import { deriveSessionId } from './utils/session-id.js';
+import { normalizeToolName } from './utils/tool-names.js';
 
 // ─── Public types ───────────────────────────────────────
 
@@ -32,8 +34,12 @@ const TRACK_TIMEOUT_MS = 5_000;
 const DASHBOARD_TIMEOUT_MS = 5_000;
 /** Contribute-check reads local state + events.jsonl — generally fast. */
 const CONTRIBUTE_CHECK_TIMEOUT_MS = 10_000;
-/** Auto-recall involves search index lookup — usually <200ms. */
-const AUTO_RECALL_TIMEOUT_MS = 10_000;
+/** TodoWrite hint is a local dedup-cache check — very fast. */
+const TODOWRITE_HINT_TIMEOUT_MS = 5_000;
+/** MR-hint queries a remote MR/PR API — allow a network round-trip. */
+const MR_HINT_TIMEOUT_MS = 10_000;
+/** Status reporter does report/sync/ack + skill commands — allow network + download. */
+const STATUS_REPORT_TIMEOUT_MS = 30_000;
 
 // ─── Handler implementations ────────────────────────────
 //
@@ -83,26 +89,25 @@ const trackHandler: HookHandler = {
   async execute(stdin, tool) {
     const { extractSkillName, isValidSkillName, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
 
-    const toolName = stdin.tool_name;
-    if (typeof toolName !== 'string') return null;
+    const rawToolName = stdin.tool_name;
+    if (typeof rawToolName !== 'string') return null;
+    const toolName = normalizeToolName(rawToolName);
 
     const toolInput = stdin.tool_input;
     if (!toolInput || typeof toolInput !== 'object') return null;
 
-    // Only track Skill (Claude) or Read+SKILL.md (Cursor)
+    // Only track Skill (Claude/CodeBuddy) or Read+SKILL.md (Cursor)
     let skillName: string | null = null;
     let toolSource = tool;
 
     if (toolName === 'Skill') {
       skillName = extractSkillName(toolInput as Record<string, unknown>);
     } else if (toolName === 'Read') {
+      const input = toolInput as Record<string, unknown>;
       const filePath =
-        (typeof (toolInput as Record<string, unknown>).file_path === 'string'
-          ? (toolInput as Record<string, unknown>).file_path
-          : null) ??
-        (typeof (toolInput as Record<string, unknown>).path === 'string'
-          ? (toolInput as Record<string, unknown>).path
-          : null);
+        (typeof input.file_path === 'string' ? input.file_path : null) ??
+        (typeof input.filePath === 'string' ? input.filePath : null) ??
+        (typeof input.path === 'string' ? input.path : null);
       if (typeof filePath === 'string' && /\/SKILL\.md$/i.test(filePath)) {
         skillName = extractSkillName({ skill: filePath });
         toolSource = 'cursor';
@@ -142,53 +147,68 @@ const trackSlashHandler: HookHandler = {
 
 const contributeCheckHandler: HookHandler = {
   name: 'contribute-check',
-  async execute(stdin, _tool) {
+  async execute(stdin, tool) {
     const { contributeCheckForSession } = await import('./contribute-check.js');
+    const { formatStopHookOutput } = await import('./utils/hook-output.js');
 
-    // Derive session ID from STDIN
     const sessionId = typeof stdin.session_id === 'string' ? stdin.session_id : null;
     if (!sessionId) return null;
 
-    const { hint } = await contributeCheckForSession(sessionId);
+    const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
+    const { hint } = await contributeCheckForSession(sessionId, cwd);
     if (hint) {
-      // Stop event format: { stopReason: "..." }
-      return JSON.stringify({ stopReason: hint });
+      return formatStopHookOutput(hint, tool);
     }
     return null;
   },
 };
 
-const autoRecallHandler: HookHandler = {
-  name: 'auto-recall',
+const todowriteHintHandler: HookHandler = {
+  name: 'todowrite-hint',
   async execute(stdin, _tool) {
-    // Auto-recall has complex internal logic (tool dispatch, error detection, rate limiting)
-    // For now, delegate to the existing function by temporarily mocking STDIN.
-    // TODO: Refactor autoRecall to accept parsed data directly.
-    const { autoRecall } = await import('./auto-recall.js');
+    if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
 
-    // The auto-recall function reads STDIN internally. To avoid changing its signature
-    // in this phase, we capture its STDOUT output via a process.stdout.write intercept.
-    let capturedOutput: string | null = null;
-    const originalWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk: unknown) => {
-      if (typeof chunk === 'string') {
-        capturedOutput = chunk;
-      } else if (Buffer.isBuffer(chunk)) {
-        capturedOutput = chunk.toString();
-      }
-      return true;
-    }) as typeof process.stdout.write;
+    const toolName = normalizeToolName(typeof stdin.tool_name === 'string' ? stdin.tool_name : '');
+    if (toolName !== 'TodoWrite') return null;
 
-    try {
-      // We can't easily pipe stdin to the function, so for this handler
-      // we'll rely on the environment (process.stdin being piped from Claude Code).
-      // In the dispatcher, auto-recall will be invoked with the raw data.
-      await autoRecall();
-    } finally {
-      process.stdout.write = originalWrite;
-    }
+    const { shouldSkipTodoWriteHint, buildHintMessage } = await import('./todowrite-hint.js');
 
-    return capturedOutput;
+    if (shouldSkipTodoWriteHint(deriveSessionId(stdin))) return null;
+
+    return JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: buildHintMessage(),
+      },
+    });
+  },
+};
+
+const mrHintHandler: HookHandler = {
+  name: 'mr-hint',
+  async execute(_stdin, _tool) {
+    const { computeMrHintOutput } = await import('./mr-hint.js');
+    return computeMrHintOutput();
+  },
+};
+
+/** SessionStart: report + sync (→ commands → ack). Never blocks the agent. */
+const statusReportSessionHandler: HookHandler = {
+  name: 'status-report-session',
+  async execute(stdin, tool) {
+    const { runStatusReport } = await import('./status-report.js');
+    await runStatusReport({ stdin, tool, phase: 'session' });
+    return null;
+  },
+};
+
+/** UserPromptSubmit: sync only (→ commands → ack). */
+const statusReportMessageHandler: HookHandler = {
+  name: 'status-report-message',
+  async execute(stdin, tool) {
+    const { runStatusReport } = await import('./status-report.js');
+    await runStatusReport({ stdin, tool, phase: 'message' });
+    return null;
   },
 };
 
@@ -203,6 +223,8 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // ─── SessionStart ─────────────────────────────────
     { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: MR_HINT_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: statusReportSessionHandler, timeoutMs: STATUS_REPORT_TIMEOUT_MS },
 
     // ─── Stop ─────────────────────────────────────────
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS },
@@ -212,15 +234,11 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // ─── PostToolUse ──────────────────────────────────
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: TRACK_TIMEOUT_MS },
-    ...(['Bash', 'Grep', 'WebSearch', 'WebFetch'] as const).map((m) => ({
-      event: 'post-tool-use' as const,
-      matcher: m,
-      handler: autoRecallHandler,
-      timeoutMs: AUTO_RECALL_TIMEOUT_MS,
-    })),
+    { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
 
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: TRACK_TIMEOUT_MS },
     { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
+    { event: 'prompt-submit', matcher: '*', handler: statusReportMessageHandler, timeoutMs: STATUS_REPORT_TIMEOUT_MS },
   ];
 }

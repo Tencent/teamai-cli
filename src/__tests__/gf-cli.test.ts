@@ -43,7 +43,7 @@ vi.mock('node:fs', () => ({
 
 import { spawnSync } from 'node:child_process';
 import { execSync } from 'node:child_process';
-import { gfGetOAuthToken, gfMrCreate } from '../utils/gf-cli.js';
+import { gfGetOAuthToken, gfMrCreate } from '../providers/tgit/gf-cli.js';
 
 describe('gfGetOAuthToken', () => {
   beforeEach(() => {
@@ -153,6 +153,36 @@ describe('gfMrCreate', () => {
     // Single quotes in content should be escaped as '\''
     expect(cmd).toContain("'it'\\''s a title'");
     expect(cmd).toContain("'it'\\''s a\ndescription'");
+  });
+
+  it('should shell-quote repo/branch args to prevent argument injection into bash -c', () => {
+    mockSpawnSync.mockReturnValue({
+      stdout: 'https://git.woa.com/team/repo/-/merge_requests/3',
+      stderr: '',
+      status: 0,
+    } as any);
+
+    gfMrCreate({
+      // Values with shell metacharacters that would break out of the command
+      // if interpolated raw into `bash -c "<gfPath> <args>"`.
+      repo: 'team/repo;echo PWNED',
+      source: 'feat;rm -rf / #',
+      target: 'master|cat /etc/passwd',
+      title: 't',
+    });
+
+    const cmd = mockSpawnSync.mock.calls[0][1]![1] as string;
+    // Each dangerous value must be a single single-quoted token so bash -c
+    // treats its metacharacters (`;`, `|`, `#`, spaces) as literal argument
+    // content rather than command separators.
+    expect(cmd).toContain("'team/repo;echo PWNED'");
+    expect(cmd).toContain("'feat;rm -rf / #'");
+    expect(cmd).toContain("'master|cat /etc/passwd'");
+    // No bare (unquoted) `;` that bash could interpret as a command separator:
+    // every `;` must sit inside a single-quoted token.
+    const outsideQuotes = cmd.replace(/'[^']*'/g, '');
+    expect(outsideQuotes).not.toContain(';');
+    expect(outsideQuotes).not.toContain('|');
   });
 
   it('should return MR URL from gf output', () => {

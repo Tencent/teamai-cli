@@ -13,18 +13,19 @@ import fs from 'node:fs/promises';
 //  maintained alongside the CLI code and deployed automatically
 //  on each `teamai pull`.
 //
-//  Currently no built-in rules are deployed — auto-recall hooks
-//  replaced the old teamai-recall.md rule. The infrastructure
-//  is kept for future built-in rules.
-//
-//  Legacy cleanup: removes old teamai-recall.md files on pull.
+//  teamai-recall.md instructs the AI to proactively search the team
+//  knowledge base (via the `teamai-recall` subagent or `teamai recall`)
+//  before starting a task — this replaced the old passive auto-recall
+//  PostToolUse hook, which fired implicitly on every Bash/Grep/WebSearch/
+//  WebFetch call but added noise without the benefit of the subagent's
+//  codebase-graph drill-down and compact structured output.
 //
 
 /** Names of CLI built-in rules. Used by push to exclude them from team repo push. */
-export const BUILTIN_RULE_NAMES = new Set<string>();
+export const BUILTIN_RULE_NAMES = new Set<string>(['teamai-recall']);
 
 /** Names of previously deployed rules that should be cleaned up. */
-export const LEGACY_RULE_NAMES = ['teamai-recall'];
+export const LEGACY_RULE_NAMES: string[] = [];
 
 /**
  * Names that scanLocalForPush and stale-cleanup should skip.
@@ -46,8 +47,9 @@ export async function deployBuiltinRules(teamConfig: TeamaiConfig, localConfig?:
     const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');
     let deployed = 0;
 
-    // No built-in rules to deploy currently
-    const builtinRules: Array<{ name: string; content: string }> = [];
+    const builtinRules: Array<{ name: string; content: string }> = [
+        { name: 'teamai-recall', content: TEAMAI_RECALL_RULE_CONTENT },
+    ];
 
     for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
         if (!toolPath.rules) continue;
@@ -90,3 +92,37 @@ export async function deployBuiltinRules(teamConfig: TeamaiConfig, localConfig?:
 
     return deployed;
 }
+
+// ─── Rule content ──────────────────────────────────────
+
+const TEAMAI_RECALL_RULE_CONTENT = `# Team Knowledge Recall (teamai)
+
+## 规则：任务开始前必须检索团队知识库
+
+**Before** starting any task that involves code changes, debugging,
+or design decisions, you **MUST** first search the team knowledge base.
+
+### 方式一：通过 Subagent（推荐，适用于支持 Agent tool 的工具）
+
+调用 \`teamai-recall\` subagent（位于 agents/ 目录），传入任务的自然语言描述。
+Subagent 会返回结构化的团队知识摘要（skills、learnings、docs、rules、codebase）。
+
+### 方式二：通过 Bash 命令（适用于所有工具）
+
+\`\`\`bash
+teamai recall "<关键词1> <关键词2> ..."
+\`\`\`
+
+从任务描述中提取 3-6 个高信号关键词进行检索。
+
+### 检索后要求
+
+完成任务后，在最终回复中声明实际引用了哪些知识条目：
+
+\`\`\`
+<!-- teamai:referenced-doc-ids: [doc-id-1, doc-id-2] -->
+\`\`\`
+
+如无相关命中则声明空列表：\`<!-- teamai:referenced-doc-ids: [] -->\`
+`;
+

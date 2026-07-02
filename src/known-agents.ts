@@ -35,8 +35,10 @@ export const KNOWN_AGENTS: KnownAgent[] = [
   // Coding agents already wired through teamConfig.toolPaths defaults
   { id: 'claude', displayName: 'Claude Code', category: 'coding', skillsPath: '.claude/skills' },
   { id: 'claude-internal', displayName: 'Claude Code Internal', category: 'coding', skillsPath: '.claude-internal/skills' },
+  { id: 'tclaude', displayName: 'TClaude', category: 'coding', skillsPath: '.tclaude/skills' },
   { id: 'codex', displayName: 'Codex CLI', category: 'coding', skillsPath: '.codex/skills' },
   { id: 'codex-internal', displayName: 'Codex CLI Internal', category: 'coding', skillsPath: '.codex-internal/skills' },
+  { id: 'tcodex', displayName: 'TCodex', category: 'coding', skillsPath: '.tcodex/skills' },
   { id: 'cursor', displayName: 'Cursor', category: 'coding', skillsPath: '.cursor/skills' },
   { id: 'codebuddy', displayName: 'CodeBuddy', category: 'coding', skillsPath: '.codebuddy/skills' },
 

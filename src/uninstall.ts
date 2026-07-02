@@ -1,16 +1,25 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { removeHooks } from './hooks.js';
+import { reconcileHooks } from './hooks.js';
+import { removeOpenClawHooks, OPENCLAW_HOOK_DIR } from './openclaw-hooks.js';
 import {
   TEAMAI_RULES_START,
   TEAMAI_RULES_END,
+  TEAMAI_CULTURE_START,
+  TEAMAI_CULTURE_END,
+  TEAMAI_CLAUDEMD_START,
+  TEAMAI_CLAUDEMD_END,
+  TEAMAI_RECALL_RULES_START,
+  TEAMAI_RECALL_RULES_END,
   TEAMAI_ENV_START,
   TEAMAI_ENV_END,
   getTeamaiHome,
+  getManagedHooksPath,
   resolveBaseDir,
   type GlobalOptions,
   type TeamaiConfig,
   type LocalConfig,
+  type Scope,
 } from './types.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import {
@@ -34,6 +43,8 @@ interface UninstallOptions extends GlobalOptions {
 interface RemovalPlan {
   /** Tool settings files that contain teamai hooks. */
   hookFiles: Array<{ path: string; tool: string }>;
+  /** OpenClaw-style hook dirs (<base>/.<tool>/hooks) holding teamai HOOK.md+handler.ts. */
+  openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
   /** CLAUDE.md files with teamai rules blocks. */
   claudeMdFiles: string[];
   /** Skill directories synced from team repo. */
@@ -48,9 +59,20 @@ interface RemovalPlan {
   teamaiHome: string;
   /** Whether teamaiHome exists on disk. */
   teamaiHomeExists: boolean;
+  /** Managed-hooks manifest path (for team-hook cleanup). */
+  managedHooksPath: string;
+  /** Scope being uninstalled (issue #73: surfaced to the user). */
+  scope: Scope;
 }
 
 // ─── Helpers ───────────────────────────────────────────
+
+const CLAUDEMD_MARKER_PAIRS: Array<[string, string]> = [
+  [TEAMAI_RULES_START, TEAMAI_RULES_END],
+  [TEAMAI_CULTURE_START, TEAMAI_CULTURE_END],
+  [TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END],
+  [TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END],
+];
 
 function detectShellProfile(): string | null {
   const home = process.env.HOME;
@@ -117,6 +139,7 @@ async function buildRemovalPlan(
 
   const plan: RemovalPlan = {
     hookFiles: [],
+    openclawHookDirs: [],
     claudeMdFiles: [],
     skillDirs: [],
     ruleFiles: [],
@@ -124,6 +147,8 @@ async function buildRemovalPlan(
     docsDir: null,
     teamaiHome,
     teamaiHomeExists: await pathExists(teamaiHome),
+    managedHooksPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
+    scope: localConfig.scope,
   };
 
   // Discover team repo resource names for targeted removal
@@ -138,13 +163,20 @@ async function buildRemovalPlan(
       if (await pathExists(settingsPath)) {
         plan.hookFiles.push({ path: settingsPath, tool });
       }
+    } else {
+      // OpenClaw-style agents (no settings file) inject a HOOK.md + handler.ts
+      // under <base>/.<tool>/hooks/<OPENCLAW_HOOK_DIR>. Mirror that for removal.
+      const hooksDir = path.join(baseDir, `.${tool}`, 'hooks');
+      if (await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) {
+        plan.openclawHookDirs.push({ hooksDir, tool });
+      }
     }
 
-    // (b) CLAUDE.md teamai rules block
+    // (b) CLAUDE.md teamai section blocks
     if (toolPath.claudemd) {
       const claudeMdPath = path.join(baseDir, toolPath.claudemd);
       const content = await readFileSafe(claudeMdPath);
-      if (content && content.includes(TEAMAI_RULES_START)) {
+      if (content && CLAUDEMD_MARKER_PAIRS.some(([start]) => content.includes(start))) {
         plan.claudeMdFiles.push(claudeMdPath);
       }
     }
@@ -212,6 +244,7 @@ async function buildRemovalPlan(
 function isPlanEmpty(plan: RemovalPlan): boolean {
   return (
     plan.hookFiles.length === 0 &&
+    plan.openclawHookDirs.length === 0 &&
     plan.claudeMdFiles.length === 0 &&
     plan.skillDirs.length === 0 &&
     plan.ruleFiles.length === 0 &&
@@ -222,7 +255,9 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
 }
 
 function printSummary(plan: RemovalPlan): void {
+  const cn = plan.scope === 'project' ? '项目级' : '用户级';
   console.log('');
+  console.log(`⚠  正在卸载 ${plan.scope} scope（${cn}）— ${plan.teamaiHome}`);
   console.log('⚠  以下 teamai 资源将被移除:');
   console.log('');
 
@@ -230,6 +265,14 @@ function printSummary(plan: RemovalPlan): void {
     console.log(`   Hooks (${plan.hookFiles.length} 个文件):`);
     for (const { path: p } of plan.hookFiles) {
       console.log(`     ${p}`);
+    }
+    console.log('');
+  }
+
+  if (plan.openclawHookDirs.length > 0) {
+    console.log(`   OpenClaw Hooks (${plan.openclawHookDirs.length} 个目录):`);
+    for (const { hooksDir } of plan.openclawHookDirs) {
+      console.log(`     ${path.join(hooksDir, OPENCLAW_HOOK_DIR)}/`);
     }
     console.log('');
   }
@@ -274,33 +317,45 @@ function printSummary(plan: RemovalPlan): void {
 // ─── Execution ─────────────────────────────────────────
 
 async function executeRemoval(plan: RemovalPlan): Promise<void> {
-  // (a) Remove hooks from tool settings
+  // (a) Remove hooks from tool settings (built-in A + team B via the manifest)
   for (const { path: settingsPath, tool } of plan.hookFiles) {
     try {
-      await removeHooks(settingsPath, tool);
+      await reconcileHooks(settingsPath, tool, [], { removeAll: true, manifestPath: plan.managedHooksPath });
     } catch (e) {
       log.warn(`移除 hooks 失败 ${settingsPath}: ${(e as Error).message}`);
     }
   }
 
-  // (b) Clean CLAUDE.md teamai rules blocks
+  // (a2) Remove OpenClaw-style hook dirs
+  for (const { hooksDir } of plan.openclawHookDirs) {
+    try {
+      await removeOpenClawHooks(hooksDir);
+    } catch (e) {
+      log.warn(`移除 OpenClaw hook 失败 ${hooksDir}: ${(e as Error).message}`);
+    }
+  }
+
+  // (b) Clean CLAUDE.md teamai section blocks
   for (const claudeMdPath of plan.claudeMdFiles) {
     try {
-      const content = await readFileSafe(claudeMdPath);
-      if (!content) continue;
+      const raw = await readFileSafe(claudeMdPath);
+      if (!raw) continue;
 
-      const startIdx = content.indexOf(TEAMAI_RULES_START);
-      const endIdx = content.indexOf(TEAMAI_RULES_END);
-      if (startIdx === -1 || endIdx === -1) continue;
+      let content: string = raw;
+      for (const [startMarker, endMarker] of CLAUDEMD_MARKER_PAIRS) {
+        const startIdx = content.indexOf(startMarker);
+        const endIdx = content.indexOf(endMarker);
+        if (startIdx === -1 || endIdx === -1) continue;
 
-      const before = content.substring(0, startIdx).replace(/\n+$/, '\n');
-      const after = content.substring(endIdx + TEAMAI_RULES_END.length).replace(/^\n+/, '\n');
-      const newContent = (before + after).trim();
+        const before = content.substring(0, startIdx).replace(/\n+$/, '\n');
+        const after = content.substring(endIdx + endMarker.length).replace(/^\n+/, '\n');
+        content = (before + after).trim();
+      }
 
-      if (newContent.length === 0) {
+      if (content.length === 0) {
         await remove(claudeMdPath);
       } else {
-        await writeFile(claudeMdPath, newContent + '\n');
+        await writeFile(claudeMdPath, content + '\n');
       }
       log.success(`清理 CLAUDE.md: ${claudeMdPath}`);
     } catch (e) {
@@ -426,6 +481,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     }
 
     console.log('');
+    console.log('⚠  正在卸载 user scope（用户级，未检测到有效配置，仅清理主目录）');
     console.log('⚠  将移除 TeamAI 主目录:');
     console.log(`     ${home}/`);
     console.log('');
