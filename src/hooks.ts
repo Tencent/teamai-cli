@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { readJson, writeJson, expandHome, ensureDir } from './utils/fs.js';
+import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 
@@ -502,13 +502,17 @@ export async function removeHooks(settingsPath: string, tool?: string): Promise<
 export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string): Promise<void> {
   const resolvedBaseDir = baseDir ?? (process.env.HOME ?? '');
   for (const [tool, paths] of Object.entries(toolPaths)) {
-    if (paths.settings) {
-      const settingsPath = path.join(resolvedBaseDir, paths.settings);
-      try {
-        await injectHooks(settingsPath, tool);
-      } catch (e) {
-        log.warn(`Failed to inject hook into ${tool}: ${(e as Error).message}`);
-      }
+    if (!paths.settings) continue;
+    const settingsPath = path.join(resolvedBaseDir, paths.settings);
+    const parentDir = path.dirname(settingsPath);
+    if (!await pathExists(parentDir)) {
+      log.debug(`Skipping ${tool}: directory ${parentDir} does not exist (tool not installed)`);
+      continue;
+    }
+    try {
+      await injectHooks(settingsPath, tool);
+    } catch (e) {
+      log.warn(`Failed to inject hook into ${tool}: ${(e as Error).message}`);
     }
   }
 }
