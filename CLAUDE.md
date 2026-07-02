@@ -42,7 +42,7 @@ npm version minor      # new feature, backward compatible
 npm version major      # breaking change
 
 # 2. Push code and tag together — CI auto-publishes both packages
-git push origin master --tags
+git push origin main --tags
 ```
 
 CI stages: validate (lint + test) -> build -> e2e -> publish (tag builds only).
