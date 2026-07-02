@@ -54,6 +54,17 @@ async function promptForRoleProfile(
     };
   }
 
+  // Auto-select when only one role is available
+  if (manifest.roles.length === 1) {
+    const only = manifest.roles[0];
+    log.info(`Role: ${roleLabels[0]} (auto-selected)`);
+    return {
+      primaryRole: only.id,
+      additionalRoles: [],
+      resourceProfileVersion: manifest.version,
+    };
+  }
+
   log.info('Available roles:');
   roleLabels.forEach((label, index) => {
     log.info(`  ${index + 1}. ${label}`);
