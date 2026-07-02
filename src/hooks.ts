@@ -503,11 +503,6 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (paths.settings) {
       const settingsPath = path.join(resolvedBaseDir, paths.settings);
-      const parentDir = path.dirname(settingsPath);
-      if (!await pathExists(parentDir)) {
-        log.debug(`Skipping ${tool}: directory ${parentDir} does not exist (tool not installed)`);
-        continue;
-      }
       try {
         await injectHooks(settingsPath, tool);
       } catch (e) {
