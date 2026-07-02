@@ -91,7 +91,7 @@ export async function importFromRepoList(
     for (const item of repoListFile.repos) {
         if (isOrgEntry(item)) {
             log.warn(`org entry not yet supported, skipped: ${item.org}`);
-            skipped.push({ url: item.org, reason: 'org entry 暂不支持（P5.4 实现）' });
+            skipped.push({ url: item.org, reason: 'org entry not yet supported' });
         } else {
             singleEntries.push(item);
         }
@@ -205,9 +205,9 @@ export async function importFromRepoList(
                 { repo: lc.repo, username: lc.username },
             );
             if (prUrl) {
-                log.success(`已创建 MR: ${prUrl}`);
+                log.success(`MR created: ${prUrl}`);
             } else {
-                log.success(`已推送分支到团队知识仓库 (${lc.repo.remote})`);
+                log.success(`Branch pushed to team knowledge repo (${lc.repo.remote})`);
             }
         } catch (e) {
             log.warn(`[git] batch push failed (non-blocking): ${(e as Error).message}`);

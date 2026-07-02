@@ -42,8 +42,8 @@ function parseIWikiInput(input: string): { type: 'space' | 'page'; id: string } 
   }
 
   throw new Error(
-    `无法识别 iWiki 输入格式："${trimmed}"。` +
-      '请输入纯数字 Space ID 或含 /p/ 的页面 URL。',
+    `Unrecognized iWiki input format: "${trimmed}". ` +
+      'Please enter a numeric Space ID or a page URL containing /p/.',
   );
 }
 
@@ -129,7 +129,7 @@ export async function importFromIWiki(opts: {
   const token = opts.token ?? process.env['TAI_PAT_TOKEN'];
   if (!token) {
     throw new Error(
-      '请设置 TAI_PAT_TOKEN 环境变量（获取地址：https://tai.it.woa.com/user/pat）',
+      'Please set TAI_PAT_TOKEN environment variable (get it at: https://tai.it.woa.com/user/pat)',
     );
   }
 
@@ -145,12 +145,12 @@ export async function importFromIWiki(opts: {
     // 单页模式：用占位符，后续直接下载该页
     pages = [{ docid: id, title: id }];
   } else {
-    const fetchSpinner = spinner(`获取 iWiki Space（${id}）页面树...`);
+    const fetchSpinner = spinner(`Fetching iWiki Space (${id}) page tree...`);
     try {
       pages = await client.fetchAllPages(id, { maxPages: opts.maxPages ?? 200 });
-      fetchSpinner.succeed(`获取页面树完成，共 ${pages.length} 页`);
+      fetchSpinner.succeed(`Page tree fetched: ${pages.length} pages`);
     } catch (err: unknown) {
-      fetchSpinner.fail(`获取页面树失败: ${String(err)}`);
+      fetchSpinner.fail(`Page tree fetch failed: ${String(err)}`);
       throw err;
     }
   }
@@ -161,13 +161,13 @@ export async function importFromIWiki(opts: {
   }
 
   // 5. 并发下载文档内容
-  const downloadSpin = spinner(`下载 iWiki 文档内容（共 ${pages.length} 页）...`);
+  const downloadSpin = spinner(`Downloading iWiki documents (${pages.length} pages)...`);
   let documents: IWikiDocument[];
   try {
     documents = await downloadDocuments(client, pages);
-    downloadSpin.succeed(`文档下载完成，成功 ${documents.length}/${pages.length} 页`);
+    downloadSpin.succeed(`Documents downloaded: ${documents.length}/${pages.length} pages`);
   } catch (err: unknown) {
-    downloadSpin.fail(`文档下载出错: ${String(err)}`);
+    downloadSpin.fail(`Document download error: ${String(err)}`);
     throw err;
   }
 
@@ -203,7 +203,7 @@ export async function importFromIWiki(opts: {
     try {
       const mapsToEdges = await reconcileIwikiWithCodebase(documents, teamwikiRoot);
       if (mapsToEdges.length > 0) {
-        log.success(`建立 ${mapsToEdges.length} 条 iWiki↔代码 MAPS_TO 关系`);
+        log.success(`Established ${mapsToEdges.length} iWiki↔code MAPS_TO relations`);
       } else {
         log.info('[reconcile] no matches found between iWiki docs and code knowledge');
       }
@@ -218,7 +218,7 @@ export async function importFromIWiki(opts: {
     await autoPushTeamRepo(repoPath, `[teamai] Import from iWiki: ${documents.map(d => d.title).slice(0, 3).join(', ')}`);
   }
 
-  log.success('iWiki 导入完成');
+  log.success('iWiki import complete');
 }
 
 // ─── iWiki↔Codebase Reconciliation ────────────────────────────

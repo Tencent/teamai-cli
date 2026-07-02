@@ -220,7 +220,7 @@ export async function scanCandidates(opts: {
     try {
       assertSafePath(expandedDir, defaultAllowedRoots());
     } catch (err: unknown) {
-      throw new Error(`拒绝扫描目录：${String(err)}`);
+      throw new Error(`Refused to scan directory: ${String(err)}`);
     }
     const relPaths = await listFilesRecursive(expandedDir);
     for (const relPath of relPaths) {

@@ -93,7 +93,7 @@ function detectKnowledgeGaps(
     gaps.push({
       id: 'unresolved-external-deps',
       kind: 'EXTERNAL_DEP_UNDOCUMENTED',
-      description: `${unresolvedImports.size} 个外部依赖未在知识库中记录（如 ${[...unresolvedImports].slice(0, 3).join(', ')}）`,
+      description: `${unresolvedImports.size} external dependencies not documented (e.g. ${[...unresolvedImports].slice(0, 3).join(', ')})`,
       source: 'relation facts',
     });
   }
@@ -116,7 +116,7 @@ function detectKnowledgeGaps(
     gaps.push({
       id: 'interface-no-impl',
       kind: 'IMPL_MISSING',
-      description: `${unimplemented.length} 个接口未发现对应实现（如 ${unimplemented.slice(0, 3).join(', ')}）`,
+      description: `${unimplemented.length} interfaces with no matching implementation (e.g. ${unimplemented.slice(0, 3).join(', ')})`,
       source: 'interface facts',
     });
   }
@@ -129,7 +129,7 @@ function detectKnowledgeGaps(
     gaps.push({
       id: 'high-orphan-ratio',
       kind: 'LOW_CONNECTIVITY',
-      description: `${orphanNodes.length}/${graph.nodes.length} 个节点无图谱连接，依赖关系可能未被完整提取`,
+      description: `${orphanNodes.length}/${graph.nodes.length} nodes have no graph connections, dependencies may not be fully extracted`,
       source: 'graph-index.json',
     });
   }
@@ -140,7 +140,7 @@ function detectKnowledgeGaps(
     gaps.push({
       id: 'no-error-patterns',
       kind: 'ERROR_HANDLING_UNDOCUMENTED',
-      description: `项目有 ${components.length} 个组件但未检测到错误类型定义，错误处理模式可能未文档化`,
+      description: `Project has ${components.length} components but no error types detected, error handling may be undocumented`,
       source: 'code scan',
     });
   }
@@ -151,7 +151,7 @@ function detectKnowledgeGaps(
     gaps.push({
       id: 'no-config-detected',
       kind: 'CONFIG_UNDOCUMENTED',
-      description: `项目有 ${components.length} 个组件但未检测到配置项/环境变量，配置管理可能未文档化`,
+      description: `Project has ${components.length} components but no config/env vars detected, configuration may be undocumented`,
       source: 'code scan',
     });
   }
@@ -674,7 +674,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
       };
       await writeFile(path.join(evidenceDir, '_domains.json'), JSON.stringify(domainMeta, null, 2), 'utf-8');
       if (!opts.json) {
-        const domainLabel = domainMeta.domain || '未分类';
+        const domainLabel = domainMeta.domain || 'uncategorized';
         console.log(`  AI enrich: ${enrichResult.manifest.components.length} modules, domain=${domainLabel}`);
       }
     }
@@ -798,18 +798,18 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   if (opts.json) {
     console.log(JSON.stringify(result, null, 2));
   } else {
-    console.log(chalk.green(`[extract] ${project} 完成`));
-    console.log(`  文件: ${result.filesScanned}`);
-    console.log(`  事实: ${result.facts.total} (${Object.entries(byKind).map(([k, v]) => `${k}:${v}`).join(', ')})`);
-    console.log(`  图谱: ${result.graph.nodes} nodes, ${result.graph.edges} edges`);
+    console.log(chalk.green(`[extract] ${project} complete`));
+    console.log(`  Files: ${result.filesScanned}`);
+    console.log(`  Facts: ${result.facts.total} (${Object.entries(byKind).map(([k, v]) => `${k}:${v}`).join(', ')})`);
+    console.log(`  Graph: ${result.graph.nodes} nodes, ${result.graph.edges} edges`);
     if (interfaceInventory.entries.length > 0) {
       const byType: Record<string, number> = {};
       for (const e of interfaceInventory.entries) byType[e.type] = (byType[e.type] ?? 0) + e.count;
-      console.log(`  接口: ${Object.entries(byType).map(([t, c]) => `${t}:${c}`).join(', ')}`);
+      console.log(`  Interfaces: ${Object.entries(byType).map(([t, c]) => `${t}:${c}`).join(', ')}`);
     }
     if (callChains.length > 0) {
-      console.log(`  调用链: ${callChains.length} chains (max depth ${Math.max(...callChains.map(c => c.depth))})`);
+      console.log(`  Call chains: ${callChains.length} chains (max depth ${Math.max(...callChains.map(c => c.depth))})`);
     }
-    console.log(`  输出: ${wikiRoot}`);
+    console.log(`  Output: ${wikiRoot}`);
   }
 }

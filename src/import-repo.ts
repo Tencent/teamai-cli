@@ -30,31 +30,31 @@ import { log } from './utils/logger.js';
 // ─── Types ──────────────────────────────────────────────
 
 export interface ImportFromRepoOptions {
-    /** 仓库 URL（https/ssh 任一） */
+    /** Repo URL (https or ssh) */
     url: string;
-    /** Shallow clone 深度，默认 1 */
+    /** Shallow clone depth, default 1 */
     depth?: number;
-    /** 强制 SSH clone */
+    /** Force SSH clone */
     forceSsh?: boolean;
-    /** 强制匿名 HTTPS（即使 token 可用），用于白名单 auth='public' */
+    /** Force anonymous HTTPS (even when token is available), for whitelist auth='public' */
     forceAnonymous?: boolean;
-    /** --domain 显式指定时跳过 AI 推荐 */
+    /** Skip AI recommendation when --domain is explicitly set */
     explicitDomain?: string;
-    /** Dry-run 模式：跳过写盘但执行 clone+扫描 */
+    /** Dry-run mode: skip writing to disk but still execute clone+scan */
     dryRun?: boolean;
-    /** 自定义产物根目录；默认 .teamai/team-repo/teamwiki */
+    /** Custom output root directory; defaults to .teamai/team-repo/teamwiki */
     output?: string;
     /**
-     * 是否启用交互式确认。
-     * 默认 true（TTY 下展示 AI 推荐并等待用户输入）；
-     * 批量导入时传 false → 无 TTY 路径（置信度不足直接归未分类）。
+     * Whether to enable interactive confirmation.
+     * Default true (shows AI recommendation and waits for user input in TTY);
+     * pass false for batch imports → non-TTY path (assign to uncategorized when confidence is low).
      */
     interactive?: boolean;
-    /** 增量模式：缓存命中时仅 fetch+reset，未命中时 fallback 到全量 clone */
+    /** Incremental mode: on cache hit do fetch+reset only; on miss fall back to full clone */
     incremental?: boolean;
-    /** batch 模式下跳过 per-repo 的 autoPushTeamRepo（由调用方统一处理） */
+    /** In batch mode, skip per-repo autoPushTeamRepo (caller handles it collectively) */
     skipAutoPush?: boolean;
-    /** 跳过 AI enrichment（只做 clone + extract + graph，不调用 LLM） */
+    /** Skip AI enrichment (only clone + extract + graph, no LLM calls) */
     skipEnrich?: boolean;
 }
 
@@ -73,13 +73,13 @@ interface SimpleGraphIndex {
 }
 
 /**
- * 检测跨仓库依赖关系。
+ * Detect cross-repo dependency relationships.
  *
- * 通过比较两个图谱的节点标签（组件名/接口名），
- * 当仓库 A 有一个节点名称与仓库 B 的节点名称匹配时，
- * 说明两者可能存在依赖关系（如共享接口、同名组件引用）。
+ * By comparing node labels (component names / interface names) across two graphs,
+ * when repo A has a node name matching a node name in repo B,
+ * it indicates a potential dependency (e.g. shared interfaces, same-name component references).
  *
- * 基于 team-wiki 的 buildCodeGraphIndex 中 exportIndex 匹配思想。
+ * Based on the exportIndex matching approach in team-wiki's buildCodeGraphIndex.
  */
 export function detectCrossRepoEdges(
     overlay: SimpleGraphIndex,
@@ -92,21 +92,21 @@ export function detectCrossRepoEdges(
     const nodeLabel = (n: SimpleGraphNode): string => n.label ?? n.title ?? '';
     const nodeKind = (n: SimpleGraphNode): string => n.kind ?? n.type ?? '';
 
-    // 建立已有图谱的组件/接口名索引
+    // Build label index for the existing graph's components/interfaces
     const existingIndex = new Map<string, string>();
     for (const node of existing.nodes) {
         const label = nodeLabel(node);
         if (label) existingIndex.set(label.toLowerCase(), nodeId(node));
     }
 
-    // 建立新图谱的组件/接口名索引
+    // Build label index for the new graph's components/interfaces
     const overlayIndex = new Map<string, string>();
     for (const node of overlay.nodes) {
         const label = nodeLabel(node);
         if (label) overlayIndex.set(label.toLowerCase(), nodeId(node));
     }
 
-    // 检查新仓库的 import 边目标是否有同名组件在已有仓库中
+    // Check if import edge targets in the new repo match component names in the existing repo
     for (const edge of overlay.edges) {
         if (edge.relation !== 'imports') continue;
         const segments = edge.to.split('/');
@@ -127,7 +127,7 @@ export function detectCrossRepoEdges(
         }
     }
 
-    // 反向：已有图谱的 import 边是否指向新仓库中的同名组件
+    // Reverse: check if import edges in the existing graph target components in the new repo
     for (const edge of existing.edges) {
         if (edge.relation !== 'imports') continue;
         const segments = edge.to.split('/');
@@ -148,7 +148,7 @@ export function detectCrossRepoEdges(
         }
     }
 
-    // 配置仓库关联：config/data 节点的 label 与另一仓库的组件/接口节点 label 完全匹配
+    // Config repo association: config/data node label fully matches a component/interface label in the other repo
     const overlayConfigs = overlay.nodes.filter(n => nodeKind(n) === 'config' || nodeKind(n) === 'data');
     const existingConfigs = existing.nodes.filter(n => nodeKind(n) === 'config' || nodeKind(n) === 'data');
 
@@ -186,8 +186,8 @@ export function detectCrossRepoEdges(
 // ─── Helpers ────────────────────────────────────────────
 
 /**
- * 判断 url 是否已在 domains.yaml 某个域中。
- * 返回所在域名，不存在返回 null。
+ * Check if a url already belongs to a domain in domains.yaml.
+ * Returns the domain name if found, or null if not.
  */
 function findExistingDomain(domains: DomainsFile, url: string): string | null {
     for (const domain of domains.domains) {
@@ -199,7 +199,7 @@ function findExistingDomain(domains: DomainsFile, url: string): string | null {
 }
 
 /**
- * 统计目录（深度 ≤ maxDepth）内各语言文件数量，返回占比最高的语言标识符。
+ * Count language files in the directory (depth <= maxDepth) and return the identifier of the dominant language.
  */
 async function detectPrimaryLanguage(
     repoPath: string,
@@ -232,7 +232,7 @@ async function detectPrimaryLanguage(
         }
         for (const entry of entries) {
             const name = entry.name;
-            // 跳过常见的无关目录
+            // Skip common irrelevant directories
             if (entry.isDirectory()) {
                 if (['node_modules', '.git', 'dist', 'build', '__pycache__', '.venv'].includes(name)) {
                     continue;
@@ -265,11 +265,11 @@ async function detectPrimaryLanguage(
 // ─── Public API ─────────────────────────────────────────
 
 /**
- * 从 clone 出的 repoPath 抽取 RepoMeta，用于 AI 推荐输入。
+ * Extract RepoMeta from a cloned repoPath for use as AI recommendation input.
  *
- * @param repoPath  本地仓库路径
- * @param url       仓库远端 URL
- * @param name      仓库名（不含 org）
+ * @param repoPath  Local repo path
+ * @param url       Remote repo URL
+ * @param name      Repo name (without org)
  */
 export async function buildRepoMetaFromPath(
     repoPath: string,
@@ -278,19 +278,19 @@ export async function buildRepoMetaFromPath(
 ): Promise<RepoMeta> {
     const meta: RepoMeta = { url, name };
 
-    // README 首段
+    // README first paragraph
     const readmeCandidates = ['README.md', 'readme.md', 'README.zh-CN.md', 'README.zh.md'];
     for (const candidate of readmeCandidates) {
         const filePath = path.join(repoPath, candidate);
         if (await fs.pathExists(filePath)) {
             try {
                 const content = await fs.readFile(filePath, 'utf8');
-                // 去掉 Markdown 标题前缀，取首 ~500 字
+                // Strip Markdown heading prefixes, take first ~500 chars
                 const stripped = content.replace(/^#+\s.*\n?/gm, '').trim();
                 meta.readme_excerpt = stripped.slice(0, 500);
                 break;
             } catch {
-                // 忽略读取错误
+                // Ignore read errors
             }
         }
     }
@@ -308,11 +308,11 @@ export async function buildRepoMetaFromPath(
                 meta.keywords = pkg.keywords as string[];
             }
         } catch {
-            // 忽略解析错误
+            // Ignore parse errors
         }
     }
 
-    // setup.py description（Python 项目）
+    // setup.py description (Python projects)
     if (!meta.description) {
         const setupPath = path.join(repoPath, 'setup.py');
         if (await fs.pathExists(setupPath)) {
@@ -323,22 +323,22 @@ export async function buildRepoMetaFromPath(
                     meta.description = match[1];
                 }
             } catch {
-                // 忽略
+                // Ignore
             }
         }
     }
 
-    // 主要语言
+    // Primary language
     meta.primary_language = await detectPrimaryLanguage(repoPath);
 
     return meta;
 }
 
 /**
- * 单点确认 UX：展示 AI 推荐，等待用户输入 Y/n/o/u。
- * 非 TTY 模式直接归入「未分类」。
+ * Single-point confirmation UX: show AI recommendation and wait for user input Y/n/o/u.
+ * In non-TTY mode, assign directly to "uncategorized".
  *
- * 返回最终确定的域名。
+ * Returns the final determined domain name.
  */
 async function interactiveConfirmDomain(
     repoName: string,
@@ -346,23 +346,23 @@ async function interactiveConfirmDomain(
     domains: DomainsFile,
 ): Promise<{ domainName: string; accepted: boolean; rejectReason?: string }> {
     if (!process.stdin.isTTY) {
-        log.warn(`非 TTY 模式，仓库 ${repoName} 直接归入「未分类」`);
-        return { domainName: '未分类', accepted: false };
+        log.warn(`Non-TTY mode, repo ${repoName} assigned to "uncategorized"`);
+        return { domainName: 'uncategorized', accepted: false };
     }
 
     const { domain, confidence, signal, alternatives } = recommend;
 
     console.log('');
-    console.log(chalk.cyan(`[AI 推荐 domain: ${domain} (confidence ${confidence.toFixed(2)})]`));
-    console.log(chalk.gray(`[依据: ${signal}]`));
+    console.log(chalk.cyan(`[AI recommended domain: ${domain} (confidence ${confidence.toFixed(2)})]`));
+    console.log(chalk.gray(`[Reason: ${signal}]`));
     if (alternatives.length > 0) {
         const altStr = alternatives.map((a) => `${a.domain} (${a.confidence.toFixed(2)})`).join(', ');
-        console.log(chalk.gray(`[备选: ${altStr}]`));
+        console.log(chalk.gray(`[Alternatives: ${altStr}]`));
     }
     console.log('');
 
     const answer = await askQuestion(
-        `确认归入「${domain}」吗？ [Y/n/o (其他域)/u (未分类)] `,
+        `Assign to "${domain}"? [Y/n/o (other)/u (uncategorized)] `,
         'y',
     );
 
@@ -373,42 +373,43 @@ async function interactiveConfirmDomain(
     }
 
     if (lower === 'u') {
-        return { domainName: '未分类', accepted: false };
+        return { domainName: 'uncategorized', accepted: false };
     }
 
     if (lower === 'n') {
         let rejectReason: string | undefined;
         try {
-            rejectReason = await askQuestion('请简述拒绝原因（可留空）：', '');
+            rejectReason = await askQuestion('Reason for rejection (optional): ', '');
         } catch {
-            // 非 TTY fallback
+            // non-TTY fallback
         }
-        return { domainName: '未分类', accepted: false, rejectReason: rejectReason || undefined };
+        return { domainName: 'uncategorized', accepted: false, rejectReason: rejectReason || undefined };
     }
 
     if (lower === 'o') {
         const existingDomains = domains.domains.map((d, idx) => `  ${idx + 1}. ${d.name}`);
         console.log('existing domains:');
         console.log(existingDomains.join('\n'));
-        const numStr = await askQuestion('请输入编号：', '');
+        const numStr = await askQuestion('Enter number: ', '');
         const num = parseInt(numStr, 10);
         if (!isNaN(num) && num >= 1 && num <= domains.domains.length) {
             return { domainName: domains.domains[num - 1].name, accepted: true };
         }
-        log.warn('无效编号，归入「未分类」');
-        return { domainName: '未分类', accepted: false };
+        log.warn('Invalid number, assigned to "uncategorized"');
+        return { domainName: 'uncategorized', accepted: false };
     }
 
-    return { domainName: '未分类', accepted: false };
+    return { domainName: 'uncategorized', accepted: false };
 }
 
 // ─── Domain Drift Detection ─────────────────────────────
 
 /**
- * 检测仓库域归属漂移（仅在增量同步场景执行）。
+ * Detect repo domain assignment drift (only runs in incremental sync).
  *
- * 当推荐域与当前归属不同、且 confidence 偏差 > threshold 时，写入 history 并告警。
- * 任何错误只 debug 日志，不抛出，不阻塞主流程。
+ * When the recommended domain differs from the current assignment and confidence delta > threshold,
+ * writes to history and emits a warning.
+ * Any errors are only debug-logged; never thrown; never blocks main flow.
  *
  * @internal
  */
@@ -424,12 +425,12 @@ export async function detectDomainDrift(args: {
     const { cwd, url, newMeta, domains, threshold = 0.4, oldSha, newSha } = args;
 
     if (oldSha === null) {
-        // 非增量场景，不检测漂移
+        // Non-incremental scenario, skip drift detection
         return;
     }
 
     try {
-        // 找到 url 当前归属域
+        // Find the domain url currently belongs to
         let currentDomain: string | null = null;
         let currentConfidence = 0;
         for (const domain of domains.domains) {
@@ -442,13 +443,13 @@ export async function detectDomainDrift(args: {
         }
 
         if (currentDomain === null) {
-            // 不在任何域，跳过
+            // Not in any domain, skip
             return;
         }
 
         const recommendResult = await recommendDomain(newMeta, domains);
 
-        // 同域无需报告
+        // Same domain, no report needed
         if (recommendResult.domain === currentDomain) {
             return;
         }
@@ -458,7 +459,7 @@ export async function detectDomainDrift(args: {
             return;
         }
 
-        // 写 history
+        // Write history
         await appendHistory(cwd, {
             ts: new Date().toISOString(),
             actor: 'ai',
@@ -478,11 +479,10 @@ export async function detectDomainDrift(args: {
 
         log.warn(
             `[drift] repo ${url} may need reclassification` +
-            `（推荐域 ${recommendResult.domain}，confidence ${recommendResult.confidence.toFixed(2)}），` +
-            `已记入 history。请人工 review，自动归属未变。`,
+            `(recommended domain: ${recommendResult.domain}, confidence: ${recommendResult.confidence.toFixed(2)}), logged to history. Manual review needed.`,
         );
 
-        // 写 pending-review（24h 去重：移除同 url 的旧 drift 项）
+        // Write pending-review (24h dedup: remove old drift entries for same url)
         try {
             const existing = await loadPendingReview(cwd);
             const cutoffMs = Date.now() - 24 * 3600 * 1000;
@@ -511,27 +511,27 @@ export async function detectDomainDrift(args: {
                 source: 'drift-detector',
             });
         } catch (err) {
-            log.debug(`[drift] 写入 pending-review 失败：${err instanceof Error ? err.message : String(err)}`);
+            log.debug(`[drift] Failed to write pending-review: ${err instanceof Error ? err.message : String(err)}`);
         }
     } catch (err) {
-        log.debug(`[drift] 域漂移检测失败（不影响主流程）：${String(err)}`);
+        log.debug(`[drift] Domain drift detection failed (non-blocking): ${String(err)}`);
     }
 }
 
 /**
- * teamai import --from-repo <url> 主入口。
+ * Main entry point for `teamai import --from-repo <url>`.
  *
- * 流程：
- *  1. 解析 url → provider + RepoInfo（owner/repo）
- *  2. shallow clone（或增量 fetch+reset）到 ~/.teamai/cache/repos/<provider>/<owner>/<repo>
- *  3. generateCodebaseMd({ repoPath: cacheDir }) → AI 叙事
- *  4. extractCodebase → teamwiki evidence 产物（确定性 overview + graph）
- *  5. AI 叙事追加到 teamwiki/evidence/code/<slug>/overview.md
- *  6. 推荐业务域（或使用 --domain 显式指定）
- *  7. 写入 .teamai/domains.yaml + appendHistory
- *  8. 写 LAST_SYNC
+ * Flow:
+ *  1. Parse url → provider + RepoInfo (owner/repo)
+ *  2. Shallow clone (or incremental fetch+reset) to ~/.teamai/cache/repos/<provider>/<owner>/<repo>
+ *  3. generateCodebaseMd({ repoPath: cacheDir }) → AI narrative
+ *  4. extractCodebase → teamwiki evidence artifacts (deterministic overview + graph)
+ *  5. Append AI narrative to teamwiki/evidence/code/<slug>/overview.md
+ *  6. Recommend business domain (or use --domain if explicitly set)
+ *  7. Write to .teamai/domains.yaml + appendHistory
+ *  8. Write LAST_SYNC
  *
- * @throws 克隆失败、扫描失败、IO 失败时抛 Error
+ * @throws Error on clone failure, scan failure, or IO failure
  */
 export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void> {
     const {
@@ -540,14 +540,14 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         incremental = false, skipAutoPush = false, skipEnrich = false,
     } = opts;
 
-    // 1. 解析 provider 和仓库信息
+    // 1. Parse provider and repo info
     const providerName = detectProvider(url);
     if (!providerName) {
         throw new Error(`Unsupported repo URL: ${url}`);
     }
 
-    // 从 url 提取 owner 和 repo 名
-    // 支持 https://github.com/owner/repo[.git] 和 git@github.com:owner/repo[.git]
+    // Extract owner and repo name from url
+    // Supports https://github.com/owner/repo[.git] and git@github.com:owner/repo[.git]
     let owner: string;
     let repoName: string;
     const httpsMatch = url.match(/https?:\/\/[^/]+\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/.*)?$/);
@@ -562,9 +562,9 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         throw new Error(`Unsupported repo URL: ${url}`);
     }
 
-    log.info(`导入远端仓库: ${owner}/${repoName} (provider: ${providerName})`);
+    log.info(`Importing remote repo: ${owner}/${repoName} (provider: ${providerName})`);
 
-    // 2. shallow clone 或增量 fetch+reset
+    // 2. Shallow clone or incremental fetch+reset
     await ensureCacheRoot();
     const cacheDir = getRepoCacheDir(providerName, owner, repoName);
     const slug = getRepoSlug(providerName, owner, repoName);
@@ -584,7 +584,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             const fetchResult = await shallowFetch(cacheDir);
             cloneSha = fetchResult.sha;
             cloneBranch = 'HEAD';
-            log.info(`[incremental] Fetch 完成: SHA=${cloneSha.slice(0, 8)}`);
+            log.info(`[incremental] Fetch complete: SHA=${cloneSha.slice(0, 8)}`);
         } catch (fetchErr) {
             log.warn(
                 `[incremental] fetch failed, falling back to full clone: ` +
@@ -596,13 +596,13 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 });
                 cloneSha = cloneResult.sha;
                 cloneBranch = cloneResult.branch;
-                oldSha = null; // fallback 时视为全量，不做漂移检测
+                oldSha = null; // treat as full clone on fallback, skip drift detection
             } catch (err) {
-                throw new Error(`克隆失败 (${url}): ${err instanceof Error ? err.message : String(err)}`);
+                throw new Error(`Clone failed (${url}): ${err instanceof Error ? err.message : String(err)}`);
             }
         }
     } else {
-        log.info(`Shallow clone 到缓存目录: ${cacheDir}`);
+        log.info(`Shallow clone to cache: ${cacheDir}`);
         try {
             const cloneResult = await shallowClone(url, cacheDir, providerName, {
                 depth, forceSsh, forceAnonymous,
@@ -610,14 +610,14 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             cloneSha = cloneResult.sha;
             cloneBranch = cloneResult.branch;
         } catch (err) {
-            // shallowClone 内部已清理目录
-            throw new Error(`克隆失败 (${url}): ${err instanceof Error ? err.message : String(err)}`);
+            // shallowClone cleans up the directory internally
+            throw new Error(`Clone failed (${url}): ${err instanceof Error ? err.message : String(err)}`);
         }
     }
 
-    log.info(`Clone/Fetch 完成: SHA=${cloneSha.slice(0, 8)}, branch=${cloneBranch}`);
+    log.info(`Clone/Fetch complete: SHA=${cloneSha.slice(0, 8)}, branch=${cloneBranch}`);
 
-    // 2.5 SHA 未变化时跳过 AI 扫描（增量模式快速路径）
+    // 2.5 Skip AI scan if SHA unchanged (incremental fast path)
     if (useIncremental && oldSha && cloneSha === oldSha) {
         log.info(`[incremental] SHA unchanged (${cloneSha.slice(0, 8)}), skipping AI scan`);
         await writeLastSync(cacheDir, cloneSha);
@@ -628,8 +628,8 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         return;
     }
 
-    // 3. 扫描生成 codebase.md（AI 扫描失败不阻断后续图谱提取）
-    log.info(`扫描仓库内容...`);
+    // 3. Scan and generate codebase.md (AI scan failure does not block graph extraction)
+    log.info(`Scanning repository...`);
     let codebaseMd: string | undefined;
     if (skipEnrich) {
         log.debug('AI enrichment skipped (--skip-enrich)');
@@ -637,7 +637,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         try {
             codebaseMd = await generateCodebaseMd({ repoPath: cacheDir });
         } catch (err) {
-            log.warn(`AI codebase 扫描失败（不阻断图谱提取）: ${err instanceof Error ? err.message : String(err)}`);
+            log.warn(`AI codebase scan failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
         }
     }
 
@@ -657,14 +657,14 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         teamRepoDir = path.join(process.cwd(), '.teamai', 'team-repo');
     }
 
-    // 4. 生成 teamwiki/ 知识图谱产物 + AI 叙事追加到 overview.md
+    // 4. Generate teamwiki/ knowledge graph artifacts + append AI narrative to overview.md
     const teamwikiRoot = output
         ? path.resolve(output, '..', 'teamwiki')
         : path.join(teamRepoDir, 'teamwiki');
     if (!dryRun) {
         const cacheWiki = path.join(cacheDir, 'teamwiki');
         try {
-            // 增量模式：将已有的缓存文件复制到 cacheDir 供 extractCodebase 读取
+            // Incremental mode: copy existing cache files to cacheDir for extractCodebase to read
             if (incremental) {
                 const destIndices = path.join(teamwikiRoot, '.indices');
                 const cacheIndices = path.join(cacheDir, 'teamwiki', '.indices');
@@ -681,11 +681,11 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 }
             }
             await extractCodebase({ path: cacheDir, project: slug, json: false, skipEnrich, incremental });
-            // 将产物从 cacheDir/teamwiki/ 移动到目标 teamwikiRoot
+            // Move artifacts from cacheDir/teamwiki/ to target teamwikiRoot
             if (await fs.pathExists(cacheWiki)) {
                 const evidenceSrc = path.join(cacheWiki, 'evidence', 'code', slug);
                 const evidenceDest = path.join(teamwikiRoot, 'evidence', 'code', slug);
-                // 先清除旧 evidence（保留 .indices/ 子目录），防止已删除的页面残留
+                // Clear old evidence first (keep .indices/ subdir) to remove stale pages
                 if (await fs.pathExists(evidenceDest)) {
                     const entries = await fs.readdir(evidenceDest);
                     for (const entry of entries) {
@@ -695,12 +695,12 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 }
                 await fs.ensureDir(evidenceDest);
                 await fs.copy(evidenceSrc, evidenceDest, { overwrite: true });
-                // 将 AI 叙事写入 overview.md（幂等：已有则替换，无则追加）
+                // Write AI narrative to overview.md (idempotent: replace if exists, append if not)
                 if (codebaseMd) {
                     const overviewPath = path.join(evidenceDest, 'overview.md');
                     const existing = await fs.readFile(overviewPath, 'utf8').catch(() => '');
                     const aiNarrative = codebaseMd.replace(/^---[\s\S]*?---\n*/m, '');
-                    const marker = '## AI 架构叙事';
+                    const marker = '## AI Architecture Narrative';
                     const markerIdx = existing.indexOf(marker);
                     const base = markerIdx >= 0 ? existing.slice(0, markerIdx).trimEnd() : existing.trimEnd();
                     let combined: string;
@@ -720,7 +720,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 } else {
                     log.debug(`[graph] per-repo graph-index.json not found, skipping copy`);
                 }
-                // 持久化增量缓存文件到 teamwikiRoot（供后续 incremental 使用）
+                // Persist incremental cache files to teamwikiRoot (for future incremental use)
                 const cacheIndices = path.join(cacheWiki, '.indices');
                 const destIndices = path.join(teamwikiRoot, '.indices');
                 for (const cacheFile of ['facts-cache.json', 'interfaces-cache.json']) {
@@ -736,7 +736,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 }
                 await fs.remove(cacheWiki);
             }
-            // 白名单显式 domain 覆盖 AI 推断
+            // Explicit --domain overrides AI inference
             if (explicitDomain) {
                 const domainsJsonPath = path.join(teamwikiRoot, 'evidence', 'code', slug, '_domains.json');
                 if (await fs.pathExists(domainsJsonPath)) {
@@ -749,7 +749,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                     await fs.writeFile(domainsJsonPath, JSON.stringify({ domain: explicitDomain }, null, 2), 'utf8');
                 }
             }
-            // 更新顶层 router.md 和 index.md（追加新项目，不覆盖）
+            // Update top-level router.md and index.md (append new project, do not overwrite)
             const { routerTemplate, indexTemplate, HOT_TEMPLATE } = await import('./wiki-engine/adapters/templates.js');
             const routerPath = path.join(teamwikiRoot, 'router.md');
             const indexPath = path.join(teamwikiRoot, 'index.md');
@@ -757,7 +757,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             if (await fs.pathExists(routerPath)) {
                 const router = await fs.readFile(routerPath, 'utf8');
                 if (!router.includes(projectLink)) {
-                    const line = `- ${projectLink} — ${slug} 代码知识\n`;
+                    const line = `- ${projectLink} — ${slug} code knowledge\n`;
                     await fs.writeFile(routerPath, router.trimEnd() + '\n' + line, 'utf8');
                 }
             } else {
@@ -768,7 +768,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 if (!idx.includes(slug)) {
                     const insertPoint = idx.indexOf('## Navigation');
                     if (insertPoint > 0) {
-                        const entry = `- [${slug}](./evidence/code/${slug}/index.md) — 代码知识图谱\n\n`;
+                        const entry = `- [${slug}](./evidence/code/${slug}/index.md) — code knowledge graph\n\n`;
                         await fs.writeFile(indexPath, idx.slice(0, insertPoint) + entry + idx.slice(insertPoint), 'utf8');
                     }
                 }
@@ -779,9 +779,9 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 await fs.writeFile(path.join(teamwikiRoot, 'hot.md'), HOT_TEMPLATE, 'utf8');
             }
 
-            log.info(chalk.green(`✓ teamwiki/ 知识图谱已更新: ${slug}`));
+            log.info(chalk.green(`✓ teamwiki/ knowledge graph updated: ${slug}`));
         } catch (err) {
-            log.debug(`[wiki-engine] 图谱生成失败（非阻塞）: ${err instanceof Error ? err.message : err}`);
+            log.debug(`[wiki-engine] Graph generation failed (non-blocking): ${err instanceof Error ? err.message : err}`);
         } finally {
             await fs.remove(cacheWiki).catch(() => {});
         }
@@ -800,14 +800,14 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         }
     }
 
-    // 5. 聚合全局图谱 + 创建 MR（单仓模式；batch 模式由 import-repo-list 统一处理）
+    // 5. Aggregate global graph + create MR (single-repo mode; batch mode handled by import-repo-list)
     if (!dryRun && !skipAutoPush) {
         if (teamwikiRoot) {
             try {
                 const { aggregateGlobalGraph } = await import('./graph-aggregate.js');
                 await aggregateGlobalGraph(teamwikiRoot);
             } catch (e) {
-                log.debug(`[graph] 单仓聚合跳过: ${(e as Error).message}`);
+                log.debug(`[graph] Single-repo aggregation skipped: ${(e as Error).message}`);
             }
         }
         if (await fs.pathExists(teamRepoDir) && mrTeamConfig && mrLocalConfig) {
@@ -820,16 +820,16 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 mrLocalConfig,
             );
             if (prUrl) {
-                log.success(`已创建 MR: ${prUrl}`);
+                log.success(`MR created: ${prUrl}`);
             } else {
-                log.success(`已推送分支到团队知识仓库${teamRepoRemote ? ` (${teamRepoRemote})` : ''}`);
+                log.success(`Branch pushed to team knowledge repo${teamRepoRemote ? ` (${teamRepoRemote})` : ''}`);
             }
         }
     }
 
-    log.info(chalk.green(`✓ 仓库 ${owner}/${repoName} 导入完成`));
+    log.info(chalk.green(`✓ Repo ${owner}/${repoName} import complete`));
 
-    // 5b. 后台深度生成（不阻塞；batch 模式下跳过 push 由调用方统一处理）
+    // 5b. Background deep enrichment (non-blocking; in batch mode caller handles push)
     if (!dryRun && !skipEnrich && teamwikiRoot) {
         const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code', slug);
         if (await fs.pathExists(path.join(evidenceDir, '_manifest.json'))) {
@@ -846,7 +846,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                             );
                         }
                     }
-                    log.info(chalk.green(`✓ 深度生成完成: ${slug}`));
+                    log.info(chalk.green(`✓ Deep enrich complete: ${slug}`));
                 } catch (e) {
                     log.debug(`deep-enrich background failed for ${slug}: ${(e as Error).message}`);
                 }
@@ -855,13 +855,13 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     }
 
 
-    // 6. 写 LAST_SYNC
+    // 6. Write LAST_SYNC
     if (!dryRun) {
         await writeLastSync(cacheDir, cloneSha);
         try {
             await touchCacheEntry({ provider: providerName, owner, repo: repoName, lastSyncedSha: cloneSha });
         } catch (touchErr) {
-            log.debug(`[cache-index] touchCacheEntry 失败: ${String(touchErr)}`);
+            log.debug(`[cache-index] touchCacheEntry failed: ${String(touchErr)}`);
         }
     }
 }

@@ -208,7 +208,7 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
 
     if (!provider.listOrgRepos) {
         throw new Error(
-            `Provider "${providerName}" 不支持 listOrgRepos，无法使用 --from-org`,
+            `Provider "${providerName}" does not support listOrgRepos, cannot use --from-org`,
         );
     }
 
@@ -222,15 +222,15 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
     });
 
     // 2. 拉取仓库列表
-    log.info(`正在从 ${providerName}/${orgPath} 拉取仓库列表...`);
+    log.info(`Fetching repo list from ${providerName}/${orgPath}`);
     let rawRepos: OrgRepoInfo[];
     try {
         rawRepos = await provider.listOrgRepos(orgPath, { maxRepos });
     } catch (err) {
-        throw new Error(`listOrgRepos 失败: ${String(err)}`);
+        throw new Error(`listOrgRepos failed: ${String(err)}`);
     }
 
-    log.info(`获取到 ${rawRepos.length} 个仓库，开始过滤...`);
+    log.info(`Fetched ${rawRepos.length} repos, filtering...`);
 
     // 3. 过滤
     const filteredRepos = filterRepos(rawRepos, {
@@ -240,11 +240,11 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
     });
 
     if (filteredRepos.length === 0) {
-        log.warn('过滤后无可用仓库，终止');
+        log.warn('No repos after filtering, aborting');
         return;
     }
 
-    log.info(`过滤后剩余 ${filteredRepos.length} 个仓库，生成白名单...`);
+    log.info(`${filteredRepos.length} repos after filtering, generating whitelist...`);
 
     // 4. 生成白名单（跳过 AI 聚类，知识图谱通过 nodes/edges 自动组织关系）
     const whitelistDraftPath = path.join(cwd, WHITELIST_DRAFT_PATH);
@@ -257,7 +257,7 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
             lines.push(`    priority: normal`);
         }
         await fs.writeFile(whitelistDraftPath, lines.join('\n') + '\n', 'utf8');
-        log.info(`白名单已写入：${WHITELIST_DRAFT_PATH}（${filteredRepos.length} 个仓库）`);
+        log.info(`Whitelist written: ${WHITELIST_DRAFT_PATH} (${filteredRepos.length} repos)`);
     }
 
     // 5. 批量导入
@@ -265,7 +265,7 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
         const whitelistPath = whitelistDraftPath;
 
         if (await fs.pathExists(whitelistPath)) {
-            log.info(`开始批量导入（白名单：${whitelistPath}）...`);
+            log.info(`Starting batch import (whitelist: ${whitelistPath})...`);
             try {
                 const result = await importFromRepoList({
                     listPath: whitelistPath,
@@ -278,7 +278,7 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
                     skipEnrich: opts.skipEnrich ?? false,
                 });
                 log.info(
-                    `批量导入完成：成功 ${result.succeeded}，失败 ${result.failed.length}，跳过 ${result.skipped.length}`,
+                    `Batch import complete: ${result.succeeded} succeeded, ${result.failed.length} failed, ${result.skipped.length} skipped`,
                 );
                 // Rebuild global router.md / index.md with full stats
                 try {
@@ -287,7 +287,7 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
                     const teamRepoWiki = path.join(teamRepoPath, 'teamwiki');
                     if (await fs.pathExists(teamRepoWiki)) {
                         await rebuildWikiIndex(teamRepoWiki);
-                        log.info('teamwiki router.md / index.md 已重建');
+                        log.info('teamwiki router.md / index.md rebuilt');
                         const { autoPushTeamRepo } = await import('./utils/git.js');
                         await autoPushTeamRepo(teamRepoPath, '[teamai] Rebuild teamwiki index after batch import');
                     }
@@ -295,10 +295,10 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
                     log.debug(`wiki index rebuild/push failed: ${(e as Error).message}`);
                 }
             } catch (err) {
-                log.warn(`批量导入出错（不中断流程）：${String(err)}`);
+                log.warn(`Batch import error (non-blocking): ${String(err)}`);
             }
         } else {
-            log.debug('白名单文件不存在，跳过批量导入');
+            log.debug('Whitelist file not found, skipping batch import');
         }
     }
 
@@ -316,5 +316,5 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
         },
     });
 
-    log.success(`组织级初始化完成（${filteredRepos.length} 仓库）`);
+    log.success(`Org initialization complete (${filteredRepos.length} repos)`);
 }

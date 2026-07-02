@@ -377,11 +377,11 @@ async function runPhaseComponents(
   const pending = components.filter(c => !progress.componentsDone.includes(c.slug));
 
   if (pending.length === 0) {
-    log.info(`deep-enrich[${project}]: 组件文档全部已完成，跳过 Phase 1`);
+    log.info(`deep-enrich[${project}]: All component docs complete, skipping Phase 1`);
     return;
   }
 
-  log.info(`deep-enrich[${project}]: Phase 1 — 生成 ${pending.length} 个组件设计文档`);
+  log.info(`deep-enrich[${project}]: Phase 1 — Generating ${pending.length} component design docs`);
 
   // 每批 2 个并发
   const BATCH = 5;
@@ -403,13 +403,13 @@ async function runPhaseComponents(
       results = await callClaudeParallel(tasks, BATCH);
     } catch (err) {
       // AggregateError — 部分可能成功，graceful fallback
-      log.warn(`deep-enrich[${project}]: batch[${i}] 部分失败，逐个 fallback`);
+      log.warn(`deep-enrich[${project}]: batch[${i}] partially failed, falling back to sequential`);
       results = await Promise.all(
         batch.map(async (_, idx) => {
           try {
             return await callClaude(tasks[idx].prompt);
           } catch (e) {
-            log.warn(`deep-enrich[${project}]: 跳过组件 ${batch[idx].slug}: ${(e as Error).message}`);
+            log.warn(`deep-enrich[${project}]: Skipping component ${batch[idx].slug}: ${(e as Error).message}`);
             return null as unknown as string;
           }
         }),
@@ -423,7 +423,7 @@ async function runPhaseComponents(
       try {
         assertSafeResourceName(comp.slug);
       } catch (e) {
-        log.warn(`deep-enrich[${project}]: 跳过不安全的组件 slug "${comp.slug}": ${(e as Error).message}`);
+        log.warn(`deep-enrich[${project}]: Skipping unsafe component slug "${comp.slug}": ${(e as Error).message}`);
         continue;
       }
       const outPath = path.join(docsDir, `${comp.slug}.md`);
@@ -431,7 +431,7 @@ async function runPhaseComponents(
       await writeFile(outPath, content, 'utf-8');
       progress.componentsDone.push(comp.slug);
       await saveProgress(evidenceDir, progress);
-      log.debug(`deep-enrich[${project}]: 组件文档写入 ${outPath}`);
+      log.debug(`deep-enrich[${project}]: Component doc written: ${outPath}`);
     }
   }
 }
@@ -454,25 +454,25 @@ async function runPhaseArchitecture(
   const interfaceSummary = ctx.indexMd.slice(0, 800);
 
   const prompt = buildArchitecturePrompt(project, moduleList, edges, interfaceSummary);
-  log.info(`deep-enrich[${project}]: Phase 2 — 生成架构总览文档`);
+  log.info(`deep-enrich[${project}]: Phase 2 — Generating architecture overview`);
 
   let content: string;
   try {
     content = await callClaude(prompt);
   } catch (e) {
-    log.warn(`deep-enrich[${project}]: 架构总览生成失败，跳过: ${(e as Error).message}`);
+    log.warn(`deep-enrich[${project}]: Architecture overview generation failed, skipping: ${(e as Error).message}`);
     return;
   }
 
   if (!content.trim()) {
-    log.warn(`deep-enrich[${project}]: 架构总览 AI 返回空内容，跳过写文件`);
+    log.warn(`deep-enrich[${project}]: Architecture overview: AI returned empty, skipping write`);
     return;
   }
 
   const outPath = path.join(docsDir, 'architecture.md');
   await mkdir(docsDir, { recursive: true });
   await writeFile(outPath, content, 'utf-8');
-  log.debug(`deep-enrich[${project}]: 架构总览写入 ${outPath}`);
+  log.debug(`deep-enrich[${project}]: Architecture overview written: ${outPath}`);
 }
 
 // ─── Phase 3: 确定性图谱文档 ───────────────────────────────
@@ -483,7 +483,7 @@ async function runPhaseGraph(
   docsDir: string,
 ): Promise<void> {
   const { project, evidenceDir } = opts;
-  log.info(`deep-enrich[${project}]: Phase 3 — 生成确定性图谱文档`);
+  log.info(`deep-enrich[${project}]: Phase 3 — Generating deterministic graph docs`);
 
   const interfacesMd = await readFileSafe(path.join(evidenceDir, 'interfaces.md'));
 
@@ -497,7 +497,7 @@ async function runPhaseGraph(
     writeFile(path.join(docsDir, 'graph-g2-dataflow.md'), g2, 'utf-8'),
     writeFile(path.join(docsDir, 'graph-g3-interfaces.md'), g3, 'utf-8'),
   ]);
-  log.debug(`deep-enrich[${project}]: 图谱文档写入 ${docsDir}`);
+  log.debug(`deep-enrich[${project}]: Graph docs written: ${docsDir}`);
 }
 
 // ─── Phase 4: AI 图谱（G5 场景序列图 + G6 多跳路径）──────────
@@ -616,7 +616,7 @@ async function runPhaseAiGraph(
   docsDir: string,
 ): Promise<{ g5Generated: boolean; g6Generated: boolean }> {
   const { project, evidenceDir } = opts;
-  log.info(`deep-enrich[${project}]: Phase 4 — 生成 AI 图谱文档（G5/G6）`);
+  log.info(`deep-enrich[${project}]: Phase 4 — Generating AI graph docs (G5/G6)`);
 
   await mkdir(docsDir, { recursive: true });
 
@@ -624,17 +624,17 @@ async function runPhaseAiGraph(
   const g6HasEdges = (ctx.manifest.edges ?? []).length > 0;
   const g6 = buildG6Content(project, ctx.manifest);
   await writeFile(path.join(docsDir, 'graph-g6-multihop.md'), g6, 'utf-8');
-  log.debug(`deep-enrich[${project}]: G6 多跳路径写入完成`);
+  log.debug(`deep-enrich[${project}]: G6 multi-hop analysis written`);
 
   // G5: AI 生成场景序列图（需要足够的模块数据）
   let g5Generated = false;
   if (ctx.moduleDocs.size < 2) {
-    log.warn(`deep-enrich[${project}]: 模块数不足（${ctx.moduleDocs.size} < 2），跳过 G5`);
+    log.warn(`deep-enrich[${project}]: Insufficient modules (${ctx.moduleDocs.size} < 2), skipping G5`);
     return { g5Generated, g6Generated: g6HasEdges };
   }
   const architectureMd = await readFileSafe(path.join(docsDir, 'architecture.md'));
   if (!architectureMd.trim()) {
-    log.warn(`deep-enrich[${project}]: 无架构文档，跳过 G5 场景序列图生成`);
+    log.warn(`deep-enrich[${project}]: No architecture doc, skipping G5 scenarios`);
     return { g5Generated, g6Generated: g6HasEdges };
   }
 
@@ -648,11 +648,11 @@ async function runPhaseAiGraph(
     const g5Content = await callClaude(prompt);
     if (g5Content.trim()) {
       await writeFile(path.join(docsDir, 'graph-g5-scenarios.md'), g5Content, 'utf-8');
-      log.debug(`deep-enrich[${project}]: G5 场景序列图写入完成`);
+      log.debug(`deep-enrich[${project}]: G5 scenario diagrams written`);
       g5Generated = true;
     }
   } catch (e) {
-    log.warn(`deep-enrich[${project}]: G5 场景序列图生成失败，跳过: ${(e as Error).message}`);
+    log.warn(`deep-enrich[${project}]: G5 scenario generation failed, skipping: ${(e as Error).message}`);
   }
   return { g5Generated, g6Generated: g6HasEdges };
 }
@@ -666,7 +666,7 @@ async function runPhaseIndexEnhance(
   graphFlags?: { g5Generated: boolean; g6Generated: boolean },
 ): Promise<void> {
   const { project, evidenceDir } = opts;
-  log.info(`deep-enrich[${project}]: Phase 5 — 索引增强`);
+  log.info(`deep-enrich[${project}]: Phase 5 — Index enhancement`);
 
   const { graphReadmeTemplate } = await import('./wiki-engine/adapters/templates.js');
 
@@ -677,7 +677,7 @@ async function runPhaseIndexEnhance(
     hasG6: graphFlags?.g6Generated ?? true,
   });
   await writeFile(path.join(docsDir, 'README.md'), graphReadme, 'utf-8');
-  log.debug(`deep-enrich[${project}]: graph/README.md 路由表写入完成`);
+  log.debug(`deep-enrich[${project}]: graph/README.md routing table written`);
 
   // 增量更新顶层 router.md 和 index.md（追加/更新当前项目条目，不覆盖其他项目）
   const { wikiRoot } = opts;
@@ -724,7 +724,7 @@ async function runPhaseIndexEnhance(
     }
   }
 
-  log.debug(`deep-enrich[${project}]: 索引增量更新完成`);
+  log.debug(`deep-enrich[${project}]: Index incremental update complete`);
 }
 
 // ─── 主函数 ─────────────────────────────────────────────────
@@ -747,19 +747,19 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<void> {
   const { project, evidenceDir } = opts;
   const docsDir = path.join(evidenceDir, 'docs');
 
-  log.info(`deep-enrich[${project}]: 开始深度知识生成，evidenceDir=${evidenceDir}`);
+  log.info(`deep-enrich[${project}]: Starting deep knowledge generation, evidenceDir=${evidenceDir}`);
 
   // 1. 加载上下文
   const ctx = await loadContext(evidenceDir);
   let components = ctx.manifest.components ?? [];
 
   if (components.length === 0) {
-    log.warn(`deep-enrich[${project}]: _manifest.json 中无组件，终止`);
+    log.warn(`deep-enrich[${project}]: No components in _manifest.json, aborting`);
     return;
   }
 
   if (opts.maxModules && components.length > opts.maxModules) {
-    log.info(`deep-enrich[${project}]: 限制为前 ${opts.maxModules} 个组件（共 ${components.length} 个）`);
+    log.info(`deep-enrich[${project}]: Limited to first ${opts.maxModules} components (${components.length} total)`);
     components = components.slice(0, opts.maxModules);
     ctx.manifest = { ...ctx.manifest, components };
   }
@@ -807,5 +807,5 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<void> {
   // 8. 完成
   progress.phase = 'done';
   await saveProgress(evidenceDir, progress);
-  log.success(`deep-enrich[${project}]: 深度知识生成完成`);
+  log.success(`deep-enrich[${project}]: Deep knowledge generation complete`);
 }

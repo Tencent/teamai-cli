@@ -129,7 +129,7 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
         // 确定性内容（模块表格）在前
         expect(content).toContain('## Module Structure');
         // AI 叙事在后
-        expect(content).toContain('## AI 架构叙事');
+        expect(content).toContain('## AI Architecture Narrative');
         expect(content).toContain('固定的项目概述内容，不会改变。');
         expect(content).toContain('技术栈');
     });
@@ -161,7 +161,7 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
         );
         if (await fs.pathExists(overviewPath)) {
             const content = await fs.readFile(overviewPath, 'utf8');
-            expect(content).not.toContain('## AI 架构叙事');
+            expect(content).not.toContain('## AI Architecture Narrative');
         }
     });
 });

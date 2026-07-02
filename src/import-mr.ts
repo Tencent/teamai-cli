@@ -11,18 +11,18 @@ import { callClaude } from './utils/ai-client.js';
 import { extractKeywords, findSupersededLearnings } from './utils/dedup.js';
 import { log, spinner } from './utils/logger.js';
 
-/** 默认 learning 存放目录。 */
+/** Default directory for storing learnings. */
 const DEFAULT_LEARNINGS_DIR = path.join(process.env.HOME ?? '/tmp', '.teamai', 'learnings');
 
-/** dedup 相似度阈值。 */
+/** Dedup similarity threshold. */
 const SUPERSEDE_THRESHOLD = 0.6;
 
 /**
- * 根据 URL 自动判断 provider 并获取 MR 数据。
+ * Auto-detects the provider from the URL and fetches MR data.
  *
- * @param url  MR / PR 的完整 URL
- * @returns    标准化的 MRData 对象
- * @throws     URL 不属于已知 provider 时抛出 Error
+ * @param url  Full URL of the MR / PR
+ * @returns    Normalized MRData object
+ * @throws     Error when the URL does not belong to a known provider
  */
 async function fetchMR(url: string): Promise<MRData> {
   if (url.includes('github.com')) {
@@ -31,14 +31,14 @@ async function fetchMR(url: string): Promise<MRData> {
   if (url.includes('git.woa.com')) {
     return fetchTGitMR(url);
   }
-  throw new Error(`Unsupported MR URL: ${url}，仅支持 GitHub 和 TGit`);
+  throw new Error(`Unsupported MR URL: ${url}. Only GitHub and TGit are supported`);
 }
 
 /**
- * 构造 learning 提炼 prompt。
+ * Builds the learning extraction prompt.
  *
- * @param mr  MR 数据对象
- * @returns   用于 callClaude 的完整提示词字符串
+ * @param mr  MR data object
+ * @returns   Full prompt string for callClaude
  */
 function extractMRLearningPrompt(mr: MRData): string {
   const commitsFormatted = mr.commits
@@ -94,10 +94,10 @@ ${diff3000}`;
 }
 
 /**
- * 交互式询问用户是否确认某项操作。
+ * Interactively asks the user to confirm an action.
  *
- * @param question  询问文本，末尾不需要加空格
- * @returns         用户输入 'n'/'N' 时返回 false，其余（包括直接回车）返回 true
+ * @param question  Prompt text (no trailing space needed)
+ * @returns         false if the user enters 'n'/'N', true for anything else (including Enter)
  */
 async function promptConfirm(question: string): Promise<boolean> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -110,10 +110,10 @@ async function promptConfirm(question: string): Promise<boolean> {
 }
 
 /**
- * 从 MR URL 推断仓库地址。
+ * Infers the repo URL from an MR URL.
  *
- * @param mrUrl  MR / PR 完整 URL
- * @returns      推断的仓库 .git URL
+ * @param mrUrl  Full MR / PR URL
+ * @returns      Inferred repo .git URL
  */
 function extractRepoUrlFromMrUrl(mrUrl: string): string {
   // GitHub: https://github.com/owner/repo/pull/123 → https://github.com/owner/repo.git
@@ -122,22 +122,22 @@ function extractRepoUrlFromMrUrl(mrUrl: string): string {
   // TGit: https://git.woa.com/group[/subgroup]/repo/merge_requests/123
   const tgitMatch = mrUrl.match(/^(https:\/\/git\.woa\.com\/.+\/[^/]+)\/merge_requests\//);
   if (tgitMatch) return `${tgitMatch[1]}.git`;
-  // 无法可靠提取时返回空，调用方跳过增量更新
+  // Cannot reliably extract; return empty string so caller skips incremental update
   return '';
 }
 
 /**
- * 从 MR URL 提炼 learning 草稿并推断仓库 URL。
+ * Extracts a learning draft from an MR URL and infers the repo URL.
  *
- * 对应 P0.5 功能：获取 MR 数据 → AI 提炼 → dedup → 交互确认 → 写文件。
+ * Implements P0.5: fetch MR data → AI extraction → dedup → interactive confirm → write file.
  *
- * @param opts.url          MR / PR 完整 URL（必填）
- * @param opts.learningsDir 用于 dedup 扫描的目录，默认 ~/.teamai/learnings
- * @param opts.all          跳过交互确认，全部接受
- * @param opts.outputDir    输出模式：写到此目录（learning.md）
- * @param opts.repoPath     团队 repo 路径（outputDir 未设时写入 learnings/）
- * @param opts.dryRun       试运行，不写磁盘
- * @returns                 提炼结果，包含 learning 草稿和推断的仓库 URL
+ * @param opts.url          Full MR / PR URL (required)
+ * @param opts.learningsDir Directory for dedup scanning, default ~/.teamai/learnings
+ * @param opts.all          Skip interactive confirmation, accept all
+ * @param opts.outputDir    Output mode: write to this directory (learning.md)
+ * @param opts.repoPath     Team repo path (written to learnings/ when outputDir is not set)
+ * @param opts.dryRun       Dry run, no disk writes
+ * @returns                 Extraction result containing the learning draft and inferred repo URL
  */
 export async function importFromMR(opts: {
   url: string;
@@ -150,28 +150,28 @@ export async function importFromMR(opts: {
   const learningsDir = opts.learningsDir ?? DEFAULT_LEARNINGS_DIR;
 
   // ── 步骤 1：获取 MR 数据 ────────────────────────────────
-  const fetchSpinner = spinner('获取 MR 数据...');
+  const fetchSpinner = spinner('Fetching MR data...');
   fetchSpinner.start();
 
   let mr: MRData;
   try {
     mr = await fetchMR(opts.url);
-    fetchSpinner.succeed('MR 数据获取完成');
+    fetchSpinner.succeed('MR data fetched');
   } catch (err: unknown) {
-    fetchSpinner.fail('MR 数据获取失败');
+    fetchSpinner.fail('MR data fetch failed');
     throw err;
   }
 
   // ── 步骤 2：AI 分析 ────────────────────────────────────
-  const aiSpinner = spinner('AI 分析中...');
+  const aiSpinner = spinner('AI analysis in progress...');
   aiSpinner.start();
 
   let learningContent: string;
   try {
     learningContent = await callClaude(extractMRLearningPrompt(mr));
-    aiSpinner.succeed('AI 分析完成');
+    aiSpinner.succeed('AI analysis complete');
   } catch (err: unknown) {
-    aiSpinner.fail('AI 分析失败');
+    aiSpinner.fail('AI analysis failed');
     throw err;
   }
 
@@ -201,7 +201,7 @@ export async function importFromMR(opts: {
   };
 
   // ── 步骤 4：打印摘要 ────────────────────────────────────
-  log.info(`✅ Learning 草稿已生成：${learningTitle}`);
+  log.info(`✅ Learning draft generated: ${learningTitle}`);
 
   const tags = parsed.data['tags'] as string[] | undefined;
   if (tags && tags.length > 0) {
@@ -209,14 +209,14 @@ export async function importFromMR(opts: {
   }
 
   if (supersedes.length > 0) {
-    log.warn(`⚠️  发现 ${supersedes.length} 条重叠的 session learning，将标记为 superseded`);
+    log.warn(`⚠️  Found ${supersedes.length} overlapping session learnings, marking as superseded`);
   }
 
   // ── 步骤 5：交互确认 ───────────────────────────────────
   let acceptLearning = true;
 
   if (!opts.all) {
-    acceptLearning = await promptConfirm('是否接受 learning？[Y/n]');
+    acceptLearning = await promptConfirm('Accept learning? [Y/n]');
   }
 
   // ── 步骤 6：写文件 ─────────────────────────────────────
@@ -251,7 +251,7 @@ async function writeLearning(
     await fs.mkdir(outputDir, { recursive: true });
     const filePath = path.join(outputDir, 'learning.md');
     await fs.writeFile(filePath, draft.content, 'utf-8');
-    log.info(`已写入 learning：${filePath}`);
+    log.info(`Learning written: ${filePath}`);
     return;
   }
 
@@ -268,9 +268,9 @@ async function writeLearning(
     const filename = `${datePrefix}-${safeTitle}.md`;
     const filePath = path.join(learningsDir, filename);
     await fs.writeFile(filePath, draft.content, 'utf-8');
-    log.info(`已写入 learning：${filePath}`);
+    log.info(`Learning written: ${filePath}`);
     return;
   }
 
-  log.warn('未指定 outputDir 或 repoPath，learning 草稿未写入磁盘');
+  log.warn('No outputDir or repoPath specified, learning draft not saved to disk');
 }
