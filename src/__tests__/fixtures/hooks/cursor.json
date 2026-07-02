@@ -24,26 +24,6 @@
         "matcher": "Skill"
       },
       {
-        "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool cursor --matcher Bash 2>/dev/null\" || true",
-        "timeout": 10,
-        "matcher": "Bash"
-      },
-      {
-        "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool cursor --matcher Grep 2>/dev/null\" || true",
-        "timeout": 10,
-        "matcher": "Grep"
-      },
-      {
-        "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool cursor --matcher WebSearch 2>/dev/null\" || true",
-        "timeout": 10,
-        "matcher": "WebSearch"
-      },
-      {
-        "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool cursor --matcher WebFetch 2>/dev/null\" || true",
-        "timeout": 10,
-        "matcher": "WebFetch"
-      },
-      {
         "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool cursor --matcher TodoWrite 2>/dev/null\" || true",
         "timeout": 3,
         "matcher": "TodoWrite"

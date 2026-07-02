@@ -33,8 +33,8 @@ interface HookInput {
 }
 
 /**
- * Resolve the dedup cache path for a session. Co-located with auto-recall
- * cache files under ~/.teamai/sessions/.
+ * Resolve the dedup cache path for a session. Co-located with the recall
+ * quality cache under ~/.teamai/sessions/.
  */
 export function getTodoWriteHintCachePath(sessionId: string): string {
   return path.join(

@@ -38,10 +38,6 @@ const BUILTIN_HOOK_SPECS: BuiltinHookSpec[] = [
   { key: 'Hook dispatch stop', event: 'Stop', dispatchEvent: 'stop', matcher: '*', cursorTimeout: 15 },
   { key: 'Hook dispatch post-tool-use wildcard', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: '*', cursorTimeout: 10 },
   { key: 'Hook dispatch post-tool-use Skill', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'Skill', cursorTimeout: 10 },
-  { key: 'Hook dispatch post-tool-use Bash', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'Bash', cursorTimeout: 10 },
-  { key: 'Hook dispatch post-tool-use Grep', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'Grep', cursorTimeout: 10 },
-  { key: 'Hook dispatch post-tool-use WebSearch', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'WebSearch', cursorTimeout: 10 },
-  { key: 'Hook dispatch post-tool-use WebFetch', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'WebFetch', cursorTimeout: 10 },
   { key: 'Hook dispatch post-tool-use TodoWrite', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'TodoWrite', cursorTimeout: 3 },
   { key: 'Hook dispatch prompt-submit', event: 'UserPromptSubmit', dispatchEvent: 'prompt-submit', matcher: '*', cursorTimeout: 10 },
 ];

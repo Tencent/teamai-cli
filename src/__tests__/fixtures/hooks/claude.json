@@ -46,46 +46,6 @@
         "description": "[teamai] Hook dispatch post-tool-use Skill"
       },
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude --matcher Bash 2>/dev/null\" || true"
-          }
-        ],
-        "description": "[teamai] Hook dispatch post-tool-use Bash"
-      },
-      {
-        "matcher": "Grep",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude --matcher Grep 2>/dev/null\" || true"
-          }
-        ],
-        "description": "[teamai] Hook dispatch post-tool-use Grep"
-      },
-      {
-        "matcher": "WebSearch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude --matcher WebSearch 2>/dev/null\" || true"
-          }
-        ],
-        "description": "[teamai] Hook dispatch post-tool-use WebSearch"
-      },
-      {
-        "matcher": "WebFetch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude --matcher WebFetch 2>/dev/null\" || true"
-          }
-        ],
-        "description": "[teamai] Hook dispatch post-tool-use WebFetch"
-      },
-      {
         "matcher": "TodoWrite",
         "hooks": [
           {
