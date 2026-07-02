@@ -401,14 +401,14 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     // Learnings
     const { recent: recentLearnings, total: totalLearnings } = await getRecentLearnings(repoPath);
     if (recentLearnings.length > 0) {
-      console.log(`📚 本周新增 Learnings: ${recentLearnings.length} 篇`);
+      console.log(`📚 New Learnings This Week: ${recentLearnings.length}`);
       for (const learning of recentLearnings) {
         console.log(`  • ${learning.title}`);
       }
       console.log('');
     }
     if (totalLearnings > 0) {
-      console.log(`📊 知识库总量: ${totalLearnings} 篇 learnings`);
+      console.log(`📊 Knowledge base total: ${totalLearnings} learnings`);
       console.log('');
     }
 
@@ -436,18 +436,14 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     // Session autonomy — Human Intervention metric (Issue #34)
     const interventions = summarizeInterventions(teamStats);
     if (interventions) {
-      console.log('🤖 会话自主性 (Human Intervention):');
+      console.log('🤖 Session Autonomy (Human Intervention):');
       console.log(
-        `  团队均值: ${interventions.avgPerSession.toFixed(2)} 次干预/会话 ` +
-        `(${interventions.totalSessions} 会话, ${interventions.totalInterventions} 次干预)`,
+        `  Team avg: ${interventions.avgPerSession.toFixed(2)} interventions/session ` +
+        `(${interventions.totalSessions} sessions, ${interventions.totalInterventions} interventions)`,
       );
       console.log(
-        `  分解: 中断 ${interventions.interrupt} · 拒绝 ${interventions.toolReject} · 纠偏 ${interventions.correction}`,
+        `  Breakdown: interrupt ${interventions.interrupt} · reject ${interventions.toolReject} · correction ${interventions.correction}`,
       );
-      console.log('  干预率排行 (高 → 低, 越低自主性越强):');
-      for (const r of interventions.ranked.slice(0, 10)) {
-        console.log(`    • ${r.username}: ${r.rate.toFixed(2)}/会话 (${r.total} 次 / ${r.sessions} 会话)`);
-      }
       console.log('');
     }
 
@@ -455,17 +451,13 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     const conversation = summarizeConversation(teamStats);
     if (conversation) {
       const t = conversation.tokens;
-      console.log('💬 对话量与 Token 用量:');
-      console.log(`  人工对话总轮数: ${conversation.totalPrompts} 次`);
+      console.log('💬 Conversation & Token Usage:');
+      console.log(`  Total human prompts: ${conversation.totalPrompts}`);
       console.log(
-        `  Token 总量: ${formatTokenCount(conversation.totalTokens)} ` +
-        `(输入 ${formatTokenCount(t.input)} · 输出 ${formatTokenCount(t.output)} · ` +
-        `缓存读 ${formatTokenCount(t.cacheRead)} · 缓存写 ${formatTokenCount(t.cacheCreation)})`,
+        `  Total tokens: ${formatTokenCount(conversation.totalTokens)} ` +
+        `(input ${formatTokenCount(t.input)} · output ${formatTokenCount(t.output)} · ` +
+        `cache read ${formatTokenCount(t.cacheRead)} · cache write ${formatTokenCount(t.cacheCreation)})`,
       );
-      console.log('  Token 用量排行 (高 → 低):');
-      for (const r of conversation.ranked.slice(0, 10)) {
-        console.log(`    • ${r.username}: ${formatTokenCount(r.tokens)} tokens (${r.prompts} 轮对话)`);
-      }
       console.log('');
     }
 
