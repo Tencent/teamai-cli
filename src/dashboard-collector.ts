@@ -262,8 +262,8 @@ export async function scanTranscriptStop(
 }
 
 /**
- * Scan a CodeBuddy `index.json` transcript for a cumulative, idempotent token +
- * prompt snapshot. CodeBuddy's schema differs from Claude Code:
+ * Read a CodeBuddy `index.json` transcript once. CodeBuddy's schema differs from
+ * Claude Code:
  *
  *   {
  *     "messages": [{ "role": "user" | "assistant" | "tool", ... }],
@@ -276,10 +276,10 @@ export async function scanTranscriptStop(
  *            to 0 and `input + output` matches CodeBuddy's own `totalTokens`.
  * - prompts: count of `messages[]` entries with role === 'user' (human turns).
  *
- * Returns null when the file is missing, too large, unparseable, or not a CodeBuddy
- * index document — the caller then falls back to the Claude JSONL scanner.
+ * Returns null when the file is missing, too large, unparseable (e.g. read mid-write),
+ * or not a CodeBuddy index document.
  */
-async function scanCodebuddyIndex(
+async function readCodebuddyIndexOnce(
   transcriptPath: string,
 ): Promise<TranscriptScanResult | null> {
   try {
@@ -311,6 +311,48 @@ async function scanCodebuddyIndex(
     log.warn(`dashboard: failed to scan CodeBuddy index: ${(e as Error).message}`);
     return null;
   }
+}
+
+/** Total token count across all four buckets. */
+function totalTokenCount(t: TokenUsage): number {
+  return t.input + t.output + t.cacheRead + t.cacheCreation;
+}
+
+/** Retry budget for waiting on CodeBuddy's post-Stop token-usage flush. */
+const CODEBUDDY_USAGE_MAX_ATTEMPTS = 8;
+const CODEBUDDY_USAGE_RETRY_MS = 250;
+
+/**
+ * Scan a CodeBuddy `index.json` for a cumulative, idempotent token + prompt
+ * snapshot, with a bounded retry.
+ *
+ * CodeBuddy flushes per-request token usage into `index.json` *shortly after* it
+ * fires the Stop hook, so the first read frequently sees the human `messages`
+ * already written (prompts are captured) but `requests[].usage` still zero. Without
+ * a retry, single-turn / last-turn sessions would permanently record 0 tokens. We
+ * re-read (up to ~1.75s, well within the 60s hook timeout) until usage appears.
+ *
+ * Returns null only when the file never parses as a CodeBuddy index — the caller
+ * then falls back to the Claude JSONL scanner.
+ */
+async function scanCodebuddyIndex(
+  transcriptPath: string,
+): Promise<TranscriptScanResult | null> {
+  let last: TranscriptScanResult | null = null;
+  for (let attempt = 0; attempt < CODEBUDDY_USAGE_MAX_ATTEMPTS; attempt++) {
+    const result = await readCodebuddyIndexOnce(transcriptPath);
+    if (result) {
+      last = result;
+      // Usage has been flushed — the snapshot is complete, stop waiting.
+      if (totalTokenCount(result.tokens) > 0) return result;
+    }
+    if (attempt < CODEBUDDY_USAGE_MAX_ATTEMPTS - 1) {
+      await new Promise((resolve) => setTimeout(resolve, CODEBUDDY_USAGE_RETRY_MS));
+    }
+  }
+  // Never observed non-zero usage: return the best (zero-token) snapshot we have,
+  // or null so the caller falls back to the Claude JSONL scanner.
+  return last;
 }
 
 /** Coerce an unknown usage field to a non-negative finite number (0 otherwise). */

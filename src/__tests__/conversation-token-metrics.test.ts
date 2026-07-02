@@ -106,6 +106,27 @@ describe('scanTranscriptStop — token usage', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('retries CodeBuddy index.json until usage is flushed after Stop', async () => {
+    // CodeBuddy writes requests[].usage a moment AFTER firing the Stop hook, so the
+    // first read sees zero usage. The scanner must retry until usage appears —
+    // otherwise single-turn sessions would record 0 tokens permanently.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-cb-race-'));
+    const p = path.join(dir, 'index.json');
+    const messages = [{ id: 'a', role: 'user' }];
+    // Initial snapshot: message present, usage not yet flushed (all zero).
+    fs.writeFileSync(p, JSON.stringify({ messages, requests: [{ usage: { inputTokens: 0, outputTokens: 0 } }] }));
+    // Flush real usage shortly after the scan starts (mimics CodeBuddy's late write).
+    const timer = setTimeout(() => {
+      fs.writeFileSync(p, JSON.stringify({ messages, requests: [{ usage: { inputTokens: 1200, outputTokens: 88 } }] }));
+    }, 300);
+
+    const { tokens, prompts } = await scanTranscriptStop(p);
+    clearTimeout(timer);
+    expect(tokens).toEqual({ input: 1200, output: 88, cacheRead: 0, cacheCreation: 0 });
+    expect(prompts).toBe(1);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('falls back to requestId for dedup when message.id is missing', async () => {
     const line = (extra: object) => JSON.stringify({
       type: 'assistant',
