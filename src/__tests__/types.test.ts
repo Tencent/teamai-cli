@@ -98,6 +98,7 @@ describe('TeamaiConfigSchema', () => {
     expect(result.toolPaths['codex-internal']).toEqual({
       skills: '.codex-internal/skills',
       rules: '.codex-internal/rules',
+      settings: '.codex-internal/hooks.json',
       agents: '.codex-internal/agents',
     });
   });

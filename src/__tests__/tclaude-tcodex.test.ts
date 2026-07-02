@@ -18,12 +18,13 @@ describe('tclaude/tcodex adapter integration', () => {
       });
     });
 
-    it('tcodex has codex-compatible paths (no settings)', async () => {
+    it('tcodex has codex-compatible paths including hooks.json', async () => {
       const { TeamaiConfigSchema } = await import('../types.js');
       const config = TeamaiConfigSchema.parse({ team: 'test', repo: 'test/repo' });
       expect(config.toolPaths.tcodex).toEqual({
         skills: '.tcodex/skills',
         rules: '.tcodex/rules',
+        settings: '.tcodex/hooks.json',
         agents: '.tcodex/agents',
       });
     });
@@ -73,14 +74,14 @@ describe('tclaude/tcodex adapter integration', () => {
     });
   });
 
-  describe('hooks injection targets tclaude', () => {
-    it('tclaude settings path enables hook injection', async () => {
+  describe('hooks injection targets tclaude/tcodex', () => {
+    it('settings paths enable hook injection', async () => {
       const { TeamaiConfigSchema } = await import('../types.js');
       const config = TeamaiConfigSchema.parse({ team: 'test', repo: 'test/repo' });
       // tclaude has settings → hooks will be injected
       expect(config.toolPaths.tclaude.settings).toBe('.tclaude/settings.json');
-      // tcodex has no settings → hooks will NOT be injected
-      expect(config.toolPaths.tcodex.settings).toBeUndefined();
+      // tcodex has Codex hooks.json → hooks will be injected
+      expect(config.toolPaths.tcodex.settings).toBe('.tcodex/hooks.json');
     });
   });
 

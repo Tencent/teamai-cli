@@ -98,6 +98,17 @@ describe('hooks', () => {
       expect(result.hooks['beforeSubmitPrompt']).toHaveLength(1);
     });
 
+    it('Codex format: injects PascalCase events into hooks.json', async () => {
+      await injectHooks('/test/codex-hooks.json', 'codex');
+
+      const result = mockFiles['/test/codex-hooks.json'] as { hooks: Record<string, Array<{ matcher?: string; description?: string; hooks: Array<{ command: string }> }>> };
+      expect(result.hooks).toBeDefined();
+      expect(Object.keys(result.hooks)).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit']);
+      expect(result.hooks.PostToolUse).toHaveLength(7);
+      expect(result.hooks.SessionStart[0].hooks[0].command).toContain('--tool codex');
+      expect(result.hooks.SessionStart[0].description).toBeUndefined();
+    });
+
     it('Claude uses PascalCase event names', async () => {
       await injectHooks('/test/settings.json', 'claude');
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, unknown[]> };
@@ -332,23 +343,35 @@ describe('hooks', () => {
         expect(cmd).toContain('--tool codebuddy');
       }
     });
+
+    it('codex hooks contain --tool codex', async () => {
+      await injectHooks('/test/hooks.json', 'codex');
+      const result = mockFiles['/test/hooks.json'] as { hooks: Record<string, unknown[]> };
+      const cmds = extractCommands(result.hooks);
+      const toolCmds = cmds.filter((c) => c.includes('--tool'));
+      expect(toolCmds.length).toBeGreaterThan(0);
+      for (const cmd of toolCmds) {
+        expect(cmd).toContain('--tool codex');
+      }
+    });
   });
 
   describe('injectHooksToAllTools', () => {
-    it('injects into tools with settings path, skips those without', async () => {
+    it('injects into all configured settings paths including Codex hooks.json', async () => {
       const originalHome = process.env.HOME;
       process.env.HOME = '/test-home';
 
       try {
         await injectHooksToAllTools({
           claude: { settings: '.claude/settings.json' },
-          codex: {},
+          codex: { settings: '.codex/hooks.json' },
           cursor: { settings: '.cursor/hooks.json' },
         });
 
         expect(mockFiles[path.join('/test-home', '.claude/settings.json')]).toBeDefined();
+        expect(mockFiles[path.join('/test-home', '.codex/hooks.json')]).toBeDefined();
         expect(mockFiles[path.join('/test-home', '.cursor/hooks.json')]).toBeDefined();
-        expect(Object.keys(mockFiles)).toHaveLength(2);
+        expect(Object.keys(mockFiles)).toHaveLength(3);
       } finally {
         process.env.HOME = originalHome;
       }
