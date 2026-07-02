@@ -83,6 +83,29 @@ describe('scanTranscriptStop — token usage', () => {
     expect(tokens).toEqual({ input: 0, output: 7, cacheRead: 0, cacheCreation: 0 });
   });
 
+  it('parses CodeBuddy index.json (requests[].usage + user messages)', async () => {
+    // CodeBuddy persists a single index.json, not Claude JSONL. Tokens live in
+    // requests[].usage.{inputTokens,outputTokens}; prompts = user messages.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-cb-'));
+    const p = path.join(dir, 'index.json');
+    fs.writeFileSync(p, JSON.stringify({
+      messages: [
+        { id: 'a', role: 'user' },
+        { id: 'b', role: 'assistant' },
+        { id: 'c', role: 'tool' },
+        { id: 'd', role: 'user' },
+      ],
+      requests: [
+        { usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } },
+        { usage: { inputTokens: 215609, outputTokens: 2967, totalTokens: 218576 } },
+      ],
+    }));
+    const { tokens, prompts } = await scanTranscriptStop(p);
+    expect(tokens).toEqual({ input: 215609, output: 2967, cacheRead: 0, cacheCreation: 0 });
+    expect(prompts).toBe(2);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('falls back to requestId for dedup when message.id is missing', async () => {
     const line = (extra: object) => JSON.stringify({
       type: 'assistant',

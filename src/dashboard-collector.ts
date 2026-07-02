@@ -152,6 +152,15 @@ export async function scanTranscriptStop(
   // the same usage). Prefer message.id; fall back to the top-level requestId.
   const countedUsageKeys = new Set<string>();
 
+  // CodeBuddy persists its transcript as a single `index.json` document (a JSON
+  // object with `requests[].usage` + `messages[]`), NOT the Claude Code JSONL
+  // schema the streaming scanner below expects. Detect and parse that shape
+  // separately — otherwise every line fails JSON.parse and tokens stay 0.
+  if (path.basename(transcriptPath) === 'index.json') {
+    const cb = await scanCodebuddyIndex(transcriptPath);
+    if (cb) return cb;
+  }
+
   try {
     const stat = await fs.promises.stat(transcriptPath);
     if (stat.size === 0) return { interrupt, toolReject, tokens, prompts };
@@ -250,6 +259,58 @@ export async function scanTranscriptStop(
   }
 
   return { interrupt, toolReject, tokens, prompts };
+}
+
+/**
+ * Scan a CodeBuddy `index.json` transcript for a cumulative, idempotent token +
+ * prompt snapshot. CodeBuddy's schema differs from Claude Code:
+ *
+ *   {
+ *     "messages": [{ "role": "user" | "assistant" | "tool", ... }],
+ *     "requests": [{ "usage": { "inputTokens", "outputTokens", "totalTokens" } }]
+ *   }
+ *
+ * - tokens:  summed across `requests[].usage` (same per-turn accumulation model as
+ *            the Claude scan, so re-sent context is counted each request). CodeBuddy
+ *            reports no cache-read/creation split at the request level, so those map
+ *            to 0 and `input + output` matches CodeBuddy's own `totalTokens`.
+ * - prompts: count of `messages[]` entries with role === 'user' (human turns).
+ *
+ * Returns null when the file is missing, too large, unparseable, or not a CodeBuddy
+ * index document — the caller then falls back to the Claude JSONL scanner.
+ */
+async function scanCodebuddyIndex(
+  transcriptPath: string,
+): Promise<TranscriptScanResult | null> {
+  try {
+    const stat = await fs.promises.stat(transcriptPath);
+    if (stat.size === 0 || stat.size > INTERVENTION_SCAN_MAX_BYTES) return null;
+
+    const content = await fs.promises.readFile(transcriptPath, 'utf-8');
+    const data = JSON.parse(content) as {
+      messages?: Array<{ role?: unknown }>;
+      requests?: Array<{ usage?: Record<string, unknown> }>;
+    };
+    if (!data || !Array.isArray(data.requests)) return null;
+
+    const tokens = emptyTokenUsage();
+    for (const req of data.requests) {
+      const usage = req?.usage;
+      if (!usage) continue;
+      tokens.input += toNum(usage.inputTokens);
+      tokens.output += toNum(usage.outputTokens);
+    }
+
+    const prompts = Array.isArray(data.messages)
+      ? data.messages.filter((m) => m?.role === 'user').length
+      : 0;
+
+    // CodeBuddy transcripts don't expose interrupt / tool-reject markers.
+    return { interrupt: 0, toolReject: 0, tokens, prompts };
+  } catch (e) {
+    log.warn(`dashboard: failed to scan CodeBuddy index: ${(e as Error).message}`);
+    return null;
+  }
 }
 
 /** Coerce an unknown usage field to a non-negative finite number (0 otherwise). */
