@@ -613,7 +613,7 @@ export function getDashboardHtml(port: number): string {
       if (isExpanded) {
         let promptsHtml = '';
         if (s.prompts && s.prompts.length > 0) {
-          promptsHtml = '<div class="detail-label">Prompts (' + s.prompts.length + ')</div>' +
+          promptsHtml = '<div class="detail-label">User Prompts (' + s.prompts.length + ')</div>' +
             s.prompts.map(p => '<div class="prompt-item">' + escapeHtml(p) + '</div>').join('');
         }
         let outputHtml = '';
@@ -637,7 +637,7 @@ export function getDashboardHtml(port: number): string {
       // 2. First question
       const firstQuestionSection = s.promptSummary
         ? '<div class="card-section">' +
-            '<div class="card-section-label">First Question</div>' +
+            '<div class="card-section-label">First User Prompt</div>' +
             '<div class="prompt-summary">' + escapeHtml(s.promptSummary) + '</div>' +
           '</div>'
         : '';
@@ -646,7 +646,7 @@ export function getDashboardHtml(port: number): string {
       const lastPrompt = s.prompts && s.prompts.length > 1 ? s.prompts[s.prompts.length - 1] : '';
       const lastQuestionSection = lastPrompt
         ? '<div class="card-section">' +
-            '<div class="card-section-label">Last Question</div>' +
+            '<div class="card-section-label">Latest User Prompt</div>' +
             '<div class="prompt-summary">' + escapeHtml(lastPrompt) + '</div>' +
           '</div>'
         : '';

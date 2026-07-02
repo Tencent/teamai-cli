@@ -76,7 +76,7 @@ describe('hook-dispatch', () => {
       expect(skillHandler.execute).not.toHaveBeenCalled();
     });
 
-    it('wildcard matcher handlers also fire when a specific matcher is dispatched', async () => {
+    it('wildcard matcher handlers do not fire during a specific matcher dispatch', async () => {
       const wildcardHandler = createHandler('dashboard');
       const bashHandler = createHandler('auto-recall');
 
@@ -89,7 +89,7 @@ describe('hook-dispatch', () => {
 
       await dispatcher.dispatch('post-tool-use', 'Bash', {}, 'claude');
 
-      expect(wildcardHandler.execute).toHaveBeenCalledOnce();
+      expect(wildcardHandler.execute).not.toHaveBeenCalled();
       expect(bashHandler.execute).toHaveBeenCalledOnce();
     });
   });

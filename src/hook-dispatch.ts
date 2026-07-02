@@ -70,8 +70,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number, handlerName: string): P
  * Create a dispatcher with the given handler registrations.
  *
  * Routing rules:
- *   - A handler matches if its event matches AND (its matcher === dispatched matcher OR its matcher === '*')
- *   - Wildcard ('*') matchers fire for any dispatched matcher on that event
+ *   - A handler matches if its event and matcher both match the dispatched hook.
+ *   - The injected wildcard hook dispatches matcher='*' separately, so wildcard
+ *     handlers must not also run during a specific matcher dispatch.
  */
 export function createDispatcher(config: DispatcherConfig): Dispatcher {
   return {
@@ -79,8 +80,7 @@ export function createDispatcher(config: DispatcherConfig): Dispatcher {
       // Find all handlers that should fire for this event+matcher
       const matched = config.handlers.filter((reg) => {
         if (reg.event !== event) return false;
-        // Wildcard handlers always fire; specific matchers must match exactly
-        return reg.matcher === '*' || reg.matcher === matcher;
+        return reg.matcher === matcher;
       });
 
       // Execute all matched handlers concurrently with isolation + per-handler timeout
