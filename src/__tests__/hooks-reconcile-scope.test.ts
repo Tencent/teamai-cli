@@ -17,7 +17,7 @@ const teamConfig = {
   toolPaths: {
     claude: { settings: '.claude/settings.json' },
     cursor: { settings: '.cursor/hooks.json' },
-    codex: {}, // no settings → skipped
+    codex: { settings: '.codex/hooks.json' },
   },
 } as unknown as TeamaiConfig;
 
@@ -40,6 +40,9 @@ function claudeSettings(): Promise<{ hooks: Record<string, Array<{ description?:
 }
 function cursorSettings(): Promise<{ hooks: Record<string, Array<{ command: string }>> }> {
   return fse.readJson(path.join(project, '.cursor', 'hooks.json'));
+}
+function codexSettings(): Promise<{ hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number }> }>> }> {
+  return fse.readJson(path.join(project, '.codex', 'hooks.json'));
 }
 function manifest(): Promise<Record<string, Array<{ id: string }>>> {
   return fse.readJson(path.join(project, '.teamai', 'managed-hooks.json'));
@@ -75,9 +78,14 @@ hooks:
     expect(cursor.hooks.stop).toHaveLength(2);
     expect(cursor.hooks.stop.some((h) => h.command === 'npm run lint')).toBe(true);
 
+    const codex = await codexSettings();
+    expect(codex.hooks.Stop).toHaveLength(2);
+    expect(codex.hooks.Stop.some((h) => h.hooks[0].command === 'npm run lint')).toBe(true);
+
     const m = await manifest();
     expect(m.claude.map((r) => r.id)).toEqual(['lint']);
     expect(m.cursor.map((r) => r.id)).toEqual(['lint']);
+    expect(m.codex.map((r) => r.id)).toEqual(['lint']);
   });
 
   it('applies hooks.yaml edits on the next reconcile (add/remove), built-in untouched', async () => {
@@ -102,9 +110,14 @@ hooks:
     expect(cursor.hooks.stop.some((h) => h.command === 'npm run lint')).toBe(false);
     expect(cursor.hooks.stop).toHaveLength(1);
 
+    const codex = await codexSettings();
+    expect(codex.hooks.Stop.some((h) => h.hooks[0].command === 'npm run lint')).toBe(false);
+    expect(codex.hooks.Stop).toHaveLength(1);
+
     const m = await manifest();
     expect(m.claude).toBeUndefined();
     expect(m.cursor).toBeUndefined();
+    expect(m.codex).toBeUndefined();
   });
 
   it('removeAll clears built-in + team hooks', async () => {
@@ -120,6 +133,10 @@ hooks:
 
     const claude = await claudeSettings();
     for (const entries of Object.values(claude.hooks)) {
+      expect(entries).toHaveLength(0);
+    }
+    const codex = await codexSettings();
+    for (const entries of Object.values(codex.hooks)) {
       expect(entries).toHaveLength(0);
     }
   });

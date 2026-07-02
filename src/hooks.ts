@@ -63,6 +63,22 @@ interface CursorHooksJson {
   hooks: Record<string, CursorHookEntry[]>;
 }
 
+interface CodexHookEntry {
+  type: string;
+  command: string;
+  timeout?: number;
+}
+
+interface CodexHookMatcher {
+  matcher?: string;
+  hooks: CodexHookEntry[];
+}
+
+interface CodexHooksJson {
+  hooks?: Record<string, CodexHookMatcher[]>;
+  [key: string]: unknown;
+}
+
 // ─── Unified reconcile engine (issue #19) ───────────────────
 //
 //  A single engine injects BOTH built-in operational hooks (source: 'builtin',
@@ -71,18 +87,20 @@ interface CursorHooksJson {
 //  marker namespaces:
 //    - built-in:  description starts with "[teamai] " / command matches a marker
 //    - team:      description starts with "[teamai:hook:<id>]"
-//  Cursor's hooks.json carries no description, so team hooks there are tracked
-//  via the managed-hooks manifest (see ManagedHooksManifest).
+//  Cursor and Codex hook files carry no description, so team hooks there are
+//  tracked via the managed-hooks manifest (see ManagedHooksManifest).
 //
 //  Reconcile is idempotent and only writes when content actually changes, so an
 //  upgraded CLI re-running over an already-injected file produces a zero-diff.
 
-type ToolFormat = 'claude' | 'cursor';
+type ToolFormat = 'claude' | 'cursor' | 'codex';
 export type HookStatus = 'installed' | 'missing';
 
 const CURSOR_TOOLS = new Set(['cursor']);
+const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
 
 function detectFormat(tool: string): ToolFormat {
+  if (CODEX_TOOLS.has(tool)) return 'codex';
   return CURSOR_TOOLS.has(tool) ? 'cursor' : 'claude';
 }
 
@@ -173,6 +191,20 @@ function toClaudeEntry(def: HookDef): HookMatcher {
 function toCursorEntry(def: HookDef): CursorHookEntry {
   const entry: CursorHookEntry = { command: def.command };
   if (def.timeout !== undefined) entry.timeout = def.timeout;
+  if (def.matcher && def.matcher !== '*') entry.matcher = def.matcher;
+  return entry;
+}
+
+function toCodexEntry(def: HookDef): CodexHookMatcher {
+  const entry: CodexHookMatcher = {
+    hooks: [
+      {
+        type: 'command',
+        command: def.command,
+        ...(def.timeout !== undefined ? { timeout: def.timeout } : {}),
+      },
+    ],
+  };
   if (def.matcher && def.matcher !== '*') entry.matcher = def.matcher;
   return entry;
 }
@@ -322,6 +354,49 @@ async function reconcileCursorFormat(
   }
 }
 
+// ─── Codex (hooks.json) reconcile ───────────────────────────
+
+async function reconcileCodexFormat(
+  hooksPath: string,
+  tool: string,
+  teamDefs: HookDef[],
+  opts: ReconcileHooksOptions,
+  priorTeamCommands: Set<string>,
+): Promise<void> {
+  const expanded = expandHome(hooksPath);
+  await ensureDir(path.dirname(expanded));
+  const hooksJson: CodexHooksJson = (await readJson<CodexHooksJson>(expanded)) ?? {};
+  if (!hooksJson.hooks) hooksJson.hooks = {};
+
+  const isManaged = (entry: CodexHookMatcher): boolean => {
+    const cmd = entry.hooks?.[0]?.command ?? '';
+    return TEAMAI_COMMAND_MARKERS.some((marker) => cmd.includes(marker)) || priorTeamCommands.has(cmd);
+  };
+
+  const defs = opts.removeAll ? [] : desiredDefs(tool, teamDefs, opts.builtinOverride);
+  const eventOrder = desiredEventOrder(defs, (e) => e);
+  const events = [...eventOrder, ...Object.keys(hooksJson.hooks).filter((e) => !eventOrder.includes(e))];
+
+  let changed = false;
+  for (const event of events) {
+    const existing = hooksJson.hooks[event] ?? [];
+    const untouched = existing.filter((e) => !isManaged(e));
+    const desiredEntries = defs.filter((d) => d.event === event).map(toCodexEntry);
+    const newArr = [...untouched, ...desiredEntries];
+    if (JSON.stringify(existing) !== JSON.stringify(newArr)) {
+      hooksJson.hooks[event] = newArr;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await writeJson(expanded, hooksJson);
+    log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);
+  } else {
+    log.debug(`teamai hooks already up-to-date in ${hooksPath}`);
+  }
+}
+
 // ─── Public reconcile API ───────────────────────────────────
 
 /**
@@ -338,8 +413,11 @@ export async function reconcileHooks(
   const manifest = opts.manifestPath ? await readManifest(opts.manifestPath) : null;
   const priorTeamCommands = new Set((manifest?.[tool] ?? []).map((r) => r.command));
 
-  if (detectFormat(tool) === 'cursor') {
+  const format = detectFormat(tool);
+  if (format === 'cursor') {
     await reconcileCursorFormat(settingsPath, tool, teamDefs, opts, priorTeamCommands);
+  } else if (format === 'codex') {
+    await reconcileCodexFormat(settingsPath, tool, teamDefs, opts, priorTeamCommands);
   } else {
     await reconcileClaudeFormat(settingsPath, tool, teamDefs, opts, teamActive);
   }
@@ -384,7 +462,8 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
   const expanded = expandHome(settingsPath);
   const defs = builtinHookDefs(toolName);
 
-  if (detectFormat(toolName) === 'cursor') {
+  const format = detectFormat(toolName);
+  if (format === 'cursor') {
     const hooksJson = await readJson<CursorHooksJson>(expanded);
     if (!hooksJson?.hooks) return 'missing';
     const present = defs.every((def) => {
@@ -393,6 +472,17 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
       const want = toCursorEntry(def);
       const entries = hooksJson.hooks[cursorEvent] ?? [];
       return entries.some((e) => e.command === want.command && e.matcher === want.matcher);
+    });
+    return present ? 'installed' : 'missing';
+  }
+
+  if (format === 'codex') {
+    const hooksJson = await readJson<CodexHooksJson>(expanded);
+    if (!hooksJson?.hooks) return 'missing';
+    const present = defs.every((def) => {
+      const want = toCodexEntry(def);
+      const entries = hooksJson.hooks?.[def.event] ?? [];
+      return entries.some((e) => e.matcher === want.matcher && e.hooks?.[0]?.command === want.hooks[0].command);
     });
     return present ? 'installed' : 'missing';
   }
