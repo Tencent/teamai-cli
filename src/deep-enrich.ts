@@ -37,6 +37,7 @@ interface ManifestEdge {
 
 interface Manifest {
   project?: string;
+  generatedAt?: string;
   components?: ManifestComponent[];
   edges?: ManifestEdge[];
 }
@@ -767,6 +768,27 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<void> {
   // 2. 初始化 progress（断点续传）
   const allSlugs = components.map(c => c.slug);
   const progress = await loadProgress(evidenceDir, project, allSlugs);
+
+  // 2b. Stale progress guard: reset when progress is outdated relative to the manifest.
+  // This happens when import writes a fresh _manifest.json but an old progress.json
+  // (from a prior run) survives on the git branch that deep-enrich executes against.
+  if (progress.phase === 'done') {
+    const manifestTime = ctx.manifest.generatedAt;
+    const progressStale = manifestTime && progress.startedAt < manifestTime;
+    let docsEmpty = true;
+    if (await pathExists(docsDir)) {
+      const entries = await readdir(docsDir).catch(() => [] as string[]);
+      docsEmpty = entries.filter(e => e.endsWith('.md')).length === 0;
+    }
+    if (docsEmpty || progressStale) {
+      log.info(`deep-enrich[${project}]: stale progress detected (phase=done, docs_empty=${docsEmpty}, progress_stale=${Boolean(progressStale)}), resetting`);
+      progress.phase = 'pending';
+      progress.componentsDone = [];
+      progress.componentsPending = [...allSlugs];
+      progress.startedAt = new Date().toISOString();
+      await saveProgress(evidenceDir, progress);
+    }
+  }
 
   // 3. Phase 1: 组件设计文档
   if (progress.phase === 'pending' || progress.phase === 'components') {
