@@ -762,7 +762,17 @@ program
     await deepEnrich({ project: cmdOpts.project, evidenceDir, wikiRoot, maxModules: cmdOpts.maxModules });
   });
 
-program
+recallCmd
+  .command('feedback')
+  .description('Record manual feedback for a recalled document')
+  .option('--positive <docId>', 'Upvote a document (marks as actually useful)')
+  .option('--negative <docId>', 'Record negative signal for a document')
+  .action(async (cmdOpts) => {
+    const { recallFeedback } = await import('./votes.js');
+    await recallFeedback({ positive: cmdOpts.positive, negative: cmdOpts.negative });
+  });
+
+recallCmd
   .command('maintenance')
   .description('Automatic maintenance of team knowledge base')
   .option('--prune', 'Remove low-confidence learnings')
@@ -835,10 +845,10 @@ program
     }
 
     const { log } = await import('./utils/logger.js');
-    log.info('Usage: teamai maintenance --prune | --confidence-writeback | --update-quality');
+    log.info('Usage: teamai recall maintenance --prune | --confidence-writeback | --update-quality');
   });
 
-program
+recallCmd
   .command('promote [learningId]')
   .description('Promote a high-confidence learning to formal knowledge (docs/skills/rules)')
   .option('--category <cat>', 'Target category: skills | rules | docs')
@@ -864,7 +874,7 @@ program
       for (const c of candidates) {
         log.info(`  - ${c.docId} (confidence: ${c.confidence.toFixed(2)}, suggested: ${c.suggestedCategory})`);
       }
-      log.info('\nRun: teamai promote <learning-id> [--category <cat>]');
+      log.info('\nRun: teamai recall promote <learning-id> [--category <cat>]');
       return;
     }
 
@@ -878,16 +888,6 @@ program
       category: cmdOpts.category as 'skills' | 'rules' | 'docs' | undefined,
       dryRun: cmdOpts.dryRun,
     });
-  });
-
-program
-  .command('recall-feedback', { hidden: true })
-  .description('Record manual feedback for a recalled document')
-  .option('--positive <docId>', 'Upvote a document (marks as actually useful)')
-  .option('--negative <docId>', 'Record negative signal for a document')
-  .action(async (cmdOpts) => {
-    const { recallFeedback } = await import('./votes.js');
-    await recallFeedback({ positive: cmdOpts.positive, negative: cmdOpts.negative });
   });
 
 program.parse();
