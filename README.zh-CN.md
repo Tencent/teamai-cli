@@ -131,6 +131,7 @@ teamai init --http https://your-team-host/api --token <api-key>
 | `teamai pull` | 拉取团队资源并注入到本地 AI 工具 |
 | `teamai status` | 查看本地 vs 团队仓库差异 |
 | `teamai recall <query>` | 搜索团队知识库（BM25 + 图谱加权） |
+| `teamai recall enable/disable/status` | 开启/关闭/查看 recall 状态（控制 auto-recall hooks 和 subagent 部署） |
 | `teamai import --dir <path>` | 从本地目录提取代码知识图谱 |
 | `teamai import --from-repo <url>` | 导入仓库代码知识图谱（`teamwiki/`） |
 | `teamai import --from-org <org>` | 批量导入组织下所有仓库 |
@@ -380,6 +381,24 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 | `[skills]` | 团队仓库 `skills/<name>/SKILL.md` | 可复用 AI skill |
 
 索引在每次 `teamai pull` 时自动重建。旧版索引（无 `version` 字段或缺少 `type`）会在首次使用时被自动检测并重建，对调用方透明
+
+### 开启 / 关闭 Recall
+
+Recall 功能通过两级配置控制——管理员设置团队默认值，成员可在本地覆盖：
+
+| 层级 | 配置文件 | 字段 | 说明 |
+|------|----------|------|------|
+| 团队默认 | `teamai.yaml` | `sharing.recall.enabled` | `true` / `false`（默认 `false`） |
+| 用户覆盖 | `~/.teamai/config.yaml` | `recallEnabled` | `true` / `false`，优先级高于团队默认 |
+| 环境变量 | shell | `TEAMAI_RECALL_DISABLED=1` | 强制禁用所有 recall hooks（应急开关） |
+
+```bash
+teamai recall enable     # 开启 recall，部署 subagent 和 rules
+teamai recall disable    # 关闭 recall，移除 subagent 和 rules
+teamai recall status     # 查看当前生效状态（团队默认 + 用户覆盖）
+```
+
+关闭后，`teamai pull` 将跳过部署 recall subagent、recall rules 注入块和 TodoWrite 提醒 hook。手动执行 `teamai recall <query>` 搜索不受此开关影响。
 
 ### 代码库知识图谱（teamwiki/）
 

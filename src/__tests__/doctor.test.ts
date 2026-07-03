@@ -142,6 +142,44 @@ describe('doctor — hook checks', () => {
         expect(TEAMAI_HOOK_SUBCOMMANDS).toHaveLength(1);
     });
 
+    it('should pass env check when env/env.yaml does not exist in team repo', async () => {
+        mockedPathExists.mockImplementation(async (filePath: string) => {
+            if (filePath.includes('env/env.yaml')) return false;
+            return true;
+        });
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => {
+            if (filePath.includes('settings.json')) return buildFullHooksContent();
+            return null;
+        });
+
+        await doctor({});
+
+        const allCalls = consoleSpy.mock.calls.map((c) => c[0]);
+        const envLine = allCalls.find((msg: string) => msg.includes('Env variables'));
+        expect(envLine).toContain('✔');
+    });
+
+    it('should pass env check when injectShellProfile is false', async () => {
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            sharing: { env: { injectShellProfile: false } },
+        });
+        mockedPathExists.mockImplementation(async (filePath: string) => {
+            if (filePath.includes('env.sh')) return false;
+            return true;
+        });
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => {
+            if (filePath.includes('settings.json')) return buildFullHooksContent();
+            return null;
+        });
+
+        await doctor({});
+
+        const allCalls = consoleSpy.mock.calls.map((c) => c[0]);
+        const envLine = allCalls.find((msg: string) => msg.includes('Env variables'));
+        expect(envLine).toContain('✔');
+    });
+
     it('should skip tools whose parent directory does not exist', async () => {
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,

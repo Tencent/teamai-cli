@@ -387,6 +387,24 @@ teamai recall "GPU 内存不足"
 - 自动合并 user + project 双 scope 的知识库，结果标注 `[user]`/`[project]` 来源
 - 被查阅的知识自动 upvote，好文档浮到顶部
 
+### 开启 / 关闭 Recall
+
+Recall 功能通过两级配置控制——管理员设置团队默认值，成员可在本地覆盖：
+
+| 层级 | 配置文件 | 字段 | 说明 |
+|------|----------|------|------|
+| 团队默认 | `teamai.yaml` | `sharing.recall.enabled` | `true` / `false`（默认 `false`） |
+| 用户覆盖 | `~/.teamai/config.yaml` | `recallEnabled` | `true` / `false`，优先级高于团队默认 |
+| 环境变量 | shell | `TEAMAI_RECALL_DISABLED=1` | 强制禁用所有 recall hooks（应急开关） |
+
+```bash
+teamai recall enable     # 开启 recall，部署 subagent 和 rules
+teamai recall disable    # 关闭 recall，移除 subagent 和 rules
+teamai recall status     # 查看当前生效状态（团队默认 + 用户覆盖）
+```
+
+关闭后，`teamai pull` 将跳过部署 recall subagent、recall rules 注入块和 TodoWrite 提醒 hook。手动执行 `teamai recall <query>` 搜索不受此开关影响。
+
 ---
 
 ## 团队文化（Culture）

@@ -12,9 +12,11 @@
  * cross-platform) — never the system `unzip`, which is absent on Windows.
  */
 
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { unzipSync } from 'fflate';
-import { ensureDir, remove, writeFile, pathExists } from './utils/fs.js';
+import YAML from 'yaml';
+import { ensureDir, remove, writeFile, pathExists, readFileSafe, readJson, writeJson } from './utils/fs.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
 
@@ -105,19 +107,61 @@ function resolveSkillPrefix(entries: Record<string, Uint8Array>, slug: string): 
   return null;
 }
 
+const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---/;
+
+async function readSkillNameFromExtracted(skillDir: string): Promise<string | null> {
+  const content = await readFileSafe(path.join(skillDir, 'SKILL.md'));
+  if (!content) return null;
+  const fm = content.match(FRONTMATTER_REGEX);
+  if (!fm) return null;
+  try {
+    const parsed = YAML.parse(fm[1]);
+    if (parsed && typeof parsed === 'object' && typeof parsed.name === 'string') {
+      return parsed.name.trim() || null;
+    }
+  } catch { /* malformed YAML — fall through */ }
+  return null;
+}
+
+function slugMapPath(targetSkillsDir: string): string {
+  return path.join(targetSkillsDir, '_slug-map.json');
+}
+
+async function readSlugMap(targetSkillsDir: string): Promise<Record<string, string>> {
+  return (await readJson<Record<string, string>>(slugMapPath(targetSkillsDir))) ?? {};
+}
+
+async function writeSlugMapEntry(targetSkillsDir: string, slug: string, dirName: string): Promise<void> {
+  const map = await readSlugMap(targetSkillsDir);
+  map[slug] = dirName;
+  await writeJson(slugMapPath(targetSkillsDir), map);
+}
+
+async function removeSlugMapEntry(targetSkillsDir: string, slug: string): Promise<void> {
+  const map = await readSlugMap(targetSkillsDir);
+  if (!(slug in map)) return;
+  delete map[slug];
+  if (Object.keys(map).length === 0) {
+    await remove(slugMapPath(targetSkillsDir));
+  } else {
+    await writeJson(slugMapPath(targetSkillsDir), map);
+  }
+}
+
 /**
- * Decompress a skill ZIP and install it into `targetSkillsDir/<slug>/`.
+ * Decompress a skill ZIP and install it under `targetSkillsDir/`.
  *
- * Accepts both the nested (`<slug>/SKILL.md`) and the flat (`SKILL.md` at root)
- * package layouts (see {@link resolveSkillPrefix}). Every entry is verified to
- * stay within the destination (path-traversal protection). Install is
- * overwrite-idempotent: any pre-existing `<slug>/` is removed first.
+ * The directory name is determined by the SKILL.md `name:` frontmatter field
+ * when it differs from the server-provided slug. Falls back to `slug` when the
+ * name is missing, empty, or fails safety validation.
+ *
+ * Returns the actual directory name used (may differ from `slug`).
  */
 export async function installSkillZip(
   zip: Uint8Array,
   slug: string,
   targetSkillsDir: string,
-): Promise<void> {
+): Promise<string> {
   assertSafeResourceName(slug);
 
   let entries: Record<string, Uint8Array>;
@@ -132,16 +176,18 @@ export async function installSkillZip(
     throw new Error(`skill package missing ${slug}/SKILL.md (no SKILL.md found at zip root or under any top-level dir — malformed package)`);
   }
 
+  // Clean up any prior install — both the slug dir and any previously mapped dir.
   const destRoot = path.join(targetSkillsDir, slug);
-  // Overwrite-idempotent: clear any prior install first.
   await remove(destRoot);
+  const oldMap = await readSlugMap(targetSkillsDir);
+  if (oldMap[slug] && oldMap[slug] !== slug) {
+    await remove(path.join(targetSkillsDir, oldMap[slug]));
+  }
+
   await ensureDir(destRoot);
 
   for (const [entryPath, bytes] of Object.entries(entries)) {
-    // For a nested layout, only extract the chosen subtree; for a flat layout
-    // (prefix === '') every entry belongs to the skill.
     if (prefix && !entryPath.startsWith(prefix)) continue;
-    // Directory entries have a trailing slash and empty bytes — ensureDir handles parents.
     if (entryPath.endsWith('/')) continue;
 
     const rel = prefix ? entryPath.slice(prefix.length) : entryPath;
@@ -151,6 +197,26 @@ export async function installSkillZip(
     await ensureDir(path.dirname(outPath));
     await writeFile(outPath, Buffer.from(bytes).toString('utf-8'));
   }
+
+  // Rename directory to match SKILL.md name when it differs from the slug.
+  const skillName = await readSkillNameFromExtracted(destRoot);
+  let actualDir = slug;
+
+  if (skillName && skillName !== slug) {
+    try {
+      assertSafeResourceName(skillName);
+      const finalDest = path.join(targetSkillsDir, skillName);
+      await remove(finalDest);
+      await fs.rename(destRoot, finalDest);
+      actualDir = skillName;
+      log.debug(`[skill-command] renamed ${slug}/ → ${skillName}/ (SKILL.md name)`);
+    } catch {
+      log.debug(`[skill-command] keeping slug "${slug}" as dir name (SKILL.md name "${skillName}" failed safety check or rename)`);
+    }
+  }
+
+  await writeSlugMapEntry(targetSkillsDir, slug, actualDir);
+  return actualDir;
 }
 
 /**
@@ -171,15 +237,25 @@ export async function executeSkillCommand(cmd: SkillCommand, targetSkillsDir: st
         throw new Error(`${cmd.type} requires download_url`);
       }
       const zip = await downloadZip(cmd.download_url);
-      await installSkillZip(zip, cmd.skill_slug, targetSkillsDir);
-      log.debug(`[skill-command] ${cmd.type} ${cmd.skill_slug}@${cmd.skill_version ?? '?'} → ${targetSkillsDir}`);
+      const actualDir = await installSkillZip(zip, cmd.skill_slug, targetSkillsDir);
+      log.debug(`[skill-command] ${cmd.type} ${cmd.skill_slug}@${cmd.skill_version ?? '?'} → ${targetSkillsDir}/${actualDir}`);
       return;
     }
     case 'uninstall_skill': {
       const dir = path.join(targetSkillsDir, cmd.skill_slug);
       if (await pathExists(dir)) {
         await remove(dir);
+      } else {
+        const map = await readSlugMap(targetSkillsDir);
+        const mapped = map[cmd.skill_slug];
+        if (mapped && mapped !== cmd.skill_slug) {
+          const mappedDir = path.join(targetSkillsDir, mapped);
+          if (await pathExists(mappedDir)) {
+            await remove(mappedDir);
+          }
+        }
       }
+      await removeSlugMapEntry(targetSkillsDir, cmd.skill_slug);
       log.debug(`[skill-command] uninstall_skill ${cmd.skill_slug} (from ${targetSkillsDir})`);
       return;
     }

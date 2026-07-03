@@ -57,6 +57,10 @@ CI stages: validate (lint + test) -> build -> e2e -> publish (tag builds only).
 
 All CLI user-facing output must be in **English**. No Chinese strings in production code. Test assertions should match English output.
 
+## Documentation
+
+When modifying `README.md`, always update `README.zh-CN.md` with the corresponding Chinese translation. The two files must stay in sync.
+
 ## Workflow Rules
 
 - **必须使用 Worktree**：每次需要修改代码前，必须先通过 `EnterWorktree` 进入一个隔离的 git worktree 进行开发，禁止直接在主工作目录修改代码。

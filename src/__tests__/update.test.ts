@@ -148,6 +148,24 @@ describe('compareVersions', () => {
     expect(compareVersions('1.0', '1.0.0')).toBe(0);
     expect(compareVersions('1.0.1', '1.0')).toBe(1);
   });
+
+  it('should treat prerelease as older than same numeric release', () => {
+    expect(compareVersions('1.2.3-beta.1', '1.2.3')).toBe(-1);
+    expect(compareVersions('1.2.3', '1.2.3-beta.1')).toBe(1);
+  });
+
+  it('should treat prerelease as older than a higher release', () => {
+    expect(compareVersions('1.2.3-beta.1', '1.2.4')).toBe(-1);
+    expect(compareVersions('1.3.0-alpha.0', '1.3.0')).toBe(-1);
+  });
+
+  it('should treat two prereleases with same core as equal (no deep prerelease ordering)', () => {
+    expect(compareVersions('1.2.3-beta.1', '1.2.3-beta.2')).toBe(0);
+  });
+
+  it('should compare prerelease against lower release correctly', () => {
+    expect(compareVersions('2.0.0-rc.1', '1.9.9')).toBe(1);
+  });
 });
 
 // ─── Unit tests: isCacheValid ───────────────────────────

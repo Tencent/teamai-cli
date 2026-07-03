@@ -20,9 +20,14 @@ afterEach(() => {
 });
 
 /** Build a valid skill zip whose top level is `<slug>/`. */
-function makeSkillZip(slug: string, extraFiles: Record<string, string> = {}): Uint8Array {
+function makeSkillZip(
+  slug: string,
+  extraFiles: Record<string, string> = {},
+  opts: { name?: string } = {},
+): Uint8Array {
+  const skillName = opts.name ?? slug;
   const files: Record<string, Uint8Array> = {
-    [`${slug}/SKILL.md`]: strToU8(`---\nname: ${slug}\ndescription: test skill\n---\nbody`),
+    [`${slug}/SKILL.md`]: strToU8(`---\nname: ${skillName}\ndescription: test skill\n---\nbody`),
   };
   for (const [rel, content] of Object.entries(extraFiles)) {
     files[`${slug}/${rel}`] = strToU8(content);
@@ -44,22 +49,26 @@ describe('installSkillZip', () => {
     await expect(installSkillZip(zip, 'weather', skillsDir)).rejects.toThrow(/missing weather\/SKILL\.md/);
   });
 
-  it('accepts a flat zip (SKILL.md at root) and installs into <slug>/', async () => {
-    // skillhub/clawpro package layout: files at the zip root, no wrapping dir.
+  it('accepts a flat zip (SKILL.md at root) and renames dir to SKILL.md name', async () => {
     const zip = zipSync({
       'SKILL.md': strToU8('---\nname: find-skills\ndescription: test\n---\nbody'),
       '_meta.json': strToU8('{"slug":"find-skills-skill"}'),
       'scripts/run.sh': strToU8('echo hi'),
     });
-    await installSkillZip(zip, 'find-skills-skill', skillsDir);
-    expect(fs.existsSync(path.join(skillsDir, 'find-skills-skill', 'SKILL.md'))).toBe(true);
-    expect(fs.readFileSync(path.join(skillsDir, 'find-skills-skill', 'scripts', 'run.sh'), 'utf-8')).toBe('echo hi');
+    const actualDir = await installSkillZip(zip, 'find-skills-skill', skillsDir);
+    expect(actualDir).toBe('find-skills');
+    expect(fs.existsSync(path.join(skillsDir, 'find-skills', 'SKILL.md'))).toBe(true);
+    expect(fs.readFileSync(path.join(skillsDir, 'find-skills', 'scripts', 'run.sh'), 'utf-8')).toBe('echo hi');
+    // Slug dir should not exist after rename
+    expect(fs.existsSync(path.join(skillsDir, 'find-skills-skill'))).toBe(false);
   });
 
-  it('accepts a nested zip whose top-level dir name differs from the slug', async () => {
-    const zip = zipSync({ 'find-skills/SKILL.md': strToU8('---\nname: find-skills\n---\nbody') });
-    await installSkillZip(zip, 'find-skills-skill', skillsDir);
-    expect(fs.existsSync(path.join(skillsDir, 'find-skills-skill', 'SKILL.md'))).toBe(true);
+  it('accepts a nested zip whose top-level dir name differs from the slug and renames to SKILL.md name', async () => {
+    const zip = zipSync({ 'find-skills/SKILL.md': strToU8('---\nname: find-skills\ndescription: test\n---\nbody') });
+    const actualDir = await installSkillZip(zip, 'find-skills-skill', skillsDir);
+    expect(actualDir).toBe('find-skills');
+    expect(fs.existsSync(path.join(skillsDir, 'find-skills', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(skillsDir, 'find-skills-skill'))).toBe(false);
   });
 
   it('is overwrite-idempotent (re-install replaces prior content)', async () => {
@@ -81,6 +90,52 @@ describe('installSkillZip', () => {
   it('rejects an unsafe slug', async () => {
     const zip = makeSkillZip('weather');
     await expect(installSkillZip(zip, '../evil', skillsDir)).rejects.toThrow(/Invalid resource name/);
+  });
+
+  it('renames dir to SKILL.md name when it differs from slug', async () => {
+    const zip = makeSkillZip('doctor', {}, { name: 'dragon-doctor' });
+    const actualDir = await installSkillZip(zip, 'doctor', skillsDir);
+    expect(actualDir).toBe('dragon-doctor');
+    expect(fs.existsSync(path.join(skillsDir, 'dragon-doctor', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(skillsDir, 'doctor'))).toBe(false);
+    // Slug map should record the mapping
+    const map = JSON.parse(fs.readFileSync(path.join(skillsDir, '_slug-map.json'), 'utf-8'));
+    expect(map['doctor']).toBe('dragon-doctor');
+  });
+
+  it('returns slug as actualDir when SKILL.md name matches slug', async () => {
+    const zip = makeSkillZip('weather');
+    const actualDir = await installSkillZip(zip, 'weather', skillsDir);
+    expect(actualDir).toBe('weather');
+  });
+
+  it('falls back to slug when SKILL.md has no name field', async () => {
+    const zip = zipSync({
+      'weather/SKILL.md': strToU8('---\ndescription: no name field\n---\nbody'),
+    });
+    const actualDir = await installSkillZip(zip, 'weather', skillsDir);
+    expect(actualDir).toBe('weather');
+    expect(fs.existsSync(path.join(skillsDir, 'weather', 'SKILL.md'))).toBe(true);
+  });
+
+  it('falls back to slug when SKILL.md name fails safety check', async () => {
+    const zip = makeSkillZip('weather', {}, { name: '../evil' });
+    const actualDir = await installSkillZip(zip, 'weather', skillsDir);
+    expect(actualDir).toBe('weather');
+    expect(fs.existsSync(path.join(skillsDir, 'weather', 'SKILL.md'))).toBe(true);
+  });
+
+  it('cleans up previously renamed dir on re-install', async () => {
+    // First install: slug=doctor → renamed to dragon-doctor
+    const zip1 = makeSkillZip('doctor', { 'v1.txt': 'v1' }, { name: 'dragon-doctor' });
+    await installSkillZip(zip1, 'doctor', skillsDir);
+    expect(fs.existsSync(path.join(skillsDir, 'dragon-doctor', 'v1.txt'))).toBe(true);
+
+    // Re-install: slug=doctor → still renamed to dragon-doctor, old content replaced
+    const zip2 = makeSkillZip('doctor', { 'v2.txt': 'v2' }, { name: 'dragon-doctor' });
+    await installSkillZip(zip2, 'doctor', skillsDir);
+    expect(fs.existsSync(path.join(skillsDir, 'dragon-doctor', 'v2.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(skillsDir, 'dragon-doctor', 'v1.txt'))).toBe(false);
   });
 });
 
@@ -116,6 +171,25 @@ describe('executeSkillCommand', () => {
     await expect(
       executeSkillCommand({ type: 'uninstall_skill', skill_slug: 'weather' }, skillsDir),
     ).resolves.toBeUndefined();
+  });
+
+  it('uninstall_skill removes renamed dir via slug map', async () => {
+    // Install with slug → renamed dir
+    const zip = makeSkillZip('doctor', {}, { name: 'dragon-doctor' });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(zip as unknown as BodyInit, { status: 200 })));
+
+    await executeSkillCommand({
+      type: 'install_skill',
+      skill_slug: 'doctor',
+      download_url: 'https://smh.example.com/pkg.zip',
+    }, skillsDir);
+    expect(fs.existsSync(path.join(skillsDir, 'dragon-doctor', 'SKILL.md'))).toBe(true);
+
+    // Uninstall by slug — should find the renamed dir via slug map
+    await executeSkillCommand({ type: 'uninstall_skill', skill_slug: 'doctor' }, skillsDir);
+    expect(fs.existsSync(path.join(skillsDir, 'dragon-doctor'))).toBe(false);
+    // Slug map should be cleaned up
+    expect(fs.existsSync(path.join(skillsDir, '_slug-map.json'))).toBe(false);
   });
 
   it('install_skill surfaces a non-200 download as an error (ack failed path)', async () => {
