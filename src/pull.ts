@@ -320,7 +320,7 @@ async function pullForScope(
             const skipRecall = !isRecallEnabled(localConfig, cfg);
             try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig, { skipRecall }); } catch {}
             try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig, { skipRecall }); } catch {}
-            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { reportingOnly }); } catch {}
+            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { reportingOnly, skipRecall }); } catch {}
           }
         }
         return;
@@ -747,7 +747,8 @@ async function pullForScope(
   if (!options.dryRun) {
     try {
       const { deployBuiltinSkills } = await import('./builtin-skills.js');
-      const deployed = await deployBuiltinSkills(freshConfig, localConfig, { reportingOnly });
+      const skipRecallForSkills = !isRecallEnabled(localConfig, freshConfig);
+      const deployed = await deployBuiltinSkills(freshConfig, localConfig, { reportingOnly, skipRecall: skipRecallForSkills });
       if (deployed > 0) {
         log.debug(`[${scopeLabel}] Deployed ${deployed} built-in skill(s)`);
       }

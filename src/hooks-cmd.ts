@@ -90,7 +90,7 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
         silent: options.silent,
     });
     for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
-        await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin });
+        await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin, force: true });
     }
 
     if (!options.silent) {
@@ -156,7 +156,7 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     const { localConfig, teamConfig } = await autoDetectInit();
 
     for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
-        await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true });
+        await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true, force: true });
     }
 
     log.success('Hooks removed from all AI tool settings');

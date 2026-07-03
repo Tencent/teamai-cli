@@ -538,12 +538,14 @@ export async function reconcileHooksToAllTools(
   baseDir: string,
   teamDefs: HookDef[],
   manifestPath: string,
-  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride } = {},
+  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; force?: boolean } = {},
 ): Promise<void> {
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (!paths.settings) continue;
-    const toolRoot = path.join(baseDir, paths.settings.split('/')[0]);
-    if (!await pathExists(toolRoot)) continue;
+    if (!opts.force) {
+      const toolRoot = path.join(baseDir, paths.settings.split('/')[0]);
+      if (!await pathExists(toolRoot)) continue;
+    }
     const settingsPath = path.join(baseDir, paths.settings);
     try {
       await reconcileHooks(settingsPath, tool, teamDefs, {
