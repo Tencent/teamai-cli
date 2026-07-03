@@ -10,9 +10,9 @@ import { importFromRepo } from './import-repo.js';
 import { importFromRepoList } from './import-repo-list.js';
 import { importFromOrg } from './import-org.js';
 import { importFromIWikiDual } from './iwiki-dual.js';
-import { GlobalOptions } from './types.js';
+import type { GlobalOptions, LearningDraft } from './types.js';
 import { Listr, PRESET_TIMER } from 'listr2';
-import { log } from './utils/logger.js';
+import { log, setSilent } from './utils/logger.js';
 import { autoPushTeamRepo } from './utils/git.js';
 
 /**
@@ -235,7 +235,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
                 task.skip('No existing evidence for this repo');
               }
             } catch (e) {
-              task.output = `Failed (non-blocking): ${(e as Error).message}`;
+              task.title = `Incremental update skipped: ${(e as Error).message}`;
             }
           },
           rendererOptions: { persistentOutput: true },
@@ -256,10 +256,11 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         },
       ], {
         rendererOptions: { timer: PRESET_TIMER, collapseErrors: false },
-        exitOnError: false,
-        ctx: { learning: undefined as unknown, repoUrl: '' as string, didUpdate: false as boolean },
+        exitOnError: true,
+        ctx: { learning: undefined as LearningDraft | undefined, repoUrl: '', didUpdate: false },
       });
-      await tasks.run();
+      setSilent(true);
+      try { await tasks.run(); } finally { setSilent(false); }
     } else if (opts.dir) {
       // 分支 3：--dir <path>，代码知识提取（等同于 --from-repo 但跳过 clone）
       const dirPath = path.resolve(opts.dir);
