@@ -716,12 +716,14 @@ export interface SearchIndexEntry {
   path?: string;
   /** Optional hotness score reserved for Phase 4.3 hot/cold splitting. */
   hotness?: number;
+  /** Computed confidence score (0.0–1.0) for maintenance/hot-cold. */
+  confidence?: number;
   /** Snippet from codebase graph recall (depth-dependent content preview). */
   snippet?: string;
 }
 
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
-export const SEARCH_INDEX_VERSION = 5;
+export const SEARCH_INDEX_VERSION = 6;
 
 /** Shape of the search-index.json file. */
 export interface SearchIndex {
@@ -742,6 +744,27 @@ export interface SearchIndex {
 /** Per-user vote file (votes/<user>.yaml). */
 export interface UserVotes {
   votes: Record<string, { at: string }>;
+}
+
+/** Vote entry with dual counters (V2). */
+export interface VoteEntryV2 {
+  recalled_count: number;
+  upvoted_count: number;
+  last_recalled_at: string;
+  last_upvoted_at?: string;
+}
+
+/** Unsynchronized delta for a single document (V2). */
+export interface VoteDelta {
+  recalled_delta: number;
+  upvoted_delta: number;
+}
+
+/** Per-user vote file V2 format (votes/<user>.yaml). */
+export interface UserVotesV2 {
+  version: 2;
+  votes: Record<string, VoteEntryV2>;
+  deltas: Record<string, VoteDelta>;
 }
 
 export const LEARNINGS_LOCAL_DIR = `${TEAMAI_HOME}/learnings`;

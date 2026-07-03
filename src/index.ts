@@ -762,4 +762,132 @@ program
     await deepEnrich({ project: cmdOpts.project, evidenceDir, wikiRoot, maxModules: cmdOpts.maxModules });
   });
 
+recallCmd
+  .command('feedback')
+  .description('Record manual feedback for a recalled document')
+  .option('--positive <docId>', 'Upvote a document (marks as actually useful)')
+  .option('--negative <docId>', 'Record negative signal for a document')
+  .action(async (cmdOpts) => {
+    const { recallFeedback } = await import('./votes.js');
+    await recallFeedback({ positive: cmdOpts.positive, negative: cmdOpts.negative });
+  });
+
+recallCmd
+  .command('maintenance')
+  .description('Automatic maintenance of team knowledge base')
+  .option('--prune', 'Remove low-confidence learnings')
+  .option('--threshold <n>', 'Confidence threshold for pruning (default 0.15)', parseFloat)
+  .option('--archive', 'Move to archive/ instead of deleting')
+  .option('--confidence-writeback', 'Update frontmatter confidence scores')
+  .option('--update-quality', 'Find stale docs/rules/skills and suggest updates')
+  .option('--dry-run', 'Show what would be done without making changes')
+  .action(async (cmdOpts) => {
+    const { requireInit } = await import('./config.js');
+    const { localConfig } = await requireInit();
+    const repoPath = localConfig.repo.localPath;
+    const votesDir = `${repoPath}/votes`;
+    const learningsDir = `${repoPath}/learnings`;
+
+    if (cmdOpts.confidenceWriteback) {
+      const { computeAllConfidence, writeBackConfidence } = await import('./maintenance/index.js');
+      const map = await computeAllConfidence(votesDir);
+      await writeBackConfidence(learningsDir, map);
+      return;
+    }
+
+    if (cmdOpts.prune) {
+      const { findPruneCandidates, executePrune } = await import('./maintenance/index.js');
+      const candidates = await findPruneCandidates(learningsDir, votesDir, {
+        threshold: cmdOpts.threshold,
+      });
+      if (candidates.length === 0) {
+        const { log } = await import('./utils/logger.js');
+        log.info('No learnings below threshold. Knowledge base is healthy.');
+        return;
+      }
+      const { log } = await import('./utils/logger.js');
+      log.info(`Found ${candidates.length} candidate(s) for pruning:`);
+      for (const c of candidates) {
+        log.info(`  - ${c.filename} (confidence: ${c.confidence.toFixed(2)}, reason: ${c.reason})`);
+      }
+      await executePrune(repoPath, candidates, {
+        dryRun: cmdOpts.dryRun,
+        archive: cmdOpts.archive,
+      });
+      return;
+    }
+
+    if (cmdOpts.updateQuality) {
+      const { findStaleEntries, reportStaleEntries, findRelatedAdoptedLearnings, generateUpdateDraft } = await import('./maintenance/index.js');
+      const { writeFile } = await import('./utils/fs.js');
+      const { log } = await import('./utils/logger.js');
+      const entries = await findStaleEntries(votesDir, {
+        docs: `${repoPath}/docs`,
+        rules: `${repoPath}/rules`,
+        skills: `${repoPath}/skills`,
+      });
+      reportStaleEntries(entries);
+
+      if (entries.length === 0 || cmdOpts.dryRun) return;
+
+      log.info('\nGenerating AI-powered update drafts...');
+      for (const entry of entries) {
+        const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsDir);
+        const draft = await generateUpdateDraft(entry, related);
+        if (draft) {
+          const draftPath = `${entry.path}.draft.md`;
+          await writeFile(draftPath, draft);
+          log.success(`  Draft written: ${draftPath}`);
+        }
+      }
+      log.info('\nReview drafts, then rename .draft.md -> .md to apply updates.');
+      return;
+    }
+
+    const { log } = await import('./utils/logger.js');
+    log.info('Usage: teamai recall maintenance --prune | --confidence-writeback | --update-quality');
+  });
+
+recallCmd
+  .command('promote [learningId]')
+  .description('Promote a high-confidence learning to formal knowledge (docs/skills/rules)')
+  .option('--category <cat>', 'Target category: skills | rules | docs')
+  .option('--dry-run', 'Show what would be done without making changes')
+  .action(async (learningId, cmdOpts) => {
+    const { requireInit } = await import('./config.js');
+    const { localConfig } = await requireInit();
+    const repoPath = localConfig.repo.localPath;
+    const votesDir = `${repoPath}/votes`;
+    const learningsDir = `${repoPath}/learnings`;
+    const { findPromotionCandidates, executePromotion } = await import('./maintenance/index.js');
+    const { log } = await import('./utils/logger.js');
+
+    const candidates = await findPromotionCandidates(learningsDir, votesDir);
+
+    if (candidates.length === 0) {
+      log.info('No learnings eligible for promotion yet.');
+      return;
+    }
+
+    if (!learningId) {
+      log.info(`${candidates.length} learning(s) eligible for promotion:`);
+      for (const c of candidates) {
+        log.info(`  - ${c.docId} (confidence: ${c.confidence.toFixed(2)}, suggested: ${c.suggestedCategory})`);
+      }
+      log.info('\nRun: teamai recall promote <learning-id> [--category <cat>]');
+      return;
+    }
+
+    const candidate = candidates.find((c) => c.docId === learningId);
+    if (!candidate) {
+      log.error(`Learning "${learningId}" not found or not eligible for promotion.`);
+      return;
+    }
+
+    await executePromotion(candidate, repoPath, {
+      category: cmdOpts.category as 'skills' | 'rules' | 'docs' | undefined,
+      dryRun: cmdOpts.dryRun,
+    });
+  });
+
 program.parse();

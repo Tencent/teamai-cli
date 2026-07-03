@@ -1,11 +1,10 @@
 import path from 'node:path';
-import YAML from 'yaml';
 import { requireInit, detectProjectConfig } from './config.js';
 import { loadIndex, buildIndex, search, isLegacyIndex } from './utils/search-index.js';
 import type { SearchResult } from './utils/search-index.js';
-import { readFileSafe, writeFile, ensureDir, pathExists } from './utils/fs.js';
+import { readFileSafe, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import type { GlobalOptions, UserVotes, SearchIndex, LocalConfig } from './types.js';
+import type { GlobalOptions, SearchIndex, LocalConfig } from './types.js';
 import { getTeamaiHome } from './types.js';
 import { queryCodeKnowledge } from './code-knowledge-recall.js';
 import type { CodeKnowledgeResult } from './code-knowledge-recall.js';
@@ -91,62 +90,25 @@ export function formatResults(results: ScopedSearchResult[]): string {
 }
 
 /**
- * Auto-upvote: record that the current user found these docs via recall.
- *
- * Idempotent: same user voting for the same doc multiple times has no effect.
- * Writes to both local (~/.teamai/votes/) and team repo (votes/) so the
- * next pull auto-report picks it up.
+ * Auto-upvote: after a successful search, increment recalled_count for each
+ * returned doc using the V2 dual-counter system.
  */
 export async function autoUpvote(
   results: SearchResult[],
   username: string,
-  repoPath: string,
+  _repoPath: string,
 ): Promise<void> {
   if (results.length === 0) return;
 
   try {
-    // Read existing local votes
+    const { incrementRecalled } = await import('./votes.js');
     const votesDir = getVotesLocalDir();
     const localVotePath = path.join(votesDir, `${username}.yaml`);
     await ensureDir(votesDir);
 
-    let userVotes: UserVotes = { votes: {} };
-    const existingContent = await readFileSafe(localVotePath);
-    if (existingContent) {
-      try {
-        const parsed = YAML.parse(existingContent) as UserVotes | null;
-        if (parsed?.votes) {
-          userVotes = parsed;
-        }
-      } catch {
-        log.debug('Corrupt local votes file, resetting');
-      }
-    }
-
-    // Add new votes (idempotent — only add if not already present)
-    const now = new Date().toISOString();
-    let newVotes = 0;
-    for (const result of results) {
-      const docId = result.entry.filename.replace(/\.md$/i, '');
-      if (!userVotes.votes[docId]) {
-        userVotes.votes[docId] = { at: now };
-        newVotes++;
-      }
-    }
-
-    if (newVotes === 0) {
-      log.debug('autoUpvote: all docs already voted, skipping write');
-      return;
-    }
-
-    // Write to local votes dir only — repo copy is handled by
-    // reportUsageToTeam() during `teamai pull`, which properly
-    // commits the file. Writing directly to the repo leaves
-    // uncommitted changes that block `git pull` in `teamai push`.
-    const yamlContent = YAML.stringify(userVotes);
-    await writeFile(localVotePath, yamlContent);
-
-    log.debug(`autoUpvote: recorded ${newVotes} new vote(s) for ${username}`);
+    const docIds = results.map((r) => r.entry.filename.replace(/\.md$/i, ''));
+    await incrementRecalled(localVotePath, docIds);
+    log.debug(`autoUpvote: incremented recalled_count for ${docIds.length} doc(s)`);
   } catch (e) {
     log.error(`autoUpvote failed: ${(e as Error).message}`);
   }

@@ -197,7 +197,7 @@ describe('domain-weighted search scoring', () => {
     const index = await loadIndex(indexPath);
 
     expect(index).not.toBeNull();
-    expect(index!.version).toBe(5);
+    expect(index!.version).toBe(6);
 
     for (const entry of index!.entries) {
       expect(entry.domain).toBeDefined();
