@@ -60,3 +60,4 @@ All CLI user-facing output must be in **English**. No Chinese strings in product
 ## Workflow Rules
 
 - **必须使用 Worktree**：每次需要修改代码前，必须先通过 `EnterWorktree` 进入一个隔离的 git worktree 进行开发，禁止直接在主工作目录修改代码。
+- **功能必须实测**：每次完成功能开发后，必须 `npm run build` 并用真实 CLI 执行端到端功能验证（不能只跑 type check 和 unit test）。PR 的 Test Plan 中列出的每一项都必须实际执行通过后才能提交。
