@@ -36,9 +36,14 @@ export interface MockServerHandle {
 }
 
 /** Build a valid skill zip (`<slug>/SKILL.md` + extra files). */
-export function buildSkillZip(slug: string, files: Record<string, string> = {}): Uint8Array {
+export function buildSkillZip(
+  slug: string,
+  files: Record<string, string> = {},
+  opts: { name?: string } = {},
+): Uint8Array {
+  const skillName = opts.name ?? slug;
   const entries: Record<string, Uint8Array> = {
-    [`${slug}/SKILL.md`]: strToU8(`---\nname: ${slug}\nversion: 1.0.0\ndescription: mock\n---\nbody`),
+    [`${slug}/SKILL.md`]: strToU8(`---\nname: ${skillName}\nversion: 1.0.0\ndescription: mock\n---\nbody`),
   };
   for (const [rel, content] of Object.entries(files)) {
     entries[`${slug}/${rel}`] = strToU8(content);
