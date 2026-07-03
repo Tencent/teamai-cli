@@ -42,7 +42,7 @@ export const SharingConfigSchema = z.object({
     requireTeamScripts: z.boolean().default(false),
   }).optional(),
   recall: z.object({
-    enabled: z.boolean().default(false),
+    enabled: z.boolean().default(true),
   }).optional(),
 });
 
@@ -62,10 +62,10 @@ export function getHooksSharing(config: { sharing?: { hooks?: { autoApply?: bool
 export function getRecallSharing(config: { sharing?: { recall?: { enabled?: boolean } } }): {
   enabled: boolean;
 } {
-  return { enabled: config.sharing?.recall?.enabled ?? false };
+  return { enabled: config.sharing?.recall?.enabled ?? true };
 }
 
-/** Resolve whether recall is enabled: user override > team config > default (false). */
+/** Resolve whether recall is enabled: user override > team config > default (true). */
 export function isRecallEnabled(
   localConfig: { recallEnabled?: boolean },
   teamConfig: { sharing?: { recall?: { enabled?: boolean } } },

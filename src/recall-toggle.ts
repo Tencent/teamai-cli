@@ -113,7 +113,7 @@ export async function recallStatus(_opts: GlobalOptions): Promise<void> {
   const { localConfig, teamConfig } = await autoDetectInit();
 
   const effective = isRecallEnabled(localConfig, teamConfig);
-  const teamSetting = teamConfig.sharing?.recall?.enabled ?? false;
+  const teamSetting = teamConfig.sharing?.recall?.enabled ?? true;
   const userOverride = localConfig.recallEnabled;
 
   console.log(`Recall: ${effective ? 'enabled' : 'disabled'}`);
