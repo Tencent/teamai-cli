@@ -802,7 +802,21 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         }
     }
 
-    // 5. Aggregate global graph + create MR (single-repo mode; batch mode handled by import-repo-list)
+    // 5. Deep enrich (synchronous, before push — so all content goes into one MR)
+    if (!dryRun && !skipEnrich && teamwikiRoot) {
+        const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code', slug);
+        if (await fs.pathExists(path.join(evidenceDir, '_manifest.json'))) {
+            try {
+                const { deepEnrich } = await import('./deep-enrich.js');
+                await deepEnrich({ project: slug, evidenceDir, wikiRoot: teamwikiRoot, cacheDir });
+                log.info(chalk.green(`✓ Deep enrich complete: ${slug}`));
+            } catch (e) {
+                log.debug(`deep-enrich failed for ${slug} (non-blocking): ${(e as Error).message}`);
+            }
+        }
+    }
+
+    // 6. Aggregate global graph + create MR (single-repo mode; batch mode handled by import-repo-list)
     if (!dryRun && !skipAutoPush) {
         if (teamwikiRoot) {
             try {
@@ -831,33 +845,8 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
 
     log.info(chalk.green(`✓ Repo ${owner}/${repoName} import complete`));
 
-    // 5b. Background deep enrichment (non-blocking; in batch mode caller handles push)
-    if (!dryRun && !skipEnrich && teamwikiRoot) {
-        const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code', slug);
-        if (await fs.pathExists(path.join(evidenceDir, '_manifest.json'))) {
-            setImmediate(async () => {
-                try {
-                    const { deepEnrich } = await import('./deep-enrich.js');
-                    await deepEnrich({ project: slug, evidenceDir, wikiRoot: teamwikiRoot, cacheDir });
-                    if (!skipAutoPush && mrTeamConfig && mrLocalConfig) {
-                        const { autoPushViaMR } = await import('./utils/git.js');
-                        if (await fs.pathExists(teamRepoDir)) {
-                            await autoPushViaMR(
-                                teamRepoDir, `[teamai] Deep enrich: ${slug}`,
-                                ['.'], mrTeamConfig, mrLocalConfig,
-                            );
-                        }
-                    }
-                    log.info(chalk.green(`✓ Deep enrich complete: ${slug}`));
-                } catch (e) {
-                    log.debug(`deep-enrich background failed for ${slug}: ${(e as Error).message}`);
-                }
-            });
-        }
-    }
 
-
-    // 6. Write LAST_SYNC
+    // 7. Write LAST_SYNC
     if (!dryRun) {
         await writeLastSync(cacheDir, cloneSha);
         try {
