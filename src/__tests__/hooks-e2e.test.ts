@@ -253,6 +253,10 @@ describe('hooks E2E — real file I/O', () => {
       const originalHome = process.env.HOME;
       process.env.HOME = tmpDir;
 
+      // Pre-create tool root dirs so they are detected as installed
+      await fse.ensureDir(path.join(tmpDir, '.claude'));
+      await fse.ensureDir(path.join(tmpDir, '.cursor'));
+
       await injectHooksToAllTools({
         claude: { settings: '.claude/settings.json' },
         cursor: { settings: '.cursor/hooks.json' },
@@ -291,6 +295,8 @@ describe('hooks E2E — real file I/O', () => {
       const originalHome = process.env.HOME;
       process.env.HOME = tmpDir;
 
+      await fse.ensureDir(path.join(tmpDir, '.claude'));
+
       await injectHooksToAllTools({
         claude: { settings: '.claude/settings.json' },
         'codex-internal': {},
@@ -304,6 +310,27 @@ describe('hooks E2E — real file I/O', () => {
       // codex-internal has no settings → no hooks file created
       const codexInternalFile = path.join(tmpDir, '.codex-internal', 'settings.json');
       expect(await fse.pathExists(codexInternalFile)).toBe(false);
+    });
+
+    it('skips tools whose root directory does not exist (not installed)', async () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = tmpDir;
+
+      // Only create .claude dir — .tclaude is NOT created (simulating uninstalled tool)
+      await fse.ensureDir(path.join(tmpDir, '.claude'));
+
+      await injectHooksToAllTools({
+        claude: { settings: '.claude/settings.json' },
+        tclaude: { settings: '.tclaude/settings.json' },
+      });
+
+      process.env.HOME = originalHome;
+
+      const claudeFile = path.join(tmpDir, '.claude', 'settings.json');
+      const tclaudeFile = path.join(tmpDir, '.tclaude', 'settings.json');
+
+      expect(await fse.pathExists(claudeFile)).toBe(true);
+      expect(await fse.pathExists(tclaudeFile)).toBe(false);
     });
   });
 });

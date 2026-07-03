@@ -11,6 +11,7 @@ vi.mock('../utils/fs.js', () => ({
   }),
   expandHome: (p: string) => p,
   ensureDir: vi.fn(),
+  pathExists: vi.fn(async () => true),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -347,6 +348,29 @@ describe('hooks', () => {
       expect(mockFiles['/test-home/.cursor/hooks.json']).toBeDefined();
       expect(Object.keys(mockFiles)).toHaveLength(2);
 
+      process.env.HOME = originalHome;
+    });
+
+    it('skips tools whose root directory does not exist', async () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = '/test-home';
+
+      const { pathExists: mockedPathExists } = await import('../utils/fs.js');
+      (mockedPathExists as ReturnType<typeof vi.fn>).mockImplementation(async (p: string) => {
+        // Only .claude exists, .tclaude does not
+        return (p as string).includes('.claude');
+      });
+
+      await injectHooksToAllTools({
+        claude: { settings: '.claude/settings.json' },
+        tclaude: { settings: '.tclaude/settings.json' },
+      });
+
+      expect(mockFiles['/test-home/.claude/settings.json']).toBeDefined();
+      expect(mockFiles['/test-home/.tclaude/settings.json']).toBeUndefined();
+
+      // Restore default mock
+      (mockedPathExists as ReturnType<typeof vi.fn>).mockImplementation(async () => true);
       process.env.HOME = originalHome;
     });
   });
