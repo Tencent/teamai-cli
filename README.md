@@ -131,6 +131,7 @@ The value you pass to `--http <baseUrl>` is the base; every endpoint is relative
 | `teamai pull` | Pull team resources and inject into local AI tools |
 | `teamai status` | Show local vs team repo diff |
 | `teamai recall <query>` | Search the team knowledge base (BM25 + graph-boost) |
+| `teamai recall enable/disable/status` | Toggle or check recall state (controls auto-recall hooks + subagent deployment) |
 | `teamai import --dir <path>` | Extract code knowledge graph from a local directory |
 | `teamai import --from-repo <url>` | Import a repo's code knowledge graph (`teamwiki/`) |
 | `teamai import --from-org <org>` | Batch import all repos under an organization |
@@ -380,6 +381,24 @@ Author: alice | Score: 12.0 | Tags: fuse, deploy
 | `[skills]` | team repo `skills/<name>/SKILL.md` | reusable AI skills |
 
 The index is rebuilt automatically on every `teamai pull`. Indexes built by older versions (no `version` field or missing `type`) are detected and rebuilt transparently on first use.
+
+### Recall Enable / Disable
+
+Recall is controlled at two levels — team admin sets the default, individual users can override:
+
+| Layer | File | Field | Effect |
+|-------|------|-------|--------|
+| Team default | `teamai.yaml` | `sharing.recall.enabled` | `true` / `false` (default: `false`) |
+| User override | `~/.teamai/config.yaml` | `recallEnabled` | `true` / `false` — wins over team default |
+| Env var | shell | `TEAMAI_RECALL_DISABLED=1` | Force-disable all recall hooks (quick kill-switch) |
+
+```bash
+teamai recall enable     # enable recall + deploy subagent & rules
+teamai recall disable    # disable recall + remove subagent & rules
+teamai recall status     # show effective state (team default + user override)
+```
+
+When recall is disabled, `teamai pull` skips deploying the recall subagent, recall rules block, and TodoWrite reminder hook. The `teamai recall <query>` manual search command still works regardless of this setting.
 
 ### Codebase Knowledge Graph (teamwiki/)
 
