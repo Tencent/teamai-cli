@@ -32,6 +32,7 @@ import {
 import { resolveBaseDir, type LocalConfig, type TeamaiConfig } from './types.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { log } from './utils/logger.js';
+import { getAgentVersion } from './agent-version.js';
 
 // ─── Endpoint mapping (internal, overridable) ───────────────
 
@@ -270,10 +271,11 @@ async function runStatusReportInner(opts: StatusReportOptions): Promise<void> {
   // ① report — SessionStart only.
   if (opts.phase === 'session') {
     const skills = await scanReportableSkills(skillsDir);
+    const agentVersion = await getAgentVersion(agentType);
     const reportBody = {
       local_agent_id: localAgentId,
       agent_type: agentType,
-      agent_version: '',
+      agent_version: agentVersion,
       host_name: os.hostname(),
       os: `${process.platform}/${process.arch}`,
       started_at: new Date().toISOString(),
