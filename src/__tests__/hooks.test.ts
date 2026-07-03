@@ -377,6 +377,29 @@ describe('hooks', () => {
         process.env.HOME = originalHome;
       }
     });
+
+    it('skips tools whose root directory does not exist', async () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = '/test-home';
+
+      const { pathExists: mockedPathExists } = await import('../utils/fs.js');
+      (mockedPathExists as ReturnType<typeof vi.fn>).mockImplementation(async (p: string) => {
+        return (p as string).includes('.claude');
+      });
+
+      try {
+        await injectHooksToAllTools({
+          claude: { settings: '.claude/settings.json' },
+          tclaude: { settings: '.tclaude/settings.json' },
+        });
+
+        expect(mockFiles[path.join('/test-home', '.claude/settings.json')]).toBeDefined();
+        expect(mockFiles[path.join('/test-home', '.tclaude/settings.json')]).toBeUndefined();
+      } finally {
+        (mockedPathExists as ReturnType<typeof vi.fn>).mockImplementation(async () => true);
+        process.env.HOME = originalHome;
+      }
+    });
   });
 
   describe('format alignment', () => {

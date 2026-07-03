@@ -51,6 +51,10 @@ function manifest(): Promise<Record<string, Array<{ id: string }>>> {
 beforeEach(async () => {
   project = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recon-proj-'));
   repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recon-repo-'));
+  // Pre-create tool root dirs so they are detected as installed
+  await fse.ensureDir(path.join(project, '.claude'));
+  await fse.ensureDir(path.join(project, '.cursor'));
+  await fse.ensureDir(path.join(project, '.codex'));
 });
 afterEach(async () => {
   await fse.remove(project);
