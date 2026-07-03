@@ -90,7 +90,7 @@ describe('hooksInject', () => {
             expect.any(String),
             TEAM_DEFS,
             expect.stringContaining('managed-hooks.json'),
-            { builtinOverride: undefined },
+            { builtinOverride: undefined, force: true },
         );
         expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Hooks injected'));
     });
@@ -119,8 +119,8 @@ describe('hooksInject', () => {
         }
 
         expect(mockedReconcile).toHaveBeenCalledTimes(2);
-        expect(mockedReconcile).toHaveBeenNthCalledWith(1, mockTeamConfig.toolPaths, '/path/to/project', TEAM_DEFS, expect.any(String), { builtinOverride: undefined });
-        expect(mockedReconcile).toHaveBeenNthCalledWith(2, mockTeamConfig.toolPaths, '/home/testuser', TEAM_DEFS, expect.any(String), { builtinOverride: undefined });
+        expect(mockedReconcile).toHaveBeenNthCalledWith(1, mockTeamConfig.toolPaths, '/path/to/project', TEAM_DEFS, expect.any(String), { builtinOverride: undefined, force: true });
+        expect(mockedReconcile).toHaveBeenNthCalledWith(2, mockTeamConfig.toolPaths, '/home/testuser', TEAM_DEFS, expect.any(String), { builtinOverride: undefined, force: true });
 
         // #85: the user-home target must be reconciled against the USER's own
         // manifest, not the project's — otherwise `pull`'s per-scope reconcile
@@ -242,7 +242,7 @@ describe('hooksRemove', () => {
             expect.any(String),
             [],
             expect.stringContaining('managed-hooks.json'),
-            { removeAll: true },
+            { removeAll: true, force: true },
         );
         expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Hooks removed'));
     });
