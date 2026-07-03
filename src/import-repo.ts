@@ -701,7 +701,9 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                     const existing = await fs.readFile(overviewPath, 'utf8').catch(() => '');
                     const aiNarrative = codebaseMd.replace(/^---[\s\S]*?---\n*/m, '');
                     const marker = '## AI Architecture Narrative';
-                    const markerIdx = existing.indexOf(marker);
+                    const oldMarker = '## AI 架构叙事';
+                    let markerIdx = existing.indexOf(marker);
+                    if (markerIdx < 0) markerIdx = existing.indexOf(oldMarker);
                     const base = markerIdx >= 0 ? existing.slice(0, markerIdx).trimEnd() : existing.trimEnd();
                     let combined: string;
                     if (!base || !base.startsWith('---')) {
