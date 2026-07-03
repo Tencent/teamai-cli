@@ -43,13 +43,17 @@ export const EXCLUDED_RULE_NAMES = new Set<string>([
  *
  * @returns Number of tool directories that received built-in rules.
  */
-export async function deployBuiltinRules(teamConfig: TeamaiConfig, localConfig?: LocalConfig): Promise<number> {
+export async function deployBuiltinRules(
+    teamConfig: TeamaiConfig,
+    localConfig?: LocalConfig,
+    options?: { skipRecall?: boolean },
+): Promise<number> {
     const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');
     let deployed = 0;
 
     const builtinRules: Array<{ name: string; content: string }> = [
         { name: 'teamai-recall', content: TEAMAI_RECALL_RULE_CONTENT },
-    ];
+    ].filter(r => !(options?.skipRecall && r.name === 'teamai-recall'));
 
     for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
         if (!toolPath.rules) continue;

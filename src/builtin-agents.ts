@@ -55,6 +55,7 @@ function getBuiltinAgentsDir(): string {
 export async function deployBuiltinAgents(
   teamConfig: TeamaiConfig,
   localConfig?: LocalConfig,
+  options?: { skipRecall?: boolean },
 ): Promise<number> {
   const builtinDir = getBuiltinAgentsDir();
   if (!await pathExists(builtinDir)) {
@@ -69,7 +70,9 @@ export async function deployBuiltinAgents(
     return 0;
   }
 
-  const agentFiles = entries.filter((f) => f.endsWith('.md') && !f.startsWith('.'));
+  const agentFiles = entries
+    .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
+    .filter((f) => !(options?.skipRecall && f === 'teamai-recall.md'));
   if (agentFiles.length === 0) return 0;
 
   const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');

@@ -41,6 +41,9 @@ export const SharingConfigSchema = z.object({
     /** Restrict team hook commands to scripts under ~/.teamai/team-scripts/. */
     requireTeamScripts: z.boolean().default(false),
   }).optional(),
+  recall: z.object({
+    enabled: z.boolean().default(false),
+  }).optional(),
 });
 
 /** Defaulted view of the optional `sharing.hooks` config. */
@@ -53,6 +56,22 @@ export function getHooksSharing(config: { sharing?: { hooks?: { autoApply?: bool
     autoApply: h?.autoApply ?? true,
     requireTeamScripts: h?.requireTeamScripts ?? false,
   };
+}
+
+/** Defaulted view of the optional `sharing.recall` config. */
+export function getRecallSharing(config: { sharing?: { recall?: { enabled?: boolean } } }): {
+  enabled: boolean;
+} {
+  return { enabled: config.sharing?.recall?.enabled ?? false };
+}
+
+/** Resolve whether recall is enabled: user override > team config > default (false). */
+export function isRecallEnabled(
+  localConfig: { recallEnabled?: boolean },
+  teamConfig: { sharing?: { recall?: { enabled?: boolean } } },
+): boolean {
+  if (localConfig.recallEnabled !== undefined) return localConfig.recallEnabled;
+  return getRecallSharing(teamConfig).enabled;
 }
 
 // ─── Source config (cross-team subscription) ─────────
@@ -166,6 +185,8 @@ export const LocalConfigSchema = z.object({
   projectRoot: z.string().optional(),
   /** Tags the user has subscribed to. If empty/undefined, pull all resources. */
   subscribedTags: z.array(z.string()).optional(),
+  /** User-level override for recall feature. When set, takes precedence over team config. */
+  recallEnabled: z.boolean().optional(),
 });
 
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;

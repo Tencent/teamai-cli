@@ -541,7 +541,7 @@ program
 
 // ─── Recall commands ─────────────────────────────────────
 
-program
+const recallCmd = program
   .command('recall [query...]')
   .description('Search team learnings knowledge base')
   .option('--depth <level>', 'Recall depth: route (entry-points only) | context (module-level, default) | lookup (full graph traversal)', 'context')
@@ -550,6 +550,33 @@ program
     const query = (queryParts as string[]).join(' ');
     const { recall } = await import('./recall.js');
     await recall(query, { ...globalOpts, depth: cmdOpts.depth });
+  });
+
+recallCmd
+  .command('disable')
+  .description('Disable automatic knowledge-base recall')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { recallDisable } = await import('./recall-toggle.js');
+    await recallDisable(globalOpts);
+  });
+
+recallCmd
+  .command('enable')
+  .description('Enable automatic knowledge-base recall')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { recallEnable } = await import('./recall-toggle.js');
+    await recallEnable(globalOpts);
+  });
+
+recallCmd
+  .command('status')
+  .description('Show recall feature status')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { recallStatus } = await import('./recall-toggle.js');
+    await recallStatus(globalOpts);
   });
 
 program
