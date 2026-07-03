@@ -1,11 +1,10 @@
 import path from 'node:path';
 import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
-import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs } from '../utils/fs.js';
+import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { TEAMAI_RULES_START, TEAMAI_RULES_END, LEARNINGS_LOCAL_DIR, resolveBaseDir } from '../types.js';
+import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir } from '../types.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
-import { injectClaudeMdSection } from '../utils/claudemd.js';
 
 export class RulesHandler extends ResourceHandler {
   readonly type = 'rules' as const;
@@ -220,48 +219,27 @@ export class RulesHandler extends ResourceHandler {
       await this.removeEmptyDirs(destDir);
     }
 
-    // 2. Update CLAUDE.md with references only
-    for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
-      if (!toolPath.claudemd || !toolPath.rules) continue;
-
-      // Skip tools that are not installed
-      if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
-
-      // Reference the rules directory and docs directory
-      const rulesRef = localConfig.scope === 'project' && localConfig.projectRoot
-        ? `./${toolPath.rules}/`
-        : `~/${toolPath.rules}/`;
-      const refs: string[] = [
-        `- ${rulesRef}`,
-      ];
-      const docsDir = teamConfig.sharing.docs.localDir;
-      if (docsDir) {
-        refs.push(`- ${docsDir}/`);
-      }
-      if (await pathExists(LEARNINGS_LOCAL_DIR)) {
-        refs.push('- ~/.teamai/learnings/（团队成员的经验总结，开始任务前建议按文件名查阅是否有相关经验）');
-      }
-
-      const rulesBlock = [
-        TEAMAI_RULES_START,
-        '<!-- DO NOT EDIT: This section is auto-managed by teamai -->',
-        '',
-        '## Team Rules (teamai)',
-        '',
-        'The following rule files apply to this project:',
-        '',
-        ...refs,
-        '',
-        TEAMAI_RULES_END,
-      ].join('\n');
-
+    // 2. Remove legacy rules section from CLAUDE.md (no longer injected)
+    for (const [, toolPath] of Object.entries(teamConfig.toolPaths)) {
+      if (!toolPath.claudemd) continue;
       const claudeMdPath = path.join(baseDir, toolPath.claudemd);
-
       try {
-        await injectClaudeMdSection(claudeMdPath, TEAMAI_RULES_START, TEAMAI_RULES_END, rulesBlock);
-        log.debug(`Updated rules references in ${tool} CLAUDE.md`);
-      } catch (e) {
-        log.warn(`Failed to update ${tool} CLAUDE.md: ${(e as Error).message}`);
+        const content = await readFileSafe(claudeMdPath);
+        if (!content || !content.includes(TEAMAI_RULES_START)) continue;
+        const startIdx = content.indexOf(TEAMAI_RULES_START);
+        const endIdx = content.indexOf(TEAMAI_RULES_END);
+        if (startIdx === -1 || endIdx === -1) continue;
+        const before = content.substring(0, startIdx).replace(/\n+$/, '\n');
+        const after = content.substring(endIdx + TEAMAI_RULES_END.length).replace(/^\n+/, '\n');
+        const newContent = (before + after).trim();
+        if (newContent.length === 0) {
+          await remove(claudeMdPath);
+        } else {
+          await writeFile(claudeMdPath, newContent + '\n');
+        }
+        log.debug(`Removed legacy rules section from ${claudeMdPath}`);
+      } catch {
+        // Best-effort cleanup
       }
     }
   }
