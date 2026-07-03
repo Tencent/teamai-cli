@@ -3,6 +3,7 @@ import { autoDetectInit, saveLocalConfigForScope } from './config.js';
 import { log } from './utils/logger.js';
 import { readFileSafe, writeFile, remove, pathExists } from './utils/fs.js';
 import { ResourceHandler } from './resources/base.js';
+import { RECALL_DEPENDENT_SKILLS } from './builtin-skills.js';
 import {
   resolveBaseDir,
   isRecallEnabled,
@@ -35,6 +36,17 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
       }
     }
 
+    // Remove recall-dependent built-in skills
+    if (toolPath.skills) {
+      for (const skillName of RECALL_DEPENDENT_SKILLS) {
+        const skillDir = path.join(baseDir, toolPath.skills, skillName);
+        if (await pathExists(skillDir)) {
+          await remove(skillDir);
+          log.debug(`Removed recall skill ${skillName} from ${tool}`);
+        }
+      }
+    }
+
     // Remove recall block from CLAUDE.md
     if (toolPath.claudemd) {
       const claudeMdPath = path.join(baseDir, toolPath.claudemd);
@@ -61,9 +73,11 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
 async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
   const { deployBuiltinRules } = await import('./builtin-rules.js');
   const { deployBuiltinAgents } = await import('./builtin-agents.js');
+  const { deployBuiltinSkills } = await import('./builtin-skills.js');
 
   await deployBuiltinRules(teamConfig, localConfig, { skipRecall: false });
   await deployBuiltinAgents(teamConfig, localConfig, { skipRecall: false });
+  await deployBuiltinSkills(teamConfig, localConfig, { skipRecall: false });
 
   // Inject recall rules block into CLAUDE.md for Tier-1 tools
   const { injectClaudeMdSection } = await import('./utils/claudemd.js');

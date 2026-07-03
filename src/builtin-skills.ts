@@ -42,6 +42,9 @@ function getBuiltinSkillsDir(): string {
 /** Names of CLI built-in skills. Used by push to exclude them from team repo push. */
 export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'team-wiki-codebase']);
 
+/** Built-in skills that depend on recall being enabled. Skipped when recall is disabled. */
+export const RECALL_DEPENDENT_SKILLS = new Set(['teamai-share-learnings', 'team-wiki-codebase']);
+
 async function copyBuiltinSkillDir(srcDir: string, destDir: string): Promise<void> {
   await fse.copy(srcDir, destDir, {
     overwrite: true,
@@ -59,7 +62,7 @@ async function copyBuiltinSkillDir(srcDir: string, destDir: string): Promise<voi
  * - Built-in skills directory doesn't exist (dev environment without build)
  * - A tool's skills directory is not configured
  */
-export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?: LocalConfig, options?: { reportingOnly?: boolean }): Promise<number> {
+export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?: LocalConfig, options?: { reportingOnly?: boolean; skipRecall?: boolean }): Promise<number> {
   // Reporting-only HTTP mode has no team repo to write to, so the team-repo-
   // dependent built-in skill (teamai-share-learnings) is non-functional there.
   // Skip built-in skills entirely.
@@ -85,6 +88,7 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
   // Filter to directories that contain SKILL.md
   const skillNames: string[] = [];
   for (const entry of entries) {
+    if (options?.skipRecall && RECALL_DEPENDENT_SKILLS.has(entry)) continue;
     const skillMd = path.join(builtinDir, entry, 'SKILL.md');
     if (await pathExists(skillMd)) {
       skillNames.push(entry);
