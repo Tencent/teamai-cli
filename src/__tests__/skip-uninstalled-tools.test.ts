@@ -330,13 +330,11 @@ scope: 'user',
     await fse.remove(tmpDir);
   });
 
-  it('should update CLAUDE.md for installed tool only', async () => {
+  it('should distribute rules to installed tool only', async () => {
     await handler.pullAllRules(teamConfig, localConfig);
 
-    // claude CLAUDE.md should be created/updated
-    expect(await fse.pathExists(path.join(homeDir, '.claude/CLAUDE.md'))).toBe(true);
-    const content = await fse.readFile(path.join(homeDir, '.claude/CLAUDE.md'), 'utf-8');
-    expect(content).toContain('.claude/rules/');
+    // claude rules directory should have the rule file
+    expect(await fse.pathExists(path.join(homeDir, '.claude/rules/my-rule.md'))).toBe(true);
 
     // codebuddy should not exist at all
     expect(await fse.pathExists(path.join(homeDir, '.codebuddy'))).toBe(false);
