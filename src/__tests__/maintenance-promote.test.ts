@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -8,6 +8,14 @@ import matter from 'gray-matter';
 
 import { findPromotionCandidates, executePromotion } from '../maintenance/promote.js';
 import type { UserVotesV2 } from '../types.js';
+
+// Mock AI client to avoid real CLI calls in tests
+vi.mock('../utils/ai-client.js', () => ({
+  callClaude: vi.fn(async (prompt: string) => {
+    if (prompt.includes('Classify')) return 'skills';
+    return '---\ntitle: promoted content\ntags: [test]\ndate: 2026-07-03\n---\nPromoted by AI.';
+  }),
+}));
 
 let tmpDir: string;
 

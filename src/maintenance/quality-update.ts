@@ -1,7 +1,7 @@
 // -*- coding: utf-8 -*-
 import path from 'node:path';
 
-import { listFiles, pathExists } from '../utils/fs.js';
+import { listFiles, pathExists, readFileSafe } from '../utils/fs.js';
 import { loadUserVotes } from '../votes.js';
 import { log } from '../utils/logger.js';
 
@@ -114,5 +114,94 @@ export function reportStaleEntries(entries: StaleEntry[]): void {
     log.info(
       `  - [${entry.type}] ${entry.docId}: recalled ${entry.recalledCount}x by ${entry.userCount} users, adopted ${entry.upvotedCount}x`,
     );
+  }
+}
+
+/**
+ * Find learnings that users actually adopted (high upvoted_count) during the
+ * same period a stale entry was being ignored. These serve as context for the
+ * AI to understand what the team actually preferred.
+ */
+export async function findRelatedAdoptedLearnings(
+  staleEntry: StaleEntry,
+  votesDir: string,
+  learningsDir: string,
+  limit: number = 5,
+): Promise<string[]> {
+  const perDoc = new Map<string, number>();
+  const voteFiles = await listFiles(votesDir);
+
+  for (const file of voteFiles) {
+    if (!file.endsWith('.yaml') && !file.endsWith('.yml')) continue;
+    try {
+      const data = await loadUserVotes(path.join(votesDir, file));
+      for (const [docId, entry] of Object.entries(data.votes)) {
+        if (docId === staleEntry.docId) continue;
+        if ((entry.upvoted_count ?? 0) > 0) {
+          perDoc.set(docId, (perDoc.get(docId) ?? 0) + (entry.upvoted_count ?? 0));
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  const sorted = [...perDoc.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit);
+
+  const contents: string[] = [];
+  for (const [docId] of sorted) {
+    const filename = docId.endsWith('.md') ? docId : `${docId}.md`;
+    const filePath = path.join(learningsDir, filename);
+    const content = await readFileSafe(filePath);
+    if (content) contents.push(content);
+  }
+
+  return contents;
+}
+
+/**
+ * Generate an AI-powered update draft for a stale entry, incorporating
+ * insights from learnings that users actually adopted.
+ */
+export async function generateUpdateDraft(
+  staleEntry: StaleEntry,
+  relatedLearnings: string[],
+): Promise<string | null> {
+  const currentContent = await readFileSafe(staleEntry.path);
+  if (!currentContent) return null;
+
+  const { callClaude } = await import('../utils/ai-client.js');
+
+  const learningContext = relatedLearnings.length > 0
+    ? `\n\nThe following learnings were actually adopted by team members (these represent what the team found more useful):\n\n${relatedLearnings.map((l, i) => `--- Learning ${i + 1} ---\n${l}`).join('\n\n')}`
+    : '';
+
+  const prompt = `You are a technical writer updating a team knowledge base entry.
+
+The following ${staleEntry.type} entry has been recalled ${staleEntry.recalledCount} times by ${staleEntry.userCount} team members but was adopted only ${staleEntry.upvotedCount} time(s). This indicates the content is relevant to common queries but not actionable enough to be directly useful.
+
+Current content:
+---
+${currentContent}
+---
+${learningContext}
+
+Please rewrite this entry to be more actionable and directly useful. Keep the same topic but:
+1. Add concrete examples or commands where applicable
+2. Remove outdated or vague information
+3. Incorporate relevant insights from the adopted learnings above
+4. Keep the same YAML frontmatter format (update the date field to today)
+5. Be concise — aim for the same or shorter length
+
+Output ONLY the updated markdown file content (including frontmatter).`;
+
+  try {
+    const draft = await callClaude(prompt);
+    return draft.trim();
+  } catch (e) {
+    log.error(`AI update generation failed: ${(e as Error).message}`);
+    return null;
   }
 }

@@ -72,7 +72,7 @@ export async function findPromotionCandidates(
       if (ageInDays < MIN_AGE_DAYS) continue;
     }
 
-    const suggestedCategory = inferCategory(content, title);
+    const suggestedCategory = await inferCategory(content, title);
 
     candidates.push({
       docId,
@@ -92,6 +92,63 @@ export async function findPromotionCandidates(
 /**
  * Execute promotion: copy learning to target category, mark original.
  */
+/**
+ * Use AI to transform a learning (individual experience) into a generalized
+ * knowledge entry suitable for the target category.
+ *
+ * - skills: rewrite as a step-by-step procedure / SOP with clear triggers
+ * - rules: rewrite as a concise constraint with rationale
+ * - docs: rewrite as reference documentation with context
+ *
+ * Falls back to the original content if AI is unavailable.
+ */
+async function generatePromotedContent(
+  originalContent: string,
+  category: 'skills' | 'rules' | 'docs',
+  title: string,
+): Promise<string> {
+  const categoryGuide: Record<string, string> = {
+    skills: `a reusable skill/SOP. Format it with:
+- A clear "when to use" trigger description
+- Step-by-step numbered procedure
+- Expected outcome
+- Common pitfalls to avoid
+Remove any references to specific dates, people, or one-off incidents. Make it timeless and reusable.`,
+    rules: `a team rule/constraint. Format it with:
+- A one-line rule statement (imperative: "Always X" / "Never Y")
+- Rationale: why this matters (1-2 sentences)
+- Examples of correct and incorrect usage
+Remove anecdotal context. State the constraint as an absolute standard.`,
+    docs: `a reference document. Format it with:
+- Context: what system/component this describes
+- Key concepts and their relationships
+- Architecture decisions and their rationale
+- Current state (as of promotion date)
+Remove personal narrative. Write as objective technical documentation.`,
+  };
+
+  try {
+    const { callClaude } = await import('../utils/ai-client.js');
+
+    const prompt = `You are a technical knowledge engineer promoting a team learning into formal knowledge.
+
+The following "learning" has been repeatedly validated by the team (high confidence, adopted by multiple members). Transform it into ${categoryGuide[category]}
+
+Original learning (title: "${title}"):
+---
+${originalContent}
+---
+
+Output ONLY the transformed markdown content (including YAML frontmatter with title, tags, date set to today). Do NOT include the original learning's confidence or vote-related fields in the frontmatter.`;
+
+    const result = await callClaude(prompt, { timeout: 60_000 });
+    return result.trim();
+  } catch (e) {
+    log.warn(`AI content generation failed, using original content: ${(e as Error).message}`);
+    return originalContent;
+  }
+}
+
 export async function executePromotion(
   candidate: PromotionCandidate,
   repoPath: string,
@@ -108,21 +165,27 @@ export async function executePromotion(
     return targetPath;
   }
 
-  await copyFile(candidate.path, targetPath);
-
-  const content = await readFileSafe(candidate.path);
-  if (content) {
-    const { data, content: body } = matter(content);
-    data.promoted_to = `${category}/${candidate.filename}`;
-    const updated = matter.stringify(body, data);
-    await writeFile(candidate.path, updated);
+  const originalContent = await readFileSafe(candidate.path);
+  if (!originalContent) {
+    log.error(`Cannot read source file: ${candidate.path}`);
+    return targetPath;
   }
+
+  // AI transforms the learning into a generalized format for the target category
+  const promotedContent = await generatePromotedContent(originalContent, category, candidate.title);
+  await writeFile(targetPath, promotedContent);
+
+  // Mark original learning as promoted
+  const { data, content: body } = matter(originalContent);
+  data.promoted_to = `${category}/${candidate.filename}`;
+  const updated = matter.stringify(body, data);
+  await writeFile(candidate.path, updated);
 
   log.success(`Promoted: ${candidate.docId} -> ${category}/${candidate.filename}`);
   return targetPath;
 }
 
-function inferCategory(content: string, title: string): 'skills' | 'rules' | 'docs' {
+function inferCategoryByKeywords(content: string, title: string): 'skills' | 'rules' | 'docs' {
   const lower = (content + ' ' + title).toLowerCase();
 
   const skillSignals = ['command', 'cli', 'workflow', 'step-by-step', 'procedure', 'how to', 'recipe'];
@@ -136,6 +199,40 @@ function inferCategory(content: string, title: string): 'skills' | 'rules' | 'do
   if (ruleScore >= skillScore && ruleScore >= docScore) return 'rules';
   if (skillScore >= docScore) return 'skills';
   return 'docs';
+}
+
+/**
+ * Use AI to determine the best promotion category for a learning.
+ * Falls back to keyword-based inference if AI is unavailable.
+ */
+async function inferCategory(content: string, title: string): Promise<'skills' | 'rules' | 'docs'> {
+  try {
+    const { callClaude } = await import('../utils/ai-client.js');
+
+    const prompt = `Classify the following team knowledge entry into exactly ONE category. Reply with ONLY the category name (no explanation):
+
+- "skills" — reusable workflows, SOPs, step-by-step procedures, CLI recipes, operational playbooks
+- "rules" — mandatory constraints, coding standards, conventions, best practices that MUST be followed
+- "docs" — architecture decisions, system design, background context, reference documentation
+
+Title: ${title}
+
+Content:
+${content.slice(0, 2000)}
+
+Category:`;
+
+    const result = await callClaude(prompt, { timeout: 30_000 });
+    const category = result.trim().toLowerCase().replace(/[^a-z]/g, '');
+
+    if (category === 'skills' || category === 'rules' || category === 'docs') {
+      return category;
+    }
+  } catch {
+    // AI unavailable — fall back to keywords
+  }
+
+  return inferCategoryByKeywords(content, title);
 }
 
 async function aggregatePerDocVotes(

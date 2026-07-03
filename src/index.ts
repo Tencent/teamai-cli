@@ -808,13 +808,29 @@ program
     }
 
     if (cmdOpts.updateQuality) {
-      const { findStaleEntries, reportStaleEntries } = await import('./maintenance/index.js');
+      const { findStaleEntries, reportStaleEntries, findRelatedAdoptedLearnings, generateUpdateDraft } = await import('./maintenance/index.js');
+      const { writeFile } = await import('./utils/fs.js');
+      const { log } = await import('./utils/logger.js');
       const entries = await findStaleEntries(votesDir, {
         docs: `${repoPath}/docs`,
         rules: `${repoPath}/rules`,
         skills: `${repoPath}/skills`,
       });
       reportStaleEntries(entries);
+
+      if (entries.length === 0 || cmdOpts.dryRun) return;
+
+      log.info('\nGenerating AI-powered update drafts...');
+      for (const entry of entries) {
+        const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsDir);
+        const draft = await generateUpdateDraft(entry, related);
+        if (draft) {
+          const draftPath = `${entry.path}.draft.md`;
+          await writeFile(draftPath, draft);
+          log.success(`  Draft written: ${draftPath}`);
+        }
+      }
+      log.info('\nReview drafts, then rename .draft.md -> .md to apply updates.');
       return;
     }
 
