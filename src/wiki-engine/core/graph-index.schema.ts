@@ -352,7 +352,11 @@ export async function loadGraphIndex(wikiRoot: string): Promise<GraphIndex | nul
   const graphPath = path.join(wikiRoot, ".indices", "graph-index.json");
   try {
     const raw = await readFile(graphPath, "utf8");
-    return JSON.parse(raw) as GraphIndex;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.nodes) || !Array.isArray(parsed?.edges)) {
+      return null;
+    }
+    return parsed as GraphIndex;
   } catch {
     return null;
   }

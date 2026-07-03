@@ -45,7 +45,7 @@ function readJson(p: string): Record<string, never> {
   return JSON.parse(fs.readFileSync(path.join(home, p), 'utf-8'));
 }
 
-const TEAM_HOOK = `hooks:\n  - id: lint\n    description: run lint at stop\n    event: Stop\n    command: npm run lint\n    tools: [claude, cursor]\n`;
+const TEAM_HOOK = `hooks:\n  - id: lint\n    description: run lint at stop\n    event: Stop\n    command: npm run lint\n    tools: [claude, cursor, codex]\n`;
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hooks-e2e-home-'));
@@ -77,8 +77,14 @@ describe('teamai hooks — unified A+B end-to-end', () => {
     const cursor = readJson('.cursor/hooks.json') as unknown as { hooks: Record<string, Array<{ command: string }>> };
     expect(cursor.hooks.stop.some((h) => h.command === 'npm run lint')).toBe(true);
 
+    const codex = readJson('.codex/hooks.json') as unknown as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    expect(codex.hooks.Stop.some((h) => h.hooks[0].command === 'npm run lint')).toBe(true);
+
     const manifest = readJson('.teamai/managed-hooks.json') as unknown as Record<string, Array<{ id: string }>>;
     expect(manifest.claude.map((r) => r.id)).toContain('lint');
+    expect(manifest.codex.map((r) => r.id)).toContain('lint');
   });
 
   it('`hooks list` audits built-in and team hooks', async () => {

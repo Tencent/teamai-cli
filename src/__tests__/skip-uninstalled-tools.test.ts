@@ -15,14 +15,6 @@ vi.mock('../utils/git.js', () => ({
   generateBranchName: vi.fn().mockReturnValue('teamai/push/test/20260305-120000'),
 }));
 
-vi.mock('../utils/gf-cli.js', () => ({
-  gfMrCreate: vi.fn().mockReturnValue('https://git.woa.com/mr/1'),
-}));
-
-vi.mock('../utils/repo-url.js', () => ({
-  parseRepoInput: vi.fn().mockReturnValue({ owner: 'test', repo: 'repo', projectId: 'test%2Frepo' }),
-}));
-
 vi.mock('../utils/logger.js', () => ({
   log: {
     info: vi.fn(),
@@ -338,13 +330,11 @@ scope: 'user',
     await fse.remove(tmpDir);
   });
 
-  it('should update CLAUDE.md for installed tool only', async () => {
+  it('should distribute rules to installed tool only', async () => {
     await handler.pullAllRules(teamConfig, localConfig);
 
-    // claude CLAUDE.md should be created/updated
-    expect(await fse.pathExists(path.join(homeDir, '.claude/CLAUDE.md'))).toBe(true);
-    const content = await fse.readFile(path.join(homeDir, '.claude/CLAUDE.md'), 'utf-8');
-    expect(content).toContain('.claude/rules/');
+    // claude rules directory should have the rule file
+    expect(await fse.pathExists(path.join(homeDir, '.claude/rules/my-rule.md'))).toBe(true);
 
     // codebuddy should not exist at all
     expect(await fse.pathExists(path.join(homeDir, '.codebuddy'))).toBe(false);
@@ -445,5 +435,42 @@ describe('deployBuiltinSkills — skip uninstalled tools', () => {
     await deployBuiltinSkills(teamConfig, localConfig);
 
     expect(await fse.pathExists(path.join(homeDir, '.claude'))).toBe(true);
+  });
+
+  it('should recursively deploy nested built-in skill files', async () => {
+    const { deployBuiltinSkills } = await import('../builtin-skills.js');
+
+    const teamConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        claude: { skills: '.claude/skills' },
+      },
+    };
+
+    const localConfig = {
+      repo: { localPath: path.join(tmpDir, 'repo'), remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto' as const,
+      additionalRoles: [],
+      scope: 'user' as const,
+    };
+
+    const deployed = await deployBuiltinSkills(teamConfig, localConfig);
+    const skillDir = path.join(homeDir, '.claude/skills/team-wiki-codebase');
+
+    expect(deployed).toBeGreaterThan(0);
+    expect(await fse.pathExists(path.join(skillDir, 'SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(skillDir, 'references/methodology/phase0-collection.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(skillDir, 'scripts/scan_repo.py'))).toBe(true);
   });
 });

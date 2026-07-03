@@ -46,11 +46,11 @@ export function extractCodeFacts(files: CodeCollectedFile[]): CodeFact[] {
   for (const [language, langFiles] of byLanguage) {
     allFacts.push(...extractForLanguage(language, langFiles));
   }
-  // Deduplicate facts by kind:name (keep first occurrence)
+  // Deduplicate facts by kind:name:file (same symbol in same file only kept once)
   const seen = new Set<string>();
   const deduped = allFacts.filter(f => {
-    if (f.kind === 'relation') return true; // relations are always unique by file context
-    const key = `${f.kind}:${f.name}`;
+    if (f.kind === 'relation') return true;
+    const key = `${f.kind}:${f.name}:${f.file}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

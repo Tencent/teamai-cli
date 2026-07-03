@@ -17,7 +17,7 @@ const teamConfig = {
   toolPaths: {
     claude: { settings: '.claude/settings.json' },
     cursor: { settings: '.cursor/hooks.json' },
-    codex: {}, // no settings → skipped
+    codex: { settings: '.codex/hooks.json' },
   },
 } as unknown as TeamaiConfig;
 
@@ -41,6 +41,9 @@ function claudeSettings(): Promise<{ hooks: Record<string, Array<{ description?:
 function cursorSettings(): Promise<{ hooks: Record<string, Array<{ command: string }>> }> {
   return fse.readJson(path.join(project, '.cursor', 'hooks.json'));
 }
+function codexSettings(): Promise<{ hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number }> }>> }> {
+  return fse.readJson(path.join(project, '.codex', 'hooks.json'));
+}
 function manifest(): Promise<Record<string, Array<{ id: string }>>> {
   return fse.readJson(path.join(project, '.teamai', 'managed-hooks.json'));
 }
@@ -48,6 +51,10 @@ function manifest(): Promise<Record<string, Array<{ id: string }>>> {
 beforeEach(async () => {
   project = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recon-proj-'));
   repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recon-repo-'));
+  // Pre-create tool root dirs so they are detected as installed
+  await fse.ensureDir(path.join(project, '.claude'));
+  await fse.ensureDir(path.join(project, '.cursor'));
+  await fse.ensureDir(path.join(project, '.codex'));
 });
 afterEach(async () => {
   await fse.remove(project);
@@ -75,9 +82,14 @@ hooks:
     expect(cursor.hooks.stop).toHaveLength(2);
     expect(cursor.hooks.stop.some((h) => h.command === 'npm run lint')).toBe(true);
 
+    const codex = await codexSettings();
+    expect(codex.hooks.Stop).toHaveLength(2);
+    expect(codex.hooks.Stop.some((h) => h.hooks[0].command === 'npm run lint')).toBe(true);
+
     const m = await manifest();
     expect(m.claude.map((r) => r.id)).toEqual(['lint']);
     expect(m.cursor.map((r) => r.id)).toEqual(['lint']);
+    expect(m.codex.map((r) => r.id)).toEqual(['lint']);
   });
 
   it('applies hooks.yaml edits on the next reconcile (add/remove), built-in untouched', async () => {
@@ -102,9 +114,14 @@ hooks:
     expect(cursor.hooks.stop.some((h) => h.command === 'npm run lint')).toBe(false);
     expect(cursor.hooks.stop).toHaveLength(1);
 
+    const codex = await codexSettings();
+    expect(codex.hooks.Stop.some((h) => h.hooks[0].command === 'npm run lint')).toBe(false);
+    expect(codex.hooks.Stop).toHaveLength(1);
+
     const m = await manifest();
     expect(m.claude).toBeUndefined();
     expect(m.cursor).toBeUndefined();
+    expect(m.codex).toBeUndefined();
   });
 
   it('removeAll clears built-in + team hooks', async () => {
@@ -122,6 +139,10 @@ hooks:
     for (const entries of Object.values(claude.hooks)) {
       expect(entries).toHaveLength(0);
     }
+    const codex = await codexSettings();
+    for (const entries of Object.values(codex.hooks)) {
+      expect(entries).toHaveLength(0);
+    }
   });
 
   it('applies §4.8 builtin disabled + timeout overrides from hooks.yaml', async () => {
@@ -135,8 +156,8 @@ builtin:
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
     const cursor = await cursorSettings();
-    // TodoWrite dropped → 6 built-in postToolUse entries instead of 7.
-    expect(cursor.hooks.postToolUse).toHaveLength(6);
+    // TodoWrite dropped → 2 built-in postToolUse entries instead of 3.
+    expect(cursor.hooks.postToolUse).toHaveLength(2);
     expect(cursor.hooks.postToolUse.some((h) => h.command.includes('TodoWrite'))).toBe(false);
     // Stop timeout overridden.
     expect((cursor.hooks.stop[0] as { timeout?: number }).timeout).toBe(99);

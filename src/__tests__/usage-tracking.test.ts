@@ -29,7 +29,6 @@ import {
 } from '../usage-tracker.js';
 import { aggregateUsage } from '../stats.js';
 import { mergeStats } from '../team-push.js';
-import { evaluateSessionValue } from '../session-collector.js';
 import { calculateSkillHealth, scoreToStars, calculateTeamHealth } from '../skill-health.js';
 import { getRecommendations } from '../skill-recommend.js';
 import type { UsageEvent, UserStats } from '../types.js';
@@ -598,21 +597,6 @@ describe('aggregateUsage', () => {
 
   it('returns empty for no events', () => {
     expect(aggregateUsage([])).toEqual([]);
-  });
-});
-
-// ─── session-collector tests ───────────────────────────
-
-describe('evaluateSessionValue', () => {
-  it('marks sessions with errors as valuable', () => {
-    expect(evaluateSessionValue('Encountered an error when running tests')).toBe(true);
-    expect(evaluateSessionValue('Had to retry the build 3 times')).toBe(true);
-    expect(evaluateSessionValue('发现一个新的踩坑模式')).toBe(true);
-  });
-
-  it('marks routine sessions as not valuable', () => {
-    expect(evaluateSessionValue('Updated README formatting')).toBe(false);
-    expect(evaluateSessionValue('Added a new component')).toBe(false);
   });
 });
 

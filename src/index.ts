@@ -69,7 +69,7 @@ program
 
 program
   .command('list [type]')
-  .description('List resources (skills|rules|docs|env|wiki). For skills, --source local/all also scans installed AI agent skill directories.')
+  .description('List resources (skills|rules|docs|env). For skills, --source local/all also scans installed AI agent skill directories.')
   .option('--source <src>', 'Where to look for skills: repo | local | all', 'all')
   .option('--agent <name>', 'Filter local agents by id (only applies to skills)')
   .action(async (type, cmdOpts) => {
@@ -126,7 +126,7 @@ membersCmd
 
 program
   .command('remove <type> <names...>')
-  .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules|wiki)')
+  .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules)')
   .action(async (type, names) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { remove } = await import('./remove.js');
@@ -479,16 +479,6 @@ program
   });
 
 program
-  .command('save-session', { hidden: true })
-  
-  .description('Save current session tool usage summary')
-  .option('--summary <text>', 'Session summary text')
-  .action(async (cmdOpts) => {
-    const { saveSession } = await import('./session-collector.js');
-    await saveSession(cmdOpts.summary);
-  });
-
-program
   .command('digest')
   .description('Generate weekly team activity digest')
   .action(async () => {
@@ -551,7 +541,7 @@ program
 
 // ─── Recall commands ─────────────────────────────────────
 
-program
+const recallCmd = program
   .command('recall [query...]')
   .description('Search team learnings knowledge base')
   .option('--depth <level>', 'Recall depth: route (entry-points only) | context (module-level, default) | lookup (full graph traversal)', 'context')
@@ -562,16 +552,31 @@ program
     await recall(query, { ...globalOpts, depth: cmdOpts.depth });
   });
 
-program
-  .command('auto-recall', { hidden: true })
-  
-  .description('Auto-recall team knowledge on tool errors (called by PostToolUse hook)')
-  .option('--stdin', 'Read hook data from STDIN')
-  .action(async (cmdOpts) => {
-    if (cmdOpts.stdin) {
-      const { autoRecall } = await import('./auto-recall.js');
-      await autoRecall();
-    }
+recallCmd
+  .command('disable')
+  .description('Disable automatic knowledge-base recall')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { recallDisable } = await import('./recall-toggle.js');
+    await recallDisable(globalOpts);
+  });
+
+recallCmd
+  .command('enable')
+  .description('Enable automatic knowledge-base recall')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { recallEnable } = await import('./recall-toggle.js');
+    await recallEnable(globalOpts);
+  });
+
+recallCmd
+  .command('status')
+  .description('Show recall feature status')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { recallStatus } = await import('./recall-toggle.js');
+    await recallStatus(globalOpts);
   });
 
 program
@@ -589,16 +594,14 @@ program
 
 program
   .command('import')
-  .description('Import knowledge from local files, Claude/Cursor rules, git workspace, MRs, or iWiki')
-  .option('--dir <path>', 'Scan local directory for importable Markdown files')
+  .description('Import knowledge from local directories, remote repos, organizations, MRs, or iWiki')
+  .option('--dir <path>', 'Extract code knowledge from a local directory (same as --from-repo but no clone)')
   .addOption(new Option('--from-claude', 'Scan Claude/Cursor rule directories (~/.claude/rules, ~/.cursor/rules)').hideHelp())
-  .addOption(new Option('--workspace', 'Generate codebase.md from current git workspace').hideHelp())
-  .option('--from-mr <url>', 'Extract learning and codebase suggestions from a merged MR/PR URL')
+  .option('--from-mr <url>', 'Extract learning from merged MR/PR and trigger incremental teamwiki update')
   .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)')
   .addOption(new Option('--resume', 'Resume an interrupted import session').hideHelp())
   .option('--all', 'Accept all suggestions without interactive confirmation')
   .addOption(new Option('--output <path>', 'Write drafts to this directory instead of pushing to team repo').hideHelp())
-  .addOption(new Option('--existing-codebase <path>', 'Path to existing codebase.md (used with --from-mr; overrides auto-detection from team repo)').hideHelp())
   .option('--from-repo <url>', 'Clone a remote repo and generate per-repo codebase summary')
   .addOption(new Option('--ssh', 'Force SSH clone even if HTTPS token is available').hideHelp())
   .addOption(new Option('--domain <name>', 'Skip AI recommendation and assign repo to this domain explicitly').hideHelp())
@@ -665,7 +668,7 @@ program
   .addOption(new Option('--stale-days <n>', 'Threshold for sync-stale check').default('60').hideHelp())
   .addOption(new Option('--pending-review-threshold <n>', 'Threshold for pending-review backlog').default('10').hideHelp())
   .option('--json', 'Output report as JSON (suitable for CI)')
-  .addOption(new Option('--output <path>', 'Custom team-codebase root (mirrors --from-repo)').hideHelp())
+  .addOption(new Option('--output <path>', 'Custom teamwiki output root directory').hideHelp())
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { codebaseCmd } = await import('./codebase-cmd.js');
@@ -696,7 +699,7 @@ program
     .option('--apply-all', 'Apply all drift items above confidence threshold')
     .option('--threshold <n>', 'Confidence threshold for --apply-all (default 0.8)', '0.8')
     .option('--lock', 'Lock the repo against future drift signals')
-    .option('--output <path>', 'Custom team-codebase root (mirrors --from-repo)')
+    .option('--output <path>', 'Custom teamwiki output root directory')
     .option('--skip-aggregate', 'Skip regenerateAggregate after apply')
     .option('--json', 'Machine-readable output')
     .action(async (subcommand, repoUrlArg, cmdOpts) => {
@@ -735,7 +738,6 @@ ciCmd
   .requiredOption('--url <url>', 'MR/PR web URL')
   .option('--mode <mode>', 'Operation mode: comment | write | both', 'comment')
   .option('--team-repo <path>', 'Team knowledge repo path (required for write mode)')
-  .option('--existing-codebase <path>', 'Existing codebase.md for style consistency')
   .option('--comment-marker <marker>', 'HTML comment anchor for idempotent updates', '<!-- teamai:ci-extract -->')
   .option('--write-mode <mode>', 'Write strategy: direct | pending-review', 'direct')
   .option('--output <dir>', 'Write artifacts to directory')

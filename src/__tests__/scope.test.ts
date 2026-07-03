@@ -113,7 +113,7 @@ scope: 'project',
     expect(resolveBaseDir(config)).toBe('/Users/testuser/my-project');
   });
 
-  it('should fallback to HOME if project scope without projectRoot', () => {
+  it('should throw instead of silently falling back to HOME if project scope without projectRoot (#85)', () => {
     const config: LocalConfig = {
       repo: { localPath: '/tmp/repo', remote: 'https://example.com' },
       username: 'test',
@@ -121,7 +121,7 @@ scope: 'project',
 additionalRoles: [],
 scope: 'project',
     };
-    expect(resolveBaseDir(config)).toBe('/Users/testuser');
+    expect(() => resolveBaseDir(config)).toThrow(/projectRoot is missing/);
   });
 });
 
@@ -138,9 +138,8 @@ describe('getTeamaiHome', () => {
     expect(result).toBe('/Users/test/proj/.teamai');
   });
 
-  it('should fallback to ~/.teamai if project scope without projectRoot', () => {
-    const result = getTeamaiHome('project');
-    expect(result).toBe(`${process.env.HOME}/.teamai`);
+  it('should throw instead of silently falling back to ~/.teamai if project scope without projectRoot (#85)', () => {
+    expect(() => getTeamaiHome('project')).toThrow(/projectRoot is missing/);
   });
 });
 

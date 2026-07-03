@@ -12,6 +12,7 @@ vi.mock('../utils/fs.js', () => ({
   }),
   expandHome: (p: string) => p,
   ensureDir: vi.fn(),
+  pathExists: vi.fn(async () => true),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -63,7 +64,7 @@ describe('hooks', () => {
   });
 
   describe('inject — empty file', () => {
-    it('Claude format: injects 4 events with 10 dispatch hooks into empty settings.json', async () => {
+    it('Claude format: injects 4 events with 6 dispatch hooks into empty settings.json', async () => {
       await injectHooks('/test/settings.json', 'claude');
 
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, unknown[]> };
@@ -74,14 +75,14 @@ describe('hooks', () => {
 
       // Merged dispatch format: one dispatch entry per event+matcher.
       // SessionStart(*:1), Stop(*:1),
-      // PostToolUse(*:1, Skill:1, TodoWrite:1, Bash:1, Grep:1, WebSearch:1, WebFetch:1), UserPromptSubmit(*:1)
+      // PostToolUse(*:1, Skill:1, TodoWrite:1), UserPromptSubmit(*:1)
       expect(result.hooks['SessionStart']).toHaveLength(1);
       expect(result.hooks['Stop']).toHaveLength(1);
-      expect(result.hooks['PostToolUse']).toHaveLength(7);
+      expect(result.hooks['PostToolUse']).toHaveLength(3);
       expect(result.hooks['UserPromptSubmit']).toHaveLength(1);
     });
 
-    it('Cursor format: injects 4 events with 10 dispatch hooks into empty hooks.json', async () => {
+    it('Cursor format: injects 4 events with 6 dispatch hooks into empty hooks.json', async () => {
       await injectHooks('/test/hooks.json', 'cursor');
 
       const result = mockFiles['/test/hooks.json'] as { version: number; hooks: Record<string, unknown[]> };
@@ -94,8 +95,19 @@ describe('hooks', () => {
       // Same merged structure (with TodoWrite dispatch entry)
       expect(result.hooks['sessionStart']).toHaveLength(1);
       expect(result.hooks['stop']).toHaveLength(1);
-      expect(result.hooks['postToolUse']).toHaveLength(7);
+      expect(result.hooks['postToolUse']).toHaveLength(3);
       expect(result.hooks['beforeSubmitPrompt']).toHaveLength(1);
+    });
+
+    it('Codex format: injects PascalCase events into hooks.json', async () => {
+      await injectHooks('/test/codex-hooks.json', 'codex');
+
+      const result = mockFiles['/test/codex-hooks.json'] as { hooks: Record<string, Array<{ matcher?: string; description?: string; hooks: Array<{ command: string }> }>> };
+      expect(result.hooks).toBeDefined();
+      expect(Object.keys(result.hooks)).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit']);
+      expect(result.hooks.PostToolUse).toHaveLength(3);
+      expect(result.hooks.SessionStart[0].hooks[0].command).toContain('--tool codex');
+      expect(result.hooks.SessionStart[0].description).toBeUndefined();
     });
 
     it('Claude uses PascalCase event names', async () => {
@@ -123,7 +135,7 @@ describe('hooks', () => {
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, unknown[]> };
       expect(result.hooks['SessionStart']).toHaveLength(1);
       expect(result.hooks['Stop']).toHaveLength(1);
-      expect(result.hooks['PostToolUse']).toHaveLength(7);
+      expect(result.hooks['PostToolUse']).toHaveLength(3);
       expect(result.hooks['UserPromptSubmit']).toHaveLength(1);
     });
 
@@ -134,7 +146,7 @@ describe('hooks', () => {
       const result = mockFiles['/test/hooks.json'] as { hooks: Record<string, unknown[]> };
       expect(result.hooks['sessionStart']).toHaveLength(1);
       expect(result.hooks['stop']).toHaveLength(1);
-      expect(result.hooks['postToolUse']).toHaveLength(7);
+      expect(result.hooks['postToolUse']).toHaveLength(3);
       expect(result.hooks['beforeSubmitPrompt']).toHaveLength(1);
     });
 
@@ -332,24 +344,59 @@ describe('hooks', () => {
         expect(cmd).toContain('--tool codebuddy');
       }
     });
+
+    it('codex hooks contain --tool codex', async () => {
+      await injectHooks('/test/hooks.json', 'codex');
+      const result = mockFiles['/test/hooks.json'] as { hooks: Record<string, unknown[]> };
+      const cmds = extractCommands(result.hooks);
+      const toolCmds = cmds.filter((c) => c.includes('--tool'));
+      expect(toolCmds.length).toBeGreaterThan(0);
+      for (const cmd of toolCmds) {
+        expect(cmd).toContain('--tool codex');
+      }
+    });
   });
 
   describe('injectHooksToAllTools', () => {
-    it('injects into tools with settings path, skips those without', async () => {
+    it('injects into all configured settings paths including Codex hooks.json', async () => {
       const originalHome = process.env.HOME;
       process.env.HOME = '/test-home';
 
       try {
         await injectHooksToAllTools({
           claude: { settings: '.claude/settings.json' },
-          codex: {},
+          codex: { settings: '.codex/hooks.json' },
           cursor: { settings: '.cursor/hooks.json' },
         });
 
         expect(mockFiles[path.join('/test-home', '.claude/settings.json')]).toBeDefined();
+        expect(mockFiles[path.join('/test-home', '.codex/hooks.json')]).toBeDefined();
         expect(mockFiles[path.join('/test-home', '.cursor/hooks.json')]).toBeDefined();
-        expect(Object.keys(mockFiles)).toHaveLength(2);
+        expect(Object.keys(mockFiles)).toHaveLength(3);
       } finally {
+        process.env.HOME = originalHome;
+      }
+    });
+
+    it('skips tools whose root directory does not exist', async () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = '/test-home';
+
+      const { pathExists: mockedPathExists } = await import('../utils/fs.js');
+      (mockedPathExists as ReturnType<typeof vi.fn>).mockImplementation(async (p: string) => {
+        return (p as string).includes('.claude');
+      });
+
+      try {
+        await injectHooksToAllTools({
+          claude: { settings: '.claude/settings.json' },
+          tclaude: { settings: '.tclaude/settings.json' },
+        });
+
+        expect(mockFiles[path.join('/test-home', '.claude/settings.json')]).toBeDefined();
+        expect(mockFiles[path.join('/test-home', '.tclaude/settings.json')]).toBeUndefined();
+      } finally {
+        (mockedPathExists as ReturnType<typeof vi.fn>).mockImplementation(async () => true);
         process.env.HOME = originalHome;
       }
     });

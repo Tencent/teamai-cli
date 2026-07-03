@@ -91,8 +91,14 @@ describe('read-only protection (http kind)', () => {
     const { init } = await import('../init.js');
     await init({ http: server.url, force: true });
 
-    const { push } = await import('../push.js');
-    await expect(push({})).rejects.toThrow(/read-only HTTP source/);
+    const originalCwd = process.cwd();
+    process.chdir(tmpDir);
+    try {
+      const { push } = await import('../push.js');
+      await expect(push({})).rejects.toThrow(/read-only HTTP source/);
+    } finally {
+      process.chdir(originalCwd);
+    }
   });
 });
 

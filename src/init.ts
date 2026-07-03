@@ -54,6 +54,17 @@ async function promptForRoleProfile(
     };
   }
 
+  // Auto-select when only one role is available
+  if (manifest.roles.length === 1) {
+    const only = manifest.roles[0];
+    log.info(`Role: ${roleLabels[0]} (auto-selected)`);
+    return {
+      primaryRole: only.id,
+      additionalRoles: [],
+      resourceProfileVersion: manifest.version,
+    };
+  }
+
   log.info('Available roles:');
   roleLabels.forEach((label, index) => {
     log.info(`  ${index + 1}. ${label}`);
@@ -66,27 +77,10 @@ async function promptForRoleProfile(
   }
 
   const primaryRole = manifest.roles[primaryIndex - 1];
-  const additionalCandidates = manifest.roles.filter((role) => role.id !== primaryRole.id);
-  let additionalRoles: string[] = [];
-
-  if (additionalCandidates.length > 0) {
-    log.info('Additional roles (optional):');
-    additionalCandidates.forEach((role, index) => {
-      const suffix = role.description ? `: ${role.description}` : '';
-      log.info(`  ${index + 1}. ${role.id}${suffix}`);
-    });
-
-    const additionalAnswer = await askQuestion(
-      'Additional roles (comma-separated numbers, blank to skip): ',
-      '',
-    );
-    const additionalIndexes = parseRoleSelection(additionalAnswer, additionalCandidates.length);
-    additionalRoles = additionalIndexes.map((selection) => additionalCandidates[selection - 1].id);
-  }
 
   return {
     primaryRole: primaryRole.id,
-    additionalRoles,
+    additionalRoles: [],
     resourceProfileVersion: manifest.version,
   };
 }
@@ -247,10 +241,12 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
   } else {
     const userPath = getTeamaiHome('user');
     const projectPath = getTeamaiHome('project', process.cwd());
-    log.info(`  user    → ${userPath}/`);
-    log.info(`  project → ${projectPath}/`);
-    const scopeAnswer = await askQuestion('Scope [user/project] (default: user): ', 'user');
-    if (scopeAnswer.toLowerCase() === 'project') {
+    log.info('Select scope:');
+    log.info(`  1. user    → ${userPath}/`);
+    log.info(`  2. project → ${projectPath}/`);
+    const scopeAnswer = await askQuestion('Scope [1/2] (default: 1): ', '1');
+    const normalizedScope = scopeAnswer.trim().toLowerCase();
+    if (normalizedScope === '2' || normalizedScope === 'project') {
       scope = 'project';
     }
   }

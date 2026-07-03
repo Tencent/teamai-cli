@@ -61,8 +61,8 @@ function renderList(items: PendingReviewItem[]): void {
     for (const item of items) counts[item.risk]++;
 
     console.log(
-        chalk.bold(`[review] 共 ${items.length} 项`) +
-        `（high: ${counts.high}, medium: ${counts.medium}, low: ${counts.low}）`,
+        chalk.bold(`[review] ${items.length} items`) +
+        ` (high: ${counts.high}, medium: ${counts.medium}, low: ${counts.low})`,
     );
 
     if (items.length === 0) return;
@@ -199,13 +199,13 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
 
         const succeeded = results.filter((r) => r.ok);
         const failed = results.filter((r) => !r.ok);
-        const summary = `[review] --all-apply 完成：成功 ${succeeded.length}，失败 ${failed.length}，跳过 ${skipped.length}`;
+        const summary = `[review] --all-apply done: ${succeeded.length} succeeded, ${failed.length} failed, ${skipped.length} skipped`;
         console.log(chalk.bold(summary));
         for (const fail of failed) {
             console.log(chalk.red(`  ✗ ${fail.id}: ${fail.reason}`));
         }
         for (const skip of skipped) {
-            console.log(chalk.dim(`  ○ 跳过 ${skip.id}（kind=${skip.kind}, risk=${skip.risk}）`));
+            console.log(chalk.dim(`  ○ skipped ${skip.id} (kind=${skip.kind}, risk=${skip.risk})`));
         }
         return;
     }
@@ -229,9 +229,9 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
     const item = items.find((i) => i.id === idArg);
 
     if (!item) {
-        log.warn(`[review] 未找到 id="${idArg}"`);
+        log.warn(`[review] not found: id="${idArg}"`);
         if (jsonMode) {
-            console.log(JSON.stringify({ ok: false, reason: `未找到 id="${idArg}"` }));
+            console.log(JSON.stringify({ ok: false, reason: `not found: id="${idArg}"` }));
         }
         return;
     }
@@ -274,7 +274,7 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
         }
 
         if (result.ok) {
-            console.log(chalk.green(`[review] 已应用：${idArg} → ${item.target.file}`));
+            console.log(chalk.green(`[review] applied: ${idArg} → ${item.target.file}`));
         } else {
             console.log(chalk.red(`[review] 应用失败：${idArg} — ${result.reason}`));
         }

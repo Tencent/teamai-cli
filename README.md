@@ -131,6 +131,7 @@ The value you pass to `--http <baseUrl>` is the base; every endpoint is relative
 | `teamai pull` | Pull team resources and inject into local AI tools |
 | `teamai status` | Show local vs team repo diff |
 | `teamai recall <query>` | Search the team knowledge base (BM25 + graph-boost) |
+| `teamai import --dir <path>` | Extract code knowledge graph from a local directory |
 | `teamai import --from-repo <url>` | Import a repo's code knowledge graph (`teamwiki/`) |
 | `teamai import --from-org <org>` | Batch import all repos under an organization |
 | `teamai import --from-repo-list <yaml>` | Batch import repos from a whitelist |
@@ -426,7 +427,7 @@ To disable the reminder globally, set:
 export TEAMAI_RECALL_DISABLED=1
 ```
 
-The same env var also disables the auto-recall hook.
+The same env var also disables `teamai recall`'s quality tracking (used by contribute-check's knowledge-gap detection).
 
 ### `agents` resource type
 

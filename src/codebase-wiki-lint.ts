@@ -4,7 +4,7 @@ import path from 'node:path';
 import chalk from 'chalk';
 
 import { pathExists } from './utils/fs.js';
-import type { CodeGraphIndex } from './wiki-engine/adapters/index.js';
+import type { GraphIndex } from './wiki-engine/adapters/index.js';
 
 export type WikiLintSeverity = 'high' | 'medium' | 'low' | 'info';
 
@@ -51,7 +51,7 @@ export async function lintTeamwiki(opts: {
 
   // Check graph-index.json exists
   const graphPath = path.join(wikiRoot, '.indices', 'graph-index.json');
-  let graph: CodeGraphIndex | null = null;
+  let graph: GraphIndex | null = null;
 
   if (!await pathExists(graphPath)) {
     addIssue({
@@ -63,7 +63,7 @@ export async function lintTeamwiki(opts: {
   } else {
     try {
       const raw = await readFile(graphPath, 'utf-8');
-      graph = JSON.parse(raw) as CodeGraphIndex;
+      graph = JSON.parse(raw) as GraphIndex;
     } catch {
       addIssue({
         severity: 'high',

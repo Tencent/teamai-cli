@@ -510,7 +510,7 @@ export async function postIndividualComments(
 
 const CODEBASE_GRAPH_MARKER = '<!-- teamai:ci-extract:codebase-graph -->';
 
-function formatGraphComment(summary: { added: string[]; removed: string[] }): string {
+function formatGraphComment(summary: { added: string[]; removed: string[]; wikiUpdatePreview?: string }): string {
   const lines: string[] = [];
   lines.push('## 📊 Codebase 知识图谱变更');
   lines.push('');
@@ -536,6 +536,11 @@ function formatGraphComment(summary: { added: string[]; removed: string[] }): st
     lines.push('');
   }
 
+  if (summary.wikiUpdatePreview) {
+    lines.push(summary.wikiUpdatePreview);
+    lines.push('');
+  }
+
   lines.push('---');
   lines.push('> 👎 对本条 comment 添加 reaction 将阻止本次图谱更新写入团队知识库');
   lines.push(CODEBASE_GRAPH_MARKER);
@@ -544,7 +549,7 @@ function formatGraphComment(summary: { added: string[]; removed: string[] }): st
 
 export async function postCodebaseGraphComment(
   mrUrl: string,
-  summary: { added: string[]; removed: string[] },
+  summary: { added: string[]; removed: string[]; wikiUpdatePreview?: string },
   dryRun?: boolean,
 ): Promise<void> {
   const body = formatGraphComment(summary);

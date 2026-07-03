@@ -46,7 +46,7 @@ export async function aggregateGlobalGraph(
                 globalGraph = overlay;
             }
         } catch (e) {
-            log.warn(`[graph] 跳过 ${dir.name} graph: ${(e as Error).message}`);
+            log.warn(`[graph] skipped ${dir.name} graph: ${(e as Error).message}`);
         }
     }
 
@@ -54,7 +54,7 @@ export async function aggregateGlobalGraph(
         const destPath = path.join(teamwikiRoot, '.indices', 'graph-index.json');
         await fs.ensureDir(path.dirname(destPath));
         await fs.writeFile(destPath, JSON.stringify(globalGraph, null, 2), 'utf8');
-        log.info(`全局 graph-index.json 已聚合（${globalGraph.nodes.length} nodes, ${globalGraph.edges.length} edges）`);
+        log.info(`global graph-index.json aggregated (${globalGraph.nodes.length} nodes, ${globalGraph.edges.length} edges)`);
         return { nodes: globalGraph.nodes.length, edges: globalGraph.edges.length };
     }
 

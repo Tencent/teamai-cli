@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ensureDir, pathExists } from './utils/fs.js';
+import { fileURLToPath } from 'node:url';
+import fse from 'fs-extra';
+import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 import { resolveBaseDir } from './types.js';
@@ -32,13 +34,23 @@ import { ensureSkillFrontmatter } from './resources/skills.js';
  */
 function getBuiltinSkillsDir(): string {
   // __dirname equivalent for ESM: import.meta.url → file path → parent
-  const distDir = path.dirname(new URL(import.meta.url).pathname);
+  const distDir = path.dirname(fileURLToPath(import.meta.url));
   // skills/ is at package root, dist/ is one level down
   return path.join(distDir, '..', 'skills');
 }
 
 /** Names of CLI built-in skills. Used by push to exclude them from team repo push. */
-export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'teamai-wiki', 'team-wiki-codebase']);
+export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'team-wiki-codebase']);
+
+/** Built-in skills that depend on recall being enabled. Skipped when recall is disabled. */
+export const RECALL_DEPENDENT_SKILLS = new Set(['teamai-share-learnings', 'team-wiki-codebase']);
+
+async function copyBuiltinSkillDir(srcDir: string, destDir: string): Promise<void> {
+  await fse.copy(srcDir, destDir, {
+    overwrite: true,
+    filter: (srcPath: string) => !path.basename(srcPath).startsWith('.'),
+  });
+}
 
 /**
  * Deploy CLI built-in skills to all configured AI tool skill directories.
@@ -50,12 +62,12 @@ export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'teamai-wi
  * - Built-in skills directory doesn't exist (dev environment without build)
  * - A tool's skills directory is not configured
  */
-export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?: LocalConfig, options?: { skipWiki?: boolean; reportingOnly?: boolean }): Promise<number> {
-  // Reporting-only HTTP mode has no team repo to write to, so both built-in
-  // skills (teamai-share-learnings → shares to team repo; teamai-wiki →
-  // persists to team repo) are non-functional. Skip them entirely.
+export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?: LocalConfig, options?: { reportingOnly?: boolean; skipRecall?: boolean }): Promise<number> {
+  // Reporting-only HTTP mode has no team repo to write to, so the team-repo-
+  // dependent built-in skill (teamai-share-learnings) is non-functional there.
+  // Skip built-in skills entirely.
   if (options?.reportingOnly) {
-    log.debug('Reporting-only mode (no team repo): skipping built-in skills (teamai-share-learnings, teamai-wiki)');
+    log.debug('Reporting-only mode (no team repo): skipping built-in skills (teamai-share-learnings)');
     return 0;
   }
 
@@ -76,6 +88,7 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
   // Filter to directories that contain SKILL.md
   const skillNames: string[] = [];
   for (const entry of entries) {
+    if (options?.skipRecall && RECALL_DEPENDENT_SKILLS.has(entry)) continue;
     const skillMd = path.join(builtinDir, entry, 'SKILL.md');
     if (await pathExists(skillMd)) {
       skillNames.push(entry);
@@ -83,12 +96,6 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
   }
 
   if (skillNames.length === 0) return 0;
-
-  // Skip teamai-wiki deployment when wiki feature is disabled
-  const filteredSkills = options?.skipWiki
-    ? skillNames.filter(name => name !== 'teamai-wiki')
-    : skillNames;
-  if (filteredSkills.length === 0) return 0;
 
   const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');
   let deployed = 0;
@@ -104,24 +111,12 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
 
     const targetSkillsDir = path.join(baseDir, toolPath.skills);
 
-    for (const skillName of filteredSkills) {
+    for (const skillName of skillNames) {
       const srcDir = path.join(builtinDir, skillName);
       const destDir = path.join(targetSkillsDir, skillName);
 
       try {
-        await ensureDir(destDir);
-
-        // Copy all files in the skill directory
-        const files = await fs.promises.readdir(srcDir);
-        for (const file of files) {
-          const srcFile = path.join(srcDir, file);
-          const destFile = path.join(destDir, file);
-
-          const stat = await fs.promises.stat(srcFile);
-          if (stat.isFile()) {
-            await fs.promises.copyFile(srcFile, destFile);
-          }
-        }
+        await copyBuiltinSkillDir(srcDir, destDir);
 
         // Ensure SKILL.md has proper YAML frontmatter (name + description)
         await ensureSkillFrontmatter(destDir, skillName);

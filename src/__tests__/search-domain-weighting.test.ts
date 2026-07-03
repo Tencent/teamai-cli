@@ -184,7 +184,7 @@ describe('domain-weighted search scoring', () => {
     expect(results[0].entry.domain).toBe('support');
   });
 
-  it('built index carries domain field on every entry (version 4)', async () => {
+  it('built index carries domain field on every entry (version 5)', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
     await fse.ensureDir(learningsDir);
 
@@ -197,7 +197,7 @@ describe('domain-weighted search scoring', () => {
     const index = await loadIndex(indexPath);
 
     expect(index).not.toBeNull();
-    expect(index!.version).toBe(4);
+    expect(index!.version).toBe(5);
 
     for (const entry of index!.entries) {
       expect(entry.domain).toBeDefined();

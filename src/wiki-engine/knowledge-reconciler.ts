@@ -334,7 +334,6 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
 
   // Phase 9 — Stale detection
   const MS_PER_DAY = 86_400_000;
-  const now = Date.now();
   for (const edge of graphEdges) {
     const fromPage = productPages.find(
       p => toPageSlug(path.relative(wikiRoot, p.path)) === edge.from
@@ -345,7 +344,7 @@ export async function reconcileKnowledge(options: ReconcileOptions): Promise<Rec
     if (!fromPage?.updated || !toPage?.updated) continue;
     const fromMs = new Date(fromPage.updated).getTime();
     const toMs = new Date(toPage.updated).getTime();
-    const daysDrift = Math.abs(now - Math.max(fromMs, toMs)) / MS_PER_DAY;
+    const daysDrift = Math.abs(fromMs - toMs) / MS_PER_DAY;
     if (daysDrift > 30) {
       staleWarnings.push({
         mappingFrom: edge.from,

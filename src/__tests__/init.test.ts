@@ -80,27 +80,6 @@ vi.mock('../providers/tgit/gf-cli.js', () => {
   };
 });
 
-// Also mock the backward-compat re-export (for the RepoNotFoundError import in this test)
-vi.mock('../utils/gf-cli.js', () => {
-  class RepoNotFoundError extends Error {
-    constructor(repo: string) {
-      super(`Repo "${repo}" not found on TGit.`);
-      this.name = 'RepoNotFoundError';
-    }
-  }
-  return {
-    gfRepoClone: (...args: unknown[]) => mockGfRepoClone(...args),
-    gfCreateRepo: (...args: unknown[]) => mockGfCreateRepo(...args),
-    gfIsAuthenticated: () => mockGfIsAuthenticated(),
-    gfAuthWhoami: () => mockGfAuthWhoami(),
-    gfGetOAuthToken: vi.fn().mockReturnValue('mock-oauth-token'),
-    ensureGfInstalled: () => mockEnsureGfInstalled(),
-    ensureAuthenticated: vi.fn().mockReturnValue('testuser'),
-    isGfInstalled: vi.fn().mockReturnValue(true),
-    RepoNotFoundError,
-  };
-});
-
 vi.mock('../config.js', () => ({
   saveLocalConfig: vi.fn(),
   saveLocalConfigForScope: vi.fn(),
@@ -151,18 +130,6 @@ vi.mock('../roles.js', () => ({
   describeRoles: vi.fn((roles: Array<{ id: string; name: string; description?: string }>) =>
     roles.map((role) => role.description ? `${role.id} - ${role.name}: ${role.description}` : `${role.id} - ${role.name}`),
   ),
-}));
-
-vi.mock('../utils/repo-url.js', () => ({
-  parseRepoInput: (input: string) => {
-    const [owner, repo] = input.split('/');
-    return {
-      owner,
-      repo,
-      projectId: `${owner}%2F${repo}`,
-      httpsUrl: `https://git.woa.com/${owner}/${repo}.git`,
-    };
-  },
 }));
 
 // Track pathExists calls to simulate directory states
@@ -295,8 +262,8 @@ describe('init', () => {
         cloneDone = true;
       });
 
-      // Answers: create repo confirm (Y), configure reviewers (n), primary role (1), no additional roles
-      questionAnswers = ['Y', 'n', '1', ''];
+      // Answers: create repo confirm (Y), configure reviewers (n), primary role (1)
+      questionAnswers = ['Y', 'n', '1'];
 
       await init({ repo: 'https://git.woa.com/HyperAI/new-repo.git', scope: 'user' });
 
@@ -358,7 +325,7 @@ describe('init', () => {
   });
 
   describe('role persistence', () => {
-    it('writes primaryRole, additionalRoles, and resourceProfileVersion when roles are selected', async () => {
+    it('writes primaryRole and resourceProfileVersion when role is selected', async () => {
       let cloneDone = false;
       pathExistsFn = (p: string) => {
         if (p === localPath) return cloneDone;
@@ -399,13 +366,13 @@ describe('init', () => {
           toolPaths: {},
         } as never);
 
-      questionAnswers = ['n', '1', '1'];
+      questionAnswers = ['n', '1'];
 
       await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git', scope: 'user' });
 
       expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({
         primaryRole: 'hai',
-        additionalRoles: ['pm'],
+        additionalRoles: [],
         resourceProfileVersion: 1,
       }));
     });
@@ -423,8 +390,8 @@ describe('init', () => {
         cloneDone = true;
       });
 
-      // Answers: scope (user via default), configure reviewers (n), primary role (1), no additional
-      questionAnswers = ['user', 'n', '1', ''];
+      // Answers: scope (user via default), configure reviewers (n), primary role (1)
+      questionAnswers = ['user', 'n', '1'];
 
       const { log } = await import('../utils/logger.js');
 
@@ -447,8 +414,8 @@ describe('init', () => {
         cloneDone = true;
       });
 
-      // Answers: configure reviewers (n), primary role (1), no additional
-      questionAnswers = ['n', '1', ''];
+      // Answers: configure reviewers (n), primary role (1)
+      questionAnswers = ['n', '1'];
 
       const { log } = await import('../utils/logger.js');
       vi.mocked(log.info).mockClear();

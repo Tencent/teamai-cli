@@ -8,7 +8,6 @@ import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
 import { scanTeamRepoNamespaces } from './resources/skills.js';
 import type { GlobalOptions, ResourceItem, ResourceType } from './types.js';
-import { isWikiEnabled } from './types.js';
 import { assertSafePath, assertSafeResourceName, defaultAllowedRoots } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
 import { askQuestion, askSelection } from './utils/prompt.js';
@@ -141,9 +140,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 
   // Scan for pushable resources first, then resolve namespace for new skills only.
   // Modified skills already carry their namespace from scanLocalForPush.
-  const pushableTypes: ResourceType[] = isWikiEnabled()
-    ? ['skills', 'rules', 'env', 'wiki', 'agents']
-    : ['skills', 'rules', 'env', 'agents'];
+  const pushableTypes: ResourceType[] = ['skills', 'rules', 'env', 'agents'];
   const allItems: ResourceItem[] = [];
 
   for (const type of pushableTypes) {
@@ -433,11 +430,11 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
     }
 
     // Create branch, commit, and push.
-    // Only include "sweeper" directories (rules/, env/, wiki/) that actually
+    // Only include "sweeper" directories (rules/, env/) that actually
     // exist — otherwise `git add 'rules/'` throws `pathspec did not match
-    // any files` and the whole push aborts (BUG #1). Pure-wiki teams may
-    // not have rules/ or env/.
-    const sweeperCandidates = ['rules/', 'env/', 'wiki/', '.codebuddy-plugin/'];
+    // any files` and the whole push aborts (BUG #1). A team may not have
+    // rules/ or env/ yet.
+    const sweeperCandidates = ['rules/', 'env/', '.codebuddy-plugin/'];
     const existingSweepers = await filterExistingTopLevelPaths(
       localConfig.repo.localPath,
       sweeperCandidates,

@@ -137,7 +137,15 @@ export async function loadLocalConfigForScope(
   try {
     const raw = YAML.parse(content);
     const parsed = LocalConfigSchema.parse(raw);
-    return await migrateLegacyRoleConfig(parsed, configPath);
+    // Config files written before `projectRoot` was added to the schema (or
+    // hand-edited) may be missing it. We already know the project root — it's
+    // the directory this config was loaded for — so backfill it instead of
+    // letting getTeamaiHome()/resolveBaseDir() silently fall back to the user
+    // home directory later (#85).
+    const withProjectRoot = scope === 'project' && projectRoot && !parsed.projectRoot
+      ? { ...parsed, projectRoot }
+      : parsed;
+    return await migrateLegacyRoleConfig(withProjectRoot, configPath);
   } catch (e) {
     log.error(`Invalid ${scope} config at ${configPath}: ${(e as Error).message}`);
     return null;
@@ -187,8 +195,11 @@ export async function detectProjectConfig(cwd?: string): Promise<LocalConfig | n
   try {
     const raw = YAML.parse(content);
     const config = LocalConfigSchema.parse(raw);
-    if (config.scope === 'project') return config;
-    return null;
+    if (config.scope !== 'project') return null;
+    // Backfill projectRoot from the directory we actually found the config
+    // in, so callers never see scope === 'project' with projectRoot missing
+    // (see loadLocalConfigForScope for the same backfill) (#85).
+    return config.projectRoot ? config : { ...config, projectRoot: dir };
   } catch {
     return null;
   }

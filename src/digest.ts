@@ -7,7 +7,8 @@ import { parseLearningDoc, titleFromFilename } from './utils/search-index.js';
 import { requireInit, detectProjectConfig } from './config.js';
 import { calculateTeamHealth } from './skill-health.js';
 import { createGit } from './utils/git.js';
-import type { GlobalOptions, UserStats } from './types.js';
+import type { GlobalOptions, UserStats, TokenUsage } from './types.js';
+import { totalTokens } from './types.js';
 
 interface SkillChange {
   name: string;
@@ -292,6 +293,52 @@ export function summarizeInterventions(teamStats: UserStats[]): InterventionSumm
   };
 }
 
+/** Aggregated team-wide conversation-turn + token-usage summary (Issue #75). */
+export interface ConversationSummary {
+  /** Total human conversation turns (UserPromptSubmit) across the team. */
+  totalPrompts: number;
+  /** Team-wide cumulative token usage. */
+  tokens: TokenUsage;
+  /** Grand total of all token buckets. */
+  totalTokens: number;
+  /** Per-user ranking by token usage (highest first). */
+  ranked: Array<{ username: string; prompts: number; tokens: number }>;
+}
+
+/** Compact a token count into a human-friendly string (e.g. 12.3M, 4.5K). */
+export function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+/**
+ * Summarize the conversation-turn count and token usage across all reported team
+ * stats. Returns null when no user has reported any prompts or tokens yet.
+ */
+export function summarizeConversation(teamStats: UserStats[]): ConversationSummary | null {
+  const users = teamStats.filter(
+    (u) => (u.prompts && u.prompts > 0) || (u.tokens && totalTokens(u.tokens) > 0),
+  );
+  if (users.length === 0) return null;
+
+  let totalPrompts = 0;
+  const tokens: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+
+  const ranked = users.map((u) => {
+    const p = u.prompts ?? 0;
+    const t = u.tokens ?? { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+    totalPrompts += p;
+    tokens.input += t.input;
+    tokens.output += t.output;
+    tokens.cacheRead += t.cacheRead;
+    tokens.cacheCreation += t.cacheCreation;
+    return { username: u.username, prompts: p, tokens: totalTokens(t) };
+  }).sort((a, b) => b.tokens - a.tokens);
+
+  return { totalPrompts, tokens, totalTokens: totalTokens(tokens), ranked };
+}
+
 /**
  * Generate and display weekly team digest.
  */
@@ -354,14 +401,14 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     // Learnings
     const { recent: recentLearnings, total: totalLearnings } = await getRecentLearnings(repoPath);
     if (recentLearnings.length > 0) {
-      console.log(`📚 本周新增 Learnings: ${recentLearnings.length} 篇`);
+      console.log(`📚 New Learnings This Week: ${recentLearnings.length}`);
       for (const learning of recentLearnings) {
         console.log(`  • ${learning.title}`);
       }
       console.log('');
     }
     if (totalLearnings > 0) {
-      console.log(`📊 知识库总量: ${totalLearnings} 篇 learnings`);
+      console.log(`📊 Knowledge base total: ${totalLearnings} learnings`);
       console.log('');
     }
 
@@ -389,18 +436,28 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     // Session autonomy — Human Intervention metric (Issue #34)
     const interventions = summarizeInterventions(teamStats);
     if (interventions) {
-      console.log('🤖 会话自主性 (Human Intervention):');
+      console.log('🤖 Session Autonomy (Human Intervention):');
       console.log(
-        `  团队均值: ${interventions.avgPerSession.toFixed(2)} 次干预/会话 ` +
-        `(${interventions.totalSessions} 会话, ${interventions.totalInterventions} 次干预)`,
+        `  Team avg: ${interventions.avgPerSession.toFixed(2)} interventions/session ` +
+        `(${interventions.totalSessions} sessions, ${interventions.totalInterventions} interventions)`,
       );
       console.log(
-        `  分解: 中断 ${interventions.interrupt} · 拒绝 ${interventions.toolReject} · 纠偏 ${interventions.correction}`,
+        `  Breakdown: interrupt ${interventions.interrupt} · reject ${interventions.toolReject} · correction ${interventions.correction}`,
       );
-      console.log('  干预率排行 (高 → 低, 越低自主性越强):');
-      for (const r of interventions.ranked.slice(0, 10)) {
-        console.log(`    • ${r.username}: ${r.rate.toFixed(2)}/会话 (${r.total} 次 / ${r.sessions} 会话)`);
-      }
+      console.log('');
+    }
+
+    // Conversation turns + token usage (Issue #75)
+    const conversation = summarizeConversation(teamStats);
+    if (conversation) {
+      const t = conversation.tokens;
+      console.log('💬 Conversation & Token Usage:');
+      console.log(`  Total human prompts: ${conversation.totalPrompts}`);
+      console.log(
+        `  Total tokens: ${formatTokenCount(conversation.totalTokens)} ` +
+        `(input ${formatTokenCount(t.input)} · output ${formatTokenCount(t.output)} · ` +
+        `cache read ${formatTokenCount(t.cacheRead)} · cache write ${formatTokenCount(t.cacheCreation)})`,
+      );
       console.log('');
     }
 

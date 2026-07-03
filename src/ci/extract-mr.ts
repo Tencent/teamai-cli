@@ -10,7 +10,6 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 
 import { importFromMR } from '../import-mr.js';
 // applyCodebaseSuggestions removed: codebase updates now handled by teamwiki/ graph engine
@@ -27,7 +26,6 @@ export interface CiExtractMrOptions {
   url: string;
   mode: 'comment' | 'write' | 'both';
   teamRepo?: string;
-  existingCodebase?: string;
   commentMarker?: string;
   writeMode?: 'direct' | 'pending-review';
   output?: string;
@@ -201,42 +199,16 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
     throw new Error('write 模式需要 --team-repo 参数');
   }
 
-  // 读取 existing codebase.md (可选)
-  let existingCodebaseMd: string | undefined;
-  if (opts.existingCodebase) {
-    try {
-      existingCodebaseMd = await fs.readFile(opts.existingCodebase, 'utf-8');
-    } catch {
-      log.warn(`无法读取 --existing-codebase: ${opts.existingCodebase}`);
-    }
-  } else if (opts.teamRepo) {
-    const codebasePath = path.join(opts.teamRepo, 'docs', 'codebase.md');
-    try {
-      existingCodebaseMd = await fs.readFile(codebasePath, 'utf-8');
-    } catch {
-      // 不存在则不传
-    }
-  }
-
   // AI 提炼（复用 importFromMR）
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-ci-extract-'));
   let learning: LearningDraft | undefined;
-  let suggestions: CodebaseSuggestion[] | undefined;
 
-  try {
-    const result = await importFromMR({
-      url: opts.url,
-      all: true,
-      outputDir: tmpDir,
-      existingCodebaseMd,
-      dryRun: true, // 不让 importFromMR 自己写文件，我们自己控制写入
-    });
-    learning = result.learning;
-    suggestions = result.codebaseSuggestions;
-  } finally {
-    // 清理临时目录
-    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-  }
+  const result = await importFromMR({
+    url: opts.url,
+    all: true,
+    learningsDir: opts.teamRepo ? path.join(opts.teamRepo, 'learnings') : undefined,
+    dryRun: true, // 不让 importFromMR 自己写文件，我们自己控制写入
+  });
+  learning = result.learning;
 
   // 执行 comment
   // NOTE: codebase suggestions 不再作为独立 comment 发布，已被图谱变更 comment 替代
@@ -306,7 +278,16 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
         };
 
         if ((opts.mode === 'comment' || opts.mode === 'both') && graphChangeSummary.added.length > 0) {
-          await postCodebaseGraphComment(opts.url, graphChangeSummary, opts.dryRun);
+          // 推断受影响模块，附加到 graph comment 作为知识库更新预览
+          const affectedModules = [...new Set(changedFiles.map(f => f.split('/')[0]))];
+          const wikiUpdatePreview = affectedModules.length > 0
+            ? `**📚 Teamwiki 知识库将增量更新以下模块：**\n${affectedModules.map(m => `- \`${m}\` (evidence + G-document)`).join('\n')}`
+            : '';
+          await postCodebaseGraphComment(
+            opts.url,
+            { ...graphChangeSummary, wikiUpdatePreview },
+            opts.dryRun,
+          );
         }
       }
     }
@@ -318,7 +299,6 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
   if (opts.mode === 'write' || opts.mode === 'both') {
     // 当使用 individual comments 时，读取 rejection 状态进行过滤
     let filteredLearning = learning;
-    let filteredSuggestions = suggestions;
 
     if (opts.individualComments && !opts.dryRun) {
       const parsed = parseMrUrl(opts.url);
@@ -329,17 +309,6 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
         if (learning && !shouldWrite('learning', rejections, parsed.provider)) {
           log.info('Learning 被 reject，跳过写入');
           filteredLearning = undefined;
-        }
-
-        // 过滤 suggestions
-        if (suggestions) {
-          filteredSuggestions = suggestions.filter((_, i) =>
-            shouldWrite(`suggestion:${i + 1}`, rejections, parsed.provider),
-          );
-          const rejected = suggestions.length - filteredSuggestions.length;
-          if (rejected > 0) {
-            log.info(`${rejected} 条 codebase 建议被 reject，已排除`);
-          }
         }
       }
     }
@@ -369,11 +338,39 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
           const fse = await import('fs-extra');
           const srcWiki = path.join(businessRepo, 'teamwiki');
           const teamWikiRoot = path.join(path.resolve(opts.teamRepo!), 'teamwiki');
-          if (await fse.pathExists(srcWiki)) {
-            await fse.copy(srcWiki, teamWikiRoot, { overwrite: true });
+          try {
+            if (await fse.pathExists(srcWiki)) {
+              const evidenceSrc = path.join(srcWiki, 'evidence', 'code', projectName);
+              const evidenceDest = path.join(teamWikiRoot, 'evidence', 'code', projectName);
+              if (await fse.pathExists(evidenceSrc)) {
+                await fse.ensureDir(evidenceDest);
+                await fse.copy(evidenceSrc, evidenceDest, { overwrite: true });
+              }
+              const srcGraph = path.join(srcWiki, '.indices', 'graph-index.json');
+              if (await fse.pathExists(srcGraph)) {
+                const destGraphDir = path.join(evidenceDest, '.indices');
+                await fse.ensureDir(destGraphDir);
+                await fse.copy(srcGraph, path.join(destGraphDir, 'graph-index.json'));
+              }
+              const { aggregateGlobalGraph } = await import('../graph-aggregate.js');
+              await aggregateGlobalGraph(teamWikiRoot);
+              try {
+                const { deepEnrich } = await import('../deep-enrich.js');
+                await deepEnrich({
+                  project: projectName,
+                  evidenceDir: evidenceDest,
+                  wikiRoot: teamWikiRoot,
+                  cacheDir: businessRepo,
+                });
+                log.success(`teamwiki/ deep enrich 完成: ${projectName}`);
+              } catch (enrichErr) {
+                log.debug(`[deep-enrich] 失败（非阻塞）: ${enrichErr instanceof Error ? enrichErr.message : enrichErr}`);
+              }
+              graphWritten = true;
+              log.success(`teamwiki/ 知识库增量更新完成`);
+            }
+          } finally {
             await fse.remove(srcWiki).catch(() => {});
-            graphWritten = true;
-            log.success(`teamwiki/ 图谱已更新到团队仓库`);
           }
         } catch (err) {
           log.debug(`[codebase-graph] 图谱写入失败（非阻塞）: ${err instanceof Error ? err.message : err}`);
@@ -384,7 +381,7 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
     await writeKnowledgeToRepo(
       opts.teamRepo!,
       filteredLearning,
-      filteredSuggestions,
+      undefined,
       opts.writeMode ?? 'direct',
       opts.url,
       opts.dryRun,
@@ -394,7 +391,7 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
 
   // 输出 artifacts
   if (opts.output) {
-    await writeArtifacts(opts.output, learning, suggestions);
+    await writeArtifacts(opts.output, learning, undefined);
     log.success(`Artifacts 已输出到: ${opts.output}`);
   }
 }

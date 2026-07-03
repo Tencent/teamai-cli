@@ -39,7 +39,7 @@ async function readResult(filePath: string): Promise<Record<string, unknown>> {
 
 describe('hooks E2E — real file I/O', () => {
   describe('inject — full injection to temp directories', () => {
-    it('creates Claude settings.json with all 4 events and 10 dispatch hooks', async () => {
+    it('creates Claude settings.json with all 4 events and 6 dispatch hooks', async () => {
       const p = claudePath();
       await injectHooks(p, 'claude');
 
@@ -49,11 +49,11 @@ describe('hooks E2E — real file I/O', () => {
       expect(Object.keys(hooks)).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit']);
       expect(hooks.SessionStart).toHaveLength(1);
       expect(hooks.Stop).toHaveLength(1);
-      expect(hooks.PostToolUse).toHaveLength(7);
+      expect(hooks.PostToolUse).toHaveLength(3);
       expect(hooks.UserPromptSubmit).toHaveLength(1);
     });
 
-    it('creates Cursor hooks.json with all 4 events and 10 dispatch hooks', async () => {
+    it('creates Cursor hooks.json with all 4 events and 6 dispatch hooks', async () => {
       const p = cursorPath();
       await injectHooks(p, 'cursor');
 
@@ -64,7 +64,7 @@ describe('hooks E2E — real file I/O', () => {
       expect(Object.keys(hooks)).toEqual(['sessionStart', 'stop', 'postToolUse', 'beforeSubmitPrompt']);
       expect(hooks.sessionStart).toHaveLength(1);
       expect(hooks.stop).toHaveLength(1);
-      expect(hooks.postToolUse).toHaveLength(7);
+      expect(hooks.postToolUse).toHaveLength(3);
       expect(hooks.beforeSubmitPrompt).toHaveLength(1);
     });
 
@@ -253,6 +253,10 @@ describe('hooks E2E — real file I/O', () => {
       const originalHome = process.env.HOME;
       process.env.HOME = tmpDir;
 
+      // Pre-create tool root dirs so they are detected as installed
+      await fse.ensureDir(path.join(tmpDir, '.claude'));
+      await fse.ensureDir(path.join(tmpDir, '.cursor'));
+
       await injectHooksToAllTools({
         claude: { settings: '.claude/settings.json' },
         cursor: { settings: '.cursor/hooks.json' },
@@ -291,6 +295,8 @@ describe('hooks E2E — real file I/O', () => {
       const originalHome = process.env.HOME;
       process.env.HOME = tmpDir;
 
+      await fse.ensureDir(path.join(tmpDir, '.claude'));
+
       await injectHooksToAllTools({
         claude: { settings: '.claude/settings.json' },
         'codex-internal': {},
@@ -304,6 +310,27 @@ describe('hooks E2E — real file I/O', () => {
       // codex-internal has no settings → no hooks file created
       const codexInternalFile = path.join(tmpDir, '.codex-internal', 'settings.json');
       expect(await fse.pathExists(codexInternalFile)).toBe(false);
+    });
+
+    it('skips tools whose root directory does not exist (not installed)', async () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = tmpDir;
+
+      // Only create .claude dir — .tclaude is NOT created (simulating uninstalled tool)
+      await fse.ensureDir(path.join(tmpDir, '.claude'));
+
+      await injectHooksToAllTools({
+        claude: { settings: '.claude/settings.json' },
+        tclaude: { settings: '.tclaude/settings.json' },
+      });
+
+      process.env.HOME = originalHome;
+
+      const claudeFile = path.join(tmpDir, '.claude', 'settings.json');
+      const tclaudeFile = path.join(tmpDir, '.tclaude', 'settings.json');
+
+      expect(await fse.pathExists(claudeFile)).toBe(true);
+      expect(await fse.pathExists(tclaudeFile)).toBe(false);
     });
   });
 });
