@@ -9,6 +9,8 @@
  * remain unchanged for backward compatibility during migration.
  */
 
+import path from 'node:path';
+
 import type { HookHandler } from './hook-dispatch.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { normalizeToolName } from './utils/tool-names.js';
@@ -34,6 +36,8 @@ const TRACK_TIMEOUT_MS = 5_000;
 const DASHBOARD_TIMEOUT_MS = 5_000;
 /** Contribute-check reads local state + events.jsonl — generally fast. */
 const CONTRIBUTE_CHECK_TIMEOUT_MS = 10_000;
+/** Votes sync at session end: parse transcript + push deltas. */
+const VOTES_SYNC_TIMEOUT_MS = 8_000;
 /** TodoWrite hint is a local dedup-cache check — very fast. */
 const TODOWRITE_HINT_TIMEOUT_MS = 5_000;
 /** MR-hint queries a remote MR/PR API — allow a network round-trip. */
@@ -163,6 +167,42 @@ const contributeCheckHandler: HookHandler = {
   },
 };
 
+const votesSyncHandler: HookHandler = {
+  name: 'votes-sync',
+  async execute(stdin) {
+    if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
+
+    const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : null;
+    if (!transcriptPath) return null;
+
+    try {
+      const { parseTranscriptForVotes } = await import('./transcript-parser.js');
+      const { incrementUpvoted, syncVotesToTeam } = await import('./votes.js');
+      const { requireInit } = await import('./config.js');
+
+      // recalledDocIds are already counted by autoUpvote() at recall time;
+      // we only need referencedDocIds (adopted signal) from the transcript.
+      const voteData = await parseTranscriptForVotes(transcriptPath);
+
+      const { localConfig } = await requireInit();
+      const { VOTES_LOCAL_DIR } = await import('./types.js');
+      const votesDir = VOTES_LOCAL_DIR;
+      const votePath = path.join(votesDir, `${localConfig.username}.yaml`);
+
+      if (voteData.referencedDocIds.length > 0) {
+        await incrementUpvoted(votePath, voteData.referencedDocIds);
+      }
+
+      await syncVotesToTeam(localConfig.repo.localPath, localConfig.username, votesDir).catch(() => {
+        // Push failed — will retry next session via reportUsageToTeam
+      });
+    } catch {
+      // Non-critical — votes will sync on next pull
+    }
+    return null;
+  },
+};
+
 const todowriteHintHandler: HookHandler = {
   name: 'todowrite-hint',
   async execute(stdin, _tool) {
@@ -229,6 +269,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // ─── Stop ─────────────────────────────────────────
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS },
     { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: CONTRIBUTE_CHECK_TIMEOUT_MS },
+    { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: VOTES_SYNC_TIMEOUT_MS },
     { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
 
     // ─── PostToolUse ──────────────────────────────────

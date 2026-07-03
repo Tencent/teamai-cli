@@ -10,6 +10,7 @@ import {
   type SearchIndex,
   type SearchIndexEntry,
   type UserVotes,
+  type VoteEntryV2,
   type KnowledgeType,
 } from '../types.js';
 
@@ -261,8 +262,14 @@ export function titleFromFilename(filename: string): string {
  * Aggregate vote counts from per-user vote files.
  * Returns a map of filename → total vote count.
  */
-async function aggregateVotes(votesDir: string): Promise<Map<string, number>> {
-  const counts = new Map<string, number>();
+interface VoteAggregation {
+  scores: Map<string, number>;
+  confidenceMap: Map<string, number>;
+}
+
+async function aggregateVotes(votesDir: string): Promise<VoteAggregation> {
+  const scores = new Map<string, number>();
+  const agg = new Map<string, { recalled: number; upvoted: number; lastRecalled: string }>();
   const files = await listFiles(votesDir);
 
   for (const file of files) {
@@ -272,10 +279,33 @@ async function aggregateVotes(votesDir: string): Promise<Map<string, number>> {
 
     try {
       const YAML = (await import('yaml')).default;
-      const parsed = YAML.parse(content) as UserVotes | null;
-      if (parsed?.votes) {
-        for (const docId of Object.keys(parsed.votes)) {
-          counts.set(docId, (counts.get(docId) ?? 0) + 1);
+      const parsed = YAML.parse(content) as Record<string, unknown> | null;
+      if (!parsed?.votes) continue;
+
+      if (parsed.version === 2) {
+        const votes = parsed.votes as Record<string, VoteEntryV2>;
+        for (const [docId, entry] of Object.entries(votes)) {
+          const recalled = entry.recalled_count ?? 0;
+          const upvoted = entry.upvoted_count ?? 0;
+          scores.set(docId, (scores.get(docId) ?? 0) + recalled * 0.3 + upvoted * 1.0);
+
+          const existing = agg.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '' };
+          existing.recalled += recalled;
+          existing.upvoted += upvoted;
+          if (entry.last_recalled_at > existing.lastRecalled) {
+            existing.lastRecalled = entry.last_recalled_at;
+          }
+          agg.set(docId, existing);
+        }
+      } else {
+        const votes = (parsed as unknown as UserVotes).votes;
+        for (const [docId, entry] of Object.entries(votes)) {
+          scores.set(docId, (scores.get(docId) ?? 0) + 1);
+
+          const existing = agg.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '' };
+          existing.recalled += 1;
+          if (entry.at > existing.lastRecalled) existing.lastRecalled = entry.at;
+          agg.set(docId, existing);
         }
       }
     } catch {
@@ -283,7 +313,17 @@ async function aggregateVotes(votesDir: string): Promise<Map<string, number>> {
     }
   }
 
-  return counts;
+  const { computeConfidence } = await import('../maintenance/confidence.js');
+  const confidenceMap = new Map<string, number>();
+  for (const [docId, data] of agg) {
+    confidenceMap.set(docId, computeConfidence({
+      recalledCount: data.recalled,
+      upvotedCount: data.upvoted,
+      lastRecalledAt: data.lastRecalled,
+    }));
+  }
+
+  return { scores, confidenceMap };
 }
 
 /**
@@ -471,9 +511,10 @@ export async function buildIndex(
     : optionsOrLearningsDir;
 
   // Aggregate votes once and reuse across all collectors.
-  const voteCounts = opts.votesDir
+  const voteAgg = opts.votesDir
     ? await aggregateVotes(opts.votesDir)
-    : new Map<string, number>();
+    : { scores: new Map<string, number>(), confidenceMap: new Map<string, number>() };
+  const voteCounts = voteAgg.scores;
 
   const entries: SearchIndexEntry[] = [];
 
@@ -491,6 +532,16 @@ export async function buildIndex(
   }
   if (opts.codebaseDir) {
     entries.push(...await collectRecursiveMdEntries(opts.codebaseDir, 'docs', voteCounts));
+  }
+
+  // Annotate entries with confidence/hotness for hot/cold scoring.
+  if (voteAgg.confidenceMap.size > 0) {
+    try {
+      const { annotateHotness } = await import('../maintenance/hot-cold.js');
+      annotateHotness(entries, voteAgg.confidenceMap);
+    } catch {
+      // Non-critical: hot/cold annotation is best-effort
+    }
   }
 
   // Build document-frequency map for IDF weighting.
@@ -641,6 +692,11 @@ export function search(
       // codebase-index.md 额外权重 boost，确保章节摘要优先于普通 docs 返回。
       if (path.basename(entry.path ?? '') === CODEBASE_INDEX_FILENAME) {
         score *= CODEBASE_INDEX_WEIGHT_BOOST;
+      }
+
+      // Hot/cold penalty: entries with low confidence get demoted.
+      if (entry.hotness !== undefined && entry.hotness < 1.0) {
+        score *= entry.hotness;
       }
 
       results.push({ entry, score });

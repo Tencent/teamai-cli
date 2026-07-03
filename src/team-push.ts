@@ -4,7 +4,7 @@ import { readUsageEvents, truncateUsageAfterReport } from './usage-tracker.js';
 import { aggregateUsage } from './stats.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
 import { createGit, pushRepoDirectly, pullRepo, resetToCleanMaster } from './utils/git.js';
-import { writeFile, readFileSafe, ensureDir, pathExists, listFiles, readJson, writeJson } from './utils/fs.js';
+import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent } from './types.js';
 import { VOTES_LOCAL_DIR, emptyTokenUsage, addTokenUsage } from './types.js';
@@ -360,20 +360,13 @@ export async function reportUsageToTeam(
       filesToPush.push(`stats/${username}.yaml`);
     }
 
-    // Always stage pending local votes (independent of usage events)
+    // Always stage pending local votes (V2 delta-aware merge)
     try {
       if (await pathExists(VOTES_LOCAL_DIR)) {
-        const voteFiles = await listFiles(VOTES_LOCAL_DIR);
-        for (const vf of voteFiles) {
-          if (!vf.endsWith('.yaml') && !vf.endsWith('.yml')) continue;
-          const localVotePath = path.join(VOTES_LOCAL_DIR, vf);
-          const repoVotePath = path.join(repoPath, 'votes', vf);
-          const content = await readFileSafe(localVotePath);
-          if (content) {
-            await ensureDir(path.join(repoPath, 'votes'));
-            await writeFile(repoVotePath, content);
-            filesToPush.push(`votes/${vf}`);
-          }
+        const { syncVotesToTeam } = await import('./votes.js');
+        const synced = await syncVotesToTeam(repoPath, username, VOTES_LOCAL_DIR);
+        if (synced) {
+          filesToPush.push(`votes/${username}.yaml`);
         }
       }
     } catch (e) {

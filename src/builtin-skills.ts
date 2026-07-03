@@ -40,7 +40,7 @@ function getBuiltinSkillsDir(): string {
 }
 
 /** Names of CLI built-in skills. Used by push to exclude them from team repo push. */
-export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'team-wiki-codebase']);
+export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'team-wiki-codebase', 'teamai-workflow', 'teamai-import']);
 
 /** Built-in skills that depend on recall being enabled. Skipped when recall is disabled. */
 export const RECALL_DEPENDENT_SKILLS = new Set(['teamai-share-learnings', 'team-wiki-codebase']);
