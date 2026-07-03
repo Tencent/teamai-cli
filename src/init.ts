@@ -77,27 +77,10 @@ async function promptForRoleProfile(
   }
 
   const primaryRole = manifest.roles[primaryIndex - 1];
-  const additionalCandidates = manifest.roles.filter((role) => role.id !== primaryRole.id);
-  let additionalRoles: string[] = [];
-
-  if (additionalCandidates.length > 0) {
-    log.info('Additional roles (optional):');
-    additionalCandidates.forEach((role, index) => {
-      const suffix = role.description ? `: ${role.description}` : '';
-      log.info(`  ${index + 1}. ${role.id}${suffix}`);
-    });
-
-    const additionalAnswer = await askQuestion(
-      'Additional roles (comma-separated numbers, blank to skip): ',
-      '',
-    );
-    const additionalIndexes = parseRoleSelection(additionalAnswer, additionalCandidates.length);
-    additionalRoles = additionalIndexes.map((selection) => additionalCandidates[selection - 1].id);
-  }
 
   return {
     primaryRole: primaryRole.id,
-    additionalRoles,
+    additionalRoles: [],
     resourceProfileVersion: manifest.version,
   };
 }
