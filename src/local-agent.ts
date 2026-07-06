@@ -1,0 +1,1094 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import readline from 'node:readline';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import fse from 'fs-extra';
+import YAML from 'yaml';
+import { log } from './utils/logger.js';
+import {
+  ensureDir,
+  pathExists,
+  readFileSafe,
+  readJson,
+  remove,
+  writeFile,
+  writeJson,
+} from './utils/fs.js';
+import { ResourceHandler } from './resources/base.js';
+import { RulesHandler, SkillsHandler } from './resources/index.js';
+import { injectHooksToAllTools } from './hooks.js';
+import { parseHookEvent, appendEvent, compactEvents } from './dashboard-collector.js';
+import { getCurrentVersion } from './package-info.js';
+import {
+  TEAMAI_HOME,
+  TEAMAI_TOKEN_PATH,
+  TEAMAI_CLAUDEMD_START,
+  TEAMAI_CLAUDEMD_END,
+  TeamaiConfigSchema,
+  type DashboardEvent,
+  type LocalConfig,
+  type Scope,
+  type TeamaiConfig,
+} from './types.js';
+
+const execFileAsync = promisify(execFile);
+
+const LOCAL_AGENT_DIR = 'local-agent';
+const CONFIG_FILE = 'config.json';
+const MANIFEST_FILE = 'manifest.json';
+const REPORTER_QUEUE_FILE = 'reporter/queue.jsonl';
+
+type LocalAgentScope = 'instance' | 'user' | 'project';
+type ResourceKind = 'skills' | 'rules' | 'claudemd';
+type CommandResourceKind = 'skill' | 'rule' | 'claudemd';
+
+interface WorkspaceBinding {
+  groupId: number;
+  groupName?: string;
+  boundAt: string;
+}
+
+export interface LocalAgentConfig {
+  endpoint: string;
+  token?: string;
+  localAgentId: string;
+  createdAt: string;
+  userGroupId?: number;
+  userGroupName?: string;
+  workspaceBindings: Record<string, WorkspaceBinding>;
+}
+
+interface LocalAgentGroup {
+  id: number;
+  name: string;
+  is_primary?: boolean;
+}
+
+interface ManifestResource {
+  slug: string;
+  version?: string;
+  display_name?: string;
+  source?: string;
+  installed_at: string;
+}
+
+interface ManifestScope {
+  skills: Record<string, ManifestResource>;
+  rules: Record<string, ManifestResource>;
+  claudemd: Record<string, ManifestResource>;
+}
+
+interface LocalAgentManifest {
+  scopes: Record<string, ManifestScope>;
+}
+
+interface LocalAgentCommand {
+  id: number;
+  type?: string;
+  scope?: LocalAgentScope;
+  workspace_path?: string;
+  download_url?: string;
+  skill_slug?: string;
+  skill_version?: string;
+  rule_slug?: string;
+  rule_version?: string;
+  claudemd_slug?: string;
+  claudemd_version?: string;
+  resource_slug?: string;
+  resource_version?: string;
+  slug?: string;
+  name?: string;
+  version?: string;
+  display_name?: string;
+}
+
+interface LocalAgentContext {
+  cwd?: string;
+  tool?: string;
+  status?: string;
+  event?: DashboardEvent;
+}
+
+function getTeamaiHomePath(): string {
+  return path.join(process.env.HOME ?? '', '.teamai');
+}
+
+function getLocalAgentHome(): string {
+  return path.join(getTeamaiHomePath(), LOCAL_AGENT_DIR);
+}
+
+function getConfigPath(): string {
+  return path.join(getLocalAgentHome(), CONFIG_FILE);
+}
+
+function getManifestPath(): string {
+  return path.join(getLocalAgentHome(), MANIFEST_FILE);
+}
+
+function getQueuePath(): string {
+  return path.join(getTeamaiHomePath(), REPORTER_QUEUE_FILE);
+}
+
+function compileClaudemdBlock(contents: string[]): string | null {
+  const parts = contents.map((content) => content.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+  return [
+    TEAMAI_CLAUDEMD_START,
+    '<!-- DO NOT EDIT: This section is auto-managed by teamai -->',
+    '',
+    parts.join('\n\n'),
+    '',
+    TEAMAI_CLAUDEMD_END,
+  ].join('\n');
+}
+
+function normalizeEndpoint(endpoint: string): string {
+  return endpoint.trim().replace(/\/+$/, '');
+}
+
+function generateLocalAgentId(): string {
+  return crypto.randomBytes(8).toString('hex');
+}
+
+function scopeKey(scope: LocalAgentScope, workspacePath?: string): string {
+  return scope === 'project' ? `project:${workspacePath ?? ''}` : scope;
+}
+
+function emptyManifestScope(): ManifestScope {
+  return { skills: {}, rules: {}, claudemd: {} };
+}
+
+async function loadManifest(): Promise<LocalAgentManifest> {
+  const manifest = await readJson<LocalAgentManifest>(getManifestPath());
+  return manifest ?? { scopes: {} };
+}
+
+async function saveManifest(manifest: LocalAgentManifest): Promise<void> {
+  await writeJson(getManifestPath(), manifest);
+}
+
+function getManifestScope(
+  manifest: LocalAgentManifest,
+  scope: LocalAgentScope,
+  workspacePath?: string,
+): ManifestScope {
+  const key = scopeKey(scope, workspacePath);
+  manifest.scopes[key] ??= emptyManifestScope();
+  return manifest.scopes[key];
+}
+
+export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
+  const fileConfig = await readJson<LocalAgentConfig>(getConfigPath());
+  if (fileConfig?.endpoint && fileConfig.localAgentId) {
+    return {
+      ...fileConfig,
+      endpoint: normalizeEndpoint(fileConfig.endpoint),
+      workspaceBindings: fileConfig.workspaceBindings ?? {},
+    };
+  }
+
+  const envEndpoint =
+    process.env.TEAMAI_HTTP_ENDPOINT ??
+    process.env.TEAMAI_ENDPOINT ??
+    process.env.TEAMAI_API_BASE_URL;
+  if (!envEndpoint) return null;
+
+  return {
+    endpoint: normalizeEndpoint(envEndpoint),
+    token: process.env.TEAMAI_API_TOKEN ?? process.env.TEAMAI_TOKEN,
+    localAgentId: process.env.TEAMAI_LOCAL_AGENT_ID ?? generateLocalAgentId(),
+    createdAt: new Date().toISOString(),
+    workspaceBindings: {},
+  };
+}
+
+async function saveLocalAgentConfig(config: LocalAgentConfig): Promise<void> {
+  await writeJson(getConfigPath(), {
+    ...config,
+    endpoint: normalizeEndpoint(config.endpoint),
+    workspaceBindings: config.workspaceBindings ?? {},
+  });
+}
+
+function createLocalAgentTeamConfig(endpoint: string): TeamaiConfig {
+  return TeamaiConfigSchema.parse({
+    team: 'local-agent',
+    repo: endpoint,
+    description: 'HTTP local agent resource cache',
+  });
+}
+
+function createResourceLocalConfig(
+  config: LocalAgentConfig,
+  scope: LocalAgentScope,
+  repoPath: string,
+  workspacePath?: string,
+): LocalConfig {
+  const projectScope = scope === 'project';
+  return {
+    repo: { localPath: repoPath, remote: config.endpoint },
+    username: os.userInfo().username,
+    scope: projectScope ? 'project' : 'user',
+    projectRoot: projectScope ? workspacePath : undefined,
+    additionalRoles: [],
+  };
+}
+
+function getResourceRepoPath(scope: LocalAgentScope, workspacePath?: string): string {
+  if (scope === 'project' && workspacePath) {
+    return path.join(workspacePath, '.teamai', LOCAL_AGENT_DIR, 'resources');
+  }
+  return path.join(getLocalAgentHome(), 'resources', scope);
+}
+
+async function ensureProjectGitignore(workspacePath: string): Promise<void> {
+  const teamaiDir = path.join(workspacePath, '.teamai');
+  await ensureDir(teamaiDir);
+  const gitignorePath = path.join(teamaiDir, '.gitignore');
+  const existing = await readFileSafe(gitignorePath);
+  if (!existing) {
+    await writeFile(gitignorePath, ['# teamai local state', 'local-agent/', ''].join('\n'));
+    return;
+  }
+  if (!existing.split('\n').some((line) => line.trim() === 'local-agent/')) {
+    await writeFile(gitignorePath, existing.trimEnd() + '\nlocal-agent/\n');
+  }
+}
+
+function authHeaders(config: LocalAgentConfig, json = true): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (json) headers['Content-Type'] = 'application/json';
+  if (config.token) {
+    headers.Authorization = `Bearer ${config.token}`;
+    headers['X-API-Token'] = config.token;
+  }
+  return headers;
+}
+
+async function localAgentFetch<T>(
+  config: LocalAgentConfig,
+  route: string,
+  init?: RequestInit,
+): Promise<T> {
+  const response = await fetch(`${config.endpoint}${route}`, {
+    ...init,
+    headers: {
+      ...authHeaders(config, init?.body !== undefined),
+      ...(init?.headers ?? {}),
+    },
+  });
+  const text = await response.text();
+  let body: unknown = null;
+  if (text.trim()) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  }
+  if (!response.ok) {
+    const message = typeof body === 'object' && body && 'error' in body
+      ? String((body as { error: unknown }).error)
+      : text || `${response.status} ${response.statusText}`;
+    throw new Error(message);
+  }
+  return body as T;
+}
+
+async function appendReporterQueue(entry: unknown): Promise<void> {
+  try {
+    await ensureDir(path.dirname(getQueuePath()));
+    await fs.promises.appendFile(
+      getQueuePath(),
+      JSON.stringify({ at: new Date().toISOString(), entry }) + '\n',
+      'utf-8',
+    );
+  } catch {
+    // Queue writes are best-effort; hook execution must not fail on I/O.
+  }
+}
+
+export async function fetchUserGroups(config: LocalAgentConfig): Promise<LocalAgentGroup[]> {
+  const response = await localAgentFetch<{ ok?: boolean; groups?: LocalAgentGroup[] }>(
+    config,
+    '/user-groups/mine',
+    { method: 'GET' },
+  );
+  return response.groups ?? [];
+}
+
+async function askViaTty(prompt: string): Promise<string | null> {
+  if (process.stdin.isTTY) {
+    const { askQuestion } = await import('./utils/prompt.js');
+    return askQuestion(prompt, '');
+  }
+
+  if (process.platform === 'win32') return null;
+
+  let fd: number | null = null;
+  let input: fs.ReadStream | null = null;
+  let output: fs.WriteStream | null = null;
+  let rl: readline.Interface | null = null;
+  try {
+    fd = fs.openSync('/dev/tty', 'r+');
+    input = fs.createReadStream('', { fd, autoClose: false });
+    output = fs.createWriteStream('', { fd, autoClose: false });
+    rl = readline.createInterface({ input, output });
+    return await new Promise<string>((resolve) => {
+      rl!.question(prompt, (answer) => resolve(answer.trim()));
+    });
+  } catch {
+    return null;
+  } finally {
+    rl?.close();
+    input?.destroy();
+    output?.destroy();
+    if (fd !== null) try { fs.closeSync(fd); } catch {}
+  }
+}
+
+async function promptForGroupBinding(
+  workspacePath: string,
+  groups: LocalAgentGroup[],
+): Promise<LocalAgentGroup | null> {
+  if (groups.length === 0) return null;
+
+  log.debug(`local-agent: workspace not bound: ${workspacePath}`);
+  const answer = await askViaTty('是否绑定到一个组织？[y/N] ');
+  if (!answer || answer.toLowerCase() !== 'y') return null;
+
+  if (groups.length === 1) return groups[0];
+
+  log.info('可用组织:');
+  groups.forEach((group, index) => {
+    const suffix = group.is_primary ? ' (默认)' : '';
+    log.info(`  ${index + 1}. ${group.name}${suffix} [id=${group.id}]`);
+  });
+
+  const primary = groups.find((group) => group.is_primary) ?? groups[0];
+  const defaultIndex = groups.indexOf(primary) + 1;
+  const selection = await askViaTty(`选择组织编号（默认 ${defaultIndex}，0 跳过）: `);
+  if (selection === null || selection === '0') return null;
+  const index = selection ? Number.parseInt(selection, 10) : defaultIndex;
+  if (Number.isNaN(index) || index < 1 || index > groups.length) return null;
+  return groups[index - 1];
+}
+
+export async function bindWorkspaceToGroup(
+  workspacePath: string,
+  groupId?: number,
+): Promise<WorkspaceBinding | null> {
+  const config = await loadLocalAgentConfig();
+  if (!config) {
+    throw new Error('HTTP local agent is not initialized. Run `teamai init --http <ENDPOINT> --token <API_TOKEN>` first.');
+  }
+
+  const groups = await fetchUserGroups(config);
+  const group = groupId
+    ? groups.find((item) => item.id === groupId)
+    : await promptForGroupBinding(workspacePath, groups);
+  if (!group) return null;
+
+  const binding: WorkspaceBinding = {
+    groupId: group.id,
+    groupName: group.name,
+    boundAt: new Date().toISOString(),
+  };
+  config.workspaceBindings[workspacePath] = binding;
+  await saveLocalAgentConfig(config);
+  log.success(`已将项目绑定到组织：${group.name} [id=${group.id}]`);
+  return binding;
+}
+
+async function ensureWorkspaceBinding(
+  config: LocalAgentConfig,
+  workspacePath: string,
+): Promise<void> {
+  if (config.workspaceBindings[workspacePath]) return;
+
+  let groups: LocalAgentGroup[];
+  try {
+    groups = await fetchUserGroups(config);
+  } catch (e) {
+    log.debug(`local-agent: failed to load user groups: ${(e as Error).message}`);
+    return;
+  }
+
+  if (groups.length === 0) return;
+
+  const group = await promptForGroupBinding(workspacePath, groups);
+  if (group) {
+    config.workspaceBindings[workspacePath] = {
+      groupId: group.id,
+      groupName: group.name,
+      boundAt: new Date().toISOString(),
+    };
+    await saveLocalAgentConfig(config);
+    return;
+  }
+
+  // TTY prompt failed (running as hook in background) — output context for AI to prompt user
+  const groupList = groups.map((g) => `${g.name} (id=${g.id})`).join(', ');
+  const context = [
+    '[teamai] 当前项目尚未绑定组织，无法接收组织下发的 skills/rules/claudemd 资源。',
+    `可用组织: ${groupList}`,
+    `请提示用户运行: teamai bind-project`,
+    `或指定组织: teamai bind-project --group-id <id>`,
+  ].join('\n');
+  const hookOutput = JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext: context,
+    },
+  });
+  process.stdout.write(hookOutput + '\n');
+}
+
+async function emitBindingHint(
+  config: LocalAgentConfig,
+  workspacePath: string,
+): Promise<void> {
+  if (config.workspaceBindings[workspacePath]) return;
+
+  // Only hint once per session — use a temp marker file
+  const hintMarker = path.join(os.tmpdir(), `teamai-bind-hint-${process.ppid}`);
+  if (fs.existsSync(hintMarker)) return;
+  try { fs.writeFileSync(hintMarker, ''); } catch {}
+
+  let groups: LocalAgentGroup[];
+  try {
+    groups = await fetchUserGroups(config);
+  } catch {
+    return;
+  }
+  if (groups.length === 0) return;
+
+  const skipNum = groups.length + 1;
+  const choices = groups.map((g, i) => `${i + 1}. 绑定到「${g.name}」组织`);
+  const actions = groups.map((g, i) => `- 用户回复 ${i + 1} → 执行 \`teamai bind-project --group-id ${g.id}\`，完成后回复"绑定完成，请开新会话生效"`);
+  const context = [
+    '[TeamAI 绑定提示] 你必须原样展示下面的选项列表，不得修改编号或内容。等用户回复数字后执行对应命令。',
+    '',
+    '---',
+    '当前项目未绑定 TeamAI 组织。绑定后可同步团队 skills/rules。请回复数字选择：',
+    '',
+    ...choices,
+    `${skipNum}. 不绑定，以后也不再提示`,
+    '---',
+    '',
+    '执行规则（不要展示给用户）：',
+    ...actions,
+    `- 用户回复 ${skipNum} → 执行 \`teamai bind-project --skip\`，完成后回复"已跳过，以后不再提示"`,
+  ].join('\n');
+  const hookOutput = JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: context,
+    },
+  });
+  process.stdout.write(hookOutput + '\n');
+}
+
+async function resolveWorkspacePath(cwd?: string): Promise<string | undefined> {
+  if (!cwd) return undefined;
+  const absolute = path.resolve(cwd);
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', absolute, 'rev-parse', '--show-toplevel']);
+    const root = stdout.trim();
+    return root ? path.resolve(root) : absolute;
+  } catch {
+    return absolute;
+  }
+}
+
+function reportableResources(scope: ManifestScope, kind: ResourceKind): Array<{
+  slug: string;
+  version?: string;
+  display_name?: string;
+  source: string;
+}> {
+  return Object.values(scope[kind]).map((resource) => ({
+    slug: resource.slug,
+    version: resource.version,
+    display_name: resource.display_name ?? resource.slug,
+    source: resource.source ?? 'enterprise',
+  }));
+}
+
+export async function buildReportPayload(
+  config: LocalAgentConfig,
+  context: LocalAgentContext,
+): Promise<Record<string, unknown>> {
+  const manifest = await loadManifest();
+  const workspacePath = await resolveWorkspacePath(context.cwd);
+  const instanceResources = getManifestScope(manifest, 'instance');
+  const userResources = getManifestScope(manifest, 'user');
+  const workspaceResources = workspacePath
+    ? getManifestScope(manifest, 'project', workspacePath)
+    : emptyManifestScope();
+  const binding = workspacePath ? config.workspaceBindings[workspacePath] : undefined;
+
+  const payload: Record<string, unknown> = {
+    agent_type: context.tool ?? 'workbuddy',
+    agent_version: getCurrentVersion(),
+    local_agent_id: config.localAgentId,
+    host_name: os.hostname(),
+    os: os.platform(),
+    started_at: config.createdAt,
+    last_status: context.status ?? 'running',
+    skills: reportableResources(instanceResources, 'skills'),
+    rules: reportableResources(instanceResources, 'rules'),
+    claudemd: reportableResources(instanceResources, 'claudemd'),
+    user_level: {
+      group_id: config.userGroupId,
+      skills: reportableResources(userResources, 'skills'),
+      rules: reportableResources(userResources, 'rules'),
+      claudemd: reportableResources(userResources, 'claudemd'),
+    },
+  };
+
+  if (workspacePath) {
+    payload.workspaces = [
+      {
+        path: workspacePath,
+        name: path.basename(workspacePath),
+        ide_type: context.tool ?? 'workbuddy',
+        group_id: binding?.groupId,
+        skills: reportableResources(workspaceResources, 'skills'),
+        rules: reportableResources(workspaceResources, 'rules'),
+        claudemd: reportableResources(workspaceResources, 'claudemd'),
+      },
+    ];
+  }
+
+  return payload;
+}
+
+async function buildSyncPayload(
+  config: LocalAgentConfig,
+  context: LocalAgentContext,
+): Promise<Record<string, unknown>> {
+  const workspacePath = await resolveWorkspacePath(context.cwd);
+  const binding = workspacePath ? config.workspaceBindings[workspacePath] : undefined;
+  const payload: Record<string, unknown> = {
+    agent_type: context.tool ?? 'workbuddy',
+    local_agent_id: config.localAgentId,
+    status: context.status ?? 'running',
+  };
+  if (workspacePath) {
+    payload.workspaces = [
+      {
+        path: workspacePath,
+        name: path.basename(workspacePath),
+        ide_type: context.tool ?? 'workbuddy',
+        group_id: binding?.groupId,
+      },
+    ];
+  }
+  return payload;
+}
+
+function commandKind(command: LocalAgentCommand): CommandResourceKind | null {
+  const type = command.type ?? '';
+  if (type.endsWith('_skill') || type === '') return 'skill';
+  if (type.endsWith('_rule')) return 'rule';
+  if (type.endsWith('_claudemd') || type.endsWith('_claude_md')) return 'claudemd';
+  return null;
+}
+
+function commandAction(command: LocalAgentCommand): 'install' | 'uninstall' | null {
+  const type = command.type ?? '';
+  if (type === '') return 'install';
+  if (type.startsWith('install_')) return 'install';
+  if (type.startsWith('uninstall_')) return 'uninstall';
+  return null;
+}
+
+function commandSlug(command: LocalAgentCommand, kind: CommandResourceKind): string {
+  const slug =
+    kind === 'skill' ? command.skill_slug :
+    kind === 'rule' ? command.rule_slug :
+    command.claudemd_slug;
+  const resolved = slug ?? command.resource_slug ?? command.slug ?? command.name;
+  if (!resolved) {
+    throw new Error(`Missing ${kind} slug`);
+  }
+  return resolved;
+}
+
+function commandVersion(command: LocalAgentCommand, kind: CommandResourceKind): string | undefined {
+  return (
+    kind === 'skill' ? command.skill_version :
+    kind === 'rule' ? command.rule_version :
+    command.claudemd_version
+  ) ?? command.resource_version ?? command.version;
+}
+
+function manifestKind(kind: CommandResourceKind): ResourceKind {
+  return kind === 'skill' ? 'skills' : kind === 'rule' ? 'rules' : 'claudemd';
+}
+
+async function downloadZip(downloadUrl: string): Promise<string> {
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'teamai-local-agent-'));
+  const zipPath = path.join(tmpDir, 'resource.zip');
+
+  if (downloadUrl.startsWith('file://')) {
+    await fse.copyFile(fileURLToPath(downloadUrl), zipPath);
+    return zipPath;
+  }
+
+  if (path.isAbsolute(downloadUrl) && await pathExists(downloadUrl)) {
+    await fse.copyFile(downloadUrl, zipPath);
+    return zipPath;
+  }
+
+  const response = await fetch(downloadUrl);
+  if (!response.ok) {
+    throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  await fs.promises.writeFile(zipPath, buffer);
+  return zipPath;
+}
+
+async function extractZip(zipPath: string): Promise<string> {
+  const extractDir = path.join(path.dirname(zipPath), 'extracted');
+  await ensureDir(extractDir);
+  await execFileAsync('unzip', ['-q', zipPath, '-d', extractDir]);
+  return extractDir;
+}
+
+async function findFirst(
+  dir: string,
+  predicate: (absolutePath: string, name: string) => Promise<boolean>,
+): Promise<string | null> {
+  const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const absolute = path.join(dir, entry.name);
+    if (await predicate(absolute, entry.name)) return absolute;
+    if (entry.isDirectory()) {
+      const nested = await findFirst(absolute, predicate);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+async function findSkillRoot(extractDir: string): Promise<string> {
+  if (await pathExists(path.join(extractDir, 'SKILL.md'))) return extractDir;
+  const skillMd = await findFirst(extractDir, async (absolute, name) => name === 'SKILL.md' && (await pathExists(absolute)));
+  if (!skillMd) throw new Error('Downloaded skill package does not contain SKILL.md');
+  return path.dirname(skillMd);
+}
+
+async function findMarkdownFile(extractDir: string, preferredName: string): Promise<string> {
+  const preferred = await findFirst(
+    extractDir,
+    async (_absolute, name) => name === `${preferredName}.md` || name === preferredName,
+  );
+  if (preferred) return preferred;
+
+  const firstMd = await findFirst(extractDir, async (_absolute, name) => name.endsWith('.md'));
+  if (!firstMd) throw new Error('Downloaded package does not contain a markdown file');
+  return firstMd;
+}
+
+async function readFrontmatter(filePath: string): Promise<Record<string, unknown>> {
+  const content = await readFileSafe(filePath);
+  if (!content) return {};
+  const match = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return {};
+  try {
+    const parsed = YAML.parse(match[1]);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+async function installDownloadedResource(input: {
+  config: LocalAgentConfig;
+  command: LocalAgentCommand;
+  kind: CommandResourceKind;
+  slug: string;
+  scope: LocalAgentScope;
+  workspacePath?: string;
+}): Promise<string | undefined> {
+  if (!input.command.download_url) {
+    throw new Error(`Missing download_url for ${input.command.type ?? 'install_skill'}`);
+  }
+
+  const repoPath = getResourceRepoPath(input.scope, input.workspacePath);
+  if (input.scope === 'project' && input.workspacePath) {
+    await ensureProjectGitignore(input.workspacePath);
+  }
+  await ensureDir(repoPath);
+
+  const zipPath = await downloadZip(input.command.download_url);
+  try {
+    const extractDir = await extractZip(zipPath);
+    const teamConfig = createLocalAgentTeamConfig(input.config.endpoint);
+    const localConfig = createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
+    const now = new Date().toISOString();
+    let displayName = input.command.display_name ?? input.slug;
+
+    if (input.kind === 'skill') {
+      const skillRoot = await findSkillRoot(extractDir);
+      const dest = path.join(repoPath, 'skills', input.slug);
+      await remove(dest);
+      await fse.copy(skillRoot, dest, { overwrite: true });
+      const fm = await readFrontmatter(path.join(dest, 'SKILL.md'));
+      displayName = typeof fm.name === 'string' ? fm.name : displayName;
+      await new SkillsHandler().pullItem({
+        name: input.slug,
+        type: 'skills',
+        sourcePath: dest,
+        relativePath: `skills/${input.slug}`,
+      }, teamConfig, localConfig);
+    } else if (input.kind === 'rule') {
+      const ruleFile = await findMarkdownFile(extractDir, input.slug);
+      const dest = path.join(repoPath, 'rules', `${input.slug}.md`);
+      await fse.ensureDir(path.dirname(dest));
+      await fse.copyFile(ruleFile, dest);
+      await new RulesHandler().pullAllRules(teamConfig, localConfig);
+    } else {
+      const mdFile = await findMarkdownFile(extractDir, input.slug);
+      const dest = path.join(repoPath, 'claudemd', `${input.slug}.md`);
+      await fse.ensureDir(path.dirname(dest));
+      await fse.copyFile(mdFile, dest);
+      await syncClaudemd(teamConfig, localConfig, repoPath);
+    }
+
+    const version = commandVersion(input.command, input.kind);
+    const manifest = await loadManifest();
+    const scopeManifest = getManifestScope(manifest, input.scope, input.workspacePath);
+    scopeManifest[manifestKind(input.kind)][input.slug] = {
+      slug: input.slug,
+      version,
+      display_name: displayName,
+      source: 'enterprise',
+      installed_at: now,
+    };
+    await saveManifest(manifest);
+    return version;
+  } finally {
+    await remove(path.dirname(zipPath));
+  }
+}
+
+async function uninstallResource(input: {
+  config: LocalAgentConfig;
+  kind: CommandResourceKind;
+  slug: string;
+  scope: LocalAgentScope;
+  workspacePath?: string;
+}): Promise<void> {
+  const repoPath = getResourceRepoPath(input.scope, input.workspacePath);
+  const teamConfig = createLocalAgentTeamConfig(input.config.endpoint);
+  const localConfig = createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
+  const manifest = await loadManifest();
+  const scopeManifest = getManifestScope(manifest, input.scope, input.workspacePath);
+
+  if (input.kind === 'skill') {
+    await new SkillsHandler().removeItem(input.slug, teamConfig, localConfig);
+  } else if (input.kind === 'rule') {
+    await new RulesHandler().removeItem(input.slug, teamConfig, localConfig);
+  } else {
+    await remove(path.join(repoPath, 'claudemd', `${input.slug}.md`));
+    await syncClaudemd(teamConfig, localConfig, repoPath);
+  }
+
+  delete scopeManifest[manifestKind(input.kind)][input.slug];
+  await saveManifest(manifest);
+}
+
+async function syncClaudemd(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  repoPath: string,
+): Promise<void> {
+  const claudemdDir = path.join(repoPath, 'claudemd');
+  const files = (await pathExists(claudemdDir))
+    ? (await fse.readdir(claudemdDir)).filter((file) => file.endsWith('.md')).sort()
+    : [];
+  const contents: string[] = [];
+  for (const file of files) {
+    const content = await readFileSafe(path.join(claudemdDir, file));
+    if (content) contents.push(content);
+  }
+  const block = compileClaudemdBlock(contents);
+
+  const baseDir = localConfig.scope === 'project' && localConfig.projectRoot
+    ? localConfig.projectRoot
+    : process.env.HOME ?? '';
+
+  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    if (!toolPath.claudemd) continue;
+    if (!await ResourceHandler.isToolInstalled(toolPath.claudemd, baseDir)) continue;
+    const claudeMdPath = path.join(baseDir, toolPath.claudemd);
+    try {
+      const { injectClaudeMdSection } = await import('./utils/claudemd.js');
+      if (block) {
+        await injectClaudeMdSection(claudeMdPath, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END, block);
+        log.debug(`local-agent: synced CLAUDE.md instructions to ${tool}`);
+      } else {
+        await removeClaudeMdSection(claudeMdPath, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END);
+        log.debug(`local-agent: removed CLAUDE.md instructions from ${tool}`);
+      }
+    } catch (e) {
+      log.warn(`Failed to sync CLAUDE.md instructions to ${tool}: ${(e as Error).message}`);
+    }
+  }
+}
+
+async function removeClaudeMdSection(
+  filePath: string,
+  startMarker: string,
+  endMarker: string,
+): Promise<void> {
+  const existing = await readFileSafe(filePath);
+  if (!existing) return;
+  const startIdx = existing.indexOf(startMarker);
+  const endIdx = existing.indexOf(endMarker);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return;
+  const before = existing.substring(0, startIdx).replace(/\n+$/, '\n');
+  const after = existing.substring(endIdx + endMarker.length).replace(/^\n+/, '\n');
+  await writeFile(filePath, (before + after).trimEnd() + '\n');
+}
+
+async function ackCommand(
+  config: LocalAgentConfig,
+  command: LocalAgentCommand,
+  status: 'success' | 'failed',
+  version?: string,
+  error?: string,
+): Promise<void> {
+  await localAgentFetch(config, '/local-agent/commands/ack', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: command.id,
+      type: command.type ?? '',
+      status,
+      error: error ?? '',
+      version,
+    }),
+  });
+}
+
+async function executeCommand(
+  config: LocalAgentConfig,
+  command: LocalAgentCommand,
+  context: LocalAgentContext,
+): Promise<string | undefined> {
+  const kind = commandKind(command);
+  const action = commandAction(command);
+  if (!kind || !action) {
+    throw new Error(`Unsupported command type: ${command.type ?? ''}`);
+  }
+
+  const scope = command.scope ?? 'user';
+  const workspacePath = scope === 'project'
+    ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
+    : undefined;
+  if (scope === 'project' && !workspacePath) {
+    throw new Error('Project command is missing workspace_path');
+  }
+
+  const slug = commandSlug(command, kind);
+  if (action === 'install') {
+    return installDownloadedResource({ config, command, kind, slug, scope, workspacePath });
+  }
+
+  await uninstallResource({ config, kind, slug, scope, workspacePath });
+  return commandVersion(command, kind);
+}
+
+async function processCommands(
+  config: LocalAgentConfig,
+  commands: LocalAgentCommand[],
+  context: LocalAgentContext,
+): Promise<void> {
+  for (const command of commands) {
+    try {
+      const version = await executeCommand(config, command, context);
+      await ackCommand(config, command, 'success', version);
+      log.debug(`local-agent: command ${command.id} (${command.type ?? ''}) succeeded`);
+    } catch (e) {
+      const error = (e as Error).message;
+      log.error(`local-agent: command ${command.id} failed: ${error}`);
+      try {
+        await ackCommand(config, command, 'failed', undefined, error);
+      } catch (ackError) {
+        log.debug(`local-agent: failed to ack command ${command.id}: ${(ackError as Error).message}`);
+      }
+    }
+  }
+}
+
+export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promise<boolean> {
+  const config = await loadLocalAgentConfig();
+  if (!config) return false;
+
+  const workspacePath = await resolveWorkspacePath(context.cwd);
+  if (context.event?.type === 'session_start' && workspacePath) {
+    await ensureWorkspaceBinding(config, workspacePath);
+  }
+  if (context.event?.type === 'prompt_submit' && workspacePath) {
+    await emitBindingHint(config, workspacePath);
+  }
+
+  try {
+    const reportPayload = await buildReportPayload(config, context);
+    await localAgentFetch(config, '/local-agent/report', {
+      method: 'POST',
+      body: JSON.stringify(reportPayload),
+    });
+    log.debug('status-report: report OK');
+
+    const syncPayload = await buildSyncPayload(config, context);
+    const syncResponse = await localAgentFetch<{ ok?: boolean; commands?: LocalAgentCommand[] }>(
+      config,
+      '/local-agent/sync',
+      { method: 'POST', body: JSON.stringify(syncPayload) },
+    );
+    const commands = syncResponse.commands ?? [];
+    if (commands.length > 0) {
+      await processCommands(config, commands, context);
+    }
+    log.debug(`status-report: sync OK (${commands.length} command(s))`);
+  } catch (e) {
+    const error = (e as Error).message;
+    log.error(`status-report FAILED: ${error}`);
+    await appendReporterQueue({ error, context });
+  }
+
+  return true;
+}
+
+function hookEventName(eventName: string): string {
+  switch (eventName) {
+    case 'session-start':
+      return 'SessionStart';
+    case 'stop':
+      return 'Stop';
+    case 'post-tool-use':
+      return 'PostToolUse';
+    case 'user-prompt-submit':
+      return 'UserPromptSubmit';
+    default:
+      return eventName;
+  }
+}
+
+function statusFromEvent(event?: DashboardEvent): string {
+  if (!event) return 'running';
+  if (event.type === 'stop' || event.type === 'process_exit') return 'stopped';
+  return 'running';
+}
+
+async function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) return '';
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks).toString('utf-8');
+}
+
+export async function hookDispatch(eventName: string, tool?: string): Promise<void> {
+  const raw = await readStdin();
+  let hookData: Record<string, unknown> = {};
+  if (raw.trim()) {
+    try {
+      hookData = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      log.error('hook-dispatch: failed to parse STDIN JSON');
+      return;
+    }
+  }
+  hookData.hook_event_name ??= hookEventName(eventName);
+
+  const normalizedRaw = JSON.stringify(hookData);
+  const event = await parseHookEvent(normalizedRaw, tool ?? 'workbuddy');
+  if (event) {
+    await appendEvent(event);
+    compactEvents().catch(() => {});
+  }
+
+  await reportAndSyncLocalAgent({
+    cwd: typeof hookData.cwd === 'string' ? hookData.cwd : event?.cwd ?? process.cwd(),
+    tool: tool ?? event?.tool,
+    status: statusFromEvent(event ?? undefined),
+    event: event ?? undefined,
+  });
+}
+
+export async function initLocalAgentHttp(options: {
+  endpoint: string;
+  token?: string;
+  force?: boolean;
+}): Promise<void> {
+  const endpoint = normalizeEndpoint(options.endpoint);
+  if (!endpoint) {
+    throw new Error('HTTP endpoint is required.');
+  }
+
+  const existing = await loadLocalAgentConfig();
+  if (existing && !options.force) {
+    throw new Error('HTTP local agent is already initialized. Re-run with --force to overwrite.');
+  }
+
+  const config: LocalAgentConfig = {
+    endpoint,
+    token: options.token,
+    localAgentId: existing?.localAgentId ?? generateLocalAgentId(),
+    createdAt: existing?.createdAt ?? new Date().toISOString(),
+    workspaceBindings: existing?.workspaceBindings ?? {},
+    userGroupId: existing?.userGroupId,
+    userGroupName: existing?.userGroupName,
+  };
+
+  await ensureDir(getLocalAgentHome());
+  await saveLocalAgentConfig(config);
+  if (options.token) {
+    await writeFile(TEAMAI_TOKEN_PATH, options.token + '\n');
+  }
+
+  const teamConfig = createLocalAgentTeamConfig(endpoint);
+  await injectHooksToAllTools(teamConfig.toolPaths, process.env.HOME ?? '');
+  log.success(`HTTP local agent initialized at ${getConfigPath()}`);
+}
+
+export async function pullLocalAgentForCwd(context?: LocalAgentContext): Promise<boolean> {
+  return reportAndSyncLocalAgent({
+    cwd: context?.cwd ?? process.cwd(),
+    tool: context?.tool ?? 'workbuddy',
+    status: context?.status ?? 'running',
+    event: context?.event,
+  });
+}
+
+export async function bindCurrentProject(options?: { groupId?: number; skip?: boolean; cwd?: string }): Promise<void> {
+  const workspacePath = await resolveWorkspacePath(options?.cwd ?? process.cwd());
+  if (!workspacePath) {
+    throw new Error('Cannot resolve current workspace path.');
+  }
+  if (options?.skip) {
+    const config = await loadLocalAgentConfig();
+    if (!config) {
+      throw new Error('Local agent not initialized. Run `teamai init --http` first.');
+    }
+    config.workspaceBindings[workspacePath] = { groupId: 0, groupName: '__skipped__', boundAt: new Date().toISOString() };
+    await saveLocalAgentConfig(config);
+    log.info(`已跳过绑定，以后不再提示此项目。`);
+    return;
+  }
+  const binding = await bindWorkspaceToGroup(workspacePath, options?.groupId);
+  if (!binding) {
+    log.info('未绑定项目。');
+  }
+}
