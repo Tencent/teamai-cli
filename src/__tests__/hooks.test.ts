@@ -400,6 +400,49 @@ describe('hooks', () => {
         process.env.HOME = originalHome;
       }
     });
+
+    it('filterAgents limits injection to specified tools only', async () => {
+      mockFiles = {};
+      const originalHome = process.env.HOME;
+      process.env.HOME = '/test-home';
+
+      try {
+        await injectHooksToAllTools({
+          claude: { settings: '.claude/settings.json' },
+          codebuddy: { settings: '.codebuddy/settings.json' },
+          workbuddy: { settings: '.workbuddy/settings.json' },
+        }, undefined, ['codebuddy']);
+
+        expect(mockFiles[path.join('/test-home', '.codebuddy/settings.json')]).toBeDefined();
+        expect(mockFiles[path.join('/test-home', '.claude/settings.json')]).toBeUndefined();
+        expect(mockFiles[path.join('/test-home', '.workbuddy/settings.json')]).toBeUndefined();
+      } finally {
+        process.env.HOME = originalHome;
+      }
+    });
+
+    it('filterAgents is additive — second call adds without removing first', async () => {
+      mockFiles = {};
+      const originalHome = process.env.HOME;
+      process.env.HOME = '/test-home';
+
+      const toolPaths = {
+        claude: { settings: '.claude/settings.json' },
+        codebuddy: { settings: '.codebuddy/settings.json' },
+        workbuddy: { settings: '.workbuddy/settings.json' },
+      };
+
+      try {
+        await injectHooksToAllTools(toolPaths, undefined, ['codebuddy']);
+        await injectHooksToAllTools(toolPaths, undefined, ['workbuddy']);
+
+        expect(mockFiles[path.join('/test-home', '.codebuddy/settings.json')]).toBeDefined();
+        expect(mockFiles[path.join('/test-home', '.workbuddy/settings.json')]).toBeDefined();
+        expect(mockFiles[path.join('/test-home', '.claude/settings.json')]).toBeUndefined();
+      } finally {
+        process.env.HOME = originalHome;
+      }
+    });
   });
 
   describe('format alignment', () => {
