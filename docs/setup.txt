@@ -1,0 +1,112 @@
+# TeamAI — HTTP 模式安装 / 初始化 / 验证
+
+项目仓库：<https://github.com/Tencent/teamai-cli>（README、Issue、源码；遇问题 AI 可查阅）
+
+**适用范围**：仅 `teamai init --http <ENDPOINT> --token <API_TOKEN> --agent <TOOL>`（无 Git 仓库、只读消费者、单 agent 安装）。
+
+**不适用** Git 模式（`teamai init --repo <git-url>`）—— Git 团队请走 README 中的标准 init 流程。
+
+**前提**：ENDPOINT + API_TOKEN 由团队下发；init 会把 token 提交到 ENDPOINT（预期行为）。
+
+**验证两条闭环**：
+
+1. **pull** — /repo 未上线时 reporting-only 也算通过
+2. **report+sync** — 用 `hook-dispatch` 模拟会话
+
+失败排查见文末 [附录](#附录)。
+
+## 变量（只改这里）
+
+| 变量 | 示例 |
+|------|------|
+| `PKG_SPEC` | `@tencent/teamai-cli` |
+| `REGISTRY` | `http://r.tnpm.oa.com` |
+| `API_TOKEN` | `<api key>` |
+| `ENDPOINT` | `<团队后端 URL>` |
+| `TOOL` | 当前 agent 名称，如 `codebuddy`、`workbuddy`、`claude` |
+
+## macOS / Linux
+
+```bash
+PKG_SPEC="@tencent/teamai-cli"; REGISTRY="http://r.tnpm.oa.com"
+API_TOKEN="<在此填入 api key>"
+ENDPOINT="<在此填入团队后端 http 地址>"
+TOOL="<当前 agent 名称，如 codebuddy、workbuddy、claude>"
+
+npm i -g "$PKG_SPEC" --registry "$REGISTRY" && teamai --version
+[ -f ~/.teamai/config.yaml ] && cp ~/.teamai/config.yaml ~/.teamai/config.yaml.bak.$(date +%s) || true
+teamai init --http "$ENDPOINT" --token "$API_TOKEN" --agent "$TOOL" --force
+
+teamai pull; echo "pull exit code = $?"
+
+f="$HOME/.$TOOL/settings.json"
+if [ ! -e "$HOME/.$TOOL" ]; then echo "[$TOOL] 未安装"; exit 1; fi
+if [ -f "$f" ] && grep -q "hook-dispatch" "$f"; then echo "[$TOOL] hooks OK"
+else echo "[$TOOL] hooks 未注入 — 附录(a)"; fi
+
+printf '{"cwd":"%s"}' "$HOME" | teamai hook-dispatch session-start --tool "$TOOL"
+echo "[$TOOL] session-start 已触发"
+
+if [ -s ~/.teamai/reporter/queue.jsonl ]; then
+  echo "❌ 队列非空（上报失败）:"; cat ~/.teamai/reporter/queue.jsonl
+else echo "✅ 队列空（上报成功）"; fi
+grep -E "status-report" ~/.teamai/debug.log 2>/dev/null | tail -n 30
+```
+
+## Windows（PowerShell）
+
+```powershell
+$PKG_SPEC="@tencent/teamai-cli"; $REGISTRY="http://r.tnpm.oa.com"
+$API_TOKEN="<在此填入 api key>"; $ENDPOINT="<在此填入团队后端 http 地址>"
+$TOOL="<当前 agent 名称，如 codebuddy、workbuddy、claude>"
+$HomeDir=$env:USERPROFILE
+
+npm i -g "$PKG_SPEC" --registry "$REGISTRY"; teamai --version
+if (Test-Path "$HomeDir\.teamai\config.yaml") { Copy-Item "$HomeDir\.teamai\config.yaml" "$HomeDir\.teamai\config.yaml.bak.$([int](Get-Date -UFormat %s))" }
+teamai init --http "$ENDPOINT" --token "$API_TOKEN" --agent "$TOOL" --force
+
+teamai pull; Write-Host "pull exit code = $LASTEXITCODE"
+
+$dir="$HomeDir\.$TOOL"; $f="$dir\settings.json"
+if (-not (Test-Path $dir)) { Write-Host "[$TOOL] 未安装"; exit 1 }
+if ((Test-Path $f) -and (Select-String -Path $f -Pattern "hook-dispatch" -Quiet)) { Write-Host "[$TOOL] hooks OK" }
+else { Write-Host "[$TOOL] hooks 未注入 — 附录(a)" }
+
+('{"cwd":"' + $HomeDir.Replace('\','\\') + '"}') | teamai hook-dispatch session-start --tool $TOOL
+Write-Host "[$TOOL] session-start 已触发"
+
+$q="$HomeDir\.teamai\reporter\queue.jsonl"
+if ((Test-Path $q) -and ((Get-Item $q).Length -gt 0)) { Write-Host "❌ 队列非空:"; Get-Content $q }
+else { Write-Host "✅ 队列空（上报成功）" }
+$dlog="$HomeDir\.teamai\debug.log"
+if (Test-Path $dlog) { Get-Content $dlog | Select-String "status-report" | Select-Object -Last 30 }
+```
+
+## 汇报
+
+执行完成后发给管理员：
+
+> 版本号 | init 是否成功 | pull exit code | hooks 注入结果 | 队列是否空 | debug.log 有无 FAILED
+
+## 附录
+
+### (a) hooks 未注入
+
+- **WorkBuddy**：沙箱锁 `~/.workbuddy/settings.json`，外部 chmod 无效；在 App 内让 AI 合并写入 hooks（SessionStart / Stop / UserPromptSubmit / PostToolUse 均调 `teamai hook-dispatch --tool workbuddy`），写入后重验 hooks 检查。
+- **其他工具**：`chmod u+w ~/.<tool>/settings.json`（Windows 解除只读）后 `teamai init --http "$ENDPOINT" --token "$API_TOKEN" --agent "$TOOL" --force`
+
+### (b) npm ENOTEMPTY
+
+```bash
+npm uninstall -g "$PKG_SPEC"
+rm -rf "$(npm root -g)/@tencent/teamai-cli"
+npm i -g "$PKG_SPEC" --registry "$REGISTRY" --force
+```
+
+### (c) 队列非空
+
+核对 ENDPOINT / API_TOKEN，重跑 `hook-dispatch` 并查队列。
+
+### (d) debug.log 含 FAILED
+
+后端 skill 命令安装失败 — 把 FAILED 行发给管理员。
