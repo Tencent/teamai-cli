@@ -400,6 +400,73 @@ describe('hooks', () => {
         process.env.HOME = originalHome;
       }
     });
+
+    it('filterAgents limits injection to specified tools only', async () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = '/test-home';
+
+      try {
+        await injectHooksToAllTools(
+          {
+            claude: { settings: '.claude/settings.json' },
+            codebuddy: { settings: '.codebuddy/settings.json' },
+            workbuddy: { settings: '.workbuddy/settings.json' },
+          },
+          undefined,
+          ['codebuddy'],
+        );
+
+        expect(mockFiles[path.join('/test-home', '.claude/settings.json')]).toBeUndefined();
+        expect(mockFiles[path.join('/test-home', '.codebuddy/settings.json')]).toBeDefined();
+        expect(mockFiles[path.join('/test-home', '.workbuddy/settings.json')]).toBeUndefined();
+      } finally {
+        process.env.HOME = originalHome;
+      }
+    });
+
+    it('filterAgents allows multiple agents (additive init runs)', async () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = '/test-home';
+
+      try {
+        await injectHooksToAllTools(
+          {
+            claude: { settings: '.claude/settings.json' },
+            codebuddy: { settings: '.codebuddy/settings.json' },
+            workbuddy: { settings: '.workbuddy/settings.json' },
+          },
+          undefined,
+          ['codebuddy', 'workbuddy'],
+        );
+
+        expect(mockFiles[path.join('/test-home', '.claude/settings.json')]).toBeUndefined();
+        expect(mockFiles[path.join('/test-home', '.codebuddy/settings.json')]).toBeDefined();
+        expect(mockFiles[path.join('/test-home', '.workbuddy/settings.json')]).toBeDefined();
+      } finally {
+        process.env.HOME = originalHome;
+      }
+    });
+
+    it('undefined filterAgents injects into all tools (backward compat)', async () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = '/test-home';
+
+      try {
+        await injectHooksToAllTools(
+          {
+            claude: { settings: '.claude/settings.json' },
+            codebuddy: { settings: '.codebuddy/settings.json' },
+          },
+          undefined,
+          undefined,
+        );
+
+        expect(mockFiles[path.join('/test-home', '.claude/settings.json')]).toBeDefined();
+        expect(mockFiles[path.join('/test-home', '.codebuddy/settings.json')]).toBeDefined();
+      } finally {
+        process.env.HOME = originalHome;
+      }
+    });
   });
 
   describe('format alignment', () => {

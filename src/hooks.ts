@@ -502,9 +502,10 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
  * Only writes to tools whose root directory already exists on disk,
  * preventing creation of config dirs for tools the user hasn't installed.
  */
-export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string): Promise<void> {
+export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<void> {
   const resolvedBaseDir = baseDir ?? (process.env.HOME ?? '');
   for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (filterAgents && !filterAgents.includes(tool)) continue;
     if (paths.settings) {
       const toolRoot = path.join(resolvedBaseDir, paths.settings.split('/')[0]);
       if (!await pathExists(toolRoot)) continue;
@@ -538,9 +539,10 @@ export async function reconcileHooksToAllTools(
   baseDir: string,
   teamDefs: HookDef[],
   manifestPath: string,
-  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; force?: boolean } = {},
+  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; force?: boolean; filterAgents?: string[] } = {},
 ): Promise<void> {
   for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
     if (!paths.settings) continue;
     if (!opts.force) {
       const toolRoot = path.join(baseDir, paths.settings.split('/')[0]);
@@ -568,16 +570,18 @@ export async function reconcileHooksToAllTools(
 export async function reconcileTeamHooksForConfig(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-  opts: { removeAll?: boolean; auto?: boolean; silent?: boolean } = {},
+  opts: { removeAll?: boolean; auto?: boolean; silent?: boolean; filterAgents?: string[] } = {},
 ): Promise<HookDef[]> {
   const { defs: teamDefs, builtin } = opts.removeAll
     ? { defs: [] as HookDef[], builtin: undefined }
     : await resolveTeamHooks(teamConfig, localConfig.repo.localPath, { auto: opts.auto, silent: opts.silent });
   const baseDir = resolveBaseDir(localConfig);
   const manifestPath = getManagedHooksPath(localConfig.scope, localConfig.projectRoot);
+  const filterAgents = opts.filterAgents ?? localConfig.enabledAgents;
   await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, {
     removeAll: opts.removeAll,
     builtinOverride: builtin,
+    filterAgents,
   });
   return teamDefs;
 }

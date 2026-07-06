@@ -27,6 +27,7 @@ program
   .option('--token <key>', 'API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.')
   .option('--scope <scope>', 'Scope: user (default) or project')
   .option('--role <id>', 'Primary role ID (e.g. hai_dev) for non-interactive setup')
+  .option('--agent <name>', 'Only inject hooks into this agent (e.g. claude, codebuddy, workbuddy). Additive on repeated runs.')
   .option('--force', 'Overwrite existing config without confirmation')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
