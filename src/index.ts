@@ -23,6 +23,8 @@ program
   .command('init')
   .description('Initialize teamai (configure TGit, clone repo, register member)')
   .option('--repo <repo>', 'Team repo (owner/repo or full URL)')
+  .option('--http <endpoint>', 'Initialize HTTP local-agent mode with backend endpoint')
+  .option('--token <token>', 'API token for HTTP local-agent mode')
   .option('--scope <scope>', 'Scope: user (default) or project')
   .option('--role <id>', 'Primary role ID (e.g. hai_dev) for non-interactive setup')
   .option('--force', 'Overwrite existing config without confirmation')
@@ -504,6 +506,35 @@ program
     }
   });
 
+program
+  .command('hook-dispatch <event>')
+  .description('Dispatch hook data to dashboard and HTTP local-agent report/sync')
+  .option('--stdin', 'Read hook data from STDIN')
+  .option('--tool <name>', 'Tool identifier (e.g. codebuddy, workbuddy, claude)')
+  .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
+  .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string }) => {
+    if (cmdOpts.stdin) {
+      const { hookDispatch } = await import('./local-agent.js');
+      await hookDispatch(event, cmdOpts.tool);
+    } else {
+      const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
+      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
+    }
+  });
+
+program
+  .command('bind-project')
+  .description('Bind the current project to a TeamAI organization/group for HTTP local-agent sync')
+  .option('--group-id <id>', 'Group ID from /user-groups/mine')
+  .option('--skip', 'Mark current project as skipped (never prompt again)')
+  .action(async (cmdOpts) => {
+    const { bindCurrentProject } = await import('./local-agent.js');
+    await bindCurrentProject({
+      groupId: cmdOpts.groupId ? Number.parseInt(cmdOpts.groupId, 10) : undefined,
+      skip: !!cmdOpts.skip,
+    });
+  });
+
 // ─── Contribute commands ──────────────────────────────────
 
 program
@@ -552,18 +583,6 @@ program
       const { autoRecall } = await import('./auto-recall.js');
       await autoRecall();
     }
-  });
-
-// ─── Unified hook dispatch (replaces individual hook subcommands) ────
-
-program
-  .command('hook-dispatch <event>')
-  .description('Unified hook dispatcher — handles all teamai hooks for a given event in one process')
-  .option('--tool <name>', 'Tool identifier (e.g. claude, claude-internal, cursor)')
-  .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
-  .action(async (event: string, cmdOpts: { tool?: string; matcher?: string }) => {
-    const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
-    await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
   });
 
 program.parse();

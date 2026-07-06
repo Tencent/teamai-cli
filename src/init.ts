@@ -106,18 +106,41 @@ export function validateScopeMatch(remoteScope: Scope | undefined, localScope: S
   }
 }
 
-export async function init(options: GlobalOptions & { repo?: string; scope?: string; role?: string; force?: boolean }): Promise<void> {
+export async function init(options: GlobalOptions & {
+  repo?: string;
+  scope?: string;
+  role?: string;
+  force?: boolean;
+  http?: string;
+  token?: string;
+}): Promise<void> {
   log.info('Initializing teamai...');
+
+  if (options.http) {
+    const token = options.token
+      ?? process.env.TEAMAI_API_TOKEN
+      ?? process.env.TEAMAI_TOKEN
+      ?? await askQuestion('API token: ', '');
+    const { initLocalAgentHttp } = await import('./local-agent.js');
+    try {
+      await initLocalAgentHttp({
+        endpoint: options.http,
+        token: token || undefined,
+        force: options.force,
+      });
+      log.success('teamai HTTP mode initialized successfully!');
+      log.info('Resources will report and sync through hook-dispatch on each session start.');
+    } finally {
+      closePrompt();
+    }
+    return;
+  }
 
   // Step 0: Determine scope (user or project)
   let scope: Scope = 'user';
   if (options.scope === 'project' || options.scope === 'user') {
     scope = options.scope as Scope;
   } else {
-    const userPath = getTeamaiHome('user');
-    const projectPath = getTeamaiHome('project', process.cwd());
-    log.info(`  user    → ${userPath}/`);
-    log.info(`  project → ${projectPath}/`);
     const scopeAnswer = await askQuestion('Scope [user/project] (default: user): ', 'user');
     if (scopeAnswer.toLowerCase() === 'project') {
       scope = 'project';
