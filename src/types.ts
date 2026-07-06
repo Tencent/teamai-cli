@@ -187,6 +187,8 @@ export const LocalConfigSchema = z.object({
   subscribedTags: z.array(z.string()).optional(),
   /** User-level override for recall feature. When set, takes precedence over team config. */
   recallEnabled: z.boolean().optional(),
+  /** When set, only inject hooks into these agents. Additive across multiple init --agent runs. */
+  enabledAgents: z.array(z.string()).optional(),
 });
 
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;

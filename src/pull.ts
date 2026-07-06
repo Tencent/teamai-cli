@@ -1030,7 +1030,7 @@ async function autoMigrateHooksIfNeeded(): Promise<void> {
   const { injectHooksToAllTools } = await import('./hooks.js');
   const { localConfig, teamConfig } = await autoDetectInit();
   const baseDir = resolveBaseDir(localConfig);
-  await injectHooksToAllTools(teamConfig.toolPaths, baseDir);
+  await injectHooksToAllTools(teamConfig.toolPaths, baseDir, localConfig.enabledAgents);
   log.debug('Hooks migrated to dispatch format');
 }
 
@@ -1169,6 +1169,7 @@ async function reconcileHooksAllScopes(
       const teamDefs = await reconcileTeamHooksForConfig(teamConfig, localConfig, {
         auto: true,
         silent: options.silent,
+        filterAgents: localConfig.enabledAgents,
       });
       if (teamDefs.length > 0) {
         log.debug(`[${localConfig.scope}] Reconciled ${teamDefs.length} team hook(s)`);
