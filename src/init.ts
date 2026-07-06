@@ -1,6 +1,6 @@
 import YAML from 'yaml';
 import path from 'node:path';
-import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadStateForScope, saveStateForScope } from './config.js';
+import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope } from './config.js';
 import { reconcileTeamHooksForConfig } from './hooks.js';
 import { configureGitUser, initRepo } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
@@ -107,7 +107,7 @@ export function validateScopeMatch(remoteScope: Scope | undefined, localScope: S
  */
 export async function initHttp(
   url: string,
-  options: GlobalOptions & { scope?: string; role?: string; force?: boolean; token?: string },
+  options: GlobalOptions & { scope?: string; role?: string; agent?: string; force?: boolean; token?: string },
 ): Promise<void> {
   const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
   const { materializeHttpRepo, RepoNotAvailableError } = await import('./source-http.js');
@@ -196,6 +196,13 @@ export async function initHttp(
     }
   }
 
+  // Persist --agent into enabledAgents (additive across runs)
+  if (options.agent) {
+    const existing = await loadLocalConfigForScope(scope, projectRoot);
+    const prev = existing?.enabledAgents ?? [];
+    localConfig.enabledAgents = [...new Set([...prev, options.agent])];
+  }
+
   await ensureDir(teamaiHome);
   if (scope === 'project') {
     await saveLocalConfigForScope(localConfig, scope, projectRoot);
@@ -216,7 +223,8 @@ export async function initHttp(
 
   // Step 5: inject hooks (built-in dispatch incl. the reporter) via the same
   // authoritative path the git init uses, so HTTP consumers behave identically.
-  await reconcileTeamHooksForConfig(teamConfig, localConfig);
+  const filterAgents = options.agent ? [options.agent] : undefined;
+  await reconcileTeamHooksForConfig(teamConfig, localConfig, { filterAgents });
 
   if (reportingOnly) {
     log.success('teamai initialized (HTTP, reporting-only — /repo not live yet)!');
@@ -228,7 +236,7 @@ export async function initHttp(
   closePrompt();
 }
 
-export async function init(options: GlobalOptions & { repo?: string; scope?: string; role?: string; force?: boolean; http?: string; token?: string }): Promise<void> {
+export async function init(options: GlobalOptions & { repo?: string; scope?: string; role?: string; agent?: string; force?: boolean; http?: string; token?: string }): Promise<void> {
   if (options.http) {
     return initHttp(options.http, options);
   }
@@ -509,6 +517,13 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
     }
   }
 
+  // Persist --agent into enabledAgents (additive across runs)
+  if (options.agent) {
+    const existing = await loadLocalConfigForScope(scope, projectRoot);
+    const prev = existing?.enabledAgents ?? [];
+    localConfig.enabledAgents = [...new Set([...prev, options.agent])];
+  }
+
   await ensureDir(teamaiHome);
 
   if (scope === 'project') {
@@ -557,7 +572,8 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
   // Step 7: Inject built-in + team hooks into AI tools
   const reloadedTeamConfig = await loadTeamConfig(localPath);
   if (reloadedTeamConfig) {
-    await reconcileTeamHooksForConfig(reloadedTeamConfig, localConfig);
+    const filterAgents = options.agent ? [options.agent] : undefined;
+    await reconcileTeamHooksForConfig(reloadedTeamConfig, localConfig, { filterAgents });
   }
 
   log.success('teamai initialized successfully!');
