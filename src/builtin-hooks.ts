@@ -15,7 +15,7 @@ import type { HookDef } from './types.js';
 /** Generate the hook-dispatch command for a given event, tool, and optional matcher. */
 export function getDispatchCommand(event: string, tool: string, matcher?: string): string {
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
-  return `bash -lc "teamai hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
+  return `bash -lc "teamai hook-dispatch ${event} --stdin --tool ${tool}${matcherArg} 2>/dev/null" || true`;
 }
 
 /** Canonical, ordered description of each built-in hook. Order is load-bearing

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch session-start --tool codebuddy 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch session-start --stdin --tool codebuddy 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch session-start"
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch stop --tool codebuddy 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch stop --stdin --tool codebuddy 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch stop"
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool codebuddy 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --stdin --tool codebuddy 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch post-tool-use wildcard"
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool codebuddy --matcher Skill 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --stdin --tool codebuddy --matcher Skill 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch post-tool-use Skill"
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool codebuddy --matcher TodoWrite 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --stdin --tool codebuddy --matcher TodoWrite 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch post-tool-use TodoWrite"
@@ -62,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch prompt-submit --tool codebuddy 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch prompt-submit --stdin --tool codebuddy 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch prompt-submit"

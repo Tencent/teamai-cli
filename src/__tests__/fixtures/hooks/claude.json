@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch session-start --tool claude 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch session-start --stdin --tool claude 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch session-start"
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch stop --tool claude 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch stop --stdin --tool claude 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch stop"
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --stdin --tool claude 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch post-tool-use wildcard"
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude --matcher Skill 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --stdin --tool claude --matcher Skill 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch post-tool-use Skill"
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude --matcher TodoWrite 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch post-tool-use --stdin --tool claude --matcher TodoWrite 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch post-tool-use TodoWrite"
@@ -62,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch prompt-submit --tool claude 2>/dev/null\" || true"
+            "command": "bash -lc \"teamai hook-dispatch prompt-submit --stdin --tool claude 2>/dev/null\" || true"
           }
         ],
         "description": "[teamai] Hook dispatch prompt-submit"

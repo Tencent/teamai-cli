@@ -978,6 +978,7 @@ function hookEventName(eventName: string): string {
     case 'post-tool-use':
       return 'PostToolUse';
     case 'user-prompt-submit':
+    case 'prompt-submit':
       return 'UserPromptSubmit';
     default:
       return eventName;
