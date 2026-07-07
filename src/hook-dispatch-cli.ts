@@ -1,13 +1,13 @@
 /**
  * CLI entry point for `teamai hook-dispatch <event> --tool <tool> [--matcher <m>]`.
- *
- * Reads STDIN once, creates the dispatcher with the full handler registry,
- * and dispatches to all matching handlers. Outputs any handler result to STDOUT.
+ * Reads STDIN once, fans out to all matching handlers, writes at most one
+ * handler's output to STDOUT. STDOUT is reserved for the AI-tool hook JSON
+ * payload; all log lines go to STDERR (see setStderrOnly below).
  */
 
 import { createDispatcher } from './hook-dispatch.js';
 import { buildHandlerRegistry } from './hook-handlers.js';
-import { log } from './utils/logger.js';
+import { log, setStderrOnly } from './utils/logger.js';
 
 /** Read STDIN fully. Returns empty string if STDIN is a TTY. */
 async function readStdin(): Promise<string> {
@@ -23,7 +23,9 @@ async function readStdin(): Promise<string> {
  * Main CLI handler for hook-dispatch.
  */
 export async function hookDispatchCli(event: string, tool: string, matcher: string): Promise<void> {
-  // Read STDIN once — shared across all handlers
+  // Reserve STDOUT for the dispatcher's hook payload; log lines go to STDERR.
+  setStderrOnly(true);
+
   const raw = await readStdin();
   let stdin: Record<string, unknown> = {};
   if (raw.trim()) {

@@ -1,23 +1,21 @@
 /**
- * Multi-tool-aware hook output formatting.
+ * Format Stop hook STDOUT for the given AI tool.
  *
- * Different AI tools parse Stop hook STDOUT differently:
- * - Claude Code / CodeBuddy: hookSpecificOutput.additionalContext → visible to AI
- * - Cursor: direct JSON message → shown in UI
- * - Codex etc.: default hookSpecificOutput (maximum compatibility)
- */
-
-/**
- * Format Stop hook output so the AI can see the hint content.
- *
- * @param message  Hint text to pass to the AI
- * @param tool     Current AI tool identifier (claude / cursor / codebuddy / codex / etc.)
- * @returns        JSON string to write to STDOUT
+ * Schema choice per tool:
+ * - Cursor: `{ followup_message }`  (Cursor stop hook docs)
+ * - Everyone else (Claude / CodeBuddy / WorkBuddy / Codex / unknown):
+ *   `{ hookSpecificOutput: { hookEventName: 'Stop', additionalContext } }`
+ *   (Claude Code stop hook docs — the "additional context that continues
+ *   the conversation" branch, NOT top-level `stopReason`, which requires
+ *   `continue:false` and aborts the run.)
  */
 export function formatStopHookOutput(message: string, tool: string): string {
-  if (tool === 'cursor') {
-    return JSON.stringify({ message });
+  const normalized = tool?.toLowerCase() ?? '';
+
+  if (normalized === 'cursor') {
+    return JSON.stringify({ followup_message: message });
   }
+
   return JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'Stop',

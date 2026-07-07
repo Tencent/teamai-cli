@@ -637,8 +637,13 @@ export const CONTRIBUTE_BASE_THRESHOLD = 15;
 /** Smart score threshold: minimum score to show contribute hint */
 export const CONTRIBUTE_SMART_THRESHOLD = 35;
 
-/** Cache smart score for this many ms (6 hours) */
-export const CONTRIBUTE_SCORE_CACHE_MS = 6 * 60 * 60 * 1000;
+/**
+ * Debounce TTL for contribute-check re-evaluation. Within this window the
+ * last-known toolCount / smartScore snapshot is trusted; beyond it we always
+ * re-read events.jsonl so a late burst of tool usage isn't missed by a stale
+ * zero-score snapshot.
+ */
+export const CONTRIBUTE_FASTPATH_TTL_MS = 5 * 60 * 1000;
 
 /** Phase 2: bonus when all recalls return zero results (knowledge gap) */
 export const CONTRIBUTE_KNOWLEDGE_GAP_BONUS = 20;
