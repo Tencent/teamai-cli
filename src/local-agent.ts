@@ -96,6 +96,7 @@ interface LocalAgentCommand {
   skill_version?: string;
   rule_slug?: string;
   rule_version?: string;
+  rule_type?: string;
   claudemd_slug?: string;
   claudemd_version?: string;
   resource_slug?: string;
@@ -593,10 +594,11 @@ async function buildSyncPayload(
 }
 
 function commandKind(command: LocalAgentCommand): CommandResourceKind | null {
+  if (command.rule_type === 'prompt') return 'claudemd';
   const type = command.type ?? '';
   if (type.endsWith('_skill') || type === '') return 'skill';
-  if (type.endsWith('_rule')) return 'rule';
   if (type.endsWith('_claudemd') || type.endsWith('_claude_md')) return 'claudemd';
+  if (type.endsWith('_rule')) return 'rule';
   return null;
 }
 
@@ -612,7 +614,7 @@ function commandSlug(command: LocalAgentCommand, kind: CommandResourceKind): str
   const slug =
     kind === 'skill' ? command.skill_slug :
     kind === 'rule' ? command.rule_slug :
-    command.claudemd_slug;
+    (command.claudemd_slug ?? command.rule_slug);
   const resolved = slug ?? command.resource_slug ?? command.slug ?? command.name;
   if (!resolved) {
     throw new Error(`Missing ${kind} slug`);
@@ -624,7 +626,7 @@ function commandVersion(command: LocalAgentCommand, kind: CommandResourceKind): 
   return (
     kind === 'skill' ? command.skill_version :
     kind === 'rule' ? command.rule_version :
-    command.claudemd_version
+    (command.claudemd_version ?? command.rule_version)
   ) ?? command.resource_version ?? command.version;
 }
 
