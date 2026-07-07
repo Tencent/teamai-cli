@@ -155,9 +155,9 @@ const contributeCheckHandler: HookHandler = {
     const { contributeCheckForSession } = await import('./contribute-check.js');
     const { formatStopHookOutput } = await import('./utils/hook-output.js');
 
-    const sessionId = typeof stdin.session_id === 'string' ? stdin.session_id : null;
-    if (!sessionId) return null;
-
+    // Match dashboard-collector's derivation so events and contribute state
+    // share the same session id even when stdin.session_id is absent.
+    const sessionId = deriveSessionId(stdin, { includeCwd: true });
     const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
     const { hint } = await contributeCheckForSession(sessionId, cwd);
     if (hint) {

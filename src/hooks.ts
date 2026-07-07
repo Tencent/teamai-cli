@@ -502,9 +502,10 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
  * Only writes to tools whose root directory already exists on disk,
  * preventing creation of config dirs for tools the user hasn't installed.
  */
-export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string): Promise<void> {
+export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<void> {
   const resolvedBaseDir = baseDir ?? (process.env.HOME ?? '');
   for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (filterAgents && !filterAgents.includes(tool)) continue;
     if (paths.settings) {
       const toolRoot = path.join(resolvedBaseDir, paths.settings.split('/')[0]);
       if (!await pathExists(toolRoot)) continue;
@@ -541,6 +542,7 @@ export async function reconcileHooksToAllTools(
   opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; force?: boolean; filterAgents?: string[] } = {},
 ): Promise<void> {
   for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
     if (!paths.settings) continue;
     if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
     if (!opts.force) {

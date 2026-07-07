@@ -1,6 +1,6 @@
 ---
 name: teamai-recall
-description: Search the team knowledge base (skills + learnings + docs + rules + codebase graph) and return a compact, structured summary with doc_ids — instead of dumping full knowledge content into the main conversation. Invoke this BEFORE any task involving code changes, troubleshooting, or design.
+description: Search the team knowledge base (skills + learnings + docs + rules + codebase graph) and return a compact, structured summary with doc_ids — instead of dumping full knowledge content into the main conversation. Invoke when the task may benefit from team knowledge context — skip when the user already provided context, answers are in local files, or the change is trivial.
 tools: Bash, Read, Grep, Glob
 ---
 
