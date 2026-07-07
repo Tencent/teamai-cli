@@ -632,27 +632,48 @@ function manifestKind(kind: CommandResourceKind): ResourceKind {
   return kind === 'skill' ? 'skills' : kind === 'rule' ? 'rules' : 'claudemd';
 }
 
-async function downloadZip(downloadUrl: string): Promise<string> {
+async function downloadResource(downloadUrl: string): Promise<string> {
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'teamai-local-agent-'));
-  const zipPath = path.join(tmpDir, 'resource.zip');
+  const filePath = path.join(tmpDir, 'resource');
 
   if (downloadUrl.startsWith('file://')) {
-    await fse.copyFile(fileURLToPath(downloadUrl), zipPath);
-    return zipPath;
+    await fse.copyFile(fileURLToPath(downloadUrl), filePath);
+    return filePath;
   }
 
   if (path.isAbsolute(downloadUrl) && await pathExists(downloadUrl)) {
-    await fse.copyFile(downloadUrl, zipPath);
-    return zipPath;
+    await fse.copyFile(downloadUrl, filePath);
+    return filePath;
   }
 
-  const response = await fetch(downloadUrl);
+  const response = await fetch(downloadUrl, { redirect: 'follow' });
   if (!response.ok) {
     throw new Error(`Download failed: ${response.status} ${response.statusText}`);
   }
   const buffer = Buffer.from(await response.arrayBuffer());
-  await fs.promises.writeFile(zipPath, buffer);
-  return zipPath;
+  await fs.promises.writeFile(filePath, buffer);
+  return filePath;
+}
+
+const ZIP_MAGIC = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+
+async function isZipFile(filePath: string): Promise<boolean> {
+  const fd = await fs.promises.open(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(4);
+    await fd.read(buf, 0, 4, 0);
+    return buf.equals(ZIP_MAGIC);
+  } finally {
+    await fd.close();
+  }
+}
+
+async function resolveMarkdownFromDownload(downloadedPath: string, slug: string): Promise<string> {
+  if (await isZipFile(downloadedPath)) {
+    const extractDir = await extractZip(downloadedPath);
+    return findMarkdownFile(extractDir, slug);
+  }
+  return downloadedPath;
 }
 
 async function extractZip(zipPath: string): Promise<string> {
@@ -728,15 +749,15 @@ async function installDownloadedResource(input: {
   }
   await ensureDir(repoPath);
 
-  const zipPath = await downloadZip(input.command.download_url);
+  const downloadedPath = await downloadResource(input.command.download_url);
   try {
-    const extractDir = await extractZip(zipPath);
     const teamConfig = createLocalAgentTeamConfig(input.config.endpoint);
     const localConfig = createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
     const now = new Date().toISOString();
     let displayName = input.command.display_name ?? input.slug;
 
     if (input.kind === 'skill') {
+      const extractDir = await extractZip(downloadedPath);
       const skillRoot = await findSkillRoot(extractDir);
       const dest = path.join(repoPath, 'skills', input.slug);
       await remove(dest);
@@ -750,13 +771,13 @@ async function installDownloadedResource(input: {
         relativePath: `skills/${input.slug}`,
       }, teamConfig, localConfig);
     } else if (input.kind === 'rule') {
-      const ruleFile = await findMarkdownFile(extractDir, input.slug);
+      const ruleFile = await resolveMarkdownFromDownload(downloadedPath, input.slug);
       const dest = path.join(repoPath, 'rules', `${input.slug}.md`);
       await fse.ensureDir(path.dirname(dest));
       await fse.copyFile(ruleFile, dest);
       await new RulesHandler().pullAllRules(teamConfig, localConfig);
     } else {
-      const mdFile = await findMarkdownFile(extractDir, input.slug);
+      const mdFile = await resolveMarkdownFromDownload(downloadedPath, input.slug);
       const dest = path.join(repoPath, 'claudemd', `${input.slug}.md`);
       await fse.ensureDir(path.dirname(dest));
       await fse.copyFile(mdFile, dest);
@@ -776,7 +797,7 @@ async function installDownloadedResource(input: {
     await saveManifest(manifest);
     return version;
   } finally {
-    await remove(path.dirname(zipPath));
+    await remove(path.dirname(downloadedPath));
   }
 }
 
