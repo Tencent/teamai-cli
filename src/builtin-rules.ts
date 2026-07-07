@@ -101,10 +101,17 @@ export async function deployBuiltinRules(
 
 const TEAMAI_RECALL_RULE_CONTENT = `# Team Knowledge Recall (teamai)
 
-## 规则：任务开始前必须检索团队知识库
+## 规则：任务开始前检索团队知识库（推荐）
 
-**Before** starting any task that involves code changes, debugging,
-or design decisions, you **MUST** first search the team knowledge base.
+**Before** starting a task that involves code changes, debugging,
+or design decisions, you **SHOULD** search the team knowledge base
+— unless one of the skip conditions below applies.
+
+### 跳过条件（满足任一即可跳过检索）
+
+1. **用户已提供上下文** — 用户在消息中明确引用了文件、给出了解决方案、或说明"答案在当前目录/这个文件里"
+2. **本地文件已有答案** — 任务信息可直接从当前工作区文件获得（如修复当前文件中明显的 bug）
+3. **简单/局部改动** — 对已知文件做小范围修改（修 typo、调整参数值、改格式），无需额外知识背景
 
 ### 方式一：通过 Subagent（推荐，适用于支持 Agent tool 的工具）
 
