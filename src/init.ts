@@ -1,6 +1,6 @@
 import YAML from 'yaml';
 import path from 'node:path';
-import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadStateForScope, saveStateForScope } from './config.js';
+import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope } from './config.js';
 import { reconcileTeamHooksForConfig } from './hooks.js';
 import { configureGitUser, initRepo } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
@@ -107,7 +107,7 @@ export function validateScopeMatch(remoteScope: Scope | undefined, localScope: S
  */
 export async function initHttp(
   url: string,
-  options: GlobalOptions & { scope?: string; role?: string; force?: boolean; token?: string },
+  options: GlobalOptions & { scope?: string; role?: string; force?: boolean; token?: string; agent?: string },
 ): Promise<void> {
   const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
   const { materializeHttpRepo, RepoNotAvailableError } = await import('./source-http.js');
@@ -196,6 +196,12 @@ export async function initHttp(
     }
   }
 
+  if (options.agent) {
+    const existing = await loadLocalConfigForScope(scope, projectRoot);
+    const prev = existing?.enabledAgents ?? [];
+    localConfig.enabledAgents = [...new Set([...prev, options.agent])];
+  }
+
   await ensureDir(teamaiHome);
   if (scope === 'project') {
     await saveLocalConfigForScope(localConfig, scope, projectRoot);
@@ -216,7 +222,17 @@ export async function initHttp(
 
   // Step 5: inject hooks (built-in dispatch incl. the reporter) via the same
   // authoritative path the git init uses, so HTTP consumers behave identically.
-  await reconcileTeamHooksForConfig(teamConfig, localConfig);
+  const filterAgents = options.agent ? [options.agent] : undefined;
+  await reconcileTeamHooksForConfig(teamConfig, localConfig, { filterAgents });
+
+  // Step 6: also initialize local-agent config so the new hook-dispatch --stdin
+  // path can deliver rules/claudemd (not just skills).
+  const { initLocalAgentHttp } = await import('./local-agent.js');
+  try {
+    await initLocalAgentHttp({ endpoint: url, token: options.token, force: options.force });
+  } catch (e) {
+    log.debug(`Local agent init: ${(e as Error).message}`);
+  }
 
   if (reportingOnly) {
     log.success('teamai initialized (HTTP, reporting-only — /repo not live yet)!');

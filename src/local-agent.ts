@@ -890,7 +890,7 @@ async function ackCommand(
   version?: string,
   error?: string,
 ): Promise<void> {
-  await localAgentFetch(config, '/local-agent/commands/ack', {
+  await localAgentFetch(config, '/api/local-agent/commands/ack', {
     method: 'POST',
     body: JSON.stringify({
       id: command.id,
@@ -935,18 +935,19 @@ async function processCommands(
   commands: LocalAgentCommand[],
   context: LocalAgentContext,
 ): Promise<void> {
+  const tag = `[${config.localAgentId.slice(-6)}] [${context.tool}]`;
   for (const command of commands) {
     try {
       const version = await executeCommand(config, command, context);
       await ackCommand(config, command, 'success', version);
-      log.debug(`local-agent: command ${command.id} (${command.type ?? ''}) succeeded`);
+      log.debug(`${tag} command ${command.id} (${command.type ?? ''}) succeeded`);
     } catch (e) {
       const error = (e as Error).message;
-      log.error(`local-agent: command ${command.id} failed: ${error}`);
+      log.error(`${tag} command ${command.id} failed: ${error}`);
       try {
         await ackCommand(config, command, 'failed', undefined, error);
       } catch (ackError) {
-        log.debug(`local-agent: failed to ack command ${command.id}: ${(ackError as Error).message}`);
+        log.debug(`${tag} failed to ack command ${command.id}: ${(ackError as Error).message}`);
       }
     }
   }
@@ -964,28 +965,32 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
     await emitBindingHint(config, workspacePath);
   }
 
+  const tag = `[${config.localAgentId.slice(-6)}] [${context.tool}]`;
+  log.debug(`${tag} run: endpoint=${config.endpoint}`);
+
   try {
     const reportPayload = await buildReportPayload(config, context);
-    await localAgentFetch(config, '/local-agent/report', {
+    await localAgentFetch(config, '/api/local-agent/report', {
       method: 'POST',
       body: JSON.stringify(reportPayload),
     });
-    log.debug('status-report: report OK');
+    log.debug(`${tag} report OK`);
 
     const syncPayload = await buildSyncPayload(config, context);
     const syncResponse = await localAgentFetch<{ ok?: boolean; commands?: LocalAgentCommand[] }>(
       config,
-      '/local-agent/sync',
+      '/api/local-agent/sync',
       { method: 'POST', body: JSON.stringify(syncPayload) },
     );
     const commands = syncResponse.commands ?? [];
     if (commands.length > 0) {
+      log.debug(`${tag} sync returned ${commands.length} command(s): ${commands.map((c) => `${c.type}#${c.id}`).join(', ')}`);
       await processCommands(config, commands, context);
     }
-    log.debug(`status-report: sync OK (${commands.length} command(s))`);
+    log.debug(`${tag} sync OK (${commands.length} command(s))`);
   } catch (e) {
     const error = (e as Error).message;
-    log.error(`status-report FAILED: ${error}`);
+    log.error(`${tag} sync FAILED: ${error}`);
     await appendReporterQueue({ error, context });
   }
 
