@@ -339,7 +339,7 @@ async function appendReporterQueue(entry: unknown): Promise<void> {
 export async function fetchUserGroups(config: LocalAgentConfig): Promise<LocalAgentGroup[]> {
   const response = await localAgentFetch<{ ok?: boolean; groups?: LocalAgentGroup[] }>(
     config,
-    '/user-groups/mine',
+    '/api/user-groups/mine',
     { method: 'GET' },
   );
   return response.groups ?? [];

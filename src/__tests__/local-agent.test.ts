@@ -80,9 +80,9 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     const { execFileSync } = await import('node:child_process');
     execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
-    // Mock global fetch to handle /user-groups/mine and /local-agent/report
+    // Mock global fetch to handle /api/user-groups/mine and /api/local-agent/report
     const fetchMock = vi.fn(async (url: string) => {
-      if (url.includes('/user-groups/mine')) {
+      if (url.includes('/api/user-groups/mine')) {
         return new Response(JSON.stringify({
           ok: true,
           groups: [
