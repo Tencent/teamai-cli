@@ -23,7 +23,7 @@ const TNPM_REGISTRY = 'http://r.tnpm.oa.com';
 
 const VERSION_CHECK_TIMEOUT = 5000;
 const INSTALL_TIMEOUT = 60000;
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 // ─── Helpers ────────────────────────────────────────────
 

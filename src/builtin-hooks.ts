@@ -29,35 +29,36 @@ interface BuiltinHookSpec {
   dispatchEvent: string;
   /** matcher ("*" = wildcard, no --matcher arg, omitted in Cursor output). */
   matcher: string;
-  /** Cursor on-disk timeout (Claude builtin entries carry no timeout). */
-  cursorTimeout: number;
+  /** Per-hook timeout in seconds (rendered for Cursor and WorkBuddy). */
+  timeoutSec: number;
 }
 
 const BUILTIN_HOOK_SPECS: BuiltinHookSpec[] = [
-  { key: 'Hook dispatch session-start', event: 'SessionStart', dispatchEvent: 'session-start', matcher: '*', cursorTimeout: 60 },
-  { key: 'Hook dispatch stop', event: 'Stop', dispatchEvent: 'stop', matcher: '*', cursorTimeout: 15 },
-  { key: 'Hook dispatch post-tool-use wildcard', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: '*', cursorTimeout: 10 },
-  { key: 'Hook dispatch post-tool-use Skill', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'Skill', cursorTimeout: 10 },
-  { key: 'Hook dispatch post-tool-use TodoWrite', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'TodoWrite', cursorTimeout: 3 },
-  { key: 'Hook dispatch prompt-submit', event: 'UserPromptSubmit', dispatchEvent: 'prompt-submit', matcher: '*', cursorTimeout: 10 },
+  { key: 'Hook dispatch session-start', event: 'SessionStart', dispatchEvent: 'session-start', matcher: '*', timeoutSec: 60 },
+  { key: 'Hook dispatch stop', event: 'Stop', dispatchEvent: 'stop', matcher: '*', timeoutSec: 15 },
+  { key: 'Hook dispatch post-tool-use wildcard', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: '*', timeoutSec: 10 },
+  { key: 'Hook dispatch post-tool-use Skill', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'Skill', timeoutSec: 10 },
+  { key: 'Hook dispatch post-tool-use TodoWrite', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'TodoWrite', timeoutSec: 3 },
+  { key: 'Hook dispatch prompt-submit', event: 'UserPromptSubmit', dispatchEvent: 'prompt-submit', matcher: '*', timeoutSec: 10 },
 ];
 
 /**
  * Build the built-in hook definitions for a tool.
  *
- * Tool-specific by design: Claude/CodeBuddy entries carry no timeout (matching
- * the historical output) while Cursor entries carry per-hook timeouts. The
+ * Tool-specific by design: Cursor and WorkBuddy entries carry per-hook timeouts
+ * so a slow/unreachable backend hook cannot hang the host; Claude/CodeBuddy
+ * entries carry no timeout (matching the historical byte-compat output). The
  * reconcile engine renders the same HookDef into each tool's on-disk shape.
  */
 export function builtinHookDefs(tool: string): HookDef[] {
-  const isCursor = tool === 'cursor';
+  const withTimeout = tool === 'cursor' || tool === 'workbuddy';
   return BUILTIN_HOOK_SPECS.map((spec) => ({
     source: 'builtin' as const,
     key: spec.key,
     event: spec.event,
     matcher: spec.matcher,
     command: getDispatchCommand(spec.dispatchEvent, tool, spec.matcher),
-    timeout: isCursor ? spec.cursorTimeout : undefined,
+    timeout: withTimeout ? spec.timeoutSec : undefined,
     description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} ${spec.key}`,
   }));
 }

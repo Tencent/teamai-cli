@@ -23,6 +23,7 @@ import { parseHookEvent, appendEvent, compactEvents } from './dashboard-collecto
 import { getCurrentVersion } from './package-info.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
+import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
 import {
   TEAMAI_HOME,
   TEAMAI_TOKEN_PATH,
@@ -298,13 +299,16 @@ async function localAgentFetch<T>(
   route: string,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(`${config.endpoint}${route}`, {
-    ...init,
-    headers: {
-      ...authHeaders(config, init?.body !== undefined),
-      ...(init?.headers ?? {}),
-    },
-  });
+  const tag = `[local-agent ${(config.localAgentId ?? 'unknown').slice(-6)}]`;
+  const method = init?.method ?? 'GET';
+  const url = `${config.endpoint}${route}`;
+  const headers: Record<string, string> = {
+    ...authHeaders(config, init?.body !== undefined),
+    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  };
+  logHttpRequest(tag, method, url, headers, init?.body);
+
+  const response = await fetch(url, { ...init, headers });
   const text = await response.text();
   let body: unknown = null;
   if (text.trim()) {
@@ -314,6 +318,7 @@ async function localAgentFetch<T>(
       body = text;
     }
   }
+  logHttpResponse(tag, method, url, response.status, response.statusText, body);
   if (!response.ok) {
     const message = typeof body === 'object' && body && 'error' in body
       ? String((body as { error: unknown }).error)
