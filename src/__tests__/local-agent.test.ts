@@ -47,6 +47,65 @@ async function setupConfig(bindings: Record<string, unknown> = {}) {
   });
 }
 
+describe('local-agent: resolveHomeDir — cross-platform HOME resolution', () => {
+  const origPlatform = process.platform;
+  let origHomeEnv: string | undefined;
+  let origUserProfile: string | undefined;
+
+  beforeEach(() => {
+    origHomeEnv = process.env.HOME;
+    origUserProfile = process.env.USERPROFILE;
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: origPlatform });
+    if (origHomeEnv === undefined) delete process.env.HOME;
+    else process.env.HOME = origHomeEnv;
+    if (origUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = origUserProfile;
+  });
+
+  it('non-Windows: uses HOME when set (preserves current behavior / test isolation)', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    process.env.HOME = '/home/linuxuser';
+    const { resolveHomeDir } = await import('../local-agent.js');
+    expect(resolveHomeDir()).toBe('/home/linuxuser');
+  });
+
+  it('Windows: prefers USERPROFILE over a shell-injected HOME', async () => {
+    // WorkBuddy's bundled bash injects a Unix-style HOME (e.g. /home/xxx) that
+    // does not match the real Windows profile where config.json lives. Native
+    // Windows Node must resolve to USERPROFILE, not that bash HOME.
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    process.env.HOME = '/home/gitbashuser';
+    process.env.USERPROFILE = 'C:\\Users\\jaelgeng';
+    const { resolveHomeDir } = await import('../local-agent.js');
+    expect(resolveHomeDir()).toBe('C:\\Users\\jaelgeng');
+  });
+
+  it('Windows: loadLocalAgentConfig finds config under USERPROFILE despite a wrong HOME', async () => {
+    // End-to-end of the fix: config.json lives under the real profile (tmpDir),
+    // HOME points somewhere else (as WorkBuddy's bash would). The loader must
+    // still find it — otherwise the binding hint silently no-ops on Windows.
+    const configDir = path.join(tmpDir, '.teamai', 'local-agent');
+    await fse.ensureDir(configDir);
+    await fse.writeJson(path.join(configDir, 'config.json'), {
+      endpoint: 'https://real.example.com/api',
+      token: 'hk-real',
+      workspaceBindings: {},
+    });
+
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    process.env.HOME = '/home/gitbashuser'; // wrong dir, no config here
+    process.env.USERPROFILE = tmpDir;       // real profile where config lives
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    expect(config).not.toBeNull();
+    expect(config?.endpoint).toBe('https://real.example.com/api');
+  });
+});
+
 describe('local-agent: bindCurrentProject --skip', () => {
   it('writes groupId 0 and __skipped__ marker to config', async () => {
     await setupConfig();

@@ -23,6 +23,7 @@ import { parseHookEvent, appendEvent, compactEvents } from './dashboard-collecto
 import { getCurrentVersion } from './package-info.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
+import { resolveHomeDir } from './utils/home.js';
 import {
   TEAMAI_HOME,
   TEAMAI_TOKEN_PATH,
@@ -125,8 +126,15 @@ interface LocalAgentContext {
   event?: DashboardEvent;
 }
 
+/**
+ * Resolve the user's home directory in a way that survives WorkBuddy's bundled
+ * bash on Windows. Re-exported from utils/home for backward compatibility with
+ * existing tests; see that module for the full rationale.
+ */
+export { resolveHomeDir };
+
 function getTeamaiHomePath(): string {
-  return path.join(process.env.HOME ?? '', '.teamai');
+  return path.join(resolveHomeDir(), '.teamai');
 }
 
 function getLocalAgentHome(): string {
@@ -944,7 +952,7 @@ async function syncClaudemd(
 
   const baseDir = localConfig.scope === 'project' && localConfig.projectRoot
     ? localConfig.projectRoot
-    : process.env.HOME ?? '';
+    : resolveHomeDir();
 
   for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
     if (!toolPath.claudemd) continue;
@@ -1194,7 +1202,7 @@ export async function initLocalAgentHttp(options: {
   }
 
   const teamConfig = createLocalAgentTeamConfig(endpoint);
-  await injectHooksToAllTools(teamConfig.toolPaths, process.env.HOME ?? '');
+  await injectHooksToAllTools(teamConfig.toolPaths, resolveHomeDir());
   log.success(`HTTP local agent initialized at ${getConfigPath()}`);
 }
 

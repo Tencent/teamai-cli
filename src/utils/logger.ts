@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import chalk from 'chalk';
 import ora, { type Ora } from 'ora';
+import { resolveHomeDir } from './home.js';
 
 let verboseEnabled = false;
 let silentMode = false;
@@ -32,7 +33,7 @@ let _writing = false;
 
 function getLogFilePath(): string {
   if (!_logFilePath) {
-    _logFilePath = path.join(process.env.HOME ?? '/tmp', '.teamai', 'debug.log');
+    _logFilePath = path.join(resolveHomeDir() || '/tmp', '.teamai', 'debug.log');
   }
   return _logFilePath;
 }
