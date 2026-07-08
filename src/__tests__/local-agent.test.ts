@@ -279,3 +279,87 @@ describe('local-agent: security — token file permissions', () => {
     expect(mode).toBe(0o600);
   });
 });
+
+describe('local-agent: skill directory naming (SKILL.md name vs server slug)', () => {
+  // Build a real skill zip whose SKILL.md `name:` may differ from the slug.
+  async function makeSkillZip(skillName: string): Promise<Uint8Array> {
+    const { zipSync, strToU8 } = await import('fflate');
+    const skillMd = `---\nname: ${skillName}\ndescription: test skill\n---\n# ${skillName}\nbody\n`;
+    return zipSync({ [`${skillName}/SKILL.md`]: strToU8(skillMd) });
+  }
+
+  // Run a single install/uninstall command through the full sync path.
+  async function runCommand(command: Record<string, unknown>, zip?: Uint8Array) {
+    // codebuddy must look "installed" or pullItem skips it.
+    await fse.ensureDir(path.join(tmpDir, '.codebuddy', 'skills'));
+    await setupConfig();
+
+    const acks: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: { body?: string }) => {
+      // downloadResource passes a URL object; report/sync pass strings.
+      const url = String(input);
+      if (url.includes('/skill.zip') && zip) {
+        return new Response(zip);
+      }
+      if (url.includes('/local-agent/sync')) {
+        return new Response(JSON.stringify({ ok: true, commands: [command] }));
+      }
+      if (url.includes('/commands/ack')) {
+        acks.push(JSON.parse(init?.body ?? '{}'));
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ cwd: tmpDir, tool: 'codebuddy', status: 'running' });
+    return acks;
+  }
+
+  const codebuddySkillsDir = () => path.join(tmpDir, '.codebuddy', 'skills');
+  const port = 41999;
+
+  it('installs the skill under its SKILL.md name, not the server slug', async () => {
+    const zip = await makeSkillZip('my-real-skill-name');
+    const acks = await runCommand({
+      id: 1,
+      type: 'install_skill',
+      skill_slug: 'server-slug-xyz',
+      skill_version: '1.0.0',
+      download_url: `http://127.0.0.1:${port}/skill.zip`,
+    }, zip);
+
+    expect(acks[0]?.status).toBe('success');
+    expect(await fse.pathExists(path.join(codebuddySkillsDir(), 'my-real-skill-name'))).toBe(true);
+    expect(await fse.pathExists(path.join(codebuddySkillsDir(), 'server-slug-xyz'))).toBe(false);
+
+    // Manifest keeps the slug as key but records the on-disk dir name.
+    const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
+    expect(manifest.scopes.user.skills['server-slug-xyz'].dir_name).toBe('my-real-skill-name');
+  });
+
+  it('uninstalls by slug and removes the SKILL.md-name directory', async () => {
+    const zip = await makeSkillZip('my-real-skill-name');
+    await runCommand({
+      id: 1, type: 'install_skill', skill_slug: 'server-slug-xyz',
+      skill_version: '1.0.0', download_url: `http://127.0.0.1:${port}/skill.zip`,
+    }, zip);
+    expect(await fse.pathExists(path.join(codebuddySkillsDir(), 'my-real-skill-name'))).toBe(true);
+
+    await runCommand({ id: 2, type: 'uninstall_skill', skill_slug: 'server-slug-xyz' });
+    expect(await fse.pathExists(path.join(codebuddySkillsDir(), 'my-real-skill-name'))).toBe(false);
+  });
+
+  it('falls back to the slug when SKILL.md name equals the slug', async () => {
+    const zip = await makeSkillZip('server-slug-xyz');
+    await runCommand({
+      id: 1, type: 'install_skill', skill_slug: 'server-slug-xyz',
+      skill_version: '1.0.0', download_url: `http://127.0.0.1:${port}/skill.zip`,
+    }, zip);
+
+    expect(await fse.pathExists(path.join(codebuddySkillsDir(), 'server-slug-xyz'))).toBe(true);
+    // No rename happened, so no dir_name is recorded.
+    const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
+    expect(manifest.scopes.user.skills['server-slug-xyz'].dir_name).toBeUndefined();
+  });
+});

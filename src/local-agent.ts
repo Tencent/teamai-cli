@@ -22,6 +22,7 @@ import { injectHooksToAllTools } from './hooks.js';
 import { parseHookEvent, appendEvent, compactEvents } from './dashboard-collector.js';
 import { getCurrentVersion } from './package-info.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
+import { assertSafeResourceName } from './utils/path-safety.js';
 import {
   TEAMAI_HOME,
   TEAMAI_TOKEN_PATH,
@@ -78,6 +79,12 @@ interface ManifestResource {
   display_name?: string;
   source?: string;
   installed_at: string;
+  /**
+   * Actual on-disk directory name for skills. Equals the SKILL.md `name:` when
+   * it differs from the server slug, else the slug. Used at uninstall time to
+   * locate the directory by slug (the manifest key stays the slug).
+   */
+  dir_name?: string;
 }
 
 interface ManifestScope {
@@ -794,6 +801,26 @@ async function readFrontmatter(filePath: string): Promise<Record<string, unknown
   }
 }
 
+/**
+ * Decide the on-disk directory name for a skill. The SKILL.md `name:` field is
+ * the source of truth for how the skill is identified by the AI tool, so use it
+ * when it differs from the server-provided slug (matching the git-path behaviour
+ * in skill-command.ts / #144). Falls back to the slug when the name is missing,
+ * empty, equal to the slug, or fails path-safety validation.
+ */
+async function resolveSkillDirName(skillRoot: string, slug: string): Promise<string> {
+  const fm = await readFrontmatter(path.join(skillRoot, 'SKILL.md'));
+  const name = typeof fm.name === 'string' ? fm.name.trim() : '';
+  if (!name || name === slug) return slug;
+  try {
+    assertSafeResourceName(name);
+    return name;
+  } catch {
+    log.debug(`[local-agent] keeping slug "${slug}" as skill dir (SKILL.md name "${name}" failed safety check)`);
+    return slug;
+  }
+}
+
 async function installDownloadedResource(input: {
   config: LocalAgentConfig;
   command: LocalAgentCommand;
@@ -818,20 +845,25 @@ async function installDownloadedResource(input: {
     const localConfig = createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
     const now = new Date().toISOString();
     let displayName = input.command.display_name ?? input.slug;
+    // On-disk skill directory name (SKILL.md name when it differs from slug).
+    // Stays the slug for rules/claudemd. Recorded in the manifest so uninstall
+    // can find the directory by slug.
+    let skillDirName = input.slug;
 
     if (input.kind === 'skill') {
       const extractDir = await extractZip(downloadedPath);
       const skillRoot = await findSkillRoot(extractDir);
-      const dest = path.join(repoPath, 'skills', input.slug);
+      skillDirName = await resolveSkillDirName(skillRoot, input.slug);
+      const dest = path.join(repoPath, 'skills', skillDirName);
       await remove(dest);
       await fse.copy(skillRoot, dest, { overwrite: true });
       const fm = await readFrontmatter(path.join(dest, 'SKILL.md'));
       displayName = typeof fm.name === 'string' ? fm.name : displayName;
       await new SkillsHandler().pullItem({
-        name: input.slug,
+        name: skillDirName,
         type: 'skills',
         sourcePath: dest,
-        relativePath: `skills/${input.slug}`,
+        relativePath: `skills/${skillDirName}`,
       }, teamConfig, localConfig);
     } else if (input.kind === 'rule') {
       const ruleFile = await resolveMarkdownFromDownload(downloadedPath, input.slug);
@@ -856,6 +888,7 @@ async function installDownloadedResource(input: {
       display_name: displayName,
       source: 'enterprise',
       installed_at: now,
+      ...(input.kind === 'skill' && skillDirName !== input.slug ? { dir_name: skillDirName } : {}),
     };
     await saveManifest(manifest);
     return version;
@@ -878,7 +911,10 @@ async function uninstallResource(input: {
   const scopeManifest = getManifestScope(manifest, input.scope, input.workspacePath);
 
   if (input.kind === 'skill') {
-    await new SkillsHandler().removeItem(input.slug, teamConfig, localConfig);
+    // The directory was created under the SKILL.md name (recorded as dir_name);
+    // remove by that name, falling back to the slug for older installs.
+    const dirName = scopeManifest.skills[input.slug]?.dir_name ?? input.slug;
+    await new SkillsHandler().removeItem(dirName, teamConfig, localConfig);
   } else if (input.kind === 'rule') {
     await new RulesHandler().removeItem(input.slug, teamConfig, localConfig);
   } else {
