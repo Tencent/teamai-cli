@@ -530,7 +530,7 @@ program
 
 program
   .command('bind-project')
-  .description('Bind the current project to a TeamAI organization/group for HTTP local-agent sync')
+  .description('Bind the current project to a ClawPro organization/group for HTTP local-agent sync')
   .option('--group-id <id>', 'Group ID from /user-groups/mine')
   .option('--skip', 'Mark current project as skipped (never prompt again)')
   .action(async (cmdOpts) => {
