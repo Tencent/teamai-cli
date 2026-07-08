@@ -299,7 +299,7 @@ describe('local-agent: skill directory naming (SKILL.md name vs server slug)', (
       // downloadResource passes a URL object; report/sync pass strings.
       const url = String(input);
       if (url.includes('/skill.zip') && zip) {
-        return new Response(zip);
+        return new Response(Buffer.from(zip));
       }
       if (url.includes('/local-agent/sync')) {
         return new Response(JSON.stringify({ ok: true, commands: [command] }));
