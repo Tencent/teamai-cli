@@ -32,6 +32,7 @@ import {
 import { resolveBaseDir, type LocalConfig, type TeamaiConfig } from './types.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { log } from './utils/logger.js';
+import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
 import { getAgentVersion } from './agent-version.js';
 
 // ─── Endpoint mapping (internal, overridable) ───────────────
@@ -187,19 +188,31 @@ async function flushQueue(apiKey: string): Promise<void> {
 // ─── HTTP ───────────────────────────────────────────────────
 
 async function postJson(url: string, apiKey: string, body: unknown): Promise<unknown> {
+  const tag = '[status-report]';
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+  };
+  logHttpRequest(tag, 'POST', url, headers, body);
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(body),
   });
+  const text = await res.text();
+  let parsed: unknown = null;
+  if (text.trim()) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+  }
+  logHttpResponse(tag, 'POST', url, res.status, res.statusText, parsed);
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}`);
   }
-  const text = await res.text();
-  return text ? JSON.parse(text) : {};
+  return parsed ?? {};
 }
 
 // ─── Main entry ─────────────────────────────────────────────
