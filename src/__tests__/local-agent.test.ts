@@ -120,6 +120,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
 
     const parsed = JSON.parse(output.trim().split('\n').find((l) => l.includes('hookSpecificOutput'))!);
     const ctx = parsed.hookSpecificOutput.additionalContext;
+    expect(ctx).toContain('[ClawPro组织 绑定提示]');
+    expect(ctx).toContain('当前项目未绑定ClawPro组织');
     expect(ctx).toContain('绑定到「alpha」组织');
     expect(ctx).toContain('绑定到「beta」组织');
     expect(ctx).toContain('不绑定，以后也不再提示');

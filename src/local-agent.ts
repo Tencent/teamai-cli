@@ -495,10 +495,10 @@ async function emitBindingHint(
   const choices = groups.map((g, i) => `${i + 1}. 绑定到「${g.name}」组织`);
   const actions = groups.map((g, i) => `- 用户回复 ${i + 1} → 执行 \`teamai bind-project --group-id ${g.id}\`，完成后回复"绑定完成，请开新会话生效"`);
   const context = [
-    '[TeamAI 绑定提示] 你必须原样展示下面的选项列表，不得修改编号或内容。等用户回复数字后执行对应命令。',
+    '[ClawPro组织 绑定提示] 你必须原样展示下面的选项列表，不得修改编号或内容。等用户回复数字后执行对应命令。',
     '',
     '---',
-    '当前项目未绑定 TeamAI 组织。绑定后可同步团队 skills/rules。请回复数字选择：',
+    '当前项目未绑定ClawPro组织。绑定后可同步团队 skills/rules。请回复数字选择：',
     '',
     ...choices,
     `${skipNum}. 不绑定，以后也不再提示`,
