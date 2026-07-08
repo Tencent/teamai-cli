@@ -198,3 +198,84 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     expect(output).not.toContain('hookSpecificOutput');
   });
 });
+
+describe('local-agent: security — install command hardening', () => {
+  async function runInstallCommand(command: Record<string, unknown>) {
+    await setupConfig();
+    const projectDir = path.join(tmpDir, 'sec-project');
+    await fse.ensureDir(projectDir);
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+
+    const acks: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (url: string, init?: { body?: string }) => {
+      if (url.includes('/local-agent/sync')) {
+        return new Response(JSON.stringify({ ok: true, commands: [command] }));
+      }
+      if (url.includes('/commands/ack')) {
+        acks.push(JSON.parse(init?.body ?? '{}'));
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'claude', status: 'running' });
+    return acks;
+  }
+
+  it('rejects a path-traversal slug and acks failed without escaping the repo', async () => {
+    const acks = await runInstallCommand({
+      id: 1,
+      type: 'install_rule',
+      rule_slug: '../../evil',
+      download_url: 'https://test.example.com/evil.md',
+    });
+
+    // The malicious command must be reported as failed with the guard message.
+    expect(acks).toHaveLength(1);
+    expect(acks[0].status).toBe('failed');
+    expect(String(acks[0].error)).toContain('Invalid resource slug');
+
+    // Nothing must have been written outside the resource repo.
+    await expect(fse.pathExists(path.join(tmpDir, '.teamai', 'evil.md'))).resolves.toBe(false);
+    await expect(fse.pathExists(path.join(tmpDir, 'evil.md'))).resolves.toBe(false);
+  });
+
+  it('rejects a file:// download_url (SSRF / arbitrary local file read)', async () => {
+    const acks = await runInstallCommand({
+      id: 2,
+      type: 'install_rule',
+      rule_slug: 'legit-rule',
+      download_url: 'file:///etc/passwd',
+    });
+
+    expect(acks).toHaveLength(1);
+    expect(acks[0].status).toBe('failed');
+    expect(String(acks[0].error)).toContain('Unsupported download URL scheme');
+  });
+});
+
+describe('local-agent: security — token file permissions', () => {
+  it('writes the credential token with owner-only (0o600) permissions', async () => {
+    const { writeTokenFile } = await import('../local-agent.js');
+    const tokenPath = path.join(tmpDir, 'token');
+    await writeTokenFile(tokenPath, 'secret-token-abc');
+
+    expect(await fse.pathExists(tokenPath)).toBe(true);
+    expect(await fse.readFile(tokenPath, 'utf-8')).toBe('secret-token-abc\n');
+    const mode = (await fse.stat(tokenPath)).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+
+  it('tightens permissions on an already-existing token file', async () => {
+    const { writeTokenFile } = await import('../local-agent.js');
+    const tokenPath = path.join(tmpDir, 'token');
+    // Pre-create with world-readable perms to prove chmod tightens it.
+    await fse.writeFile(tokenPath, 'old\n', { mode: 0o644 });
+    await writeTokenFile(tokenPath, 'new-token');
+
+    const mode = (await fse.stat(tokenPath)).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+});

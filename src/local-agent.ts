@@ -1,11 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import readline from 'node:readline';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 import { log } from './utils/logger.js';
@@ -23,6 +21,7 @@ import { RulesHandler, SkillsHandler } from './resources/index.js';
 import { injectHooksToAllTools } from './hooks.js';
 import { parseHookEvent, appendEvent, compactEvents } from './dashboard-collector.js';
 import { getCurrentVersion } from './package-info.js';
+import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import {
   TEAMAI_HOME,
   TEAMAI_TOKEN_PATH,
@@ -55,7 +54,12 @@ interface WorkspaceBinding {
 export interface LocalAgentConfig {
   endpoint: string;
   token?: string;
-  localAgentId: string;
+  /**
+   * @deprecated No longer the id source. local_agent_id is now derived at
+   * runtime per detected tool via resolveLocalAgentId(). Kept optional so
+   * older config.json files still load without a rewrite.
+   */
+  localAgentId?: string;
   createdAt: string;
   userGroupId?: number;
   userGroupName?: string;
@@ -151,8 +155,21 @@ function normalizeEndpoint(endpoint: string): string {
   return endpoint.trim().replace(/\/+$/, '');
 }
 
-function generateLocalAgentId(): string {
-  return crypto.randomBytes(8).toString('hex');
+/**
+ * Resolve the local_agent_id for the current invocation.
+ *
+ * Deterministic per (detected tool + machine + install dir) — same tool on the
+ * same machine always yields the same id, so the backend sees a stable agent
+ * instead of a fresh random one every hook fire. The tool is auto-detected from
+ * the hook's --tool flag (context.tool); different tools (claude / codebuddy /
+ * workbuddy) get different ids by design. TEAMAI_LOCAL_AGENT_ID still overrides
+ * for explicit pinning.
+ */
+function resolveLocalAgentId(context: LocalAgentContext): string {
+  const envOverride = process.env.TEAMAI_LOCAL_AGENT_ID;
+  if (envOverride) return envOverride;
+  const agentType = context.tool ?? 'workbuddy';
+  return deriveLocalAgentId(agentType, getMachineId(), getLocalAgentHome());
 }
 
 function scopeKey(scope: LocalAgentScope, workspacePath?: string): string {
@@ -184,7 +201,7 @@ function getManifestScope(
 
 export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
   const fileConfig = await readJson<LocalAgentConfig>(getConfigPath());
-  if (fileConfig?.endpoint && fileConfig.localAgentId) {
+  if (fileConfig?.endpoint) {
     return {
       ...fileConfig,
       endpoint: normalizeEndpoint(fileConfig.endpoint),
@@ -201,7 +218,6 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
   return {
     endpoint: normalizeEndpoint(envEndpoint),
     token: process.env.TEAMAI_API_TOKEN ?? process.env.TEAMAI_TOKEN,
-    localAgentId: process.env.TEAMAI_LOCAL_AGENT_ID ?? generateLocalAgentId(),
     createdAt: new Date().toISOString(),
     workspaceBindings: {},
   };
@@ -536,7 +552,7 @@ export async function buildReportPayload(
   const payload: Record<string, unknown> = {
     agent_type: context.tool ?? 'workbuddy',
     agent_version: getCurrentVersion(),
-    local_agent_id: config.localAgentId,
+    local_agent_id: resolveLocalAgentId(context),
     host_name: os.hostname(),
     os: os.platform(),
     started_at: config.createdAt,
@@ -577,7 +593,7 @@ async function buildSyncPayload(
   const binding = workspacePath ? config.workspaceBindings[workspacePath] : undefined;
   const payload: Record<string, unknown> = {
     agent_type: context.tool ?? 'workbuddy',
-    local_agent_id: config.localAgentId,
+    local_agent_id: resolveLocalAgentId(context),
     status: context.status ?? 'running',
   };
   if (workspacePath) {
@@ -610,6 +626,24 @@ function commandAction(command: LocalAgentCommand): 'install' | 'uninstall' | nu
   return null;
 }
 
+/**
+ * Reject slugs that could escape the resource directory. Slugs come from
+ * backend sync commands and are used directly in filesystem paths, so a value
+ * like `../../.ssh/authorized_keys` would otherwise write outside the repo.
+ */
+function validateSlug(slug: string): string {
+  if (
+    !slug ||
+    slug.includes('/') ||
+    slug.includes('\\') ||
+    slug.includes('..') ||
+    path.isAbsolute(slug)
+  ) {
+    throw new Error(`Invalid resource slug: ${slug}`);
+  }
+  return slug;
+}
+
 function commandSlug(command: LocalAgentCommand, kind: CommandResourceKind): string {
   const slug =
     kind === 'skill' ? command.skill_slug :
@@ -619,7 +653,7 @@ function commandSlug(command: LocalAgentCommand, kind: CommandResourceKind): str
   if (!resolved) {
     throw new Error(`Missing ${kind} slug`);
   }
-  return resolved;
+  return validateSlug(resolved);
 }
 
 function commandVersion(command: LocalAgentCommand, kind: CommandResourceKind): string | undefined {
@@ -634,21 +668,48 @@ function manifestKind(kind: CommandResourceKind): ResourceKind {
   return kind === 'skill' ? 'skills' : kind === 'rule' ? 'rules' : 'claudemd';
 }
 
+/** Only http(s) downloads are allowed — reject file:, ftp:, gopher:, etc. */
+function assertHttpUrl(rawUrl: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`Invalid download URL: ${rawUrl}`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Unsupported download URL scheme: ${parsed.protocol}`);
+  }
+  return parsed;
+}
+
+/**
+ * Fetch a resource by URL. download_url comes from backend sync commands, so it
+ * is treated as untrusted: only http(s) is honoured (no file:// / local-path
+ * copy, which would be arbitrary local file read), and redirects are followed
+ * manually so every hop's scheme is re-validated instead of blindly trusting
+ * whatever Location the server returns.
+ */
 async function downloadResource(downloadUrl: string): Promise<string> {
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'teamai-local-agent-'));
   const filePath = path.join(tmpDir, 'resource');
 
-  if (downloadUrl.startsWith('file://')) {
-    await fse.copyFile(fileURLToPath(downloadUrl), filePath);
-    return filePath;
+  let current = assertHttpUrl(downloadUrl);
+  let response: Response;
+  const maxRedirects = 5;
+  for (let hop = 0; ; hop++) {
+    response = await fetch(current, { redirect: 'manual' });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (!location) break;
+      if (hop >= maxRedirects) {
+        throw new Error(`Download failed: too many redirects (${downloadUrl})`);
+      }
+      current = assertHttpUrl(new URL(location, current).toString());
+      continue;
+    }
+    break;
   }
 
-  if (path.isAbsolute(downloadUrl) && await pathExists(downloadUrl)) {
-    await fse.copyFile(downloadUrl, filePath);
-    return filePath;
-  }
-
-  const response = await fetch(downloadUrl, { redirect: 'follow' });
   if (!response.ok) {
     throw new Error(`Download failed: ${response.status} ${response.statusText}`);
   }
@@ -935,7 +996,7 @@ async function processCommands(
   commands: LocalAgentCommand[],
   context: LocalAgentContext,
 ): Promise<void> {
-  const tag = `[${config.localAgentId.slice(-6)}] [${context.tool}]`;
+  const tag = `[${resolveLocalAgentId(context).slice(-6)}] [${context.tool}]`;
   for (const command of commands) {
     try {
       const version = await executeCommand(config, command, context);
@@ -965,7 +1026,7 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
     await emitBindingHint(config, workspacePath);
   }
 
-  const tag = `[${config.localAgentId.slice(-6)}] [${context.tool}]`;
+  const tag = `[${resolveLocalAgentId(context).slice(-6)}] [${context.tool}]`;
   log.debug(`${tag} run: endpoint=${config.endpoint}`);
 
   try {
@@ -1056,6 +1117,16 @@ export async function hookDispatch(eventName: string, tool?: string): Promise<vo
   });
 }
 
+/**
+ * Persist the API token as a credential file with owner-only (0o600)
+ * permissions. chmod after write so an already-existing token file (whose perms
+ * mode-on-create would not touch) is also tightened.
+ */
+export async function writeTokenFile(tokenPath: string, token: string): Promise<void> {
+  await fs.promises.writeFile(tokenPath, token + '\n', { mode: 0o600 });
+  await fs.promises.chmod(tokenPath, 0o600);
+}
+
 export async function initLocalAgentHttp(options: {
   endpoint: string;
   token?: string;
@@ -1074,7 +1145,6 @@ export async function initLocalAgentHttp(options: {
   const config: LocalAgentConfig = {
     endpoint,
     token: options.token,
-    localAgentId: existing?.localAgentId ?? generateLocalAgentId(),
     createdAt: existing?.createdAt ?? new Date().toISOString(),
     workspaceBindings: existing?.workspaceBindings ?? {},
     userGroupId: existing?.userGroupId,
@@ -1084,7 +1154,7 @@ export async function initLocalAgentHttp(options: {
   await ensureDir(getLocalAgentHome());
   await saveLocalAgentConfig(config);
   if (options.token) {
-    await writeFile(TEAMAI_TOKEN_PATH, options.token + '\n');
+    await writeTokenFile(TEAMAI_TOKEN_PATH, options.token);
   }
 
   const teamConfig = createLocalAgentTeamConfig(endpoint);
