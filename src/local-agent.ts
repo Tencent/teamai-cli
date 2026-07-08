@@ -9,6 +9,8 @@ import YAML from 'yaml';
 import { log } from './utils/logger.js';
 import {
   ensureDir,
+  listDirs,
+  listFilesRecursive,
   pathExists,
   readFileSafe,
   readJson,
@@ -22,6 +24,7 @@ import { injectHooksToAllTools } from './hooks.js';
 import { parseHookEvent, appendEvent, compactEvents } from './dashboard-collector.js';
 import { getCurrentVersion } from './package-info.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
+import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
 import {
@@ -534,19 +537,87 @@ async function resolveWorkspacePath(cwd?: string): Promise<string | undefined> {
   }
 }
 
-function reportableResources(scope: ManifestScope, kind: ResourceKind): Array<{
+interface ReportedResource {
   slug: string;
   version?: string;
   display_name?: string;
   source: string;
-}> {
-  return Object.values(scope[kind]).map((resource) => ({
-    slug: resource.slug,
-    version: resource.version,
-    display_name: resource.display_name ?? resource.slug,
-    source: resource.source ?? 'enterprise',
-  }));
 }
+
+/**
+ * Resolve a resource's source by looking it up in the local-agent manifest:
+ * slugs recorded there were installed via HTTP distribution (`enterprise`);
+ * everything else present only on disk is treated as `local`.
+ */
+function resolveSource(slug: string, manifestSlugs: Set<string>): string {
+  return manifestSlugs.has(slug) ? 'enterprise' : 'local';
+}
+
+/**
+ * Scan a tool's on-disk skills directory. Each sub-directory containing a
+ * SKILL.md is one installed skill; slug/version/display_name come from its
+ * front-matter (falling back to the directory name).
+ */
+async function scanSkillsFromDisk(
+  skillsDir: string,
+  manifestSlugs: Set<string>,
+): Promise<ReportedResource[]> {
+  if (!(await pathExists(skillsDir))) return [];
+  const dirs = (await listDirs(skillsDir)).filter((name) => !name.startsWith('.') && !name.startsWith('_'));
+  const results: ReportedResource[] = [];
+  for (const dir of dirs) {
+    const skillMd = path.join(skillsDir, dir, 'SKILL.md');
+    if (!(await pathExists(skillMd))) continue;
+    const fm = await readFrontmatter(skillMd);
+    const slug = typeof fm.name === 'string' && fm.name ? fm.name : dir;
+    const version = fm.version != null ? String(fm.version) : undefined;
+    results.push({
+      slug,
+      version,
+      display_name: slug,
+      source: resolveSource(slug, manifestSlugs),
+    });
+  }
+  return results.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+/**
+ * Scan a tool's on-disk rules directory. Every `.md` file (recursively) is one
+ * installed rule; the slug is its path relative to the rules dir without the
+ * `.md` extension.
+ */
+async function scanRulesFromDisk(
+  rulesDir: string,
+  manifestSlugs: Set<string>,
+): Promise<ReportedResource[]> {
+  if (!(await pathExists(rulesDir))) return [];
+  const files = (await listFilesRecursive(rulesDir)).filter((f) => f.endsWith('.md'));
+  const results: ReportedResource[] = [];
+  for (const file of files) {
+    const slug = file.replace(/\.md$/, '');
+    // Skip CLI built-in / legacy rules (e.g. teamai-recall) so they are not
+    // reported as user-installed resources — mirrors the pull/uninstall filter.
+    if (EXCLUDED_RULE_NAMES.has(path.basename(slug)) || EXCLUDED_RULE_NAMES.has(slug)) continue;
+    results.push({
+      slug,
+      display_name: slug,
+      source: resolveSource(slug, manifestSlugs),
+    });
+  }
+  return results.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+/** Collect every skill/rule slug recorded across all manifest scopes. */
+function collectManifestSlugs(manifest: LocalAgentManifest): { skills: Set<string>; rules: Set<string> } {
+  const skills = new Set<string>();
+  const rules = new Set<string>();
+  for (const scope of Object.values(manifest.scopes)) {
+    for (const slug of Object.keys(scope.skills ?? {})) skills.add(slug);
+    for (const slug of Object.keys(scope.rules ?? {})) rules.add(slug);
+  }
+  return { skills, rules };
+}
+
 
 export async function buildReportPayload(
   config: LocalAgentConfig,
@@ -554,42 +625,59 @@ export async function buildReportPayload(
 ): Promise<Record<string, unknown>> {
   const manifest = await loadManifest();
   const workspacePath = await resolveWorkspacePath(context.cwd);
-  const instanceResources = getManifestScope(manifest, 'instance');
-  const userResources = getManifestScope(manifest, 'user');
-  const workspaceResources = workspacePath
-    ? getManifestScope(manifest, 'project', workspacePath)
-    : emptyManifestScope();
   const binding = workspacePath ? config.workspaceBindings[workspacePath] : undefined;
 
+  // Resource discovery scans the tool's on-disk skills/rules directories rather
+  // than the manifest, so locally-installed resources (not just HTTP-distributed
+  // ones) are reported. `source` is derived from the manifest: slugs recorded
+  // there are `enterprise`, the rest `local`.
+  const tool = context.tool ?? 'workbuddy';
+  const toolPaths = createLocalAgentTeamConfig(config.endpoint).toolPaths;
+  const toolPath = toolPaths[tool];
+  const manifestSlugs = collectManifestSlugs(manifest);
+
+  const scanScope = async (baseDir: string): Promise<{ skills: ReportedResource[]; rules: ReportedResource[] }> => {
+    if (!toolPath) return { skills: [], rules: [] };
+    const skills = toolPath.skills
+      ? await scanSkillsFromDisk(path.join(baseDir, toolPath.skills), manifestSlugs.skills)
+      : [];
+    const rules = toolPath.rules
+      ? await scanRulesFromDisk(path.join(baseDir, toolPath.rules), manifestSlugs.rules)
+      : [];
+    return { skills, rules };
+  };
+
+  const userScope = await scanScope(process.env.HOME ?? '');
+
   const payload: Record<string, unknown> = {
-    agent_type: context.tool ?? 'workbuddy',
+    agent_type: tool,
     agent_version: getCurrentVersion(),
     local_agent_id: resolveLocalAgentId(context),
     host_name: os.hostname(),
     os: os.platform(),
     started_at: config.createdAt,
     last_status: context.status ?? 'running',
-    skills: reportableResources(instanceResources, 'skills'),
-    rules: reportableResources(instanceResources, 'rules'),
-    claudemd: reportableResources(instanceResources, 'claudemd'),
+    // Instance-level skills/rules are a phase-1 legacy concept. They are
+    // deliberately omitted (not sent as []): the server treats present arrays
+    // as a full-sync snapshot ("消失即删"), so an empty array would wipe any
+    // instance-level resources. Omitting the field leaves them untouched.
     user_level: {
       group_id: config.userGroupId,
-      skills: reportableResources(userResources, 'skills'),
-      rules: reportableResources(userResources, 'rules'),
-      claudemd: reportableResources(userResources, 'claudemd'),
+      skills: userScope.skills,
+      rules: userScope.rules,
     },
   };
 
   if (workspacePath) {
+    const wsScope = await scanScope(workspacePath);
     payload.workspaces = [
       {
         path: workspacePath,
         name: path.basename(workspacePath),
-        ide_type: context.tool ?? 'workbuddy',
+        ide_type: tool,
         group_id: binding?.groupId,
-        skills: reportableResources(workspaceResources, 'skills'),
-        rules: reportableResources(workspaceResources, 'rules'),
-        claudemd: reportableResources(workspaceResources, 'claudemd'),
+        skills: wsScope.skills,
+        rules: wsScope.rules,
       },
     ];
   }

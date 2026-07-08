@@ -47,6 +47,55 @@ async function setupConfig(bindings: Record<string, unknown> = {}) {
   });
 }
 
+describe('local-agent: buildReportPayload disk scan', () => {
+  async function writeSkill(baseDir: string, tool: string, dir: string, name: string, version?: string): Promise<void> {
+    const skillDir = path.join(baseDir, `.${tool}`, 'skills', dir);
+    await fse.ensureDir(skillDir);
+    const fm = ['---', `name: ${name}`, ...(version ? [`version: ${version}`] : []), '---', '', '# skill'].join('\n');
+    await fse.writeFile(path.join(skillDir, 'SKILL.md'), fm);
+  }
+
+  async function writeRule(baseDir: string, tool: string, slug: string): Promise<void> {
+    const rulesDir = path.join(baseDir, `.${tool}`, 'rules');
+    await fse.ensureDir(rulesDir);
+    await fse.writeFile(path.join(rulesDir, `${slug}.md`), '# rule');
+  }
+
+  it('scans user-level skills/rules from disk, leaves instance empty, derives source from manifest', async () => {
+    await setupConfig();
+    // Manifest records one slug → that one is `enterprise`, the rest `local`.
+    const manifestDir = path.join(tmpDir, '.teamai', 'local-agent');
+    await fse.writeJson(path.join(manifestDir, 'manifest.json'), {
+      scopes: { instance: { skills: { 'known-skill': { slug: 'known-skill', installed_at: 'x' } }, rules: {}, claudemd: {} } },
+    });
+    // User-level resources on disk (~/.codebuddy under mocked HOME=tmpDir).
+    await writeSkill(tmpDir, 'codebuddy', 'known-skill', 'known-skill', '1.0.0');
+    await writeSkill(tmpDir, 'codebuddy', 'local-skill', 'local-skill');
+    await writeRule(tmpDir, 'codebuddy', 'my-rule');
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      skills?: unknown[];
+      rules?: unknown[];
+      user_level: { skills: Array<{ slug: string; source: string; version?: string }>; rules: Array<{ slug: string }> };
+    };
+
+    // Instance level is omitted entirely (phase-1 legacy) — not sent as [] so
+    // the server's full-sync semantics don't wipe instance resources.
+    expect(payload.skills).toBeUndefined();
+    expect(payload.rules).toBeUndefined();
+
+    // User level scanned from disk.
+    const userSkills = payload.user_level.skills;
+    expect(userSkills.map((s) => s.slug).sort()).toEqual(['known-skill', 'local-skill']);
+    expect(userSkills.find((s) => s.slug === 'known-skill')?.source).toBe('enterprise');
+    expect(userSkills.find((s) => s.slug === 'local-skill')?.source).toBe('local');
+    expect(userSkills.find((s) => s.slug === 'known-skill')?.version).toBe('1.0.0');
+    expect(payload.user_level.rules.map((r) => r.slug)).toEqual(['my-rule']);
+  });
+});
+
 describe('local-agent: bindCurrentProject --skip', () => {
   it('writes groupId 0 and __skipped__ marker to config', async () => {
     await setupConfig();
