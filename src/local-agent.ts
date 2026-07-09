@@ -1293,6 +1293,7 @@ export async function initLocalAgentHttp(options: {
   endpoint: string;
   token?: string;
   force?: boolean;
+  filterAgents?: string[];
 }): Promise<void> {
   const endpoint = normalizeEndpoint(options.endpoint);
   if (!endpoint) {
@@ -1320,7 +1321,7 @@ export async function initLocalAgentHttp(options: {
   }
 
   const teamConfig = createLocalAgentTeamConfig(endpoint);
-  await injectHooksToAllTools(teamConfig.toolPaths, process.env.HOME ?? '');
+  await injectHooksToAllTools(teamConfig.toolPaths, process.env.HOME ?? '', options.filterAgents);
   log.success(`HTTP local agent initialized at ${getConfigPath()}`);
 }
 
