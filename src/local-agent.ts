@@ -44,7 +44,7 @@ const execFileAsync = promisify(execFile);
 const LOCAL_AGENT_DIR = 'local-agent';
 const CONFIG_FILE = 'config.json';
 const MANIFEST_FILE = 'manifest.json';
-const REPORTER_QUEUE_FILE = 'reporter/queue.jsonl';
+const REPORTER_ERROR_LOG = 'reporter/errors.jsonl';
 
 type LocalAgentScope = 'instance' | 'user' | 'project';
 type ResourceKind = 'skills' | 'rules' | 'claudemd';
@@ -145,8 +145,8 @@ function getManifestPath(): string {
   return path.join(getLocalAgentHome(), MANIFEST_FILE);
 }
 
-function getQueuePath(): string {
-  return path.join(getTeamaiHomePath(), REPORTER_QUEUE_FILE);
+function getErrorLogPath(): string {
+  return path.join(getTeamaiHomePath(), REPORTER_ERROR_LOG);
 }
 
 function compileClaudemdBlock(contents: string[]): string | null {
@@ -361,16 +361,16 @@ async function localAgentFetch<T>(
   return body as T;
 }
 
-async function appendReporterQueue(entry: unknown): Promise<void> {
+async function appendErrorLog(entry: unknown): Promise<void> {
   try {
-    await ensureDir(path.dirname(getQueuePath()));
+    await ensureDir(path.dirname(getErrorLogPath()));
     await fs.promises.appendFile(
-      getQueuePath(),
+      getErrorLogPath(),
       JSON.stringify({ at: new Date().toISOString(), entry }) + '\n',
       'utf-8',
     );
   } catch {
-    // Queue writes are best-effort; hook execution must not fail on I/O.
+    // Best-effort; hook execution must not fail on I/O.
   }
 }
 
@@ -1214,7 +1214,7 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   } catch (e) {
     const error = (e as Error).message;
     log.error(`${tag} sync FAILED: ${error}`);
-    await appendReporterQueue({ error, context });
+    await appendErrorLog({ error, context });
   }
 
   return true;
@@ -1293,6 +1293,7 @@ export async function initLocalAgentHttp(options: {
   endpoint: string;
   token?: string;
   force?: boolean;
+  filterAgents?: string[];
 }): Promise<void> {
   const endpoint = normalizeEndpoint(options.endpoint);
   if (!endpoint) {
@@ -1320,7 +1321,7 @@ export async function initLocalAgentHttp(options: {
   }
 
   const teamConfig = createLocalAgentTeamConfig(endpoint);
-  await injectHooksToAllTools(teamConfig.toolPaths, process.env.HOME ?? '');
+  await injectHooksToAllTools(teamConfig.toolPaths, process.env.HOME ?? '', options.filterAgents);
   log.success(`HTTP local agent initialized at ${getConfigPath()}`);
 }
 

@@ -230,7 +230,7 @@ export async function initHttp(
   // path can deliver rules/claudemd (not just skills).
   const { initLocalAgentHttp } = await import('./local-agent.js');
   try {
-    await initLocalAgentHttp({ endpoint: url, token: options.token, force: options.force });
+    await initLocalAgentHttp({ endpoint: url, token: options.token, force: options.force, filterAgents });
   } catch (e) {
     log.debug(`Local agent init: ${(e as Error).message}`);
   }
