@@ -361,7 +361,7 @@ async function localAgentFetch<T>(
   return body as T;
 }
 
-async function appendReporterQueue(entry: unknown): Promise<void> {
+async function appendErrorLog(entry: unknown): Promise<void> {
   try {
     await ensureDir(path.dirname(getErrorLogPath()));
     await fs.promises.appendFile(
@@ -370,7 +370,7 @@ async function appendReporterQueue(entry: unknown): Promise<void> {
       'utf-8',
     );
   } catch {
-    // Queue writes are best-effort; hook execution must not fail on I/O.
+    // Best-effort; hook execution must not fail on I/O.
   }
 }
 
@@ -1214,7 +1214,7 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   } catch (e) {
     const error = (e as Error).message;
     log.error(`${tag} sync FAILED: ${error}`);
-    await appendReporterQueue({ error, context });
+    await appendErrorLog({ error, context });
   }
 
   return true;
