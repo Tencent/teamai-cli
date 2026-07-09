@@ -3,7 +3,7 @@ import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/
 import { log } from './utils/logger.js';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, getManagedHooksPath, resolveBaseDir } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
-import { builtinHookDefs, applyBuiltinOverride } from './builtin-hooks.js';
+import { builtinHookDefs, applyBuiltinOverride, ensureTeamaiWrapper } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { resolveTeamHooks } from './resources/hooks.js';
 
@@ -111,12 +111,12 @@ const TEAMAI_COMMAND_MARKERS = [
 ];
 
 function extractTeamaiSubcommand(command: string): string | null {
-  const match = command.match(/(?:^|\/|")teamai\s+([\w-]+)/);
+  const match = command.match(/teamai\s+([\w-]+)/);
   return match ? match[1] : null;
 }
 
 function isTeamaiHookCommand(command: string): boolean {
-  return /(?:^|\/|")teamai\s/.test(command);
+  return /(?:^|"|\s)teamai\s/.test(command);
 }
 
 /** Filter team defs down to those that apply to the given tool. */
@@ -504,6 +504,10 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
  */
 export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<void> {
   const resolvedBaseDir = baseDir ?? (process.env.HOME ?? '');
+  const tools = Object.keys(toolPaths).filter(t => !filterAgents || filterAgents.includes(t));
+  if (tools.includes('workbuddy')) {
+    ensureTeamaiWrapper();
+  }
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (filterAgents && !filterAgents.includes(tool)) continue;
     if (paths.settings) {

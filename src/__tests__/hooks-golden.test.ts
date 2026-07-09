@@ -24,13 +24,10 @@ const cases: Array<[string, string]> = [
 
 describe('hooks golden — built-in output is byte-identical to the captured baseline', () => {
   let tmp: string;
-  const origArgv0 = process.argv[0];
   beforeEach(async () => {
     tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'hooks-golden-'));
-    process.argv[0] = '/nonexistent';
   });
   afterEach(async () => {
-    process.argv[0] = origArgv0;
     await fse.remove(tmp);
   });
 
