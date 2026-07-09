@@ -111,12 +111,12 @@ const TEAMAI_COMMAND_MARKERS = [
 ];
 
 function extractTeamaiSubcommand(command: string): string | null {
-  const match = command.match(/teamai\s+([\w-]+)/);
+  const match = command.match(/(?:^|\/|")teamai\s+([\w-]+)/);
   return match ? match[1] : null;
 }
 
 function isTeamaiHookCommand(command: string): boolean {
-  return /"teamai\s/.test(command);
+  return /(?:^|\/|")teamai\s/.test(command);
 }
 
 /** Filter team defs down to those that apply to the given tool. */

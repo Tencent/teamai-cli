@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import type { HookDef } from './types.js';
 
@@ -12,10 +14,27 @@ import type { HookDef } from './types.js';
 //  byte-for-byte identical to the previous hardcoded version, so that machines
 //  upgrading the CLI see a zero-diff reconcile. Pinned by hooks-golden.test.ts.
 
+/**
+ * Resolve the absolute path of the `teamai` binary so hook commands work
+ * in GUI-launched processes that lack a complete PATH.
+ *
+ * npm global install places the `teamai` symlink next to the `node` binary
+ * (process.argv[0]), so we look there first.
+ */
+export function resolveTeamaiBinPath(): string {
+  try {
+    const nodeDir = path.dirname(process.argv[0]);
+    const candidate = path.join(nodeDir, 'teamai');
+    if (fs.existsSync(candidate)) return candidate;
+  } catch { /* fallback below */ }
+  return 'teamai';
+}
+
 /** Generate the hook-dispatch command for a given event, tool, and optional matcher. */
-export function getDispatchCommand(event: string, tool: string, matcher?: string): string {
+export function getDispatchCommand(event: string, tool: string, matcher?: string, binPath?: string): string {
+  const bin = binPath ?? 'teamai';
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
-  return `bash -lc "teamai hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
+  return `bash -lc "${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
 }
 
 /** Canonical, ordered description of each built-in hook. Order is load-bearing
@@ -51,13 +70,14 @@ const BUILTIN_HOOK_SPECS: BuiltinHookSpec[] = [
  * reconcile engine renders the same HookDef into each tool's on-disk shape.
  */
 export function builtinHookDefs(tool: string): HookDef[] {
+  const binPath = resolveTeamaiBinPath();
   const withTimeout = tool === 'cursor' || tool === 'workbuddy';
   return BUILTIN_HOOK_SPECS.map((spec) => ({
     source: 'builtin' as const,
     key: spec.key,
     event: spec.event,
     matcher: spec.matcher,
-    command: getDispatchCommand(spec.dispatchEvent, tool, spec.matcher),
+    command: getDispatchCommand(spec.dispatchEvent, tool, spec.matcher, binPath),
     timeout: withTimeout ? spec.timeoutSec : undefined,
     description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} ${spec.key}`,
   }));
