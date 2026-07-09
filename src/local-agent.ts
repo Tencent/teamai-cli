@@ -491,6 +491,16 @@ async function ensureWorkspaceBinding(
   process.stdout.write(hookOutput + '\n');
 }
 
+/**
+ * The organization-binding prompt (TTY prompt + injected hook context) is
+ * off by default. Enable it explicitly with `TEAMAI_BIND_PROMPT_ENABLED=1`.
+ * The manual `teamai bind-project` command is always available regardless.
+ */
+function isBindPromptEnabled(): boolean {
+  const flag = process.env.TEAMAI_BIND_PROMPT_ENABLED;
+  return flag === '1' || flag === 'true';
+}
+
 async function emitBindingHint(
   config: LocalAgentConfig,
   workspacePath: string,
@@ -1160,11 +1170,13 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   if (!config) return false;
 
   const workspacePath = await resolveWorkspacePath(context.cwd);
-  if (context.event?.type === 'session_start' && workspacePath) {
-    await ensureWorkspaceBinding(config, workspacePath);
-  }
-  if (context.event?.type === 'prompt_submit' && workspacePath) {
-    await emitBindingHint(config, workspacePath);
+  if (isBindPromptEnabled() && workspacePath) {
+    if (context.event?.type === 'session_start') {
+      await ensureWorkspaceBinding(config, workspacePath);
+    }
+    if (context.event?.type === 'prompt_submit') {
+      await emitBindingHint(config, workspacePath);
+    }
   }
 
   const tag = localAgentTag(context);

@@ -119,6 +119,7 @@ The value you pass to `--http <baseUrl>` is the base; every endpoint is relative
 | `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }` to override the three reporter paths |
 | `TEAMAI_REPORT_AGENTS` | Comma-separated agents that report (default `workbuddy,codebuddy`) |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | Comma-separated host allowlist for skill `download_url` (empty = allow all) |
+| `TEAMAI_BIND_PROMPT_ENABLED` | Set to `1` to enable the org-binding prompt (TTY prompt + injected hook hint). Off by default; `teamai bind-project` works regardless |
 
 </details>
 
