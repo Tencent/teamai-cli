@@ -172,6 +172,7 @@ async function flushQueue(apiKey: string): Promise<void> {
     } catch {
       continue; // drop malformed
     }
+    if (!req.url || !req.body) continue; // drop non-retryable entries (e.g. diagnostic logs)
     try {
       await postJson(req.url, apiKey, req.body);
     } catch {
