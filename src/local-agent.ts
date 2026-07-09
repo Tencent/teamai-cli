@@ -969,7 +969,10 @@ async function installDownloadedResource(input: {
     const fullTeamConfig = createLocalAgentTeamConfig(input.config.endpoint);
     const tool = input.tool ?? 'workbuddy';
     const toolPath = fullTeamConfig.toolPaths[tool];
-    const teamConfig = { ...fullTeamConfig, toolPaths: toolPath ? { [tool]: toolPath } : {} };
+    if (!toolPath) {
+      throw new Error(`Unknown tool "${tool}": no toolPaths entry found`);
+    }
+    const teamConfig = { ...fullTeamConfig, toolPaths: { [tool]: toolPath } };
     const localConfig = createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
     const now = new Date().toISOString();
     let displayName = input.command.display_name ?? input.slug;
@@ -1037,7 +1040,10 @@ async function uninstallResource(input: {
   const fullTeamConfig = createLocalAgentTeamConfig(input.config.endpoint);
   const tool = input.tool ?? 'workbuddy';
   const toolPath = fullTeamConfig.toolPaths[tool];
-  const teamConfig = { ...fullTeamConfig, toolPaths: toolPath ? { [tool]: toolPath } : {} };
+  if (!toolPath) {
+    throw new Error(`Unknown tool "${tool}": no toolPaths entry found`);
+  }
+  const teamConfig = { ...fullTeamConfig, toolPaths: { [tool]: toolPath } };
   const localConfig = createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
   const manifest = await loadManifest();
   const scopeManifest = getManifestScope(manifest, input.scope, input.workspacePath);
