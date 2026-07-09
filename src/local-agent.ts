@@ -638,12 +638,19 @@ async function scanRulesFromDisk(
   return results.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
-/** Collect every skill/rule slug recorded across all manifest scopes. */
+/** Collect every skill/rule slug recorded across all manifest scopes.
+ * For skills, also includes dir_name (the on-disk SKILL.md name) so that
+ * scanSkillsFromDisk — which uses SKILL.md name as the reported slug —
+ * correctly resolves source as 'enterprise' even when dir_name ≠ slug.
+ */
 function collectManifestSlugs(manifest: LocalAgentManifest): { skills: Set<string>; rules: Set<string> } {
   const skills = new Set<string>();
   const rules = new Set<string>();
   for (const scope of Object.values(manifest.scopes)) {
-    for (const slug of Object.keys(scope.skills ?? {})) skills.add(slug);
+    for (const [slug, entry] of Object.entries(scope.skills ?? {})) {
+      skills.add(slug);
+      if (entry.dir_name) skills.add(entry.dir_name);
+    }
     for (const slug of Object.keys(scope.rules ?? {})) rules.add(slug);
   }
   return { skills, rules };
