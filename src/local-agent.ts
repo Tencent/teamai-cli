@@ -44,7 +44,7 @@ const execFileAsync = promisify(execFile);
 const LOCAL_AGENT_DIR = 'local-agent';
 const CONFIG_FILE = 'config.json';
 const MANIFEST_FILE = 'manifest.json';
-const REPORTER_QUEUE_FILE = 'reporter/queue.jsonl';
+const REPORTER_ERROR_LOG = 'reporter/errors.jsonl';
 
 type LocalAgentScope = 'instance' | 'user' | 'project';
 type ResourceKind = 'skills' | 'rules' | 'claudemd';
@@ -145,8 +145,8 @@ function getManifestPath(): string {
   return path.join(getLocalAgentHome(), MANIFEST_FILE);
 }
 
-function getQueuePath(): string {
-  return path.join(getTeamaiHomePath(), REPORTER_QUEUE_FILE);
+function getErrorLogPath(): string {
+  return path.join(getTeamaiHomePath(), REPORTER_ERROR_LOG);
 }
 
 function compileClaudemdBlock(contents: string[]): string | null {
@@ -363,9 +363,9 @@ async function localAgentFetch<T>(
 
 async function appendReporterQueue(entry: unknown): Promise<void> {
   try {
-    await ensureDir(path.dirname(getQueuePath()));
+    await ensureDir(path.dirname(getErrorLogPath()));
     await fs.promises.appendFile(
-      getQueuePath(),
+      getErrorLogPath(),
       JSON.stringify({ at: new Date().toISOString(), entry }) + '\n',
       'utf-8',
     );
