@@ -1300,6 +1300,84 @@ export async function pullLocalAgentForCwd(context?: LocalAgentContext): Promise
   });
 }
 
+/** Summary of the configured HTTP local-agent bypass, for `teamai source list`. */
+export interface LocalAgentSummary {
+  endpoint: string;
+  boundGroups: Array<{ path: string; groupName?: string; groupId: number }>;
+  resourceCounts: { skills: number; rules: number; claudemd: number };
+}
+
+/**
+ * Describe the configured HTTP local-agent bypass (report/sync/ack), or null when
+ * none is configured. Used by `teamai source list` to show the HTTP side channel
+ * alongside git cross-team sources.
+ */
+export async function describeLocalAgent(): Promise<LocalAgentSummary | null> {
+  const config = await loadLocalAgentConfig();
+  if (!config) return null;
+
+  const boundGroups = Object.entries(config.workspaceBindings)
+    // groupId 0 is the "__skipped__" sentinel — not a real binding.
+    .filter(([, b]) => b.groupId !== 0)
+    .map(([workspacePath, b]) => ({ path: workspacePath, groupName: b.groupName, groupId: b.groupId }));
+
+  const manifest = await loadManifest();
+  const counts = { skills: 0, rules: 0, claudemd: 0 };
+  for (const scope of Object.values(manifest.scopes)) {
+    counts.skills += Object.keys(scope.skills ?? {}).length;
+    counts.rules += Object.keys(scope.rules ?? {}).length;
+    counts.claudemd += Object.keys(scope.claudemd ?? {}).length;
+  }
+
+  return { endpoint: config.endpoint, boundGroups, resourceCounts: counts };
+}
+
+/** Parse a manifest scope key back into (scope, workspacePath). */
+function parseScopeKey(key: string): { scope: LocalAgentScope; workspacePath?: string } {
+  if (key.startsWith('project:')) {
+    return { scope: 'project', workspacePath: key.slice('project:'.length) || undefined };
+  }
+  return { scope: key === 'instance' ? 'instance' : 'user' };
+}
+
+/**
+ * Tear down the HTTP local-agent bypass: uninstall every resource recorded in the
+ * manifest (skills/rules/claudemd, across all scopes) from the AI tool dirs, then
+ * remove the whole ~/.teamai/local-agent/ directory (config + manifest + queue).
+ *
+ * Best-effort per resource: a single failed uninstall is logged and skipped so a
+ * stale entry cannot block the teardown.
+ */
+export async function removeLocalAgentHttp(): Promise<void> {
+  const config = await loadLocalAgentConfig();
+  if (!config) {
+    log.info('No HTTP source configured — nothing to remove.');
+    return;
+  }
+
+  const manifest = await loadManifest();
+  for (const [key, scopeManifest] of Object.entries(manifest.scopes)) {
+    const { scope, workspacePath } = parseScopeKey(key);
+    const kinds: Array<[ResourceKind, CommandResourceKind]> = [
+      ['skills', 'skill'],
+      ['rules', 'rule'],
+      ['claudemd', 'claudemd'],
+    ];
+    for (const [manifestField, kind] of kinds) {
+      for (const slug of Object.keys(scopeManifest[manifestField] ?? {})) {
+        try {
+          await uninstallResource({ config, kind, slug, scope, workspacePath });
+        } catch (e) {
+          log.debug(`local-agent: failed to uninstall ${kind} "${slug}": ${(e as Error).message}`);
+        }
+      }
+    }
+  }
+
+  await remove(getLocalAgentHome());
+  log.success('HTTP source removed (resources uninstalled, config cleared).');
+}
+
 export async function bindCurrentProject(options?: { groupId?: number; skip?: boolean; cwd?: string }): Promise<void> {
   const workspacePath = await resolveWorkspacePath(options?.cwd ?? process.cwd());
   if (!workspacePath) {

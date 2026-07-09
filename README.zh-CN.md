@@ -300,6 +300,25 @@ teamai source remove other-team
 
 订阅源的 skills 在 `teamai pull` 时自动同步到本地，与团队自有 skills 共存。
 
+### HTTP source（report/sync/ack）
+
+上面的订阅源是 **git** 源。你还可以在**不改动现有 git 主仓**的前提下，额外挂一个 **HTTP** 源，它走 report/sync/ack 生命周期——与 `init --http` 消费者所用的完全相同：
+
+```bash
+# 挂一个 HTTP 源（git 主仓保持不变）
+teamai source add-http https://your-team-host/api --token <api-key>
+
+# 在 "HTTP source" 分区查看
+teamai source list
+
+# 移除（卸载其资源并清空配置）
+teamai source remove-http
+```
+
+HTTP 源在每次 AI 会话时上报状态并拉取 skills/rules/CLAUDE.md 指令命令，由 `teamai init` 已安装的 `hook-dispatch` hook 驱动。从不执行 `add-http` 的用户不受任何影响。
+
+仅支持一个 HTTP 源，且面向 **git 主仓**用户：若你的主仓本身就是 HTTP 后端（`init --http`），它已占用 HTTP 配置，此时 `add-http` 会被拒绝。
+
 ## Scope（作用域）
 
 TeamAI 支持两种 scope，可以共存：

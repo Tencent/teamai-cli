@@ -327,6 +327,26 @@ sourceCmd
   });
 
 sourceCmd
+  .command('add-http <endpoint>')
+  .description('Add an HTTP source (report/sync/ack) alongside a git main repo')
+  .option('--token <key>', 'API token for the HTTP endpoint (stored 0600, never committed)')
+  .option('--force', 'Overwrite an existing HTTP source config')
+  .action(async (endpoint: string, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { sourceAddHttp } = await import('./source.js');
+    await sourceAddHttp(endpoint, { ...globalOpts, ...cmdOpts });
+  });
+
+sourceCmd
+  .command('remove-http')
+  .description('Remove the HTTP source and clean up its resources')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { sourceRemoveHttp } = await import('./source.js');
+    await sourceRemoveHttp(globalOpts);
+  });
+
+sourceCmd
   .command('list')
   .description('List all configured sources')
   .action(async () => {

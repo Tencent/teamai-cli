@@ -300,6 +300,25 @@ teamai source remove other-team
 
 Subscribed skills sync to your local machine on `teamai pull` and coexist with your own team's skills.
 
+### HTTP source (report/sync/ack)
+
+The subscriptions above are **git** sources. You can additionally attach a single **HTTP** source that uses the report/sync/ack lifecycle — the same one an `init --http` consumer gets — **alongside your existing git main repo**, without changing it:
+
+```bash
+# Attach an HTTP source (git main repo stays untouched)
+teamai source add-http https://your-team-host/api --token <api-key>
+
+# See it listed under "HTTP source"
+teamai source list
+
+# Detach it (uninstalls its resources, clears its config)
+teamai source remove-http
+```
+
+The HTTP source reports status and pulls down skills/rules/CLAUDE.md commands on each AI session, driven by the `hook-dispatch` hook that `teamai init` already installs. Users who never run `add-http` are unaffected.
+
+Only one HTTP source is supported, and it is meant for **git-based** main repos: if your main repo is itself an HTTP backend (`init --http`), it already owns the HTTP config, so `add-http` is rejected.
+
 ## Scope
 
 TeamAI supports two scopes that can coexist:
