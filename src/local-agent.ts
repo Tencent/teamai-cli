@@ -183,6 +183,16 @@ function resolveLocalAgentId(context: LocalAgentContext): string {
   return deriveLocalAgentId(agentType, getMachineId(), getLocalAgentHome());
 }
 
+/**
+ * Build the unified log tag for local-agent debug output: `[<id6>] [<tool>]` —
+ * the last 6 chars of the derived agent id plus the agent name (tool), so every
+ * line (HTTP request/response, report/sync, command ack) reads the same way.
+ */
+function localAgentTag(context: LocalAgentContext): string {
+  const tool = context.tool ?? 'workbuddy';
+  return `[${resolveLocalAgentId(context).slice(-6)}] [${tool}]`;
+}
+
 function scopeKey(scope: LocalAgentScope, workspacePath?: string): string {
   return scope === 'project' ? `project:${workspacePath ?? ''}` : scope;
 }
@@ -299,11 +309,10 @@ function authHeaders(config: LocalAgentConfig, json = true): Record<string, stri
 
 async function localAgentFetch<T>(
   config: LocalAgentConfig,
-  agentId: string,
+  tag: string,
   route: string,
   init?: RequestInit,
 ): Promise<T> {
-  const tag = `[local-agent ${agentId.slice(-6)}]`;
   const method = init?.method ?? 'GET';
   const url = `${config.endpoint}${route}`;
   const headers: Record<string, string> = {
@@ -348,7 +357,7 @@ async function appendReporterQueue(entry: unknown): Promise<void> {
 export async function fetchUserGroups(config: LocalAgentConfig): Promise<LocalAgentGroup[]> {
   const response = await localAgentFetch<{ ok?: boolean; groups?: LocalAgentGroup[] }>(
     config,
-    resolveLocalAgentId({}),
+    localAgentTag({}),
     '/api/user-groups/mine',
     { method: 'GET' },
   );
@@ -1077,13 +1086,13 @@ async function removeClaudeMdSection(
 
 async function ackCommand(
   config: LocalAgentConfig,
-  agentId: string,
+  tag: string,
   command: LocalAgentCommand,
   status: 'success' | 'failed',
   version?: string,
   error?: string,
 ): Promise<void> {
-  await localAgentFetch(config, agentId, '/api/local-agent/commands/ack', {
+  await localAgentFetch(config, tag, '/api/local-agent/commands/ack', {
     method: 'POST',
     body: JSON.stringify({
       id: command.id,
@@ -1128,18 +1137,17 @@ async function processCommands(
   commands: LocalAgentCommand[],
   context: LocalAgentContext,
 ): Promise<void> {
-  const agentId = resolveLocalAgentId(context);
-  const tag = `[${agentId.slice(-6)}] [${context.tool}]`;
+  const tag = localAgentTag(context);
   for (const command of commands) {
     try {
       const version = await executeCommand(config, command, context);
-      await ackCommand(config, agentId, command, 'success', version);
+      await ackCommand(config, tag, command, 'success', version);
       log.debug(`${tag} command ${command.id} (${command.type ?? ''}) succeeded`);
     } catch (e) {
       const error = (e as Error).message;
       log.error(`${tag} command ${command.id} failed: ${error}`);
       try {
-        await ackCommand(config, agentId, command, 'failed', undefined, error);
+        await ackCommand(config, tag, command, 'failed', undefined, error);
       } catch (ackError) {
         log.debug(`${tag} failed to ack command ${command.id}: ${(ackError as Error).message}`);
       }
@@ -1159,13 +1167,12 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
     await emitBindingHint(config, workspacePath);
   }
 
-  const agentId = resolveLocalAgentId(context);
-  const tag = `[${agentId.slice(-6)}] [${context.tool}]`;
+  const tag = localAgentTag(context);
   log.debug(`${tag} run: endpoint=${config.endpoint}`);
 
   try {
     const reportPayload = await buildReportPayload(config, context);
-    await localAgentFetch(config, agentId, '/api/local-agent/report', {
+    await localAgentFetch(config, tag, '/api/local-agent/report', {
       method: 'POST',
       body: JSON.stringify(reportPayload),
     });
@@ -1174,7 +1181,7 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
     const syncPayload = await buildSyncPayload(config, context);
     const syncResponse = await localAgentFetch<{ ok?: boolean; commands?: LocalAgentCommand[] }>(
       config,
-      agentId,
+      tag,
       '/api/local-agent/sync',
       { method: 'POST', body: JSON.stringify(syncPayload) },
     );
