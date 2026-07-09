@@ -22,7 +22,7 @@ import { ResourceHandler } from './resources/base.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
 import { injectHooksToAllTools } from './hooks.js';
 import { parseHookEvent, appendEvent, compactEvents } from './dashboard-collector.js';
-import { getCurrentVersion } from './package-info.js';
+import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
@@ -662,7 +662,7 @@ export async function buildReportPayload(
 
   const payload: Record<string, unknown> = {
     agent_type: tool,
-    agent_version: getCurrentVersion(),
+    agent_version: await getAgentVersion(tool),
     local_agent_id: resolveLocalAgentId(context),
     host_name: os.hostname(),
     os: os.platform(),
