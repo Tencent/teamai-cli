@@ -96,6 +96,54 @@ describe('local-agent: buildReportPayload disk scan', () => {
   });
 });
 
+describe('local-agent: local_agent_id derivation (per-tool install dir)', () => {
+  it('derives the id from ~/.<tool>, matching the historical status-report口径', async () => {
+    await setupConfig();
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const { deriveLocalAgentId, getMachineId } = await import('../machine-id.js');
+    const config = await loadLocalAgentConfig();
+
+    const payload = (await buildReportPayload(config!, { tool: 'codebuddy' })) as {
+      local_agent_id: string;
+    };
+
+    // Expected = same deterministic algorithm, seeded with the tool's own dir
+    // (~/.codebuddy), NOT the teamai home. This keeps the id byte-for-byte
+    // identical to what the status-report path produced pre-upgrade.
+    const expected = deriveLocalAgentId('codebuddy', getMachineId(), path.join(tmpDir, '.codebuddy'));
+    expect(payload.local_agent_id).toBe(expected);
+    // It must NOT be seeded with the teamai home (the drifted口径).
+    const drifted = deriveLocalAgentId('codebuddy', getMachineId(), path.join(tmpDir, '.teamai', 'local-agent'));
+    expect(payload.local_agent_id).not.toBe(drifted);
+  });
+
+  it('gives claude and codebuddy different ids on the same machine', async () => {
+    await setupConfig();
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    const claude = (await buildReportPayload(config!, { tool: 'claude' })) as { local_agent_id: string };
+    const codebuddy = (await buildReportPayload(config!, { tool: 'codebuddy' })) as { local_agent_id: string };
+
+    expect(claude.local_agent_id).not.toBe(codebuddy.local_agent_id);
+  });
+
+  it('honors TEAMAI_LOCAL_AGENT_ID override', async () => {
+    await setupConfig();
+    const prev = process.env.TEAMAI_LOCAL_AGENT_ID;
+    process.env.TEAMAI_LOCAL_AGENT_ID = 'pinned-xyz';
+    try {
+      const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+      const config = await loadLocalAgentConfig();
+      const payload = (await buildReportPayload(config!, { tool: 'codebuddy' })) as { local_agent_id: string };
+      expect(payload.local_agent_id).toBe('pinned-xyz');
+    } finally {
+      if (prev === undefined) delete process.env.TEAMAI_LOCAL_AGENT_ID;
+      else process.env.TEAMAI_LOCAL_AGENT_ID = prev;
+    }
+  });
+});
+
 describe('local-agent: bindCurrentProject --skip', () => {
   it('writes groupId 0 and __skipped__ marker to config', async () => {
     await setupConfig();

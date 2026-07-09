@@ -167,20 +167,40 @@ function normalizeEndpoint(endpoint: string): string {
 }
 
 /**
+ * Resolve the per-tool install directory that seeds the local_agent_id hash.
+ *
+ * This must match the historical status-report口径 — `~/.<tool>` — so that a
+ * machine upgrading from the status-report era keeps the same id instead of
+ * drifting. It is derived from the same toolPaths map buildReportPayload uses:
+ * `~/<dirname(skills)>` (e.g. `.codebuddy/skills` → `~/.codebuddy`). Unknown
+ * tools fall back to `~/.<tool>`, still deterministic and distinct per tool.
+ * Note: install_path only feeds the local hash — it never leaves the machine.
+ */
+function resolveAgentInstallPath(agentType: string): string {
+  const home = process.env.HOME ?? '';
+  const skillsRel = createLocalAgentTeamConfig('').toolPaths[agentType]?.skills;
+  const rel = skillsRel ? path.dirname(skillsRel) : `.${agentType}`;
+  return path.join(home, rel);
+}
+
+/**
  * Resolve the local_agent_id for the current invocation.
  *
  * Deterministic per (detected tool + machine + install dir) — same tool on the
  * same machine always yields the same id, so the backend sees a stable agent
  * instead of a fresh random one every hook fire. The tool is auto-detected from
  * the hook's --tool flag (context.tool); different tools (claude / codebuddy /
- * workbuddy) get different ids by design. TEAMAI_LOCAL_AGENT_ID still overrides
- * for explicit pinning.
+ * workbuddy) get different ids because agent_type AND the per-tool install dir
+ * (~/.<tool>) both feed the hash. install_path uses the tool's own dir (not the
+ * teamai home) to stay byte-for-byte identical to the historical status-report
+ * derivation, avoiding an id change on upgrade. TEAMAI_LOCAL_AGENT_ID still
+ * overrides for explicit pinning.
  */
 function resolveLocalAgentId(context: LocalAgentContext): string {
   const envOverride = process.env.TEAMAI_LOCAL_AGENT_ID;
   if (envOverride) return envOverride;
   const agentType = context.tool ?? 'workbuddy';
-  return deriveLocalAgentId(agentType, getMachineId(), getLocalAgentHome());
+  return deriveLocalAgentId(agentType, getMachineId(), resolveAgentInstallPath(agentType));
 }
 
 /**
