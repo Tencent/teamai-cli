@@ -505,7 +505,7 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
 export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<void> {
   const resolvedBaseDir = baseDir ?? (process.env.HOME ?? '');
   const tools = Object.keys(toolPaths).filter(t => !filterAgents || filterAgents.includes(t));
-  if (tools.includes('workbuddy')) {
+  if (tools.some(t => t === 'workbuddy' || t === 'codebuddy')) {
     ensureTeamaiWrapper();
   }
   for (const [tool, paths] of Object.entries(toolPaths)) {
@@ -545,6 +545,11 @@ export async function reconcileHooksToAllTools(
   manifestPath: string,
   opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; force?: boolean; filterAgents?: string[] } = {},
 ): Promise<void> {
+  const wrapperTools = ['workbuddy', 'codebuddy'];
+  const activeTools = Object.keys(toolPaths).filter(t => !opts.filterAgents || opts.filterAgents.includes(t));
+  if (activeTools.some(t => wrapperTools.includes(t))) {
+    ensureTeamaiWrapper();
+  }
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
     if (!paths.settings) continue;

@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch session-start --tool codebuddy 2>/dev/null || true"
+            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch session-start --tool workbuddy 2>/dev/null || true",
+            "timeout": 60
           }
         ],
         "description": "[teamai] Hook dispatch session-start"
@@ -18,7 +19,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch stop --tool codebuddy 2>/dev/null || true"
+            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch stop --tool workbuddy 2>/dev/null || true",
+            "timeout": 15
           }
         ],
         "description": "[teamai] Hook dispatch stop"
@@ -30,7 +32,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch post-tool-use --tool codebuddy 2>/dev/null || true"
+            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch post-tool-use --tool workbuddy 2>/dev/null || true",
+            "timeout": 10
           }
         ],
         "description": "[teamai] Hook dispatch post-tool-use wildcard"
@@ -40,7 +43,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch post-tool-use --tool codebuddy --matcher Skill 2>/dev/null || true"
+            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch post-tool-use --tool workbuddy --matcher Skill 2>/dev/null || true",
+            "timeout": 10
           }
         ],
         "description": "[teamai] Hook dispatch post-tool-use Skill"
@@ -50,7 +54,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch post-tool-use --tool codebuddy --matcher TodoWrite 2>/dev/null || true"
+            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch post-tool-use --tool workbuddy --matcher TodoWrite 2>/dev/null || true",
+            "timeout": 3
           }
         ],
         "description": "[teamai] Hook dispatch post-tool-use TodoWrite"
@@ -62,7 +67,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch prompt-submit --tool codebuddy 2>/dev/null || true"
+            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch prompt-submit --tool workbuddy 2>/dev/null || true",
+            "timeout": 10
           }
         ],
         "description": "[teamai] Hook dispatch prompt-submit"

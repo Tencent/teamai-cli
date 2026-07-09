@@ -20,6 +20,7 @@ const cases: Array<[string, string]> = [
   ['claude-internal', 'settings.json'],
   ['codebuddy', 'settings.json'],
   ['cursor', 'hooks.json'],
+  ['workbuddy', 'settings.json'],
 ];
 
 describe('hooks golden — built-in output is byte-identical to the captured baseline', () => {
