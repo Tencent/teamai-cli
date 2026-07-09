@@ -299,10 +299,11 @@ function authHeaders(config: LocalAgentConfig, json = true): Record<string, stri
 
 async function localAgentFetch<T>(
   config: LocalAgentConfig,
+  agentId: string,
   route: string,
   init?: RequestInit,
 ): Promise<T> {
-  const tag = `[local-agent ${(config.localAgentId ?? 'unknown').slice(-6)}]`;
+  const tag = `[local-agent ${agentId.slice(-6)}]`;
   const method = init?.method ?? 'GET';
   const url = `${config.endpoint}${route}`;
   const headers: Record<string, string> = {
@@ -347,6 +348,7 @@ async function appendReporterQueue(entry: unknown): Promise<void> {
 export async function fetchUserGroups(config: LocalAgentConfig): Promise<LocalAgentGroup[]> {
   const response = await localAgentFetch<{ ok?: boolean; groups?: LocalAgentGroup[] }>(
     config,
+    resolveLocalAgentId({}),
     '/api/user-groups/mine',
     { method: 'GET' },
   );
@@ -1075,12 +1077,13 @@ async function removeClaudeMdSection(
 
 async function ackCommand(
   config: LocalAgentConfig,
+  agentId: string,
   command: LocalAgentCommand,
   status: 'success' | 'failed',
   version?: string,
   error?: string,
 ): Promise<void> {
-  await localAgentFetch(config, '/api/local-agent/commands/ack', {
+  await localAgentFetch(config, agentId, '/api/local-agent/commands/ack', {
     method: 'POST',
     body: JSON.stringify({
       id: command.id,
@@ -1125,17 +1128,18 @@ async function processCommands(
   commands: LocalAgentCommand[],
   context: LocalAgentContext,
 ): Promise<void> {
-  const tag = `[${resolveLocalAgentId(context).slice(-6)}] [${context.tool}]`;
+  const agentId = resolveLocalAgentId(context);
+  const tag = `[${agentId.slice(-6)}] [${context.tool}]`;
   for (const command of commands) {
     try {
       const version = await executeCommand(config, command, context);
-      await ackCommand(config, command, 'success', version);
+      await ackCommand(config, agentId, command, 'success', version);
       log.debug(`${tag} command ${command.id} (${command.type ?? ''}) succeeded`);
     } catch (e) {
       const error = (e as Error).message;
       log.error(`${tag} command ${command.id} failed: ${error}`);
       try {
-        await ackCommand(config, command, 'failed', undefined, error);
+        await ackCommand(config, agentId, command, 'failed', undefined, error);
       } catch (ackError) {
         log.debug(`${tag} failed to ack command ${command.id}: ${(ackError as Error).message}`);
       }
@@ -1155,12 +1159,13 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
     await emitBindingHint(config, workspacePath);
   }
 
-  const tag = `[${resolveLocalAgentId(context).slice(-6)}] [${context.tool}]`;
+  const agentId = resolveLocalAgentId(context);
+  const tag = `[${agentId.slice(-6)}] [${context.tool}]`;
   log.debug(`${tag} run: endpoint=${config.endpoint}`);
 
   try {
     const reportPayload = await buildReportPayload(config, context);
-    await localAgentFetch(config, '/api/local-agent/report', {
+    await localAgentFetch(config, agentId, '/api/local-agent/report', {
       method: 'POST',
       body: JSON.stringify(reportPayload),
     });
@@ -1169,6 +1174,7 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
     const syncPayload = await buildSyncPayload(config, context);
     const syncResponse = await localAgentFetch<{ ok?: boolean; commands?: LocalAgentCommand[] }>(
       config,
+      agentId,
       '/api/local-agent/sync',
       { method: 'POST', body: JSON.stringify(syncPayload) },
     );
