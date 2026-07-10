@@ -42,8 +42,8 @@ const VOTES_SYNC_TIMEOUT_MS = 8_000;
 const TODOWRITE_HINT_TIMEOUT_MS = 5_000;
 /** MR-hint queries a remote MR/PR API — allow a network round-trip. */
 const MR_HINT_TIMEOUT_MS = 10_000;
-/** Status reporter does report/sync/ack + skill commands — allow network + download. */
-const STATUS_REPORT_TIMEOUT_MS = 30_000;
+/** Local-agent HTTP report/sync + binding prompts — network dependent. */
+const LOCAL_AGENT_TIMEOUT_MS = 30_000;
 
 // ─── Handler implementations ────────────────────────────
 //
@@ -232,23 +232,12 @@ const mrHintHandler: HookHandler = {
   },
 };
 
-/** SessionStart: report + sync (→ commands → ack). Never blocks the agent. */
-const statusReportSessionHandler: HookHandler = {
-  name: 'status-report-session',
+/** HTTP local-agent report/sync + workspace binding prompts. */
+const localAgentHandler: HookHandler = {
+  name: 'local-agent-sync',
   async execute(stdin, tool) {
-    const { runStatusReport } = await import('./status-report.js');
-    await runStatusReport({ stdin, tool, phase: 'session' });
-    return null;
-  },
-};
-
-/** UserPromptSubmit: sync only (→ commands → ack). */
-const statusReportMessageHandler: HookHandler = {
-  name: 'status-report-message',
-  async execute(stdin, tool) {
-    const { runStatusReport } = await import('./status-report.js');
-    await runStatusReport({ stdin, tool, phase: 'message' });
-    return null;
+    const { reportAndSyncFromHook } = await import('./local-agent.js');
+    return reportAndSyncFromHook(stdin, tool);
   },
 };
 
@@ -264,22 +253,24 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: MR_HINT_TIMEOUT_MS },
-    { event: 'session-start', matcher: '*', handler: statusReportSessionHandler, timeoutMs: STATUS_REPORT_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
 
     // ─── Stop ─────────────────────────────────────────
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS },
     { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: CONTRIBUTE_CHECK_TIMEOUT_MS },
     { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: VOTES_SYNC_TIMEOUT_MS },
     { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
+    { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
 
     // ─── PostToolUse ──────────────────────────────────
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: TRACK_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
+    { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
 
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: TRACK_TIMEOUT_MS },
     { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
-    { event: 'prompt-submit', matcher: '*', handler: statusReportMessageHandler, timeoutMs: STATUS_REPORT_TIMEOUT_MS },
+    { event: 'prompt-submit', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
   ];
 }
