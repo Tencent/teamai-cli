@@ -534,18 +534,13 @@ program
 
 program
   .command('hook-dispatch <event>')
-  .description('Dispatch hook data to dashboard and HTTP local-agent report/sync')
-  .option('--stdin', 'Read hook data from STDIN')
+  .description('Unified hook dispatcher — handles all teamai hooks for a given event in one process')
+  .option('--stdin', 'Read hook data from STDIN (accepted for forward compat, always reads STDIN)')
   .option('--tool <name>', 'Tool identifier (e.g. codebuddy, workbuddy, claude)')
   .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
   .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string }) => {
-    if (cmdOpts.stdin) {
-      const { hookDispatch } = await import('./local-agent.js');
-      await hookDispatch(event, cmdOpts.tool);
-    } else {
-      const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
-      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
-    }
+    const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
+    await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
   });
 
 program

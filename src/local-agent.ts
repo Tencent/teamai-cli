@@ -21,7 +21,7 @@ import {
 import { ResourceHandler } from './resources/base.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
 import { injectHooksToAllTools } from './hooks.js';
-import { parseHookEvent, appendEvent, compactEvents } from './dashboard-collector.js';
+import { parseHookEvent } from './dashboard-collector.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
@@ -1242,63 +1242,31 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   return true;
 }
 
-function hookEventName(eventName: string): string {
-  switch (eventName) {
-    case 'session-start':
-      return 'SessionStart';
-    case 'stop':
-      return 'Stop';
-    case 'post-tool-use':
-      return 'PostToolUse';
-    case 'user-prompt-submit':
-    case 'prompt-submit':
-      return 'UserPromptSubmit';
-    default:
-      return eventName;
-  }
-}
-
 function statusFromEvent(event?: DashboardEvent): string {
   if (!event) return 'running';
   if (event.type === 'stop' || event.type === 'process_exit') return 'stopped';
   return 'running';
 }
 
-async function readStdin(): Promise<string> {
-  if (process.stdin.isTTY) return '';
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks).toString('utf-8');
-}
-
-export async function hookDispatch(eventName: string, tool?: string): Promise<void> {
-  const raw = await readStdin();
-  let hookData: Record<string, unknown> = {};
-  if (raw.trim()) {
-    try {
-      hookData = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      log.error('hook-dispatch: failed to parse STDIN JSON');
-      return;
-    }
-  }
-  hookData.hook_event_name ??= hookEventName(eventName);
-
-  const normalizedRaw = JSON.stringify(hookData);
-  const event = await parseHookEvent(normalizedRaw, tool ?? 'workbuddy');
-  if (event) {
-    await appendEvent(event);
-    compactEvents().catch(() => {});
-  }
-
+/**
+ * Hook-handler adapter: run local-agent report/sync (incl. workspace binding
+ * prompts) from within the unified hook dispatcher. Accepts pre-parsed STDIN
+ * data so the dispatcher reads STDIN only once.
+ */
+export async function reportAndSyncFromHook(
+  stdin: Record<string, unknown>,
+  tool: string,
+): Promise<string | null> {
+  const raw = JSON.stringify(stdin);
+  const event = await parseHookEvent(raw, tool);
+  const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : event?.cwd ?? process.cwd();
   await reportAndSyncLocalAgent({
-    cwd: typeof hookData.cwd === 'string' ? hookData.cwd : event?.cwd ?? process.cwd(),
-    tool: tool ?? event?.tool,
+    cwd,
+    tool,
     status: statusFromEvent(event ?? undefined),
     event: event ?? undefined,
   });
+  return null;
 }
 
 /**

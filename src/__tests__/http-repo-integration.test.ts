@@ -103,12 +103,17 @@ describe('read-only protection (http kind)', () => {
 });
 
 describe('hook registry wiring', () => {
-  it('registers status-report handlers on session-start and prompt-submit', async () => {
+  it('has exactly one HTTP reporter per event (no double report/sync)', async () => {
     const { buildHandlerRegistry } = await import('../hook-handlers.js');
     const reg = buildHandlerRegistry();
-    const names = (event: string) =>
-      reg.filter((r) => r.event === event).map((r) => r.handler.name);
-    expect(names('session-start')).toContain('status-report-session');
-    expect(names('prompt-submit')).toContain('status-report-message');
+
+    const httpReporters = (event: string) =>
+      reg
+        .filter((r) => r.event === event)
+        .map((r) => r.handler.name)
+        .filter((n) => n.includes('status-report') || n.includes('local-agent'));
+
+    expect(httpReporters('session-start')).toEqual(['local-agent-sync']);
+    expect(httpReporters('prompt-submit')).toEqual(['local-agent-sync']);
   });
 });
