@@ -1,11 +1,9 @@
 /**
  * Shared skill-distribution primitive (issue #1, §二·五).
  *
- * This is the single, global skill-distribution executor used by BOTH:
- *   - push path (方案二 status reporting): commands come from `sync`,
- *     targetSkillsDir = the agent's own skills dir (e.g. ~/.codebuddy/skills).
- *   - pull path (方案一 HTTP team repo): commands come from `GET /repo`,
- *     targetSkillsDir = localPath/skills (materialized into the team repo tree).
+ * This is the single, global skill-distribution executor. Commands come from the
+ * `sync` endpoint (status reporting / the local-agent bypass) and install into
+ * the target skills dir (e.g. the agent's own ~/.codebuddy/skills).
  *
  * A skill package is a ZIP whose top level is a single skill directory named
  * after the slug (`<slug>/SKILL.md ...`). We decompress with `fflate` (pure JS,

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
-import { loadTeamConfig, autoDetectInit } from './config.js';
+import { loadTeamConfig, autoDetectInit, loadLocalConfig, detectProjectConfig } from './config.js';
 import { createGit, pullRepo } from './utils/git.js';
 import { detectProvider, getProvider } from './providers/index.js';
 import { log, spinner } from './utils/logger.js';
@@ -277,7 +277,6 @@ export async function sourceAddHttp(
 
   // Guard: if the main repo is already an HTTP backend, it owns the single
   // local-agent config — refuse rather than overwrite its endpoint.
-  const { loadLocalConfig, detectProjectConfig } = await import('./config.js');
   const mainConfig = (await detectProjectConfig()) ?? (await loadLocalConfig());
   if (mainConfig?.repo.kind === 'http') {
     log.error('Your main team repo is already an HTTP backend, which owns the HTTP source config.');

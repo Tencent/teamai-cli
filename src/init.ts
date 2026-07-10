@@ -101,16 +101,16 @@ export function validateScopeMatch(remoteScope: Scope | undefined, localScope: S
 }
 
 /**
- * Git-free HTTP onboarding (issue #1, 方案一). A read-only consumer only needs
- * an API key: no git auth, no clone, no member/reviewer push. The team repo is
- * materialized from `GET {url}/repo` into the same on-disk layout a clone yields.
+ * Git-free HTTP onboarding (issue #1). A read-only consumer only needs an API
+ * key: no git auth, no clone, no member/reviewer push. Skills/rules/CLAUDE.md are
+ * delivered on each session via the report/sync/ack lifecycle (the local-agent
+ * bypass), not by cloning a repo.
  */
 export async function initHttp(
   url: string,
   options: GlobalOptions & { scope?: string; role?: string; agent?: string; force?: boolean; token?: string },
 ): Promise<void> {
   const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
-  const { materializeHttpRepo, RepoNotAvailableError } = await import('./source-http.js');
 
   log.info('Initializing teamai (HTTP read-only consumer)...');
 
@@ -142,40 +142,18 @@ export async function initHttp(
     process.exit(1);
   }
 
-  // Step 2: materialize repo from HTTP. If the endpoint doesn't serve /repo yet
-  // (404 / non-JSON), fall back to "reporting-only" mode: the endpoint + key are
-  // still configured so status reporting works now, and skills will sync once
-  // /repo comes online (no re-init needed). Auth/transport errors still abort.
+  // Step 2: write a minimal local teamai.yaml stub (default toolPaths) to drive
+  // hook injection + the reporter. Skills/rules/CLAUDE.md are not cloned; they
+  // are delivered on each session via report/sync/ack (see Step 6).
   const localPath = expandHome(path.join(teamaiHome, 'team-repo'));
-  const matSpin = spinner('Fetching team repo over HTTP...').start();
-  let reportingOnly = false;
-  try {
-    await materializeHttpRepo(url, localPath, apiKey!);
-    matSpin.succeed('Team repo materialized');
-  } catch (e) {
-    if (e instanceof RepoNotAvailableError) {
-      reportingOnly = true;
-      matSpin.warn('No /repo at this endpoint yet — configuring for status reporting only.');
-      log.info('Skills/rules will sync automatically once /repo is available (no re-init needed).');
-    } else {
-      matSpin.fail(`HTTP fetch failed: ${(e as Error).message}`);
-      process.exit(1);
-    }
-  }
-
-  // Step 3: load teamai.yaml. In reporting-only mode the endpoint hasn't shipped
-  // one yet, so write a minimal local stub (default toolPaths) to drive hook
-  // injection + the reporter. A real /repo will overwrite it on the next pull.
-  if (reportingOnly) {
-    await ensureDir(localPath);
-    const stubPath = path.join(localPath, 'teamai.yaml');
-    if (!(await pathExists(stubPath))) {
-      await writeFile(stubPath, YAML.stringify({ team: 'http-reporting', repo: url, sharing: {} }));
-    }
+  await ensureDir(localPath);
+  const stubPath = path.join(localPath, 'teamai.yaml');
+  if (!(await pathExists(stubPath))) {
+    await writeFile(stubPath, YAML.stringify({ team: 'http-reporting', repo: url, sharing: {} }));
   }
   const teamConfig = await loadTeamConfig(localPath);
   if (!teamConfig) {
-    log.error('Materialized repo has no valid teamai.yaml. Check the endpoint.');
+    log.error('Failed to write a valid teamai.yaml stub. Check filesystem permissions.');
     process.exit(1);
   }
 
@@ -235,13 +213,8 @@ export async function initHttp(
     log.debug(`Local agent init: ${(e as Error).message}`);
   }
 
-  if (reportingOnly) {
-    log.success('teamai initialized (HTTP, reporting-only — /repo not live yet)!');
-    log.info('Status reporting is active now; skills/rules will sync automatically once /repo is available.');
-  } else {
-    log.success('teamai initialized (HTTP read-only)!');
-    log.info('Skills/rules will auto-sync on each session start. This team is read-only (no push).');
-  }
+  log.success('teamai initialized (HTTP read-only)!');
+  log.info('Skills/rules will auto-sync on each session start via report/sync. This team is read-only (no push).');
   closePrompt();
 }
 

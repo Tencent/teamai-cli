@@ -1,6 +1,6 @@
 /**
  * In-process mock of the teamai HTTP backend (the three local-agent interfaces
- * report/sync/ack + the HTTP team-repo /repo endpoint + skill zip download).
+ * report/sync/ack + the user-groups + skill zip download).
  *
  * Used by the e2e tests and mirrors `scripts/mock-teamai-server.mjs` (the
  * standalone runnable server the reviewer asked for). Bearer auth is enforced
@@ -11,12 +11,9 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { zipSync, strToU8 } from 'fflate';
 import type { SkillCommand } from '../../skill-command.js';
-import type { RepoFile } from '../../source-http.js';
 
 export interface MockServerConfig {
   apiKey: string;
-  /** /repo response. */
-  repo?: { version: string | null; files: RepoFile[]; commands: SkillCommand[] };
   /** Commands handed back by the next sync call, then cleared. */
   pendingCommands?: SkillCommand[];
   /** Slug → file map used to synthesize downloadable skill zips. */
@@ -31,8 +28,6 @@ export interface MockServerHandle {
   acks: Array<{ id: number; body: unknown }>;
   /** Queue commands the next sync should return (download_url can use `url`). */
   seedCommands: (cmds: SkillCommand[]) => void;
-  /** Set the /repo response after start (download_url can use `url`). */
-  seedRepo: (repo: NonNullable<MockServerConfig['repo']>) => void;
 }
 
 /** Build a valid skill zip (`<slug>/SKILL.md` + extra files). */
@@ -68,9 +63,6 @@ export async function startMockServer(config: MockServerConfig): Promise<MockSer
     seedCommands: (cmds) => {
       config.pendingCommands = cmds;
     },
-    seedRepo: (repo) => {
-      config.repo = repo;
-    },
   };
 
   const server = http.createServer(async (req, res) => {
@@ -94,11 +86,6 @@ export async function startMockServer(config: MockServerConfig): Promise<MockSer
     // Everything else requires Bearer auth.
     if (auth !== `Bearer ${config.apiKey}`) {
       json(401, { error: 'unauthorized' });
-      return;
-    }
-
-    if (req.method === 'GET' && url.pathname === '/repo') {
-      json(200, config.repo ?? { version: 'v1', files: [], commands: [] });
       return;
     }
 

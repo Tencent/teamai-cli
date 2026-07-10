@@ -1376,7 +1376,7 @@ function parseScopeKey(key: string): { scope: LocalAgentScope; workspacePath?: s
 /**
  * Tear down the HTTP local-agent bypass: uninstall every resource recorded in the
  * manifest (skills/rules/claudemd, across all scopes) from the AI tool dirs, then
- * remove the whole ~/.teamai/local-agent/ directory (config + manifest + queue).
+ * remove the whole ~/.teamai/local-agent/ directory (config + manifest).
  *
  * Best-effort per resource: a single failed uninstall is logged and skipped so a
  * stale entry cannot block the teardown.
@@ -1388,16 +1388,12 @@ export async function removeLocalAgentHttp(): Promise<void> {
     return;
   }
 
+  const kinds: CommandResourceKind[] = ['skill', 'rule', 'claudemd'];
   const manifest = await loadManifest();
   for (const [key, scopeManifest] of Object.entries(manifest.scopes)) {
     const { scope, workspacePath } = parseScopeKey(key);
-    const kinds: Array<[ResourceKind, CommandResourceKind]> = [
-      ['skills', 'skill'],
-      ['rules', 'rule'],
-      ['claudemd', 'claudemd'],
-    ];
-    for (const [manifestField, kind] of kinds) {
-      for (const slug of Object.keys(scopeManifest[manifestField] ?? {})) {
+    for (const kind of kinds) {
+      for (const slug of Object.keys(scopeManifest[manifestKind(kind)] ?? {})) {
         try {
           await uninstallResource({ config, kind, slug, scope, workspacePath });
         } catch (e) {

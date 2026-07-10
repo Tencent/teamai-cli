@@ -12,12 +12,6 @@ const API_KEY = 'e2e-key';
 const ENV_KEYS = ['TEAMAI_API_TOKEN', 'TEAMAI_API_KEY', 'TEAMAI_REPORT_ENDPOINT'];
 const saved: Record<string, string | undefined> = {};
 
-const TEAMAI_YAML = YAML.stringify({
-  team: 'mock-http',
-  repo: 'http://mock',
-  toolPaths: { claude: { skills: '.claude/skills', settings: '.claude/settings.json' } },
-});
-
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-http-e2e-'));
   originalHome = process.env.HOME ?? '';
@@ -46,24 +40,9 @@ function writeApiKey(): void {
 }
 
 describe('teamai init --http (read-only onboarding)', () => {
-  it('materializes the repo and writes a kind:http local config', async () => {
+  it('writes a kind:http local config and a teamai.yaml stub (no repo clone)', async () => {
     writeApiKey();
     server = await startMockServer({ apiKey: API_KEY });
-    server.seedRepo({
-      version: 'v1',
-      files: [
-        { path: 'teamai.yaml', content: TEAMAI_YAML },
-        { path: 'rules/common/x.md', content: '# x\n' },
-      ],
-      commands: [
-        {
-          type: 'install_skill',
-          skill_slug: 'weather',
-          skill_version: '1.0.0',
-          download_url: `${server.url}/download?slug=weather&access_token=smh`,
-        },
-      ],
-    });
 
     const { init } = await import('../init.js');
     await init({ http: server.url, force: true });
@@ -74,11 +53,10 @@ describe('teamai init --http (read-only onboarding)', () => {
     expect(cfg.repo.url).toBe(server.url);
     expect(JSON.stringify(cfg)).not.toContain(API_KEY);
 
-    // Repo materialized like a clone.
+    // A teamai.yaml stub is written to drive hook injection; skills/rules are
+    // NOT cloned — they arrive per-session via report/sync.
     const repoPath = path.join(tmpDir, '.teamai', 'team-repo');
     expect(fs.existsSync(path.join(repoPath, 'teamai.yaml'))).toBe(true);
-    expect(fs.existsSync(path.join(repoPath, 'rules', 'common', 'x.md'))).toBe(true);
-    expect(fs.existsSync(path.join(repoPath, 'skills', 'weather', 'SKILL.md'))).toBe(true);
   });
 });
 
@@ -86,7 +64,6 @@ describe('read-only protection (http kind)', () => {
   it('rejects teamai push', async () => {
     writeApiKey();
     server = await startMockServer({ apiKey: API_KEY });
-    server.seedRepo({ version: 'v1', files: [{ path: 'teamai.yaml', content: TEAMAI_YAML }], commands: [] });
 
     const { init } = await import('../init.js');
     await init({ http: server.url, force: true });
