@@ -37,6 +37,19 @@ export async function hookDispatchCli(event: string, tool: string, matcher: stri
     }
   }
 
+  // WorkBuddy/CodeBuddy may pass hook_event_name: "" — normalize to the
+  // CLI-derived event name so downstream handlers (parseHookEvent, etc.)
+  // can correctly determine the event type.
+  if (!stdin.hook_event_name) {
+    const EVENT_MAP: Record<string, string> = {
+      'session-start': 'SessionStart',
+      'stop': 'Stop',
+      'post-tool-use': 'PostToolUse',
+      'prompt-submit': 'UserPromptSubmit',
+    };
+    stdin.hook_event_name = EVENT_MAP[event] ?? event;
+  }
+
   // Build dispatcher with full handler registry
   const registry = buildHandlerRegistry();
   const dispatcher = createDispatcher({ handlers: registry });
