@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
  * Standalone local mock of the teamai HTTP backend — the three local-agent
- * interfaces (report / sync / ack), the HTTP team-repo `/repo` endpoint, and a
- * skill zip download endpoint. Use it to exercise `teamai init --http`,
- * `teamai pull`, and the hooks-driven status reporter end to end on a dev box.
+ * interfaces (report / sync / ack) and a skill zip download endpoint. Use it to
+ * exercise `teamai init --http`, `teamai pull`, and the hooks-driven status
+ * reporter end to end on a dev box.
  *
  * Usage:
  *   node scripts/mock-teamai-server.mjs                 # port 8787, key "dev-key"
@@ -67,25 +67,6 @@ const server = http.createServer(async (req, res) => {
 
   if ((req.headers.authorization ?? '') !== `Bearer ${API_KEY}`) {
     json(401, { error: 'unauthorized' });
-    return;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/repo') {
-    json(200, {
-      version: 'v1',
-      files: [
-        { path: 'teamai.yaml', content: 'team: mock\nrepo: http://mock\nsharing: {}\n' },
-        { path: 'rules/common/demo.md', content: '# demo rule\n' },
-      ],
-      commands: [
-        {
-          type: 'install_skill',
-          skill_slug: 'weather',
-          skill_version: '1.0.0',
-          download_url: `http://127.0.0.1:${PORT}/download?slug=weather&access_token=smh`,
-        },
-      ],
-    });
     return;
   }
 

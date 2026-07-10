@@ -77,7 +77,7 @@ teamai init --http https://your-team-host/api --token <api-key>
 
 - **只读**：HTTP 仓库下 `push` / `contribute` / `remove` 均被禁用。
 - API key 以 `0600` 权限保存（不写入 config，也不会被提交）；同时支持 `TEAMAI_API_TOKEN` 环境变量。
-- 如果团队仓库端点（`/repo`）尚未上线，init 会回落到 **reporting-only 模式**——hooks 和状态上报立即生效，待端点可用后 skills/rules 会自动开始同步。
+- 无需 git clone：skills/rules/CLAUDE.md 在每次会话时通过 report/sync/ack 生命周期交付。hooks 与状态上报在 init 时即接线完成。
 
 #### Agent 状态上报
 
@@ -92,25 +92,22 @@ teamai init --http https://your-team-host/api --token <api-key>
 
 | 端点 | 方法 | 用途 | 路径 |
 |------|------|------|------|
-| `{baseUrl}/repo` | GET | 团队仓库快照（skills + rules/docs） | **固定** |
 | `{baseUrl}/api/local-agent/report` | POST | session 启动：upsert agent + 已装 skill | 默认，可配置 |
 | `{baseUrl}/api/local-agent/sync` | POST | 上报状态 + 返回待执行的 skill 命令 | 默认，可配置 |
 | `{baseUrl}/api/local-agent/commands/ack` | POST | 回执单条命令（`{ id, status, error }`） | 默认，可配置 |
 
-`GET /repo` 返回 JSON（返回 404 或非 JSON 的 200 ⇒ 客户端进入 reporting-only 模式）：
+`POST /api/local-agent/sync` 返回负责 skill 安装/更新/卸载的待执行命令：
 
 ```json
 {
-  "version": "<不透明的缓存 key，例如 commit hash>",
-  "files":   [{ "path": "rules/foo.md", "content": "..." }],
-  "commands":[{ "type": "install_skill", "skill_slug": "x", "skill_version": "1.0.0", "download_url": "https://signed-url/..." }]
+  "ok": true,
+  "commands": [{ "id": 1, "type": "install_skill", "skill_slug": "x", "skill_version": "1.0.0", "download_url": "https://signed-url/..." }]
 }
 ```
 
-- `files[]` 原样写入本地仓库树（带路径穿越防护）；`commands[]` 负责 skill 的安装/更新/卸载。
 - skill 的 `download_url` 是**直连**拉取——它在 query string 里自带签名鉴权，因此不附带 `Bearer` 头。它必须指向一个 `.zip`，其根目录为 `<slug>/SKILL.md …` 或扁平的 `SKILL.md …`。
 
-**固定 vs 可配置**：`/repo` 路径固定；reporter 三个路径是可覆盖的默认值；上面的 JSON 结构是契约。可调项（环境变量）：
+**可配置路径**：reporter 三个路径是可覆盖的默认值;上面的 JSON 结构是契约。可调项（环境变量）：
 
 | 变量 | 作用 |
 |------|------|
