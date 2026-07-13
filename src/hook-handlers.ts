@@ -169,7 +169,7 @@ const contributeCheckHandler: HookHandler = {
 
 const votesSyncHandler: HookHandler = {
   name: 'votes-sync',
-  async execute(stdin) {
+  async execute(stdin, tool) {
     if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
 
     const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : null;
@@ -180,22 +180,74 @@ const votesSyncHandler: HookHandler = {
       const { incrementUpvoted, syncVotesToTeam } = await import('./votes.js');
       const { requireInit } = await import('./config.js');
 
-      // recalledDocIds are already counted by autoUpvote() at recall time;
-      // we only need referencedDocIds (adopted signal) from the transcript.
       const voteData = await parseTranscriptForVotes(transcriptPath);
-
       const { localConfig } = await requireInit();
-      const { VOTES_LOCAL_DIR } = await import('./types.js');
+      const { VOTES_LOCAL_DIR, TEAMAI_SESSIONS_DIR } = await import('./types.js');
       const votesDir = VOTES_LOCAL_DIR;
       const votePath = path.join(votesDir, `${localConfig.username}.yaml`);
 
+      // Record the adoptions the main conversation declared.
       if (voteData.referencedDocIds.length > 0) {
         await incrementUpvoted(votePath, voteData.referencedDocIds);
       }
-
       await syncVotesToTeam(localConfig.repo.localPath, localConfig.username, votesDir).catch(() => {
-        // Push failed — will retry next session via reportUsageToTeam
+        // Push failed — will retry next session
       });
+
+      // Enforcement: recall happened but nothing was declared → nudge the model
+      // once to declare which recalled docs it actually used. The nudge makes the
+      // model continue; on the next Stop the declaration is recorded above.
+      const sessionId = deriveSessionId(stdin, { includeCwd: true });
+      const recalled = voteData.recalledDocIds;
+      const declared = voteData.referencedDocIds;
+      let nudged = false;
+
+      if (recalled.length > 0 && declared.length === 0) {
+        const fsp = await import('node:fs/promises');
+        const safeId = sessionId.replace(/[^a-zA-Z0-9_.-]/g, '_');
+        const marker = path.join(TEAMAI_SESSIONS_DIR, `${safeId}-adoption-nudged`);
+        let already = false;
+        try { await fsp.access(marker); already = true; } catch { already = false; }
+        if (!already) {
+          try {
+            const { ensureDir } = await import('./utils/fs.js');
+            await ensureDir(TEAMAI_SESSIONS_DIR);
+            await fsp.writeFile(marker, '');
+            // Only nudge once we've persisted the marker, so a write failure
+            // degrades to "no nudge this Stop" rather than re-nudging every Stop.
+            nudged = true;
+          } catch {
+            // Could not persist the marker — skip the nudge this Stop; retry next.
+          }
+        }
+      }
+
+      // A/B measurement (opt-in): one line per Stop.
+      if (process.env.TEAMAI_ADOPTION_EVAL_LOG) {
+        try {
+          const { appendFile } = await import('node:fs/promises');
+          await appendFile(
+            process.env.TEAMAI_ADOPTION_EVAL_LOG,
+            JSON.stringify({
+              ts: new Date().toISOString(),
+              sessionId,
+              recalled: recalled.length,
+              declared: declared.length,
+              nudged,
+            }) + '\n',
+          );
+        } catch {
+          // best-effort; measurement only
+        }
+      }
+
+      if (nudged) {
+        const { formatStopHookOutput } = await import('./utils/hook-output.js');
+        const msg =
+          `你本次通过 teamai 召回了团队知识（候选 doc-id：${recalled.join(', ')}）。` +
+          `结束前请在回复末尾声明你实际用到的条目：<!-- teamai:referenced-doc-ids: [用到的doc-id] -->；没用到就留空 []。`;
+        return formatStopHookOutput(msg, tool ?? 'claude');
+      }
     } catch {
       // Non-critical — votes will sync on next pull
     }
@@ -257,8 +309,8 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
 
     // ─── Stop ─────────────────────────────────────────
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS },
-    { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: CONTRIBUTE_CHECK_TIMEOUT_MS },
     { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: VOTES_SYNC_TIMEOUT_MS },
+    { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: CONTRIBUTE_CHECK_TIMEOUT_MS },
     { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
     { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
 

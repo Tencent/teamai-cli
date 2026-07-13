@@ -30,7 +30,14 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
 
   for await (const line of rl) {
     const trimmed = line.trim();
-    if (!trimmed || !trimmed.includes('"assistant"')) continue;
+    if (!trimmed) continue;
+
+    // The teamai-recall subagent emits `<!-- teamai:recalled-doc-ids: [...] -->`;
+    // in the subagent path it lands in the main transcript as a tool_result (not
+    // an assistant text block), so scan every raw line regardless of role.
+    extractRecalledDocIdsFromComment(trimmed, recalledSet);
+
+    if (!trimmed.includes('"assistant"')) continue;
 
     let entry: Record<string, unknown>;
     try {
@@ -60,6 +67,26 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
   };
 }
 
+/**
+ * Reject placeholder-shaped tokens (e.g. `<id1>`, `<id2>`, `...`) that appear in
+ * documentation/agent example markers. Real doc-ids are kebab-case slugs and
+ * never contain angle brackets nor are a bare ellipsis.
+ */
+function isValidDocId(docId: string): boolean {
+  return docId.length > 0 && !/[<>]/.test(docId) && docId !== '...';
+}
+
+function extractRecalledDocIdsFromComment(text: string, out: Set<string>): void {
+  const pattern = /<!--\s*teamai:recalled-doc-ids:\s*\[([^\]]*)\]\s*-->/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    for (const item of match[1].split(',')) {
+      const docId = item.trim().replace(/^['"]|['"]$/g, '');
+      if (isValidDocId(docId)) out.add(docId);
+    }
+  }
+}
+
 function extractRecalledDocIds(text: string, out: Set<string>): void {
   const START = '--- [teamai:recall:start] ---';
   const END = '--- [teamai:recall:end] ---';
@@ -80,7 +107,7 @@ function extractRecalledDocIds(text: string, out: Set<string>): void {
     while ((match = filePattern.exec(region)) !== null) {
       const filePath = match[1].trim();
       const docId = path.basename(filePath).replace(/\.md$/i, '');
-      out.add(docId);
+      if (isValidDocId(docId)) out.add(docId);
     }
 
     searchFrom = endIdx + END.length;
@@ -95,7 +122,7 @@ function extractReferencedDocIds(text: string, out: Set<string>): void {
     const raw = match[1];
     for (const item of raw.split(',')) {
       const docId = item.trim().replace(/^['"]|['"]$/g, '');
-      if (docId) out.add(docId);
+      if (isValidDocId(docId)) out.add(docId);
     }
   }
 }

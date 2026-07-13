@@ -135,6 +135,7 @@ Return your output in **this exact format** to the main conversation:
 - The trailing HTML comment **must** list every doc_id you returned —
   later phases (Phase 3 Stop hook) will parse this from the conversation
   transcript.
+- **不要自己输出带内容的 `teamai:referenced-doc-ids` 标记** —— 那是主对话的职责。你只需在返回末尾另起一行提示主对话：`👉 主对话：完成任务后请在最终回复末尾声明实际引用的 doc-id（从上面 recalled-doc-ids 列表中挑出真正用到的），方括号内只填用到的、没用到就留空。` 这样主对话是"剪枝"而非"凭记忆重建"，能显著提高声明率。
 
 ## Hard rules
 
