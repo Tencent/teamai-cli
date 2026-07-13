@@ -116,6 +116,7 @@ teamai init --http https://your-team-host/api --token <api-key>
 | `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }`，覆盖 reporter 三个路径 |
 | `TEAMAI_REPORT_AGENTS` | 参与上报的 agent，逗号分隔（默认 `workbuddy,codebuddy`） |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | skill `download_url` 的 host 白名单，逗号分隔（空 = 全部放行） |
+| `TEAMAI_BIND_PROMPT_ENABLED` | 设为 `1` 开启组织绑定提示（TTY 交互提示 + 注入的 hook 提示）。默认关闭；`teamai bind-project` 手动命令不受影响 |
 
 </details>
 

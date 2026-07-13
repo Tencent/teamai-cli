@@ -22,6 +22,8 @@ beforeEach(async () => {
   origHome = process.env.HOME;
   process.env.HOME = tmpDir;
   origPpid = process.ppid;
+  // Bind prompt is off by default — start each test from that baseline.
+  delete process.env.TEAMAI_BIND_PROMPT_ENABLED;
   // Clean hint markers
   const markerPath = path.join(os.tmpdir(), `teamai-bind-hint-${process.ppid}`);
   await fse.remove(markerPath);
@@ -29,6 +31,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   process.env.HOME = origHome;
+  delete process.env.TEAMAI_BIND_PROMPT_ENABLED;
   const markerPath = path.join(os.tmpdir(), `teamai-bind-hint-${origPpid}`);
   await fse.remove(markerPath);
   await fse.remove(tmpDir);
@@ -171,6 +174,7 @@ describe('local-agent: bindCurrentProject --skip', () => {
 
 describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
   it('outputs hookSpecificOutput with choices when project is unbound', async () => {
+    process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
     await setupConfig();
     const projectDir = path.join(tmpDir, 'unbound-project');
     await fse.ensureDir(projectDir);
@@ -227,7 +231,43 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     expect(ctx).toContain('teamai bind-project --skip');
   });
 
+  it('does NOT emit hint by default when TEAMAI_BIND_PROMPT_ENABLED is unset', async () => {
+    // No process.env.TEAMAI_BIND_PROMPT_ENABLED — bind prompt is off by default.
+    await setupConfig();
+    const projectDir = path.join(tmpDir, 'default-off-project');
+    await fse.ensureDir(projectDir);
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+
+    const fetchMock = vi.fn(async (_url: string) => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdoutChunks: string[] = [];
+    const origWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Buffer) => {
+      stdoutChunks.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+      await reportAndSyncLocalAgent({
+        cwd: projectDir,
+        tool: 'claude',
+        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'claude' },
+      });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    const output = stdoutChunks.join('');
+    expect(output).not.toContain('hookSpecificOutput');
+    // user-groups must not even be fetched when the prompt is disabled
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/user-groups/mine'))).toBe(false);
+  });
+
   it('does NOT emit hint when project is already bound', async () => {
+    process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
     const projectDir = path.join(tmpDir, 'bound-project');
     await fse.ensureDir(projectDir);
     const { execFileSync } = await import('node:child_process');
@@ -263,6 +303,7 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
   });
 
   it('does NOT emit hint when project is skipped (groupId 0)', async () => {
+    process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
     const projectDir = path.join(tmpDir, 'skipped-project');
     await fse.ensureDir(projectDir);
     const { execFileSync } = await import('node:child_process');
