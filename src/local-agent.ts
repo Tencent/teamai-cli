@@ -26,6 +26,7 @@ import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
+import { installPluginPackage, uninstallPluginPackage, getInstalledPluginVersion } from './plugin-installer.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
 import {
   TEAMAI_HOME,
@@ -47,8 +48,8 @@ const MANIFEST_FILE = 'manifest.json';
 const REPORTER_ERROR_LOG = 'reporter/errors.jsonl';
 
 type LocalAgentScope = 'instance' | 'user' | 'project';
-type ResourceKind = 'skills' | 'rules' | 'claudemd';
-type CommandResourceKind = 'skill' | 'rule' | 'claudemd';
+type ResourceKind = 'skills' | 'rules' | 'claudemd' | 'plugins';
+type CommandResourceKind = 'skill' | 'rule' | 'claudemd' | 'plugin';
 
 interface WorkspaceBinding {
   groupId: number;
@@ -89,12 +90,19 @@ interface ManifestResource {
    * locate the directory by slug (the manifest key stays the slug).
    */
   dir_name?: string;
+  /**
+   * npm package name for plugin entries. The manifest key is the teamai plugin
+   * slug (id); this records the actual package name so uninstall/upgrade can
+   * target it (scoped names like `@scope/pkg` are allowed here, unlike slugs).
+   */
+  package?: string;
 }
 
 interface ManifestScope {
   skills: Record<string, ManifestResource>;
   rules: Record<string, ManifestResource>;
   claudemd: Record<string, ManifestResource>;
+  plugins: Record<string, ManifestResource>;
 }
 
 interface LocalAgentManifest {
@@ -114,6 +122,9 @@ interface LocalAgentCommand {
   rule_type?: string;
   claudemd_slug?: string;
   claudemd_version?: string;
+  plugin_slug?: string;
+  plugin_package?: string;
+  plugin_version?: string;
   resource_slug?: string;
   resource_version?: string;
   slug?: string;
@@ -218,7 +229,7 @@ function scopeKey(scope: LocalAgentScope, workspacePath?: string): string {
 }
 
 function emptyManifestScope(): ManifestScope {
-  return { skills: {}, rules: {}, claudemd: {} };
+  return { skills: {}, rules: {}, claudemd: {}, plugins: {} };
 }
 
 async function loadManifest(): Promise<LocalAgentManifest> {
@@ -656,6 +667,30 @@ function collectManifestSlugs(manifest: LocalAgentManifest): { skills: Set<strin
   return { skills, rules };
 }
 
+/**
+ * Plugins are npm packages installed globally, so they have no workspace scope
+ * and are recorded under a single `user` manifest scope. The manifest key is
+ * the teamai plugin slug; `package` records the real npm name for uninstall.
+ */
+const PLUGIN_SCOPE: LocalAgentScope = 'user';
+
+/**
+ * List installed plugins from the manifest (not disk — global npm packages do
+ * not live under a teamai-controlled directory). Plugins are reported at
+ * user-level only, since they are installed globally with no workspace scope,
+ * so only PLUGIN_SCOPE is read.
+ */
+function scanPluginsFromManifest(manifest: LocalAgentManifest): ReportedResource[] {
+  const plugins = manifest.scopes[scopeKey(PLUGIN_SCOPE)]?.plugins ?? {};
+  return Object.values(plugins)
+    .map((entry) => ({
+      slug: entry.slug,
+      version: entry.version,
+      display_name: entry.display_name ?? entry.slug,
+      source: entry.source ?? 'enterprise',
+    }))
+    .sort((a, b) => a.slug.localeCompare(b.slug));
+}
 
 export async function buildReportPayload(
   config: LocalAgentConfig,
@@ -703,6 +738,7 @@ export async function buildReportPayload(
       group_id: config.userGroupId,
       skills: userScope.skills,
       rules: userScope.rules,
+      plugins: scanPluginsFromManifest(manifest),
     },
   };
 
@@ -753,6 +789,7 @@ function commandKind(command: LocalAgentCommand): CommandResourceKind | null {
   if (type.endsWith('_skill') || type === '') return 'skill';
   if (type.endsWith('_claudemd') || type.endsWith('_claude_md')) return 'claudemd';
   if (type.endsWith('_rule')) return 'rule';
+  if (type.endsWith('_plugin')) return 'plugin';
   return null;
 }
 
@@ -786,6 +823,7 @@ function commandSlug(command: LocalAgentCommand, kind: CommandResourceKind): str
   const slug =
     kind === 'skill' ? command.skill_slug :
     kind === 'rule' ? command.rule_slug :
+    kind === 'plugin' ? command.plugin_slug :
     (command.claudemd_slug ?? command.rule_slug);
   const resolved = slug ?? command.resource_slug ?? command.slug ?? command.name;
   if (!resolved) {
@@ -798,12 +836,16 @@ function commandVersion(command: LocalAgentCommand, kind: CommandResourceKind): 
   return (
     kind === 'skill' ? command.skill_version :
     kind === 'rule' ? command.rule_version :
+    kind === 'plugin' ? command.plugin_version :
     (command.claudemd_version ?? command.rule_version)
   ) ?? command.resource_version ?? command.version;
 }
 
 function manifestKind(kind: CommandResourceKind): ResourceKind {
-  return kind === 'skill' ? 'skills' : kind === 'rule' ? 'rules' : 'claudemd';
+  return kind === 'skill' ? 'skills'
+    : kind === 'rule' ? 'rules'
+    : kind === 'plugin' ? 'plugins'
+    : 'claudemd';
 }
 
 /** Only http(s) downloads are allowed — reject file:, ftp:, gopher:, etc. */
@@ -1071,6 +1113,105 @@ async function uninstallResource(input: {
   await saveManifest(manifest);
 }
 
+/**
+ * Install (or upgrade) a plugin npm package and record it in the manifest.
+ * Source is either a tarball (download_url) or the npm registry; either way the
+ * npm package name (plugin_package) is required so a later uninstall/upgrade can
+ * target it. Idempotent: re-running for an already-installed version is skipped.
+ */
+async function installPlugin(input: {
+  command: LocalAgentCommand;
+  slug: string;
+}): Promise<string | undefined> {
+  const { command, slug } = input;
+  const pkg = command.plugin_package;
+  if (!pkg) {
+    throw new Error(`Missing plugin_package for ${command.type ?? 'install_plugin'}`);
+  }
+  // plugin_package comes from the trusted backend and is passed to npm as a
+  // literal argv entry (execFile, not a shell) so it cannot inject commands. A
+  // package-name allowlist could further constrain what may be installed; left
+  // to the backend contract for now.
+  const version = commandVersion(command, 'plugin');
+
+  const manifest = await loadManifest();
+  const scopeManifest = getManifestScope(manifest, PLUGIN_SCOPE);
+  scopeManifest.plugins ??= {};
+
+  // Skip the (re)install when the desired state already holds on disk — checked
+  // via npm, not the manifest, which can be stale if the package was removed out
+  // of band. With an explicit version we require an exact match; without one, any
+  // installed version counts as "present" (so an unpinned re-sync is a no-op).
+  const installed = await getInstalledPluginVersion(pkg);
+  const satisfied = version !== undefined ? installed === version : installed !== undefined;
+  if (satisfied) {
+    if (!scopeManifest.plugins[slug]) {
+      scopeManifest.plugins[slug] = {
+        slug,
+        version: version ?? installed,
+        display_name: command.display_name ?? slug,
+        source: 'enterprise',
+        installed_at: new Date().toISOString(),
+        package: pkg,
+      };
+      await saveManifest(manifest);
+    }
+    return version ?? installed;
+  }
+
+  if (command.download_url) {
+    const downloaded = await downloadResource(command.download_url);
+    try {
+      // npm identifies a local tarball by its `.tgz` name, but downloadResource
+      // writes an extension-less file — rename it before handing it to npm.
+      const tarball = path.join(path.dirname(downloaded), 'plugin.tgz');
+      await fs.promises.rename(downloaded, tarball);
+      await installPluginPackage({ tarballPath: tarball });
+    } finally {
+      await remove(path.dirname(downloaded));
+    }
+  } else {
+    await installPluginPackage({ package: pkg, version });
+  }
+
+  scopeManifest.plugins[slug] = {
+    slug,
+    version,
+    display_name: command.display_name ?? slug,
+    source: 'enterprise',
+    installed_at: new Date().toISOString(),
+    package: pkg,
+  };
+  await saveManifest(manifest);
+  return version;
+}
+
+/** Uninstall a plugin npm package (by its recorded name) and drop the manifest entry. */
+async function uninstallPlugin(input: { slug: string }): Promise<void> {
+  const manifest = await loadManifest();
+  const scopeManifest = getManifestScope(manifest, PLUGIN_SCOPE);
+  scopeManifest.plugins ??= {};
+  const entry = scopeManifest.plugins[input.slug];
+  if (!entry) {
+    // Nothing recorded under this slug — do not run npm uninstall, which could
+    // otherwise remove an unrelated global package that shares the name.
+    log.debug(`[local-agent] uninstall_plugin: no manifest entry for "${input.slug}", skipping`);
+    return;
+  }
+  if (!entry.package) {
+    // Without the real npm package name we cannot safely target npm (the slug is
+    // a teamai id, not necessarily a package name). Drop the record rather than
+    // risk uninstalling an unrelated global package.
+    log.warn(`[local-agent] uninstall_plugin: entry "${input.slug}" has no package name; removing record without npm uninstall`);
+    delete scopeManifest.plugins[input.slug];
+    await saveManifest(manifest);
+    return;
+  }
+  await uninstallPluginPackage(entry.package);
+  delete scopeManifest.plugins[input.slug];
+  await saveManifest(manifest);
+}
+
 async function syncClaudemd(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
@@ -1154,6 +1295,16 @@ async function executeCommand(
   const action = commandAction(command);
   if (!kind || !action) {
     throw new Error(`Unsupported command type: ${command.type ?? ''}`);
+  }
+
+  // Plugins are global npm packages: no scope/workspace, no on-disk copy.
+  if (kind === 'plugin') {
+    const slug = commandSlug(command, kind);
+    if (action === 'install') {
+      return installPlugin({ command, slug });
+    }
+    await uninstallPlugin({ slug });
+    return commandVersion(command, kind);
   }
 
   const scope = command.scope ?? 'user';

@@ -462,3 +462,145 @@ describe('local-agent: skill directory naming (SKILL.md name vs server slug)', (
     expect(manifest.scopes.user.skills['server-slug-xyz'].dir_name).toBeUndefined();
   });
 });
+
+// The npm layer is mocked so plugin install/uninstall orchestration (manifest,
+// idempotency, registry-vs-tarball dispatch) can be tested without spawning npm.
+const npmMock = vi.hoisted(() => ({ install: vi.fn(), uninstall: vi.fn(), getVersion: vi.fn() }));
+vi.mock('../plugin-installer.js', () => ({
+  installPluginPackage: npmMock.install,
+  uninstallPluginPackage: npmMock.uninstall,
+  getInstalledPluginVersion: npmMock.getVersion,
+}));
+
+describe('local-agent: plugin install/update/uninstall', () => {
+  const port = 42010;
+
+  beforeEach(() => {
+    npmMock.install.mockReset().mockResolvedValue(undefined);
+    npmMock.uninstall.mockReset().mockResolvedValue(undefined);
+    // Default: package not installed on disk, so installs proceed.
+    npmMock.getVersion.mockReset().mockResolvedValue(undefined);
+  });
+
+  async function runCommand(command: Record<string, unknown>) {
+    await setupConfig();
+    const acks: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: { body?: string }) => {
+      const url = String(input);
+      if (url.includes('/plugin.tgz')) return new Response(Buffer.from('fake-tarball'));
+      if (url.includes('/local-agent/sync')) {
+        return new Response(JSON.stringify({ ok: true, commands: [command] }));
+      }
+      if (url.includes('/commands/ack')) acks.push(JSON.parse(init?.body ?? '{}'));
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ cwd: tmpDir, tool: 'codebuddy', status: 'running' });
+    return acks;
+  }
+
+  const readPlugins = async () => {
+    const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
+    return manifest.scopes.user?.plugins ?? {};
+  };
+
+  it('installs a registry package and records it in the manifest', async () => {
+    const acks = await runCommand({
+      id: 1, type: 'install_plugin', plugin_slug: 'cls', plugin_package: '@t/cls-agent', plugin_version: '1.0.0',
+    });
+
+    expect(acks[0]).toMatchObject({ status: 'success', version: '1.0.0' });
+    expect(npmMock.install).toHaveBeenCalledWith({ package: '@t/cls-agent', version: '1.0.0' });
+    const plugins = await readPlugins();
+    expect(plugins.cls).toMatchObject({ slug: 'cls', package: '@t/cls-agent', version: '1.0.0', source: 'enterprise' });
+  });
+
+  it('is idempotent when the installed version already matches', async () => {
+    const cmd = { id: 1, type: 'install_plugin', plugin_slug: 'cls', plugin_package: '@t/cls-agent', plugin_version: '1.0.0' };
+    await runCommand(cmd);
+    // Now npm reports the package present at the requested version on disk.
+    npmMock.getVersion.mockResolvedValue('1.0.0');
+    await runCommand({ ...cmd, id: 2 });
+    expect(npmMock.install).toHaveBeenCalledTimes(1);
+  });
+
+  it('reinstalls when the manifest is stale but the package is gone from disk', async () => {
+    const cmd = { id: 1, type: 'install_plugin', plugin_slug: 'cls', plugin_package: '@t/cls-agent', plugin_version: '1.0.0' };
+    await runCommand(cmd);
+    // Manifest still records v1, but npm reports it absent → must reinstall.
+    npmMock.getVersion.mockResolvedValue(undefined);
+    await runCommand({ ...cmd, id: 2 });
+    expect(npmMock.install).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips an unpinned install when the package is already present', async () => {
+    npmMock.getVersion.mockResolvedValue('1.0.0'); // already installed at some version
+    const acks = await runCommand({ id: 1, type: 'install_plugin', plugin_slug: 'cls', plugin_package: '@t/cls-agent' });
+    expect(npmMock.install).not.toHaveBeenCalled();
+    expect(acks[0]).toMatchObject({ status: 'success', version: '1.0.0' });
+    expect((await readPlugins()).cls).toMatchObject({ package: '@t/cls-agent', version: '1.0.0' });
+  });
+
+  it('upgrades when a new version is requested', async () => {
+    await runCommand({ id: 1, type: 'install_plugin', plugin_slug: 'cls', plugin_package: '@t/cls-agent', plugin_version: '1.0.0' });
+    npmMock.getVersion.mockResolvedValue('1.0.0');
+    await runCommand({ id: 2, type: 'install_plugin', plugin_slug: 'cls', plugin_package: '@t/cls-agent', plugin_version: '2.0.0' });
+    expect(npmMock.install).toHaveBeenCalledTimes(2);
+    expect(npmMock.install).toHaveBeenLastCalledWith({ package: '@t/cls-agent', version: '2.0.0' });
+    expect((await readPlugins()).cls.version).toBe('2.0.0');
+  });
+
+  it('installs from a tarball when download_url is given', async () => {
+    await runCommand({
+      id: 1, type: 'install_plugin', plugin_slug: 'cls', plugin_package: '@t/cls-agent',
+      plugin_version: '1.0.0', download_url: `http://127.0.0.1:${port}/plugin.tgz`,
+    });
+    expect(npmMock.install).toHaveBeenCalledWith({ tarballPath: expect.stringMatching(/\.tgz$/) });
+    expect((await readPlugins()).cls.package).toBe('@t/cls-agent');
+  });
+
+  it('fails when plugin_package is missing', async () => {
+    const acks = await runCommand({ id: 1, type: 'install_plugin', plugin_slug: 'cls', plugin_version: '1.0.0' });
+    expect(acks[0]).toMatchObject({ status: 'failed' });
+    expect(acks[0].error).toMatch(/plugin_package/);
+    expect(npmMock.install).not.toHaveBeenCalled();
+  });
+
+  it('uninstalls by the recorded npm package name and drops the manifest entry', async () => {
+    await runCommand({ id: 1, type: 'install_plugin', plugin_slug: 'cls', plugin_package: '@t/cls-agent', plugin_version: '1.0.0' });
+    await runCommand({ id: 2, type: 'uninstall_plugin', plugin_slug: 'cls' });
+    expect(npmMock.uninstall).toHaveBeenCalledWith('@t/cls-agent');
+    expect((await readPlugins()).cls).toBeUndefined();
+  });
+
+  it('skips npm uninstall when no manifest entry exists for the slug', async () => {
+    const acks = await runCommand({ id: 1, type: 'uninstall_plugin', plugin_slug: 'never-installed' });
+    expect(npmMock.uninstall).not.toHaveBeenCalled();
+    expect(acks[0]).toMatchObject({ status: 'success' });
+  });
+
+  it('drops the record without npm uninstall when the entry has no package name', async () => {
+    await setupConfig();
+    const mdir = path.join(tmpDir, '.teamai', 'local-agent');
+    await fse.ensureDir(mdir);
+    await fse.writeJson(path.join(mdir, 'manifest.json'), {
+      scopes: { user: { skills: {}, rules: {}, claudemd: {}, plugins: { cls: { slug: 'cls', version: '1.0.0', installed_at: 'x' } } } },
+    });
+    await runCommand({ id: 1, type: 'uninstall_plugin', plugin_slug: 'cls' });
+    expect(npmMock.uninstall).not.toHaveBeenCalled();
+    expect((await readPlugins()).cls).toBeUndefined();
+  });
+
+  it('reports installed plugins at user level', async () => {
+    await runCommand({ id: 1, type: 'install_plugin', plugin_slug: 'cls', plugin_package: '@t/cls-agent', plugin_version: '1.0.0' });
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = (await buildReportPayload(config!, { tool: 'codebuddy' })) as {
+      user_level: { plugins: Array<{ slug: string; version?: string; source: string }> };
+    };
+    expect(payload.user_level.plugins).toEqual([
+      { slug: 'cls', version: '1.0.0', display_name: 'cls', source: 'enterprise' },
+    ]);
+  });
+});
