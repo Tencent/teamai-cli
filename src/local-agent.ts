@@ -241,6 +241,54 @@ async function saveManifest(manifest: LocalAgentManifest): Promise<void> {
   await writeJson(getManifestPath(), manifest);
 }
 
+/**
+ * Serialize a manifest read-modify-write across concurrent teamai processes
+ * (hook events can fire in parallel, each running its own sync). A best-effort
+ * cross-process lock file is taken with O_EXCL; `mutate` gets a freshly loaded
+ * manifest and its changes are persisted before the lock is released. Without
+ * this, two interleaved processes each load → mutate → save, and the last save
+ * silently drops the other's entry (lost update). If the lock cannot be taken
+ * within the timeout (or a stale lock is found), it proceeds anyway rather than
+ * failing the command — correctness is best-effort, not guaranteed.
+ */
+async function withManifestLock<T>(
+  mutate: (manifest: LocalAgentManifest) => Promise<T> | T,
+): Promise<T> {
+  const lockPath = `${getManifestPath()}.lock`;
+  await ensureDir(path.dirname(lockPath));
+  const deadline = Date.now() + 5000;
+  let acquired = false;
+  while (Date.now() <= deadline) {
+    try {
+      const fd = await fs.promises.open(lockPath, 'wx');
+      await fd.close();
+      acquired = true;
+      break;
+    } catch (e) {
+      if ((e as { code?: string }).code !== 'EEXIST') throw e;
+      try {
+        // Reclaim a lock left behind by a crashed process.
+        const st = await fs.promises.stat(lockPath);
+        if (Date.now() - st.mtimeMs > 30_000) {
+          await fs.promises.rm(lockPath, { force: true });
+          continue;
+        }
+      } catch {
+        continue; // lock vanished between open and stat — retry immediately
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  try {
+    const manifest = await loadManifest();
+    const result = await mutate(manifest);
+    await saveManifest(manifest);
+    return result;
+  } finally {
+    if (acquired) await fs.promises.rm(lockPath, { force: true });
+  }
+}
+
 function getManifestScope(
   manifest: LocalAgentManifest,
   scope: LocalAgentScope,
@@ -842,10 +890,7 @@ function commandVersion(command: LocalAgentCommand, kind: CommandResourceKind): 
 }
 
 function manifestKind(kind: CommandResourceKind): ResourceKind {
-  return kind === 'skill' ? 'skills'
-    : kind === 'rule' ? 'rules'
-    : kind === 'plugin' ? 'plugins'
-    : 'claudemd';
+  return kind === 'skill' ? 'skills' : kind === 'rule' ? 'rules' : 'claudemd';
 }
 
 /** Only http(s) downloads are allowed — reject file:, ftp:, gopher:, etc. */
@@ -862,12 +907,19 @@ function assertHttpUrl(rawUrl: string): URL {
   return parsed;
 }
 
+/** Hard caps on a resource download so a huge or slow URL cannot exhaust
+ * memory or stall the command loop. */
+const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024;
+const DOWNLOAD_TIMEOUT_MS = 60_000;
+
 /**
- * Fetch a resource by URL. download_url comes from backend sync commands, so it
- * is treated as untrusted: only http(s) is honoured (no file:// / local-path
- * copy, which would be arbitrary local file read), and redirects are followed
- * manually so every hop's scheme is re-validated instead of blindly trusting
- * whatever Location the server returns.
+ * Fetch a resource by URL. download_url comes from backend sync commands. Only
+ * http(s) is honoured (no file:// / local-path copy, which would be arbitrary
+ * local file read), and redirects are followed manually so every hop's scheme
+ * is re-validated instead of trusting whatever Location the server returns.
+ * This does NOT constrain the host, so it is not an SSRF guard — the backend is
+ * trusted to point only at legitimate package URLs. The body is size-capped and
+ * the request is bounded by a timeout.
  */
 async function downloadResource(downloadUrl: string): Promise<string> {
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'teamai-local-agent-'));
@@ -877,7 +929,7 @@ async function downloadResource(downloadUrl: string): Promise<string> {
   let response: Response;
   const maxRedirects = 5;
   for (let hop = 0; ; hop++) {
-    response = await fetch(current, { redirect: 'manual' });
+    response = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');
       if (!location) break;
@@ -893,7 +945,15 @@ async function downloadResource(downloadUrl: string): Promise<string> {
   if (!response.ok) {
     throw new Error(`Download failed: ${response.status} ${response.statusText}`);
   }
+  // Reject before buffering when the server declares an oversized body.
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_DOWNLOAD_BYTES) {
+    throw new Error(`Download too large: ${declared} bytes exceeds ${MAX_DOWNLOAD_BYTES}`);
+  }
   const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.byteLength > MAX_DOWNLOAD_BYTES) {
+    throw new Error(`Download too large: ${buffer.byteLength} bytes exceeds ${MAX_DOWNLOAD_BYTES}`);
+  }
   await fs.promises.writeFile(filePath, buffer);
   return filePath;
 }
@@ -1134,31 +1194,39 @@ async function installPlugin(input: {
   // to the backend contract for now.
   const version = commandVersion(command, 'plugin');
 
-  const manifest = await loadManifest();
-  const scopeManifest = getManifestScope(manifest, PLUGIN_SCOPE);
-  scopeManifest.plugins ??= {};
-
   // Skip the (re)install when the desired state already holds on disk — checked
   // via npm, not the manifest, which can be stale if the package was removed out
   // of band. With an explicit version we require an exact match; without one, any
   // installed version counts as "present" (so an unpinned re-sync is a no-op).
   const installed = await getInstalledPluginVersion(pkg);
   const satisfied = version !== undefined ? installed === version : installed !== undefined;
+
+  const record = (m: LocalAgentManifest, recordedVersion: string | undefined): void => {
+    const scope = getManifestScope(m, PLUGIN_SCOPE);
+    scope.plugins ??= {};
+    scope.plugins[slug] = {
+      slug,
+      version: recordedVersion,
+      display_name: command.display_name ?? slug,
+      source: 'enterprise',
+      installed_at: new Date().toISOString(),
+      package: pkg,
+    };
+  };
+
   if (satisfied) {
-    if (!scopeManifest.plugins[slug]) {
-      scopeManifest.plugins[slug] = {
-        slug,
-        version: version ?? installed,
-        display_name: command.display_name ?? slug,
-        source: 'enterprise',
-        installed_at: new Date().toISOString(),
-        package: pkg,
-      };
-      await saveManifest(manifest);
-    }
+    // Ensure the manifest reflects the on-disk package, but do not rewrite an
+    // existing record (keeps installed_at and service registration stable).
+    await withManifestLock((m) => {
+      const scope = getManifestScope(m, PLUGIN_SCOPE);
+      scope.plugins ??= {};
+      if (!scope.plugins[slug]) record(m, version ?? installed);
+    });
     return version ?? installed;
   }
 
+  // npm work runs outside the manifest lock so a slow install does not block
+  // other processes' manifest updates.
   if (command.download_url) {
     const downloaded = await downloadResource(command.download_url);
     try {
@@ -1174,15 +1242,7 @@ async function installPlugin(input: {
     await installPluginPackage({ package: pkg, version });
   }
 
-  scopeManifest.plugins[slug] = {
-    slug,
-    version,
-    display_name: command.display_name ?? slug,
-    source: 'enterprise',
-    installed_at: new Date().toISOString(),
-    package: pkg,
-  };
-  await saveManifest(manifest);
+  await withManifestLock((m) => record(m, version));
   return version;
 }
 
@@ -1198,18 +1258,23 @@ async function uninstallPlugin(input: { slug: string }): Promise<void> {
     log.debug(`[local-agent] uninstall_plugin: no manifest entry for "${input.slug}", skipping`);
     return;
   }
+
+  const dropRecord = () =>
+    withManifestLock((m) => {
+      const scope = getManifestScope(m, PLUGIN_SCOPE);
+      delete scope.plugins?.[input.slug];
+    });
+
   if (!entry.package) {
     // Without the real npm package name we cannot safely target npm (the slug is
     // a teamai id, not necessarily a package name). Drop the record rather than
     // risk uninstalling an unrelated global package.
     log.warn(`[local-agent] uninstall_plugin: entry "${input.slug}" has no package name; removing record without npm uninstall`);
-    delete scopeManifest.plugins[input.slug];
-    await saveManifest(manifest);
+    await dropRecord();
     return;
   }
   await uninstallPluginPackage(entry.package);
-  delete scopeManifest.plugins[input.slug];
-  await saveManifest(manifest);
+  await dropRecord();
 }
 
 async function syncClaudemd(
