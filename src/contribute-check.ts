@@ -10,7 +10,7 @@ import type { ContributeState, DashboardEvent } from './types.js';
 import {
   CONTRIBUTE_SMART_THRESHOLD,
   CONTRIBUTE_BASE_THRESHOLD,
-  CONTRIBUTE_SCORE_CACHE_MS,
+  CONTRIBUTE_FASTPATH_TTL_MS,
   CONTRIBUTE_KNOWLEDGE_GAP_BONUS,
   CONTRIBUTE_LOW_QUALITY_BONUS,
   CONTRIBUTE_LOW_QUALITY_THRESHOLD,
@@ -33,8 +33,8 @@ import {
 //      │   ├─ state.contributed → exit(no hint)
 //      │   └─ state.hinted      → exit(no hint, dedup)
 //      │
-//      ├─ Layer 1 fast-path:
-//      │   └─ toolCount < BASE_THRESHOLD AND lastEvaluated within CACHE TTL
+//      ├─ Layer 1 fast-path (short debounce, NOT long-term suppression):
+//      │   └─ toolCount < BASE_THRESHOLD AND lastEvaluated within FASTPATH_TTL_MS (5 min)
 //      │      → exit(no hint), no events read
 //      │
 //      ├─ Layer 2:
@@ -354,9 +354,9 @@ function buildHint(totalToolCalls: number, uniqueTools: number, isKnowledgeGap: 
  *     - state.contributed → skip (user already ran /contribute)
  *     - state.hinted      → skip (hint already emitted, dedup)
  *
- *   Layer 1 fast-path (skips events.jsonl read):
- *     - toolCount < BASE_THRESHOLD AND lastEvaluated within CACHE TTL
- *       → skip (small session, recently checked)
+ *   Layer 1 fast-path (short debounce, skips events.jsonl read):
+ *     - toolCount < BASE_THRESHOLD AND lastEvaluated within FASTPATH_TTL_MS (5 min)
+ *       → skip (small session, just re-evaluated — debounce repeat Stop hooks)
  *
  *   Layer 2 score resolution:
  *     - cache hit:  smartScore + display fields present, lastEvaluated fresh
@@ -389,16 +389,19 @@ export async function contributeCheckForSession(
     return { hint: null };
   }
 
-  const cacheFresh =
-    state.lastEvaluated !== undefined && now - state.lastEvaluated < CONTRIBUTE_SCORE_CACHE_MS;
+  // Shared debounce for Layer 1 (skip events read) and Layer 2 (reuse cached
+  // score). Beyond this window we always re-read events.jsonl so a stale
+  // snapshot can't suppress a session that got busier later on.
+  const debounceFresh =
+    state.lastEvaluated !== undefined && now - state.lastEvaluated < CONTRIBUTE_FASTPATH_TTL_MS;
 
-  // Layer 1 fast-path
+  // Layer 1 fast-path — skip events read for small, recently-evaluated sessions.
   if (
-    cacheFresh &&
+    debounceFresh &&
     state.toolCount !== undefined &&
     state.toolCount < CONTRIBUTE_BASE_THRESHOLD
   ) {
-    log.debug(`contribute-check: fast-path skip (toolCount ${state.toolCount} < ${CONTRIBUTE_BASE_THRESHOLD}, cache fresh)`);
+    log.debug(`contribute-check: fast-path skip (toolCount ${state.toolCount} < ${CONTRIBUTE_BASE_THRESHOLD}, debounce fresh)`);
     return { hint: null };
   }
 
@@ -410,7 +413,7 @@ export async function contributeCheckForSession(
   let sessionStartIso: string | undefined;
 
   const cachedDisplayAvailable =
-    cacheFresh
+    debounceFresh
     && state.smartScore !== undefined
     && state.toolCount !== undefined
     && state.uniqueTools !== undefined;
@@ -488,6 +491,11 @@ export async function contributeCheckForSession(
  * so the AI will naturally suggest /contribute to the user.
  */
 export async function contributeCheck(toolArg?: string): Promise<void> {
+  // Same stdout-exclusive contract as hook-dispatch-cli — log lines mixed
+  // into stdout break Claude Code's JSON parse and silently drop the hint.
+  const { setStderrOnly } = await import('./utils/logger.js');
+  setStderrOnly(true);
+
   const stdinData = await readStdinAndDeriveSession();
   if (!stdinData) {
     log.debug('contribute-check: no STDIN data or no session ID');
@@ -496,8 +504,8 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
 
   const { hint } = await contributeCheckForSession(stdinData.sessionId, stdinData.cwd);
   if (hint !== null) {
-    // Stop schema has no hookSpecificOutput; use stopReason
-    process.stdout.write(JSON.stringify({ stopReason: hint }));
+    const { formatStopHookOutput } = await import('./utils/hook-output.js');
+    process.stdout.write(formatStopHookOutput(hint, toolArg ?? 'claude'));
   }
 }
 

@@ -156,6 +156,23 @@ async function buildRemovalPlan(
   const teamSkillNames = await collectTeamSkillNames(repoPath);
   const teamRuleNames = await collectTeamRuleNames(repoPath);
 
+  // Also include resources installed by local-agent (HTTP distribution)
+  const localAgentManifestPath = path.join(
+    process.env.HOME ?? '', '.teamai', 'local-agent', 'manifest.json',
+  );
+  if (await pathExists(localAgentManifestPath)) {
+    try {
+      const raw = await readFileSafe(localAgentManifestPath);
+      if (raw) {
+        const manifest = JSON.parse(raw) as { scopes?: Record<string, { skills?: Record<string, unknown>; rules?: Record<string, unknown> }> };
+        for (const scopeVal of Object.values(manifest.scopes ?? {})) {
+          for (const slug of Object.keys(scopeVal.skills ?? {})) teamSkillNames.add(slug);
+          for (const slug of Object.keys(scopeVal.rules ?? {})) teamRuleNames.add(slug);
+        }
+      }
+    } catch { /* best effort */ }
+  }
+
   for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
     // (a) Hooks — settings.json / hooks.json
     if (toolPath.settings) {

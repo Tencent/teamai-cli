@@ -11,7 +11,7 @@ import {
 import { appendEvent } from '../dashboard-collector.js';
 import {
   CONTRIBUTE_BASE_THRESHOLD,
-  CONTRIBUTE_SCORE_CACHE_MS,
+  CONTRIBUTE_FASTPATH_TTL_MS,
   CONTRIBUTE_SMART_THRESHOLD,
 } from '../types.js';
 import type { ContributeState, DashboardEvent } from '../types.js';
@@ -316,7 +316,8 @@ describe('contributeCheckForSession', () => {
 
   it('fast-path expires: low toolCount + STALE cache → re-evaluate (state updated)', async () => {
     const sessionId = 'fp-stale';
-    const veryOld = Date.now() - CONTRIBUTE_SCORE_CACHE_MS - 1000;
+    // Snapshot far outside the debounce window (much older than 5 min).
+    const veryOld = Date.now() - CONTRIBUTE_FASTPATH_TTL_MS - 60 * 60 * 1000;
     await writeContributeState(sessionId, {
       contributed: false,
       toolCount: CONTRIBUTE_BASE_THRESHOLD - 1,
@@ -332,6 +333,52 @@ describe('contributeCheckForSession', () => {
     // and the high-scoring session produced a hint.
     expect(after.lastEvaluated).toBeGreaterThan(veryOld);
     expect(after.toolCount).toBeGreaterThanOrEqual(50);
+    expect(after.smartScore).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
+    expect(result.hint).not.toBeNull();
+  });
+
+  // Regression: a stale toolCount=0 snapshot must not suppress evaluation
+  // once it falls outside the debounce window.
+  it('fast-path debounce: low-toolCount snapshot older than 5min → re-evaluate (regression)', async () => {
+    const sessionId = 'fp-debounce-expired';
+    const tenMinAgo = Date.now() - CONTRIBUTE_FASTPATH_TTL_MS - 5 * 60 * 1000;
+    await writeContributeState(sessionId, {
+      contributed: false,
+      toolCount: 0,                    // snapshot captured before tools ran
+      lastEvaluated: tenMinAgo,        // 10 min ago — past the 5-min debounce
+      smartScore: 0,
+    });
+    await seedHighScoreSession(sessionId);
+
+    const result = await contributeCheckForSession(sessionId);
+    const after = await readContributeState(sessionId);
+
+    expect(after.toolCount).toBeGreaterThanOrEqual(50);
+    expect(after.smartScore).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
+    expect(result.hint).not.toBeNull();
+  });
+
+  // Regression: even when all display fields (smartScore/toolCount/uniqueTools)
+  // are present in state, they must not be reused as a "cache hit" past the
+  // debounce window — Layer 2 now shares the same debounce as Layer 1.
+  it('layer-2 cache-hit expiry: stale (smartScore=0, toolCount=0) past debounce → re-scan events', async () => {
+    const sessionId = 'l2-cache-stale';
+    const tenMinAgo = Date.now() - CONTRIBUTE_FASTPATH_TTL_MS - 5 * 60 * 1000;
+    await writeContributeState(sessionId, {
+      contributed: false,
+      toolCount: 0,
+      uniqueTools: 0,
+      smartScore: 0,
+      lastEvaluated: tenMinAgo,
+    });
+    await seedHighScoreSession(sessionId);
+
+    const result = await contributeCheckForSession(sessionId);
+    const after = await readContributeState(sessionId);
+
+    // Must have re-scanned events, not reused the stale (score=0) cache.
+    expect(after.toolCount).toBeGreaterThanOrEqual(50);
+    expect(after.smartScore).toBeGreaterThan(0);
     expect(after.smartScore).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
     expect(result.hint).not.toBeNull();
   });

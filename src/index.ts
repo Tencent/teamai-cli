@@ -327,6 +327,26 @@ sourceCmd
   });
 
 sourceCmd
+  .command('add-http <endpoint>')
+  .description('Add an HTTP source (report/sync/ack) alongside a git main repo')
+  .option('--token <key>', 'API token for the HTTP endpoint (stored 0600, never committed)')
+  .option('--force', 'Overwrite an existing HTTP source config')
+  .action(async (endpoint: string, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { sourceAddHttp } = await import('./source.js');
+    await sourceAddHttp(endpoint, { ...globalOpts, ...cmdOpts });
+  });
+
+sourceCmd
+  .command('remove-http')
+  .description('Remove the HTTP source and clean up its resources')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { sourceRemoveHttp } = await import('./source.js');
+    await sourceRemoveHttp(globalOpts);
+  });
+
+sourceCmd
   .command('list')
   .description('List all configured sources')
   .action(async () => {
@@ -510,6 +530,30 @@ program
       const { dashboardReport } = await import('./dashboard-collector.js');
       await dashboardReport(cmdOpts.tool);
     }
+  });
+
+program
+  .command('hook-dispatch <event>')
+  .description('Unified hook dispatcher — handles all teamai hooks for a given event in one process')
+  .option('--stdin', 'Read hook data from STDIN (accepted for forward compat, always reads STDIN)')
+  .option('--tool <name>', 'Tool identifier (e.g. codebuddy, workbuddy, claude)')
+  .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
+  .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string }) => {
+    const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
+    await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
+  });
+
+program
+  .command('bind-project')
+  .description('Bind the current project to a ClawPro organization/group for HTTP local-agent sync')
+  .option('--group-id <id>', 'Group ID from /user-groups/mine')
+  .option('--skip', 'Mark current project as skipped (never prompt again)')
+  .action(async (cmdOpts) => {
+    const { bindCurrentProject } = await import('./local-agent.js');
+    await bindCurrentProject({
+      groupId: cmdOpts.groupId ? Number.parseInt(cmdOpts.groupId, 10) : undefined,
+      skip: !!cmdOpts.skip,
+    });
   });
 
 // ─── Contribute commands ──────────────────────────────────
@@ -715,17 +759,6 @@ program
     });
 
 // ─── Unified hook dispatch (replaces individual hook subcommands) ────
-
-program
-  .command('hook-dispatch <event>', { hidden: true })
-  
-  .description('Unified hook dispatcher — handles all teamai hooks for a given event in one process')
-  .option('--tool <name>', 'Tool identifier (e.g. claude, claude-internal, cursor)')
-  .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
-  .action(async (event: string, cmdOpts: { tool?: string; matcher?: string }) => {
-    const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
-    await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
-  });
 
 // ─── CI 命令组 ──────────────────────────────────────────
 

@@ -5,6 +5,7 @@ import ora, { type Ora } from 'ora';
 
 let verboseEnabled = false;
 let silentMode = false;
+let stderrMode = false;
 
 // ─── File transport ─────────────────────────────────────
 //
@@ -111,18 +112,35 @@ export function setSilent(s: boolean): void {
   silentMode = s;
 }
 
+/**
+ * Route non-error log output to stderr. Used by hook-dispatch commands to
+ * keep stdout as a clean JSON channel for the AI tool.
+ */
+export function setStderrOnly(s: boolean): void {
+  stderrMode = s;
+}
+
+/** Write a "non-error" log line. Goes to stderr in hook mode, stdout otherwise. */
+function writeInfoLine(line: string): void {
+  if (stderrMode) {
+    console.error(line);
+  } else {
+    console.log(line);
+  }
+}
+
 export const log = {
   info(msg: string): void {
     if (silentMode) return;
-    console.log(chalk.blue('ℹ'), msg);
+    writeInfoLine(`${chalk.blue('ℹ')} ${msg}`);
   },
   success(msg: string): void {
     if (silentMode) return;
-    console.log(chalk.green('✔'), msg);
+    writeInfoLine(`${chalk.green('✔')} ${msg}`);
   },
   warn(msg: string): void {
     if (silentMode) return;
-    console.log(chalk.yellow('⚠'), msg);
+    writeInfoLine(`${chalk.yellow('⚠')} ${msg}`);
   },
   error(msg: string): void {
     console.error(chalk.red('✖'), msg);
@@ -131,11 +149,11 @@ export const log = {
   debug(msg: string): void {
     writeToFile('DEBUG', msg);
     if (!verboseEnabled || silentMode) return;
-    console.log(chalk.gray('  [debug]'), msg);
+    writeInfoLine(`${chalk.gray('  [debug]')} ${msg}`);
   },
   dim(msg: string): void {
     if (silentMode) return;
-    console.log(chalk.dim(msg));
+    writeInfoLine(chalk.dim(msg));
   },
 };
 

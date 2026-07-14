@@ -37,7 +37,9 @@ interface RolePullContext {
  * Refresh the local team-repo tree, abstracting the two backends.
  *
  * - git:  `git pull` into localPath; version = current HEAD rev.
- * - http: re-materialize `GET /repo` into localPath; version = server version.
+ * - http: nothing to clone — skills/rules/CLAUDE.md are delivered per-session via
+ *         report/sync/ack (the local-agent bypass), not a repo snapshot. The
+ *         `reportingOnly` flag tells the deploy step to skip git-tree sync.
  *
  * Returns a display label and the opaque version string used as the
  * incremental-sync cache key (state.lastPullRev). `version` is null only when
@@ -48,27 +50,13 @@ async function refreshTeamRepo(
 ): Promise<{ label: string; version: string | null; reportingOnly: boolean }> {
   if (localConfig.repo.kind === 'http') {
     const { resolveApiKey } = await import('./api-key.js');
-    const { materializeHttpRepo, RepoNotAvailableError } = await import('./source-http.js');
     const apiKey = resolveApiKey();
     if (!apiKey) {
       throw new Error('No API key configured. Re-run `teamai init --http <url> --token <key>` or set TEAMAI_API_TOKEN.');
     }
-    const baseUrl = localConfig.repo.url;
-    if (!baseUrl) {
-      throw new Error('HTTP team repo has no url configured.');
-    }
-    try {
-      const version = await materializeHttpRepo(baseUrl, localConfig.repo.localPath, apiKey);
-      return { label: `HTTP ${version ?? '(no version)'}`, version, reportingOnly: false };
-    } catch (e) {
-      if (e instanceof RepoNotAvailableError) {
-        // Reporting-only endpoint: /repo not live yet. Skip skill/rule sync
-        // quietly (status reporting still runs via its own hook handler).
-        log.debug(`[pull] ${(e as Error).message} — skipping repo sync (reporting-only)`);
-        return { label: 'HTTP (reporting-only, no /repo yet)', version: null, reportingOnly: true };
-      }
-      throw e;
-    }
+    // HTTP backends deliver resources through report/sync (own hook handler),
+    // so there is no repo tree to pull here.
+    return { label: 'HTTP (report/sync delivery)', version: null, reportingOnly: true };
   }
 
   const result = await pullRepo(localConfig.repo.localPath);
