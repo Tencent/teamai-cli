@@ -347,6 +347,14 @@ sourceCmd
   });
 
 sourceCmd
+  .command('reconcile-plugins', { hidden: true })
+  .description('Run plugin reconcile worker (called internally by session_start hook)')
+  .action(async () => {
+    const { runPluginReconcileWorker } = await import('./local-agent.js');
+    await runPluginReconcileWorker();
+  });
+
+sourceCmd
   .command('list')
   .description('List all configured sources')
   .action(async () => {

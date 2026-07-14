@@ -27,6 +27,7 @@ import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
+import { reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
 import {
   TEAMAI_HOME,
   TEAMAI_TOKEN_PATH,
@@ -230,6 +231,46 @@ async function saveManifest(manifest: LocalAgentManifest): Promise<void> {
   await writeJson(getManifestPath(), manifest);
 }
 
+function getPluginStatePath(): string {
+  return path.join(getLocalAgentHome(), 'plugins.json');
+}
+
+async function readPluginState(): Promise<Record<string, PluginState>> {
+  return (await readJson<Record<string, PluginState>>(getPluginStatePath())) ?? {};
+}
+
+/**
+ * Atomically mutate the plugin-state file under an exclusive lock. If the lock
+ * cannot be acquired within the timeout, throws (the caller skips this cycle
+ * rather than writing without the lock — reconcile is throttled, so skipping is safe).
+ */
+async function withPluginStateLock(mutate: (m: Record<string, PluginState>) => void): Promise<void> {
+  const statePath = getPluginStatePath();
+  const lockPath = `${statePath}.lock`;
+  await ensureDir(path.dirname(lockPath));
+  const deadline = Date.now() + 5000;
+  let acquired = false;
+  while (Date.now() <= deadline) {
+    try { const fd = await fs.promises.open(lockPath, 'wx'); await fd.close(); acquired = true; break; }
+    catch (e) {
+      if ((e as { code?: string }).code !== 'EEXIST') throw e;
+      try {
+        const st = await fs.promises.stat(lockPath);
+        if (Date.now() - st.mtimeMs > 30_000) { await fs.promises.rm(lockPath, { force: true }); continue; }
+      } catch { /* lock vanished */ }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+  if (!acquired) throw new Error('could not acquire plugin-state lock');
+  try {
+    const m = await readPluginState();
+    mutate(m);
+    await writeJson(statePath, m);
+  } finally {
+    await fs.promises.rm(lockPath, { force: true });
+  }
+}
+
 function getManifestScope(
   manifest: LocalAgentManifest,
   scope: LocalAgentScope,
@@ -332,6 +373,7 @@ async function localAgentFetch<T>(
   tag: string,
   route: string,
   init?: RequestInit,
+  opts?: { redactResponseLog?: boolean },
 ): Promise<T> {
   const method = init?.method ?? 'GET';
   const url = `${config.endpoint}${route}`;
@@ -351,7 +393,7 @@ async function localAgentFetch<T>(
       body = text;
     }
   }
-  logHttpResponse(tag, method, url, response.status, response.statusText, body);
+  logHttpResponse(tag, method, url, response.status, response.statusText, opts?.redactResponseLog ? '<redacted>' : body);
   if (!response.ok) {
     const message = typeof body === 'object' && body && 'error' in body
       ? String((body as { error: unknown }).error)
@@ -382,6 +424,137 @@ export async function fetchUserGroups(config: LocalAgentConfig): Promise<LocalAg
     { method: 'GET' },
   );
   return response.groups ?? [];
+}
+
+/** Mask secret values (CLI flags / key=value) so they don't reach logs. */
+function redactSecrets(s: string): string {
+  return s
+    .replace(/(--secret-(?:key|id)[= ]+)\S+/gi, '$1***')
+    .replace(/(secret[_-]?(?:key|id)"?\s*[:=]\s*"?)[^"\s,}]+/gi, '$1***');
+}
+
+/** Execute a shell command string with a timeout. Rejects on non-zero exit or timeout. */
+async function execPluginCommand(cmd: string, timeoutMs: number): Promise<void> {
+  const { spawn } = await import('node:child_process');
+  await new Promise<void>((resolve, reject) => {
+    const child = process.platform === 'win32'
+      ? spawn('cmd', ['/c', cmd], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+      : spawn('/bin/sh', ['-lc', cmd], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr?.on('data', (d) => { stderr += d.toString(); if (stderr.length > 8192) stderr = stderr.slice(-8192); });
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`command timed out after ${timeoutMs}ms`)); }, timeoutMs);
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('close', (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`command failed (exit ${code})${stderr ? ' :: ' + redactSecrets(stderr.slice(0, 200).trim()) : ''}`)); });
+  });
+}
+
+/**
+ * Fetch backend plugin config.
+ * Route = /api/local-agent/get-config → final URL: <endpoint>/api/local-agent/get-config.
+ * localAgentFetch builds `url = config.endpoint + route`, matching report/sync pattern.
+ */
+async function fetchPluginConfig(config: LocalAgentConfig, tag: string): Promise<unknown> {
+  return localAgentFetch<unknown>(config, tag, '/api/local-agent/get-config', { method: 'GET' }, { redactResponseLog: true });
+}
+
+const PLUGIN_PULL_INTERVAL_MS = 12 * 60 * 60 * 1000;
+const PLUGIN_FAIL_BACKOFF_MS = 60 * 60 * 1000;
+
+function getPluginPullStatePath(): string {
+  return path.join(getLocalAgentHome(), 'plugin-pull.json');
+}
+
+function buildReconcileDeps(config: LocalAgentConfig, tag: string): ReconcileDeps {
+  return {
+    readPlugins: () => readPluginState(),
+    mutatePlugins: (fn) => withPluginStateLock(fn),
+    execCommand: (cmd, t) => execPluginCommand(cmd, t),
+    now: () => Date.now(),
+    log: { debug: (msg) => log.debug(`${tag} ${msg}`), warn: (msg) => log.warn(`${tag} ${msg}`) },
+  };
+}
+
+/** On session start, throttle-check and spawn a detached worker for plugin reconcile. Never blocks. */
+async function maybeReconcilePlugins(context: LocalAgentContext): Promise<void> {
+  try {
+    const state = (await readJson<{ lastPullAt?: number; lastFailAt?: number }>(getPluginPullStatePath())) ?? {};
+    const now = Date.now();
+    if (state.lastPullAt && now - state.lastPullAt < PLUGIN_PULL_INTERVAL_MS) return;
+    if (state.lastFailAt && now - state.lastFailAt < PLUGIN_FAIL_BACKOFF_MS) return;
+    const tool = context.tool ?? 'workbuddy';
+    const localAgentId = `${tool}-${resolveLocalAgentId(context)}`;
+    const { spawn } = await import('node:child_process');
+    if (!process.argv[1]) { log.debug('[local-agent] plugin reconcile: no CLI entrypoint (argv[1]), skipping'); return; }
+    const child = spawn(process.execPath, [process.argv[1], 'source', 'reconcile-plugins'],
+      { detached: true, stdio: 'ignore', env: { ...process.env, TEAMAI_PLUGIN_LOCAL_AGENT_ID: localAgentId } });
+    child.unref();
+  } catch (e) { log.debug(`[local-agent] plugin reconcile spawn skipped: ${(e as Error).message}`); }
+}
+
+/** Detached worker: pull get-config and reconcile plugins once, guarded by a reconcile lock. */
+export async function runPluginReconcileWorker(): Promise<void> {
+  const config = await loadLocalAgentConfig();
+  if (!config) return;
+  const lockPath = path.join(getLocalAgentHome(), 'plugin-reconcile.lock');
+  await ensureDir(path.dirname(lockPath));
+  let acquired = false;
+  try {
+    try {
+      const fd = await fs.promises.open(lockPath, 'wx');
+      await fd.close();
+      acquired = true;
+    } catch (e) {
+      if ((e as { code?: string }).code !== 'EEXIST') throw e;
+      try {
+        const st = await fs.promises.stat(lockPath);
+        if (Date.now() - st.mtimeMs > 30 * 60 * 1000) {
+          await fs.promises.rm(lockPath, { force: true });
+          const fd = await fs.promises.open(lockPath, 'wx');
+          await fd.close();
+          acquired = true;
+        }
+      } catch { /* ignore */ }
+      if (!acquired) return;
+    }
+    const tag = '[local-agent] [plugin-reconcile]';
+    const statePath = getPluginPullStatePath();
+    try {
+      const resp = await fetchPluginConfig(config, tag);
+      const { vars, plugins } = parseGetConfig(resp);
+      const laid = process.env.TEAMAI_PLUGIN_LOCAL_AGENT_ID;
+      if (!laid) log.debug(tag + ' no local_agent_id in env; plugins needing it will be skipped');
+      const allVars = { ...vars, ...(laid ? { local_agent_id: laid } : {}) };
+      const resolved: typeof plugins = [];
+      for (const p of plugins) {
+        const rp = {
+          ...p,
+          installCmd: substituteVars(p.installCmd, allVars),
+          updateCmd: p.updateCmd ? substituteVars(p.updateCmd, allVars) : undefined,
+          uninstallCmd: substituteVars(p.uninstallCmd, allVars),
+          runCmd: substituteVars(p.runCmd, allVars),
+        };
+        const missing = [...new Set([
+          ...unresolvedPlaceholders(rp.installCmd),
+          ...unresolvedPlaceholders(rp.runCmd),
+          ...unresolvedPlaceholders(rp.uninstallCmd),
+          ...(rp.updateCmd ? unresolvedPlaceholders(rp.updateCmd) : []),
+        ])];
+        if (missing.length) {
+          log.warn(`${tag} plugin ${p.slug}: unresolved placeholders [${missing.join(',')}], skipping`);
+          continue;
+        }
+        resolved.push(rp);
+      }
+      await reconcilePlugins(resolved, buildReconcileDeps(config, tag));
+      await writeJson(statePath, { lastPullAt: Date.now() });
+    } catch (e) {
+      const prev = (await readJson<{ lastPullAt?: number; lastFailAt?: number }>(statePath)) ?? {};
+      await writeJson(statePath, { ...prev, lastFailAt: Date.now() });
+      log.debug(`${tag} reconcile failed: ${(e as Error).message}`);
+    }
+  } finally {
+    if (acquired) await fs.promises.rm(lockPath, { force: true });
+  }
 }
 
 async function askViaTty(prompt: string): Promise<string | null> {
@@ -1224,6 +1397,10 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   const tag = localAgentTag(context);
   log.debug(`${tag} run: endpoint=${config.endpoint}`);
 
+  if (context.event?.type === 'session_start') {
+    await maybeReconcilePlugins(context);
+  }
+
   try {
     const reportPayload = await buildReportPayload(config, context);
     await localAgentFetch(config, tag, '/api/local-agent/report', {
@@ -1390,6 +1567,11 @@ export async function removeLocalAgentHttp(): Promise<void> {
     log.info('No HTTP source configured — nothing to remove.');
     return;
   }
+
+  // Tear down installed plugins before removing teamai's local-agent state.
+  try {
+    await teardownAllPlugins(buildReconcileDeps(config, '[local-agent] [uninstall]'));
+  } catch (e) { log.warn(`[local-agent] plugin teardown failed: ${(e as Error).message}`); }
 
   const kinds: CommandResourceKind[] = ['skill', 'rule', 'claudemd'];
   const manifest = await loadManifest();
