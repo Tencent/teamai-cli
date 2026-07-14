@@ -21,7 +21,9 @@ import {
   type LocalConfig,
   type Scope,
 } from './types.js';
-import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
+import { BUILTIN_RULE_NAMES } from './builtin-rules.js';
+import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
+import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import {
   pathExists,
   readFileSafe,
@@ -49,8 +51,10 @@ interface RemovalPlan {
   claudeMdFiles: string[];
   /** Skill directories synced from team repo. */
   skillDirs: string[];
-  /** Rule .md files synced from team repo. */
+  /** Rule .md files synced from team repo (plus CLI built-in rules). */
   ruleFiles: string[];
+  /** Built-in agent .md files deployed by the CLI (e.g. teamai-recall). */
+  agentFiles: string[];
   /** Shell profile path containing env block (null if none). */
   shellProfile: string | null;
   /** Docs directory (null if doesn't exist). */
@@ -143,6 +147,7 @@ async function buildRemovalPlan(
     claudeMdFiles: [],
     skillDirs: [],
     ruleFiles: [],
+    agentFiles: [],
     shellProfile: null,
     docsDir: null,
     teamaiHome,
@@ -151,10 +156,16 @@ async function buildRemovalPlan(
     scope: localConfig.scope,
   };
 
-  // Discover team repo resource names for targeted removal
+  // Discover team repo resource names for targeted removal. CLI built-in
+  // resources (recall agent/rule, share-learnings skill, …) are deployed by
+  // the CLI itself rather than synced from the team repo, so fold their names
+  // in explicitly — otherwise uninstall leaks them (they match neither the
+  // team-repo set nor a user-authored resource).
   const repoPath = localConfig.repo.localPath;
   const teamSkillNames = await collectTeamSkillNames(repoPath);
+  for (const name of BUILTIN_SKILL_NAMES) teamSkillNames.add(name);
   const teamRuleNames = await collectTeamRuleNames(repoPath);
+  for (const name of BUILTIN_RULE_NAMES) teamRuleNames.add(name);
 
   // Also include resources installed by local-agent (HTTP distribution)
   const localAgentManifestPath = path.join(
@@ -211,7 +222,8 @@ async function buildRemovalPlan(
       }
     }
 
-    // (d) Rules — only those matching team repo, excluding built-in
+    // (d) Rules — team-synced rules plus CLI built-in rules (teamRuleNames
+    // now includes BUILTIN_RULE_NAMES). User-authored rules are left alone.
     if (toolPath.rules) {
       const rulesDir = path.join(baseDir, toolPath.rules);
       if (await pathExists(rulesDir)) {
@@ -219,9 +231,22 @@ async function buildRemovalPlan(
         for (const file of files) {
           if (!file.endsWith('.md')) continue;
           const ruleName = file.replace(/\.md$/, '');
-          if (EXCLUDED_RULE_NAMES.has(ruleName)) continue;
           if (teamRuleNames.has(ruleName)) {
             plan.ruleFiles.push(path.join(rulesDir, file));
+          }
+        }
+      }
+    }
+
+    // (d2) Built-in agents — CLI-deployed subagents (e.g. teamai-recall).
+    // Not synced from the team repo, so match by BUILTIN_AGENT_NAMES.
+    if (toolPath.agents) {
+      const agentsDir = path.join(baseDir, toolPath.agents);
+      if (await pathExists(agentsDir)) {
+        for (const name of BUILTIN_AGENT_NAMES) {
+          const agentFile = path.join(agentsDir, `${name}.md`);
+          if (await pathExists(agentFile)) {
+            plan.agentFiles.push(agentFile);
           }
         }
       }
@@ -265,6 +290,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.claudeMdFiles.length === 0 &&
     plan.skillDirs.length === 0 &&
     plan.ruleFiles.length === 0 &&
+    plan.agentFiles.length === 0 &&
     plan.shellProfile === null &&
     plan.docsDir === null &&
     !plan.teamaiHomeExists
@@ -309,6 +335,11 @@ function printSummary(plan: RemovalPlan): void {
 
   if (plan.ruleFiles.length > 0) {
     console.log(`   Rules (${plan.ruleFiles.length} 个文件)`);
+    console.log('');
+  }
+
+  if (plan.agentFiles.length > 0) {
+    console.log(`   Agents (${plan.agentFiles.length} 个文件)`);
     console.log('');
   }
 
@@ -402,6 +433,18 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
   }
   if (plan.ruleFiles.length > 0) {
     log.success(`移除了 ${plan.ruleFiles.length} 个 rule 文件`);
+  }
+
+  // (d2) Remove built-in agent files (e.g. teamai-recall)
+  for (const agentFile of plan.agentFiles) {
+    try {
+      await remove(agentFile);
+    } catch (e) {
+      log.warn(`移除 agent 失败 ${agentFile}: ${(e as Error).message}`);
+    }
+  }
+  if (plan.agentFiles.length > 0) {
+    log.success(`移除了 ${plan.agentFiles.length} 个 agent 文件`);
   }
 
   // (e) Clean shell profile env block
