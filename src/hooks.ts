@@ -3,7 +3,7 @@ import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/
 import { log } from './utils/logger.js';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, getManagedHooksPath, resolveBaseDir } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
-import { builtinHookDefs, applyBuiltinOverride } from './builtin-hooks.js';
+import { builtinHookDefs, applyBuiltinOverride, ensureTeamaiWrapper } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { resolveTeamHooks } from './resources/hooks.js';
 
@@ -116,7 +116,7 @@ function extractTeamaiSubcommand(command: string): string | null {
 }
 
 function isTeamaiHookCommand(command: string): boolean {
-  return /"teamai\s/.test(command);
+  return /(?:^|"|\s)teamai\s/.test(command);
 }
 
 /** Filter team defs down to those that apply to the given tool. */
@@ -504,6 +504,10 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
  */
 export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<void> {
   const resolvedBaseDir = baseDir ?? (process.env.HOME ?? '');
+  const tools = Object.keys(toolPaths).filter(t => !filterAgents || filterAgents.includes(t));
+  if (tools.some(t => t === 'workbuddy' || t === 'codebuddy')) {
+    ensureTeamaiWrapper();
+  }
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (filterAgents && !filterAgents.includes(tool)) continue;
     if (paths.settings) {
@@ -541,9 +545,15 @@ export async function reconcileHooksToAllTools(
   manifestPath: string,
   opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; force?: boolean; filterAgents?: string[] } = {},
 ): Promise<void> {
+  const wrapperTools = ['workbuddy', 'codebuddy'];
+  const activeTools = Object.keys(toolPaths).filter(t => !opts.filterAgents || opts.filterAgents.includes(t));
+  if (activeTools.some(t => wrapperTools.includes(t))) {
+    ensureTeamaiWrapper();
+  }
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
     if (!paths.settings) continue;
+    if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
     if (!opts.force) {
       const toolRoot = path.join(baseDir, paths.settings.split('/')[0]);
       if (!await pathExists(toolRoot)) continue;

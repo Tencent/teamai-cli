@@ -90,6 +90,60 @@ describe('hook-handlers registry', () => {
     expect(stopHandlers).toContain('dashboard-report');
   });
 
+  // Regression: handler used to hard-require stdin.session_id (returned null
+  // otherwise) and derived it differently from dashboard-collector, leaving
+  // sessionEvents empty. Now it uses the shared deriveSessionId helper.
+  it('contribute-check handler derives session id even when stdin.session_id is missing', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'contribute-check',
+    )!.handler;
+
+    mockContributeCheckForSession.mockResolvedValueOnce({ hint: null });
+
+    const originalEnv = process.env.CLAUDE_SESSION_ID;
+    delete process.env.CLAUDE_SESSION_ID;
+    try {
+      const result = await handler.execute({ cwd: '/tmp/some-project' }, 'claude');
+      expect(result).toBeNull();
+      expect(mockContributeCheckForSession).toHaveBeenCalledOnce();
+      const [sessionId, cwd] = mockContributeCheckForSession.mock.calls[0];
+      expect(typeof sessionId).toBe('string');
+      expect(sessionId.length).toBeGreaterThan(0);
+      // PID fallback embeds the cwd
+      expect(sessionId).toContain('/tmp/some-project');
+      expect(cwd).toBe('/tmp/some-project');
+    } finally {
+      if (originalEnv !== undefined) process.env.CLAUDE_SESSION_ID = originalEnv;
+    }
+  });
+
+  it('contribute-check handler prefers explicit session_id when present', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'contribute-check',
+    )!.handler;
+
+    mockContributeCheckForSession.mockResolvedValueOnce({ hint: null });
+
+    await handler.execute({ session_id: 'sid-abc', cwd: '/x' }, 'claude');
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x');
+  });
+
+  it('contribute-check handler routes hint through formatStopHookOutput for cursor', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'contribute-check',
+    )!.handler;
+
+    mockContributeCheckForSession.mockResolvedValueOnce({ hint: '[teamai] hello' });
+
+    const result = await handler.execute({ session_id: 's', cwd: '/x' }, 'cursor');
+    expect(result).not.toBeNull();
+    const parsed = JSON.parse(result!);
+    expect(parsed.followup_message).toBe('[teamai] hello');
+  });
+
   it('post-tool-use wildcard has dashboard-report', () => {
     const registry = buildHandlerRegistry();
     const wildcardHandlers = registry

@@ -77,7 +77,7 @@ teamai init --http https://your-team-host/api --token <api-key>
 
 - **只读**：HTTP 仓库下 `push` / `contribute` / `remove` 均被禁用。
 - API key 以 `0600` 权限保存（不写入 config，也不会被提交）；同时支持 `TEAMAI_API_TOKEN` 环境变量。
-- 如果团队仓库端点（`/repo`）尚未上线，init 会回落到 **reporting-only 模式**——hooks 和状态上报立即生效，待端点可用后 skills/rules 会自动开始同步。
+- 无需 git clone：skills/rules/CLAUDE.md 在每次会话时通过 report/sync/ack 生命周期交付。hooks 与状态上报在 init 时即接线完成。
 
 #### Agent 状态上报
 
@@ -92,25 +92,22 @@ teamai init --http https://your-team-host/api --token <api-key>
 
 | 端点 | 方法 | 用途 | 路径 |
 |------|------|------|------|
-| `{baseUrl}/repo` | GET | 团队仓库快照（skills + rules/docs） | **固定** |
 | `{baseUrl}/api/local-agent/report` | POST | session 启动：upsert agent + 已装 skill | 默认，可配置 |
 | `{baseUrl}/api/local-agent/sync` | POST | 上报状态 + 返回待执行的 skill 命令 | 默认，可配置 |
 | `{baseUrl}/api/local-agent/commands/ack` | POST | 回执单条命令（`{ id, status, error }`） | 默认，可配置 |
 
-`GET /repo` 返回 JSON（返回 404 或非 JSON 的 200 ⇒ 客户端进入 reporting-only 模式）：
+`POST /api/local-agent/sync` 返回负责 skill 安装/更新/卸载的待执行命令：
 
 ```json
 {
-  "version": "<不透明的缓存 key，例如 commit hash>",
-  "files":   [{ "path": "rules/foo.md", "content": "..." }],
-  "commands":[{ "type": "install_skill", "skill_slug": "x", "skill_version": "1.0.0", "download_url": "https://signed-url/..." }]
+  "ok": true,
+  "commands": [{ "id": 1, "type": "install_skill", "skill_slug": "x", "skill_version": "1.0.0", "download_url": "https://signed-url/..." }]
 }
 ```
 
-- `files[]` 原样写入本地仓库树（带路径穿越防护）；`commands[]` 负责 skill 的安装/更新/卸载。
 - skill 的 `download_url` 是**直连**拉取——它在 query string 里自带签名鉴权，因此不附带 `Bearer` 头。它必须指向一个 `.zip`，其根目录为 `<slug>/SKILL.md …` 或扁平的 `SKILL.md …`。
 
-**固定 vs 可配置**：`/repo` 路径固定；reporter 三个路径是可覆盖的默认值；上面的 JSON 结构是契约。可调项（环境变量）：
+**可配置路径**：reporter 三个路径是可覆盖的默认值;上面的 JSON 结构是契约。可调项（环境变量）：
 
 | 变量 | 作用 |
 |------|------|
@@ -119,6 +116,7 @@ teamai init --http https://your-team-host/api --token <api-key>
 | `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }`，覆盖 reporter 三个路径 |
 | `TEAMAI_REPORT_AGENTS` | 参与上报的 agent，逗号分隔（默认 `workbuddy,codebuddy`） |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | skill `download_url` 的 host 白名单，逗号分隔（空 = 全部放行） |
+| `TEAMAI_BIND_PROMPT_ENABLED` | 设为 `1` 开启组织绑定提示（TTY 交互提示 + 注入的 hook 提示）。默认关闭；`teamai bind-project` 手动命令不受影响 |
 
 </details>
 
@@ -299,6 +297,25 @@ teamai source remove other-team
 ```
 
 订阅源的 skills 在 `teamai pull` 时自动同步到本地，与团队自有 skills 共存。
+
+### HTTP source（report/sync/ack）
+
+上面的订阅源是 **git** 源。你还可以在**不改动现有 git 主仓**的前提下，额外挂一个 **HTTP** 源，它走 report/sync/ack 生命周期——与 `init --http` 消费者所用的完全相同：
+
+```bash
+# 挂一个 HTTP 源（git 主仓保持不变）
+teamai source add-http https://your-team-host/api --token <api-key>
+
+# 在 "HTTP source" 分区查看
+teamai source list
+
+# 移除（卸载其资源并清空配置）
+teamai source remove-http
+```
+
+HTTP 源在每次 AI 会话时上报状态并拉取 skills/rules/CLAUDE.md 指令命令，由 `teamai init` 已安装的 `hook-dispatch` hook 驱动。从不执行 `add-http` 的用户不受任何影响。
+
+仅支持一个 HTTP 源，且面向 **git 主仓**用户：若你的主仓本身就是 HTTP 后端（`init --http`），它已占用 HTTP 配置，此时 `add-http` 会被拒绝。
 
 ## Scope（作用域）
 

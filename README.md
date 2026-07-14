@@ -77,7 +77,7 @@ teamai init --http https://your-team-host/api --token <api-key>
 
 - **Read-only:** `push` / `contribute` / `remove` are disabled for HTTP repos.
 - The API key is stored `0600` (never written to config, never committed); `TEAMAI_API_TOKEN` is also honored.
-- If the team-repo endpoint (`/repo`) is not live yet, init falls back to **reporting-only mode** — hooks and status reporting are wired immediately, and skills/rules begin syncing automatically once the endpoint is available.
+- No git clone: skills/rules/CLAUDE.md are delivered per-session over the report/sync/ack lifecycle. Hooks and status reporting are wired at init time.
 
 #### Agent status reporting
 
@@ -92,25 +92,22 @@ The value you pass to `--http <baseUrl>` is the base; every endpoint is relative
 
 | Endpoint | Method | Purpose | Path |
 |----------|--------|---------|------|
-| `{baseUrl}/repo` | GET | Team-repo snapshot (skills + rules/docs) | **fixed** |
 | `{baseUrl}/api/local-agent/report` | POST | Session start: upsert agent + installed skills | default, configurable |
 | `{baseUrl}/api/local-agent/sync` | POST | Report status + return pending skill commands | default, configurable |
 | `{baseUrl}/api/local-agent/commands/ack` | POST | Ack one command (`{ id, status, error }`) | default, configurable |
 
-`GET /repo` returns JSON (a 404 or non-JSON 200 ⇒ the client enters reporting-only mode):
+`POST /api/local-agent/sync` returns pending commands that install/update/uninstall skills:
 
 ```json
 {
-  "version": "<opaque cache key, e.g. a commit hash>",
-  "files":   [{ "path": "rules/foo.md", "content": "..." }],
-  "commands":[{ "type": "install_skill", "skill_slug": "x", "skill_version": "1.0.0", "download_url": "https://signed-url/..." }]
+  "ok": true,
+  "commands": [{ "id": 1, "type": "install_skill", "skill_slug": "x", "skill_version": "1.0.0", "download_url": "https://signed-url/..." }]
 }
 ```
 
-- `files[]` are written verbatim into the local repo tree (path-traversal guarded); `commands[]` install/update/uninstall skills.
 - A skill `download_url` is fetched **directly** — it carries its own signed auth in the query string, so no `Bearer` header is sent. It must resolve to a `.zip` whose root is either `<slug>/SKILL.md …` or a flat `SKILL.md …`.
 
-**Fixed vs configurable.** The `/repo` path is fixed; the three reporter paths are defaults you can override. The JSON shapes above are the contract. Knobs (env vars):
+**Configurable paths.** The three reporter paths are defaults you can override. The JSON shapes above are the contract. Knobs (env vars):
 
 | Variable | Effect |
 |----------|--------|
@@ -119,6 +116,7 @@ The value you pass to `--http <baseUrl>` is the base; every endpoint is relative
 | `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }` to override the three reporter paths |
 | `TEAMAI_REPORT_AGENTS` | Comma-separated agents that report (default `workbuddy,codebuddy`) |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | Comma-separated host allowlist for skill `download_url` (empty = allow all) |
+| `TEAMAI_BIND_PROMPT_ENABLED` | Set to `1` to enable the org-binding prompt (TTY prompt + injected hook hint). Off by default; `teamai bind-project` works regardless |
 
 </details>
 
@@ -299,6 +297,25 @@ teamai source remove other-team
 ```
 
 Subscribed skills sync to your local machine on `teamai pull` and coexist with your own team's skills.
+
+### HTTP source (report/sync/ack)
+
+The subscriptions above are **git** sources. You can additionally attach a single **HTTP** source that uses the report/sync/ack lifecycle — the same one an `init --http` consumer gets — **alongside your existing git main repo**, without changing it:
+
+```bash
+# Attach an HTTP source (git main repo stays untouched)
+teamai source add-http https://your-team-host/api --token <api-key>
+
+# See it listed under "HTTP source"
+teamai source list
+
+# Detach it (uninstalls its resources, clears its config)
+teamai source remove-http
+```
+
+The HTTP source reports status and pulls down skills/rules/CLAUDE.md commands on each AI session, driven by the `hook-dispatch` hook that `teamai init` already installs. Users who never run `add-http` are unaffected.
+
+Only one HTTP source is supported, and it is meant for **git-based** main repos: if your main repo is itself an HTTP backend (`init --http`), it already owns the HTTP config, so `add-http` is rejected.
 
 ## Scope
 

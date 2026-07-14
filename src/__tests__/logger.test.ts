@@ -10,7 +10,7 @@ vi.mock('chalk', () => ({
   default: { blue: (s: string) => s, green: (s: string) => s, yellow: (s: string) => s, red: (s: string) => s, gray: (s: string) => s, dim: (s: string) => s },
 }));
 
-import { log, setVerbose, setSilent, MAX_LOG_BYTES, _setLogFilePath, _resetState } from '../utils/logger.js';
+import { log, setVerbose, setSilent, setStderrOnly, MAX_LOG_BYTES, _setLogFilePath, _resetState } from '../utils/logger.js';
 
 let tmpDir: string;
 let logFile: string;
@@ -21,12 +21,14 @@ beforeEach(() => {
   _setLogFilePath(logFile);
   setVerbose(false);
   setSilent(false);
+  setStderrOnly(false);
 });
 
 afterEach(() => {
   _resetState();
   setVerbose(false);
   setSilent(false);
+  setStderrOnly(false);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -126,6 +128,49 @@ describe('levels', () => {
     expect(lines).toHaveLength(2);
     expect(lines[0]).toContain('[DEBUG]');
     expect(lines[1]).toContain('[ERROR]');
+  });
+});
+
+describe('stderr-only mode (hook-dispatch path)', () => {
+  it('routes info to stderr when enabled, keeping stdout clean', () => {
+    const stdoutSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setStderrOnly(true);
+    log.info('hook progress');
+    expect(stdoutSpy).not.toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalled();
+    expect(String(stderrSpy.mock.calls[0][0])).toContain('hook progress');
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it('routes success/warn to stderr when enabled', () => {
+    const stdoutSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setStderrOnly(true);
+    log.success('done');
+    log.warn('be careful');
+    expect(stdoutSpy).not.toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalledTimes(2);
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it('keeps error on stderr (unchanged behavior)', () => {
+    const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setStderrOnly(true);
+    log.error('boom');
+    expect(stderrSpy).toHaveBeenCalled();
+    stderrSpy.mockRestore();
+  });
+
+  it('reverts to stdout when disabled', () => {
+    const stdoutSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    setStderrOnly(true);
+    setStderrOnly(false);
+    log.info('back to normal');
+    expect(stdoutSpy).toHaveBeenCalled();
+    stdoutSpy.mockRestore();
   });
 });
 

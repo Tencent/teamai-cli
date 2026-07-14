@@ -153,11 +153,14 @@ describe('contribute-check E2E', () => {
     expect(code).toBe(0);
     expect(stdout).not.toBe('');
 
-    // Should be valid JSON with stopReason (Stop hook schema)
+    // Stop hook output must use hookSpecificOutput.additionalContext, not
+    // stopReason (which only applies to `continue:false` aborts).
     const parsed = JSON.parse(stdout);
-    expect(parsed.stopReason).toBeDefined();
-    expect(parsed.stopReason).toContain('[teamai]');
-    expect(parsed.stopReason).toContain('/teamai-share-learnings');
+    expect(parsed.hookSpecificOutput).toBeDefined();
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('Stop');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('[teamai]');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('/teamai-share-learnings');
+    expect(parsed.stopReason).toBeUndefined();
   });
 
   it('produces no output for a trivial session below threshold', async () => {

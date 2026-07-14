@@ -547,6 +547,30 @@ describe('hooks', () => {
       }
     });
 
+    it('WorkBuddy hooks have timeout values (claude-format inner entry)', async () => {
+      await injectHooks('/test/settings.json', 'workbuddy');
+      const result = mockFiles['/test/settings.json'] as {
+        hooks: Record<string, Array<{ hooks: Array<{ timeout?: number }> }>>;
+      };
+      for (const entries of Object.values(result.hooks)) {
+        for (const entry of entries) {
+          expect(entry.hooks[0].timeout).toBeGreaterThan(0);
+        }
+      }
+    });
+
+    it('Claude hooks carry no timeout (byte-compat baseline preserved)', async () => {
+      await injectHooks('/test/settings.json', 'claude');
+      const result = mockFiles['/test/settings.json'] as {
+        hooks: Record<string, Array<{ hooks: Array<{ timeout?: number }> }>>;
+      };
+      for (const entries of Object.values(result.hooks)) {
+        for (const entry of entries) {
+          expect(entry.hooks[0].timeout).toBeUndefined();
+        }
+      }
+    });
+
     it('Claude hooks have [teamai] description prefix', async () => {
       await injectHooks('/test/settings.json', 'claude');
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, Array<{ description?: string }>> };
