@@ -70,7 +70,29 @@ export interface LocalAgentConfig {
   userGroupId?: number;
   userGroupName?: string;
   workspaceBindings: Record<string, WorkspaceBinding>;
+  /**
+   * Optional per-endpoint path overrides. Maps a logical route name to a custom
+   * path so a backend that does not use the default `/api/local-agent/*` layout
+   * can be pointed at its own routes. Unspecified routes fall back to DEFAULT_ROUTES.
+   * Example: { "getConfig": "/api/plugins/config", "sync": "/v2/agent/sync" }
+   */
+  routes?: Partial<Record<RouteName, string>>;
 }
+
+/**
+ * Logical names for every backend endpoint the local agent talks to, mapped to
+ * their default paths. A deployment can override any of these via config.routes
+ * (see LocalAgentConfig.routes) without touching call sites.
+ */
+export const DEFAULT_ROUTES = {
+  userGroups: '/api/user-groups/mine',
+  report: '/api/local-agent/report',
+  sync: '/api/local-agent/sync',
+  ack: '/api/local-agent/commands/ack',
+  getConfig: '/api/local-agent/get-config',
+} as const;
+
+export type RouteName = keyof typeof DEFAULT_ROUTES;
 
 interface LocalAgentGroup {
   id: number;
@@ -165,6 +187,22 @@ function compileClaudemdBlock(contents: string[]): string | null {
 
 function normalizeEndpoint(endpoint: string): string {
   return endpoint.trim().replace(/\/+$/, '');
+}
+
+/** Normalize a route override so it is a leading-slash path (endpoint has no trailing slash). */
+function normalizeRoute(route: string): string {
+  const trimmed = route.trim();
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+/**
+ * Resolve a logical route name to its path, applying config.routes overrides
+ * over DEFAULT_ROUTES. A blank/whitespace override is ignored (falls back to default).
+ */
+export function resolveRoute(config: Pick<LocalAgentConfig, 'routes'>, name: RouteName): string {
+  const override = config.routes?.[name];
+  if (override && override.trim()) return normalizeRoute(override);
+  return DEFAULT_ROUTES[name];
 }
 
 /**
@@ -371,12 +409,12 @@ function authHeaders(config: LocalAgentConfig, json = true): Record<string, stri
 async function localAgentFetch<T>(
   config: LocalAgentConfig,
   tag: string,
-  route: string,
+  route: RouteName,
   init?: RequestInit,
   opts?: { redactResponseLog?: boolean },
 ): Promise<T> {
   const method = init?.method ?? 'GET';
-  const url = `${config.endpoint}${route}`;
+  const url = `${config.endpoint}${resolveRoute(config, route)}`;
   const headers: Record<string, string> = {
     ...authHeaders(config, init?.body !== undefined),
     ...((init?.headers as Record<string, string> | undefined) ?? {}),
@@ -420,7 +458,7 @@ export async function fetchUserGroups(config: LocalAgentConfig): Promise<LocalAg
   const response = await localAgentFetch<{ ok?: boolean; groups?: LocalAgentGroup[] }>(
     config,
     localAgentTag({}),
-    '/api/user-groups/mine',
+    'userGroups',
     { method: 'GET' },
   );
   return response.groups ?? [];
@@ -488,11 +526,11 @@ async function execPluginCommand(cmd: string, timeoutMs: number): Promise<void> 
 
 /**
  * Fetch backend plugin config.
- * Route = /api/local-agent/get-config → final URL: <endpoint>/api/local-agent/get-config.
- * localAgentFetch builds `url = config.endpoint + route`, matching report/sync pattern.
+ * Route = 'getConfig' (default path /api/local-agent/get-config, overridable via config.routes).
+ * localAgentFetch builds `url = config.endpoint + resolveRoute(...)`, matching report/sync pattern.
  */
 async function fetchPluginConfig(config: LocalAgentConfig, tag: string): Promise<unknown> {
-  return localAgentFetch<unknown>(config, tag, '/api/local-agent/get-config', { method: 'GET' }, { redactResponseLog: true });
+  return localAgentFetch<unknown>(config, tag, 'getConfig', { method: 'GET' }, { redactResponseLog: true });
 }
 
 const PLUGIN_PULL_INTERVAL_MS = 12 * 60 * 60 * 1000;
@@ -1366,7 +1404,7 @@ async function ackCommand(
   version?: string,
   error?: string,
 ): Promise<void> {
-  await localAgentFetch(config, tag, '/api/local-agent/commands/ack', {
+  await localAgentFetch(config, tag, 'ack', {
     method: 'POST',
     body: JSON.stringify({
       id: command.id,
@@ -1453,7 +1491,7 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
 
   try {
     const reportPayload = await buildReportPayload(config, context);
-    await localAgentFetch(config, tag, '/api/local-agent/report', {
+    await localAgentFetch(config, tag, 'report', {
       method: 'POST',
       body: JSON.stringify(reportPayload),
     });
@@ -1463,7 +1501,7 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
     const syncResponse = await localAgentFetch<{ ok?: boolean; commands?: LocalAgentCommand[] }>(
       config,
       tag,
-      '/api/local-agent/sync',
+      'sync',
       { method: 'POST', body: JSON.stringify(syncPayload) },
     );
     const commands = syncResponse.commands ?? [];
