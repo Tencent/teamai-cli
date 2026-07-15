@@ -426,11 +426,14 @@ export async function fetchUserGroups(config: LocalAgentConfig): Promise<LocalAg
   return response.groups ?? [];
 }
 
-/** Mask secret values (CLI flags / key=value) so they don't reach logs. */
+/** Mask secret values (CLI flags / key=value / bearer tokens) so they don't reach logs. */
 function redactSecrets(s: string): string {
+  // Secret-bearing identifiers, matched case-insensitively in flag and key=value forms.
+  const names = 'secret[_-]?(?:key|id)|api[_-]?key|access[_-]?token|token|password|passwd|pwd';
   return s
-    .replace(/(--secret-(?:key|id)[= ]+)\S+/gi, '$1***')
-    .replace(/(secret[_-]?(?:key|id)"?\s*[:=]\s*"?)[^"\s,}]+/gi, '$1***');
+    .replace(new RegExp(`(--(?:${names})[= ]+)\\S+`, 'gi'), '$1***')
+    .replace(new RegExp(`((?:${names})"?\\s*[:=]\\s*"?)[^"\\s,}]+`, 'gi'), '$1***')
+    .replace(/(bearer\s+)[\w.\-]+/gi, '$1***');
 }
 
 /** Execute a shell command string with a timeout. Rejects on non-zero exit or timeout. */
@@ -470,7 +473,15 @@ function buildReconcileDeps(config: LocalAgentConfig, tag: string): ReconcileDep
     mutatePlugins: (fn) => withPluginStateLock(fn),
     execCommand: (cmd, t) => execPluginCommand(cmd, t),
     now: () => Date.now(),
-    log: { debug: (msg) => log.debug(`${tag} ${msg}`), warn: (msg) => log.warn(`${tag} ${msg}`) },
+    log: {
+      debug: (msg) => log.debug(`${tag} ${msg}`),
+      // The reconcile worker runs detached (stdio: 'ignore'), so console-only log.warn
+      // output is discarded. Mirror warnings to debug.log so failures are traceable.
+      warn: (msg) => {
+        log.warn(`${tag} ${msg}`);
+        log.debug(`${tag} WARN: ${msg}`);
+      },
+    },
   };
 }
 
@@ -521,6 +532,8 @@ export async function runPluginReconcileWorker(): Promise<void> {
     try {
       const resp = await fetchPluginConfig(config, tag);
       const { vars, plugins } = parseGetConfig(resp);
+      const declaredSlugs = plugins.length ? ` [${plugins.map((p) => p.slug).join(', ')}]` : '';
+      log.debug(`${tag} get-config: ${plugins.length} plugin(s) declared${declaredSlugs}`);
       const laid = process.env.TEAMAI_PLUGIN_LOCAL_AGENT_ID;
       if (!laid) log.debug(tag + ' no local_agent_id in env; plugins needing it will be skipped');
       const allVars = { ...vars, ...(laid ? { local_agent_id: laid } : {}) };
@@ -541,11 +554,13 @@ export async function runPluginReconcileWorker(): Promise<void> {
         ])];
         if (missing.length) {
           log.warn(`${tag} plugin ${p.slug}: unresolved placeholders [${missing.join(',')}], skipping`);
+          log.debug(`${tag} WARN: plugin ${p.slug}: unresolved placeholders [${missing.join(',')}], skipping`);
           continue;
         }
         resolved.push(rp);
       }
       await reconcilePlugins(resolved, buildReconcileDeps(config, tag));
+      log.debug(`${tag} reconcile complete (${resolved.length} plugin(s) processed)`);
       await writeJson(statePath, { lastPullAt: Date.now() });
     } catch (e) {
       const prev = (await readJson<{ lastPullAt?: number; lastFailAt?: number }>(statePath)) ?? {};

@@ -109,18 +109,22 @@ export async function reconcilePlugins(
           deps.log.debug(`plugin ${d.slug}: in failure cooldown, skip`);
           continue;
         }
+        deps.log.debug(`plugin ${d.slug}: installing${d.version ? ' version ' + d.version : ''}`);
         await deps.execCommand(d.installCmd, INSTALL_TIMEOUT_MS);
         await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
         await deps.mutatePlugins((m) => {
           m[d.slug] = makeReadyState(d, deps);
         });
+        deps.log.debug(`plugin ${d.slug}: installed and setup complete`);
       } else if (d.version !== undefined && e.version !== d.version) {
         // Version changed → update
+        deps.log.debug(`plugin ${d.slug}: updating ${e.version ?? '(unknown)'} -> ${d.version}`);
         await deps.execCommand(d.updateCmd ?? d.installCmd, UPDATE_TIMEOUT_MS);
         await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
         await deps.mutatePlugins((m) => {
           m[d.slug] = makeReadyState(d, deps);
         });
+        deps.log.debug(`plugin ${d.slug}: updated to version ${d.version}`);
       }
       // else: steady state — plugin self-manages, teamai is no-op
     } catch (err) {
@@ -150,10 +154,12 @@ export async function reconcilePlugins(
     if (desiredSlugs.has(slug)) continue;
     const e = local[slug];
     try {
+      deps.log.debug(`plugin ${slug}: uninstalling (removed from desired list)`);
       await deps.execCommand(e.uninstallCmd, UNINSTALL_TIMEOUT_MS);
       await deps.mutatePlugins((m) => {
         delete m[slug];
       });
+      deps.log.debug(`plugin ${slug}: uninstalled`);
     } catch (err) {
       deps.log.warn(`plugin ${slug} uninstall failed: ${(err as Error).message}`);
     }
@@ -170,10 +176,12 @@ export async function teardownAllPlugins(deps: ReconcileDeps): Promise<void> {
   const plugins = await deps.readPlugins();
   for (const [slug, state] of Object.entries(plugins)) {
     try {
+      deps.log.debug(`plugin ${slug}: tearing down`);
       await deps.execCommand(state.uninstallCmd, UNINSTALL_TIMEOUT_MS);
       await deps.mutatePlugins((m) => {
         delete m[slug];
       });
+      deps.log.debug(`plugin ${slug}: torn down`);
     } catch (err) {
       deps.log.warn(`plugin ${slug} teardown failed: ${(err as Error).message}`);
     }
