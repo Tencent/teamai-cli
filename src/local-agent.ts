@@ -436,7 +436,14 @@ function redactSecrets(s: string): string {
     .replace(/(bearer\s+)[\w.\-]+/gi, '$1***');
 }
 
-/** Execute a shell command string with a timeout. Rejects on non-zero exit or timeout. */
+/**
+ * Execute a shell command string with a timeout.
+ *
+ * Completion is gated on the process 'exit' event, NOT 'close': a setup command that
+ * daemonizes and leaves the inherited stderr pipe open in a background process would never
+ * emit 'close', producing a false timeout even though the command itself finished.
+ * Rejects on non-zero exit, termination by signal, or timeout.
+ */
 async function execPluginCommand(cmd: string, timeoutMs: number): Promise<void> {
   const { spawn } = await import('node:child_process');
   await new Promise<void>((resolve, reject) => {
@@ -444,10 +451,38 @@ async function execPluginCommand(cmd: string, timeoutMs: number): Promise<void> 
       ? spawn('cmd', ['/c', cmd], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
       : spawn('/bin/sh', ['-lc', cmd], { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
     child.stderr?.on('data', (d) => { stderr += d.toString(); if (stderr.length > 8192) stderr = stderr.slice(-8192); });
-    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`command timed out after ${timeoutMs}ms`)); }, timeoutMs);
-    child.on('error', (e) => { clearTimeout(timer); reject(e); });
-    child.on('close', (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`command failed (exit ${code})${stderr ? ' :: ' + redactSecrets(stderr.slice(0, 200).trim()) : ''}`)); });
+    const detachStderr = (): void => {
+      // Drain and unref the stderr pipe without closing it: a daemonized child may still hold
+      // the write end, and closing our read end would send it SIGPIPE. Unref-ing lets this
+      // worker process exit without waiting on — or killing — the daemon.
+      child.stderr?.removeAllListeners('data');
+      child.stderr?.resume();
+      (child.stderr as unknown as { unref?: () => void } | undefined)?.unref?.();
+    };
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      detachStderr();
+      child.unref();
+      fn();
+    };
+    timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(() => reject(new Error(`command timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+    child.on('error', (e) => finish(() => reject(e)));
+    child.on('exit', (code, signal) =>
+      finish(() => {
+        if (signal) return reject(new Error(`command killed by ${signal}`));
+        if (code === 0) return resolve();
+        const tail = stderr ? ' :: ' + redactSecrets(stderr.slice(0, 200).trim()) : '';
+        reject(new Error(`command failed (exit ${code})${tail}`));
+      }),
+    );
   });
 }
 
