@@ -364,6 +364,20 @@ function printSummary(plan: RemovalPlan): void {
 
 // ─── Execution ─────────────────────────────────────────
 
+/**
+ * Stop and uninstall local-agent plugins (best-effort) before ~/.teamai is deleted.
+ * Dynamic import mirrors source.ts — keeps local-agent's heavy dependency graph out
+ * of uninstall's static import chain.
+ */
+async function teardownPlugins(): Promise<void> {
+  try {
+    const { teardownLocalAgentPlugins } = await import('./local-agent.js');
+    await teardownLocalAgentPlugins();
+  } catch (e) {
+    log.warn(`plugin teardown failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 async function executeRemoval(plan: RemovalPlan): Promise<void> {
   // (a) Remove hooks from tool settings (built-in A + team B via the manifest)
   for (const { path: settingsPath, tool } of plan.hookFiles) {
@@ -478,6 +492,8 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
 
   // (g) Remove ~/.teamai/ directory (last — earlier steps read from it)
   if (plan.teamaiHomeExists) {
+    // Tear down plugins first: their manifest/config live under ~/.teamai/local-agent.
+    await teardownPlugins();
     try {
       await remove(plan.teamaiHome);
       log.success(`移除 ${plan.teamaiHome}/`);
@@ -560,6 +576,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     }
 
     try {
+      await teardownPlugins();
       await remove(home);
       log.success(`移除 ${home}/`);
       log.success('teamai 卸载完成');

@@ -1642,6 +1642,25 @@ function parseScopeKey(key: string): { scope: LocalAgentScope; workspacePath?: s
 }
 
 /**
+ * Run each installed plugin's uninstall_cmd (stop daemons, deregister autostart,
+ * remove packages) using the persisted plugin manifest. No-op when no HTTP source
+ * is configured.
+ *
+ * Best-effort: failures are logged, never thrown, so teardown of the rest of teamai
+ * is never blocked. Must run BEFORE ~/.teamai is deleted — it reads the plugin
+ * manifest and endpoint config from ~/.teamai/local-agent/.
+ */
+export async function teardownLocalAgentPlugins(): Promise<void> {
+  try {
+    const config = await loadLocalAgentConfig();
+    if (!config) return;
+    await teardownAllPlugins(buildReconcileDeps(config, '[local-agent] [uninstall]'));
+  } catch (e) {
+    log.warn(`[local-agent] plugin teardown failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
  * Tear down the HTTP local-agent bypass: uninstall every resource recorded in the
  * manifest (skills/rules/claudemd, across all scopes) from the AI tool dirs, then
  * remove the whole ~/.teamai/local-agent/ directory (config + manifest).
