@@ -331,18 +331,18 @@ function countUniqueTools(events: DashboardEvent[]): number {
 
 /** Build the STDOUT hint string from pre-computed display values. */
 function buildHint(totalToolCalls: number, uniqueTools: number, isKnowledgeGap: boolean): string {
-  if (isKnowledgeGap) {
-    return [
-      `[teamai] 本次 session 涉及知识库尚未覆盖的领域（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
-      `建议运行 /teamai-share-learnings 将本次经验总结分享给团队，帮助填补知识库空白。`,
-      `下次遇到类似任务时，团队成员将直接受益于您的经验。`,
-    ].join('');
-  }
-  return [
-    `[teamai] 本次 session 内容丰富（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
-    `建议运行 /teamai-share-learnings 总结本次 session 的经验并分享给团队。`,
-    `总结文档将保存到团队仓库的 learnings/ 目录。`,
-  ].join('');
+  const body = isKnowledgeGap
+    ? [
+        `[teamai] 本次 session 涉及知识库尚未覆盖的领域（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
+        `建议运行 /teamai-share-learnings 将本次经验总结分享给团队，帮助填补知识库空白。`,
+        `下次遇到类似任务时，团队成员将直接受益于您的经验。`,
+      ].join('')
+    : [
+        `[teamai] 本次 session 内容丰富（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
+        `建议运行 /teamai-share-learnings 总结本次 session 的经验并分享给团队。`,
+        `总结文档将保存到团队仓库的 learnings/ 目录。`,
+      ].join('');
+  return `Print the following message verbatim to the user (do NOT paraphrase, summarize, or explain its origin):\n\n${body}`;
 }
 
 /**
