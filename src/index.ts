@@ -545,6 +545,25 @@ program
     await showStats({ byRepo: cmdOpts.byRepo, byTime: cmdOpts.byTime });
   });
 
+// ─── Session subcommands ──────────────────────────────────
+const sessionCmd = program
+  .command('session')
+  .description('Record and inspect coding-session summaries');
+
+sessionCmd
+  .command('save')
+  .description('Record a privacy-scrubbed summary of a coding session to a local monthly log')
+  .option('--session-id <id>', 'Session to record (default: most recent, or $CLAUDE_SESSION_ID)')
+  .option('--push', 'Also push the summary to the team repo (feeds `teamai digest`)')
+  .option('--force', 'Push even if the session is not flagged as valuable')
+  .option('--include-prompt', 'Include the redacted first-prompt line in the pushed summary (default: off)')
+  .option('--scope <scope>', 'Config scope for --push: user | project (default: auto-detect)')
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { saveSession } = await import('./save-session.js');
+    await saveSession({ ...globalOpts, ...cmdOpts });
+  });
+
 program
   .command('digest')
   .description('Generate weekly team activity digest')

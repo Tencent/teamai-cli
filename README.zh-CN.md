@@ -169,6 +169,7 @@ teamai codebase --lint                      # 健康检查
 | `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](docs/usage-guide.zh-CN.md#排除个人不需要的-skill)） |
 | `teamai source` | 管理跨团队 skill 订阅 |
 | `teamai remove <type> <name>` | 删除资源并创建 MR |
+| `teamai session save` | 将脱敏后的 session 摘要记录到月度日志（`--push` 可喂给 `digest`） |
 | `teamai digest` | 生成团队周报 |
 | `teamai doctor` | 诊断配置问题 |
 | `teamai uninstall` | 移除所有 teamai 资源和 hooks |

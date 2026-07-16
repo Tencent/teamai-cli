@@ -33,14 +33,14 @@ Transform TeamAI from a simple skill-sharing CLI into a **Team Intelligence Plat
 ### Core Features
 
 #### 1. Session 工具使用记录
-**What:** 在会话内主动收集 AI 对话过程和工具使用记录，重点关注 AI 用错工具的情况。通过 `teamai save-session` 命令或 Stop hook 触发。
+**What:** 在会话内主动收集 AI 对话过程和工具使用记录，重点关注 AI 用错工具的情况。通过 `teamai session save` 命令或 Stop hook 触发。
 
 **How it works:**
 ```
 会话进行中 → AI 使用工具、对话
                     │
                     ▼
-        用户/AI 调用 teamai save-session
+        用户/AI 调用 teamai session save
                     │
                     ▼
         收集工具使用记录 + 对话摘要
@@ -144,7 +144,7 @@ git pull → git add → git commit → git push (直接到 master)
 │ hook         │     │ → append JSONL │     │                  │
 │              │     │                │     │ sessions/<user>/ │
 │ In-session   │     │ session-       │     │  <year-month>.md │
-│ save-session─┼────▶│ collector.ts   │     │                  │
+│ session save─┼────▶│ collector.ts   │     │                  │
 │ command      │     │                │     └──────────────────┘
 └──────────────┘     │ health.ts      │            ▲
                      │ recommend.ts   │            │

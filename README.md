@@ -169,6 +169,7 @@ The graph stores components, interfaces, configs, and cross-repo import edges. `
 | `teamai skill exclude add/remove/list` | Manage skills excluded from local sync ([usage guide](docs/usage-guide.md#excluding-skills-you-dont-need)) |
 | `teamai source` | Manage cross-team skill subscriptions |
 | `teamai remove <type> <name>` | Remove a resource and open MR |
+| `teamai session save` | Record a privacy-scrubbed session summary to a monthly log (`--push` feeds `digest`) |
 | `teamai digest` | Generate weekly team usage digest |
 | `teamai doctor` | Diagnose configuration issues |
 | `teamai uninstall` | Remove all teamai resources and hooks |
