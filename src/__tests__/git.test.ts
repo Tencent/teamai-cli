@@ -15,6 +15,7 @@ const mockGit = {
   revparse: vi.fn().mockResolvedValue('main'),
   reset: vi.fn(),
   merge: vi.fn(),
+  diff: vi.fn().mockResolvedValue('+some real content change\n'),
 };
 
 vi.mock('simple-git', () => ({
@@ -45,7 +46,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster } from '../utils/git.js';
+import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff } from '../utils/git.js';
 import fse from 'fs-extra';
 
 describe('generateBranchName', () => {
@@ -110,6 +111,26 @@ describe('pushRepoBranch', () => {
     expect(mockGit.deleteLocalBranch).toHaveBeenCalledWith('teamai/push/test/456', true);
     expect(mockGit.commit).not.toHaveBeenCalled();
     expect(mockGit.push).not.toHaveBeenCalled();
+  });
+
+  it('should return false and clean up when diff is metadata-only (timestamps)', async () => {
+    mockGit.status.mockResolvedValue({ staged: ['codebase.md'] });
+    mockGit.diff.mockResolvedValue(
+      '-lastUpdated: 2026-07-16T10:00:00.000Z\n+lastUpdated: 2026-07-16T10:05:00.000Z\n',
+    );
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'origin/HEAD') return 'origin/master';
+      return '';
+    });
+
+    const result = await pushRepoBranch('/repo', 'msg', ['file.txt'], 'teamai/push/test/789');
+
+    expect(result).toBe(false);
+    expect(mockGit.diff).toHaveBeenCalledWith(['--cached', '--unified=0']);
+    expect(mockGit.checkout).toHaveBeenCalledWith('master');
+    expect(mockGit.deleteLocalBranch).toHaveBeenCalledWith('teamai/push/test/789', true);
+    expect(mockGit.commit).not.toHaveBeenCalled();
   });
 });
 
@@ -328,5 +349,59 @@ describe('resetToCleanMaster', () => {
     await resetToCleanMaster(mockGit as any);
 
     expect(mockGit.checkout).toHaveBeenCalledWith('main');
+  });
+});
+
+describe('isMetadataOnlyDiff', () => {
+  it('should return true for empty diff', () => {
+    expect(isMetadataOnlyDiff('')).toBe(true);
+    expect(isMetadataOnlyDiff('  \n  ')).toBe(true);
+  });
+
+  it('should return true for timestamp-only changes', () => {
+    const diff = [
+      '--- a/teamwiki/source-manifest.json',
+      '+++ b/teamwiki/source-manifest.json',
+      '-  "lastScan": "2026-07-16T10:00:00.000Z",',
+      '+  "lastScan": "2026-07-16T10:05:00.000Z",',
+    ].join('\n');
+    expect(isMetadataOnlyDiff(diff)).toBe(true);
+  });
+
+  it('should return true for mixed metadata patterns', () => {
+    const diff = [
+      '-lastUpdated: 2026-07-16T10:00:00.000Z',
+      '+lastUpdated: 2026-07-16T10:05:00.000Z',
+      '-  "lastScan": "2026-07-16T10:00:00.000Z",',
+      '+  "lastScan": "2026-07-16T10:05:00.000Z",',
+      '-syncedAt: 2026-07-16T10:00:00.000Z',
+      '+syncedAt: 2026-07-16T10:05:00.000Z',
+    ].join('\n');
+    expect(isMetadataOnlyDiff(diff)).toBe(true);
+  });
+
+  it('should return false when real content changes are present', () => {
+    const diff = [
+      '-lastUpdated: 2026-07-16T10:00:00.000Z',
+      '+lastUpdated: 2026-07-16T10:05:00.000Z',
+      '-## Old Section',
+      '+## New Section with real changes',
+    ].join('\n');
+    expect(isMetadataOnlyDiff(diff)).toBe(false);
+  });
+
+  it('should return false for purely content changes', () => {
+    const diff = '+export function newFeature() { return 42; }\n';
+    expect(isMetadataOnlyDiff(diff)).toBe(false);
+  });
+
+  it('should ignore diff header lines (--- and +++)', () => {
+    const diff = [
+      '--- a/file.md',
+      '+++ b/file.md',
+      '-lastUpdated: old',
+      '+lastUpdated: new',
+    ].join('\n');
+    expect(isMetadataOnlyDiff(diff)).toBe(true);
   });
 });

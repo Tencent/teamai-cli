@@ -29,6 +29,10 @@ vi.mock('../utils/prompt.js', () => ({
     askConfirmation: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock('../config.js', () => ({
+    autoDetectInit: vi.fn().mockRejectedValue(new Error('no config in test')),
+}));
+
 // ─── Imports (after mocks) ───────────────────────────────
 
 import { importFromRepo } from '../import-repo.js';

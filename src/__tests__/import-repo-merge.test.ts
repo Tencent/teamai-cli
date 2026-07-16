@@ -35,6 +35,10 @@ vi.mock('../codebase-extract.js', () => ({
     extractCodebase: vi.fn(),
 }));
 
+vi.mock('../config.js', () => ({
+    autoDetectInit: vi.fn().mockRejectedValue(new Error('no config in test')),
+}));
+
 // ─── Imports (after mocks) ──────────────────────────────
 
 import { importFromRepo } from '../import-repo.js';
