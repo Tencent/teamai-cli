@@ -538,9 +538,11 @@ program
 program
   .command('stats')
   .description('Show local skill usage statistics')
-  .action(async () => {
+  .option('--by-repo', 'Break usage down per repository')
+  .option('--by-time', 'Show activity by hour of day')
+  .action(async (cmdOpts) => {
     const { showStats } = await import('./stats.js');
-    await showStats();
+    await showStats({ byRepo: cmdOpts.byRepo, byTime: cmdOpts.byTime });
   });
 
 program
