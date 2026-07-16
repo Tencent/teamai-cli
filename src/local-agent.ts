@@ -26,6 +26,7 @@ import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
+import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
 import {
   TEAMAI_HOME,
@@ -688,7 +689,7 @@ export async function buildReportPayload(
   const userScope = await scanScope(process.env.HOME ?? '');
 
   const payload: Record<string, unknown> = {
-    agent_type: tool,
+    agent_type: normalizeAgentType(tool),
     agent_version: await getAgentVersion(tool),
     local_agent_id: resolveLocalAgentId(context),
     host_name: os.hostname(),
@@ -712,7 +713,7 @@ export async function buildReportPayload(
       {
         path: workspacePath,
         name: path.basename(workspacePath),
-        ide_type: tool,
+        ide_type: normalizeAgentType(tool),
         group_id: binding?.groupId,
         skills: wsScope.skills,
         rules: wsScope.rules,
@@ -730,7 +731,7 @@ async function buildSyncPayload(
   const workspacePath = await resolveWorkspacePath(context.cwd);
   const binding = workspacePath ? config.workspaceBindings[workspacePath] : undefined;
   const payload: Record<string, unknown> = {
-    agent_type: context.tool ?? 'workbuddy',
+    agent_type: normalizeAgentType(context.tool ?? 'workbuddy'),
     local_agent_id: resolveLocalAgentId(context),
     status: context.status ?? 'running',
   };
@@ -739,7 +740,7 @@ async function buildSyncPayload(
       {
         path: workspacePath,
         name: path.basename(workspacePath),
-        ide_type: context.tool ?? 'workbuddy',
+        ide_type: normalizeAgentType(context.tool ?? 'workbuddy'),
         group_id: binding?.groupId,
       },
     ];

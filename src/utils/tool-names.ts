@@ -21,3 +21,14 @@ const IDE_TO_CLI: Record<string, string> = {
 export function normalizeToolName(name: string): string {
   return IDE_TO_CLI[name] ?? name;
 }
+
+const AGENT_TYPE_ALIASES: Record<string, string> = {
+  tcodex: 'codex',
+  'codex-internal': 'codex',
+  tclaude: 'claude',
+  'claude-internal': 'claude',
+};
+
+export function normalizeAgentType(name: string): string {
+  return AGENT_TYPE_ALIASES[name] ?? name;
+}
