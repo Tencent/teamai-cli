@@ -180,6 +180,19 @@ cd /path/to/my-project
 teamai init --repo <group>/TeamAi-<team> --scope project
 ```
 
+**HTTP 模式（只读消费者）：**
+
+无需 git 访问、仅消费 skills/rules 的用户或 agent：
+
+```bash
+teamai init --http https://your-team-host/api --token <api-key>
+```
+
+- 只读模式：`push` / `contribute` / `remove` 不可用。
+- 无需 git clone——skills/rules 通过 report/sync/ack 生命周期按 session 下发。
+- 支持的 agent 在 session 启动时自动上报已安装 skill 状态，并拉取服务端管理的安装/更新/卸载指令。
+- API key 存储为 `0600` 权限，也可通过 `TEAMAI_API_TOKEN` 环境变量传入。
+
 **验证：**
 
 ```bash
@@ -523,6 +536,74 @@ cat ~/.claude/CLAUDE.md
 
 ## 进阶功能
 
+### HTTP 契约（面向后端实现者）
+
+使用 `teamai init --http <baseUrl>` 时，端点需要提供以下接口（`Authorization: Bearer <api-key>` 鉴权）：
+
+| 端点 | 方法 | 用途 |
+|------|------|------|
+| `{baseUrl}/api/local-agent/report` | POST | session 启动：upsert agent + 已装 skill |
+| `{baseUrl}/api/local-agent/sync` | POST | 上报状态 + 返回待执行的 skill 命令 |
+| `{baseUrl}/api/local-agent/commands/ack` | POST | 回执单条命令（`{ id, status, error }`） |
+
+`POST /api/local-agent/sync` 返回待执行命令：
+
+```json
+{
+  "ok": true,
+  "commands": [{ "id": 1, "type": "install_skill", "skill_slug": "x", "skill_version": "1.0.0", "download_url": "https://signed-url/..." }]
+}
+```
+
+可配置环境变量：
+
+| 变量 | 作用 |
+|------|------|
+| `TEAMAI_API_TOKEN` | API key（`--token` 的替代） |
+| `TEAMAI_REPORT_ENDPOINT` | reporter 基础 URL（默认 = `--http` 地址） |
+| `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }`，覆盖三个路径 |
+| `TEAMAI_REPORT_AGENTS` | 参与上报的 agent，逗号分隔（默认 `workbuddy,codebuddy`） |
+| `TEAMAI_SKILL_DOWNLOAD_HOSTS` | skill `download_url` host 白名单（空 = 全部放行） |
+
+> **隐私**：install path 和 machine id 仅在本地哈希以派生 `local_agent_id`，不会上报。
+
+### 代码知识图谱
+
+`teamai import` 将源码仓库解析为结构化知识图谱（存储在团队仓库的 `teamwiki/` 目录下），实现结构感知的知识检索：
+
+```bash
+# 从本地目录提取
+teamai import --dir /path/to/project
+
+# 从远程仓库导入
+teamai import --from-repo https://github.com/org/repo
+
+# 批量导入组织下所有仓库
+teamai import --from-org myorg
+
+# 从白名单批量导入
+teamai import --from-repo-list repos.yaml
+
+# 从已合并的 MR/PR 提取经验
+teamai import --from-mr https://github.com/org/repo/pull/123
+
+# 从 iWiki 导入文档
+teamai import --from-iwiki 12345
+
+# 增量模式（跳过未变更文件）
+teamai import --from-repo https://github.com/org/repo --incremental
+
+# 仅提取结构，跳过 AI 增强
+teamai import --from-repo https://github.com/org/repo --skip-enrich
+```
+
+图谱存储组件、接口、配置和跨仓库依赖关系。`teamai recall` 利用图谱进行 BM25 + graph-boost 增强排名。
+
+```bash
+# 图谱健康检查
+teamai codebase --lint
+```
+
 ### Dashboard
 
 ```bash
@@ -575,6 +656,53 @@ teamai hooks inject    # 重新注入
 teamai hooks remove    # 移除
 ```
 
+### 团队 Hooks 声明
+
+团队可在仓库 `hooks/hooks.yaml` 中声明自定义 hooks，`teamai pull` 自动分发到所有成员的 AI 工具：
+
+```yaml
+hooks:
+  - id: block-secret
+    description: 提交前扫描密钥
+    event: PreToolUse
+    matcher: Bash
+    command: 'bash -lc "~/.teamai/team-scripts/scan-secret.sh" || true'
+    timeout: 15
+    tools: [claude, cursor]
+
+builtin:
+  disabled: [Hook dispatch post-tool-use TodoWrite]
+  overrides:
+    Hook dispatch stop: { timeout: 20 }
+```
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 唯一标识，`^[a-z0-9-]+$` |
+| `event` | Claude PascalCase 事件名（跨工具通用） |
+| `matcher` | 可选，工具 matcher |
+| `tools` | 可选，目标工具列表（默认 = 所有 hook 支持的工具） |
+| `builtin.disabled` | 禁用的内置 hook 列表 |
+| `builtin.overrides` | 仅可覆盖内置 hook 的 `timeout` |
+
+安全治理：
+- `sharing.hooks.autoApply: false`（`teamai.yaml`）：pull 时仅提示，需手动 `teamai hooks inject` 确认
+- `sharing.hooks.requireTeamScripts: true`：拒绝 command 不在 `~/.teamai/team-scripts/` 下的 hook
+- `TEAMAI_HOOKS_DISABLED=1`：本地禁用所有团队 hooks（内置 hooks 不受影响）
+
+### Agents 资源类型
+
+团队仓库可在 `agents/` 目录下维护自定义 subagent 定义（每个 agent 一个 `*.md` 文件）：
+
+```text
+team-repo/
+  agents/
+    code-reviewer.md      # 团队自定义 subagent
+    .removed              # tombstone（由 teamai remove agents <name> 自动管理）
+```
+
+`teamai pull` 会将它们复制到每个 Tier-1 工具的 `agents/` 目录（如 `~/.claude/agents/`）。CLI 内置的 `teamai-recall.md` 与团队 agents 并列部署，但不会被 `teamai push` 上传。
+
 ### 其他
 
 ```bash
@@ -585,6 +713,38 @@ teamai remove skills <name>   # 删除资源
 teamai remove rules <name>
 teamai remove wiki <name>
 ```
+
+自动更新在 Stop hook 中执行，可通过两层控制：
+
+| 层级 | 文件 | 字段 | 值 |
+|------|------|------|------|
+| 团队默认 | `teamai.yaml` | `autoUpdate` | `true`（默认）/ `false` |
+| 用户覆盖 | `~/.teamai/config.yaml` | `updatePolicy` | `auto` / `prompt` / `skip` |
+
+用户级 `updatePolicy` 始终优先于团队级 `autoUpdate`。
+
+### CI 集成
+
+`teamai ci extract-mr` 接入 CI 流水线，从每个 MR/PR 自动提取知识：
+
+```bash
+# 评论模式：以评论形式发布建议（在 PR 打开/更新时运行）
+teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
+
+# 写入模式：合并后将审批通过的建议写入知识库
+teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ./team-repo --individual-comments
+```
+
+工作流程：
+
+1. MR 打开/更新 → CI 触发 `--mode comment`，提取知识建议并发布为 MR 评论
+2. Reviewer 审查评论，对不需要的建议添加拒绝标记（GitHub 👎 / TGit ☝️）
+3. MR 合并 → CI 触发 `--mode write`，将未被拒绝的建议写入团队知识仓库
+
+开箱即用模板：
+
+- `examples/ci/github-actions-mr-extract.yml`（GitHub Actions）
+- `examples/ci/coding-ci-mr-extract.yaml`（Coding CI / TGit）
 
 ### 跨团队 Skill 订阅
 
@@ -605,6 +765,23 @@ teamai source remove other-team
 ```
 
 订阅源的 skills 在 `teamai pull` 时自动同步到本地，与团队自有 skills 共存。配置存储在本地 `config.yaml` 的 `sources` 字段中。
+
+#### HTTP 源
+
+除了 git 订阅源，还可以在已有 git 主仓的基础上附加一个 HTTP 源——适用于服务端管理的 skill 下发：
+
+```bash
+# 附加 HTTP 源（git 主仓不受影响）
+teamai source add-http https://your-team-host/api --token <api-key>
+
+# 查看（在 "HTTP source" 下显示）
+teamai source list
+
+# 解绑并卸载其资源
+teamai source remove-http
+```
+
+HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill 指令。每个安装仅支持一个 HTTP 源。若主仓本身已是 HTTP 模式（`init --http`），则 `add-http` 不可用（主仓已占用 HTTP 配置）。
 
 ---
 
