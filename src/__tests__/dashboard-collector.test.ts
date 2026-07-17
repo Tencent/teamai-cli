@@ -280,6 +280,17 @@ describe('readLastAssistantOutput', () => {
     const output = await readLastAssistantOutput(transcriptPath);
     expect(output).toBe('Valid response');
   });
+
+  it('redacts secrets in the assistant output before returning', async () => {
+    const transcriptPath = path.join(tmpDir, 'secret.jsonl');
+    const text = 'Here is the token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 use it';
+    const line = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+    fs.writeFileSync(transcriptPath, line + '\n');
+
+    const output = await readLastAssistantOutput(transcriptPath);
+    expect(output).not.toContain('ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789');
+    expect(output).toContain('<REDACTED:gh_tok>');
+  });
 });
 
 // ─── JSONL persistence ──────────────────────────────────

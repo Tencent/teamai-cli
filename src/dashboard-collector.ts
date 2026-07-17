@@ -6,6 +6,7 @@ import { deriveSessionId } from './utils/session-id.js';
 import { ensureDir } from './utils/fs.js';
 import { resolveMonitorPid } from './pid-monitor.js';
 import { normalizeToolName } from './utils/tool-names.js';
+import { redactWithEnv } from './utils/redact.js';
 import {
   DASHBOARD_EVENTS_PATH,
   DASHBOARD_EVENTS_DIR,
@@ -103,7 +104,10 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
         }
       }
 
-      return lastAssistantText.slice(0, STOPPED_OUTPUT_MAX_CHARS);
+      // Scrub secrets before this text is persisted to events.jsonl and rendered
+      // in the dashboard. Redact first, then slice, so a placeholder (not a raw
+      // token fragment) is what lands near the length boundary.
+      return redactWithEnv(lastAssistantText).slice(0, STOPPED_OUTPUT_MAX_CHARS);
     } finally {
       await fh.close();
     }
