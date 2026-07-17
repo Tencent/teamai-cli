@@ -5,6 +5,11 @@
 #
 # 使用前请配置：
 #   修改下方 env 中的占位符为你的实际值
+#
+# QCI 内置 MR 变量说明：
+#   当 trigger_type=TRIGGER_MR 时 QCI 自动注入 QCI_MR_IID / QCI_REPO 等变量，
+#   本模板通过 QCI_REPO + QCI_MR_IID 拼接 MR URL。
+#   手动触发时这些变量为空，task 会跳过执行。
 
 version: 2
 
@@ -34,8 +39,13 @@ stages:
         cmds:
         - npm install -g teamai-cli
         - |
+          if [ -z "${QCI_MR_IID}" ]; then
+            echo "⏭ Not an MR trigger (QCI_MR_IID is empty), skipping"
+            exit 0
+          fi
+          MR_URL="${QCI_REPO%.git}/merge_requests/${QCI_MR_IID}"
           teamai ci extract-mr \
-            --url "${CI_MERGE_REQUEST_URL}" \
+            --url "${MR_URL}" \
             --mode comment
 
 # ── MR 合入后：将知识写入团队知识仓库 ─────────────────────
@@ -50,20 +60,24 @@ stages:
       params:
         cmds:
         - npm install -g teamai-cli
+        - |
+          if [ -z "${QCI_MR_IID}" ]; then
+            echo "⏭ Not an MR trigger (QCI_MR_IID is empty), skipping"
+            exit 0
+          fi
         - git clone -b "${TEAMAI_KNOWLEDGE_BRANCH}" "https://oauth2:${TAI_PAT_TOKEN}@git.woa.com/${TEAMAI_KNOWLEDGE_REPO}.git" team-repo
         - |
+          MR_URL="${QCI_REPO%.git}/merge_requests/${QCI_MR_IID}"
           teamai ci extract-mr \
-            --url "${CI_MERGE_REQUEST_URL}" \
+            --url "${MR_URL}" \
             --mode write \
             --team-repo ./team-repo \
             --write-mode direct
         - |
           cd team-repo
-          # git user.name/email 由 teamai ci extract-mr 自动从 token 对应账号获取
-          # 确保 TAI_PAT_TOKEN 对应的账号对知识仓库有 push 权限即可
           git add learnings/ docs/ .teamai/
           git diff --cached --quiet || \
-            git commit -m "[teamai] Extract knowledge from MR !${CI_MERGE_REQUEST_IID}"
+            git commit -m "[teamai] Extract knowledge from MR !${QCI_MR_IID}"
           git push
 
 mr:
