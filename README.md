@@ -47,7 +47,7 @@ teamai init --repo https://github.com/yourorg/yourrepo --scope project
 
 Once initialized, every AI session automatically pulls the latest skills / rules and other Harness updates published by admins — no manual sync needed.
 
-> **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) — covers everything from team creation to day-to-day use.
+> **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — covers everything from team creation to day-to-day use.
 
 ## Harness Management & Distribution
 
