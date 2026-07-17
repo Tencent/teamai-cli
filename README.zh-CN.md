@@ -11,65 +11,144 @@
 [![npm downloads](https://img.shields.io/npm/dm/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[![Discord](https://img.shields.io/discord/1234567890?label=Discord&logo=discord)](https://discord.gg/gervEZm58g)
+[![用户交流](https://img.shields.io/badge/用户交流-Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/gervEZm58g)
+[![开发者交流](https://img.shields.io/badge/开发者交流-Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/DeHHxPnfZF)
 
-💬 **用户讨论：** [Discord](https://discord.gg/gervEZm58g) | 🛠 **开发者交流：** [Discord](https://discord.gg/DeHHxPnfZF)
+面向 AI 智能体的团队 Harness 分发工具。
 
-让每个 AI 编程助手都按同一套标准工作。
+通过 Git 统一管理 skills、rules、docs，驾驭 Claude Code / Codex / CodeBuddy / WorkBuddy 等多种 AI 工具。
 
-通过 Git 统一管理 skills、rules、docs，驾驭 20+ 种 AI 工具——一个人也能用，团队用更强。
+一个人也能用，团队用更强。
 
-**支持：** Claude Code、Codex、Cursor、CodeBuddy IDE，以及 Gemini CLI、Windsurf、Trae、Aider、Amp、OpenClaw 等 20+ 种 AI 编程工具（skills 同步）。
+## 快速开始
 
-> 📖 **完整使用指南**：[docs/usage-guide.md](docs/usage-guide.md) — 涵盖从团队创建到日常使用的全流程。
-
-> 📚 **Provider 说明**：[docs/providers.md](docs/providers.md) — GitHub / TGit 差异与认证配置。
-
-## 安装
+### 安装
 
 ```bash
 npm install -g teamai-cli
-npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com  # 腾讯内部
 ```
 
-前置要求：Node.js 20+。更新：`npm update -g teamai-cli`
+### 团队管理员 / 个人使用者
 
-## 快速开始
+在 Git 托管平台（GitHub 或 TGit）创建共享经验仓库，**授予团队成员写权限**，然后让他们运行 `teamai init --repo https://github.com/yourorg/yourrepo`。
+
+> 个人使用无需单独建仓：`teamai init` 会检查目标仓库，不存在时自动创建。
 
 ### 团队成员
 
 ```bash
 # 用户级初始化（默认，资源安装到 ~/ 下）
-teamai init --repo yourteam/yourproject
+teamai init --repo https://github.com/yourorg/yourrepo
 
 # 项目级初始化（资源安装到项目目录下）
 cd /path/to/my-project
-teamai init --repo yourteam/yourproject --scope project
-
-# 非交互模式（适用于 CI/CD 或 AI 自动化场景）
-teamai init --repo yourteam/yourproject --scope user --role hai_dev --force
+teamai init --repo https://github.com/yourorg/yourrepo --scope project
 ```
 
-### 管理员
+初始化完成后，每次开启 AI 会话时都会自动拉取管理员发布的 skills / rules 等 Harness 更新，无需手动同步。
 
-在 Git 托管平台（GitHub 或 TGit）创建共享经验仓库，授予团队成员写权限，然后让他们运行 `teamai init --repo <org>/<repo>`。
+> **完整使用指南**：[docs/usage-guide.md](docs/usage-guide.md) — 涵盖从团队创建到日常使用的全流程。
 
-CLI 自动根据仓库 URL 选择 provider：
+## Harness 管理和分发
 
-- `yourorg/yourrepo` 或 `https://github.com/yourorg/yourrepo` → GitHub
-- `https://git.woa.com/yourteam/yourrepo` → TGit
+TeamAI 把 skills、rules、docs、hooks 统一存放在共享 Git 仓库，通过「push → 评审合并 → pull」的流程分发到每位成员的本地 AI 工具，并支持订阅其他团队的 Harness。
 
-### 只读消费者（HTTP 模式）
+### 工作原理
 
-仅消费 skills/rules、无需 git 访问的用户：
+```
+teamai push → 创建分支 + MR → reviewer 审批合并
+                                    ↓
+           SessionStart hook → teamai pull → 同步到本地 AI 工具
+```
+
+成员通过 `teamai push` 提交变更并创建合并请求供审核。合并后，`teamai pull`（由 SessionStart hook 在会话启动时自动触发）将最新资源同步到本地。Skills 会同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/` 等目录。
+
+### 团队 Hooks
+
+在 `hooks/hooks.yaml` 中声明自定义 hooks，`teamai pull` 自动分发到所有 AI 工具：
+
+```yaml
+hooks:
+  - id: block-secret
+    description: 提交前扫描密钥
+    event: PreToolUse
+    matcher: Bash
+    command: 'bash -lc "~/.teamai/team-scripts/scan-secret.sh" || true'
+    tools: [claude, cursor]
+```
 
 ```bash
-teamai init --http https://your-team-host/api --token <api-key>
+teamai hooks list      # 查看生效的 hooks
+teamai hooks inject    # 强制重新注入到所有工具
+teamai hooks remove    # 移除所有 teamai 管理的 hooks
 ```
 
-- 只读模式：`push` / `contribute` / `remove` 不可用。
-- 无需 git clone——skills/rules 通过 report/sync/ack 生命周期按 session 下发。
-- 支持的 agent 在 session 启动时自动上报已安装 skill 状态，并拉取服务端管理的安装/更新/卸载指令。
+### 跨团队 Skill 订阅
+
+订阅其他团队的公开 skill 仓库：
+
+```bash
+teamai source add https://github.com/other-team/teamai-public.git --name other-team
+teamai source list
+teamai source browse other-team    # 浏览可用 skills
+teamai source remove other-team
+```
+
+订阅的 skills 在 `teamai pull` 时自动同步。
+
+## 知识库
+
+除了分发 Harness，TeamAI 还把团队沉淀的经验和代码结构组织成可检索的知识库，让 AI 在需要时自动召回。
+
+### 自动经验沉淀
+
+Session 结束时，Stop hook 对 session 价值评分（工具多样性、skill 使用、错误处理、时长）。达标后 AI 会建议：
+
+```
+建议运行 /teamai-share-learnings 总结本次 session 的经验并分享给团队。
+```
+
+`/teamai-share-learnings` skill 自动总结 session 经验并推送到团队仓库。每个 session 最多提示一次。
+
+### 团队知识检索
+
+让 AI 在执行任务前自动检索团队积累的知识。该功能**默认关闭**，需显式开启——团队可在 `teamai.yaml` 设 `sharing.recall.enabled: true` 作为默认值，成员也可本地覆盖：
+
+```bash
+teamai recall enable     # 开启：部署 teamai-recall 子 agent + 注入引导规则
+teamai recall disable    # 关闭：移除子 agent 和规则
+teamai recall status     # 查看生效状态（团队默认 + 用户覆盖）
+```
+
+**通过子 agent 检索**：开启后 `teamai pull` 会把内置的 `teamai-recall` 子 agent 部署到各 AI 工具的 `agents/` 目录。AI 在任务开始前调用它——由子 agent 提取关键词、执行检索、读取命中的源文件，最后返回结构化的团队知识摘要。子 agent 底层调用的仍是 `teamai recall` 命令，也可手动直接运行：
+
+```bash
+$ teamai recall "port conflict"
+[1/2] MR review caught a port-conflict bug ★1 [user]
+Author: member-a | Score: 18.5 | Tags: troubleshooting, networking
+
+[2/2] Deployment configuration best practices [project]
+Author: member-b | Score: 12.0 | Tags: deploy, config
+```
+
+**检索内容覆盖两部分**：
+
+- **共享检索索引**（`search-index.json`）：learnings（session 经验）、docs（团队文档）、rules（编码规则）、skills（各 `SKILL.md`）四类，源自团队仓库对应目录，在 `teamai pull` / `teamai contribute` 时构建重建。
+- **代码知识图谱**（`teamwiki/`）：由 `teamai import` 生成，检索时实时查询。
+
+排序采用 BM25 + 图谱增强，合并用户 / 项目双 scope 结果并标注来源；搜索会隐式为命中文档投票，优质内容自然上浮。
+
+### 代码知识图谱
+
+`teamai import` 将源码仓库解析为 `teamwiki/` 下的结构化图谱，实现结构感知的检索：
+
+```bash
+teamai import --from-repo https://github.com/org/repo
+teamai import --from-org myorg              # 批量导入所有仓库
+teamai codebase --lint                      # 健康检查
+```
+
+图谱存储组件、接口、配置和跨仓库依赖边。`teamai recall` 利用图谱进行增强排名。
 
 ## 命令一览
 
@@ -94,139 +173,6 @@ teamai init --http https://your-team-host/api --token <api-key>
 | `teamai uninstall` | 移除所有 teamai 资源和 hooks |
 
 全局选项：`--dry-run`、`--verbose`
-
-## 工作原理
-
-```
-teamai push → 创建分支 + MR → reviewer 审批合并
-                                    ↓
-           SessionStart hook → teamai pull → 同步到本地 AI 工具
-```
-
-TeamAI 将 skills、rules、docs 和 learnings 存储在共享 Git 仓库中。成员通过 `teamai push` 提交变更并创建合并请求供审核。合并后，`teamai pull`（通过 hooks 在 session 启动时自动触发）将最新资源同步到每位成员的本地 AI 工具。
-
-Skills 同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/` 等目录。
-
-## 角色化 Skills
-
-Skills 按角色命名空间组织。`teamai init` 时选择 `primaryRole` 和可选的 `additionalRoles`，`teamai pull` 仅同步匹配的命名空间。
-
-```yaml
-# ~/.teamai/config.yaml
-primaryRole: hai
-additionalRoles:
-  - pm
-```
-
-以上配置会同步 `skills/common/`、`skills/hai/`、`skills/pm/` 下的所有 skills。
-
-推送时，CLI 自动检测可用命名空间并提示选择（或使用 `teamai push --role pm` 直接指定）。
-
-## 团队知识检索
-
-`teamai recall` 搜索团队积累的知识：
-
-```bash
-$ teamai recall "port conflict"
-[1/2] MR review caught a port-conflict bug ★1 [user]
-Author: member-a | Score: 18.5 | Tags: troubleshooting, networking
-
-[2/2] Deployment configuration best practices [project]
-Author: member-b | Score: 12.0 | Tags: deploy, config
-```
-
-- 中英文混合搜索，BM25 + 图谱增强排名。
-- 双 scope（用户 + 项目）合并结果，标注来源。
-- 隐式投票：搜索自动提升匹配文档权重，优质文档自然上浮。
-
-```bash
-teamai recall enable     # 启用 recall + 部署 subagent
-teamai recall disable    # 禁用 recall + 移除 subagent
-teamai recall status     # 查看生效状态
-```
-
-## 代码知识图谱
-
-`teamai import` 将源码仓库解析为 `teamwiki/` 下的结构化图谱，实现结构感知的检索：
-
-```bash
-teamai import --from-repo https://github.com/org/repo
-teamai import --from-org myorg              # 批量导入所有仓库
-teamai codebase --lint                      # 健康检查
-```
-
-图谱存储组件、接口、配置和跨仓库依赖边。`teamai recall` 利用图谱进行增强排名。
-
-## 自动经验沉淀
-
-Session 结束时，Stop hook 对 session 价值评分（工具多样性、skill 使用、错误处理、时长）。达标后 AI 会建议：
-
-```
-建议运行 /teamai-share-learnings 总结本次 session 的经验并分享给团队。
-```
-
-`/teamai-share-learnings` skill 自动总结 session 经验并推送到团队仓库。每个 session 最多提示一次。
-
-## 团队 Hooks
-
-在 `hooks/hooks.yaml` 中声明自定义 hooks，`teamai pull` 自动分发到所有 AI 工具：
-
-```yaml
-hooks:
-  - id: block-secret
-    description: 提交前扫描密钥
-    event: PreToolUse
-    matcher: Bash
-    command: 'bash -lc "~/.teamai/team-scripts/scan-secret.sh" || true'
-    tools: [claude, cursor]
-```
-
-```bash
-teamai hooks list      # 查看生效的 hooks
-teamai hooks inject    # 强制重新注入到所有工具
-teamai hooks remove    # 移除所有 teamai 管理的 hooks
-```
-
-## 跨团队 Skill 订阅
-
-### Git 源
-
-订阅其他团队的公开 skill 仓库：
-
-```bash
-teamai source add https://github.com/other-team/teamai-public.git --name other-team
-teamai source list
-teamai source browse other-team    # 浏览可用 skills
-teamai source remove other-team
-```
-
-订阅的 skills 在 `teamai pull` 时自动同步。
-
-### HTTP 源
-
-在已有 git 主仓的基础上附加 HTTP 源——适用于服务端管理的 skill 下发，无需修改主仓：
-
-```bash
-teamai source add-http https://your-team-host/api --token <api-key>
-teamai source list            # 在 "HTTP source" 下显示
-teamai source remove-http     # 解绑并卸载其资源
-```
-
-HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill 指令。每个安装仅支持一个 HTTP 源。
-
-## CI 集成
-
-`teamai ci extract-mr` 接入 CI，从每个 MR 自动提取知识：
-
-```bash
-# 以评论形式发布建议（PR 打开/更新时）
-teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
-
-# 合并后写入知识库
-teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ./team-repo
-```
-
-开箱即用模板：`examples/ci/github-actions-mr-extract.yml`（GitHub Actions）、`examples/ci/coding-ci-mr-extract.yaml`（Coding CI）。
 
 ## 许可证
 
