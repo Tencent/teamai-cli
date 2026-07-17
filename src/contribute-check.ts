@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { log } from './utils/logger.js';
 import { readJson, writeJson, ensureDir } from './utils/fs.js';
-import { readEvents } from './dashboard-collector.js';
+import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
 import { readRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
 import type { ContributeState, DashboardEvent } from './types.js';
@@ -15,7 +15,21 @@ import {
   CONTRIBUTE_LOW_QUALITY_BONUS,
   CONTRIBUTE_LOW_QUALITY_THRESHOLD,
   CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT,
+  CONTRIBUTE_INTERRUPT_WEIGHT,
+  CONTRIBUTE_REJECT_WEIGHT,
+  CONTRIBUTE_CORRECTION_WEIGHT,
+  CONTRIBUTE_TOOLERROR_TIERS,
+  CONTRIBUTE_SKILL_BONUS,
+  CONTRIBUTE_DIVERSITY_BONUS_MAX,
 } from './types.js';
+
+/** Friction signals for a session, fed into computeSmartScore. */
+export interface SessionFriction {
+  interrupt: number;
+  toolReject: number;
+  correction: number;
+  toolError: number;
+}
 
 // ─── Contribute check data flow (Stop hook) ────────────────
 //
@@ -155,25 +169,37 @@ export async function cleanupStaleSessions(dir: string, currentSessionId: string
   }
 }
 
+/** Points from the tool-error retry gradient (highest matching tier wins). */
+function toolErrorPoints(toolError: number): number {
+  for (const tier of CONTRIBUTE_TOOLERROR_TIERS) {
+    if (toolError >= tier.min) return tier.points;
+  }
+  return 0;
+}
+
 /**
- * Compute a "contribution value" score for a session based on its events.
+ * Compute a session's FRICTION score — how much the user had to correct the AI
+ * or the AI had to fight its tools. A session is worth documenting because it hit
+ * a real snag, not because it ran a lot of tools.
  *
- * Score components (0-100):
- * - Tool count (gradient): 30→10, 50→15, 80+→20 (max 20)
- * - Tool diversity: unique tool names / total calls × 30 (max 30)
- * - Skill usage: any Skill tool invoked → +15
- * - Error indicators: any error-related events → +15
- * - Session duration: > 30 min → +20
+ * Primary signals (each near-threshold on its own):
+ * - interrupt   × CONTRIBUTE_INTERRUPT_WEIGHT   (user stopped a wrong direction)
+ * - toolReject  × CONTRIBUTE_REJECT_WEIGHT       (user denied a tool call)
+ * - correction  × CONTRIBUTE_CORRECTION_WEIGHT   (re-prompt to course-correct)
+ * - toolError   → CONTRIBUTE_TOOLERROR_TIERS      (AI retried failing tools)
  *
- * A session that used many tools, showed diversity, and lasted a while
- * is very likely worth documenting.
+ * Scale is only a tiny nudge (diversity + skill use, max ~10) and can never
+ * trigger a hint on its own — that is the whole point of the rewrite.
+ *
+ * `friction` is optional so existing callers/tests that pass only events still
+ * compile; without it the score reflects the scale nudge alone (effectively "no
+ * friction detected").
  */
-export function computeSmartScore(events: DashboardEvent[]): number {
+export function computeSmartScore(events: DashboardEvent[], friction?: SessionFriction): number {
   if (events.length === 0) return 0;
 
   const toolNames = new Set<string>();
   let hasSkills = false;
-  let hasErrors = false;
   let totalToolCalls = 0;
 
   for (const event of events) {
@@ -184,55 +210,25 @@ export function computeSmartScore(events: DashboardEvent[]): number {
         hasSkills = true;
       }
     }
-    // Detect error indicators from prompt content
-    if (event.type === 'prompt_submit' && event.promptSummary) {
-      const lower = event.promptSummary.toLowerCase();
-      if (
-        lower.includes('error') ||
-        lower.includes('fix') ||
-        lower.includes('bug') ||
-        lower.includes('fail') ||
-        lower.includes('retry')
-      ) {
-        hasErrors = true;
-      }
-    }
   }
 
   let score = 0;
 
-  // Tool count — gradient (max 25 points)
-  // 20+ calls → 5, scales linearly up to 80+ → 25
-  if (totalToolCalls >= 20) {
-    score += Math.min(25, Math.round(((totalToolCalls - 20) / 60) * 20) + 5);
+  // ── Primary: friction signals ──
+  if (friction) {
+    score += friction.interrupt * CONTRIBUTE_INTERRUPT_WEIGHT;
+    score += friction.toolReject * CONTRIBUTE_REJECT_WEIGHT;
+    score += friction.correction * CONTRIBUTE_CORRECTION_WEIGHT;
+    score += toolErrorPoints(friction.toolError);
   }
 
-  // Tool diversity (max 20 points)
+  // ── Secondary: tiny scale nudge (never triggers alone) ──
+  if (hasSkills) {
+    score += CONTRIBUTE_SKILL_BONUS;
+  }
   if (totalToolCalls > 0) {
     const diversity = toolNames.size / Math.min(totalToolCalls, 10);
-    score += Math.min(Math.round(diversity * 20), 20);
-  }
-
-  // Skill usage (10 points)
-  if (hasSkills) {
-    score += 10;
-  }
-
-  // Error indicators (10 points)
-  if (hasErrors) {
-    score += 10;
-  }
-
-  // Session duration (max 20 points)
-  if (events.length >= 2) {
-    const first = new Date(events[0].timestamp).getTime();
-    const last = new Date(events[events.length - 1].timestamp).getTime();
-    const durationMin = (last - first) / (1000 * 60);
-    if (durationMin > 30) {
-      score += 20;
-    } else if (durationMin > 15) {
-      score += 10;
-    }
+    score += Math.min(Math.round(diversity * CONTRIBUTE_DIVERSITY_BONUS_MAX), CONTRIBUTE_DIVERSITY_BONUS_MAX);
   }
 
   return score;
@@ -329,16 +325,40 @@ function countUniqueTools(events: DashboardEvent[]): number {
   return new Set(events.filter((e) => e.toolName).map((e) => e.toolName)).size;
 }
 
+/**
+ * Extract friction signals for a session from its events.
+ *
+ * - interrupt / toolReject / toolError: from the latest Stop event's interventions
+ *   snapshot (idempotent full total; toolError absent on pre-existing events → 0).
+ * - correction: derived by aggregateSessionMetrics from the stop→prompt_submit
+ *   pattern (not present on any single event), so we reuse it rather than re-scan.
+ */
+function extractFriction(events: DashboardEvent[], sessionId: string): SessionFriction {
+  let interrupt = 0;
+  let toolReject = 0;
+  let toolError = 0;
+  for (const e of events) {
+    if (e.type === 'stop' && e.interventions) {
+      // Latest Stop wins (snapshots are cumulative & idempotent).
+      interrupt = e.interventions.interrupt;
+      toolReject = e.interventions.toolReject;
+      toolError = e.interventions.toolError ?? 0;
+    }
+  }
+  const correction = aggregateSessionMetrics(events).get(sessionId)?.correction ?? 0;
+  return { interrupt, toolReject, correction, toolError };
+}
+
 /** Build the STDOUT hint string from pre-computed display values. */
 function buildHint(totalToolCalls: number, uniqueTools: number, isKnowledgeGap: boolean): string {
   const body = isKnowledgeGap
     ? [
-        `[teamai] 本次 session 涉及知识库尚未覆盖的领域（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
+        `[teamai] 本次 session 涉及知识库尚未覆盖的领域，且过程中经历了多次调整（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
         `建议运行 /teamai-share-learnings 将本次经验总结分享给团队，帮助填补知识库空白。`,
         `下次遇到类似任务时，团队成员将直接受益于您的经验。`,
       ].join('')
     : [
-        `[teamai] 本次 session 内容丰富（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
+        `[teamai] 本次 session 过程中出现了较多纠偏或工具重试，很可能踩到了值得记录的坑（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
         `建议运行 /teamai-share-learnings 总结本次 session 的经验并分享给团队。`,
         `总结文档将保存到团队仓库的 learnings/ 目录。`,
       ].join('');
@@ -428,14 +448,19 @@ export async function contributeCheckForSession(
   } else {
     const allEvents = await readEvents();
     const sessionEvents = allEvents.filter((e) => e.sessionId === sessionId);
-    score = computeSmartScore(sessionEvents);
+    const friction = extractFriction(sessionEvents, sessionId);
+    score = computeSmartScore(sessionEvents, friction);
     toolCount = countToolUseEvents(sessionEvents);
     uniqueTools = countUniqueTools(sessionEvents);
     needsPersist = true;
     if (sessionEvents.length > 0) {
       sessionStartIso = sessionEvents[0].timestamp;
     }
-    log.debug(`contribute-check: session ${sessionId.slice(0, 16)} smart score = ${score} (threshold: ${CONTRIBUTE_SMART_THRESHOLD})`);
+    log.debug(
+      `contribute-check: session ${sessionId.slice(0, 16)} friction score = ${score} `
+      + `(interrupt=${friction.interrupt}, reject=${friction.toolReject}, `
+      + `correction=${friction.correction}, toolError=${friction.toolError}, threshold=${CONTRIBUTE_SMART_THRESHOLD})`,
+    );
   }
 
   // Phase 2: apply knowledge gap + git commit adjustments
@@ -449,7 +474,9 @@ export async function contributeCheckForSession(
     );
   }
 
-  const willHint = score >= CONTRIBUTE_SMART_THRESHOLD;
+  // Hard gate: even a friction-heavy session is not worth documenting if it did
+  // almost no work (e.g. a single rejected command). Requires real activity.
+  const willHint = score >= CONTRIBUTE_SMART_THRESHOLD && toolCount >= CONTRIBUTE_BASE_THRESHOLD;
 
   // Single write: re-read first to avoid clobbering parallel /contribute marks.
   // Skip the write on cache hit + low score (state is already current).

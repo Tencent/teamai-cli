@@ -149,117 +149,88 @@ describe('contributeState', () => {
 
 // ─── computeSmartScore ─────────────────────────────────────
 
-describe('computeSmartScore', () => {
+describe('computeSmartScore (friction model)', () => {
+  const noFriction = { interrupt: 0, toolReject: 0, correction: 0, toolError: 0 };
+
   it('returns 0 for empty events', () => {
     expect(computeSmartScore([])).toBe(0);
   });
 
-  it('scores low for single-tool repetitive session', () => {
-    const events = Array.from({ length: 20 }, () =>
-      makeEvent({ toolName: 'Bash' }),
-    );
-    const score = computeSmartScore(events);
-    expect(score).toBeLessThan(10);
-  });
-
-  it('scores high for diverse session with skills and errors', () => {
+  it('scores low for a large but frictionless session (scale never triggers alone)', () => {
+    // 50 diverse tool calls, no interrupts/rejects/corrections/errors.
     const now = Date.now();
-    const events: DashboardEvent[] = [
-      makeEvent({ toolName: 'Read', timestamp: new Date(now - 40 * 60 * 1000).toISOString() }),
-      makeEvent({ toolName: 'Edit', timestamp: new Date(now - 35 * 60 * 1000).toISOString() }),
-      makeEvent({ toolName: 'Bash', timestamp: new Date(now - 30 * 60 * 1000).toISOString() }),
-      makeEvent({ toolName: 'Skill', timestamp: new Date(now - 25 * 60 * 1000).toISOString() }),
-      makeEvent({ toolName: 'Write', timestamp: new Date(now - 20 * 60 * 1000).toISOString() }),
-      makeEvent({ toolName: 'Grep', timestamp: new Date(now - 15 * 60 * 1000).toISOString() }),
-      makeEvent({ toolName: 'Agent', timestamp: new Date(now - 10 * 60 * 1000).toISOString() }),
-      makeEvent({
-        type: 'prompt_submit',
-        promptSummary: 'fix the build error',
-        timestamp: new Date(now - 5 * 60 * 1000).toISOString(),
-      }),
-      makeEvent({ toolName: 'Edit', timestamp: new Date(now).toISOString() }),
-    ];
-
-    const score = computeSmartScore(events);
-    expect(score).toBeGreaterThanOrEqual(35);
+    const tools = ['Bash', 'Read', 'Edit', 'Grep', 'Write'];
+    const events = Array.from({ length: 50 }, (_, i) =>
+      makeEvent({ toolName: tools[i % 5], timestamp: new Date(now - (50 - i) * 1000).toISOString() }),
+    );
+    const score = computeSmartScore(events, noFriction);
+    // Only the scale nudge (diversity ≤5 + no skill) — must stay well below threshold.
+    expect(score).toBeLessThan(CONTRIBUTE_SMART_THRESHOLD);
+    expect(score).toBeLessThanOrEqual(10);
   });
 
-  it('gives 15 points for skill usage', () => {
-    const base = [
+  it('a single user interrupt lands at/above threshold', () => {
+    const events = [makeEvent({ toolName: 'Bash' })];
+    const score = computeSmartScore(events, { ...noFriction, interrupt: 1 });
+    expect(score).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
+  });
+
+  it('a single tool rejection lands at/above threshold', () => {
+    const events = [makeEvent({ toolName: 'Bash' })];
+    const score = computeSmartScore(events, { ...noFriction, toolReject: 1 });
+    expect(score).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
+  });
+
+  it('a single correction lands at/above threshold', () => {
+    const events = [makeEvent({ toolName: 'Bash' })];
+    const score = computeSmartScore(events, { ...noFriction, correction: 1 });
+    expect(score).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
+  });
+
+  it('tool errors score on a gradient (more struggle → more points)', () => {
+    const events = [makeEvent({ toolName: 'Bash' })];
+    // Baseline scale nudge with no tool errors, to isolate the gradient delta.
+    const base = computeSmartScore(events, noFriction);
+    const s2 = computeSmartScore(events, { ...noFriction, toolError: 2 });
+    const s3 = computeSmartScore(events, { ...noFriction, toolError: 3 });
+    const s5 = computeSmartScore(events, { ...noFriction, toolError: 5 });
+    const s8 = computeSmartScore(events, { ...noFriction, toolError: 8 });
+    expect(s2).toBe(base); // below the first tier → no extra points
+    expect(s3).toBeGreaterThan(s2);
+    expect(s5).toBeGreaterThan(s3);
+    expect(s8).toBeGreaterThan(s5);
+  });
+
+  it('a struggle-heavy session (8+ tool errors + correction) clears threshold', () => {
+    const events = [makeEvent({ toolName: 'Bash' })];
+    const score = computeSmartScore(events, { ...noFriction, toolError: 8, correction: 1 });
+    expect(score).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
+  });
+
+  it('friction accumulates across signal types', () => {
+    const events = [makeEvent({ toolName: 'Bash' })];
+    const score = computeSmartScore(events, { interrupt: 1, toolReject: 1, correction: 1, toolError: 5 });
+    expect(score).toBeGreaterThan(CONTRIBUTE_SMART_THRESHOLD);
+  });
+
+  it('without a friction arg, score reflects only the scale nudge (backward compatible)', () => {
+    const events = [
       makeEvent({ toolName: 'Bash' }),
-      makeEvent({ toolName: 'Read' }),
-    ];
-    const withSkill = [
-      ...base,
       makeEvent({ toolName: 'Skill' }),
     ];
-
-    const scoreBase = computeSmartScore(base);
-    const scoreWithSkill = computeSmartScore(withSkill);
-    expect(scoreWithSkill - scoreBase).toBeGreaterThanOrEqual(10);
-  });
-
-  it('detects error keywords in prompts', () => {
-    const events: DashboardEvent[] = [
-      makeEvent({ toolName: 'Bash' }),
-      makeEvent({
-        type: 'prompt_submit',
-        promptSummary: 'there was an error in the build',
-      }),
-    ];
     const score = computeSmartScore(events);
-    expect(score).toBeGreaterThanOrEqual(15);
-  });
-
-  it('gives 20 points for long sessions', () => {
-    const now = Date.now();
-    const events: DashboardEvent[] = [
-      makeEvent({ toolName: 'Bash', timestamp: new Date(now - 60 * 60 * 1000).toISOString() }),
-      makeEvent({ toolName: 'Bash', timestamp: new Date(now).toISOString() }),
-    ];
-    const score = computeSmartScore(events);
-    expect(score).toBeGreaterThanOrEqual(20);
-  });
-
-  it('gives toolCount gradient points for 30+ calls', () => {
-    const events30 = Array.from({ length: 30 }, () =>
-      makeEvent({ toolName: 'Bash' }),
-    );
-    const score30 = computeSmartScore(events30);
-
-    const events80 = Array.from({ length: 80 }, () =>
-      makeEvent({ toolName: 'Bash' }),
-    );
-    const score80 = computeSmartScore(events80);
-
-    expect(score80).toBeGreaterThan(score30);
-    expect(score30).toBeGreaterThanOrEqual(10);
-  });
-
-  it('typical session (50 calls, 3 tools, 40min) exceeds threshold of 35', () => {
-    const now = Date.now();
-    const events: DashboardEvent[] = [];
-    for (let i = 0; i < 50; i++) {
-      const tools = ['Bash', 'Read', 'Edit'];
-      const minutesAgo = 40 - (i * 40) / 50;
-      events.push(
-        makeEvent({
-          toolName: tools[i % 3],
-          timestamp: new Date(now - minutesAgo * 60 * 1000).toISOString(),
-        }),
-      );
-    }
-
-    const score = computeSmartScore(events);
-    expect(score).toBeGreaterThanOrEqual(35);
+    expect(score).toBeLessThan(CONTRIBUTE_SMART_THRESHOLD);
   });
 });
 
 // ─── contributeCheckForSession (Stop hook integration) ─────
 
 /**
- * Build a high-scoring session worth of events on disk.
- * Score must comfortably clear CONTRIBUTE_SMART_THRESHOLD (35).
+ * Build a high-FRICTION session worth of events on disk.
+ * Score must comfortably clear CONTRIBUTE_SMART_THRESHOLD (35) via friction
+ * signals (a Stop event carrying interventions), not raw tool volume — that is
+ * the point of the friction rewrite. Also seeds enough tool_use events to clear
+ * the toolCount >= CONTRIBUTE_BASE_THRESHOLD hard gate.
  */
 async function seedHighScoreSession(sessionId: string, opts?: { count?: number }): Promise<void> {
   const count = opts?.count ?? 50;
@@ -274,6 +245,14 @@ async function seedHighScoreSession(sessionId: string, opts?: { count?: number }
       timestamp: new Date(now - ((count - i) * 60 * 1000)).toISOString(),
     });
   }
+  // Friction snapshot at Stop: 2 interrupts + 8 tool errors → well above threshold.
+  await appendEvent({
+    type: 'stop',
+    sessionId,
+    tool: 'claude',
+    timestamp: new Date(now).toISOString(),
+    interventions: { interrupt: 2, toolReject: 0, toolError: 8 },
+  });
 }
 
 describe('contributeCheckForSession', () => {

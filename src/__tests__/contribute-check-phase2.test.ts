@@ -171,12 +171,13 @@ describe('buildHint text differentiation', () => {
                 timestamp: new Date(now - ((count - i) * 60 * 1000)).toISOString(),
             });
         }
+        // Friction snapshot at Stop drives the score under the friction model.
         await appendEvent({
-            type: 'prompt_submit',
+            type: 'stop',
             sessionId,
             tool: 'claude',
-            promptSummary: 'fix the error',
-            timestamp: new Date(now - 60 * 1000).toISOString(),
+            timestamp: new Date(now).toISOString(),
+            interventions: { interrupt: 2, toolReject: 0, toolError: 8 },
         });
     }
 
@@ -197,7 +198,7 @@ describe('buildHint text differentiation', () => {
         expect(hint).toContain('知识库尚未覆盖');
     });
 
-    it('hint contains "内容丰富" when recall quality is good (no knowledge gap)', async () => {
+    it('hint uses friction wording when recall quality is good (no knowledge gap)', async () => {
         const sessionId = 'good-recall-hint-session';
         await seedHighScoreSession(sessionId);
         writeRecallCache(tmpDir, sessionId, {
@@ -211,7 +212,7 @@ describe('buildHint text differentiation', () => {
 
         const { hint } = await contributeCheckForSession(sessionId);
         expect(hint).not.toBeNull();
-        expect(hint).toContain('内容丰富');
+        expect(hint).toContain('纠偏或工具重试');
         expect(hint).not.toContain('知识库尚未覆盖');
     });
 });

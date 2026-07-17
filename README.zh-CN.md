@@ -102,7 +102,7 @@ teamai source remove other-team
 
 ### 自动经验沉淀
 
-Session 结束时，Stop hook 对 session 价值评分（工具多样性、skill 使用、错误处理、时长）。达标后 AI 会建议：
+Session 结束时，Stop hook 按**摩擦信号**对 session 评分——这些信号表明本次 session 踩到了值得记录的东西：你打断或纠正了 AI、拒绝了某次工具调用，或 AI 反复重试出错的工具。又长又顺（工具调用很多但没有摩擦）的 session 不会触发；真正较劲过的 session 才会。达标后 AI 会建议：
 
 ```
 建议运行 /teamai-share-learnings 总结本次 session 的经验并分享给团队。

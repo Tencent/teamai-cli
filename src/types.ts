@@ -490,8 +490,12 @@ export interface DashboardEvent {
    * whole session, so a later Stop overrides an earlier one in rebuildSessions.
    * `correction` is NOT derived from the transcript — it is computed in
    * rebuildSessions from the stop→prompt_submit event pattern.
+   *
+   * `toolError` (optional; absent on pre-existing events) counts genuine tool
+   * failures the AI had to retry — a friction signal for contribute scoring. It is
+   * intentionally NOT rolled into SessionMetrics / team stats.
    */
-  interventions?: { interrupt: number; toolReject: number };
+  interventions?: { interrupt: number; toolReject: number; toolError?: number };
   /**
    * Cumulative token usage scanned from the transcript at Stop time. Full snapshot
    * (idempotent): each Stop carries the running total for the whole session, so a
@@ -592,14 +596,18 @@ export const TRANSCRIPT_REJECT_MARKERS = [
 
 // ─── Contribute (session auto-contribute) ────────────
 //
-//  Two-layer threshold detection:
+//  Friction-based threshold detection (a session is worth documenting when the
+//  user had to fight the AI, not merely when it ran a lot of tools):
 //
 //  Layer 1 (fast): toolCount in contribute-state.json
 //      │ < BASE_THRESHOLD → exit early (~1ms per PostToolUse)
 //      ▼
-//  Layer 2 (lazy): read events.jsonl, compute smart score
-//      │ score = f(uniqueTools, hasSkills, hasErrors, duration)
+//  Layer 2 (lazy): read events.jsonl, compute FRICTION score
+//      │ score = f(interrupt, toolReject, correction, toolError) + tiny scale bonus
 //      │ < SMART_THRESHOLD → exit
+//      ▼
+//  Hard gate: toolCount >= BASE_THRESHOLD (a friction-heavy but trivial session
+//             — e.g. one rejected command — is not worth a knowledge-base entry)
 //      ▼
 //  STDOUT hint → AI suggests /contribute to user
 //
@@ -629,11 +637,53 @@ export interface ContributeState {
   isKnowledgeGap?: boolean;
 }
 
-/** Layer 1 (fast-path) threshold: if toolCount < this, skip reading events.jsonl */
+/**
+ * Layer 1 (fast-path) threshold: if toolCount < this, skip reading events.jsonl.
+ * Also doubles as a HARD GATE on hint emission — a session with fewer than this
+ * many tool calls never triggers a hint no matter how much friction it shows
+ * (a one-command session the user rejected is not knowledge-base material).
+ */
 export const CONTRIBUTE_BASE_THRESHOLD = 15;
 
-/** Smart score threshold: minimum score to show contribute hint */
-export const CONTRIBUTE_SMART_THRESHOLD = 35;
+/**
+ * Friction score threshold: minimum score to show contribute hint.
+ *
+ * Calibrated so ONE clear primary friction signal (a single interrupt, rejection,
+ * or correction — each worth CONTRIBUTE_*_WEIGHT = 20) crosses it, while the scale
+ * nudge alone (diversity + skill, max ~10) never can. Combined with the toolCount
+ * hard gate, this fires only on substantive sessions that actually hit friction.
+ */
+export const CONTRIBUTE_SMART_THRESHOLD = 20;
+
+// ─── Friction score weights ──────────────────────────
+//  A session earns points from signals that the user had to correct or the AI
+//  had to fight — not from raw activity. Any single strong signal (one interrupt,
+//  one rejection, one correction) lands near the threshold; scale (tool count /
+//  duration) only nudges and can never trigger on its own.
+
+/** Points per user interrupt (ESC mid-output — the user stopped a wrong direction). */
+export const CONTRIBUTE_INTERRUPT_WEIGHT = 20;
+
+/** Points per tool rejection (user denied a tool call — explicit course block). */
+export const CONTRIBUTE_REJECT_WEIGHT = 20;
+
+/** Points per correction (re-prompt with a correction keyword right after a stop). */
+export const CONTRIBUTE_CORRECTION_WEIGHT = 20;
+
+/**
+ * Tool-error (retry) score gradient: genuine tool failures the AI had to work
+ * around. Keyed by count thresholds → points; the highest matching tier wins.
+ * Distinct from a single fluke error — it takes a few to signal a real struggle.
+ */
+export const CONTRIBUTE_TOOLERROR_TIERS: ReadonlyArray<{ min: number; points: number }> = [
+  { min: 8, points: 25 },
+  { min: 5, points: 18 },
+  { min: 3, points: 10 },
+];
+
+/** Small scale bonus (diversity + skill use) — nudges, never triggers alone. Max ~10. */
+export const CONTRIBUTE_SKILL_BONUS = 5;
+export const CONTRIBUTE_DIVERSITY_BONUS_MAX = 5;
 
 /**
  * Debounce TTL for contribute-check re-evaluation. Within this window the

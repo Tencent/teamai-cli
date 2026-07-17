@@ -121,6 +121,13 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
 export interface TranscriptScanResult {
   interrupt: number;
   toolReject: number;
+  /**
+   * Cumulative count of genuine tool failures (tool_result with is_error=true that
+   * is NOT a user permission rejection). Signals the AI struggled with a tool and
+   * had to retry — a strong "this session hit a real snag" indicator for contribute
+   * scoring. Distinct from toolReject (human deny).
+   */
+  toolError: number;
   tokens: TokenUsage;
   /**
    * Cumulative count of genuine human prompt turns in the transcript. Sourced here
@@ -150,6 +157,7 @@ export async function scanTranscriptStop(
 ): Promise<TranscriptScanResult> {
   let interrupt = 0;
   let toolReject = 0;
+  let toolError = 0;
   let prompts = 0;
   const tokens = emptyTokenUsage();
   // Dedup assistant usage per message (one turn spans many JSONL lines that repeat
@@ -167,10 +175,10 @@ export async function scanTranscriptStop(
 
   try {
     const stat = await fs.promises.stat(transcriptPath);
-    if (stat.size === 0) return { interrupt, toolReject, tokens, prompts };
+    if (stat.size === 0) return { interrupt, toolReject, toolError, tokens, prompts };
     if (stat.size > INTERVENTION_SCAN_MAX_BYTES) {
       log.warn(`dashboard: transcript too large to scan (${stat.size} bytes)`);
-      return { interrupt, toolReject, tokens, prompts };
+      return { interrupt, toolReject, toolError, tokens, prompts };
     }
 
     const rl = readline.createInterface({
@@ -252,6 +260,10 @@ export async function scanTranscriptStop(
               : '';
           if (TRANSCRIPT_REJECT_MARKERS.some((m) => text.includes(m))) {
             toolReject++;
+          } else {
+            // is_error=true but not a permission deny → a genuine tool failure
+            // the AI had to work around (bad args, command error, etc.).
+            toolError++;
           }
         }
       }
@@ -262,7 +274,7 @@ export async function scanTranscriptStop(
     log.warn(`dashboard: failed to scan transcript: ${(e as Error).message}`);
   }
 
-  return { interrupt, toolReject, tokens, prompts };
+  return { interrupt, toolReject, toolError, tokens, prompts };
 }
 
 /**
@@ -309,8 +321,8 @@ async function readCodebuddyIndexOnce(
       ? data.messages.filter((m) => m?.role === 'user').length
       : 0;
 
-    // CodeBuddy transcripts don't expose interrupt / tool-reject markers.
-    return { interrupt: 0, toolReject: 0, tokens, prompts };
+    // CodeBuddy transcripts don't expose interrupt / tool-reject / tool-error markers.
+    return { interrupt: 0, toolReject: 0, toolError: 0, tokens, prompts };
   } catch (e) {
     log.warn(`dashboard: failed to scan CodeBuddy index: ${(e as Error).message}`);
     return null;
@@ -369,9 +381,9 @@ function toNum(v: unknown): number {
  */
 export async function countInterventions(
   transcriptPath: string,
-): Promise<{ interrupt: number; toolReject: number }> {
-  const { interrupt, toolReject } = await scanTranscriptStop(transcriptPath);
-  return { interrupt, toolReject };
+): Promise<{ interrupt: number; toolReject: number; toolError: number }> {
+  const { interrupt, toolReject, toolError } = await scanTranscriptStop(transcriptPath);
+  return { interrupt, toolReject, toolError };
 }
 
 /** True when a prompt looks like a course-correction (vs. a fresh task). */
@@ -479,8 +491,12 @@ export async function parseHookEvent(
     // Full-transcript snapshot of interrupt/tool_reject counts + token usage +
     // human prompt count (all idempotent, sourced from the non-compactable transcript).
     const scan = await scanTranscriptStop(hookData.transcript_path);
-    if (scan.interrupt > 0 || scan.toolReject > 0) {
-      event.interventions = { interrupt: scan.interrupt, toolReject: scan.toolReject };
+    if (scan.interrupt > 0 || scan.toolReject > 0 || scan.toolError > 0) {
+      event.interventions = {
+        interrupt: scan.interrupt,
+        toolReject: scan.toolReject,
+        toolError: scan.toolError,
+      };
     }
     if (scan.tokens.input > 0 || scan.tokens.output > 0
       || scan.tokens.cacheRead > 0 || scan.tokens.cacheCreation > 0) {

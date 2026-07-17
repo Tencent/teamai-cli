@@ -548,11 +548,28 @@ describe('countInterventions', () => {
     expect(iv.interrupt).toBe(0);
   });
 
-  it('does not count ordinary tool errors as rejections', async () => {
+  it('does not count ordinary tool errors as rejections, but counts them as toolError', async () => {
     const p = writeTranscript('t3.jsonl', [TOOL_ERROR_LINE, NORMAL_USER_LINE, ASSISTANT_LINE]);
     const iv = await countInterventions(p);
     expect(iv.toolReject).toBe(0);
     expect(iv.interrupt).toBe(0);
+    expect(iv.toolError).toBe(1);
+  });
+
+  it('counts multiple genuine tool errors (retry struggle signal)', async () => {
+    const p = writeTranscript('t3b.jsonl', [
+      TOOL_ERROR_LINE, ASSISTANT_LINE, TOOL_ERROR_LINE, ASSISTANT_LINE, TOOL_ERROR_LINE,
+    ]);
+    const iv = await countInterventions(p);
+    expect(iv.toolError).toBe(3);
+    expect(iv.toolReject).toBe(0);
+  });
+
+  it('separates rejections from errors in a mixed transcript', async () => {
+    const p = writeTranscript('t3c.jsonl', [REJECT_LINE, TOOL_ERROR_LINE, REJECT_LINE, TOOL_ERROR_LINE]);
+    const iv = await countInterventions(p);
+    expect(iv.toolReject).toBe(2);
+    expect(iv.toolError).toBe(2);
   });
 
   it('counts a mix of interrupts and rejections', async () => {
@@ -564,14 +581,14 @@ describe('countInterventions', () => {
 
   it('returns zeros for nonexistent file', async () => {
     const iv = await countInterventions('/nonexistent/transcript.jsonl');
-    expect(iv).toEqual({ interrupt: 0, toolReject: 0 });
+    expect(iv).toEqual({ interrupt: 0, toolReject: 0, toolError: 0 });
   });
 
   it('returns zeros for empty file', async () => {
     const p = writeTranscript('empty.jsonl', []);
     fs.writeFileSync(p, '');
     const iv = await countInterventions(p);
-    expect(iv).toEqual({ interrupt: 0, toolReject: 0 });
+    expect(iv).toEqual({ interrupt: 0, toolReject: 0, toolError: 0 });
   });
 
   it('skips malformed lines gracefully', async () => {
@@ -594,7 +611,19 @@ describe('parseHookEvent interventions', () => {
       transcript_path: transcriptPath,
     });
     const event = await parseHookEvent(raw, 'claude');
-    expect(event!.interventions).toEqual({ interrupt: 1, toolReject: 1 });
+    expect(event!.interventions).toEqual({ interrupt: 1, toolReject: 1, toolError: 0 });
+  });
+
+  it('attaches toolError-only snapshot when transcript has plain tool failures', async () => {
+    const transcriptPath = path.join(tmpDir, 'stop-toolerror.jsonl');
+    fs.writeFileSync(transcriptPath, [ASSISTANT_LINE, TOOL_ERROR_LINE, TOOL_ERROR_LINE].join('\n') + '\n');
+    const raw = JSON.stringify({
+      hook_event_name: 'Stop',
+      session_id: 'sess-te',
+      transcript_path: transcriptPath,
+    });
+    const event = await parseHookEvent(raw, 'claude');
+    expect(event!.interventions).toEqual({ interrupt: 0, toolReject: 0, toolError: 2 });
   });
 
   it('omits interventions field when transcript has none', async () => {

@@ -102,7 +102,7 @@ Beyond distributing the Harness, TeamAI organizes accumulated team experience an
 
 ### Automatic Experience Sharing
 
-When a session ends, the Stop hook evaluates session value (tool diversity, skill usage, error handling, duration). If the score is high enough, the AI suggests:
+When a session ends, the Stop hook scores it by **friction** — signals that the session hit something worth remembering: you interrupted or corrected the AI, denied a tool call, or the AI had to retry failing tools. A long-but-routine session (lots of tool calls, no friction) does not trigger; a session where you actually fought a problem does. If the score is high enough, the AI suggests:
 
 ```
 建议运行 /teamai-share-learnings 总结本次 session 的经验并分享给团队。
