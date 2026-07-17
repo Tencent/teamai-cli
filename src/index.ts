@@ -106,6 +106,42 @@ skillCmd
     await skillShow(name, { ...globalOpts, ...cmdOpts });
   });
 
+const excludeCmd = skillCmd
+  .command('exclude')
+  .description('Manage per-user skill exclusion (skip sync without affecting team repo)')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { excludeList } = await import('./exclude.js');
+    await excludeList(globalOpts);
+  });
+
+excludeCmd
+  .command('list')
+  .description('List excluded skills')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { excludeList } = await import('./exclude.js');
+    await excludeList(globalOpts);
+  });
+
+excludeCmd
+  .command('add <skills...>')
+  .description('Add skill(s) to the exclude list')
+  .action(async (skills: string[]) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { excludeAdd } = await import('./exclude.js');
+    await excludeAdd(skills, globalOpts);
+  });
+
+excludeCmd
+  .command('remove <skills...>')
+  .description('Remove skill(s) from the exclude list')
+  .action(async (skills: string[]) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { excludeRemove } = await import('./exclude.js');
+    await excludeRemove(skills, globalOpts);
+  });
+
 const membersCmd = program
   .command('members')
   .description('Manage team members')

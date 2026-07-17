@@ -181,6 +181,8 @@ export const LocalConfigSchema = z.object({
   projectRoot: z.string().optional(),
   /** Tags the user has subscribed to. If empty/undefined, pull all resources. */
   subscribedTags: z.array(z.string()).optional(),
+  /** Skills to exclude from local sync (per-user, does not affect team repo). */
+  excludedSkills: z.array(z.string()).optional(),
   /** User-level override for recall feature. When set, takes precedence over team config. */
   recallEnabled: z.boolean().optional(),
   /** When set, only inject hooks into these agents. Additive across multiple init --agent runs. */

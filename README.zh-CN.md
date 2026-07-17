@@ -87,6 +87,7 @@ teamai init --http https://your-team-host/api --token <api-key>
 | `teamai ci extract-mr --url <url>` | CI：从 MR 提取知识、发评论、合并后写入 |
 | `teamai members` | 查看团队成员 |
 | `teamai roles` | 管理团队角色和命名空间 |
+| `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](docs/usage-guide.md#排除个人不需要的-skill)） |
 | `teamai source` | 管理跨团队 skill 订阅 |
 | `teamai remove <type> <name>` | 删除资源并创建 MR |
 | `teamai digest` | 生成团队周报 |

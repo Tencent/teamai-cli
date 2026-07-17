@@ -226,6 +226,28 @@ teamai pull --dry-run    # 试运行，不实际修改
 
 启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/`、`docs/`、`learnings/` 仍然保持原有全局同步逻辑。
 
+### 排除个人不需要的 Skill
+
+如果团队共享的某个 skill 不适合你，可以只在本地将它排除，无需修改团队仓库，也不会影响其他成员：
+
+```bash
+teamai skill exclude add using-superpowers
+teamai pull                    # 从本地 AI 工具中删除
+teamai skill exclude list
+
+teamai skill exclude remove using-superpowers
+teamai pull                    # 重新同步
+```
+
+排除列表保存在当前 user 或 project scope 的 `config.yaml` 中：
+
+```yaml
+excludedSkills:
+  - using-superpowers
+```
+
+排除规则在角色和标签过滤之后生效。执行 `teamai pull` 时，被排除的 skill 不会同步，并且会清理由之前 pull 安装的副本。
+
 ### 推送本地资源
 
 ```bash

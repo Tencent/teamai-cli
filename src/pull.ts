@@ -338,6 +338,7 @@ async function pullForScope(
   // Load tags config for filtering
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
   const subscribedTags = localConfig.subscribedTags;
+  const excludedSkills = new Set(localConfig.excludedSkills ?? []);
 
   // Step 2: Sync each resource type
   const resourceTypes: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'agents'];
@@ -396,6 +397,9 @@ async function pullForScope(
         if (!merged.has(item.name)) merged.set(item.name, item);
       }
       items = [...merged.values()];
+      if (excludedSkills.size > 0) {
+        items = items.filter((item) => !excludedSkills.has(item.name));
+      }
       desiredSkillNames = new Set(items.map((i) => i.name));
       knownRepoSkillNames = new Set(allTeamSkills.map((i) => i.name));
     } else {
@@ -530,6 +534,23 @@ async function pullForScope(
         const skillDir = path.join(skillsDir, dir);
         await remove(skillDir);
         log.debug(`Removed excluded skill ${dir} from ${tool}`);
+      }
+
+      // Old releases could leave namespace-nested copies behind. Pull now
+      // installs skills flat, but remove an excluded nested copy as well.
+      if (excludedSkills.size > 0) {
+        for (const namespace of localDirs) {
+          const namespaceDir = path.join(skillsDir, namespace);
+          // A top-level skill is not a namespace; never traverse into it.
+          if (await pathExists(path.join(namespaceDir, 'SKILL.md'))) continue;
+          for (const skillName of await listDirs(namespaceDir)) {
+            if (!excludedSkills.has(skillName) || BUILTIN_SKILL_NAMES.has(skillName)) continue;
+            const nestedSkillDir = path.join(namespaceDir, skillName);
+            if (!await pathExists(path.join(nestedSkillDir, 'SKILL.md'))) continue;
+            await remove(nestedSkillDir);
+            log.debug(`Removed excluded skill ${namespace}/${skillName} from ${tool}`);
+          }
+        }
       }
     }
   }
