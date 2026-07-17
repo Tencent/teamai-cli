@@ -38,6 +38,7 @@ stages:
       params:
         cmds:
         - npm install -g teamai-cli
+        - teamai init
         - |
           if [ -z "${QCI_MR_IID}" ] || [ "${QCI_MR_IID}" = "None" ]; then
             echo "⏭ Not an MR trigger (QCI_MR_IID is empty), skipping"
@@ -60,6 +61,7 @@ stages:
       params:
         cmds:
         - npm install -g teamai-cli
+        - teamai init
         - |
           if [ -z "${QCI_MR_IID}" ] || [ "${QCI_MR_IID}" = "None" ]; then
             echo "⏭ Not an MR trigger (QCI_MR_IID is empty), skipping"
