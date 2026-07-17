@@ -75,6 +75,8 @@ stages:
           git clone -b "${TEAMAI_KNOWLEDGE_BRANCH}" "https://oauth2:${TAI_PAT_TOKEN}@git.woa.com/${TEAMAI_KNOWLEDGE_REPO}.git" team-repo
           teamai ci extract-mr --url "$MR_URL" --mode write --individual-comments --team-repo ./team-repo --write-mode direct
           cd team-repo
+          git config user.name "teamai-ci"
+          git config user.email "teamai-ci@noreply"
           git add learnings/ docs/ .teamai/ teamwiki/ 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "[teamai] Extract knowledge from MR !${QCI_MR_IID}"
