@@ -47,7 +47,7 @@ teamai init --repo https://github.com/yourorg/yourrepo --scope project
 
 初始化完成后，每次开启 AI 会话时都会自动拉取管理员发布的 skills / rules 等 Harness 更新，无需手动同步。
 
-> **完整使用指南**：[docs/usage-guide.md](docs/usage-guide.md) — 涵盖从团队创建到日常使用的全流程。
+> **完整使用指南**：[docs/usage-guide.zh-CN.md](docs/usage-guide.zh-CN.md)（[English](docs/usage-guide.md)）— 涵盖从团队创建到日常使用的全流程。
 
 ## Harness 管理和分发
 
@@ -166,7 +166,7 @@ teamai codebase --lint                      # 健康检查
 | `teamai ci extract-mr --url <url>` | CI：从 MR 提取知识、发评论、合并后写入 |
 | `teamai members` | 查看团队成员 |
 | `teamai roles` | 管理团队角色和命名空间 |
-| `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](docs/usage-guide.md#排除个人不需要的-skill)） |
+| `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](docs/usage-guide.zh-CN.md#排除个人不需要的-skill)） |
 | `teamai source` | 管理跨团队 skill 订阅 |
 | `teamai remove <type> <name>` | 删除资源并创建 MR |
 | `teamai digest` | 生成团队周报 |

@@ -47,7 +47,7 @@ teamai init --repo https://github.com/yourorg/yourrepo --scope project
 
 Once initialized, every AI session automatically pulls the latest skills / rules and other Harness updates published by admins — no manual sync needed.
 
-> **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) — covers everything from team creation to day-to-day use.
+> **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — covers everything from team creation to day-to-day use.
 
 ## Harness Management & Distribution
 
@@ -166,7 +166,7 @@ The graph stores components, interfaces, configs, and cross-repo import edges. `
 | `teamai ci extract-mr --url <url>` | CI: extract knowledge from MR, post comments, write after merge |
 | `teamai members` | List team members |
 | `teamai roles` | Manage team roles and namespaces |
-| `teamai skill exclude add/remove/list` | Manage skills excluded from local sync ([usage guide](docs/usage-guide.md#排除个人不需要的-skill)) |
+| `teamai skill exclude add/remove/list` | Manage skills excluded from local sync ([usage guide](docs/usage-guide.md#excluding-skills-you-dont-need)) |
 | `teamai source` | Manage cross-team skill subscriptions |
 | `teamai remove <type> <name>` | Remove a resource and open MR |
 | `teamai digest` | Generate weekly team usage digest |

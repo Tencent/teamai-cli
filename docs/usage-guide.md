@@ -1,124 +1,128 @@
-# TeamAI CLI — 团队接入与使用指南
+# TeamAI CLI — Team Onboarding & Usage Guide
 
-> **@tencent/teamai-cli** — 团队 AI 经验共享框架
+> [English](usage-guide.md) | [简体中文](usage-guide.zh-CN.md)
+
+> **teamai-cli** — a shared AI experience framework for teams
 >
-> 帮助团队统一管理和共享 Skills、Rules、Docs、Env 等资源，自动同步到 Claude Code、CodeBuddy、Cursor、Codex、Gemini CLI、Windsurf 等 AI 编程工具中。
+> Helps teams centrally manage and share Skills, Rules, Docs, and Env resources, automatically syncing them to AI coding tools like Claude Code, CodeBuddy, Cursor, Codex, Gemini CLI, and Windsurf.
 
 ---
 
-## 目录
+## Table of Contents
 
-- [核心概念](#核心概念)
-- [安装](#安装)
-- [管理员初始化](#管理员初始化)
-  - [用户级（User Scope）](#用户级user-scope)
-  - [项目级（Project Scope）](#项目级project-scope)
-  - [如何选择 Scope？](#如何选择-scope)
-- [成员接入](#成员接入)
-- [日常使用](#日常使用)
-- [共享团队资源](#共享团队资源)
-- [知识沉淀与检索](#知识沉淀与检索)
-- [团队文化](#团队文化culture)
-- [进阶功能](#进阶功能)
-- [配置文件参考](#配置文件参考)
-- [常见问题 FAQ](#常见问题-faq)
+- [Core Concepts](#core-concepts)
+- [Installation](#installation)
+- [Admin Initialization](#admin-initialization)
+  - [User Scope](#user-scope)
+  - [Project Scope](#project-scope)
+  - [How to Choose a Scope?](#how-to-choose-a-scope)
+- [Member Onboarding](#member-onboarding)
+- [Day-to-Day Use](#day-to-day-use)
+- [Sharing Team Resources](#sharing-team-resources)
+- [Knowledge Capture & Retrieval](#knowledge-capture--retrieval)
+- [Team Culture](#team-culture)
+- [Advanced Features](#advanced-features)
+- [Configuration Reference](#configuration-reference)
+- [Uninstall](#uninstall)
+- [FAQ](#faq)
 
 ---
 
-## 核心概念
+## Core Concepts
 
-| 概念 | 说明 |
+| Concept | Description |
 |------|------|
-| **Team Repo** | 一个 Git 仓库，集中存放团队共享的 Skills / Rules / Docs / Env 资源 |
-| **Scope** | 资源安装位置：`user`（用户主目录，默认）或 `project`（项目目录）|
-| **Skills** | AI 可调用的自定义技能（目录形式，含 `SKILL.md`） |
-| **Rules** | Markdown 格式的团队规范，自动合并到 AI 工具配置中 |
-| **Docs** | 团队共享文档，供 AI 参考 |
-| **Env** | 团队共享环境变量，自动注入 shell |
+| **Team Repo** | A Git repository that centrally stores a team's shared Skills / Rules / Docs / Env resources |
+| **Scope** | Where resources are installed: `user` (home directory, default) or `project` (project directory) |
+| **Skills** | Custom skills the AI can invoke (a directory containing a `SKILL.md`) |
+| **Rules** | Markdown-formatted team conventions, automatically merged into AI tool configs |
+| **Docs** | Shared team documentation for the AI to reference |
+| **Env** | Shared team environment variables, automatically injected into the shell |
 
 ```
 ┌───────────────┐    teamai push (MR)    ┌───────────────────┐
-│  你的本地资源   │ ──────────────────────→ │   Team Repo (Git) │
-│ skills/rules  │                         │ skills/rules/docs │
-└───────────────┘ ←────────────────────── └───────────────────┘
-                     teamai pull (自动)
+│ Your local     │ ──────────────────────→ │   Team Repo (Git) │
+│ resources      │                         │ skills/rules/docs │
+│ skills/rules   │ ←────────────────────── └───────────────────┘
+└───────────────┘     teamai pull (auto)
                            │
                            ▼
                   ┌──────────────────┐
-                  │  AI 工具自动获取   │
+                  │  AI tools fetch   │
+                  │  automatically    │
                   │ Claude / CodeBuddy│
-                  │ Cursor / Codex   │
+                  │ Cursor / Codex    │
                   └──────────────────┘
 ```
 
 ---
 
-## 安装
+## Installation
 
 ```bash
-npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
+npm install -g teamai-cli
 
-# 验证
+# Verify
 teamai --version
 ```
 
-**前置依赖：** Node.js ≥ 18、Git（`gf` CLI 仅 TGit 用户需要，`teamai init` 时会自动安装）
+**Prerequisites:** Node.js ≥ 18, Git (the `gf` CLI is only needed by TGit users, and `teamai init` will install it automatically)
 
 ---
 
-## 管理员初始化
+## Admin Initialization
 
-> 只需一位管理员完成，其他成员跳到[成员接入](#成员接入)。
+> Only one admin needs to do this — other members can skip to [Member Onboarding](#member-onboarding).
 
-在 TGit（腾讯工蜂）上创建一个空仓库（命名建议：`TeamAi-<团队名>`），或者直接执行 `teamai init`，不存在时会提示自动创建。
+Create an empty repository on GitHub or TGit (Tencent's internal Git host) (suggested naming: `TeamAi-<team-name>`), or simply run `teamai init` — if the repo doesn't exist yet, you'll be prompted to create it automatically.
 
-### 用户级（User Scope）
+### User Scope
 
-资源安装到用户主目录（`~/.claude/skills/` 等），适用于通用团队规范、跨项目技能。
+Resources are installed into your home directory (`~/.claude/skills/`, etc.), suited for general team conventions and cross-project skills.
 
 ```bash
-# --scope user 是默认值，可省略
+# --scope user is the default and can be omitted
 teamai init --repo <group>/TeamAi-<team>
 ```
 
-生成的目录结构：
+Resulting directory structure:
 
 ```
 ~/.teamai/
-├── config.yaml          # 本地配置
-├── team-repo/           # 团队仓库克隆
-│   ├── teamai.yaml      # 远端团队配置（scope: user）
+├── config.yaml          # Local config
+├── team-repo/            # Clone of the team repo
+│   ├── teamai.yaml      # Remote team config (scope: user)
 │   ├── skills/ rules/ docs/ env/ members/
-│   ├── manifest/roles.yaml  # 角色定义（启用角色化 skills 时）
-│   └── learnings/       # 团队知识库
-~/.claude/skills/        # 团队 skills（自动同步）
-~/.claude/rules/         # 团队 rules（自动同步）
+│   ├── manifest/roles.yaml  # Role definitions (when role-based skills are enabled)
+│   └── learnings/       # Team knowledge base
+~/.claude/skills/        # Team skills (auto-synced)
+~/.claude/rules/         # Team rules (auto-synced)
 ```
 
-如果仓库启用了角色化 skills（存在 `manifest/roles.yaml`），`teamai init` 还会交互式要求你选择：
+If the repo has role-based skills enabled (i.e. `manifest/roles.yaml` exists), `teamai init` will also interactively ask you to choose:
 
-- `primaryRole`：默认 skill 同步和推送的目标 namespace
-- `additionalRoles`：额外需要同步的 skill namespace
+- `primaryRole`: the target namespace for skill sync and push by default
+- `additionalRoles`: additional skill namespaces to sync
 
-也可以通过 CLI 参数跳过交互，实现完全非交互式初始化（适合 CI/CD 或 AI agent）：
+You can also skip the interactive prompts via CLI flags for a fully non-interactive init (suitable for CI/CD or AI agents):
 
 ```bash
 teamai init --repo <group>/TeamAi-<team> --scope user --role hai_dev --force
 ```
 
-| 参数 | 说明 |
+| Flag | Description |
 |------|------|
-| `--repo <url>` | 团队仓库地址（必填） |
-| `--scope <user\|project>` | 作用域，默认 `user` |
-| `--role <id>` | 直接指定 primaryRole，跳过角色交互选择 |
-| `--force` | 覆盖已有配置，跳过确认提示 |
+| `--repo <url>` | Team repo URL (required) |
+| `--scope <user\|project>` | Scope, defaults to `user` |
+| `--role <id>` | Directly specify the primary role, skipping the interactive role prompt |
+| `--force` | Overwrite existing config, skipping confirmation prompts |
 
-本地配置示例：
+Example local config:
 
 ```yaml
 repo:
   localPath: ~/.teamai/team-repo
-  remote: https://git.woa.com/group/repo.git
+  remote: https://github.com/group/repo.git
 username: alice
 scope: user
 primaryRole: hai
@@ -127,136 +131,136 @@ additionalRoles:
 resourceProfileVersion: 1
 ```
 
-### 项目级（Project Scope）
+### Project Scope
 
-资源安装到项目目录下（`<project>/.claude/skills/` 等），适用于项目特定的技能和规则。
+Resources are installed under the project directory (`<project>/.claude/skills/`, etc.), suited for project-specific skills and rules.
 
 ```bash
 cd /path/to/my-project
 teamai init --repo <group>/TeamAi-<team> --scope project
 ```
 
-生成的目录结构：
+Resulting directory structure:
 
 ```
 /path/to/my-project/
-├── .teamai/                     # 项目级配置（含自动生成的 .gitignore）
+├── .teamai/                     # Project-level config (with an auto-generated .gitignore)
 │   ├── config.yaml
 │   └── team-repo/
-├── .claude/skills/              # 项目级 skills（自动同步）
-├── .claude/rules/               # 项目级 rules（自动同步）
+├── .claude/skills/              # Project-level skills (auto-synced)
+├── .claude/rules/               # Project-level rules (auto-synced)
 └── src/
 ```
 
-### 如何选择 Scope？
+### How to Choose a Scope?
 
-| 维度 | User Scope（默认） | Project Scope |
+| Dimension | User Scope (default) | Project Scope |
 |------|-------------------|---------------|
-| **资源安装位置** | `~/` 下 | 项目目录下 |
-| **适用场景** | 通用团队规范、跨项目技能 | 项目特定的技能和规则 |
-| **能否共存** | ✅ 可以同时拥有两个 scope | ✅ 可以同时拥有两个 scope |
+| **Install location** | Under `~/` | Under the project directory |
+| **Best for** | General team conventions, cross-project skills | Project-specific skills and rules |
+| **Can coexist** | ✅ Yes, both scopes can be active at once | ✅ Yes, both scopes can be active at once |
 
-> **Scope 锁定：** 管理员首次 init 时 scope 写入远端 `teamai.yaml`，后续成员 init 必须使用相同 scope。
+> **Scope lock-in:** When an admin runs `init` for the first time, the scope is written into the remote `teamai.yaml`. All subsequent member `init` runs must use the same scope.
 
 ---
 
-## 成员接入
+## Member Onboarding
 
-管理员将团队仓库地址分享给成员后：
+Once the admin shares the team repo URL with members:
 
-**用户级团队：**
+**User-scoped teams:**
 
 ```bash
-npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
+npm install -g teamai-cli
 teamai init --repo <group>/TeamAi-<team>
-# 完成！AI 工具已自动获得团队资源
+# Done! AI tools now automatically have access to team resources
 ```
 
-**项目级团队：**
+**Project-scoped teams:**
 
 ```bash
-npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
+npm install -g teamai-cli
 cd /path/to/my-project
 teamai init --repo <group>/TeamAi-<team> --scope project
 ```
 
-**HTTP 模式（只读消费者）：**
+**HTTP mode (read-only consumer):**
 
-无需 git 访问、仅消费 skills/rules 的用户或 agent：
+For users or agents that don't need git access and only consume skills/rules:
 
 ```bash
 teamai init --http https://your-team-host/api --token <api-key>
 ```
 
-- 只读模式：`push` / `contribute` / `remove` 不可用。
-- 无需 git clone——skills/rules 通过 report/sync/ack 生命周期按 session 下发。
-- 支持的 agent 在 session 启动时自动上报已安装 skill 状态，并拉取服务端管理的安装/更新/卸载指令。
-- API key 存储为 `0600` 权限，也可通过 `TEAMAI_API_TOKEN` 环境变量传入。
+- Read-only mode: `push` / `contribute` / `remove` are not available.
+- No git clone required — skills/rules are delivered via a report/sync/ack lifecycle on a per-session basis.
+- Supported agents automatically report their installed skill state at session start, and pull install/update/uninstall commands managed by the server.
+- The API key is stored with `0600` permissions, or can be passed via the `TEAMAI_API_TOKEN` environment variable.
 
-**验证：**
+**Verify:**
 
 ```bash
-teamai status                       # 查看状态
-teamai members                      # 查看团队成员
-teamai list                         # 查看团队仓库 + 各 AI agent 已安装的 skills（默认 --source all）
-teamai list --source repo           # 只看团队仓库内容（旧行为）
-teamai list --source local          # 只看每个已安装 agent 下的 skills，按来源标注
-teamai list --agent claude --verbose  # 只看 Claude Code 安装的 skills，含描述
+teamai status                       # View status
+teamai members                      # View team members
+teamai list                         # View team repo + skills installed by each AI agent (default --source all)
+teamai list --source repo           # Only view team repo contents (legacy behavior)
+teamai list --source local          # Only view skills under each installed agent, labeled by source
+teamai list --agent claude --verbose  # Only view skills installed by Claude Code, with descriptions
 
-teamai skill                        # 列出所有 skill（等价于 teamai list skills --source all）
-teamai skill show hai-deploy-test   # 看单个 skill 的来源 / 贡献者 / 安装位置 / 描述摘要
+teamai skill                        # List all skills (equivalent to teamai list skills --source all)
+teamai skill show hai-deploy-test   # View a single skill's source / contributor / install locations / description summary
 ```
 
 ---
 
-## 日常使用
+## Day-to-Day Use
 
-### 自动同步
+### Auto-sync
 
-`teamai init` 时已注入 Hooks 到你的 AI 工具中。**每次启动 AI 会话时会自动执行 `teamai pull`**，无需手动操作。
+`teamai init` already injected Hooks into your AI tools. **`teamai pull` runs automatically every time you start an AI session** — no manual action needed.
 
-如果需要立即同步，可以手动执行：
+If you need to sync immediately, you can run it manually:
 
 ```bash
-teamai pull              # 手动拉取
-teamai pull --dry-run    # 试运行，不实际修改
+teamai pull              # Manual pull
+teamai pull --dry-run    # Dry run, no actual changes
 ```
 
-> 如果你同时有 user 和 project scope，`pull` 会依次拉取两个 scope 的资源，互不冲突。
+> If you have both a user scope and a project scope, `pull` will pull resources for both scopes in sequence, without conflicts.
 
-启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/`、`docs/`、`learnings/` 仍然保持原有全局同步逻辑。
+With role-based skills enabled, `pull`'s skill sync source becomes the contents of `skills/<namespace>/`, expanded according to `primaryRole + additionalRoles` and flattened into each local AI tool's skills directory. `rules/`, `docs/`, and `learnings/` keep their original global sync behavior.
 
-### 排除个人不需要的 Skill
+### Excluding skills you don't need
 
-如果团队共享的某个 skill 不适合你，可以只在本地将它排除，无需修改团队仓库，也不会影响其他成员：
+If a skill shared by the team doesn't suit you, you can exclude it locally only — no need to modify the team repo, and it won't affect other members:
 
 ```bash
 teamai skill exclude add using-superpowers
-teamai pull                    # 从本地 AI 工具中删除
+teamai pull                    # Remove it from local AI tools
 teamai skill exclude list
 
 teamai skill exclude remove using-superpowers
-teamai pull                    # 重新同步
+teamai pull                    # Re-sync
 ```
 
-排除列表保存在当前 user 或 project scope 的 `config.yaml` 中：
+The exclusion list is stored in the `config.yaml` of the current user or project scope:
 
 ```yaml
 excludedSkills:
   - using-superpowers
 ```
 
-排除规则在角色和标签过滤之后生效。执行 `teamai pull` 时，被排除的 skill 不会同步，并且会清理由之前 pull 安装的副本。
+Exclusion rules take effect after role and tag filtering. When running `teamai pull`, excluded skills are not synced, and any copies previously installed by `pull` are cleaned up.
 
-### 推送本地资源
+### Push local resources
 
 ```bash
-teamai push          # 扫描新增/修改的资源，创建 MR
-teamai push --all    # 跳过确认，直接推送
-teamai push --role pm  # 将本次 skill 推送到 skills/pm/<skill-name>/
+teamai push          # Scan for new/modified resources, create an MR
+teamai push --all    # Skip confirmation, push directly
+teamai push --role pm  # Push this skill to skills/pm/<skill-name>/
 ```
 
-**命名空间选择（新 skill）：** 推送新 skill 时，CLI 会自动检测可用的命名空间并提供交互式选择：
+**Namespace selection (new skills):** When pushing a new skill, the CLI automatically detects available namespaces and offers an interactive choice:
 
 ```
 Which namespace should new skills be pushed to?
@@ -266,189 +270,189 @@ Which namespace should new skills be pushed to?
 Choose namespace [1-3] (default: 1 = common):
 ```
 
-- 有 `primaryRole` 时，从 manifest 展开可用 namespace 列表
-- 无 `primaryRole` 时，自动扫描团队仓库目录结构
-- 单一命名空间时自动选中；`--silent` 模式使用默认值
-- 修改已有 skill 时自动保持原 namespace
+- If `primaryRole` is set, the list of available namespaces is expanded from the manifest
+- If `primaryRole` is not set, the team repo's directory structure is scanned automatically
+- A single namespace is auto-selected; `--silent` mode uses the default
+- Modifying an existing skill automatically keeps its original namespace
 
-**YAML Frontmatter 自动补全：** 推送时 CLI 自动检查 `SKILL.md`，缺少 `name`/`description` 则自动补全，无需手动维护。
+**Automatic YAML frontmatter completion:** When pushing, the CLI automatically checks `SKILL.md` and fills in `name`/`description` if missing — no manual upkeep required.
 
-### 查看状态
+### Check status
 
 ```bash
-teamai status        # 当前 scope、同步时间、资源统计
+teamai status        # Current scope, last sync time, resource stats
 ```
 
-### 角色管理
+### Role management
 
-角色（Roles）控制每个成员看到哪些 skills。管理员通过 `manifest/roles.yaml` 定义角色，成员选择自己的角色后，pull 只同步对应 namespace 的 skills。
+Roles control which skills each member sees. Admins define roles via `manifest/roles.yaml`; once a member selects their role, `pull` only syncs skills from the matching namespace.
 
-**管理员操作：**
+**Admin operations:**
 
 ```bash
-# 初始化（交互式创建 manifest）
+# Initialize (interactively create the manifest)
 teamai roles init
 
-# 添加角色
-teamai roles add devops --namespaces common,infra -d "基础设施团队"
+# Add a role
+teamai roles add devops --namespaces common,infra -d "Infrastructure team"
 
-# 修改角色（增删 namespace、改描述）
+# Update a role (add/remove namespaces, change description)
 teamai roles update hai --add-namespaces infra
-teamai roles update hai --remove-namespaces legacy -d "新描述"
+teamai roles update hai --remove-namespaces legacy -d "New description"
 
-# 删除角色
+# Remove a role
 teamai roles remove devops
 
-# 预览变更
+# Preview changes
 teamai roles add test --namespaces common,test --dry-run
 ```
 
-以上命令会自动 push 分支并创建 MR，合并后对全团队生效。
+The commands above automatically push a branch and create an MR; the change takes effect team-wide once merged.
 
-**成员操作：**
+**Member operations:**
 
 ```bash
-# 查看可选角色
+# View available roles
 teamai roles list
 
-# 选择自己的角色
+# Choose your own role
 teamai roles set hai
-teamai roles set hai --add pm    # 主角色 hai + 额外角色 pm
+teamai roles set hai --add pm    # Primary role hai + additional role pm
 
-# 同步新角色的资源
+# Sync resources for the new role
 teamai pull
 ```
 
-> **安全降级：** 如果管理员删除了某个角色，仍然配置了该角色的成员在 pull 时不会报错，而是回退到全量同步并输出警告，提示重新选择角色。
+> **Safe degradation:** If an admin removes a role that a member is still configured with, `pull` won't error out — it falls back to a full sync and prints a warning prompting the member to choose a new role.
 
 ---
 
-## 共享团队资源
+## Sharing Team Resources
 
-### Skills（技能）
+### Skills
 
 ```bash
-# 创建 skill
+# Create a skill
 mkdir -p ~/.claude/skills/my-deploy-helper
 cat > ~/.claude/skills/my-deploy-helper/SKILL.md << 'EOF'
 # Deploy Helper
-当用户请求部署时，按以下步骤执行：
-1. 检查当前分支是否为 master
-2. 运行测试 `npm test`
-3. 构建 `npm run build`
-4. 部署 `./deploy.sh`
+When the user requests a deployment, follow these steps:
+1. Check that the current branch is master
+2. Run tests `npm test`
+3. Build `npm run build`
+4. Deploy `./deploy.sh`
 EOF
 
-# 推送到团队（YAML frontmatter 会自动补全）
+# Push to the team (YAML frontmatter is auto-completed)
 teamai push
 
-# 推送到指定角色 namespace
+# Push to a specific role namespace
 teamai push --role pm
 ```
 
-> **Frontmatter 自动补全：** 推送时 CLI 会检查 `SKILL.md` 的 YAML frontmatter（`name`/`description`），缺失则自动从目录名和内容中推导并补全。你也可以手动添加更精确的 frontmatter：
+> **Frontmatter auto-completion:** When pushing, the CLI checks the `SKILL.md` YAML frontmatter (`name`/`description`) and, if missing, derives and fills it in automatically from the directory name and content. You can also add more precise frontmatter yourself:
 >
 > ```yaml
 > ---
 > name: my-deploy-helper
-> description: 帮助团队部署服务的自动化技能
+> description: Automated skill for helping the team deploy services
 > tags: [deploy, automation]
 > ---
 > ```
 
-启用角色化 skills 后，push 的目标目录为：
+With role-based skills enabled, the push target directory becomes:
 
-- 默认：`skills/<primaryRole>/<skill-name>/`
-- 显式覆盖：`skills/<role>/<skill-name>/`（通过 `--role`）
+- Default: `skills/<primaryRole>/<skill-name>/`
+- Explicit override: `skills/<role>/<skill-name>/` (via `--role`)
 
-### Rules（规则）
+### Rules
 
 ```bash
-# 创建 rule
+# Create a rule
 cat > ~/.claude/rules/code-review-guide.md << 'EOF'
-# 代码审查规范
-- 所有函数必须有 JSDoc 注释
-- 禁止使用 `any` 类型
-- 测试覆盖率不低于 80%
+# Code Review Guidelines
+- All functions must have JSDoc comments
+- `any` type is not allowed
+- Test coverage must be at least 80%
 EOF
 
-# 推送
+# Push
 teamai push
 ```
 
-> 管理员可在 `teamai.yaml` 中设置强制规则（`sharing.rules.enforced`），成员不可删除。
+> Admins can set enforced rules in `teamai.yaml` (`sharing.rules.enforced`), which members cannot delete.
 
-### Env（环境变量）
+### Env (environment variables)
 
 ```bash
-teamai env add API_ENDPOINT https://api.example.com --description "团队 API 地址"
+teamai env add API_ENDPOINT https://api.example.com --description "Team API endpoint"
 teamai env list
 teamai push
 ```
 
-### Docs（文档）
+### Docs
 
-将文档放入团队仓库 `docs/` 目录，push 后团队成员 pull 时自动同步。
+Place documentation in the team repo's `docs/` directory; after pushing, team members will automatically receive it on their next `pull`.
 
 ---
 
-## 知识沉淀与检索
+## Knowledge Capture & Retrieval
 
-### 贡献知识
+### Contributing knowledge
 
-AI 通过 Hooks 追踪你的编码会话。当会话结束时（Stop hook），系统会对本次会话进行智能评分（工具调用多样性、skill 使用、错误修复等），达标后会自动提醒：
+The AI tracks your coding sessions via Hooks. When a session ends (the Stop hook), the system runs an intelligent score on the session (tool-call diversity, skill usage, error fixes, etc.), and if it qualifies, automatically reminds you:
 
 ```
-建议运行 /teamai-share-learnings 分享经验
+Recommend running /teamai-share-learnings to share your learnings
 ```
 
-使用内置 skill `/teamai-share-learnings`，AI 会自动总结本次 session 经验并贡献到团队知识库。每个 session 最多提示一次。
+Using the built-in `/teamai-share-learnings` skill, the AI will automatically summarize the session's learnings and contribute them to the team knowledge base. Each session is prompted at most once.
 
-也可以手动指定文件：
+You can also specify a file manually:
 
 ```bash
 teamai contribute --file /tmp/session.md
 teamai contribute --file /tmp/session.md --scope project
 ```
 
-### 搜索知识
+### Searching knowledge
 
 ```bash
-teamai recall "API 超时"
-teamai recall "GPU 内存不足"
+teamai recall "API timeout"
+teamai recall "GPU out of memory"
 ```
 
-- 支持中英文混合搜索
-- 自动合并 user + project 双 scope 的知识库，结果标注 `[user]`/`[project]` 来源
-- 被查阅的知识自动 upvote，好文档浮到顶部
+- Supports mixed-language search
+- Automatically merges the knowledge bases of both user + project scope, labeling results `[user]`/`[project]` by source
+- Consulted knowledge is automatically upvoted, surfacing high-quality docs to the top
 
-### 开启 / 关闭 Recall
+### Enabling / Disabling Recall
 
-Recall 功能通过两级配置控制——管理员设置团队默认值，成员可在本地覆盖：
+The Recall feature is controlled by a two-tier configuration — admins set the team default, and members can override it locally:
 
-| 层级 | 配置文件 | 字段 | 说明 |
+| Tier | Config file | Field | Description |
 |------|----------|------|------|
-| 团队默认 | `teamai.yaml` | `sharing.recall.enabled` | `true` / `false`（默认 `false`） |
-| 用户覆盖 | `~/.teamai/config.yaml` | `recallEnabled` | `true` / `false`，优先级高于团队默认 |
-| 环境变量 | shell | `TEAMAI_RECALL_DISABLED=1` | 强制禁用所有 recall hooks（应急开关） |
+| Team default | `teamai.yaml` | `sharing.recall.enabled` | `true` / `false` (default `false`) |
+| User override | `~/.teamai/config.yaml` | `recallEnabled` | `true` / `false`, takes priority over the team default |
+| Environment variable | shell | `TEAMAI_RECALL_DISABLED=1` | Force-disables all recall hooks (emergency kill switch) |
 
 ```bash
-teamai recall enable     # 开启 recall，部署 subagent 和 rules
-teamai recall disable    # 关闭 recall，移除 subagent 和 rules
-teamai recall status     # 查看当前生效状态（团队默认 + 用户覆盖）
+teamai recall enable     # Enable recall, deploy the subagent and rules
+teamai recall disable    # Disable recall, remove the subagent and rules
+teamai recall status     # View the current effective status (team default + user override)
 ```
 
-关闭后，`teamai pull` 将跳过部署 recall subagent、recall rules 注入块和 TodoWrite 提醒 hook。手动执行 `teamai recall <query>` 搜索不受此开关影响。
+When disabled, `teamai pull` skips deploying the recall subagent, the recall rules injection block, and the TodoWrite reminder hook. Manually running `teamai recall <query>` to search is not affected by this switch.
 
 ---
 
-## 团队文化（Culture）
+## Team Culture
 
-TeamAI 支持将团队文化注入到 AI 工具中，让 AI 编码助手在每次会话中都能感知你的团队文化、价值观和编码准则。
+TeamAI supports injecting your team's culture into AI tools, so your AI coding assistant is aware of your team's culture, values, and coding standards in every session.
 
-### 创建 culture.md
+### Creating culture.md
 
-管理员在团队仓库根目录创建 `culture.md` 文件：
+The admin creates a `culture.md` file at the root of the team repo:
 
 ```markdown
 ---
@@ -468,68 +472,68 @@ team:
     - Improve test coverage to 90%
 ---
 
-## 编码准则
+## Coding Standards
 
-- 所有 PR 必须有至少一个 reviewer 审批
-- 禁止直接 push master
-- 测试覆盖率不低于 80%
+- All PRs must have at least one reviewer approval
+- Direct pushes to master are prohibited
+- Test coverage must be at least 80%
 
-## 协作规范
+## Collaboration Norms
 
-- 使用 conventional commits 格式
-- PR 描述必须包含 ## Summary 和 ## Test Plan
-- 重大变更需要先写设计文档
+- Use conventional commits format
+- PR descriptions must include ## Summary and ## Test Plan
+- Major changes require a design doc first
 ```
 
-### frontmatter 字段
+### Frontmatter fields
 
-| 字段 | 类型 | 说明 |
+| Field | Type | Description |
 |------|------|------|
-| `company.name` | string (必填) | 公司名称 |
-| `company.mission` | string | 公司使命 |
-| `company.vision` | string | 公司愿景 |
-| `company.values` | string[] | 公司核心价值观 |
-| `team.name` | string (必填) | 团队名称 |
-| `team.mission` | string | 团队使命 |
-| `team.goals` | string[] | 团队目标 |
+| `company.name` | string (required) | Company name |
+| `company.mission` | string | Company mission |
+| `company.vision` | string | Company vision |
+| `company.values` | string[] | Company core values |
+| `team.name` | string (required) | Team name |
+| `team.mission` | string | Team mission |
+| `team.goals` | string[] | Team goals |
 
-frontmatter 之后的 markdown body 部分会作为团队文化指引的正文内容，整体注入到 CLAUDE.md 中。
+The markdown body after the frontmatter becomes the body content of the team culture guidance, injected as a whole into `CLAUDE.md`.
 
-### 工作原理
+### How it works
 
 ```
-团队仓库
-├── culture.md          ← 管理员维护
+Team repo
+├── culture.md          ← Maintained by admin
 ├── skills/
 ├── rules/
 └── ...
 
 teamai pull
     │
-    ▼  解析 culture.md
-    │  ├─ frontmatter → 结构化公司/团队信息
-    │  └─ body → 团队文化指引正文
+    ▼  Parse culture.md
+    │  ├─ frontmatter → structured company/team info
+    │  └─ body → team culture guidance body
     │
-    ▼  编译为 CLAUDE.md 注入块
+    ▼  Compile into a CLAUDE.md injection block
     │
-    ▼  注入到各 AI 工具的 CLAUDE.md
+    ▼  Inject into each AI tool's CLAUDE.md
        ├─ ~/.claude/CLAUDE.md
        ├─ ~/.cursor/CLAUDE.md
        └─ ...
 ```
 
-注入的内容位于 `<!-- [teamai:culture:start] -->` 和 `<!-- [teamai:culture:end] -->` 标记之间，每次 pull 时自动更新，不会影响文件中的其他内容。
+The injected content sits between the `<!-- [teamai:culture:start] -->` and `<!-- [teamai:culture:end] -->` markers, is automatically updated on every `pull`, and does not affect any other content in the file.
 
-### 查看效果
+### Viewing the result
 
-pull 后可以直接查看 AI 工具的 CLAUDE.md：
+After pulling, you can view the AI tool's CLAUDE.md directly:
 
 ```bash
 teamai pull
 cat ~/.claude/CLAUDE.md
 ```
 
-你会看到类似这样的注入块：
+You'll see an injection block like this:
 
 ```markdown
 <!-- [teamai:culture:start] -->
@@ -548,27 +552,27 @@ cat ~/.claude/CLAUDE.md
 - Ship v2.0 by Q2
 - Improve test coverage to 90%
 
-## 编码准则
-- 所有 PR 必须有至少一个 reviewer 审批
+## Coding Standards
+- All PRs must have at least one reviewer approval
 ...
 <!-- [teamai:culture:end] -->
 ```
 
 ---
 
-## 进阶功能
+## Advanced Features
 
-### HTTP 契约（面向后端实现者）
+### HTTP Contract (for backend implementers)
 
-使用 `teamai init --http <baseUrl>` 时，端点需要提供以下接口（`Authorization: Bearer <api-key>` 鉴权）：
+When using `teamai init --http <baseUrl>`, the endpoint must implement the following APIs (authenticated via `Authorization: Bearer <api-key>`):
 
-| 端点 | 方法 | 用途 |
+| Endpoint | Method | Purpose |
 |------|------|------|
-| `{baseUrl}/api/local-agent/report` | POST | session 启动：upsert agent + 已装 skill |
-| `{baseUrl}/api/local-agent/sync` | POST | 上报状态 + 返回待执行的 skill 命令 |
-| `{baseUrl}/api/local-agent/commands/ack` | POST | 回执单条命令（`{ id, status, error }`） |
+| `{baseUrl}/api/local-agent/report` | POST | Session start: upsert agent + installed skills |
+| `{baseUrl}/api/local-agent/sync` | POST | Report status + return pending skill commands |
+| `{baseUrl}/api/local-agent/commands/ack` | POST | Acknowledge a single command (`{ id, status, error }`) |
 
-`POST /api/local-agent/sync` 返回待执行命令：
+`POST /api/local-agent/sync` returns pending commands:
 
 ```json
 {
@@ -577,115 +581,115 @@ cat ~/.claude/CLAUDE.md
 }
 ```
 
-可配置环境变量：
+Configurable environment variables:
 
-| 变量 | 作用 |
+| Variable | Purpose |
 |------|------|
-| `TEAMAI_API_TOKEN` | API key（`--token` 的替代） |
-| `TEAMAI_REPORT_ENDPOINT` | reporter 基础 URL（默认 = `--http` 地址） |
-| `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }`，覆盖三个路径 |
-| `TEAMAI_REPORT_AGENTS` | 参与上报的 agent，逗号分隔（默认 `workbuddy,codebuddy`） |
-| `TEAMAI_SKILL_DOWNLOAD_HOSTS` | skill `download_url` host 白名单（空 = 全部放行） |
+| `TEAMAI_API_TOKEN` | API key (alternative to `--token`) |
+| `TEAMAI_REPORT_ENDPOINT` | Reporter base URL (defaults to the `--http` address) |
+| `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }`, overrides the three paths |
+| `TEAMAI_REPORT_AGENTS` | Comma-separated list of agents that report (default `workbuddy,codebuddy`) |
+| `TEAMAI_SKILL_DOWNLOAD_HOSTS` | Allowlist of hosts for skill `download_url` (empty = allow all) |
 
-> **隐私**：install path 和 machine id 仅在本地哈希以派生 `local_agent_id`，不会上报。
+> **Privacy:** The install path and machine id are only hashed locally to derive `local_agent_id` — they are never reported.
 
-### 代码知识图谱
+### Codebase Knowledge Graph
 
-`teamai import` 将源码仓库解析为结构化知识图谱（存储在团队仓库的 `teamwiki/` 目录下），实现结构感知的知识检索：
+`teamai import` parses a source code repo into a structured knowledge graph (stored under the team repo's `teamwiki/` directory), enabling structure-aware knowledge retrieval:
 
 ```bash
-# 从本地目录提取
+# Extract from a local directory
 teamai import --dir /path/to/project
 
-# 从远程仓库导入
+# Import from a remote repo
 teamai import --from-repo https://github.com/org/repo
 
-# 批量导入组织下所有仓库
+# Bulk-import all repos under an organization
 teamai import --from-org myorg
 
-# 从白名单批量导入
+# Bulk-import from an allowlist
 teamai import --from-repo-list repos.yaml
 
-# 从已合并的 MR/PR 提取经验
+# Extract learnings from a merged MR/PR
 teamai import --from-mr https://github.com/org/repo/pull/123
 
-# 从 iWiki 导入文档
+# Import docs from iWiki
 teamai import --from-iwiki 12345
 
-# 增量模式（跳过未变更文件）
+# Incremental mode (skip unchanged files)
 teamai import --from-repo https://github.com/org/repo --incremental
 
-# 仅提取结构，跳过 AI 增强
+# Extract structure only, skip AI enrichment
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
-图谱存储组件、接口、配置和跨仓库依赖关系。`teamai recall` 利用图谱进行 BM25 + graph-boost 增强排名。
+The graph stores components, interfaces, configs, and cross-repo dependencies. `teamai recall` uses the graph for BM25 + graph-boosted ranking.
 
 ```bash
-# 图谱健康检查
+# Graph health check
 teamai codebase --lint
 ```
 
 ### Dashboard
 
 ```bash
-teamai dashboard             # 启动 Web 面板（默认端口 3721）
+teamai dashboard             # Start the web dashboard (default port 3721)
 teamai dashboard --port 8080
 ```
 
-实时查看团队成员的 AI 编码会话状态。
+View team members' AI coding session status in real time.
 
-#### 人工干预指标（Human Intervention）
+#### Human Intervention Metrics
 
-每个会话卡片会显示一个 `⚠ N` 徽标，统计该对话中用户的**人工干预次数**——干预越少，说明 agent 一次把事做对的能力越强。鼠标悬停可看分类明细，三类信号各计一次：
+Each session card shows a `⚠ N` badge, counting the **number of human interventions** in that conversation — fewer interventions means the agent is better at getting things right on the first try. Hover to see a breakdown; each of the three signal types counts once:
 
-| 类型 | 含义 | 数据来源 |
+| Type | Meaning | Data source |
 |------|------|----------|
-| `interrupt` | 用户在 agent 执行中途按 ESC 打断 | transcript 中被中断的 turn |
-| `toolReject` | 用户拒绝某个工具调用（permission deny） | transcript 中标记拒绝的 tool_result |
-| `correction` | agent stop 后 60s 内用户追加含「不对 / 重来 / 错了 / wrong / redo」等纠偏词的 prompt | stop → prompt_submit 事件模式 |
+| `interrupt` | User pressed ESC to interrupt the agent mid-execution | An interrupted turn in the transcript |
+| `toolReject` | User rejected a tool call (permission deny) | A tool_result marked as rejected in the transcript |
+| `correction` | Within 60s after the agent stops, the user submits a follow-up prompt containing a correction keyword ("not right" / "redo" / "wrong" / etc.) | The stop → prompt_submit event pattern |
 
-> 隐私：只统计**次数**，不落地任何 prompt 或 transcript 原文。
+> Privacy: only counts are tracked — no prompt or transcript text is ever stored.
 
-干预数据会随 `teamai pull` 自动聚合上报到团队 `stats/<user>.yaml`，并在 `teamai digest` 的「会话自主性」榜单中给出团队均值与人均干预率排行，可用于验证某个 skill / rule 上线后干预率是否下降。无 transcript 的工具（如 Cursor）会优雅降级，只统计 `correction`。
+Intervention data is automatically aggregated and reported to the team's `stats/<user>.yaml` during `teamai pull`, and shown in the "Session Autonomy" leaderboard of `teamai digest`, with team averages and per-person intervention rate rankings — useful for verifying whether a skill/rule reduces intervention rates after rollout. Tools without a transcript (e.g. Cursor) degrade gracefully, tracking only `correction`.
 
-#### 对话量与 Token 用量
+#### Conversation Volume & Token Usage
 
-每个会话卡片还会显示两个徽标：
+Each session card also shows two badges:
 
-| 徽标 | 含义 | 数据来源 |
+| Badge | Meaning | Data source |
 |------|------|----------|
-| `💬 N` | 该会话里**人类对话的轮数**（发了几次 prompt） | `UserPromptSubmit` 事件数 |
-| `⛁ X` | 该会话累计 **token 用量**（鼠标悬停看 输入 / 输出 / 缓存读 / 缓存写 明细） | Claude Code transcript 的 `message.usage`（按 `message.id` 去重，避免重复计数） |
+| `💬 N` | The **number of human conversation turns** in the session (how many prompts were sent) | Count of `UserPromptSubmit` events |
+| `⛁ X` | The session's cumulative **token usage** (hover to see input / output / cache read / cache write breakdown) | Claude Code transcript's `message.usage` (deduplicated by `message.id` to avoid double counting) |
 
-> 隐私：只统计**轮数与 token 数量**，不落地任何 prompt 或 transcript 原文。
+> Privacy: only turn counts and token counts are tracked — no prompt or transcript text is ever stored.
 
-这两项同样随 `teamai pull` 聚合到 `stats/<user>.yaml`（`prompts` 与 `tokens` 字段），并在 `teamai digest` 的「对话量与 Token 用量」板块给出团队对话总轮数、token 总量（分桶）与人均 token 用量排行。拿不到 transcript 的工具（如 Cursor）会优雅降级：仍统计对话轮数，token 显示为 0 / N/A。
+These two metrics are likewise aggregated into `stats/<user>.yaml` (as `prompts` and `tokens` fields) during `teamai pull`, and shown in the "Conversation Volume & Token Usage" section of `teamai digest`, with team-wide totals, bucketed token totals, and per-person token usage rankings. Tools without transcript access (e.g. Cursor) degrade gracefully: turn counts are still tracked, while tokens show as 0 / N/A.
 
 ### Hooks
 
-`teamai init` 自动注入的 Hooks：
+Hooks automatically injected by `teamai init`:
 
-| Hook 事件 | 操作 |
+| Hook Event | Action |
 |-----------|------|
-| `SessionStart` | 自动 pull + 上报会话启动 |
-| `PostToolUse` | skill 追踪 + 知识贡献检测 + dashboard 上报 |
-| `UserPromptSubmit` | slash 命令追踪 |
-| `Stop` | CLI 更新检查 + 上报会话结束 |
+| `SessionStart` | Auto pull + report session start |
+| `PostToolUse` | Skill tracking + knowledge contribution detection + dashboard reporting |
+| `UserPromptSubmit` | Slash command tracking |
+| `Stop` | CLI update check + report session end |
 
 ```bash
-teamai hooks inject    # 重新注入
-teamai hooks remove    # 移除
+teamai hooks inject    # Re-inject
+teamai hooks remove    # Remove
 ```
 
-### 团队 Hooks 声明
+### Team Hooks Declaration
 
-团队可在仓库 `hooks/hooks.yaml` 中声明自定义 hooks，`teamai pull` 自动分发到所有成员的 AI 工具：
+A team can declare custom hooks in the repo's `hooks/hooks.yaml`; `teamai pull` automatically distributes them to all members' AI tools:
 
 ```yaml
 hooks:
   - id: block-secret
-    description: 提交前扫描密钥
+    description: Scan for secrets before commit
     event: PreToolUse
     matcher: Bash
     command: 'bash -lc "~/.teamai/team-scripts/scan-secret.sh" || true'
@@ -698,125 +702,125 @@ builtin:
     Hook dispatch stop: { timeout: 20 }
 ```
 
-| 字段 | 说明 |
+| Field | Description |
 |------|------|
-| `id` | 唯一标识，`^[a-z0-9-]+$` |
-| `event` | Claude PascalCase 事件名（跨工具通用） |
-| `matcher` | 可选，工具 matcher |
-| `tools` | 可选，目标工具列表（默认 = 所有 hook 支持的工具） |
-| `builtin.disabled` | 禁用的内置 hook 列表 |
-| `builtin.overrides` | 仅可覆盖内置 hook 的 `timeout` |
+| `id` | Unique identifier, `^[a-z0-9-]+$` |
+| `event` | Claude PascalCase event name (shared across tools) |
+| `matcher` | Optional tool matcher |
+| `tools` | Optional list of target tools (default = all tools that support hooks) |
+| `builtin.disabled` | List of disabled built-in hooks |
+| `builtin.overrides` | Only the `timeout` of a built-in hook can be overridden |
 
-安全治理：
-- `sharing.hooks.autoApply: false`（`teamai.yaml`）：pull 时仅提示，需手动 `teamai hooks inject` 确认
-- `sharing.hooks.requireTeamScripts: true`：拒绝 command 不在 `~/.teamai/team-scripts/` 下的 hook
-- `TEAMAI_HOOKS_DISABLED=1`：本地禁用所有团队 hooks（内置 hooks 不受影响）
+Security governance:
+- `sharing.hooks.autoApply: false` (`teamai.yaml`): on pull, only prompts — requires manually confirming with `teamai hooks inject`
+- `sharing.hooks.requireTeamScripts: true`: rejects any hook whose command isn't under `~/.teamai/team-scripts/`
+- `TEAMAI_HOOKS_DISABLED=1`: disables all team hooks locally (built-in hooks are unaffected)
 
-### Agents 资源类型
+### Agents Resource Type
 
-团队仓库可在 `agents/` 目录下维护自定义 subagent 定义（每个 agent 一个 `*.md` 文件）：
+The team repo can maintain custom subagent definitions under an `agents/` directory (one `*.md` file per agent):
 
 ```text
 team-repo/
   agents/
-    code-reviewer.md      # 团队自定义 subagent
-    .removed              # tombstone（由 teamai remove agents <name> 自动管理）
+    code-reviewer.md      # Team custom subagent
+    .removed              # tombstone (auto-managed by teamai remove agents <name>)
 ```
 
-`teamai pull` 会将它们复制到每个 Tier-1 工具的 `agents/` 目录（如 `~/.claude/agents/`）。CLI 内置的 `teamai-recall.md` 与团队 agents 并列部署，但不会被 `teamai push` 上传。
+`teamai pull` copies these into each Tier-1 tool's `agents/` directory (e.g. `~/.claude/agents/`). The CLI's built-in `teamai-recall.md` is deployed alongside team agents but is not uploaded by `teamai push`.
 
-### 其他
+### Miscellaneous
 
 ```bash
-teamai doctor          # 配置诊断
-teamai stats           # skill 使用统计
-teamai update          # CLI 更新
-teamai remove skills <name>   # 删除资源
+teamai doctor          # Config diagnostics
+teamai stats           # Skill usage stats
+teamai update          # CLI update
+teamai remove skills <name>   # Remove a resource
 teamai remove rules <name>
 teamai remove wiki <name>
 ```
 
-自动更新在 Stop hook 中执行，可通过两层控制：
+Auto-update runs in the Stop hook and is controlled by two tiers:
 
-| 层级 | 文件 | 字段 | 值 |
+| Tier | File | Field | Value |
 |------|------|------|------|
-| 团队默认 | `teamai.yaml` | `autoUpdate` | `true`（默认）/ `false` |
-| 用户覆盖 | `~/.teamai/config.yaml` | `updatePolicy` | `auto` / `prompt` / `skip` |
+| Team default | `teamai.yaml` | `autoUpdate` | `true` (default) / `false` |
+| User override | `~/.teamai/config.yaml` | `updatePolicy` | `auto` / `prompt` / `skip` |
 
-用户级 `updatePolicy` 始终优先于团队级 `autoUpdate`。
+The user-level `updatePolicy` always takes priority over the team-level `autoUpdate`.
 
-### CI 集成
+### CI Integration
 
-`teamai ci extract-mr` 接入 CI 流水线，从每个 MR/PR 自动提取知识：
+`teamai ci extract-mr` plugs into your CI pipeline, automatically extracting knowledge from every MR/PR:
 
 ```bash
-# 评论模式：以评论形式发布建议（在 PR 打开/更新时运行）
+# Comment mode: post suggestions as comments (runs when the MR/PR is opened/updated)
 teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
 
-# 写入模式：合并后将审批通过的建议写入知识库
+# Write mode: after merge, write approved suggestions into the knowledge base
 teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ./team-repo --individual-comments
 ```
 
-工作流程：
+Workflow:
 
-1. MR 打开/更新 → CI 触发 `--mode comment`，提取知识建议并发布为 MR 评论
-2. Reviewer 审查评论，对不需要的建议添加拒绝标记（GitHub 👎 / TGit ☝️）
-3. MR 合并 → CI 触发 `--mode write`，将未被拒绝的建议写入团队知识仓库
+1. MR opened/updated → CI triggers `--mode comment`, extracts knowledge suggestions and posts them as MR comments
+2. Reviewer reviews the comments, marking unwanted suggestions as rejected (GitHub 👎 / TGit ☝️)
+3. MR merged → CI triggers `--mode write`, writing non-rejected suggestions into the team knowledge repo
 
-开箱即用模板：
+Ready-to-use templates:
 
-- `examples/ci/github-actions-mr-extract.yml`（GitHub Actions）
-- `examples/ci/coding-ci-mr-extract.yaml`（Coding CI / TGit）
+- `examples/ci/github-actions-mr-extract.yml` (GitHub Actions)
+- `examples/ci/coding-ci-mr-extract.yaml` (Coding CI / TGit)
 
-### 跨团队 Skill 订阅
+### Cross-Team Skill Subscriptions
 
-`teamai source` 让你订阅其他团队的公共 skill 仓库，pull 时自动获取最新 skills：
+`teamai source` lets you subscribe to other teams' public skill repos, automatically fetching the latest skills on `pull`:
 
 ```bash
-# 添加订阅源
-teamai source add https://git.woa.com/other-team/teamai-public.git --name other-team
+# Add a subscription source
+teamai source add https://github.com/other-team/teamai-public.git --name other-team
 
-# 查看订阅列表
+# List subscriptions
 teamai source list
 
-# 浏览订阅源的 skills
+# Browse a subscription's skills
 teamai source browse other-team
 
-# 移除订阅（同时清理其 skills）
+# Remove a subscription (also cleans up its skills)
 teamai source remove other-team
 ```
 
-订阅源的 skills 在 `teamai pull` 时自动同步到本地，与团队自有 skills 共存。配置存储在本地 `config.yaml` 的 `sources` 字段中。
+A subscription source's skills are automatically synced locally on `teamai pull`, coexisting with the team's own skills. Configuration is stored in the `sources` field of the local `config.yaml`.
 
-#### HTTP 源
+#### HTTP Source
 
-除了 git 订阅源，还可以在已有 git 主仓的基础上附加一个 HTTP 源——适用于服务端管理的 skill 下发：
+In addition to a git subscription source, you can attach an HTTP source on top of an existing git main repo — useful for server-managed skill delivery:
 
 ```bash
-# 附加 HTTP 源（git 主仓不受影响）
+# Attach an HTTP source (the git main repo is unaffected)
 teamai source add-http https://your-team-host/api --token <api-key>
 
-# 查看（在 "HTTP source" 下显示）
+# View it (shown under "HTTP source")
 teamai source list
 
-# 解绑并卸载其资源
+# Detach and uninstall its resources
 teamai source remove-http
 ```
 
-HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill 指令。每个安装仅支持一个 HTTP 源。若主仓本身已是 HTTP 模式（`init --http`），则 `add-http` 不可用（主仓已占用 HTTP 配置）。
+An HTTP source reports status and pulls skill commands via hook dispatch on every session. Only one HTTP source is supported per install. If the main repo is already in HTTP mode (`init --http`), `add-http` is unavailable (the main repo already occupies the HTTP config).
 
 ---
 
-## 配置文件参考
+## Configuration Reference
 
-### teamai.yaml（远端团队配置）
+### teamai.yaml (remote team config)
 
 ```yaml
 team: my-team
-scope: user                              # user 或 project
-description: 团队 AI 资源仓库
-repo: https://git.woa.com/group/repo.git
-provider: tgit
+scope: user                              # user or project
+description: Team AI resource repo
+repo: https://github.com/group/repo.git
+provider: github
 
 reviewers:
   - reviewer1
@@ -830,44 +834,44 @@ sharing:
     injectShellProfile: true
 ```
 
-### config.yaml（本地配置）
+### config.yaml (local config)
 
 ```yaml
 repo:
   localPath: /path/to/.teamai/team-repo
-  remote: https://git.woa.com/group/repo.git
+  remote: https://github.com/group/repo.git
 username: your-name
 updatePolicy: auto
-scope: user                    # 或 project
-projectRoot: /path/to/project  # 仅 project scope
+scope: user                    # or project
+projectRoot: /path/to/project  # project scope only
 ```
 
 ---
 
-## 卸载
+## Uninstall
 
-`teamai uninstall` 会智能清理所有 teamai 管理的资源，**保留用户自建内容**。
+`teamai uninstall` intelligently cleans up all teamai-managed resources, **preserving anything you created yourself**.
 
 ```bash
-# 预览将要移除的内容（不做实际变更）
+# Preview what will be removed (no actual changes)
 teamai uninstall --dry-run
 
-# 交互式确认卸载
+# Interactive confirmation
 teamai uninstall
 
-# 跳过确认直接卸载（适合脚本/CI）
+# Skip confirmation and uninstall directly (for scripts/CI)
 teamai uninstall --force
 ```
 
-移除内容：
-- AI 工具 settings 中的 teamai hooks
-- CLAUDE.md 中的 teamai rules 块（保留用户自写内容）
-- 团队同步的 skills（保留用户自建 skills）
-- 团队同步的 rules
-- Shell profile 中的 env 块
-- `~/.teamai/` 目录
+What gets removed:
+- teamai hooks in AI tool settings
+- The teamai rules block in CLAUDE.md (your own content is preserved)
+- Team-synced skills (your own skills are preserved)
+- Team-synced rules
+- The env block in your shell profile
+- The `~/.teamai/` directory
 
-卸载后如需重新加入：
+To rejoin after uninstalling:
 
 ```bash
 teamai init --repo <group>/TeamAi-<team> --scope user --role <role_id> --force
@@ -876,32 +880,32 @@ teamai pull
 
 ---
 
-## 常见问题 FAQ
+## FAQ
 
-**Q: User scope 和 Project scope 可以共存吗？**
+**Q: Can user scope and project scope coexist?**
 
-可以。`pull` 会依次拉取两个 scope，`recall` 会合并搜索两个 scope 的知识库。两者互不冲突。
+Yes. `pull` pulls both scopes in sequence, and `recall` merges search results across both scopes' knowledge bases. They don't conflict with each other.
 
-**Q: `teamai init` 提示已初始化？**
+**Q: `teamai init` says it's already initialized?**
 
-交互模式下会提示是否覆盖，输入 `y` 即可。也可用 `--force` 跳过确认：
+In interactive mode, you'll be asked whether to overwrite — type `y` to confirm. You can also use `--force` to skip the confirmation:
 
 ```bash
 teamai init --repo <group>/<repo> --force
 ```
 
-**Q: Hooks 没有自动触发？**
+**Q: Hooks aren't firing automatically?**
 
 ```bash
-teamai doctor        # 诊断
-teamai hooks inject  # 重新注入
+teamai doctor        # Diagnose
+teamai hooks inject  # Re-inject
 ```
 
-**Q: push 提示 "no new resources detected"？**
+**Q: `push` says "no new resources detected"?**
 
-`push` 只检测新增或修改的资源。没有变更时无需推送。
+`push` only detects new or modified resources. If nothing changed, there's nothing to push.
 
-**Q: 如何删除已推送的资源？**
+**Q: How do I delete resources that were already pushed?**
 
 ```bash
 teamai remove skills <name>
@@ -910,5 +914,5 @@ teamai remove rules <name>
 
 ---
 
-> **仓库**: https://git.woa.com/teamai/teamai-cli
-> **问题反馈**: 提交 Issue 到仓库
+> **Repo**: https://github.com/Tencent/teamai-cli
+> **Feedback**: file an Issue in the repo
