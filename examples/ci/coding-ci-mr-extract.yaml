@@ -1,17 +1,21 @@
 # TeamAI MR Knowledge Extract — Coding CI (TGit)
 #
-# 在 MR 创建/更新时自动提炼知识建议并以 note 贴到 MR 上；
+# 在 MR 创建/更新时自动提炼知识建议并以 comment 贴到 MR 上；
 # MR 合入后自动将 learning 和 codebase 建议写入团队知识仓库。
 #
 # 使用前请配置：
 #   修改下方 env 中的占位符为你的实际值
-#
-# QCI 内置 MR 变量说明：
-#   当 trigger_type=TRIGGER_MR 时 QCI 自动注入 QCI_MR_IID / QCI_REPO 等变量，
-#   本模板通过 QCI_REPO + QCI_MR_IID 拼接 MR URL。
-#   手动触发时这些变量为空，task 会跳过执行。
 
 version: 2
+
+mr:
+  action:
+  - open
+  - push-update
+  - merge
+  is_local_mr: true
+  is_block_mr: true
+  auto_cancel_same_merge_request: true
 
 env:
   TAI_PAT_TOKEN:
@@ -27,65 +31,63 @@ env:
 
 stages:
 # ── MR 创建/更新时：提炼知识并以 comment 形式展示 ──────────
-- stage: extract-comment
+- stage: teamai-extract-comment
   tasks:
   - task: extract-and-comment
-    when:
-      event: merge_request
-      action: [opened, updated]
     cmds:
     - plugin: cmds
       params:
         cmds:
-        - npm install -g teamai-cli
-        - teamai init
+        - npm install -g teamai-cli @anthropic-ai/claude-code 2>&1 | tail -3
         - |
-          if [ -z "${QCI_MR_IID}" ] || [ "${QCI_MR_IID}" = "None" ]; then
-            echo "⏭ Not an MR trigger (QCI_MR_IID is empty), skipping"
+          echo "machine git.woa.com login oauth2 password ${TAI_PAT_TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
+        - |
+          echo "=== [TeamAI] Trigger: ${QCI_TRIGGER_TYPE}, MR IID: ${QCI_MR_IID:-none} ==="
+          if [ "${QCI_TRIGGER_TYPE}" = "TRIGGER_MR" ] && [ -n "${QCI_MR_IID}" ] && [ "${QCI_MR_IID}" != "None" ]; then
+            MR_URL="${QCI_REPO%.git}/merge_requests/${QCI_MR_IID}"
+          else
+            echo "⏭ Not an MR trigger, skipping"
             exit 0
           fi
-          MR_URL="${QCI_REPO%.git}/merge_requests/${QCI_MR_IID}"
-          teamai ci extract-mr \
-            --url "${MR_URL}" \
-            --mode comment
+          echo "=== [TeamAI] MR_URL=$MR_URL ==="
+          teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
 
 # ── MR 合入后：将知识写入团队知识仓库 ─────────────────────
-- stage: post-merge-write
+- stage: teamai-post-merge-write
   tasks:
   - task: write-knowledge
-    when:
-      event: merge_request
-      action: [merged]
     cmds:
     - plugin: cmds
       params:
         cmds:
-        - npm install -g teamai-cli
-        - teamai init
+        - npm install -g teamai-cli @anthropic-ai/claude-code 2>&1 | tail -3
         - |
-          if [ -z "${QCI_MR_IID}" ] || [ "${QCI_MR_IID}" = "None" ]; then
-            echo "⏭ Not an MR trigger (QCI_MR_IID is empty), skipping"
+          echo "machine git.woa.com login oauth2 password ${TAI_PAT_TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
+        - |
+          if [ "${QCI_TRIGGER_TYPE}" != "TRIGGER_MR" ] || [ "${QCI_MR_ACTION}" != "merge" ]; then
+            echo "=== [TeamAI] SKIP: Not a merge event ==="
             exit 0
           fi
-        - git clone -b "${TEAMAI_KNOWLEDGE_BRANCH}" "https://oauth2:${TAI_PAT_TOKEN}@git.woa.com/${TEAMAI_KNOWLEDGE_REPO}.git" team-repo
-        - |
           MR_URL="${QCI_REPO%.git}/merge_requests/${QCI_MR_IID}"
-          teamai ci extract-mr \
-            --url "${MR_URL}" \
-            --mode write \
-            --team-repo ./team-repo \
-            --write-mode direct
-        - |
+          echo "=== [TeamAI] Writing knowledge for $MR_URL ==="
+          git clone -b "${TEAMAI_KNOWLEDGE_BRANCH}" "https://oauth2:${TAI_PAT_TOKEN}@git.woa.com/${TEAMAI_KNOWLEDGE_REPO}.git" team-repo
+          teamai ci extract-mr --url "$MR_URL" --mode write --individual-comments --team-repo ./team-repo --write-mode direct
           cd team-repo
-          git add learnings/ docs/ .teamai/
-          git diff --cached --quiet || \
+          git add learnings/ docs/ .teamai/ teamwiki/ 2>/dev/null || true
+          if ! git diff --cached --quiet; then
             git commit -m "[teamai] Extract knowledge from MR !${QCI_MR_IID}"
-          git push
-
-mr:
-  is_block_mr: 0
+            git push
+            echo "=== [TeamAI] Knowledge pushed ==="
+          else
+            echo "=== [TeamAI] No changes ==="
+          fi
 
 worker:
   label: JOB_MATRIX_DEVCLOUD
   tools: []
   language: node_js-22.19.0
+
+maximum_builds: 2
+is_auto_cancel: false
