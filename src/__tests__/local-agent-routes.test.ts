@@ -19,14 +19,14 @@ describe('local-agent: resolveRoute – path mapping', () => {
   it('supports overriding every route independently', () => {
     const config = {
       routes: {
-        userGroups: '/v2/groups',
+        projects: '/v2/groups',
         report: '/v2/report',
         sync: '/v2/sync',
         ack: '/v2/ack',
         getConfig: '/v2/config',
       },
     };
-    expect(resolveRoute(config, 'userGroups')).toBe('/v2/groups');
+    expect(resolveRoute(config, 'projects')).toBe('/v2/groups');
     expect(resolveRoute(config, 'report')).toBe('/v2/report');
     expect(resolveRoute(config, 'sync')).toBe('/v2/sync');
     expect(resolveRoute(config, 'ack')).toBe('/v2/ack');

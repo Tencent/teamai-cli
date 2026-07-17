@@ -148,7 +148,7 @@ describe('local-agent: local_agent_id derivation (per-tool install dir)', () => 
 });
 
 describe('local-agent: bindCurrentProject --skip', () => {
-  it('writes groupId 0 and __skipped__ marker to config', async () => {
+  it('writes projectId 0 and __skipped__ marker to config', async () => {
     await setupConfig();
     // Create a git repo in tmpDir so resolveWorkspacePath works
     const projectDir = path.join(tmpDir, 'my-project');
@@ -166,8 +166,8 @@ describe('local-agent: bindCurrentProject --skip', () => {
     const realProjectDir = fse.realpathSync(projectDir);
     const binding = config.workspaceBindings[realProjectDir] ?? config.workspaceBindings[projectDir];
     expect(binding).toBeDefined();
-    expect(binding.groupId).toBe(0);
-    expect(binding.groupName).toBe('__skipped__');
+    expect(binding.projectId).toBe(0);
+    expect(binding.projectName).toBe('__skipped__');
     expect(binding.boundAt).toBeTruthy();
   });
 });
@@ -181,12 +181,12 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     const { execFileSync } = await import('node:child_process');
     execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
-    // Mock global fetch to handle /api/user-groups/mine and /api/local-agent/report
+    // Mock global fetch to handle /api/projects/mine and /api/local-agent/report
     const fetchMock = vi.fn(async (url: string) => {
-      if (url.includes('/api/user-groups/mine')) {
+      if (url.includes('/api/projects/mine')) {
         return new Response(JSON.stringify({
           ok: true,
-          groups: [
+          projects: [
             { id: 100, name: 'alpha' },
             { id: 200, name: 'beta' },
           ],
@@ -221,13 +221,13 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
 
     const parsed = JSON.parse(output.trim().split('\n').find((l) => l.includes('hookSpecificOutput'))!);
     const ctx = parsed.hookSpecificOutput.additionalContext;
-    expect(ctx).toContain('[ClawPro组织 绑定提示]');
-    expect(ctx).toContain('当前项目未绑定ClawPro组织');
-    expect(ctx).toContain('绑定到「alpha」组织');
-    expect(ctx).toContain('绑定到「beta」组织');
+    expect(ctx).toContain('[ClawPro项目 绑定提示]');
+    expect(ctx).toContain('当前工作区未绑定ClawPro项目');
+    expect(ctx).toContain('绑定到「alpha」项目');
+    expect(ctx).toContain('绑定到「beta」项目');
     expect(ctx).toContain('不绑定，以后也不再提示');
-    expect(ctx).toContain('teamai bind-project --group-id 100');
-    expect(ctx).toContain('teamai bind-project --group-id 200');
+    expect(ctx).toContain('teamai bind-project --project-id 100');
+    expect(ctx).toContain('teamai bind-project --project-id 200');
     expect(ctx).toContain('teamai bind-project --skip');
   });
 
@@ -274,7 +274,7 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
     await setupConfig({
-      [projectDir]: { groupId: 1, groupName: 'existing', boundAt: '2026-01-01T00:00:00.000Z' },
+      [projectDir]: { projectId: 1, projectName: 'existing', boundAt: '2026-01-01T00:00:00.000Z' },
     });
 
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
@@ -302,7 +302,7 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     expect(output).not.toContain('hookSpecificOutput');
   });
 
-  it('does NOT emit hint when project is skipped (groupId 0)', async () => {
+  it('does NOT emit hint when project is skipped (projectId 0)', async () => {
     process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
     const projectDir = path.join(tmpDir, 'skipped-project');
     await fse.ensureDir(projectDir);
@@ -310,7 +310,7 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
 
     await setupConfig({
-      [projectDir]: { groupId: 0, groupName: '__skipped__', boundAt: '2026-01-01T00:00:00.000Z' },
+      [projectDir]: { projectId: 0, projectName: '__skipped__', boundAt: '2026-01-01T00:00:00.000Z' },
     });
 
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));

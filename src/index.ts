@@ -589,13 +589,13 @@ program
 
 program
   .command('bind-project')
-  .description('Bind the current project to a ClawPro organization/group for HTTP local-agent sync')
-  .option('--group-id <id>', 'Group ID from /user-groups/mine')
-  .option('--skip', 'Mark current project as skipped (never prompt again)')
+  .description('Bind the current workspace to a ClawPro project for HTTP local-agent sync')
+  .option('--project-id <id>', 'Project ID from /projects/mine')
+  .option('--skip', 'Mark current workspace as skipped (never prompt again)')
   .action(async (cmdOpts) => {
     const { bindCurrentProject } = await import('./local-agent.js');
     await bindCurrentProject({
-      groupId: cmdOpts.groupId ? Number.parseInt(cmdOpts.groupId, 10) : undefined,
+      projectId: cmdOpts.projectId ? Number.parseInt(cmdOpts.projectId, 10) : undefined,
       skip: !!cmdOpts.skip,
     });
   });
