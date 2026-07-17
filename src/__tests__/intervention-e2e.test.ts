@@ -96,7 +96,7 @@ describe('Human Intervention metric — end to end', () => {
     const events = await readEvents();
     expect(events.length).toBe(4);
     const stopEvent = events.find((e) => e.type === 'stop');
-    expect(stopEvent!.interventions).toEqual({ interrupt: 1, toolReject: 1 });
+    expect(stopEvent!.interventions).toEqual({ interrupt: 1, toolReject: 1, toolError: 0 });
 
     // 3. Dashboard rebuild surfaces the per-session intervention badge data.
     const sessions = rebuildSessions(events);
