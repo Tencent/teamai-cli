@@ -4,15 +4,21 @@
 # MR 合入后自动将 learning 和 codebase 建议写入团队知识仓库。
 #
 # 使用前请配置：
-#   1. Pipeline Secret: TAI_PAT_TOKEN（对团队知识仓库有写权限的 TGit Personal Access Token）
-#   2. 修改 post-merge-write 中的 <team>/<knowledge-repo> 为你的团队仓库路径
-#   3. 如有 AI API key 需求，配置对应环境变量
+#   修改下方 env 中的占位符为你的实际值
 
 version: 2
 
 env:
   TAI_PAT_TOKEN:
     secret: ${TAI_PAT_TOKEN_SECRET}
+  ANTHROPIC_AUTH_TOKEN:
+    secret: ${ANTHROPIC_AUTH_TOKEN_SECRET}
+  TEAMAI_KNOWLEDGE_REPO: <team>/<knowledge-repo>       # 团队知识仓库路径
+  TEAMAI_KNOWLEDGE_BRANCH: main                        # 知识仓库默认分支
+  ANTHROPIC_BASE_URL: <your-anthropic-base-url>        # 如 https://api.anthropic.com
+  ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet-4-6
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5
+  ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-4-8
 
 stages:
 # ── MR 创建/更新时：提炼知识并以 comment 形式展示 ──────────
@@ -44,7 +50,7 @@ stages:
       params:
         cmds:
         - npm install -g teamai-cli
-        - git clone "https://oauth2:${TAI_PAT_TOKEN}@git.woa.com/<team>/<knowledge-repo>.git" team-repo
+        - git clone -b "${TEAMAI_KNOWLEDGE_BRANCH}" "https://oauth2:${TAI_PAT_TOKEN}@git.woa.com/${TEAMAI_KNOWLEDGE_REPO}.git" team-repo
         - |
           teamai ci extract-mr \
             --url "${CI_MERGE_REQUEST_URL}" \

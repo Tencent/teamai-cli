@@ -4,14 +4,7 @@
 # PR 合入后自动将 learning 和 codebase 建议写入团队知识仓库。
 #
 # 使用前请配置：
-#   1. Repository Secret: TEAMAI_SYNC_TOKEN（对团队知识仓库有写权限的 PAT）
-#   2. 修改 write job 中的 <owner>/<team-knowledge-repo> 为你的团队仓库路径
-#   3. 配置 Repository Variables（Settings → Secrets and variables → Variables）：
-#      - ANTHROPIC_BASE_URL: AI API 基础地址（如 https://api.anthropic.com）
-#      - ANTHROPIC_DEFAULT_SONNET_MODEL: 默认 sonnet 模型名
-#      - ANTHROPIC_DEFAULT_HAIKU_MODEL: 默认 haiku 模型名
-#      - ANTHROPIC_DEFAULT_OPUS_MODEL: 默认 opus 模型名
-#   4. 配置 Repository Secret: ANTHROPIC_AUTH_TOKEN（AI API 认证 Token）
+#   修改下方 env 中的占位符，并在 Repository Settings 中配置对应 Secrets / Variables
 
 name: TeamAI MR Knowledge Extract
 
@@ -22,6 +15,8 @@ on:
     types: [closed]
 
 env:
+  TEAMAI_KNOWLEDGE_REPO: ${{ vars.TEAMAI_KNOWLEDGE_REPO }}
+  TEAMAI_KNOWLEDGE_BRANCH: ${{ vars.TEAMAI_KNOWLEDGE_BRANCH || 'main' }}
   ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
   ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ vars.ANTHROPIC_DEFAULT_SONNET_MODEL }}
   ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ vars.ANTHROPIC_DEFAULT_HAIKU_MODEL }}
@@ -62,7 +57,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: <owner>/<team-knowledge-repo>
+          repository: ${{ env.TEAMAI_KNOWLEDGE_REPO }}
+          ref: ${{ env.TEAMAI_KNOWLEDGE_BRANCH }}
           token: ${{ secrets.TEAMAI_SYNC_TOKEN }}
           path: team-repo
 
