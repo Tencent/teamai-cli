@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pathExists, ensureDir } from '../../utils/fs.js';
 import { log, spinner } from '../../utils/logger.js';
 import { TEAMAI_HOME } from '../../types.js';
+import { tgitFetch } from './rest-auth.js';
 
 /** Path where gf CLI is installed */
 const GF_INSTALL_DIR = path.join(TEAMAI_HOME, 'gf');
@@ -267,28 +268,15 @@ export function gfGetOAuthToken(): string | null {
 
 /**
  * Create a repo on TGit using the REST API.
- * Uses the OAuth token from gf's credential store with Bearer auth.
+ * Authentication (token + scheme) is handled by {@link tgitFetch}.
  */
 export async function gfCreateRepo(owner: string, repo: string): Promise<void> {
-  const token = gfGetOAuthToken();
-  if (!token) {
-    throw new Error('Cannot retrieve OAuth token. Please run `gf auth login` first.');
-  }
-
-  const authHeaders = {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`,
-  };
-
   // Look up namespace ID for the owner (group or user).
   // For multi-segment paths like "HyperAI/ElasticLLM", the API's `path` field
   // only contains the last segment ("ElasticLLM"), so we search by the last
   // segment and match against `full_path` which includes parent groups.
   const searchTerm = owner.includes('/') ? owner.split('/').pop()! : owner;
-  const nsResp = await fetch(
-    `https://git.woa.com/api/v3/namespaces?search=${encodeURIComponent(searchTerm)}`,
-    { headers: authHeaders },
-  );
+  const nsResp = await tgitFetch(`/namespaces?search=${encodeURIComponent(searchTerm)}`);
   if (!nsResp.ok) {
     throw new Error(`Failed to look up namespace "${owner}": ${nsResp.status}`);
   }
@@ -302,14 +290,10 @@ export async function gfCreateRepo(owner: string, repo: string): Promise<void> {
     body.namespace_id = ns.id;
   }
 
-  const createResp = await fetch(
-    'https://git.woa.com/api/v3/projects',
-    {
-      method: 'POST',
-      headers: authHeaders,
-      body: JSON.stringify(body),
-    },
-  );
+  const createResp = await tgitFetch('/projects', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
   if (!createResp.ok) {
     const errBody = await createResp.text().catch(() => '');
     throw new Error(`Failed to create repo: ${createResp.status} ${errBody}`);

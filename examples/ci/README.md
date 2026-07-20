@@ -17,7 +17,7 @@
 2. 触发频率建议每日一次（示例中为 UTC 02:17）。
 3. 必须配置好对应 secret：
    - GitHub Actions：`TEAMAI_SYNC_TOKEN`（需要 repo 读写权限）
-   - Coding CI：`TAI_PAT_TOKEN`（同上）
+   - Coding CI：`TGIT_TOKEN`（同上）
 4. `.teamai/repo-whitelist.yaml` 必须存在且至少包含一个 repo entry。
 
 ## 增量模式说明
@@ -56,6 +56,6 @@
 1. 这两个文件是**模板**，使用前需按文件内注释替换占位符（本仓库路径、知识仓库路径、默认分支、AI 网关地址）。
 2. `teamai ci extract-mr` 会调用本地 AI CLI 做提炼，因此**必须**安装 AI CLI（`@anthropic-ai/claude-code`）并配置凭证：
    - GitHub Actions：`ANTHROPIC_AUTH_TOKEN`（Secret）+ `ANTHROPIC_BASE_URL` / 模型名（Variables）
-   - 智研 / Coding CI（工蜂）：`ANTHROPIC_AUTH_TOKEN`、`TAI_PAT_TOKEN`（均为 Secret）
-3. 需要对团队知识仓库有 push 权限的 token：GitHub 用 `TEAMAI_SYNC_TOKEN`，工蜂用 `TAI_PAT_TOKEN`。
+   - 智研 / Coding CI（工蜂）：`ANTHROPIC_AUTH_TOKEN`、`TGIT_TOKEN`（均为 Secret）
+3. 需要对团队知识仓库有 push 权限的 token：GitHub 用 `TEAMAI_SYNC_TOKEN`，工蜂用 `TGIT_TOKEN`。
 4. 智研 / Coding CI（工蜂）的 MR 触发规则**必须写在 YAML 的 `mr:` 块**，仅在 UI 勾选无效。

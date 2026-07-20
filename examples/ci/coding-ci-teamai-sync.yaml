@@ -12,7 +12,7 @@ jobs:
             - run: npm install -g teamai-cli
             - run: teamai import --from-repo-list .teamai/repo-whitelist.yaml --incremental
               env:
-                  TAI_PAT_TOKEN: ${{ secrets.TAI_PAT_TOKEN }}
+                  TGIT_TOKEN: ${{ secrets.TGIT_TOKEN }}
             - run: |
                   git add docs/team-codebase .teamai/domains.yaml .teamai/domains.history.jsonl
                   git diff --cached --quiet || (git commit -m "chore(team-codebase): scheduled sync" && git push)
