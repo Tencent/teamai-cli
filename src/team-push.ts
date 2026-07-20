@@ -4,6 +4,7 @@ import { readUsageEvents, truncateUsageAfterReport } from './usage-tracker.js';
 import { aggregateUsage } from './stats.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
 import { createGit, pushRepoDirectly, pullRepo, resetToCleanMaster } from './utils/git.js';
+import { withTimeout } from './utils/async.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent } from './types.js';
@@ -385,13 +386,14 @@ export async function reportUsageToTeam(
       : (hasInterventions || hasPromptTokens)
         ? `[teamai] Update session stats for ${username}`
         : `[teamai] Update votes for ${username}`;
-    const pushPromise = pushRepoDirectly(repoPath, commitMsg, filesToPush);
-
-    const timeoutPromise = new Promise<never>((__, reject) =>
-      setTimeout(() => reject(new Error('Auto-report timeout (5s)')), 5000),
+    // Guard the push with a 5s timeout. withTimeout clears its timer once the
+    // push settles, so a fast success does not leave a 5s timer pinning the
+    // event loop (and hanging `teamai pull`) after the work is done.
+    await withTimeout(
+      pushRepoDirectly(repoPath, commitMsg, filesToPush),
+      5000,
+      'Auto-report timeout (5s)',
     );
-
-    await Promise.race([pushPromise, timeoutPromise]);
 
     // Success — truncate reported usage events (only if caller allows it)
     if (hasUsage && !options?.skipTruncate) {

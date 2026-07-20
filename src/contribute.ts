@@ -4,6 +4,7 @@ import fse from 'fs-extra';
 import { requireInit, detectProjectConfig, loadTeamConfig, loadLocalConfigForScope } from './config.js';
 import { assertNotReadOnly } from './read-only.js';
 import { pushRepoDirectly, pullRepo } from './utils/git.js';
+import { withTimeout } from './utils/async.js';
 import { ensureDir, pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { markContributed } from './contribute-check.js';
@@ -168,19 +169,15 @@ export async function contribute(
       log.debug(`contribute: index rebuild skipped: ${(e as Error).message}`);
     }
 
-    // Push directly to master with timeout
+    // Push directly to master with timeout. withTimeout clears its timer once
+    // the push settles, so a fast push does not leave a 10s timer pinning the
+    // event loop (and hanging the CLI) after the work is done.
     const commitMsg = `[teamai] Contribute session knowledge from ${username}`;
-    const pushPromise = pushRepoDirectly(
-      repoPath,
-      commitMsg,
-      [`learnings/${filename}`],
+    await withTimeout(
+      pushRepoDirectly(repoPath, commitMsg, [`learnings/${filename}`]),
+      10_000,
+      'Push timeout (10s)',
     );
-
-    const timeoutPromise = new Promise<never>((__, reject) =>
-      setTimeout(() => reject(new Error('Push timeout (10s)')), 10_000),
-    );
-
-    await Promise.race([pushPromise, timeoutPromise]);
 
     pushSpin.succeed(`Contributed: learnings/${filename}`);
 
