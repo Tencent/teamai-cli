@@ -126,14 +126,17 @@ teamai recall "<关键词1> <关键词2> ..."
 
 从任务描述中提取 3-6 个高信号关键词进行检索。
 
-### 检索后要求
+### 检索后要求（用于评估知识被采纳情况，请务必执行）
 
-完成任务后，在最终回复中声明实际引用了哪些知识条目：
+teamai-recall subagent 的返回里已列出本次检索到的候选 doc-id（见其 recalled-doc-ids 列表）。
+你**不需要凭记忆重建列表**——只需在**最终回复末尾**追加下面这行，
+从候选里**保留你实际用到的**（照抄了命令、或概念上参考了，都算用到），删掉没用到的：
 
 \`\`\`
-<!-- teamai:referenced-doc-ids: [doc-id-1, doc-id-2] -->
+<!-- teamai:referenced-doc-ids: [你实际用到的-doc-id] -->
 \`\`\`
 
-如无相关命中则声明空列表：\`<!-- teamai:referenced-doc-ids: [] -->\`
+一个都没用到就留空：\`<!-- teamai:referenced-doc-ids: [] -->\`。
+若直接用 \`teamai recall\` 命令（未走 subagent），从召回结果的 File 路径推出 doc-id 自行填入。
 `;
 

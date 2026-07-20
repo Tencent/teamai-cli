@@ -27,6 +27,10 @@ vi.mock('../domains/store.js', () => ({
     }),
 }));
 
+vi.mock('../config.js', () => ({
+    autoDetectInit: vi.fn().mockRejectedValue(new Error('no config in test')),
+}));
+
 // ─── Imports（after mocks）──────────────────────────────
 
 import { importFromRepoList } from '../import-repo-list.js';

@@ -250,8 +250,8 @@ export async function sourceList(): Promise<void> {
     log.info('HTTP source (report/sync/ack):');
     log.info(`  ${httpSource.endpoint}`);
     log.dim(`    ${skills} skill(s), ${rules} rule(s), ${claudemd} claude.md`);
-    for (const g of httpSource.boundGroups) {
-      log.dim(`    bound: ${g.groupName ?? g.groupId} — ${g.path}`);
+    for (const p of httpSource.boundProjects) {
+      log.dim(`    bound: ${p.projectName ?? p.projectId} — ${p.path}`);
     }
   }
 }

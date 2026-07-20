@@ -80,13 +80,17 @@ function runContributeCheck(
 
 // ─── Scenario helpers ────────────────────────────────────
 
-/** Build a rich session (score >= 35): diverse tools, Skill usage, errors, 40+ min */
+/**
+ * Build a high-friction session that clears the threshold: substantive tool
+ * volume (past the toolCount hard gate) PLUS a Stop event carrying interventions
+ * (interrupts + tool errors). Friction — not volume — is what scores.
+ */
 function buildRichSessionEvents(sessionId: string): Record<string, unknown>[] {
   const now = Date.now();
   const tools = ['Read', 'Edit', 'Bash', 'Skill', 'Write', 'Grep', 'Agent'];
   const events: Record<string, unknown>[] = [];
 
-  // 50 tool_use events over 40 minutes, 7 unique tools
+  // 50 tool_use events, 7 unique tools — clears the toolCount hard gate.
   for (let i = 0; i < 50; i++) {
     const minutesAgo = 40 - (i * 40) / 50;
     events.push({
@@ -98,19 +102,19 @@ function buildRichSessionEvents(sessionId: string): Record<string, unknown>[] {
     });
   }
 
-  // An error prompt
+  // Friction snapshot at Stop: 2 interrupts + 8 tool errors → well past threshold.
   events.push({
-    type: 'prompt_submit',
-    timestamp: new Date(now - 5 * 60 * 1000).toISOString(),
+    type: 'stop',
+    timestamp: new Date(now).toISOString(),
     sessionId,
     tool: 'claude',
-    promptSummary: 'fix the build error',
+    interventions: { interrupt: 2, toolReject: 0, toolError: 8 },
   });
 
   return events;
 }
 
-/** Build a trivial session (score < 35): few calls, one tool, short */
+/** Build a trivial session (frictionless + few calls): stays below threshold. */
 function buildTrivialSessionEvents(sessionId: string): Record<string, unknown>[] {
   const now = Date.now();
   return Array.from({ length: 5 }, (_, i) => ({

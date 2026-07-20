@@ -128,4 +128,104 @@ describe('parseTranscriptForVotes', () => {
     expect(result.referencedDocIds).toContain('doc-a');
     expect(result.referencedDocIds).toContain('doc-b');
   });
+
+  it('recalled-doc-ids comment in a tool_result (non-assistant) line is detected', async () => {
+    const filePath = path.join(tmpDir, 'transcript.jsonl');
+    writeLine(filePath, {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          content: 'Some tool output here.<!-- teamai:recalled-doc-ids: [doc-a, doc-b] -->',
+        }],
+      },
+    });
+    writeLine(filePath, {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'text',
+          text: 'Here is my answer with no referenced marker.',
+        }],
+      },
+    });
+
+    const result = await parseTranscriptForVotes(filePath);
+    expect(result.recalledDocIds).toContain('doc-a');
+    expect(result.recalledDocIds).toContain('doc-b');
+    expect(result.recalledDocIds).toHaveLength(2);
+    expect(result.referencedDocIds).toEqual([]);
+  });
+
+  it('referenced-doc-ids in a non-assistant line is NOT counted (assistant-only guard)', async () => {
+    const filePath = path.join(tmpDir, 'transcript.jsonl');
+    writeLine(filePath, {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          content: 'Tool output.<!-- teamai:referenced-doc-ids: [doc-x] --><!-- teamai:recalled-doc-ids: [doc-y] -->',
+        }],
+      },
+    });
+
+    const result = await parseTranscriptForVotes(filePath);
+    expect(result.referencedDocIds).not.toContain('doc-x');
+    expect(result.referencedDocIds).toEqual([]);
+    expect(result.recalledDocIds).toContain('doc-y');
+  });
+
+  it('placeholder recalled-doc-ids are filtered', async () => {
+    const filePath = path.join(tmpDir, 'transcript.jsonl');
+    writeLine(filePath, {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          content: 'Some output.<!-- teamai:recalled-doc-ids: [<id1>, <id2>, ...] -->',
+        }],
+      },
+    });
+    writeLine(filePath, {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'text',
+          text: 'Here is my answer with no marker.',
+        }],
+      },
+    });
+
+    const result = await parseTranscriptForVotes(filePath);
+    expect(result.recalledDocIds).toHaveLength(0);
+  });
+
+  it('mixed real + placeholder recalled-doc-ids keeps only real', async () => {
+    const filePath = path.join(tmpDir, 'transcript.jsonl');
+    writeLine(filePath, {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          content: 'Some output.<!-- teamai:recalled-doc-ids: [<id1>, real-doc-id] -->',
+        }],
+      },
+    });
+    writeLine(filePath, {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'text',
+          text: 'Here is my answer with no marker.',
+        }],
+      },
+    });
+
+    const result = await parseTranscriptForVotes(filePath);
+    expect(result.recalledDocIds).toEqual(['real-doc-id']);
+  });
 });
