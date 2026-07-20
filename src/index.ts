@@ -106,6 +106,42 @@ skillCmd
     await skillShow(name, { ...globalOpts, ...cmdOpts });
   });
 
+const excludeCmd = skillCmd
+  .command('exclude')
+  .description('Manage per-user skill exclusion (skip sync without affecting team repo)')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { excludeList } = await import('./exclude.js');
+    await excludeList(globalOpts);
+  });
+
+excludeCmd
+  .command('list')
+  .description('List excluded skills')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { excludeList } = await import('./exclude.js');
+    await excludeList(globalOpts);
+  });
+
+excludeCmd
+  .command('add <skills...>')
+  .description('Add skill(s) to the exclude list')
+  .action(async (skills: string[]) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { excludeAdd } = await import('./exclude.js');
+    await excludeAdd(skills, globalOpts);
+  });
+
+excludeCmd
+  .command('remove <skills...>')
+  .description('Remove skill(s) from the exclude list')
+  .action(async (skills: string[]) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { excludeRemove } = await import('./exclude.js');
+    await excludeRemove(skills, globalOpts);
+  });
+
 const membersCmd = program
   .command('members')
   .description('Manage team members')
@@ -347,6 +383,14 @@ sourceCmd
   });
 
 sourceCmd
+  .command('reconcile-plugins', { hidden: true })
+  .description('Run plugin reconcile worker (called internally by session_start hook)')
+  .action(async () => {
+    const { runPluginReconcileWorker } = await import('./local-agent.js');
+    await runPluginReconcileWorker();
+  });
+
+sourceCmd
   .command('list')
   .description('List all configured sources')
   .action(async () => {
@@ -545,13 +589,13 @@ program
 
 program
   .command('bind-project')
-  .description('Bind the current project to a ClawPro organization/group for HTTP local-agent sync')
-  .option('--group-id <id>', 'Group ID from /user-groups/mine')
-  .option('--skip', 'Mark current project as skipped (never prompt again)')
+  .description('Bind the current workspace to a ClawPro project for HTTP local-agent sync')
+  .option('--project-id <id>', 'Project ID from /projects/mine')
+  .option('--skip', 'Mark current workspace as skipped (never prompt again)')
   .action(async (cmdOpts) => {
     const { bindCurrentProject } = await import('./local-agent.js');
     await bindCurrentProject({
-      groupId: cmdOpts.groupId ? Number.parseInt(cmdOpts.groupId, 10) : undefined,
+      projectId: cmdOpts.projectId ? Number.parseInt(cmdOpts.projectId, 10) : undefined,
       skip: !!cmdOpts.skip,
     });
   });

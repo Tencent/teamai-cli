@@ -1,67 +1,110 @@
-# TeamAI MR Knowledge Extract — Coding CI (TGit)
+# TeamAI MR Knowledge Extract — 智研 / Coding CI（TGit / 工蜂）
 #
-# 在 MR 创建/更新时自动提炼知识建议并以 note 贴到 MR 上；
-# MR 合入后自动将 learning 和 codebase 建议写入团队知识仓库。
+# 在 MR 创建/更新时自动提炼知识建议并以 comment 贴到 MR 上；
+# MR 合入后自动将 learning、codebase、图谱建议写入团队知识仓库。
 #
 # 使用前请配置：
-#   1. Pipeline Secret: TAI_PAT_TOKEN（对团队知识仓库有写权限的 TGit Personal Access Token）
-#   2. 修改 post-merge-write 中的 <team>/<knowledge-repo> 为你的团队仓库路径
-#   3. 如有 AI API key 需求，配置对应环境变量
+#   1. 在智研 Web 端新建一条流水线：绑定本工蜂仓库 → CIfile 指向本文件路径 →
+#      触发方式勾选 MR。注意：MR 触发规则**必须**在本 YAML 的 `mr:` 块声明，
+#      仅在智研 UI 勾选无效。
+#   2. Pipeline Secret：
+#        - TAI_PAT_TOKEN：对团队知识仓库有 push 权限的 TGit Personal Access Token
+#        - ANTHROPIC_AUTH_TOKEN：AI 认证 Token
+#      说明：teamai ci extract-mr 复用了 AI 提炼逻辑（callClaude），comment 与
+#      write 两种模式都会 spawn 本地 AI CLI，因此 AI CLI 与凭证是**必须**的，不是可选。
+#   3. 把下方占位符改成你的实际值：
+#        - <team>/<your-repo>       本仓库路径
+#        - <team>/<knowledge-repo>  团队知识仓库路径
+#        - <默认分支>               本仓库默认分支（master 或 main）
+#        - <your-anthropic-base-url> AI 网关地址
 
 version: 2
 
+# ── MR 触发规则（必须在 YAML 中声明，UI 配置无效）────────────
+mr:
+  action:
+    - open
+    - push-update
+    - merge
+  branches:
+    include:
+      - <默认分支>          # 按仓库实际填：master 或 main
+
+# ── 密钥与环境变量 ────────────────────────────────────────────
 env:
   TAI_PAT_TOKEN:
     secret: ${TAI_PAT_TOKEN_SECRET}
+  ANTHROPIC_AUTH_TOKEN:
+    secret: ${ANTHROPIC_AUTH_TOKEN_SECRET}
+  ANTHROPIC_BASE_URL: <your-anthropic-base-url>        # 如 https://api.anthropic.com
+  ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet-4-6
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku-4-5-20251001
+  ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus-4-8
 
+# ── 流水线阶段 ────────────────────────────────────────────────
 stages:
+
 # ── MR 创建/更新时：提炼知识并以 comment 形式展示 ──────────
-- stage: extract-comment
+- stage: teamai-extract-comment
   tasks:
   - task: extract-and-comment
-    when:
-      event: merge_request
-      action: [opened, updated]
     cmds:
     - plugin: cmds
       params:
         cmds:
-        - npm install -g teamai-cli
+        - echo "=== [TeamAI] Installing CLI tools ==="
+        # 公网环境：npm 安装；内网无公网 npm 时改为本地 tarball，如：
+        #   npm install -g ./teamai-cli-<version>.tgz @anthropic-ai/claude-code
+        - npm install -g teamai-cli @anthropic-ai/claude-code 2>&1 | tail -3
         - |
-          teamai ci extract-mr \
-            --url "${CI_MERGE_REQUEST_URL}" \
-            --mode comment
+          echo "machine git.woa.com login oauth2 password ${TAI_PAT_TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
+          echo "=== [TeamAI] TGit auth configured ==="
+        - |
+          echo "=== [TeamAI] Trigger: ${QCI_TRIGGER_TYPE}, MR IID: ${QCI_MR_IID:-none} ==="
+          if [ "${QCI_TRIGGER_TYPE}" != "TRIGGER_MR" ] || [ -z "${QCI_MR_IID}" ]; then
+            echo "=== [TeamAI] SKIP: No MR context ==="
+            exit 0
+          fi
+          MR_URL="https://git.woa.com/<team>/<your-repo>/merge_requests/${QCI_MR_IID}"
+          echo "=== [TeamAI] MR_URL=$MR_URL ==="
+          teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
 
 # ── MR 合入后：将知识写入团队知识仓库 ─────────────────────
-- stage: post-merge-write
+- stage: teamai-post-merge-write
   tasks:
   - task: write-knowledge
-    when:
-      event: merge_request
-      action: [merged]
     cmds:
     - plugin: cmds
       params:
         cmds:
-        - npm install -g teamai-cli
-        - git clone "https://oauth2:${TAI_PAT_TOKEN}@git.woa.com/<team>/<knowledge-repo>.git" team-repo
+        - npm install -g teamai-cli @anthropic-ai/claude-code 2>&1 | tail -3
         - |
-          teamai ci extract-mr \
-            --url "${CI_MERGE_REQUEST_URL}" \
-            --mode write \
-            --team-repo ./team-repo \
-            --write-mode direct
+          echo "machine git.woa.com login oauth2 password ${TAI_PAT_TOKEN}" > ~/.netrc
+          chmod 600 ~/.netrc
         - |
+          if [ "${QCI_TRIGGER_TYPE}" != "TRIGGER_MR" ] || [ "${QCI_MR_ACTION}" != "merge" ]; then
+            echo "=== [TeamAI] SKIP: Not a merge event ==="
+            exit 0
+          fi
+          MR_URL="https://git.woa.com/<team>/<your-repo>/merge_requests/${QCI_MR_IID}"
+          echo "=== [TeamAI] Writing knowledge for $MR_URL ==="
+          git clone "https://oauth2:${TAI_PAT_TOKEN}@git.woa.com/<team>/<knowledge-repo>.git" team-repo
+          teamai ci extract-mr --url "$MR_URL" --mode write --individual-comments --team-repo ./team-repo --write-mode direct
           cd team-repo
-          # git user.name/email 由 teamai ci extract-mr 自动从 token 对应账号获取
-          # 确保 TAI_PAT_TOKEN 对应的账号对知识仓库有 push 权限即可
-          git add learnings/ docs/ .teamai/
-          git diff --cached --quiet || \
-            git commit -m "[teamai] Extract knowledge from MR !${CI_MERGE_REQUEST_IID}"
-          git push
+          # git user.name/email 建议用 TAI_PAT_TOKEN 对应账号
+          git config user.name "teamai-ci"
+          git config user.email "teamai-ci@tencent.com"
+          git add learnings/ docs/ .teamai/ teamwiki/ 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "[teamai] Extract knowledge from MR !${QCI_MR_IID}"
+            git push
+            echo "=== [TeamAI] Knowledge pushed ==="
+          else
+            echo "=== [TeamAI] No changes ==="
+          fi
 
-mr:
-  is_block_mr: 0
+is_block_mr: 0
 
 worker:
   label: JOB_MATRIX_DEVCLOUD

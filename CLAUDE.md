@@ -59,7 +59,8 @@ All CLI user-facing output must be in **English**. No Chinese strings in product
 
 ## Documentation
 
-When modifying `README.md`, always update `README.zh-CN.md` with the corresponding Chinese translation. The two files must stay in sync.
+- **Bilingual docs stay in sync**: docs are paired as an English main version plus a `*.zh-CN.md` Chinese version (e.g. `README.md` / `README.zh-CN.md`, `docs/usage-guide.md` / `docs/usage-guide.zh-CN.md`). When you edit one language, update the other in the same change so they never drift.
+- **Large changes must update all affected docs**: when a change alters observable behavior, a mechanism, a threshold, a command, or a workflow, update every doc that describes it — README (both languages), `docs/usage-guide.*`, and any design docs under `docs/designs/`. Grep for the old behavior/wording before opening the PR to confirm nothing stale remains. A behavior change whose docs still describe the old behavior is an incomplete PR.
 
 ## Workflow Rules
 

@@ -68,6 +68,7 @@ function makeTeamConfig(overrides?: Partial<TeamaiConfig>): TeamaiConfig {
         rules: '.claude/rules',
         settings: '.claude/settings.json',
         claudemd: '.claude/CLAUDE.md',
+        agents: '.claude/agents',
       },
     },
     ...overrides,
@@ -107,6 +108,15 @@ async function setupFixture(tmpDir: string) {
   // Tool dirs: synced rule
   await fse.ensureDir(path.join(homeDir, '.claude', 'rules'));
   await fse.writeFile(path.join(homeDir, '.claude', 'rules', 'team-rule.md'), '# Team Rule');
+
+  // Tool dirs: CLI built-in resources (deployed by the CLI, not the team repo)
+  await fse.writeFile(path.join(homeDir, '.claude', 'rules', 'teamai-recall.md'), '# Recall Rule');
+  await fse.ensureDir(path.join(homeDir, '.claude', 'agents'));
+  await fse.writeFile(path.join(homeDir, '.claude', 'agents', 'teamai-recall.md'), '# Recall Agent');
+  await fse.ensureDir(path.join(homeDir, '.claude', 'skills', 'teamai-share-learnings'));
+  await fse.writeFile(path.join(homeDir, '.claude', 'skills', 'teamai-share-learnings', 'SKILL.md'), '# Share Learnings');
+  await fse.ensureDir(path.join(homeDir, '.claude', 'skills', 'team-wiki-codebase'));
+  await fse.writeFile(path.join(homeDir, '.claude', 'skills', 'team-wiki-codebase', 'SKILL.md'), '# Wiki Codebase');
 
   // Settings.json with hooks
   await fse.writeJson(path.join(homeDir, '.claude', 'settings.json'), {
@@ -420,6 +430,27 @@ describe('uninstall', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(false);
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'ns-skill'))).toBe(false);
     // User skill preserved
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'my-own-skill'))).toBe(true);
+  });
+
+  it('移除 CLI built-in 资源（recall agent/rule + built-in skills）', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    // Built-in recall agent + rule removed
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'agents', 'teamai-recall.md'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'rules', 'teamai-recall.md'))).toBe(false);
+    // Built-in skills removed
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'teamai-share-learnings'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-wiki-codebase'))).toBe(false);
+    // User's own skill still preserved
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'my-own-skill'))).toBe(true);
   });
 

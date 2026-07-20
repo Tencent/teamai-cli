@@ -135,6 +135,68 @@ describe('tags CLI', () => {
   });
 });
 
+// ─── Skill exclusion CLI (isolated local config) ─────────
+
+describe('skill exclude CLI', () => {
+  it('add/list/remove updates config and invalidates the pull cache', async () => {
+    const os = await import('node:os');
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-exclude-e2e-'));
+    const teamaiHome = path.join(sandbox, '.teamai');
+    const repoPath = path.join(sandbox, 'team-repo');
+
+    try {
+      fs.mkdirSync(teamaiHome, { recursive: true });
+      fs.mkdirSync(repoPath, { recursive: true });
+      fs.writeFileSync(
+        path.join(repoPath, 'teamai.yaml'),
+        [
+          'team: exclude-e2e',
+          'description: isolated CLI test',
+          'repo: local/exclude-e2e',
+          'provider: github',
+          'reviewers: []',
+        ].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(teamaiHome, 'config.yaml'),
+        [
+          'repo:',
+          `  localPath: ${repoPath}`,
+          '  remote: local/exclude-e2e',
+          'username: e2e',
+          'scope: user',
+        ].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(teamaiHome, 'state.json'),
+        JSON.stringify({ lastPullRev: 'abc1234' }),
+      );
+
+      const env = { HOME: sandbox };
+      const add = await runCLIWithEnv(['skill', 'exclude', 'add', 'b-skill', 'a-skill'], env, '', sandbox);
+      expect(add.code, add.output).toBe(0);
+      expect(add.output).toContain('Excluded: b-skill, a-skill');
+
+      const savedConfig = fs.readFileSync(path.join(teamaiHome, 'config.yaml'), 'utf-8');
+      expect(savedConfig).toMatch(/excludedSkills:\n\s+- a-skill\n\s+- b-skill/);
+      const invalidatedState = JSON.parse(fs.readFileSync(path.join(teamaiHome, 'state.json'), 'utf-8'));
+      expect(invalidatedState.lastPullRev).toBeNull();
+
+      const list = await runCLIWithEnv(['skill', 'exclude', 'list'], env, '', sandbox);
+      expect(list.code, list.output).toBe(0);
+      expect(list.output).toContain('a-skill');
+      expect(list.output).toContain('b-skill');
+
+      const remove = await runCLIWithEnv(['skill', 'exclude', 'remove', 'a-skill', 'b-skill'], env, '', sandbox);
+      expect(remove.code, remove.output).toBe(0);
+      const finalConfig = fs.readFileSync(path.join(teamaiHome, 'config.yaml'), 'utf-8');
+      expect(finalConfig).not.toContain('excludedSkills');
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── Source-code sanity checks (migrated from test/e2e.mjs) ──
 
 describe('source code checks', () => {

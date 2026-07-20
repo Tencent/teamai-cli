@@ -190,8 +190,37 @@ export async function autoPushViaMR(
 }
 
 /**
+ * Check whether a unified diff contains only metadata/timestamp changes.
+ * If ALL added/removed lines match known timestamp patterns, the diff is
+ * metadata-only and should not trigger a new MR.
+ */
+export function isMetadataOnlyDiff(diff: string): boolean {
+  if (!diff.trim()) return true;
+
+  const METADATA_PATTERNS = [
+    /^\s*"?lastUpdated"?\s*[:=]/i,
+    /^\s*"?lastScan"?\s*[:=]/i,
+    /^\s*"?syncedAt"?\s*[:=]/i,
+    /^\s*"?generatedAt"?\s*[:=]/i,
+    /^\s*"?updatedAt"?\s*[:=]/i,
+  ];
+
+  const lines = diff.split('\n');
+  for (const line of lines) {
+    if (!line.startsWith('+') && !line.startsWith('-')) continue;
+    if (line.startsWith('---') || line.startsWith('+++')) continue;
+    const content = line.slice(1);
+    if (!content.trim()) continue;
+    const isMetadata = METADATA_PATTERNS.some(pat => pat.test(content));
+    if (!isMetadata) return false;
+  }
+
+  return true;
+}
+
+/**
  * Create a new branch, commit files, and push the branch to remote.
- * Returns false if there are no changes to commit.
+ * Returns false if there are no changes to commit (or only metadata changes).
  * Leaves the local repo on the new branch after pushing so that
  * the provider's createPullRequest (which may internally push HEAD)
  * sees the correct branch.
@@ -214,6 +243,16 @@ export async function pushRepoBranch(
   if (status.staged.length === 0) {
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Nothing to commit, switching back to ${defaultBranch}`);
+    await git.checkout(defaultBranch);
+    await git.deleteLocalBranch(branchName, true);
+    return false;
+  }
+
+  // Second gate: skip if all staged changes are metadata-only (timestamps)
+  const diffOutput = await git.diff(['--cached', '--unified=0']);
+  if (isMetadataOnlyDiff(diffOutput)) {
+    const defaultBranch = await getDefaultBranch(localPath);
+    log.debug(`Only metadata/timestamp changes detected, switching back to ${defaultBranch}`);
     await git.checkout(defaultBranch);
     await git.deleteLocalBranch(branchName, true);
     return false;

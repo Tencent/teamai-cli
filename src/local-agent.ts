@@ -26,7 +26,9 @@ import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
+import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
+import { reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
 import {
   TEAMAI_HOME,
   TEAMAI_TOKEN_PATH,
@@ -51,8 +53,8 @@ type ResourceKind = 'skills' | 'rules' | 'claudemd';
 type CommandResourceKind = 'skill' | 'rule' | 'claudemd';
 
 interface WorkspaceBinding {
-  groupId: number;
-  groupName?: string;
+  projectId: number;
+  projectName?: string;
   boundAt: string;
 }
 
@@ -69,12 +71,34 @@ export interface LocalAgentConfig {
   userGroupId?: number;
   userGroupName?: string;
   workspaceBindings: Record<string, WorkspaceBinding>;
+  /**
+   * Optional per-endpoint path overrides. Maps a logical route name to a custom
+   * path so a backend that does not use the default `/api/local-agent/*` layout
+   * can be pointed at its own routes. Unspecified routes fall back to DEFAULT_ROUTES.
+   * Example: { "getConfig": "/api/plugins/config", "sync": "/v2/agent/sync" }
+   */
+  routes?: Partial<Record<RouteName, string>>;
 }
 
-interface LocalAgentGroup {
+/**
+ * Logical names for every backend endpoint the local agent talks to, mapped to
+ * their default paths. A deployment can override any of these via config.routes
+ * (see LocalAgentConfig.routes) without touching call sites.
+ */
+export const DEFAULT_ROUTES = {
+  projects: '/api/projects/mine',
+  report: '/api/local-agent/report',
+  sync: '/api/local-agent/sync',
+  ack: '/api/local-agent/commands/ack',
+  getConfig: '/api/local-agent/get-config',
+} as const;
+
+export type RouteName = keyof typeof DEFAULT_ROUTES;
+
+interface LocalAgentProject {
   id: number;
   name: string;
-  is_primary?: boolean;
+  description?: string;
 }
 
 interface ManifestResource {
@@ -166,6 +190,22 @@ function normalizeEndpoint(endpoint: string): string {
   return endpoint.trim().replace(/\/+$/, '');
 }
 
+/** Normalize a route override so it is a leading-slash path (endpoint has no trailing slash). */
+function normalizeRoute(route: string): string {
+  const trimmed = route.trim();
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+/**
+ * Resolve a logical route name to its path, applying config.routes overrides
+ * over DEFAULT_ROUTES. A blank/whitespace override is ignored (falls back to default).
+ */
+export function resolveRoute(config: Pick<LocalAgentConfig, 'routes'>, name: RouteName): string {
+  const override = config.routes?.[name];
+  if (override && override.trim()) return normalizeRoute(override);
+  return DEFAULT_ROUTES[name];
+}
+
 /**
  * Resolve the per-tool install directory that seeds the local_agent_id hash.
  *
@@ -230,6 +270,46 @@ async function saveManifest(manifest: LocalAgentManifest): Promise<void> {
   await writeJson(getManifestPath(), manifest);
 }
 
+function getPluginStatePath(): string {
+  return path.join(getLocalAgentHome(), 'plugins.json');
+}
+
+async function readPluginState(): Promise<Record<string, PluginState>> {
+  return (await readJson<Record<string, PluginState>>(getPluginStatePath())) ?? {};
+}
+
+/**
+ * Atomically mutate the plugin-state file under an exclusive lock. If the lock
+ * cannot be acquired within the timeout, throws (the caller skips this cycle
+ * rather than writing without the lock — reconcile is throttled, so skipping is safe).
+ */
+async function withPluginStateLock(mutate: (m: Record<string, PluginState>) => void): Promise<void> {
+  const statePath = getPluginStatePath();
+  const lockPath = `${statePath}.lock`;
+  await ensureDir(path.dirname(lockPath));
+  const deadline = Date.now() + 5000;
+  let acquired = false;
+  while (Date.now() <= deadline) {
+    try { const fd = await fs.promises.open(lockPath, 'wx'); await fd.close(); acquired = true; break; }
+    catch (e) {
+      if ((e as { code?: string }).code !== 'EEXIST') throw e;
+      try {
+        const st = await fs.promises.stat(lockPath);
+        if (Date.now() - st.mtimeMs > 30_000) { await fs.promises.rm(lockPath, { force: true }); continue; }
+      } catch { /* lock vanished */ }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+  if (!acquired) throw new Error('could not acquire plugin-state lock');
+  try {
+    const m = await readPluginState();
+    mutate(m);
+    await writeJson(statePath, m);
+  } finally {
+    await fs.promises.rm(lockPath, { force: true });
+  }
+}
+
 function getManifestScope(
   manifest: LocalAgentManifest,
   scope: LocalAgentScope,
@@ -243,11 +323,18 @@ function getManifestScope(
 export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
   const fileConfig = await readJson<LocalAgentConfig>(getConfigPath());
   if (fileConfig?.endpoint) {
-    return {
+    const config = {
       ...fileConfig,
       endpoint: normalizeEndpoint(fileConfig.endpoint),
       workspaceBindings: fileConfig.workspaceBindings ?? {},
     };
+    // Migrate: clear legacy group-based bindings (groupId without projectId)
+    for (const [wsPath, binding] of Object.entries(config.workspaceBindings)) {
+      if ('groupId' in binding && !('projectId' in (binding as Record<string, unknown>))) {
+        delete config.workspaceBindings[wsPath];
+      }
+    }
+    return config;
   }
 
   const envEndpoint =
@@ -330,11 +417,12 @@ function authHeaders(config: LocalAgentConfig, json = true): Record<string, stri
 async function localAgentFetch<T>(
   config: LocalAgentConfig,
   tag: string,
-  route: string,
+  route: RouteName,
   init?: RequestInit,
+  opts?: { redactResponseLog?: boolean },
 ): Promise<T> {
   const method = init?.method ?? 'GET';
-  const url = `${config.endpoint}${route}`;
+  const url = `${config.endpoint}${resolveRoute(config, route)}`;
   const headers: Record<string, string> = {
     ...authHeaders(config, init?.body !== undefined),
     ...((init?.headers as Record<string, string> | undefined) ?? {}),
@@ -351,7 +439,7 @@ async function localAgentFetch<T>(
       body = text;
     }
   }
-  logHttpResponse(tag, method, url, response.status, response.statusText, body);
+  logHttpResponse(tag, method, url, response.status, response.statusText, opts?.redactResponseLog ? '<redacted>' : body);
   if (!response.ok) {
     const message = typeof body === 'object' && body && 'error' in body
       ? String((body as { error: unknown }).error)
@@ -374,14 +462,195 @@ async function appendErrorLog(entry: unknown): Promise<void> {
   }
 }
 
-export async function fetchUserGroups(config: LocalAgentConfig): Promise<LocalAgentGroup[]> {
-  const response = await localAgentFetch<{ ok?: boolean; groups?: LocalAgentGroup[] }>(
+export async function fetchUserProjects(config: LocalAgentConfig): Promise<LocalAgentProject[]> {
+  const response = await localAgentFetch<{ ok?: boolean; projects?: LocalAgentProject[] }>(
     config,
     localAgentTag({}),
-    '/api/user-groups/mine',
+    'projects',
     { method: 'GET' },
   );
-  return response.groups ?? [];
+  return response.projects ?? [];
+}
+
+/** Mask secret values (CLI flags / key=value / bearer tokens) so they don't reach logs. */
+function redactSecrets(s: string): string {
+  // Secret-bearing identifiers, matched case-insensitively in flag and key=value forms.
+  const names = 'secret[_-]?(?:key|id)|api[_-]?key|access[_-]?token|token|password|passwd|pwd';
+  return s
+    .replace(new RegExp(`(--(?:${names})[= ]+)\\S+`, 'gi'), '$1***')
+    .replace(new RegExp(`((?:${names})"?\\s*[:=]\\s*"?)[^"\\s,}]+`, 'gi'), '$1***')
+    .replace(/(bearer\s+)[\w.\-]+/gi, '$1***');
+}
+
+/**
+ * Execute a shell command string with a timeout.
+ *
+ * Completion is gated on the process 'exit' event, NOT 'close': a setup command that
+ * daemonizes and leaves the inherited stderr pipe open in a background process would never
+ * emit 'close', producing a false timeout even though the command itself finished.
+ * Rejects on non-zero exit, termination by signal, or timeout.
+ */
+async function execPluginCommand(cmd: string, timeoutMs: number): Promise<void> {
+  const { spawn } = await import('node:child_process');
+  await new Promise<void>((resolve, reject) => {
+    const child = process.platform === 'win32'
+      ? spawn('cmd', ['/c', cmd], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
+      : spawn('/bin/sh', ['-lc', cmd], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    child.stderr?.on('data', (d) => { stderr += d.toString(); if (stderr.length > 8192) stderr = stderr.slice(-8192); });
+    const detachStderr = (): void => {
+      // Drain and unref the stderr pipe without closing it: a daemonized child may still hold
+      // the write end, and closing our read end would send it SIGPIPE. Unref-ing lets this
+      // worker process exit without waiting on — or killing — the daemon.
+      child.stderr?.removeAllListeners('data');
+      child.stderr?.resume();
+      (child.stderr as unknown as { unref?: () => void } | undefined)?.unref?.();
+    };
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      detachStderr();
+      child.unref();
+      fn();
+    };
+    timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(() => reject(new Error(`command timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+    child.on('error', (e) => finish(() => reject(e)));
+    child.on('exit', (code, signal) =>
+      finish(() => {
+        if (signal) return reject(new Error(`command killed by ${signal}`));
+        if (code === 0) return resolve();
+        const tail = stderr ? ' :: ' + redactSecrets(stderr.slice(0, 200).trim()) : '';
+        reject(new Error(`command failed (exit ${code})${tail}`));
+      }),
+    );
+  });
+}
+
+/**
+ * Fetch backend plugin config.
+ * Route = 'getConfig' (default path /api/local-agent/get-config, overridable via config.routes).
+ * localAgentFetch builds `url = config.endpoint + resolveRoute(...)`, matching report/sync pattern.
+ */
+async function fetchPluginConfig(config: LocalAgentConfig, tag: string): Promise<unknown> {
+  return localAgentFetch<unknown>(config, tag, 'getConfig', { method: 'GET' }, { redactResponseLog: true });
+}
+
+const PLUGIN_PULL_INTERVAL_MS = 12 * 60 * 60 * 1000;
+const PLUGIN_FAIL_BACKOFF_MS = 60 * 60 * 1000;
+
+function getPluginPullStatePath(): string {
+  return path.join(getLocalAgentHome(), 'plugin-pull.json');
+}
+
+function buildReconcileDeps(config: LocalAgentConfig, tag: string): ReconcileDeps {
+  return {
+    readPlugins: () => readPluginState(),
+    mutatePlugins: (fn) => withPluginStateLock(fn),
+    execCommand: (cmd, t) => execPluginCommand(cmd, t),
+    now: () => Date.now(),
+    log: {
+      debug: (msg) => log.debug(`${tag} ${msg}`),
+      // The reconcile worker runs detached (stdio: 'ignore'), so console-only log.warn
+      // output is discarded. Mirror warnings to debug.log so failures are traceable.
+      warn: (msg) => {
+        log.warn(`${tag} ${msg}`);
+        log.debug(`${tag} WARN: ${msg}`);
+      },
+    },
+  };
+}
+
+/** On session start, throttle-check and spawn a detached worker for plugin reconcile. Never blocks. */
+async function maybeReconcilePlugins(context: LocalAgentContext): Promise<void> {
+  try {
+    const state = (await readJson<{ lastPullAt?: number; lastFailAt?: number }>(getPluginPullStatePath())) ?? {};
+    const now = Date.now();
+    if (state.lastPullAt && now - state.lastPullAt < PLUGIN_PULL_INTERVAL_MS) return;
+    if (state.lastFailAt && now - state.lastFailAt < PLUGIN_FAIL_BACKOFF_MS) return;
+    const tool = context.tool ?? 'workbuddy';
+    const localAgentId = `${tool}-${resolveLocalAgentId(context)}`;
+    const { spawn } = await import('node:child_process');
+    if (!process.argv[1]) { log.debug('[local-agent] plugin reconcile: no CLI entrypoint (argv[1]), skipping'); return; }
+    const child = spawn(process.execPath, [process.argv[1], 'source', 'reconcile-plugins'],
+      { detached: true, stdio: 'ignore', env: { ...process.env, TEAMAI_PLUGIN_LOCAL_AGENT_ID: localAgentId } });
+    child.unref();
+  } catch (e) { log.debug(`[local-agent] plugin reconcile spawn skipped: ${(e as Error).message}`); }
+}
+
+/** Detached worker: pull get-config and reconcile plugins once, guarded by a reconcile lock. */
+export async function runPluginReconcileWorker(): Promise<void> {
+  const config = await loadLocalAgentConfig();
+  if (!config) return;
+  const lockPath = path.join(getLocalAgentHome(), 'plugin-reconcile.lock');
+  await ensureDir(path.dirname(lockPath));
+  let acquired = false;
+  try {
+    try {
+      const fd = await fs.promises.open(lockPath, 'wx');
+      await fd.close();
+      acquired = true;
+    } catch (e) {
+      if ((e as { code?: string }).code !== 'EEXIST') throw e;
+      try {
+        const st = await fs.promises.stat(lockPath);
+        if (Date.now() - st.mtimeMs > 30 * 60 * 1000) {
+          await fs.promises.rm(lockPath, { force: true });
+          const fd = await fs.promises.open(lockPath, 'wx');
+          await fd.close();
+          acquired = true;
+        }
+      } catch { /* ignore */ }
+      if (!acquired) return;
+    }
+    const tag = '[local-agent] [plugin-reconcile]';
+    const statePath = getPluginPullStatePath();
+    try {
+      const resp = await fetchPluginConfig(config, tag);
+      const { vars, plugins } = parseGetConfig(resp);
+      const declaredSlugs = plugins.length ? ` [${plugins.map((p) => p.slug).join(', ')}]` : '';
+      log.debug(`${tag} get-config: ${plugins.length} plugin(s) declared${declaredSlugs}`);
+      const laid = process.env.TEAMAI_PLUGIN_LOCAL_AGENT_ID;
+      if (!laid) log.debug(tag + ' no local_agent_id in env; plugins needing it will be skipped');
+      const allVars = { ...vars, ...(laid ? { local_agent_id: laid } : {}) };
+      const resolved: typeof plugins = [];
+      for (const p of plugins) {
+        const rp = {
+          ...p,
+          installCmd: substituteVars(p.installCmd, allVars),
+          updateCmd: p.updateCmd ? substituteVars(p.updateCmd, allVars) : undefined,
+          uninstallCmd: substituteVars(p.uninstallCmd, allVars),
+          runCmd: substituteVars(p.runCmd, allVars),
+        };
+        const missing = [...new Set([
+          ...unresolvedPlaceholders(rp.installCmd),
+          ...unresolvedPlaceholders(rp.runCmd),
+          ...unresolvedPlaceholders(rp.uninstallCmd),
+          ...(rp.updateCmd ? unresolvedPlaceholders(rp.updateCmd) : []),
+        ])];
+        if (missing.length) {
+          log.warn(`${tag} plugin ${p.slug}: unresolved placeholders [${missing.join(',')}], skipping`);
+          log.debug(`${tag} WARN: plugin ${p.slug}: unresolved placeholders [${missing.join(',')}], skipping`);
+          continue;
+        }
+        resolved.push(rp);
+      }
+      await reconcilePlugins(resolved, buildReconcileDeps(config, tag));
+      log.debug(`${tag} reconcile complete (${resolved.length} plugin(s) processed)`);
+      await writeJson(statePath, { lastPullAt: Date.now() });
+    } catch (e) {
+      const prev = (await readJson<{ lastPullAt?: number; lastFailAt?: number }>(statePath)) ?? {};
+      await writeJson(statePath, { ...prev, lastFailAt: Date.now() });
+      log.debug(`${tag} reconcile failed: ${(e as Error).message}`);
+    }
+  } finally {
+    if (acquired) await fs.promises.rm(lockPath, { force: true });
+  }
 }
 
 async function askViaTty(prompt: string): Promise<string | null> {
@@ -414,56 +683,54 @@ async function askViaTty(prompt: string): Promise<string | null> {
   }
 }
 
-async function promptForGroupBinding(
+async function promptForProjectBinding(
   workspacePath: string,
-  groups: LocalAgentGroup[],
-): Promise<LocalAgentGroup | null> {
-  if (groups.length === 0) return null;
+  projects: LocalAgentProject[],
+): Promise<LocalAgentProject | null> {
+  if (projects.length === 0) return null;
 
   log.debug(`local-agent: workspace not bound: ${workspacePath}`);
-  const answer = await askViaTty('是否绑定到一个组织？[y/N] ');
+  const answer = await askViaTty('是否绑定到一个项目？[y/N] ');
   if (!answer || answer.toLowerCase() !== 'y') return null;
 
-  if (groups.length === 1) return groups[0];
+  if (projects.length === 1) return projects[0];
 
-  log.info('可用组织:');
-  groups.forEach((group, index) => {
-    const suffix = group.is_primary ? ' (默认)' : '';
-    log.info(`  ${index + 1}. ${group.name}${suffix} [id=${group.id}]`);
+  log.info('可用项目:');
+  projects.forEach((project, index) => {
+    const desc = project.description ? ` - ${project.description}` : '';
+    log.info(`  ${index + 1}. ${project.name}${desc} [id=${project.id}]`);
   });
 
-  const primary = groups.find((group) => group.is_primary) ?? groups[0];
-  const defaultIndex = groups.indexOf(primary) + 1;
-  const selection = await askViaTty(`选择组织编号（默认 ${defaultIndex}，0 跳过）: `);
+  const selection = await askViaTty(`选择项目编号（1-${projects.length}，0 跳过）: `);
   if (selection === null || selection === '0') return null;
-  const index = selection ? Number.parseInt(selection, 10) : defaultIndex;
-  if (Number.isNaN(index) || index < 1 || index > groups.length) return null;
-  return groups[index - 1];
+  const index = selection ? Number.parseInt(selection, 10) : 0;
+  if (Number.isNaN(index) || index < 1 || index > projects.length) return null;
+  return projects[index - 1];
 }
 
-export async function bindWorkspaceToGroup(
+export async function bindWorkspaceToProject(
   workspacePath: string,
-  groupId?: number,
+  projectId?: number,
 ): Promise<WorkspaceBinding | null> {
   const config = await loadLocalAgentConfig();
   if (!config) {
     throw new Error('HTTP local agent is not initialized. Run `teamai init --http <ENDPOINT> --token <API_TOKEN>` first.');
   }
 
-  const groups = await fetchUserGroups(config);
-  const group = groupId
-    ? groups.find((item) => item.id === groupId)
-    : await promptForGroupBinding(workspacePath, groups);
-  if (!group) return null;
+  const projects = await fetchUserProjects(config);
+  const project = projectId
+    ? projects.find((item) => item.id === projectId)
+    : await promptForProjectBinding(workspacePath, projects);
+  if (!project) return null;
 
   const binding: WorkspaceBinding = {
-    groupId: group.id,
-    groupName: group.name,
+    projectId: project.id,
+    projectName: project.name,
     boundAt: new Date().toISOString(),
   };
   config.workspaceBindings[workspacePath] = binding;
   await saveLocalAgentConfig(config);
-  log.success(`已将项目绑定到组织：${group.name} [id=${group.id}]`);
+  log.success(`已将工作区绑定到项目：${project.name} [id=${project.id}]`);
   return binding;
 }
 
@@ -473,21 +740,21 @@ async function ensureWorkspaceBinding(
 ): Promise<void> {
   if (config.workspaceBindings[workspacePath]) return;
 
-  let groups: LocalAgentGroup[];
+  let projects: LocalAgentProject[];
   try {
-    groups = await fetchUserGroups(config);
+    projects = await fetchUserProjects(config);
   } catch (e) {
-    log.debug(`local-agent: failed to load user groups: ${(e as Error).message}`);
+    log.debug(`local-agent: failed to load user projects: ${(e as Error).message}`);
     return;
   }
 
-  if (groups.length === 0) return;
+  if (projects.length === 0) return;
 
-  const group = await promptForGroupBinding(workspacePath, groups);
-  if (group) {
+  const project = await promptForProjectBinding(workspacePath, projects);
+  if (project) {
     config.workspaceBindings[workspacePath] = {
-      groupId: group.id,
-      groupName: group.name,
+      projectId: project.id,
+      projectName: project.name,
       boundAt: new Date().toISOString(),
     };
     await saveLocalAgentConfig(config);
@@ -495,12 +762,12 @@ async function ensureWorkspaceBinding(
   }
 
   // TTY prompt failed (running as hook in background) — output context for AI to prompt user
-  const groupList = groups.map((g) => `${g.name} (id=${g.id})`).join(', ');
+  const projectList = projects.map((p) => `${p.name} (id=${p.id})`).join(', ');
   const context = [
-    '[teamai] 当前项目尚未绑定组织，无法接收组织下发的 skills/rules/claudemd 资源。',
-    `可用组织: ${groupList}`,
+    '[teamai] 当前工作区尚未绑定项目，无法接收项目下发的 skills/rules/claudemd 资源。',
+    `可用项目: ${projectList}`,
     `请提示用户运行: teamai bind-project`,
-    `或指定组织: teamai bind-project --group-id <id>`,
+    `或指定项目: teamai bind-project --project-id <id>`,
   ].join('\n');
   const hookOutput = JSON.stringify({
     hookSpecificOutput: {
@@ -532,22 +799,22 @@ async function emitBindingHint(
   if (fs.existsSync(hintMarker)) return;
   try { fs.writeFileSync(hintMarker, ''); } catch {}
 
-  let groups: LocalAgentGroup[];
+  let projects: LocalAgentProject[];
   try {
-    groups = await fetchUserGroups(config);
+    projects = await fetchUserProjects(config);
   } catch {
     return;
   }
-  if (groups.length === 0) return;
+  if (projects.length === 0) return;
 
-  const skipNum = groups.length + 1;
-  const choices = groups.map((g, i) => `${i + 1}. 绑定到「${g.name}」组织`);
-  const actions = groups.map((g, i) => `- 用户回复 ${i + 1} → 执行 \`teamai bind-project --group-id ${g.id}\`，完成后回复"绑定完成，请开新会话生效"`);
+  const skipNum = projects.length + 1;
+  const choices = projects.map((p, i) => `${i + 1}. 绑定到「${p.name}」项目`);
+  const actions = projects.map((p, i) => `- 用户回复 ${i + 1} → 执行 \`teamai bind-project --project-id ${p.id}\`，完成后回复"绑定完成，请开新会话生效"`);
   const context = [
-    '[ClawPro组织 绑定提示] 你必须原样展示下面的选项列表，不得修改编号或内容。等用户回复数字后执行对应命令。',
+    '[ClawPro项目 绑定提示] 你必须原样展示下面的选项列表，不得修改编号或内容。等用户回复数字后执行对应命令。',
     '',
     '---',
-    '当前项目未绑定ClawPro组织。绑定后可同步团队 skills/rules。请回复数字选择：',
+    '当前工作区未绑定ClawPro项目。绑定后可同步团队 skills/rules。请回复数字选择：',
     '',
     ...choices,
     `${skipNum}. 不绑定，以后也不再提示`,
@@ -698,7 +965,7 @@ export async function buildReportPayload(
   const userScope = await scanScope(process.env.HOME ?? '');
 
   const payload: Record<string, unknown> = {
-    agent_type: tool,
+    agent_type: normalizeAgentType(tool),
     agent_version: await getAgentVersion(tool),
     local_agent_id: resolveLocalAgentId(context),
     host_name: os.hostname(),
@@ -722,8 +989,8 @@ export async function buildReportPayload(
       {
         path: workspacePath,
         name: path.basename(workspacePath),
-        ide_type: tool,
-        group_id: binding?.groupId,
+        ide_type: normalizeAgentType(tool),
+        project_id: binding?.projectId,
         skills: wsScope.skills,
         rules: wsScope.rules,
       },
@@ -740,7 +1007,7 @@ async function buildSyncPayload(
   const workspacePath = await resolveWorkspacePath(context.cwd);
   const binding = workspacePath ? config.workspaceBindings[workspacePath] : undefined;
   const payload: Record<string, unknown> = {
-    agent_type: context.tool ?? 'workbuddy',
+    agent_type: normalizeAgentType(context.tool ?? 'workbuddy'),
     local_agent_id: resolveLocalAgentId(context),
     status: context.status ?? 'running',
   };
@@ -749,8 +1016,8 @@ async function buildSyncPayload(
       {
         path: workspacePath,
         name: path.basename(workspacePath),
-        ide_type: context.tool ?? 'workbuddy',
-        group_id: binding?.groupId,
+        ide_type: normalizeAgentType(context.tool ?? 'workbuddy'),
+        project_id: binding?.projectId,
       },
     ];
   }
@@ -1143,7 +1410,7 @@ async function ackCommand(
   version?: string,
   error?: string,
 ): Promise<void> {
-  await localAgentFetch(config, tag, '/api/local-agent/commands/ack', {
+  await localAgentFetch(config, tag, 'ack', {
     method: 'POST',
     body: JSON.stringify({
       id: command.id,
@@ -1224,9 +1491,13 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   const tag = localAgentTag(context);
   log.debug(`${tag} run: endpoint=${config.endpoint}`);
 
+  if (context.event?.type === 'session_start') {
+    await maybeReconcilePlugins(context);
+  }
+
   try {
     const reportPayload = await buildReportPayload(config, context);
-    await localAgentFetch(config, tag, '/api/local-agent/report', {
+    await localAgentFetch(config, tag, 'report', {
       method: 'POST',
       body: JSON.stringify(reportPayload),
     });
@@ -1236,7 +1507,7 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
     const syncResponse = await localAgentFetch<{ ok?: boolean; commands?: LocalAgentCommand[] }>(
       config,
       tag,
-      '/api/local-agent/sync',
+      'sync',
       { method: 'POST', body: JSON.stringify(syncPayload) },
     );
     const commands = syncResponse.commands ?? [];
@@ -1339,7 +1610,7 @@ export async function pullLocalAgentForCwd(context?: LocalAgentContext): Promise
 /** Summary of the configured HTTP local-agent bypass, for `teamai source list`. */
 export interface LocalAgentSummary {
   endpoint: string;
-  boundGroups: Array<{ path: string; groupName?: string; groupId: number }>;
+  boundProjects: Array<{ path: string; projectName?: string; projectId: number }>;
   resourceCounts: { skills: number; rules: number; claudemd: number };
 }
 
@@ -1352,10 +1623,9 @@ export async function describeLocalAgent(): Promise<LocalAgentSummary | null> {
   const config = await loadLocalAgentConfig();
   if (!config) return null;
 
-  const boundGroups = Object.entries(config.workspaceBindings)
-    // groupId 0 is the "__skipped__" sentinel — not a real binding.
-    .filter(([, b]) => b.groupId !== 0)
-    .map(([workspacePath, b]) => ({ path: workspacePath, groupName: b.groupName, groupId: b.groupId }));
+  const boundProjects = Object.entries(config.workspaceBindings)
+    .filter(([, b]) => b.projectId !== 0)
+    .map(([workspacePath, b]) => ({ path: workspacePath, projectName: b.projectName, projectId: b.projectId }));
 
   const manifest = await loadManifest();
   const counts = { skills: 0, rules: 0, claudemd: 0 };
@@ -1365,7 +1635,7 @@ export async function describeLocalAgent(): Promise<LocalAgentSummary | null> {
     counts.claudemd += Object.keys(scope.claudemd ?? {}).length;
   }
 
-  return { endpoint: config.endpoint, boundGroups, resourceCounts: counts };
+  return { endpoint: config.endpoint, boundProjects, resourceCounts: counts };
 }
 
 /** Parse a manifest scope key back into (scope, workspacePath). */
@@ -1374,6 +1644,25 @@ function parseScopeKey(key: string): { scope: LocalAgentScope; workspacePath?: s
     return { scope: 'project', workspacePath: key.slice('project:'.length) || undefined };
   }
   return { scope: key === 'instance' ? 'instance' : 'user' };
+}
+
+/**
+ * Run each installed plugin's uninstall_cmd (stop daemons, deregister autostart,
+ * remove packages) using the persisted plugin manifest. No-op when no HTTP source
+ * is configured.
+ *
+ * Best-effort: failures are logged, never thrown, so teardown of the rest of teamai
+ * is never blocked. Must run BEFORE ~/.teamai is deleted — it reads the plugin
+ * manifest and endpoint config from ~/.teamai/local-agent/.
+ */
+export async function teardownLocalAgentPlugins(): Promise<void> {
+  try {
+    const config = await loadLocalAgentConfig();
+    if (!config) return;
+    await teardownAllPlugins(buildReconcileDeps(config, '[local-agent] [uninstall]'));
+  } catch (e) {
+    log.warn(`[local-agent] plugin teardown failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /**
@@ -1390,6 +1679,11 @@ export async function removeLocalAgentHttp(): Promise<void> {
     log.info('No HTTP source configured — nothing to remove.');
     return;
   }
+
+  // Tear down installed plugins before removing teamai's local-agent state.
+  try {
+    await teardownAllPlugins(buildReconcileDeps(config, '[local-agent] [uninstall]'));
+  } catch (e) { log.warn(`[local-agent] plugin teardown failed: ${(e as Error).message}`); }
 
   const kinds: CommandResourceKind[] = ['skill', 'rule', 'claudemd'];
   const manifest = await loadManifest();
@@ -1410,7 +1704,7 @@ export async function removeLocalAgentHttp(): Promise<void> {
   log.success('HTTP source removed (resources uninstalled, config cleared).');
 }
 
-export async function bindCurrentProject(options?: { groupId?: number; skip?: boolean; cwd?: string }): Promise<void> {
+export async function bindCurrentProject(options?: { projectId?: number; skip?: boolean; cwd?: string }): Promise<void> {
   const workspacePath = await resolveWorkspacePath(options?.cwd ?? process.cwd());
   if (!workspacePath) {
     throw new Error('Cannot resolve current workspace path.');
@@ -1420,12 +1714,12 @@ export async function bindCurrentProject(options?: { groupId?: number; skip?: bo
     if (!config) {
       throw new Error('Local agent not initialized. Run `teamai init --http` first.');
     }
-    config.workspaceBindings[workspacePath] = { groupId: 0, groupName: '__skipped__', boundAt: new Date().toISOString() };
+    config.workspaceBindings[workspacePath] = { projectId: 0, projectName: '__skipped__', boundAt: new Date().toISOString() };
     await saveLocalAgentConfig(config);
-    log.info(`已跳过绑定，以后不再提示此项目。`);
+    log.info(`已跳过绑定，以后不再提示此工作区。`);
     return;
   }
-  const binding = await bindWorkspaceToGroup(workspacePath, options?.groupId);
+  const binding = await bindWorkspaceToProject(workspacePath, options?.projectId);
   if (!binding) {
     log.info('未绑定项目。');
   }
