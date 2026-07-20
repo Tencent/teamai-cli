@@ -1,5 +1,5 @@
 import type { OrgRepoInfo } from '../types.js';
-import { gfGetOAuthToken } from './gf-cli.js';
+import { getTGitToken, tgitAuthHeaders } from './rest-auth.js';
 import { log } from '../../utils/logger.js';
 
 const TGIT_API_BASE = 'https://git.woa.com/api/v3';
@@ -57,20 +57,15 @@ export async function gfListOrgRepos(
     group: string,
     opts?: { maxRepos?: number },
 ): Promise<OrgRepoInfo[]> {
-    const token = gfGetOAuthToken();
-    if (!token) {
-        throw new Error(
-            'TGit token unavailable: configure ~/.netrc for git.woa.com or set TAI_PAT_TOKEN',
-        );
-    }
+    const { token, scheme } = getTGitToken();
 
     const maxRepos = opts?.maxRepos ?? DEFAULT_MAX_REPOS;
     const perPage = DEFAULT_PER_PAGE;
     const encodedGroup = encodeURIComponent(group);
 
     const headers = {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json',
+        ...tgitAuthHeaders(token, scheme),
+        Accept: 'application/json',
     };
 
     const collected: OrgRepoInfo[] = [];

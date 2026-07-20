@@ -143,10 +143,16 @@ describe('gfListOrgRepos', () => {
         await expect(gfListOrgRepos('my-group')).rejects.toThrow('TGit API HTTP 403');
     });
 
-    it('token 缺失 — 抛 TGit token unavailable', async () => {
+    it('token 缺失 — 抛 No TGit credentials found', async () => {
+        const savedToken = process.env['TGIT_TOKEN'];
+        delete process.env['TGIT_TOKEN'];
         (gfGetOAuthToken as Mock).mockReturnValue(null);
 
-        await expect(gfListOrgRepos('my-group')).rejects.toThrow('TGit token unavailable');
+        try {
+            await expect(gfListOrgRepos('my-group')).rejects.toThrow('No TGit credentials found');
+        } finally {
+            if (savedToken !== undefined) process.env['TGIT_TOKEN'] = savedToken;
+        }
     });
 
     it('archived 字段缺失时默认 false', async () => {

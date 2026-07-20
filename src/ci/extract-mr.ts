@@ -19,6 +19,7 @@ import { log } from '../utils/logger.js';
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 import { postOrUpdateMrComment, postIndividualComments, postCodebaseGraphComment, parseMrUrl } from './mr-comment.js';
 import { readRejections, shouldWrite } from './read-rejections.js';
+import { tgitFetch } from '../providers/tgit/rest-auth.js';
 
 // ─── 类型 ────────────────────────────────────────────────
 
@@ -40,7 +41,7 @@ export interface CiExtractMrOptions {
  *
  * 通过 provider API 获取当前 token 对应的用户信息：
  * - GitHub: GITHUB_TOKEN → GET /user
- * - TGit: TAI_PAT_TOKEN → GET /api/v3/user
+ * - TGit: TGIT_TOKEN → GET /api/v3/user
  */
 async function configureGitUser(repoPath: string, provider: 'github' | 'tgit'): Promise<void> {
   const { execFileSync } = await import('node:child_process');
@@ -62,17 +63,13 @@ async function configureGitUser(repoPath: string, provider: 'github' | 'tgit'): 
         }
       }
     } else {
-      const token = process.env['TAI_PAT_TOKEN'];
-      if (token) {
-        const resp = await fetch('https://git.woa.com/api/v3/user', {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: AbortSignal.timeout(8000),
-        });
-        if (resp.ok) {
-          const user = (await resp.json()) as { username: string; email: string };
-          name = user.username;
-          email = user.email;
-        }
+      // tgitFetch throws when no TGit credential is available; the outer
+      // catch below logs and falls back to the default git user.
+      const resp = await tgitFetch('/user', { signal: AbortSignal.timeout(8000) });
+      if (resp.ok) {
+        const user = (await resp.json()) as { username: string; email: string };
+        name = user.username;
+        email = user.email;
       }
     }
   } catch {

@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { gfGetOAuthToken } from './providers/tgit/gf-cli.js';
+import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
 
 // ─── MR Hint data flow ──────────────────────────────────
@@ -210,20 +210,20 @@ async function listTGitMergedMRs(
   repo: string,
   since: Date,
 ): Promise<MRSummary[]> {
-  const token = gfGetOAuthToken();
-  if (!token) {
+  try {
+    getTGitToken();
+  } catch {
     log.debug('mr-hint: no TGit token, skipping TGit MR check');
     return [];
   }
 
   const projectId = encodeURIComponent(`${owner}/${repo}`);
-  const apiUrl =
-    `https://git.woa.com/api/v3/projects/${projectId}/merge_requests` +
+  const apiPath =
+    `/projects/${projectId}/merge_requests` +
     `?state=merged&order_by=updated_at&sort=desc&per_page=${MAX_MRS}`;
 
   try {
-    const resp = await fetch(apiUrl, {
-      headers: { Authorization: `Bearer ${token}` },
+    const resp = await tgitFetch(apiPath, {
       signal: AbortSignal.timeout(8000),
     });
     if (!resp.ok) {
