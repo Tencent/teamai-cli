@@ -153,6 +153,20 @@ export async function gitCommit(root: string): Promise<string | undefined> {
 }
 
 /**
+ * Report whether the git working tree at root is clean (no staged, unstaged,
+ * or untracked changes). Returns false when git is unavailable, so callers
+ * treat "unknown" as dirty and fall back to a full scan.
+ */
+export async function isWorkingTreeClean(root: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", root, "status", "--porcelain"]);
+    return stdout.trim().length === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Compute changed files between two git commits via `git diff --name-status`.
  *
  * Returns added/changed/deleted relative paths (POSIX-normalized). Renames
@@ -166,7 +180,7 @@ export async function gitDiffNameStatus(
   newSha: string,
 ): Promise<{ added: string[]; changed: string[]; deleted: string[] } | null> {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", root, "diff", "--name-status", "-M", "-C", oldSha, newSha]);
+    const { stdout } = await execFileAsync("git", ["-C", root, "-c", "core.quotePath=false", "diff", "--name-status", "-M", "-C", oldSha, newSha]);
     const added: string[] = [];
     const changed: string[] = [];
     const deleted: string[] = [];

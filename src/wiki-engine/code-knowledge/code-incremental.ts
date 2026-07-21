@@ -1,7 +1,7 @@
 import { readFile, writeFile, stat, mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import { collectCode, gitCommit, gitDiffNameStatus } from "./code-collector.js";
+import { collectCode, gitCommit, gitDiffNameStatus, isWorkingTreeClean } from "./code-collector.js";
 import type { CodeFact } from "./code-extractors.js";
 import type { InterfaceInventory } from "../interface-scanner.js";
 
@@ -27,8 +27,11 @@ export async function detectCodeIncrementalChanges(
   const oldSha = previous.headSha;
   const newSha = await gitCommit(root);
 
-  // Git incremental path: use git diff when both commits are known
-  if (oldSha && newSha) {
+  // Git incremental path: only when both commits are known AND the working
+  // tree is clean. A dirty tree has uncommitted/untracked changes that a
+  // commit-to-commit diff cannot see, so we fall back to the full sha256
+  // scan (which reads the working tree) to avoid silent staleness.
+  if (oldSha && newSha && (await isWorkingTreeClean(root))) {
     const gitChanges = await gitDiffNameStatus(root, oldSha, newSha);
     if (gitChanges !== null) {
       const { added, changed, deleted } = gitChanges;

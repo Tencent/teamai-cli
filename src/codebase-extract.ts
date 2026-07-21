@@ -780,19 +780,19 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   let prevRepoUrl: string | undefined;
   let prevBranch: string | undefined;
   let prevIngestedMrs: Array<{ url: string; headSha?: string; at: string }> = [];
-  // Load prior baseline on incremental, or when recording a MR (preserve existing ingestedMrs).
-  if (opts.incremental || opts.sourceMrUrl) {
-    try {
-      const prev = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
-        repoUrl?: string;
-        branch?: string;
-        ingestedMrs?: Array<{ url: string; headSha?: string; at: string }>;
-      };
-      prevRepoUrl = prev.repoUrl;
-      prevBranch = prev.branch;
-      prevIngestedMrs = prev.ingestedMrs ?? [];
-    } catch { /* no prior manifest */ }
-  }
+  // Always carry forward prior baseline provenance (repoUrl / branch /
+  // ingestedMrs) so a full re-extract does not silently drop it. A missing
+  // or unreadable manifest just leaves the defaults.
+  try {
+    const prev = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+      repoUrl?: string;
+      branch?: string;
+      ingestedMrs?: Array<{ url: string; headSha?: string; at: string }>;
+    };
+    prevRepoUrl = prev.repoUrl;
+    prevBranch = prev.branch;
+    prevIngestedMrs = prev.ingestedMrs ?? [];
+  } catch { /* no prior manifest */ }
 
   const headSha = collectionManifest.commit;
   const manifestObject: Record<string, unknown> = {
