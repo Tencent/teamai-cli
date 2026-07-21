@@ -680,7 +680,11 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                     await fs.copy(existingManifest, path.join(cacheDir, 'teamwiki', 'source-manifest.json'));
                 }
             }
-            await extractCodebase({ path: cacheDir, project: slug, json: false, skipEnrich, incremental });
+            await extractCodebase({
+                path: cacheDir, project: slug, json: false, skipEnrich, incremental,
+                repoUrl: url,
+                branch: cloneBranch === 'HEAD' ? undefined : cloneBranch,
+            });
             // Move artifacts from cacheDir/teamwiki/ to target teamwikiRoot
             if (await fs.pathExists(cacheWiki)) {
                 const evidenceSrc = path.join(cacheWiki, 'evidence', 'code', slug);

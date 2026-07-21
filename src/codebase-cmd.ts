@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 import chalk from 'chalk';
 
@@ -25,6 +26,7 @@ export interface CodebaseCmdOptions extends GlobalOptions {
     output?: string;
     project?: string;
     maxFiles?: string;
+    status?: boolean;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -81,6 +83,11 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
             project: opts.project,
             maxFiles: opts.maxFiles ? parseInt(opts.maxFiles, 10) : undefined,
         });
+        return;
+    }
+
+    if (opts.status) {
+        await printCodebaseStatus(opts);
         return;
     }
 
@@ -195,4 +202,55 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
             process.exitCode = 1;
         }
     }
+}
+
+/**
+ * Print the git baseline recorded in teamwiki/source-manifest.json.
+ *
+ * Reports headSha / repoUrl / branch / lastScan / file count so users can
+ * tell which commit the knowledge base corresponds to.
+ */
+async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
+    const cwd = process.cwd();
+    let teamwikiDir: string;
+    if (opts.output) {
+        teamwikiDir = path.resolve(opts.output, 'teamwiki');
+    } else {
+        try {
+            const { autoDetectInit } = await import('./config.js');
+            const { localConfig: lc } = await autoDetectInit();
+            teamwikiDir = path.join(lc.repo.localPath, 'teamwiki');
+        } catch {
+            teamwikiDir = path.join(cwd, '.teamai', 'team-repo', 'teamwiki');
+        }
+    }
+    const manifestPath = path.join(teamwikiDir, 'source-manifest.json');
+    let manifest: { headSha?: string; repoUrl?: string; branch?: string; lastScan?: string; files?: unknown[] };
+    try {
+        manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
+    } catch {
+        if (opts.json) {
+            console.log(JSON.stringify({ error: 'no-manifest', manifestPath }));
+        } else {
+            console.log(chalk.yellow(`No source-manifest.json found at ${manifestPath}`));
+        }
+        process.exitCode = 1;
+        return;
+    }
+    if (opts.json) {
+        console.log(JSON.stringify({
+            headSha: manifest.headSha ?? null,
+            repoUrl: manifest.repoUrl ?? null,
+            branch: manifest.branch ?? null,
+            lastScan: manifest.lastScan ?? null,
+            fileCount: Array.isArray(manifest.files) ? manifest.files.length : 0,
+        }, null, 2));
+        return;
+    }
+    console.log(chalk.bold('Knowledge-base baseline'));
+    console.log(`  headSha:  ${manifest.headSha ?? chalk.dim('(none)')}`);
+    console.log(`  repoUrl:  ${manifest.repoUrl ?? chalk.dim('(none)')}`);
+    console.log(`  branch:   ${manifest.branch ?? chalk.dim('(none)')}`);
+    console.log(`  lastScan: ${manifest.lastScan ?? chalk.dim('(none)')}`);
+    console.log(`  files:    ${Array.isArray(manifest.files) ? manifest.files.length : 0}`);
 }

@@ -709,6 +709,7 @@ program
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
   .option('--lint', 'Run global consistency lint over docs/team-codebase')
   .option('--fix', 'Apply low-risk mechanical fixes (only with --lint)')
+  .option('--status', 'Show knowledge-base git baseline (headSha / repoUrl / branch)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
   .addOption(new Option('--stale-days <n>', 'Threshold for sync-stale check').default('60').hideHelp())
   .addOption(new Option('--pending-review-threshold <n>', 'Threshold for pending-review backlog').default('10').hideHelp())

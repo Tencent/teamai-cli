@@ -45,6 +45,10 @@ export interface ExtractCodebaseOptions {
   skipEnrich?: boolean;
   /** 产出根目录（teamwiki/ 写到此目录下）。默认与 path 相同。 */
   outputRoot?: string;
+  /** Remote repository URL, persisted into source-manifest.json baseline. */
+  repoUrl?: string;
+  /** Branch name, persisted into source-manifest.json baseline. */
+  branch?: string;
 }
 
 interface ExtractResult {
@@ -770,15 +774,29 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     const deletedSet = new Set(deletedFiles);
     allManifestFiles = allManifestFiles.filter(f => !deletedSet.has(f.relativePath));
   }
-  const manifestContent = JSON.stringify(
-    {
-      version: 1,
-      lastScan: new Date().toISOString(),
-      files: allManifestFiles,
-    },
-    null,
-    2,
-  );
+  // Persist git baseline from prior incremental manifest when not explicitly supplied
+  let prevRepoUrl: string | undefined;
+  let prevBranch: string | undefined;
+  if (opts.incremental) {
+    try {
+      const prev = JSON.parse(await readFile(manifestPath, 'utf-8')) as { repoUrl?: string; branch?: string };
+      prevRepoUrl = prev.repoUrl;
+      prevBranch = prev.branch;
+    } catch { /* no prior manifest */ }
+  }
+
+  const headSha = collectionManifest.commit;
+  const manifestObject: Record<string, unknown> = {
+    version: 1,
+    lastScan: new Date().toISOString(),
+    files: allManifestFiles,
+  };
+  if (headSha) manifestObject.headSha = headSha;
+  const repoUrl = opts.repoUrl ?? prevRepoUrl;
+  const branch = opts.branch ?? prevBranch;
+  if (repoUrl) manifestObject.repoUrl = repoUrl;
+  if (branch) manifestObject.branch = branch;
+  const manifestContent = JSON.stringify(manifestObject, null, 2);
   await writeFile(manifestPath, manifestContent, 'utf-8');
 
   const byKind: Record<string, number> = {};
