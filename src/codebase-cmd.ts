@@ -225,7 +225,14 @@ async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
         }
     }
     const manifestPath = path.join(teamwikiDir, 'source-manifest.json');
-    let manifest: { headSha?: string; repoUrl?: string; branch?: string; lastScan?: string; files?: unknown[] };
+    let manifest: {
+        headSha?: string;
+        repoUrl?: string;
+        branch?: string;
+        lastScan?: string;
+        files?: unknown[];
+        ingestedMrs?: Array<{ url: string; headSha?: string; at: string }>;
+    };
     try {
         manifest = JSON.parse(await readFile(manifestPath, 'utf-8'));
     } catch {
@@ -244,6 +251,7 @@ async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
             branch: manifest.branch ?? null,
             lastScan: manifest.lastScan ?? null,
             fileCount: Array.isArray(manifest.files) ? manifest.files.length : 0,
+            ingestedMrs: manifest.ingestedMrs ?? [],
         }, null, 2));
         return;
     }
@@ -253,4 +261,10 @@ async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
     console.log(`  branch:   ${manifest.branch ?? chalk.dim('(none)')}`);
     console.log(`  lastScan: ${manifest.lastScan ?? chalk.dim('(none)')}`);
     console.log(`  files:    ${Array.isArray(manifest.files) ? manifest.files.length : 0}`);
+    const mrs = manifest.ingestedMrs ?? [];
+    console.log(`  ingested MRs: ${mrs.length}`);
+    for (const mr of mrs) {
+        const sha = mr.headSha ? mr.headSha.slice(0, 8) : '(no sha)';
+        console.log(`    - ${mr.url}  @${sha}  ${mr.at}`);
+    }
 }

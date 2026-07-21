@@ -229,6 +229,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
                   incremental: true,
                   interactive: false,
                   skipAutoPush: true,
+                  sourceMrUrl: opts.fromMr,
                 });
                 ctx.didUpdate = true;
               } else {

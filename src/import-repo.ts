@@ -56,6 +56,8 @@ export interface ImportFromRepoOptions {
     skipAutoPush?: boolean;
     /** Skip AI enrichment (only clone + extract + graph, no LLM calls) */
     skipEnrich?: boolean;
+    /** Source MR/PR URL to record as ingested (P5, passed through to extractCodebase). */
+    sourceMrUrl?: string;
 }
 
 // ─── Cross-Repo Edge Detection ─────────────────────────
@@ -537,7 +539,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     const {
         url, depth = 1, forceSsh = false, forceAnonymous = false,
         explicitDomain, dryRun = false, output, interactive = true,
-        incremental = false, skipAutoPush = false, skipEnrich = false,
+        incremental = false, skipAutoPush = false, skipEnrich = false, sourceMrUrl,
     } = opts;
 
     // 1. Parse provider and repo info
@@ -684,6 +686,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 path: cacheDir, project: slug, json: false, skipEnrich, incremental,
                 repoUrl: url,
                 branch: cloneBranch === 'HEAD' ? undefined : cloneBranch,
+                sourceMrUrl,
             });
             // Move artifacts from cacheDir/teamwiki/ to target teamwikiRoot
             if (await fs.pathExists(cacheWiki)) {
