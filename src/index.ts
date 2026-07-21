@@ -586,7 +586,17 @@ program
   .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
   .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string }) => {
     const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
-    await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
+    try {
+      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
+    } finally {
+      // Hook subprocesses must exit promptly: a hung/unreachable backend fetch can
+      // leave a socket pending on the event loop, blocking natural exit and tripping
+      // the host IDE's default hook timeout. Force exit once dispatch has settled.
+      // Tradeoff: this also terminates best-effort fire-and-forget background work
+      // (e.g. event compaction) for all tools, which is acceptable because such work
+      // is idempotent/best-effort and safe to drop.
+      process.exit(0);
+    }
   });
 
 program

@@ -64,6 +64,6 @@ export async function hookDispatchCli(event: string, tool: string, matcher: stri
 
   // Write output to STDOUT if any handler produced one
   if (result.output) {
-    process.stdout.write(result.output);
+    await new Promise<void>((resolve) => process.stdout.write(result.output as string, () => resolve()));
   }
 }
