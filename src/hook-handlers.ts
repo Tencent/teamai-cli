@@ -26,8 +26,8 @@ export interface HandlerRegistration {
 
 // ─── Timeout constants ──────────────────────────────────
 
-/** Pull involves git network ops — generous timeout. */
-const PULL_TIMEOUT_MS = 60_000;
+/** Pull involves git network ops — 15s cap. */
+const PULL_TIMEOUT_MS = 15_000;
 /** Update checks npm registry — cap at 10s to avoid blocking session shutdown. */
 const UPDATE_TIMEOUT_MS = 10_000;
 /** Track/track-slash is a local file append — very fast. */
@@ -42,8 +42,8 @@ const VOTES_SYNC_TIMEOUT_MS = 8_000;
 const TODOWRITE_HINT_TIMEOUT_MS = 5_000;
 /** MR-hint queries a remote MR/PR API — allow a network round-trip. */
 const MR_HINT_TIMEOUT_MS = 10_000;
-/** Local-agent HTTP report/sync + binding prompts — network dependent. */
-const LOCAL_AGENT_TIMEOUT_MS = 30_000;
+/** Local-agent HTTP report/sync + binding prompts — 15s cap. */
+const LOCAL_AGENT_TIMEOUT_MS = 15_000;
 
 // ─── Handler implementations ────────────────────────────
 //

@@ -48,6 +48,15 @@ const CONFIG_FILE = 'config.json';
 const MANIFEST_FILE = 'manifest.json';
 const REPORTER_ERROR_LOG = 'reporter/errors.jsonl';
 
+/**
+ * Abort timeout for local-agent network calls.
+ *
+ * Prevents a fetch from hanging indefinitely when the endpoint is unreachable,
+ * which would otherwise keep a socket pending on the event loop and stall the
+ * hook subprocess until the host IDE's default hook timeout fires.
+ */
+const LOCAL_AGENT_FETCH_TIMEOUT_MS = 15_000;
+
 type LocalAgentScope = 'instance' | 'user' | 'project';
 type ResourceKind = 'skills' | 'rules' | 'claudemd';
 type CommandResourceKind = 'skill' | 'rule' | 'claudemd';
@@ -429,7 +438,11 @@ async function localAgentFetch<T>(
   };
   logHttpRequest(tag, method, url, headers, init?.body);
 
-  const response = await fetch(url, { ...init, headers });
+  const response = await fetch(url, {
+    ...init,
+    headers,
+    signal: init?.signal ?? AbortSignal.timeout(LOCAL_AGENT_FETCH_TIMEOUT_MS),
+  });
   const text = await response.text();
   let body: unknown = null;
   if (text.trim()) {
@@ -1111,8 +1124,11 @@ async function downloadResource(downloadUrl: string): Promise<string> {
   let current = assertHttpUrl(downloadUrl);
   let response: Response;
   const maxRedirects = 5;
+  // One timeout budget for the whole download (all redirect hops combined), so a
+  // chain of slow redirects cannot exceed the intended bound.
+  const signal = AbortSignal.timeout(LOCAL_AGENT_FETCH_TIMEOUT_MS);
   for (let hop = 0; ; hop++) {
-    response = await fetch(current, { redirect: 'manual' });
+    response = await fetch(current, { redirect: 'manual', signal });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');
       if (!location) break;
