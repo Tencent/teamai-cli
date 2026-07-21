@@ -64,7 +64,7 @@ npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
 teamai --version
 ```
 
-**前置依赖：** Node.js ≥ 18、Git（`gf` CLI 仅 TGit 用户需要，`teamai init` 时会自动安装）
+**前置依赖：** Node.js ≥ 18、Git（TGit 用户还需 `gf` CLI、CNB 用户还需 `cnb` CLI，`teamai init` 时都会自动安装）
 
 ---
 
@@ -72,7 +72,7 @@ teamai --version
 
 > 只需一位管理员完成，其他成员跳到[成员接入](#成员接入)。
 
-在 TGit（腾讯工蜂）上创建一个空仓库（命名建议：`TeamAi-<团队名>`），或者直接执行 `teamai init`，不存在时会提示自动创建。
+在 GitHub、TGit（腾讯工蜂）或 CNB（cnb.cool）上创建一个空仓库（命名建议：`TeamAi-<团队名>`），或者直接执行 `teamai init`，不存在时会提示自动创建。
 
 ### 用户级（User Scope）
 
@@ -663,6 +663,24 @@ teamai dashboard --port 8080
 > 隐私：只统计**轮数与 token 数量**，不落地任何 prompt 或 transcript 原文。
 
 这两项同样随 `teamai pull` 聚合到 `stats/<user>.yaml`（`prompts` 与 `tokens` 字段），并在 `teamai digest` 的「对话量与 Token 用量」板块给出团队对话总轮数、token 总量（分桶）与人均 token 用量排行。拿不到 transcript 的工具（如 Cursor）会优雅降级：仍统计对话轮数，token 显示为 0 / N/A。
+
+### Session Save（会话存档）
+
+`teamai session save` 把 dashboard 已有的**单次会话事件流**（工具调用序列、prompt 轮次、干预记录）折叠成一份精简、脱敏的 markdown 摘要——不调用 LLM，也不新增采集路径。
+
+```bash
+teamai session save                    # 存档最近一次会话（本地）
+teamai session save --session-id <id>  # 存档指定会话
+teamai session save --push             # 把「有价值」的会话推送到团队仓库
+teamai session save --push --force     # 即便是琐碎会话也推送
+teamai session save --push --include-prompt  # 额外带上（脱敏后的）首个 prompt 行
+```
+
+**本地（始终执行）：** 追加到 `~/.teamai/session-logs/<年-月>.md`。按会话幂等（当月已记录的会话会跳过），且超过 90 天的日志会自动清理。
+
+**团队（`--push`，需显式开启）：** 直接提交（不走 PR）到团队仓库的 `sessions/<user>/<年-月>.md`——正是 `teamai digest` 读取的路径，于是该会话会出现在 **Session Highlights** 板块。默认只推送**有价值**的会话：出现摩擦（interrupt / tool-reject / correction）或工具使用充分（≥ 3 种不同工具）。琐碎会话除非加 `--force`，否则只留本地。对只读（HTTP 模式）的团队，`--push` 会优雅失败并保留本地日志。
+
+> 隐私：推送到团队的内容默认**只含计数 + 工具名**。首个 prompt 行需通过 `--include-prompt` 显式开启，且即便开启也会经过与别处一致的密钥脱敏（`ghp_…` → `<REDACTED:…>`）。本地日志因为不出本机，会保留脱敏后的首个 prompt 行。
 
 ### Hooks
 

@@ -66,7 +66,7 @@ npm install -g teamai-cli
 teamai --version
 ```
 
-**Prerequisites:** Node.js ≥ 18, Git (the `gf` CLI is only needed by TGit users, and `teamai init` will install it automatically)
+**Prerequisites:** Node.js ≥ 18, Git (TGit users also need the `gf` CLI, and CNB users the `cnb` CLI — `teamai init` installs either automatically)
 
 ---
 
@@ -74,7 +74,7 @@ teamai --version
 
 > Only one admin needs to do this — other members can skip to [Member Onboarding](#member-onboarding).
 
-Create an empty repository on GitHub or TGit (Tencent's internal Git host) (suggested naming: `TeamAi-<team-name>`), or simply run `teamai init` — if the repo doesn't exist yet, you'll be prompted to create it automatically.
+Create an empty repository on GitHub, TGit (Tencent's internal Git host), or CNB (cnb.cool) (suggested naming: `TeamAi-<team-name>`), or simply run `teamai init` — if the repo doesn't exist yet, you'll be prompted to create it automatically.
 
 ### User Scope
 
@@ -665,6 +665,24 @@ Each session card also shows two badges:
 > Privacy: only turn counts and token counts are tracked — no prompt or transcript text is ever stored.
 
 These two metrics are likewise aggregated into `stats/<user>.yaml` (as `prompts` and `tokens` fields) during `teamai pull`, and shown in the "Conversation Volume & Token Usage" section of `teamai digest`, with team-wide totals, bucketed token totals, and per-person token usage rankings. Tools without transcript access (e.g. Cursor) degrade gracefully: turn counts are still tracked, while tokens show as 0 / N/A.
+
+### Session Save
+
+`teamai session save` folds the dashboard's existing per-session event stream (tool sequence, prompt turns, interventions) into a compact, privacy-scrubbed markdown summary — no LLM call, no new collection path.
+
+```bash
+teamai session save                    # record the most-recent session locally
+teamai session save --session-id <id>  # record a specific session
+teamai session save --push             # also push a "valuable" session to the team repo
+teamai session save --push --force     # push even a trivial session
+teamai session save --push --include-prompt  # also include the (redacted) first-ask line
+```
+
+**Local (always):** appends to `~/.teamai/session-logs/<year-month>.md`. Idempotent per session (a session already recorded that month is skipped), and logs older than 90 days are pruned automatically.
+
+**Team (`--push`, opt-in):** commits the summary directly (no PR) to `sessions/<user>/<year-month>.md` in the team repo — the exact path `teamai digest` reads, so the session shows up under **Session Highlights**. Only a **valuable** session is pushed by default: one that shows friction (an interrupt / tool-reject / correction) or substantial tool use (≥ 3 distinct tools). Trivial sessions stay local unless you pass `--force`. On a read-only (HTTP-mode) team, `--push` fails gracefully and the local log is still kept.
+
+> Privacy: the team-pushed payload is **counts + tool names only** by default. The first-ask prompt line is opt-in via `--include-prompt`, and even then it is run through the same secret redaction (`ghp_…` → `<REDACTED:…>`) used elsewhere. Local logs keep the redacted first-ask line since they never leave your machine.
 
 ### Hooks
 

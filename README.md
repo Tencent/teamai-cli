@@ -30,7 +30,7 @@ npm install -g teamai-cli
 
 ### Team admin / solo user
 
-Create a shared-experience repo on your git host (GitHub or TGit), **grant write access to team members**, then have them run `teamai init --repo https://github.com/yourorg/yourrepo`.
+Create a shared-experience repo on your git host (GitHub, TGit, or CNB), **grant write access to team members**, then have them run `teamai init --repo https://github.com/yourorg/yourrepo`.
 
 > Solo use needs no separate repo setup: `teamai init` checks the target repo and creates it automatically if it doesn't exist.
 
