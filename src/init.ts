@@ -336,8 +336,14 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
           await provider.createRepo(repoInfo.owner, repoInfo.repo);
           createSpin.succeed(`Repo ${repoInfo.owner}/${repoInfo.repo} created`);
         } catch (ce) {
-          createSpin.fail(`Failed to create repo: ${(ce as Error).message}`);
-          process.exit(1);
+          const msg = (ce as Error).message;
+          if (/already been taken|already exists/i.test(msg)) {
+            // Repo already exists — not fatal; fall through to retry the clone.
+            createSpin.info(`Repo ${repoInfo.owner}/${repoInfo.repo} already exists, retrying clone`);
+          } else {
+            createSpin.fail(`Failed to create repo: ${msg}`);
+            process.exit(1);
+          }
         }
         // Retry clone after creation
         const retryCloneSpin = spinner('Cloning newly created repo...').start();

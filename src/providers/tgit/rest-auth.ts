@@ -43,6 +43,26 @@ export function getTGitToken(): { token: string; scheme: TGitAuthScheme } {
 }
 
 /**
+ * git-over-HTTPS username for the given auth scheme.
+ * A PAT ('private-token') authenticates git as `private`; an OAuth token as `oauth2`.
+ */
+export function tgitGitUser(scheme: TGitAuthScheme): string {
+  return scheme === 'private-token' ? 'private' : 'oauth2';
+}
+
+/**
+ * Like {@link getTGitToken} but returns null instead of throwing when no
+ * credential is available (lets callers choose a no-token fallback path).
+ */
+export function tryGetTGitToken(): { token: string; scheme: TGitAuthScheme } | null {
+  try {
+    return getTGitToken();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build the authorization header for the given token and scheme.
  *
  * @param token  - the credential value

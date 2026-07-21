@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pathExists, ensureDir } from '../../utils/fs.js';
 import { log, spinner } from '../../utils/logger.js';
 import { TEAMAI_HOME } from '../../types.js';
-import { tgitFetch } from './rest-auth.js';
+import { tgitFetch, tryGetTGitToken, tgitGitUser } from './rest-auth.js';
 
 /** Path where gf CLI is installed */
 const GF_INSTALL_DIR = path.join(TEAMAI_HOME, 'gf');
@@ -308,44 +308,50 @@ export class RepoNotFoundError extends Error {
   }
 }
 
+/** True when `git clone` output indicates the remote repo does not exist. */
+function gitOutputSaysRepoMissing(output: string): boolean {
+  return output.includes('not found')
+    || output.includes('does not exist')
+    || output.includes('Repository not found');
+}
+
 /**
- * Clone a repo using `gf repo clone`.
- * The remote URL will have the OAuth token embedded, so subsequent
- * git pull/push via simple-git will work without extra auth.
+ * Clone a repo from git.woa.com.
  *
- * For multi-segment group paths (e.g. "group/subgroup/repo"), `gf repo clone`
- * does not work — it only accepts two-segment "namespace/repo" format.
- * In that case we fall back to `git clone` with the OAuth token embedded in the URL.
+ * When a TGit credential is available, clone via `git clone` with the token
+ * embedded in the URL. The git username depends on the token scheme: a PAT
+ * ('private-token') authenticates as `private`, an OAuth token as `oauth2`
+ * (see {@link tgitGitUser}). This path handles both two-segment and
+ * multi-segment group paths uniformly.
+ *
+ * When no credential is available, fall back to `gf repo clone` (the
+ * interactive/user path, which relies on gf's own stored auth).
  *
  * Throws RepoNotFoundError when the remote repo does not exist.
  */
 export function gfRepoClone(repo: string, localPath: string): void {
-  const segments = repo.split('/');
-
-  // Multi-segment path: gf repo clone only supports "namespace/repo"
-  if (segments.length > 2) {
-    const token = gfGetOAuthToken();
-    if (!token) {
-      throw new Error('Cannot retrieve OAuth token for git clone. Please run `gf auth login` first.');
-    }
-    const cloneUrl = `https://oauth2:${token}@git.woa.com/${repo}.git`;
+  const creds = tryGetTGitToken();
+  if (creds) {
+    const user = tgitGitUser(creds.scheme);
+    const cloneUrl = `https://${user}:${creds.token}@git.woa.com/${repo}.git`;
     const result = spawnSync('git', ['clone', cloneUrl, localPath], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 120_000,
     });
     const allOutput = `${result.stderr ?? ''} ${result.stdout ?? ''}`;
-    if (allOutput.includes('not found') || allOutput.includes('does not exist') || allOutput.includes('Repository not found')) {
+    if (gitOutputSaysRepoMissing(allOutput)) {
       throw new RepoNotFoundError(repo);
     }
     if (result.status !== 0) {
       // Sanitize output to avoid leaking the token
-      const sanitized = allOutput.replace(/oauth2:[^@]+@/g, 'oauth2:***@');
+      const sanitized = allOutput.replace(/(oauth2|private):[^@]+@/g, '$1:***@');
       throw new Error(`git clone failed: ${sanitized.trim()}`);
     }
     return;
   }
 
+  // No token available → fall back to `gf repo clone` (interactive/user path).
   const result = gfExec(['repo', 'clone', repo, localPath]);
   const allOutput = `${result.stderr} ${result.stdout}`;
   // Only match gf's own "not found" message, not git's object stats (e.g. "reused 404")

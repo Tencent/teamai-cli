@@ -16,7 +16,7 @@ vi.mock('../utils/logger.js', () => ({
     },
 }));
 
-import { getTGitToken, tgitAuthHeaders, tgitFetch } from '../providers/tgit/rest-auth.js';
+import { getTGitToken, tgitAuthHeaders, tgitFetch, tgitGitUser, tryGetTGitToken } from '../providers/tgit/rest-auth.js';
 import { gfGetOAuthToken } from '../providers/tgit/gf-cli.js';
 
 function makeResponse(status: number): Response {
@@ -61,6 +61,33 @@ describe('rest-auth', () => {
         it('neither credential → throws', () => {
             (gfGetOAuthToken as Mock).mockReturnValue(null);
             expect(() => getTGitToken()).toThrow(/No TGit credentials found/);
+        });
+    });
+
+    describe('tgitGitUser', () => {
+        it("'private-token' → 'private'", () => {
+            expect(tgitGitUser('private-token')).toBe('private');
+        });
+
+        it("'bearer' → 'oauth2'", () => {
+            expect(tgitGitUser('bearer')).toBe('oauth2');
+        });
+    });
+
+    describe('tryGetTGitToken', () => {
+        it('TGIT_TOKEN set → private-token scheme', () => {
+            process.env['TGIT_TOKEN'] = 'pat-123';
+            expect(tryGetTGitToken()).toEqual({ token: 'pat-123', scheme: 'private-token' });
+        });
+
+        it('no TGIT_TOKEN, OAuth token → bearer scheme', () => {
+            (gfGetOAuthToken as Mock).mockReturnValue('oauth-x');
+            expect(tryGetTGitToken()).toEqual({ token: 'oauth-x', scheme: 'bearer' });
+        });
+
+        it('neither credential → returns null (does not throw)', () => {
+            (gfGetOAuthToken as Mock).mockReturnValue(null);
+            expect(tryGetTGitToken()).toBeNull();
         });
     });
 

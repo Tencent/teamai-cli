@@ -57,10 +57,11 @@ stages:
         #   npm install -g ./teamai-cli-<version>.tgz @anthropic-ai/claude-code
         - npm install -g teamai-cli @anthropic-ai/claude-code 2>&1 | tail -3
         - |
-          echo "machine git.woa.com login oauth2 password ${TGIT_TOKEN}" > ~/.netrc
+          echo "machine git.woa.com login private password ${TGIT_TOKEN}" > ~/.netrc
           chmod 600 ~/.netrc
           echo "=== [TeamAI] TGit auth configured ==="
-        - teamai init --repo "https://git.woa.com/${TEAMAI_KNOWLEDGE_REPO}"
+        # comment 模式仅通过 REST 拉取 MR 并回帖，无需克隆团队知识仓库，
+        # 因此不运行 `teamai init`（它需要交互式成员注册，在 CI 中不可用）。
         - |
           echo "=== [TeamAI] Trigger: ${QCI_TRIGGER_TYPE}, MR IID: ${QCI_MR_IID:-none} ==="
           if [ "${QCI_TRIGGER_TYPE}" = "TRIGGER_MR" ] && [ -n "${QCI_MR_IID}" ] && [ "${QCI_MR_IID}" != "None" ]; then
@@ -82,29 +83,17 @@ stages:
         cmds:
         - npm install -g teamai-cli @anthropic-ai/claude-code 2>&1 | tail -3
         - |
-          echo "machine git.woa.com login oauth2 password ${TGIT_TOKEN}" > ~/.netrc
-          chmod 600 ~/.netrc
-        - teamai init --repo "https://git.woa.com/${TEAMAI_KNOWLEDGE_REPO}"
-        - |
           if [ "${QCI_TRIGGER_TYPE}" != "TRIGGER_MR" ] || [ "${QCI_MR_ACTION}" != "merge" ]; then
             echo "=== [TeamAI] SKIP: Not a merge event ==="
             exit 0
           fi
           MR_URL="${QCI_REPO%.git}/merge_requests/${QCI_MR_IID}"
           echo "=== [TeamAI] Writing knowledge for $MR_URL ==="
-          git clone -b "${TEAMAI_KNOWLEDGE_BRANCH}" "https://oauth2:${TGIT_TOKEN}@git.woa.com/${TEAMAI_KNOWLEDGE_REPO}.git" team-repo
+          # 用 PAT 克隆团队知识仓库（PAT 的 git 用户名为 `private`）。
+          git clone -b "${TEAMAI_KNOWLEDGE_BRANCH}" "https://private:${TGIT_TOKEN}@git.woa.com/${TEAMAI_KNOWLEDGE_REPO}.git" team-repo
+          # --write-mode direct 让 CLI 自行 commit 并 push：git 身份由 TGIT_TOKEN
+          # 对应账号（REST /user）推导，满足工蜂 committer-check。无需手动 git config/commit/push。
           teamai ci extract-mr --url "$MR_URL" --mode write --individual-comments --team-repo ./team-repo --write-mode direct
-          cd team-repo
-          git config user.name "teamai-ci"
-          git config user.email "teamai-ci@noreply"
-          git add learnings/ docs/ .teamai/ teamwiki/ 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "[teamai] Extract knowledge from MR !${QCI_MR_IID}"
-            git push
-            echo "=== [TeamAI] Knowledge pushed ==="
-          else
-            echo "=== [TeamAI] No changes ==="
-          fi
 
 worker:
   label: JOB_MATRIX_DEVCLOUD
