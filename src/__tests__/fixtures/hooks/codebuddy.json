@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch session-start --tool codebuddy 2>/dev/null || true",
-            "timeout": 60
+            "timeout": 15
           }
         ],
         "description": "[teamai] Hook dispatch session-start"
