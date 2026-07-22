@@ -603,10 +603,11 @@ program
   .option('--stdin', 'Read hook data from STDIN (accepted for forward compat, always reads STDIN)')
   .option('--tool <name>', 'Tool identifier (e.g. codebuddy, workbuddy, claude)')
   .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
-  .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string }) => {
+  .option('--bg-only', 'Internal: run only fire-and-forget background handlers (used by the detached child)')
+  .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean }) => {
     const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
     try {
-      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
+      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*', cmdOpts.bgOnly ?? false);
     } finally {
       // Hook subprocesses must exit promptly: a hung/unreachable backend fetch can
       // leave a socket pending on the event loop, blocking natural exit and tripping

@@ -2,9 +2,16 @@ import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 
 // ─── Mocks ──────────────────────────────────────────────
 
-vi.mock('node:child_process', () => ({
-  execSync: vi.fn(),
-}));
+// update.ts uses `promisify(execFile)`. Mock execFile with a promisify.custom
+// hook so promisify returns our controllable async mock; each test drives it
+// via mockExec.mockResolvedValue({ stdout, stderr }) / mockRejectedValue(err).
+const { mockExec } = vi.hoisted(() => ({ mockExec: vi.fn() }));
+vi.mock('node:child_process', async () => {
+  const { promisify } = await import('node:util');
+  const execFile = vi.fn();
+  (execFile as unknown as Record<symbol, unknown>)[promisify.custom] = mockExec;
+  return { execFile };
+});
 
 vi.mock('fs-extra', () => ({
   default: {
@@ -57,7 +64,6 @@ vi.mock('../utils/prompt.js', () => ({
 
 // ─── Imports (after mocks) ──────────────────────────────
 
-import { execSync } from 'node:child_process';
 import fse from 'fs-extra';
 import { loadState, saveState, loadLocalConfig, loadTeamConfig } from '../config.js';
 import { log } from '../utils/logger.js';
@@ -75,7 +81,7 @@ import {
 
 // ─── Typed mock references ──────────────────────────────
 
-const mockedExecSync = execSync as Mock;
+const mockedExecSync = mockExec as Mock;
 const mockedLoadState = loadState as Mock;
 const mockedSaveState = saveState as Mock;
 const mockedLoadLocalConfig = loadLocalConfig as Mock;
@@ -217,13 +223,14 @@ describe('checkForUpdate', () => {
       lastUpdateCheck: oldCheck,
       availableUpdate: null,
     });
-    mockedExecSync.mockReturnValue('99.0.0\n');
+    mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
     const result = await checkForUpdate();
 
     expect(mockedExecSync).toHaveBeenCalledTimes(1);
     expect(mockedExecSync).toHaveBeenCalledWith(
-      expect.stringContaining('npm view'),
+      'npm',
+      expect.arrayContaining(['view', 'version']),
       expect.any(Object),
     );
     expect(result.available).toBe(true);
@@ -259,7 +266,7 @@ describe('checkForUpdate', () => {
 
   it('should report no update when version is same', async () => {
     const current = getCurrentVersion();
-    mockedExecSync.mockReturnValue(`${current}\n`);
+    mockedExecSync.mockResolvedValue({ stdout: `${current}\n`, stderr: '' });
 
     const result = await checkForUpdate({ force: true });
 
@@ -271,7 +278,7 @@ describe('checkForUpdate', () => {
   // ─── Test #6: Newer version available ─────────────────
 
   it('should report update available when newer version exists', async () => {
-    mockedExecSync.mockReturnValue('99.0.0\n');
+    mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
     const result = await checkForUpdate({ force: true });
 
@@ -290,15 +297,16 @@ describe('checkForUpdate', () => {
 describe('doUpdate', () => {
   it('should execute npm install when policy is auto and update available', async () => {
     mockedExecSync
-      .mockReturnValueOnce('99.0.0\n') // npm view
-      .mockReturnValueOnce('')          // npm install
-      .mockReturnValueOnce('');         // teamai hooks inject --silent
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' }) // npm view
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })          // npm install
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });         // teamai hooks inject --silent
 
     await doUpdate();
 
     expect(mockedExecSync).toHaveBeenCalledTimes(3);
     expect(mockedExecSync).toHaveBeenCalledWith(
-      expect.stringContaining('npm install -g'),
+      'npm',
+      expect.arrayContaining(['install', '-g']),
       expect.any(Object),
     );
     expect(mockedLog.success).toHaveBeenCalledWith(
@@ -317,7 +325,7 @@ describe('doUpdate', () => {
       username: 'testuser',
       updatePolicy: 'prompt',
     });
-    mockedExecSync.mockReturnValueOnce('99.0.0\n');
+    mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
 
     await doUpdate();
 
@@ -342,9 +350,9 @@ describe('doUpdate', () => {
       updatePolicy: 'prompt',
     });
     mockedExecSync
-      .mockReturnValueOnce('99.0.0\n')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('');
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });
 
     await doUpdate();
 
@@ -362,7 +370,7 @@ describe('doUpdate', () => {
       username: 'testuser',
       updatePolicy: 'skip',
     });
-    mockedExecSync.mockReturnValueOnce('99.0.0\n');
+    mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
 
     await doUpdate();
 
@@ -385,14 +393,15 @@ describe('doUpdate', () => {
       repo: 'https://...',
       autoUpdate: false,
     });
-    mockedExecSync.mockReturnValueOnce('99.0.0\n');  // the version check call
+    mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });  // the version check call
 
     await doUpdate();
 
-    // Only the version-check execSync ran; no npm install
+    // Only the version-check exec ran; no npm install
     expect(mockedExecSync).toHaveBeenCalledTimes(1);
     expect(mockedExecSync).not.toHaveBeenCalledWith(
-      expect.stringContaining('npm install'),
+      'npm',
+      expect.arrayContaining(['install']),
       expect.anything(),
     );
     expect(mockedLog.debug).toHaveBeenCalledWith(
@@ -415,14 +424,15 @@ describe('doUpdate', () => {
       autoUpdate: false,
     });
     mockedExecSync
-      .mockReturnValueOnce('99.0.0\n')  // version check
-      .mockReturnValueOnce('')          // npm install
-      .mockReturnValueOnce('');         // hooks inject
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })  // version check
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })          // npm install
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });         // hooks inject
 
     await doUpdate();
 
     expect(mockedExecSync).toHaveBeenCalledWith(
-      expect.stringContaining('npm install -g'),
+      'npm',
+      expect.arrayContaining(['install', '-g']),
       expect.any(Object),
     );
   });
@@ -432,9 +442,9 @@ describe('doUpdate', () => {
   it('should proceed with install when lock is acquired', async () => {
     mockedFse.pathExists.mockResolvedValue(false);
     mockedExecSync
-      .mockReturnValueOnce('99.0.0\n')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('');
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });
 
     await doUpdate();
 
@@ -454,7 +464,7 @@ describe('doUpdate', () => {
     mockedFse.pathExists.mockResolvedValue(true);
     mockedFse.readFile.mockResolvedValue(String(process.pid));
 
-    mockedExecSync.mockReturnValueOnce('99.0.0\n');
+    mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
 
     await doUpdate();
 
@@ -468,7 +478,7 @@ describe('doUpdate', () => {
 
   it('should warn about permission denied on EACCES', async () => {
     mockedExecSync
-      .mockReturnValueOnce('99.0.0\n')
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
       .mockImplementationOnce(() => {
         const err = new Error('npm ERR! code EACCES') as NodeJS.ErrnoException;
         err.code = 'EACCES';
@@ -487,7 +497,7 @@ describe('doUpdate', () => {
 
   it('should warn about timeout on npm install timeout', async () => {
     mockedExecSync
-      .mockReturnValueOnce('99.0.0\n')
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
       .mockImplementationOnce(() => {
         throw new Error('ETIMEDOUT');
       });
@@ -503,7 +513,7 @@ describe('doUpdate', () => {
 
   it('should log up to date when no update available', async () => {
     const current = getCurrentVersion();
-    mockedExecSync.mockReturnValueOnce(`${current}\n`);
+    mockedExecSync.mockResolvedValueOnce({ stdout: `${current}\n`, stderr: '' });
 
     await doUpdate();
 
@@ -522,12 +532,13 @@ describe('checkForUpdate with corrupted state', () => {
       lastUpdateCheck: null,
       availableUpdate: null,
     });
-    mockedExecSync.mockReturnValue('99.0.0\n');
+    mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
 
     const result = await checkForUpdate();
 
     expect(mockedExecSync).toHaveBeenCalledWith(
-      expect.stringContaining('npm view'),
+      'npm',
+      expect.arrayContaining(['view', 'version']),
       expect.any(Object),
     );
     expect(result.available).toBe(true);
@@ -538,7 +549,7 @@ describe('checkForUpdate with corrupted state', () => {
 
 describe('update', () => {
   it('should only check and print when --check is set', async () => {
-    mockedExecSync.mockReturnValueOnce('99.0.0\n');
+    mockedExecSync.mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' });
 
     await update({ check: true });
 
@@ -550,7 +561,7 @@ describe('update', () => {
 
   it('should print up to date when --check and no update', async () => {
     const current = getCurrentVersion();
-    mockedExecSync.mockReturnValueOnce(`${current}\n`);
+    mockedExecSync.mockResolvedValueOnce({ stdout: `${current}\n`, stderr: '' });
 
     await update({ check: true });
 
@@ -561,9 +572,9 @@ describe('update', () => {
 
   it('should run full update flow without --check', async () => {
     mockedExecSync
-      .mockReturnValueOnce('99.0.0\n')
-      .mockReturnValueOnce('')
-      .mockReturnValueOnce('');
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });
 
     await update({});
 
@@ -577,9 +588,9 @@ describe('update', () => {
 describe('hook refresh after update', () => {
   it('should spawn "teamai hooks inject --silent" after successful update', async () => {
     mockedExecSync
-      .mockReturnValueOnce('99.0.0\n') // npm view
-      .mockReturnValueOnce('')          // npm install
-      .mockReturnValueOnce('');         // teamai hooks inject --silent
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' }) // npm view
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })          // npm install
+      .mockResolvedValueOnce({ stdout: '', stderr: '' });         // teamai hooks inject --silent
 
     await doUpdate();
 
@@ -588,8 +599,9 @@ describe('hook refresh after update', () => {
     );
     expect(mockedExecSync).toHaveBeenCalledTimes(3);
     expect(mockedExecSync).toHaveBeenCalledWith(
-      'teamai hooks inject --silent',
-      expect.objectContaining({ timeout: 15_000, stdio: 'pipe' }),
+      'teamai',
+      ['hooks', 'inject', '--silent'],
+      expect.objectContaining({ timeout: 15_000 }),
     );
     expect(mockedLog.success).toHaveBeenCalledWith(
       expect.stringContaining('Refreshed hooks'),
@@ -598,8 +610,8 @@ describe('hook refresh after update', () => {
 
   it('should silently skip hook refresh when spawn fails', async () => {
     mockedExecSync
-      .mockReturnValueOnce('99.0.0\n') // npm view
-      .mockReturnValueOnce('')          // npm install
+      .mockResolvedValueOnce({ stdout: '99.0.0\n', stderr: '' }) // npm view
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })          // npm install
       .mockImplementationOnce(() => {   // teamai hooks inject fails
         throw new Error('command not found');
       });

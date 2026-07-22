@@ -22,6 +22,8 @@ export interface HandlerRegistration {
   matcher: string;
   handler: HookHandler;
   timeoutMs: number;
+  /** Fire-and-forget: run detached so it can't delay host hook completion. */
+  background?: boolean;
 }
 
 // ─── Timeout constants ──────────────────────────────────
@@ -308,11 +310,16 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
 
     // ─── Stop ─────────────────────────────────────────
-    { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS },
+    // votes-sync and contribute-check may return a hint the host injects back
+    // into the session, so they run inline. The rest are pure side effects —
+    // the update check in particular shells out to the npm registry — so they
+    // run detached to avoid pushing the Stop hook past the host's hook timeout
+    // (CodeBuddy: 10s).
+    { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS, background: true },
     { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: VOTES_SYNC_TIMEOUT_MS },
     { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: CONTRIBUTE_CHECK_TIMEOUT_MS },
-    { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
-    { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
+    { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
 
     // ─── PostToolUse ──────────────────────────────────
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },

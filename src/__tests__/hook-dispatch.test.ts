@@ -207,4 +207,74 @@ describe('hook-dispatch', () => {
       expect(result.output).toBe('quick');
     });
   });
+
+  describe('foreground / background split', () => {
+    it('foreground mode runs only non-background handlers', async () => {
+      const fg = createHandler('contribute-check', 'hint');
+      const bg = createHandler('update');
+
+      const dispatcher = createDispatcher({
+        handlers: [
+          { event: 'stop', matcher: '*', handler: fg },
+          { event: 'stop', matcher: '*', handler: bg, background: true },
+        ],
+      });
+
+      const result = await dispatcher.dispatch('stop', '*', {}, 'claude', 'foreground');
+
+      expect(fg.execute).toHaveBeenCalledOnce();
+      expect(bg.execute).not.toHaveBeenCalled();
+      expect(result.output).toBe('hint');
+    });
+
+    it('background mode runs only background handlers', async () => {
+      const fg = createHandler('contribute-check', 'hint');
+      const bg = createHandler('update');
+
+      const dispatcher = createDispatcher({
+        handlers: [
+          { event: 'stop', matcher: '*', handler: fg },
+          { event: 'stop', matcher: '*', handler: bg, background: true },
+        ],
+      });
+
+      const result = await dispatcher.dispatch('stop', '*', {}, 'claude', 'background');
+
+      expect(bg.execute).toHaveBeenCalledOnce();
+      expect(fg.execute).not.toHaveBeenCalled();
+      // Background handlers are fire-and-forget — no output wired to the host.
+      expect(result.output).toBeNull();
+    });
+
+    it('default mode ("all") runs both, preserving backward compatibility', async () => {
+      const fg = createHandler('contribute-check');
+      const bg = createHandler('update');
+
+      const dispatcher = createDispatcher({
+        handlers: [
+          { event: 'stop', matcher: '*', handler: fg },
+          { event: 'stop', matcher: '*', handler: bg, background: true },
+        ],
+      });
+
+      await dispatcher.dispatch('stop', '*', {}, 'claude');
+
+      expect(fg.execute).toHaveBeenCalledOnce();
+      expect(bg.execute).toHaveBeenCalledOnce();
+    });
+
+    it('hasBackground reflects whether the event+matcher has a background handler', () => {
+      const dispatcher = createDispatcher({
+        handlers: [
+          { event: 'stop', matcher: '*', handler: createHandler('contribute-check') },
+          { event: 'stop', matcher: '*', handler: createHandler('update'), background: true },
+          { event: 'post-tool-use', matcher: 'Skill', handler: createHandler('track') },
+        ],
+      });
+
+      expect(dispatcher.hasBackground('stop', '*')).toBe(true);
+      expect(dispatcher.hasBackground('post-tool-use', 'Skill')).toBe(false);
+      expect(dispatcher.hasBackground('session-start', '*')).toBe(false);
+    });
+  });
 });
