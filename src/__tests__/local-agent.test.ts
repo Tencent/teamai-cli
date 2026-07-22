@@ -503,3 +503,66 @@ describe('local-agent: skill directory naming (SKILL.md name vs server slug)', (
     expect(manifest.scopes.user.skills['server-slug-xyz'].dir_name).toBeUndefined();
   });
 });
+
+describe('local-agent: normalizeScope — workspace scope installs to project dir', () => {
+  const port = 42001;
+
+  it('installs to project-level skills dir when backend sends scope=workspace', async () => {
+    const projectDir = path.join(tmpDir, 'ws-project');
+    await fse.ensureDir(projectDir);
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    await fse.ensureDir(path.join(projectDir, '.codebuddy', 'skills'));
+    await setupConfig();
+
+    const { zipSync, strToU8 } = await import('fflate');
+    const skillMd = '---\nname: ws-skill\ndescription: test\n---\n# ws-skill\nbody\n';
+    const zip = zipSync({ 'ws-skill/SKILL.md': strToU8(skillMd) });
+
+    const acks: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: { body?: string }) => {
+      const url = String(input);
+      if (url.includes('/skill.zip')) {
+        return new Response(Buffer.from(zip));
+      }
+      if (url.includes('/local-agent/sync')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          commands: [{
+            id: 1,
+            type: 'install_skill',
+            skill_slug: 'ws-skill',
+            skill_version: '1.0.0',
+            download_url: `http://127.0.0.1:${port}/skill.zip`,
+            scope: 'workspace',
+            workspace_path: projectDir,
+            project_id: 101,
+          }],
+        }));
+      }
+      if (url.includes('/commands/ack')) {
+        acks.push(JSON.parse(init?.body ?? '{}'));
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'codebuddy', status: 'running' });
+
+    expect(acks[0]?.status).toBe('success');
+
+    // Skill must land under the project dir, not the user HOME.
+    const projectSkillDir = path.join(projectDir, '.codebuddy', 'skills', 'ws-skill');
+    const userSkillDir = path.join(tmpDir, '.codebuddy', 'skills', 'ws-skill');
+    await expect(fse.pathExists(projectSkillDir)).resolves.toBe(true);
+    await expect(fse.pathExists(userSkillDir)).resolves.toBe(false);
+
+    // The skill must be recorded under a `project:` manifest scope key
+    // (scopeKey('project', workspacePath)), not `user` or `instance`.
+    const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
+    const projectKey = Object.keys(manifest.scopes ?? {}).find((key) => key.startsWith('project:'));
+    expect(projectKey).toBeDefined();
+    expect(manifest.scopes[projectKey!].skills['ws-skill']).toBeDefined();
+  });
+});
