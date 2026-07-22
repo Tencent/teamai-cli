@@ -1620,7 +1620,11 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   }
 
   const pruned = await pruneDeadWorkspaceBindings(config);
-  const stamped = stampWorkspaceTool(config, workspacePath, context.tool ?? 'workbuddy');
+  // Resolve the current workspace independently here rather than reusing an
+  // earlier local, so tool attribution does not depend on the binding-prompt
+  // block above keeping a `workspacePath` in scope.
+  const currentPath = await resolveWorkspacePath(context.cwd);
+  const stamped = stampWorkspaceTool(config, currentPath, context.tool ?? 'workbuddy');
   if (pruned || stamped) {
     await saveLocalAgentConfig(config);
   }
