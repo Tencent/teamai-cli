@@ -590,8 +590,14 @@ Configurable environment variables:
 | `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }`, overrides the three paths |
 | `TEAMAI_REPORT_AGENTS` | Comma-separated list of agents that report (default `workbuddy,codebuddy`) |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | Allowlist of hosts for skill `download_url` (empty = allow all) |
+| `TEAMAI_ALLOW_SANDBOX_REPORT` | Set to `1` to force report/sync inside a CloudStudio sandbox (see note below) |
 
 > **Privacy:** The install path and machine id are only hashed locally to derive `local_agent_id` — they are never reported.
+
+> **CloudStudio sandbox:** When WorkBuddy runs teamai hooks inside a CloudStudio container, that container has a
+> different machine id than the macOS host and would report a duplicate agent card. Report/sync is therefore skipped
+> automatically inside a CloudStudio sandbox (detected via `X_IDE_IS_CLOUDSTUDIO=TRUE` or the `/var/run/cloudstudio`
+> directory). Set `TEAMAI_ALLOW_SANDBOX_REPORT=1` to opt back in if you run teamai exclusively inside CloudStudio.
 
 ### Codebase Knowledge Graph
 

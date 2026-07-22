@@ -254,6 +254,24 @@ function resolveLocalAgentId(context: LocalAgentContext): string {
 }
 
 /**
+ * Detect whether we are running inside a CloudStudio container sandbox.
+ *
+ * WorkBuddy can spawn a CloudStudio Linux container that runs its own teamai
+ * hooks. That container has a different machine_id than the macOS host, so it
+ * derives a second local_agent_id and reports a duplicate agent card. Both
+ * signals below are absent on a normal Linux user machine, so this never
+ * suppresses reporting for legitimate standalone Linux users.
+ */
+function isCloudStudioSandbox(): boolean {
+  if (process.env.X_IDE_IS_CLOUDSTUDIO === 'TRUE') return true;
+  try {
+    return fs.existsSync('/var/run/cloudstudio');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Build the unified log tag for local-agent debug output: `[<id6>] [<tool>]` —
  * the last 6 chars of the derived agent id plus the agent name (tool), so every
  * line (HTTP request/response, report/sync, command ack) reads the same way.
@@ -1559,14 +1577,28 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   const config = await loadLocalAgentConfig();
   if (!config) return false;
 
-  const workspacePath = await resolveWorkspacePath(context.cwd);
-  if (isBindPromptEnabled() && workspacePath) {
-    if (context.event?.type === 'session_start') {
-      await ensureWorkspaceBinding(config, workspacePath);
+  // Binding prompt is injected via stdout hook context (not HTTP), so it must run
+  // even inside the CloudStudio sandbox — the sandbox guard below only skips the
+  // HTTP report/sync that would produce a duplicate card. Resolve the workspace
+  // only when the prompt is enabled, so the default-off path forks no git process.
+  if (isBindPromptEnabled()) {
+    const workspacePath = await resolveWorkspacePath(context.cwd);
+    if (workspacePath) {
+      if (context.event?.type === 'session_start') {
+        await ensureWorkspaceBinding(config, workspacePath);
+      }
+      if (context.event?.type === 'prompt_submit') {
+        await emitBindingHint(config, workspacePath);
+      }
     }
-    if (context.event?.type === 'prompt_submit') {
-      await emitBindingHint(config, workspacePath);
-    }
+  }
+
+  if (isCloudStudioSandbox() && process.env.TEAMAI_ALLOW_SANDBOX_REPORT !== '1') {
+    log.debug(
+      '[local-agent] CloudStudio sandbox detected; skipping HTTP report/sync ' +
+        '(binding prompt still runs; set TEAMAI_ALLOW_SANDBOX_REPORT=1 to override)',
+    );
+    return false;
   }
 
   const tag = localAgentTag(context);

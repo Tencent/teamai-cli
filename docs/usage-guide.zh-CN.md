@@ -588,8 +588,14 @@ cat ~/.claude/CLAUDE.md
 | `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }`，覆盖三个路径 |
 | `TEAMAI_REPORT_AGENTS` | 参与上报的 agent，逗号分隔（默认 `workbuddy,codebuddy`） |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | skill `download_url` host 白名单（空 = 全部放行） |
+| `TEAMAI_ALLOW_SANDBOX_REPORT` | 设为 `1` 可强制在 CloudStudio 沙箱内 report/sync（见下方说明） |
 
 > **隐私**：install path 和 machine id 仅在本地哈希以派生 `local_agent_id`，不会上报。
+
+> **CloudStudio 沙箱**：当 WorkBuddy 在 CloudStudio 容器内运行 teamai hook 时，该容器的 machine id 与 macOS
+> 宿主不同，会上报一张重复的 agent 卡片。因此在 CloudStudio 沙箱内会自动跳过 report/sync（通过
+> `X_IDE_IS_CLOUDSTUDIO=TRUE` 或 `/var/run/cloudstudio` 目录检测）。若你只在 CloudStudio 内使用 teamai，可设
+> `TEAMAI_ALLOW_SANDBOX_REPORT=1` 重新开启上报。
 
 ### 代码知识图谱
 

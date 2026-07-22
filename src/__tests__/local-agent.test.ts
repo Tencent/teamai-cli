@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -741,5 +742,117 @@ describe('local-agent: full-snapshot workspace reporting', () => {
 
     expect(pruned).toBe(true);
     expect(Object.keys(config!.workspaceBindings)).not.toContain(wsSkipDead);
+  });
+});
+
+describe('local-agent: CloudStudio sandbox suppression', () => {
+  afterEach(() => {
+    delete process.env.X_IDE_IS_CLOUDSTUDIO;
+    delete process.env.TEAMAI_ALLOW_SANDBOX_REPORT;
+  });
+
+  it('returns false without fetching when X_IDE_IS_CLOUDSTUDIO=TRUE', async () => {
+    process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(result).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with normal reporting when TEAMAI_ALLOW_SANDBOX_REPORT=1 overrides sandbox', async () => {
+    process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
+    process.env.TEAMAI_ALLOW_SANDBOX_REPORT = '1';
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('proceeds with normal reporting when no sandbox env is set', async () => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('returns false without fetching when /var/run/cloudstudio exists', async () => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(result).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('still emits binding hint (stdout) but skips HTTP report inside sandbox', async () => {
+    process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
+    process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
+    await setupConfig();
+    const projectDir = path.join(tmpDir, 'sandbox-unbound-project');
+    await fse.ensureDir(projectDir);
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+
+    let reportCalled = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/api/projects/mine')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          projects: [{ id: 100, name: 'alpha' }],
+        }));
+      }
+      if (url.includes('/report')) reportCalled = true;
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdoutChunks: string[] = [];
+    const origWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Buffer) => {
+      stdoutChunks.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stdout.write;
+
+    let result: boolean;
+    try {
+      const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+      result = await reportAndSyncLocalAgent({
+        cwd: projectDir,
+        tool: 'claude',
+        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'claude' },
+      });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    const output = stdoutChunks.join('');
+    // Binding hint must still be injected via stdout even inside the sandbox.
+    expect(output).toContain('hookSpecificOutput');
+    expect(output).toContain('绑定到「alpha」项目');
+    // But the HTTP report/sync must be skipped, and the function returns false.
+    expect(reportCalled).toBe(false);
+    expect(result).toBe(false);
   });
 });
