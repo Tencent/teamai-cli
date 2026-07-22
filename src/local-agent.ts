@@ -31,6 +31,7 @@ import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
 import { reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
 import {
+  resolveBaseDir,
   TEAMAI_HOME,
   TEAMAI_TOKEN_PATH,
   TEAMAI_CLAUDEMD_START,
@@ -1339,6 +1340,32 @@ async function installDownloadedResource(input: {
     }
     const teamConfig = { ...fullTeamConfig, toolPaths: { [tool]: toolPath } };
     const localConfig = createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
+    // Ensure the tool root directory exists before dispatch so isToolInstalled
+    // gate does not skip the resource when the workspace is freshly bound.
+    // Restricted to project scope: user-scope installs use $HOME as baseDir and
+    // should continue to rely on isToolInstalled as the gate.
+    if (localConfig.scope === 'project') {
+      try {
+        const baseDir = resolveBaseDir(localConfig);
+        const resourceToolPath =
+          input.kind === 'skill' ? toolPath.skills :
+          input.kind === 'rule'  ? toolPath.rules  :
+          // Default branch covers the 'claudemd' kind; if a new CommandResourceKind
+          // is added, revisit this mapping so it doesn't silently fall through to claudemd.
+          toolPath.claudemd;
+        if (resourceToolPath && resourceToolPath.includes('/')) {
+          const rootSegment = resourceToolPath.split('/')[0];
+          await ensureDir(path.join(baseDir, rootSegment));
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('resolveBaseDir')) {
+          log.warn(`Cannot resolve base dir to pre-create tool root: ${msg}`);
+        } else {
+          log.debug(`Failed to pre-create tool root directory: ${msg}`);
+        }
+      }
+    }
     const now = new Date().toISOString();
     let displayName = input.command.display_name ?? input.slug;
     // On-disk skill directory name (SKILL.md name when it differs from slug).
