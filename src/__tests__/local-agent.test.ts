@@ -574,8 +574,8 @@ describe('local-agent: full-snapshot workspace reporting', () => {
     await fse.ensureDir(wsA);
     await fse.ensureDir(wsB);
     await setupConfig({
-      [wsA]: { projectId: 11, projectName: 'A', boundAt: 'x' },
-      [wsB]: { projectId: 22, projectName: 'B', boundAt: 'x' },
+      [wsA]: { projectId: 11, projectName: 'A', boundAt: 'x', ideType: 'codebuddy' },
+      [wsB]: { projectId: 22, projectName: 'B', boundAt: 'x', ideType: 'codebuddy' },
     });
 
     const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
@@ -610,8 +610,8 @@ describe('local-agent: full-snapshot workspace reporting', () => {
     );
     await fse.ensureDir(wsEmpty);
     await setupConfig({
-      [wsFull]: { projectId: 7, projectName: 'full', boundAt: 'x' },
-      [wsEmpty]: { projectId: 8, projectName: 'empty', boundAt: 'x' },
+      [wsFull]: { projectId: 7, projectName: 'full', boundAt: 'x', ideType: 'codebuddy' },
+      [wsEmpty]: { projectId: 8, projectName: 'empty', boundAt: 'x', ideType: 'codebuddy' },
     });
 
     const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
@@ -675,7 +675,7 @@ describe('local-agent: full-snapshot workspace reporting', () => {
     await fse.ensureDir(wsA);
     execFileSync('git', ['init'], { cwd: cwdDir, stdio: 'ignore' });
     await setupConfig({
-      [wsA]: { projectId: 5, projectName: 'A', boundAt: 'x' },
+      [wsA]: { projectId: 5, projectName: 'A', boundAt: 'x', ideType: 'codebuddy' },
     });
 
     const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
@@ -714,7 +714,7 @@ describe('local-agent: full-snapshot workspace reporting', () => {
     const wsSkip = path.join(tmpDir, 'ws-skip');
     await fse.ensureDir(wsSkip);
     await setupConfig({
-      [wsSkip]: { projectId: 0, projectName: '__skipped__', boundAt: 'x' },
+      [wsSkip]: { projectId: 0, projectName: '__skipped__', boundAt: 'x', ideType: 'codebuddy' },
     });
 
     const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
@@ -741,5 +741,134 @@ describe('local-agent: full-snapshot workspace reporting', () => {
 
     expect(pruned).toBe(true);
     expect(Object.keys(config!.workspaceBindings)).not.toContain(wsSkipDead);
+  });
+
+  it('filters by tool: workbuddy report only includes workbuddy-owned binding', async () => {
+    const wsCb = path.join(tmpDir, 'ws-cb');
+    const wsWb = path.join(tmpDir, 'ws-wb');
+    await fse.ensureDir(wsCb);
+    await fse.ensureDir(wsWb);
+    await setupConfig({
+      [wsCb]: { projectId: 10, projectName: 'cb', boundAt: 'x', ideType: 'codebuddy' },
+      [wsWb]: { projectId: 20, projectName: 'wb', boundAt: 'x', ideType: 'workbuddy' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    const wbPayload = await buildReportPayload(config!, { tool: 'workbuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+    expect(wbPayload.workspaces).toHaveLength(1);
+    expect(wbPayload.workspaces![0].path).toBe(wsWb);
+    expect(wbPayload.workspaces![0].ide_type).toBe('workbuddy');
+
+    const cbPayload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+    expect(cbPayload.workspaces).toHaveLength(1);
+    expect(cbPayload.workspaces![0].path).toBe(wsCb);
+    expect(cbPayload.workspaces![0].ide_type).toBe('codebuddy');
+  });
+
+  it('includes unattributed cwd binding as current tool and excludes unattributed non-cwd binding', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const cwdDir = path.join(tmpDir, 'cwd-no-type');
+    const wsOther = path.join(tmpDir, 'ws-other-no-type');
+    await fse.ensureDir(cwdDir);
+    await fse.ensureDir(wsOther);
+    execFileSync('git', ['init'], { cwd: cwdDir, stdio: 'ignore' });
+    await setupConfig({
+      [cwdDir]: { projectId: 30, projectName: 'cwd-ws', boundAt: 'x' },
+      [wsOther]: { projectId: 31, projectName: 'other-ws', boundAt: 'x' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy', cwd: cwdDir }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    const realCwd = fse.realpathSync(cwdDir);
+    // Only the cwd binding is included; the unattributed non-cwd binding is skipped.
+    expect(payload.workspaces).toHaveLength(1);
+    expect(payload.workspaces![0].path).toBe(realCwd);
+    expect(payload.workspaces![0].ide_type).toBe('codebuddy');
+    // wsOther has no ideType and is not cwd, so it is excluded.
+    const paths = (payload.workspaces ?? []).map((w) => w.path as string);
+    expect(paths).not.toContain(wsOther);
+  });
+
+  it('stampWorkspaceTool writes ideType to cwd binding and returns true', async () => {
+    const wsCwd = path.join(tmpDir, 'stamp-ws');
+    await fse.ensureDir(wsCwd);
+    await setupConfig({
+      [wsCwd]: { projectId: 40, projectName: 'stamp', boundAt: 'x' },
+    });
+
+    const { stampWorkspaceTool, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    const changed = stampWorkspaceTool(config!, wsCwd, 'codebuddy');
+    expect(changed).toBe(true);
+    expect(config!.workspaceBindings[wsCwd].ideType).toBe('codebuddy');
+
+    // Calling again with same tool is idempotent.
+    const changedAgain = stampWorkspaceTool(config!, wsCwd, 'codebuddy');
+    expect(changedAgain).toBe(false);
+  });
+
+  it('stampWorkspaceTool returns false when currentPath is null or undefined', async () => {
+    const wsCwd = path.join(tmpDir, 'stamp-null-ws');
+    await fse.ensureDir(wsCwd);
+    await setupConfig({
+      [wsCwd]: { projectId: 41, projectName: 'stamp-null', boundAt: 'x' },
+    });
+
+    const { stampWorkspaceTool, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    expect(stampWorkspaceTool(config!, null, 'codebuddy')).toBe(false);
+    expect(stampWorkspaceTool(config!, undefined, 'codebuddy')).toBe(false);
+    // Config must be untouched.
+    expect(config!.workspaceBindings[wsCwd].ideType).toBeUndefined();
+  });
+
+  it('stampWorkspaceTool returns false when currentPath has no binding in config', async () => {
+    await setupConfig({});
+
+    const { stampWorkspaceTool, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    const missingPath = path.join(tmpDir, 'no-such-binding');
+    expect(stampWorkspaceTool(config!, missingPath, 'codebuddy')).toBe(false);
+  });
+
+  it('buildSyncPayload filters by tool matching ideType', async () => {
+    const wsCb = path.join(tmpDir, 'sync-cb');
+    const wsWb = path.join(tmpDir, 'sync-wb');
+    await fse.ensureDir(wsCb);
+    await fse.ensureDir(wsWb);
+    await setupConfig({
+      [wsCb]: { projectId: 50, projectName: 'sync-cb', boundAt: 'x', ideType: 'codebuddy' },
+      [wsWb]: { projectId: 51, projectName: 'sync-wb', boundAt: 'x', ideType: 'workbuddy' },
+    });
+
+    const { buildSyncPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    const cbPayload = await buildSyncPayload(config!, { tool: 'codebuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+    expect(cbPayload.workspaces).toHaveLength(1);
+    expect(cbPayload.workspaces![0].path).toBe(wsCb);
+    expect(cbPayload.workspaces![0].ide_type).toBe('codebuddy');
+
+    const wbPayload = await buildSyncPayload(config!, { tool: 'workbuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+    expect(wbPayload.workspaces).toHaveLength(1);
+    expect(wbPayload.workspaces![0].path).toBe(wsWb);
+    expect(wbPayload.workspaces![0].ide_type).toBe('workbuddy');
   });
 });
