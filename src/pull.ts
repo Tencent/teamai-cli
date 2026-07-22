@@ -309,6 +309,9 @@ async function pullForScope(
             try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig, { skipRecall }); } catch {}
             try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig, { skipRecall }); } catch {}
             try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { reportingOnly, skipRecall }); } catch {}
+            // Also refresh the CLAUDE.md recall block so a CLI upgrade that ships
+            // a new block reaches CLAUDE.md even when the repo HEAD is unchanged.
+            await injectRecallBlockIntoTools(cfg, localConfig, scopeLabel);
           }
         }
         return;
@@ -716,40 +719,8 @@ async function pullForScope(
   }
 
   // Step 3.8: Inject teamai-recall subagent rules block (Phase 1)
-  //
-  // Only injected for Tier-1 tools that have BOTH `agents` and `claudemd`
-  // configured. Tools without subagent support (cursor / codex / openclaw /
-  // workbuddy) are skipped — for them the recall flow runs purely via the
-  // TodoWrite hint hook and the manual `teamai recall` command.
-  if (!options.dryRun && isRecallEnabled(localConfig, freshConfig)) {
-    try {
-      const baseDir = resolveBaseDir(localConfig);
-      const recallBlock = compileRecallRulesBlock();
-      let injected = 0;
-      for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
-        if (!toolPath.claudemd || !toolPath.agents) continue;
-        if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
-
-        const claudeMdPath = path.join(baseDir, toolPath.claudemd);
-        try {
-          await injectClaudeMdSection(
-            claudeMdPath,
-            TEAMAI_RECALL_RULES_START,
-            TEAMAI_RECALL_RULES_END,
-            recallBlock,
-          );
-          injected++;
-          log.debug(`Injected recall rules into ${tool} CLAUDE.md`);
-        } catch (e) {
-          log.warn(`Failed to inject recall rules into ${tool} CLAUDE.md: ${(e as Error).message}`);
-        }
-      }
-      if (injected > 0) {
-        log.debug(`[${scopeLabel}] Injected recall rules into ${injected} tool(s) CLAUDE.md`);
-      }
-    } catch (e) {
-      log.debug(`[${scopeLabel}] Recall rules injection skipped: ${(e as Error).message}`);
-    }
+  if (!options.dryRun) {
+    await injectRecallBlockIntoTools(freshConfig, localConfig, scopeLabel);
   }
 
   // Step 4: Deploy CLI built-in skills
@@ -917,6 +888,55 @@ export function compileClaudemd(contents: string[]): string | null {
         '',
         TEAMAI_CLAUDEMD_END,
     ].join('\n');
+}
+
+/**
+ * Inject (or replace) the teamai-recall block into every Tier-1 tool's CLAUDE.md.
+ *
+ * Only injected for Tier-1 tools that have BOTH `agents` and `claudemd`
+ * configured. Tools without subagent support (cursor / codex / openclaw /
+ * workbuddy) are skipped — for them the recall flow runs purely via the
+ * TodoWrite hint hook and the manual `teamai recall` command.
+ *
+ * Extracted so both the full-sync path (Step 3.8) and the "Already synced"
+ * rev fast-path can call it — otherwise a CLI upgrade that ships a new recall
+ * block never reaches CLAUDE.md when the team repo HEAD is unchanged.
+ * No-op when recall is disabled for this scope.
+ */
+export async function injectRecallBlockIntoTools(
+    config: TeamaiConfig,
+    localConfig: LocalConfig,
+    scopeLabel: string,
+): Promise<void> {
+    if (!isRecallEnabled(localConfig, config)) return;
+    try {
+        const baseDir = resolveBaseDir(localConfig);
+        const recallBlock = compileRecallRulesBlock();
+        let injected = 0;
+        for (const [tool, toolPath] of Object.entries(config.toolPaths)) {
+            if (!toolPath.claudemd || !toolPath.agents) continue;
+            if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
+
+            const claudeMdPath = path.join(baseDir, toolPath.claudemd);
+            try {
+                await injectClaudeMdSection(
+                    claudeMdPath,
+                    TEAMAI_RECALL_RULES_START,
+                    TEAMAI_RECALL_RULES_END,
+                    recallBlock,
+                );
+                injected++;
+                log.debug(`Injected recall rules into ${tool} CLAUDE.md`);
+            } catch (e) {
+                log.warn(`Failed to inject recall rules into ${tool} CLAUDE.md: ${(e as Error).message}`);
+            }
+        }
+        if (injected > 0) {
+            log.debug(`[${scopeLabel}] Injected recall rules into ${injected} tool(s) CLAUDE.md`);
+        }
+    } catch (e) {
+        log.debug(`[${scopeLabel}] Recall rules injection skipped: ${(e as Error).message}`);
+    }
 }
 
 /**
