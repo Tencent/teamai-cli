@@ -137,7 +137,7 @@ interface LocalAgentManifest {
 interface LocalAgentCommand {
   id: number;
   type?: string;
-  scope?: LocalAgentScope;
+  scope?: string;
   workspace_path?: string;
   download_url?: string;
   skill_slug?: string;
@@ -1092,6 +1092,25 @@ function commandVersion(command: LocalAgentCommand, kind: CommandResourceKind): 
   ) ?? command.resource_version ?? command.version;
 }
 
+/**
+ * Normalize a backend-sent scope string to an internal LocalAgentScope.
+ *
+ * The backend emits `user` / `workspace` (see clawpro local-agent-api.md);
+ * the deprecated `instance` is no longer sent. Internally project-level
+ * resources use the `project` scope, so `workspace` maps to `project`.
+ * Any unrecognized value falls back to `user` (global install).
+ *
+ * This only maps the scope; presence of `workspace_path` for project scope
+ * is validated by the caller (executeCommand throws if it is missing).
+ */
+function normalizeScope(raw?: string): LocalAgentScope {
+  if (raw === 'workspace' || raw === 'project') return 'project';
+  if (raw !== undefined && raw !== 'user' && raw !== 'instance') {
+    log.debug(`local-agent: unknown scope "${raw}", defaulting to user`);
+  }
+  return 'user';
+}
+
 function manifestKind(kind: CommandResourceKind): ResourceKind {
   return kind === 'skill' ? 'skills' : kind === 'rule' ? 'rules' : 'claudemd';
 }
@@ -1449,7 +1468,7 @@ async function executeCommand(
     throw new Error(`Unsupported command type: ${command.type ?? ''}`);
   }
 
-  const scope = command.scope ?? 'user';
+  const scope = normalizeScope(command.scope);
   const workspacePath = scope === 'project'
     ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
     : undefined;
