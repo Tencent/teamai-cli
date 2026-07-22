@@ -66,6 +66,9 @@ interface WorkspaceBinding {
   projectId: number;
   projectName?: string;
   boundAt: string;
+  /** Normalized owning tool (via normalizeAgentType). Optional for back-compat with existing config.json;
+   * absent means "not yet attributed". */
+  ideType?: string;
 }
 
 export interface LocalAgentConfig {
@@ -1000,6 +1003,49 @@ export async function pruneDeadWorkspaceBindings(config: LocalAgentConfig): Prom
   return changed;
 }
 
+/**
+ * Stamps the workspace binding's owning tool when the hook fires from that tool's own process.
+ * Because hooks are invoked from within the tool's process, cwd === binding.path is the
+ * authoritative signal that this binding belongs to the triggering tool.
+ *
+ * Returns true if the binding was modified (caller should persist config), false otherwise.
+ */
+export function stampWorkspaceTool(
+  config: LocalAgentConfig,
+  currentPath: string | null | undefined,
+  tool: string,
+): boolean {
+  if (!currentPath) return false;
+  const binding = config.workspaceBindings[currentPath];
+  if (!binding) return false;
+  const normalized = normalizeAgentType(tool);
+  if (binding.ideType === normalized) return false;
+  binding.ideType = normalized;
+  return true;
+}
+
+/**
+ * Select the workspace paths that belong to the current tool for reporting.
+ *
+ * A binding belongs to the current tool when its stamped ideType matches, or —
+ * for the not-yet-attributed current cwd — when it is the workspace the hook
+ * fired from. An empty/absent ideType on a non-cwd binding is treated as
+ * unattributed and excluded (it self-heals once its owning tool reports from it).
+ */
+function selectToolWorkspaces(
+  config: LocalAgentConfig,
+  currentPath: string | null | undefined,
+  currentTool: string,
+): string[] {
+  const paths = new Set<string>(Object.keys(config.workspaceBindings));
+  if (currentPath) paths.add(currentPath);
+  return Array.from(paths).filter((wsPath) => {
+    const b = config.workspaceBindings[wsPath];
+    const wsTool = (b?.ideType || undefined) ?? (wsPath === currentPath ? currentTool : undefined);
+    return wsTool === currentTool;
+  });
+}
+
 export async function buildReportPayload(
   config: LocalAgentConfig,
   context: LocalAgentContext,
@@ -1048,19 +1094,17 @@ export async function buildReportPayload(
   };
 
   const currentPath = await resolveWorkspacePath(context.cwd);
-  const workspacePaths = new Set<string>(Object.keys(config.workspaceBindings));
-  if (currentPath) {
-    workspacePaths.add(currentPath);
-  }
-  if (workspacePaths.size > 0) {
-    payload.workspaces = await Promise.all(
-      Array.from(workspacePaths).map(async (wsPath) => {
+  const currentTool = normalizeAgentType(tool);
+  const targetPaths = selectToolWorkspaces(config, currentPath, currentTool);
+  if (targetPaths.length > 0) {
+    const workspaceResults = await Promise.all(
+      targetPaths.map(async (wsPath) => {
         const wsScope = await scanScope(wsPath);
         const wsBinding = config.workspaceBindings[wsPath];
         const workspace: Record<string, unknown> = {
           path: wsPath,
           name: path.basename(wsPath),
-          ide_type: normalizeAgentType(tool),
+          ide_type: currentTool,
           project_id: wsBinding?.projectId,
         };
         if (wsScope.skills.length > 0) workspace.skills = wsScope.skills;
@@ -1068,12 +1112,13 @@ export async function buildReportPayload(
         return workspace;
       }),
     );
+    payload.workspaces = workspaceResults;
   }
 
   return payload;
 }
 
-async function buildSyncPayload(
+export async function buildSyncPayload(
   config: LocalAgentConfig,
   context: LocalAgentContext,
 ): Promise<Record<string, unknown>> {
@@ -1083,17 +1128,15 @@ async function buildSyncPayload(
     status: context.status ?? 'running',
   };
   const currentPath = await resolveWorkspacePath(context.cwd);
-  const workspacePaths = new Set<string>(Object.keys(config.workspaceBindings));
-  if (currentPath) {
-    workspacePaths.add(currentPath);
-  }
-  if (workspacePaths.size > 0) {
-    payload.workspaces = Array.from(workspacePaths).map((wsPath) => {
+  const currentTool = normalizeAgentType(context.tool ?? 'workbuddy');
+  const targetPaths = selectToolWorkspaces(config, currentPath, currentTool);
+  if (targetPaths.length > 0) {
+    payload.workspaces = targetPaths.map((wsPath) => {
       const wsBinding = config.workspaceBindings[wsPath];
       return {
         path: wsPath,
         name: path.basename(wsPath),
-        ide_type: normalizeAgentType(context.tool ?? 'workbuddy'),
+        ide_type: currentTool,
         project_id: wsBinding?.projectId,
       };
     });
@@ -1609,7 +1652,12 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   }
 
   const pruned = await pruneDeadWorkspaceBindings(config);
-  if (pruned) {
+  // Resolve the current workspace independently here rather than reusing an
+  // earlier local, so tool attribution does not depend on the binding-prompt
+  // block above keeping a `workspacePath` in scope.
+  const currentPath = await resolveWorkspacePath(context.cwd);
+  const stamped = stampWorkspaceTool(config, currentPath, context.tool ?? 'workbuddy');
+  if (pruned || stamped) {
     await saveLocalAgentConfig(config);
   }
 
