@@ -566,3 +566,147 @@ describe('local-agent: normalizeScope — workspace scope installs to project di
     expect(manifest.scopes[projectKey!].skills['ws-skill']).toBeDefined();
   });
 });
+
+describe('local-agent: full-snapshot workspace reporting', () => {
+  it('reports all bound workspaces, not just the current cwd', async () => {
+    const wsA = path.join(tmpDir, 'ws-a');
+    const wsB = path.join(tmpDir, 'ws-b');
+    await fse.ensureDir(wsA);
+    await fse.ensureDir(wsB);
+    await setupConfig({
+      [wsA]: { projectId: 11, projectName: 'A', boundAt: 'x' },
+      [wsB]: { projectId: 22, projectName: 'B', boundAt: 'x' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    expect(payload.workspaces).toHaveLength(2);
+    const paths = (payload.workspaces ?? []).map((w) => w.path as string);
+    expect(new Set(paths)).toEqual(new Set([wsA, wsB]));
+    const wsAEntry = (payload.workspaces ?? []).find((w) => w.path === wsA);
+    const wsBEntry = (payload.workspaces ?? []).find((w) => w.path === wsB);
+    expect(wsAEntry?.project_id).toBe(11);
+    expect(wsBEntry?.project_id).toBe(22);
+    // Empty directories — no skills or rules installed.
+    expect(wsAEntry).not.toHaveProperty('skills');
+    expect(wsAEntry).not.toHaveProperty('rules');
+    expect(wsBEntry).not.toHaveProperty('skills');
+    expect(wsBEntry).not.toHaveProperty('rules');
+  });
+
+  it('omits skills/rules for empty workspaces but includes them when present', async () => {
+    const wsFull = path.join(tmpDir, 'ws-full');
+    const wsEmpty = path.join(tmpDir, 'ws-empty');
+    // Write a real codebuddy skill into wsFull.
+    const skillDir = path.join(wsFull, '.codebuddy', 'skills', 'demo-skill');
+    await fse.ensureDir(skillDir);
+    await fse.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: demo-skill\n---\n\n# skill',
+    );
+    await fse.ensureDir(wsEmpty);
+    await setupConfig({
+      [wsFull]: { projectId: 7, projectName: 'full', boundAt: 'x' },
+      [wsEmpty]: { projectId: 8, projectName: 'empty', boundAt: 'x' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    const wsFullEntry = (payload.workspaces ?? []).find((w) => w.path === wsFull) as
+      | (Record<string, unknown> & { skills?: Array<{ slug: string }> })
+      | undefined;
+    const wsEmptyEntry = (payload.workspaces ?? []).find((w) => w.path === wsEmpty);
+
+    expect(wsFullEntry?.skills).toBeDefined();
+    expect(wsFullEntry?.skills?.map((s) => s.slug)).toContain('demo-skill');
+    expect(wsEmptyEntry).not.toHaveProperty('skills');
+    expect(wsEmptyEntry).not.toHaveProperty('rules');
+  });
+
+  it('prunes workspaces whose directory no longer exists', async () => {
+    const wsLive = path.join(tmpDir, 'ws-live');
+    const wsDead = path.join(tmpDir, 'ws-dead');
+    await fse.ensureDir(wsLive);
+    // wsDead is intentionally not created.
+    await setupConfig({
+      [wsLive]: { projectId: 3, projectName: 'live', boundAt: 'x' },
+      [wsDead]: { projectId: 4, projectName: 'dead', boundAt: 'x' },
+    });
+
+    const { pruneDeadWorkspaceBindings, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const pruned = await pruneDeadWorkspaceBindings(config!);
+
+    expect(pruned).toBe(true);
+    expect(Object.keys(config!.workspaceBindings)).toEqual([wsLive]);
+  });
+
+  it('returns false when all directories exist', async () => {
+    const wsA = path.join(tmpDir, 'ws-a2');
+    const wsB = path.join(tmpDir, 'ws-b2');
+    await fse.ensureDir(wsA);
+    await fse.ensureDir(wsB);
+    await setupConfig({
+      [wsA]: { projectId: 1, projectName: 'a', boundAt: 'x' },
+      [wsB]: { projectId: 2, projectName: 'b', boundAt: 'x' },
+    });
+
+    const { pruneDeadWorkspaceBindings, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const pruned = await pruneDeadWorkspaceBindings(config!);
+
+    expect(pruned).toBe(false);
+    expect(Object.keys(config!.workspaceBindings)).toHaveLength(2);
+  });
+
+  it('includes unbound current cwd in the report', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const cwdDir = path.join(tmpDir, 'current');
+    const wsA = path.join(tmpDir, 'ws-a3');
+    await fse.ensureDir(cwdDir);
+    await fse.ensureDir(wsA);
+    execFileSync('git', ['init'], { cwd: cwdDir, stdio: 'ignore' });
+    await setupConfig({
+      [wsA]: { projectId: 5, projectName: 'A', boundAt: 'x' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy', cwd: cwdDir }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    const realCwd = fse.realpathSync(cwdDir);
+    expect(payload.workspaces).toHaveLength(2);
+    const allPaths = (payload.workspaces ?? []).map((w) => w.path as string);
+    expect(allPaths).toContain(wsA);
+    expect(allPaths).toContain(realCwd);
+    const cwdEntry = (payload.workspaces ?? []).find((w) => w.path === realCwd);
+    const wsAEntry = (payload.workspaces ?? []).find((w) => w.path === wsA);
+    expect(cwdEntry?.project_id).toBeUndefined();
+    expect(wsAEntry?.project_id).toBe(5);
+  });
+
+  it('omits user_level skills/rules when none installed', async () => {
+    // HOME is tmpDir (set in beforeEach); no codebuddy skills/rules written there.
+    await setupConfig();
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      user_level: Record<string, unknown>;
+    };
+
+    expect(payload.user_level).toHaveProperty('group_id');
+    expect(payload.user_level).not.toHaveProperty('skills');
+    expect(payload.user_level).not.toHaveProperty('rules');
+  });
+});

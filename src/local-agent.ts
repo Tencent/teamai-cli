@@ -946,14 +946,34 @@ function collectManifestSlugs(manifest: LocalAgentManifest): { skills: Set<strin
   return { skills, rules };
 }
 
+/**
+ * Remove workspace bindings whose directory no longer exists on disk.
+ *
+ * Workspace bindings are only ever added, never removed, so a deleted
+ * project directory would otherwise be reported forever and the server
+ * (full-sync snapshot) could never drop it. This prunes such stale
+ * entries in place. Applies to skipped ('__skipped__', projectId 0)
+ * entries too — a deleted directory should not leave a permanent sentinel.
+ *
+ * @param config - Loaded local-agent config; its workspaceBindings map is mutated in place.
+ * @returns True if at least one binding was removed.
+ */
+export async function pruneDeadWorkspaceBindings(config: LocalAgentConfig): Promise<boolean> {
+  let changed = false;
+  for (const workspacePath of Object.keys(config.workspaceBindings)) {
+    if (!(await pathExists(workspacePath))) {
+      delete config.workspaceBindings[workspacePath];
+      changed = true;
+    }
+  }
+  return changed;
+}
 
 export async function buildReportPayload(
   config: LocalAgentConfig,
   context: LocalAgentContext,
 ): Promise<Record<string, unknown>> {
   const manifest = await loadManifest();
-  const workspacePath = await resolveWorkspacePath(context.cwd);
-  const binding = workspacePath ? config.workspaceBindings[workspacePath] : undefined;
 
   // Resource discovery scans the tool's on-disk skills/rules directories rather
   // than the manifest, so locally-installed resources (not just HTTP-distributed
@@ -977,6 +997,10 @@ export async function buildReportPayload(
 
   const userScope = await scanScope(process.env.HOME ?? '');
 
+  const userLevel: Record<string, unknown> = { group_id: config.userGroupId };
+  if (userScope.skills.length > 0) userLevel.skills = userScope.skills;
+  if (userScope.rules.length > 0) userLevel.rules = userScope.rules;
+
   const payload: Record<string, unknown> = {
     agent_type: normalizeAgentType(tool),
     agent_version: await getAgentVersion(tool),
@@ -989,25 +1013,30 @@ export async function buildReportPayload(
     // deliberately omitted (not sent as []): the server treats present arrays
     // as a full-sync snapshot ("消失即删"), so an empty array would wipe any
     // instance-level resources. Omitting the field leaves them untouched.
-    user_level: {
-      group_id: config.userGroupId,
-      skills: userScope.skills,
-      rules: userScope.rules,
-    },
+    user_level: userLevel,
   };
 
-  if (workspacePath) {
-    const wsScope = await scanScope(workspacePath);
-    payload.workspaces = [
-      {
-        path: workspacePath,
-        name: path.basename(workspacePath),
-        ide_type: normalizeAgentType(tool),
-        project_id: binding?.projectId,
-        skills: wsScope.skills,
-        rules: wsScope.rules,
-      },
-    ];
+  const currentPath = await resolveWorkspacePath(context.cwd);
+  const workspacePaths = new Set<string>(Object.keys(config.workspaceBindings));
+  if (currentPath) {
+    workspacePaths.add(currentPath);
+  }
+  if (workspacePaths.size > 0) {
+    payload.workspaces = await Promise.all(
+      Array.from(workspacePaths).map(async (wsPath) => {
+        const wsScope = await scanScope(wsPath);
+        const wsBinding = config.workspaceBindings[wsPath];
+        const workspace: Record<string, unknown> = {
+          path: wsPath,
+          name: path.basename(wsPath),
+          ide_type: normalizeAgentType(tool),
+          project_id: wsBinding?.projectId,
+        };
+        if (wsScope.skills.length > 0) workspace.skills = wsScope.skills;
+        if (wsScope.rules.length > 0) workspace.rules = wsScope.rules;
+        return workspace;
+      }),
+    );
   }
 
   return payload;
@@ -1017,22 +1046,26 @@ async function buildSyncPayload(
   config: LocalAgentConfig,
   context: LocalAgentContext,
 ): Promise<Record<string, unknown>> {
-  const workspacePath = await resolveWorkspacePath(context.cwd);
-  const binding = workspacePath ? config.workspaceBindings[workspacePath] : undefined;
   const payload: Record<string, unknown> = {
     agent_type: normalizeAgentType(context.tool ?? 'workbuddy'),
     local_agent_id: resolveLocalAgentId(context),
     status: context.status ?? 'running',
   };
-  if (workspacePath) {
-    payload.workspaces = [
-      {
-        path: workspacePath,
-        name: path.basename(workspacePath),
+  const currentPath = await resolveWorkspacePath(context.cwd);
+  const workspacePaths = new Set<string>(Object.keys(config.workspaceBindings));
+  if (currentPath) {
+    workspacePaths.add(currentPath);
+  }
+  if (workspacePaths.size > 0) {
+    payload.workspaces = Array.from(workspacePaths).map((wsPath) => {
+      const wsBinding = config.workspaceBindings[wsPath];
+      return {
+        path: wsPath,
+        name: path.basename(wsPath),
         ide_type: normalizeAgentType(context.tool ?? 'workbuddy'),
-        project_id: binding?.projectId,
-      },
-    ];
+        project_id: wsBinding?.projectId,
+      };
+    });
   }
   return payload;
 }
@@ -1528,6 +1561,11 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
 
   if (context.event?.type === 'session_start') {
     await maybeReconcilePlugins(context);
+  }
+
+  const pruned = await pruneDeadWorkspaceBindings(config);
+  if (pruned) {
+    await saveLocalAgentConfig(config);
   }
 
   try {
