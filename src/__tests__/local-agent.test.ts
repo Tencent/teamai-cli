@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -741,5 +742,67 @@ describe('local-agent: full-snapshot workspace reporting', () => {
 
     expect(pruned).toBe(true);
     expect(Object.keys(config!.workspaceBindings)).not.toContain(wsSkipDead);
+  });
+});
+
+describe('local-agent: CloudStudio sandbox suppression', () => {
+  afterEach(() => {
+    delete process.env.X_IDE_IS_CLOUDSTUDIO;
+    delete process.env.TEAMAI_ALLOW_SANDBOX_REPORT;
+  });
+
+  it('returns false without fetching when X_IDE_IS_CLOUDSTUDIO=TRUE', async () => {
+    process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(result).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with normal reporting when TEAMAI_ALLOW_SANDBOX_REPORT=1 overrides sandbox', async () => {
+    process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
+    process.env.TEAMAI_ALLOW_SANDBOX_REPORT = '1';
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('proceeds with normal reporting when no sandbox env is set', async () => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('returns false without fetching when /var/run/cloudstudio exists', async () => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(result).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

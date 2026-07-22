@@ -254,6 +254,24 @@ function resolveLocalAgentId(context: LocalAgentContext): string {
 }
 
 /**
+ * Detect whether we are running inside a CloudStudio container sandbox.
+ *
+ * WorkBuddy can spawn a CloudStudio Linux container that runs its own teamai
+ * hooks. That container has a different machine_id than the macOS host, so it
+ * derives a second local_agent_id and reports a duplicate agent card. Both
+ * signals below are absent on a normal Linux user machine, so this never
+ * suppresses reporting for legitimate standalone Linux users.
+ */
+function isCloudStudioSandbox(): boolean {
+  if (process.env.X_IDE_IS_CLOUDSTUDIO === 'TRUE') return true;
+  try {
+    return fs.existsSync('/var/run/cloudstudio');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Build the unified log tag for local-agent debug output: `[<id6>] [<tool>]` —
  * the last 6 chars of the derived agent id plus the agent name (tool), so every
  * line (HTTP request/response, report/sync, command ack) reads the same way.
@@ -1556,6 +1574,13 @@ async function processCommands(
 }
 
 export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promise<boolean> {
+  if (isCloudStudioSandbox() && process.env.TEAMAI_ALLOW_SANDBOX_REPORT !== '1') {
+    log.debug(
+      '[local-agent] CloudStudio sandbox detected; skipping report/sync ' +
+        '(set TEAMAI_ALLOW_SANDBOX_REPORT=1 to override)',
+    );
+    return false;
+  }
   const config = await loadLocalAgentConfig();
   if (!config) return false;
 
