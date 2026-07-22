@@ -45,22 +45,11 @@ export async function readFileSafe(filePath: string): Promise<string | null> {
 
 /**
  * Write a file, creating parent dirs as needed.
- * Uses an atomic temp-file + rename strategy so concurrent readers never see
- * a half-written file and concurrent writers do not interleave partial data.
  */
 export async function writeFile(filePath: string, content: string): Promise<void> {
   const expanded = expandHome(filePath);
   await fse.ensureDir(path.dirname(expanded));
-  // rename(2) within the same filesystem is atomic; the tmp file lives in the
-  // same directory to guarantee they share a filesystem.
-  const tmp = `${expanded}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
-  try {
-    await fse.writeFile(tmp, content, 'utf-8');
-    await fse.rename(tmp, expanded);
-  } catch (error) {
-    await fse.remove(tmp).catch(() => undefined);
-    throw error;
-  }
+  await fse.writeFile(expanded, content, 'utf-8');
 }
 
 /**
@@ -82,6 +71,40 @@ export async function readJson<T = unknown>(filePath: string): Promise<T | null>
  */
 export async function writeJson(filePath: string, data: unknown): Promise<void> {
   await writeFile(filePath, JSON.stringify(data, null, 2) + '\n');
+}
+
+/**
+ * Write JSON atomically (temp file + rename), preserving the target's
+ * existing permission bits (or defaulting to 0o600 for a new file).
+ *
+ * rename(2) within a filesystem is atomic, so concurrent readers never see a
+ * half-written file and concurrent writers cannot interleave partial data.
+ * Intended for small, security-sensitive, concurrently-written files such as
+ * the local-agent config. Not for shell-profile / dotfile paths, which may be
+ * symlinks a caller expects writes to follow.
+ *
+ * @param filePath - Destination path (may use ~).
+ * @param data - JSON-serializable value.
+ */
+export async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
+  const expanded = expandHome(filePath);
+  await fse.ensureDir(path.dirname(expanded));
+  const content = JSON.stringify(data, null, 2) + '\n';
+  let mode = 0o600;
+  try {
+    mode = (await fse.stat(expanded)).mode & 0o777;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const tmp = `${expanded}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await fse.writeFile(tmp, content, 'utf-8');
+    await fse.chmod(tmp, mode);
+    await fse.rename(tmp, expanded);
+  } catch (error) {
+    await fse.remove(tmp).catch(() => undefined);
+    throw error;
+  }
 }
 
 /**

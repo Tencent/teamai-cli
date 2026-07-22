@@ -17,6 +17,7 @@ import {
   remove,
   writeFile,
   writeJson,
+  writeJsonAtomic,
 } from './utils/fs.js';
 import { ResourceHandler } from './resources/base.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
@@ -361,7 +362,7 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
 }
 
 async function saveLocalAgentConfig(config: LocalAgentConfig): Promise<void> {
-  await writeJson(getConfigPath(), {
+  await writeJsonAtomic(getConfigPath(), {
     ...config,
     endpoint: normalizeEndpoint(config.endpoint),
     workspaceBindings: config.workspaceBindings ?? {},
