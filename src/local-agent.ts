@@ -1574,24 +1574,31 @@ async function processCommands(
 }
 
 export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promise<boolean> {
-  if (isCloudStudioSandbox() && process.env.TEAMAI_ALLOW_SANDBOX_REPORT !== '1') {
-    log.debug(
-      '[local-agent] CloudStudio sandbox detected; skipping report/sync ' +
-        '(set TEAMAI_ALLOW_SANDBOX_REPORT=1 to override)',
-    );
-    return false;
-  }
   const config = await loadLocalAgentConfig();
   if (!config) return false;
 
-  const workspacePath = await resolveWorkspacePath(context.cwd);
-  if (isBindPromptEnabled() && workspacePath) {
-    if (context.event?.type === 'session_start') {
-      await ensureWorkspaceBinding(config, workspacePath);
+  // Binding prompt is injected via stdout hook context (not HTTP), so it must run
+  // even inside the CloudStudio sandbox — the sandbox guard below only skips the
+  // HTTP report/sync that would produce a duplicate card. Resolve the workspace
+  // only when the prompt is enabled, so the default-off path forks no git process.
+  if (isBindPromptEnabled()) {
+    const workspacePath = await resolveWorkspacePath(context.cwd);
+    if (workspacePath) {
+      if (context.event?.type === 'session_start') {
+        await ensureWorkspaceBinding(config, workspacePath);
+      }
+      if (context.event?.type === 'prompt_submit') {
+        await emitBindingHint(config, workspacePath);
+      }
     }
-    if (context.event?.type === 'prompt_submit') {
-      await emitBindingHint(config, workspacePath);
-    }
+  }
+
+  if (isCloudStudioSandbox() && process.env.TEAMAI_ALLOW_SANDBOX_REPORT !== '1') {
+    log.debug(
+      '[local-agent] CloudStudio sandbox detected; skipping HTTP report/sync ' +
+        '(binding prompt still runs; set TEAMAI_ALLOW_SANDBOX_REPORT=1 to override)',
+    );
+    return false;
   }
 
   const tag = localAgentTag(context);
