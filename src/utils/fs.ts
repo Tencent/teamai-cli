@@ -44,12 +44,23 @@ export async function readFileSafe(filePath: string): Promise<string | null> {
 }
 
 /**
- * Write a file, creating parent dirs as needed
+ * Write a file, creating parent dirs as needed.
+ * Uses an atomic temp-file + rename strategy so concurrent readers never see
+ * a half-written file and concurrent writers do not interleave partial data.
  */
 export async function writeFile(filePath: string, content: string): Promise<void> {
   const expanded = expandHome(filePath);
   await fse.ensureDir(path.dirname(expanded));
-  await fse.writeFile(expanded, content, 'utf-8');
+  // rename(2) within the same filesystem is atomic; the tmp file lives in the
+  // same directory to guarantee they share a filesystem.
+  const tmp = `${expanded}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await fse.writeFile(tmp, content, 'utf-8');
+    await fse.rename(tmp, expanded);
+  } catch (error) {
+    await fse.remove(tmp).catch(() => undefined);
+    throw error;
+  }
 }
 
 /**

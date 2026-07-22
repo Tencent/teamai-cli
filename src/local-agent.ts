@@ -961,9 +961,21 @@ function collectManifestSlugs(manifest: LocalAgentManifest): { skills: Set<strin
 export async function pruneDeadWorkspaceBindings(config: LocalAgentConfig): Promise<boolean> {
   let changed = false;
   for (const workspacePath of Object.keys(config.workspaceBindings)) {
-    if (!(await pathExists(workspacePath))) {
-      delete config.workspaceBindings[workspacePath];
-      changed = true;
+    try {
+      await fs.promises.stat(workspacePath);
+    } catch (error) {
+      // Only prune when the directory is confirmed gone (ENOENT). Transient
+      // failures — permission errors, unreachable network mounts — must NOT
+      // delete a still-valid binding, or the server's full-sync snapshot
+      // would drop that workspace's resources.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        delete config.workspaceBindings[workspacePath];
+        changed = true;
+      } else {
+        log.debug(
+          `local-agent: keeping workspace binding ${workspacePath} despite stat error: ${(error as Error).message}`,
+        );
+      }
     }
   }
   return changed;

@@ -709,4 +709,37 @@ describe('local-agent: full-snapshot workspace reporting', () => {
     expect(payload.user_level).not.toHaveProperty('skills');
     expect(payload.user_level).not.toHaveProperty('rules');
   });
+
+  it('reports skipped workspaces with project_id 0', async () => {
+    const wsSkip = path.join(tmpDir, 'ws-skip');
+    await fse.ensureDir(wsSkip);
+    await setupConfig({
+      [wsSkip]: { projectId: 0, projectName: '__skipped__', boundAt: 'x' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    const entry = (payload.workspaces ?? []).find((w) => w.path === wsSkip);
+    expect(entry).toBeDefined();
+    expect(entry?.project_id).toBe(0);
+  });
+
+  it('prunes a skipped workspace whose directory is gone', async () => {
+    const wsSkipDead = path.join(tmpDir, 'ws-skip-dead');
+    // Intentionally not created — directory does not exist.
+    await setupConfig({
+      [wsSkipDead]: { projectId: 0, projectName: '__skipped__', boundAt: 'x' },
+    });
+
+    const { pruneDeadWorkspaceBindings, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const pruned = await pruneDeadWorkspaceBindings(config!);
+
+    expect(pruned).toBe(true);
+    expect(Object.keys(config!.workspaceBindings)).not.toContain(wsSkipDead);
+  });
 });
