@@ -15,15 +15,6 @@ vi.mock('../codebase.js', () => ({
     generateCodebaseMd: vi.fn().mockResolvedValue('# Codebase\n\n生成的 codebase 文档内容\n'),
 }));
 
-vi.mock('../domains/recommend.js', () => ({
-    recommendDomain: vi.fn().mockResolvedValue({
-        domain: '推理',
-        confidence: 0.84,
-        signal: 'README 含 "推理服务"',
-        alternatives: [],
-    }),
-}));
-
 vi.mock('../utils/prompt.js', () => ({
     askQuestion: vi.fn().mockResolvedValue('y'),
     askConfirmation: vi.fn().mockResolvedValue(true),
@@ -37,9 +28,7 @@ vi.mock('../config.js', () => ({
 
 import { importFromRepo } from '../import-repo.js';
 import { shallowClone, shallowFetch } from '../clone.js';
-import { loadDomains } from '../domains/store.js';
 import { generateCodebaseMd } from '../codebase.js';
-import { recommendDomain } from '../domains/recommend.js';
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -91,13 +80,6 @@ describe('importFromRepo — incremental mode', () => {
         });
 
         vi.mocked(generateCodebaseMd).mockResolvedValue('# Codebase\n\n生成的 codebase 文档内容\n');
-
-        vi.mocked(recommendDomain).mockResolvedValue({
-            domain: '推理',
-            confidence: 0.84,
-            signal: 'README 含 "推理服务"',
-            alternatives: [],
-        });
     });
 
     afterEach(async () => {
@@ -171,36 +153,5 @@ describe('importFromRepo — incremental mode', () => {
         expect(content).toContain('deadbeef');
     });
 
-    it('增量模式下仓库已在域中：更新 LAST_SYNC 并返回', async () => {
-        const domainsYaml = [
-            'version: 1',
-            'confidence_threshold: 0.6',
-            'domains:',
-            '  - name: 推理',
-            '    description: ""',
-            '    repos:',
-            `      - url: "${TEST_URL}"`,
-            '        confidence: 0.84',
-            '        signal: test',
-            '        locked: false',
-        ].join('\n');
-        await fs.writeFile(path.join(workdir, '.teamai', 'domains.yaml'), domainsYaml, 'utf8');
-        await makeFakeCache(workdir, 'github', 'owner', 'testrepo', FAKE_OLD_SHA);
-
-        await importFromRepo({
-            url: TEST_URL,
-            incremental: true,
-            interactive: false,
-        });
-
-        expect(shallowFetch).toHaveBeenCalledTimes(1);
-        const lastSyncPath = path.join(workdir, 'cache', 'github', 'owner', 'testrepo', 'LAST_SYNC');
-        const content = await fs.readFile(lastSyncPath, 'utf8');
-        expect(content).toContain('cafebabe');
-
-        // domains.yaml 中不应新增条目
-        const domains = await loadDomains(workdir);
-        const domainEntry = domains.domains.find((d) => d.name === '推理');
-        expect(domainEntry?.repos).toHaveLength(1);
-    });
 });
+

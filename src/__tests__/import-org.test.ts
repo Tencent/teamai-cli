@@ -7,24 +7,6 @@ import fs from 'fs-extra';
 
 // ─── Mocks ──────────────────────────────────────────────
 
-vi.mock('../domains/cluster.js', () => ({
-    clusterRepos: vi.fn(),
-}));
-
-vi.mock('../domains/store.js', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('../domains/store.js')>();
-    return {
-        ...actual,
-        saveDomainsDraft: vi.fn().mockResolvedValue(undefined),
-        saveDomains: vi.fn().mockResolvedValue(undefined),
-        appendHistory: vi.fn().mockResolvedValue(undefined),
-    };
-});
-
-vi.mock('../domains/review.js', () => ({
-    reviewDomains: vi.fn(),
-}));
-
 vi.mock('../import-repo-list.js', () => ({
     importFromRepoList: vi.fn(),
 }));
@@ -37,12 +19,8 @@ vi.mock('../providers/registry.js', () => ({
 // ─── Imports (after mocks) ───────────────────────────────
 
 import { importFromOrg } from '../import-org.js';
-import { clusterRepos } from '../domains/cluster.js';
-import { saveDomainsDraft, saveDomains, appendHistory } from '../domains/store.js';
-import { reviewDomains } from '../domains/review.js';
 import { importFromRepoList } from '../import-repo-list.js';
 import { getProvider } from '../providers/registry.js';
-import type { DomainsFile } from '../domains/index.js';
 import type { OrgRepoInfo } from '../providers/types.js';
 
 // ─── Helpers ────────────────────────────────────────────
@@ -54,20 +32,6 @@ function makeRepo(overrides: Partial<OrgRepoInfo> = {}): OrgRepoInfo {
         name: 'repo-a',
         archived: false,
         ...overrides,
-    };
-}
-
-function makeDomains(): DomainsFile {
-    return {
-        version: 1,
-        confidence_threshold: 0.6,
-        domains: [
-            {
-                name: '基础设施',
-                description: '',
-                repos: [{ url: 'https://github.com/org/repo-a', locked: false }],
-            },
-        ],
     };
 }
 
@@ -95,11 +59,6 @@ describe('importFromOrg', () => {
         process.chdir(cwd);
         vi.clearAllMocks();
         (getProvider as ReturnType<typeof vi.fn>).mockReturnValue(mockProvider);
-        (clusterRepos as ReturnType<typeof vi.fn>).mockResolvedValue(makeDomains());
-        (reviewDomains as ReturnType<typeof vi.fn>).mockResolvedValue({
-            result: makeDomains(),
-            finalize: 'save',
-        });
         (importFromRepoList as ReturnType<typeof vi.fn>).mockResolvedValue({
             succeeded: 1,
             failed: [],
@@ -120,7 +79,7 @@ describe('importFromOrg', () => {
         ];
         mockListOrgRepos.mockResolvedValue(repos);
 
-        await importFromOrg({ org: 'github.com/org', skipImport: true, bootstrap: false, dryRun: false });
+        await importFromOrg({ org: 'github.com/org', skipImport: true, dryRun: false });
 
         const whitelistPath = path.join(cwd, '.teamai', 'repo-whitelist.draft.yaml');
         const content = await fs.readFile(whitelistPath, 'utf8');
@@ -141,7 +100,6 @@ describe('importFromOrg', () => {
             includePattern: 'service-',
             excludePattern: 'service-b',
             skipImport: true,
-            bootstrap: false,
             dryRun: false,
         });
 
@@ -155,23 +113,15 @@ describe('importFromOrg', () => {
     it('skipImport=true 跳过 importFromRepoList', async () => {
         mockListOrgRepos.mockResolvedValue([makeRepo()]);
 
-        await importFromOrg({ org: 'github.com/org', skipImport: true, bootstrap: false, dryRun: true });
+        await importFromOrg({ org: 'github.com/org', skipImport: true, dryRun: true });
 
         expect(importFromRepoList).not.toHaveBeenCalled();
-    });
-
-    it('bootstrap=false 仅写草稿不 review', async () => {
-        mockListOrgRepos.mockResolvedValue([makeRepo()]);
-
-        await importFromOrg({ org: 'github.com/org', bootstrap: false, skipImport: true, dryRun: true });
-
-        expect(reviewDomains).not.toHaveBeenCalled();
     });
 
     it('skipImport=false 调用 importFromRepoList', async () => {
         mockListOrgRepos.mockResolvedValue([makeRepo()]);
 
-        await importFromOrg({ org: 'github.com/org', skipImport: false, bootstrap: false, dryRun: false });
+        await importFromOrg({ org: 'github.com/org', skipImport: false, dryRun: false });
 
         expect(importFromRepoList).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -180,11 +130,4 @@ describe('importFromOrg', () => {
         );
     });
 
-    it('appendHistory 被调用两次（start + complete）', async () => {
-        mockListOrgRepos.mockResolvedValue([makeRepo()]);
-
-        await importFromOrg({ org: 'github.com/org', skipImport: true, bootstrap: false, dryRun: true });
-
-        expect(appendHistory).toHaveBeenCalledTimes(2);
-    });
 });

@@ -647,18 +647,6 @@ async function pullForScope(
     }
   }
 
-  // Step 3.5b: Sync domains.yaml from team repo to local .teamai/
-  if (!options.dryRun) {
-    try {
-      const teamDomainsPath = path.join(localConfig.repo.localPath, '.teamai', 'domains.yaml');
-      if (await pathExists(teamDomainsPath)) {
-        const localDomainsDir = path.join(process.cwd(), '.teamai');
-        await fse.ensureDir(localDomainsDir);
-        await fse.copy(teamDomainsPath, path.join(localDomainsDir, 'domains.yaml'), { overwrite: true });
-      }
-    } catch { /* non-critical */ }
-  }
-
   // Step 3.6: Inject team culture into CLAUDE.md
   if (!options.dryRun) {
     try {

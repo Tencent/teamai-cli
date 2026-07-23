@@ -45,14 +45,10 @@ interface ImportOptions extends GlobalOptions {
   fromRepoList?: string;
   /** Concurrency for --from-repo-list (string, requires parseInt), default 3 */
   concurrency?: string;
-  /** Skip domain-*.md / index.md regeneration (single-repo only) */
-  skipAggregate?: boolean;
   /** Incremental mode: fetch+reset on cache hit, fall back to full clone on miss */
   incremental?: boolean;
   /** --from-org: org URL or group path */
   fromOrg?: string;
-  /** --bootstrap: enter interactive review after --from-org */
-  bootstrap?: boolean;
   /** --max-repos: max repos to fetch with --from-org (string, requires parseInt) */
   maxRepos?: string;
   /** --exclude-archived: exclude archived repos */
@@ -87,7 +83,6 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
             task.output = `Org: ${opts.fromOrg}`;
             await importFromOrg({
               org: opts.fromOrg!,
-              bootstrap: opts.bootstrap ?? false,
               maxRepos: opts.maxRepos ? parseInt(opts.maxRepos, 10) : 200,
               excludeArchived: opts.excludeArchived ?? true,
               includePattern: opts.includePattern,
@@ -146,7 +141,6 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
               forceSsh: opts.ssh ?? false,
               dryRun: opts.dryRun,
               output: opts.output,
-              skipAggregate: opts.skipAggregate ?? false,
               incremental: opts.incremental ?? false,
               skipEnrich: opts.skipEnrich ?? false,
             });

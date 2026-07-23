@@ -12,21 +12,6 @@ vi.mock('../import-repo.js', () => ({
     importFromRepo: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../aggregate.js', () => ({
-    regenerateAggregate: vi.fn().mockResolvedValue({
-        domainFiles: [],
-        indexFile: '/mock/index.md',
-    }),
-}));
-
-vi.mock('../domains/store.js', () => ({
-    loadDomains: vi.fn().mockResolvedValue({
-        version: 1,
-        confidence_threshold: 0.6,
-        domains: [],
-    }),
-}));
-
 vi.mock('../config.js', () => ({
     autoDetectInit: vi.fn().mockRejectedValue(new Error('no config in test')),
 }));
@@ -35,7 +20,6 @@ vi.mock('../config.js', () => ({
 
 import { importFromRepoList } from '../import-repo-list.js';
 import { importFromRepo } from '../import-repo.js';
-import { regenerateAggregate } from '../aggregate.js';
 
 // ─── Tests ──────────────────────────────────────────────
 
@@ -116,28 +100,6 @@ describe('importFromRepoList', () => {
         expect(result.failed[0].url).toBe('https://github.com/org/fail-repo');
         expect(result.failed[0].error).toContain('克隆失败');
         expect(result.succeeded).toBe(1);
-    });
-
-    it('skipAggregate=true → 不调用 regenerateAggregate', async () => {
-        const filePath = await writeYaml('repos.yaml', {
-            version: 1,
-            repos: [{ url: 'https://github.com/org/repo-x' }],
-        });
-
-        await importFromRepoList({ listPath: filePath, skipAggregate: true });
-
-        expect(regenerateAggregate).not.toHaveBeenCalled();
-    });
-
-    it('默认 skipAggregate=false → 调用 regenerateAggregate', async () => {
-        const filePath = await writeYaml('repos.yaml', {
-            version: 1,
-            repos: [{ url: 'https://github.com/org/repo-y' }],
-        });
-
-        await importFromRepoList({ listPath: filePath });
-
-        expect(regenerateAggregate).toHaveBeenCalledTimes(1);
     });
 
     it('priority=high 条目优先排序：先于 normal', async () => {

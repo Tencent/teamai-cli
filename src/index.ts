@@ -728,11 +728,9 @@ program
   .addOption(new Option('--domain <name>', 'Skip AI recommendation and assign repo to this domain explicitly').hideHelp())
   .option('--from-repo-list <path>', 'Batch import repos from a YAML whitelist')
   .addOption(new Option('--concurrency <n>', 'Concurrent repos for --from-repo-list (default 3)').default('3').hideHelp())
-  .addOption(new Option('--skip-aggregate', 'Skip domain-*.md / index.md regeneration').hideHelp())
   .option('--incremental', 'Use cached clone with fetch+reset (with --from-repo or --from-repo-list)')
   .option('--skip-enrich', 'Skip AI enrichment (only clone + extract + graph, no LLM calls)')
-  .option('--from-org <org>', 'List repos under an org and bootstrap whitelist + domains')
-  .addOption(new Option('--bootstrap', 'Run interactive review after --from-org').hideHelp())
+  .option('--from-org <org>', 'List repos under an org and generate a repo whitelist')
   .addOption(new Option('--max-repos <n>', 'Cap on repos pulled from --from-org (default 200)').default('200').hideHelp())
   .addOption(new Option('--exclude-archived', 'Exclude archived repos from --from-org (default true)').hideHelp())
   .addOption(new Option('--include-pattern <re>', 'Regex to include repos by full name (used with --from-org)').hideHelp())
@@ -783,12 +781,10 @@ program
   .addOption(new Option('--project <name>', 'Project slug for extract output (default: directory name)').hideHelp())
   .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)').hideHelp())
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
-  .option('--lint', 'Run global consistency lint over docs/team-codebase')
-  .option('--fix', 'Apply low-risk mechanical fixes (only with --lint)')
+  .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph')
+  .option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode')
   .option('--status', 'Show knowledge-base git baseline (headSha / repoUrl / branch)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
-  .addOption(new Option('--stale-days <n>', 'Threshold for sync-stale check').default('60').hideHelp())
-  .addOption(new Option('--pending-review-threshold <n>', 'Threshold for pending-review backlog').default('10').hideHelp())
   .option('--json', 'Output report as JSON (suitable for CI)')
   .addOption(new Option('--output <path>', 'Custom teamwiki output root directory').hideHelp())
   .action(async (cmdOpts) => {
@@ -811,28 +807,6 @@ program
         const globalOpts = program.opts() as GlobalOptions;
         const { reviewCmd } = await import('./review-cmd.js');
         await reviewCmd({ ...globalOpts, ...cmdOpts, idArg });
-    });
-
-program
-    .command('domains <subcommand> [repoUrl]', { hidden: true })
-    
-    .description('Inspect / accept / reject domain-drift signals (subcommand: drift)')
-    .option('--apply', 'Apply drift for the given repoUrl')
-    .option('--apply-all', 'Apply all drift items above confidence threshold')
-    .option('--threshold <n>', 'Confidence threshold for --apply-all (default 0.8)', '0.8')
-    .option('--lock', 'Lock the repo against future drift signals')
-    .option('--output <path>', 'Custom teamwiki output root directory')
-    .option('--skip-aggregate', 'Skip regenerateAggregate after apply')
-    .option('--json', 'Machine-readable output')
-    .action(async (subcommand, repoUrlArg, cmdOpts) => {
-        if (subcommand !== 'drift') {
-            log.error(`Unknown subcommand: ${subcommand}（仅支持 drift）`);
-            process.exitCode = 2;
-            return;
-        }
-        const globalOpts = program.opts() as GlobalOptions;
-        const { driftCmd } = await import('./drift-cmd.js');
-        await driftCmd({ ...globalOpts, ...cmdOpts, repoUrlArg });
     });
 
 // ─── Unified hook dispatch (replaces individual hook subcommands) ────
