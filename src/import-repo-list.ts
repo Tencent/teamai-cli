@@ -4,9 +4,6 @@ import fs from 'fs-extra';
 import { loadRepoList } from './repo-list/store.js';
 import { isOrgEntry, type RepoListEntry } from './repo-list/schema.js';
 import { importFromRepo } from './import-repo.js';
-import { loadDomains } from './domains/index.js';
-import { regenerateAggregate } from './aggregate.js';
-import { getTeamCodebasePaths } from './utils/team-codebase-paths.js';
 import { log } from './utils/logger.js';
 
 /** importFromRepoList 入参。 */
@@ -21,8 +18,6 @@ export interface ImportFromRepoListOptions {
     dryRun?: boolean;
     /** 自定义产物根（同 P5.1 的 output 语义） */
     output?: string;
-    /** 跳过 domain-*.md 与 index.md 重生（仅做单仓） */
-    skipAggregate?: boolean;
     /** 增量模式：缓存命中时仅 fetch+reset，未命中时 fallback 到全量 clone */
     incremental?: boolean;
     /** 跳过 AI enrichment（只做 clone + extract + graph，不调用 LLM） */
@@ -34,7 +29,6 @@ export interface ImportFromRepoListResult {
     succeeded: number;
     failed: Array<{ url: string; error: string }>;
     skipped: Array<{ url: string; reason: string }>;
-    aggregateGenerated: boolean;
 }
 
 /**
@@ -60,7 +54,6 @@ function sortByPriority(entries: RepoListEntry[]): RepoListEntry[] {
  *  2. 展开 org entry（P5.2 暂不实现，遇到 org entry 直接 warn 跳过；留给 P5.4）
  *  3. 用 P5.1 的 importFromRepo 单仓内核处理每个 entry，并发上限 = concurrency
  *  4. 单仓失败不阻塞，最终汇总 succeeded/failed/skipped
- *  5. 全部完成后调用 regenerateAggregate 重建 domain-*.md + index.md
  *
  * @param opts ImportFromRepoListOptions
  * @returns    汇总结果
@@ -74,7 +67,6 @@ export async function importFromRepoList(
         forceSsh = false,
         dryRun = false,
         output,
-        skipAggregate = false,
         incremental = false,
         skipEnrich = false,
     } = opts;
@@ -165,33 +157,7 @@ export async function importFromRepoList(
         }
     }
 
-    // 5. 重建聚合文件
-    let aggregateGenerated = false;
-    if (!skipAggregate && !dryRun) {
-        try {
-            const cwd = process.cwd();
-            let resolvedOutput = output;
-            let domainsBase = cwd;
-            if (!resolvedOutput) {
-                try {
-                    const { autoDetectInit } = await import('./config.js');
-                    const { localConfig: lc } = await autoDetectInit();
-                    resolvedOutput = path.join(lc.repo.localPath, 'docs', 'team-codebase');
-                    domainsBase = lc.repo.localPath;
-                } catch { /* fallback to cwd */ }
-            }
-            const paths = getTeamCodebasePaths(cwd, resolvedOutput);
-            const domains = await loadDomains(domainsBase);
-            await regenerateAggregate({ paths, domains });
-            aggregateGenerated = true;
-            log.info(`aggregated files generated: ${paths.index}`);
-        } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            log.warn(`aggregation file generation failed (non-blocking): ${message}`);
-        }
-    }
-
-    // 6. 统一推送（graph + aggregate 通过 MR 提交）
+    // 5. 统一推送（graph 通过 MR 提交）
     if (!dryRun && succeeded.length > 0) {
         try {
             const { autoDetectInit } = await import('./config.js');
@@ -199,7 +165,7 @@ export async function importFromRepoList(
             const { autoPushViaMR } = await import('./utils/git.js');
             const prUrl = await autoPushViaMR(
                 lc.repo.localPath,
-                '[teamai] Batch import: graph + aggregate',
+                '[teamai] Batch import: graph',
                 ['.'],
                 { repo: tc.repo, provider: tc.provider, reviewers: tc.reviewers },
                 { repo: lc.repo, username: lc.username },
@@ -218,6 +184,5 @@ export async function importFromRepoList(
         succeeded: succeeded.length,
         failed,
         skipped,
-        aggregateGenerated,
     };
 }

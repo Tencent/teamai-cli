@@ -11,15 +11,6 @@ vi.mock('../clone.js', () => ({
     shallowFetch: vi.fn(),
 }));
 
-vi.mock('../domains/recommend.js', () => ({
-    recommendDomain: vi.fn().mockResolvedValue({
-        domain: '推理',
-        confidence: 0.84,
-        signal: 'test signal',
-        alternatives: [],
-    }),
-}));
-
 vi.mock('../utils/prompt.js', () => ({
     askQuestion: vi.fn().mockResolvedValue('y'),
     askConfirmation: vi.fn().mockResolvedValue(true),
