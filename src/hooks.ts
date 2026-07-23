@@ -543,7 +543,7 @@ export async function reconcileHooksToAllTools(
   baseDir: string,
   teamDefs: HookDef[],
   manifestPath: string,
-  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; force?: boolean; filterAgents?: string[] } = {},
+  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[] } = {},
 ): Promise<void> {
   const wrapperTools = ['workbuddy', 'codebuddy'];
   const activeTools = Object.keys(toolPaths).filter(t => !opts.filterAgents || opts.filterAgents.includes(t));
@@ -553,11 +553,13 @@ export async function reconcileHooksToAllTools(
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
     if (!paths.settings) continue;
-    if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
-    if (!opts.force) {
-      const toolRoot = path.join(baseDir, paths.settings.split('/')[0]);
-      if (!await pathExists(toolRoot)) continue;
-    }
+    // Only reconcile hooks for tools the user actually has installed. Without
+    // this gate, `hooks inject`/`remove` would create root directories for
+    // every configured tool (e.g. ~/.tclaude, ~/.tcodex) via reconcileHooks's
+    // ensureDir — making uninstalled tools look installed and pulling skills
+    // into them on later `pull`s.
+    const toolRoot = path.join(baseDir, paths.settings.split('/')[0]);
+    if (!await pathExists(toolRoot)) continue;
     const settingsPath = path.join(baseDir, paths.settings);
     try {
       await reconcileHooks(settingsPath, tool, teamDefs, {

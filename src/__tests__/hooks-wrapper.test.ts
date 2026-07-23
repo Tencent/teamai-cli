@@ -56,9 +56,7 @@ describe('reconcileHooksToAllTools — wrapper creation on main inject path', ()
         [tool]: { settings: settingsFile },
       };
 
-      await reconcileHooksToAllTools(toolPaths, tmp, [], path.join(tmp, 'managed-hooks.json'), {
-        force: true,
-      });
+      await reconcileHooksToAllTools(toolPaths, tmp, [], path.join(tmp, 'managed-hooks.json'), {});
 
       const wrapperPath = path.join(tmp, '.teamai', 'bin', 'teamai');
       expect(await fse.pathExists(wrapperPath)).toBe(true);
@@ -76,9 +74,7 @@ describe('reconcileHooksToAllTools — wrapper creation on main inject path', ()
     await fse.ensureDir(path.join(tmp, '.claude'));
 
     await expect(
-      reconcileHooksToAllTools(toolPaths, tmp, [], path.join(tmp, 'managed-hooks.json'), {
-        force: true,
-      }),
+      reconcileHooksToAllTools(toolPaths, tmp, [], path.join(tmp, 'managed-hooks.json'), {}),
     ).resolves.not.toThrow();
   });
 });
@@ -120,9 +116,7 @@ describe('reconcileHooksToAllTools — wrapper creation on main inject path', ()
         [tool]: { settings: settingsFile },
       };
 
-      await reconcileHooksToAllTools(toolPaths, tmp, [], path.join(tmp, 'managed-hooks.json'), {
-        force: true,
-      });
+      await reconcileHooksToAllTools(toolPaths, tmp, [], path.join(tmp, 'managed-hooks.json'), {});
 
       const wrapperPath = path.join(tmp, '.teamai', 'bin', 'teamai');
       expect(await fse.pathExists(wrapperPath)).toBe(true);
@@ -140,9 +134,7 @@ describe('reconcileHooksToAllTools — wrapper creation on main inject path', ()
     await fse.ensureDir(path.join(tmp, '.claude'));
 
     await expect(
-      reconcileHooksToAllTools(toolPaths, tmp, [], path.join(tmp, 'managed-hooks.json'), {
-        force: true,
-      }),
+      reconcileHooksToAllTools(toolPaths, tmp, [], path.join(tmp, 'managed-hooks.json'), {}),
     ).resolves.not.toThrow();
   });
 });

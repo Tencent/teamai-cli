@@ -706,6 +706,8 @@ teamai hooks inject    # Re-inject
 teamai hooks remove    # Remove
 ```
 
+Both commands only touch tools you actually have installed (i.e. whose `~/.<tool>/` root directory already exists). They never create root directories for tools listed in `toolPaths` but not installed, so uninstalled tools such as `.tclaude` / `.tcodex` are left untouched.
+
 ### Team Hooks Declaration
 
 A team can declare custom hooks in the repo's `hooks/hooks.yaml`; `teamai pull` automatically distributes them to all members' AI tools:

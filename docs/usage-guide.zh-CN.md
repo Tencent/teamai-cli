@@ -704,6 +704,8 @@ teamai hooks inject    # 重新注入
 teamai hooks remove    # 移除
 ```
 
+这两个命令只会操作你实际已安装的工具（即 `~/.<tool>/` 根目录已存在的工具）。对于 `toolPaths` 中已配置但未安装的工具，命令不会为其凭空创建根目录，因此像 `.tclaude` / `.tcodex` 这类未安装的工具会被完全跳过。
+
 ### 团队 Hooks 声明
 
 团队可在仓库 `hooks/hooks.yaml` 中声明自定义 hooks，`teamai pull` 自动分发到所有成员的 AI 工具：

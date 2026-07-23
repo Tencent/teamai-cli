@@ -79,7 +79,7 @@ hooks:
 
 ```bash
 teamai hooks list      # 查看生效的 hooks
-teamai hooks inject    # 强制重新注入到所有工具
+teamai hooks inject    # 重新注入到每个已安装的工具
 teamai hooks remove    # 移除所有 teamai 管理的 hooks
 ```
 
