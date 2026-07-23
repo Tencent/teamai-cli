@@ -79,7 +79,7 @@ hooks:
 
 ```bash
 teamai hooks list      # list effective hooks
-teamai hooks inject    # force-reconcile into all tools
+teamai hooks inject    # re-reconcile into every installed tool
 teamai hooks remove    # remove all teamai-managed hooks
 ```
 
