@@ -65,10 +65,11 @@ vi.mock('../roles.js', () => ({
   }),
 }));
 
-import { pull } from '../pull.js';
+import { pull, compileRecallRulesBlock } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope, saveStateForScope } from '../config.js';
 import { getHeadRev } from '../utils/git.js';
 import { log } from '../utils/logger.js';
+import { TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END } from '../types.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 describe('pull skip-sync when repo HEAD unchanged', () => {
@@ -258,5 +259,135 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     expect(log.debug).toHaveBeenCalledWith(
       expect.stringContaining('Rev check failed'),
     );
+  });
+});
+
+// Regression: a CLI upgrade that ships a new recall block must reach CLAUDE.md
+// even when the repo HEAD is unchanged (the "Already synced" fast-path). Before
+// the fix, the fast-path refreshed rules/agents but skipped the CLAUDE.md recall
+// block, so the block stayed frozen at the old wording (e.g. MUST vs SHOULD)
+// until the user ran `teamai pull --force`.
+describe('pull skip-sync refreshes CLAUDE.md recall block (CLI upgrade)', () => {
+  let tmpDir: string;
+  let homeDir: string;
+  let repoPath: string;
+  let claudeMdPath: string;
+
+  // A stale recall block, as an older CLI version would have written it.
+  const STALE_RECALL_BLOCK = [
+    TEAMAI_RECALL_RULES_START,
+    '<!-- DO NOT EDIT: This section is auto-managed by teamai -->',
+    '',
+    '## Team Knowledge Recall (teamai)',
+    '',
+    '**Before** starting any task, you **MUST** first invoke the `teamai-recall` subagent.',
+    TEAMAI_RECALL_RULES_END,
+  ].join('\n');
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recall-refresh-'));
+    homeDir = path.join(tmpDir, 'home');
+    repoPath = path.join(tmpDir, 'team-repo');
+    claudeMdPath = path.join(homeDir, '.claude', 'CLAUDE.md');
+
+    await fse.ensureDir(path.join(repoPath, 'rules'));
+    await fse.ensureDir(path.join(repoPath, 'skills', 'common'));
+    await fse.ensureDir(path.join(repoPath, 'learnings', 'common'));
+    await fse.ensureDir(path.join(repoPath, 'manifest'));
+    await fse.writeFile(path.join(repoPath, 'manifest', 'roles.yaml'), 'version: 1\n');
+    // Tier-1 tool must have its agents dir present for injection to fire.
+    await fse.ensureDir(path.join(homeDir, '.claude', 'agents'));
+    await fse.ensureDir(path.join(homeDir, '.claude', 'rules'));
+    await fse.ensureDir(path.join(homeDir, '.claude', 'skills'));
+    // Seed a CLAUDE.md holding the stale (pre-upgrade) recall block.
+    await fse.writeFile(claudeMdPath, `# CLAUDE.md\n\n${STALE_RECALL_BLOCK}\n`);
+
+    vi.stubEnv('HOME', homeDir);
+
+    const teamConfig: TeamaiConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        // Tier-1: both agents + claudemd configured → recall block injected.
+        claude: { skills: '.claude/skills', rules: '.claude/rules', agents: '.claude/agents', claudemd: '.claude/CLAUDE.md' },
+      },
+    };
+
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+      recallEnabled: true,
+    };
+
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(localConfig);
+    vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
+    vi.mocked(detectProjectConfig).mockResolvedValue(null);
+    vi.mocked(getHeadRev).mockResolvedValue('abc1234');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPull: '2026-04-01',
+      lastPullRev: 'abc1234', // matches HEAD → triggers "Already synced" fast-path
+      lastPush: null,
+      pushedRules: [],
+      pushedSkills: [],
+      pushedEnvVars: [],
+      lastUpdateCheck: null,
+      availableUpdate: null,
+    });
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    vi.clearAllMocks();
+    await fse.remove(tmpDir);
+  });
+
+  it('replaces the stale recall block with the current one on the fast-path', async () => {
+    await pull({});
+
+    // Confirm we actually took the fast-path (repo HEAD unchanged).
+    expect(log.success).toHaveBeenCalledWith(
+      expect.stringContaining('Already synced at abc1234, skipping'),
+    );
+
+    const updated = await fse.readFile(claudeMdPath, 'utf8');
+    // Stale block gone, current block present — verbatim from the CLI source.
+    expect(updated).not.toContain('you **MUST** first invoke the `teamai-recall` subagent');
+    expect(updated).toContain(compileRecallRulesBlock());
+    // Exactly one managed block (replace, not append).
+    expect(updated.split(TEAMAI_RECALL_RULES_START).length - 1).toBe(1);
+    expect(updated.split(TEAMAI_RECALL_RULES_END).length - 1).toBe(1);
+  });
+
+  it('does not touch CLAUDE.md when recall is disabled for the scope', async () => {
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue({
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+      recallEnabled: false,
+    } as LocalConfig);
+
+    await pull({});
+
+    const after = await fse.readFile(claudeMdPath, 'utf8');
+    // Untouched: the stale block remains exactly as seeded.
+    expect(after).toContain('you **MUST** first invoke the `teamai-recall` subagent');
   });
 });
