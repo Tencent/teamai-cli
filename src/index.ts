@@ -666,11 +666,12 @@ const recallCmd = program
   .command('recall [query...]')
   .description('Search team learnings knowledge base')
   .option('--depth <level>', 'Recall depth: route (entry-points only) | context (module-level, default) | lookup (full graph traversal)', 'context')
+  .option('--check', 'Relevance precheck only: print RELEVANT/NOT_RELEVANT + top score; no file reads, no upvote')
   .action(async (queryParts, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const query = (queryParts as string[]).join(' ');
     const { recall } = await import('./recall.js');
-    await recall(query, { ...globalOpts, depth: cmdOpts.depth });
+    await recall(query, { ...globalOpts, depth: cmdOpts.depth, check: cmdOpts.check });
   });
 
 recallCmd
