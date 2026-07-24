@@ -120,7 +120,7 @@ teamai recall disable    # 关闭：移除子 agent 和规则
 teamai recall status     # 查看生效状态（团队默认 + 用户覆盖）
 ```
 
-**通过子 agent 检索**：开启后 `teamai pull` 会把内置的 `teamai-recall` 子 agent 部署到各 AI 工具的 `agents/` 目录。AI 在任务开始前调用它——由子 agent 提取关键词、执行检索、读取命中的源文件，最后返回结构化的团队知识摘要。子 agent 底层调用的仍是 `teamai recall` 命令，也可手动直接运行：
+**通过子 agent 检索**：开启后 `teamai pull` 会把内置的 `teamai-recall` 子 agent 部署到各 AI 工具的 `agents/` 目录。AI 在任务开始前调用它——由子 agent 提取关键词、执行检索、读取命中的源文件，最后返回结构化的团队知识摘要。subagent 会先做相关性预检（`teamai recall --check`），当任务与团队知识无关时直接跳过检索。子 agent 底层调用的仍是 `teamai recall` 命令，也可手动直接运行：
 
 ```bash
 $ teamai recall "port conflict"
