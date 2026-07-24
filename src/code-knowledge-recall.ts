@@ -8,6 +8,8 @@
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
+import matter from 'gray-matter';
+
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { tokenize, tokenCount, MAX_TOKENIZE_CHARS } from './utils/tokenizer.js';
 
@@ -17,6 +19,7 @@ export interface CodeKnowledgeResult {
   score: number;
   snippet: string;
   kind: 'codebase';
+  sources?: string[];
 }
 
 interface CorpusStats {
@@ -31,6 +34,7 @@ interface PageDoc {
   content: string;
   tokens: string[];
   tokenCount: number; // B10: raw (non-deduplicated) token count for BM25 dl
+  sources?: string[];
 }
 
 const BM25_K1 = 1.5;
@@ -259,6 +263,37 @@ async function loadWikiPages(wikiRoot: string, depth: 'route' | 'context' | 'loo
 
 const MAX_RECURSION_DEPTH = 10;
 
+/**
+ * Filter a raw frontmatter `source` list down to in-repo file-path anchors.
+ *
+ * teamwiki pages carry heterogeneous `source` values: real file paths
+ * (buildEvidencePages), a repo URL (overview.md), or a bare directory
+ * (modules pages). Only concrete file paths are useful as "which files to
+ * change" anchors, so this drops URLs and directory-only entries.
+ *
+ * Extension-less files (Makefile, Dockerfile, LICENSE, Jenkinsfile, etc.)
+ * are intentionally preserved — they are valid source anchors produced by
+ * codebase-extract.
+ *
+ * @param sources  Raw source entries from frontmatter (may be undefined).
+ * @returns         Cleaned, trimmed file-path anchors, or undefined when none remain.
+ */
+function sanitizeSources(sources: string[] | undefined): string[] | undefined {
+  if (sources === undefined) return undefined;
+  const cleaned = sources
+    .map((s) => s.trim())
+    .filter((trimmed) => {
+      if (trimmed === '') return false;
+      // Exclude URLs: http://, https://, or any other protocol via ://
+      if (/^https?:\/\//i.test(trimmed)) return false;
+      if (trimmed.includes('://')) return false;
+      // Exclude bare directories (trailing slash)
+      if (trimmed.endsWith('/')) return false;
+      return true;
+    });
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
 async function loadPagesRecursive(
   dir: string,
   relativePath: string,
@@ -288,16 +323,35 @@ async function loadPagesRecursive(
       }
       try {
         const content = await readFile(fullPath, 'utf-8');
-        const titleMatch = content.match(/^title:\s*(.+)$/m);
-        const title = titleMatch
-          ? titleMatch[1].trim()
-          : entry.name.replace('.md', '');
+        let title: string;
+        let sources: string[] | undefined;
+        try {
+          const { data } = matter(content);
+          title = typeof data.title === 'string' && data.title.trim()
+            ? data.title.trim()
+            : entry.name.replace('.md', '');
+          const raw = data.source;
+          if (Array.isArray(raw)) {
+            const filtered = raw.filter((s): s is string => typeof s === 'string' && s.trim() !== '');
+            sources = filtered.length > 0 ? filtered : undefined;
+          } else if (typeof raw === 'string' && raw.trim() !== '') {
+            sources = [raw.trim()];
+          } else {
+            sources = undefined;
+          }
+        } catch {
+          // gray-matter 解析失败（frontmatter 格式损坏）→ 降级为正则抓 title，sources 置空
+          const titleMatch = content.match(/^title:\s*(.+)$/m);
+          title = titleMatch ? titleMatch[1].trim() : entry.name.replace('.md', '');
+          sources = undefined;
+        }
         pages.push({
           path: relFilePath,
           title,
           content,
           tokens: tokenize(content),
           tokenCount: tokenCount(content),
+          sources: sanitizeSources(sources),
         });
       } catch {
         continue;
@@ -335,6 +389,7 @@ export async function queryCodeKnowledge(
       score: 10,
       snippet: pages[0].content.slice(0, 800),
       kind: 'codebase',
+      sources: pages[0].sources,
     }];
   }
 
@@ -387,6 +442,7 @@ export async function queryCodeKnowledge(
       score,
       snippet,
       kind: 'codebase',
+      sources: page.sources,
     });
   }
 

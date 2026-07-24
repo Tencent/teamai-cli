@@ -57,6 +57,13 @@ corresponding file and extract relevant sections. Skip BM25 search.
 > - `--depth lookup`: searches ALL evidence pages including raw symbol lists (for precise file:line lookups)
 > - `--depth route`: returns the router table only (use when you need to discover what projects exist)
 
+**Edit/change queries** (keywords: 新增/添加/修改/如何改/重构/实现; how to add/change/modify/implement): use `--depth lookup` in Step 3 so facts/relation pages are visible. After BM25 recall, also read these directly (bypassing BM25 ranking uncertainty):
+1. `teamwiki/evidence/code/<project>/.indices/graph-index.json` (priority; fall back to `teamwiki/.indices/graph-index.json` if absent) — when surfacing edges, pick 1–3 entry files most relevant to the task and read only their forward direct-dep edges (`from` == entry file); skip reverse expansion (each edge: `{from, to, relation}` — from/to are file paths, relation is type e.g. DEPENDS_ON)
+2. `Sources:` file anchors listed in any matching facts pages (component.md / interface.md)
+3. `dependency-paths.md` in the same project docs dir when line-level call anchors are needed
+
+(`<project>` extracted from recall result file paths, or from `router.md`.)
+
 Fallback: if no `teamwiki/`, check `~/.teamai/docs/codebase.md`. If
 none exists, silently skip.
 
@@ -96,7 +103,10 @@ For each hit returned by `teamai recall`, read the source file directly
 **For codebase hits** (path contains `teamwiki/evidence/`):
 - If the hit is a raw facts page (component.md, interface.md), prefer
   reading the corresponding **module summary** (`modules/<dir>.md`) instead —
-  it's more concise and shows dependencies.
+  it's more concise and shows dependencies. **Exception for edit queries**:
+  retain the `Sources:` file anchors from the facts page (do not discard them
+  in favour of the module summary alone); cross-reference those anchor files
+  against graph-index.json edges to surface dependency relationships.
 - If you need architectural context (why a module exists, design decisions),
   check `overview.md` in the same project directory.
 - If the hit mentions a knowledge gap (from `gaps/detected.md`), relay
@@ -128,6 +138,16 @@ Return your output in **this exact format** to the main conversation:
 - Depended by: <list>
 - Core components: `Foo`, `Bar`, `Baz` (top 5 by reference count)
 - Architecture: <one sentence from overview.md if available>
+
+### Change entry points (edit queries only)
+
+Relevant files (from graph-index.json: first pick 1–3 entry files most relevant to the query from Sources anchors + keywords; then list only their forward direct-dep edges where `from` == entry file; skip self-edges (from == to); do not expand reverse edges — they blow up):
+- `<file_a>` ──<RELATION>──> `<file_b>`
+- ...
+
+Suggested reading order: <contract/types first> → <impl> → ...
+
+> Edges capped at 10; see graph-index.json for full graph. Keep this section ≤ 300 characters. Omit this section for non-edit queries.
 
 ### Gaps (if relevant)
 
@@ -170,3 +190,4 @@ Return your output in **this exact format** to the main conversation:
 - When zero hits are found but `teamwiki/` exists, check if the query
   relates to a known gap before returning "no knowledge found".
 - When `teamai recall --check` returns `NOT_RELEVANT`, do not continue — return the no-knowledge line and stop. The precheck exists to avoid wasted retrieval on unrelated tasks.
+- **Do not invent call relationships.** The "Change entry points" section must be derived solely from graph-index.json edges and dependency-paths.md. If those files are absent or do not cover the queried files, write `relation data not covered` and omit the section — do not guess.
