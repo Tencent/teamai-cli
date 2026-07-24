@@ -27,6 +27,8 @@ interface ScopedSearchResult extends SearchResult {
   scope?: 'user' | 'project';
   /** Base path for learnings files (so AI can read the correct path). */
   learningsBase?: string;
+  /** Source file anchors from codebase wiki frontmatter (codebase results only). */
+  sources?: string[];
 }
 
 // ─── Recall data flow ────────────────────────────────────
@@ -65,7 +67,7 @@ export function formatResults(results: ScopedSearchResult[]): string {
   lines.push('');
 
   for (let i = 0; i < results.length; i++) {
-    const { entry, score, scope, learningsBase } = results[i];
+    const { entry, score, scope, learningsBase, sources } = results[i];
     const voteStr = entry.votes > 0 ? ` ★${entry.votes}` : '';
     const scopeStr = scope ? ` [${scope}]` : '';
     // Phase 1: prepend a [type] tag so callers can quickly tell which knowledge
@@ -83,6 +85,9 @@ export function formatResults(results: ScopedSearchResult[]): string {
         ? `${learningsBase}/${entry.filename}`
         : `~/.teamai/learnings/${entry.filename}`;
     lines.push(`File: ${filePath}`);
+    if (sources && sources.length > 0) {
+      lines.push(`Sources: ${sources.join(', ')}`);
+    }
     if (entry.snippet) {
       lines.push(`Snippet: ${entry.snippet}`);
     }
@@ -308,6 +313,7 @@ export async function recall(
         score: Math.min(10, Math.log2(cr.score + 1) * 2),
         scope: 'project',
         learningsBase: wikiRoot,
+        sources: cr.sources,
       });
     }
   } catch {
