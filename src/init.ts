@@ -2,10 +2,10 @@ import YAML from 'yaml';
 import path from 'node:path';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope } from './config.js';
 import { reconcileTeamHooksForConfig } from './hooks.js';
-import { configureGitUser, initRepo } from './utils/git.js';
+import { configureGitUser, initRepo, isGitRepo } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
 import { getProvider, detectProvider, RepoNotFoundError } from './providers/index.js';
-import { ensureDir, writeFile, pathExists, expandHome, readFileSafe } from './utils/fs.js';
+import { ensureDir, writeFile, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { TEAMAI_HOME, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath } from './types.js';
 import { describeRoles, loadRolesManifest } from './roles.js';
@@ -305,13 +305,20 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
 
   // Step 3: Clone or link repo
   const defaultLocalPath = path.join(teamaiHome, 'team-repo');
-  let localPath: string;
+  const localPath = expandHome(defaultLocalPath);
 
-  if (await pathExists(expandHome(defaultLocalPath))) {
-    localPath = expandHome(defaultLocalPath);
-    log.info(`Repo already exists at ${localPath}, using existing clone`);
+  if (await pathExists(localPath)) {
+    if (await isGitRepo(localPath)) {
+      log.info(`Repo already exists at ${localPath}, using existing clone`);
+    } else {
+      // The path exists but isn't a git repo — typically a leftover from a
+      // previous non-git source (e.g. an HTTP repo). Reusing it would make the
+      // subsequent git commands fail ("not a git repository"). Remove it so we
+      // fall through to a fresh clone below.
+      log.warn(`Existing ${localPath} is not a git repository, re-cloning`);
+      await remove(localPath);
+    }
   } else {
-    localPath = expandHome(defaultLocalPath);
     log.info(`Clone path: ${localPath}`);
   }
 
