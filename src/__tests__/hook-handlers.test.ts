@@ -11,6 +11,7 @@ const mockTrackFromParsed = vi.fn().mockResolvedValue(undefined);
 const mockTrackSlashFromParsed = vi.fn().mockResolvedValue(undefined);
 const mockContributeCheckForSession = vi.fn().mockResolvedValue({ hint: null });
 const mockDoUpdate = vi.fn().mockResolvedValue(undefined);
+const mockReportAndSyncFromHook = vi.fn().mockResolvedValue(null);
 
 vi.mock('../pull.js', () => ({
   pull: mockPull,
@@ -53,7 +54,12 @@ vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+vi.mock('../local-agent.js', () => ({
+  reportAndSyncFromHook: mockReportAndSyncFromHook,
+}));
+
 import { buildHandlerRegistry, type HandlerRegistration } from '../hook-handlers.js';
+import { createDispatcher } from '../hook-dispatch.js';
 
 // ── Tests ────────────────────────────────────────────────
 
@@ -160,6 +166,46 @@ describe('hook-handlers registry', () => {
     expect(skillHandlers).toContain('track');
   });
 
+  // Perf regression: post-tool-use fires on every tool call, so its local-agent
+  // report/sync (two HTTP round-trips) must run detached — never in the
+  // foreground where it stalls the host's hook completion by ~300ms–seconds
+  // depending on network latency. Mirrors the `stop` event, which already
+  // backgrounds local-agent-sync.
+  it('post-tool-use wildcard local-agent-sync is a background handler', () => {
+    const registry = buildHandlerRegistry();
+    const localAgent = registry.find(
+      (r) => r.event === 'post-tool-use' && r.matcher === '*' && r.handler.name === 'local-agent-sync',
+    );
+    expect(localAgent).toBeDefined();
+    expect(localAgent!.background).toBe(true);
+  });
+
+  // post-tool-use dashboard-report stays foreground: it is a fast local file
+  // append with no network I/O, so detaching it would add spawn overhead for
+  // no benefit.
+  it('post-tool-use wildcard dashboard-report stays foreground', () => {
+    const registry = buildHandlerRegistry();
+    const dashboard = registry.find(
+      (r) => r.event === 'post-tool-use' && r.matcher === '*' && r.handler.name === 'dashboard-report',
+    );
+    expect(dashboard).toBeDefined();
+    expect(dashboard!.background).not.toBe(true);
+  });
+
+  // prompt-submit local-agent-sync must NOT be backgrounded: when the org
+  // binding prompt is enabled (TEAMAI_BIND_PROMPT_ENABLED=1) it writes the
+  // binding hint to STDOUT for the host to inject back into the session, and a
+  // detached child's STDOUT is discarded. Guards against a copy-paste of the
+  // post-tool-use change onto prompt-submit.
+  it('prompt-submit wildcard local-agent-sync stays foreground', () => {
+    const registry = buildHandlerRegistry();
+    const localAgent = registry.find(
+      (r) => r.event === 'prompt-submit' && r.matcher === '*' && r.handler.name === 'local-agent-sync',
+    );
+    expect(localAgent).toBeDefined();
+    expect(localAgent!.background).not.toBe(true);
+  });
+
   it('post-tool-use Bash/Grep/WebSearch/WebFetch have no registered handlers', () => {
     const registry = buildHandlerRegistry();
     for (const matcher of ['Bash', 'Grep', 'WebSearch', 'WebFetch']) {
@@ -189,5 +235,43 @@ describe('hook-handlers registry', () => {
     const pull = registry.find((r) => r.handler.name === 'pull');
     const dashboard = registry.find((r) => r.handler.name === 'dashboard-report');
     expect(pull!.timeoutMs).toBeGreaterThan(dashboard!.timeoutMs!);
+  });
+});
+
+// End-to-end: wire the real handler registry through the real dispatcher and
+// assert the foreground/background split that actually governs host latency.
+// The registry declares `background: true`; the dispatcher must honor it by
+// keeping local-agent-sync OUT of the foreground pass (so the host's hook
+// returns without waiting on the two HTTP round-trips) while still running it
+// in the detached background pass (so report/sync are not silently dropped).
+describe('post-tool-use dispatch — local-agent runs detached, never blocks host', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const stdin = { tool_name: 'Bash', tool_input: { command: 'ls' }, cwd: '/tmp/proj' };
+
+  it('hasBackground is true for the post-tool-use wildcard', () => {
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    expect(dispatcher.hasBackground('post-tool-use', '*')).toBe(true);
+  });
+
+  it('foreground pass does NOT invoke local-agent-sync (host is not blocked on HTTP)', async () => {
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'foreground');
+    expect(mockReportAndSyncFromHook).not.toHaveBeenCalled();
+  });
+
+  it('background pass DOES invoke local-agent-sync (report/sync still happen)', async () => {
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'background');
+    expect(mockReportAndSyncFromHook).toHaveBeenCalledOnce();
+  });
+
+  it('foreground pass still runs the fast local dashboard-report handler', async () => {
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'foreground');
+    // dashboard-report parses the event and appends locally — it must stay inline.
+    expect(mockParseHookEvent).toHaveBeenCalled();
   });
 });
