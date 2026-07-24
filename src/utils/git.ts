@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import fse from 'fs-extra';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import { log } from './logger.js';
@@ -14,6 +15,20 @@ export function createGit(basePath?: string): SimpleGit {
     return simpleGit({ baseDir: basePath });
   }
   return simpleGit();
+}
+
+/**
+ * Check whether localPath is a valid git repository (has a `.git` entry).
+ *
+ * Returns false if the path does not exist, or exists but is not a git repo
+ * (e.g. a leftover directory from a previous non-git source such as an HTTP
+ * repo). Callers use this to avoid running git commands against a non-repo.
+ */
+export async function isGitRepo(localPath: string): Promise<boolean> {
+  if (!(await fse.pathExists(localPath))) {
+    return false;
+  }
+  return fse.pathExists(path.join(localPath, '.git'));
 }
 
 /**

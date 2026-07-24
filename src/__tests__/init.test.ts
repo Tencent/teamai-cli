@@ -135,6 +135,8 @@ vi.mock('../roles.js', () => ({
 // Track pathExists calls to simulate directory states
 let pathExistsFn: (p: string) => boolean = () => false;
 
+const mockRemove = vi.fn();
+
 vi.mock('../utils/fs.js', () => ({
   ensureDir: vi.fn(),
   writeFile: vi.fn(),
@@ -146,6 +148,7 @@ vi.mock('../utils/fs.js', () => ({
     return p;
   },
   readFileSafe: vi.fn().mockResolvedValue(null),
+  remove: (p: string) => mockRemove(p),
 }));
 
 vi.mock('../types.js', async (importOriginal) => {
@@ -179,6 +182,7 @@ const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as
 import { init } from '../init.js';
 import { RepoNotFoundError } from '../providers/types.js';
 import { saveLocalConfig } from '../config.js';
+import fse from 'fs-extra';
 
 describe('init', () => {
   const HOME = process.env.HOME ?? '';
@@ -237,6 +241,55 @@ describe('init', () => {
       expect(mockGfRepoClone).toHaveBeenCalled();
       expect(mockGit.init).not.toHaveBeenCalled();
       expect(mockGit.addRemote).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('stale non-git directory', () => {
+    it('should remove and re-clone when team-repo exists but is not a git repo', async () => {
+      // team-repo dir exists on disk...
+      let removed = false;
+      pathExistsFn = (p: string) => {
+        if (p === localPath) return !removed; // exists until we remove it, then clone recreates handled below
+        return false;
+      };
+      mockRemove.mockImplementation((p: string) => {
+        if (p === localPath) removed = true;
+      });
+      // ...but it has no .git entry → isGitRepo() returns false.
+      // isGitRepo calls fse.pathExists twice: dir exists (true), .git missing (false).
+      (fse.pathExists as any)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false);
+
+      mockGfRepoClone.mockImplementation(() => {
+        removed = false; // clone recreates the directory
+      });
+
+      // Answers: configure reviewers (n), primary role (1), no additional roles
+      questionAnswers = ['n', '1', ''];
+
+      await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git', scope: 'user' });
+
+      // Stale dir removed, then a real clone performed.
+      expect(mockRemove).toHaveBeenCalledWith(localPath);
+      expect(mockGfRepoClone).toHaveBeenCalledWith('HyperAI/teamai-test', localPath);
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it('should reuse the existing clone when team-repo is a valid git repo', async () => {
+      pathExistsFn = (p: string) => p === localPath; // dir exists
+      // isGitRepo: dir exists (true), .git present (true)
+      (fse.pathExists as any)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true);
+
+      questionAnswers = ['n'];
+
+      await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git', scope: 'user' });
+
+      // Valid clone → no removal, no re-clone.
+      expect(mockRemove).not.toHaveBeenCalled();
+      expect(mockGfRepoClone).not.toHaveBeenCalled();
     });
   });
 
