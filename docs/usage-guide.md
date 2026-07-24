@@ -425,6 +425,7 @@ teamai recall "GPU out of memory"
 - Supports mixed-language search
 - Automatically merges the knowledge bases of both user + project scope, labeling results `[user]`/`[project]` by source
 - Consulted knowledge is automatically upvoted, surfacing high-quality docs to the top
+- A lightweight relevance precheck is available via `teamai recall --check "<keywords>"`, which prints `RELEVANT score=<n>` or `NOT_RELEVANT score=<n>` without reading files or upvoting — the recall subagent uses it to skip retrieval on unrelated tasks
 
 ### Enabling / Disabling Recall
 

@@ -20,6 +20,22 @@ upstream API"). Treat this as your query.
 
 ## What you must do — step by step
 
+### Step 0 — Relevance precheck (fail fast)
+
+Before any classification or search, run a single lightweight precheck:
+
+```bash
+teamai recall --check "<3-6 keywords from the task>"
+```
+
+- If the output starts with `NOT_RELEVANT`: the team knowledge base has no
+  meaningful coverage for this task. Emit exactly one line
+  `No relevant team knowledge found for: <query>` and **stop** — do not
+  proceed to Step 1–5, do not read any files, do not run a full recall.
+- If the output starts with `RELEVANT`: continue to Step 1.
+- If the command fails or `teamai` is not on PATH: skip the precheck and
+  continue to Step 1 (do not block on precheck failure).
+
 ### Step 1 — Classify question type and choose retrieval depth
 
 Determine if the query matches a G-document category:
@@ -153,3 +169,4 @@ Return your output in **this exact format** to the main conversation:
   Gaps section so the main conversation does not hallucinate.
 - When zero hits are found but `teamwiki/` exists, check if the query
   relates to a known gap before returning "no knowledge found".
+- When `teamai recall --check` returns `NOT_RELEVANT`, do not continue — return the no-knowledge line and stop. The precheck exists to avoid wasted retrieval on unrelated tasks.

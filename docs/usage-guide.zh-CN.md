@@ -423,6 +423,7 @@ teamai recall "GPU 内存不足"
 - 支持中英文混合搜索
 - 自动合并 user + project 双 scope 的知识库，结果标注 `[user]`/`[project]` 来源
 - 被查阅的知识自动 upvote，好文档浮到顶部
+- 提供轻量相关性预检 `teamai recall --check "<关键词>"`，仅输出 `RELEVANT score=<n>` 或 `NOT_RELEVANT score=<n>`，不读取文件、不 upvote —— recall subagent 用它在任务与团队知识无关时跳过检索
 
 ### 开启 / 关闭 Recall
 

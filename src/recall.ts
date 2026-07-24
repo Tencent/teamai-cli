@@ -11,6 +11,12 @@ import type { CodeKnowledgeResult } from './code-knowledge-recall.js';
 import { recordRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
 
+/** Minimum top-1 relevance score for recall to be considered worthwhile.
+ *  Learnings meaningful hits score >=5; codebase hits are log-compressed to
+ *  0-10 (recall.ts ~line 288). 4.0 balances not missing codebase hits vs
+ *  filtering pure noise. Tunable — --check prints the actual score. */
+const RECALL_RELEVANCE_THRESHOLD = 4.0;
+
 /** Resolve votes dir dynamically (respects HOME changes in tests). */
 function getVotesLocalDir(): string {
   return `${process.env.HOME ?? ''}/.teamai/votes`;
@@ -190,9 +196,19 @@ async function loadOrBuildScopeIndex(
  */
 export async function recall(
   query: string,
-  options: GlobalOptions & { depth?: 'route' | 'context' | 'lookup' },
+  options: GlobalOptions & { depth?: 'route' | 'context' | 'lookup'; check?: boolean },
 ): Promise<void> {
+  const emitCheckVerdict = (score: number): void => {
+    const rounded = Math.round(score * 10) / 10;
+    const verdict = rounded >= RECALL_RELEVANCE_THRESHOLD ? 'RELEVANT' : 'NOT_RELEVANT';
+    process.stdout.write(`${verdict} score=${rounded.toFixed(1)}\n`);
+  };
+
   if (!query || !query.trim()) {
+    if (options.check) {
+      emitCheckVerdict(0);
+      return;
+    }
     log.error('Usage: teamai recall <query>');
     log.info('Example: teamai recall "api timeout"');
     return;
@@ -246,6 +262,10 @@ export async function recall(
     : path.join(process.cwd(), '.teamai', 'team-repo', 'teamwiki');
   const hasWiki = await pathExists(wikiRoot);
   if (scopeIndexes.length === 0 && !hasWiki) {
+    if (options.check) {
+      emitCheckVerdict(0);
+      return;
+    }
     log.info('No learnings available. Run `teamai pull` first to sync team knowledge.');
     return;
   }
@@ -299,6 +319,11 @@ export async function recall(
     if (b.score !== a.score) return b.score - a.score;
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
+
+  if (options.check) {
+    emitCheckVerdict(allResults.length > 0 ? allResults[0].score : 0);
+    return;
+  }
 
   // Limit to top 5
   const topResults = allResults.slice(0, 5);
