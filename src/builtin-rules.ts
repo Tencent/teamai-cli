@@ -13,6 +13,11 @@ import fs from 'node:fs/promises';
 //  maintained alongside the CLI code and deployed automatically
 //  on each `teamai pull`.
 //
+//  token-efficiency.md distills the team's "Effective Token" guidelines
+//  into AI-actionable guardrails (grounding over hallucination, search
+//  before full-file reads, tools/scripts over model reasoning, minimal
+//  output, YAGNI). It is always deployed, independent of recall state.
+//
 //  teamai-recall.md instructs the AI to proactively search the team
 //  knowledge base (via the `teamai-recall` subagent or `teamai recall`)
 //  before starting a task — this replaced the old passive auto-recall
@@ -22,7 +27,7 @@ import fs from 'node:fs/promises';
 //
 
 /** Names of CLI built-in rules. Used by push to exclude them from team repo push. */
-export const BUILTIN_RULE_NAMES = new Set<string>(['teamai-recall']);
+export const BUILTIN_RULE_NAMES = new Set<string>(['teamai-recall', 'token-efficiency']);
 
 /** Names of previously deployed rules that should be cleaned up. */
 export const LEGACY_RULE_NAMES: string[] = [];
@@ -53,6 +58,9 @@ export async function deployBuiltinRules(
 
     const builtinRules: Array<{ name: string; content: string }> = [
         { name: 'teamai-recall', content: TEAMAI_RECALL_RULE_CONTENT },
+        // token-efficiency is a general behavior guardrail — always deployed,
+        // independent of whether team knowledge recall is enabled.
+        { name: 'token-efficiency', content: TOKEN_EFFICIENCY_RULE_CONTENT },
     ].filter(r => !(options?.skipRecall && r.name === 'teamai-recall'));
 
     for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
@@ -138,5 +146,60 @@ teamai-recall subagent 的返回里已列出本次检索到的候选 doc-id（�
 
 一个都没用到就留空：\`<!-- teamai:referenced-doc-ids: [] -->\`。
 若直接用 \`teamai recall\` 命令（未走 subagent），从召回结果的 File 路径推出 doc-id 自行填入。
+`;
+
+const TOKEN_EFFICIENCY_RULE_CONTENT = `# Token Efficiency (teamai)
+
+Token is a direct compute cost. These guardrails cut wasted tokens without
+sacrificing correctness. They apply to every task unless the user explicitly
+asks for verbose output or a full-file dump.
+
+## Grounding over memory (anti-hallucination)
+
+- When a fact about the code depends on file contents, symbol definitions,
+  signatures, or Git state, **call a tool to check** — never answer from
+  memory or guess. A confident wrong answer causes a retry, and a retry costs
+  a full request round-trip.
+- If a read/search returns empty or nothing relevant, **stop and say so**.
+  Do not invent file contents, APIs, or function signatures to fill the gap.
+
+## Search before you read
+
+- On an unfamiliar codebase, use \`grep\`/\`rg\`/glob to locate the relevant
+  region **first**, then read only that region. Do not read entire files to
+  "get context" when a targeted search answers the question.
+- When reading a file you already located, prefer a bounded range (offset +
+  limit) over the whole file. Default to reading no more than ~200 lines at a
+  time unless the task genuinely needs more.
+- Narrow command output at the source: \`head\`, \`--stat\`, \`-n\`, \`grep\`,
+  \`jq\`. Do not pull thousands of lines into context to inspect a handful.
+
+## Tools and scripts over model reasoning
+
+Prefer, in order: **an existing purpose-built tool → a short script → model
+reasoning.** Reserve the model for judgement, ambiguity, and trade-offs.
+
+- Mechanical, rule-defined work goes to tools/scripts, not step-by-step model
+  reasoning. Examples: linting/formatting (\`eslint\`, \`gofmt\`), bulk
+  find-and-replace (\`sed\`), test runs, build checks.
+- Where a mature CLI already exists (e.g. \`git\`, \`gh\`, \`kubectl\`), call it
+  directly rather than reasoning through the equivalent by hand.
+
+## Minimal, focused output
+
+- Skip filler: no "Sure, I'd be happy to help", no restating the request, no
+  self-congratulation, no recap of what you just did unless asked.
+- Prefer lists and tables over prose. Answer the question, then stop.
+- After editing code, show the relevant diff or changed region — do not
+  reprint the whole file.
+- Before writing new code, apply YAGNI: reuse what already exists in the repo,
+  the standard library, or an installed dependency before adding new code.
+  Write the least code that satisfies the requirement.
+
+## Persist durable information to files
+
+Long-lived facts (decisions, conventions, task state) belong in files —
+\`CLAUDE.md\`, design docs, task lists — not buried in conversation history that
+must be re-sent every turn. Keep the session focused on the current task.
 `;
 

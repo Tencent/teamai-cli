@@ -50,6 +50,36 @@ describe('builtin-rules', () => {
             expect(content).toContain('teamai recall');
         });
 
+        it('should always deploy token-efficiency.md, even when recall is skipped', async () => {
+            const claudeRulesDir = path.join(tmpDir, '.claude', 'rules');
+            fs.mkdirSync(claudeRulesDir, { recursive: true });
+
+            const teamConfig = {
+                toolPaths: {
+                    claude: {
+                        skills: '.claude/skills',
+                        rules: '.claude/rules',
+                        settings: '.claude/settings.json',
+                        claudemd: '.claude/CLAUDE.md',
+                    },
+                },
+            } as any;
+
+            const { deployBuiltinRules } = await import('../builtin-rules.js');
+            // skipRecall: true — teamai-recall should be filtered out, but
+            // token-efficiency must still deploy.
+            await deployBuiltinRules(teamConfig, undefined, { skipRecall: true });
+
+            const tokenRule = path.join(claudeRulesDir, 'token-efficiency.md');
+            expect(fs.existsSync(tokenRule)).toBe(true);
+            const content = fs.readFileSync(tokenRule, 'utf-8');
+            expect(content).toContain('Token Efficiency');
+            expect(content).toContain('Grounding over memory');
+
+            // recall rule filtered out when skipRecall is set
+            expect(fs.existsSync(path.join(claudeRulesDir, 'teamai-recall.md'))).toBe(false);
+        });
+
         it('should skip tool directories that do not exist (tool not installed)', async () => {
             // Arrange: only create one tool directory
             const claudeRulesDir = path.join(tmpDir, '.claude', 'rules');
@@ -106,6 +136,11 @@ describe('builtin-rules', () => {
         it('should contain teamai-recall', async () => {
             const { BUILTIN_RULE_NAMES } = await import('../builtin-rules.js');
             expect(BUILTIN_RULE_NAMES.has('teamai-recall')).toBe(true);
+        });
+
+        it('should contain token-efficiency', async () => {
+            const { BUILTIN_RULE_NAMES } = await import('../builtin-rules.js');
+            expect(BUILTIN_RULE_NAMES.has('token-efficiency')).toBe(true);
         });
     });
 });

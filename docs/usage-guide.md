@@ -382,6 +382,17 @@ teamai push
 
 > Admins can set enforced rules in `teamai.yaml` (`sharing.rules.enforced`), which members cannot delete.
 
+#### Built-in rules
+
+The CLI ships with a few maintained-in-code rules that `teamai pull` deploys
+into every installed tool's rules directory. They are not uploaded by
+`teamai push` and are not counted as team rules.
+
+| Rule | Purpose | Gated by |
+| --- | --- | --- |
+| `token-efficiency.md` | Distills the team's "Effective Token" guidelines into AI-actionable guardrails — grounding over hallucination, search before full-file reads, tools/scripts over model reasoning, minimal output, YAGNI. | Always deployed |
+| `teamai-recall.md` | Instructs the AI to search the team knowledge base before a task. | Only when recall is enabled (`teamai recall enable`) |
+
 ### Env (environment variables)
 
 ```bash

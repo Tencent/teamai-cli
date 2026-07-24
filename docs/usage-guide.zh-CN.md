@@ -380,6 +380,15 @@ teamai push
 
 > 管理员可在 `teamai.yaml` 中设置强制规则（`sharing.rules.enforced`），成员不可删除。
 
+#### 内置规则
+
+CLI 自带若干随代码维护的规则，`teamai pull` 会把它们部署到每个已安装工具的 rules 目录。这些规则不会被 `teamai push` 上传，也不计入团队规则。
+
+| 规则 | 作用 | 生效条件 |
+| --- | --- | --- |
+| `token-efficiency.md` | 把团队《Effective Token 使用规范》中可内化的条款固化为 AI 可执行的准则——工具校验优先于记忆、检索优先于全文阅读、工具/脚本优先于大模型推理、精简输出、YAGNI。 | 始终部署 |
+| `teamai-recall.md` | 指示 AI 在任务开始前检索团队知识库。 | 仅在开启 recall 时（`teamai recall enable`） |
+
 ### Env（环境变量）
 
 ```bash
