@@ -816,12 +816,15 @@ async function ensureWorkspaceBinding(
 
 /**
  * The organization-binding prompt (TTY prompt + injected hook context) is
- * off by default. Enable it explicitly with `TEAMAI_BIND_PROMPT_ENABLED=1`.
- * The manual `teamai bind-project` command is always available regardless.
+ * on by default. Disable it explicitly with `TEAMAI_BIND_PROMPT_ENABLED=0`
+ * (or `false`). The manual `teamai bind-project` command is always available
+ * regardless.
  */
 function isBindPromptEnabled(): boolean {
   const flag = process.env.TEAMAI_BIND_PROMPT_ENABLED;
-  return flag === '1' || flag === 'true';
+  if (flag === undefined) return true;
+  const normalized = flag.toLowerCase();
+  return normalized !== '0' && normalized !== 'false';
 }
 
 async function emitBindingHint(
@@ -1650,7 +1653,7 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   // Binding prompt is injected via stdout hook context (not HTTP), so it must run
   // even inside the CloudStudio sandbox — the sandbox guard below only skips the
   // HTTP report/sync that would produce a duplicate card. Resolve the workspace
-  // only when the prompt is enabled, so the default-off path forks no git process.
+  // only when the prompt is enabled, so the disabled path forks no git process.
   if (isBindPromptEnabled()) {
     const workspacePath = await resolveWorkspacePath(context.cwd);
     if (workspacePath) {

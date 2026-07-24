@@ -23,7 +23,7 @@ beforeEach(async () => {
   origHome = process.env.HOME;
   process.env.HOME = tmpDir;
   origPpid = process.ppid;
-  // Bind prompt is off by default — start each test from that baseline.
+  // Bind prompt is on by default — start each test from that baseline.
   delete process.env.TEAMAI_BIND_PROMPT_ENABLED;
   // Clean hint markers
   const markerPath = path.join(os.tmpdir(), `teamai-bind-hint-${process.ppid}`);
@@ -232,10 +232,11 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     expect(ctx).toContain('teamai bind-project --skip');
   });
 
-  it('does NOT emit hint by default when TEAMAI_BIND_PROMPT_ENABLED is unset', async () => {
-    // No process.env.TEAMAI_BIND_PROMPT_ENABLED — bind prompt is off by default.
+  it('does NOT emit hint when TEAMAI_BIND_PROMPT_ENABLED is explicitly disabled', async () => {
+    // Explicitly disable the bind prompt via TEAMAI_BIND_PROMPT_ENABLED=0.
+    process.env.TEAMAI_BIND_PROMPT_ENABLED = '0';
     await setupConfig();
-    const projectDir = path.join(tmpDir, 'default-off-project');
+    const projectDir = path.join(tmpDir, 'disabled-project');
     await fse.ensureDir(projectDir);
     const { execFileSync } = await import('node:child_process');
     execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
