@@ -30,7 +30,7 @@ npm install -g teamai-cli
 
 ### Team admin / solo user
 
-Create a shared-experience repo on your git host (GitHub or TGit), **grant write access to team members**, then have them run `teamai init --repo https://github.com/yourorg/yourrepo`.
+Create a shared-experience repo on your git host (GitHub, TGit, or CNB), **grant write access to team members**, then have them run `teamai init --repo https://github.com/yourorg/yourrepo`.
 
 > Solo use needs no separate repo setup: `teamai init` checks the target repo and creates it automatically if it doesn't exist.
 
@@ -79,7 +79,7 @@ hooks:
 
 ```bash
 teamai hooks list      # list effective hooks
-teamai hooks inject    # force-reconcile into all tools
+teamai hooks inject    # re-reconcile into every installed tool
 teamai hooks remove    # remove all teamai-managed hooks
 ```
 
@@ -120,7 +120,7 @@ teamai recall disable    # off: remove the subagent and rules
 teamai recall status     # show effective state (team default + user override)
 ```
 
-**Search runs via a subagent**: once enabled, `teamai pull` deploys the built-in `teamai-recall` subagent into each AI tool's `agents/` directory. The AI invokes it before a task — the subagent extracts keywords, runs the search, reads the matched source files, and returns a structured summary of team knowledge. Under the hood it shells out to the `teamai recall` command, which you can also run manually:
+**Search runs via a subagent**: once enabled, `teamai pull` deploys the built-in `teamai-recall` subagent into each AI tool's `agents/` directory. The AI invokes it before a task — the subagent extracts keywords, runs the search, reads the matched source files, and returns a structured summary of team knowledge. The subagent first runs a relevance precheck (`teamai recall --check`) and skips retrieval entirely when the task is unrelated to team knowledge. Under the hood it shells out to the `teamai recall` command, which you can also run manually:
 
 ```bash
 $ teamai recall "port conflict"
@@ -149,6 +149,7 @@ teamai codebase --lint                      # health check
 ```
 
 The graph stores components, interfaces, configs, and cross-repo import edges. `teamai recall` uses it for graph-boosted re-ranking.
+When a recall hit comes from a codebase page, the result includes a `Sources:` line listing the relevant source file paths — giving agents a direct starting point for code changes instead of re-exploring the repo.
 
 ## Commands
 
@@ -169,6 +170,7 @@ The graph stores components, interfaces, configs, and cross-repo import edges. `
 | `teamai skill exclude add/remove/list` | Manage skills excluded from local sync ([usage guide](docs/usage-guide.md#excluding-skills-you-dont-need)) |
 | `teamai source` | Manage cross-team skill subscriptions |
 | `teamai remove <type> <name>` | Remove a resource and open MR |
+| `teamai session save` | Record a privacy-scrubbed session summary to a monthly log (`--push` feeds `digest`) |
 | `teamai digest` | Generate weekly team usage digest |
 | `teamai doctor` | Diagnose configuration issues |
 | `teamai uninstall` | Remove all teamai resources and hooks |

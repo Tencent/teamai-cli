@@ -1,5 +1,7 @@
 /** Plugin lifecycle reconciliation engine. All I/O is injected via `ReconcileDeps` for pure-logic testing. */
 
+import { createHash } from 'node:crypto';
+
 // ---------------------------------------------------------------------------
 // Domain types
 // ---------------------------------------------------------------------------
@@ -26,6 +28,14 @@ export interface PluginState {
   installedAt?: string;
   /** Required: needed by uninstall when the plugin is removed from desired list. */
   uninstallCmd: string;
+  /**
+   * SHA-256 of the resolved install/update/run commands (uninstall excluded).
+   * Lets reconcile detect launch-argument changes (endpoint, topic_id, secrets,
+   * and so on) even when `version` is unchanged. A hash is stored rather than the
+   * raw commands so that secret material in `runCmd` never lands in the
+   * plugin-state file on disk.
+   */
+  cmdFingerprint?: string;
   /** ISO timestamp of last failed attempt; used for failure cooldown. */
   lastAttemptAt?: string;
   lastError?: string;
@@ -69,6 +79,22 @@ const FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
 // Private helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Fingerprint the commands that actually (re)provision the plugin: install,
+ * update, and run (including launch args substituted into runCmd). A change
+ * yields a different hash, which reconcile treats as a reason to re-run.
+ *
+ * `uninstallCmd` is deliberately excluded: it only runs when the plugin is
+ * removed from the desired list, so a change to it should not force an
+ * install/run cycle on a healthy plugin. Fields are joined with a NUL
+ * separator so shifting content across a boundary cannot produce a collision.
+ */
+export function commandFingerprint(d: PluginDescriptor): string {
+  const sep = String.fromCharCode(0);
+  const parts = [d.installCmd, d.updateCmd ?? '', d.runCmd];
+  return createHash('sha256').update(parts.join(sep)).digest('hex');
+}
+
 function makeReadyState(d: PluginDescriptor, deps: ReconcileDeps): PluginState {
   return {
     slug: d.slug,
@@ -76,6 +102,7 @@ function makeReadyState(d: PluginDescriptor, deps: ReconcileDeps): PluginState {
     ready: true,
     installedAt: new Date(deps.now()).toISOString(),
     uninstallCmd: d.uninstallCmd,
+    cmdFingerprint: commandFingerprint(d),
     lastAttemptAt: undefined,
     lastError: undefined,
   };
@@ -116,17 +143,34 @@ export async function reconcilePlugins(
           m[d.slug] = makeReadyState(d, deps);
         });
         deps.log.debug(`plugin ${d.slug}: installed and setup complete`);
-      } else if (d.version !== undefined && e.version !== d.version) {
-        // Version changed → update
-        deps.log.debug(`plugin ${d.slug}: updating ${e.version ?? '(unknown)'} -> ${d.version}`);
-        await deps.execCommand(d.updateCmd ?? d.installCmd, UPDATE_TIMEOUT_MS);
-        await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
-        await deps.mutatePlugins((m) => {
-          m[d.slug] = makeReadyState(d, deps);
-        });
-        deps.log.debug(`plugin ${d.slug}: updated to version ${d.version}`);
+      } else {
+        const currentFp = commandFingerprint(d);
+        const versionChanged = d.version !== undefined && e.version !== d.version;
+        // A stored fingerprint that no longer matches means the provisioning
+        // commands (install/update/run, including launch args in runCmd) changed.
+        const cmdChanged = e.cmdFingerprint !== undefined && e.cmdFingerprint !== currentFp;
+        if (versionChanged || cmdChanged) {
+          const reason = versionChanged
+            ? `version ${e.version ?? '(unknown)'} -> ${d.version}`
+            : 'command/launch-arg change';
+          deps.log.debug(`plugin ${d.slug}: updating (${reason})`);
+          await deps.execCommand(d.updateCmd ?? d.installCmd, UPDATE_TIMEOUT_MS);
+          await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
+          await deps.mutatePlugins((m) => {
+            m[d.slug] = makeReadyState(d, deps);
+          });
+          deps.log.debug(`plugin ${d.slug}: updated (${reason})`);
+        } else if (e.cmdFingerprint === undefined) {
+          // Plugin installed before fingerprinting existed: backfill the fingerprint
+          // without re-running, so drift is detected from here on. (We cannot know
+          // whether it already drifted, so we do not force a re-run on upgrade.)
+          deps.log.debug(`plugin ${d.slug}: backfilling command fingerprint`);
+          await deps.mutatePlugins((m) => {
+            if (m[d.slug]) m[d.slug].cmdFingerprint = currentFp;
+          });
+        }
+        // else: steady state — plugin self-manages, teamai is no-op
       }
-      // else: steady state — plugin self-manages, teamai is no-op
     } catch (err) {
       const msg = (err as Error).message;
       deps.log.warn(`plugin ${d.slug} reconcile failed: ${msg}`);

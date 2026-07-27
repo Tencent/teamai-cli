@@ -538,9 +538,30 @@ program
 program
   .command('stats')
   .description('Show local skill usage statistics')
-  .action(async () => {
+  .option('--by-repo', 'Break usage down per repository')
+  .option('--by-time', 'Show activity by hour of day')
+  .action(async (cmdOpts) => {
     const { showStats } = await import('./stats.js');
-    await showStats();
+    await showStats({ byRepo: cmdOpts.byRepo, byTime: cmdOpts.byTime });
+  });
+
+// ─── Session subcommands ──────────────────────────────────
+const sessionCmd = program
+  .command('session')
+  .description('Record and inspect coding-session summaries');
+
+sessionCmd
+  .command('save')
+  .description('Record a privacy-scrubbed summary of a coding session to a local monthly log')
+  .option('--session-id <id>', 'Session to record (default: most recent, or $CLAUDE_SESSION_ID)')
+  .option('--push', 'Also push the summary to the team repo (feeds `teamai digest`)')
+  .option('--force', 'Push even if the session is not flagged as valuable')
+  .option('--include-prompt', 'Include the redacted first-prompt line in the pushed summary (default: off)')
+  .option('--scope <scope>', 'Config scope for --push: user | project (default: auto-detect)')
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { saveSession } = await import('./save-session.js');
+    await saveSession({ ...globalOpts, ...cmdOpts });
   });
 
 program
@@ -582,9 +603,20 @@ program
   .option('--stdin', 'Read hook data from STDIN (accepted for forward compat, always reads STDIN)')
   .option('--tool <name>', 'Tool identifier (e.g. codebuddy, workbuddy, claude)')
   .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
-  .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string }) => {
+  .option('--bg-only', 'Internal: run only fire-and-forget background handlers (used by the detached child)')
+  .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean }) => {
     const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
-    await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*');
+    try {
+      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*', cmdOpts.bgOnly ?? false);
+    } finally {
+      // Hook subprocesses must exit promptly: a hung/unreachable backend fetch can
+      // leave a socket pending on the event loop, blocking natural exit and tripping
+      // the host IDE's default hook timeout. Force exit once dispatch has settled.
+      // Tradeoff: this also terminates best-effort fire-and-forget background work
+      // (e.g. event compaction) for all tools, which is acceptable because such work
+      // is idempotent/best-effort and safe to drop.
+      process.exit(0);
+    }
   });
 
 program
@@ -634,11 +666,12 @@ const recallCmd = program
   .command('recall [query...]')
   .description('Search team learnings knowledge base')
   .option('--depth <level>', 'Recall depth: route (entry-points only) | context (module-level, default) | lookup (full graph traversal)', 'context')
+  .option('--check', 'Relevance precheck only: print RELEVANT/NOT_RELEVANT + top score; no file reads, no upvote')
   .action(async (queryParts, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const query = (queryParts as string[]).join(' ');
     const { recall } = await import('./recall.js');
-    await recall(query, { ...globalOpts, depth: cmdOpts.depth });
+    await recall(query, { ...globalOpts, depth: cmdOpts.depth, check: cmdOpts.check });
   });
 
 recallCmd
@@ -696,11 +729,9 @@ program
   .addOption(new Option('--domain <name>', 'Skip AI recommendation and assign repo to this domain explicitly').hideHelp())
   .option('--from-repo-list <path>', 'Batch import repos from a YAML whitelist')
   .addOption(new Option('--concurrency <n>', 'Concurrent repos for --from-repo-list (default 3)').default('3').hideHelp())
-  .addOption(new Option('--skip-aggregate', 'Skip domain-*.md / index.md regeneration').hideHelp())
   .option('--incremental', 'Use cached clone with fetch+reset (with --from-repo or --from-repo-list)')
   .option('--skip-enrich', 'Skip AI enrichment (only clone + extract + graph, no LLM calls)')
-  .option('--from-org <org>', 'List repos under an org and bootstrap whitelist + domains')
-  .addOption(new Option('--bootstrap', 'Run interactive review after --from-org').hideHelp())
+  .option('--from-org <org>', 'List repos under an org and generate a repo whitelist')
   .addOption(new Option('--max-repos <n>', 'Cap on repos pulled from --from-org (default 200)').default('200').hideHelp())
   .addOption(new Option('--exclude-archived', 'Exclude archived repos from --from-org (default true)').hideHelp())
   .addOption(new Option('--include-pattern <re>', 'Regex to include repos by full name (used with --from-org)').hideHelp())
@@ -751,11 +782,10 @@ program
   .addOption(new Option('--project <name>', 'Project slug for extract output (default: directory name)').hideHelp())
   .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)').hideHelp())
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
-  .option('--lint', 'Run global consistency lint over docs/team-codebase')
-  .option('--fix', 'Apply low-risk mechanical fixes (only with --lint)')
+  .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph')
+  .option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode')
+  .option('--status', 'Show knowledge-base git baseline (headSha / repoUrl / branch)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
-  .addOption(new Option('--stale-days <n>', 'Threshold for sync-stale check').default('60').hideHelp())
-  .addOption(new Option('--pending-review-threshold <n>', 'Threshold for pending-review backlog').default('10').hideHelp())
   .option('--json', 'Output report as JSON (suitable for CI)')
   .addOption(new Option('--output <path>', 'Custom teamwiki output root directory').hideHelp())
   .action(async (cmdOpts) => {
@@ -778,28 +808,6 @@ program
         const globalOpts = program.opts() as GlobalOptions;
         const { reviewCmd } = await import('./review-cmd.js');
         await reviewCmd({ ...globalOpts, ...cmdOpts, idArg });
-    });
-
-program
-    .command('domains <subcommand> [repoUrl]', { hidden: true })
-    
-    .description('Inspect / accept / reject domain-drift signals (subcommand: drift)')
-    .option('--apply', 'Apply drift for the given repoUrl')
-    .option('--apply-all', 'Apply all drift items above confidence threshold')
-    .option('--threshold <n>', 'Confidence threshold for --apply-all (default 0.8)', '0.8')
-    .option('--lock', 'Lock the repo against future drift signals')
-    .option('--output <path>', 'Custom teamwiki output root directory')
-    .option('--skip-aggregate', 'Skip regenerateAggregate after apply')
-    .option('--json', 'Machine-readable output')
-    .action(async (subcommand, repoUrlArg, cmdOpts) => {
-        if (subcommand !== 'drift') {
-            log.error(`Unknown subcommand: ${subcommand}（仅支持 drift）`);
-            process.exitCode = 2;
-            return;
-        }
-        const globalOpts = program.opts() as GlobalOptions;
-        const { driftCmd } = await import('./drift-cmd.js');
-        await driftCmd({ ...globalOpts, ...cmdOpts, repoUrlArg });
     });
 
 // ─── Unified hook dispatch (replaces individual hook subcommands) ────

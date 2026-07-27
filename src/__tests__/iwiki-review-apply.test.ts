@@ -37,14 +37,6 @@ vi.mock('../utils/prompt.js', () => ({
     askConfirmation: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock('../domains/store.js', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('../domains/store.js')>();
-    return {
-        ...actual,
-        appendHistory: vi.fn().mockResolvedValue(undefined),
-    };
-});
-
 // ─── Imports (after mocks) ───────────────────────────────
 
 import { importFromIWikiDual } from '../iwiki-dual.js';

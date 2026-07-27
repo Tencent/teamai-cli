@@ -17,6 +17,7 @@ import {
   remove,
   writeFile,
   writeJson,
+  writeJsonAtomic,
 } from './utils/fs.js';
 import { ResourceHandler } from './resources/base.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
@@ -30,6 +31,7 @@ import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
 import { reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
 import {
+  resolveBaseDir,
   TEAMAI_HOME,
   TEAMAI_TOKEN_PATH,
   TEAMAI_CLAUDEMD_START,
@@ -48,6 +50,15 @@ const CONFIG_FILE = 'config.json';
 const MANIFEST_FILE = 'manifest.json';
 const REPORTER_ERROR_LOG = 'reporter/errors.jsonl';
 
+/**
+ * Abort timeout for local-agent network calls.
+ *
+ * Prevents a fetch from hanging indefinitely when the endpoint is unreachable,
+ * which would otherwise keep a socket pending on the event loop and stall the
+ * hook subprocess until the host IDE's default hook timeout fires.
+ */
+const LOCAL_AGENT_FETCH_TIMEOUT_MS = 15_000;
+
 type LocalAgentScope = 'instance' | 'user' | 'project';
 type ResourceKind = 'skills' | 'rules' | 'claudemd';
 type CommandResourceKind = 'skill' | 'rule' | 'claudemd';
@@ -56,6 +67,9 @@ interface WorkspaceBinding {
   projectId: number;
   projectName?: string;
   boundAt: string;
+  /** Normalized owning tool (via normalizeAgentType). Optional for back-compat with existing config.json;
+   * absent means "not yet attributed". */
+  ideType?: string;
 }
 
 export interface LocalAgentConfig {
@@ -128,7 +142,7 @@ interface LocalAgentManifest {
 interface LocalAgentCommand {
   id: number;
   type?: string;
-  scope?: LocalAgentScope;
+  scope?: string;
   workspace_path?: string;
   download_url?: string;
   skill_slug?: string;
@@ -244,6 +258,24 @@ function resolveLocalAgentId(context: LocalAgentContext): string {
 }
 
 /**
+ * Detect whether we are running inside a CloudStudio container sandbox.
+ *
+ * WorkBuddy can spawn a CloudStudio Linux container that runs its own teamai
+ * hooks. That container has a different machine_id than the macOS host, so it
+ * derives a second local_agent_id and reports a duplicate agent card. Both
+ * signals below are absent on a normal Linux user machine, so this never
+ * suppresses reporting for legitimate standalone Linux users.
+ */
+function isCloudStudioSandbox(): boolean {
+  if (process.env.X_IDE_IS_CLOUDSTUDIO === 'TRUE') return true;
+  try {
+    return fs.existsSync('/var/run/cloudstudio');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Build the unified log tag for local-agent debug output: `[<id6>] [<tool>]` —
  * the last 6 chars of the derived agent id plus the agent name (tool), so every
  * line (HTTP request/response, report/sync, command ack) reads the same way.
@@ -352,7 +384,7 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
 }
 
 async function saveLocalAgentConfig(config: LocalAgentConfig): Promise<void> {
-  await writeJson(getConfigPath(), {
+  await writeJsonAtomic(getConfigPath(), {
     ...config,
     endpoint: normalizeEndpoint(config.endpoint),
     workspaceBindings: config.workspaceBindings ?? {},
@@ -429,7 +461,11 @@ async function localAgentFetch<T>(
   };
   logHttpRequest(tag, method, url, headers, init?.body);
 
-  const response = await fetch(url, { ...init, headers });
+  const response = await fetch(url, {
+    ...init,
+    headers,
+    signal: init?.signal ?? AbortSignal.timeout(LOCAL_AGENT_FETCH_TIMEOUT_MS),
+  });
   const text = await response.text();
   let body: unknown = null;
   if (text.trim()) {
@@ -780,12 +816,15 @@ async function ensureWorkspaceBinding(
 
 /**
  * The organization-binding prompt (TTY prompt + injected hook context) is
- * off by default. Enable it explicitly with `TEAMAI_BIND_PROMPT_ENABLED=1`.
- * The manual `teamai bind-project` command is always available regardless.
+ * on by default. Disable it explicitly with `TEAMAI_BIND_PROMPT_ENABLED=0`
+ * (or `false`). The manual `teamai bind-project` command is always available
+ * regardless.
  */
 function isBindPromptEnabled(): boolean {
   const flag = process.env.TEAMAI_BIND_PROMPT_ENABLED;
-  return flag === '1' || flag === 'true';
+  if (flag === undefined) return true;
+  const normalized = flag.toLowerCase();
+  return normalized !== '0' && normalized !== 'false';
 }
 
 async function emitBindingHint(
@@ -933,14 +972,89 @@ function collectManifestSlugs(manifest: LocalAgentManifest): { skills: Set<strin
   return { skills, rules };
 }
 
+/**
+ * Remove workspace bindings whose directory no longer exists on disk.
+ *
+ * Workspace bindings are only ever added, never removed, so a deleted
+ * project directory would otherwise be reported forever and the server
+ * (full-sync snapshot) could never drop it. This prunes such stale
+ * entries in place. Applies to skipped ('__skipped__', projectId 0)
+ * entries too — a deleted directory should not leave a permanent sentinel.
+ *
+ * @param config - Loaded local-agent config; its workspaceBindings map is mutated in place.
+ * @returns True if at least one binding was removed.
+ */
+export async function pruneDeadWorkspaceBindings(config: LocalAgentConfig): Promise<boolean> {
+  let changed = false;
+  for (const workspacePath of Object.keys(config.workspaceBindings)) {
+    try {
+      await fs.promises.stat(workspacePath);
+    } catch (error) {
+      // Only prune when the directory is confirmed gone (ENOENT). Transient
+      // failures — permission errors, unreachable network mounts — must NOT
+      // delete a still-valid binding, or the server's full-sync snapshot
+      // would drop that workspace's resources.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        delete config.workspaceBindings[workspacePath];
+        changed = true;
+      } else {
+        log.debug(
+          `local-agent: keeping workspace binding ${workspacePath} despite stat error: ${(error as Error).message}`,
+        );
+      }
+    }
+  }
+  return changed;
+}
+
+/**
+ * Stamps the workspace binding's owning tool when the hook fires from that tool's own process.
+ * Because hooks are invoked from within the tool's process, cwd === binding.path is the
+ * authoritative signal that this binding belongs to the triggering tool.
+ *
+ * Returns true if the binding was modified (caller should persist config), false otherwise.
+ */
+export function stampWorkspaceTool(
+  config: LocalAgentConfig,
+  currentPath: string | null | undefined,
+  tool: string,
+): boolean {
+  if (!currentPath) return false;
+  const binding = config.workspaceBindings[currentPath];
+  if (!binding) return false;
+  const normalized = normalizeAgentType(tool);
+  if (binding.ideType === normalized) return false;
+  binding.ideType = normalized;
+  return true;
+}
+
+/**
+ * Select the workspace paths that belong to the current tool for reporting.
+ *
+ * A binding belongs to the current tool when its stamped ideType matches, or —
+ * for the not-yet-attributed current cwd — when it is the workspace the hook
+ * fired from. An empty/absent ideType on a non-cwd binding is treated as
+ * unattributed and excluded (it self-heals once its owning tool reports from it).
+ */
+function selectToolWorkspaces(
+  config: LocalAgentConfig,
+  currentPath: string | null | undefined,
+  currentTool: string,
+): string[] {
+  const paths = new Set<string>(Object.keys(config.workspaceBindings));
+  if (currentPath) paths.add(currentPath);
+  return Array.from(paths).filter((wsPath) => {
+    const b = config.workspaceBindings[wsPath];
+    const wsTool = (b?.ideType || undefined) ?? (wsPath === currentPath ? currentTool : undefined);
+    return wsTool === currentTool;
+  });
+}
 
 export async function buildReportPayload(
   config: LocalAgentConfig,
   context: LocalAgentContext,
 ): Promise<Record<string, unknown>> {
   const manifest = await loadManifest();
-  const workspacePath = await resolveWorkspacePath(context.cwd);
-  const binding = workspacePath ? config.workspaceBindings[workspacePath] : undefined;
 
   // Resource discovery scans the tool's on-disk skills/rules directories rather
   // than the manifest, so locally-installed resources (not just HTTP-distributed
@@ -964,6 +1078,10 @@ export async function buildReportPayload(
 
   const userScope = await scanScope(process.env.HOME ?? '');
 
+  const userLevel: Record<string, unknown> = { group_id: config.userGroupId };
+  if (userScope.skills.length > 0) userLevel.skills = userScope.skills;
+  if (userScope.rules.length > 0) userLevel.rules = userScope.rules;
+
   const payload: Record<string, unknown> = {
     agent_type: normalizeAgentType(tool),
     agent_version: await getAgentVersion(tool),
@@ -976,50 +1094,56 @@ export async function buildReportPayload(
     // deliberately omitted (not sent as []): the server treats present arrays
     // as a full-sync snapshot ("消失即删"), so an empty array would wipe any
     // instance-level resources. Omitting the field leaves them untouched.
-    user_level: {
-      group_id: config.userGroupId,
-      skills: userScope.skills,
-      rules: userScope.rules,
-    },
+    user_level: userLevel,
   };
 
-  if (workspacePath) {
-    const wsScope = await scanScope(workspacePath);
-    payload.workspaces = [
-      {
-        path: workspacePath,
-        name: path.basename(workspacePath),
-        ide_type: normalizeAgentType(tool),
-        project_id: binding?.projectId,
-        skills: wsScope.skills,
-        rules: wsScope.rules,
-      },
-    ];
+  const currentPath = await resolveWorkspacePath(context.cwd);
+  const currentTool = normalizeAgentType(tool);
+  const targetPaths = selectToolWorkspaces(config, currentPath, currentTool);
+  if (targetPaths.length > 0) {
+    const workspaceResults = await Promise.all(
+      targetPaths.map(async (wsPath) => {
+        const wsScope = await scanScope(wsPath);
+        const wsBinding = config.workspaceBindings[wsPath];
+        const workspace: Record<string, unknown> = {
+          path: wsPath,
+          name: path.basename(wsPath),
+          ide_type: currentTool,
+          project_id: wsBinding?.projectId,
+        };
+        if (wsScope.skills.length > 0) workspace.skills = wsScope.skills;
+        if (wsScope.rules.length > 0) workspace.rules = wsScope.rules;
+        return workspace;
+      }),
+    );
+    payload.workspaces = workspaceResults;
   }
 
   return payload;
 }
 
-async function buildSyncPayload(
+export async function buildSyncPayload(
   config: LocalAgentConfig,
   context: LocalAgentContext,
 ): Promise<Record<string, unknown>> {
-  const workspacePath = await resolveWorkspacePath(context.cwd);
-  const binding = workspacePath ? config.workspaceBindings[workspacePath] : undefined;
   const payload: Record<string, unknown> = {
     agent_type: normalizeAgentType(context.tool ?? 'workbuddy'),
     local_agent_id: resolveLocalAgentId(context),
     status: context.status ?? 'running',
   };
-  if (workspacePath) {
-    payload.workspaces = [
-      {
-        path: workspacePath,
-        name: path.basename(workspacePath),
-        ide_type: normalizeAgentType(context.tool ?? 'workbuddy'),
-        project_id: binding?.projectId,
-      },
-    ];
+  const currentPath = await resolveWorkspacePath(context.cwd);
+  const currentTool = normalizeAgentType(context.tool ?? 'workbuddy');
+  const targetPaths = selectToolWorkspaces(config, currentPath, currentTool);
+  if (targetPaths.length > 0) {
+    payload.workspaces = targetPaths.map((wsPath) => {
+      const wsBinding = config.workspaceBindings[wsPath];
+      return {
+        path: wsPath,
+        name: path.basename(wsPath),
+        ide_type: currentTool,
+        project_id: wsBinding?.projectId,
+      };
+    });
   }
   return payload;
 }
@@ -1079,6 +1203,25 @@ function commandVersion(command: LocalAgentCommand, kind: CommandResourceKind): 
   ) ?? command.resource_version ?? command.version;
 }
 
+/**
+ * Normalize a backend-sent scope string to an internal LocalAgentScope.
+ *
+ * The backend emits `user` / `workspace` (see clawpro local-agent-api.md);
+ * the deprecated `instance` is no longer sent. Internally project-level
+ * resources use the `project` scope, so `workspace` maps to `project`.
+ * Any unrecognized value falls back to `user` (global install).
+ *
+ * This only maps the scope; presence of `workspace_path` for project scope
+ * is validated by the caller (executeCommand throws if it is missing).
+ */
+function normalizeScope(raw?: string): LocalAgentScope {
+  if (raw === 'workspace' || raw === 'project') return 'project';
+  if (raw !== undefined && raw !== 'user' && raw !== 'instance') {
+    log.debug(`local-agent: unknown scope "${raw}", defaulting to user`);
+  }
+  return 'user';
+}
+
 function manifestKind(kind: CommandResourceKind): ResourceKind {
   return kind === 'skill' ? 'skills' : kind === 'rule' ? 'rules' : 'claudemd';
 }
@@ -1111,8 +1254,11 @@ async function downloadResource(downloadUrl: string): Promise<string> {
   let current = assertHttpUrl(downloadUrl);
   let response: Response;
   const maxRedirects = 5;
+  // One timeout budget for the whole download (all redirect hops combined), so a
+  // chain of slow redirects cannot exceed the intended bound.
+  const signal = AbortSignal.timeout(LOCAL_AGENT_FETCH_TIMEOUT_MS);
   for (let hop = 0; ; hop++) {
-    response = await fetch(current, { redirect: 'manual' });
+    response = await fetch(current, { redirect: 'manual', signal });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');
       if (!location) break;
@@ -1258,6 +1404,32 @@ async function installDownloadedResource(input: {
     }
     const teamConfig = { ...fullTeamConfig, toolPaths: { [tool]: toolPath } };
     const localConfig = createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
+    // Ensure the tool root directory exists before dispatch so isToolInstalled
+    // gate does not skip the resource when the workspace is freshly bound.
+    // Restricted to project scope: user-scope installs use $HOME as baseDir and
+    // should continue to rely on isToolInstalled as the gate.
+    if (localConfig.scope === 'project') {
+      try {
+        const baseDir = resolveBaseDir(localConfig);
+        const resourceToolPath =
+          input.kind === 'skill' ? toolPath.skills :
+          input.kind === 'rule'  ? toolPath.rules  :
+          // Default branch covers the 'claudemd' kind; if a new CommandResourceKind
+          // is added, revisit this mapping so it doesn't silently fall through to claudemd.
+          toolPath.claudemd;
+        if (resourceToolPath && resourceToolPath.includes('/')) {
+          const rootSegment = resourceToolPath.split('/')[0];
+          await ensureDir(path.join(baseDir, rootSegment));
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('resolveBaseDir')) {
+          log.warn(`Cannot resolve base dir to pre-create tool root: ${msg}`);
+        } else {
+          log.debug(`Failed to pre-create tool root directory: ${msg}`);
+        }
+      }
+    }
     const now = new Date().toISOString();
     let displayName = input.command.display_name ?? input.slug;
     // On-disk skill directory name (SKILL.md name when it differs from slug).
@@ -1433,7 +1605,7 @@ async function executeCommand(
     throw new Error(`Unsupported command type: ${command.type ?? ''}`);
   }
 
-  const scope = command.scope ?? 'user';
+  const scope = normalizeScope(command.scope);
   const workspacePath = scope === 'project'
     ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
     : undefined;
@@ -1478,14 +1650,28 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   const config = await loadLocalAgentConfig();
   if (!config) return false;
 
-  const workspacePath = await resolveWorkspacePath(context.cwd);
-  if (isBindPromptEnabled() && workspacePath) {
-    if (context.event?.type === 'session_start') {
-      await ensureWorkspaceBinding(config, workspacePath);
+  // Binding prompt is injected via stdout hook context (not HTTP), so it must run
+  // even inside the CloudStudio sandbox — the sandbox guard below only skips the
+  // HTTP report/sync that would produce a duplicate card. Resolve the workspace
+  // only when the prompt is enabled, so the disabled path forks no git process.
+  if (isBindPromptEnabled()) {
+    const workspacePath = await resolveWorkspacePath(context.cwd);
+    if (workspacePath) {
+      if (context.event?.type === 'session_start') {
+        await ensureWorkspaceBinding(config, workspacePath);
+      }
+      if (context.event?.type === 'prompt_submit') {
+        await emitBindingHint(config, workspacePath);
+      }
     }
-    if (context.event?.type === 'prompt_submit') {
-      await emitBindingHint(config, workspacePath);
-    }
+  }
+
+  if (isCloudStudioSandbox() && process.env.TEAMAI_ALLOW_SANDBOX_REPORT !== '1') {
+    log.debug(
+      '[local-agent] CloudStudio sandbox detected; skipping HTTP report/sync ' +
+        '(binding prompt still runs; set TEAMAI_ALLOW_SANDBOX_REPORT=1 to override)',
+    );
+    return false;
   }
 
   const tag = localAgentTag(context);
@@ -1493,6 +1679,16 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
 
   if (context.event?.type === 'session_start') {
     await maybeReconcilePlugins(context);
+  }
+
+  const pruned = await pruneDeadWorkspaceBindings(config);
+  // Resolve the current workspace independently here rather than reusing an
+  // earlier local, so tool attribution does not depend on the binding-prompt
+  // block above keeping a `workspacePath` in scope.
+  const currentPath = await resolveWorkspacePath(context.cwd);
+  const stamped = stampWorkspaceTool(config, currentPath, context.tool ?? 'workbuddy');
+  if (pruned || stamped) {
+    await saveLocalAgentConfig(config);
   }
 
   try {

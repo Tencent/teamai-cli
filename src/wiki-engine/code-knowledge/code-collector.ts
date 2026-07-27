@@ -143,12 +143,73 @@ function languageFor(filePath: string): string {
   return map[ext] ?? "text";
 }
 
-async function gitCommit(root: string): Promise<string | undefined> {
+export async function gitCommit(root: string): Promise<string | undefined> {
   try {
     const { stdout } = await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"]);
     return stdout.trim() || undefined;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Report whether the git working tree at root is clean (no staged, unstaged,
+ * or untracked changes). Returns false when git is unavailable, so callers
+ * treat "unknown" as dirty and fall back to a full scan.
+ */
+export async function isWorkingTreeClean(root: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", root, "status", "--porcelain"]);
+    return stdout.trim().length === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Compute changed files between two git commits via `git diff --name-status`.
+ *
+ * Returns added/changed/deleted relative paths (POSIX-normalized). Renames
+ * are decomposed into a delete of the old path and an add of the new path.
+ * Returns null when git is unavailable or the diff fails, so callers can
+ * fall back to full sha256 comparison.
+ */
+export async function gitDiffNameStatus(
+  root: string,
+  oldSha: string,
+  newSha: string,
+): Promise<{ added: string[]; changed: string[]; deleted: string[] } | null> {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", root, "-c", "core.quotePath=false", "diff", "--name-status", "-M", "-C", oldSha, newSha]);
+    const added: string[] = [];
+    const changed: string[] = [];
+    const deleted: string[] = [];
+    for (const line of stdout.split("\n")) {
+      if (!line.trim()) continue;
+      const parts = line.split("\t");
+      const status = parts[0];
+      if (status === "A" && parts.length >= 2) {
+        added.push(toPosix(parts[1]));
+      } else if (status === "M" && parts.length >= 2) {
+        changed.push(toPosix(parts[1]));
+      } else if (status === "D" && parts.length >= 2) {
+        deleted.push(toPosix(parts[1]));
+      } else if (status.startsWith("R") && parts.length >= 3) {
+        // rename: old path deleted, new path added
+        deleted.push(toPosix(parts[1]));
+        added.push(toPosix(parts[2]));
+      } else if (status.startsWith("C") && parts.length >= 3) {
+        // copy: only the new path is added
+        added.push(toPosix(parts[2]));
+      }
+      // malformed or other status codes are ignored
+    }
+    added.sort();
+    changed.sort();
+    deleted.sort();
+    return { added, changed, deleted };
+  } catch {
+    return null;
   }
 }
 

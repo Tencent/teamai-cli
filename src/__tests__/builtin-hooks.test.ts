@@ -16,7 +16,7 @@ describe('builtinHookDefs — unified built-in hook model', () => {
   it('Claude defs carry no timeout; Cursor defs carry per-hook timeouts', () => {
     expect(builtinHookDefs('claude').every((d) => d.timeout === undefined)).toBe(true);
     const cursor = builtinHookDefs('cursor');
-    expect(cursor.find((d) => d.key === 'Hook dispatch session-start')?.timeout).toBe(60);
+    expect(cursor.find((d) => d.key === 'Hook dispatch session-start')?.timeout).toBe(15);
     expect(cursor.find((d) => d.key === 'Hook dispatch post-tool-use TodoWrite')?.timeout).toBe(3);
   });
 

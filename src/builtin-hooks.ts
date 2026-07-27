@@ -177,7 +177,7 @@ interface BuiltinHookSpec {
 }
 
 const BUILTIN_HOOK_SPECS: BuiltinHookSpec[] = [
-  { key: 'Hook dispatch session-start', event: 'SessionStart', dispatchEvent: 'session-start', matcher: '*', timeoutSec: 60 },
+  { key: 'Hook dispatch session-start', event: 'SessionStart', dispatchEvent: 'session-start', matcher: '*', timeoutSec: 15 },
   { key: 'Hook dispatch stop', event: 'Stop', dispatchEvent: 'stop', matcher: '*', timeoutSec: 15 },
   { key: 'Hook dispatch post-tool-use wildcard', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: '*', timeoutSec: 10 },
   { key: 'Hook dispatch post-tool-use Skill', event: 'PostToolUse', dispatchEvent: 'post-tool-use', matcher: 'Skill', timeoutSec: 10 },
@@ -188,10 +188,10 @@ const BUILTIN_HOOK_SPECS: BuiltinHookSpec[] = [
 /**
  * Build the built-in hook definitions for a tool.
  *
- * Tool-specific by design: Cursor and WorkBuddy entries carry per-hook timeouts
- * so a slow/unreachable backend hook cannot hang the host; Claude/CodeBuddy
- * entries carry no timeout (matching the historical byte-compat output). The
- * reconcile engine renders the same HookDef into each tool's on-disk shape.
+ * Tool-specific by design: Cursor, WorkBuddy and CodeBuddy entries carry
+ * per-hook timeouts so a slow/unreachable backend hook cannot hang the host;
+ * only Claude/Codex entries carry no timeout. The reconcile engine renders the
+ * same HookDef into each tool's on-disk shape.
  *
  * GUI tools (WorkBuddy, CodeBuddy) use the wrapper dispatch command so their
  * hook subprocesses can find `teamai` even without the user's full PATH.
@@ -199,7 +199,7 @@ const BUILTIN_HOOK_SPECS: BuiltinHookSpec[] = [
 const WRAPPER_TOOLS = new Set(['workbuddy', 'codebuddy']);
 
 export function builtinHookDefs(tool: string): HookDef[] {
-  const withTimeout = tool === 'cursor' || tool === 'workbuddy';
+  const withTimeout = tool === 'cursor' || tool === 'workbuddy' || tool === 'codebuddy';
   const buildCommand = WRAPPER_TOOLS.has(tool) ? getWrapperDispatchCommand : getDispatchCommand;
   return BUILTIN_HOOK_SPECS.map((spec) => ({
     source: 'builtin' as const,

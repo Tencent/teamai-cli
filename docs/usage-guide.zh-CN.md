@@ -64,7 +64,7 @@ npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
 teamai --version
 ```
 
-**前置依赖：** Node.js ≥ 18、Git（`gf` CLI 仅 TGit 用户需要，`teamai init` 时会自动安装）
+**前置依赖：** Node.js ≥ 18、Git（TGit 用户还需 `gf` CLI、CNB 用户还需 `cnb` CLI，`teamai init` 时都会自动安装）
 
 ---
 
@@ -72,7 +72,7 @@ teamai --version
 
 > 只需一位管理员完成，其他成员跳到[成员接入](#成员接入)。
 
-在 TGit（腾讯工蜂）上创建一个空仓库（命名建议：`TeamAi-<团队名>`），或者直接执行 `teamai init`，不存在时会提示自动创建。
+在 GitHub、TGit（腾讯工蜂）或 CNB（cnb.cool）上创建一个空仓库（命名建议：`TeamAi-<团队名>`），或者直接执行 `teamai init`，不存在时会提示自动创建。
 
 ### 用户级（User Scope）
 
@@ -423,6 +423,7 @@ teamai recall "GPU 内存不足"
 - 支持中英文混合搜索
 - 自动合并 user + project 双 scope 的知识库，结果标注 `[user]`/`[project]` 来源
 - 被查阅的知识自动 upvote，好文档浮到顶部
+- 提供轻量相关性预检 `teamai recall --check "<关键词>"`，仅输出 `RELEVANT score=<n>` 或 `NOT_RELEVANT score=<n>`，不读取文件、不 upvote —— recall subagent 用它在任务与团队知识无关时跳过检索
 
 ### 开启 / 关闭 Recall
 
@@ -588,8 +589,14 @@ cat ~/.claude/CLAUDE.md
 | `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }`，覆盖三个路径 |
 | `TEAMAI_REPORT_AGENTS` | 参与上报的 agent，逗号分隔（默认 `workbuddy,codebuddy`） |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | skill `download_url` host 白名单（空 = 全部放行） |
+| `TEAMAI_ALLOW_SANDBOX_REPORT` | 设为 `1` 可强制在 CloudStudio 沙箱内 report/sync（见下方说明） |
 
 > **隐私**：install path 和 machine id 仅在本地哈希以派生 `local_agent_id`，不会上报。
+
+> **CloudStudio 沙箱**：当 WorkBuddy 在 CloudStudio 容器内运行 teamai hook 时，该容器的 machine id 与 macOS
+> 宿主不同，会上报一张重复的 agent 卡片。因此在 CloudStudio 沙箱内会自动跳过 report/sync（通过
+> `X_IDE_IS_CLOUDSTUDIO=TRUE` 或 `/var/run/cloudstudio` 目录检测）。若你只在 CloudStudio 内使用 teamai，可设
+> `TEAMAI_ALLOW_SANDBOX_REPORT=1` 重新开启上报。
 
 ### 代码知识图谱
 
@@ -664,6 +671,24 @@ teamai dashboard --port 8080
 
 这两项同样随 `teamai pull` 聚合到 `stats/<user>.yaml`（`prompts` 与 `tokens` 字段），并在 `teamai digest` 的「对话量与 Token 用量」板块给出团队对话总轮数、token 总量（分桶）与人均 token 用量排行。拿不到 transcript 的工具（如 Cursor）会优雅降级：仍统计对话轮数，token 显示为 0 / N/A。
 
+### Session Save（会话存档）
+
+`teamai session save` 把 dashboard 已有的**单次会话事件流**（工具调用序列、prompt 轮次、干预记录）折叠成一份精简、脱敏的 markdown 摘要——不调用 LLM，也不新增采集路径。
+
+```bash
+teamai session save                    # 存档最近一次会话（本地）
+teamai session save --session-id <id>  # 存档指定会话
+teamai session save --push             # 把「有价值」的会话推送到团队仓库
+teamai session save --push --force     # 即便是琐碎会话也推送
+teamai session save --push --include-prompt  # 额外带上（脱敏后的）首个 prompt 行
+```
+
+**本地（始终执行）：** 追加到 `~/.teamai/session-logs/<年-月>.md`。按会话幂等（当月已记录的会话会跳过），且超过 90 天的日志会自动清理。
+
+**团队（`--push`，需显式开启）：** 直接提交（不走 PR）到团队仓库的 `sessions/<user>/<年-月>.md`——正是 `teamai digest` 读取的路径，于是该会话会出现在 **Session Highlights** 板块。默认只推送**有价值**的会话：出现摩擦（interrupt / tool-reject / correction）或工具使用充分（≥ 3 种不同工具）。琐碎会话除非加 `--force`，否则只留本地。对只读（HTTP 模式）的团队，`--push` 会优雅失败并保留本地日志。
+
+> 隐私：推送到团队的内容默认**只含计数 + 工具名**。首个 prompt 行需通过 `--include-prompt` 显式开启，且即便开启也会经过与别处一致的密钥脱敏（`ghp_…` → `<REDACTED:…>`）。本地日志因为不出本机，会保留脱敏后的首个 prompt 行。
+
 ### Hooks
 
 `teamai init` 自动注入的 Hooks：
@@ -679,6 +704,8 @@ teamai dashboard --port 8080
 teamai hooks inject    # 重新注入
 teamai hooks remove    # 移除
 ```
+
+这两个命令只会操作你实际已安装的工具（即 `~/.<tool>/` 根目录已存在的工具）。对于 `toolPaths` 中已配置但未安装的工具，命令不会为其凭空创建根目录，因此像 `.tclaude` / `.tcodex` 这类未安装的工具会被完全跳过。
 
 ### 团队 Hooks 声明
 

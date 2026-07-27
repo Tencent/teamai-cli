@@ -89,6 +89,61 @@ const ARCHITECTURE_CONTENT = `title: architecture
 This document describes the overall architecture.
 `;
 
+// Source-anchor fixture pages (placed under docs/ so they pass CONTEXT_ALLOWED_PATTERNS)
+const SOURCE_ARRAY_CONTENT = `---
+title: source-array-page
+source:
+  - src/foo.ts
+  - src/bar.ts
+---
+
+## Source Array Fixture
+
+This page tests uniqueSourceArrayKeyword retrieval from the knowledge graph.
+It contains uniqueSourceArrayKeyword for reliable BM25 hit.
+`;
+
+const SOURCE_STRING_CONTENT = `---
+title: source-string-page
+source: src/only.ts
+---
+
+## Source String Fixture
+
+This page tests uniqueSourceStringKeyword retrieval from the knowledge graph.
+It contains uniqueSourceStringKeyword for reliable BM25 hit.
+`;
+
+// Mixed-source fixture: URL + directory + real file — only the file should survive sanitization
+const SOURCE_MIXED_CONTENT = `---
+title: source-mixed-page
+source:
+  - https://github.com/Tencent/teamai-cli.git
+  - src/somedir/
+  - src/real-file.ts
+---
+
+## Source Mixed Fixture
+
+This page tests uniqueSourceMixedKeyword sanitization of heterogeneous source entries.
+It contains uniqueSourceMixedKeyword for reliable BM25 hit.
+`;
+
+// Extension-less source fixture: Makefile and Dockerfile have no dot in basename
+const SOURCE_NO_EXT_CONTENT = `---
+title: source-no-ext-page
+source:
+  - Makefile
+  - src/Dockerfile
+  - https://repo.example.com/
+---
+
+## No-Extension Source Fixture
+
+This page tests uniqueSourceNoExtKeyword that extension-less files are kept as anchors.
+It contains uniqueSourceNoExtKeyword for reliable BM25 hit.
+`;
+
 // ---------------------------------------------------------------------------
 // Helper: build the full wiki tree under a tmpdir
 // ---------------------------------------------------------------------------
@@ -112,6 +167,10 @@ async function buildWikiTree(tmpDir: string): Promise<void> {
   await fs.writeFile(path.join(modulesDir, 'src.md'), SRC_MODULE_CONTENT, 'utf-8');
   await fs.writeFile(path.join(docsDir, 'README.md'), README_CONTENT, 'utf-8');
   await fs.writeFile(path.join(docsDir, 'architecture.md'), ARCHITECTURE_CONTENT, 'utf-8');
+  await fs.writeFile(path.join(docsDir, 'source-array.md'), SOURCE_ARRAY_CONTENT, 'utf-8');
+  await fs.writeFile(path.join(docsDir, 'source-string.md'), SOURCE_STRING_CONTENT, 'utf-8');
+  await fs.writeFile(path.join(docsDir, 'source-mixed.md'), SOURCE_MIXED_CONTENT, 'utf-8');
+  await fs.writeFile(path.join(docsDir, 'source-no-ext.md'), SOURCE_NO_EXT_CONTENT, 'utf-8');
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +251,83 @@ describe('queryCodeKnowledge — progressive depth retrieval', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Test 4: graph-boost applies in context mode when graph-index.json exists
+  // Test 4: source parsing — array frontmatter
+  // -------------------------------------------------------------------------
+  it('frontmatter source 数组被解析为 sources 字段', async () => {
+    const results = await queryCodeKnowledge('uniqueSourceArrayKeyword', {
+      wikiRoot: tmpDir,
+      depth: 'lookup',
+      limit: 10,
+    });
+
+    const hit = results.find(r => r.page.includes('source-array.md'));
+    expect(hit).toBeDefined();
+    expect(hit?.sources).toEqual(['src/foo.ts', 'src/bar.ts']);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 5: source parsing — single string frontmatter
+  // -------------------------------------------------------------------------
+  it('frontmatter source 单字符串被规范化为单元素数组', async () => {
+    const results = await queryCodeKnowledge('uniqueSourceStringKeyword', {
+      wikiRoot: tmpDir,
+      depth: 'lookup',
+      limit: 10,
+    });
+
+    const hit = results.find(r => r.page.includes('source-string.md'));
+    expect(hit).toBeDefined();
+    expect(hit?.sources).toEqual(['src/only.ts']);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 6: source parsing — missing source field yields undefined
+  // -------------------------------------------------------------------------
+  it('无 source 字段的页面命中结果 sources 为 undefined', async () => {
+    const results = await queryCodeKnowledge('architecture', {
+      wikiRoot: tmpDir,
+      depth: 'lookup',
+      limit: 10,
+    });
+
+    const hit = results.find(r => r.page.includes('architecture.md'));
+    expect(hit).toBeDefined();
+    expect(hit?.sources).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 7: sanitizeSources — URL and directory entries are filtered out
+  // -------------------------------------------------------------------------
+  it('source 中 URL 和目录项被净化，只保留真实文件路径', async () => {
+    const results = await queryCodeKnowledge('uniqueSourceMixedKeyword', {
+      wikiRoot: tmpDir,
+      depth: 'lookup',
+      limit: 10,
+    });
+
+    const hit = results.find(r => r.page.includes('source-mixed.md'));
+    expect(hit).toBeDefined();
+    expect(hit?.sources).toEqual(['src/real-file.ts']);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 8: sanitizeSources — extension-less files (Makefile, Dockerfile) are kept
+  // -------------------------------------------------------------------------
+  it('无扩展名的真实文件（Makefile、Dockerfile）不被净化过滤', async () => {
+    const results = await queryCodeKnowledge('uniqueSourceNoExtKeyword', {
+      wikiRoot: tmpDir,
+      depth: 'lookup',
+      limit: 10,
+    });
+
+    const hit = results.find(r => r.page.includes('source-no-ext.md'));
+    expect(hit).toBeDefined();
+    // URL entry must be dropped; Makefile and src/Dockerfile must survive
+    expect(hit?.sources).toEqual(['Makefile', 'src/Dockerfile']);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 4 (original): graph-boost applies in context mode when graph-index.json exists
   // -------------------------------------------------------------------------
   it('context 模式的 graph-boost 仍然生效', async () => {
     // graph-index.json is read from wikiRoot/.indices/ by loadGraphIndex

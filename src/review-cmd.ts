@@ -10,7 +10,6 @@ import path from 'node:path';
 import chalk from 'chalk';
 import fs from 'fs-extra';
 
-import { appendHistory } from './domains/index.js';
 import { patchManagedSection } from './section-patcher.js';
 import type { GlobalOptions } from './types.js';
 import { log } from './utils/logger.js';
@@ -182,12 +181,6 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
             const result = await applyOne(cwd, item);
             if (result.ok) {
                 await removePendingReview(cwd, item.id);
-                await appendHistory(cwd, {
-                    ts: new Date().toISOString(),
-                    actor: 'user',
-                    action: 'accept',
-                    details: { id: item.id, target: item.target },
-                });
             }
             results.push({ id: item.id, ok: result.ok, reason: result.reason });
         }
@@ -239,12 +232,6 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
     // ── reject 模式 ───────────────────────────────────────
     if (reject) {
         await removePendingReview(cwd, idArg);
-        await appendHistory(cwd, {
-            ts: new Date().toISOString(),
-            actor: 'user',
-            action: 'reject',
-            details: { id: idArg, reason: opts.reason ?? '' },
-        });
 
         if (jsonMode) {
             console.log(JSON.stringify({ ok: true, action: 'reject', id: idArg }));
@@ -260,12 +247,6 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
 
         if (result.ok) {
             await removePendingReview(cwd, idArg);
-            await appendHistory(cwd, {
-                ts: new Date().toISOString(),
-                actor: 'user',
-                action: 'accept',
-                details: { id: idArg, target: item.target },
-            });
         }
 
         if (jsonMode) {

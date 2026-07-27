@@ -7,7 +7,7 @@
  */
 
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
-import { gfGetOAuthToken } from '../providers/tgit/gf-cli.js';
+import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { log } from '../utils/logger.js';
 
 // ─── 常量 ────────────────────────────────────────────────
@@ -178,29 +178,10 @@ async function updateGitHubComment(
 
 // ─── TGit Comment API ───────────────────────────────────
 
-function getTGitToken(): string {
-  const envToken = process.env['TAI_PAT_TOKEN'];
-  if (envToken) return envToken;
-
-  const oauthToken = gfGetOAuthToken();
-  if (oauthToken) return oauthToken;
-
-  throw new Error('未设置 TAI_PAT_TOKEN 环境变量，且无法从 gf credential 获取 token');
-}
-
 async function tgitRequest(path: string, method: string, body?: unknown): Promise<Response> {
-  const token = getTGitToken();
-  const url = `https://git.woa.com/api/v3${path}`;
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': 'application/json',
-  };
-
-  return fetch(url, {
+  return tgitFetch(path, {
     method,
-    headers,
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
 }
 

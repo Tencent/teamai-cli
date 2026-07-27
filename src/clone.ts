@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import fs from 'fs-extra';
 
 import { getGitHubToken } from './providers/github/gh-cli.js';
-import { gfGetOAuthToken } from './providers/tgit/gf-cli.js';
+import { tryGetTGitToken, tgitGitUser } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
 
 // ─── Types ──────────────────────────────────────────────
@@ -189,11 +189,12 @@ export async function shallowClone(
             log.debug(`shallowClone: 使用匿名 HTTPS 克隆 github 仓库`);
         }
     } else if (provider === 'tgit') {
-        // TGit: 使用 OAuth token 嵌入 URL（netrc 非标准字段导致 git credential 不稳定）
-        const tgitToken = gfGetOAuthToken();
+        // TGit: 使用 token 嵌入 URL（netrc 非标准字段导致 git credential 不稳定）
+        // git 用户名取决于 token 类型：PAT → private，OAuth → oauth2。
+        const creds = tryGetTGitToken();
         cloneUrl = url.replace(/^http:\/\//, 'https://');
-        if (tgitToken) {
-            cloneUrl = cloneUrl.replace('https://', `https://oauth2:${tgitToken}@`);
+        if (creds) {
+            cloneUrl = cloneUrl.replace('https://', `https://${tgitGitUser(creds.scheme)}:${creds.token}@`);
             cloneMethod = 'https-token';
             log.debug(`shallowClone: 使用 HTTPS+token 克隆 tgit 仓库`);
         } else {

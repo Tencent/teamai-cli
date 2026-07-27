@@ -51,6 +51,12 @@ beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hooks-e2e-home-'));
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hooks-e2e-repo-'));
   writeConfig();
+  // Pre-create the tool root dirs the assertions cover so they are detected as
+  // installed. `hooks inject`/`remove` only reconciles installed tools, so
+  // uninstalled tools (e.g. .tclaude) are intentionally left untouched.
+  for (const tool of ['.claude', '.cursor', '.codex']) {
+    fs.mkdirSync(path.join(home, tool), { recursive: true });
+  }
 });
 
 afterEach(() => {
@@ -129,6 +135,25 @@ describe('teamai hooks — unified A+B end-to-end', () => {
     const claude = readJson('.claude/settings.json') as unknown as { hooks: Record<string, unknown[]> };
     for (const entries of Object.values(claude.hooks)) {
       expect(entries).toHaveLength(0);
+    }
+  });
+
+  // Regression: `hooks inject` must NOT materialize root directories for tools
+  // the user never installed. Doing so used to make uninstalled tools (e.g.
+  // .tclaude / .tcodex / .codex-internal, all present in default toolPaths)
+  // look installed, so later `pull`s pushed skills into them.
+  it('does not create root directories for uninstalled tools', async () => {
+    writeHooksYaml(TEAM_HOOK);
+    // .claude is pre-created (installed) by beforeEach; .tclaude/.tcodex are not.
+    await run(['hooks', 'inject', '--silent']);
+
+    // Installed tool got its settings written.
+    expect(fs.existsSync(path.join(home, '.claude', 'settings.json'))).toBe(true);
+
+    // Uninstalled tools from the default toolPaths were left completely alone —
+    // no root directory, no settings file conjured out of thin air.
+    for (const tool of ['.tclaude', '.tcodex', '.codex-internal']) {
+      expect(fs.existsSync(path.join(home, tool))).toBe(false);
     }
   });
 });

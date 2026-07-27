@@ -7,7 +7,7 @@
  */
 
 import { parseMrUrl } from './mr-comment.js';
-import { gfGetOAuthToken } from '../providers/tgit/gf-cli.js';
+import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { log } from '../utils/logger.js';
 
 const API_TIMEOUT_MS = 15_000;
@@ -111,23 +111,8 @@ interface TGitNote {
   comments: TGitNoteComment[];
 }
 
-function getTGitToken(): string {
-  const envToken = process.env['TAI_PAT_TOKEN'];
-  if (envToken) return envToken;
-  const oauthToken = gfGetOAuthToken();
-  if (oauthToken) return oauthToken;
-  throw new Error('未设置 TAI_PAT_TOKEN 且无法获取 OAuth token');
-}
-
 async function tgitRequest(path: string): Promise<Response> {
-  const token = getTGitToken();
-  return fetch(`https://git.woa.com/api/v3${path}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    signal: AbortSignal.timeout(API_TIMEOUT_MS),
-  });
+  return tgitFetch(path);
 }
 
 async function getMrGlobalId(projectId: string, mrIid: string): Promise<number> {
