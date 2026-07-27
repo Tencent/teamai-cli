@@ -206,6 +206,27 @@ describe('hook-handlers registry', () => {
     expect(localAgent!.background).not.toBe(true);
   });
 
+  // Regression: foreground local-agent-sync runs inline and blocks the host's
+  // hook. Its timeout MUST stay safely under CodeBuddy's per-event hook cap
+  // (see builtin-hooks.ts: UserPromptSubmit=10s, SessionStart=15s). Otherwise a
+  // slow/unreachable HTTP endpoint makes CodeBuddy abort the hook with
+  // "Hook timed out after 10000ms" (error 3003) on every prompt — breaking the
+  // IDE for anyone who installed `teamai init --http`.
+  it('foreground local-agent-sync timeouts are unified under 5s', () => {
+    const registry = buildHandlerRegistry();
+    const promptSubmit = registry.find(
+      (r) => r.event === 'prompt-submit' && r.matcher === '*' && r.handler.name === 'local-agent-sync',
+    );
+    const sessionStart = registry.find(
+      (r) => r.event === 'session-start' && r.matcher === '*' && r.handler.name === 'local-agent-sync',
+    );
+    // Kept < 5s (and unified) so a slow/unreachable HTTP endpoint never blocks the
+    // IDE long enough to trip CodeBuddy's per-event hook cap (error 3003).
+    expect(promptSubmit!.timeoutMs).toBeLessThan(5_000);
+    expect(sessionStart!.timeoutMs).toBeLessThan(5_000);
+    expect(promptSubmit!.timeoutMs).toBe(sessionStart!.timeoutMs);
+  });
+
   it('post-tool-use Bash/Grep/WebSearch/WebFetch have no registered handlers', () => {
     const registry = buildHandlerRegistry();
     for (const matcher of ['Bash', 'Grep', 'WebSearch', 'WebFetch']) {
@@ -230,11 +251,27 @@ describe('hook-handlers registry', () => {
     }
   });
 
-  it('pull handler has a longer timeout than dashboard-report', () => {
+  // CodeBuddy aborts a hook at ~10s regardless of the declared timeout (even
+  // Stop/SessionStart, declared 15s, are killed at 10000ms). Every foreground
+  // (inline, blocking) handler must therefore stay well under that ceiling —
+  // unified at <5s — so a slow/unreachable endpoint can never trip the host
+  // timeout on any event. Background (detached) handlers are not awaited by the
+  // host, so they may keep longer budgets.
+  it('every foreground handler timeout is under 5s', () => {
     const registry = buildHandlerRegistry();
-    const pull = registry.find((r) => r.handler.name === 'pull');
-    const dashboard = registry.find((r) => r.handler.name === 'dashboard-report');
-    expect(pull!.timeoutMs).toBeGreaterThan(dashboard!.timeoutMs!);
+    const foreground = registry.filter((r) => r.background !== true);
+    expect(foreground.length).toBeGreaterThan(0);
+    for (const reg of foreground) {
+      expect(reg.timeoutMs).toBeLessThan(5_000);
+    }
+  });
+
+  it('TodoWrite hint stays under its 3s PostToolUse host cap', () => {
+    const registry = buildHandlerRegistry();
+    const todo = registry.find(
+      (r) => r.event === 'post-tool-use' && r.matcher === 'TodoWrite',
+    );
+    expect(todo!.timeoutMs).toBeLessThan(3_000);
   });
 
   it('marks contribute-check, mr-hint, and votes-sync as gitOnly', () => {

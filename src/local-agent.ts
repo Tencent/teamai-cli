@@ -59,6 +59,20 @@ const REPORTER_ERROR_LOG = 'reporter/errors.jsonl';
  */
 const LOCAL_AGENT_FETCH_TIMEOUT_MS = 15_000;
 
+/**
+ * Per-fetch timeout to use while running inside a *foreground* hook. Foreground
+ * hooks block the host IDE and must finish under its per-event hook timeout
+ * (UserPromptSubmit/PostToolUse = 10s). Kept under 5s — and safely below the
+ * foreground handler's dispatch budget (LOCAL_AGENT_FG_TIMEOUT_MS = 4.5s) — so a
+ * slow/unreachable endpoint fails fast and the whole handler returns before the
+ * host aborts it. Healthy endpoints answer in well under a second, so this is
+ * invisible in normal use and never degrades the experience.
+ */
+const LOCAL_AGENT_HOOK_FETCH_TIMEOUT_MS = 3_000;
+
+/** Active per-fetch timeout; overridden to the hook value inside foreground hooks. */
+let activeFetchTimeoutMs = LOCAL_AGENT_FETCH_TIMEOUT_MS;
+
 type LocalAgentScope = 'instance' | 'user' | 'project';
 type ResourceKind = 'skills' | 'rules' | 'claudemd';
 type CommandResourceKind = 'skill' | 'rule' | 'claudemd';
@@ -518,7 +532,7 @@ async function localAgentFetch<T>(
   const response = await fetch(url, {
     ...init,
     headers,
-    signal: init?.signal ?? AbortSignal.timeout(LOCAL_AGENT_FETCH_TIMEOUT_MS),
+    signal: init?.signal ?? AbortSignal.timeout(activeFetchTimeoutMs),
   });
   const text = await response.text();
   let body: unknown = null;
@@ -1310,7 +1324,7 @@ async function downloadResource(downloadUrl: string): Promise<string> {
   const maxRedirects = 5;
   // One timeout budget for the whole download (all redirect hops combined), so a
   // chain of slow redirects cannot exceed the intended bound.
-  const signal = AbortSignal.timeout(LOCAL_AGENT_FETCH_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(activeFetchTimeoutMs);
   for (let hop = 0; ; hop++) {
     response = await fetch(current, { redirect: 'manual', signal });
     if (response.status >= 300 && response.status < 400) {
@@ -1793,13 +1807,28 @@ export async function reportAndSyncFromHook(
   const raw = JSON.stringify(stdin);
   const event = await parseHookEvent(raw, tool);
   const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : event?.cwd ?? process.cwd();
-  await reportAndSyncLocalAgent({
-    cwd,
-    tool,
-    status: statusFromEvent(event ?? undefined),
-    event: event ?? undefined,
-  });
-  return null;
+
+  // SessionStart and UserPromptSubmit run this handler in the *foreground*, where
+  // it blocks the host IDE's hook (UserPromptSubmit cap = 10s). Narrow the
+  // per-fetch timeout so a slow/unreachable endpoint fails fast and the handler
+  // returns before the host aborts the hook. Stop / PostToolUse run detached in
+  // the background, so they keep the full interactive timeout to complete real
+  // resource syncs/downloads.
+  const isForegroundEvent = event?.type === 'session_start' || event?.type === 'prompt_submit';
+  activeFetchTimeoutMs = isForegroundEvent
+    ? LOCAL_AGENT_HOOK_FETCH_TIMEOUT_MS
+    : LOCAL_AGENT_FETCH_TIMEOUT_MS;
+  try {
+    await reportAndSyncLocalAgent({
+      cwd,
+      tool,
+      status: statusFromEvent(event ?? undefined),
+      event: event ?? undefined,
+    });
+    return null;
+  } finally {
+    activeFetchTimeoutMs = LOCAL_AGENT_FETCH_TIMEOUT_MS;
+  }
 }
 
 /**

@@ -36,23 +36,37 @@ export interface HandlerRegistration {
 
 // ─── Timeout constants ──────────────────────────────────
 
-/** Pull involves git network ops — 15s cap. */
-const PULL_TIMEOUT_MS = 15_000;
-/** Update checks npm registry — cap at 10s to avoid blocking session shutdown. */
+/**
+ * Unified budget for every *foreground* (inline) handler, kept strictly under 5s.
+ *
+ * Foreground handlers block the host IDE's hook. Empirically CodeBuddy aborts a
+ * hook at ~10s REGARDLESS of the larger `timeout` we declare (see
+ * builtin-hooks.ts: even Stop/SessionStart, declared 15s, are killed at 10000ms),
+ * reporting "Hook timed out after 10000ms" (error 3003) and breaking the IDE.
+ *
+ * So no single foreground handler may approach that ceiling. Since foreground
+ * handlers on an event run concurrently, the whole foreground pass finishes at
+ * ~max(handler timeouts) + node startup/exit, which must stay well under 10s. A
+ * unified <5s cap guarantees that with margin. Healthy endpoints answer in well
+ * under a second, so this is invisible in normal use; it only bounds the worst
+ * case (slow/unreachable endpoint). Any network side-effect truncated here (e.g.
+ * a large first-time resource sync, vote-delta push) is completed later by the
+ * background (detached) pass, which is not awaited by the host.
+ */
+const FOREGROUND_HOOK_TIMEOUT_MS = 4_500;
+/**
+ * TodoWrite runs on a PostToolUse matcher whose host cap is only 3s
+ * (builtin-hooks.ts), so it needs a tighter budget than the shared foreground
+ * cap. It is a local dedup-cache check that completes in microseconds anyway.
+ */
+const TODOWRITE_HINT_TIMEOUT_MS = 2_500;
+/** Background (detached) npm-registry update check — not awaited by the host. */
 const UPDATE_TIMEOUT_MS = 10_000;
-/** Track/track-slash is a local file append — very fast. */
-const TRACK_TIMEOUT_MS = 5_000;
-/** Dashboard-report is a local file append — very fast. */
-const DASHBOARD_TIMEOUT_MS = 5_000;
-/** Contribute-check reads local state + events.jsonl — generally fast. */
-const CONTRIBUTE_CHECK_TIMEOUT_MS = 10_000;
-/** Votes sync at session end: parse transcript + push deltas. */
-const VOTES_SYNC_TIMEOUT_MS = 8_000;
-/** TodoWrite hint is a local dedup-cache check — very fast. */
-const TODOWRITE_HINT_TIMEOUT_MS = 5_000;
-/** MR-hint queries a remote MR/PR API — allow a network round-trip. */
-const MR_HINT_TIMEOUT_MS = 10_000;
-/** Local-agent HTTP report/sync + binding prompts — 15s cap. */
+/**
+ * Background (detached) local-agent HTTP report/sync. Detached runs are not
+ * awaited by the host, so they keep a full budget to complete real work such as
+ * resource downloads. Foreground local-agent runs use FOREGROUND_HOOK_TIMEOUT_MS.
+ */
 const LOCAL_AGENT_TIMEOUT_MS = 15_000;
 
 // ─── Handler implementations ────────────────────────────
@@ -312,33 +326,34 @@ const localAgentHandler: HookHandler = {
 export function buildHandlerRegistry(): HandlerRegistration[] {
   return [
     // ─── SessionStart ─────────────────────────────────
-    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS },
-    { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
-    { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: MR_HINT_TIMEOUT_MS, gitOnly: true },
-    { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
+    { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
 
     // ─── Stop ─────────────────────────────────────────
     // votes-sync and contribute-check may return a hint the host injects back
-    // into the session, so they run inline. The rest are pure side effects —
-    // the update check in particular shells out to the npm registry — so they
-    // run detached to avoid pushing the Stop hook past the host's hook timeout
-    // (CodeBuddy: 10s).
+    // into the session, so they run inline (capped at FOREGROUND_HOOK_TIMEOUT_MS).
+    // The rest are pure side effects — the update check in particular shells out
+    // to the npm registry — so they run detached to avoid pushing the Stop hook
+    // past the host's hook timeout (CodeBuddy kills hooks at ~10s regardless of
+    // the declared timeout).
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS, background: true },
-    { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: VOTES_SYNC_TIMEOUT_MS, gitOnly: true },
-    { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: CONTRIBUTE_CHECK_TIMEOUT_MS, gitOnly: true },
-    { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
+    { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
+    { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
     { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
 
     // ─── PostToolUse ──────────────────────────────────
-    { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
-    { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: TRACK_TIMEOUT_MS },
+    { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
 
     // ─── UserPromptSubmit ─────────────────────────────
-    { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: TRACK_TIMEOUT_MS },
-    { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
-    { event: 'prompt-submit', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
+    { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'prompt-submit', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
   ];
 }
 
