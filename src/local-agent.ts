@@ -26,6 +26,7 @@ import { parseHookEvent } from './dashboard-collector.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
+import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
@@ -80,11 +81,12 @@ type CommandResourceKind = 'skill' | 'rule' | 'claudemd';
 // Command types recognized but not yet implemented by this reporter. Skipped
 // silently (see isUnimplementedCommand) so the suffix logic in commandKind()
 // cannot misfire (e.g. uninstall_hook_rule ends in _rule and would otherwise be
-// treated as a destructive rule uninstall).
+// treated as a destructive rule uninstall). uninstall_teamai is NOT here — it
+// carries a `cmd` and is executed by runCmdCommand (see executeCommand), so the
+// local agent actually uninstalls itself and acks.
 const UNIMPLEMENTED_COMMAND_TYPES = new Set<string>([
   'install_hook_rule',
   'uninstall_hook_rule',
-  'uninstall_teamai',
 ]);
 
 interface WorkspaceBinding {
@@ -183,6 +185,7 @@ interface LocalAgentCommand {
   name?: string;
   version?: string;
   display_name?: string;
+  cmd?: string;
 }
 
 /**
@@ -1688,11 +1691,140 @@ async function ackCommand(
   });
 }
 
+/**
+ * Tokenize a restricted `teamai` command string into an argv array.
+ *
+ * Supports single and double quotes so arguments containing spaces survive
+ * (e.g. `--name "a b"`). No variable expansion, no globbing; shell
+ * metacharacters like `;`, `|`, `&`, `$`, `(`, `)` are treated as literals.
+ * Throws when the string is empty, has an unterminated quote, or its first
+ * token is not exactly `teamai` — so a backend can never launch anything but
+ * a teamai subcommand.
+ */
+export function parseTeamaiCmd(raw: string): string[] {
+  const argv: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let hasToken = false;
+  for (const char of raw) {
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      hasToken = true;
+      continue;
+    }
+    if (char === ' ' || char === '\t' || char === '\n' || char === '\r') {
+      if (hasToken) {
+        argv.push(current);
+        current = '';
+        hasToken = false;
+      }
+      continue;
+    }
+    current += char;
+    hasToken = true;
+  }
+  if (quote) {
+    throw new Error('Unterminated quote in cmd');
+  }
+  if (hasToken) {
+    argv.push(current);
+  }
+  if (argv.length === 0) {
+    throw new Error('Empty cmd');
+  }
+  if (argv[0] !== 'teamai') {
+    throw new Error(`Rejected cmd: only "teamai" subcommands are allowed, got "${argv[0]}"`);
+  }
+  return argv;
+}
+
+/**
+ * Resolve the teamai entry script to run a pushed cmd. Prefers the current
+ * process entry (`process.argv[1]`) so the running teamai is reused, and
+ * falls back to resolving `dist/index.js` from this bundle when argv[1] is
+ * unavailable (some sandboxed hook launchers). Returns null when neither
+ * resolves.
+ */
+function resolveCmdEntry(): string | null {
+  const argvEntry = process.argv[1];
+  if (argvEntry) {
+    return argvEntry;
+  }
+  return resolveTeamaiEntryScript();
+}
+
+/**
+ * Execute an `uninstall_teamai` command's `cmd` string pushed via sync. Runs a
+ * teamai subcommand once with the current Node binary (`process.execPath`) and
+ * the resolved entry script — no shell, so there is no metacharacter injection
+ * and no PATH dependency (works inside sandboxes with a bundled Node). The
+ * whole `process.env` is forwarded so bundled-node runtime variables survive.
+ *
+ * Throws (which the caller acks as `failed`) when remote cmd is disabled, the
+ * cmd is missing/rejected, the entry cannot be resolved, or the subprocess
+ * exits non-zero or times out. Returns undefined on success (no version to
+ * report for a cmd).
+ */
+async function runCmdCommand(
+  command: LocalAgentCommand,
+  context: LocalAgentContext,
+): Promise<string | undefined> {
+  if (process.env.TEAMAI_DISABLE_REMOTE_CMD === '1') {
+    throw new Error('remote cmd disabled by client');
+  }
+  if (!command.cmd) {
+    throw new Error('cmd command is missing the "cmd" field');
+  }
+  const argv = parseTeamaiCmd(command.cmd);
+  const entry = resolveCmdEntry();
+  if (!entry) {
+    throw new Error('Cannot resolve teamai entry script to run cmd');
+  }
+  const tag = localAgentTag(context);
+  try {
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [entry, ...argv.slice(1)],
+      { timeout: 120_000, env: process.env, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const summary = stdout.trim().split('\n').slice(0, 3).join(' | ');
+    log.debug(`${tag} cmd OK: ${command.cmd}${summary ? ` — ${summary}` : ''}`);
+    return undefined;
+  } catch (e) {
+    const err = e as { stderr?: string; message?: string; killed?: boolean; code?: string };
+    const detail = (err.stderr?.trim() || err.message || 'unknown error')
+      .split('\n')
+      .slice(0, 3)
+      .join(' | ')
+      .slice(0, 200);
+    // `killed` is also set on maxBuffer overflow, so disambiguate before labeling.
+    const prefix = err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+      ? 'cmd output too large'
+      : err.killed
+        ? 'cmd timed out'
+        : 'cmd failed';
+    throw new Error(`${prefix}: ${detail}`);
+  }
+}
+
 async function executeCommand(
   config: LocalAgentConfig,
   command: LocalAgentCommand,
   context: LocalAgentContext,
 ): Promise<string | undefined> {
+  // uninstall_teamai (clawpro three-phase: cmd = "teamai uninstall --force
+  // --agent <tool>") executes its `cmd` string as a restricted teamai subcommand.
+  if (command.type === 'uninstall_teamai') {
+    return runCmdCommand(command, context);
+  }
   const kind = commandKind(command);
   const action = commandAction(command);
   if (!kind || !action) {
@@ -1764,38 +1896,53 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
     }
   }
 
-  if (isCloudStudioSandbox() && process.env.TEAMAI_ALLOW_SANDBOX_REPORT !== '1') {
+  // CloudStudio sandbox reports a duplicate agent card (different machine id
+  // than the host), so we skip the report POST here. Sync + command execution
+  // must still run so sandboxed agents can receive pushed cmds (e.g. uninstall);
+  // sync produces no card, so there is no duplicate risk.
+  // TEAMAI_ALLOW_SANDBOX_REPORT=1 restores the report too (backward compatible).
+  const skipReport = isCloudStudioSandbox() && process.env.TEAMAI_ALLOW_SANDBOX_REPORT !== '1';
+  if (skipReport) {
     log.debug(
-      '[local-agent] CloudStudio sandbox detected; skipping HTTP report/sync ' +
-        '(binding prompt still runs; set TEAMAI_ALLOW_SANDBOX_REPORT=1 to override)',
+      '[local-agent] CloudStudio sandbox detected; skipping HTTP report ' +
+        '(sync still runs; set TEAMAI_ALLOW_SANDBOX_REPORT=1 to report too)',
     );
-    return false;
   }
 
   const tag = localAgentTag(context);
   log.debug(`${tag} run: endpoint=${config.endpoint}`);
 
-  if (context.event?.type === 'session_start') {
-    await maybeReconcilePlugins(context);
-  }
+  // Report-side bookkeeping (plugin reconcile + binding prune + tool stamp) is
+  // tied to the report path and must stay skipped inside the CloudStudio sandbox,
+  // exactly as before this branch stopped returning early. In particular,
+  // pruneDeadWorkspaceBindings would wrongly drop host bindings whose paths are
+  // not mounted in the container. Only sync + command execution run when
+  // skipReport is set.
+  if (!skipReport) {
+    if (context.event?.type === 'session_start') {
+      await maybeReconcilePlugins(context);
+    }
 
-  const pruned = await pruneDeadWorkspaceBindings(config);
-  // Resolve the current workspace independently here rather than reusing an
-  // earlier local, so tool attribution does not depend on the binding-prompt
-  // block above keeping a `workspacePath` in scope.
-  const currentPath = await resolveWorkspacePath(context.cwd);
-  const stamped = stampWorkspaceTool(config, currentPath, context.tool ?? 'workbuddy');
-  if (pruned || stamped) {
-    await saveLocalAgentConfig(config);
+    const pruned = await pruneDeadWorkspaceBindings(config);
+    // Resolve the current workspace independently here rather than reusing an
+    // earlier local, so tool attribution does not depend on the binding-prompt
+    // block above keeping a `workspacePath` in scope.
+    const currentPath = await resolveWorkspacePath(context.cwd);
+    const stamped = stampWorkspaceTool(config, currentPath, context.tool ?? 'workbuddy');
+    if (pruned || stamped) {
+      await saveLocalAgentConfig(config);
+    }
   }
 
   try {
-    const reportPayload = await buildReportPayload(config, context);
-    await localAgentFetch(config, tag, 'report', {
-      method: 'POST',
-      body: JSON.stringify(reportPayload),
-    });
-    log.debug(`${tag} report OK`);
+    if (!skipReport) {
+      const reportPayload = await buildReportPayload(config, context);
+      await localAgentFetch(config, tag, 'report', {
+        method: 'POST',
+        body: JSON.stringify(reportPayload),
+      });
+      log.debug(`${tag} report OK`);
+    }
 
     const syncPayload = await buildSyncPayload(config, context);
     const syncResponse = await localAgentFetch<{

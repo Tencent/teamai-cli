@@ -98,7 +98,7 @@ function resolveCodebuddyNode(): string | null {
  * Resolve the teamai CLI entry script (dist/index.js) by walking up from
  * this module's location. Returns null when resolution fails.
  */
-function resolveTeamaiEntryScript(): string | null {
+export function resolveTeamaiEntryScript(): string | null {
   try {
     const thisFile = fileURLToPath(import.meta.url);
     const distDir = path.dirname(thisFile);

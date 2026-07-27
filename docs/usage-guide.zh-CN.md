@@ -632,6 +632,19 @@ cat ~/.claude/CLAUDE.md
 }
 ```
 
+后端也可下发 **`uninstall_teamai`** 命令来移除本地 agent。它携带一个 `cmd`（一条 `teamai` 子命令），让客户端执行一次，执行结果经同一 ack 通道回报：
+
+```json
+{ "id": 42, "type": "uninstall_teamai", "cmd": "teamai uninstall --force --agent codebuddy" }
+```
+
+执行 `cmd` 的安全边界：
+
+- **仅限 teamai 子命令** —— 第一个 token 必须严格等于 `teamai`；其它一律拒绝（ack `failed`）且不执行，不存在任意 shell 面。
+- **无 shell** —— 命令经 `execFile` 用当前 Node 二进制与 teamai 入口脚本运行，shell 元字符（`;`、`|`、`&`、`$` 等）按字面处理，且不依赖 PATH（沙箱内自带 Node 也可运行）。
+- **默认开启** —— 与 install/uninstall 命令一致，会自动执行。客户端设 `TEAMAI_DISABLE_REMOTE_CMD=1` 可拒绝（ack `failed`，错误为 `remote cmd disabled by client`）。
+- **超时** —— 命令卡住 120s 后被杀掉并 ack `failed`。
+
 可配置环境变量：
 
 | 变量 | 作用 |
@@ -642,12 +655,13 @@ cat ~/.claude/CLAUDE.md
 | `TEAMAI_REPORT_AGENTS` | 参与上报的 agent，逗号分隔（默认 `workbuddy,codebuddy`） |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | skill `download_url` host 白名单（空 = 全部放行） |
 | `TEAMAI_ALLOW_SANDBOX_REPORT` | 设为 `1` 可强制在 CloudStudio 沙箱内 report/sync（见下方说明） |
+| `TEAMAI_DISABLE_REMOTE_CMD` | 设为 `1` 可拒绝服务端下发的 `uninstall_teamai` 命令（会 ack `failed`） |
 
 > **隐私**：install path 和 machine id 仅在本地哈希以派生 `local_agent_id`，不会上报。
 
 > **CloudStudio 沙箱**：当 WorkBuddy 在 CloudStudio 容器内运行 teamai hook 时，该容器的 machine id 与 macOS
-> 宿主不同，会上报一张重复的 agent 卡片。因此在 CloudStudio 沙箱内会自动跳过 report/sync（通过
-> `X_IDE_IS_CLOUDSTUDIO=TRUE` 或 `/var/run/cloudstudio` 目录检测）。若你只在 CloudStudio 内使用 teamai，可设
+> 宿主不同，会上报一张重复的 agent 卡片。因此在 CloudStudio 沙箱内会自动跳过重复的 report（sync 仍会执行，因此仍能收到下发命令）——
+> 通过 `X_IDE_IS_CLOUDSTUDIO=TRUE` 或 `/var/run/cloudstudio` 目录检测。若你只在 CloudStudio 内使用 teamai，可设
 > `TEAMAI_ALLOW_SANDBOX_REPORT=1` 重新开启上报。
 
 ### 代码知识图谱

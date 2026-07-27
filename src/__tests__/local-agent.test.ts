@@ -938,18 +938,22 @@ describe('local-agent: CloudStudio sandbox suppression', () => {
     delete process.env.TEAMAI_ALLOW_SANDBOX_REPORT;
   });
 
-  it('returns false without fetching when X_IDE_IS_CLOUDSTUDIO=TRUE', async () => {
+  it('skips report but still runs sync when X_IDE_IS_CLOUDSTUDIO=TRUE', async () => {
     process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
     await setupConfig();
-
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    let reportCalled = false;
+    let syncCalled = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/report')) reportCalled = true;
+      if (url.includes('/sync')) syncCalled = true;
+      return new Response(JSON.stringify({ ok: true }));
+    });
     vi.stubGlobal('fetch', fetchMock);
-
     const { reportAndSyncLocalAgent } = await import('../local-agent.js');
     const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
-
-    expect(result).toBe(false);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(reportCalled).toBe(false);
+    expect(syncCalled).toBe(true);
+    expect(result).toBe(true);
   });
 
   it('proceeds with normal reporting when TEAMAI_ALLOW_SANDBOX_REPORT=1 overrides sandbox', async () => {
@@ -979,18 +983,50 @@ describe('local-agent: CloudStudio sandbox suppression', () => {
     expect(fetchMock).toHaveBeenCalled();
   });
 
-  it('returns false without fetching when /var/run/cloudstudio exists', async () => {
-    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+  it('skips report but still runs sync when /var/run/cloudstudio exists', async () => {
+    vi.spyOn(fs, 'existsSync').mockImplementation((p) => String(p).includes('cloudstudio'));
     await setupConfig();
+    let reportCalled = false;
+    let syncCalled = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/report')) reportCalled = true;
+      if (url.includes('/sync')) syncCalled = true;
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+    expect(reportCalled).toBe(false);
+    expect(syncCalled).toBe(true);
+    expect(result).toBe(true);
+  });
 
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+  it('does not prune workspace bindings or rewrite config inside the sandbox', async () => {
+    process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
+    // A binding whose workspace path does not exist on disk — outside the sandbox
+    // this would be pruned and the config rewritten. Inside the sandbox it must survive.
+    const deadPath = path.join(tmpDir, 'not-mounted-in-container');
+    await setupConfig({ [deadPath]: { projectId: 7, projectName: 'dead-ws', boundAt: '2026-01-01T00:00:00.000Z' } });
+    const configPath = path.join(tmpDir, '.teamai', 'local-agent', 'config.json');
+    const before = await fse.readJson(configPath);
+
+    let syncCalled = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/sync')) syncCalled = true;
+      return new Response(JSON.stringify({ ok: true }));
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     const { reportAndSyncLocalAgent } = await import('../local-agent.js');
     const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
 
-    expect(result).toBe(false);
-    expect(fetchMock).not.toHaveBeenCalled();
+    const after = await fse.readJson(configPath);
+    // Binding preserved + config untouched (no prune/save ran).
+    expect(after.workspaceBindings).toEqual(before.workspaceBindings);
+    expect(after.workspaceBindings[deadPath]).toBeTruthy();
+    // Sync still runs so pushed cmds are delivered.
+    expect(syncCalled).toBe(true);
+    expect(result).toBe(true);
   });
 
   it('still emits binding hint (stdout) but skips HTTP report inside sandbox', async () => {
@@ -1038,9 +1074,168 @@ describe('local-agent: CloudStudio sandbox suppression', () => {
     // Binding hint must still be injected via stdout even inside the sandbox.
     expect(output).toContain('hookSpecificOutput');
     expect(output).toContain('绑定到「alpha」项目');
-    // But the HTTP report/sync must be skipped, and the function returns false.
+    // But the HTTP report must be skipped; sync still runs, function returns true.
     expect(reportCalled).toBe(false);
-    expect(result).toBe(false);
+    expect(result).toBe(true);
+  });
+});
+
+describe('local-agent: parseTeamaiCmd tokenizer', () => {
+  it('splits quoted args and keeps spaces inside quotes', async () => {
+    const { parseTeamaiCmd } = await import('../local-agent.js');
+    expect(parseTeamaiCmd('teamai foo --name "a b"')).toEqual(['teamai', 'foo', '--name', 'a b']);
+    expect(parseTeamaiCmd("teamai uninstall --agent 'claude code'")).toEqual(
+      ['teamai', 'uninstall', '--agent', 'claude code'],
+    );
+  });
+
+  it('rejects a non-teamai first token', async () => {
+    const { parseTeamaiCmd } = await import('../local-agent.js');
+    expect(() => parseTeamaiCmd('rm -rf /')).toThrow(/only "teamai"/);
+  });
+
+  it('rejects empty input and unterminated quotes', async () => {
+    const { parseTeamaiCmd } = await import('../local-agent.js');
+    expect(() => parseTeamaiCmd('   ')).toThrow(/Empty cmd/);
+    expect(() => parseTeamaiCmd('teamai "oops')).toThrow(/Unterminated quote/);
+  });
+});
+
+describe('local-agent: uninstall_teamai command execution', () => {
+  let origArgv1: string;
+  let helperScript: string;
+  let sideEffectFile: string;
+
+  beforeEach(async () => {
+    origArgv1 = process.argv[1];
+    sideEffectFile = path.join(tmpDir, 'cmd-ran.marker');
+  });
+
+  afterEach(() => {
+    process.argv[1] = origArgv1;
+    delete process.env.TEAMAI_DISABLE_REMOTE_CMD;
+  });
+
+  // Write a throwaway node script and point the cmd entry resolver at it via
+  // process.argv[1], so runCmdCommand execs `node <helper> <args>` for real
+  // without needing a built teamai binary.
+  async function installHelper(bodyLines: string[]): Promise<void> {
+    helperScript = path.join(tmpDir, 'fake-teamai-entry.mjs');
+    await fse.writeFile(helperScript, bodyLines.join('\n'));
+    process.argv[1] = helperScript;
+  }
+
+  interface AckBody {
+    id: number;
+    type: string;
+    status: string;
+    error?: string;
+    version?: string;
+  }
+
+  // fetch mock that returns exactly one command from /sync and records the ack.
+  function stubFetchWithCommand(command: Record<string, unknown>): { getAck: () => AckBody | undefined } {
+    let ackBody: AckBody | undefined;
+    const fetchMock = vi.fn(async (url: string, init?: { body?: string }) => {
+      if (url.includes('/commands/ack')) {
+        ackBody = JSON.parse(init?.body ?? '{}');
+        return new Response(JSON.stringify({ ok: true }));
+      }
+      if (url.includes('/sync')) {
+        return new Response(JSON.stringify({ ok: true, cmds: [command] }));
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return { getAck: () => ackBody };
+  }
+
+  it('runs the uninstall_teamai cmd and acks success', async () => {
+    await setupConfig();
+    await installHelper([
+      `import fs from 'node:fs';`,
+      `fs.writeFileSync(${JSON.stringify(sideEffectFile)}, 'ran');`,
+      `process.stdout.write('uninstalled');`,
+    ]);
+    const { getAck } = stubFetchWithCommand({
+      id: 6,
+      type: 'uninstall_teamai',
+      cmd: 'teamai uninstall --force --agent codebuddy',
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'codebuddy', cwd: tmpDir });
+
+    // The uninstall actually executed (helper ran) instead of being skipped.
+    expect(fs.existsSync(sideEffectFile)).toBe(true);
+    const ack = getAck();
+    expect(ack).toBeDefined();
+    if (!ack) return;
+    expect(ack.id).toBe(6);
+    expect(ack.type).toBe('uninstall_teamai');
+    expect(ack.status).toBe('success');
+  });
+
+  it('rejects a non-teamai cmd without executing it and acks failed', async () => {
+    await setupConfig();
+    await installHelper([
+      `import fs from 'node:fs';`,
+      `fs.writeFileSync(${JSON.stringify(sideEffectFile)}, 'ran');`,
+    ]);
+    const { getAck } = stubFetchWithCommand({ id: 8, type: 'uninstall_teamai', cmd: 'rm -rf /' });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'codebuddy', cwd: tmpDir });
+
+    expect(fs.existsSync(sideEffectFile)).toBe(false);
+    const ack = getAck();
+    expect(ack).toBeDefined();
+    if (!ack) return;
+    expect(ack.status).toBe('failed');
+    expect(ack.error).toMatch(/only "teamai"/);
+  });
+
+  it('acks failed with "disabled" when TEAMAI_DISABLE_REMOTE_CMD=1', async () => {
+    await setupConfig();
+    process.env.TEAMAI_DISABLE_REMOTE_CMD = '1';
+    await installHelper([
+      `import fs from 'node:fs';`,
+      `fs.writeFileSync(${JSON.stringify(sideEffectFile)}, 'ran');`,
+    ]);
+    const { getAck } = stubFetchWithCommand({
+      id: 9,
+      type: 'uninstall_teamai',
+      cmd: 'teamai uninstall --force --agent codebuddy',
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'codebuddy', cwd: tmpDir });
+
+    expect(fs.existsSync(sideEffectFile)).toBe(false);
+    const ack = getAck();
+    expect(ack).toBeDefined();
+    if (!ack) return;
+    expect(ack.status).toBe('failed');
+    expect(ack.error).toMatch(/disabled/);
+  });
+
+  it('acks failed with stderr detail when the subcommand exits non-zero', async () => {
+    await setupConfig();
+    await installHelper([
+      `process.stderr.write('boom happened');`,
+      `process.exit(3);`,
+    ]);
+    const { getAck } = stubFetchWithCommand({ id: 10, type: 'uninstall_teamai', cmd: 'teamai explode' });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'codebuddy', cwd: tmpDir });
+
+    const ack = getAck();
+    expect(ack).toBeDefined();
+    if (!ack) return;
+    expect(ack.status).toBe('failed');
+    expect(ack.error).toMatch(/cmd failed/);
+    expect(ack.error).toMatch(/boom happened/);
   });
 });
 
@@ -1144,14 +1339,6 @@ describe('local-agent: cmds[] migration', () => {
     const manifest2 = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
     expect(manifest2.scopes.user.rules?.['shared']).toBeDefined();
     expect(acks2.find((a) => a.id === 5)).toBeUndefined();
-  });
-
-  it('skips uninstall_teamai (no slug) without error', async () => {
-    const acks = await runResponse({
-      cmds: [{ id: 6, type: 'uninstall_teamai', cmd: 'teamai uninstall --force --agent codebuddy' }],
-    });
-
-    expect(acks.find((a) => a.id === 6)).toBeUndefined();
   });
 
   it('skips install_hook_rule silently', async () => {

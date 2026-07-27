@@ -634,6 +634,19 @@ When using `teamai init --http <baseUrl>`, the endpoint must implement the follo
 }
 ```
 
+The backend may also push an **`uninstall_teamai`** command to remove the local agent. It carries a `cmd` (a single `teamai` subcommand) that runs once on the client, with the result reported back through the same ack channel:
+
+```json
+{ "id": 42, "type": "uninstall_teamai", "cmd": "teamai uninstall --force --agent codebuddy" }
+```
+
+Security boundary for the executed `cmd`:
+
+- **teamai subcommands only** — the first token must be exactly `teamai`; anything else is rejected (acked `failed`) and never executed. There is no arbitrary-shell surface.
+- **No shell** — the command is run via `execFile` with the current Node binary and teamai entry script, so shell metacharacters (`;`, `|`, `&`, `$`, …) are treated as literals and there is no PATH dependency (works inside sandboxes with a bundled Node).
+- **On by default** — like install/uninstall commands, it runs automatically. Set `TEAMAI_DISABLE_REMOTE_CMD=1` on the client to reject it (acked `failed` with `remote cmd disabled by client`).
+- **Timeout** — a hung command is killed after 120s and acked `failed`.
+
 Configurable environment variables:
 
 | Variable | Purpose |
@@ -644,13 +657,15 @@ Configurable environment variables:
 | `TEAMAI_REPORT_AGENTS` | Comma-separated list of agents that report (default `workbuddy,codebuddy`) |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | Allowlist of hosts for skill `download_url` (empty = allow all) |
 | `TEAMAI_ALLOW_SANDBOX_REPORT` | Set to `1` to force report/sync inside a CloudStudio sandbox (see note below) |
+| `TEAMAI_DISABLE_REMOTE_CMD` | Set to `1` to reject server-pushed `uninstall_teamai` commands (they are acked `failed`) |
 
 > **Privacy:** The install path and machine id are only hashed locally to derive `local_agent_id` — they are never reported.
 
 > **CloudStudio sandbox:** When WorkBuddy runs teamai hooks inside a CloudStudio container, that container has a
-> different machine id than the macOS host and would report a duplicate agent card. Report/sync is therefore skipped
-> automatically inside a CloudStudio sandbox (detected via `X_IDE_IS_CLOUDSTUDIO=TRUE` or the `/var/run/cloudstudio`
-> directory). Set `TEAMAI_ALLOW_SANDBOX_REPORT=1` to opt back in if you run teamai exclusively inside CloudStudio.
+> different machine id than the macOS host and would report a duplicate agent card. The duplicate report is therefore
+> skipped automatically inside a CloudStudio sandbox (sync still runs, so pushed commands are still received) —
+> detected via `X_IDE_IS_CLOUDSTUDIO=TRUE` or the `/var/run/cloudstudio` directory.
+> Set `TEAMAI_ALLOW_SANDBOX_REPORT=1` to opt back in if you run teamai exclusively inside CloudStudio.
 
 ### Codebase Knowledge Graph
 
