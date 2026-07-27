@@ -25,6 +25,7 @@ vi.mock('simple-git', () => ({
 vi.mock('fs-extra', () => ({
   default: {
     ensureDir: vi.fn(),
+    pathExists: vi.fn(),
   },
 }));
 
@@ -46,7 +47,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff } from '../utils/git.js';
+import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo } from '../utils/git.js';
 import fse from 'fs-extra';
 
 describe('generateBranchName', () => {
@@ -73,6 +74,33 @@ describe('generateBranchName', () => {
     expect(month).toBeLessThanOrEqual(12);
     expect(day).toBeGreaterThanOrEqual(1);
     expect(day).toBeLessThanOrEqual(31);
+  });
+});
+
+describe('isGitRepo', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns false when the path does not exist', async () => {
+    (fse.pathExists as any).mockResolvedValue(false);
+    expect(await isGitRepo('/nope')).toBe(false);
+    // Should short-circuit after the first (path) check
+    expect((fse.pathExists as any)).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns false when the path exists but has no .git entry', async () => {
+    (fse.pathExists as any)
+      .mockResolvedValueOnce(true) // path exists
+      .mockResolvedValueOnce(false); // .git missing
+    expect(await isGitRepo('/repo')).toBe(false);
+  });
+
+  it('returns true when the path is a git repo', async () => {
+    (fse.pathExists as any)
+      .mockResolvedValueOnce(true) // path exists
+      .mockResolvedValueOnce(true); // .git present
+    expect(await isGitRepo('/repo')).toBe(true);
   });
 });
 

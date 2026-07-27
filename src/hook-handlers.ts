@@ -22,12 +22,14 @@ export interface HandlerRegistration {
   matcher: string;
   handler: HookHandler;
   timeoutMs: number;
+  /** Fire-and-forget: run detached so it can't delay host hook completion. */
+  background?: boolean;
 }
 
 // ─── Timeout constants ──────────────────────────────────
 
-/** Pull involves git network ops — generous timeout. */
-const PULL_TIMEOUT_MS = 60_000;
+/** Pull involves git network ops — 15s cap. */
+const PULL_TIMEOUT_MS = 15_000;
 /** Update checks npm registry — cap at 10s to avoid blocking session shutdown. */
 const UPDATE_TIMEOUT_MS = 10_000;
 /** Track/track-slash is a local file append — very fast. */
@@ -42,8 +44,8 @@ const VOTES_SYNC_TIMEOUT_MS = 8_000;
 const TODOWRITE_HINT_TIMEOUT_MS = 5_000;
 /** MR-hint queries a remote MR/PR API — allow a network round-trip. */
 const MR_HINT_TIMEOUT_MS = 10_000;
-/** Local-agent HTTP report/sync + binding prompts — network dependent. */
-const LOCAL_AGENT_TIMEOUT_MS = 30_000;
+/** Local-agent HTTP report/sync + binding prompts — 15s cap. */
+const LOCAL_AGENT_TIMEOUT_MS = 15_000;
 
 // ─── Handler implementations ────────────────────────────
 //
@@ -308,17 +310,22 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
 
     // ─── Stop ─────────────────────────────────────────
-    { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS },
+    // votes-sync and contribute-check may return a hint the host injects back
+    // into the session, so they run inline. The rest are pure side effects —
+    // the update check in particular shells out to the npm registry — so they
+    // run detached to avoid pushing the Stop hook past the host's hook timeout
+    // (CodeBuddy: 10s).
+    { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS, background: true },
     { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: VOTES_SYNC_TIMEOUT_MS },
     { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: CONTRIBUTE_CHECK_TIMEOUT_MS },
-    { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
-    { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
+    { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
 
     // ─── PostToolUse ──────────────────────────────────
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: TRACK_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
-    { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
+    { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
 
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: TRACK_TIMEOUT_MS },

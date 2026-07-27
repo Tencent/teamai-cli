@@ -1,6 +1,7 @@
 import type { GitProvider } from './types.js';
 import { TGitProvider } from './tgit/index.js';
 import { GitHubProvider } from './github/index.js';
+import { CNBProvider } from './cnb/index.js';
 import { getCurrentPackageName } from '../package-info.js';
 
 // ─── Provider Detection ──────────────────────────────────
@@ -28,10 +29,11 @@ import { getCurrentPackageName } from '../package-info.js';
 const HOST_MAP: Record<string, string> = {
   'github.com': 'github',
   'git.woa.com': 'tgit',
+  'cnb.cool': 'cnb',
 };
 
 /** Providers we are willing to accept as a default override. */
-const KNOWN_PROVIDERS = new Set(['github', 'tgit']);
+const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb']);
 
 /**
  * Decide the fallback provider used when the input URL host is unknown or
@@ -92,6 +94,7 @@ export function detectProvider(input: string): string {
 const PROVIDERS: Record<string, () => GitProvider> = {
   tgit: () => new TGitProvider(),
   github: () => new GitHubProvider(),
+  cnb: () => new CNBProvider(),
 };
 
 /**

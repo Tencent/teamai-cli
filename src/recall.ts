@@ -11,6 +11,12 @@ import type { CodeKnowledgeResult } from './code-knowledge-recall.js';
 import { recordRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
 
+/** Minimum top-1 relevance score for recall to be considered worthwhile.
+ *  Learnings meaningful hits score >=5; codebase hits are log-compressed to
+ *  0-10 (recall.ts ~line 288). 4.0 balances not missing codebase hits vs
+ *  filtering pure noise. Tunable — --check prints the actual score. */
+const RECALL_RELEVANCE_THRESHOLD = 4.0;
+
 /** Resolve votes dir dynamically (respects HOME changes in tests). */
 function getVotesLocalDir(): string {
   return `${process.env.HOME ?? ''}/.teamai/votes`;
@@ -21,6 +27,8 @@ interface ScopedSearchResult extends SearchResult {
   scope?: 'user' | 'project';
   /** Base path for learnings files (so AI can read the correct path). */
   learningsBase?: string;
+  /** Source file anchors from codebase wiki frontmatter (codebase results only). */
+  sources?: string[];
 }
 
 // ─── Recall data flow ────────────────────────────────────
@@ -59,7 +67,7 @@ export function formatResults(results: ScopedSearchResult[]): string {
   lines.push('');
 
   for (let i = 0; i < results.length; i++) {
-    const { entry, score, scope, learningsBase } = results[i];
+    const { entry, score, scope, learningsBase, sources } = results[i];
     const voteStr = entry.votes > 0 ? ` ★${entry.votes}` : '';
     const scopeStr = scope ? ` [${scope}]` : '';
     // Phase 1: prepend a [type] tag so callers can quickly tell which knowledge
@@ -77,6 +85,9 @@ export function formatResults(results: ScopedSearchResult[]): string {
         ? `${learningsBase}/${entry.filename}`
         : `~/.teamai/learnings/${entry.filename}`;
     lines.push(`File: ${filePath}`);
+    if (sources && sources.length > 0) {
+      lines.push(`Sources: ${sources.join(', ')}`);
+    }
     if (entry.snippet) {
       lines.push(`Snippet: ${entry.snippet}`);
     }
@@ -190,9 +201,19 @@ async function loadOrBuildScopeIndex(
  */
 export async function recall(
   query: string,
-  options: GlobalOptions & { depth?: 'route' | 'context' | 'lookup' },
+  options: GlobalOptions & { depth?: 'route' | 'context' | 'lookup'; check?: boolean },
 ): Promise<void> {
+  const emitCheckVerdict = (score: number): void => {
+    const rounded = Math.round(score * 10) / 10;
+    const verdict = rounded >= RECALL_RELEVANCE_THRESHOLD ? 'RELEVANT' : 'NOT_RELEVANT';
+    process.stdout.write(`${verdict} score=${rounded.toFixed(1)}\n`);
+  };
+
   if (!query || !query.trim()) {
+    if (options.check) {
+      emitCheckVerdict(0);
+      return;
+    }
     log.error('Usage: teamai recall <query>');
     log.info('Example: teamai recall "api timeout"');
     return;
@@ -246,6 +267,10 @@ export async function recall(
     : path.join(process.cwd(), '.teamai', 'team-repo', 'teamwiki');
   const hasWiki = await pathExists(wikiRoot);
   if (scopeIndexes.length === 0 && !hasWiki) {
+    if (options.check) {
+      emitCheckVerdict(0);
+      return;
+    }
     log.info('No learnings available. Run `teamai pull` first to sync team knowledge.');
     return;
   }
@@ -288,6 +313,7 @@ export async function recall(
         score: Math.min(10, Math.log2(cr.score + 1) * 2),
         scope: 'project',
         learningsBase: wikiRoot,
+        sources: cr.sources,
       });
     }
   } catch {
@@ -299,6 +325,11 @@ export async function recall(
     if (b.score !== a.score) return b.score - a.score;
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
+
+  if (options.check) {
+    emitCheckVerdict(allResults.length > 0 ? allResults[0].score : 0);
+    return;
+  }
 
   // Limit to top 5
   const topResults = allResults.slice(0, 5);

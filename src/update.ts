@@ -1,4 +1,5 @@
-import { execSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import fse from 'fs-extra';
 import { loadState, saveState, loadLocalConfig, loadTeamConfig } from './config.js';
 import { resolveEffectiveUpdatePolicy } from './update-policy.js';
@@ -13,6 +14,8 @@ import { askConfirmation } from './utils/prompt.js';
 // for backwards compatibility with existing callers of `./update.js`.
 import { getCurrentVersion, getCurrentPackageName } from './package-info.js';
 export { getCurrentVersion, getCurrentPackageName };
+
+const execFileAsync = promisify(execFile);
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -53,11 +56,15 @@ export async function fetchLatestVersion(
   const pkgName = getCurrentPackageName();
   const resolvedRegistry = registry ?? resolveRegistryForPackage(pkgName);
   try {
-    const output = execSync(
-      `npm view ${pkgName} version --registry=${resolvedRegistry}`,
-      { timeout, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+    // Async execFile so the hook dispatcher's event loop is not blocked while
+    // the registry is queried — a synchronous execSync here would freeze all
+    // sibling Stop handlers for up to `timeout` ms.
+    const { stdout } = await execFileAsync(
+      'npm',
+      ['view', pkgName, 'version', `--registry=${resolvedRegistry}`],
+      { timeout, encoding: 'utf-8' },
     );
-    const version = output.trim();
+    const version = stdout.trim();
     if (!version) return null;
     return version;
   } catch (e) {
@@ -243,17 +250,17 @@ export async function doUpdate(): Promise<void> {
   try {
     const pkgName = getCurrentPackageName();
     const registry = resolveRegistryForPackage(pkgName);
-    execSync(
-      `npm install -g ${pkgName} --registry=${registry}`,
-      { timeout: INSTALL_TIMEOUT, stdio: 'pipe' },
+    await execFileAsync(
+      'npm',
+      ['install', '-g', pkgName, `--registry=${registry}`],
+      { timeout: INSTALL_TIMEOUT },
     );
     log.success(`Updated teamai to v${result.latest}`);
 
     // Refresh hooks using new version's code (spawn new process so updated code is loaded)
     try {
-      execSync('teamai hooks inject --silent', {
+      await execFileAsync('teamai', ['hooks', 'inject', '--silent'], {
         timeout: 15_000,
-        stdio: 'pipe',
       });
       log.success('Refreshed hooks with new version');
     } catch (e) {

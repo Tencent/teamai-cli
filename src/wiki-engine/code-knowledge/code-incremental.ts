@@ -1,7 +1,7 @@
 import { readFile, writeFile, stat, mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import { collectCode } from "./code-collector.js";
+import { collectCode, gitCommit, gitDiffNameStatus, isWorkingTreeClean } from "./code-collector.js";
 import type { CodeFact } from "./code-extractors.js";
 import type { InterfaceInventory } from "../interface-scanner.js";
 
@@ -12,13 +12,47 @@ export interface CodeIncrementalChange {
   affectedPages: string[];
 }
 
-export async function detectCodeIncrementalChanges(root: string, manifestPath: string, project: string): Promise<CodeIncrementalChange> {
-  const previous = (await exists(manifestPath)) ? (JSON.parse(await readFile(manifestPath, "utf8")) as { files?: Array<{ relativePath: string; sha256: string }> }) : { files: [] };
+export async function detectCodeIncrementalChanges(
+  root: string,
+  manifestPath: string,
+  project: string,
+): Promise<CodeIncrementalChange> {
+  const previous = (await exists(manifestPath))
+    ? (JSON.parse(await readFile(manifestPath, "utf8")) as {
+        headSha?: string;
+        files?: Array<{ relativePath: string; sha256: string }>;
+      })
+    : { files: [] };
+
+  const oldSha = previous.headSha;
+  const newSha = await gitCommit(root);
+
+  // Git incremental path: only when both commits are known AND the working
+  // tree is clean. A dirty tree has uncommitted/untracked changes that a
+  // commit-to-commit diff cannot see, so we fall back to the full sha256
+  // scan (which reads the working tree) to avoid silent staleness.
+  if (oldSha && newSha && (await isWorkingTreeClean(root))) {
+    const gitChanges = await gitDiffNameStatus(root, oldSha, newSha);
+    if (gitChanges !== null) {
+      const { added, changed, deleted } = gitChanges;
+      return {
+        added,
+        changed,
+        deleted,
+        affectedPages: affectedPages(project, [...added, ...changed, ...deleted]),
+      };
+    }
+  }
+
+  // Fallback: full sha256 comparison when git is unavailable or no baseline
   const current = await collectCode({ root });
   const previousByPath = new Map((previous.files ?? []).map((file) => [file.relativePath, file.sha256]));
   const currentByPath = new Map(current.manifest.files.map((file) => [file.relativePath, file.sha256]));
   const added = [...currentByPath.keys()].filter((file) => !previousByPath.has(file)).sort();
-  const changed = [...currentByPath.entries()].filter(([file, sha]) => previousByPath.has(file) && previousByPath.get(file) !== sha).map(([file]) => file).sort();
+  const changed = [...currentByPath.entries()]
+    .filter(([file, sha]) => previousByPath.has(file) && previousByPath.get(file) !== sha)
+    .map(([file]) => file)
+    .sort();
   const deleted = [...previousByPath.keys()].filter((file) => !currentByPath.has(file)).sort();
   return { added, changed, deleted, affectedPages: affectedPages(project, [...added, ...changed, ...deleted]) };
 }

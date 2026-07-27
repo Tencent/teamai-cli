@@ -45,6 +45,12 @@ export interface ExtractCodebaseOptions {
   skipEnrich?: boolean;
   /** 产出根目录（teamwiki/ 写到此目录下）。默认与 path 相同。 */
   outputRoot?: string;
+  /** Remote repository URL, persisted into source-manifest.json baseline. */
+  repoUrl?: string;
+  /** Branch name, persisted into source-manifest.json baseline. */
+  branch?: string;
+  /** Source MR/PR URL to record as ingested into source-manifest.json (P5). */
+  sourceMrUrl?: string;
 }
 
 interface ExtractResult {
@@ -770,15 +776,44 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     const deletedSet = new Set(deletedFiles);
     allManifestFiles = allManifestFiles.filter(f => !deletedSet.has(f.relativePath));
   }
-  const manifestContent = JSON.stringify(
-    {
-      version: 1,
-      lastScan: new Date().toISOString(),
-      files: allManifestFiles,
-    },
-    null,
-    2,
-  );
+  // Persist git baseline from prior incremental manifest when not explicitly supplied
+  let prevRepoUrl: string | undefined;
+  let prevBranch: string | undefined;
+  let prevIngestedMrs: Array<{ url: string; headSha?: string; at: string }> = [];
+  // Always carry forward prior baseline provenance (repoUrl / branch /
+  // ingestedMrs) so a full re-extract does not silently drop it. A missing
+  // or unreadable manifest just leaves the defaults.
+  try {
+    const prev = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
+      repoUrl?: string;
+      branch?: string;
+      ingestedMrs?: Array<{ url: string; headSha?: string; at: string }>;
+    };
+    prevRepoUrl = prev.repoUrl;
+    prevBranch = prev.branch;
+    prevIngestedMrs = prev.ingestedMrs ?? [];
+  } catch { /* no prior manifest */ }
+
+  const headSha = collectionManifest.commit;
+  const manifestObject: Record<string, unknown> = {
+    version: 1,
+    lastScan: new Date().toISOString(),
+    files: allManifestFiles,
+  };
+  if (headSha) manifestObject.headSha = headSha;
+  const repoUrl = opts.repoUrl ?? prevRepoUrl;
+  const branch = opts.branch ?? prevBranch;
+  if (repoUrl) manifestObject.repoUrl = repoUrl;
+  if (branch) manifestObject.branch = branch;
+  // P5: record ingested MR (upsert by url) when invoked via --from-mr
+  let ingestedMrs = prevIngestedMrs;
+  if (opts.sourceMrUrl) {
+    const at = new Date().toISOString();
+    const entry = { url: opts.sourceMrUrl, headSha, at };
+    ingestedMrs = [...prevIngestedMrs.filter((m) => m.url !== opts.sourceMrUrl), entry];
+  }
+  if (ingestedMrs.length > 0) manifestObject.ingestedMrs = ingestedMrs;
+  const manifestContent = JSON.stringify(manifestObject, null, 2);
   await writeFile(manifestPath, manifestContent, 'utf-8');
 
   const byKind: Record<string, number> = {};

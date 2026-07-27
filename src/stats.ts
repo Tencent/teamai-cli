@@ -5,6 +5,7 @@ import { readFileSafe } from './utils/fs.js';
 import { loadLocalConfig, detectProjectConfig } from './config.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
 import { totalTokens, addTokenUsage, emptyTokenUsage } from './types.js';
+import { attributeByRepo, timeAnalytics, renderHourSparkline } from './session-analytics.js';
 import { formatTokenCount } from './digest.js';
 import type { UsageEvent, UserStats, TokenUsage, SessionMetrics } from './types.js';
 
@@ -149,11 +150,18 @@ function mergeDashboardAndReported(
   return merged;
 }
 
+export interface ShowStatsOptions {
+  /** Add a per-repo usage breakdown. */
+  byRepo?: boolean;
+  /** Add a time-of-day activity breakdown. */
+  byTime?: boolean;
+}
+
 /**
  * CLI: Show skill usage and session/token statistics.
  * Merges local unreported events with reported team stats for a complete view.
  */
-export async function showStats(): Promise<void> {
+export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   const events = await readUsageEvents();
   const localStats = aggregateUsage(events);
   const reported = await loadReportedStats();
@@ -224,6 +232,43 @@ export async function showStats(): Promise<void> {
       if (dashboard.interrupt > 0) console.log(`    Interrupts:       ${dashboard.interrupt}`);
       if (dashboard.toolReject > 0) console.log(`    Tool rejects:     ${dashboard.toolReject}`);
       if (dashboard.correction > 0) console.log(`    Corrections:      ${dashboard.correction}`);
+    }
+  }
+
+  // ─── Per-repo breakdown (--by-repo) ───
+  if (options.byRepo) {
+    const repos = attributeByRepo(dashboardEvents);
+    if (repos.length > 0) {
+      console.log('');
+      console.log('By Repo:');
+      console.log('');
+      const TOP_N = 15;
+      const maxLen = Math.max(...repos.slice(0, TOP_N).map((r) => r.repo.length), 4);
+      for (const r of repos.slice(0, TOP_N)) {
+        const name = r.repo.padEnd(maxLen);
+        const tok = totalTokens(r.tokens);
+        const parts = [`${r.sessions} sess`, `${r.prompts} turns`, `${r.tools} tools`];
+        if (tok > 0) parts.push(`${formatTokenCount(tok)} tok`);
+        if (r.interventions > 0) parts.push(`${r.interventions} intv`);
+        console.log(`  ${name}  ${parts.join(', ')}`);
+      }
+      if (repos.length > TOP_N) {
+        console.log(`  … and ${repos.length - TOP_N} more`);
+      }
+    }
+  }
+
+  // ─── Time-of-day patterns (--by-time) ───
+  if (options.byTime) {
+    const ta = timeAnalytics(dashboardEvents);
+    if (ta.totalEvents > 0) {
+      console.log('');
+      console.log('Activity by Hour (local time):');
+      console.log('');
+      console.log(`  00h ${renderHourSparkline(ta.byHour)} 23h`);
+      console.log(`  Peak hour:    ${String(ta.peakHour).padStart(2, '0')}:00`);
+      console.log(`  Active time:  ${ta.activeMinutes} min`);
+      console.log(`  Night owl:    ${(ta.nightOwlRatio * 100).toFixed(0)}% of activity before 6am`);
     }
   }
 }

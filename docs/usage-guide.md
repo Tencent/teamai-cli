@@ -66,7 +66,7 @@ npm install -g teamai-cli
 teamai --version
 ```
 
-**Prerequisites:** Node.js ≥ 18, Git (the `gf` CLI is only needed by TGit users, and `teamai init` will install it automatically)
+**Prerequisites:** Node.js ≥ 18, Git (TGit users also need the `gf` CLI, and CNB users the `cnb` CLI — `teamai init` installs either automatically)
 
 ---
 
@@ -74,7 +74,7 @@ teamai --version
 
 > Only one admin needs to do this — other members can skip to [Member Onboarding](#member-onboarding).
 
-Create an empty repository on GitHub or TGit (Tencent's internal Git host) (suggested naming: `TeamAi-<team-name>`), or simply run `teamai init` — if the repo doesn't exist yet, you'll be prompted to create it automatically.
+Create an empty repository on GitHub, TGit (Tencent's internal Git host), or CNB (cnb.cool) (suggested naming: `TeamAi-<team-name>`), or simply run `teamai init` — if the repo doesn't exist yet, you'll be prompted to create it automatically.
 
 ### User Scope
 
@@ -425,6 +425,7 @@ teamai recall "GPU out of memory"
 - Supports mixed-language search
 - Automatically merges the knowledge bases of both user + project scope, labeling results `[user]`/`[project]` by source
 - Consulted knowledge is automatically upvoted, surfacing high-quality docs to the top
+- A lightweight relevance precheck is available via `teamai recall --check "<keywords>"`, which prints `RELEVANT score=<n>` or `NOT_RELEVANT score=<n>` without reading files or upvoting — the recall subagent uses it to skip retrieval on unrelated tasks
 
 ### Enabling / Disabling Recall
 
@@ -590,8 +591,14 @@ Configurable environment variables:
 | `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }`, overrides the three paths |
 | `TEAMAI_REPORT_AGENTS` | Comma-separated list of agents that report (default `workbuddy,codebuddy`) |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | Allowlist of hosts for skill `download_url` (empty = allow all) |
+| `TEAMAI_ALLOW_SANDBOX_REPORT` | Set to `1` to force report/sync inside a CloudStudio sandbox (see note below) |
 
 > **Privacy:** The install path and machine id are only hashed locally to derive `local_agent_id` — they are never reported.
+
+> **CloudStudio sandbox:** When WorkBuddy runs teamai hooks inside a CloudStudio container, that container has a
+> different machine id than the macOS host and would report a duplicate agent card. Report/sync is therefore skipped
+> automatically inside a CloudStudio sandbox (detected via `X_IDE_IS_CLOUDSTUDIO=TRUE` or the `/var/run/cloudstudio`
+> directory). Set `TEAMAI_ALLOW_SANDBOX_REPORT=1` to opt back in if you run teamai exclusively inside CloudStudio.
 
 ### Codebase Knowledge Graph
 
@@ -666,6 +673,24 @@ Each session card also shows two badges:
 
 These two metrics are likewise aggregated into `stats/<user>.yaml` (as `prompts` and `tokens` fields) during `teamai pull`, and shown in the "Conversation Volume & Token Usage" section of `teamai digest`, with team-wide totals, bucketed token totals, and per-person token usage rankings. Tools without transcript access (e.g. Cursor) degrade gracefully: turn counts are still tracked, while tokens show as 0 / N/A.
 
+### Session Save
+
+`teamai session save` folds the dashboard's existing per-session event stream (tool sequence, prompt turns, interventions) into a compact, privacy-scrubbed markdown summary — no LLM call, no new collection path.
+
+```bash
+teamai session save                    # record the most-recent session locally
+teamai session save --session-id <id>  # record a specific session
+teamai session save --push             # also push a "valuable" session to the team repo
+teamai session save --push --force     # push even a trivial session
+teamai session save --push --include-prompt  # also include the (redacted) first-ask line
+```
+
+**Local (always):** appends to `~/.teamai/session-logs/<year-month>.md`. Idempotent per session (a session already recorded that month is skipped), and logs older than 90 days are pruned automatically.
+
+**Team (`--push`, opt-in):** commits the summary directly (no PR) to `sessions/<user>/<year-month>.md` in the team repo — the exact path `teamai digest` reads, so the session shows up under **Session Highlights**. Only a **valuable** session is pushed by default: one that shows friction (an interrupt / tool-reject / correction) or substantial tool use (≥ 3 distinct tools). Trivial sessions stay local unless you pass `--force`. On a read-only (HTTP-mode) team, `--push` fails gracefully and the local log is still kept.
+
+> Privacy: the team-pushed payload is **counts + tool names only** by default. The first-ask prompt line is opt-in via `--include-prompt`, and even then it is run through the same secret redaction (`ghp_…` → `<REDACTED:…>`) used elsewhere. Local logs keep the redacted first-ask line since they never leave your machine.
+
 ### Hooks
 
 Hooks automatically injected by `teamai init`:
@@ -681,6 +706,8 @@ Hooks automatically injected by `teamai init`:
 teamai hooks inject    # Re-inject
 teamai hooks remove    # Remove
 ```
+
+Both commands only touch tools you actually have installed (i.e. whose `~/.<tool>/` root directory already exists). They never create root directories for tools listed in `toolPaths` but not installed, so uninstalled tools such as `.tclaude` / `.tcodex` are left untouched.
 
 ### Team Hooks Declaration
 

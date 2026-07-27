@@ -2,33 +2,18 @@
 /**
  * 组织级一键初始化入口。
  *
- * 对应 CLI：teamai import --from-org <org> [--bootstrap]
+ * 对应 CLI：teamai import --from-org <org>
  *
  * 流程：
  *  1. 解析 org URL → provider + org 路径
  *  2. provider.listOrgRepos → OrgRepoInfo[]
  *  3. 按 includePattern / excludePattern / excludeArchived 过滤
- *  4. 转 RepoMeta[] → clusterRepos → DomainsFile 草稿
- *  5. 同时生成 RepoListFile 草稿
- *  6. 写草稿到 .teamai/domains.draft.yaml + .teamai/repo-whitelist.draft.yaml
- *  7. 若 bootstrap=true 进 reviewDomains → 写正式配置
- *  8. 若 skipImport=false，调 importFromRepoList 完成首次全量
- *  9. appendHistory 记录 bootstrap 元事件
+ *  4. 生成扁平的 repo-whitelist 草稿（.teamai/repo-whitelist.draft.yaml）
+ *  5. 若 skipImport=false，调 importFromRepoList 完成首次全量导入（产物写入 teamwiki）
  */
 
 import path from 'node:path';
 import fs from 'fs-extra';
-import { stringify as yamlStringify } from 'yaml';
-
-import {
-    clusterRepos,
-    saveDomainsDraft,
-    saveDomains,
-    reviewDomains,
-    appendHistory,
-} from './domains/index.js';
-import type { DomainsFile, RepoMeta } from './domains/index.js';
-import type { RepoListFile, RepoListEntry } from './repo-list/schema.js';
 import { importFromRepoList } from './import-repo-list.js';
 import { getProviderFromUrl, getProvider } from './providers/registry.js';
 import type { OrgRepoInfo } from './providers/types.js';
@@ -37,7 +22,6 @@ import { log } from './utils/logger.js';
 // ─── 常量 ────────────────────────────────────────────────
 
 const WHITELIST_DRAFT_PATH = '.teamai/repo-whitelist.draft.yaml';
-const WHITELIST_PATH = '.teamai/repo-whitelist.yaml';
 
 // ─── 类型 ────────────────────────────────────────────────
 
@@ -45,8 +29,6 @@ const WHITELIST_PATH = '.teamai/repo-whitelist.yaml';
 export interface ImportFromOrgOptions {
     /** org URL 或 "github.com/org" / "git.woa.com/group" 或裸 "team-org" */
     org: string;
-    /** true=进入交互 review；false=只生成草稿 */
-    bootstrap?: boolean;
     /** 最多拉取的仓库数，默认 200 */
     maxRepos?: number;
     /** 排除 archived 仓库，默认 true */
@@ -143,57 +125,12 @@ function filterRepos(
     return result;
 }
 
-/**
- * 将 OrgRepoInfo 转换为 RepoMeta（聚类输入）。
- */
-function toRepoMeta(info: OrgRepoInfo): RepoMeta {
-    return {
-        url: info.url,
-        name: info.name,
-        description: info.description,
-        primary_language: info.primaryLanguage,
-    };
-}
-
-/**
- * 根据 DomainsFile 草稿找到某 URL 所属域名。
- */
-function findDomainForUrl(url: string, domains: DomainsFile): string | undefined {
-    for (const domain of domains.domains) {
-        if (domain.repos.some((r) => r.url === url)) {
-            return domain.name;
-        }
-    }
-    return undefined;
-}
-
-/**
- * 构建白名单草稿文件内容（YAML 字符串，含顶部注释）。
- */
-function buildWhitelistYaml(repos: OrgRepoInfo[], domains: DomainsFile): string {
-    const entries: RepoListEntry[] = repos.map((r) => ({
-        url: r.url,
-        domain: findDomainForUrl(r.url, domains),
-        auth: 'token' as const,
-        priority: 'normal' as const,
-    }));
-
-    const file: RepoListFile = {
-        version: 1,
-        repos: entries,
-    };
-
-    const header =
-        '# 由 teamai import --from-org --bootstrap 生成；可手工编辑后再次 review\n';
-    return header + yamlStringify(file);
-}
-
 // ─── 主入口 ──────────────────────────────────────────────
 
 /**
  * 组织级一键初始化。
  *
- * 列出 org 下所有仓 → AI 聚类 → 生成白名单和域字典草稿 → 可选 review → 可选全量导入。
+ * 列出 org 下所有仓 → 过滤 → 生成 repo-whitelist 草稿 → 可选全量导入（产物写入 teamwiki）。
  *
  * @param opts 导入选项
  */
@@ -211,15 +148,6 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
             `Provider "${providerName}" does not support listOrgRepos, cannot use --from-org`,
         );
     }
-
-    // 记录开始事件
-    const startTs = new Date().toISOString();
-    await appendHistory(cwd, {
-        ts: startTs,
-        actor: 'ai',
-        action: 'recommend',
-        details: { event: 'bootstrap-start', org: opts.org, orgPath, provider: providerName },
-    });
 
     // 2. 拉取仓库列表
     log.info(`Fetching repo list from ${providerName}/${orgPath}`);
@@ -273,7 +201,6 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
                     forceSsh: opts.forceSsh ?? false,
                     dryRun: opts.dryRun,
                     output: opts.output,
-                    skipAggregate: false,
                     incremental: false,
                     skipEnrich: opts.skipEnrich ?? false,
                 });
@@ -301,20 +228,6 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
             log.debug('Whitelist file not found, skipping batch import');
         }
     }
-
-    // 8. 记录完成事件
-    await appendHistory(cwd, {
-        ts: new Date().toISOString(),
-        actor: 'ai',
-        action: 'recommend',
-        details: {
-            event: 'bootstrap-complete',
-            org: opts.org,
-            repo_count: filteredRepos.length,
-            
-            
-        },
-    });
 
     log.success(`Org initialization complete (${filteredRepos.length} repos)`);
 }

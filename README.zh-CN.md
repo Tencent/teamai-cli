@@ -30,7 +30,7 @@ npm install -g teamai-cli
 
 ### 团队管理员 / 个人使用者
 
-在 Git 托管平台（GitHub 或 TGit）创建共享经验仓库，**授予团队成员写权限**，然后让他们运行 `teamai init --repo https://github.com/yourorg/yourrepo`。
+在 Git 托管平台（GitHub、TGit 或 CNB）创建共享经验仓库，**授予团队成员写权限**，然后让他们运行 `teamai init --repo https://github.com/yourorg/yourrepo`。
 
 > 个人使用无需单独建仓：`teamai init` 会检查目标仓库，不存在时自动创建。
 
@@ -79,7 +79,7 @@ hooks:
 
 ```bash
 teamai hooks list      # 查看生效的 hooks
-teamai hooks inject    # 强制重新注入到所有工具
+teamai hooks inject    # 重新注入到每个已安装的工具
 teamai hooks remove    # 移除所有 teamai 管理的 hooks
 ```
 
@@ -120,7 +120,7 @@ teamai recall disable    # 关闭：移除子 agent 和规则
 teamai recall status     # 查看生效状态（团队默认 + 用户覆盖）
 ```
 
-**通过子 agent 检索**：开启后 `teamai pull` 会把内置的 `teamai-recall` 子 agent 部署到各 AI 工具的 `agents/` 目录。AI 在任务开始前调用它——由子 agent 提取关键词、执行检索、读取命中的源文件，最后返回结构化的团队知识摘要。子 agent 底层调用的仍是 `teamai recall` 命令，也可手动直接运行：
+**通过子 agent 检索**：开启后 `teamai pull` 会把内置的 `teamai-recall` 子 agent 部署到各 AI 工具的 `agents/` 目录。AI 在任务开始前调用它——由子 agent 提取关键词、执行检索、读取命中的源文件，最后返回结构化的团队知识摘要。subagent 会先做相关性预检（`teamai recall --check`），当任务与团队知识无关时直接跳过检索。子 agent 底层调用的仍是 `teamai recall` 命令，也可手动直接运行：
 
 ```bash
 $ teamai recall "port conflict"
@@ -149,6 +149,7 @@ teamai codebase --lint                      # 健康检查
 ```
 
 图谱存储组件、接口、配置和跨仓库依赖边。`teamai recall` 利用图谱进行增强排名。
+当召回命中 codebase 页面时，结果会附带一行 `Sources:`，列出相关源文件路径，供 agent 直接作为代码改动的入口，无需重新探索代码库。
 
 ## 命令一览
 
@@ -169,6 +170,7 @@ teamai codebase --lint                      # 健康检查
 | `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](docs/usage-guide.zh-CN.md#排除个人不需要的-skill)） |
 | `teamai source` | 管理跨团队 skill 订阅 |
 | `teamai remove <type> <name>` | 删除资源并创建 MR |
+| `teamai session save` | 将脱敏后的 session 摘要记录到月度日志（`--push` 可喂给 `digest`） |
 | `teamai digest` | 生成团队周报 |
 | `teamai doctor` | 诊断配置问题 |
 | `teamai uninstall` | 移除所有 teamai 资源和 hooks |

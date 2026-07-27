@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -22,7 +23,7 @@ beforeEach(async () => {
   origHome = process.env.HOME;
   process.env.HOME = tmpDir;
   origPpid = process.ppid;
-  // Bind prompt is off by default — start each test from that baseline.
+  // Bind prompt is on by default — start each test from that baseline.
   delete process.env.TEAMAI_BIND_PROMPT_ENABLED;
   // Clean hint markers
   const markerPath = path.join(os.tmpdir(), `teamai-bind-hint-${process.ppid}`);
@@ -231,10 +232,11 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     expect(ctx).toContain('teamai bind-project --skip');
   });
 
-  it('does NOT emit hint by default when TEAMAI_BIND_PROMPT_ENABLED is unset', async () => {
-    // No process.env.TEAMAI_BIND_PROMPT_ENABLED — bind prompt is off by default.
+  it('does NOT emit hint when TEAMAI_BIND_PROMPT_ENABLED is explicitly disabled', async () => {
+    // Explicitly disable the bind prompt via TEAMAI_BIND_PROMPT_ENABLED=0.
+    process.env.TEAMAI_BIND_PROMPT_ENABLED = '0';
     await setupConfig();
-    const projectDir = path.join(tmpDir, 'default-off-project');
+    const projectDir = path.join(tmpDir, 'disabled-project');
     await fse.ensureDir(projectDir);
     const { execFileSync } = await import('node:child_process');
     execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
@@ -501,5 +503,486 @@ describe('local-agent: skill directory naming (SKILL.md name vs server slug)', (
     // No rename happened, so no dir_name is recorded.
     const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
     expect(manifest.scopes.user.skills['server-slug-xyz'].dir_name).toBeUndefined();
+  });
+});
+
+describe('local-agent: normalizeScope — workspace scope installs to project dir', () => {
+  const port = 42001;
+
+  it('installs to project-level skills dir when backend sends scope=workspace', async () => {
+    const projectDir = path.join(tmpDir, 'ws-project');
+    await fse.ensureDir(projectDir);
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+    await fse.ensureDir(path.join(projectDir, '.codebuddy', 'skills'));
+    await setupConfig();
+
+    const { zipSync, strToU8 } = await import('fflate');
+    const skillMd = '---\nname: ws-skill\ndescription: test\n---\n# ws-skill\nbody\n';
+    const zip = zipSync({ 'ws-skill/SKILL.md': strToU8(skillMd) });
+
+    const acks: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: { body?: string }) => {
+      const url = String(input);
+      if (url.includes('/skill.zip')) {
+        return new Response(Buffer.from(zip));
+      }
+      if (url.includes('/local-agent/sync')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          commands: [{
+            id: 1,
+            type: 'install_skill',
+            skill_slug: 'ws-skill',
+            skill_version: '1.0.0',
+            download_url: `http://127.0.0.1:${port}/skill.zip`,
+            scope: 'workspace',
+            workspace_path: projectDir,
+            project_id: 101,
+          }],
+        }));
+      }
+      if (url.includes('/commands/ack')) {
+        acks.push(JSON.parse(init?.body ?? '{}'));
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'codebuddy', status: 'running' });
+
+    expect(acks[0]?.status).toBe('success');
+
+    // Skill must land under the project dir, not the user HOME.
+    const projectSkillDir = path.join(projectDir, '.codebuddy', 'skills', 'ws-skill');
+    const userSkillDir = path.join(tmpDir, '.codebuddy', 'skills', 'ws-skill');
+    await expect(fse.pathExists(projectSkillDir)).resolves.toBe(true);
+    await expect(fse.pathExists(userSkillDir)).resolves.toBe(false);
+
+    // The skill must be recorded under a `project:` manifest scope key
+    // (scopeKey('project', workspacePath)), not `user` or `instance`.
+    const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
+    const projectKey = Object.keys(manifest.scopes ?? {}).find((key) => key.startsWith('project:'));
+    expect(projectKey).toBeDefined();
+    expect(manifest.scopes[projectKey!].skills['ws-skill']).toBeDefined();
+  });
+});
+
+describe('local-agent: full-snapshot workspace reporting', () => {
+  it('reports all bound workspaces, not just the current cwd', async () => {
+    const wsA = path.join(tmpDir, 'ws-a');
+    const wsB = path.join(tmpDir, 'ws-b');
+    await fse.ensureDir(wsA);
+    await fse.ensureDir(wsB);
+    await setupConfig({
+      [wsA]: { projectId: 11, projectName: 'A', boundAt: 'x', ideType: 'codebuddy' },
+      [wsB]: { projectId: 22, projectName: 'B', boundAt: 'x', ideType: 'codebuddy' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    expect(payload.workspaces).toHaveLength(2);
+    const paths = (payload.workspaces ?? []).map((w) => w.path as string);
+    expect(new Set(paths)).toEqual(new Set([wsA, wsB]));
+    const wsAEntry = (payload.workspaces ?? []).find((w) => w.path === wsA);
+    const wsBEntry = (payload.workspaces ?? []).find((w) => w.path === wsB);
+    expect(wsAEntry?.project_id).toBe(11);
+    expect(wsBEntry?.project_id).toBe(22);
+    // Empty directories — no skills or rules installed.
+    expect(wsAEntry).not.toHaveProperty('skills');
+    expect(wsAEntry).not.toHaveProperty('rules');
+    expect(wsBEntry).not.toHaveProperty('skills');
+    expect(wsBEntry).not.toHaveProperty('rules');
+  });
+
+  it('omits skills/rules for empty workspaces but includes them when present', async () => {
+    const wsFull = path.join(tmpDir, 'ws-full');
+    const wsEmpty = path.join(tmpDir, 'ws-empty');
+    // Write a real codebuddy skill into wsFull.
+    const skillDir = path.join(wsFull, '.codebuddy', 'skills', 'demo-skill');
+    await fse.ensureDir(skillDir);
+    await fse.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: demo-skill\n---\n\n# skill',
+    );
+    await fse.ensureDir(wsEmpty);
+    await setupConfig({
+      [wsFull]: { projectId: 7, projectName: 'full', boundAt: 'x', ideType: 'codebuddy' },
+      [wsEmpty]: { projectId: 8, projectName: 'empty', boundAt: 'x', ideType: 'codebuddy' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    const wsFullEntry = (payload.workspaces ?? []).find((w) => w.path === wsFull) as
+      | (Record<string, unknown> & { skills?: Array<{ slug: string }> })
+      | undefined;
+    const wsEmptyEntry = (payload.workspaces ?? []).find((w) => w.path === wsEmpty);
+
+    expect(wsFullEntry?.skills).toBeDefined();
+    expect(wsFullEntry?.skills?.map((s) => s.slug)).toContain('demo-skill');
+    expect(wsEmptyEntry).not.toHaveProperty('skills');
+    expect(wsEmptyEntry).not.toHaveProperty('rules');
+  });
+
+  it('prunes workspaces whose directory no longer exists', async () => {
+    const wsLive = path.join(tmpDir, 'ws-live');
+    const wsDead = path.join(tmpDir, 'ws-dead');
+    await fse.ensureDir(wsLive);
+    // wsDead is intentionally not created.
+    await setupConfig({
+      [wsLive]: { projectId: 3, projectName: 'live', boundAt: 'x' },
+      [wsDead]: { projectId: 4, projectName: 'dead', boundAt: 'x' },
+    });
+
+    const { pruneDeadWorkspaceBindings, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const pruned = await pruneDeadWorkspaceBindings(config!);
+
+    expect(pruned).toBe(true);
+    expect(Object.keys(config!.workspaceBindings)).toEqual([wsLive]);
+  });
+
+  it('returns false when all directories exist', async () => {
+    const wsA = path.join(tmpDir, 'ws-a2');
+    const wsB = path.join(tmpDir, 'ws-b2');
+    await fse.ensureDir(wsA);
+    await fse.ensureDir(wsB);
+    await setupConfig({
+      [wsA]: { projectId: 1, projectName: 'a', boundAt: 'x' },
+      [wsB]: { projectId: 2, projectName: 'b', boundAt: 'x' },
+    });
+
+    const { pruneDeadWorkspaceBindings, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const pruned = await pruneDeadWorkspaceBindings(config!);
+
+    expect(pruned).toBe(false);
+    expect(Object.keys(config!.workspaceBindings)).toHaveLength(2);
+  });
+
+  it('includes unbound current cwd in the report', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const cwdDir = path.join(tmpDir, 'current');
+    const wsA = path.join(tmpDir, 'ws-a3');
+    await fse.ensureDir(cwdDir);
+    await fse.ensureDir(wsA);
+    execFileSync('git', ['init'], { cwd: cwdDir, stdio: 'ignore' });
+    await setupConfig({
+      [wsA]: { projectId: 5, projectName: 'A', boundAt: 'x', ideType: 'codebuddy' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy', cwd: cwdDir }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    const realCwd = fse.realpathSync(cwdDir);
+    expect(payload.workspaces).toHaveLength(2);
+    const allPaths = (payload.workspaces ?? []).map((w) => w.path as string);
+    expect(allPaths).toContain(wsA);
+    expect(allPaths).toContain(realCwd);
+    const cwdEntry = (payload.workspaces ?? []).find((w) => w.path === realCwd);
+    const wsAEntry = (payload.workspaces ?? []).find((w) => w.path === wsA);
+    expect(cwdEntry?.project_id).toBeUndefined();
+    expect(wsAEntry?.project_id).toBe(5);
+  });
+
+  it('omits user_level skills/rules when none installed', async () => {
+    // HOME is tmpDir (set in beforeEach); no codebuddy skills/rules written there.
+    await setupConfig();
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      user_level: Record<string, unknown>;
+    };
+
+    expect(payload.user_level).toHaveProperty('group_id');
+    expect(payload.user_level).not.toHaveProperty('skills');
+    expect(payload.user_level).not.toHaveProperty('rules');
+  });
+
+  it('reports skipped workspaces with project_id 0', async () => {
+    const wsSkip = path.join(tmpDir, 'ws-skip');
+    await fse.ensureDir(wsSkip);
+    await setupConfig({
+      [wsSkip]: { projectId: 0, projectName: '__skipped__', boundAt: 'x', ideType: 'codebuddy' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    const entry = (payload.workspaces ?? []).find((w) => w.path === wsSkip);
+    expect(entry).toBeDefined();
+    expect(entry?.project_id).toBe(0);
+  });
+
+  it('prunes a skipped workspace whose directory is gone', async () => {
+    const wsSkipDead = path.join(tmpDir, 'ws-skip-dead');
+    // Intentionally not created — directory does not exist.
+    await setupConfig({
+      [wsSkipDead]: { projectId: 0, projectName: '__skipped__', boundAt: 'x' },
+    });
+
+    const { pruneDeadWorkspaceBindings, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const pruned = await pruneDeadWorkspaceBindings(config!);
+
+    expect(pruned).toBe(true);
+    expect(Object.keys(config!.workspaceBindings)).not.toContain(wsSkipDead);
+  });
+
+  it('filters by tool: workbuddy report only includes workbuddy-owned binding', async () => {
+    const wsCb = path.join(tmpDir, 'ws-cb');
+    const wsWb = path.join(tmpDir, 'ws-wb');
+    await fse.ensureDir(wsCb);
+    await fse.ensureDir(wsWb);
+    await setupConfig({
+      [wsCb]: { projectId: 10, projectName: 'cb', boundAt: 'x', ideType: 'codebuddy' },
+      [wsWb]: { projectId: 20, projectName: 'wb', boundAt: 'x', ideType: 'workbuddy' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    const wbPayload = await buildReportPayload(config!, { tool: 'workbuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+    expect(wbPayload.workspaces).toHaveLength(1);
+    expect(wbPayload.workspaces![0].path).toBe(wsWb);
+    expect(wbPayload.workspaces![0].ide_type).toBe('workbuddy');
+
+    const cbPayload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+    expect(cbPayload.workspaces).toHaveLength(1);
+    expect(cbPayload.workspaces![0].path).toBe(wsCb);
+    expect(cbPayload.workspaces![0].ide_type).toBe('codebuddy');
+  });
+
+  it('includes unattributed cwd binding as current tool and excludes unattributed non-cwd binding', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const cwdDir = path.join(tmpDir, 'cwd-no-type');
+    const wsOther = path.join(tmpDir, 'ws-other-no-type');
+    await fse.ensureDir(cwdDir);
+    await fse.ensureDir(wsOther);
+    execFileSync('git', ['init'], { cwd: cwdDir, stdio: 'ignore' });
+    await setupConfig({
+      [cwdDir]: { projectId: 30, projectName: 'cwd-ws', boundAt: 'x' },
+      [wsOther]: { projectId: 31, projectName: 'other-ws', boundAt: 'x' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy', cwd: cwdDir }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    const realCwd = fse.realpathSync(cwdDir);
+    // Only the cwd binding is included; the unattributed non-cwd binding is skipped.
+    expect(payload.workspaces).toHaveLength(1);
+    expect(payload.workspaces![0].path).toBe(realCwd);
+    expect(payload.workspaces![0].ide_type).toBe('codebuddy');
+    // wsOther has no ideType and is not cwd, so it is excluded.
+    const paths = (payload.workspaces ?? []).map((w) => w.path as string);
+    expect(paths).not.toContain(wsOther);
+  });
+
+  it('stampWorkspaceTool writes ideType to cwd binding and returns true', async () => {
+    const wsCwd = path.join(tmpDir, 'stamp-ws');
+    await fse.ensureDir(wsCwd);
+    await setupConfig({
+      [wsCwd]: { projectId: 40, projectName: 'stamp', boundAt: 'x' },
+    });
+
+    const { stampWorkspaceTool, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    const changed = stampWorkspaceTool(config!, wsCwd, 'codebuddy');
+    expect(changed).toBe(true);
+    expect(config!.workspaceBindings[wsCwd].ideType).toBe('codebuddy');
+
+    // Calling again with same tool is idempotent.
+    const changedAgain = stampWorkspaceTool(config!, wsCwd, 'codebuddy');
+    expect(changedAgain).toBe(false);
+  });
+
+  it('stampWorkspaceTool returns false when currentPath is null or undefined', async () => {
+    const wsCwd = path.join(tmpDir, 'stamp-null-ws');
+    await fse.ensureDir(wsCwd);
+    await setupConfig({
+      [wsCwd]: { projectId: 41, projectName: 'stamp-null', boundAt: 'x' },
+    });
+
+    const { stampWorkspaceTool, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    expect(stampWorkspaceTool(config!, null, 'codebuddy')).toBe(false);
+    expect(stampWorkspaceTool(config!, undefined, 'codebuddy')).toBe(false);
+    // Config must be untouched.
+    expect(config!.workspaceBindings[wsCwd].ideType).toBeUndefined();
+  });
+
+  it('stampWorkspaceTool returns false when currentPath has no binding in config', async () => {
+    await setupConfig({});
+
+    const { stampWorkspaceTool, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    const missingPath = path.join(tmpDir, 'no-such-binding');
+    expect(stampWorkspaceTool(config!, missingPath, 'codebuddy')).toBe(false);
+  });
+
+  it('buildSyncPayload filters by tool matching ideType', async () => {
+    const wsCb = path.join(tmpDir, 'sync-cb');
+    const wsWb = path.join(tmpDir, 'sync-wb');
+    await fse.ensureDir(wsCb);
+    await fse.ensureDir(wsWb);
+    await setupConfig({
+      [wsCb]: { projectId: 50, projectName: 'sync-cb', boundAt: 'x', ideType: 'codebuddy' },
+      [wsWb]: { projectId: 51, projectName: 'sync-wb', boundAt: 'x', ideType: 'workbuddy' },
+    });
+
+    const { buildSyncPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    const cbPayload = await buildSyncPayload(config!, { tool: 'codebuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+    expect(cbPayload.workspaces).toHaveLength(1);
+    expect(cbPayload.workspaces![0].path).toBe(wsCb);
+    expect(cbPayload.workspaces![0].ide_type).toBe('codebuddy');
+
+    const wbPayload = await buildSyncPayload(config!, { tool: 'workbuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+    expect(wbPayload.workspaces).toHaveLength(1);
+    expect(wbPayload.workspaces![0].path).toBe(wsWb);
+    expect(wbPayload.workspaces![0].ide_type).toBe('workbuddy');
+  });
+});
+
+describe('local-agent: CloudStudio sandbox suppression', () => {
+  afterEach(() => {
+    delete process.env.X_IDE_IS_CLOUDSTUDIO;
+    delete process.env.TEAMAI_ALLOW_SANDBOX_REPORT;
+  });
+
+  it('returns false without fetching when X_IDE_IS_CLOUDSTUDIO=TRUE', async () => {
+    process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(result).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with normal reporting when TEAMAI_ALLOW_SANDBOX_REPORT=1 overrides sandbox', async () => {
+    process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
+    process.env.TEAMAI_ALLOW_SANDBOX_REPORT = '1';
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('proceeds with normal reporting when no sandbox env is set', async () => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('returns false without fetching when /var/run/cloudstudio exists', async () => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    await setupConfig();
+
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+
+    expect(result).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('still emits binding hint (stdout) but skips HTTP report inside sandbox', async () => {
+    process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
+    process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
+    await setupConfig();
+    const projectDir = path.join(tmpDir, 'sandbox-unbound-project');
+    await fse.ensureDir(projectDir);
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+
+    let reportCalled = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/api/projects/mine')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          projects: [{ id: 100, name: 'alpha' }],
+        }));
+      }
+      if (url.includes('/report')) reportCalled = true;
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdoutChunks: string[] = [];
+    const origWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Buffer) => {
+      stdoutChunks.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stdout.write;
+
+    let result: boolean;
+    try {
+      const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+      result = await reportAndSyncLocalAgent({
+        cwd: projectDir,
+        tool: 'claude',
+        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'claude' },
+      });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    const output = stdoutChunks.join('');
+    // Binding hint must still be injected via stdout even inside the sandbox.
+    expect(output).toContain('hookSpecificOutput');
+    expect(output).toContain('绑定到「alpha」项目');
+    // But the HTTP report/sync must be skipped, and the function returns false.
+    expect(reportCalled).toBe(false);
+    expect(result).toBe(false);
   });
 });

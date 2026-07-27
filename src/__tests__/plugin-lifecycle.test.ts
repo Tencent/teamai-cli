@@ -5,6 +5,7 @@ import {
   parseGetConfig,
   substituteVars,
   unresolvedPlaceholders,
+  commandFingerprint,
   type PluginDescriptor,
   type PluginState,
   type ReconcileDeps,
@@ -78,6 +79,7 @@ describe('reconcilePlugins – fresh install', () => {
     expect(deps.map[d.slug]).toMatchObject({ ready: true, version: '1.0.0' });
     expect(deps.map[d.slug].lastError).toBeUndefined();
     expect(deps.map[d.slug].lastAttemptAt).toBeUndefined();
+    expect(deps.map[d.slug].cmdFingerprint).toBe(commandFingerprint(d));
   });
 });
 
@@ -169,14 +171,15 @@ describe('reconcilePlugins – version update', () => {
 
 describe('reconcilePlugins – steady state no-op', () => {
   it('issues zero commands when version is unchanged and plugin is ready', async () => {
+    const d = makeDescriptor();
     const existing: PluginState = {
       slug: 'cls-codebuddy',
       version: '1.0.0',
       ready: true,
       uninstallCmd: 'npm uninstall -g cls-plugin',
+      cmdFingerprint: commandFingerprint(d),
     };
     const deps = makeDeps({ 'cls-codebuddy': existing });
-    const d = makeDescriptor();
 
     await reconcilePlugins([d], deps);
 
@@ -190,18 +193,96 @@ describe('reconcilePlugins – steady state no-op', () => {
 
 describe('reconcilePlugins – no version, already ready → no-op', () => {
   it('issues zero commands when desired has no version and plugin is already ready', async () => {
+    const d = makeDescriptor({ slug: 'cls', version: undefined, uninstallCmd: 'cls-codebuddy uninstall-all' });
     const existing: PluginState = {
       slug: 'cls',
       version: undefined,
       ready: true,
       uninstallCmd: 'cls-codebuddy uninstall-all',
+      cmdFingerprint: commandFingerprint(d),
     };
     const deps = makeDeps({ cls: existing });
-    const d = makeDescriptor({ slug: 'cls', version: undefined, uninstallCmd: 'cls-codebuddy uninstall-all' });
 
     await reconcilePlugins([d], deps);
 
     expect(deps.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4b. Command / launch-arg change → re-run even when version is unchanged
+// ---------------------------------------------------------------------------
+
+describe('reconcilePlugins – command fingerprint change', () => {
+  it('re-runs update + run when runCmd launch args change but version is the same', async () => {
+    const oldDesc = makeDescriptor({
+      version: '1.0.0',
+      runCmd: 'cls-codebuddy setup --topic-id OLD',
+      updateCmd: 'npm install -g cls-plugin@1.0.0',
+    });
+    const existing: PluginState = {
+      slug: oldDesc.slug,
+      version: '1.0.0',
+      ready: true,
+      uninstallCmd: oldDesc.uninstallCmd,
+      cmdFingerprint: commandFingerprint(oldDesc),
+    };
+    const deps = makeDeps({ [oldDesc.slug]: existing });
+    // Same version, but the topic-id launch arg changed.
+    const newDesc = makeDescriptor({
+      version: '1.0.0',
+      runCmd: 'cls-codebuddy setup --topic-id NEW',
+      updateCmd: 'npm install -g cls-plugin@1.0.0',
+    });
+
+    await reconcilePlugins([newDesc], deps);
+
+    expect(deps.calls).toEqual([
+      `exec:${newDesc.updateCmd}`,
+      `exec:${newDesc.runCmd}`,
+    ]);
+    expect(deps.map[newDesc.slug].cmdFingerprint).toBe(commandFingerprint(newDesc));
+    expect(deps.map[newDesc.slug].ready).toBe(true);
+  });
+
+  it('re-runs when installCmd changes even if runCmd and version are unchanged', async () => {
+    const oldDesc = makeDescriptor({ version: '1.0.0', installCmd: 'npm i -g cls@1.0.0 --registry OLD' });
+    const existing: PluginState = {
+      slug: oldDesc.slug,
+      version: '1.0.0',
+      ready: true,
+      uninstallCmd: oldDesc.uninstallCmd,
+      cmdFingerprint: commandFingerprint(oldDesc),
+    };
+    const deps = makeDeps({ [oldDesc.slug]: existing });
+    const newDesc = makeDescriptor({ version: '1.0.0', installCmd: 'npm i -g cls@1.0.0 --registry NEW' });
+
+    await reconcilePlugins([newDesc], deps);
+
+    // No updateCmd → falls back to installCmd, then runCmd.
+    expect(deps.calls).toEqual([
+      `exec:${newDesc.installCmd}`,
+      `exec:${newDesc.runCmd}`,
+    ]);
+  });
+
+  it('backfills fingerprint without re-running when legacy state lacks one', async () => {
+    const d = makeDescriptor({ version: '1.0.0' });
+    const existing: PluginState = {
+      slug: d.slug,
+      version: '1.0.0',
+      ready: true,
+      uninstallCmd: d.uninstallCmd,
+      // cmdFingerprint intentionally absent (installed before fingerprinting existed)
+    };
+    const deps = makeDeps({ [d.slug]: existing });
+
+    await reconcilePlugins([d], deps);
+
+    // No commands executed…
+    expect(deps.calls).toHaveLength(0);
+    // …but the fingerprint is now recorded so future drift is detected.
+    expect(deps.map[d.slug].cmdFingerprint).toBe(commandFingerprint(d));
   });
 });
 
@@ -408,5 +489,43 @@ describe('unresolvedPlaceholders', () => {
 
   it('deduplicates repeated placeholder names', () => {
     expect(unresolvedPlaceholders('${key} and ${key} again')).toEqual(['key']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. commandFingerprint
+// ---------------------------------------------------------------------------
+
+describe('commandFingerprint', () => {
+  it('is stable for identical command sets', () => {
+    const a = makeDescriptor();
+    const b = makeDescriptor();
+    expect(commandFingerprint(a)).toBe(commandFingerprint(b));
+  });
+
+  it('changes when a provisioning command field changes', () => {
+    const base = makeDescriptor();
+    const baseFp = commandFingerprint(base);
+    expect(commandFingerprint(makeDescriptor({ installCmd: base.installCmd + ' --x' }))).not.toBe(baseFp);
+    expect(commandFingerprint(makeDescriptor({ runCmd: base.runCmd + ' --topic-id NEW' }))).not.toBe(baseFp);
+    expect(commandFingerprint(makeDescriptor({ updateCmd: 'npm up -g cls' }))).not.toBe(baseFp);
+  });
+
+  it('is unaffected by uninstallCmd (only runs on removal, not provisioning)', () => {
+    const base = makeDescriptor();
+    const changed = makeDescriptor({ uninstallCmd: base.uninstallCmd + ' --purge' });
+    expect(commandFingerprint(changed)).toBe(commandFingerprint(base));
+  });
+
+  it('is unaffected by version (version is tracked separately)', () => {
+    const a = makeDescriptor({ version: '1.0.0' });
+    const b = makeDescriptor({ version: '2.0.0' });
+    expect(commandFingerprint(a)).toBe(commandFingerprint(b));
+  });
+
+  it('does not collide when content shifts across field boundaries', () => {
+    const x = commandFingerprint(makeDescriptor({ installCmd: 'a', runCmd: 'bc' }));
+    const y = commandFingerprint(makeDescriptor({ installCmd: 'ab', runCmd: 'c' }));
+    expect(x).not.toBe(y);
   });
 });
