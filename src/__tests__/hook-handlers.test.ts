@@ -58,7 +58,7 @@ vi.mock('../local-agent.js', () => ({
   reportAndSyncFromHook: mockReportAndSyncFromHook,
 }));
 
-import { buildHandlerRegistry, type HandlerRegistration } from '../hook-handlers.js';
+import { buildHandlerRegistry, filterHandlersForConfig, type HandlerRegistration } from '../hook-handlers.js';
 import { createDispatcher } from '../hook-dispatch.js';
 
 // ── Tests ────────────────────────────────────────────────
@@ -235,6 +235,34 @@ describe('hook-handlers registry', () => {
     const pull = registry.find((r) => r.handler.name === 'pull');
     const dashboard = registry.find((r) => r.handler.name === 'dashboard-report');
     expect(pull!.timeoutMs).toBeGreaterThan(dashboard!.timeoutMs!);
+  });
+
+  it('marks contribute-check, mr-hint, and votes-sync as gitOnly', () => {
+    const registry = buildHandlerRegistry();
+    const gitOnly = registry.filter((r) => r.gitOnly === true).map((r) => r.handler.name);
+    expect(gitOnly).toContain('contribute-check');
+    expect(gitOnly).toContain('mr-hint');
+    expect(gitOnly).toContain('votes-sync');
+  });
+
+  it('filterHandlersForConfig drops gitOnly handlers for http source', () => {
+    const registry = buildHandlerRegistry();
+    const filtered = filterHandlersForConfig(registry, { repo: { kind: 'http' } } as never);
+    const names = filtered.map((r) => r.handler.name);
+    expect(names).not.toContain('contribute-check');
+    expect(names).not.toContain('mr-hint');
+    expect(names).not.toContain('votes-sync');
+    // Non-git-only handlers survive
+    expect(names).toContain('pull');
+    expect(names).toContain('local-agent-sync');
+  });
+
+  it('filterHandlersForConfig keeps all handlers for git source and when uninitialized', () => {
+    const registry = buildHandlerRegistry();
+    const full = registry.length;
+    expect(filterHandlersForConfig(registry, { repo: { kind: 'git' } } as never).length).toBe(full);
+    expect(filterHandlersForConfig(registry, { repo: {} } as never).length).toBe(full);
+    expect(filterHandlersForConfig(registry, null).length).toBe(full);
   });
 });
 

@@ -12,6 +12,7 @@
 import path from 'node:path';
 
 import type { HookHandler } from './hook-dispatch.js';
+import type { LocalConfig } from './types.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { normalizeToolName } from './utils/tool-names.js';
 
@@ -24,6 +25,13 @@ export interface HandlerRegistration {
   timeoutMs: number;
   /** Fire-and-forget: run detached so it can't delay host hook completion. */
   background?: boolean;
+  /**
+   * Git-provider-only handler. When teamai is configured with an HTTP source
+   * (localConfig.repo.kind === 'http'), these are filtered out at the dispatch
+   * boundary so HTTP consumers never see prompts for git-only workflows
+   * (contribute / import-from-mr / votes push). See filterHandlersForConfig.
+   */
+  gitOnly?: boolean;
 }
 
 // ─── Timeout constants ──────────────────────────────────
@@ -306,7 +314,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // ─── SessionStart ─────────────────────────────────
     { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
-    { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: MR_HINT_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: MR_HINT_TIMEOUT_MS, gitOnly: true },
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
 
     // ─── Stop ─────────────────────────────────────────
@@ -316,8 +324,8 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // run detached to avoid pushing the Stop hook past the host's hook timeout
     // (CodeBuddy: 10s).
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS, background: true },
-    { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: VOTES_SYNC_TIMEOUT_MS },
-    { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: CONTRIBUTE_CHECK_TIMEOUT_MS },
+    { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: VOTES_SYNC_TIMEOUT_MS, gitOnly: true },
+    { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: CONTRIBUTE_CHECK_TIMEOUT_MS, gitOnly: true },
     { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS, background: true },
     { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
 
@@ -332,4 +340,34 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: DASHBOARD_TIMEOUT_MS },
     { event: 'prompt-submit', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS },
   ];
+}
+
+/**
+ * Apply the provider-config gate to a handler registry.
+ *
+ * HTTP-only teams (localConfig.repo.kind === 'http') must not receive prompts
+ * for git-provider-only features. This drops every `gitOnly` handler when the
+ * team source is HTTP. When localConfig is null (teamai not initialized) or the
+ * source is git (kind === 'git' or undefined for backward compatibility), the
+ * full registry is returned unchanged.
+ *
+ * The gate is keyed on teamai's own configured source, NOT on the current
+ * working directory's git remote — an HTTP-only user working inside a
+ * github/tgit checkout must still see no git-only prompts.
+ *
+ * Fail-open by design: a null localConfig means either teamai is not
+ * initialized or the config failed to parse (loadLocalConfig swallows parse
+ * errors and returns null). In both cases the full registry is kept, so a
+ * corrupted config degrades to "all hooks run" rather than silently disabling
+ * them. This is intentionally NOT a hard security gate — HTTP write ops are
+ * still enforced at execution time by assertNotReadOnly().
+ */
+export function filterHandlersForConfig(
+  registry: HandlerRegistration[],
+  localConfig: LocalConfig | null,
+): HandlerRegistration[] {
+  if (localConfig?.repo.kind === 'http') {
+    return registry.filter((reg) => reg.gitOnly !== true);
+  }
+  return registry;
 }

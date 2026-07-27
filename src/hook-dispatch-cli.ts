@@ -17,7 +17,7 @@
 import { spawn } from 'node:child_process';
 
 import { createDispatcher, type Dispatcher } from './hook-dispatch.js';
-import { buildHandlerRegistry } from './hook-handlers.js';
+import { buildHandlerRegistry, filterHandlersForConfig } from './hook-handlers.js';
 import { log, setStderrOnly } from './utils/logger.js';
 
 /** Read STDIN fully. Returns empty string if STDIN is a TTY. */
@@ -127,7 +127,13 @@ export async function hookDispatchCli(
   const stdin = parseStdin(raw, event);
   if (stdin === null) return;
 
-  const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+  // Provider-config gate: HTTP-only teams must not receive git-provider-only
+  // hook prompts (contribute / mr-hint / votes). Filter keyed on teamai's own
+  // configured source, independent of the cwd's git remote.
+  const { loadLocalConfig } = await import('./config.js');
+  const localConfig = await loadLocalConfig();
+  const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
+  const dispatcher = createDispatcher({ handlers });
 
   // Detached child: run the fire-and-forget handlers, then exit. No output is
   // wired back to the host (the parent already returned).
