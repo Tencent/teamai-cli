@@ -352,6 +352,46 @@ function getManifestScope(
   return manifest.scopes[key];
 }
 
+/**
+ * Canonicalize a workspace path to its physical on-disk form via realpath.
+ * On case-insensitive filesystems (macOS) this collapses casing variants of the
+ * same physical directory to one identity; it also resolves symlinks. Falls back
+ * to the resolved absolute path when the target does not exist (dead binding) or
+ * realpath fails for any other reason.
+ */
+async function canonicalizeWorkspacePath(value: string): Promise<string> {
+  const absolute = path.resolve(value);
+  try {
+    return await fs.promises.realpath(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+function mergeWorkspaceBindings(
+  existing: WorkspaceBinding | undefined,
+  incoming: WorkspaceBinding,
+  canonicalKey: string,
+): WorkspaceBinding {
+  if (!existing) return incoming;
+  // pick base = whichever has a non-zero projectId; prefer existing on tie
+  const existingReal = existing.projectId !== 0;
+  const incomingReal = incoming.projectId !== 0;
+  if (existingReal && incomingReal && existing.projectId !== incoming.projectId) {
+    log.warn(
+      `local-agent: workspace ${canonicalKey} has conflicting project bindings ` +
+        `(${existing.projectId} vs ${incoming.projectId}); keeping ${existing.projectId}`,
+    );
+  }
+  const base = existingReal || !incomingReal ? { ...existing } : { ...incoming };
+  // A physical workspace tracks one owning tool (same single-owner model as
+  // stampWorkspaceTool). Only backfill ideType when the base lacks one; if two
+  // aliases were stamped by different tools, the base's ideType wins — the
+  // other tool re-stamps itself on its next report from the canonical path.
+  if (!base.ideType) base.ideType = existing.ideType ?? incoming.ideType;
+  return base;
+}
+
 export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
   const fileConfig = await readJson<LocalAgentConfig>(getConfigPath());
   if (fileConfig?.endpoint) {
@@ -365,6 +405,20 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
       if ('groupId' in binding && !('projectId' in (binding as Record<string, unknown>))) {
         delete config.workspaceBindings[wsPath];
       }
+    }
+    // Migrate: canonicalize binding keys to their physical on-disk path so
+    // case-only / symlink aliases of the same workspace collapse to one entry.
+    const migrated: Record<string, WorkspaceBinding> = {};
+    let migrationChanged = false;
+    for (const [wsPath, binding] of Object.entries(config.workspaceBindings)) {
+      const canonicalKey = await canonicalizeWorkspacePath(wsPath);
+      if (canonicalKey !== wsPath) migrationChanged = true;
+      if (migrated[canonicalKey]) migrationChanged = true;
+      migrated[canonicalKey] = mergeWorkspaceBindings(migrated[canonicalKey], binding, canonicalKey);
+    }
+    config.workspaceBindings = migrated;
+    if (migrationChanged) {
+      await saveLocalAgentConfig(config);
     }
     return config;
   }
@@ -878,9 +932,9 @@ async function resolveWorkspacePath(cwd?: string): Promise<string | undefined> {
   try {
     const { stdout } = await execFileAsync('git', ['-C', absolute, 'rev-parse', '--show-toplevel']);
     const root = stdout.trim();
-    return root ? path.resolve(root) : absolute;
+    return await canonicalizeWorkspacePath(root || absolute);
   } catch {
-    return absolute;
+    return await canonicalizeWorkspacePath(absolute);
   }
 }
 
