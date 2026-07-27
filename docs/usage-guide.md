@@ -938,6 +938,9 @@ teamai uninstall
 
 # Skip confirmation and uninstall directly (for scripts/CI)
 teamai uninstall --force
+
+# Uninstall only one tool's resources (mirrors `init --agent`)
+teamai uninstall --agent claude
 ```
 
 What gets removed:
@@ -947,6 +950,10 @@ What gets removed:
 - Team-synced rules
 - The env block in your shell profile
 - The `~/.teamai/` directory
+
+### Uninstall a single tool (`--agent <tool>`)
+
+`--agent <tool>` removes only that tool's teamai resources (hooks, CLAUDE.md block, skills, rules, built-in agents). The tool name is a key of `toolPaths` (e.g. `claude`, `codex`, `codebuddy`). Shared resources (the env block, docs directory, and `~/.teamai/`) are removed **only when the target is the last tool still using teamai** — otherwise they are kept for the remaining tools. An unknown tool name aborts without deleting anything and lists the available tools.
 
 To rejoin after uninstalling:
 

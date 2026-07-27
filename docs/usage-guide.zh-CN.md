@@ -936,6 +936,9 @@ teamai uninstall
 
 # 跳过确认直接卸载（适合脚本/CI）
 teamai uninstall --force
+
+# 只卸载某一个工具的资源（与 init --agent 对称）
+teamai uninstall --agent claude
 ```
 
 移除内容：
@@ -945,6 +948,10 @@ teamai uninstall --force
 - 团队同步的 rules
 - Shell profile 中的 env 块
 - `~/.teamai/` 目录
+
+### 只卸载单个工具（`--agent <tool>`）
+
+`--agent <tool>` 只移除该工具的 teamai 资源（hooks、CLAUDE.md 块、skills、rules、内置 agents）。工具名即 `toolPaths` 的键（如 `claude`、`codex`、`codebuddy`）。跨工具共享资源（shell profile env 块、docs 目录、`~/.teamai/`）**仅当该工具是最后一个仍在使用 teamai 的工具时**才一并移除，否则会为其余工具保留。传入未知工具名会直接报错并列出可用工具，不执行任何删除。
 
 卸载后如需重新加入：
 

@@ -424,6 +424,7 @@ program
   .command('uninstall')
   .description('Remove all teamai-managed resources and hooks from this machine')
   .option('--force', 'Skip confirmation prompt')
+  .option('--agent <name>', 'Only uninstall this agent\'s resources; shared resources go only if it is the last tool')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { uninstall } = await import('./uninstall.js');
