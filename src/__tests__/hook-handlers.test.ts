@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
+import fse from 'fs-extra';
 
 // ── Mocks ────────────────────────────────────────────────
 // Mock the underlying modules so handlers don't do real I/O
@@ -86,13 +89,14 @@ describe('hook-handlers registry', () => {
     expect(sessionStartHandlers).toContain('dashboard-report');
   });
 
-  it('stop has update, contribute-check, and dashboard-report handlers', () => {
+  it('stop has update, contribute-check, turn-limit-hint, and dashboard-report handlers', () => {
     const registry = buildHandlerRegistry();
     const stopHandlers = registry
       .filter((r) => r.event === 'stop' && r.matcher === '*')
       .map((r) => r.handler.name);
     expect(stopHandlers).toContain('update');
     expect(stopHandlers).toContain('contribute-check');
+    expect(stopHandlers).toContain('turn-limit-hint');
     expect(stopHandlers).toContain('dashboard-report');
   });
 
@@ -145,8 +149,8 @@ describe('hook-handlers registry', () => {
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: '[teamai] hello' });
 
     const result = await handler.execute({ session_id: 's', cwd: '/x' }, 'cursor');
-    expect(result).not.toBeNull();
-    const parsed = JSON.parse(result!);
+    expect(typeof result).toBe('string');
+    const parsed = JSON.parse(result as string);
     expect(parsed.followup_message).toBe('[teamai] hello');
   });
 
@@ -242,6 +246,88 @@ describe('hook-handlers registry', () => {
       .map((r) => r.handler.name);
     expect(handlers).toContain('track-slash');
     expect(handlers).toContain('dashboard-report');
+  });
+
+  it('prompt-submit records turn-limit state without competing for visible output', () => {
+    const registry = buildHandlerRegistry();
+    const promptSubmitHandlers = registry
+      .filter((r) => r.event === 'prompt-submit' && r.matcher === '*')
+      .map((r) => r.handler.name);
+    expect(promptSubmitHandlers).toContain('turn-limit-counter');
+    expect(promptSubmitHandlers).not.toContain('turn-limit-hint');
+
+    // The counter runs after local-agent-sync, while the visible notification
+    // is deferred to Stop so the current user request is never interrupted.
+    const localAgentIdx = promptSubmitHandlers.indexOf('local-agent-sync');
+    const counterIdx = promptSubmitHandlers.indexOf('turn-limit-counter');
+    expect(counterIdx).toBeGreaterThan(localAgentIdx);
+  });
+
+  it('turn-limit-hint follows contribute-check on Stop so higher-priority hints win first', () => {
+    const registry = buildHandlerRegistry();
+    const stopHandlers = registry
+      .filter((r) => r.event === 'stop' && r.matcher === '*')
+      .map((r) => r.handler.name);
+    expect(stopHandlers.indexOf('turn-limit-hint')).toBeGreaterThan(
+      stopHandlers.indexOf('contribute-check'),
+    );
+  });
+
+  it('delivers a due turn-limit hint from Stop and acknowledges it after selection', async () => {
+    const tmpHome = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-turn-stop-'));
+    vi.stubEnv('HOME', tmpHome);
+    vi.stubEnv('TEAMAI_TURN_LIMIT', '3');
+    vi.stubEnv('TEAMAI_RECALL_DISABLED', '1');
+    vi.stubEnv('TEAMAI_TURN_HINT_DISABLED', '');
+
+    try {
+      const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+      const stdin = { session_id: 'stop-delivery', prompt: '继续', cwd: '/tmp/project' };
+
+      await dispatcher.dispatch('prompt-submit', '*', stdin, 'claude'); // count=1
+      await dispatcher.dispatch('prompt-submit', '*', stdin, 'claude'); // count=2
+      await dispatcher.dispatch('prompt-submit', '*', stdin, 'claude'); // count=3, pending=true
+
+      const { hasPendingTurnLimitHint } = await import('../turn-limit-hint.js');
+      expect(hasPendingTurnLimitHint('stop-delivery')).toBe(true);
+
+      const result = await dispatcher.dispatch('stop', '*', stdin, 'claude');
+      const output = JSON.parse(result.output!);
+      expect(output.hookSpecificOutput.hookEventName).toBe('Stop');
+      expect(output.hookSpecificOutput.additionalContext).toContain('[teamai:turn-limit-hint]');
+      expect(hasPendingTurnLimitHint('stop-delivery')).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      await fse.remove(tmpHome);
+    }
+  });
+
+  it('delivers a due turn-limit hint through Cursor native followup_message', async () => {
+    const tmpHome = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-turn-cursor-'));
+    vi.stubEnv('HOME', tmpHome);
+    vi.stubEnv('TEAMAI_TURN_LIMIT', '3');
+    vi.stubEnv('TEAMAI_RECALL_DISABLED', '1');
+    vi.stubEnv('TEAMAI_TURN_HINT_DISABLED', '');
+
+    try {
+      const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+      const stdin = { session_id: 'cursor-followup', prompt: '继续', cwd: '/tmp/project' };
+
+      await dispatcher.dispatch('prompt-submit', '*', stdin, 'cursor');
+      await dispatcher.dispatch('prompt-submit', '*', stdin, 'cursor');
+      await dispatcher.dispatch('prompt-submit', '*', stdin, 'cursor');
+
+      const { hasPendingTurnLimitHint } = await import('../turn-limit-hint.js');
+      const result = await dispatcher.dispatch('stop', '*', stdin, 'cursor');
+
+      expect(JSON.parse(result.output!)).toEqual({
+        followup_message: expect.stringContaining('[teamai:turn-limit-hint]'),
+      });
+      expect(hasPendingTurnLimitHint('cursor-followup')).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      await fse.remove(tmpHome);
+    }
   });
 
   it('all handlers have timeoutMs set', () => {

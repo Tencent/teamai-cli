@@ -2,7 +2,7 @@
  * Format Stop hook STDOUT for the given AI tool.
  *
  * Schema choice per tool:
- * - Cursor: `{ followup_message }`  (Cursor stop hook docs)
+ * - Cursor: `{ followup_message }`
  * - Everyone else (Claude / CodeBuddy / WorkBuddy / Codex / unknown):
  *   `{ hookSpecificOutput: { hookEventName: 'Stop', additionalContext } }`
  *   (Claude Code stop hook docs — the "additional context that continues

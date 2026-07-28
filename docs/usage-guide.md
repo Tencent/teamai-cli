@@ -923,6 +923,28 @@ scope: user                    # or project
 projectRoot: /path/to/project  # project scope only
 ```
 
+### `TEAMAI_TURN_LIMIT`
+
+Turn-limit reminder threshold. When a session reaches this many user turns, teamai queues a **visible reminder after the current response completes**, then repeats it every 3 turns until a new session starts. Default: `20`.
+
+```bash
+# Set a custom threshold of 30 turns
+export TEAMAI_TURN_LIMIT=30
+```
+
+### `TEAMAI_TURN_HINT_DISABLED`
+
+Set to `1` to completely disable turn-limit reminders. This is independent from `TEAMAI_RECALL_DISABLED`.
+
+```bash
+# Disable turn-limit reminders permanently
+export TEAMAI_TURN_HINT_DISABLED=1
+```
+
+To mute only the current session, reply `关闭轮次提醒` (or `disable turn hint`). Other and future sessions remain enabled.
+
+> Cursor receives the reminder through its native Stop-hook `followup_message` mechanism, which automatically starts a follow-up Agent turn.
+
 ---
 
 ## Uninstall

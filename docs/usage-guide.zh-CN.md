@@ -921,6 +921,28 @@ scope: user                    # 或 project
 projectRoot: /path/to/project  # 仅 project scope
 ```
 
+### `TEAMAI_TURN_LIMIT`
+
+轮次提醒阈值。当会话达到该用户对话轮次时，teamai 会在**当前回复完成后展示一条可见提醒**；此后每 3 轮重复一次，直到开启新会话。默认 `20`。
+
+```bash
+# 自定义阈值为 30 轮
+export TEAMAI_TURN_LIMIT=30
+```
+
+### `TEAMAI_TURN_HINT_DISABLED`
+
+设为 `1` 永久关闭轮次提醒功能。与 `TEAMAI_RECALL_DISABLED` 独立，互不影响。
+
+```bash
+# 永久关闭轮次提醒
+export TEAMAI_TURN_HINT_DISABLED=1
+```
+
+仅静默当前会话时，直接回复 `关闭轮次提醒`（或 `disable turn hint`）；其他及后续会话仍保持开启。
+
+> Cursor 通过原生 Stop hook `followup_message` 接收提醒；该机制会自动开启一轮后续 Agent 对话。
+
 ---
 
 ## 卸载

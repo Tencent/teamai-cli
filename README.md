@@ -194,6 +194,13 @@ When a recall hit comes from a codebase page, the result includes a `Sources:` l
 
 Global options: `--dry-run`, `--verbose`
 
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `TEAMAI_TURN_LIMIT` | Turn-limit reminder threshold; shown after the current response, then every 3 turns | `20` |
+| `TEAMAI_TURN_HINT_DISABLED` | Set to `1` to disable turn-limit reminders | unset |
+
 ## License
 
 [MIT](LICENSE)

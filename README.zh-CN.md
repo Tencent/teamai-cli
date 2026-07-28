@@ -194,6 +194,13 @@ teamai codebase --lint                      # 健康检查
 
 全局选项：`--dry-run`、`--verbose`
 
+## 环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `TEAMAI_TURN_LIMIT` | 轮次提醒阈值；当前回复完成后展示提醒，之后每 3 轮重复 | `20` |
+| `TEAMAI_TURN_HINT_DISABLED` | 设为 `1` 关闭轮次提醒 | 未设置 |
+
 ## 许可证
 
 [MIT](LICENSE)

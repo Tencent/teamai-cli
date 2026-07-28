@@ -13,9 +13,21 @@
 
 // ─── Public types ───────────────────────────────────────
 
+/**
+ * A handler output whose acknowledgement runs only when the dispatcher selects
+ * it for STDOUT. Useful for durable notifications that must remain pending when
+ * a higher-priority handler wins the one-output-per-event slot.
+ */
+export interface AcknowledgedHookOutput {
+  output: string;
+  onAccepted?: () => void | Promise<void>;
+}
+
+export type HookHandlerOutput = string | AcknowledgedHookOutput | null;
+
 export interface HookHandler {
   name: string;
-  execute(stdin: Record<string, unknown>, tool: string): Promise<string | null>;
+  execute(stdin: Record<string, unknown>, tool: string): Promise<HookHandlerOutput>;
 }
 
 export interface HandlerRegistration {
@@ -85,6 +97,10 @@ function withTimeout<T>(promise: Promise<T>, ms: number, handlerName: string): P
   });
 }
 
+function normalizeOutput(result: Exclude<HookHandlerOutput, null>): AcknowledgedHookOutput {
+  return typeof result === 'string' ? { output: result } : result;
+}
+
 /**
  * Create a dispatcher with the given handler registrations.
  *
@@ -133,10 +149,21 @@ export function createDispatcher(config: DispatcherConfig): Dispatcher {
             handlerName,
             error: result.reason instanceof Error ? result.reason : new Error(String(result.reason)),
           });
-        } else if (result.status === 'fulfilled' && result.value != null) {
-          // First non-null output wins (at most one handler should produce output per event)
-          if (output === null) {
-            output = result.value;
+        } else if (result.status === 'fulfilled' && result.value != null && output === null) {
+          // First non-null output wins. Handlers with persistent state can defer
+          // acknowledgement until this point, so an output that loses this race
+          // remains eligible for a later dispatch.
+          const selected = normalizeOutput(result.value);
+          output = selected.output;
+          if (selected.onAccepted) {
+            try {
+              await selected.onAccepted();
+            } catch (error) {
+              errors.push({
+                handlerName,
+                error: error instanceof Error ? error : new Error(String(error)),
+              });
+            }
           }
         }
       }

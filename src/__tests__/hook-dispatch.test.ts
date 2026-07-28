@@ -160,6 +160,31 @@ describe('hook-dispatch', () => {
 
       expect(result.output).toBeNull();
     });
+
+    it('acknowledges only the output selected by registration priority', async () => {
+      const firstAccepted = vi.fn();
+      const secondAccepted = vi.fn();
+      const first: HookHandler = {
+        name: 'first',
+        execute: vi.fn().mockResolvedValue({ output: 'first output', onAccepted: firstAccepted }),
+      };
+      const second: HookHandler = {
+        name: 'second',
+        execute: vi.fn().mockResolvedValue({ output: 'second output', onAccepted: secondAccepted }),
+      };
+      const dispatcher = createDispatcher({
+        handlers: [
+          { event: 'stop', matcher: '*', handler: first },
+          { event: 'stop', matcher: '*', handler: second },
+        ],
+      });
+
+      const result = await dispatcher.dispatch('stop', '*', {}, 'claude');
+
+      expect(result.output).toBe('first output');
+      expect(firstAccepted).toHaveBeenCalledOnce();
+      expect(secondAccepted).not.toHaveBeenCalled();
+    });
   });
 
   describe('stdin sharing', () => {

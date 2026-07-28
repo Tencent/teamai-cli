@@ -317,6 +317,49 @@ const localAgentHandler: HookHandler = {
   },
 };
 
+const turnLimitCounterHandler: HookHandler = {
+  name: 'turn-limit-counter',
+  async execute(stdin, _tool) {
+    if (process.env.TEAMAI_TURN_HINT_DISABLED === '1') return null;
+
+    const { resolveTurnLimit, recordTurnAndShouldHint } = await import('./turn-limit-hint.js');
+    const sessionId = deriveSessionId(stdin);
+    const limit = resolveTurnLimit();
+    const prompt = typeof stdin.prompt === 'string' ? stdin.prompt : undefined;
+
+    // UserPromptSubmit only records state. Its additionalContext is invisible to
+    // users unless a model chooses to repeat it, so visible delivery happens at
+    // the subsequent Stop hook after the current answer is complete.
+    recordTurnAndShouldHint(sessionId, limit, prompt);
+    return null;
+  },
+};
+
+const turnLimitHintHandler: HookHandler = {
+  name: 'turn-limit-hint',
+  async execute(stdin, tool) {
+    if (process.env.TEAMAI_TURN_HINT_DISABLED === '1') return null;
+
+    const {
+      acknowledgeTurnLimitHint,
+      buildTurnLimitHintMessage,
+      hasPendingTurnLimitHint,
+    } = await import('./turn-limit-hint.js');
+    const sessionId = deriveSessionId(stdin);
+    if (!hasPendingTurnLimitHint(sessionId)) return null;
+
+    const message = buildTurnLimitHintMessage();
+    const { formatStopHookOutput } = await import('./utils/hook-output.js');
+    return {
+      output: formatStopHookOutput(message, tool),
+      // The dispatcher calls this only when no earlier Stop handler supplied
+      // output. If a higher-priority hint wins, keep this notification pending
+      // and retry at a later Stop instead of silently losing it.
+      onAccepted: () => acknowledgeTurnLimitHint(sessionId),
+    };
+  },
+};
+
 // ─── Registry builder ───────────────────────────────────
 
 /**
@@ -332,15 +375,15 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
 
     // ─── Stop ─────────────────────────────────────────
-    // votes-sync and contribute-check may return a hint the host injects back
-    // into the session, so they run inline (capped at FOREGROUND_HOOK_TIMEOUT_MS).
-    // The rest are pure side effects — the update check in particular shells out
-    // to the npm registry — so they run detached to avoid pushing the Stop hook
-    // past the host's hook timeout (CodeBuddy kills hooks at ~10s regardless of
-    // the declared timeout).
+    // votes-sync, contribute-check, and turn-limit-hint may return a user-visible
+    // follow-up, so they run inline under the shared foreground budget. Their
+    // registration order is priority order: when an earlier handler wins, a
+    // pending turn-limit hint remains queued for a later Stop event. The rest
+    // are pure side effects and run detached to keep the host responsive.
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS, background: true },
     { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
     { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
+    { event: 'stop', matcher: '*', handler: turnLimitHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
     { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
     { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
 
@@ -354,6 +397,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'prompt-submit', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'prompt-submit', matcher: '*', handler: turnLimitCounterHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
   ];
 }
 
