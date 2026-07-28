@@ -30,19 +30,19 @@ npm install -g teamai-cli
 
 ### Team admin / solo user
 
-Create a shared-experience repo on your git host (GitHub, TGit, or CNB), **grant write access to team members**, then have them run `teamai init --repo https://github.com/yourorg/yourrepo`.
+Create a shared-experience repo on your git host (GitHub, TGit, or CNB), **grant write access to team members**, then have them run `teamai init https://github.com/yourorg/yourrepo`.
 
 > Solo use needs no separate repo setup: `teamai init` checks the target repo and creates it automatically if it doesn't exist.
 
 ### Team members
 
 ```bash
-# User-scope init (default, resources installed under ~/)
-teamai init --repo https://github.com/yourorg/yourrepo
-
-# Project-scope init (resources installed under the project directory)
+# Project-scope init (default, resources installed under the project directory)
 cd /path/to/my-project
-teamai init --repo https://github.com/yourorg/yourrepo --scope project
+teamai init https://github.com/yourorg/yourrepo
+
+# User-scope init (resources installed under ~/)
+teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 Once initialized, every AI session automatically pulls the latest skills / rules and other Harness updates published by admins — no manual sync needed.

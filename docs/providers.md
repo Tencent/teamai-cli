@@ -10,7 +10,7 @@ TeamAI CLI 通过 provider 抽象层支持多个 git 托管平台。当前实现
 
 ## Provider 自动检测
 
-`teamai init --repo <input>` 根据输入格式自动选择 provider：
+`teamai init <input>`（或等价别名 `teamai init --repo <input>`）根据输入格式自动选择 provider：
 
 ```
 yourorg/yourrepo                        → github（默认）
@@ -45,7 +45,7 @@ sudo apt install gh
 安装后运行 `gh auth login`，或直接让 `teamai init` 触发交互式登录：
 
 ```bash
-teamai init --repo yourorg/yourrepo
+teamai init yourorg/yourrepo
 # 检测到未登录时会自动调起 gh auth login --web
 ```
 
@@ -55,7 +55,7 @@ teamai init --repo yourorg/yourrepo
 
 ```bash
 export GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxx
-teamai init --repo yourorg/yourrepo
+teamai init yourorg/yourrepo
 ```
 
 token 需要 `repo` 权限。`GH_TOKEN` 作为别名也会被识别。
@@ -104,14 +104,14 @@ CNB（[云原生构建](https://cnb.cool)）provider 是对官方 CLI `@cnbcool/
 
 ```bash
 cnb login   # OAuth2 device flow，登录后 `cnb git-credential` 为 git 提供凭据
-teamai init --repo https://cnb.cool/yourorg/yourrepo
+teamai init https://cnb.cool/yourorg/yourrepo
 ```
 
 **方式 2：`CNB_TOKEN` 环境变量（headless / CI）**
 
 ```bash
 export CNB_TOKEN=xxxxxxxx
-teamai init --repo https://cnb.cool/yourorg/yourrepo
+teamai init https://cnb.cool/yourorg/yourrepo
 ```
 
 设置 `CNB_TOKEN` 后无需 `cnb login`。用户名从 `cnb users get-user-info` 解析，也可用 `CNB_USERNAME` 覆盖。

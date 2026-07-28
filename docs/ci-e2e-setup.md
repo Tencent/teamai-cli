@@ -76,7 +76,7 @@ GitHub repo → **Settings → Secrets and variables → Actions → Variables �
 | `dashboard -p 37210` | spawn Web 服务 + curl 验活 + kill |
 | `uninstall --dry-run` / `uninstall --force` | 卸载预览 + 真卸载 + 重建恢复 |
 | `roles set + pull` | 切换角色后 skill 集变化 |
-| `init --scope project --repo ... --force` | 全新 init（沙盒 cwd + 隔离 HOME） |
+| `init <repo> --force`（默认 project scope） | 全新 init（沙盒 cwd + 隔离 HOME） |
 
 不要 token 的部分：`--version` / `--help` / `tags --help` / `members --help` / `uninstall --help` / 源码 sanity check —— PR from forks 也能跑。
 

@@ -151,7 +151,10 @@ export const TeamaiConfigSchema = z.object({
   repo: z.string(),
   /** Git hosting provider: 'tgit' | 'github'. Defaults to 'tgit' for backward compatibility. */
   provider: z.enum(['tgit', 'github']).default('tgit'),
-  /** Repo scope set at creation time; undefined = legacy repo (no restriction). */
+  /**
+   * @deprecated Ignored by `teamai init` (issue #250). Local install scope is
+   * decided only by CLI `--scope` / default. Kept optional for old teamai.yaml files.
+   */
   scope: ScopeEnum.optional(),
   reviewers: z.array(z.string()).default([]),
   /** Skills this team makes available to other teams via cross-team subscription. */
@@ -211,6 +214,8 @@ export const LocalConfigSchema = z.object({
   }),
   username: z.string(),
   updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),
+  // Read-compat default for historical configs that omit `scope` (pre-project era).
+  // NOT the write default for `teamai init` — init defaults to project (issue #250).
   scope: ScopeEnum.default('user'),
   primaryRole: z.string().min(1).optional(),
   additionalRoles: z.array(z.string()).default([]),

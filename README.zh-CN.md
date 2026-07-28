@@ -30,19 +30,19 @@ npm install -g teamai-cli
 
 ### 团队管理员 / 个人使用者
 
-在 Git 托管平台（GitHub、TGit 或 CNB）创建共享经验仓库，**授予团队成员写权限**，然后让他们运行 `teamai init --repo https://github.com/yourorg/yourrepo`。
+在 Git 托管平台（GitHub、TGit 或 CNB）创建共享经验仓库，**授予团队成员写权限**，然后让他们运行 `teamai init https://github.com/yourorg/yourrepo`。
 
 > 个人使用无需单独建仓：`teamai init` 会检查目标仓库，不存在时自动创建。
 
 ### 团队成员
 
 ```bash
-# 用户级初始化（默认，资源安装到 ~/ 下）
-teamai init --repo https://github.com/yourorg/yourrepo
-
-# 项目级初始化（资源安装到项目目录下）
+# 项目级初始化（默认，资源安装到项目目录下）
 cd /path/to/my-project
-teamai init --repo https://github.com/yourorg/yourrepo --scope project
+teamai init https://github.com/yourorg/yourrepo
+
+# 用户级初始化（资源安装到 ~/ 下）
+teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 初始化完成后，每次开启 AI 会话时都会自动拉取管理员发布的 skills / rules 等 Harness 更新，无需手动同步。

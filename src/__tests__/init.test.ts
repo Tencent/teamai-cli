@@ -83,11 +83,15 @@ vi.mock('../providers/tgit/gf-cli.js', () => {
 vi.mock('../config.js', () => ({
   saveLocalConfig: vi.fn(),
   saveLocalConfigForScope: vi.fn(),
+  loadLocalConfigForScope: vi.fn().mockResolvedValue(null),
   loadTeamConfig: vi.fn().mockResolvedValue(null),
+  loadStateForScope: vi.fn().mockRejectedValue(new Error('no state')),
+  saveStateForScope: vi.fn(),
 }));
 
 vi.mock('../hooks.js', () => ({
   injectHooksToAllTools: vi.fn(),
+  reconcileTeamHooksForConfig: vi.fn(),
 }));
 
 vi.mock('../roles.js', () => ({
@@ -432,10 +436,13 @@ describe('init', () => {
   });
 
   describe('scope path display', () => {
-    it('should display storage paths when scope is not provided via flag', async () => {
+    it('should default to project scope and print summary when --scope is omitted', async () => {
+      const projectLocalPath = path.join(process.cwd(), '.teamai', 'team-repo');
       let cloneDone = false;
       pathExistsFn = (p: string) => {
-        if (p === localPath) return cloneDone;
+        if (p === projectLocalPath) return cloneDone;
+        // Treat cwd as inside a git repo so E2 warn is skipped in this test
+        if (p.endsWith(`${path.sep}.git`) || p.endsWith('/.git')) return true;
         return false;
       };
 
@@ -443,20 +450,25 @@ describe('init', () => {
         cloneDone = true;
       });
 
-      // Answers: scope (user via default), configure reviewers (n), primary role (1)
-      questionAnswers = ['user', 'n', '1'];
+      // Answers: configure reviewers (n), primary role (1) — no scope prompt
+      questionAnswers = ['n', '1'];
 
       const { log } = await import('../utils/logger.js');
+      const { saveLocalConfigForScope } = await import('../config.js');
 
       await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git' });
 
-      // Verify that path hints were displayed
-      expect(log.info).toHaveBeenCalledWith(expect.stringContaining('user'));
-      expect(log.info).toHaveBeenCalledWith(expect.stringContaining('.teamai/'));
-      expect(log.info).toHaveBeenCalledWith(expect.stringContaining('project'));
+      expect(log.info).toHaveBeenCalledWith(expect.stringMatching(/^Scope: project /));
+      expect(log.info).toHaveBeenCalledWith(expect.stringContaining('config    →'));
+      expect(log.info).toHaveBeenCalledWith(expect.stringContaining('--scope user'));
+      expect(saveLocalConfigForScope).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'project', projectRoot: process.cwd() }),
+        'project',
+        process.cwd(),
+      );
     });
 
-    it('should not display storage paths when scope is provided via --scope flag', async () => {
+    it('should print scope summary without interactive Select scope when --scope is provided', async () => {
       let cloneDone = false;
       pathExistsFn = (p: string) => {
         if (p === localPath) return cloneDone;
@@ -475,13 +487,47 @@ describe('init', () => {
 
       await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git', scope: 'user' });
 
-      // When --scope is provided, the path hints are NOT shown before the prompt
-      // (they appear in the "Scope: user" line only)
-      const infoCalls = vi.mocked(log.info).mock.calls.map(c => c[0]);
-      const pathHintCalls = infoCalls.filter(
-        (msg: string) => msg.includes('user    →') || msg.includes('project →'),
+      expect(log.info).toHaveBeenCalledWith(expect.stringMatching(/^Scope: user$/));
+      const infoCalls = vi.mocked(log.info).mock.calls.map(c => String(c[0]));
+      expect(infoCalls.some((msg) => msg.includes('Select scope:'))).toBe(false);
+      expect(infoCalls.some((msg) => msg.includes('Scope [1/2]'))).toBe(false);
+    });
+
+    it('should ignore remote teamai.yaml.scope and succeed with local project scope', async () => {
+      const projectLocalPath = path.join(process.cwd(), '.teamai', 'team-repo');
+      let cloneDone = false;
+      pathExistsFn = (p: string) => {
+        if (p === projectLocalPath) return cloneDone;
+        if (p.endsWith(`${path.sep}.git`) || p.endsWith('/.git')) return true;
+        return false;
+      };
+
+      mockGfRepoClone.mockImplementation(() => {
+        cloneDone = true;
+      });
+
+      const { loadTeamConfig, saveLocalConfigForScope } = await import('../config.js');
+      vi.mocked(loadTeamConfig).mockResolvedValue({
+        team: 'remote-team',
+        description: '',
+        repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+        provider: 'tgit',
+        scope: 'user',
+        reviewers: [],
+        sharing: { rules: { enforced: [] }, docs: {}, env: { injectShellProfile: true } },
+        toolPaths: {},
+      } as never);
+
+      questionAnswers = ['n', '1'];
+
+      await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git' });
+
+      expect(mockExit).not.toHaveBeenCalled();
+      expect(saveLocalConfigForScope).toHaveBeenCalledWith(
+        expect.objectContaining({ scope: 'project' }),
+        'project',
+        process.cwd(),
       );
-      expect(pathHintCalls).toHaveLength(0);
     });
   });
 });

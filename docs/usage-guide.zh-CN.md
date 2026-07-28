@@ -74,68 +74,15 @@ teamai --version
 
 在 GitHub、TGit（腾讯工蜂）或 CNB（cnb.cool）上创建一个空仓库（命名建议：`TeamAi-<团队名>`），或者直接执行 `teamai init`，不存在时会提示自动创建。
 
-### 用户级（User Scope）
-
-资源安装到用户主目录（`~/.claude/skills/` 等），适用于通用团队规范、跨项目技能。
-
-```bash
-# --scope user 是默认值，可省略
-teamai init --repo <group>/TeamAi-<team>
-```
-
-生成的目录结构：
-
-```
-~/.teamai/
-├── config.yaml          # 本地配置
-├── team-repo/           # 团队仓库克隆
-│   ├── teamai.yaml      # 远端团队配置（scope: user）
-│   ├── skills/ rules/ docs/ env/ members/
-│   ├── manifest/roles.yaml  # 角色定义（启用角色化 skills 时）
-│   └── learnings/       # 团队知识库
-~/.claude/skills/        # 团队 skills（自动同步）
-~/.claude/rules/         # 团队 rules（自动同步）
-```
-
-如果仓库启用了角色化 skills（存在 `manifest/roles.yaml`），`teamai init` 还会交互式要求你选择：
-
-- `primaryRole`：默认 skill 同步和推送的目标 namespace
-- `additionalRoles`：额外需要同步的 skill namespace
-
-也可以通过 CLI 参数跳过交互，实现完全非交互式初始化（适合 CI/CD 或 AI agent）：
-
-```bash
-teamai init --repo <group>/TeamAi-<team> --scope user --role hai_dev --force
-```
-
-| 参数 | 说明 |
-|------|------|
-| `--repo <url>` | 团队仓库地址（必填） |
-| `--scope <user\|project>` | 作用域，默认 `user` |
-| `--role <id>` | 直接指定 primaryRole，跳过角色交互选择 |
-| `--force` | 覆盖已有配置，跳过确认提示 |
-
-本地配置示例：
-
-```yaml
-repo:
-  localPath: ~/.teamai/team-repo
-  remote: https://git.woa.com/group/repo.git
-username: alice
-scope: user
-primaryRole: hai
-additionalRoles:
-  - pm
-resourceProfileVersion: 1
-```
-
-### 项目级（Project Scope）
+### 项目级（Project Scope，默认）
 
 资源安装到项目目录下（`<project>/.claude/skills/` 等），适用于项目特定的技能和规则。
 
 ```bash
+# project 是默认值，可省略 --scope
 cd /path/to/my-project
-teamai init --repo <group>/TeamAi-<team> --scope project
+teamai init <group>/TeamAi-<team>
+# 等价别名：teamai init --repo <group>/TeamAi-<team>
 ```
 
 生成的目录结构：
@@ -150,15 +97,70 @@ teamai init --repo <group>/TeamAi-<team> --scope project
 └── src/
 ```
 
+如果仓库启用了角色化 skills（存在 `manifest/roles.yaml`），`teamai init` 还会交互式要求你选择：
+
+- `primaryRole`：默认 skill 同步和推送的目标 namespace
+- `additionalRoles`：额外需要同步的 skill namespace
+
+也可以通过 CLI 参数跳过交互，实现完全非交互式初始化（适合 CI/CD 或 AI agent）：
+
+```bash
+teamai init <group>/TeamAi-<team> --scope project --role hai_dev --force
+```
+
+| 参数 | 说明 |
+|------|------|
+| `[repo]` / `--repo <url>` | 团队仓库地址（推荐位置参数；`--repo` 为永久别名） |
+| `--scope <project\|user>` | 安装作用域，默认 `project`（`<cwd>/.teamai`）。需要装到 `~/` 时用 `user` |
+| `--role <id>` | 直接指定 primaryRole，跳过角色交互选择 |
+| `--force` | 覆盖已有配置，跳过确认提示 |
+
+本地配置示例：
+
+```yaml
+repo:
+  localPath: /path/to/my-project/.teamai/team-repo
+  remote: https://git.woa.com/group/repo.git
+username: alice
+scope: project
+projectRoot: /path/to/my-project
+primaryRole: hai
+additionalRoles:
+  - pm
+resourceProfileVersion: 1
+```
+
+### 用户级（User Scope）
+
+资源安装到用户主目录（`~/.claude/skills/` 等），适用于通用团队规范、跨项目技能。
+
+```bash
+teamai init <group>/TeamAi-<team> --scope user
+```
+
+生成的目录结构：
+
+```
+~/.teamai/
+├── config.yaml          # 本地配置
+├── team-repo/           # 团队仓库克隆
+│   ├── teamai.yaml      # 远端团队配置
+│   ├── skills/ rules/ docs/ env/ members/
+│   ├── manifest/roles.yaml  # 角色定义（启用角色化 skills 时）
+│   └── learnings/       # 团队知识库
+~/.claude/skills/        # 团队 skills（自动同步）
+~/.claude/rules/         # 团队 rules（自动同步）
+```
+
 ### 如何选择 Scope？
 
-| 维度 | User Scope（默认） | Project Scope |
+| 维度 | Project Scope（默认） | User Scope |
 |------|-------------------|---------------|
-| **资源安装位置** | `~/` 下 | 项目目录下 |
-| **适用场景** | 通用团队规范、跨项目技能 | 项目特定的技能和规则 |
+| **资源安装位置** | 项目目录下 | `~/` 下 |
+| **适用场景** | 项目特定的技能和规则 | 通用团队规范、跨项目技能 |
 | **能否共存** | ✅ 可以同时拥有两个 scope | ✅ 可以同时拥有两个 scope |
 
-> **Scope 锁定：** 管理员首次 init 时 scope 写入远端 `teamai.yaml`，后续成员 init 必须使用相同 scope。
+> **本机安装位置**仅由 `teamai init` 的 `--scope`（默认 `project`）决定。远端 `teamai.yaml` 中若仍有 `scope` 字段会被忽略。
 
 ---
 
@@ -166,20 +168,20 @@ teamai init --repo <group>/TeamAi-<team> --scope project
 
 管理员将团队仓库地址分享给成员后：
 
-**用户级团队：**
-
-```bash
-npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
-teamai init --repo <group>/TeamAi-<team>
-# 完成！AI 工具已自动获得团队资源
-```
-
-**项目级团队：**
+**项目级团队（默认）：**
 
 ```bash
 npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
 cd /path/to/my-project
-teamai init --repo <group>/TeamAi-<team> --scope project
+teamai init <group>/TeamAi-<team>
+# 完成！AI 工具已自动获得团队资源
+```
+
+**用户级团队：**
+
+```bash
+npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
+teamai init <group>/TeamAi-<team> --scope user
 ```
 
 **HTTP 模式（只读消费者）：**
@@ -892,10 +894,10 @@ HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill �
 
 ```yaml
 team: my-team
-scope: user                              # user 或 project
 description: 团队 AI 资源仓库
 repo: https://git.woa.com/group/repo.git
 provider: tgit
+# scope: 若存在则忽略——本机安装位置由 `teamai init --scope` 决定
 
 reviewers:
   - reviewer1
@@ -904,7 +906,7 @@ sharing:
   rules:
     enforced: [code-review-guide]
   docs:
-    localDir: ~/.teamai/docs
+    localDir: ./.teamai/docs
   env:
     injectShellProfile: true
 ```
@@ -917,7 +919,7 @@ repo:
   remote: https://git.woa.com/group/repo.git
 username: your-name
 updatePolicy: auto
-scope: user                    # 或 project
+scope: project                 # project（init 默认）或 user
 projectRoot: /path/to/project  # 仅 project scope
 ```
 

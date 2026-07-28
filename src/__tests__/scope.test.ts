@@ -12,7 +12,6 @@ import {
   getStatePath,
   type LocalConfig,
 } from '../types.js';
-import { validateScopeMatch } from '../init.js';
 import {
   detectProjectConfig,
   loadLocalConfigForScope,
@@ -451,33 +450,6 @@ describe('TeamaiConfigSchema with scope', () => {
   it('should reject invalid scope values', () => {
     expect(() => TeamaiConfigSchema.parse({ ...baseTeamConfig, scope: 'global' })).toThrow();
     expect(() => TeamaiConfigSchema.parse({ ...baseTeamConfig, scope: 123 })).toThrow();
-  });
-});
-
-// ─── validateScopeMatch tests ────────────────────────────
-
-describe('validateScopeMatch', () => {
-  it('should allow matching scopes (user/user)', () => {
-    expect(() => validateScopeMatch('user', 'user')).not.toThrow();
-  });
-
-  it('should allow matching scopes (project/project)', () => {
-    expect(() => validateScopeMatch('project', 'project')).not.toThrow();
-  });
-
-  it('should reject mismatched scopes (user remote, project local)', () => {
-    expect(() => validateScopeMatch('user', 'project')).toThrow(/Scope mismatch/);
-    expect(() => validateScopeMatch('user', 'project')).toThrow(/--scope project/);
-  });
-
-  it('should reject mismatched scopes (project remote, user local)', () => {
-    expect(() => validateScopeMatch('project', 'user')).toThrow(/Scope mismatch/);
-    expect(() => validateScopeMatch('project', 'user')).toThrow(/--scope user/);
-  });
-
-  it('should allow any local scope when remote is undefined (legacy repo)', () => {
-    expect(() => validateScopeMatch(undefined, 'user')).not.toThrow();
-    expect(() => validateScopeMatch(undefined, 'project')).not.toThrow();
   });
 });
 

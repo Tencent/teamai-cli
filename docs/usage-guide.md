@@ -76,68 +76,15 @@ teamai --version
 
 Create an empty repository on GitHub, TGit (Tencent's internal Git host), or CNB (cnb.cool) (suggested naming: `TeamAi-<team-name>`), or simply run `teamai init` — if the repo doesn't exist yet, you'll be prompted to create it automatically.
 
-### User Scope
-
-Resources are installed into your home directory (`~/.claude/skills/`, etc.), suited for general team conventions and cross-project skills.
-
-```bash
-# --scope user is the default and can be omitted
-teamai init --repo <group>/TeamAi-<team>
-```
-
-Resulting directory structure:
-
-```
-~/.teamai/
-├── config.yaml          # Local config
-├── team-repo/            # Clone of the team repo
-│   ├── teamai.yaml      # Remote team config (scope: user)
-│   ├── skills/ rules/ docs/ env/ members/
-│   ├── manifest/roles.yaml  # Role definitions (when role-based skills are enabled)
-│   └── learnings/       # Team knowledge base
-~/.claude/skills/        # Team skills (auto-synced)
-~/.claude/rules/         # Team rules (auto-synced)
-```
-
-If the repo has role-based skills enabled (i.e. `manifest/roles.yaml` exists), `teamai init` will also interactively ask you to choose:
-
-- `primaryRole`: the target namespace for skill sync and push by default
-- `additionalRoles`: additional skill namespaces to sync
-
-You can also skip the interactive prompts via CLI flags for a fully non-interactive init (suitable for CI/CD or AI agents):
-
-```bash
-teamai init --repo <group>/TeamAi-<team> --scope user --role hai_dev --force
-```
-
-| Flag | Description |
-|------|------|
-| `--repo <url>` | Team repo URL (required) |
-| `--scope <user\|project>` | Scope, defaults to `user` |
-| `--role <id>` | Directly specify the primary role, skipping the interactive role prompt |
-| `--force` | Overwrite existing config, skipping confirmation prompts |
-
-Example local config:
-
-```yaml
-repo:
-  localPath: ~/.teamai/team-repo
-  remote: https://github.com/group/repo.git
-username: alice
-scope: user
-primaryRole: hai
-additionalRoles:
-  - pm
-resourceProfileVersion: 1
-```
-
-### Project Scope
+### Project Scope (default)
 
 Resources are installed under the project directory (`<project>/.claude/skills/`, etc.), suited for project-specific skills and rules.
 
 ```bash
+# project is the default — --scope can be omitted
 cd /path/to/my-project
-teamai init --repo <group>/TeamAi-<team> --scope project
+teamai init <group>/TeamAi-<team>
+# equivalent alias: teamai init --repo <group>/TeamAi-<team>
 ```
 
 Resulting directory structure:
@@ -152,15 +99,70 @@ Resulting directory structure:
 └── src/
 ```
 
+If the repo has role-based skills enabled (i.e. `manifest/roles.yaml` exists), `teamai init` will also interactively ask you to choose:
+
+- `primaryRole`: the target namespace for skill sync and push by default
+- `additionalRoles`: additional skill namespaces to sync
+
+You can also skip the interactive prompts via CLI flags for a fully non-interactive init (suitable for CI/CD or AI agents):
+
+```bash
+teamai init <group>/TeamAi-<team> --scope project --role hai_dev --force
+```
+
+| Flag | Description |
+|------|------|
+| `[repo]` / `--repo <url>` | Team repo URL (positional preferred; `--repo` is a permanent alias) |
+| `--scope <project\|user>` | Install scope, defaults to `project` (`<cwd>/.teamai`). Use `user` for `~/` |
+| `--role <id>` | Directly specify the primary role, skipping the interactive role prompt |
+| `--force` | Overwrite existing config, skipping confirmation prompts |
+
+Example local config:
+
+```yaml
+repo:
+  localPath: /path/to/my-project/.teamai/team-repo
+  remote: https://github.com/group/repo.git
+username: alice
+scope: project
+projectRoot: /path/to/my-project
+primaryRole: hai
+additionalRoles:
+  - pm
+resourceProfileVersion: 1
+```
+
+### User Scope
+
+Resources are installed into your home directory (`~/.claude/skills/`, etc.), suited for general team conventions and cross-project skills.
+
+```bash
+teamai init <group>/TeamAi-<team> --scope user
+```
+
+Resulting directory structure:
+
+```
+~/.teamai/
+├── config.yaml          # Local config
+├── team-repo/            # Clone of the team repo
+│   ├── teamai.yaml      # Remote team config
+│   ├── skills/ rules/ docs/ env/ members/
+│   ├── manifest/roles.yaml  # Role definitions (when role-based skills are enabled)
+│   └── learnings/       # Team knowledge base
+~/.claude/skills/        # Team skills (auto-synced)
+~/.claude/rules/         # Team rules (auto-synced)
+```
+
 ### How to Choose a Scope?
 
-| Dimension | User Scope (default) | Project Scope |
+| Dimension | Project Scope (default) | User Scope |
 |------|-------------------|---------------|
-| **Install location** | Under `~/` | Under the project directory |
-| **Best for** | General team conventions, cross-project skills | Project-specific skills and rules |
+| **Install location** | Under the project directory | Under `~/` |
+| **Best for** | Project-specific skills and rules | General team conventions, cross-project skills |
 | **Can coexist** | ✅ Yes, both scopes can be active at once | ✅ Yes, both scopes can be active at once |
 
-> **Scope lock-in:** When an admin runs `init` for the first time, the scope is written into the remote `teamai.yaml`. All subsequent member `init` runs must use the same scope.
+> **Local install location** is decided only by `teamai init`'s `--scope` (default `project`). A `scope` field in remote `teamai.yaml`, if present, is ignored.
 
 ---
 
@@ -168,20 +170,20 @@ Resulting directory structure:
 
 Once the admin shares the team repo URL with members:
 
-**User-scoped teams:**
-
-```bash
-npm install -g teamai-cli
-teamai init --repo <group>/TeamAi-<team>
-# Done! AI tools now automatically have access to team resources
-```
-
-**Project-scoped teams:**
+**Project-scoped teams (default):**
 
 ```bash
 npm install -g teamai-cli
 cd /path/to/my-project
-teamai init --repo <group>/TeamAi-<team> --scope project
+teamai init <group>/TeamAi-<team>
+# Done! AI tools now automatically have access to team resources
+```
+
+**User-scoped teams:**
+
+```bash
+npm install -g teamai-cli
+teamai init <group>/TeamAi-<team> --scope user
 ```
 
 **HTTP mode (read-only consumer):**
@@ -894,10 +896,10 @@ An HTTP source reports status and pulls skill commands via hook dispatch on ever
 
 ```yaml
 team: my-team
-scope: user                              # user or project
 description: Team AI resource repo
 repo: https://github.com/group/repo.git
 provider: github
+# scope: ignored if present — local install location is set by `teamai init --scope`
 
 reviewers:
   - reviewer1
@@ -906,7 +908,7 @@ sharing:
   rules:
     enforced: [code-review-guide]
   docs:
-    localDir: ~/.teamai/docs
+    localDir: ./.teamai/docs
   env:
     injectShellProfile: true
 ```
@@ -919,7 +921,7 @@ repo:
   remote: https://github.com/group/repo.git
 username: your-name
 updatePolicy: auto
-scope: user                    # or project
+scope: project                 # project (default from init) or user
 projectRoot: /path/to/project  # project scope only
 ```
 

@@ -6,12 +6,16 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 💥 破坏性变更
 
+- **`teamai init` 默认 scope 改为 project**（#250）：未传 `--scope` 时安装到 `<cwd>/.teamai/` 与 `<cwd>/.claude/...`，不再默认装到 `~/`。恢复旧行为：`teamai init <repo> --scope user`
+  - 远端 `teamai.yaml.scope` 不再锁定本机安装位置（`validateScopeMatch` 已移除）；本地 scope 仅由 CLI 决定
+  - 新建默认 `teamai.yaml` 不再写入 `scope:` 字段
 - **移除 `auto-recall` PostToolUse hook**：不再在 `Bash`/`Grep`/`WebSearch`/`WebFetch` 工具调用后被动、隐式地自动搜索团队知识库——这条链路噪音大、命中率低，且与更早前上线的 `teamai-recall` subagent（任务开始前主动检索，支持 codebase 图谱 drill-down、输出结构化摘要）功能重叠。已安装环境的 hooks 配置会在下次 `teamai pull` / `hooks inject` 时自动清理，无需手动迁移
   - `contribute-check` 的知识空白检测（Phase 2）改为由 `teamai recall`（手动 + `teamai-recall` subagent 均会触发）记录召回质量，缓存格式不变，功能保留
   - `TEAMAI_RECALL_DISABLED=1` 现在控制 `teamai recall` 的质量记录而非 auto-recall hook
 
 ### ✨ 新功能
 
+- **`teamai init <repo>` 位置参数**（#250）：推荐写法；`--repo` 永久保留为等价别名（无 deprecation 警告）
 - **跨 agent skills 视图**：`teamai list` 新增 `--source <repo|local|all>` 和 `--agent <id>` 参数（默认 `--source all`）。`local` / `all` 模式会扫描所有已安装 AI agent 的 skills 目录，每个 skill 标注来源 `[team]` / `[builtin]` / `[source:<name>]` / `[local-only]`。`--verbose` 时展开每个 agent 的 skill 列表与描述摘要。未安装的 agent 不出现在输出里
 - **Known agents 注册表**：内置 28 个 AI agent 路径（Claude Code / Cursor / Codex / Gemini CLI / Aider / Augment / Hermes / Copilot / KiloCode / Kiro / OpenCode / Qoder / Trae / Windsurf / WorkBuddy 等），自动检测哪些已安装。`teamai.yaml` 中显式配置的 `toolPaths` 优先生效
 - **`teamai skill` 子命令组**：
