@@ -94,6 +94,36 @@ ${diff3000}`;
 }
 
 /**
+ * Parses the AI-generated learning draft, tolerating malformed frontmatter.
+ *
+ * The LLM output may wrap content in markdown code fences, prepend
+ * conversational text, or contain markdown (e.g. '*italic*' lines) that
+ * gray-matter/js-yaml would misread as YAML. This normalizes the content and
+ * parses it defensively so a parse failure never crashes the caller.
+ *
+ * @param raw  Raw string returned by the AI
+ * @returns    Normalized content plus parsed frontmatter data (empty object on parse failure)
+ */
+export function parseLearningDraft(raw: string): { content: string; data: Record<string, unknown> } {
+  let content = raw
+    .replace(/^```(?:markdown|md|yaml)?\s*\n/m, '')
+    .replace(/\n```\s*$/, '');
+  // AI may emit conversational text before the frontmatter; start at the first `---`
+  const frontmatterStart = content.indexOf('---');
+  if (frontmatterStart > 0) {
+    content = content.slice(frontmatterStart);
+  }
+  try {
+    const parsed = matter(content);
+    return { content, data: parsed.data };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.warn(`⚠️  Failed to parse learning frontmatter, using fallback: ${message}`);
+    return { content, data: {} };
+  }
+}
+
+/**
  * Interactively asks the user to confirm an action.
  *
  * @param question  Prompt text (no trailing space needed)
@@ -176,17 +206,9 @@ export async function importFromMR(opts: {
   }
 
   // ── 步骤 3：解析 learning 草稿 + dedup ─────────────────
-  // AI 可能用 markdown 代码块包裹输出，先剥离
-  learningContent = learningContent
-    .replace(/^```(?:markdown|md|yaml)?\s*\n/m, '')
-    .replace(/\n```\s*$/, '');
-  // AI 可能在 frontmatter 前输出对话性废话，截取从第一个 `---` 开始的内容
-  const frontmatterStart = learningContent.indexOf('---');
-  if (frontmatterStart > 0) {
-    learningContent = learningContent.slice(frontmatterStart);
-  }
-  const parsed = matter(learningContent);
-  const learningTitle = (parsed.data['title'] as string | undefined) ?? mr.title;
+  const { content: normalizedContent, data: frontmatter } = parseLearningDraft(learningContent);
+  learningContent = normalizedContent;
+  const learningTitle = (frontmatter['title'] as string | undefined) ?? mr.title;
 
   const draftKeywords = extractKeywords(learningContent);
   const supersededEntries = await findSupersededLearnings(draftKeywords, learningsDir);
@@ -203,7 +225,7 @@ export async function importFromMR(opts: {
   // ── 步骤 4：打印摘要 ────────────────────────────────────
   log.info(`✅ Learning draft generated: ${learningTitle}`);
 
-  const tags = parsed.data['tags'] as string[] | undefined;
+  const tags = frontmatter['tags'] as string[] | undefined;
   if (tags && tags.length > 0) {
     log.info(`   Tags: ${tags.join(', ')}`);
   }

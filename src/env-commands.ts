@@ -4,22 +4,10 @@ import { requireInit, detectProjectConfig } from './config.js';
 import { pullRepo } from './utils/git.js';
 import { ensureDir, readFileSafe, writeFile, pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
-import { EnvHandler } from './resources/env.js';
+import { EnvHandler, maskEnvValue } from './resources/env.js';
 import type { GlobalOptions } from './types.js';
 
 const envHandler = new EnvHandler();
-
-/**
- * Mask an env variable value for display.
- * Shows first 2 chars + "****", or "****" for very short values.
- *
- * @param value  Original value string.
- * @returns      Masked string.
- */
-function maskValue(value: string): string {
-  if (value.length < 4) return '****';
-  return `${value.slice(0, 2)}****`;
-}
 
 /**
  * List all team env variables from env.yaml.
@@ -50,7 +38,7 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
   console.log(`Team env variables (${envConfig.variables.length}):`);
   console.log('');
   for (const v of envConfig.variables) {
-    const displayValue = options.reveal ? v.value : maskValue(v.value);
+    const displayValue = options.reveal ? v.value : maskEnvValue(v.value);
     console.log(`  ${v.key}=${displayValue}`);
     if (v.description && options.verbose) {
       log.dim(`    ${v.description}`);

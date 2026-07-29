@@ -202,12 +202,14 @@ teamai init --http https://your-team-host/api --token <api-key>
 ```bash
 teamai status                       # View status
 teamai members                      # View team members
-teamai list                         # View team repo + skills installed by each AI agent (default --source all)
-teamai list --source repo           # Only view team repo contents (legacy behavior)
-teamai list --source local          # Only view skills under each installed agent, labeled by source
-teamai list --agent claude --verbose  # Only view skills installed by Claude Code, with descriptions
+teamai list                         # All resource types (skills|rules|docs|env|agents|hooks|mcp) + local skills
+teamai list mcp                     # Only team MCP servers
+teamai list --source repo           # Team repo only
+teamai list --source local          # Skills under each installed agent
+teamai list --agent claude --verbose
+teamai list env --reveal            # Show env values in plaintext (default: masked)
 
-teamai skill                        # List all skills (equivalent to teamai list skills --source all)
+teamai skill                        # Equivalent to teamai list skills --source all
 teamai skill show hai-deploy-test   # View a single skill's source / contributor / install locations / description summary
 ```
 
@@ -393,6 +395,54 @@ teamai push
 ### Docs
 
 Place documentation in the team repo's `docs/` directory; after pushing, team members will automatically receive it on their next `pull`.
+
+### MCP servers
+
+Declare each server once in the team repo's `mcp/mcp.yaml`. On `teamai pull` it is written into every installed tool's own MCP config, translated into that tool's native format.
+
+```yaml
+servers:
+  - name: gpu-analysis
+    description: GPU inventory and pricing queries
+    transport: http                      # stdio | http | sse
+    url: https://example.com/api/mcp
+    headers:
+      Authorization: Bearer ${GPU_ANALYSIS_TOKEN}
+    timeout: 600000
+
+  - name: local-formatter
+    transport: stdio
+    command: npx
+    args: ['-y', '@acme/formatter-mcp']
+    env:
+      FORMATTER_MODE: strict
+    requires: [npx]                      # skipped with a hint when npx is absent
+    tools: [claude, cursor]              # optional; default is every capable tool
+```
+
+Where each tool's servers land:
+
+| Tool | User scope | Project scope |
+|---|---|---|
+| claude | `~/.claude.json` | `<project>/.mcp.json` |
+| cursor | `~/.cursor/mcp.json` | `<project>/.cursor/mcp.json` |
+| codebuddy / workbuddy | `~/.<tool>/mcp.json` | `<project>/.<tool>/mcp.json` |
+| codex | `~/.codex/config.toml` | not supported |
+
+Codex supports `stdio` and `http`; `sse` is skipped. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
+
+**Secrets.** Write `${VAR}`, never a literal. Values resolve from the environment, then from `env/env.yaml` → `~/.teamai/env`. Unresolved variables skip the server with a hint.
+
+Where the tool can keep secrets off disk, teamai does: Claude project `.mcp.json` keeps the placeholder (Claude expands it); Codex writes `bearer_token_env_var` / `env_http_headers` (variable name only). Elsewhere the value is resolved into a `0600` file. In project scope, tools that cannot expand `${VAR}` skip secret-bearing servers instead of writing plaintext into a committed file.
+
+Claude Code may show project `.mcp.json` servers as pending approval until you accept them once in an interactive session.
+
+```bash
+teamai mcp list              # servers, secret status, and where they are installed
+teamai mcp inject            # apply now; --dry-run to preview, --force to override collisions
+teamai mcp remove            # remove every teamai-managed server
+```
+
 
 ---
 
@@ -707,7 +757,7 @@ teamai hooks inject    # Re-inject
 teamai hooks remove    # Remove
 ```
 
-Both commands only touch tools you actually have installed (i.e. whose `~/.<tool>/` root directory already exists). They never create root directories for tools listed in `toolPaths` but not installed, so uninstalled tools such as `.tclaude` / `.tcodex` are left untouched.
+Both commands only touch tools you actually have installed (i.e. whose `~/.<tool>/` root directory already exists). They never create root directories for tools listed in `toolPaths` but not installed.
 
 ### Team Hooks Declaration
 

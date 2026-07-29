@@ -16,7 +16,10 @@ import {
   truncate,
   type AgentSkillsView,
 } from './agent-skills.js';
-import type { GlobalOptions, ResourceType } from './types.js';
+import { RESOURCE_TYPES, type GlobalOptions, type ResourceType } from './types.js';
+import { maskEnvValue } from './resources/env.js';
+import { parseTeamMcpServers } from './resources/mcp.js';
+import { parseHooksYaml } from './resources/hooks.js';
 
 export interface ListOptions extends GlobalOptions {
   /** Where to look for resources: 'repo' (default for backwards compat),
@@ -24,6 +27,8 @@ export interface ListOptions extends GlobalOptions {
   source?: 'repo' | 'local' | 'all';
   /** Restrict --source local|all output to a single agent id. */
   agent?: string;
+  /** Show env values in plaintext (default: masked). Same as `teamai env list --reveal`. */
+  reveal?: boolean;
 }
 
 export async function status(options: GlobalOptions): Promise<void> {
@@ -61,27 +66,23 @@ export async function status(options: GlobalOptions): Promise<void> {
   console.log(`  last push: ${state.lastPush ?? 'never'}`);
   console.log(`  last pull: ${state.lastPull ?? 'never'}`);
 
-  // Resource counts
+  // Resource counts — cover every ResourceType, in RESOURCE_TYPES order.
   console.log('');
   log.info('Team resources:');
 
   const repoPath = localConfig.repo.localPath;
   const counts: Record<string, number> = {};
 
-  // Skills
   const skillsDirs = await listDirs(path.join(repoPath, 'skills'));
   counts.skills = skillsDirs.length;
 
-  // Rules
   const rulesFiles = (await listFiles(path.join(repoPath, 'rules'))).filter(f => f.endsWith('.md'));
   counts.rules = rulesFiles.length;
 
-  // Docs
   const docsExists = await pathExists(path.join(repoPath, 'docs'));
   const docFiles = docsExists ? (await listFiles(path.join(repoPath, 'docs'))).filter(f => !f.startsWith('.')) : [];
   counts.docs = docFiles.length;
 
-  // Env
   const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
   let envCount = 0;
   if (await pathExists(envYamlPath)) {
@@ -97,14 +98,20 @@ export async function status(options: GlobalOptions): Promise<void> {
   }
   counts.env = envCount;
 
-  // Hooks (team-declared, hooks/hooks.yaml)
+  const agentsHandler = getAllHandlers().find((h) => h.type === 'agents');
+  counts.agents = agentsHandler
+    ? (await agentsHandler.scanTeamForPull(teamConfig, localConfig)).length
+    : 0;
+
   const hooksHandler = getAllHandlers().find((h) => h.type === 'hooks') as
     | { countHooks: (repoPath: string) => Promise<number> }
     | undefined;
   counts.hooks = hooksHandler ? await hooksHandler.countHooks(repoPath) : 0;
 
-  for (const [type, count] of Object.entries(counts)) {
-    console.log(`  ${type}: ${count}`);
+  counts.mcp = (await parseTeamMcpServers(repoPath)).length;
+
+  for (const type of RESOURCE_TYPES) {
+    console.log(`  ${type}: ${counts[type] ?? 0}`);
   }
 
   // Local pushable items
@@ -162,9 +169,15 @@ export async function list(type: string | undefined, options: ListOptions): Prom
     return;
   }
 
+  if (type && !RESOURCE_TYPES.includes(type as ResourceType)) {
+    log.error(`Unknown resource type: ${type}. Supported: ${RESOURCE_TYPES.join(', ')}`);
+    process.exitCode = 1;
+    return;
+  }
+
   const types: ResourceType[] = type
     ? [type as ResourceType]
-    : ['skills', 'rules', 'docs', 'env'];
+    : [...RESOURCE_TYPES];
 
   // ── Repo section ────────────────────────────────────
   if (source === 'repo' || source === 'all') {
@@ -200,8 +213,12 @@ async function printRepoSection(
         try {
           const envData = YAML.parse(envContent) as { variables?: Array<{ key: string; value: string; description?: string }> };
           if (envData?.variables && envData.variables.length > 0) {
+            if (options.reveal) {
+              process.stderr.write('[warn] Env values will be shown in plaintext\n');
+            }
             for (const v of envData.variables) {
-              console.log(`  ${v.key}=${v.value}`);
+              const display = options.reveal ? v.value : maskEnvValue(v.value);
+              console.log(`  ${v.key}=${display}`);
               if (options.verbose && v.description) {
                 console.log(`    ${v.description}`);
               }
@@ -217,6 +234,40 @@ async function printRepoSection(
       }
     } else {
       console.log('  (none)');
+    }
+    return;
+  }
+
+  if (t === 'mcp') {
+    const servers = await parseTeamMcpServers(repoPath);
+    if (servers.length === 0) {
+      console.log('  (none)');
+      return;
+    }
+    for (const s of servers) {
+      const endpoint = s.transport === 'stdio'
+        ? `${s.command ?? ''} ${(s.args ?? []).join(' ')}`.trim()
+        : (s.url ?? '');
+      console.log(`  ${s.name}  [${s.transport}]  ${endpoint}`);
+      if (options.verbose && s.description) {
+        console.log(`    ${s.description}`);
+      }
+    }
+    return;
+  }
+
+  if (t === 'hooks') {
+    const parsed = await parseHooksYaml(repoPath);
+    const hooks = parsed?.hooks ?? [];
+    if (hooks.length === 0) {
+      console.log('  (none)');
+      return;
+    }
+    for (const h of hooks) {
+      console.log(`  ${h.id}  [${h.event}]`);
+      if (options.verbose && h.description) {
+        console.log(`    ${h.description}`);
+      }
     }
     return;
   }

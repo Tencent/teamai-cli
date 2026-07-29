@@ -83,6 +83,23 @@ teamai hooks inject    # 重新注入到每个已安装的工具
 teamai hooks remove    # 移除所有 teamai 管理的 hooks
 ```
 
+### 团队 MCP Server
+
+在 `mcp/mcp.yaml` 中声明一次，`teamai pull` 按各工具原生格式写入。密钥用 `${VAR}`。
+
+```yaml
+servers:
+  - name: gpu-analysis
+    transport: http            # stdio | http | sse
+    url: https://example.com/api/mcp
+    headers:
+      Authorization: Bearer ${GPU_ANALYSIS_TOKEN}
+```
+
+```bash
+teamai mcp list | inject | remove
+```
+
 ### 跨团队 Skill 订阅
 
 订阅其他团队的公开 skill 仓库：

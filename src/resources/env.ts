@@ -23,6 +23,15 @@ export type EnvVariable = z.infer<typeof EnvVariableSchema>;
 export type EnvYaml = z.infer<typeof EnvYamlSchema>;
 
 /**
+ * Mask an env variable value for display.
+ * Shows first 2 chars + "****", or "****" for very short values.
+ */
+export function maskEnvValue(value: string): string {
+  if (value.length < 4) return '****';
+  return `${value.slice(0, 2)}****`;
+}
+
+/**
  * Quote a string so it is safe to interpolate into a POSIX shell (bash/zsh/sh).
  * Wraps the value in single quotes and encodes any embedded single quote as
  * `'\''`, leaving all other characters (including `"`, `$`, `` ` ``, `\`)

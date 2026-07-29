@@ -83,6 +83,23 @@ teamai hooks inject    # re-reconcile into every installed tool
 teamai hooks remove    # remove all teamai-managed hooks
 ```
 
+### Team MCP Servers
+
+Declare once in `mcp/mcp.yaml`; `teamai pull` writes each tool's native config. Use `${VAR}` for secrets.
+
+```yaml
+servers:
+  - name: gpu-analysis
+    transport: http            # stdio | http | sse
+    url: https://example.com/api/mcp
+    headers:
+      Authorization: Bearer ${GPU_ANALYSIS_TOKEN}
+```
+
+```bash
+teamai mcp list | inject | remove
+```
+
 ### Cross-team Skill Subscription
 
 Subscribe to other teams' public skill repos:

@@ -15,6 +15,8 @@ describe('tclaude/tcodex adapter integration', () => {
         settings: '.tclaude/settings.json',
         claudemd: '.tclaude/CLAUDE.md',
         agents: '.tclaude/agents',
+        // customUserDataDir relocates Claude Code's user data dir into .tclaude/
+        mcp: '.tclaude/.claude.json',
       });
     });
 
