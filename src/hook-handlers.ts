@@ -320,10 +320,10 @@ const localAgentHandler: HookHandler = {
 const turnLimitCounterHandler: HookHandler = {
   name: 'turn-limit-counter',
   async execute(stdin, _tool) {
-    if (process.env.TEAMAI_TURN_HINT_DISABLED === '1') return null;
+    const { isTurnHintDisabled, resolveTurnLimit, recordTurnAndShouldHint } = await import('./turn-limit-hint.js');
+    if (isTurnHintDisabled()) return null;
 
-    const { resolveTurnLimit, recordTurnAndShouldHint } = await import('./turn-limit-hint.js');
-    const sessionId = deriveSessionId(stdin);
+    const sessionId = deriveSessionId(stdin, { includeCwd: true });
     const limit = resolveTurnLimit();
     const prompt = typeof stdin.prompt === 'string' ? stdin.prompt : undefined;
 
@@ -338,14 +338,15 @@ const turnLimitCounterHandler: HookHandler = {
 const turnLimitHintHandler: HookHandler = {
   name: 'turn-limit-hint',
   async execute(stdin, tool) {
-    if (process.env.TEAMAI_TURN_HINT_DISABLED === '1') return null;
-
     const {
       acknowledgeTurnLimitHint,
       buildTurnLimitHintMessage,
       hasPendingTurnLimitHint,
+      isTurnHintDisabled,
     } = await import('./turn-limit-hint.js');
-    const sessionId = deriveSessionId(stdin);
+    if (isTurnHintDisabled()) return null;
+
+    const sessionId = deriveSessionId(stdin, { includeCwd: true });
     if (!hasPendingTurnLimitHint(sessionId)) return null;
 
     const message = buildTurnLimitHintMessage();
