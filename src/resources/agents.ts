@@ -3,7 +3,7 @@ import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFiles, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { resolveBaseDir } from '../types.js';
+import { resolveBaseDir, isAgentDisabled } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import {
   parseAgentYaml,
@@ -266,7 +266,7 @@ export class AgentsHandler extends ResourceHandler {
 
     if (isLegacy) {
       // Legacy: copy .md to tools that support agents
-      await this.pullLegacyMd(item, teamConfig, baseDir);
+      await this.pullLegacyMd(item, teamConfig, baseDir, localConfig);
       return;
     }
 
@@ -297,6 +297,7 @@ export class AgentsHandler extends ResourceHandler {
         log.debug(`Skipping agent sync for ${tool}: tool not installed`);
         continue;
       }
+      if (isAgentDisabled(localConfig, tool)) continue;
 
       const destDir = path.join(baseDir, toolPath.agents);
       try {
@@ -357,6 +358,7 @@ export class AgentsHandler extends ResourceHandler {
     item: ResourceItem,
     teamConfig: TeamaiConfig,
     baseDir: string,
+    localConfig: LocalConfig,
   ): Promise<void> {
     const legacyTools = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy']);
 
@@ -370,6 +372,7 @@ export class AgentsHandler extends ResourceHandler {
         log.debug(`Skipping legacy agent sync for ${tool}: tool not installed`);
         continue;
       }
+      if (isAgentDisabled(localConfig, tool)) continue;
 
       const destDir = path.join(baseDir, toolPath.agents);
       try {

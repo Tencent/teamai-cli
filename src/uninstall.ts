@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { autoDetectInit } from './config.js';
+import { autoDetectInit, saveLocalConfig, saveLocalConfigForScope } from './config.js';
 import { reconcileHooks, hasTeamaiHooks } from './hooks.js';
 import { removeOpenClawHooks, OPENCLAW_HOOK_DIR } from './openclaw-hooks.js';
 import {
@@ -407,9 +407,9 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
   console.log(`⚠  正在卸载 ${plan.scope} scope（${cn}）— ${plan.teamaiHome}`);
   if (agentFilter) {
     const sharedNote = plan.includeShared
-      ? '（最后一个工具，共享资源一并移除）'
-      : '（保留其他工具的共享资源）';
-    console.log(`⚠  仅卸载工具: ${agentFilter}${sharedNote}`);
+      ? ' (last tool — shared resources removed too)'
+      : ' (shared resources kept for remaining tools)';
+    console.log(`⚠  Uninstalling tool only: ${agentFilter}${sharedNote}`);
   }
   console.log('⚠  以下 teamai 资源将被移除:');
   console.log('');
@@ -642,7 +642,8 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
       const tools = Object.keys(teamConfig.toolPaths);
       const matched = tools.find((t) => t.toLowerCase() === opts.agent!.toLowerCase());
       if (!matched) {
-        log.error(`未知工具 "${opts.agent}"。可用工具: ${tools.join(', ')}`);
+        log.error(`Unknown tool "${opts.agent}". Available tools: ${tools.join(', ')}`);
+        process.exitCode = 2;
         return;
       }
       agentKey = matched; // normalize to canonical toolPaths key
@@ -688,11 +689,35 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
 
     await executeRemoval(plan);
 
+    // Persist the exclusion so the next pull (or another tool's session-start
+    // hook) does not resurrect this tool's resources. Only meaningful when the
+    // shared ~/.teamai home survives (non-last-tool uninstall); on a last-tool
+    // uninstall the home is deleted and there is nothing to persist.
+    if (agentKey && !plan.includeShared) {
+      const cfg = localConfig!;
+      // Only prune an existing whitelist. Leaving `enabledAgents` undefined
+      // (meaning "all tools") as-is is important: collapsing it to [] would be
+      // read by the hook path as "whitelist nothing" and stop hook sync for the
+      // remaining tools too. The disabledAgents exclusion below is what actually
+      // keeps the uninstalled tool out on the next pull.
+      if (cfg.enabledAgents) {
+        cfg.enabledAgents = cfg.enabledAgents.filter((t) => t !== agentKey);
+      }
+      const prevDisabled = cfg.disabledAgents ?? [];
+      cfg.disabledAgents = [...new Set([...prevDisabled, agentKey])];
+      if (cfg.scope === 'project') {
+        await saveLocalConfigForScope(cfg, cfg.scope, cfg.projectRoot);
+      } else {
+        await saveLocalConfig(cfg);
+      }
+    }
+
     log.success('teamai 卸载完成');
   } else {
     // Minimal uninstall — just try to remove ~/.teamai/
     if (opts.agent) {
-      log.warn('未检测到有效配置，无法按 --agent 定向卸载指定工具');
+      log.warn('No valid teamai configuration detected; cannot target a specific tool with --agent');
+      process.exitCode = 2;
       return;
     }
     const homeDir = process.env.HOME;

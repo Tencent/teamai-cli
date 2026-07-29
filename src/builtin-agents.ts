@@ -3,7 +3,7 @@ import path from 'node:path';
 import { ensureDir, pathExists, copyFile } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir } from './types.js';
+import { resolveBaseDir, isAgentDisabled } from './types.js';
 import { ResourceHandler } from './resources/base.js';
 
 // ─── Built-in agents deployment ──────────────────────────
@@ -87,6 +87,7 @@ export async function deployBuiltinAgents(
       log.debug(`Skipping built-in agent deployment for ${tool}: tool not installed`);
       continue;
     }
+    if (localConfig && isAgentDisabled(localConfig, tool)) continue;
 
     const targetAgentsDir = path.join(baseDir, toolPath.agents);
     try {

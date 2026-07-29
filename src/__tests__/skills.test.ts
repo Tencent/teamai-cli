@@ -952,3 +952,73 @@ describe('ensureSkillFrontmatter', () => {
     expect(pushedContent).toMatch(/^---\nname: bare-skill\ndescription: Bare Skill\n---\n/);
   });
 });
+
+describe('SkillsHandler.pullItem honors disabledAgents', () => {
+  let tmpDir: string;
+  let homeDir: string;
+  let handler: SkillsHandler;
+  let teamConfig: TeamaiConfig;
+  let localConfig: LocalConfig;
+  let sourcePath: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-skills-pull-disabled-'));
+    homeDir = path.join(tmpDir, 'home');
+    const repoPath = path.join(tmpDir, 'team-repo');
+
+    // Both tools installed (root dirs exist) so isToolInstalled alone wouldn't skip either.
+    await fse.ensureDir(path.join(homeDir, '.claude', 'skills'));
+    await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
+
+    // Team-repo source skill to pull.
+    sourcePath = path.join(repoPath, 'skills', 'team-skill');
+    await fse.ensureDir(sourcePath);
+    await fse.writeFile(path.join(sourcePath, 'SKILL.md'), '---\nname: team-skill\ndescription: X\n---\n');
+
+    vi.stubEnv('HOME', homeDir);
+    handler = new SkillsHandler();
+
+    teamConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+      toolPaths: {
+        claude: { skills: '.claude/skills', rules: '.claude/rules' },
+        codex: { skills: '.codex/skills', rules: '.codex/rules' },
+      },
+    };
+
+    localConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      additionalRoles: [],
+      scope: 'user',
+      disabledAgents: ['claude'],
+    };
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  it('skips a disabled tool but still syncs the others', async () => {
+    const item = {
+      name: 'team-skill',
+      type: 'skills' as const,
+      sourcePath,
+      relativePath: 'skills/team-skill',
+    };
+
+    await handler.pullItem(item, teamConfig, localConfig);
+
+    // claude is disabled → not written, even though ~/.claude exists
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(false);
+    // codex is not disabled → synced normally
+    expect(await fse.pathExists(path.join(homeDir, '.codex', 'skills', 'team-skill'))).toBe(true);
+  });
+});

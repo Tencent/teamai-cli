@@ -641,7 +641,14 @@ export async function reconcileTeamHooksForConfig(
     : await resolveTeamHooks(teamConfig, localConfig.repo.localPath, { auto: opts.auto, silent: opts.silent });
   const baseDir = resolveBaseDir(localConfig);
   const manifestPath = getManagedHooksPath(localConfig.scope, localConfig.projectRoot);
-  const filterAgents = opts.filterAgents ?? localConfig.enabledAgents;
+  let filterAgents = opts.filterAgents ?? localConfig.enabledAgents;
+  const disabled = localConfig.disabledAgents;
+  if (disabled && disabled.length > 0) {
+    // Exclusion always applies, even when there is no whitelist. When no
+    // whitelist exists, start from the full configured tool set.
+    const universe = filterAgents ?? Object.keys(teamConfig.toolPaths);
+    filterAgents = universe.filter((t) => !disabled.includes(t));
+  }
   await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, {
     removeAll: opts.removeAll,
     builtinOverride: builtin,

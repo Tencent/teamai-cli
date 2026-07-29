@@ -179,6 +179,7 @@ export async function initHttp(
     const existing = await loadLocalConfigForScope(scope, projectRoot);
     const prev = existing?.enabledAgents ?? [];
     localConfig.enabledAgents = [...new Set([...prev, options.agent])];
+    localConfig.disabledAgents = (existing?.disabledAgents ?? []).filter((t) => t !== options.agent);
   }
 
   await ensureDir(teamaiHome);
@@ -517,6 +518,7 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
     const existing = await loadLocalConfigForScope(scope, projectRoot);
     const prev = existing?.enabledAgents ?? [];
     localConfig.enabledAgents = [...new Set([...prev, options.agent])];
+    localConfig.disabledAgents = (existing?.disabledAgents ?? []).filter((t) => t !== options.agent);
   }
 
   await ensureDir(teamaiHome);

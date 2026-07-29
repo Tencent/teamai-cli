@@ -953,7 +953,11 @@ What gets removed:
 
 ### Uninstall a single tool (`--agent <tool>`)
 
-`--agent <tool>` removes only that tool's teamai resources (hooks, CLAUDE.md block, skills, rules, built-in agents). The tool name is a key of `toolPaths` (e.g. `claude`, `codex`, `codebuddy`). Shared resources (the env block, docs directory, and `~/.teamai/`) are removed **only when the target is the last tool still using teamai** — otherwise they are kept for the remaining tools. An unknown tool name aborts without deleting anything and lists the available tools.
+`--agent <tool>` removes only that tool's teamai resources (hooks, CLAUDE.md block, skills, rules, built-in agents). The tool name is a key of `toolPaths` (e.g. `claude`, `codex`, `codebuddy`) and is matched case-insensitively. An unknown tool name aborts without deleting anything, lists the available tools, and exits with a non-zero status.
+
+Shared resources (the env block, docs directory, and `~/.teamai/`) are removed **only when the target itself has teamai resources AND is the last tool still using teamai** — otherwise they are kept for the remaining tools. (So targeting a tool that has no teamai resources of its own is a no-op and leaves shared resources in place, even if it happens to be the only tool.)
+
+The exclusion is durable: `uninstall --agent <tool>` drops the tool from `enabledAgents` and records it in `disabledAgents`, so a later `pull` (or another tool's session-start hook) will not resurrect its skills, rules, agents, CLAUDE.md block, or hooks. Running `init --agent <tool>` again clears the exclusion and re-enables sync for that tool.
 
 To rejoin after uninstalling:
 

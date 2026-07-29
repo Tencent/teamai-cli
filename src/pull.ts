@@ -23,6 +23,7 @@ import {
   resolveBaseDir,
   getTeamaiHome,
   isRecallEnabled,
+  isAgentDisabled,
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
@@ -178,6 +179,7 @@ export async function cleanupInactiveNamespaceSkills(
   const baseDir = resolveBaseDir(localConfig);
 
   for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    if (isAgentDisabled(localConfig, tool)) continue;
     if (!toolPath.skills) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
     if (!await pathExists(path.join(baseDir, toolPath.skills))) continue;
@@ -494,10 +496,11 @@ async function pullForScope(
       const tombstones = await handler.readTombstones(localConfig);
       if (tombstones.size === 0) continue;
 
-      for (const [_tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
+      for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
         const dir = toolPath[toolPathField];
         if (!dir) continue;
         if (!await ResourceHandler.isToolInstalled(dir, baseDir)) continue;
+        if (isAgentDisabled(localConfig, tool)) continue;
 
         for (const name of tombstones) {
           const localPath = path.join(baseDir, dir, ext ? `${name}${ext}` : name);
@@ -524,6 +527,7 @@ async function pullForScope(
     const baseDir = resolveBaseDir(localConfig);
 
     for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
+      if (isAgentDisabled(localConfig, tool)) continue;
       if (!toolPath.skills) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
       const skillsDir = path.join(baseDir, toolPath.skills);
@@ -658,6 +662,7 @@ async function pullForScope(
           if (compiled) {
             const baseDir = resolveBaseDir(localConfig);
             for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
+              if (isAgentDisabled(localConfig, tool)) continue;
               if (!toolPath.claudemd) continue;
               if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
 
@@ -688,6 +693,7 @@ async function pullForScope(
         if (compiled) {
           const baseDir = resolveBaseDir(localConfig);
           for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
+            if (isAgentDisabled(localConfig, tool)) continue;
             if (!toolPath.claudemd) continue;
             if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
             const claudeMdPath = path.join(baseDir, toolPath.claudemd);
@@ -902,6 +908,7 @@ export async function injectRecallBlockIntoTools(
         const recallBlock = compileRecallRulesBlock();
         let injected = 0;
         for (const [tool, toolPath] of Object.entries(config.toolPaths)) {
+            if (isAgentDisabled(localConfig, tool)) continue;
             if (!toolPath.claudemd || !toolPath.agents) continue;
             if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
 
@@ -1061,7 +1068,13 @@ async function autoMigrateHooksIfNeeded(): Promise<void> {
   const { injectHooksToAllTools } = await import('./hooks.js');
   const { localConfig, teamConfig } = await autoDetectInit();
   const baseDir = resolveBaseDir(localConfig);
-  await injectHooksToAllTools(teamConfig.toolPaths, baseDir, localConfig.enabledAgents);
+  const disabled = localConfig.disabledAgents;
+  let hookFilter = localConfig.enabledAgents;
+  if (disabled && disabled.length > 0) {
+    const universe = hookFilter ?? Object.keys(teamConfig.toolPaths);
+    hookFilter = universe.filter((t) => !disabled.includes(t));
+  }
+  await injectHooksToAllTools(teamConfig.toolPaths, baseDir, hookFilter);
   log.debug('Hooks migrated to dispatch format');
 }
 
