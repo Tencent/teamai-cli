@@ -77,6 +77,16 @@ type LocalAgentScope = 'instance' | 'user' | 'project';
 type ResourceKind = 'skills' | 'rules' | 'claudemd';
 type CommandResourceKind = 'skill' | 'rule' | 'claudemd';
 
+// Command types recognized but not yet implemented by this reporter. Skipped
+// silently (see isUnimplementedCommand) so the suffix logic in commandKind()
+// cannot misfire (e.g. uninstall_hook_rule ends in _rule and would otherwise be
+// treated as a destructive rule uninstall).
+const UNIMPLEMENTED_COMMAND_TYPES = new Set<string>([
+  'install_hook_rule',
+  'uninstall_hook_rule',
+  'uninstall_teamai',
+]);
+
 interface WorkspaceBinding {
   projectId: number;
   projectName?: string;
@@ -164,6 +174,7 @@ interface LocalAgentCommand {
   rule_slug?: string;
   rule_version?: string;
   rule_type?: string;
+  handle_type?: string;
   claudemd_slug?: string;
   claudemd_version?: string;
   resource_slug?: string;
@@ -172,6 +183,17 @@ interface LocalAgentCommand {
   name?: string;
   version?: string;
   display_name?: string;
+}
+
+/**
+ * Whether a sync command is recognized-but-unimplemented and must be skipped
+ * before dispatch. Matches both the known unimplemented type strings and any
+ * hook command (handle_type === 'hook'), so a future hook `type` outside
+ * UNIMPLEMENTED_COMMAND_TYPES still skips silently instead of falling through
+ * to commandKind() and being acked as a failure.
+ */
+function isUnimplementedCommand(command: LocalAgentCommand): boolean {
+  return UNIMPLEMENTED_COMMAND_TYPES.has(command.type ?? '') || command.handle_type === 'hook';
 }
 
 interface LocalAgentContext {
@@ -1217,7 +1239,11 @@ export async function buildSyncPayload(
 }
 
 function commandKind(command: LocalAgentCommand): CommandResourceKind | null {
-  if (command.rule_type === 'prompt') return 'claudemd';
+  // Unified cmds[] carries handle_type; legacy commands[] carries rule_type.
+  // Both map a prompt rule to the claudemd resource kind.
+  if (command.rule_type === 'prompt' || command.handle_type === 'prompt') return 'claudemd';
+  if (command.handle_type === 'rule') return 'rule';
+  if (command.handle_type === 'hook') return null; // defensive; skipped before dispatch
   const type = command.type ?? '';
   if (type.endsWith('_skill') || type === '') return 'skill';
   if (type.endsWith('_claudemd') || type.endsWith('_claude_md')) return 'claudemd';
@@ -1698,6 +1724,10 @@ async function processCommands(
 ): Promise<void> {
   const tag = localAgentTag(context);
   for (const command of commands) {
+    if (isUnimplementedCommand(command)) {
+      log.debug(`${tag} skipping unimplemented command ${command.id} (${command.type})`);
+      continue;
+    }
     try {
       const version = await executeCommand(config, command, context);
       await ackCommand(config, tag, command, 'success', version);
@@ -1768,13 +1798,25 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
     log.debug(`${tag} report OK`);
 
     const syncPayload = await buildSyncPayload(config, context);
-    const syncResponse = await localAgentFetch<{ ok?: boolean; commands?: LocalAgentCommand[] }>(
+    const syncResponse = await localAgentFetch<{
+      ok?: boolean;
+      cmds?: LocalAgentCommand[];
+      commands?: LocalAgentCommand[];
+    }>(
       config,
       tag,
       'sync',
       { method: 'POST', body: JSON.stringify(syncPayload) },
     );
-    const commands = syncResponse.commands ?? [];
+    // Prefer the unified cmds[] (source of truth). Fall back to the legacy
+    // commands[] for older backends that do not yet emit cmds. An empty cmds[]
+    // is treated as "cmds not available" and falls back too — the backend sends
+    // identical data in both arrays, so this only affects old backends where
+    // cmds is genuinely absent/empty while commands still carries the work.
+    // TODO(jiahe, cmds-migration): drop the `commands` fallback once the backend
+    // guarantees `cmds` on all sync responses (clawpro iwiki ch.7).
+    const cmds = syncResponse.cmds;
+    const commands = cmds && cmds.length > 0 ? cmds : (syncResponse.commands ?? []);
     if (commands.length > 0) {
       log.debug(`${tag} sync returned ${commands.length} command(s): ${commands.map((c) => `${c.type}#${c.id}`).join(', ')}`);
       await processCommands(config, commands, context);
