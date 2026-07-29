@@ -586,11 +586,13 @@ describe('local-agent: full-snapshot workspace reporting', () => {
       workspaces?: Array<Record<string, unknown>>;
     };
 
+    const rA = fse.realpathSync(wsA);
+    const rB = fse.realpathSync(wsB);
     expect(payload.workspaces).toHaveLength(2);
     const paths = (payload.workspaces ?? []).map((w) => w.path as string);
-    expect(new Set(paths)).toEqual(new Set([wsA, wsB]));
-    const wsAEntry = (payload.workspaces ?? []).find((w) => w.path === wsA);
-    const wsBEntry = (payload.workspaces ?? []).find((w) => w.path === wsB);
+    expect(new Set(paths)).toEqual(new Set([rA, rB]));
+    const wsAEntry = (payload.workspaces ?? []).find((w) => w.path === rA);
+    const wsBEntry = (payload.workspaces ?? []).find((w) => w.path === rB);
     expect(wsAEntry?.project_id).toBe(11);
     expect(wsBEntry?.project_id).toBe(22);
     // Empty directories — no skills or rules installed.
@@ -622,10 +624,12 @@ describe('local-agent: full-snapshot workspace reporting', () => {
       workspaces?: Array<Record<string, unknown>>;
     };
 
-    const wsFullEntry = (payload.workspaces ?? []).find((w) => w.path === wsFull) as
+    const rFull = fse.realpathSync(wsFull);
+    const rEmpty = fse.realpathSync(wsEmpty);
+    const wsFullEntry = (payload.workspaces ?? []).find((w) => w.path === rFull) as
       | (Record<string, unknown> & { skills?: Array<{ slug: string }> })
       | undefined;
-    const wsEmptyEntry = (payload.workspaces ?? []).find((w) => w.path === wsEmpty);
+    const wsEmptyEntry = (payload.workspaces ?? []).find((w) => w.path === rEmpty);
 
     expect(wsFullEntry?.skills).toBeDefined();
     expect(wsFullEntry?.skills?.map((s) => s.slug)).toContain('demo-skill');
@@ -648,7 +652,7 @@ describe('local-agent: full-snapshot workspace reporting', () => {
     const pruned = await pruneDeadWorkspaceBindings(config!);
 
     expect(pruned).toBe(true);
-    expect(Object.keys(config!.workspaceBindings)).toEqual([wsLive]);
+    expect(Object.keys(config!.workspaceBindings)).toEqual([fse.realpathSync(wsLive)]);
   });
 
   it('returns false when all directories exist', async () => {
@@ -687,12 +691,13 @@ describe('local-agent: full-snapshot workspace reporting', () => {
     };
 
     const realCwd = fse.realpathSync(cwdDir);
+    const rA = fse.realpathSync(wsA);
     expect(payload.workspaces).toHaveLength(2);
     const allPaths = (payload.workspaces ?? []).map((w) => w.path as string);
-    expect(allPaths).toContain(wsA);
+    expect(allPaths).toContain(rA);
     expect(allPaths).toContain(realCwd);
     const cwdEntry = (payload.workspaces ?? []).find((w) => w.path === realCwd);
-    const wsAEntry = (payload.workspaces ?? []).find((w) => w.path === wsA);
+    const wsAEntry = (payload.workspaces ?? []).find((w) => w.path === rA);
     expect(cwdEntry?.project_id).toBeUndefined();
     expect(wsAEntry?.project_id).toBe(5);
   });
@@ -725,7 +730,7 @@ describe('local-agent: full-snapshot workspace reporting', () => {
       workspaces?: Array<Record<string, unknown>>;
     };
 
-    const entry = (payload.workspaces ?? []).find((w) => w.path === wsSkip);
+    const entry = (payload.workspaces ?? []).find((w) => w.path === fse.realpathSync(wsSkip));
     expect(entry).toBeDefined();
     expect(entry?.project_id).toBe(0);
   });
@@ -762,15 +767,65 @@ describe('local-agent: full-snapshot workspace reporting', () => {
       workspaces?: Array<Record<string, unknown>>;
     };
     expect(wbPayload.workspaces).toHaveLength(1);
-    expect(wbPayload.workspaces![0].path).toBe(wsWb);
+    expect(wbPayload.workspaces![0].path).toBe(fse.realpathSync(wsWb));
     expect(wbPayload.workspaces![0].ide_type).toBe('workbuddy');
 
     const cbPayload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
       workspaces?: Array<Record<string, unknown>>;
     };
     expect(cbPayload.workspaces).toHaveLength(1);
-    expect(cbPayload.workspaces![0].path).toBe(wsCb);
+    expect(cbPayload.workspaces![0].path).toBe(fse.realpathSync(wsCb));
     expect(cbPayload.workspaces![0].ide_type).toBe('codebuddy');
+  });
+
+  it('collapses two path aliases of the same physical workspace into one entry', async () => {
+    // Real directory + a symlink alias pointing at it. Both are valid strings
+    // for the same physical workspace (mirrors macOS case-insensitive aliasing).
+    const realWs = path.join(tmpDir, 'ws-real');
+    const aliasWs = path.join(tmpDir, 'ws-alias');
+    await fse.ensureDir(realWs);
+    await fse.symlink(realWs, aliasWs, 'dir');
+
+    // Config stores the two aliases as distinct keys, as a pre-migration install would.
+    await setupConfig({
+      [realWs]: { projectId: 11, projectName: 'real', boundAt: 'x', ideType: 'codebuddy' },
+      [aliasWs]: { projectId: 11, projectName: 'alias', boundAt: 'x', ideType: 'codebuddy' },
+    });
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    // After canonicalization migration, only one binding key remains.
+    const canonical = fse.realpathSync(realWs);
+    expect(Object.keys(config!.workspaceBindings)).toEqual([canonical]);
+
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy' }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+    expect(payload.workspaces).toHaveLength(1);
+    expect(payload.workspaces![0].path).toBe(canonical);
+    expect(payload.workspaces![0].project_id).toBe(11);
+  });
+
+  it('warns and keeps first binding when aliases have conflicting project ids', async () => {
+    const realWs = path.join(tmpDir, 'ws-conflict-real');
+    const aliasWs = path.join(tmpDir, 'ws-conflict-alias');
+    await fse.ensureDir(realWs);
+    await fse.symlink(realWs, aliasWs, 'dir');
+
+    // Order in the object literal determines iteration order; realWs (id 11) is first.
+    await setupConfig({
+      [realWs]: { projectId: 11, projectName: 'real', boundAt: 'x', ideType: 'codebuddy' },
+      [aliasWs]: { projectId: 22, projectName: 'alias', boundAt: 'x', ideType: 'codebuddy' },
+    });
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+
+    const canonical = fse.realpathSync(realWs);
+    expect(Object.keys(config!.workspaceBindings)).toEqual([canonical]);
+    // First-seen non-zero projectId wins.
+    expect(config!.workspaceBindings[canonical].projectId).toBe(11);
   });
 
   it('includes unattributed cwd binding as current tool and excludes unattributed non-cwd binding', async () => {
@@ -810,13 +865,14 @@ describe('local-agent: full-snapshot workspace reporting', () => {
 
     const { stampWorkspaceTool, loadLocalAgentConfig } = await import('../local-agent.js');
     const config = await loadLocalAgentConfig();
+    const realWsCwd = fse.realpathSync(wsCwd);
 
-    const changed = stampWorkspaceTool(config!, wsCwd, 'codebuddy');
+    const changed = stampWorkspaceTool(config!, realWsCwd, 'codebuddy');
     expect(changed).toBe(true);
-    expect(config!.workspaceBindings[wsCwd].ideType).toBe('codebuddy');
+    expect(config!.workspaceBindings[realWsCwd].ideType).toBe('codebuddy');
 
     // Calling again with same tool is idempotent.
-    const changedAgain = stampWorkspaceTool(config!, wsCwd, 'codebuddy');
+    const changedAgain = stampWorkspaceTool(config!, realWsCwd, 'codebuddy');
     expect(changedAgain).toBe(false);
   });
 
@@ -829,11 +885,12 @@ describe('local-agent: full-snapshot workspace reporting', () => {
 
     const { stampWorkspaceTool, loadLocalAgentConfig } = await import('../local-agent.js');
     const config = await loadLocalAgentConfig();
+    const realWsCwd = fse.realpathSync(wsCwd);
 
     expect(stampWorkspaceTool(config!, null, 'codebuddy')).toBe(false);
     expect(stampWorkspaceTool(config!, undefined, 'codebuddy')).toBe(false);
     // Config must be untouched.
-    expect(config!.workspaceBindings[wsCwd].ideType).toBeUndefined();
+    expect(config!.workspaceBindings[realWsCwd].ideType).toBeUndefined();
   });
 
   it('stampWorkspaceTool returns false when currentPath has no binding in config', async () => {
@@ -863,14 +920,14 @@ describe('local-agent: full-snapshot workspace reporting', () => {
       workspaces?: Array<Record<string, unknown>>;
     };
     expect(cbPayload.workspaces).toHaveLength(1);
-    expect(cbPayload.workspaces![0].path).toBe(wsCb);
+    expect(cbPayload.workspaces![0].path).toBe(fse.realpathSync(wsCb));
     expect(cbPayload.workspaces![0].ide_type).toBe('codebuddy');
 
     const wbPayload = await buildSyncPayload(config!, { tool: 'workbuddy' }) as {
       workspaces?: Array<Record<string, unknown>>;
     };
     expect(wbPayload.workspaces).toHaveLength(1);
-    expect(wbPayload.workspaces![0].path).toBe(wsWb);
+    expect(wbPayload.workspaces![0].path).toBe(fse.realpathSync(wsWb));
     expect(wbPayload.workspaces![0].ide_type).toBe('workbuddy');
   });
 });

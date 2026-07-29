@@ -15,11 +15,13 @@ import {
   TEAMAI_ENV_END,
   getTeamaiHome,
   getManagedHooksPath,
+  managedMcpManifestPath,
   resolveBaseDir,
   type GlobalOptions,
   type TeamaiConfig,
   type LocalConfig,
   type Scope,
+  type ManagedMcpManifest,
 } from './types.js';
 import { BUILTIN_RULE_NAMES } from './builtin-rules.js';
 import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
@@ -27,6 +29,7 @@ import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import {
   pathExists,
   readFileSafe,
+  readJson,
   writeFile,
   remove,
   listDirs,
@@ -55,6 +58,8 @@ interface RemovalPlan {
   ruleFiles: string[];
   /** Built-in agent .md files deployed by the CLI (e.g. teamai-recall). */
   agentFiles: string[];
+  /** teamai-managed MCP servers from managed-mcp.json (`tool/server` or `tool:project/server`). */
+  mcpServers: string[];
   /** Shell profile path containing env block (null if none). */
   shellProfile: string | null;
   /** Docs directory (null if doesn't exist). */
@@ -148,6 +153,7 @@ async function buildRemovalPlan(
     skillDirs: [],
     ruleFiles: [],
     agentFiles: [],
+    mcpServers: [],
     shellProfile: null,
     docsDir: null,
     teamaiHome,
@@ -155,6 +161,18 @@ async function buildRemovalPlan(
     managedHooksPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
     scope: localConfig.scope,
   };
+
+  // MCP servers are tracked in managed-mcp.json (same ownership model as hooks).
+  const mcpManifestPath = expandHome(
+    managedMcpManifestPath(localConfig.scope, localConfig.projectRoot),
+  );
+  const mcpManifest = (await readJson<ManagedMcpManifest>(mcpManifestPath)) ?? {};
+  for (const [toolKey, records] of Object.entries(mcpManifest)) {
+    for (const rec of records ?? []) {
+      if (rec?.name) plan.mcpServers.push(`${toolKey}/${rec.name}`);
+    }
+  }
+  plan.mcpServers.sort();
 
   // Discover team repo resource names for targeted removal. CLI built-in
   // resources (recall agent/rule, share-learnings skill, …) are deployed by
@@ -291,6 +309,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.skillDirs.length === 0 &&
     plan.ruleFiles.length === 0 &&
     plan.agentFiles.length === 0 &&
+    plan.mcpServers.length === 0 &&
     plan.shellProfile === null &&
     plan.docsDir === null &&
     !plan.teamaiHomeExists
@@ -340,6 +359,14 @@ function printSummary(plan: RemovalPlan): void {
 
   if (plan.agentFiles.length > 0) {
     console.log(`   Agents (${plan.agentFiles.length} 个文件)`);
+    console.log('');
+  }
+
+  if (plan.mcpServers.length > 0) {
+    console.log(`   MCP servers (${plan.mcpServers.length}):`);
+    for (const entry of plan.mcpServers) {
+      console.log(`     ${entry}`);
+    }
     console.log('');
   }
 
@@ -541,7 +568,20 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
       }
     }
 
+    // MCP cleanup must run before executeRemoval deletes ~/.teamai/: ownership is
+    // tracked in managed-mcp.json inside that directory. Hooks already do this
+    // inside executeRemoval for the same reason.
+    try {
+      const { reconcileMcpForConfig } = await import('./mcp-reconcile.js');
+      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig, { removeAll: true });
+      const removed = changes.filter((c) => c.action === 'removed');
+      if (removed.length > 0) log.info(`Removed ${removed.length} teamai-managed MCP server(s)`);
+    } catch (e) {
+      log.warn(`Failed to remove MCP servers: ${(e as Error).message}`);
+    }
+
     await executeRemoval(plan);
+
     log.success('teamai 卸载完成');
   } else {
     // Minimal uninstall — just try to remove ~/.teamai/

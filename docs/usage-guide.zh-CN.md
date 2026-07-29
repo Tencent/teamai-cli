@@ -200,12 +200,14 @@ teamai init --http https://your-team-host/api --token <api-key>
 ```bash
 teamai status                       # 查看状态
 teamai members                      # 查看团队成员
-teamai list                         # 查看团队仓库 + 各 AI agent 已安装的 skills（默认 --source all）
-teamai list --source repo           # 只看团队仓库内容（旧行为）
-teamai list --source local          # 只看每个已安装 agent 下的 skills，按来源标注
-teamai list --agent claude --verbose  # 只看 Claude Code 安装的 skills，含描述
+teamai list                         # 全部资源类型（skills|rules|docs|env|agents|hooks|mcp）+ 本地 skills
+teamai list mcp                     # 只看团队 MCP servers
+teamai list --source repo           # 只看团队仓库
+teamai list --source local          # 各已安装 agent 下的 skills
+teamai list --agent claude --verbose
+teamai list env --reveal            # 明文显示 env（默认脱敏）
 
-teamai skill                        # 列出所有 skill（等价于 teamai list skills --source all）
+teamai skill                        # 等价于 teamai list skills --source all
 teamai skill show hai-deploy-test   # 看单个 skill 的来源 / 贡献者 / 安装位置 / 描述摘要
 ```
 
@@ -391,6 +393,54 @@ teamai push
 ### Docs（文档）
 
 将文档放入团队仓库 `docs/` 目录，push 后团队成员 pull 时自动同步。
+
+### MCP Server
+
+在团队仓库的 `mcp/mcp.yaml` 中声明一次，`teamai pull` 时会按各工具的原生格式写入它们各自的 MCP 配置文件。
+
+```yaml
+servers:
+  - name: gpu-analysis
+    description: GPU 存量与价格查询
+    transport: http                      # stdio | http | sse
+    url: https://example.com/api/mcp
+    headers:
+      Authorization: Bearer ${GPU_ANALYSIS_TOKEN}
+    timeout: 600000
+
+  - name: local-formatter
+    transport: stdio
+    command: npx
+    args: ['-y', '@acme/formatter-mcp']
+    env:
+      FORMATTER_MODE: strict
+    requires: [npx]                      # npx 不存在时跳过并提示
+    tools: [claude, cursor]              # 可选；默认所有支持 MCP 的工具
+```
+
+各工具的落点：
+
+| 工具 | 用户级 | 项目级 |
+|---|---|---|
+| claude | `~/.claude.json` | `<project>/.mcp.json` |
+| cursor | `~/.cursor/mcp.json` | `<project>/.cursor/mcp.json` |
+| codebuddy / workbuddy | `~/.<tool>/mcp.json` | `<project>/.<tool>/mcp.json` |
+| codex | `~/.codex/config.toml` | 不支持 |
+
+Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；与手写同名则跳过，除非 `--force`。
+
+**密钥**：写 `${VAR}`，不要写明文。取值优先来自环境变量，其次是 `env/env.yaml` → `~/.teamai/env`。变量无法解析则跳过并提示。
+
+能让密钥不落盘的工具会走那条路：Claude 项目级 `.mcp.json` 保留占位符（由 Claude 展开）；Codex 写 `bearer_token_env_var` / `env_http_headers`（只记变量名）。其余情况解析后写入 `0600` 文件。项目级下，不支持 `${VAR}` 展开的工具会跳过带密钥的 server，避免明文进 git。
+
+Claude Code 可能把来自仓库的 `.mcp.json` 标为待批准，需在交互式会话中确认一次。
+
+```bash
+teamai mcp list              # 查看 server、密钥状态与安装位置
+teamai mcp inject            # 立即注入；--dry-run 预览，--force 覆盖同名
+teamai mcp remove            # 移除所有 teamai 管理的 server
+```
+
 
 ---
 
@@ -705,7 +755,7 @@ teamai hooks inject    # 重新注入
 teamai hooks remove    # 移除
 ```
 
-这两个命令只会操作你实际已安装的工具（即 `~/.<tool>/` 根目录已存在的工具）。对于 `toolPaths` 中已配置但未安装的工具，命令不会为其凭空创建根目录，因此像 `.tclaude` / `.tcodex` 这类未安装的工具会被完全跳过。
+这两个命令只会操作你实际已安装的工具（即 `~/.<tool>/` 根目录已存在的工具）。对于 `toolPaths` 中已配置但未安装的工具，命令不会为其凭空创建根目录。
 
 ### 团队 Hooks 声明
 

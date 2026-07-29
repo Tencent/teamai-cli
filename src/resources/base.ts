@@ -6,7 +6,7 @@ const TOMBSTONE_FILE = '.removed';
 
 /**
  * Abstract base class for resource handlers.
- * Each resource type (skills, rules, docs, env) implements this.
+ * Each resource type (skills, rules, docs, env, agents, hooks, mcp) implements this.
  */
 export abstract class ResourceHandler {
   abstract readonly type: ResourceType;

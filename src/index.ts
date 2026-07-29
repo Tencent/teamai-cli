@@ -70,9 +70,10 @@ program
 
 program
   .command('list [type]')
-  .description('List resources (skills|rules|docs|env). For skills, --source local/all also scans installed AI agent skill directories.')
+  .description('List resources (skills|rules|docs|env|agents|hooks|mcp). For skills, --source local/all also scans installed AI agent skill directories.')
   .option('--source <src>', 'Where to look for skills: repo | local | all', 'all')
   .option('--agent <name>', 'Filter local agents by id (only applies to skills)')
+  .option('--reveal', 'Show env values in plaintext (default: masked)')
   .action(async (type, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { list } = await import('./status.js');
@@ -163,7 +164,7 @@ membersCmd
 
 program
   .command('remove <type> <names...>')
-  .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules)')
+  .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules|agents|mcp)')
   .action(async (type, names) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { remove } = await import('./remove.js');
@@ -504,6 +505,41 @@ hooksCmd
     await hooksRemove(globalOpts);
   });
 
+// ─── MCP commands ───────────────────────────────────────
+
+const mcpCmd = program
+  .command('mcp')
+  .description('Manage team MCP servers across AI tools');
+
+mcpCmd
+  .command('list')
+  .description('List team MCP servers and their per-tool install status')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { mcpList } = await import('./mcp-cmd.js');
+    await mcpList(globalOpts);
+  });
+
+mcpCmd
+  .command('inject')
+  .description('Inject team MCP servers into all AI tool configs')
+  .option('--dry-run', 'Show what would change without writing')
+  .option('--force', 'Overwrite servers that collide with user-owned entries')
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { mcpInject } = await import('./mcp-cmd.js');
+    await mcpInject({ ...globalOpts, ...cmdOpts });
+  });
+
+mcpCmd
+  .command('remove')
+  .description('Remove all teamai-managed MCP servers from AI tool configs')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { mcpRemove } = await import('./mcp-cmd.js');
+    await mcpRemove(globalOpts);
+  });
+
 // ─── Usage tracking commands ────────────────────────────
 
 program
@@ -605,10 +641,30 @@ program
   .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
   .option('--bg-only', 'Internal: run only fire-and-forget background handlers (used by the detached child)')
   .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean }) => {
+    const bgOnly = cmdOpts.bgOnly ?? false;
+
+    // Hard wall-clock safety net for the FOREGROUND (parent) hook process, which
+    // blocks the host IDE's hook. The host aborts a hook at ~10s regardless of
+    // any larger declared timeout, reporting "Hook timed out after 10000ms"
+    // (error 3003) and breaking the IDE. Guarantee we exit well before that no
+    // matter which stage stalls — a STDIN read that never sees EOF, a wedged
+    // handler, or a pending socket from an aborted fetch keeping the event loop
+    // alive. 7s leaves margin below the 10s cap while sitting comfortably above
+    // the 4.5s foreground handler budget, so it never truncates legitimate work.
+    // The detached `--bg-only` child is unref'd and not awaited by the host, so
+    // it is exempt and keeps its full budget to finish real syncs/downloads.
+    const HOOK_HARD_EXIT_MS = 7_000;
+    let hardExit: NodeJS.Timeout | undefined;
+    if (!bgOnly) {
+      hardExit = setTimeout(() => process.exit(0), HOOK_HARD_EXIT_MS);
+      hardExit.unref();
+    }
+
     const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
     try {
-      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*', cmdOpts.bgOnly ?? false);
+      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*', bgOnly);
     } finally {
+      if (hardExit) clearTimeout(hardExit);
       // Hook subprocesses must exit promptly: a hung/unreachable backend fetch can
       // leave a socket pending on the event loop, blocking natural exit and tripping
       // the host IDE's default hook timeout. Force exit once dispatch has settled.

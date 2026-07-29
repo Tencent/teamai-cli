@@ -17,16 +17,48 @@
 import { spawn } from 'node:child_process';
 
 import { createDispatcher, type Dispatcher } from './hook-dispatch.js';
-import { buildHandlerRegistry } from './hook-handlers.js';
+import { buildHandlerRegistry, filterHandlersForConfig } from './hook-handlers.js';
 import { log, setStderrOnly } from './utils/logger.js';
 
-/** Read STDIN fully. Returns empty string if STDIN is a TTY. */
+/**
+ * Max time to wait for STDIN EOF before proceeding with whatever was received.
+ *
+ * `for await (process.stdin)` only ends when the host closes the pipe (EOF). If
+ * the host (e.g. CodeBuddy) writes the hook payload but never closes STDIN — or
+ * opens the pipe without sending EOF — the read would hang until the host aborts
+ * the hook with "Hook timed out after 10000ms" (error 3003), all *before* any
+ * handler timeout can engage. Racing a short deadline lets us continue with the
+ * payload we already buffered (a healthy host EOFs within milliseconds, so this
+ * never triggers in normal use).
+ */
+const STDIN_READ_TIMEOUT_MS = 2_000;
+
+/**
+ * Read STDIN fully, but never block longer than STDIN_READ_TIMEOUT_MS waiting
+ * for EOF. Returns empty string if STDIN is a TTY. On timeout, returns whatever
+ * chunks were already received (typically the full payload minus a missing EOF).
+ */
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return '';
   const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
+  const readAll = (async () => {
+    for await (const chunk of process.stdin) {
+      chunks.push(chunk as Buffer);
+    }
+  })();
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, STDIN_READ_TIMEOUT_MS);
+    // Don't let this timer itself keep the event loop alive.
+    timer.unref();
+  });
+  try {
+    await Promise.race([readAll, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
+  // Swallow late read errors/rejections so an aborted read can't crash the hook.
+  readAll.catch(() => {});
   return Buffer.concat(chunks).toString('utf-8');
 }
 
@@ -127,7 +159,13 @@ export async function hookDispatchCli(
   const stdin = parseStdin(raw, event);
   if (stdin === null) return;
 
-  const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+  // Provider-config gate: HTTP-only teams must not receive git-provider-only
+  // hook prompts (contribute / mr-hint / votes). Filter keyed on teamai's own
+  // configured source, independent of the cwd's git remote.
+  const { loadLocalConfig } = await import('./config.js');
+  const localConfig = await loadLocalConfig();
+  const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
+  const dispatcher = createDispatcher({ handlers });
 
   // Detached child: run the fire-and-forget handlers, then exit. No output is
   // wired back to the host (the parent already returned).

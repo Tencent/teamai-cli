@@ -1126,6 +1126,10 @@ export async function pull(options: GlobalOptions): Promise<void> {
   // session start. In project mode user is null, so user hooks are left alone.
   await reconcileHooksAllScopes(projectMode ? null : userConfig, projectConfig, options);
 
+  // 3.6. Reconcile team MCP servers. Outside pullForScope for the same reason as
+  // hooks: mcp.yaml changes must apply even when the rev fast-path short-circuits.
+  await reconcileMcpAllScopes(projectMode ? null : userConfig, projectConfig, options);
+
   // 4. Auto-report usage data to all active scopes. Events live in a single
   //    shared file (~/.teamai/usage.jsonl), so we report to each repo with
   //    skipTruncate=true first, then truncate once at the end.
@@ -1207,6 +1211,39 @@ async function reconcileHooksAllScopes(
       }
     } catch (e) {
       log.debug(`[${localConfig.scope}] Hook reconcile skipped: ${(e as Error).message}`);
+    }
+  }
+}
+
+/**
+ * Reconcile team MCP servers across all active scopes. MCP servers load at
+ * session start, so a change applied here takes effect in the user's next
+ * session — which is exactly when the SessionStart pull hook runs.
+ */
+async function reconcileMcpAllScopes(
+  userConfig: LocalConfig | null,
+  projectConfig: LocalConfig | null,
+  options: GlobalOptions,
+): Promise<void> {
+  if (options.dryRun) return;
+  const scopes = [userConfig, projectConfig].filter((c): c is LocalConfig => !!c);
+  for (const localConfig of scopes) {
+    try {
+      const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+      if (!teamConfig) continue;
+      const { reconcileMcpForConfig } = await import('./mcp-reconcile.js');
+      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+
+      const applied = changes.filter((c) => c.action !== 'skipped');
+      for (const c of changes) {
+        if (c.action === 'skipped') log.debug(`[mcp] ${c.tool}/${c.server}: skipped — ${c.reason}`);
+      }
+      if (applied.length > 0 && !options.silent) {
+        const servers = [...new Set(applied.map((c) => c.server))];
+        log.info(`MCP: ${applied.length} change(s) across ${servers.length} server(s). Restart your AI tool session to load them.`);
+      }
+    } catch (e) {
+      log.debug(`[${localConfig.scope}] MCP reconcile skipped: ${(e as Error).message}`);
     }
   }
 }
