@@ -515,6 +515,16 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
     }
   }
 
+  // (a3) Remove HTTP-source agent hooks across all formats via their manifest
+  // (issue #238). Dynamic import mirrors teardownPlugins — keeps local-agent's
+  // heavy dependency graph out of uninstall's static import chain. Best-effort.
+  try {
+    const { removeAllAgentHooks } = await import('./local-agent.js');
+    await removeAllAgentHooks();
+  } catch (e) {
+    log.warn(`Failed to remove agent hooks: ${(e as Error).message}`);
+  }
+
   // (b) Clean CLAUDE.md teamai section blocks
   for (const claudeMdPath of plan.claudeMdFiles) {
     try {

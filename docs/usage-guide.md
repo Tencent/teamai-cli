@@ -647,6 +647,43 @@ Security boundary for the executed `cmd`:
 - **On by default** — like install/uninstall commands, it runs automatically. Set `TEAMAI_DISABLE_REMOTE_CMD=1` on the client to reject it (acked `failed` with `remote cmd disabled by client`).
 - **Timeout** — a hung command is killed after 120s and acked `failed`.
 
+The backend may also push **`install_hook_rule`** / **`uninstall_hook_rule`** commands to remotely
+manage a session hook in the **current reporting tool**'s settings, keyed by `slug`. The result is
+reported over the same ack channel:
+
+```jsonc
+// install (or replace) a hook keyed by slug
+{ "id": 50, "type": "install_hook_rule", "handle_type": "hook", "slug": "my-hook",
+  "event": "SessionStart", "cmd": "echo hi", "timeout": 10 }
+
+// uninstall the hook previously installed under slug
+{ "id": 51, "type": "uninstall_hook_rule", "handle_type": "hook", "slug": "my-hook" }
+```
+
+Rules for agent hooks:
+
+- **Current tool only** — the hook is written to the tool that is reporting (e.g. under Claude ⇒
+  only `.claude/settings.json`). Other tools are never touched.
+- **Supported tools** — `claude` / `codex` / `workbuddy` / `codebuddy` (plus their internal
+  variants). **Cursor and OpenClaw-family tools are rejected** → acked `failed` (`unsupported tool`).
+- **Event whitelist** — `SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`.
+  Any other event → acked `failed` (`unsupported event`).
+- **Optional `matcher`** — a tool-name filter for `PreToolUse` / `PostToolUse`; defaults to `*`
+  (all tools) when omitted.
+- **Default timeout 10s** when `timeout` is omitted; the backend value is honored when present.
+- **Idempotent** — re-installing the same `slug` replaces the existing hook rather than duplicating
+  it; `uninstall_hook_rule` for a missing `slug` is acked `success`.
+- **Isolation** — agent hooks use a dedicated `[teamai:agent-hook:<slug>]` marker, so a team pull
+  never deletes them and installing one never disturbs built-in or team hooks.
+- **Teardown** — agent hooks are removed by `uninstall_hook_rule`, `teamai source remove`, and
+  `teamai uninstall` (no residue in any tool's settings).
+- **Kill-switch** — an agent hook is a backend-supplied command the tool auto-runs on its events,
+  so it shares the `uninstall_teamai` trust model: setting `TEAMAI_DISABLE_REMOTE_CMD=1` on the
+  client rejects `install_hook_rule` / `uninstall_hook_rule` too (acked `failed`).
+- **Codex matching** — codex settings carry no description field, so codex agent hooks are matched
+  by their exact command and the local-agent manifest is the authoritative record for their
+  teardown. Backends should use a **unique `cmd` per codex `slug`** so replace/remove stay precise.
+
 Configurable environment variables:
 
 | Variable | Purpose |
@@ -657,7 +694,7 @@ Configurable environment variables:
 | `TEAMAI_REPORT_AGENTS` | Comma-separated list of agents that report (default `workbuddy,codebuddy`) |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | Allowlist of hosts for skill `download_url` (empty = allow all) |
 | `TEAMAI_ALLOW_SANDBOX_REPORT` | Set to `1` to force report/sync inside a CloudStudio sandbox (see note below) |
-| `TEAMAI_DISABLE_REMOTE_CMD` | Set to `1` to reject server-pushed `uninstall_teamai` commands (they are acked `failed`) |
+| `TEAMAI_DISABLE_REMOTE_CMD` | Set to `1` to reject server-pushed `uninstall_teamai`, `install_hook_rule`, and `uninstall_hook_rule` commands (they are acked `failed`) |
 
 > **Privacy:** The install path and machine id are only hashed locally to derive `local_agent_id` — they are never reported.
 

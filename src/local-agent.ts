@@ -21,7 +21,7 @@ import {
 } from './utils/fs.js';
 import { ResourceHandler } from './resources/base.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
-import { injectHooksToAllTools } from './hooks.js';
+import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
@@ -84,10 +84,12 @@ type CommandResourceKind = 'skill' | 'rule' | 'claudemd';
 // treated as a destructive rule uninstall). uninstall_teamai is NOT here — it
 // carries a `cmd` and is executed by runCmdCommand (see executeCommand), so the
 // local agent actually uninstalls itself and acks.
-const UNIMPLEMENTED_COMMAND_TYPES = new Set<string>([
-  'install_hook_rule',
-  'uninstall_hook_rule',
-]);
+// install_hook_rule / uninstall_hook_rule are now implemented (see runHookRuleCommand) and are NOT skipped.
+const UNIMPLEMENTED_COMMAND_TYPES = new Set<string>([]);
+
+/** Hook commands this reporter implements (see runHookRuleCommand). Excluded from
+ *  the handle_type==='hook' skip so they dispatch instead of being silently dropped. */
+const IMPLEMENTED_HOOK_COMMAND_TYPES = new Set<string>(['install_hook_rule', 'uninstall_hook_rule']);
 
 interface WorkspaceBinding {
   projectId: number;
@@ -186,6 +188,9 @@ interface LocalAgentCommand {
   version?: string;
   display_name?: string;
   cmd?: string;
+  event?: string;
+  matcher?: string;
+  timeout?: number;
 }
 
 /**
@@ -196,7 +201,9 @@ interface LocalAgentCommand {
  * to commandKind() and being acked as a failure.
  */
 function isUnimplementedCommand(command: LocalAgentCommand): boolean {
-  return UNIMPLEMENTED_COMMAND_TYPES.has(command.type ?? '') || command.handle_type === 'hook';
+  const type = command.type ?? '';
+  if (IMPLEMENTED_HOOK_COMMAND_TYPES.has(type)) return false;
+  return UNIMPLEMENTED_COMMAND_TYPES.has(type) || command.handle_type === 'hook';
 }
 
 interface LocalAgentContext {
@@ -339,6 +346,42 @@ async function loadManifest(): Promise<LocalAgentManifest> {
 
 async function saveManifest(manifest: LocalAgentManifest): Promise<void> {
   await writeJson(getManifestPath(), manifest);
+}
+
+/** One HTTP-source agent hook recorded locally so teardown can find & remove it
+ *  across all formats (codex has no in-file marker, so its command is stored). */
+interface AgentHookRecord {
+  tool: string;
+  event: string;
+  command: string;
+  matcher?: string;
+  timeout?: number;
+}
+
+/** slug → record. Kept separate from the resource manifest and from the team
+ *  managed-hooks.json so a team pull never treats agent hooks as stale. */
+type AgentHookManifest = Record<string, AgentHookRecord>;
+
+function getAgentHookManifestPath(): string {
+  return path.join(getLocalAgentHome(), 'agent-hooks.json');
+}
+
+async function loadAgentHookManifest(): Promise<AgentHookManifest> {
+  const data = await readJson<AgentHookManifest>(getAgentHookManifestPath());
+  return data && typeof data === 'object' ? data : {};
+}
+
+async function saveAgentHookManifest(manifest: AgentHookManifest): Promise<void> {
+  await writeJsonAtomic(getAgentHookManifestPath(), manifest);
+}
+
+/** Resolve the current tool's settings file absolute path (user scope, $HOME base). */
+function resolveToolSettingsPath(config: LocalAgentConfig, tool: string): string {
+  const toolPath = createLocalAgentTeamConfig(config.endpoint).toolPaths[tool];
+  if (!toolPath?.settings) {
+    throw new Error(`unsupported tool: ${tool} (no settings path)`);
+  }
+  return path.join(process.env.HOME ?? '', toolPath.settings);
 }
 
 function getPluginStatePath(): string {
@@ -1815,6 +1858,85 @@ async function runCmdCommand(
   }
 }
 
+/**
+ * Execute an install_hook_rule / uninstall_hook_rule sync command (issue #238):
+ * write or remove a single HTTP-source agent hook in the CURRENT tool's settings,
+ * tracked in the agent-hook manifest. Only claude / codex format tools are
+ * supported; cursor and openclaw are rejected. Throws on validation failure so
+ * the caller acks 'failed' with the message.
+ *
+ * Gated by the same TEAMAI_DISABLE_REMOTE_CMD kill-switch as runCmdCommand: an
+ * agent hook writes a backend-supplied command that the tool auto-runs on session
+ * events, so the client's single remote-command opt-out disables this surface too.
+ */
+async function runHookRuleCommand(
+  config: LocalAgentConfig,
+  command: LocalAgentCommand,
+  context: LocalAgentContext,
+): Promise<string | undefined> {
+  if (process.env.TEAMAI_DISABLE_REMOTE_CMD === '1') {
+    throw new Error('remote cmd disabled by client');
+  }
+  const tool = context.tool;
+  if (!tool) {
+    throw new Error('install_hook_rule: missing current tool in context');
+  }
+  if (!isAgentHookSupportedTool(tool)) {
+    throw new Error(`unsupported tool: ${tool}`);
+  }
+  const slug = command.slug;
+  if (!slug) {
+    throw new Error(`${command.type}: missing slug`);
+  }
+  const manifest = await loadAgentHookManifest();
+
+  if (command.type === 'uninstall_hook_rule') {
+    const rec = manifest[slug];
+    if (rec) {
+      const settingsPath = resolveToolSettingsPath(config, rec.tool);
+      await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
+      delete manifest[slug];
+      await saveAgentHookManifest(manifest);
+    }
+    // Missing slug is idempotent success.
+    return undefined;
+  }
+
+  // install_hook_rule
+  const event = command.event;
+  const cmd = command.cmd;
+  if (!event || !cmd) {
+    throw new Error('install_hook_rule: missing event or cmd');
+  }
+  if (!isAgentHookEvent(event)) {
+    throw new Error(`unsupported event: ${event}`);
+  }
+  const timeout = command.timeout ?? 10;
+  const matcher = command.matcher; // may be undefined → applyAgentHook defaults to '*'
+
+  // If this slug was previously installed, remove the old entry first so re-install
+  // never leaves a stale hook behind. This must run even when the tool is unchanged:
+  // applyAgentHook only replaces within the new event (claude) or by the new command
+  // (codex), so a same-tool re-install that changes the event or command would
+  // otherwise orphan the old entry. removeAgentHook scans all events by slug (claude)
+  // and matches prior.command (codex), covering both cases.
+  const prior = manifest[slug];
+  if (prior) {
+    try {
+      const priorPath = resolveToolSettingsPath(config, prior.tool);
+      await removeAgentHook(priorPath, prior.tool, { slug, command: prior.command });
+    } catch (e) {
+      log.debug(`agent hook [${slug}] prior cleanup failed: ${(e as Error).message}`);
+    }
+  }
+
+  const settingsPath = resolveToolSettingsPath(config, tool);
+  await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
+  manifest[slug] = { tool, event, command: cmd, matcher, timeout };
+  await saveAgentHookManifest(manifest);
+  return undefined;
+}
+
 async function executeCommand(
   config: LocalAgentConfig,
   command: LocalAgentCommand,
@@ -1824,6 +1946,9 @@ async function executeCommand(
   // --agent <tool>") executes its `cmd` string as a restricted teamai subcommand.
   if (command.type === 'uninstall_teamai') {
     return runCmdCommand(command, context);
+  }
+  if (command.type === 'install_hook_rule' || command.type === 'uninstall_hook_rule') {
+    return runHookRuleCommand(config, command, context);
   }
   const kind = commandKind(command);
   const action = commandAction(command);
@@ -2134,6 +2259,30 @@ export async function teardownLocalAgentPlugins(): Promise<void> {
 }
 
 /**
+ * Remove every HTTP-source agent hook recorded in the agent-hook manifest from
+ * each tool's settings, then clear the manifest. Best-effort; used by
+ * `source remove-http` and `teamai uninstall` teardown (issue #238). Safe to call
+ * when no config / no manifest exists.
+ */
+export async function removeAllAgentHooks(): Promise<void> {
+  const config = await loadLocalAgentConfig();
+  if (!config) return;
+  const manifest = await loadAgentHookManifest();
+  const slugs = Object.keys(manifest);
+  if (slugs.length === 0) return;
+  for (const slug of slugs) {
+    const rec = manifest[slug];
+    try {
+      const settingsPath = resolveToolSettingsPath(config, rec.tool);
+      await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
+    } catch (e) {
+      log.debug(`agent hook [${slug}] teardown failed: ${(e as Error).message}`);
+    }
+  }
+  await saveAgentHookManifest({});
+}
+
+/**
  * Tear down the HTTP local-agent bypass: uninstall every resource recorded in the
  * manifest (skills/rules/claudemd, across all scopes) from the AI tool dirs, then
  * remove the whole ~/.teamai/local-agent/ directory (config + manifest).
@@ -2168,6 +2317,7 @@ export async function removeLocalAgentHttp(): Promise<void> {
     }
   }
 
+  await removeAllAgentHooks();
   await remove(getLocalAgentHome());
   log.success('HTTP source removed (resources uninstalled, config cleared).');
 }

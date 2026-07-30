@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, getManagedHooksPath, resolveBaseDir } from './types.js';
+import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, getManagedHooksPath, resolveBaseDir } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
 import { builtinHookDefs, applyBuiltinOverride, ensureTeamaiWrapper } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
@@ -248,7 +248,7 @@ async function reconcileClaudeFormat(
   // when a team pass is active (manifest present). This keeps the builtin-only
   // refresh path (injectHooks / autoMigrate) non-destructive to team hooks (§5).
   const isManaged = (e: HookMatcher): boolean =>
-    isBuiltinClaudeEntry(e) || (teamActive && isTeamClaudeEntry(e));
+    isBuiltinClaudeEntry(e) || (teamActive && isTeamClaudeEntry(e)) || (!!opts.removeAll && isAgentClaudeEntry(e));
   const expanded = expandHome(settingsPath);
   await ensureDir(path.dirname(expanded));
   const settings: ClaudeSettingsJson = (await readJson<ClaudeSettingsJson>(expanded)) ?? {};
@@ -394,6 +394,176 @@ async function reconcileCodexFormat(
     log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);
   } else {
     log.debug(`teamai hooks already up-to-date in ${hooksPath}`);
+  }
+}
+
+// ─── Agent hooks (HTTP-source, issue #238) ──────────────────
+
+/**
+ * Whitelisted hook events for HTTP-source agent hooks
+ * (Claude PascalCase, native in both claude & codex formats).
+ */
+export const AGENT_HOOK_EVENTS = new Set<string>([
+  'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop',
+]);
+
+/** One HTTP-source agent hook to install. */
+export interface AgentHookDef {
+  slug: string;
+  event: string;
+  command: string;
+  matcher?: string;
+  timeout?: number;
+}
+
+/**
+ * Return true if the tool supports agent hooks (claude/codex formats only;
+ * cursor and openclaw family do not support agent hooks).
+ */
+export function isAgentHookSupportedTool(tool: string): boolean {
+  return !CURSOR_TOOLS.has(tool) && !OPENCLAW_TOOLS.has(tool);
+}
+
+/**
+ * Return true if the event is in the whitelisted agent hook event set.
+ */
+export function isAgentHookEvent(event: string): boolean {
+  return AGENT_HOOK_EVENTS.has(event);
+}
+
+/**
+ * Generate the description marker for an agent hook entry.
+ * Produces: `[teamai:agent-hook:<slug>]`
+ */
+export function agentHookDescription(slug: string): string {
+  return `${TEAMAI_AGENT_HOOK_PREFIX}${slug}]`;
+}
+
+/** True if the HookMatcher entry is a teamai agent hook (optionally scoped to a slug). */
+function isAgentClaudeEntry(entry: HookMatcher, slug?: string): boolean {
+  const desc = entry.description ?? '';
+  if (slug !== undefined) {
+    return desc === agentHookDescription(slug);
+  }
+  return desc.startsWith(TEAMAI_AGENT_HOOK_PREFIX);
+}
+
+/**
+ * Idempotently install or replace a single HTTP-source agent hook into a tool's
+ * settings file. Claude format uses the marker description for precise replacement;
+ * codex format uses the command for precise replacement. Only writes when content
+ * has actually changed.
+ */
+export async function applyAgentHook(
+  settingsPath: string,
+  tool: string,
+  def: AgentHookDef,
+): Promise<void> {
+  const format = detectFormat(tool);
+  const expanded = expandHome(settingsPath);
+  await ensureDir(path.dirname(expanded));
+
+  const hookDef: HookDef = {
+    source: 'team',
+    key: def.slug,
+    event: def.event,
+    matcher: def.matcher ?? '*',
+    command: def.command,
+    ...(def.timeout !== undefined ? { timeout: def.timeout } : {}),
+    description: agentHookDescription(def.slug),
+  };
+
+  // Codex entries carry no description field, so agent hooks are matched by
+  // their exact command string (and tracked in the local-agent agent-hook
+  // manifest, the authoritative record for codex teardown). Backends must use
+  // a unique command per codex agent-hook slug so replace/remove stay precise.
+  if (format === 'codex') {
+    const hooksJson: CodexHooksJson = (await readJson<CodexHooksJson>(expanded)) ?? {};
+    if (!hooksJson.hooks) hooksJson.hooks = {};
+    const existing = hooksJson.hooks[def.event] ?? [];
+    const untouched = existing.filter((e) => (e.hooks?.[0]?.command ?? '') !== def.command);
+    const newArr = [...untouched, toCodexEntry(hookDef)];
+    if (JSON.stringify(existing) !== JSON.stringify(newArr)) {
+      hooksJson.hooks[def.event] = newArr;
+      await writeJson(expanded, hooksJson);
+      log.success(`Installed agent hook [${def.slug}] in ${settingsPath}`);
+    } else {
+      log.debug(`agent hook [${def.slug}] already up-to-date in ${settingsPath}`);
+    }
+  } else {
+    const settings: ClaudeSettingsJson = (await readJson<ClaudeSettingsJson>(expanded)) ?? {};
+    if (!settings.hooks) settings.hooks = {};
+    const existing = settings.hooks[def.event] ?? [];
+    const untouched = existing.filter((e) => !isAgentClaudeEntry(e, def.slug));
+    const newArr = [...untouched, toClaudeEntry(hookDef)];
+    if (JSON.stringify(existing) !== JSON.stringify(newArr)) {
+      settings.hooks[def.event] = newArr;
+      await writeJson(expanded, settings);
+      log.success(`Installed agent hook [${def.slug}] in ${settingsPath}`);
+    } else {
+      log.debug(`agent hook [${def.slug}] already up-to-date in ${settingsPath}`);
+    }
+  }
+}
+
+/**
+ * Remove a single agent hook from a tool's settings file by slug (claude) or
+ * command (codex). Silent if the file does not exist or there is no matching entry.
+ * Only writes when content has actually changed.
+ */
+export async function removeAgentHook(
+  settingsPath: string,
+  tool: string,
+  opts: { slug: string; command?: string },
+): Promise<void> {
+  const expanded = expandHome(settingsPath);
+  if (!(await pathExists(expanded))) return;
+  const format = detectFormat(tool);
+
+  // Codex removal matches by command (no marker in the file); callers pass the
+  // command recorded in the agent-hook manifest, which is the source of truth
+  // for codex teardown.
+  if (format === 'codex') {
+    if (!opts.command) return;
+    const hooksJson: CodexHooksJson = (await readJson<CodexHooksJson>(expanded)) ?? {};
+    if (!hooksJson.hooks) return;
+    let changed = false;
+    for (const event of Object.keys(hooksJson.hooks)) {
+      const before = hooksJson.hooks[event];
+      const after = before.filter((e) => (e.hooks?.[0]?.command ?? '') !== opts.command);
+      if (after.length !== before.length) {
+        changed = true;
+        if (after.length === 0) {
+          delete hooksJson.hooks[event];
+        } else {
+          hooksJson.hooks[event] = after;
+        }
+      }
+    }
+    if (changed) {
+      await writeJson(expanded, hooksJson);
+      log.success(`Removed agent hook [${opts.slug}] from ${settingsPath}`);
+    }
+  } else {
+    const settings: ClaudeSettingsJson = (await readJson<ClaudeSettingsJson>(expanded)) ?? {};
+    if (!settings.hooks) return;
+    let changed = false;
+    for (const event of Object.keys(settings.hooks)) {
+      const before = settings.hooks[event];
+      const after = before.filter((e) => !isAgentClaudeEntry(e, opts.slug));
+      if (after.length !== before.length) {
+        changed = true;
+        if (after.length === 0) {
+          delete settings.hooks[event];
+        } else {
+          settings.hooks[event] = after;
+        }
+      }
+    }
+    if (changed) {
+      await writeJson(expanded, settings);
+      log.success(`Removed agent hook [${opts.slug}] from ${settingsPath}`);
+    }
   }
 }
 

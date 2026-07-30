@@ -407,6 +407,16 @@ export const TEAMAI_HOOK_DESCRIPTION_PREFIX = '[teamai]';
  */
 export const TEAMAI_CUSTOM_HOOK_PREFIX = '[teamai:hook:';
 
+/**
+ * Description prefix for HTTP-source agent hooks (issue #238) installed via the
+ * `install_hook_rule` sync command. A third, isolated marker namespace: it does
+ * NOT start with "[teamai] " (built-in) nor "[teamai:hook:" (team), so team-pull
+ * full-reconcile treats agent hooks as untouched and never deletes them. Only
+ * `install_hook_rule` / `uninstall_hook_rule` and teardown manage this namespace.
+ * Format: "[teamai:agent-hook:<slug>]".
+ */
+export const TEAMAI_AGENT_HOOK_PREFIX = '[teamai:agent-hook:';
+
 export const TEAMAI_ENV_START = '# [teamai:env:start]';
 export const TEAMAI_ENV_END = '# [teamai:env:end]';
 

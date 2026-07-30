@@ -645,6 +645,41 @@ cat ~/.claude/CLAUDE.md
 - **默认开启** —— 与 install/uninstall 命令一致，会自动执行。客户端设 `TEAMAI_DISABLE_REMOTE_CMD=1` 可拒绝（ack `failed`，错误为 `remote cmd disabled by client`）。
 - **超时** —— 命令卡住 120s 后被杀掉并 ack `failed`。
 
+后端还可下发 **`install_hook_rule`** / **`uninstall_hook_rule`** 命令，按 `slug` 远程管理**当前上报工具**
+settings 里的一个 session hook。结果经同一 ack 通道回报：
+
+```jsonc
+// 按 slug 安装（或替换）一个 hook
+{ "id": 50, "type": "install_hook_rule", "handle_type": "hook", "slug": "my-hook",
+  "event": "SessionStart", "cmd": "echo hi", "timeout": 10 }
+
+// 卸载此前以该 slug 安装的 hook
+{ "id": 51, "type": "uninstall_hook_rule", "handle_type": "hook", "slug": "my-hook" }
+```
+
+agent hook 规则：
+
+- **仅当前工具** —— hook 只写入正在上报的工具（如在 Claude 下运行 ⇒ 只写 `.claude/settings.json`），
+  绝不触碰其它工具。
+- **支持的工具** —— `claude` / `codex` / `workbuddy` / `codebuddy`（含其内部变体）。**Cursor 与 OpenClaw
+  家族被拒绝** → ack `failed`（`unsupported tool`）。
+- **事件白名单** —— `SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`。
+  其它事件 → ack `failed`（`unsupported event`）。
+- **可选 `matcher`** —— `PreToolUse` / `PostToolUse` 的工具名过滤；省略时默认为 `*`（全部工具）。
+- **默认超时 10s** —— 省略 `timeout` 时用 10s；后端给了值则以后端为准。
+- **幂等** —— 用相同 `slug` 重装会替换已有 hook 而非重复追加；对不存在的 `slug` 执行
+  `uninstall_hook_rule` 也 ack `success`。
+- **隔离** —— agent hook 使用专属 marker `[teamai:agent-hook:<slug>]`，团队 pull 不会删除它，
+  安装它也不会扰动 built-in 或团队 hook。
+- **清理** —— agent hook 会被 `uninstall_hook_rule`、`teamai source remove` 和 `teamai uninstall`
+  彻底移除（不在任何工具 settings 里留残留）。
+- **关闭开关** —— agent hook 是后端下发、由工具在其事件上自动执行的命令，因此与 `uninstall_teamai`
+  共用信任模型：客户端设 `TEAMAI_DISABLE_REMOTE_CMD=1` 也会拒绝 `install_hook_rule` /
+  `uninstall_hook_rule`（ack `failed`）。
+- **Codex 匹配** —— codex settings 无 description 字段，因此 codex agent hook 按其确切命令匹配，
+  且以 local-agent manifest 作为卸载的权威记录。后端应为**每个 codex `slug` 使用唯一的 `cmd`**，
+  以保证替换/删除的精确性。
+
 可配置环境变量：
 
 | 变量 | 作用 |
@@ -655,7 +690,7 @@ cat ~/.claude/CLAUDE.md
 | `TEAMAI_REPORT_AGENTS` | 参与上报的 agent，逗号分隔（默认 `workbuddy,codebuddy`） |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | skill `download_url` host 白名单（空 = 全部放行） |
 | `TEAMAI_ALLOW_SANDBOX_REPORT` | 设为 `1` 可强制在 CloudStudio 沙箱内 report/sync（见下方说明） |
-| `TEAMAI_DISABLE_REMOTE_CMD` | 设为 `1` 可拒绝服务端下发的 `uninstall_teamai` 命令（会 ack `failed`） |
+| `TEAMAI_DISABLE_REMOTE_CMD` | 设为 `1` 可拒绝服务端下发的 `uninstall_teamai`、`install_hook_rule`、`uninstall_hook_rule` 命令（会 ack `failed`） |
 
 > **隐私**：install path 和 machine id 仅在本地哈希以派生 `local_agent_id`，不会上报。
 
