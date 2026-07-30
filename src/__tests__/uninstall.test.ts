@@ -6,16 +6,21 @@ import fse from 'fs-extra';
 // ─── Mocks ─────────────────────────────────────────────
 
 const mockAutoDetectInit = vi.fn();
+const mockSaveLocalConfig = vi.fn();
+const mockSaveLocalConfigForScope = vi.fn();
 
 vi.mock('../config.js', () => ({
   autoDetectInit: (...args: unknown[]) => mockAutoDetectInit(...args),
+  saveLocalConfig: (...args: unknown[]) => mockSaveLocalConfig(...args),
+  saveLocalConfigForScope: (...args: unknown[]) => mockSaveLocalConfigForScope(...args),
 }));
 
 const mockReconcileHooks = vi.fn();
 
-vi.mock('../hooks.js', () => ({
-  reconcileHooks: (...args: unknown[]) => mockReconcileHooks(...args),
-}));
+vi.mock('../hooks.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks.js')>();
+  return { ...actual, reconcileHooks: (...args: unknown[]) => mockReconcileHooks(...args) };
+});
 
 vi.mock('../utils/logger.js', () => ({
   log: {
@@ -183,6 +188,8 @@ describe('uninstall', () => {
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-uninstall-test-'));
     mockAutoDetectInit.mockReset();
     mockReconcileHooks.mockReset();
+    mockSaveLocalConfig.mockReset();
+    mockSaveLocalConfigForScope.mockReset();
   });
 
   afterEach(async () => {
@@ -650,6 +657,241 @@ describe('uninstall', () => {
     expect(internalResult).toContain('# Internal Config');
     expect(internalResult).not.toContain(TEAMAI_CULTURE_START);
     expect(internalResult).not.toContain(TEAMAI_CLAUDEMD_START);
+  });
+
+  it('--agent claude 且只有 claude 一个工具 → 全删含共享', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'claude' });
+
+    // claude team-skill removed
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(false);
+    // ~/.teamai removed (claude was the last tool)
+    expect(await fse.pathExists(teamaiHome)).toBe(false);
+    // reconcileHooks called with claude + removeAll
+    expect(mockReconcileHooks).toHaveBeenCalledWith(
+      path.join(homeDir, '.claude', 'settings.json'),
+      'claude',
+      [],
+      expect.objectContaining({ removeAll: true }),
+    );
+  });
+
+  it('--agent claude 但 codex 仍有资源 → 保留共享', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    // Set up codex with a team-skill so discoverToolResources finds resources
+    await fse.ensureDir(path.join(homeDir, '.codex', 'skills', 'team-skill'));
+    await fse.writeFile(path.join(homeDir, '.codex', 'skills', 'team-skill', 'SKILL.md'), '# Team Skill');
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        claude: {
+          skills: '.claude/skills',
+          rules: '.claude/rules',
+          settings: '.claude/settings.json',
+          claudemd: '.claude/CLAUDE.md',
+          agents: '.claude/agents',
+        },
+        codex: {
+          skills: '.codex/skills',
+          rules: '.codex/rules',
+        },
+      },
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'claude' });
+
+    // claude team-skill removed
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(false);
+    // ~/.teamai NOT removed (codex still has resources)
+    expect(await fse.pathExists(teamaiHome)).toBe(true);
+    // codex team-skill still exists
+    expect(await fse.pathExists(path.join(homeDir, '.codex', 'skills', 'team-skill'))).toBe(true);
+    // Exclusion persisted so the next pull won't resurrect claude: added to
+    // disabledAgents (user scope → saveLocalConfig).
+    expect(mockSaveLocalConfig).toHaveBeenCalledTimes(1);
+    const savedCfg = mockSaveLocalConfig.mock.calls[0][0] as LocalConfig;
+    expect(savedCfg.disabledAgents).toContain('claude');
+    // No prior whitelist existed → enabledAgents must stay undefined, NOT collapse
+    // to [] (which the hook path reads as "whitelist nothing" and would wrongly
+    // stop hook sync for the remaining tools too).
+    expect(savedCfg.enabledAgents).toBeUndefined();
+  });
+
+  it('--agent 卸载在已有 enabledAgents 白名单时只移除目标工具', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    await fse.ensureDir(path.join(homeDir, '.codex', 'skills', 'team-skill'));
+    await fse.writeFile(path.join(homeDir, '.codex', 'skills', 'team-skill', 'SKILL.md'), '# Team Skill');
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        claude: {
+          skills: '.claude/skills',
+          rules: '.claude/rules',
+          settings: '.claude/settings.json',
+          claudemd: '.claude/CLAUDE.md',
+          agents: '.claude/agents',
+        },
+        codex: { skills: '.codex/skills', rules: '.codex/rules' },
+      },
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    localConfig.enabledAgents = ['claude', 'codex'];
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'claude' });
+
+    expect(mockSaveLocalConfig).toHaveBeenCalledTimes(1);
+    const savedCfg = mockSaveLocalConfig.mock.calls[0][0] as LocalConfig;
+    // Existing whitelist is pruned of the target only; codex stays enabled.
+    expect(savedCfg.enabledAgents).toEqual(['codex']);
+    expect(savedCfg.disabledAgents).toContain('claude');
+  });
+
+  it('--agent unknown → 报错不删', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    const prevExitCode = process.exitCode;
+    process.exitCode = undefined;
+    await uninstall({ force: true, agent: 'nonexistent' });
+
+    // claude team-skill still exists
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(true);
+    // ~/.teamai still exists
+    expect(await fse.pathExists(teamaiHome)).toBe(true);
+    // reconcileHooks not called
+    expect(mockReconcileHooks).not.toHaveBeenCalled();
+    // Unknown tool sets a non-zero exit code (so scripts/CI see the failure)
+    expect(process.exitCode).toBe(2);
+    process.exitCode = prevExitCode;
+  });
+
+  it('--agent 卸载最后一个工具时移除共享资源（已剥离 hooks 的工具不算占用）', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    // claude settings.json has only a non-teamai user hook (simulates hooks already stripped)
+    await fse.writeJson(path.join(homeDir, '.claude', 'settings.json'), {
+      hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'echo hi' }] }] },
+    });
+    // Remove all teamai resources from claude so it has zero teamai presence
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'team-skill'));
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'teamai-share-learnings'));
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'team-wiki-codebase'));
+    await fse.remove(path.join(homeDir, '.claude', 'rules', 'team-rule.md'));
+    await fse.remove(path.join(homeDir, '.claude', 'rules', 'teamai-recall.md'));
+    await fse.remove(path.join(homeDir, '.claude', 'agents', 'teamai-recall.md'));
+    await fse.remove(path.join(homeDir, '.claude', 'CLAUDE.md'));
+
+    // codex has one team-skill
+    await fse.ensureDir(path.join(homeDir, '.codex', 'skills', 'team-skill'));
+    await fse.writeFile(path.join(homeDir, '.codex', 'skills', 'team-skill', 'SKILL.md'), '# Team Skill');
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        claude: {
+          skills: '.claude/skills',
+          rules: '.claude/rules',
+          settings: '.claude/settings.json',
+          claudemd: '.claude/CLAUDE.md',
+          agents: '.claude/agents',
+        },
+        codex: {
+          skills: '.codex/skills',
+          rules: '.codex/rules',
+        },
+      },
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'codex' });
+
+    // codex team-skill removed
+    expect(await fse.pathExists(path.join(homeDir, '.codex', 'skills', 'team-skill'))).toBe(false);
+    // ~/.teamai removed — claude's settings.json has no teamai hooks, so it doesn't block shared removal
+    expect(await fse.pathExists(teamaiHome)).toBe(false);
+    // Last-tool uninstall deletes ~/.teamai, so there is no config to persist to.
+    expect(mockSaveLocalConfig).not.toHaveBeenCalled();
+    expect(mockSaveLocalConfigForScope).not.toHaveBeenCalled();
+  });
+
+  it('未检测到配置 + --agent → 返回不删', async () => {
+    const homeDir = path.join(tmpDir, 'no-config-home');
+    const teamaiHome = path.join(homeDir, '.teamai');
+    await fse.ensureDir(teamaiHome);
+    vi.stubEnv('HOME', homeDir);
+
+    mockAutoDetectInit.mockRejectedValue(new Error('no config'));
+
+    await uninstall({ force: true, agent: 'claude' });
+
+    // ~/.teamai still exists (minimal uninstall was skipped)
+    expect(await fse.pathExists(teamaiHome)).toBe(true);
+  });
+
+  it('目标工具无 teamai 资源 → no-op 不删共享', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    // Strip all teamai resources from claude so it has zero teamai presence
+    await fse.writeJson(path.join(homeDir, '.claude', 'settings.json'), {
+      hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'echo hi' }] }] },
+    });
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'team-skill'));
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'teamai-share-learnings'));
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'team-wiki-codebase'));
+    await fse.remove(path.join(homeDir, '.claude', 'rules', 'team-rule.md'));
+    await fse.remove(path.join(homeDir, '.claude', 'rules', 'teamai-recall.md'));
+    await fse.remove(path.join(homeDir, '.claude', 'agents', 'teamai-recall.md'));
+    await fse.remove(path.join(homeDir, '.claude', 'CLAUDE.md'));
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'claude' });
+
+    // ~/.teamai must still exist — target had no teamai resources
+    expect(await fse.pathExists(teamaiHome)).toBe(true);
+    expect(mockReconcileHooks).not.toHaveBeenCalled();
+  });
+
+  it('--agent 大小写不敏感', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'Claude' });
+
+    // Should have matched 'claude' and removed team-skill
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(false);
   });
 
   it('仅含 teamai section 的 CLAUDE.md 被整文件删除', async () => {

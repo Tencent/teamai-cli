@@ -134,6 +134,9 @@ function policyViolation(def: McpServerDef, sharing: ReturnType<typeof getMcpSha
   return null;
 }
 
+/** An executable name — no path separators or shell metacharacters. */
+const SAFE_BIN_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 /** True when every executable in `requires` is on PATH. */
 async function requirementsMet(def: McpServerDef): Promise<string | null> {
   if (!def.requires?.length) return null;
@@ -141,6 +144,13 @@ async function requirementsMet(def: McpServerDef): Promise<string | null> {
   const { promisify } = await import('node:util');
   const run = promisify(execFile);
   for (const bin of def.requires) {
+    // `requires` comes from the team repo's mcp.yaml. `command -v` runs under a
+    // shell (builtin), so an unvalidated name like `npx; rm -rf ~` would be
+    // executed. A bare executable name has no shell metacharacters, so reject
+    // anything else rather than pass it to the shell.
+    if (!SAFE_BIN_RE.test(bin)) {
+      return `required executable "${bin}" has an invalid name`;
+    }
     try {
       await run('command', ['-v', bin], { shell: '/bin/sh' });
     } catch {
@@ -341,24 +351,12 @@ export async function reconcileMcpForConfig(
 
       // Pass ${VAR} through where the tool expands it itself, so the secret
       // never lands on disk; otherwise resolve and require every var to exist.
+      // A resolved value is written verbatim into the target file, including
+      // project-scope files that get committed — the team has opted into that
+      // by declaring the server with a ${VAR} a tool cannot expand itself.
       const passthrough = supportsEnvExpansion(target.format, target.projectScope, raw);
       let def = raw;
       if (!passthrough) {
-        // A project-scope file lives in the repo and gets committed. Resolving a
-        // placeholder for a tool that cannot expand ${VAR} would put the secret
-        // into version control, so refuse rather than leak it.
-        const referenced = referencedVars(raw);
-        if (target.projectScope && referenced.length > 0) {
-          changes.push({
-            tool: target.tool,
-            server: raw.name,
-            action: 'skipped',
-            reason:
-              `${target.tool} cannot expand \${VAR}, so ${referenced.join(', ')} would be ` +
-              `written in plaintext to a committed file — distribute this server at user scope instead`,
-          });
-          continue;
-        }
         const { def: resolved, missing } = resolvePlaceholders(raw, vars);
         if (missing.length > 0) {
           changes.push({

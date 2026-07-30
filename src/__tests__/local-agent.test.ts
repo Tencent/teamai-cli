@@ -1043,3 +1043,172 @@ describe('local-agent: CloudStudio sandbox suppression', () => {
     expect(result).toBe(false);
   });
 });
+
+describe('local-agent: cmds[] migration', () => {
+  async function makeSkillZip(skillName: string): Promise<Uint8Array> {
+    const { zipSync, strToU8 } = await import('fflate');
+    const skillMd = `---\nname: ${skillName}\ndescription: test skill\n---\n# ${skillName}\nbody\n`;
+    return zipSync({ [`${skillName}/SKILL.md`]: strToU8(skillMd) });
+  }
+
+  async function runResponse(body: Record<string, unknown>, zip?: Uint8Array) {
+    await fse.ensureDir(path.join(tmpDir, '.codebuddy', 'skills'));
+    await setupConfig();
+    const acks: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: { body?: string }) => {
+      const url = String(input);
+      if (url.includes('/skill.zip') && zip) return new Response(Buffer.from(zip));
+      if (url.endsWith('.md')) return new Response('# content\nbody\n');
+      if (url.includes('/local-agent/sync')) return new Response(JSON.stringify({ ok: true, ...body }));
+      if (url.includes('/commands/ack')) acks.push(JSON.parse(init?.body ?? '{}'));
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ cwd: tmpDir, tool: 'codebuddy', status: 'running' });
+    return acks;
+  }
+
+  it('prefers cmds[] over commands[]', async () => {
+    const zip = await makeSkillZip('skill-a');
+    const acks = await runResponse({
+      cmds: [{
+        id: 1, type: 'install_skill', slug: 'skill-a', version: '1.0.0',
+        download_url: 'http://127.0.0.1:42100/skill.zip', scope: 'user',
+      }],
+      commands: [{ id: 9, type: 'uninstall_skill', skill_slug: 'skill-a' }],
+    }, zip);
+
+    await expect(fse.pathExists(path.join(tmpDir, '.codebuddy', 'skills', 'skill-a'))).resolves.toBe(true);
+    expect(acks.find((a) => a.id === 1)?.status).toBe('success');
+    expect(acks.find((a) => a.id === 9)).toBeUndefined();
+  });
+
+  it('handle_type=prompt routes to claudemd', async () => {
+    const acks = await runResponse({
+      cmds: [{
+        id: 2, type: 'install_prompt_rule', handle_type: 'prompt', slug: 'doc-a',
+        version: '1.0.0', download_url: 'http://127.0.0.1:42100/doc-a.md', scope: 'user',
+      }],
+    });
+
+    expect(acks.find((a) => a.id === 2)?.status).toBe('success');
+    const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
+    expect(manifest.scopes.user.claudemd?.['doc-a']).toBeDefined();
+    expect(manifest.scopes.user.rules?.['doc-a']).toBeUndefined();
+  });
+
+  it('handle_type=rule routes to rule', async () => {
+    const acks = await runResponse({
+      cmds: [{
+        id: 3, type: 'install_rule_rule', handle_type: 'rule', slug: 'rule-b',
+        version: '1.0.0', download_url: 'http://127.0.0.1:42100/rule-b.md', scope: 'user',
+      }],
+    });
+
+    expect(acks.find((a) => a.id === 3)?.status).toBe('success');
+    const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
+    expect(manifest.scopes.user.rules?.['rule-b']).toBeDefined();
+    expect(manifest.scopes.user.claudemd?.['rule-b']).toBeUndefined();
+  });
+
+  it('consumes unified slug/version (no prefixed fields)', async () => {
+    const zip = await makeSkillZip('skill-c');
+    const acks = await runResponse({
+      cmds: [{
+        id: 4, type: 'install_skill', slug: 'skill-c', version: '1.0.0',
+        download_url: 'http://127.0.0.1:42100/skill.zip', scope: 'user',
+      }],
+    }, zip);
+
+    await expect(fse.pathExists(path.join(tmpDir, '.codebuddy', 'skills', 'skill-c'))).resolves.toBe(true);
+    expect(acks.find((a) => a.id === 4)?.version).toBe('1.0.0');
+  });
+
+  it('skips uninstall_hook_rule without touching a same-slug rule', async () => {
+    // Step 1: install a rule with slug 'shared'.
+    await runResponse({
+      cmds: [{
+        id: 10, type: 'install_rule_rule', handle_type: 'rule', slug: 'shared',
+        version: '1.0.0', download_url: 'http://127.0.0.1:42100/shared.md', scope: 'user',
+      }],
+    });
+    const manifest1 = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
+    expect(manifest1.scopes.user.rules?.['shared']).toBeDefined();
+
+    // Step 2: send uninstall_hook_rule targeting same slug — must be silently skipped.
+    const acks2 = await runResponse({
+      cmds: [{ id: 5, type: 'uninstall_hook_rule', handle_type: 'hook', slug: 'shared', scope: 'user' }],
+    });
+
+    const manifest2 = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
+    expect(manifest2.scopes.user.rules?.['shared']).toBeDefined();
+    expect(acks2.find((a) => a.id === 5)).toBeUndefined();
+  });
+
+  it('skips uninstall_teamai (no slug) without error', async () => {
+    const acks = await runResponse({
+      cmds: [{ id: 6, type: 'uninstall_teamai', cmd: 'teamai uninstall --force --agent codebuddy' }],
+    });
+
+    expect(acks.find((a) => a.id === 6)).toBeUndefined();
+  });
+
+  it('skips install_hook_rule silently', async () => {
+    const acks = await runResponse({
+      cmds: [{
+        id: 7, type: 'install_hook_rule', handle_type: 'hook', slug: 'hook-x',
+        version: '1.0.0', event: 'SessionStart', cmd: 'echo hi', scope: 'user',
+      }],
+    });
+
+    expect(acks.find((a) => a.id === 7)).toBeUndefined();
+    // A skipped install must write nothing. The manifest is only created by a
+    // real install, so its absence is itself proof no resource was written;
+    // if it does exist, hook-x must not appear in any bucket.
+    const manifestPath = path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json');
+    const manifest = (await fse.pathExists(manifestPath)) ? await fse.readJson(manifestPath) : {};
+    expect(manifest.scopes?.user?.rules?.['hook-x']).toBeUndefined();
+    expect(manifest.scopes?.user?.claudemd?.['hook-x']).toBeUndefined();
+  });
+
+  it('skips an unknown hook type (handle_type=hook) without a failed ack', async () => {
+    // A future hook `type` outside the known set must still skip silently via
+    // handle_type, not fall through to commandKind() and get acked as failed.
+    const acks = await runResponse({
+      cmds: [{
+        id: 11, type: 'toggle_hook_rule', handle_type: 'hook', slug: 'hook-future',
+        version: '1.0.0', event: 'SessionStart', cmd: 'echo hi', scope: 'user',
+      }],
+    });
+
+    expect(acks.find((a) => a.id === 11)).toBeUndefined();
+  });
+
+  it('falls back to commands[] when cmds absent', async () => {
+    const zip = await makeSkillZip('skill-legacy');
+    const acks = await runResponse({
+      commands: [{
+        id: 8, type: 'install_skill', skill_slug: 'skill-legacy', skill_version: '1.0.0',
+        download_url: 'http://127.0.0.1:42100/skill.zip', scope: 'user',
+      }],
+    }, zip);
+
+    await expect(fse.pathExists(path.join(tmpDir, '.codebuddy', 'skills', 'skill-legacy'))).resolves.toBe(true);
+    expect(acks.find((a) => a.id === 8)?.status).toBe('success');
+  });
+
+  it('empty cmds[] falls back to commands[]', async () => {
+    const zip = await makeSkillZip('skill-empty');
+    const acks = await runResponse({
+      cmds: [],
+      commands: [{
+        id: 9, type: 'install_skill', skill_slug: 'skill-empty', skill_version: '1.0.0',
+        download_url: 'http://127.0.0.1:42100/skill.zip', scope: 'user',
+      }],
+    }, zip);
+
+    await expect(fse.pathExists(path.join(tmpDir, '.codebuddy', 'skills', 'skill-empty'))).resolves.toBe(true);
+    expect(acks.find((a) => a.id === 9)?.status).toBe('success');
+  });
+});

@@ -431,9 +431,11 @@ Where each tool's servers land:
 
 Codex supports `stdio` and `http`; `sse` is skipped. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
 
-**Secrets.** Write `${VAR}`, never a literal. Values resolve from the environment, then from `env/env.yaml` → `~/.teamai/env`. Unresolved variables skip the server with a hint.
+**Secrets.** Write `${VAR}`, never a literal, in `mcp.yaml`. Values resolve from the environment, then from `env/env.yaml` → `~/.teamai/env`. Unresolved variables skip the server with a hint.
 
-Where the tool can keep secrets off disk, teamai does: Claude project `.mcp.json` keeps the placeholder (Claude expands it); Codex writes `bearer_token_env_var` / `env_http_headers` (variable name only). Elsewhere the value is resolved into a `0600` file. In project scope, tools that cannot expand `${VAR}` skip secret-bearing servers instead of writing plaintext into a committed file.
+teamai **resolves every `${VAR}` to its value and writes it verbatim** into each tool's config (new files are created `0600`). It does not rely on any tool's own env-var expansion: that expansion is fragile — most decisively, IDEs launched from the GUI (Dock/Launchpad) never inherit your shell's exported variables, so a `${VAR}` placeholder expands to empty and the server 401s. Resolving to plaintext makes the token present no matter how the tool is started.
+
+> ⚠️ **The resolved token lands on disk.** Project-scope MCP configs (`.mcp.json`, `.cursor/mcp.json`, `.codebuddy/mcp.json`, `.codex/config.toml`) then contain the literal secret — add them to `.gitignore` and never commit them.
 
 Claude Code may show project `.mcp.json` servers as pending approval until you accept them once in an interactive session.
 
@@ -938,6 +940,9 @@ teamai uninstall
 
 # Skip confirmation and uninstall directly (for scripts/CI)
 teamai uninstall --force
+
+# Uninstall only one tool's resources (mirrors `init --agent`)
+teamai uninstall --agent claude
 ```
 
 What gets removed:
@@ -947,6 +952,14 @@ What gets removed:
 - Team-synced rules
 - The env block in your shell profile
 - The `~/.teamai/` directory
+
+### Uninstall a single tool (`--agent <tool>`)
+
+`--agent <tool>` removes only that tool's teamai resources (hooks, CLAUDE.md block, skills, rules, built-in agents). The tool name is a key of `toolPaths` (e.g. `claude`, `codex`, `codebuddy`) and is matched case-insensitively. An unknown tool name aborts without deleting anything, lists the available tools, and exits with a non-zero status.
+
+Shared resources (the env block, docs directory, and `~/.teamai/`) are removed **only when the target itself has teamai resources AND is the last tool still using teamai** — otherwise they are kept for the remaining tools. (So targeting a tool that has no teamai resources of its own is a no-op and leaves shared resources in place, even if it happens to be the only tool.)
+
+The exclusion is durable: `uninstall --agent <tool>` drops the tool from `enabledAgents` and records it in `disabledAgents`, so a later `pull` (or another tool's session-start hook) will not resurrect its skills, rules, agents, CLAUDE.md block, or hooks. Running `init --agent <tool>` again clears the exclusion and re-enables sync for that tool.
 
 To rejoin after uninstalling:
 

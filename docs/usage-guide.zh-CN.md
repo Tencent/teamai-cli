@@ -429,9 +429,11 @@ servers:
 
 Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；与手写同名则跳过，除非 `--force`。
 
-**密钥**：写 `${VAR}`，不要写明文。取值优先来自环境变量，其次是 `env/env.yaml` → `~/.teamai/env`。变量无法解析则跳过并提示。
+**密钥**：在 `mcp.yaml` 里写 `${VAR}`，不要写明文。取值优先来自环境变量，其次是 `env/env.yaml` → `~/.teamai/env`。变量无法解析则跳过并提示。
 
-能让密钥不落盘的工具会走那条路：Claude 项目级 `.mcp.json` 保留占位符（由 Claude 展开）；Codex 写 `bearer_token_env_var` / `env_http_headers`（只记变量名）。其余情况解析后写入 `0600` 文件。项目级下，不支持 `${VAR}` 展开的工具会跳过带密钥的 server，避免明文进 git。
+teamai 会**把每个 `${VAR}` 解析成取值后原样写入**各工具的配置文件(新建文件权限为 `0600`)。它不依赖任何工具自身的环境变量展开——因为那种展开很脆弱:最典型的是,以 GUI 方式(Dock/Launchpad)启动的 IDE 不会继承你 shell 中 `export` 的变量,`${VAR}` 占位符会展开为空、导致服务端 401。解析成明文可以保证无论工具如何启动,token 都在。
+
+> ⚠️ **解析后的 token 会落盘。** 项目级 MCP 配置(`.mcp.json`、`.cursor/mcp.json`、`.codebuddy/mcp.json`、`.codex/config.toml`)因此含有明文密钥——请把它们加入 `.gitignore`,切勿提交。
 
 Claude Code 可能把来自仓库的 `.mcp.json` 标为待批准，需在交互式会话中确认一次。
 
@@ -936,6 +938,9 @@ teamai uninstall
 
 # 跳过确认直接卸载（适合脚本/CI）
 teamai uninstall --force
+
+# 只卸载某一个工具的资源（与 init --agent 对称）
+teamai uninstall --agent claude
 ```
 
 移除内容：
@@ -945,6 +950,14 @@ teamai uninstall --force
 - 团队同步的 rules
 - Shell profile 中的 env 块
 - `~/.teamai/` 目录
+
+### 只卸载单个工具（`--agent <tool>`）
+
+`--agent <tool>` 只移除该工具的 teamai 资源（hooks、CLAUDE.md 块、skills、rules、内置 agents）。工具名即 `toolPaths` 的键（如 `claude`、`codex`、`codebuddy`），匹配大小写不敏感。传入未知工具名会直接报错并列出可用工具、不执行任何删除，并以非零状态码退出。
+
+跨工具共享资源（shell profile env 块、docs 目录、`~/.teamai/`）**仅当该工具自身存在 teamai 资源、且它是最后一个仍在使用 teamai 的工具时**才一并移除，否则会为其余工具保留。（因此，定向卸载一个自身没有任何 teamai 资源的工具是 no-op，即便它恰好是唯一的工具，也不会删除共享资源。）
+
+该排除是持久的：`uninstall --agent <tool>` 会把该工具从 `enabledAgents` 移除并记入 `disabledAgents`，因此之后的 `pull`（或其他工具的 session-start hook）不会再把它的 skills、rules、agents、CLAUDE.md 块或 hooks 重新装回。重新执行 `init --agent <tool>` 会清除该排除、恢复对该工具的同步。
 
 卸载后如需重新加入：
 

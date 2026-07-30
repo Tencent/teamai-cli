@@ -9,9 +9,8 @@ import { log } from '../utils/logger.js';
 // ─── Schema for mcp/mcp.yaml ────────────────────────────────
 //
 //  Team-declared MCP servers. Transport names are the tool-neutral MCP spec
-//  names; each tool's own spelling (Claude's `type`, CodeBuddy's
-//  `transportType: streamable-http`, Codex's TOML table) is applied at render
-//  time by mcp-format.ts.
+//  names; each tool's own spelling (the claude/cursor/codebuddy `type` field,
+//  Codex's TOML table) is applied at render time by mcp-format.ts.
 
 const TeamMcpServerSchema = z
   .object({

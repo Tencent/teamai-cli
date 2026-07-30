@@ -225,6 +225,8 @@ export const LocalConfigSchema = z.object({
   recallEnabled: z.boolean().optional(),
   /** When set, only inject hooks into these agents. Additive across multiple init --agent runs. */
   enabledAgents: z.array(z.string()).optional(),
+  /** Tools explicitly excluded from all teamai sync (set by `uninstall --agent`). Removed again by `init --agent`. */
+  disabledAgents: z.array(z.string()).optional(),
 });
 
 export type LocalConfig = z.infer<typeof LocalConfigSchema>;
@@ -954,6 +956,11 @@ export function resolveBaseDir(localConfig: LocalConfig): string {
     return localConfig.projectRoot;
   }
   return process.env.HOME!;
+}
+
+/** True when `tool` is in localConfig.disabledAgents (excluded from teamai sync). */
+export function isAgentDisabled(localConfig: { disabledAgents?: string[] }, tool: string): boolean {
+  return localConfig.disabledAgents?.includes(tool) ?? false;
 }
 
 /**

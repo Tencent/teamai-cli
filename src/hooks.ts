@@ -498,6 +498,58 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
 }
 
 /**
+ * Report whether a tool settings/hooks file currently holds ANY teamai-managed
+ * hook entry (built-in A or team B). Unlike getHookStatus (which checks the full
+ * built-in set is present), this returns true if even one teamai entry remains.
+ * Used by `uninstall --agent` to decide whether a tool still has teamai hooks.
+ * Manifest records must still exist in the file to count — stale manifest entries
+ * (user hand-stripped the hook) are ignored.
+ */
+export async function hasTeamaiHooks(
+  settingsPath: string,
+  tool: string,
+  manifestPath?: string,
+): Promise<boolean> {
+  const manifest = manifestPath ? await readManifest(manifestPath) : null;
+  // Manifest records are only a signal when the recorded command still exists in
+  // the settings file. A stale manifest entry (user hand-stripped the hook) must
+  // NOT count as "still using teamai" — intersect manifest with actual content.
+  const priorTeamCommands = new Set((manifest?.[tool] ?? []).map((r) => r.command));
+
+  const expanded = expandHome(settingsPath);
+  const format = detectFormat(tool);
+
+  if (format === 'cursor') {
+    const j = await readJson<CursorHooksJson>(expanded);
+    if (!j?.hooks) return false;
+    return Object.values(j.hooks).some((entries) =>
+      (entries ?? []).some((e) => isTeamaiHookCommand(e.command) || priorTeamCommands.has(e.command)),
+    );
+  }
+
+  if (format === 'codex') {
+    const j = await readJson<CodexHooksJson>(expanded);
+    if (!j?.hooks) return false;
+    return Object.values(j.hooks).some((entries) =>
+      (entries ?? []).some((e) => {
+        const cmd = e.hooks?.[0]?.command ?? '';
+        return TEAMAI_COMMAND_MARKERS.some((m) => cmd.includes(m)) || priorTeamCommands.has(cmd);
+      }),
+    );
+  }
+
+  const s = await readJson<ClaudeSettingsJson>(expanded);
+  if (!s?.hooks) return false;
+  return Object.values(s.hooks).some((entries) =>
+    (entries ?? []).some((e) => {
+      if (isBuiltinClaudeEntry(e) || isTeamClaudeEntry(e)) return true;
+      const cmd = e.hooks?.[0]?.command ?? '';
+      return priorTeamCommands.has(cmd);
+    }),
+  );
+}
+
+/**
  * Inject teamai built-in hooks into all AI tool settings.
  * Only writes to tools whose root directory already exists on disk,
  * preventing creation of config dirs for tools the user hasn't installed.
@@ -589,7 +641,14 @@ export async function reconcileTeamHooksForConfig(
     : await resolveTeamHooks(teamConfig, localConfig.repo.localPath, { auto: opts.auto, silent: opts.silent });
   const baseDir = resolveBaseDir(localConfig);
   const manifestPath = getManagedHooksPath(localConfig.scope, localConfig.projectRoot);
-  const filterAgents = opts.filterAgents ?? localConfig.enabledAgents;
+  let filterAgents = opts.filterAgents ?? localConfig.enabledAgents;
+  const disabled = localConfig.disabledAgents;
+  if (disabled && disabled.length > 0) {
+    // Exclusion always applies, even when there is no whitelist. When no
+    // whitelist exists, start from the full configured tool set.
+    const universe = filterAgents ?? Object.keys(teamConfig.toolPaths);
+    filterAgents = universe.filter((t) => !disabled.includes(t));
+  }
   await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, {
     removeAll: opts.removeAll,
     builtinOverride: builtin,
