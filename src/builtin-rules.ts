@@ -3,7 +3,7 @@ import { ensureDir, writeFile, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { ResourceHandler } from './resources/base.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir } from './types.js';
+import { resolveBaseDir, isAgentDisabled } from './types.js';
 import fs from 'node:fs/promises';
 
 // ─── Built-in rules deployment ──────────────────────────
@@ -63,6 +63,7 @@ export async function deployBuiltinRules(
             log.debug(`Skipping built-in rules for ${tool}: tool not installed`);
             continue;
         }
+        if (localConfig && isAgentDisabled(localConfig, tool)) continue;
 
         const rulesDir = path.join(baseDir, toolPath.rules);
         if (!await pathExists(rulesDir)) continue;

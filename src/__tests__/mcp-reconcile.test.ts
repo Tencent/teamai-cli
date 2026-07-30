@@ -154,6 +154,8 @@ servers:
   });
 
   it('skips a server whose ${VAR} cannot be resolved instead of injecting it broken', async () => {
+    // Every tool resolves ${VAR} onto disk now, so an unresolvable var skips the
+    // server everywhere; scoped to claude here just to keep the assertion focused.
     await writeMcpYaml(`
 servers:
   - name: needs-token
@@ -161,6 +163,7 @@ servers:
     url: https://example.com/mcp
     headers:
       Authorization: Bearer \${DEFINITELY_UNSET_TOKEN_XYZ}
+    tools: [claude]
 `);
 
     const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
@@ -288,9 +291,9 @@ servers:
     expect(await fse.pathExists(path.join(projectRoot, '.mcp.json'))).toBe(true);
   });
 
-  it('refuses to write a secret in plaintext into a committed project file', async () => {
+  it('resolves a project secret to plaintext in every tool, keyed off `type`', async () => {
     const projectRoot = path.join(tmpDir, 'proj2');
-    for (const d of ['.claude', '.cursor']) {
+    for (const d of ['.claude', '.cursor', '.codebuddy']) {
       await fse.ensureDir(path.join(projectRoot, d, 'skills'));
     }
     const projectConfig = { ...localConfig, scope: 'project', projectRoot } as unknown as LocalConfig;
@@ -308,26 +311,24 @@ servers:
     url: https://example.com/open
 `);
 
-    const { changes } = await reconcileMcpForConfig(teamConfig, projectConfig);
+    await reconcileMcpForConfig(teamConfig, projectConfig);
 
-    // Claude expands ${VAR} itself, so the placeholder is passed through intact.
+    // teamai resolves every secret to plaintext rather than relying on any tool's
+    // own ${VAR} expansion, which is fragile (GUI IDEs never inherit shell exports,
+    // so a placeholder resolves to empty and the server 401s). Each remote server
+    // keys its transport off `type`, not the ignored `transportType`.
     const claudeDoc = await fse.readJson(path.join(projectRoot, '.mcp.json'));
-    expect(claudeDoc.mcpServers['with-secret'].headers.Authorization).toBe('Bearer ${SECRET_TOKEN}');
+    expect(claudeDoc.mcpServers['with-secret'].headers.Authorization).toBe('Bearer super-secret-value');
 
-    // Cursor cannot, so the server is dropped rather than resolved to plaintext.
+    const buddyDoc = await fse.readJson(path.join(projectRoot, '.codebuddy', 'mcp.json'));
+    expect(buddyDoc.mcpServers['with-secret'].type).toBe('http');
+    expect(buddyDoc.mcpServers['with-secret'].headers.Authorization).toBe('Bearer super-secret-value');
+
     const cursorDoc = await fse.readJson(path.join(projectRoot, '.cursor', 'mcp.json'));
-    expect(cursorDoc.mcpServers['with-secret']).toBeUndefined();
+    expect(cursorDoc.mcpServers['with-secret'].type).toBe('http');
+    expect(cursorDoc.mcpServers['with-secret'].headers.Authorization).toBe('Bearer super-secret-value');
     expect(cursorDoc.mcpServers['no-secret']).toBeDefined();
 
-    const skipped = changes.find((c) => c.tool === 'cursor' && c.server === 'with-secret');
-    expect(skipped?.action).toBe('skipped');
-    expect(skipped?.reason).toMatch(/plaintext/);
-
-    // Belt and braces: the secret must not appear anywhere under the project.
-    for (const f of ['.mcp.json', '.cursor/mcp.json']) {
-      const raw = await fse.readFile(path.join(projectRoot, f), 'utf-8');
-      expect(raw).not.toContain('super-secret-value');
-    }
     delete process.env.SECRET_TOKEN;
   });
 
@@ -344,9 +345,33 @@ servers:
     expect(await fse.pathExists(path.join(homeDir, '.codebuddy', 'mcp.json'))).toBe(false);
   });
 
-  // Verified against codex-cli 0.142.5: it speaks streamable HTTP, and names the
-  // env var for a bearer token rather than storing the value.
-  it('writes an http server into codex config.toml, naming the token env var', async () => {
+  it('rejects a requires entry with shell metacharacters instead of running it', async () => {
+    const marker = path.join(tmpDir, 'requires-injection-proof');
+    await writeMcpYaml(`
+servers:
+  - name: evil
+    transport: stdio
+    command: echo
+    requires:
+      - "echo; touch ${marker}"
+`);
+
+    const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+
+    // The injected command must never have executed.
+    expect(await fse.pathExists(marker)).toBe(false);
+
+    // The server is skipped with an invalid-name reason, not installed.
+    const skipped = changes.find((c) => c.server === 'evil' && c.action === 'skipped');
+    expect(skipped?.reason).toMatch(/invalid name/);
+    expect(changes.some((c) => c.server === 'evil' && c.action === 'added')).toBe(false);
+  });
+
+  // Verified against codex-cli 0.142.5: it speaks streamable HTTP. Secrets are
+  // resolved to plaintext like every other tool — codex's env-var naming
+  // (`bearer_token_env_var`) is not used, so the token is present regardless of
+  // how codex is launched.
+  it('writes an http server into codex config.toml with the token resolved to plaintext', async () => {
     await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
     process.env.REMOTE_TOKEN = 'super-secret-value';
     await writeMcpYaml(`
@@ -367,18 +392,18 @@ servers:
     const toml = await fse.readFile(path.join(homeDir, '.codex', 'config.toml'), 'utf-8');
 
     expect(toml).toContain('url = "https://example.com/mcp"');
-    expect(toml).toContain('bearer_token_env_var = "REMOTE_TOKEN"');
-    expect(toml).toContain('env_http_headers = { "X-Trace" = "TRACE_ID" }');
-    expect(toml).toContain('http_headers = { "X-Team" = "literal-value" }');
+    // All headers resolve to plaintext and land in http_headers; no env-var naming.
+    expect(toml).not.toContain('bearer_token_env_var');
+    expect(toml).not.toContain('env_http_headers');
+    expect(toml).toContain('"Authorization" = "Bearer super-secret-value"');
+    expect(toml).toContain('"X-Trace" = "trace-1"');
+    expect(toml).toContain('"X-Team" = "literal-value"');
     expect(toml).toContain('startup_timeout_sec = 600');
-    // The point of naming the variable: the value never reaches the file.
-    expect(toml).not.toContain('super-secret-value');
-    expect(toml).not.toContain('trace-1');
     delete process.env.REMOTE_TOKEN;
     delete process.env.TRACE_ID;
   });
 
-  it('resolves a codex placeholder it cannot name, such as one inside the url', async () => {
+  it('resolves a codex placeholder inside the url to plaintext', async () => {
     await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
     process.env.REGION = 'eu';
     await writeMcpYaml(`

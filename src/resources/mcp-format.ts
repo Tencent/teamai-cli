@@ -46,19 +46,19 @@ export function supportsTransport(format: McpFormat, transport: McpTransport): b
  * Whether the target file keeps the secret out of itself, letting the ${VAR} be
  * written through verbatim rather than resolved onto disk.
  *
- * Two tools manage it, by different means. Claude Code expands env vars in a
- * project-scope .mcp.json. Codex names the variable instead of holding its value
- * (`bearer_token_env_var`, `env_http_headers`) — but those fields only name a
- * variable for a whole header value, so a placeholder embedded in a larger
- * string, or one in the URL, still has to be resolved.
+ * Always false: teamai resolves every secret to plaintext before writing it.
+ * Env-var passthrough was tried per tool, but each tool expands variables under
+ * different, fragile conditions — most decisively, IDEs launched from the GUI
+ * never inherit the user's shell exports, so a ${VAR} placeholder resolves to
+ * empty and the server 401s. Resolving to plaintext makes the token present no
+ * matter how the tool is started, at the cost of the value landing on disk (new
+ * files are created 0600; users should gitignore project-scope MCP configs).
  */
 export function supportsEnvExpansion(
-  format: McpFormat,
-  projectScope: boolean,
-  def?: McpServerDef,
+  _format: McpFormat,
+  _projectScope: boolean,
+  _def?: McpServerDef,
 ): boolean {
-  if (format === 'claude' && projectScope) return true;
-  if (format === 'codex' && def?.transport === 'http') return codexCanNameEveryVar(def);
   return false;
 }
 
@@ -66,15 +66,6 @@ export function supportsEnvExpansion(
 const BEARER_PLACEHOLDER_RE = /^Bearer \$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 /** A header whose entire value is one placeholder. */
 const WHOLE_PLACEHOLDER_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
-
-function codexCanNameEveryVar(def: McpServerDef): boolean {
-  if (def.url?.includes('${')) return false;
-  for (const value of Object.values(def.headers ?? {})) {
-    if (!value.includes('${')) continue;
-    if (!BEARER_PLACEHOLDER_RE.test(value) && !WHOLE_PLACEHOLDER_RE.test(value)) return false;
-  }
-  return true;
-}
 
 interface CodexHeaderPlan {
   bearerTokenEnvVar?: string;
@@ -176,15 +167,27 @@ function renderClaude(def: McpServerDef): McpJsonEntry {
   return e;
 }
 
+/**
+ * Cursor interpolates `${env:NAME}`, not the bare `${NAME}` our defs carry.
+ * Rewrite every placeholder into cursor's syntax; a def whose vars were already
+ * resolved has no `${…}` left, so this is a no-op there.
+ */
+function toCursorEnvSyntax(s: string): string {
+  return s.replace(PLACEHOLDER_RE, (_whole, name: string) => `\${env:${name}}`);
+}
+
 function renderCursor(def: McpServerDef): McpJsonEntry {
+  const mapVals = (m: Record<string, string>): Record<string, string> =>
+    Object.fromEntries(Object.entries(m).map(([k, v]) => [k, toCursorEnvSyntax(v)]));
   const e: McpJsonEntry = {};
   if (def.transport === 'stdio') {
     e.command = def.command;
-    if (def.args?.length) e.args = def.args;
-    if (def.env && Object.keys(def.env).length) e.env = def.env;
+    if (def.args?.length) e.args = def.args.map(toCursorEnvSyntax);
+    if (def.env && Object.keys(def.env).length) e.env = mapVals(def.env);
   } else {
-    e.url = def.url;
-    if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
+    e.type = def.transport;
+    e.url = def.url ? toCursorEnvSyntax(def.url) : def.url;
+    if (def.headers && Object.keys(def.headers).length) e.headers = mapVals(def.headers);
   }
   return e;
 }
@@ -196,7 +199,10 @@ function renderBuddy(def: McpServerDef): McpJsonEntry {
     if (def.args?.length) e.args = def.args;
     if (def.env && Object.keys(def.env).length) e.env = def.env;
   } else {
-    e.transportType = def.transport === 'http' ? 'streamable-http' : 'sse';
+    // CodeBuddy keys the remote transport off `type`, exactly like the claude
+    // family — an older `transportType: "streamable-http"` is ignored, so the
+    // Authorization header never ships and the server 401s.
+    e.type = def.transport;
     e.url = def.url;
     if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
   }

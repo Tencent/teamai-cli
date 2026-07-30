@@ -3,7 +3,7 @@ import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir } from '../types.js';
+import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir, isAgentDisabled } from '../types.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 
 export class RulesHandler extends ResourceHandler {
@@ -120,6 +120,7 @@ export class RulesHandler extends ResourceHandler {
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
     const baseDir = resolveBaseDir(localConfig);
     for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+      if (isAgentDisabled(localConfig, tool)) continue;
       if (!toolPath.rules) continue;
 
       // Skip tools that are not installed
