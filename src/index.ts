@@ -841,7 +841,7 @@ program
   .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)').hideHelp())
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
   .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph')
-  .option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode')
+  .addOption(new Option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode').hideHelp())
   .option('--status', 'Show knowledge-base git baseline (headSha / repoUrl / branch)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
   .option('--json', 'Output report as JSON (suitable for CI)')
