@@ -160,10 +160,12 @@ export async function hookDispatchCli(
   if (stdin === null) return;
 
   // Provider-config gate: HTTP-only teams must not receive git-provider-only
-  // hook prompts (contribute / mr-hint / votes). Filter keyed on teamai's own
-  // configured source, independent of the cwd's git remote.
-  const { loadLocalConfig } = await import('./config.js');
-  const localConfig = await loadLocalConfig();
+  // hook prompts (contribute / mr-hint / votes). Prefer the project-scope
+  // config when the host tells us the working directory (#264), so
+  // filterHandlersForConfig can honour a project-level repo.kind.
+  const { loadLocalConfig, detectProjectConfig } = await import('./config.js');
+  const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
+  const localConfig = (cwd ? await detectProjectConfig(cwd) : null) ?? await loadLocalConfig();
   const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
   const dispatcher = createDispatcher({ handlers });
 

@@ -106,7 +106,7 @@ describe('hooksInject', () => {
         await expect(hooksInject({})).rejects.toThrow('not initialized');
     });
 
-    it('reconciles into project and user base dirs when project config detected', async () => {
+    it('reconciles only into HOME when project config detected (#264)', async () => {
         const restoreHome = mockHome('/home/testuser');
         mockedAutoDetectInit.mockResolvedValue({
             localConfig: { ...mockLocalConfig, scope: 'project', projectRoot: '/path/to/project' },
@@ -118,20 +118,15 @@ describe('hooksInject', () => {
             restoreHome();
         }
 
-        expect(mockedReconcile).toHaveBeenCalledTimes(2);
-        expect(mockedReconcile).toHaveBeenNthCalledWith(1, mockTeamConfig.toolPaths, '/path/to/project', TEAM_DEFS, expect.any(String), { builtinOverride: undefined });
-        expect(mockedReconcile).toHaveBeenNthCalledWith(2, mockTeamConfig.toolPaths, '/home/testuser', TEAM_DEFS, expect.any(String), { builtinOverride: undefined });
-
-        // #85: the user-home target must be reconciled against the USER's own
-        // manifest, not the project's — otherwise `pull`'s per-scope reconcile
-        // (which always uses each scope's own manifest) diverges from `inject`,
-        // causing duplicate injection / wrongful cleanup of the shared file.
-        const projectManifestPath = mockedReconcile.mock.calls[0][3] as string;
-        const userManifestPath = mockedReconcile.mock.calls[1][3] as string;
-        expect(userManifestPath).not.toBe(projectManifestPath);
-        expect(projectManifestPath).toContain('/path/to/project');
-        expect(userManifestPath).toContain('/home/testuser');
-        expect(userManifestPath).not.toContain('/path/to/project');
+        // #264: project scope no longer writes a redundant copy into projectRoot;
+        // HOME covers all cwds, and dispatch identifies the project via stdin.cwd.
+        expect(mockedReconcile).toHaveBeenCalledTimes(1);
+        expect(mockedReconcile).toHaveBeenCalledWith(
+            mockTeamConfig.toolPaths, '/home/testuser', TEAM_DEFS, expect.any(String), { builtinOverride: undefined },
+        );
+        const manifestPath = mockedReconcile.mock.calls[0][3] as string;
+        expect(manifestPath).toContain('/home/testuser');
+        expect(manifestPath).not.toContain('/path/to/project');
     });
 });
 
@@ -197,7 +192,7 @@ describe('hooksList', () => {
         }
     });
 
-    it('should list project and user base dirs when project config detected', async () => {
+    it('should list only HOME base dir when project config detected (#264)', async () => {
         const restoreHome = mockHome('/home/testuser');
         const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
         const projectConfig = {
@@ -206,17 +201,22 @@ describe('hooksList', () => {
             projectRoot: '/path/to/project',
         };
         mockedAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig: mockTeamConfig });
+        mockedGetHookStatus
+            .mockResolvedValueOnce('installed')
+            .mockResolvedValueOnce('missing')
+            .mockResolvedValueOnce('installed');
 
         try {
             await hooksList({});
 
-            expect(mockedGetHookStatus).toHaveBeenCalledTimes(6);
-            expect(mockedGetHookStatus).toHaveBeenCalledWith(
-                path.join('/path/to/project', '.claude/settings.json'),
-                'claude',
-            );
+            // #264: project scope only checks HOME, not projectRoot.
+            expect(mockedGetHookStatus).toHaveBeenCalledTimes(3);
             expect(mockedGetHookStatus).toHaveBeenCalledWith(
                 path.join('/home/testuser', '.claude/settings.json'),
+                'claude',
+            );
+            expect(mockedGetHookStatus).not.toHaveBeenCalledWith(
+                path.join('/path/to/project', '.claude/settings.json'),
                 'claude',
             );
         } finally {
@@ -247,7 +247,7 @@ describe('hooksRemove', () => {
         expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Hooks removed'));
     });
 
-    it('removes from project and user base dirs when project config detected', async () => {
+    it('removes from HOME and cleans up legacy projectRoot entries (#264)', async () => {
         const restoreHome = mockHome('/home/testuser');
         mockedAutoDetectInit.mockResolvedValue({
             localConfig: { ...mockLocalConfig, scope: 'project', projectRoot: '/path/to/project' },
@@ -258,27 +258,22 @@ describe('hooksRemove', () => {
         } finally {
             restoreHome();
         }
+        // 1 main (HOME) + 1 legacy cleanup (projectRoot)
         expect(mockedReconcile).toHaveBeenCalledTimes(2);
 
-        // #85: same per-scope manifest requirement as `hooksInject`.
-        const projectManifestPath = mockedReconcile.mock.calls[0][3] as string;
-        const userManifestPath = mockedReconcile.mock.calls[1][3] as string;
-        expect(userManifestPath).not.toBe(projectManifestPath);
-        expect(userManifestPath).not.toContain('/path/to/project');
-    });
+        // Main removal targets HOME with user manifest.
+        expect(mockedReconcile).toHaveBeenNthCalledWith(1,
+            mockTeamConfig.toolPaths, '/home/testuser', [], expect.any(String), { removeAll: true },
+        );
+        const userManifest = mockedReconcile.mock.calls[0][3] as string;
+        expect(userManifest).toContain('/home/testuser');
 
-    it('does not duplicate when HOME equals projectRoot', async () => {
-        const restoreHome = mockHome('/path/to/project');
-        mockedAutoDetectInit.mockResolvedValue({
-            localConfig: { ...mockLocalConfig, scope: 'project', projectRoot: '/path/to/project' },
-            teamConfig: mockTeamConfig,
-        });
-        try {
-            await hooksRemove({});
-        } finally {
-            restoreHome();
-        }
-        expect(mockedReconcile).toHaveBeenCalledTimes(1);
+        // Legacy cleanup targets projectRoot with project manifest.
+        expect(mockedReconcile).toHaveBeenNthCalledWith(2,
+            mockTeamConfig.toolPaths, '/path/to/project', [], expect.any(String), { removeAll: true },
+        );
+        const legacyManifest = mockedReconcile.mock.calls[1][3] as string;
+        expect(legacyManifest).toContain('/path/to/project');
     });
 
     it('propagates error when not initialized', async () => {
