@@ -751,6 +751,13 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
           log.warn(`Failed to inject OpenClaw hook into ${tool}: ${(e as Error).message}`);
         }
       }
+    } else if (tool === 'hermes') {
+      try {
+        const { injectHermesHooks } = await import('./hermes-hooks.js');
+        await injectHermesHooks();
+      } catch (e) {
+        log.warn(`Failed to inject Hermes hook: ${(e as Error).message}`);
+      }
     }
   }
 }
@@ -774,6 +781,25 @@ export async function reconcileHooksToAllTools(
   }
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
+    // Hermes uses config.yaml (YAML) + a script dir + allowlist instead of a
+    // JSON settings file, so it bypasses the settings-based reconcile path.
+    // Install when the .hermes home exists; removeAll clears the teamai hook.
+    if (tool === 'hermes') {
+      try {
+        const { getHermesHome } = await import('./hermes-home.js');
+        const hermesRoot = getHermesHome();
+        if (opts.removeAll) {
+          const { removeHermesHooks } = await import('./hermes-hooks.js');
+          await removeHermesHooks();
+        } else if (await pathExists(hermesRoot)) {
+          const { injectHermesHooks } = await import('./hermes-hooks.js');
+          await injectHermesHooks();
+        }
+      } catch (e) {
+        log.warn(`Failed to reconcile Hermes hooks: ${(e as Error).message}`);
+      }
+      continue;
+    }
     if (!paths.settings) continue;
     // Only reconcile hooks for tools the user actually has installed. Without
     // this gate, `hooks inject`/`remove` would create root directories for

@@ -73,6 +73,8 @@ interface RemovalPlan {
   managedHooksPath: string;
   /** Whether shared resources (docs / ~/.teamai / shell profile) are part of this removal. */
   includeShared: boolean;
+  /** Whether this removal targets Hermes (clears its SOUL.md block + config.yaml hook). */
+  hermesCleanup: boolean;
   /** Scope being uninstalled (issue #73: surfaced to the user). */
   scope: Scope;
 }
@@ -325,6 +327,7 @@ async function buildRemovalPlan(
     teamaiHomeExists: includeShared && await pathExists(teamaiHome),
     managedHooksPath,
     includeShared,
+    hermesCleanup: toolsToMerge.includes('hermes'),
     scope: localConfig.scope,
   };
 
@@ -627,6 +630,20 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
       log.success(`移除 ${plan.teamaiHome}/`);
     } catch (e) {
       log.warn(`移除 ${plan.teamaiHome} 失败: ${(e as Error).message}`);
+    }
+  }
+
+  // (h) Hermes: clear teamai-managed entries — the SOUL.md rules block, the
+  // status-report hook (config.yaml + allowlist + script). Gated on hermesCleanup
+  // so a targeted `--agent <other>` uninstall never touches ~/.hermes. No-op safe.
+  if (plan.hermesCleanup) {
+    try {
+      const { removeHermesHooks } = await import('./hermes-hooks.js');
+      const { removeSoulRules } = await import('./hermes-config.js');
+      await removeHermesHooks();
+      await removeSoulRules();
+    } catch (e) {
+      log.debug(`Hermes uninstall cleanup skipped: ${(e as Error).message}`);
     }
   }
 }

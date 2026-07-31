@@ -1893,8 +1893,13 @@ async function runHookRuleCommand(
   if (command.type === 'uninstall_hook_rule') {
     const rec = manifest[slug];
     if (rec) {
-      const settingsPath = resolveToolSettingsPath(config, rec.tool);
-      await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
+      if (rec.tool === 'hermes') {
+        const { removeHermesAgentHook } = await import('./hermes-hooks.js');
+        await removeHermesAgentHook({ slug, event: rec.event, command: rec.command });
+      } else {
+        const settingsPath = resolveToolSettingsPath(config, rec.tool);
+        await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
+      }
       delete manifest[slug];
       await saveAgentHookManifest(manifest);
     }
@@ -1923,15 +1928,25 @@ async function runHookRuleCommand(
   const prior = manifest[slug];
   if (prior) {
     try {
-      const priorPath = resolveToolSettingsPath(config, prior.tool);
-      await removeAgentHook(priorPath, prior.tool, { slug, command: prior.command });
+      if (prior.tool === 'hermes') {
+        const { removeHermesAgentHook } = await import('./hermes-hooks.js');
+        await removeHermesAgentHook({ slug, event: prior.event, command: prior.command });
+      } else {
+        const priorPath = resolveToolSettingsPath(config, prior.tool);
+        await removeAgentHook(priorPath, prior.tool, { slug, command: prior.command });
+      }
     } catch (e) {
       log.debug(`agent hook [${slug}] prior cleanup failed: ${(e as Error).message}`);
     }
   }
 
-  const settingsPath = resolveToolSettingsPath(config, tool);
-  await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
+  if (tool === 'hermes') {
+    const { applyHermesAgentHook } = await import('./hermes-hooks.js');
+    await applyHermesAgentHook({ slug, event, command: cmd, matcher, timeout });
+  } else {
+    const settingsPath = resolveToolSettingsPath(config, tool);
+    await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
+  }
   manifest[slug] = { tool, event, command: cmd, matcher, timeout };
   await saveAgentHookManifest(manifest);
   return undefined;
@@ -2273,8 +2288,13 @@ export async function removeAllAgentHooks(): Promise<void> {
   for (const slug of slugs) {
     const rec = manifest[slug];
     try {
-      const settingsPath = resolveToolSettingsPath(config, rec.tool);
-      await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
+      if (rec.tool === 'hermes') {
+        const { removeHermesAgentHook } = await import('./hermes-hooks.js');
+        await removeHermesAgentHook({ slug, event: rec.event, command: rec.command });
+      } else {
+        const settingsPath = resolveToolSettingsPath(config, rec.tool);
+        await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
+      }
     } catch (e) {
       log.debug(`agent hook [${slug}] teardown failed: ${(e as Error).message}`);
     }
