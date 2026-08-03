@@ -163,6 +163,13 @@ async function collectTeamRuleNames(repoPath: string): Promise<Set<string>> {
   );
 }
 
+/** Detect hooks cleared to empty arrays — a residue of prior teamai installation. */
+function isEmptyHooksResidue(parsed: Record<string, unknown> | null): boolean {
+  if (parsed == null || !('hooks' in parsed) || typeof parsed.hooks !== 'object' || parsed.hooks == null) return false;
+  const entries = Object.values(parsed.hooks as Record<string, unknown>);
+  return entries.length > 0 && entries.every((v) => Array.isArray(v) && v.length === 0);
+}
+
 // ─── Discovery ─────────────────────────────────────────
 
 async function discoverToolResources(
@@ -181,7 +188,9 @@ async function discoverToolResources(
   // (a) Hooks — settings.json / hooks.json
   if (toolPath.settings) {
     const settingsPath = path.join(baseDir, toolPath.settings);
-    if (await pathExists(settingsPath) && await hasTeamaiHooks(settingsPath, tool, managedHooksPath)) {
+    if (await pathExists(settingsPath)
+      && (await hasTeamaiHooks(settingsPath, tool, managedHooksPath)
+        || isEmptyHooksResidue(await readJson<Record<string, unknown>>(settingsPath)))) {
       res.hookFiles.push({ path: settingsPath, tool });
     }
   } else {
