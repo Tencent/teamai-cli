@@ -92,6 +92,10 @@ describe('recall --check precheck mode', () => {
 
     expect(captured).toMatch(/^RELEVANT score=\d+\.\d+\n$/);
     expect(captured).not.toContain(CHECK_LEARNING_TITLE);
+    // With a single-entry index the learnings IDF baseline is 1 (log(1)+1=1),
+    // so the effective threshold is 1.35. A high-signal query against a closely
+    // matching title/tags should score well above that. The >= 4.0 guard
+    // confirms the fixture actually exercises a strong hit, not a borderline one.
     expect(Number(captured.match(/score=([\d.]+)/)![1])).toBeGreaterThanOrEqual(4.0);
   });
 
