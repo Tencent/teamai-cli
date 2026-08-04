@@ -3,6 +3,7 @@ import matter from 'gray-matter';
 import { readFileSafe, readJson, writeJson, listFiles, listFilesRecursive, listDirs, pathExists } from './fs.js';
 import { tokenize, MAX_TOKENIZE_CHARS } from './tokenizer.js';
 import { log } from './logger.js';
+import { extractErrorSignatures } from './error-signature.js';
 import {
   SEARCH_INDEX_VERSION,
   type KnowledgeDomain,
@@ -355,13 +356,16 @@ async function aggregateVotes(votesDir: string): Promise<VoteAggregation> {
  * Read a markdown file, truncate oversized content, and convert it to a
  * SearchIndexEntry of the given category. Used by all four collectors.
  * Returns null when the file is empty/unreadable.
+ *
+ * Also returns the body excerpt so callers can extract error signatures from
+ * the raw body without re-reading the file.
  */
 async function entryFromMdFile(
   absPath: string,
   filenameForId: string,
   type: KnowledgeType,
   voteCounts: Map<string, number>,
-): Promise<SearchIndexEntry | null> {
+): Promise<{ entry: SearchIndexEntry; bodyExcerpt: string } | null> {
   // 若当前文件是全量 codebase.md，且同目录存在 codebase-index.md，则跳过以避免重复命中。
   const basename = path.basename(absPath);
   if (basename === CODEBASE_FULL_FILENAME) {
@@ -417,16 +421,19 @@ async function entryFromMdFile(
   const docId = filenameForId.replace(/\.md$/i, '');
 
   return {
-    filename: filenameForId,
-    title,
-    author: meta.author ?? '',
-    date: meta.date ?? '',
-    tags,
-    tokens: [...new Set(tokens)],
-    votes: voteCounts.get(docId) ?? 0,
-    type,
-    domain,
-    path: absPath,
+    entry: {
+      filename: filenameForId,
+      title,
+      author: meta.author ?? '',
+      date: meta.date ?? '',
+      tags,
+      tokens: [...new Set(tokens)],
+      votes: voteCounts.get(docId) ?? 0,
+      type,
+      domain,
+      path: absPath,
+    },
+    bodyExcerpt,
   };
 }
 
@@ -435,10 +442,10 @@ async function collectFlatMdEntries(
   dir: string,
   type: KnowledgeType,
   voteCounts: Map<string, number>,
-): Promise<SearchIndexEntry[]> {
+): Promise<Array<{ entry: SearchIndexEntry; bodyExcerpt: string }>> {
   if (!await pathExists(dir)) return [];
   const files = await listFiles(dir);
-  const out: SearchIndexEntry[] = [];
+  const out: Array<{ entry: SearchIndexEntry; bodyExcerpt: string }> = [];
   for (const filename of files) {
     if (!filename.endsWith('.md')) continue;
     const e = await entryFromMdFile(path.join(dir, filename), filename, type, voteCounts);
@@ -455,10 +462,10 @@ async function collectRecursiveMdEntries(
   dir: string,
   type: KnowledgeType,
   voteCounts: Map<string, number>,
-): Promise<SearchIndexEntry[]> {
+): Promise<Array<{ entry: SearchIndexEntry; bodyExcerpt: string }>> {
   if (!await pathExists(dir)) return [];
   const files = await listFilesRecursive(dir);
-  const out: SearchIndexEntry[] = [];
+  const out: Array<{ entry: SearchIndexEntry; bodyExcerpt: string }> = [];
   for (const rel of files) {
     if (!rel.endsWith('.md')) continue;
     // Use the relative path as the filename so the entry id is unique
@@ -479,9 +486,9 @@ async function collectRecursiveMdEntries(
 async function collectSkillEntries(
   dir: string,
   voteCounts: Map<string, number>,
-): Promise<SearchIndexEntry[]> {
+): Promise<Array<{ entry: SearchIndexEntry; bodyExcerpt: string }>> {
   if (!await pathExists(dir)) return [];
-  const out: SearchIndexEntry[] = [];
+  const out: Array<{ entry: SearchIndexEntry; bodyExcerpt: string }> = [];
 
   async function walk(current: string): Promise<void> {
     const subdirs = await listDirs(current);
@@ -541,23 +548,28 @@ export async function buildIndex(
     : { scores: new Map<string, number>(), confidenceMap: new Map<string, number>() };
   const voteCounts = voteAgg.scores;
 
-  const entries: SearchIndexEntry[] = [];
+  // Collect raw results (entry + bodyExcerpt) from all sources.
+  // bodyExcerpt is kept alongside the entry only during index build so we can
+  // extract error signatures below without re-reading any files.
+  const rawResults: Array<{ entry: SearchIndexEntry; bodyExcerpt: string }> = [];
 
   if (opts.learningsDir) {
-    entries.push(...await collectFlatMdEntries(opts.learningsDir, 'learnings', voteCounts));
+    rawResults.push(...await collectFlatMdEntries(opts.learningsDir, 'learnings', voteCounts));
   }
   if (opts.docsDir) {
-    entries.push(...await collectRecursiveMdEntries(opts.docsDir, 'docs', voteCounts));
+    rawResults.push(...await collectRecursiveMdEntries(opts.docsDir, 'docs', voteCounts));
   }
   if (opts.rulesDir) {
-    entries.push(...await collectRecursiveMdEntries(opts.rulesDir, 'rules', voteCounts));
+    rawResults.push(...await collectRecursiveMdEntries(opts.rulesDir, 'rules', voteCounts));
   }
   if (opts.skillsDir) {
-    entries.push(...await collectSkillEntries(opts.skillsDir, voteCounts));
+    rawResults.push(...await collectSkillEntries(opts.skillsDir, voteCounts));
   }
   if (opts.codebaseDir) {
-    entries.push(...await collectRecursiveMdEntries(opts.codebaseDir, 'docs', voteCounts));
+    rawResults.push(...await collectRecursiveMdEntries(opts.codebaseDir, 'docs', voteCounts));
   }
+
+  const entries: SearchIndexEntry[] = rawResults.map((r) => r.entry);
 
   // Annotate entries with confidence/hotness for hot/cold scoring.
   if (voteAgg.confidenceMap.size > 0) {
@@ -571,10 +583,29 @@ export async function buildIndex(
 
   // Build document-frequency map for IDF weighting.
   // Count how many *entries* contain each token (not raw term frequency).
+  // IMPORTANT: error signatures are kept in a separate errorSignatures map and
+  // must NEVER be added to entry.tokens or counted here, to avoid polluting
+  // df/IDF calculations (which would cause IDF dilution across the corpus).
   const df: Record<string, number> = {};
   for (const entry of entries) {
     for (const token of new Set(entry.tokens)) {
       df[token] = (df[token] ?? 0) + 1;
+    }
+  }
+
+  // Build error-signature index: signature → filenames.
+  // This is a completely separate map that never touches entry.tokens or df,
+  // ensuring zero impact on BM25 IDF calculations.
+  const errorSignatures: Record<string, string[]> = {};
+  for (const { entry, bodyExcerpt } of rawResults) {
+    const sigs = extractErrorSignatures(bodyExcerpt);
+    for (const sig of sigs) {
+      if (!errorSignatures[sig]) {
+        errorSignatures[sig] = [];
+      }
+      if (!errorSignatures[sig].includes(entry.filename)) {
+        errorSignatures[sig].push(entry.filename);
+      }
     }
   }
 
@@ -594,6 +625,7 @@ export async function buildIndex(
     elapsedMs: elapsed,
     entries,
     df,
+    errorSignatures: Object.keys(errorSignatures).length > 0 ? errorSignatures : undefined,
   };
 
   await writeJson(targetPath, index);
@@ -612,6 +644,12 @@ export async function buildIndex(
  */
 export function isLegacyIndex(index: SearchIndex | null): boolean {
   if (!index) return false;
+  // Version number is the sole migration trigger. `errorSignatures` is intentionally
+  // absent (undefined) when no signatures were extracted — a zero-signature v7 index
+  // is still current. Do NOT use the presence/absence of errorSignatures as a detector:
+  // that would make a current empty-signature index indistinguishable from a stale one.
+  // When adding a new schema field in a future version, bump SEARCH_INDEX_VERSION;
+  // do not rely on field presence.
   if (typeof index.version !== 'number' || index.version < SEARCH_INDEX_VERSION) return true;
   // Any entry missing type or domain → legacy; domain was added in v3.
   return index.entries.some((e) => !e.type || e.domain === undefined) || !index.df;

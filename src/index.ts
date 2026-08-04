@@ -725,11 +725,13 @@ const recallCmd = program
   .description('Search team learnings knowledge base')
   .option('--depth <level>', 'Recall depth: route (entry-points only) | context (module-level, default) | lookup (full graph traversal)', 'context')
   .option('--check', 'Relevance precheck only: print RELEVANT/NOT_RELEVANT + top score; no file reads, no upvote')
+  .option('--domain <list>', 'Filter by knowledge domain, comma-separated: technical | ops | support | neutral')
+  .option('--type <list>', 'Filter by knowledge type, comma-separated: learnings | docs | rules | skills')
   .action(async (queryParts, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const query = (queryParts as string[]).join(' ');
     const { recall } = await import('./recall.js');
-    await recall(query, { ...globalOpts, depth: cmdOpts.depth, check: cmdOpts.check });
+    await recall(query, { ...globalOpts, depth: cmdOpts.depth, check: cmdOpts.check, domain: cmdOpts.domain, type: cmdOpts.type });
   });
 
 recallCmd

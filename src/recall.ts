@@ -4,17 +4,27 @@ import { loadIndex, buildIndex, search, isLegacyIndex } from './utils/search-ind
 import type { SearchResult } from './utils/search-index.js';
 import { readFileSafe, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import type { GlobalOptions, SearchIndex, LocalConfig } from './types.js';
+import type { GlobalOptions, SearchIndex, LocalConfig, KnowledgeDomain, KnowledgeType } from './types.js';
 import { getTeamaiHome } from './types.js';
 import { queryCodeKnowledge } from './code-knowledge-recall.js';
 import type { CodeKnowledgeResult } from './code-knowledge-recall.js';
 import { recordRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { matchErrorSignatures } from './utils/error-signature.js';
 
 /** Relevance threshold for codebase graph hits.
  *  These are log-compressed to a bounded [0,10] range (see ~line 313),
  *  so an absolute threshold is stable here — it does not drift with corpus size. */
 const CODEBASE_RELEVANCE_THRESHOLD = 4.0;
+
+/** Display score assigned to exact error-signature matches.
+ *
+ *  This value does NOT establish ranking — learnings scores are unbounded TF-IDF
+ *  sums that exceed any fixed constant once the corpus grows (a single token
+ *  matching title+tag+body already scores ~21 at N=25). Precedence is enforced
+ *  by sorting on `fromSignature` first; this constant only gives the hit a
+ *  stable, recognizable number in `--check` output and formatted results. */
+const SIGNATURE_MATCH_SCORE = 20;
 
 /** Relevance threshold for learnings/docs hits, expressed as a fraction of the
  *  theoretical single-token-match baseline rather than an absolute score.
@@ -44,6 +54,12 @@ const LEARNINGS_RELEVANCE_RATIO = 1.35;
  *  keeps the stricter pre-existing behavior until the corpus is large enough
  *  (N >= ~20) for the relative threshold to exceed the floor on its own. */
 const LEARNINGS_ABSOLUTE_FLOOR = 4.0;
+
+/** Valid --domain filter values. Module-level constant so it is not rebuilt on each recall() call. */
+const VALID_DOMAINS = new Set<KnowledgeDomain>(['technical', 'ops', 'support', 'neutral']);
+
+/** Valid --type filter values. Module-level constant so it is not rebuilt on each recall() call. */
+const VALID_TYPES = new Set<KnowledgeType>(['learnings', 'docs', 'rules', 'skills']);
 
 /**
  * Decide whether a top-1 recall result clears the relevance bar.
@@ -103,6 +119,62 @@ export function computeIdfBaseline(indexes: SearchIndex[]): number {
   return Math.log((maxEntries + 1) / 2) + 1;
 }
 
+/**
+ * Parse a comma-separated CLI filter value against an allowed vocabulary.
+ *
+ * Unknown entries are dropped with a warning rather than aborting the command —
+ * a typo in one value should not discard the whole query. Returns undefined when
+ * nothing valid remains, which callers treat as "no filter".
+ *
+ * @param raw Raw option string, e.g. 'technical,ops'.
+ * @param allowed Permitted values.
+ * @param flagName Flag name used in the warning message, e.g. '--domain'.
+ * @returns Set of valid values, or undefined when the filter should not apply.
+ */
+export function parseFilterValues<T extends string>(
+  raw: string | undefined,
+  allowed: ReadonlySet<T>,
+  flagName: string,
+): Set<T> | undefined {
+  if (!raw) return undefined;
+  const parts = raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (parts.length === 0) return undefined;
+  const valid = new Set<T>();
+  const invalid: string[] = [];
+  for (const p of parts) {
+    if (allowed.has(p as T)) valid.add(p as T);
+    else invalid.push(p);
+  }
+  if (invalid.length > 0) {
+    log.warn(
+      `Ignoring invalid ${flagName} value(s): ${invalid.join(', ')}. Valid: ${[...allowed].join(', ')}`,
+    );
+  }
+  return valid.size > 0 ? valid : undefined;
+}
+
+/**
+ * Test whether a search result entry matches the given domain/type filters.
+ *
+ * Both filters are optional; when absent that dimension is unconstrained.
+ * A missing `entry.domain` is treated as `'neutral'` to match the indexing
+ * convention in search-index.ts (entry.domain ?? 'neutral').
+ *
+ * @param entry The search index entry to test.
+ * @param domainFilter Set of allowed domains, or undefined for no restriction.
+ * @param typeFilter Set of allowed types, or undefined for no restriction.
+ * @returns True when the entry satisfies all active filters.
+ */
+export function matchesFilters(
+  entry: { domain?: KnowledgeDomain; type: KnowledgeType },
+  domainFilter: Set<KnowledgeDomain> | undefined,
+  typeFilter: Set<KnowledgeType> | undefined,
+): boolean {
+  if (domainFilter && !domainFilter.has(entry.domain ?? 'neutral')) return false;
+  if (typeFilter && !typeFilter.has(entry.type)) return false;
+  return true;
+}
+
 /** Resolve votes dir dynamically (respects HOME changes in tests). */
 function getVotesLocalDir(): string {
   return `${process.env.HOME ?? ''}/.teamai/votes`;
@@ -117,6 +189,8 @@ interface ScopedSearchResult extends SearchResult {
   sources?: string[];
   /** True when this result came from the codebase knowledge graph (bounded score scale). */
   fromCodebase?: boolean;
+  /** True when this result came from an exact error-signature match. */
+  fromSignature?: boolean;
 }
 
 // ─── Recall data flow ────────────────────────────────────
@@ -162,7 +236,10 @@ export function formatResults(results: ScopedSearchResult[]): string {
     // bucket each hit came from. Falls back to no tag for legacy entries that
     // pre-date the schema bump (these are auto-rebuilt on the next pull).
     const typeTag = entry.type ? `[${entry.type}] ` : '';
-    lines.push(`[${i + 1}/${results.length}] ${typeTag}${entry.title}${voteStr}${scopeStr}`);
+    // Exact error-signature matches get an additional tag so the AI knows this
+    // is a precise structural match, not a scored keyword hit.
+    const sigTag = results[i].fromSignature ? '[exact-error-match] ' : '';
+    lines.push(`[${i + 1}/${results.length}] ${sigTag}${typeTag}${entry.title}${voteStr}${scopeStr}`);
     lines.push(`Author: ${entry.author || 'unknown'} | Date: ${entry.date || 'unknown'} | Score: ${score.toFixed(1)}`);
     if (entry.tags.length > 0) {
       lines.push(`Tags: ${entry.tags.join(', ')}`);
@@ -186,6 +263,34 @@ export function formatResults(results: ScopedSearchResult[]): string {
   lines.push('');
   lines.push('以上内容来自团队知识库，仅供参考。如需详细信息，请用 Read 工具读取对应文件。');
   return lines.join('\n');
+}
+
+/**
+ * Comparator for merged recall results.
+ *
+ * Sorting strategy:
+ *  1. Exact error-signature matches always precede scored hits. Their score is a
+ *     fixed display value, not a comparable magnitude — learnings scores are
+ *     unbounded TF-IDF sums that exceed SIGNATURE_MATCH_SCORE as the corpus grows
+ *     (a single token matching title+tag+body already scores ~21 at N=25).
+ *  2. Within each partition, sort by score descending.
+ *  3. Ties broken by date descending.
+ *
+ * Exported so tests can validate the partitioning behaviour in isolation,
+ * without needing to spin up an index.
+ *
+ * TODO(cross-scale): learnings scores are unbounded TF-IDF sums that grow with
+ * log(N), while codebase scores are log-compressed into [0,10]. Sorting them
+ * directly compares different scales — as the corpus grows, learnings hits
+ * increasingly crowd out codebase hits regardless of true relevance. Fixing
+ * this properly means normalizing learnings scores against the IDF baseline
+ * before the merge (related to the per-domain IDF work).
+ */
+export function compareResults(a: ScopedSearchResult, b: ScopedSearchResult): number {
+  const sigDelta = Number(b.fromSignature ?? false) - Number(a.fromSignature ?? false);
+  if (sigDelta !== 0) return sigDelta;
+  if (b.score !== a.score) return b.score - a.score;
+  return (b.entry.date || '').localeCompare(a.entry.date || '');
 }
 
 /**
@@ -289,7 +394,12 @@ async function loadOrBuildScopeIndex(
  */
 export async function recall(
   query: string,
-  options: GlobalOptions & { depth?: 'route' | 'context' | 'lookup'; check?: boolean },
+  options: GlobalOptions & {
+    depth?: 'route' | 'context' | 'lookup';
+    check?: boolean;
+    domain?: string;
+    type?: string;
+  },
 ): Promise<void> {
   /**
    * Emit a --check verdict line to stdout.
@@ -373,15 +483,41 @@ export async function recall(
   }
 
   // Merge: search each scope index, tag results with scope, then combine & sort
-  const allResults: ScopedSearchResult[] = [];
+  let allResults: ScopedSearchResult[] = [];
   const seenFilenames = new Set<string>();
 
   const idfBaseline = computeIdfBaseline(scopeIndexes.map((s) => s.index));
 
+  // ── Exact error-signature bypass ─────────────────────────
+  // Check the errorSignatures map before running BM25 scoring. A signature hit
+  // means the query contains a pasted error that exactly matches a known failure.
+  // These hits are assigned SIGNATURE_MATCH_SCORE (a fixed display value) and
+  // always sorted before scored hits by compareResults (partitioned by fromSignature).
+  // Signature hits still go through --domain/--type filters so they respect user constraints.
+  for (const { index, scope, learningsBase } of scopeIndexes) {
+    const matchedFilenames = matchErrorSignatures(query, index.errorSignatures ?? {});
+    if (matchedFilenames.length === 0) continue;
+    // Build a filename → entry map once per index to avoid O(n²) find() in loop.
+    const entryByFilename = new Map(index.entries.map((e) => [e.filename, e]));
+    for (const filename of matchedFilenames) {
+      if (seenFilenames.has(filename)) continue;
+      const entry = entryByFilename.get(filename);
+      if (!entry) continue;
+      seenFilenames.add(filename);
+      allResults.push({
+        entry,
+        score: SIGNATURE_MATCH_SCORE,
+        scope,
+        learningsBase,
+        fromSignature: true,
+      });
+    }
+  }
+
   for (const { index, scope, learningsBase } of scopeIndexes) {
     const results = search(query, index);
     for (const r of results) {
-      // Deduplicate by filename across scopes
+      // Deduplicate by filename across scopes; signature hits already inserted above take priority.
       if (!seenFilenames.has(r.entry.filename)) {
         seenFilenames.add(r.entry.filename);
         allResults.push({ ...r, scope, learningsBase });
@@ -420,21 +556,28 @@ export async function recall(
     log.warn('recall: code graph retrieval unavailable, run teamai codebase --lint to diagnose');
   }
 
-  // Re-sort merged results by score descending, then date descending
-  // TODO(cross-scale): learnings scores are unbounded TF-IDF sums that grow with
-  // log(N), while codebase scores are log-compressed into [0,10]. Sorting them
-  // directly compares different scales — as the corpus grows, learnings hits
-  // increasingly crowd out codebase hits regardless of true relevance. Fixing
-  // this properly means normalizing learnings scores against the IDF baseline
-  // before the merge (related to the per-domain IDF work).
-  allResults.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return (b.entry.date || '').localeCompare(a.entry.date || '');
-  });
+  // Apply --domain / --type filters before sorting so --check reflects filtered results
+  const domainFilter = parseFilterValues(options.domain, VALID_DOMAINS, '--domain');
+  const typeFilter = parseFilterValues(options.type, VALID_TYPES, '--type');
+  if (domainFilter || typeFilter) {
+    const before = allResults.length;
+    allResults = allResults.filter((r) => matchesFilters(r.entry, domainFilter, typeFilter));
+    if (options.verbose) {
+      log.info(`recall: filters removed ${before - allResults.length} of ${before} result(s) (domain=${options.domain ?? 'none'}, type=${options.type ?? 'none'})`);
+    }
+  }
+
+  // Re-sort merged results. Signature matches partition first, then score descending,
+  // then date descending. See compareResults for the full rationale.
+  allResults.sort(compareResults);
 
   if (options.check) {
     const top = allResults.length > 0 ? allResults[0] : undefined;
-    emitCheckVerdict(top?.score ?? 0, top?.fromCodebase ?? false, idfBaseline);
+    // Signature hits use the codebase branch (absolute threshold CODEBASE_RELEVANCE_THRESHOLD = 4.0)
+    // because SIGNATURE_MATCH_SCORE (20) is a fixed constant that does not drift with corpus size,
+    // so comparing it against a corpus-relative learnings threshold would be meaningless.
+    const isAbsoluteScaleHit = (top?.fromCodebase ?? false) || (top?.fromSignature ?? false);
+    emitCheckVerdict(top?.score ?? 0, isAbsoluteScaleHit, idfBaseline);
     return;
   }
 

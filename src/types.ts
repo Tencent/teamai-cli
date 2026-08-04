@@ -889,7 +889,7 @@ export interface SearchIndexEntry {
 }
 
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
-export const SEARCH_INDEX_VERSION = 6;
+export const SEARCH_INDEX_VERSION = 7;
 
 /** Shape of the search-index.json file. */
 export interface SearchIndex {
@@ -905,6 +905,10 @@ export interface SearchIndex {
    *  Used for IDF weighting in search(). Optional for backward compatibility
    *  with indexes built before this field was introduced. */
   df?: Record<string, number>;
+  /** Error signature → filenames. Exact-match bypass; never feeds df/IDF.
+   *  Populated at index build time from error strings found in document bodies.
+   *  Optional so old indexes missing this field degrade gracefully to "no bypass". */
+  errorSignatures?: Record<string, string[]>;
 }
 
 /** Per-user vote file (votes/<user>.yaml). */
