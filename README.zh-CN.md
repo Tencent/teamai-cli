@@ -43,6 +43,11 @@ teamai init https://github.com/yourorg/yourrepo
 
 # 用户级初始化（资源安装到 ~/ 下）
 teamai init https://github.com/yourorg/yourrepo --scope user
+
+# 可选的分层模式：项目仓库保持为当前 scope，同时继承已初始化的
+# user scope 中的安全资源和可检索知识
+cd /path/to/my-project
+teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 ```
 
 初始化完成后，每次开启 AI 会话时都会自动拉取管理员发布的 skills / rules 等 Harness 更新，无需手动同步。
@@ -153,7 +158,7 @@ Author: member-b | Score: 12.0 | Tags: deploy, config
 - **共享检索索引**（`search-index.json`）：learnings（session 经验）、docs（团队文档）、rules（编码规则）、skills（各 `SKILL.md`）四类，源自团队仓库对应目录，在 `teamai pull` / `teamai contribute` 时构建重建。
 - **代码知识图谱**（`teamwiki/`）：由 `teamai import` 生成，检索时实时查询。
 
-排序在当前生效的 scope 内采用 BM25 + 图谱增强。检索索引结果会标注来源，搜索会隐式为命中的索引文档投票，让优质内容自然上浮。当当前工作目录包含 project scope 配置时，recall 只检索该 project scope；否则检索 user scope。
+排序采用 BM25 + 图谱增强。当前工作目录包含 project scope 配置时，Recall 先检索该项目；如果项目启用了 `--inherit-user-scope`，再检索 user 知识并标注结果来源，相同条目由 project 版本覆盖 user 版本。当前目录没有 project 配置时，Recall 检索 user scope。当前 scope 的命中会隐式投票，项目运行期间继承的 user 命中保持只读。
 
 ### 代码知识图谱
 

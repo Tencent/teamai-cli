@@ -151,6 +151,24 @@ export function resolveInitScope(
 }
 
 /**
+ * Resolve the project-local user-scope inheritance setting.
+ *
+ * An omitted flag preserves an existing project setting so additive re-init
+ * operations such as `init --agent` do not silently disable inheritance.
+ */
+export function resolveInheritUserScope(
+  scope: Scope,
+  requested: boolean | undefined,
+  existing: boolean | undefined,
+): boolean | undefined {
+  if (requested === true && scope !== 'project') {
+    throw new Error('--inherit-user-scope can only be used with project scope.');
+  }
+  if (scope !== 'project') return undefined;
+  return requested ?? existing;
+}
+
+/**
  * Merge positional `teamai init <repo>` with `--repo` alias.
  * `--repo` is permanently kept as an equivalent alias (no deprecation warning).
  */
@@ -202,7 +220,7 @@ async function isInsideGitRepo(dir: string): Promise<boolean> {
  */
 export async function initHttp(
   url: string,
-  options: GlobalOptions & { scope?: string; role?: string; agent?: string; force?: boolean; token?: string },
+  options: GlobalOptions & { scope?: string; role?: string; agent?: string; force?: boolean; token?: string; inheritUserScope?: boolean },
 ): Promise<void> {
   const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
 
@@ -219,6 +237,19 @@ export async function initHttp(
       process.cwd(),
       process.env.HOME ?? '',
     ));
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exit(1);
+    return;
+  }
+  const existingLocalConfig = await loadLocalConfigForScope(scope, projectRoot);
+  let inheritUserScope: boolean | undefined;
+  try {
+    inheritUserScope = resolveInheritUserScope(
+      scope,
+      options.inheritUserScope,
+      existingLocalConfig?.inheritUserScope,
+    );
   } catch (e) {
     log.error((e as Error).message);
     process.exit(1);
@@ -278,6 +309,7 @@ export async function initHttp(
     scope,
     projectRoot,
     additionalRoles: [],
+    ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   };
   try {
     Object.assign(localConfig, await promptForRoleProfile(localPath, options.role));
@@ -342,6 +374,7 @@ export async function init(options: GlobalOptions & {
   force?: boolean;
   http?: string;
   token?: string;
+  inheritUserScope?: boolean;
 }): Promise<void> {
   if (options.http) {
     return initHttp(options.http, options);
@@ -359,6 +392,19 @@ export async function init(options: GlobalOptions & {
       process.cwd(),
       process.env.HOME ?? '',
     ));
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exit(1);
+    return;
+  }
+  const existingLocalConfig = await loadLocalConfigForScope(scope, projectRoot);
+  let inheritUserScope: boolean | undefined;
+  try {
+    inheritUserScope = resolveInheritUserScope(
+      scope,
+      options.inheritUserScope,
+      existingLocalConfig?.inheritUserScope,
+    );
   } catch (e) {
     log.error((e as Error).message);
     process.exit(1);
@@ -626,6 +672,7 @@ export async function init(options: GlobalOptions & {
     scope,
     projectRoot,
     additionalRoles: [],
+    ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   };
 
   try {

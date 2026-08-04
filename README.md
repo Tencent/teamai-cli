@@ -43,6 +43,11 @@ teamai init https://github.com/yourorg/yourrepo
 
 # User-scope init (resources installed under ~/)
 teamai init https://github.com/yourorg/yourrepo --scope user
+
+# Optional layered setup: keep a project repo active while inheriting safe
+# resources and searchable knowledge from an initialized user-scope repo
+cd /path/to/my-project
+teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 ```
 
 Once initialized, every AI session automatically pulls the latest skills / rules and other Harness updates published by admins — no manual sync needed.
@@ -153,7 +158,7 @@ Author: member-b | Score: 12.0 | Tags: deploy, config
 - **Shared search index** (`search-index.json`): four categories — learnings (session experience), docs (team docs), rules (coding rules), and skills (each `SKILL.md`) — sourced from the corresponding team-repo directories, (re)built on `teamai pull` / `teamai contribute`.
 - **Codebase knowledge graph** (`teamwiki/`): produced by `teamai import`, queried live at search time.
 
-Ranking uses BM25 + graph-boost within the active scope. Search-index results are tagged with their origin, and matched indexed documents are implicitly upvoted so good content floats up over time. When the current working directory contains a project-scope config, recall searches only that project scope; otherwise it searches the user scope.
+Ranking uses BM25 + graph-boost. When the current working directory contains a project-scope config, Recall searches that project; if the project enables `--inherit-user-scope`, it then searches user knowledge, tags each result with its origin, and lets an identical project entry override the user entry. Without a project config in the current directory, Recall searches the user scope. Active-scope hits are implicitly upvoted; inherited user hits remain read-only while the project is active.
 
 ### Codebase Knowledge Graph
 

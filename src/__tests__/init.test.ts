@@ -202,6 +202,18 @@ describe('init', () => {
     mockExit.mockClear();
   });
 
+  it('rejects user-scope inheritance before provider or repository side effects', async () => {
+    await init({
+      repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+      scope: 'user',
+      inheritUserScope: true,
+    });
+
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockEnsureGfInstalled).not.toHaveBeenCalled();
+    expect(mockGfRepoClone).not.toHaveBeenCalled();
+  });
+
   describe('empty repo fallback', () => {
     it('should call initRepo when clone succeeds but directory does not exist', async () => {
       let pathExistsCallCount = 0;
@@ -436,6 +448,34 @@ describe('init', () => {
   });
 
   describe('scope path display', () => {
+    it('persists explicit user-resource inheritance in project config', async () => {
+      const projectLocalPath = path.join(process.cwd(), '.teamai', 'team-repo');
+      let cloneDone = false;
+      pathExistsFn = (p: string) => {
+        if (p === projectLocalPath) return cloneDone;
+        if (p.endsWith(`${path.sep}.git`) || p.endsWith('/.git')) return true;
+        return false;
+      };
+      mockGfRepoClone.mockImplementation(() => { cloneDone = true; });
+      questionAnswers = ['n', '1'];
+
+      const { saveLocalConfigForScope } = await import('../config.js');
+      await init({
+        repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+        inheritUserScope: true,
+      });
+
+      expect(saveLocalConfigForScope).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: 'project',
+          projectRoot: process.cwd(),
+          inheritUserScope: true,
+        }),
+        'project',
+        process.cwd(),
+      );
+    });
+
     it('should default to project scope and print summary when --scope is omitted', async () => {
       const projectLocalPath = path.join(process.cwd(), '.teamai', 'team-repo');
       let cloneDone = false;

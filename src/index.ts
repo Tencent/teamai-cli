@@ -27,6 +27,8 @@ program
   .option('--http <url>', 'Git-free HTTP team repo (read-only consumer; only needs an API key)')
   .option('--token <key>', 'API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.')
   .option('--scope <scope>', 'Install scope: project (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude)')
+  .option('--inherit-user-scope', 'In project scope, also sync safe user-scope resources and search its knowledge')
+  .option('--no-inherit-user-scope', 'Disable user-scope inheritance for this project')
   .option('--role <id>', 'Primary role ID (e.g. hai_dev) for non-interactive setup')
   .option('--agent <name>', 'Only inject hooks into this agent (e.g. claude, codebuddy, workbuddy). Additive on repeated runs.')
   .option('--force', 'Overwrite existing config without confirmation')
