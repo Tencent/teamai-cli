@@ -262,7 +262,7 @@ describe('queryCodeKnowledge — progressive depth retrieval', () => {
 
     const hit = results.find(r => r.page.includes('source-array.md'));
     expect(hit).toBeDefined();
-    expect(hit?.sources).toEqual(['src/foo.ts', 'src/bar.ts']);
+    expect(hit?.sources).toEqual([{ path: 'src/foo.ts' }, { path: 'src/bar.ts' }]);
   });
 
   // -------------------------------------------------------------------------
@@ -277,7 +277,7 @@ describe('queryCodeKnowledge — progressive depth retrieval', () => {
 
     const hit = results.find(r => r.page.includes('source-string.md'));
     expect(hit).toBeDefined();
-    expect(hit?.sources).toEqual(['src/only.ts']);
+    expect(hit?.sources).toEqual([{ path: 'src/only.ts' }]);
   });
 
   // -------------------------------------------------------------------------
@@ -307,7 +307,7 @@ describe('queryCodeKnowledge — progressive depth retrieval', () => {
 
     const hit = results.find(r => r.page.includes('source-mixed.md'));
     expect(hit).toBeDefined();
-    expect(hit?.sources).toEqual(['src/real-file.ts']);
+    expect(hit?.sources).toEqual([{ path: 'src/real-file.ts' }]);
   });
 
   // -------------------------------------------------------------------------
@@ -323,7 +323,7 @@ describe('queryCodeKnowledge — progressive depth retrieval', () => {
     const hit = results.find(r => r.page.includes('source-no-ext.md'));
     expect(hit).toBeDefined();
     // URL entry must be dropped; Makefile and src/Dockerfile must survive
-    expect(hit?.sources).toEqual(['Makefile', 'src/Dockerfile']);
+    expect(hit?.sources).toEqual([{ path: 'Makefile' }, { path: 'src/Dockerfile' }]);
   });
 
   // -------------------------------------------------------------------------

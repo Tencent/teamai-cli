@@ -13,13 +13,19 @@ import matter from 'gray-matter';
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { tokenize, tokenCount, MAX_TOKENIZE_CHARS } from './utils/tokenizer.js';
 
+export interface SourceAnchor {
+  path: string;
+  desc?: string;
+}
+
 export interface CodeKnowledgeResult {
   page: string;
   title: string;
   score: number;
   snippet: string;
   kind: 'codebase';
-  sources?: string[];
+  sources?: SourceAnchor[];
+  relatedFiles?: string[];
 }
 
 interface CorpusStats {
@@ -294,6 +300,65 @@ function sanitizeSources(sources: string[] | undefined): string[] | undefined {
   return cleaned.length > 0 ? cleaned : undefined;
 }
 
+export function extractSourceDescriptions(sources: string[], pageContent: string): SourceAnchor[] {
+  const lines = pageContent.split('\n');
+  return sources.map((source) => {
+    const slashIdx = source.lastIndexOf('/');
+    const basename = slashIdx >= 0 ? source.slice(slashIdx + 1) : source;
+
+    let matchLineIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes(source)) {
+        matchLineIdx = i;
+        break;
+      }
+    }
+    if (matchLineIdx === -1) {
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes('`file:') && lines[i].includes(basename)) {
+          matchLineIdx = i;
+          break;
+        }
+      }
+    }
+    if (matchLineIdx === -1) {
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes(basename)) {
+          matchLineIdx = i;
+          break;
+        }
+      }
+    }
+
+    if (matchLineIdx === -1) return { path: source };
+
+    let h3Idx = -1;
+    for (let i = matchLineIdx; i >= 0; i--) {
+      if (lines[i].startsWith('### ')) {
+        h3Idx = i;
+        break;
+      }
+    }
+
+    if (h3Idx === -1) return { path: source };
+
+    let descIdx = -1;
+    for (let i = h3Idx + 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.trim() === '') continue;
+      if (line.startsWith('#') || line.startsWith('-') || line.startsWith('`')) break;
+      descIdx = i;
+      break;
+    }
+
+    if (descIdx === -1) return { path: source };
+
+    const chars = Array.from(lines[descIdx]);
+    const desc = chars.length > 40 ? chars.slice(0, 40).join('') : lines[descIdx];
+    return { path: source, desc };
+  });
+}
+
 async function loadPagesRecursive(
   dir: string,
   relativePath: string,
@@ -389,7 +454,9 @@ export async function queryCodeKnowledge(
       score: 10,
       snippet: pages[0].content.slice(0, 800),
       kind: 'codebase',
-      sources: pages[0].sources,
+      sources: pages[0].sources
+        ? extractSourceDescriptions(pages[0].sources, pages[0].content)
+        : undefined,
     }];
   }
 
@@ -418,6 +485,15 @@ export async function queryCodeKnowledge(
   const budget = TOKEN_BUDGET[depth] ?? 5000;
   const estimateTokens = (text: string) => Math.ceil(text.length / 3.5);
 
+  const forwardDeps = new Map<string, string[]>();
+  if (graph && depth === 'lookup') {
+    for (const edge of graph.edges) {
+      if (edge.from === edge.to) continue;
+      const list = forwardDeps.get(edge.from);
+      if (list) { list.push(edge.to); } else { forwardDeps.set(edge.from, [edge.to]); }
+    }
+  }
+
   const results: CodeKnowledgeResult[] = [];
   let tokenUsed = 0;
 
@@ -436,13 +512,29 @@ export async function queryCodeKnowledge(
     if (tokenUsed + cost > budget && results.length > 0) break;
     tokenUsed += cost;
 
+    let relatedFiles: string[] | undefined;
+    if (page.sources && page.sources.length > 0) {
+      const sourceSet = new Set<string>(page.sources);
+      const neighbors = new Set<string>();
+      for (const src of page.sources) {
+        const deps = forwardDeps.get(src);
+        if (deps) { for (const d of deps) { if (!sourceSet.has(d)) { neighbors.add(d); } } }
+      }
+      if (neighbors.size > 0) {
+        relatedFiles = [...neighbors].slice(0, 15);
+      }
+    }
+
     results.push({
       page: page.path,
       title: page.title,
       score,
       snippet,
       kind: 'codebase',
-      sources: page.sources,
+      sources: page.sources
+        ? extractSourceDescriptions(page.sources, page.content)
+        : undefined,
+      relatedFiles,
     });
   }
 
