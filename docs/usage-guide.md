@@ -160,7 +160,7 @@ Resulting directory structure:
 |------|-------------------|---------------|
 | **Install location** | Under the project directory | Under `~/` |
 | **Best for** | Project-specific skills and rules | General team conventions, cross-project skills |
-| **Can coexist** | ✅ Yes, both scopes can be active at once | ✅ Yes, both scopes can be active at once |
+| **Can coexist** | ✅ Yes; selected when the current directory has its config | ✅ Yes; selected otherwise |
 
 > **Local install location** is decided only by `teamai init`'s `--scope` (default `project`). A `scope` field in remote `teamai.yaml`, if present, is ignored.
 
@@ -230,7 +230,7 @@ teamai pull              # Manual pull
 teamai pull --dry-run    # Dry run, no actual changes
 ```
 
-> If you have both a user scope and a project scope, `pull` will pull resources for both scopes in sequence, without conflicts.
+> User and project scopes can both be installed, but `pull` processes only the active scope. When the current working directory contains a project-scope `.teamai/config.yaml`, it pulls the project scope and skips the user scope; otherwise it pulls the user scope.
 
 With role-based skills enabled, `pull`'s skill sync source becomes the contents of `skills/<namespace>/`, expanded according to `primaryRole + additionalRoles` and flattened into each local AI tool's skills directory. `rules/`, `docs/`, and `learnings/` keep their original global sync behavior.
 
@@ -477,7 +477,7 @@ teamai recall "GPU out of memory"
 ```
 
 - Supports mixed-language search
-- Automatically merges the knowledge bases of both user + project scope, labeling results `[user]`/`[project]` by source
+- Searches only the active scope and labels search-index results `[user]` or `[project]`; a project-scope config in the current working directory takes precedence over the user scope
 - Consulted knowledge is automatically upvoted, surfacing high-quality docs to the top
 - A lightweight relevance precheck is available via `teamai recall --check "<keywords>"`, which prints `RELEVANT score=<n>` or `NOT_RELEVANT score=<n>` without reading files or upvoting — the recall subagent uses it to skip retrieval on unrelated tasks
 
@@ -1028,7 +1028,7 @@ teamai pull
 
 **Q: Can user scope and project scope coexist?**
 
-Yes. `pull` pulls both scopes in sequence, and `recall` merges search results across both scopes' knowledge bases. They don't conflict with each other.
+Yes, both configurations can be installed on the same machine. They are isolated at runtime: when the current working directory contains a project-scope `.teamai/config.yaml`, `pull` and `recall` use only that project scope; otherwise they use the user scope.
 
 **Q: `teamai init` says it's already initialized?**
 

@@ -153,7 +153,7 @@ Author: member-b | Score: 12.0 | Tags: deploy, config
 - **Shared search index** (`search-index.json`): four categories — learnings (session experience), docs (team docs), rules (coding rules), and skills (each `SKILL.md`) — sourced from the corresponding team-repo directories, (re)built on `teamai pull` / `teamai contribute`.
 - **Codebase knowledge graph** (`teamwiki/`): produced by `teamai import`, queried live at search time.
 
-Ranking uses BM25 + graph-boost, merges dual-scope (user + project) results tagged with origin, and implicitly upvotes matched docs so good content floats up over time.
+Ranking uses BM25 + graph-boost within the active scope. Search-index results are tagged with their origin, and matched indexed documents are implicitly upvoted so good content floats up over time. When the current working directory contains a project-scope config, recall searches only that project scope; otherwise it searches the user scope.
 
 ### Codebase Knowledge Graph
 

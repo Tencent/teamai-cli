@@ -153,7 +153,7 @@ Author: member-b | Score: 12.0 | Tags: deploy, config
 - **共享检索索引**（`search-index.json`）：learnings（session 经验）、docs（团队文档）、rules（编码规则）、skills（各 `SKILL.md`）四类，源自团队仓库对应目录，在 `teamai pull` / `teamai contribute` 时构建重建。
 - **代码知识图谱**（`teamwiki/`）：由 `teamai import` 生成，检索时实时查询。
 
-排序采用 BM25 + 图谱增强，合并用户 / 项目双 scope 结果并标注来源；搜索会隐式为命中文档投票，优质内容自然上浮。
+排序在当前生效的 scope 内采用 BM25 + 图谱增强。检索索引结果会标注来源，搜索会隐式为命中的索引文档投票，让优质内容自然上浮。当当前工作目录包含 project scope 配置时，recall 只检索该 project scope；否则检索 user scope。
 
 ### 代码知识图谱
 

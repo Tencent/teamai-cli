@@ -158,7 +158,7 @@ teamai init <group>/TeamAi-<team> --scope user
 |------|-------------------|---------------|
 | **资源安装位置** | 项目目录下 | `~/` 下 |
 | **适用场景** | 项目特定的技能和规则 | 通用团队规范、跨项目技能 |
-| **能否共存** | ✅ 可以同时拥有两个 scope | ✅ 可以同时拥有两个 scope |
+| **能否共存** | ✅ 可以；当前目录包含对应配置时生效 | ✅ 可以；其他情况下生效 |
 
 > **本机安装位置**仅由 `teamai init` 的 `--scope`（默认 `project`）决定。远端 `teamai.yaml` 中若仍有 `scope` 字段会被忽略。
 
@@ -228,7 +228,7 @@ teamai pull              # 手动拉取
 teamai pull --dry-run    # 试运行，不实际修改
 ```
 
-> 如果你同时有 user 和 project scope，`pull` 会依次拉取两个 scope 的资源，互不冲突。
+> user 和 project scope 可以同时安装，但 `pull` 只处理当前生效的 scope。当前工作目录包含 project scope 的 `.teamai/config.yaml` 时，会拉取 project scope 并跳过 user scope；否则拉取 user scope。
 
 启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/`、`docs/`、`learnings/` 仍然保持原有全局同步逻辑。
 
@@ -475,7 +475,7 @@ teamai recall "GPU 内存不足"
 ```
 
 - 支持中英文混合搜索
-- 自动合并 user + project 双 scope 的知识库，结果标注 `[user]`/`[project]` 来源
+- 只检索当前生效的 scope，并将检索索引结果标注为 `[user]` 或 `[project]`；当前工作目录包含 project scope 配置时优先使用 project scope
 - 被查阅的知识自动 upvote，好文档浮到顶部
 - 提供轻量相关性预检 `teamai recall --check "<关键词>"`，仅输出 `RELEVANT score=<n>` 或 `NOT_RELEVANT score=<n>`，不读取文件、不 upvote —— recall subagent 用它在任务与团队知识无关时跳过检索
 
@@ -1023,7 +1023,7 @@ teamai pull
 
 **Q: User scope 和 Project scope 可以共存吗？**
 
-可以。`pull` 会依次拉取两个 scope，`recall` 会合并搜索两个 scope 的知识库。两者互不冲突。
+可以在同一台机器上同时安装两个 scope 的配置，但运行时彼此隔离：当前工作目录包含 project scope 的 `.teamai/config.yaml` 时，`pull` 和 `recall` 只使用该 project scope；否则使用 user scope。
 
 **Q: `teamai init` 提示已初始化？**
 
