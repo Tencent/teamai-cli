@@ -11,11 +11,97 @@ import type { CodeKnowledgeResult, SourceAnchor } from './code-knowledge-recall.
 import { recordRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
 
-/** Minimum top-1 relevance score for recall to be considered worthwhile.
- *  Learnings meaningful hits score >=5; codebase hits are log-compressed to
- *  0-10 (recall.ts ~line 288). 4.0 balances not missing codebase hits vs
- *  filtering pure noise. Tunable — --check prints the actual score. */
-const RECALL_RELEVANCE_THRESHOLD = 4.0;
+/** Relevance threshold for codebase graph hits.
+ *  These are log-compressed to a bounded [0,10] range (see ~line 313),
+ *  so an absolute threshold is stable here — it does not drift with corpus size. */
+const CODEBASE_RELEVANCE_THRESHOLD = 4.0;
+
+/** Relevance threshold for learnings/docs hits, expressed as a fraction of the
+ *  theoretical single-token-match baseline rather than an absolute score.
+ *  Learnings scores are unbounded TF-IDF sums whose magnitude scales with
+ *  log(N) as the corpus grows (IDF numerator is the total entry count), so a
+ *  hardcoded absolute cutoff silently drifts. Normalizing by the baseline
+ *  keeps the decision stable across corpus sizes.
+ *
+ *  Calibrated against the current corpus (N=25): a single-token-match baseline
+ *  is log(26/2)+1 ≈ 3.56, giving an effective cutoff of ≈4.81 — slightly
+ *  stricter than the historical hardcoded 4.0.
+ *
+ *  IMPORTANT: this ratio is only "stricter" for N ≳ 20 (where baseline×1.35 >
+ *  4.0). For small corpora (N=1–5) the ratio gives a cutoff of 1.35–3.57, which
+ *  is significantly looser than 4.0. That is why LEARNINGS_ABSOLUTE_FLOOR exists:
+ *  isRelevantScore uses max(baseline*ratio, floor) so cold-start corpora are
+ *  held to the same strict bar as historical code, and the relative threshold
+ *  only takes effect once N is large enough (~20+) to push it above the floor. */
+const LEARNINGS_RELEVANCE_RATIO = 1.35;
+
+/** Absolute floor for learnings relevance, applied when the corpus is too small
+ *  for the relative threshold to be meaningful.
+ *
+ *  The ratio-based cutoff scales with log(N), so on a cold-start corpus (1-5
+ *  entries) it drops well below the historical absolute cutoff of 4.0 — a single
+ *  tag match would score ~1.7-3.6 and wrongly pass. Taking max(relative, floor)
+ *  keeps the stricter pre-existing behavior until the corpus is large enough
+ *  (N >= ~20) for the relative threshold to exceed the floor on its own. */
+const LEARNINGS_ABSOLUTE_FLOOR = 4.0;
+
+/**
+ * Decide whether a top-1 recall result clears the relevance bar.
+ *
+ * Codebase graph hits use a fixed threshold because their scores are already
+ * log-compressed into a bounded range. Learnings hits use
+ * `max(baseline * LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR)`:
+ * - On a large corpus (N ≳ 20), the relative threshold exceeds the floor and
+ *   provides a corpus-size-stable cutoff.
+ * - On a cold-start corpus (N = 1–5), the relative threshold drops well below
+ *   4.0, so the floor enforces the same strict bar as historical code and
+ *   prevents false positives from single-tag or single-title matches.
+ *
+ * @param score Top-1 merged result score.
+ * @param isCodebaseHit True when the top result came from the codebase graph.
+ * @param idfBaseline IDF of a single-occurrence token in the active index;
+ *                    pass 1 to fall back to absolute-score behavior.
+ * @returns True when the result is relevant enough to surface.
+ */
+export function isRelevantScore(
+  score: number,
+  isCodebaseHit: boolean,
+  idfBaseline: number,
+): boolean {
+  if (isCodebaseHit) return score >= CODEBASE_RELEVANCE_THRESHOLD;
+  const baseline = idfBaseline > 0 ? idfBaseline : 1;
+  return score >= Math.max(baseline * LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR);
+}
+
+/**
+ * IDF value of a token occurring in exactly one entry of the given index.
+ *
+ * Mirrors the formula in search-index.ts (`log((N+1)/(df+1)) + 1` with df=1)
+ * so learnings thresholds can be expressed relative to corpus size instead of
+ * as absolute scores. Returns 1 for legacy indexes lacking a df map, which
+ * makes `isRelevantScore` degrade to its previous absolute behavior.
+ *
+ * When multiple scopes are active, we take the entry count of whichever
+ * df-bearing index is largest. This is a deliberately conservative approximation
+ * (the resulting threshold is higher) — a more precise approach would carry each
+ * index's own baseline through to the per-result scoring, which is left as a
+ * known limitation (see P2-5).
+ *
+ * Legacy indexes (no df map) are excluded from the N computation because their
+ * presence would otherwise inflate maxEntries and raise the threshold against
+ * results that were actually scored against a small modern index.
+ *
+ * @returns IDF of a single-occurrence token (>= 1); 1 for legacy indexes without a df map.
+ */
+export function computeIdfBaseline(indexes: SearchIndex[]): number {
+  let maxEntries = 0;
+  for (const idx of indexes) {
+    if (!idx.df) continue;                    // legacy index: its N is not used for IDF anyway
+    if (idx.entries.length > maxEntries) maxEntries = idx.entries.length;
+  }
+  if (maxEntries === 0) return 1;
+  return Math.log((maxEntries + 1) / 2) + 1;
+}
 
 /** Resolve votes dir dynamically (respects HOME changes in tests). */
 function getVotesLocalDir(): string {
@@ -31,6 +117,8 @@ interface ScopedSearchResult extends SearchResult {
   sources?: SourceAnchor[];
   /** Forward-dependency neighbor files from graph (candidate change files). */
   relatedFiles?: string[];
+  /** True when this result came from the codebase knowledge graph (bounded score scale). */
+  fromCodebase?: boolean;
 }
 
 // ─── Recall data flow ────────────────────────────────────
@@ -225,9 +313,9 @@ export async function recall(
   query: string,
   options: GlobalOptions & { depth?: 'route' | 'context' | 'lookup'; check?: boolean },
 ): Promise<void> {
-  const emitCheckVerdict = (score: number, topResult?: ScopedSearchResult): void => {
+  const emitCheckVerdict = (score: number, isCodebaseHit = false, baseline = 1, topResult?: ScopedSearchResult): void => {
     const rounded = Math.round(score * 10) / 10;
-    const verdict = rounded >= RECALL_RELEVANCE_THRESHOLD ? 'RELEVANT' : 'NOT_RELEVANT';
+    const verdict = isRelevantScore(score, isCodebaseHit, baseline) ? 'RELEVANT' : 'NOT_RELEVANT';
     let line = `${verdict} score=${rounded.toFixed(1)}`;
     if (verdict === 'RELEVANT' && topResult) {
       line += ` title="${topResult.entry.title}"`;
@@ -328,6 +416,8 @@ export async function recall(
       .flatMap(({ index }) => index.entries.map((entry) => `${entry.type}:${entry.filename}`)),
   );
 
+  const idfBaseline = computeIdfBaseline(scopeIndexes.map((s) => s.index));
+
   for (const { index, scope, learningsBase } of scopeIndexes) {
     const results = search(query, index);
     for (const r of results) {
@@ -368,6 +458,7 @@ export async function recall(
         learningsBase: wikiRoot,
         sources: cr.sources,
         relatedFiles: cr.relatedFiles,
+        fromCodebase: true,
       });
     }
   } catch {
@@ -375,13 +466,20 @@ export async function recall(
   }
 
   // Re-sort merged results by score descending, then date descending
+  // TODO(cross-scale): learnings scores are unbounded TF-IDF sums that grow with
+  // log(N), while codebase scores are log-compressed into [0,10]. Sorting them
+  // directly compares different scales — as the corpus grows, learnings hits
+  // increasingly crowd out codebase hits regardless of true relevance. Fixing
+  // this properly means normalizing learnings scores against the IDF baseline
+  // before the merge (related to the per-domain IDF work).
   allResults.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
 
   if (options.check) {
-    emitCheckVerdict(allResults.length > 0 ? allResults[0].score : 0, allResults[0]);
+    const top = allResults.length > 0 ? allResults[0] : undefined;
+    emitCheckVerdict(top?.score ?? 0, top?.fromCodebase ?? false, idfBaseline, top);
     return;
   }
 

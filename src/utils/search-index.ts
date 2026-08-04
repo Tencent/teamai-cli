@@ -59,6 +59,16 @@ const TECHNICAL_TAGS = new Set([
   'http', 'grpc', 'proto', 'json', 'schema', 'migration', 'index',
   'test', 'unittest', 'e2e', 'mock', 'lint', 'typecheck',
   'docker', 'build', 'package', 'dependency', 'import', 'module',
+  // CJK terms: the tokenizer emits 2-char bigrams for Chinese text, so only
+  // 2-char entries can ever match — single chars are too ambiguous to include,
+  // and 3+ char words are unreachable by construction.
+  // Note: this table is also reused by inferDomain() to match frontmatter tags;
+  // a Chinese tag that appears in learnings frontmatter hits here the same way
+  // an English tag does — this is intentional and expected behaviour.
+  '接口', '代码', '函数', '类型', '重构', '报错', '异常', '调试', '修复', '补丁',
+  '性能', '延迟', '超时', '重试', '并发', '异步', '线程', '缓存',
+  '架构', '框架', '依赖', '模块', '编译', '构建', '测试', '单测', '断言',
+  '算法', '协议',
 ]);
 
 const OPS_TAGS = new Set([
@@ -69,12 +79,24 @@ const OPS_TAGS = new Set([
   'nginx', 'lb', 'ingress', 'service', 'network', 'firewall',
   'backup', 'restore', 'disaster', 'incident', 'oncall',
   'gpu', 'resource', 'quota', 'tke', 'tcr', 'cos',
+  // CJK terms: see TECHNICAL_TAGS comment above for rationale. Also reused by
+  // inferDomain() to match frontmatter tags — Chinese tag behaviour is the same
+  // as English tag behaviour, which is intentional.
+  '部署', '发布', '上线', '回滚', '扩容', '缩容', '重启', '集群', '节点',
+  '监控', '告警', '指标', '日志', '排查', '故障', '值班', '预案',
+  '容器', '镜像', '网关', '负载', '流量', '带宽', '磁盘', '内存', '显存',
+  '备份', '恢复', '容灾', '资源', '配额', '权限', '证书',
 ]);
 
 const SUPPORT_TAGS = new Set([
   'faq', 'support', 'user', 'customer', 'guide', 'tutorial',
   'onboard', 'onboarding', 'help', 'howto', 'usage', 'example',
   'feedback', 'issue', 'complaint', 'request', 'ticket',
+  // CJK terms: see TECHNICAL_TAGS comment above for rationale. Also reused by
+  // inferDomain() to match frontmatter tags — Chinese tag behaviour is the same
+  // as English tag behaviour, which is intentional.
+  '教程', '指南', '示例', '用法', '入门', '新手', '帮助',
+  '反馈', '咨询', '问题', '工单', '需求', '客户', '用户',
 ]);
 
 // Directory path sub-strings that signal a domain.
@@ -99,9 +121,12 @@ const DOMAIN_WEIGHT: Record<KnowledgeDomain, Record<KnowledgeDomain, number>> = 
 };
 
 /**
- * Infer the domain of a query from its tokens.
- * Uses the same tag sets used for document domain inference so the two sides
- * of the matching are symmetric.
+ * Infer the dominant domain of a search query from its tokens.
+ *
+ * Matches tokens against the same tag vocabularies used by `inferDomain`, which
+ * now include CJK word entries — the tokenizer emits 2-char words for Chinese
+ * text, so Chinese queries resolve to a real domain instead of always falling
+ * back to 'neutral'. Ties break technical > ops > support, mirroring inferDomain.
  */
 function inferQueryDomain(queryTokens: string[]): KnowledgeDomain {
   let techScore = 0;
