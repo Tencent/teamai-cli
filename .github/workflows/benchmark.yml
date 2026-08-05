@@ -27,6 +27,24 @@ on:
         required: false
         default: '2'
         type: string
+      anthropic_base_url:
+        description: 'Anthropic API base URL (leave empty for official API)'
+        required: false
+        type: string
+      anthropic_api_key:
+        description: 'Override API key (leave empty to use ANTHROPIC_API_KEY secret)'
+        required: false
+        type: string
+      session_model:
+        description: 'Model for main session (e.g. claude-sonnet-4-6)'
+        required: false
+        default: 'claude-sonnet-4-6'
+        type: string
+      recall_model:
+        description: 'Model for recall sub-agent (e.g. deepseek-v4-flash-202605)'
+        required: false
+        default: 'deepseek-v4-flash-202605'
+        type: string
 
 concurrency:
   group: benchmark
@@ -38,7 +56,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key || secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url }}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.session_model || 'claude-sonnet-4-6' }}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.recall_model || 'deepseek-v4-flash-202605' }}
       TGIT_TOKEN: ${{ secrets.TGIT_TOKEN }}
     steps:
       - name: Checkout with submodules
@@ -130,6 +151,8 @@ jobs:
             echo "**Run ID:** \`${{ steps.run-id.outputs.id }}\`" >> "$GITHUB_STEP_SUMMARY"
             echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
             echo "**Variants:** \`${{ inputs.variants || 'baseline.json,teamai.json' }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Session Model:** \`${{ inputs.session_model || 'claude-sonnet-4-6' }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Recall Model:** \`${{ inputs.recall_model || 'deepseek-v4-flash-202605' }}\`" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
           else
