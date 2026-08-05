@@ -31,7 +31,7 @@ import { log, setStderrOnly } from './utils/logger.js';
  * payload we already buffered (a healthy host EOFs within milliseconds, so this
  * never triggers in normal use).
  */
-const STDIN_READ_TIMEOUT_MS = 2_000;
+const STDIN_READ_TIMEOUT_MS = 1_000;
 
 /**
  * Read STDIN fully, but never block longer than STDIN_READ_TIMEOUT_MS waiting
@@ -152,41 +152,41 @@ export async function hookDispatchCli(
   matcher: string,
   bgOnly = false,
 ): Promise<void> {
-  // Reserve STDOUT for the dispatcher's hook payload; log lines go to STDERR.
   setStderrOnly(true);
+  try {
+    const raw = await readStdin();
+    const stdin = parseStdin(raw, event);
+    if (stdin === null) return;
 
-  const raw = await readStdin();
-  const stdin = parseStdin(raw, event);
-  if (stdin === null) return;
+    // Provider-config gate: HTTP-only teams must not receive git-provider-only
+    // hook prompts (contribute / mr-hint / votes). Prefer the project-scope
+    // config when the host tells us the working directory (#264), so
+    // filterHandlersForConfig can honour a project-level repo.kind.
+    const { loadLocalConfig, detectProjectConfig } = await import('./config.js');
+    const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
+    const localConfig = (cwd ? await detectProjectConfig(cwd) : null) ?? await loadLocalConfig();
+    const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
+    const dispatcher = createDispatcher({ handlers });
 
-  // Provider-config gate: HTTP-only teams must not receive git-provider-only
-  // hook prompts (contribute / mr-hint / votes). Prefer the project-scope
-  // config when the host tells us the working directory (#264), so
-  // filterHandlersForConfig can honour a project-level repo.kind.
-  const { loadLocalConfig, detectProjectConfig } = await import('./config.js');
-  const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
-  const localConfig = (cwd ? await detectProjectConfig(cwd) : null) ?? await loadLocalConfig();
-  const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
-  const dispatcher = createDispatcher({ handlers });
+    // Detached child: run the fire-and-forget handlers, then exit. No output is
+    // wired back to the host (the parent already returned).
+    if (bgOnly) {
+      await runDispatch(dispatcher, event, matcher, stdin, tool, 'background');
+      return;
+    }
 
-  // Detached child: run the fire-and-forget handlers, then exit. No output is
-  // wired back to the host (the parent already returned).
-  if (bgOnly) {
-    await runDispatch(dispatcher, event, matcher, stdin, tool, 'background');
-    return;
-  }
+    // Parent: kick off background handlers in a detached process first so they
+    // start working while we run the inline (foreground) pass.
+    if (dispatcher.hasBackground(event, matcher)) {
+      spawnBackground(event, tool, matcher, raw);
+    }
 
-  // Parent: kick off background handlers in a detached process first so they
-  // start working while we run the inline (foreground) pass.
-  if (dispatcher.hasBackground(event, matcher)) {
-    spawnBackground(event, tool, matcher, raw);
-  }
+    const output = await runDispatch(dispatcher, event, matcher, stdin, tool, 'foreground');
 
-  const output = await runDispatch(dispatcher, event, matcher, stdin, tool, 'foreground');
-
-  // Write output to STDOUT if any handler produced one, flushing before return
-  // so the caller's process.exit(0) cannot truncate it.
-  if (output) {
-    await new Promise<void>((resolve) => process.stdout.write(output, () => resolve()));
+    if (output) {
+      await new Promise<void>((resolve) => process.stdout.write(output, () => resolve()));
+    }
+  } catch (e) {
+    log.warn(`hook-dispatch: unexpected error: ${e instanceof Error ? e.message : String(e)}`);
   }
 }

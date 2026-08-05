@@ -2020,6 +2020,11 @@ async function processCommands(
       const version = await executeCommand(config, command, context);
       await ackCommand(config, tag, command, 'success', version);
       log.debug(`${tag} command ${command.id} (${command.type ?? ''}) succeeded`);
+      // Uninstall succeeded — skip remaining commands; the hook process exits naturally.
+      if (command.type === 'uninstall_teamai') {
+        log.debug(`${tag} uninstall_teamai completed — remaining commands skipped`);
+        return;
+      }
     } catch (e) {
       const error = (e as Error).message;
       log.error(`${tag} command ${command.id} failed: ${error}`);

@@ -7,7 +7,7 @@ import { log } from './utils/logger.js';
 import type { GlobalOptions, SearchIndex, LocalConfig } from './types.js';
 import { getTeamaiHome } from './types.js';
 import { queryCodeKnowledge } from './code-knowledge-recall.js';
-import type { CodeKnowledgeResult } from './code-knowledge-recall.js';
+import type { CodeKnowledgeResult, SourceAnchor } from './code-knowledge-recall.js';
 import { recordRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
 
@@ -28,7 +28,9 @@ interface ScopedSearchResult extends SearchResult {
   /** Base path for learnings files (so AI can read the correct path). */
   learningsBase?: string;
   /** Source file anchors from codebase wiki frontmatter (codebase results only). */
-  sources?: string[];
+  sources?: SourceAnchor[];
+  /** Forward-dependency neighbor files from graph (candidate change files). */
+  relatedFiles?: string[];
 }
 
 // ─── Recall data flow ────────────────────────────────────
@@ -86,10 +88,30 @@ export function formatResults(results: ScopedSearchResult[]): string {
         : `~/.teamai/learnings/${entry.filename}`;
     lines.push(`File: ${filePath}`);
     if (sources && sources.length > 0) {
-      lines.push(`Sources: ${sources.join(', ')}`);
+      lines.push(`Sources: ${sources.map((s) => s.desc ? `${s.path} (${s.desc})` : s.path).join(', ')}`);
     }
     if (entry.snippet) {
       lines.push(`Snippet: ${entry.snippet}`);
+    }
+    lines.push('');
+  }
+
+  const allRelated = new Set<string>();
+  for (const r of results) {
+    if (r.relatedFiles) {
+      for (const f of r.relatedFiles) {
+        allRelated.add(f);
+      }
+    }
+  }
+  if (allRelated.size > 0) {
+    const capped = [...allRelated].slice(0, 10);
+    lines.push('--- Candidate change files ---');
+    for (const f of capped) {
+      lines.push(`- ${f}`);
+    }
+    if (allRelated.size > 10) {
+      lines.push(`  (${allRelated.size - 10} more omitted)`);
     }
     lines.push('');
   }
@@ -203,10 +225,18 @@ export async function recall(
   query: string,
   options: GlobalOptions & { depth?: 'route' | 'context' | 'lookup'; check?: boolean },
 ): Promise<void> {
-  const emitCheckVerdict = (score: number): void => {
+  const emitCheckVerdict = (score: number, topResult?: ScopedSearchResult): void => {
     const rounded = Math.round(score * 10) / 10;
     const verdict = rounded >= RECALL_RELEVANCE_THRESHOLD ? 'RELEVANT' : 'NOT_RELEVANT';
-    process.stdout.write(`${verdict} score=${rounded.toFixed(1)}\n`);
+    let line = `${verdict} score=${rounded.toFixed(1)}`;
+    if (verdict === 'RELEVANT' && topResult) {
+      line += ` title="${topResult.entry.title}"`;
+      if (topResult.sources && topResult.sources.length > 0) {
+        const srcStr = topResult.sources.map((s) => s.desc ? `${s.path}(${s.desc})` : s.path).join(',');
+        line += ` sources=${srcStr}`;
+      }
+    }
+    process.stdout.write(`${line}\n`);
   };
 
   if (!query || !query.trim()) {
@@ -337,6 +367,7 @@ export async function recall(
         scope: projectConfig ? 'project' : 'user',
         learningsBase: wikiRoot,
         sources: cr.sources,
+        relatedFiles: cr.relatedFiles,
       });
     }
   } catch {
@@ -350,7 +381,7 @@ export async function recall(
   });
 
   if (options.check) {
-    emitCheckVerdict(allResults.length > 0 ? allResults[0].score : 0);
+    emitCheckVerdict(allResults.length > 0 ? allResults[0].score : 0, allResults[0]);
     return;
   }
 
