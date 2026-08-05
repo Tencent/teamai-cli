@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveInitScope, resolveInitRepo } from '../init.js';
+import { resolveInheritUserScope, resolveInitScope, resolveInitRepo } from '../init.js';
 
 describe('resolveInitScope', () => {
   const cwd = '/tmp/my-project';
@@ -67,6 +67,25 @@ describe('resolveInitScope', () => {
       projectRoot: undefined,
       explicit: true,
     });
+  });
+});
+
+describe('resolveInheritUserScope', () => {
+  it('enables inheritance only for project scope', () => {
+    expect(resolveInheritUserScope('project', true, undefined)).toBe(true);
+    expect(() => resolveInheritUserScope('user', true, undefined)).toThrow(
+      /only be used with project scope/,
+    );
+  });
+
+  it('preserves an existing project setting when the flag is omitted', () => {
+    expect(resolveInheritUserScope('project', undefined, true)).toBe(true);
+    expect(resolveInheritUserScope('project', undefined, false)).toBe(false);
+  });
+
+  it('allows an explicit disable and ignores the setting for user scope', () => {
+    expect(resolveInheritUserScope('project', false, true)).toBe(false);
+    expect(resolveInheritUserScope('user', false, true)).toBeUndefined();
   });
 });
 

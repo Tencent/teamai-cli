@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { requireInit, detectProjectConfig } from './config.js';
+import { requireInit, detectProjectConfig, loadLocalConfigForScope } from './config.js';
 import { loadIndex, buildIndex, search, isLegacyIndex } from './utils/search-index.js';
 import type { SearchResult } from './utils/search-index.js';
 import { readFileSafe, ensureDir, pathExists } from './utils/fs.js';
@@ -195,9 +195,9 @@ async function loadOrBuildScopeIndex(
 /**
  * Handle `teamai recall <query>`.
  *
- * Scope isolation (issue #73): queries the project-scope index when a project
- * install is detected in cwd, otherwise the user-scope index. Displays ranked
- * results and auto-upvotes returned documents.
+ * Scope isolation (issue #73) remains the default. A project with
+ * `inheritUserScope` enabled searches the project index first, followed by the
+ * user index. Displays ranked results and auto-upvotes returned documents.
  */
 export async function recall(
   query: string,
@@ -225,9 +225,8 @@ export async function recall(
     options.depth = 'context';
   }
 
-  // Scope isolation (issue #73): when a project-scope install is detected in
-  // cwd, recall queries the project index ONLY. Otherwise it falls back to the
-  // user scope. The two scopes are never merged anymore.
+  // Scope isolation (issue #73) remains the default. Projects may explicitly
+  // opt into searching the user index after the project index.
   const scopeIndexes: Array<{ index: SearchIndex; scope: 'user' | 'project'; config: LocalConfig; learningsBase: string }> = [];
 
   let projectConfig: LocalConfig | null = null;
@@ -238,7 +237,7 @@ export async function recall(
   }
 
   if (projectConfig) {
-    // Project mode: project scope only.
+    // Project mode: project scope first.
     try {
       const result = await loadOrBuildScopeIndex(projectConfig, 'project');
       if (result && result.index.entries.length > 0) {
@@ -246,6 +245,20 @@ export async function recall(
       }
     } catch {
       log.debug('recall: project scope not available');
+    }
+
+    if (projectConfig.inheritUserScope === true) {
+      try {
+        const userConfig = await loadLocalConfigForScope('user');
+        if (userConfig) {
+          const result = await loadOrBuildScopeIndex(userConfig, 'user');
+          if (result && result.index.entries.length > 0) {
+            scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
+          }
+        }
+      } catch {
+        log.debug('recall: inherited user scope not available');
+      }
     }
   } else {
     // User mode: user scope only.
@@ -260,8 +273,9 @@ export async function recall(
     }
   }
 
-  // Resolve teamwiki path from team-repo (prefer project scope, fallback to user scope)
-  const wikiConfig = scopeIndexes[0]?.config;
+  // Codebase knowledge stays bound to the active project even when its search
+  // index is empty and only an inherited user index is available.
+  const wikiConfig = projectConfig ?? scopeIndexes[0]?.config;
   const wikiRoot = wikiConfig
     ? path.join(wikiConfig.repo.localPath, 'teamwiki')
     : path.join(process.cwd(), '.teamai', 'team-repo', 'teamwiki');
@@ -277,14 +291,23 @@ export async function recall(
 
   // Merge: search each scope index, tag results with scope, then combine & sort
   const allResults: ScopedSearchResult[] = [];
-  const seenFilenames = new Set<string>();
+  const seenEntries = new Set<string>();
+  const projectEntryKeys = new Set(
+    scopeIndexes
+      .filter(({ scope }) => scope === 'project')
+      .flatMap(({ index }) => index.entries.map((entry) => `${entry.type}:${entry.filename}`)),
+  );
 
   for (const { index, scope, learningsBase } of scopeIndexes) {
     const results = search(query, index);
     for (const r of results) {
-      // Deduplicate by filename across scopes
-      if (!seenFilenames.has(r.entry.filename)) {
-        seenFilenames.add(r.entry.filename);
+      // A project entry shadows the same logical user entry even when the
+      // project version does not match this particular query. This prevents a
+      // stale inherited copy from leaking through after a project override.
+      const entryKey = `${r.entry.type}:${r.entry.filename}`;
+      if (scope === 'user' && projectEntryKeys.has(entryKey)) continue;
+      if (!seenEntries.has(entryKey)) {
+        seenEntries.add(entryKey);
         allResults.push({ ...r, scope, learningsBase });
       }
     }
@@ -311,7 +334,7 @@ export async function recall(
           snippet: cr.snippet,
         },
         score: Math.min(10, Math.log2(cr.score + 1) * 2),
-        scope: 'project',
+        scope: projectConfig ? 'project' : 'user',
         learningsBase: wikiRoot,
         sources: cr.sources,
       });
@@ -349,10 +372,15 @@ export async function recall(
   const output = formatResults(topResults);
   process.stdout.write(output + '\n');
 
-  // Auto-upvote (best-effort, non-blocking for dry-run)
-  // 分 scope 写入各自的 repo，确保 vote 归属正确
+  // Auto-upvote (best-effort, non-blocking for dry-run). Vote deltas currently
+  // share one HOME-level store, so layered project mode records only active
+  // project results. Inherited user hits remain read-only to avoid attributing
+  // their votes to the project team during the next report.
   if (!options.dryRun) {
-    for (const scopeInfo of scopeIndexes) {
+    const voteScopes = projectConfig
+      ? scopeIndexes.filter((scopeInfo) => scopeInfo.scope === 'project')
+      : scopeIndexes;
+    for (const scopeInfo of voteScopes) {
       const scopeResults = topResults.filter(r => r.scope === scopeInfo.scope);
       if (scopeResults.length > 0) {
         try {
