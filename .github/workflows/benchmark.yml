@@ -1,0 +1,137 @@
+name: AI Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run identifier (default: ci-<sha7>-<date>)'
+        required: false
+        type: string
+      variants:
+        description: 'Variant config files (comma-separated)'
+        required: false
+        default: 'baseline.json,teamai.json'
+        type: string
+      baseline:
+        description: 'Baseline variant id for comparison'
+        required: false
+        default: 'baseline'
+        type: string
+      tasks_dir:
+        description: 'Tasks directory name under benchmark-data/'
+        required: false
+        default: 'tasks-ci'
+        type: string
+      max_retries:
+        description: 'Max retries per task on failure/timeout'
+        required: false
+        default: '2'
+        type: string
+
+concurrency:
+  group: benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Run AI Benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      TGIT_TOKEN: ${{ secrets.TGIT_TOKEN }}
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Generate run ID
+        id: run-id
+        run: |
+          if [ -n "${{ inputs.run_id }}" ]; then
+            echo "id=${{ inputs.run_id }}" >> "$GITHUB_OUTPUT"
+          else
+            SHORT_SHA=$(echo "${{ github.sha }}" | head -c 7)
+            DATE=$(date +%Y%m%d)
+            echo "id=ci-${SHORT_SHA}-${DATE}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build teamai-cli (current branch)
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          npm link
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Build AI-Benchmark
+        working-directory: benchmark
+        run: |
+          npm ci
+          npm run build
+
+      - name: Run benchmark
+        working-directory: benchmark
+        run: |
+          node dist/index.js run \
+            --variants ${{ inputs.variants || 'baseline.json,teamai.json' }} \
+            --tasks benchmark-data/${{ inputs.tasks_dir || 'tasks-ci' }} \
+            --run-id ${{ steps.run-id.outputs.id }} \
+            --max-retries ${{ inputs.max_retries || '2' }}
+
+      - name: Review results
+        working-directory: benchmark
+        run: |
+          node dist/index.js review \
+            --run-id ${{ steps.run-id.outputs.id }} \
+            --tasks benchmark-data/${{ inputs.tasks_dir || 'tasks-ci' }}
+
+      - name: Generate report
+        working-directory: benchmark
+        run: |
+          node dist/index.js report \
+            --run-id ${{ steps.run-id.outputs.id }} \
+            --tasks benchmark-data/${{ inputs.tasks_dir || 'tasks-ci' }} \
+            --baseline ${{ inputs.baseline || 'baseline' }}
+
+      - name: Upload run artifacts (transcripts, executions, reviews)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-run-${{ steps.run-id.outputs.id }}
+          path: benchmark/benchmark-data/runs/${{ steps.run-id.outputs.id }}/
+          retention-days: 90
+
+      - name: Upload report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report-${{ steps.run-id.outputs.id }}
+          path: benchmark/benchmark-data/reports/
+          retention-days: 90
+
+      - name: Post report to job summary
+        if: always()
+        run: |
+          REPORT_DIR="benchmark/benchmark-data/reports"
+          # Find the most recent report.md
+          REPORT_FILE=$(find "$REPORT_DIR" -name "report.md" -type f | sort | tail -1)
+          if [ -n "$REPORT_FILE" ] && [ -f "$REPORT_FILE" ]; then
+            echo "## AI Benchmark Report" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Run ID:** \`${{ steps.run-id.outputs.id }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Variants:** \`${{ inputs.variants || 'baseline.json,teamai.json' }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ No report.md found. Check the run logs for errors." >> "$GITHUB_STEP_SUMMARY"
+          fi
