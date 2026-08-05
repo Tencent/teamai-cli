@@ -121,8 +121,36 @@ describe('contributeState', () => {
     expect(persisted.promptSummary).toContain('<REDACTED:gh_tok>');
     expect(persisted.promptSummary).not.toContain(rawToken);
     expect(persisted.promptSummary).not.toMatch(/[\r\n\t\u0000]/);
-    expect(persisted.promptSummary!.length).toBeLessThanOrEqual(160);
+    expect(persisted.promptSummary).toHaveLength(160);
+    expect(persisted.promptSummary).toMatch(/…$/);
     expect(await readContributeState('safe-prompt-session')).toEqual(persisted);
+  });
+
+  it('does not split a surrogate pair at the promptSummary truncation boundary', async () => {
+    const prefix = 'x'.repeat(158);
+    await writeContributeState('unicode-prompt-session', {
+      contributed: false,
+      promptSummary: `${prefix}😀 more text`,
+    });
+
+    const state = await readContributeState('unicode-prompt-session');
+    expect(state.promptSummary).toBe(`${prefix}…`);
+    expect(Buffer.from(state.promptSummary!, 'utf8').toString('utf8')).toBe(state.promptSummary);
+  });
+
+  it('appends an ellipsis when truncation clips a redaction marker', async () => {
+    const rawToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    await writeContributeState('truncated-redaction-session', {
+      contributed: false,
+      promptSummary: `${'x'.repeat(150)} ${rawToken} more text`,
+    });
+
+    const state = await readContributeState('truncated-redaction-session');
+    expect(state.promptSummary).toContain('<REDACT');
+    expect(state.promptSummary).not.toContain('<REDACTED:gh_tok>');
+    expect(state.promptSummary).not.toContain(rawToken);
+    expect(state.promptSummary).toMatch(/…$/);
+    expect(state.promptSummary!.length).toBeLessThanOrEqual(160);
   });
 
   it('rejects malformed types: non-number toolCount/lastEvaluated falls back to undefined', async () => {

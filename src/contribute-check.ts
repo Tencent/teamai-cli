@@ -106,7 +106,12 @@ function normalizePromptSummary(raw?: string): string | undefined {
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-  return normalized ? normalized.slice(0, MAX_CONTRIBUTE_PROMPT_SUMMARY_CHARS) : undefined;
+  if (!normalized) return undefined;
+  if (normalized.length <= MAX_CONTRIBUTE_PROMPT_SUMMARY_CHARS) return normalized;
+  const truncated = normalized
+    .slice(0, MAX_CONTRIBUTE_PROMPT_SUMMARY_CHARS - 1)
+    .replace(/[\uD800-\uDBFF]$/, '');
+  return `${truncated}…`;
 }
 
 /** Get session state file path: ~/.teamai/sessions/{sanitized-sessionId}.json */
