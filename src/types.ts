@@ -723,11 +723,19 @@ export const TRANSCRIPT_REJECT_MARKERS = [
 //  STDOUT hint → AI suggests /contribute to user
 //
 
+/** Friction signals that explain why a session qualified for contribution. */
+export interface SessionFriction {
+  interrupt: number;
+  toolReject: number;
+  correction: number;
+  toolError: number;
+}
+
 /** Per-session contribute state, persisted to ~/.teamai/sessions/{sessionId}.json */
 export interface ContributeState {
   /** Tool count at last evaluation (used for Layer 1 fast-path check) */
   toolCount?: number;
-  /** Unique tool names at last evaluation (cached so cache-hit hint emission can skip readEvents) */
+  /** Unique tool names at last evaluation (retained for backward-compatible state) */
   uniqueTools?: number;
   /** Timestamp when score was last evaluated (ms since epoch) */
   lastEvaluated?: number;
@@ -746,6 +754,10 @@ export interface ContributeState {
   hasGitCommit?: boolean;
   /** Phase 2: whether knowledge gap was detected (all recalls missed) */
   isKnowledgeGap?: boolean;
+  /** Cached explanation context so Stop-hook cache hits can skip events.jsonl */
+  friction?: SessionFriction;
+  /** Sanitized, single-line summary of the session's first task */
+  promptSummary?: string;
 }
 
 /**

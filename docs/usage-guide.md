@@ -457,10 +457,14 @@ teamai mcp remove            # remove every teamai-managed server
 The AI tracks your coding sessions via Hooks. When a session ends (the Stop hook), the system scores it by **friction** — whether you interrupted or corrected the AI, denied a tool call, or the AI had to retry failing tools. A long-but-routine session (many tool calls, no friction) won't trigger; only a session where you actually hit a problem does. If it qualifies, the AI automatically reminds you:
 
 ```
-Recommend running /teamai-share-learnings to share your learnings
+[teamai] 本次 session 疑似踩到了值得记录的坑：你中断了 AI 2 次、AI 遇到工具错误并重试 8 次。
+
+任务：修复项目级 Hook 重复注入问题
+
+建议运行 /teamai-share-learnings 总结经验并分享给团队。
 ```
 
-Using the built-in `/teamai-share-learnings` skill, the AI will automatically summarize the session's learnings and contribute them to the team knowledge base. Each session is prompted at most once.
+The reminder lists the non-zero friction signals that triggered it. When the first task is available, it also includes a redacted, single-line task summary so you can decide whether the session is worth sharing. Using the built-in `/teamai-share-learnings` skill, the AI will automatically summarize the session's learnings and contribute them to the team knowledge base. Each session is prompted at most once.
 
 You can also specify a file manually:
 

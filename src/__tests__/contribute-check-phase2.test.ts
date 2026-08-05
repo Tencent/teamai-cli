@@ -181,7 +181,7 @@ describe('buildHint text differentiation', () => {
         });
     }
 
-    it('hint contains "知识库尚未覆盖" when knowledge gap detected', async () => {
+    it('hint explains that the current task is not covered when a knowledge gap is detected', async () => {
         const sessionId = 'knowledge-gap-hint-session';
         await seedHighScoreSession(sessionId);
         writeRecallCache(tmpDir, sessionId, {
@@ -195,10 +195,40 @@ describe('buildHint text differentiation', () => {
 
         const { hint } = await contributeCheckForSession(sessionId);
         expect(hint).not.toBeNull();
-        expect(hint).toContain('知识库尚未覆盖');
+        expect(hint).toContain('当前知识库尚未覆盖该任务');
+        expect(hint).toContain('你中断了 AI 2 次');
+        expect(hint).toContain('AI 遇到工具错误并重试 8 次');
     });
 
-    it('hint uses friction wording when recall quality is good (no knowledge gap)', async () => {
+    it('knowledge gap can explain a frictionless hint without inventing friction reasons', async () => {
+        const sessionId = 'knowledge-gap-only-hint-session';
+        for (let i = 0; i < 15; i++) {
+            await appendEvent({
+                type: 'tool_use',
+                sessionId,
+                tool: 'claude',
+                toolName: 'Bash',
+                timestamp: new Date(Date.now() + i).toISOString(),
+            });
+        }
+        writeRecallCache(tmpDir, sessionId, {
+            queries: ['q1'],
+            count: 1,
+            updatedAt: new Date().toISOString(),
+            topScore: 0,
+            hitCount: 0,
+            missCount: 1,
+        });
+
+        const { hint } = await contributeCheckForSession(sessionId);
+        expect(hint).toContain('[teamai] 当前知识库尚未覆盖该任务。');
+        expect(hint).not.toContain('你中断了 AI');
+        expect(hint).not.toContain('你拒绝了');
+        expect(hint).not.toContain('你纠偏了');
+        expect(hint).not.toContain('工具错误并重试');
+    });
+
+    it('hint names the concrete friction signals when recall quality is good', async () => {
         const sessionId = 'good-recall-hint-session';
         await seedHighScoreSession(sessionId);
         writeRecallCache(tmpDir, sessionId, {
@@ -212,7 +242,9 @@ describe('buildHint text differentiation', () => {
 
         const { hint } = await contributeCheckForSession(sessionId);
         expect(hint).not.toBeNull();
-        expect(hint).toContain('纠偏或工具重试');
+        expect(hint).toContain('你中断了 AI 2 次');
+        expect(hint).toContain('AI 遇到工具错误并重试 8 次');
+        expect(hint).not.toContain('你拒绝了');
         expect(hint).not.toContain('知识库尚未覆盖');
     });
 });

@@ -6,7 +6,8 @@ import { readJson, writeJson, ensureDir } from './utils/fs.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
 import { readRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
-import type { ContributeState, DashboardEvent } from './types.js';
+import { redactWithEnv } from './utils/redact.js';
+import type { ContributeState, DashboardEvent, SessionFriction } from './types.js';
 import {
   CONTRIBUTE_SMART_THRESHOLD,
   CONTRIBUTE_BASE_THRESHOLD,
@@ -22,14 +23,6 @@ import {
   CONTRIBUTE_SKILL_BONUS,
   CONTRIBUTE_DIVERSITY_BONUS_MAX,
 } from './types.js';
-
-/** Friction signals for a session, fed into computeSmartScore. */
-export interface SessionFriction {
-  interrupt: number;
-  toolReject: number;
-  correction: number;
-  toolError: number;
-}
 
 // ─── Contribute check data flow (Stop hook) ────────────────
 //
@@ -52,14 +45,14 @@ export interface SessionFriction {
 //      │      → exit(no hint), no events read
 //      │
 //      ├─ Layer 2:
-//      │   ├─ cache hit  (smartScore + lastEvaluated fresh)
-//      │   │             → reuse score + cached display fields
-//      │   └─ cache miss → readEvents → computeSmartScore + display
+//      │   ├─ cache hit  (smartScore + friction + lastEvaluated fresh)
+//      │   │             → reuse score + cached explanation context
+//      │   └─ cache miss → readEvents → computeSmartScore + context
 //      │
 //      ├─ score < SMART_THRESHOLD → persist updates, exit(no hint)
 //      │
 //      └─ Single write (re-read latest first to avoid clobbering /contribute):
-//          persist score, toolCount, uniqueTools, lastEvaluated, hinted=true
+//          persist score, toolCount, friction, promptSummary, lastEvaluated, hinted=true
 //          → STDOUT hint → AI reads, suggests /contribute
 //
 
@@ -81,6 +74,39 @@ export interface SessionFriction {
  */
 function sanitizeSessionId(sessionId: string): string {
   return sessionId.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+const MAX_CONTRIBUTE_PROMPT_SUMMARY_CHARS = 160;
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/** Parse cached friction defensively; malformed legacy/tampered state is a cache miss. */
+function parseSessionFriction(raw: unknown): SessionFriction | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const candidate = raw as Record<string, unknown>;
+  const { interrupt, toolReject, correction, toolError } = candidate;
+  if (
+    !isNonNegativeInteger(interrupt)
+    || !isNonNegativeInteger(toolReject)
+    || !isNonNegativeInteger(correction)
+    || !isNonNegativeInteger(toolError)
+  ) {
+    return undefined;
+  }
+  return { interrupt, toolReject, correction, toolError };
+}
+
+/** Redact and flatten user-controlled prompt text before caching or displaying it. */
+function normalizePromptSummary(raw?: string): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const normalized = redactWithEnv(raw)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized ? normalized.slice(0, MAX_CONTRIBUTE_PROMPT_SUMMARY_CHARS) : undefined;
 }
 
 /** Get session state file path: ~/.teamai/sessions/{sanitized-sessionId}.json */
@@ -115,6 +141,10 @@ export async function readContributeState(sessionId: string): Promise<Contribute
         sessionStartIso: typeof raw.sessionStartIso === 'string' ? raw.sessionStartIso : undefined,
         hasGitCommit: typeof raw.hasGitCommit === 'boolean' ? raw.hasGitCommit : undefined,
         isKnowledgeGap: typeof raw.isKnowledgeGap === 'boolean' ? raw.isKnowledgeGap : undefined,
+        friction: parseSessionFriction(raw.friction),
+        promptSummary: typeof raw.promptSummary === 'string'
+          ? normalizePromptSummary(raw.promptSummary)
+          : undefined,
       };
     }
     return defaultState();
@@ -128,7 +158,12 @@ export async function writeContributeState(sessionId: string, state: ContributeS
   try {
     const filePath = getSessionPath(sessionId);
     await ensureDir(path.dirname(filePath));
-    await writeJson(filePath, state);
+    const persistedState: ContributeState = {
+      ...state,
+      friction: parseSessionFriction(state.friction),
+      promptSummary: normalizePromptSummary(state.promptSummary),
+    };
+    await writeJson(filePath, persistedState);
     // Best-effort cleanup of stale session files (>24h)
     await cleanupStaleSessions(path.dirname(filePath), sessionId);
   } catch (e) {
@@ -349,19 +384,50 @@ function extractFriction(events: DashboardEvent[], sessionId: string): SessionFr
   return { interrupt, toolReject, correction, toolError };
 }
 
-/** Build the STDOUT hint string from pre-computed display values. */
-function buildHint(totalToolCalls: number, uniqueTools: number, isKnowledgeGap: boolean): string {
-  const body = isKnowledgeGap
-    ? [
-        `[teamai] 本次 session 涉及知识库尚未覆盖的领域，且过程中经历了多次调整（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
-        `建议运行 /teamai-share-learnings 将本次经验总结分享给团队，帮助填补知识库空白。`,
-        `下次遇到类似任务时，团队成员将直接受益于您的经验。`,
-      ].join('')
-    : [
-        `[teamai] 本次 session 过程中出现了较多纠偏或工具重试，很可能踩到了值得记录的坑（${totalToolCalls} 次工具调用，${uniqueTools} 种不同工具）。`,
-        `建议运行 /teamai-share-learnings 总结本次 session 的经验并分享给团队。`,
-        `总结文档将保存到团队仓库的 learnings/ 目录。`,
-      ].join('');
+/** Extract and sanitize the first user task recorded for the session. */
+function extractPromptSummary(events: DashboardEvent[]): string | undefined {
+  const firstPrompt = events.find(
+    (event) => event.type === 'prompt_submit'
+      && typeof event.promptSummary === 'string'
+      && event.promptSummary.trim().length > 0,
+  );
+  return normalizePromptSummary(firstPrompt?.promptSummary);
+}
+
+/** Turn non-zero friction signals into concrete, user-facing reasons. */
+function formatFrictionReasons(friction: SessionFriction): string[] {
+  const reasons: string[] = [];
+  if (friction.interrupt > 0) reasons.push(`你中断了 AI ${friction.interrupt} 次`);
+  if (friction.toolReject > 0) reasons.push(`你拒绝了 ${friction.toolReject} 次工具调用`);
+  if (friction.correction > 0) reasons.push(`你纠偏了 ${friction.correction} 次`);
+  if (friction.toolError > 0) reasons.push(`AI 遇到工具错误并重试 ${friction.toolError} 次`);
+  return reasons;
+}
+
+interface HintContext {
+  friction: SessionFriction;
+  promptSummary?: string;
+  isKnowledgeGap: boolean;
+}
+
+/** Build the STDOUT hint from the same context that drove the score. */
+function buildHint({ friction, promptSummary, isKnowledgeGap }: HintContext): string {
+  const reasons = formatFrictionReasons(friction).join('、');
+  let headline: string;
+  if (isKnowledgeGap) {
+    headline = reasons
+      ? `[teamai] 当前知识库尚未覆盖该任务，且本次 session 中${reasons}。`
+      : '[teamai] 当前知识库尚未覆盖该任务。';
+  } else {
+    headline = reasons
+      ? `[teamai] 本次 session 疑似踩到了值得记录的坑：${reasons}。`
+      : '[teamai] 本次 session 疑似踩到了值得记录的坑。';
+  }
+  const task = promptSummary ? `\n\n任务：${promptSummary}` : '';
+  const action = isKnowledgeGap
+    ? '建议运行 /teamai-share-learnings 总结经验并分享给团队，帮助补齐知识空白。'
+    : '建议运行 /teamai-share-learnings 总结经验并分享给团队。';
+  const body = `${headline}${task}\n\n${action}`;
   return `Print the following message verbatim to the user (do NOT paraphrase, summarize, or explain its origin):\n\n${body}`;
 }
 
@@ -379,16 +445,16 @@ function buildHint(totalToolCalls: number, uniqueTools: number, isKnowledgeGap: 
  *       → skip (small session, just re-evaluated — debounce repeat Stop hooks)
  *
  *   Layer 2 score resolution:
- *     - cache hit:  smartScore + display fields present, lastEvaluated fresh
- *                   → reuse cached values, no events read
- *     - cache miss: readEvents → computeSmartScore + display
+ *     - cache hit:  smartScore + friction present, lastEvaluated fresh
+ *                   → reuse cached explanation context, no events read
+ *     - cache miss: readEvents → computeSmartScore + explanation context
  *
  *   Hint emission (score >= SMART_THRESHOLD):
- *     - Return hint string built from cached display fields
+ *     - Return hint string built from cached friction + task context
  *
  *   Persistence (single atomic write per call, re-read latest first to avoid
  *   clobbering /contribute marks set during the read↔write window):
- *     - Cache miss path always writes (smartScore + display + lastEvaluated)
+ *     - Cache miss path always writes (smartScore + context + lastEvaluated)
  *     - Hint path additionally sets hinted=true
  *     - Cache hit + low score path skips the write entirely (state is current)
  *
@@ -425,30 +491,35 @@ export async function contributeCheckForSession(
     return { hint: null };
   }
 
-  // Layer 2: resolve score + display
+  // Layer 2: resolve score + explanation context
   let score: number;
   let toolCount: number;
-  let uniqueTools: number;
+  let uniqueTools: number | undefined;
+  let friction: SessionFriction;
+  let promptSummary: string | undefined;
   let needsPersist: boolean;
   let sessionStartIso: string | undefined;
 
-  const cachedDisplayAvailable =
+  const cachedContextAvailable =
     debounceFresh
     && state.smartScore !== undefined
     && state.toolCount !== undefined
-    && state.uniqueTools !== undefined;
+    && state.friction !== undefined;
 
-  if (cachedDisplayAvailable) {
+  if (cachedContextAvailable) {
     log.debug(`contribute-check: cache hit (score=${state.smartScore})`);
     score = state.smartScore!;
     toolCount = state.toolCount!;
-    uniqueTools = state.uniqueTools!;
+    uniqueTools = state.uniqueTools;
+    friction = state.friction!;
+    promptSummary = state.promptSummary;
     sessionStartIso = state.sessionStartIso;
     needsPersist = false;
   } else {
     const allEvents = await readEvents();
     const sessionEvents = allEvents.filter((e) => e.sessionId === sessionId);
-    const friction = extractFriction(sessionEvents, sessionId);
+    friction = extractFriction(sessionEvents, sessionId);
+    promptSummary = extractPromptSummary(sessionEvents);
     score = computeSmartScore(sessionEvents, friction);
     toolCount = countToolUseEvents(sessionEvents);
     uniqueTools = countUniqueTools(sessionEvents);
@@ -486,11 +557,13 @@ export async function contributeCheckForSession(
       ...latest,
       smartScore: score,
       toolCount,
-      uniqueTools,
+      uniqueTools: uniqueTools ?? latest.uniqueTools,
       lastEvaluated: needsPersist ? now : (latest.lastEvaluated ?? now),
       sessionStartIso: sessionStartIso ?? latest.sessionStartIso,
       isKnowledgeGap,
       hasGitCommit,
+      friction,
+      promptSummary: promptSummary ?? latest.promptSummary,
     };
     if (latest.hinted || willHint) {
       updated.hinted = true;
@@ -503,7 +576,7 @@ export async function contributeCheckForSession(
     return { hint: null };
   }
 
-  return { hint: buildHint(toolCount, uniqueTools, isKnowledgeGap) };
+  return { hint: buildHint({ friction, promptSummary, isKnowledgeGap }) };
 }
 
 /**
