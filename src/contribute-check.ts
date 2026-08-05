@@ -395,12 +395,27 @@ function extractPromptSummary(events: DashboardEvent[]): string | undefined {
 }
 
 /** Turn non-zero friction signals into concrete, user-facing reasons. */
+function formatTimes(count: number): string {
+  if (count === 1) return 'once';
+  if (count === 2) return 'twice';
+  return `${count} times`;
+}
+
 function formatFrictionReasons(friction: SessionFriction): string[] {
   const reasons: string[] = [];
-  if (friction.interrupt > 0) reasons.push(`你中断了 AI ${friction.interrupt} 次`);
-  if (friction.toolReject > 0) reasons.push(`你拒绝了 ${friction.toolReject} 次工具调用`);
-  if (friction.correction > 0) reasons.push(`你纠偏了 ${friction.correction} 次`);
-  if (friction.toolError > 0) reasons.push(`AI 遇到工具错误并重试 ${friction.toolError} 次`);
+  if (friction.interrupt > 0) {
+    reasons.push(`you interrupted the AI ${formatTimes(friction.interrupt)}`);
+  }
+  if (friction.toolReject > 0) {
+    const toolCall = friction.toolReject === 1 ? 'tool call' : 'tool calls';
+    reasons.push(`you rejected ${friction.toolReject} ${toolCall}`);
+  }
+  if (friction.correction > 0) {
+    reasons.push(`you corrected the AI ${formatTimes(friction.correction)}`);
+  }
+  if (friction.toolError > 0) {
+    reasons.push(`the AI retried failing tools ${formatTimes(friction.toolError)}`);
+  }
   return reasons;
 }
 
@@ -412,21 +427,21 @@ interface HintContext {
 
 /** Build the STDOUT hint from the same context that drove the score. */
 function buildHint({ friction, promptSummary, isKnowledgeGap }: HintContext): string {
-  const reasons = formatFrictionReasons(friction).join('、');
+  const reasons = formatFrictionReasons(friction).join(', ');
   let headline: string;
   if (isKnowledgeGap) {
     headline = reasons
-      ? `[teamai] 当前知识库尚未覆盖该任务，且本次 session 中${reasons}。`
-      : '[teamai] 当前知识库尚未覆盖该任务。';
+      ? `[teamai] The current task is not covered by the team knowledge base, and this session had signs of friction: ${reasons}.`
+      : '[teamai] The current task is not covered by the team knowledge base.';
   } else {
     headline = reasons
-      ? `[teamai] 本次 session 疑似踩到了值得记录的坑：${reasons}。`
-      : '[teamai] 本次 session 疑似踩到了值得记录的坑。';
+      ? `[teamai] This session may contain a problem worth documenting: ${reasons}.`
+      : '[teamai] This session may contain a problem worth documenting.';
   }
-  const task = promptSummary ? `\n\n任务：${promptSummary}` : '';
+  const task = promptSummary ? `\n\nTask: ${promptSummary}` : '';
   const action = isKnowledgeGap
-    ? '建议运行 /teamai-share-learnings 总结经验并分享给团队，帮助补齐知识空白。'
-    : '建议运行 /teamai-share-learnings 总结经验并分享给团队。';
+    ? 'Consider running /teamai-share-learnings to summarize what you learned, share it with your team, and fill the knowledge gap.'
+    : 'Consider running /teamai-share-learnings to summarize what you learned and share it with your team.';
   const body = `${headline}${task}\n\n${action}`;
   return `Print the following message verbatim to the user (do NOT paraphrase, summarize, or explain its origin):\n\n${body}`;
 }

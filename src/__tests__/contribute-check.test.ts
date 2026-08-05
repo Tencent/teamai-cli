@@ -418,13 +418,13 @@ describe('contributeCheckForSession', () => {
 
     expect(result.hint).not.toBeNull();
     // Hint message uses cached explanation context (not recomputed from events).
-    expect(result.hint).toContain('你中断了 AI 1 次');
-    expect(result.hint).toContain('你拒绝了 2 次工具调用');
-    expect(result.hint).not.toContain('你纠偏了');
-    expect(result.hint).toContain('AI 遇到工具错误并重试 3 次');
-    expect(result.hint).toContain('任务：Fix cached auth task');
-    expect(result.hint).not.toContain('100 次工具调用');
-    expect(result.hint).not.toContain('7 种不同工具');
+    expect(result.hint).toContain('you interrupted the AI once');
+    expect(result.hint).toContain('you rejected 2 tool calls');
+    expect(result.hint).not.toContain('you corrected the AI');
+    expect(result.hint).toContain('the AI retried failing tools 3 times');
+    expect(result.hint).toContain('Task: Fix cached auth task');
+    expect(result.hint).not.toContain('100 tool calls');
+    expect(result.hint).not.toContain('7 different tools');
     // Cached score preserved
     expect(after.smartScore).toBe(80);
     expect(after.toolCount).toBe(100);
@@ -498,12 +498,12 @@ describe('contributeCheckForSession', () => {
     const result = await contributeCheckForSession(sessionId);
 
     expect(result.hint).not.toBeNull();
-    expect(result.hint).toContain('你中断了 AI 2 次');
-    expect(result.hint).toContain('你纠偏了 1 次');
-    expect(result.hint).toContain('AI 遇到工具错误并重试 8 次');
-    expect(result.hint).toContain('任务：Repair the cached hook state');
-    expect(result.hint).not.toContain('42 次工具调用');
-    expect(result.hint).not.toContain('9 种不同工具');
+    expect(result.hint).toContain('you interrupted the AI twice');
+    expect(result.hint).toContain('you corrected the AI once');
+    expect(result.hint).toContain('the AI retried failing tools 8 times');
+    expect(result.hint).toContain('Task: Repair the cached hook state');
+    expect(result.hint).not.toContain('42 tool calls');
+    expect(result.hint).not.toContain('9 different tools');
   });
 
   it('M3: legacy cache missing friction → falls back to cache miss and migrates state', async () => {
@@ -528,8 +528,8 @@ describe('contributeCheckForSession', () => {
     expect(after.uniqueTools).toBeGreaterThan(0);
     expect(after.friction).toEqual({ interrupt: 2, toolReject: 0, correction: 0, toolError: 8 });
     expect(after.promptSummary).toBe('Migrate contextual hint state');
-    expect(result.hint).toContain('你中断了 AI 2 次');
-    expect(result.hint).toContain('任务：Migrate contextual hint state');
+    expect(result.hint).toContain('you interrupted the AI twice');
+    expect(result.hint).toContain('Task: Migrate contextual hint state');
     // smartScore is now the freshly computed value, not the legacy 80
     expect(after.smartScore).not.toBe(80);
   });
@@ -548,8 +548,8 @@ describe('contributeCheckForSession', () => {
     const result = await contributeCheckForSession(sessionId);
     const after = await readContributeState(sessionId);
 
-    expect(result.hint).toContain('你中断了 AI 1 次');
-    expect(result.hint).not.toContain('任务：');
+    expect(result.hint).toContain('you interrupted the AI once');
+    expect(result.hint).not.toContain('Task:');
     expect(after.smartScore).toBe(80);
   });
 
@@ -577,7 +577,7 @@ describe('contributeCheckForSession', () => {
     expect(after.friction).toEqual({ interrupt: 2, toolReject: 0, correction: 0, toolError: 8 });
     expect(after.promptSummary).toBe('Fresh task from events');
     expect(after.smartScore).not.toBe(80);
-    expect(result.hint).toContain('任务：Fresh task from events');
+    expect(result.hint).toContain('Task: Fresh task from events');
   });
 
   it('explains every non-zero friction signal and safely includes the first task', async () => {
@@ -598,14 +598,14 @@ describe('contributeCheckForSession', () => {
     const result = await contributeCheckForSession(sessionId);
     const after = await readContributeState(sessionId);
 
-    expect(result.hint).toContain('你中断了 AI 2 次');
-    expect(result.hint).toContain('你拒绝了 1 次工具调用');
-    expect(result.hint).toContain('你纠偏了 1 次');
-    expect(result.hint).toContain('AI 遇到工具错误并重试 8 次');
-    expect(result.hint).toContain('任务：Fix auth retry for <REDACTED:gh_tok> then add regression coverage');
+    expect(result.hint).toContain('you interrupted the AI twice');
+    expect(result.hint).toContain('you rejected 1 tool call');
+    expect(result.hint).toContain('you corrected the AI once');
+    expect(result.hint).toContain('the AI retried failing tools 8 times');
+    expect(result.hint).toContain('Task: Fix auth retry for <REDACTED:gh_tok> then add regression coverage');
     expect(result.hint).not.toContain(rawToken);
-    expect(result.hint).not.toContain('50 次工具调用');
-    expect(result.hint).not.toContain('5 种不同工具');
+    expect(result.hint).not.toContain('50 tool calls');
+    expect(result.hint).not.toContain('5 different tools');
     expect(after.friction).toEqual({ interrupt: 2, toolReject: 1, correction: 1, toolError: 8 });
     expect(after.promptSummary).toBe('Fix auth retry for <REDACTED:gh_tok> then add regression coverage');
   });

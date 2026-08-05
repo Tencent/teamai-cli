@@ -171,15 +171,15 @@ describe('contribute-check E2E', () => {
     expect(parsed.hookSpecificOutput).toBeDefined();
     expect(parsed.hookSpecificOutput.hookEventName).toBe('Stop');
     expect(parsed.hookSpecificOutput.additionalContext).toContain('[teamai]');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('你中断了 AI 2 次');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('AI 遇到工具错误并重试 8 次');
-    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('你拒绝了');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('you interrupted the AI twice');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('the AI retried failing tools 8 times');
+    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('you rejected');
     expect(parsed.hookSpecificOutput.additionalContext).toContain(
-      '任务：Fix auth retry for <REDACTED:gh_tok> then add regression coverage',
+      'Task: Fix auth retry for <REDACTED:gh_tok> then add regression coverage',
     );
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain(RAW_GITHUB_TOKEN);
-    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('50 次工具调用');
-    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('7 种不同工具');
+    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('50 tool calls');
+    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('7 different tools');
     expect(parsed.hookSpecificOutput.additionalContext).toContain('/teamai-share-learnings');
     expect(parsed.stopReason).toBeUndefined();
 
@@ -248,9 +248,9 @@ describe('contribute-check E2E', () => {
 
     expect(code).toBe(0);
     const parsed = JSON.parse(stdout);
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('你中断了 AI 1 次');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('你拒绝了 1 次工具调用');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('任务：Repair cached Stop-hook context');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('you interrupted the AI once');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('you rejected 1 tool call');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('Task: Repair cached Stop-hook context');
   });
 
   it('does not mix up events from different sessions', async () => {

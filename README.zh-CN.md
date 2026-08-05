@@ -124,14 +124,14 @@ teamai source remove other-team
 
 ### 自动经验沉淀
 
-Session 结束时，Stop hook 按**摩擦信号**对 session 评分——这些信号表明本次 session 踩到了值得记录的东西：你打断或纠正了 AI、拒绝了某次工具调用，或 AI 反复重试出错的工具。又长又顺（工具调用很多但没有摩擦）的 session 不会触发；真正较劲过的 session 才会。达标后 AI 会建议：
+Session 结束时，Stop hook 按**摩擦信号**对 session 评分——这些信号表明本次 session 踩到了值得记录的东西：你打断或纠正了 AI、拒绝了某次工具调用，或 AI 反复重试出错的工具。又长又顺（工具调用很多但没有摩擦）的 session 不会触发；真正较劲过的 session 才会。达标后 AI 会显示如下英文提示：
 
 ```
-[teamai] 本次 session 疑似踩到了值得记录的坑：你中断了 AI 2 次、AI 遇到工具错误并重试 8 次。
+[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, the AI retried failing tools 8 times.
 
-任务：修复项目级 Hook 重复注入问题
+Task: Fix duplicate project-level Hook injection
 
-建议运行 /teamai-share-learnings 总结经验并分享给团队。
+Consider running /teamai-share-learnings to summarize what you learned and share it with your team.
 ```
 
 提示会列出实际触发它的非零摩擦信号；如果能取得首个任务摘要，还会在脱敏、单行化后附上任务上下文。`/teamai-share-learnings` skill 自动总结 session 经验并推送到团队仓库。每个 session 最多提示一次。

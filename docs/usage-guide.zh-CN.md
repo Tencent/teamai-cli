@@ -471,14 +471,14 @@ teamai mcp remove            # 移除所有 teamai 管理的 server
 
 ### 贡献知识
 
-AI 通过 Hooks 追踪你的编码会话。当会话结束时（Stop hook），系统按**摩擦信号**评分——你是否打断/纠正了 AI、拒绝了工具调用，或 AI 反复重试出错的工具。又长又顺的会话（工具调用多但没摩擦）不会触发，真正踩过坑的会话才会。达标后会自动提醒：
+AI 通过 Hooks 追踪你的编码会话。当会话结束时（Stop hook），系统按**摩擦信号**评分——你是否打断/纠正了 AI、拒绝了工具调用，或 AI 反复重试出错的工具。又长又顺的会话（工具调用多但没摩擦）不会触发，真正踩过坑的会话才会。达标后会显示如下英文提醒：
 
 ```
-[teamai] 本次 session 疑似踩到了值得记录的坑：你中断了 AI 2 次、AI 遇到工具错误并重试 8 次。
+[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, the AI retried failing tools 8 times.
 
-任务：修复项目级 Hook 重复注入问题
+Task: Fix duplicate project-level Hook injection
 
-建议运行 /teamai-share-learnings 总结经验并分享给团队。
+Consider running /teamai-share-learnings to summarize what you learned and share it with your team.
 ```
 
 提醒会列出实际触发它的非零摩擦信号；如果能取得首个任务，还会附上脱敏、单行化后的任务摘要，便于判断本次 session 是否值得分享。使用内置 skill `/teamai-share-learnings`，AI 会自动总结本次 session 经验并贡献到团队知识库。每个 session 最多提示一次。

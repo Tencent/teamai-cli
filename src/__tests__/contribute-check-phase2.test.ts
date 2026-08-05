@@ -195,9 +195,9 @@ describe('buildHint text differentiation', () => {
 
         const { hint } = await contributeCheckForSession(sessionId);
         expect(hint).not.toBeNull();
-        expect(hint).toContain('当前知识库尚未覆盖该任务');
-        expect(hint).toContain('你中断了 AI 2 次');
-        expect(hint).toContain('AI 遇到工具错误并重试 8 次');
+        expect(hint).toContain('The current task is not covered by the team knowledge base');
+        expect(hint).toContain('you interrupted the AI twice');
+        expect(hint).toContain('the AI retried failing tools 8 times');
     });
 
     it('knowledge gap can explain a frictionless hint without inventing friction reasons', async () => {
@@ -221,11 +221,11 @@ describe('buildHint text differentiation', () => {
         });
 
         const { hint } = await contributeCheckForSession(sessionId);
-        expect(hint).toContain('[teamai] 当前知识库尚未覆盖该任务。');
-        expect(hint).not.toContain('你中断了 AI');
-        expect(hint).not.toContain('你拒绝了');
-        expect(hint).not.toContain('你纠偏了');
-        expect(hint).not.toContain('工具错误并重试');
+        expect(hint).toContain('[teamai] The current task is not covered by the team knowledge base.');
+        expect(hint).not.toContain('you interrupted the AI');
+        expect(hint).not.toContain('you rejected');
+        expect(hint).not.toContain('you corrected the AI');
+        expect(hint).not.toContain('retried failing tools');
     });
 
     it('hint names the concrete friction signals when recall quality is good', async () => {
@@ -242,9 +242,9 @@ describe('buildHint text differentiation', () => {
 
         const { hint } = await contributeCheckForSession(sessionId);
         expect(hint).not.toBeNull();
-        expect(hint).toContain('你中断了 AI 2 次');
-        expect(hint).toContain('AI 遇到工具错误并重试 8 次');
-        expect(hint).not.toContain('你拒绝了');
-        expect(hint).not.toContain('知识库尚未覆盖');
+        expect(hint).toContain('you interrupted the AI twice');
+        expect(hint).toContain('the AI retried failing tools 8 times');
+        expect(hint).not.toContain('you rejected');
+        expect(hint).not.toContain('not covered by the team knowledge base');
     });
 });
