@@ -22,17 +22,20 @@ program
 program
   .command('init')
   .description('Initialize teamai (configure TGit, clone repo, register member)')
-  .option('--repo <repo>', 'Team repo (owner/repo or full URL)')
+  .argument('[repo]', 'Team repo (owner/repo or full URL)')
+  .option('--repo <repo>', 'Team repo (alias of the positional argument)')
   .option('--http <url>', 'Git-free HTTP team repo (read-only consumer; only needs an API key)')
   .option('--token <key>', 'API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.')
-  .option('--scope <scope>', 'Scope: user (default) or project')
+  .option('--scope <scope>', 'Install scope: project (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude)')
+  .option('--inherit-user-scope', 'In project scope, also sync safe user-scope resources and search its knowledge')
+  .option('--no-inherit-user-scope', 'Disable user-scope inheritance for this project')
   .option('--role <id>', 'Primary role ID (e.g. hai_dev) for non-interactive setup')
   .option('--agent <name>', 'Only inject hooks into this agent (e.g. claude, codebuddy, workbuddy). Additive on repeated runs.')
   .option('--force', 'Overwrite existing config without confirmation')
-  .action(async (cmdOpts) => {
+  .action(async (repoArg, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { init } = await import('./init.js');
-    await init({ ...globalOpts, ...cmdOpts });
+    await init({ ...globalOpts, ...cmdOpts, repoPositional: repoArg });
   });
 
 program
@@ -840,7 +843,7 @@ program
   .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)').hideHelp())
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
   .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph')
-  .option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode')
+  .addOption(new Option('--fix', 'Deprecated: teamwiki lint has no autofix; runs lint in report-only mode').hideHelp())
   .option('--status', 'Show knowledge-base git baseline (headSha / repoUrl / branch)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
   .option('--json', 'Output report as JSON (suitable for CI)')

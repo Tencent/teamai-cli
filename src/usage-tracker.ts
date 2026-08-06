@@ -120,6 +120,7 @@ const SKILL_DIRS = [
   '.codex-internal/skills',
   '.tcodex/skills',
   '.openclaw/skills',
+  '.hermes/skills',
 ];
 
 /**

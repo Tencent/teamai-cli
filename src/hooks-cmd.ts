@@ -21,31 +21,26 @@ interface HookScopeTarget {
 }
 
 /**
- * Resolve every (baseDir, manifestPath) pair that hook reconciliation must
- * touch for this config's scope. Project scope also targets the user's home
- * directory (so hooks fire from subdirectories, see #44) — but that target
- * MUST use the user's own manifest, not the project's. Attributing the
- * user-home write to the project's manifest is what let `hooks inject`
- * diverge from `pull`'s per-scope reconcile (each scope's own baseDir +
- * manifest, see reconcileHooksAllScopes in pull.ts) and caused duplicate
- * injection / wrongful cleanup of ~/.cursor/hooks.json et al. (#85).
+ * Resolve the (baseDir, manifestPath) pair for hook reconciliation.
+ *
+ * User scope → HOME + user manifest (unchanged).
+ * Project scope → HOME + user manifest only (#264). The previous behaviour
+ * duplicated entries into <projectRoot> as well (for #44 subdirectory
+ * coverage), but HOME already covers every cwd. The dispatch runtime now
+ * identifies the active project via detectProjectConfig(stdin.cwd), so a
+ * redundant projectRoot copy is unnecessary.
  */
 function resolveHookScopeTargets(localConfig: LocalConfig): HookScopeTarget[] {
-    const baseDir = resolveBaseDir(localConfig) ?? '';
-    const manifestPath = getManagedHooksPath(localConfig.scope, localConfig.projectRoot);
     if (localConfig.scope !== 'project') {
-        return [{ baseDir, manifestPath }];
+        return [{
+            baseDir: resolveBaseDir(localConfig) ?? '',
+            manifestPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
+        }];
     }
-
-    const userBaseDir = process.env.HOME ?? '';
-    if (!userBaseDir || userBaseDir === baseDir) {
-        return [{ baseDir, manifestPath }];
-    }
-
-    return [
-        { baseDir, manifestPath },
-        { baseDir: userBaseDir, manifestPath: getManagedHooksPath('user') },
-    ];
+    return [{
+        baseDir: process.env.HOME ?? '',
+        manifestPath: getManagedHooksPath('user'),
+    }];
 }
 
 function formatDisplayPath(settingsPath: string): string {
@@ -157,6 +152,13 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
 
     for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
         await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true });
+    }
+
+    // Clean up legacy projectRoot entries left by older versions that wrote
+    // hooks into both <projectRoot> and HOME (#264 migration).
+    if (localConfig.scope === 'project' && localConfig.projectRoot) {
+        const legacyManifest = getManagedHooksPath('project', localConfig.projectRoot);
+        await reconcileHooksToAllTools(teamConfig.toolPaths, localConfig.projectRoot, [], legacyManifest, { removeAll: true });
     }
 
     log.success('Hooks removed from all AI tool settings');

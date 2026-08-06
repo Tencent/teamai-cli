@@ -94,17 +94,63 @@ describe('contributeState', () => {
     expect(state.lastEvaluated).toBeUndefined();
   });
 
-  it('round-trip: write→read preserves toolCount, lastEvaluated, hinted', async () => {
+  it('round-trip: write→read preserves score, friction, prompt context, and hint state', async () => {
     const original: ContributeState = {
       contributed: false,
       smartScore: 42,
       toolCount: 25,
       lastEvaluated: 1234567890,
       hinted: true,
+      friction: { interrupt: 1, toolReject: 0, correction: 2, toolError: 3 },
+      promptSummary: 'Fix auth retry handling',
     };
     await writeContributeState('rt-session', original);
     const read = await readContributeState('rt-session');
     expect(read).toEqual(original);
+  });
+
+  it('sanitizes, flattens, and truncates promptSummary before persisting it', async () => {
+    const rawToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    await writeContributeState('safe-prompt-session', {
+      contributed: false,
+      promptSummary: `  Fix auth with ${rawToken}\nthen\tadd\u0000coverage ${'x'.repeat(200)}`,
+    });
+
+    const statePath = path.join(tmpDir, '.teamai', 'sessions', 'safe-prompt-session.json');
+    const persisted = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as ContributeState;
+    expect(persisted.promptSummary).toContain('<REDACTED:gh_tok>');
+    expect(persisted.promptSummary).not.toContain(rawToken);
+    expect(persisted.promptSummary).not.toMatch(/[\r\n\t\u0000]/);
+    expect(persisted.promptSummary).toHaveLength(160);
+    expect(persisted.promptSummary).toMatch(/…$/);
+    expect(await readContributeState('safe-prompt-session')).toEqual(persisted);
+  });
+
+  it('does not split a surrogate pair at the promptSummary truncation boundary', async () => {
+    const prefix = 'x'.repeat(158);
+    await writeContributeState('unicode-prompt-session', {
+      contributed: false,
+      promptSummary: `${prefix}😀 more text`,
+    });
+
+    const state = await readContributeState('unicode-prompt-session');
+    expect(state.promptSummary).toBe(`${prefix}…`);
+    expect(Buffer.from(state.promptSummary!, 'utf8').toString('utf8')).toBe(state.promptSummary);
+  });
+
+  it('appends an ellipsis when truncation clips a redaction marker', async () => {
+    const rawToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    await writeContributeState('truncated-redaction-session', {
+      contributed: false,
+      promptSummary: `${'x'.repeat(150)} ${rawToken} more text`,
+    });
+
+    const state = await readContributeState('truncated-redaction-session');
+    expect(state.promptSummary).toContain('<REDACT');
+    expect(state.promptSummary).not.toContain('<REDACTED:gh_tok>');
+    expect(state.promptSummary).not.toContain(rawToken);
+    expect(state.promptSummary).toMatch(/…$/);
+    expect(state.promptSummary!.length).toBeLessThanOrEqual(160);
   });
 
   it('rejects malformed types: non-number toolCount/lastEvaluated falls back to undefined', async () => {
@@ -117,6 +163,7 @@ describe('contributeState', () => {
         toolCount: 'not-a-number',
         lastEvaluated: { weird: 'object' },
         hinted: 'truthy-string',
+        friction: { interrupt: 1, toolReject: 0, correction: -1, toolError: '8' },
       }),
       'utf-8',
     );
@@ -125,6 +172,7 @@ describe('contributeState', () => {
     expect(state.toolCount).toBeUndefined();
     expect(state.lastEvaluated).toBeUndefined();
     expect(state.hinted).toBeUndefined();
+    expect(state.friction).toBeUndefined();
   });
 
   it('cleans up session files older than 24 hours on write', async () => {
@@ -232,10 +280,26 @@ describe('computeSmartScore (friction model)', () => {
  * the point of the friction rewrite. Also seeds enough tool_use events to clear
  * the toolCount >= CONTRIBUTE_BASE_THRESHOLD hard gate.
  */
-async function seedHighScoreSession(sessionId: string, opts?: { count?: number }): Promise<void> {
+async function seedHighScoreSession(
+  sessionId: string,
+  opts?: {
+    count?: number;
+    promptSummary?: string;
+    interventions?: { interrupt: number; toolReject: number; toolError?: number };
+  },
+): Promise<void> {
   const count = opts?.count ?? 50;
   const now = Date.now();
   const tools = ['Bash', 'Read', 'Edit', 'Skill', 'Grep'];
+  if (opts?.promptSummary) {
+    await appendEvent({
+      type: 'prompt_submit',
+      sessionId,
+      tool: 'claude',
+      promptSummary: opts.promptSummary,
+      timestamp: new Date(now - ((count + 1) * 60 * 1000)).toISOString(),
+    });
+  }
   for (let i = 0; i < count; i++) {
     await appendEvent({
       type: 'tool_use',
@@ -251,7 +315,7 @@ async function seedHighScoreSession(sessionId: string, opts?: { count?: number }
     sessionId,
     tool: 'claude',
     timestamp: new Date(now).toISOString(),
-    interventions: { interrupt: 2, toolReject: 0, toolError: 8 },
+    interventions: opts?.interventions ?? { interrupt: 2, toolReject: 0, toolError: 8 },
   });
 }
 
@@ -337,9 +401,9 @@ describe('contributeCheckForSession', () => {
     expect(result.hint).not.toBeNull();
   });
 
-  // Regression: even when all display fields (smartScore/toolCount/uniqueTools)
-  // are present in state, they must not be reused as a "cache hit" past the
-  // debounce window — Layer 2 now shares the same debounce as Layer 1.
+  // Regression: even when all score/context fields are present in state, they
+  // must not be reused as a "cache hit" past the debounce window — Layer 2 now
+  // shares the same debounce as Layer 1.
   it('layer-2 cache-hit expiry: stale (smartScore=0, toolCount=0) past debounce → re-scan events', async () => {
     const sessionId = 'l2-cache-stale';
     const tenMinAgo = Date.now() - CONTRIBUTE_FASTPATH_TTL_MS - 5 * 60 * 1000;
@@ -349,6 +413,7 @@ describe('contributeCheckForSession', () => {
       uniqueTools: 0,
       smartScore: 0,
       lastEvaluated: tenMinAgo,
+      friction: { interrupt: 0, toolReject: 0, correction: 0, toolError: 0 },
     });
     await seedHighScoreSession(sessionId);
 
@@ -362,7 +427,7 @@ describe('contributeCheckForSession', () => {
     expect(result.hint).not.toBeNull();
   });
 
-  it('cache hit: high cached score + fresh display fields → reuse cache, emit hint', async () => {
+  it('cache hit: high cached score + fresh friction context → reuse cache, emit contextual hint', async () => {
     const sessionId = 'cache-hit';
     const now = Date.now();
     await writeContributeState(sessionId, {
@@ -371,6 +436,8 @@ describe('contributeCheckForSession', () => {
       uniqueTools: 7,
       lastEvaluated: now,
       smartScore: 80,
+      friction: { interrupt: 1, toolReject: 2, correction: 0, toolError: 3 },
+      promptSummary: 'Fix cached auth task',
     });
     await seedHighScoreSession(sessionId);
 
@@ -378,13 +445,20 @@ describe('contributeCheckForSession', () => {
     const after = await readContributeState(sessionId);
 
     expect(result.hint).not.toBeNull();
-    // Hint message uses cached display values (not recomputed from events)
-    expect(result.hint).toContain('100 次工具调用');
-    expect(result.hint).toContain('7 种不同工具');
+    // Hint message uses cached explanation context (not recomputed from events).
+    expect(result.hint).toContain('you interrupted the AI once');
+    expect(result.hint).toContain('you rejected 2 tool calls');
+    expect(result.hint).not.toContain('you corrected the AI');
+    expect(result.hint).toContain('the AI retried failing tools 3 times');
+    expect(result.hint).toContain('Task: Fix cached auth task');
+    expect(result.hint).not.toContain('100 tool calls');
+    expect(result.hint).not.toContain('7 different tools');
     // Cached score preserved
     expect(after.smartScore).toBe(80);
     expect(after.toolCount).toBe(100);
     expect(after.uniqueTools).toBe(7);
+    expect(after.friction).toEqual({ interrupt: 1, toolReject: 2, correction: 0, toolError: 3 });
+    expect(after.promptSummary).toBe('Fix cached auth task');
     // lastEvaluated unchanged on cache hit + only-hinted-flag write
     expect(after.lastEvaluated).toBe(now);
     expect(after.hinted).toBe(true);
@@ -415,7 +489,7 @@ describe('contributeCheckForSession', () => {
 
   it('first run on empty state: no cache → reads events, persists toolCount/lastEvaluated/smartScore', async () => {
     const sessionId = 'first-run';
-    await seedHighScoreSession(sessionId);
+    await seedHighScoreSession(sessionId, { promptSummary: 'Fix first-run cache state' });
 
     const before = await readContributeState(sessionId);
     expect(before.lastEvaluated).toBeUndefined();
@@ -427,10 +501,12 @@ describe('contributeCheckForSession', () => {
     expect(after.lastEvaluated).toBeDefined();
     expect(after.toolCount).toBeGreaterThan(0);
     expect(after.smartScore).toBeGreaterThanOrEqual(CONTRIBUTE_SMART_THRESHOLD);
+    expect(after.friction).toEqual({ interrupt: 2, toolReject: 0, correction: 0, toolError: 8 });
+    expect(after.promptSummary).toBe('Fix first-run cache state');
     expect(after.hinted).toBe(true);
   });
 
-  it('M3: cache hit emits hint WITHOUT reading events.jsonl (display from cache)', async () => {
+  it('M3: cache hit emits hint WITHOUT reading events.jsonl (context from cache)', async () => {
     const sessionId = 'cache-no-events';
     const now = Date.now();
     // Cache fully primed
@@ -440,6 +516,8 @@ describe('contributeCheckForSession', () => {
       toolCount: 42,
       uniqueTools: 9,
       lastEvaluated: now,
+      friction: { interrupt: 2, toolReject: 0, correction: 1, toolError: 8 },
+      promptSummary: 'Repair the cached hook state',
     });
     // Intentionally do NOT seed any events; no file at all.
     // If the implementation tried to readEvents() it would get [] and
@@ -448,32 +526,116 @@ describe('contributeCheckForSession', () => {
     const result = await contributeCheckForSession(sessionId);
 
     expect(result.hint).not.toBeNull();
-    expect(result.hint).toContain('42 次工具调用');
-    expect(result.hint).toContain('9 种不同工具');
+    expect(result.hint).toContain('you interrupted the AI twice');
+    expect(result.hint).toContain('you corrected the AI once');
+    expect(result.hint).toContain('the AI retried failing tools 8 times');
+    expect(result.hint).toContain('Task: Repair the cached hook state');
+    expect(result.hint).not.toContain('42 tool calls');
+    expect(result.hint).not.toContain('9 different tools');
   });
 
-  it('M3: cache fresh but uniqueTools missing → falls back to cache miss (re-reads events)', async () => {
+  it('M3: legacy cache missing friction → falls back to cache miss and migrates state', async () => {
     const sessionId = 'cache-partial';
     const now = Date.now();
-    // Legacy state (pre-uniqueTools): smartScore + toolCount + lastEvaluated
-    // present, uniqueTools absent. Code must re-evaluate to get a complete
-    // display rather than emit hint with bogus uniqueTools=0.
+    // Legacy state: score/display fields are present, but explanation context is
+    // absent. Code must re-evaluate rather than emit an ungrounded hint.
     await writeContributeState(sessionId, {
       contributed: false,
       smartScore: 80,
       toolCount: 100,
+      uniqueTools: 7,
       lastEvaluated: now,
-      // uniqueTools intentionally omitted
+      // friction intentionally omitted
     });
-    await seedHighScoreSession(sessionId);
+    await seedHighScoreSession(sessionId, { promptSummary: 'Migrate contextual hint state' });
 
     const result = await contributeCheckForSession(sessionId);
     const after = await readContributeState(sessionId);
 
     expect(result.hint).not.toBeNull();
     expect(after.uniqueTools).toBeGreaterThan(0);
+    expect(after.friction).toEqual({ interrupt: 2, toolReject: 0, correction: 0, toolError: 8 });
+    expect(after.promptSummary).toBe('Migrate contextual hint state');
+    expect(result.hint).toContain('you interrupted the AI twice');
+    expect(result.hint).toContain('Task: Migrate contextual hint state');
     // smartScore is now the freshly computed value, not the legacy 80
     expect(after.smartScore).not.toBe(80);
+  });
+
+  it('promptSummary is optional and does not cause a permanent cache miss', async () => {
+    const sessionId = 'cache-without-prompt';
+    await writeContributeState(sessionId, {
+      contributed: false,
+      smartScore: 80,
+      toolCount: 42,
+      lastEvaluated: Date.now(),
+      friction: { interrupt: 1, toolReject: 0, correction: 0, toolError: 0 },
+      // promptSummary intentionally omitted (some tools cannot provide one)
+    });
+
+    const result = await contributeCheckForSession(sessionId);
+    const after = await readContributeState(sessionId);
+
+    expect(result.hint).toContain('you interrupted the AI once');
+    expect(result.hint).not.toContain('Task:');
+    expect(after.smartScore).toBe(80);
+  });
+
+  it('malformed cached friction is rejected and rebuilt from events', async () => {
+    const sessionId = 'cache-malformed-friction';
+    const sessionsDir = path.join(tmpDir, '.teamai', 'sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionsDir, `${sessionId}.json`),
+      JSON.stringify({
+        contributed: false,
+        smartScore: 80,
+        toolCount: 100,
+        lastEvaluated: Date.now(),
+        friction: { interrupt: 1, toolReject: 0, correction: 'bad', toolError: 8 },
+        promptSummary: 'Stale cached task',
+      }),
+      'utf-8',
+    );
+    await seedHighScoreSession(sessionId, { promptSummary: 'Fresh task from events' });
+
+    const result = await contributeCheckForSession(sessionId);
+    const after = await readContributeState(sessionId);
+
+    expect(after.friction).toEqual({ interrupt: 2, toolReject: 0, correction: 0, toolError: 8 });
+    expect(after.promptSummary).toBe('Fresh task from events');
+    expect(after.smartScore).not.toBe(80);
+    expect(result.hint).toContain('Task: Fresh task from events');
+  });
+
+  it('explains every non-zero friction signal and safely includes the first task', async () => {
+    const sessionId = 'contextual-reasons';
+    const rawToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    await seedHighScoreSession(sessionId, {
+      promptSummary: `Fix auth retry for ${rawToken}\nthen add regression coverage`,
+      interventions: { interrupt: 2, toolReject: 1, toolError: 8 },
+    });
+    await appendEvent({
+      type: 'prompt_submit',
+      sessionId,
+      tool: 'claude',
+      promptSummary: 'wrong, redo it',
+      timestamp: new Date(Date.now() + 1000).toISOString(),
+    });
+
+    const result = await contributeCheckForSession(sessionId);
+    const after = await readContributeState(sessionId);
+
+    expect(result.hint).toContain('you interrupted the AI twice');
+    expect(result.hint).toContain('you rejected 1 tool call');
+    expect(result.hint).toContain('you corrected the AI once');
+    expect(result.hint).toContain('the AI retried failing tools 8 times');
+    expect(result.hint).toContain('Task: Fix auth retry for <REDACTED:gh_tok> then add regression coverage');
+    expect(result.hint).not.toContain(rawToken);
+    expect(result.hint).not.toContain('50 tool calls');
+    expect(result.hint).not.toContain('5 different tools');
+    expect(after.friction).toEqual({ interrupt: 2, toolReject: 1, correction: 1, toolError: 8 });
+    expect(after.promptSummary).toBe('Fix auth retry for <REDACTED:gh_tok> then add regression coverage');
   });
 
   it('M1: cache miss + high score performs exactly ONE writeContributeState (not two)', async () => {
@@ -508,6 +670,7 @@ describe('contributeCheckForSession', () => {
       toolCount: 100, // ≥ BASE_THRESHOLD so fast-path doesn't kick
       uniqueTools: 1,
       lastEvaluated: originalLastEvaluated,
+      friction: { interrupt: 0, toolReject: 0, correction: 0, toolError: 0 },
     });
 
     const sessionsDir = path.join(tmpDir, '.teamai', 'sessions');

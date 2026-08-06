@@ -30,19 +30,24 @@ npm install -g teamai-cli
 
 ### Team admin / solo user
 
-Create a shared-experience repo on your git host (GitHub, TGit, or CNB), **grant write access to team members**, then have them run `teamai init --repo https://github.com/yourorg/yourrepo`.
+Create a shared-experience repo on your git host (GitHub, TGit, or CNB), **grant write access to team members**, then have them run `teamai init https://github.com/yourorg/yourrepo`.
 
 > Solo use needs no separate repo setup: `teamai init` checks the target repo and creates it automatically if it doesn't exist.
 
 ### Team members
 
 ```bash
-# User-scope init (default, resources installed under ~/)
-teamai init --repo https://github.com/yourorg/yourrepo
-
-# Project-scope init (resources installed under the project directory)
+# Project-scope init (default, resources installed under the project directory)
 cd /path/to/my-project
-teamai init --repo https://github.com/yourorg/yourrepo --scope project
+teamai init https://github.com/yourorg/yourrepo
+
+# User-scope init (resources installed under ~/)
+teamai init https://github.com/yourorg/yourrepo --scope user
+
+# Optional layered setup: keep a project repo active while inheriting safe
+# resources and searchable knowledge from an initialized user-scope repo
+cd /path/to/my-project
+teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 ```
 
 Once initialized, every AI session automatically pulls the latest skills / rules and other Harness updates published by admins — no manual sync needed.
@@ -122,10 +127,14 @@ Beyond distributing the Harness, TeamAI organizes accumulated team experience an
 When a session ends, the Stop hook scores it by **friction** — signals that the session hit something worth remembering: you interrupted or corrected the AI, denied a tool call, or the AI had to retry failing tools. A long-but-routine session (lots of tool calls, no friction) does not trigger; a session where you actually fought a problem does. If the score is high enough, the AI suggests:
 
 ```
-建议运行 /teamai-share-learnings 总结本次 session 的经验并分享给团队。
+[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, the AI retried failing tools 8 times.
+
+Task: Fix duplicate project-level Hook injection
+
+Consider running /teamai-share-learnings to summarize what you learned and share it with your team.
 ```
 
-The `/teamai-share-learnings` skill summarizes the session and pushes a learning document directly to the team repo. Each session is prompted at most once.
+The hint names the non-zero friction signals that triggered it and, when available, includes a redacted, single-line summary of the first task. The `/teamai-share-learnings` skill summarizes the session and pushes a learning document directly to the team repo. Each session is prompted at most once.
 
 ### Team Knowledge Recall
 
@@ -153,7 +162,7 @@ Author: member-b | Score: 12.0 | Tags: deploy, config
 - **Shared search index** (`search-index.json`): four categories — learnings (session experience), docs (team docs), rules (coding rules), and skills (each `SKILL.md`) — sourced from the corresponding team-repo directories, (re)built on `teamai pull` / `teamai contribute`.
 - **Codebase knowledge graph** (`teamwiki/`): produced by `teamai import`, queried live at search time.
 
-Ranking uses BM25 + graph-boost, merges dual-scope (user + project) results tagged with origin, and implicitly upvotes matched docs so good content floats up over time.
+Ranking uses BM25 + graph-boost. When the current working directory contains a project-scope config, Recall searches that project; if the project enables `--inherit-user-scope`, it then searches user knowledge, tags each result with its origin, and lets an identical project entry override the user entry. Without a project config in the current directory, Recall searches the user scope. Active-scope hits are implicitly upvoted; inherited user hits remain read-only while the project is active.
 
 ### Codebase Knowledge Graph
 

@@ -879,6 +879,88 @@ describe('uninstall', () => {
     expect(mockReconcileHooks).not.toHaveBeenCalled();
   });
 
+  it('hooks 全为空数组时仍纳入清理范围（empty-array residue）', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    // Simulate a prior partial uninstall that left hooks cleared to empty arrays.
+    await fse.writeJson(path.join(homeDir, '.claude', 'settings.json'), {
+      hooks: { SessionStart: [], Stop: [], PostToolUse: [] },
+    });
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    // reconcileHooks must be called — the file was recognised as having teamai residue.
+    expect(mockReconcileHooks).toHaveBeenCalledWith(
+      path.join(homeDir, '.claude', 'settings.json'),
+      'claude',
+      [],
+      expect.objectContaining({ removeAll: true }),
+    );
+  });
+
+  it('settings.json 无 hooks 字段时不纳入清理范围', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    // settings.json exists but has no hooks key at all — not a teamai file.
+    await fse.writeJson(path.join(homeDir, '.claude', 'settings.json'), {
+      model: 'claude-opus-4',
+    });
+    // Also remove all other teamai resources so nothing triggers cleanup.
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'team-skill'));
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'teamai-share-learnings'));
+    await fse.remove(path.join(homeDir, '.claude', 'skills', 'team-wiki-codebase'));
+    await fse.remove(path.join(homeDir, '.claude', 'rules', 'team-rule.md'));
+    await fse.remove(path.join(homeDir, '.claude', 'rules', 'teamai-recall.md'));
+    await fse.remove(path.join(homeDir, '.claude', 'agents', 'teamai-recall.md'));
+    await fse.remove(path.join(homeDir, '.claude', 'CLAUDE.md'));
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'claude' });
+
+    // No hooks residue + no teamai resources → reconcileHooks not called.
+    expect(mockReconcileHooks).not.toHaveBeenCalled();
+  });
+
+  it('hooks 有非空数组（用户自有 hook）时仅由 hasTeamaiHooks 判断是否纳入', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    // User has their own non-teamai hook — isEmptyHooksResidue must return false,
+    // but hasTeamaiHooks will still detect the teamai hook that setupFixture added.
+    await fse.writeJson(path.join(homeDir, '.claude', 'settings.json'), {
+      hooks: {
+        SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'teamai pull' }], description: '[teamai] Auto-pull' }],
+        PostToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'echo user-hook' }] }],
+      },
+    });
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    // hasTeamaiHooks detects the teamai hook → reconcileHooks must be called.
+    expect(mockReconcileHooks).toHaveBeenCalledWith(
+      path.join(homeDir, '.claude', 'settings.json'),
+      'claude',
+      [],
+      expect.objectContaining({ removeAll: true }),
+    );
+  });
+
   it('--agent 大小写不敏感', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

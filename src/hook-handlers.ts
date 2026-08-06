@@ -326,7 +326,10 @@ const localAgentHandler: HookHandler = {
 export function buildHandlerRegistry(): HandlerRegistration[] {
   return [
     // ─── SessionStart ─────────────────────────────────
-    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    // pull does not produce output the host needs; run detached so git fetch
+    // on a slow network cannot delay session startup. Reuses LOCAL_AGENT_TIMEOUT_MS
+    // (15s) — ample for a background git pull that is not awaited by the host.
+    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },

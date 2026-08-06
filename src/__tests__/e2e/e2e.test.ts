@@ -686,8 +686,10 @@ describe('remote commands', () => {
 });
 
 // ─── Init project scope (sandboxed) ──────────────────────
-// Runs in a temp cwd with --scope project so it doesn't touch the
-// user-scope ~/.teamai/ that the rest of the suite depends on.
+// Runs in a temp cwd. Since #250, project is the default scope — we pass the
+// repo as a positional arg (recommended) and omit --scope.
+// HOME is isolated so we don't touch the user-scope ~/.teamai/ that the rest
+// of the suite depends on.
 //
 // GitHub-only: TGit's `gf` CLI authenticates via ~/.netrc, which we lose
 // when we isolate $HOME to a temp dir. `gf auth login` then triggers an
@@ -700,10 +702,13 @@ const PROVIDER_IS_GITHUB =
 
 describe('init project scope (sandboxed)', () => {
   it.skipIf(!CAN_RUN_REMOTE || !PROVIDER_IS_GITHUB)(
-    'teamai init --scope project --repo X --force — creates .teamai/',
+    'teamai init <repo> --force — default project scope creates .teamai/',
     async () => {
       const os = await import('node:os');
-      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-init-'));
+      // Nested project dir so cwd !== HOME (E1 would otherwise fall back to user)
+      const homeSandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-init-home-'));
+      const sandbox = path.join(homeSandbox, 'project');
+      fs.mkdirSync(sandbox);
 
       try {
         const repoUrl = process.env.TEAMAI_TEST_REPO_URL ?? '';
@@ -718,13 +723,14 @@ describe('init project scope (sandboxed)', () => {
         const stdinAllBlanks = '\n\n\n\n\n';
 
         const result = await runCLIWithEnv(
-          ['init', '--scope', 'project', '--repo', fullUrl, '--role', 'common', '--force'],
+          // Positional repo; omit --scope to exercise the new project default (#250)
+          ['init', fullUrl, '--role', 'common', '--force'],
           {
             // GitHub: gh CLI / REST honors GITHUB_TOKEN
             // TGit: gf CLI honors TGIT_TOKEN
             GITHUB_TOKEN: process.env.TEAMAI_TEST_TOKEN ?? '',
             TGIT_TOKEN: process.env.TEAMAI_TEST_TOKEN ?? '',
-            HOME: sandbox, // isolate from user-scope ~/.teamai
+            HOME: homeSandbox, // isolate from user-scope ~/.teamai
             // Git identity must be set explicitly because HOME override
             // hides the global .gitconfig written by CI setup steps.
             GIT_AUTHOR_NAME: 'TeamAI CI',
@@ -733,11 +739,13 @@ describe('init project scope (sandboxed)', () => {
             GIT_COMMITTER_EMAIL: 'ci@teamai.test',
           },
           stdinAllBlanks,
-          sandbox, // cwd = sandbox, so .teamai/ lands here
+          sandbox, // cwd = project under HOME, so .teamai/ lands here
         );
 
         expect(result.code, `init failed with output:\n${result.output}`).toBe(0);
         expect(fs.existsSync(path.join(sandbox, '.teamai', 'config.yaml'))).toBe(true);
+        // Default scope must not write into HOME/.teamai
+        expect(fs.existsSync(path.join(homeSandbox, '.teamai', 'config.yaml'))).toBe(false);
 
         // Verify the project-scope config has the expected shape
         const cfg = fs.readFileSync(
@@ -746,8 +754,10 @@ describe('init project scope (sandboxed)', () => {
         );
         expect(cfg).toContain('repo:');
         expect(cfg).toContain('localPath');
+        expect(cfg).toMatch(/scope:\s*project/);
+        expect(result.output).toMatch(/Scope: project/);
       } finally {
-        fs.rmSync(sandbox, { recursive: true, force: true });
+        fs.rmSync(homeSandbox, { recursive: true, force: true });
       }
     },
     // init does fixture clone + member push, which is slow on CI runners.

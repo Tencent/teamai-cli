@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
+import { agentHookDescription } from '../hooks.js';
 
 vi.mock('../utils/logger.js', () => ({
   log: {
@@ -18,6 +19,8 @@ let tmpDir: string;
 let origHome: string | undefined;
 let origPpid: number;
 
+const TEST_SESSION_ID = 'test-session';
+
 beforeEach(async () => {
   tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-test-'));
   origHome = process.env.HOME;
@@ -25,16 +28,16 @@ beforeEach(async () => {
   origPpid = process.ppid;
   // Bind prompt is on by default — start each test from that baseline.
   delete process.env.TEAMAI_BIND_PROMPT_ENABLED;
-  // Clean hint markers
-  const markerPath = path.join(os.tmpdir(), `teamai-bind-hint-${process.ppid}`);
-  await fse.remove(markerPath);
+  // Clean hint markers (both old ppid-based and new sessionId-based)
+  await fse.remove(path.join(os.tmpdir(), `teamai-bind-hint-${TEST_SESSION_ID}`));
+  await fse.remove(path.join(os.tmpdir(), `teamai-bind-session-${TEST_SESSION_ID}`));
 });
 
 afterEach(async () => {
   process.env.HOME = origHome;
   delete process.env.TEAMAI_BIND_PROMPT_ENABLED;
-  const markerPath = path.join(os.tmpdir(), `teamai-bind-hint-${origPpid}`);
-  await fse.remove(markerPath);
+  await fse.remove(path.join(os.tmpdir(), `teamai-bind-hint-${TEST_SESSION_ID}`));
+  await fse.remove(path.join(os.tmpdir(), `teamai-bind-session-${TEST_SESSION_ID}`));
   await fse.remove(tmpDir);
   vi.restoreAllMocks();
 });
@@ -338,6 +341,92 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
 
     const output = stdoutChunks.join('');
     expect(output).not.toContain('hookSpecificOutput');
+  });
+
+  it('does NOT emit hint for WorkBuddy ephemeral task directories', async () => {
+    process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
+    await setupConfig();
+
+    // Create a WorkBuddy ephemeral task directory (not a git repo)
+    const ephemeralDir = path.join(tmpDir, 'WorkBuddy', '2026-07-31-16-04-39');
+    await fse.ensureDir(ephemeralDir);
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/api/projects/mine')) {
+        return new Response(JSON.stringify({ ok: true, projects: [{ id: 1, name: 'proj' }] }));
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdoutChunks: string[] = [];
+    const origWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Buffer) => {
+      stdoutChunks.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+      await reportAndSyncLocalAgent({
+        cwd: ephemeralDir,
+        tool: 'workbuddy',
+        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: TEST_SESSION_ID, tool: 'workbuddy' },
+      });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    const output = stdoutChunks.join('');
+    expect(output).not.toContain('hookSpecificOutput');
+    expect(output).not.toContain('ClawPro项目 绑定提示');
+  });
+
+  it('emits hint only once per sessionId', async () => {
+    process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
+    await setupConfig();
+    const projectDir = path.join(tmpDir, 'dedup-project');
+    await fse.ensureDir(projectDir);
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/api/projects/mine')) {
+        return new Response(JSON.stringify({ ok: true, projects: [{ id: 1, name: 'proj' }] }));
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const allOutput: string[] = [];
+    const origWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Buffer) => {
+      allOutput.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+      const makeEvent = () => ({
+        type: 'prompt_submit' as const,
+        timestamp: new Date().toISOString(),
+        sessionId: TEST_SESSION_ID,
+        tool: 'claude',
+      });
+
+      // First call — should emit hint
+      await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'claude', event: makeEvent() });
+      const firstOutput = allOutput.join('');
+      expect(firstOutput).toContain('ClawPro项目 绑定提示');
+
+      // Second call with same sessionId — should NOT emit hint
+      allOutput.length = 0;
+      await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'claude', event: makeEvent() });
+      const secondOutput = allOutput.join('');
+      expect(secondOutput).not.toContain('ClawPro项目 绑定提示');
+    } finally {
+      process.stdout.write = origWrite;
+    }
   });
 });
 
@@ -938,18 +1027,22 @@ describe('local-agent: CloudStudio sandbox suppression', () => {
     delete process.env.TEAMAI_ALLOW_SANDBOX_REPORT;
   });
 
-  it('returns false without fetching when X_IDE_IS_CLOUDSTUDIO=TRUE', async () => {
+  it('skips report but still runs sync when X_IDE_IS_CLOUDSTUDIO=TRUE', async () => {
     process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
     await setupConfig();
-
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+    let reportCalled = false;
+    let syncCalled = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/report')) reportCalled = true;
+      if (url.includes('/sync')) syncCalled = true;
+      return new Response(JSON.stringify({ ok: true }));
+    });
     vi.stubGlobal('fetch', fetchMock);
-
     const { reportAndSyncLocalAgent } = await import('../local-agent.js');
     const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
-
-    expect(result).toBe(false);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(reportCalled).toBe(false);
+    expect(syncCalled).toBe(true);
+    expect(result).toBe(true);
   });
 
   it('proceeds with normal reporting when TEAMAI_ALLOW_SANDBOX_REPORT=1 overrides sandbox', async () => {
@@ -979,18 +1072,50 @@ describe('local-agent: CloudStudio sandbox suppression', () => {
     expect(fetchMock).toHaveBeenCalled();
   });
 
-  it('returns false without fetching when /var/run/cloudstudio exists', async () => {
-    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+  it('skips report but still runs sync when /var/run/cloudstudio exists', async () => {
+    vi.spyOn(fs, 'existsSync').mockImplementation((p) => String(p).includes('cloudstudio'));
     await setupConfig();
+    let reportCalled = false;
+    let syncCalled = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/report')) reportCalled = true;
+      if (url.includes('/sync')) syncCalled = true;
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
+    expect(reportCalled).toBe(false);
+    expect(syncCalled).toBe(true);
+    expect(result).toBe(true);
+  });
 
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+  it('does not prune workspace bindings or rewrite config inside the sandbox', async () => {
+    process.env.X_IDE_IS_CLOUDSTUDIO = 'TRUE';
+    // A binding whose workspace path does not exist on disk — outside the sandbox
+    // this would be pruned and the config rewritten. Inside the sandbox it must survive.
+    const deadPath = path.join(tmpDir, 'not-mounted-in-container');
+    await setupConfig({ [deadPath]: { projectId: 7, projectName: 'dead-ws', boundAt: '2026-01-01T00:00:00.000Z' } });
+    const configPath = path.join(tmpDir, '.teamai', 'local-agent', 'config.json');
+    const before = await fse.readJson(configPath);
+
+    let syncCalled = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/sync')) syncCalled = true;
+      return new Response(JSON.stringify({ ok: true }));
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     const { reportAndSyncLocalAgent } = await import('../local-agent.js');
     const result = await reportAndSyncLocalAgent({ tool: 'claude', cwd: tmpDir });
 
-    expect(result).toBe(false);
-    expect(fetchMock).not.toHaveBeenCalled();
+    const after = await fse.readJson(configPath);
+    // Binding preserved + config untouched (no prune/save ran).
+    expect(after.workspaceBindings).toEqual(before.workspaceBindings);
+    expect(after.workspaceBindings[deadPath]).toBeTruthy();
+    // Sync still runs so pushed cmds are delivered.
+    expect(syncCalled).toBe(true);
+    expect(result).toBe(true);
   });
 
   it('still emits binding hint (stdout) but skips HTTP report inside sandbox', async () => {
@@ -1038,9 +1163,168 @@ describe('local-agent: CloudStudio sandbox suppression', () => {
     // Binding hint must still be injected via stdout even inside the sandbox.
     expect(output).toContain('hookSpecificOutput');
     expect(output).toContain('绑定到「alpha」项目');
-    // But the HTTP report/sync must be skipped, and the function returns false.
+    // But the HTTP report must be skipped; sync still runs, function returns true.
     expect(reportCalled).toBe(false);
-    expect(result).toBe(false);
+    expect(result).toBe(true);
+  });
+});
+
+describe('local-agent: parseTeamaiCmd tokenizer', () => {
+  it('splits quoted args and keeps spaces inside quotes', async () => {
+    const { parseTeamaiCmd } = await import('../local-agent.js');
+    expect(parseTeamaiCmd('teamai foo --name "a b"')).toEqual(['teamai', 'foo', '--name', 'a b']);
+    expect(parseTeamaiCmd("teamai uninstall --agent 'claude code'")).toEqual(
+      ['teamai', 'uninstall', '--agent', 'claude code'],
+    );
+  });
+
+  it('rejects a non-teamai first token', async () => {
+    const { parseTeamaiCmd } = await import('../local-agent.js');
+    expect(() => parseTeamaiCmd('rm -rf /')).toThrow(/only "teamai"/);
+  });
+
+  it('rejects empty input and unterminated quotes', async () => {
+    const { parseTeamaiCmd } = await import('../local-agent.js');
+    expect(() => parseTeamaiCmd('   ')).toThrow(/Empty cmd/);
+    expect(() => parseTeamaiCmd('teamai "oops')).toThrow(/Unterminated quote/);
+  });
+});
+
+describe('local-agent: uninstall_teamai command execution', () => {
+  let origArgv1: string;
+  let helperScript: string;
+  let sideEffectFile: string;
+
+  beforeEach(async () => {
+    origArgv1 = process.argv[1];
+    sideEffectFile = path.join(tmpDir, 'cmd-ran.marker');
+  });
+
+  afterEach(() => {
+    process.argv[1] = origArgv1;
+    delete process.env.TEAMAI_DISABLE_REMOTE_CMD;
+  });
+
+  // Write a throwaway node script and point the cmd entry resolver at it via
+  // process.argv[1], so runCmdCommand execs `node <helper> <args>` for real
+  // without needing a built teamai binary.
+  async function installHelper(bodyLines: string[]): Promise<void> {
+    helperScript = path.join(tmpDir, 'fake-teamai-entry.mjs');
+    await fse.writeFile(helperScript, bodyLines.join('\n'));
+    process.argv[1] = helperScript;
+  }
+
+  interface AckBody {
+    id: number;
+    type: string;
+    status: string;
+    error?: string;
+    version?: string;
+  }
+
+  // fetch mock that returns exactly one command from /sync and records the ack.
+  function stubFetchWithCommand(command: Record<string, unknown>): { getAck: () => AckBody | undefined } {
+    let ackBody: AckBody | undefined;
+    const fetchMock = vi.fn(async (url: string, init?: { body?: string }) => {
+      if (url.includes('/commands/ack')) {
+        ackBody = JSON.parse(init?.body ?? '{}');
+        return new Response(JSON.stringify({ ok: true }));
+      }
+      if (url.includes('/sync')) {
+        return new Response(JSON.stringify({ ok: true, cmds: [command] }));
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return { getAck: () => ackBody };
+  }
+
+  it('runs the uninstall_teamai cmd and acks success', async () => {
+    await setupConfig();
+    await installHelper([
+      `import fs from 'node:fs';`,
+      `fs.writeFileSync(${JSON.stringify(sideEffectFile)}, 'ran');`,
+      `process.stdout.write('uninstalled');`,
+    ]);
+    const { getAck } = stubFetchWithCommand({
+      id: 6,
+      type: 'uninstall_teamai',
+      cmd: 'teamai uninstall --force --agent codebuddy',
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'codebuddy', cwd: tmpDir });
+
+    // The uninstall actually executed (helper ran) instead of being skipped.
+    expect(fs.existsSync(sideEffectFile)).toBe(true);
+    const ack = getAck();
+    expect(ack).toBeDefined();
+    if (!ack) return;
+    expect(ack.id).toBe(6);
+    expect(ack.type).toBe('uninstall_teamai');
+    expect(ack.status).toBe('success');
+  });
+
+  it('rejects a non-teamai cmd without executing it and acks failed', async () => {
+    await setupConfig();
+    await installHelper([
+      `import fs from 'node:fs';`,
+      `fs.writeFileSync(${JSON.stringify(sideEffectFile)}, 'ran');`,
+    ]);
+    const { getAck } = stubFetchWithCommand({ id: 8, type: 'uninstall_teamai', cmd: 'rm -rf /' });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'codebuddy', cwd: tmpDir });
+
+    expect(fs.existsSync(sideEffectFile)).toBe(false);
+    const ack = getAck();
+    expect(ack).toBeDefined();
+    if (!ack) return;
+    expect(ack.status).toBe('failed');
+    expect(ack.error).toMatch(/only "teamai"/);
+  });
+
+  it('acks failed with "disabled" when TEAMAI_DISABLE_REMOTE_CMD=1', async () => {
+    await setupConfig();
+    process.env.TEAMAI_DISABLE_REMOTE_CMD = '1';
+    await installHelper([
+      `import fs from 'node:fs';`,
+      `fs.writeFileSync(${JSON.stringify(sideEffectFile)}, 'ran');`,
+    ]);
+    const { getAck } = stubFetchWithCommand({
+      id: 9,
+      type: 'uninstall_teamai',
+      cmd: 'teamai uninstall --force --agent codebuddy',
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'codebuddy', cwd: tmpDir });
+
+    expect(fs.existsSync(sideEffectFile)).toBe(false);
+    const ack = getAck();
+    expect(ack).toBeDefined();
+    if (!ack) return;
+    expect(ack.status).toBe('failed');
+    expect(ack.error).toMatch(/disabled/);
+  });
+
+  it('acks failed with stderr detail when the subcommand exits non-zero', async () => {
+    await setupConfig();
+    await installHelper([
+      `process.stderr.write('boom happened');`,
+      `process.exit(3);`,
+    ]);
+    const { getAck } = stubFetchWithCommand({ id: 10, type: 'uninstall_teamai', cmd: 'teamai explode' });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'codebuddy', cwd: tmpDir });
+
+    const ack = getAck();
+    expect(ack).toBeDefined();
+    if (!ack) return;
+    expect(ack.status).toBe('failed');
+    expect(ack.error).toMatch(/cmd failed/);
+    expect(ack.error).toMatch(/boom happened/);
   });
 });
 
@@ -1051,7 +1335,7 @@ describe('local-agent: cmds[] migration', () => {
     return zipSync({ [`${skillName}/SKILL.md`]: strToU8(skillMd) });
   }
 
-  async function runResponse(body: Record<string, unknown>, zip?: Uint8Array) {
+  async function runResponse(body: Record<string, unknown>, zip?: Uint8Array, tool: string = 'codebuddy') {
     await fse.ensureDir(path.join(tmpDir, '.codebuddy', 'skills'));
     await setupConfig();
     const acks: Array<Record<string, unknown>> = [];
@@ -1065,7 +1349,7 @@ describe('local-agent: cmds[] migration', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const { reportAndSyncLocalAgent } = await import('../local-agent.js');
-    await reportAndSyncLocalAgent({ cwd: tmpDir, tool: 'codebuddy', status: 'running' });
+    await reportAndSyncLocalAgent({ cwd: tmpDir, tool, status: 'running' });
     return acks;
   }
 
@@ -1125,51 +1409,150 @@ describe('local-agent: cmds[] migration', () => {
     expect(acks.find((a) => a.id === 4)?.version).toBe('1.0.0');
   });
 
-  it('skips uninstall_hook_rule without touching a same-slug rule', async () => {
-    // Step 1: install a rule with slug 'shared'.
-    await runResponse({
-      cmds: [{
-        id: 10, type: 'install_rule_rule', handle_type: 'rule', slug: 'shared',
-        version: '1.0.0', download_url: 'http://127.0.0.1:42100/shared.md', scope: 'user',
-      }],
-    });
-    const manifest1 = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
-    expect(manifest1.scopes.user.rules?.['shared']).toBeDefined();
-
-    // Step 2: send uninstall_hook_rule targeting same slug — must be silently skipped.
-    const acks2 = await runResponse({
-      cmds: [{ id: 5, type: 'uninstall_hook_rule', handle_type: 'hook', slug: 'shared', scope: 'user' }],
-    });
-
-    const manifest2 = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
-    expect(manifest2.scopes.user.rules?.['shared']).toBeDefined();
-    expect(acks2.find((a) => a.id === 5)).toBeUndefined();
-  });
-
-  it('skips uninstall_teamai (no slug) without error', async () => {
-    const acks = await runResponse({
-      cmds: [{ id: 6, type: 'uninstall_teamai', cmd: 'teamai uninstall --force --agent codebuddy' }],
-    });
-
-    expect(acks.find((a) => a.id === 6)).toBeUndefined();
-  });
-
-  it('skips install_hook_rule silently', async () => {
+  it('install_hook_rule writes a slug-tagged claude hook with default timeout', async () => {
     const acks = await runResponse({
       cmds: [{
-        id: 7, type: 'install_hook_rule', handle_type: 'hook', slug: 'hook-x',
-        version: '1.0.0', event: 'SessionStart', cmd: 'echo hi', scope: 'user',
+        id: 20, type: 'install_hook_rule', handle_type: 'hook', slug: 'hk1',
+        event: 'SessionStart', cmd: 'echo hi', scope: 'user',
       }],
     });
+    expect(acks.find((a) => a.id === 20)?.status).toBe('success');
+    const settings = await fse.readJson(path.join(tmpDir, '.codebuddy', 'settings.json'));
+    const entries = settings.hooks.SessionStart;
+    const mine = entries.find((e: any) => e.description === agentHookDescription('hk1'));
+    expect(mine).toBeDefined();
+    expect(mine.hooks[0].command).toBe('echo hi');
+    expect(mine.hooks[0].timeout).toBe(10);
+    const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'agent-hooks.json'));
+    expect(manifest.hk1).toMatchObject({ tool: 'codebuddy', event: 'SessionStart', command: 'echo hi', timeout: 10 });
+  });
 
-    expect(acks.find((a) => a.id === 7)).toBeUndefined();
-    // A skipped install must write nothing. The manifest is only created by a
-    // real install, so its absence is itself proof no resource was written;
-    // if it does exist, hook-x must not appear in any bucket.
-    const manifestPath = path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json');
-    const manifest = (await fse.pathExists(manifestPath)) ? await fse.readJson(manifestPath) : {};
-    expect(manifest.scopes?.user?.rules?.['hook-x']).toBeUndefined();
-    expect(manifest.scopes?.user?.claudemd?.['hook-x']).toBeUndefined();
+  it('honors explicit timeout and replaces on re-install (idempotent)', async () => {
+    const cmd21 = {
+      id: 21, type: 'install_hook_rule', handle_type: 'hook', slug: 'hk2',
+      event: 'Stop', cmd: 'echo a', timeout: 30, scope: 'user',
+    };
+    await runResponse({ cmds: [cmd21] });
+    const cmd22 = {
+      id: 22, type: 'install_hook_rule', handle_type: 'hook', slug: 'hk2',
+      event: 'Stop', cmd: 'echo b', timeout: 45, scope: 'user',
+    };
+    const acks2 = await runResponse({ cmds: [cmd22] });
+    expect(acks2.find((a) => a.id === 22)?.status).toBe('success');
+    const settings = await fse.readJson(path.join(tmpDir, '.codebuddy', 'settings.json'));
+    const mine = settings.hooks.Stop.filter((e: any) => e.description === agentHookDescription('hk2'));
+    expect(mine).toHaveLength(1);
+    expect(mine[0].hooks[0].command).toBe('echo b');
+    expect(mine[0].hooks[0].timeout).toBe(45);
+  });
+
+  it('install_hook_rule writes a codex hook (no description, command-matched)', async () => {
+    await fse.ensureDir(path.join(tmpDir, '.codex'));
+    const cmd23 = {
+      id: 23, type: 'install_hook_rule', handle_type: 'hook', slug: 'hk3',
+      event: 'PreToolUse', cmd: 'echo cx', scope: 'user',
+    };
+    const acks = await runResponse({ cmds: [cmd23] }, undefined, 'codex');
+    expect(acks.find((a) => a.id === 23)?.status).toBe('success');
+    const hooksJson = await fse.readJson(path.join(tmpDir, '.codex', 'hooks.json'));
+    const mine = hooksJson.hooks.PreToolUse.find((e: any) => e.hooks[0].command === 'echo cx');
+    expect(mine).toBeDefined();
+  });
+
+  it('re-install same codex slug with a new command leaves no stale entry', async () => {
+    const first = {
+      id: 30, type: 'install_hook_rule', handle_type: 'hook', slug: 'cxr',
+      event: 'PreToolUse', cmd: 'echo old', scope: 'user',
+    };
+    await fse.ensureDir(path.join(tmpDir, '.codex'));
+    await runResponse({ cmds: [first] }, undefined, 'codex');
+    const second = {
+      id: 31, type: 'install_hook_rule', handle_type: 'hook', slug: 'cxr',
+      event: 'PreToolUse', cmd: 'echo new', scope: 'user',
+    };
+    const acks = await runResponse({ cmds: [second] }, undefined, 'codex');
+    expect(acks.find((a) => a.id === 31)?.status).toBe('success');
+    const hooksJson = await fse.readJson(path.join(tmpDir, '.codex', 'hooks.json'));
+    const cmds = (hooksJson.hooks.PreToolUse ?? []).map((e: any) => e.hooks[0].command);
+    expect(cmds).toContain('echo new');
+    expect(cmds).not.toContain('echo old');
+    const manifest = await fse.readJson(
+      path.join(tmpDir, '.teamai', 'local-agent', 'agent-hooks.json'),
+    );
+    expect(manifest.cxr?.command).toBe('echo new');
+  });
+
+  it('uninstall_hook_rule removes the entry and manifest record; missing slug is success', async () => {
+    const cmd24 = {
+      id: 24, type: 'install_hook_rule', handle_type: 'hook', slug: 'hk4',
+      event: 'SessionStart', cmd: 'echo x', scope: 'user',
+    };
+    await runResponse({ cmds: [cmd24] });
+    const cmd25 = {
+      id: 25, type: 'uninstall_hook_rule', handle_type: 'hook', slug: 'hk4', scope: 'user',
+    };
+    const acks = await runResponse({ cmds: [cmd25] });
+    expect(acks.find((a) => a.id === 25)?.status).toBe('success');
+    const settings = await fse.readJson(path.join(tmpDir, '.codebuddy', 'settings.json'));
+    const isHk4 = (e: any) => e.description === agentHookDescription('hk4');
+    const remaining = (settings.hooks.SessionStart ?? []).filter(isHk4);
+    expect(remaining).toHaveLength(0);
+    const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'agent-hooks.json'));
+    expect(manifest.hk4).toBeUndefined();
+    // Missing slug → idempotent success.
+    const cmd26 = {
+      id: 26, type: 'uninstall_hook_rule', handle_type: 'hook', slug: 'nope', scope: 'user',
+    };
+    const acks2 = await runResponse({ cmds: [cmd26] });
+    expect(acks2.find((a) => a.id === 26)?.status).toBe('success');
+  });
+
+  it('rejects invalid install_hook_rule with a failed ack', async () => {
+    const cmd27 = {
+      id: 27, type: 'install_hook_rule', handle_type: 'hook', slug: 'bad1',
+      cmd: 'echo x', scope: 'user',
+    };
+    const a1 = await runResponse({ cmds: [cmd27] });
+    expect(a1.find((a) => a.id === 27)?.status).toBe('failed');
+    expect(String(a1.find((a) => a.id === 27)?.error)).toMatch(/event|cmd/i);
+
+    const cmd28 = {
+      id: 28, type: 'install_hook_rule', handle_type: 'hook', slug: 'bad2',
+      event: 'NotAnEvent', cmd: 'echo x', scope: 'user',
+    };
+    const a2 = await runResponse({ cmds: [cmd28] });
+    expect(a2.find((a) => a.id === 28)?.status).toBe('failed');
+    expect(String(a2.find((a) => a.id === 28)?.error)).toMatch(/unsupported event/i);
+
+    await fse.ensureDir(path.join(tmpDir, '.cursor'));
+    const cmd29 = {
+      id: 29, type: 'install_hook_rule', handle_type: 'hook', slug: 'bad3',
+      event: 'SessionStart', cmd: 'echo x', scope: 'user',
+    };
+    const a3 = await runResponse({ cmds: [cmd29] }, undefined, 'cursor');
+    expect(a3.find((a) => a.id === 29)?.status).toBe('failed');
+    expect(String(a3.find((a) => a.id === 29)?.error)).toMatch(/unsupported tool/i);
+  });
+
+  it('rejects install_hook_rule when TEAMAI_DISABLE_REMOTE_CMD=1', async () => {
+    const prev = process.env.TEAMAI_DISABLE_REMOTE_CMD;
+    process.env.TEAMAI_DISABLE_REMOTE_CMD = '1';
+    try {
+      const cmd40 = {
+        id: 40, type: 'install_hook_rule', handle_type: 'hook', slug: 'gated',
+        event: 'SessionStart', cmd: 'echo x', scope: 'user',
+      };
+      const acks = await runResponse({ cmds: [cmd40] });
+      expect(acks.find((a) => a.id === 40)?.status).toBe('failed');
+      expect(String(acks.find((a) => a.id === 40)?.error)).toMatch(/disabled/i);
+      const settings = path.join(tmpDir, '.codebuddy', 'settings.json');
+      const written = (await fse.pathExists(settings)) ? await fse.readJson(settings) : {};
+      const hooks = written.hooks?.SessionStart ?? [];
+      expect(hooks.some((e: any) => e.description === agentHookDescription('gated'))).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.TEAMAI_DISABLE_REMOTE_CMD;
+      else process.env.TEAMAI_DISABLE_REMOTE_CMD = prev;
+    }
   });
 
   it('skips an unknown hook type (handle_type=hook) without a failed ack', async () => {

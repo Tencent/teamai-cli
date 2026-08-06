@@ -73,6 +73,8 @@ interface RemovalPlan {
   managedHooksPath: string;
   /** Whether shared resources (docs / ~/.teamai / shell profile) are part of this removal. */
   includeShared: boolean;
+  /** Whether this removal targets Hermes (clears its SOUL.md block + config.yaml hook). */
+  hermesCleanup: boolean;
   /** Scope being uninstalled (issue #73: surfaced to the user). */
   scope: Scope;
 }
@@ -161,6 +163,13 @@ async function collectTeamRuleNames(repoPath: string): Promise<Set<string>> {
   );
 }
 
+/** Detect hooks cleared to empty arrays — a residue of prior teamai installation. */
+function isEmptyHooksResidue(parsed: Record<string, unknown> | null): boolean {
+  if (parsed == null || !('hooks' in parsed) || typeof parsed.hooks !== 'object' || parsed.hooks == null) return false;
+  const entries = Object.values(parsed.hooks as Record<string, unknown>);
+  return entries.length > 0 && entries.every((v) => Array.isArray(v) && v.length === 0);
+}
+
 // ─── Discovery ─────────────────────────────────────────
 
 async function discoverToolResources(
@@ -179,7 +188,9 @@ async function discoverToolResources(
   // (a) Hooks — settings.json / hooks.json
   if (toolPath.settings) {
     const settingsPath = path.join(baseDir, toolPath.settings);
-    if (await pathExists(settingsPath) && await hasTeamaiHooks(settingsPath, tool, managedHooksPath)) {
+    if (await pathExists(settingsPath)
+      && (await hasTeamaiHooks(settingsPath, tool, managedHooksPath)
+        || isEmptyHooksResidue(await readJson<Record<string, unknown>>(settingsPath)))) {
       res.hookFiles.push({ path: settingsPath, tool });
     }
   } else {
@@ -325,6 +336,7 @@ async function buildRemovalPlan(
     teamaiHomeExists: includeShared && await pathExists(teamaiHome),
     managedHooksPath,
     includeShared,
+    hermesCleanup: toolsToMerge.includes('hermes'),
     scope: localConfig.scope,
   };
 
@@ -515,6 +527,16 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
     }
   }
 
+  // (a3) Remove HTTP-source agent hooks across all formats via their manifest
+  // (issue #238). Dynamic import mirrors teardownPlugins — keeps local-agent's
+  // heavy dependency graph out of uninstall's static import chain. Best-effort.
+  try {
+    const { removeAllAgentHooks } = await import('./local-agent.js');
+    await removeAllAgentHooks();
+  } catch (e) {
+    log.warn(`Failed to remove agent hooks: ${(e as Error).message}`);
+  }
+
   // (b) Clean CLAUDE.md teamai section blocks
   for (const claudeMdPath of plan.claudeMdFiles) {
     try {
@@ -617,6 +639,20 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
       log.success(`移除 ${plan.teamaiHome}/`);
     } catch (e) {
       log.warn(`移除 ${plan.teamaiHome} 失败: ${(e as Error).message}`);
+    }
+  }
+
+  // (h) Hermes: clear teamai-managed entries — the SOUL.md rules block, the
+  // status-report hook (config.yaml + allowlist + script). Gated on hermesCleanup
+  // so a targeted `--agent <other>` uninstall never touches ~/.hermes. No-op safe.
+  if (plan.hermesCleanup) {
+    try {
+      const { removeHermesHooks } = await import('./hermes-hooks.js');
+      const { removeSoulRules } = await import('./hermes-config.js');
+      await removeHermesHooks();
+      await removeSoulRules();
+    } catch (e) {
+      log.debug(`Hermes uninstall cleanup skipped: ${(e as Error).message}`);
     }
   }
 }

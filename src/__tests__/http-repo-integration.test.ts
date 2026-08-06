@@ -45,7 +45,7 @@ describe('teamai init --http (read-only onboarding)', () => {
     server = await startMockServer({ apiKey: API_KEY });
 
     const { init } = await import('../init.js');
-    await init({ http: server.url, force: true });
+    await init({ http: server.url, force: true, scope: 'user' });
 
     // Local config written with kind:http and only the URL (no key).
     const cfg = YAML.parse(fs.readFileSync(path.join(tmpDir, '.teamai', 'config.yaml'), 'utf-8'));
@@ -66,7 +66,7 @@ describe('read-only protection (http kind)', () => {
     server = await startMockServer({ apiKey: API_KEY });
 
     const { init } = await import('../init.js');
-    await init({ http: server.url, force: true });
+    await init({ http: server.url, force: true, scope: 'user' });
 
     const originalCwd = process.cwd();
     process.chdir(tmpDir);

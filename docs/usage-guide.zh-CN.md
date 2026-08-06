@@ -13,9 +13,10 @@
 - [核心概念](#核心概念)
 - [安装](#安装)
 - [管理员初始化](#管理员初始化)
-  - [用户级（User Scope）](#用户级user-scope)
   - [项目级（Project Scope）](#项目级project-scope)
+  - [用户级（User Scope）](#用户级user-scope)
   - [如何选择 Scope？](#如何选择-scope)
+  - [在项目仓库下叠加组织级仓库](#在项目仓库下叠加组织级仓库)
 - [成员接入](#成员接入)
 - [日常使用](#日常使用)
 - [共享团队资源](#共享团队资源)
@@ -32,7 +33,7 @@
 | 概念 | 说明 |
 |------|------|
 | **Team Repo** | 一个 Git 仓库，集中存放团队共享的 Skills / Rules / Docs / Env 资源 |
-| **Scope** | 资源安装位置：`user`（用户主目录，默认）或 `project`（项目目录）|
+| **Scope** | 资源安装位置：`project`（当前项目，默认）或 `user`（用户主目录）|
 | **Skills** | AI 可调用的自定义技能（目录形式，含 `SKILL.md`） |
 | **Rules** | Markdown 格式的团队规范，自动合并到 AI 工具配置中 |
 | **Docs** | 团队共享文档，供 AI 参考 |
@@ -74,68 +75,15 @@ teamai --version
 
 在 GitHub、TGit（腾讯工蜂）或 CNB（cnb.cool）上创建一个空仓库（命名建议：`TeamAi-<团队名>`），或者直接执行 `teamai init`，不存在时会提示自动创建。
 
-### 用户级（User Scope）
-
-资源安装到用户主目录（`~/.claude/skills/` 等），适用于通用团队规范、跨项目技能。
-
-```bash
-# --scope user 是默认值，可省略
-teamai init --repo <group>/TeamAi-<team>
-```
-
-生成的目录结构：
-
-```
-~/.teamai/
-├── config.yaml          # 本地配置
-├── team-repo/           # 团队仓库克隆
-│   ├── teamai.yaml      # 远端团队配置（scope: user）
-│   ├── skills/ rules/ docs/ env/ members/
-│   ├── manifest/roles.yaml  # 角色定义（启用角色化 skills 时）
-│   └── learnings/       # 团队知识库
-~/.claude/skills/        # 团队 skills（自动同步）
-~/.claude/rules/         # 团队 rules（自动同步）
-```
-
-如果仓库启用了角色化 skills（存在 `manifest/roles.yaml`），`teamai init` 还会交互式要求你选择：
-
-- `primaryRole`：默认 skill 同步和推送的目标 namespace
-- `additionalRoles`：额外需要同步的 skill namespace
-
-也可以通过 CLI 参数跳过交互，实现完全非交互式初始化（适合 CI/CD 或 AI agent）：
-
-```bash
-teamai init --repo <group>/TeamAi-<team> --scope user --role hai_dev --force
-```
-
-| 参数 | 说明 |
-|------|------|
-| `--repo <url>` | 团队仓库地址（必填） |
-| `--scope <user\|project>` | 作用域，默认 `user` |
-| `--role <id>` | 直接指定 primaryRole，跳过角色交互选择 |
-| `--force` | 覆盖已有配置，跳过确认提示 |
-
-本地配置示例：
-
-```yaml
-repo:
-  localPath: ~/.teamai/team-repo
-  remote: https://git.woa.com/group/repo.git
-username: alice
-scope: user
-primaryRole: hai
-additionalRoles:
-  - pm
-resourceProfileVersion: 1
-```
-
-### 项目级（Project Scope）
+### 项目级（Project Scope，默认）
 
 资源安装到项目目录下（`<project>/.claude/skills/` 等），适用于项目特定的技能和规则。
 
 ```bash
+# project 是默认值，可省略 --scope
 cd /path/to/my-project
-teamai init --repo <group>/TeamAi-<team> --scope project
+teamai init <group>/TeamAi-<team>
+# 等价别名：teamai init --repo <group>/TeamAi-<team>
 ```
 
 生成的目录结构：
@@ -150,15 +98,88 @@ teamai init --repo <group>/TeamAi-<team> --scope project
 └── src/
 ```
 
+如果仓库启用了角色化 skills（存在 `manifest/roles.yaml`），`teamai init` 还会交互式要求你选择：
+
+- `primaryRole`：默认 skill 同步和推送的目标 namespace
+- `additionalRoles`：额外需要同步的 skill namespace
+
+也可以通过 CLI 参数跳过交互，实现完全非交互式初始化（适合 CI/CD 或 AI agent）：
+
+```bash
+teamai init <group>/TeamAi-<team> --scope project --role hai_dev --force
+```
+
+| 参数 | 说明 |
+|------|------|
+| `[repo]` / `--repo <url>` | 团队仓库地址（推荐位置参数；`--repo` 为永久别名） |
+| `--scope <project\|user>` | 安装作用域，默认 `project`（`<cwd>/.teamai`）。需要装到 `~/` 时用 `user` |
+| `--inherit-user-scope` | 仅 project scope：同时同步安全的 user 资源并检索 user 知识 |
+| `--no-inherit-user-scope` | 关闭当前项目先前配置的 user scope 继承 |
+| `--role <id>` | 直接指定 primaryRole，跳过角色交互选择 |
+| `--force` | 覆盖已有配置，跳过确认提示 |
+
+本地配置示例：
+
+```yaml
+repo:
+  localPath: /path/to/my-project/.teamai/team-repo
+  remote: https://git.woa.com/group/repo.git
+username: alice
+scope: project
+projectRoot: /path/to/my-project
+inheritUserScope: true            # 可选，仅 project scope
+primaryRole: hai
+additionalRoles:
+  - pm
+resourceProfileVersion: 1
+```
+
+### 用户级（User Scope）
+
+资源安装到用户主目录（`~/.claude/skills/` 等），适用于通用团队规范、跨项目技能。
+
+```bash
+teamai init <group>/TeamAi-<team> --scope user
+```
+
+生成的目录结构：
+
+```
+~/.teamai/
+├── config.yaml          # 本地配置
+├── team-repo/           # 团队仓库克隆
+│   ├── teamai.yaml      # 远端团队配置
+│   ├── skills/ rules/ docs/ env/ members/
+│   ├── manifest/roles.yaml  # 角色定义（启用角色化 skills 时）
+│   └── learnings/       # 团队知识库
+~/.claude/skills/        # 团队 skills（自动同步）
+~/.claude/rules/         # 团队 rules（自动同步）
+```
+
 ### 如何选择 Scope？
 
-| 维度 | User Scope（默认） | Project Scope |
+| 维度 | Project Scope（默认） | User Scope |
 |------|-------------------|---------------|
-| **资源安装位置** | `~/` 下 | 项目目录下 |
-| **适用场景** | 通用团队规范、跨项目技能 | 项目特定的技能和规则 |
-| **能否共存** | ✅ 可以同时拥有两个 scope | ✅ 可以同时拥有两个 scope |
+| **资源安装位置** | 项目目录下 | `~/` 下 |
+| **适用场景** | 项目特定的技能和规则 | 通用团队规范、跨项目技能 |
+| **能否共存** | ✅ 可以；project 保持当前 scope，并可选择继承安全的 user 资源 | ✅ 可以；仍是独立的用户主目录级安装 |
 
-> **Scope 锁定：** 管理员首次 init 时 scope 写入远端 `teamai.yaml`，后续成员 init 必须使用相同 scope。
+> **本机安装位置**仅由 `teamai init` 的 `--scope`（默认 `project`）决定。远端 `teamai.yaml` 中若仍有 `scope` 字段会被忽略。
+
+### 在项目仓库下叠加组织级仓库
+
+当一部分经验全组织通用、另一部分只属于具体项目时，可以使用两个 Team Repo。CLI 只安装一次，但两个 scope 各有独立的本地配置和仓库克隆：
+
+```bash
+# 每位开发者执行一次：组织通用 skills、rules、docs、agents 和 learnings
+teamai init https://github.com/yourorg/engineering-practices --scope user
+
+# 在 Java 项目中：项目资源保持当前 scope，recall 时优先
+cd /path/to/java-service
+teamai init https://github.com/yourorg/java-service-teamai --inherit-user-scope
+```
+
+启用继承后，`teamai pull` 会先把 user 的 `skills`、`rules`、`docs`、`agents`、共享指令/文化和检索索引刷新到用户主目录级位置，再刷新项目目录中的 project scope。user 的 `env`、hooks、MCP 定义、跨团队 sources、usage reporting 和远端仓库写入不会被继承。两个配置和两个 Git 仓库仍然分离；该功能组合的是安全读取路径，不会合并 Git 仓库或文件。同名的已安装资源仍分别位于 user/project 路径，由具体 AI 工具决定运行时优先级；Recall 则明确保证相同资源类型和文件名的 project 条目覆盖 user 条目。
 
 ---
 
@@ -166,20 +187,20 @@ teamai init --repo <group>/TeamAi-<team> --scope project
 
 管理员将团队仓库地址分享给成员后：
 
-**用户级团队：**
-
-```bash
-npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
-teamai init --repo <group>/TeamAi-<team>
-# 完成！AI 工具已自动获得团队资源
-```
-
-**项目级团队：**
+**项目级团队（默认）：**
 
 ```bash
 npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
 cd /path/to/my-project
-teamai init --repo <group>/TeamAi-<team> --scope project
+teamai init <group>/TeamAi-<team>
+# 完成！AI 工具已自动获得团队资源
+```
+
+**用户级团队：**
+
+```bash
+npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
+teamai init <group>/TeamAi-<team> --scope user
 ```
 
 **HTTP 模式（只读消费者）：**
@@ -226,7 +247,7 @@ teamai pull              # 手动拉取
 teamai pull --dry-run    # 试运行，不实际修改
 ```
 
-> 如果你同时有 user 和 project scope，`pull` 会依次拉取两个 scope 的资源，互不冲突。
+> Project scope 默认与 user scope 隔离。当前工作目录包含 project scope 的 `.teamai/config.yaml` 时，`pull` 会处理该项目并跳过 user scope；仅当本地配置包含 `inheritUserScope: true` 时，才会先刷新安全的 user 资源通道。当前目录没有 project 配置时，`pull` 处理 user scope。project 模式下，user 的 `env`、hooks、MCP 定义、sources、reporting 和写入行为仍保持隔离。
 
 启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/`、`docs/`、`learnings/` 仍然保持原有全局同步逻辑。
 
@@ -450,13 +471,17 @@ teamai mcp remove            # 移除所有 teamai 管理的 server
 
 ### 贡献知识
 
-AI 通过 Hooks 追踪你的编码会话。当会话结束时（Stop hook），系统按**摩擦信号**评分——你是否打断/纠正了 AI、拒绝了工具调用，或 AI 反复重试出错的工具。又长又顺的会话（工具调用多但没摩擦）不会触发，真正踩过坑的会话才会。达标后会自动提醒：
+AI 通过 Hooks 追踪你的编码会话。当会话结束时（Stop hook），系统按**摩擦信号**评分——你是否打断/纠正了 AI、拒绝了工具调用，或 AI 反复重试出错的工具。又长又顺的会话（工具调用多但没摩擦）不会触发，真正踩过坑的会话才会。达标后会显示如下英文提醒：
 
 ```
-建议运行 /teamai-share-learnings 分享经验
+[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, the AI retried failing tools 8 times.
+
+Task: Fix duplicate project-level Hook injection
+
+Consider running /teamai-share-learnings to summarize what you learned and share it with your team.
 ```
 
-使用内置 skill `/teamai-share-learnings`，AI 会自动总结本次 session 经验并贡献到团队知识库。每个 session 最多提示一次。
+提醒会列出实际触发它的非零摩擦信号；如果能取得首个任务，还会附上脱敏、单行化后的任务摘要，便于判断本次 session 是否值得分享。使用内置 skill `/teamai-share-learnings`，AI 会自动总结本次 session 经验并贡献到团队知识库。每个 session 最多提示一次。
 
 也可以手动指定文件：
 
@@ -473,8 +498,9 @@ teamai recall "GPU 内存不足"
 ```
 
 - 支持中英文混合搜索
-- 自动合并 user + project 双 scope 的知识库，结果标注 `[user]`/`[project]` 来源
-- 被查阅的知识自动 upvote，好文档浮到顶部
+- 当前工作目录包含 project scope 配置时搜索该项目；配置 `inheritUserScope: true` 后先搜索 project、再搜索 user，并标注 `[project]`/`[user]` 来源；否则搜索 user scope
+- 资源类型和文件名都相同时由 project 条目优先；不同资源类型即使文件名相同也分别保留
+- 当前 scope 中被查阅的知识自动 upvote；项目运行期间继承的 user 命中保持只读
 - 提供轻量相关性预检 `teamai recall --check "<关键词>"`，仅输出 `RELEVANT score=<n>` 或 `NOT_RELEVANT score=<n>`，不读取文件、不 upvote —— recall subagent 用它在任务与团队知识无关时跳过检索
 
 ### 开启 / 关闭 Recall
@@ -632,6 +658,54 @@ cat ~/.claude/CLAUDE.md
 }
 ```
 
+后端也可下发 **`uninstall_teamai`** 命令来移除本地 agent。它携带一个 `cmd`（一条 `teamai` 子命令），让客户端执行一次，执行结果经同一 ack 通道回报：
+
+```json
+{ "id": 42, "type": "uninstall_teamai", "cmd": "teamai uninstall --force --agent codebuddy" }
+```
+
+执行 `cmd` 的安全边界：
+
+- **仅限 teamai 子命令** —— 第一个 token 必须严格等于 `teamai`；其它一律拒绝（ack `failed`）且不执行，不存在任意 shell 面。
+- **无 shell** —— 命令经 `execFile` 用当前 Node 二进制与 teamai 入口脚本运行，shell 元字符（`;`、`|`、`&`、`$` 等）按字面处理，且不依赖 PATH（沙箱内自带 Node 也可运行）。
+- **默认开启** —— 与 install/uninstall 命令一致，会自动执行。客户端设 `TEAMAI_DISABLE_REMOTE_CMD=1` 可拒绝（ack `failed`，错误为 `remote cmd disabled by client`）。
+- **超时** —— 命令卡住 120s 后被杀掉并 ack `failed`。
+
+后端还可下发 **`install_hook_rule`** / **`uninstall_hook_rule`** 命令，按 `slug` 远程管理**当前上报工具**
+settings 里的一个 session hook。结果经同一 ack 通道回报：
+
+```jsonc
+// 按 slug 安装（或替换）一个 hook
+{ "id": 50, "type": "install_hook_rule", "handle_type": "hook", "slug": "my-hook",
+  "event": "SessionStart", "cmd": "echo hi", "timeout": 10 }
+
+// 卸载此前以该 slug 安装的 hook
+{ "id": 51, "type": "uninstall_hook_rule", "handle_type": "hook", "slug": "my-hook" }
+```
+
+agent hook 规则：
+
+- **仅当前工具** —— hook 只写入正在上报的工具（如在 Claude 下运行 ⇒ 只写 `.claude/settings.json`），
+  绝不触碰其它工具。
+- **支持的工具** —— `claude` / `codex` / `workbuddy` / `codebuddy`（含其内部变体）。**Cursor 与 OpenClaw
+  家族被拒绝** → ack `failed`（`unsupported tool`）。
+- **事件白名单** —— `SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`。
+  其它事件 → ack `failed`（`unsupported event`）。
+- **可选 `matcher`** —— `PreToolUse` / `PostToolUse` 的工具名过滤；省略时默认为 `*`（全部工具）。
+- **默认超时 10s** —— 省略 `timeout` 时用 10s；后端给了值则以后端为准。
+- **幂等** —— 用相同 `slug` 重装会替换已有 hook 而非重复追加；对不存在的 `slug` 执行
+  `uninstall_hook_rule` 也 ack `success`。
+- **隔离** —— agent hook 使用专属 marker `[teamai:agent-hook:<slug>]`，团队 pull 不会删除它，
+  安装它也不会扰动 built-in 或团队 hook。
+- **清理** —— agent hook 会被 `uninstall_hook_rule`、`teamai source remove` 和 `teamai uninstall`
+  彻底移除（不在任何工具 settings 里留残留）。
+- **关闭开关** —— agent hook 是后端下发、由工具在其事件上自动执行的命令，因此与 `uninstall_teamai`
+  共用信任模型：客户端设 `TEAMAI_DISABLE_REMOTE_CMD=1` 也会拒绝 `install_hook_rule` /
+  `uninstall_hook_rule`（ack `failed`）。
+- **Codex 匹配** —— codex settings 无 description 字段，因此 codex agent hook 按其确切命令匹配，
+  且以 local-agent manifest 作为卸载的权威记录。后端应为**每个 codex `slug` 使用唯一的 `cmd`**，
+  以保证替换/删除的精确性。
+
 可配置环境变量：
 
 | 变量 | 作用 |
@@ -642,12 +716,13 @@ cat ~/.claude/CLAUDE.md
 | `TEAMAI_REPORT_AGENTS` | 参与上报的 agent，逗号分隔（默认 `workbuddy,codebuddy`） |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | skill `download_url` host 白名单（空 = 全部放行） |
 | `TEAMAI_ALLOW_SANDBOX_REPORT` | 设为 `1` 可强制在 CloudStudio 沙箱内 report/sync（见下方说明） |
+| `TEAMAI_DISABLE_REMOTE_CMD` | 设为 `1` 可拒绝服务端下发的 `uninstall_teamai`、`install_hook_rule`、`uninstall_hook_rule` 命令（会 ack `failed`） |
 
 > **隐私**：install path 和 machine id 仅在本地哈希以派生 `local_agent_id`，不会上报。
 
 > **CloudStudio 沙箱**：当 WorkBuddy 在 CloudStudio 容器内运行 teamai hook 时，该容器的 machine id 与 macOS
-> 宿主不同，会上报一张重复的 agent 卡片。因此在 CloudStudio 沙箱内会自动跳过 report/sync（通过
-> `X_IDE_IS_CLOUDSTUDIO=TRUE` 或 `/var/run/cloudstudio` 目录检测）。若你只在 CloudStudio 内使用 teamai，可设
+> 宿主不同，会上报一张重复的 agent 卡片。因此在 CloudStudio 沙箱内会自动跳过重复的 report（sync 仍会执行，因此仍能收到下发命令）——
+> 通过 `X_IDE_IS_CLOUDSTUDIO=TRUE` 或 `/var/run/cloudstudio` 目录检测。若你只在 CloudStudio 内使用 teamai，可设
 > `TEAMAI_ALLOW_SANDBOX_REPORT=1` 重新开启上报。
 
 ### 代码知识图谱
@@ -894,10 +969,10 @@ HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill �
 
 ```yaml
 team: my-team
-scope: user                              # user 或 project
 description: 团队 AI 资源仓库
 repo: https://git.woa.com/group/repo.git
 provider: tgit
+# scope: 若存在则忽略——本机安装位置由 `teamai init --scope` 决定
 
 reviewers:
   - reviewer1
@@ -906,7 +981,7 @@ sharing:
   rules:
     enforced: [code-review-guide]
   docs:
-    localDir: ~/.teamai/docs
+    localDir: ./.teamai/docs
   env:
     injectShellProfile: true
 ```
@@ -919,8 +994,9 @@ repo:
   remote: https://git.woa.com/group/repo.git
 username: your-name
 updatePolicy: auto
-scope: user                    # 或 project
+scope: project                 # project（init 默认）或 user
 projectRoot: /path/to/project  # 仅 project scope
+inheritUserScope: true         # 可选，仅 project scope，默认 false
 ```
 
 ---
@@ -972,7 +1048,7 @@ teamai pull
 
 **Q: User scope 和 Project scope 可以共存吗？**
 
-可以。`pull` 会依次拉取两个 scope，`recall` 会合并搜索两个 scope 的知识库。两者互不冲突。
+可以，但 project scope 默认保持隔离。当前工作目录包含 project scope 配置时，该项目生效并跳过 user scope。先初始化 user scope，再使用 `--inherit-user-scope` 初始化项目（或在项目本地配置中设置 `inheritUserScope: true`），即可组合安全资源和 Recall 结果；可执行配置和控制面配置仍只使用 project scope。
 
 **Q: `teamai init` 提示已初始化？**
 

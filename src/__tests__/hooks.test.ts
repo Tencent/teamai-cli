@@ -25,7 +25,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { getHookStatus, injectHooks, removeHooks, injectHooksToAllTools, TEAMAI_HOOK_SUBCOMMANDS, TEAMAI_LEGACY_HOOK_SUBCOMMANDS, CLAUDE_TO_CURSOR_EVENTS } from '../hooks.js';
+import { getHookStatus, injectHooks, removeHooks, injectHooksToAllTools, TEAMAI_HOOK_SUBCOMMANDS, TEAMAI_LEGACY_HOOK_SUBCOMMANDS, CLAUDE_TO_CURSOR_EVENTS, reconcileHooks, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, agentHookDescription } from '../hooks.js';
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -616,6 +616,99 @@ describe('hooks', () => {
       expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('dashboard-report');
       expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('contribute-check');
       expect(TEAMAI_LEGACY_HOOK_SUBCOMMANDS).toContain('auto-recall');
+    });
+  });
+
+  describe('agent hooks (issue #238)', () => {
+    it('isAgentHookSupportedTool: claude/codex/workbuddy/codebuddy yes, cursor/openclaw no', () => {
+      for (const t of ['claude', 'codex', 'workbuddy', 'codebuddy', 'codex-internal']) {
+        expect(isAgentHookSupportedTool(t)).toBe(true);
+      }
+      for (const t of ['cursor', 'openclaw', 'qclaw', 'easyclaw', 'autoclaw']) {
+        expect(isAgentHookSupportedTool(t)).toBe(false);
+      }
+    });
+
+    it('isAgentHookEvent: only the 5 whitelisted events', () => {
+      for (const e of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']) {
+        expect(isAgentHookEvent(e)).toBe(true);
+      }
+      for (const e of ['Notification', 'PreCompact', 'foo', 'sessionStart']) {
+        expect(isAgentHookEvent(e)).toBe(false);
+      }
+    });
+
+    it('applyAgentHook (claude): writes a slug-tagged entry with timeout', async () => {
+      await applyAgentHook('/t/settings.json', 'claude', {
+        slug: 's1', event: 'SessionStart', command: 'echo hi', timeout: 10,
+      });
+      const s = mockFiles['/t/settings.json'] as any;
+      const e = s.hooks.SessionStart.find((x: any) => x.description === agentHookDescription('s1'));
+      expect(e).toBeDefined();
+      expect(e.matcher).toBe('*');
+      expect(e.hooks[0].command).toBe('echo hi');
+      expect(e.hooks[0].timeout).toBe(10);
+    });
+
+    it('applyAgentHook (claude): re-install same slug replaces, no duplicate', async () => {
+      await applyAgentHook('/t/s.json', 'claude', { slug: 's2', event: 'Stop', command: 'echo a' });
+      await applyAgentHook('/t/s.json', 'claude', { slug: 's2', event: 'Stop', command: 'echo b' });
+      const s = mockFiles['/t/s.json'] as any;
+      const mine = s.hooks.Stop.filter((x: any) => x.description === agentHookDescription('s2'));
+      expect(mine).toHaveLength(1);
+      expect(mine[0].hooks[0].command).toBe('echo b');
+    });
+
+    it('applyAgentHook preserves a user hook in the same event', async () => {
+      mockFiles['/t/s.json'] = {
+        hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'user-cmd' }] }] },
+      };
+      await applyAgentHook('/t/s.json', 'claude', { slug: 's3', event: 'SessionStart', command: 'echo hi' });
+      const s = mockFiles['/t/s.json'] as any;
+      expect(s.hooks.SessionStart.some((x: any) => x.hooks[0].command === 'user-cmd')).toBe(true);
+      expect(s.hooks.SessionStart.some((x: any) => x.description === agentHookDescription('s3'))).toBe(true);
+    });
+
+    it('applyAgentHook (codex): writes entry without description, matched by command', async () => {
+      await applyAgentHook('/t/codex.json', 'codex', { slug: 's4', event: 'PreToolUse', command: 'echo cx' });
+      const s = mockFiles['/t/codex.json'] as any;
+      const e = s.hooks.PreToolUse.find((x: any) => x.hooks[0].command === 'echo cx');
+      expect(e).toBeDefined();
+      expect(e.description).toBeUndefined();
+    });
+
+    it('removeAgentHook (claude): removes by slug, drops empty event key', async () => {
+      await applyAgentHook('/t/s.json', 'claude', { slug: 's5', event: 'SessionStart', command: 'echo hi' });
+      await removeAgentHook('/t/s.json', 'claude', { slug: 's5' });
+      const s = mockFiles['/t/s.json'] as any;
+      expect(s.hooks.SessionStart).toBeUndefined();
+    });
+
+    it('removeAgentHook (codex): removes by command', async () => {
+      await applyAgentHook('/t/codex.json', 'codex', { slug: 's6', event: 'Stop', command: 'echo cx6' });
+      await removeAgentHook('/t/codex.json', 'codex', { slug: 's6', command: 'echo cx6' });
+      const s = mockFiles['/t/codex.json'] as any;
+      expect(s.hooks.Stop).toBeUndefined();
+    });
+
+    it('normal reconcile leaves an agent hook untouched; removeAll sweeps it', async () => {
+      // Seed a claude settings file with a built-in inject + an agent hook.
+      await injectHooks('/t/rec.json', 'claude');
+      await applyAgentHook('/t/rec.json', 'claude', { slug: 's7', event: 'SessionStart', command: 'echo hi' });
+      const marker = agentHookDescription('s7');
+      const has = () => {
+        const s = mockFiles['/t/rec.json'] as any;
+        return Object.values(s.hooks).some((arr: any) => arr.some((e: any) => e.description === marker));
+      };
+      expect(has()).toBe(true);
+
+      // Normal reconcile (no manifest, removeAll=false) must NOT delete the agent hook.
+      await reconcileHooks('/t/rec.json', 'claude', []);
+      expect(has()).toBe(true);
+
+      // Teardown removeAll must sweep it.
+      await reconcileHooks('/t/rec.json', 'claude', [], { removeAll: true });
+      expect(has()).toBe(false);
     });
   });
 
