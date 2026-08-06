@@ -82,6 +82,20 @@ describe('tokenize', () => {
     const apiCount = tokens.filter((t) => t === 'api').length;
     expect(apiCount).toBe(1);
   });
+
+  it('does not mint bigrams across multi-char word boundaries', () => {
+    // Segmenter yields 推理|服务; joining across that boundary would produce
+    // "理服", a token matching no real term yet scoring like one.
+    const tokens = tokenize('推理服务');
+    expect(tokens).toContain('推理');
+    expect(tokens).toContain('服务');
+    expect(tokens).not.toContain('理服');
+  });
+
+  it('still recovers words the segmenter splits into single chars', () => {
+    // Segmenter yields 排|查, so the bigram is what makes "排查" searchable.
+    expect(tokenize('排查')).toContain('排查');
+  });
 });
 
 // ─── buildIndex ───────────────────────────────────────────
@@ -250,6 +264,30 @@ Docker bridge 网络的常见配置方法。
     const index = await loadIndex();
     const results = search('nonexistent keyword xyz', index!);
     expect(results).toHaveLength(0);
+  });
+
+  it('normalizes score by query length so scores are comparable across queries', async () => {
+    const index = await loadIndex();
+    // Same single matching term, but the second query pads it with words that
+    // match nothing. Without length normalization the padded query would score
+    // identically, letting verbose queries clear an absolute threshold on
+    // filler alone.
+    const short = search('oom', index!);
+    const padded = search('oom zzz qqq vvv', index!);
+    expect(short.length).toBeGreaterThan(0);
+    expect(padded.length).toBeGreaterThan(0);
+    expect(padded[0].entry.filename).toBe(short[0].entry.filename);
+    expect(padded[0].score).toBeLessThan(short[0].score);
+  });
+
+  it('length normalization does not change ranking within one query', async () => {
+    const index = await loadIndex();
+    // Normalization is a constant factor per query, so relative order is intact.
+    // "troubleshooting" tags k8s-oom; "docker" titles/tags the docker doc.
+    const results = search('troubleshooting docker', index!);
+    expect(results.length).toBeGreaterThan(1);
+    const scores = results.map((r) => r.score);
+    expect([...scores].sort((a, b) => b - a)).toEqual(scores);
   });
 
   it('returns empty for empty query', async () => {

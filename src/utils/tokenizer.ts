@@ -5,7 +5,8 @@
  * 特性：
  * - Intl.Segmenter word-boundary 分词（支持中英混合）
  * - camelCase/PascalCase 额外拆分（getUserById 额外产生 get, user, by, id）
- * - CJK bigram 分词（"超时" → "超"、"时"、"超时"）
+ * - CJK bigram 分词，仅拼接相邻单字段（"排"+"查" → "排查"）；
+ *   不跨多字词边界，避免 "推理"+"服务" 产生无意义的 "理服"
  * - 全小写
  * - 去重
  */
@@ -20,7 +21,9 @@ export function tokenize(text: string): string[] {
   const segmenter = sharedSegmenter;
   const tokens: string[] = [];
 
-  // Collect CJK characters in runs for bigram generation
+  // Accumulate runs of single-CJK-character segments. Segmenter sometimes fails
+  // to join a real word ("排查" → "排"|"查"); bigrams recover it. Runs are broken
+  // by any multi-char word, so "推理"+"服务" never mints a phantom "理服".
   let cjkRun: string[] = [];
 
   const flushCjkRun = (): void => {
@@ -56,14 +59,11 @@ export function tokenize(text: string): string[] {
       }
     }
 
-    // Track CJK runs for bigram generation
-    const chars = [...word];
-    for (const ch of chars) {
-      if (/[一-鿿]/.test(ch)) {
-        cjkRun.push(ch);
-      } else {
-        flushCjkRun();
-      }
+    // Only single-char CJK segments feed the bigram run; anything else ends it.
+    if (word.length === 1 && /[一-鿿]/.test(word)) {
+      cjkRun.push(word);
+    } else {
+      flushCjkRun();
     }
   }
   flushCjkRun();

@@ -677,6 +677,14 @@ export function search(
     return Math.log((N + 1) / (docFreq + 1)) + 1; // +1 smoothing keeps score ≥ 1
   };
 
+  // Query-length normalization: raw match sums grow with query length, so a
+  // 15-token question outscores a 4-token one on generic words alone. That makes
+  // any absolute relevance threshold meaningless across queries. Dividing by
+  // sqrt(len) keeps scores comparable while still rewarding queries that match
+  // on more terms. Within a single query this is a constant factor, so relative
+  // ranking is unaffected.
+  const lengthNorm = Math.sqrt(queryTokens.length);
+
   const results: SearchResult[] = [];
 
   for (const entry of index.entries) {
@@ -705,6 +713,10 @@ export function search(
     // Codebase docs (from team-codebase/) lack tags, so allow body-only matches for them.
     const isCodebaseDoc = entry.type === 'docs' && (entry.path ?? entry.filename ?? '').includes('team-codebase');
     if (score > 0 && (hasTitleOrTagMatch || isCodebaseDoc)) {
+      // Normalize the token-match sum by query length before adding absolute
+      // bonuses, so cross-query scores share a scale (see lengthNorm above).
+      score /= lengthNorm;
+
       // Vote bonus: +0.5 per vote, max 5 points (unchanged).
       score += Math.min(entry.votes * 0.5, 5);
 
