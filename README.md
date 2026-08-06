@@ -41,6 +41,9 @@ Create a shared-experience repo on your git host (GitHub, TGit, or CNB), **grant
 cd /path/to/my-project
 teamai init https://github.com/yourorg/yourrepo
 
+# Shorthand: auto-detect cwd's git remote as team repo (implies project scope)
+teamai init .
+
 # User-scope init (resources installed under ~/)
 teamai init https://github.com/yourorg/yourrepo --scope user
 
@@ -51,6 +54,8 @@ teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 ```
 
 Once initialized, every AI session automatically pulls the latest skills / rules and other Harness updates published by admins — no manual sync needed.
+
+> **Clone & go**: if the repo already has a `.teamai/project.yaml` (committed by a teammate's `init`), new clones auto-bootstrap on the first AI session — no manual init needed.
 
 > **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — covers everything from team creation to day-to-day use.
 
@@ -181,7 +186,7 @@ When a recall hit comes from a codebase page, the result includes a `Sources:` l
 
 | Command | Description |
 |---------|-------------|
-| `teamai init` | Initialize: OAuth login, link repo, register member, inject hooks |
+| `teamai init [repo\|.]` | Initialize: OAuth login, link repo, register member, inject hooks. Use `.` to auto-detect cwd's git remote |
 | `teamai pull` | Pull team resources and inject into local AI tools |
 | `teamai push` | Push local resources to a branch and open a Merge Request |
 | `teamai status` | Show local vs team repo diff |

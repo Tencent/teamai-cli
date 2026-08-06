@@ -21,8 +21,8 @@ program
 
 program
   .command('init')
-  .description('Initialize teamai (configure TGit, clone repo, register member)')
-  .argument('[repo]', 'Team repo (owner/repo or full URL)')
+  .description('Initialize teamai. Use "." to auto-detect the cwd git remote as team repo (implies --scope project)')
+  .argument('[target]', 'Team repo (owner/repo, full URL, or "." to auto-detect cwd git remote)')
   .option('--repo <repo>', 'Team repo (alias of the positional argument)')
   .option('--http <url>', 'Git-free HTTP team repo (read-only consumer; only needs an API key)')
   .option('--token <key>', 'API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.')
@@ -32,10 +32,10 @@ program
   .option('--role <id>', 'Primary role ID (e.g. hai_dev) for non-interactive setup')
   .option('--agent <name>', 'Only inject hooks into this agent (e.g. claude, codebuddy, workbuddy). Additive on repeated runs.')
   .option('--force', 'Overwrite existing config without confirmation')
-  .action(async (repoArg, cmdOpts) => {
+  .action(async (target, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { init } = await import('./init.js');
-    await init({ ...globalOpts, ...cmdOpts, repoPositional: repoArg });
+    await init({ ...globalOpts, ...cmdOpts, repoPositional: target });
   });
 
 program

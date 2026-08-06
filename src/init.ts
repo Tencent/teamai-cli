@@ -1,26 +1,15 @@
 import YAML from 'yaml';
-import fs from 'node:fs';
 import path from 'node:path';
-import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope } from './config.js';
+import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, saveProjectDeclaration } from './config.js';
 import { reconcileTeamHooksForConfig } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo } from './utils/git.js';
+import { configureGitUser, initRepo, isGitRepo, getCwdGitRemoteUrl, resolveRealPath } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
 import { getProvider, detectProvider, RepoNotFoundError } from './providers/index.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
-import { TEAMAI_HOME, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath } from './types.js';
+import { TEAMAI_HOME, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath, getProjectDeclarationPath, PROJECT_GITIGNORE_ENTRIES } from './types.js';
 import { describeRoles, loadRolesManifest } from './roles.js';
 import { askQuestion, askConfirmation, closePrompt } from './utils/prompt.js';
-
-/** Resolve + realpath so macOS /var → /private/var (and similar) compare equal. */
-function resolveRealPath(p: string): string {
-  const resolved = path.resolve(p);
-  try {
-    return fs.realpathSync(resolved);
-  } catch {
-    return resolved;
-  }
-}
 
 function parseRoleSelection(answer: string, max: number): number[] {
   if (!answer.trim()) return [];
@@ -151,6 +140,21 @@ export function resolveInitScope(
 }
 
 /**
+ * Resolve the '.' shorthand: use cwd's git remote as the team repo URL.
+ */
+export async function resolveDotTarget(cwd: string): Promise<string> {
+  const remoteUrl = await getCwdGitRemoteUrl(cwd);
+  if (!remoteUrl) {
+    throw new Error(
+      `'teamai init .' requires the current directory to be a git repo with a configured remote.\n` +
+      `No git remote found in ${cwd}.\n` +
+      `Run: teamai init --repo <url> --scope project`,
+    );
+  }
+  return remoteUrl;
+}
+
+/**
  * Resolve the project-local user-scope inheritance setting.
  *
  * An omitted flag preserves an existing project setting so additive re-init
@@ -171,12 +175,14 @@ export function resolveInheritUserScope(
 /**
  * Merge positional `teamai init <repo>` with `--repo` alias.
  * `--repo` is permanently kept as an equivalent alias (no deprecation warning).
+ * When positional is '.', resolvedDotUrl replaces it.
  */
 export function resolveInitRepo(
   positional: string | undefined,
   repoFlag: string | undefined,
+  resolvedDotUrl?: string,
 ): string | undefined {
-  const pos = positional?.trim() || undefined;
+  const pos = resolvedDotUrl ?? (positional?.trim() || undefined);
   const flag = repoFlag?.trim() || undefined;
   if (pos && flag && pos !== flag) {
     throw new Error(
@@ -379,6 +385,24 @@ export async function init(options: GlobalOptions & {
   if (options.http) {
     return initHttp(options.http, options);
   }
+
+  // Step -1: Resolve '.' target before anything else
+  let resolvedDotUrl: string | undefined;
+  if (options.repoPositional?.trim() === '.') {
+    try {
+      resolvedDotUrl = await resolveDotTarget(process.cwd());
+      log.info(`Detected git remote: ${resolvedDotUrl}`);
+      // '.' implies project scope
+      if (!options.scope) {
+        options = { ...options, scope: 'project' };
+      }
+    } catch (e) {
+      log.error((e as Error).message);
+      process.exit(1);
+      return;
+    }
+  }
+
   log.info('Initializing teamai...');
 
   // Step 0: Resolve scope (default project; only explicit --scope user → ~/ )
@@ -438,7 +462,7 @@ export async function init(options: GlobalOptions & {
   // Step 1: Get repo input (positional or --repo alias; prompt if neither)
   let repoInput = '';
   try {
-    repoInput = resolveInitRepo(options.repoPositional, options.repo) ?? '';
+    repoInput = resolveInitRepo(options.repoPositional, options.repo, resolvedDotUrl) ?? '';
   } catch (e) {
     log.error((e as Error).message);
     process.exit(1);
@@ -704,25 +728,23 @@ export async function init(options: GlobalOptions & {
     // Generate .gitignore for project scope to prevent local config from being committed
     const gitignorePath = path.join(teamaiHome, '.gitignore');
     if (!await pathExists(gitignorePath)) {
-      const gitignoreContent = [
-        '# teamai local config (do not commit)',
-        'config.yaml',
-        'state.json',
-        'token',
-        '.update-lock',
-        'env',
-        'env.sh',
-        'sessions/',
-        'dashboard/',
-        'usage.jsonl',
-        'known-skills.json',
-        'learnings/',
-        'search-index.json',
-        'votes/',
-        '',
-      ].join('\n');
-      await writeFile(gitignorePath, gitignoreContent);
+      await writeFile(gitignorePath, PROJECT_GITIGNORE_ENTRIES.join('\n'));
       log.debug('Generated .teamai/.gitignore for project scope');
+    }
+
+    // Write portable project declaration (checked into git for clone-after bootstrap)
+    const projectDeclPath = getProjectDeclarationPath(projectRoot!);
+    if (!await pathExists(projectDeclPath) || options.force) {
+      await saveProjectDeclaration(
+        {
+          repo: repoInfo.httpsUrl,
+          defaultRole: localConfig.primaryRole,
+          scope: 'project',
+        },
+        projectRoot!,
+      );
+      log.success(`Project declaration saved to .teamai/project.yaml`);
+      log.info('Tip: commit .teamai/project.yaml so teammates can auto-bootstrap after cloning');
     }
   } else {
     await ensureDir(TEAMAI_HOME);

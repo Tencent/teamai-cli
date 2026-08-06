@@ -3,18 +3,21 @@ import path from 'node:path';
 import {
   TeamaiConfigSchema,
   LocalConfigSchema,
+  ProjectDeclarationSchema,
   StateSchema,
   TEAMAI_CONFIG_PATH,
   TEAMAI_STATE_PATH,
   type TeamaiConfig,
   type LocalConfig,
+  type ProjectDeclaration,
   type State,
   type Scope,
   getTeamaiHome,
   getConfigPath,
   getStatePath,
+  getProjectDeclarationPath,
 } from './types.js';
-import { readFileSafe, readJson, writeFile, writeJson, expandHome, pathExists } from './utils/fs.js';
+import { readFileSafe, readJson, writeFile, writeJson, expandHome, pathExists, ensureDir } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { loadRolesManifest } from './roles.js';
 
@@ -203,6 +206,38 @@ export async function detectProjectConfig(cwd?: string): Promise<LocalConfig | n
   } catch {
     return null;
   }
+}
+
+/**
+ * Load .teamai/project.yaml (the portable, committed declaration file).
+ * Returns null when the file doesn't exist or cannot be parsed.
+ */
+export async function loadProjectDeclaration(
+  projectRoot: string,
+): Promise<ProjectDeclaration | null> {
+  const declPath = getProjectDeclarationPath(projectRoot);
+  const content = await readFileSafe(declPath);
+  if (!content) return null;
+  try {
+    const raw = YAML.parse(content);
+    return ProjectDeclarationSchema.parse(raw);
+  } catch (e) {
+    log.debug(`Invalid .teamai/project.yaml: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * Save .teamai/project.yaml (the portable, committed declaration file).
+ * Only writes safe-to-commit fields: repo, defaultRole, scope.
+ */
+export async function saveProjectDeclaration(
+  decl: ProjectDeclaration,
+  projectRoot: string,
+): Promise<void> {
+  const declPath = getProjectDeclarationPath(projectRoot);
+  await ensureDir(path.dirname(declPath));
+  await writeFile(declPath, YAML.stringify(decl));
 }
 
 /**

@@ -783,8 +783,11 @@ export async function reconcileHooksToAllTools(
   opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[] } = {},
 ): Promise<void> {
   const activeTools = Object.keys(toolPaths).filter(t => !opts.filterAgents || opts.filterAgents.includes(t));
+  // The shell wrapper is only needed to *inject* shell-dependent hooks. When
+  // removeAll is set we still want to clean up previously-injected (now broken)
+  // hooks even if /bin/sh has since disappeared, so skip the wrapper gate.
   let shellAvailable = true;
-  if (activeTools.some(t => SHELL_DEPENDENT_TOOLS.has(t))) {
+  if (!opts.removeAll && activeTools.some(t => SHELL_DEPENDENT_TOOLS.has(t))) {
     shellAvailable = ensureWrapperIfShellAvailable();
     if (!shellAvailable) {
       log.warn(
@@ -795,7 +798,9 @@ export async function reconcileHooksToAllTools(
   }
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
-    if (!shellAvailable && SHELL_DEPENDENT_TOOLS.has(tool)) continue;
+    // Only skip injection for shell-dependent tools when the shell is missing;
+    // removeAll must still run so stale hooks get cleaned up.
+    if (!opts.removeAll && !shellAvailable && SHELL_DEPENDENT_TOOLS.has(tool)) continue;
     // Hermes uses config.yaml (YAML) + a script dir + allowlist instead of a
     // JSON settings file, so it bypasses the settings-based reconcile path.
     // Install when the .hermes home exists; removeAll clears the teamai hook.

@@ -26,7 +26,7 @@ vi.mock('node:fs', async () => {
 });
 
 import { hasShell, _resetShellCache } from '../builtin-hooks.js';
-import { injectHooksToAllTools } from '../hooks.js';
+import { injectHooksToAllTools, reconcileHooksToAllTools } from '../hooks.js';
 import { log } from '../utils/logger.js';
 
 describe('hasShell()', () => {
@@ -98,5 +98,39 @@ describe('injectHooksToAllTools — no-shell skip', () => {
 
     const settingsExists = await fse.pathExists(path.join(tmp, settingsPath));
     expect(settingsExists).toBe(true);
+  });
+
+  it('removeAll still cleans up codebuddy hooks when /bin/sh is absent', async () => {
+    // First, inject a codebuddy hook while a shell IS available.
+    shellExists = true;
+    const codebuddyDir = path.join(tmp, '.codebuddy');
+    await fse.ensureDir(codebuddyDir);
+    const relSettings = '.codebuddy/settings.json';
+    const manifestPath = path.join(tmp, 'managed-hooks.json');
+
+    await reconcileHooksToAllTools(
+      { codebuddy: { settings: relSettings } },
+      tmp,
+      [],
+      manifestPath,
+    );
+    const settingsPath = path.join(tmp, relSettings);
+    const injected = await fse.readJson(settingsPath);
+    expect(JSON.stringify(injected)).toContain('teamai');
+
+    // Now the shell disappears. removeAll must still strip the stale hook
+    // instead of skipping codebuddy entirely.
+    shellExists = false;
+    _resetShellCache();
+    await reconcileHooksToAllTools(
+      { codebuddy: { settings: relSettings } },
+      tmp,
+      [],
+      manifestPath,
+      { removeAll: true },
+    );
+
+    const cleaned = await fse.readJson(settingsPath);
+    expect(JSON.stringify(cleaned)).not.toContain('teamai');
   });
 });

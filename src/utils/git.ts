@@ -79,6 +79,67 @@ export async function getHeadRev(localPath: string): Promise<string> {
   return git.revparse(['--short', 'HEAD']);
 }
 
+/** Resolve + realpath so macOS /var → /private/var (and similar) compare equal. */
+export function resolveRealPath(p: string): string {
+  const resolved = path.resolve(p);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+/**
+ * Normalize a git remote URL to HTTPS format with a consistent .git suffix.
+ * SSH `git@host:path` → `https://host/path.git`;
+ * SSH URL `ssh://git@host[:port]/path` → `https://host/path.git`;
+ * HTTPS gets .git appended if missing.
+ */
+export function normalizeRemoteUrl(url: string): string | null {
+  if (!url) return null;
+  // scp-style: git@host:owner/repo(.git)
+  const scp = url.match(/^git@([^:]+):(.+?)(?:\.git)?\s*$/);
+  if (scp) {
+    return `https://${scp[1]}/${scp[2]}.git`;
+  }
+  // URL form: ssh://[user@]host[:port]/owner/repo(.git)
+  const sshUrl = url.match(/^ssh:\/\/(?:[^@/]+@)?([^:/]+)(?::\d+)?\/(.+?)(?:\.git)?\s*$/);
+  if (sshUrl) {
+    return `https://${sshUrl[1]}/${sshUrl[2]}.git`;
+  }
+  if (/^https?:\/\/.+/.test(url)) {
+    let normalized = url.trim().replace(/\/$/, '');
+    if (!normalized.endsWith('.git')) {
+      normalized += '.git';
+    }
+    return normalized;
+  }
+  return null;
+}
+
+/**
+ * Get the HTTPS URL of the 'origin' remote for the repo at basePath.
+ * Falls back to the first available remote if no 'origin' exists.
+ * Returns null for non-git directories or repos with no remotes.
+ */
+export async function getCwdGitRemoteUrl(basePath: string): Promise<string | null> {
+  try {
+    await fse.access(basePath);
+  } catch {
+    return null;
+  }
+  const git = createGit(basePath);
+  try {
+    const remotes = await git.getRemotes(true);
+    const origin = remotes.find((r) => r.name === 'origin');
+    const target = origin ?? remotes[0];
+    if (!target) return null;
+    return normalizeRemoteUrl(target.refs.fetch);
+  } catch {
+    return null;
+  }
+}
+
 export async function pullRepo(localPath: string): Promise<string> {
   const git = createGit(localPath);
   const result = await git.pull();

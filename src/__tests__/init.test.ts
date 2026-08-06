@@ -83,6 +83,7 @@ vi.mock('../providers/tgit/gf-cli.js', () => {
 vi.mock('../config.js', () => ({
   saveLocalConfig: vi.fn(),
   saveLocalConfigForScope: vi.fn(),
+  saveProjectDeclaration: vi.fn(),
   loadLocalConfigForScope: vi.fn().mockResolvedValue(null),
   loadTeamConfig: vi.fn().mockResolvedValue(null),
   loadStateForScope: vi.fn().mockRejectedValue(new Error('no state')),

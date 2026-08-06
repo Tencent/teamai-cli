@@ -1027,6 +1027,44 @@ export function getStatePath(scope: Scope, projectRoot?: string): string {
   return path.join(getTeamaiHome(scope, projectRoot), 'state.json');
 }
 
+// ─── Project declaration (.teamai/project.yaml) ──────────
+//
+//  Checked into git. Contains only portable, safe-to-commit fields.
+//  No absolute paths, no tokens, no usernames.
+
+export const ProjectDeclarationSchema = z.object({
+  repo: z.string().min(1),
+  defaultRole: z.string().optional(),
+  scope: z.literal('project').default('project'),
+});
+
+export type ProjectDeclaration = z.infer<typeof ProjectDeclarationSchema>;
+
+export function getProjectDeclarationPath(projectRoot: string): string {
+  return path.join(projectRoot, '.teamai', 'project.yaml');
+}
+
+/** Shared .gitignore entries for project-scope .teamai/ directories. */
+export const PROJECT_GITIGNORE_ENTRIES = [
+  '# teamai local config (do not commit)',
+  '# NOTE: project.yaml is intentionally NOT listed — it is the portable bootstrap file',
+  'config.yaml',
+  'state.json',
+  'team-repo/',
+  'token',
+  '.update-lock',
+  'env',
+  'env.sh',
+  'sessions/',
+  'dashboard/',
+  'usage.jsonl',
+  'known-skills.json',
+  'learnings/',
+  'search-index.json',
+  'votes/',
+  '',
+];
+
 /**
  * Get the managed-hooks manifest path for a given scope. This file indexes the
  * team (B) hooks injected into each tool, so reconcile can clean up hooks that

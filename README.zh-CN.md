@@ -41,6 +41,9 @@ npm install -g teamai-cli
 cd /path/to/my-project
 teamai init https://github.com/yourorg/yourrepo
 
+# 简写：自动检测当前目录的 git remote 作为团队仓（隐含 project scope）
+teamai init .
+
 # 用户级初始化（资源安装到 ~/ 下）
 teamai init https://github.com/yourorg/yourrepo --scope user
 
@@ -51,6 +54,8 @@ teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 ```
 
 初始化完成后，每次开启 AI 会话时都会自动拉取管理员发布的 skills / rules 等 Harness 更新，无需手动同步。
+
+> **Clone 即就绪**：如果仓库已包含 `.teamai/project.yaml`（由队友的 `init` 生成并提交），新 clone 的仓库会在首次 AI 会话时自动完成初始化，无需手动运行 init。
 
 > **完整使用指南**：[docs/usage-guide.zh-CN.md](docs/usage-guide.zh-CN.md)（[English](docs/usage-guide.md)）— 涵盖从团队创建到日常使用的全流程。
 
@@ -181,7 +186,7 @@ teamai codebase --lint                      # 健康检查
 
 | 命令 | 说明 |
 |------|------|
-| `teamai init` | 初始化：OAuth 登录、关联仓库、注册成员、注入 hooks |
+| `teamai init [repo\|.]` | 初始化：OAuth 登录、关联仓库、注册成员、注入 hooks。使用 `.` 自动检测当前目录的 git remote |
 | `teamai pull` | 拉取团队资源并注入到本地 AI 工具 |
 | `teamai push` | 推送本地资源到分支并创建合并请求 |
 | `teamai status` | 显示本地与团队仓库的差异 |

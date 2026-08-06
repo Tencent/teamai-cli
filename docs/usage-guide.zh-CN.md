@@ -84,6 +84,9 @@ teamai --version
 cd /path/to/my-project
 teamai init <group>/TeamAi-<team>
 # 等价别名：teamai init --repo <group>/TeamAi-<team>
+
+# 简写：自动检测当前目录的 git remote 作为团队仓
+teamai init .
 ```
 
 生成的目录结构：
@@ -91,7 +94,8 @@ teamai init <group>/TeamAi-<team>
 ```
 /path/to/my-project/
 ├── .teamai/                     # 项目级配置（含自动生成的 .gitignore）
-│   ├── config.yaml
+│   ├── config.yaml              # 机器本地（被 gitignore）
+│   ├── project.yaml             # 可移植声明（请提交此文件！）
 │   └── team-repo/
 ├── .claude/skills/              # 项目级 skills（自动同步）
 ├── .claude/rules/               # 项目级 rules（自动同步）
@@ -111,7 +115,7 @@ teamai init <group>/TeamAi-<team> --scope project --role hai_dev --force
 
 | 参数 | 说明 |
 |------|------|
-| `[repo]` / `--repo <url>` | 团队仓库地址（推荐位置参数；`--repo` 为永久别名） |
+| `[repo\|.]` / `--repo <url>` | 团队仓库地址（推荐位置参数；`--repo` 为永久别名）。传 `.` 自动检测当前目录的 git remote（隐含 `--scope project`） |
 | `--scope <project\|user>` | 安装作用域，默认 `project`（`<cwd>/.teamai`）。需要装到 `~/` 时用 `user` |
 | `--inherit-user-scope` | 仅 project scope：同时同步安全的 user 资源并检索 user 知识 |
 | `--no-inherit-user-scope` | 关闭当前项目先前配置的 user scope 继承 |
@@ -195,6 +199,20 @@ cd /path/to/my-project
 teamai init <group>/TeamAi-<team>
 # 完成！AI 工具已自动获得团队资源
 ```
+
+**自动引导（零操作接入）：**
+
+如果项目已提交 `.teamai/project.yaml`（由之前的 `teamai init .` 或 `teamai init --scope project` 生成），新 clone 会在首次 AI 会话时自动完成初始化，无需手动运行 `teamai init`：
+
+```bash
+npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
+git clone <项目仓库>
+cd <项目目录>
+# 启动任意 AI 会话 — teamai 自动检测 project.yaml，克隆团队仓，
+# 写入本地配置并注入 hooks。skills/rules 即时同步。
+```
+
+自动引导运行在 session-start hook 内，因此绝不会触发交互式登录。如果 git provider（如 `gh`）尚未认证，它会打印提示并跳过 —— 手动执行一次 `teamai init .` 完成登录后，后续会话即可自动引导。
 
 **用户级团队：**
 

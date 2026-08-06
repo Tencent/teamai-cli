@@ -86,6 +86,9 @@ Resources are installed under the project directory (`<project>/.claude/skills/`
 cd /path/to/my-project
 teamai init <group>/TeamAi-<team>
 # equivalent alias: teamai init --repo <group>/TeamAi-<team>
+
+# shorthand: auto-detect cwd's git remote as team repo
+teamai init .
 ```
 
 Resulting directory structure:
@@ -93,7 +96,8 @@ Resulting directory structure:
 ```
 /path/to/my-project/
 ├── .teamai/                     # Project-level config (with an auto-generated .gitignore)
-│   ├── config.yaml
+│   ├── config.yaml              # Machine-local (gitignored)
+│   ├── project.yaml             # Portable declaration (commit this!)
 │   └── team-repo/
 ├── .claude/skills/              # Project-level skills (auto-synced)
 ├── .claude/rules/               # Project-level rules (auto-synced)
@@ -113,7 +117,7 @@ teamai init <group>/TeamAi-<team> --scope project --role hai_dev --force
 
 | Flag | Description |
 |------|------|
-| `[repo]` / `--repo <url>` | Team repo URL (positional preferred; `--repo` is a permanent alias) |
+| `[repo\|.]` / `--repo <url>` | Team repo URL (positional preferred; `--repo` is a permanent alias). Pass `.` to auto-detect cwd's git remote (implies `--scope project`) |
 | `--scope <project\|user>` | Install scope, defaults to `project` (`<cwd>/.teamai`). Use `user` for `~/` |
 | `--inherit-user-scope` | Project scope only: also sync safe user resources and search user knowledge |
 | `--no-inherit-user-scope` | Disable previously configured user-scope inheritance for this project |
@@ -197,6 +201,23 @@ cd /path/to/my-project
 teamai init <group>/TeamAi-<team>
 # Done! AI tools now automatically have access to team resources
 ```
+
+**Auto-bootstrap (zero-init onboarding):**
+
+If the project already has `.teamai/project.yaml` committed (created by a prior `teamai init .` or `teamai init --scope project`), new clones auto-bootstrap on the first AI session — no manual `teamai init` needed:
+
+```bash
+npm install -g teamai-cli
+git clone <project-repo>
+cd <project-repo>
+# Start any AI session — teamai auto-detects project.yaml, clones team-repo,
+# writes local config, and injects hooks. Skills/rules sync immediately.
+```
+
+Auto-bootstrap runs inside the session-start hook, so it never launches an
+interactive login. If your git provider (e.g. `gh`) is not yet authenticated,
+it prints a hint and skips — run `teamai init .` once to complete the login,
+and subsequent sessions bootstrap automatically.
 
 **User-scoped teams:**
 
