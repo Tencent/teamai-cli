@@ -1,0 +1,3 @@
+[submodule "benchmark"]
+	path = benchmark
+	url = git@github.com:m0Nst3r873/AI-Benchmark.git
