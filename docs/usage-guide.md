@@ -13,9 +13,10 @@
 - [Core Concepts](#core-concepts)
 - [Installation](#installation)
 - [Admin Initialization](#admin-initialization)
-  - [User Scope](#user-scope)
   - [Project Scope](#project-scope)
+  - [User Scope](#user-scope)
   - [How to Choose a Scope?](#how-to-choose-a-scope)
+  - [Layer an organization repo under a project repo](#layer-an-organization-repo-under-a-project-repo)
 - [Member Onboarding](#member-onboarding)
 - [Day-to-Day Use](#day-to-day-use)
 - [Sharing Team Resources](#sharing-team-resources)
@@ -33,7 +34,7 @@
 | Concept | Description |
 |------|------|
 | **Team Repo** | A Git repository that centrally stores a team's shared Skills / Rules / Docs / Env resources |
-| **Scope** | Where resources are installed: `user` (home directory, default) or `project` (project directory) |
+| **Scope** | Where resources are installed: `project` (current project, default) or `user` (home directory) |
 | **Skills** | Custom skills the AI can invoke (a directory containing a `SKILL.md`) |
 | **Rules** | Markdown-formatted team conventions, automatically merged into AI tool configs |
 | **Docs** | Shared team documentation for the AI to reference |
@@ -76,68 +77,15 @@ teamai --version
 
 Create an empty repository on GitHub, TGit (Tencent's internal Git host), or CNB (cnb.cool) (suggested naming: `TeamAi-<team-name>`), or simply run `teamai init` — if the repo doesn't exist yet, you'll be prompted to create it automatically.
 
-### User Scope
-
-Resources are installed into your home directory (`~/.claude/skills/`, etc.), suited for general team conventions and cross-project skills.
-
-```bash
-# --scope user is the default and can be omitted
-teamai init --repo <group>/TeamAi-<team>
-```
-
-Resulting directory structure:
-
-```
-~/.teamai/
-├── config.yaml          # Local config
-├── team-repo/            # Clone of the team repo
-│   ├── teamai.yaml      # Remote team config (scope: user)
-│   ├── skills/ rules/ docs/ env/ members/
-│   ├── manifest/roles.yaml  # Role definitions (when role-based skills are enabled)
-│   └── learnings/       # Team knowledge base
-~/.claude/skills/        # Team skills (auto-synced)
-~/.claude/rules/         # Team rules (auto-synced)
-```
-
-If the repo has role-based skills enabled (i.e. `manifest/roles.yaml` exists), `teamai init` will also interactively ask you to choose:
-
-- `primaryRole`: the target namespace for skill sync and push by default
-- `additionalRoles`: additional skill namespaces to sync
-
-You can also skip the interactive prompts via CLI flags for a fully non-interactive init (suitable for CI/CD or AI agents):
-
-```bash
-teamai init --repo <group>/TeamAi-<team> --scope user --role hai_dev --force
-```
-
-| Flag | Description |
-|------|------|
-| `--repo <url>` | Team repo URL (required) |
-| `--scope <user\|project>` | Scope, defaults to `user` |
-| `--role <id>` | Directly specify the primary role, skipping the interactive role prompt |
-| `--force` | Overwrite existing config, skipping confirmation prompts |
-
-Example local config:
-
-```yaml
-repo:
-  localPath: ~/.teamai/team-repo
-  remote: https://github.com/group/repo.git
-username: alice
-scope: user
-primaryRole: hai
-additionalRoles:
-  - pm
-resourceProfileVersion: 1
-```
-
-### Project Scope
+### Project Scope (default)
 
 Resources are installed under the project directory (`<project>/.claude/skills/`, etc.), suited for project-specific skills and rules.
 
 ```bash
+# project is the default — --scope can be omitted
 cd /path/to/my-project
-teamai init --repo <group>/TeamAi-<team> --scope project
+teamai init <group>/TeamAi-<team>
+# equivalent alias: teamai init --repo <group>/TeamAi-<team>
 ```
 
 Resulting directory structure:
@@ -152,15 +100,88 @@ Resulting directory structure:
 └── src/
 ```
 
+If the repo has role-based skills enabled (i.e. `manifest/roles.yaml` exists), `teamai init` will also interactively ask you to choose:
+
+- `primaryRole`: the target namespace for skill sync and push by default
+- `additionalRoles`: additional skill namespaces to sync
+
+You can also skip the interactive prompts via CLI flags for a fully non-interactive init (suitable for CI/CD or AI agents):
+
+```bash
+teamai init <group>/TeamAi-<team> --scope project --role hai_dev --force
+```
+
+| Flag | Description |
+|------|------|
+| `[repo]` / `--repo <url>` | Team repo URL (positional preferred; `--repo` is a permanent alias) |
+| `--scope <project\|user>` | Install scope, defaults to `project` (`<cwd>/.teamai`). Use `user` for `~/` |
+| `--inherit-user-scope` | Project scope only: also sync safe user resources and search user knowledge |
+| `--no-inherit-user-scope` | Disable previously configured user-scope inheritance for this project |
+| `--role <id>` | Directly specify the primary role, skipping the interactive role prompt |
+| `--force` | Overwrite existing config, skipping confirmation prompts |
+
+Example local config:
+
+```yaml
+repo:
+  localPath: /path/to/my-project/.teamai/team-repo
+  remote: https://github.com/group/repo.git
+username: alice
+scope: project
+projectRoot: /path/to/my-project
+inheritUserScope: true            # optional; project scope only
+primaryRole: hai
+additionalRoles:
+  - pm
+resourceProfileVersion: 1
+```
+
+### User Scope
+
+Resources are installed into your home directory (`~/.claude/skills/`, etc.), suited for general team conventions and cross-project skills.
+
+```bash
+teamai init <group>/TeamAi-<team> --scope user
+```
+
+Resulting directory structure:
+
+```
+~/.teamai/
+├── config.yaml          # Local config
+├── team-repo/            # Clone of the team repo
+│   ├── teamai.yaml      # Remote team config
+│   ├── skills/ rules/ docs/ env/ members/
+│   ├── manifest/roles.yaml  # Role definitions (when role-based skills are enabled)
+│   └── learnings/       # Team knowledge base
+~/.claude/skills/        # Team skills (auto-synced)
+~/.claude/rules/         # Team rules (auto-synced)
+```
+
 ### How to Choose a Scope?
 
-| Dimension | User Scope (default) | Project Scope |
+| Dimension | Project Scope (default) | User Scope |
 |------|-------------------|---------------|
-| **Install location** | Under `~/` | Under the project directory |
-| **Best for** | General team conventions, cross-project skills | Project-specific skills and rules |
-| **Can coexist** | ✅ Yes, both scopes can be active at once | ✅ Yes, both scopes can be active at once |
+| **Install location** | Under the project directory | Under `~/` |
+| **Best for** | Project-specific skills and rules | General team conventions, cross-project skills |
+| **Can coexist** | ✅ Yes; project stays active and can opt into safe user resources | ✅ Yes; remains a separate home-level install |
 
-> **Scope lock-in:** When an admin runs `init` for the first time, the scope is written into the remote `teamai.yaml`. All subsequent member `init` runs must use the same scope.
+> **Local install location** is decided only by `teamai init`'s `--scope` (default `project`). A `scope` field in remote `teamai.yaml`, if present, is ignored.
+
+### Layer an organization repo under a project repo
+
+Use two Team Repos when some knowledge is organization-wide and other resources are project-specific. The CLI is installed only once, but each scope has its own local config and repository clone:
+
+```bash
+# Once per developer: organization-wide skills, rules, docs, agents, and learnings
+teamai init https://github.com/yourorg/engineering-practices --scope user
+
+# In a Java project: project resources stay active and recall prefers them
+cd /path/to/java-service
+teamai init https://github.com/yourorg/java-service-teamai --inherit-user-scope
+```
+
+With inheritance enabled, `teamai pull` refreshes user `skills`, `rules`, `docs`, `agents`, shared instructions/culture, and the user search index in their home-level locations, then refreshes the project scope in the project directory. User `env`, hooks, MCP definitions, cross-team sources, usage reporting, and remote repository writes are not inherited. The two configs and repositories remain separate; this feature composes their safe read paths rather than merging Git repositories or files. Installed resources with the same name remain in separate user/project paths, so the AI tool decides runtime precedence; Recall separately guarantees that a project entry shadows the same user resource type and filename.
 
 ---
 
@@ -168,20 +189,20 @@ Resulting directory structure:
 
 Once the admin shares the team repo URL with members:
 
-**User-scoped teams:**
-
-```bash
-npm install -g teamai-cli
-teamai init --repo <group>/TeamAi-<team>
-# Done! AI tools now automatically have access to team resources
-```
-
-**Project-scoped teams:**
+**Project-scoped teams (default):**
 
 ```bash
 npm install -g teamai-cli
 cd /path/to/my-project
-teamai init --repo <group>/TeamAi-<team> --scope project
+teamai init <group>/TeamAi-<team>
+# Done! AI tools now automatically have access to team resources
+```
+
+**User-scoped teams:**
+
+```bash
+npm install -g teamai-cli
+teamai init <group>/TeamAi-<team> --scope user
 ```
 
 **HTTP mode (read-only consumer):**
@@ -228,7 +249,7 @@ teamai pull              # Manual pull
 teamai pull --dry-run    # Dry run, no actual changes
 ```
 
-> If you have both a user scope and a project scope, `pull` will pull resources for both scopes in sequence, without conflicts.
+> Project scope is isolated by default. When the current working directory contains a project-scope `.teamai/config.yaml`, `pull` processes that project and skips user scope unless the local config has `inheritUserScope: true`; in that case it first refreshes the safe user-resource channel. Without a project config in the current directory, `pull` processes user scope. User `env`, hooks, MCP definitions, sources, reporting, and writes remain isolated in project mode.
 
 With role-based skills enabled, `pull`'s skill sync source becomes the contents of `skills/<namespace>/`, expanded according to `primaryRole + additionalRoles` and flattened into each local AI tool's skills directory. `rules/`, `docs/`, and `learnings/` keep their original global sync behavior.
 
@@ -455,10 +476,14 @@ teamai mcp remove            # remove every teamai-managed server
 The AI tracks your coding sessions via Hooks. When a session ends (the Stop hook), the system scores it by **friction** — whether you interrupted or corrected the AI, denied a tool call, or the AI had to retry failing tools. A long-but-routine session (many tool calls, no friction) won't trigger; only a session where you actually hit a problem does. If it qualifies, the AI automatically reminds you:
 
 ```
-Recommend running /teamai-share-learnings to share your learnings
+[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, the AI retried failing tools 8 times.
+
+Task: Fix duplicate project-level Hook injection
+
+Consider running /teamai-share-learnings to summarize what you learned and share it with your team.
 ```
 
-Using the built-in `/teamai-share-learnings` skill, the AI will automatically summarize the session's learnings and contribute them to the team knowledge base. Each session is prompted at most once.
+The reminder lists the non-zero friction signals that triggered it. When the first task is available, it also includes a redacted, single-line task summary so you can decide whether the session is worth sharing. Using the built-in `/teamai-share-learnings` skill, the AI will automatically summarize the session's learnings and contribute them to the team knowledge base. Each session is prompted at most once.
 
 You can also specify a file manually:
 
@@ -475,8 +500,9 @@ teamai recall "GPU out of memory"
 ```
 
 - Supports mixed-language search
-- Automatically merges the knowledge bases of both user + project scope, labeling results `[user]`/`[project]` by source
-- Consulted knowledge is automatically upvoted, surfacing high-quality docs to the top
+- Searches the project scope when the current working directory contains its config; with `inheritUserScope: true`, searches project first and user second, labeling results `[project]`/`[user]`. Otherwise searches user scope
+- For the same resource type and filename, the project entry wins; different resource types with the same filename remain separate
+- Consulted active-scope knowledge is automatically upvoted. Inherited user hits remain read-only while the project is active
 - A lightweight relevance precheck is available via `teamai recall --check "<keywords>"`, which prints `RELEVANT score=<n>` or `NOT_RELEVANT score=<n>` without reading files or upvoting — the recall subagent uses it to skip retrieval on unrelated tasks
 
 ### Enabling / Disabling Recall
@@ -634,6 +660,56 @@ When using `teamai init --http <baseUrl>`, the endpoint must implement the follo
 }
 ```
 
+The backend may also push an **`uninstall_teamai`** command to remove the local agent. It carries a `cmd` (a single `teamai` subcommand) that runs once on the client, with the result reported back through the same ack channel:
+
+```json
+{ "id": 42, "type": "uninstall_teamai", "cmd": "teamai uninstall --force --agent codebuddy" }
+```
+
+Security boundary for the executed `cmd`:
+
+- **teamai subcommands only** — the first token must be exactly `teamai`; anything else is rejected (acked `failed`) and never executed. There is no arbitrary-shell surface.
+- **No shell** — the command is run via `execFile` with the current Node binary and teamai entry script, so shell metacharacters (`;`, `|`, `&`, `$`, …) are treated as literals and there is no PATH dependency (works inside sandboxes with a bundled Node).
+- **On by default** — like install/uninstall commands, it runs automatically. Set `TEAMAI_DISABLE_REMOTE_CMD=1` on the client to reject it (acked `failed` with `remote cmd disabled by client`).
+- **Timeout** — a hung command is killed after 120s and acked `failed`.
+
+The backend may also push **`install_hook_rule`** / **`uninstall_hook_rule`** commands to remotely
+manage a session hook in the **current reporting tool**'s settings, keyed by `slug`. The result is
+reported over the same ack channel:
+
+```jsonc
+// install (or replace) a hook keyed by slug
+{ "id": 50, "type": "install_hook_rule", "handle_type": "hook", "slug": "my-hook",
+  "event": "SessionStart", "cmd": "echo hi", "timeout": 10 }
+
+// uninstall the hook previously installed under slug
+{ "id": 51, "type": "uninstall_hook_rule", "handle_type": "hook", "slug": "my-hook" }
+```
+
+Rules for agent hooks:
+
+- **Current tool only** — the hook is written to the tool that is reporting (e.g. under Claude ⇒
+  only `.claude/settings.json`). Other tools are never touched.
+- **Supported tools** — `claude` / `codex` / `workbuddy` / `codebuddy` (plus their internal
+  variants). **Cursor and OpenClaw-family tools are rejected** → acked `failed` (`unsupported tool`).
+- **Event whitelist** — `SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`.
+  Any other event → acked `failed` (`unsupported event`).
+- **Optional `matcher`** — a tool-name filter for `PreToolUse` / `PostToolUse`; defaults to `*`
+  (all tools) when omitted.
+- **Default timeout 10s** when `timeout` is omitted; the backend value is honored when present.
+- **Idempotent** — re-installing the same `slug` replaces the existing hook rather than duplicating
+  it; `uninstall_hook_rule` for a missing `slug` is acked `success`.
+- **Isolation** — agent hooks use a dedicated `[teamai:agent-hook:<slug>]` marker, so a team pull
+  never deletes them and installing one never disturbs built-in or team hooks.
+- **Teardown** — agent hooks are removed by `uninstall_hook_rule`, `teamai source remove`, and
+  `teamai uninstall` (no residue in any tool's settings).
+- **Kill-switch** — an agent hook is a backend-supplied command the tool auto-runs on its events,
+  so it shares the `uninstall_teamai` trust model: setting `TEAMAI_DISABLE_REMOTE_CMD=1` on the
+  client rejects `install_hook_rule` / `uninstall_hook_rule` too (acked `failed`).
+- **Codex matching** — codex settings carry no description field, so codex agent hooks are matched
+  by their exact command and the local-agent manifest is the authoritative record for their
+  teardown. Backends should use a **unique `cmd` per codex `slug`** so replace/remove stay precise.
+
 Configurable environment variables:
 
 | Variable | Purpose |
@@ -644,13 +720,15 @@ Configurable environment variables:
 | `TEAMAI_REPORT_AGENTS` | Comma-separated list of agents that report (default `workbuddy,codebuddy`) |
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | Allowlist of hosts for skill `download_url` (empty = allow all) |
 | `TEAMAI_ALLOW_SANDBOX_REPORT` | Set to `1` to force report/sync inside a CloudStudio sandbox (see note below) |
+| `TEAMAI_DISABLE_REMOTE_CMD` | Set to `1` to reject server-pushed `uninstall_teamai`, `install_hook_rule`, and `uninstall_hook_rule` commands (they are acked `failed`) |
 
 > **Privacy:** The install path and machine id are only hashed locally to derive `local_agent_id` — they are never reported.
 
 > **CloudStudio sandbox:** When WorkBuddy runs teamai hooks inside a CloudStudio container, that container has a
-> different machine id than the macOS host and would report a duplicate agent card. Report/sync is therefore skipped
-> automatically inside a CloudStudio sandbox (detected via `X_IDE_IS_CLOUDSTUDIO=TRUE` or the `/var/run/cloudstudio`
-> directory). Set `TEAMAI_ALLOW_SANDBOX_REPORT=1` to opt back in if you run teamai exclusively inside CloudStudio.
+> different machine id than the macOS host and would report a duplicate agent card. The duplicate report is therefore
+> skipped automatically inside a CloudStudio sandbox (sync still runs, so pushed commands are still received) —
+> detected via `X_IDE_IS_CLOUDSTUDIO=TRUE` or the `/var/run/cloudstudio` directory.
+> Set `TEAMAI_ALLOW_SANDBOX_REPORT=1` to opt back in if you run teamai exclusively inside CloudStudio.
 
 ### Codebase Knowledge Graph
 
@@ -896,10 +974,10 @@ An HTTP source reports status and pulls skill commands via hook dispatch on ever
 
 ```yaml
 team: my-team
-scope: user                              # user or project
 description: Team AI resource repo
 repo: https://github.com/group/repo.git
 provider: github
+# scope: ignored if present — local install location is set by `teamai init --scope`
 
 reviewers:
   - reviewer1
@@ -908,7 +986,7 @@ sharing:
   rules:
     enforced: [code-review-guide]
   docs:
-    localDir: ~/.teamai/docs
+    localDir: ./.teamai/docs
   env:
     injectShellProfile: true
 ```
@@ -921,8 +999,9 @@ repo:
   remote: https://github.com/group/repo.git
 username: your-name
 updatePolicy: auto
-scope: user                    # or project
+scope: project                 # project (default from init) or user
 projectRoot: /path/to/project  # project scope only
+inheritUserScope: true         # optional; project scope only, defaults to false
 ```
 
 ---
@@ -974,7 +1053,7 @@ teamai pull
 
 **Q: Can user scope and project scope coexist?**
 
-Yes. `pull` pulls both scopes in sequence, and `recall` merges search results across both scopes' knowledge bases. They don't conflict with each other.
+Yes, but project scope remains isolated by default. When the current working directory contains a project-scope config, it is active and user scope is skipped. Initialize user scope first, then initialize the project with `--inherit-user-scope` (or set `inheritUserScope: true` in the project's local config) to compose safe resources and Recall results. Executable and control-plane configuration remains project-only.
 
 **Q: `teamai init` says it's already initialized?**
 

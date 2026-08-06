@@ -31,6 +31,36 @@ const TEAMAI_BIN_DIR = '.teamai/bin';
 const WRAPPER_NAME = 'teamai';
 
 /**
+ * Tools whose hook commands depend on /bin/sh being available.  CodeBuddy
+ * and WorkBuddy execute hooks via `spawn('/bin/sh', ['-c', command])`, so
+ * hook injection is skipped when /bin/sh is absent.
+ */
+export const SHELL_DEPENDENT_TOOLS = new Set(['workbuddy', 'codebuddy']);
+
+/**
+ * Check whether /bin/sh exists.  Remote containers (e.g. CloudStudio AI
+ * inference nodes) may lack it, causing CodeBuddy's `spawn /bin/sh` to
+ * fail with ENOENT on every hook invocation.  Exported so the injection
+ * entry points can skip hook installation and warn the user.
+ */
+let _hasShellCache: boolean | undefined;
+export function hasShell(): boolean {
+  if (_hasShellCache === undefined) {
+    try {
+      _hasShellCache = fs.existsSync('/bin/sh');
+    } catch {
+      _hasShellCache = false;
+    }
+  }
+  return _hasShellCache;
+}
+
+/** Reset the cached hasShell result. Test-only. */
+export function _resetShellCache(): void {
+  _hasShellCache = undefined;
+}
+
+/**
  * Compare two semver-like version strings numerically (segment by segment).
  * Returns negative if a < b, 0 if equal, positive if a > b.
  */
@@ -98,7 +128,7 @@ function resolveCodebuddyNode(): string | null {
  * Resolve the teamai CLI entry script (dist/index.js) by walking up from
  * this module's location. Returns null when resolution fails.
  */
-function resolveTeamaiEntryScript(): string | null {
+export function resolveTeamaiEntryScript(): string | null {
   try {
     const thisFile = fileURLToPath(import.meta.url);
     const distDir = path.dirname(thisFile);
@@ -140,6 +170,17 @@ export function ensureTeamaiWrapper(): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * If /bin/sh is available, write the teamai wrapper and return true.
+ * Returns false when /bin/sh is absent — callers should skip
+ * shell-dependent tool injection and warn the user.
+ */
+export function ensureWrapperIfShellAvailable(): boolean {
+  if (!hasShell()) return false;
+  ensureTeamaiWrapper();
+  return true;
 }
 
 /** Generate the hook-dispatch command for a given event, tool, and optional matcher. */
@@ -196,7 +237,7 @@ const BUILTIN_HOOK_SPECS: BuiltinHookSpec[] = [
  * GUI tools (WorkBuddy, CodeBuddy) use the wrapper dispatch command so their
  * hook subprocesses can find `teamai` even without the user's full PATH.
  */
-const WRAPPER_TOOLS = new Set(['workbuddy', 'codebuddy']);
+const WRAPPER_TOOLS = SHELL_DEPENDENT_TOOLS;
 
 export function builtinHookDefs(tool: string): HookDef[] {
   const withTimeout = tool === 'cursor' || tool === 'workbuddy' || tool === 'codebuddy';

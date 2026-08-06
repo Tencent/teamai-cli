@@ -247,3 +247,25 @@ describe('LocalConfigSchema updatePolicy', () => {
     expect(() => LocalConfigSchema.parse({ ...baseConfig, updatePolicy: 'invalid' })).toThrow();
   });
 });
+
+describe('LocalConfigSchema inheritUserScope', () => {
+  const baseConfig = {
+    repo: { localPath: '/tmp/repo', remote: 'https://git.woa.com/team/repo.git' },
+    username: 'test',
+    scope: 'project',
+  };
+
+  it('leaves inheritance disabled when omitted', () => {
+    const result = LocalConfigSchema.parse(baseConfig);
+    expect(result.inheritUserScope).toBeUndefined();
+  });
+
+  it('accepts an explicit boolean value', () => {
+    expect(LocalConfigSchema.parse({ ...baseConfig, inheritUserScope: true }).inheritUserScope).toBe(true);
+    expect(LocalConfigSchema.parse({ ...baseConfig, inheritUserScope: false }).inheritUserScope).toBe(false);
+  });
+
+  it('rejects non-boolean values', () => {
+    expect(() => LocalConfigSchema.parse({ ...baseConfig, inheritUserScope: 'yes' })).toThrow();
+  });
+});

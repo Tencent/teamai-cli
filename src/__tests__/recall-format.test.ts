@@ -44,7 +44,7 @@ describe('formatResults — Sources line', () => {
         entry: makeEntry({ title: 'Code Page', path: '/wiki/evidence/code/proj/foo.md' }),
         score: 7.5,
         scope: 'project',
-        sources: ['src/a.ts', 'src/b.ts'],
+        sources: [{ path: 'src/a.ts' }, { path: 'src/b.ts' }],
       },
     ]);
 

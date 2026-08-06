@@ -186,6 +186,23 @@ export class RulesHandler extends ResourceHandler {
     filteredRules?: ResourceItem[],
   ): Promise<void> {
     const rules = filteredRules ?? await this.scanTeamForPull(teamConfig, localConfig);
+
+    // Hermes: inline all team rules into a teamai-managed block in SOUL.md
+    // (user-level standing instructions). Only when Hermes is actually
+    // installed — never create ~/.hermes for users who don't use it.
+    if (!isAgentDisabled(localConfig, 'hermes')) {
+      const { getHermesHome } = await import('../hermes-home.js');
+      if (await pathExists(getHermesHome())) {
+        const bodies: string[] = [];
+        for (const rule of rules) {
+          const body = await readFileSafe(rule.sourcePath);
+          if (body && body.trim() !== '') bodies.push(body.trim());
+        }
+        const { upsertSoulRules } = await import('../hermes-config.js');
+        await upsertSoulRules(bodies.join('\n\n'));
+      }
+    }
+
     if (rules.length === 0) return;
 
     // 1. Distribute rule files to each tool's rules/ directory

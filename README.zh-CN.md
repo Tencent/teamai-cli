@@ -30,19 +30,24 @@ npm install -g teamai-cli
 
 ### 团队管理员 / 个人使用者
 
-在 Git 托管平台（GitHub、TGit 或 CNB）创建共享经验仓库，**授予团队成员写权限**，然后让他们运行 `teamai init --repo https://github.com/yourorg/yourrepo`。
+在 Git 托管平台（GitHub、TGit 或 CNB）创建共享经验仓库，**授予团队成员写权限**，然后让他们运行 `teamai init https://github.com/yourorg/yourrepo`。
 
 > 个人使用无需单独建仓：`teamai init` 会检查目标仓库，不存在时自动创建。
 
 ### 团队成员
 
 ```bash
-# 用户级初始化（默认，资源安装到 ~/ 下）
-teamai init --repo https://github.com/yourorg/yourrepo
-
-# 项目级初始化（资源安装到项目目录下）
+# 项目级初始化（默认，资源安装到项目目录下）
 cd /path/to/my-project
-teamai init --repo https://github.com/yourorg/yourrepo --scope project
+teamai init https://github.com/yourorg/yourrepo
+
+# 用户级初始化（资源安装到 ~/ 下）
+teamai init https://github.com/yourorg/yourrepo --scope user
+
+# 可选的分层模式：项目仓库保持为当前 scope，同时继承已初始化的
+# user scope 中的安全资源和可检索知识
+cd /path/to/my-project
+teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 ```
 
 初始化完成后，每次开启 AI 会话时都会自动拉取管理员发布的 skills / rules 等 Harness 更新，无需手动同步。
@@ -119,13 +124,17 @@ teamai source remove other-team
 
 ### 自动经验沉淀
 
-Session 结束时，Stop hook 按**摩擦信号**对 session 评分——这些信号表明本次 session 踩到了值得记录的东西：你打断或纠正了 AI、拒绝了某次工具调用，或 AI 反复重试出错的工具。又长又顺（工具调用很多但没有摩擦）的 session 不会触发；真正较劲过的 session 才会。达标后 AI 会建议：
+Session 结束时，Stop hook 按**摩擦信号**对 session 评分——这些信号表明本次 session 踩到了值得记录的东西：你打断或纠正了 AI、拒绝了某次工具调用，或 AI 反复重试出错的工具。又长又顺（工具调用很多但没有摩擦）的 session 不会触发；真正较劲过的 session 才会。达标后 AI 会显示如下英文提示：
 
 ```
-建议运行 /teamai-share-learnings 总结本次 session 的经验并分享给团队。
+[teamai] This session may contain a problem worth documenting: you interrupted the AI twice, the AI retried failing tools 8 times.
+
+Task: Fix duplicate project-level Hook injection
+
+Consider running /teamai-share-learnings to summarize what you learned and share it with your team.
 ```
 
-`/teamai-share-learnings` skill 自动总结 session 经验并推送到团队仓库。每个 session 最多提示一次。
+提示会列出实际触发它的非零摩擦信号；如果能取得首个任务摘要，还会在脱敏、单行化后附上任务上下文。`/teamai-share-learnings` skill 自动总结 session 经验并推送到团队仓库。每个 session 最多提示一次。
 
 ### 团队知识检索
 
@@ -153,7 +162,7 @@ Author: member-b | Score: 12.0 | Tags: deploy, config
 - **共享检索索引**（`search-index.json`）：learnings（session 经验）、docs（团队文档）、rules（编码规则）、skills（各 `SKILL.md`）四类，源自团队仓库对应目录，在 `teamai pull` / `teamai contribute` 时构建重建。
 - **代码知识图谱**（`teamwiki/`）：由 `teamai import` 生成，检索时实时查询。
 
-排序采用 BM25 + 图谱增强，合并用户 / 项目双 scope 结果并标注来源；搜索会隐式为命中文档投票，优质内容自然上浮。
+排序采用 BM25 + 图谱增强。当前工作目录包含 project scope 配置时，Recall 先检索该项目；如果项目启用了 `--inherit-user-scope`，再检索 user 知识并标注结果来源，相同条目由 project 版本覆盖 user 版本。当前目录没有 project 配置时，Recall 检索 user scope。当前 scope 的命中会隐式投票，项目运行期间继承的 user 命中保持只读。
 
 ### 代码知识图谱
 

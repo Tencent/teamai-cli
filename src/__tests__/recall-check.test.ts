@@ -90,8 +90,8 @@ describe('recall --check precheck mode', () => {
 
     await recall('deployment timeout retry', { check: true });
 
-    expect(captured).toMatch(/^RELEVANT score=\d+\.\d+\n$/);
-    expect(captured).not.toContain(CHECK_LEARNING_TITLE);
+    expect(captured).toMatch(/^RELEVANT score=\d+\.\d+/);
+    expect(captured).toContain(`title="${CHECK_LEARNING_TITLE}"`);
     expect(Number(captured.match(/score=([\d.]+)/)![1])).toBeGreaterThanOrEqual(4.0);
   });
 

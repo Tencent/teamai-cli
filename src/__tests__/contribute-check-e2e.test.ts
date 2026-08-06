@@ -15,6 +15,8 @@ import os from 'node:os';
 
 const CLI_PATH = path.resolve(__dirname, '../../dist/index.js');
 const SESSION_ID = 'e2e-test-session-001';
+const RAW_GITHUB_TOKEN = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const FIRST_TASK = `Fix auth retry for ${RAW_GITHUB_TOKEN}\nthen add regression coverage`;
 
 function makeTmpHome(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-contribute-e2e-'));
@@ -88,7 +90,13 @@ function runContributeCheck(
 function buildRichSessionEvents(sessionId: string): Record<string, unknown>[] {
   const now = Date.now();
   const tools = ['Read', 'Edit', 'Bash', 'Skill', 'Write', 'Grep', 'Agent'];
-  const events: Record<string, unknown>[] = [];
+  const events: Record<string, unknown>[] = [{
+    type: 'prompt_submit',
+    timestamp: new Date(now - 41 * 60 * 1000).toISOString(),
+    sessionId,
+    tool: 'claude',
+    promptSummary: FIRST_TASK,
+  }];
 
   // 50 tool_use events, 7 unique tools — clears the toolCount hard gate.
   for (let i = 0; i < 50; i++) {
@@ -146,7 +154,7 @@ describe('contribute-check E2E', () => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  it('outputs hint JSON for a rich session that exceeds threshold', async () => {
+  it('outputs contextual, sanitized hint JSON for a rich session that exceeds threshold', async () => {
     writeEventsFile(tmpHome, buildRichSessionEvents(SESSION_ID));
 
     const { stdout, code } = await runContributeCheck(
@@ -163,8 +171,22 @@ describe('contribute-check E2E', () => {
     expect(parsed.hookSpecificOutput).toBeDefined();
     expect(parsed.hookSpecificOutput.hookEventName).toBe('Stop');
     expect(parsed.hookSpecificOutput.additionalContext).toContain('[teamai]');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('you interrupted the AI twice');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('the AI retried failing tools 8 times');
+    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('you rejected');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain(
+      'Task: Fix auth retry for <REDACTED:gh_tok> then add regression coverage',
+    );
+    expect(parsed.hookSpecificOutput.additionalContext).not.toContain(RAW_GITHUB_TOKEN);
+    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('50 tool calls');
+    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('7 different tools');
     expect(parsed.hookSpecificOutput.additionalContext).toContain('/teamai-share-learnings');
     expect(parsed.stopReason).toBeUndefined();
+
+    // The real CLI persists hinted=true, so a repeated Stop hook is silent.
+    const repeated = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID));
+    expect(repeated.code).toBe(0);
+    expect(repeated.stdout).toBe('');
   });
 
   it('produces no output for a trivial session below threshold', async () => {
@@ -202,6 +224,33 @@ describe('contribute-check E2E', () => {
     expect(typeof state!.smartScore).toBe('number');
     expect(state!.smartScore as number).toBeGreaterThanOrEqual(35);
     expect(state!.contributed).toBe(false);
+    expect(state!.friction).toEqual({ interrupt: 2, toolReject: 0, correction: 0, toolError: 8 });
+    expect(state!.promptSummary).toBe(
+      'Fix auth retry for <REDACTED:gh_tok> then add regression coverage',
+    );
+    expect(state!.promptSummary).not.toContain(RAW_GITHUB_TOKEN);
+  });
+
+  it('uses a complete friction cache even when events.jsonl is absent', async () => {
+    writeSessionState(tmpHome, SESSION_ID, {
+      contributed: false,
+      smartScore: 80,
+      toolCount: 42,
+      lastEvaluated: Date.now(),
+      friction: { interrupt: 1, toolReject: 1, correction: 0, toolError: 3 },
+      promptSummary: 'Repair cached Stop-hook context',
+    });
+
+    const { stdout, code } = await runContributeCheck(
+      tmpHome,
+      makeStdinPayload(SESSION_ID),
+    );
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('you interrupted the AI once');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('you rejected 1 tool call');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('Task: Repair cached Stop-hook context');
   });
 
   it('does not mix up events from different sessions', async () => {

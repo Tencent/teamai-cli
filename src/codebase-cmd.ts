@@ -25,11 +25,7 @@ export interface CodebaseCmdOptions extends GlobalOptions {
 // ─── Command handler ─────────────────────────────────────────────────────────
 
 /**
- * codebase 子命令处理函数。
- *
- * 支持 --lint（teamwiki 一致性检查）、--json（CI 机器可读输出）。
- *
- * @param opts 命令选项（含全局选项）
+ * Handler for the `teamai codebase` subcommand.
  */
 export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
     const cwd = process.cwd();
@@ -60,27 +56,31 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
     }
 
     if (!opts.lint) {
-        console.log('teamai codebase — 团队 codebase 文档健康度管理');
+        console.log('teamai codebase — team codebase knowledge management');
         console.log('');
-        console.log('用法：');
-        console.log('  teamai codebase --extract [path]        提取代码知识 + 构建图谱');
-        console.log('  teamai codebase --extract --incremental 增量模式');
-        console.log('  teamai codebase --lint                  运行全局一致性检查');
-        console.log('  teamai codebase --lint --fix            检查并自动修复低风险问题');
-        console.log('  teamai codebase --lint --json           输出 JSON 报告（适合 CI）');
-        console.log('  teamai codebase --lint --severity high  只报告 high 级别问题');
+        console.log('Usage:');
+        console.log('  teamai codebase --extract [path]        Extract code knowledge + build graph');
+        console.log('  teamai codebase --extract --incremental Incremental mode');
+        console.log('  teamai codebase --lint                  Run teamwiki consistency lint');
+        console.log('  teamai codebase --lint --json           Output JSON report (for CI)');
+        console.log('  teamai codebase --lint --severity high  Only report high-severity issues');
+        console.log('  teamai codebase --status                Show knowledge-base git baseline');
         return;
     }
 
     // Resolve teamwiki directory
     const { pathExists } = await import('./utils/fs.js');
     let teamwikiDir: string;
-    try {
-        const { autoDetectInit } = await import('./config.js');
-        const { localConfig: lc } = await autoDetectInit();
-        teamwikiDir = path.join(lc.repo.localPath, 'teamwiki');
-    } catch {
-        teamwikiDir = path.join(cwd, '.teamai', 'team-repo', 'teamwiki');
+    if (opts.output) {
+        teamwikiDir = path.resolve(opts.output, 'teamwiki');
+    } else {
+        try {
+            const { autoDetectInit } = await import('./config.js');
+            const { localConfig: lc } = await autoDetectInit();
+            teamwikiDir = path.join(lc.repo.localPath, 'teamwiki');
+        } catch {
+            teamwikiDir = path.join(cwd, '.teamai', 'team-repo', 'teamwiki');
+        }
     }
 
     if (!(await pathExists(teamwikiDir))) {

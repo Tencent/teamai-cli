@@ -12,7 +12,6 @@ import {
   getStatePath,
   type LocalConfig,
 } from '../types.js';
-import { validateScopeMatch } from '../init.js';
 import {
   detectProjectConfig,
   loadLocalConfigForScope,
@@ -454,33 +453,6 @@ describe('TeamaiConfigSchema with scope', () => {
   });
 });
 
-// ─── validateScopeMatch tests ────────────────────────────
-
-describe('validateScopeMatch', () => {
-  it('should allow matching scopes (user/user)', () => {
-    expect(() => validateScopeMatch('user', 'user')).not.toThrow();
-  });
-
-  it('should allow matching scopes (project/project)', () => {
-    expect(() => validateScopeMatch('project', 'project')).not.toThrow();
-  });
-
-  it('should reject mismatched scopes (user remote, project local)', () => {
-    expect(() => validateScopeMatch('user', 'project')).toThrow(/Scope mismatch/);
-    expect(() => validateScopeMatch('user', 'project')).toThrow(/--scope project/);
-  });
-
-  it('should reject mismatched scopes (project remote, user local)', () => {
-    expect(() => validateScopeMatch('project', 'user')).toThrow(/Scope mismatch/);
-    expect(() => validateScopeMatch('project', 'user')).toThrow(/--scope user/);
-  });
-
-  it('should allow any local scope when remote is undefined (legacy repo)', () => {
-    expect(() => validateScopeMatch(undefined, 'user')).not.toThrow();
-    expect(() => validateScopeMatch(undefined, 'project')).not.toThrow();
-  });
-});
-
 // ─── contribute --scope tests ────────────────────────────
 
 describe('contribute --scope', () => {
@@ -548,9 +520,9 @@ describe('contribute --scope', () => {
   });
 });
 
-// ─── recall dual-scope merge tests ───────────────────────
+// ─── recall layered-scope index primitives ───────────────
 
-describe('recall dual-scope merge', () => {
+describe('recall layered-scope index primitives', () => {
   let tmpDir: string;
   const originalHome = process.env.HOME;
 
@@ -674,25 +646,28 @@ describe('recall dual-scope merge', () => {
     const userResults = search('shared', userIndex!);
     const projectResults = search('shared', projectIndex!);
 
-    // Simulate merge with dedup (same logic as recall)
-    const seenFilenames = new Set<string>();
+    // Simulate layered merge with project precedence (same logic as recall).
+    const seenEntries = new Set<string>();
     const merged: Array<{ filename: string; scope: string }> = [];
-    for (const r of userResults) {
-      if (!seenFilenames.has(r.entry.filename)) {
-        seenFilenames.add(r.entry.filename);
-        merged.push({ filename: r.entry.filename, scope: 'user' });
+    for (const r of projectResults) {
+      const key = `${r.entry.type}:${r.entry.filename}`;
+      if (!seenEntries.has(key)) {
+        seenEntries.add(key);
+        merged.push({ filename: r.entry.filename, scope: 'project' });
       }
     }
-    for (const r of projectResults) {
-      if (!seenFilenames.has(r.entry.filename)) {
-        seenFilenames.add(r.entry.filename);
-        merged.push({ filename: r.entry.filename, scope: 'project' });
+    for (const r of userResults) {
+      const key = `${r.entry.type}:${r.entry.filename}`;
+      if (!seenEntries.has(key)) {
+        seenEntries.add(key);
+        merged.push({ filename: r.entry.filename, scope: 'user' });
       }
     }
 
     // Only one entry should appear (deduped)
     expect(merged).toHaveLength(1);
     expect(merged[0].filename).toBe('shared-doc-2026-04-01-xyz.md');
+    expect(merged[0].scope).toBe('project');
   });
 
   it('project scope should use repo learnings dir (not local copy)', async () => {

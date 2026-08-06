@@ -1,4 +1,5 @@
 import YAML from 'yaml';
+import fs from 'node:fs';
 import path from 'node:path';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope } from './config.js';
 import { reconcileTeamHooksForConfig } from './hooks.js';
@@ -10,6 +11,16 @@ import { log, spinner } from './utils/logger.js';
 import { TEAMAI_HOME, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath } from './types.js';
 import { describeRoles, loadRolesManifest } from './roles.js';
 import { askQuestion, askConfirmation, closePrompt } from './utils/prompt.js';
+
+/** Resolve + realpath so macOS /var → /private/var (and similar) compare equal. */
+function resolveRealPath(p: string): string {
+  const resolved = path.resolve(p);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
 
 function parseRoleSelection(answer: string, max: number): number[] {
   if (!answer.trim()) return [];
@@ -86,17 +97,118 @@ async function promptForRoleProfile(
 }
 
 /**
- * Validate that the local --scope matches the remote repo's declared scope.
- * Legacy repos (scope undefined) allow any local scope.
+ * Resolve init install scope from `--scope` / default.
+ *
+ * - Explicit `user` / `project` → use as-is (`explicit: true`)
+ * - Invalid value → throw
+ * - Omitted → **project** (cwd), unless cwd === home (E1: fall back to user)
+ *
+ * Local install location is decided only by the CLI; remote `teamai.yaml.scope`
+ * is ignored (see issue #250).
  */
-export function validateScopeMatch(remoteScope: Scope | undefined, localScope: Scope): void {
-  if (remoteScope === undefined) return; // legacy repo — no restriction
-  if (remoteScope !== localScope) {
+export function resolveInitScope(
+  rawScope: string | undefined,
+  cwd: string,
+  homeDir: string,
+): { scope: Scope; projectRoot?: string; explicit: boolean; fallbackReason?: string } {
+  const cwdResolved = resolveRealPath(cwd);
+  const homeResolved = resolveRealPath(homeDir);
+  const atHome = cwdResolved === homeResolved;
+
+  if (rawScope !== undefined && rawScope !== '') {
+    if (rawScope !== 'user' && rawScope !== 'project') {
+      throw new Error(`Invalid scope "${rawScope}". Use "project" (default) or "user".`);
+    }
+    if (rawScope === 'project' && atHome) {
+      throw new Error(
+        'Cannot use --scope project in your home directory (paths would collide with user scope). ' +
+        'cd to a project directory first, or omit --scope / use --scope user.',
+      );
+    }
+    return {
+      scope: rawScope,
+      projectRoot: rawScope === 'project' ? cwdResolved : undefined,
+      explicit: true,
+    };
+  }
+
+  // Implicit default: project, with E1 fallback when cwd is $HOME
+  if (atHome) {
+    return {
+      scope: 'user',
+      projectRoot: undefined,
+      explicit: false,
+      fallbackReason:
+        'cwd is your home directory; using user scope to avoid path collision with ~/.teamai',
+    };
+  }
+
+  return {
+    scope: 'project',
+    projectRoot: cwdResolved,
+    explicit: false,
+  };
+}
+
+/**
+ * Resolve the project-local user-scope inheritance setting.
+ *
+ * An omitted flag preserves an existing project setting so additive re-init
+ * operations such as `init --agent` do not silently disable inheritance.
+ */
+export function resolveInheritUserScope(
+  scope: Scope,
+  requested: boolean | undefined,
+  existing: boolean | undefined,
+): boolean | undefined {
+  if (requested === true && scope !== 'project') {
+    throw new Error('--inherit-user-scope can only be used with project scope.');
+  }
+  if (scope !== 'project') return undefined;
+  return requested ?? existing;
+}
+
+/**
+ * Merge positional `teamai init <repo>` with `--repo` alias.
+ * `--repo` is permanently kept as an equivalent alias (no deprecation warning).
+ */
+export function resolveInitRepo(
+  positional: string | undefined,
+  repoFlag: string | undefined,
+): string | undefined {
+  const pos = positional?.trim() || undefined;
+  const flag = repoFlag?.trim() || undefined;
+  if (pos && flag && pos !== flag) {
     throw new Error(
-      `Scope mismatch: this repo is configured as "${remoteScope}" scope, ` +
-      `but you are trying to init with --scope ${localScope}. ` +
-      `Please use --scope ${remoteScope}.`,
+      `Conflicting repo values: positional "${pos}" vs --repo "${flag}". Pass only one.`,
     );
+  }
+  return pos ?? flag;
+}
+
+function printScopeSummary(
+  scope: Scope,
+  projectRoot: string | undefined,
+  explicit: boolean,
+): void {
+  const configPath = getConfigPath(scope, projectRoot);
+  const baseDir = scope === 'project' ? (projectRoot ?? process.cwd()) : (process.env.HOME ?? '~');
+  log.info(`Scope: ${scope}${scope === 'project' ? ` (${projectRoot})` : ''}`);
+  log.info(`  config    → ${configPath}`);
+  log.info(`  resources → ${baseDir}/.claude/skills, ...`);
+  if (!explicit && scope === 'project') {
+    log.info('  Tip: run with `--scope user` to install under your home directory (~/)');
+  }
+}
+
+/** Walk up from dir looking for a `.git` entry (file or directory). */
+async function isInsideGitRepo(dir: string): Promise<boolean> {
+  let current = path.resolve(dir);
+  for (;;) {
+    if (await pathExists(path.join(current, '.git'))) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
   }
 }
 
@@ -108,17 +220,50 @@ export function validateScopeMatch(remoteScope: Scope | undefined, localScope: S
  */
 export async function initHttp(
   url: string,
-  options: GlobalOptions & { scope?: string; role?: string; agent?: string; force?: boolean; token?: string },
+  options: GlobalOptions & { scope?: string; role?: string; agent?: string; force?: boolean; token?: string; inheritUserScope?: boolean },
 ): Promise<void> {
   const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
 
   log.info('Initializing teamai (HTTP read-only consumer)...');
 
-  // Step 0: scope
-  let scope: Scope = options.scope === 'project' ? 'project' : 'user';
-  const projectRoot = scope === 'project' ? process.cwd() : undefined;
+  // Step 0: scope (same rules as git init — default project)
+  let scope: Scope;
+  let projectRoot: string | undefined;
+  let explicit: boolean;
+  let fallbackReason: string | undefined;
+  try {
+    ({ scope, projectRoot, explicit, fallbackReason } = resolveInitScope(
+      options.scope,
+      process.cwd(),
+      process.env.HOME ?? '',
+    ));
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exit(1);
+    return;
+  }
+  const existingLocalConfig = await loadLocalConfigForScope(scope, projectRoot);
+  let inheritUserScope: boolean | undefined;
+  try {
+    inheritUserScope = resolveInheritUserScope(
+      scope,
+      options.inheritUserScope,
+      existingLocalConfig?.inheritUserScope,
+    );
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exit(1);
+    return;
+  }
+  if (fallbackReason) {
+    log.warn(fallbackReason);
+  }
   const teamaiHome = getTeamaiHome(scope, projectRoot);
-  log.info(`Scope: ${scope}${scope === 'project' ? ` (${projectRoot})` : ''}`);
+  printScopeSummary(scope, projectRoot, explicit);
+
+  if (scope === 'project' && !(await isInsideGitRepo(process.cwd()))) {
+    log.warn(`cwd is not inside a git repository; will create ${teamaiHome}/`);
+  }
 
   // Re-init guard
   const existingConfigPath = getConfigPath(scope, projectRoot);
@@ -164,6 +309,7 @@ export async function initHttp(
     scope,
     projectRoot,
     additionalRoles: [],
+    ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   };
   try {
     Object.assign(localConfig, await promptForRoleProfile(localPath, options.role));
@@ -219,33 +365,60 @@ export async function initHttp(
   closePrompt();
 }
 
-export async function init(options: GlobalOptions & { repo?: string; scope?: string; role?: string; agent?: string; force?: boolean; http?: string; token?: string }): Promise<void> {
+export async function init(options: GlobalOptions & {
+  repo?: string;
+  repoPositional?: string;
+  scope?: string;
+  role?: string;
+  agent?: string;
+  force?: boolean;
+  http?: string;
+  token?: string;
+  inheritUserScope?: boolean;
+}): Promise<void> {
   if (options.http) {
     return initHttp(options.http, options);
   }
   log.info('Initializing teamai...');
 
-  // Step 0: Determine scope (user or project)
-  let scope: Scope = 'user';
-  if (options.scope === 'project' || options.scope === 'user') {
-    scope = options.scope as Scope;
-  } else {
-    const userPath = getTeamaiHome('user');
-    const projectPath = getTeamaiHome('project', process.cwd());
-    log.info('Select scope:');
-    log.info(`  1. user    → ${userPath}/`);
-    log.info(`  2. project → ${projectPath}/`);
-    const scopeAnswer = await askQuestion('Scope [1/2] (default: 1): ', '1');
-    const normalizedScope = scopeAnswer.trim().toLowerCase();
-    if (normalizedScope === '2' || normalizedScope === 'project') {
-      scope = 'project';
-    }
+  // Step 0: Resolve scope (default project; only explicit --scope user → ~/ )
+  let scope: Scope;
+  let projectRoot: string | undefined;
+  let explicit: boolean;
+  let fallbackReason: string | undefined;
+  try {
+    ({ scope, projectRoot, explicit, fallbackReason } = resolveInitScope(
+      options.scope,
+      process.cwd(),
+      process.env.HOME ?? '',
+    ));
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exit(1);
+    return;
   }
-
-  const projectRoot = scope === 'project' ? process.cwd() : undefined;
+  const existingLocalConfig = await loadLocalConfigForScope(scope, projectRoot);
+  let inheritUserScope: boolean | undefined;
+  try {
+    inheritUserScope = resolveInheritUserScope(
+      scope,
+      options.inheritUserScope,
+      existingLocalConfig?.inheritUserScope,
+    );
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exit(1);
+    return;
+  }
+  if (fallbackReason) {
+    log.warn(fallbackReason);
+  }
   const teamaiHome = getTeamaiHome(scope, projectRoot);
+  printScopeSummary(scope, projectRoot, explicit);
 
-  log.info(`Scope: ${scope}${scope === 'project' ? ` (${projectRoot})` : ''}`);
+  if (scope === 'project' && !(await isInsideGitRepo(process.cwd()))) {
+    log.warn(`cwd is not inside a git repository; will create ${teamaiHome}/`);
+  }
 
   // Step 0.5: Re-init guard — warn if config already exists
   const existingConfigPath = getConfigPath(scope, projectRoot);
@@ -262,8 +435,15 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
     }
   }
 
-  // Step 1: Get repo input first (needed to detect provider)
-  let repoInput = options.repo ?? '';
+  // Step 1: Get repo input (positional or --repo alias; prompt if neither)
+  let repoInput = '';
+  try {
+    repoInput = resolveInitRepo(options.repoPositional, options.repo) ?? '';
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exit(1);
+    return;
+  }
   if (!repoInput) {
     repoInput = await askQuestion('Team repo (e.g. yourteam/yourproject or https://github.com/org/repo): ');
   }
@@ -387,12 +567,13 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
   await configureGitUser(localPath, username, username, undefined, emailDomain);
 
   // Step 4: Load team config
+  // Remote teamai.yaml.scope (if present) is ignored — local install location
+  // is decided only by --scope / default (issue #250).
   const teamConfig = await loadTeamConfig(localPath);
   if (!teamConfig) {
     log.warn('teamai.yaml not found in repo. Creating default config...');
     const defaultConfig = YAML.stringify({
       team: 'my-team',
-      scope,
       description: 'TeamAI shared resources',
       repo: repoInfo.httpsUrl,
       provider: providerName,
@@ -411,14 +592,6 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
       if (!await pathExists(gitkeep)) {
         await writeFile(gitkeep, '');
       }
-    }
-  } else {
-    // Existing repo — validate that remote scope matches local scope
-    try {
-      validateScopeMatch(teamConfig.scope, scope);
-    } catch (e) {
-      log.error((e as Error).message);
-      process.exit(1);
     }
   }
 
@@ -499,6 +672,7 @@ export async function init(options: GlobalOptions & { repo?: string; scope?: str
     scope,
     projectRoot,
     additionalRoles: [],
+    ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   };
 
   try {

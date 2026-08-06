@@ -21,11 +21,12 @@ import {
 } from './utils/fs.js';
 import { ResourceHandler } from './resources/base.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
-import { injectHooksToAllTools } from './hooks.js';
+import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
+import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
@@ -80,12 +81,15 @@ type CommandResourceKind = 'skill' | 'rule' | 'claudemd';
 // Command types recognized but not yet implemented by this reporter. Skipped
 // silently (see isUnimplementedCommand) so the suffix logic in commandKind()
 // cannot misfire (e.g. uninstall_hook_rule ends in _rule and would otherwise be
-// treated as a destructive rule uninstall).
-const UNIMPLEMENTED_COMMAND_TYPES = new Set<string>([
-  'install_hook_rule',
-  'uninstall_hook_rule',
-  'uninstall_teamai',
-]);
+// treated as a destructive rule uninstall). uninstall_teamai is NOT here — it
+// carries a `cmd` and is executed by runCmdCommand (see executeCommand), so the
+// local agent actually uninstalls itself and acks.
+// install_hook_rule / uninstall_hook_rule are now implemented (see runHookRuleCommand) and are NOT skipped.
+const UNIMPLEMENTED_COMMAND_TYPES = new Set<string>([]);
+
+/** Hook commands this reporter implements (see runHookRuleCommand). Excluded from
+ *  the handle_type==='hook' skip so they dispatch instead of being silently dropped. */
+const IMPLEMENTED_HOOK_COMMAND_TYPES = new Set<string>(['install_hook_rule', 'uninstall_hook_rule']);
 
 interface WorkspaceBinding {
   projectId: number;
@@ -183,6 +187,10 @@ interface LocalAgentCommand {
   name?: string;
   version?: string;
   display_name?: string;
+  cmd?: string;
+  event?: string;
+  matcher?: string;
+  timeout?: number;
 }
 
 /**
@@ -193,7 +201,9 @@ interface LocalAgentCommand {
  * to commandKind() and being acked as a failure.
  */
 function isUnimplementedCommand(command: LocalAgentCommand): boolean {
-  return UNIMPLEMENTED_COMMAND_TYPES.has(command.type ?? '') || command.handle_type === 'hook';
+  const type = command.type ?? '';
+  if (IMPLEMENTED_HOOK_COMMAND_TYPES.has(type)) return false;
+  return UNIMPLEMENTED_COMMAND_TYPES.has(type) || command.handle_type === 'hook';
 }
 
 interface LocalAgentContext {
@@ -336,6 +346,42 @@ async function loadManifest(): Promise<LocalAgentManifest> {
 
 async function saveManifest(manifest: LocalAgentManifest): Promise<void> {
   await writeJson(getManifestPath(), manifest);
+}
+
+/** One HTTP-source agent hook recorded locally so teardown can find & remove it
+ *  across all formats (codex has no in-file marker, so its command is stored). */
+interface AgentHookRecord {
+  tool: string;
+  event: string;
+  command: string;
+  matcher?: string;
+  timeout?: number;
+}
+
+/** slug → record. Kept separate from the resource manifest and from the team
+ *  managed-hooks.json so a team pull never treats agent hooks as stale. */
+type AgentHookManifest = Record<string, AgentHookRecord>;
+
+function getAgentHookManifestPath(): string {
+  return path.join(getLocalAgentHome(), 'agent-hooks.json');
+}
+
+async function loadAgentHookManifest(): Promise<AgentHookManifest> {
+  const data = await readJson<AgentHookManifest>(getAgentHookManifestPath());
+  return data && typeof data === 'object' ? data : {};
+}
+
+async function saveAgentHookManifest(manifest: AgentHookManifest): Promise<void> {
+  await writeJsonAtomic(getAgentHookManifestPath(), manifest);
+}
+
+/** Resolve the current tool's settings file absolute path (user scope, $HOME base). */
+function resolveToolSettingsPath(config: LocalAgentConfig, tool: string): string {
+  const toolPath = createLocalAgentTeamConfig(config.endpoint).toolPaths[tool];
+  if (!toolPath?.settings) {
+    throw new Error(`unsupported tool: ${tool} (no settings path)`);
+  }
+  return path.join(process.env.HOME ?? '', toolPath.settings);
 }
 
 function getPluginStatePath(): string {
@@ -863,8 +909,14 @@ export async function bindWorkspaceToProject(
 async function ensureWorkspaceBinding(
   config: LocalAgentConfig,
   workspacePath: string,
+  sessionId?: string,
 ): Promise<void> {
   if (config.workspaceBindings[workspacePath]) return;
+
+  const markerKey = sessionId || `ppid-${process.ppid}`;
+  const hintMarker = path.join(os.tmpdir(), `teamai-bind-session-${markerKey}`);
+  if (fs.existsSync(hintMarker)) return;
+  try { fs.writeFileSync(hintMarker, ''); } catch {}
 
   let projects: LocalAgentProject[];
   try {
@@ -920,11 +972,13 @@ function isBindPromptEnabled(): boolean {
 async function emitBindingHint(
   config: LocalAgentConfig,
   workspacePath: string,
+  sessionId?: string,
 ): Promise<void> {
   if (config.workspaceBindings[workspacePath]) return;
 
-  // Only hint once per session — use a temp marker file
-  const hintMarker = path.join(os.tmpdir(), `teamai-bind-hint-${process.ppid}`);
+  // Only hint once per session — use a temp marker file keyed by sessionId
+  const markerKey = sessionId || `ppid-${process.ppid}`;
+  const hintMarker = path.join(os.tmpdir(), `teamai-bind-hint-${markerKey}`);
   if (fs.existsSync(hintMarker)) return;
   try { fs.writeFileSync(hintMarker, ''); } catch {}
 
@@ -962,9 +1016,17 @@ async function emitBindingHint(
   process.stdout.write(hookOutput + '\n');
 }
 
+function isEphemeralTaskDir(dir: string): boolean {
+  const segments = dir.split(path.sep);
+  const wbIdx = segments.lastIndexOf('WorkBuddy');
+  if (wbIdx < 0 || wbIdx >= segments.length - 1) return false;
+  return /^\d{4}-\d{2}-\d{2}/.test(segments[wbIdx + 1]);
+}
+
 async function resolveWorkspacePath(cwd?: string): Promise<string | undefined> {
   if (!cwd) return undefined;
   const absolute = path.resolve(cwd);
+  if (isEphemeralTaskDir(absolute)) return undefined;
   try {
     const { stdout } = await execFileAsync('git', ['-C', absolute, 'rev-parse', '--show-toplevel']);
     const root = stdout.trim();
@@ -1688,11 +1750,237 @@ async function ackCommand(
   });
 }
 
+/**
+ * Tokenize a restricted `teamai` command string into an argv array.
+ *
+ * Supports single and double quotes so arguments containing spaces survive
+ * (e.g. `--name "a b"`). No variable expansion, no globbing; shell
+ * metacharacters like `;`, `|`, `&`, `$`, `(`, `)` are treated as literals.
+ * Throws when the string is empty, has an unterminated quote, or its first
+ * token is not exactly `teamai` — so a backend can never launch anything but
+ * a teamai subcommand.
+ */
+export function parseTeamaiCmd(raw: string): string[] {
+  const argv: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let hasToken = false;
+  for (const char of raw) {
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      hasToken = true;
+      continue;
+    }
+    if (char === ' ' || char === '\t' || char === '\n' || char === '\r') {
+      if (hasToken) {
+        argv.push(current);
+        current = '';
+        hasToken = false;
+      }
+      continue;
+    }
+    current += char;
+    hasToken = true;
+  }
+  if (quote) {
+    throw new Error('Unterminated quote in cmd');
+  }
+  if (hasToken) {
+    argv.push(current);
+  }
+  if (argv.length === 0) {
+    throw new Error('Empty cmd');
+  }
+  if (argv[0] !== 'teamai') {
+    throw new Error(`Rejected cmd: only "teamai" subcommands are allowed, got "${argv[0]}"`);
+  }
+  return argv;
+}
+
+/**
+ * Resolve the teamai entry script to run a pushed cmd. Prefers the current
+ * process entry (`process.argv[1]`) so the running teamai is reused, and
+ * falls back to resolving `dist/index.js` from this bundle when argv[1] is
+ * unavailable (some sandboxed hook launchers). Returns null when neither
+ * resolves.
+ */
+function resolveCmdEntry(): string | null {
+  const argvEntry = process.argv[1];
+  if (argvEntry) {
+    return argvEntry;
+  }
+  return resolveTeamaiEntryScript();
+}
+
+/**
+ * Execute an `uninstall_teamai` command's `cmd` string pushed via sync. Runs a
+ * teamai subcommand once with the current Node binary (`process.execPath`) and
+ * the resolved entry script — no shell, so there is no metacharacter injection
+ * and no PATH dependency (works inside sandboxes with a bundled Node). The
+ * whole `process.env` is forwarded so bundled-node runtime variables survive.
+ *
+ * Throws (which the caller acks as `failed`) when remote cmd is disabled, the
+ * cmd is missing/rejected, the entry cannot be resolved, or the subprocess
+ * exits non-zero or times out. Returns undefined on success (no version to
+ * report for a cmd).
+ */
+async function runCmdCommand(
+  command: LocalAgentCommand,
+  context: LocalAgentContext,
+): Promise<string | undefined> {
+  if (process.env.TEAMAI_DISABLE_REMOTE_CMD === '1') {
+    throw new Error('remote cmd disabled by client');
+  }
+  if (!command.cmd) {
+    throw new Error('cmd command is missing the "cmd" field');
+  }
+  const argv = parseTeamaiCmd(command.cmd);
+  const entry = resolveCmdEntry();
+  if (!entry) {
+    throw new Error('Cannot resolve teamai entry script to run cmd');
+  }
+  const tag = localAgentTag(context);
+  try {
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [entry, ...argv.slice(1)],
+      { timeout: 120_000, env: process.env, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const summary = stdout.trim().split('\n').slice(0, 3).join(' | ');
+    log.debug(`${tag} cmd OK: ${command.cmd}${summary ? ` — ${summary}` : ''}`);
+    return undefined;
+  } catch (e) {
+    const err = e as { stderr?: string; message?: string; killed?: boolean; code?: string };
+    const detail = (err.stderr?.trim() || err.message || 'unknown error')
+      .split('\n')
+      .slice(0, 3)
+      .join(' | ')
+      .slice(0, 200);
+    // `killed` is also set on maxBuffer overflow, so disambiguate before labeling.
+    const prefix = err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+      ? 'cmd output too large'
+      : err.killed
+        ? 'cmd timed out'
+        : 'cmd failed';
+    throw new Error(`${prefix}: ${detail}`);
+  }
+}
+
+/**
+ * Execute an install_hook_rule / uninstall_hook_rule sync command (issue #238):
+ * write or remove a single HTTP-source agent hook in the CURRENT tool's settings,
+ * tracked in the agent-hook manifest. Only claude / codex format tools are
+ * supported; cursor and openclaw are rejected. Throws on validation failure so
+ * the caller acks 'failed' with the message.
+ *
+ * Gated by the same TEAMAI_DISABLE_REMOTE_CMD kill-switch as runCmdCommand: an
+ * agent hook writes a backend-supplied command that the tool auto-runs on session
+ * events, so the client's single remote-command opt-out disables this surface too.
+ */
+async function runHookRuleCommand(
+  config: LocalAgentConfig,
+  command: LocalAgentCommand,
+  context: LocalAgentContext,
+): Promise<string | undefined> {
+  if (process.env.TEAMAI_DISABLE_REMOTE_CMD === '1') {
+    throw new Error('remote cmd disabled by client');
+  }
+  const tool = context.tool;
+  if (!tool) {
+    throw new Error('install_hook_rule: missing current tool in context');
+  }
+  if (!isAgentHookSupportedTool(tool)) {
+    throw new Error(`unsupported tool: ${tool}`);
+  }
+  const slug = command.slug;
+  if (!slug) {
+    throw new Error(`${command.type}: missing slug`);
+  }
+  const manifest = await loadAgentHookManifest();
+
+  if (command.type === 'uninstall_hook_rule') {
+    const rec = manifest[slug];
+    if (rec) {
+      if (rec.tool === 'hermes') {
+        const { removeHermesAgentHook } = await import('./hermes-hooks.js');
+        await removeHermesAgentHook({ slug, event: rec.event, command: rec.command });
+      } else {
+        const settingsPath = resolveToolSettingsPath(config, rec.tool);
+        await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
+      }
+      delete manifest[slug];
+      await saveAgentHookManifest(manifest);
+    }
+    // Missing slug is idempotent success.
+    return undefined;
+  }
+
+  // install_hook_rule
+  const event = command.event;
+  const cmd = command.cmd;
+  if (!event || !cmd) {
+    throw new Error('install_hook_rule: missing event or cmd');
+  }
+  if (!isAgentHookEvent(event)) {
+    throw new Error(`unsupported event: ${event}`);
+  }
+  const timeout = command.timeout ?? 10;
+  const matcher = command.matcher; // may be undefined → applyAgentHook defaults to '*'
+
+  // If this slug was previously installed, remove the old entry first so re-install
+  // never leaves a stale hook behind. This must run even when the tool is unchanged:
+  // applyAgentHook only replaces within the new event (claude) or by the new command
+  // (codex), so a same-tool re-install that changes the event or command would
+  // otherwise orphan the old entry. removeAgentHook scans all events by slug (claude)
+  // and matches prior.command (codex), covering both cases.
+  const prior = manifest[slug];
+  if (prior) {
+    try {
+      if (prior.tool === 'hermes') {
+        const { removeHermesAgentHook } = await import('./hermes-hooks.js');
+        await removeHermesAgentHook({ slug, event: prior.event, command: prior.command });
+      } else {
+        const priorPath = resolveToolSettingsPath(config, prior.tool);
+        await removeAgentHook(priorPath, prior.tool, { slug, command: prior.command });
+      }
+    } catch (e) {
+      log.debug(`agent hook [${slug}] prior cleanup failed: ${(e as Error).message}`);
+    }
+  }
+
+  if (tool === 'hermes') {
+    const { applyHermesAgentHook } = await import('./hermes-hooks.js');
+    await applyHermesAgentHook({ slug, event, command: cmd, matcher, timeout });
+  } else {
+    const settingsPath = resolveToolSettingsPath(config, tool);
+    await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
+  }
+  manifest[slug] = { tool, event, command: cmd, matcher, timeout };
+  await saveAgentHookManifest(manifest);
+  return undefined;
+}
+
 async function executeCommand(
   config: LocalAgentConfig,
   command: LocalAgentCommand,
   context: LocalAgentContext,
 ): Promise<string | undefined> {
+  // uninstall_teamai (clawpro three-phase: cmd = "teamai uninstall --force
+  // --agent <tool>") executes its `cmd` string as a restricted teamai subcommand.
+  if (command.type === 'uninstall_teamai') {
+    return runCmdCommand(command, context);
+  }
+  if (command.type === 'install_hook_rule' || command.type === 'uninstall_hook_rule') {
+    return runHookRuleCommand(config, command, context);
+  }
   const kind = commandKind(command);
   const action = commandAction(command);
   if (!kind || !action) {
@@ -1732,6 +2020,11 @@ async function processCommands(
       const version = await executeCommand(config, command, context);
       await ackCommand(config, tag, command, 'success', version);
       log.debug(`${tag} command ${command.id} (${command.type ?? ''}) succeeded`);
+      // Uninstall succeeded — skip remaining commands; the hook process exits naturally.
+      if (command.type === 'uninstall_teamai') {
+        log.debug(`${tag} uninstall_teamai completed — remaining commands skipped`);
+        return;
+      }
     } catch (e) {
       const error = (e as Error).message;
       log.error(`${tag} command ${command.id} failed: ${error}`);
@@ -1755,47 +2048,63 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   if (isBindPromptEnabled()) {
     const workspacePath = await resolveWorkspacePath(context.cwd);
     if (workspacePath) {
+      const sid = context.event?.sessionId;
       if (context.event?.type === 'session_start') {
-        await ensureWorkspaceBinding(config, workspacePath);
+        await ensureWorkspaceBinding(config, workspacePath, sid);
       }
       if (context.event?.type === 'prompt_submit') {
-        await emitBindingHint(config, workspacePath);
+        await emitBindingHint(config, workspacePath, sid);
       }
     }
   }
 
-  if (isCloudStudioSandbox() && process.env.TEAMAI_ALLOW_SANDBOX_REPORT !== '1') {
+  // CloudStudio sandbox reports a duplicate agent card (different machine id
+  // than the host), so we skip the report POST here. Sync + command execution
+  // must still run so sandboxed agents can receive pushed cmds (e.g. uninstall);
+  // sync produces no card, so there is no duplicate risk.
+  // TEAMAI_ALLOW_SANDBOX_REPORT=1 restores the report too (backward compatible).
+  const skipReport = isCloudStudioSandbox() && process.env.TEAMAI_ALLOW_SANDBOX_REPORT !== '1';
+  if (skipReport) {
     log.debug(
-      '[local-agent] CloudStudio sandbox detected; skipping HTTP report/sync ' +
-        '(binding prompt still runs; set TEAMAI_ALLOW_SANDBOX_REPORT=1 to override)',
+      '[local-agent] CloudStudio sandbox detected; skipping HTTP report ' +
+        '(sync still runs; set TEAMAI_ALLOW_SANDBOX_REPORT=1 to report too)',
     );
-    return false;
   }
 
   const tag = localAgentTag(context);
   log.debug(`${tag} run: endpoint=${config.endpoint}`);
 
-  if (context.event?.type === 'session_start') {
-    await maybeReconcilePlugins(context);
-  }
+  // Report-side bookkeeping (plugin reconcile + binding prune + tool stamp) is
+  // tied to the report path and must stay skipped inside the CloudStudio sandbox,
+  // exactly as before this branch stopped returning early. In particular,
+  // pruneDeadWorkspaceBindings would wrongly drop host bindings whose paths are
+  // not mounted in the container. Only sync + command execution run when
+  // skipReport is set.
+  if (!skipReport) {
+    if (context.event?.type === 'session_start') {
+      await maybeReconcilePlugins(context);
+    }
 
-  const pruned = await pruneDeadWorkspaceBindings(config);
-  // Resolve the current workspace independently here rather than reusing an
-  // earlier local, so tool attribution does not depend on the binding-prompt
-  // block above keeping a `workspacePath` in scope.
-  const currentPath = await resolveWorkspacePath(context.cwd);
-  const stamped = stampWorkspaceTool(config, currentPath, context.tool ?? 'workbuddy');
-  if (pruned || stamped) {
-    await saveLocalAgentConfig(config);
+    const pruned = await pruneDeadWorkspaceBindings(config);
+    // Resolve the current workspace independently here rather than reusing an
+    // earlier local, so tool attribution does not depend on the binding-prompt
+    // block above keeping a `workspacePath` in scope.
+    const currentPath = await resolveWorkspacePath(context.cwd);
+    const stamped = stampWorkspaceTool(config, currentPath, context.tool ?? 'workbuddy');
+    if (pruned || stamped) {
+      await saveLocalAgentConfig(config);
+    }
   }
 
   try {
-    const reportPayload = await buildReportPayload(config, context);
-    await localAgentFetch(config, tag, 'report', {
-      method: 'POST',
-      body: JSON.stringify(reportPayload),
-    });
-    log.debug(`${tag} report OK`);
+    if (!skipReport) {
+      const reportPayload = await buildReportPayload(config, context);
+      await localAgentFetch(config, tag, 'report', {
+        method: 'POST',
+        body: JSON.stringify(reportPayload),
+      });
+      log.debug(`${tag} report OK`);
+    }
 
     const syncPayload = await buildSyncPayload(config, context);
     const syncResponse = await localAgentFetch<{
@@ -1987,6 +2296,35 @@ export async function teardownLocalAgentPlugins(): Promise<void> {
 }
 
 /**
+ * Remove every HTTP-source agent hook recorded in the agent-hook manifest from
+ * each tool's settings, then clear the manifest. Best-effort; used by
+ * `source remove-http` and `teamai uninstall` teardown (issue #238). Safe to call
+ * when no config / no manifest exists.
+ */
+export async function removeAllAgentHooks(): Promise<void> {
+  const config = await loadLocalAgentConfig();
+  if (!config) return;
+  const manifest = await loadAgentHookManifest();
+  const slugs = Object.keys(manifest);
+  if (slugs.length === 0) return;
+  for (const slug of slugs) {
+    const rec = manifest[slug];
+    try {
+      if (rec.tool === 'hermes') {
+        const { removeHermesAgentHook } = await import('./hermes-hooks.js');
+        await removeHermesAgentHook({ slug, event: rec.event, command: rec.command });
+      } else {
+        const settingsPath = resolveToolSettingsPath(config, rec.tool);
+        await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
+      }
+    } catch (e) {
+      log.debug(`agent hook [${slug}] teardown failed: ${(e as Error).message}`);
+    }
+  }
+  await saveAgentHookManifest({});
+}
+
+/**
  * Tear down the HTTP local-agent bypass: uninstall every resource recorded in the
  * manifest (skills/rules/claudemd, across all scopes) from the AI tool dirs, then
  * remove the whole ~/.teamai/local-agent/ directory (config + manifest).
@@ -2021,6 +2359,7 @@ export async function removeLocalAgentHttp(): Promise<void> {
     }
   }
 
+  await removeAllAgentHooks();
   await remove(getLocalAgentHome());
   log.success('HTTP source removed (resources uninstalled, config cleared).');
 }

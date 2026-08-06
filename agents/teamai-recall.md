@@ -32,9 +32,39 @@ teamai recall --check "<3-6 keywords from the task>"
   meaningful coverage for this task. Emit exactly one line
   `No relevant team knowledge found for: <query>` and **stop** — do not
   proceed to Step 1–5, do not read any files, do not run a full recall.
-- If the output starts with `RELEVANT`: continue to Step 1.
+- If the output starts with `RELEVANT`: check complexity (see below),
+  then continue to Step 1 or take the LOW shortcut.
 - If the command fails or `teamai` is not on PATH: skip the precheck and
   continue to Step 1 (do not block on precheck failure).
+
+#### Complexity quick-judge (after RELEVANT)
+
+> **Format dependency**: The LOW shortcut parses `title=` and `sources=` from `--check` stdout. If `emitCheckVerdict` output format changes, update this section.
+
+Scan the original task description for complexity signals:
+
+**LOW signals** (all must hold):
+- Task targets a single file or a single field/parameter change
+- Keywords present: 改名/rename/修改名称/修改字段/add parameter/加参数/
+  改配置/change config/update constant/修改常量/加个字段/加一个参数
+- No multi-module interaction, no new flow/controller/class creation
+
+**If LOW and `--check` output includes `title=` and `sources=`**: use them
+directly to construct a short response (≤500 chars):
+
+```
+Relevant knowledge: <title from --check output>
+Suggested files: <sources from --check output>
+<!-- teamai:recalled-doc-ids: [] -->
+```
+
+**Stop here** — skip Steps 1–5 entirely.
+
+**If LOW but `--check` output lacks `sources=`**: run
+`teamai recall <keywords> --depth context`, take only the top-1 result's
+title + Sources, return the same short format above, and skip Steps 1–5.
+
+**If not LOW**: continue to Step 1 as normal.
 
 ### Step 1 — Classify question type and choose retrieval depth
 
@@ -56,6 +86,19 @@ corresponding file and extract relevant sections. Skip BM25 search.
 > - `--depth context` (default): searches overview + modules + docs (best for most queries)
 > - `--depth lookup`: searches ALL evidence pages including raw symbol lists (for precise file:line lookups)
 > - `--depth route`: returns the router table only (use when you need to discover what projects exist)
+
+**Task complexity heuristic — choose depth by task type:**
+
+| Signal in query | Task type | Depth | Rationale |
+|-----------------|-----------|-------|-----------|
+| feature/新功能/新增功能/大功能/redesign/重构整个/multi-file | Feature (large) | `--depth lookup` | Need full file coverage to avoid missing files |
+| 添加/修改/如何改/实现/implement/refactor | Edit (medium) | `--depth lookup` | Need symbol-level anchors |
+| bugfix/修复/fix/patch/typo/单文件/one-file | Bugfix (small) | `--depth context` | Fast pass; skip graph-index drill-down |
+
+For **bugfix/small** tasks: use `--depth context` only, skip the
+graph-index.json deep read in the edit/change section below, and keep
+output ≤ 1500 characters. The main conversation already knows which
+file to fix.
 
 **Edit/change queries** (keywords: 新增/添加/修改/如何改/重构/实现; how to add/change/modify/implement): use `--depth lookup` in Step 3 so facts/relation pages are visible. After BM25 recall, also read these directly (bypassing BM25 ranking uncertainty):
 1. `teamwiki/evidence/code/<project>/.indices/graph-index.json` (priority; fall back to `teamwiki/.indices/graph-index.json` if absent) — when surfacing edges, pick 1–3 entry files most relevant to the task and read only their forward direct-dep edges (`from` == entry file); skip reverse expansion (each edge: `{from, to, relation}` — from/to are file paths, relation is type e.g. DEPENDS_ON)
@@ -148,6 +191,16 @@ Relevant files (from graph-index.json: first pick 1–3 entry files most relevan
 Suggested reading order: <contract/types first> → <impl> → ...
 
 > Edges capped at 10; see graph-index.json for full graph. Keep this section ≤ 300 characters. Omit this section for non-edit queries.
+
+### Candidate change files
+
+If the `teamai recall` output contains a
+`--- Candidate change files ---` section, reproduce it here verbatim.
+These are source files and their forward dependencies from the code
+graph — the main conversation should check whether its planned
+changes cover all of them.
+
+If no candidate files section was returned, omit this heading entirely.
 
 ### Gaps (if relevant)
 
