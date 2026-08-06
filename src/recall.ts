@@ -157,7 +157,7 @@ export function formatResults(results: ScopedSearchResult[]): string {
   lines.push('');
 
   for (let i = 0; i < results.length; i++) {
-    const { entry, score, scope, learningsBase, sources } = results[i];
+    const { entry, score, scope, learningsBase, sources, matchedTerms, missingTerms } = results[i];
     const voteStr = entry.votes > 0 ? ` ★${entry.votes}` : '';
     const scopeStr = scope ? ` [${scope}]` : '';
     // Phase 1: prepend a [type] tag so callers can quickly tell which knowledge
@@ -168,6 +168,13 @@ export function formatResults(results: ScopedSearchResult[]): string {
     lines.push(`Author: ${entry.author || 'unknown'} | Date: ${entry.date || 'unknown'} | Score: ${score.toFixed(1)}`);
     if (entry.tags.length > 0) {
       lines.push(`Tags: ${entry.tags.join(', ')}`);
+    }
+    // Term coverage lets the caller judge relevance itself: a hit whose every
+    // discriminating term is missing is topically adjacent, not an answer.
+    // Score alone cannot express this.
+    if (missingTerms && missingTerms.length > 0) {
+      const matchedStr = matchedTerms && matchedTerms.length > 0 ? matchedTerms.join(', ') : 'none';
+      lines.push(`Matched: ${matchedStr} | Missing: ${missingTerms.join(', ')}`);
     }
     const filePath = entry.path
       ? entry.path
@@ -317,8 +324,21 @@ export async function recall(
     const rounded = Math.round(score * 10) / 10;
     const verdict = isRelevantScore(score, isCodebaseHit, baseline) ? 'RELEVANT' : 'NOT_RELEVANT';
     let line = `${verdict} score=${rounded.toFixed(1)}`;
+    // Emit the cutoff too: a bare score is uninterpretable by the caller.
+    const cutoff = isCodebaseHit
+      ? CODEBASE_RELEVANCE_THRESHOLD
+      : Math.max((baseline > 0 ? baseline : 1) * LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR);
+    line += ` threshold=${(Math.round(cutoff * 10) / 10).toFixed(1)}`;
     if (verdict === 'RELEVANT' && topResult) {
       line += ` title="${topResult.entry.title}"`;
+      // Term coverage: RELEVANT means "worth reading files", not "covers your
+      // subject". Missing terms let the caller make that second call itself.
+      if (topResult.matchedTerms && topResult.matchedTerms.length > 0) {
+        line += ` matched=${topResult.matchedTerms.join(',')}`;
+      }
+      if (topResult.missingTerms && topResult.missingTerms.length > 0) {
+        line += ` missing=${topResult.missingTerms.join(',')}`;
+      }
       if (topResult.sources && topResult.sources.length > 0) {
         const srcStr = topResult.sources.map((s) => s.desc ? `${s.path}(${s.desc})` : s.path).join(',');
         line += ` sources=${srcStr}`;

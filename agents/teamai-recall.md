@@ -34,6 +34,12 @@ teamai recall --check "<3-6 keywords from the task>"
   proceed to Step 1–5, do not read any files, do not run a full recall.
 - If the output starts with `RELEVANT`: check complexity (see below),
   then continue to Step 1 or take the LOW shortcut.
+  `RELEVANT` means only "something scored above the threshold, so reading
+  files is worth the cost" — **not** "the knowledge base covers your
+  subject". The verdict also reports `threshold=` (the cutoff the score was
+  compared against) and, for the top hit, `matched=` / `missing=` listing
+  which query terms it covers. If your discriminating terms appear under
+  `missing=`, expect Step 4 to conclude there is no real coverage.
 - If the command fails or `teamai` is not on PATH: skip the precheck and
   continue to Step 1 (do not block on precheck failure).
 
@@ -115,6 +121,26 @@ none exists, silently skip.
 Pick 3–6 high-signal keywords from the user query. Strip filler words
 ("the", "how", "please"). Mix English and Chinese terms when both appear.
 
+**Also drop generic troubleshooting vocabulary.** The index scores by how
+rare a word is in the corpus, so words describing *any* debugging task —
+排查 / 失败 / 问题 / 分析 / 原因 / 服务 / 请求 / 错误 / troubleshoot /
+debug / issue / error / fix — carry almost no signal in a knowledge base
+where most entries are troubleshooting notes. They crowd out the terms
+that actually identify your subject.
+
+Keep the terms that pin down *this* task: proper nouns, customer or
+product names, service IDs, error codes, versions, symbol names
+(牧原, AppID, GLM-5.2, svc-3jvxo1tb, RuntimeError), plus the specific
+technology or subsystem (sglang, rotary embedding, CLS).
+
+```
+task:  "牧原 推理服务 请求失败 客户 AppID 错误率 排查"
+query: "牧原 AppID 推理服务"        # dropped 请求/失败/客户/错误率/排查
+```
+
+Note which of your terms are the discriminating ones — you will check
+them against the results in Step 4.
+
 ### Step 3 — Run the teamai recall command
 
 Execute with the appropriate depth:
@@ -140,8 +166,28 @@ stop.
 
 ### Step 4 — Read the top hits and drill into codebase
 
-For each hit returned by `teamai recall`, read the source file directly
-(use `Read`) and condense each into **one or two sentences**.
+**First, judge coverage — this is your call, not the CLI's.** Each result
+carries a `Matched: … | Missing: …` line listing which of your query terms
+appear in its title or tags (the line is omitted when every term matched).
+Score and `RELEVANT` only tell you a hit is worth opening; they cannot tell
+you whether it covers your subject.
+
+If your discriminating terms appear in the `Missing:` list of every result,
+the knowledge base has no entry on that specific subject. Say so plainly
+instead of presenting topically-adjacent entries as answers:
+
+```
+No entry covers 牧原 / AppID. Closest topical matches (likely not applicable):
+1. **[learnings] 昆仑芯-glm-5-0-pd-分离推理服务...** — matched 推理服务 only
+```
+
+Use judgement rather than counting: a term can be missing from tags yet
+discussed in the body, and a matched term can be a coincidence (a query for
+`React hooks` matching a learning about `git hooks`). When a hit looks
+promising despite a missing term, open the file and decide from its content.
+
+For each hit you keep, read the source file directly (use `Read`) and
+condense each into **one or two sentences**.
 
 **For codebase hits** (path contains `teamwiki/evidence/`):
 - If the hit is a raw facts page (component.md, interface.md), prefer
@@ -243,4 +289,9 @@ If no candidate files section was returned, omit this heading entirely.
 - When zero hits are found but `teamwiki/` exists, check if the query
   relates to a known gap before returning "no knowledge found".
 - When `teamai recall --check` returns `NOT_RELEVANT`, do not continue — return the no-knowledge line and stop. The precheck exists to avoid wasted retrieval on unrelated tasks.
+- **Relevance is your judgement.** `teamai recall` returns its top 5 by score
+  without filtering on coverage; it reports `Matched:`/`Missing:` so you can
+  decide. Never present hits whose discriminating terms are all missing as if
+  they answered the question — report the gap instead. Recall returning
+  results is not evidence that the knowledge exists.
 - **Do not invent call relationships.** The "Change entry points" section must be derived solely from graph-index.json edges and dependency-paths.md. If those files are absent or do not cover the queried files, write `relation data not covered` and omit the section — do not guess.

@@ -503,7 +503,8 @@ teamai recall "GPU out of memory"
 - Searches the project scope when the current working directory contains its config; with `inheritUserScope: true`, searches project first and user second, labeling results `[project]`/`[user]`. Otherwise searches user scope
 - For the same resource type and filename, the project entry wins; different resource types with the same filename remain separate
 - Consulted active-scope knowledge is automatically upvoted. Inherited user hits remain read-only while the project is active
-- A lightweight relevance precheck is available via `teamai recall --check "<keywords>"`, which prints `RELEVANT score=<n>` or `NOT_RELEVANT score=<n>` without reading files or upvoting — the recall subagent uses it to skip retrieval on unrelated tasks
+- A lightweight relevance precheck is available via `teamai recall --check "<keywords>"`, which prints `RELEVANT score=<n> threshold=<n>` or `NOT_RELEVANT score=<n> threshold=<n>` without reading files or upvoting — the recall subagent uses it to skip retrieval on unrelated tasks. For a `RELEVANT` top hit it also reports `matched=`/`missing=` — the query terms that hit its title/tags and those that did not
+- `RELEVANT` means a hit cleared the score threshold, i.e. reading files is worth the cost — it does not mean the knowledge base covers your subject. Use the `matched=`/`missing=` terms (and the `Matched:`/`Missing:` lines on full results) to make that judgement: a hit missing all your distinctive terms is topically adjacent, not an answer
 
 ### Enabling / Disabling Recall
 

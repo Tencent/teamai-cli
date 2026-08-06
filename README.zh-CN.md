@@ -155,7 +155,12 @@ Author: member-a | Score: 18.5 | Tags: troubleshooting, networking
 
 [2/2] Deployment configuration best practices [project]
 Author: member-b | Score: 12.0 | Tags: deploy, config
+Matched: conflict | Missing: port
 ```
+
+当某条结果未覆盖全部查询词时，会输出 `Matched: … | Missing: …` 行（全部命中时省略）。
+recall 按分数返回 top 结果，**不会**按覆盖度过滤：若你的关键区分词全在 `Missing:` 里，
+说明这条只是主题相邻，并非答案。这个判断由调用方来做 —— 分数本身无法表达它。
 
 **检索内容覆盖两部分**：
 

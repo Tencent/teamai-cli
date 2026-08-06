@@ -632,6 +632,11 @@ export async function loadIndex(indexPath?: string): Promise<SearchIndex | null>
 export interface SearchResult {
   entry: SearchIndexEntry;
   score: number;
+  /** Query words matching this entry's title or tags. Absent for codebase-graph
+   *  hits, which are scored by BM25 over pages rather than per-term coverage. */
+  matchedTerms?: string[];
+  /** Query words matching neither its title nor its tags. */
+  missingTerms?: string[];
 }
 
 /**
@@ -685,6 +690,13 @@ export function search(
   // ranking is unaffected.
   const lengthNorm = Math.sqrt(queryTokens.length);
 
+  // Report coverage per whitespace-separated query word rather than per internal
+  // token, so callers see the terms they actually typed ("AppID") instead of
+  // tokenizer fragments ("app", "id"). Relevance is the caller's judgement to
+  // make; search only states which of their terms this entry covers.
+  const queryWords = query.trim().split(/\s+/).filter(Boolean);
+  const wordTokens = queryWords.map((w) => ({ word: w, tokens: tokenize(w) }));
+
   const results: SearchResult[] = [];
 
   for (const entry of index.entries) {
@@ -736,7 +748,15 @@ export function search(
         score *= entry.hotness;
       }
 
-      results.push({ entry, score });
+      // Coverage per query word: matched when any of its tokens hits title/tag.
+      const matchedTerms: string[] = [];
+      const missingTerms: string[] = [];
+      for (const { word, tokens: wt } of wordTokens) {
+        const hit = wt.some((t) => entryTokens.has(`title:${t}`) || entryTokens.has(`tag:${t}`));
+        (hit ? matchedTerms : missingTerms).push(word);
+      }
+
+      results.push({ entry, score, matchedTerms, missingTerms });
     }
   }
 

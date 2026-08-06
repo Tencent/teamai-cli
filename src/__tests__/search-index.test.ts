@@ -266,6 +266,25 @@ Docker bridge 网络的常见配置方法。
     expect(results).toHaveLength(0);
   });
 
+  it('reports term coverage per query word, not per internal token', async () => {
+    const index = await loadIndex();
+    // "AppID" tokenizes to app/id; the caller should see the word they typed.
+    const results = search('oom AppID', index!);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].matchedTerms).toContain('oom');
+    expect(results[0].missingTerms).toContain('AppID');
+  });
+
+  it('marks every term missing when a hit only matches on body text', async () => {
+    const index = await loadIndex();
+    // "troubleshooting" is a tag on k8s-oom, so the entry surfaces; "部署"
+    // appears only in another doc's body and belongs to no title or tag.
+    const results = search('troubleshooting 部署', index!);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].matchedTerms).toEqual(['troubleshooting']);
+    expect(results[0].missingTerms).toEqual(['部署']);
+  });
+
   it('normalizes score by query length so scores are comparable across queries', async () => {
     const index = await loadIndex();
     // Same single matching term, but the second query pads it with words that
