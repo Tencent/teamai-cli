@@ -1,7 +1,7 @@
 import path from 'node:path';
 import matter from 'gray-matter';
 import { readFileSafe, readJson, writeJson, listFiles, listFilesRecursive, listDirs, pathExists } from './fs.js';
-import { tokenize, MAX_TOKENIZE_CHARS } from './tokenizer.js';
+import { tokenize, wordSegments, MAX_TOKENIZE_CHARS } from './tokenizer.js';
 import { log } from './logger.js';
 import {
   SEARCH_INDEX_VERSION,
@@ -39,7 +39,9 @@ function getSearchIndexPath(): string {
 //      │
 //      ├─ tokenize(query)
 //      ├─ for each entry: count matching tokens
-//      ├─ boost: title match × 3, tag match × 2, vote bonus
+//      ├─ boost: title match × 3, tag match × 2 (IDF-weighted)
+//      ├─ normalize by sqrt(query token count), then add vote bonus
+//      ├─ record which query words the entry covers (matched/missing)
 //      └─ return sorted results
 //
 
@@ -230,7 +232,7 @@ export function inferDomain(
 }
 
 // Re-export tokenizer for external callers
-export { tokenize, MAX_TOKENIZE_CHARS };
+export { tokenize, wordSegments, MAX_TOKENIZE_CHARS };
 
 /**
  * Parse a learning document's frontmatter and body.
@@ -690,12 +692,14 @@ export function search(
   // ranking is unaffected.
   const lengthNorm = Math.sqrt(queryTokens.length);
 
-  // Report coverage per whitespace-separated query word rather than per internal
-  // token, so callers see the terms they actually typed ("AppID") instead of
-  // tokenizer fragments ("app", "id"). Relevance is the caller's judgement to
-  // make; search only states which of their terms this entry covers.
-  const queryWords = query.trim().split(/\s+/).filter(Boolean);
-  const wordTokens = queryWords.map((w) => ({ word: w, tokens: tokenize(w) }));
+  // Report coverage per query word, not per internal token, so callers see the
+  // terms they typed ("AppID") rather than tokenizer fragments ("app", "id").
+  // Words come from the segmenter rather than a whitespace split: languages that
+  // do not delimit words with spaces would otherwise collapse into a single
+  // "word" that counts as matched whenever any fragment of it hits, reporting
+  // full coverage for an entry that missed every distinctive term.
+  // Relevance is the caller's judgement; search only states what it covers.
+  const wordTokens = wordSegments(query).map((w) => ({ word: w, tokens: tokenize(w) }));
 
   const results: SearchResult[] = [];
 

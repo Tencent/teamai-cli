@@ -45,7 +45,7 @@ teamai recall --check "<3-6 keywords from the task>"
 
 #### Complexity quick-judge (after RELEVANT)
 
-> **Format dependency**: The LOW shortcut parses `title=` and `sources=` from `--check` stdout. If `emitCheckVerdict` output format changes, update this section.
+> **Format dependency**: The LOW shortcut parses `title=` and `sources=` from `--check` stdout. The full field set is `<VERDICT> score= threshold=` followed, for a `RELEVANT` hit, by `title="…" [matched=…] [missing=…] [sources=…]`. `title` is quote-delimited and `sources` comes last, so both stay extractable as fields are added. If `emitCheckVerdict` output format changes, update this section.
 
 Scan the original task description for complexity signals:
 
@@ -122,20 +122,21 @@ Pick 3–6 high-signal keywords from the user query. Strip filler words
 ("the", "how", "please"). Mix English and Chinese terms when both appear.
 
 **Also drop generic troubleshooting vocabulary.** The index scores by how
-rare a word is in the corpus, so words describing *any* debugging task —
-排查 / 失败 / 问题 / 分析 / 原因 / 服务 / 请求 / 错误 / troubleshoot /
-debug / issue / error / fix — carry almost no signal in a knowledge base
-where most entries are troubleshooting notes. They crowd out the terms
-that actually identify your subject.
+rare a word is in the corpus, so words describing *any* debugging task
+carry almost no signal in a knowledge base where most entries are
+troubleshooting notes. They crowd out the terms that identify your subject.
+Judge by that principle rather than by a fixed list — 排查 / 失败 / 问题 /
+分析 / troubleshoot / debug / issue / error / fix are examples, and the same
+reasoning applies to their equivalents in any language.
 
 Keep the terms that pin down *this* task: proper nouns, customer or
 product names, service IDs, error codes, versions, symbol names
-(牧原, AppID, GLM-5.2, svc-3jvxo1tb, RuntimeError), plus the specific
-technology or subsystem (sglang, rotary embedding, CLS).
+(`acme-corp`, `AccountID`, `v2.1.3`, `svc-a1b2c3`, `RuntimeError`), plus the
+specific technology or subsystem (`postgres`, `connection pool`, `oauth`).
 
 ```
-task:  "牧原 推理服务 请求失败 客户 AppID 错误率 排查"
-query: "牧原 AppID 推理服务"        # dropped 请求/失败/客户/错误率/排查
+task:  "acme-corp inference service request failures AccountID error rate triage"
+query: "acme-corp AccountID inference service"   # dropped request/failures/error rate/triage
 ```
 
 Note which of your terms are the discriminating ones — you will check
@@ -177,8 +178,8 @@ the knowledge base has no entry on that specific subject. Say so plainly
 instead of presenting topically-adjacent entries as answers:
 
 ```
-No entry covers 牧原 / AppID. Closest topical matches (likely not applicable):
-1. **[learnings] 昆仑芯-glm-5-0-pd-分离推理服务...** — matched 推理服务 only
+No entry covers acme-corp / AccountID. Closest topical matches (likely not applicable):
+1. **[learnings] inference-service-gateway-tracing** — matched "inference service" only
 ```
 
 Use judgement rather than counting: a term can be missing from tags yet

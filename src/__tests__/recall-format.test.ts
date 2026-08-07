@@ -100,11 +100,11 @@ describe('formatResults — term coverage', () => {
         score: 16.2,
         scope: 'user',
         matchedTerms: ['推理服务'],
-        missingTerms: ['牧原', 'AppID'],
+        missingTerms: ['acme-corp', 'AccountID'],
       },
     ]);
 
-    expect(output).toContain('Matched: 推理服务 | Missing: 牧原, AppID');
+    expect(output).toContain('Matched: 推理服务 | Missing: acme-corp, AccountID');
   });
 
   it('reports "none" when the hit covers no query term', () => {

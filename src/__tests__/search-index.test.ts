@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { tokenize, buildIndex, loadIndex, search } from '../utils/search-index.js';
+import { tokenize, wordSegments, buildIndex, loadIndex, search } from '../utils/search-index.js';
+import { computeIdfBaseline, isRelevantScore } from '../recall.js';
 
 // ─── Test helpers ──────────────────────────────────────────
 
@@ -95,6 +96,32 @@ describe('tokenize', () => {
   it('still recovers words the segmenter splits into single chars', () => {
     // Segmenter yields 排|查, so the bigram is what makes "排查" searchable.
     expect(tokenize('排查')).toContain('排查');
+  });
+});
+
+describe('wordSegments', () => {
+  it('splits space-free CJK into words a reader would name', () => {
+    expect(wordSegments('推理服务崩溃')).toEqual(['推理', '服务', '崩溃']);
+  });
+
+  it('keeps compound identifiers whole instead of fragmenting them', () => {
+    // tokenize() would yield app/id; reporting terms must not.
+    expect(wordSegments('客户AppID错误')).toEqual(['客户', 'AppID', '错误']);
+  });
+
+  it('rejoins adjacent single-char CJK segments', () => {
+    // Segmenter splits 排查 into 排|查; reporting both would be noise.
+    expect(wordSegments('排查')).toEqual(['排查']);
+    expect(wordSegments('NUMA 排查')).toEqual(['NUMA', '排查']);
+  });
+
+  it('does not join single chars across punctuation', () => {
+    expect(wordSegments('中，文')).toEqual(['中', '文']);
+  });
+
+  it('returns empty for blank input', () => {
+    expect(wordSegments('')).toEqual([]);
+    expect(wordSegments('   ')).toEqual([]);
   });
 });
 
@@ -283,6 +310,31 @@ Docker bridge 网络的常见配置方法。
     expect(results.length).toBeGreaterThan(0);
     expect(results[0].matchedTerms).toEqual(['troubleshooting']);
     expect(results[0].missingTerms).toEqual(['部署']);
+  });
+
+  it('reports coverage for space-free CJK queries instead of claiming full coverage', async () => {
+    const index = await loadIndex();
+    // A whitespace split would make this one "word", matched because 排查 hits
+    // the k8s-oom title — reporting full coverage while 部署 matched nothing.
+    const results = search('排查部署', index!);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].matchedTerms).toContain('排查');
+    expect(results[0].missingTerms).toContain('部署');
+  });
+
+  it('keeps normalized scores above the relevance threshold for genuine hits', async () => {
+    const index = await loadIndex();
+    const baseline = computeIdfBaseline([index!]);
+    // Length normalization must not push real hits under the cutoff. A longer
+    // query matches more terms, so numerator and divisor grow together — pin
+    // that here so a future change to either side cannot silently suppress
+    // long queries.
+    const short = search('oom', index!);
+    const long = search('k8s pod oom 排查指南 内存 超限 troubleshooting', index!);
+    expect(short.length).toBeGreaterThan(0);
+    expect(long.length).toBeGreaterThan(0);
+    expect(isRelevantScore(short[0].score, false, baseline)).toBe(true);
+    expect(isRelevantScore(long[0].score, false, baseline)).toBe(true);
   });
 
   it('normalizes score by query length so scores are comparable across queries', async () => {

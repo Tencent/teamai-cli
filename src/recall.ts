@@ -12,8 +12,10 @@ import { recordRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
 
 /** Relevance threshold for codebase graph hits.
- *  These are log-compressed to a bounded [0,10] range (see ~line 313),
- *  so an absolute threshold is stable here — it does not drift with corpus size. */
+ *  These are log-compressed to a bounded [0,10] range (see `queryCodeKnowledge`
+ *  result mapping below), so an absolute threshold is stable here — it does not
+ *  drift with corpus size, and it is unaffected by the query-length
+ *  normalization that applies to learnings scores. */
 const CODEBASE_RELEVANCE_THRESHOLD = 4.0;
 
 /** Relevance threshold for learnings/docs hits, expressed as a fraction of the
@@ -23,9 +25,14 @@ const CODEBASE_RELEVANCE_THRESHOLD = 4.0;
  *  hardcoded absolute cutoff silently drifts. Normalizing by the baseline
  *  keeps the decision stable across corpus sizes.
  *
- *  Calibrated against the current corpus (N=25): a single-token-match baseline
- *  is log(26/2)+1 ≈ 3.56, giving an effective cutoff of ≈4.81 — slightly
- *  stricter than the historical hardcoded 4.0.
+ *  Scores are also divided by sqrt(query token count) in `search` so that they
+ *  are comparable across queries of different lengths — these thresholds apply
+ *  to that normalized scale. Normalization does not systematically penalize long
+ *  queries: a longer query matches more terms, so the numerator grows roughly in
+ *  step with the divisor. Measured on a 163-entry corpus, true positives ranged
+ *  from 11.2 (a 3-token query) to 63.2 (19 tokens), all well clear of the 7.3
+ *  cutoff, while unrelated queries scored 0 — they are excluded by the
+ *  title/tag gate in `search` rather than by this threshold.
  *
  *  IMPORTANT: this ratio is only "stricter" for N ≳ 20 (where baseline×1.35 >
  *  4.0). For small corpora (N=1–5) the ratio gives a cutoff of 1.35–3.57, which
@@ -42,7 +49,9 @@ const LEARNINGS_RELEVANCE_RATIO = 1.35;
  *  entries) it drops well below the historical absolute cutoff of 4.0 — a single
  *  tag match would score ~1.7-3.6 and wrongly pass. Taking max(relative, floor)
  *  keeps the stricter pre-existing behavior until the corpus is large enough
- *  (N >= ~20) for the relative threshold to exceed the floor on its own. */
+ *  (N >= ~20) for the relative threshold to exceed the floor on its own.
+ *
+ *  Like the ratio above, this compares against query-length-normalized scores. */
 const LEARNINGS_ABSOLUTE_FLOOR = 4.0;
 
 /**
