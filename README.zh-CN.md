@@ -34,6 +34,8 @@ npm install -g teamai-cli
 
 > 个人使用无需单独建仓：`teamai init` 会检查目标仓库，不存在时自动创建。
 
+> **还没有团队仓库？** 可以从内置了成套 skills、rules、review agents 的模板起步。浏览 [teamai-hub](https://github.com/teamai-hub) org，点 **Use this template** 生成自己的仓库，再对它执行 `teamai init`。
+
 ### 团队成员
 
 ```bash

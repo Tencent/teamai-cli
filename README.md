@@ -34,6 +34,8 @@ Create a shared-experience repo on your git host (GitHub, TGit, or CNB), **grant
 
 > Solo use needs no separate repo setup: `teamai init` checks the target repo and creates it automatically if it doesn't exist.
 
+> **No team repo yet?** Start from a template pre-loaded with production-ready skills, rules, and review agents. Browse the [teamai-hub](https://github.com/teamai-hub) org, click **Use this template**, then `teamai init` against your new repo.
+
 ### Team members
 
 ```bash
