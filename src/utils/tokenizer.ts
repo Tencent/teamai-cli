@@ -107,6 +107,10 @@ export function tokenCount(text: string): number {
  * Adjacent single-CJK-char segments are rejoined, mirroring the bigram recovery
  * in `tokenize`: the segmenter splits "排查" into 排|查, and reporting those as
  * two separate terms would be noise rather than the word the caller typed.
+ * A lone single-char segment directly after a multi-char CJK word is treated the
+ * same way — the segmenter peels suffixes off ("错误率" → 错误|率, "中间件" →
+ * 中间|件), and a bare 率 or 件 is not a term any caller would recognise as
+ * theirs. Such a char is appended to the preceding word instead.
  */
 export function wordSegments(text: string): string[] {
   if (!text) return [];
@@ -114,15 +118,25 @@ export function wordSegments(text: string): string[] {
     ? text.slice(0, MAX_TOKENIZE_CHARS) : text;
   const words: string[] = [];
   let run: string[] = [];
+  // Whether the last emitted word was a multi-char CJK word, i.e. one the
+  // segmenter may have peeled a suffix char off.
+  let lastWasCjkWord = false;
 
   const flushRun = (): void => {
-    if (run.length > 0) words.push(run.join(''));
+    if (run.length === 1 && lastWasCjkWord) {
+      // Lone trailing char: a peeled suffix, not a word of its own.
+      words[words.length - 1] += run[0];
+    } else if (run.length > 0) {
+      words.push(run.join(''));
+      lastWasCjkWord = false;
+    }
     run = [];
   };
 
   for (const seg of sharedSegmenter.segment(input)) {
     if (!seg.isWordLike) {
       flushRun();
+      lastWasCjkWord = false;
       continue;
     }
     if (seg.segment.length === 1 && /[一-鿿]/.test(seg.segment)) {
@@ -131,6 +145,7 @@ export function wordSegments(text: string): string[] {
     }
     flushRun();
     words.push(seg.segment);
+    lastWasCjkWord = /^[一-鿿]+$/.test(seg.segment);
   }
   flushRun();
 

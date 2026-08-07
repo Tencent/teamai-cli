@@ -115,6 +115,19 @@ describe('wordSegments', () => {
     expect(wordSegments('NUMA 排查')).toEqual(['NUMA', '排查']);
   });
 
+  it('reattaches suffix chars the segmenter peels off CJK words', () => {
+    // 错误率 segments as 错误|率; a bare 率 is not a term the caller would
+    // recognise, and it would permanently occupy a slot in Missing:.
+    expect(wordSegments('错误率')).toEqual(['错误率']);
+    expect(wordSegments('中间件')).toEqual(['中间件']);
+    expect(wordSegments('使用率 成功率')).toEqual(['使用率', '成功率']);
+  });
+
+  it('keeps a genuine single-char word separate when whitespace delimits it', () => {
+    expect(wordSegments('服务 猫')).toEqual(['服务', '猫']);
+    expect(wordSegments('猫')).toEqual(['猫']);
+  });
+
   it('does not join single chars across punctuation', () => {
     expect(wordSegments('中，文')).toEqual(['中', '文']);
   });
@@ -291,6 +304,27 @@ Docker bridge 网络的常见配置方法。
     const index = await loadIndex();
     const results = search('nonexistent keyword xyz', index!);
     expect(results).toHaveLength(0);
+  });
+
+  it('collapses duplicate entries so they do not consume two result slots', async () => {
+    // Same learning shared twice: identical content, different filename suffix.
+    const dup = `---
+title: "Duplicate Learning"
+author: carol
+date: 2026-03-01
+tags: [duplicate, oom]
+---
+
+Body about oom.
+`;
+    writeLearningDoc(learningsDir, 'dup-2026-03-01-aaa.md', dup);
+    writeLearningDoc(learningsDir, 'dup-2026-03-01-bbb.md', dup);
+    await buildIndex(learningsDir);
+    const index = await loadIndex();
+
+    const results = search('duplicate', index!);
+    const titles = results.map((r) => r.entry.title);
+    expect(titles.filter((t) => t === 'Duplicate Learning')).toHaveLength(1);
   });
 
   it('reports term coverage per query word, not per internal token', async () => {

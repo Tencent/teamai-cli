@@ -770,5 +770,31 @@ export function search(
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
 
-  return results.slice(0, limit);
+  // Collapse duplicates before truncating. The same learning can be shared
+  // twice, landing in the corpus as two files whose only difference is the
+  // random filename suffix; both score identically and would otherwise consume
+  // two of the `limit` slots, silently narrowing the result set.
+  //
+  // The key must not merge genuinely distinct entries that happen to share a
+  // title, so it covers the fields a re-share copies verbatim. Entries differing
+  // in tags or body differ in token count, and any scoring difference separates
+  // them too.
+  const seen = new Set<string>();
+  const deduped: SearchResult[] = [];
+  for (const r of results) {
+    const key = [
+      r.entry.type,
+      r.entry.title,
+      r.entry.date,
+      r.entry.author,
+      r.entry.tokens.length,
+      r.score,
+    ].join(' ');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(r);
+    if (deduped.length === limit) break;
+  }
+
+  return deduped;
 }
