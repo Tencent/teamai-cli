@@ -13,6 +13,7 @@ import {
   type DashboardEvent,
 } from './types.js';
 import { getDashboardHtml } from './dashboard-html.js';
+import { scorePrompt } from './prompt-scorer.js';
 
 // ─── Dashboard server architecture ──────────────────────
 //
@@ -157,6 +158,39 @@ export async function startDashboard(port?: number): Promise<void> {
 
       req.on('close', () => {
         clients.delete(res);
+      });
+      return;
+    }
+
+    if (url.pathname === '/api/judge' && req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', async () => {
+        try {
+          const parsed = JSON.parse(body) as Record<string, unknown>;
+          const prompt = parsed.prompt;
+          if (!prompt || typeof prompt !== 'string') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'prompt is required and must be a string' }));
+            return;
+          }
+          const lang = typeof parsed.lang === 'string' ? parsed.lang : undefined;
+          const result = await scorePrompt(prompt, lang);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'unknown error';
+          if (message.includes('HUNYUAN_API_KEY not configured')) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'HUNYUAN_API_KEY not configured' }));
+          } else if (message.includes('Hunyuan API error') || message.includes('abort')) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'LLM service unavailable' }));
+          } else {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: message }));
+          }
+        }
       });
       return;
     }

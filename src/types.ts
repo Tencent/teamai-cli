@@ -517,6 +517,14 @@ export interface DashboardEvent {
   prompts?: number;
 }
 
+/** Prompt quality score across three dimensions. */
+export interface PromptScore {
+  overall: number;
+  intentClarity: number;
+  scopeSpecificity: number;
+  contextSufficiency: number;
+}
+
 export interface DashboardSession {
   /** Unique session identifier */
   sessionId: string;
@@ -555,6 +563,8 @@ export interface DashboardSession {
   promptCount: number;
   /** Cumulative token usage for this session (zero when no transcript usage). */
   tokens: TokenUsage;
+  /** Prompt quality score computed by the rule-based scorer. */
+  promptScore?: PromptScore;
 }
 
 export const DASHBOARD_EVENTS_DIR = `${TEAMAI_HOME}/dashboard`;

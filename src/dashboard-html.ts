@@ -199,6 +199,25 @@ export function getDashboardHtml(port: number): string {
       font-weight: 600;
       cursor: help;
     }
+    .prompt-score-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-weight: 600;
+      cursor: help;
+    }
+    .prompt-score-badge.score-high {
+      background: rgba(16, 185, 129, 0.15);
+      color: #10b981;
+    }
+    .prompt-score-badge.score-mid {
+      background: rgba(59, 130, 246, 0.15);
+      color: #3b82f6;
+    }
+    .prompt-score-badge.score-low {
+      background: rgba(245, 158, 11, 0.15);
+      color: #f59e0b;
+    }
     .status-text {
       font-size: 12px;
       color: var(--text-muted);
@@ -593,6 +612,39 @@ export function getDashboardHtml(port: number): string {
         ' · 缓存读 ' + fmtTokens(t.cacheRead) + ' · 缓存写 ' + fmtTokens(t.cacheCreation);
     }
 
+    // ─── Async prompt scoring ───
+    const promptScoreCache = {};
+
+    async function fetchPromptScore(sessionId, prompt) {
+      if (promptScoreCache[sessionId]) return promptScoreCache[sessionId];
+      if (promptScoreCache[sessionId] === null) return null;
+      try {
+        const resp = await fetch('/api/judge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: prompt })
+        });
+        if (!resp.ok) { promptScoreCache[sessionId] = null; return null; }
+        const score = await resp.json();
+        promptScoreCache[sessionId] = score;
+        render();
+        return score;
+      } catch { promptScoreCache[sessionId] = null; return null; }
+    }
+
+    function promptScoreClass(score) {
+      if (score >= 8) return 'score-high';
+      if (score >= 5) return 'score-mid';
+      return 'score-low';
+    }
+
+    function promptScoreTitle(ps) {
+      if (!ps) return '';
+      return 'Intent clarity ' + ps.intentClarity + '/10'
+        + ' · Scope specificity ' + ps.scopeSpecificity + '/10'
+        + ' · Context sufficiency ' + ps.contextSufficiency + '/10';
+    }
+
     function renderCard(s) {
       const isExpanded = expandedCards.has(s.sessionId);
       const isStopped = s.status === 'stopped';
@@ -607,6 +659,16 @@ export function getDashboardHtml(port: number): string {
       const tokenBadge = (tokenSum > 0)
         ? '<span class="token-badge" title="' + escapeAttr(tokenTitle(s.tokens)) + '">⛁ ' + fmtTokens(tokenSum) + '</span>'
         : '';
+      let promptScoreBadge = '';
+      const cachedScore = promptScoreCache[s.sessionId];
+      if (cachedScore) {
+        promptScoreBadge = '<span class="prompt-score-badge ' + promptScoreClass(cachedScore.overall)
+          + '" title="' + escapeAttr(promptScoreTitle(cachedScore))
+          + '">📝 ' + cachedScore.overall + '/10</span>';
+      } else if (cachedScore === undefined && s.promptSummary) {
+        promptScoreBadge = '<span class="prompt-score-badge score-mid">📝 ...</span>';
+        fetchPromptScore(s.sessionId, s.promptSummary);
+      }
 
       // ─── Expanded detail panel ───
       let detail = '';
@@ -659,6 +721,7 @@ export function getDashboardHtml(port: number): string {
           convoBadge +
           tokenBadge +
           interventionBadge +
+          promptScoreBadge +
           '<span class="status-text">' + statusLabel(s.status) + '</span>' +
         '</div>' +
         '<div class="cwd" title="' + escapeAttr(s.cwd) + '">' + escapeHtml(shortPath(s.cwd)) + '</div>' +
