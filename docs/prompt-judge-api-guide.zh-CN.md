@@ -13,8 +13,8 @@ Prompt Judge API 用于评估 AI 编码助手用户 prompt 的质量。它从三
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
 | `HUNYUAN_API_KEY` | 是 | — | 混元 LLM 服务的 API key |
-| `HUNYUAN_BASE_URL` | 否 | `https://api.hunyuan.cloud.tencent.com/v1` | 混元 API 的 Base URL |
-| `HUNYUAN_MODEL` | 否 | `hunyuan-turbos-latest` | 用于评分的模型名称 |
+| `HUNYUAN_BASE_URL` | 否 | `https://tokenhub.tencentmaas.com/v1` | 混元 API 的 Base URL |
+| `HUNYUAN_MODEL` | 否 | `hy3` | 用于评分的模型名称 |
 
 ```bash
 export HUNYUAN_API_KEY="your-api-key-here"

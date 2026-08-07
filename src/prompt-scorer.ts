@@ -26,8 +26,8 @@ export class ScorerServiceError extends Error {
   }
 }
 
-const DEFAULT_BASE_URL = 'https://api.hunyuan.cloud.tencent.com/v1';
-const DEFAULT_MODEL = 'hunyuan-turbos-latest';
+const DEFAULT_BASE_URL = 'https://tokenhub.tencentmaas.com/v1';
+const DEFAULT_MODEL = 'hy3';
 const FETCH_TIMEOUT_MS = 10_000;
 
 const SCORING_SYSTEM_PROMPT = `You are an AI coding assistant prompt quality evaluator.
@@ -50,9 +50,10 @@ export async function scorePrompt(prompt: string, lang?: string): Promise<Prompt
   }
 
   const baseUrl = process.env.HUNYUAN_BASE_URL ?? DEFAULT_BASE_URL;
-  if (!/^https:\/\/[^/]*\.cloud\.tencent\.com(\/|$)/.test(baseUrl) && baseUrl !== DEFAULT_BASE_URL) {
+  const ALLOWED_HOSTS = /^https:\/\/[^/]*(\.cloud\.tencent\.com|\.tencentmaas\.com)(\/|$)/;
+  if (!ALLOWED_HOSTS.test(baseUrl) && baseUrl !== DEFAULT_BASE_URL) {
     throw new ScorerConfigError(
-      `HUNYUAN_BASE_URL must be a *.cloud.tencent.com HTTPS endpoint, got: ${baseUrl}`
+      `HUNYUAN_BASE_URL must be a Tencent Cloud HTTPS endpoint, got: ${baseUrl}`
     );
   }
   const model = process.env.HUNYUAN_MODEL ?? DEFAULT_MODEL;

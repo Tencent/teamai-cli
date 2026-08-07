@@ -75,9 +75,9 @@ describe('prompt-scorer', () => {
 
       await scorePrompt('test');
       const url = vi.mocked(fetch).mock.calls[0][0] as string;
-      expect(url).toBe('https://api.hunyuan.cloud.tencent.com/v1/chat/completions');
+      expect(url).toBe('https://tokenhub.tencentmaas.com/v1/chat/completions');
       const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
-      expect(body.model).toBe('hunyuan-turbos-latest');
+      expect(body.model).toBe('hy3');
     });
 
     it('truncates prompt to 2000 characters', async () => {
@@ -108,11 +108,11 @@ describe('prompt-scorer', () => {
       process.env.HUNYUAN_BASE_URL = 'https://evil.com/v1';
       const { scorePrompt, ScorerConfigError } = await importScorer();
       await expect(scorePrompt('test')).rejects.toThrow(ScorerConfigError);
-      await expect(scorePrompt('test')).rejects.toThrow('must be a *.cloud.tencent.com');
+      await expect(scorePrompt('test')).rejects.toThrow('must be a Tencent Cloud HTTPS endpoint');
     });
 
     it('accepts valid tencent cloud URL', async () => {
-      process.env.HUNYUAN_BASE_URL = 'https://api.hunyuan.cloud.tencent.com/v1';
+      process.env.HUNYUAN_BASE_URL = 'https://tokenhub.tencentmaas.com/v1';
       const { scorePrompt } = await importScorer();
       vi.mocked(fetch).mockResolvedValueOnce(
         makeFetchResponse(makeHunyuanResponse('{"overall":5,"intentClarity":5,"scopeSpecificity":5,"contextSufficiency":5}')),

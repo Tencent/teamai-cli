@@ -13,8 +13,8 @@ Set the following environment variables before starting the Dashboard:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `HUNYUAN_API_KEY` | Yes | — | API key for Hunyuan LLM service |
-| `HUNYUAN_BASE_URL` | No | `https://api.hunyuan.cloud.tencent.com/v1` | Base URL for the Hunyuan API |
-| `HUNYUAN_MODEL` | No | `hunyuan-turbos-latest` | Model name to use for scoring |
+| `HUNYUAN_BASE_URL` | No | `https://tokenhub.tencentmaas.com/v1` | Base URL for the Hunyuan API |
+| `HUNYUAN_MODEL` | No | `hy3` | Model name to use for scoring |
 
 ```bash
 export HUNYUAN_API_KEY="your-api-key-here"
