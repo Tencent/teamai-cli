@@ -13,7 +13,10 @@ import {
   type DashboardEvent,
 } from './types.js';
 import { getDashboardHtml } from './dashboard-html.js';
-import { scorePrompt } from './prompt-scorer.js';
+import { scorePrompt, ScorerConfigError, ScorerServiceError } from './prompt-scorer.js';
+
+let judgeInFlight = 0;
+const MAX_JUDGE_CONCURRENT = 5;
 
 // ─── Dashboard server architecture ──────────────────────
 //
@@ -163,33 +166,59 @@ export async function startDashboard(port?: number): Promise<void> {
     }
 
     if (url.pathname === '/api/judge' && req.method === 'POST') {
+      const MAX_BODY_BYTES = 65_536;
       let body = '';
-      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      let oversized = false;
+      req.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+        if (body.length > MAX_BODY_BYTES) {
+          oversized = true;
+          req.destroy();
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'request body too large' }));
+        }
+      });
       req.on('end', async () => {
+        if (oversized) return;
+        let parsed: Record<string, unknown>;
         try {
-          const parsed = JSON.parse(body) as Record<string, unknown>;
-          const prompt = parsed.prompt;
-          if (!prompt || typeof prompt !== 'string') {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'prompt is required and must be a string' }));
-            return;
-          }
-          const lang = typeof parsed.lang === 'string' ? parsed.lang : undefined;
+          parsed = JSON.parse(body) as Record<string, unknown>;
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON' }));
+          return;
+        }
+        const prompt = parsed.prompt;
+        if (!prompt || typeof prompt !== 'string') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'prompt is required and must be a string' }));
+          return;
+        }
+        const lang = typeof parsed.lang === 'string' ? parsed.lang : undefined;
+        if (judgeInFlight >= MAX_JUDGE_CONCURRENT) {
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'too many concurrent requests, try again later' }));
+          return;
+        }
+        judgeInFlight++;
+        try {
           const result = await scorePrompt(prompt, lang);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(result));
         } catch (err) {
-          const message = err instanceof Error ? err.message : 'unknown error';
-          if (message.includes('HUNYUAN_API_KEY not configured')) {
+          if (err instanceof ScorerConfigError) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'HUNYUAN_API_KEY not configured' }));
-          } else if (message.includes('Hunyuan API error') || message.includes('abort')) {
+            res.end(JSON.stringify({ error: err.message }));
+          } else if (err instanceof ScorerServiceError) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'LLM service unavailable' }));
           } else {
+            const message = err instanceof Error ? err.message : 'unknown error';
             res.writeHead(400, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: message }));
           }
+        } finally {
+          judgeInFlight--;
         }
       });
       return;

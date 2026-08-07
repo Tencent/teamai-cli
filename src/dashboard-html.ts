@@ -614,10 +614,15 @@ export function getDashboardHtml(port: number): string {
 
     // ─── Async prompt scoring ───
     const promptScoreCache = {};
+    const SCORE_PENDING = 'pending';
 
     async function fetchPromptScore(sessionId, prompt) {
-      if (promptScoreCache[sessionId]) return promptScoreCache[sessionId];
+      if (promptScoreCache[sessionId] && promptScoreCache[sessionId] !== SCORE_PENDING) {
+        return promptScoreCache[sessionId];
+      }
       if (promptScoreCache[sessionId] === null) return null;
+      if (promptScoreCache[sessionId] === SCORE_PENDING) return null;
+      promptScoreCache[sessionId] = SCORE_PENDING;
       try {
         const resp = await fetch('/api/judge', {
           method: 'POST',
@@ -661,13 +666,15 @@ export function getDashboardHtml(port: number): string {
         : '';
       let promptScoreBadge = '';
       const cachedScore = promptScoreCache[s.sessionId];
-      if (cachedScore) {
+      if (cachedScore && cachedScore !== SCORE_PENDING) {
         promptScoreBadge = '<span class="prompt-score-badge ' + promptScoreClass(cachedScore.overall)
           + '" title="' + escapeAttr(promptScoreTitle(cachedScore))
           + '">📝 ' + cachedScore.overall + '/10</span>';
       } else if (cachedScore === undefined && s.promptSummary) {
         promptScoreBadge = '<span class="prompt-score-badge score-mid">📝 ...</span>';
         fetchPromptScore(s.sessionId, s.promptSummary);
+      } else if (cachedScore === SCORE_PENDING) {
+        promptScoreBadge = '<span class="prompt-score-badge score-mid">📝 ...</span>';
       }
 
       // ─── Expanded detail panel ───

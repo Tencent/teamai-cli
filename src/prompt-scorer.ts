@@ -10,6 +10,22 @@ import { type PromptScore } from './types.js';
 
 export { type PromptScore };
 
+/** Thrown when scorer configuration is invalid or missing. */
+export class ScorerConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ScorerConfigError';
+  }
+}
+
+/** Thrown when the LLM service is unavailable or returns an error. */
+export class ScorerServiceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ScorerServiceError';
+  }
+}
+
 const DEFAULT_BASE_URL = 'https://api.hunyuan.cloud.tencent.com/v1';
 const DEFAULT_MODEL = 'hunyuan-turbos-latest';
 const FETCH_TIMEOUT_MS = 10_000;
@@ -30,15 +46,21 @@ overall = round(intentClarity * 0.4 + scopeSpecificity * 0.3 + contextSufficienc
 export async function scorePrompt(prompt: string, lang?: string): Promise<PromptScore> {
   const apiKey = process.env.HUNYUAN_API_KEY;
   if (!apiKey) {
-    throw new Error('HUNYUAN_API_KEY not configured');
+    throw new ScorerConfigError('HUNYUAN_API_KEY not configured');
   }
 
   const baseUrl = process.env.HUNYUAN_BASE_URL ?? DEFAULT_BASE_URL;
+  if (!/^https:\/\/[^/]*\.cloud\.tencent\.com(\/|$)/.test(baseUrl) && baseUrl !== DEFAULT_BASE_URL) {
+    throw new ScorerConfigError(
+      `HUNYUAN_BASE_URL must be a *.cloud.tencent.com HTTPS endpoint, got: ${baseUrl}`
+    );
+  }
   const model = process.env.HUNYUAN_MODEL ?? DEFAULT_MODEL;
   const url = `${baseUrl}/chat/completions`;
 
+  const truncatedPrompt = prompt.length > 2000 ? prompt.slice(0, 2000) : prompt;
   const langHint = lang ? ` The prompt is in ${lang === 'zh' ? 'Chinese' : 'English'}.` : '';
-  const userContent = `${langHint}\n\nUser prompt to evaluate:\n"""\n${prompt}\n"""`;
+  const userContent = `${langHint}\n\nUser prompt to evaluate:\n"""\n${truncatedPrompt}\n"""`;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -64,7 +86,7 @@ export async function scorePrompt(prompt: string, lang?: string): Promise<Prompt
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      throw new Error(`Hunyuan API error: ${response.status} ${text.slice(0, 200)}`);
+      throw new ScorerServiceError(`Hunyuan API error: ${response.status} ${text.slice(0, 200)}`);
     }
 
     const data = await response.json() as {
@@ -84,7 +106,12 @@ function parseScoreResponse(content: string): PromptScore {
     throw new Error(`Failed to parse LLM response: no JSON found in "${content.slice(0, 200)}"`);
   }
 
-  const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+  } catch {
+    throw new ScorerServiceError(`Failed to parse LLM score JSON: ${jsonMatch[0].slice(0, 200)}`);
+  }
   const intentClarity = clampScore(parsed.intentClarity);
   const scopeSpecificity = clampScore(parsed.scopeSpecificity);
   const contextSufficiency = clampScore(parsed.contextSufficiency);

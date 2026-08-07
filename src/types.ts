@@ -563,8 +563,6 @@ export interface DashboardSession {
   promptCount: number;
   /** Cumulative token usage for this session (zero when no transcript usage). */
   tokens: TokenUsage;
-  /** Prompt quality score computed by the rule-based scorer. */
-  promptScore?: PromptScore;
 }
 
 export const DASHBOARD_EVENTS_DIR = `${TEAMAI_HOME}/dashboard`;
