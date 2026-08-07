@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import fs from 'fs-extra';
 
 import { getGitHubToken } from './providers/github/gh-cli.js';
-import { tryGetTGitToken, tgitGitUser } from './providers/tgit/rest-auth.js';
+import { tgitGitCloneUrl } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
 
 // ─── Types ──────────────────────────────────────────────
@@ -189,17 +189,18 @@ export async function shallowClone(
             log.debug(`shallowClone: 使用匿名 HTTPS 克隆 github 仓库`);
         }
     } else if (provider === 'tgit') {
-        // TGit: 使用 token 嵌入 URL（netrc 非标准字段导致 git credential 不稳定）
-        // git 用户名取决于 token 类型：PAT → private，OAuth → oauth2。
-        const creds = tryGetTGitToken();
-        cloneUrl = url.replace(/^http:\/\//, 'https://');
-        if (creds) {
-            cloneUrl = cloneUrl.replace('https://', `https://${tgitGitUser(creds.scheme)}:${creds.token}@`);
+        // TGit 的 git 协议只认 gf 登录的 OAuth token（oauth2:<token>@ 嵌入 URL）；
+        // TGIT_TOKEN PAT 仅用于 REST API,对 git clone 无效,故此处不使用（见 tgitGitCloneUrl）。
+        const httpsUrl = url.replace(/^http:\/\//, 'https://');
+        const authed = tgitGitCloneUrl(httpsUrl);
+        if (authed) {
+            cloneUrl = authed;
             cloneMethod = 'https-token';
-            log.debug(`shallowClone: 使用 HTTPS+token 克隆 tgit 仓库`);
+            log.debug(`shallowClone: 使用 HTTPS+OAuth token 克隆 tgit 仓库`);
         } else {
+            cloneUrl = httpsUrl;
             cloneMethod = 'https-anonymous';
-            log.debug(`shallowClone: 无 TGit token，尝试匿名 HTTPS 克隆`);
+            log.debug(`shallowClone: 无 TGit OAuth token，尝试匿名 HTTPS 克隆`);
         }
     } else {
         // 其他 provider，依赖 ~/.netrc

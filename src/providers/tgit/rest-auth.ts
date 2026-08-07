@@ -43,11 +43,32 @@ export function getTGitToken(): { token: string; scheme: TGitAuthScheme } {
 }
 
 /**
- * git-over-HTTPS username for the given auth scheme.
- * A PAT ('private-token') authenticates git as `private`; an OAuth token as `oauth2`.
+ * Build an authenticated git.woa.com clone/fetch URL, or null when no usable
+ * git credential exists.
+ *
+ * IMPORTANT — git protocol vs REST API use different credentials on TGit:
+ *
+ * - **git-over-HTTPS (clone/fetch)** only accepts the OAuth token from
+ *   `gf auth login` (stored in ~/.netrc), presented as in-URL basic-auth
+ *   `https://oauth2:<token>@…`. This is the only form git.woa.com's git
+ *   endpoint honours.
+ * - A `TGIT_TOKEN` **Personal Access Token is REST-API-only** — git.woa.com's
+ *   git endpoint rejects it in every form (in-URL basic-auth *and*
+ *   `PRIVATE-TOKEN` header both get a 401 `www-authenticate: Basic`). So the
+ *   PAT is deliberately ignored here; it is used only by {@link tgitFetch}.
+ *
+ * Consequently a stray `TGIT_TOKEN` in the environment must NOT shadow the
+ * OAuth token for clone — doing so is exactly the bug this function prevents.
+ *
+ * @param httpsUrl - the base `https://git.woa.com/…` clone URL (no credentials)
+ * @returns the authenticated URL, or null when only a PAT / nothing is available
  */
-export function tgitGitUser(scheme: TGitAuthScheme): string {
-  return scheme === 'private-token' ? 'private' : 'oauth2';
+export function tgitGitCloneUrl(httpsUrl: string): string | null {
+  const oauthToken = gfGetOAuthToken();
+  if (!oauthToken) {
+    return null;
+  }
+  return httpsUrl.replace(/^https:\/\//, `https://oauth2:${oauthToken}@`);
 }
 
 /**
