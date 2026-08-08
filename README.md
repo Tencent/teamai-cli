@@ -157,7 +157,16 @@ Author: member-a | Score: 18.5 | Tags: troubleshooting, networking
 
 [2/2] Deployment configuration best practices [project]
 Author: member-b | Score: 12.0 | Tags: deploy, config
+Matched: conflict | Missing: port
 ```
+
+A `Matched: … | Missing: …` line appears whenever a hit does not cover every
+query term (omitted when all terms matched). Recall returns its top matches by
+score without filtering on coverage: a hit missing all of your distinctive
+terms is topically adjacent, not an answer. Judging that is the caller's job —
+the score alone cannot express it. Entries matching on title, date, author and
+content are collapsed, so the same learning shared twice does not occupy two
+slots.
 
 **Coverage spans two parts:**
 

@@ -34,12 +34,21 @@ teamai recall --check "<3-6 keywords from the task>"
   proceed to Step 1–5, do not read any files, do not run a full recall.
 - If the output starts with `RELEVANT`: check complexity (see below),
   then continue to Step 1 or take the LOW shortcut.
+  `RELEVANT` means only "something scored above the threshold, so reading
+  files is worth the cost" — **not** "the knowledge base covers your
+  subject". The verdict also reports `threshold=` (the cutoff the score was
+  compared against) and, for the top hit, `matched=` / `missing=` listing
+  which query terms it covers. Treat `missing=` here as a hint about where
+  Step 4 is likely to land, **not** as a reason to stop early: coverage is
+  computed over titles and tags only, so a term reported missing may still be
+  discussed in a body that a full recall (or a `Grep`) will surface. Only
+  `NOT_RELEVANT` short-circuits the flow.
 - If the command fails or `teamai` is not on PATH: skip the precheck and
   continue to Step 1 (do not block on precheck failure).
 
 #### Complexity quick-judge (after RELEVANT)
 
-> **Format dependency**: The LOW shortcut parses `title=` and `sources=` from `--check` stdout. If `emitCheckVerdict` output format changes, update this section.
+> **Format dependency**: The LOW shortcut parses `title=` and `sources=` from `--check` stdout. The full field set is `<VERDICT> score= threshold=` followed, for a `RELEVANT` hit, by `title="…" [matched=…] [missing=…] [sources=…]`. `title` is quote-delimited and `sources` comes last, so both stay extractable as fields are added. If `emitCheckVerdict` output format changes, update this section.
 
 Scan the original task description for complexity signals:
 
@@ -94,11 +103,13 @@ corresponding file and extract relevant sections. Skip BM25 search.
 | feature/新功能/新增功能/大功能/redesign/重构整个/multi-file | Feature (large) | `--depth lookup` | Need full file coverage to avoid missing files |
 | 添加/修改/如何改/实现/implement/refactor | Edit (medium) | `--depth lookup` | Need symbol-level anchors |
 | bugfix/修复/fix/patch/typo/单文件/one-file | Bugfix (small) | `--depth context` | Fast pass; skip graph-index drill-down |
+| 排查/定位/诊断/为什么/triage/diagnose/investigate | Diagnose (read-only) | `--depth context` | Nothing is being edited, so symbol anchors are not needed |
 
-For **bugfix/small** tasks: use `--depth context` only, skip the
-graph-index.json deep read in the edit/change section below, and keep
-output ≤ 1500 characters. The main conversation already knows which
-file to fix.
+For **bugfix/small** and **diagnose** tasks: use `--depth context` only, skip
+the graph-index.json deep read in the edit/change section below, and keep
+output ≤ 1500 characters. For bugfix the main conversation already knows which
+file to fix; for diagnosis there is no file to fix yet — what is wanted is prior
+experience with the same symptom.
 
 **Edit/change queries** (keywords: 新增/添加/修改/如何改/重构/实现; how to add/change/modify/implement): use `--depth lookup` in Step 3 so facts/relation pages are visible. After BM25 recall, also read these directly (bypassing BM25 ranking uncertainty):
 1. `teamwiki/evidence/code/<project>/.indices/graph-index.json` (priority; fall back to `teamwiki/.indices/graph-index.json` if absent) — when surfacing edges, pick 1–3 entry files most relevant to the task and read only their forward direct-dep edges (`from` == entry file); skip reverse expansion (each edge: `{from, to, relation}` — from/to are file paths, relation is type e.g. DEPENDS_ON)
@@ -114,6 +125,38 @@ none exists, silently skip.
 
 Pick 3–6 high-signal keywords from the user query. Strip filler words
 ("the", "how", "please"). Mix English and Chinese terms when both appear.
+
+**Lead with the terms that pin down *this* task**: proper nouns, customer or
+product names, service IDs, error codes, versions, symbol names
+(`acme-corp`, `AccountID`, `v2.1.3`, `svc-a1b2c3`, `RuntimeError`), plus the
+specific technology or subsystem (`postgres`, `connection pool`, `oauth`).
+
+**Do not let generic troubleshooting words be the bulk of the query.** Words
+describing *any* debugging task — 排查 / 失败 / 问题 / troubleshoot / debug /
+issue / fix and their equivalents in any language — are common in a knowledge
+base where most entries are troubleshooting notes, so a query made mostly of
+them ranks entries by topic rather than by subject. Keep at most one or two as
+supporting terms; do not build the query out of them.
+
+**But do not strip them entirely either.** Being common lowers a word's weight;
+it does not make it useless. Entries are often tagged with exactly these words
+(`创建异常`, `现网排查`), so dropping them can push a genuinely relevant entry
+out of the top 5.
+
+```
+task:  "acme-corp inference service request failures AccountID error rate triage"
+query: "acme-corp AccountID inference service triage"   # kept one supporting term
+```
+
+Note which of your terms are the discriminating ones — you will check
+them against the results in Step 4.
+
+If the results look topically right but miss what you asked about, run recall
+once more with a different term mix — swapping which supporting word you keep,
+or trading a proper noun for the subsystem name. Hard rules allow up to three
+calls per invocation; use a second one rather than concluding from a single
+keyword set. `Grep` over the learnings directory is also fair game when a term
+is too specific to rank (see Step 4).
 
 ### Step 3 — Run the teamai recall command
 
@@ -140,8 +183,37 @@ stop.
 
 ### Step 4 — Read the top hits and drill into codebase
 
-For each hit returned by `teamai recall`, read the source file directly
-(use `Read`) and condense each into **one or two sentences**.
+**First, judge coverage — this is your call, not the CLI's.** Each result
+carries a `Matched: … | Missing: …` line listing which of your query terms
+appear in its title or tags (the line is omitted when every term matched).
+Score and `RELEVANT` only tell you a hit is worth opening; they cannot tell
+you whether it covers your subject.
+
+If your discriminating terms appear in the `Missing:` list of every result,
+the knowledge base likely has no entry on that specific subject. Verify per the
+judgement rules below, then report the gap using the no-coverage template in
+Step 5 — do not present topically-adjacent entries as answers.
+
+Use judgement rather than counting, in both directions:
+
+- **A missing term is not proof of absence.** Coverage is computed over titles
+  and tags only, so a term can be discussed in the body yet reported missing.
+  When a hit looks promising anyway, open the file and decide from its content.
+  When a term is specific enough that the index cannot rank it, `Grep` the
+  learnings directory for it directly — that reaches body text.
+- **A matched term is not proof of relevance.** Matching is per token, so it
+  fires on substrings and on segmented fragments: a query for `AccountID` will
+  match an entry about a notification template `ID`, and 客户 (customer) will
+  match 客户端 (client). CJK is especially prone to this. Treat `Matched:` on a
+  discriminating term as a lead to verify by opening the file, not as a
+  conclusion.
+- **Fewer than 5 results does not mean the corpus is thin.** Results are
+  deduplicated when title, date, author and content all match, so a learning
+  shared twice appears once. Body-
+  only matches are also dropped. Both are intentional.
+
+For each hit you keep, read the source file directly (use `Read`) and
+condense each into **one or two sentences**.
 
 **For codebase hits** (path contains `teamwiki/evidence/`):
 - If the hit is a raw facts page (component.md, interface.md), prefer
@@ -155,9 +227,14 @@ For each hit returned by `teamai recall`, read the source file directly
 - If the hit mentions a knowledge gap (from `gaps/detected.md`), relay
   it to the user: "This area is not fully documented in the knowledge base."
 
-Cap your total summary at ~2000 characters. Drop hits that are off-topic.
+Cap the knowledge summaries at ~2000 characters (the whole response has a
+~2500 limit, see Hard rules; bugfix and diagnose tasks tighten it to 1500).
+Drop hits that are off-topic.
 
 ### Step 5 — Emit a structured response
+
+Use the numbered-list format below when at least one hit answers the task; use
+the no-coverage variant that follows it when none does.
 
 Return your output in **this exact format** to the main conversation:
 
@@ -209,6 +286,45 @@ If no candidate files section was returned, omit this heading entirely.
 <!-- teamai:recalled-doc-ids: [<id1>, <id2>, ...] -->
 ```
 
+**When nothing covers the subject**, use this variant instead of the numbered
+list — the point is that the main conversation must not mistake topical
+neighbours for answers:
+
+```
+## Team Knowledge Recall
+
+### Relevant knowledge
+
+**No entry covers <discriminating terms>.** <One sentence on what you checked —
+which terms, and whether you grepped bodies as well as titles/tags.>
+
+Rejected matches:
+- **[<type>] <doc_id>** — matched <term> only; <why it does not apply>
+
+### Partial coverage (omit if none)
+
+1. **[<type>] <doc_id>** — <file path>
+   <which part of the task it covers, and which part it does not>
+   Confidence: <high | medium | low>
+
+### Gaps
+
+⚠️ <gap description> — do not guess answers for this area.
+<Point to the tool or skill that would answer it, if one is obvious.>
+
+<!-- teamai:recalled-doc-ids: [<only entries listed under Partial coverage>] -->
+```
+
+A task with several requirements is often part-covered: report the covered part
+under **Partial coverage**, say explicitly which requirement it does *not*
+answer, and put the rest under **Gaps**. Rejected entries stay in the rejected
+list — never promote one to answer a requirement it does not address.
+
+For a no-coverage response, evidence takes priority over brevity: if listing
+rejected entries pushes past the character cap, allow up to ~2000 characters
+even on bugfix and diagnose tasks, whose 1500 cap this overrides.
+rather than dropping the reasoning.
+
 **Output structure rules:**
 
 - `<type>` is one of `skills` / `learnings` / `docs` / `rules` / `codebase`
@@ -232,7 +348,9 @@ If no candidate files section was returned, omit this heading entirely.
 - **Do not** call `teamai recall` more than 3 times in one invocation.
 - **Do not** invoke other subagents.
 - If `teamai` CLI is not on PATH, return `teamai CLI not available` and stop.
-- Output total ≤ ~2500 characters. The whole point of using a subagent is
+- Output total ≤ ~2500 characters (≤ 1500 for bugfix and diagnose tasks). This
+  is the ceiling for the whole response; the ~2000 in Step 4 applies to the
+  knowledge summaries within it. The whole point of using a subagent is
   to keep the main conversation's context lean.
 - For codebase hits, **prefer module summaries over raw facts pages** —
   they give better signal-to-noise for the main conversation.
@@ -243,4 +361,12 @@ If no candidate files section was returned, omit this heading entirely.
 - When zero hits are found but `teamwiki/` exists, check if the query
   relates to a known gap before returning "no knowledge found".
 - When `teamai recall --check` returns `NOT_RELEVANT`, do not continue — return the no-knowledge line and stop. The precheck exists to avoid wasted retrieval on unrelated tasks.
+- **Relevance is your judgement.** `teamai recall` returns its top 5 by score
+  without filtering on coverage; it reports `Matched:`/`Missing:` so you can
+  decide. Never present hits whose discriminating terms are all missing as if
+  they answered the question — report the gap instead. Recall returning
+  results is not evidence that the knowledge exists. Equally, a single ranked
+  query is not evidence that it does not: before reporting a gap, consider a
+  second recall with a different term mix or a `Grep` for the specific term,
+  since ranking covers titles and tags while `Grep` reaches bodies.
 - **Do not invent call relationships.** The "Change entry points" section must be derived solely from graph-index.json edges and dependency-paths.md. If those files are absent or do not cover the queried files, write `relation data not covered` and omit the section — do not guess.

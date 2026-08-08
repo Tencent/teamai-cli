@@ -1,7 +1,7 @@
 import path from 'node:path';
 import matter from 'gray-matter';
 import { readFileSafe, readJson, writeJson, listFiles, listFilesRecursive, listDirs, pathExists } from './fs.js';
-import { tokenize, MAX_TOKENIZE_CHARS } from './tokenizer.js';
+import { tokenize, wordSegments, MAX_TOKENIZE_CHARS } from './tokenizer.js';
 import { log } from './logger.js';
 import {
   SEARCH_INDEX_VERSION,
@@ -39,7 +39,9 @@ function getSearchIndexPath(): string {
 //      │
 //      ├─ tokenize(query)
 //      ├─ for each entry: count matching tokens
-//      ├─ boost: title match × 3, tag match × 2, vote bonus
+//      ├─ boost: title match × 3, tag match × 2 (IDF-weighted)
+//      ├─ normalize by sqrt(query token count), then add vote bonus
+//      ├─ record which query words the entry covers (matched/missing)
 //      └─ return sorted results
 //
 
@@ -230,7 +232,7 @@ export function inferDomain(
 }
 
 // Re-export tokenizer for external callers
-export { tokenize, MAX_TOKENIZE_CHARS };
+export { tokenize, wordSegments, MAX_TOKENIZE_CHARS };
 
 /**
  * Parse a learning document's frontmatter and body.
@@ -632,6 +634,11 @@ export async function loadIndex(indexPath?: string): Promise<SearchIndex | null>
 export interface SearchResult {
   entry: SearchIndexEntry;
   score: number;
+  /** Query words matching this entry's title or tags. Absent for codebase-graph
+   *  hits, which are scored by BM25 over pages rather than per-term coverage. */
+  matchedTerms?: string[];
+  /** Query words matching neither its title nor its tags. */
+  missingTerms?: string[];
 }
 
 /**
@@ -677,6 +684,23 @@ export function search(
     return Math.log((N + 1) / (docFreq + 1)) + 1; // +1 smoothing keeps score ≥ 1
   };
 
+  // Query-length normalization: raw match sums grow with query length, so a
+  // 15-token question outscores a 4-token one on generic words alone. That makes
+  // any absolute relevance threshold meaningless across queries. Dividing by
+  // sqrt(len) keeps scores comparable while still rewarding queries that match
+  // on more terms. Within a single query this is a constant factor, so relative
+  // ranking is unaffected.
+  const lengthNorm = Math.sqrt(queryTokens.length);
+
+  // Report coverage per query word, not per internal token, so callers see the
+  // terms they typed ("AppID") rather than tokenizer fragments ("app", "id").
+  // Words come from the segmenter rather than a whitespace split: languages that
+  // do not delimit words with spaces would otherwise collapse into a single
+  // "word" that counts as matched whenever any fragment of it hits, reporting
+  // full coverage for an entry that missed every distinctive term.
+  // Relevance is the caller's judgement; search only states what it covers.
+  const wordTokens = wordSegments(query).map((w) => ({ word: w, tokens: tokenize(w) }));
+
   const results: SearchResult[] = [];
 
   for (const entry of index.entries) {
@@ -705,6 +729,10 @@ export function search(
     // Codebase docs (from team-codebase/) lack tags, so allow body-only matches for them.
     const isCodebaseDoc = entry.type === 'docs' && (entry.path ?? entry.filename ?? '').includes('team-codebase');
     if (score > 0 && (hasTitleOrTagMatch || isCodebaseDoc)) {
+      // Normalize the token-match sum by query length before adding absolute
+      // bonuses, so cross-query scores share a scale (see lengthNorm above).
+      score /= lengthNorm;
+
       // Vote bonus: +0.5 per vote, max 5 points (unchanged).
       score += Math.min(entry.votes * 0.5, 5);
 
@@ -724,7 +752,23 @@ export function search(
         score *= entry.hotness;
       }
 
-      results.push({ entry, score });
+      // Coverage per query word: matched when any of its tokens hits title/tag.
+      // Skipped for entries admitted only by the codebase exemption — those are
+      // scored on body text, so every term would read as missing and the caller
+      // would discard a legitimate hit as uncovered.
+      if (!hasTitleOrTagMatch) {
+        results.push({ entry, score });
+        continue;
+      }
+
+      const matchedTerms: string[] = [];
+      const missingTerms: string[] = [];
+      for (const { word, tokens: wt } of wordTokens) {
+        const hit = wt.some((t) => entryTokens.has(`title:${t}`) || entryTokens.has(`tag:${t}`));
+        (hit ? matchedTerms : missingTerms).push(word);
+      }
+
+      results.push({ entry, score, matchedTerms, missingTerms });
     }
   }
 
@@ -734,5 +778,31 @@ export function search(
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
 
-  return results.slice(0, limit);
+  // Collapse duplicates before truncating. The same learning can be shared
+  // twice, landing in the corpus as two files whose only difference is the
+  // random filename suffix; both score identically and would otherwise consume
+  // two of the `limit` slots, silently narrowing the result set.
+  //
+  // The key must not merge genuinely distinct entries that happen to share a
+  // title, so it covers the fields a re-share copies verbatim. Entries differing
+  // in tags or body differ in token count, and any scoring difference separates
+  // them too.
+  const seen = new Set<string>();
+  const deduped: SearchResult[] = [];
+  for (const r of results) {
+    const key = [
+      r.entry.type,
+      r.entry.title,
+      r.entry.date,
+      r.entry.author,
+      r.entry.tokens.length,
+      r.score,
+    ].join(' ');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(r);
+    if (deduped.length === limit) break;
+  }
+
+  return deduped;
 }

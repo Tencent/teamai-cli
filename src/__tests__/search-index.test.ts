@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { tokenize, buildIndex, loadIndex, search } from '../utils/search-index.js';
+import { tokenize, wordSegments, buildIndex, loadIndex, search } from '../utils/search-index.js';
+import { computeIdfBaseline, isRelevantScore } from '../recall.js';
+import type { SearchIndex } from '../types.js';
 
 // ─── Test helpers ──────────────────────────────────────────
 
@@ -81,6 +83,74 @@ describe('tokenize', () => {
     const tokens = tokenize('api api api');
     const apiCount = tokens.filter((t) => t === 'api').length;
     expect(apiCount).toBe(1);
+  });
+
+  it('does not mint bigrams across multi-char word boundaries', () => {
+    // Segmenter yields 推理|服务; joining across that boundary would produce
+    // "理服", a token matching no real term yet scoring like one.
+    const tokens = tokenize('推理服务');
+    expect(tokens).toContain('推理');
+    expect(tokens).toContain('服务');
+    expect(tokens).not.toContain('理服');
+  });
+
+  it('still recovers words the segmenter splits into single chars', () => {
+    // Segmenter yields 排|查, so the bigram is what makes "排查" searchable.
+    expect(tokenize('排查')).toContain('排查');
+  });
+});
+
+describe('wordSegments', () => {
+  it('splits space-free CJK into words a reader would name', () => {
+    expect(wordSegments('推理服务崩溃')).toEqual(['推理', '服务', '崩溃']);
+  });
+
+  it('keeps compound identifiers whole instead of fragmenting them', () => {
+    // tokenize() would yield app/id; reporting terms must not.
+    expect(wordSegments('客户AppID错误')).toEqual(['客户', 'AppID', '错误']);
+  });
+
+  it('rejoins adjacent single-char CJK segments', () => {
+    // Segmenter splits 排查 into 排|查; reporting both would be noise.
+    expect(wordSegments('排查')).toEqual(['排查']);
+    expect(wordSegments('NUMA 排查')).toEqual(['NUMA', '排查']);
+  });
+
+  it('reattaches suffix chars the segmenter peels off CJK words', () => {
+    // 错误率 segments as 错误|率; a bare 率 is not a term the caller would
+    // recognise, and it would permanently occupy a slot in Missing:.
+    expect(wordSegments('错误率')).toEqual(['错误率']);
+    expect(wordSegments('中间件')).toEqual(['中间件']);
+    expect(wordSegments('使用率 成功率')).toEqual(['使用率', '成功率']);
+  });
+
+  it('reattaches only the first char when a word follows the peeled suffix', () => {
+    // 中间件排查 segments as 中间|件|排|查. Gluing the whole run onto nothing
+    // yielded ['中间', '件排查'] — a corrupted leading word plus a term the
+    // caller never typed, and (worse) full coverage against a 中间件 tag.
+    expect(wordSegments('中间件排查')).toEqual(['中间件', '排查']);
+    expect(wordSegments('连接池耗尽')).toEqual(['连接池', '耗尽']);
+  });
+
+  it('joins a run the segmenter gives up on entirely', () => {
+    // 限流熔断降级 segments as 限|流|熔|断|降级 — no preceding multi-char word,
+    // so the leading run has no suffix to reattach and cannot be split without
+    // a dictionary.
+    expect(wordSegments('限流熔断降级')).toEqual(['限流熔断', '降级']);
+  });
+
+  it('keeps a genuine single-char word separate when whitespace delimits it', () => {
+    expect(wordSegments('服务 猫')).toEqual(['服务', '猫']);
+    expect(wordSegments('猫')).toEqual(['猫']);
+  });
+
+  it('does not join single chars across punctuation', () => {
+    expect(wordSegments('中，文')).toEqual(['中', '文']);
+  });
+
+  it('returns empty for blank input', () => {
+    expect(wordSegments('')).toEqual([]);
+    expect(wordSegments('   ')).toEqual([]);
   });
 });
 
@@ -250,6 +320,148 @@ Docker bridge 网络的常见配置方法。
     const index = await loadIndex();
     const results = search('nonexistent keyword xyz', index!);
     expect(results).toHaveLength(0);
+  });
+
+  it('collapses duplicate entries so they do not consume two result slots', async () => {
+    // Same learning shared twice: identical content, different filename suffix.
+    const dup = `---
+title: "Duplicate Learning"
+author: carol
+date: 2026-03-01
+tags: [duplicate, oom]
+---
+
+Body about oom.
+`;
+    writeLearningDoc(learningsDir, 'dup-2026-03-01-aaa.md', dup);
+    writeLearningDoc(learningsDir, 'dup-2026-03-01-bbb.md', dup);
+    await buildIndex(learningsDir);
+    const index = await loadIndex();
+
+    const results = search('duplicate', index!);
+    const titles = results.map((r) => r.entry.title);
+    expect(titles.filter((t) => t === 'Duplicate Learning')).toHaveLength(1);
+  });
+
+  it('reports term coverage per query word, not per internal token', async () => {
+    const index = await loadIndex();
+    // "AppID" tokenizes to app/id; the caller should see the word they typed.
+    const results = search('oom AppID', index!);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].matchedTerms).toContain('oom');
+    expect(results[0].missingTerms).toContain('AppID');
+  });
+
+  it('does not claim full coverage when a peeled suffix corrupted the words', async () => {
+    // Query 中间件排查 against an entry tagged 中间件. Gluing the run gave
+    // ['中间', '件排查'], so 中间 matched the tag, nothing was missing, and the
+    // Missing: line was omitted — reporting full coverage for a troubleshooting
+    // query against a plain overview entry.
+    writeLearningDoc(learningsDir, 'mw-2026-03-05-mid.md', `---
+title: "中间件概览"
+author: dave
+date: 2026-03-05
+tags: [中间件]
+---
+
+Overview of the middleware layer.
+`);
+    await buildIndex(learningsDir);
+    const index = await loadIndex();
+
+    const results = search('中间件排查', index!);
+    const mw = results.find((r) => r.entry.title === '中间件概览');
+    expect(mw).toBeDefined();
+    expect(mw!.matchedTerms).toEqual(['中间件']);
+    expect(mw!.missingTerms).toEqual(['排查']);
+  });
+
+  it('omits coverage for codebase docs admitted on a body-only match', async () => {
+    // team-codebase docs have no tags, so search() lets them match on body
+    // alone. Reporting coverage for them would mark every term missing, and the
+    // caller is told to treat that as "no coverage" — discarding a valid hit.
+    const index: SearchIndex = {
+      version: 6,
+      entries: [
+        {
+          filename: 'arch.md',
+          title: 'Architecture notes',
+          author: 'bob',
+          date: '2026-03-01',
+          tags: [],
+          tokens: ['authentication', 'retry'],
+          votes: 0,
+          type: 'docs',
+          domain: 'technical',
+          path: '/repo/docs/team-codebase/arch.md',
+        },
+      ],
+      df: { authentication: 1, retry: 1 },
+    } as unknown as SearchIndex;
+
+    const results = search('authentication retry', index);
+    expect(results).toHaveLength(1);
+    expect(results[0].matchedTerms).toBeUndefined();
+    expect(results[0].missingTerms).toBeUndefined();
+  });
+
+  it('marks every term missing when a hit only matches on body text', async () => {
+    const index = await loadIndex();
+    // "troubleshooting" is a tag on k8s-oom, so the entry surfaces; "部署"
+    // appears only in another doc's body and belongs to no title or tag.
+    const results = search('troubleshooting 部署', index!);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].matchedTerms).toEqual(['troubleshooting']);
+    expect(results[0].missingTerms).toEqual(['部署']);
+  });
+
+  it('reports coverage for space-free CJK queries instead of claiming full coverage', async () => {
+    const index = await loadIndex();
+    // A whitespace split would make this one "word", matched because 排查 hits
+    // the k8s-oom title — reporting full coverage while 部署 matched nothing.
+    const results = search('排查部署', index!);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].matchedTerms).toContain('排查');
+    expect(results[0].missingTerms).toContain('部署');
+  });
+
+  it('keeps normalized scores above the relevance threshold for genuine hits', async () => {
+    const index = await loadIndex();
+    const baseline = computeIdfBaseline([index!]);
+    // Length normalization must not push real hits under the cutoff. A longer
+    // query matches more terms, so numerator and divisor grow together — pin
+    // that here so a future change to either side cannot silently suppress
+    // long queries.
+    const short = search('oom', index!);
+    const long = search('k8s pod oom 排查指南 内存 超限 troubleshooting', index!);
+    expect(short.length).toBeGreaterThan(0);
+    expect(long.length).toBeGreaterThan(0);
+    expect(isRelevantScore(short[0].score, false, baseline)).toBe(true);
+    expect(isRelevantScore(long[0].score, false, baseline)).toBe(true);
+  });
+
+  it('normalizes score by query length so scores are comparable across queries', async () => {
+    const index = await loadIndex();
+    // Same single matching term, but the second query pads it with words that
+    // match nothing. Without length normalization the padded query would score
+    // identically, letting verbose queries clear an absolute threshold on
+    // filler alone.
+    const short = search('oom', index!);
+    const padded = search('oom zzz qqq vvv', index!);
+    expect(short.length).toBeGreaterThan(0);
+    expect(padded.length).toBeGreaterThan(0);
+    expect(padded[0].entry.filename).toBe(short[0].entry.filename);
+    expect(padded[0].score).toBeLessThan(short[0].score);
+  });
+
+  it('length normalization does not change ranking within one query', async () => {
+    const index = await loadIndex();
+    // Normalization is a constant factor per query, so relative order is intact.
+    // "troubleshooting" tags k8s-oom; "docker" titles/tags the docker doc.
+    const results = search('troubleshooting docker', index!);
+    expect(results.length).toBeGreaterThan(1);
+    const scores = results.map((r) => r.score);
+    expect([...scores].sort((a, b) => b - a)).toEqual(scores);
   });
 
   it('returns empty for empty query', async () => {
