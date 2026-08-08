@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { tokenize, wordSegments, buildIndex, loadIndex, search } from '../utils/search-index.js';
 import { computeIdfBaseline, isRelevantScore } from '../recall.js';
+import type { SearchIndex } from '../types.js';
 
 // ─── Test helpers ──────────────────────────────────────────
 
@@ -121,6 +122,21 @@ describe('wordSegments', () => {
     expect(wordSegments('错误率')).toEqual(['错误率']);
     expect(wordSegments('中间件')).toEqual(['中间件']);
     expect(wordSegments('使用率 成功率')).toEqual(['使用率', '成功率']);
+  });
+
+  it('reattaches only the first char when a word follows the peeled suffix', () => {
+    // 中间件排查 segments as 中间|件|排|查. Gluing the whole run onto nothing
+    // yielded ['中间', '件排查'] — a corrupted leading word plus a term the
+    // caller never typed, and (worse) full coverage against a 中间件 tag.
+    expect(wordSegments('中间件排查')).toEqual(['中间件', '排查']);
+    expect(wordSegments('连接池耗尽')).toEqual(['连接池', '耗尽']);
+  });
+
+  it('joins a run the segmenter gives up on entirely', () => {
+    // 限流熔断降级 segments as 限|流|熔|断|降级 — no preceding multi-char word,
+    // so the leading run has no suffix to reattach and cannot be split without
+    // a dictionary.
+    expect(wordSegments('限流熔断降级')).toEqual(['限流熔断', '降级']);
   });
 
   it('keeps a genuine single-char word separate when whitespace delimits it', () => {
@@ -334,6 +350,59 @@ Body about oom.
     expect(results.length).toBeGreaterThan(0);
     expect(results[0].matchedTerms).toContain('oom');
     expect(results[0].missingTerms).toContain('AppID');
+  });
+
+  it('does not claim full coverage when a peeled suffix corrupted the words', async () => {
+    // Query 中间件排查 against an entry tagged 中间件. Gluing the run gave
+    // ['中间', '件排查'], so 中间 matched the tag, nothing was missing, and the
+    // Missing: line was omitted — reporting full coverage for a troubleshooting
+    // query against a plain overview entry.
+    writeLearningDoc(learningsDir, 'mw-2026-03-05-mid.md', `---
+title: "中间件概览"
+author: dave
+date: 2026-03-05
+tags: [中间件]
+---
+
+Overview of the middleware layer.
+`);
+    await buildIndex(learningsDir);
+    const index = await loadIndex();
+
+    const results = search('中间件排查', index!);
+    const mw = results.find((r) => r.entry.title === '中间件概览');
+    expect(mw).toBeDefined();
+    expect(mw!.matchedTerms).toEqual(['中间件']);
+    expect(mw!.missingTerms).toEqual(['排查']);
+  });
+
+  it('omits coverage for codebase docs admitted on a body-only match', async () => {
+    // team-codebase docs have no tags, so search() lets them match on body
+    // alone. Reporting coverage for them would mark every term missing, and the
+    // caller is told to treat that as "no coverage" — discarding a valid hit.
+    const index: SearchIndex = {
+      version: 6,
+      entries: [
+        {
+          filename: 'arch.md',
+          title: 'Architecture notes',
+          author: 'bob',
+          date: '2026-03-01',
+          tags: [],
+          tokens: ['authentication', 'retry'],
+          votes: 0,
+          type: 'docs',
+          domain: 'technical',
+          path: '/repo/docs/team-codebase/arch.md',
+        },
+      ],
+      df: { authentication: 1, retry: 1 },
+    } as unknown as SearchIndex;
+
+    const results = search('authentication retry', index);
+    expect(results).toHaveLength(1);
+    expect(results[0].matchedTerms).toBeUndefined();
+    expect(results[0].missingTerms).toBeUndefined();
   });
 
   it('marks every term missing when a hit only matches on body text', async () => {

@@ -208,7 +208,8 @@ Use judgement rather than counting, in both directions:
   discriminating term as a lead to verify by opening the file, not as a
   conclusion.
 - **Fewer than 5 results does not mean the corpus is thin.** Results are
-  deduplicated by title and date, so a learning shared twice appears once. Body-
+  deduplicated when title, date, author and content all match, so a learning
+  shared twice appears once. Body-
   only matches are also dropped. Both are intentional.
 
 For each hit you keep, read the source file directly (use `Read`) and
@@ -231,6 +232,9 @@ Cap the knowledge summaries at ~2000 characters (the whole response has a
 Drop hits that are off-topic.
 
 ### Step 5 — Emit a structured response
+
+Use the numbered-list format below when at least one hit answers the task; use
+the no-coverage variant that follows it when none does.
 
 Return your output in **this exact format** to the main conversation:
 
@@ -318,6 +322,7 @@ list — never promote one to answer a requirement it does not address.
 
 For a no-coverage response, evidence takes priority over brevity: if listing
 rejected entries pushes past the character cap, allow up to ~2000 characters
+even on bugfix and diagnose tasks, whose 1500 cap this overrides.
 rather than dropping the reasoning.
 
 **Output structure rules:**

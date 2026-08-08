@@ -111,6 +111,14 @@ export function tokenCount(text: string): number {
  * same way — the segmenter peels suffixes off ("错误率" → 错误|率, "中间件" →
  * 中间|件), and a bare 率 or 件 is not a term any caller would recognise as
  * theirs. Such a char is appended to the preceding word instead.
+ *
+ * Known limit: only the first char of a run reattaches, because the rest are
+ * words the segmenter failed to join rather than suffixes. A run the segmenter
+ * gives up on entirely is joined as one word — "限流熔断降级" segments as
+ * 限|流|熔|断|降级 and yields 限流熔断 / 降级, since splitting a run of three or
+ * more requires a dictionary. What matters is that the preceding word stays
+ * intact: a corrupted leading word would be reported back to the caller as a
+ * term they never typed.
  */
 export function wordSegments(text: string): string[] {
   if (!text) return [];
@@ -123,10 +131,14 @@ export function wordSegments(text: string): string[] {
   let lastWasCjkWord = false;
 
   const flushRun = (): void => {
-    if (run.length === 1 && lastWasCjkWord) {
-      // Lone trailing char: a peeled suffix, not a word of its own.
-      words[words.length - 1] += run[0];
-    } else if (run.length > 0) {
+    if (run.length > 0 && lastWasCjkWord) {
+      // The first char is a suffix the segmenter peeled off the previous word,
+      // so it belongs there rather than leading a word of its own. Only the
+      // first: the rest are separate words the segmenter failed to join.
+      words[words.length - 1] += run.shift() as string;
+      lastWasCjkWord = false;
+    }
+    if (run.length > 0) {
       words.push(run.join(''));
       lastWasCjkWord = false;
     }

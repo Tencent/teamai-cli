@@ -753,6 +753,14 @@ export function search(
       }
 
       // Coverage per query word: matched when any of its tokens hits title/tag.
+      // Skipped for entries admitted only by the codebase exemption — those are
+      // scored on body text, so every term would read as missing and the caller
+      // would discard a legitimate hit as uncovered.
+      if (!hasTitleOrTagMatch) {
+        results.push({ entry, score });
+        continue;
+      }
+
       const matchedTerms: string[] = [];
       const missingTerms: string[] = [];
       for (const { word, tokens: wt } of wordTokens) {
