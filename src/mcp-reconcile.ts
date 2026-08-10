@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
 import type {
@@ -223,7 +224,7 @@ export async function resolveMcpTargets(
 
 // ─── JSON target I/O ─────────────────────────────────────────
 
-interface JsonDoc {
+export interface JsonDoc {
   data: Record<string, unknown>;
   servers: Record<string, unknown>;
 }
@@ -233,7 +234,7 @@ interface JsonDoc {
  * parsed — we abandon the injection rather than risk clobbering a file we do
  * not understand (it may hold the user's OAuth session).
  */
-async function readJsonDoc(file: string, serverKey: string): Promise<JsonDoc | null> {
+export async function readJsonDoc(file: string, serverKey: string): Promise<JsonDoc | null> {
   if (!await pathExists(file)) return { data: {}, servers: {} };
   const raw = await readFileSafe(file);
   if (raw === null) return null;
@@ -514,4 +515,13 @@ async function applyCodex(
   await fse.chmod(tmp, 0o600);
   await fse.rename(tmp, target.file);
   return true;
+}
+
+export async function writeCodexAtomic(file: string, content: string): Promise<void> {
+  await fse.ensureDir(path.dirname(file));
+  const suffix = crypto.randomBytes(6).toString('hex');
+  const tmp = `${file}.${process.pid}.${suffix}.tmp`;
+  await fse.writeFile(tmp, content, 'utf-8');
+  await fse.chmod(tmp, 0o600);
+  await fse.rename(tmp, file);
 }
