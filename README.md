@@ -54,6 +54,22 @@ teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 
 Once initialized, every AI session automatically pulls the latest skills / rules and other Harness updates published by admins — no manual sync needed.
 
+### Single-repo mode (the business repo *is* the team repo)
+
+No separate team repo. Run `teamai init .` inside an existing project and its own git repo becomes the team repo:
+
+```bash
+cd /path/to/my-project
+teamai init .          # or: teamai init --self
+```
+
+- **Knowledge** (skills / rules / docs / learnings) is committed to your repo's **main branch** under `.teamai/`, so a plain `git clone` already carries the whole team setup.
+- **Reports** (member registrations, session summaries, votes, usage stats) go to a separate **`teamai-reports` orphan branch** — they never touch main.
+- **Clone = initialized.** When a teammate clones the repo, the next `teamai` command (or AI session) auto-detects the `mode: self` marker in `.teamai/teamai.yaml` and finishes local setup automatically — no need to re-type repo/role.
+- All of teamai's git operations run in isolated worktrees, so your working tree and current branch are never touched.
+
+After `teamai init .`, commit `.teamai/` (skills, rules, docs, learnings, `teamai.yaml`, `.gitignore`) and `.claude/settings.json` to main so teammates get auto-initialized on clone.
+
 > **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — covers everything from team creation to day-to-day use.
 
 ## Harness Management & Distribution

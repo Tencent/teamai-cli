@@ -16,6 +16,7 @@
   - [项目级（Project Scope）](#项目级project-scope)
   - [用户级（User Scope）](#用户级user-scope)
   - [如何选择 Scope？](#如何选择-scope)
+  - [单仓模式（业务仓即团队仓）](#单仓模式业务仓即团队仓)
   - [在项目仓库下叠加组织级仓库](#在项目仓库下叠加组织级仓库)
 - [成员接入](#成员接入)
 - [日常使用](#日常使用)
@@ -165,6 +166,35 @@ teamai init <group>/TeamAi-<team> --scope user
 | **能否共存** | ✅ 可以；project 保持当前 scope，并可选择继承安全的 user 资源 | ✅ 可以；仍是独立的用户主目录级安装 |
 
 > **本机安装位置**仅由 `teamai init` 的 `--scope`（默认 `project`）决定。远端 `teamai.yaml` 中若仍有 `scope` 字段会被忽略。
+
+### 单仓模式（业务仓即团队仓）
+
+无需单独的团队仓库，可以让某个已有项目自己的 git 仓库直接充当团队仓。在项目内运行：
+
+```bash
+cd /path/to/my-project
+teamai init .            # 或：teamai init --self
+```
+
+**数据如何在分支间拆分：**
+
+| 数据 | 存放位置 | 随 `git clone` 一起带走？ |
+|------|----------|---------------------------|
+| 知识资产：`skills/` `rules/` `docs/` `learnings/`、`teamai.yaml` | **main** 分支的 `.teamai/` | ✅ 会 |
+| 上报数据：`members/` `sessions/` `votes/` `stats/` | `teamai-reports` **孤儿分支** | 推送到 `origin`（独立历史） |
+| 本机私有：`config.yaml`、`token`、`state.json`、worktree | `.teamai/`（已 gitignore） | ❌ 不会（每台机器本地） |
+
+**克隆即初始化。** 由于知识资产和 `.teamai/teamai.yaml` 里的 `mode: self` 标记都提交在 main 上，团队成员 clone 仓库后会被自动初始化：下一条 `teamai` 命令或 AI 会话会识别该标记，并（在其 git provider 已认证的前提下）自动写入本机配置、注入 hooks、在孤儿分支上注册成员 —— 无需手抄 repo/role 参数。若尚未认证，teamai 会提示其运行一次 `teamai init .`。
+
+**安全性。** 单仓模式下 teamai 的每一次 git 写操作（知识 PR 和上报孤儿分支）都在 `.teamai/` 下的隔离 git worktree 中进行，绝不会 checkout、reset 或切换你的工作区和当前分支。
+
+**管理员在 `teamai init .` 之后的清单：**
+
+1. 把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）和 `.claude/settings.json` 提交到 main。
+2. 推送 main，供团队成员 clone。
+3. 之后新增知识用 `teamai push` —— 它会（通过隔离 worktree）向你的仓库开 PR，而不是直接改动你的工作区。
+
+> **限制。** 单仓模式把一套团队配置绑定到一个业务仓。如果需要一套团队知识库被多个业务仓共享，请改用独立团队仓（`teamai init <repo>`）。
 
 ### 在项目仓库下叠加组织级仓库
 

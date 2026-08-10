@@ -60,6 +60,21 @@ async function refreshTeamRepo(
     return { label: 'HTTP (report/sync delivery)', version: null, reportingOnly: true };
   }
 
+  if (localConfig.repo.kind === 'self') {
+    // Single-repo mode: knowledge lives under <business-repo>/.teamai on main and
+    // arrives with the business repo's own `git clone`/`git pull`. teamai must NOT
+    // run `git pull` on localPath here — that would operate on the business repo
+    // root and touch the user's active working tree. Just read the current HEAD as
+    // the cache version and let the deploy step inject from the on-disk .teamai/.
+    let version: string | null = null;
+    try {
+      version = await getHeadRev(localConfig.repo.localPath);
+    } catch {
+      version = null;
+    }
+    return { label: 'single-repo (knowledge on main)', version, reportingOnly: false };
+  }
+
   const result = await pullRepo(localConfig.repo.localPath);
   let version: string | null = null;
   try {
@@ -1181,12 +1196,17 @@ export async function pull(options: GlobalOptions): Promise<void> {
     try {
       const { reportUsageToTeam } = await import('./team-push.js');
       const { truncateUsageAfterReport, readUsageEvents } = await import('./usage-tracker.js');
-      const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[] } }> = [];
+      const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig?: LocalConfig } }> = [];
       if (projectConfig) {
         targets.push({
           repoPath: projectConfig.repo.localPath,
           username: projectConfig.username,
-          opts: { skipTruncate: true, projectRoot: projectConfig.projectRoot },
+          opts: {
+            skipTruncate: true,
+            projectRoot: projectConfig.projectRoot,
+            // Self mode routes stats/votes to the teamai-reports orphan branch.
+            ...(projectConfig.repo.kind === 'self' ? { selfConfig: projectConfig } : {}),
+          },
         });
       }
       if (activeUserConfig && activeUserConfig.repo.kind !== 'http') {

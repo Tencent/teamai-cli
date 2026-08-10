@@ -79,6 +79,76 @@ export async function getHeadRev(localPath: string): Promise<string> {
   return git.revparse(['--short', 'HEAD']);
 }
 
+/**
+ * Read the `origin` remote URL of the repo at localPath (or its enclosing repo).
+ * Returns null when there is no origin remote or the path is not a git repo.
+ * Used by single-repo mode to derive the provider/remote from the business repo.
+ */
+export async function getRemoteUrl(localPath: string, remoteName = 'origin'): Promise<string | null> {
+  const git = createGit(localPath);
+  try {
+    const url = (await git.raw(['remote', 'get-url', remoteName])).trim();
+    return url || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the repo at localPath has at least one commit reachable from HEAD.
+ * A freshly `git init`'d repo (HEAD points at an unborn branch) returns false.
+ * Used by single-repo mode: knowledge worktrees/PRs need a base commit to exist.
+ */
+export async function hasCommits(localPath: string): Promise<boolean> {
+  const git = createGit(localPath);
+  try {
+    // NB: `--quiet` makes git exit 1 silently on an unborn HEAD, and simple-git
+    // does not throw on that — so we must validate the OUTPUT (a real sha), not
+    // rely on a thrown error. An unborn HEAD yields empty/whitespace output.
+    const out = (await git.raw(['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
+    return /^[0-9a-f]{7,40}$/.test(out);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stage the given pathspecs and commit them on the current branch of the repo at
+ * localPath. Best-effort helper for single-repo init: it seeds the business repo
+ * with a base commit carrying the committed .teamai/ knowledge skeleton so later
+ * knowledge PRs (which branch off HEAD) have something to branch from.
+ *
+ * Returns true if a commit was created, false if there was nothing to commit.
+ * Does NOT push — the user pushes their business repo on their own cadence.
+ */
+export async function commitPaths(
+  localPath: string,
+  message: string,
+  files: string[],
+): Promise<boolean> {
+  const git = createGit(localPath);
+  const existing = files.filter((f) => fs.existsSync(path.join(localPath, f)));
+  if (existing.length === 0) return false;
+  // Add each path individually and tolerate `git add` failing on an
+  // explicitly-gitignored path (it errors "Use -f if you really want to add
+  // them"). Callers should not pass ignored paths, but a stray one must not
+  // abort the whole commit. `--` guards against paths that look like options.
+  let added = 0;
+  for (const f of existing) {
+    try {
+      await git.add(['--', f]);
+      added++;
+    } catch {
+      // ignored/unaddable path — skip it
+    }
+  }
+  if (added === 0) return false;
+  const status = await git.status();
+  if (status.staged.length === 0) return false;
+  await git.commit(message);
+  return true;
+}
+
 export async function pullRepo(localPath: string): Promise<string> {
   const git = createGit(localPath);
   const result = await git.pull();
@@ -258,7 +328,7 @@ export async function pushRepoBranch(
   if (status.staged.length === 0) {
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Nothing to commit, switching back to ${defaultBranch}`);
-    await git.checkout(defaultBranch);
+    await switchToDefaultBranch(git, defaultBranch);
     await git.deleteLocalBranch(branchName, true);
     return false;
   }
@@ -268,7 +338,7 @@ export async function pushRepoBranch(
   if (isMetadataOnlyDiff(diffOutput)) {
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Only metadata/timestamp changes detected, switching back to ${defaultBranch}`);
-    await git.checkout(defaultBranch);
+    await switchToDefaultBranch(git, defaultBranch);
     await git.deleteLocalBranch(branchName, true);
     return false;
   }
@@ -281,13 +351,41 @@ export async function pushRepoBranch(
 }
 
 /**
+ * Switch a repo/worktree back to its default branch, tolerating the case where
+ * that branch is already checked out in another worktree.
+ *
+ * In single-repo mode, teamai stages knowledge PRs in a disposable worktree while
+ * the user's active tree holds the same default branch (e.g. `main`). Git refuses
+ * `checkout main` in a second worktree ("'main' is already used by worktree ...").
+ * That's harmless here: the worktree is about to be destroyed, and in a normal
+ * clone a skipped switch self-heals via resetToCleanMaster on the next run. So we
+ * swallow that specific conflict rather than letting it abort the whole operation.
+ */
+async function switchToDefaultBranch(git: SimpleGit, defaultBranch: string): Promise<void> {
+  try {
+    await git.checkout(defaultBranch);
+  } catch (e) {
+    const msg = (e as Error).message ?? '';
+    if (/already (used|checked out) by worktree|is already checked out/i.test(msg)) {
+      log.debug(`Skipping switch to ${defaultBranch}: already checked out in another worktree`);
+      return;
+    }
+    throw e;
+  }
+}
+
+/**
  * Switch the repo back to its default branch (main/master).
  * Used after pushRepoBranch + createPullRequest.
+ *
+ * Best-effort with respect to the "already used by worktree" conflict (see
+ * switchToDefaultBranch): a self-mode knowledge worktree shares the default branch
+ * with the user's active tree and is disposable, so failing to switch is a no-op.
  */
 export async function checkoutMaster(localPath: string): Promise<void> {
   const git = createGit(localPath);
   const defaultBranch = await getDefaultBranch(localPath);
-  await git.checkout(defaultBranch);
+  await switchToDefaultBranch(git, defaultBranch);
 }
 
 /**

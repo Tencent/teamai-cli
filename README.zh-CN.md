@@ -54,6 +54,22 @@ teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 
 初始化完成后，每次开启 AI 会话时都会自动拉取管理员发布的 skills / rules 等 Harness 更新，无需手动同步。
 
+### 单仓模式（业务仓即团队仓）
+
+无需单独的团队仓库。在已有项目里运行 `teamai init .`，让它自己的 git 仓库直接充当团队仓：
+
+```bash
+cd /path/to/my-project
+teamai init .          # 或：teamai init --self
+```
+
+- **知识资产**（skills / rules / docs / learnings）提交到仓库 **main 分支**的 `.teamai/` 目录，因此一次普通 `git clone` 就带上了整套团队配置。
+- **上报数据**（成员注册、会话摘要、投票、使用统计）走独立的 **`teamai-reports` 孤儿分支** —— 永不污染 main。
+- **克隆即初始化。** 团队成员 clone 仓库后，下一条 `teamai` 命令（或 AI 会话）会自动识别 `.teamai/teamai.yaml` 里的 `mode: self` 标记并自动完成本机初始化 —— 无需手抄 repo/role 参数。
+- teamai 的所有 git 操作都在隔离的 worktree 中进行，绝不触碰你的工作区和当前分支。
+
+执行 `teamai init .` 后，把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）和 `.claude/settings.json` 提交到 main，团队成员 clone 后即可自动初始化。
+
 > **完整使用指南**：[docs/usage-guide.zh-CN.md](docs/usage-guide.zh-CN.md)（[English](docs/usage-guide.md)）— 涵盖从团队创建到日常使用的全流程。
 
 ## Harness 管理和分发

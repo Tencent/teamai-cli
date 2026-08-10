@@ -1,5 +1,6 @@
-import { pathExists } from './utils/fs.js';
-import { resolveBaseDir } from './types.js';
+import path from 'node:path';
+import { pathExists, ensureDir } from './utils/fs.js';
+import { resolveBaseDir, isAgentDisabled } from './types.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
 
 // ─── Known AI coding agents registry ────────────────────
@@ -86,6 +87,46 @@ export interface ResolvedAgent extends KnownAgent {
  * config. Entries that share the same id prefer the team config's
  * skillsPath (admin can override the default location).
  */
+/**
+ * Single-repo mode: seed the tool skills-directory root for the agents this
+ * project should sync to, so that first-run injection actually lands.
+ *
+ * In git/user modes, `teamai pull` only injects into AI tools whose root dir
+ * already exists (isToolInstalled) — the user "opts in" by having e.g. ~/.claude.
+ * But single-repo mode's whole promise is "clone → auto-inject": a teammate's
+ * fresh clone has no <repo>/.claude yet, so nothing would ever inject. Seeding
+ * the dir here makes hooks + skills deploy on the first pull.
+ *
+ * Which agents: `--agent`/enabledAgents when set; otherwise just `claude` (the
+ * primary) — we deliberately do NOT create dirs for every configured tool, to
+ * avoid littering the repo with .cursor/.codebuddy/... the teammate doesn't use.
+ *
+ * Returns the list of agent ids whose dirs were ensured.
+ */
+export async function seedSelfModeToolDirs(
+  localConfig: LocalConfig,
+  teamConfig: TeamaiConfig,
+): Promise<string[]> {
+  const baseDir = resolveBaseDir(localConfig);
+  const configured = teamConfig.toolPaths ?? {};
+
+  let targets = localConfig.enabledAgents && localConfig.enabledAgents.length > 0
+    ? localConfig.enabledAgents
+    : ['claude'];
+  // Never seed an explicitly disabled agent.
+  targets = targets.filter((id) => !isAgentDisabled(localConfig, id));
+
+  const seeded: string[] = [];
+  for (const id of targets) {
+    const skillsPath = configured[id]?.skills
+      ?? KNOWN_AGENTS.find((a) => a.id === id)?.skillsPath;
+    if (!skillsPath) continue;
+    await ensureDir(path.join(baseDir, skillsPath));
+    seeded.push(id);
+  }
+  return seeded;
+}
+
 export function getEffectiveAgents(teamConfig: TeamaiConfig): KnownAgent[] {
   const byId = new Map<string, KnownAgent & { fromTeamConfig?: boolean }>();
 

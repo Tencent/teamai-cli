@@ -7,7 +7,7 @@ import { getProvider } from './providers/index.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
 import { scanTeamRepoNamespaces } from './resources/skills.js';
-import type { GlobalOptions, ResourceItem, ResourceType } from './types.js';
+import type { GlobalOptions, ResourceItem, ResourceType, LocalConfig, TeamaiConfig } from './types.js';
 import { assertSafePath, assertSafeResourceName, defaultAllowedRoots } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
 import { askQuestion, askSelection } from './utils/prompt.js';
@@ -108,6 +108,33 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
   // Auto-detect scope: project scope if cwd has project config, else user scope
   const { localConfig, teamConfig } = await autoDetectInit();
   assertNotReadOnly(localConfig, 'teamai push');
+
+  // Single-repo mode: knowledge PRs must run in an isolated worktree so the
+  // branch/commit/reset never touch the user's active tree. withKnowledgeWorktree
+  // hands pushCore a config whose localPath is the worktree's .teamai.
+  if (localConfig.repo.kind === 'self') {
+    const { withKnowledgeWorktree, EmptyRepoError } = await import('./utils/reports-branch.js');
+    try {
+      await withKnowledgeWorktree(localConfig, (wtConfig) => pushCore(wtConfig, teamConfig, options));
+    } catch (e) {
+      if (e instanceof EmptyRepoError) {
+        log.error(e.message);
+      } else {
+        log.error(`Push failed: ${(e as Error).message}`);
+      }
+    }
+    return;
+  }
+
+  await pushCore(localConfig, teamConfig, options);
+}
+
+async function pushCore(
+  localConfig: LocalConfig,
+  teamConfig: TeamaiConfig,
+  options: GlobalOptions & { all?: boolean; role?: string },
+): Promise<void> {
+  const selfMode = localConfig.repo.kind === 'self';
   const scopeLabel = localConfig.scope;
 
   // Pull latest default branch BEFORE scanning so detection runs against up-to-date repo.
@@ -116,15 +143,20 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
   //   - Stuck on a stale push branch instead of master
   //   - Uncommitted changes (e.g. votes written by autoUpvote)
   // We recover from all of these before pulling.
-  const pullSpin = spinner('Pulling latest changes...').start();
-  try {
-    const repoPath = localConfig.repo.localPath;
-    const git = createGit(repoPath);
-    await resetToCleanMaster(git, repoPath);
-    await pullRepo(repoPath);
-    pullSpin.succeed('Up to date');
-  } catch (e) {
-    pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+  // In self mode the worktree is already a fresh detached checkout of
+  // origin/<default>, so resetToCleanMaster/pullRepo (which assume a normal
+  // clone on a branch) are neither needed nor safe — skip them.
+  if (!selfMode) {
+    const pullSpin = spinner('Pulling latest changes...').start();
+    try {
+      const repoPath = localConfig.repo.localPath;
+      const git = createGit(repoPath);
+      await resetToCleanMaster(git, repoPath);
+      await pullRepo(repoPath);
+      pullSpin.succeed('Up to date');
+    } catch (e) {
+      pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+    }
   }
 
   // Sync team repo updates to local tool directories before scanning.

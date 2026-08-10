@@ -16,6 +16,7 @@
   - [Project Scope](#project-scope)
   - [User Scope](#user-scope)
   - [How to Choose a Scope?](#how-to-choose-a-scope)
+  - [Single-repo mode (business repo is the team repo)](#single-repo-mode-business-repo-is-the-team-repo)
   - [Layer an organization repo under a project repo](#layer-an-organization-repo-under-a-project-repo)
 - [Member Onboarding](#member-onboarding)
 - [Day-to-Day Use](#day-to-day-use)
@@ -167,6 +168,35 @@ Resulting directory structure:
 | **Can coexist** | ✅ Yes; project stays active and can opt into safe user resources | ✅ Yes; remains a separate home-level install |
 
 > **Local install location** is decided only by `teamai init`'s `--scope` (default `project`). A `scope` field in remote `teamai.yaml`, if present, is ignored.
+
+### Single-repo mode (business repo is the team repo)
+
+Instead of a separate team repo, you can make an existing project's own git repo double as the team repo. Run this inside the project:
+
+```bash
+cd /path/to/my-project
+teamai init .            # or: teamai init --self
+```
+
+**How it splits data across branches:**
+
+| Data | Where it lives | Travels with `git clone`? |
+|------|----------------|---------------------------|
+| Knowledge: `skills/` `rules/` `docs/` `learnings/`, `teamai.yaml` | `.teamai/` on the **main** branch | ✅ Yes |
+| Reports: `members/` `sessions/` `votes/` `stats/` | `teamai-reports` **orphan branch** | Pushed to `origin` (separate history) |
+| Machine-local: `config.yaml`, `token`, `state.json`, worktrees | `.teamai/` (gitignored) | ❌ No (per-machine) |
+
+**Clone = initialized.** Because knowledge and the `mode: self` marker in `.teamai/teamai.yaml` are committed to main, a teammate who clones the repo is auto-initialized: the next `teamai` command or AI session detects the marker, and (when their git provider is already authenticated) writes their local config, injects hooks, and registers them on the reports branch — no need to re-type repo/role. If they aren't authenticated yet, teamai prompts them to run `teamai init .` once.
+
+**Safety.** Every git write teamai performs in single-repo mode (knowledge PRs and the reports orphan branch) runs in an isolated git worktree under `.teamai/`. Your working tree and current branch are never checked out, reset, or switched.
+
+**Admin checklist after `teamai init .`:**
+
+1. Commit `.teamai/` (skills, rules, docs, learnings, `teamai.yaml`, `.gitignore`) and `.claude/settings.json` to main.
+2. Push main so teammates can clone.
+3. Add knowledge later with `teamai push` — it opens a PR against your repo (via an isolated worktree) rather than committing to your working tree.
+
+> **Limitation.** Single-repo mode ties one team setup to one business repo. If you need to share one team knowledge base across many business repos, use a standalone team repo (`teamai init <repo>`) instead.
 
 ### Layer an organization repo under a project repo
 

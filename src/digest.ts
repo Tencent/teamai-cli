@@ -348,7 +348,17 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     const localConfig = projectConfig ?? (await requireInit()).localConfig;
     const repoPath = localConfig.repo.localPath;
 
-    const teamStats = await loadTeamStats(repoPath);
+    // In self mode, knowledge (learnings, skill git-log) lives under localPath on
+    // main, but report data (stats, sessions) lives on the teamai-reports orphan
+    // branch — read those from the reports worktree, refreshed from origin.
+    let reportsRoot = repoPath;
+    if (localConfig.repo.kind === 'self') {
+      const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
+      await refreshReportsWorktree(localConfig);
+      reportsRoot = await ensureReportsWorktree(localConfig);
+    }
+
+    const teamStats = await loadTeamStats(reportsRoot);
 
     if (teamStats.length === 0) {
       console.log('No team usage data available yet.');
@@ -357,7 +367,7 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     }
 
     const health = calculateTeamHealth(teamStats);
-    const sessions = await getRecentSessions(repoPath);
+    const sessions = await getRecentSessions(reportsRoot);
 
     // Header
     const now = new Date();
