@@ -83,6 +83,19 @@ async function detectWorkbuddyVersion(): Promise<string> {
   return '';
 }
 
+async function detectHermesVersion(): Promise<string> {
+  const raw = await execVersion('hermes');
+  // hermes --version may output "(2026.8.7)\nProject: ..." — extract from parens or leading digits.
+  const match = raw.match(/^\(?(\d+(?:\.\d+)*)\)?/);
+  return match?.[1] ?? '';
+}
+
+async function detectOpenclawVersion(): Promise<string> {
+  const raw = await execVersion('openclaw');
+  const match = raw.match(/^([\d.]+)/);
+  return match?.[1] ?? '';
+}
+
 // ─── Registry ───────────────────────────────────────────
 
 type VersionDetector = () => Promise<string>;
@@ -93,6 +106,8 @@ const DETECTORS: Record<string, VersionDetector> = {
   codebuddy: detectCodebuddyCliVersion,
   'codebuddy-ide': detectCodebuddyIdeVersion,
   workbuddy: detectWorkbuddyVersion,
+  hermes: detectHermesVersion,
+  openclaw: detectOpenclawVersion,
 };
 
 /**

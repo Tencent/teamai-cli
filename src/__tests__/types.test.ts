@@ -88,6 +88,7 @@ describe('TeamaiConfigSchema', () => {
     expect(result.toolPaths.openclaw).toEqual({
       skills: '.openclaw/skills',
       rules: '.openclaw/rules',
+      claudemd: '.openclaw/workspace/AGENTS.md',
     });
   });
 

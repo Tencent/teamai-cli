@@ -52,3 +52,14 @@ describe('detectMachineId', () => {
     expect(getMachineId()).toBe(getMachineId());
   });
 });
+
+describe('detectMachineId hostname fallback', () => {
+  it('falls back to hostname when platform reader returns empty', async () => {
+    const os = await import('node:os');
+    const hostname = os.hostname();
+    // 'freebsd' hits the Linux branch; on macOS CI /etc/machine-id does not exist,
+    // so readLinuxMachineId returns '' and detectMachineId falls back to hostname.
+    const id = detectMachineId('freebsd' as NodeJS.Platform);
+    expect(id).toBe(hostname);
+  });
+});
