@@ -192,7 +192,7 @@ teamai init .            # 或：teamai init --self
 
 1. 把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）和 `.claude/settings.json` 提交到 main。
 2. 推送 main，供团队成员 clone。
-3. 之后新增知识用 `teamai push` —— 它会（通过隔离 worktree）向你的仓库开 PR，而不是直接改动你的工作区。
+3. 之后新增知识用 `teamai push` —— 它会（通过隔离 worktree）向你的仓库开 PR，而不是直接改动你的工作区。单仓模式下，你既可以在 AI 工具目录（如 `~/.claude/skills/`）里编写知识,**也可以**直接编辑仓库里的 `.teamai/skills/`、`.teamai/rules/`；`teamai push` 会同时扫描两者,只呈现真正的新增或修改（已提交的知识会被跳过）。
 
 > **限制。** 单仓模式把一套团队配置绑定到一个业务仓。如果需要一套团队知识库被多个业务仓共享，请改用独立团队仓（`teamai init <repo>`）。
 

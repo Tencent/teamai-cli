@@ -194,7 +194,7 @@ teamai init .            # or: teamai init --self
 
 1. Commit `.teamai/` (skills, rules, docs, learnings, `teamai.yaml`, `.gitignore`) and `.claude/settings.json` to main.
 2. Push main so teammates can clone.
-3. Add knowledge later with `teamai push` — it opens a PR against your repo (via an isolated worktree) rather than committing to your working tree.
+3. Add knowledge later with `teamai push` — it opens a PR against your repo (via an isolated worktree) rather than committing to your working tree. In single-repo mode you can author knowledge either in an AI tool dir (e.g. `~/.claude/skills/`) **or** by editing `.teamai/skills/` and `.teamai/rules/` directly in your repo; `teamai push` scans both and only surfaces genuine additions or edits (already-committed knowledge is skipped).
 
 > **Limitation.** Single-repo mode ties one team setup to one business repo. If you need to share one team knowledge base across many business repos, use a standalone team repo (`teamai init <repo>`) instead.
 

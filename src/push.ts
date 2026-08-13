@@ -14,6 +14,14 @@ import { askQuestion, askSelection } from './utils/prompt.js';
 import { pathExists } from './utils/fs.js';
 
 /**
+ * Synthetic toolPaths key used only to make `teamai push` scan the active tree's
+ * .teamai/{skills,rules} in single-repo mode (see pushCore). It is never written
+ * to disk and never used by pull — the leading marker keeps it from colliding
+ * with any real agent id.
+ */
+const SELF_KNOWLEDGE_SCAN_KEY = '__teamai_self_knowledge__';
+
+/**
  * Filter a list of repo-root-relative paths (e.g. "rules/", "env/") down to
  * those that actually exist on disk. `git add` throws `pathspec did not match
  * any files` when any argument doesn't exist, so we guard against that when
@@ -170,6 +178,30 @@ async function pushCore(
 
   const spin = spinner('Scanning local resources...').start();
 
+  // In single-repo mode the team knowledge dirs (.teamai/skills, .teamai/rules)
+  // live inside the user's own repo, so people naturally add or edit skills there
+  // directly (e.g. `cp my-skill .teamai/skills/`) instead of in an AI tool dir
+  // like ~/.claude/skills. The default scanner only treats AI tool dirs as push
+  // "sources", so a skill hand-placed under .teamai/skills would be invisible to
+  // push ("No new or modified resources"). Add the ACTIVE tree's .teamai/{skills,
+  // rules} as extra scan sources; they are diffed against the worktree checkout of
+  // origin/<default> (localConfig.repo.localPath here), so already-committed
+  // knowledge is skipped and only genuine additions/edits surface.
+  //
+  // Scan-only: we deliberately do NOT persist this into teamConfig.toolPaths — pull
+  // and pre-push sync must never target .teamai/skills (that would copy knowledge
+  // back onto itself). getHandler(type).scanLocalForPush reads toolPaths for the
+  // source list only; pushItem writes via localConfig.repo.localPath, unaffected.
+  const scanTeamConfig: TeamaiConfig = selfMode
+    ? {
+      ...teamConfig,
+      toolPaths: {
+        ...teamConfig.toolPaths,
+        [SELF_KNOWLEDGE_SCAN_KEY]: { skills: '.teamai/skills', rules: '.teamai/rules' },
+      },
+    }
+    : teamConfig;
+
   // Scan for pushable resources first, then resolve namespace for new skills only.
   // Modified skills already carry their namespace from scanLocalForPush.
   const pushableTypes: ResourceType[] = ['skills', 'rules', 'env', 'agents'];
@@ -177,7 +209,7 @@ async function pushCore(
 
   for (const type of pushableTypes) {
     const handler = getHandler(type);
-    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const items = await handler.scanLocalForPush(scanTeamConfig, localConfig);
     allItems.push(...items);
   }
 
