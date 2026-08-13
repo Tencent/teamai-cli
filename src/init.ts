@@ -409,14 +409,43 @@ export function buildSelfModeGitignore(): string {
 }
 
 /**
+ * Map an interactive selection to a concrete agent-id list. Pure (no I/O) so it
+ * can be unit-tested. The picker's option order is:
+ *   index 0            → "Auto" (mirror the tools detected under HOME)
+ *   index 1..N         → SELF_MODE_AGENT_CHOICES[index - 1] (a specific tool)
+ *
+ * Picking Auto expands to `detected`; picking Auto with nothing detected falls
+ * back to ['claude'] so the "clone = initialized" loop is never left with zero
+ * tools. Auto and specific tools can be combined; the result is deduped in the
+ * choice order (detected first, then any explicitly-picked tools).
+ */
+export function resolveSelfModeSelection(indices: number[], detected: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (id: string) => { if (id && !seen.has(id)) { seen.add(id); out.push(id); } };
+
+  const pickedAuto = indices.includes(0);
+  if (pickedAuto) {
+    if (detected.length > 0) detected.forEach(add);
+    else add('claude'); // Auto but nothing installed → keep the guarantee.
+  }
+  for (const i of indices) {
+    if (i === 0) continue; // Auto handled above
+    const id = SELF_MODE_AGENT_CHOICES[i - 1];
+    if (id) add(id);
+  }
+  return out;
+}
+
+/**
  * Decide which AI tools single-repo init should set up (seed skills dir, inject
  * hooks, commit their settings). Priority:
  *   1. `--agent` given → use exactly that (explicit wins, no prompt).
- *   2. Non-interactive (no TTY) → mirror the tools already installed under the
- *      user's HOME; if none, return [] (create nothing — no `.claude/` conjured).
- *   3. Interactive → present a multi-select of the common coding agents; Enter
- *      accepts the default (claude); an empty/cancelled selection falls back to
- *      [claude] so the "clone = initialized" loop is never left with zero tools.
+ *   2. Non-interactive (no TTY / --silent / --force) → mirror the tools already
+ *      installed under the user's HOME; if none, return [] (create nothing).
+ *   3. Interactive → multi-select. Option 1 is "Auto" (the tools detected under
+ *      HOME, listed inline) and is the Enter default; options 2+ are the specific
+ *      tools. Empty/cancelled falls back to Auto/[claude].
  */
 export async function promptForSelfModeAgents(options: {
   agent?: string | string[];
@@ -433,35 +462,43 @@ export async function promptForSelfModeAgents(options: {
     return detectHomeInstalledAgents();
   }
 
-  const choices = SELF_MODE_AGENT_CHOICES.map((id) => {
+  const detected = await detectHomeInstalledAgents();
+  const tools = SELF_MODE_AGENT_CHOICES.map((id) => {
     const meta = KNOWN_AGENTS.find((a) => a.id === id);
     const root = meta?.skillsPath.split('/')[0] ?? `.${id}`;
     return { id, label: meta?.displayName ?? id, root };
   });
 
+  const detectedLabels = detected
+    .map((id) => tools.find((t) => t.id === id)?.label ?? id)
+    .join(', ');
+  const autoLabel = detected.length > 0
+    ? `Auto — the AI tools already installed here: ${detectedLabels}`
+    : 'Auto — none detected (will set up Claude Code)';
+
   console.log('');
   console.log('Which AI tools should teamai set up in this repo?');
   console.log('(creates the skills dir, injects hooks, commits settings to main)');
   console.log('');
-  choices.forEach((c, i) => {
-    console.log(`  ${i + 1}. ${c.label}  (${c.root})`);
+  console.log(`  1. ${autoLabel}`);
+  tools.forEach((t, i) => {
+    console.log(`  ${i + 2}. ${t.label}  (${t.root})`);
   });
   console.log('');
 
-  // defaultAll=false: a bare Enter returns null (not "everything"). We map that —
-  // and any cancel/empty — to [claude], the sensible default. Explicit "all" still
-  // works via the parser.
+  const optionCount = tools.length + 1; // +1 for the Auto row
+  // defaultAll=false: a bare Enter returns null (not "everything"). We map Enter /
+  // cancel / empty to Auto (option 1). Explicit "all" still works via the parser.
   const indices = await askSelection(
-    `Select [1-${choices.length}, comma/range, or "all"] (default: 1 = ${choices[0].label}): `,
-    choices.length,
+    `Select [1-${optionCount}, comma/range, or "all"] (default: 1 = Auto): `,
+    optionCount,
     false,
   );
   if (!indices || indices.length === 0) {
-    // Enter / cancelled / empty → default to claude so the clone-is-initialized
-    // guarantee is never left with zero tools.
-    return ['claude'];
+    // Enter / cancelled → Auto.
+    return resolveSelfModeSelection([0], detected);
   }
-  return indices.map((i) => choices[i].id);
+  return resolveSelfModeSelection(indices, detected);
 }
 
 /**
