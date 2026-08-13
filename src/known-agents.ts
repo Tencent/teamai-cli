@@ -3,6 +3,40 @@ import { pathExists, ensureDir } from './utils/fs.js';
 import { resolveBaseDir, isAgentDisabled } from './types.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
 
+/**
+ * Single-repo mode: the AI tools offered when `teamai init .` asks which tool
+ * directories to create (interactive multi-select), and the candidate set probed
+ * against the user's HOME in non-interactive contexts. Order is the display order.
+ * Kept small on purpose — the common coding agents, not the full KNOWN_AGENTS list.
+ */
+export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'codebuddy', 'workbuddy'] as const;
+
+/**
+ * Normalize the `--agent` option into a deduplicated id list.
+ *
+ * Accepts commander's variadic array (`--agent claude --agent codex` → ['claude',
+ * 'codex']), a single string (legacy `--agent claude`), or a comma-separated
+ * string (`--agent claude,codex`). Any element may itself be comma-separated, so
+ * both invocation styles compose. Blank entries are dropped; order/first-seen is
+ * preserved. Returns [] for undefined/empty.
+ */
+export function normalizeAgentList(agent?: string | string[]): string[] {
+  if (agent === undefined) return [];
+  const raw = Array.isArray(agent) ? agent : [agent];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const part of raw) {
+    for (const piece of String(part).split(',')) {
+      const id = piece.trim();
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        out.push(id);
+      }
+    }
+  }
+  return out;
+}
+
 // ─── Known AI coding agents registry ────────────────────
 //
 //  Curated list of agents whose skills directory layout is
@@ -97,9 +131,12 @@ export interface ResolvedAgent extends KnownAgent {
  * fresh clone has no <repo>/.claude yet, so nothing would ever inject. Seeding
  * the dir here makes hooks + skills deploy on the first pull.
  *
- * Which agents: `--agent`/enabledAgents when set; otherwise just `claude` (the
- * primary) — we deliberately do NOT create dirs for every configured tool, to
- * avoid littering the repo with .cursor/.codebuddy/... the teammate doesn't use.
+ * Which agents: strictly `localConfig.enabledAgents`. The caller decides that set
+ * — interactively (multi-select in `teamai init .`), from `--agent`, or by probing
+ * the user's HOME in non-interactive contexts (see detectHomeInstalledAgents).
+ * We deliberately do NOT fall back to a hardcoded default here: an empty
+ * enabledAgents means "create nothing", so no `.claude/` is conjured for someone
+ * who never asked for it.
  *
  * Returns the list of agent ids whose dirs were ensured.
  */
@@ -110,9 +147,7 @@ export async function seedSelfModeToolDirs(
   const baseDir = resolveBaseDir(localConfig);
   const configured = teamConfig.toolPaths ?? {};
 
-  let targets = localConfig.enabledAgents && localConfig.enabledAgents.length > 0
-    ? localConfig.enabledAgents
-    : ['claude'];
+  let targets = localConfig.enabledAgents ?? [];
   // Never seed an explicitly disabled agent.
   targets = targets.filter((id) => !isAgentDisabled(localConfig, id));
 
@@ -125,6 +160,37 @@ export async function seedSelfModeToolDirs(
     seeded.push(id);
   }
   return seeded;
+}
+
+/**
+ * Detect which candidate AI tools are already installed under the user's HOME.
+ *
+ * Used by single-repo mode in non-interactive contexts (CI, session-start hook,
+ * clone-time bootstrap) to decide which tool dirs to seed when the user cannot be
+ * asked: we mirror whatever tools they already use globally (~/.claude, ~/.codex,
+ * ...). Returns [] when none are present — the caller then seeds nothing rather
+ * than conjuring a `.claude/` nobody uses.
+ *
+ * Note this probes HOME, not resolveBaseDir(localConfig) (which in project scope
+ * is the repo root). The whole point is "what does this developer use elsewhere".
+ */
+export async function detectHomeInstalledAgents(
+  candidateIds: readonly string[] = SELF_MODE_AGENT_CHOICES,
+): Promise<string[]> {
+  const home = process.env.HOME;
+  if (!home) return [];
+
+  const found: string[] = [];
+  for (const id of candidateIds) {
+    const skillsPath = KNOWN_AGENTS.find((a) => a.id === id)?.skillsPath;
+    if (!skillsPath) continue;
+    const rootSegment = skillsPath.split('/')[0]; // e.g. ".claude"
+    if (!rootSegment) continue;
+    if (await pathExists(path.join(home, rootSegment))) {
+      found.push(id);
+    }
+  }
+  return found;
 }
 
 export function getEffectiveAgents(teamConfig: TeamaiConfig): KnownAgent[] {

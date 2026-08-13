@@ -175,8 +175,15 @@ Instead of a separate team repo, you can make an existing project's own git repo
 
 ```bash
 cd /path/to/my-project
-teamai init .            # or: teamai init --self
+teamai init .                        # interactive: pick which AI tools to set up
+teamai init . --agent claude,codex   # non-interactive: set up Claude Code + Codex
 ```
+
+**Choosing which AI tools to set up.** Single-repo mode creates a per-tool directory in your repo (e.g. `.claude/`, `.codex/`) — it seeds the skills dir, injects the teamai hooks, and commits that tool's settings to main so teammates get them on clone. You control which tools:
+
+- **`--agent <name...>`** — explicit list, repeatable or comma-separated: `--agent claude`, `--agent claude,codex`, `--agent claude --agent cursor`. Supported ids: `claude`, `codex`, `cursor`, `codebuddy`, `workbuddy`.
+- **Interactive (no `--agent`, a terminal)** — teamai shows a multi-select of those tools; press Enter to accept the default (Claude Code).
+- **Non-interactive (no `--agent`, no terminal — CI, hooks, clone-time bootstrap)** — teamai mirrors the tools you already use under your home dir (`~/.claude`, `~/.codex`, …). If none are found, it creates nothing (you still get the knowledge; run `teamai init .` later to pick tools).
 
 **How it splits data across branches:**
 
@@ -192,7 +199,7 @@ teamai init .            # or: teamai init --self
 
 **Admin checklist after `teamai init .`:**
 
-1. Commit `.teamai/` (skills, rules, docs, learnings, `teamai.yaml`, `.gitignore`) and `.claude/settings.json` to main.
+1. `teamai init .` already commits `.teamai/` (skills, rules, docs, learnings, `teamai.yaml`, `.gitignore`) plus each selected tool's settings (e.g. `.claude/settings.json`, `.codex/hooks.json`) to the current branch for you.
 2. Push main so teammates can clone.
 3. Add knowledge later with `teamai push` — it opens a PR against your repo (via an isolated worktree) rather than committing to your working tree. In single-repo mode you can author knowledge either in an AI tool dir (e.g. `~/.claude/skills/`) **or** by editing `.teamai/skills/` and `.teamai/rules/` directly in your repo; `teamai push` scans both and only surfaces genuine additions or edits (already-committed knowledge is skipped).
 

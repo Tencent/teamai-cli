@@ -60,15 +60,17 @@ No separate team repo. Run `teamai init .` inside an existing project and its ow
 
 ```bash
 cd /path/to/my-project
-teamai init .          # or: teamai init --self
+teamai init .                        # interactive: pick which AI tools to set up
+teamai init . --agent claude,codex   # non-interactive: Claude Code + Codex
 ```
 
 - **Knowledge** (skills / rules / docs / learnings) is committed to your repo's **main branch** under `.teamai/`, so a plain `git clone` already carries the whole team setup.
 - **Reports** (member registrations, session summaries, votes, usage stats) go to a separate **`teamai-reports` orphan branch** — they never touch main.
+- **You choose which AI tools to set up.** `--agent claude,codex` (repeatable/comma-separated), an interactive picker when omitted, or — in non-interactive contexts — whichever tools you already use under `~/`. teamai creates each selected tool's dir, injects hooks, and commits its settings.
 - **Clone = initialized.** When a teammate clones the repo, the next `teamai` command (or AI session) auto-detects the `mode: self` marker in `.teamai/teamai.yaml` and finishes local setup automatically — no need to re-type repo/role.
 - All of teamai's git operations run in isolated worktrees, so your working tree and current branch are never touched.
 
-After `teamai init .`, commit `.teamai/` (skills, rules, docs, learnings, `teamai.yaml`, `.gitignore`) and `.claude/settings.json` to main so teammates get auto-initialized on clone.
+`teamai init .` commits `.teamai/` (skills, rules, docs, learnings, `teamai.yaml`, `.gitignore`) plus each selected tool's settings (e.g. `.claude/settings.json`, `.codex/hooks.json`) for you; just push main so teammates get auto-initialized on clone.
 
 > **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — covers everything from team creation to day-to-day use.
 

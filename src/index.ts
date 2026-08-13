@@ -31,7 +31,11 @@ program
   .option('--inherit-user-scope', 'In project scope, also sync safe user-scope resources and search its knowledge')
   .option('--no-inherit-user-scope', 'Disable user-scope inheritance for this project')
   .option('--role <id>', 'Primary role ID (e.g. hai_dev) for non-interactive setup')
-  .option('--agent <name>', 'Only inject hooks into this agent (e.g. claude, codebuddy, workbuddy). Additive on repeated runs.')
+  // Non-variadic + a collecting coercer: repeatable (`--agent a --agent b`) and
+  // comma-separated (`--agent a,b`, split later by normalizeAgentList) both work,
+  // WITHOUT the greedy `<name...>` variadic that would swallow the `[repo]`
+  // positional (e.g. `init --agent claude .` must keep `.` as the repo arg).
+  .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; omit for an interactive picker. Additive on repeated runs.', (val: string, acc: string[]) => acc.concat(val), [] as string[])
   .option('--force', 'Overwrite existing config without confirmation')
   .action(async (repoArg, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;

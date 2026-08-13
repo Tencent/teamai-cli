@@ -173,8 +173,15 @@ teamai init <group>/TeamAi-<team> --scope user
 
 ```bash
 cd /path/to/my-project
-teamai init .            # 或：teamai init --self
+teamai init .                        # 交互式：选择要启用哪些 AI 工具
+teamai init . --agent claude,codex   # 非交互:启用 Claude Code + Codex
 ```
+
+**选择启用哪些 AI 工具。** 单仓模式会在你的仓库里为每个工具创建一个目录（如 `.claude/`、`.codex/`）—— 建好 skills 目录、注入 teamai hooks,并把该工具的 settings 提交到 main,让队友 clone 后即可获得。由你决定启用哪些工具:
+
+- **`--agent <name...>`** —— 显式列表,可重复或逗号分隔:`--agent claude`、`--agent claude,codex`、`--agent claude --agent cursor`。支持的 id:`claude`、`codex`、`cursor`、`codebuddy`、`workbuddy`。
+- **交互式（无 `--agent`、有终端）** —— teamai 弹出这些工具的多选列表;直接回车即采用默认（Claude Code）。
+- **非交互（无 `--agent`、无终端 —— CI、hook、clone 时自愈 bootstrap）** —— teamai 会按你本机 home 目录下已装的工具（`~/.claude`、`~/.codex`……）来建。若一个都没检测到,则什么都不建（你仍拿到知识,可稍后运行 `teamai init .` 再选工具）。
 
 **数据如何在分支间拆分：**
 
@@ -190,7 +197,7 @@ teamai init .            # 或：teamai init --self
 
 **管理员在 `teamai init .` 之后的清单：**
 
-1. 把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）和 `.claude/settings.json` 提交到 main。
+1. `teamai init .` 已经帮你把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）以及每个所选工具的 settings（如 `.claude/settings.json`、`.codex/hooks.json`）提交到当前分支。
 2. 推送 main，供团队成员 clone。
 3. 之后新增知识用 `teamai push` —— 它会（通过隔离 worktree）向你的仓库开 PR，而不是直接改动你的工作区。单仓模式下，你既可以在 AI 工具目录（如 `~/.claude/skills/`）里编写知识,**也可以**直接编辑仓库里的 `.teamai/skills/`、`.teamai/rules/`；`teamai push` 会同时扫描两者,只呈现真正的新增或修改（已提交的知识会被跳过）。
 

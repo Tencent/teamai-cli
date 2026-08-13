@@ -133,12 +133,20 @@ export async function bootstrapSelfRepo(
       return 'skip';
     }
 
+    // Bootstrap is fully non-interactive (clone-time self-heal), so we can't ask
+    // which tools to set up. Mirror whatever this developer already uses under
+    // their HOME (~/.claude, ~/.codex, ...). Empty means "seed nothing" — they
+    // get the knowledge, and can run `teamai init .` to pick tools explicitly.
+    const { detectHomeInstalledAgents } = await import('./known-agents.js');
+    const enabledAgents = await detectHomeInstalledAgents();
+
     const localConfig: LocalConfig = {
       repo: { localPath, remote: repoInfo.httpsUrl, kind: 'self', businessRepoRoot },
       username,
       scope: 'project',
       projectRoot: businessRepoRoot,
       additionalRoles: [],
+      ...(enabledAgents.length > 0 ? { enabledAgents } : {}),
     };
 
     // Role (non-interactive): auto-select when the repo defines exactly one role.

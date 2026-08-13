@@ -60,15 +60,17 @@ teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 
 ```bash
 cd /path/to/my-project
-teamai init .          # 或：teamai init --self
+teamai init .                        # 交互式：选择要启用哪些 AI 工具
+teamai init . --agent claude,codex   # 非交互:启用 Claude Code + Codex
 ```
 
 - **知识资产**（skills / rules / docs / learnings）提交到仓库 **main 分支**的 `.teamai/` 目录，因此一次普通 `git clone` 就带上了整套团队配置。
 - **上报数据**（成员注册、会话摘要、投票、使用统计）走独立的 **`teamai-reports` 孤儿分支** —— 永不污染 main。
+- **由你选择启用哪些 AI 工具。** `--agent claude,codex`（可重复/逗号分隔）,省略时弹交互选择框,非交互场景则按你本机 `~/` 下已装的工具来建。teamai 为每个所选工具建目录、注入 hooks、并提交其 settings。
 - **克隆即初始化。** 团队成员 clone 仓库后，下一条 `teamai` 命令（或 AI 会话）会自动识别 `.teamai/teamai.yaml` 里的 `mode: self` 标记并自动完成本机初始化 —— 无需手抄 repo/role 参数。
 - teamai 的所有 git 操作都在隔离的 worktree 中进行，绝不触碰你的工作区和当前分支。
 
-执行 `teamai init .` 后，把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）和 `.claude/settings.json` 提交到 main，团队成员 clone 后即可自动初始化。
+`teamai init .` 会帮你把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）以及每个所选工具的 settings（如 `.claude/settings.json`、`.codex/hooks.json`）提交好;推送 main 后团队成员 clone 即可自动初始化。
 
 > **完整使用指南**：[docs/usage-guide.zh-CN.md](docs/usage-guide.zh-CN.md)（[English](docs/usage-guide.md)）— 涵盖从团队创建到日常使用的全流程。
 
