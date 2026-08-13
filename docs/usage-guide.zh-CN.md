@@ -199,7 +199,19 @@ teamai init . --agent claude,codex   # 非交互:启用 Claude Code + Codex
 
 1. `teamai init .` 已经帮你把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）以及每个所选工具的 settings（如 `.claude/settings.json`、`.codex/hooks.json`）提交到当前分支。
 2. 推送 main，供团队成员 clone。
-3. 之后新增知识用 `teamai push` —— 它会（通过隔离 worktree）向你的仓库开 PR，而不是直接改动你的工作区。单仓模式下，你既可以在 AI 工具目录（如 `~/.claude/skills/`）里编写知识,**也可以**直接编辑仓库里的 `.teamai/skills/`、`.teamai/rules/`；`teamai push` 会同时扫描两者,只呈现真正的新增或修改（已提交的知识会被跳过）。
+3. 之后新增资源用 `teamai push` —— 它会（通过隔离 worktree）向你的仓库开 PR，而不是直接改动你的工作区。单仓模式下，你既可以在 AI 工具目录（如 `~/.claude/skills/`）里编写,**也可以**直接把资源放进仓库里的 `.teamai/`：
+   - `.teamai/skills/` —— 团队 skills
+   - `.teamai/rules/` —— 共享 rules
+   - `.teamai/agents/` —— subagent 定义（`<name>.yaml`,或旧版 `<name>.md`）
+   - `.teamai/env/env.yaml` —— 共享环境变量
+
+   `teamai push` 会同时扫描这些目录和你的 AI 工具目录,只呈现真正的新增或修改（已提交的内容会被跳过）。如果你改了某个 agent 的扩展名（如 `helper.md` → `helper.yaml`）,请手动删掉旧文件 —— `teamai push` 不会替你删除,同 stem 的两个文件会在 pull 时冲突。
+4. **docs / hooks / mcp** 通过直接编辑对应文件来贡献 —— 它们不走 `teamai push`,用普通的 `git commit` + push 即可分发：
+   - `.teamai/docs/` —— 团队文档
+   - `.teamai/hooks/hooks.yaml` —— 团队 hooks
+   - `.teamai/mcp/mcp.yaml` —— 共享 MCP servers
+
+> **关于 `env` 的提醒。** 单仓模式下 `.teamai/env/env.yaml` **会被提交到 main**（不同于独立模式的每机本地 env），因此会随 clone 分发给所有人。`env.yaml` 存的是明文键值对 —— 只放非敏感的共享配置,真正的密钥请留在你自己未追踪的环境里。
 
 > **限制。** 单仓模式把一套团队配置绑定到一个业务仓。如果需要一套团队知识库被多个业务仓共享，请改用独立团队仓（`teamai init <repo>`）。
 

@@ -201,7 +201,19 @@ teamai init . --agent claude,codex   # non-interactive: set up Claude Code + Cod
 
 1. `teamai init .` already commits `.teamai/` (skills, rules, docs, learnings, `teamai.yaml`, `.gitignore`) plus each selected tool's settings (e.g. `.claude/settings.json`, `.codex/hooks.json`) to the current branch for you.
 2. Push main so teammates can clone.
-3. Add knowledge later with `teamai push` — it opens a PR against your repo (via an isolated worktree) rather than committing to your working tree. In single-repo mode you can author knowledge either in an AI tool dir (e.g. `~/.claude/skills/`) **or** by editing `.teamai/skills/` and `.teamai/rules/` directly in your repo; `teamai push` scans both and only surfaces genuine additions or edits (already-committed knowledge is skipped).
+3. Add resources later with `teamai push` — it opens a PR against your repo (via an isolated worktree) rather than committing to your working tree. In single-repo mode you can author them either in an AI tool dir (e.g. `~/.claude/skills/`) **or** by dropping them straight into `.teamai/` in your repo:
+   - `.teamai/skills/` — team skills
+   - `.teamai/rules/` — shared rules
+   - `.teamai/agents/` — subagent definitions (`<name>.yaml`, or legacy `<name>.md`)
+   - `.teamai/env/env.yaml` — shared env vars
+
+   `teamai push` scans all of these plus your AI tool dirs, and only surfaces genuine additions or edits (already-committed content is skipped). If you rename an agent's extension (e.g. `helper.md` → `helper.yaml`), delete the old file — `teamai push` won't remove it for you, and two files with the same stem would collide on pull.
+4. **docs / hooks / mcp** are contributed by editing their file directly — they don't go through `teamai push`; a normal `git commit` + push ships them:
+   - `.teamai/docs/` — team docs
+   - `.teamai/hooks/hooks.yaml` — team hooks
+   - `.teamai/mcp/mcp.yaml` — shared MCP servers
+
+> **Heads-up on `env`.** In single-repo mode `.teamai/env/env.yaml` **is committed to main** (unlike standalone mode's per-machine env), so it travels to everyone who clones the repo. `env.yaml` stores plaintext key/value pairs — put only non-secret shared config there, and keep real secrets in your own untracked environment.
 
 > **Limitation.** Single-repo mode ties one team setup to one business repo. If you need to share one team knowledge base across many business repos, use a standalone team repo (`teamai init <repo>`) instead.
 

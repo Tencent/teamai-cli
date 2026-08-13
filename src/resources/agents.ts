@@ -3,7 +3,7 @@ import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFiles, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { resolveBaseDir, isAgentDisabled } from '../types.js';
+import { resolveBaseDir, isAgentDisabled, isSelfMode } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import {
   parseAgentYaml,
@@ -55,6 +55,44 @@ export class AgentsHandler extends ResourceHandler {
     const tombstones = await this.readTombstones(localConfig);
     const baseDir = resolveBaseDir(localConfig);
 
+    // Single-repo mode: users drop canonical agent files straight into the repo's
+    // own .teamai/agents/ (<name>.yaml, or legacy <name>.md) rather than authoring
+    // them in a tool's agents dir. Those are ALREADY in team-repo format, so we
+    // pick them up directly (no reverse/merge) — diffed against the worktree's
+    // origin/<default> checkout so only genuine additions/edits surface. These win
+    // over the reverse-parse path below on name conflicts (explicit canonical is
+    // authoritative). Active tree = projectRoot (kept intact by withKnowledgeWorktree).
+    const directItems: AgentResourceItem[] = [];
+    const directStems = new Set<string>();
+    if (isSelfMode(localConfig) && localConfig.projectRoot) {
+      const activeAgentsDir = path.join(localConfig.projectRoot, '.teamai', 'agents');
+      if (await pathExists(activeAgentsDir)) {
+        for (const file of await listFiles(activeAgentsDir)) {
+          const isYaml = file.endsWith('.yaml');
+          const isMd = file.endsWith('.md');
+          if (!isYaml && !isMd) continue;
+          const stem = file.replace(/\.(yaml|md)$/, '');
+          if (tombstones.has(stem)) continue;
+          if (BUILTIN_AGENT_NAMES.has(stem)) continue;
+
+          const activePath = path.join(activeAgentsDir, file);
+          const basePath = path.join(teamAgentsDir, file);
+          const baseExists = await pathExists(basePath);
+          if (baseExists && await fileContentEqual(activePath, basePath)) continue; // unchanged
+
+          directItems.push({
+            name: stem,
+            type: 'agents',
+            sourcePath: activePath,
+            relativePath: `agents/${file}`,
+            status: (baseExists ? 'modified' : 'new') as ResourceItemStatus,
+            legacy: isMd,
+          });
+          directStems.add(stem);
+        }
+      }
+    }
+
     // Collect all local agent files grouped by stem
     const grouped = new Map<string, Map<string, string>>(); // stem → (tool → filePath)
 
@@ -69,6 +107,7 @@ export class AgentsHandler extends ResourceHandler {
         if (stem === null) continue;
         if (tombstones.has(stem)) continue;
         if (BUILTIN_AGENT_NAMES.has(stem)) continue;
+        if (directStems.has(stem)) continue; // canonical direct-pickup wins (self mode)
 
         const filePath = path.join(agentsDir, file);
         let toolGroup = grouped.get(stem);
@@ -83,7 +122,9 @@ export class AgentsHandler extends ResourceHandler {
       }
     }
 
-    const items: AgentResourceItem[] = [];
+    // Seed with the canonical direct-pickup items (self mode); reverse-parsed
+    // items for other stems are appended below.
+    const items: AgentResourceItem[] = [...directItems];
 
     for (const [stem, toolFiles] of grouped) {
       const teamYamlPath = path.join(teamAgentsDir, `${stem}.yaml`);
@@ -242,13 +283,17 @@ export class AgentsHandler extends ResourceHandler {
       return;
     }
 
-    // Legacy: copy raw .md
-    const dest = path.join(localConfig.repo.localPath, 'agents', `${item.name}.md`);
+    // Direct-pickup (self mode) or legacy .md: copy the source verbatim, PRESERVING
+    // its extension. The old code hardcoded `.md`, which would corrupt a canonical
+    // `<name>.yaml` a user placed directly under .teamai/agents/. Derive the ext
+    // from the source so both .yaml and .md round-trip correctly.
+    const ext = item.sourcePath.endsWith('.yaml') ? '.yaml' : '.md';
+    const dest = path.join(localConfig.repo.localPath, 'agents', `${item.name}${ext}`);
     if (item.sourcePath !== dest) {
       await ensureDir(path.dirname(dest));
       await copyFile(item.sourcePath, dest);
     }
-    log.debug(`Copied agent ${item.name} → team repo (legacy MD format)`);
+    log.debug(`Copied agent ${item.name} → team repo (${ext} verbatim)`);
   }
 
   /**

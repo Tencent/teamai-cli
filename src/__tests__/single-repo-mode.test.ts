@@ -115,12 +115,21 @@ describe('buildSelfModeGitignore', () => {
     }
   });
 
-  it('does NOT ignore knowledge (skills/rules/docs/learnings stay on main)', () => {
+  it('does NOT ignore knowledge (skills/rules/docs/learnings/env stay on main)', () => {
     // These must not appear as ignore lines (they are committed to main).
+    // env is intentionally committed in single-repo mode (unlike standalone mode's
+    // per-machine env), so `teamai push` can carry team env vars — it must NOT be
+    // an ignore line. env.sh (generated locally) stays ignored, checked below.
     const lines = gi.split('\n').map((l) => l.trim());
     expect(lines).not.toContain('skills/');
     expect(lines).not.toContain('rules/');
     expect(lines).not.toContain('docs/');
     expect(lines).not.toContain('learnings/');
+    expect(lines).not.toContain('env');
+    expect(lines).not.toContain('env/');
+  });
+
+  it('still ignores the locally-generated env.sh (only env.yaml is shared)', () => {
+    expect(gi.split('\n').map((l) => l.trim())).toContain('env.sh');
   });
 });

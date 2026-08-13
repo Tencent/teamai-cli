@@ -387,8 +387,14 @@ export function buildSelfModeGitignore(): string {
     '.update-lock',
     '.reports-lock',
     '.bootstrap-lock',
-    'env',
+    // NB: env/ is intentionally NOT ignored in single-repo mode — team env vars
+    // (.teamai/env/env.yaml) are committed to main so `teamai push` can carry them
+    // and teammates get them on clone. env.yaml holds plaintext key/value pairs, so
+    // only put non-secret config there; keep real secrets out of the repo.
     'env.sh',
+    // env.local is the machine-local KEY=value backup pull writes for ${VAR}
+    // resolution (self mode uses this name to avoid colliding with the env/ dir).
+    'env.local',
     'usage.jsonl',
     'known-skills.json',
     'search-index.json',
@@ -592,8 +598,11 @@ export async function initSelfRepo(options: GlobalOptions & {
   }
 
   // Step 3: build the .teamai/ knowledge skeleton on the active tree (committed to main).
+  // Includes hooks/ and mcp/ too: in single-repo mode those are contributed by
+  // editing .teamai/{hooks/hooks.yaml,mcp/mcp.yaml} directly and committing (they
+  // don't go through `teamai push`), so seeding the dirs makes that path obvious.
   await ensureDir(localPath);
-  for (const dir of ['skills', 'rules', 'docs', 'learnings', 'env']) {
+  for (const dir of ['skills', 'rules', 'docs', 'learnings', 'env', 'agents', 'hooks', 'mcp']) {
     await ensureDir(path.join(localPath, dir));
     const gitkeep = path.join(localPath, dir, '.gitkeep');
     if (!await pathExists(gitkeep)) {
@@ -699,7 +708,8 @@ export async function initSelfRepo(options: GlobalOptions & {
       // gitignored via buildSelfModeGitignore and must NOT be listed here — adding
       // an explicitly-gitignored path makes `git add` error out.
       const skeletonPaths = [
-        '.teamai/skills', '.teamai/rules', '.teamai/docs', '.teamai/learnings',
+        '.teamai/skills', '.teamai/rules', '.teamai/docs', '.teamai/learnings', '.teamai/env',
+        '.teamai/agents', '.teamai/hooks', '.teamai/mcp',
         '.teamai/teamai.yaml', '.teamai/.gitignore',
       ];
       // Each selected tool's settings file (path varies: claude/codebuddy use
@@ -763,8 +773,18 @@ export async function initSelfRepo(options: GlobalOptions & {
   }
 
   log.success('teamai initialized (single-repo mode)!');
-  log.info('Push your business repo (e.g. `git push -u origin HEAD`) so teammates get the .teamai/ knowledge and are auto-initialized on clone.');
-  log.info('Add skills/rules later with `teamai push` — it opens a PR against your repo without touching your working tree.');
+  log.info('Next steps:');
+  log.info('  1. Add team resources by dropping them into .teamai/ (or author them in your AI tool as usual):');
+  log.info('       .teamai/skills/    team skills');
+  log.info('       .teamai/rules/     shared rules');
+  log.info('       .teamai/agents/    subagent definitions (<name>.yaml)');
+  log.info('       .teamai/env/env.yaml   shared env vars — committed to main, so keep real secrets out');
+  log.info('  2. Run `teamai push` for the above — it scans .teamai/{skills,rules,agents,env} plus your AI tool dirs and opens a PR against your repo, without touching your working tree.');
+  log.info('  3. docs / hooks / mcp are edited directly and shipped with a normal commit — no push needed:');
+  log.info('       .teamai/docs/          team docs');
+  log.info('       .teamai/hooks/hooks.yaml   team hooks');
+  log.info('       .teamai/mcp/mcp.yaml       shared MCP servers');
+  log.info('  4. Push your business repo (e.g. `git push -u origin HEAD`) so teammates get the .teamai/ knowledge and are auto-initialized on clone.');
   closePrompt();
 }
 

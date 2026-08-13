@@ -1079,6 +1079,22 @@ export function getTeamaiHome(scope: Scope, projectRoot?: string): string {
 }
 
 /**
+ * Path of the machine-local KEY=value env backup file that the env channel writes
+ * on pull and mcp-reconcile reads for ${VAR} resolution.
+ *
+ * Normally this is `<teamaiHome>/env`. But in single-repo mode `<teamaiHome>` is
+ * `<repo>/.teamai`, where `env/` is a committed DIRECTORY holding the shared
+ * `env.yaml` — writing a file at `<teamaiHome>/env` there would collide with that
+ * directory (EISDIR). So self mode uses `env.local`, which is gitignored (see
+ * buildSelfModeGitignore) and never committed. Readers and writers MUST both go
+ * through this helper so they never disagree on the path.
+ */
+export function getEnvBackupPath(localConfig: LocalConfig): string {
+  const home = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
+  return path.join(home, isSelfMode(localConfig) ? 'env.local' : 'env');
+}
+
+/**
  * Get the config.yaml path for a given scope.
  */
 export function getConfigPath(scope: Scope, projectRoot?: string): string {
