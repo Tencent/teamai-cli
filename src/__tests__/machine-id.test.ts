@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { deriveLocalAgentId, deriveInstanceId, detectMachineId, getMachineId } from '../machine-id.js';
 
 describe('deriveLocalAgentId', () => {
@@ -54,11 +55,20 @@ describe('detectMachineId', () => {
 });
 
 describe('detectMachineId hostname fallback', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('falls back to hostname when platform reader returns empty', async () => {
     const os = await import('node:os');
     const hostname = os.hostname();
-    // 'freebsd' hits the Linux branch; on macOS CI /etc/machine-id does not exist,
-    // so readLinuxMachineId returns '' and detectMachineId falls back to hostname.
+    // Mock readFileSync to throw ENOENT so readLinuxMachineId returns '',
+    // forcing detectMachineId to fall back to hostname on any platform.
+    vi.spyOn(fs, 'readFileSync').mockImplementation(() => {
+      const err = new Error('ENOENT') as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      throw err;
+    });
     const id = detectMachineId('freebsd' as NodeJS.Platform);
     expect(id).toBe(hostname);
   });
