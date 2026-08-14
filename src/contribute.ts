@@ -244,17 +244,46 @@ async function contributeSelf(
 
       // Mirror the worktree's learnings into the machine-local dir + rebuild the
       // index so recall sees this contribution immediately — without touching the
-      // user's active tree.
+      // user's active tree. Index ALL categories (not just learnings) — a
+      // learnings-only rebuild would clobber the project index and drop
+      // docs/rules/skills/votes until the next full pull.
+      //
+      // IMPORTANT: source docs/rules/skills from the PERSISTENT active tree
+      // (localConfig.repo.localPath/.teamai), NOT the disposable knowledge
+      // worktree — withKnowledgeWorktree deletes wtRepo on teardown, and buildIndex
+      // bakes absolute paths into search-index.json, so worktree paths would leave
+      // recall printing `File: <deleted>` pointers. learnings come from the
+      // persistent LEARNINGS_LOCAL_DIR mirror; votes from the reports worktree.
+      // This matches the other index-build sites (pull.ts / recall.ts).
       try {
+        const { pathExists } = await import('./utils/fs.js');
         const wtLearnings = path.join(wtRepo, 'learnings');
         await fse.copy(wtLearnings, LEARNINGS_LOCAL_DIR, {
           overwrite: true,
           filter: (src: string) => !path.basename(src).startsWith('.'),
         });
+
+        const repoPath = localConfig.repo.localPath; // persistent active-tree .teamai
+        const docsDir = path.join(repoPath, 'docs');
+        const rulesDir = path.join(repoPath, 'rules');
+        const skillsDir = path.join(repoPath, 'skills');
+
+        // votes are on the teamai-reports orphan branch, not in the knowledge worktree.
+        let votesDir: string | undefined;
+        try {
+          const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
+          const candidate = path.join(await ensureReportsWorktree(localConfig), 'votes');
+          if (await pathExists(candidate)) votesDir = candidate;
+        } catch { /* reports worktree unavailable — index without votes */ }
+
         const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
         const { buildIndex } = await import('./utils/search-index.js');
         await buildIndex({
-          learningsDir: LEARNINGS_LOCAL_DIR,
+          learningsDir: await pathExists(LEARNINGS_LOCAL_DIR) ? LEARNINGS_LOCAL_DIR : undefined,
+          docsDir: await pathExists(docsDir) ? docsDir : undefined,
+          rulesDir: await pathExists(rulesDir) ? rulesDir : undefined,
+          skillsDir: await pathExists(skillsDir) ? skillsDir : undefined,
+          votesDir,
           indexPath: path.join(teamaiHome, 'search-index.json'),
         });
       } catch (e) {

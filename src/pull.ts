@@ -604,7 +604,19 @@ async function pullForScope(
       const docsRepoDir = path.join(localConfig.repo.localPath, 'docs');
       const rulesRepoDir = path.join(localConfig.repo.localPath, 'rules');
       const skillsRepoDir = path.join(localConfig.repo.localPath, 'skills');
-      const votesDir = path.join(localConfig.repo.localPath, 'votes');
+      // votes/ lives on the teamai-reports orphan branch in self mode (gitignored
+      // under localPath), so vote-weighted recall must read it from the reports
+      // worktree — otherwise ranking is silently disabled. Best-effort: fall back
+      // to localPath/votes (empty) if the worktree can't be resolved.
+      let votesDir = path.join(localConfig.repo.localPath, 'votes');
+      if (localConfig.repo.kind === 'self') {
+        try {
+          const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
+          votesDir = path.join(await ensureReportsWorktree(localConfig), 'votes');
+        } catch (e) {
+          log.debug(`[self] reports worktree for votes unavailable: ${(e as Error).message}`);
+        }
+      }
 
       // user scope: sync learnings to ~/.teamai/learnings/ (legacy behavior)
       // project scope: use learnings directly from repo
@@ -804,7 +816,18 @@ async function pullForScope(
       const YAML = (await import('yaml')).default;
       const { listFiles, readFileSafe } = await import('./utils/fs.js');
       const { getRecommendations, displayRecommendations } = await import('./skill-recommend.js');
-      const statsDir = path.join(localConfig.repo.localPath, 'stats');
+      // stats/ lives on the teamai-reports orphan branch in self mode (gitignored
+      // under localPath), so recommendations must read it from the reports worktree
+      // — otherwise they never appear. Best-effort fallback to localPath/stats.
+      let statsDir = path.join(localConfig.repo.localPath, 'stats');
+      if (localConfig.repo.kind === 'self') {
+        try {
+          const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
+          statsDir = path.join(await ensureReportsWorktree(localConfig), 'stats');
+        } catch (e) {
+          log.debug(`[self] reports worktree for stats unavailable: ${(e as Error).message}`);
+        }
+      }
       const files = await listFiles(statsDir);
       const teamStats = [];
       for (const file of files) {
