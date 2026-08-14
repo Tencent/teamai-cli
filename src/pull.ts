@@ -66,6 +66,15 @@ async function refreshTeamRepo(
     // run `git pull` on localPath here — that would operate on the business repo
     // root and touch the user's active working tree. Just read the current HEAD as
     // the cache version and let the deploy step inject from the on-disk .teamai/.
+    //
+    // Self-heal an older .teamai/.gitignore that still ignores `env` (pre-beta.5),
+    // which would keep team env vars off main. Best-effort; prompts the user to
+    // commit the change.
+    try {
+      const { migrateSelfModeGitignore } = await import('./init.js');
+      await migrateSelfModeGitignore(localConfig);
+    } catch { /* best-effort */ }
+
     let version: string | null = null;
     try {
       version = await getHeadRev(localConfig.repo.localPath);

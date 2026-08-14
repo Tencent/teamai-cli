@@ -9,7 +9,7 @@ import {
   TeamaiConfigSchema,
   type LocalConfig,
 } from '../types.js';
-import { buildSelfModeGitignore } from '../init.js';
+import { buildSelfModeGitignore, migrateSelfModeGitignoreContent } from '../init.js';
 
 function makeConfig(kind: 'git' | 'http' | 'self', localPath = '/repo/.teamai'): LocalConfig {
   return {
@@ -131,5 +131,52 @@ describe('buildSelfModeGitignore', () => {
 
   it('still ignores the locally-generated env.sh (only env.yaml is shared)', () => {
     expect(gi.split('\n').map((l) => l.trim())).toContain('env.sh');
+  });
+});
+
+describe('migrateSelfModeGitignoreContent (self-heal old gitignore)', () => {
+  it('removes a standalone `env` line and adds env.local', () => {
+    const old = ['config.yaml', 'env', 'env.sh', 'members/'].join('\n');
+    const { changed, content } = migrateSelfModeGitignoreContent(old);
+    expect(changed).toBe(true);
+    const lines = content.split('\n').map((l) => l.trim());
+    expect(lines).not.toContain('env');
+    expect(lines).toContain('env.local');
+    // env.local inserted right after env.sh
+    expect(content).toContain('env.sh\nenv.local');
+  });
+
+  it('does not touch env.sh, env.local, or env/', () => {
+    const old = ['env.sh', 'env.local', 'env/'].join('\n');
+    const { changed, content } = migrateSelfModeGitignoreContent(old);
+    expect(changed).toBe(false); // nothing to remove, env.local already present
+    const lines = content.split('\n').map((l) => l.trim());
+    expect(lines).toContain('env.sh');
+    expect(lines).toContain('env.local');
+    expect(lines).toContain('env/');
+  });
+
+  it('is a no-op on a current gitignore (already migrated)', () => {
+    const current = buildSelfModeGitignore();
+    const { changed, content } = migrateSelfModeGitignoreContent(current);
+    expect(changed).toBe(false);
+    expect(content).toBe(current);
+  });
+
+  it('adds env.local even when there is no env.sh to anchor to', () => {
+    const old = ['config.yaml', 'env', 'token'].join('\n');
+    const { changed, content } = migrateSelfModeGitignoreContent(old);
+    expect(changed).toBe(true);
+    const lines = content.split('\n').map((l) => l.trim());
+    expect(lines).not.toContain('env');
+    expect(lines).toContain('env.local');
+  });
+
+  it('ignores commented lines containing env', () => {
+    const old = ['# env is machine-local', 'config.yaml', 'env.local'].join('\n');
+    const { changed, content } = migrateSelfModeGitignoreContent(old);
+    // No bare `env` line, env.local already present → unchanged.
+    expect(changed).toBe(false);
+    expect(content).toContain('# env is machine-local');
   });
 });

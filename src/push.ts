@@ -121,6 +121,14 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
   // branch/commit/reset never touch the user's active tree. withKnowledgeWorktree
   // hands pushCore a config whose localPath is the worktree's .teamai.
   if (localConfig.repo.kind === 'self') {
+    // Self-heal an older .teamai/.gitignore that still ignores `env` (pre-beta.5).
+    // Run against the ACTIVE tree (original localConfig, projectRoot intact) BEFORE
+    // swapping into the worktree, so the fixed .gitignore lets env changes surface.
+    try {
+      const { migrateSelfModeGitignore } = await import('./init.js');
+      await migrateSelfModeGitignore(localConfig);
+    } catch { /* best-effort */ }
+
     const { withKnowledgeWorktree, EmptyRepoError } = await import('./utils/reports-branch.js');
     try {
       await withKnowledgeWorktree(localConfig, (wtConfig) => pushCore(wtConfig, teamConfig, options));

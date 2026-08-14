@@ -415,6 +415,71 @@ export function buildSelfModeGitignore(): string {
 }
 
 /**
+ * Migrate an existing single-repo `.teamai/.gitignore` written by an older teamai
+ * (≤ beta.4), which ignored `env` — that hid `.teamai/env/env.yaml` from push and
+ * kept it off main. Pure (no I/O) so it can be unit-tested.
+ *
+ * Removes a standalone `env` ignore line (NOT `env.sh` / `env.local` / `env/`, and
+ * not commented lines), and ensures `env.local` is ignored (the machine-local
+ * backup pull now writes). Returns whether anything changed plus the new content.
+ */
+export function migrateSelfModeGitignoreContent(content: string): { changed: boolean; content: string } {
+  const lines = content.split('\n');
+  let changed = false;
+
+  // Drop a bare `env` ignore line (trimmed exact match). Keep env.sh/env.local/env/.
+  const filtered = lines.filter((line) => {
+    if (line.trim() === 'env') {
+      changed = true;
+      return false;
+    }
+    return true;
+  });
+
+  // Ensure env.local is present (older files predate it). Insert next to env.sh if
+  // found, else append before the trailing blank/knowledge comment.
+  const hasEnvLocal = filtered.some((l) => l.trim() === 'env.local');
+  if (!hasEnvLocal) {
+    const envShIdx = filtered.findIndex((l) => l.trim() === 'env.sh');
+    if (envShIdx >= 0) {
+      filtered.splice(envShIdx + 1, 0, 'env.local');
+    } else {
+      // Append at a sensible spot: before a trailing empty line if any.
+      const lastNonEmpty = filtered.reduce((acc, l, i) => (l.trim() ? i : acc), -1);
+      filtered.splice(lastNonEmpty + 1, 0, 'env.local');
+    }
+    changed = true;
+  }
+
+  return { changed, content: filtered.join('\n') };
+}
+
+/**
+ * Self-heal an older single-repo `.teamai/.gitignore` in place (see
+ * migrateSelfModeGitignoreContent). Best-effort: rewrites the ACTIVE tree's file
+ * and logs a one-line hint to commit it — teamai never commits it for the user
+ * here (the file is on main; the user owns that commit). No-op for non-self mode,
+ * a missing file, or an already-current file. Safe to call on every pull/push.
+ */
+export async function migrateSelfModeGitignore(localConfig: LocalConfig): Promise<void> {
+  if (localConfig.repo.kind !== 'self' || !localConfig.projectRoot) return;
+  const gitignorePath = path.join(localConfig.projectRoot, '.teamai', '.gitignore');
+  try {
+    const current = await readFileSafe(gitignorePath);
+    if (current === null) return; // no gitignore to migrate
+    const { changed, content } = migrateSelfModeGitignoreContent(current);
+    if (!changed) return;
+    await writeFile(gitignorePath, content);
+    log.info(
+      'Updated .teamai/.gitignore so team env vars (.teamai/env/env.yaml) can be shared — '
+      + 'please `git add .teamai/.gitignore` and commit it.',
+    );
+  } catch (e) {
+    log.debug(`[self-mode] gitignore migration skipped: ${(e as Error).message}`);
+  }
+}
+
+/**
  * Map an interactive selection to a concrete agent-id list. Pure (no I/O) so it
  * can be unit-tested. The picker's option order is:
  *   index 0            → "Auto" (mirror the tools detected under HOME)
