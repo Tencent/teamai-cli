@@ -85,6 +85,39 @@ function parseJSON<T>(raw: string): T | null {
   }
 }
 
+/**
+ * Resolve an import path to its target top-level module name.
+ *
+ * Handles three import formats:
+ * 1. Relative paths: `./utils/foo`, `../common/bar` — resolved against the importing file's directory
+ * 2. Dot-separated (Python): `framework.adapter.haiflow` — first segment is the module
+ * 3. Absolute/bare (JS/TS): `@scope/pkg/foo` or `lodash/fp` — first non-scope segment
+ */
+function resolveImportToModule(importerFile: string, importPath: string): string | undefined {
+  // Case 1: relative paths (./foo, ../bar)
+  if (importPath.startsWith('.')) {
+    const importerDir = path.dirname(importerFile);
+    const resolved = path.normalize(path.join(importerDir, importPath));
+    const topLevel = resolved.split('/')[0];
+    // Guard against resolving outside repo root
+    if (!topLevel || topLevel === '..' || topLevel === '.') return undefined;
+    return topLevel;
+  }
+
+  // Case 2: dot-separated imports (Python style: framework.adapter.foo)
+  if (importPath.includes('.') && !importPath.includes('/')) {
+    return importPath.split('.')[0];
+  }
+
+  // Case 3: bare/absolute imports (JS/TS: lodash/fp, @scope/pkg)
+  const parts = importPath.split('/');
+  const first = parts[0];
+  if (!first) return undefined;
+  // Skip npm scoped packages (@scope/pkg) — not project modules
+  if (first.startsWith('@')) return undefined;
+  return first;
+}
+
 export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | null> {
   const moduleEntries = [...ctx.modules.entries()].filter(([, facts]) => facts.length >= 5);
 
@@ -164,9 +197,9 @@ export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | n
     const moduleImports = ctx.facts.filter(f => f.kind === 'relation' && f.file.startsWith(name + '/'));
     const targetModules = new Set<string>();
     for (const imp of moduleImports) {
-      const targetParts = imp.name.split('/');
-      if (targetParts[0] && targetParts[0] !== name) {
-        targetModules.add(targetParts[0]);
+      const resolved = resolveImportToModule(imp.file, imp.name);
+      if (resolved && resolved !== name) {
+        targetModules.add(resolved);
       }
     }
     for (const target of targetModules) {
