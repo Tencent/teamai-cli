@@ -478,13 +478,30 @@ Overview of the middleware layer.
     expect(results[0].entry.filename).toContain('k8s-oom');
   });
 
-  it('discards results with only body matches (no title/tag hit)', async () => {
+  it('discards results with only body matches for non-docs types', async () => {
     // "部署" appears in the body of api-timeout doc ("部署 SGLang 推理服务")
     // but NOT in any title or tag of the test docs.
-    // A body-only match should be filtered out.
+    // A body-only match should be filtered out for learnings type.
     const index = await loadIndex();
     const results = search('部署', index!);
     expect(results).toHaveLength(0);
+  });
+
+  it('allows body-only matches for docs type entries', async () => {
+    // Build a separate index with a docs-type entry that has a generic title
+    // and a domain-specific term only in the body.
+    const docsDir = path.join(tmpDir, 'docs');
+    fs.mkdirSync(docsDir, { recursive: true });
+    fs.writeFileSync(path.join(docsDir, 'dev-guide.md'), `# Dev Guide\n\nUse @supercache decorator for caching.\n`, 'utf-8');
+
+    await buildIndex({ learningsDir, docsDir });
+    const index = await loadIndex();
+
+    // "supercache" only appears in the body of a docs entry, not in title/tags.
+    // With the isDocsEntry relaxation, it should still be returned.
+    const results = search('supercache', index!);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].entry.title).toContain('dev guide');
   });
 
   it('returns results when query matches tag but not title', async () => {

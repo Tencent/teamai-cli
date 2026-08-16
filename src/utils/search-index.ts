@@ -45,7 +45,6 @@ function getSearchIndexPath(): string {
 //      └─ return sorted results
 //
 
-const MAX_BODY_CHARS = 2000;
 const MAX_DOC_BYTES = 50 * 1024; // 50KB
 
 // \u2500\u2500\u2500 P1.4 Domain inference \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -261,14 +260,14 @@ export function parseLearningDoc(
           : undefined,
     };
 
-    const bodyExcerpt = body.slice(0, MAX_BODY_CHARS);
+    const bodyExcerpt = body;
     return { meta, bodyExcerpt };
   } catch {
     // Fallback: treat entire content as body, derive title from filename
     log.error(`Failed to parse frontmatter for ${filename}, using fallback`);
     return {
       meta: {},
-      bodyExcerpt: content.slice(0, MAX_BODY_CHARS),
+      bodyExcerpt: content,
     };
   }
 }
@@ -726,13 +725,13 @@ export function search(
     }
 
     // Require at least one title or tag match to filter out body-only noise.
-    // Codebase docs (from team-codebase/) lack tags, so allow body-only matches for them.
-    const isCodebaseDoc = entry.type === 'docs' && (entry.path ?? entry.filename ?? '').includes('team-codebase');
-    if (score > 0 && (hasTitleOrTagMatch || isCodebaseDoc)) {
+    // Docs (type === 'docs') often lack tags and have generic titles, so allow body-only
+    // matches for them — the IDF weighting naturally demotes low-relevance hits.
+    const isDocsEntry = entry.type === 'docs';
+    if (score > 0 && (hasTitleOrTagMatch || isDocsEntry)) {
       // Normalize the token-match sum by query length before adding absolute
       // bonuses, so cross-query scores share a scale (see lengthNorm above).
       score /= lengthNorm;
-
       // Vote bonus: +0.5 per vote, max 5 points (unchanged).
       score += Math.min(entry.votes * 0.5, 5);
 
