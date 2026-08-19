@@ -642,6 +642,32 @@ export interface SearchResult {
 }
 
 /**
+ * Identity key for collapsing duplicate search results: only fields a re-share
+ * copies verbatim, so two copies of one document match however each scored.
+ *
+ * `score` is excluded because it is per-query and carries the vote bonus, so
+ * copies drift apart as they collect votes independently. Token *content* is
+ * compared rather than `tokens.length`, which distinct entries routinely share.
+ *
+ * `tokens` is the entry's deduplicated token set (title + tags + body excerpt),
+ * so tags and body reach the key already normalized, and comparison is by
+ * vocabulary rather than prose. It is sorted because tag order follows
+ * hand-authored frontmatter, which a re-share may reorder. `domain` is listed
+ * separately: it comes from frontmatter, never reaches the token set, and until
+ * now was kept apart only by the domain multiplier inside `score`.
+ */
+function dedupKey(r: SearchResult): string {
+  return JSON.stringify([
+    r.entry.type,
+    r.entry.domain,
+    r.entry.title,
+    r.entry.date,
+    r.entry.author,
+    [...r.entry.tokens].sort(),
+  ]);
+}
+
+/**
  * Search the index with a query string.
  *
  * Scoring (P1.4 domain-weighted):
@@ -780,24 +806,16 @@ export function search(
 
   // Collapse duplicates before truncating. The same learning can be shared
   // twice, landing in the corpus as two files whose only difference is the
-  // random filename suffix; both score identically and would otherwise consume
-  // two of the `limit` slots, silently narrowing the result set.
+  // random filename suffix; both would otherwise consume two of the `limit`
+  // slots, silently narrowing the result set.
   //
-  // The key must not merge genuinely distinct entries that happen to share a
-  // title, so it covers the fields a re-share copies verbatim. Entries differing
-  // in tags or body differ in token count, and any scoring difference separates
-  // them too.
+  // Results are already sorted by score descending, so the surviving copy of a
+  // duplicate is its highest-scoring one. See dedupKey for what counts as the
+  // same content.
   const seen = new Set<string>();
   const deduped: SearchResult[] = [];
   for (const r of results) {
-    const key = [
-      r.entry.type,
-      r.entry.title,
-      r.entry.date,
-      r.entry.author,
-      r.entry.tokens.length,
-      r.score,
-    ].join(' ');
+    const key = dedupKey(r);
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(r);

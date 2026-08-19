@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { tokenize, wordSegments, buildIndex, loadIndex, search } from '../utils/search-index.js';
 import { computeIdfBaseline, isRelevantScore } from '../recall.js';
-import type { SearchIndex } from '../types.js';
+import type { SearchIndex, SearchIndexEntry } from '../types.js';
 
 // ─── Test helpers ──────────────────────────────────────────
 
@@ -507,6 +507,126 @@ Overview of the middleware layer.
     const index = await loadIndex();
     const results = search('docker k8s api', index!, 1);
     expect(results).toHaveLength(1);
+  });
+});
+
+// ─── search: duplicate collapsing ──────────────────────────
+
+describe('search deduplication', () => {
+  /**
+   * Two copies of one re-shared learning, overridable per case. Entries are
+   * synthetic because buildIndex() cannot express "same content, different vote
+   * count" without a votes fixture per case.
+   */
+  function makeEntry(overrides: Partial<SearchIndexEntry> = {}): SearchIndexEntry {
+    return {
+      filename: 'dup-aaa.md',
+      title: 'Duplicate Learning',
+      author: 'carol',
+      date: '2026-03-01',
+      tags: ['oom'],
+      tokens: ['title:dup', 'dup', 'tag:oom', 'oom'],
+      votes: 0,
+      type: 'learnings',
+      domain: 'technical',
+      ...overrides,
+    };
+  }
+
+  function makeIndex(entries: SearchIndexEntry[]): SearchIndex {
+    return { version: 6, entries } as unknown as SearchIndex;
+  }
+
+  it('collapses identical content whose vote counts produced different scores', () => {
+    // A re-shared learning accumulates votes independently of its twin, and the
+    // vote bonus is part of the score — so a key holding score let both survive.
+    const index = makeIndex([
+      makeEntry({ filename: 'dup-aaa.md', votes: 0 }),
+      makeEntry({ filename: 'dup-bbb.md', votes: 3 }),
+    ]);
+
+    const results = search('dup', index);
+    expect(results).toHaveLength(1);
+    // Sorting runs before collapsing, so the surviving copy is the higher-scoring one.
+    expect(results[0].entry.filename).toBe('dup-bbb.md');
+  });
+
+  it('does not merge different content that shares a token count', () => {
+    // Same metadata, same number of tokens, and the same score — the query hits
+    // the same title token in both. Only the body vocabulary differs, which a
+    // length-based key cannot see.
+    const index = makeIndex([
+      makeEntry({ filename: 'alpha.md', tokens: ['title:dup', 'dup', 'tag:oom', 'alpha'] }),
+      makeEntry({ filename: 'beta.md', tokens: ['title:dup', 'dup', 'tag:oom', 'beta'] }),
+    ]);
+
+    const results = search('dup', index);
+    expect(results.map((r) => r.entry.filename).sort()).toEqual(['alpha.md', 'beta.md']);
+  });
+
+  it('does not merge entries that differ only in tags', () => {
+    // Tags reach the key through the token set rather than as a field of their
+    // own, so tag tokens are what has to keep these apart.
+    const index = makeIndex([
+      makeEntry({ filename: 'oom.md', tags: ['oom'], tokens: ['title:dup', 'dup', 'tag:oom', 'oom'] }),
+      makeEntry({ filename: 'cpu.md', tags: ['cpu'], tokens: ['title:dup', 'dup', 'tag:cpu', 'cpu'] }),
+    ]);
+
+    const results = search('dup', index);
+    expect(results).toHaveLength(2);
+  });
+
+  it('does not merge entries that differ only in domain', () => {
+    // domain is authored in frontmatter and never reaches the token set, so it
+    // needs its own slot in the key: dropping score dropped the domain
+    // multiplier that used to keep these apart by accident.
+    const index = makeIndex([
+      makeEntry({ filename: 'support.md', domain: 'support' }),
+      makeEntry({ filename: 'neutral.md', domain: 'neutral' }),
+    ]);
+
+    const results = search('dup', index);
+    expect(results).toHaveLength(2);
+  });
+
+  it('collapses a re-share whose tokens came out in another order', () => {
+    // Tag order is hand-authored, so a re-share can list the same tags
+    // differently and shift the derived tokens with them. That must not read as
+    // different content.
+    const index = makeIndex([
+      makeEntry({
+        filename: 'dup-aaa.md',
+        tags: ['oom', 'k8s'],
+        tokens: ['title:dup', 'dup', 'tag:oom', 'oom', 'tag:k8s', 'k8s'],
+      }),
+      makeEntry({
+        filename: 'dup-bbb.md',
+        tags: ['k8s', 'oom'],
+        tokens: ['title:dup', 'dup', 'tag:k8s', 'k8s', 'tag:oom', 'oom'],
+      }),
+    ]);
+
+    const results = search('dup', index);
+    expect(results).toHaveLength(1);
+  });
+
+  it('does not let duplicates consume the result limit', () => {
+    // Three copies of one learning plus a distinct entry, asking for two
+    // results. The copies must collapse so the distinct entry still makes the cut.
+    const index = makeIndex([
+      makeEntry({ filename: 'dup-aaa.md', votes: 0 }),
+      makeEntry({ filename: 'dup-bbb.md', votes: 3 }),
+      makeEntry({ filename: 'dup-ccc.md', votes: 6 }),
+      makeEntry({
+        filename: 'other.md',
+        title: 'Other Learning',
+        tags: ['cpu'],
+        tokens: ['title:dup', 'dup', 'tag:cpu', 'cpu'],
+      }),
+    ]);
+
+    const results = search('dup', index, 2);
+    expect(results.map((r) => r.entry.title)).toEqual(['Duplicate Learning', 'Other Learning']);
   });
 });
 

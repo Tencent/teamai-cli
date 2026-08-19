@@ -208,9 +208,10 @@ Use judgement rather than counting, in both directions:
   discriminating term as a lead to verify by opening the file, not as a
   conclusion.
 - **Fewer than 5 results does not mean the corpus is thin.** Results are
-  deduplicated when title, date, author and content all match, so a learning
-  shared twice appears once. Body-
-  only matches are also dropped. Both are intentional.
+  deduplicated when type, domain, title, date, author, tags and content all
+  match, so a learning shared twice appears once — including when the two copies
+  have collected different vote counts. Body-only matches are also dropped. Both
+  are intentional.
 
 For each hit you keep, read the source file directly (use `Read`) and
 condense each into **one or two sentences**.
