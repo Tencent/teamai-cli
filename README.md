@@ -206,6 +206,13 @@ teamai codebase --lint                      # health check
 The graph stores components, interfaces, configs, and cross-repo import edges. `teamai recall` uses it for graph-boosted re-ranking.
 When a recall hit comes from a codebase page, the result includes a `Sources:` line listing the relevant source file paths — giving agents a direct starting point for code changes instead of re-exploring the repo.
 
+Edges come from two tracks that run together, with AST results taking precedence on overlap:
+
+- **AST track** (TypeScript/JavaScript, Python, Go): a WASM [tree-sitter](https://tree-sitter.github.io/) parser resolves `import`/`require` and call sites to precise file-to-file `DEPENDS_ON` / `REFERENCES` edges (tagged `code-ast`, with confidence weights).
+- **Heuristic track** (all languages, including Java/Rust): regex-based extraction (tagged `code-heuristic`), which also covers languages the AST track does not.
+
+The WASM parser is a pure-JavaScript dependency — no native toolchain is required. If it fails to load for any reason, extraction falls back to the heuristic track and records an `AST_UNAVAILABLE` gap. Set `TEAMAI_SKIP_AST=1` to force heuristic-only extraction.
+
 ## Commands
 
 | Command | Description |

@@ -21,6 +21,10 @@ import {
   buildIndexHubOverlay,
   mergeGraphs,
   saveGraphIndex,
+  extractStructuralGraphAsFacts,
+  astAvailable,
+  mergeCodeFacts,
+  formatAstStatsSummary,
 } from './wiki-engine/adapters/index.js';
 import type { CodeFact, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
 import {
@@ -612,6 +616,49 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     interfaceInventory = await scanInterfaces(files);
   }
 
+
+  // AST track (web-tree-sitter WASM): resolve precise import/call edges for
+  // TS/JS/Python/Go. Runs alongside the regex heuristic track; AST facts win
+  // on merge. Falls back to heuristic-only when the WASM runtime is unavailable
+  // (e.g. TEAMAI_SKIP_AST=1) or throws, recording an AST_UNAVAILABLE gap.
+  const astGaps: KnowledgeGap[] = [];
+  if (files.length > 0 && astAvailable()) {
+    try {
+      const { facts: astFacts, result: astResult } = await extractStructuralGraphAsFacts({
+        repoRoot: root,
+        files,
+      });
+      facts = mergeCodeFacts(astFacts, facts);
+      let gapSeq = 0;
+      for (const gap of astResult.gaps) {
+        astGaps.push({
+          id: `AST-${gap.kind}-${gapSeq++}`,
+          kind: gap.kind,
+          description: gap.message,
+          source: gap.sources.join(', '),
+        });
+      }
+      if (!opts.json) {
+        console.log(chalk.dim(`  [AST: ${formatAstStatsSummary(astResult.stats)}]`));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      astGaps.push({
+        id: 'AST-UNAVAILABLE-0',
+        kind: 'AST_UNAVAILABLE',
+        description: `code-ast failed: ${message}; used code-heuristic only.`,
+        source: 'code-ast',
+      });
+    }
+  } else if (files.length > 0) {
+    astGaps.push({
+      id: 'AST-UNAVAILABLE-0',
+      kind: 'AST_UNAVAILABLE',
+      description: 'web-tree-sitter WASM runtime unavailable or TEAMAI_SKIP_AST=1; used code-heuristic only.',
+      source: 'code-ast',
+    });
+  }
+
   const graph: GraphIndex = buildCodeGraph(facts);
 
   // Call chain tracing (entry → orchestration → service → data)
@@ -733,7 +780,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   await writeIfChanged(path.join(wikiRoot, 'index.md'), indexTemplate(proj, indexStats));
 
   // 生成 gaps/ — 知识缺口追踪
-  const gaps = detectKnowledgeGaps(facts, graph, files);
+  const gaps = [...detectKnowledgeGaps(facts, graph, files), ...astGaps];
   const gapsDir = path.join(wikiRoot, 'gaps');
   await mkdir(gapsDir, { recursive: true });
   const gapLines = [

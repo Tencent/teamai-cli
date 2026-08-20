@@ -767,6 +767,7 @@ agent hook 规则：
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | skill `download_url` host 白名单（空 = 全部放行） |
 | `TEAMAI_ALLOW_SANDBOX_REPORT` | 设为 `1` 可强制在 CloudStudio 沙箱内 report/sync（见下方说明） |
 | `TEAMAI_DISABLE_REMOTE_CMD` | 设为 `1` 可拒绝服务端下发的 `uninstall_teamai`、`install_hook_rule`、`uninstall_hook_rule` 命令（会 ack `failed`） |
+| `TEAMAI_SKIP_AST` | 设为 `1` 时强制仅用启发式提取，跳过 WASM tree-sitter AST 轨 |
 
 > **隐私**：install path 和 machine id 仅在本地哈希以派生 `local_agent_id`，不会上报。
 
@@ -806,6 +807,8 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
 图谱存储组件、接口、配置和跨仓库依赖关系。`teamai recall` 利用图谱进行 BM25 + graph-boost 增强排名。
+
+依赖边由两条并行轨道提取：WASM tree-sitter **AST 轨**（TypeScript/JavaScript、Python、Go），将 import 与调用解析为精确的文件到文件边（`code-ast`）；以及正则 **启发式轨**（所有语言，`code-heuristic`），同时覆盖 AST 轨未支持的语言。重叠时 AST 结果优先。AST 解析器无需原生编译工具链；加载失败时提取会降级到启发式并记录一条 `AST_UNAVAILABLE` gap。设置 `TEAMAI_SKIP_AST=1` 可强制仅用启发式提取。
 
 ```bash
 # 图谱健康检查

@@ -771,6 +771,7 @@ Configurable environment variables:
 | `TEAMAI_SKILL_DOWNLOAD_HOSTS` | Allowlist of hosts for skill `download_url` (empty = allow all) |
 | `TEAMAI_ALLOW_SANDBOX_REPORT` | Set to `1` to force report/sync inside a CloudStudio sandbox (see note below) |
 | `TEAMAI_DISABLE_REMOTE_CMD` | Set to `1` to reject server-pushed `uninstall_teamai`, `install_hook_rule`, and `uninstall_hook_rule` commands (they are acked `failed`) |
+| `TEAMAI_SKIP_AST` | Set to `1` to force heuristic-only code extraction, skipping the WASM tree-sitter AST track |
 
 > **Privacy:** The install path and machine id are only hashed locally to derive `local_agent_id` — they are never reported.
 
@@ -811,6 +812,8 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
 The graph stores components, interfaces, configs, and cross-repo dependencies. `teamai recall` uses the graph for BM25 + graph-boosted ranking.
+
+Dependency edges are extracted by two parallel tracks: a WASM tree-sitter **AST track** (TypeScript/JavaScript, Python, Go) that resolves imports and calls to precise file-to-file edges (`code-ast`), and a regex **heuristic track** (all languages, `code-heuristic`) that also covers languages the AST track does not. AST results win on overlap. The AST parser needs no native toolchain; on load failure, extraction falls back to heuristics and records an `AST_UNAVAILABLE` gap. Set `TEAMAI_SKIP_AST=1` to force heuristic-only extraction.
 
 ```bash
 # Graph health check
