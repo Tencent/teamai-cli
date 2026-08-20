@@ -34,6 +34,8 @@ npm install -g teamai-cli
 
 > 个人使用无需单独建仓：`teamai init` 会检查目标仓库，不存在时自动创建。
 
+> **还没有团队仓库？** 可以从内置了成套 skills、rules、review agents 的模板起步。浏览 [teamai-hub](https://github.com/teamai-hub) org，点 **Use this template** 生成自己的仓库，再对它执行 `teamai init`。
+
 ### 团队成员
 
 ```bash
@@ -51,6 +53,24 @@ teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 ```
 
 初始化完成后，每次开启 AI 会话时都会自动拉取管理员发布的 skills / rules 等 Harness 更新，无需手动同步。
+
+### 单仓模式（业务仓即团队仓）
+
+无需单独的团队仓库。在已有项目里运行 `teamai init .`，让它自己的 git 仓库直接充当团队仓：
+
+```bash
+cd /path/to/my-project
+teamai init .                        # 交互式：选择要启用哪些 AI 工具
+teamai init . --agent claude,codex   # 非交互:启用 Claude Code + Codex
+```
+
+- **知识资产**（skills / rules / docs / learnings）提交到仓库 **main 分支**的 `.teamai/` 目录，因此一次普通 `git clone` 就带上了整套团队配置。
+- **上报数据**（成员注册、会话摘要、投票、使用统计）走独立的 **`teamai-reports` 孤儿分支** —— 永不污染 main。
+- **由你选择启用哪些 AI 工具。** `--agent claude,codex`（可重复/逗号分隔）,省略时弹交互选择框,非交互场景则按你本机 `~/` 下已装的工具来建。teamai 为每个所选工具建目录、注入 hooks、并提交其 settings。
+- **克隆即初始化。** 团队成员 clone 仓库后，下一条 `teamai` 命令（或 AI 会话）会自动识别 `.teamai/teamai.yaml` 里的 `mode: self` 标记并自动完成本机初始化 —— 无需手抄 repo/role 参数。
+- teamai 的所有 git 操作都在隔离的 worktree 中进行，绝不触碰你的工作区和当前分支。
+
+`teamai init .` 会帮你把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）以及每个所选工具的 settings（如 `.claude/settings.json`、`.codex/hooks.json`）提交好;推送 main 后团队成员 clone 即可自动初始化。
 
 > **完整使用指南**：[docs/usage-guide.zh-CN.md](docs/usage-guide.zh-CN.md)（[English](docs/usage-guide.md)）— 涵盖从团队创建到日常使用的全流程。
 
@@ -155,7 +175,13 @@ Author: member-a | Score: 18.5 | Tags: troubleshooting, networking
 
 [2/2] Deployment configuration best practices [project]
 Author: member-b | Score: 12.0 | Tags: deploy, config
+Matched: conflict | Missing: port
 ```
+
+当某条结果未覆盖全部查询词时，会输出 `Matched: … | Missing: …` 行（全部命中时省略）。
+recall 按分数返回 top 结果，**不会**按覆盖度过滤：若你的关键区分词全在 `Missing:` 里，
+说明这条只是主题相邻，并非答案。这个判断由调用方来做 —— 分数本身无法表达它。
+标题、日期、作者与内容均相同的条目会被合并，因此同一条 learning 被分享两次不会占用两个名额。
 
 **检索内容覆盖两部分**：
 

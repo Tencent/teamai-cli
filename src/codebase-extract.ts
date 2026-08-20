@@ -615,12 +615,23 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   const graph: GraphIndex = buildCodeGraph(facts);
 
   // Call chain tracing (entry → orchestration → service → data)
-  // 增量模式下跳过 traceCallChains（只有变更文件的 content，无法完整追踪）
-  // 读取已有的 dependency-paths.md 内容，避免因少量文件变更而清空调用链
   let callChains: CallChain[];
   const depPathsFile = path.join(evidenceDir, 'dependency-paths.md');
   if (changedFiles) {
-    callChains = [];
+    // 增量模式：优先复用已有 dependency-paths.md（只有变更文件的 content，无法完整追踪）
+    let reused = false;
+    try {
+      const existing = await readFile(depPathsFile, 'utf-8');
+      if (existing.trim()) {
+        reused = true;
+      }
+    } catch { /* 文件不存在 */ }
+
+    if (reused) {
+      callChains = [];
+    } else {
+      callChains = traceCallChains(facts, files);
+    }
   } else {
     callChains = traceCallChains(facts, files);
   }
@@ -629,7 +640,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
 
   await mkdir(evidenceDir, { recursive: true });
 
-  // 增量模式下复用已有 dependency-paths.md（仅有变更文件 content，无法重新追踪）
+  // 增量模式下复用已有 dependency-paths.md
   if (changedFiles && !pages.has('dependency-paths.md')) {
     try {
       const existing = await readFile(depPathsFile, 'utf-8');

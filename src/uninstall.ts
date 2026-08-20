@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { autoDetectInit, saveLocalConfig, saveLocalConfigForScope } from './config.js';
 import { reconcileHooks, hasTeamaiHooks } from './hooks.js';
-import { removeOpenClawHooks, OPENCLAW_HOOK_DIR } from './openclaw-hooks.js';
+import { removeOpenClawHooks, OPENCLAW_HOOK_DIR, resolveOpenClawHooksDir } from './openclaw-hooks.js';
 import {
   TEAMAI_RULES_START,
   TEAMAI_RULES_END,
@@ -195,10 +195,15 @@ async function discoverToolResources(
     }
   } else {
     // OpenClaw-style agents (no settings file) inject a HOOK.md + handler.ts
-    // under <base>/.<tool>/hooks/<OPENCLAW_HOOK_DIR>. Mirror that for removal.
-    const hooksDir = path.join(baseDir, `.${tool}`, 'hooks');
-    if (await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) {
-      res.openclawHookDirs.push({ hooksDir, tool });
+    // under <hooksDir>/<OPENCLAW_HOOK_DIR>. Check both the default path and
+    // the OPENCLAW_STATE_DIR override to cover imate container environments.
+    const defaultHooksDir = path.join(baseDir, `.${tool}`, 'hooks');
+    const resolvedHooksDir = resolveOpenClawHooksDir(tool);
+    const dirsToCheck = new Set([defaultHooksDir, resolvedHooksDir]);
+    for (const hooksDir of dirsToCheck) {
+      if (await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) {
+        res.openclawHookDirs.push({ hooksDir, tool });
+      }
     }
   }
 

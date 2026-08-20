@@ -91,3 +91,55 @@ describe('formatResults — Sources line', () => {
     expect(output).toContain('Snippet: Important lesson learned.');
   });
 });
+
+describe('formatResults — term coverage', () => {
+  it('reports matched and missing query terms so the caller can judge relevance', () => {
+    const output = formatResults([
+      {
+        entry: makeEntry({ title: 'Inference service restart', type: 'learnings' }),
+        score: 16.2,
+        scope: 'user',
+        matchedTerms: ['推理服务'],
+        missingTerms: ['acme-corp', 'AccountID'],
+      },
+    ]);
+
+    expect(output).toContain('Matched: 推理服务 | Missing: acme-corp, AccountID');
+  });
+
+  it('reports "none" when the hit covers no query term', () => {
+    const output = formatResults([
+      {
+        entry: makeEntry({ title: 'Unrelated', type: 'learnings' }),
+        score: 8.0,
+        scope: 'user',
+        matchedTerms: [],
+        missingTerms: ['rotary', 'CP'],
+      },
+    ]);
+
+    expect(output).toContain('Matched: none | Missing: rotary, CP');
+  });
+
+  it('omits the line when every term matched, and for codebase hits without coverage data', () => {
+    const allMatched = formatResults([
+      {
+        entry: makeEntry({ title: 'Full hit', type: 'learnings' }),
+        score: 40.1,
+        scope: 'user',
+        matchedTerms: ['NUMA', 'goosefs'],
+        missingTerms: [],
+      },
+    ]);
+    expect(allMatched).not.toContain('Missing:');
+
+    const codebaseHit = formatResults([
+      {
+        entry: makeEntry({ title: 'Graph page', path: '/wiki/evidence/code/p/x.md' }),
+        score: 5.0,
+        scope: 'project',
+      },
+    ]);
+    expect(codebaseHit).not.toContain('Missing:');
+  });
+});

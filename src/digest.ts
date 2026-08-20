@@ -94,12 +94,35 @@ function parseGitLogOutput(output: string): Array<{ author: string; message: str
 }
 
 /**
+ * Build the git pathspec + match regex for a team repo's skills SKILL.md files,
+ * accounting for a repo-root-relative `subdir` prefix. Exported for testing —
+ * this is the exact spot that broke in single-repo mode (git emitted
+ * ".teamai/skills/..." paths that never matched a bare "skills/..." regex).
+ */
+export function buildSkillChangePathspec(subdir = ''): { pathspec: string; skillRe: RegExp } {
+  const prefix = subdir ? `${subdir.replace(/\/+$/, '')}/` : '';
+  const pathspec = `${prefix}skills/*/SKILL.md`;
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const skillRe = new RegExp(`^${escaped}skills/([^/]+)/SKILL\\.md$`);
+  return { pathspec, skillRe };
+}
+
+/**
  * Detect new and updated skills in the team repo from the past 7 days
  * by inspecting git log for changes under skills/SKILL.md paths.
+ *
+ * `subdir` is the repo-root-relative directory holding the team repo's `skills/`.
+ * It's '' for standalone team repos (git log runs at the repo root, paths are
+ * `skills/foo/SKILL.md`), but '.teamai' in single-repo mode — there the git log
+ * must run at the BUSINESS repo root with a `.teamai/skills/...` pathspec, and
+ * git emits repo-root-relative paths like `.teamai/skills/foo/SKILL.md`. We build
+ * the pathspec and the match regex from `subdir` so both layouts work.
  */
-async function getRecentSkillChanges(repoPath: string): Promise<SkillChange[]> {
+async function getRecentSkillChanges(repoPath: string, subdir = ''): Promise<SkillChange[]> {
   const seen = new Set<string>();
   const changes: SkillChange[] = [];
+
+  const { pathspec, skillRe } = buildSkillChangePathspec(subdir);
 
   try {
     const git = createGit(repoPath);
@@ -108,7 +131,7 @@ async function getRecentSkillChanges(repoPath: string): Promise<SkillChange[]> {
     const rawOutput = await git.raw([
       'log', '--since=7 days ago', '--diff-filter=AM',
       '--name-only', '--pretty=format:%H|%an|%s',
-      '--', 'skills/*/SKILL.md',
+      '--', pathspec,
     ]);
 
     if (!rawOutput.trim()) return changes;
@@ -117,7 +140,7 @@ async function getRecentSkillChanges(repoPath: string): Promise<SkillChange[]> {
 
     for (const commit of commits) {
       for (const file of commit.files) {
-        const match = file.match(/^skills\/([^/]+)\/SKILL\.md$/);
+        const match = file.match(skillRe);
         if (!match) continue;
         const skillName = match[1];
         if (seen.has(skillName)) continue;
@@ -136,7 +159,7 @@ async function getRecentSkillChanges(repoPath: string): Promise<SkillChange[]> {
       const addedOutput = await git.raw([
         'log', '--since=7 days ago', '--diff-filter=A',
         '--name-only', '--pretty=format:%H|%an|%s',
-        '--', 'skills/*/SKILL.md',
+        '--', pathspec,
       ]);
 
       const newSkills = new Set<string>();
@@ -144,7 +167,7 @@ async function getRecentSkillChanges(repoPath: string): Promise<SkillChange[]> {
         const addedCommits = parseGitLogOutput(addedOutput);
         for (const commit of addedCommits) {
           for (const file of commit.files) {
-            const match = file.match(/^skills\/([^/]+)\/SKILL\.md$/);
+            const match = file.match(skillRe);
             if (match) {
               newSkills.add(match[1]);
             }
@@ -348,7 +371,17 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     const localConfig = projectConfig ?? (await requireInit()).localConfig;
     const repoPath = localConfig.repo.localPath;
 
-    const teamStats = await loadTeamStats(repoPath);
+    // In self mode, knowledge (learnings, skill git-log) lives under localPath on
+    // main, but report data (stats, sessions) lives on the teamai-reports orphan
+    // branch — read those from the reports worktree, refreshed from origin.
+    let reportsRoot = repoPath;
+    if (localConfig.repo.kind === 'self') {
+      const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
+      await refreshReportsWorktree(localConfig);
+      reportsRoot = await ensureReportsWorktree(localConfig);
+    }
+
+    const teamStats = await loadTeamStats(reportsRoot);
 
     if (teamStats.length === 0) {
       console.log('No team usage data available yet.');
@@ -357,7 +390,7 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     }
 
     const health = calculateTeamHealth(teamStats);
-    const sessions = await getRecentSessions(repoPath);
+    const sessions = await getRecentSessions(reportsRoot);
 
     // Header
     const now = new Date();
@@ -412,8 +445,16 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
       console.log('');
     }
 
-    // Skill changelog
-    const skillChanges = await getRecentSkillChanges(repoPath);
+    // Skill changelog. In self mode skills live at <businessRepoRoot>/.teamai/skills,
+    // so run the git log at the business repo root with a `.teamai` subdir prefix —
+    // running it at repoPath (a subdirectory) makes git emit `.teamai/skills/...`
+    // paths that never match the bare `skills/...` regex (blank changelog).
+    const skillChanges = localConfig.repo.kind === 'self'
+      ? await getRecentSkillChanges(
+        localConfig.repo.businessRepoRoot ?? path.dirname(repoPath),
+        '.teamai',
+      )
+      : await getRecentSkillChanges(repoPath);
     const newSkills = skillChanges.filter((c) => c.type === 'new');
     const updatedSkills = skillChanges.filter((c) => c.type === 'updated');
 

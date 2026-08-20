@@ -189,7 +189,21 @@ export async function saveStateForScope(state: State, scope: Scope, projectRoot?
 export async function detectProjectConfig(cwd?: string): Promise<LocalConfig | null> {
   const dir = cwd ?? process.cwd();
   const configPath = path.join(dir, '.teamai', 'config.yaml');
-  if (!(await pathExists(configPath))) return null;
+  if (!(await pathExists(configPath))) {
+    // Single-repo mode self-heal (issue #198): a teammate who cloned a repo
+    // carrying `.teamai/teamai.yaml` with `mode: self` has the team knowledge on
+    // disk but no local config (it is gitignored, not cloned). Auto-bootstrap the
+    // machine side, then re-read. bootstrapSelfRepo is a no-op ('skip') for any
+    // dir that is not a self-mode project, so this stays cheap on the hot path.
+    try {
+      const { bootstrapSelfRepo } = await import('./bootstrap.js');
+      const result = await bootstrapSelfRepo(dir, { silent: true });
+      if (result !== 'bootstrapped') return null;
+    } catch {
+      return null;
+    }
+    if (!(await pathExists(configPath))) return null;
+  }
   const content = await readFileSafe(configPath);
   if (!content) return null;
   try {

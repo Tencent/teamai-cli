@@ -12,6 +12,7 @@ vi.mock('../utils/git.js', () => ({
   pushRepoDirectly: (...args: unknown[]) => pushRepoDirectly(...args),
   pullRepo: vi.fn().mockResolvedValue(undefined),
   resetToCleanMaster: vi.fn().mockResolvedValue(undefined),
+  isDedicatedRepoRoot: vi.fn().mockResolvedValue(true),
 }));
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },

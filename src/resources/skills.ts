@@ -5,6 +5,7 @@ import { resolveBaseDir, getPushignorePath, isAgentDisabled } from '../types.js'
 import { listDirs, pathExists, copyDir, remove, dirTeamSubsetEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
+import { resolveOpenclawWorkspaceDir } from '../openclaw-hooks.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from '../roles.js';
 
 /** File name used to track who has contributed (pushed) a skill. */
@@ -434,13 +435,22 @@ export class SkillsHandler extends ResourceHandler {
       if (isAgentDisabled(localConfig, tool)) continue;
       if (!toolPath.skills) continue;
 
-      // Skip tools that are not installed
-      if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) {
-        log.debug(`Skipping skill sync for ${tool}: tool not installed`);
-        continue;
+      let dest: string;
+      if (tool === 'openclaw') {
+        const wsDir = await resolveOpenclawWorkspaceDir();
+        if (!wsDir) {
+          log.debug(`Skipping skill sync for openclaw: workspace dir not found`);
+          continue;
+        }
+        dest = path.join(wsDir, 'skills', item.name);
+      } else {
+        if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) {
+          log.debug(`Skipping skill sync for ${tool}: tool not installed`);
+          continue;
+        }
+        dest = path.join(baseDir, toolPath.skills, item.name);
       }
 
-      const dest = path.join(baseDir, toolPath.skills, item.name);
       try {
         await copyDir(item.sourcePath, dest);
         await ensureSkillFrontmatter(dest, item.name);
@@ -482,7 +492,14 @@ export class SkillsHandler extends ResourceHandler {
     // Remove from each tool's skills directory
     for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
       if (!toolPath.skills) continue;
-      const skillDir = path.join(baseDir, toolPath.skills, name);
+      let skillDir: string;
+      if (tool === 'openclaw') {
+        const wsDir = await resolveOpenclawWorkspaceDir();
+        if (!wsDir) continue;
+        skillDir = path.join(wsDir, 'skills', name);
+      } else {
+        skillDir = path.join(baseDir, toolPath.skills, name);
+      }
       if (await pathExists(skillDir)) {
         await remove(skillDir);
         removed.push(skillDir);

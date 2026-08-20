@@ -142,6 +142,13 @@ export async function contribute(
     return;
   }
 
+  // Single-repo mode: learnings are knowledge on main → contribute via a PR from
+  // an isolated worktree (never the active tree / direct push to main).
+  if (localConfig.repo.kind === 'self') {
+    await contributeSelf(localConfig, content, options);
+    return;
+  }
+
   const pushSpin = spinner('Contributing session knowledge...').start();
   const filename = generateFilename(options.title);
 
@@ -200,5 +207,113 @@ export async function contribute(
       pushSpin.fail(`Contribution failed: ${(e as Error).message}`);
       log.info('You can retry with: teamai contribute --file <path>');
     }
+  }
+}
+
+/**
+ * Single-repo mode contribution: learnings are knowledge on main, so we open a
+ * PR from an isolated knowledge worktree instead of pushing to main directly.
+ *
+ * The user's active working tree is never written to. For immediate local recall,
+ * we mirror the worktree's learnings/ (committed main learnings + the new one)
+ * into the machine-local LEARNINGS_LOCAL_DIR and index from there — the same
+ * pattern user scope uses. The contribution lands in the active tree only when the
+ * PR merges and the user pulls.
+ */
+async function contributeSelf(
+  localConfig: LocalConfig,
+  content: string,
+  options: GlobalOptions & { file?: string; title?: string; sessionId?: string; scope?: string },
+): Promise<void> {
+  const username = localConfig.username;
+  const filename = generateFilename(options.title);
+  const relPath = `learnings/${filename}`;
+  const commitMsg = `[teamai] Contribute session knowledge from ${username}`;
+  const spin = spinner('Contributing session knowledge...').start();
+
+  try {
+    const { withKnowledgeWorktree } = await import('./utils/reports-branch.js');
+    const { pushRepoBranch, checkoutMaster, generateBranchName } = await import('./utils/git.js');
+    const { createPrWithFallback } = await import('./push.js');
+    const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+
+    await withKnowledgeWorktree(localConfig, async (wtConfig) => {
+      const wtRepo = wtConfig.repo.localPath;
+      await ensureDir(path.join(wtRepo, 'learnings'));
+      await fs.promises.writeFile(path.join(wtRepo, relPath), content, 'utf-8');
+
+      // Mirror the worktree's learnings into the machine-local dir + rebuild the
+      // index so recall sees this contribution immediately — without touching the
+      // user's active tree. Index ALL categories (not just learnings) — a
+      // learnings-only rebuild would clobber the project index and drop
+      // docs/rules/skills/votes until the next full pull.
+      //
+      // IMPORTANT: source docs/rules/skills from the PERSISTENT active tree
+      // (localConfig.repo.localPath/.teamai), NOT the disposable knowledge
+      // worktree — withKnowledgeWorktree deletes wtRepo on teardown, and buildIndex
+      // bakes absolute paths into search-index.json, so worktree paths would leave
+      // recall printing `File: <deleted>` pointers. learnings come from the
+      // persistent LEARNINGS_LOCAL_DIR mirror; votes from the reports worktree.
+      // This matches the other index-build sites (pull.ts / recall.ts).
+      try {
+        const { pathExists } = await import('./utils/fs.js');
+        const wtLearnings = path.join(wtRepo, 'learnings');
+        await fse.copy(wtLearnings, LEARNINGS_LOCAL_DIR, {
+          overwrite: true,
+          filter: (src: string) => !path.basename(src).startsWith('.'),
+        });
+
+        const repoPath = localConfig.repo.localPath; // persistent active-tree .teamai
+        const docsDir = path.join(repoPath, 'docs');
+        const rulesDir = path.join(repoPath, 'rules');
+        const skillsDir = path.join(repoPath, 'skills');
+
+        // votes are on the teamai-reports orphan branch, not in the knowledge worktree.
+        let votesDir: string | undefined;
+        try {
+          const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
+          const candidate = path.join(await ensureReportsWorktree(localConfig), 'votes');
+          if (await pathExists(candidate)) votesDir = candidate;
+        } catch { /* reports worktree unavailable — index without votes */ }
+
+        const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
+        const { buildIndex } = await import('./utils/search-index.js');
+        await buildIndex({
+          learningsDir: await pathExists(LEARNINGS_LOCAL_DIR) ? LEARNINGS_LOCAL_DIR : undefined,
+          docsDir: await pathExists(docsDir) ? docsDir : undefined,
+          rulesDir: await pathExists(rulesDir) ? rulesDir : undefined,
+          skillsDir: await pathExists(skillsDir) ? skillsDir : undefined,
+          votesDir,
+          indexPath: path.join(teamaiHome, 'search-index.json'),
+        });
+      } catch (e) {
+        log.debug(`contribute(self): local index refresh skipped: ${(e as Error).message}`);
+      }
+
+      const branchName = generateBranchName(username);
+      const hasChanges = await pushRepoBranch(wtRepo, commitMsg, [relPath], branchName);
+      if (!hasChanges) {
+        spin.info('Contribution already present — nothing to push.');
+        return;
+      }
+      if (teamConfig) {
+        await createPrWithFallback(
+          teamConfig,
+          wtConfig,
+          branchName,
+          commitMsg,
+          `Contribute session knowledge: ${options.title ?? filename}`,
+        );
+      }
+      await checkoutMaster(wtRepo);
+      spin.succeed(`Contributed via PR: ${relPath}`);
+    });
+
+    const sessionId = options.sessionId || process.env.CLAUDE_SESSION_ID || '';
+    if (sessionId) await markContributed(sessionId);
+    log.info('Your session knowledge has been shared with the team (PR opened).');
+  } catch (e) {
+    spin.fail(`Contribution failed: ${(e as Error).message}`);
+    log.info('You can retry with: teamai contribute --file <path>');
   }
 }
