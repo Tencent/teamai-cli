@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
-import { resolveBaseDir, getPushignorePath, isAgentDisabled } from '../types.js';
+import { resolveBaseDir, getPushignorePath, isAgentDisabled, scopedToolPaths } from '../types.js';
 import { listDirs, pathExists, copyDir, remove, dirTeamSubsetEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
@@ -301,7 +301,7 @@ export class SkillsHandler extends ResourceHandler {
     const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus; namespace?: string }>();
 
     // Scan each tool's skills directory
-    for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
       const skillsDir = path.join(resolveBaseDir(localConfig), toolPath.skills);
       if (!await pathExists(skillsDir)) continue;
@@ -431,7 +431,7 @@ export class SkillsHandler extends ResourceHandler {
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
     const baseDir = resolveBaseDir(localConfig);
 
-    for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (isAgentDisabled(localConfig, tool)) continue;
       if (!toolPath.skills) continue;
 
@@ -490,7 +490,7 @@ export class SkillsHandler extends ResourceHandler {
     await this.addTombstone(name, localConfig);
 
     // Remove from each tool's skills directory
-    for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
       let skillDir: string;
       if (tool === 'openclaw') {

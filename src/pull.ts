@@ -392,15 +392,21 @@ async function pullForScope(
       const knowledgeNs = roleContext ? roleContext.activeNamespaces.knowledge : null;
       const roleFiltered = filterRulesByKnowledgeNamespaces(allItems, knowledgeNs);
       const { included: items, skipped } = filterByTags(roleFiltered, tagsConfig, subscribedTags, 'rules');
-      if (items.length > 0) {
-        if (options.dryRun) {
+      if (options.dryRun) {
+        if (items.length > 0) {
           log.info(`[${scopeLabel}] [dry-run] Would sync ${items.length} rule(s)${skipped.length > 0 ? ` (skipped ${skipped.length} by tags)` : ''}`);
-        } else {
-          await rulesHandler.pullAllRules(freshConfig, localConfig, items);
+        }
+      } else {
+        // Always call pullAllRules, even with an empty set: it also cleans up
+        // stale local rule files and deactivates the OpenCode instructions glob
+        // when the team's last rule is removed. Guarding on items.length > 0
+        // would leak those artifacts on the machine after upstream deletion.
+        await rulesHandler.pullAllRules(freshConfig, localConfig, items);
+        if (items.length > 0) {
           log.success(`[${scopeLabel}] Synced ${items.length} rule(s)${skipped.length > 0 ? ` (skipped ${skipped.length} by tags)` : ''}`);
         }
-        totalSynced += items.length;
       }
+      totalSynced += items.length;
       continue;
     }
 

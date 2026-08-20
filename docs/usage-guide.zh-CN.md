@@ -4,7 +4,7 @@
 
 > **@tencent/teamai-cli** — 团队 AI 经验共享框架
 >
-> 帮助团队统一管理和共享 Skills、Rules、Docs、Env 等资源，自动同步到 Claude Code、CodeBuddy、Cursor、Codex、Gemini CLI、Windsurf 等 AI 编程工具中。
+> 帮助团队统一管理和共享 Skills、Rules、Docs、Env 等资源，自动同步到 Claude Code、CodeBuddy、Cursor、Codex、OpenCode、Gemini CLI、Windsurf 等 AI 编程工具中。
 
 ---
 
@@ -496,14 +496,15 @@ servers:
 | cursor | `~/.cursor/mcp.json` | `<project>/.cursor/mcp.json` |
 | codebuddy / workbuddy | `~/.<tool>/mcp.json` | `<project>/.<tool>/mcp.json` |
 | codex | `~/.codex/config.toml` | 不支持 |
+| opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 
-Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；与手写同名则跳过，除非 `--force`。
+Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）与 `http`（`type:"remote"`），`sse` 会被跳过，其 server 位于共享 `opencode.json` 的 `mcp` 键下。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；与手写同名则跳过，除非 `--force`。
 
 **密钥**：在 `mcp.yaml` 里写 `${VAR}`，不要写明文。取值优先来自环境变量，其次是 `env/env.yaml` → `~/.teamai/env`。变量无法解析则跳过并提示。
 
 teamai 会**把每个 `${VAR}` 解析成取值后原样写入**各工具的配置文件(新建文件权限为 `0600`)。它不依赖任何工具自身的环境变量展开——因为那种展开很脆弱:最典型的是,以 GUI 方式(Dock/Launchpad)启动的 IDE 不会继承你 shell 中 `export` 的变量,`${VAR}` 占位符会展开为空、导致服务端 401。解析成明文可以保证无论工具如何启动,token 都在。
 
-> ⚠️ **解析后的 token 会落盘。** 项目级 MCP 配置(`.mcp.json`、`.cursor/mcp.json`、`.codebuddy/mcp.json`、`.codex/config.toml`)因此含有明文密钥——请把它们加入 `.gitignore`,切勿提交。
+> ⚠️ **解析后的 token 会落盘。** 项目级 MCP 配置(`.mcp.json`、`.cursor/mcp.json`、`.codebuddy/mcp.json`、`.codex/config.toml`、`opencode.json`)因此含有明文密钥——请把它们加入 `.gitignore`,切勿提交。
 
 Claude Code 可能把来自仓库的 `.mcp.json` 标为待批准，需在交互式会话中确认一次。
 
@@ -930,6 +931,16 @@ team-repo/
 ```
 
 `teamai pull` 会将它们复制到每个 Tier-1 工具的 `agents/` 目录（如 `~/.claude/agents/`）。CLI 内置的 `teamai-recall.md` 与团队 agents 并列部署，但不会被 `teamai push` 上传。
+
+### OpenCode
+
+[OpenCode](https://opencode.ai) 已作为一等工具支持。由于它的配置布局与 Claude 系不同，teamai 对以下几点做了特殊处理：
+
+- **作用域。** OpenCode 的用户配置在 `~/.config/opencode/` 下，项目配置在 `<project>/.opencode/` 下——前缀与其他所有工具都不同。teamai 会按 `--scope` 写入正确的位置，且仅在该作用域确实安装了 OpenCode 时才碰它的文件（绝不会为未使用 OpenCode 的用户创建 `~/.config/opencode/`）。
+- **Skills** 落在 `.opencode/skills/`（项目）或 `~/.config/opencode/skills/`（用户）。OpenCode 也原生读取 `.claude/skills`，但 teamai 仍会写 OpenCode 路径，好让只用 OpenCode 的用户也能拿到。
+- **Subagents** 会被渲染成 OpenCode 自己的 `agents/*.md` 格式：frontmatter 带 `description` + `mode: subagent`（以及 `model` 和 `tool_extras.opencode` 中的字段，如 `temperature`）；agent 名取自文件名。OpenCode **不**读取 `.claude/agents`，因此这份原生副本是必需的。
+- **Rules** 会被复制到 `.opencode/rules/`（或 `~/.config/opencode/rules/`），但 OpenCode 不会自动扫描 rules 目录——文件在被引用前是惰性的。因此 teamai 会往 `opencode.json` 的 `instructions` 数组里加一条 `rules/*.md` glob，并在团队最后一条 rule 消失时再把它移除，且只编辑这一个键、不动你自己的 `instructions` 条目。
+- **MCP** server 位于共享 `opencode.json` 的 `mcp` 键下（详见上文 MCP 章节）。
 
 ### 其他
 

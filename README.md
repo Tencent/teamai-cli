@@ -16,7 +16,7 @@
 
 Make every AI coding agent work by the same harness.
 
-Git-native management of skills, rules, and docs across Claude Code / Codex / CodeBuddy / WorkBuddy and more.
+Git-native management of skills, rules, and docs across Claude Code / Codex / CodeBuddy / WorkBuddy / OpenCode and more.
 
 For you or your whole team.
 

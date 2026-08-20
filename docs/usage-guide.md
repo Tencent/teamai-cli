@@ -4,7 +4,7 @@
 
 > **teamai-cli** — a shared AI experience framework for teams
 >
-> Helps teams centrally manage and share Skills, Rules, Docs, and Env resources, automatically syncing them to AI coding tools like Claude Code, CodeBuddy, Cursor, Codex, Gemini CLI, and Windsurf.
+> Helps teams centrally manage and share Skills, Rules, Docs, and Env resources, automatically syncing them to AI coding tools like Claude Code, CodeBuddy, Cursor, Codex, OpenCode, Gemini CLI, and Windsurf.
 
 ---
 
@@ -498,14 +498,15 @@ Where each tool's servers land:
 | cursor | `~/.cursor/mcp.json` | `<project>/.cursor/mcp.json` |
 | codebuddy / workbuddy | `~/.<tool>/mcp.json` | `<project>/.<tool>/mcp.json` |
 | codex | `~/.codex/config.toml` | not supported |
+| opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 
-Codex supports `stdio` and `http`; `sse` is skipped. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
+Codex supports `stdio` and `http`; `sse` is skipped. OpenCode supports `stdio` (written as its `type:"local"` shape) and `http` (`type:"remote"`); `sse` is skipped, and its servers live under the `mcp` key of the shared `opencode.json`. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
 
 **Secrets.** Write `${VAR}`, never a literal, in `mcp.yaml`. Values resolve from the environment, then from `env/env.yaml` → `~/.teamai/env`. Unresolved variables skip the server with a hint.
 
 teamai **resolves every `${VAR}` to its value and writes it verbatim** into each tool's config (new files are created `0600`). It does not rely on any tool's own env-var expansion: that expansion is fragile — most decisively, IDEs launched from the GUI (Dock/Launchpad) never inherit your shell's exported variables, so a `${VAR}` placeholder expands to empty and the server 401s. Resolving to plaintext makes the token present no matter how the tool is started.
 
-> ⚠️ **The resolved token lands on disk.** Project-scope MCP configs (`.mcp.json`, `.cursor/mcp.json`, `.codebuddy/mcp.json`, `.codex/config.toml`) then contain the literal secret — add them to `.gitignore` and never commit them.
+> ⚠️ **The resolved token lands on disk.** Project-scope MCP configs (`.mcp.json`, `.cursor/mcp.json`, `.codebuddy/mcp.json`, `.codex/config.toml`, `opencode.json`) then contain the literal secret — add them to `.gitignore` and never commit them.
 
 Claude Code may show project `.mcp.json` servers as pending approval until you accept them once in an interactive session.
 
@@ -935,6 +936,16 @@ team-repo/
 ```
 
 `teamai pull` copies these into each Tier-1 tool's `agents/` directory (e.g. `~/.claude/agents/`). The CLI's built-in `teamai-recall.md` is deployed alongside team agents but is not uploaded by `teamai push`.
+
+### OpenCode
+
+[OpenCode](https://opencode.ai) is supported as a first-class tool. Because its config layout differs from the Claude family, teamai handles a few things specially:
+
+- **Scopes.** OpenCode's user config lives under `~/.config/opencode/` while its project config lives under `<project>/.opencode/` — a different prefix from every other tool. teamai writes to the correct one per `--scope`, and only ever touches OpenCode files when OpenCode is actually installed for that scope (it never creates `~/.config/opencode/` for a non-user).
+- **Skills** land in `.opencode/skills/` (project) or `~/.config/opencode/skills/` (user). OpenCode also reads `.claude/skills` natively, but teamai writes the OpenCode path too so an OpenCode-only user still gets them.
+- **Subagents** are rendered into OpenCode's own `agents/*.md` format: frontmatter carries `description` + `mode: subagent` (plus `model` and any `tool_extras.opencode` fields such as `temperature`); the agent name comes from the filename. OpenCode does **not** read `.claude/agents`, so this native copy is required.
+- **Rules** are copied into `.opencode/rules/` (or `~/.config/opencode/rules/`), but OpenCode does not auto-scan a rules directory — the files are inert until referenced. teamai therefore adds a `rules/*.md` glob to the `instructions` array in `opencode.json` and removes it again when the team's last rule goes away, editing only that one key and leaving your own `instructions` entries untouched.
+- **MCP** servers live under the `mcp` key of the shared `opencode.json` (see the MCP section above).
 
 ### Miscellaneous
 

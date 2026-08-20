@@ -66,7 +66,13 @@ export abstract class ResourceHandler {
    */
   static async isToolInstalled(toolPath: string, baseDir?: string): Promise<boolean> {
     const base = baseDir ?? getUserHome();
-    const toolRoot = path.join(base, toolPath.split('/')[0]);
+    // The tool root is the resource dir's parent: `.claude/skills` → `.claude`,
+    // and `.config/opencode/skills` → `.config/opencode`. Using split('/')[0]
+    // instead would report `.config` for OpenCode's user scope — a directory
+    // nearly every user has — and wrongly treat OpenCode as installed. dirname
+    // is identical to the old behavior for every 2-segment `.<tool>/<resource>`.
+    const dir = path.dirname(toolPath);
+    const toolRoot = dir === '.' ? path.join(base, toolPath) : path.join(base, dir);
     return pathExists(toolRoot);
   }
 

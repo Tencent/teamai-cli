@@ -12,6 +12,7 @@ import {
   getEnvBackupPath,
   managedMcpManifestPath,
   resolveBaseDir,
+  scopedToolPaths,
 } from './types.js';
 import {
   detectMcpFormat,
@@ -22,6 +23,7 @@ import {
   resolvePlaceholders,
   referencedVars,
   entryHash,
+  MCP_SERVER_KEY,
   type McpFormat,
 } from './resources/mcp-format.js';
 import { parseTeamMcpServers } from './resources/mcp.js';
@@ -188,7 +190,9 @@ export async function resolveMcpTargets(
   const projectScope = localConfig.scope === 'project';
   const targets: McpTarget[] = [];
 
-  for (const [tool, paths] of Object.entries(teamConfig.toolPaths)) {
+  // Skills/settings/agents probe paths must reflect the active scope: OpenCode's
+  // user-scope resources live under ~/.config/opencode, not ~/.opencode.
+  for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     const format = detectMcpFormat(tool);
     if (!format) continue;
 
@@ -202,7 +206,11 @@ export async function resolveMcpTargets(
 
     const probe = paths.skills ?? paths.settings ?? paths.agents;
     if (!probe) continue;
-    const toolRoot = path.join(baseDir, probe.split('/')[0]);
+    // Probe the tool's root dir (the resource dir's parent), so a multi-segment
+    // path like `.config/opencode/skills` resolves to `.config/opencode` rather
+    // than the near-universal `.config`. Matches ResourceHandler.isToolInstalled.
+    const probeDir = path.dirname(probe);
+    const toolRoot = probeDir === '.' ? path.join(baseDir, probe) : path.join(baseDir, probeDir);
     if (!await pathExists(toolRoot)) {
       log.debug(`Skipping MCP sync for ${tool}: tool not installed`);
       continue;
@@ -225,7 +233,7 @@ interface JsonDoc {
  * parsed — we abandon the injection rather than risk clobbering a file we do
  * not understand (it may hold the user's OAuth session).
  */
-async function readJsonDoc(file: string): Promise<JsonDoc | null> {
+async function readJsonDoc(file: string, serverKey: string): Promise<JsonDoc | null> {
   if (!await pathExists(file)) return { data: {}, servers: {} };
   const raw = await readFileSafe(file);
   if (raw === null) return null;
@@ -233,7 +241,7 @@ async function readJsonDoc(file: string): Promise<JsonDoc | null> {
   try {
     const data = JSON.parse(raw) as Record<string, unknown>;
     if (typeof data !== 'object' || data === null || Array.isArray(data)) return null;
-    const servers = (data.mcpServers as Record<string, unknown>) ?? {};
+    const servers = (data[serverKey] as Record<string, unknown>) ?? {};
     if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) return null;
     return { data, servers: { ...servers } };
   } catch {
@@ -410,7 +418,8 @@ async function applyJson(
   changes: McpChange[],
   options: McpReconcileOptions,
 ): Promise<boolean> {
-  const doc = await readJsonDoc(target.file);
+  const serverKey = MCP_SERVER_KEY[target.format as Exclude<McpFormat, 'codex'>];
+  const doc = await readJsonDoc(target.file, serverKey);
   if (!doc) {
     log.warn(`Could not parse ${target.file} — skipping MCP injection for ${target.tool}`);
     return false;
@@ -449,7 +458,10 @@ async function applyJson(
   if (!dirty || options.dryRun) return false;
 
   // Key-level surgery: every unrelated top-level key is carried over untouched.
-  doc.data.mcpServers = doc.servers;
+  // Some tools (OpenCode) key the server map under `mcp`, not `mcpServers`;
+  // writing the wrong key would strip the servers and, worse, leave a phantom
+  // empty `mcpServers` in a file the tool never reads under that name.
+  doc.data[serverKey] = doc.servers;
   await writeJsonAtomic(target.file, doc.data);
   return true;
 }

@@ -16,7 +16,7 @@
 
 面向 AI 智能体的团队 Harness 分发工具。
 
-通过 Git 统一管理 skills、rules、docs，驾驭 Claude Code / Codex / CodeBuddy / WorkBuddy 等多种 AI 工具。
+通过 Git 统一管理 skills、rules、docs，驾驭 Claude Code / Codex / CodeBuddy / WorkBuddy / OpenCode 等多种 AI 工具。
 
 一个人也能用，团队用更强。
 

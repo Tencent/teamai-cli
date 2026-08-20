@@ -19,6 +19,21 @@ export const ToolPathsSchema = z.object({
    * cannot share a value: user scope is ~/.claude.json but project scope is
    * <root>/.mcp.json, breaking the usual `.<tool>/<file>` convention. */
   mcpProject: z.string().optional(),
+  /**
+   * User-scope path overrides for skills/rules/agents. Most tools store their
+   * user-scope resources at the same `.<tool>/<resource>` relative path as their
+   * project-scope ones, so this is omitted. OpenCode is the exception: its
+   * project-scope config lives at `<root>/.opencode/...` but its user-scope config
+   * lives at `~/.config/opencode/...`, a different prefix entirely. When set and the
+   * active scope is `user`, these values replace the base skills/rules/agents paths.
+   */
+  userScope: z
+    .object({
+      skills: z.string().optional(),
+      rules: z.string().optional(),
+      agents: z.string().optional(),
+    })
+    .optional(),
 });
 
 // ─── Scope ──────────────────────────────────────────────
@@ -195,6 +210,20 @@ export const TeamaiConfigSchema = z.object({
     openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules', claudemd: '.openclaw/workspace/AGENTS.md' },
     hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
     workbuddy: { skills: '.workbuddy/skills', rules: '.workbuddy/rules', settings: '.workbuddy/settings.json', claudemd: 'AGENTS.md', mcp: '.workbuddy/mcp.json', mcpProject: '.workbuddy/mcp.json' },
+    // OpenCode reads project config from <root>/.opencode/ but user config from
+    // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
+    // read natively from .claude/skills, but we write .opencode/skills so an
+    // OpenCode-only user (no Claude) still gets them. Rules land in .opencode/rules
+    // but must be activated via the `instructions` glob in opencode.json (OpenCode
+    // does not auto-scan a rules dir). MCP shares opencode.json under the `mcp` key.
+    opencode: {
+      skills: '.opencode/skills',
+      rules: '.opencode/rules',
+      agents: '.opencode/agents',
+      mcp: '.config/opencode/opencode.json',
+      mcpProject: 'opencode.json',
+      userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules', agents: '.config/opencode/agents' },
+    },
   }),
 });
 
@@ -1017,6 +1046,42 @@ export function resolveBaseDir(localConfig: LocalConfig): string {
 /** True when `tool` is in localConfig.disabledAgents (excluded from teamai sync). */
 export function isAgentDisabled(localConfig: { disabledAgents?: string[] }, tool: string): boolean {
   return localConfig.disabledAgents?.includes(tool) ?? false;
+}
+
+/**
+ * Return `teamConfig.toolPaths` with per-scope path overrides applied.
+ *
+ * Almost every tool keeps its user-scope and project-scope resources at the same
+ * `.<tool>/<resource>` relative path, so this is the identity map for them. The
+ * one exception is OpenCode, whose user-scope config lives under
+ * `~/.config/opencode/` (a different prefix from its project `<root>/.opencode/`);
+ * its `userScope` block carries those paths and is spliced in only when the active
+ * scope is `user`. Callers that iterate `toolPaths` for skills/rules/agents should
+ * iterate the result of this function instead, so the correct scope path is used.
+ *
+ * MCP is untouched here: its two scopes are already distinct fields
+ * (`mcp` / `mcpProject`), resolved separately in the reconcile engine.
+ */
+export function scopedToolPaths(
+  teamConfig: TeamaiConfig,
+  localConfig: { scope?: Scope },
+): Record<string, z.infer<typeof ToolPathsSchema>> {
+  if (localConfig.scope !== 'user') return teamConfig.toolPaths;
+  const out: Record<string, z.infer<typeof ToolPathsSchema>> = {};
+  for (const [tool, paths] of Object.entries(teamConfig.toolPaths)) {
+    const us = paths.userScope;
+    if (!us) {
+      out[tool] = paths;
+      continue;
+    }
+    out[tool] = {
+      ...paths,
+      ...(us.skills !== undefined ? { skills: us.skills } : {}),
+      ...(us.rules !== undefined ? { rules: us.rules } : {}),
+      ...(us.agents !== undefined ? { agents: us.agents } : {}),
+    };
+  }
+  return out;
 }
 
 /** True when the local config is single-repo mode (the business repo is the team repo). */
