@@ -2,6 +2,7 @@ import type { GitProvider } from './types.js';
 import { TGitProvider } from './tgit/index.js';
 import { GitHubProvider } from './github/index.js';
 import { CNBProvider } from './cnb/index.js';
+import { GenericGitProvider } from './git/index.js';
 import { getCurrentPackageName } from '../package-info.js';
 
 // ─── Provider Detection ──────────────────────────────────
@@ -13,7 +14,7 @@ import { getCurrentPackageName } from '../package-info.js';
 //  https://git.woa.com/o/r         tgit
 //  git@git.woa.com:o/r.git         tgit
 //  owner/repo (bare)               <fallback — see getDefaultProvider>
-//  https://<unknown-host>/o/r      <fallback>
+//  https://<unknown-host>/o/r      git (transport-only generic provider)
 //
 // The fallback is based on which distribution channel the CLI was installed
 // from:
@@ -60,10 +61,10 @@ export function getDefaultProvider(): string {
 
 /**
  * Detect which git provider to use based on a repo URL or short format.
- * Returns provider name string ('github' | 'tgit').
+ * Returns a registered provider name ('github' | 'tgit' | 'cnb' | 'git').
  *
- * - Full URL (HTTPS or SSH): matched by host. Unknown hosts fall back to the
- *   distribution-based default (see {@link getDefaultProvider}).
+ * - Full URL (HTTPS or SSH): matched by host. Unknown hosts use the generic
+ *   Git transport provider.
  * - Bare `owner/repo`: uses the distribution-based default so `@tencent/`
  *   tnpm users get tgit automatically without having to type the full URL.
  */
@@ -74,14 +75,24 @@ export function detectProvider(input: string): string {
   const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\//);
   if (httpsMatch) {
     const host = httpsMatch[1].toLowerCase();
-    return HOST_MAP[host] ?? getDefaultProvider();
+    return HOST_MAP[host] ?? 'git';
+  }
+
+  // ssh:// URL: extract host through URL parsing.
+  if (/^ssh:\/\//i.test(trimmed)) {
+    try {
+      const host = new URL(trimmed).hostname.toLowerCase();
+      return HOST_MAP[host] ?? 'git';
+    } catch {
+      return 'git';
+    }
   }
 
   // SSH URL: extract host
-  const sshMatch = trimmed.match(/^git@([^:]+):/);
+  const sshMatch = trimmed.match(/^[^@\s]+@([^:\s]+):/);
   if (sshMatch) {
     const host = sshMatch[1].toLowerCase();
-    return HOST_MAP[host] ?? getDefaultProvider();
+    return HOST_MAP[host] ?? 'git';
   }
 
   // Bare owner/repo — use distribution-based default.
@@ -95,6 +106,7 @@ const PROVIDERS: Record<string, () => GitProvider> = {
   tgit: () => new TGitProvider(),
   github: () => new GitHubProvider(),
   cnb: () => new CNBProvider(),
+  git: () => new GenericGitProvider(),
 };
 
 /**

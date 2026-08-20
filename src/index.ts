@@ -21,7 +21,7 @@ program
 
 program
   .command('init')
-  .description('Initialize teamai (configure TGit, clone repo, register member)')
+  .description('Initialize teamai (configure Git provider, clone repo, register member)')
   .argument('[repo]', 'Team repo (owner/repo or full URL)')
   .option('--repo <repo>', 'Team repo (alias of the positional argument)')
   .option('--http <url>', 'Git-free HTTP team repo (read-only consumer; only needs an API key)')

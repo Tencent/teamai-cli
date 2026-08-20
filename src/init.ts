@@ -468,16 +468,17 @@ export async function init(options: GlobalOptions & {
   // Step 2: Ensure provider tools are installed and authenticate
   await provider.ensureInstalled();
 
-  const authSpin = spinner('Checking authentication...').start();
+  const isGenericGit = provider.name === 'git';
+  const authSpin = spinner(isGenericGit ? 'Checking Git identity...' : 'Checking authentication...').start();
   let username: string;
   try {
     if (provider.isAuthenticated()) {
       username = await provider.authenticate();
-      authSpin.succeed(`Authenticated as ${username}`);
+      authSpin.succeed(isGenericGit ? `Using Git identity ${username}` : `Authenticated as ${username}`);
     } else {
-      authSpin.info('Not logged in — starting authentication');
+      authSpin.info(isGenericGit ? 'Resolving Git identity' : 'Not logged in — starting authentication');
       username = await provider.authenticate();
-      log.success(`Authenticated as ${username}`);
+      log.success(isGenericGit ? `Using Git identity ${username}` : `Authenticated as ${username}`);
     }
   } catch (e) {
     authSpin.fail(`Authentication failed: ${(e as Error).message}`);

@@ -1,12 +1,13 @@
 # Git Provider 说明
 
-TeamAI CLI 通过 provider 抽象层支持多个 git 托管平台。当前实现了三个：
+TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现了四个：
 
 | Provider | Host            | 认证方式                            | 建议场景              |
 |----------|-----------------|--------------------------------------|----------------------|
 | `github` | github.com      | `gh` CLI 或 `GITHUB_TOKEN` 环境变量  | 开源项目、外部用户    |
 | `tgit`   | git.woa.com     | `gf` CLI（自动下载）+ `~/.netrc`     | 腾讯内部团队          |
 | `cnb`    | cnb.cool        | `cnb login` 或 `CNB_TOKEN` 环境变量  | CNB（云原生构建）用户 |
+| `git`    | 任意 Git host   | 系统 Git Credential Helper 或 SSH Key | 自建 GitLab/Gitea 等 |
 
 ## Provider 自动检测
 
@@ -20,9 +21,28 @@ https://git.woa.com/team/repo(.git)     → tgit
 git@git.woa.com:team/repo.git           → tgit
 https://cnb.cool/org/repo(.git)         → cnb
 git@cnb.cool:org/repo.git               → cnb
+https://git.example.com/group/repo.git  → git
+git@git.example.com:group/repo.git      → git
 ```
 
 provider 选择会写入 team 仓库的 `teamai.yaml` 的 `provider` 字段，后续 `push` / `pull` 都按这个值来。
+
+## 通用 Git Provider（自建/私有仓库）
+
+不在已知 host 列表中的完整 HTTPS 或 SSH URL 会自动选择 `git` provider。例如：
+
+```bash
+teamai init https://code.qschou.com/Enterprise/arb-workflow-kit.git --scope user
+# 或使用 SSH
+teamai init git@code.qschou.com:Enterprise/arb-workflow-kit.git --scope user
+```
+
+通用 provider 不读取或保存平台 Token，而是让系统 `git` 处理认证：
+
+- HTTPS：预先配置 Git Credential Helper；不要把用户名、密码或 Token 写进 URL。
+- SSH：预先配置 SSH Key，并确保 `ssh-agent` 能访问私钥。
+
+clone、pull、push 均可正常使用。平台 API 操作（自动建仓、自动创建 MR/PR）无法跨不同服务统一实现，因此暂不支持；`teamai push` 会先推送分支，再提示用户到对应平台手动创建 MR。
 
 ## GitHub Provider
 
@@ -141,7 +161,7 @@ CNB Provider 不设默认 email 域（同 GitHub）。
 
 ## 手动指定 Provider
 
-除了 URL 自动检测，也可以在 team 仓库的 `teamai.yaml` 中显式写 `provider: github`、`provider: tgit` 或 `provider: cnb` 强制切换。一个典型的 `teamai.yaml`：
+除了 URL 自动检测，也可以在 team 仓库的 `teamai.yaml` 中显式写 `provider: github`、`provider: tgit`、`provider: cnb` 或 `provider: git` 强制切换。一个典型的 `teamai.yaml`：
 
 ```yaml
 team: my-team
@@ -156,7 +176,7 @@ reviewers:
 
 ## 新增 Provider
 
-Provider 是一个 TypeScript 接口（见 [`src/providers/types.ts`](../src/providers/types.ts)），新增 GitLab / Bitbucket / Gitea 等只需要：
+Provider 是一个 TypeScript 接口（见 [`src/providers/types.ts`](../src/providers/types.ts)），新增带平台 API 能力的 GitLab / Bitbucket / Gitea provider 只需要：
 
 1. 新建 `src/providers/<name>/` 目录
 2. 实现 `GitProvider` 接口：`parseRepoInput` / `authenticate` / `cloneRepo` / `createRepo` / `createPullRequest` / `getDefaultEmailDomain`

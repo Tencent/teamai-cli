@@ -112,9 +112,9 @@ describe('detectProvider with package-name fallback', () => {
     expect(detectProvider('HyperAI/teamai')).toBe('tgit');
   });
 
-  it('unknown host → tgit when installed from internal tnpm', () => {
+  it('unknown full URL → generic git even when installed from internal tnpm', () => {
     setPackageName('@tencent/teamai-cli');
-    expect(detectProvider('https://gitlab.com/org/repo')).toBe('tgit');
+    expect(detectProvider('https://gitlab.com/org/repo')).toBe('git');
   });
 
   it('explicit github.com URL still resolves to github on tnpm build', () => {

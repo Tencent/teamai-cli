@@ -17,6 +17,7 @@
 export interface RepoInfo {
   owner: string;
   repo: string;
+  /** Canonical clone URL. The legacy name is retained; generic Git may return an SSH URL. */
   httpsUrl: string;
   /** URL-encoded owner/repo for API calls */
   projectId: string;
@@ -60,7 +61,7 @@ export interface OrgRepoInfo {
 }
 
 export interface GitProvider {
-  /** Provider identifier: 'github' | 'tgit' */
+  /** Registered provider identifier, e.g. 'github', 'tgit', 'cnb', or 'git'. */
   readonly name: string;
 
   // ─── URL parsing ──────────────────────────────────────

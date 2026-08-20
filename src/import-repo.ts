@@ -4,7 +4,7 @@ import chalk from 'chalk';
 
 import { generateCodebaseMd } from './codebase.js';
 import { extractCodebase } from './codebase-extract.js';
-import { detectProvider } from './providers/registry.js';
+import { detectProvider, getProvider } from './providers/registry.js';
 import { shallowClone, shallowFetch } from './clone.js';
 import {
     getRepoCacheDir,
@@ -202,21 +202,9 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         throw new Error(`Unsupported repo URL: ${url}`);
     }
 
-    // Extract owner and repo name from url
-    // Supports https://github.com/owner/repo[.git] and git@github.com:owner/repo[.git]
-    let owner: string;
-    let repoName: string;
-    const httpsMatch = url.match(/https?:\/\/[^/]+\/([^/]+)\/([^/]+?)(?:\.git)?(?:\/.*)?$/);
-    const sshMatch = url.match(/git@[^:]+:([^/]+)\/([^/]+?)(?:\.git)?$/);
-    if (httpsMatch) {
-        owner = httpsMatch[1];
-        repoName = httpsMatch[2];
-    } else if (sshMatch) {
-        owner = sshMatch[1];
-        repoName = sshMatch[2];
-    } else {
-        throw new Error(`Unsupported repo URL: ${url}`);
-    }
+    const repoInfo = getProvider(providerName).parseRepoInput(url);
+    const owner = repoInfo.owner;
+    const repoName = repoInfo.repo;
 
     log.info(`Importing remote repo: ${owner}/${repoName} (provider: ${providerName})`);
 

@@ -30,9 +30,11 @@ npm install -g teamai-cli
 
 ### 团队管理员 / 个人使用者
 
-在 Git 托管平台（GitHub、TGit 或 CNB）创建共享经验仓库，**授予团队成员写权限**，然后让他们运行 `teamai init https://github.com/yourorg/yourrepo`。
+在 Git 托管平台（GitHub、TGit、CNB 或自建 Git 服务）创建共享经验仓库，**授予团队成员写权限**，然后让他们运行 `teamai init https://github.com/yourorg/yourrepo`。
 
 > 个人使用无需单独建仓：`teamai init` 会检查目标仓库，不存在时自动创建。
+
+> 自建 GitLab/Gitea 等服务支持 HTTPS Credential Helper 或 SSH Key；需预先创建仓库，MR 暂时手动创建。详见 [Git Provider 说明](docs/providers.md)。
 
 > **还没有团队仓库？** 可以从内置了成套 skills、rules、review agents 的模板起步。浏览 [teamai-hub](https://github.com/teamai-hub) org，点 **Use this template** 生成自己的仓库，再对它执行 `teamai init`。
 
