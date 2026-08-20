@@ -124,7 +124,24 @@ none exists, silently skip.
 ### Step 2 — Extract keywords from the task description
 
 Pick 3–6 high-signal keywords from the user query. Strip filler words
-("the", "how", "please"). Mix English and Chinese terms when both appear.
+("the", "how", "please").
+
+**Always search bilingually (cross-language recall).** The knowledge base
+mixes Chinese and English: a learning may be titled in English while your
+task is described in Chinese, or vice versa. The search is purely lexical
+(BM25 token matching), so a Chinese-only query never matches an
+English-only document. To bridge this, expand every domain term into
+**both languages** and include both in your keyword set:
+
+- Chinese task → add the English term for each concept
+  (e.g. "重启推理集群" → also add `restart`, `inference`, `cluster`).
+- English task → add the Chinese term for each concept
+  (e.g. "restart inference cluster" → also add `重启`, `推理`, `集群`).
+- Keep proper nouns, acronyms, and identifiers (`AppID`, `GPU`, `HAI`)
+  as-is — do not translate them.
+
+Only translate the meaningful domain terms; do not pad the query with
+low-signal words. Aim for the same 3–6 concepts, each in both languages.
 
 **Lead with the terms that pin down *this* task**: proper nouns, customer or
 product names, service IDs, error codes, versions, symbol names
