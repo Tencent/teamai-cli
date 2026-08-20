@@ -137,8 +137,13 @@ English-only document. To bridge this, expand every domain term into
   (e.g. "重启推理集群" → also add `restart`, `inference`, `cluster`).
 - English task → add the Chinese term for each concept
   (e.g. "restart inference cluster" → also add `重启`, `推理`, `集群`).
-- Keep proper nouns, acronyms, and identifiers (`AppID`, `GPU`, `HAI`)
-  as-is — do not translate them.
+- Only translate terms that genuinely differ across languages. Keep any
+  **language-neutral token** as-is — anything that is written the same way
+  in both languages, or has no meaningful translation: proper nouns, brand
+  and product names, acronyms and initialisms, code identifiers and symbols,
+  error codes, version strings, file paths, CLI commands, and API names
+  (e.g. `AppID`, `Kubernetes`, `GPU`, `RuntimeError`, `v2.1.3`, `oauth`). Translating
+  these only hurts matching.
 
 Only translate the meaningful domain terms; do not pad the query with
 low-signal words. Aim for the same 3–6 concepts, each in both languages.
