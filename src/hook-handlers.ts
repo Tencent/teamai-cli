@@ -202,10 +202,12 @@ const votesSyncHandler: HookHandler = {
     try {
       const { parseTranscriptForVotes } = await import('./transcript-parser.js');
       const { incrementUpvoted, syncVotesToTeam } = await import('./votes.js');
-      const { requireInit } = await import('./config.js');
+      const { autoDetectInit } = await import('./config.js');
 
       const voteData = await parseTranscriptForVotes(transcriptPath);
-      const { localConfig } = await requireInit();
+      // autoDetectInit picks project scope when present (so self-mode configs are
+      // honored), falling back to user scope otherwise.
+      const { localConfig } = await autoDetectInit();
       const { VOTES_LOCAL_DIR, TEAMAI_SESSIONS_DIR } = await import('./types.js');
       const votesDir = VOTES_LOCAL_DIR;
       const votePath = path.join(votesDir, `${localConfig.username}.yaml`);
@@ -214,9 +216,24 @@ const votesSyncHandler: HookHandler = {
       if (voteData.referencedDocIds.length > 0) {
         await incrementUpvoted(votePath, voteData.referencedDocIds);
       }
-      await syncVotesToTeam(localConfig.repo.localPath, localConfig.username, votesDir).catch(() => {
-        // Push failed — will retry next session
-      });
+      if (localConfig.repo.kind === 'self') {
+        // Self mode: votes are report data → the teamai-reports orphan branch,
+        // written through an isolated worktree (never the active tree).
+        try {
+          const { ensureReportsWorktree, commitAndPushReports } = await import('./utils/reports-branch.js');
+          const wt = await ensureReportsWorktree(localConfig);
+          const synced = await syncVotesToTeam(wt, localConfig.username, votesDir);
+          if (synced) {
+            await commitAndPushReports(localConfig, `[teamai] Update votes for ${localConfig.username}`, [`votes/${localConfig.username}.yaml`]);
+          }
+        } catch {
+          // Push failed — will retry next session
+        }
+      } else {
+        await syncVotesToTeam(localConfig.repo.localPath, localConfig.username, votesDir).catch(() => {
+          // Push failed — will retry next session
+        });
+      }
 
       // Enforcement: recall happened but nothing was declared → nudge the model
       // once to declare which recalled docs it actually used. The nudge makes the

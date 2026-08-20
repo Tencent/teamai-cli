@@ -124,14 +124,45 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
     return;
   }
 
-  const repoPath = localConfig.repo.localPath;
   const username = localConfig.username;
-  const teamDir = path.join(repoPath, 'sessions', username);
+  const commitMsg = `[teamai] Session summary from ${username} (${monthKey(summary)})`;
 
   if (options.dryRun) {
     log.info(`[dry-run] Would push session summary to sessions/${username}/${monthKey(summary)}.md`);
     return;
   }
+
+  // Single-repo mode: session summaries are report data → the teamai-reports
+  // orphan branch, written through an isolated worktree so main / the user's
+  // active tree is never touched.
+  if (localConfig.repo.kind === 'self') {
+    const spin = spinner('Pushing session summary to team...').start();
+    try {
+      const { ensureReportsWorktree, commitAndPushReports } = await import('./utils/reports-branch.js');
+      const wt = await ensureReportsWorktree(localConfig);
+      const teamDir = path.join(wt, 'sessions', username);
+      const written = await appendMonthlyLog(teamDir, summary, { includePrompt: options.includePrompt });
+      if (!written) {
+        spin.info('Session already present in the team log — nothing to push.');
+        return;
+      }
+      const rel = path.relative(wt, written);
+      const pushed = await withTimeout(
+        commitAndPushReports(localConfig, commitMsg, [rel]),
+        10_000,
+        'Push timeout (10s)',
+      );
+      if (pushed) spin.succeed(`Pushed: ${rel}`);
+      else spin.info('Nothing new to push.');
+    } catch (e) {
+      spin.fail(`Team push failed: ${(e as Error).message}`);
+      log.info('The local log was still saved. Retry later with: teamai session save --push');
+    }
+    return;
+  }
+
+  const repoPath = localConfig.repo.localPath;
+  const teamDir = path.join(repoPath, 'sessions', username);
 
   const spin = spinner('Pushing session summary to team...').start();
   try {
@@ -149,7 +180,6 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
       return;
     }
     const rel = path.relative(repoPath, written);
-    const commitMsg = `[teamai] Session summary from ${username} (${monthKey(summary)})`;
 
     await withTimeout(pushRepoDirectly(repoPath, commitMsg, [rel]), 10_000, 'Push timeout (10s)');
 

@@ -7,11 +7,19 @@ import { getProvider } from './providers/index.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
 import { scanTeamRepoNamespaces } from './resources/skills.js';
-import type { GlobalOptions, ResourceItem, ResourceType } from './types.js';
+import type { GlobalOptions, ResourceItem, ResourceType, LocalConfig, TeamaiConfig } from './types.js';
 import { assertSafePath, assertSafeResourceName, defaultAllowedRoots } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
 import { askQuestion, askSelection } from './utils/prompt.js';
 import { pathExists } from './utils/fs.js';
+
+/**
+ * Synthetic toolPaths key used only to make `teamai push` scan the active tree's
+ * .teamai/{skills,rules} in single-repo mode (see pushCore). It is never written
+ * to disk and never used by pull — the leading marker keeps it from colliding
+ * with any real agent id.
+ */
+const SELF_KNOWLEDGE_SCAN_KEY = '__teamai_self_knowledge__';
 
 /**
  * Filter a list of repo-root-relative paths (e.g. "rules/", "env/") down to
@@ -108,6 +116,41 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
   // Auto-detect scope: project scope if cwd has project config, else user scope
   const { localConfig, teamConfig } = await autoDetectInit();
   assertNotReadOnly(localConfig, 'teamai push');
+
+  // Single-repo mode: knowledge PRs must run in an isolated worktree so the
+  // branch/commit/reset never touch the user's active tree. withKnowledgeWorktree
+  // hands pushCore a config whose localPath is the worktree's .teamai.
+  if (localConfig.repo.kind === 'self') {
+    // Self-heal an older .teamai/.gitignore that still ignores `env` (pre-beta.5).
+    // Run against the ACTIVE tree (original localConfig, projectRoot intact) BEFORE
+    // swapping into the worktree, so the fixed .gitignore lets env changes surface.
+    try {
+      const { migrateSelfModeGitignore } = await import('./init.js');
+      await migrateSelfModeGitignore(localConfig);
+    } catch { /* best-effort */ }
+
+    const { withKnowledgeWorktree, EmptyRepoError } = await import('./utils/reports-branch.js');
+    try {
+      await withKnowledgeWorktree(localConfig, (wtConfig) => pushCore(wtConfig, teamConfig, options));
+    } catch (e) {
+      if (e instanceof EmptyRepoError) {
+        log.error(e.message);
+      } else {
+        log.error(`Push failed: ${(e as Error).message}`);
+      }
+    }
+    return;
+  }
+
+  await pushCore(localConfig, teamConfig, options);
+}
+
+async function pushCore(
+  localConfig: LocalConfig,
+  teamConfig: TeamaiConfig,
+  options: GlobalOptions & { all?: boolean; role?: string },
+): Promise<void> {
+  const selfMode = localConfig.repo.kind === 'self';
   const scopeLabel = localConfig.scope;
 
   // Pull latest default branch BEFORE scanning so detection runs against up-to-date repo.
@@ -116,15 +159,20 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
   //   - Stuck on a stale push branch instead of master
   //   - Uncommitted changes (e.g. votes written by autoUpvote)
   // We recover from all of these before pulling.
-  const pullSpin = spinner('Pulling latest changes...').start();
-  try {
-    const repoPath = localConfig.repo.localPath;
-    const git = createGit(repoPath);
-    await resetToCleanMaster(git, repoPath);
-    await pullRepo(repoPath);
-    pullSpin.succeed('Up to date');
-  } catch (e) {
-    pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+  // In self mode the worktree is already a fresh detached checkout of
+  // origin/<default>, so resetToCleanMaster/pullRepo (which assume a normal
+  // clone on a branch) are neither needed nor safe — skip them.
+  if (!selfMode) {
+    const pullSpin = spinner('Pulling latest changes...').start();
+    try {
+      const repoPath = localConfig.repo.localPath;
+      const git = createGit(repoPath);
+      await resetToCleanMaster(git, repoPath);
+      await pullRepo(repoPath);
+      pullSpin.succeed('Up to date');
+    } catch (e) {
+      pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+    }
   }
 
   // Sync team repo updates to local tool directories before scanning.
@@ -138,6 +186,30 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 
   const spin = spinner('Scanning local resources...').start();
 
+  // In single-repo mode the team knowledge dirs (.teamai/skills, .teamai/rules)
+  // live inside the user's own repo, so people naturally add or edit skills there
+  // directly (e.g. `cp my-skill .teamai/skills/`) instead of in an AI tool dir
+  // like ~/.claude/skills. The default scanner only treats AI tool dirs as push
+  // "sources", so a skill hand-placed under .teamai/skills would be invisible to
+  // push ("No new or modified resources"). Add the ACTIVE tree's .teamai/{skills,
+  // rules} as extra scan sources; they are diffed against the worktree checkout of
+  // origin/<default> (localConfig.repo.localPath here), so already-committed
+  // knowledge is skipped and only genuine additions/edits surface.
+  //
+  // Scan-only: we deliberately do NOT persist this into teamConfig.toolPaths — pull
+  // and pre-push sync must never target .teamai/skills (that would copy knowledge
+  // back onto itself). getHandler(type).scanLocalForPush reads toolPaths for the
+  // source list only; pushItem writes via localConfig.repo.localPath, unaffected.
+  const scanTeamConfig: TeamaiConfig = selfMode
+    ? {
+      ...teamConfig,
+      toolPaths: {
+        ...teamConfig.toolPaths,
+        [SELF_KNOWLEDGE_SCAN_KEY]: { skills: '.teamai/skills', rules: '.teamai/rules' },
+      },
+    }
+    : teamConfig;
+
   // Scan for pushable resources first, then resolve namespace for new skills only.
   // Modified skills already carry their namespace from scanLocalForPush.
   const pushableTypes: ResourceType[] = ['skills', 'rules', 'env', 'agents'];
@@ -145,7 +217,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 
   for (const type of pushableTypes) {
     const handler = getHandler(type);
-    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const items = await handler.scanLocalForPush(scanTeamConfig, localConfig);
     allItems.push(...items);
   }
 

@@ -25,9 +25,18 @@ export async function getMemberConfig(repoPath: string, username: string): Promi
 export async function listMembers(options: GlobalOptions): Promise<void> {
   const projectConfig = await detectProjectConfig();
   const localConfig = projectConfig ?? (await requireInit()).localConfig;
-  const repoPath = localConfig.repo.localPath;
 
-  await pullRepo(repoPath);
+  // Members live on the teamai-reports orphan branch in self mode; read them from
+  // the reports worktree (refreshed from origin) instead of the team repo clone.
+  let repoPath: string;
+  if (localConfig.repo.kind === 'self') {
+    const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
+    await refreshReportsWorktree(localConfig);
+    repoPath = await ensureReportsWorktree(localConfig);
+  } else {
+    repoPath = localConfig.repo.localPath;
+    await pullRepo(repoPath);
+  }
 
   const membersDir = path.join(repoPath, 'members');
   const files = await listFiles(membersDir);

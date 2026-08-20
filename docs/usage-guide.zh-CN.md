@@ -16,6 +16,7 @@
   - [项目级（Project Scope）](#项目级project-scope)
   - [用户级（User Scope）](#用户级user-scope)
   - [如何选择 Scope？](#如何选择-scope)
+  - [单仓模式（业务仓即团队仓）](#单仓模式业务仓即团队仓)
   - [在项目仓库下叠加组织级仓库](#在项目仓库下叠加组织级仓库)
 - [成员接入](#成员接入)
 - [日常使用](#日常使用)
@@ -165,6 +166,54 @@ teamai init <group>/TeamAi-<team> --scope user
 | **能否共存** | ✅ 可以；project 保持当前 scope，并可选择继承安全的 user 资源 | ✅ 可以；仍是独立的用户主目录级安装 |
 
 > **本机安装位置**仅由 `teamai init` 的 `--scope`（默认 `project`）决定。远端 `teamai.yaml` 中若仍有 `scope` 字段会被忽略。
+
+### 单仓模式（业务仓即团队仓）
+
+无需单独的团队仓库，可以让某个已有项目自己的 git 仓库直接充当团队仓。在项目内运行：
+
+```bash
+cd /path/to/my-project
+teamai init .                        # 交互式：选择要启用哪些 AI 工具
+teamai init . --agent claude,codex   # 非交互:启用 Claude Code + Codex
+```
+
+**选择启用哪些 AI 工具。** 单仓模式会在你的仓库里为每个工具创建一个目录（如 `.claude/`、`.codex/`）—— 建好 skills 目录、注入 teamai hooks,并把该工具的 settings 提交到 main,让队友 clone 后即可获得。由你决定启用哪些工具:
+
+- **`--agent <name...>`** —— 显式列表,可重复或逗号分隔:`--agent claude`、`--agent claude,codex`、`--agent claude --agent cursor`。支持的 id:`claude`、`codex`、`cursor`、`codebuddy`、`workbuddy`。
+- **交互式（无 `--agent`、有终端）** —— teamai 弹出多选列表。第 1 项是 **Auto**,会列出你本机已安装的 AI 工具（`~/.claude`、`~/.codex`……）并作为回车默认项;其余各项是具体工具。Auto 与具体工具可以组合勾选。
+- **非交互（无 `--agent`、无终端 —— CI、hook、clone 时自愈 bootstrap）** —— teamai 会按你本机 home 目录下已装的工具（`~/.claude`、`~/.codex`……）来建。若一个都没检测到,则什么都不建（你仍拿到知识,可稍后运行 `teamai init .` 再选工具）。
+
+**数据如何在分支间拆分：**
+
+| 数据 | 存放位置 | 随 `git clone` 一起带走？ |
+|------|----------|---------------------------|
+| 知识资产：`skills/` `rules/` `docs/` `learnings/`、`teamai.yaml` | **main** 分支的 `.teamai/` | ✅ 会 |
+| 上报数据：`members/` `sessions/` `votes/` `stats/` | `teamai-reports` **孤儿分支** | 推送到 `origin`（独立历史） |
+| 本机私有：`config.yaml`、`token`、`state.json`、worktree | `.teamai/`（已 gitignore） | ❌ 不会（每台机器本地） |
+
+**克隆即初始化。** 由于知识资产和 `.teamai/teamai.yaml` 里的 `mode: self` 标记都提交在 main 上，团队成员 clone 仓库后会被自动初始化：下一条 `teamai` 命令或 AI 会话会识别该标记，并（在其 git provider 已认证的前提下）自动写入本机配置、注入 hooks、在孤儿分支上注册成员 —— 无需手抄 repo/role 参数。若尚未认证，teamai 会提示其运行一次 `teamai init .`。
+
+**安全性。** 单仓模式下 teamai 的每一次 git 写操作（知识 PR 和上报孤儿分支）都在 `.teamai/` 下的隔离 git worktree 中进行，绝不会 checkout、reset 或切换你的工作区和当前分支。
+
+**管理员在 `teamai init .` 之后的清单：**
+
+1. `teamai init .` 已经帮你把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）以及每个所选工具的 settings（如 `.claude/settings.json`、`.codex/hooks.json`）提交到当前分支。
+2. 推送 main，供团队成员 clone。
+3. 之后新增资源用 `teamai push` —— 它会（通过隔离 worktree）向你的仓库开 PR，而不是直接改动你的工作区。单仓模式下，你既可以在 AI 工具目录（如 `~/.claude/skills/`）里编写,**也可以**直接把资源放进仓库里的 `.teamai/`：
+   - `.teamai/skills/` —— 团队 skills
+   - `.teamai/rules/` —— 共享 rules
+   - `.teamai/agents/` —— subagent 定义（`<name>.yaml`,或旧版 `<name>.md`）
+   - `.teamai/env/env.yaml` —— 共享环境变量
+
+   `teamai push` 会同时扫描这些目录和你的 AI 工具目录,只呈现真正的新增或修改（已提交的内容会被跳过）。如果你改了某个 agent 的扩展名（如 `helper.md` → `helper.yaml`）,请手动删掉旧文件 —— `teamai push` 不会替你删除,同 stem 的两个文件会在 pull 时冲突。
+4. **docs / hooks / mcp** 通过直接编辑对应文件来贡献 —— 它们不走 `teamai push`,用普通的 `git commit` + push 即可分发：
+   - `.teamai/docs/` —— 团队文档
+   - `.teamai/hooks/hooks.yaml` —— 团队 hooks
+   - `.teamai/mcp/mcp.yaml` —— 共享 MCP servers
+
+> **关于 `env` 的提醒。** 单仓模式下 `.teamai/env/env.yaml` **会被提交到 main**（不同于独立模式的每机本地 env），因此会随 clone 分发给所有人。`env.yaml` 存的是明文键值对 —— 只放非敏感的共享配置,真正的密钥请留在你自己未追踪的环境里。
+
+> **限制。** 单仓模式把一套团队配置绑定到一个业务仓。如果需要一套团队知识库被多个业务仓共享，请改用独立团队仓（`teamai init <repo>`）。
 
 ### 在项目仓库下叠加组织级仓库
 

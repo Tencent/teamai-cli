@@ -3,8 +3,8 @@ import { z } from 'zod';
 import YAML from 'yaml';
 import { ResourceHandler } from './base.js';
 import type { ResourceItem, TeamaiConfig, LocalConfig } from '../types.js';
-import { TEAMAI_ENV_START, TEAMAI_ENV_END, getTeamaiHome } from '../types.js';
-import { pathExists, readFileSafe, writeFile, ensureDir } from '../utils/fs.js';
+import { TEAMAI_ENV_START, TEAMAI_ENV_END, getTeamaiHome, getEnvBackupPath, isSelfMode } from '../types.js';
+import { pathExists, readFileSafe, writeFile, ensureDir, fileContentEqual } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 
 // ─── Schema for env.yaml ────────────────────────────────
@@ -51,6 +51,27 @@ export class EnvHandler extends ResourceHandler {
    * Compares local env/env.yaml against the committed version.
    */
   async scanLocalForPush(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
+    // Single-repo mode: users edit team env directly at <repo>/.teamai/env/env.yaml
+    // (it lives in their own repo). push runs in the knowledge worktree, so
+    // localConfig.repo.localPath here is the origin/<default> checkout — diff the
+    // ACTIVE tree's copy against it and surface genuine additions/edits. (Active
+    // tree = projectRoot, which withKnowledgeWorktree deliberately leaves intact.)
+    if (isSelfMode(localConfig) && localConfig.projectRoot) {
+      const activeEnv = path.join(localConfig.projectRoot, '.teamai', 'env', 'env.yaml');
+      if (!await pathExists(activeEnv)) return [];
+      const baseEnv = path.join(localConfig.repo.localPath, 'env', 'env.yaml');
+      // Not in the baseline → new; present but different → modified; equal → skip.
+      if (await pathExists(baseEnv) && await fileContentEqual(activeEnv, baseEnv)) {
+        return [];
+      }
+      return [{
+        name: 'env.yaml',
+        type: 'env',
+        sourcePath: activeEnv,
+        relativePath: 'env/env.yaml',
+      }];
+    }
+
     const envYamlPath = path.join(localConfig.repo.localPath, 'env', 'env.yaml');
     if (!await pathExists(envYamlPath)) return [];
 
@@ -93,8 +114,23 @@ export class EnvHandler extends ResourceHandler {
     }];
   }
 
-  async pushItem(_item: ResourceItem, _teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<void> {
-    // No-op — env.yaml is already in the repo dir; push.ts handles git commit
+  async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+    // Non-self modes: env.yaml already lives in the repo dir; push.ts commits it
+    // via the env/ sweeper — nothing to copy.
+    //
+    // Single-repo mode: the source is the ACTIVE tree's .teamai/env/env.yaml, but
+    // the commit happens in the knowledge worktree (localConfig.repo.localPath).
+    // Copy the active copy into the worktree so the PR actually carries the change;
+    // otherwise the env/ sweeper would commit the stale baseline. (Guarded on the
+    // paths differing so non-self stays a no-op.)
+    if (isSelfMode(localConfig)) {
+      const dest = path.join(localConfig.repo.localPath, 'env', 'env.yaml');
+      if (item.sourcePath !== dest) {
+        await ensureDir(path.dirname(dest));
+        const content = await readFileSafe(item.sourcePath);
+        if (content !== null) await writeFile(dest, content);
+      }
+    }
   }
 
   /**
@@ -115,11 +151,14 @@ export class EnvHandler extends ResourceHandler {
 
     if (envConfig.variables.length === 0) return;
 
-    // Write <teamaiHome>/env (KEY=VALUE backup for loadEnvFile compatibility)
+    // Write the machine-local KEY=VALUE backup (for loadEnvFile / buildVarTable).
+    // getEnvBackupPath returns <teamaiHome>/env normally, but <teamaiHome>/env.local
+    // in self mode — where <teamaiHome>/env is a committed DIRECTORY (env/env.yaml)
+    // and writing a file there would throw EISDIR.
     const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
     const backupLines = envConfig.variables.map(v => `${v.key}=${v.value}`);
     await ensureDir(teamaiHome);
-    await writeFile(path.join(teamaiHome, 'env'), backupLines.join('\n') + '\n');
+    await writeFile(getEnvBackupPath(localConfig), backupLines.join('\n') + '\n');
 
     // Write <teamaiHome>/env.sh (sourceable export file)
     const envShContent = this.generateEnvFile(envConfig.variables);

@@ -16,6 +16,7 @@
   - [Project Scope](#project-scope)
   - [User Scope](#user-scope)
   - [How to Choose a Scope?](#how-to-choose-a-scope)
+  - [Single-repo mode (business repo is the team repo)](#single-repo-mode-business-repo-is-the-team-repo)
   - [Layer an organization repo under a project repo](#layer-an-organization-repo-under-a-project-repo)
 - [Member Onboarding](#member-onboarding)
 - [Day-to-Day Use](#day-to-day-use)
@@ -167,6 +168,54 @@ Resulting directory structure:
 | **Can coexist** | ✅ Yes; project stays active and can opt into safe user resources | ✅ Yes; remains a separate home-level install |
 
 > **Local install location** is decided only by `teamai init`'s `--scope` (default `project`). A `scope` field in remote `teamai.yaml`, if present, is ignored.
+
+### Single-repo mode (business repo is the team repo)
+
+Instead of a separate team repo, you can make an existing project's own git repo double as the team repo. Run this inside the project:
+
+```bash
+cd /path/to/my-project
+teamai init .                        # interactive: pick which AI tools to set up
+teamai init . --agent claude,codex   # non-interactive: set up Claude Code + Codex
+```
+
+**Choosing which AI tools to set up.** Single-repo mode creates a per-tool directory in your repo (e.g. `.claude/`, `.codex/`) — it seeds the skills dir, injects the teamai hooks, and commits that tool's settings to main so teammates get them on clone. You control which tools:
+
+- **`--agent <name...>`** — explicit list, repeatable or comma-separated: `--agent claude`, `--agent claude,codex`, `--agent claude --agent cursor`. Supported ids: `claude`, `codex`, `cursor`, `codebuddy`, `workbuddy`.
+- **Interactive (no `--agent`, a terminal)** — teamai shows a multi-select. Option 1 is **Auto**, which lists the AI tools already installed on your machine (`~/.claude`, `~/.codex`, …) and is the Enter default; the remaining options are the individual tools. Auto and specific tools can be combined.
+- **Non-interactive (no `--agent`, no terminal — CI, hooks, clone-time bootstrap)** — teamai mirrors the tools you already use under your home dir (`~/.claude`, `~/.codex`, …). If none are found, it creates nothing (you still get the knowledge; run `teamai init .` later to pick tools).
+
+**How it splits data across branches:**
+
+| Data | Where it lives | Travels with `git clone`? |
+|------|----------------|---------------------------|
+| Knowledge: `skills/` `rules/` `docs/` `learnings/`, `teamai.yaml` | `.teamai/` on the **main** branch | ✅ Yes |
+| Reports: `members/` `sessions/` `votes/` `stats/` | `teamai-reports` **orphan branch** | Pushed to `origin` (separate history) |
+| Machine-local: `config.yaml`, `token`, `state.json`, worktrees | `.teamai/` (gitignored) | ❌ No (per-machine) |
+
+**Clone = initialized.** Because knowledge and the `mode: self` marker in `.teamai/teamai.yaml` are committed to main, a teammate who clones the repo is auto-initialized: the next `teamai` command or AI session detects the marker, and (when their git provider is already authenticated) writes their local config, injects hooks, and registers them on the reports branch — no need to re-type repo/role. If they aren't authenticated yet, teamai prompts them to run `teamai init .` once.
+
+**Safety.** Every git write teamai performs in single-repo mode (knowledge PRs and the reports orphan branch) runs in an isolated git worktree under `.teamai/`. Your working tree and current branch are never checked out, reset, or switched.
+
+**Admin checklist after `teamai init .`:**
+
+1. `teamai init .` already commits `.teamai/` (skills, rules, docs, learnings, `teamai.yaml`, `.gitignore`) plus each selected tool's settings (e.g. `.claude/settings.json`, `.codex/hooks.json`) to the current branch for you.
+2. Push main so teammates can clone.
+3. Add resources later with `teamai push` — it opens a PR against your repo (via an isolated worktree) rather than committing to your working tree. In single-repo mode you can author them either in an AI tool dir (e.g. `~/.claude/skills/`) **or** by dropping them straight into `.teamai/` in your repo:
+   - `.teamai/skills/` — team skills
+   - `.teamai/rules/` — shared rules
+   - `.teamai/agents/` — subagent definitions (`<name>.yaml`, or legacy `<name>.md`)
+   - `.teamai/env/env.yaml` — shared env vars
+
+   `teamai push` scans all of these plus your AI tool dirs, and only surfaces genuine additions or edits (already-committed content is skipped). If you rename an agent's extension (e.g. `helper.md` → `helper.yaml`), delete the old file — `teamai push` won't remove it for you, and two files with the same stem would collide on pull.
+4. **docs / hooks / mcp** are contributed by editing their file directly — they don't go through `teamai push`; a normal `git commit` + push ships them:
+   - `.teamai/docs/` — team docs
+   - `.teamai/hooks/hooks.yaml` — team hooks
+   - `.teamai/mcp/mcp.yaml` — shared MCP servers
+
+> **Heads-up on `env`.** In single-repo mode `.teamai/env/env.yaml` **is committed to main** (unlike standalone mode's per-machine env), so it travels to everyone who clones the repo. `env.yaml` stores plaintext key/value pairs — put only non-secret shared config there, and keep real secrets in your own untracked environment.
+
+> **Limitation.** Single-repo mode ties one team setup to one business repo. If you need to share one team knowledge base across many business repos, use a standalone team repo (`teamai init <repo>`) instead.
 
 ### Layer an organization repo under a project repo
 

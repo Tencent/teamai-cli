@@ -288,7 +288,11 @@ async function loadOrBuildScopeIndex(
   // condition triggers rebuild when the file is missing entirely.
   const needsRebuild = !index || isLegacyIndex(index);
   if (needsRebuild && (effectiveLearningsDir || await pathExists(path.join(localConfig.repo.localPath, 'docs')) || await pathExists(path.join(localConfig.repo.localPath, 'rules')) || await pathExists(path.join(localConfig.repo.localPath, 'skills')))) {
-    const votesDir = path.join(localConfig.repo.localPath, 'votes');
+    // Votes live on the teamai-reports orphan branch in self mode; getReportsDir
+    // points at the worktree. If it isn't materialized yet, votesExist is false
+    // and vote-weighted ranking is simply skipped (graceful degradation).
+    const { getReportsDir } = await import('./types.js');
+    const votesDir = path.join(getReportsDir(localConfig), 'votes');
     const votesExist = await pathExists(votesDir);
     const docsDir = path.join(localConfig.repo.localPath, 'docs');
     const rulesDir = path.join(localConfig.repo.localPath, 'rules');

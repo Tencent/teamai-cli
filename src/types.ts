@@ -156,6 +156,14 @@ export const TeamaiConfigSchema = z.object({
    * decided only by CLI `--scope` / default. Kept optional for old teamai.yaml files.
    */
   scope: ScopeEnum.optional(),
+  /**
+   * Single-repo mode marker. Committed to main inside <repo>/.teamai/teamai.yaml
+   * so it travels with `git clone`. When a teammate clones a repo carrying
+   * `mode: self` but has no local config yet, teamai auto-bootstraps the machine
+   * side (write local config, inject hooks, register member). undefined = a
+   * standalone team repo (existing behavior). See detectProjectConfig / bootstrapSelfRepo.
+   */
+  mode: z.enum(['self']).optional(),
   reviewers: z.array(z.string()).default([]),
   /** Skills this team makes available to other teams via cross-team subscription. */
   publicSkills: z.array(z.string()).optional(),
@@ -208,10 +216,25 @@ export const LocalConfigSchema = z.object({
   repo: z.object({
     localPath: z.string(),
     remote: z.string(),
-    /** Team repo backend. Defaults to 'git' for backward compatibility. */
-    kind: z.enum(['git', 'http']).optional(),
+    /**
+     * Team repo backend. Defaults to 'git' for backward compatibility.
+     * - 'git':  a standalone team repo cloned to <home>/team-repo.
+     * - 'http': a git-free HTTP team repo (read-only consumer).
+     * - 'self': single-repo mode — the business repo IS the team repo.
+     *           Knowledge lives on main under <businessRepoRoot>/.teamai/;
+     *           reports (members/sessions/votes/stats) live on the
+     *           `teamai-reports` orphan branch. localPath = <businessRepoRoot>/.teamai.
+     */
+    kind: z.enum(['git', 'http', 'self']).optional(),
     /** Base URL of the HTTP team repo (only when kind === 'http'). */
     url: z.string().optional(),
+    /**
+     * Git root of the business repo (only when kind === 'self').
+     * Equals the parent directory of localPath. All git write operations
+     * (knowledge PRs, reports orphan branch) run in isolated worktrees under
+     * this repo so the user's active working tree is never touched.
+     */
+    businessRepoRoot: z.string().optional(),
   }),
   username: z.string(),
   updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),
@@ -995,6 +1018,48 @@ export function isAgentDisabled(localConfig: { disabledAgents?: string[] }, tool
   return localConfig.disabledAgents?.includes(tool) ?? false;
 }
 
+/** True when the local config is single-repo mode (the business repo is the team repo). */
+export function isSelfMode(localConfig: { repo: { kind?: string } }): boolean {
+  return localConfig.repo.kind === 'self';
+}
+
+/** Orphan branch that carries reports (members/sessions/votes/stats) in single-repo mode. */
+export const REPORTS_BRANCH = 'teamai-reports';
+/** Worktree directory (under .teamai) that checks out the reports orphan branch. */
+export const REPORTS_WORKTREE_DIRNAME = 'reports-wt';
+/** Worktree directory (under .teamai) used to stage knowledge PRs off the active tree. */
+export const KNOWLEDGE_WORKTREE_DIRNAME = 'knowledge-wt';
+/** Lock filename (under <repo>/.teamai) guarding concurrent reports-branch writes. */
+export const REPORTS_LOCK_FILENAME = '.reports-lock';
+/** Lock filename (under <repo>/.teamai) guarding concurrent self-mode bootstrap. */
+export const BOOTSTRAP_LOCK_FILENAME = '.bootstrap-lock';
+
+/**
+ * Directory holding team knowledge assets (skills/rules/docs/learnings/...).
+ * All modes read/write knowledge under localConfig.repo.localPath:
+ * - git/http: <home>/team-repo
+ * - self:     <businessRepoRoot>/.teamai  (committed to main)
+ * This is why the ~230 `path.join(localPath, 'skills'|...)` sites need no change.
+ */
+export function getKnowledgeDir(localConfig: LocalConfig): string {
+  return localConfig.repo.localPath;
+}
+
+/**
+ * Directory holding reports data (members/sessions/votes/stats).
+ * - git/http: same as knowledge (localPath) — reports live alongside knowledge.
+ * - self:     <localPath>/reports-wt — a git worktree checked out on the
+ *             `teamai-reports` orphan branch, so reports never land on main.
+ * Callers must ensure the worktree exists first (see ensureReportsWorktree)
+ * when the returned path is the self-mode worktree.
+ */
+export function getReportsDir(localConfig: LocalConfig): string {
+  if (isSelfMode(localConfig)) {
+    return path.join(localConfig.repo.localPath, REPORTS_WORKTREE_DIRNAME);
+  }
+  return localConfig.repo.localPath;
+}
+
 /**
  * Get the .teamai home directory for a given scope.
  * - user scope  → ~/.teamai (evaluated at call time for test compatibility)
@@ -1011,6 +1076,22 @@ export function getTeamaiHome(scope: Scope, projectRoot?: string): string {
     return path.join(projectRoot, '.teamai');
   }
   return path.join(process.env.HOME ?? '', '.teamai');
+}
+
+/**
+ * Path of the machine-local KEY=value env backup file that the env channel writes
+ * on pull and mcp-reconcile reads for ${VAR} resolution.
+ *
+ * Normally this is `<teamaiHome>/env`. But in single-repo mode `<teamaiHome>` is
+ * `<repo>/.teamai`, where `env/` is a committed DIRECTORY holding the shared
+ * `env.yaml` — writing a file at `<teamaiHome>/env` there would collide with that
+ * directory (EISDIR). So self mode uses `env.local`, which is gitignored (see
+ * buildSelfModeGitignore) and never committed. Readers and writers MUST both go
+ * through this helper so they never disagree on the path.
+ */
+export function getEnvBackupPath(localConfig: LocalConfig): string {
+  const home = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
+  return path.join(home, isSelfMode(localConfig) ? 'env.local' : 'env');
 }
 
 /**

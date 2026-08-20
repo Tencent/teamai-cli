@@ -436,7 +436,7 @@ export class SkillsHandler extends ResourceHandler {
       if (!toolPath.skills) continue;
 
       let dest: string;
-      if (tool === 'openclaw' && localConfig.scope !== 'project') {
+      if (tool === 'openclaw') {
         const wsDir = await resolveOpenclawWorkspaceDir();
         if (!wsDir) {
           log.debug(`Skipping skill sync for openclaw: workspace dir not found`);
@@ -493,7 +493,7 @@ export class SkillsHandler extends ResourceHandler {
     for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
       if (!toolPath.skills) continue;
       let skillDir: string;
-      if (tool === 'openclaw' && localConfig.scope !== 'project') {
+      if (tool === 'openclaw') {
         const wsDir = await resolveOpenclawWorkspaceDir();
         if (!wsDir) continue;
         skillDir = path.join(wsDir, 'skills', name);

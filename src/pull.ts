@@ -60,6 +60,30 @@ async function refreshTeamRepo(
     return { label: 'HTTP (report/sync delivery)', version: null, reportingOnly: true };
   }
 
+  if (localConfig.repo.kind === 'self') {
+    // Single-repo mode: knowledge lives under <business-repo>/.teamai on main and
+    // arrives with the business repo's own `git clone`/`git pull`. teamai must NOT
+    // run `git pull` on localPath here — that would operate on the business repo
+    // root and touch the user's active working tree. Just read the current HEAD as
+    // the cache version and let the deploy step inject from the on-disk .teamai/.
+    //
+    // Self-heal an older .teamai/.gitignore that still ignores `env` (pre-beta.5),
+    // which would keep team env vars off main. Best-effort; prompts the user to
+    // commit the change.
+    try {
+      const { migrateSelfModeGitignore } = await import('./init.js');
+      await migrateSelfModeGitignore(localConfig);
+    } catch { /* best-effort */ }
+
+    let version: string | null = null;
+    try {
+      version = await getHeadRev(localConfig.repo.localPath);
+    } catch {
+      version = null;
+    }
+    return { label: 'single-repo (knowledge on main)', version, reportingOnly: false };
+  }
+
   const result = await pullRepo(localConfig.repo.localPath);
   let version: string | null = null;
   try {
@@ -580,7 +604,19 @@ async function pullForScope(
       const docsRepoDir = path.join(localConfig.repo.localPath, 'docs');
       const rulesRepoDir = path.join(localConfig.repo.localPath, 'rules');
       const skillsRepoDir = path.join(localConfig.repo.localPath, 'skills');
-      const votesDir = path.join(localConfig.repo.localPath, 'votes');
+      // votes/ lives on the teamai-reports orphan branch in self mode (gitignored
+      // under localPath), so vote-weighted recall must read it from the reports
+      // worktree — otherwise ranking is silently disabled. Best-effort: fall back
+      // to localPath/votes (empty) if the worktree can't be resolved.
+      let votesDir = path.join(localConfig.repo.localPath, 'votes');
+      if (localConfig.repo.kind === 'self') {
+        try {
+          const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
+          votesDir = path.join(await ensureReportsWorktree(localConfig), 'votes');
+        } catch (e) {
+          log.debug(`[self] reports worktree for votes unavailable: ${(e as Error).message}`);
+        }
+      }
 
       // user scope: sync learnings to ~/.teamai/learnings/ (legacy behavior)
       // project scope: use learnings directly from repo
@@ -780,7 +816,18 @@ async function pullForScope(
       const YAML = (await import('yaml')).default;
       const { listFiles, readFileSafe } = await import('./utils/fs.js');
       const { getRecommendations, displayRecommendations } = await import('./skill-recommend.js');
-      const statsDir = path.join(localConfig.repo.localPath, 'stats');
+      // stats/ lives on the teamai-reports orphan branch in self mode (gitignored
+      // under localPath), so recommendations must read it from the reports worktree
+      // — otherwise they never appear. Best-effort fallback to localPath/stats.
+      let statsDir = path.join(localConfig.repo.localPath, 'stats');
+      if (localConfig.repo.kind === 'self') {
+        try {
+          const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
+          statsDir = path.join(await ensureReportsWorktree(localConfig), 'stats');
+        } catch (e) {
+          log.debug(`[self] reports worktree for stats unavailable: ${(e as Error).message}`);
+        }
+      }
       const files = await listFiles(statsDir);
       const teamStats = [];
       for (const file of files) {
@@ -1181,12 +1228,17 @@ export async function pull(options: GlobalOptions): Promise<void> {
     try {
       const { reportUsageToTeam } = await import('./team-push.js');
       const { truncateUsageAfterReport, readUsageEvents } = await import('./usage-tracker.js');
-      const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[] } }> = [];
+      const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig?: LocalConfig } }> = [];
       if (projectConfig) {
         targets.push({
           repoPath: projectConfig.repo.localPath,
           username: projectConfig.username,
-          opts: { skipTruncate: true, projectRoot: projectConfig.projectRoot },
+          opts: {
+            skipTruncate: true,
+            projectRoot: projectConfig.projectRoot,
+            // Self mode routes stats/votes to the teamai-reports orphan branch.
+            ...(projectConfig.repo.kind === 'self' ? { selfConfig: projectConfig } : {}),
+          },
         });
       }
       if (activeUserConfig && activeUserConfig.repo.kind !== 'http') {
