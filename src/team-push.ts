@@ -3,7 +3,7 @@ import path from 'node:path';
 import { readUsageEvents, truncateUsageAfterReport } from './usage-tracker.js';
 import { aggregateUsage } from './stats.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
-import { createGit, pushRepoDirectly, pullRepo, resetToCleanMaster } from './utils/git.js';
+import { createGit, pushRepoDirectly, pullRepo, resetToCleanMaster, isDedicatedRepoRoot } from './utils/git.js';
 import { withTimeout } from './utils/async.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -345,9 +345,24 @@ export async function reportUsageToTeam(
       const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
       writeRoot = await ensureReportsWorktree(selfConfig);
     } else {
-      // Reset any dirty/conflicted state and ensure we're on the default branch before pulling.
-      // Same pattern as push.ts — the team repo is a cache, safe to discard local state.
+      // The team repo is a disposable cache clone here — safe to discard local state
+      // and reset to the default branch before pulling (same pattern as push.ts).
+      //
+      // Defense-in-depth: this whole else-branch assumes repoPath is a dedicated clone
+      // ROOT with its own .git. If it is not the git top level, git commands here bubble
+      // up to the nearest enclosing .git and act on the USER'S BUSINESS REPO instead —
+      // reset --hard wipes their uncommitted work and checkout switches them off their
+      // branch. Two known ways repoPath ends up inside the business repo:
+      //   - self mode: localPath is `<businessRoot>/.teamai`
+      //   - project scope: localPath is `<projectRoot>/.teamai/team-repo`, and when that
+      //     dir has no dedicated .git (clone missing/incomplete) it resolves to the
+      //     business repo root.
+      // In either case bail out: there is no safe cache root to report into.
       const git = createGit(repoPath);
+      if (!(await isDedicatedRepoRoot(repoPath))) {
+        log.debug(`Skipping report: ${repoPath} is not a dedicated team-repo root (safety guard)`);
+        return;
+      }
       await resetToCleanMaster(git, repoPath);
       await pullRepo(repoPath);
     }

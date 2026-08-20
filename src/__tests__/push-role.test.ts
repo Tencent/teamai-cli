@@ -60,6 +60,7 @@ vi.mock('../utils/git.js', () => ({
   checkoutMaster: (...args: unknown[]) => mockCheckoutMaster(...args),
   generateBranchName: (...args: unknown[]) => mockGenerateBranchName(...args),
   resetToCleanMaster: (...args: unknown[]) => mockResetToCleanMaster(...args),
+  isDedicatedRepoRoot: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('../roles.js', async () => {

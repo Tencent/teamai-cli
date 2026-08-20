@@ -1229,7 +1229,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
       const { reportUsageToTeam } = await import('./team-push.js');
       const { truncateUsageAfterReport, readUsageEvents } = await import('./usage-tracker.js');
       const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig?: LocalConfig } }> = [];
-      if (projectConfig) {
+      if (projectConfig && projectConfig.repo.kind !== 'http') {
         targets.push({
           repoPath: projectConfig.repo.localPath,
           username: projectConfig.username,
@@ -1245,7 +1245,13 @@ export async function pull(options: GlobalOptions): Promise<void> {
         targets.push({
           repoPath: activeUserConfig.repo.localPath,
           username: activeUserConfig.username,
-          opts: { skipTruncate: true, excludeProjectRoots: projectConfig?.projectRoot ? [projectConfig.projectRoot] : [] },
+          opts: {
+            skipTruncate: true,
+            excludeProjectRoots: projectConfig?.projectRoot ? [projectConfig.projectRoot] : [],
+            // Self mode routes stats/votes to the teamai-reports orphan branch —
+            // never reset/pull the business repo working tree.
+            ...(activeUserConfig.repo.kind === 'self' ? { selfConfig: activeUserConfig } : {}),
+          },
         });
       }
 

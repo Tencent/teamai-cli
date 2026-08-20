@@ -1,7 +1,10 @@
 import path from 'node:path';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
 import { assertNotReadOnly } from './read-only.js';
-import { createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName, resetToCleanMaster, getDefaultBranch } from './utils/git.js';
+import {
+  createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName,
+  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch,
+} from './utils/git.js';
 import { syncTeamUpdatesToLocal } from './utils/pre-push-sync.js';
 import { getProvider } from './providers/index.js';
 import { log, spinner } from './utils/logger.js';
@@ -167,6 +170,16 @@ async function pushCore(
     try {
       const repoPath = localConfig.repo.localPath;
       const git = createGit(repoPath);
+      if (!(await isDedicatedRepoRoot(repoPath))) {
+        // repoPath is not its own git root (e.g. a project-scope team repo dir with no
+        // dedicated .git that resolves to the business repo). Every step below — reset
+        // --hard, checkout, and pushRepoBranch — would act on the enclosing business
+        // repo and wipe the user's working tree. Abort the whole push with a clear
+        // message rather than silently doing nothing or damaging their repo.
+        pullSpin.fail('Cannot push: team repo path is not a dedicated git root. '
+          + 'Run `teamai init` to re-clone the team repo before pushing.');
+        return;
+      }
       await resetToCleanMaster(git, repoPath);
       await pullRepo(repoPath);
       pullSpin.succeed('Up to date');

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import fse from 'fs-extra';
 import simpleGit, { type SimpleGit } from 'simple-git';
@@ -396,6 +397,42 @@ export function generateBranchName(username: string): string {
   const pad = (n: number) => n.toString().padStart(2, '0');
   const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   return `teamai/push/${username}/${timestamp}`;
+}
+
+/**
+ * Check whether repoPath is a dedicated git repository root of its own — i.e. safe
+ * to run destructive maintenance (reset --hard, checkout) against as a disposable
+ * cache clone.
+ *
+ * Returns true ONLY when repoPath resolves to its own git top level. Returns false
+ * whenever that cannot be positively confirmed, so callers must bail out (skip
+ * reset/pull) on false: if repoPath is a subdirectory of the user's business repo
+ * (e.g. `<projectRoot>/.teamai/team-repo` with no dedicated .git), git commands
+ * bubble up to the business repo and would wipe the user's working tree.
+ *
+ * @param repoPath - Absolute path expected to be a dedicated clone root.
+ * @returns True if repoPath is its own git top level; false if unconfirmed/unsafe.
+ */
+export async function isDedicatedRepoRoot(repoPath: string): Promise<boolean> {
+  const git = createGit(repoPath);
+  let toplevel: string;
+  try {
+    toplevel = (await git.revparse(['--show-toplevel'])).trim();
+  } catch {
+    // Not inside a git repository at all — there is no enclosing repo to damage,
+    // so treat repoPath as a plain dedicated dir (historical behavior). fail-open.
+    return true;
+  }
+  try {
+    // revparse succeeded: repoPath is inside SOME git repo. Confirm it is repoPath's
+    // OWN root, not an enclosing business repo. Resolve symlinks on both sides first
+    // (macOS /tmp -> /private/tmp) so path comparison is not fooled by a symlinked
+    // prefix. If realpath itself fails, we cannot confirm safety → fail-closed.
+    const [realTop, realRepo] = await Promise.all([realpath(toplevel), realpath(repoPath)]);
+    return realTop === realRepo;
+  } catch {
+    return false;
+  }
 }
 
 /**
