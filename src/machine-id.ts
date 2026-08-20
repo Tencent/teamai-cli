@@ -9,7 +9,9 @@
  * Invariants:
  *   - install_path never leaves the machine — it only feeds the local hash (privacy boundary).
  *   - Pure derivation, no disk writes — same machine + install dir + agent_type ⇒ same id.
- *   - machine_id falls back to empty string when unavailable (no MAC fallback).
+ *   - machine_id falls back to os.hostname() when platform id is unavailable (e.g. containers
+ *     without /etc/machine-id). hostname is NOT guaranteed stable across container restarts;
+ *     it trades id stability for uniqueness in multi-user container environments like imate.
  *
  * Cross-platform machine_id sources (macOS / Windows are first-class):
  *   - macOS:   IOPlatformUUID via `ioreg -rd1 -c IOPlatformExpertDevice`
@@ -20,6 +22,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import os from 'node:os';
 
 let cachedMachineId: string | null = null;
 
@@ -27,8 +30,9 @@ let cachedMachineId: string | null = null;
  * Read this host's stable machine id. Result is cached for the process lifetime.
  *
  * Never throws — any failure (command missing, permission denied, unsupported
- * platform) resolves to an empty string. The reporter must never assume bash
- * exists; each platform branch calls native binaries directly via execFileSync.
+ * platform) falls back to os.hostname(), then to empty string. The reporter
+ * must never assume bash exists; each platform branch calls native binaries
+ * directly via execFileSync.
  */
 export function getMachineId(): string {
   if (cachedMachineId !== null) return cachedMachineId;
@@ -38,18 +42,23 @@ export function getMachineId(): string {
 
 /** @internal — exported for tests that need to bypass the cache. */
 export function detectMachineId(platform: NodeJS.Platform = process.platform): string {
+  let id = '';
   try {
     switch (platform) {
       case 'darwin':
-        return readDarwinMachineId();
+        id = readDarwinMachineId();
+        break;
       case 'win32':
-        return readWindowsMachineId();
+        id = readWindowsMachineId();
+        break;
       default:
-        return readLinuxMachineId();
+        id = readLinuxMachineId();
+        break;
     }
   } catch {
-    return '';
+    // platform reader threw — fall through to hostname fallback
   }
+  return id || os.hostname() || '';
 }
 
 function readDarwinMachineId(): string {

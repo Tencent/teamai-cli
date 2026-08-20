@@ -4,7 +4,7 @@ import { pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './
 import { createPrWithFallback, filterExistingTopLevelPaths } from './push.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
-import type { GlobalOptions, ResourceType } from './types.js';
+import type { GlobalOptions, ResourceType, LocalConfig, TeamaiConfig } from './types.js';
 import { askConfirmation } from './utils/prompt.js';
 
 const REMOVABLE_TYPES: ResourceType[] = ['skills', 'rules', 'agents', 'mcp'];
@@ -28,10 +28,41 @@ export async function remove(
   const { localConfig, teamConfig } = await autoDetectInit();
   assertNotReadOnly(localConfig, 'teamai remove');
 
-  // Pull latest before making changes
-  try {
-    await pullRepo(localConfig.repo.localPath);
-  } catch { /* continue even if pull fails */ }
+  // Single-repo mode: run the removal PR in an isolated knowledge worktree so the
+  // branch/commit never touches the user's active tree.
+  if (localConfig.repo.kind === 'self') {
+    const { withKnowledgeWorktree, EmptyRepoError } = await import('./utils/reports-branch.js');
+    try {
+      await withKnowledgeWorktree(localConfig, (wtConfig) => removeCore(type, names, options, wtConfig, teamConfig));
+    } catch (e) {
+      if (e instanceof EmptyRepoError) {
+        log.error(e.message);
+      } else {
+        log.error(`Remove failed: ${(e as Error).message}`);
+      }
+    }
+    return;
+  }
+
+  await removeCore(type, names, options, localConfig, teamConfig);
+}
+
+async function removeCore(
+  type: string,
+  names: string[],
+  options: GlobalOptions,
+  localConfig: LocalConfig,
+  teamConfig: TeamaiConfig,
+): Promise<void> {
+  const selfMode = localConfig.repo.kind === 'self';
+
+  // Pull latest before making changes. In self mode the worktree is already a
+  // fresh checkout of origin/<default>, so skip the pull.
+  if (!selfMode) {
+    try {
+      await pullRepo(localConfig.repo.localPath);
+    } catch { /* continue even if pull fails */ }
+  }
 
   const handler = getHandler(type as ResourceType);
 

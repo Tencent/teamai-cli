@@ -186,6 +186,23 @@ describe('checkoutMaster', () => {
     await checkoutMaster('/repo-main');
     expect(mockGit.checkout).toHaveBeenCalledWith('main');
   });
+
+  it('tolerates the "already used by worktree" conflict (single-repo knowledge worktree)', async () => {
+    // In self mode the knowledge worktree shares `main` with the user's active
+    // tree; git refuses `checkout main` there. checkoutMaster must swallow it
+    // rather than throw, so the knowledge-PR flow completes.
+    mockGit.revparse.mockResolvedValue('main');
+    mockGit.checkout.mockRejectedValueOnce(
+      new Error("fatal: 'main' is already used by worktree at '/repo/primary'"),
+    );
+    await expect(checkoutMaster('/repo-main/.teamai/knowledge-wt')).resolves.toBeUndefined();
+  });
+
+  it('still throws on unrelated checkout failures', async () => {
+    mockGit.revparse.mockResolvedValue('main');
+    mockGit.checkout.mockRejectedValueOnce(new Error('fatal: some other git error'));
+    await expect(checkoutMaster('/repo-main')).rejects.toThrow('some other git error');
+  });
 });
 
 describe('pushRepoDirectly', () => {

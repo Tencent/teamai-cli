@@ -21,12 +21,13 @@ import {
 } from './utils/fs.js';
 import { ResourceHandler } from './resources/base.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
-import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent } from './hooks.js';
+import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, OPENCLAW_TOOLS } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
+import { resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
@@ -1619,7 +1620,7 @@ async function installDownloadedResource(input: {
       const dest = path.join(repoPath, 'claudemd', `${input.slug}.md`);
       await fse.ensureDir(path.dirname(dest));
       await fse.copyFile(mdFile, dest);
-      await syncClaudemd(teamConfig, localConfig, repoPath);
+      await syncClaudemd(teamConfig, localConfig, repoPath, input.workspacePath);
     }
 
     const version = commandVersion(input.command, input.kind);
@@ -1669,17 +1670,36 @@ async function uninstallResource(input: {
     await new RulesHandler().removeItem(input.slug, teamConfig, localConfig);
   } else {
     await remove(path.join(repoPath, 'claudemd', `${input.slug}.md`));
-    await syncClaudemd(teamConfig, localConfig, repoPath);
+    await syncClaudemd(teamConfig, localConfig, repoPath, input.workspacePath);
   }
 
   delete scopeManifest[manifestKind(input.kind)][input.slug];
   await saveManifest(manifest);
 }
 
+async function resolveHermesUserBaseDir(): Promise<string | undefined> {
+  try {
+    const envWs = process.env.TEAMAI_HERMES_WORKSPACE;
+    if (envWs && path.isAbsolute(envWs)) return envWs;
+    const cfg = await readJson<LocalAgentConfig>(getConfigPath());
+    const bindings = cfg?.workspaceBindings;
+    if (bindings && typeof bindings === 'object') {
+      const entries = Object.entries(bindings)
+        .filter(([p, v]) => path.isAbsolute(p) && v?.ideType === 'hermes')
+        .sort((a, b) => (b[1].boundAt ?? '').localeCompare(a[1].boundAt ?? ''));
+      for (const [p] of entries) {
+        if (await pathExists(path.join(p, '.hermes'))) return p;
+      }
+    }
+  } catch { /* fall through */ }
+  return undefined;
+}
+
 async function syncClaudemd(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   repoPath: string,
+  workspacePath?: string,
 ): Promise<void> {
   const claudemdDir = path.join(repoPath, 'claudemd');
   const files = (await pathExists(claudemdDir))
@@ -1691,27 +1711,60 @@ async function syncClaudemd(
     if (content) contents.push(content);
   }
   const block = compileClaudemdBlock(contents);
+  let syncedAny = false;
 
-  const baseDir = localConfig.scope === 'project' && localConfig.projectRoot
+  const defaultBaseDir = localConfig.scope === 'project' && localConfig.projectRoot
     ? localConfig.projectRoot
     : process.env.HOME ?? '';
 
   for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
     if (!toolPath.claudemd) continue;
-    if (!await ResourceHandler.isToolInstalled(toolPath.claudemd, baseDir)) continue;
-    const claudeMdPath = path.join(baseDir, toolPath.claudemd);
+
+    let baseDir = defaultBaseDir;
+    let resolvedAbsPath: string | null = null;
+
+    if (tool === 'openclaw' && localConfig.scope !== 'project') {
+      const openclawWs = await resolveOpenclawWorkspaceDir(workspacePath);
+      if (openclawWs) {
+        resolvedAbsPath = path.join(openclawWs, path.basename(toolPath.claudemd));
+      }
+    } else if (tool === 'hermes' && localConfig.scope !== 'project') {
+      const hermesBase = workspacePath ?? await resolveHermesUserBaseDir();
+      if (hermesBase) {
+        baseDir = hermesBase;
+        log.debug(`local-agent: hermes user-scope baseDir resolved to ${baseDir}`);
+      }
+    }
+
+    const toolInstalled = resolvedAbsPath
+      ? await pathExists(resolvedAbsPath)
+      : toolPath.claudemd.includes('/')
+        ? await ResourceHandler.isToolInstalled(toolPath.claudemd, baseDir)
+        : await pathExists(path.join(baseDir, `.${tool}`));
+    if (!toolInstalled) {
+      log.debug(`Skipped CLAUDE.md sync for ${tool}: target not found`);
+      continue;
+    }
+
+    const claudeMdPath = resolvedAbsPath ?? path.join(baseDir, toolPath.claudemd);
     try {
       const { injectClaudeMdSection } = await import('./utils/claudemd.js');
       if (block) {
         await injectClaudeMdSection(claudeMdPath, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END, block);
         log.debug(`local-agent: synced CLAUDE.md instructions to ${tool}`);
+        syncedAny = true;
       } else {
         await removeClaudeMdSection(claudeMdPath, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END);
         log.debug(`local-agent: removed CLAUDE.md instructions from ${tool}`);
+        syncedAny = true;
       }
     } catch (e) {
       log.warn(`Failed to sync CLAUDE.md instructions to ${tool}: ${(e as Error).message}`);
     }
+  }
+
+  if (files.length > 0 && !syncedAny) {
+    throw new Error('CLAUDE.md sync landed on no tool: every configured target was skipped');
   }
 }
 
@@ -1877,8 +1930,9 @@ async function runCmdCommand(
 /**
  * Execute an install_hook_rule / uninstall_hook_rule sync command (issue #238):
  * write or remove a single HTTP-source agent hook in the CURRENT tool's settings,
- * tracked in the agent-hook manifest. Only claude / codex format tools are
- * supported; cursor and openclaw are rejected. Throws on validation failure so
+ * tracked in the agent-hook manifest. Each tool family has its own hook format:
+ * claude/codex use settings.json, hermes uses config.yaml, openclaw-family uses
+ * HOOK.md + handler.ts. cursor is rejected. Throws on validation failure so
  * the caller acks 'failed' with the message.
  *
  * Gated by the same TEAMAI_DISABLE_REMOTE_CMD kill-switch as runCmdCommand: an
@@ -1912,6 +1966,9 @@ async function runHookRuleCommand(
       if (rec.tool === 'hermes') {
         const { removeHermesAgentHook } = await import('./hermes-hooks.js');
         await removeHermesAgentHook({ slug, event: rec.event, command: rec.command });
+      } else if (OPENCLAW_TOOLS.has(rec.tool)) {
+        const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
+        await removeOpenClawAgentHook({ slug, tool: rec.tool });
       } else {
         const settingsPath = resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
@@ -1919,7 +1976,6 @@ async function runHookRuleCommand(
       delete manifest[slug];
       await saveAgentHookManifest(manifest);
     }
-    // Missing slug is idempotent success.
     return undefined;
   }
 
@@ -1947,6 +2003,9 @@ async function runHookRuleCommand(
       if (prior.tool === 'hermes') {
         const { removeHermesAgentHook } = await import('./hermes-hooks.js');
         await removeHermesAgentHook({ slug, event: prior.event, command: prior.command });
+      } else if (OPENCLAW_TOOLS.has(prior.tool)) {
+        const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
+        await removeOpenClawAgentHook({ slug, tool: prior.tool });
       } else {
         const priorPath = resolveToolSettingsPath(config, prior.tool);
         await removeAgentHook(priorPath, prior.tool, { slug, command: prior.command });
@@ -1959,6 +2018,9 @@ async function runHookRuleCommand(
   if (tool === 'hermes') {
     const { applyHermesAgentHook } = await import('./hermes-hooks.js');
     await applyHermesAgentHook({ slug, event, command: cmd, matcher, timeout });
+  } else if (OPENCLAW_TOOLS.has(tool)) {
+    const { applyOpenClawAgentHook } = await import('./openclaw-hooks.js');
+    await applyOpenClawAgentHook({ slug, event, command: cmd, tool, matcher, timeout });
   } else {
     const settingsPath = resolveToolSettingsPath(config, tool);
     await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
@@ -2313,6 +2375,9 @@ export async function removeAllAgentHooks(): Promise<void> {
       if (rec.tool === 'hermes') {
         const { removeHermesAgentHook } = await import('./hermes-hooks.js');
         await removeHermesAgentHook({ slug, event: rec.event, command: rec.command });
+      } else if (OPENCLAW_TOOLS.has(rec.tool)) {
+        const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
+        await removeOpenClawAgentHook({ slug, tool: rec.tool });
       } else {
         const settingsPath = resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });

@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { deriveLocalAgentId, deriveInstanceId, detectMachineId, getMachineId } from '../machine-id.js';
 
 describe('deriveLocalAgentId', () => {
@@ -50,5 +51,25 @@ describe('detectMachineId', () => {
     expect(typeof getMachineId()).toBe('string');
     // Second call returns the cached value (same reference value).
     expect(getMachineId()).toBe(getMachineId());
+  });
+});
+
+describe('detectMachineId hostname fallback', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('falls back to hostname when platform reader returns empty', async () => {
+    const os = await import('node:os');
+    const hostname = os.hostname();
+    // Mock readFileSync to throw ENOENT so readLinuxMachineId returns '',
+    // forcing detectMachineId to fall back to hostname on any platform.
+    vi.spyOn(fs, 'readFileSync').mockImplementation(() => {
+      const err = new Error('ENOENT') as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      throw err;
+    });
+    const id = detectMachineId('freebsd' as NodeJS.Platform);
+    expect(id).toBe(hostname);
   });
 });

@@ -9,7 +9,7 @@ import type {
 } from './types.js';
 import {
   getMcpSharing,
-  getTeamaiHome,
+  getEnvBackupPath,
   managedMcpManifestPath,
   resolveBaseDir,
 } from './types.js';
@@ -86,7 +86,9 @@ async function readManifest(manifestPath: string): Promise<ManagedMcpManifest> {
  */
 export async function buildVarTable(localConfig: LocalConfig): Promise<Record<string, string>> {
   const table: Record<string, string> = {};
-  const envFile = path.join(getTeamaiHome(localConfig.scope, localConfig.projectRoot), 'env');
+  // Must use the same path the env channel wrote (getEnvBackupPath) — self mode
+  // uses env.local, not env (which is a committed directory there).
+  const envFile = getEnvBackupPath(localConfig);
   const content = await readFileSafe(envFile);
   if (content) {
     for (const line of content.split('\n')) {

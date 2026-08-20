@@ -3,11 +3,11 @@ import path from 'node:path';
 import { readUsageEvents, truncateUsageAfterReport } from './usage-tracker.js';
 import { aggregateUsage } from './stats.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
-import { createGit, pushRepoDirectly, pullRepo, resetToCleanMaster } from './utils/git.js';
+import { createGit, pushRepoDirectly, pullRepo, resetToCleanMaster, isDedicatedRepoRoot } from './utils/git.js';
 import { withTimeout } from './utils/async.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent } from './types.js';
+import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig } from './types.js';
 import { VOTES_LOCAL_DIR, emptyTokenUsage, addTokenUsage } from './types.js';
 
 /** Snapshot of already-reported per-session intervention counts (idempotency basis). */
@@ -299,8 +299,15 @@ export function filterEventsByScope(
 export async function reportUsageToTeam(
   repoPath: string,
   username: string,
-  options?: { skipTruncate?: boolean; projectRoot?: string; excludeProjectRoots?: string[] },
+  options?: { skipTruncate?: boolean; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig?: LocalConfig },
 ): Promise<void> {
+  // Single-repo mode: stats + votes are report data → the teamai-reports orphan
+  // branch (isolated worktree). We must NOT resetToCleanMaster / pullRepo /
+  // pushRepoDirectly on the business repo root — that would touch the user's
+  // active working tree. The dedicated writer handles the worktree + rebase race.
+  const selfConfig = options?.selfConfig;
+  const selfMode = selfConfig?.repo.kind === 'self';
+
   try {
     const events = await readUsageEvents();
     const filesToPush: string[] = [];
@@ -331,15 +338,38 @@ export async function reportUsageToTeam(
     const hasInterventions = hasInterventionDelta(interventionDelta);
     const hasPromptTokens = hasPromptTokenDelta(promptTokenDelta);
 
-    // Reset any dirty/conflicted state and ensure we're on the default branch before pulling.
-    // Same pattern as push.ts — the team repo is a cache, safe to discard local state.
-    const git = createGit(repoPath);
-    await resetToCleanMaster(git, repoPath);
-    await pullRepo(repoPath);
+    // Resolve where report data is written. In self mode this is the reports
+    // orphan-branch worktree; in git mode it is the team repo clone.
+    let writeRoot = repoPath;
+    if (selfMode && selfConfig) {
+      const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
+      writeRoot = await ensureReportsWorktree(selfConfig);
+    } else {
+      // The team repo is a disposable cache clone here — safe to discard local state
+      // and reset to the default branch before pulling (same pattern as push.ts).
+      //
+      // Defense-in-depth: this whole else-branch assumes repoPath is a dedicated clone
+      // ROOT with its own .git. If it is not the git top level, git commands here bubble
+      // up to the nearest enclosing .git and act on the USER'S BUSINESS REPO instead —
+      // reset --hard wipes their uncommitted work and checkout switches them off their
+      // branch. Two known ways repoPath ends up inside the business repo:
+      //   - self mode: localPath is `<businessRoot>/.teamai`
+      //   - project scope: localPath is `<projectRoot>/.teamai/team-repo`, and when that
+      //     dir has no dedicated .git (clone missing/incomplete) it resolves to the
+      //     business repo root.
+      // In either case bail out: there is no safe cache root to report into.
+      const git = createGit(repoPath);
+      if (!(await isDedicatedRepoRoot(repoPath))) {
+        log.debug(`Skipping report: ${repoPath} is not a dedicated team-repo root (safety guard)`);
+        return;
+      }
+      await resetToCleanMaster(git, repoPath);
+      await pullRepo(repoPath);
+    }
 
     // Process usage and/or intervention/prompt/token stats if anything is new to report.
     if (hasUsage || hasInterventions || hasPromptTokens) {
-      const statsDir = path.join(repoPath, 'stats');
+      const statsDir = path.join(writeRoot, 'stats');
       await ensureDir(statsDir);
       const statsPath = path.join(statsDir, `${username}.yaml`);
 
@@ -365,7 +395,7 @@ export async function reportUsageToTeam(
     try {
       if (await pathExists(VOTES_LOCAL_DIR)) {
         const { syncVotesToTeam } = await import('./votes.js');
-        const synced = await syncVotesToTeam(repoPath, username, VOTES_LOCAL_DIR);
+        const synced = await syncVotesToTeam(writeRoot, username, VOTES_LOCAL_DIR);
         if (synced) {
           filesToPush.push(`votes/${username}.yaml`);
         }
@@ -389,11 +419,20 @@ export async function reportUsageToTeam(
     // Guard the push with a 5s timeout. withTimeout clears its timer once the
     // push settles, so a fast success does not leave a 5s timer pinning the
     // event loop (and hanging `teamai pull`) after the work is done.
-    await withTimeout(
-      pushRepoDirectly(repoPath, commitMsg, filesToPush),
-      5000,
-      'Auto-report timeout (5s)',
-    );
+    if (selfMode && selfConfig) {
+      const { commitAndPushReports } = await import('./utils/reports-branch.js');
+      await withTimeout(
+        commitAndPushReports(selfConfig, commitMsg, filesToPush),
+        5000,
+        'Auto-report timeout (5s)',
+      );
+    } else {
+      await withTimeout(
+        pushRepoDirectly(repoPath, commitMsg, filesToPush),
+        5000,
+        'Auto-report timeout (5s)',
+      );
+    }
 
     // Success — truncate reported usage events (only if caller allows it)
     if (hasUsage && !options?.skipTruncate) {

@@ -34,6 +34,8 @@ Create a shared-experience repo on your git host (GitHub, TGit, or CNB), **grant
 
 > Solo use needs no separate repo setup: `teamai init` checks the target repo and creates it automatically if it doesn't exist.
 
+> **No team repo yet?** Start from a template pre-loaded with production-ready skills, rules, and review agents. Browse the [teamai-hub](https://github.com/teamai-hub) org, click **Use this template**, then `teamai init` against your new repo.
+
 ### Team members
 
 ```bash
@@ -51,6 +53,24 @@ teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 ```
 
 Once initialized, every AI session automatically pulls the latest skills / rules and other Harness updates published by admins — no manual sync needed.
+
+### Single-repo mode (the business repo *is* the team repo)
+
+No separate team repo. Run `teamai init .` inside an existing project and its own git repo becomes the team repo:
+
+```bash
+cd /path/to/my-project
+teamai init .                        # interactive: pick which AI tools to set up
+teamai init . --agent claude,codex   # non-interactive: Claude Code + Codex
+```
+
+- **Knowledge** (skills / rules / docs / learnings) is committed to your repo's **main branch** under `.teamai/`, so a plain `git clone` already carries the whole team setup.
+- **Reports** (member registrations, session summaries, votes, usage stats) go to a separate **`teamai-reports` orphan branch** — they never touch main.
+- **You choose which AI tools to set up.** `--agent claude,codex` (repeatable/comma-separated), an interactive picker when omitted, or — in non-interactive contexts — whichever tools you already use under `~/`. teamai creates each selected tool's dir, injects hooks, and commits its settings.
+- **Clone = initialized.** When a teammate clones the repo, the next `teamai` command (or AI session) auto-detects the `mode: self` marker in `.teamai/teamai.yaml` and finishes local setup automatically — no need to re-type repo/role.
+- All of teamai's git operations run in isolated worktrees, so your working tree and current branch are never touched.
+
+`teamai init .` commits `.teamai/` (skills, rules, docs, learnings, `teamai.yaml`, `.gitignore`) plus each selected tool's settings (e.g. `.claude/settings.json`, `.codex/hooks.json`) for you; just push main so teammates get auto-initialized on clone.
 
 > **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — covers everything from team creation to day-to-day use.
 
@@ -155,7 +175,16 @@ Author: member-a | Score: 18.5 | Tags: troubleshooting, networking
 
 [2/2] Deployment configuration best practices [project]
 Author: member-b | Score: 12.0 | Tags: deploy, config
+Matched: conflict | Missing: port
 ```
+
+A `Matched: … | Missing: …` line appears whenever a hit does not cover every
+query term (omitted when all terms matched). Recall returns its top matches by
+score without filtering on coverage: a hit missing all of your distinctive
+terms is topically adjacent, not an answer. Judging that is the caller's job —
+the score alone cannot express it. Entries matching on title, date, author and
+content are collapsed, so the same learning shared twice does not occupy two
+slots.
 
 **Coverage spans two parts:**
 

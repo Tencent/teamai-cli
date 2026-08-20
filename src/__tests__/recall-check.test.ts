@@ -100,7 +100,7 @@ describe('recall --check precheck mode', () => {
 
     await recall('completely unrelated gibberish xyzzy quantum', { check: true });
 
-    expect(captured).toMatch(/^NOT_RELEVANT score=\d+\.\d+\n$/);
+    expect(captured).toMatch(/^NOT_RELEVANT score=\d+\.\d+ threshold=\d+\.\d+\n$/);
   });
 
   it('check mode does not record recall quality (no side effects)', async () => {
@@ -125,6 +125,6 @@ describe('recall --check precheck mode', () => {
 
     await recall('', { check: true });
 
-    expect(captured).toBe('NOT_RELEVANT score=0.0\n');
+    expect(captured).toBe('NOT_RELEVANT score=0.0 threshold=4.0\n');
   });
 });

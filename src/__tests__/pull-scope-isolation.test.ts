@@ -268,4 +268,51 @@ describe('pull scope isolation (issue #73)', () => {
     expect(pullSources).toHaveBeenCalledTimes(1);
     expect(vi.mocked(pullSources).mock.calls[0][0]).toMatchObject({ scope: 'user' });
   });
+
+  it('user mode self-repo: reportUsageToTeam receives selfConfig so business repo is never reset', async () => {
+    const businessRoot = path.join(tmpDir, 'business-repo');
+    const selfRepoPath = path.join(businessRoot, '.teamai');
+    const selfUserConfig: LocalConfig = {
+      repo: {
+        localPath: selfRepoPath,
+        remote: 'https://git.woa.com/test/self-repo.git',
+        kind: 'self',
+        businessRepoRoot: businessRoot,
+      },
+      username: 'selfuser',
+      updatePolicy: 'auto',
+      additionalRoles: [],
+      scope: 'user',
+    };
+
+    vi.mocked(detectProjectConfig).mockResolvedValue(null);
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(selfUserConfig);
+
+    await pull({ silent: true });
+
+    expect(reportUsageToTeam).toHaveBeenCalledWith(
+      selfRepoPath,
+      'selfuser',
+      expect.objectContaining({
+        selfConfig: expect.objectContaining({
+          repo: expect.objectContaining({ kind: 'self' }),
+        }),
+      }),
+    );
+  });
+
+  it('project mode http-repo: never calls reportUsageToTeam (data-loss guard)', async () => {
+    const httpProjectConfig: LocalConfig = {
+      ...projectConfig,
+      repo: { ...projectConfig.repo, kind: 'http' as const },
+    };
+
+    vi.mocked(detectProjectConfig).mockResolvedValue(httpProjectConfig);
+
+    await pull({ silent: true });
+
+    // HTTP-kind repo: kind !== 'http' guard filters out both report targets,
+    // so targets is empty and the business repo's team-repo dir is never reset.
+    expect(reportUsageToTeam).not.toHaveBeenCalled();
+  });
 });

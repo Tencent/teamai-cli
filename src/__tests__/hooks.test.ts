@@ -620,11 +620,11 @@ describe('hooks', () => {
   });
 
   describe('agent hooks (issue #238)', () => {
-    it('isAgentHookSupportedTool: claude/codex/workbuddy/codebuddy yes, cursor/openclaw no', () => {
-      for (const t of ['claude', 'codex', 'workbuddy', 'codebuddy', 'codex-internal']) {
+    it('isAgentHookSupportedTool: claude/codex/workbuddy/codebuddy/openclaw yes, cursor no', () => {
+      for (const t of ['claude', 'codex', 'workbuddy', 'codebuddy', 'codex-internal', 'openclaw', 'qclaw', 'easyclaw', 'autoclaw']) {
         expect(isAgentHookSupportedTool(t)).toBe(true);
       }
-      for (const t of ['cursor', 'openclaw', 'qclaw', 'easyclaw', 'autoclaw']) {
+      for (const t of ['cursor']) {
         expect(isAgentHookSupportedTool(t)).toBe(false);
       }
     });

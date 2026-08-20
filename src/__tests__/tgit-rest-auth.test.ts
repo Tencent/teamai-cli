@@ -16,7 +16,7 @@ vi.mock('../utils/logger.js', () => ({
     },
 }));
 
-import { getTGitToken, tgitAuthHeaders, tgitFetch, tgitGitUser, tryGetTGitToken } from '../providers/tgit/rest-auth.js';
+import { getTGitToken, tgitAuthHeaders, tgitFetch, tgitGitCloneUrl, tryGetTGitToken } from '../providers/tgit/rest-auth.js';
 import { gfGetOAuthToken } from '../providers/tgit/gf-cli.js';
 
 function makeResponse(status: number): Response {
@@ -64,13 +64,31 @@ describe('rest-auth', () => {
         });
     });
 
-    describe('tgitGitUser', () => {
-        it("'private-token' → 'private'", () => {
-            expect(tgitGitUser('private-token')).toBe('private');
+    describe('tgitGitCloneUrl', () => {
+        const base = 'https://git.woa.com/owner/repo.git';
+
+        it('OAuth token present → embeds it as oauth2:<token>@', () => {
+            (gfGetOAuthToken as Mock).mockReturnValue('oauth-x');
+            expect(tgitGitCloneUrl(base)).toBe('https://oauth2:oauth-x@git.woa.com/owner/repo.git');
         });
 
-        it("'bearer' → 'oauth2'", () => {
-            expect(tgitGitUser('bearer')).toBe('oauth2');
+        it('no OAuth token → returns null (caller falls back to gf)', () => {
+            (gfGetOAuthToken as Mock).mockReturnValue(null);
+            expect(tgitGitCloneUrl(base)).toBeNull();
+        });
+
+        it('a PAT in TGIT_TOKEN does NOT enable git clone (REST-only, ignored here)', () => {
+            // Regression guard: a stray PAT must not shadow the (absent) OAuth token.
+            // git.woa.com's git endpoint rejects the PAT, so clone must report "no cred".
+            process.env['TGIT_TOKEN'] = 'pat-123';
+            (gfGetOAuthToken as Mock).mockReturnValue(null);
+            expect(tgitGitCloneUrl(base)).toBeNull();
+        });
+
+        it('OAuth wins even when a PAT is also present', () => {
+            process.env['TGIT_TOKEN'] = 'pat-123';
+            (gfGetOAuthToken as Mock).mockReturnValue('oauth-x');
+            expect(tgitGitCloneUrl(base)).toBe('https://oauth2:oauth-x@git.woa.com/owner/repo.git');
         });
     });
 

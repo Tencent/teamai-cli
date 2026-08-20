@@ -51,7 +51,13 @@ async function loadReportedStats(): Promise<UserStats | null> {
   try {
     const config = await detectProjectConfig() ?? await loadLocalConfig();
     if (!config) return null;
-    const statsPath = path.join(config.repo.localPath, 'stats', `${config.username}.yaml`);
+    // Self mode: stats live on the teamai-reports orphan branch worktree.
+    let statsRoot = config.repo.localPath;
+    if (config.repo.kind === 'self') {
+      const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
+      statsRoot = await ensureReportsWorktree(config);
+    }
+    const statsPath = path.join(statsRoot, 'stats', `${config.username}.yaml`);
     const content = await readFileSafe(statsPath);
     if (!content) return null;
     const parsed = YAML.parse(content) as UserStats;
