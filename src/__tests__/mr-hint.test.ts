@@ -28,13 +28,28 @@ describe('parseRemoteToRepo', () => {
     expect(result).toEqual({ provider: 'github', owner: 'myorg', repo: 'myrepo' });
   });
 
+  it('parses GitLab HTTPS URL', () => {
+    const result = parseRemoteToRepo('https://gitlab.com/owner/repo.git');
+    expect(result).toEqual({ provider: 'gitlab', owner: 'owner', repo: 'repo' });
+  });
+
+  it('parses GitLab HTTPS URL with group path', () => {
+    const result = parseRemoteToRepo('https://gitlab.com/group/subgroup/repo.git');
+    expect(result).toEqual({ provider: 'gitlab', owner: 'group/subgroup', repo: 'repo' });
+  });
+
+  it('parses GitLab SSH URL', () => {
+    const result = parseRemoteToRepo('git@gitlab.com:myorg/myrepo.git');
+    expect(result).toEqual({ provider: 'gitlab', owner: 'myorg', repo: 'myrepo' });
+  });
+
   it('parses URL without .git suffix', () => {
     const result = parseRemoteToRepo('https://git.woa.com/owner/repo');
     expect(result).toEqual({ provider: 'tgit', owner: 'owner', repo: 'repo' });
   });
 
   it('returns null for unrecognized URL', () => {
-    expect(parseRemoteToRepo('https://gitlab.com/owner/repo.git')).toBeNull();
+    expect(parseRemoteToRepo('https://bitbucket.org/owner/repo.git')).toBeNull();
     expect(parseRemoteToRepo('')).toBeNull();
     expect(parseRemoteToRepo('not-a-url')).toBeNull();
   });

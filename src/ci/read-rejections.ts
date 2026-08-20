@@ -8,6 +8,7 @@
 
 import { parseMrUrl } from './mr-comment.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
+import { gitlabFetch } from '../providers/gitlab/rest-auth.js';
 import { log } from '../utils/logger.js';
 
 const API_TIMEOUT_MS = 15_000;
@@ -152,6 +153,53 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
   return result;
 }
 
+// ─── GitLab ─────────────────────────────────────────────
+
+interface GitLabNote {
+  id: number;
+  body: string;
+}
+
+/** GitLab award emoji on a note (used field only) */
+interface GitLabAwardEmoji {
+  name: string; // e.g. "thumbsdown", "thumbsup"
+}
+
+async function readGitLabRejections(owner: string, repo: string, mrIid: string): Promise<RejectionResult> {
+  const result: RejectionResult = { rejectedIds: new Set(), approvedIds: new Set(), allIds: new Set() };
+
+  const projectId = encodeURIComponent(`${owner}/${repo}`);
+
+  // 读取所有 notes（GitLab notes API 直接用 iid）
+  const resp = await gitlabFetch(`/projects/${projectId}/merge_requests/${mrIid}/notes?per_page=100`);
+  if (!resp.ok) return result;
+  const notes = (await resp.json()) as GitLabNote[];
+
+  for (const note of notes) {
+    const markerId = extractMarkerId(note.body);
+    if (!markerId) continue;
+    result.allIds.add(markerId);
+
+    // GitLab: 读取该 note 的 award emoji，👎 (thumbsdown) = reject，无则默认 approve
+    const awardResp = await gitlabFetch(
+      `/projects/${projectId}/merge_requests/${mrIid}/notes/${note.id}/award_emoji`,
+    );
+    if (!awardResp.ok) {
+      result.approvedIds.add(markerId); // 读取失败默认 approve
+      continue;
+    }
+    const awards = (await awardResp.json()) as GitLabAwardEmoji[];
+    const hasThumbsDown = awards.some((a) => a.name === 'thumbsdown');
+    if (hasThumbsDown) {
+      result.rejectedIds.add(markerId);
+    } else {
+      result.approvedIds.add(markerId);
+    }
+  }
+
+  return result;
+}
+
 // ─── Public API ─────────────────────────────────────────
 
 /**
@@ -159,6 +207,7 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
  *
  * 返回被 reject 和 approve 的 marker id 集合。
  * - GitHub: 默认写入，👎 = reject
+ * - GitLab: 默认写入，👎 (thumbsdown award emoji) = reject
  * - TGit: 默认不写入，点"解决" = approve
  */
 export async function readRejections(mrUrl: string): Promise<RejectionResult> {
@@ -169,6 +218,11 @@ export async function readRejections(mrUrl: string): Promise<RejectionResult> {
     return readGitHubRejections(parsed.owner, parsed.repo, parsed.number);
   }
 
+  if (parsed.provider === 'gitlab') {
+    log.debug('读取 GitLab award emoji...');
+    return readGitLabRejections(parsed.owner, parsed.repo, parsed.number);
+  }
+
   log.debug('读取 TGit emoji reactions...');
   return readTGitRejections(parsed.owner, parsed.repo, parsed.number);
 }
@@ -176,10 +230,15 @@ export async function readRejections(mrUrl: string): Promise<RejectionResult> {
 /**
  * 根据 rejection 结果判断某条建议是否应该写入。
  *
- * 两个平台逻辑统一：默认写入，被 reject 的不写入。
+ * 平台逻辑统一：默认写入，被 reject 的不写入。
  * - GitHub: 👎 reaction = reject
+ * - GitLab: 👎 award emoji = reject
  * - TGit: ☝️ emoji (编号 8) = reject
  */
-export function shouldWrite(markerId: string, rejections: RejectionResult, _provider: 'github' | 'tgit'): boolean {
+export function shouldWrite(
+  markerId: string,
+  rejections: RejectionResult,
+  _provider: 'github' | 'tgit' | 'gitlab',
+): boolean {
   return !rejections.rejectedIds.has(markerId);
 }

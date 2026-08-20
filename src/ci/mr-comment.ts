@@ -8,6 +8,7 @@
 
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
+import { gitlabFetch, getGitLabHost } from '../providers/gitlab/rest-auth.js';
 import { log } from '../utils/logger.js';
 
 // ─── 常量 ────────────────────────────────────────────────
@@ -23,7 +24,7 @@ export interface CommentResult {
 }
 
 interface ParsedMrUrl {
-  provider: 'github' | 'tgit';
+  provider: 'github' | 'tgit' | 'gitlab';
   owner: string;
   repo: string;
   number: string;
@@ -48,7 +49,23 @@ export function parseMrUrl(url: string): ParsedMrUrl {
     return { provider: 'tgit', owner: tgitMatch[1], repo: tgitMatch[2], number: tgitMatch[3] };
   }
 
-  throw new Error(`无法解析 MR URL: ${url}，仅支持 GitHub 和 TGit`);
+  // GitLab: https://<host>/{group}/{project}/-/merge_requests/{iid}
+  // host 为 gitlab.com 或自托管 TEAMAI_GITLAB_HOST；group 可能含多级路径。
+  // GitLab 现代路径带 `/-/` 分隔符，同时兼容不带分隔符的旧格式。
+  const glHosts = ['gitlab.com', getGitLabHost()];
+  for (const host of glHosts) {
+    const hostRe = host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const dashMatch = url.match(new RegExp(`${hostRe}/(.+?)/([^/]+)/-/merge_requests/(\\d+)`));
+    if (dashMatch) {
+      return { provider: 'gitlab', owner: dashMatch[1], repo: dashMatch[2], number: dashMatch[3] };
+    }
+    const plainMatch = url.match(new RegExp(`${hostRe}/(.+?)/([^/]+)/merge_requests/(\\d+)`));
+    if (plainMatch) {
+      return { provider: 'gitlab', owner: plainMatch[1], repo: plainMatch[2], number: plainMatch[3] };
+    }
+  }
+
+  throw new Error(`无法解析 MR URL: ${url}，仅支持 GitHub、TGit 和 GitLab`);
 }
 
 // ─── Comment 格式化 ──────────────────────────────────────
@@ -264,6 +281,72 @@ async function updateTGitComment(
   return { created: false };
 }
 
+// ─── GitLab Comment API ─────────────────────────────────
+//
+//  GitLab 的 notes API 直接使用 MR 的项目内 iid（无需像 TGit 那样先查全局
+//  id）。projectId 为 URL 编码后的 `group/repo` 全路径。
+
+async function gitlabRequest(path: string, method: string, body?: unknown): Promise<Response> {
+  return gitlabFetch(path, {
+    method,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}
+
+interface GitLabNote {
+  id: number;
+  body: string;
+}
+
+async function findGitLabComment(
+  projectId: string,
+  mrIid: string,
+  marker: string,
+): Promise<GitLabNote | null> {
+  const resp = await gitlabRequest(
+    `/projects/${projectId}/merge_requests/${mrIid}/notes?per_page=100`,
+    'GET',
+  );
+  if (!resp.ok) return null;
+  const notes = (await resp.json()) as GitLabNote[];
+  return notes.find((n) => n.body.includes(marker)) ?? null;
+}
+
+async function postGitLabComment(
+  projectId: string,
+  mrIid: string,
+  body: string,
+): Promise<CommentResult> {
+  const resp = await gitlabRequest(
+    `/projects/${projectId}/merge_requests/${mrIid}/notes`,
+    'POST',
+    { body },
+  );
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`GitLab comment 创建失败 (${resp.status}): ${errText}`);
+  }
+  return { created: true };
+}
+
+async function updateGitLabComment(
+  projectId: string,
+  mrIid: string,
+  noteId: number,
+  body: string,
+): Promise<CommentResult> {
+  const resp = await gitlabRequest(
+    `/projects/${projectId}/merge_requests/${mrIid}/notes/${noteId}`,
+    'PUT',
+    { body },
+  );
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`GitLab comment 更新失败 (${resp.status}): ${errText}`);
+  }
+  return { created: false };
+}
+
 // ─── Public API ─────────────────────────────────────────
 
 /**
@@ -311,6 +394,17 @@ export async function postOrUpdateMrComment(
     return postGitHubComment(parsed.owner, parsed.repo, parsed.number, body);
   }
 
+  if (parsed.provider === 'gitlab') {
+    // GitLab — Notes API 使用 MR 的项目内 iid
+    const glProjectId = encodeURIComponent(`${parsed.owner}/${parsed.repo}`);
+    const existing = await findGitLabComment(glProjectId, parsed.number, effectiveMarker);
+    if (existing) {
+      log.debug(`发现已有 note #${existing.id}，更新中...`);
+      return updateGitLabComment(glProjectId, parsed.number, existing.id, body);
+    }
+    return postGitLabComment(glProjectId, parsed.number, body);
+  }
+
   // TGit — Notes API 使用 MR 全局 id
   const projectId = encodeURIComponent(`${parsed.owner}/${parsed.repo}`);
   const mrGlobalId = await getMrGlobalId(projectId, parsed.number);
@@ -331,7 +425,7 @@ export function formatIndividualComment(
   type: 'learning' | 'suggestion',
   index: number,
   content: { title?: string; body?: string; section?: string; action?: string; preview?: string },
-  provider: 'github' | 'tgit',
+  provider: 'github' | 'tgit' | 'gitlab',
 ): string {
   const markerId = type === 'learning' ? 'learning' : `suggestion:${index}`;
   const marker = `<!-- teamai:ci-extract:${markerId} -->`;
@@ -359,7 +453,7 @@ export function formatIndividualComment(
   }
 
   lines.push('');
-  if (provider === 'github') {
+  if (provider === 'github' || provider === 'gitlab') {
     lines.push('> 💡 不写入此条？请对本条 comment 加 👎 reaction');
   } else {
     lines.push('> 💡 不写入此条？请对本条评论加 ☝️ emoji reaction');
@@ -429,6 +523,19 @@ export async function postIndividualComments(
         await updateGitHubComment(parsed.owner, parsed.repo, existing.id, item.body);
       } else {
         await postGitHubComment(parsed.owner, parsed.repo, parsed.number, item.body);
+      }
+      posted++;
+    }
+  } else if (parsed.provider === 'gitlab') {
+    // GitLab: 逐条发布为 MR note（notes API 直接用 iid）
+    const glProjectId = encodeURIComponent(`${parsed.owner}/${parsed.repo}`);
+    for (const item of items) {
+      const marker = `<!-- teamai:ci-extract:${item.markerId} -->`;
+      const existing = await findGitLabComment(glProjectId, parsed.number, marker);
+      if (existing) {
+        await updateGitLabComment(glProjectId, parsed.number, existing.id, item.body);
+      } else {
+        await postGitLabComment(glProjectId, parsed.number, item.body);
       }
       posted++;
     }

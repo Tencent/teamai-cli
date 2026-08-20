@@ -106,7 +106,12 @@ describe('detectProvider', () => {
   });
 
   it('defaults unknown hosts to github', () => {
-    expect(detectProvider('https://gitlab.com/org/repo')).toBe('github');
+    expect(detectProvider('https://git.example.com/org/repo')).toBe('github');
+  });
+
+  it('detects gitlab from gitlab.com URLs', () => {
+    expect(detectProvider('https://gitlab.com/org/repo')).toBe('gitlab');
+    expect(detectProvider('git@gitlab.com:org/repo.git')).toBe('gitlab');
   });
 });
 

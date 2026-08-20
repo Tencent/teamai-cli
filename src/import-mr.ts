@@ -6,6 +6,8 @@ import matter from 'gray-matter';
 
 import { fetchGitHubPR } from './providers/github/mr-fetch.js';
 import { fetchTGitMR } from './providers/tgit/mr-fetch.js';
+import { fetchGitLabMR } from './providers/gitlab/mr-fetch.js';
+import { getGitLabHost } from './providers/gitlab/rest-auth.js';
 import type { MRData, LearningDraft } from './types.js';
 import { callClaude } from './utils/ai-client.js';
 import { extractKeywords, findSupersededLearnings } from './utils/dedup.js';
@@ -31,7 +33,14 @@ async function fetchMR(url: string): Promise<MRData> {
   if (url.includes('git.woa.com')) {
     return fetchTGitMR(url);
   }
-  throw new Error(`Unsupported MR URL: ${url}. Only GitHub and TGit are supported`);
+  // GitLab: match the /merge_requests/ path on gitlab.com or a self-hosted host.
+  if (
+    /\/-?\/?merge_requests\/\d+/.test(url) &&
+    (url.includes('gitlab.com') || url.includes(getGitLabHost()))
+  ) {
+    return fetchGitLabMR(url);
+  }
+  throw new Error(`Unsupported MR URL: ${url}. Only GitHub, TGit and GitLab are supported`);
 }
 
 /**

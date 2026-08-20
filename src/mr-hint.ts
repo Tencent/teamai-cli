@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
+import {
+  getGitLabHost,
+  gitlabFetch,
+  tryGetGitLabToken,
+} from './providers/gitlab/rest-auth.js';
 import { log } from './utils/logger.js';
 
 // ─── MR Hint data flow ──────────────────────────────────
@@ -139,17 +144,23 @@ export function getGitRemote(cwd: string): string | null {
 /** Parsed result from a git remote URL. */
 export interface RemoteRepo {
   /** Git provider. */
-  provider: 'tgit' | 'github';
+  provider: 'tgit' | 'github' | 'gitlab';
   /** Owner or group path (may contain '/'). */
   owner: string;
   /** Repository name (last path segment). */
   repo: string;
 }
 
+/** Escape a string for safe interpolation into a RegExp. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Parse a git remote URL into provider + owner/repo info.
  *
- * Supports HTTPS and SSH formats for git.woa.com (TGit) and github.com.
+ * Supports HTTPS and SSH formats for git.woa.com (TGit), github.com, and
+ * GitLab (gitlab.com plus any self-hosted host set via TEAMAI_GITLAB_HOST).
  *
  * @param remoteUrl  Full git remote URL
  * @returns          Parsed RemoteRepo, or null if unrecognized
@@ -179,6 +190,23 @@ export function parseRemoteToRepo(remoteUrl: string): RemoteRepo | null {
   const ghSsh = url.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?\/?$/);
   if (ghSsh) {
     return { provider: 'github', owner: ghSsh[1], repo: ghSsh[2] };
+  }
+
+  // GitLab: match gitlab.com and the configured self-hosted host. Groups may be
+  // multi-level, so the owner segment allows '/'.
+  const hosts = Array.from(new Set(['gitlab.com', getGitLabHost()]));
+  for (const host of hosts) {
+    const h = escapeRegExp(host);
+    // HTTPS: https://<host>/group[/sub]/repo.git
+    const glHttps = url.match(new RegExp(`^https?://[^@]*${h}/(.+)/([^/]+?)(?:\\.git)?/?$`));
+    if (glHttps) {
+      return { provider: 'gitlab', owner: glHttps[1], repo: glHttps[2] };
+    }
+    // SSH: git@<host>:group[/sub]/repo.git
+    const glSsh = url.match(new RegExp(`^git@${h}:(.+)/([^/]+?)(?:\\.git)?/?$`));
+    if (glSsh) {
+      return { provider: 'gitlab', owner: glSsh[1], repo: glSsh[2] };
+    }
   }
 
   return null;
@@ -242,6 +270,64 @@ async function listTGitMergedMRs(
       }));
   } catch (err) {
     log.debug(`mr-hint: TGit API error: ${(err as Error).message}`);
+    return [];
+  }
+}
+
+/** GitLab API MR object (subset of fields). */
+interface GitLabMR {
+  iid: number;
+  title: string;
+  web_url: string;
+  merged_at: string | null;
+}
+
+/**
+ * List recently merged MRs from the GitLab REST API.
+ *
+ * Calls: GET /projects/<encoded-path>/merge_requests?state=merged&...
+ * Uses the token resolved from the environment or `glab` CLI.
+ *
+ * @param owner   Owner or group path (may contain '/')
+ * @param repo    Repository name
+ * @param since   Include only MRs merged after this date
+ * @returns       Array of MRSummary, empty on any error
+ */
+async function listGitLabMergedMRs(
+  owner: string,
+  repo: string,
+  since: Date,
+): Promise<MRSummary[]> {
+  if (!tryGetGitLabToken()) {
+    log.debug('mr-hint: no GitLab token, skipping GitLab MR check');
+    return [];
+  }
+
+  const projectId = encodeURIComponent(`${owner}/${repo}`);
+  const apiPath =
+    `/projects/${projectId}/merge_requests` +
+    `?state=merged&order_by=updated_at&sort=desc&per_page=${MAX_MRS}`;
+
+  try {
+    const resp = await gitlabFetch(apiPath, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!resp.ok) {
+      log.debug(`mr-hint: GitLab API returned ${resp.status}`);
+      return [];
+    }
+    const items = (await resp.json()) as GitLabMR[];
+    const sinceMs = since.getTime();
+    return items
+      .filter((mr) => mr.merged_at && new Date(mr.merged_at).getTime() >= sinceMs)
+      .map((mr) => ({
+        id: String(mr.iid),
+        title: mr.title,
+        url: mr.web_url,
+        mergedAt: mr.merged_at!,
+      }));
+  } catch (err) {
+    log.debug(`mr-hint: GitLab API error: ${(err as Error).message}`);
     return [];
   }
 }
@@ -445,6 +531,8 @@ export async function computeMrHintOutput(): Promise<string | null> {
 
   if (provider === 'tgit') {
     allMrs = await listTGitMergedMRs(owner, repo, since);
+  } else if (provider === 'gitlab') {
+    allMrs = await listGitLabMergedMRs(owner, repo, since);
   } else {
     allMrs = await listGitHubMergedMRs(owner, repo, since);
   }

@@ -18,8 +18,18 @@ describe('parseMrUrl', () => {
     expect(result).toEqual({ provider: 'tgit', owner: 'group/sub', repo: 'project', number: '123' });
   });
 
+  it('解析 GitLab MR URL（带 /-/ 分隔符）', () => {
+    const result = parseMrUrl('https://gitlab.com/org/repo/-/merge_requests/1');
+    expect(result).toEqual({ provider: 'gitlab', owner: 'org', repo: 'repo', number: '1' });
+  });
+
+  it('解析 GitLab MR URL（多层 group）', () => {
+    const result = parseMrUrl('https://gitlab.com/group/sub/project/-/merge_requests/88');
+    expect(result).toEqual({ provider: 'gitlab', owner: 'group/sub', repo: 'project', number: '88' });
+  });
+
   it('不支持的 URL 抛出错误', () => {
-    expect(() => parseMrUrl('https://gitlab.com/org/repo/-/merge_requests/1')).toThrow('无法解析 MR URL');
+    expect(() => parseMrUrl('https://bitbucket.org/org/repo/pull-requests/1')).toThrow('无法解析 MR URL');
   });
 });
 

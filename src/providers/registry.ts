@@ -2,6 +2,7 @@ import type { GitProvider } from './types.js';
 import { TGitProvider } from './tgit/index.js';
 import { GitHubProvider } from './github/index.js';
 import { CNBProvider } from './cnb/index.js';
+import { GitLabProvider } from './gitlab/index.js';
 import { getCurrentPackageName } from '../package-info.js';
 
 // ─── Provider Detection ──────────────────────────────────
@@ -30,10 +31,22 @@ const HOST_MAP: Record<string, string> = {
   'github.com': 'github',
   'git.woa.com': 'tgit',
   'cnb.cool': 'cnb',
+  'gitlab.com': 'gitlab',
 };
 
 /** Providers we are willing to accept as a default override. */
-const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb']);
+const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab']);
+
+/**
+ * Resolve the configured self-hosted GitLab host, lowercased, or null when
+ * `TEAMAI_GITLAB_HOST` is unset. This lets `detectProvider` route an enterprise
+ * GitLab URL (e.g. `gitlab.mycorp.com`) to the gitlab provider without a static
+ * HOST_MAP entry — mirroring how CNB uses TEAMAI_CNB_HOST.
+ */
+function selfHostedGitLabHost(): string | null {
+  const host = process.env.TEAMAI_GITLAB_HOST?.trim().toLowerCase();
+  return host && host !== 'gitlab.com' ? host : null;
+}
 
 /**
  * Decide the fallback provider used when the input URL host is unknown or
@@ -70,10 +83,13 @@ export function getDefaultProvider(): string {
 export function detectProvider(input: string): string {
   const trimmed = input.trim();
 
+  const selfGitLab = selfHostedGitLabHost();
+
   // HTTPS URL: extract host
   const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\//);
   if (httpsMatch) {
     const host = httpsMatch[1].toLowerCase();
+    if (selfGitLab && host === selfGitLab) return 'gitlab';
     return HOST_MAP[host] ?? getDefaultProvider();
   }
 
@@ -81,6 +97,7 @@ export function detectProvider(input: string): string {
   const sshMatch = trimmed.match(/^git@([^:]+):/);
   if (sshMatch) {
     const host = sshMatch[1].toLowerCase();
+    if (selfGitLab && host === selfGitLab) return 'gitlab';
     return HOST_MAP[host] ?? getDefaultProvider();
   }
 
@@ -95,6 +112,7 @@ const PROVIDERS: Record<string, () => GitProvider> = {
   tgit: () => new TGitProvider(),
   github: () => new GitHubProvider(),
   cnb: () => new CNBProvider(),
+  gitlab: () => new GitLabProvider(),
 };
 
 /**

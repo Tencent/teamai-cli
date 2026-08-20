@@ -76,7 +76,7 @@ teamai --version
 
 > Only one admin needs to do this — other members can skip to [Member Onboarding](#member-onboarding).
 
-Create an empty repository on GitHub, TGit (Tencent's internal Git host), or CNB (cnb.cool) (suggested naming: `TeamAi-<team-name>`), or simply run `teamai init` — if the repo doesn't exist yet, you'll be prompted to create it automatically.
+Create an empty repository on GitHub, GitLab (gitlab.com or self-hosted), TGit (Tencent's internal Git host), or CNB (cnb.cool) (suggested naming: `TeamAi-<team-name>`), or simply run `teamai init` — if the repo doesn't exist yet, you'll be prompted to create it automatically.
 
 ### Project Scope (default)
 
