@@ -33,35 +33,3 @@ export function mergeCodeFacts(astFacts: CodeFact[], heuristicFacts: CodeFact[])
   return result;
 }
 
-export interface EdgeConflict {
-  from: string;
-  toHeuristic: string;
-  toAst: string;
-  relation: string;
-}
-
-export function findConflictingEdges(
-  astFacts: CodeFact[],
-  heuristicFacts: CodeFact[]
-): EdgeConflict[] {
-  const conflicts: EdgeConflict[] = [];
-  const heuristicByLine = new Map(
-    heuristicFacts
-      .filter((f) => f.kind === "relation")
-      .map((f) => [`${f.file}:${f.lineStart}`, f] as const)
-  );
-
-  for (const ast of astFacts.filter((f) => f.kind === "relation")) {
-    const heur = heuristicByLine.get(`${ast.file}:${ast.lineStart}`);
-    if (heur && heur.name !== ast.name && heur.confidence === "EXTRACTED" && ast.confidence === "AMBIGUOUS") {
-      conflicts.push({
-        from: ast.file,
-        toHeuristic: heur.name,
-        toAst: ast.name,
-        relation: "DEPENDS_ON"
-      });
-    }
-  }
-
-  return conflicts;
-}

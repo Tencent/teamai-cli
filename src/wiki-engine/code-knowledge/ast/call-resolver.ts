@@ -53,8 +53,13 @@ export function resolveCallSites(
   resolved: Map<string, ResolvedImport | undefined>,
   symbolsByFile: Map<string, AstSymbol[]>
 ): AstCallSite[] {
+  const bindingsByFile = new Map<string, ImportBindingMap>();
   return callSites.map((site) => {
-    const bindings = buildImportBindingsForFile(site.fromFile, imports, resolved, symbolsByFile);
+    let bindings = bindingsByFile.get(site.fromFile);
+    if (!bindings) {
+      bindings = buildImportBindingsForFile(site.fromFile, imports, resolved, symbolsByFile);
+      bindingsByFile.set(site.fromFile, bindings);
+    }
     return resolveOneCall(site, symbolsByFile, bindings);
   });
 }

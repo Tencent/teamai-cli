@@ -72,9 +72,6 @@ export async function loadTsconfigPaths(
   return null;
 }
 
-export function clearTsconfigCache(): void {
-  tsconfigCache.clear();
-}
 
 export async function resolveImportSpecifier(
   repoRoot: string,

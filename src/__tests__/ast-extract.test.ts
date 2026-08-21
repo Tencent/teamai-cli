@@ -98,6 +98,27 @@ describe('AST structural extraction (web-tree-sitter WASM)', () => {
     expect(edge?.source).toBe('code-ast');
   });
 
+  it('treats module-level Python defs as exported so cross-file calls resolve to a symbol', async () => {
+    // Regression: tree-sitter-python has no "__export__" node, so export
+    // detection must fall back to module-level class/def. Without it every
+    // Python symbol is exported=false and symbol-level call resolution never
+    // fires (only the coarser file-level edge survives).
+    const files = [
+      makeFile('pkg/main.py', 'from util import boot\n\ndef run():\n    return boot()\n'),
+      makeFile('pkg/util.py', 'def boot():\n    return 1\n'),
+    ];
+
+    const { result } = await extractStructuralGraphAsFacts({ repoRoot: REPO_ROOT, files });
+
+    const bootSymbol = result.symbols.find((s) => s.name === 'boot' && s.file === 'pkg/util.py');
+    expect(bootSymbol?.exported).toBe(true);
+
+    // The call boot() in main.py resolves to boot's symbol id in util.py.
+    const call = result.callSites.find((c) => c.calleeText === 'boot' && c.fromFile === 'pkg/main.py');
+    expect(call?.resolvedTargetId).toBe('pkg/util.py#Function:boot');
+    expect(call?.resolvedTargetFile).toBe('pkg/util.py');
+  });
+
   it('extracts symbols from Go', async () => {
     const goSrc = [
       'package main',

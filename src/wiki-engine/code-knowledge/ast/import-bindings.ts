@@ -130,8 +130,12 @@ export function collectExportLineStarts(
     }
   }
   if (variant === "python") {
-    for (const node of root.descendantsOfType("__export__")) {
-      if (node) lines.add(node.startPosition.row + 1);
+    // Python has no export keyword: treat module-level class/function
+    // definitions as importable (tree-sitter-python has no "__export__" node).
+    for (const node of root.descendantsOfType(["class_definition", "function_definition"])) {
+      if (node && node.parent?.type === "module") {
+        lines.add(node.startPosition.row + 1);
+      }
     }
   }
   return lines;
