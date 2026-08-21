@@ -2,11 +2,8 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 import type { GitProvider, PrCreateOptions, RepoInfo } from '../types.js';
+import { sanitizeGitUrl } from '../../utils/redact.js';
 import { parseGenericGitRepoInput } from './repo-url.js';
-
-function redactCredentials(message: string): string {
-  return message.replace(/(https?:\/\/)[^/@\s]+@/gi, '$1***@');
-}
 
 function gitIdentity(): string {
   const result = spawnSync('git', ['config', '--get', 'user.name'], {
@@ -26,12 +23,9 @@ function gitIdentity(): string {
  */
 export class GenericGitProvider implements GitProvider {
   readonly name = 'git';
-  private remoteUrl: string | null = null;
 
   parseRepoInput(input: string): RepoInfo {
-    const repoInfo = parseGenericGitRepoInput(input);
-    this.remoteUrl = repoInfo.httpsUrl;
-    return repoInfo;
+    return parseGenericGitRepoInput(input);
   }
 
   isAuthenticated(): boolean {
@@ -55,12 +49,10 @@ export class GenericGitProvider implements GitProvider {
     }
   }
 
-  cloneRepo(_repo: string, localPath: string): void {
-    if (!this.remoteUrl) {
-      throw new Error('Generic Git clone requires parseRepoInput() before cloneRepo().');
-    }
+  cloneRepo(repo: string, localPath: string): void {
+    const remoteUrl = parseGenericGitRepoInput(repo).httpsUrl;
 
-    const result = spawnSync('git', ['clone', this.remoteUrl, localPath], {
+    const result = spawnSync('git', ['clone', remoteUrl, localPath], {
       encoding: 'utf-8',
       stdio: ['inherit', 'pipe', 'pipe'],
       timeout: 120_000,
@@ -68,7 +60,7 @@ export class GenericGitProvider implements GitProvider {
     if (result.error || result.status !== 0) {
       const output = `${result.stderr ?? ''} ${result.stdout ?? ''}`.trim();
       const detail = output || result.error?.message || `exit ${result.status ?? 1}`;
-      throw new Error(`git clone failed: ${redactCredentials(detail)}`);
+      throw new Error(`git clone failed: ${sanitizeGitUrl(detail)}`);
     }
   }
 

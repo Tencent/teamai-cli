@@ -92,7 +92,10 @@ async function ensureSourceRepo(source: SourceConfig, force: boolean): Promise<s
     const providerName = detectProvider(source.repo);
     const provider = getProvider(providerName);
     const repoInfo = provider.parseRepoInput(source.repo);
-    provider.cloneRepo(`${repoInfo.owner}/${repoInfo.repo}`, repoDir);
+    const cloneTarget = provider.name === 'git'
+      ? repoInfo.httpsUrl
+      : `${repoInfo.owner}/${repoInfo.repo}`;
+    provider.cloneRepo(cloneTarget, repoDir);
 
     cloneSpin.succeed(`[source:${source.name}] Cloned`);
     return repoDir;

@@ -1002,8 +1002,11 @@ export async function init(options: GlobalOptions & {
 
   if (!await pathExists(localPath)) {
     const cloneSpin = spinner('Cloning team repo...').start();
+    const cloneTarget = provider.name === 'git'
+      ? repoInfo.httpsUrl
+      : `${repoInfo.owner}/${repoInfo.repo}`;
     try {
-      provider.cloneRepo(`${repoInfo.owner}/${repoInfo.repo}`, localPath);
+      provider.cloneRepo(cloneTarget, localPath);
       cloneSpin.succeed('Team repo cloned');
     } catch (e) {
       if (e instanceof RepoNotFoundError) {
@@ -1033,7 +1036,7 @@ export async function init(options: GlobalOptions & {
         // Retry clone after creation
         const retryCloneSpin = spinner('Cloning newly created repo...').start();
         try {
-          provider.cloneRepo(`${repoInfo.owner}/${repoInfo.repo}`, localPath);
+          provider.cloneRepo(cloneTarget, localPath);
           retryCloneSpin.succeed('Team repo cloned');
         } catch (ce) {
           retryCloneSpin.fail(`Clone failed: ${(ce as Error).message}`);

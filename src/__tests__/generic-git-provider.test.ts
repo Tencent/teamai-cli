@@ -72,12 +72,14 @@ describe('GenericGitProvider transport', () => {
     mockedSpawnSync.mockReset();
   });
 
-  it('clones the exact parsed remote through system git', () => {
+  it('clones a full remote URL without requiring parseRepoInput first', () => {
     mockedSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
     const provider = new GenericGitProvider();
-    provider.parseRepoInput('git@code.qschou.com:Enterprise/arb-workflow-kit.git');
 
-    provider.cloneRepo('Enterprise/arb-workflow-kit', '/tmp/team-repo');
+    provider.cloneRepo(
+      'git@code.qschou.com:Enterprise/arb-workflow-kit.git',
+      '/tmp/team-repo',
+    );
 
     expect(mockedSpawnSync).toHaveBeenCalledWith(
       'git',
@@ -93,10 +95,28 @@ describe('GenericGitProvider transport', () => {
       stderr: 'fatal: Authentication failed',
     });
     const provider = new GenericGitProvider();
-    provider.parseRepoInput('https://code.qschou.com/Enterprise/arb-workflow-kit.git');
 
-    expect(() => provider.cloneRepo('Enterprise/arb-workflow-kit', '/tmp/team-repo'))
+    expect(() => provider.cloneRepo(
+      'https://code.qschou.com/Enterprise/arb-workflow-kit.git',
+      '/tmp/team-repo',
+    ))
       .toThrow(/git clone failed: fatal: Authentication failed/);
+  });
+
+  it('uses the shared URL sanitizer for clone errors', () => {
+    mockedSpawnSync.mockReturnValue({
+      status: 128,
+      stdout: '',
+      stderr: 'fatal: https://oauth2:secret@code.qschou.com/Enterprise/repo.git',
+    });
+    const provider = new GenericGitProvider();
+
+    expect(() => provider.cloneRepo(
+      'https://code.qschou.com/Enterprise/repo.git',
+      '/tmp/team-repo',
+    )).toThrow(
+      'git clone failed: fatal: https://***@code.qschou.com/Enterprise/repo.git',
+    );
   });
 
   it('reports unsupported host API operations explicitly', async () => {

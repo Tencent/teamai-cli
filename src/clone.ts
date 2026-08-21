@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 import { getGitHubToken } from './providers/github/gh-cli.js';
 import { tgitGitCloneUrl } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
+import { sanitizeGitUrl } from './utils/redact.js';
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -56,9 +57,7 @@ function convertHttpToSsh(url: string): string {
  * @param msg  可能含有 token 的字符串
  * @returns    脱敏后的字符串
  */
-export function sanitizeGitUrl(msg: string): string {
-    return msg.replace(/https?:\/\/[^@\s]+@/g, 'https://***@');
-}
+export { sanitizeGitUrl };
 
 /**
  * 对日志/错误信息中的 token 进行脱敏。

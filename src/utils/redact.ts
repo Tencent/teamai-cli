@@ -32,6 +32,11 @@
 
 const PLACEHOLDER = (label: string): string => `<REDACTED:${label}>`;
 
+/** Mask credentials embedded in HTTP(S) Git URLs found in logs or errors. */
+export function sanitizeGitUrl(text: string): string {
+  return text.replace(/(https?:\/\/)[^/@\s]+@/gi, '$1***@');
+}
+
 /** Env var name fragments that mark a value as likely-secret. */
 const SECRET_KEY_HINTS = ['TOKEN', 'SECRET', 'KEY', 'PASSWORD', 'PASSWD', '_PAT', 'CREDENTIAL'];
 
