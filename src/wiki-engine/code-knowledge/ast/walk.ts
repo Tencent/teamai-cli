@@ -9,12 +9,13 @@ import {
   parseImportBindings
 } from "./import-bindings.js";
 import { grammarForExtension, getLanguage, getParser, getQuery } from "./parser-registry.js";
-import type { AstCallSite, AstImport, AstSymbol, AstSymbolKind } from "./types.js";
+import type { AstCallSite, AstImplementsSite, AstImport, AstSymbol, AstSymbolKind } from "./types.js";
 
 export interface FileWalkResult {
   symbols: AstSymbol[];
   imports: AstImport[];
   callSites: AstCallSite[];
+  implementsSites: AstImplementsSite[];
   parseErrors: string[];
 }
 
@@ -28,15 +29,16 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
   const symbols: AstSymbol[] = [];
   const imports: AstImport[] = [];
   const callSites: AstCallSite[] = [];
+  const implementsSites: AstImplementsSite[] = [];
   const parseErrors: string[] = [];
 
   if (!isAstParseableFile(file.relativePath)) {
-    return { symbols, imports, callSites, parseErrors };
+    return { symbols, imports, callSites, implementsSites, parseErrors };
   }
 
   if (Buffer.byteLength(file.content, "utf8") > MAX_FILE_BYTES) {
     parseErrors.push(`skipped large file: ${file.relativePath}`);
-    return { symbols, imports, callSites, parseErrors };
+    return { symbols, imports, callSites, implementsSites, parseErrors };
   }
 
   const variant = grammarForExtension(path.extname(file.relativePath))!;
@@ -49,12 +51,12 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
     tree = parser.parse(file.content);
   } catch (error) {
     parseErrors.push(`parse failed: ${file.relativePath}: ${error instanceof Error ? error.message : String(error)}`);
-    return { symbols, imports, callSites, parseErrors };
+    return { symbols, imports, callSites, implementsSites, parseErrors };
   }
 
   if (!tree) {
     parseErrors.push(`parse returned null: ${file.relativePath}`);
-    return { symbols, imports, callSites, parseErrors };
+    return { symbols, imports, callSites, implementsSites, parseErrors };
   }
 
   try {
@@ -120,13 +122,30 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
           receiver,
           confidence: "INFERRED"
         });
+        continue;
+      }
+
+      if (byName.has("impl.stmt")) {
+        const classNode = byName.get("impl.class");
+        const ifaceNames = match.captures
+          .filter((c) => c.name === "impl.iface")
+          .map((c) => c.node.text);
+        if (classNode && ifaceNames.length > 0) {
+          implementsSites.push({
+            fromFile: file.relativePath,
+            className: classNode.text,
+            ifaceNames,
+            line: classNode.startPosition.row + 1
+          });
+        }
+        continue;
       }
     }
   } finally {
     tree.delete();
   }
 
-  return { symbols, imports, callSites, parseErrors };
+  return { symbols, imports, callSites, implementsSites, parseErrors };
 }
 
 function symbolId(file: string, kind: AstSymbolKind, name: string): string {

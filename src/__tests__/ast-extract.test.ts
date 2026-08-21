@@ -142,6 +142,49 @@ describe('AST structural extraction (web-tree-sitter WASM)', () => {
     expect(result.gaps.some((g) => g.kind === 'EXTERNAL_IMPORT')).toBe(true);
   });
 
+  it('resolves a multi-segment Python import (from a.b.c import x) to a nested file', async () => {
+    const files = [
+      makeFile('app/main.py', 'from pkg.sub.helper import boot\n\ndef run():\n    return boot()\n'),
+      makeFile('app/pkg/sub/helper.py', 'def boot():\n    return 1\n'),
+    ];
+
+    const { result } = await extractStructuralGraphAsFacts({ repoRoot: REPO_ROOT, files });
+
+    const edge = result.edges.find(
+      (e) => e.from === 'app/main.py' && e.to === 'app/pkg/sub/helper.py',
+    );
+    expect(edge).toBeDefined();
+    expect(edge?.relation).toBe('DEPENDS_ON');
+    expect(edge?.source).toBe('code-ast');
+  });
+
+  it('produces an IMPLEMENTS edge for a TS class implementing an imported interface', async () => {
+    const files = [
+      makeFile('src/svc.ts', 'import { IFoo } from "./iface";\n\nexport class Svc implements IFoo {\n  run() {}\n}\n'),
+      makeFile('src/iface.ts', 'export interface IFoo {\n  run(): void;\n}\n'),
+    ];
+
+    const { result } = await extractStructuralGraphAsFacts({ repoRoot: REPO_ROOT, files });
+
+    const impl = result.edges.find(
+      (e) => e.relation === 'IMPLEMENTS' && e.from === 'src/svc.ts' && e.to === 'src/iface.ts',
+    );
+    expect(impl).toBeDefined();
+    expect(impl?.source).toBe('code-ast');
+  });
+
+  it('produces an IMPLEMENTS edge for a same-file interface', async () => {
+    const files = [
+      makeFile('src/only.ts', 'export interface IBar {\n  go(): void;\n}\n\nexport class Impl implements IBar {\n  go() {}\n}\n'),
+    ];
+
+    const { result } = await extractStructuralGraphAsFacts({ repoRoot: REPO_ROOT, files });
+
+    const impl = result.edges.find((e) => e.relation === 'IMPLEMENTS' && e.from === 'src/only.ts');
+    expect(impl).toBeDefined();
+    expect(impl?.to).toBe('src/only.ts');
+  });
+
   it('records unresolved external imports as gaps', async () => {
     const files = [
       makeFile('src/a.ts', 'import { thing } from "some-external-pkg";\nexport const x = thing;\n'),

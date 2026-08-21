@@ -29,6 +29,15 @@ export const TS_AST_QUERY_SOURCE = `
     property: (property_identifier) @call.member
   )
 ) @call.member
+
+(class_declaration
+  name: (type_identifier) @impl.class
+  (class_heritage
+    (implements_clause
+      (type_identifier) @impl.iface
+    )
+  )
+) @impl.stmt
 `;
 
 export const PYTHON_AST_QUERY_SOURCE = `

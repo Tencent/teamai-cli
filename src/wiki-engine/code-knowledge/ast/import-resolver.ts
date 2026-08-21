@@ -118,7 +118,9 @@ async function resolveSiblingModuleImport(
     return undefined;
   }
   const fromDir = path.dirname(fromFile);
-  const base = toPosix(path.normalize(path.join(fromDir, specifier)));
+  // Python dotted modules (a.b.c) map to nested paths (a/b/c); other langs keep the specifier as-is.
+  const modulePath = fromFile.endsWith(".py") ? specifier.replace(/\./gu, "/") : specifier;
+  const base = toPosix(path.normalize(path.join(fromDir, modulePath)));
   const candidates = await expandModulePaths(base, fromFile, fileExists);
   return pickCandidate(candidates);
 }

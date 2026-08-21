@@ -3,10 +3,10 @@ import { createRequire } from "node:module";
 import type { CodeCollectedFile } from "../code-collector.js";
 import { type CodeFact } from "../code-extractors.js";
 import { structuralEdgesToCodeFacts, unresolvedImportsToGaps } from "./adapt-code-facts.js";
-import { callResolutionWeight, resolveCallSites } from "./call-resolver.js";
+import { buildImportBindingsForFile, callResolutionWeight, resolveCallSites } from "./call-resolver.js";
 import { buildFileExistenceChecker, resolveImportSpecifier } from "./import-resolver.js";
 import { ensureAstReady } from "./parser-registry.js";
-import type { AstExtractionGap, StructuralEdge, StructuralGraphResult } from "./types.js";
+import type { AstExtractionGap, AstImplementsSite, StructuralEdge, StructuralGraphResult } from "./types.js";
 import { isAstParseableFile, walkFile } from "./walk.js";
 
 const require = createRequire(import.meta.url);
@@ -46,6 +46,7 @@ export async function extractStructuralGraph(
   const symbols: StructuralGraphResult["symbols"] = [];
   const imports: StructuralGraphResult["imports"] = [];
   const callSites: StructuralGraphResult["callSites"] = [];
+  const implementsSites: AstImplementsSite[] = [];
   const gaps: AstExtractionGap[] = [];
   const edges: StructuralEdge[] = [];
 
@@ -74,6 +75,7 @@ export async function extractStructuralGraph(
     symbols.push(...walked.symbols);
     imports.push(...walked.imports);
     callSites.push(...walked.callSites);
+    implementsSites.push(...walked.implementsSites);
   }
 
   const symbolsByFile = new Map<string, typeof symbols>();
@@ -138,6 +140,42 @@ export async function extractStructuralGraph(
         }
       ]
     });
+  }
+
+  // IMPLEMENTS edges: resolve each implemented interface name to its defining
+  // file via (a) same-file interface symbols or (b) imported bindings. Names
+  // that resolve to neither (e.g. ambient/global types) are skipped.
+  for (const site of implementsSites) {
+    const bindings = buildImportBindingsForFile(site.fromFile, imports, resolvedImports, symbolsByFile);
+    const localInterfaces = symbolsByFile.get(site.fromFile) ?? [];
+    for (const ifaceName of site.ifaceNames) {
+      let targetFile: string | undefined;
+      const sameFile = localInterfaces.find((s) => s.name === ifaceName && s.kind === "interface");
+      if (sameFile) {
+        targetFile = site.fromFile;
+      } else {
+        targetFile = bindings.localToFile.get(ifaceName);
+      }
+      if (!targetFile) {
+        continue;
+      }
+      edges.push({
+        from: site.fromFile,
+        to: targetFile,
+        relation: "IMPLEMENTS",
+        source: "code-ast",
+        weight: 0.9,
+        confidence: "EXTRACTED",
+        evidence: [
+          {
+            ref: site.fromFile,
+            lineStart: site.line,
+            lineEnd: site.line,
+            note: `${site.className} implements ${ifaceName}`
+          }
+        ]
+      });
+    }
   }
 
   const stats = {

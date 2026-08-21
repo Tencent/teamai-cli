@@ -33,6 +33,13 @@ export interface AstCallSite {
   confidence: ManifestConfidence;
 }
 
+export interface AstImplementsSite {
+  fromFile: string;
+  className: string;
+  ifaceNames: string[];
+  line: number;
+}
+
 export type StructuralRelation = "DEPENDS_ON" | "REFERENCES" | "IMPLEMENTS";
 
 export interface StructuralEdge {
