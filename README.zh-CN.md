@@ -205,7 +205,7 @@ teamai codebase --lint                      # 健康检查
 
 依赖边来自两条并行的提取轨道，重叠时以 AST 结果优先：
 
-- **AST 轨**（TypeScript/JavaScript、Python、Go）：使用 WASM 版 [tree-sitter](https://tree-sitter.github.io/) 解析器，将 `import`/`require` 与调用点解析为精确的文件到文件 `DEPENDS_ON` / `REFERENCES` 边（标记为 `code-ast`，带置信度权重）。
+- **AST 轨**（TypeScript/JavaScript、Python、Go）：使用 WASM 版 [tree-sitter](https://tree-sitter.github.io/) 解析器，将 `import`/`require`、调用点、以及 TS `implements` 子句解析为精确的文件到文件 `DEPENDS_ON` / `REFERENCES` / `IMPLEMENTS` 边（标记为 `code-ast`，带置信度权重）。
 - **启发式轨**（所有语言，含 Java/Rust）：基于正则的提取（标记为 `code-heuristic`），同时覆盖 AST 轨未支持的语言。
 
 WASM 解析器是纯 JavaScript 依赖，无需任何原生编译工具链。若因任何原因加载失败，提取会降级到启发式轨并记录一条 `AST_UNAVAILABLE` gap。设置 `TEAMAI_SKIP_AST=1` 可强制仅使用启发式提取。
