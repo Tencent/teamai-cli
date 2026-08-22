@@ -16,31 +16,7 @@ import {
 import { touchCacheEntry } from './utils/cache-index.js';
 import { log } from './utils/logger.js';
 
-// ─── Write-Phase Mutex ─────────────────────────────
-
-/**
- * Serializes the team-repo write phase across concurrent importFromRepo calls.
- *
- * Batch imports (--from-repo-list / --from-org) run multiple importFromRepo in
- * parallel; the clone+extract phase is independent per repo (safe), but writing
- * artifacts into the shared teamwikiRoot (per-repo graph copy, global reconcile,
- * router/index, caches) is a read-modify-write on shared files and races.
- * This mutex lets extract stay parallel while the write phase runs one at a time.
- */
-let teamwikiWriteLock: Promise<void> = Promise.resolve();
-
-export async function acquireTeamwikiWriteLock(): Promise<() => void> {
-    let release!: () => void;
-    const next = new Promise<void>((resolve) => {
-        release = resolve;
-    });
-    const prev = teamwikiWriteLock;
-    teamwikiWriteLock = teamwikiWriteLock.then(() => next);
-    await prev;
-    return release;
-}
-
-// ─── Types ─────────────────────────────────
+// ─── Types ──────────────────────────────────────────────
 
 export interface ImportFromRepoOptions {
     /** Repo URL (https or ssh) */
@@ -198,7 +174,7 @@ export function detectCrossRepoEdges(
     return crossEdges;
 }
 
-// ─── Public API ────────────────────────────────
+// ─── Public API ─────────────────────────────────────────
 
 /**
  * Main entry point for `teamai import --from-repo <url>`.
@@ -343,11 +319,8 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         : path.join(teamRepoDir, 'teamwiki');
     if (!dryRun) {
         const cacheWiki = path.join(cacheDir, 'teamwiki');
-        let writeRelease: (() => void) | null = null;
         try {
-            // NOTE: incremental preheating read — known minor race: a concurrent import may
-            // overwrite teamwikiRoot/.indices just after this read; affects incremental
-            // accuracy only, does not drop AST edges in a full import.
+            // Incremental mode: copy existing cache files to cacheDir for extractCodebase to read
             if (incremental) {
                 const destIndices = path.join(teamwikiRoot, '.indices');
                 const cacheIndices = path.join(cacheDir, 'teamwiki', '.indices');
@@ -363,15 +336,12 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                     await fs.copy(existingManifest, path.join(cacheDir, 'teamwiki', 'source-manifest.json'));
                 }
             }
-            // extractCodebase writes only to cacheDir — lock-free, runs in parallel across repos.
             await extractCodebase({
                 path: cacheDir, project: slug, json: false, skipEnrich, incremental,
                 repoUrl: url,
                 branch: cloneBranch === 'HEAD' ? undefined : cloneBranch,
                 sourceMrUrl,
             });
-            // Serialise write phase: acquire mutex before touching shared teamwikiRoot.
-            writeRelease = await acquireTeamwikiWriteLock();
             // Move artifacts from cacheDir/teamwiki/ to target teamwikiRoot
             if (await fs.pathExists(cacheWiki)) {
                 const evidenceSrc = path.join(cacheWiki, 'evidence', 'code', slug);
@@ -398,8 +368,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                     const base = markerIdx >= 0 ? existing.slice(0, markerIdx).trimEnd() : existing.trimEnd();
                     let combined: string;
                     if (!base || !base.startsWith('---')) {
-                        const fm = `---\ntitle: ${slug} overview\ndomain: code-knowledge\n---\n\n`;
-                        combined = fm + marker + '\n\n' + aiNarrative;
+                        combined = `---\ntitle: ${slug} overview\ndomain: code-knowledge\n---\n\n${marker}\n\n${aiNarrative}`;
                     } else {
                         combined = base + '\n\n---\n\n' + marker + '\n\n' + aiNarrative;
                     }
@@ -463,8 +432,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                     const insertPoint = idx.indexOf('## Navigation');
                     if (insertPoint > 0) {
                         const entry = `- [${slug}](./evidence/code/${slug}/index.md) — code knowledge graph\n\n`;
-                        const updated = idx.slice(0, insertPoint) + entry + idx.slice(insertPoint);
-                        await fs.writeFile(indexPath, updated, 'utf8');
+                        await fs.writeFile(indexPath, idx.slice(0, insertPoint) + entry + idx.slice(insertPoint), 'utf8');
                     }
                 }
             } else {
@@ -475,41 +443,37 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             }
 
             log.info(chalk.green(`✓ teamwiki/ knowledge graph updated: ${slug}`));
-
-            // 4c. Reconcile product docs ↔ code knowledge (under write lock)
-            if (teamwikiRoot) {
-                try {
-                    const { reconcileKnowledge } = await import('./wiki-engine/adapters/index.js');
-                    const result = await reconcileKnowledge({ wikiRoot: teamwikiRoot, dryRun: false });
-                    if (result.mappings > 0 || result.gaps.length > 0) {
-                        const { mappings, gaps, graphEdges } = result;
-                        const edgeCount = graphEdges.length;
-                        log.info(`  reconcile: ${mappings} mappings, ${gaps.length} gaps, ${edgeCount} MAPS_TO edges`);
-                    }
-                } catch (e) {
-                    log.debug(`reconcile skipped: ${(e as Error).message}`);
-                }
-            }
-
-            // 5. Deep enrich (under write lock, before push — so all content goes into one MR)
-            if (!skipEnrich && teamwikiRoot) {
-                const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code', slug);
-                if (await fs.pathExists(path.join(evidenceDir, '_manifest.json'))) {
-                    try {
-                        const { deepEnrich } = await import('./deep-enrich.js');
-                        await deepEnrich({ project: slug, evidenceDir, wikiRoot: teamwikiRoot, cacheDir });
-                        log.info(chalk.green(`✓ Deep enrich complete: ${slug}`));
-                    } catch (e) {
-                        log.debug(`deep-enrich failed for ${slug} (non-blocking): ${(e as Error).message}`);
-                    }
-                }
-            }
         } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            log.debug(`[wiki-engine] Graph generation failed (non-blocking): ${msg}`);
+            log.debug(`[wiki-engine] Graph generation failed (non-blocking): ${err instanceof Error ? err.message : err}`);
         } finally {
             await fs.remove(cacheWiki).catch(() => {});
-            writeRelease?.();
+        }
+    }
+
+    // 4c. Reconcile product docs ↔ code knowledge (if product docs exist)
+    if (!dryRun && teamwikiRoot) {
+        try {
+            const { reconcileKnowledge } = await import('./wiki-engine/adapters/index.js');
+            const result = await reconcileKnowledge({ wikiRoot: teamwikiRoot, dryRun: false });
+            if (result.mappings > 0 || result.gaps.length > 0) {
+                log.info(`  reconcile: ${result.mappings} mappings, ${result.gaps.length} gaps, ${result.graphEdges.length} MAPS_TO edges`);
+            }
+        } catch (e) {
+            log.debug(`reconcile skipped: ${(e as Error).message}`);
+        }
+    }
+
+    // 5. Deep enrich (synchronous, before push — so all content goes into one MR)
+    if (!dryRun && !skipEnrich && teamwikiRoot) {
+        const evidenceDir = path.join(teamwikiRoot, 'evidence', 'code', slug);
+        if (await fs.pathExists(path.join(evidenceDir, '_manifest.json'))) {
+            try {
+                const { deepEnrich } = await import('./deep-enrich.js');
+                await deepEnrich({ project: slug, evidenceDir, wikiRoot: teamwikiRoot, cacheDir });
+                log.info(chalk.green(`✓ Deep enrich complete: ${slug}`));
+            } catch (e) {
+                log.debug(`deep-enrich failed for ${slug} (non-blocking): ${(e as Error).message}`);
+            }
         }
     }
 
