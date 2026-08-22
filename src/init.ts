@@ -1265,6 +1265,13 @@ export async function init(options: GlobalOptions & {
       await writeFile(gitignorePath, gitignoreContent);
       log.debug('Generated .teamai/.gitignore for project scope');
     }
+
+    // Keep teamai-managed paths (.claude/, AGENTS.md, .teamai/) out of the
+    // business repo's `git status`. Marker-delimited block, idempotent; see
+    // ensureTeamaiGitignore. Standalone repo mode only — single-repo mode
+    // intentionally COMMITS .claude settings to the business repo.
+    const { ensureTeamaiGitignore } = await import('./utils/git.js');
+    await ensureTeamaiGitignore(projectRoot ?? process.cwd());
   } else {
     await ensureDir(TEAMAI_HOME);
     await saveLocalConfig(localConfig);

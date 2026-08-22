@@ -737,3 +737,51 @@ export async function getRepoStatus(localPath: string): Promise<{ ahead: number;
     modified: [...status.modified, ...status.not_added, ...status.created],
   };
 }
+
+// ─── Business-repo .gitignore management (standalone project scope) ──────
+
+const TEAMAI_GITIGNORE_START = '# >>> teamai managed >>>';
+const TEAMAI_GITIGNORE_END = '# <<< teamai managed <<<';
+
+/**
+ * Ensure the business repo's .gitignore keeps teamai-managed paths out of
+ * git status noise. In standalone project scope, pull writes synced skills,
+ * injected hooks/settings and the culture block INTO the user's business
+ * repo (.claude/, AGENTS.md, .teamai/). Without ignore entries every pull
+ * leaves untracked-file noise in `git status` and risks accidental commits
+ * of machine-specific churn.
+ *
+ * Appends a marker-delimited block once; never touches an existing block
+ * (user edits inside the markers are preserved), never untracks files that
+ * are already tracked (ignore entries only affect untracked paths).
+ *
+ * Escape hatch: TEAMAI_MANAGE_GITIGNORE=0 disables this entirely.
+ *
+ * @returns true when the block was appended, false when it already existed
+ *          or management is disabled.
+ */
+export async function ensureTeamaiGitignore(projectRoot: string): Promise<boolean> {
+  if (process.env.TEAMAI_MANAGE_GITIGNORE === '0') return false;
+
+  const { readFileSafe, writeFile } = await import('./fs.js');
+  const gitignorePath = path.join(projectRoot, '.gitignore');
+  const current = await readFileSafe(gitignorePath);
+  if (current !== null && current.includes(TEAMAI_GITIGNORE_START)) {
+    return false; // block already present (possibly user-edited) — leave it alone
+  }
+
+  const block = [
+    TEAMAI_GITIGNORE_START,
+    '.teamai/',
+    '.claude/',
+    'AGENTS.md',
+    TEAMAI_GITIGNORE_END,
+  ].join('\n');
+
+  const next = current === null || current.trim() === ''
+    ? block + '\n'
+    : current.replace(/\n*$/, '\n') + block + '\n';
+  await writeFile(gitignorePath, next);
+  log.info(`Added teamai ignore block to ${gitignorePath}`);
+  return true;
+}

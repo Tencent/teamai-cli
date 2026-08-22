@@ -1291,6 +1291,18 @@ export async function pull(options: GlobalOptions): Promise<void> {
     } catch (e) {
       log.warn(`Project-scope pull error: ${(e as Error).message}`);
     }
+
+    // 3.1. Keep teamai-managed paths out of the business repo's git status.
+    // Idempotent marker block; self-heals a missing/removed block. Standalone
+    // repo mode only (single-repo mode commits its .claude settings by design).
+    if (!options.dryRun && projectConfig.repo.kind !== 'self' && projectConfig.projectRoot) {
+      try {
+        const { ensureTeamaiGitignore } = await import('./utils/git.js');
+        await ensureTeamaiGitignore(projectConfig.projectRoot);
+      } catch (e) {
+        log.debug(`gitignore ensure skipped: ${(e as Error).message}`);
+      }
+    }
   }
 
   // 3.5. Reconcile built-in + team hooks for the active scope only. Runs OUTSIDE
