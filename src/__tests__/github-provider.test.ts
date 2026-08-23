@@ -106,7 +106,7 @@ describe('detectProvider', () => {
   });
 
   it('uses generic git for unknown hosts', () => {
-    expect(detectProvider('https://gitlab.com/org/repo')).toBe('git');
+    expect(detectProvider('https://gitea.example.com/org/repo')).toBe('git');
   });
 });
 

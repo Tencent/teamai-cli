@@ -151,7 +151,7 @@ export const TeamaiConfigSchema = z.object({
   description: z.string().default(''),
   repo: z.string(),
   /** Git hosting provider. `git` is the transport-only fallback for arbitrary hosts. */
-  provider: z.enum(['tgit', 'github', 'cnb', 'git']).default('tgit'),
+  provider: z.enum(['tgit', 'github', 'cnb', 'gitlab', 'git']).default('tgit'),
   /**
    * @deprecated Ignored by `teamai init` (issue #250). Local install scope is
    * decided only by CLI `--scope` / default. Kept optional for old teamai.yaml files.

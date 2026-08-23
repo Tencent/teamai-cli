@@ -1,13 +1,14 @@
 # Git Provider 说明
 
-TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现了四个：
+TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现了五个：
 
 | Provider | Host            | 认证方式                            | 建议场景              |
 |----------|-----------------|--------------------------------------|----------------------|
 | `github` | github.com      | `gh` CLI 或 `GITHUB_TOKEN` 环境变量  | 开源项目、外部用户    |
 | `tgit`   | git.woa.com     | `gf` CLI（自动下载）+ `~/.netrc`     | 腾讯内部团队          |
 | `cnb`    | cnb.cool        | `cnb login` 或 `CNB_TOKEN` 环境变量  | CNB（云原生构建）用户 |
-| `git`    | 任意 Git host   | 系统 Git Credential Helper 或 SSH Key | 自建 GitLab/Gitea 等 |
+| `gitlab` | gitlab.com 或自托管实例 | `GITLAB_TOKEN` 环境变量              | GitLab / 企业自托管   |
+| `git`    | 任意 Git host   | 系统 Git Credential Helper 或 SSH Key | 自建 Gitea 等其他平台 |
 
 ## Provider 自动检测
 
@@ -21,6 +22,8 @@ https://git.woa.com/team/repo(.git)     → tgit
 git@git.woa.com:team/repo.git           → tgit
 https://cnb.cool/org/repo(.git)         → cnb
 git@cnb.cool:org/repo.git               → cnb
+https://gitlab.com/org/repo(.git)       → gitlab
+git@gitlab.com:org/repo.git             → gitlab
 https://git.example.com/group/repo.git  → git
 git@git.example.com:group/repo.git      → git
 ```
@@ -159,9 +162,58 @@ CNB Provider 不设默认 email 域（同 GitHub）。
 
 内部/企业自托管实例（如内网镜像）可通过 `TEAMAI_CNB_HOST` 覆盖 git host，但这类部署还必须给 `cnb` CLI 设置 `CNB_API_ENDPOINT`（以及 `CNB_WEB_ENDPOINT`）指向对应 API——本封装不代管这些端点，且尚未实测，暂不作为受支持配置。
 
+## GitLab Provider（含自托管）
+
+GitLab Provider 通过 GitLab **REST API v4** 工作，**不需要任何外部 CLI**——只依赖一个 Personal Access Token。这是新增 Provider 时推荐的形态：GitLab（含企业自托管实例）都有标准的 REST API，行为可预测。
+
+### 认证
+
+通过标准 GitLab 环境变量配置：
+
+```bash
+export GITLAB_URL=https://gitlab.example.com   # 自托管实例 base URL；默认 https://gitlab.com
+export GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxx      # Personal Access Token，需要 api scope
+```
+
+token 变量支持三个名字（按优先级）：`GITLAB_TOKEN` > `GITLAB_PRIVATE_TOKEN` > `GITLAB_PAT`。
+
+### 自托管实例检测
+
+- **公有 gitlab.com**：URL host 直接命中，自动选择 gitlab provider。
+- **自托管实例**：设置 `GITLAB_URL` 后，URL host 与 `GITLAB_URL` 的 host 相同时自动识别为 gitlab；也可用 `TEAMAI_GITLAB_HOST` 直接指定 host。两种方式都不需要写完整 URL：
+  ```bash
+  export GITLAB_URL=https://git.example.com
+  teamai init git.example.com/yourgroup/yourrepo     # → gitlab
+  ```
+- 也可以在 team 仓库的 `teamai.yaml` 显式写 `provider: gitlab` 强制切换。
+
+### 多级命名空间
+
+GitLab 支持 `group/subgroup/repo` 多级路径，provider 的路径解析会保留完整 group 路径：
+
+```
+https://git.example.com/Group/Subgroup/repo
+git@git.example.com:Group/Subgroup/repo.git
+```
+
+### 支持的操作
+
+| 操作                   | 实现                                                        |
+|------------------------|-------------------------------------------------------------|
+| clone                  | `git clone https://oauth2:<token>@<host>/...`              |
+| 创建仓库               | `POST /api/v4/projects`（匹配用户 namespace 或解析 group） |
+| 创建 MR                | `POST /api/v4/projects/:id/merge_requests`                 |
+| 指定 reviewer          | 解析 username → user id，提交 `reviewer_ids`                |
+| 拉取 MR 数据           | `GET /api/v4/projects/:id/merge_requests/:iid` + commits + changes |
+| 列出 group 仓库        | `GET /api/v4/groups/:path/projects`（分页）                 |
+
+### 默认 email 域
+
+GitLab Provider 不设默认 email 域（同 GitHub），使用用户的 git 全局配置。
+
 ## 手动指定 Provider
 
-除了 URL 自动检测，也可以在 team 仓库的 `teamai.yaml` 中显式写 `provider: github`、`provider: tgit`、`provider: cnb` 或 `provider: git` 强制切换。一个典型的 `teamai.yaml`：
+除了 URL 自动检测，也可以在 team 仓库的 `teamai.yaml` 中显式写 `provider: github`、`provider: tgit`、`provider: cnb`、`provider: gitlab` 或 `provider: git` 强制切换。一个典型的 `teamai.yaml`：
 
 ```yaml
 team: my-team
