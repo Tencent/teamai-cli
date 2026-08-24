@@ -1,6 +1,5 @@
 import type { OrgRepoInfo } from '../types.js';
-import { getGitLabToken } from './gitlab-api.js';
-import { GITLAB_BASE_URL } from './gitlab-api.js';
+import { getGitLabToken, gitlabBaseUrl } from './gitlab-api.js';
 
 /** 响应体最大 50 MB，防止恶意服务器返回超大响应导致 OOM */
 const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
@@ -66,7 +65,10 @@ export async function gitlabListOrgRepos(
   let page = 1;
 
   while (collected.length < maxRepos) {
-    const url = `${GITLAB_BASE_URL}/api/v4/groups/${encodedGroup}/projects?per_page=${perPage}&page=${page}`;
+    // include_subgroups=true — GitLab defaults it to false, which would silently
+    // drop every project nested under a subgroup of the requested group.
+    const url = `${gitlabBaseUrl()}/api/v4/groups/${encodedGroup}/projects`
+      + `?per_page=${perPage}&page=${page}&include_subgroups=true`;
     const resp = await fetch(url, { headers, redirect: 'manual' });
 
     if (resp.status >= 300 && resp.status < 400) {
@@ -95,8 +97,14 @@ export async function gitlabListOrgRepos(
         chunks.push(value);
       }
     }
-    const bodyText = Buffer.concat(chunks).toString('utf-8');
-    const items = JSON.parse(bodyText) as GitLabProjectApiItem[];
+    const bodyText = Buffer.concat(chunks).toString('utf-8').trim();
+    if (!bodyText) break;
+    let items: GitLabProjectApiItem[];
+    try {
+      items = JSON.parse(bodyText) as GitLabProjectApiItem[];
+    } catch {
+      throw new Error(`GitLab API returned a malformed project list for group ${group}`);
+    }
     if (!Array.isArray(items) || items.length === 0) break;
 
     for (const item of items) {

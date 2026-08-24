@@ -175,7 +175,9 @@ export GITLAB_URL=https://gitlab.example.com   # 自托管实例 base URL；默�
 export GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxx      # Personal Access Token，需要 api scope
 ```
 
-token 变量支持三个名字（按优先级）：`GITLAB_TOKEN` > `GITLAB_PRIVATE_TOKEN` > `GITLAB_PAT`。
+token 变量支持三个名字（按优先级）：`GITLAB_TOKEN` > `GITLAB_PRIVATE_TOKEN` > `GITLAB_PAT`。空值/纯空白视为未设置，会继续尝试下一个别名。
+
+`GITLAB_URL` **必须带 scheme**（`https://` 或 `http://`）。写成 `gitlab.example.com` 会在执行 GitLab 操作时报错退出，而不是静默回落到 gitlab.com。内网 http 实例、非标准端口、以及挂在子路径下的部署（`https://example.com/gitlab`）都会被完整保留，包括 clone URL。
 
 ### 自托管实例检测
 
@@ -187,6 +189,10 @@ token 变量支持三个名字（按优先级）：`GITLAB_TOKEN` > `GITLAB_PRIV
   ```
 - 也可以在 team 仓库的 `teamai.yaml` 显式写 `provider: gitlab` 强制切换。
 
+### 与 `git` 通用 Provider 的分工
+
+未知 host 默认落到 `git` 通用 Provider——它只做传输（clone/pull/push 走系统 Git 凭据），`createRepo` 和创建 MR 都会直接报「不支持」。GitLab Provider 的价值就在这里：把自托管实例识别出来后，建仓、建 MR、拉 MR 数据、列 group 仓库这些平台能力才可用。检测顺序是 **已知 host → 自托管 GitLab → `git` 通用回落**。
+
 ### 多级命名空间
 
 GitLab 支持 `group/subgroup/repo` 多级路径，provider 的路径解析会保留完整 group 路径：
@@ -196,16 +202,18 @@ https://git.example.com/Group/Subgroup/repo
 git@git.example.com:Group/Subgroup/repo.git
 ```
 
+也可以直接粘贴浏览器地址栏里的 URL：GitLab 的 `/-/` 路由分隔符及其后内容（`/-/tree/main`、`/-/merge_requests/42`、`/-/blob/...`）会被自动剥离，解析回项目本身。
+
 ### 支持的操作
 
 | 操作                   | 实现                                                        |
 |------------------------|-------------------------------------------------------------|
-| clone                  | `git clone https://oauth2:<token>@<host>/...`              |
-| 创建仓库               | `POST /api/v4/projects`（匹配用户 namespace 或解析 group） |
+| clone                  | `git clone <base-url>/...`，token 以 `oauth2:` 基本认证注入 |
+| 创建仓库               | `POST /api/v4/projects`（用户 namespace，或按路径精确解析 group；解析不到直接报错，不会退回个人 namespace） |
 | 创建 MR                | `POST /api/v4/projects/:id/merge_requests`                 |
 | 指定 reviewer          | 解析 username → user id，提交 `reviewer_ids`                |
 | 拉取 MR 数据           | `GET /api/v4/projects/:id/merge_requests/:iid` + commits + changes |
-| 列出 group 仓库        | `GET /api/v4/groups/:path/projects`（分页）                 |
+| 列出 group 仓库        | `GET /api/v4/groups/:path/projects`（分页，`include_subgroups=true` 含子组） |
 
 ### 默认 email 域
 

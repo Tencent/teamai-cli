@@ -38,7 +38,7 @@ function resolveGitLabHost(): string {
  * subgroups), e.g. `group/subgroup/repo`.
  */
 export function parseGitLabRepoInput(input: string): RepoInfo {
-  const trimmed = input.trim();
+  const trimmed = stripGitLabRoutePath(input.trim());
 
   // Full URL — host is taken from the URL itself (covers self-hosted instances).
   const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\/(.+)\/([^/]+?)(?:\.git)?\/?$/);
@@ -67,6 +67,20 @@ export function parseGitLabRepoInput(input: string): RepoInfo {
       `    https://${GITLAB_HOST}/owner/repo.git\n` +
       `    git@${GITLAB_HOST}:owner/repo.git`,
   );
+}
+
+/**
+ * Strip GitLab's `/-/` route separator and everything after it.
+ *
+ * Every GitLab web URL past the project root carries one — `/-/tree/main`,
+ * `/-/merge_requests/42`, `/-/blob/...`. Without this, the greedy owner group in
+ * the URL patterns happily swallows the route, so pasting a URL straight from
+ * the browser yields `owner: 'org/repo/-/tree', repo: 'main'` instead of an
+ * error. `/-/` is never a legal part of a namespace or project path.
+ */
+function stripGitLabRoutePath(input: string): string {
+  const marker = input.indexOf('/-/');
+  return marker === -1 ? input : input.slice(0, marker);
 }
 
 function buildRepoInfo(host: string, owner: string, repo: string): RepoInfo {

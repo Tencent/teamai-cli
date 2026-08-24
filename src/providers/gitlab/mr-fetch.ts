@@ -1,12 +1,12 @@
 import { type MRData } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { getGitLabToken } from './gitlab-api.js';
-import { GITLAB_BASE_URL } from './gitlab-api.js';
 
 /** GitLab MR URL 解析结果 */
 interface ParsedGitLabMR {
-  group: string;
-  project: string;
+  /** API base derived from the MR URL's own origin, e.g. https://host/api/v4 */
+  apiBase: string;
+  projectPath: string;
   mrIid: string;
 }
 
@@ -18,16 +18,22 @@ interface ParsedGitLabMR {
  * 解析失败时抛出 Error。
  */
 function parseGitLabMRUrl(url: string): ParsedGitLabMR {
-  const match = url.match(/[^/]+:\/\/([^/]+)\/(.+?)\/-\/merge_requests\/(\d+)/);
+  const match = url.match(/^(https?):\/\/([^/]+)\/(.+?)\/-\/merge_requests\/(\d+)/i);
   if (!match) {
     throw new Error(`Invalid GitLab MR URL: ${url}`);
   }
-  const path = match[2];
-  const lastSlash = path.lastIndexOf('/');
-  if (lastSlash < 0) {
+  const projectPath = match[3];
+  if (!projectPath.includes('/')) {
     throw new Error(`Invalid GitLab MR URL: ${url}`);
   }
-  return { group: path.slice(0, lastSlash), project: path.slice(lastSlash + 1), mrIid: match[3] };
+  // Query the instance the URL actually names. Defaulting to the configured
+  // instance would send a self-hosted PAT to gitlab.com and read a different
+  // project that merely shares the same path.
+  return {
+    apiBase: `${match[1].toLowerCase()}://${match[2]}/api/v4`,
+    projectPath,
+    mrIid: match[4],
+  };
 }
 
 /** GitLab REST API 返回的 MR 元信息（仅使用的字段） */
@@ -68,24 +74,23 @@ function authHeaders(token: string): Record<string, string> {
  * @throws Error 当 URL 格式不合法、未配置 token 或 API 调用失败时
  */
 export async function fetchGitLabMR(url: string): Promise<MRData> {
-  const { group, project, mrIid } = parseGitLabMRUrl(url);
+  const { apiBase, projectPath, mrIid } = parseGitLabMRUrl(url);
   const token = getGitLabToken();
   if (!token) {
     throw new Error('GITLAB_TOKEN is not set.');
   }
 
-  const projectPath = `${group}/${project}`;
   const enc = encodeURIComponent(projectPath);
   const headers = authHeaders(token);
   log.debug(`fetchGitLabMR: ${projectPath}!${mrIid}`);
 
   // ── 1. 获取元信息 ──────────────────────────────────────────
-  const resp = await fetch(`${GITLAB_BASE_URL}/api/v4/projects/${enc}/merge_requests/${mrIid}`, {
+  const resp = await fetch(`${apiBase}/projects/${enc}/merge_requests/${mrIid}`, {
     headers,
     redirect: 'manual',
   });
   if (!resp.ok) {
-    throw new Error(`GitLab API 返回错误 ${resp.status}：${await resp.text()}`);
+    throw new Error(`GitLab API error ${resp.status}: ${await resp.text()}`);
   }
   const mr = (await resp.json()) as GitLabMR;
 
@@ -93,7 +98,7 @@ export async function fetchGitLabMR(url: string): Promise<MRData> {
   let commits: Array<{ hash: string; message: string }> = [];
   try {
     const commitsResp = await fetch(
-      `${GITLAB_BASE_URL}/api/v4/projects/${enc}/merge_requests/${mrIid}/commits?per_page=50`,
+      `${apiBase}/projects/${enc}/merge_requests/${mrIid}/commits?per_page=50`,
       { headers, redirect: 'manual' },
     );
     if (commitsResp.ok) {
@@ -108,7 +113,7 @@ export async function fetchGitLabMR(url: string): Promise<MRData> {
   let diff = '';
   try {
     const diffResp = await fetch(
-      `${GITLAB_BASE_URL}/api/v4/projects/${enc}/merge_requests/${mrIid}/changes`,
+      `${apiBase}/projects/${enc}/merge_requests/${mrIid}/changes`,
       { headers, redirect: 'manual' },
     );
     if (diffResp.ok) {

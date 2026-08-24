@@ -15,7 +15,7 @@
 import path from 'node:path';
 import fs from 'fs-extra';
 import { importFromRepoList } from './import-repo-list.js';
-import { getProviderFromUrl, getProvider } from './providers/registry.js';
+import { getProviderFromUrl, getProvider, detectProvider } from './providers/registry.js';
 import type { OrgRepoInfo } from './providers/types.js';
 import { log } from './utils/logger.js';
 
@@ -67,8 +67,7 @@ function parseOrgInput(org: string): { providerName: string; orgPath: string } {
     if (httpsMatch) {
         const host = httpsMatch[1].toLowerCase();
         const orgPath = httpsMatch[2].replace(/\/$/, '');
-        const providerName = host.includes('woa.com') ? 'tgit' : 'github';
-        return { providerName, orgPath };
+        return { providerName: detectProviderForHost(host), orgPath };
     }
 
     // "host/org" 格式（不含协议）
@@ -78,8 +77,7 @@ function parseOrgInput(org: string): { providerName: string; orgPath: string } {
         const orgPath = hostOrgMatch[2];
         if (host.includes('.')) {
             // 有效 hostname
-            const providerName = host.includes('woa.com') ? 'tgit' : 'github';
-            return { providerName, orgPath };
+            return { providerName: detectProviderForHost(host), orgPath };
         }
         // 裸 "owner/repo" 模式 → 视整体为 org 路径，用默认 provider
         return { providerName: getProviderFromUrl('').name, orgPath: trimmed };
@@ -93,6 +91,16 @@ function parseOrgInput(org: string): { providerName: string; orgPath: string } {
     // 裸 org 名
     const providerName = getProvider().name;
     return { providerName, orgPath: trimmed };
+}
+
+/**
+ * 把 host 交给 registry 的 provider 检测，而不是在这里重复一套 host 判断。
+ *
+ * 直接硬编码 `woa.com ? tgit : github` 会让 gitlab.com 与自托管 GitLab 落到
+ * GitHub provider 上，listOrgRepos 永远走不到 GitLab 实现。
+ */
+function detectProviderForHost(host: string): string {
+    return detectProvider(`https://${host}/`);
 }
 
 /**

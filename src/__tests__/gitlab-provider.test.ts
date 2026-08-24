@@ -35,8 +35,11 @@ import {
   gitlabCreateRepo,
   gitlabMrCreate,
   getGitLabToken,
+  gitlabBaseUrl,
   GitLabRepoNotFoundError,
 } from '../providers/gitlab/gitlab-api.js';
+import { fetchGitLabMR } from '../providers/gitlab/mr-fetch.js';
+import { gitlabListOrgRepos } from '../providers/gitlab/org.js';
 import { detectProvider, getProvider } from '../providers/registry.js';
 import { GitLabProvider } from '../providers/gitlab/index.js';
 
@@ -308,11 +311,8 @@ describe('gitlabCreateRepo', () => {
       if (url.endsWith('/user')) {
         return new Response(JSON.stringify({ username: 'alice' }), { status: 200 });
       }
-      if (url.includes('/namespaces?')) {
-        return new Response(
-          JSON.stringify([{ id: 7, full_path: 'teamai' }]),
-          { status: 200 },
-        );
+      if (url.includes('/groups/')) {
+        return new Response(JSON.stringify({ id: 7, full_path: 'teamai' }), { status: 200 });
       }
       if (url.endsWith('/projects')) {
         const body = JSON.parse(String((global.fetch as Mock).mock.calls.find(
@@ -332,10 +332,30 @@ describe('gitlabCreateRepo', () => {
       if (url.endsWith('/user')) {
         return new Response(JSON.stringify({ username: 'alice' }), { status: 200 });
       }
+      if (url.includes('/groups/')) {
+        return new Response(JSON.stringify({ id: 7, full_path: 'teamai' }), { status: 200 });
+      }
       return new Response('Forbidden', { status: 403 });
     }) as never;
 
     await expect(gitlabCreateRepo('teamai', 'cli')).rejects.toThrow(/403/);
+  });
+
+  it('refuses to fall back to the personal namespace when the group is unknown', async () => {
+    global.fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/user')) {
+        return new Response(JSON.stringify({ username: 'alice' }), { status: 200 });
+      }
+      if (url.includes('/groups/')) return new Response('Not Found', { status: 404 });
+      return new Response(JSON.stringify({ name: 'cli' }), { status: 201 });
+    }) as never;
+
+    // Posting without namespace_id would silently create alice/cli instead.
+    await expect(gitlabCreateRepo('platform-team', 'cli')).rejects.toThrow(/namespace/i);
+    const posted = (global.fetch as Mock).mock.calls.some(
+      ([u, init]) => String(u).endsWith('/projects') && init?.method === 'POST',
+    );
+    expect(posted).toBe(false);
   });
 
   it('throws when no token is available', async () => {
@@ -436,5 +456,228 @@ describe('GitLabProvider', () => {
     const p = new GitLabProvider();
     const info = p.parseRepoInput('org/repo');
     expect(info.httpsUrl).toBe(`https://${GITLAB_HOST}/org/repo.git`);
+  });
+});
+
+
+// ─── regressions: URL / host handling ───────────────────
+
+describe('parseGitLabRepoInput — GitLab route paths', () => {
+  it('strips the /-/ route so a browser URL yields the project, not the route', () => {
+    const info = parseGitLabRepoInput('https://gitlab.com/org/repo/-/tree/main');
+    expect(info.owner).toBe('org');
+    expect(info.repo).toBe('repo');
+    expect(info.httpsUrl).toBe('https://gitlab.com/org/repo.git');
+  });
+
+  it('strips /-/ for nested groups and for MR URLs', () => {
+    expect(parseGitLabRepoInput('https://gl.example.com/g/sub/repo/-/merge_requests/42'))
+      .toMatchObject({ owner: 'g/sub', repo: 'repo' });
+    expect(parseGitLabRepoInput('https://gitlab.com/org/repo/-/blob/main/README.md'))
+      .toMatchObject({ owner: 'org', repo: 'repo' });
+  });
+});
+
+describe('gitlabBaseUrl', () => {
+  const originalEnv = { ...process.env };
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('defaults to the public host', () => {
+    delete process.env.GITLAB_URL;
+    expect(gitlabBaseUrl()).toBe('https://gitlab.com');
+  });
+
+  it('keeps scheme, port and path prefix of a self-hosted instance', () => {
+    process.env.GITLAB_URL = 'http://gitlab.internal:8929/gitlab/';
+    expect(gitlabBaseUrl()).toBe('http://gitlab.internal:8929/gitlab');
+  });
+
+  it('rejects a GITLAB_URL without a scheme instead of silently diverging', () => {
+    process.env.GITLAB_URL = 'gitlab.example.com';
+    expect(() => gitlabBaseUrl()).toThrow(/Invalid GITLAB_URL/);
+  });
+});
+
+describe('getGitLabToken — blank handling', () => {
+  const originalEnv = { ...process.env };
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('treats an empty token as absent', () => {
+    process.env.GITLAB_TOKEN = '';
+    delete process.env.GITLAB_PRIVATE_TOKEN;
+    delete process.env.GITLAB_PAT;
+    expect(getGitLabToken()).toBeNull();
+    expect(gitlabIsAuthenticated()).toBe(false);
+  });
+
+  it('falls through a blank primary to a set alias, and trims', () => {
+    process.env.GITLAB_TOKEN = '   ';
+    process.env.GITLAB_PRIVATE_TOKEN = 'glpat_real\n';
+    expect(getGitLabToken()).toBe('glpat_real');
+  });
+});
+
+describe('gitlabRepoClone — self-hosted clone URL', () => {
+  const originalEnv = { ...process.env };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedSpawnSync.mockReset();
+  });
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('preserves scheme, port and path prefix when embedding the token', () => {
+    process.env.GITLAB_TOKEN = 'glpat_secret';
+    process.env.GITLAB_URL = 'http://gitlab.internal:8929/gitlab';
+    mockedSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+
+    gitlabRepoClone('group/repo', '/tmp/clone');
+
+    const cloneTarget = mockedSpawnSync.mock.calls[0][1][1];
+    expect(cloneTarget).toBe(
+      'http://oauth2:glpat_secret@gitlab.internal:8929/gitlab/group/repo.git',
+    );
+  });
+});
+
+// ─── mr-fetch ───────────────────────────────────────────
+
+describe('fetchGitLabMR', () => {
+  const originalFetch = global.fetch;
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.GITLAB_TOKEN = 'glpat_test';
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    process.env = { ...originalEnv };
+  });
+
+  it('queries the host named by the MR URL, not the configured instance', async () => {
+    process.env.GITLAB_URL = 'https://gitlab.com';
+    const seen: string[] = [];
+    global.fetch = vi.fn(async (url: string) => {
+      seen.push(String(url));
+      if (String(url).includes('/changes')) {
+        return new Response(JSON.stringify({ changes: [{ diff: '@@ -1 +1 @@' }] }), { status: 200 });
+      }
+      if (String(url).includes('/commits')) {
+        return new Response(JSON.stringify([{ id: 'abc123', title: 'first' }]), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({ title: 'T', description: 'D', author: { username: 'bob' } }),
+        { status: 200 },
+      );
+    }) as never;
+
+    const mr = await fetchGitLabMR('https://git.corp.example.com/team/repo/-/merge_requests/42');
+
+    expect(seen.every((u) => u.startsWith('https://git.corp.example.com/api/v4/'))).toBe(true);
+    expect(seen.some((u) => u.includes('gitlab.com'))).toBe(false);
+    expect(mr.title).toBe('T');
+    expect(mr.author).toBe('bob');
+    expect(mr.commits).toEqual([{ hash: 'abc123', message: 'first' }]);
+    expect(mr.diff).toContain('@@');
+  });
+
+  it('encodes a nested group path into the project id', async () => {
+    const seen: string[] = [];
+    global.fetch = vi.fn(async (url: string) => {
+      seen.push(String(url));
+      return new Response(
+        JSON.stringify({ title: 'T', description: null, author: { username: 'a' } }),
+        { status: 200 },
+      );
+    }) as never;
+
+    await fetchGitLabMR('https://gitlab.com/g/sub/repo/-/merge_requests/7');
+    expect(seen[0]).toContain('/projects/g%2Fsub%2Frepo/merge_requests/7');
+  });
+
+  it('throws an English error on a non-OK response', async () => {
+    global.fetch = vi.fn(async () => new Response('boom', { status: 500 })) as never;
+    await expect(
+      fetchGitLabMR('https://gitlab.com/org/repo/-/merge_requests/1'),
+    ).rejects.toThrow(/GitLab API error 500/);
+  });
+
+  it('rejects a URL that is not a GitLab MR', async () => {
+    await expect(fetchGitLabMR('https://gitlab.com/org/repo')).rejects.toThrow(/Invalid GitLab MR URL/);
+  });
+});
+
+// ─── org listing ────────────────────────────────────────
+
+describe('gitlabListOrgRepos', () => {
+  const originalFetch = global.fetch;
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.GITLAB_TOKEN = 'glpat_test';
+    delete process.env.GITLAB_URL;
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    process.env = { ...originalEnv };
+  });
+
+  const project = (id: number, path: string) => ({
+    id,
+    name: path.split('/').pop(),
+    path_with_namespace: path,
+    http_url_to_repo: `https://gitlab.com/${path}.git`,
+    archived: false,
+    star_count: id,
+    last_activity_at: '2026-01-01T00:00:00Z',
+  });
+
+  it('requests subgroup projects too', async () => {
+    const seen: string[] = [];
+    global.fetch = vi.fn(async (url: string) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify([project(1, 'g/sub/repo')]), { status: 200 });
+    }) as never;
+
+    const repos = await gitlabListOrgRepos('g');
+
+    expect(seen[0]).toContain('include_subgroups=true');
+    expect(repos).toHaveLength(1);
+    expect(repos[0].fullName).toBe('g/sub/repo');
+  });
+
+  it('paginates until a short page and honours maxRepos', async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => project(i, `g/repo-${i}`));
+    global.fetch = vi.fn(async (url: string) => {
+      const page = Number(new URL(String(url)).searchParams.get('page'));
+      return new Response(JSON.stringify(page === 1 ? page1 : [project(999, 'g/last')]), {
+        status: 200,
+      });
+    }) as never;
+
+    expect(await gitlabListOrgRepos('g')).toHaveLength(101);
+    expect(await gitlabListOrgRepos('g', { maxRepos: 5 })).toHaveLength(5);
+  });
+
+  it('reports a missing group distinctly from other HTTP errors', async () => {
+    global.fetch = vi.fn(async () => new Response('nope', { status: 404 })) as never;
+    await expect(gitlabListOrgRepos('ghost')).rejects.toThrow(/not found or no access/);
+
+    global.fetch = vi.fn(async () => new Response('nope', { status: 500 })) as never;
+    await expect(gitlabListOrgRepos('g')).rejects.toThrow(/HTTP 500/);
+  });
+
+  it('requires a token', async () => {
+    delete process.env.GITLAB_TOKEN;
+    delete process.env.GITLAB_PRIVATE_TOKEN;
+    delete process.env.GITLAB_PAT;
+    await expect(gitlabListOrgRepos('g')).rejects.toThrow(/GitLab token unavailable/);
   });
 });

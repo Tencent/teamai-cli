@@ -100,6 +100,15 @@ export async function doctor(options: GlobalOptions): Promise<void> {
         fix: 'Run `gh auth login` to authenticate',
       },
     );
+  } else if (providerName === 'gitlab') {
+    // GitLab needs no CLI — only a Personal Access Token.
+    const { gitlabIsAuthenticated } = await import('./providers/gitlab/index.js');
+    checks.push({
+      name: 'GitLab token is configured',
+      check: async () => gitlabIsAuthenticated(),
+      fix: 'Export GITLAB_TOKEN (a Personal Access Token with `api` scope). '
+        + 'GITLAB_PRIVATE_TOKEN and GITLAB_PAT are accepted as aliases.',
+    });
   }
 
   checks.push(
