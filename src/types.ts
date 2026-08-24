@@ -209,6 +209,10 @@ export const TeamaiConfigSchema = z.object({
     codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents', mcp: '.codebuddy/mcp.json', mcpProject: '.codebuddy/mcp.json' },
     openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules', claudemd: '.openclaw/workspace/AGENTS.md' },
     hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
+    // DeepSeek Harness: skills synced to ~/.dsh/skills, which its skill-filesystem
+    // provider scans as user-dsh root (rank 400). dsh discovers both directory
+    // bundles (<name>/SKILL.md) and flat Markdown files there natively.
+    dsh: { skills: '.dsh/skills' },
     workbuddy: { skills: '.workbuddy/skills', rules: '.workbuddy/rules', settings: '.workbuddy/settings.json', claudemd: 'AGENTS.md', mcp: '.workbuddy/mcp.json', mcpProject: '.workbuddy/mcp.json' },
     // OpenCode reads project config from <root>/.opencode/ but user config from
     // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also

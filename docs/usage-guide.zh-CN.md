@@ -179,7 +179,7 @@ teamai init . --agent claude,codex   # 非交互:启用 Claude Code + Codex
 
 **选择启用哪些 AI 工具。** 单仓模式会在你的仓库里为每个工具创建一个目录（如 `.claude/`、`.codex/`）—— 建好 skills 目录、注入 teamai hooks,并把该工具的 settings 提交到 main,让队友 clone 后即可获得。由你决定启用哪些工具:
 
-- **`--agent <name...>`** —— 显式列表,可重复或逗号分隔:`--agent claude`、`--agent claude,codex`、`--agent claude --agent cursor`。支持的 id:`claude`、`codex`、`cursor`、`codebuddy`、`workbuddy`。
+- **`--agent <name...>`** —— 显式列表,可重复或逗号分隔:`--agent claude`、`--agent claude,codex`、`--agent claude --agent cursor`。支持的 id:`claude`、`codex`、`cursor`、`codebuddy`、`workbuddy`、`dsh`(DeepSeek Harness)。
 - **交互式（无 `--agent`、有终端）** —— teamai 弹出多选列表。第 1 项是 **Auto**,会列出你本机已安装的 AI 工具（`~/.claude`、`~/.codex`……）并作为回车默认项;其余各项是具体工具。Auto 与具体工具可以组合勾选。
 - **非交互（无 `--agent`、无终端 —— CI、hook、clone 时自愈 bootstrap）** —— teamai 会按你本机 home 目录下已装的工具（`~/.claude`、`~/.codex`……）来建。若一个都没检测到,则什么都不建（你仍拿到知识,可稍后运行 `teamai init .` 再选工具）。
 

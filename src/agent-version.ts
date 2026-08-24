@@ -108,7 +108,16 @@ const DETECTORS: Record<string, VersionDetector> = {
   workbuddy: detectWorkbuddyVersion,
   hermes: detectHermesVersion,
   openclaw: detectOpenclawVersion,
+  // DeepSeek Harness: `dsh --version` prints e.g. "0.1.1" (optionally with a
+  // leading "v" or trailing commit info). Extract leading semver-ish digits.
+  dsh: detectDshVersion,
 };
+
+async function detectDshVersion(): Promise<string> {
+  const raw = await execVersion('dsh');
+  const match = raw.match(/v?(\d+(?:\.\d+)*)/);
+  return match?.[1] ?? '';
+}
 
 /**
  * Detect the version of a given agent. Returns '' on failure.

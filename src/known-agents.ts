@@ -105,6 +105,12 @@ export const KNOWN_AGENTS: KnownAgent[] = [
   { id: 'autoclaw', displayName: 'AutoClaw', category: 'lobster', skillsPath: '.openclaw-autoclaw/skills' },
   { id: 'workbuddy', displayName: 'WorkBuddy', category: 'lobster', skillsPath: '.workbuddy/skills' },
 
+  // DeepSeek Harness (dsh) — plugin-based agent harness. Its skill-filesystem
+  // provider scans user skill roots: ~/.dsh/skills (rank 400) and ~/.agents/skills
+  // (rank 500). We sync to ~/.dsh/skills so dsh keeps its own copy; the central
+  // `.agents` entry below covers the shared root as well.
+  { id: 'dsh', displayName: 'DeepSeek Harness', category: 'coding', skillsPath: '.dsh/skills' },
+
   // Central agent skills directory (codex / generic)
   { id: 'agents', displayName: 'Central (Agent Skills)', category: 'central', skillsPath: '.agents/skills' },
 ];
