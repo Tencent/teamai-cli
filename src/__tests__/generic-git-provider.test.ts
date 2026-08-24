@@ -67,6 +67,18 @@ describe('parseGenericGitRepoInput', () => {
     )).toThrow(/Do not embed credentials/);
   });
 
+  it('rejects scp-style embedded credentials but keeps a real SSH login', () => {
+    // A colon in the user field is a credential (e.g. "oauth2:token"), not a login.
+    expect(() => parseGenericGitRepoInput(
+      'oauth2:secret@code.qschou.com:Enterprise/arb-workflow-kit.git',
+    )).toThrow(/Do not embed credentials/);
+
+    // A normal SSH user must still be accepted and preserved verbatim.
+    expect(parseGenericGitRepoInput(
+      'git@code.qschou.com:Enterprise/arb-workflow-kit.git',
+    ).httpsUrl).toBe('git@code.qschou.com:Enterprise/arb-workflow-kit.git');
+  });
+
   it('rejects insecure HTTP and does not echo query-string secrets', () => {
     expect(() => parseGenericGitRepoInput(
       'http://code.qschou.com/Enterprise/arb-workflow-kit.git',
@@ -111,7 +123,7 @@ describe('GenericGitProvider transport', () => {
     expect(mockedSpawnSync).toHaveBeenCalledWith(
       'git',
       ['clone', '--', 'git@code.qschou.com:Enterprise/arb-workflow-kit.git', '/tmp/team-repo'],
-      expect.objectContaining({ timeout: 120_000 }),
+      expect.objectContaining({ timeout: 180_000 }),
     );
   });
 

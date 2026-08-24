@@ -85,7 +85,9 @@ export class GenericGitProvider implements GitProvider {
     const result = spawnSync('git', ['clone', '--', remoteUrl, localPath], {
       encoding: 'utf-8',
       stdio: ['inherit', 'pipe', 'pipe'],
-      timeout: 120_000,
+      // Match the 180s default used by the shallow-clone path in clone.ts:
+      // large self-hosted repos over slow/VPN links need the extra headroom.
+      timeout: 180_000,
       maxBuffer: 10 * 1024 * 1024,
     });
     if (result.error || result.status !== 0) {

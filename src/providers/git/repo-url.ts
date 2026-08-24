@@ -75,6 +75,14 @@ export function parseGenericGitRepoInput(input: string): RepoInfo {
   const scpMatch = trimmed.match(/^([^@\s]+)@([^:\s]+):(.+)$/);
   if (scpMatch) {
     const [, user, host, rawPath] = scpMatch;
+    // A colon in the SSH user field means embedded credentials
+    // (e.g. "oauth2:token@host:path"); a real SSH login never contains one.
+    if (user.includes(':')) {
+      throw new Error(
+        'Invalid Git repo URL. Do not embed credentials in the URL; '
+        + 'configure a Git credential helper or SSH key instead.',
+      );
+    }
     const { owner, repo, fullPath } = parsePath(rawPath);
     return buildRepoInfo(owner, repo, `${user}@${host}:${fullPath}.git`);
   }
