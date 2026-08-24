@@ -363,6 +363,11 @@ export async function reportUsageToTeam(
         log.debug(`Skipping report: ${repoPath} is not a dedicated team-repo root (safety guard)`);
         return;
       }
+      const { isImportInProgress } = await import('./utils/import-lock.js');
+      if (await isImportInProgress(repoPath)) {
+        log.debug(`Skipping report: import in progress for ${repoPath} (would reset uncommitted artifacts)`);
+        return;
+      }
       await resetToCleanMaster(git, repoPath);
       await pullRepo(repoPath);
     }
