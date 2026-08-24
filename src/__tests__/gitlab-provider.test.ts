@@ -212,7 +212,7 @@ describe('gitlabRepoClone', () => {
     expect(() => gitlabRepoClone('org/missing', '/tmp/clone')).toThrow(GitLabRepoNotFoundError);
   });
 
-  it('succeeds when git clone exits 0', () => {
+  it('injects the token via http.extraHeader, never into the clone URL', () => {
     process.env.GITLAB_TOKEN = 'glpat_secret';
     mockedSpawnSync.mockReturnValue({
       status: 0,
@@ -220,19 +220,44 @@ describe('gitlabRepoClone', () => {
       stderr: '',
     });
     expect(() => gitlabRepoClone('org/repo', '/tmp/clone')).not.toThrow();
-    const args = mockedSpawnSync.mock.calls[0][1];
-    expect(args[0]).toBe('clone');
-    expect(args[1]).toContain('oauth2:glpat_secret@');
+    const args = mockedSpawnSync.mock.calls[0][1] as string[];
+    // -c http.extraHeader=Authorization: Basic <base64(oauth2:token)>
+    expect(args[0]).toBe('-c');
+    const expectedHeader = `http.extraHeader=Authorization: Basic ${Buffer.from('oauth2:glpat_secret').toString('base64')}`;
+    expect(args[1]).toBe(expectedHeader);
+    expect(args[2]).toBe('clone');
+    // The token must NOT appear anywhere in the clone URL.
+    const cloneUrlArg = args.find((a) => a.endsWith('.git'));
+    expect(cloneUrlArg).toBeDefined();
+    expect(cloneUrlArg).not.toContain('glpat_secret');
+    expect(cloneUrlArg).not.toContain('oauth2:');
+    // And the raw token must not appear in any argument.
+    expect(args.some((a) => a.includes('glpat_secret'))).toBe(false);
   });
 
-  it('sanitizes token from error output', () => {
+  it('clones anonymously (no auth header) when no token is set', () => {
+    delete process.env.GITLAB_TOKEN;
+    delete process.env.GITLAB_PRIVATE_TOKEN;
+    delete process.env.GITLAB_PAT;
+    mockedSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    gitlabRepoClone('org/repo', '/tmp/clone');
+    const args = mockedSpawnSync.mock.calls[0][1] as string[];
+    expect(args[0]).toBe('clone');
+    expect(args.some((a) => a.includes('http.extraHeader'))).toBe(false);
+  });
+
+  it('sanitizes credentials from error output via the shared helper', () => {
     process.env.GITLAB_TOKEN = 'glpat_secret';
     mockedSpawnSync.mockReturnValue({
       status: 128,
       stdout: '',
-      stderr: 'fatal: Authentication failed for host oauth2:glpat_secret@gitlab.example.com',
+      // git echoes the full URL (with any embedded userinfo) on access errors.
+      stderr: "fatal: unable to access 'https://oauth2:glpat_secret@gitlab.example.com/org/repo.git/': The requested URL returned error: 403",
     });
-    expect(() => gitlabRepoClone('org/repo', '/tmp/clone')).toThrow(/oauth2:\*\*\*@/);
+    const err = (() => { try { gitlabRepoClone('org/repo', '/tmp/clone'); return null; } catch (e) { return e as Error; } })();
+    expect(err).not.toBeNull();
+    expect(err!.message).not.toContain('glpat_secret');
+    expect(err!.message).toContain('***@');
   });
 });
 
@@ -531,17 +556,21 @@ describe('gitlabRepoClone — self-hosted clone URL', () => {
     process.env = { ...originalEnv };
   });
 
-  it('preserves scheme, port and path prefix when embedding the token', () => {
+  it('preserves scheme, port and path prefix in the clone URL — without the token', () => {
     process.env.GITLAB_TOKEN = 'glpat_secret';
     process.env.GITLAB_URL = 'http://gitlab.internal:8929/gitlab';
     mockedSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
 
     gitlabRepoClone('group/repo', '/tmp/clone');
 
-    const cloneTarget = mockedSpawnSync.mock.calls[0][1][1];
-    expect(cloneTarget).toBe(
-      'http://oauth2:glpat_secret@gitlab.internal:8929/gitlab/group/repo.git',
-    );
+    const args = mockedSpawnSync.mock.calls[0][1] as string[];
+    const cloneTarget = args.find((a) => a.endsWith('.git'));
+    // URL keeps the self-hosted scheme/port/prefix but carries NO credentials.
+    expect(cloneTarget).toBe('http://gitlab.internal:8929/gitlab/group/repo.git');
+    // Token travels in the extraHeader instead.
+    const expectedHeader = `http.extraHeader=Authorization: Basic ${Buffer.from('oauth2:glpat_secret').toString('base64')}`;
+    expect(args).toContain(expectedHeader);
+    expect(args.some((a) => a.includes('glpat_secret') && a.endsWith('.git'))).toBe(false);
   });
 });
 
@@ -560,8 +589,9 @@ describe('fetchGitLabMR', () => {
     process.env = { ...originalEnv };
   });
 
-  it('queries the host named by the MR URL, not the configured instance', async () => {
-    process.env.GITLAB_URL = 'https://gitlab.com';
+  it('queries the MR URL host when it matches the configured instance', async () => {
+    // Default GITLAB_HOST in the test process is gitlab.com; an MR URL on that
+    // host is trusted and the token is sent to it.
     const seen: string[] = [];
     global.fetch = vi.fn(async (url: string) => {
       seen.push(String(url));
@@ -577,14 +607,25 @@ describe('fetchGitLabMR', () => {
       );
     }) as never;
 
-    const mr = await fetchGitLabMR('https://git.corp.example.com/team/repo/-/merge_requests/42');
+    const mr = await fetchGitLabMR('https://gitlab.com/team/repo/-/merge_requests/42');
 
-    expect(seen.every((u) => u.startsWith('https://git.corp.example.com/api/v4/'))).toBe(true);
-    expect(seen.some((u) => u.includes('gitlab.com'))).toBe(false);
+    expect(seen.every((u) => u.startsWith('https://gitlab.com/api/v4/'))).toBe(true);
     expect(mr.title).toBe('T');
     expect(mr.author).toBe('bob');
     expect(mr.commits).toEqual([{ hash: 'abc123', message: 'first' }]);
     expect(mr.diff).toContain('@@');
+  });
+
+  it('refuses to send the token to a host that is not the configured instance (SSRF guard)', async () => {
+    // GITLAB_HOST defaults to gitlab.com; an MR URL on a different host must be
+    // rejected BEFORE any network call, so the PAT is never exfiltrated.
+    const fetchSpy = vi.fn(async () => new Response('{}', { status: 200 }));
+    global.fetch = fetchSpy as never;
+
+    await expect(
+      fetchGitLabMR('https://git.corp.example.com/team/repo/-/merge_requests/42'),
+    ).rejects.toThrow(/does not match the configured GitLab instance/);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('encodes a nested group path into the project id', async () => {

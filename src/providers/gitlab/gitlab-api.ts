@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { GITLAB_HOST } from './repo-url.js';
+import { sanitizeGitUrl } from '../../utils/redact.js';
 
 /**
  * GitLab REST API client (API v4).
@@ -139,29 +140,47 @@ export class GitLabRepoNotFoundError extends Error {
 }
 
 /**
- * Build a git clone URL embedding the token (oauth2 scheme, per GitLab docs).
+ * Build the git clone URL WITHOUT credentials.
  *
  * Derived from the instance base URL rather than re-assembled from GITLAB_HOST,
  * so a self-hosted instance keeps its scheme (`http://` internal deployments),
  * its port, and any relative-URL-root prefix (`https://example.com/gitlab`).
+ * The token is injected out-of-band via `http.extraHeader` (see gitlabRepoClone)
+ * so it never lands in the remote URL, and therefore is not persisted to the
+ * cloned repo's `.git/config` (where a URL-embedded credential would remain for
+ * every later fetch/push). This mirrors the http.extraHeader approach already
+ * used in clone.ts.
  */
 function cloneUrl(repo: string): string {
-  const token = getGitLabToken();
-  if (!token) return `${gitlabBaseUrl()}/${repo}.git`;
-
-  const url = new URL(gitlabBaseUrl());
-  url.username = 'oauth2';
-  url.password = token;
-  const base = url.toString().replace(/\/+$/, '');
+  const base = gitlabBaseUrl().replace(/\/+$/, '');
   return `${base}/${repo}.git`;
 }
 
 /**
- * Clone a GitLab repo to localPath. Embeds the token in the remote URL so
- * subsequent git ops work without extra auth.
+ * HTTP Basic auth header for a GitLab PAT (username fixed to `oauth2`), passed
+ * to git via `-c http.extraHeader=...` so the token stays out of the URL.
+ */
+function gitlabAuthHeaderArg(token: string): string {
+  const encoded = Buffer.from(`oauth2:${token}`).toString('base64');
+  return `http.extraHeader=Authorization: Basic ${encoded}`;
+}
+
+/**
+ * Clone a GitLab repo to localPath. The token is injected via http.extraHeader
+ * rather than embedded in the remote URL, so it is not persisted to
+ * `.git/config` for subsequent git operations.
  */
 export function gitlabRepoClone(repo: string, localPath: string): void {
-  const result = spawnSync('git', ['clone', cloneUrl(repo), localPath], {
+  const token = getGitLabToken();
+  // `-c <key>=<val>` is a git-level option and must precede the `clone`
+  // subcommand, matching the http.extraHeader pattern in clone.ts.
+  const args: string[] = [];
+  if (token) {
+    args.push('-c', gitlabAuthHeaderArg(token));
+  }
+  args.push('clone', cloneUrl(repo), localPath);
+
+  const result = spawnSync('git', args, {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: 120_000,
@@ -180,7 +199,9 @@ export function gitlabRepoClone(repo: string, localPath: string): void {
     throw new GitLabRepoNotFoundError(repo);
   }
 
-  const sanitized = allOutput.replace(/oauth2:[^@]+@/g, 'oauth2:***@');
+  // Redact any credentials git may have echoed back, using the shared helper so
+  // coverage stays consistent with the rest of the codebase.
+  const sanitized = sanitizeGitUrl(allOutput);
   throw new Error(`git clone failed: ${sanitized.trim()}`);
 }
 

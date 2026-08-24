@@ -208,11 +208,11 @@ git@git.example.com:Group/Subgroup/repo.git
 
 | 操作                   | 实现                                                        |
 |------------------------|-------------------------------------------------------------|
-| clone                  | `git clone <base-url>/...`，token 以 `oauth2:` 基本认证注入 |
+| clone                  | `git clone <base-url>/...`，token 以 `oauth2:` 基本认证经 `-c http.extraHeader` 注入（不写进 URL，因此不会残留在克隆仓库的 `.git/config`） |
 | 创建仓库               | `POST /api/v4/projects`（用户 namespace，或按路径精确解析 group；解析不到直接报错，不会退回个人 namespace） |
 | 创建 MR                | `POST /api/v4/projects/:id/merge_requests`                 |
 | 指定 reviewer          | 解析 username → user id，提交 `reviewer_ids`                |
-| 拉取 MR 数据           | `GET /api/v4/projects/:id/merge_requests/:iid` + commits + changes |
+| 拉取 MR 数据           | `GET /api/v4/projects/:id/merge_requests/:iid` + commits + changes；MR URL 的 host 必须与已配置实例（`GITLAB_URL` / `TEAMAI_GITLAB_HOST`，默认 gitlab.com）一致，否则拒绝请求，避免把 token 发往未配置的 host |
 | 列出 group 仓库        | `GET /api/v4/groups/:path/projects`（分页，`include_subgroups=true` 含子组） |
 
 ### 默认 email 域

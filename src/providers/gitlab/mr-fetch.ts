@@ -1,6 +1,7 @@
 import { type MRData } from '../../types.js';
 import { log } from '../../utils/logger.js';
 import { getGitLabToken } from './gitlab-api.js';
+import { GITLAB_HOST } from './repo-url.js';
 
 /** GitLab MR URL 解析结果 */
 interface ParsedGitLabMR {
@@ -22,18 +23,43 @@ function parseGitLabMRUrl(url: string): ParsedGitLabMR {
   if (!match) {
     throw new Error(`Invalid GitLab MR URL: ${url}`);
   }
+  const scheme = match[1].toLowerCase();
+  const host = match[2];
   const projectPath = match[3];
   if (!projectPath.includes('/')) {
     throw new Error(`Invalid GitLab MR URL: ${url}`);
   }
-  // Query the instance the URL actually names. Defaulting to the configured
-  // instance would send a self-hosted PAT to gitlab.com and read a different
-  // project that merely shares the same path.
+  // Only ever send the token to the *configured* instance. We still derive the
+  // API base from the URL's own origin (so a self-hosted instance keeps its
+  // scheme/port), but the host component must match GITLAB_HOST — otherwise a
+  // hand-crafted MR URL on an attacker-controlled host would receive the PAT
+  // (SSRF / credential exfiltration). The host compare is case-insensitive and
+  // strips a leading `www.`; ports must match exactly.
+  if (!hostMatchesConfigured(host)) {
+    throw new Error(
+      `Refusing to fetch GitLab MR from "${host}": it does not match the configured ` +
+        `GitLab instance "${GITLAB_HOST}". Set GITLAB_URL / TEAMAI_GITLAB_HOST to this ` +
+        `instance if it is trusted.`,
+    );
+  }
   return {
-    apiBase: `${match[1].toLowerCase()}://${match[2]}/api/v4`,
+    apiBase: `${scheme}://${host}/api/v4`,
     projectPath,
     mrIid: match[4],
   };
+}
+
+/** Normalize a host for comparison: lowercase, drop a leading `www.`. */
+function normalizeHost(host: string): string {
+  return host.trim().toLowerCase().replace(/^www\./, '');
+}
+
+/**
+ * True when `urlHost` (host[:port] from an MR URL) refers to the same instance
+ * as the configured GITLAB_HOST. GITLAB_HOST may itself carry a port.
+ */
+function hostMatchesConfigured(urlHost: string): boolean {
+  return normalizeHost(urlHost) === normalizeHost(GITLAB_HOST);
 }
 
 /** GitLab REST API 返回的 MR 元信息（仅使用的字段） */
