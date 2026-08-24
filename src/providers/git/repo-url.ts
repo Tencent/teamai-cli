@@ -3,7 +3,12 @@ import type { RepoInfo } from '../types.js';
 const SUPPORTED_URL_HINT =
   'expected https://host/group/repo.git, ssh://git@host/group/repo.git, or git@host:group/repo.git';
 
-function parsePath(input: string, rawPath: string): { owner: string; repo: string; fullPath: string } {
+function invalidRepoUrl(reason?: string): Error {
+  const detail = reason ? `: ${reason}` : '';
+  return new Error(`Invalid Git repo URL${detail} (${SUPPORTED_URL_HINT})`);
+}
+
+function parsePath(rawPath: string): { owner: string; repo: string; fullPath: string } {
   const cleanPath = rawPath
     .replace(/^\/+/, '')
     .replace(/\/+$/, '')
@@ -15,7 +20,7 @@ function parsePath(input: string, rawPath: string): { owner: string; repo: strin
     segments.length < 2
     || segments.some((segment) => segment === '.' || segment === '..' || /[\s\\]/.test(segment))
   ) {
-    throw new Error(`Invalid Git repo URL: "${input}" (${SUPPORTED_URL_HINT})`);
+    throw invalidRepoUrl('repository paths need an owner/group and a repository name');
   }
 
   const repo = segments[segments.length - 1];
@@ -38,12 +43,16 @@ function buildRepoInfo(owner: string, repo: string, remoteUrl: string): RepoInfo
 export function parseGenericGitRepoInput(input: string): RepoInfo {
   const trimmed = input.trim();
 
-  if (/^https?:\/\//i.test(trimmed) || /^ssh:\/\//i.test(trimmed)) {
+  if (/^http:\/\//i.test(trimmed)) {
+    throw invalidRepoUrl('plain HTTP is not supported; use HTTPS or SSH');
+  }
+
+  if (/^https:\/\//i.test(trimmed) || /^ssh:\/\//i.test(trimmed)) {
     let parsed: URL;
     try {
       parsed = new URL(trimmed);
     } catch {
-      throw new Error(`Invalid Git repo URL: "${trimmed}" (${SUPPORTED_URL_HINT})`);
+      throw invalidRepoUrl();
     }
 
     const httpCredentials = /^https?:$/i.test(parsed.protocol) && (parsed.username || parsed.password);
@@ -54,10 +63,10 @@ export function parseGenericGitRepoInput(input: string): RepoInfo {
       );
     }
     if (parsed.search || parsed.hash) {
-      throw new Error(`Invalid Git repo URL: "${trimmed}" (${SUPPORTED_URL_HINT})`);
+      throw invalidRepoUrl('query strings and fragments are not supported');
     }
 
-    const { owner, repo, fullPath } = parsePath(trimmed, parsed.pathname);
+    const { owner, repo, fullPath } = parsePath(parsed.pathname);
     const auth = parsed.username ? `${parsed.username}@` : '';
     const remoteUrl = `${parsed.protocol}//${auth}${parsed.host}/${fullPath}.git`;
     return buildRepoInfo(owner, repo, remoteUrl);
@@ -66,9 +75,9 @@ export function parseGenericGitRepoInput(input: string): RepoInfo {
   const scpMatch = trimmed.match(/^([^@\s]+)@([^:\s]+):(.+)$/);
   if (scpMatch) {
     const [, user, host, rawPath] = scpMatch;
-    const { owner, repo, fullPath } = parsePath(trimmed, rawPath);
+    const { owner, repo, fullPath } = parsePath(rawPath);
     return buildRepoInfo(owner, repo, `${user}@${host}:${fullPath}.git`);
   }
 
-  throw new Error(`Invalid Git repo URL: "${trimmed}" (${SUPPORTED_URL_HINT})`);
+  throw invalidRepoUrl();
 }

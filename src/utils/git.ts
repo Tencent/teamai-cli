@@ -7,8 +7,8 @@ import { log } from './logger.js';
 /**
  * Create a SimpleGit instance for a given base path.
  *
- * Authentication is handled by credentials embedded in the remote URL
- * (set during clone by the provider). No credential-helper injection needed.
+ * Authentication is handled by the provider's remote URL or by normal Git
+ * facilities such as credential helpers, SSH config, and SSH agents.
  */
 export function createGit(basePath?: string): SimpleGit {
   if (basePath) {

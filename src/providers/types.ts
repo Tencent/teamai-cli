@@ -89,8 +89,9 @@ export interface GitProvider {
   // ─── Repository operations ────────────────────────────
 
   /**
-   * Clone a repo to localPath. Should embed credentials in
-   * the remote URL so subsequent git ops work without extra auth.
+   * Clone a repo to localPath. The resulting origin remote must remain usable
+   * for later pull/push operations via provider credentials, a Git credential
+   * helper, or SSH agent.
    */
   cloneRepo(repo: string, localPath: string): void;
 

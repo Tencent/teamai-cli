@@ -27,7 +27,7 @@ vi.mock('../utils/git.js', () => ({
   pullRepo: vi.fn().mockResolvedValue('already up to date'),
 }));
 
-import { getAllSourceSkillNames, pullSources } from '../source.js';
+import { deriveSourceName, getAllSourceSkillNames, pullSources } from '../source.js';
 import type { TeamaiConfig, LocalConfig, SourceInstallManifest } from '../types.js';
 
 describe('source', () => {
@@ -74,6 +74,14 @@ describe('source', () => {
     await fse.remove(tmpDir);
   });
 
+  describe('deriveSourceName', () => {
+    it('handles HTTPS, scp-style SSH, and ssh:// URLs with a port', () => {
+      expect(deriveSourceName('https://git.example.com/group/sub/repo.git')).toBe('group');
+      expect(deriveSourceName('git@git.example.com:group/sub/repo.git')).toBe('group');
+      expect(deriveSourceName('ssh://git@git.example.com:2222/group/sub/repo.git')).toBe('group');
+    });
+  });
+
   describe('getAllSourceSkillNames', () => {
     it('should return empty set when no sources exist', async () => {
       const names = await getAllSourceSkillNames();
@@ -111,6 +119,22 @@ describe('source', () => {
       expect(names.has('team-a-skill')).toBe(true);
       expect(names.has('team-b-skill')).toBe(true);
       expect(names.size).toBe(2);
+    });
+
+    it('falls back to USERPROFILE when HOME is unavailable', async () => {
+      vi.unstubAllEnvs();
+      vi.stubEnv('USERPROFILE', homeDir);
+      delete process.env.HOME;
+
+      const manifestDir = path.join(sourcesDir, 'windows-team');
+      await fse.ensureDir(manifestDir);
+      await fse.writeJson(path.join(manifestDir, 'installed.json'), {
+        lastPull: new Date().toISOString(),
+        installedSkills: ['windows-skill'],
+      } satisfies SourceInstallManifest);
+
+      const names = await getAllSourceSkillNames();
+      expect(names).toContain('windows-skill');
     });
   });
 

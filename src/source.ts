@@ -18,6 +18,8 @@ import {
 import { getHandler } from './resources/index.js';
 import { ResourceHandler } from './resources/base.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
+import { getUserHome } from './utils/home.js';
+import { assertSafeResourceName } from './utils/path-safety.js';
 import type {
   TeamaiConfig,
   LocalConfig,
@@ -30,7 +32,8 @@ import { resolveBaseDir, SOURCE_PULL_TTL_MS } from './types.js';
 // ─── Source repo management ──────────────────────────────
 
 function getSourceDir(sourceName: string): string {
-  return path.join(process.env.HOME ?? '', '.teamai', 'sources', sourceName);
+  assertSafeResourceName(sourceName);
+  return path.join(getUserHome(), '.teamai', 'sources', sourceName);
 }
 
 function getSourceRepoDir(sourceName: string): string {
@@ -84,7 +87,8 @@ async function ensureSourceRepo(source: SourceConfig, force: boolean): Promise<s
     }
   }
 
-  // First time: clone via provider so private repos get an auth token
+  // First time: clone via the provider so its configured authentication path
+  // (token, credential helper, or SSH agent) is used.
   try {
     await ensureDir(path.dirname(repoDir));
     const cloneSpin = spinner(`[source:${source.name}] Cloning...`).start();
@@ -119,6 +123,12 @@ export async function sourceAdd(repoUrl: string, options: { name?: string } & Gl
   const name = options.name ?? deriveSourceName(repoUrl);
   if (!name) {
     log.error('Could not derive source name from URL. Use --name to specify one.');
+    return;
+  }
+  try {
+    assertSafeResourceName(name);
+  } catch (e) {
+    log.error(`Invalid source name "${name}": ${(e as Error).message}`);
     return;
   }
 
@@ -510,20 +520,27 @@ async function pullSingleSource(
  *   - "https://github.com/teamai/skills.git"  → "teamai"
  *   - "git@git.woa.com:platform/skills.git"   → "platform"
  */
-function deriveSourceName(repoUrl: string): string | null {
-  // SSH format: git@host:owner/repo.git (or git@host:group/sub/repo.git)
-  const sshMatch = repoUrl.match(/:([^/]+)\//);
-  if (sshMatch) return sshMatch[1];
+export function deriveSourceName(repoUrl: string): string | null {
+  const trimmed = repoUrl.trim();
+  let repoPath = '';
 
-  // HTTPS format: https://host/owner/repo(.git)?
-  const httpsMatch = repoUrl.match(/\/\/[^/]+\/([^/]+)\/[^/]+?(?:\.git)?\/?$/);
-  if (httpsMatch) return httpsMatch[1];
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) {
+    try {
+      repoPath = new URL(trimmed).pathname;
+    } catch {
+      return null;
+    }
+  } else {
+    const scpMatch = trimmed.match(/^[^@\s]+@[^:\s]+:(.+)$/);
+    repoPath = scpMatch?.[1] ?? trimmed;
+  }
 
-  // Fallback: penultimate segment of the URL, stripping .git
-  const parts = repoUrl.replace(/\.git$/, '').split('/');
-  if (parts.length >= 2) return parts[parts.length - 2];
-
-  return null;
+  const segments = repoPath
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\.git$/i, '')
+    .split('/')
+    .filter(Boolean);
+  return segments.length >= 2 ? segments[0] : null;
 }
 
 /**
@@ -622,7 +639,7 @@ async function cleanupSourceSkills(sourceName: string, teamConfig: TeamaiConfig,
  */
 export async function getAllSourceSkillNames(): Promise<Set<string>> {
   const names = new Set<string>();
-  const sourcesDir = path.join(process.env.HOME ?? '', '.teamai', 'sources');
+  const sourcesDir = path.join(getUserHome(), '.teamai', 'sources');
   if (!await pathExists(sourcesDir)) return names;
 
   const sourceDirs = await listDirs(sourcesDir);

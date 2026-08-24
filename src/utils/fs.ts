@@ -2,6 +2,7 @@ import fse from 'fs-extra';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { log } from './logger.js';
+import { getUserHome } from './home.js';
 
 const IGNORED_NAMES = new Set([
   '__pycache__',
@@ -16,11 +17,11 @@ function isIgnored(name: string): boolean {
 }
 
 /**
- * Expand ~ to $HOME in paths
+ * Expand ~ to the platform user home directory in paths.
  */
 export function expandHome(p: string): string {
   if (p.startsWith('~/') || p === '~') {
-    return path.join(process.env.HOME ?? '', p.slice(1));
+    return path.join(getUserHome(), p.slice(1));
   }
   return p;
 }

@@ -5,6 +5,25 @@ import type { GitProvider, PrCreateOptions, RepoInfo } from '../types.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
 import { parseGenericGitRepoInput } from './repo-url.js';
 
+const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
+
+/** Convert a display-oriented Git/OS name into a safe member and branch identifier. */
+export function normalizeGitIdentity(value: string): string | null {
+  let normalized = value
+    .trim()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 64)
+    .replace(/[._-]+$/g, '');
+
+  if (!normalized) return null;
+  if (WINDOWS_RESERVED_NAME.test(normalized)) normalized = `user-${normalized}`;
+  return normalized.slice(0, 64);
+}
+
 function gitIdentity(): string {
   const result = spawnSync('git', ['config', '--get', 'user.name'], {
     encoding: 'utf-8',
@@ -12,7 +31,18 @@ function gitIdentity(): string {
     timeout: 10_000,
   });
   const configured = result.status === 0 ? (result.stdout ?? '').trim() : '';
-  return configured || process.env.GIT_AUTHOR_NAME?.trim() || os.userInfo().username;
+  let osUsername = '';
+  try {
+    osUsername = os.userInfo().username;
+  } catch {
+    // Extremely restricted runtimes may not expose OS account information.
+  }
+
+  for (const candidate of [configured, process.env.GIT_AUTHOR_NAME ?? '', osUsername]) {
+    const safe = normalizeGitIdentity(candidate);
+    if (safe) return safe;
+  }
+  return 'git-user';
 }
 
 /**
@@ -52,10 +82,11 @@ export class GenericGitProvider implements GitProvider {
   cloneRepo(repo: string, localPath: string): void {
     const remoteUrl = parseGenericGitRepoInput(repo).httpsUrl;
 
-    const result = spawnSync('git', ['clone', remoteUrl, localPath], {
+    const result = spawnSync('git', ['clone', '--', remoteUrl, localPath], {
       encoding: 'utf-8',
       stdio: ['inherit', 'pipe', 'pipe'],
       timeout: 120_000,
+      maxBuffer: 10 * 1024 * 1024,
     });
     if (result.error || result.status !== 0) {
       const output = `${result.stderr ?? ''} ${result.stdout ?? ''}`.trim();

@@ -72,7 +72,7 @@ export function detectProvider(input: string): string {
   const trimmed = input.trim();
 
   // HTTPS URL: extract host
-  const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\//);
+  const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\//i);
   if (httpsMatch) {
     const host = httpsMatch[1].toLowerCase();
     return HOST_MAP[host] ?? 'git';

@@ -5,7 +5,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { spawnSync } from 'node:child_process';
-import { GenericGitProvider } from '../providers/git/index.js';
+import { GenericGitProvider, normalizeGitIdentity } from '../providers/git/index.js';
 import { parseGenericGitRepoInput } from '../providers/git/repo-url.js';
 import { detectProvider, getProvider } from '../providers/registry.js';
 
@@ -14,6 +14,7 @@ const mockedSpawnSync = spawnSync as Mock;
 describe('generic Git provider detection', () => {
   it('detects arbitrary HTTPS and SSH hosts', () => {
     expect(detectProvider('https://code.qschou.com/Enterprise/arb-workflow-kit.git')).toBe('git');
+    expect(detectProvider('HTTPS://code.qschou.com/Enterprise/arb-workflow-kit.git')).toBe('git');
     expect(detectProvider('git@code.qschou.com:Enterprise/arb-workflow-kit.git')).toBe('git');
     expect(detectProvider('ssh://git@code.qschou.com/Enterprise/arb-workflow-kit.git')).toBe('git');
   });
@@ -65,6 +66,32 @@ describe('parseGenericGitRepoInput', () => {
       'https://oauth2:secret@code.qschou.com/Enterprise/arb-workflow-kit.git',
     )).toThrow(/Do not embed credentials/);
   });
+
+  it('rejects insecure HTTP and does not echo query-string secrets', () => {
+    expect(() => parseGenericGitRepoInput(
+      'http://code.qschou.com/Enterprise/arb-workflow-kit.git',
+    )).toThrow(/plain HTTP is not supported/);
+
+    let message = '';
+    try {
+      parseGenericGitRepoInput(
+        'https://code.qschou.com/Enterprise/arb-workflow-kit.git?token=secret-value',
+      );
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/query strings and fragments are not supported/);
+    expect(message).not.toContain('secret-value');
+  });
+});
+
+describe('generic Git identity', () => {
+  it('normalizes display names and path-like values into safe member ids', () => {
+    expect(normalizeGitIdentity('Jane Doe')).toBe('Jane-Doe');
+    expect(normalizeGitIdentity('../../outside')).toBe('outside');
+    expect(normalizeGitIdentity('CON')).toBe('user-CON');
+    expect(normalizeGitIdentity('中文用户')).toBeNull();
+  });
 });
 
 describe('GenericGitProvider transport', () => {
@@ -83,9 +110,43 @@ describe('GenericGitProvider transport', () => {
 
     expect(mockedSpawnSync).toHaveBeenCalledWith(
       'git',
-      ['clone', 'git@code.qschou.com:Enterprise/arb-workflow-kit.git', '/tmp/team-repo'],
+      ['clone', '--', 'git@code.qschou.com:Enterprise/arb-workflow-kit.git', '/tmp/team-repo'],
       expect.objectContaining({ timeout: 120_000 }),
     );
+  });
+
+  it('checks that git is installed before transport operations', async () => {
+    mockedSpawnSync.mockReturnValue({ status: 0, stdout: 'git version 2.50.0\n', stderr: '' });
+
+    await expect(new GenericGitProvider().ensureInstalled()).resolves.toBeUndefined();
+    expect(mockedSpawnSync).toHaveBeenCalledWith(
+      'git',
+      ['--version'],
+      expect.objectContaining({ timeout: 10_000 }),
+    );
+  });
+
+  it('reports a clear error when git is unavailable', async () => {
+    mockedSpawnSync.mockReturnValue({
+      status: null,
+      stdout: '',
+      stderr: '',
+      error: new Error('spawn git ENOENT'),
+    });
+
+    await expect(new GenericGitProvider().ensureInstalled()).rejects.toThrow(
+      /git is required.*PATH/,
+    );
+  });
+
+  it('uses a safe normalized identity for member files and branch names', async () => {
+    mockedSpawnSync.mockReturnValue({
+      status: 0,
+      stdout: '../../outside\n',
+      stderr: '',
+    });
+
+    await expect(new GenericGitProvider().authenticate()).resolves.toBe('outside');
   });
 
   it('surfaces clone failures', () => {

@@ -138,11 +138,11 @@ async function gitCmd(
  * 三层认证策略：
  *   1. forceSsh=true 或 url 是 SSH 形式 → 直接走 SSH
  *   2. github 且能拿到 token → HTTPS + x-access-token 注入
- *   3. tgit 走 ~/.netrc（git 自身处理）；github 无 token 则匿名 HTTPS
+ *   3. 其他 provider 交给 Git credential helper / ~/.netrc 处理；github 无 token 则匿名 HTTPS
  *
  * @param url        仓库 URL（https/ssh 任一）
  * @param localPath  目标目录（存在则先 rm 再 clone）
- * @param provider   'github' | 'tgit'
+ * @param provider   Provider name such as 'github', 'tgit', 'cnb', or 'git'
  * @param opts       克隆选项
  */
 export async function shallowClone(
@@ -202,10 +202,10 @@ export async function shallowClone(
             log.debug(`shallowClone: 无 TGit OAuth token，尝试匿名 HTTPS 克隆`);
         }
     } else {
-        // 其他 provider，依赖 ~/.netrc
+        // 其他 provider 依赖 Git 自身的 credential helper / ~/.netrc。
         cloneUrl = url.replace(/^http:\/\//, 'https://');
         cloneMethod = 'https-anonymous';
-        log.debug(`shallowClone: 使用 HTTPS (~/.netrc) 克隆 ${provider} 仓库`);
+        log.debug(`shallowClone: 使用 HTTPS (Git credential helper / ~/.netrc) 克隆 ${provider} 仓库`);
     }
 
     // 构建 clone 参数：若有 token 则通过 http.extraHeader 注入，避免 token 出现在 URL 中
