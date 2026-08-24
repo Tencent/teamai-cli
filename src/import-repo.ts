@@ -400,36 +400,6 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                     await fs.writeFile(domainsJsonPath, JSON.stringify({ domain: explicitDomain }, null, 2), 'utf8');
                 }
             }
-            // Update top-level router.md and index.md (append new project, do not overwrite)
-            const { routerTemplate, indexTemplate, HOT_TEMPLATE } = await import('./wiki-engine/adapters/templates.js');
-            const routerPath = path.join(teamwikiRoot, 'router.md');
-            const indexPath = path.join(teamwikiRoot, 'index.md');
-            const projectLink = `[[evidence/code/${slug}/index]]`;
-            if (await fs.pathExists(routerPath)) {
-                const router = await fs.readFile(routerPath, 'utf8');
-                if (!router.includes(projectLink)) {
-                    const line = `- ${projectLink} — ${slug} code knowledge\n`;
-                    await fs.writeFile(routerPath, router.trimEnd() + '\n' + line, 'utf8');
-                }
-            } else {
-                await fs.writeFile(routerPath, routerTemplate([{ slug, label: slug }]), 'utf8');
-            }
-            if (await fs.pathExists(indexPath)) {
-                const idx = await fs.readFile(indexPath, 'utf8');
-                if (!idx.includes(slug)) {
-                    const insertPoint = idx.indexOf('## Navigation');
-                    if (insertPoint > 0) {
-                        const entry = `- [${slug}](./evidence/code/${slug}/index.md) — code knowledge graph\n\n`;
-                        await fs.writeFile(indexPath, idx.slice(0, insertPoint) + entry + idx.slice(insertPoint), 'utf8');
-                    }
-                }
-            } else {
-                await fs.writeFile(indexPath, indexTemplate([{ slug, label: slug }]), 'utf8');
-            }
-            if (!await fs.pathExists(path.join(teamwikiRoot, 'hot.md'))) {
-                await fs.writeFile(path.join(teamwikiRoot, 'hot.md'), HOT_TEMPLATE, 'utf8');
-            }
-
             log.info(chalk.green(`✓ teamwiki/ knowledge graph updated: ${slug}`));
         } catch (err) {
             log.debug(`[wiki-engine] Graph generation failed (non-blocking): ${err instanceof Error ? err.message : err}`);
@@ -473,6 +443,14 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 await aggregateGlobalGraph(teamwikiRoot);
             } catch (e) {
                 log.debug(`[graph] Single-repo aggregation skipped: ${(e as Error).message}`);
+            }
+            // Rebuild global router.md / index.md from the full evidence/code set
+            try {
+                const { rebuildWikiIndex } = await import('./rebuild-wiki-index.js');
+                await rebuildWikiIndex(teamwikiRoot);
+            } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                log.warn(`[wiki] global index rebuild failed (non-blocking): ${msg}`);
             }
         }
         if (await fs.pathExists(teamRepoDir) && mrTeamConfig && mrLocalConfig) {

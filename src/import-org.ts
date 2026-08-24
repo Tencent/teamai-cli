@@ -216,18 +216,22 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
                     `Batch import complete: ${result.succeeded} succeeded, ${result.failed.length} failed, ${result.skipped.length} skipped`,
                 );
                 // Rebuild global router.md / index.md with full stats
-                try {
-                    const { rebuildWikiIndex } = await import('./rebuild-wiki-index.js');
-                    const teamRepoPath = path.join(cwd, '.teamai', 'team-repo');
-                    const teamRepoWiki = path.join(teamRepoPath, 'teamwiki');
-                    if (await fs.pathExists(teamRepoWiki)) {
-                        await rebuildWikiIndex(teamRepoWiki);
-                        log.info('teamwiki router.md / index.md rebuilt');
-                        const { autoPushTeamRepo } = await import('./utils/git.js');
-                        await autoPushTeamRepo(teamRepoPath, '[teamai] Rebuild teamwiki index after batch import');
+                if (!opts.dryRun) {
+                    try {
+                        const { rebuildWikiIndex } = await import('./rebuild-wiki-index.js');
+                        const { autoDetectInit } = await import('./config.js');
+                        const { localConfig } = await autoDetectInit();
+                        const teamRepoPath = localConfig.repo.localPath;
+                        const teamRepoWiki = path.join(teamRepoPath, 'teamwiki');
+                        if (await fs.pathExists(teamRepoWiki)) {
+                            await rebuildWikiIndex(teamRepoWiki);
+                            log.info('teamwiki router.md / index.md rebuilt');
+                            const { autoPushTeamRepo } = await import('./utils/git.js');
+                            await autoPushTeamRepo(teamRepoPath, '[teamai] Rebuild teamwiki index after batch import');
+                        }
+                    } catch (e) {
+                        log.warn(`wiki index rebuild/push failed: ${e instanceof Error ? e.message : String(e)}`);
                     }
-                } catch (e) {
-                    log.debug(`wiki index rebuild/push failed: ${(e as Error).message}`);
                 }
             } catch (err) {
                 log.warn(`Batch import error (non-blocking): ${String(err)}`);
