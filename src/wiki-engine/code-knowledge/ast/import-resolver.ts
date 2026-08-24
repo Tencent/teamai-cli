@@ -8,6 +8,8 @@ const INDEX_SUFFIXES_TS = ["/index.ts", "/index.tsx", "/index.js", "/index.jsx"]
 const EXTENSIONS_PY = [".py"];
 const INDEX_SUFFIXES_PY = ["/__init__.py"];
 const EXTENSIONS_GO = [".go"];
+/** Matches a dotted module identifier (e.g. `pkg.sub.mod`), used by Python/Go import resolution. */
+const MODULE_IDENTIFIER_RE = /^[A-Za-z_][\w.]*$/u;
 
 export interface TsconfigPathsConfig {
   baseUrl: string;
@@ -86,6 +88,10 @@ export async function resolveImportSpecifier(
   if (fromFile.endsWith(".py") || fromFile.endsWith(".go")) {
     const sibling = await resolveSiblingModuleImport(fromFile, specifier, fileExists);
     if (sibling) return sibling;
+    if (fromFile.endsWith(".py")) {
+      const absolutePkg = await resolveAbsolutePackageImport(fromFile, specifier, fileExists);
+      if (absolutePkg) return absolutePkg;
+    }
   }
 
   const tsconfig = await loadTsconfigPaths(repoRoot, fromFile);
@@ -114,7 +120,7 @@ async function resolveSiblingModuleImport(
   specifier: string,
   fileExists: (relativePath: string) => Promise<boolean>
 ): Promise<ResolvedImport | undefined> {
-  if (!/^[A-Za-z_][\w.]*$/u.test(specifier)) {
+  if (!MODULE_IDENTIFIER_RE.test(specifier)) {
     return undefined;
   }
   const fromDir = path.dirname(fromFile);
@@ -122,6 +128,36 @@ async function resolveSiblingModuleImport(
   const modulePath = fromFile.endsWith(".py") ? specifier.replace(/\./gu, "/") : specifier;
   const base = toPosix(path.normalize(path.join(fromDir, modulePath)));
   const candidates = await expandModulePaths(base, fromFile, fileExists);
+  return pickCandidate(candidates);
+}
+
+/**
+ * Resolve a Python absolute package import from the repo root.
+ *
+ * Python code commonly imports via the top-level package name rooted at the
+ * repository root (e.g. `from hai_flow.conf import config`), not relative to the
+ * importing file's directory. This maps the dotted specifier directly onto a
+ * repo-root-relative path (a.b.c -> a/b/c) and probes for a module file or
+ * package `__init__.py`. Only applies to Python source files.
+ *
+ * @param fromFile     Repo-root-relative path of the importing file.
+ * @param specifier    The (non-relative) import specifier, e.g. "hai_flow.conf".
+ * @param fileExists   Predicate checking a repo-root-relative path exists.
+ * @returns            Resolved import, or undefined when no repo-root path matches.
+ */
+async function resolveAbsolutePackageImport(
+  fromFile: string,
+  specifier: string,
+  fileExists: (relativePath: string) => Promise<boolean>
+): Promise<ResolvedImport | undefined> {
+  if (!fromFile.endsWith(".py")) {
+    return undefined;
+  }
+  if (!MODULE_IDENTIFIER_RE.test(specifier)) {
+    return undefined;
+  }
+  const modulePath = specifier.replace(/\./gu, "/");
+  const candidates = await expandModulePaths(modulePath, fromFile, fileExists);
   return pickCandidate(candidates);
 }
 
