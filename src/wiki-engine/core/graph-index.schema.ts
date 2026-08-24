@@ -356,6 +356,9 @@ export async function loadGraphIndex(wikiRoot: string): Promise<GraphIndex | nul
     if (!Array.isArray(parsed?.nodes) || !Array.isArray(parsed?.edges)) {
       return null;
     }
+    if (parsed.schemaVersion !== GRAPH_INDEX_SCHEMA_VERSION) {
+      return null;
+    }
     return parsed as GraphIndex;
   } catch {
     return null;

@@ -157,14 +157,17 @@ async function loadOrBuildScopeIndex(
     const rulesDir = path.join(localConfig.repo.localPath, 'rules');
     const skillsDir = path.join(localConfig.repo.localPath, 'skills');
     const repoCodebaseDir = path.join(localConfig.repo.localPath, 'docs', 'team-codebase');
-    const codebaseDir = await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
+    const hasLegacyCodebase = await pathExists(repoCodebaseDir);
+    if (hasLegacyCodebase) {
+      log.warn(`Legacy 'docs/team-codebase' is no longer indexed. Migrate to 'teamwiki/' for code-knowledge recall.`);
+    }
     try {
       await buildIndex({
         learningsDir: effectiveLearningsDir ?? undefined,
         docsDir: await pathExists(docsDir) ? docsDir : undefined,
         rulesDir: await pathExists(rulesDir) ? rulesDir : undefined,
         skillsDir: await pathExists(skillsDir) ? skillsDir : undefined,
-        codebaseDir,
+        codebaseDir: undefined, // codebase now served by teamwiki/ graph engine
         votesDir: votesExist ? votesDir : undefined,
         indexPath,
       });

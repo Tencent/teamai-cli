@@ -339,12 +339,48 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
       workspaceBindings: fileConfig.workspaceBindings ?? {},
     };
     // Migrate: clear legacy group-based bindings (groupId without projectId)
+    const removedLegacyPaths: string[] = [];
     for (const [wsPath, binding] of Object.entries(config.workspaceBindings)) {
       if ('groupId' in binding && !('projectId' in (binding as Record<string, unknown>))) {
         delete config.workspaceBindings[wsPath];
+        removedLegacyPaths.push(wsPath);
+      }
+    }
+    if (removedLegacyPaths.length > 0) {
+      log.warn(
+        `Removed ${removedLegacyPaths.length} legacy group-based workspace binding(s); ` +
+          `you will be prompted to re-bind on the next session.`,
+      );
+      try {
+        await saveLocalAgentConfig(config);
+      } catch (e) {
+        log.debug(`local-agent: failed to persist binding cleanup: ${(e as Error).message}`);
       }
     }
     return config;
+  }
+
+  // Backfill: if config.json is missing but a legacy ~/.teamai/config.yaml has
+  // an HTTP team repo, auto-create config.json so v0.17.x upgraders keep capability.
+  const { loadLocalConfig } = await import('./config.js');
+  const { resolveApiKey } = await import('./api-key.js');
+  const legacy = await loadLocalConfig();
+  if (legacy?.repo?.kind === 'http' && legacy.repo.url) {
+    const endpoint = normalizeEndpoint(legacy.repo.url);
+    const token = resolveApiKey() ?? undefined;
+    const backfilled: LocalAgentConfig = {
+      endpoint,
+      token,
+      createdAt: new Date().toISOString(),
+      workspaceBindings: {},
+    };
+    try {
+      await saveLocalAgentConfig(backfilled);
+      log.debug('local-agent: backfilled config.json from legacy ~/.teamai/config.yaml (http repo)');
+    } catch (e) {
+      log.debug(`local-agent: backfill persist failed, using in-memory config: ${(e as Error).message}`);
+    }
+    return backfilled;
   }
 
   const envEndpoint =
