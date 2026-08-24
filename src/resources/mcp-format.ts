@@ -238,7 +238,9 @@ function renderOpencode(def: McpServerDef): McpJsonEntry {
   if (def.transport === 'stdio') {
     e.type = 'local';
     // OpenCode folds the executable and its args into one `command` array.
-    e.command = [def.command ?? '', ...(def.args ?? [])];
+    // The schema guarantees a stdio def has `command`; guard anyway so a
+    // malformed def never writes an empty-string executable into opencode.json.
+    e.command = [...(def.command ? [def.command] : []), ...(def.args ?? [])];
     if (def.env && Object.keys(def.env).length) e.environment = def.env;
   } else {
     e.type = 'remote';

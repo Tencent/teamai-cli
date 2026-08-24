@@ -7,6 +7,7 @@ import { RECALL_DEPENDENT_SKILLS } from './builtin-skills.js';
 import {
   resolveBaseDir,
   isRecallEnabled,
+  scopedToolPaths,
   TEAMAI_RECALL_RULES_START,
   TEAMAI_RECALL_RULES_END,
   type GlobalOptions,
@@ -17,7 +18,7 @@ import {
 async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
   const baseDir = resolveBaseDir(localConfig);
 
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     // Remove recall rule file
     if (toolPath.rules) {
       const ruleFile = path.join(baseDir, toolPath.rules, 'teamai-recall.md');
@@ -85,7 +86,7 @@ async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
   const baseDir = resolveBaseDir(localConfig);
   const recallBlock = compileRecallRulesBlock();
 
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.claudemd || !toolPath.agents) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
 

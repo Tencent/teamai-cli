@@ -27,7 +27,7 @@ import type {
   SourceInstallManifest,
   GlobalOptions,
 } from './types.js';
-import { resolveBaseDir, SOURCE_PULL_TTL_MS } from './types.js';
+import { resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
 
 // ─── Source repo management ──────────────────────────────
 
@@ -467,7 +467,7 @@ async function pullSingleSource(
     }
 
     // Deploy to each tool's skills directory
-    for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
 
@@ -488,7 +488,7 @@ async function pullSingleSource(
     const deployedSet = new Set(deployed);
     for (const oldSkill of oldInstalled) {
       if (!deployedSet.has(oldSkill) && !localTeamSkills.has(oldSkill)) {
-        await removeSkillFromToolPaths(oldSkill, teamConfig, baseDir);
+        await removeSkillFromToolPaths(oldSkill, teamConfig, localConfig, baseDir);
         log.debug(`[source:${source.name}] Removed "${oldSkill}" (no longer public)`);
       }
     }
@@ -610,8 +610,8 @@ async function getLocalTeamSkillNames(teamConfig: TeamaiConfig, localConfig: Loc
 /**
  * Remove a skill from all tool paths.
  */
-async function removeSkillFromToolPaths(skillName: string, teamConfig: TeamaiConfig, baseDir: string): Promise<void> {
-  for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+async function removeSkillFromToolPaths(skillName: string, teamConfig: TeamaiConfig, localConfig: LocalConfig, baseDir: string): Promise<void> {
+  for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.skills) continue;
     const skillDir = path.join(baseDir, toolPath.skills, skillName);
     if (await pathExists(skillDir)) {
@@ -629,7 +629,7 @@ async function cleanupSourceSkills(sourceName: string, teamConfig: TeamaiConfig,
 
   const baseDir = resolveBaseDir(localConfig);
   for (const skillName of manifest.installedSkills) {
-    await removeSkillFromToolPaths(skillName, teamConfig, baseDir);
+    await removeSkillFromToolPaths(skillName, teamConfig, localConfig, baseDir);
   }
 }
 

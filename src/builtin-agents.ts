@@ -3,7 +3,7 @@ import path from 'node:path';
 import { ensureDir, pathExists, copyFile } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir, isAgentDisabled } from './types.js';
+import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
 import { ResourceHandler } from './resources/base.js';
 import { getUserHome } from './utils/home.js';
 
@@ -79,7 +79,7 @@ export async function deployBuiltinAgents(
   const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
   let deployed = 0;
 
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
     if (!toolPath.agents) {
       log.debug(`Skipping built-in agent deployment for ${tool}: no agents path`);
       continue;

@@ -95,4 +95,29 @@ describe('reconcileOpencodeInstructions', () => {
     expect(wrote).toBe(true);
     expect((await fse.readJson(configFile)).instructions).toEqual([GLOB]);
   });
+
+  it('preserves the position of non-string entries when adding the glob', async () => {
+    const objEntry = { path: 'dynamic.md', enabled: true };
+    await fse.writeJson(configFile, { instructions: [objEntry, 'user.md'] });
+    const wrote = await reconcileOpencodeInstructions(configFile, GLOB, true);
+    expect(wrote).toBe(true);
+    // The object entry must NOT be relocated to the end — only our glob is appended.
+    expect((await fse.readJson(configFile)).instructions).toEqual([objEntry, 'user.md', GLOB]);
+  });
+
+  it('preserves the position of non-string entries when removing the glob', async () => {
+    const objEntry = { path: 'dynamic.md', enabled: true };
+    await fse.writeJson(configFile, { instructions: [objEntry, 'user.md', GLOB] });
+    const wrote = await reconcileOpencodeInstructions(configFile, GLOB, false);
+    expect(wrote).toBe(true);
+    expect((await fse.readJson(configFile)).instructions).toEqual([objEntry, 'user.md']);
+  });
+
+  it('keeps a non-string entry even when it is the only survivor after removing the glob', async () => {
+    const objEntry = { path: 'dynamic.md' };
+    await fse.writeJson(configFile, { instructions: [objEntry, GLOB] });
+    const wrote = await reconcileOpencodeInstructions(configFile, GLOB, false);
+    expect(wrote).toBe(true);
+    expect((await fse.readJson(configFile)).instructions).toEqual([objEntry]);
+  });
 });

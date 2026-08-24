@@ -17,6 +17,7 @@ import {
   getManagedHooksPath,
   managedMcpManifestPath,
   resolveBaseDir,
+  scopedToolPaths,
   type GlobalOptions,
   type TeamaiConfig,
   type LocalConfig,
@@ -301,7 +302,7 @@ async function buildRemovalPlan(
   // Discover per-tool resources
   const managedHooksPath = getManagedHooksPath(localConfig.scope, localConfig.projectRoot);
   const perTool = new Map<string, ToolResources>();
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     perTool.set(
       tool,
       await discoverToolResources(tool, toolPath, baseDir, teamSkillNames, teamRuleNames, managedHooksPath),

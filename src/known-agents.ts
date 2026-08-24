@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { pathExists, ensureDir } from './utils/fs.js';
-import { resolveBaseDir, isAgentDisabled } from './types.js';
-import type { LocalConfig, TeamaiConfig } from './types.js';
+import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
+import { toolInstallRoot } from './resources/base.js';
+import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
 import { getUserHome } from './utils/home.js';
 
 /**
@@ -193,14 +194,18 @@ export async function detectHomeInstalledAgents(
   return found;
 }
 
-export function getEffectiveAgents(teamConfig: TeamaiConfig): KnownAgent[] {
+export function getEffectiveAgents(
+  teamConfig: TeamaiConfig,
+  localConfig?: { scope?: Scope },
+): KnownAgent[] {
   const byId = new Map<string, KnownAgent & { fromTeamConfig?: boolean }>();
 
   for (const agent of KNOWN_AGENTS) {
     byId.set(agent.id, { ...agent });
   }
 
-  for (const [id, paths] of Object.entries(teamConfig.toolPaths)) {
+  const toolPaths = scopedToolPaths(teamConfig, localConfig ?? {});
+  for (const [id, paths] of Object.entries(toolPaths)) {
     if (!paths.skills) continue;
     const existing = byId.get(id);
     if (existing) {
@@ -228,18 +233,18 @@ export function getEffectiveAgents(teamConfig: TeamaiConfig): KnownAgent[] {
  */
 export async function detectInstalledAgents(localConfig: LocalConfig, teamConfig: TeamaiConfig): Promise<ResolvedAgent[]> {
   const baseDir = resolveBaseDir(localConfig);
-  const agents = getEffectiveAgents(teamConfig);
+  const agents = getEffectiveAgents(teamConfig, localConfig);
+  const scoped = scopedToolPaths(teamConfig, localConfig);
   const fromTeamConfig = new Set(
-    Object.entries(teamConfig.toolPaths)
+    Object.entries(scoped)
       .filter(([, paths]) => paths.skills)
       .map(([id]) => id),
   );
 
   const results: ResolvedAgent[] = [];
   for (const agent of agents) {
-    const segments = agent.skillsPath.split('/');
-    const rootSegment = segments[0] ?? '';
-    const rootPath = `${baseDir}/${rootSegment}`;
+    const rootSegment = toolInstallRoot(agent.skillsPath);
+    const rootPath = path.join(baseDir, rootSegment);
     const installed = rootSegment ? await pathExists(rootPath) : false;
     results.push({
       ...agent,

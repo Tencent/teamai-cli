@@ -6,6 +6,25 @@ import { getUserHome } from '../utils/home.js';
 const TOMBSTONE_FILE = '.removed';
 
 /**
+ * The directory whose existence marks a tool as "installed" for a given
+ * resource path. The tool root is normally the first path segment
+ * (`.claude/skills` → `.claude`, `.openclaw/workspace/AGENTS.md` → `.openclaw`).
+ *
+ * The one exception is OpenCode's user scope, whose paths live under
+ * `.config/opencode/...`: there the first segment (`.config`) is a directory
+ * nearly every user has, so it would wrongly report OpenCode as installed.
+ * For a `.config/<tool>/...` path the root is the first two segments
+ * (`.config/opencode`) instead.
+ */
+export function toolInstallRoot(toolPath: string): string {
+  const segments = toolPath.split('/');
+  if (segments[0] === '.config' && segments.length > 1) {
+    return `${segments[0]}/${segments[1]}`;
+  }
+  return segments[0] ?? toolPath;
+}
+
+/**
  * Abstract base class for resource handlers.
  * Each resource type (skills, rules, docs, env, agents, hooks, mcp) implements this.
  */
@@ -66,13 +85,7 @@ export abstract class ResourceHandler {
    */
   static async isToolInstalled(toolPath: string, baseDir?: string): Promise<boolean> {
     const base = baseDir ?? getUserHome();
-    // The tool root is the resource dir's parent: `.claude/skills` → `.claude`,
-    // and `.config/opencode/skills` → `.config/opencode`. Using split('/')[0]
-    // instead would report `.config` for OpenCode's user scope — a directory
-    // nearly every user has — and wrongly treat OpenCode as installed. dirname
-    // is identical to the old behavior for every 2-segment `.<tool>/<resource>`.
-    const dir = path.dirname(toolPath);
-    const toolRoot = dir === '.' ? path.join(base, toolPath) : path.join(base, dir);
+    const toolRoot = path.join(base, toolInstallRoot(toolPath));
     return pathExists(toolRoot);
   }
 

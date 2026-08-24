@@ -80,31 +80,26 @@ export async function reconcileOpencodeInstructions(
     }
   }
 
-  const current = Array.isArray(data.instructions)
-    ? (data.instructions as unknown[]).filter((v): v is string => typeof v === 'string')
-    : [];
-  const has = current.includes(glob);
+  // Operate on the array in place so the relative order of the user's own
+  // entries — string globs and any non-string entries alike — is preserved.
+  // (OpenCode may treat instruction order as precedence, so reordering the
+  // user's entries on every pull would silently change their config.)
+  const original = Array.isArray(data.instructions) ? [...(data.instructions as unknown[])] : [];
+  const has = original.includes(glob);
 
   if (present && has) return false;
   if (!present && !has) return false;
 
-  let next: string[];
-  if (present) {
-    next = [...current, glob];
-  } else {
-    next = current.filter((g) => g !== glob);
-  }
+  const next = present
+    ? [...original, glob]           // append our glob without touching existing order
+    : original.filter((g) => g !== glob); // remove only our glob, everything else stays put
 
-  // Key-level surgery: drop `instructions` entirely when it would be empty and
-  // there were no non-string entries to preserve, otherwise write it back.
-  if (next.length === 0 && (!Array.isArray(data.instructions) || (data.instructions as unknown[]).every((v) => typeof v === 'string'))) {
+  // Key-level surgery: drop `instructions` entirely when it would be empty,
+  // otherwise write the reconciled array back.
+  if (next.length === 0) {
     delete data.instructions;
   } else {
-    // Preserve any non-string entries the user may have had by re-appending them.
-    const nonStrings = Array.isArray(data.instructions)
-      ? (data.instructions as unknown[]).filter((v) => typeof v !== 'string')
-      : [];
-    data.instructions = [...next, ...nonStrings];
+    data.instructions = next;
   }
 
   await writeJsonAtomic(configFileAbs, data);
