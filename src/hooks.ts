@@ -6,6 +6,7 @@ import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
 import { builtinHookDefs, applyBuiltinOverride, ensureWrapperIfShellAvailable, SHELL_DEPENDENT_TOOLS } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { resolveTeamHooks } from './resources/hooks.js';
+import { getUserHome } from './utils/home.js';
 
 /**
  * Lobster-family agents (OpenClaw engine) that use HOOK.md + handler.ts instead
@@ -726,7 +727,7 @@ export async function hasTeamaiHooks(
  * preventing creation of config dirs for tools the user hasn't installed.
  */
 export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<void> {
-  const resolvedBaseDir = baseDir ?? (process.env.HOME ?? '');
+  const resolvedBaseDir = baseDir ?? getUserHome();
   const tools = Object.keys(toolPaths).filter(t => !filterAgents || filterAgents.includes(t));
   let shellAvailable = true;
   if (tools.some(t => SHELL_DEPENDENT_TOOLS.has(t))) {

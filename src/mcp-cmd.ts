@@ -13,10 +13,11 @@ import type { GlobalOptions } from './types.js';
 import { managedMcpManifestPath } from './types.js';
 import { readJson } from './utils/fs.js';
 import type { ManagedMcpManifest } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 function displayPath(p: string): string {
-  const home = process.env.HOME;
-  if (home && (p === home || p.startsWith(home + path.sep))) return `~${p.slice(home.length)}`;
+  const home = getUserHome();
+  if (p === home || p.startsWith(home + path.sep)) return `~${p.slice(home.length)}`;
   return p;
 }
 

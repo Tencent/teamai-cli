@@ -38,6 +38,7 @@ import {
 } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { askConfirmation } from './utils/prompt.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── Types ─────────────────────────────────────────────
 
@@ -109,9 +110,8 @@ const CLAUDEMD_MARKER_PAIRS: Array<[string, string]> = [
   [TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END],
 ];
 
-function detectShellProfile(): string | null {
-  const home = process.env.HOME;
-  if (!home) return null;
+function detectShellProfile(): string {
+  const home = getUserHome();
   const shell = process.env.SHELL ?? '';
   if (shell.includes('zsh')) {
     return path.join(home, '.zshrc');
@@ -283,7 +283,7 @@ async function buildRemovalPlan(
 
   // Also include resources installed by local-agent (HTTP distribution)
   const localAgentManifestPath = path.join(
-    process.env.HOME ?? '', '.teamai', 'local-agent', 'manifest.json',
+    getUserHome(), '.teamai', 'local-agent', 'manifest.json',
   );
   if (await pathExists(localAgentManifestPath)) {
     try {
@@ -761,12 +761,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
       process.exitCode = 2;
       return;
     }
-    const homeDir = process.env.HOME;
-    if (!homeDir) {
-      log.error('无法确定用户主目录（HOME 环境变量未设置）');
-      return;
-    }
-    const home = path.join(homeDir, '.teamai');
+    const home = path.join(getUserHome(), '.teamai');
     if (!await pathExists(home)) {
       log.info('没有需要卸载的内容');
       return;

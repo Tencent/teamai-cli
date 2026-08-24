@@ -10,6 +10,7 @@ import { queryCodeKnowledge } from './code-knowledge-recall.js';
 import type { CodeKnowledgeResult, SourceAnchor } from './code-knowledge-recall.js';
 import { recordRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { getUserHome } from './utils/home.js';
 
 /** Relevance threshold for codebase graph hits.
  *  These are log-compressed to a bounded [0,10] range (see `queryCodeKnowledge`
@@ -114,7 +115,7 @@ export function computeIdfBaseline(indexes: SearchIndex[]): number {
 
 /** Resolve votes dir dynamically (respects HOME changes in tests). */
 function getVotesLocalDir(): string {
-  return `${process.env.HOME ?? ''}/.teamai/votes`;
+  return path.join(getUserHome(), '.teamai', 'votes');
 }
 
 /** Search result with scope label for merged output. */

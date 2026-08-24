@@ -44,6 +44,7 @@ import {
   type Scope,
   type TeamaiConfig,
 } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -215,7 +216,7 @@ interface LocalAgentContext {
 }
 
 function getTeamaiHomePath(): string {
-  return path.join(process.env.HOME ?? '', '.teamai');
+  return path.join(getUserHome(), '.teamai');
 }
 
 function getLocalAgentHome(): string {
@@ -278,7 +279,7 @@ export function resolveRoute(config: Pick<LocalAgentConfig, 'routes'>, name: Rou
  * Note: install_path only feeds the local hash — it never leaves the machine.
  */
 function resolveAgentInstallPath(agentType: string): string {
-  const home = process.env.HOME ?? '';
+  const home = getUserHome();
   const skillsRel = createLocalAgentTeamConfig('').toolPaths[agentType]?.skills;
   const rel = skillsRel ? path.dirname(skillsRel) : `.${agentType}`;
   return path.join(home, rel);
@@ -382,7 +383,7 @@ function resolveToolSettingsPath(config: LocalAgentConfig, tool: string): string
   if (!toolPath?.settings) {
     throw new Error(`unsupported tool: ${tool} (no settings path)`);
   }
-  return path.join(process.env.HOME ?? '', toolPath.settings);
+  return path.join(getUserHome(), toolPath.settings);
 }
 
 function getPluginStatePath(): string {
@@ -1229,7 +1230,7 @@ export async function buildReportPayload(
     return { skills, rules };
   };
 
-  const userScope = await scanScope(process.env.HOME ?? '');
+  const userScope = await scanScope(getUserHome());
 
   const userLevel: Record<string, unknown> = { group_id: config.userGroupId };
   if (userScope.skills.length > 0) userLevel.skills = userScope.skills;
@@ -1715,7 +1716,7 @@ async function syncClaudemd(
 
   const defaultBaseDir = localConfig.scope === 'project' && localConfig.projectRoot
     ? localConfig.projectRoot
-    : process.env.HOME ?? '';
+    : getUserHome();
 
   for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
     if (!toolPath.claudemd) continue;
@@ -2286,7 +2287,7 @@ export async function initLocalAgentHttp(options: {
   }
 
   const teamConfig = createLocalAgentTeamConfig(endpoint);
-  await injectHooksToAllTools(teamConfig.toolPaths, process.env.HOME ?? '', options.filterAgents);
+  await injectHooksToAllTools(teamConfig.toolPaths, getUserHome(), options.filterAgents);
   log.success(`HTTP local agent initialized at ${getConfigPath()}`);
 }
 

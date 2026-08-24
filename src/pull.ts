@@ -27,6 +27,7 @@ import {
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
+import { getUserHome } from './utils/home.js';
 
 interface RolePullContext {
   activeNamespaces: ResourceNamespaces;
@@ -1109,7 +1110,7 @@ async function collectClaudemdFiles(
  * Reinjects with the current version's hook definitions.
  */
 async function autoMigrateHooksIfNeeded(): Promise<void> {
-  const home = process.env.HOME ?? '';
+  const home = getUserHome();
   // Quick check: read the primary settings file and see if it has hook-dispatch
   const primarySettings = path.join(home, '.claude', 'settings.json');
   if (!await pathExists(primarySettings)) return;

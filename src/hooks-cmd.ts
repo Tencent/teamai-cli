@@ -6,6 +6,7 @@ import { parseTeamHooks, resolveTeamHooks } from './resources/hooks.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { resolveBaseDir, getManagedHooksPath } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 type HookListStatus = HookStatus | 'not configured';
 
@@ -38,14 +39,13 @@ function resolveHookScopeTargets(localConfig: LocalConfig): HookScopeTarget[] {
         }];
     }
     return [{
-        baseDir: process.env.HOME ?? '',
+        baseDir: getUserHome(),
         manifestPath: getManagedHooksPath('user'),
     }];
 }
 
 function formatDisplayPath(settingsPath: string): string {
-    const home = process.env.HOME;
-    if (!home) return settingsPath;
+    const home = getUserHome();
 
     if (settingsPath === home) return '~';
     if (settingsPath.startsWith(home + path.sep) || settingsPath.startsWith(home + '/')) {

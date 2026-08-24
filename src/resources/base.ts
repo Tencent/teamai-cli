@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type { ResourceType, ResourceItem, ResourceDiff, TeamaiConfig, LocalConfig } from '../types.js';
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
+import { getUserHome } from '../utils/home.js';
 
 const TOMBSTONE_FILE = '.removed';
 
@@ -64,7 +65,7 @@ export abstract class ResourceHandler {
    * @param baseDir - Override base directory (defaults to HOME). Used for project scope.
    */
   static async isToolInstalled(toolPath: string, baseDir?: string): Promise<boolean> {
-    const base = baseDir ?? process.env.HOME ?? '';
+    const base = baseDir ?? getUserHome();
     const toolRoot = path.join(base, toolPath.split('/')[0]);
     return pathExists(toolRoot);
   }

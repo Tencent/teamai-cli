@@ -22,6 +22,7 @@
 import path from 'node:path';
 import { writeFile, ensureDir, pathExists, readFileSafe, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { getUserHome } from './utils/home.js';
 
 /**
  * Resolve the hooks directory for an OpenClaw-family tool.
@@ -36,7 +37,7 @@ export function resolveOpenClawHooksDir(tool: string): string {
   if (tool === 'openclaw' && process.env.OPENCLAW_STATE_DIR) {
     return path.join(process.env.OPENCLAW_STATE_DIR, 'hooks');
   }
-  const home = process.env.HOME ?? '';
+  const home = getUserHome();
   return path.join(home, `.${tool}`, 'hooks');
 }
 
@@ -231,8 +232,7 @@ export async function resolveOpenclawWorkspaceDir(workspacePath?: string): Promi
       } catch (e) { log.debug(`openclaw: failed to parse openclaw.json: ${(e as Error).message}`); }
     }
   }
-  const home = process.env.HOME;
-  if (home) candidates.push(path.join(home, '.openclaw', 'workspace'));
+  candidates.push(path.join(getUserHome(), '.openclaw', 'workspace'));
   for (const candidate of candidates) {
     if (await pathExists(candidate)) {
       log.debug(`openclaw: resolved workspace dir to ${candidate}`);

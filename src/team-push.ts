@@ -9,6 +9,7 @@ import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } f
 import { log } from './utils/logger.js';
 import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig } from './types.js';
 import { VOTES_LOCAL_DIR, emptyTokenUsage, addTokenUsage } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 /** Snapshot of already-reported per-session intervention counts (idempotency basis). */
 type ReportedInterventions = Record<string, { interrupt: number; toolReject: number; correction: number }>;
@@ -117,7 +118,7 @@ export function mergeStats(
 
 /** Path to the local reported-interventions snapshot (evaluated at call time for tests). */
 function getReportedInterventionsPath(): string {
-  return path.join(process.env.HOME ?? '', '.teamai', 'dashboard', 'reported-interventions.json');
+  return path.join(getUserHome(), '.teamai', 'dashboard', 'reported-interventions.json');
 }
 
 async function readReportedInterventions(): Promise<ReportedInterventions> {
@@ -188,7 +189,7 @@ function hasInterventionDelta(d: UserInterventionStats): boolean {
 
 /** Path to the local prompt/token reported snapshot (evaluated at call time for tests). */
 function getReportedPromptTokensPath(): string {
-  return path.join(process.env.HOME ?? '', '.teamai', 'dashboard', 'reported-prompt-tokens.json');
+  return path.join(getUserHome(), '.teamai', 'dashboard', 'reported-prompt-tokens.json');
 }
 
 async function readReportedPromptTokens(): Promise<ReportedPromptTokens> {

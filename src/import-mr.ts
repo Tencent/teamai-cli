@@ -11,9 +11,10 @@ import type { MRData, LearningDraft } from './types.js';
 import { callClaude } from './utils/ai-client.js';
 import { extractKeywords, findSupersededLearnings } from './utils/dedup.js';
 import { log, spinner } from './utils/logger.js';
+import { getUserHome } from './utils/home.js';
 
 /** Default directory for storing learnings. */
-const DEFAULT_LEARNINGS_DIR = path.join(process.env.HOME ?? '/tmp', '.teamai', 'learnings');
+const DEFAULT_LEARNINGS_DIR = path.join(getUserHome(), '.teamai', 'learnings');
 
 /** Dedup similarity threshold. */
 const SUPERSEDE_THRESHOLD = 0.6;

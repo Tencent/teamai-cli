@@ -15,10 +15,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir } from './utils/fs.js';
+import { getUserHome } from './utils/home.js';
 
 /** Absolute path to the local API key file. */
 export function getApiKeyPath(): string {
-  return path.join(process.env.HOME ?? '', '.teamai', 'apikey');
+  return path.join(getUserHome(), '.teamai', 'apikey');
 }
 
 /**

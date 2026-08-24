@@ -5,6 +5,7 @@ import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 import { resolveBaseDir, isAgentDisabled } from './types.js';
 import { ResourceHandler } from './resources/base.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── Built-in agents deployment ──────────────────────────
 //
@@ -75,7 +76,7 @@ export async function deployBuiltinAgents(
     .filter((f) => !(options?.skipRecall && f === 'teamai-recall.md'));
   if (agentFiles.length === 0) return 0;
 
-  const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');
+  const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
   let deployed = 0;
 
   for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {

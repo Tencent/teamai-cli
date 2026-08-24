@@ -10,6 +10,7 @@ import {
   type TeamaiConfig,
 } from './types.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
+import { getUserHome } from './utils/home.js';
 
 interface Check {
   name: string;
@@ -65,7 +66,7 @@ export async function doctor(options: GlobalOptions): Promise<void> {
   // Fall back to schema defaults if team config is unavailable
   const toolPaths = teamConfig?.toolPaths ?? TeamaiConfigSchema.shape.toolPaths.parse(undefined);
   const providerName = teamConfig?.provider ?? 'tgit';
-  const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');
+  const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
 
   const checks: Check[] = [];
 
@@ -144,7 +145,7 @@ export async function doctor(options: GlobalOptions): Promise<void> {
         const envYamlPath = path.join(localConfig.repo.localPath, 'env', 'env.yaml');
         if (!await pathExists(envYamlPath)) return true;
 
-        const home = process.env.HOME ?? '';
+        const home = getUserHome();
 
         const envShPath = path.join(home, '.teamai', 'env.sh');
         if (!await pathExists(envShPath)) return false;

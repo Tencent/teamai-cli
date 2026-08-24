@@ -5,6 +5,7 @@ import { ResourceHandler } from './resources/base.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 import { resolveBaseDir, isAgentDisabled } from './types.js';
 import fs from 'node:fs/promises';
+import { getUserHome } from './utils/home.js';
 
 // ─── Built-in rules deployment ──────────────────────────
 //
@@ -48,7 +49,7 @@ export async function deployBuiltinRules(
     localConfig?: LocalConfig,
     options?: { skipRecall?: boolean },
 ): Promise<number> {
-    const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');
+    const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
     let deployed = 0;
 
     const builtinRules: Array<{ name: string; content: string }> = [

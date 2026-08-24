@@ -2,6 +2,7 @@ import path from 'node:path';
 import { pathExists, ensureDir } from './utils/fs.js';
 import { resolveBaseDir, isAgentDisabled } from './types.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 /**
  * Single-repo mode: the AI tools offered when `teamai init .` asks which tool
@@ -177,8 +178,7 @@ export async function seedSelfModeToolDirs(
 export async function detectHomeInstalledAgents(
   candidateIds: readonly string[] = SELF_MODE_AGENT_CHOICES,
 ): Promise<string[]> {
-  const home = process.env.HOME;
-  if (!home) return [];
+  const home = getUserHome();
 
   const found: string[] = [];
   for (const id of candidateIds) {
