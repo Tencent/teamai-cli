@@ -236,7 +236,7 @@ async function isInsideGitRepo(dir: string): Promise<boolean> {
  */
 export async function initHttp(
   url: string,
-  options: GlobalOptions & { scope?: string; role?: string; agent?: string | string[]; force?: boolean; token?: string; inheritUserScope?: boolean },
+  options: GlobalOptions & { scope?: string; role?: string; agent?: string | string[]; force?: boolean; token?: string; inheritUserScope?: boolean; branch?: string },
 ): Promise<void> {
   const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
 
@@ -874,6 +874,7 @@ export async function init(options: GlobalOptions & {
   token?: string;
   inheritUserScope?: boolean;
   self?: boolean;
+  branch?: string;
 }): Promise<void> {
   if (options.http) {
     return initHttp(options.http, options);
@@ -1102,6 +1103,19 @@ export async function init(options: GlobalOptions & {
     }
   }
 
+  // Step 3.4: Pin the clone to a non-default branch when --branch was given.
+  // Product-line variant branches: checkout + tracking + origin/HEAD in one go,
+  // so every getDefaultBranch() consumer follows it from the first pull on.
+  if (options.branch) {
+    try {
+      const { pinCloneToBranch } = await import('./utils/branch-manager.js');
+      await pinCloneToBranch(localPath, options.branch);
+    } catch (e) {
+      log.error(`--branch ${options.branch} failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  }
+
   // Step 3.5: Configure git user for the team repo
   const emailDomain = provider.getDefaultEmailDomain() ?? undefined;
   await configureGitUser(localPath, username, username, undefined, emailDomain);
@@ -1207,7 +1221,7 @@ export async function init(options: GlobalOptions & {
 
   // Step 6: Save local config
   const localConfig: LocalConfig = {
-    repo: { localPath, remote: repoInfo.httpsUrl },
+    repo: { localPath, remote: repoInfo.httpsUrl, ...(options.branch ? { branch: options.branch } : {}) },
     username,
     scope,
     projectRoot,

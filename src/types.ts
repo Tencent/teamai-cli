@@ -287,6 +287,13 @@ export const LocalConfigSchema = z.object({
     /** Base URL of the HTTP team repo (only when kind === 'http'). */
     url: z.string().optional(),
     /**
+     * Team-repo branch to track instead of the remote default branch
+     * (only when kind === 'git'). Set via `teamai init --branch <name>`.
+     * Product-line variants can then live as long-lived branches of one
+     * team repo; pull/push/MR-target all follow this branch.
+     */
+    branch: z.string().optional(),
+    /**
      * Git root of the business repo (only when kind === 'self').
      * Equals the parent directory of localPath. All git write operations
      * (knowledge PRs, reports orphan branch) run in isolated worktrees under

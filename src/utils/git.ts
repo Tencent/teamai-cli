@@ -619,6 +619,11 @@ export function generateBranchName(username: string): string {
   const now = new Date();
   const pad = (n: number) => n.toString().padStart(2, '0');
   const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  // Hosts that enforce branch-name whitelists in pre-receive hooks (some
+  // self-hosted GitLab instances only allow master/release/*/develop/*) can
+  // override the default `teamai/push/` prefix with TEAMAI_BRANCH_PREFIX.
+  const prefix = process.env.TEAMAI_BRANCH_PREFIX?.trim().replace(/\/+$/, '');
+  if (prefix) return `${prefix}/${username}/${timestamp}`;
   return `teamai/push/${username}/${timestamp}`;
 }
 

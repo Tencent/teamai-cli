@@ -357,6 +357,22 @@ async function pullForScope(
     return;
   }
 
+  // Step 0.5: Branch self-heal — when config.repo.branch is set, make sure the
+  // clone is checked out on it, tracking it, and origin/HEAD points at it.
+  // Any repair invalidates the revision cache so the sync below is a full one
+  // (switching branches usually changes content without changing cache keys).
+  try {
+    const { ensureBranchState } = await import('./utils/branch-manager.js');
+    if (await ensureBranchState(localConfig)) {
+      const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
+      state[revisionField] = null;
+      await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
+      log.info(`[${scopeLabel}] Branch state repaired — running a full sync`);
+    }
+  } catch (e) {
+    log.debug(`[${scopeLabel}] Branch self-heal skipped: ${(e as Error).message}`);
+  }
+
   // Step 1: refresh team repo (git pull, or HTTP /repo materialization)
   const pullSpin = spinner(`[${scopeLabel}] Pulling team repo...`).start();
   let currentRev: string | null = null;
@@ -567,6 +583,31 @@ async function pullForScope(
 
       if (type === 'skills') {
         logSyncDetail(type, items, existingNames, !!options.verbose, scopeLabel, skippedByTags);
+
+        // Branch-aware orphan cleanup: diff the ledger of skills teamai
+        // installed on the previous pull against this pull's scan set and
+        // remove entries that vanished (deleted from the branch, or present on
+        // a previous branch and absent here). Only ledger-recorded installs
+        // are ever removed — user-created skills are untouched.
+        if (!options.dryRun) {
+          try {
+            const { cleanupOrphanSkills, recordInstalledSkills } = await import('./utils/branch-manager.js');
+            const baseDir = resolveBaseDir(localConfig);
+            const installs: Array<{ tool: string; name: string; dir: string }> = [];
+            for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
+              if (!toolPath.skills) continue;
+              if (isAgentDisabled(localConfig, tool)) continue;
+              if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
+              for (const item of items) {
+                installs.push({ tool, name: item.name, dir: path.join(baseDir, toolPath.skills, item.name) });
+              }
+            }
+            cleanupOrphanSkills(localConfig, installs);
+            recordInstalledSkills(localConfig, installs);
+          } catch (e) {
+            log.debug(`[${scopeLabel}] Orphan cleanup skipped: ${(e as Error).message}`);
+          }
+        }
       } else {
         log.success(`[${scopeLabel}] Synced ${items.length} ${type}`);
       }
