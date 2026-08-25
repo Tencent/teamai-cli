@@ -305,6 +305,16 @@ export async function reconcileMcpForConfig(
   const sharing = getMcpSharing(teamConfig);
   const removeAll = options.removeAll === true;
 
+  // HTTP-mode teams have no repo tree: team MCP servers are delivered through
+  // the local-agent install_mcp channel and recorded in the same
+  // managed-mcp.json this function prunes against. Running the desired-set
+  // reconcile here would see an always-empty desired set and delete every
+  // HTTP-installed server on each session-start sync. Skip it — the explicit
+  // removeAll teardown (teamai uninstall) must still run.
+  if (localConfig.repo.kind === 'http' && !removeAll) {
+    return { changes, wrote };
+  }
+
   const teamDefs = removeAll ? [] : await parseTeamMcpServers(localConfig.repo.localPath);
   if (!removeAll && teamDefs.length > 0 && !sharing.autoApply) {
     log.info(`${teamDefs.length} team MCP server(s) available. Run \`teamai mcp inject\` to apply.`);
