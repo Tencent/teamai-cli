@@ -2692,6 +2692,8 @@ var init_cnb = __esm({
 function resolveGitLabHost() {
   const direct = process.env.TEAMAI_GITLAB_HOST?.trim();
   if (direct) return direct;
+  const hosts = process.env.TEAMAI_GITLAB_HOSTS?.split(",").map((s) => s.trim()).filter(Boolean);
+  if (hosts?.length) return hosts[0];
   const gitlabUrl = process.env.GITLAB_URL?.trim();
   if (gitlabUrl) {
     try {
@@ -2744,6 +2746,57 @@ var init_repo_url3 = __esm({
   "src/providers/gitlab/repo-url.ts"() {
     "use strict";
     GITLAB_HOST = resolveGitLabHost();
+  }
+});
+
+// src/providers/gitlab/ssh-fallback.ts
+import { execFileSync } from "child_process";
+function sshHostFromBaseUrl(baseUrl) {
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return baseUrl.replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+  }
+}
+function sshProbeUsername(host) {
+  const bannerFor = (s) => {
+    const m = s.match(/Welcome to GitLab, @([^!\s]+)!/);
+    return m ? m[1] : null;
+  };
+  try {
+    const out = execFileSync(
+      "ssh",
+      [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=8",
+        "-T",
+        "git@" + host
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 15e3 }
+    ).toString();
+    return bannerFor(out);
+  } catch (e) {
+    const err = e;
+    return bannerFor((err.stderr ?? "") + " " + (err.stdout ?? ""));
+  }
+}
+function sshCloneUrl(host, repo) {
+  return `git@${host}:${repo}.git`;
+}
+function mrPrefillUrl(baseUrl, repo, source, target, title) {
+  const params = new URLSearchParams();
+  params.set("merge_request[source_branch]", source);
+  params.set("merge_request[target_branch]", target);
+  params.set("merge_request[title]", title);
+  return `${baseUrl.replace(/\/+$/, "")}/${repo}/-/merge_requests/new?${params.toString()}`;
+}
+var init_ssh_fallback = __esm({
+  "src/providers/gitlab/ssh-fallback.ts"() {
+    "use strict";
   }
 });
 
@@ -2826,7 +2879,9 @@ async function ensureGitLabAvailable() {
 }
 function cloneUrl(repo) {
   const token = getGitLabToken();
-  if (!token) return `${gitlabBaseUrl()}/${repo}.git`;
+  if (!token) {
+    return sshCloneUrl(sshHostFromBaseUrl(gitlabBaseUrl()), repo);
+  }
   const url = new URL(gitlabBaseUrl());
   url.username = "oauth2";
   url.password = token;
@@ -2929,6 +2984,7 @@ var init_gitlab_api = __esm({
   "src/providers/gitlab/gitlab-api.ts"() {
     "use strict";
     init_repo_url3();
+    init_ssh_fallback();
     GitLabRepoNotFoundError = class extends Error {
       constructor(repo) {
         super(`Repo "${repo}" not found on GitLab.`);
@@ -3107,6 +3163,7 @@ __export(gitlab_exports, {
   getGitLabToken: () => getGitLabToken,
   gitlabIsAuthenticated: () => gitlabIsAuthenticated
 });
+import { execFileSync as execFileSync2 } from "child_process";
 var GitLabProvider;
 var init_gitlab = __esm({
   "src/providers/gitlab/index.ts"() {
@@ -3116,6 +3173,8 @@ var init_gitlab = __esm({
     init_org();
     init_mr_fetch();
     init_repo_url3();
+    init_ssh_fallback();
+    init_logger();
     init_gitlab_api();
     GitLabProvider = class {
       name = "gitlab";
@@ -3123,22 +3182,27 @@ var init_gitlab = __esm({
         return parseGitLabRepoInput(input);
       }
       isAuthenticated() {
-        return gitlabIsAuthenticated();
+        if (gitlabIsAuthenticated()) return true;
+        return sshProbeUsername(sshHostFromBaseUrl(gitlabBaseUrl())) !== null;
       }
       async authenticate() {
-        if (this.isAuthenticated()) {
-          const username2 = await gitlabWhoami();
-          if (username2) return username2;
+        if (gitlabIsAuthenticated()) {
+          const username = await gitlabWhoami();
+          if (username) return username;
         }
-        await ensureGitLabAvailable();
-        const username = await gitlabWhoami();
-        if (!username) {
-          throw new Error("GitLab authentication failed. Please run `teamai init` again.");
+        const sshName = sshProbeUsername(sshHostFromBaseUrl(gitlabBaseUrl()));
+        if (sshName) return sshName;
+        try {
+          const gitName = execFileSync2("git", ["config", "user.name"], { encoding: "utf8" }).trim();
+          if (gitName) return gitName;
+        } catch {
         }
-        return username;
+        throw new Error(
+          "GitLab authentication failed. Either export GITLAB_TOKEN (a Personal Access Token with the api scope) or make sure `ssh -T git@" + sshHostFromBaseUrl(gitlabBaseUrl()) + "` succeeds with your ssh key."
+        );
       }
       async ensureInstalled() {
-        await ensureGitLabAvailable();
+        if (getGitLabToken()) await ensureGitLabAvailable();
       }
       cloneRepo(repo, localPath) {
         try {
@@ -3151,18 +3215,35 @@ var init_gitlab = __esm({
         }
       }
       async createRepo(owner, repo) {
+        if (!getGitLabToken()) {
+          throw new Error(
+            "GITLAB_TOKEN is required to create repos via the API. Alternatively, create " + owner + "/" + repo + " in the GitLab web UI (GitLab also auto-creates personal projects on first push)."
+          );
+        }
         await gitlabCreateRepo(owner, repo);
       }
       async createPullRequest(opts) {
-        return gitlabMrCreate({
-          repo: opts.repo,
-          source: opts.source,
-          target: opts.target,
-          title: opts.title,
-          description: opts.description,
-          reviewers: opts.reviewers,
-          cwd: opts.cwd
-        });
+        if (getGitLabToken()) {
+          return gitlabMrCreate({
+            repo: opts.repo,
+            source: opts.source,
+            target: opts.target,
+            title: opts.title,
+            description: opts.description,
+            reviewers: opts.reviewers,
+            cwd: opts.cwd
+          });
+        }
+        const url = mrPrefillUrl(
+          gitlabBaseUrl(),
+          opts.repo,
+          opts.source,
+          opts.target,
+          opts.title
+        );
+        log.info("GITLAB_TOKEN is not set \u2014 open this prefilled merge request form:");
+        log.info(url);
+        return url;
       }
       async fetchMergeRequest(url) {
         return fetchGitLabMR(url);
@@ -5725,7 +5806,7 @@ var init_agent_version = __esm({
 // src/machine-id.ts
 import crypto2 from "crypto";
 import fs9 from "fs";
-import { execFileSync } from "child_process";
+import { execFileSync as execFileSync3 } from "child_process";
 import os5 from "os";
 function getMachineId() {
   if (cachedMachineId !== null) return cachedMachineId;
@@ -5751,7 +5832,7 @@ function detectMachineId(platform = process.platform) {
   return id || os5.hostname() || "";
 }
 function readDarwinMachineId() {
-  const out = execFileSync("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], {
+  const out = execFileSync3("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], {
     encoding: "utf-8",
     timeout: 3e3
   });
@@ -5759,7 +5840,7 @@ function readDarwinMachineId() {
   return match ? match[1].trim() : "";
 }
 function readWindowsMachineId() {
-  const out = execFileSync(
+  const out = execFileSync3(
     "reg",
     ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"],
     { encoding: "utf-8", timeout: 3e3 }
@@ -20665,7 +20746,7 @@ __export(contribute_check_exports, {
 });
 import fs21 from "fs";
 import path65 from "path";
-import { execFileSync as execFileSync2 } from "child_process";
+import { execFileSync as execFileSync4 } from "child_process";
 function sanitizeSessionId2(sessionId) {
   return sessionId.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -20799,7 +20880,7 @@ function hasGitCommitInSession(cwd, sessionStartIso) {
     return false;
   }
   try {
-    const result = execFileSync2(
+    const result = execFileSync4(
       "git",
       ["log", "--oneline", `--after=${sessionStartIso}`, "--format=%H", "-1"],
       { cwd, encoding: "utf-8", timeout: 3e3, stdio: ["pipe", "pipe", "pipe"] }
@@ -21987,10 +22068,10 @@ async function contribute(options) {
     log.info(`Your session knowledge has been shared with the team.`);
   } catch (e) {
     try {
-      const { execFileSync: execFileSync4 } = await import("child_process");
+      const { execFileSync: execFileSync6 } = await import("child_process");
       const commitMsg = `[teamai] Contribute: ${options.title || "session knowledge"}`;
-      execFileSync4("git", ["add", `learnings/${filename}`], { cwd: repoPath, timeout: 5e3 });
-      execFileSync4("git", ["commit", "-m", commitMsg], { cwd: repoPath, timeout: 5e3 });
+      execFileSync6("git", ["add", `learnings/${filename}`], { cwd: repoPath, timeout: 5e3 });
+      execFileSync6("git", ["commit", "-m", commitMsg], { cwd: repoPath, timeout: 5e3 });
       pushSpin.warn(`\u5DF2\u4FDD\u5B58\u5230\u672C\u5730\uFF08\u63A8\u9001\u5931\u8D25: ${e.message}\uFF09\u3002\u4E0B\u6B21 pull \u65F6\u5C06\u81EA\u52A8\u91CD\u8BD5\u63A8\u9001\u3002`);
     } catch {
       pushSpin.fail(`Contribution failed: ${e.message}`);
@@ -23609,13 +23690,13 @@ __export(ai_client_exports, {
   callClaudeParallel: () => callClaudeParallel,
   getAICliName: () => getAICliName
 });
-import { spawn as spawn2, execFileSync as execFileSync3 } from "child_process";
+import { spawn as spawn2, execFileSync as execFileSync5 } from "child_process";
 import { existsSync } from "fs";
 function detectClaudeCli() {
   const candidates = ALLOWED_CLI_CANDIDATES;
   for (const cmd of candidates) {
     try {
-      const p = execFileSync3("bash", ["-lc", `command -v ${cmd}`], {
+      const p = execFileSync5("bash", ["-lc", `command -v ${cmd}`], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         shell: false,
@@ -23625,7 +23706,7 @@ function detectClaudeCli() {
     } catch {
     }
     try {
-      const p = execFileSync3("zsh", ["-lc", `command -v ${cmd}`], {
+      const p = execFileSync5("zsh", ["-lc", `command -v ${cmd}`], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         shell: false,
@@ -23635,7 +23716,7 @@ function detectClaudeCli() {
     } catch {
     }
     try {
-      const p = execFileSync3("which", [cmd], {
+      const p = execFileSync5("which", [cmd], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         shell: false,
@@ -31614,7 +31695,7 @@ __export(extract_mr_exports, {
 import fs41 from "fs/promises";
 import path104 from "path";
 async function configureGitUser2(repoPath, provider) {
-  const { execFileSync: execFileSync4 } = await import("child_process");
+  const { execFileSync: execFileSync6 } = await import("child_process");
   let name = "teamai-ci";
   let email = "teamai-ci@noreply";
   try {
@@ -31643,8 +31724,8 @@ async function configureGitUser2(repoPath, provider) {
     log.debug("\u65E0\u6CD5\u83B7\u53D6\u7528\u6237\u4FE1\u606F\uFF0C\u4F7F\u7528\u9ED8\u8BA4 git user");
   }
   try {
-    execFileSync4("git", ["config", "user.name", name], { cwd: repoPath, stdio: "ignore" });
-    execFileSync4("git", ["config", "user.email", email], { cwd: repoPath, stdio: "ignore" });
+    execFileSync6("git", ["config", "user.name", name], { cwd: repoPath, stdio: "ignore" });
+    execFileSync6("git", ["config", "user.email", email], { cwd: repoPath, stdio: "ignore" });
     log.debug(`Git user: ${name} <${email}>`);
   } catch {
     log.debug("git config \u5931\u8D25\uFF08\u975E git \u4ED3\u5E93\uFF09\uFF0C\u8DF3\u8FC7");
@@ -31748,7 +31829,7 @@ async function ciExtractMr(opts) {
   let graphChangeSummary;
   try {
     const { collectCode: collectCode2, extractCodeFacts: extractCodeFacts2, buildCodeGraph: buildCodeGraph2 } = await Promise.resolve().then(() => (init_adapters(), adapters_exports));
-    const { execFileSync: execFileSync4 } = await import("child_process");
+    const { execFileSync: execFileSync6 } = await import("child_process");
     const businessRepo = process.cwd();
     let changedFiles = [];
     const diffCommands = [
@@ -31758,7 +31839,7 @@ async function ciExtractMr(opts) {
     ];
     for (const args of diffCommands) {
       try {
-        const diffOutput = execFileSync4(
+        const diffOutput = execFileSync6(
           "git",
           args,
           { cwd: businessRepo, encoding: "utf-8", timeout: 1e4 }
