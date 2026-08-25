@@ -362,7 +362,7 @@ async function pullForScope(
   // Any repair invalidates the revision cache so the sync below is a full one
   // (switching branches usually changes content without changing cache keys).
   try {
-    const { ensureBranchState } = await import('./utils/branch-manager.js');
+    const { ensureBranchState, BranchVanishedError } = await import('./utils/branch-manager.js');
     if (await ensureBranchState(localConfig)) {
       const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
       state[revisionField] = null;
@@ -370,6 +370,12 @@ async function pullForScope(
       log.info(`[${scopeLabel}] Branch state repaired — running a full sync`);
     }
   } catch (e) {
+    if (e instanceof Error && e.name === 'BranchVanishedError') {
+      // The configured branch is gone from the remote (product-line rename?).
+      // Abort this scope loudly instead of silently syncing the wrong branch.
+      log.error(`[${scopeLabel}] ${(e as Error).message}`);
+      return;
+    }
     log.debug(`[${scopeLabel}] Branch self-heal skipped: ${(e as Error).message}`);
   }
 

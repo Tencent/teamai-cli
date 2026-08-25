@@ -11898,6 +11898,7 @@ var init_api_key = __esm({
 // src/utils/branch-manager.ts
 var branch_manager_exports = {};
 __export(branch_manager_exports, {
+  BranchVanishedError: () => BranchVanishedError,
   cleanupOrphanSkills: () => cleanupOrphanSkills,
   configuredBranch: () => configuredBranch,
   ensureBranchState: () => ensureBranchState,
@@ -11906,6 +11907,14 @@ __export(branch_manager_exports, {
 });
 import fs14 from "fs";
 import path38 from "path";
+async function remoteBranchExists2(git, branch) {
+  try {
+    const refs = await git.raw(["ls-remote", "origin", `refs/heads/${branch}`]);
+    return refs.trim().length > 0;
+  } catch {
+    return true;
+  }
+}
 function configuredBranch(localConfig) {
   if (localConfig.repo.kind && localConfig.repo.kind !== "git") return null;
   const b = localConfig.repo.branch?.trim();
@@ -11913,7 +11922,18 @@ function configuredBranch(localConfig) {
 }
 async function pinCloneToBranch(localPath, branch) {
   const git = createGit2(localPath);
-  await git.fetch(["origin", branch]);
+  try {
+    await git.fetch(["origin", branch]);
+  } catch (e) {
+    try {
+      if (!await remoteBranchExists2(git, branch)) {
+        throw new BranchVanishedError(branch);
+      }
+    } catch (e2) {
+      if (e2 instanceof BranchVanishedError) throw e2;
+    }
+    throw e;
+  }
   const localExists = await git.branchLocal().then((bs) => bs.all.includes(branch)).catch(() => false);
   if (localExists) {
     await git.checkout(branch);
@@ -11928,6 +11948,9 @@ async function ensureBranchState(localConfig) {
   const branch = configuredBranch(localConfig);
   if (!branch) return false;
   const git = createGit2(localConfig.repo.localPath);
+  if (!await remoteBranchExists2(git, branch)) {
+    throw new BranchVanishedError(branch);
+  }
   let repaired = false;
   const current = (await git.revparse(["--abbrev-ref", "HEAD"])).trim();
   if (current !== branch) {
@@ -11998,11 +12021,20 @@ function cleanupOrphanSkills(localConfig, currentInstalls) {
 function recordInstalledSkills(localConfig, installs) {
   writeLedger(localConfig, installs);
 }
+var BranchVanishedError;
 var init_branch_manager = __esm({
   "src/utils/branch-manager.ts"() {
     "use strict";
     init_git2();
     init_logger();
+    BranchVanishedError = class extends Error {
+      constructor(branch) {
+        super(
+          `Branch '${branch}' does not exist on the remote. It may have been renamed or deleted. Check the team repo's current branch names (git ls-remote --heads origin), then re-run teamai init --branch <new-name>, or edit repo.branch in .teamai/config.yaml.`
+        );
+        this.name = "BranchVanishedError";
+      }
+    };
   }
 });
 
@@ -16111,7 +16143,7 @@ async function pullForScope(localConfig, options, policy = {}) {
     return;
   }
   try {
-    const { ensureBranchState: ensureBranchState2 } = await Promise.resolve().then(() => (init_branch_manager(), branch_manager_exports));
+    const { ensureBranchState: ensureBranchState2, BranchVanishedError: BranchVanishedError2 } = await Promise.resolve().then(() => (init_branch_manager(), branch_manager_exports));
     if (await ensureBranchState2(localConfig)) {
       const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
       state[revisionField] = null;
@@ -16119,6 +16151,10 @@ async function pullForScope(localConfig, options, policy = {}) {
       log.info(`[${scopeLabel}] Branch state repaired \u2014 running a full sync`);
     }
   } catch (e) {
+    if (e instanceof Error && e.name === "BranchVanishedError") {
+      log.error(`[${scopeLabel}] ${e.message}`);
+      return;
+    }
     log.debug(`[${scopeLabel}] Branch self-heal skipped: ${e.message}`);
   }
   const pullSpin = spinner(`[${scopeLabel}] Pulling team repo...`).start();

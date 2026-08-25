@@ -13,6 +13,28 @@ import { log } from './logger.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** Thrown when the configured tracking branch no longer exists on the remote. */
+export class BranchVanishedError extends Error {
+  constructor(branch: string) {
+    super(
+      `Branch '${branch}' does not exist on the remote. It may have been renamed or deleted. ` +
+        `Check the team repo's current branch names (git ls-remote --heads origin), then re-run ` +
+        `teamai init --branch <new-name>, or edit repo.branch in .teamai/config.yaml.`,
+    );
+    this.name = 'BranchVanishedError';
+  }
+}
+
+/** Cheap remote existence check for a branch (one ls-remote round-trip). */
+async function remoteBranchExists(git: ReturnType<typeof createGit>, branch: string): Promise<boolean> {
+  try {
+    const refs = await git.raw(['ls-remote', 'origin', `refs/heads/${branch}`]);
+    return refs.trim().length > 0;
+  } catch {
+    return true; // cannot tell — assume present, let later git calls surface real errors
+  }
+}
+
 export interface BranchAwareConfig {
   repo: {
     localPath: string;
@@ -36,7 +58,22 @@ export function configuredBranch(localConfig: BranchAwareConfig): string | null 
  */
 export async function pinCloneToBranch(localPath: string, branch: string): Promise<void> {
   const git = createGit(localPath);
-  await git.fetch(['origin', branch]);
+  try {
+    await git.fetch(['origin', branch]);
+  } catch (e) {
+    // Distinguish "branch gone" (renamed / deleted on the remote) from real
+    // network errors, so members get an actionable message instead of a raw
+    // transport error after e.g. a product-line branch rename.
+    try {
+      if (!(await remoteBranchExists(git, branch))) {
+        throw new BranchVanishedError(branch);
+      }
+    } catch (e2) {
+      if (e2 instanceof BranchVanishedError) throw e2;
+      // ls-remote itself failed — surface the original fetch error.
+    }
+    throw e;
+  }
   const localExists = await git.branchLocal().then(bs => bs.all.includes(branch)).catch(() => false);
   if (localExists) {
     await git.checkout(branch);
@@ -61,6 +98,14 @@ export async function ensureBranchState(localConfig: BranchAwareConfig): Promise
   const branch = configuredBranch(localConfig);
   if (!branch) return false;
   const git = createGit(localConfig.repo.localPath);
+
+  // Abort early (and loudly) when the branch vanished from the remote — e.g.
+  // a product-line rename. Syncing from a stale clone or silently falling
+  // back to the default branch would ship the wrong skill set.
+  if (!(await remoteBranchExists(git, branch))) {
+    throw new BranchVanishedError(branch);
+  }
+
   let repaired = false;
 
   const current = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();

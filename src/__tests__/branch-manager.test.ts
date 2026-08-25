@@ -121,4 +121,17 @@ describe('ensureBranchState (real git)', () => {
     expect((await git.log({ maxCount: 1 })).latest?.message).toContain('remote advances');
     await expect(git.pull()).resolves.toBeTruthy();
   });
+
+  it('throws BranchVanishedError when the configured branch is gone from the remote', async () => {
+    const { clonePath, originPath } = await buildFixture();
+    await pinCloneToBranch(clonePath, 'develop/line');
+    // Delete the branch on the "remote" (rename scenario).
+    const tmp = path.join(path.dirname(clonePath), 'rm');
+    await createGit(clonePath).raw(['clone', originPath, tmp]);
+    const rg = createGit(tmp);
+    await rg.raw(['push', 'origin', '--delete', 'develop/line']);
+    fs.rmSync(tmp, { recursive: true, force: true });
+    const cfg = { repo: { localPath: clonePath, kind: 'git', branch: 'develop/line' } };
+    await expect(ensureBranchState(cfg)).rejects.toThrow(/does not exist on the remote/);
+  });
 });
