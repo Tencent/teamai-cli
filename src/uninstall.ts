@@ -53,6 +53,8 @@ interface RemovalPlan {
   hookFiles: Array<{ path: string; tool: string }>;
   /** OpenClaw-style hook dirs (<base>/.<tool>/hooks) holding teamai HOOK.md+handler.ts. */
   openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
+  /** OpenCode teamai plugin files (.opencode/plugin/teamai-*.ts) to delete. */
+  opencodeHookScopes: Array<{ baseDir: string; scope: Scope }>;
   /** CLAUDE.md files with teamai rules blocks. */
   claudeMdFiles: string[];
   /** Skill directories synced from team repo. */
@@ -85,6 +87,7 @@ interface RemovalPlan {
 interface ToolResources {
   hookFiles: Array<{ path: string; tool: string }>;
   openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
+  opencodeHookScopes: Array<{ baseDir: string; scope: Scope }>;
   claudeMdFiles: string[];
   skillDirs: string[];
   ruleFiles: string[];
@@ -95,6 +98,7 @@ function hasToolResources(r: ToolResources): boolean {
   return (
     r.hookFiles.length > 0 ||
     r.openclawHookDirs.length > 0 ||
+    r.opencodeHookScopes.length > 0 ||
     r.claudeMdFiles.length > 0 ||
     r.skillDirs.length > 0 ||
     r.ruleFiles.length > 0 ||
@@ -180,14 +184,29 @@ async function discoverToolResources(
   teamSkillNames: Set<string>,
   teamRuleNames: Set<string>,
   managedHooksPath: string,
+  scope: Scope,
 ): Promise<ToolResources> {
   const res: ToolResources = {
-    hookFiles: [], openclawHookDirs: [], claudeMdFiles: [],
+    hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], claudeMdFiles: [],
     skillDirs: [], ruleFiles: [], agentFiles: [],
   };
 
   // (a) Hooks — settings.json / hooks.json
-  if (toolPath.settings) {
+  if (tool === 'opencode') {
+    // OpenCode has no settings file; its teamai hooks are plugin .ts files under
+    // <base>/.opencode/plugin (project) or <base>/.config/opencode/plugin (user).
+    const { resolveOpencodePluginDir, OPENCODE_HOOK_FILE } = await import('./opencode-hooks.js');
+    const pluginDir = resolveOpencodePluginDir(baseDir, scope);
+    if (await pathExists(path.join(pluginDir, OPENCODE_HOOK_FILE))) {
+      res.opencodeHookScopes.push({ baseDir, scope });
+    } else if (await pathExists(pluginDir)) {
+      // Agent-hook plugins (teamai-agent-*.ts) may exist without the main hook file.
+      const files = await listFilesRecursive(pluginDir);
+      if (files.some((f) => path.basename(f).startsWith('teamai-agent-'))) {
+        res.opencodeHookScopes.push({ baseDir, scope });
+      }
+    }
+  } else if (toolPath.settings) {
     const settingsPath = path.join(baseDir, toolPath.settings);
     if (await pathExists(settingsPath)
       && (await hasTeamaiHooks(settingsPath, tool, managedHooksPath)
@@ -305,7 +324,7 @@ async function buildRemovalPlan(
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     perTool.set(
       tool,
-      await discoverToolResources(tool, toolPath, baseDir, teamSkillNames, teamRuleNames, managedHooksPath),
+      await discoverToolResources(tool, toolPath, baseDir, teamSkillNames, teamRuleNames, managedHooksPath, localConfig.scope),
     );
   }
 
@@ -331,6 +350,7 @@ async function buildRemovalPlan(
   const plan: RemovalPlan = {
     hookFiles: [],
     openclawHookDirs: [],
+    opencodeHookScopes: [],
     claudeMdFiles: [],
     skillDirs: [],
     ruleFiles: [],
@@ -352,6 +372,7 @@ async function buildRemovalPlan(
     if (!res) continue;
     plan.hookFiles.push(...res.hookFiles);
     plan.openclawHookDirs.push(...res.openclawHookDirs);
+    plan.opencodeHookScopes.push(...res.opencodeHookScopes);
     plan.claudeMdFiles.push(...res.claudeMdFiles);
     plan.skillDirs.push(...res.skillDirs);
     plan.ruleFiles.push(...res.ruleFiles);
@@ -408,6 +429,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
   return (
     plan.hookFiles.length === 0 &&
     plan.openclawHookDirs.length === 0 &&
+    plan.opencodeHookScopes.length === 0 &&
     plan.claudeMdFiles.length === 0 &&
     plan.skillDirs.length === 0 &&
     plan.ruleFiles.length === 0 &&
@@ -444,6 +466,15 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     console.log(`   OpenClaw Hooks (${plan.openclawHookDirs.length} 个目录):`);
     for (const { hooksDir } of plan.openclawHookDirs) {
       console.log(`     ${path.join(hooksDir, OPENCLAW_HOOK_DIR)}/`);
+    }
+    console.log('');
+  }
+
+  if (plan.opencodeHookScopes.length > 0) {
+    console.log(`   OpenCode Hooks (${plan.opencodeHookScopes.length} 个 plugin):`);
+    for (const { baseDir, scope } of plan.opencodeHookScopes) {
+      const configDir = scope === 'project' ? '.opencode' : path.join('.config', 'opencode');
+      console.log(`     ${path.join(baseDir, configDir, 'plugin')}/teamai-*.ts`);
     }
     console.log('');
   }
@@ -530,6 +561,23 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
       await removeOpenClawHooks(hooksDir);
     } catch (e) {
       log.warn(`移除 OpenClaw hook 失败 ${hooksDir}: ${(e as Error).message}`);
+    }
+  }
+
+  // (a2b) Remove OpenCode teamai plugin files (main hook + any agent-hook plugins).
+  for (const { baseDir, scope } of plan.opencodeHookScopes) {
+    try {
+      const { removeOpencodeHooks, resolveOpencodePluginDir } = await import('./opencode-hooks.js');
+      await removeOpencodeHooks(baseDir, scope);
+      // Sweep leftover teamai-agent-*.ts plugins not tracked in the agent-hook manifest.
+      const pluginDir = resolveOpencodePluginDir(baseDir, scope);
+      if (await pathExists(pluginDir)) {
+        for (const f of await listFilesRecursive(pluginDir)) {
+          if (path.basename(f).startsWith('teamai-agent-')) await remove(f);
+        }
+      }
+    } catch (e) {
+      log.warn(`移除 OpenCode hook 失败 (${scope}): ${(e as Error).message}`);
     }
   }
 

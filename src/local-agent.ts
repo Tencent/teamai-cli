@@ -2006,6 +2006,9 @@ async function runHookRuleCommand(
       } else if (OPENCLAW_TOOLS.has(rec.tool)) {
         const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
         await removeOpenClawAgentHook({ slug, tool: rec.tool });
+      } else if (rec.tool === 'opencode') {
+        const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
+        await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
       } else {
         const settingsPath = resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
@@ -2043,6 +2046,9 @@ async function runHookRuleCommand(
       } else if (OPENCLAW_TOOLS.has(prior.tool)) {
         const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
         await removeOpenClawAgentHook({ slug, tool: prior.tool });
+      } else if (prior.tool === 'opencode') {
+        const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
+        await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
       } else {
         const priorPath = resolveToolSettingsPath(config, prior.tool);
         await removeAgentHook(priorPath, prior.tool, { slug, command: prior.command });
@@ -2058,6 +2064,10 @@ async function runHookRuleCommand(
   } else if (OPENCLAW_TOOLS.has(tool)) {
     const { applyOpenClawAgentHook } = await import('./openclaw-hooks.js');
     await applyOpenClawAgentHook({ slug, event, command: cmd, tool, matcher, timeout });
+  } else if (tool === 'opencode') {
+    // OpenCode loads plugins from ~/.config/opencode/plugin (user scope).
+    const { applyOpencodeAgentHook } = await import('./opencode-hooks.js');
+    await applyOpencodeAgentHook({ slug, event, command: cmd, baseDir: getUserHome(), scope: 'user' });
   } else {
     const settingsPath = resolveToolSettingsPath(config, tool);
     await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
@@ -2415,6 +2425,9 @@ export async function removeAllAgentHooks(): Promise<void> {
       } else if (OPENCLAW_TOOLS.has(rec.tool)) {
         const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
         await removeOpenClawAgentHook({ slug, tool: rec.tool });
+      } else if (rec.tool === 'opencode') {
+        const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
+        await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
       } else {
         const settingsPath = resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });

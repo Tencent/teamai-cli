@@ -85,7 +85,10 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
         silent: options.silent,
     });
     for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
-        await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin });
+        // resolveHookScopeTargets always resolves baseDir to HOME (even in project
+        // scope), so OpenCode plugins go to the global ~/.config/opencode/plugin —
+        // covering every project, matching how settings.json hooks live in HOME.
+        await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin, scope: 'user' });
     }
 
     if (!options.silent) {
@@ -151,14 +154,15 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     const { localConfig, teamConfig } = await autoDetectInit();
 
     for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
-        await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true });
+        // baseDir is HOME → clear the global OpenCode plugin (see hooksInject).
+        await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true, scope: 'user' });
     }
 
     // Clean up legacy projectRoot entries left by older versions that wrote
     // hooks into both <projectRoot> and HOME (#264 migration).
     if (localConfig.scope === 'project' && localConfig.projectRoot) {
         const legacyManifest = getManagedHooksPath('project', localConfig.projectRoot);
-        await reconcileHooksToAllTools(teamConfig.toolPaths, localConfig.projectRoot, [], legacyManifest, { removeAll: true });
+        await reconcileHooksToAllTools(teamConfig.toolPaths, localConfig.projectRoot, [], legacyManifest, { removeAll: true, scope: 'project' });
     }
 
     log.success('Hooks removed from all AI tool settings');

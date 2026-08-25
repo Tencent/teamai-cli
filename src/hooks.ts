@@ -726,7 +726,7 @@ export async function hasTeamaiHooks(
  * Only writes to tools whose root directory already exists on disk,
  * preventing creation of config dirs for tools the user hasn't installed.
  */
-export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<void> {
+export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[], scope: 'project' | 'user' = 'user'): Promise<void> {
   const resolvedBaseDir = baseDir ?? getUserHome();
   const tools = Object.keys(toolPaths).filter(t => !filterAgents || filterAgents.includes(t));
   let shellAvailable = true;
@@ -768,6 +768,16 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
       } catch (e) {
         log.warn(`Failed to inject Hermes hook: ${(e as Error).message}`);
       }
+    } else if (tool === 'opencode') {
+      const configRoot = path.join(resolvedBaseDir, scope === 'project' ? '.opencode' : path.join('.config', 'opencode'));
+      if (await pathExists(configRoot)) {
+        try {
+          const { injectOpencodeHooks } = await import('./opencode-hooks.js');
+          await injectOpencodeHooks(resolvedBaseDir, scope);
+        } catch (e) {
+          log.warn(`Failed to inject OpenCode hook into ${tool}: ${(e as Error).message}`);
+        }
+      }
     }
   }
 }
@@ -782,7 +792,7 @@ export async function reconcileHooksToAllTools(
   baseDir: string,
   teamDefs: HookDef[],
   manifestPath: string,
-  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[] } = {},
+  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; scope?: 'project' | 'user' } = {},
 ): Promise<void> {
   const activeTools = Object.keys(toolPaths).filter(t => !opts.filterAgents || opts.filterAgents.includes(t));
   let shellAvailable = true;
@@ -814,6 +824,24 @@ export async function reconcileHooksToAllTools(
         }
       } catch (e) {
         log.warn(`Failed to reconcile Hermes hooks: ${(e as Error).message}`);
+      }
+      continue;
+    }
+    // OpenCode has no settings.json hook list; it auto-loads JS/TS plugins from
+    // `.opencode/plugin` (project) or `~/.config/opencode/plugin` (user). Route
+    // it to the plugin-file adapter instead of the settings-based path.
+    if (tool === 'opencode') {
+      try {
+        const scope = opts.scope ?? 'user';
+        const configRoot = path.join(baseDir, scope === 'project' ? '.opencode' : path.join('.config', 'opencode'));
+        const { injectOpencodeHooks, removeOpencodeHooks } = await import('./opencode-hooks.js');
+        if (opts.removeAll) {
+          await removeOpencodeHooks(baseDir, scope);
+        } else if (await pathExists(configRoot)) {
+          await injectOpencodeHooks(baseDir, scope);
+        }
+      } catch (e) {
+        log.warn(`Failed to reconcile OpenCode hooks: ${(e as Error).message}`);
       }
       continue;
     }
@@ -866,6 +894,7 @@ export async function reconcileTeamHooksForConfig(
     removeAll: opts.removeAll,
     builtinOverride: builtin,
     filterAgents,
+    scope: localConfig.scope,
   });
   return teamDefs;
 }
