@@ -11918,7 +11918,7 @@ async function pinCloneToBranch(localPath, branch) {
   if (localExists) {
     await git.checkout(branch);
   } else {
-    await git.checkoutLocalBranch(branch);
+    await git.checkoutBranch(branch, `origin/${branch}`);
   }
   await git.branch([`--set-upstream-to=origin/${branch}`, branch]);
   await git.raw(["remote", "set-head", "origin", branch]);
@@ -11945,6 +11945,22 @@ async function ensureBranchState(localConfig) {
     await git.raw(["remote", "set-head", "origin", branch]);
     repaired = true;
     log.debug(`Restored origin/HEAD -> origin/${branch}`);
+  }
+  try {
+    await git.fetch(["origin", branch]);
+    const counts = (await git.raw(["rev-list", "--left-right", "--count", `HEAD...origin/${branch}`])).trim();
+    const [localOnly, remoteOnly] = counts.split(/\s+/).map(Number);
+    if (localOnly > 0 && remoteOnly > 0) {
+      const discarded = (await git.raw(["log", "--oneline", `origin/${branch}..HEAD`])).trim();
+      if (discarded) {
+        log.info(`Branch diverged from origin/${branch}; discarding ${localOnly} local-only commit(s) (kept in reflog):`);
+        for (const line of discarded.split("\n").slice(0, 5)) log.dim(`  ${line}`);
+      }
+      await git.reset(["--hard", `origin/${branch}`]);
+      repaired = true;
+    }
+  } catch (e) {
+    log.debug(`Divergence check skipped: ${e.message}`);
   }
   return repaired;
 }

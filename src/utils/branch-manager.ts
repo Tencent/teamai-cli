@@ -41,7 +41,11 @@ export async function pinCloneToBranch(localPath: string, branch: string): Promi
   if (localExists) {
     await git.checkout(branch);
   } else {
-    await git.checkoutLocalBranch(branch);
+    // Create the local branch FROM the remote ref. A bare `checkout -b` forks
+    // off the current HEAD (the default branch right after a fresh clone),
+    // leaving the pinned branch at the wrong position — later `git pull` then
+    // fails with "Need to specify how to reconcile divergent branches".
+    await git.checkoutBranch(branch, `origin/${branch}`);
   }
   await git.branch([`--set-upstream-to=origin/${branch}`, branch]);
   await git.raw(['remote', 'set-head', 'origin', branch]);
@@ -77,6 +81,31 @@ export async function ensureBranchState(localConfig: BranchAwareConfig): Promise
     await git.raw(['remote', 'set-head', 'origin', branch]);
     repaired = true;
     log.debug(`Restored origin/HEAD -> origin/${branch}`);
+  }
+
+  // Diverged from upstream (local and remote each hold exclusive commits).
+  // The pinned clone is a disposable mirror of the branch — real contributions
+  // go through MR branches — so realign it to the remote tip. Any local-only
+  // commits are logged (and remain recoverable via git reflog) before reset.
+  // This also heals a legacy mis-pinned branch (created from the default
+  // branch position by the pre-fix pinCloneToBranch).
+  try {
+    // Fetch FIRST: the local tracking ref may be stale, and divergence is
+    // judged against the up-to-date remote tip.
+    await git.fetch(['origin', branch]);
+    const counts = (await git.raw(['rev-list', '--left-right', '--count', `HEAD...origin/${branch}`])).trim();
+    const [localOnly, remoteOnly] = counts.split(/\s+/).map(Number);
+    if (localOnly > 0 && remoteOnly > 0) {
+      const discarded = (await git.raw(['log', '--oneline', `origin/${branch}..HEAD`])).trim();
+      if (discarded) {
+        log.info(`Branch diverged from origin/${branch}; discarding ${localOnly} local-only commit(s) (kept in reflog):`);
+        for (const line of discarded.split('\n').slice(0, 5)) log.dim(`  ${line}`);
+      }
+      await git.reset(['--hard', `origin/${branch}`]);
+      repaired = true;
+    }
+  } catch (e) {
+    log.debug(`Divergence check skipped: ${(e as Error).message}`);
   }
 
   return repaired;
