@@ -1003,7 +1003,7 @@ teamai source browse other-team
 teamai source remove other-team
 ```
 
-订阅源的 skills 在 `teamai pull` 时自动同步到本地，与团队自有 skills 共存。配置存储在本地 `config.yaml` 的 `sources` 字段中。
+订阅源的 skills 在 `teamai pull` 时自动同步到本地，与团队自有 skills 共存。订阅本身存储在团队仓库 `teamai.yaml` 的 `sources` 字段中——因此是共享给整个团队的，而不只对你本机生效。执行 `teamai source add`/`remove` 后，运行 `teamai push` 会开一个包含 `teamai.yaml` 改动的 PR；合入后，每位成员的 `teamai pull` 都会自动获取到新的订阅源。
 
 #### HTTP 源
 
