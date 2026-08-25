@@ -8299,6 +8299,7 @@ var init_source = __esm({
 });
 
 // src/resources/skills.ts
+import fse5 from "fs-extra";
 import path22 from "path";
 async function ensureSkillFrontmatter(skillDir, skillName) {
   const skillMdPath = path22.join(skillDir, SKILL_MD);
@@ -8631,6 +8632,7 @@ var init_skills = __esm({
             dest = path22.join(baseDir, toolPath.skills, item.name);
           }
           try {
+            await fse5.remove(dest).catch(() => void 0);
             await copyDir(item.sourcePath, dest);
             await ensureSkillFrontmatter(dest, item.name);
             log.debug(`Synced skill ${item.name} \u2192 ${tool}`);
@@ -8918,7 +8920,7 @@ var init_rules = __esm({
 
 // src/resources/docs.ts
 import path24 from "path";
-import fse5 from "fs-extra";
+import fse6 from "fs-extra";
 var DocsHandler;
 var init_docs = __esm({
   "src/resources/docs.ts"() {
@@ -8963,7 +8965,7 @@ var init_docs = __esm({
         }
         try {
           const src = expandHome(item.sourcePath);
-          await fse5.copy(src, localDocsDir, {
+          await fse6.copy(src, localDocsDir, {
             overwrite: true,
             filter: (srcPath) => !path24.basename(srcPath).startsWith(".")
           });
@@ -10072,7 +10074,7 @@ __export(update_exports, {
 });
 import { execFile as execFile3 } from "child_process";
 import { promisify as promisify2 } from "util";
-import fse6 from "fs-extra";
+import fse7 from "fs-extra";
 function resolveRegistryForPackage(pkgName) {
   const override = process.env.TEAMAI_NPM_REGISTRY?.trim();
   if (override) return override;
@@ -10125,21 +10127,21 @@ function isCacheValid(lastCheck, ttlMs = CACHE_TTL_MS) {
 async function acquireLock(lockPath) {
   const resolved = lockPath ?? expandHome(TEAMAI_UPDATE_LOCK_PATH);
   try {
-    if (await fse6.pathExists(resolved)) {
-      const content = await fse6.readFile(resolved, "utf-8");
+    if (await fse7.pathExists(resolved)) {
+      const content = await fse7.readFile(resolved, "utf-8");
       const pid = parseInt(content.trim(), 10);
       if (!isNaN(pid)) {
         try {
           process.kill(pid, 0);
           return false;
         } catch {
-          await fse6.remove(resolved);
+          await fse7.remove(resolved);
         }
       } else {
-        await fse6.remove(resolved);
+        await fse7.remove(resolved);
       }
     }
-    await fse6.writeFile(resolved, String(process.pid));
+    await fse7.writeFile(resolved, String(process.pid));
     return true;
   } catch {
     return false;
@@ -10148,7 +10150,7 @@ async function acquireLock(lockPath) {
 async function releaseLock(lockPath) {
   const resolved = lockPath ?? expandHome(TEAMAI_UPDATE_LOCK_PATH);
   try {
-    await fse6.remove(resolved);
+    await fse7.remove(resolved);
   } catch {
   }
 }
@@ -10281,7 +10283,7 @@ __export(reports_branch_exports, {
   withKnowledgeWorktree: () => withKnowledgeWorktree
 });
 import path30 from "path";
-import fse7 from "fs-extra";
+import fse8 from "fs-extra";
 function businessRoot(localConfig) {
   return localConfig.repo.businessRepoRoot ?? path30.dirname(localConfig.repo.localPath);
 }
@@ -10304,7 +10306,7 @@ async function ensureReportsWorktree(localConfig) {
     return wt;
   }
   if (await pathExists(wt)) {
-    await fse7.remove(wt);
+    await fse8.remove(wt);
   }
   await ensureDir(path30.dirname(wt));
   const git = createGit2(repoRoot);
@@ -10359,9 +10361,9 @@ async function createOrphanWorktree(repoRoot, wt) {
   }
 }
 async function clearWorktreeFiles(wt) {
-  const entries = await fse7.readdir(wt);
+  const entries = await fse8.readdir(wt);
   await Promise.all(
-    entries.filter((e) => e !== ".git").map((e) => fse7.remove(path30.join(wt, e)))
+    entries.filter((e) => e !== ".git").map((e) => fse8.remove(path30.join(wt, e)))
   );
 }
 async function writeWorktreeGitignore(wt) {
@@ -10446,7 +10448,7 @@ async function withKnowledgeWorktree(localConfig, fn) {
     try {
       await git.raw(["worktree", "remove", "--force", wt]);
     } catch {
-      await fse7.remove(wt);
+      await fse8.remove(wt);
     }
   }
   try {
@@ -10479,7 +10481,7 @@ async function withKnowledgeWorktree(localConfig, fn) {
     try {
       await git.raw(["worktree", "remove", "--force", wt]);
     } catch {
-      await fse7.remove(wt);
+      await fse8.remove(wt);
       try {
         await git.raw(["worktree", "prune"]);
       } catch {
@@ -11061,7 +11063,7 @@ __export(git_exports, {
 import fs12 from "fs";
 import { realpath } from "fs/promises";
 import path33 from "path";
-import fse8 from "fs-extra";
+import fse9 from "fs-extra";
 import simpleGit from "simple-git";
 function createGit2(basePath) {
   if (basePath) {
@@ -11070,13 +11072,13 @@ function createGit2(basePath) {
   return simpleGit();
 }
 async function isGitRepo(localPath) {
-  if (!await fse8.pathExists(localPath)) {
+  if (!await fse9.pathExists(localPath)) {
     return false;
   }
-  return fse8.pathExists(path33.join(localPath, ".git"));
+  return fse9.pathExists(path33.join(localPath, ".git"));
 }
 async function initRepo(remote, localPath) {
-  await fse8.ensureDir(localPath);
+  await fse9.ensureDir(localPath);
   const git = simpleGit({ baseDir: localPath });
   await git.init();
   await git.addRemote("origin", remote);
@@ -15660,7 +15662,7 @@ __export(mcp_reconcile_exports, {
   spliceCodexBlock: () => spliceCodexBlock
 });
 import path48 from "path";
-import fse9 from "fs-extra";
+import fse10 from "fs-extra";
 async function readManifest2(manifestPath) {
   const data = await readJson(expandHome(manifestPath));
   return data && typeof data === "object" ? data : {};
@@ -15937,11 +15939,11 @@ async function applyCodex(target, desired, ownedNames, nextRecords, changes, opt
     changes.push({ tool: target.tool, server: name, action: "removed" });
   }
   if (!dirty || options.dryRun) return false;
-  await fse9.ensureDir(path48.dirname(target.file));
+  await fse10.ensureDir(path48.dirname(target.file));
   const tmp = `${target.file}.${process.pid}.tmp`;
-  await fse9.writeFile(tmp, source, "utf-8");
-  await fse9.chmod(tmp, 384);
-  await fse9.rename(tmp, target.file);
+  await fse10.writeFile(tmp, source, "utf-8");
+  await fse10.chmod(tmp, 384);
+  await fse10.rename(tmp, target.file);
   return true;
 }
 var SAFE_BIN_RE;
@@ -15970,7 +15972,7 @@ __export(pull_exports, {
   scanRoleAwareSkills: () => scanRoleAwareSkills
 });
 import path49 from "path";
-import fse10 from "fs-extra";
+import fse11 from "fs-extra";
 import matter4 from "gray-matter";
 async function refreshTeamRepo(localConfig) {
   if (localConfig.repo.kind === "http") {
@@ -16427,7 +16429,7 @@ async function pullForScope(localConfig, options, policy = {}) {
       let effectiveLearningsDir;
       if (localConfig.scope === "user") {
         if (await pathExists(learningsRepoDir)) {
-          await fse10.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
+          await fse11.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
             overwrite: true,
             filter: (src) => !path49.basename(src).startsWith(".")
           });
@@ -22008,7 +22010,7 @@ __export(contribute_exports, {
 });
 import fs25 from "fs";
 import path70 from "path";
-import fse11 from "fs-extra";
+import fse12 from "fs-extra";
 async function rebuildIndexAfterContribute(localConfig) {
   const repoPath = localConfig.repo.localPath;
   const learningsRepoDir = path70.join(repoPath, "learnings");
@@ -22019,7 +22021,7 @@ async function rebuildIndexAfterContribute(localConfig) {
   let effectiveLearningsDir;
   if (localConfig.scope === "user") {
     if (await pathExists(learningsRepoDir)) {
-      await fse11.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
+      await fse12.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
         overwrite: true,
         filter: (src) => !path70.basename(src).startsWith(".")
       });
@@ -22149,7 +22151,7 @@ async function contributeSelf(localConfig, content, options) {
       try {
         const { pathExists: pathExists3 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
         const wtLearnings = path70.join(wtRepo, "learnings");
-        await fse11.copy(wtLearnings, LEARNINGS_LOCAL_DIR, {
+        await fse12.copy(wtLearnings, LEARNINGS_LOCAL_DIR, {
           overwrite: true,
           filter: (src) => !path70.basename(src).startsWith(".")
         });
@@ -31959,22 +31961,22 @@ ${affectedModules.map((m) => `- \`${m}\` (evidence + G-document)`).join("\n")}` 
           const parsed = parseMrUrl(opts.url);
           const projectName = parsed.repo;
           await extractCodebase2({ path: businessRepo, project: projectName });
-          const fse12 = await import("fs-extra");
+          const fse13 = await import("fs-extra");
           const srcWiki = path104.join(businessRepo, "teamwiki");
           const teamWikiRoot = path104.join(path104.resolve(opts.teamRepo), "teamwiki");
           try {
-            if (await fse12.pathExists(srcWiki)) {
+            if (await fse13.pathExists(srcWiki)) {
               const evidenceSrc = path104.join(srcWiki, "evidence", "code", projectName);
               const evidenceDest = path104.join(teamWikiRoot, "evidence", "code", projectName);
-              if (await fse12.pathExists(evidenceSrc)) {
-                await fse12.ensureDir(evidenceDest);
-                await fse12.copy(evidenceSrc, evidenceDest, { overwrite: true });
+              if (await fse13.pathExists(evidenceSrc)) {
+                await fse13.ensureDir(evidenceDest);
+                await fse13.copy(evidenceSrc, evidenceDest, { overwrite: true });
               }
               const srcGraph = path104.join(srcWiki, ".indices", "graph-index.json");
-              if (await fse12.pathExists(srcGraph)) {
+              if (await fse13.pathExists(srcGraph)) {
                 const destGraphDir = path104.join(evidenceDest, ".indices");
-                await fse12.ensureDir(destGraphDir);
-                await fse12.copy(srcGraph, path104.join(destGraphDir, "graph-index.json"));
+                await fse13.ensureDir(destGraphDir);
+                await fse13.copy(srcGraph, path104.join(destGraphDir, "graph-index.json"));
               }
               const { aggregateGlobalGraph: aggregateGlobalGraph2 } = await Promise.resolve().then(() => (init_graph_aggregate(), graph_aggregate_exports));
               await aggregateGlobalGraph2(teamWikiRoot);
@@ -31994,7 +31996,7 @@ ${affectedModules.map((m) => `- \`${m}\` (evidence + G-document)`).join("\n")}` 
               log.success(`teamwiki/ \u77E5\u8BC6\u5E93\u589E\u91CF\u66F4\u65B0\u5B8C\u6210`);
             }
           } finally {
-            await fse12.remove(srcWiki).catch(() => {
+            await fse13.remove(srcWiki).catch(() => {
             });
           }
         } catch (err) {
