@@ -754,3 +754,167 @@ describe('compactEvents', () => {
     expect(content.trim().split('\n')).toHaveLength(1);
   });
 });
+
+// ─── countInterventions (CodeBuddy index.json) ─────────
+
+describe('countInterventions (CodeBuddy index.json)', () => {
+  // index.json with non-zero usage so scanCodebuddyIndex returns on first read
+  // (no ~1.75s retry loop). messages[].role==='user' feeds prompts, not tested here.
+  const INDEX_WITH_USAGE = {
+    messages: [{ id: 'm1', role: 'user', type: 'text', isComplete: true }],
+    requests: [{ id: 'r1', usage: { inputTokens: 100, outputTokens: 50 } }],
+  };
+
+  // assistant blob whose `extra` is a JSON string with a cancelled+marker entry.
+  function rejectedAssistantBlob(callId: string): unknown {
+    return {
+      role: 'assistant',
+      id: 'a1',
+      message: 'whatever',
+      extra: JSON.stringify({
+        requestId: 'r1',
+        toolStatus: {
+          [callId]: {
+            ready: true,
+            status: 'cancelled',
+            result: {
+              status: 'cancelled',
+              success: false,
+              errorMessage: 'User rejected this command. Do not attempt to achieve the same goal through alternative methods or workarounds.',
+            },
+            pendingConfirmation: false,
+            safetyConfirmMessage: 'security.dangerousCommand (command=rm)',
+          },
+        },
+      }),
+    };
+  }
+
+  // assistant blob whose tool ran normally (status 'executed') — counts as nothing.
+  function executedAssistantBlob(callId: string): unknown {
+    return {
+      role: 'assistant',
+      id: 'a2',
+      extra: JSON.stringify({
+        toolStatus: {
+          [callId]: { ready: true, status: 'executed', result: { status: 'success', success: true } },
+        },
+      }),
+    };
+  }
+
+  // tool blob reporting a genuine execution error (isError=true).
+  function errorToolBlob(callId: string): unknown {
+    return {
+      role: 'tool',
+      id: 't1',
+      message: JSON.stringify({
+        role: 'tool',
+        content: [{
+          type: 'tool-result',
+          toolCallId: callId,
+          toolName: 'execute_command',
+          result: { status: 'error', success: false, errorMessage: 'Error: command failed' },
+          isError: true,
+        }],
+      }),
+    };
+  }
+
+  // tool blob for a rejected tool (isError=false) — must not count as toolError.
+  function rejectedToolBlob(callId: string): unknown {
+    return {
+      role: 'tool',
+      id: 't2',
+      message: JSON.stringify({
+        role: 'tool',
+        content: [{
+          type: 'tool-result',
+          toolCallId: callId,
+          result: { status: 'cancelled', success: false, errorMessage: 'User rejected this command...' },
+          isError: false,
+        }],
+      }),
+    };
+  }
+
+  function writeCodebuddySession(dirName: string, indexData: unknown, blobs: unknown[]): string {
+    const sessionDir = path.join(tmpDir, dirName);
+    const messagesDir = path.join(sessionDir, 'messages');
+    fs.mkdirSync(messagesDir, { recursive: true });
+    const indexPath = path.join(sessionDir, 'index.json');
+    fs.writeFileSync(indexPath, JSON.stringify(indexData));
+    blobs.forEach((b, i) => fs.writeFileSync(path.join(messagesDir, `blob-${i}.json`), JSON.stringify(b)));
+    return indexPath;
+  }
+
+  it('counts a user-rejected tool as toolReject', async () => {
+    const p = writeCodebuddySession('reject', INDEX_WITH_USAGE, [rejectedAssistantBlob('call_reject_1')]);
+    const iv = await countInterventions(p);
+    expect(iv.toolReject).toBe(1);
+    expect(iv.toolError).toBe(0);
+    expect(iv.interrupt).toBe(0);
+  });
+
+  it('counts a genuine tool error as toolError', async () => {
+    const p = writeCodebuddySession('error', INDEX_WITH_USAGE, [errorToolBlob('call_err_1')]);
+    const iv = await countInterventions(p);
+    expect(iv.toolError).toBe(1);
+    expect(iv.toolReject).toBe(0);
+  });
+
+  it('does not count executed tools or rejected tools as toolError', async () => {
+    const p = writeCodebuddySession('exec-ok', INDEX_WITH_USAGE, [
+      executedAssistantBlob('call_ok_1'),
+      rejectedToolBlob('call_reject_1'),
+    ]);
+    const iv = await countInterventions(p);
+    expect(iv.toolReject).toBe(0);
+    expect(iv.toolError).toBe(0);
+  });
+
+  it('de-duplicates the same callId across multiple blobs', async () => {
+    // Same rejected callId in two assistant blobs → one reject, not two.
+    // Same errored callId in two tool blobs → one error, not two.
+    const p = writeCodebuddySession('dedup', INDEX_WITH_USAGE, [
+      rejectedAssistantBlob('call_reject_1'),
+      rejectedAssistantBlob('call_reject_1'),
+      errorToolBlob('call_err_1'),
+      errorToolBlob('call_err_1'),
+    ]);
+    const iv = await countInterventions(p);
+    expect(iv.toolReject).toBe(1);
+    expect(iv.toolError).toBe(1);
+  });
+
+  it('counts reject and error together in a mixed session', async () => {
+    const p = writeCodebuddySession('mixed', INDEX_WITH_USAGE, [
+      rejectedAssistantBlob('call_reject_1'),
+      errorToolBlob('call_err_1'),
+      executedAssistantBlob('call_ok_1'),
+    ]);
+    const iv = await countInterventions(p);
+    expect(iv.toolReject).toBe(1);
+    expect(iv.toolError).toBe(1);
+  });
+
+  it('returns zeros when messages directory is absent', async () => {
+    const sessionDir = path.join(tmpDir, 'no-msg');
+    fs.mkdirSync(sessionDir);
+    const p = path.join(sessionDir, 'index.json');
+    fs.writeFileSync(p, JSON.stringify(INDEX_WITH_USAGE));
+    const iv = await countInterventions(p);
+    expect(iv).toEqual({ interrupt: 0, toolReject: 0, toolError: 0 });
+  });
+
+  it('skips malformed blobs gracefully', async () => {
+    const p = writeCodebuddySession('malformed', INDEX_WITH_USAGE, [
+      rejectedAssistantBlob('call_reject_1'),
+      { role: 'assistant', extra: { toolStatus: {} } }, // extra is an object, not a string
+    ]);
+    // A non-JSON .json file: writeCodebuddySession stringifies valid JSON, so write this raw.
+    fs.writeFileSync(path.join(tmpDir, 'malformed', 'messages', 'bad.json'), 'NOT JSON');
+    const iv = await countInterventions(p);
+    expect(iv.toolReject).toBe(1);
+  });
+});
