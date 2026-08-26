@@ -7,6 +7,7 @@ import { log } from '../utils/logger.js';
 import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 import { resolveOpenclawWorkspaceDir } from '../openclaw-hooks.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from '../roles.js';
+import { assertWithinRoot } from '../utils/path-safety.js';
 
 /** File name used to track who has contributed (pushed) a skill. */
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
@@ -141,14 +142,6 @@ async function resolveSkillNamespaces(localConfig: LocalConfig): Promise<string[
     return [localConfig.primaryRole, ...(localConfig.additionalRoles ?? [])];
   }
 }
-
-function getSkillDestination(localConfig: LocalConfig, skillName: string, namespace?: string): string {
-  if (namespace) {
-    return path.join(localConfig.repo.localPath, 'skills', namespace, skillName);
-  }
-  return path.join(localConfig.repo.localPath, 'skills', skillName);
-}
-
 
 /**
  * Recursively scan a directory tree to find all subdirectories containing SKILL.md.
@@ -405,7 +398,13 @@ export class SkillsHandler extends ResourceHandler {
    * Copy a local skill to the team repo.
    */
   async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    const dest = getSkillDestination(localConfig, item.name, item.namespace ?? localConfig.primaryRole);
+    const skillsRoot = path.join(localConfig.repo.localPath, 'skills');
+    const dest = path.resolve(localConfig.repo.localPath, item.relativePath);
+    assertWithinRoot(
+      skillsRoot,
+      dest,
+      `Invalid skill destination outside team repo skills directory: ${item.relativePath}`,
+    );
     await copyDir(item.sourcePath, dest);
     log.debug(`Copied skill ${item.name} → team repo`);
 

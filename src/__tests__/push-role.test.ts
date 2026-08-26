@@ -290,6 +290,90 @@ describe('push namespace routing', () => {
     expect(pushedItems[0].relativePath).toBe('skills/pm/skill-a');
   });
 
+  it('explicit --role flag also routes a modified skill to that namespace', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(),
+      teamConfig: makeTeamConfig(),
+    });
+    mockGetHandler.mockImplementation((type: string) => {
+      if (type === 'skills') {
+        return {
+          scanLocalForPush: vi.fn().mockResolvedValue([
+            {
+              name: 'skill-a',
+              type: 'skills',
+              sourcePath: '/tmp/skill-a',
+              relativePath: 'skills/skill-a',
+              status: 'modified',
+            },
+          ]),
+          pushItem: vi.fn().mockImplementation(async (item: Record<string, unknown>) => {
+            pushedItems.push(item);
+          }),
+        };
+      }
+      return { scanLocalForPush: vi.fn().mockResolvedValue([]), pushItem: vi.fn() };
+    });
+
+    await push({ all: true, role: 'backend' });
+
+    expect(pushedItems[0].namespace).toBe('backend');
+    expect(pushedItems[0].relativePath).toBe('skills/backend/skill-a');
+  });
+
+  it('rejects a path-traversal value passed to --role', async () => {
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(),
+      teamConfig: makeTeamConfig(),
+    });
+    mockSkillHandler();
+    const originalExitCode = process.exitCode;
+
+    try {
+      await push({ all: true, role: '../outside' });
+
+      expect(mockPushRepoBranch).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(2);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
+  it('rejects an unsafe scanned skill name before building the role path', async () => {
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(),
+      teamConfig: makeTeamConfig(),
+    });
+    mockGetHandler.mockImplementation((type: string) => {
+      if (type === 'skills') {
+        return {
+          scanLocalForPush: vi.fn().mockResolvedValue([
+            {
+              name: '../outside',
+              type: 'skills',
+              sourcePath: '/tmp/outside',
+              relativePath: 'skills/outside',
+              status: 'modified',
+            },
+          ]),
+          pushItem: vi.fn(),
+        };
+      }
+      return { scanLocalForPush: vi.fn().mockResolvedValue([]), pushItem: vi.fn() };
+    });
+    const originalExitCode = process.exitCode;
+
+    try {
+      await push({ all: true, role: 'backend' });
+
+      expect(mockPushRepoBranch).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(2);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
   it('rejects out-of-range namespace selection', async () => {
     mockAutoDetectInit.mockResolvedValue({
       localConfig: makeLocalConfig(),  // skills: [common, hai]

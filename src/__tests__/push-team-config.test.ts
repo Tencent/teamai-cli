@@ -128,6 +128,34 @@ describe('push carries teamai.yaml (source add regression)', () => {
     expect(pushed).toContain('https://git.example/dev');
   });
 
+  it('config-only: returns a non-zero exit code when PR creation fails', async () => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    const yamlPath = path.join(teamRepo, 'teamai.yaml');
+    fs.writeFileSync(yamlPath, 'version: 1\npublicSkills:\n  - beta-proof\n');
+    mockCreatePullRequest.mockRejectedValue(new Error('PR API unavailable'));
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: {
+        repo: { localPath: teamRepo, remote: path.join(tmpDir, 'remote.git'), kind: undefined },
+        username: 'alice',
+        scope: 'project',
+        projectRoot: teamRepo,
+      },
+      teamConfig: { repo: 'acme/team', toolPaths: {} },
+    });
+    const originalExitCode = process.exitCode;
+
+    try {
+      const { push } = await import('../push.js');
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await push({ all: true });
+      logSpy.mockRestore();
+
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
   it('no changes at all: reports nothing to push, no PR', async () => {
     const teamRepo = await initTeamRepos(tmpDir);
 

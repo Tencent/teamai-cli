@@ -14,6 +14,7 @@ const mockGit = {
   addConfig: vi.fn(),
   revparse: vi.fn().mockResolvedValue('main'),
   reset: vi.fn(),
+  clean: vi.fn(),
   merge: vi.fn(),
   diff: vi.fn().mockResolvedValue('+some real content change\n'),
 };
@@ -137,6 +138,8 @@ describe('pushRepoBranch', () => {
     expect(result).toBe(false);
     expect(mockGit.checkout).toHaveBeenCalledWith('master');
     expect(mockGit.deleteLocalBranch).toHaveBeenCalledWith('teamai/push/test/456', true);
+    expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+    expect(mockGit.clean).toHaveBeenCalledWith('f', ['-d']);
     expect(mockGit.commit).not.toHaveBeenCalled();
     expect(mockGit.push).not.toHaveBeenCalled();
   });
@@ -158,6 +161,8 @@ describe('pushRepoBranch', () => {
     expect(mockGit.diff).toHaveBeenCalledWith(['--cached', '--unified=0']);
     expect(mockGit.checkout).toHaveBeenCalledWith('master');
     expect(mockGit.deleteLocalBranch).toHaveBeenCalledWith('teamai/push/test/789', true);
+    expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+    expect(mockGit.clean).toHaveBeenCalledWith('f', ['-d']);
     expect(mockGit.commit).not.toHaveBeenCalled();
   });
 });

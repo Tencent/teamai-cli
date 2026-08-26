@@ -371,6 +371,10 @@ export async function pushRepoBranch(
   await git.add(files);
   const status = await git.status();
   if (status.staged.length === 0) {
+    // checkout would otherwise carry unmatched copied files back to the
+    // default branch as unstaged/untracked changes (#331).
+    await git.reset(['--hard', 'HEAD']);
+    await git.clean('f', ['-d']);
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Nothing to commit, switching back to ${defaultBranch}`);
     await switchToDefaultBranch(git, defaultBranch);
@@ -381,6 +385,8 @@ export async function pushRepoBranch(
   // Second gate: skip if all staged changes are metadata-only (timestamps)
   const diffOutput = await git.diff(['--cached', '--unified=0']);
   if (isMetadataOnlyDiff(diffOutput)) {
+    await git.reset(['--hard', 'HEAD']);
+    await git.clean('f', ['-d']);
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Only metadata/timestamp changes detected, switching back to ${defaultBranch}`);
     await switchToDefaultBranch(git, defaultBranch);

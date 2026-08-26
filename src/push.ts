@@ -141,6 +141,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
       } else {
         log.error(`Push failed: ${(e as Error).message}`);
       }
+      process.exitCode = 1;
     }
     return;
   }
@@ -184,6 +185,7 @@ async function pushCore(
         // message rather than silently doing nothing or damaging their repo.
         pullSpin.fail('Cannot push: team repo path is not a dedicated git root. '
           + 'Run `teamai init` to re-clone the team repo before pushing.');
+        process.exitCode = 1;
         return;
       }
       const yamlPath = path.join(repoPath, 'teamai.yaml');
@@ -370,6 +372,29 @@ async function pushCore(
     // Replace allItems with just this one skill
     allItems.length = 0;
     allItems.push(matchedItem);
+  }
+
+  // An explicit --role is a destination override for every selected skill,
+  // including modified skills. Keep relativePath aligned with pushItem's
+  // destination so git stages the files that were actually copied (#331).
+  if (options.role) {
+    try {
+      assertSafeResourceName(options.role);
+      for (const item of allItems) {
+        if (item.type === 'skills') {
+          assertSafeResourceName(item.name);
+        }
+      }
+    } catch (e) {
+      log.error(`Invalid skill role or name: ${(e as Error).message}`);
+      process.exitCode = 2;
+      return;
+    }
+    for (const item of allItems) {
+      if (item.type !== 'skills') continue;
+      item.namespace = options.role;
+      item.relativePath = `skills/${options.role}/${item.name}`;
+    }
   }
 
   if (allItems.length === 0) {
@@ -574,13 +599,16 @@ async function pushCore(
     pushSpin.succeed(`Pushed branch ${branchName}`);
 
     // Create PR/MR via provider
-    await createPrWithFallback(
+    const prUrl = await createPrWithFallback(
       teamConfig,
       localConfig,
       branchName,
       commitMsg,
       `Pushed ${selectedItems.length} resource(s):\n${selectedItems.map((i) => `- [${i.type}] ${i.name}`).join('\n')}`,
     );
+    if (!prUrl) {
+      process.exitCode = 1;
+    }
 
     // Switch back to master after PR creation
     await checkoutMaster(localConfig.repo.localPath);
@@ -598,6 +626,7 @@ async function pushCore(
         );
       }
     }
+    process.exitCode = 1;
     return;
   }
 
@@ -658,17 +687,21 @@ async function pushTeamConfigOnly(
     }
     pushSpin.succeed(`Pushed branch ${branchName}`);
 
-    await createPrWithFallback(
+    const prUrl = await createPrWithFallback(
       teamConfig,
       localConfig,
       branchName,
       commitMsg,
       'Updated team config (teamai.yaml)',
     );
+    if (!prUrl) {
+      process.exitCode = 1;
+    }
 
     await checkoutMaster(localConfig.repo.localPath);
   } catch (e) {
     pushSpin.fail(`Push failed: ${(e as Error).message}`);
+    process.exitCode = 1;
     return;
   }
 }
