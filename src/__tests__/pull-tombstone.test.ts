@@ -236,6 +236,64 @@ describe('pull role-aware sync and cleanup', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude/skills', 'pm-skill', 'SKILL.md'))).toBe(false);
   });
 
+  it('only augments role-scoped skills with explicit tag matches', async () => {
+    await fse.ensureDir(path.join(repoPath, 'skills', 'hai', 'backend-only'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'hai', 'backend-only', 'SKILL.md'), '# Backend');
+    await fse.ensureDir(path.join(repoPath, 'skills', 'pm', 'beta-tag-wanted'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'pm', 'beta-tag-wanted', 'SKILL.md'), '# Wanted');
+    await fse.ensureDir(path.join(repoPath, 'skills', 'pm', 'beta-tag-other'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'pm', 'beta-tag-other', 'SKILL.md'), '# Other');
+    await fse.ensureDir(path.join(repoPath, 'skills', 'pm', 'frontend-only'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'pm', 'frontend-only', 'SKILL.md'), '# Frontend');
+    await fse.writeFile(path.join(repoPath, 'tags.yaml'), [
+      'skills:',
+      '  beta-tag-wanted: [wanted]',
+      '  beta-tag-other: [other]',
+      '',
+    ].join('\n'));
+
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue({
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+      subscribedTags: ['wanted'],
+    });
+    const { log } = await import('../utils/logger.js');
+    vi.mocked(log.dim).mockClear();
+
+    await pull({ force: true });
+
+    const detailOutput = vi.mocked(log.dim).mock.calls.flat().join('\n');
+    expect(detailOutput).toContain('backend-only');
+    expect(detailOutput).toContain('beta-tag-wanted');
+    expect(detailOutput).not.toContain('beta-tag-other');
+    expect(detailOutput).not.toContain('frontend-only');
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills', 'backend-only', 'SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills', 'beta-tag-wanted', 'SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills', 'beta-tag-other'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills', 'frontend-only'))).toBe(false);
+  });
+
+  it('removes a cross-role tagged skill after its subscription is cleared', async () => {
+    await fse.ensureDir(path.join(repoPath, 'skills', 'pm', 'beta-tag-wanted'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'pm', 'beta-tag-wanted', 'SKILL.md'), '# Wanted');
+    await fse.writeFile(path.join(repoPath, 'tags.yaml'), [
+      'skills:',
+      '  beta-tag-wanted: [wanted]',
+      '',
+    ].join('\n'));
+    await fse.ensureDir(path.join(homeDir, '.claude/skills', 'beta-tag-wanted'));
+    await fse.writeFile(path.join(homeDir, '.claude/skills', 'beta-tag-wanted', 'SKILL.md'), '# Previously synced');
+
+    await pull({ force: true });
+
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills', 'beta-tag-wanted'))).toBe(false);
+  });
+
   it('removes stale skills from namespaces that are no longer active', async () => {
     await fse.ensureDir(path.join(homeDir, '.claude/skills', 'pm-skill'));
     await fse.writeFile(path.join(homeDir, '.claude/skills', 'pm-skill', 'SKILL.md'), '# PM');

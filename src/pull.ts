@@ -199,7 +199,7 @@ export async function scanRoleAwareSkills(localConfig: LocalConfig, namespaces: 
 export async function cleanupInactiveNamespaceSkills(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-  activeSkillNames: Set<string>,
+  retainedSkillNames: Set<string>,
   inactiveSkillNames: Set<string>,
 ): Promise<void> {
   const baseDir = resolveBaseDir(localConfig);
@@ -213,7 +213,7 @@ export async function cleanupInactiveNamespaceSkills(
     const localSkillNames = await listDirs(path.join(baseDir, toolPath.skills));
     for (const skillName of localSkillNames) {
       if (BUILTIN_SKILL_NAMES.has(skillName)) continue;
-      if (activeSkillNames.has(skillName)) continue;
+      if (retainedSkillNames.has(skillName)) continue;
       if (!inactiveSkillNames.has(skillName)) continue;
 
       const localSkillDir = path.join(baseDir, toolPath.skills, skillName);
@@ -429,7 +429,11 @@ async function pullForScope(
       let tagIncluded: ResourceItem[] = [];
       if (hasActiveTagSubscriptions) {
         const tagResult = filterByTags(allTeamSkills, tagsConfig, subscribedTags, 'skills');
-        tagIncluded = tagResult.included;
+        const subscribedTagSet = new Set(subscribedTags);
+        tagIncluded = tagResult.included.filter((item) => {
+          const itemTags = tagsConfig.skills[item.name];
+          return itemTags?.some((tag) => subscribedTagSet.has(tag));
+        });
         skippedByTags = tagResult.skipped.length;
       }
 
@@ -554,7 +558,7 @@ async function pullForScope(
       await cleanupInactiveNamespaceSkills(
         freshConfig,
         localConfig,
-        roleContext.activeSkillNames,
+        desiredSkillNames ?? roleContext.activeSkillNames,
         roleContext.inactiveSkillNames,
       );
     }

@@ -357,7 +357,7 @@ teamai status        # Current scope, last sync time, resource stats
 
 ### Role management
 
-Roles control which skills each member sees. Admins define roles via `manifest/roles.yaml`; once a member selects their role, `pull` only syncs skills from the matching namespace.
+Roles control which skills each member sees. Admins define roles via `manifest/roles.yaml`; once a member selects their role, `pull` syncs skills from the matching namespace. Active tag subscriptions may additionally sync explicitly matching skills from other namespaces, but untagged skills in inactive namespaces are not included.
 
 **Admin operations:**
 
