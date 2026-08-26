@@ -2067,7 +2067,7 @@ async function runHookRuleCommand(
   } else if (tool === 'opencode') {
     // OpenCode loads plugins from ~/.config/opencode/plugin (user scope).
     const { applyOpencodeAgentHook } = await import('./opencode-hooks.js');
-    await applyOpencodeAgentHook({ slug, event, command: cmd, baseDir: getUserHome(), scope: 'user' });
+    await applyOpencodeAgentHook({ slug, event, command: cmd, baseDir: getUserHome(), scope: 'user', matcher });
   } else {
     const settingsPath = resolveToolSettingsPath(config, tool);
     await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });

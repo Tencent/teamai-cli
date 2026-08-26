@@ -42,18 +42,36 @@ describe('buildPluginSource', () => {
     expect(src).toContain("event.type === 'session.idle'");
     expect(src).toContain("dispatch('stop')");
     expect(src).toContain("'chat.message'");
-    expect(src).toContain("dispatch('prompt-submit')");
+    expect(src).toContain("'prompt-submit'");
     expect(src).toContain("'tool.execute.after'");
-    expect(src).toContain("dispatch('post-tool-use')");
+    expect(src).toContain("'post-tool-use'");
   });
-  it('shells out to teamai hook-dispatch --tool opencode, non-blocking', () => {
+  it('shells out to teamai hook-dispatch --tool opencode, swallowing errors', () => {
     expect(src).toContain("'hook-dispatch'");
     expect(src).toContain("'--tool', 'opencode'");
     expect(src).toContain('.quiet().nothrow()');
   });
-  it('forwards Skill / TodoWrite matchers for post-tool-use', () => {
-    expect(src).toContain("tool === 'Skill' || tool === 'TodoWrite'");
-    expect(src).toContain("dispatch('post-tool-use', tool)");
+  it('forwards a STDIN payload (cwd + per-event fields) via a Response', () => {
+    // cwd comes from the plugin ctx (directory / worktree), fed on STDIN so the
+    // provider-config gate and track/hint handlers work.
+    expect(src).toContain('directory');
+    expect(src).toContain('worktree');
+    expect(src).toContain('JSON.stringify({ cwd');
+    expect(src).toContain('new Response(stdin)');
+  });
+  it('maps lowercase OpenCode tool ids back to PascalCase matchers', () => {
+    // OpenCode passes `skill` / `todowrite`; the handler registry keys matchers
+    // on `Skill` / `TodoWrite`.
+    expect(src).toContain("skill: 'Skill'");
+    expect(src).toContain("todowrite: 'TodoWrite'");
+    expect(src).toContain('TOOL_MATCHER[tool]');
+    // The dead PascalCase id comparison must be gone.
+    expect(src).not.toContain("tool === 'Skill'");
+  });
+  it('forwards tool_name / tool_input on post-tool-use and prompt on chat.message', () => {
+    expect(src).toContain('tool_name');
+    expect(src).toContain('tool_input');
+    expect(src).toContain('prompt');
   });
   it('is syntactically valid JavaScript', () => {
     assertValidJs(src);
@@ -138,6 +156,28 @@ describe('agent-hook plugins', () => {
     expect(await fse.pathExists(file)).toBe(true);
     await removeOpencodeAgentHook({ slug: 'gone', baseDir: tmp, scope: 'user' });
     expect(await fse.pathExists(file)).toBe(false);
+  });
+
+  it('gates a matcher-scoped tool hook on the tool id (case-insensitive)', async () => {
+    await applyOpencodeAgentHook({ slug: 'scoped', event: 'PostToolUse', command: 'x', baseDir: tmp, scope: 'user', matcher: 'Bash' });
+    const content = await fse.readFile(path.join(tmp, '.config', 'opencode', 'plugin', 'teamai-agent-scoped.ts'), 'utf8');
+    // Compares the lowercase OpenCode id against the lowercased matcher.
+    expect(content).toContain("tool.toLowerCase() === \"bash\"");
+  });
+
+  it('runs a tool hook unconditionally when matcher is absent or *', async () => {
+    await applyOpencodeAgentHook({ slug: 'wild', event: 'PostToolUse', command: 'x', baseDir: tmp, scope: 'user', matcher: '*' });
+    const content = await fse.readFile(path.join(tmp, '.config', 'opencode', 'plugin', 'teamai-agent-wild.ts'), 'utf8');
+    expect(content).toContain('"tool.execute.after": async () => { await run(); }');
+    expect(content).not.toContain('toLowerCase()');
+  });
+
+  it('rejects a slug with path-traversal (../) — no file escapes the plugin dir', async () => {
+    await expect(
+      applyOpencodeAgentHook({ slug: '../../evil', event: 'PostToolUse', command: 'x', baseDir: tmp, scope: 'user' }),
+    ).rejects.toThrow(/Invalid agent-hook slug/);
+    // Nothing was written outside the plugin dir.
+    expect(await fse.pathExists(path.join(tmp, '.config', 'evil.ts'))).toBe(false);
   });
 });
 
