@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope } from './config.js';
 import { reconcileTeamHooksForConfig } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo, getRemoteUrl } from './utils/git.js';
+import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
 import { getProvider, detectProvider, RepoNotFoundError } from './providers/index.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
@@ -988,7 +988,37 @@ export async function init(options: GlobalOptions & {
 
   if (await pathExists(localPath)) {
     if (await isGitRepo(localPath)) {
-      log.info(`Repo already exists at ${localPath}, using existing clone`);
+      // Reuse only when the existing clone points at the SAME repo. A leftover
+      // clone from a different team repo would otherwise be reused silently,
+      // surfacing the wrong roles/skills (issue: re-init against a new --repo
+      // kept serving the old clone's manifest). Compare ignoring credentials,
+      // protocol, and .git suffix.
+      const existingRemote = await getRemoteUrl(localPath);
+      if (existingRemote && !remotesMatch(existingRemote, repoInfo.httpsUrl)) {
+        log.warn(
+          `Existing clone at ${localPath} points at a different repo ` +
+          `(${redactGitCredentials(existingRemote)}), not ${repoInfo.httpsUrl}.`,
+        );
+        if (options.force) {
+          log.info('Replacing it with a fresh clone (--force)');
+          await remove(localPath);
+        } else {
+          const confirmed = await askConfirmation(
+            'Remove it and clone the requested repo? [y/N] ',
+          );
+          if (!confirmed) {
+            log.error(
+              'Aborted. The cached clone belongs to a different repo. ' +
+              `Remove ${localPath} manually or re-run with --force to replace it.`,
+            );
+            process.exit(1);
+            return;
+          }
+          await remove(localPath);
+        }
+      } else {
+        log.info(`Repo already exists at ${localPath}, using existing clone`);
+      }
     } else {
       // The path exists but isn't a git repo — typically a leftover from a
       // previous non-git source (e.g. an HTTP repo). Reusing it would make the

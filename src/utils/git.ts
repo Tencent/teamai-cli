@@ -96,6 +96,50 @@ export async function getRemoteUrl(localPath: string, remoteName = 'origin'): Pr
 }
 
 /**
+ * Strip embedded credentials from a git remote URL for safe display, e.g.
+ * `https://oauth2:TOKEN@host/o/r.git` → `https://host/o/r.git`. Leaves URLs
+ * without credentials (and scp-form `git@host:o/r.git`) untouched.
+ */
+export function redactGitCredentials(url: string): string {
+  // Match the `user:pass@` (or `user@`) userinfo of an http(s) URL only. The
+  // scp form `git@host:path` has no `//` and is intentionally left as-is.
+  return url.replace(/^(https?:\/\/)[^/@]+@/i, '$1');
+}
+
+/**
+ * Normalize a git remote URL into a canonical `host/owner/repo` key for
+ * equality comparison. Ignores differences that don't change the target repo:
+ * embedded credentials, http vs https vs ssh, scp-form vs URL-form, a trailing
+ * `.git`, trailing slashes, and case. Returns a best-effort lowercased string;
+ * inputs it can't parse are lowercased/trimmed so identical strings still match.
+ */
+export function normalizeRepoUrlForCompare(url: string): string {
+  let s = url.trim();
+
+  // scp-form: git@host:owner/repo(.git) → host/owner/repo
+  const scp = /^[^/@]+@([^:/]+):(.+)$/.exec(s);
+  if (scp) {
+    s = `${scp[1]}/${scp[2]}`;
+  } else {
+    // Strip scheme (http/https/ssh/git) and any userinfo credentials.
+    s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^[^/@]+@/, '');
+  }
+
+  // Drop an explicit port and surrounding slashes, then a trailing `.git`
+  // (strip slashes first so `repo.git/` also matches).
+  s = s.replace(/:(\d+)\//, '/').replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
+  return s.toLowerCase();
+}
+
+/**
+ * Whether two git remote URLs point at the same repository, ignoring
+ * credentials, protocol, scp-vs-URL form, `.git` suffix, and case.
+ */
+export function remotesMatch(a: string, b: string): boolean {
+  return normalizeRepoUrlForCompare(a) === normalizeRepoUrlForCompare(b);
+}
+
+/**
  * Whether the repo at localPath has at least one commit reachable from HEAD.
  * A freshly `git init`'d repo (HEAD points at an unborn branch) returns false.
  * Used by single-repo mode: knowledge worktrees/PRs need a base commit to exist.
