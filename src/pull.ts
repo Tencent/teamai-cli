@@ -369,10 +369,13 @@ async function pullForScope(
       const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
       if (currentRev && state[revisionField] && state[revisionField] === currentRev) {
         currentTargets = await getInstalledResourceTargets(teamConfig, localConfig);
-        const syncedTargets = new Set(state[targetsField] ?? []);
-        const unsyncedTargets = currentTargets.filter((target) => !syncedTargets.has(target));
+        const previousTargets = state[targetsField];
+        const syncedTargets = new Set(previousTargets ?? []);
+        const targetSetMatches = previousTargets !== undefined
+          && previousTargets.length === currentTargets.length
+          && currentTargets.every((target) => syncedTargets.has(target));
 
-        if (unsyncedTargets.length === 0) {
+        if (targetSetMatches) {
           log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
           // 即使 repo 未变化，仍部署 CLI 内置资源（确保 CLI 升级后新版本 agent/rules 生效）
           if (!options.dryRun) {
@@ -390,9 +393,7 @@ async function pullForScope(
           return;
         }
 
-        log.debug(
-          `[${scopeLabel}] Repo unchanged; syncing newly available target(s): ${unsyncedTargets.join(', ')}`,
-        );
+        log.debug(`[${scopeLabel}] Repo unchanged; resource target set changed, syncing`);
       }
     } catch {
       // If rev check fails, proceed with full sync

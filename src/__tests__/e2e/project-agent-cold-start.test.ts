@@ -138,14 +138,22 @@ describe('project-scope sequential agent cold start (#342)', () => {
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
-  it('syncs a newly available agent at the same revision, then retains the fast-path', async () => {
+  it('tracks the exact target set across sequential and recreated agent roots', async () => {
+    for (const agentRoot of ['.claude', '.cursor', '.codex', '.codebuddy']) {
+      fs.rmSync(path.join(projectRoot, agentRoot), { recursive: true, force: true });
+    }
+    fs.rmSync(path.join(projectRoot, '.teamai', 'state.json'), { force: true });
     fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, '.codebuddy'), { recursive: true });
 
     const firstPull = await runCLI(['pull'], { HOME: homeDir }, projectRoot);
     expect(firstPull.code, firstPull.output).toBe(0);
     expect(fs.existsSync(path.join(projectRoot, '.claude', 'skills', 'team-skill', 'SKILL.md'))).toBe(true);
     expect(fs.existsSync(path.join(projectRoot, '.claude', 'rules', 'team-rule.md'))).toBe(true);
     expect(fs.existsSync(path.join(projectRoot, '.claude', 'agents', 'team-helper.md'))).toBe(true);
+    expect(JSON.parse(
+      fs.readFileSync(path.join(projectRoot, '.teamai', 'state.json'), 'utf8'),
+    ).lastPullTargets).toEqual(['claude']);
 
     fs.mkdirSync(path.join(projectRoot, '.cursor'), { recursive: true });
 
@@ -155,12 +163,35 @@ describe('project-scope sequential agent cold start (#342)', () => {
     expect(fs.existsSync(path.join(projectRoot, '.cursor', 'skills', 'team-skill', 'SKILL.md'))).toBe(true);
     expect(fs.existsSync(path.join(projectRoot, '.cursor', 'rules', 'team-rule.md'))).toBe(true);
     expect(fs.existsSync(path.join(projectRoot, '.cursor', 'agents', 'team-helper.md'))).toBe(true);
+    expect(JSON.parse(
+      fs.readFileSync(path.join(projectRoot, '.teamai', 'state.json'), 'utf8'),
+    ).lastPullTargets).toEqual(['claude', 'cursor']);
 
     const thirdPull = await runCLI(['pull'], { HOME: homeDir }, projectRoot);
     expect(thirdPull.code, thirdPull.output).toBe(0);
     expect(thirdPull.output).toContain('Already synced');
 
+    fs.rmSync(path.join(projectRoot, '.cursor'), { recursive: true, force: true });
+    const fourthPull = await runCLI(['pull'], { HOME: homeDir }, projectRoot);
+    expect(fourthPull.code, fourthPull.output).toBe(0);
+    expect(fourthPull.output).not.toContain('Already synced');
+    expect(JSON.parse(
+      fs.readFileSync(path.join(projectRoot, '.teamai', 'state.json'), 'utf8'),
+    ).lastPullTargets).toEqual(['claude']);
+
+    fs.mkdirSync(path.join(projectRoot, '.cursor'), { recursive: true });
+    const fifthPull = await runCLI(['pull'], { HOME: homeDir }, projectRoot);
+    expect(fifthPull.code, fifthPull.output).toBe(0);
+    expect(fifthPull.output).not.toContain('Already synced');
+    expect(fs.existsSync(path.join(projectRoot, '.cursor', 'skills', 'team-skill', 'SKILL.md'))).toBe(true);
+    expect(JSON.parse(
+      fs.readFileSync(path.join(projectRoot, '.teamai', 'state.json'), 'utf8'),
+    ).lastPullTargets).toEqual(['claude', 'cursor']);
+
     expect(fs.existsSync(path.join(projectRoot, '.codex'))).toBe(false);
-    expect(fs.existsSync(path.join(projectRoot, '.codebuddy'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.codebuddy'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.codebuddy', 'skills'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.codebuddy', 'rules'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.codebuddy', 'agents'))).toBe(false);
   }, 30_000);
 });
