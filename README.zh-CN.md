@@ -159,7 +159,8 @@ teamai source browse other-team    # 浏览可用 skills
 teamai source remove other-team
 ```
 
-订阅的 skills 在 `teamai pull` 时自动同步。
+添加/移除会立即在本机生效，订阅的 skills 会在下一次 `teamai pull` 时同步。需要将
+`teamai.yaml` 的改动分享给团队成员时，再运行 `teamai push`。
 
 ## 知识库
 

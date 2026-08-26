@@ -3,7 +3,14 @@ import path from 'node:path';
 import { readUsageEvents, truncateUsageAfterReport } from './usage-tracker.js';
 import { aggregateUsage } from './stats.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
-import { createGit, pushRepoDirectly, pullRepo, resetToCleanMaster, isDedicatedRepoRoot } from './utils/git.js';
+import {
+  createGit,
+  pushRepoDirectly,
+  pullRepo,
+  resetToCleanMaster,
+  isDedicatedRepoRoot,
+  getFileContentAtRev,
+} from './utils/git.js';
 import { withTimeout } from './utils/async.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -364,8 +371,28 @@ export async function reportUsageToTeam(
         log.debug(`Skipping report: ${repoPath} is not a dedicated team-repo root (safety guard)`);
         return;
       }
-      await resetToCleanMaster(git, repoPath);
-      await pullRepo(repoPath);
+      const yamlPath = path.join(repoPath, 'teamai.yaml');
+      const workingContent = await readFileSafe(yamlPath);
+      const committedContent = workingContent === null
+        ? null
+        : await getFileContentAtRev(repoPath, 'HEAD', 'teamai.yaml');
+      const pendingTeamConfig = workingContent !== null
+        && (committedContent === null || committedContent.toString() !== workingContent)
+        ? workingContent
+        : null;
+
+      try {
+        await resetToCleanMaster(git, repoPath);
+        await pullRepo(repoPath);
+      } finally {
+        // `source add` and `source remove` intentionally leave teamai.yaml
+        // uncommitted until `teamai push`. Auto-report must not discard those edits.
+        // Keep the complete local version, matching pushCore: it remains an explicit
+        // working-tree diff for review instead of being silently committed here.
+        if (pendingTeamConfig !== null) {
+          await writeFile(yamlPath, pendingTeamConfig);
+        }
+      }
     }
 
     // Process usage and/or intervention/prompt/token stats if anything is new to report.

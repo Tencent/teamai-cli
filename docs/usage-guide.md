@@ -1009,7 +1009,7 @@ teamai source browse other-team
 teamai source remove other-team
 ```
 
-A subscription source's skills are automatically synced locally on `teamai pull`, coexisting with the team's own skills. The subscription itself is stored in the `sources` field of the team repo's `teamai.yaml` — so it is shared with the whole team, not just your machine. After `teamai source add`/`remove`, run `teamai push` to open a PR with the `teamai.yaml` change; once it merges, every teammate's `teamai pull` picks up the new source automatically.
+A subscription source's skills are automatically synced locally on `teamai pull`, coexisting with the team's own skills. `teamai source add`/`remove` updates the active scope's team repo immediately, so local `list`, `browse`, and `pull` commands use the change before it is committed. The subscription itself is stored in the `sources` field of that repo's `teamai.yaml`. Run `teamai push` to open a PR with the config change; once it merges, every teammate's `teamai pull` picks up the new source automatically.
 
 #### HTTP Source
 

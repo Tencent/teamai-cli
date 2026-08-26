@@ -71,21 +71,29 @@ describe('E2E self-mode: business repo working tree is never reset', () => {
     expect(content).toContain('MY UNCOMMITTED WORK');
   });
 
-  it('git mode: a real dedicated cache clone IS still reset (no regression)', async () => {
+  it('git mode: resets cache garbage but preserves an uncommitted teamai.yaml edit', async () => {
     // A dedicated cache clone: repoPath IS the git top level.
     // Use 'main' as default branch so resetToCleanMaster's fallback checkout matches.
     const cacheRoot = path.join(tmp, 'cache');
     await makeRepo(cacheRoot, 'main');
     const git = simpleGit(cacheRoot);
 
-    // Simulate stale dirty state in the cache.
+    fs.writeFileSync(path.join(cacheRoot, 'teamai.yaml'), 'team: original\n');
+    await git.add('teamai.yaml');
+    await git.commit('add team config');
+
+    // Simulate both disposable cache garbage and a pending source add.
     fs.writeFileSync(path.join(cacheRoot, 'app.js'), 'garbage\n');
+    fs.writeFileSync(
+      path.join(cacheRoot, 'teamai.yaml'),
+      'team: original\nsources:\n  - name: beta-source\n    repo: https://source.test/root/beta-source.git\n',
+    );
 
     await reportUsageToTeam(cacheRoot, 'me', { skipTruncate: true });
 
-    // reset --hard should have discarded the dirty change in the cache clone.
-    const content = fs.readFileSync(path.join(cacheRoot, 'app.js'), 'utf-8');
-    expect(content).toBe('console.log(1)\n');
+    expect(fs.readFileSync(path.join(cacheRoot, 'app.js'), 'utf-8')).toBe('console.log(1)\n');
+    expect(fs.readFileSync(path.join(cacheRoot, 'teamai.yaml'), 'utf-8'))
+      .toContain('name: beta-source');
   });
 
   it('project scope (git kind): business repo is NOT reset when team-repo dir lacks its own .git', async () => {

@@ -159,7 +159,8 @@ teamai source browse other-team    # browse available skills
 teamai source remove other-team
 ```
 
-Subscribed skills sync automatically on `teamai pull`.
+The add/remove change takes effect locally right away, and subscribed skills sync on the next
+`teamai pull`. Run `teamai push` when you want to share the `teamai.yaml` change with teammates.
 
 ## Knowledge Base
 
