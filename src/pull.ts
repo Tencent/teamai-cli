@@ -1143,7 +1143,7 @@ async function autoMigrateHooksIfNeeded(): Promise<void> {
     const universe = hookFilter ?? Object.keys(teamConfig.toolPaths);
     hookFilter = universe.filter((t) => !disabled.includes(t));
   }
-  await injectHooksToAllTools(teamConfig.toolPaths, baseDir, hookFilter, localConfig.scope);
+  await injectHooksToAllTools(teamConfig.toolPaths, baseDir, hookFilter);
   log.debug('Hooks migrated to dispatch format');
 }
 

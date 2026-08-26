@@ -90,7 +90,7 @@ describe('hooksInject', () => {
             expect.any(String),
             TEAM_DEFS,
             expect.stringContaining('managed-hooks.json'),
-            { builtinOverride: undefined, scope: 'user' },
+            { builtinOverride: undefined },
         );
         expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Hooks injected'));
     });
@@ -122,7 +122,7 @@ describe('hooksInject', () => {
         // HOME covers all cwds, and dispatch identifies the project via stdin.cwd.
         expect(mockedReconcile).toHaveBeenCalledTimes(1);
         expect(mockedReconcile).toHaveBeenCalledWith(
-            mockTeamConfig.toolPaths, '/home/testuser', TEAM_DEFS, expect.any(String), { builtinOverride: undefined, scope: 'user' },
+            mockTeamConfig.toolPaths, '/home/testuser', TEAM_DEFS, expect.any(String), { builtinOverride: undefined },
         );
         const manifestPath = mockedReconcile.mock.calls[0][3] as string;
         expect(manifestPath).toContain('/home/testuser');
@@ -242,7 +242,7 @@ describe('hooksRemove', () => {
             expect.any(String),
             [],
             expect.stringContaining('managed-hooks.json'),
-            { removeAll: true, scope: 'user' },
+            { removeAll: true },
         );
         expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Hooks removed'));
     });
@@ -263,14 +263,14 @@ describe('hooksRemove', () => {
 
         // Main removal targets HOME with user manifest.
         expect(mockedReconcile).toHaveBeenNthCalledWith(1,
-            mockTeamConfig.toolPaths, '/home/testuser', [], expect.any(String), { removeAll: true, scope: 'user' },
+            mockTeamConfig.toolPaths, '/home/testuser', [], expect.any(String), { removeAll: true },
         );
         const userManifest = mockedReconcile.mock.calls[0][3] as string;
         expect(userManifest).toContain('/home/testuser');
 
         // Legacy cleanup targets projectRoot with project manifest.
         expect(mockedReconcile).toHaveBeenNthCalledWith(2,
-            mockTeamConfig.toolPaths, '/path/to/project', [], expect.any(String), { removeAll: true, scope: 'project' },
+            mockTeamConfig.toolPaths, '/path/to/project', [], expect.any(String), { removeAll: true },
         );
         const legacyManifest = mockedReconcile.mock.calls[1][3] as string;
         expect(legacyManifest).toContain('/path/to/project');

@@ -325,6 +325,45 @@ describe('uninstall', () => {
     expect(await fse.pathExists(ocHookDir)).toBe(false);
   });
 
+  it('project scope 卸载同时清掉用户级和项目级的 OpenCode plugin', async () => {
+    const projectRoot = path.join(tmpDir, 'oc-project');
+    const homeDir = path.join(tmpDir, 'home');
+    const repoPath = path.join(projectRoot, '.teamai', 'team-repo');
+    await fse.ensureDir(repoPath);
+    await fse.writeFile(path.join(projectRoot, '.teamai', 'config.yaml'), 'scope: project');
+
+    // teamai writes the plugin into the user dir; the project dir may still hold
+    // a copy from an earlier layout, plus an agent-hook plugin.
+    const userPlugin = path.join(homeDir, '.config', 'opencode', 'plugin');
+    const projectPlugin = path.join(projectRoot, '.opencode', 'plugin');
+    await fse.ensureDir(userPlugin);
+    await fse.ensureDir(projectPlugin);
+    await fse.writeFile(path.join(userPlugin, 'teamai-hooks.ts'), '// [teamai] hooks plugin');
+    await fse.writeFile(path.join(projectPlugin, 'teamai-hooks.ts'), '// [teamai] hooks plugin');
+    await fse.writeFile(path.join(projectPlugin, 'teamai-agent-legacy.ts'), '// [teamai] agent hook');
+    await fse.writeFile(path.join(projectPlugin, 'my-own-plugin.ts'), '// mine');
+
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        opencode: { skills: '.opencode/skills', rules: '.opencode/rules' }, // no settings → plugin path
+      },
+    });
+    const localConfig = makeLocalConfig(projectRoot, repoPath, { scope: 'project', projectRoot });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(path.join(userPlugin, 'teamai-hooks.ts'))).toBe(false);
+    expect(await fse.pathExists(path.join(projectPlugin, 'teamai-hooks.ts'))).toBe(false);
+    // Agent-hook sweep must delete inside the plugin dir, not a cwd-relative path.
+    expect(await fse.pathExists(path.join(projectPlugin, 'teamai-agent-legacy.ts'))).toBe(false);
+    // A user's own plugin is untouched.
+    expect(await fse.pathExists(path.join(projectPlugin, 'my-own-plugin.ts'))).toBe(true);
+  });
+
   it('保留用户自建的 skills', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

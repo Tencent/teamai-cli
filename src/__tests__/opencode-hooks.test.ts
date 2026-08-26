@@ -183,35 +183,67 @@ describe('agent-hook plugins', () => {
 
 describe('reconcileHooksToAllTools routes opencode to the plugin adapter', () => {
   let tmp: string;
-  beforeEach(async () => { tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-oc-recon-')); });
-  afterEach(async () => { await fse.remove(tmp); });
+  let home: string;
+  let projectRoot: string;
+  let prevHome: string | undefined;
+
+  beforeEach(async () => {
+    tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-oc-recon-'));
+    home = path.join(tmp, 'home');
+    projectRoot = path.join(tmp, 'project');
+    await fse.ensureDir(home);
+    await fse.ensureDir(projectRoot);
+    prevHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+  afterEach(async () => {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    await fse.remove(tmp);
+  });
 
   const toolPaths = { opencode: { skills: '.opencode/skills' } } as Record<string, { settings?: string }>;
   const manifest = () => path.join(tmp, 'managed-hooks.json');
+  const userPlugin = () => path.join(home, '.config', 'opencode', 'plugin', OPENCODE_HOOK_FILE);
+  const projectPlugin = () => path.join(projectRoot, '.opencode', 'plugin', OPENCODE_HOOK_FILE);
 
-  it('does nothing when OpenCode is not installed (no config dir)', async () => {
-    await reconcileHooksToAllTools(toolPaths, tmp, [], manifest(), { scope: 'project' });
-    expect(await fse.pathExists(path.join(tmp, '.opencode', 'plugin', OPENCODE_HOOK_FILE))).toBe(false);
+  it('does nothing when OpenCode is not installed (no user config dir)', async () => {
+    await reconcileHooksToAllTools(toolPaths, projectRoot, [], manifest());
+    expect(await fse.pathExists(userPlugin())).toBe(false);
+    expect(await fse.pathExists(projectPlugin())).toBe(false);
   });
 
-  it('injects the plugin when the .opencode config dir exists (project scope)', async () => {
-    await fse.ensureDir(path.join(tmp, '.opencode'));
-    await reconcileHooksToAllTools(toolPaths, tmp, [], manifest(), { scope: 'project' });
-    expect(await fse.pathExists(path.join(tmp, '.opencode', 'plugin', OPENCODE_HOOK_FILE))).toBe(true);
+  it('injects into the user plugin dir when ~/.config/opencode exists', async () => {
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+    expect(await fse.pathExists(userPlugin())).toBe(true);
   });
 
-  it('removeAll deletes the plugin', async () => {
-    await fse.ensureDir(path.join(tmp, '.opencode'));
-    await reconcileHooksToAllTools(toolPaths, tmp, [], manifest(), { scope: 'project' });
-    const file = path.join(tmp, '.opencode', 'plugin', OPENCODE_HOOK_FILE);
-    expect(await fse.pathExists(file)).toBe(true);
-    await reconcileHooksToAllTools(toolPaths, tmp, [], manifest(), { scope: 'project', removeAll: true });
-    expect(await fse.pathExists(file)).toBe(false);
+  it('keeps a single copy when reconciling a project-scope base dir', async () => {
+    // OpenCode loads BOTH ~/.config/opencode/plugin and <project>/.opencode/plugin,
+    // so a project copy next to the user one would dispatch every event twice.
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    await fse.ensureDir(path.join(projectRoot, '.opencode'));
+    await reconcileHooksToAllTools(toolPaths, projectRoot, [], manifest());
+    expect(await fse.pathExists(userPlugin())).toBe(true);
+    expect(await fse.pathExists(projectPlugin())).toBe(false);
   });
 
-  it('user scope injects under .config/opencode when that dir exists', async () => {
-    await fse.ensureDir(path.join(tmp, '.config', 'opencode'));
-    await reconcileHooksToAllTools(toolPaths, tmp, [], manifest(), { scope: 'user' });
-    expect(await fse.pathExists(path.join(tmp, '.config', 'opencode', 'plugin', OPENCODE_HOOK_FILE))).toBe(true);
+  it('deletes a project-scope plugin left by an earlier layout', async () => {
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    await injectOpencodeHooks(projectRoot, 'project');
+    expect(await fse.pathExists(projectPlugin())).toBe(true);
+    await reconcileHooksToAllTools(toolPaths, projectRoot, [], manifest());
+    expect(await fse.pathExists(projectPlugin())).toBe(false);
+    expect(await fse.pathExists(userPlugin())).toBe(true);
+  });
+
+  it('removeAll deletes the plugin in both locations', async () => {
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+    await injectOpencodeHooks(projectRoot, 'project');
+    await reconcileHooksToAllTools(toolPaths, projectRoot, [], manifest(), { removeAll: true });
+    expect(await fse.pathExists(userPlugin())).toBe(false);
+    expect(await fse.pathExists(projectPlugin())).toBe(false);
   });
 });
