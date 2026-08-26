@@ -174,6 +174,6 @@ describe('scope isolation e2e (issue #73)', () => {
   it('uninstall --dry-run: states it is acting on the project scope', async () => {
     const res = await runCLI(['uninstall', '--dry-run', '--force'], { HOME: homeDir }, projectRoot);
     expect(res.code, res.output).toBe(0);
-    expect(res.output).toContain('正在卸载 project scope（项目级）');
+    expect(res.output).toContain('Uninstalling project scope');
   });
 });

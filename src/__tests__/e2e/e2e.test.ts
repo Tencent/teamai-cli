@@ -580,7 +580,7 @@ describe('remote commands', () => {
       // Step 1: Uninstall everything
       const uninstallResult = await runCLI(['uninstall', '--force']);
       expect(uninstallResult.code).toBe(0);
-      expect(uninstallResult.output).toContain('卸载完成');
+      expect(uninstallResult.output).toContain('teamai uninstalled');
 
       // Step 2: Verify cleanup — config.yaml should not exist
       const teamaiHome = path.join(process.env.HOME ?? '', '.teamai');
