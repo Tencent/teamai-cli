@@ -1,7 +1,12 @@
 import path from 'node:path';
 import { autoDetectInit, saveLocalConfig, saveLocalConfigForScope } from './config.js';
 import { reconcileHooks, hasTeamaiHooks } from './hooks.js';
-import { removeOpenClawHooks, OPENCLAW_HOOK_DIR, resolveOpenClawHooksDir } from './openclaw-hooks.js';
+import {
+  removeOpenClawHooks,
+  OPENCLAW_HOOK_DIR,
+  resolveOpenClawHooksDir,
+  resolveOpenclawWorkspaceDir,
+} from './openclaw-hooks.js';
 import {
   TEAMAI_RULES_START,
   TEAMAI_RULES_END,
@@ -34,6 +39,7 @@ import {
   writeFile,
   remove,
   listDirs,
+  listFiles,
   listFilesRecursive,
   expandHome,
 } from './utils/fs.js';
@@ -168,6 +174,19 @@ async function collectTeamRuleNames(repoPath: string): Promise<Set<string>> {
   );
 }
 
+/** Collect custom agent names from canonical YAML and legacy Markdown files. */
+async function collectTeamAgentNames(repoPath: string): Promise<Set<string>> {
+  const teamAgentsDir = path.join(repoPath, 'agents');
+  if (!await pathExists(teamAgentsDir)) return new Set();
+
+  const files = await listFiles(teamAgentsDir);
+  return new Set(
+    files
+      .filter((file) => file.endsWith('.yaml') || file.endsWith('.md'))
+      .map((file) => path.basename(file).replace(/\.(yaml|md)$/, '')),
+  );
+}
+
 /** Detect hooks cleared to empty arrays — a residue of prior teamai installation. */
 function isEmptyHooksResidue(parsed: Record<string, unknown> | null): boolean {
   if (parsed == null || !('hooks' in parsed) || typeof parsed.hooks !== 'object' || parsed.hooks == null) return false;
@@ -200,6 +219,7 @@ async function discoverToolResources(
   baseDir: string,
   teamSkillNames: Set<string>,
   teamRuleNames: Set<string>,
+  teamAgentNames: Set<string>,
   managedHooksPath: string,
   scope: Scope,
 ): Promise<ToolResources> {
@@ -258,12 +278,18 @@ async function discoverToolResources(
 
   // (c) Skills — only those matching team repo
   if (toolPath.skills) {
-    const skillsDir = path.join(baseDir, toolPath.skills);
-    if (await pathExists(skillsDir)) {
-      const dirs = await listDirs(skillsDir);
-      for (const dir of dirs) {
-        if (teamSkillNames.has(dir)) {
-          res.skillDirs.push(path.join(skillsDir, dir));
+    const skillRoots = new Set([path.join(baseDir, toolPath.skills)]);
+    if (tool === 'openclaw') {
+      const workspaceDir = await resolveOpenclawWorkspaceDir();
+      if (workspaceDir) skillRoots.add(path.join(workspaceDir, 'skills'));
+    }
+    for (const skillsDir of skillRoots) {
+      if (await pathExists(skillsDir)) {
+        const dirs = await listDirs(skillsDir);
+        for (const dir of dirs) {
+          if (teamSkillNames.has(dir)) {
+            res.skillDirs.push(path.join(skillsDir, dir));
+          }
         }
       }
     }
@@ -285,16 +311,16 @@ async function discoverToolResources(
     }
   }
 
-  // (d2) Built-in agents — CLI-deployed subagents (e.g. teamai-recall).
-  // Not synced from the team repo, so match by BUILTIN_AGENT_NAMES.
+  // (d2) Team-synced custom agents plus CLI built-ins. Native output uses
+  // .md for most tools and .toml for Codex, so match installed files by stem.
   if (toolPath.agents) {
     const agentsDir = path.join(baseDir, toolPath.agents);
     if (await pathExists(agentsDir)) {
-      for (const name of BUILTIN_AGENT_NAMES) {
-        const agentFile = path.join(agentsDir, `${name}.md`);
-        if (await pathExists(agentFile)) {
-          res.agentFiles.push(agentFile);
-        }
+      for (const file of await listFiles(agentsDir)) {
+        if (!file.endsWith('.md') && !file.endsWith('.toml')) continue;
+        const name = path.basename(file).replace(/\.(md|toml)$/, '');
+        if (!teamAgentNames.has(name) && !BUILTIN_AGENT_NAMES.has(name)) continue;
+        res.agentFiles.push(path.join(agentsDir, file));
       }
     }
   }
@@ -320,6 +346,7 @@ async function buildRemovalPlan(
   for (const name of BUILTIN_SKILL_NAMES) teamSkillNames.add(name);
   const teamRuleNames = await collectTeamRuleNames(repoPath);
   for (const name of BUILTIN_RULE_NAMES) teamRuleNames.add(name);
+  const teamAgentNames = await collectTeamAgentNames(repoPath);
 
   // Also include resources installed by local-agent (HTTP distribution)
   const localAgentManifestPath = path.join(
@@ -344,7 +371,16 @@ async function buildRemovalPlan(
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     perTool.set(
       tool,
-      await discoverToolResources(tool, toolPath, baseDir, teamSkillNames, teamRuleNames, managedHooksPath, localConfig.scope),
+      await discoverToolResources(
+        tool,
+        toolPath,
+        baseDir,
+        teamSkillNames,
+        teamRuleNames,
+        teamAgentNames,
+        managedHooksPath,
+        localConfig.scope,
+      ),
     );
   }
 
@@ -507,7 +543,10 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
   }
 
   if (plan.skillDirs.length > 0) {
-    console.log(`   Skills (${plan.skillDirs.length} directories)`);
+    console.log(`   Skills (${plan.skillDirs.length} directories):`);
+    for (const skillDir of plan.skillDirs) {
+      console.log(`     ${skillDir}`);
+    }
     console.log('');
   }
 
@@ -517,7 +556,10 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
   }
 
   if (plan.agentFiles.length > 0) {
-    console.log(`   Agents (${plan.agentFiles.length} files)`);
+    console.log(`   Agents (${plan.agentFiles.length} files):`);
+    for (const agentFile of plan.agentFiles) {
+      console.log(`     ${agentFile}`);
+    }
     console.log('');
   }
 

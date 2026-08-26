@@ -436,6 +436,106 @@ describe('uninstall', () => {
     expect(claudeMd).toContain(TEAMAI_RULES_START);
   });
 
+  it('dry-run 和卸载覆盖自定义 agents 及 OpenClaw workspace skills，同时保留用户资源', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    await fse.ensureDir(path.join(repoPath, 'agents'));
+    await fse.writeFile(
+      path.join(repoPath, 'agents', 'beta-proof-agent.yaml'),
+      'name: beta-proof-agent\ndescription: Team agent\ninstructions: Help the team\n',
+    );
+    await fse.ensureDir(path.join(repoPath, 'skills', 'former-role-skill'));
+    await fse.writeFile(
+      path.join(repoPath, 'skills', 'former-role-skill', 'SKILL.md'),
+      '# Former Role Skill',
+    );
+
+    const managedAgentPaths = [
+      path.join(homeDir, '.claude', 'agents', 'beta-proof-agent.md'),
+      path.join(homeDir, '.codex', 'agents', 'beta-proof-agent.toml'),
+      path.join(homeDir, '.cursor', 'agents', 'beta-proof-agent.md'),
+      path.join(homeDir, '.codebuddy', 'agents', 'beta-proof-agent.md'),
+      path.join(homeDir, '.opencode', 'agents', 'beta-proof-agent.md'),
+    ];
+    for (const agentPath of managedAgentPaths) {
+      await fse.ensureDir(path.dirname(agentPath));
+      await fse.writeFile(agentPath, '# Managed agent');
+    }
+
+    const userAgentPath = path.join(homeDir, '.claude', 'agents', 'my-own-agent.md');
+    await fse.writeFile(userAgentPath, '# User agent');
+    const nestedUserAgentPath = path.join(
+      homeDir,
+      '.claude',
+      'agents',
+      'user-group',
+      'beta-proof-agent.md',
+    );
+    await fse.ensureDir(path.dirname(nestedUserAgentPath));
+    await fse.writeFile(nestedUserAgentPath, '# User agent with a managed-looking basename');
+
+    const openclawManagedSkill = path.join(
+      homeDir,
+      '.openclaw',
+      'workspace',
+      'skills',
+      'former-role-skill',
+    );
+    const openclawUserSkill = path.join(
+      homeDir,
+      '.openclaw',
+      'workspace',
+      'skills',
+      'my-own-skill',
+    );
+    await fse.ensureDir(openclawManagedSkill);
+    await fse.writeFile(path.join(openclawManagedSkill, 'SKILL.md'), '# Managed skill');
+    await fse.ensureDir(openclawUserSkill);
+    await fse.writeFile(path.join(openclawUserSkill, 'SKILL.md'), '# User skill');
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        claude: { skills: '.claude/skills', agents: '.claude/agents' },
+        codex: { skills: '.codex/skills', agents: '.codex/agents' },
+        cursor: { skills: '.cursor/skills', agents: '.cursor/agents' },
+        codebuddy: { skills: '.codebuddy/skills', agents: '.codebuddy/agents' },
+        opencode: { skills: '.opencode/skills', agents: '.opencode/agents' },
+        openclaw: { skills: '.openclaw/skills' },
+      },
+    });
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath),
+      teamConfig,
+    });
+
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    });
+    await uninstall({ dryRun: true, force: true });
+    spy.mockRestore();
+
+    const summary = lines.join('\n');
+    for (const agentPath of managedAgentPaths) {
+      expect(summary).toContain(agentPath);
+      expect(await fse.pathExists(agentPath)).toBe(true);
+    }
+    expect(summary).toContain(openclawManagedSkill);
+    expect(await fse.pathExists(openclawManagedSkill)).toBe(true);
+
+    await uninstall({ force: true });
+
+    for (const agentPath of managedAgentPaths) {
+      expect(await fse.pathExists(agentPath)).toBe(false);
+    }
+    expect(await fse.pathExists(openclawManagedSkill)).toBe(false);
+    expect(await fse.pathExists(userAgentPath)).toBe(true);
+    expect(await fse.pathExists(nestedUserAgentPath)).toBe(true);
+    expect(await fse.pathExists(openclawUserSkill)).toBe(true);
+  });
+
   it('uninstall summary lists teamai-managed MCP servers', async () => {
     const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

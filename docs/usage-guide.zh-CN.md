@@ -1068,7 +1068,7 @@ inheritUserScope: true         # 可选，仅 project scope，默认 false
 `teamai uninstall` 会智能清理所有 teamai 管理的资源，**保留用户自建内容**。
 
 ```bash
-# 预览将要移除的内容（不做实际变更）
+# 预览将要移除的每个受管路径（不做实际变更）
 teamai uninstall --dry-run
 
 # 交互式确认卸载
@@ -1084,14 +1084,15 @@ teamai uninstall --agent claude
 移除内容：
 - AI 工具 settings 中的 teamai hooks
 - CLAUDE.md 中的 teamai rules 块（保留用户自写内容）
-- 团队同步的 skills（保留用户自建 skills）
+- 团队同步的 skills，包括 OpenClaw workspace skills（保留用户自建 skills）
 - 团队同步的 rules
+- 团队同步的自定义 agents 和 CLI 内置 agents（保留用户自建 agents）
 - Shell profile 中的 env 块
 - `~/.teamai/` 目录
 
 ### 只卸载单个工具（`--agent <tool>`）
 
-`--agent <tool>` 只移除该工具的 teamai 资源（hooks、CLAUDE.md 块、skills、rules、内置 agents）。工具名即 `toolPaths` 的键（如 `claude`、`codex`、`codebuddy`），匹配大小写不敏感。传入未知工具名会直接报错并列出可用工具、不执行任何删除，并以非零状态码退出。
+`--agent <tool>` 只移除该工具的 teamai 资源（hooks、CLAUDE.md 块、skills、rules、团队同步的自定义 agents、内置 agents）。工具名即 `toolPaths` 的键（如 `claude`、`codex`、`codebuddy`），匹配大小写不敏感。传入未知工具名会直接报错并列出可用工具、不执行任何删除，并以非零状态码退出。
 
 跨工具共享资源（shell profile env 块、docs 目录、`~/.teamai/`）**仅当该工具自身存在 teamai 资源、且它是最后一个仍在使用 teamai 的工具时**才一并移除，否则会为其余工具保留。（因此，定向卸载一个自身没有任何 teamai 资源的工具是 no-op，即便它恰好是唯一的工具，也不会删除共享资源。）
 

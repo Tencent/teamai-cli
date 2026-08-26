@@ -1073,7 +1073,7 @@ inheritUserScope: true         # optional; project scope only, defaults to false
 `teamai uninstall` intelligently cleans up all teamai-managed resources, **preserving anything you created yourself**.
 
 ```bash
-# Preview what will be removed (no actual changes)
+# Preview every managed path that will be removed (no actual changes)
 teamai uninstall --dry-run
 
 # Interactive confirmation
@@ -1089,14 +1089,15 @@ teamai uninstall --agent claude
 What gets removed:
 - teamai hooks in AI tool settings
 - The teamai rules block in CLAUDE.md (your own content is preserved)
-- Team-synced skills (your own skills are preserved)
+- Team-synced skills, including OpenClaw workspace skills (your own skills are preserved)
 - Team-synced rules
+- Team-synced custom agents and CLI built-in agents (your own agents are preserved)
 - The env block in your shell profile
 - The `~/.teamai/` directory
 
 ### Uninstall a single tool (`--agent <tool>`)
 
-`--agent <tool>` removes only that tool's teamai resources (hooks, CLAUDE.md block, skills, rules, built-in agents). The tool name is a key of `toolPaths` (e.g. `claude`, `codex`, `codebuddy`) and is matched case-insensitively. An unknown tool name aborts without deleting anything, lists the available tools, and exits with a non-zero status.
+`--agent <tool>` removes only that tool's teamai resources (hooks, CLAUDE.md block, skills, rules, team-synced custom agents, and built-in agents). The tool name is a key of `toolPaths` (e.g. `claude`, `codex`, `codebuddy`) and is matched case-insensitively. An unknown tool name aborts without deleting anything, lists the available tools, and exits with a non-zero status.
 
 Shared resources (the env block, docs directory, and `~/.teamai/`) are removed **only when the target itself has teamai resources AND is the last tool still using teamai** — otherwise they are kept for the remaining tools. (So targeting a tool that has no teamai resources of its own is a no-op and leaves shared resources in place, even if it happens to be the only tool.)
 
