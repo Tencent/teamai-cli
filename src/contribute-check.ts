@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { log } from './utils/logger.js';
 import { readJson, writeJson, ensureDir } from './utils/fs.js';
-import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
+import { readEvents, aggregateSessionMetrics, scanTranscriptStop } from './dashboard-collector.js';
 import { readRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { redactWithEnv } from './utils/redact.js';
@@ -335,7 +335,11 @@ export function applyPhase2Adjustments(
 }
 
 /** Read STDIN and extract sessionId from hook JSON. */
-async function readStdinAndDeriveSession(): Promise<{ sessionId: string; cwd?: string } | null> {
+async function readStdinAndDeriveSession(): Promise<{
+  sessionId: string;
+  cwd?: string;
+  transcriptPath?: string;
+} | null> {
   if (process.stdin.isTTY) return null;
 
   const chunks: Buffer[] = [];
@@ -350,7 +354,10 @@ async function readStdinAndDeriveSession(): Promise<{ sessionId: string; cwd?: s
     // Derive session ID: session_id field > env > PID+cwd fallback
     const sessionId = deriveSessionId(hookData, { includeCwd: true });
     const cwd = typeof hookData.cwd === 'string' ? hookData.cwd : undefined;
-    return { sessionId, cwd };
+    const transcriptPath = typeof hookData.transcript_path === 'string'
+      ? hookData.transcript_path
+      : undefined;
+    return { sessionId, cwd, transcriptPath };
   } catch {
     return null;
   }
@@ -369,21 +376,36 @@ function countUniqueTools(events: DashboardEvent[]): number {
 /**
  * Extract friction signals for a session from its events.
  *
- * - interrupt / toolReject / toolError: from the latest Stop event's interventions
- *   snapshot (idempotent full total; toolError absent on pre-existing events → 0).
+ * - interrupt / toolReject / toolError: prefer the freshly-scanned transcript
+ *   results (`transcriptFriction`) when provided. These three signals normally
+ *   live on the latest Stop event's interventions snapshot, but that Stop event
+ *   is written asynchronously by a detached background process and may not be
+ *   flushed to events.jsonl yet when this check runs — so a live transcript scan
+ *   eliminates the cross-process race. When `transcriptFriction` is absent
+ *   (backward compatibility / no transcript path), fall back to the latest Stop
+ *   event's interventions snapshot (idempotent full total; toolError absent on
+ *   pre-existing events → 0).
  * - correction: derived by aggregateSessionMetrics from the stop→prompt_submit
  *   pattern (not present on any single event), so we reuse it rather than re-scan.
  */
-function extractFriction(events: DashboardEvent[], sessionId: string): SessionFriction {
+function extractFriction(
+  events: DashboardEvent[],
+  sessionId: string,
+  transcriptFriction?: { interrupt: number; toolReject: number; toolError: number },
+): SessionFriction {
   let interrupt = 0;
   let toolReject = 0;
   let toolError = 0;
-  for (const e of events) {
-    if (e.type === 'stop' && e.interventions) {
-      // Latest Stop wins (snapshots are cumulative & idempotent).
-      interrupt = e.interventions.interrupt;
-      toolReject = e.interventions.toolReject;
-      toolError = e.interventions.toolError ?? 0;
+  if (transcriptFriction) {
+    ({ interrupt, toolReject, toolError } = transcriptFriction);
+  } else {
+    for (const e of events) {
+      if (e.type === 'stop' && e.interventions) {
+        // Latest Stop wins (snapshots are cumulative & idempotent).
+        interrupt = e.interventions.interrupt;
+        toolReject = e.interventions.toolReject;
+        toolError = e.interventions.toolError ?? 0;
+      }
     }
   }
   const correction = aggregateSessionMetrics(events).get(sessionId)?.correction ?? 0;
@@ -484,6 +506,7 @@ function buildHint({ friction, promptSummary, isKnowledgeGap }: HintContext): st
 export async function contributeCheckForSession(
   sessionId: string,
   cwd?: string,
+  transcriptPath?: string,
 ): Promise<{ hint: string | null }> {
   const state = await readContributeState(sessionId);
   const now = Date.now();
@@ -539,7 +562,16 @@ export async function contributeCheckForSession(
   } else {
     const allEvents = await readEvents();
     const sessionEvents = allEvents.filter((e) => e.sessionId === sessionId);
-    friction = extractFriction(sessionEvents, sessionId);
+    if (transcriptPath) {
+      const scan = await scanTranscriptStop(transcriptPath, { frictionOnly: true });
+      friction = extractFriction(sessionEvents, sessionId, {
+        interrupt: scan.interrupt,
+        toolReject: scan.toolReject,
+        toolError: scan.toolError,
+      });
+    } else {
+      friction = extractFriction(sessionEvents, sessionId);
+    }
     promptSummary = extractPromptSummary(sessionEvents);
     score = computeSmartScore(sessionEvents, friction);
     toolCount = countToolUseEvents(sessionEvents);
@@ -623,7 +655,11 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
     return;
   }
 
-  const { hint } = await contributeCheckForSession(stdinData.sessionId, stdinData.cwd);
+  const { hint } = await contributeCheckForSession(
+    stdinData.sessionId,
+    stdinData.cwd,
+    stdinData.transcriptPath,
+  );
   if (hint !== null) {
     const { formatStopHookOutput } = await import('./utils/hook-output.js');
     process.stdout.write(formatStopHookOutput(hint, toolArg ?? 'claude'));

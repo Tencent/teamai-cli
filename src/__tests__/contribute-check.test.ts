@@ -687,6 +687,55 @@ describe('contributeCheckForSession', () => {
     readdirSpy.mockRestore();
   });
 
+  it('race fix: reads friction from transcript when Stop event interventions are absent', async () => {
+    const sessionId = 'race-transcript';
+    // Stop event carries interventions all 0 (simulating the background writer
+    // not yet having flushed real friction into events.jsonl).
+    await seedHighScoreSession(sessionId, {
+      count: 20,
+      interventions: { interrupt: 0, toolReject: 0, toolError: 0 },
+    });
+
+    const transcriptPath = path.join(tmpDir, 'transcript.jsonl');
+    fs.writeFileSync(
+      transcriptPath,
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              is_error: true,
+              tool_use_id: 'tu_1',
+              content: "The user doesn't want to proceed with this tool use. The tool use was rejected",
+            },
+          ],
+        },
+      }) + '\n',
+      'utf-8',
+    );
+
+    const result = await contributeCheckForSession(sessionId, undefined, transcriptPath);
+    const after = await readContributeState(sessionId);
+
+    expect(result.hint).not.toBeNull();
+    expect(after.friction?.toolReject).toBe(1);
+  });
+
+  it('without transcriptPath, still falls back to events Stop interventions (backward compat)', async () => {
+    const sessionId = 'no-transcript-compat';
+    await seedHighScoreSession(sessionId, {
+      count: 20,
+      interventions: { interrupt: 0, toolReject: 1, toolError: 0 },
+    });
+
+    const result = await contributeCheckForSession(sessionId);
+    const after = await readContributeState(sessionId);
+
+    expect(result.hint).not.toBeNull();
+    expect(after.friction?.toolReject).toBe(1);
+  });
+
   it('low-score session: events read, score below threshold → no hint, hinted not set', async () => {
     const sessionId = 'low-score';
     // Tiny session — single tool, no diversity, no skill/error/duration

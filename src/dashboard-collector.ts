@@ -152,9 +152,16 @@ export interface TranscriptScanResult {
  *
  * Uses a streaming line reader so large transcripts don't load fully into memory.
  * Returns zero counts on any error (file missing, too large, permission denied).
+ *
+ * Set `opts.frictionOnly` to true for low-latency foreground callers (e.g.
+ * contribute-check) that only need friction signals. On the CodeBuddy index.json
+ * path this skips the token-flush retry loop — friction comes from a single blob
+ * scan that completes before the retry, so no token wait is required. The Claude
+ * JSONL path is a single streaming scan with no retry, so the flag is a no-op there.
  */
 export async function scanTranscriptStop(
   transcriptPath: string,
+  opts?: { frictionOnly?: boolean },
 ): Promise<TranscriptScanResult> {
   let interrupt = 0;
   let toolReject = 0;
@@ -170,7 +177,7 @@ export async function scanTranscriptStop(
   // schema the streaming scanner below expects. Detect and parse that shape
   // separately — otherwise every line fails JSON.parse and tokens stay 0.
   if (path.basename(transcriptPath) === 'index.json') {
-    const cb = await scanCodebuddyIndex(transcriptPath);
+    const cb = await scanCodebuddyIndex(transcriptPath, opts?.frictionOnly ?? false);
     if (cb) return cb;
   }
 
@@ -477,6 +484,9 @@ async function scanCodebuddyBlobs(
  * already written (prompts are captured) but `requests[].usage` still zero. Without
  * a retry, single-turn / last-turn sessions would permanently record 0 tokens. We
  * re-read (up to ~1.75s, well within the 60s hook timeout) until usage appears.
+ * This retry path is only exercised by background dashboard callers with a lax hook
+ * timeout; foreground low-latency callers (e.g. contribute-check) pass `frictionOnly`
+ * (see {@link scanTranscriptStop}) and skip the retry loop entirely.
  *
  * Friction signals (toolReject / toolError) are extracted once from the sibling
  * `messages/` blob directory (see {@link scanCodebuddyBlobs}) and merged into the
@@ -489,9 +499,29 @@ async function scanCodebuddyBlobs(
  */
 async function scanCodebuddyIndex(
   transcriptPath: string,
+  frictionOnly = false,
 ): Promise<TranscriptScanResult | null> {
   const messagesDir = path.join(path.dirname(transcriptPath), 'messages');
   const friction = await scanCodebuddyBlobs(messagesDir);
+
+  // Friction-only callers (e.g. the foreground contribute-check Stop hook) don't
+  // need token usage, so skip the token-flush retry loop entirely — friction is
+  // already complete from the single blob scan above. Saves up to ~1.75s of
+  // foreground hook budget.
+  if (frictionOnly) {
+    const once = await readCodebuddyIndexOnce(transcriptPath);
+    if (once) {
+      return { ...once, toolReject: friction.toolReject, toolError: friction.toolError };
+    }
+    // index.json unreadable, but we still have friction from the blobs.
+    return {
+      interrupt: 0,
+      toolReject: friction.toolReject,
+      toolError: friction.toolError,
+      tokens: emptyTokenUsage(),
+      prompts: 0,
+    };
+  }
 
   let last: TranscriptScanResult | null = null;
   for (let attempt = 0; attempt < CODEBUDDY_USAGE_MAX_ATTEMPTS; attempt++) {

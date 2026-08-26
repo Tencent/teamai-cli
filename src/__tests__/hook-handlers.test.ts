@@ -133,7 +133,23 @@ describe('hook-handlers registry', () => {
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: null });
 
     await handler.execute({ session_id: 'sid-abc', cwd: '/x' }, 'claude');
-    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x');
+    // transcriptPath is the third arg; absent from this stdin so it is undefined.
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', undefined);
+  });
+
+  it('contribute-check handler forwards transcript_path so friction is read live', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'contribute-check',
+    )!.handler;
+
+    mockContributeCheckForSession.mockResolvedValueOnce({ hint: null });
+
+    await handler.execute(
+      { session_id: 'sid-abc', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
+      'claude',
+    );
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', '/t/transcript.jsonl');
   });
 
   it('contribute-check handler routes hint through formatStopHookOutput for cursor', async () => {

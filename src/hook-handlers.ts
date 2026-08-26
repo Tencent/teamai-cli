@@ -183,7 +183,8 @@ const contributeCheckHandler: HookHandler = {
     // share the same session id even when stdin.session_id is absent.
     const sessionId = deriveSessionId(stdin, { includeCwd: true });
     const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
-    const { hint } = await contributeCheckForSession(sessionId, cwd);
+    const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : undefined;
+    const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath);
     if (hint) {
       return formatStopHookOutput(hint, tool);
     }
