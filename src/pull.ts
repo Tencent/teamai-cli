@@ -292,6 +292,37 @@ function logSyncDetail(
 }
 
 /**
+ * Return the installed tool targets that can receive team-owned resources.
+ *
+ * The revision cache is shared by a scope, while tool roots can appear later
+ * (for example, when Cursor creates `.cursor/` on its first launch). Persisting
+ * this set alongside the revision prevents a pull for one tool from suppressing
+ * the first resource sync for another.
+ */
+async function getInstalledResourceTargets(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<string[]> {
+  const baseDir = resolveBaseDir(localConfig);
+  const targets: string[] = [];
+
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    if (isAgentDisabled(localConfig, tool)) continue;
+
+    const resourcePaths = [toolPath.skills, toolPath.rules, toolPath.agents]
+      .filter((resourcePath): resourcePath is string => !!resourcePath);
+    for (const resourcePath of resourcePaths) {
+      if (await ResourceHandler.isToolInstalled(resourcePath, baseDir)) {
+        targets.push(tool);
+        break;
+      }
+    }
+  }
+
+  return targets.sort();
+}
+
+/**
  * Pull resources for a single scope. This is the core sync logic extracted
  * from the original pull() function to support both user and project scope.
  */
@@ -305,6 +336,9 @@ async function pullForScope(
 ): Promise<void> {
   const scopeLabel = localConfig.scope;
   const revisionField = policy.revisionField ?? 'lastPullRev';
+  const targetsField = revisionField === 'lastPullRev'
+    ? 'lastPullTargets' as const
+    : 'lastInheritedPullTargets' as const;
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
   if (!teamConfig) {
     log.warn(`[${scopeLabel}] Team config (teamai.yaml) not found. Skipping.`);
@@ -329,25 +363,36 @@ async function pullForScope(
   }
 
   // Step 1b: Skip sync if the repo version hasn't changed since last pull
+  let currentTargets: string[] | null = null;
   if (!options.force && !options.dryRun) {
     try {
       const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
       if (currentRev && state[revisionField] && state[revisionField] === currentRev) {
-        log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
-        // 即使 repo 未变化，仍部署 CLI 内置资源（确保 CLI 升级后新版本 agent/rules 生效）
-        if (!options.dryRun) {
-          const cfg = await loadTeamConfig(localConfig.repo.localPath);
-          if (cfg) {
-            const skipRecall = !isRecallEnabled(localConfig, cfg);
-            try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig, { skipRecall }); } catch {}
-            try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig, { skipRecall }); } catch {}
-            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { reportingOnly, skipRecall }); } catch {}
-            // Also refresh the CLAUDE.md recall block so a CLI upgrade that ships
-            // a new block reaches CLAUDE.md even when the repo HEAD is unchanged.
-            await injectRecallBlockIntoTools(cfg, localConfig, scopeLabel);
+        currentTargets = await getInstalledResourceTargets(teamConfig, localConfig);
+        const syncedTargets = new Set(state[targetsField] ?? []);
+        const unsyncedTargets = currentTargets.filter((target) => !syncedTargets.has(target));
+
+        if (unsyncedTargets.length === 0) {
+          log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
+          // 即使 repo 未变化，仍部署 CLI 内置资源（确保 CLI 升级后新版本 agent/rules 生效）
+          if (!options.dryRun) {
+            const cfg = await loadTeamConfig(localConfig.repo.localPath);
+            if (cfg) {
+              const skipRecall = !isRecallEnabled(localConfig, cfg);
+              try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig, { skipRecall }); } catch {}
+              try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig, { skipRecall }); } catch {}
+              try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { reportingOnly, skipRecall }); } catch {}
+              // Also refresh the CLAUDE.md recall block so a CLI upgrade that ships
+              // a new block reaches CLAUDE.md even when the repo HEAD is unchanged.
+              await injectRecallBlockIntoTools(cfg, localConfig, scopeLabel);
+            }
           }
+          return;
         }
-        return;
+
+        log.debug(
+          `[${scopeLabel}] Repo unchanged; syncing newly available target(s): ${unsyncedTargets.join(', ')}`,
+        );
       }
     } catch {
       // If rev check fails, proceed with full sync
@@ -815,6 +860,8 @@ async function pullForScope(
         state[revisionField] = null;
       }
     }
+    state[targetsField] = currentTargets
+      ?? await getInstalledResourceTargets(freshConfig, localConfig);
     await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
   }
 

@@ -137,6 +137,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     vi.mocked(loadStateForScope).mockResolvedValue({
       lastPull: '2026-04-01',
       lastPullRev: 'abc1234',
+      lastPullTargets: ['claude'],
       lastPush: null,
       pushedRules: [],
       pushedSkills: [],
@@ -152,6 +153,28 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     );
     // State should NOT be re-saved (no sync happened)
     expect(saveStateForScope).not.toHaveBeenCalled();
+  });
+
+  it('should sync once when a matching legacy state has no target marker', async () => {
+    vi.mocked(getHeadRev).mockResolvedValue('abc1234');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPull: '2026-04-01',
+      lastPullRev: 'abc1234',
+      lastPush: null,
+      pushedRules: [],
+      pushedSkills: [],
+      pushedEnvVars: [],
+      lastUpdateCheck: null,
+      availableUpdate: null,
+    });
+
+    await pull({});
+
+    expect(log.success).not.toHaveBeenCalledWith(
+      expect.stringContaining('Already synced'),
+    );
+    expect(saveStateForScope).toHaveBeenCalled();
+    expect(vi.mocked(saveStateForScope).mock.calls[0][0].lastPullTargets).toEqual(['claude']);
   });
 
   it('should do full sync when HEAD rev differs from lastPullRev', async () => {
@@ -340,6 +363,7 @@ describe('pull skip-sync refreshes CLAUDE.md recall block (CLI upgrade)', () => 
     vi.mocked(loadStateForScope).mockResolvedValue({
       lastPull: '2026-04-01',
       lastPullRev: 'abc1234', // matches HEAD → triggers "Already synced" fast-path
+      lastPullTargets: ['claude'],
       lastPush: null,
       pushedRules: [],
       pushedSkills: [],

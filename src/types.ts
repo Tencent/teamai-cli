@@ -304,8 +304,12 @@ export const StateSchema = z.object({
   lastPull: z.string().nullable().default(null),
   /** Git commit hash (short) of the team repo at the time of last successful pull. */
   lastPullRev: z.string().nullable().default(null),
+  /** Installed, enabled tool targets that completed the last full pull. */
+  lastPullTargets: z.array(z.string()).optional(),
   /** Git commit hash synchronized through the safe user-resource inheritance channel. */
   lastInheritedPullRev: z.string().nullable().optional(),
+  /** Tool targets that completed the last inherited user-resource pull. */
+  lastInheritedPullTargets: z.array(z.string()).optional(),
   pushedRules: z.array(z.string()).default([]),
   pushedSkills: z.array(z.string()).default([]),
   pushedEnvVars: z.array(z.string()).default([]),
