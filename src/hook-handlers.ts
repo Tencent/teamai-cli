@@ -178,17 +178,48 @@ const contributeCheckHandler: HookHandler = {
   async execute(stdin, tool) {
     const { contributeCheckForSession } = await import('./contribute-check.js');
     const { formatStopHookOutput } = await import('./utils/hook-output.js');
+    const { STOP_STDOUT_UNSUPPORTED_TOOLS } = await import('./utils/tool-names.js');
 
     // Match dashboard-collector's derivation so events and contribute state
     // share the same session id even when stdin.session_id is absent.
     const sessionId = deriveSessionId(stdin, { includeCwd: true });
     const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
     const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : undefined;
-    const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath);
-    if (hint) {
-      return formatStopHookOutput(hint, tool);
-    }
-    return null;
+    // Tools whose Stop hook ignores stdout: the hint is stashed (within the same
+    // single state write inside contributeCheckForSession) for delivery on the
+    // next UserPromptSubmit, so contributeCheckForSession returns null here.
+    const stash = STOP_STDOUT_UNSUPPORTED_TOOLS.has(tool);
+    const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath, stash);
+    if (!hint) return null;
+    return formatStopHookOutput(hint, tool);
+  },
+};
+
+/** UserPromptSubmit: deliver a hint stashed at Stop for stdout-less tools. */
+const pendingHintHandler: HookHandler = {
+  name: 'pending-hint',
+  async execute(stdin, tool) {
+    const { STOP_STDOUT_UNSUPPORTED_TOOLS } = await import('./utils/tool-names.js');
+    if (!STOP_STDOUT_UNSUPPORTED_TOOLS.has(tool)) return null;
+
+    const { takePendingHint } = await import('./contribute-check.js');
+    // Must match contributeCheckHandler's derivation so Stop and UserPromptSubmit
+    // resolve to the same session file. This cross-process handoff relies on
+    // codebuddy/workbuddy sending a stable, consistent session_id on BOTH the
+    // Stop and the next UserPromptSubmit payload — verified against real session
+    // data (a session's stop and prompt_submit events share one sessionId). If a
+    // tool omits session_id, deriveSessionId falls back to pid+cwd, which can
+    // differ across the two hook processes and orphan the stash (best-effort).
+    const sessionId = deriveSessionId(stdin, { includeCwd: true });
+    const hint = await takePendingHint(sessionId);
+    if (!hint) return null;
+
+    return JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: hint,
+      },
+    });
   },
 };
 
@@ -372,6 +403,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
 
     // ─── UserPromptSubmit ─────────────────────────────
+    { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
     { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'prompt-submit', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },

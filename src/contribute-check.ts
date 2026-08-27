@@ -151,6 +151,7 @@ export async function readContributeState(sessionId: string): Promise<Contribute
         promptSummary: typeof raw.promptSummary === 'string'
           ? normalizePromptSummary(raw.promptSummary)
           : undefined,
+        pendingHint: typeof raw.pendingHint === 'string' ? raw.pendingHint : undefined,
       };
     }
     return defaultState();
@@ -507,6 +508,7 @@ export async function contributeCheckForSession(
   sessionId: string,
   cwd?: string,
   transcriptPath?: string,
+  stashInsteadOfReturn = false,
 ): Promise<{ hint: string | null }> {
   const state = await readContributeState(sessionId);
   const now = Date.now();
@@ -602,6 +604,10 @@ export async function contributeCheckForSession(
   // almost no work (e.g. a single rejected command). Requires real activity.
   const willHint = score >= CONTRIBUTE_SMART_THRESHOLD && toolCount >= CONTRIBUTE_BASE_THRESHOLD;
 
+  // Build the hint text once; it is either returned (Stop stdout) or stashed for
+  // UserPromptSubmit delivery, never both.
+  const hintText = willHint ? buildHint({ friction, promptSummary, isKnowledgeGap }) : null;
+
   // Single write: re-read first to avoid clobbering parallel /contribute marks.
   // Skip the write on cache hit + low score (state is already current).
   if (needsPersist || willHint) {
@@ -621,6 +627,11 @@ export async function contributeCheckForSession(
     if (latest.hinted || willHint) {
       updated.hinted = true;
     }
+    // For tools whose Stop hook ignores stdout, stash the hint in this same
+    // write for delivery on the next UserPromptSubmit — no second write.
+    if (willHint && stashInsteadOfReturn) {
+      updated.pendingHint = hintText ?? undefined;
+    }
     await writeContributeState(sessionId, updated);
   }
 
@@ -629,7 +640,25 @@ export async function contributeCheckForSession(
     return { hint: null };
   }
 
-  return { hint: buildHint({ friction, promptSummary, isKnowledgeGap }) };
+  // stashInsteadOfReturn callers receive null here (the hint was persisted as
+  // pendingHint above); everyone else gets the hint to write to Stop stdout.
+  return { hint: stashInsteadOfReturn ? null : hintText };
+}
+
+/**
+ * Read and clear a pending share-learnings hint for this session, if any.
+ * Returns the hint text (to inject via UserPromptSubmit additionalContext) or
+ * null. Clearing preserves all other state (including `hinted`), so the
+ * one-hint-per-session guarantee holds. If the user already contributed between
+ * the stash and now, the stale nudge is cleared and dropped (returns null).
+ */
+export async function takePendingHint(sessionId: string): Promise<string | null> {
+  const state = await readContributeState(sessionId);
+  if (!state.pendingHint) return null;
+  const hint = state.pendingHint;
+  // Clear regardless; if the user already contributed, drop the stale nudge.
+  await writeContributeState(sessionId, { ...state, pendingHint: undefined });
+  return state.contributed ? null : hint;
 }
 
 /**
@@ -655,6 +684,11 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
     return;
   }
 
+  // This standalone CLI path always writes the hint to Stop stdout (no stashing).
+  // It is NOT wired for codebuddy/workbuddy — those route through hook-dispatch's
+  // contributeCheckHandler, which stashes instead. If a future tool whose Stop
+  // hook ignores stdout is ever pointed at this command directly, the hint would
+  // be silently dropped; such a tool must go through the stashing handler.
   const { hint } = await contributeCheckForSession(
     stdinData.sessionId,
     stdinData.cwd,

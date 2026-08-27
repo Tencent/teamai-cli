@@ -819,6 +819,13 @@ export interface ContributeState {
   friction?: SessionFriction;
   /** Sanitized, single-line summary of the session's first task */
   promptSummary?: string;
+  /**
+   * A generated share-learnings hint awaiting delivery via UserPromptSubmit
+   * (used only for tools whose Stop hook ignores stdout — see
+   * STOP_STDOUT_UNSUPPORTED_TOOLS). Cleared once injected. Absent for tools
+   * that deliver the hint directly through the Stop hook.
+   */
+  pendingHint?: string;
 }
 
 /**

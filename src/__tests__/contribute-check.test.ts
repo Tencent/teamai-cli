@@ -7,6 +7,7 @@ import {
   writeContributeState,
   computeSmartScore,
   contributeCheckForSession,
+  takePendingHint,
 } from '../contribute-check.js';
 import { appendEvent } from '../dashboard-collector.js';
 import {
@@ -192,6 +193,59 @@ describe('contributeState', () => {
     expect(fs.existsSync(oldFile)).toBe(false);
     expect(fs.existsSync(recentFile)).toBe(true);
     expect(fs.existsSync(path.join(sessionsDir, 'new-session.json'))).toBe(true);
+  });
+});
+
+// ─── pending hint (stash/take) ─────────────────────────────
+
+describe('pending hint (stash/take)', () => {
+  let tmpDir: string;
+  const originalHome = process.env.HOME;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    process.env.HOME = tmpDir;
+  });
+
+  afterEach(() => {
+    process.env.HOME = originalHome;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('takePendingHint returns a stashed hint then clears it', async () => {
+    await writeContributeState('sess-x', { contributed: false, pendingHint: '[teamai] hint text' });
+    const first = await takePendingHint('sess-x');
+    expect(first).toBe('[teamai] hint text');
+    const second = await takePendingHint('sess-x');
+    expect(second).toBeNull();
+  });
+
+  it('takePendingHint returns null when no pending hint', async () => {
+    const result = await takePendingHint('fresh-session');
+    expect(result).toBeNull();
+  });
+
+  it('takePendingHint clears pendingHint but preserves other state (e.g. hinted)', async () => {
+    await writeContributeState('sess-y', { contributed: false, hinted: true, smartScore: 22, pendingHint: 'h' });
+
+    const hint = await takePendingHint('sess-y');
+    expect(hint).toBe('h');
+
+    const after = await readContributeState('sess-y');
+    expect(after.hinted).toBe(true);
+    expect(after.smartScore).toBe(22);
+    expect(after.pendingHint).toBeUndefined();
+  });
+
+  it('takePendingHint drops the nudge (but still clears it) when already contributed', async () => {
+    await writeContributeState('sess-c', { contributed: true, pendingHint: 'h' });
+
+    const hint = await takePendingHint('sess-c');
+    expect(hint).toBeNull();
+
+    const after = await readContributeState('sess-c');
+    expect(after.pendingHint).toBeUndefined();
+    expect(after.contributed).toBe(true);
   });
 });
 

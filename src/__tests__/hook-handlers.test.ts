@@ -10,6 +10,7 @@ const mockAppendEvent = vi.fn().mockResolvedValue(undefined);
 const mockTrackFromParsed = vi.fn().mockResolvedValue(undefined);
 const mockTrackSlashFromParsed = vi.fn().mockResolvedValue(undefined);
 const mockContributeCheckForSession = vi.fn().mockResolvedValue({ hint: null });
+const mockTakePendingHint = vi.fn().mockResolvedValue(null);
 const mockDoUpdate = vi.fn().mockResolvedValue(undefined);
 const mockReportAndSyncFromHook = vi.fn().mockResolvedValue(null);
 
@@ -36,6 +37,7 @@ vi.mock('../usage-tracker.js', () => ({
 vi.mock('../contribute-check.js', () => ({
   contributeCheck: vi.fn().mockResolvedValue(undefined),
   contributeCheckForSession: mockContributeCheckForSession,
+  takePendingHint: mockTakePendingHint,
 }));
 
 vi.mock('../update.js', () => ({
@@ -134,7 +136,7 @@ describe('hook-handlers registry', () => {
 
     await handler.execute({ session_id: 'sid-abc', cwd: '/x' }, 'claude');
     // transcriptPath is the third arg; absent from this stdin so it is undefined.
-    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', undefined);
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', undefined, false);
   });
 
   it('contribute-check handler forwards transcript_path so friction is read live', async () => {
@@ -149,7 +151,7 @@ describe('hook-handlers registry', () => {
       { session_id: 'sid-abc', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
       'claude',
     );
-    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', '/t/transcript.jsonl');
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', '/t/transcript.jsonl', false);
   });
 
   it('contribute-check handler routes hint through formatStopHookOutput for cursor', async () => {
@@ -164,6 +166,74 @@ describe('hook-handlers registry', () => {
     expect(result).not.toBeNull();
     const parsed = JSON.parse(result!);
     expect(parsed.followup_message).toBe('[teamai] hello');
+  });
+
+  it('contribute-check handler asks to stash (not stdout) for codebuddy', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'contribute-check',
+    )!.handler;
+
+    // codebuddy stashes: contributeCheckForSession is called with stash=true and
+    // returns hint:null (it persisted the hint as pendingHint itself).
+    mockContributeCheckForSession.mockResolvedValueOnce({ hint: null });
+
+    const result = await handler.execute({ session_id: 's1', cwd: '/x' }, 'codebuddy');
+    expect(result).toBeNull();
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('s1', '/x', undefined, true);
+  });
+
+  it('contribute-check handler returns stdout hint for claude (unchanged)', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'contribute-check',
+    )!.handler;
+
+    mockContributeCheckForSession.mockResolvedValueOnce({ hint: '[teamai] do share' });
+
+    const result = await handler.execute({ session_id: 's2', cwd: '/x' }, 'claude');
+    expect(result).not.toBeNull();
+    expect(result).toContain('do share');
+    // claude is not a stash tool: called with stash=false.
+    expect(mockContributeCheckForSession).toHaveBeenCalledWith('s2', '/x', undefined, false);
+  });
+
+  it('pending-hint handler injects stashed hint for codebuddy on prompt-submit', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'prompt-submit' && r.handler.name === 'pending-hint',
+    )!.handler;
+
+    mockTakePendingHint.mockResolvedValueOnce('[teamai] stashed');
+
+    const result = await handler.execute({ session_id: 's3', cwd: '/x' }, 'codebuddy');
+    expect(result).not.toBeNull();
+    const parsed = JSON.parse(result!);
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
+    expect(parsed.hookSpecificOutput.additionalContext).toBe('[teamai] stashed');
+  });
+
+  it('pending-hint handler is a no-op for claude', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'prompt-submit' && r.handler.name === 'pending-hint',
+    )!.handler;
+
+    const result = await handler.execute({ session_id: 's4', cwd: '/x' }, 'claude');
+    expect(result).toBeNull();
+    expect(mockTakePendingHint).not.toHaveBeenCalled();
+  });
+
+  it('pending-hint handler returns null when no pending hint', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'prompt-submit' && r.handler.name === 'pending-hint',
+    )!.handler;
+
+    mockTakePendingHint.mockResolvedValueOnce(null);
+
+    const result = await handler.execute({ session_id: 's5', cwd: '/x' }, 'codebuddy');
+    expect(result).toBeNull();
   });
 
   it('post-tool-use wildcard has dashboard-report', () => {

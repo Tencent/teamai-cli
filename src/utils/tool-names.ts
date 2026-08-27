@@ -32,3 +32,16 @@ const AGENT_TYPE_ALIASES: Record<string, string> = {
 export function normalizeAgentType(name: string): string {
   return AGENT_TYPE_ALIASES[name] ?? name;
 }
+
+/**
+ * Tools whose Stop hook is fire-and-forget: the host executes the command but
+ * does not consume its stdout, so a Stop-hook hint printed to stdout is dropped.
+ * For these tools the share-learnings hint is stashed as pending state at Stop
+ * and injected on the next UserPromptSubmit instead (which they DO consume).
+ *
+ * Matched against the raw, lowercase tool literal passed through hook dispatch
+ * (not run through normalizeAgentType). A future variant id (e.g.
+ * "codebuddy-internal") would miss this Set and fall back to the dropped-stdout
+ * Stop path, so add such variants here explicitly.
+ */
+export const STOP_STDOUT_UNSUPPORTED_TOOLS = new Set(['codebuddy', 'workbuddy']);
