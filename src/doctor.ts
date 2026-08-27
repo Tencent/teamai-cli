@@ -10,7 +10,7 @@ import {
   getTeamaiHome,
   type TeamaiConfig,
 } from './types.js';
-import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
+import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder } from './hooks.js';
 import { getUserHome } from './utils/home.js';
 
 interface Check {
@@ -46,6 +46,24 @@ async function buildHookChecks(toolPaths: TeamaiConfig['toolPaths'], baseDir: st
     });
   }
   return checks;
+}
+
+/**
+ * True if a trust-gated Codex tool (the public `codex`) already has teamai hooks
+ * installed on disk (settings file exists and contains the hook-dispatch
+ * command). Used to emit a lightweight reminder that Codex may still require the
+ * user to trust them. Read-only — never inspects or modifies Codex's
+ * [hooks.state] trust store. Internal variants are excluded (no trust gate).
+ */
+async function hasInstalledCodexHooks(toolPaths: TeamaiConfig['toolPaths'], baseDir: string): Promise<boolean> {
+  for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (!isCodexTrustGatedTool(tool) || !paths.settings) continue;
+    const settingsPath = path.join(baseDir, paths.settings);
+    if (!await pathExists(settingsPath)) continue;
+    const content = await readFileSafe(settingsPath);
+    if (content?.includes('teamai hook-dispatch')) return true;
+  }
+  return false;
 }
 
 export async function doctor(options: GlobalOptions): Promise<void> {
@@ -179,6 +197,14 @@ export async function doctor(options: GlobalOptions): Promise<void> {
       if (fix) console.log(`    → ${fix}`);
       allPassed = false;
     }
+  }
+
+  // Codex trust-gate reminder: even when hooks are installed, Codex may not run
+  // them until the user reviews/trusts them. Note only — teamai never writes
+  // [hooks.state] to auto-trust.
+  if (await hasInstalledCodexHooks(toolPaths, baseDir)) {
+    console.log('');
+    log.info(codexTrustReminder());
   }
 
   console.log('');

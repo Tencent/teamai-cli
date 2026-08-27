@@ -892,6 +892,8 @@ teamai hooks remove    # Remove
 
 Both commands only touch tools you actually have installed (i.e. whose `~/.<tool>/` root directory already exists). They never create root directories for tools listed in `toolPaths` but not installed.
 
+> **Codex trust gate** — Codex (the OpenAI / ChatGPT Codex app, tool id `codex`) gates non-managed hooks behind an explicit user trust step. After teamai writes `~/.codex/hooks.json`, Codex may skip a newly added or changed hook until you review/trust it in `/hooks` or Settings → Hooks. `teamai hooks inject` and `teamai doctor` print a reminder when Codex hooks are installed; teamai never edits Codex's `[hooks.state]` to auto-trust — trusting is left to you. (The internal variants `codex-internal` / `tcodex` share the hooks.json format but have no trust gate, so no reminder is shown for them.)
+
 ### Team Hooks Declaration
 
 A team can declare custom hooks in the repo's `hooks/hooks.yaml`; `teamai pull` automatically distributes them to all members' AI tools:

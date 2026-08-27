@@ -7,10 +7,16 @@ vi.mock('../config.js', () => ({
     autoDetectInit: vi.fn(),
 }));
 
-vi.mock('../hooks.js', () => ({
-    getHookStatus: vi.fn(),
-    reconcileHooksToAllTools: vi.fn(),
-}));
+vi.mock('../hooks.js', async () => {
+    const actual = await vi.importActual<typeof import('../hooks.js')>('../hooks.js');
+    return {
+        getHookStatus: vi.fn(),
+        reconcileHooksToAllTools: vi.fn(),
+        hasInstalledCodexTrustGatedTool: vi.fn(),
+        // Keep the real reminder text so assertions verify the actual wording.
+        codexTrustReminder: actual.codexTrustReminder,
+    };
+});
 
 vi.mock('../resources/hooks.js', () => ({
     parseTeamHooks: vi.fn(),
@@ -30,7 +36,7 @@ vi.mock('../utils/logger.js', () => ({
 // ── Imports (after mocks) ────────────────────────────────
 
 import { autoDetectInit } from '../config.js';
-import { getHookStatus, reconcileHooksToAllTools } from '../hooks.js';
+import { getHookStatus, reconcileHooksToAllTools, hasInstalledCodexTrustGatedTool } from '../hooks.js';
 import { parseTeamHooks, resolveTeamHooks } from '../resources/hooks.js';
 import { log } from '../utils/logger.js';
 import { hooksInject, hooksRemove, hooksList } from '../hooks-cmd.js';
@@ -38,6 +44,7 @@ import { hooksInject, hooksRemove, hooksList } from '../hooks-cmd.js';
 const mockedAutoDetectInit = autoDetectInit as Mock;
 const mockedGetHookStatus = getHookStatus as Mock;
 const mockedReconcile = reconcileHooksToAllTools as Mock;
+const mockedHasCodexTrustGated = hasInstalledCodexTrustGatedTool as Mock;
 const mockedParseTeamHooks = parseTeamHooks as Mock;
 const mockedResolveTeamHooks = resolveTeamHooks as Mock;
 const mockedLog = log as unknown as { info: Mock; success: Mock; warn: Mock; error: Mock; debug: Mock };
@@ -74,6 +81,7 @@ beforeEach(() => {
     mockedAutoDetectInit.mockResolvedValue({ localConfig: mockLocalConfig, teamConfig: mockTeamConfig });
     mockedGetHookStatus.mockResolvedValue('missing');
     mockedReconcile.mockResolvedValue(undefined);
+    mockedHasCodexTrustGated.mockResolvedValue(false);
     mockedParseTeamHooks.mockResolvedValue(TEAM_DEFS);
     mockedResolveTeamHooks.mockResolvedValue({ defs: TEAM_DEFS, builtin: undefined });
 });
@@ -99,6 +107,29 @@ describe('hooksInject', () => {
         await hooksInject({ silent: true });
         expect(mockedReconcile).toHaveBeenCalled();
         expect(mockedLog.success).not.toHaveBeenCalled();
+    });
+
+    it('warns to trust Codex hooks when the public Codex is installed', async () => {
+        mockedHasCodexTrustGated.mockResolvedValue(true);
+        await hooksInject({});
+        expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Hooks injected'));
+        const warned = mockedLog.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('Codex');
+        expect(warned).toMatch(/review\/trust|trust them/i);
+        expect(warned).toContain('/hooks');
+    });
+
+    it('does not warn about Codex trust when no trust-gated Codex is installed', async () => {
+        mockedHasCodexTrustGated.mockResolvedValue(false);
+        await hooksInject({});
+        expect(mockedLog.warn).not.toHaveBeenCalled();
+    });
+
+    it('suppresses the Codex trust reminder with --silent', async () => {
+        mockedHasCodexTrustGated.mockResolvedValue(true);
+        await hooksInject({ silent: true });
+        expect(mockedLog.success).not.toHaveBeenCalled();
+        expect(mockedLog.warn).not.toHaveBeenCalled();
     });
 
     it('propagates error when not initialized', async () => {

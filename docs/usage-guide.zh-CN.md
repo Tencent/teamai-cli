@@ -887,6 +887,8 @@ teamai hooks remove    # 移除
 
 这两个命令只会操作你实际已安装的工具（即 `~/.<tool>/` 根目录已存在的工具）。对于 `toolPaths` 中已配置但未安装的工具，命令不会为其凭空创建根目录。
 
+> **Codex 信任门槛** — Codex（OpenAI / ChatGPT Codex 应用，工具 id 为 `codex`）对非托管 hooks 设有显式的用户信任机制。teamai 写入 `~/.codex/hooks.json` 后，对于新增或变更的 hook，Codex 可能会跳过执行，直到你在 `/hooks` 或 Settings → Hooks 中 review/trust。当检测到 Codex hooks 已安装时，`teamai hooks inject` 与 `teamai doctor` 会输出提示；teamai 从不修改 Codex 的 `[hooks.state]` 来自动信任 —— 信任操作交由你手动完成。（内部变体 `codex-internal` / `tcodex` 共用 hooks.json 格式但没有信任门槛，因此不会为它们输出提示。）
+
 ### 团队 Hooks 声明
 
 团队可在仓库 `hooks/hooks.yaml` 中声明自定义 hooks，`teamai pull` 自动分发到所有成员的 AI 工具：
