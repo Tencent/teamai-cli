@@ -655,6 +655,30 @@ scope: 'user',
     expect(content).toBe('testuser\n');
   });
 
+  it('uses relativePath as the push destination instead of re-deriving it from primaryRole', async () => {
+    localConfig.primaryRole = 'backend';
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'my-skill');
+    await fse.ensureDir(localSkillDir);
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# My Skill');
+
+    const item = {
+      name: 'my-skill',
+      type: 'skills' as const,
+      sourcePath: localSkillDir,
+      relativePath: 'skills/my-skill',
+      status: 'modified' as const,
+    };
+
+    await handler.pushItem(item, teamConfig, localConfig);
+
+    expect(await fse.pathExists(
+      path.join(localConfig.repo.localPath, 'skills', 'my-skill', 'SKILL.md'),
+    )).toBe(true);
+    expect(await fse.pathExists(
+      path.join(localConfig.repo.localPath, 'skills', 'backend', 'my-skill'),
+    )).toBe(false);
+  });
+
   it('should NOT copy .git directory when skill source is a git repo', async () => {
     const localSkillDir = path.join(homeDir, '.claude/skills', 'git-skill');
     await fse.ensureDir(localSkillDir);

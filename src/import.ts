@@ -225,6 +225,13 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
                   skipAutoPush: true,
                   sourceMrUrl: opts.fromMr,
                 });
+                try {
+                  const { rebuildWikiIndex } = await import('./rebuild-wiki-index.js');
+                  await rebuildWikiIndex(teamwikiRoot);
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  log.warn(`[wiki] global index rebuild failed (non-blocking): ${msg}`);
+                }
                 ctx.didUpdate = true;
               } else {
                 task.skip('No existing evidence for this repo');
@@ -316,6 +323,15 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
 
             const { aggregateGlobalGraph } = await import('./graph-aggregate.js');
             await aggregateGlobalGraph(teamwikiRoot);
+
+            // Rebuild global router.md / index.md so newly imported repos appear in navigation
+            try {
+              const { rebuildWikiIndex } = await import('./rebuild-wiki-index.js');
+              await rebuildWikiIndex(teamwikiRoot);
+              log.info('teamwiki router.md / index.md rebuilt');
+            } catch (e) {
+              log.warn(`[wiki] global index rebuild failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
+            }
 
             await autoPushTeamRepo(teamRepoPath, `[teamai] Import from local dir: ${slug}`);
             log.success(`Pushed to team knowledge repo (${localConfig.repo.remote})`);

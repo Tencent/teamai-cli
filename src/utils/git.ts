@@ -8,8 +8,8 @@ import { log } from './logger.js';
 /**
  * Create a SimpleGit instance for a given base path.
  *
- * Authentication is handled by credentials embedded in the remote URL
- * (set during clone by the provider). No credential-helper injection needed.
+ * Authentication is handled by the provider's remote URL or by normal Git
+ * facilities such as credential helpers, SSH config, and SSH agents.
  */
 export function createGit(basePath?: string): SimpleGit {
   if (basePath) {
@@ -93,6 +93,50 @@ export async function getRemoteUrl(localPath: string, remoteName = 'origin'): Pr
   } catch {
     return null;
   }
+}
+
+/**
+ * Strip embedded credentials from a git remote URL for safe display, e.g.
+ * `https://oauth2:TOKEN@host/o/r.git` → `https://host/o/r.git`. Leaves URLs
+ * without credentials (and scp-form `git@host:o/r.git`) untouched.
+ */
+export function redactGitCredentials(url: string): string {
+  // Match the `user:pass@` (or `user@`) userinfo of an http(s) URL only. The
+  // scp form `git@host:path` has no `//` and is intentionally left as-is.
+  return url.replace(/^(https?:\/\/)[^/@]+@/i, '$1');
+}
+
+/**
+ * Normalize a git remote URL into a canonical `host/owner/repo` key for
+ * equality comparison. Ignores differences that don't change the target repo:
+ * embedded credentials, http vs https vs ssh, scp-form vs URL-form, a trailing
+ * `.git`, trailing slashes, and case. Returns a best-effort lowercased string;
+ * inputs it can't parse are lowercased/trimmed so identical strings still match.
+ */
+export function normalizeRepoUrlForCompare(url: string): string {
+  let s = url.trim();
+
+  // scp-form: git@host:owner/repo(.git) → host/owner/repo
+  const scp = /^[^/@]+@([^:/]+):(.+)$/.exec(s);
+  if (scp) {
+    s = `${scp[1]}/${scp[2]}`;
+  } else {
+    // Strip scheme (http/https/ssh/git) and any userinfo credentials.
+    s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^[^/@]+@/, '');
+  }
+
+  // Drop an explicit port and surrounding slashes, then a trailing `.git`
+  // (strip slashes first so `repo.git/` also matches).
+  s = s.replace(/:(\d+)\//, '/').replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
+  return s.toLowerCase();
+}
+
+/**
+ * Whether two git remote URLs point at the same repository, ignoring
+ * credentials, protocol, scp-vs-URL form, `.git` suffix, and case.
+ */
+export function remotesMatch(a: string, b: string): boolean {
+  return normalizeRepoUrlForCompare(a) === normalizeRepoUrlForCompare(b);
 }
 
 /**
@@ -327,6 +371,10 @@ export async function pushRepoBranch(
   await git.add(files);
   const status = await git.status();
   if (status.staged.length === 0) {
+    // checkout would otherwise carry unmatched copied files back to the
+    // default branch as unstaged/untracked changes (#331).
+    await git.reset(['--hard', 'HEAD']);
+    await git.clean('f', ['-d']);
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Nothing to commit, switching back to ${defaultBranch}`);
     await switchToDefaultBranch(git, defaultBranch);
@@ -337,6 +385,8 @@ export async function pushRepoBranch(
   // Second gate: skip if all staged changes are metadata-only (timestamps)
   const diffOutput = await git.diff(['--cached', '--unified=0']);
   if (isMetadataOnlyDiff(diffOutput)) {
+    await git.reset(['--hard', 'HEAD']);
+    await git.clean('f', ['-d']);
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Only metadata/timestamp changes detected, switching back to ${defaultBranch}`);
     await switchToDefaultBranch(git, defaultBranch);

@@ -47,6 +47,8 @@ git push origin main --tags
 
 CI stages: validate (lint + test) -> build -> e2e -> publish (tag builds only).
 
+Prerelease versions (`npm version prerelease --preid=beta` → `0.21.0-beta.0`) publish to a matching dist-tag (`beta`, `rc`, ...) instead of `latest`, so auto-update is unaffected.
+
 ## Git Conventions
 
 - **Default branch**: `main` (not `master`). All worktrees and PRs should be based on `origin/main`.

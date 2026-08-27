@@ -75,6 +75,21 @@ describe('ResourceHandler.isToolInstalled', () => {
     await fse.ensureDir(path.join(homeDir, '.codex-internal'));
     expect(await ResourceHandler.isToolInstalled('.codex-internal/skills')).toBe(true);
   });
+
+  it('uses .config/opencode (not .config) as the OpenCode user-scope root', async () => {
+    // A bare .config dir must NOT count as OpenCode installed.
+    await fse.ensureDir(path.join(homeDir, '.config'));
+    expect(await ResourceHandler.isToolInstalled('.config/opencode/skills')).toBe(false);
+    await fse.ensureDir(path.join(homeDir, '.config/opencode'));
+    expect(await ResourceHandler.isToolInstalled('.config/opencode/skills')).toBe(true);
+  });
+
+  it('uses the first segment as the root for openclaw 3-segment claudemd paths', async () => {
+    // .openclaw/workspace/AGENTS.md → root is .openclaw, not .openclaw/workspace.
+    expect(await ResourceHandler.isToolInstalled('.openclaw/workspace/AGENTS.md')).toBe(false);
+    await fse.ensureDir(path.join(homeDir, '.openclaw'));
+    expect(await ResourceHandler.isToolInstalled('.openclaw/workspace/AGENTS.md')).toBe(true);
+  });
 });
 
 describe('SkillsHandler.pullItem — skip uninstalled tools', () => {
@@ -472,5 +487,47 @@ describe('deployBuiltinSkills — skip uninstalled tools', () => {
     expect(await fse.pathExists(path.join(skillDir, 'SKILL.md'))).toBe(true);
     expect(await fse.pathExists(path.join(skillDir, 'references/methodology/phase0-collection.md'))).toBe(true);
     expect(await fse.pathExists(path.join(skillDir, 'scripts/scan_repo.py'))).toBe(true);
+  });
+
+  it('deploys built-in skills to OpenCode user scope under .config/opencode/skills', async () => {
+    const { deployBuiltinSkills } = await import('../builtin-skills.js');
+
+    // OpenCode-only user: config lives at ~/.config/opencode, no ~/.opencode.
+    await fse.ensureDir(path.join(homeDir, '.config/opencode'));
+
+    const teamConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        opencode: {
+          skills: '.opencode/skills',
+          userScope: { skills: '.config/opencode/skills' },
+        },
+      },
+    };
+
+    const localConfig = {
+      repo: { localPath: path.join(tmpDir, 'repo'), remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto' as const,
+      additionalRoles: [],
+      scope: 'user' as const,
+    };
+
+    const deployed = await deployBuiltinSkills(teamConfig, localConfig);
+
+    expect(deployed).toBeGreaterThan(0);
+    // Written to the user-scope path, NOT the project-scope .opencode/skills.
+    expect(await fse.pathExists(path.join(homeDir, '.config/opencode/skills/team-wiki-codebase/SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.opencode'))).toBe(false);
   });
 });

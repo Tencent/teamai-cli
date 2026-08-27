@@ -41,9 +41,16 @@ vi.mock('node:fs', () => ({
   },
 }));
 
+import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { execSync } from 'node:child_process';
-import { gfGetOAuthToken, gfMrCreate } from '../providers/tgit/gf-cli.js';
+import {
+  gfGetOAuthToken,
+  gfMrCreate,
+  gfAuthWhoami,
+  gfIsAuthenticated,
+  gfAuthLogin,
+} from '../providers/tgit/gf-cli.js';
 
 describe('gfGetOAuthToken', () => {
   beforeEach(() => {
@@ -217,5 +224,61 @@ describe('gfMrCreate', () => {
         title: 'test',
       }),
     ).toThrow('gf mr create failed: auth required');
+  });
+});
+
+describe('gf auth commands run from a neutral cwd', () => {
+  const mockSpawnSync = vi.mocked(spawnSync);
+  const mockExecSync = vi.mocked(execSync);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Make getGfPath() find gf in PATH
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd.includes('test -x')) throw new Error('not found');
+      if (cmd === 'which gf') return '/usr/bin/gf' as any;
+      throw new Error('unexpected');
+    });
+  });
+
+  // gf `auth` commands inspect the current git repo's origin remote and scope
+  // the auth check to that host. Running them from the repo cwd wrongly reports
+  // "not logged in" when origin is a non-git.woa.com mirror (e.g. GitHub). They
+  // must run from a neutral, non-git directory (os.tmpdir()) so the host-scoped
+  // credential is found regardless of where teamai was invoked.
+  it('gfAuthWhoami spawns with cwd = os.tmpdir()', () => {
+    mockSpawnSync.mockReturnValue({
+      stdout: '当前登录用户：jeffyxu',
+      stderr: '',
+      status: 0,
+    } as any);
+
+    expect(gfAuthWhoami()).toBe('jeffyxu');
+
+    const opts = mockSpawnSync.mock.calls[0][2] as { cwd?: string };
+    expect(opts.cwd).toBe(os.tmpdir());
+  });
+
+  it('gfIsAuthenticated spawns with cwd = os.tmpdir()', () => {
+    mockSpawnSync.mockReturnValue({
+      stdout: '当前登录用户：jeffyxu',
+      stderr: '',
+      status: 0,
+    } as any);
+
+    expect(gfIsAuthenticated()).toBe(true);
+
+    const opts = mockSpawnSync.mock.calls[0][2] as { cwd?: string };
+    expect(opts.cwd).toBe(os.tmpdir());
+  });
+
+  it('gfAuthLogin spawns with cwd = os.tmpdir() and inherited stdio', () => {
+    mockSpawnSync.mockReturnValue({ status: 0 } as any);
+
+    gfAuthLogin();
+
+    const opts = mockSpawnSync.mock.calls[0][2] as { cwd?: string; stdio?: string };
+    expect(opts.cwd).toBe(os.tmpdir());
+    expect(opts.stdio).toBe('inherit');
   });
 });

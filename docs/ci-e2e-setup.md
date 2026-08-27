@@ -78,7 +78,7 @@ GitHub repo → **Settings → Secrets and variables → Actions → Variables �
 | `roles set + pull` | 切换角色后 skill 集变化 |
 | `init <repo> --force`（默认 project scope） | 全新 init（沙盒 cwd + 隔离 HOME） |
 
-不要 token 的部分：`--version` / `--help` / `tags --help` / `members --help` / `uninstall --help` / 源码 sanity check —— PR from forks 也能跑。
+不要 token 的部分：`--version` / `--help` / `tags --help` / `members --help` / `uninstall --help` / 源码 sanity check，以及 `source-project-scope-e2e.test.ts` 使用本地真实 Git 仓覆盖的 source add → list → browse → pull/deploy → remove/cleanup 生命周期——PR from forks 也能跑。
 
 ---
 

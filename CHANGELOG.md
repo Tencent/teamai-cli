@@ -22,6 +22,11 @@ All notable changes to this project will be documented in this file. See [standa
   - `teamai skill` 或 `teamai skill list`：等价 `teamai list skills --source all`
   - `teamai skill show <name>`：查看单个 skill 的来源标签、命名空间、贡献者、`tags.yaml` 中的 tags、已安装的 agent 列表，以及 frontmatter 中的描述（最多 160 字符）。不渲染完整 SKILL.md 正文
 
+### 🐛 修复
+
+- **OpenCode recall agent 配置修复**（#332）：内置 subagent 现在与团队 subagent 一样按目标工具渲染原生格式，避免启用 recall 后把 Claude 的 `name`/`tools` frontmatter 原样写入 OpenCode 并阻止其启动；不支持的目标格式会跳过并输出可操作警告
+- **项目级 source 配置持久化**（#335）：`teamai pull` 自动上报 usage 时不再丢弃 `source add`/`remove` 尚未提交的 `teamai.yaml` 改动，后续 pull 可正常部署订阅 skills 并写入安装清单
+
 ## [0.14.2] (2026-04-16)
 
 ### 🐛 修复

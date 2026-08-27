@@ -23,6 +23,7 @@ import {
   CONTRIBUTE_SKILL_BONUS,
   CONTRIBUTE_DIVERSITY_BONUS_MAX,
 } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── Contribute check data flow (Stop hook) ────────────────
 //
@@ -117,7 +118,7 @@ function normalizePromptSummary(raw?: string): string | undefined {
 /** Get session state file path: ~/.teamai/sessions/{sanitized-sessionId}.json */
 function getSessionPath(sessionId: string): string {
   return path.join(
-    process.env.HOME ?? '',
+    getUserHome(),
     '.teamai',
     'sessions',
     `${sanitizeSessionId(sessionId)}.json`,

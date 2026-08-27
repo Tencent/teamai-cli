@@ -13,10 +13,11 @@ import {
   type VoteEntryV2,
   type KnowledgeType,
 } from '../types.js';
+import { getUserHome } from './home.js';
 
 /** Resolve search index path dynamically (respects HOME changes in tests). */
 function getSearchIndexPath(): string {
-  return `${process.env.HOME ?? ''}/.teamai/search-index.json`;
+  return path.join(getUserHome(), '.teamai', 'search-index.json');
 }
 
 // ─── Search index data flow ──────────────────────────

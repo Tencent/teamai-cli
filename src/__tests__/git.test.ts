@@ -14,6 +14,7 @@ const mockGit = {
   addConfig: vi.fn(),
   revparse: vi.fn().mockResolvedValue('main'),
   reset: vi.fn(),
+  clean: vi.fn(),
   merge: vi.fn(),
   diff: vi.fn().mockResolvedValue('+some real content change\n'),
 };
@@ -47,7 +48,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo } from '../utils/git.js';
+import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials } from '../utils/git.js';
 import fse from 'fs-extra';
 
 describe('generateBranchName', () => {
@@ -137,6 +138,8 @@ describe('pushRepoBranch', () => {
     expect(result).toBe(false);
     expect(mockGit.checkout).toHaveBeenCalledWith('master');
     expect(mockGit.deleteLocalBranch).toHaveBeenCalledWith('teamai/push/test/456', true);
+    expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+    expect(mockGit.clean).toHaveBeenCalledWith('f', ['-d']);
     expect(mockGit.commit).not.toHaveBeenCalled();
     expect(mockGit.push).not.toHaveBeenCalled();
   });
@@ -158,6 +161,8 @@ describe('pushRepoBranch', () => {
     expect(mockGit.diff).toHaveBeenCalledWith(['--cached', '--unified=0']);
     expect(mockGit.checkout).toHaveBeenCalledWith('master');
     expect(mockGit.deleteLocalBranch).toHaveBeenCalledWith('teamai/push/test/789', true);
+    expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+    expect(mockGit.clean).toHaveBeenCalledWith('f', ['-d']);
     expect(mockGit.commit).not.toHaveBeenCalled();
   });
 });
@@ -448,5 +453,82 @@ describe('isMetadataOnlyDiff', () => {
       '+lastUpdated: new',
     ].join('\n');
     expect(isMetadataOnlyDiff(diff)).toBe(true);
+  });
+});
+
+describe('normalizeRepoUrlForCompare', () => {
+  it('strips embedded credentials from https URLs', () => {
+    expect(normalizeRepoUrlForCompare('https://oauth2:TOKEN@git.woa.com/HyperAI/teamai.git'))
+      .toBe('git.woa.com/hyperai/teamai');
+  });
+
+  it('treats http and https as equal', () => {
+    expect(normalizeRepoUrlForCompare('http://github.com/org/repo'))
+      .toBe(normalizeRepoUrlForCompare('https://github.com/org/repo'));
+  });
+
+  it('normalizes scp-form ssh to host/owner/repo', () => {
+    expect(normalizeRepoUrlForCompare('git@github.com:org/repo.git'))
+      .toBe('github.com/org/repo');
+  });
+
+  it('ignores a trailing .git and trailing slash', () => {
+    expect(normalizeRepoUrlForCompare('https://github.com/org/repo.git/'))
+      .toBe('github.com/org/repo');
+  });
+
+  it('is case-insensitive', () => {
+    expect(normalizeRepoUrlForCompare('https://GitHub.com/Org/Repo'))
+      .toBe('github.com/org/repo');
+  });
+
+  it('handles ssh:// URLs with credentials', () => {
+    expect(normalizeRepoUrlForCompare('ssh://git@git.woa.com/HyperAI/teamai.git'))
+      .toBe('git.woa.com/hyperai/teamai');
+  });
+});
+
+describe('remotesMatch', () => {
+  it('matches the same repo across credential/protocol/.git differences', () => {
+    expect(remotesMatch(
+      'https://oauth2:TOKEN@git.woa.com/HyperAI/teamai.git',
+      'https://git.woa.com/HyperAI/teamai',
+    )).toBe(true);
+    expect(remotesMatch(
+      'git@github.com:org/repo.git',
+      'https://github.com/org/repo',
+    )).toBe(true);
+  });
+
+  it('does not match different repos', () => {
+    // The exact bug: cached clone of HyperAI/teamai vs requested teamai/teamai-dev-repo
+    expect(remotesMatch(
+      'https://oauth2:TOKEN@git.woa.com/HyperAI/teamai.git',
+      'https://git.woa.com/teamai/teamai-dev-repo.git',
+    )).toBe(false);
+  });
+
+  it('does not match different hosts for the same owner/repo', () => {
+    expect(remotesMatch(
+      'https://github.com/org/repo.git',
+      'https://gitlab.com/org/repo.git',
+    )).toBe(false);
+  });
+});
+
+describe('redactGitCredentials', () => {
+  it('removes user:token userinfo from https URLs', () => {
+    expect(redactGitCredentials('https://oauth2:TOKEN@git.woa.com/HyperAI/teamai.git'))
+      .toBe('https://git.woa.com/HyperAI/teamai.git');
+  });
+
+  it('leaves credential-free URLs untouched', () => {
+    expect(redactGitCredentials('https://github.com/org/repo.git'))
+      .toBe('https://github.com/org/repo.git');
+  });
+
+  it('leaves scp-form ssh URLs untouched', () => {
+    expect(redactGitCredentials('git@github.com:org/repo.git'))
+      .toBe('git@github.com:org/repo.git');
   });
 });

@@ -5,7 +5,7 @@ import { stringify as stringifyToml, parse as parseToml } from 'smol-toml';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
-export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor';
+export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'opencode';
 
 export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'claude',
@@ -16,7 +16,21 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'codex-internal',
   'tcodex',
   'cursor',
+  'opencode',
 ];
+
+export type AgentFileExtension = '.md' | '.toml';
+
+export function agentFileExtensionForTool(tool: ToolName): AgentFileExtension {
+  switch (tool) {
+    case 'codex':
+    case 'codex-internal':
+    case 'tcodex':
+      return '.toml';
+    default:
+      return '.md';
+  }
+}
 
 // ─── Intermediate format ─────────────────────────────────────────────────────
 
@@ -50,6 +64,7 @@ export interface AgentSpec {
     'codex-internal'?: Record<string, unknown>;
     tcodex?: Record<string, unknown>;
     cursor?: Record<string, unknown>;
+    opencode?: Record<string, unknown>;
   };
   /**
    * Which tools this agent should be deployed to.
@@ -136,7 +151,10 @@ export interface RenderResult {
  * Output: YAML frontmatter (.md) with optional model/tools and tool_extras.claude fields.
  */
 export function renderForClaude(spec: AgentSpec): RenderResult {
-  return { ext: '.md', content: renderMarkdownAgent(spec, spec.tool_extras?.['claude']) };
+  return {
+    ext: agentFileExtensionForTool('claude'),
+    content: renderMarkdownAgent(spec, spec.tool_extras?.['claude']),
+  };
 }
 
 /**
@@ -144,7 +162,10 @@ export function renderForClaude(spec: AgentSpec): RenderResult {
  * Same format as Claude — YAML frontmatter + body.
  */
 export function renderForClaudeInternal(spec: AgentSpec): RenderResult {
-  return { ext: '.md', content: renderMarkdownAgent(spec, spec.tool_extras?.['claude-internal']) };
+  return {
+    ext: agentFileExtensionForTool('claude-internal'),
+    content: renderMarkdownAgent(spec, spec.tool_extras?.['claude-internal']),
+  };
 }
 
 /**
@@ -152,7 +173,10 @@ export function renderForClaudeInternal(spec: AgentSpec): RenderResult {
  * Same format as Claude, but merges tool_extras.codebuddy into frontmatter.
  */
 export function renderForCodebuddy(spec: AgentSpec): RenderResult {
-  return { ext: '.md', content: renderMarkdownAgent(spec, spec.tool_extras?.['codebuddy']) };
+  return {
+    ext: agentFileExtensionForTool('codebuddy'),
+    content: renderMarkdownAgent(spec, spec.tool_extras?.['codebuddy']),
+  };
 }
 
 /**
@@ -160,7 +184,10 @@ export function renderForCodebuddy(spec: AgentSpec): RenderResult {
  * Output: TOML with developer_instructions and flattened tool_extras.codex fields.
  */
 export function renderForCodex(spec: AgentSpec): RenderResult {
-  return { ext: '.toml', content: renderTomlAgent(spec, spec.tool_extras?.['codex']) };
+  return {
+    ext: agentFileExtensionForTool('codex'),
+    content: renderTomlAgent(spec, spec.tool_extras?.['codex']),
+  };
 }
 
 /**
@@ -168,7 +195,10 @@ export function renderForCodex(spec: AgentSpec): RenderResult {
  * Same format as Codex — TOML with developer_instructions.
  */
 export function renderForCodexInternal(spec: AgentSpec): RenderResult {
-  return { ext: '.toml', content: renderTomlAgent(spec, spec.tool_extras?.['codex-internal']) };
+  return {
+    ext: agentFileExtensionForTool('codex-internal'),
+    content: renderTomlAgent(spec, spec.tool_extras?.['codex-internal']),
+  };
 }
 
 /**
@@ -191,7 +221,35 @@ export function renderForCursor(spec: AgentSpec): RenderResult {
     }
   }
   const content = matter.stringify(spec.instructions, frontmatterData);
-  return { ext: '.md', content };
+  return { ext: agentFileExtensionForTool('cursor'), content };
+}
+
+/**
+ * Render an AgentSpec for OpenCode.
+ * Output: YAML frontmatter (.md). OpenCode derives the agent name from the
+ * filename, so `name` is intentionally omitted from frontmatter. `mode` defaults
+ * to `subagent` (teamai only syncs subagents). OpenCode's `tools` field is
+ * deprecated in favor of `permission`, so the common `tools` list is not emitted;
+ * a team that needs per-tool permissions carries them in tool_extras.opencode
+ * (e.g. `permission: { edit: deny }`), which is flattened into the frontmatter.
+ */
+export function renderForOpencode(spec: AgentSpec): RenderResult {
+  const frontmatterData: Record<string, unknown> = {
+    description: spec.description,
+    mode: 'subagent',
+  };
+  if (spec.model !== undefined) {
+    frontmatterData['model'] = spec.model;
+  }
+  // Flatten tool_extras.opencode into frontmatter (mode/permission/temperature/…).
+  const extras = spec.tool_extras?.['opencode'];
+  if (extras) {
+    for (const [key, value] of Object.entries(extras)) {
+      frontmatterData[key] = value;
+    }
+  }
+  const content = matter.stringify(spec.instructions, frontmatterData);
+  return { ext: agentFileExtensionForTool('opencode'), content };
 }
 
 // ─── Internal render helpers ─────────────────────────────────────────────────
@@ -252,6 +310,9 @@ export type ReverseResult =
 const COMMON_CLAUDE_FIELDS = new Set(['name', 'description', 'model', 'tools']);
 const COMMON_CURSOR_FIELDS = new Set(['agent_id', 'description', 'model', 'tools']);
 const COMMON_CODEX_FIELDS = new Set(['name', 'description', 'developer_instructions', 'model']);
+// `mode` is not carried to the AgentSpec root — it is an OpenCode-only concept
+// (teamai always renders `subagent`), so it round-trips through tool_extras.opencode.
+const COMMON_OPENCODE_FIELDS = new Set(['description', 'model']);
 
 /**
  * Reverse a Claude-format .md file into an AgentSpec.
@@ -391,6 +452,47 @@ export function reverseFromCursor(filePath: string, content: string): ReverseRes
   return { ok: true, spec };
 }
 
+/**
+ * Reverse an OpenCode-format .md file into an AgentSpec.
+ * The agent name is derived from the filename (OpenCode has no `name` in
+ * frontmatter). Non-common frontmatter fields (mode, permission, temperature, …)
+ * are collected into tool_extras.opencode.
+ */
+export function reverseFromOpencode(filePath: string, content: string): ReverseResult {
+  let parsed: matter.GrayMatterFile<string>;
+  try {
+    parsed = matter(content);
+  } catch (err) {
+    return { ok: false, reason: `parse error: ${(err as Error).message}` };
+  }
+
+  const fm = parsed.data as Record<string, unknown>;
+  const body = parsed.content.trim();
+
+  const name = path.basename(filePath, '.md');
+  if (!name) return { ok: false, reason: 'missing agent name (empty filename)' };
+  if (!fm['description']) return { ok: false, reason: 'missing field description' };
+  if (!body) return { ok: false, reason: 'missing field instructions (empty body)' };
+
+  // Collect non-common frontmatter fields as tool_extras
+  const extras: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fm)) {
+    if (!COMMON_OPENCODE_FIELDS.has(key)) {
+      extras[key] = value;
+    }
+  }
+
+  const spec: AgentSpec = {
+    name,
+    description: fm['description'] as string,
+    instructions: body,
+  };
+  if (fm['model'] !== undefined) spec.model = fm['model'] as string;
+  if (Object.keys(extras).length > 0) spec.tool_extras = { opencode: extras };
+
+  return { ok: true, spec };
+}
+
 // ─── Merge multi-tool reverse results ───────────────────────────────────────
 
 /** Conflict details when merging results from multiple tools. */
@@ -499,5 +601,6 @@ export function renderForTool(spec: AgentSpec, tool: ToolName): RenderResult {
     case 'codex-internal': return renderForCodexInternal(spec);
     case 'tcodex': return renderForCodex(spec);
     case 'cursor': return renderForCursor(spec);
+    case 'opencode': return renderForOpencode(spec);
   }
 }

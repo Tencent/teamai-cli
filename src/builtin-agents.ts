@@ -1,10 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ensureDir, pathExists, copyFile } from './utils/fs.js';
+import { fileURLToPath } from 'node:url';
+import { ensureDir, pathExists, readFileSafe, writeFile } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir, isAgentDisabled } from './types.js';
+import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
 import { ResourceHandler } from './resources/base.js';
+import { getUserHome } from './utils/home.js';
+import { ALL_SUPPORTED_TOOLS, renderForTool, reverseFromClaude } from './resources/agent-format.js';
+import type { ToolName } from './resources/agent-format.js';
 
 // ─── Built-in agents deployment ──────────────────────────
 //
@@ -35,7 +39,10 @@ export const BUILTIN_AGENT_NAMES = new Set<string>(['teamai-recall']);
  * package root, so we walk up to find `agents/`.
  */
 function getBuiltinAgentsDir(): string {
-  const distDir = path.dirname(new URL(import.meta.url).pathname);
+  // __dirname equivalent for ESM: import.meta.url → file path → parent.
+  // Use fileURLToPath (not URL.pathname) so Windows drive-letter paths
+  // resolve correctly — a raw `/C:/…` pathname is not resolvable by fs.
+  const distDir = path.dirname(fileURLToPath(import.meta.url));
   return path.join(distDir, '..', 'agents');
 }
 
@@ -75,10 +82,10 @@ export async function deployBuiltinAgents(
     .filter((f) => !(options?.skipRecall && f === 'teamai-recall.md'));
   if (agentFiles.length === 0) return 0;
 
-  const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');
+  const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
   let deployed = 0;
 
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
     if (!toolPath.agents) {
       log.debug(`Skipping built-in agent deployment for ${tool}: no agents path`);
       continue;
@@ -88,6 +95,13 @@ export async function deployBuiltinAgents(
       continue;
     }
     if (localConfig && isAgentDisabled(localConfig, tool)) continue;
+    if (!(ALL_SUPPORTED_TOOLS as string[]).includes(tool)) {
+      log.warn(
+        `Skipping built-in agent deployment for ${tool}: unsupported agent format; ` +
+        'disable this target or add a native renderer',
+      );
+      continue;
+    }
 
     const targetAgentsDir = path.join(baseDir, toolPath.agents);
     try {
@@ -99,9 +113,17 @@ export async function deployBuiltinAgents(
 
     for (const file of agentFiles) {
       const src = path.join(builtinDir, file);
-      const dest = path.join(targetAgentsDir, file);
       try {
-        await copyFile(src, dest);
+        const source = await readFileSafe(src);
+        const parsed = source
+          ? reverseFromClaude(src, source)
+          : { ok: false as const, reason: 'cannot read source file' };
+        if (!parsed.ok) {
+          throw new Error(`invalid built-in agent ${file}: ${parsed.reason}`);
+        }
+        const rendered = renderForTool(parsed.spec, tool as ToolName);
+        const dest = path.join(targetAgentsDir, `${path.basename(file, '.md')}${rendered.ext}`);
+        await writeFile(dest, rendered.content);
         deployed++;
       } catch (e) {
         log.warn(`Failed to deploy built-in agent ${file} to ${tool}: ${(e as Error).message}`);

@@ -29,6 +29,20 @@ import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
+import {
+  detectMcpFormat,
+  supportsTransport,
+  renderJsonEntry,
+  renderCodexBlock,
+  entryHash,
+  MCP_SERVER_KEY,
+} from './resources/mcp-format.js';
+import {
+  readJsonDoc,
+  writeCodexAtomic,
+  spliceCodexBlock,
+  codexServerNames,
+} from './mcp-reconcile.js';
 import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
 import { reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
@@ -39,11 +53,17 @@ import {
   TEAMAI_CLAUDEMD_START,
   TEAMAI_CLAUDEMD_END,
   TeamaiConfigSchema,
+  managedMcpManifestPath,
   type DashboardEvent,
   type LocalConfig,
+  type ManagedMcpManifest,
+  type ManagedMcpRecord,
+  type McpServerDef,
+  type McpTransport,
   type Scope,
   type TeamaiConfig,
 } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -192,6 +212,16 @@ interface LocalAgentCommand {
   event?: string;
   matcher?: string;
   timeout?: number;
+  mcp_config?: {
+    transport: string;
+    url?: string;
+    headers?: Record<string, string>;
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    timeout?: number;
+    requires?: string[];
+  };
 }
 
 /**
@@ -215,7 +245,7 @@ interface LocalAgentContext {
 }
 
 function getTeamaiHomePath(): string {
-  return path.join(process.env.HOME ?? '', '.teamai');
+  return path.join(getUserHome(), '.teamai');
 }
 
 function getLocalAgentHome(): string {
@@ -278,7 +308,7 @@ export function resolveRoute(config: Pick<LocalAgentConfig, 'routes'>, name: Rou
  * Note: install_path only feeds the local hash — it never leaves the machine.
  */
 function resolveAgentInstallPath(agentType: string): string {
-  const home = process.env.HOME ?? '';
+  const home = getUserHome();
   const skillsRel = createLocalAgentTeamConfig('').toolPaths[agentType]?.skills;
   const rel = skillsRel ? path.dirname(skillsRel) : `.${agentType}`;
   return path.join(home, rel);
@@ -382,7 +412,7 @@ function resolveToolSettingsPath(config: LocalAgentConfig, tool: string): string
   if (!toolPath?.settings) {
     throw new Error(`unsupported tool: ${tool} (no settings path)`);
   }
-  return path.join(process.env.HOME ?? '', toolPath.settings);
+  return path.join(getUserHome(), toolPath.settings);
 }
 
 function getPluginStatePath(): string {
@@ -484,9 +514,22 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
       workspaceBindings: fileConfig.workspaceBindings ?? {},
     };
     // Migrate: clear legacy group-based bindings (groupId without projectId)
+    const removedLegacyPaths: string[] = [];
     for (const [wsPath, binding] of Object.entries(config.workspaceBindings)) {
       if ('groupId' in binding && !('projectId' in (binding as Record<string, unknown>))) {
         delete config.workspaceBindings[wsPath];
+        removedLegacyPaths.push(wsPath);
+      }
+    }
+    if (removedLegacyPaths.length > 0) {
+      log.warn(
+        `Removed ${removedLegacyPaths.length} legacy group-based workspace binding(s); ` +
+          `you will be prompted to re-bind on the next session.`,
+      );
+      try {
+        await saveLocalAgentConfig(config);
+      } catch (e) {
+        log.debug(`local-agent: failed to persist binding cleanup: ${(e as Error).message}`);
       }
     }
     // Migrate: canonicalize binding keys to their physical on-disk path so
@@ -504,6 +547,29 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
       await saveLocalAgentConfig(config);
     }
     return config;
+  }
+
+  // Backfill: if config.json is missing but a legacy ~/.teamai/config.yaml has
+  // an HTTP team repo, auto-create config.json so v0.17.x upgraders keep capability.
+  const { loadLocalConfig } = await import('./config.js');
+  const { resolveApiKey } = await import('./api-key.js');
+  const legacy = await loadLocalConfig();
+  if (legacy?.repo?.kind === 'http' && legacy.repo.url) {
+    const endpoint = normalizeEndpoint(legacy.repo.url);
+    const token = resolveApiKey() ?? undefined;
+    const backfilled: LocalAgentConfig = {
+      endpoint,
+      token,
+      createdAt: new Date().toISOString(),
+      workspaceBindings: {},
+    };
+    try {
+      await saveLocalAgentConfig(backfilled);
+      log.debug('local-agent: backfilled config.json from legacy ~/.teamai/config.yaml (http repo)');
+    } catch (e) {
+      log.debug(`local-agent: backfill persist failed, using in-memory config: ${(e as Error).message}`);
+    }
+    return backfilled;
   }
 
   const envEndpoint =
@@ -1126,6 +1192,35 @@ function collectManifestSlugs(manifest: LocalAgentManifest): { skills: Set<strin
 }
 
 /**
+ * Scan the managed-mcp manifest for a given scope and return MCP servers as
+ * ReportedResource entries. Only servers tracked in managed-mcp.json (i.e.
+ * installed via HTTP distribution) are reported with source = 'enterprise'.
+ */
+async function scanMcpFromManifest(
+  scope: 'user' | 'project',
+  projectRoot?: string,
+): Promise<ReportedResource[]> {
+  const manifestPath = managedMcpManifestPath(
+    scope === 'project' ? 'project' : 'user',
+    projectRoot,
+  );
+  const manifest = await readJson<ManagedMcpManifest>(manifestPath);
+  if (!manifest || typeof manifest !== 'object') return [];
+
+  const seen = new Set<string>();
+  const results: ReportedResource[] = [];
+  for (const records of Object.values(manifest)) {
+    if (!Array.isArray(records)) continue;
+    for (const rec of records) {
+      if (!rec.name || seen.has(rec.name)) continue;
+      seen.add(rec.name);
+      results.push({ slug: rec.name, source: 'enterprise' });
+    }
+  }
+  return results.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+/**
  * Remove workspace bindings whose directory no longer exists on disk.
  *
  * Workspace bindings are only ever added, never removed, so a deleted
@@ -1229,11 +1324,13 @@ export async function buildReportPayload(
     return { skills, rules };
   };
 
-  const userScope = await scanScope(process.env.HOME ?? '');
+  const userScope = await scanScope(getUserHome());
 
   const userLevel: Record<string, unknown> = { group_id: config.userGroupId };
   if (userScope.skills.length > 0) userLevel.skills = userScope.skills;
   if (userScope.rules.length > 0) userLevel.rules = userScope.rules;
+  const userMcps = await scanMcpFromManifest('user');
+  if (userMcps.length > 0) userLevel.mcps = userMcps;
 
   const payload: Record<string, unknown> = {
     agent_type: normalizeAgentType(tool),
@@ -1266,6 +1363,8 @@ export async function buildReportPayload(
         };
         if (wsScope.skills.length > 0) workspace.skills = wsScope.skills;
         if (wsScope.rules.length > 0) workspace.rules = wsScope.rules;
+        const wsMcps = await scanMcpFromManifest('project', wsPath);
+        if (wsMcps.length > 0) workspace.mcps = wsMcps;
         return workspace;
       }),
     );
@@ -1715,7 +1814,7 @@ async function syncClaudemd(
 
   const defaultBaseDir = localConfig.scope === 'project' && localConfig.projectRoot
     ? localConfig.projectRoot
-    : process.env.HOME ?? '';
+    : getUserHome();
 
   for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
     if (!toolPath.claudemd) continue;
@@ -1969,6 +2068,9 @@ async function runHookRuleCommand(
       } else if (OPENCLAW_TOOLS.has(rec.tool)) {
         const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
         await removeOpenClawAgentHook({ slug, tool: rec.tool });
+      } else if (rec.tool === 'opencode') {
+        const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
+        await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
       } else {
         const settingsPath = resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
@@ -2006,6 +2108,9 @@ async function runHookRuleCommand(
       } else if (OPENCLAW_TOOLS.has(prior.tool)) {
         const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
         await removeOpenClawAgentHook({ slug, tool: prior.tool });
+      } else if (prior.tool === 'opencode') {
+        const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
+        await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
       } else {
         const priorPath = resolveToolSettingsPath(config, prior.tool);
         await removeAgentHook(priorPath, prior.tool, { slug, command: prior.command });
@@ -2021,6 +2126,10 @@ async function runHookRuleCommand(
   } else if (OPENCLAW_TOOLS.has(tool)) {
     const { applyOpenClawAgentHook } = await import('./openclaw-hooks.js');
     await applyOpenClawAgentHook({ slug, event, command: cmd, tool, matcher, timeout });
+  } else if (tool === 'opencode') {
+    // OpenCode loads plugins from ~/.config/opencode/plugin (user scope).
+    const { applyOpencodeAgentHook } = await import('./opencode-hooks.js');
+    await applyOpencodeAgentHook({ slug, event, command: cmd, baseDir: getUserHome(), scope: 'user', matcher });
   } else {
     const settingsPath = resolveToolSettingsPath(config, tool);
     await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
@@ -2028,6 +2137,204 @@ async function runHookRuleCommand(
   manifest[slug] = { tool, event, command: cmd, matcher, timeout };
   await saveAgentHookManifest(manifest);
   return undefined;
+}
+
+// ─── MCP server install / uninstall (HTTP distribution) ─────
+
+const VALID_MCP_TRANSPORTS = new Set<string>(['stdio', 'http', 'sse']);
+
+function mcpConfigToDef(slug: string, cfg: NonNullable<LocalAgentCommand['mcp_config']>): McpServerDef {
+  if (!VALID_MCP_TRANSPORTS.has(cfg.transport)) {
+    throw new Error(`install_mcp: unsupported transport "${cfg.transport}" for server "${slug}"`);
+  }
+  return {
+    name: slug,
+    transport: cfg.transport as McpTransport,
+    command: cfg.command,
+    args: cfg.args,
+    url: cfg.url,
+    headers: cfg.headers,
+    env: cfg.env,
+    timeout: cfg.timeout,
+    requires: cfg.requires,
+  };
+}
+
+function updateManifestRecord(
+  manifest: ManagedMcpManifest,
+  key: string,
+  name: string,
+  hash: string,
+): void {
+  const records = manifest[key] ?? [];
+  const idx = records.findIndex((r: ManagedMcpRecord) => r.name === name);
+  if (idx >= 0) {
+    records[idx] = { name, hash };
+  } else {
+    records.push({ name, hash });
+  }
+  manifest[key] = records;
+}
+
+async function installMcpServer(
+  config: LocalAgentConfig,
+  command: LocalAgentCommand,
+  tool: string,
+  slug: string,
+  scope: LocalAgentScope,
+  workspacePath?: string,
+): Promise<string | undefined> {
+  if (!command.mcp_config) {
+    throw new Error('install_mcp: missing mcp_config');
+  }
+
+  const def = mcpConfigToDef(slug, command.mcp_config);
+  const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
+  const toolPath = fullTeamConfig.toolPaths[tool];
+  if (!toolPath) {
+    throw new Error(`install_mcp: unknown tool "${tool}"`);
+  }
+
+  const projectScope = scope === 'project';
+  const mcpRel = projectScope ? toolPath.mcpProject : toolPath.mcp;
+  if (!mcpRel) {
+    throw new Error(`install_mcp: tool "${tool}" has no MCP config path for scope "${scope}"`);
+  }
+
+  const format = detectMcpFormat(tool);
+  if (!format) {
+    throw new Error(`install_mcp: tool "${tool}" has no known MCP format`);
+  }
+  if (!supportsTransport(format, def.transport)) {
+    throw new Error(`install_mcp: tool "${tool}" does not support ${def.transport} transport`);
+  }
+
+  const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
+  const targetFile = path.join(baseDir, mcpRel);
+
+  const manifestPath = managedMcpManifestPath(
+    projectScope ? 'project' : 'user',
+    projectScope ? workspacePath : undefined,
+  );
+  const manifest = (await readJson<ManagedMcpManifest>(manifestPath)) ?? {};
+  const manifestKey = `${tool}${projectScope ? ':project' : ''}`;
+  const owned = manifest[manifestKey] ?? [];
+  const ownedNames = new Set(owned.map((r: ManagedMcpRecord) => r.name));
+
+  if (format === 'codex') {
+    const block = renderCodexBlock(def);
+    const hash = entryHash(block);
+    let source = (await readFileSafe(targetFile)) ?? '';
+    const present = new Set(codexServerNames(source));
+    if (present.has(slug) && !ownedNames.has(slug)) {
+      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
+    }
+    updateManifestRecord(manifest, manifestKey, slug, hash);
+    await writeJsonAtomic(manifestPath, manifest);
+    source = spliceCodexBlock(source, slug, block);
+    await writeCodexAtomic(targetFile, source);
+  } else {
+    const entry = renderJsonEntry(format, def);
+    const serverKey = MCP_SERVER_KEY[format];
+    const hash = entryHash(entry);
+    const doc = await readJsonDoc(targetFile, serverKey);
+    if (!doc) {
+      throw new Error(`install_mcp: cannot parse ${targetFile}`);
+    }
+    if (doc.servers[slug] !== undefined && !ownedNames.has(slug)) {
+      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
+    }
+    updateManifestRecord(manifest, manifestKey, slug, hash);
+    await writeJsonAtomic(manifestPath, manifest);
+    doc.servers[slug] = entry;
+    doc.data[serverKey] = doc.servers;
+    await writeJsonAtomic(targetFile, doc.data);
+  }
+  log.debug(`local-agent: installed MCP server "${slug}" for ${tool} (scope=${scope})`);
+  return command.version;
+}
+
+async function uninstallMcpServer(
+  config: LocalAgentConfig,
+  tool: string,
+  slug: string,
+  scope: LocalAgentScope,
+  workspacePath?: string,
+): Promise<void> {
+  const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
+  const toolPath = fullTeamConfig.toolPaths[tool];
+  if (!toolPath) return;
+
+  const projectScope = scope === 'project';
+  const mcpRel = projectScope ? toolPath.mcpProject : toolPath.mcp;
+  if (!mcpRel) return;
+
+  const format = detectMcpFormat(tool);
+  if (!format) return;
+
+  const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
+  const targetFile = path.join(baseDir, mcpRel);
+
+  const manifestPath = managedMcpManifestPath(
+    projectScope ? 'project' : 'user',
+    projectScope ? workspacePath : undefined,
+  );
+  const manifest = (await readJson<ManagedMcpManifest>(manifestPath)) ?? {};
+  const manifestKey = `${tool}${projectScope ? ':project' : ''}`;
+  const owned = manifest[manifestKey] ?? [];
+  const ownedNames = new Set(owned.map((r: ManagedMcpRecord) => r.name));
+
+  if (!ownedNames.has(slug)) return;
+
+  manifest[manifestKey] = owned.filter((r: ManagedMcpRecord) => r.name !== slug);
+  if ((manifest[manifestKey] as ManagedMcpRecord[]).length === 0) delete manifest[manifestKey];
+  await writeJsonAtomic(manifestPath, manifest);
+
+  if (format === 'codex') {
+    let source = (await readFileSafe(targetFile)) ?? '';
+    source = spliceCodexBlock(source, slug, null);
+    await writeCodexAtomic(targetFile, source);
+  } else {
+    const serverKey = MCP_SERVER_KEY[format];
+    const doc = await readJsonDoc(targetFile, serverKey);
+    if (doc && doc.servers[slug] !== undefined) {
+      delete doc.servers[slug];
+      doc.data[serverKey] = doc.servers;
+      await writeJsonAtomic(targetFile, doc.data);
+    }
+  }
+  log.debug(`local-agent: uninstalled MCP server "${slug}" from ${tool} (scope=${scope})`);
+}
+
+async function runMcpCommand(
+  config: LocalAgentConfig,
+  command: LocalAgentCommand,
+  context: LocalAgentContext,
+): Promise<string | undefined> {
+  const tool = context.tool;
+  if (!tool) {
+    throw new Error(`${command.type}: cannot determine current tool`);
+  }
+  const slug = command.slug;
+  if (!slug) {
+    throw new Error(`${command.type}: missing slug`);
+  }
+  assertSafeResourceName(slug);
+
+  const scope = normalizeScope(command.scope);
+  const workspacePath = scope === 'project'
+    ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
+    : undefined;
+  if (scope === 'project' && !workspacePath) {
+    throw new Error(`${command.type}: workspace command is missing workspace_path`);
+  }
+
+  if (command.type === 'install_mcp') {
+    return installMcpServer(config, command, tool, slug, scope, workspacePath);
+  }
+
+  await uninstallMcpServer(config, tool, slug, scope, workspacePath);
+  return command.version;
 }
 
 async function executeCommand(
@@ -2042,6 +2349,9 @@ async function executeCommand(
   }
   if (command.type === 'install_hook_rule' || command.type === 'uninstall_hook_rule') {
     return runHookRuleCommand(config, command, context);
+  }
+  if (command.type === 'install_mcp' || command.type === 'uninstall_mcp') {
+    return runMcpCommand(config, command, context);
   }
   const kind = commandKind(command);
   const action = commandAction(command);
@@ -2286,7 +2596,7 @@ export async function initLocalAgentHttp(options: {
   }
 
   const teamConfig = createLocalAgentTeamConfig(endpoint);
-  await injectHooksToAllTools(teamConfig.toolPaths, process.env.HOME ?? '', options.filterAgents);
+  await injectHooksToAllTools(teamConfig.toolPaths, getUserHome(), options.filterAgents);
   log.success(`HTTP local agent initialized at ${getConfigPath()}`);
 }
 
@@ -2378,6 +2688,9 @@ export async function removeAllAgentHooks(): Promise<void> {
       } else if (OPENCLAW_TOOLS.has(rec.tool)) {
         const { removeOpenClawAgentHook } = await import('./openclaw-hooks.js');
         await removeOpenClawAgentHook({ slug, tool: rec.tool });
+      } else if (rec.tool === 'opencode') {
+        const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
+        await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
       } else {
         const settingsPath = resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });

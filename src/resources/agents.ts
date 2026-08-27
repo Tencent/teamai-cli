@@ -3,7 +3,7 @@ import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFiles, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { resolveBaseDir, isAgentDisabled, isSelfMode } from '../types.js';
+import { resolveBaseDir, isAgentDisabled, isSelfMode, scopedToolPaths } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import {
   parseAgentYaml,
@@ -13,6 +13,7 @@ import {
   reverseFromCodebuddy,
   reverseFromCodex,
   reverseFromCursor,
+  reverseFromOpencode,
   mergeReverseResults,
   ALL_SUPPORTED_TOOLS,
 } from './agent-format.js';
@@ -96,7 +97,7 @@ export class AgentsHandler extends ResourceHandler {
     // Collect all local agent files grouped by stem
     const grouped = new Map<string, Map<string, string>>(); // stem → (tool → filePath)
 
-    for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.agents) continue;
       const agentsDir = path.join(baseDir, toolPath.agents);
       if (!await pathExists(agentsDir)) continue;
@@ -331,9 +332,10 @@ export class AgentsHandler extends ResourceHandler {
     spec = parseResult.spec;
 
     const targets = spec.targets ?? ALL_SUPPORTED_TOOLS;
+    const scoped = scopedToolPaths(teamConfig, localConfig);
 
     for (const tool of targets) {
-      const toolPath = teamConfig.toolPaths[tool];
+      const toolPath = scoped[tool];
       if (!toolPath?.agents) {
         log.debug(`Skipping agent sync for ${tool}: no agents path configured`);
         continue;
@@ -378,7 +380,7 @@ export class AgentsHandler extends ResourceHandler {
 
     await this.addTombstone(name, localConfig);
 
-    for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.agents) continue;
       // Try removing both .md and .toml variants
       for (const ext of ['.md', '.toml'] as const) {
@@ -407,7 +409,7 @@ export class AgentsHandler extends ResourceHandler {
   ): Promise<void> {
     const legacyTools = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy']);
 
-    for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!legacyTools.has(tool)) continue;
       if (!toolPath.agents) {
         log.debug(`Skipping legacy agent sync for ${tool}: no agents path configured`);
@@ -468,5 +470,7 @@ function reverseByTool(tool: ToolName, filePath: string, content: string): Rever
       return reverseFromCodex(filePath, content);
     case 'cursor':
       return reverseFromCursor(filePath, content);
+    case 'opencode':
+      return reverseFromOpencode(filePath, content);
   }
 }

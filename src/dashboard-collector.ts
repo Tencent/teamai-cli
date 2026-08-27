@@ -29,6 +29,7 @@ import {
   type TokenUsage,
   type SessionMetrics,
 } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── Event collection data flow ─────────────────────────
 //
@@ -514,7 +515,7 @@ export async function parseHookEvent(
 
 /** Get events path (evaluated at call time). */
 function getEventsPath(): string {
-  return path.join(process.env.HOME ?? '', '.teamai', 'dashboard', 'events.jsonl');
+  return path.join(getUserHome(), '.teamai', 'dashboard', 'events.jsonl');
 }
 
 /**

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import type { SearchResult } from './utils/search-index.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── Recall quality tracking ─────────────────────────────
 //
@@ -37,7 +38,7 @@ function sanitizeSessionId(sessionId: string): string {
 function getCachePath(sessionId: string): string {
     const safeName = sanitizeSessionId(sessionId);
     return path.join(
-        process.env.HOME ?? '',
+        getUserHome(),
         '.teamai',
         'sessions',
         `${safeName}-recall-cache.json`,

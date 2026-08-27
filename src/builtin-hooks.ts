@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import type { HookDef } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── Built-in (A) operational hooks as data ─────────────────
 //
@@ -89,7 +90,7 @@ function pickLatestVersion(versions: string[]): string | undefined {
  * using numeric semver comparison (avoids '9.0.0' > '10.11.0' lexicographic error).
  */
 function resolveWorkbuddyNode(): string | null {
-  const home = process.env.HOME ?? '';
+  const home = getUserHome();
   const versionsDir = path.join(home, WORKBUDDY_BUNDLED_NODE_DIR);
   try {
     const versions = fs.readdirSync(versionsDir).filter(d => !d.startsWith('.'));
@@ -106,7 +107,7 @@ function resolveWorkbuddyNode(): string | null {
  * ~/.codebuddy-server-<variant>/bin/stable-<version>/node (prefix may vary).
  */
 function resolveCodebuddyNode(): string | null {
-  const home = process.env.HOME ?? '';
+  const home = getUserHome();
   try {
     const entries = fs.readdirSync(home);
     for (const entry of entries) {
@@ -150,7 +151,7 @@ export function ensureTeamaiWrapper(): string | null {
   if (!entryScript) return null;
 
   const nodeBin = resolveWorkbuddyNode() ?? resolveCodebuddyNode() ?? process.argv[0];
-  const home = process.env.HOME ?? '';
+  const home = getUserHome();
   const binDir = path.join(home, TEAMAI_BIN_DIR);
   const wrapperPath = path.join(binDir, WRAPPER_NAME);
 
