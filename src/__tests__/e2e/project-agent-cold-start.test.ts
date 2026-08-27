@@ -21,7 +21,12 @@ interface RunResult {
   output: string;
 }
 
-function runCLI(args: string[], env: Record<string, string>, cwd: string): Promise<RunResult> {
+function runCLI(
+  args: string[],
+  env: Record<string, string>,
+  cwd: string,
+  stdin = '',
+): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn('node', [CLI, ...args], {
       env: { ...process.env, FORCE_COLOR: '0', ...env },
@@ -31,7 +36,7 @@ function runCLI(args: string[], env: Record<string, string>, cwd: string): Promi
     let output = '';
     child.stdout.on('data', (data: Buffer) => { output += data.toString(); });
     child.stderr.on('data', (data: Buffer) => { output += data.toString(); });
-    child.stdin.end();
+    child.stdin.end(stdin);
     child.on('close', (code) => resolve({ code, output }));
   });
 }
@@ -193,5 +198,71 @@ describe('project-scope sequential agent cold start (#342)', () => {
     expect(fs.existsSync(path.join(projectRoot, '.codebuddy', 'skills'))).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, '.codebuddy', 'rules'))).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, '.codebuddy', 'agents'))).toBe(false);
+  }, 30_000);
+
+  it('does not create missing agent roots on a bare pull', async () => {
+    for (const agentRoot of ['.claude', '.cursor', '.codex', '.codebuddy']) {
+      fs.rmSync(path.join(projectRoot, agentRoot), { recursive: true, force: true });
+    }
+    fs.rmSync(path.join(projectRoot, '.teamai', 'state.json'), { force: true });
+
+    const result = await runCLI(['pull'], { HOME: homeDir }, projectRoot);
+    expect(result.code, result.output).toBe(0);
+    expect(fs.existsSync(path.join(projectRoot, '.claude'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.cursor'))).toBe(false);
+  }, 30_000);
+
+  it('SessionStart --tool claude seeds .claude then pulls into it', async () => {
+    for (const agentRoot of ['.claude', '.cursor', '.codex', '.codebuddy']) {
+      fs.rmSync(path.join(projectRoot, agentRoot), { recursive: true, force: true });
+    }
+    fs.rmSync(path.join(projectRoot, '.teamai', 'state.json'), { force: true });
+
+    const result = await runCLI(
+      ['hook-dispatch', 'session-start', '--tool', 'claude', '--bg-only'],
+      { HOME: homeDir },
+      projectRoot,
+      JSON.stringify({ cwd: projectRoot }),
+    );
+    expect(result.code, result.output).toBe(0);
+    expect(fs.existsSync(path.join(projectRoot, '.claude', 'skills', 'team-skill', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.cursor'))).toBe(false);
+    expect(JSON.parse(
+      fs.readFileSync(path.join(projectRoot, '.teamai', 'state.json'), 'utf8'),
+    ).lastPullTargets).toEqual(['claude']);
+  }, 30_000);
+
+  it('SessionStart --tool cursor seeds only .cursor, not .claude', async () => {
+    for (const agentRoot of ['.claude', '.cursor', '.codex', '.codebuddy']) {
+      fs.rmSync(path.join(projectRoot, agentRoot), { recursive: true, force: true });
+    }
+    fs.rmSync(path.join(projectRoot, '.teamai', 'state.json'), { force: true });
+
+    const result = await runCLI(
+      ['hook-dispatch', 'session-start', '--tool', 'cursor', '--bg-only'],
+      { HOME: homeDir },
+      projectRoot,
+      JSON.stringify({ cwd: projectRoot }),
+    );
+    expect(result.code, result.output).toBe(0);
+    expect(fs.existsSync(path.join(projectRoot, '.cursor', 'skills', 'team-skill', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.claude'))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, '.codebuddy'))).toBe(false);
+  }, 30_000);
+
+  it('SessionStart does not seed a disabled agent', async () => {
+    for (const agentRoot of ['.claude', '.cursor', '.codex', '.codebuddy']) {
+      fs.rmSync(path.join(projectRoot, agentRoot), { recursive: true, force: true });
+    }
+    fs.rmSync(path.join(projectRoot, '.teamai', 'state.json'), { force: true });
+
+    const result = await runCLI(
+      ['hook-dispatch', 'session-start', '--tool', 'codebuddy', '--bg-only'],
+      { HOME: homeDir },
+      projectRoot,
+      JSON.stringify({ cwd: projectRoot }),
+    );
+    expect(result.code, result.output).toBe(0);
+    expect(fs.existsSync(path.join(projectRoot, '.codebuddy'))).toBe(false);
   }, 30_000);
 });

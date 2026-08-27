@@ -101,6 +101,8 @@ Resulting directory structure:
 └── src/
 ```
 
+`teamai init` writes `.teamai/` only. Per-agent project roots (`.claude/`, `.cursor/`, `.codebuddy/`, …) are created on **SessionStart** for the tool that just opened (`--tool claude` creates `.claude/`, then pull writes into it). A bare `teamai pull` still skips tools whose project root does not exist, so it never invents agent directories for tools you have not opened in this project.
+
 If the repo has role-based skills enabled (i.e. `manifest/roles.yaml` exists), `teamai init` will also interactively ask you to choose:
 
 - `primaryRole`: the target namespace for skill sync and push by default
@@ -289,7 +291,7 @@ teamai skill show hai-deploy-test   # View a single skill's source / contributor
 
 ### Auto-sync
 
-`teamai init` already injected Hooks into your AI tools. **`teamai pull` runs automatically every time you start an AI session** — no manual action needed.
+`teamai init` already injected Hooks into your AI tools. **`teamai pull` runs automatically every time you start an AI session** — no manual action needed. In project scope, that SessionStart hook first creates the current agent's project root (e.g. `<project>/.claude` when Claude Code opens the repo) if it is missing, then pulls.
 
 If you need to sync immediately, you can run it manually:
 
@@ -878,7 +880,7 @@ Hooks automatically injected by `teamai init`:
 
 | Hook Event | Action |
 |-----------|------|
-| `SessionStart` | Auto pull + report session start |
+| `SessionStart` | Seed the current agent's project root (project scope), then auto pull + report session start |
 | `PostToolUse` | Skill tracking + knowledge contribution detection + dashboard reporting |
 | `UserPromptSubmit` | Slash command tracking |
 | `Stop` | CLI update check + report session end |
@@ -1125,6 +1127,10 @@ In interactive mode, you'll be asked whether to overwrite — type `y` to confir
 ```bash
 teamai init --repo <group>/<repo> --force
 ```
+
+**Q: After `teamai init` in a project, there is no `.claude/` (or `.cursor/`, `.codebuddy/`) directory?**
+
+That is expected. `init` does not know which agent you will open. Open Claude Code / Cursor / CodeBuddy in the project: the SessionStart hook creates that tool's project root and then pulls. A bare `teamai pull` will not create missing agent roots.
 
 **Q: Hooks aren't firing automatically?**
 

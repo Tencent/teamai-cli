@@ -58,6 +58,11 @@ vi.mock('../local-agent.js', () => ({
   reportAndSyncFromHook: mockReportAndSyncFromHook,
 }));
 
+const mockSeedProjectAgentRoot = vi.fn().mockResolvedValue(undefined);
+vi.mock('../project-agent-root.js', () => ({
+  seedProjectAgentRoot: mockSeedProjectAgentRoot,
+}));
+
 import { buildHandlerRegistry, filterHandlersForConfig, type HandlerRegistration } from '../hook-handlers.js';
 import { createDispatcher } from '../hook-dispatch.js';
 
@@ -84,6 +89,21 @@ describe('hook-handlers registry', () => {
       .map((r) => r.handler.name);
     expect(sessionStartHandlers).toContain('pull');
     expect(sessionStartHandlers).toContain('dashboard-report');
+  });
+
+  it('session-start pull seeds the hook tool root before pulling', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'session-start' && r.handler.name === 'pull',
+    )!.handler;
+
+    await handler.execute({ cwd: '/tmp/some-project' }, 'claude');
+
+    expect(mockSeedProjectAgentRoot).toHaveBeenCalledWith('claude', '/tmp/some-project');
+    expect(mockPull).toHaveBeenCalledWith({ silent: true });
+    expect(mockSeedProjectAgentRoot.mock.invocationCallOrder[0]).toBeLessThan(
+      mockPull.mock.invocationCallOrder[0],
+    );
   });
 
   it('stop has update, contribute-check, and dashboard-report handlers', () => {

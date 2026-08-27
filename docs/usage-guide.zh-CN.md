@@ -99,6 +99,8 @@ teamai init <group>/TeamAi-<team>
 └── src/
 ```
 
+`teamai init` 只写入 `.teamai/`。各 Agent 的项目根目录（`.claude/`、`.cursor/`、`.codebuddy/` 等）会在 **SessionStart** 时按刚打开的工具创建（`--tool claude` 会建 `.claude/`，再 pull 写入）。单独执行 `teamai pull` 仍会跳过项目里还不存在根目录的工具，因此不会给尚未在本项目打开过的 Agent 凭空建目录。
+
 如果仓库启用了角色化 skills（存在 `manifest/roles.yaml`），`teamai init` 还会交互式要求你选择：
 
 - `primaryRole`：默认 skill 同步和推送的目标 namespace
@@ -287,7 +289,7 @@ teamai skill show hai-deploy-test   # 看单个 skill 的来源 / 贡献者 / �
 
 ### 自动同步
 
-`teamai init` 时已注入 Hooks 到你的 AI 工具中。**每次启动 AI 会话时会自动执行 `teamai pull`**，无需手动操作。
+`teamai init` 时已注入 Hooks 到你的 AI 工具中。**每次启动 AI 会话时会自动执行 `teamai pull`**，无需手动操作。在 project scope 下，该 SessionStart hook 会先为当前 Agent 创建项目根目录（例如用 Claude Code 打开仓库时创建 `<project>/.claude`），然后再 pull。
 
 如果需要立即同步，可以手动执行：
 
@@ -873,7 +875,7 @@ teamai session save --push --include-prompt  # 额外带上（脱敏后的）首
 
 | Hook 事件 | 操作 |
 |-----------|------|
-| `SessionStart` | 自动 pull + 上报会话启动 |
+| `SessionStart` | 先为当前 Agent 创建项目根目录（project scope），再自动 pull + 上报会话启动 |
 | `PostToolUse` | skill 追踪 + 知识贡献检测 + dashboard 上报 |
 | `UserPromptSubmit` | slash 命令追踪 |
 | `Stop` | CLI 更新检查 + 上报会话结束 |
@@ -1120,6 +1122,10 @@ teamai pull
 ```bash
 teamai init --repo <group>/<repo> --force
 ```
+
+**Q: 在项目里执行 `teamai init` 后没有 `.claude/`（或 `.cursor/`、`.codebuddy/`）目录？**
+
+这是预期行为。`init` 不知道你会打开哪个 Agent。在项目中打开 Claude Code / Cursor / CodeBuddy：SessionStart hook 会创建该工具的项目根目录并随后 pull。单独执行 `teamai pull` 不会为缺失的 Agent 根目录建目录。
 
 **Q: Hooks 没有自动触发？**
 

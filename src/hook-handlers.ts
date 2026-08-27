@@ -14,6 +14,7 @@ import path from 'node:path';
 import type { HookHandler } from './hook-dispatch.js';
 import type { LocalConfig } from './types.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { log } from './utils/logger.js';
 import { normalizeToolName } from './utils/tool-names.js';
 
 // ─── Public types ───────────────────────────────────────
@@ -81,7 +82,14 @@ const LOCAL_AGENT_TIMEOUT_MS = 15_000;
 
 const pullHandler: HookHandler = {
   name: 'pull',
-  async execute(_stdin, _tool) {
+  async execute(stdin, tool) {
+    const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
+    try {
+      const { seedProjectAgentRoot } = await import('./project-agent-root.js');
+      await seedProjectAgentRoot(tool, cwd);
+    } catch (e) {
+      log.debug(`hook-dispatch: seedProjectAgentRoot failed: ${(e as Error).message}`);
+    }
     const { pull } = await import('./pull.js');
     await pull({ silent: true });
     return null;
