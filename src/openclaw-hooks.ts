@@ -239,6 +239,10 @@ export async function resolveOpenclawWorkspaceDir(workspacePath?: string): Promi
       return candidate;
     }
   }
-  log.warn(`openclaw: no workspace dir found (tried: ${candidates.join(', ') || 'none'})`);
+  // A missing workspace dir is the normal case when OpenClaw is not installed;
+  // callers treat null as "skip openclaw" and log their own debug line, so keep
+  // this at debug level to avoid warning noise (one line per skill/file) on
+  // machines without OpenClaw.
+  log.debug(`openclaw: no workspace dir found (tried: ${candidates.join(', ') || 'none'})`);
   return null;
 }
