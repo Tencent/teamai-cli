@@ -166,7 +166,7 @@ describe('project-scope sequential agent cold start (#342)', () => {
     expect(secondPull.code, secondPull.output).toBe(0);
     expect(secondPull.output).not.toContain('Already synced');
     expect(fs.existsSync(path.join(projectRoot, '.cursor', 'skills', 'team-skill', 'SKILL.md'))).toBe(true);
-    expect(fs.existsSync(path.join(projectRoot, '.cursor', 'rules', 'team-rule.md'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.cursor', 'rules', 'team-rule.mdc'))).toBe(true);
     expect(fs.existsSync(path.join(projectRoot, '.cursor', 'agents', 'team-helper.md'))).toBe(true);
     expect(JSON.parse(
       fs.readFileSync(path.join(projectRoot, '.teamai', 'state.json'), 'utf8'),
