@@ -7,6 +7,7 @@ import {
   TeamaiConfigSchema,
   TEAMAI_ENV_START,
   resolveBaseDir,
+  getTeamaiHome,
   type TeamaiConfig,
 } from './types.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
@@ -147,7 +148,13 @@ export async function doctor(options: GlobalOptions): Promise<void> {
 
         const home = getUserHome();
 
-        const envShPath = path.join(home, '.teamai', 'env.sh');
+        // env.sh lives under teamaiHome, which is <projectRoot>/.teamai in
+        // project scope and ~/.teamai in user scope — mirror the path that
+        // `teamai pull` actually writes to, not a hardcoded user-home path.
+        const envShPath = path.join(
+          getTeamaiHome(localConfig.scope, localConfig.projectRoot),
+          'env.sh',
+        );
         if (!await pathExists(envShPath)) return false;
 
         const shell = process.env.SHELL ?? '';
