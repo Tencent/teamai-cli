@@ -10,6 +10,7 @@ import {
   type TeamaiConfig,
 } from './types.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
+import { getUserHome } from './utils/home.js';
 
 interface Check {
   name: string;
@@ -65,7 +66,7 @@ export async function doctor(options: GlobalOptions): Promise<void> {
   // Fall back to schema defaults if team config is unavailable
   const toolPaths = teamConfig?.toolPaths ?? TeamaiConfigSchema.shape.toolPaths.parse(undefined);
   const providerName = teamConfig?.provider ?? 'tgit';
-  const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');
+  const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
 
   const checks: Check[] = [];
 
@@ -100,6 +101,15 @@ export async function doctor(options: GlobalOptions): Promise<void> {
         fix: 'Run `gh auth login` to authenticate',
       },
     );
+  } else if (providerName === 'gitlab') {
+    // GitLab needs no CLI — only a Personal Access Token.
+    const { gitlabIsAuthenticated } = await import('./providers/gitlab/index.js');
+    checks.push({
+      name: 'GitLab token is configured',
+      check: async () => gitlabIsAuthenticated(),
+      fix: 'Export GITLAB_TOKEN (a Personal Access Token with `api` scope). '
+        + 'GITLAB_PRIVATE_TOKEN and GITLAB_PAT are accepted as aliases.',
+    });
   }
 
   checks.push(
@@ -135,7 +145,7 @@ export async function doctor(options: GlobalOptions): Promise<void> {
         const envYamlPath = path.join(localConfig.repo.localPath, 'env', 'env.yaml');
         if (!await pathExists(envYamlPath)) return true;
 
-        const home = process.env.HOME ?? '';
+        const home = getUserHome();
 
         const envShPath = path.join(home, '.teamai', 'env.sh');
         if (!await pathExists(envShPath)) return false;

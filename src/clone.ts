@@ -3,8 +3,10 @@ import { spawn } from 'node:child_process';
 import fs from 'fs-extra';
 
 import { getGitHubToken } from './providers/github/gh-cli.js';
+import { getGitLabToken } from './providers/gitlab/gitlab-api.js';
 import { tgitGitCloneUrl } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
+import { sanitizeGitUrl } from './utils/redact.js';
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -56,9 +58,7 @@ function convertHttpToSsh(url: string): string {
  * @param msg  可能含有 token 的字符串
  * @returns    脱敏后的字符串
  */
-export function sanitizeGitUrl(msg: string): string {
-    return msg.replace(/https?:\/\/[^@\s]+@/g, 'https://***@');
-}
+export { sanitizeGitUrl };
 
 /**
  * 对日志/错误信息中的 token 进行脱敏。
@@ -74,8 +74,8 @@ function redactToken(msg: string): string {
  * @param token  GitHub token
  * @returns      Authorization header 值，格式为 `Authorization: Basic <base64>`
  */
-function buildAuthHeader(token: string): string {
-    const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
+function buildAuthHeader(token: string, username = 'x-access-token'): string {
+    const encoded = Buffer.from(`${username}:${token}`).toString('base64');
     return `Authorization: Basic ${encoded}`;
 }
 
@@ -139,11 +139,11 @@ async function gitCmd(
  * 三层认证策略：
  *   1. forceSsh=true 或 url 是 SSH 形式 → 直接走 SSH
  *   2. github 且能拿到 token → HTTPS + x-access-token 注入
- *   3. tgit 走 ~/.netrc（git 自身处理）；github 无 token 则匿名 HTTPS
+ *   3. 其他 provider 交给 Git credential helper / ~/.netrc 处理；github 无 token 则匿名 HTTPS
  *
  * @param url        仓库 URL（https/ssh 任一）
  * @param localPath  目标目录（存在则先 rm 再 clone）
- * @param provider   'github' | 'tgit'
+ * @param provider   Provider name such as 'github', 'tgit', 'cnb', or 'git'
  * @param opts       克隆选项
  */
 export async function shallowClone(
@@ -166,7 +166,7 @@ export async function shallowClone(
     // 确定克隆 URL 和认证方式
     let cloneUrl = url;
     let cloneMethod: CloneResult['cloneMethod'];
-    let githubToken: string | undefined;
+    let extraAuthHeader: string | undefined;
 
     if (forceSsh || isSshUrl(url)) {
         cloneUrl = isSshUrl(url) ? url : convertHttpToSsh(url);
@@ -180,7 +180,7 @@ export async function shallowClone(
         const token = getGitHubToken();
         if (token) {
             cloneUrl = url;
-            githubToken = token;
+            extraAuthHeader = buildAuthHeader(token);
             cloneMethod = 'https-token';
             log.debug(`shallowClone: 使用 HTTPS+token 克隆 github 仓库`);
         } else {
@@ -202,17 +202,31 @@ export async function shallowClone(
             cloneMethod = 'https-anonymous';
             log.debug(`shallowClone: 无 TGit OAuth token，尝试匿名 HTTPS 克隆`);
         }
+    } else if (provider === 'gitlab') {
+        // GitLab: PAT 走 HTTP Basic（用户名固定 oauth2）。用 http.extraHeader 注入，
+        // token 不进 URL。不强制 http→https：自托管实例可能就是 http。
+        const token = getGitLabToken();
+        if (token) {
+            cloneUrl = url;
+            extraAuthHeader = buildAuthHeader(token, 'oauth2');
+            cloneMethod = 'https-token';
+            log.debug(`shallowClone: 使用 HTTPS+token 克隆 gitlab 仓库`);
+        } else {
+            cloneUrl = url;
+            cloneMethod = 'https-anonymous';
+            log.debug(`shallowClone: 无 GITLAB_TOKEN，尝试匿名 HTTPS 克隆`);
+        }
     } else {
-        // 其他 provider，依赖 ~/.netrc
+        // 其他 provider 依赖 Git 自身的 credential helper / ~/.netrc。
         cloneUrl = url.replace(/^http:\/\//, 'https://');
         cloneMethod = 'https-anonymous';
-        log.debug(`shallowClone: 使用 HTTPS (~/.netrc) 克隆 ${provider} 仓库`);
+        log.debug(`shallowClone: 使用 HTTPS (Git credential helper / ~/.netrc) 克隆 ${provider} 仓库`);
     }
 
     // 构建 clone 参数：若有 token 则通过 http.extraHeader 注入，避免 token 出现在 URL 中
     const cloneArgs: string[] = [];
-    if (githubToken) {
-        cloneArgs.push('-c', `http.extraHeader=${buildAuthHeader(githubToken)}`);
+    if (extraAuthHeader) {
+        cloneArgs.push('-c', `http.extraHeader=${extraAuthHeader}`);
     }
     cloneArgs.push(
         'clone',

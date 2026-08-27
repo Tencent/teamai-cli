@@ -4,6 +4,7 @@ import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── Local agent skill scanning ─────────────────────────
 //
@@ -54,7 +55,7 @@ export async function buildClassifyContext(localConfig: LocalConfig): Promise<Cl
 
   const sourceSkills = new Map<string, string>();
   try {
-    const sourcesDir = path.join(process.env.HOME ?? '', '.teamai', 'sources');
+    const sourcesDir = path.join(getUserHome(), '.teamai', 'sources');
     if (await pathExists(sourcesDir)) {
       const sourceNames = await listDirs(sourcesDir);
       for (const sourceName of sourceNames) {

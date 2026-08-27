@@ -13,20 +13,34 @@ import type { McpServerDef, McpTransport } from '../types.js';
 //  Keeping the differences here — rather than in the reconcile engine — is the
 //  same split agents uses between agent-format.ts and its handler.
 
-export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex';
+export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode';
 
 const CLAUDE_TOOLS = new Set(['claude', 'claude-internal', 'tclaude']);
 const CURSOR_TOOLS = new Set(['cursor']);
 const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
 const BUDDY_TOOLS = new Set(['codebuddy', 'workbuddy']);
+const OPENCODE_TOOLS = new Set(['opencode']);
 
 export function detectMcpFormat(tool: string): McpFormat | null {
   if (CLAUDE_TOOLS.has(tool)) return 'claude';
   if (CURSOR_TOOLS.has(tool)) return 'cursor';
   if (CODEX_TOOLS.has(tool)) return 'codex';
   if (BUDDY_TOOLS.has(tool)) return 'buddy';
+  if (OPENCODE_TOOLS.has(tool)) return 'opencode';
   return null;
 }
+
+/**
+ * Top-level JSON key each format stores its server map under. Claude/cursor/buddy
+ * all use `mcpServers`; OpenCode uses `mcp`. Codex is TOML (handled separately) and
+ * has no entry here.
+ */
+export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
+  claude: 'mcpServers',
+  cursor: 'mcpServers',
+  buddy: 'mcpServers',
+  opencode: 'mcp',
+};
 
 /** Transports each format can actually express. */
 const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
@@ -36,6 +50,9 @@ const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
   // Codex speaks streamable HTTP (`url` + header keys) as well as stdio, but has
   // no SSE transport, so only that one is skipped.
   codex: new Set<McpTransport>(['stdio', 'http']),
+  // OpenCode splits transports into `type: local` (stdio) and `type: remote`
+  // (streamable HTTP). It has no SSE transport.
+  opencode: new Set<McpTransport>(['stdio', 'http']),
 };
 
 export function supportsTransport(format: McpFormat, transport: McpTransport): boolean {
@@ -210,10 +227,35 @@ function renderBuddy(def: McpServerDef): McpJsonEntry {
   return e;
 }
 
+/**
+ * OpenCode's shape is unlike the others: transport is expressed as
+ * `type: "local"` (stdio) or `type: "remote"` (http), a local server's command
+ * and args are a single `command` array, env is `environment` (not `env`), and
+ * every server carries `enabled: true`.
+ */
+function renderOpencode(def: McpServerDef): McpJsonEntry {
+  const e: McpJsonEntry = {};
+  if (def.transport === 'stdio') {
+    e.type = 'local';
+    // OpenCode folds the executable and its args into one `command` array.
+    // The schema guarantees a stdio def has `command`; guard anyway so a
+    // malformed def never writes an empty-string executable into opencode.json.
+    e.command = [...(def.command ? [def.command] : []), ...(def.args ?? [])];
+    if (def.env && Object.keys(def.env).length) e.environment = def.env;
+  } else {
+    e.type = 'remote';
+    e.url = def.url;
+    if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
+  }
+  e.enabled = true;
+  return e;
+}
+
 /** Render the JSON-shaped entry for a format. Codex is handled separately (TOML). */
 export function renderJsonEntry(format: Exclude<McpFormat, 'codex'>, def: McpServerDef): McpJsonEntry {
   if (format === 'claude') return renderClaude(def);
   if (format === 'cursor') return renderCursor(def);
+  if (format === 'opencode') return renderOpencode(def);
   return renderBuddy(def);
 }
 

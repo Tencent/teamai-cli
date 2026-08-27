@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
-import { resolveBaseDir } from '../types.js';
+import { resolveBaseDir, scopedToolPaths } from '../types.js';
 import {
   listFilesRecursive,
   listDirs,
@@ -55,7 +55,7 @@ export async function syncTeamUpdatesToLocal(
  */
 async function syncRulesToLocal(
   teamConfig: TeamaiConfig,
-  _localConfig: LocalConfig,
+  localConfig: LocalConfig,
   repoPath: string,
   baseDir: string,
   lastPullRev: string,
@@ -63,7 +63,7 @@ async function syncRulesToLocal(
   const teamRulesDir = path.join(repoPath, 'rules');
   if (!await pathExists(teamRulesDir)) return;
 
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.rules) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
 
@@ -103,7 +103,7 @@ async function syncRulesToLocal(
  */
 async function syncSkillsToLocal(
   teamConfig: TeamaiConfig,
-  _localConfig: LocalConfig,
+  localConfig: LocalConfig,
   repoPath: string,
   baseDir: string,
   lastPullRev: string,
@@ -132,7 +132,7 @@ async function syncSkillsToLocal(
 
   const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
 
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.skills) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
 

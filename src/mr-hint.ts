@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── MR Hint data flow ──────────────────────────────────
 //
@@ -71,7 +72,7 @@ function repoSlug(owner: string, repo: string): string {
  */
 function getCachePath(owner: string, repo: string): string {
   return path.join(
-    process.env.HOME ?? '',
+    getUserHome(),
     '.teamai',
     'sessions',
     `mr-hint-${repoSlug(owner, repo)}.json`,

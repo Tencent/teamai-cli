@@ -128,7 +128,7 @@ describe('loadGraphIndex schema validation (issue #84 bug5)', () => {
   it('returns null when file exists but nodes/edges are not arrays', async () => {
     const { writeFile, mkdir, rm } = await import('node:fs/promises');
     const { join } = await import('node:path');
-    const { loadGraphIndex } = await import('../wiki-engine/core/graph-index.schema.js');
+    const { loadGraphIndex, GRAPH_INDEX_SCHEMA_VERSION } = await import('../wiki-engine/core/graph-index.schema.js');
 
     const tmpRoot = `/tmp/graph-schema-test-${Date.now()}`;
     const indicesDir = join(tmpRoot, '.indices');
@@ -144,12 +144,35 @@ describe('loadGraphIndex schema validation (issue #84 bug5)', () => {
     const result2 = await loadGraphIndex(tmpRoot);
     expect(result2).toBeNull();
 
-    // Write a valid graph — should return it
-    await writeFile(join(indicesDir, 'graph-index.json'), JSON.stringify({ nodes: [], edges: [] }));
+    // Write a valid graph (current schema) — should return it
+    await writeFile(join(indicesDir, 'graph-index.json'),
+      JSON.stringify({
+        schemaVersion: GRAPH_INDEX_SCHEMA_VERSION, generatedAt: new Date().toISOString(), nodes: [], edges: [],
+      }));
     const result3 = await loadGraphIndex(tmpRoot);
     expect(result3).not.toBeNull();
     expect(result3!.nodes).toEqual([]);
     expect(result3!.edges).toEqual([]);
+
+    await rm(tmpRoot, { recursive: true });
+  });
+
+  it('returns null when schemaVersion does not match (legacy index triggers rebuild)', async () => {
+    const { writeFile, mkdir, rm } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const { loadGraphIndex } = await import('../wiki-engine/core/graph-index.schema.js');
+
+    const tmpRoot = `/tmp/graph-schema-legacy-test-${Date.now()}`;
+    const indicesDir = join(tmpRoot, '.indices');
+    await mkdir(indicesDir, { recursive: true });
+
+    // Write a structurally valid graph but with a mismatched (legacy) schemaVersion
+    await writeFile(join(indicesDir, 'graph-index.json'),
+      JSON.stringify({
+        schemaVersion: 'team-wiki.graph-index.v0', generatedAt: new Date().toISOString(), nodes: [], edges: [],
+      }));
+    const result = await loadGraphIndex(tmpRoot);
+    expect(result).toBeNull();
 
     await rm(tmpRoot, { recursive: true });
   });

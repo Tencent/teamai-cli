@@ -28,10 +28,13 @@ import {
   renderForCodex,
   renderForCodexInternal,
   renderForCursor,
+  renderForOpencode,
   reverseFromClaude,
   reverseFromCodebuddy,
   reverseFromCodex,
   reverseFromCursor,
+  reverseFromOpencode,
+  renderForTool,
   mergeReverseResults,
 } from '../resources/agent-format.js';
 import type { AgentSpec, ToolName, ParseResult } from '../resources/agent-format.js';
@@ -359,6 +362,101 @@ describe('reverseFromCursor', () => {
     const content = `---\nagent_id: a\ndescription: b\n---\n\n`;
     const result = reverseFromCursor('/agents/a.md', content);
     expect(result.ok).toBe(false);
+  });
+});
+
+// ─── renderForOpencode ───────────────────────────────────────────────────────
+
+describe('renderForOpencode', () => {
+  it('emits description + mode:subagent and omits name', () => {
+    const spec = makeSpec();
+    const { ext, content } = renderForOpencode(spec);
+    expect(ext).toBe('.md');
+    expect(content).toContain('description: A test agent for unit tests');
+    expect(content).toContain('mode: subagent');
+    // OpenCode derives the name from the filename — it must NOT be in frontmatter.
+    expect(content).not.toMatch(/^name:/m);
+    expect(content).toContain('You are a helpful assistant.');
+  });
+
+  it('includes model when present', () => {
+    const spec = makeSpec({ model: 'anthropic/claude-sonnet-4' });
+    const { content } = renderForOpencode(spec);
+    expect(content).toContain('model: anthropic/claude-sonnet-4');
+  });
+
+  it('does NOT emit the deprecated tools field', () => {
+    const spec = makeSpec({ tools: ['read', 'write'] });
+    const { content } = renderForOpencode(spec);
+    expect(content).not.toMatch(/^tools:/m);
+  });
+
+  it('flattens tool_extras.opencode (permission/temperature) into frontmatter', () => {
+    const spec = makeSpec({ tool_extras: { opencode: { temperature: 0.1, permission: { edit: 'deny' } } } });
+    const { content } = renderForOpencode(spec);
+    expect(content).toContain('temperature: 0.1');
+    expect(content).toContain('edit: deny');
+  });
+
+  it('renderForTool dispatches opencode to renderForOpencode', () => {
+    const spec = makeSpec();
+    const viaTool = renderForTool(spec, 'opencode');
+    const direct = renderForOpencode(spec);
+    expect(viaTool).toEqual(direct);
+  });
+});
+
+// ─── reverseFromOpencode ─────────────────────────────────────────────────────
+
+describe('reverseFromOpencode', () => {
+  it('derives name from filename and reads description', () => {
+    const content = `---\ndescription: OpenCode helper\nmode: subagent\n---\nInstructions here\n`;
+    const result = reverseFromOpencode('/agents/oc-agent.md', content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.spec.name).toBe('oc-agent');
+    expect(result.spec.description).toBe('OpenCode helper');
+  });
+
+  it('collects mode/permission into tool_extras.opencode', () => {
+    const content = `---\ndescription: b\nmode: subagent\ntemperature: 0.2\n---\nBody\n`;
+    const result = reverseFromOpencode('/agents/a.md', content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.spec.tool_extras?.['opencode']).toEqual({ mode: 'subagent', temperature: 0.2 });
+  });
+
+  it('moves model into the common field, not extras', () => {
+    const content = `---\ndescription: b\nmodel: anthropic/claude-sonnet-4\n---\nBody\n`;
+    const result = reverseFromOpencode('/agents/a.md', content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.spec.model).toBe('anthropic/claude-sonnet-4');
+    expect(result.spec.tool_extras?.['opencode']).toBeUndefined();
+  });
+
+  it('returns error on missing description', () => {
+    const content = `---\nmode: subagent\n---\nBody\n`;
+    const result = reverseFromOpencode('/agents/a.md', content);
+    expect(result.ok).toBe(false);
+  });
+
+  it('returns error on empty body', () => {
+    const content = `---\ndescription: b\n---\n\n`;
+    const result = reverseFromOpencode('/agents/a.md', content);
+    expect(result.ok).toBe(false);
+  });
+
+  it('round-trips render → reverse preserving common fields', () => {
+    const spec = makeSpec({ model: 'anthropic/claude-sonnet-4' });
+    const { content } = renderForOpencode(spec);
+    const result = reverseFromOpencode('/agents/test-agent.md', content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.spec.name).toBe('test-agent');
+    expect(result.spec.description).toBe(spec.description);
+    expect(result.spec.instructions).toBe(spec.instructions);
+    expect(result.spec.model).toBe('anthropic/claude-sonnet-4');
   });
 });
 

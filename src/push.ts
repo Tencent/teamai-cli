@@ -3,7 +3,7 @@ import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.j
 import { assertNotReadOnly } from './read-only.js';
 import {
   createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName,
-  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch,
+  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev,
 } from './utils/git.js';
 import { syncTeamUpdatesToLocal } from './utils/pre-push-sync.js';
 import { getProvider } from './providers/index.js';
@@ -14,7 +14,7 @@ import type { GlobalOptions, ResourceItem, ResourceType, LocalConfig, TeamaiConf
 import { assertSafePath, assertSafeResourceName, defaultAllowedRoots } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
 import { askQuestion, askSelection } from './utils/prompt.js';
-import { pathExists } from './utils/fs.js';
+import { pathExists, readFileSafe, writeFile } from './utils/fs.js';
 
 /**
  * Synthetic toolPaths key used only to make `teamai push` scan the active tree's
@@ -141,6 +141,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
       } else {
         log.error(`Push failed: ${(e as Error).message}`);
       }
+      process.exitCode = 1;
     }
     return;
   }
@@ -165,6 +166,12 @@ async function pushCore(
   // In self mode the worktree is already a fresh detached checkout of
   // origin/<default>, so resetToCleanMaster/pullRepo (which assume a normal
   // clone on a branch) are neither needed nor safe — skip them.
+  // Uncommitted teamai.yaml edits (e.g. from `teamai source add`, which writes the
+  // file but does not commit) live in the team repo working tree. resetToCleanMaster
+  // below does `git reset --hard`, which would silently destroy them. Capture the
+  // working-tree content before the reset and restore it after pull, so config edits
+  // survive and get committed alongside resources (see gitFiles construction below).
+  let pendingTeamConfig: string | null = null;
   if (!selfMode) {
     const pullSpin = spinner('Pulling latest changes...').start();
     try {
@@ -178,10 +185,23 @@ async function pushCore(
         // message rather than silently doing nothing or damaging their repo.
         pullSpin.fail('Cannot push: team repo path is not a dedicated git root. '
           + 'Run `teamai init` to re-clone the team repo before pushing.');
+        process.exitCode = 1;
         return;
+      }
+      const yamlPath = path.join(repoPath, 'teamai.yaml');
+      const workingContent = await readFileSafe(yamlPath);
+      if (workingContent !== null) {
+        const committed = await getFileContentAtRev(repoPath, 'HEAD', 'teamai.yaml');
+        if (committed === null || committed.toString() !== workingContent) {
+          pendingTeamConfig = workingContent;
+        }
       }
       await resetToCleanMaster(git, repoPath);
       await pullRepo(repoPath);
+      if (pendingTeamConfig !== null) {
+        // Re-apply the user's config edits on top of the freshly pulled default branch.
+        await writeFile(yamlPath, pendingTeamConfig);
+      }
       pullSpin.succeed('Up to date');
     } catch (e) {
       pullSpin.warn(`Pull failed: ${(e as Error).message}`);
@@ -354,7 +374,37 @@ async function pushCore(
     allItems.push(matchedItem);
   }
 
+  // An explicit --role is a destination override for every selected skill,
+  // including modified skills. Keep relativePath aligned with pushItem's
+  // destination so git stages the files that were actually copied (#331).
+  if (options.role) {
+    try {
+      assertSafeResourceName(options.role);
+      for (const item of allItems) {
+        if (item.type === 'skills') {
+          assertSafeResourceName(item.name);
+        }
+      }
+    } catch (e) {
+      log.error(`Invalid skill role or name: ${(e as Error).message}`);
+      process.exitCode = 2;
+      return;
+    }
+    for (const item of allItems) {
+      if (item.type !== 'skills') continue;
+      item.namespace = options.role;
+      item.relativePath = `skills/${options.role}/${item.name}`;
+    }
+  }
+
   if (allItems.length === 0) {
+    // No resource changes, but the user may have edited teamai.yaml (sources /
+    // publicSkills) via `teamai source add`. Push that config change on its own
+    // rather than reporting "nothing to push".
+    if (pendingTeamConfig !== null) {
+      await pushTeamConfigOnly(localConfig, teamConfig, options);
+      return;
+    }
     log.info('No new or modified resources to push');
     return;
   }
@@ -524,7 +574,10 @@ async function pushCore(
       localConfig.repo.localPath,
       sweeperCandidates,
     );
-    const gitFiles = [...new Set([...pushedFiles, ...existingSweepers])];
+    // Include teamai.yaml when the user edited it (e.g. `teamai source add`), so
+    // sources / publicSkills changes ride along in the same PR as the resources.
+    const configFiles = pendingTeamConfig !== null ? ['teamai.yaml'] : [];
+    const gitFiles = [...new Set([...pushedFiles, ...existingSweepers, ...configFiles])];
     const branchName = generateBranchName(localConfig.username);
     const commitMsg = `[teamai] Push ${selectedItems.length} resource(s) from ${localConfig.username}`;
 
@@ -546,13 +599,16 @@ async function pushCore(
     pushSpin.succeed(`Pushed branch ${branchName}`);
 
     // Create PR/MR via provider
-    await createPrWithFallback(
+    const prUrl = await createPrWithFallback(
       teamConfig,
       localConfig,
       branchName,
       commitMsg,
       `Pushed ${selectedItems.length} resource(s):\n${selectedItems.map((i) => `- [${i.type}] ${i.name}`).join('\n')}`,
     );
+    if (!prUrl) {
+      process.exitCode = 1;
+    }
 
     // Switch back to master after PR creation
     await checkoutMaster(localConfig.repo.localPath);
@@ -570,6 +626,7 @@ async function pushCore(
         );
       }
     }
+    process.exitCode = 1;
     return;
   }
 
@@ -588,4 +645,63 @@ async function pushCore(
     }
   }
   await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
+}
+
+/**
+ * Push a teamai.yaml-only change (e.g. from `teamai source add`) to the team repo
+ * via a PR. Called when the user edited config but changed no resources, so the
+ * normal resource-push path would exit with "No new or modified resources".
+ *
+ * Precondition: the working-tree teamai.yaml already carries the user's edits
+ * (restored after pull in pushCore) and the repo is a dedicated git root.
+ */
+async function pushTeamConfigOnly(
+  localConfig: LocalConfig,
+  teamConfig: TeamaiConfig,
+  options: GlobalOptions,
+): Promise<void> {
+  console.log('');
+  console.log('Found team config change to push:');
+  console.log('  - teamai.yaml');
+  console.log('');
+
+  if (options.dryRun) {
+    log.info('Dry run — no changes made');
+    return;
+  }
+
+  const pushSpin = spinner('Pushing team config...').start();
+  const branchName = generateBranchName(localConfig.username);
+  const commitMsg = `[teamai] Update team config from ${localConfig.username}`;
+
+  try {
+    const hasChanges = await pushRepoBranch(
+      localConfig.repo.localPath,
+      commitMsg,
+      ['teamai.yaml'],
+      branchName,
+    );
+    if (!hasChanges) {
+      pushSpin.succeed('No changes to push (config already up to date)');
+      return;
+    }
+    pushSpin.succeed(`Pushed branch ${branchName}`);
+
+    const prUrl = await createPrWithFallback(
+      teamConfig,
+      localConfig,
+      branchName,
+      commitMsg,
+      'Updated team config (teamai.yaml)',
+    );
+    if (!prUrl) {
+      process.exitCode = 1;
+    }
+
+    await checkoutMaster(localConfig.repo.localPath);
+  } catch (e) {
+    pushSpin.fail(`Push failed: ${(e as Error).message}`);
+    process.exitCode = 1;
+    return;
+  }
 }

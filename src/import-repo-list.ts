@@ -157,6 +157,24 @@ export async function importFromRepoList(
         }
     }
 
+    // 4.5 全量重建全局导航文件 router.md / index.md（基于完整 evidence/code/ 目录，覆盖 append 的中间状态）
+    if (!dryRun && succeeded.length > 0) {
+        try {
+            const { autoDetectInit } = await import('./config.js');
+            const { localConfig } = await autoDetectInit();
+            const teamwikiRoot = path.join(localConfig.repo.localPath, 'teamwiki');
+
+            if (await fs.pathExists(teamwikiRoot)) {
+                const { rebuildWikiIndex } = await import('./rebuild-wiki-index.js');
+                await rebuildWikiIndex(teamwikiRoot);
+                log.info('teamwiki router.md / index.md rebuilt');
+            }
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            log.warn(`[wiki] global index rebuild failed (non-blocking): ${msg}`);
+        }
+    }
+
     // 5. 统一推送（graph 通过 MR 提交）
     if (!dryRun && succeeded.length > 0) {
         try {

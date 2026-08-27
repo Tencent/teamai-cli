@@ -3,7 +3,7 @@ import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir, isAgentDisabled } from '../types.js';
+import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir, isAgentDisabled, scopedToolPaths } from '../types.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 
 export class RulesHandler extends ResourceHandler {
@@ -31,7 +31,7 @@ export class RulesHandler extends ResourceHandler {
     const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus }>();
 
     // Scan each tool's rules/ directory (recursively)
-    for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       const rulesPath = toolPath.rules;
       if (!rulesPath) continue;
       const rulesDir = path.join(resolveBaseDir(localConfig), rulesPath);
@@ -119,7 +119,7 @@ export class RulesHandler extends ResourceHandler {
    */
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
     const baseDir = resolveBaseDir(localConfig);
-    for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (isAgentDisabled(localConfig, tool)) continue;
       if (!toolPath.rules) continue;
 
@@ -160,7 +160,7 @@ export class RulesHandler extends ResourceHandler {
     await this.addTombstone(name, localConfig);
 
     // Remove from each tool's rules directory
-    for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.rules) continue;
       const filePath = path.join(baseDir, toolPath.rules, fileName);
       if (await pathExists(filePath)) {
@@ -203,6 +203,18 @@ export class RulesHandler extends ResourceHandler {
       }
     }
 
+    // OpenCode does not auto-scan a rules directory: the .md files are inert
+    // until referenced from `instructions` in opencode.json. Activate (or, when
+    // there are no team rules, deactivate) that glob. Runs before the empty-set
+    // early return so removing the last rule also removes the glob.
+    await this.activateOpencodeInstructions(teamConfig, localConfig, rules.length > 0);
+
+    // Empty set = the team has no rules right now. We deliberately do NOT run the
+    // aggressive stale-file cleanup below in that case, because it would treat a
+    // user's own personal rule files as stale and delete them. Explicit team
+    // removals are handled by the tombstone cleanup in pull.ts instead. The
+    // OpenCode glob deactivation above still runs, so the (now unmanaged) rules
+    // stop being auto-loaded.
     if (rules.length === 0) return;
 
     // 1. Distribute rule files to each tool's rules/ directory
@@ -213,7 +225,7 @@ export class RulesHandler extends ResourceHandler {
     // 1.5. Clean up stale local rule files not present in team repo
     const teamRuleFiles = new Set(rules.map((r) => `${r.name}.md`));
     const baseDir = resolveBaseDir(localConfig);
-    for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.rules) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
 
@@ -238,7 +250,7 @@ export class RulesHandler extends ResourceHandler {
     }
 
     // 2. Remove legacy rules section from CLAUDE.md (no longer injected)
-    for (const [, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.claudemd) continue;
       const claudeMdPath = path.join(baseDir, toolPath.claudemd);
       try {
@@ -259,6 +271,42 @@ export class RulesHandler extends ResourceHandler {
       } catch {
         // Best-effort cleanup
       }
+    }
+  }
+
+  /**
+   * Add or remove the teamai rules glob in OpenCode's opencode.json `instructions`
+   * array, so copied rule files are actually loaded. No-op for any tool other than
+   * opencode, when opencode is disabled, or when opencode is not installed (we
+   * never create an opencode.json for a user who doesn't use OpenCode).
+   */
+  private async activateOpencodeInstructions(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    present: boolean,
+  ): Promise<void> {
+    if (isAgentDisabled(localConfig, 'opencode')) return;
+    const scoped = scopedToolPaths(teamConfig, localConfig);
+    const paths = scoped['opencode'];
+    if (!paths?.rules) return;
+
+    const baseDir = resolveBaseDir(localConfig);
+    // Only touch opencode.json when OpenCode is actually installed for this scope.
+    if (!await ResourceHandler.isToolInstalled(paths.rules, baseDir)) return;
+
+    // The config file mirrors the MCP scope fields: <root>/opencode.json in
+    // project scope, ~/.config/opencode/opencode.json in user scope.
+    const configRel = localConfig.scope === 'project' ? paths.mcpProject : paths.mcp;
+    if (!configRel) return;
+    const configFileAbs = path.join(baseDir, configRel);
+    const rulesDirAbs = path.join(baseDir, paths.rules);
+
+    const { reconcileOpencodeInstructions, opencodeRulesGlob } = await import('./opencode-config.js');
+    const glob = opencodeRulesGlob(configFileAbs, rulesDirAbs);
+    try {
+      await reconcileOpencodeInstructions(configFileAbs, glob, present);
+    } catch (e) {
+      log.warn(`Failed to update OpenCode instructions in ${configFileAbs}: ${(e as Error).message}`);
     }
   }
 

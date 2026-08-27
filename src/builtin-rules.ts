@@ -3,8 +3,9 @@ import { ensureDir, writeFile, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { ResourceHandler } from './resources/base.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir, isAgentDisabled } from './types.js';
+import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
 import fs from 'node:fs/promises';
+import { getUserHome } from './utils/home.js';
 
 // ─── Built-in rules deployment ──────────────────────────
 //
@@ -48,14 +49,14 @@ export async function deployBuiltinRules(
     localConfig?: LocalConfig,
     options?: { skipRecall?: boolean },
 ): Promise<number> {
-    const baseDir = localConfig ? resolveBaseDir(localConfig) : (process.env.HOME ?? '');
+    const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
     let deployed = 0;
 
     const builtinRules: Array<{ name: string; content: string }> = [
         { name: 'teamai-recall', content: TEAMAI_RECALL_RULE_CONTENT },
     ].filter(r => !(options?.skipRecall && r.name === 'teamai-recall'));
 
-    for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
         if (!toolPath.rules) continue;
 
         // Skip tools that are not installed

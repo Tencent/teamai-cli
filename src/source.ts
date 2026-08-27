@@ -18,6 +18,8 @@ import {
 import { getHandler } from './resources/index.js';
 import { ResourceHandler } from './resources/base.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
+import { getUserHome } from './utils/home.js';
+import { assertSafeResourceName } from './utils/path-safety.js';
 import type {
   TeamaiConfig,
   LocalConfig,
@@ -25,12 +27,13 @@ import type {
   SourceInstallManifest,
   GlobalOptions,
 } from './types.js';
-import { resolveBaseDir, SOURCE_PULL_TTL_MS } from './types.js';
+import { resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
 
 // ─── Source repo management ──────────────────────────────
 
 function getSourceDir(sourceName: string): string {
-  return path.join(process.env.HOME ?? '', '.teamai', 'sources', sourceName);
+  assertSafeResourceName(sourceName);
+  return path.join(getUserHome(), '.teamai', 'sources', sourceName);
 }
 
 function getSourceRepoDir(sourceName: string): string {
@@ -84,7 +87,8 @@ async function ensureSourceRepo(source: SourceConfig, force: boolean): Promise<s
     }
   }
 
-  // First time: clone via provider so private repos get an auth token
+  // First time: clone via the provider so its configured authentication path
+  // (token, credential helper, or SSH agent) is used.
   try {
     await ensureDir(path.dirname(repoDir));
     const cloneSpin = spinner(`[source:${source.name}] Cloning...`).start();
@@ -92,7 +96,10 @@ async function ensureSourceRepo(source: SourceConfig, force: boolean): Promise<s
     const providerName = detectProvider(source.repo);
     const provider = getProvider(providerName);
     const repoInfo = provider.parseRepoInput(source.repo);
-    provider.cloneRepo(`${repoInfo.owner}/${repoInfo.repo}`, repoDir);
+    const cloneTarget = provider.name === 'git'
+      ? repoInfo.httpsUrl
+      : `${repoInfo.owner}/${repoInfo.repo}`;
+    provider.cloneRepo(cloneTarget, repoDir);
 
     cloneSpin.succeed(`[source:${source.name}] Cloned`);
     return repoDir;
@@ -116,6 +123,12 @@ export async function sourceAdd(repoUrl: string, options: { name?: string } & Gl
   const name = options.name ?? deriveSourceName(repoUrl);
   if (!name) {
     log.error('Could not derive source name from URL. Use --name to specify one.');
+    return;
+  }
+  try {
+    assertSafeResourceName(name);
+  } catch (e) {
+    log.error(`Invalid source name "${name}": ${(e as Error).message}`);
     return;
   }
 
@@ -454,7 +467,7 @@ async function pullSingleSource(
     }
 
     // Deploy to each tool's skills directory
-    for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
 
@@ -475,7 +488,7 @@ async function pullSingleSource(
     const deployedSet = new Set(deployed);
     for (const oldSkill of oldInstalled) {
       if (!deployedSet.has(oldSkill) && !localTeamSkills.has(oldSkill)) {
-        await removeSkillFromToolPaths(oldSkill, teamConfig, baseDir);
+        await removeSkillFromToolPaths(oldSkill, teamConfig, localConfig, baseDir);
         log.debug(`[source:${source.name}] Removed "${oldSkill}" (no longer public)`);
       }
     }
@@ -507,20 +520,27 @@ async function pullSingleSource(
  *   - "https://github.com/teamai/skills.git"  → "teamai"
  *   - "git@git.woa.com:platform/skills.git"   → "platform"
  */
-function deriveSourceName(repoUrl: string): string | null {
-  // SSH format: git@host:owner/repo.git (or git@host:group/sub/repo.git)
-  const sshMatch = repoUrl.match(/:([^/]+)\//);
-  if (sshMatch) return sshMatch[1];
+export function deriveSourceName(repoUrl: string): string | null {
+  const trimmed = repoUrl.trim();
+  let repoPath = '';
 
-  // HTTPS format: https://host/owner/repo(.git)?
-  const httpsMatch = repoUrl.match(/\/\/[^/]+\/([^/]+)\/[^/]+?(?:\.git)?\/?$/);
-  if (httpsMatch) return httpsMatch[1];
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) {
+    try {
+      repoPath = new URL(trimmed).pathname;
+    } catch {
+      return null;
+    }
+  } else {
+    const scpMatch = trimmed.match(/^[^@\s]+@[^:\s]+:(.+)$/);
+    repoPath = scpMatch?.[1] ?? trimmed;
+  }
 
-  // Fallback: penultimate segment of the URL, stripping .git
-  const parts = repoUrl.replace(/\.git$/, '').split('/');
-  if (parts.length >= 2) return parts[parts.length - 2];
-
-  return null;
+  const segments = repoPath
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\.git$/i, '')
+    .split('/')
+    .filter(Boolean);
+  return segments.length >= 2 ? segments[0] : null;
 }
 
 /**
@@ -590,8 +610,8 @@ async function getLocalTeamSkillNames(teamConfig: TeamaiConfig, localConfig: Loc
 /**
  * Remove a skill from all tool paths.
  */
-async function removeSkillFromToolPaths(skillName: string, teamConfig: TeamaiConfig, baseDir: string): Promise<void> {
-  for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+async function removeSkillFromToolPaths(skillName: string, teamConfig: TeamaiConfig, localConfig: LocalConfig, baseDir: string): Promise<void> {
+  for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.skills) continue;
     const skillDir = path.join(baseDir, toolPath.skills, skillName);
     if (await pathExists(skillDir)) {
@@ -609,7 +629,7 @@ async function cleanupSourceSkills(sourceName: string, teamConfig: TeamaiConfig,
 
   const baseDir = resolveBaseDir(localConfig);
   for (const skillName of manifest.installedSkills) {
-    await removeSkillFromToolPaths(skillName, teamConfig, baseDir);
+    await removeSkillFromToolPaths(skillName, teamConfig, localConfig, baseDir);
   }
 }
 
@@ -619,7 +639,7 @@ async function cleanupSourceSkills(sourceName: string, teamConfig: TeamaiConfig,
  */
 export async function getAllSourceSkillNames(): Promise<Set<string>> {
   const names = new Set<string>();
-  const sourcesDir = path.join(process.env.HOME ?? '', '.teamai', 'sources');
+  const sourcesDir = path.join(getUserHome(), '.teamai', 'sources');
   if (!await pathExists(sourcesDir)) return names;
 
   const sourceDirs = await listDirs(sourcesDir);

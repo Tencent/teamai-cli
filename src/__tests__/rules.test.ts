@@ -585,3 +585,81 @@ scope: 'user',
     expect(await fse.pathExists(path.join(localRulesDir, 'old-user-rule.md'))).toBe(false);
   });
 });
+
+describe('RulesHandler.pullAllRules — OpenCode instructions activation', () => {
+  let tmpDir: string;
+  let homeDir: string;
+  let handler: RulesHandler;
+  let teamConfig: TeamaiConfig;
+  let localConfig: LocalConfig;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-rules-oc-'));
+    homeDir = path.join(tmpDir, 'home');
+    const repoPath = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(path.join(repoPath, 'rules'));
+    // OpenCode installed at user scope: ~/.config/opencode present.
+    await fse.ensureDir(path.join(homeDir, '.config', 'opencode', 'skills'));
+    vi.stubEnv('HOME', homeDir);
+
+    handler = new RulesHandler();
+    teamConfig = {
+      team: 'test', description: '', repo: 'r', provider: 'tgit' as const, reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+      toolPaths: {
+        opencode: {
+          skills: '.opencode/skills', rules: '.opencode/rules', agents: '.opencode/agents',
+          mcp: '.config/opencode/opencode.json', mcpProject: 'opencode.json',
+          userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules', agents: '.config/opencode/agents' },
+        },
+      },
+    } as unknown as TeamaiConfig;
+
+    localConfig = {
+      repo: { localPath: repoPath, remote: 'r' },
+      username: 'u', additionalRoles: [], scope: 'user',
+    } as unknown as LocalConfig;
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  const ocConfig = () => path.join(homeDir, '.config', 'opencode', 'opencode.json');
+  const ocRules = () => path.join(homeDir, '.config', 'opencode', 'rules');
+
+  it('copies rule files to ~/.config/opencode/rules and adds the instructions glob', async () => {
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'rules', 'team-rule.md'), 'team content');
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    // File landed under the user-scope OpenCode rules dir.
+    expect(await fse.pathExists(path.join(ocRules(), 'team-rule.md'))).toBe(true);
+    // opencode.json now references the teamai glob (user scope → 'rules/*.md').
+    const doc = await fse.readJson(ocConfig());
+    expect(doc.instructions).toContain('rules/*.md');
+  });
+
+  it('removes the instructions glob when the team has no rules left', async () => {
+    // First: one rule → glob present.
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'rules', 'r.md'), 'x');
+    await handler.pullAllRules(teamConfig, localConfig);
+    expect((await fse.readJson(ocConfig())).instructions).toContain('rules/*.md');
+
+    // Then: remove the team rule and re-pull → glob gone.
+    await fse.remove(path.join(localConfig.repo.localPath, 'rules', 'r.md'));
+    await handler.pullAllRules(teamConfig, localConfig);
+    const doc = await fse.readJson(ocConfig());
+    expect(doc.instructions ?? []).not.toContain('rules/*.md');
+  });
+
+  it('does not create opencode.json when OpenCode is not installed', async () => {
+    // Remove the install marker.
+    await fse.remove(path.join(homeDir, '.config', 'opencode'));
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'rules', 'team-rule.md'), 'content');
+
+    await handler.pullAllRules(teamConfig, localConfig);
+    expect(await fse.pathExists(ocConfig())).toBe(false);
+  });
+});

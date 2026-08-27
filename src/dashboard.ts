@@ -13,6 +13,7 @@ import {
   type DashboardEvent,
 } from './types.js';
 import { getDashboardHtml } from './dashboard-html.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── Dashboard server architecture ──────────────────────
 //
@@ -35,7 +36,7 @@ type SSEClient = http.ServerResponse;
  */
 export async function startDashboard(port?: number): Promise<void> {
   const serverPort = port ?? DASHBOARD_DEFAULT_PORT;
-  const eventsPath = path.join(process.env.HOME ?? '', '.teamai', 'dashboard', 'events.jsonl');
+  const eventsPath = path.join(getUserHome(), '.teamai', 'dashboard', 'events.jsonl');
 
   // Ensure events directory exists
   await ensureDir(path.dirname(eventsPath));

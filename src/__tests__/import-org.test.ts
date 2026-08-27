@@ -14,6 +14,7 @@ vi.mock('../import-repo-list.js', () => ({
 vi.mock('../providers/registry.js', () => ({
     getProvider: vi.fn(),
     getProviderFromUrl: vi.fn().mockReturnValue({ name: 'github' }),
+    detectProvider: vi.fn().mockReturnValue('github'),
 }));
 
 // ─── Imports (after mocks) ───────────────────────────────

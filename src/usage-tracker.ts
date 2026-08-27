@@ -7,15 +7,16 @@ import {
   type UsageEvent,
 } from './types.js';
 import { ensureDir, readJson, writeJson, pathExists } from './utils/fs.js';
+import { getUserHome } from './utils/home.js';
 
 /** Get the usage JSONL path (evaluated at call time to respect HOME changes in tests). */
 function getUsagePath(): string {
-  return path.join(process.env.HOME ?? '', '.teamai', 'usage.jsonl');
+  return path.join(getUserHome(), '.teamai', 'usage.jsonl');
 }
 
 /** Get the known-skills.json path (evaluated at call time to respect HOME changes in tests). */
 function getKnownSkillsPath(): string {
-  return path.join(process.env.HOME ?? '', '.teamai', 'known-skills.json');
+  return path.join(getUserHome(), '.teamai', 'known-skills.json');
 }
 
 // ─── Data flow ─────────────────────────────────────────
@@ -130,7 +131,7 @@ const SKILL_DIRS = [
  * Performance: Checks at most 12 directories (6 user + 6 project) with a single stat() each — sub-millisecond.
  */
 export async function skillExistsOnDisk(skillName: string): Promise<boolean> {
-  const home = process.env.HOME ?? '';
+  const home = getUserHome();
   // Check user-level directories
   for (const dir of SKILL_DIRS) {
     const skillMd = path.join(home, dir, skillName, 'SKILL.md');
