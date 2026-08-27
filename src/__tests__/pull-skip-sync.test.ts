@@ -142,6 +142,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
       pushedRules: [],
       pushedSkills: [],
       pushedEnvVars: [],
+      pendingPushes: [],
       lastUpdateCheck: null,
       availableUpdate: null,
     });
@@ -164,6 +165,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
       pushedRules: [],
       pushedSkills: [],
       pushedEnvVars: [],
+      pendingPushes: [],
       lastUpdateCheck: null,
       availableUpdate: null,
     });
@@ -188,6 +190,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
       pushedRules: [],
       pushedSkills: [],
       pushedEnvVars: [],
+      pendingPushes: [],
       lastUpdateCheck: null,
       availableUpdate: null,
     });
@@ -211,6 +214,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
       pushedRules: [],
       pushedSkills: [],
       pushedEnvVars: [],
+      pendingPushes: [],
       lastUpdateCheck: null,
       availableUpdate: null,
     });
@@ -232,6 +236,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
       pushedRules: [],
       pushedSkills: [],
       pushedEnvVars: [],
+      pendingPushes: [],
       lastUpdateCheck: null,
       availableUpdate: null,
     });
@@ -251,6 +256,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
       pushedRules: [],
       pushedSkills: [],
       pushedEnvVars: [],
+      pendingPushes: [],
       lastUpdateCheck: null,
       availableUpdate: null,
     });
@@ -272,6 +278,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
       pushedRules: [],
       pushedSkills: [],
       pushedEnvVars: [],
+      pendingPushes: [],
       lastUpdateCheck: null,
       availableUpdate: null,
     });
@@ -368,6 +375,7 @@ describe('pull skip-sync refreshes CLAUDE.md recall block (CLI upgrade)', () => 
       pushedRules: [],
       pushedSkills: [],
       pushedEnvVars: [],
+      pendingPushes: [],
       lastUpdateCheck: null,
       availableUpdate: null,
     });

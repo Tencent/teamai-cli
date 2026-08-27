@@ -299,6 +299,37 @@ export type LocalConfigInput = z.input<typeof LocalConfigSchema>;
 
 // ─── Local state (~/.teamai/state.json) ────────────────────
 
+/**
+ * A resource that was included in a still-open push PR.
+ * Matched against fresh scan results by `type` + `name`.
+ */
+export const PendingPushItemSchema = z.object({
+  type: z.string(),
+  name: z.string(),
+  /** Destination path inside the team repo, e.g. "skills/js/hello-skill". */
+  relativePath: z.string(),
+  /** Skill namespace chosen at push time, reapplied when the PR is updated. */
+  namespace: z.string().optional(),
+});
+
+/**
+ * A push branch that has been sent to the remote but whose PR is not merged yet.
+ *
+ * `teamai push` detects changes by diffing against the team repo's default
+ * branch, so resources sitting in an unmerged PR look "new" on every run and
+ * used to produce an endless stream of duplicate PRs. Recording them here lets
+ * push skip them by default and offer to update the existing PR instead.
+ */
+export const PendingPushSchema = z.object({
+  branch: z.string(),
+  prUrl: z.string().nullable().default(null),
+  createdAt: z.string(),
+  items: z.array(PendingPushItemSchema).default([]),
+});
+
+export type PendingPushItem = z.infer<typeof PendingPushItemSchema>;
+export type PendingPush = z.infer<typeof PendingPushSchema>;
+
 export const StateSchema = z.object({
   lastPush: z.string().nullable().default(null),
   lastPull: z.string().nullable().default(null),
@@ -313,6 +344,8 @@ export const StateSchema = z.object({
   pushedRules: z.array(z.string()).default([]),
   pushedSkills: z.array(z.string()).default([]),
   pushedEnvVars: z.array(z.string()).default([]),
+  /** Push branches whose PR is still open — see PendingPushSchema. */
+  pendingPushes: z.array(PendingPushSchema).default([]),
   lastUpdateCheck: z.string().nullable().default(null),
   availableUpdate: z.string().nullable().default(null),
 });

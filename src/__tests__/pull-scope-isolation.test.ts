@@ -171,6 +171,7 @@ describe('pull scope isolation (issue #73)', () => {
       pushedRules: [],
       pushedSkills: [],
       pushedEnvVars: [],
+      pendingPushes: [],
       lastUpdateCheck: null,
       availableUpdate: null,
     }));

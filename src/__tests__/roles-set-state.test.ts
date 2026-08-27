@@ -97,6 +97,7 @@ describe('rolesSet — state invalidation', () => {
             pushedRules: [],
             pushedSkills: [],
             pushedEnvVars: [],
+            pendingPushes: [],
             lastUpdateCheck: null,
             availableUpdate: null,
         });
