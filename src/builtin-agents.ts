@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureDir, pathExists, readFileSafe, writeFile } from './utils/fs.js';
+import { ensureDir, pathExists, readFileSafe, writeFile, remove, listFiles } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
@@ -59,6 +59,38 @@ function getBuiltinAgentsDir(): string {
  *
  * @returns Total number of (agent × tool) deployments performed
  */
+/**
+ * Remove any same-stem sibling agent file whose extension differs from `targetExt`.
+ *
+ * Per-tool rendering can change an agent's native extension (e.g. Codex ships as
+ * `.toml` while Claude ships as `.md`). When re-rendering on `teamai pull`, a
+ * stale file from a previous extension (left behind by an upgrade or a renderer
+ * change) must be cleaned up so the tool does not load two conflicting copies —
+ * the stale `.md` would be invalid TOML for Codex, and the stale `.toml` would
+ * be invalid frontmatter for Claude.
+ *
+ * Mirrors the stem-based match already used by `src/uninstall.ts`.
+ */
+async function removeStaleAgentSiblings(targetAgentsDir: string, stem: string, targetExt: string): Promise<void> {
+  let files: string[];
+  try {
+    files = await listFiles(targetAgentsDir);
+  } catch {
+    return; // dir missing or unreadable — nothing to clean
+  }
+  for (const file of files) {
+    const base = file.replace(/\.(md|toml)$/, '');
+    if (base !== stem) continue;
+    if (file === `${stem}${targetExt}`) continue;
+    try {
+      await remove(path.join(targetAgentsDir, file));
+      log.debug(`Removed stale agent sibling ${file} for ${stem}`);
+    } catch {
+      // best-effort
+    }
+  }
+}
+
 export async function deployBuiltinAgents(
   teamConfig: TeamaiConfig,
   localConfig?: LocalConfig,
@@ -122,7 +154,13 @@ export async function deployBuiltinAgents(
           throw new Error(`invalid built-in agent ${file}: ${parsed.reason}`);
         }
         const rendered = renderForTool(parsed.spec, tool as ToolName);
-        const dest = path.join(targetAgentsDir, `${path.basename(file, '.md')}${rendered.ext}`);
+        const stem = path.basename(file, '.md');
+        // Clean up any same-stem sibling with a different extension before
+        // writing the (possibly new) native extension — e.g. an upgrade that
+        // switches a tool from .md to .toml must not leave the stale .md behind
+        // (it would be invalid TOML for Codex, or invalid frontmatter for Claude).
+        await removeStaleAgentSiblings(targetAgentsDir, stem, rendered.ext);
+        const dest = path.join(targetAgentsDir, `${stem}${rendered.ext}`);
         await writeFile(dest, rendered.content);
         deployed++;
       } catch (e) {

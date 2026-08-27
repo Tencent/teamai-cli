@@ -180,4 +180,40 @@ describe('deployBuiltinAgents', () => {
     const deployed = await deployBuiltinAgents(teamConfig, localConfig);
     expect(deployed).toBe(0);
   });
+
+  it('removes a stale same-stem sibling when re-rendering to a different extension', async () => {
+    const recallSrc = path.join(builtinAgentsDir, 'teamai-recall.md');
+    if (!fs.existsSync(recallSrc)) return;
+
+    // Upgrade residue: an old .md copy left beside the new .toml render for
+    // Codex (the exact scenario reported in the PR review).
+    await fse.ensureDir(path.join(homeDir, '.codex', 'agents'));
+    const staleMd = path.join(homeDir, '.codex', 'agents', 'teamai-recall.md');
+    await fse.writeFile(staleMd, '# stale invalid-for-codex copy');
+
+    const teamConfig = buildTeamConfig({ codex: { agents: '.codex/agents' } });
+
+    const deployed = await deployBuiltinAgents(teamConfig, localConfig);
+    expect(deployed).toBeGreaterThanOrEqual(1);
+
+    const tomlPath = path.join(homeDir, '.codex', 'agents', 'teamai-recall.toml');
+    expect(await fse.pathExists(tomlPath)).toBe(true);
+    expect(await fse.pathExists(staleMd)).toBe(false);
+  });
+
+  it('removes a stale .toml sibling when re-rendering back to .md (claude)', async () => {
+    const recallSrc = path.join(builtinAgentsDir, 'teamai-recall.md');
+    if (!fs.existsSync(recallSrc)) return;
+
+    await fse.ensureDir(path.join(homeDir, '.claude', 'agents'));
+    const staleToml = path.join(homeDir, '.claude', 'agents', 'teamai-recall.toml');
+    await fse.writeFile(staleToml, '[not valid frontmatter]');
+
+    const teamConfig = buildTeamConfig({ claude: { agents: '.claude/agents' } });
+
+    await deployBuiltinAgents(teamConfig, localConfig);
+
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'agents', 'teamai-recall.md'))).toBe(true);
+    expect(await fse.pathExists(staleToml)).toBe(false);
+  });
 });
