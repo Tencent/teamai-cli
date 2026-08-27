@@ -5,6 +5,16 @@ import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileConten
 import { log } from '../utils/logger.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir, isAgentDisabled, scopedToolPaths } from '../types.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
+import { teamRuleToCursorMdc, cursorMdcToTeamMd, cursorMdcBodyEqualsTeamMd } from './cursor-mdc.js';
+
+/**
+ * Cursor stores project rules as `.cursor/rules/*.mdc` and ignores plain `.md`
+ * files there (they lack the frontmatter Cursor requires). All other tools use
+ * plain `.md`. `ruleExtForTool` returns the on-disk extension for a given tool.
+ */
+function ruleExtForTool(tool: string): '.md' | '.mdc' {
+  return tool === 'cursor' ? '.mdc' : '.md';
+}
 
 export class RulesHandler extends ResourceHandler {
   readonly type = 'rules' as const;
@@ -31,26 +41,40 @@ export class RulesHandler extends ResourceHandler {
     const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus }>();
 
     // Scan each tool's rules/ directory (recursively)
-    for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       const rulesPath = toolPath.rules;
       if (!rulesPath) continue;
       const rulesDir = path.join(resolveBaseDir(localConfig), rulesPath);
       if (!await pathExists(rulesDir)) continue;
 
+      // Cursor stores rules as `.mdc`; every other tool as `.md`.
+      const ext = ruleExtForTool(tool);
+      const isCursor = tool === 'cursor';
+
       const files = await listFilesRecursive(rulesDir);
       for (const file of files) {
-        if (!file.endsWith('.md')) continue;
+        if (!file.endsWith(ext)) continue;
         // name includes subdirectory path, e.g. "common/coding-standards"
-        const name = file.replace(/\.md$/, '');
+        const name = file.slice(0, -ext.length);
         if (tombstones.has(name)) continue;
         if (EXCLUDED_RULE_NAMES.has(name)) continue; // Skip CLI built-in and legacy rules
 
         const localFilePath = path.join(rulesDir, file);
+        // Team repo always stores `.md`, keyed by rule name.
+        const teamFileName = `${name}.md`;
 
-        if (teamRules.has(file)) {
+        if (teamRules.has(teamFileName)) {
           // File exists in team repo — check if content differs
-          const teamFilePath = path.join(teamRulesDir, file);
-          const equal = await fileContentEqual(localFilePath, teamFilePath);
+          const teamFilePath = path.join(teamRulesDir, teamFileName);
+          // For Cursor, compare markdown bodies only: the `.mdc` frontmatter is
+          // machine-derived on pull, so a clean pull-then-push must not look
+          // modified. For other tools the files are byte-identical copies.
+          const equal = isCursor
+            ? cursorMdcBodyEqualsTeamMd(
+                (await readFileSafe(localFilePath)) ?? '',
+                (await readFileSafe(teamFilePath)) ?? '',
+              )
+            : await fileContentEqual(localFilePath, teamFilePath);
           if (equal) continue; // This tool dir's copy is identical, skip
 
           // Content differs — candidate for "modified"
@@ -109,7 +133,14 @@ export class RulesHandler extends ResourceHandler {
   async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
     const dest = path.join(localConfig.repo.localPath, 'rules', `${item.name}.md`);
     if (item.sourcePath !== dest) {
-      await copyFile(item.sourcePath, dest);
+      if (item.sourcePath.endsWith('.mdc')) {
+        // Source is a Cursor `.mdc`: strip its derived frontmatter and write the
+        // tool-neutral markdown body back to the team repo (`.md`).
+        const raw = await readFileSafe(item.sourcePath);
+        await writeFile(dest, cursorMdcToTeamMd(raw ?? ''));
+      } else {
+        await copyFile(item.sourcePath, dest);
+      }
     }
     log.debug(`Copied rule ${item.name} → team repo`);
   }
@@ -131,9 +162,15 @@ export class RulesHandler extends ResourceHandler {
 
       const destDir = path.join(baseDir, toolPath.rules);
       await ensureDir(destDir);
-      const dest = path.join(destDir, `${item.name}.md`);
+      const dest = path.join(destDir, `${item.name}${ruleExtForTool(tool)}`);
       try {
-        await copyFile(item.sourcePath, dest);
+        if (tool === 'cursor') {
+          // Cursor needs `.mdc` with derived frontmatter, not a raw `.md` copy.
+          const raw = await readFileSafe(item.sourcePath);
+          await writeFile(dest, teamRuleToCursorMdc(raw ?? ''));
+        } else {
+          await copyFile(item.sourcePath, dest);
+        }
         log.debug(`Synced rule ${item.name} → ${tool}`);
       } catch (e) {
         log.warn(`Failed to sync rule ${item.name} to ${tool}: ${(e as Error).message}`);
@@ -147,10 +184,9 @@ export class RulesHandler extends ResourceHandler {
   async removeItem(name: string, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
     const removed: string[] = [];
     const baseDir = resolveBaseDir(localConfig);
-    const fileName = `${name}.md`;
 
-    // Remove from team repo
-    const teamFile = path.join(localConfig.repo.localPath, 'rules', fileName);
+    // Remove from team repo (always `.md`)
+    const teamFile = path.join(localConfig.repo.localPath, 'rules', `${name}.md`);
     if (await pathExists(teamFile)) {
       await remove(teamFile);
       removed.push(teamFile);
@@ -159,10 +195,10 @@ export class RulesHandler extends ResourceHandler {
     // Record tombstone so the resource won't be re-pushed
     await this.addTombstone(name, localConfig);
 
-    // Remove from each tool's rules directory
+    // Remove from each tool's rules directory (Cursor uses `.mdc`)
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.rules) continue;
-      const filePath = path.join(baseDir, toolPath.rules, fileName);
+      const filePath = path.join(baseDir, toolPath.rules, `${name}${ruleExtForTool(tool)}`);
       if (await pathExists(filePath)) {
         await remove(filePath);
         removed.push(filePath);
@@ -223,7 +259,7 @@ export class RulesHandler extends ResourceHandler {
     }
 
     // 1.5. Clean up stale local rule files not present in team repo
-    const teamRuleFiles = new Set(rules.map((r) => `${r.name}.md`));
+    const teamRuleNames = new Set(rules.map((r) => r.name));
     const baseDir = resolveBaseDir(localConfig);
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.rules) continue;
@@ -232,13 +268,14 @@ export class RulesHandler extends ResourceHandler {
       const destDir = path.join(baseDir, toolPath.rules);
       if (!await pathExists(destDir)) continue;
 
+      const ext = ruleExtForTool(tool);
       const localFiles = await listFilesRecursive(destDir);
       for (const localFile of localFiles) {
-        if (!localFile.endsWith('.md')) continue;
+        if (!localFile.endsWith(ext)) continue;
         // Skip built-in and legacy rules (managed by CLI, not team repo)
-        const ruleName = localFile.replace(/\.md$/, '');
+        const ruleName = localFile.slice(0, -ext.length);
         if (EXCLUDED_RULE_NAMES.has(ruleName)) continue;
-        if (!teamRuleFiles.has(localFile)) {
+        if (!teamRuleNames.has(ruleName)) {
           const fullPath = path.join(destDir, localFile);
           await remove(fullPath);
           log.debug(`Removed stale rule ${localFile} from ${tool}`);

@@ -590,8 +590,12 @@ async function pullForScope(
         if (!await ResourceHandler.isToolInstalled(dir, baseDir)) continue;
         if (isAgentDisabled(localConfig, tool)) continue;
 
+        // Cursor stores rules as `.mdc`; use that extension so its copies of a
+        // tombstoned rule are cleaned up too.
+        const effectiveExt = type === 'rules' && tool === 'cursor' ? '.mdc' : ext;
+
         for (const name of tombstones) {
-          const localPath = path.join(baseDir, dir, ext ? `${name}${ext}` : name);
+          const localPath = path.join(baseDir, dir, effectiveExt ? `${name}${effectiveExt}` : name);
           if (await pathExists(localPath)) {
             await remove(localPath);
             log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);

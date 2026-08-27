@@ -663,3 +663,130 @@ describe('RulesHandler.pullAllRules — OpenCode instructions activation', () =>
     expect(await fse.pathExists(ocConfig())).toBe(false);
   });
 });
+
+describe('RulesHandler — Cursor .mdc handling', () => {
+  let tmpDir: string;
+  let homeDir: string;
+  let repoPath: string;
+  let handler: RulesHandler;
+  let teamConfig: TeamaiConfig;
+  let localConfig: LocalConfig;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-rules-cursor-'));
+    homeDir = path.join(tmpDir, 'home');
+    repoPath = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(path.join(repoPath, 'rules'));
+    // Both tools installed so pull targets both dirs.
+    await fse.ensureDir(path.join(homeDir, '.claude', 'rules'));
+    await fse.ensureDir(path.join(homeDir, '.cursor', 'rules'));
+
+    vi.stubEnv('HOME', homeDir);
+    handler = new RulesHandler();
+
+    teamConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+      toolPaths: {
+        claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md' },
+        cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json' },
+      },
+    };
+
+    localConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      additionalRoles: [],
+      scope: 'user',
+    };
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  it('pull writes .mdc (not .md) with derived frontmatter for cursor', async () => {
+    await fse.writeFile(
+      path.join(repoPath, 'rules', 'ts-style.md'),
+      '---\npaths:\n  - "**/*.ts"\n---\n\nUse named exports.',
+    );
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    const mdcPath = path.join(homeDir, '.cursor/rules/ts-style.mdc');
+    expect(await fse.pathExists(mdcPath)).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.cursor/rules/ts-style.md'))).toBe(false);
+    const content = await fse.readFile(mdcPath, 'utf-8');
+    expect(content).toContain('globs: **/*.ts');
+    expect(content).toContain('alwaysApply: false');
+    // claude still gets a plain .md copy
+    expect(await fse.pathExists(path.join(homeDir, '.claude/rules/ts-style.md'))).toBe(true);
+  });
+
+  it('a clean pull does not make cursor rules look modified on push', async () => {
+    await fse.writeFile(path.join(repoPath, 'rules', 'enforced.md'), 'A mandatory rule.');
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    expect(items.find((i) => i.name === 'enforced')).toBeUndefined();
+  });
+
+  it('detects a genuine edit to a cursor .mdc body as modified', async () => {
+    await fse.writeFile(path.join(repoPath, 'rules', 'edit-me.md'), 'Original body.');
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    // User edits the body of the .mdc directly.
+    const mdcPath = path.join(homeDir, '.cursor/rules/edit-me.mdc');
+    await fse.writeFile(mdcPath, '---\nalwaysApply: true\n---\n\nEdited body.');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const item = items.find((i) => i.name === 'edit-me');
+    expect(item).toBeDefined();
+    expect(item!.status).toBe('modified');
+    expect(item!.sourcePath).toBe(mdcPath);
+  });
+
+  it('pushItem strips cursor frontmatter when writing an .mdc back to team repo', async () => {
+    const mdcPath = path.join(homeDir, '.cursor/rules/back.mdc');
+    await fse.writeFile(mdcPath, '---\nglobs: **/*.ts\nalwaysApply: false\n---\n\nBody to push.');
+
+    await handler.pushItem(
+      { name: 'back', type: 'rules', sourcePath: mdcPath, relativePath: 'rules/back.md' },
+      teamConfig,
+      localConfig,
+    );
+
+    const teamContent = await fse.readFile(path.join(repoPath, 'rules', 'back.md'), 'utf-8');
+    expect(teamContent).toBe('Body to push.\n');
+    expect(teamContent).not.toContain('globs');
+  });
+
+  it('stale cleanup removes an orphaned cursor .mdc not in team repo', async () => {
+    // Team has one rule; cursor dir has an extra orphan .mdc.
+    await fse.writeFile(path.join(repoPath, 'rules', 'keep.md'), 'keep me');
+    await fse.writeFile(
+      path.join(homeDir, '.cursor/rules/orphan.mdc'),
+      '---\nalwaysApply: true\n---\n\norphan',
+    );
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.pathExists(path.join(homeDir, '.cursor/rules/orphan.mdc'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.cursor/rules/keep.mdc'))).toBe(true);
+  });
+
+  it('removeItem deletes the cursor .mdc copy', async () => {
+    await fse.writeFile(path.join(repoPath, 'rules', 'gone.md'), 'bye');
+    await handler.pullAllRules(teamConfig, localConfig);
+    expect(await fse.pathExists(path.join(homeDir, '.cursor/rules/gone.mdc'))).toBe(true);
+
+    await handler.removeItem('gone', teamConfig, localConfig);
+    expect(await fse.pathExists(path.join(homeDir, '.cursor/rules/gone.mdc'))).toBe(false);
+  });
+});

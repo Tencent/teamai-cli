@@ -287,7 +287,9 @@ scope: 'user',
     await handler.pullItem(item, teamConfig, localConfig);
 
     expect(await fse.pathExists(path.join(homeDir, '.claude/rules/test-rule.md'))).toBe(true);
-    expect(await fse.pathExists(path.join(homeDir, '.cursor/rules/test-rule.md'))).toBe(true);
+    // Cursor rules must be written as `.mdc` (a plain `.md` there is ignored by Cursor).
+    expect(await fse.pathExists(path.join(homeDir, '.cursor/rules/test-rule.mdc'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.cursor/rules/test-rule.md'))).toBe(false);
   });
 });
 
