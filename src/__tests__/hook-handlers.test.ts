@@ -106,6 +106,31 @@ describe('hook-handlers registry', () => {
     );
   });
 
+  it('session-start pull seeds from workspace_roots when cwd is absent', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'session-start' && r.handler.name === 'pull',
+    )!.handler;
+
+    await handler.execute({ workspace_roots: ['/tmp/cursor-project'] }, 'cursor');
+
+    expect(mockSeedProjectAgentRoot).toHaveBeenCalledWith('cursor', '/tmp/cursor-project');
+  });
+
+  it('session-start pull prefers cwd over workspace_roots', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'session-start' && r.handler.name === 'pull',
+    )!.handler;
+
+    await handler.execute(
+      { cwd: '/from-cwd', workspace_roots: ['/from-roots'] },
+      'claude',
+    );
+
+    expect(mockSeedProjectAgentRoot).toHaveBeenCalledWith('claude', '/from-cwd');
+  });
+
   it('stop has update, contribute-check, and dashboard-report handlers', () => {
     const registry = buildHandlerRegistry();
     const stopHandlers = registry

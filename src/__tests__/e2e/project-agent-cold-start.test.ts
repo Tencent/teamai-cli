@@ -250,6 +250,28 @@ describe('project-scope sequential agent cold start (#342)', () => {
     expect(fs.existsSync(path.join(projectRoot, '.codebuddy'))).toBe(false);
   }, 30_000);
 
+  it('SessionStart --tool cursor uses workspace_roots when process cwd is not the project', async () => {
+    for (const agentRoot of ['.claude', '.cursor', '.codex', '.codebuddy']) {
+      fs.rmSync(path.join(projectRoot, agentRoot), { recursive: true, force: true });
+    }
+    fs.rmSync(path.join(projectRoot, '.teamai', 'state.json'), { force: true });
+
+    // Cursor user hooks run with process.cwd() = ~/.cursor and send
+    // workspace_roots instead of cwd (captured from Cursor 3.17.8).
+    const result = await runCLI(
+      ['hook-dispatch', 'session-start', '--tool', 'cursor', '--bg-only'],
+      { HOME: homeDir },
+      homeDir,
+      JSON.stringify({ workspace_roots: [projectRoot] }),
+    );
+    expect(result.code, result.output).toBe(0);
+    expect(fs.existsSync(path.join(projectRoot, '.cursor', 'skills', 'team-skill', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, '.claude'))).toBe(false);
+    expect(JSON.parse(
+      fs.readFileSync(path.join(projectRoot, '.teamai', 'state.json'), 'utf8'),
+    ).lastPullTargets).toEqual(['cursor']);
+  }, 30_000);
+
   it('SessionStart does not seed a disabled agent', async () => {
     for (const agentRoot of ['.claude', '.cursor', '.codex', '.codebuddy']) {
       fs.rmSync(path.join(projectRoot, agentRoot), { recursive: true, force: true });

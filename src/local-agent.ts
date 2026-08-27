@@ -23,6 +23,7 @@ import { ResourceHandler } from './resources/base.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
 import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, OPENCLAW_TOOLS } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
+import { resolveHookCwd } from './utils/hook-cwd.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
@@ -2536,7 +2537,7 @@ export async function reportAndSyncFromHook(
 ): Promise<string | null> {
   const raw = JSON.stringify(stdin);
   const event = await parseHookEvent(raw, tool);
-  const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : event?.cwd ?? process.cwd();
+  const cwd = resolveHookCwd(stdin) ?? event?.cwd ?? process.cwd();
 
   // SessionStart and UserPromptSubmit run this handler in the *foreground*, where
   // it blocks the host IDE's hook (UserPromptSubmit cap = 10s). Narrow the

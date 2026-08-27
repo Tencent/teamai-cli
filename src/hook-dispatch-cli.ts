@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process';
 
 import { createDispatcher, type Dispatcher } from './hook-dispatch.js';
 import { buildHandlerRegistry, filterHandlersForConfig } from './hook-handlers.js';
+import { resolveHookCwd } from './utils/hook-cwd.js';
 import { log, setStderrOnly } from './utils/logger.js';
 
 /**
@@ -69,7 +70,13 @@ async function readStdin(): Promise<string> {
  * caller's process.exit(0) — without waiting for or killing it; its
  * stdout/stderr are ignored so no open pipe keeps the parent alive.
  */
-function spawnBackground(event: string, tool: string, matcher: string, raw: string): void {
+function spawnBackground(
+  event: string,
+  tool: string,
+  matcher: string,
+  raw: string,
+  cwd?: string,
+): void {
   try {
     const args = [
       process.argv[1],
@@ -85,6 +92,7 @@ function spawnBackground(event: string, tool: string, matcher: string, raw: stri
     const child = spawn(process.execPath, args, {
       detached: true,
       stdio: ['pipe', 'ignore', 'ignore'],
+      ...(cwd ? { cwd } : {}),
     });
     child.on('error', () => {});
     if (child.stdin) {
@@ -121,6 +129,8 @@ function parseStdin(raw: string, event: string): Record<string, unknown> | null 
     };
     stdin.hook_event_name = EVENT_MAP[event] ?? event;
   }
+  const cwd = resolveHookCwd(stdin);
+  if (cwd) stdin.cwd = cwd;
   return stdin;
 }
 
@@ -163,7 +173,14 @@ export async function hookDispatchCli(
     // config when the host tells us the working directory (#264), so
     // filterHandlersForConfig can honour a project-level repo.kind.
     const { loadLocalConfig, detectProjectConfig } = await import('./config.js');
-    const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
+    const cwd = resolveHookCwd(stdin);
+    if (cwd) {
+      try {
+        process.chdir(cwd);
+      } catch (e) {
+        log.debug(`hook-dispatch: chdir to ${cwd} failed: ${(e as Error).message}`);
+      }
+    }
     const localConfig = (cwd ? await detectProjectConfig(cwd) : null) ?? await loadLocalConfig();
     const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
     const dispatcher = createDispatcher({ handlers });
@@ -178,7 +195,7 @@ export async function hookDispatchCli(
     // Parent: kick off background handlers in a detached process first so they
     // start working while we run the inline (foreground) pass.
     if (dispatcher.hasBackground(event, matcher)) {
-      spawnBackground(event, tool, matcher, raw);
+      spawnBackground(event, tool, matcher, raw, cwd);
     }
 
     const output = await runDispatch(dispatcher, event, matcher, stdin, tool, 'foreground');
