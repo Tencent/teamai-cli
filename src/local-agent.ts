@@ -26,6 +26,7 @@ import { parseHookEvent } from './dashboard-collector.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
+import { ruleStemFromFilename } from './resources/rule-format.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
@@ -1157,10 +1158,16 @@ async function scanRulesFromDisk(
   manifestSlugs: Set<string>,
 ): Promise<ReportedResource[]> {
   if (!(await pathExists(rulesDir))) return [];
-  const files = (await listFilesRecursive(rulesDir)).filter((f) => f.endsWith('.md'));
+  // Cursor stores rules as `.mdc`, every other tool as `.md`; match by stem so
+  // a Cursor agent still reports its installed rules.
+  const files = await listFilesRecursive(rulesDir);
   const results: ReportedResource[] = [];
+  const seen = new Set<string>();
   for (const file of files) {
-    const slug = file.replace(/\.md$/, '');
+    const slug = ruleStemFromFilename(file);
+    if (slug === null) continue;
+    if (seen.has(slug)) continue; // Same rule under both extensions
+    seen.add(slug);
     // Skip CLI built-in / legacy rules (e.g. teamai-recall) so they are not
     // reported as user-installed resources — mirrors the pull/uninstall filter.
     if (EXCLUDED_RULE_NAMES.has(path.basename(slug)) || EXCLUDED_RULE_NAMES.has(slug)) continue;

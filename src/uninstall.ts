@@ -30,6 +30,7 @@ import {
   type ManagedMcpManifest,
 } from './types.js';
 import { BUILTIN_RULE_NAMES } from './builtin-rules.js';
+import { ruleStemFromFilename } from './resources/rule-format.js';
 import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import {
@@ -302,8 +303,10 @@ async function discoverToolResources(
     if (await pathExists(rulesDir)) {
       const files = await listFilesRecursive(rulesDir);
       for (const file of files) {
-        if (!file.endsWith('.md')) continue;
-        const ruleName = file.replace(/\.md$/, '');
+        // Cursor's copies are `.mdc`; match by stem so both extensions are
+        // collected and uninstall does not leave team rules behind.
+        const ruleName = ruleStemFromFilename(file);
+        if (ruleName === null) continue;
         if (teamRuleNames.has(ruleName)) {
           res.ruleFiles.push(path.join(rulesDir, file));
         }

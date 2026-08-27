@@ -10,9 +10,13 @@ import {
   copyFile,
   copyDir,
   dirTeamSubsetEqual,
+  readFileSafe,
+  writeFile,
 } from './fs.js';
 import { getFileContentAtRev } from './git.js';
 import { ResourceHandler } from '../resources/base.js';
+import { ruleFileExtensionForTool, usesCursorMdcRules } from '../resources/rule-format.js';
+import { teamRuleToCursorMdc, cursorMdcBodyEqualsTeamMd } from '../resources/cursor-mdc.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { log } from './logger.js';
 
@@ -70,21 +74,47 @@ async function syncRulesToLocal(
     const rulesDir = path.join(baseDir, toolPath.rules);
     if (!await pathExists(rulesDir)) continue;
 
+    // Cursor's copies are `.mdc` with derived frontmatter; every other tool's
+    // are verbatim `.md`. Matching only `.md` here would skip Cursor entirely,
+    // leaving a stale copy that push then reports as "modified" and sends
+    // upstream — silently reverting the teammate's update.
+    const ext = ruleFileExtensionForTool(tool);
+    const isCursor = usesCursorMdcRules(tool);
+
     const files = await listFilesRecursive(rulesDir);
     for (const file of files) {
-      if (!file.endsWith('.md')) continue;
-      const name = file.replace(/\.md$/, '');
+      if (!file.endsWith(ext)) continue;
+      const name = file.slice(0, -ext.length);
       if (EXCLUDED_RULE_NAMES.has(name)) continue;
 
       const localFilePath = path.join(rulesDir, file);
-      const teamFilePath = path.join(teamRulesDir, file);
+      // The team repo always stores the tool-neutral `.md`.
+      const teamRelPath = `rules/${name}.md`;
+      const teamFilePath = path.join(teamRulesDir, `${name}.md`);
 
       // Only process files that exist in both places but differ
       if (!await pathExists(teamFilePath)) continue;
+      if (isCursor) {
+        const localRaw = await readFileSafe(localFilePath);
+        const teamRaw = await readFileSafe(teamFilePath);
+        if (localRaw === null || teamRaw === null) continue;
+        if (cursorMdcBodyEqualsTeamMd(localRaw, teamRaw)) continue;
+
+        const oldContent = await getFileContentAtRev(repoPath, lastPullRev, teamRelPath);
+        if (oldContent === null) continue; // Didn't exist at lastPullRev — ambiguous, skip
+
+        // Compare bodies: the local `.mdc` never matched the team `.md` byte for byte.
+        if (cursorMdcBodyEqualsTeamMd(localRaw, oldContent.toString('utf-8'))) {
+          await writeFile(localFilePath, teamRuleToCursorMdc(teamRaw));
+          log.debug(`Pre-push sync: updated ${tool} rule ${name} to match team repo`);
+        }
+        continue;
+      }
+
       if (await fileContentEqual(localFilePath, teamFilePath)) continue;
 
       // They differ — check if local matches the old team repo version
-      const oldContent = await getFileContentAtRev(repoPath, lastPullRev, `rules/${file}`);
+      const oldContent = await getFileContentAtRev(repoPath, lastPullRev, teamRelPath);
       if (oldContent === null) continue; // File didn't exist at lastPullRev — ambiguous, skip
 
       if (await fileContentEqualToBuffer(localFilePath, oldContent)) {

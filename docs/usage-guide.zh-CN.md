@@ -949,10 +949,17 @@ team-repo/
 
 Cursor 的项目规则必须以 **`.mdc`** 文件形式放在 `.cursor/rules/` 下，且带 YAML frontmatter——放在那里的纯 `.md` 会被 Cursor 直接忽略。因此 teamai 向 Cursor 写规则时用 `<name>.mdc`（其他工具仍写纯 `.md`），并从团队规则派生 frontmatter：
 
-- 带 `paths:` 列表的规则会转成 `globs: <逗号拼接>` + `alwaysApply: false`（上下文中有匹配文件时 Cursor 自动附加该规则）。
+- 带 `paths:` 列表的规则会转成 `globs: "<逗号拼接>"` + `alwaysApply: false`（上下文中有匹配文件时 Cursor 自动附加该规则）。值加引号是因为以 `*` 开头的 glob 不加引号时并非合法 YAML。
 - 无 `paths` 的规则（团队强制规则）会转成 `alwaysApply: true`（每个 Cursor 会话都应用）。
 
-markdown 正文原样保留，只有 frontmatter 是机器派生的，因此 `pull` → `push` 往返不会被误判为内容变更。`push` 同样会读取 `.cursor/rules/*.mdc`——在那里改规则正文后执行 `teamai push`，只会把正文改动回流上游（Cursor 的 frontmatter 会被剥除）。stale 文件清理与 `remove` 也会处理 `.mdc` 扩展名。
+两种格式之间只有 markdown 正文互通，各自的 frontmatter 归各自所有。`pull` 时 Cursor 的 frontmatter 由机器派生（正文原样拷贝，仅规范化首尾空行），因此 `pull` → `push` 往返不会被误判为内容变更。`push` 时，在 `.cursor/rules/*.mdc` 里改完正文再执行 `teamai push`，**只有正文**会回流上游——团队规则自己的 `paths:` frontmatter 会被保留，规则的作用域不会被悄悄丢掉。
+
+有两类文件刻意**不会**从 Cursor 规则目录推送：
+
+- 团队仓库中没有同名规则的 `.mdc`。`.cursor/rules/` 同时也是 Cursor 自带的 *New Cursor Rule* 命令写入个人规则的地方，teamai 不会把它们当作新的团队资源。
+- CLI 内置规则——它们是被下发的（对 Cursor 同样写成 `.mdc`），而非同步而来。
+
+从旧版本升级：旧布局写入的 `.cursor/rules/*.md` 是无效文件（Cursor 从未读取过它们），因此 `pull`、`remove`、`uninstall` 会连同 `.mdc` 一起删除。你自己放在那里的 `.md` 不受影响。
 
 ### 其他
 

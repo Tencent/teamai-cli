@@ -8,6 +8,7 @@ import {
   agentFileExtensionForTool,
   type ToolName,
 } from './resources/agent-format.js';
+import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { RECALL_DEPENDENT_SKILLS } from './builtin-skills.js';
 import {
   resolveBaseDir,
@@ -26,10 +27,14 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     // Remove recall rule file
     if (toolPath.rules) {
-      const ruleFile = path.join(baseDir, toolPath.rules, 'teamai-recall.md');
-      if (await pathExists(ruleFile)) {
-        await remove(ruleFile);
-        log.debug(`Removed recall rule from ${tool}`);
+      // Cursor's copy is `.mdc`; older layouts also left a `.md` there.
+      const extensions = new Set<string>([ruleFileExtensionForTool(tool), '.md']);
+      for (const extension of extensions) {
+        const ruleFile = path.join(baseDir, toolPath.rules, `teamai-recall${extension}`);
+        if (await pathExists(ruleFile)) {
+          await remove(ruleFile);
+          log.debug(`Removed recall rule from ${tool}`);
+        }
       }
     }
 

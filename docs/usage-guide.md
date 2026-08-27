@@ -954,10 +954,17 @@ team-repo/
 
 Cursor project rules must live in `.cursor/rules/` as **`.mdc`** files with YAML frontmatter — a plain `.md` file there is silently ignored by Cursor. teamai therefore writes rules to Cursor as `<name>.mdc` (every other tool still gets a plain `.md`), deriving the frontmatter from the team rule:
 
-- A rule scoped with a `paths:` list becomes `globs: <comma-joined>` + `alwaysApply: false` (Cursor auto-attaches it when a matching file is in context).
+- A rule scoped with a `paths:` list becomes `globs: "<comma-joined>"` + `alwaysApply: false` (Cursor auto-attaches it when a matching file is in context). The value is quoted because a glob starting with `*` is not valid YAML unquoted.
 - A rule with no `paths` (a mandatory team rule) becomes `alwaysApply: true` (applied to every Cursor chat session).
 
-The markdown body is preserved verbatim; only the frontmatter is machine-derived, so a `pull` → `push` round-trip does not look like a content change. `push` reads back `.cursor/rules/*.mdc` too — editing a rule's body there and running `teamai push` sends just that body change upstream (the Cursor frontmatter is stripped). Stale-file cleanup and `remove` handle the `.mdc` extension as well.
+Only the markdown body crosses between the two formats; each side keeps its own frontmatter. On `pull` the Cursor frontmatter is machine-derived (the body is copied over with leading/trailing blank lines normalized), so a `pull` → `push` round-trip is not seen as a content change. On `push`, editing a rule's body in `.cursor/rules/*.mdc` and running `teamai push` sends **only that body** upstream — the team rule keeps its own `paths:` frontmatter, so the rule's scope is never silently lost.
+
+Two things are deliberately *not* pushed from Cursor's rules directory:
+
+- A `.mdc` file with no matching team rule. `.cursor/rules/` is also where Cursor's own *New Cursor Rule* command writes personal rules, so teamai never offers those as new team resources.
+- The CLI built-in rules, which are deployed (as `.mdc` for Cursor) rather than synced.
+
+Upgrading from an earlier version: `.cursor/rules/*.md` copies written by the old layout are inert — Cursor never read them — so `pull`, `remove`, and `uninstall` delete them alongside the `.mdc` file. A `.md` you put there yourself is left alone.
 
 ### Miscellaneous
 

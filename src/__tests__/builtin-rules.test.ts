@@ -50,6 +50,35 @@ describe('builtin-rules', () => {
             expect(content).toContain('teamai recall');
         });
 
+        it('should deploy the recall rule to cursor as .mdc, not an ignored .md', async () => {
+            const cursorRulesDir = path.join(tmpDir, '.cursor', 'rules');
+            fs.mkdirSync(cursorRulesDir, { recursive: true });
+            // A copy left by the layout that predates `.mdc`.
+            fs.writeFileSync(path.join(cursorRulesDir, 'teamai-recall.md'), 'stale');
+
+            const teamConfig = {
+                toolPaths: {
+                    cursor: {
+                        skills: '.cursor/skills',
+                        rules: '.cursor/rules',
+                        settings: '.cursor/hooks.json',
+                    },
+                },
+            } as any;
+
+            const { deployBuiltinRules } = await import('../builtin-rules.js');
+            await deployBuiltinRules(teamConfig);
+
+            const mdc = path.join(cursorRulesDir, 'teamai-recall.mdc');
+            expect(fs.existsSync(mdc)).toBe(true);
+            // Cursor silently ignores a plain `.md` here, so it must not linger.
+            expect(fs.existsSync(path.join(cursorRulesDir, 'teamai-recall.md'))).toBe(false);
+            const content = fs.readFileSync(mdc, 'utf-8');
+            expect(content.startsWith('---\n')).toBe(true);
+            expect(content).toContain('alwaysApply: true');
+            expect(content).toContain('Team Knowledge Recall');
+        });
+
         it('should skip tool directories that do not exist (tool not installed)', async () => {
             // Arrange: only create one tool directory
             const claudeRulesDir = path.join(tmpDir, '.claude', 'rules');

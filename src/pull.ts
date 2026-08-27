@@ -8,6 +8,7 @@ import { pathExists, remove, listFiles, listDirs, readFileSafe } from './utils/f
 import { injectClaudeMdSection } from './utils/claudemd.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler } from './resources/index.js';
 import { ResourceHandler } from './resources/base.js';
+import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { loadTagsConfig, filterByTags } from './utils/tags.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import type { GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, TagsConfig } from './types.js';
@@ -590,15 +591,20 @@ async function pullForScope(
         if (!await ResourceHandler.isToolInstalled(dir, baseDir)) continue;
         if (isAgentDisabled(localConfig, tool)) continue;
 
-        // Cursor stores rules as `.mdc`; use that extension so its copies of a
-        // tombstoned rule are cleaned up too.
-        const effectiveExt = type === 'rules' && tool === 'cursor' ? '.mdc' : ext;
+        // Rules carry a per-tool extension (Cursor uses `.mdc`), and Cursor dirs
+        // may still hold a `.md` copy from the layout that predates it, so a
+        // tombstoned rule is cleaned up under every extension it may wear.
+        const extensions = type === 'rules'
+          ? [...new Set([ruleFileExtensionForTool(tool), '.md'])]
+          : [ext];
 
         for (const name of tombstones) {
-          const localPath = path.join(baseDir, dir, effectiveExt ? `${name}${effectiveExt}` : name);
-          if (await pathExists(localPath)) {
-            await remove(localPath);
-            log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);
+          for (const extension of extensions) {
+            const localPath = path.join(baseDir, dir, extension ? `${name}${extension}` : name);
+            if (await pathExists(localPath)) {
+              await remove(localPath);
+              log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);
+            }
           }
         }
       }
