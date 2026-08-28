@@ -109,7 +109,7 @@ teamai push → 创建分支 + MR → reviewer 审批合并
            SessionStart hook → teamai pull → 同步到本地 AI 工具
 ```
 
-成员通过 `teamai push` 提交变更并创建合并请求供审核。合并后，`teamai pull`（由 SessionStart hook 在会话启动时自动触发）将最新资源同步到本地。Skills 会同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/` 等目录。在 **project scope** 安装下，SessionStart 会先为当前工具创建项目根目录（例如 `<project>/.claude`），再 pull 写入；单独执行 `teamai pull` 仍不会凭空创建 Agent 目录。
+成员通过 `teamai push` 提交变更并创建合并请求供审核。若某个资源已在未合并的 PR 中等待评审，再次对它执行 `teamai push` 会就地更新该 PR，而非新开一个重复的 PR。合并后，`teamai pull`（由 SessionStart hook 在会话启动时自动触发）将最新资源同步到本地。Skills 会同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/` 等目录。在 **project scope** 安装下，SessionStart 会先为当前工具创建项目根目录（例如 `<project>/.claude`），再 pull 写入；单独执行 `teamai pull` 仍不会凭空创建 Agent 目录。
 
 ### 团队 Hooks
 

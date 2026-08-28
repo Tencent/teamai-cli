@@ -176,4 +176,46 @@ describe('push carries teamai.yaml (source add regression)', () => {
 
     expect(mockCreatePullRequest).not.toHaveBeenCalled();
   });
+
+  it('config-only: switches back to the default branch when the push throws', async () => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    const yamlPath = path.join(teamRepo, 'teamai.yaml');
+    fs.writeFileSync(yamlPath, 'version: 1\npublicSkills:\n  - beta-proof\n');
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: {
+        repo: { localPath: teamRepo, remote: path.join(tmpDir, 'remote.git'), kind: undefined },
+        username: 'alice',
+        scope: 'project',
+        projectRoot: teamRepo,
+      },
+      teamConfig: { repo: 'acme/team', toolPaths: {} },
+    });
+
+    // Force pushRepoBranch to throw AFTER it has moved the repo onto a push
+    // branch, so the catch path is the only thing that can restore the default
+    // branch. We simulate the mid-push failure by leaving the repo on a stray
+    // branch and rejecting from pushRepoBranch.
+    const git = simpleGit(teamRepo);
+    const gitMod = await import('../utils/git.js');
+    const spy = vi.spyOn(gitMod, 'pushRepoBranch').mockImplementation(async () => {
+      await git.checkoutLocalBranch('teamai/push/alice/stuck-branch');
+      throw new Error('network failure mid-push');
+    });
+    const originalExitCode = process.exitCode;
+
+    try {
+      const { push } = await import('../push.js');
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await push({ all: true });
+      logSpy.mockRestore();
+
+      // The repo must not be stranded on the push branch.
+      const branch = (await git.branch()).current;
+      expect(branch).not.toBe('teamai/push/alice/stuck-branch');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      spy.mockRestore();
+      process.exitCode = originalExitCode;
+    }
+  });
 });

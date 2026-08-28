@@ -147,9 +147,10 @@ export function remotesMatch(a: string, b: string): boolean {
 export async function hasCommits(localPath: string): Promise<boolean> {
   const git = createGit(localPath);
   try {
-    // NB: `--quiet` makes git exit 1 silently on an unborn HEAD, and simple-git
-    // does not throw on that — so we must validate the OUTPUT (a real sha), not
-    // rely on a thrown error. An unborn HEAD yields empty/whitespace output.
+    // On an unborn HEAD `rev-parse --verify HEAD^{commit}` exits non-zero and
+    // simple-git throws, so the catch below is the primary guard. The sha-shape
+    // check is a belt-and-suspenders guard for the rare case a build resolves
+    // HEAD to empty/whitespace output without throwing.
     const out = (await git.raw(['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
     return /^[0-9a-f]{7,40}$/.test(out);
   } catch {
@@ -442,6 +443,7 @@ export async function pushRepoBranch(
       log.debug(`Remote branch ${branchName} already holds this tree, skipping force-push`);
       const defaultBranch = await getDefaultBranch(localPath);
       await switchToDefaultBranch(git, defaultBranch);
+      await git.deleteLocalBranch(branchName, true);
       return false;
     }
     await git.push(['--force-with-lease', '-u', 'origin', branchName]);

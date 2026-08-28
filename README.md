@@ -109,7 +109,7 @@ teamai push → create branch + MR → reviewer approves + merges
               SessionStart hook → teamai pull → synced to local AI tools
 ```
 
-Members push changes via `teamai push`, which opens a Merge Request for review. Once merged, `teamai pull` (triggered automatically on session start via the SessionStart hook) syncs the latest resources locally. Skills sync to `~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`, `~/.codebuddy/skills/`, etc. In a **project-scope** install, SessionStart first creates that tool's project root (e.g. `<project>/.claude`) if it is missing, then pulls into it — a bare `teamai pull` still will not invent agent directories.
+Members push changes via `teamai push`, which opens a Merge Request for review. Re-running `teamai push` on a resource that is still waiting in an unmerged PR updates that PR in place instead of opening a duplicate. Once merged, `teamai pull` (triggered automatically on session start via the SessionStart hook) syncs the latest resources locally. Skills sync to `~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`, `~/.codebuddy/skills/`, etc. In a **project-scope** install, SessionStart first creates that tool's project root (e.g. `<project>/.claude`) if it is missing, then pulls into it — a bare `teamai pull` still will not invent agent directories.
 
 ### Team Hooks
 

@@ -349,6 +349,8 @@ Choose namespace [1-3] (default: 1 = common):
 - A single namespace is auto-selected; `--silent` mode uses the default
 - Modifying an existing skill automatically keeps its original namespace
 
+**Updating an open PR instead of duplicating it:** If a resource is already waiting in an unmerged PR, re-running `teamai push` on it updates that existing PR in place (by force-pushing its branch) rather than opening a duplicate. Keep the resource selected to update its PR; deselect it to leave the PR untouched. Unrelated resources selected in the same run go into their own new PR. Once the PR merges (or its branch is removed from the remote), the record is cleared and the next push opens a fresh PR as usual.
+
 **Automatic YAML frontmatter completion:** When pushing, the CLI automatically checks `SKILL.md` and fills in `name`/`description` if missing — no manual upkeep required.
 
 ### Check status

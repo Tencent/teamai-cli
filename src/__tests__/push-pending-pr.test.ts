@@ -391,4 +391,36 @@ describe('push() with an open PR', () => {
     expect(saved.pendingPushes).toHaveLength(1);
     expect(saved.pendingPushes[0].branch).toBe('teamai/push/testuser/20260827-065032');
   });
+
+  it('keeps other skills\' open-PR records when pushing a single --skill', async () => {
+    // --skill narrows the push to one skill, but the open PRs of the OTHER
+    // skills must survive: pruning against the narrowed scan would drop them
+    // and the next run would open duplicate PRs for them.
+    const targetEntry = makeEntry({
+      branch: 'teamai/push/testuser/target-branch',
+      prUrl: 'https://github.com/team/repo/pull/1',
+      items: [{ type: 'skills', name: 'target', relativePath: 'skills/js/target', namespace: 'js' }],
+    });
+    const otherEntry = makeEntry({
+      branch: 'teamai/push/testuser/other-branch',
+      prUrl: 'https://github.com/team/repo/pull/2',
+      items: [{ type: 'skills', name: 'other', relativePath: 'skills/js/other', namespace: 'js' }],
+    });
+    mockLoadStateForScope.mockResolvedValue(makeState([targetEntry, otherEntry]));
+    mockGetHandler.mockImplementation((type: string) => ({
+      scanLocalForPush: vi.fn().mockResolvedValue(
+        type === 'skills'
+          ? [makeItem({ name: 'target', sourcePath: '/home/u/.cursor/skills/target' }),
+            makeItem({ name: 'other', sourcePath: '/home/u/.cursor/skills/other' })]
+          : [],
+      ),
+      pushItem: vi.fn(),
+    }));
+
+    await push({ all: true, skill: 'target' });
+
+    const saved = mockSaveStateForScope.mock.calls.at(-1)?.[0] as State;
+    const branches = saved.pendingPushes.map((p) => p.branch).sort();
+    expect(branches).toContain('teamai/push/testuser/other-branch');
+  });
 });

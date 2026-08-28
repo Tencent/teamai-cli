@@ -347,6 +347,8 @@ Choose namespace [1-3] (default: 1 = common):
 - 单一命名空间时自动选中；`--silent` 模式使用默认值
 - 修改已有 skill 时自动保持原 namespace
 
+**更新已存在的 PR 而非重复创建：** 如果某个资源已在一个未合并的 PR 中等待评审，再次对它执行 `teamai push` 会就地更新那个已存在的 PR（通过 force-push 其分支），而不是新开一个重复的 PR。保持该资源被选中即更新其 PR；取消勾选则不动它。同一次运行中选中的其他无关资源会进入各自新开的 PR。一旦该 PR 合并（或其分支从远端删除），记录会被清除，下次 push 照常新开 PR。
+
 **YAML Frontmatter 自动补全：** 推送时 CLI 自动检查 `SKILL.md`，缺少 `name`/`description` 则自动补全，无需手动维护。
 
 ### 查看状态
