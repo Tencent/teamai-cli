@@ -517,6 +517,14 @@ async function pushCore(
     // Replace allItems with just this one skill
     allItems.length = 0;
     allItems.push(matchedItem);
+
+    // A force-constructed matchedItem (scanner returned nothing for this skill
+    // because its content matches the team repo) is absent from fullScan. Add it
+    // so prunePendingPushes still sees this skill as locally present — otherwise
+    // its own open-PR record is dropped and the next run opens a duplicate.
+    if (!fullScan.some((i) => i.type === matchedItem!.type && i.name === matchedItem!.name)) {
+      fullScan.push(matchedItem);
+    }
   }
 
   // An explicit --role is a destination override for every selected skill,

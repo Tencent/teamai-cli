@@ -202,18 +202,19 @@ describe('push carries teamai.yaml (source add regression)', () => {
       throw new Error('network failure mid-push');
     });
     const originalExitCode = process.exitCode;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
       const { push } = await import('../push.js');
-      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
       await push({ all: true });
-      logSpy.mockRestore();
 
-      // The repo must not be stranded on the push branch.
+      // The catch path must land the repo back on the default branch, not just
+      // off the stuck branch (the seed repo's default branch is 'main').
       const branch = (await git.branch()).current;
-      expect(branch).not.toBe('teamai/push/alice/stuck-branch');
+      expect(branch).toBe('main');
       expect(process.exitCode).toBe(1);
     } finally {
+      logSpy.mockRestore();
       spy.mockRestore();
       process.exitCode = originalExitCode;
     }

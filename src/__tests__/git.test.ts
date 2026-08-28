@@ -165,6 +165,29 @@ describe('pushRepoBranch', () => {
     expect(mockGit.clean).toHaveBeenCalledWith('f', ['-d']);
     expect(mockGit.commit).not.toHaveBeenCalled();
   });
+
+  it('skips the branch delete (no throw) when the default branch is busy in another worktree', async () => {
+    // Multi-worktree: `checkout master` fails because another worktree holds it,
+    // so HEAD stays on the push branch. Deleting the checked-out branch would
+    // throw; the delete must be skipped and pushRepoBranch must return false
+    // rather than propagating a cryptic git error.
+    mockGit.status.mockResolvedValue({ staged: [] });
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'origin/HEAD') return 'origin/master';
+      return '';
+    });
+    mockGit.checkout.mockRejectedValueOnce(
+      new Error("fatal: 'master' is already used by worktree at '/repo/primary'"),
+    );
+
+    const result = await pushRepoBranch('/repo', 'msg', ['file.txt'], 'teamai/push/test/wt');
+
+    expect(result).toBe(false);
+    expect(mockGit.checkout).toHaveBeenCalledWith('master');
+    // The delete is skipped because the switch did not actually happen.
+    expect(mockGit.deleteLocalBranch).not.toHaveBeenCalled();
+  });
 });
 
 describe('checkoutMaster', () => {

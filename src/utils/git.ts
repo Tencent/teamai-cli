@@ -416,8 +416,7 @@ export async function pushRepoBranch(
     await git.clean('f', ['-d']);
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Nothing to commit, switching back to ${defaultBranch}`);
-    await switchToDefaultBranch(git, defaultBranch);
-    await git.deleteLocalBranch(branchName, true);
+    await leaveAndDeletePushBranch(git, defaultBranch, branchName);
     return false;
   }
 
@@ -428,8 +427,7 @@ export async function pushRepoBranch(
     await git.clean('f', ['-d']);
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Only metadata/timestamp changes detected, switching back to ${defaultBranch}`);
-    await switchToDefaultBranch(git, defaultBranch);
-    await git.deleteLocalBranch(branchName, true);
+    await leaveAndDeletePushBranch(git, defaultBranch, branchName);
     return false;
   }
 
@@ -442,8 +440,7 @@ export async function pushRepoBranch(
     if (await treeMatchesRemoteBranch(git, branchName)) {
       log.debug(`Remote branch ${branchName} already holds this tree, skipping force-push`);
       const defaultBranch = await getDefaultBranch(localPath);
-      await switchToDefaultBranch(git, defaultBranch);
-      await git.deleteLocalBranch(branchName, true);
+      await leaveAndDeletePushBranch(git, defaultBranch, branchName);
       return false;
     }
     await git.push(['--force-with-lease', '-u', 'origin', branchName]);
@@ -480,17 +477,40 @@ async function treeMatchesRemoteBranch(git: SimpleGit, branchName: string): Prom
  * clone a skipped switch self-heals via resetToCleanMaster on the next run. So we
  * swallow that specific conflict rather than letting it abort the whole operation.
  */
-async function switchToDefaultBranch(git: SimpleGit, defaultBranch: string): Promise<void> {
+async function switchToDefaultBranch(git: SimpleGit, defaultBranch: string): Promise<boolean> {
   try {
     await git.checkout(defaultBranch);
+    return true;
   } catch (e) {
     const msg = (e as Error).message ?? '';
     if (/already (used|checked out) by worktree|is already checked out/i.test(msg)) {
       log.debug(`Skipping switch to ${defaultBranch}: already checked out in another worktree`);
-      return;
+      return false;
     }
     throw e;
   }
+}
+
+/**
+ * Leave the push branch for the default branch, then delete the push branch.
+ *
+ * When switchToDefaultBranch could not actually leave (the default branch is
+ * held by another worktree, so HEAD is still on branchName), the delete is
+ * skipped: `git branch -D branchName` refuses to drop the currently checked-out
+ * branch and would throw an uncaught git error out of the caller. The stray
+ * branch self-heals via resetToCleanMaster on the next run.
+ */
+async function leaveAndDeletePushBranch(
+  git: SimpleGit,
+  defaultBranch: string,
+  branchName: string,
+): Promise<void> {
+  const switched = await switchToDefaultBranch(git, defaultBranch);
+  if (!switched) {
+    log.debug(`Leaving ${branchName} in place: default branch busy in another worktree`);
+    return;
+  }
+  await git.deleteLocalBranch(branchName, true);
 }
 
 /**
