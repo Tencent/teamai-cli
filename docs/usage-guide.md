@@ -578,6 +578,35 @@ When disabled, `teamai pull` skips deploying the recall subagent, the recall rul
 
 ---
 
+## Commit Co-Author Attribution
+
+AI coding tools stamp a `Co-Authored-By:` / attribution trailer on the commits they make. Teams that prefer a clean history can turn this off for everyone; individual members can still override it on their own machine. `teamai pull` applies the resolved intent to each installed tool's own config file.
+
+The feature is controlled by the same two-tier pattern as recall:
+
+| Tier | Config file | Field | Description |
+|------|----------|------|------|
+| Team default | `teamai.yaml` | `sharing.coAuthor.enabled` | `true` = keep the trailer / `false` = strip it. Omit the block entirely for "no opinion" (teamai touches nothing) |
+| User override | `~/.teamai/config.yaml` | `coAuthorEnabled` | `true` / `false`, takes priority over the team default |
+
+Per tool family, the trailer maps to a different setting:
+
+| Tool family | File | Setting written | Scope | Reliability |
+|------|------|------|------|------|
+| Claude (`claude`, `codebuddy`, `workbuddy`) | `settings.json` | `attribution.commit` / `attribution.pr` set to `""` | user **or** project (follows the active scope) | Deterministic |
+| Codex (`codex`) | `~/.codex/config.toml` | `commit_attribution = ""` | user only | Best-effort — only takes effect when `[features].codex_git_commit = true`, which teamai does not force |
+| Cursor | `~/.cursor/cli-config.json` | `attribution.attributeCommitsToAgent = false` | user only | Best-effort — a [known upstream bug](https://forum.cursor.com/t/local-executor-ignores-cli-config-attribution-opt-out-forcing-co-authored-by-trailer/167722) can cause the local executor to ignore this |
+
+Semantics:
+
+- **Write-only, never delete.** Once teamai has written a value, dropping the team policy later leaves that value untouched — teamai never restores a trailer it stripped. To re-enable, set the intent back to `true` explicitly (which removes teamai's override so the tool's own default returns).
+- **Idempotent.** teamai records what it last wrote per file (in `state.json` under `coAuthorManaged`) and skips a write when nothing would change.
+- **Only installed tools are touched**, and existing keys/comments in each config file are preserved (key-level surgery, not regenerate-from-scratch).
+
+Restart your AI tool session after a `pull` for the change to take effect.
+
+---
+
 ## Team Culture
 
 TeamAI supports injecting your team's culture into AI tools, so your AI coding assistant is aware of your team's culture, values, and coding standards in every session.
@@ -1071,6 +1100,8 @@ sharing:
     localDir: ./.teamai/docs
   env:
     injectShellProfile: true
+  coAuthor:
+    enabled: false             # optional; strip AI-tool commit trailers team-wide
 ```
 
 ### config.yaml (local config)
@@ -1084,6 +1115,7 @@ updatePolicy: auto
 scope: project                 # project (default from init) or user
 projectRoot: /path/to/project  # project scope only
 inheritUserScope: true         # optional; project scope only, defaults to false
+coAuthorEnabled: true          # optional; per-machine co-author override
 ```
 
 ---

@@ -576,6 +576,35 @@ teamai recall status     # 查看当前生效状态（团队默认 + 用户覆�
 
 ---
 
+## 提交 Co-Author 署名（Commit Co-Author Attribution）
+
+AI 编码工具会在它生成的提交上打一个 `Co-Authored-By:` / attribution 尾注。希望保持干净历史的团队可以为全员关闭它，成员仍可在自己机器上覆盖。`teamai pull` 会把最终生效的意图写入每个已安装工具各自的配置文件。
+
+该功能采用与 recall 相同的两级配置：
+
+| 层级 | 配置文件 | 字段 | 说明 |
+|------|----------|------|------|
+| 团队默认 | `teamai.yaml` | `sharing.coAuthor.enabled` | `true` = 保留尾注 / `false` = 去除尾注。整块省略表示"无意见"（teamai 不做任何改动） |
+| 用户覆盖 | `~/.teamai/config.yaml` | `coAuthorEnabled` | `true` / `false`，优先级高于团队默认 |
+
+不同工具家族映射到不同的设置项：
+
+| 工具家族 | 文件 | 写入的设置 | 作用域 | 可靠性 |
+|------|------|------|------|------|
+| Claude（`claude`、`codebuddy`、`workbuddy`） | `settings.json` | `attribution.commit` / `attribution.pr` 置为 `""` | 用户 **或** 项目（跟随当前 scope） | 确定生效 |
+| Codex（`codex`） | `~/.codex/config.toml` | `commit_attribution = ""` | 仅用户 | 尽力而为 —— 仅当 `[features].codex_git_commit = true` 时生效，teamai 不会强制开启该开关 |
+| Cursor | `~/.cursor/cli-config.json` | `attribution.attributeCommitsToAgent = false` | 仅用户 | 尽力而为 —— 存在[上游已知 bug](https://forum.cursor.com/t/local-executor-ignores-cli-config-attribution-opt-out-forcing-co-authored-by-trailer/167722)，local executor 可能忽略该设置 |
+
+语义：
+
+- **只写不删。** teamai 一旦写入某个值，之后团队撤下策略也不会改动该值 —— teamai 绝不还原它去除过的尾注。若要重新启用，请显式把意图设回 `true`（这会移除 teamai 的覆盖，从而恢复工具自身的默认行为）。
+- **幂等。** teamai 在 `state.json` 的 `coAuthorManaged` 中记录每个文件上次写入的值，无变化时跳过写入。
+- **只改动已安装的工具**，并保留各配置文件中已有的键与注释（键级别的精修，而非整文件重生成）。
+
+`pull` 之后请重启 AI 工具会话使改动生效。
+
+---
+
 ## 团队文化（Culture）
 
 TeamAI 支持将团队文化注入到 AI 工具中，让 AI 编码助手在每次会话中都能感知你的团队文化、价值观和编码准则。
@@ -1066,6 +1095,8 @@ sharing:
     localDir: ./.teamai/docs
   env:
     injectShellProfile: true
+  coAuthor:
+    enabled: false             # 可选，为全团队去除 AI 工具提交尾注
 ```
 
 ### config.yaml（本地配置）
@@ -1079,6 +1110,7 @@ updatePolicy: auto
 scope: project                 # project（init 默认）或 user
 projectRoot: /path/to/project  # 仅 project scope
 inheritUserScope: true         # 可选，仅 project scope，默认 false
+coAuthorEnabled: true          # 可选，每机器的 co-author 覆盖
 ```
 
 ---

@@ -67,6 +67,15 @@ export const SharingConfigSchema = z.object({
   recall: z.object({
     enabled: z.boolean().default(false),
   }).optional(),
+  // Optional (not .default) so existing TeamaiConfig literals stay valid, AND so
+  // "team has no opinion" (block absent) stays distinct from "team says off"
+  // (enabled: false). Only the former is a no-op; see resolveCoAuthor().
+  coAuthor: z.object({
+    /** Team default: whether members' AI-tool commits carry a Co-Authored-By /
+     *  attribution trailer. false = strip it (clean history). Users can override
+     *  per-machine via `coAuthorEnabled` in local config. */
+    enabled: z.boolean().default(true),
+  }).optional(),
   // Optional (not .default) so existing TeamaiConfig literals stay valid; use
   // getMcpSharing() for the defaulted view.
   mcp: z.object({
@@ -118,6 +127,21 @@ export function isRecallEnabled(
 ): boolean {
   if (localConfig.recallEnabled !== undefined) return localConfig.recallEnabled;
   return getRecallSharing(teamConfig).enabled;
+}
+
+/**
+ * Resolve the effective co-author intent: user override > team config > no-op.
+ *
+ * Returns `undefined` when neither the user nor the team has an opinion — the
+ * caller must then leave every tool's config untouched (write-only, never
+ * delete). A boolean means "make the trailer on/off"; only then do we write.
+ */
+export function resolveCoAuthor(
+  localConfig: { coAuthorEnabled?: boolean },
+  teamConfig: { sharing?: { coAuthor?: { enabled?: boolean } } },
+): boolean | undefined {
+  if (localConfig.coAuthorEnabled !== undefined) return localConfig.coAuthorEnabled;
+  return teamConfig.sharing?.coAuthor?.enabled;
 }
 
 // ─── Source config (cross-team subscription) ─────────
@@ -288,6 +312,10 @@ export const LocalConfigSchema = z.object({
   excludedSkills: z.array(z.string()).optional(),
   /** User-level override for recall feature. When set, takes precedence over team config. */
   recallEnabled: z.boolean().optional(),
+  /** Per-machine override for the co-author trailer in AI-tool commits. When set,
+   *  takes precedence over the team `sharing.coAuthor` default. Undefined means
+   *  "defer to the team" (see resolveCoAuthor). */
+  coAuthorEnabled: z.boolean().optional(),
   /** When set, only inject hooks into these agents. Additive across multiple init --agent runs. */
   enabledAgents: z.array(z.string()).optional(),
   /** Tools explicitly excluded from all teamai sync (set by `uninstall --agent`). Removed again by `init --agent`. */
@@ -346,6 +374,16 @@ export const StateSchema = z.object({
   pushedEnvVars: z.array(z.string()).default([]),
   /** Push branches whose PR is still open — see PendingPushSchema. */
   pendingPushes: z.array(PendingPushSchema).default([]),
+  /**
+   * Last co-author intent teamai actually wrote to tool configs, per tool file.
+   * Key = absolute config path, value = the boolean we last applied. Lets the
+   * reconciler stay idempotent (skip a no-op write) while honoring write-only
+   * semantics: we never remove a trailer field, we only stop touching it when
+   * neither user nor team has an opinion. Absent key = never managed by teamai.
+   * Optional (like lastPullTargets) so historical state.json and hand-built State
+   * literals stay valid; the reconciler treats absent as an empty map.
+   */
+  coAuthorManaged: z.record(z.string(), z.boolean()).optional(),
   lastUpdateCheck: z.string().nullable().default(null),
   availableUpdate: z.string().nullable().default(null),
 });
