@@ -778,14 +778,11 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         log.warn(`Failed to inject hook into ${tool}: ${(e as Error).message}`);
       }
     } else if (OPENCLAW_TOOLS.has(tool)) {
-      const agentRoot = path.join(resolvedBaseDir, `.${tool}`);
-      if (await pathExists(agentRoot)) {
-        try {
-          const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
-          await injectOpenClawHooks(path.join(agentRoot, 'hooks'), tool);
-        } catch (e) {
-          log.warn(`Failed to inject OpenClaw hook into ${tool}: ${(e as Error).message}`);
-        }
+      try {
+        const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
+        await injectOpenClawHooks(undefined, tool);
+      } catch (e) {
+        log.warn(`Failed to inject OpenClaw hook into ${tool}: ${(e as Error).message}`);
       }
     } else if (tool === 'hermes') {
       try {

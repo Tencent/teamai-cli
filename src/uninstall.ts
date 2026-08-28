@@ -255,11 +255,17 @@ async function discoverToolResources(
     }
   } else {
     // OpenClaw-style agents (no settings file) inject a HOOK.md + handler.ts
-    // under <hooksDir>/<OPENCLAW_HOOK_DIR>. Check both the default path and
-    // the OPENCLAW_STATE_DIR override to cover imate container environments.
+    // under <hooksDir>/<OPENCLAW_HOOK_DIR>. Check the default path, the
+    // OPENCLAW_STATE_DIR override (imate containers), and the resolved
+    // workspace dir — injection now targets `<workspace>/hooks`, so teardown
+    // must cover it too, otherwise the hook is orphaned on uninstall.
     const defaultHooksDir = path.join(baseDir, `.${tool}`, 'hooks');
     const resolvedHooksDir = resolveOpenClawHooksDir(tool);
     const dirsToCheck = new Set([defaultHooksDir, resolvedHooksDir]);
+    const workspaceDir = await resolveOpenclawWorkspaceDir();
+    if (workspaceDir) {
+      dirsToCheck.add(path.join(workspaceDir, 'hooks'));
+    }
     for (const hooksDir of dirsToCheck) {
       if (await pathExists(path.join(hooksDir, OPENCLAW_HOOK_DIR))) {
         res.openclawHookDirs.push({ hooksDir, tool });

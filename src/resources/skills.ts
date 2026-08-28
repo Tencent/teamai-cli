@@ -6,6 +6,7 @@ import { listDirs, pathExists, copyDir, remove, dirTeamSubsetEqual, getDirLatest
 import { log } from '../utils/logger.js';
 import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 import { resolveOpenclawWorkspaceDir } from '../openclaw-hooks.js';
+import { getHermesHome } from '../hermes-home.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from '../roles.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
 
@@ -442,6 +443,8 @@ export class SkillsHandler extends ResourceHandler {
           continue;
         }
         dest = path.join(wsDir, 'skills', item.name);
+      } else if (tool === 'hermes') {
+        dest = path.join(getHermesHome(), 'skills', item.name);
       } else {
         if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) {
           log.debug(`Skipping skill sync for ${tool}: tool not installed`);
