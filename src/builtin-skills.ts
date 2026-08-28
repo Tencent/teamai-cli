@@ -43,8 +43,14 @@ function getBuiltinSkillsDir(): string {
 /** Names of CLI built-in skills. Used by push to exclude them from team repo push. */
 export const BUILTIN_SKILL_NAMES = new Set(['teamai-share-learnings', 'team-wiki-codebase', 'teamai-workflow', 'teamai-import']);
 
-/** Built-in skills that depend on recall being enabled. Skipped when recall is disabled. */
-export const RECALL_DEPENDENT_SKILLS = new Set(['teamai-share-learnings', 'team-wiki-codebase']);
+/**
+ * Built-in skills that depend on recall being enabled. Skipped when recall is disabled.
+ *
+ * Only teamai-share-learnings belongs here: it contributes learnings back to the
+ * team repo, which is meaningful only when recall is on. team-wiki-codebase is a
+ * knowledge-base generator and does not depend on recall, so it must always deploy.
+ */
+export const RECALL_DEPENDENT_SKILLS = new Set(['teamai-share-learnings']);
 
 async function copyBuiltinSkillDir(srcDir: string, destDir: string): Promise<void> {
   await fse.copy(srcDir, destDir, {

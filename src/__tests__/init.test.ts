@@ -94,6 +94,11 @@ vi.mock('../hooks.js', () => ({
   reconcileTeamHooksForConfig: vi.fn(),
 }));
 
+const mockDeployBuiltinSkills = vi.fn().mockResolvedValue(0);
+vi.mock('../builtin-skills.js', () => ({
+  deployBuiltinSkills: (...args: unknown[]) => mockDeployBuiltinSkills(...args),
+}));
+
 vi.mock('../roles.js', () => ({
   loadRolesManifest: vi.fn().mockResolvedValue({
     version: 1,
@@ -444,6 +449,46 @@ describe('init', () => {
         additionalRoles: [],
         resourceProfileVersion: 1,
       }));
+    });
+  });
+
+  describe('deploys built-in skills after init', () => {
+    it('calls deployBuiltinSkills with teamConfig and skipRecall when loadTeamConfig returns non-null', async () => {
+      let cloneDone = false;
+      pathExistsFn = (p: string) => {
+        if (p === localPath) return cloneDone;
+        return false;
+      };
+
+      mockGfRepoClone.mockImplementation(() => {
+        cloneDone = true;
+      });
+
+      const mockedLoadTeamConfig = vi.mocked(await import('../config.js')).loadTeamConfig;
+      mockedLoadTeamConfig.mockResolvedValue({
+        team: 'my-team',
+        repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+        provider: 'tgit',
+        reviewers: [],
+        sharing: {
+          skills: {},
+          rules: { enforced: [] },
+          docs: { localDir: '~/.teamai/docs' },
+          env: { injectShellProfile: true },
+        },
+        toolPaths: {},
+      } as never);
+
+      questionAnswers = ['n', '1'];
+
+      await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git', scope: 'user' });
+
+      expect(mockDeployBuiltinSkills).toHaveBeenCalled();
+      expect(mockDeployBuiltinSkills).toHaveBeenCalledWith(
+        expect.objectContaining({ team: expect.any(String) }),
+        expect.anything(),
+        expect.objectContaining({ skipRecall: expect.any(Boolean) }),
+      );
     });
   });
 
