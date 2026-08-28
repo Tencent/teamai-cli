@@ -2537,7 +2537,9 @@ export async function reportAndSyncFromHook(
 ): Promise<string | null> {
   const raw = JSON.stringify(stdin);
   const event = await parseHookEvent(raw, tool);
-  const cwd = resolveHookCwd(stdin) ?? event?.cwd ?? process.cwd();
+  // parseHookEvent resolves cwd via resolveHookCwd too, so event?.cwd would be
+  // identical here — resolve once and fall back to process.cwd().
+  const cwd = resolveHookCwd(stdin) ?? process.cwd();
 
   // SessionStart and UserPromptSubmit run this handler in the *foreground*, where
   // it blocks the host IDE's hook (UserPromptSubmit cap = 10s). Narrow the
