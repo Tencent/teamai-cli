@@ -1279,6 +1279,12 @@ export async function pull(options: GlobalOptions): Promise<void> {
   // hooks. User-scope MCP remains isolated in project mode.
   await reconcileMcpAllScopes(activeUserConfig, projectConfig, options);
 
+  // 3.7. Reconcile the team co-author policy (does an AI tool stamp a
+  // Co-Authored-By / attribution trailer on its commits?). Outside pullForScope
+  // for the same reason as hooks/MCP; write-only, so it self-heals but never
+  // strips a trailer once the team drops the policy.
+  await reconcileCoAuthorAllScopes(activeUserConfig, projectConfig, options);
+
   // 4. Auto-report usage data to all active scopes. Events live in a single
   //    shared file (~/.teamai/usage.jsonl), so we report to each repo with
   //    skipTruncate=true first, then truncate once at the end.
@@ -1404,6 +1410,46 @@ async function reconcileMcpAllScopes(
       }
     } catch (e) {
       log.debug(`[${localConfig.scope}] MCP reconcile skipped: ${(e as Error).message}`);
+    }
+  }
+}
+
+/**
+ * Reconcile the co-author policy across active scopes. Mirrors
+ * reconcileMcpAllScopes: loops the installed scopes, loads each team config,
+ * applies the resolved intent to every installed tool, and persists the
+ * per-file `coAuthorManaged` markers so the pass stays idempotent.
+ */
+async function reconcileCoAuthorAllScopes(
+  userConfig: LocalConfig | null,
+  projectConfig: LocalConfig | null,
+  options: GlobalOptions,
+): Promise<void> {
+  if (options.dryRun) return;
+  const scopes = [userConfig, projectConfig].filter((c): c is LocalConfig => !!c);
+  for (const localConfig of scopes) {
+    try {
+      const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+      if (!teamConfig) continue;
+      const { reconcileCoAuthorForConfig } = await import('./coauthor-reconcile.js');
+      const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
+      const { changes, managed } = await reconcileCoAuthorForConfig(teamConfig, localConfig, state);
+
+      const applied = changes.filter((c) => c.action !== 'skipped');
+      for (const c of changes) {
+        if (c.action === 'skipped') log.debug(`[coauthor] ${c.tool}: skipped — ${c.reason}`);
+      }
+      if (applied.length > 0) {
+        state.coAuthorManaged = managed;
+        await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
+        if (!options.silent) {
+          const verb = applied[0].enabled ? 'enabled' : 'disabled';
+          const tools = [...new Set(applied.map((c) => c.tool))];
+          log.info(`Co-author trailer ${verb} for ${tools.join(', ')}. Restart your AI tool session to apply.`);
+        }
+      }
+    } catch (e) {
+      log.debug(`[${localConfig.scope}] co-author reconcile skipped: ${(e as Error).message}`);
     }
   }
 }
