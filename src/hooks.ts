@@ -6,6 +6,7 @@ import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
 import { builtinHookDefs, applyBuiltinOverride, ensureWrapperIfShellAvailable, SHELL_DEPENDENT_TOOLS } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { resolveTeamHooks } from './resources/hooks.js';
+import { getUserHome } from './utils/home.js';
 
 /**
  * Lobster-family agents (OpenClaw engine) that use HOOK.md + handler.ts instead
@@ -102,6 +103,35 @@ const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
 function detectFormat(tool: string): ToolFormat {
   if (CODEX_TOOLS.has(tool)) return 'codex';
   return CURSOR_TOOLS.has(tool) ? 'cursor' : 'claude';
+}
+
+/**
+ * Tools that enforce a user trust gate on non-managed hooks. Only the public
+ * Codex (the OpenAI / ChatGPT Codex app, tool id `codex`) does: even after
+ * teamai writes `<repo>/.codex/hooks.json` or `~/.codex/hooks.json`, Codex may
+ * skip a newly added or changed hook until the user reviews/trusts it in
+ * `/hooks` or Settings → Hooks. The internal variants (`codex-internal`,
+ * `tcodex`) share the codex hooks.json *format* but not this trust gate, so
+ * they are intentionally excluded.
+ */
+const CODEX_TRUST_GATE_TOOLS = new Set(['codex']);
+
+/**
+ * True for a tool that gates hooks behind an explicit user trust step (only the
+ * public `codex`). teamai never edits Codex's `[hooks.state]` to auto-trust —
+ * the reminder is UX only. Exported so `hooks inject` / `doctor` can surface it.
+ */
+export function isCodexTrustGatedTool(tool: string): boolean {
+  return CODEX_TRUST_GATE_TOOLS.has(tool);
+}
+
+/**
+ * One-line reminder that Codex may require the user to trust newly written hooks
+ * before they run. Shared by `hooks inject` (post-write notice) and `doctor`
+ * (installed-hooks note) so the wording stays identical.
+ */
+export function codexTrustReminder(): string {
+  return 'Codex hooks written, but Codex may require you to review/trust them before they run — open /hooks or Settings → Hooks in Codex to trust them.';
 }
 
 /** Known teamai command substrings used to identify built-in / legacy hooks. */
@@ -721,12 +751,38 @@ export async function hasTeamaiHooks(
 }
 
 /**
+ * Reconcile the single teamai OpenCode plugin.
+ *
+ * OpenCode auto-loads plugins from BOTH `~/.config/opencode/plugin` and
+ * `<project>/.opencode/plugin`, so a project-scope copy living next to a
+ * user-scope one makes OpenCode load two identical plugins and dispatch every
+ * event twice. teamai therefore keeps exactly one copy, in the user plugin dir —
+ * matching the settings.json hooks of every other tool, which also live in HOME
+ * and gate on the `cwd` fed to `hook-dispatch`. Any project-scope copy left by
+ * an earlier layout is deleted on the way through.
+ */
+async function reconcileOpencodePlugin(baseDir: string, removeAll = false): Promise<void> {
+  const home = getUserHome();
+  const { injectOpencodeHooks, removeOpencodeHooks } = await import('./opencode-hooks.js');
+  if (path.resolve(baseDir) !== path.resolve(home)) {
+    await removeOpencodeHooks(baseDir, 'project');
+  }
+  if (removeAll) {
+    await removeOpencodeHooks(home, 'user');
+    return;
+  }
+  if (await pathExists(path.join(home, '.config', 'opencode'))) {
+    await injectOpencodeHooks(home, 'user');
+  }
+}
+
+/**
  * Inject teamai built-in hooks into all AI tool settings.
  * Only writes to tools whose root directory already exists on disk,
  * preventing creation of config dirs for tools the user hasn't installed.
  */
 export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<void> {
-  const resolvedBaseDir = baseDir ?? (process.env.HOME ?? '');
+  const resolvedBaseDir = baseDir ?? getUserHome();
   const tools = Object.keys(toolPaths).filter(t => !filterAgents || filterAgents.includes(t));
   let shellAvailable = true;
   if (tools.some(t => SHELL_DEPENDENT_TOOLS.has(t))) {
@@ -766,6 +822,12 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         await injectHermesHooks();
       } catch (e) {
         log.warn(`Failed to inject Hermes hook: ${(e as Error).message}`);
+      }
+    } else if (tool === 'opencode') {
+      try {
+        await reconcileOpencodePlugin(resolvedBaseDir);
+      } catch (e) {
+        log.warn(`Failed to inject OpenCode hook into ${tool}: ${(e as Error).message}`);
       }
     }
   }
@@ -816,6 +878,17 @@ export async function reconcileHooksToAllTools(
       }
       continue;
     }
+    // OpenCode has no settings.json hook list; it auto-loads JS/TS plugins from
+    // its config dirs. Route it to the plugin-file adapter instead of the
+    // settings-based path.
+    if (tool === 'opencode') {
+      try {
+        await reconcileOpencodePlugin(baseDir, opts.removeAll);
+      } catch (e) {
+        log.warn(`Failed to reconcile OpenCode hooks: ${(e as Error).message}`);
+      }
+      continue;
+    }
     if (!paths.settings) continue;
     // Only reconcile hooks for tools the user actually has installed. Without
     // this gate, `hooks inject`/`remove` would create root directories for
@@ -835,6 +908,28 @@ export async function reconcileHooksToAllTools(
       log.warn(`Failed to reconcile hooks for ${tool}: ${(e as Error).message}`);
     }
   }
+}
+
+/**
+ * True if a trust-gated Codex tool (the public `codex`) is both configured with
+ * a settings path and actually installed on disk under baseDir.
+ *
+ * "Installed" uses the same root-directory gate as reconcileHooksToAllTools, so
+ * a true result means inject just wrote hooks that Codex may require the user to
+ * trust. Internal variants (codex-internal / tcodex) are excluded — they share
+ * the format but not the trust gate. Used to decide whether to print the
+ * reminder after inject.
+ */
+export async function hasInstalledCodexTrustGatedTool(
+  toolPaths: Record<string, { settings?: string }>,
+  baseDir: string,
+): Promise<boolean> {
+  for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (!isCodexTrustGatedTool(tool) || !paths.settings) continue;
+    const toolRoot = path.join(baseDir, paths.settings.split('/')[0]);
+    if (await pathExists(toolRoot)) return true;
+  }
+  return false;
 }
 
 /**

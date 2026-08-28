@@ -7,6 +7,7 @@ import { listFilesRecursive, readFileSafe, writeFile, expandHome, ensureDir } fr
 import { log } from './utils/logger.js';
 import { assertSafePath, defaultAllowedRoots } from './utils/path-safety.js';
 import type { ClassifiedItem, ImportSession, ImportSessionItem } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── 常量 ──────────────────────────────────────────────────
 
@@ -17,7 +18,7 @@ const MAX_FILE_SIZE_BYTES = 50 * 1024;
 const MAX_CONTENT_CHARS = 3000;
 
 /** import 会话文件默认路径。 */
-const DEFAULT_SESSION_PATH = `${process.env.HOME}/.teamai/import-session.json`;
+const DEFAULT_SESSION_PATH = path.join(getUserHome(), '.teamai', 'import-session.json');
 
 /** 并发调用 Claude 的最大数量。 */
 const AI_CONCURRENCY = 3;

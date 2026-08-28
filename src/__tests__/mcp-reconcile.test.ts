@@ -209,6 +209,49 @@ servers:
     expect(after.mcpServers.temp).toBeUndefined();
   });
 
+  it('does not prune managed servers in http mode (install_mcp survives second sync)', async () => {
+    // First, inject a server as a git-mode team would, so managed-mcp.json and
+    // the tool config both record it (stands in for an install_mcp write).
+    await writeMcpYaml(`
+servers:
+  - name: clawpro
+    transport: http
+    url: https://clawpro.example.com/mcp
+    tools: [claude]
+`);
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    const claudeJson = path.join(homeDir, '.claude.json');
+    expect((await fse.readJson(claudeJson)).mcpServers.clawpro).toBeDefined();
+
+    // Now the team is HTTP-backed with an empty desired set (no repo tree). A
+    // session-start reconcile must NOT delete the previously managed server.
+    await writeMcpYaml('servers: []\n');
+    const httpConfig = { ...localConfig, repo: { ...localConfig.repo, kind: 'http' } } as typeof localConfig;
+    const { changes } = await reconcileMcpForConfig(teamConfig, httpConfig);
+
+    expect(changes).toEqual([]);
+    expect((await fse.readJson(claudeJson)).mcpServers.clawpro).toBeDefined();
+  });
+
+  it('still removes managed servers in http mode when removeAll is set (uninstall teardown)', async () => {
+    await writeMcpYaml(`
+servers:
+  - name: clawpro
+    transport: http
+    url: https://clawpro.example.com/mcp
+    tools: [claude]
+`);
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    const claudeJson = path.join(homeDir, '.claude.json');
+    expect((await fse.readJson(claudeJson)).mcpServers.clawpro).toBeDefined();
+
+    const httpConfig = { ...localConfig, repo: { ...localConfig.repo, kind: 'http' } } as typeof localConfig;
+    const { changes } = await reconcileMcpForConfig(teamConfig, httpConfig, { removeAll: true });
+
+    expect(changes.some((c) => c.action === 'removed' && c.server === 'clawpro')).toBe(true);
+    expect((await fse.readJson(claudeJson)).mcpServers.clawpro).toBeUndefined();
+  });
+
   // tclaude relocates Claude Code's user data dir via customUserDataDir, so its
   // MCP file is ~/.tclaude/.claude.json — a nested path, not ~/.tclaude.json.
   it('writes tclaude servers to ~/.tclaude/.claude.json in claude format', async () => {
@@ -492,6 +535,140 @@ servers:
     const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
     expect(changes[0]).toMatchObject({ action: 'skipped' });
     expect(changes[0].reason).toContain('allowedHosts');
+  });
+});
+
+describe('MCP reconcile — OpenCode', () => {
+  let tmpDir: string;
+  let homeDir: string;
+  let repoPath: string;
+  let teamConfig: TeamaiConfig;
+  let localConfig: LocalConfig;
+
+  const OPENCODE_TOOL_PATHS = {
+    opencode: {
+      skills: '.opencode/skills',
+      rules: '.opencode/rules',
+      agents: '.opencode/agents',
+      mcp: '.config/opencode/opencode.json',
+      mcpProject: 'opencode.json',
+      userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules', agents: '.config/opencode/agents' },
+    },
+  };
+
+  async function writeMcpYaml(body: string): Promise<void> {
+    await fse.ensureDir(path.join(repoPath, 'mcp'));
+    await fse.writeFile(path.join(repoPath, 'mcp', 'mcp.yaml'), body);
+  }
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-mcp-oc-test-'));
+    homeDir = path.join(tmpDir, 'home');
+    repoPath = path.join(tmpDir, 'team-repo');
+    // OpenCode "installed" at user scope lives under ~/.config/opencode.
+    await fse.ensureDir(path.join(homeDir, '.config', 'opencode', 'skills'));
+    await fse.ensureDir(path.join(homeDir, '.teamai'));
+    vi.stubEnv('HOME', homeDir);
+
+    teamConfig = {
+      team: 't', description: '', repo: 'r', provider: 'tgit', reviewers: [],
+      sharing: {
+        skills: {}, rules: { enforced: [] }, docs: { localDir: '~/.teamai/docs' },
+        env: { injectShellProfile: false }, mcp: { autoApply: true, allowedCommands: [], allowedHosts: [] },
+      },
+      toolPaths: OPENCODE_TOOL_PATHS,
+    } as unknown as TeamaiConfig;
+
+    localConfig = {
+      repo: { localPath: repoPath, remote: 'r' },
+      username: 'u', scope: 'user', additionalRoles: [],
+    } as unknown as LocalConfig;
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  const ocConfig = () => path.join(homeDir, '.config', 'opencode', 'opencode.json');
+
+  it('writes servers under the `mcp` key, not `mcpServers`, in local shape', async () => {
+    await writeMcpYaml(`
+servers:
+  - name: local-srv
+    transport: stdio
+    command: my-server
+    args: ["--port", "3000"]
+    env:
+      FOO: bar
+`);
+    await reconcileMcpForConfig(teamConfig, localConfig);
+
+    const doc = await fse.readJson(ocConfig());
+    expect(doc.mcpServers).toBeUndefined();
+    expect(doc.mcp['local-srv']).toEqual({
+      type: 'local',
+      command: ['my-server', '--port', '3000'],
+      environment: { FOO: 'bar' },
+      enabled: true,
+    });
+  });
+
+  it('renders a remote (http) server with url + headers', async () => {
+    await writeMcpYaml(`
+servers:
+  - name: remote-srv
+    transport: http
+    url: https://example.com/mcp
+    headers:
+      Authorization: Bearer tok
+`);
+    await reconcileMcpForConfig(teamConfig, localConfig);
+
+    const doc = await fse.readJson(ocConfig());
+    expect(doc.mcp['remote-srv']).toEqual({
+      type: 'remote',
+      url: 'https://example.com/mcp',
+      headers: { Authorization: 'Bearer tok' },
+      enabled: true,
+    });
+  });
+
+  it('preserves unrelated keys (instructions) and the user\'s own mcp entries', async () => {
+    await fse.ensureDir(path.dirname(ocConfig()));
+    await fse.writeJson(ocConfig(), {
+      $schema: 'https://opencode.ai/config.json',
+      instructions: ['.opencode/rules/*.md'],
+      mcp: { mine: { type: 'local', command: ['x'], enabled: true } },
+    });
+    await writeMcpYaml(`
+servers:
+  - name: team-srv
+    transport: http
+    url: https://team.example/mcp
+`);
+    await reconcileMcpForConfig(teamConfig, localConfig);
+
+    const doc = await fse.readJson(ocConfig());
+    expect(doc.$schema).toBe('https://opencode.ai/config.json');
+    expect(doc.instructions).toEqual(['.opencode/rules/*.md']);
+    expect(doc.mcp.mine).toEqual({ type: 'local', command: ['x'], enabled: true });
+    expect(doc.mcp['team-srv'].type).toBe('remote');
+  });
+
+  it('removes a dropped team server from the mcp key on a later run', async () => {
+    await writeMcpYaml(`
+servers:
+  - name: temp
+    transport: http
+    url: https://example.com/mcp
+`);
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    expect((await fse.readJson(ocConfig())).mcp.temp).toBeDefined();
+
+    await writeMcpYaml(`servers: []\n`);
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    expect((await fse.readJson(ocConfig())).mcp.temp).toBeUndefined();
   });
 });
 

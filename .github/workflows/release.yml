@@ -47,8 +47,36 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Resolve dist-tag
+        id: disttag
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          case "$PKG_VERSION" in
+            *-*)
+              # Prerelease (e.g. 0.21.0-beta.0). Derive the dist-tag from the
+              # first prerelease identifier (beta, rc, alpha, ...) so it lands
+              # on its own channel and NEVER on `latest` — the tag consumed by
+              # the CLI's auto-update check (src/update.ts).
+              PRE="${PKG_VERSION#*-}"
+              DIST_TAG="${PRE%%.*}"
+              # npm rejects dist-tags that look like a semver version, so fall
+              # back to `beta` when the identifier isn't a plain word.
+              case "$DIST_TAG" in
+                ''|*[!a-zA-Z]*) DIST_TAG="beta" ;;
+              esac
+              IS_PRERELEASE=true
+              ;;
+            *)
+              DIST_TAG="latest"
+              IS_PRERELEASE=false
+              ;;
+          esac
+          echo "Publishing $PKG_VERSION with dist-tag: $DIST_TAG (prerelease=$IS_PRERELEASE)"
+          echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+
       - name: Publish
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --tag "${{ steps.disttag.outputs.dist_tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -56,3 +84,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          prerelease: ${{ steps.disttag.outputs.is_prerelease == 'true' }}

@@ -68,6 +68,58 @@ interface ImportOptions extends GlobalOptions {
 }
 
 /**
+ * Run knowledge reconciliation followed by deep enrichment for a freshly
+ * extracted codebase, mirroring the reconcile → deep-enrich stages used by
+ * the --from-repo flow.
+ *
+ * Both stages are non-blocking: failures are logged at debug level and
+ * swallowed so they never abort the import. Deep enrich runs only when AI
+ * enrichment produced a `_manifest.json` and `skipEnrich` is not set.
+ *
+ * @param params - Reconcile/enrich parameters
+ * @param params.slug - Project slug, used for evidence dir naming and logging
+ * @param params.evidenceDir - Path to evidence/code/<slug> under the wiki root
+ * @param params.wikiRoot - teamwiki root directory to reconcile/enrich against
+ * @param params.cacheDir - Source code directory (the resolved --dir path)
+ * @param params.skipEnrich - When true, skip the deep-enrich stage
+ */
+async function reconcileAndDeepEnrich(params: {
+  slug: string;
+  evidenceDir: string;
+  wikiRoot: string;
+  cacheDir: string;
+  skipEnrich: boolean;
+}): Promise<void> {
+  const { slug, evidenceDir, wikiRoot, cacheDir, skipEnrich } = params;
+
+  // Reconcile product docs ↔ code knowledge (if product docs exist)
+  try {
+    const { reconcileKnowledge } = await import('./wiki-engine/adapters/index.js');
+    const result = await reconcileKnowledge({ wikiRoot, dryRun: false });
+    if (result.mappings > 0 || result.gaps.length > 0) {
+      log.info(
+        `  reconcile: ${result.mappings} mappings, ` +
+        `${result.gaps.length} gaps, ${result.graphEdges.length} MAPS_TO edges`,
+      );
+    }
+  } catch (err) {
+    log.debug(`reconcile skipped: ${(err as Error).message}`);
+  }
+
+  // Deep enrich (synchronous, before push — so all content goes into one MR)
+  const manifestExists = await fs.pathExists(path.join(evidenceDir, '_manifest.json'));
+  if (!skipEnrich && manifestExists) {
+    try {
+      const { deepEnrich } = await import('./deep-enrich.js');
+      await deepEnrich({ project: slug, evidenceDir, wikiRoot, cacheDir });
+      log.info(`Deep enrich complete: ${slug}`);
+    } catch (err) {
+      log.debug(`deep-enrich failed for ${slug} (non-blocking): ${(err as Error).message}`);
+    }
+  }
+}
+
+/**
  * Main entry point for the import command, orchestrating dir, MR, org, and other import flows.
  *
  * @param opts - Merged global and subcommand options object
@@ -225,6 +277,13 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
                   skipAutoPush: true,
                   sourceMrUrl: opts.fromMr,
                 });
+                try {
+                  const { rebuildWikiIndex } = await import('./rebuild-wiki-index.js');
+                  await rebuildWikiIndex(teamwikiRoot);
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  log.warn(`[wiki] global index rebuild failed (non-blocking): ${msg}`);
+                }
                 ctx.didUpdate = true;
               } else {
                 task.skip('No existing evidence for this repo');
@@ -291,6 +350,13 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
             if (await fs.pathExists(srcWiki)) {
               await fs.copy(srcWiki, outputWiki, { overwrite: true });
               log.info(`Output written: ${outputWiki}`);
+              await reconcileAndDeepEnrich({
+                slug,
+                evidenceDir: path.join(outputWiki, 'evidence', 'code', slug),
+                wikiRoot: outputWiki,
+                cacheDir: dirPath,
+                skipEnrich: opts.skipEnrich ?? false,
+              });
             }
           } else {
             // 默认模式：写入 team-repo 并推送
@@ -312,10 +378,26 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
                 await fs.copy(srcGraph, path.join(destGraphDir, 'graph-index.json'), { overwrite: true });
               }
               log.info(`teamwiki/ knowledge graph updated: ${slug}`);
+              await reconcileAndDeepEnrich({
+                slug,
+                evidenceDir: evidenceDest,
+                wikiRoot: teamwikiRoot,
+                cacheDir: dirPath,
+                skipEnrich: opts.skipEnrich ?? false,
+              });
             }
 
             const { aggregateGlobalGraph } = await import('./graph-aggregate.js');
             await aggregateGlobalGraph(teamwikiRoot);
+
+            // Rebuild global router.md / index.md so newly imported repos appear in navigation
+            try {
+              const { rebuildWikiIndex } = await import('./rebuild-wiki-index.js');
+              await rebuildWikiIndex(teamwikiRoot);
+              log.info('teamwiki router.md / index.md rebuilt');
+            } catch (e) {
+              log.warn(`[wiki] global index rebuild failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
+            }
 
             await autoPushTeamRepo(teamRepoPath, `[teamai] Import from local dir: ${slug}`);
             log.success(`Pushed to team knowledge repo (${localConfig.repo.remote})`);

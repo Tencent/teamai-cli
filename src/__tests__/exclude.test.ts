@@ -50,6 +50,7 @@ describe('skill exclude commands', () => {
       pushedRules: [],
       pushedSkills: [],
       pushedEnvVars: [],
+      pendingPushes: [],
       lastUpdateCheck: null,
       availableUpdate: null,
     });

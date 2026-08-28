@@ -5,14 +5,16 @@ import readline from 'node:readline/promises';
 import matter from 'gray-matter';
 
 import { fetchGitHubPR } from './providers/github/mr-fetch.js';
+import { fetchGitLabMR } from './providers/gitlab/mr-fetch.js';
 import { fetchTGitMR } from './providers/tgit/mr-fetch.js';
 import type { MRData, LearningDraft } from './types.js';
 import { callClaude } from './utils/ai-client.js';
 import { extractKeywords, findSupersededLearnings } from './utils/dedup.js';
 import { log, spinner } from './utils/logger.js';
+import { getUserHome } from './utils/home.js';
 
 /** Default directory for storing learnings. */
-const DEFAULT_LEARNINGS_DIR = path.join(process.env.HOME ?? '/tmp', '.teamai', 'learnings');
+const DEFAULT_LEARNINGS_DIR = path.join(getUserHome(), '.teamai', 'learnings');
 
 /** Dedup similarity threshold. */
 const SUPERSEDE_THRESHOLD = 0.6;
@@ -31,7 +33,12 @@ async function fetchMR(url: string): Promise<MRData> {
   if (url.includes('git.woa.com')) {
     return fetchTGitMR(url);
   }
-  throw new Error(`Unsupported MR URL: ${url}. Only GitHub and TGit are supported`);
+  // GitLab (incl. self-hosted): the `/-/merge_requests/` route is unique to
+  // GitLab, so it identifies the platform on any host.
+  if (/\/-\/merge_requests\/\d+/.test(url)) {
+    return fetchGitLabMR(url);
+  }
+  throw new Error(`Unsupported MR URL: ${url}. Only GitHub, TGit and GitLab are supported`);
 }
 
 /**
@@ -152,6 +159,9 @@ function extractRepoUrlFromMrUrl(mrUrl: string): string {
   // TGit: https://git.woa.com/group[/subgroup]/repo/merge_requests/123
   const tgitMatch = mrUrl.match(/^(https:\/\/git\.woa\.com\/.+\/[^/]+)\/merge_requests\//);
   if (tgitMatch) return `${tgitMatch[1]}.git`;
+  // GitLab: https://<host>/group[/subgroup]/repo/-/merge_requests/123
+  const gitlabMatch = mrUrl.match(/^(https?:\/\/.+?\/.+\/[^/]+)\/-\/merge_requests\//);
+  if (gitlabMatch) return `${gitlabMatch[1]}.git`;
   // Cannot reliably extract; return empty string so caller skips incremental update
   return '';
 }

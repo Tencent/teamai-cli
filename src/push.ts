@@ -3,18 +3,24 @@ import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.j
 import { assertNotReadOnly } from './read-only.js';
 import {
   createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName,
-  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch,
+  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev,
 } from './utils/git.js';
+import {
+  findPendingForItem, partiallySelectedEntries, pendingNamespaceFor, planPushGroups,
+  prunePendingPushes, recordPendingPush, toPendingItems, type PushGroup,
+} from './utils/pending-push.js';
 import { syncTeamUpdatesToLocal } from './utils/pre-push-sync.js';
 import { getProvider } from './providers/index.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
 import { scanTeamRepoNamespaces } from './resources/skills.js';
-import type { GlobalOptions, ResourceItem, ResourceType, LocalConfig, TeamaiConfig } from './types.js';
+import type {
+  GlobalOptions, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
+} from './types.js';
 import { assertSafePath, assertSafeResourceName, defaultAllowedRoots } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
 import { askQuestion, askSelection } from './utils/prompt.js';
-import { pathExists } from './utils/fs.js';
+import { pathExists, readFileSafe, writeFile } from './utils/fs.js';
 
 /**
  * Synthetic toolPaths key used only to make `teamai push` scan the active tree's
@@ -115,6 +121,139 @@ async function createPrWithFallback(
 
 export { createPrWithFallback };
 
+/**
+ * Push each selected resource into the team repo, commit it on a branch, and
+ * open (or update) the matching PR. Returns false when the push failed, after
+ * rolling back the copies so the next scan sees a clean tree.
+ */
+async function pushGroup(args: {
+  group: PushGroup;
+  teamConfig: TeamaiConfig;
+  localConfig: LocalConfig;
+  pushState: State;
+  includeTeamConfig: boolean;
+}): Promise<boolean> {
+  const { group, teamConfig, localConfig, pushState, includeTeamConfig } = args;
+  const { items, reuse } = group;
+
+  // pushItem copies files into the team repo's working tree. If any later
+  // step (refreshMarketplace, pushRepoBranch, createPullRequest) fails, we
+  // must wipe those copies + any staging so the next `teamai push` scans
+  // cleanly instead of reporting "No new resources" (BUG #2).
+  const pushSpin = spinner('Pushing resources...').start();
+  const pushedFiles: string[] = [];
+  let workingTreeDirtied = false;
+
+  try {
+    for (const item of items) {
+      const handler = getHandler(item.type);
+      await handler.pushItem(item, teamConfig, localConfig);
+      workingTreeDirtied = true;
+      pushedFiles.push(item.relativePath);
+    }
+
+    // Refresh marketplace.json if it exists and skills were pushed
+    if (items.some((i) => i.type === 'skills')) {
+      try {
+        const { refreshMarketplace } = await import('./resources/marketplace.js');
+        const updated = await refreshMarketplace(localConfig.repo.localPath);
+        if (updated) {
+          pushedFiles.push('.codebuddy-plugin/marketplace.json');
+          log.debug('Refreshed marketplace.json');
+        }
+      } catch (e) {
+        log.debug(`Marketplace refresh skipped: ${(e as Error).message}`);
+      }
+    }
+
+    // Create branch, commit, and push.
+    // Only include "sweeper" directories (rules/, env/) that actually
+    // exist — otherwise `git add 'rules/'` throws `pathspec did not match
+    // any files` and the whole push aborts (BUG #1). A team may not have
+    // rules/ or env/ yet.
+    const sweeperCandidates = ['rules/', 'env/', '.codebuddy-plugin/'];
+    const existingSweepers = await filterExistingTopLevelPaths(
+      localConfig.repo.localPath,
+      sweeperCandidates,
+    );
+    // Include teamai.yaml when the user edited it (e.g. `teamai source add`), so
+    // sources / publicSkills changes ride along in the same PR as the resources.
+    const configFiles = includeTeamConfig ? ['teamai.yaml'] : [];
+    const gitFiles = [...new Set([...pushedFiles, ...existingSweepers, ...configFiles])];
+    const branchName = reuse?.branch ?? generateBranchName(localConfig.username);
+    const commitMsg = `[teamai] Push ${items.length} resource(s) from ${localConfig.username}`;
+
+    const hasChanges = await pushRepoBranch(
+      localConfig.repo.localPath,
+      commitMsg,
+      gitFiles,
+      branchName,
+      { reuseBranch: Boolean(reuse) },
+    );
+    // pushRepoBranch committed (or deleted the branch) — working tree is
+    // clean either way from the branch's perspective.
+    workingTreeDirtied = false;
+
+    if (!hasChanges) {
+      pushSpin.succeed(
+        reuse
+          ? `No changes to push (PR already up to date: ${reuse.prUrl ?? branchName})`
+          : 'No changes to push (files already up to date)',
+      );
+      return true;
+    }
+
+    pushSpin.succeed(`Pushed branch ${branchName}`);
+
+    let prUrl: string | null;
+    if (reuse) {
+      // The PR tracks this branch, so the force-push above already updated it.
+      prUrl = reuse.prUrl;
+      log.success(`Existing PR updated: ${prUrl ?? branchName}`);
+    } else {
+      prUrl = await createPrWithFallback(
+        teamConfig,
+        localConfig,
+        branchName,
+        commitMsg,
+        `Pushed ${items.length} resource(s):\n${items.map((i) => `- [${i.type}] ${i.name}`).join('\n')}`,
+      );
+      if (!prUrl) {
+        process.exitCode = 1;
+      }
+    }
+
+    // Remember the open PR so the next run updates it instead of opening a
+    // duplicate. Recorded even when PR creation failed: the branch is on the
+    // remote, so pushing again must reuse it.
+    recordPendingPush(pushState, {
+      branch: branchName,
+      prUrl,
+      createdAt: new Date().toISOString(),
+      items: toPendingItems(items),
+    });
+
+    // Switch back to the default branch so the next group starts clean
+    await checkoutMaster(localConfig.repo.localPath);
+    return true;
+  } catch (e) {
+    pushSpin.fail(`Push failed: ${(e as Error).message}`);
+    if (workingTreeDirtied) {
+      try {
+        const git = createGit(localConfig.repo.localPath);
+        await git.reset(['--hard', 'HEAD']);
+        await git.clean('f', ['-d']);
+        log.debug('Rolled back team repo working tree after failed push');
+      } catch (cleanupErr) {
+        log.warn(
+          `Warning: team repo may be in a dirty state. Run \`git -C ${localConfig.repo.localPath} reset --hard && git clean -fd\` manually. (${(cleanupErr as Error).message})`,
+        );
+      }
+    }
+    return false;
+  }
+}
+
 export async function push(options: GlobalOptions & { all?: boolean; role?: string }): Promise<void> {
   // Auto-detect scope: project scope if cwd has project config, else user scope
   const { localConfig, teamConfig } = await autoDetectInit();
@@ -141,6 +280,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
       } else {
         log.error(`Push failed: ${(e as Error).message}`);
       }
+      process.exitCode = 1;
     }
     return;
   }
@@ -165,6 +305,12 @@ async function pushCore(
   // In self mode the worktree is already a fresh detached checkout of
   // origin/<default>, so resetToCleanMaster/pullRepo (which assume a normal
   // clone on a branch) are neither needed nor safe — skip them.
+  // Uncommitted teamai.yaml edits (e.g. from `teamai source add`, which writes the
+  // file but does not commit) live in the team repo working tree. resetToCleanMaster
+  // below does `git reset --hard`, which would silently destroy them. Capture the
+  // working-tree content before the reset and restore it after pull, so config edits
+  // survive and get committed alongside resources (see gitFiles construction below).
+  let pendingTeamConfig: string | null = null;
   if (!selfMode) {
     const pullSpin = spinner('Pulling latest changes...').start();
     try {
@@ -178,10 +324,23 @@ async function pushCore(
         // message rather than silently doing nothing or damaging their repo.
         pullSpin.fail('Cannot push: team repo path is not a dedicated git root. '
           + 'Run `teamai init` to re-clone the team repo before pushing.');
+        process.exitCode = 1;
         return;
+      }
+      const yamlPath = path.join(repoPath, 'teamai.yaml');
+      const workingContent = await readFileSafe(yamlPath);
+      if (workingContent !== null) {
+        const committed = await getFileContentAtRev(repoPath, 'HEAD', 'teamai.yaml');
+        if (committed === null || committed.toString() !== workingContent) {
+          pendingTeamConfig = workingContent;
+        }
       }
       await resetToCleanMaster(git, repoPath);
       await pullRepo(repoPath);
+      if (pendingTeamConfig !== null) {
+        // Re-apply the user's config edits on top of the freshly pulled default branch.
+        await writeFile(yamlPath, pendingTeamConfig);
+      }
       pullSpin.succeed('Up to date');
     } catch (e) {
       pullSpin.warn(`Pull failed: ${(e as Error).message}`);
@@ -354,7 +513,53 @@ async function pushCore(
     allItems.push(matchedItem);
   }
 
+  // An explicit --role is a destination override for every selected skill,
+  // including modified skills. Keep relativePath aligned with pushItem's
+  // destination so git stages the files that were actually copied (#331).
+  if (options.role) {
+    try {
+      assertSafeResourceName(options.role);
+      for (const item of allItems) {
+        if (item.type === 'skills') {
+          assertSafeResourceName(item.name);
+        }
+      }
+    } catch (e) {
+      log.error(`Invalid skill role or name: ${(e as Error).message}`);
+      process.exitCode = 2;
+      return;
+    }
+    for (const item of allItems) {
+      if (item.type !== 'skills') continue;
+      item.namespace = options.role;
+      item.relativePath = `skills/${options.role}/${item.name}`;
+    }
+  }
+
+  // ── Step 0: Cross-check against still-open push PRs ────────────────
+  // Resources waiting in an unmerged PR are absent from the default branch, so
+  // the scan above flags them as new every single time. Without this check each
+  // run opens another duplicate PR.
+  const pushState = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
+  const pruned = await prunePendingPushes(
+    localConfig.repo.localPath,
+    pushState.pendingPushes,
+    allItems,
+  );
+  pushState.pendingPushes = pruned.pending;
+  if (pruned.changed) {
+    await saveStateForScope(pushState, localConfig.scope, localConfig.projectRoot);
+  }
+  const pendingPushes = pushState.pendingPushes;
+
   if (allItems.length === 0) {
+    // No resource changes, but the user may have edited teamai.yaml (sources /
+    // publicSkills) via `teamai source add`. Push that config change on its own
+    // rather than reporting "nothing to push".
+    if (pendingTeamConfig !== null) {
+      await pushTeamConfigOnly(localConfig, teamConfig, options);
+      return;
+    }
     log.info('No new or modified resources to push');
     return;
   }
@@ -363,6 +568,7 @@ async function pushCore(
   console.log('');
   console.log(`Found ${allItems.length} resource(s) to push:`);
   console.log('');
+  const pendingIndices = new Set<number>();
   for (let i = 0; i < allItems.length; i++) {
     const item = allItems[i];
     const statusLabel = item.status === 'modified' ? ' (modified)' : ' (new)';
@@ -373,8 +579,23 @@ async function pushCore(
     if (item.type === 'skills' && item.namespace) {
       console.log(`       to:   skills/${item.namespace}/${item.name}`);
     }
+    const openPrs = findPendingForItem(pendingPushes, item);
+    if (openPrs.length > 0) {
+      pendingIndices.add(i);
+      for (const entry of openPrs) {
+        console.log(`       awaiting review: ${entry.prUrl ?? `branch ${entry.branch}`}`);
+      }
+    }
   }
   console.log('');
+
+  if (pendingIndices.size > 0) {
+    log.info(
+      `${pendingIndices.size} resource(s) already belong to an open PR. Keeping them selected updates `
+      + 'that PR instead of opening a duplicate; deselect them to leave it untouched.',
+    );
+    console.log('');
+  }
 
   // ── Step 2: Dry run exits after display ────────────────────────────
   if (options.dryRun) {
@@ -398,8 +619,38 @@ async function pushCore(
     selectedItems = indices.map((i) => allItems[i]);
   }
 
+  // ── Step 3b: Split the selection into per-PR groups ────────────────
+  // Resources that belong to an open PR are pushed by force-pushing that PR's
+  // branch, which updates it in place; everything else goes into a new PR. Both
+  // can happen in one run, so editing a resource under review updates its PR
+  // without dragging unrelated resources into that review.
+  const groups = planPushGroups(selectedItems, pendingPushes);
+  for (const group of groups) {
+    if (!group.reuse) continue;
+    log.info(
+      `Updating existing PR instead of creating a new one: ${group.reuse.prUrl ?? group.reuse.branch}`,
+    );
+    // Reuse the destination chosen when that PR was opened rather than asking
+    // again — a different answer would silently move the skill.
+    for (const item of group.items) {
+      if (item.type !== 'skills' || item.status !== 'new') continue;
+      const ns = pendingNamespaceFor(group.reuse, item);
+      if (!ns) continue;
+      item.namespace = ns;
+      item.relativePath = `skills/${ns}/${item.name}`;
+    }
+  }
+  for (const entry of partiallySelectedEntries(selectedItems, pendingPushes)) {
+    log.warn(
+      `Only part of ${entry.prUrl ?? entry.branch} is selected, so the selected resources go into a `
+      + 'new PR and will exist in both. Select all of its resources to update it in place instead.',
+    );
+  }
+
   // ── Step 4: Resolve namespace for NEW skills only (after selection) ─
-  const newSkills = selectedItems.filter((i) => i.type === 'skills' && i.status === 'new');
+  const newSkills = selectedItems.filter(
+    (i) => i.type === 'skills' && i.status === 'new' && !i.namespace,
+  );
   let resolvedNamespaceForNew: string | undefined;
 
   if (newSkills.length > 0) {
@@ -483,98 +734,29 @@ async function pushCore(
     }
   }
 
-  // ── Step 5: Push each selected item to local repo ──────────────────
-  // pushItem copies files into the team repo's working tree. If any later
-  // step (refreshMarketplace, pushRepoBranch, createPullRequest) fails, we
-  // must wipe those copies + any staging so the next `teamai push` scans
-  // cleanly instead of reporting "No new resources" (BUG #2).
-  const pushSpin = spinner('Pushing resources...').start();
-  const pushedFiles: string[] = [];
-  let workingTreeDirtied = false;
-
-  try {
-    for (const item of selectedItems) {
-      const handler = getHandler(item.type);
-      await handler.pushItem(item, teamConfig, localConfig);
-      workingTreeDirtied = true;
-      pushedFiles.push(item.relativePath);
-    }
-
-    // Refresh marketplace.json if it exists and skills were pushed
-    if (selectedItems.some((i) => i.type === 'skills')) {
-      try {
-        const { refreshMarketplace } = await import('./resources/marketplace.js');
-        const updated = await refreshMarketplace(localConfig.repo.localPath);
-        if (updated) {
-          pushedFiles.push('.codebuddy-plugin/marketplace.json');
-          log.debug('Refreshed marketplace.json');
-        }
-      } catch (e) {
-        log.debug(`Marketplace refresh skipped: ${(e as Error).message}`);
-      }
-    }
-
-    // Create branch, commit, and push.
-    // Only include "sweeper" directories (rules/, env/) that actually
-    // exist — otherwise `git add 'rules/'` throws `pathspec did not match
-    // any files` and the whole push aborts (BUG #1). A team may not have
-    // rules/ or env/ yet.
-    const sweeperCandidates = ['rules/', 'env/', '.codebuddy-plugin/'];
-    const existingSweepers = await filterExistingTopLevelPaths(
-      localConfig.repo.localPath,
-      sweeperCandidates,
-    );
-    const gitFiles = [...new Set([...pushedFiles, ...existingSweepers])];
-    const branchName = generateBranchName(localConfig.username);
-    const commitMsg = `[teamai] Push ${selectedItems.length} resource(s) from ${localConfig.username}`;
-
-    const hasChanges = await pushRepoBranch(
-      localConfig.repo.localPath,
-      commitMsg,
-      gitFiles,
-      branchName,
-    );
-    // pushRepoBranch committed (or deleted the branch) — working tree is
-    // clean either way from the branch's perspective.
-    workingTreeDirtied = false;
-
-    if (!hasChanges) {
-      pushSpin.succeed('No changes to push (files already up to date)');
-      return;
-    }
-
-    pushSpin.succeed(`Pushed branch ${branchName}`);
-
-    // Create PR/MR via provider
-    await createPrWithFallback(
+  // ── Step 5: Push each group — one branch/PR per group ──────────────
+  // Config edits ride along with the first group so they land in a single PR.
+  let configRider = pendingTeamConfig !== null;
+  for (const group of groups) {
+    const ok = await pushGroup({
+      group,
       teamConfig,
       localConfig,
-      branchName,
-      commitMsg,
-      `Pushed ${selectedItems.length} resource(s):\n${selectedItems.map((i) => `- [${i.type}] ${i.name}`).join('\n')}`,
-    );
-
-    // Switch back to master after PR creation
-    await checkoutMaster(localConfig.repo.localPath);
-  } catch (e) {
-    pushSpin.fail(`Push failed: ${(e as Error).message}`);
-    if (workingTreeDirtied) {
-      try {
-        const git = createGit(localConfig.repo.localPath);
-        await git.reset(['--hard', 'HEAD']);
-        await git.clean('f', ['-d']);
-        log.debug('Rolled back team repo working tree after failed push');
-      } catch (cleanupErr) {
-        log.warn(
-          `Warning: team repo may be in a dirty state. Run \`git -C ${localConfig.repo.localPath} reset --hard && git clean -fd\` manually. (${(cleanupErr as Error).message})`,
-        );
-      }
+      pushState,
+      includeTeamConfig: configRider,
+    });
+    if (!ok) {
+      // The branch/PR for earlier groups is already on the remote, so their
+      // records must survive this failure or the next run would duplicate them.
+      await saveStateForScope(pushState, localConfig.scope, localConfig.projectRoot);
+      process.exitCode = 1;
+      return;
     }
-    return;
+    configRider = false;
   }
 
-  // Update state
-  const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
+  // Update state (pushState already carries the pendingPushes records above)
+  const state = pushState;
   state.lastPush = new Date().toISOString();
   for (const item of selectedItems) {
     if (item.type === 'skills' && !state.pushedSkills.includes(item.name)) {
@@ -588,4 +770,63 @@ async function pushCore(
     }
   }
   await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
+}
+
+/**
+ * Push a teamai.yaml-only change (e.g. from `teamai source add`) to the team repo
+ * via a PR. Called when the user edited config but changed no resources, so the
+ * normal resource-push path would exit with "No new or modified resources".
+ *
+ * Precondition: the working-tree teamai.yaml already carries the user's edits
+ * (restored after pull in pushCore) and the repo is a dedicated git root.
+ */
+async function pushTeamConfigOnly(
+  localConfig: LocalConfig,
+  teamConfig: TeamaiConfig,
+  options: GlobalOptions,
+): Promise<void> {
+  console.log('');
+  console.log('Found team config change to push:');
+  console.log('  - teamai.yaml');
+  console.log('');
+
+  if (options.dryRun) {
+    log.info('Dry run — no changes made');
+    return;
+  }
+
+  const pushSpin = spinner('Pushing team config...').start();
+  const branchName = generateBranchName(localConfig.username);
+  const commitMsg = `[teamai] Update team config from ${localConfig.username}`;
+
+  try {
+    const hasChanges = await pushRepoBranch(
+      localConfig.repo.localPath,
+      commitMsg,
+      ['teamai.yaml'],
+      branchName,
+    );
+    if (!hasChanges) {
+      pushSpin.succeed('No changes to push (config already up to date)');
+      return;
+    }
+    pushSpin.succeed(`Pushed branch ${branchName}`);
+
+    const prUrl = await createPrWithFallback(
+      teamConfig,
+      localConfig,
+      branchName,
+      commitMsg,
+      'Updated team config (teamai.yaml)',
+    );
+    if (!prUrl) {
+      process.exitCode = 1;
+    }
+
+    await checkoutMaster(localConfig.repo.localPath);
+  } catch (e) {
+    pushSpin.fail(`Push failed: ${(e as Error).message}`);
+    process.exitCode = 1;
+    return;
+  }
 }

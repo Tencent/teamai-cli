@@ -52,6 +52,18 @@ describe('MemberConfigSchema', () => {
 });
 
 describe('TeamaiConfigSchema', () => {
+  it.each(['github', 'tgit', 'cnb', 'git'] as const)(
+    'accepts the %s provider',
+    (provider) => {
+      const result = TeamaiConfigSchema.parse({
+        team: 'test-team',
+        repo: 'https://example.com/test/repo.git',
+        provider,
+      });
+      expect(result.provider).toBe(provider);
+    },
+  );
+
   it('should include codebuddy in default toolPaths', () => {
     const result = TeamaiConfigSchema.parse({
       team: 'test-team',

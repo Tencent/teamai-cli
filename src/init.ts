@@ -3,12 +3,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope } from './config.js';
 import { reconcileTeamHooksForConfig } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo, getRemoteUrl } from './utils/git.js';
+import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
 import { getProvider, detectProvider, RepoNotFoundError } from './providers/index.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
-import { TEAMAI_HOME, REPORTS_BRANCH, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath } from './types.js';
+import {
+  TEAMAI_HOME,
+  REPORTS_BRANCH,
+  type GlobalOptions,
+  type LocalConfig,
+  type Scope,
+  getTeamaiHome,
+  getConfigPath,
+  isRecallEnabled,
+} from './types.js';
+import { getUserHome } from './utils/home.js';
 import { describeRoles, loadRolesManifest } from './roles.js';
 import { askQuestion, askConfirmation, askSelection, closePrompt } from './utils/prompt.js';
 import {
@@ -198,7 +208,7 @@ function printScopeSummary(
   explicit: boolean,
 ): void {
   const configPath = getConfigPath(scope, projectRoot);
-  const baseDir = scope === 'project' ? (projectRoot ?? process.cwd()) : (process.env.HOME ?? '~');
+  const baseDir = scope === 'project' ? (projectRoot ?? process.cwd()) : getUserHome();
   log.info(`Scope: ${scope}${scope === 'project' ? ` (${projectRoot})` : ''}`);
   log.info(`  config    → ${configPath}`);
   log.info(`  resources → ${baseDir}/.claude/skills, ...`);
@@ -241,7 +251,7 @@ export async function initHttp(
     ({ scope, projectRoot, explicit, fallbackReason } = resolveInitScope(
       options.scope,
       process.cwd(),
-      process.env.HOME ?? '',
+      getUserHome(),
     ));
   } catch (e) {
     log.error((e as Error).message);
@@ -886,7 +896,7 @@ export async function init(options: GlobalOptions & {
     ({ scope, projectRoot, explicit, fallbackReason } = resolveInitScope(
       options.scope,
       process.cwd(),
-      process.env.HOME ?? '',
+      getUserHome(),
     ));
   } catch (e) {
     log.error((e as Error).message);
@@ -964,16 +974,17 @@ export async function init(options: GlobalOptions & {
   // Step 2: Ensure provider tools are installed and authenticate
   await provider.ensureInstalled();
 
-  const authSpin = spinner('Checking authentication...').start();
+  const isGenericGit = provider.name === 'git';
+  const authSpin = spinner(isGenericGit ? 'Checking Git identity...' : 'Checking authentication...').start();
   let username: string;
   try {
     if (provider.isAuthenticated()) {
       username = await provider.authenticate();
-      authSpin.succeed(`Authenticated as ${username}`);
+      authSpin.succeed(isGenericGit ? `Using Git identity ${username}` : `Authenticated as ${username}`);
     } else {
-      authSpin.info('Not logged in — starting authentication');
+      authSpin.info(isGenericGit ? 'Resolving Git identity' : 'Not logged in — starting authentication');
       username = await provider.authenticate();
-      log.success(`Authenticated as ${username}`);
+      log.success(isGenericGit ? `Using Git identity ${username}` : `Authenticated as ${username}`);
     }
   } catch (e) {
     authSpin.fail(`Authentication failed: ${(e as Error).message}`);
@@ -986,7 +997,37 @@ export async function init(options: GlobalOptions & {
 
   if (await pathExists(localPath)) {
     if (await isGitRepo(localPath)) {
-      log.info(`Repo already exists at ${localPath}, using existing clone`);
+      // Reuse only when the existing clone points at the SAME repo. A leftover
+      // clone from a different team repo would otherwise be reused silently,
+      // surfacing the wrong roles/skills (issue: re-init against a new --repo
+      // kept serving the old clone's manifest). Compare ignoring credentials,
+      // protocol, and .git suffix.
+      const existingRemote = await getRemoteUrl(localPath);
+      if (existingRemote && !remotesMatch(existingRemote, repoInfo.httpsUrl)) {
+        log.warn(
+          `Existing clone at ${localPath} points at a different repo ` +
+          `(${redactGitCredentials(existingRemote)}), not ${repoInfo.httpsUrl}.`,
+        );
+        if (options.force) {
+          log.info('Replacing it with a fresh clone (--force)');
+          await remove(localPath);
+        } else {
+          const confirmed = await askConfirmation(
+            'Remove it and clone the requested repo? [y/N] ',
+          );
+          if (!confirmed) {
+            log.error(
+              'Aborted. The cached clone belongs to a different repo. ' +
+              `Remove ${localPath} manually or re-run with --force to replace it.`,
+            );
+            process.exit(1);
+            return;
+          }
+          await remove(localPath);
+        }
+      } else {
+        log.info(`Repo already exists at ${localPath}, using existing clone`);
+      }
     } else {
       // The path exists but isn't a git repo — typically a leftover from a
       // previous non-git source (e.g. an HTTP repo). Reusing it would make the
@@ -1001,8 +1042,11 @@ export async function init(options: GlobalOptions & {
 
   if (!await pathExists(localPath)) {
     const cloneSpin = spinner('Cloning team repo...').start();
+    const cloneTarget = provider.name === 'git'
+      ? repoInfo.httpsUrl
+      : `${repoInfo.owner}/${repoInfo.repo}`;
     try {
-      provider.cloneRepo(`${repoInfo.owner}/${repoInfo.repo}`, localPath);
+      provider.cloneRepo(cloneTarget, localPath);
       cloneSpin.succeed('Team repo cloned');
     } catch (e) {
       if (e instanceof RepoNotFoundError) {
@@ -1032,7 +1076,7 @@ export async function init(options: GlobalOptions & {
         // Retry clone after creation
         const retryCloneSpin = spinner('Cloning newly created repo...').start();
         try {
-          provider.cloneRepo(`${repoInfo.owner}/${repoInfo.repo}`, localPath);
+          provider.cloneRepo(cloneTarget, localPath);
           retryCloneSpin.succeed('Team repo cloned');
         } catch (ce) {
           retryCloneSpin.fail(`Clone failed: ${(ce as Error).message}`);
@@ -1242,9 +1286,23 @@ export async function init(options: GlobalOptions & {
   if (reloadedTeamConfig) {
     const filterAgents = requestedAgents.length > 0 ? requestedAgents : undefined;
     await reconcileTeamHooksForConfig(reloadedTeamConfig, localConfig, { filterAgents });
+
+    // Step 7.5: Deploy CLI built-in skills immediately so team-wiki-codebase
+    // is available in the IDE right after init, without waiting for first pull.
+    try {
+      const { deployBuiltinSkills } = await import('./builtin-skills.js');
+      const skipRecall = !isRecallEnabled(localConfig, reloadedTeamConfig);
+      const deployed = await deployBuiltinSkills(reloadedTeamConfig, localConfig, { skipRecall });
+      if (deployed > 0) {
+        log.debug(`Deployed ${deployed} built-in skill(s)`);
+      }
+    } catch (e) {
+      log.debug(`Built-in skills deployment skipped: ${(e as Error).message}`);
+    }
   }
 
   log.success('teamai initialized successfully!');
+  log.info('Built-in skills (e.g. team-wiki-codebase) are ready to use in your IDE now.');
   log.info('Skills, rules, env and docs will auto-sync on each session start (via hooks).');
   log.info('Run `teamai status` to check current config.');
 

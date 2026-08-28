@@ -14,7 +14,9 @@ import path from 'node:path';
 import type { HookHandler } from './hook-dispatch.js';
 import type { LocalConfig } from './types.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { log } from './utils/logger.js';
 import { normalizeToolName } from './utils/tool-names.js';
+import { resolveHookCwd } from './utils/hook-cwd.js';
 
 // ─── Public types ───────────────────────────────────────
 
@@ -81,7 +83,14 @@ const LOCAL_AGENT_TIMEOUT_MS = 15_000;
 
 const pullHandler: HookHandler = {
   name: 'pull',
-  async execute(_stdin, _tool) {
+  async execute(stdin, tool) {
+    const cwd = resolveHookCwd(stdin);
+    try {
+      const { seedProjectAgentRoot } = await import('./project-agent-root.js');
+      await seedProjectAgentRoot(tool, cwd);
+    } catch (e) {
+      log.debug(`hook-dispatch: seedProjectAgentRoot failed: ${(e as Error).message}`);
+    }
     const { pull } = await import('./pull.js');
     await pull({ silent: true });
     return null;
@@ -182,7 +191,7 @@ const contributeCheckHandler: HookHandler = {
     // Match dashboard-collector's derivation so events and contribute state
     // share the same session id even when stdin.session_id is absent.
     const sessionId = deriveSessionId(stdin, { includeCwd: true });
-    const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : undefined;
+    const cwd = resolveHookCwd(stdin);
     const { hint } = await contributeCheckForSession(sessionId, cwd);
     if (hint) {
       return formatStopHookOutput(hint, tool);

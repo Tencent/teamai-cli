@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import path from 'node:path';
+import { getUserHome } from './utils/home.js';
 
 // ─── Tool path config ───────────────────────────────────
 
@@ -18,6 +19,21 @@ export const ToolPathsSchema = z.object({
    * cannot share a value: user scope is ~/.claude.json but project scope is
    * <root>/.mcp.json, breaking the usual `.<tool>/<file>` convention. */
   mcpProject: z.string().optional(),
+  /**
+   * User-scope path overrides for skills/rules/agents. Most tools store their
+   * user-scope resources at the same `.<tool>/<resource>` relative path as their
+   * project-scope ones, so this is omitted. OpenCode is the exception: its
+   * project-scope config lives at `<root>/.opencode/...` but its user-scope config
+   * lives at `~/.config/opencode/...`, a different prefix entirely. When set and the
+   * active scope is `user`, these values replace the base skills/rules/agents paths.
+   */
+  userScope: z
+    .object({
+      skills: z.string().optional(),
+      rules: z.string().optional(),
+      agents: z.string().optional(),
+    })
+    .optional(),
 });
 
 // ─── Scope ──────────────────────────────────────────────
@@ -143,14 +159,14 @@ export interface SourceInstallManifest {
 /** TTL for source repo pull: don't re-pull within this duration (ms). */
 export const SOURCE_PULL_TTL_MS = 24 * 60 * 60 * 1000;
 
-export const TEAMAI_SOURCES_DIR = `${process.env.HOME}/.teamai/sources`;
+export const TEAMAI_SOURCES_DIR = path.join(getUserHome(), '.teamai', 'sources');
 
 export const TeamaiConfigSchema = z.object({
   team: z.string(),
   description: z.string().default(''),
   repo: z.string(),
-  /** Git hosting provider: 'tgit' | 'github'. Defaults to 'tgit' for backward compatibility. */
-  provider: z.enum(['tgit', 'github']).default('tgit'),
+  /** Git hosting provider. `git` is the transport-only fallback for arbitrary hosts. */
+  provider: z.enum(['tgit', 'github', 'cnb', 'gitlab', 'git']).default('tgit'),
   /**
    * @deprecated Ignored by `teamai init` (issue #250). Local install scope is
    * decided only by CLI `--scope` / default. Kept optional for old teamai.yaml files.
@@ -193,7 +209,25 @@ export const TeamaiConfigSchema = z.object({
     codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents', mcp: '.codebuddy/mcp.json', mcpProject: '.codebuddy/mcp.json' },
     openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules', claudemd: '.openclaw/workspace/AGENTS.md' },
     hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
+    // DeepSeek Harness: skills synced to ~/.dsh/skills, which its skill-filesystem
+    // provider scans as user-dsh root (rank 400). dsh discovers both directory
+    // bundles (<name>/SKILL.md) and flat Markdown files there natively.
+    dsh: { skills: '.dsh/skills' },
     workbuddy: { skills: '.workbuddy/skills', rules: '.workbuddy/rules', settings: '.workbuddy/settings.json', claudemd: 'AGENTS.md', mcp: '.workbuddy/mcp.json', mcpProject: '.workbuddy/mcp.json' },
+    // OpenCode reads project config from <root>/.opencode/ but user config from
+    // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
+    // read natively from .claude/skills, but we write .opencode/skills so an
+    // OpenCode-only user (no Claude) still gets them. Rules land in .opencode/rules
+    // but must be activated via the `instructions` glob in opencode.json (OpenCode
+    // does not auto-scan a rules dir). MCP shares opencode.json under the `mcp` key.
+    opencode: {
+      skills: '.opencode/skills',
+      rules: '.opencode/rules',
+      agents: '.opencode/agents',
+      mcp: '.config/opencode/opencode.json',
+      mcpProject: 'opencode.json',
+      userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules', agents: '.config/opencode/agents' },
+    },
   }),
 });
 
@@ -265,16 +299,53 @@ export type LocalConfigInput = z.input<typeof LocalConfigSchema>;
 
 // ─── Local state (~/.teamai/state.json) ────────────────────
 
+/**
+ * A resource that was included in a still-open push PR.
+ * Matched against fresh scan results by `type` + `name`.
+ */
+export const PendingPushItemSchema = z.object({
+  type: z.string(),
+  name: z.string(),
+  /** Destination path inside the team repo, e.g. "skills/js/hello-skill". */
+  relativePath: z.string(),
+  /** Skill namespace chosen at push time, reapplied when the PR is updated. */
+  namespace: z.string().optional(),
+});
+
+/**
+ * A push branch that has been sent to the remote but whose PR is not merged yet.
+ *
+ * `teamai push` detects changes by diffing against the team repo's default
+ * branch, so resources sitting in an unmerged PR look "new" on every run and
+ * used to produce an endless stream of duplicate PRs. Recording them here lets
+ * push skip them by default and offer to update the existing PR instead.
+ */
+export const PendingPushSchema = z.object({
+  branch: z.string(),
+  prUrl: z.string().nullable().default(null),
+  createdAt: z.string(),
+  items: z.array(PendingPushItemSchema).default([]),
+});
+
+export type PendingPushItem = z.infer<typeof PendingPushItemSchema>;
+export type PendingPush = z.infer<typeof PendingPushSchema>;
+
 export const StateSchema = z.object({
   lastPush: z.string().nullable().default(null),
   lastPull: z.string().nullable().default(null),
   /** Git commit hash (short) of the team repo at the time of last successful pull. */
   lastPullRev: z.string().nullable().default(null),
+  /** Installed, enabled tool targets that completed the last full pull. */
+  lastPullTargets: z.array(z.string()).optional(),
   /** Git commit hash synchronized through the safe user-resource inheritance channel. */
   lastInheritedPullRev: z.string().nullable().optional(),
+  /** Tool targets that completed the last inherited user-resource pull. */
+  lastInheritedPullTargets: z.array(z.string()).optional(),
   pushedRules: z.array(z.string()).default([]),
   pushedSkills: z.array(z.string()).default([]),
   pushedEnvVars: z.array(z.string()).default([]),
+  /** Push branches whose PR is still open — see PendingPushSchema. */
+  pendingPushes: z.array(PendingPushSchema).default([]),
   lastUpdateCheck: z.string().nullable().default(null),
   availableUpdate: z.string().nullable().default(null),
 });
@@ -419,11 +490,11 @@ export interface GlobalOptions {
 
 // ─── Constants ──────────────────────────────────────────
 
-export const TEAMAI_HOME = `${process.env.HOME}/.teamai`;
-export const TEAMAI_CONFIG_PATH = `${TEAMAI_HOME}/config.yaml`;
-export const TEAMAI_STATE_PATH = `${TEAMAI_HOME}/state.json`;
-export const TEAMAI_TOKEN_PATH = `${TEAMAI_HOME}/token`;
-export const TEAMAI_UPDATE_LOCK_PATH = `${TEAMAI_HOME}/.update-lock`;
+export const TEAMAI_HOME = path.join(getUserHome(), '.teamai');
+export const TEAMAI_CONFIG_PATH = path.join(TEAMAI_HOME, 'config.yaml');
+export const TEAMAI_STATE_PATH = path.join(TEAMAI_HOME, 'state.json');
+export const TEAMAI_TOKEN_PATH = path.join(TEAMAI_HOME, 'token');
+export const TEAMAI_UPDATE_LOCK_PATH = path.join(TEAMAI_HOME, '.update-lock');
 
 export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'agents', 'hooks', 'mcp'];
 
@@ -997,7 +1068,7 @@ export type CultureFrontmatter = z.infer<typeof CultureFrontmatterSchema>;
 
 /**
  * Resolve the base directory for resource installation based on scope.
- * - user scope  → process.env.HOME (e.g. /Users/xxx)
+ * - user scope  → the platform user home directory (e.g. /Users/xxx)
  * - project scope → localConfig.projectRoot (e.g. /Users/xxx/my-project)
  */
 export function resolveBaseDir(localConfig: LocalConfig): string {
@@ -1010,12 +1081,48 @@ export function resolveBaseDir(localConfig: LocalConfig): string {
     }
     return localConfig.projectRoot;
   }
-  return process.env.HOME!;
+  return getUserHome();
 }
 
 /** True when `tool` is in localConfig.disabledAgents (excluded from teamai sync). */
 export function isAgentDisabled(localConfig: { disabledAgents?: string[] }, tool: string): boolean {
   return localConfig.disabledAgents?.includes(tool) ?? false;
+}
+
+/**
+ * Return `teamConfig.toolPaths` with per-scope path overrides applied.
+ *
+ * Almost every tool keeps its user-scope and project-scope resources at the same
+ * `.<tool>/<resource>` relative path, so this is the identity map for them. The
+ * one exception is OpenCode, whose user-scope config lives under
+ * `~/.config/opencode/` (a different prefix from its project `<root>/.opencode/`);
+ * its `userScope` block carries those paths and is spliced in only when the active
+ * scope is `user`. Callers that iterate `toolPaths` for skills/rules/agents should
+ * iterate the result of this function instead, so the correct scope path is used.
+ *
+ * MCP is untouched here: its two scopes are already distinct fields
+ * (`mcp` / `mcpProject`), resolved separately in the reconcile engine.
+ */
+export function scopedToolPaths(
+  teamConfig: TeamaiConfig,
+  localConfig: { scope?: Scope },
+): Record<string, z.infer<typeof ToolPathsSchema>> {
+  if (localConfig.scope !== 'user') return teamConfig.toolPaths;
+  const out: Record<string, z.infer<typeof ToolPathsSchema>> = {};
+  for (const [tool, paths] of Object.entries(teamConfig.toolPaths)) {
+    const us = paths.userScope;
+    if (!us) {
+      out[tool] = paths;
+      continue;
+    }
+    out[tool] = {
+      ...paths,
+      ...(us.skills !== undefined ? { skills: us.skills } : {}),
+      ...(us.rules !== undefined ? { rules: us.rules } : {}),
+      ...(us.agents !== undefined ? { agents: us.agents } : {}),
+    };
+  }
+  return out;
 }
 
 /** True when the local config is single-repo mode (the business repo is the team repo). */
@@ -1075,7 +1182,7 @@ export function getTeamaiHome(scope: Scope, projectRoot?: string): string {
     }
     return path.join(projectRoot, '.teamai');
   }
-  return path.join(process.env.HOME ?? '', '.teamai');
+  return path.join(getUserHome(), '.teamai');
 }
 
 /**
@@ -1121,7 +1228,7 @@ export function getManagedHooksPath(scope: Scope, projectRoot?: string): string 
  * Get the user-level pushignore path.
  */
 export function getPushignorePath(): string {
-  return path.join(process.env.HOME ?? '', '.teamai', 'pushignore');
+  return path.join(getUserHome(), '.teamai', 'pushignore');
 }
 
 /**

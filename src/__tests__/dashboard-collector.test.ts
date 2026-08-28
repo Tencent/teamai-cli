@@ -147,6 +147,17 @@ describe('parseHookEvent', () => {
     expect(event!.tool).toBe('cursor');
   });
 
+  it('parses Cursor sessionStart workspace_roots as cwd', async () => {
+    const raw = JSON.stringify({
+      hook_event_name: 'sessionStart',
+      session_id: 'sess-cursor-roots',
+      workspace_roots: ['/Users/jeffxu/Project/teamai-cli'],
+    });
+    const event = await parseHookEvent(raw, 'cursor');
+    expect(event).not.toBeNull();
+    expect(event!.cwd).toBe('/Users/jeffxu/Project/teamai-cli');
+  });
+
   it('parses Cursor camelCase stop event', async () => {
     const raw = JSON.stringify({
       hook_event_name: 'stop',

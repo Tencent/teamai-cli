@@ -410,7 +410,7 @@ describe('loadStateForScope / saveStateForScope', () => {
 
   it('should save and load state for user scope', async () => {
     await fse.ensureDir(path.join(tmpDir, '.teamai'));
-    await saveStateForScope({ lastPull: '2025-01-01', lastPullRev: null, lastPush: null, pushedRules: [], pushedSkills: [], pushedEnvVars: [], lastUpdateCheck: null, availableUpdate: null }, 'user');
+    await saveStateForScope({ lastPull: '2025-01-01', lastPullRev: null, lastPush: null, pushedRules: [], pushedSkills: [], pushedEnvVars: [], pendingPushes: [], lastUpdateCheck: null, availableUpdate: null }, 'user');
     const state = await loadStateForScope('user');
     expect(state.lastPull).toBe('2025-01-01');
   });
@@ -418,7 +418,7 @@ describe('loadStateForScope / saveStateForScope', () => {
   it('should save and load state for project scope', async () => {
     const projectRoot = path.join(tmpDir, 'proj');
     await fse.ensureDir(path.join(projectRoot, '.teamai'));
-    await saveStateForScope({ lastPull: '2025-06-01', lastPullRev: null, lastPush: null, pushedRules: [], pushedSkills: [], pushedEnvVars: [], lastUpdateCheck: null, availableUpdate: null }, 'project', projectRoot);
+    await saveStateForScope({ lastPull: '2025-06-01', lastPullRev: null, lastPush: null, pushedRules: [], pushedSkills: [], pushedEnvVars: [], pendingPushes: [], lastUpdateCheck: null, availableUpdate: null }, 'project', projectRoot);
     const state = await loadStateForScope('project', projectRoot);
     expect(state.lastPull).toBe('2025-06-01');
   });

@@ -11,14 +11,9 @@
 [![npm downloads](https://img.shields.io/npm/dm/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[![用户交流](https://img.shields.io/badge/用户交流-Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/gervEZm58g)
-[![开发者交流](https://img.shields.io/badge/开发者交流-Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/DeHHxPnfZF)
+面向 AI 智能体的团队 Harness 管理和分发工具。
 
-面向 AI 智能体的团队 Harness 分发工具。
-
-通过 Git 统一管理 skills、rules、docs，驾驭 Claude Code / Codex / CodeBuddy / WorkBuddy 等多种 AI 工具。
-
-一个人也能用，团队用更强。
+通过 Git 统一管理 skills、rules、mcp、环境变量、知识库等 Harness，驾驭 Claude Code / Codex / CodeBuddy / WorkBuddy / OpenCode 等多种 AI 工具。
 
 ## 快速开始
 
@@ -30,53 +25,81 @@ npm install -g teamai-cli
 
 ### 团队管理员 / 个人使用者
 
-在 Git 托管平台（GitHub、TGit 或 CNB）创建共享经验仓库，**授予团队成员写权限**，然后让他们运行 `teamai init https://github.com/yourorg/yourrepo`。
-
-> 个人使用无需单独建仓：`teamai init` 会检查目标仓库，不存在时自动创建。
+在 Git 托管平台（GitHub、GitLab、CNB、TGit，或私有 Git 服务）创建共享经验仓库，**授予团队成员写权限**，然后运行 `teamai init https://github.com/yourorg/yourrepo`。
 
 > **还没有团队仓库？** 可以从内置了成套 skills、rules、review agents 的模板起步。浏览 [teamai-hub](https://github.com/teamai-hub) org，点 **Use this template** 生成自己的仓库，再对它执行 `teamai init`。
 
 ### 团队成员
 
 ```bash
+# 二选一：按你想要的安装范围选择其中一条
+
 # 项目级初始化（默认，资源安装到项目目录下）
 cd /path/to/my-project
 teamai init https://github.com/yourorg/yourrepo
 
-# 用户级初始化（资源安装到 ~/ 下）
+# 或者，用户级初始化（资源安装到 ~/ 下）
 teamai init https://github.com/yourorg/yourrepo --scope user
-
-# 可选的分层模式：项目仓库保持为当前 scope，同时继承已初始化的
-# user scope 中的安全资源和可检索知识
-cd /path/to/my-project
-teamai init https://github.com/yourorg/project-repo --inherit-user-scope
 ```
 
 初始化完成后，每次开启 AI 会话时都会自动拉取管理员发布的 skills / rules 等 Harness 更新，无需手动同步。
 
-### 单仓模式（业务仓即团队仓）
-
-无需单独的团队仓库。在已有项目里运行 `teamai init .`，让它自己的 git 仓库直接充当团队仓：
-
-```bash
-cd /path/to/my-project
-teamai init .                        # 交互式：选择要启用哪些 AI 工具
-teamai init . --agent claude,codex   # 非交互:启用 Claude Code + Codex
-```
-
-- **知识资产**（skills / rules / docs / learnings）提交到仓库 **main 分支**的 `.teamai/` 目录，因此一次普通 `git clone` 就带上了整套团队配置。
-- **上报数据**（成员注册、会话摘要、投票、使用统计）走独立的 **`teamai-reports` 孤儿分支** —— 永不污染 main。
-- **由你选择启用哪些 AI 工具。** `--agent claude,codex`（可重复/逗号分隔）,省略时弹交互选择框,非交互场景则按你本机 `~/` 下已装的工具来建。teamai 为每个所选工具建目录、注入 hooks、并提交其 settings。
-- **克隆即初始化。** 团队成员 clone 仓库后，下一条 `teamai` 命令（或 AI 会话）会自动识别 `.teamai/teamai.yaml` 里的 `mode: self` 标记并自动完成本机初始化 —— 无需手抄 repo/role 参数。
-- teamai 的所有 git 操作都在隔离的 worktree 中进行，绝不触碰你的工作区和当前分支。
-
-`teamai init .` 会帮你把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）以及每个所选工具的 settings（如 `.claude/settings.json`、`.codex/hooks.json`）提交好;推送 main 后团队成员 clone 即可自动初始化。
-
 > **完整使用指南**：[docs/usage-guide.zh-CN.md](docs/usage-guide.zh-CN.md)（[English](docs/usage-guide.md)）— 涵盖从团队创建到日常使用的全流程。
+
+## 功能概览
+
+<table>
+  <thead>
+    <tr>
+      <th rowspan="2">Agent</th>
+      <th colspan="7">Harness</th>
+      <th colspan="3">知识库</th>
+      <th colspan="3">使用分析</th>
+    </tr>
+    <tr>
+      <th>skills</th><th>rules</th><th>docs</th><th>env</th><th>agents</th><th>hooks</th><th>mcp</th>
+      <th>learnings</th><th>codebase</th><th>teamwiki</th>
+      <th>usage</th><th>sessions</th><th>dashboard</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Claude Code</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>Codex</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>Cursor</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>CodeBuddy</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>OpenCode</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+    <tr><td>WorkBuddy</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>OpenClaw</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+    <tr><td>Hermes</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+    <tr><td>DeepSeek Harness</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
+  </tbody>
+</table>
+
+**Git 托管平台** —— GitHub · GitLab · CNB · TGit · 私有 Git 服务。
+
+### 分发策略
+
+管理员一次配置、随 `teamai pull` 分发给每位成员的团队级设置：
+
+| 能力 | 命令 | 作用 |
+|------|------|------|
+| **角色（Roles）** | `teamai roles` | 定义「角色 → 命名空间」映射，让每位成员只同步与自身角色匹配的 skills。 |
+| **标签（Tags）** | `teamai tags` | 给 skills / rules 打标签，成员只订阅自己需要的标签。 |
+| **订阅源（Sources）** | `teamai source` | 订阅额外的 skill 仓库——其他团队的公开仓库，或本团队内的公共/共享仓库；已订阅的 skills 会在 pull 时自动同步。 |
+
+### 使用分析
+
+洞察团队实际如何使用 AI 工具：
+
+| 能力 | 命令 | 呈现内容 |
+|------|------|----------|
+| **用量（Usage）** | `teamai digest` | 团队周报——token 用量、会话量、干预率。 |
+| **会话（Sessions）** | `teamai session save` | 脱敏的单会话摘要（工具序列、对话轮次、干预次数），喂给周报的 Session Highlights。 |
+| **看板（Dashboard）** | `teamai dashboard` | Web 看板，实时展示成员的编码会话状态、干预次数和 token 用量。 |
 
 ## Harness 管理和分发
 
-TeamAI 把 skills、rules、docs、hooks 统一存放在共享 Git 仓库，通过「push → 评审合并 → pull」的流程分发到每位成员的本地 AI 工具，并支持订阅其他团队的 Harness。
+TeamAI 把 skills、rules、docs、hooks 统一存放在共享 Git 仓库，通过「push → 评审合并 → pull」的流程分发到每位成员的本地 AI 工具，并支持订阅其他团队或公共仓库的 Harness。
 
 ### 工作原理
 
@@ -86,7 +109,7 @@ teamai push → 创建分支 + MR → reviewer 审批合并
            SessionStart hook → teamai pull → 同步到本地 AI 工具
 ```
 
-成员通过 `teamai push` 提交变更并创建合并请求供审核。合并后，`teamai pull`（由 SessionStart hook 在会话启动时自动触发）将最新资源同步到本地。Skills 会同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/` 等目录。
+成员通过 `teamai push` 提交变更并创建合并请求供审核。合并后，`teamai pull`（由 SessionStart hook 在会话启动时自动触发）将最新资源同步到本地。Skills 会同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/` 等目录。在 **project scope** 安装下，SessionStart 会先为当前工具创建项目根目录（例如 `<project>/.claude`），再 pull 写入；单独执行 `teamai pull` 仍不会凭空创建 Agent 目录。
 
 ### 团队 Hooks
 
@@ -125,9 +148,9 @@ servers:
 teamai mcp list | inject | remove
 ```
 
-### 跨团队 Skill 订阅
+### Skill 订阅源
 
-订阅其他团队的公开 skill 仓库：
+订阅额外的 skill 仓库——其他团队的公开仓库，或本团队内的公共/共享仓库：
 
 ```bash
 teamai source add https://github.com/other-team/teamai-public.git --name other-team
@@ -136,7 +159,8 @@ teamai source browse other-team    # 浏览可用 skills
 teamai source remove other-team
 ```
 
-订阅的 skills 在 `teamai pull` 时自动同步。
+添加/移除会立即在本机生效，订阅的 skills 会在下一次 `teamai pull` 时同步。需要将
+`teamai.yaml` 的改动分享给团队成员时，再运行 `teamai push`。
 
 ## 知识库
 
@@ -178,18 +202,6 @@ Author: member-b | Score: 12.0 | Tags: deploy, config
 Matched: conflict | Missing: port
 ```
 
-当某条结果未覆盖全部查询词时，会输出 `Matched: … | Missing: …` 行（全部命中时省略）。
-recall 按分数返回 top 结果，**不会**按覆盖度过滤：若你的关键区分词全在 `Missing:` 里，
-说明这条只是主题相邻，并非答案。这个判断由调用方来做 —— 分数本身无法表达它。
-标题、日期、作者与内容均相同的条目会被合并，因此同一条 learning 被分享两次不会占用两个名额。
-
-**检索内容覆盖两部分**：
-
-- **共享检索索引**（`search-index.json`）：learnings（session 经验）、docs（团队文档）、rules（编码规则）、skills（各 `SKILL.md`）四类，源自团队仓库对应目录，在 `teamai pull` / `teamai contribute` 时构建重建。
-- **代码知识图谱**（`teamwiki/`）：由 `teamai import` 生成，检索时实时查询。
-
-排序采用 BM25 + 图谱增强。当前工作目录包含 project scope 配置时，Recall 先检索该项目；如果项目启用了 `--inherit-user-scope`，再检索 user 知识并标注结果来源，相同条目由 project 版本覆盖 user 版本。当前目录没有 project 配置时，Recall 检索 user scope。当前 scope 的命中会隐式投票，项目运行期间继承的 user 命中保持只读。
-
 ### 代码知识图谱
 
 `teamai import` 将源码仓库解析为 `teamwiki/` 下的结构化图谱，实现结构感知的检索：
@@ -226,15 +238,14 @@ WASM 解析器是纯 JavaScript 依赖，无需任何原生编译工具链。若
 | `teamai ci extract-mr --url <url>` | CI：从 MR 提取知识、发评论、合并后写入 |
 | `teamai members` | 查看团队成员 |
 | `teamai roles` | 管理团队角色和命名空间 |
+| `teamai tags` | 管理基于标签的 skill/rule 过滤 |
 | `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](docs/usage-guide.zh-CN.md#排除个人不需要的-skill)） |
-| `teamai source` | 管理跨团队 skill 订阅 |
+| `teamai source` | 管理 skill 订阅源（其他团队或本团队公共仓库） |
 | `teamai remove <type> <name>` | 删除资源并创建 MR |
 | `teamai session save` | 将脱敏后的 session 摘要记录到月度日志（`--push` 可喂给 `digest`） |
 | `teamai digest` | 生成团队周报 |
 | `teamai doctor` | 诊断配置问题 |
 | `teamai uninstall` | 移除所有 teamai 资源和 hooks |
-
-全局选项：`--dry-run`、`--verbose`
 
 ## 许可证
 

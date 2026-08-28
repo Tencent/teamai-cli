@@ -261,6 +261,80 @@ describe('syncTeamUpdatesToLocal — rules', () => {
     expect(mockGetFileContentAtRev).not.toHaveBeenCalled();
   });
 
+  // Regression: Cursor rules moved to `.mdc`, and matching only `.md` here made
+  // pre-push sync skip them entirely — push then reported the stale local copy
+  // as "modified" and sent it upstream, reverting the teammate's update.
+  it('should sync a cursor .mdc rule when the team updated it and the user did not', async () => {
+    await fse.ensureDir(path.join(homeDir, '.cursor', 'rules'));
+    teamConfig.toolPaths.cursor = {
+      skills: '.cursor/skills',
+      rules: '.cursor/rules',
+      settings: '.cursor/hooks.json',
+    };
+
+    // Team repo has v2, scoped.
+    await fse.writeFile(
+      path.join(repoPath, 'rules', 'my-rule.md'),
+      '---\npaths:\n  - "**/*.ts"\n---\n\nv2 content',
+    );
+    // Local Cursor copy is still v1, in Cursor's derived-frontmatter form.
+    await fse.writeFile(
+      path.join(homeDir, '.cursor/rules', 'my-rule.mdc'),
+      '---\nglobs: "**/*.ts"\nalwaysApply: false\n---\n\nv1 content',
+    );
+    mockGetFileContentAtRev.mockResolvedValue(
+      Buffer.from('---\npaths:\n  - "**/*.ts"\n---\n\nv1 content'),
+    );
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    const content = await fse.readFile(path.join(homeDir, '.cursor/rules', 'my-rule.mdc'), 'utf-8');
+    expect(content).toContain('v2 content');
+    // Refreshed in Cursor's format, not as a raw copy of the team `.md`.
+    expect(content).toContain('globs: "**/*.ts"');
+    expect(content).not.toContain('paths:');
+  });
+
+  it('should NOT sync a cursor .mdc rule the user edited', async () => {
+    await fse.ensureDir(path.join(homeDir, '.cursor', 'rules'));
+    teamConfig.toolPaths.cursor = {
+      skills: '.cursor/skills',
+      rules: '.cursor/rules',
+      settings: '.cursor/hooks.json',
+    };
+
+    await fse.writeFile(path.join(repoPath, 'rules', 'my-rule.md'), 'v2 content');
+    await fse.writeFile(
+      path.join(homeDir, '.cursor/rules', 'my-rule.mdc'),
+      '---\nalwaysApply: true\n---\n\nuser custom content',
+    );
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1 content'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    const content = await fse.readFile(path.join(homeDir, '.cursor/rules', 'my-rule.mdc'), 'utf-8');
+    expect(content).toContain('user custom content');
+  });
+
+  it('should treat a clean pull of a cursor rule as a no-op', async () => {
+    await fse.ensureDir(path.join(homeDir, '.cursor', 'rules'));
+    teamConfig.toolPaths.cursor = {
+      skills: '.cursor/skills',
+      rules: '.cursor/rules',
+      settings: '.cursor/hooks.json',
+    };
+
+    await fse.writeFile(path.join(repoPath, 'rules', 'my-rule.md'), 'same content');
+    const mdcPath = path.join(homeDir, '.cursor/rules', 'my-rule.mdc');
+    await fse.writeFile(mdcPath, '---\nalwaysApply: true\n---\n\nsame content\n');
+    const before = await fse.readFile(mdcPath, 'utf-8');
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    expect(await fse.readFile(mdcPath, 'utf-8')).toBe(before);
+    expect(mockGetFileContentAtRev).not.toHaveBeenCalled();
+  });
+
   it('should skip sync when getFileContentAtRev returns null (rev invalid)', async () => {
     await fse.writeFile(path.join(repoPath, 'rules', 'my-rule.md'), 'v2');
     await fse.writeFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'v1');

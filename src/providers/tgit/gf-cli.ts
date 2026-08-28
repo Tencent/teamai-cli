@@ -172,11 +172,26 @@ export async function ensureGfInstalled(): Promise<void> {
 // ─── Authentication ──────────────────────────────────────
 
 /**
+ * A neutral working directory for `gf auth` commands.
+ *
+ * `gf auth whoami` / `gf auth login` inspect the *current* git repository's
+ * `origin` remote and scope the authentication check to that remote's host.
+ * When teamai runs inside a repo whose origin is not git.woa.com (e.g. a GitHub
+ * mirror), gf reports "not logged in" even though a valid git.woa.com token
+ * exists — so teamai wrongly re-triggers interactive login and fails.
+ *
+ * Running these commands from the system temp dir (which is not a git repo)
+ * removes the cwd dependency, so the host-scoped credential is found reliably
+ * regardless of where teamai was invoked.
+ */
+const AUTH_CWD = os.tmpdir();
+
+/**
  * Check if gf is authenticated. Returns true if `gf auth whoami` succeeds.
  */
 export function gfIsAuthenticated(): boolean {
   try {
-    const result = gfExec(['auth', 'whoami']);
+    const result = gfExec(['auth', 'whoami'], { cwd: AUTH_CWD });
     return result.status === 0 && result.stdout.includes('当前登录用户');
   } catch {
     return false;
@@ -189,7 +204,7 @@ export function gfIsAuthenticated(): boolean {
  */
 export function gfAuthWhoami(): string | null {
   try {
-    const result = gfExec(['auth', 'whoami']);
+    const result = gfExec(['auth', 'whoami'], { cwd: AUTH_CWD });
     if (result.status !== 0) return null;
 
     // Parse "当前登录用户：<username>" or similar
@@ -207,7 +222,7 @@ export function gfAuthWhoami(): string | null {
  */
 export function gfAuthLogin(): void {
   log.info('Starting gf authentication...');
-  const result = gfExec(['auth', 'login'], { inheritStdio: true });
+  const result = gfExec(['auth', 'login'], { inheritStdio: true, cwd: AUTH_CWD });
   if (result.status !== 0) {
     throw new Error('gf auth login failed. Please try again.');
   }

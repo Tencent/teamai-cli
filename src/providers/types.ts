@@ -17,6 +17,7 @@
 export interface RepoInfo {
   owner: string;
   repo: string;
+  /** Canonical clone URL. The legacy name is retained; generic Git may return an SSH URL. */
   httpsUrl: string;
   /** URL-encoded owner/repo for API calls */
   projectId: string;
@@ -60,7 +61,7 @@ export interface OrgRepoInfo {
 }
 
 export interface GitProvider {
-  /** Provider identifier: 'github' | 'tgit' */
+  /** Registered provider identifier, e.g. 'github', 'tgit', 'cnb', or 'git'. */
   readonly name: string;
 
   // ─── URL parsing ──────────────────────────────────────
@@ -88,8 +89,9 @@ export interface GitProvider {
   // ─── Repository operations ────────────────────────────
 
   /**
-   * Clone a repo to localPath. Should embed credentials in
-   * the remote URL so subsequent git ops work without extra auth.
+   * Clone a repo to localPath. The resulting origin remote must remain usable
+   * for later pull/push operations via provider credentials, a Git credential
+   * helper, or SSH agent.
    */
   cloneRepo(repo: string, localPath: string): void;
 

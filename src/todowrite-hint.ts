@@ -2,6 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { log } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── TodoWrite hint data flow ───────────────────────────
 //
@@ -38,7 +39,7 @@ interface HookInput {
  */
 export function getTodoWriteHintCachePath(sessionId: string): string {
   return path.join(
-    process.env.HOME ?? '',
+    getUserHome(),
     '.teamai',
     'sessions',
     `${sessionId}-todowrite-hint.json`,

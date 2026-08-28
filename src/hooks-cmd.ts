@@ -1,11 +1,12 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { reconcileHooksToAllTools, getHookStatus, type HookStatus } from './hooks.js';
+import { reconcileHooksToAllTools, getHookStatus, hasInstalledCodexTrustGatedTool, codexTrustReminder, type HookStatus } from './hooks.js';
 import { builtinHookDefs } from './builtin-hooks.js';
 import { parseTeamHooks, resolveTeamHooks } from './resources/hooks.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { resolveBaseDir, getManagedHooksPath } from './types.js';
+import { getUserHome } from './utils/home.js';
 
 type HookListStatus = HookStatus | 'not configured';
 
@@ -38,14 +39,13 @@ function resolveHookScopeTargets(localConfig: LocalConfig): HookScopeTarget[] {
         }];
     }
     return [{
-        baseDir: process.env.HOME ?? '',
+        baseDir: getUserHome(),
         manifestPath: getManagedHooksPath('user'),
     }];
 }
 
 function formatDisplayPath(settingsPath: string): string {
-    const home = process.env.HOME;
-    if (!home) return settingsPath;
+    const home = getUserHome();
 
     if (settingsPath === home) return '~';
     if (settingsPath.startsWith(home + path.sep) || settingsPath.startsWith(home + '/')) {
@@ -84,12 +84,22 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
         auto: false,
         silent: options.silent,
     });
+    let codexTrustGated = false;
     for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
         await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin });
+        if (await hasInstalledCodexTrustGatedTool(teamConfig.toolPaths, baseDir)) {
+            codexTrustGated = true;
+        }
     }
 
     if (!options.silent) {
         log.success('Hooks injected into all AI tool settings');
+        // The public Codex gates non-managed hooks behind an explicit trust step;
+        // remind the user to trust them in Codex. teamai never edits [hooks.state]
+        // to auto-trust (constraint: reminder only, no bypass).
+        if (codexTrustGated) {
+            log.warn(codexTrustReminder());
+        }
     }
 }
 

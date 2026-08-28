@@ -97,7 +97,10 @@ stages:
         - "echo \"//r.tnpm.oa.com/:_auth=$(echo -n \"${NPM_USERNAME}:${NPM_TOKEN}\" | base64)\" > .npmrc"
         - npm ci --ignore-scripts
         - npm run build
-        - npm publish --registry http://r.tnpm.oa.com
+        # Resolve the dist-tag from the version: a prerelease (e.g. 0.21.0-beta.0)
+        # publishes to its own channel (beta/rc/...), never to `latest` — the tag
+        # the CLI's auto-update check reads for @tencent/teamai-cli (src/update.ts).
+        - "PKG_VERSION=$(node -p \"require('./package.json').version\")\ncase \"$PKG_VERSION\" in\n  *-*)\n    PRE=\"${PKG_VERSION#*-}\"\n    DIST_TAG=\"${PRE%%.*}\"\n    case \"$DIST_TAG\" in\n      ''|*[!a-zA-Z]*) DIST_TAG=\"beta\" ;;\n    esac\n    ;;\n  *)\n    DIST_TAG=\"latest\"\n    ;;\nesac\necho \"Publishing $PKG_VERSION with dist-tag: $DIST_TAG\"\nnpm publish --registry http://r.tnpm.oa.com --tag \"$DIST_TAG\"\n"
         - rm -f .npmrc
 trigger:
   branches:

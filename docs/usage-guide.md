@@ -4,7 +4,7 @@
 
 > **teamai-cli** — a shared AI experience framework for teams
 >
-> Helps teams centrally manage and share Skills, Rules, Docs, and Env resources, automatically syncing them to AI coding tools like Claude Code, CodeBuddy, Cursor, Codex, Gemini CLI, and Windsurf.
+> Helps teams centrally manage and share Skills, Rules, Docs, and Env resources, automatically syncing them to AI coding tools like Claude Code, CodeBuddy, Cursor, Codex, OpenCode, Gemini CLI, and Windsurf.
 
 ---
 
@@ -76,7 +76,7 @@ teamai --version
 
 > Only one admin needs to do this — other members can skip to [Member Onboarding](#member-onboarding).
 
-Create an empty repository on GitHub, TGit (Tencent's internal Git host), or CNB (cnb.cool) (suggested naming: `TeamAi-<team-name>`), or simply run `teamai init` — if the repo doesn't exist yet, you'll be prompted to create it automatically.
+Create an empty repository on GitHub, GitLab (gitlab.com or a self-hosted instance), CNB (cnb.cool), TGit (Tencent's internal Git host), or any private/self-hosted Git service (suggested naming: `TeamAi-<team-name>`), or simply run `teamai init` — if the repo doesn't exist yet, you'll be prompted to create it automatically.
 
 ### Project Scope (default)
 
@@ -100,6 +100,8 @@ Resulting directory structure:
 ├── .claude/rules/               # Project-level rules (auto-synced)
 └── src/
 ```
+
+`teamai init` writes `.teamai/` only. Per-agent project roots (`.claude/`, `.cursor/`, `.codebuddy/`, …) are created on **SessionStart** for the tool that just opened (`--tool claude` creates `.claude/`, then pull writes into it). A bare `teamai pull` still skips tools whose project root does not exist, so it never invents agent directories for tools you have not opened in this project.
 
 If the repo has role-based skills enabled (i.e. `manifest/roles.yaml` exists), `teamai init` will also interactively ask you to choose:
 
@@ -181,7 +183,7 @@ teamai init . --agent claude,codex   # non-interactive: set up Claude Code + Cod
 
 **Choosing which AI tools to set up.** Single-repo mode creates a per-tool directory in your repo (e.g. `.claude/`, `.codex/`) — it seeds the skills dir, injects the teamai hooks, and commits that tool's settings to main so teammates get them on clone. You control which tools:
 
-- **`--agent <name...>`** — explicit list, repeatable or comma-separated: `--agent claude`, `--agent claude,codex`, `--agent claude --agent cursor`. Supported ids: `claude`, `codex`, `cursor`, `codebuddy`, `workbuddy`.
+- **`--agent <name...>`** — explicit list, repeatable or comma-separated: `--agent claude`, `--agent claude,codex`, `--agent claude --agent cursor`. Supported ids: `claude`, `codex`, `cursor`, `codebuddy`, `workbuddy`, `dsh` (DeepSeek Harness).
 - **Interactive (no `--agent`, a terminal)** — teamai shows a multi-select. Option 1 is **Auto**, which lists the AI tools already installed on your machine (`~/.claude`, `~/.codex`, …) and is the Enter default; the remaining options are the individual tools. Auto and specific tools can be combined.
 - **Non-interactive (no `--agent`, no terminal — CI, hooks, clone-time bootstrap)** — teamai mirrors the tools you already use under your home dir (`~/.claude`, `~/.codex`, …). If none are found, it creates nothing (you still get the knowledge; run `teamai init .` later to pick tools).
 
@@ -289,7 +291,7 @@ teamai skill show hai-deploy-test   # View a single skill's source / contributor
 
 ### Auto-sync
 
-`teamai init` already injected Hooks into your AI tools. **`teamai pull` runs automatically every time you start an AI session** — no manual action needed.
+`teamai init` already injected Hooks into your AI tools. **`teamai pull` runs automatically every time you start an AI session** — no manual action needed. In project scope, that SessionStart hook first creates the current agent's project root (e.g. `<project>/.claude` when Claude Code opens the repo) if it is missing, then pulls.
 
 If you need to sync immediately, you can run it manually:
 
@@ -357,7 +359,7 @@ teamai status        # Current scope, last sync time, resource stats
 
 ### Role management
 
-Roles control which skills each member sees. Admins define roles via `manifest/roles.yaml`; once a member selects their role, `pull` only syncs skills from the matching namespace.
+Roles control which skills each member sees. Admins define roles via `manifest/roles.yaml`; once a member selects their role, `pull` syncs skills from the matching namespace. Active tag subscriptions may additionally sync explicitly matching skills from other namespaces, but untagged skills in inactive namespaces are not included.
 
 **Admin operations:**
 
@@ -498,14 +500,15 @@ Where each tool's servers land:
 | cursor | `~/.cursor/mcp.json` | `<project>/.cursor/mcp.json` |
 | codebuddy / workbuddy | `~/.<tool>/mcp.json` | `<project>/.<tool>/mcp.json` |
 | codex | `~/.codex/config.toml` | not supported |
+| opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 
-Codex supports `stdio` and `http`; `sse` is skipped. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
+Codex supports `stdio` and `http`; `sse` is skipped. OpenCode supports `stdio` (written as its `type:"local"` shape) and `http` (`type:"remote"`); `sse` is skipped, and its servers live under the `mcp` key of the shared `opencode.json`. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
 
 **Secrets.** Write `${VAR}`, never a literal, in `mcp.yaml`. Values resolve from the environment, then from `env/env.yaml` → `~/.teamai/env`. Unresolved variables skip the server with a hint.
 
 teamai **resolves every `${VAR}` to its value and writes it verbatim** into each tool's config (new files are created `0600`). It does not rely on any tool's own env-var expansion: that expansion is fragile — most decisively, IDEs launched from the GUI (Dock/Launchpad) never inherit your shell's exported variables, so a `${VAR}` placeholder expands to empty and the server 401s. Resolving to plaintext makes the token present no matter how the tool is started.
 
-> ⚠️ **The resolved token lands on disk.** Project-scope MCP configs (`.mcp.json`, `.cursor/mcp.json`, `.codebuddy/mcp.json`, `.codex/config.toml`) then contain the literal secret — add them to `.gitignore` and never commit them.
+> ⚠️ **The resolved token lands on disk.** Project-scope MCP configs (`.mcp.json`, `.cursor/mcp.json`, `.codebuddy/mcp.json`, `.codex/config.toml`, `opencode.json`) then contain the literal secret — add them to `.gitignore` and never commit them.
 
 Claude Code may show project `.mcp.json` servers as pending approval until you accept them once in an interactive session.
 
@@ -880,7 +883,7 @@ Hooks automatically injected by `teamai init`:
 
 | Hook Event | Action |
 |-----------|------|
-| `SessionStart` | Auto pull + report session start |
+| `SessionStart` | Seed the current agent's project root (project scope), then auto pull + report session start |
 | `PostToolUse` | Skill tracking + knowledge contribution detection + dashboard reporting |
 | `UserPromptSubmit` | Slash command tracking |
 | `Stop` | CLI update check + report session end |
@@ -891,6 +894,8 @@ teamai hooks remove    # Remove
 ```
 
 Both commands only touch tools you actually have installed (i.e. whose `~/.<tool>/` root directory already exists). They never create root directories for tools listed in `toolPaths` but not installed.
+
+> **Codex trust gate** — Codex (the OpenAI / ChatGPT Codex app, tool id `codex`) gates non-managed hooks behind an explicit user trust step. After teamai writes `~/.codex/hooks.json`, Codex may skip a newly added or changed hook until you review/trust it in `/hooks` or Settings → Hooks. `teamai hooks inject` and `teamai doctor` print a reminder when Codex hooks are installed; teamai never edits Codex's `[hooks.state]` to auto-trust — trusting is left to you. (The internal variants `codex-internal` / `tcodex` share the hooks.json format but have no trust gate, so no reminder is shown for them.)
 
 ### Team Hooks Declaration
 
@@ -938,6 +943,33 @@ team-repo/
 ```
 
 `teamai pull` copies these into each Tier-1 tool's `agents/` directory (e.g. `~/.claude/agents/`). The CLI's built-in `teamai-recall.md` is deployed alongside team agents but is not uploaded by `teamai push`.
+
+### OpenCode
+
+[OpenCode](https://opencode.ai) is supported as a first-class tool. Because its config layout differs from the Claude family, teamai handles a few things specially:
+
+- **Scopes.** OpenCode's user config lives under `~/.config/opencode/` while its project config lives under `<project>/.opencode/` — a different prefix from every other tool. teamai writes to the correct one per `--scope`, and only ever touches OpenCode files when OpenCode is actually installed for that scope (it never creates `~/.config/opencode/` for a non-user). Hooks are the one exception — they are always user-scoped, for the reason described below.
+- **Skills** land in `.opencode/skills/` (project) or `~/.config/opencode/skills/` (user). OpenCode also reads `.claude/skills` natively, but teamai writes the OpenCode path too so an OpenCode-only user still gets them.
+- **Subagents** are rendered into OpenCode's own `agents/*.md` format: frontmatter carries `description` + `mode: subagent` (plus `model` and any `tool_extras.opencode` fields such as `temperature`); the agent name comes from the filename. OpenCode does **not** read `.claude/agents`, so this native copy is required.
+- **Rules** are copied into `.opencode/rules/` (or `~/.config/opencode/rules/`), but OpenCode does not auto-scan a rules directory — the files are inert until referenced. teamai therefore adds a `rules/*.md` glob to the `instructions` array in `opencode.json` and removes it again when the team's last rule goes away, editing only that one key and leaving your own `instructions` entries untouched.
+- **Hooks** are delivered as an OpenCode *plugin*, not a settings-file entry — OpenCode has no `hooks` array; it auto-loads JS/TS plugins from **both** `~/.config/opencode/plugin/` and `<project>/.opencode/plugin/`. A plugin present in both dirs is loaded twice and would dispatch every event twice, so teamai keeps exactly one copy: `teamai-hooks.ts` in the user dir, which covers every project. Any project-scope copy left by an earlier layout is deleted on the next sync. This matches the other tools, whose `settings.json` hooks also live in HOME and gate on the `cwd` handed to `hook-dispatch`. The plugin subscribes to OpenCode's own events and shelling out to the same `teamai hook-dispatch` entry point every other tool uses. The event mapping mirrors the Claude built-in set: `session.created` → session-start, `session.idle` → stop, `chat.message` → prompt-submit, `tool.execute.after` → post-tool-use. The plugin forwards the same STDIN payload other agents send (`cwd`, `tool_name`, `tool_input`, `prompt`), and maps OpenCode's lowercase tool ids (`skill`, `todowrite`) back to the PascalCase matchers the handler registry expects. OpenCode cannot inject a hook's stdout back into the session, so hooks run purely for their side effects (status report / sync / update). Note that OpenCode *awaits* its named hooks (`chat.message`, `tool.execute.after`), so those dispatches briefly wait on the `teamai` subprocess before the agent continues; the errors are always swallowed so a hook can never fail the session. Server-pushed agent hooks (`teamai-agent-<slug>.ts`) install into the same user plugin dir.
+- **MCP** servers live under the `mcp` key of the shared `opencode.json` (see the MCP section above).
+
+### Cursor
+
+Cursor project rules must live in `.cursor/rules/` as **`.mdc`** files with YAML frontmatter — a plain `.md` file there is silently ignored by Cursor. teamai therefore writes rules to Cursor as `<name>.mdc` (every other tool still gets a plain `.md`), deriving the frontmatter from the team rule:
+
+- A rule scoped with a `paths:` list becomes `globs: "<comma-joined>"` + `alwaysApply: false` (Cursor auto-attaches it when a matching file is in context). The value is quoted because a glob starting with `*` is not valid YAML unquoted.
+- A rule with no `paths` (a mandatory team rule) becomes `alwaysApply: true` (applied to every Cursor chat session).
+
+Only the markdown body crosses between the two formats; each side keeps its own frontmatter. On `pull` the Cursor frontmatter is machine-derived (the body is copied over with leading/trailing blank lines normalized), so a `pull` → `push` round-trip is not seen as a content change. On `push`, editing a rule's body in `.cursor/rules/*.mdc` and running `teamai push` sends **only that body** upstream — the team rule keeps its own `paths:` frontmatter, so the rule's scope is never silently lost.
+
+Two things are deliberately *not* pushed from Cursor's rules directory:
+
+- A `.mdc` file with no matching team rule. `.cursor/rules/` is also where Cursor's own *New Cursor Rule* command writes personal rules, so teamai never offers those as new team resources.
+- The CLI built-in rules, which are deployed (as `.mdc` for Cursor) rather than synced.
+
+Upgrading from an earlier version: `.cursor/rules/*.md` copies written by the old layout are inert — Cursor never read them — so `pull`, `remove`, and `uninstall` delete them alongside the `.mdc` file. A `.md` you put there yourself is left alone.
 
 ### Miscellaneous
 
@@ -1000,7 +1032,7 @@ teamai source browse other-team
 teamai source remove other-team
 ```
 
-A subscription source's skills are automatically synced locally on `teamai pull`, coexisting with the team's own skills. Configuration is stored in the `sources` field of the local `config.yaml`.
+A subscription source's skills are automatically synced locally on `teamai pull`, coexisting with the team's own skills. `teamai source add`/`remove` updates the active scope's team repo immediately, so local `list`, `browse`, and `pull` commands use the change before it is committed. The subscription itself is stored in the `sources` field of that repo's `teamai.yaml`. Run `teamai push` to open a PR with the config change; once it merges, every teammate's `teamai pull` picks up the new source automatically.
 
 #### HTTP Source
 
@@ -1064,7 +1096,7 @@ inheritUserScope: true         # optional; project scope only, defaults to false
 `teamai uninstall` intelligently cleans up all teamai-managed resources, **preserving anything you created yourself**.
 
 ```bash
-# Preview what will be removed (no actual changes)
+# Preview every managed path that will be removed (no actual changes)
 teamai uninstall --dry-run
 
 # Interactive confirmation
@@ -1080,14 +1112,15 @@ teamai uninstall --agent claude
 What gets removed:
 - teamai hooks in AI tool settings
 - The teamai rules block in CLAUDE.md (your own content is preserved)
-- Team-synced skills (your own skills are preserved)
+- Team-synced skills, including OpenClaw workspace skills (your own skills are preserved)
 - Team-synced rules
+- Team-synced custom agents and CLI built-in agents (your own agents are preserved)
 - The env block in your shell profile
 - The `~/.teamai/` directory
 
 ### Uninstall a single tool (`--agent <tool>`)
 
-`--agent <tool>` removes only that tool's teamai resources (hooks, CLAUDE.md block, skills, rules, built-in agents). The tool name is a key of `toolPaths` (e.g. `claude`, `codex`, `codebuddy`) and is matched case-insensitively. An unknown tool name aborts without deleting anything, lists the available tools, and exits with a non-zero status.
+`--agent <tool>` removes only that tool's teamai resources (hooks, CLAUDE.md block, skills, rules, team-synced custom agents, and built-in agents). The tool name is a key of `toolPaths` (e.g. `claude`, `codex`, `codebuddy`) and is matched case-insensitively. An unknown tool name aborts without deleting anything, lists the available tools, and exits with a non-zero status.
 
 Shared resources (the env block, docs directory, and `~/.teamai/`) are removed **only when the target itself has teamai resources AND is the last tool still using teamai** — otherwise they are kept for the remaining tools. (So targeting a tool that has no teamai resources of its own is a no-op and leaves shared resources in place, even if it happens to be the only tool.)
 
@@ -1115,6 +1148,10 @@ In interactive mode, you'll be asked whether to overwrite — type `y` to confir
 ```bash
 teamai init --repo <group>/<repo> --force
 ```
+
+**Q: After `teamai init` in a project, there is no `.claude/` (or `.cursor/`, `.codebuddy/`) directory?**
+
+That is expected. `init` does not know which agent you will open. Open Claude Code / Cursor / CodeBuddy in the project: the SessionStart hook creates that tool's project root and then pulls. A bare `teamai pull` will not create missing agent roots.
 
 **Q: Hooks aren't firing automatically?**
 

@@ -44,4 +44,13 @@ describe('deriveSessionId', () => {
         const result = deriveSessionId({}, { includeCwd: true });
         expect(result).toContain(process.cwd());
     });
+
+    it('uses workspace_roots in pid fallback when cwd is absent', () => {
+        delete process.env.CLAUDE_SESSION_ID;
+        const result = deriveSessionId(
+            { workspace_roots: ['/Users/jeffxu/Project/teamai-cli'] },
+            { includeCwd: true },
+        );
+        expect(result).toMatch(/^pid-\d+-\/Users\/jeffxu\/Project\/teamai-cli$/);
+    });
 });

@@ -6,6 +6,7 @@ import type { ResourceItem, TeamaiConfig, LocalConfig } from '../types.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END, getTeamaiHome, getEnvBackupPath, isSelfMode } from '../types.js';
 import { pathExists, readFileSafe, writeFile, ensureDir, fileContentEqual } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { getUserHome } from '../utils/home.js';
 
 // ─── Schema for env.yaml ────────────────────────────────
 
@@ -247,7 +248,7 @@ export class EnvHandler extends ResourceHandler {
    * Detect the user's shell profile path.
    */
   private detectShellProfile(): string {
-    const home = process.env.HOME ?? '';
+    const home = getUserHome();
     const shell = process.env.SHELL ?? '';
 
     if (shell.includes('zsh')) {

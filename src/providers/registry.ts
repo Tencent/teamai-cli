@@ -2,6 +2,8 @@ import type { GitProvider } from './types.js';
 import { TGitProvider } from './tgit/index.js';
 import { GitHubProvider } from './github/index.js';
 import { CNBProvider } from './cnb/index.js';
+import { GitLabProvider } from './gitlab/index.js';
+import { GenericGitProvider } from './git/index.js';
 import { getCurrentPackageName } from '../package-info.js';
 
 // ─── Provider Detection ──────────────────────────────────
@@ -13,7 +15,7 @@ import { getCurrentPackageName } from '../package-info.js';
 //  https://git.woa.com/o/r         tgit
 //  git@git.woa.com:o/r.git         tgit
 //  owner/repo (bare)               <fallback — see getDefaultProvider>
-//  https://<unknown-host>/o/r      <fallback>
+//  https://<unknown-host>/o/r      git (transport-only generic provider)
 //
 // The fallback is based on which distribution channel the CLI was installed
 // from:
@@ -30,10 +32,11 @@ const HOST_MAP: Record<string, string> = {
   'github.com': 'github',
   'git.woa.com': 'tgit',
   'cnb.cool': 'cnb',
+  'gitlab.com': 'gitlab',
 };
 
 /** Providers we are willing to accept as a default override. */
-const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb']);
+const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab']);
 
 /**
  * Decide the fallback provider used when the input URL host is unknown or
@@ -60,32 +63,98 @@ export function getDefaultProvider(): string {
 
 /**
  * Detect which git provider to use based on a repo URL or short format.
- * Returns provider name string ('github' | 'tgit').
+ * Returns a registered provider name
+ * ('github' | 'tgit' | 'cnb' | 'gitlab' | 'git').
  *
- * - Full URL (HTTPS or SSH): matched by host. Unknown hosts fall back to the
- *   distribution-based default (see {@link getDefaultProvider}).
+ * - Full URL (HTTPS or SSH): matched by host. Unknown hosts use the generic
+ *   Git transport provider.
  * - Bare `owner/repo`: uses the distribution-based default so `@tencent/`
  *   tnpm users get tgit automatically without having to type the full URL.
+ *
+ * Self-hosted GitLab instances are detected when the URL host matches the host
+ * of the `GITLAB_URL` env var (e.g. `GITLAB_URL=https://gitlab.example.com`),
+ * or via the `TEAMAI_GITLAB_HOST` override (see providers/gitlab/repo-url.ts).
  */
 export function detectProvider(input: string): string {
   const trimmed = input.trim();
 
   // HTTPS URL: extract host
-  const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\//);
+  const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\//i);
   if (httpsMatch) {
     const host = httpsMatch[1].toLowerCase();
-    return HOST_MAP[host] ?? getDefaultProvider();
+    return resolveHostProvider(host);
+  }
+
+  // ssh:// URL: extract host through URL parsing.
+  if (/^ssh:\/\//i.test(trimmed)) {
+    try {
+      const host = new URL(trimmed).hostname.toLowerCase();
+      return resolveHostProvider(host);
+    } catch {
+      return 'git';
+    }
   }
 
   // SSH URL: extract host
-  const sshMatch = trimmed.match(/^git@([^:]+):/);
+  const sshMatch = trimmed.match(/^[^@\s]+@([^:\s]+):/);
   if (sshMatch) {
     const host = sshMatch[1].toLowerCase();
-    return HOST_MAP[host] ?? getDefaultProvider();
+    return resolveHostProvider(host);
   }
 
   // Bare owner/repo — use distribution-based default.
   return getDefaultProvider();
+}
+
+/**
+ * Resolve a URL host to a provider name: a known platform host wins, then a
+ * configured self-hosted GitLab instance, then the transport-only generic
+ * provider for arbitrary hosts.
+ */
+function resolveHostProvider(host: string): string {
+  return HOST_MAP[host] ?? detectSelfHostedGitLabHost(host) ?? 'git';
+}
+
+/**
+ * Map a host to 'gitlab' when it matches the configured self-hosted GitLab
+ * instance, otherwise return null.
+ *
+ * The configured host comes from (in priority order):
+ *   1. `TEAMAI_GITLAB_HOST` — explicit override
+ *   2. host parsed from `GITLAB_URL` — standard GitLab env var
+ *
+ * Callers extract the host differently per URL form: the HTTPS branch keeps any
+ * `:port`, while `ssh://` (URL.hostname) and scp-style `git@host:path` never
+ * carry one. Both the port-qualified and bare forms of the configured host are
+ * therefore compared, so `GITLAB_URL=https://gl.example.com:8443` still matches
+ * `git@gl.example.com:group/repo.git`.
+ */
+function detectSelfHostedGitLabHost(host: string): string | null {
+  for (const configured of configuredGitLabHosts()) {
+    if (configured === host) return 'gitlab';
+    // Strip a port from the configured host so the bare-host URL forms match.
+    const withoutPort = configured.replace(/:\d+$/, '');
+    if (withoutPort === host) return 'gitlab';
+  }
+  return null;
+}
+
+/** Configured self-hosted GitLab hosts, highest precedence first. */
+function configuredGitLabHosts(): string[] {
+  const hosts: string[] = [];
+
+  const override = process.env.TEAMAI_GITLAB_HOST?.trim().toLowerCase();
+  if (override) hosts.push(override);
+
+  const gitlabUrl = process.env.GITLAB_URL?.trim();
+  if (gitlabUrl) {
+    try {
+      hosts.push(new URL(gitlabUrl).host.toLowerCase());
+    } catch {
+      // ignore malformed GITLAB_URL — resolveGitLabBaseUrl reports it instead
+    }
+  }
+  return hosts;
 }
 
 // ─── Provider Factory ────────────────────────────────────
@@ -95,6 +164,8 @@ const PROVIDERS: Record<string, () => GitProvider> = {
   tgit: () => new TGitProvider(),
   github: () => new GitHubProvider(),
   cnb: () => new CNBProvider(),
+  gitlab: () => new GitLabProvider(),
+  git: () => new GenericGitProvider(),
 };
 
 /**
