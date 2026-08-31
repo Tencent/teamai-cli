@@ -5,7 +5,7 @@ import { builtinHookDefs } from './builtin-hooks.js';
 import { parseTeamHooks, resolveTeamHooks } from './resources/hooks.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
-import { resolveBaseDir, getManagedHooksPath } from './types.js';
+import { resolveHookScope, getManagedHooksPath } from './types.js';
 import { getUserHome } from './utils/home.js';
 
 type HookListStatus = HookStatus | 'not configured';
@@ -22,26 +22,17 @@ interface HookScopeTarget {
 }
 
 /**
- * Resolve the (baseDir, manifestPath) pair for hook reconciliation.
+ * Resolve the (baseDir, manifestPath) pairs for hook reconciliation.
  *
- * User scope → HOME + user manifest (unchanged).
- * Project scope → HOME + user manifest only (#264). The previous behaviour
- * duplicated entries into <projectRoot> as well (for #44 subdirectory
- * coverage), but HOME already covers every cwd. The dispatch runtime now
- * identifies the active project via detectProjectConfig(stdin.cwd), so a
- * redundant projectRoot copy is unnecessary.
+ * Delegates to the shared `resolveHookScope` so this command uses the exact same
+ * on-disk target as `init`/`pull`/`bootstrap` and `doctor`:
+ * - Non-self project scope → HOME + user manifest (#264). HOME covers every cwd;
+ *   the dispatch runtime identifies the active project via detectProjectConfig.
+ * - Self single-repo mode → projectRoot (hooks committed to main travel on clone).
+ * - User scope → HOME.
  */
 function resolveHookScopeTargets(localConfig: LocalConfig): HookScopeTarget[] {
-    if (localConfig.scope !== 'project') {
-        return [{
-            baseDir: resolveBaseDir(localConfig) ?? '',
-            manifestPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
-        }];
-    }
-    return [{
-        baseDir: getUserHome(),
-        manifestPath: getManagedHooksPath('user'),
-    }];
+    return [resolveHookScope(localConfig)];
 }
 
 function formatDisplayPath(settingsPath: string): string {

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, getManagedHooksPath, resolveBaseDir } from './types.js';
+import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, resolveHookScope } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
 import { builtinHookDefs, applyBuiltinOverride, ensureWrapperIfShellAvailable, SHELL_DEPENDENT_TOOLS } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
@@ -943,8 +943,7 @@ export async function reconcileTeamHooksForConfig(
   const { defs: teamDefs, builtin } = opts.removeAll
     ? { defs: [] as HookDef[], builtin: undefined }
     : await resolveTeamHooks(teamConfig, localConfig.repo.localPath, { auto: opts.auto, silent: opts.silent });
-  const baseDir = resolveBaseDir(localConfig);
-  const manifestPath = getManagedHooksPath(localConfig.scope, localConfig.projectRoot);
+  const { baseDir, manifestPath } = resolveHookScope(localConfig);
   let filterAgents = opts.filterAgents ?? localConfig.enabledAgents;
   const disabled = localConfig.disabledAgents;
   if (disabled && disabled.length > 0) {

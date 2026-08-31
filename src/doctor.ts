@@ -6,7 +6,7 @@ import type { GlobalOptions, Scope } from './types.js';
 import {
   TeamaiConfigSchema,
   TEAMAI_ENV_START,
-  resolveBaseDir,
+  resolveHookScope,
   getTeamaiHome,
   type TeamaiConfig,
 } from './types.js';
@@ -85,7 +85,11 @@ export async function doctor(options: GlobalOptions): Promise<void> {
   // Fall back to schema defaults if team config is unavailable
   const toolPaths = teamConfig?.toolPaths ?? TeamaiConfigSchema.shape.toolPaths.parse(undefined);
   const providerName = teamConfig?.provider ?? 'tgit';
-  const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
+  // Hook checks must look where hooks are actually injected. resolveHookScope
+  // maps a non-self project scope to HOME (#264), matching the injection path in
+  // init/pull/hooks-cmd — otherwise doctor checks <projectRoot>/.claude while the
+  // hooks live in ~/.claude and always reports them missing.
+  const baseDir = localConfig ? resolveHookScope(localConfig).baseDir : getUserHome();
 
   const checks: Check[] = [];
 

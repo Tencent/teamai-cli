@@ -12,6 +12,7 @@ import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 let project: string;
 let repo: string;
+let home: string;
 
 const teamConfig = {
   toolPaths: {
@@ -35,30 +36,40 @@ async function writeYaml(content: string): Promise<void> {
   await fse.ensureDir(path.join(repo, 'hooks'));
   await fse.writeFile(path.join(repo, 'hooks', 'hooks.yaml'), content);
 }
+// Non-self project scope injects into HOME (#264 / the init↔inject unification):
+// ~/.claude always exists so the "installed tool" gate passes, and the dispatch
+// runtime resolves the active project by cwd — so settings live under HOME, not
+// <projectRoot>. These readers therefore all read from `home`.
 function claudeSettings(): Promise<{ hooks: Record<string, Array<{ description?: string; hooks: Array<{ command: string }> }>> }> {
-  return fse.readJson(path.join(project, '.claude', 'settings.json'));
+  return fse.readJson(path.join(home, '.claude', 'settings.json'));
 }
 function cursorSettings(): Promise<{ hooks: Record<string, Array<{ command: string }>> }> {
-  return fse.readJson(path.join(project, '.cursor', 'hooks.json'));
+  return fse.readJson(path.join(home, '.cursor', 'hooks.json'));
 }
 function codexSettings(): Promise<{ hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number }> }>> }> {
-  return fse.readJson(path.join(project, '.codex', 'hooks.json'));
+  return fse.readJson(path.join(home, '.codex', 'hooks.json'));
 }
 function manifest(): Promise<Record<string, Array<{ id: string }>>> {
-  return fse.readJson(path.join(project, '.teamai', 'managed-hooks.json'));
+  return fse.readJson(path.join(home, '.teamai', 'managed-hooks.json'));
 }
 
 beforeEach(async () => {
   project = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recon-proj-'));
   repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recon-repo-'));
-  // Pre-create tool root dirs so they are detected as installed
-  await fse.ensureDir(path.join(project, '.claude'));
-  await fse.ensureDir(path.join(project, '.cursor'));
-  await fse.ensureDir(path.join(project, '.codex'));
+  home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recon-home-'));
+  // Point HOME at the sandbox so the non-self project scope resolves its hook
+  // base dir to this dir rather than the developer's real home.
+  vi.stubEnv('HOME', home);
+  // Pre-create the tool root dirs under HOME so they are detected as installed.
+  await fse.ensureDir(path.join(home, '.claude'));
+  await fse.ensureDir(path.join(home, '.cursor'));
+  await fse.ensureDir(path.join(home, '.codex'));
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await fse.remove(project);
   await fse.remove(repo);
+  await fse.remove(home);
 });
 
 describe('reconcileTeamHooksForConfig — pull/init core path', () => {
@@ -169,6 +180,25 @@ builtin:
     const claude = await claudeSettings();
     expect(claude.hooks.SessionStart).toHaveLength(1);
     // No manifest written when there are no team hooks.
-    expect(await fse.pathExists(path.join(project, '.teamai', 'managed-hooks.json'))).toBe(false);
+    expect(await fse.pathExists(path.join(home, '.teamai', 'managed-hooks.json'))).toBe(false);
+  });
+
+  it('self single-repo mode injects into projectRoot, not HOME (committed to main, travels on clone)', async () => {
+    // Pre-create the tool root under projectRoot so it counts as installed there.
+    await fse.ensureDir(path.join(project, '.claude'));
+    const selfConfig = {
+      repo: { localPath: repo, remote: 'x', kind: 'self', businessRepoRoot: project },
+      username: 'u',
+      scope: 'project',
+      projectRoot: project,
+      additionalRoles: [],
+    } as unknown as LocalConfig;
+
+    await reconcileTeamHooksForConfig(teamConfig, selfConfig);
+
+    // Self mode writes to the business repo tree (projectRoot), never HOME.
+    const projectClaude = await fse.readJson(path.join(project, '.claude', 'settings.json'));
+    expect(projectClaude.hooks.SessionStart).toHaveLength(1);
+    expect(await fse.pathExists(path.join(home, '.claude', 'settings.json'))).toBe(false);
   });
 });
