@@ -51,7 +51,12 @@ async function initTeamRepos(root: string): Promise<string> {
   const seed = path.join(root, 'seed');
   const teamRepo = path.join(root, 'team-repo');
 
-  await simpleGit().init(['--bare', remote]);
+  // Pin the bare repo's default branch to main. Without this, a runner whose
+  // git defaults to `master` (init.defaultBranch) leaves the bare HEAD pointing
+  // at a branch we never push, so `git clone` lands on an unborn HEAD and the
+  // working clone has no local `main` — `.branch().current` then reads '' and
+  // the "switches back to the default branch" assertion sees '' instead of main.
+  await simpleGit().init(['--bare', '--initial-branch=main', remote]);
 
   fs.mkdirSync(path.join(seed, 'skills', 'ns'), { recursive: true });
   fs.writeFileSync(path.join(seed, 'teamai.yaml'), 'version: 1\npublicSkills: []\n');
