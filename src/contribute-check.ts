@@ -6,6 +6,7 @@ import { readJson, writeJson, ensureDir } from './utils/fs.js';
 import { readEvents, aggregateSessionMetrics, scanTranscriptStop } from './dashboard-collector.js';
 import { readRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { resolveHookCwd } from './utils/hook-cwd.js';
 import { redactWithEnv } from './utils/redact.js';
 import type { ContributeState, DashboardEvent, SessionFriction } from './types.js';
 import {
@@ -354,7 +355,7 @@ async function readStdinAndDeriveSession(): Promise<{
     const hookData = JSON.parse(raw) as Record<string, unknown>;
     // Derive session ID: session_id field > env > PID+cwd fallback
     const sessionId = deriveSessionId(hookData, { includeCwd: true });
-    const cwd = typeof hookData.cwd === 'string' ? hookData.cwd : undefined;
+    const cwd = resolveHookCwd(hookData);
     const transcriptPath = typeof hookData.transcript_path === 'string'
       ? hookData.transcript_path
       : undefined;

@@ -5,6 +5,7 @@ import {
   type GraphIndex,
   type GraphNode,
   type GraphEdge,
+  type RelationType,
   createGraphIndex,
 } from "../core/graph-index.schema.js";
 
@@ -28,6 +29,13 @@ export function buildCodeGraph(facts: CodeFact[]): GraphIndex {
   const edges: GraphEdge[] = facts
     .filter((fact) => fact.kind === "relation")
     .flatMap((fact) => {
+      // AST-derived relation facts carry a resolved target file in fact.name and a
+      // "(code-ast)" marker in detail — trust them directly instead of fuzzy matching.
+      const astEdge = parseAstRelationFact(fact);
+      if (astEdge) {
+        return [astEdge];
+      }
+      // Heuristic relation facts: fuzzy path-substring match against known node files.
       const targets = [...nodeFiles].filter((file) => relationMayTarget(fact.name, file));
       return targets.map((file) => ({
         from: fact.file,
@@ -39,6 +47,31 @@ export function buildCodeGraph(facts: CodeFact[]): GraphIndex {
     });
 
   return createGraphIndex(nodes, edges);
+}
+
+/**
+ * Parse an AST-derived relation fact into a precise graph edge.
+ *
+ * AST facts encode their edge as `detail = "<RELATION> → <target> (code-ast)"`
+ * with `fact.name` already holding the resolved target file. Returns undefined
+ * for heuristic (regex) relation facts, which are resolved by fuzzy matching.
+ */
+function parseAstRelationFact(fact: CodeFact): GraphEdge | undefined {
+  if (!fact.detail.includes("(code-ast)")) {
+    return undefined;
+  }
+  const relation: RelationType = fact.detail.startsWith("REFERENCES")
+    ? "REFERENCES"
+    : fact.detail.startsWith("IMPLEMENTS")
+      ? "IMPLEMENTS"
+      : "DEPENDS_ON";
+  return {
+    from: fact.file,
+    to: fact.name,
+    relation,
+    weight: fact.confidence === "EXTRACTED" ? 0.9 : 0.5,
+    source: "code-ast",
+  };
 }
 
 function relationMayTarget(importTarget: string, file: string): boolean {

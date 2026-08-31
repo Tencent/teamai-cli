@@ -246,6 +246,48 @@ describe('uninstall', () => {
     expect(await fse.pathExists(teamaiHome)).toBe(false);
   });
 
+  // Regression: Cursor rules are `.mdc`; matching only `.md` left every team
+  // rule on disk after uninstall, still injected into each Cursor session.
+  it('removes cursor .mdc rules (and a legacy .md copy) on uninstall', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    const cursorRules = path.join(homeDir, '.cursor', 'rules');
+    await fse.ensureDir(cursorRules);
+    await fse.writeFile(path.join(cursorRules, 'team-rule.mdc'), '---\nalwaysApply: true\n---\n\n# Team Rule');
+    // Left behind by the layout that predates `.mdc`.
+    await fse.writeFile(path.join(cursorRules, 'team-rule.md'), '# Team Rule');
+    // A rule the user wrote themselves must survive.
+    await fse.writeFile(path.join(cursorRules, 'my-own-rule.mdc'), '---\nalwaysApply: true\n---\n\nmine');
+
+    const teamConfig = makeTeamConfig({
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: `${teamaiHome}/docs` },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        claude: {
+          skills: '.claude/skills',
+          rules: '.claude/rules',
+          settings: '.claude/settings.json',
+          claudemd: '.claude/CLAUDE.md',
+          agents: '.claude/agents',
+        },
+        cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json' },
+      },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig });
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(path.join(cursorRules, 'team-rule.mdc'))).toBe(false);
+    expect(await fse.pathExists(path.join(cursorRules, 'team-rule.md'))).toBe(false);
+    expect(await fse.pathExists(path.join(cursorRules, 'my-own-rule.mdc'))).toBe(true);
+  });
+
   // Regression: MCP cleanup used to run after ~/.teamai/ was deleted, so the
   // ownership manifest was already gone and removeAll became a no-op.
   it('卸载时移除 teamai 管理的 MCP server，并保留用户自建的', async () => {
@@ -436,6 +478,106 @@ describe('uninstall', () => {
     expect(claudeMd).toContain(TEAMAI_RULES_START);
   });
 
+  it('dry-run 和卸载覆盖自定义 agents 及 OpenClaw workspace skills，同时保留用户资源', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    await fse.ensureDir(path.join(repoPath, 'agents'));
+    await fse.writeFile(
+      path.join(repoPath, 'agents', 'beta-proof-agent.yaml'),
+      'name: beta-proof-agent\ndescription: Team agent\ninstructions: Help the team\n',
+    );
+    await fse.ensureDir(path.join(repoPath, 'skills', 'former-role-skill'));
+    await fse.writeFile(
+      path.join(repoPath, 'skills', 'former-role-skill', 'SKILL.md'),
+      '# Former Role Skill',
+    );
+
+    const managedAgentPaths = [
+      path.join(homeDir, '.claude', 'agents', 'beta-proof-agent.md'),
+      path.join(homeDir, '.codex', 'agents', 'beta-proof-agent.toml'),
+      path.join(homeDir, '.cursor', 'agents', 'beta-proof-agent.md'),
+      path.join(homeDir, '.codebuddy', 'agents', 'beta-proof-agent.md'),
+      path.join(homeDir, '.opencode', 'agents', 'beta-proof-agent.md'),
+    ];
+    for (const agentPath of managedAgentPaths) {
+      await fse.ensureDir(path.dirname(agentPath));
+      await fse.writeFile(agentPath, '# Managed agent');
+    }
+
+    const userAgentPath = path.join(homeDir, '.claude', 'agents', 'my-own-agent.md');
+    await fse.writeFile(userAgentPath, '# User agent');
+    const nestedUserAgentPath = path.join(
+      homeDir,
+      '.claude',
+      'agents',
+      'user-group',
+      'beta-proof-agent.md',
+    );
+    await fse.ensureDir(path.dirname(nestedUserAgentPath));
+    await fse.writeFile(nestedUserAgentPath, '# User agent with a managed-looking basename');
+
+    const openclawManagedSkill = path.join(
+      homeDir,
+      '.openclaw',
+      'workspace',
+      'skills',
+      'former-role-skill',
+    );
+    const openclawUserSkill = path.join(
+      homeDir,
+      '.openclaw',
+      'workspace',
+      'skills',
+      'my-own-skill',
+    );
+    await fse.ensureDir(openclawManagedSkill);
+    await fse.writeFile(path.join(openclawManagedSkill, 'SKILL.md'), '# Managed skill');
+    await fse.ensureDir(openclawUserSkill);
+    await fse.writeFile(path.join(openclawUserSkill, 'SKILL.md'), '# User skill');
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        claude: { skills: '.claude/skills', agents: '.claude/agents' },
+        codex: { skills: '.codex/skills', agents: '.codex/agents' },
+        cursor: { skills: '.cursor/skills', agents: '.cursor/agents' },
+        codebuddy: { skills: '.codebuddy/skills', agents: '.codebuddy/agents' },
+        opencode: { skills: '.opencode/skills', agents: '.opencode/agents' },
+        openclaw: { skills: '.openclaw/skills' },
+      },
+    });
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath),
+      teamConfig,
+    });
+
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    });
+    await uninstall({ dryRun: true, force: true });
+    spy.mockRestore();
+
+    const summary = lines.join('\n');
+    for (const agentPath of managedAgentPaths) {
+      expect(summary).toContain(agentPath);
+      expect(await fse.pathExists(agentPath)).toBe(true);
+    }
+    expect(summary).toContain(openclawManagedSkill);
+    expect(await fse.pathExists(openclawManagedSkill)).toBe(true);
+
+    await uninstall({ force: true });
+
+    for (const agentPath of managedAgentPaths) {
+      expect(await fse.pathExists(agentPath)).toBe(false);
+    }
+    expect(await fse.pathExists(openclawManagedSkill)).toBe(false);
+    expect(await fse.pathExists(userAgentPath)).toBe(true);
+    expect(await fse.pathExists(nestedUserAgentPath)).toBe(true);
+    expect(await fse.pathExists(openclawUserSkill)).toBe(true);
+  });
+
   it('uninstall summary lists teamai-managed MCP servers', async () => {
     const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);
@@ -570,7 +712,22 @@ describe('uninstall', () => {
     vi.stubEnv('HOME', homeDir);
     vi.stubEnv('SHELL', '/bin/zsh');
 
-    const teamConfig = makeTeamConfig();
+    const codexRecallAgent = path.join(homeDir, '.codex', 'agents', 'teamai-recall.toml');
+    await fse.ensureDir(path.dirname(codexRecallAgent));
+    await fse.writeFile(codexRecallAgent, 'developer_instructions = "Recall"\n');
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        claude: {
+          skills: '.claude/skills',
+          rules: '.claude/rules',
+          settings: '.claude/settings.json',
+          claudemd: '.claude/CLAUDE.md',
+          agents: '.claude/agents',
+        },
+        codex: { agents: '.codex/agents' },
+      },
+    });
     const localConfig = makeLocalConfig(homeDir, repoPath);
     mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
 
@@ -579,6 +736,7 @@ describe('uninstall', () => {
     // Built-in recall agent + rule removed
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'agents', 'teamai-recall.md'))).toBe(false);
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'rules', 'teamai-recall.md'))).toBe(false);
+    expect(await fse.pathExists(codexRecallAgent)).toBe(false);
     // Built-in skills removed
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'teamai-share-learnings'))).toBe(false);
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-wiki-codebase'))).toBe(false);

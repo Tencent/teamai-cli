@@ -19,6 +19,19 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'opencode',
 ];
 
+export type AgentFileExtension = '.md' | '.toml';
+
+export function agentFileExtensionForTool(tool: ToolName): AgentFileExtension {
+  switch (tool) {
+    case 'codex':
+    case 'codex-internal':
+    case 'tcodex':
+      return '.toml';
+    default:
+      return '.md';
+  }
+}
+
 // ─── Intermediate format ─────────────────────────────────────────────────────
 
 /**
@@ -138,7 +151,10 @@ export interface RenderResult {
  * Output: YAML frontmatter (.md) with optional model/tools and tool_extras.claude fields.
  */
 export function renderForClaude(spec: AgentSpec): RenderResult {
-  return { ext: '.md', content: renderMarkdownAgent(spec, spec.tool_extras?.['claude']) };
+  return {
+    ext: agentFileExtensionForTool('claude'),
+    content: renderMarkdownAgent(spec, spec.tool_extras?.['claude']),
+  };
 }
 
 /**
@@ -146,7 +162,10 @@ export function renderForClaude(spec: AgentSpec): RenderResult {
  * Same format as Claude — YAML frontmatter + body.
  */
 export function renderForClaudeInternal(spec: AgentSpec): RenderResult {
-  return { ext: '.md', content: renderMarkdownAgent(spec, spec.tool_extras?.['claude-internal']) };
+  return {
+    ext: agentFileExtensionForTool('claude-internal'),
+    content: renderMarkdownAgent(spec, spec.tool_extras?.['claude-internal']),
+  };
 }
 
 /**
@@ -154,7 +173,10 @@ export function renderForClaudeInternal(spec: AgentSpec): RenderResult {
  * Same format as Claude, but merges tool_extras.codebuddy into frontmatter.
  */
 export function renderForCodebuddy(spec: AgentSpec): RenderResult {
-  return { ext: '.md', content: renderMarkdownAgent(spec, spec.tool_extras?.['codebuddy']) };
+  return {
+    ext: agentFileExtensionForTool('codebuddy'),
+    content: renderMarkdownAgent(spec, spec.tool_extras?.['codebuddy']),
+  };
 }
 
 /**
@@ -162,7 +184,10 @@ export function renderForCodebuddy(spec: AgentSpec): RenderResult {
  * Output: TOML with developer_instructions and flattened tool_extras.codex fields.
  */
 export function renderForCodex(spec: AgentSpec): RenderResult {
-  return { ext: '.toml', content: renderTomlAgent(spec, spec.tool_extras?.['codex']) };
+  return {
+    ext: agentFileExtensionForTool('codex'),
+    content: renderTomlAgent(spec, spec.tool_extras?.['codex']),
+  };
 }
 
 /**
@@ -170,7 +195,10 @@ export function renderForCodex(spec: AgentSpec): RenderResult {
  * Same format as Codex — TOML with developer_instructions.
  */
 export function renderForCodexInternal(spec: AgentSpec): RenderResult {
-  return { ext: '.toml', content: renderTomlAgent(spec, spec.tool_extras?.['codex-internal']) };
+  return {
+    ext: agentFileExtensionForTool('codex-internal'),
+    content: renderTomlAgent(spec, spec.tool_extras?.['codex-internal']),
+  };
 }
 
 /**
@@ -193,7 +221,7 @@ export function renderForCursor(spec: AgentSpec): RenderResult {
     }
   }
   const content = matter.stringify(spec.instructions, frontmatterData);
-  return { ext: '.md', content };
+  return { ext: agentFileExtensionForTool('cursor'), content };
 }
 
 /**
@@ -221,7 +249,7 @@ export function renderForOpencode(spec: AgentSpec): RenderResult {
     }
   }
   const content = matter.stringify(spec.instructions, frontmatterData);
-  return { ext: '.md', content };
+  return { ext: agentFileExtensionForTool('opencode'), content };
 }
 
 // ─── Internal render helpers ─────────────────────────────────────────────────

@@ -45,7 +45,7 @@ teamai init git@code.qschou.com:Enterprise/arb-workflow-kit.git --scope user
 - HTTPS：预先配置 Git Credential Helper；不要把用户名、密码或 Token 写进 URL。
 - SSH：预先配置 SSH Key，并确保 `ssh-agent` 能访问私钥。
 
-clone、pull、push 均可正常使用。平台 API 操作（自动建仓、自动创建 MR/PR）无法跨不同服务统一实现，因此暂不支持；`teamai push` 会先推送分支，再提示用户到对应平台手动创建 MR。
+clone、pull、push 均可正常使用。平台 API 操作（自动建仓、自动创建 MR/PR）无法跨不同服务统一实现，因此暂不支持；`teamai push` 会先推送分支，再提示用户到对应平台手动创建 MR，并以非零退出码表明自动 PR/MR 创建未完成。
 
 ## GitHub Provider
 

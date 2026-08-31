@@ -109,7 +109,7 @@ teamai push → 创建分支 + MR → reviewer 审批合并
            SessionStart hook → teamai pull → 同步到本地 AI 工具
 ```
 
-成员通过 `teamai push` 提交变更并创建合并请求供审核。合并后，`teamai pull`（由 SessionStart hook 在会话启动时自动触发）将最新资源同步到本地。Skills 会同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/` 等目录。
+成员通过 `teamai push` 提交变更并创建合并请求供审核。合并后，`teamai pull`（由 SessionStart hook 在会话启动时自动触发）将最新资源同步到本地。Skills 会同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/` 等目录。在 **project scope** 安装下，SessionStart 会先为当前工具创建项目根目录（例如 `<project>/.claude`），再 pull 写入；单独执行 `teamai pull` 仍不会凭空创建 Agent 目录。
 
 ### 团队 Hooks
 
@@ -159,7 +159,8 @@ teamai source browse other-team    # 浏览可用 skills
 teamai source remove other-team
 ```
 
-订阅的 skills 在 `teamai pull` 时自动同步。
+添加/移除会立即在本机生效，订阅的 skills 会在下一次 `teamai pull` 时同步。需要将
+`teamai.yaml` 的改动分享给团队成员时，再运行 `teamai push`。
 
 ## 知识库
 
@@ -213,6 +214,13 @@ teamai codebase --lint                      # 健康检查
 
 图谱存储组件、接口、配置和跨仓库依赖边。`teamai recall` 利用图谱进行增强排名。
 当召回命中 codebase 页面时，结果会附带一行 `Sources:`，列出相关源文件路径，供 agent 直接作为代码改动的入口，无需重新探索代码库。
+
+依赖边来自两条并行的提取轨道，重叠时以 AST 结果优先：
+
+- **AST 轨**（TypeScript/JavaScript、Python、Go）：使用 WASM 版 [tree-sitter](https://tree-sitter.github.io/) 解析器，将 `import`/`require`、调用点、以及 TS `implements` 子句解析为精确的文件到文件 `DEPENDS_ON` / `REFERENCES` / `IMPLEMENTS` 边（标记为 `code-ast`，带置信度权重）。
+- **启发式轨**（所有语言，含 Java/Rust）：基于正则的提取（标记为 `code-heuristic`），同时覆盖 AST 轨未支持的语言。
+
+WASM 解析器是纯 JavaScript 依赖，无需任何原生编译工具链。若因任何原因加载失败，提取会降级到启发式轨并记录一条 `AST_UNAVAILABLE` gap。设置 `TEAMAI_SKIP_AST=1` 可强制仅使用启发式提取。
 
 ## 命令一览
 

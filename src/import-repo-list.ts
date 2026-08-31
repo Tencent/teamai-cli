@@ -74,10 +74,23 @@ export async function importFromRepoList(
     // 1. 加载白名单
     const repoListFile = await loadRepoList(listPath);
 
+    let releaseBatchLock: (() => Promise<void>) | null = null;
+    if (!dryRun) {
+        try {
+            const { autoDetectInit } = await import('./config.js');
+            const { localConfig: lc } = await autoDetectInit();
+            const { acquireImportLock } = await import('./utils/import-lock.js');
+            releaseBatchLock = await acquireImportLock(lc.repo.localPath);
+        } catch (e) {
+            log.debug(`[import-lock] batch lock acquire skipped: ${(e as Error).message}`);
+        }
+    }
+
     const succeeded: number[] = [];
     const failed: Array<{ url: string; error: string }> = [];
     const skipped: Array<{ url: string; reason: string }> = [];
 
+    try {
     // 2. 分拣 org entry（暂不支持）与单仓 entry
     const singleEntries: ReturnType<typeof sortByPriority> = [];
     for (const item of repoListFile.repos) {
@@ -195,6 +208,12 @@ export async function importFromRepoList(
             }
         } catch (e) {
             log.warn(`[git] batch push failed (non-blocking): ${(e as Error).message}`);
+        }
+    }
+
+    } finally {
+        if (releaseBatchLock) {
+            await releaseBatchLock();
         }
     }
 

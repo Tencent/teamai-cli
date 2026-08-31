@@ -209,6 +209,49 @@ servers:
     expect(after.mcpServers.temp).toBeUndefined();
   });
 
+  it('does not prune managed servers in http mode (install_mcp survives second sync)', async () => {
+    // First, inject a server as a git-mode team would, so managed-mcp.json and
+    // the tool config both record it (stands in for an install_mcp write).
+    await writeMcpYaml(`
+servers:
+  - name: clawpro
+    transport: http
+    url: https://clawpro.example.com/mcp
+    tools: [claude]
+`);
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    const claudeJson = path.join(homeDir, '.claude.json');
+    expect((await fse.readJson(claudeJson)).mcpServers.clawpro).toBeDefined();
+
+    // Now the team is HTTP-backed with an empty desired set (no repo tree). A
+    // session-start reconcile must NOT delete the previously managed server.
+    await writeMcpYaml('servers: []\n');
+    const httpConfig = { ...localConfig, repo: { ...localConfig.repo, kind: 'http' } } as typeof localConfig;
+    const { changes } = await reconcileMcpForConfig(teamConfig, httpConfig);
+
+    expect(changes).toEqual([]);
+    expect((await fse.readJson(claudeJson)).mcpServers.clawpro).toBeDefined();
+  });
+
+  it('still removes managed servers in http mode when removeAll is set (uninstall teardown)', async () => {
+    await writeMcpYaml(`
+servers:
+  - name: clawpro
+    transport: http
+    url: https://clawpro.example.com/mcp
+    tools: [claude]
+`);
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    const claudeJson = path.join(homeDir, '.claude.json');
+    expect((await fse.readJson(claudeJson)).mcpServers.clawpro).toBeDefined();
+
+    const httpConfig = { ...localConfig, repo: { ...localConfig.repo, kind: 'http' } } as typeof localConfig;
+    const { changes } = await reconcileMcpForConfig(teamConfig, httpConfig, { removeAll: true });
+
+    expect(changes.some((c) => c.action === 'removed' && c.server === 'clawpro')).toBe(true);
+    expect((await fse.readJson(claudeJson)).mcpServers.clawpro).toBeUndefined();
+  });
+
   // tclaude relocates Claude Code's user data dir via customUserDataDir, so its
   // MCP file is ~/.tclaude/.claude.json — a nested path, not ~/.tclaude.json.
   it('writes tclaude servers to ~/.tclaude/.claude.json in claude format', async () => {

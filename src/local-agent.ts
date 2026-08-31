@@ -23,12 +23,28 @@ import { ResourceHandler } from './resources/base.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
 import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, OPENCLAW_TOOLS } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
+import { resolveHookCwd } from './utils/hook-cwd.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
+import { ruleStemFromFilename } from './resources/rule-format.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
+import {
+  detectMcpFormat,
+  supportsTransport,
+  renderJsonEntry,
+  renderCodexBlock,
+  entryHash,
+  MCP_SERVER_KEY,
+} from './resources/mcp-format.js';
+import {
+  readJsonDoc,
+  writeCodexAtomic,
+  spliceCodexBlock,
+  codexServerNames,
+} from './mcp-reconcile.js';
 import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
 import { reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
@@ -39,8 +55,13 @@ import {
   TEAMAI_CLAUDEMD_START,
   TEAMAI_CLAUDEMD_END,
   TeamaiConfigSchema,
+  managedMcpManifestPath,
   type DashboardEvent,
   type LocalConfig,
+  type ManagedMcpManifest,
+  type ManagedMcpRecord,
+  type McpServerDef,
+  type McpTransport,
   type Scope,
   type TeamaiConfig,
 } from './types.js';
@@ -193,6 +214,16 @@ interface LocalAgentCommand {
   event?: string;
   matcher?: string;
   timeout?: number;
+  mcp_config?: {
+    transport: string;
+    url?: string;
+    headers?: Record<string, string>;
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    timeout?: number;
+    requires?: string[];
+  };
 }
 
 /**
@@ -1128,10 +1159,16 @@ async function scanRulesFromDisk(
   manifestSlugs: Set<string>,
 ): Promise<ReportedResource[]> {
   if (!(await pathExists(rulesDir))) return [];
-  const files = (await listFilesRecursive(rulesDir)).filter((f) => f.endsWith('.md'));
+  // Cursor stores rules as `.mdc`, every other tool as `.md`; match by stem so
+  // a Cursor agent still reports its installed rules.
+  const files = await listFilesRecursive(rulesDir);
   const results: ReportedResource[] = [];
+  const seen = new Set<string>();
   for (const file of files) {
-    const slug = file.replace(/\.md$/, '');
+    const slug = ruleStemFromFilename(file);
+    if (slug === null) continue;
+    if (seen.has(slug)) continue; // Same rule under both extensions
+    seen.add(slug);
     // Skip CLI built-in / legacy rules (e.g. teamai-recall) so they are not
     // reported as user-installed resources — mirrors the pull/uninstall filter.
     if (EXCLUDED_RULE_NAMES.has(path.basename(slug)) || EXCLUDED_RULE_NAMES.has(slug)) continue;
@@ -1160,6 +1197,35 @@ function collectManifestSlugs(manifest: LocalAgentManifest): { skills: Set<strin
     for (const slug of Object.keys(scope.rules ?? {})) rules.add(slug);
   }
   return { skills, rules };
+}
+
+/**
+ * Scan the managed-mcp manifest for a given scope and return MCP servers as
+ * ReportedResource entries. Only servers tracked in managed-mcp.json (i.e.
+ * installed via HTTP distribution) are reported with source = 'enterprise'.
+ */
+async function scanMcpFromManifest(
+  scope: 'user' | 'project',
+  projectRoot?: string,
+): Promise<ReportedResource[]> {
+  const manifestPath = managedMcpManifestPath(
+    scope === 'project' ? 'project' : 'user',
+    projectRoot,
+  );
+  const manifest = await readJson<ManagedMcpManifest>(manifestPath);
+  if (!manifest || typeof manifest !== 'object') return [];
+
+  const seen = new Set<string>();
+  const results: ReportedResource[] = [];
+  for (const records of Object.values(manifest)) {
+    if (!Array.isArray(records)) continue;
+    for (const rec of records) {
+      if (!rec.name || seen.has(rec.name)) continue;
+      seen.add(rec.name);
+      results.push({ slug: rec.name, source: 'enterprise' });
+    }
+  }
+  return results.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
 /**
@@ -1271,6 +1337,8 @@ export async function buildReportPayload(
   const userLevel: Record<string, unknown> = { group_id: config.userGroupId };
   if (userScope.skills.length > 0) userLevel.skills = userScope.skills;
   if (userScope.rules.length > 0) userLevel.rules = userScope.rules;
+  const userMcps = await scanMcpFromManifest('user');
+  if (userMcps.length > 0) userLevel.mcps = userMcps;
 
   const payload: Record<string, unknown> = {
     agent_type: normalizeAgentType(tool),
@@ -1303,6 +1371,8 @@ export async function buildReportPayload(
         };
         if (wsScope.skills.length > 0) workspace.skills = wsScope.skills;
         if (wsScope.rules.length > 0) workspace.rules = wsScope.rules;
+        const wsMcps = await scanMcpFromManifest('project', wsPath);
+        if (wsMcps.length > 0) workspace.mcps = wsMcps;
         return workspace;
       }),
     );
@@ -2077,6 +2147,204 @@ async function runHookRuleCommand(
   return undefined;
 }
 
+// ─── MCP server install / uninstall (HTTP distribution) ─────
+
+const VALID_MCP_TRANSPORTS = new Set<string>(['stdio', 'http', 'sse']);
+
+function mcpConfigToDef(slug: string, cfg: NonNullable<LocalAgentCommand['mcp_config']>): McpServerDef {
+  if (!VALID_MCP_TRANSPORTS.has(cfg.transport)) {
+    throw new Error(`install_mcp: unsupported transport "${cfg.transport}" for server "${slug}"`);
+  }
+  return {
+    name: slug,
+    transport: cfg.transport as McpTransport,
+    command: cfg.command,
+    args: cfg.args,
+    url: cfg.url,
+    headers: cfg.headers,
+    env: cfg.env,
+    timeout: cfg.timeout,
+    requires: cfg.requires,
+  };
+}
+
+function updateManifestRecord(
+  manifest: ManagedMcpManifest,
+  key: string,
+  name: string,
+  hash: string,
+): void {
+  const records = manifest[key] ?? [];
+  const idx = records.findIndex((r: ManagedMcpRecord) => r.name === name);
+  if (idx >= 0) {
+    records[idx] = { name, hash };
+  } else {
+    records.push({ name, hash });
+  }
+  manifest[key] = records;
+}
+
+async function installMcpServer(
+  config: LocalAgentConfig,
+  command: LocalAgentCommand,
+  tool: string,
+  slug: string,
+  scope: LocalAgentScope,
+  workspacePath?: string,
+): Promise<string | undefined> {
+  if (!command.mcp_config) {
+    throw new Error('install_mcp: missing mcp_config');
+  }
+
+  const def = mcpConfigToDef(slug, command.mcp_config);
+  const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
+  const toolPath = fullTeamConfig.toolPaths[tool];
+  if (!toolPath) {
+    throw new Error(`install_mcp: unknown tool "${tool}"`);
+  }
+
+  const projectScope = scope === 'project';
+  const mcpRel = projectScope ? toolPath.mcpProject : toolPath.mcp;
+  if (!mcpRel) {
+    throw new Error(`install_mcp: tool "${tool}" has no MCP config path for scope "${scope}"`);
+  }
+
+  const format = detectMcpFormat(tool);
+  if (!format) {
+    throw new Error(`install_mcp: tool "${tool}" has no known MCP format`);
+  }
+  if (!supportsTransport(format, def.transport)) {
+    throw new Error(`install_mcp: tool "${tool}" does not support ${def.transport} transport`);
+  }
+
+  const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
+  const targetFile = path.join(baseDir, mcpRel);
+
+  const manifestPath = managedMcpManifestPath(
+    projectScope ? 'project' : 'user',
+    projectScope ? workspacePath : undefined,
+  );
+  const manifest = (await readJson<ManagedMcpManifest>(manifestPath)) ?? {};
+  const manifestKey = `${tool}${projectScope ? ':project' : ''}`;
+  const owned = manifest[manifestKey] ?? [];
+  const ownedNames = new Set(owned.map((r: ManagedMcpRecord) => r.name));
+
+  if (format === 'codex') {
+    const block = renderCodexBlock(def);
+    const hash = entryHash(block);
+    let source = (await readFileSafe(targetFile)) ?? '';
+    const present = new Set(codexServerNames(source));
+    if (present.has(slug) && !ownedNames.has(slug)) {
+      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
+    }
+    updateManifestRecord(manifest, manifestKey, slug, hash);
+    await writeJsonAtomic(manifestPath, manifest);
+    source = spliceCodexBlock(source, slug, block);
+    await writeCodexAtomic(targetFile, source);
+  } else {
+    const entry = renderJsonEntry(format, def);
+    const serverKey = MCP_SERVER_KEY[format];
+    const hash = entryHash(entry);
+    const doc = await readJsonDoc(targetFile, serverKey);
+    if (!doc) {
+      throw new Error(`install_mcp: cannot parse ${targetFile}`);
+    }
+    if (doc.servers[slug] !== undefined && !ownedNames.has(slug)) {
+      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
+    }
+    updateManifestRecord(manifest, manifestKey, slug, hash);
+    await writeJsonAtomic(manifestPath, manifest);
+    doc.servers[slug] = entry;
+    doc.data[serverKey] = doc.servers;
+    await writeJsonAtomic(targetFile, doc.data);
+  }
+  log.debug(`local-agent: installed MCP server "${slug}" for ${tool} (scope=${scope})`);
+  return command.version;
+}
+
+async function uninstallMcpServer(
+  config: LocalAgentConfig,
+  tool: string,
+  slug: string,
+  scope: LocalAgentScope,
+  workspacePath?: string,
+): Promise<void> {
+  const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
+  const toolPath = fullTeamConfig.toolPaths[tool];
+  if (!toolPath) return;
+
+  const projectScope = scope === 'project';
+  const mcpRel = projectScope ? toolPath.mcpProject : toolPath.mcp;
+  if (!mcpRel) return;
+
+  const format = detectMcpFormat(tool);
+  if (!format) return;
+
+  const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
+  const targetFile = path.join(baseDir, mcpRel);
+
+  const manifestPath = managedMcpManifestPath(
+    projectScope ? 'project' : 'user',
+    projectScope ? workspacePath : undefined,
+  );
+  const manifest = (await readJson<ManagedMcpManifest>(manifestPath)) ?? {};
+  const manifestKey = `${tool}${projectScope ? ':project' : ''}`;
+  const owned = manifest[manifestKey] ?? [];
+  const ownedNames = new Set(owned.map((r: ManagedMcpRecord) => r.name));
+
+  if (!ownedNames.has(slug)) return;
+
+  manifest[manifestKey] = owned.filter((r: ManagedMcpRecord) => r.name !== slug);
+  if ((manifest[manifestKey] as ManagedMcpRecord[]).length === 0) delete manifest[manifestKey];
+  await writeJsonAtomic(manifestPath, manifest);
+
+  if (format === 'codex') {
+    let source = (await readFileSafe(targetFile)) ?? '';
+    source = spliceCodexBlock(source, slug, null);
+    await writeCodexAtomic(targetFile, source);
+  } else {
+    const serverKey = MCP_SERVER_KEY[format];
+    const doc = await readJsonDoc(targetFile, serverKey);
+    if (doc && doc.servers[slug] !== undefined) {
+      delete doc.servers[slug];
+      doc.data[serverKey] = doc.servers;
+      await writeJsonAtomic(targetFile, doc.data);
+    }
+  }
+  log.debug(`local-agent: uninstalled MCP server "${slug}" from ${tool} (scope=${scope})`);
+}
+
+async function runMcpCommand(
+  config: LocalAgentConfig,
+  command: LocalAgentCommand,
+  context: LocalAgentContext,
+): Promise<string | undefined> {
+  const tool = context.tool;
+  if (!tool) {
+    throw new Error(`${command.type}: cannot determine current tool`);
+  }
+  const slug = command.slug;
+  if (!slug) {
+    throw new Error(`${command.type}: missing slug`);
+  }
+  assertSafeResourceName(slug);
+
+  const scope = normalizeScope(command.scope);
+  const workspacePath = scope === 'project'
+    ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
+    : undefined;
+  if (scope === 'project' && !workspacePath) {
+    throw new Error(`${command.type}: workspace command is missing workspace_path`);
+  }
+
+  if (command.type === 'install_mcp') {
+    return installMcpServer(config, command, tool, slug, scope, workspacePath);
+  }
+
+  await uninstallMcpServer(config, tool, slug, scope, workspacePath);
+  return command.version;
+}
+
 async function executeCommand(
   config: LocalAgentConfig,
   command: LocalAgentCommand,
@@ -2089,6 +2357,9 @@ async function executeCommand(
   }
   if (command.type === 'install_hook_rule' || command.type === 'uninstall_hook_rule') {
     return runHookRuleCommand(config, command, context);
+  }
+  if (command.type === 'install_mcp' || command.type === 'uninstall_mcp') {
+    return runMcpCommand(config, command, context);
   }
   const kind = commandKind(command);
   const action = commandAction(command);
@@ -2266,7 +2537,9 @@ export async function reportAndSyncFromHook(
 ): Promise<string | null> {
   const raw = JSON.stringify(stdin);
   const event = await parseHookEvent(raw, tool);
-  const cwd = typeof stdin.cwd === 'string' ? stdin.cwd : event?.cwd ?? process.cwd();
+  // parseHookEvent resolves cwd via resolveHookCwd too, so event?.cwd would be
+  // identical here — resolve once and fall back to process.cwd().
+  const cwd = resolveHookCwd(stdin) ?? process.cwd();
 
   // SessionStart and UserPromptSubmit run this handler in the *foreground*, where
   // it blocks the host IDE's hook (UserPromptSubmit cap = 10s). Narrow the

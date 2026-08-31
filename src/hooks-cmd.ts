@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { reconcileHooksToAllTools, getHookStatus, type HookStatus } from './hooks.js';
+import { reconcileHooksToAllTools, getHookStatus, hasInstalledCodexTrustGatedTool, codexTrustReminder, type HookStatus } from './hooks.js';
 import { builtinHookDefs } from './builtin-hooks.js';
 import { parseTeamHooks, resolveTeamHooks } from './resources/hooks.js';
 import { log } from './utils/logger.js';
@@ -84,12 +84,22 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
         auto: false,
         silent: options.silent,
     });
+    let codexTrustGated = false;
     for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
         await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin });
+        if (await hasInstalledCodexTrustGatedTool(teamConfig.toolPaths, baseDir)) {
+            codexTrustGated = true;
+        }
     }
 
     if (!options.silent) {
         log.success('Hooks injected into all AI tool settings');
+        // The public Codex gates non-managed hooks behind an explicit trust step;
+        // remind the user to trust them in Codex. teamai never edits [hooks.state]
+        // to auto-trust (constraint: reminder only, no bypass).
+        if (codexTrustGated) {
+            log.warn(codexTrustReminder());
+        }
     }
 }
 

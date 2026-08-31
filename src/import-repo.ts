@@ -301,6 +301,9 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         teamRepoDir = path.join(process.cwd(), '.teamai', 'team-repo');
     }
 
+    const { acquireImportLock } = await import('./utils/import-lock.js');
+    const releaseImportLock = await acquireImportLock(teamRepoDir);
+    try {
     // 4. Generate teamwiki/ knowledge graph artifacts + append AI narrative to overview.md
     const teamwikiRoot = output
         ? path.resolve(output, '..', 'teamwiki')
@@ -481,5 +484,8 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         } catch (touchErr) {
             log.debug(`[cache-index] touchCacheEntry failed: ${String(touchErr)}`);
         }
+    }
+    } finally {
+        await releaseImportLock();
     }
 }

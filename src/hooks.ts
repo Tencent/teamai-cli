@@ -105,6 +105,35 @@ function detectFormat(tool: string): ToolFormat {
   return CURSOR_TOOLS.has(tool) ? 'cursor' : 'claude';
 }
 
+/**
+ * Tools that enforce a user trust gate on non-managed hooks. Only the public
+ * Codex (the OpenAI / ChatGPT Codex app, tool id `codex`) does: even after
+ * teamai writes `<repo>/.codex/hooks.json` or `~/.codex/hooks.json`, Codex may
+ * skip a newly added or changed hook until the user reviews/trusts it in
+ * `/hooks` or Settings → Hooks. The internal variants (`codex-internal`,
+ * `tcodex`) share the codex hooks.json *format* but not this trust gate, so
+ * they are intentionally excluded.
+ */
+const CODEX_TRUST_GATE_TOOLS = new Set(['codex']);
+
+/**
+ * True for a tool that gates hooks behind an explicit user trust step (only the
+ * public `codex`). teamai never edits Codex's `[hooks.state]` to auto-trust —
+ * the reminder is UX only. Exported so `hooks inject` / `doctor` can surface it.
+ */
+export function isCodexTrustGatedTool(tool: string): boolean {
+  return CODEX_TRUST_GATE_TOOLS.has(tool);
+}
+
+/**
+ * One-line reminder that Codex may require the user to trust newly written hooks
+ * before they run. Shared by `hooks inject` (post-write notice) and `doctor`
+ * (installed-hooks note) so the wording stays identical.
+ */
+export function codexTrustReminder(): string {
+  return 'Codex hooks written, but Codex may require you to review/trust them before they run — open /hooks or Settings → Hooks in Codex to trust them.';
+}
+
 /** Known teamai command substrings used to identify built-in / legacy hooks. */
 const TEAMAI_COMMAND_MARKERS = [
   'teamai pull', 'teamai update', 'teamai track', 'teamai dashboard', 'teamai contribute-check',
@@ -879,6 +908,28 @@ export async function reconcileHooksToAllTools(
       log.warn(`Failed to reconcile hooks for ${tool}: ${(e as Error).message}`);
     }
   }
+}
+
+/**
+ * True if a trust-gated Codex tool (the public `codex`) is both configured with
+ * a settings path and actually installed on disk under baseDir.
+ *
+ * "Installed" uses the same root-directory gate as reconcileHooksToAllTools, so
+ * a true result means inject just wrote hooks that Codex may require the user to
+ * trust. Internal variants (codex-internal / tcodex) are excluded — they share
+ * the format but not the trust gate. Used to decide whether to print the
+ * reminder after inject.
+ */
+export async function hasInstalledCodexTrustGatedTool(
+  toolPaths: Record<string, { settings?: string }>,
+  baseDir: string,
+): Promise<boolean> {
+  for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (!isCodexTrustGatedTool(tool) || !paths.settings) continue;
+    const toolRoot = path.join(baseDir, paths.settings.split('/')[0]);
+    if (await pathExists(toolRoot)) return true;
+  }
+  return false;
 }
 
 /**

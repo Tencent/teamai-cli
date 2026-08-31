@@ -8,7 +8,16 @@ import { pushRepoDirectly } from './utils/git.js';
 import { getProvider, detectProvider, RepoNotFoundError } from './providers/index.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
-import { TEAMAI_HOME, REPORTS_BRANCH, type GlobalOptions, type LocalConfig, type Scope, getTeamaiHome, getConfigPath } from './types.js';
+import {
+  TEAMAI_HOME,
+  REPORTS_BRANCH,
+  type GlobalOptions,
+  type LocalConfig,
+  type Scope,
+  getTeamaiHome,
+  getConfigPath,
+  isRecallEnabled,
+} from './types.js';
 import { getUserHome } from './utils/home.js';
 import { describeRoles, loadRolesManifest } from './roles.js';
 import { askQuestion, askConfirmation, askSelection, closePrompt } from './utils/prompt.js';
@@ -1277,9 +1286,23 @@ export async function init(options: GlobalOptions & {
   if (reloadedTeamConfig) {
     const filterAgents = requestedAgents.length > 0 ? requestedAgents : undefined;
     await reconcileTeamHooksForConfig(reloadedTeamConfig, localConfig, { filterAgents });
+
+    // Step 7.5: Deploy CLI built-in skills immediately so team-wiki-codebase
+    // is available in the IDE right after init, without waiting for first pull.
+    try {
+      const { deployBuiltinSkills } = await import('./builtin-skills.js');
+      const skipRecall = !isRecallEnabled(localConfig, reloadedTeamConfig);
+      const deployed = await deployBuiltinSkills(reloadedTeamConfig, localConfig, { skipRecall });
+      if (deployed > 0) {
+        log.debug(`Deployed ${deployed} built-in skill(s)`);
+      }
+    } catch (e) {
+      log.debug(`Built-in skills deployment skipped: ${(e as Error).message}`);
+    }
   }
 
   log.success('teamai initialized successfully!');
+  log.info('Built-in skills (e.g. team-wiki-codebase) are ready to use in your IDE now.');
   log.info('Skills, rules, env and docs will auto-sync on each session start (via hooks).');
   log.info('Run `teamai status` to check current config.');
 

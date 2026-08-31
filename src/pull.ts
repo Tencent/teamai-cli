@@ -8,6 +8,7 @@ import { pathExists, remove, listFiles, listDirs, readFileSafe } from './utils/f
 import { injectClaudeMdSection } from './utils/claudemd.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler } from './resources/index.js';
 import { ResourceHandler } from './resources/base.js';
+import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { loadTagsConfig, filterByTags } from './utils/tags.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import type { GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, TagsConfig } from './types.js';
@@ -199,7 +200,7 @@ export async function scanRoleAwareSkills(localConfig: LocalConfig, namespaces: 
 export async function cleanupInactiveNamespaceSkills(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-  activeSkillNames: Set<string>,
+  retainedSkillNames: Set<string>,
   inactiveSkillNames: Set<string>,
 ): Promise<void> {
   const baseDir = resolveBaseDir(localConfig);
@@ -213,7 +214,7 @@ export async function cleanupInactiveNamespaceSkills(
     const localSkillNames = await listDirs(path.join(baseDir, toolPath.skills));
     for (const skillName of localSkillNames) {
       if (BUILTIN_SKILL_NAMES.has(skillName)) continue;
-      if (activeSkillNames.has(skillName)) continue;
+      if (retainedSkillNames.has(skillName)) continue;
       if (!inactiveSkillNames.has(skillName)) continue;
 
       const localSkillDir = path.join(baseDir, toolPath.skills, skillName);
@@ -292,6 +293,37 @@ function logSyncDetail(
 }
 
 /**
+ * Return the installed tool targets that can receive team-owned resources.
+ *
+ * The revision cache is shared by a scope, while tool roots can appear later
+ * (for example, when Cursor creates `.cursor/` on its first launch). Persisting
+ * this set alongside the revision prevents a pull for one tool from suppressing
+ * the first resource sync for another.
+ */
+async function getInstalledResourceTargets(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<string[]> {
+  const baseDir = resolveBaseDir(localConfig);
+  const targets: string[] = [];
+
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    if (isAgentDisabled(localConfig, tool)) continue;
+
+    const resourcePaths = [toolPath.skills, toolPath.rules, toolPath.agents]
+      .filter((resourcePath): resourcePath is string => !!resourcePath);
+    for (const resourcePath of resourcePaths) {
+      if (await ResourceHandler.isToolInstalled(resourcePath, baseDir)) {
+        targets.push(tool);
+        break;
+      }
+    }
+  }
+
+  return targets.sort();
+}
+
+/**
  * Pull resources for a single scope. This is the core sync logic extracted
  * from the original pull() function to support both user and project scope.
  */
@@ -305,6 +337,9 @@ async function pullForScope(
 ): Promise<void> {
   const scopeLabel = localConfig.scope;
   const revisionField = policy.revisionField ?? 'lastPullRev';
+  const targetsField = revisionField === 'lastPullRev'
+    ? 'lastPullTargets' as const
+    : 'lastInheritedPullTargets' as const;
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
   if (!teamConfig) {
     log.warn(`[${scopeLabel}] Team config (teamai.yaml) not found. Skipping.`);
@@ -329,25 +364,37 @@ async function pullForScope(
   }
 
   // Step 1b: Skip sync if the repo version hasn't changed since last pull
+  let currentTargets: string[] | null = null;
   if (!options.force && !options.dryRun) {
     try {
       const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
       if (currentRev && state[revisionField] && state[revisionField] === currentRev) {
-        log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
-        // 即使 repo 未变化，仍部署 CLI 内置资源（确保 CLI 升级后新版本 agent/rules 生效）
-        if (!options.dryRun) {
-          const cfg = await loadTeamConfig(localConfig.repo.localPath);
-          if (cfg) {
-            const skipRecall = !isRecallEnabled(localConfig, cfg);
-            try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig, { skipRecall }); } catch {}
-            try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig, { skipRecall }); } catch {}
-            try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { reportingOnly, skipRecall }); } catch {}
-            // Also refresh the CLAUDE.md recall block so a CLI upgrade that ships
-            // a new block reaches CLAUDE.md even when the repo HEAD is unchanged.
-            await injectRecallBlockIntoTools(cfg, localConfig, scopeLabel);
+        currentTargets = await getInstalledResourceTargets(teamConfig, localConfig);
+        const previousTargets = state[targetsField];
+        const syncedTargets = new Set(previousTargets ?? []);
+        const targetSetMatches = previousTargets !== undefined
+          && previousTargets.length === currentTargets.length
+          && currentTargets.every((target) => syncedTargets.has(target));
+
+        if (targetSetMatches) {
+          log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
+          // 即使 repo 未变化，仍部署 CLI 内置资源（确保 CLI 升级后新版本 agent/rules 生效）
+          if (!options.dryRun) {
+            const cfg = await loadTeamConfig(localConfig.repo.localPath);
+            if (cfg) {
+              const skipRecall = !isRecallEnabled(localConfig, cfg);
+              try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig, { skipRecall }); } catch {}
+              try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig, { skipRecall }); } catch {}
+              try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { reportingOnly, skipRecall }); } catch {}
+              // Also refresh the CLAUDE.md recall block so a CLI upgrade that ships
+              // a new block reaches CLAUDE.md even when the repo HEAD is unchanged.
+              await injectRecallBlockIntoTools(cfg, localConfig, scopeLabel);
+            }
           }
+          return;
         }
-        return;
+
+        log.debug(`[${scopeLabel}] Repo unchanged; resource target set changed, syncing`);
       }
     } catch {
       // If rev check fails, proceed with full sync
@@ -429,7 +476,11 @@ async function pullForScope(
       let tagIncluded: ResourceItem[] = [];
       if (hasActiveTagSubscriptions) {
         const tagResult = filterByTags(allTeamSkills, tagsConfig, subscribedTags, 'skills');
-        tagIncluded = tagResult.included;
+        const subscribedTagSet = new Set(subscribedTags);
+        tagIncluded = tagResult.included.filter((item) => {
+          const itemTags = tagsConfig.skills[item.name];
+          return itemTags?.some((tag) => subscribedTagSet.has(tag));
+        });
         skippedByTags = tagResult.skipped.length;
       }
 
@@ -540,11 +591,20 @@ async function pullForScope(
         if (!await ResourceHandler.isToolInstalled(dir, baseDir)) continue;
         if (isAgentDisabled(localConfig, tool)) continue;
 
+        // Rules carry a per-tool extension (Cursor uses `.mdc`), and Cursor dirs
+        // may still hold a `.md` copy from the layout that predates it, so a
+        // tombstoned rule is cleaned up under every extension it may wear.
+        const extensions = type === 'rules'
+          ? [...new Set([ruleFileExtensionForTool(tool), '.md'])]
+          : [ext];
+
         for (const name of tombstones) {
-          const localPath = path.join(baseDir, dir, ext ? `${name}${ext}` : name);
-          if (await pathExists(localPath)) {
-            await remove(localPath);
-            log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);
+          for (const extension of extensions) {
+            const localPath = path.join(baseDir, dir, extension ? `${name}${extension}` : name);
+            if (await pathExists(localPath)) {
+              await remove(localPath);
+              log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);
+            }
           }
         }
       }
@@ -554,7 +614,7 @@ async function pullForScope(
       await cleanupInactiveNamespaceSkills(
         freshConfig,
         localConfig,
-        roleContext.activeSkillNames,
+        desiredSkillNames ?? roleContext.activeSkillNames,
         roleContext.inactiveSkillNames,
       );
     }
@@ -811,6 +871,8 @@ async function pullForScope(
         state[revisionField] = null;
       }
     }
+    state[targetsField] = currentTargets
+      ?? await getInstalledResourceTargets(freshConfig, localConfig);
     await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
   }
 

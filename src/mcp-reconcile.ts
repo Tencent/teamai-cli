@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
 import type {
@@ -223,7 +224,7 @@ export async function resolveMcpTargets(
 
 // ─── JSON target I/O ─────────────────────────────────────────
 
-interface JsonDoc {
+export interface JsonDoc {
   data: Record<string, unknown>;
   servers: Record<string, unknown>;
 }
@@ -233,7 +234,7 @@ interface JsonDoc {
  * parsed — we abandon the injection rather than risk clobbering a file we do
  * not understand (it may hold the user's OAuth session).
  */
-async function readJsonDoc(file: string, serverKey: string): Promise<JsonDoc | null> {
+export async function readJsonDoc(file: string, serverKey: string): Promise<JsonDoc | null> {
   if (!await pathExists(file)) return { data: {}, servers: {} };
   const raw = await readFileSafe(file);
   if (raw === null) return null;
@@ -303,6 +304,16 @@ export async function reconcileMcpForConfig(
 
   const sharing = getMcpSharing(teamConfig);
   const removeAll = options.removeAll === true;
+
+  // HTTP-mode teams have no repo tree: team MCP servers are delivered through
+  // the local-agent install_mcp channel and recorded in the same
+  // managed-mcp.json this function prunes against. Running the desired-set
+  // reconcile here would see an always-empty desired set and delete every
+  // HTTP-installed server on each session-start sync. Skip it — the explicit
+  // removeAll teardown (teamai uninstall) must still run.
+  if (localConfig.repo.kind === 'http' && !removeAll) {
+    return { changes, wrote };
+  }
 
   const teamDefs = removeAll ? [] : await parseTeamMcpServers(localConfig.repo.localPath);
   if (!removeAll && teamDefs.length > 0 && !sharing.autoApply) {
@@ -514,4 +525,13 @@ async function applyCodex(
   await fse.chmod(tmp, 0o600);
   await fse.rename(tmp, target.file);
   return true;
+}
+
+export async function writeCodexAtomic(file: string, content: string): Promise<void> {
+  await fse.ensureDir(path.dirname(file));
+  const suffix = crypto.randomBytes(6).toString('hex');
+  const tmp = `${file}.${process.pid}.${suffix}.tmp`;
+  await fse.writeFile(tmp, content, 'utf-8');
+  await fse.chmod(tmp, 0o600);
+  await fse.rename(tmp, file);
 }

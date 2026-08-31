@@ -3,6 +3,12 @@ import { autoDetectInit, saveLocalConfigForScope } from './config.js';
 import { log } from './utils/logger.js';
 import { readFileSafe, writeFile, remove, pathExists } from './utils/fs.js';
 import { ResourceHandler } from './resources/base.js';
+import {
+  ALL_SUPPORTED_TOOLS,
+  agentFileExtensionForTool,
+  type ToolName,
+} from './resources/agent-format.js';
+import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { RECALL_DEPENDENT_SKILLS } from './builtin-skills.js';
 import {
   resolveBaseDir,
@@ -21,19 +27,30 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     // Remove recall rule file
     if (toolPath.rules) {
-      const ruleFile = path.join(baseDir, toolPath.rules, 'teamai-recall.md');
-      if (await pathExists(ruleFile)) {
-        await remove(ruleFile);
-        log.debug(`Removed recall rule from ${tool}`);
+      // Cursor's copy is `.mdc`; older layouts also left a `.md` there.
+      const extensions = new Set<string>([ruleFileExtensionForTool(tool), '.md']);
+      for (const extension of extensions) {
+        const ruleFile = path.join(baseDir, toolPath.rules, `teamai-recall${extension}`);
+        if (await pathExists(ruleFile)) {
+          await remove(ruleFile);
+          log.debug(`Removed recall rule from ${tool}`);
+        }
       }
     }
 
     // Remove recall agent file
     if (toolPath.agents) {
-      const agentFile = path.join(baseDir, toolPath.agents, 'teamai-recall.md');
-      if (await pathExists(agentFile)) {
-        await remove(agentFile);
-        log.debug(`Removed recall agent from ${tool}`);
+      const agentsDir = path.join(baseDir, toolPath.agents);
+      const extensions = new Set<string>(['.md']);
+      if ((ALL_SUPPORTED_TOOLS as string[]).includes(tool)) {
+        extensions.add(agentFileExtensionForTool(tool as ToolName));
+      }
+      for (const extension of extensions) {
+        const agentFile = path.join(agentsDir, `teamai-recall${extension}`);
+        if (await pathExists(agentFile)) {
+          await remove(agentFile);
+          log.debug(`Removed recall agent from ${tool}`);
+        }
       }
     }
 

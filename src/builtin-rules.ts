@@ -2,6 +2,8 @@ import path from 'node:path';
 import { ensureDir, writeFile, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { ResourceHandler } from './resources/base.js';
+import { ruleFileExtensionForTool, usesCursorMdcRules } from './resources/rule-format.js';
+import { teamRuleToCursorMdc } from './resources/cursor-mdc.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
 import fs from 'node:fs/promises';
@@ -72,21 +74,39 @@ export async function deployBuiltinRules(
         try {
             await ensureDir(rulesDir);
 
-            // Deploy current built-in rules
+            // Deploy current built-in rules. Cursor only reads `.cursor/rules/*.mdc`
+            // — a plain `.md` there is silently ignored — so its copy carries the
+            // `.mdc` extension and derived frontmatter, same as team rules.
+            const ext = ruleFileExtensionForTool(tool);
             for (const rule of builtinRules) {
-                const destFile = path.join(rulesDir, `${rule.name}.md`);
-                await writeFile(destFile, rule.content);
+                const destFile = path.join(rulesDir, `${rule.name}${ext}`);
+                const content = usesCursorMdcRules(tool)
+                    ? teamRuleToCursorMdc(rule.content)
+                    : rule.content;
+                await writeFile(destFile, content);
                 log.debug(`Deployed built-in rule ${rule.name} → ${tool}`);
+
+                // Drop the `.md` copy an older layout left in a Cursor rules dir.
+                if (ext !== '.md') {
+                    try {
+                        await fs.unlink(path.join(rulesDir, `${rule.name}.md`));
+                        log.debug(`Removed legacy .md built-in rule ${rule.name} from ${tool}`);
+                    } catch {
+                        // File doesn't exist — that's fine
+                    }
+                }
             }
 
-            // Clean up legacy rules no longer deployed
+            // Clean up legacy rules no longer deployed (both extensions)
             for (const legacyName of LEGACY_RULE_NAMES) {
-                const legacyFile = path.join(rulesDir, `${legacyName}.md`);
-                try {
-                    await fs.unlink(legacyFile);
-                    log.debug(`Removed legacy built-in rule ${legacyName} from ${tool}`);
-                } catch {
-                    // File doesn't exist — that's fine
+                for (const legacyExt of new Set<string>([ext, '.md'])) {
+                    const legacyFile = path.join(rulesDir, `${legacyName}${legacyExt}`);
+                    try {
+                        await fs.unlink(legacyFile);
+                        log.debug(`Removed legacy built-in rule ${legacyName} from ${tool}`);
+                    } catch {
+                        // File doesn't exist — that's fine
+                    }
                 }
             }
 

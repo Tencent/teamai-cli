@@ -10,6 +10,13 @@ export { extractCodeFacts } from '../code-knowledge/code-extractors.js';
 export type { CodeFact, CodeFactKind, CodeEvidenceType } from '../code-knowledge/code-extractors.js';
 
 export { buildCodeGraph } from '../code-knowledge/code-graph.js';
+export {
+  extractStructuralGraphAsFacts,
+  astAvailable,
+  mergeCodeFacts,
+  formatAstStatsSummary,
+} from '../code-knowledge/ast/index.js';
+export type { StructuralGraphResult, AstExtractionGap } from '../code-knowledge/ast/index.js';
 
 export { detectCodeIncrementalChanges } from '../code-knowledge/code-incremental.js';
 

@@ -287,7 +287,9 @@ scope: 'user',
     await handler.pullItem(item, teamConfig, localConfig);
 
     expect(await fse.pathExists(path.join(homeDir, '.claude/rules/test-rule.md'))).toBe(true);
-    expect(await fse.pathExists(path.join(homeDir, '.cursor/rules/test-rule.md'))).toBe(true);
+    // Cursor rules must be written as `.mdc` (a plain `.md` there is ignored by Cursor).
+    expect(await fse.pathExists(path.join(homeDir, '.cursor/rules/test-rule.mdc'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.cursor/rules/test-rule.md'))).toBe(false);
   });
 });
 
@@ -529,5 +531,45 @@ describe('deployBuiltinSkills — skip uninstalled tools', () => {
     // Written to the user-scope path, NOT the project-scope .opencode/skills.
     expect(await fse.pathExists(path.join(homeDir, '.config/opencode/skills/team-wiki-codebase/SKILL.md'))).toBe(true);
     expect(await fse.pathExists(path.join(homeDir, '.opencode'))).toBe(false);
+  });
+
+  it('should still deploy team-wiki-codebase when recall is disabled (skipRecall)', async () => {
+    const { deployBuiltinSkills } = await import('../builtin-skills.js');
+
+    const teamConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        claude: { skills: '.claude/skills' },
+      },
+    };
+
+    const localConfig = {
+      repo: { localPath: path.join(tmpDir, 'repo'), remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto' as const,
+      additionalRoles: [],
+      scope: 'user' as const,
+    };
+
+    const deployed = await deployBuiltinSkills(teamConfig, localConfig, { skipRecall: true });
+
+    expect(deployed).toBeGreaterThan(0);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills/team-wiki-codebase/SKILL.md'))).toBe(true);
+    const wikiEnrichFile = path.join(
+      homeDir,
+      '.claude/skills/team-wiki-codebase/references/methodology/phase3-ai-enhancement.md',
+    );
+    expect(await fse.pathExists(wikiEnrichFile)).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills/teamai-share-learnings/SKILL.md'))).toBe(false);
   });
 });

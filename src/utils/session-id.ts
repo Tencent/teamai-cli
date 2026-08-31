@@ -6,6 +6,8 @@
  * fallback logic.
  */
 
+import { resolveHookCwd } from './hook-cwd.js';
+
 export interface DeriveSessionIdOptions {
     /** When true, include the working directory in the PID fallback. */
     includeCwd?: boolean;
@@ -33,7 +35,7 @@ export function deriveSessionId(
 
     const ppid = process.ppid ?? process.pid;
     if (options.includeCwd) {
-        const cwd = typeof data.cwd === 'string' ? data.cwd : process.cwd();
+        const cwd = resolveHookCwd(data) ?? process.cwd();
         return `pid-${ppid}-${cwd}`;
     }
 

@@ -3,6 +3,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { log } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { resolveHookCwd } from './utils/hook-cwd.js';
 import { ensureDir } from './utils/fs.js';
 import { resolveMonitorPid } from './pid-monitor.js';
 import { normalizeToolName } from './utils/tool-names.js';
@@ -622,7 +623,7 @@ export async function parseHookEvent(
   }
 
   const sessionId = deriveSessionId(hookData, { includeCwd: true });
-  const cwd = typeof hookData.cwd === 'string' ? hookData.cwd : undefined;
+  const cwd = resolveHookCwd(hookData);
 
   const event: DashboardEvent = {
     type: eventType,
