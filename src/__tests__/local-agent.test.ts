@@ -428,6 +428,67 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
       process.stdout.write = origWrite;
     }
   });
+
+  it('session_start with unbound workspace emits stdout hint instead of blocking on TTY prompt', async () => {
+    process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
+    await setupConfig();
+    const projectDir = path.join(tmpDir, 'session-start-project');
+    await fse.ensureDir(projectDir);
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+
+    // Guarantee non-TTY so askViaTty returns null immediately (no /dev/tty open).
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/api/projects/mine')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          projects: [
+            { id: 100, name: 'alpha' },
+            { id: 200, name: 'beta' },
+          ],
+        }));
+      }
+      return new Response(JSON.stringify({ ok: true }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const stdoutChunks: string[] = [];
+    const origWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string | Buffer) => {
+      stdoutChunks.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+      // Assertion 1: call resolves without hanging (no /dev/tty readline block).
+      const promise = reportAndSyncLocalAgent({
+        cwd: projectDir,
+        tool: 'claude',
+        event: {
+          type: 'session_start',
+          timestamp: new Date().toISOString(),
+          sessionId: TEST_SESSION_ID,
+          tool: 'claude',
+        },
+      });
+      await expect(promise).resolves.not.toThrow();
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    const output = stdoutChunks.join('');
+    // Assertion 2: stdout contains hookSpecificOutput (the ensureWorkspaceBinding fallback path).
+    expect(output).toContain('hookSpecificOutput');
+
+    // Assertion 3: additionalContext carries the unbound-workspace hint keywords.
+    const parsed = JSON.parse(output.trim().split('\n').find((l) => l.includes('hookSpecificOutput'))!);
+    const ctx = parsed.hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain('当前工作区尚未绑定项目');
+    expect(ctx).toContain('teamai bind-project');
+  });
 });
 
 describe('local-agent: security — install command hardening', () => {

@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import readline from 'node:readline';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fse from 'fs-extra';
@@ -895,33 +894,18 @@ export async function runPluginReconcileWorker(): Promise<void> {
 }
 
 async function askViaTty(prompt: string): Promise<string | null> {
+  // Only prompt on a real interactive terminal (e.g. the user running
+  // `teamai bind-project` directly). In non-interactive contexts such as an
+  // IDE-invoked hook, stdin is piped; opening /dev/tty there succeeds when the
+  // host GUI keeps a controlling terminal, and readline then blocks forever
+  // waiting for input that never comes — hanging the hook until the host's
+  // timeout and stalling the IDE. Callers fall back to injecting a stdout
+  // binding hint when this returns null, so degrade to that instead.
   if (process.stdin.isTTY) {
     const { askQuestion } = await import('./utils/prompt.js');
     return askQuestion(prompt, '');
   }
-
-  if (process.platform === 'win32') return null;
-
-  let fd: number | null = null;
-  let input: fs.ReadStream | null = null;
-  let output: fs.WriteStream | null = null;
-  let rl: readline.Interface | null = null;
-  try {
-    fd = fs.openSync('/dev/tty', 'r+');
-    input = fs.createReadStream('', { fd, autoClose: false });
-    output = fs.createWriteStream('', { fd, autoClose: false });
-    rl = readline.createInterface({ input, output });
-    return await new Promise<string>((resolve) => {
-      rl!.question(prompt, (answer) => resolve(answer.trim()));
-    });
-  } catch {
-    return null;
-  } finally {
-    rl?.close();
-    input?.destroy();
-    output?.destroy();
-    if (fd !== null) try { fs.closeSync(fd); } catch {}
-  }
+  return null;
 }
 
 async function promptForProjectBinding(
