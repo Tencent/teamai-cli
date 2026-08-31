@@ -194,13 +194,65 @@ export async function commitPaths(
   return true;
 }
 
+/**
+ * Pull the latest changes from origin into a local team-repo clone.
+ *
+ * Non-destructive by default:
+ *   Layer 1: fast-forward-only pull (--ff-only). Succeeds when the local branch
+ *     is behind or already up to date with origin, without touching unrelated
+ *     uncommitted files.
+ *   Layer 2: if ff-only fails (diverged / ahead / no tracking) AND the repo is a
+ *     dedicated clone root, realign to origin/<branch> via fetch + hard reset.
+ *     On a non-dedicated path (e.g. a business-repo subdir in single-repo mode)
+ *     a hard reset would wipe the user's working tree, so we re-throw the
+ *     original error instead of resetting.
+ * Before any hard reset we log.warn if it would discard local commits or
+ * uncommitted changes, so the loss is never silent. A failed fetch is re-thrown
+ * so the caller surfaces the real network/auth cause.
+ */
 export async function pullRepo(localPath: string): Promise<string> {
   const git = createGit(localPath);
-  const result = await git.pull();
-  if (result.summary.changes === 0 && result.summary.insertions === 0 && result.summary.deletions === 0) {
-    return 'already up to date';
+  const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+
+  try {
+    const result = await git.pull(['--ff-only']);
+    if (result.summary.changes === 0 && result.summary.insertions === 0 && result.summary.deletions === 0) {
+      return 'already up to date';
+    }
+    return `${result.summary.changes} file(s) changed`;
+  } catch (err) {
+    // ff-only failed. A hard reset to origin is the only recovery, but it is
+    // destructive — only safe on a dedicated team-repo clone. On a business-repo
+    // subdir it would bubble up to the user's repo, so bail and surface the cause.
+    const dedicated = await isDedicatedRepoRoot(localPath);
+    if (!dedicated) {
+      throw err;
+    }
+    const reason = err instanceof Error ? err.message : String(err);
+    log.debug(`ff-only pull failed (${branch}), attempting fetch + hard reset: ${reason}`);
+    await git.fetch(['origin', branch]);
+
+    let ahead = 0;
+    try {
+      const out = (await git.raw(['rev-list', '--count', `origin/${branch}..HEAD`])).trim();
+      ahead = Number.parseInt(out, 10) || 0;
+    } catch {
+      // best-effort count; proceed with the reset regardless
+    }
+    const status = await git.status();
+    // `reset --hard` discards tracked changes (and ahead commits) but leaves
+    // untracked files in place, so count tracked changes only — every changed
+    // path appears once in status.files; subtract the untracked (not_added) ones.
+    const dirtyCount = status.files.length - status.not_added.length;
+    if (ahead > 0 || dirtyCount > 0) {
+      log.warn(
+        `Team repo diverged from origin/${branch}; realigning discards `
+        + `${ahead} local commit(s) and ${dirtyCount} uncommitted change(s).`,
+      );
+    }
+    await git.reset(['--hard', `origin/${branch}`]);
+    return 'reset to origin (diverged)';
   }
-  return `${result.summary.changes} file(s) changed`;
 }
 
 /**
@@ -270,6 +322,39 @@ export async function pushRepoDirectly(localPath: string, message: string, files
   // Use --set-upstream for first push on repos initialized from empty remotes
   const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
   await git.push(['-u', 'origin', branch]);
+}
+
+/**
+ * Push the branch holding a just-copied learning file to origin and confirm it
+ * landed. Unlike pushRepoDirectly (whose push is skipped when nothing is newly
+ * staged), this always pushes whatever commits the branch is ahead by — covering
+ * a learning that a prior failed contribute already committed but never pushed —
+ * and reports success only once origin/<branch> actually contains it.
+ *
+ * @param repoPath - Dedicated team-repo clone root (never a business-repo subdir).
+ * @param filename - Learning file name under `learnings/`.
+ * @param message - Commit message used when the file is newly staged.
+ * @returns True when, after the push, the local branch is no longer ahead of
+ *   origin/<branch> (the learning is confirmed on the remote). False when it is
+ *   still ahead. Throws if the push itself fails (offline) so the caller keeps
+ *   its durable backup.
+ */
+export async function pushLearningToOrigin(
+  repoPath: string,
+  filename: string,
+  message: string,
+): Promise<boolean> {
+  const git = createGit(repoPath);
+  await git.add([`learnings/${filename}`]);
+  const status = await git.status();
+  if (status.staged.length > 0) {
+    await git.commit(message);
+  }
+  const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+  await git.push(['origin', branch]);
+  await git.fetch(['origin', branch]);
+  const ahead = (await git.raw(['rev-list', '--count', `origin/${branch}..HEAD`])).trim();
+  return ahead === '0' || ahead === '';
 }
 
 /**
@@ -597,7 +682,7 @@ export async function resetToCleanMaster(git: SimpleGit, localPath?: string): Pr
   }
   if (branch !== defaultBranch) {
     log.debug(`Switching from stale branch '${branch}' back to ${defaultBranch}`);
-    await git.checkout(defaultBranch);
+    await switchToDefaultBranch(git, defaultBranch);
   }
 }
 

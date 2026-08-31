@@ -17,6 +17,9 @@ const mockGit = {
   clean: vi.fn(),
   merge: vi.fn(),
   diff: vi.fn().mockResolvedValue('+some real content change\n'),
+  pull: vi.fn(),
+  fetch: vi.fn(),
+  raw: vi.fn(),
 };
 
 vi.mock('simple-git', () => ({
@@ -37,6 +40,8 @@ vi.mock('node:fs', () => ({
   },
 }));
 
+vi.mock('node:fs/promises', () => ({ realpath: vi.fn(async (p: string) => p) }));
+
 vi.mock('../utils/logger.js', () => ({
   log: {
     info: vi.fn(),
@@ -48,7 +53,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials } from '../utils/git.js';
+import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pushLearningToOrigin } from '../utils/git.js';
 import fse from 'fs-extra';
 
 describe('generateBranchName', () => {
@@ -530,5 +535,163 @@ describe('redactGitCredentials', () => {
   it('leaves scp-form ssh URLs untouched', () => {
     expect(redactGitCredentials('git@github.com:org/repo.git'))
       .toBe('git@github.com:org/repo.git');
+  });
+});
+
+describe('pullRepo', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // resetToCleanMaster needs status + revparse (default branch detection)
+    mockGit.status.mockResolvedValue({
+      conflicted: [],
+      modified: [],
+      not_added: [],
+      created: [],
+      staged: [],
+      files: [],
+    });
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'HEAD') return 'main';
+      if (a[0] === '--show-toplevel') return '/tmp/x';
+      return '';
+    });
+    mockGit.raw.mockResolvedValue('0\n');
+    mockGit.fetch.mockResolvedValue(undefined);
+    mockGit.reset.mockResolvedValue(undefined);
+  });
+
+  it('returns "already up to date" when pull reports no changes', async () => {
+    mockGit.pull.mockResolvedValue({ summary: { changes: 0, insertions: 0, deletions: 0 } });
+    const result = await pullRepo('/tmp/x');
+    expect(result).toBe('already up to date');
+    expect(mockGit.pull).toHaveBeenCalledWith(['--ff-only']);
+    expect(mockGit.reset).not.toHaveBeenCalledWith(expect.arrayContaining(['--hard']));
+  });
+
+  it('returns changed file count on fast-forward success', async () => {
+    mockGit.pull.mockResolvedValue({ summary: { changes: 2, insertions: 5, deletions: 1 } });
+    const result = await pullRepo('/tmp/x');
+    expect(result).toBe('2 file(s) changed');
+  });
+
+  it('falls back to hard reset when pull rejects (diverged)', async () => {
+    mockGit.pull.mockRejectedValue(new Error('Not possible to fast-forward, aborting.'));
+    const result = await pullRepo('/tmp/x');
+    expect(result).toBe('reset to origin (diverged)');
+    expect(mockGit.fetch).toHaveBeenCalledWith(['origin', 'main']);
+    expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'origin/main']);
+  });
+
+  it('re-throws when fetch fails after diverged pull', async () => {
+    mockGit.pull.mockRejectedValue(new Error('Not possible to fast-forward, aborting.'));
+    mockGit.fetch.mockRejectedValue(new Error('could not read from remote'));
+    await expect(pullRepo('/tmp/x')).rejects.toThrow('could not read from remote');
+    expect(mockGit.reset).not.toHaveBeenCalledWith(expect.arrayContaining(['--hard']));
+  });
+
+  it('surfaces the real auth/network error when fetch also fails', async () => {
+    vi.clearAllMocks();
+    mockGit.status.mockResolvedValue({
+      conflicted: [],
+      modified: [],
+      not_added: [],
+      created: [],
+      staged: [],
+      files: [],
+    });
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'HEAD') return 'main';
+      if (a[0] === '--show-toplevel') return '/tmp/x';
+      return '';
+    });
+    mockGit.raw.mockResolvedValue('0\n');
+    mockGit.pull.mockRejectedValue(new Error('Authentication failed for origin'));
+    mockGit.fetch.mockRejectedValue(new Error('Authentication failed for origin'));
+    await expect(pullRepo('/tmp/x')).rejects.toThrow('Authentication failed');
+    expect(mockGit.reset).not.toHaveBeenCalled();
+  });
+
+  it('re-throws without hard reset when repo is not a dedicated clone', async () => {
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'HEAD') return 'main';
+      if (a[0] === '--show-toplevel') return '/tmp';
+      return '';
+    });
+    mockGit.pull.mockRejectedValue(new Error('Not possible to fast-forward, aborting.'));
+    await expect(pullRepo('/tmp/x')).rejects.toThrow('fast-forward');
+    expect(mockGit.fetch).not.toHaveBeenCalled();
+    expect(mockGit.reset).not.toHaveBeenCalledWith(expect.arrayContaining(['--hard']));
+  });
+
+  it('warns when the realign discards local commits', async () => {
+    mockGit.pull.mockRejectedValue(new Error('Not possible to fast-forward, aborting.'));
+    mockGit.raw.mockResolvedValue('2\n');
+    const result = await pullRepo('/tmp/x');
+    expect(result).toBe('reset to origin (diverged)');
+    const { log: testLog } = await import('../utils/logger.js');
+    expect(testLog.warn).toHaveBeenCalled();
+  });
+});
+
+describe('pushLearningToOrigin', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGit.add.mockResolvedValue(undefined);
+    mockGit.commit.mockResolvedValue(undefined);
+    mockGit.push.mockResolvedValue(undefined);
+    mockGit.fetch.mockResolvedValue(undefined);
+  });
+
+  it('pushes even when nothing is newly staged (core P1 regression: file already committed)', async () => {
+    // Simulates: prior failed contribute committed the file but never pushed.
+    // git.add produces no new staged entry, so staged === [].
+    // pushLearningToOrigin must still call git.push to send that ahead commit.
+    mockGit.status.mockResolvedValue({ staged: [] });
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'HEAD') return 'main';
+      return '';
+    });
+    mockGit.raw.mockResolvedValue('0\n');
+
+    const result = await pushLearningToOrigin('/repo', 'foo.md', 'commit msg');
+
+    expect(mockGit.commit).not.toHaveBeenCalled();
+    expect(mockGit.push).toHaveBeenCalledWith(['origin', 'main']);
+    expect(result).toBe(true);
+  });
+
+  it('returns false when branch is still ahead of origin after push', async () => {
+    mockGit.status.mockResolvedValue({ staged: [] });
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'HEAD') return 'main';
+      return '';
+    });
+    mockGit.raw.mockResolvedValue('1\n');
+
+    const result = await pushLearningToOrigin('/repo', 'foo.md', 'commit msg');
+
+    expect(mockGit.push).toHaveBeenCalledWith(['origin', 'main']);
+    expect(result).toBe(false);
+  });
+
+  it('commits then pushes when the file is newly staged', async () => {
+    mockGit.status.mockResolvedValue({ staged: ['learnings/bar.md'] });
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'HEAD') return 'main';
+      return '';
+    });
+    mockGit.raw.mockResolvedValue('0\n');
+
+    const result = await pushLearningToOrigin('/repo', 'bar.md', 'commit msg');
+
+    expect(mockGit.commit).toHaveBeenCalledWith('commit msg');
+    expect(mockGit.push).toHaveBeenCalledWith(['origin', 'main']);
+    expect(result).toBe(true);
   });
 });

@@ -8,6 +8,7 @@ import { withTimeout } from './utils/async.js';
 import { ensureDir, pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { markContributed } from './contribute-check.js';
+import { savePendingLearning } from './utils/pending-learnings.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { LEARNINGS_LOCAL_DIR, getTeamaiHome } from './types.js';
 
@@ -196,13 +197,12 @@ export async function contribute(
 
     log.info(`Your session knowledge has been shared with the team.`);
   } catch (e) {
-    // 确保文件至少被本地 commit（防止 resetToCleanMaster 丢失数据）
+    // Push failed (usually offline). Persist the learning OUTSIDE the clone so a
+    // later pullRepo realign (reset --hard) cannot discard it, and retry on the
+    // next pull.
     try {
-      const { execFileSync } = await import('node:child_process');
-      const commitMsg = `[teamai] Contribute: ${options.title || 'session knowledge'}`;
-      execFileSync('git', ['add', `learnings/${filename}`], { cwd: repoPath, timeout: 5000 });
-      execFileSync('git', ['commit', '-m', commitMsg], { cwd: repoPath, timeout: 5000 });
-      pushSpin.warn(`已保存到本地（推送失败: ${(e as Error).message}）。下次 pull 时将自动重试推送。`);
+      await savePendingLearning(repoPath, filename, content);
+      pushSpin.warn(`Saved locally (push failed: ${(e as Error).message}). Will retry on the next pull.`);
     } catch {
       pushSpin.fail(`Contribution failed: ${(e as Error).message}`);
       log.info('You can retry with: teamai contribute --file <path>');

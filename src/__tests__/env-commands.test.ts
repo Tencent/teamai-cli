@@ -36,6 +36,7 @@ vi.mock('../utils/logger.js', () => ({
 import { envList, envAdd, envRemove } from '../env-commands.js';
 import { requireInit } from '../config.js';
 import { log } from '../utils/logger.js';
+import { pullRepo } from '../utils/git.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 describe('env-commands', () => {
@@ -292,6 +293,51 @@ scope: 'user',
       expect(parsed.variables).toHaveLength(1);
 
       expect(log.info).toHaveBeenCalledWith(expect.stringContaining('[dry-run]'));
+    });
+  });
+
+  // self-mode guard
+
+  describe('self-mode: pullRepo is skipped', () => {
+    beforeEach(() => {
+      vi.mocked(pullRepo).mockClear();
+    });
+
+    it('envAdd does not call pullRepo in self mode but still writes env.yaml', async () => {
+      const selfConfig: LocalConfig = {
+        ...localConfig,
+        repo: { ...localConfig.repo, kind: 'self' },
+      };
+      vi.mocked(requireInit).mockResolvedValue({ localConfig: selfConfig, teamConfig });
+
+      await envAdd('SELF_VAR', 'self_value', {});
+
+      expect(pullRepo).not.toHaveBeenCalled();
+      const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
+      const content = await fse.readFile(envYamlPath, 'utf-8');
+      const parsed = YAML.parse(content);
+      expect(parsed.variables).toHaveLength(1);
+      expect(parsed.variables[0]).toEqual({ key: 'SELF_VAR', value: 'self_value' });
+    });
+
+    it('envRemove does not call pullRepo in self mode', async () => {
+      const selfConfig: LocalConfig = {
+        ...localConfig,
+        repo: { ...localConfig.repo, kind: 'self' },
+      };
+      vi.mocked(requireInit).mockResolvedValue({ localConfig: selfConfig, teamConfig });
+
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({ variables: [{ key: 'SELF_VAR', value: 'x' }] }),
+      );
+
+      await envRemove('SELF_VAR', {});
+
+      expect(pullRepo).not.toHaveBeenCalled();
+      const content = await fse.readFile(path.join(repoPath, 'env', 'env.yaml'), 'utf-8');
+      const parsed = YAML.parse(content);
+      expect(parsed.variables).toHaveLength(0);
     });
   });
 });

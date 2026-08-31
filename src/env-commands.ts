@@ -6,6 +6,7 @@ import { ensureDir, readFileSafe, writeFile, pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { EnvHandler, maskEnvValue } from './resources/env.js';
 import type { GlobalOptions } from './types.js';
+import { isSelfMode } from './types.js';
 
 const envHandler = new EnvHandler();
 
@@ -62,12 +63,14 @@ export async function envAdd(
   const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
 
   // Pull latest
-  const pullSpin = spinner('Pulling latest...').start();
-  try {
-    await pullRepo(repoPath);
-    pullSpin.succeed('Up to date');
-  } catch (e) {
-    pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+  if (!isSelfMode(localConfig)) {
+    const pullSpin = spinner('Pulling latest...').start();
+    try {
+      await pullRepo(repoPath);
+      pullSpin.succeed('Up to date');
+    } catch (e) {
+      pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+    }
   }
 
   // Parse existing env.yaml (or create new)
@@ -115,12 +118,14 @@ export async function envRemove(key: string, options: GlobalOptions): Promise<vo
   const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
 
   // Pull latest
-  const pullSpin = spinner('Pulling latest...').start();
-  try {
-    await pullRepo(repoPath);
-    pullSpin.succeed('Up to date');
-  } catch (e) {
-    pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+  if (!isSelfMode(localConfig)) {
+    const pullSpin = spinner('Pulling latest...').start();
+    try {
+      await pullRepo(repoPath);
+      pullSpin.succeed('Up to date');
+    } catch (e) {
+      pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+    }
   }
 
   if (!await pathExists(envYamlPath)) {

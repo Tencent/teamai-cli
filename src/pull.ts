@@ -3,6 +3,7 @@ import fse from 'fs-extra';
 import matter from 'gray-matter';
 import { requireInit, loadState, saveState, detectProjectConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
 import { pullRepo, getHeadRev } from './utils/git.js';
+import { flushPendingLearnings } from './utils/pending-learnings.js';
 import { log, spinner } from './utils/logger.js';
 import { pathExists, remove, listFiles, listDirs, readFileSafe } from './utils/fs.js';
 import { injectClaudeMdSection } from './utils/claudemd.js';
@@ -88,6 +89,15 @@ async function refreshTeamRepo(
   }
 
   const result = await pullRepo(localConfig.repo.localPath);
+
+  // Retry any learnings whose push previously failed (see savePendingLearning).
+  // Best-effort: never let a flush error block the pull.
+  try {
+    await flushPendingLearnings(localConfig.repo.localPath, localConfig.username);
+  } catch (e) {
+    log.debug(`pending-learnings flush skipped: ${(e as Error).message}`);
+  }
+
   let version: string | null = null;
   try {
     version = await getHeadRev(localConfig.repo.localPath);
