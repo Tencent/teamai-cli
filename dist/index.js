@@ -9,6 +9,23 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
+// src/utils/home.ts
+import os from "os";
+function getUserHome() {
+  const home = process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || os.homedir();
+  if (!home) {
+    throw new Error(
+      "Unable to determine the user home directory: none of HOME, USERPROFILE, or os.homedir() is available. Set HOME explicitly before running teamai."
+    );
+  }
+  return home;
+}
+var init_home = __esm({
+  "src/utils/home.ts"() {
+    "use strict";
+  }
+});
+
 // src/utils/logger.ts
 var logger_exports = {};
 __export(logger_exports, {
@@ -27,7 +44,7 @@ import chalk from "chalk";
 import ora from "ora";
 function getLogFilePath() {
   if (!_logFilePath) {
-    _logFilePath = path.join(process.env.HOME ?? "/tmp", ".teamai", "debug.log");
+    _logFilePath = path.join(getUserHome(), ".teamai", "debug.log");
   }
   return _logFilePath;
 }
@@ -41,8 +58,8 @@ function ensureLogDir() {
 }
 function maybeRotate() {
   try {
-    const stat6 = fs.statSync(getLogFilePath());
-    if (stat6.size >= MAX_LOG_BYTES) {
+    const stat8 = fs.statSync(getLogFilePath());
+    if (stat8.size >= MAX_LOG_BYTES) {
       fs.renameSync(getLogFilePath(), getLogFilePath() + ".1");
     }
   } catch {
@@ -98,6 +115,7 @@ var verboseEnabled, silentMode, stderrMode, MAX_LOG_BYTES, _logFilePath, _dirEns
 var init_logger = __esm({
   "src/utils/logger.ts"() {
     "use strict";
+    init_home();
     verboseEnabled = false;
     silentMode = false;
     stderrMode = false;
@@ -132,17 +150,6 @@ var init_logger = __esm({
         writeInfoLine(chalk.dim(msg));
       }
     };
-  }
-});
-
-// src/utils/home.ts
-import os from "os";
-function getUserHome() {
-  return process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || os.homedir();
-}
-var init_home = __esm({
-  "src/utils/home.ts"() {
-    "use strict";
   }
 });
 
@@ -182,6 +189,8 @@ __export(types_exports, {
   LEARNINGS_LOCAL_DIR: () => LEARNINGS_LOCAL_DIR,
   LocalConfigSchema: () => LocalConfigSchema,
   MemberConfigSchema: () => MemberConfigSchema,
+  PendingPushItemSchema: () => PendingPushItemSchema,
+  PendingPushSchema: () => PendingPushSchema,
   REPORTS_BRANCH: () => REPORTS_BRANCH,
   REPORTS_LOCK_FILENAME: () => REPORTS_LOCK_FILENAME,
   REPORTS_WORKTREE_DIRNAME: () => REPORTS_WORKTREE_DIRNAME,
@@ -244,6 +253,10 @@ __export(types_exports, {
   isSelfMode: () => isSelfMode,
   managedMcpManifestPath: () => managedMcpManifestPath,
   resolveBaseDir: () => resolveBaseDir,
+  resolveCoAuthor: () => resolveCoAuthor,
+  resolveHookScope: () => resolveHookScope,
+  resolveLegacyProjectHookScope: () => resolveLegacyProjectHookScope,
+  scopedToolPaths: () => scopedToolPaths,
   totalTokens: () => totalTokens
 });
 import { z } from "zod";
@@ -269,6 +282,10 @@ function getRecallSharing(config) {
 function isRecallEnabled(localConfig, teamConfig) {
   if (localConfig.recallEnabled !== void 0) return localConfig.recallEnabled;
   return getRecallSharing(teamConfig).enabled;
+}
+function resolveCoAuthor(localConfig, teamConfig) {
+  if (localConfig.coAuthorEnabled !== void 0) return localConfig.coAuthorEnabled;
+  return teamConfig.sharing?.coAuthor?.enabled;
 }
 function managedMcpManifestPath(scope, projectRoot) {
   return path2.join(getTeamaiHome(scope, projectRoot), "managed-mcp.json");
@@ -301,6 +318,24 @@ function resolveBaseDir(localConfig) {
 }
 function isAgentDisabled(localConfig, tool) {
   return localConfig.disabledAgents?.includes(tool) ?? false;
+}
+function scopedToolPaths(teamConfig, localConfig) {
+  if (localConfig.scope !== "user") return teamConfig.toolPaths;
+  const out = {};
+  for (const [tool, paths] of Object.entries(teamConfig.toolPaths)) {
+    const us = paths.userScope;
+    if (!us) {
+      out[tool] = paths;
+      continue;
+    }
+    out[tool] = {
+      ...paths,
+      ...us.skills !== void 0 ? { skills: us.skills } : {},
+      ...us.rules !== void 0 ? { rules: us.rules } : {},
+      ...us.agents !== void 0 ? { agents: us.agents } : {}
+    };
+  }
+  return out;
 }
 function isSelfMode(localConfig) {
   return localConfig.repo.kind === "self";
@@ -338,13 +373,32 @@ function getStatePath(scope, projectRoot) {
 function getManagedHooksPath(scope, projectRoot) {
   return path2.join(getTeamaiHome(scope, projectRoot), "managed-hooks.json");
 }
+function resolveHookScope(localConfig) {
+  const selfWithRoot = isSelfMode(localConfig) && !!localConfig.projectRoot;
+  if (localConfig.scope === "project" && !selfWithRoot) {
+    return { baseDir: getUserHome(), manifestPath: getManagedHooksPath("user") };
+  }
+  return {
+    baseDir: resolveBaseDir(localConfig),
+    manifestPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot)
+  };
+}
+function resolveLegacyProjectHookScope(localConfig) {
+  if (localConfig.scope !== "project" || !localConfig.projectRoot) return null;
+  if (isSelfMode(localConfig)) return null;
+  if (path2.resolve(localConfig.projectRoot) === path2.resolve(getUserHome())) return null;
+  return {
+    baseDir: localConfig.projectRoot,
+    manifestPath: getManagedHooksPath("project", localConfig.projectRoot)
+  };
+}
 function getPushignorePath() {
   return path2.join(getUserHome(), ".teamai", "pushignore");
 }
 function areTeamHooksDisabled() {
   return process.env.TEAMAI_HOOKS_DISABLED === "1" || process.env.TEAMAI_HOOKS_DISABLED === "true";
 }
-var ToolPathsSchema, ScopeEnum, SharingConfigSchema, SourceConfigSchema, SOURCE_PULL_TTL_MS, TEAMAI_SOURCES_DIR, TeamaiConfigSchema, MemberConfigSchema, LocalConfigSchema, StateSchema, TEAMAI_HOME, TEAMAI_CONFIG_PATH, TEAMAI_STATE_PATH, TEAMAI_TOKEN_PATH, TEAMAI_UPDATE_LOCK_PATH, RESOURCE_TYPES, TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, TEAMAI_ENV_START, TEAMAI_ENV_END, TEAMAI_CULTURE_START, TEAMAI_CULTURE_END, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END, TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END, SKILL_NAME_REGEX, TEAMAI_USAGE_PATH, TEAMAI_KNOWN_SKILLS_PATH, TEAMAI_PUSHIGNORE_PATH, TEAMAI_SESSIONS_DIR, SESSION_LOGS_LOCAL_DIR, UsageEventSchema, DASHBOARD_EVENTS_DIR, DASHBOARD_EVENTS_PATH, DASHBOARD_DEFAULT_PORT, DASHBOARD_IDLE_TIMEOUT_MS, DASHBOARD_STALE_TIMEOUT_MS, DASHBOARD_COMPACTION_THRESHOLD, DASHBOARD_STOPPED_DISPLAY_MS, DASHBOARD_PID_CHECK_INTERVAL_MS, CORRECTION_WINDOW_MS, CORRECTION_KEYWORDS, INTERVENTION_SCAN_MAX_BYTES, TRANSCRIPT_INTERRUPT_PREFIX, TRANSCRIPT_SYSTEM_PREFIXES, TRANSCRIPT_REJECT_MARKERS, CONTRIBUTE_BASE_THRESHOLD, CONTRIBUTE_SMART_THRESHOLD, CONTRIBUTE_INTERRUPT_WEIGHT, CONTRIBUTE_REJECT_WEIGHT, CONTRIBUTE_CORRECTION_WEIGHT, CONTRIBUTE_TOOLERROR_TIERS, CONTRIBUTE_SKILL_BONUS, CONTRIBUTE_DIVERSITY_BONUS_MAX, CONTRIBUTE_FASTPATH_TTL_MS, CONTRIBUTE_KNOWLEDGE_GAP_BONUS, CONTRIBUTE_LOW_QUALITY_BONUS, CONTRIBUTE_LOW_QUALITY_THRESHOLD, CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT, CONTRIBUTE_SESSIONS_DIR, SEARCH_INDEX_VERSION, LEARNINGS_LOCAL_DIR, SEARCH_INDEX_PATH, VOTES_LOCAL_DIR, CultureCompanySchema, CultureTeamSchema, CultureFrontmatterSchema, REPORTS_BRANCH, REPORTS_WORKTREE_DIRNAME, KNOWLEDGE_WORKTREE_DIRNAME, REPORTS_LOCK_FILENAME, BOOTSTRAP_LOCK_FILENAME;
+var ToolPathsSchema, ScopeEnum, SharingConfigSchema, SourceConfigSchema, SOURCE_PULL_TTL_MS, TEAMAI_SOURCES_DIR, TeamaiConfigSchema, MemberConfigSchema, LocalConfigSchema, PendingPushItemSchema, PendingPushSchema, StateSchema, TEAMAI_HOME, TEAMAI_CONFIG_PATH, TEAMAI_STATE_PATH, TEAMAI_TOKEN_PATH, TEAMAI_UPDATE_LOCK_PATH, RESOURCE_TYPES, TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, TEAMAI_ENV_START, TEAMAI_ENV_END, TEAMAI_CULTURE_START, TEAMAI_CULTURE_END, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END, TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END, SKILL_NAME_REGEX, TEAMAI_USAGE_PATH, TEAMAI_KNOWN_SKILLS_PATH, TEAMAI_PUSHIGNORE_PATH, TEAMAI_SESSIONS_DIR, SESSION_LOGS_LOCAL_DIR, UsageEventSchema, DASHBOARD_EVENTS_DIR, DASHBOARD_EVENTS_PATH, DASHBOARD_DEFAULT_PORT, DASHBOARD_IDLE_TIMEOUT_MS, DASHBOARD_STALE_TIMEOUT_MS, DASHBOARD_COMPACTION_THRESHOLD, DASHBOARD_STOPPED_DISPLAY_MS, DASHBOARD_PID_CHECK_INTERVAL_MS, CORRECTION_WINDOW_MS, CORRECTION_KEYWORDS, INTERVENTION_SCAN_MAX_BYTES, TRANSCRIPT_INTERRUPT_PREFIX, TRANSCRIPT_SYSTEM_PREFIXES, TRANSCRIPT_REJECT_MARKERS, CONTRIBUTE_BASE_THRESHOLD, CONTRIBUTE_SMART_THRESHOLD, CONTRIBUTE_INTERRUPT_WEIGHT, CONTRIBUTE_REJECT_WEIGHT, CONTRIBUTE_CORRECTION_WEIGHT, CONTRIBUTE_TOOLERROR_TIERS, CONTRIBUTE_SKILL_BONUS, CONTRIBUTE_DIVERSITY_BONUS_MAX, CONTRIBUTE_FASTPATH_TTL_MS, CONTRIBUTE_KNOWLEDGE_GAP_BONUS, CONTRIBUTE_LOW_QUALITY_BONUS, CONTRIBUTE_LOW_QUALITY_THRESHOLD, CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT, CONTRIBUTE_SESSIONS_DIR, SEARCH_INDEX_VERSION, LEARNINGS_LOCAL_DIR, SEARCH_INDEX_PATH, VOTES_LOCAL_DIR, CultureCompanySchema, CultureTeamSchema, CultureFrontmatterSchema, REPORTS_BRANCH, REPORTS_WORKTREE_DIRNAME, KNOWLEDGE_WORKTREE_DIRNAME, REPORTS_LOCK_FILENAME, BOOTSTRAP_LOCK_FILENAME;
 var init_types = __esm({
   "src/types.ts"() {
     "use strict";
@@ -363,7 +417,20 @@ var init_types = __esm({
        * the tool has no project-scope MCP support at all. Claude Code shows why the two
        * cannot share a value: user scope is ~/.claude.json but project scope is
        * <root>/.mcp.json, breaking the usual `.<tool>/<file>` convention. */
-      mcpProject: z.string().optional()
+      mcpProject: z.string().optional(),
+      /**
+       * User-scope path overrides for skills/rules/agents. Most tools store their
+       * user-scope resources at the same `.<tool>/<resource>` relative path as their
+       * project-scope ones, so this is omitted. OpenCode is the exception: its
+       * project-scope config lives at `<root>/.opencode/...` but its user-scope config
+       * lives at `~/.config/opencode/...`, a different prefix entirely. When set and the
+       * active scope is `user`, these values replace the base skills/rules/agents paths.
+       */
+      userScope: z.object({
+        skills: z.string().optional(),
+        rules: z.string().optional(),
+        agents: z.string().optional()
+      }).optional()
     });
     ScopeEnum = z.enum(["user", "project"]);
     SharingConfigSchema = z.object({
@@ -389,6 +456,15 @@ var init_types = __esm({
       }).optional(),
       recall: z.object({
         enabled: z.boolean().default(false)
+      }).optional(),
+      // Optional (not .default) so existing TeamaiConfig literals stay valid, AND so
+      // "team has no opinion" (block absent) stays distinct from "team says off"
+      // (enabled: false). Only the former is a no-op; see resolveCoAuthor().
+      coAuthor: z.object({
+        /** Team default: whether members' AI-tool commits carry a Co-Authored-By /
+         *  attribution trailer. false = strip it (clean history). Users can override
+         *  per-machine via `coAuthorEnabled` in local config. */
+        enabled: z.boolean().default(true)
       }).optional(),
       // Optional (not .default) so existing TeamaiConfig literals stay valid; use
       // getMcpSharing() for the defaulted view.
@@ -458,7 +534,25 @@ var init_types = __esm({
         codebuddy: { skills: ".codebuddy/skills", rules: ".codebuddy/rules", settings: ".codebuddy/settings.json", claudemd: ".codebuddy/CODEBUDDY.md", agents: ".codebuddy/agents", mcp: ".codebuddy/mcp.json", mcpProject: ".codebuddy/mcp.json" },
         openclaw: { skills: ".openclaw/skills", rules: ".openclaw/rules", claudemd: ".openclaw/workspace/AGENTS.md" },
         hermes: { skills: ".hermes/skills", claudemd: "AGENTS.md" },
-        workbuddy: { skills: ".workbuddy/skills", rules: ".workbuddy/rules", settings: ".workbuddy/settings.json", claudemd: "AGENTS.md", mcp: ".workbuddy/mcp.json", mcpProject: ".workbuddy/mcp.json" }
+        // DeepSeek Harness: skills synced to ~/.dsh/skills, which its skill-filesystem
+        // provider scans as user-dsh root (rank 400). dsh discovers both directory
+        // bundles (<name>/SKILL.md) and flat Markdown files there natively.
+        dsh: { skills: ".dsh/skills" },
+        workbuddy: { skills: ".workbuddy/skills", rules: ".workbuddy/rules", settings: ".workbuddy/settings.json", claudemd: "AGENTS.md", mcp: ".workbuddy/mcp.json", mcpProject: ".workbuddy/mcp.json" },
+        // OpenCode reads project config from <root>/.opencode/ but user config from
+        // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
+        // read natively from .claude/skills, but we write .opencode/skills so an
+        // OpenCode-only user (no Claude) still gets them. Rules land in .opencode/rules
+        // but must be activated via the `instructions` glob in opencode.json (OpenCode
+        // does not auto-scan a rules dir). MCP shares opencode.json under the `mcp` key.
+        opencode: {
+          skills: ".opencode/skills",
+          rules: ".opencode/rules",
+          agents: ".opencode/agents",
+          mcp: ".config/opencode/opencode.json",
+          mcpProject: "opencode.json",
+          userScope: { skills: ".config/opencode/skills", rules: ".config/opencode/rules", agents: ".config/opencode/agents" }
+        }
       })
     });
     MemberConfigSchema = z.object({
@@ -516,21 +610,55 @@ var init_types = __esm({
       excludedSkills: z.array(z.string()).optional(),
       /** User-level override for recall feature. When set, takes precedence over team config. */
       recallEnabled: z.boolean().optional(),
+      /** Per-machine override for the co-author trailer in AI-tool commits. When set,
+       *  takes precedence over the team `sharing.coAuthor` default. Undefined means
+       *  "defer to the team" (see resolveCoAuthor). */
+      coAuthorEnabled: z.boolean().optional(),
       /** When set, only inject hooks into these agents. Additive across multiple init --agent runs. */
       enabledAgents: z.array(z.string()).optional(),
       /** Tools explicitly excluded from all teamai sync (set by `uninstall --agent`). Removed again by `init --agent`. */
       disabledAgents: z.array(z.string()).optional()
+    });
+    PendingPushItemSchema = z.object({
+      type: z.string(),
+      name: z.string(),
+      /** Destination path inside the team repo, e.g. "skills/js/hello-skill". */
+      relativePath: z.string(),
+      /** Skill namespace chosen at push time, reapplied when the PR is updated. */
+      namespace: z.string().optional()
+    });
+    PendingPushSchema = z.object({
+      branch: z.string(),
+      prUrl: z.string().nullable().default(null),
+      createdAt: z.string(),
+      items: z.array(PendingPushItemSchema).default([])
     });
     StateSchema = z.object({
       lastPush: z.string().nullable().default(null),
       lastPull: z.string().nullable().default(null),
       /** Git commit hash (short) of the team repo at the time of last successful pull. */
       lastPullRev: z.string().nullable().default(null),
+      /** Installed, enabled tool targets that completed the last full pull. */
+      lastPullTargets: z.array(z.string()).optional(),
       /** Git commit hash synchronized through the safe user-resource inheritance channel. */
       lastInheritedPullRev: z.string().nullable().optional(),
+      /** Tool targets that completed the last inherited user-resource pull. */
+      lastInheritedPullTargets: z.array(z.string()).optional(),
       pushedRules: z.array(z.string()).default([]),
       pushedSkills: z.array(z.string()).default([]),
       pushedEnvVars: z.array(z.string()).default([]),
+      /** Push branches whose PR is still open — see PendingPushSchema. */
+      pendingPushes: z.array(PendingPushSchema).default([]),
+      /**
+       * Last co-author intent teamai actually wrote to tool configs, per tool file.
+       * Key = absolute config path, value = the boolean we last applied. Lets the
+       * reconciler stay idempotent (skip a no-op write) while honoring write-only
+       * semantics: we never remove a trailer field, we only stop touching it when
+       * neither user nor team has an opinion. Absent key = never managed by teamai.
+       * Optional (like lastPullTargets) so historical state.json and hand-built State
+       * literals stay valid; the reconciler treats absent as an empty map.
+       */
+      coAuthorManaged: z.record(z.string(), z.boolean()).optional(),
       lastUpdateCheck: z.string().nullable().default(null),
       availableUpdate: z.string().nullable().default(null)
     });
@@ -736,8 +864,8 @@ async function writeJsonAtomic(filePath, data) {
 async function copyDir(src, dest) {
   const destExpanded = expandHome(dest);
   try {
-    const stat6 = await fse.lstat(destExpanded);
-    if (stat6.isSymbolicLink()) {
+    const stat8 = await fse.lstat(destExpanded);
+    if (stat8.isSymbolicLink()) {
       await fse.remove(destExpanded);
     }
   } catch {
@@ -791,8 +919,8 @@ async function remove(p) {
 }
 async function getFileMtime(filePath) {
   try {
-    const stat6 = await fse.stat(expandHome(filePath));
-    return stat6.mtimeMs;
+    const stat8 = await fse.stat(expandHome(filePath));
+    return stat8.mtimeMs;
   } catch {
     return 0;
   }
@@ -806,8 +934,8 @@ async function getDirLatestMtime(dirPath) {
     if (isIgnored(entry.name)) continue;
     const fullPath = path3.join(expanded, entry.name);
     if (entry.isFile()) {
-      const stat6 = await fse.stat(fullPath);
-      if (stat6.mtimeMs > latest) latest = stat6.mtimeMs;
+      const stat8 = await fse.stat(fullPath);
+      if (stat8.mtimeMs > latest) latest = stat8.mtimeMs;
     } else if (entry.isDirectory()) {
       const sub = await getDirLatestMtime(fullPath);
       if (sub > latest) latest = sub;
@@ -1060,13 +1188,100 @@ var init_read_only = __esm({
   }
 });
 
+// src/utils/pending-push.ts
+function itemKey(type, name) {
+  return `${type}:${name}`;
+}
+async function prunePendingPushes(repoPath, pending, scanned) {
+  const scannedKeys = new Set(scanned.map((i) => itemKey(i.type, i.name)));
+  const kept = [];
+  const entries = pending ?? [];
+  for (const entry of entries) {
+    const stillScanned = entry.items.some((i) => scannedKeys.has(itemKey(i.type, i.name)));
+    if (!stillScanned) {
+      log.debug(`Dropping pending push ${entry.branch}: resources no longer pending`);
+      continue;
+    }
+    const exists3 = await remoteBranchExists(repoPath, entry.branch);
+    if (exists3 === false) {
+      log.debug(`Dropping pending push ${entry.branch}: branch gone from origin`);
+      continue;
+    }
+    kept.push(entry);
+  }
+  return { pending: kept, changed: kept.length !== entries.length };
+}
+function findPendingForItem(pending, item) {
+  const key = itemKey(item.type, item.name);
+  return (pending ?? []).filter(
+    (entry) => entry.items.some((i) => itemKey(i.type, i.name) === key)
+  );
+}
+function planPushGroups(selected, pending) {
+  const byKey = new Map(selected.map((i) => [itemKey(i.type, i.name), i]));
+  const claimed = /* @__PURE__ */ new Set();
+  const groups = [];
+  const newestFirst = [...pending ?? []].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  for (const entry of newestFirst) {
+    const keys = entry.items.map((i) => itemKey(i.type, i.name));
+    if (keys.length === 0) continue;
+    if (!keys.every((k) => byKey.has(k) && !claimed.has(k))) continue;
+    for (const k of keys) claimed.add(k);
+    groups.push({ items: keys.map((k) => byKey.get(k)), reuse: entry });
+  }
+  const rest = selected.filter((i) => !claimed.has(itemKey(i.type, i.name)));
+  if (rest.length > 0) groups.push({ items: rest });
+  return groups;
+}
+function partiallySelectedEntries(selected, pending) {
+  const selectedKeys = new Set(selected.map((i) => itemKey(i.type, i.name)));
+  return (pending ?? []).filter((entry) => {
+    const keys = entry.items.map((i) => itemKey(i.type, i.name));
+    const hits = keys.filter((k) => selectedKeys.has(k)).length;
+    return hits > 0 && hits < keys.length;
+  });
+}
+function pendingNamespaceFor(entry, item) {
+  const key = itemKey(item.type, item.name);
+  return entry.items.find((i) => itemKey(i.type, i.name) === key)?.namespace;
+}
+function recordPendingPush(state, entry) {
+  state.pendingPushes = [
+    ...(state.pendingPushes ?? []).filter((e) => e.branch !== entry.branch),
+    entry
+  ];
+}
+function toPendingItems(items) {
+  return items.map((i) => ({
+    type: i.type,
+    name: i.name,
+    relativePath: i.relativePath,
+    namespace: i.namespace
+  }));
+}
+var init_pending_push = __esm({
+  "src/utils/pending-push.ts"() {
+    "use strict";
+    init_git2();
+    init_logger();
+  }
+});
+
 // src/resources/base.ts
 import path5 from "path";
+function toolInstallRoot(toolPath) {
+  const segments = toolPath.split("/");
+  if (segments[0] === ".config" && segments.length > 1) {
+    return `${segments[0]}/${segments[1]}`;
+  }
+  return segments[0] ?? toolPath;
+}
 var TOMBSTONE_FILE, ResourceHandler;
 var init_base = __esm({
   "src/resources/base.ts"() {
     "use strict";
     init_fs();
+    init_home();
     TOMBSTONE_FILE = ".removed";
     ResourceHandler = class {
       /**
@@ -1076,8 +1291,8 @@ var init_base = __esm({
        * @param baseDir - Override base directory (defaults to HOME). Used for project scope.
        */
       static async isToolInstalled(toolPath, baseDir) {
-        const base = baseDir ?? process.env.HOME ?? "";
-        const toolRoot = path5.join(base, toolPath.split("/")[0]);
+        const base = baseDir ?? getUserHome();
+        const toolRoot = path5.join(base, toolInstallRoot(toolPath));
         return pathExists(toolRoot);
       }
       /**
@@ -1120,6 +1335,106 @@ var init_base = __esm({
   }
 });
 
+// src/resources/rule-format.ts
+function ruleFileExtensionForTool(tool) {
+  return tool === "cursor" ? ".mdc" : ".md";
+}
+function usesCursorMdcRules(tool) {
+  return tool === "cursor";
+}
+function ruleStemFromFilename(filename) {
+  if (filename.endsWith(".mdc")) return filename.slice(0, -".mdc".length);
+  if (filename.endsWith(".md")) return filename.slice(0, -".md".length);
+  return null;
+}
+function isLegacyCursorRuleFile(tool, filename) {
+  return usesCursorMdcRules(tool) && filename.endsWith(".md");
+}
+var init_rule_format = __esm({
+  "src/resources/rule-format.ts"() {
+    "use strict";
+  }
+});
+
+// src/resources/cursor-mdc.ts
+import matter from "gray-matter";
+function splitFrontmatter(raw) {
+  const m = raw.match(FRONTMATTER_RE);
+  return m ? { block: m[0], body: raw.slice(m[0].length) } : { block: "", body: raw };
+}
+function extractBody(raw) {
+  return splitFrontmatter(raw).body;
+}
+function quoteYamlUnsafeScalars(block) {
+  return block.split(/\r?\n/).map((line) => {
+    const m = line.match(/^(\s*(?:-\s+|[A-Za-z0-9_.-]+:[ \t]+))([*&][^"']*)$/);
+    return m ? `${m[1]}"${m[2].trimEnd()}"` : line;
+  }).join("\n");
+}
+function parseFrontmatterData(raw) {
+  try {
+    return matter(raw).data;
+  } catch {
+  }
+  const { block } = splitFrontmatter(raw);
+  if (!block) return {};
+  const quoted = quoteYamlUnsafeScalars(block);
+  try {
+    return matter(quoted.endsWith("\n") ? quoted : `${quoted}
+`).data;
+  } catch {
+    return {};
+  }
+}
+function normalizeBody(body) {
+  return body.replace(/^\s+/, "").replace(/\s+$/, "");
+}
+function deriveCursorFrontmatter(data) {
+  const rawPaths = data.paths ?? data.globs;
+  const patterns = Array.isArray(rawPaths) ? rawPaths.map((p) => String(p).trim()).filter(Boolean) : typeof rawPaths === "string" && rawPaths.trim() !== "" ? rawPaths.split(",").map((p) => p.trim()).filter(Boolean) : [];
+  if (patterns.length > 0) {
+    return { globs: patterns.join(", "), alwaysApply: false };
+  }
+  return { alwaysApply: true };
+}
+function renderCursorMdc(fm, body) {
+  const lines = ["---"];
+  if (fm.globs !== void 0) lines.push(`globs: ${JSON.stringify(fm.globs)}`);
+  lines.push(`alwaysApply: ${fm.alwaysApply}`);
+  lines.push("---");
+  return `${lines.join("\n")}
+
+${normalizeBody(body)}
+`;
+}
+function teamRuleToCursorMdc(rawTeamRule) {
+  const data = parseFrontmatterData(rawTeamRule);
+  return renderCursorMdc(deriveCursorFrontmatter(data), extractBody(rawTeamRule));
+}
+function mergeCursorBodyIntoTeamMd(rawCursorMdc, existingTeamMd) {
+  const body = normalizeBody(extractBody(rawCursorMdc));
+  if (existingTeamMd === null) return `${body}
+`;
+  if (normalizeBody(extractBody(existingTeamMd)) === body) return existingTeamMd;
+  const { block } = splitFrontmatter(existingTeamMd);
+  if (!block) return `${body}
+`;
+  return `${block.endsWith("\n") ? block : `${block}
+`}
+${body}
+`;
+}
+function cursorMdcBodyEqualsTeamMd(rawCursorMdc, rawTeamRule) {
+  return normalizeBody(extractBody(rawCursorMdc)) === normalizeBody(extractBody(rawTeamRule));
+}
+var FRONTMATTER_RE;
+var init_cursor_mdc = __esm({
+  "src/resources/cursor-mdc.ts"() {
+    "use strict";
+    FRONTMATTER_RE = /^﻿?---\r?\n(?:[\s\S]*?\r?\n)?---\r?\n?/;
+  }
+});
+
 // src/builtin-rules.ts
 var builtin_rules_exports = {};
 __export(builtin_rules_exports, {
@@ -1131,12 +1446,12 @@ __export(builtin_rules_exports, {
 import path6 from "path";
 import fs2 from "fs/promises";
 async function deployBuiltinRules(teamConfig, localConfig, options) {
-  const baseDir = localConfig ? resolveBaseDir(localConfig) : process.env.HOME ?? "";
+  const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
   let deployed = 0;
   const builtinRules = [
     { name: "teamai-recall", content: TEAMAI_RECALL_RULE_CONTENT }
   ].filter((r) => !(options?.skipRecall && r.name === "teamai-recall"));
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
     if (!toolPath.rules) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) {
       log.debug(`Skipping built-in rules for ${tool}: tool not installed`);
@@ -1147,17 +1462,28 @@ async function deployBuiltinRules(teamConfig, localConfig, options) {
     if (!await pathExists(rulesDir)) continue;
     try {
       await ensureDir(rulesDir);
+      const ext = ruleFileExtensionForTool(tool);
       for (const rule of builtinRules) {
-        const destFile = path6.join(rulesDir, `${rule.name}.md`);
-        await writeFile(destFile, rule.content);
+        const destFile = path6.join(rulesDir, `${rule.name}${ext}`);
+        const content = usesCursorMdcRules(tool) ? teamRuleToCursorMdc(rule.content) : rule.content;
+        await writeFile(destFile, content);
         log.debug(`Deployed built-in rule ${rule.name} \u2192 ${tool}`);
+        if (ext !== ".md") {
+          try {
+            await fs2.unlink(path6.join(rulesDir, `${rule.name}.md`));
+            log.debug(`Removed legacy .md built-in rule ${rule.name} from ${tool}`);
+          } catch {
+          }
+        }
       }
       for (const legacyName of LEGACY_RULE_NAMES) {
-        const legacyFile = path6.join(rulesDir, `${legacyName}.md`);
-        try {
-          await fs2.unlink(legacyFile);
-          log.debug(`Removed legacy built-in rule ${legacyName} from ${tool}`);
-        } catch {
+        for (const legacyExt of /* @__PURE__ */ new Set([ext, ".md"])) {
+          const legacyFile = path6.join(rulesDir, `${legacyName}${legacyExt}`);
+          try {
+            await fs2.unlink(legacyFile);
+            log.debug(`Removed legacy built-in rule ${legacyName} from ${tool}`);
+          } catch {
+          }
         }
       }
       deployed++;
@@ -1174,7 +1500,10 @@ var init_builtin_rules = __esm({
     init_fs();
     init_logger();
     init_base();
+    init_rule_format();
+    init_cursor_mdc();
     init_types();
+    init_home();
     BUILTIN_RULE_NAMES = /* @__PURE__ */ new Set(["teamai-recall"]);
     LEGACY_RULE_NAMES = [];
     EXCLUDED_RULE_NAMES = /* @__PURE__ */ new Set([
@@ -1243,24 +1572,40 @@ async function syncTeamUpdatesToLocal(teamConfig, localConfig, lastPullRev) {
   await syncRulesToLocal(teamConfig, localConfig, repoPath, baseDir, lastPullRev);
   await syncSkillsToLocal(teamConfig, localConfig, repoPath, baseDir, lastPullRev);
 }
-async function syncRulesToLocal(teamConfig, _localConfig, repoPath, baseDir, lastPullRev) {
+async function syncRulesToLocal(teamConfig, localConfig, repoPath, baseDir, lastPullRev) {
   const teamRulesDir = path7.join(repoPath, "rules");
   if (!await pathExists(teamRulesDir)) return;
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.rules) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
     const rulesDir = path7.join(baseDir, toolPath.rules);
     if (!await pathExists(rulesDir)) continue;
+    const ext = ruleFileExtensionForTool(tool);
+    const isCursor = usesCursorMdcRules(tool);
     const files = await listFilesRecursive(rulesDir);
     for (const file of files) {
-      if (!file.endsWith(".md")) continue;
-      const name = file.replace(/\.md$/, "");
+      if (!file.endsWith(ext)) continue;
+      const name = file.slice(0, -ext.length);
       if (EXCLUDED_RULE_NAMES.has(name)) continue;
       const localFilePath = path7.join(rulesDir, file);
-      const teamFilePath = path7.join(teamRulesDir, file);
+      const teamRelPath = `rules/${name}.md`;
+      const teamFilePath = path7.join(teamRulesDir, `${name}.md`);
       if (!await pathExists(teamFilePath)) continue;
+      if (isCursor) {
+        const localRaw = await readFileSafe(localFilePath);
+        const teamRaw = await readFileSafe(teamFilePath);
+        if (localRaw === null || teamRaw === null) continue;
+        if (cursorMdcBodyEqualsTeamMd(localRaw, teamRaw)) continue;
+        const oldContent2 = await getFileContentAtRev(repoPath, lastPullRev, teamRelPath);
+        if (oldContent2 === null) continue;
+        if (cursorMdcBodyEqualsTeamMd(localRaw, oldContent2.toString("utf-8"))) {
+          await writeFile(localFilePath, teamRuleToCursorMdc(teamRaw));
+          log.debug(`Pre-push sync: updated ${tool} rule ${name} to match team repo`);
+        }
+        continue;
+      }
       if (await fileContentEqual(localFilePath, teamFilePath)) continue;
-      const oldContent = await getFileContentAtRev(repoPath, lastPullRev, `rules/${file}`);
+      const oldContent = await getFileContentAtRev(repoPath, lastPullRev, teamRelPath);
       if (oldContent === null) continue;
       if (await fileContentEqualToBuffer(localFilePath, oldContent)) {
         await copyFile(teamFilePath, localFilePath);
@@ -1269,7 +1614,7 @@ async function syncRulesToLocal(teamConfig, _localConfig, repoPath, baseDir, las
     }
   }
 }
-async function syncSkillsToLocal(teamConfig, _localConfig, repoPath, baseDir, lastPullRev) {
+async function syncSkillsToLocal(teamConfig, localConfig, repoPath, baseDir, lastPullRev) {
   const teamSkillsDir = path7.join(repoPath, "skills");
   if (!await pathExists(teamSkillsDir)) return;
   const teamSkillPaths = /* @__PURE__ */ new Map();
@@ -1288,7 +1633,7 @@ async function syncSkillsToLocal(teamConfig, _localConfig, repoPath, baseDir, la
     }
   }
   const CONTRIBUTORS_FILE2 = "CONTRIBUTORS";
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.skills) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
     const skillsDir = path7.join(baseDir, toolPath.skills);
@@ -1343,6 +1688,8 @@ var init_pre_push_sync = __esm({
     init_fs();
     init_git2();
     init_base();
+    init_rule_format();
+    init_cursor_mdc();
     init_builtin_rules();
     init_logger();
   }
@@ -1389,10 +1736,10 @@ function tgitAuthHeaders(token, scheme) {
   }
   return { "PRIVATE-TOKEN": token };
 }
-async function tgitFetch(path108, init2) {
+async function tgitFetch(path116, init2) {
   const { token, scheme: resolvedScheme } = getTGitToken();
   const scheme = cachedScheme ?? resolvedScheme;
-  const url = `${TGIT_API_BASE}${path108}`;
+  const url = `${TGIT_API_BASE}${path116}`;
   const callerHeaders = { ...init2?.headers };
   const baseHeaders = { "Content-Type": "application/json", ...callerHeaders };
   const doFetch = (activeScheme) => fetch(url, {
@@ -1458,11 +1805,11 @@ function gfExec(args, options) {
 }
 function getGfPath() {
   try {
-    const stat6 = execSync(`test -x "${GF_BIN_PATH}" && echo ok`, {
+    const stat8 = execSync(`test -x "${GF_BIN_PATH}" && echo ok`, {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"]
     });
-    if (stat6.trim() === "ok") return GF_BIN_PATH;
+    if (stat8.trim() === "ok") return GF_BIN_PATH;
   } catch {
   }
   try {
@@ -1527,7 +1874,7 @@ async function ensureGfInstalled() {
 }
 function gfIsAuthenticated() {
   try {
-    const result = gfExec(["auth", "whoami"]);
+    const result = gfExec(["auth", "whoami"], { cwd: AUTH_CWD });
     return result.status === 0 && result.stdout.includes("\u5F53\u524D\u767B\u5F55\u7528\u6237");
   } catch {
     return false;
@@ -1535,7 +1882,7 @@ function gfIsAuthenticated() {
 }
 function gfAuthWhoami() {
   try {
-    const result = gfExec(["auth", "whoami"]);
+    const result = gfExec(["auth", "whoami"], { cwd: AUTH_CWD });
     if (result.status !== 0) return null;
     const output = result.stdout;
     const match = output.match(/当前登录用户[：:]\s*(\S+)/);
@@ -1546,7 +1893,7 @@ function gfAuthWhoami() {
 }
 function gfAuthLogin() {
   log.info("Starting gf authentication...");
-  const result = gfExec(["auth", "login"], { inheritStdio: true });
+  const result = gfExec(["auth", "login"], { inheritStdio: true, cwd: AUTH_CWD });
   if (result.status !== 0) {
     throw new Error("gf auth login failed. Please try again.");
   }
@@ -1664,7 +2011,7 @@ function gfMrCreate(opts) {
   }
   throw new Error(`gf mr create succeeded but returned unexpected output: ${output}`);
 }
-var GF_INSTALL_DIR, GF_BIN_PATH, GF_DOWNLOAD_BASE, RepoNotFoundError2;
+var GF_INSTALL_DIR, GF_BIN_PATH, GF_DOWNLOAD_BASE, AUTH_CWD, RepoNotFoundError2;
 var init_gf_cli = __esm({
   "src/providers/tgit/gf-cli.ts"() {
     "use strict";
@@ -1675,6 +2022,7 @@ var init_gf_cli = __esm({
     GF_INSTALL_DIR = path8.join(TEAMAI_HOME, "gf");
     GF_BIN_PATH = path8.join(GF_INSTALL_DIR, "gf", "bin", "gf");
     GF_DOWNLOAD_BASE = "http://mirrors.tencent.com/repository/generic/gongfeng-cli/files/channels/stable";
+    AUTH_CWD = os2.tmpdir();
     RepoNotFoundError2 = class extends Error {
       constructor(repo) {
         super(`Repo "${repo}" not found on TGit.`);
@@ -2749,6 +3097,76 @@ var init_repo_url3 = __esm({
   }
 });
 
+// src/utils/redact.ts
+function sanitizeGitUrl(text) {
+  return text.replace(/(https?:\/\/)[^/@\s]+@/gi, "$1***@");
+}
+function collectEnvSecrets(env = process.env) {
+  const secrets = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (typeof value !== "string" || value.length < MIN_ENV_VALUE_LENGTH) continue;
+    const upper = name.toUpperCase();
+    if (SECRET_KEY_HINTS.some((hint) => upper.includes(hint))) {
+      secrets[name] = value;
+    }
+  }
+  return secrets;
+}
+function redact(text, options = {}) {
+  if (!text) return text;
+  let out = text;
+  const envSecrets = options.envSecrets ?? {};
+  const entries = Object.entries(envSecrets).sort((a, b) => b[1].length - a[1].length);
+  for (const [label, value] of entries) {
+    if (value && out.includes(value)) {
+      out = out.split(value).join(PLACEHOLDER(label));
+    }
+  }
+  if (options.patterns !== false) {
+    for (const [label, pattern] of SECRET_PATTERNS) {
+      out = out.replace(pattern, () => PLACEHOLDER(label));
+    }
+    out = out.replace(KV_PATTERN, (_m, key, sep) => key + sep + PLACEHOLDER("kv"));
+    out = out.replace(BEARER_PATTERN, (_m, scheme) => scheme + PLACEHOLDER("authz"));
+    out = out.replace(
+      CONNECTION_STRING_PATTERN,
+      (_m, prefix, _pw, at) => prefix + PLACEHOLDER("conn") + at
+    );
+  }
+  return out;
+}
+function redactWithEnv(text, env = process.env) {
+  return redact(text, { envSecrets: collectEnvSecrets(env) });
+}
+var PLACEHOLDER, SECRET_KEY_HINTS, MIN_ENV_VALUE_LENGTH, SECRET_PATTERNS, KV_PATTERN, BEARER_PATTERN, CONNECTION_STRING_PATTERN;
+var init_redact = __esm({
+  "src/utils/redact.ts"() {
+    "use strict";
+    PLACEHOLDER = (label) => `<REDACTED:${label}>`;
+    SECRET_KEY_HINTS = ["TOKEN", "SECRET", "KEY", "PASSWORD", "PASSWD", "_PAT", "CREDENTIAL"];
+    MIN_ENV_VALUE_LENGTH = 8;
+    SECRET_PATTERNS = [
+      ["pem", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g],
+      ["anthropic", /\bsk-ant-[A-Za-z0-9_-]{20,}/g],
+      ["openai", /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/g],
+      ["gh_pat", /\bgithub_pat_[A-Za-z0-9_]{22,}/g],
+      ["gh_tok", /\bgh[pousr]_[A-Za-z0-9]{20,}/g],
+      ["aws", /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[0-9A-Z]{16}\b/g],
+      ["slack", /\bxox[baprs]-[A-Za-z0-9-]{10,}/g],
+      ["slackhook", /https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/]{20,}/g],
+      ["google", /\bAIza[0-9A-Za-z_-]{35}\b/g],
+      ["gcp_oauth", /\bya29\.[0-9A-Za-z_-]{20,}/g],
+      ["stripe", /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}/g],
+      ["jwt", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g],
+      ["sendgrid", /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g],
+      ["provider", /\b(?:xai-|gsk_|pplx-|sk-or-v1-|hf_|dop_v1_|glpat-|npm_|shpat_|tfp_|nvapi-|r8_)[A-Za-z0-9_-]{16,}/g]
+    ];
+    KV_PATTERN = /(secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|password|passwd|auth[_-]?token|private[_-]?key)(["']?\s*[:=]\s*["']?)([A-Za-z0-9._\-/+=]{16,})/gi;
+    BEARER_PATTERN = /\b(bearer\s+)([A-Za-z0-9._-]{16,})/gi;
+    CONNECTION_STRING_PATTERN = /([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s:/@]+:)([^\s/@]{6,})(@)/g;
+  }
+});
+
 // src/providers/gitlab/ssh-fallback.ts
 import { execFileSync } from "child_process";
 function sshHostFromBaseUrl(baseUrl) {
@@ -2882,14 +3300,21 @@ function cloneUrl(repo) {
   if (!token) {
     return sshCloneUrl(sshHostFromBaseUrl(gitlabBaseUrl()), repo);
   }
-  const url = new URL(gitlabBaseUrl());
-  url.username = "oauth2";
-  url.password = token;
-  const base = url.toString().replace(/\/+$/, "");
+  const base = gitlabBaseUrl().replace(/\/+$/, "");
   return `${base}/${repo}.git`;
 }
+function gitlabAuthHeaderArg(token) {
+  const encoded = Buffer.from(`oauth2:${token}`).toString("base64");
+  return `http.extraHeader=Authorization: Basic ${encoded}`;
+}
 function gitlabRepoClone(repo, localPath) {
-  const result = spawnSync4("git", ["clone", cloneUrl(repo), localPath], {
+  const token = getGitLabToken();
+  const args = [];
+  if (token) {
+    args.push("-c", gitlabAuthHeaderArg(token));
+  }
+  args.push("clone", cloneUrl(repo), localPath);
+  const result = spawnSync4("git", args, {
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],
     timeout: 12e4
@@ -2899,7 +3324,7 @@ function gitlabRepoClone(repo, localPath) {
   if (allOutput.includes("not found") || allOutput.includes("does not exist") || allOutput.includes("Repository not found") || allOutput.includes("could not be found")) {
     throw new GitLabRepoNotFoundError(repo);
   }
-  const sanitized = allOutput.replace(/oauth2:[^@]+@/g, "oauth2:***@");
+  const sanitized = sanitizeGitUrl(allOutput);
   throw new Error(`git clone failed: ${sanitized.trim()}`);
 }
 async function resolveNamespaceId(owner, token) {
@@ -2984,6 +3409,7 @@ var init_gitlab_api = __esm({
   "src/providers/gitlab/gitlab-api.ts"() {
     "use strict";
     init_repo_url3();
+    init_redact();
     init_ssh_fallback();
     GitLabRepoNotFoundError = class extends Error {
       constructor(repo) {
@@ -3080,15 +3506,28 @@ function parseGitLabMRUrl(url) {
   if (!match) {
     throw new Error(`Invalid GitLab MR URL: ${url}`);
   }
+  const scheme = match[1].toLowerCase();
+  const host = match[2];
   const projectPath = match[3];
   if (!projectPath.includes("/")) {
     throw new Error(`Invalid GitLab MR URL: ${url}`);
   }
+  if (!hostMatchesConfigured(host)) {
+    throw new Error(
+      `Refusing to fetch GitLab MR from "${host}": it does not match the configured GitLab instance "${GITLAB_HOST}". Set GITLAB_URL / TEAMAI_GITLAB_HOST to this instance if it is trusted.`
+    );
+  }
   return {
-    apiBase: `${match[1].toLowerCase()}://${match[2]}/api/v4`,
+    apiBase: `${scheme}://${host}/api/v4`,
     projectPath,
     mrIid: match[4]
   };
+}
+function normalizeHost(host) {
+  return host.trim().toLowerCase().replace(/^www\./, "");
+}
+function hostMatchesConfigured(urlHost) {
+  return normalizeHost(urlHost) === normalizeHost(GITLAB_HOST);
 }
 function authHeaders2(token) {
   return { "PRIVATE-TOKEN": token, "Accept": "application/json" };
@@ -3153,6 +3592,7 @@ var init_mr_fetch = __esm({
     "use strict";
     init_logger();
     init_gitlab_api();
+    init_repo_url3();
   }
 });
 
@@ -3258,76 +3698,6 @@ var init_gitlab = __esm({
   }
 });
 
-// src/utils/redact.ts
-function sanitizeGitUrl(text) {
-  return text.replace(/(https?:\/\/)[^/@\s]+@/gi, "$1***@");
-}
-function collectEnvSecrets(env = process.env) {
-  const secrets = {};
-  for (const [name, value] of Object.entries(env)) {
-    if (typeof value !== "string" || value.length < MIN_ENV_VALUE_LENGTH) continue;
-    const upper = name.toUpperCase();
-    if (SECRET_KEY_HINTS.some((hint) => upper.includes(hint))) {
-      secrets[name] = value;
-    }
-  }
-  return secrets;
-}
-function redact(text, options = {}) {
-  if (!text) return text;
-  let out = text;
-  const envSecrets = options.envSecrets ?? {};
-  const entries = Object.entries(envSecrets).sort((a, b) => b[1].length - a[1].length);
-  for (const [label, value] of entries) {
-    if (value && out.includes(value)) {
-      out = out.split(value).join(PLACEHOLDER(label));
-    }
-  }
-  if (options.patterns !== false) {
-    for (const [label, pattern] of SECRET_PATTERNS) {
-      out = out.replace(pattern, () => PLACEHOLDER(label));
-    }
-    out = out.replace(KV_PATTERN, (_m, key, sep) => key + sep + PLACEHOLDER("kv"));
-    out = out.replace(BEARER_PATTERN, (_m, scheme) => scheme + PLACEHOLDER("authz"));
-    out = out.replace(
-      CONNECTION_STRING_PATTERN,
-      (_m, prefix, _pw, at) => prefix + PLACEHOLDER("conn") + at
-    );
-  }
-  return out;
-}
-function redactWithEnv(text, env = process.env) {
-  return redact(text, { envSecrets: collectEnvSecrets(env) });
-}
-var PLACEHOLDER, SECRET_KEY_HINTS, MIN_ENV_VALUE_LENGTH, SECRET_PATTERNS, KV_PATTERN, BEARER_PATTERN, CONNECTION_STRING_PATTERN;
-var init_redact = __esm({
-  "src/utils/redact.ts"() {
-    "use strict";
-    PLACEHOLDER = (label) => `<REDACTED:${label}>`;
-    SECRET_KEY_HINTS = ["TOKEN", "SECRET", "KEY", "PASSWORD", "PASSWD", "_PAT", "CREDENTIAL"];
-    MIN_ENV_VALUE_LENGTH = 8;
-    SECRET_PATTERNS = [
-      ["pem", /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g],
-      ["anthropic", /\bsk-ant-[A-Za-z0-9_-]{20,}/g],
-      ["openai", /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}/g],
-      ["gh_pat", /\bgithub_pat_[A-Za-z0-9_]{22,}/g],
-      ["gh_tok", /\bgh[pousr]_[A-Za-z0-9]{20,}/g],
-      ["aws", /\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[0-9A-Z]{16}\b/g],
-      ["slack", /\bxox[baprs]-[A-Za-z0-9-]{10,}/g],
-      ["slackhook", /https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/]{20,}/g],
-      ["google", /\bAIza[0-9A-Za-z_-]{35}\b/g],
-      ["gcp_oauth", /\bya29\.[0-9A-Za-z_-]{20,}/g],
-      ["stripe", /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}/g],
-      ["jwt", /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g],
-      ["sendgrid", /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g],
-      ["provider", /\b(?:xai-|gsk_|pplx-|sk-or-v1-|hf_|dop_v1_|glpat-|npm_|shpat_|tfp_|nvapi-|r8_)[A-Za-z0-9_-]{16,}/g]
-    ];
-    KV_PATTERN = /(secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|password|passwd|auth[_-]?token|private[_-]?key)(["']?\s*[:=]\s*["']?)([A-Za-z0-9._\-/+=]{16,})/gi;
-    BEARER_PATTERN = /\b(bearer\s+)([A-Za-z0-9._-]{16,})/gi;
-    CONNECTION_STRING_PATTERN = /([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s:/@]+:)([^\s/@]{6,})(@)/g;
-  }
-});
-
 // src/providers/git/repo-url.ts
 function invalidRepoUrl(reason) {
   const detail = reason ? `: ${reason}` : "";
@@ -3382,6 +3752,11 @@ function parseGenericGitRepoInput(input) {
   const scpMatch = trimmed.match(/^([^@\s]+)@([^:\s]+):(.+)$/);
   if (scpMatch) {
     const [, user, host, rawPath] = scpMatch;
+    if (user.includes(":")) {
+      throw new Error(
+        "Invalid Git repo URL. Do not embed credentials in the URL; configure a Git credential helper or SSH key instead."
+      );
+    }
     const { owner, repo, fullPath } = parsePath(rawPath);
     return buildRepoInfo4(owner, repo, `${user}@${host}:${fullPath}.git`);
   }
@@ -3456,7 +3831,9 @@ var init_git = __esm({
         const result = spawnSync5("git", ["clone", "--", remoteUrl, localPath], {
           encoding: "utf-8",
           stdio: ["inherit", "pipe", "pipe"],
-          timeout: 12e4,
+          // Match the 180s default used by the shallow-clone path in clone.ts:
+          // large self-hosted repos over slow/VPN links need the extra headroom.
+          timeout: 18e4,
           maxBuffer: 10 * 1024 * 1024
         });
         if (result.error || result.status !== 0) {
@@ -3485,8 +3862,8 @@ var init_git = __esm({
 // src/package-info.ts
 import { createRequire } from "module";
 function loadPackageJson() {
-  const require3 = createRequire(import.meta.url);
-  return require3("../package.json");
+  const require5 = createRequire(import.meta.url);
+  return require5("../package.json");
 }
 function getCurrentVersion() {
   return loadPackageJson().version;
@@ -3675,9 +4052,9 @@ async function deployBuiltinSkills(teamConfig, localConfig, options) {
     }
   }
   if (skillNames.length === 0) return 0;
-  const baseDir = localConfig ? resolveBaseDir(localConfig) : process.env.HOME ?? "";
+  const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
   let deployed = 0;
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
     if (!toolPath.skills) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) {
       log.debug(`Skipping built-in skill deployment for ${tool}: tool not installed`);
@@ -3708,8 +4085,9 @@ var init_builtin_skills = __esm({
     init_types();
     init_base();
     init_skills();
+    init_home();
     BUILTIN_SKILL_NAMES = /* @__PURE__ */ new Set(["teamai-share-learnings", "team-wiki-codebase", "teamai-workflow", "teamai-import"]);
-    RECALL_DEPENDENT_SKILLS = /* @__PURE__ */ new Set(["teamai-share-learnings", "team-wiki-codebase"]);
+    RECALL_DEPENDENT_SKILLS = /* @__PURE__ */ new Set(["teamai-share-learnings"]);
   }
 });
 
@@ -3718,6 +4096,7 @@ var openclaw_hooks_exports = {};
 __export(openclaw_hooks_exports, {
   OPENCLAW_HOOK_DIR: () => OPENCLAW_HOOK_DIR,
   applyOpenClawAgentHook: () => applyOpenClawAgentHook,
+  enableOpenClawInternalHooks: () => enableOpenClawInternalHooks,
   injectOpenClawHooks: () => injectOpenClawHooks,
   removeOpenClawAgentHook: () => removeOpenClawAgentHook,
   removeOpenClawHooks: () => removeOpenClawHooks,
@@ -3729,7 +4108,7 @@ function resolveOpenClawHooksDir(tool) {
   if (tool === "openclaw" && process.env.OPENCLAW_STATE_DIR) {
     return path10.join(process.env.OPENCLAW_STATE_DIR, "hooks");
   }
-  const home = process.env.HOME ?? "";
+  const home = getUserHome();
   return path10.join(home, `.${tool}`, "hooks");
 }
 function buildHookMd(tool) {
@@ -3770,13 +4149,45 @@ export default async function handler(ctx: { event?: string } = {}): Promise<voi
 }
 `;
 }
-async function injectOpenClawHooks(hooksDir, tool = "openclaw") {
-  const effectiveHooksDir = resolveOpenClawHooksDir(tool);
-  const dir = path10.join(effectiveHooksDir, OPENCLAW_HOOK_DIR);
+async function injectOpenClawHooks(workspacePath, tool = "openclaw") {
+  const wsDir = await resolveOpenclawWorkspaceDir(workspacePath);
+  if (!wsDir) {
+    log.debug(`openclaw: skip hook injection for ${tool} \u2014 workspace dir not found`);
+    return;
+  }
+  const dir = path10.join(wsDir, "hooks", OPENCLAW_HOOK_DIR);
   await ensureDir(dir);
   await writeFile(path10.join(dir, "HOOK.md"), buildHookMd(tool));
   await writeFile(path10.join(dir, "handler.ts"), buildHandlerTs(tool));
   log.success(`Injected teamai OpenClaw hook into ${dir}`);
+  await enableOpenClawInternalHooks(tool);
+}
+async function enableOpenClawInternalHooks(tool = "openclaw") {
+  if (tool !== "openclaw") return;
+  const stateDir = process.env.OPENCLAW_STATE_DIR;
+  if (!stateDir || !path10.isAbsolute(stateDir)) {
+    log.debug("openclaw: skip enabling internal hooks \u2014 OPENCLAW_STATE_DIR unset or not absolute");
+    return;
+  }
+  const cfgPath = path10.join(stateDir, "openclaw.json");
+  try {
+    const cfg = await readJson(cfgPath) ?? {};
+    const hooksVal = cfg.hooks;
+    const hooks = hooksVal && typeof hooksVal === "object" ? hooksVal : {};
+    const internalVal = hooks.internal;
+    const internal = internalVal && typeof internalVal === "object" ? internalVal : {};
+    if (internal.enabled === true) {
+      log.debug("openclaw: internal hooks already enabled");
+      return;
+    }
+    internal.enabled = true;
+    hooks.internal = internal;
+    cfg.hooks = hooks;
+    await writeJsonAtomic(cfgPath, cfg);
+    log.success(`Enabled OpenClaw internal hooks in ${cfgPath}`);
+  } catch (e) {
+    log.warn(`openclaw: failed to enable internal hooks: ${e.message}`);
+  }
 }
 async function removeOpenClawHooks(hooksDir) {
   const dir = path10.join(hooksDir, OPENCLAW_HOOK_DIR);
@@ -3865,15 +4276,14 @@ async function resolveOpenclawWorkspaceDir(workspacePath) {
       }
     }
   }
-  const home = process.env.HOME;
-  if (home) candidates.push(path10.join(home, ".openclaw", "workspace"));
+  candidates.push(path10.join(getUserHome(), ".openclaw", "workspace"));
   for (const candidate of candidates) {
     if (await pathExists(candidate)) {
       log.debug(`openclaw: resolved workspace dir to ${candidate}`);
       return candidate;
     }
   }
-  log.warn(`openclaw: no workspace dir found (tried: ${candidates.join(", ") || "none"})`);
+  log.debug(`openclaw: no workspace dir found (tried: ${candidates.join(", ") || "none"})`);
   return null;
 }
 var OPENCLAW_HOOK_DIR, TEAMAI_MARKER, EVENT_MAP, CLAUDE_TO_OPENCLAW_EVENTS;
@@ -3882,6 +4292,7 @@ var init_openclaw_hooks = __esm({
     "use strict";
     init_fs();
     init_logger();
+    init_home();
     OPENCLAW_HOOK_DIR = "teamai-status-report";
     TEAMAI_MARKER = "[teamai]";
     EVENT_MAP = {
@@ -3895,15 +4306,35 @@ var init_openclaw_hooks = __esm({
   }
 });
 
+// src/hermes-home.ts
+var hermes_home_exports = {};
+__export(hermes_home_exports, {
+  getHermesHome: () => getHermesHome
+});
+import path11 from "path";
+import { homedir } from "os";
+function getHermesHome() {
+  const fromEnv = process.env.HERMES_HOME;
+  if (fromEnv && fromEnv.trim() !== "") {
+    return path11.resolve(fromEnv);
+  }
+  return path11.join(homedir(), ".hermes");
+}
+var init_hermes_home = __esm({
+  "src/hermes-home.ts"() {
+    "use strict";
+  }
+});
+
 // src/utils/path-safety.ts
 import os4 from "os";
-import path11 from "path";
+import path12 from "path";
 import fs5 from "fs";
 function assertSafePath(target, allowedRoots) {
   const resolvedTarget = resolveReal(target);
   for (const root of allowedRoots) {
     const resolvedRoot = resolveReal(root);
-    if (resolvedTarget === resolvedRoot || resolvedTarget.startsWith(resolvedRoot + path11.sep)) {
+    if (resolvedTarget === resolvedRoot || resolvedTarget.startsWith(resolvedRoot + path12.sep)) {
       return;
     }
   }
@@ -3911,9 +4342,16 @@ function assertSafePath(target, allowedRoots) {
     `Path traversal detected: "${target}" is outside allowed directories: ${allowedRoots.join(", ")}`
   );
 }
+function assertWithinRoot(root, candidate, message) {
+  const resolvedRoot = path12.resolve(root);
+  const resolvedCandidate = path12.resolve(candidate);
+  if (resolvedCandidate !== resolvedRoot && !resolvedCandidate.startsWith(resolvedRoot + path12.sep)) {
+    throw new Error(message ?? `path traversal detected: "${candidate}" is outside "${root}"`);
+  }
+}
 function resolveReal(p) {
-  const expanded = p.startsWith("~") ? path11.join(os4.homedir(), p.slice(1)) : p;
-  const abs = path11.resolve(expanded);
+  const expanded = p.startsWith("~") ? path12.join(os4.homedir(), p.slice(1)) : p;
+  const abs = path12.resolve(expanded);
   try {
     return fs5.realpathSync(abs);
   } catch {
@@ -3939,7 +4377,7 @@ function assertSafeResourceName(name) {
   if (decoded.includes("/") || decoded.includes("\\")) {
     throw new Error("Invalid resource name: contains path separator");
   }
-  if (path11.isAbsolute(decoded)) {
+  if (path12.isAbsolute(decoded)) {
     throw new Error("Invalid resource name: must not be an absolute path");
   }
   if (decoded === "." || decoded === "..") {
@@ -3959,7 +4397,7 @@ var init_path_safety = __esm({
 
 // src/builtin-hooks.ts
 import fs6 from "fs";
-import path12 from "path";
+import path13 from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
 function hasShell() {
   if (_hasShellCache === void 0) {
@@ -3986,29 +4424,29 @@ function pickLatestVersion(versions) {
   return versions.reduce((best, v) => compareSemver(v, best) > 0 ? v : best, versions[0]);
 }
 function resolveWorkbuddyNode() {
-  const home = process.env.HOME ?? "";
-  const versionsDir = path12.join(home, WORKBUDDY_BUNDLED_NODE_DIR);
+  const home = getUserHome();
+  const versionsDir = path13.join(home, WORKBUDDY_BUNDLED_NODE_DIR);
   try {
     const versions = fs6.readdirSync(versionsDir).filter((d) => !d.startsWith("."));
     const latest = pickLatestVersion(versions);
     if (!latest) return null;
-    const nodeBin = path12.join(versionsDir, latest, "bin", "node");
+    const nodeBin = path13.join(versionsDir, latest, "bin", "node");
     if (fs6.existsSync(nodeBin)) return nodeBin;
   } catch {
   }
   return null;
 }
 function resolveCodebuddyNode() {
-  const home = process.env.HOME ?? "";
+  const home = getUserHome();
   try {
     const entries = fs6.readdirSync(home);
     for (const entry of entries) {
       if (!entry.startsWith(".codebuddy-server")) continue;
       try {
-        const binDir = path12.join(home, entry, "bin");
+        const binDir = path13.join(home, entry, "bin");
         const stableDirs = fs6.readdirSync(binDir).filter((d) => d.startsWith("stable-"));
         for (const stable of stableDirs) {
-          const nodeBin = path12.join(binDir, stable, "node");
+          const nodeBin = path13.join(binDir, stable, "node");
           if (fs6.existsSync(nodeBin)) return nodeBin;
         }
       } catch {
@@ -4021,8 +4459,8 @@ function resolveCodebuddyNode() {
 function resolveTeamaiEntryScript() {
   try {
     const thisFile = fileURLToPath2(import.meta.url);
-    const distDir = path12.dirname(thisFile);
-    const candidate = path12.join(distDir, "index.js");
+    const distDir = path13.dirname(thisFile);
+    const candidate = path13.join(distDir, "index.js");
     if (fs6.existsSync(candidate)) return candidate;
   } catch {
   }
@@ -4032,9 +4470,9 @@ function ensureTeamaiWrapper() {
   const entryScript = resolveTeamaiEntryScript();
   if (!entryScript) return null;
   const nodeBin = resolveWorkbuddyNode() ?? resolveCodebuddyNode() ?? process.argv[0];
-  const home = process.env.HOME ?? "";
-  const binDir = path12.join(home, TEAMAI_BIN_DIR);
-  const wrapperPath = path12.join(binDir, WRAPPER_NAME);
+  const home = getUserHome();
+  const binDir = path13.join(home, TEAMAI_BIN_DIR);
+  const wrapperPath = path13.join(binDir, WRAPPER_NAME);
   const script = [
     "#!/bin/sh",
     `# Auto-generated by teamai \u2014 do not edit.`,
@@ -4091,6 +4529,7 @@ var init_builtin_hooks = __esm({
   "src/builtin-hooks.ts"() {
     "use strict";
     init_types();
+    init_home();
     WORKBUDDY_BUNDLED_NODE_DIR = ".workbuddy/bundled/node/versions";
     TEAMAI_BIN_DIR = ".teamai/bin";
     WRAPPER_NAME = "teamai";
@@ -4108,11 +4547,11 @@ var init_builtin_hooks = __esm({
 });
 
 // src/resources/hooks.ts
-import path13 from "path";
+import path14 from "path";
 import { z as z3 } from "zod";
 import YAML2 from "yaml";
 function teamHooksYamlPath(repoPath) {
-  return path13.join(repoPath, "hooks", "hooks.yaml");
+  return path14.join(repoPath, "hooks", "hooks.yaml");
 }
 async function parseHooksYaml(repoPath) {
   const content = await readFileSafe(teamHooksYamlPath(repoPath));
@@ -4235,23 +4674,197 @@ var init_hooks = __esm({
   }
 });
 
-// src/hermes-home.ts
-var hermes_home_exports = {};
-__export(hermes_home_exports, {
-  getHermesHome: () => getHermesHome
+// src/opencode-hooks.ts
+var opencode_hooks_exports = {};
+__export(opencode_hooks_exports, {
+  OPENCODE_HOOK_FILE: () => OPENCODE_HOOK_FILE,
+  OPENCODE_PLUGIN_DIR: () => OPENCODE_PLUGIN_DIR,
+  applyOpencodeAgentHook: () => applyOpencodeAgentHook,
+  buildAgentHookPluginSource: () => buildAgentHookPluginSource,
+  buildPluginSource: () => buildPluginSource,
+  injectOpencodeHooks: () => injectOpencodeHooks,
+  removeOpencodeAgentHook: () => removeOpencodeAgentHook,
+  removeOpencodeHooks: () => removeOpencodeHooks,
+  resolveOpencodePluginDir: () => resolveOpencodePluginDir
 });
-import path14 from "path";
-import { homedir } from "os";
-function getHermesHome() {
-  const fromEnv = process.env.HERMES_HOME;
-  if (fromEnv && fromEnv.trim() !== "") {
-    return path14.resolve(fromEnv);
-  }
-  return path14.join(homedir(), ".hermes");
+import path15 from "path";
+function resolveOpencodePluginDir(baseDir, scope) {
+  const configDir = scope === "project" ? ".opencode" : path15.join(".config", "opencode");
+  return path15.join(baseDir, configDir, OPENCODE_PLUGIN_DIR);
 }
-var init_hermes_home = __esm({
-  "src/hermes-home.ts"() {
+function buildPluginSource() {
+  return `// ${TEAMAI_MARKER2} hooks plugin \u2014 generated by teamai, do not edit by hand.
+//
+// Bridges OpenCode's plugin events to \`teamai hook-dispatch\`, mirroring the
+// Claude built-in hook set. Feeds the same STDIN JSON payload other agents send
+// so the track / hint handlers and project-scope gating work. Errors are
+// swallowed; OpenCode cannot inject a hook's stdout back into the session, so
+// this runs the dispatch purely for its side effects (status report / sync /
+// update).
+//
+// NOTE: OpenCode awaits its named hooks (chat.message, tool.execute.after), so
+// the dispatch is not truly fire-and-forget for those two \u2014 see the timeout
+// note below.
+
+/** OpenCode lowercase tool ids \u2192 Claude PascalCase matcher names. */
+const TOOL_MATCHER = { skill: 'Skill', todowrite: 'TodoWrite' };
+
+/** @param {{ $: any, directory?: string, worktree?: string }} ctx */
+export const TeamaiHooks = async ({ $, directory, worktree }) => {
+  const cwd = directory || worktree;
+  // Dispatch one hook event, forwarding a JSON payload on STDIN. \`payload\`
+  // fields (cwd / tool_name / tool_input / prompt) match what hook-dispatch's
+  // handlers read; \`matcher\` scopes PostToolUse handlers (Skill / TodoWrite).
+  const dispatch = async (event, matcher, payload) => {
+    try {
+      const args = ['hook-dispatch', event, '--tool', 'opencode'];
+      if (matcher) {
+        args.push('--matcher', matcher);
+      }
+      const stdin = JSON.stringify({ cwd, ...(payload || {}) });
+      // Redirect the payload into STDIN via a Response (Bun shell can only
+      // redirect Response/Buffer/Blob, not a bare string). .quiet() suppresses
+      // output; .nothrow() keeps a non-zero exit (e.g. no teamai on PATH) from
+      // throwing into the agent session.
+      await $\`teamai \${args} < \${new Response(stdin)}\`.quiet().nothrow();
+    } catch {
+      // never block the agent
+    }
+  };
+
+  return {
+    event: async ({ event }) => {
+      if (event.type === 'session.created') {
+        await dispatch('session-start');
+      } else if (event.type === 'session.idle') {
+        await dispatch('stop');
+      }
+    },
+    // A new user message maps to Claude's UserPromptSubmit. The prompt text
+    // lives in output.parts (text parts); forward it so track-slash can see
+    // slash-command usage.
+    'chat.message': async (_input, output) => {
+      let prompt = '';
+      const parts = (output && output.parts) || [];
+      for (const part of parts) {
+        if (part && part.type === 'text' && typeof part.text === 'string') {
+          prompt += part.text;
+        }
+      }
+      await dispatch('prompt-submit', undefined, { prompt });
+    },
+    // Fires after every tool call. Dispatch the wildcard matcher always, plus a
+    // matcher-scoped pass so Skill / TodoWrite handlers can fire. input.tool is
+    // the lowercase OpenCode tool id; input.args is the tool input.
+    'tool.execute.after': async (input) => {
+      const tool = (input && input.tool) || '';
+      const matcher = TOOL_MATCHER[tool];
+      const payload = { tool_name: matcher || tool, tool_input: (input && input.args) || {} };
+      await dispatch('post-tool-use', undefined, payload);
+      if (matcher) {
+        await dispatch('post-tool-use', matcher, payload);
+      }
+    },
+  };
+};
+`;
+}
+async function injectOpencodeHooks(baseDir, scope) {
+  const dir = resolveOpencodePluginDir(baseDir, scope);
+  await ensureDir(dir);
+  const file = path15.join(dir, OPENCODE_HOOK_FILE);
+  await writeFile(file, buildPluginSource());
+  log.success(`Injected teamai OpenCode hook into ${file}`);
+}
+async function removeOpencodeHooks(baseDir, scope) {
+  const dir = resolveOpencodePluginDir(baseDir, scope);
+  const file = path15.join(dir, OPENCODE_HOOK_FILE);
+  if (await pathExists(file)) {
+    await remove(file);
+    log.success(`Removed teamai OpenCode hook from ${file}`);
+  }
+}
+function assertSafeSlug(slug) {
+  if (!slug || slug.includes("/") || slug.includes("\\") || slug.includes("..") || path15.isAbsolute(slug)) {
+    throw new Error(`Invalid agent-hook slug: ${slug}`);
+  }
+}
+function buildAgentHookPluginSource(slug, ocEvent, command, matcher) {
+  const scoped = ocEvent === "tool.execute.after" && !!matcher && matcher !== "*";
+  let body;
+  if (ocEvent === "tool.execute.after") {
+    body = scoped ? `  return {
+    "tool.execute.after": async (input) => {
+      const tool = (input && input.tool) || '';
+      if (tool.toLowerCase() === ${JSON.stringify(matcher.toLowerCase())}) { await run(); }
+    },
+  };` : `  return {
+    "tool.execute.after": async () => { await run(); },
+  };`;
+  } else if (ocEvent === "chat.message") {
+    body = `  return {
+    "chat.message": async () => { await run(); },
+  };`;
+  } else {
+    body = `  return {
+    event: async ({ event }) => {
+      if (event.type === ${JSON.stringify(ocEvent)}) { await run(); }
+    },
+  };`;
+  }
+  return `// ${TEAMAI_MARKER2} agent hook [${slug}] \u2014 generated by teamai, do not edit by hand.
+/** @param {{ $: any }} ctx */
+export const TeamaiAgentHook_${slug.replace(/[^A-Za-z0-9_]/g, "_")} = async ({ $ }) => {
+  const run = async () => {
+    try {
+      // .quiet() suppresses output; .nothrow() keeps a non-zero exit from
+      // throwing into the agent session. Fire-and-forget \u2014 never blocks.
+      await $\`sh -c \${${JSON.stringify(command)}}\`.quiet().nothrow();
+    } catch {
+      // never block the agent
+    }
+  };
+${body}
+};
+`;
+}
+async function applyOpencodeAgentHook(def) {
+  assertSafeSlug(def.slug);
+  const ocEvent = CLAUDE_TO_OPENCODE_EVENTS[def.event];
+  if (!ocEvent) {
+    log.warn(`OpenCode does not support event "${def.event}" \u2014 skipping hook [${def.slug}]`);
+    return;
+  }
+  const dir = resolveOpencodePluginDir(def.baseDir, def.scope);
+  await ensureDir(dir);
+  const file = path15.join(dir, `teamai-agent-${def.slug}.ts`);
+  await writeFile(file, buildAgentHookPluginSource(def.slug, ocEvent, def.command, def.matcher));
+  log.success(`Installed OpenCode agent hook [${def.slug}] in ${file}`);
+}
+async function removeOpencodeAgentHook(opts) {
+  assertSafeSlug(opts.slug);
+  const dir = resolveOpencodePluginDir(opts.baseDir, opts.scope);
+  const file = path15.join(dir, `teamai-agent-${opts.slug}.ts`);
+  if (await pathExists(file)) {
+    await remove(file);
+    log.success(`Removed OpenCode agent hook [${opts.slug}] from ${file}`);
+  }
+}
+var OPENCODE_PLUGIN_DIR, OPENCODE_HOOK_FILE, TEAMAI_MARKER2, CLAUDE_TO_OPENCODE_EVENTS;
+var init_opencode_hooks = __esm({
+  "src/opencode-hooks.ts"() {
     "use strict";
+    init_fs();
+    init_logger();
+    OPENCODE_PLUGIN_DIR = "plugin";
+    OPENCODE_HOOK_FILE = "teamai-hooks.ts";
+    TEAMAI_MARKER2 = "[teamai]";
+    CLAUDE_TO_OPENCODE_EVENTS = {
+      SessionStart: "session.created",
+      Stop: "session.idle",
+      UserPromptSubmit: "chat.message",
+      PostToolUse: "tool.execute.after"
+    };
   }
 });
 
@@ -4269,12 +4882,12 @@ __export(hermes_config_exports, {
   upsertSoulRules: () => upsertSoulRules
 });
 import YAML3 from "yaml";
-import path15 from "path";
+import path16 from "path";
 function getHermesConfigPath() {
-  return path15.join(getHermesHome(), "config.yaml");
+  return path16.join(getHermesHome(), "config.yaml");
 }
 function getHermesSoulPath() {
-  return path15.join(getHermesHome(), "SOUL.md");
+  return path16.join(getHermesHome(), "SOUL.md");
 }
 async function readConfigDoc() {
   const content = await readFileSafe(getHermesConfigPath());
@@ -4354,7 +4967,7 @@ async function removeSoulRules() {
   await upsertSoulRules("");
 }
 function getHermesAllowlistPath() {
-  return path15.join(getHermesHome(), "shell-hooks-allowlist.json");
+  return path16.join(getHermesHome(), "shell-hooks-allowlist.json");
 }
 async function upsertHermesHook(event, entry) {
   const doc = await readConfigDoc();
@@ -4435,10 +5048,10 @@ __export(hermes_hooks_exports, {
   removeHermesAgentHook: () => removeHermesAgentHook,
   removeHermesHooks: () => removeHermesHooks
 });
-import path16 from "path";
+import path17 from "path";
 import { chmod } from "fs/promises";
 function getReportScriptPath() {
-  return path16.join(getHermesHome(), "hooks", "teamai-status-report.sh");
+  return path17.join(getHermesHome(), "hooks", "teamai-status-report.sh");
 }
 function buildReportScript() {
   return [
@@ -4450,7 +5063,7 @@ function buildReportScript() {
 }
 async function injectHermesHooks() {
   const scriptPath = getReportScriptPath();
-  await ensureDir(path16.dirname(scriptPath));
+  await ensureDir(path17.dirname(scriptPath));
   await writeFile(scriptPath, buildReportScript());
   try {
     await chmod(scriptPath, 493);
@@ -4509,22 +5122,32 @@ __export(hooks_exports, {
   TEAMAI_LEGACY_HOOK_SUBCOMMANDS: () => TEAMAI_LEGACY_HOOK_SUBCOMMANDS,
   agentHookDescription: () => agentHookDescription,
   applyAgentHook: () => applyAgentHook,
+  codexTrustReminder: () => codexTrustReminder,
   getHookStatus: () => getHookStatus,
+  hasInstalledCodexTrustGatedTool: () => hasInstalledCodexTrustGatedTool,
   hasTeamaiHooks: () => hasTeamaiHooks,
   injectHooks: () => injectHooks,
   injectHooksToAllTools: () => injectHooksToAllTools,
   isAgentHookEvent: () => isAgentHookEvent,
   isAgentHookSupportedTool: () => isAgentHookSupportedTool,
+  isCodexTrustGatedTool: () => isCodexTrustGatedTool,
   reconcileHooks: () => reconcileHooks,
   reconcileHooksToAllTools: () => reconcileHooksToAllTools,
   reconcileTeamHooksForConfig: () => reconcileTeamHooksForConfig,
   removeAgentHook: () => removeAgentHook,
-  removeHooks: () => removeHooks
+  removeHooks: () => removeHooks,
+  sweepLegacyProjectHooks: () => sweepLegacyProjectHooks
 });
-import path17 from "path";
+import path18 from "path";
 function detectFormat(tool) {
   if (CODEX_TOOLS.has(tool)) return "codex";
   return CURSOR_TOOLS.has(tool) ? "cursor" : "claude";
+}
+function isCodexTrustGatedTool(tool) {
+  return CODEX_TRUST_GATE_TOOLS.has(tool);
+}
+function codexTrustReminder() {
+  return "Codex hooks written, but Codex may require you to review/trust them before they run \u2014 open /hooks or Settings \u2192 Hooks in Codex to trust them.";
 }
 function isTeamaiHookCommand(command) {
   return /(?:^|"|\s)teamai\s/.test(command);
@@ -4603,7 +5226,7 @@ function isTeamClaudeEntry(entry) {
 async function reconcileClaudeFormat(settingsPath, tool, teamDefs, opts, teamActive) {
   const isManaged = (e) => isBuiltinClaudeEntry(e) || teamActive && isTeamClaudeEntry(e) || !!opts.removeAll && isAgentClaudeEntry(e);
   const expanded = expandHome(settingsPath);
-  await ensureDir(path17.dirname(expanded));
+  await ensureDir(path18.dirname(expanded));
   const settings = await readJson(expanded) ?? {};
   if (!settings.hooks) settings.hooks = {};
   let changed = false;
@@ -4635,7 +5258,7 @@ async function reconcileClaudeFormat(settingsPath, tool, teamDefs, opts, teamAct
 }
 async function reconcileCursorFormat(hooksPath, tool, teamDefs, opts, priorTeamCommands) {
   const expanded = expandHome(hooksPath);
-  await ensureDir(path17.dirname(expanded));
+  await ensureDir(path18.dirname(expanded));
   const hooksJson = await readJson(expanded) ?? { version: 1, hooks: {} };
   if (!hooksJson.version) hooksJson.version = 1;
   if (!hooksJson.hooks) hooksJson.hooks = {};
@@ -4683,7 +5306,7 @@ async function reconcileCursorFormat(hooksPath, tool, teamDefs, opts, priorTeamC
 }
 async function reconcileCodexFormat(hooksPath, tool, teamDefs, opts, priorTeamCommands) {
   const expanded = expandHome(hooksPath);
-  await ensureDir(path17.dirname(expanded));
+  await ensureDir(path18.dirname(expanded));
   const hooksJson = await readJson(expanded) ?? {};
   if (!hooksJson.hooks) hooksJson.hooks = {};
   const isManaged = (entry) => {
@@ -4730,7 +5353,7 @@ function isAgentClaudeEntry(entry, slug) {
 async function applyAgentHook(settingsPath, tool, def) {
   const format = detectFormat(tool);
   const expanded = expandHome(settingsPath);
-  await ensureDir(path17.dirname(expanded));
+  await ensureDir(path18.dirname(expanded));
   const hookDef = {
     source: "team",
     key: def.slug,
@@ -4917,8 +5540,22 @@ async function hasTeamaiHooks(settingsPath, tool, manifestPath) {
     })
   );
 }
+async function reconcileOpencodePlugin(baseDir, removeAll = false) {
+  const home = getUserHome();
+  const { injectOpencodeHooks: injectOpencodeHooks2, removeOpencodeHooks: removeOpencodeHooks2 } = await Promise.resolve().then(() => (init_opencode_hooks(), opencode_hooks_exports));
+  if (path18.resolve(baseDir) !== path18.resolve(home)) {
+    await removeOpencodeHooks2(baseDir, "project");
+  }
+  if (removeAll) {
+    await removeOpencodeHooks2(home, "user");
+    return;
+  }
+  if (await pathExists(path18.join(home, ".config", "opencode"))) {
+    await injectOpencodeHooks2(home, "user");
+  }
+}
 async function injectHooksToAllTools(toolPaths, baseDir, filterAgents2) {
-  const resolvedBaseDir = baseDir ?? (process.env.HOME ?? "");
+  const resolvedBaseDir = baseDir ?? getUserHome();
   const tools = Object.keys(toolPaths).filter((t) => !filterAgents2 || filterAgents2.includes(t));
   let shellAvailable = true;
   if (tools.some((t) => SHELL_DEPENDENT_TOOLS.has(t))) {
@@ -4933,23 +5570,20 @@ async function injectHooksToAllTools(toolPaths, baseDir, filterAgents2) {
     if (filterAgents2 && !filterAgents2.includes(tool)) continue;
     if (!shellAvailable && SHELL_DEPENDENT_TOOLS.has(tool)) continue;
     if (paths.settings) {
-      const toolRoot = path17.join(resolvedBaseDir, paths.settings.split("/")[0]);
+      const toolRoot = path18.join(resolvedBaseDir, paths.settings.split("/")[0]);
       if (!await pathExists(toolRoot)) continue;
-      const settingsPath = path17.join(resolvedBaseDir, paths.settings);
+      const settingsPath = path18.join(resolvedBaseDir, paths.settings);
       try {
         await injectHooks(settingsPath, tool);
       } catch (e) {
         log.warn(`Failed to inject hook into ${tool}: ${e.message}`);
       }
     } else if (OPENCLAW_TOOLS.has(tool)) {
-      const agentRoot = path17.join(resolvedBaseDir, `.${tool}`);
-      if (await pathExists(agentRoot)) {
-        try {
-          const { injectOpenClawHooks: injectOpenClawHooks2 } = await Promise.resolve().then(() => (init_openclaw_hooks(), openclaw_hooks_exports));
-          await injectOpenClawHooks2(path17.join(agentRoot, "hooks"), tool);
-        } catch (e) {
-          log.warn(`Failed to inject OpenClaw hook into ${tool}: ${e.message}`);
-        }
+      try {
+        const { injectOpenClawHooks: injectOpenClawHooks2 } = await Promise.resolve().then(() => (init_openclaw_hooks(), openclaw_hooks_exports));
+        await injectOpenClawHooks2(void 0, tool);
+      } catch (e) {
+        log.warn(`Failed to inject OpenClaw hook into ${tool}: ${e.message}`);
       }
     } else if (tool === "hermes") {
       try {
@@ -4957,6 +5591,12 @@ async function injectHooksToAllTools(toolPaths, baseDir, filterAgents2) {
         await injectHermesHooks2();
       } catch (e) {
         log.warn(`Failed to inject Hermes hook: ${e.message}`);
+      }
+    } else if (tool === "opencode") {
+      try {
+        await reconcileOpencodePlugin(resolvedBaseDir);
+      } catch (e) {
+        log.warn(`Failed to inject OpenCode hook into ${tool}: ${e.message}`);
       }
     }
   }
@@ -4976,6 +5616,7 @@ async function reconcileHooksToAllTools(toolPaths, baseDir, teamDefs, manifestPa
     if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
     if (!shellAvailable && SHELL_DEPENDENT_TOOLS.has(tool)) continue;
     if (tool === "hermes") {
+      if (opts.settingsOnly) continue;
       try {
         const { getHermesHome: getHermesHome2 } = await Promise.resolve().then(() => (init_hermes_home(), hermes_home_exports));
         const hermesRoot = getHermesHome2();
@@ -4991,10 +5632,19 @@ async function reconcileHooksToAllTools(toolPaths, baseDir, teamDefs, manifestPa
       }
       continue;
     }
+    if (tool === "opencode") {
+      if (opts.settingsOnly) continue;
+      try {
+        await reconcileOpencodePlugin(baseDir, opts.removeAll);
+      } catch (e) {
+        log.warn(`Failed to reconcile OpenCode hooks: ${e.message}`);
+      }
+      continue;
+    }
     if (!paths.settings) continue;
-    const toolRoot = path17.join(baseDir, paths.settings.split("/")[0]);
+    const toolRoot = path18.join(baseDir, paths.settings.split("/")[0]);
     if (!await pathExists(toolRoot)) continue;
-    const settingsPath = path17.join(baseDir, paths.settings);
+    const settingsPath = path18.join(baseDir, paths.settings);
     try {
       await reconcileHooks(settingsPath, tool, teamDefs, {
         manifestPath,
@@ -5006,10 +5656,33 @@ async function reconcileHooksToAllTools(toolPaths, baseDir, teamDefs, manifestPa
     }
   }
 }
+async function hasInstalledCodexTrustGatedTool(toolPaths, baseDir) {
+  for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (!isCodexTrustGatedTool(tool) || !paths.settings) continue;
+    const toolRoot = path18.join(baseDir, paths.settings.split("/")[0]);
+    if (await pathExists(toolRoot)) return true;
+  }
+  return false;
+}
+async function sweepLegacyProjectHooks(toolPaths, localConfig) {
+  const legacy = resolveLegacyProjectHookScope(localConfig);
+  if (!legacy) return;
+  await reconcileHooksToAllTools(toolPaths, legacy.baseDir, [], legacy.manifestPath, {
+    removeAll: true,
+    settingsOnly: true
+  });
+  if (toolPaths.opencode) {
+    try {
+      const { removeOpencodeHooks: removeOpencodeHooks2 } = await Promise.resolve().then(() => (init_opencode_hooks(), opencode_hooks_exports));
+      await removeOpencodeHooks2(legacy.baseDir, "project");
+    } catch (e) {
+      log.warn(`Failed to remove legacy OpenCode project plugin: ${e.message}`);
+    }
+  }
+}
 async function reconcileTeamHooksForConfig(teamConfig, localConfig, opts = {}) {
   const { defs: teamDefs, builtin } = opts.removeAll ? { defs: [], builtin: void 0 } : await resolveTeamHooks(teamConfig, localConfig.repo.localPath, { auto: opts.auto, silent: opts.silent });
-  const baseDir = resolveBaseDir(localConfig);
-  const manifestPath = getManagedHooksPath(localConfig.scope, localConfig.projectRoot);
+  const { baseDir, manifestPath } = resolveHookScope(localConfig);
   let filterAgents2 = opts.filterAgents ?? localConfig.enabledAgents;
   const disabled = localConfig.disabledAgents;
   if (disabled && disabled.length > 0) {
@@ -5021,9 +5694,10 @@ async function reconcileTeamHooksForConfig(teamConfig, localConfig, opts = {}) {
     builtinOverride: builtin,
     filterAgents: filterAgents2
   });
+  await sweepLegacyProjectHooks(teamConfig.toolPaths, localConfig);
   return teamDefs;
 }
-var OPENCLAW_TOOLS, TEAMAI_HOOK_SUBCOMMANDS, TEAMAI_LEGACY_HOOK_SUBCOMMANDS, CLAUDE_TO_CURSOR_EVENTS, CURSOR_TOOLS, CODEX_TOOLS, TEAMAI_COMMAND_MARKERS, AGENT_HOOK_EVENTS;
+var OPENCLAW_TOOLS, TEAMAI_HOOK_SUBCOMMANDS, TEAMAI_LEGACY_HOOK_SUBCOMMANDS, CLAUDE_TO_CURSOR_EVENTS, CURSOR_TOOLS, CODEX_TOOLS, CODEX_TRUST_GATE_TOOLS, TEAMAI_COMMAND_MARKERS, AGENT_HOOK_EVENTS;
 var init_hooks2 = __esm({
   "src/hooks.ts"() {
     "use strict";
@@ -5032,6 +5706,7 @@ var init_hooks2 = __esm({
     init_types();
     init_builtin_hooks();
     init_hooks();
+    init_home();
     OPENCLAW_TOOLS = /* @__PURE__ */ new Set(["openclaw", "qclaw", "easyclaw", "autoclaw"]);
     TEAMAI_HOOK_SUBCOMMANDS = ["hook-dispatch"];
     TEAMAI_LEGACY_HOOK_SUBCOMMANDS = ["pull", "update", "track", "track-slash", "dashboard-report", "contribute-check", "auto-recall", "todowrite-hint", "mr-hint"];
@@ -5043,6 +5718,7 @@ var init_hooks2 = __esm({
     };
     CURSOR_TOOLS = /* @__PURE__ */ new Set(["cursor"]);
     CODEX_TOOLS = /* @__PURE__ */ new Set(["codex", "codex-internal", "tcodex"]);
+    CODEX_TRUST_GATE_TOOLS = /* @__PURE__ */ new Set(["codex"]);
     TEAMAI_COMMAND_MARKERS = [
       "teamai pull",
       "teamai update",
@@ -5064,6 +5740,28 @@ var init_hooks2 = __esm({
   }
 });
 
+// src/utils/hook-cwd.ts
+function resolveHookCwd(data) {
+  if (typeof data.cwd === "string") {
+    const trimmed = data.cwd.trim();
+    if (trimmed) return trimmed;
+  }
+  const roots = data.workspace_roots;
+  if (!Array.isArray(roots)) return void 0;
+  for (const root of roots) {
+    if (typeof root === "string") {
+      const trimmed = root.trim();
+      if (trimmed) return trimmed;
+    }
+  }
+  return void 0;
+}
+var init_hook_cwd = __esm({
+  "src/utils/hook-cwd.ts"() {
+    "use strict";
+  }
+});
+
 // src/utils/session-id.ts
 function deriveSessionId(data, options = {}) {
   if (typeof data.session_id === "string" && data.session_id) {
@@ -5074,7 +5772,7 @@ function deriveSessionId(data, options = {}) {
   }
   const ppid = process.ppid ?? process.pid;
   if (options.includeCwd) {
-    const cwd = typeof data.cwd === "string" ? data.cwd : process.cwd();
+    const cwd = resolveHookCwd(data) ?? process.cwd();
     return `pid-${ppid}-${cwd}`;
   }
   return `pid-${ppid}`;
@@ -5082,6 +5780,7 @@ function deriveSessionId(data, options = {}) {
 var init_session_id = __esm({
   "src/utils/session-id.ts"() {
     "use strict";
+    init_hook_cwd();
   }
 });
 
@@ -5090,10 +5789,10 @@ import fs7 from "fs";
 import { execSync as execSync4 } from "child_process";
 function getParentPid(pid) {
   try {
-    const stat6 = fs7.readFileSync(`/proc/${pid}/stat`, "utf-8");
-    const closeParen = stat6.lastIndexOf(") ");
+    const stat8 = fs7.readFileSync(`/proc/${pid}/stat`, "utf-8");
+    const closeParen = stat8.lastIndexOf(") ");
     if (closeParen === -1) return void 0;
-    const fields = stat6.slice(closeParen + 2).split(" ");
+    const fields = stat8.slice(closeParen + 2).split(" ");
     const ppid = parseInt(fields[1], 10);
     return ppid > 0 ? ppid : void 0;
   } catch {
@@ -5170,13 +5869,19 @@ var init_pid_monitor = __esm({
 });
 
 // src/utils/tool-names.ts
+var tool_names_exports = {};
+__export(tool_names_exports, {
+  STOP_STDOUT_UNSUPPORTED_TOOLS: () => STOP_STDOUT_UNSUPPORTED_TOOLS,
+  normalizeAgentType: () => normalizeAgentType,
+  normalizeToolName: () => normalizeToolName
+});
 function normalizeToolName(name) {
   return IDE_TO_CLI[name] ?? name;
 }
 function normalizeAgentType(name) {
   return AGENT_TYPE_ALIASES[name] ?? name;
 }
-var IDE_TO_CLI, AGENT_TYPE_ALIASES;
+var IDE_TO_CLI, AGENT_TYPE_ALIASES, STOP_STDOUT_UNSUPPORTED_TOOLS;
 var init_tool_names = __esm({
   "src/utils/tool-names.ts"() {
     "use strict";
@@ -5197,6 +5902,7 @@ var init_tool_names = __esm({
       tclaude: "claude",
       "claude-internal": "claude"
     };
+    STOP_STDOUT_UNSUPPORTED_TOOLS = /* @__PURE__ */ new Set(["codebuddy", "workbuddy"]);
   }
 });
 
@@ -5216,7 +5922,7 @@ __export(dashboard_collector_exports, {
   scanTranscriptStop: () => scanTranscriptStop
 });
 import fs8 from "fs";
-import path18 from "path";
+import path19 from "path";
 import readline from "readline";
 async function readStdin() {
   if (process.stdin.isTTY) return "";
@@ -5228,8 +5934,8 @@ async function readStdin() {
 }
 async function readLastAssistantOutput(transcriptPath) {
   try {
-    const stat6 = await fs8.promises.stat(transcriptPath);
-    const fileSize = stat6.size;
+    const stat8 = await fs8.promises.stat(transcriptPath);
+    const fileSize = stat8.size;
     if (fileSize === 0) return "";
     const readSize = Math.min(fileSize, TRANSCRIPT_TAIL_BYTES);
     const offset = Math.max(0, fileSize - readSize);
@@ -5261,22 +5967,22 @@ async function readLastAssistantOutput(transcriptPath) {
     return "";
   }
 }
-async function scanTranscriptStop(transcriptPath) {
+async function scanTranscriptStop(transcriptPath, opts) {
   let interrupt = 0;
   let toolReject = 0;
   let toolError = 0;
   let prompts = 0;
   const tokens = emptyTokenUsage();
   const countedUsageKeys = /* @__PURE__ */ new Set();
-  if (path18.basename(transcriptPath) === "index.json") {
-    const cb = await scanCodebuddyIndex(transcriptPath);
+  if (path19.basename(transcriptPath) === "index.json") {
+    const cb = await scanCodebuddyIndex(transcriptPath, opts?.frictionOnly ?? false);
     if (cb) return cb;
   }
   try {
-    const stat6 = await fs8.promises.stat(transcriptPath);
-    if (stat6.size === 0) return { interrupt, toolReject, toolError, tokens, prompts };
-    if (stat6.size > INTERVENTION_SCAN_MAX_BYTES) {
-      log.warn(`dashboard: transcript too large to scan (${stat6.size} bytes)`);
+    const stat8 = await fs8.promises.stat(transcriptPath);
+    if (stat8.size === 0) return { interrupt, toolReject, toolError, tokens, prompts };
+    if (stat8.size > INTERVENTION_SCAN_MAX_BYTES) {
+      log.warn(`dashboard: transcript too large to scan (${stat8.size} bytes)`);
       return { interrupt, toolReject, toolError, tokens, prompts };
     }
     const rl = readline.createInterface({
@@ -5342,8 +6048,8 @@ async function scanTranscriptStop(transcriptPath) {
 }
 async function readCodebuddyIndexOnce(transcriptPath) {
   try {
-    const stat6 = await fs8.promises.stat(transcriptPath);
-    if (stat6.size === 0 || stat6.size > INTERVENTION_SCAN_MAX_BYTES) return null;
+    const stat8 = await fs8.promises.stat(transcriptPath);
+    if (stat8.size === 0 || stat8.size > INTERVENTION_SCAN_MAX_BYTES) return null;
     const content = await fs8.promises.readFile(transcriptPath, "utf-8");
     const data = JSON.parse(content);
     if (!data || !Array.isArray(data.requests)) return null;
@@ -5364,17 +6070,96 @@ async function readCodebuddyIndexOnce(transcriptPath) {
 function totalTokenCount(t) {
   return t.input + t.output + t.cacheRead + t.cacheCreation;
 }
-async function scanCodebuddyIndex(transcriptPath) {
+async function scanCodebuddyBlobs(messagesDir) {
+  let names;
+  try {
+    names = await fs8.promises.readdir(messagesDir);
+  } catch {
+    return { toolReject: 0, toolError: 0 };
+  }
+  const blobPaths = names.filter((n) => n.endsWith(".json")).sort().slice(0, CODEBUDDY_BLOB_MAX_COUNT).map((n) => path19.join(messagesDir, n));
+  const rejectedCallIds = /* @__PURE__ */ new Set();
+  const erroredCallIds = /* @__PURE__ */ new Set();
+  for (const blobPath of blobPaths) {
+    try {
+      const stat8 = await fs8.promises.stat(blobPath);
+      if (stat8.size === 0 || stat8.size > INTERVENTION_SCAN_MAX_BYTES) continue;
+      const raw = await fs8.promises.readFile(blobPath, "utf-8");
+      const blob = JSON.parse(raw);
+      if (blob.role === "assistant") {
+        if (typeof blob.extra !== "string") continue;
+        let extra;
+        try {
+          extra = JSON.parse(blob.extra);
+        } catch {
+          continue;
+        }
+        const toolStatus = extra?.toolStatus;
+        if (!toolStatus || typeof toolStatus !== "object") continue;
+        for (const [callId, entry] of Object.entries(
+          toolStatus
+        )) {
+          if (!entry || typeof entry !== "object") continue;
+          const e = entry;
+          if (e.status === "cancelled" && typeof e.result?.errorMessage === "string" && e.result.errorMessage.includes(CODEBUDDY_REJECT_MARKER)) {
+            rejectedCallIds.add(callId);
+          }
+        }
+      } else if (blob.role === "tool") {
+        if (typeof blob.message !== "string") continue;
+        let message;
+        try {
+          message = JSON.parse(blob.message);
+        } catch {
+          continue;
+        }
+        const content = message?.content;
+        if (!Array.isArray(content)) continue;
+        for (const item of content) {
+          if (!item || typeof item !== "object") continue;
+          const i = item;
+          if (i.type === "tool-result" && i.isError === true && typeof i.toolCallId === "string") {
+            erroredCallIds.add(i.toolCallId);
+          }
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+  return { toolReject: rejectedCallIds.size, toolError: erroredCallIds.size };
+}
+async function scanCodebuddyIndex(transcriptPath, frictionOnly = false) {
+  const messagesDir = path19.join(path19.dirname(transcriptPath), "messages");
+  const friction = await scanCodebuddyBlobs(messagesDir);
+  if (frictionOnly) {
+    const once = await readCodebuddyIndexOnce(transcriptPath);
+    if (once) {
+      return { ...once, toolReject: friction.toolReject, toolError: friction.toolError };
+    }
+    return {
+      interrupt: 0,
+      toolReject: friction.toolReject,
+      toolError: friction.toolError,
+      tokens: emptyTokenUsage(),
+      prompts: 0
+    };
+  }
   let last = null;
   for (let attempt = 0; attempt < CODEBUDDY_USAGE_MAX_ATTEMPTS; attempt++) {
     const result = await readCodebuddyIndexOnce(transcriptPath);
     if (result) {
       last = result;
-      if (totalTokenCount(result.tokens) > 0) return result;
+      if (totalTokenCount(result.tokens) > 0) {
+        return { ...result, toolReject: friction.toolReject, toolError: friction.toolError };
+      }
     }
     if (attempt < CODEBUDDY_USAGE_MAX_ATTEMPTS - 1) {
       await new Promise((resolve) => setTimeout(resolve, CODEBUDDY_USAGE_RETRY_MS));
     }
+  }
+  if (last) {
+    return { ...last, toolReject: friction.toolReject, toolError: friction.toolError };
   }
   return last;
 }
@@ -5425,7 +6210,7 @@ async function parseHookEvent(raw, tool) {
     return null;
   }
   const sessionId = deriveSessionId(hookData, { includeCwd: true });
-  const cwd = typeof hookData.cwd === "string" ? hookData.cwd : void 0;
+  const cwd = resolveHookCwd(hookData);
   const event = {
     type: eventType,
     timestamp: (/* @__PURE__ */ new Date()).toISOString(),
@@ -5473,12 +6258,12 @@ async function parseHookEvent(raw, tool) {
   return event;
 }
 function getEventsPath() {
-  return path18.join(process.env.HOME ?? "", ".teamai", "dashboard", "events.jsonl");
+  return path19.join(getUserHome(), ".teamai", "dashboard", "events.jsonl");
 }
 async function appendEvent(event) {
   try {
     const eventsPath = getEventsPath();
-    await ensureDir(path18.dirname(eventsPath));
+    await ensureDir(path19.dirname(eventsPath));
     const line = JSON.stringify(event) + "\n";
     await fs8.promises.appendFile(eventsPath, line, "utf-8");
     const detail = event.toolName ? ` [tool=${event.toolName}]` : event.promptSummary ? ` [prompt=${event.promptSummary.slice(0, 60)}]` : "";
@@ -5683,28 +6468,32 @@ async function dashboardReport(toolArg) {
   compactEvents().catch(() => {
   });
 }
-var TRANSCRIPT_TAIL_BYTES, STOPPED_OUTPUT_MAX_CHARS, CODEBUDDY_USAGE_MAX_ATTEMPTS, CODEBUDDY_USAGE_RETRY_MS;
+var TRANSCRIPT_TAIL_BYTES, STOPPED_OUTPUT_MAX_CHARS, CODEBUDDY_USAGE_MAX_ATTEMPTS, CODEBUDDY_USAGE_RETRY_MS, CODEBUDDY_BLOB_MAX_COUNT, CODEBUDDY_REJECT_MARKER;
 var init_dashboard_collector = __esm({
   "src/dashboard-collector.ts"() {
     "use strict";
     init_logger();
     init_session_id();
+    init_hook_cwd();
     init_fs();
     init_pid_monitor();
     init_tool_names();
     init_redact();
     init_types();
+    init_home();
     TRANSCRIPT_TAIL_BYTES = 10240;
     STOPPED_OUTPUT_MAX_CHARS = 500;
     CODEBUDDY_USAGE_MAX_ATTEMPTS = 8;
     CODEBUDDY_USAGE_RETRY_MS = 250;
+    CODEBUDDY_BLOB_MAX_COUNT = 2e3;
+    CODEBUDDY_REJECT_MARKER = "User rejected this command";
   }
 });
 
 // src/agent-version.ts
 import { execFile } from "child_process";
 import { readFile } from "fs/promises";
-import path19 from "path";
+import path20 from "path";
 async function execVersion(bin, args = ["--version"]) {
   return new Promise((resolve) => {
     execFile(bin, args, { timeout: 5e3 }, (err, stdout) => {
@@ -5717,7 +6506,7 @@ async function execVersion(bin, args = ["--version"]) {
   });
 }
 async function readPlistVersion(appPath) {
-  const plistPath = path19.join(appPath, "Contents", "Info.plist");
+  const plistPath = path20.join(appPath, "Contents", "Info.plist");
   try {
     const content = await readFile(plistPath, "utf-8");
     const match = content.match(
@@ -5764,6 +6553,11 @@ async function detectOpenclawVersion() {
   const match = raw.match(/^([\d.]+)/);
   return match?.[1] ?? "";
 }
+async function detectDshVersion() {
+  const raw = await execVersion("dsh");
+  const match = raw.match(/v?(\d+(?:\.\d+)*)/);
+  return match?.[1] ?? "";
+}
 async function getAgentVersion(agentType) {
   if (VERSION_CACHE.has(agentType)) return VERSION_CACHE.get(agentType);
   const detector = DETECTORS[agentType];
@@ -5798,7 +6592,10 @@ var init_agent_version = __esm({
       "codebuddy-ide": detectCodebuddyIdeVersion,
       workbuddy: detectWorkbuddyVersion,
       hermes: detectHermesVersion,
-      openclaw: detectOpenclawVersion
+      openclaw: detectOpenclawVersion,
+      // DeepSeek Harness: `dsh --version` prints e.g. "0.1.1" (optionally with a
+      // leading "v" or trailing commit info). Extract leading semver-ish digits.
+      dsh: detectDshVersion
     };
   }
 });
@@ -5870,6 +6667,637 @@ var init_machine_id = __esm({
   "src/machine-id.ts"() {
     "use strict";
     cachedMachineId = null;
+  }
+});
+
+// src/resources/mcp-format.ts
+import crypto3 from "crypto";
+function detectMcpFormat(tool) {
+  if (CLAUDE_TOOLS.has(tool)) return "claude";
+  if (CURSOR_TOOLS2.has(tool)) return "cursor";
+  if (CODEX_TOOLS2.has(tool)) return "codex";
+  if (BUDDY_TOOLS.has(tool)) return "buddy";
+  if (OPENCODE_TOOLS.has(tool)) return "opencode";
+  return null;
+}
+function supportsTransport(format, transport) {
+  return SUPPORTED_TRANSPORTS[format].has(transport);
+}
+function supportsEnvExpansion(_format, _projectScope, _def) {
+  return false;
+}
+function planCodexHeaders(headers = {}) {
+  const plan = { envHttpHeaders: {}, httpHeaders: {} };
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === "authorization") {
+      const bearer = BEARER_PLACEHOLDER_RE.exec(value);
+      if (bearer) {
+        plan.bearerTokenEnvVar = bearer[1];
+        continue;
+      }
+    }
+    const whole = WHOLE_PLACEHOLDER_RE.exec(value);
+    if (whole) {
+      plan.envHttpHeaders[name] = whole[1];
+      continue;
+    }
+    plan.httpHeaders[name] = value;
+  }
+  return plan;
+}
+function referencedVars(def) {
+  const found = /* @__PURE__ */ new Set();
+  const scan = (v) => {
+    if (!v) return;
+    for (const m of v.matchAll(PLACEHOLDER_RE)) found.add(m[1]);
+  };
+  scan(def.url);
+  scan(def.command);
+  def.args?.forEach(scan);
+  Object.values(def.headers ?? {}).forEach(scan);
+  Object.values(def.env ?? {}).forEach(scan);
+  return [...found];
+}
+function resolvePlaceholders(def, vars) {
+  const missing = /* @__PURE__ */ new Set();
+  const sub = (v) => v.replace(PLACEHOLDER_RE, (whole, name) => {
+    const val = vars[name];
+    if (val === void 0 || val === "") {
+      missing.add(name);
+      return whole;
+    }
+    return val;
+  });
+  const subMap = (m) => m && Object.fromEntries(Object.entries(m).map(([k, v]) => [k, sub(v)]));
+  return {
+    def: {
+      ...def,
+      command: def.command ? sub(def.command) : void 0,
+      args: def.args?.map(sub),
+      url: def.url ? sub(def.url) : void 0,
+      headers: subMap(def.headers),
+      env: subMap(def.env)
+    },
+    missing: [...missing]
+  };
+}
+function renderClaude(def) {
+  const e = { type: def.transport };
+  if (def.transport === "stdio") {
+    e.command = def.command;
+    if (def.args?.length) e.args = def.args;
+    if (def.env && Object.keys(def.env).length) e.env = def.env;
+  } else {
+    e.url = def.url;
+    if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
+  }
+  return e;
+}
+function toCursorEnvSyntax(s) {
+  return s.replace(PLACEHOLDER_RE, (_whole, name) => `\${env:${name}}`);
+}
+function renderCursor(def) {
+  const mapVals = (m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, toCursorEnvSyntax(v)]));
+  const e = {};
+  if (def.transport === "stdio") {
+    e.command = def.command;
+    if (def.args?.length) e.args = def.args.map(toCursorEnvSyntax);
+    if (def.env && Object.keys(def.env).length) e.env = mapVals(def.env);
+  } else {
+    e.type = def.transport;
+    e.url = def.url ? toCursorEnvSyntax(def.url) : def.url;
+    if (def.headers && Object.keys(def.headers).length) e.headers = mapVals(def.headers);
+  }
+  return e;
+}
+function renderBuddy(def) {
+  const e = {};
+  if (def.transport === "stdio") {
+    e.command = def.command;
+    if (def.args?.length) e.args = def.args;
+    if (def.env && Object.keys(def.env).length) e.env = def.env;
+  } else {
+    e.type = def.transport;
+    e.url = def.url;
+    if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
+  }
+  if (def.timeout !== void 0) e.timeout = def.timeout;
+  return e;
+}
+function renderOpencode(def) {
+  const e = {};
+  if (def.transport === "stdio") {
+    e.type = "local";
+    e.command = [...def.command ? [def.command] : [], ...def.args ?? []];
+    if (def.env && Object.keys(def.env).length) e.environment = def.env;
+  } else {
+    e.type = "remote";
+    e.url = def.url;
+    if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
+  }
+  e.enabled = true;
+  return e;
+}
+function renderJsonEntry(format, def) {
+  if (format === "claude") return renderClaude(def);
+  if (format === "cursor") return renderCursor(def);
+  if (format === "opencode") return renderOpencode(def);
+  return renderBuddy(def);
+}
+function renderCodexBlock(def) {
+  const q = (s) => JSON.stringify(s);
+  const lines = [`[mcp_servers.${def.name}]`];
+  if (def.transport === "http") {
+    const inlineTable = (t) => `{ ${Object.entries(t).map(([k, v]) => `${q(k)} = ${q(v)}`).join(", ")} }`;
+    lines.push(`url = ${q(def.url ?? "")}`);
+    const plan = planCodexHeaders(def.headers);
+    if (plan.bearerTokenEnvVar) lines.push(`bearer_token_env_var = ${q(plan.bearerTokenEnvVar)}`);
+    if (Object.keys(plan.envHttpHeaders).length > 0) {
+      lines.push(`env_http_headers = ${inlineTable(plan.envHttpHeaders)}`);
+    }
+    if (Object.keys(plan.httpHeaders).length > 0) {
+      lines.push(`http_headers = ${inlineTable(plan.httpHeaders)}`);
+    }
+    if (def.timeout !== void 0) {
+      lines.push(`startup_timeout_sec = ${Math.ceil(def.timeout / 1e3)}`);
+    }
+    return lines.join("\n") + "\n";
+  }
+  lines.push(`command = ${q(def.command ?? "")}`);
+  lines.push(`args = [${(def.args ?? []).map(q).join(", ")}]`);
+  if (def.timeout !== void 0) {
+    lines.push(`startup_timeout_sec = ${Math.ceil(def.timeout / 1e3)}`);
+  }
+  const env = def.env ?? {};
+  if (Object.keys(env).length) {
+    lines.push("");
+    lines.push(`[mcp_servers.${def.name}.env]`);
+    for (const [k, v] of Object.entries(env)) lines.push(`${k} = ${q(v)}`);
+  }
+  return lines.join("\n") + "\n";
+}
+function entryHash(rendered) {
+  return crypto3.createHash("sha1").update(JSON.stringify(rendered)).digest("hex").slice(0, 16);
+}
+var CLAUDE_TOOLS, CURSOR_TOOLS2, CODEX_TOOLS2, BUDDY_TOOLS, OPENCODE_TOOLS, MCP_SERVER_KEY, SUPPORTED_TRANSPORTS, BEARER_PLACEHOLDER_RE, WHOLE_PLACEHOLDER_RE, PLACEHOLDER_RE;
+var init_mcp_format = __esm({
+  "src/resources/mcp-format.ts"() {
+    "use strict";
+    CLAUDE_TOOLS = /* @__PURE__ */ new Set(["claude", "claude-internal", "tclaude"]);
+    CURSOR_TOOLS2 = /* @__PURE__ */ new Set(["cursor"]);
+    CODEX_TOOLS2 = /* @__PURE__ */ new Set(["codex", "codex-internal", "tcodex"]);
+    BUDDY_TOOLS = /* @__PURE__ */ new Set(["codebuddy", "workbuddy"]);
+    OPENCODE_TOOLS = /* @__PURE__ */ new Set(["opencode"]);
+    MCP_SERVER_KEY = {
+      claude: "mcpServers",
+      cursor: "mcpServers",
+      buddy: "mcpServers",
+      opencode: "mcp"
+    };
+    SUPPORTED_TRANSPORTS = {
+      claude: /* @__PURE__ */ new Set(["stdio", "http", "sse"]),
+      cursor: /* @__PURE__ */ new Set(["stdio", "http", "sse"]),
+      buddy: /* @__PURE__ */ new Set(["stdio", "http", "sse"]),
+      // Codex speaks streamable HTTP (`url` + header keys) as well as stdio, but has
+      // no SSE transport, so only that one is skipped.
+      codex: /* @__PURE__ */ new Set(["stdio", "http"]),
+      // OpenCode splits transports into `type: local` (stdio) and `type: remote`
+      // (streamable HTTP). It has no SSE transport.
+      opencode: /* @__PURE__ */ new Set(["stdio", "http"])
+    };
+    BEARER_PLACEHOLDER_RE = /^Bearer \$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
+    WHOLE_PLACEHOLDER_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
+    PLACEHOLDER_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+  }
+});
+
+// src/resources/mcp.ts
+import path21 from "path";
+import { z as z4 } from "zod";
+import YAML4 from "yaml";
+function teamMcpYamlPath(repoPath) {
+  return path21.join(repoPath, "mcp", "mcp.yaml");
+}
+async function parseMcpYaml(repoPath) {
+  const content = await readFileSafe(teamMcpYamlPath(repoPath));
+  if (!content) return null;
+  try {
+    return McpYamlSchema.parse(YAML4.parse(content));
+  } catch (e) {
+    log.warn(`Invalid mcp.yaml format: ${e.message} \u2014 skipping team MCP servers this run`);
+    return null;
+  }
+}
+function teamMcpToDef(s) {
+  return {
+    name: s.name,
+    description: s.description,
+    transport: s.transport,
+    command: s.command,
+    args: s.args,
+    url: s.url,
+    headers: s.headers,
+    env: s.env,
+    timeout: s.timeout,
+    requires: s.requires,
+    tools: s.tools
+  };
+}
+async function parseTeamMcpServers(repoPath) {
+  const parsed = await parseMcpYaml(repoPath);
+  if (!parsed) return [];
+  return parsed.servers.map(teamMcpToDef);
+}
+var TeamMcpServerSchema, McpYamlSchema, McpHandler;
+var init_mcp = __esm({
+  "src/resources/mcp.ts"() {
+    "use strict";
+    init_base();
+    init_fs();
+    init_logger();
+    TeamMcpServerSchema = z4.object({
+      name: z4.string().regex(/^[A-Za-z0-9_-]+$/, "name must be alphanumeric with - or _"),
+      description: z4.string().optional(),
+      transport: z4.enum(["stdio", "http", "sse"]),
+      command: z4.string().optional(),
+      args: z4.array(z4.string()).optional(),
+      url: z4.string().optional(),
+      headers: z4.record(z4.string(), z4.string()).optional(),
+      env: z4.record(z4.string(), z4.string()).optional(),
+      timeout: z4.number().int().positive().optional(),
+      requires: z4.array(z4.string()).optional(),
+      tools: z4.array(z4.string()).optional()
+    }).refine((s) => s.transport === "stdio" ? !!s.command : true, {
+      message: "stdio transport requires `command`"
+    }).refine((s) => s.transport === "stdio" ? true : !!s.url, {
+      message: "http/sse transport requires `url`"
+    });
+    McpYamlSchema = z4.object({
+      servers: z4.array(TeamMcpServerSchema).default([])
+    });
+    McpHandler = class extends ResourceHandler {
+      type = "mcp";
+      /**
+       * MCP servers are contributed by editing mcp/mcp.yaml directly (same as hooks),
+       * so there is nothing to discover on the local side for push.
+       */
+      async scanLocalForPush() {
+        return [];
+      }
+      async scanTeamForPull(_teamConfig, localConfig) {
+        const yamlPath = teamMcpYamlPath(localConfig.repo.localPath);
+        if (!await pathExists(yamlPath)) return [];
+        const servers = await parseTeamMcpServers(localConfig.repo.localPath);
+        return servers.map((s) => ({
+          name: s.name,
+          type: "mcp",
+          sourcePath: yamlPath,
+          relativePath: path21.join("mcp", "mcp.yaml")
+        }));
+      }
+      async pushItem() {
+      }
+      async pullItem() {
+      }
+      /**
+       * Remove a server from the team repo's mcp.yaml. Local tool configs are cleaned
+       * up by the next reconcile, which sees the server vanish from the desired set.
+       */
+      async removeItem(name, _teamConfig, localConfig) {
+        const yamlPath = teamMcpYamlPath(localConfig.repo.localPath);
+        const parsed = await parseMcpYaml(localConfig.repo.localPath);
+        if (!parsed) return [];
+        const remaining = parsed.servers.filter((s) => s.name !== name);
+        if (remaining.length === parsed.servers.length) return [];
+        const { writeFile: writeFile13 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
+        await writeFile13(yamlPath, YAML4.stringify({ servers: remaining }));
+        await this.addTombstone(name, localConfig);
+        return [yamlPath];
+      }
+    };
+  }
+});
+
+// src/mcp-reconcile.ts
+var mcp_reconcile_exports = {};
+__export(mcp_reconcile_exports, {
+  buildVarTable: () => buildVarTable,
+  codexServerNames: () => codexServerNames,
+  readJsonDoc: () => readJsonDoc,
+  reconcileMcpForConfig: () => reconcileMcpForConfig,
+  resolveMcpTargets: () => resolveMcpTargets,
+  spliceCodexBlock: () => spliceCodexBlock,
+  writeCodexAtomic: () => writeCodexAtomic
+});
+import crypto4 from "crypto";
+import path22 from "path";
+import fse3 from "fs-extra";
+async function readManifest2(manifestPath) {
+  const data = await readJson(expandHome(manifestPath));
+  return data && typeof data === "object" ? data : {};
+}
+async function buildVarTable(localConfig) {
+  const table = {};
+  const envFile = getEnvBackupPath(localConfig);
+  const content = await readFileSafe(envFile);
+  if (content) {
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq <= 0) continue;
+      table[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+    }
+  }
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== void 0) table[k] = v;
+  }
+  return table;
+}
+function hostAllowed(url, allowedHosts) {
+  if (allowedHosts.length === 0) return true;
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  return allowedHosts.some(
+    (pattern) => pattern.startsWith("*.") ? host === pattern.slice(2) || host.endsWith(pattern.slice(1)) : host === pattern
+  );
+}
+function policyViolation(def, sharing) {
+  if (def.transport === "stdio") {
+    const { allowedCommands } = sharing;
+    if (allowedCommands.length > 0 && def.command && !allowedCommands.includes(def.command)) {
+      return `command "${def.command}" is not in sharing.mcp.allowedCommands`;
+    }
+  } else if (def.url && !hostAllowed(def.url, sharing.allowedHosts)) {
+    return `host is not in sharing.mcp.allowedHosts`;
+  }
+  return null;
+}
+async function requirementsMet(def) {
+  if (!def.requires?.length) return null;
+  const { execFile: execFile5 } = await import("child_process");
+  const { promisify: promisify4 } = await import("util");
+  const run = promisify4(execFile5);
+  for (const bin of def.requires) {
+    if (!SAFE_BIN_RE.test(bin)) {
+      return `required executable "${bin}" has an invalid name`;
+    }
+    try {
+      await run("command", ["-v", bin], { shell: "/bin/sh" });
+    } catch {
+      return `required executable "${bin}" not found on PATH`;
+    }
+  }
+  return null;
+}
+async function resolveMcpTargets(teamConfig, localConfig) {
+  const baseDir = resolveBaseDir(localConfig);
+  const projectScope = localConfig.scope === "project";
+  const targets = [];
+  for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    const format = detectMcpFormat(tool);
+    if (!format) continue;
+    const rel = projectScope ? paths.mcpProject : paths.mcp;
+    if (!rel) continue;
+    const probe = paths.skills ?? paths.settings ?? paths.agents;
+    if (!probe) continue;
+    const probeDir = path22.dirname(probe);
+    const toolRoot = probeDir === "." ? path22.join(baseDir, probe) : path22.join(baseDir, probeDir);
+    if (!await pathExists(toolRoot)) {
+      log.debug(`Skipping MCP sync for ${tool}: tool not installed`);
+      continue;
+    }
+    targets.push({ tool, format, file: path22.join(baseDir, rel), projectScope });
+  }
+  return targets;
+}
+async function readJsonDoc(file, serverKey) {
+  if (!await pathExists(file)) return { data: {}, servers: {} };
+  const raw = await readFileSafe(file);
+  if (raw === null) return null;
+  if (raw.trim() === "") return { data: {}, servers: {} };
+  try {
+    const data = JSON.parse(raw);
+    if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+    const servers = data[serverKey] ?? {};
+    if (typeof servers !== "object" || servers === null || Array.isArray(servers)) return null;
+    return { data, servers: { ...servers } };
+  } catch {
+    return null;
+  }
+}
+function spliceCodexBlock(source, name, block) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(
+    String.raw`^\[mcp_servers\.${escaped}\]\s*$[\s\S]*?(?=^\[(?!mcp_servers\.${escaped}[.\]])|(?![\s\S]))`,
+    "m"
+  );
+  const match = source.match(re);
+  if (match) {
+    if (block === null) {
+      const cleaned = source.replace(re, "");
+      return cleaned.replace(/\n{3,}/g, "\n\n");
+    }
+    return source.replace(re, block.endsWith("\n") ? block + "\n" : block + "\n\n");
+  }
+  if (block === null) return source;
+  const sep = source.length === 0 || source.endsWith("\n\n") ? "" : source.endsWith("\n") ? "\n" : "\n\n";
+  return source + sep + block;
+}
+function codexServerNames(source) {
+  const names = /* @__PURE__ */ new Set();
+  for (const m of source.matchAll(/^\[mcp_servers\.([A-Za-z0-9_-]+)\]\s*$/gm)) names.add(m[1]);
+  return [...names];
+}
+async function reconcileMcpForConfig(teamConfig, localConfig, options = {}) {
+  const changes = [];
+  let wrote = false;
+  const sharing = getMcpSharing(teamConfig);
+  const removeAll = options.removeAll === true;
+  if (localConfig.repo.kind === "http" && !removeAll) {
+    return { changes, wrote };
+  }
+  const teamDefs = removeAll ? [] : await parseTeamMcpServers(localConfig.repo.localPath);
+  if (!removeAll && teamDefs.length > 0 && !sharing.autoApply) {
+    log.info(`${teamDefs.length} team MCP server(s) available. Run \`teamai mcp inject\` to apply.`);
+    return { changes, wrote };
+  }
+  const excluded = new Set(localConfig.excludedSkills ?? []);
+  const targets = await resolveMcpTargets(teamConfig, localConfig);
+  if (targets.length === 0) return { changes, wrote };
+  const manifestPath = managedMcpManifestPath(localConfig.scope, localConfig.projectRoot);
+  const manifest = await readManifest2(manifestPath);
+  const nothingOwned = Object.values(manifest).every((r) => r.length === 0);
+  if (teamDefs.length === 0 && nothingOwned) return { changes, wrote };
+  const vars = await buildVarTable(localConfig);
+  for (const target of targets) {
+    const manifestKey = `${target.tool}${target.projectScope ? ":project" : ""}`;
+    const owned = manifest[manifestKey] ?? [];
+    const ownedNames = new Set(owned.map((r) => r.name));
+    const nextRecords = [];
+    const desired = /* @__PURE__ */ new Map();
+    for (const raw of teamDefs) {
+      if (raw.tools && !raw.tools.includes(target.tool)) continue;
+      if (excluded.has(raw.name)) {
+        changes.push({ tool: target.tool, server: raw.name, action: "skipped", reason: "excluded by user" });
+        continue;
+      }
+      if (!supportsTransport(target.format, raw.transport)) {
+        changes.push({
+          tool: target.tool,
+          server: raw.name,
+          action: "skipped",
+          reason: `${target.tool} does not support ${raw.transport} transport`
+        });
+        continue;
+      }
+      const violation = policyViolation(raw, sharing);
+      if (violation) {
+        changes.push({ tool: target.tool, server: raw.name, action: "skipped", reason: violation });
+        continue;
+      }
+      const missingBin = await requirementsMet(raw);
+      if (missingBin) {
+        changes.push({ tool: target.tool, server: raw.name, action: "skipped", reason: missingBin });
+        continue;
+      }
+      const passthrough = supportsEnvExpansion(target.format, target.projectScope, raw);
+      let def = raw;
+      if (!passthrough) {
+        const { def: resolved, missing } = resolvePlaceholders(raw, vars);
+        if (missing.length > 0) {
+          changes.push({
+            tool: target.tool,
+            server: raw.name,
+            action: "skipped",
+            reason: `unresolved variable(s): ${missing.join(", ")}`
+          });
+          continue;
+        }
+        def = resolved;
+      } else if (referencedVars(raw).length > 0) {
+        log.debug(`${raw.name}: passing ${referencedVars(raw).join(", ")} through to ${target.tool}`);
+      }
+      if (target.format === "codex") {
+        const block = renderCodexBlock(def);
+        desired.set(raw.name, { entry: block, hash: entryHash(block), block });
+      } else {
+        const entry = renderJsonEntry(target.format, def);
+        desired.set(raw.name, { entry, hash: entryHash(entry) });
+      }
+    }
+    if (target.format === "codex") {
+      wrote = await applyCodex(target, desired, ownedNames, nextRecords, changes, options) || wrote;
+    } else {
+      wrote = await applyJson(target, desired, owned, ownedNames, nextRecords, changes, options) || wrote;
+    }
+    if (nextRecords.length > 0) manifest[manifestKey] = nextRecords;
+    else delete manifest[manifestKey];
+  }
+  if (!options.dryRun && wrote) {
+    await writeJsonAtomic(manifestPath, manifest);
+  }
+  return { changes, wrote };
+}
+async function applyJson(target, desired, owned, ownedNames, nextRecords, changes, options) {
+  const serverKey = MCP_SERVER_KEY[target.format];
+  const doc = await readJsonDoc(target.file, serverKey);
+  if (!doc) {
+    log.warn(`Could not parse ${target.file} \u2014 skipping MCP injection for ${target.tool}`);
+    return false;
+  }
+  const ownedHash = new Map(owned.map((r) => [r.name, r.hash]));
+  let dirty = false;
+  for (const [name, { entry, hash }] of desired) {
+    const existing = doc.servers[name];
+    if (existing !== void 0 && !ownedNames.has(name) && !options.force) {
+      changes.push({
+        tool: target.tool,
+        server: name,
+        action: "skipped",
+        reason: "a server with this name already exists and is not managed by teamai"
+      });
+      continue;
+    }
+    nextRecords.push({ name, hash });
+    if (existing !== void 0 && ownedHash.get(name) === hash) continue;
+    doc.servers[name] = entry;
+    dirty = true;
+    changes.push({ tool: target.tool, server: name, action: existing === void 0 ? "added" : "updated" });
+  }
+  for (const name of ownedNames) {
+    if (desired.has(name)) continue;
+    if (doc.servers[name] !== void 0) {
+      delete doc.servers[name];
+      dirty = true;
+    }
+    changes.push({ tool: target.tool, server: name, action: "removed" });
+  }
+  if (!dirty || options.dryRun) return false;
+  doc.data[serverKey] = doc.servers;
+  await writeJsonAtomic(target.file, doc.data);
+  return true;
+}
+async function applyCodex(target, desired, ownedNames, nextRecords, changes, options) {
+  let source = await readFileSafe(target.file) ?? "";
+  const present = new Set(codexServerNames(source));
+  let dirty = false;
+  for (const [name, { hash, block }] of desired) {
+    if (present.has(name) && !ownedNames.has(name) && !options.force) {
+      changes.push({
+        tool: target.tool,
+        server: name,
+        action: "skipped",
+        reason: "a server with this name already exists and is not managed by teamai"
+      });
+      continue;
+    }
+    nextRecords.push({ name, hash });
+    const next = spliceCodexBlock(source, name, block);
+    if (next === source) continue;
+    source = next;
+    dirty = true;
+    changes.push({ tool: target.tool, server: name, action: present.has(name) ? "updated" : "added" });
+  }
+  for (const name of ownedNames) {
+    if (desired.has(name)) continue;
+    const next = spliceCodexBlock(source, name, null);
+    if (next !== source) {
+      source = next;
+      dirty = true;
+    }
+    changes.push({ tool: target.tool, server: name, action: "removed" });
+  }
+  if (!dirty || options.dryRun) return false;
+  await fse3.ensureDir(path22.dirname(target.file));
+  const tmp = `${target.file}.${process.pid}.tmp`;
+  await fse3.writeFile(tmp, source, "utf-8");
+  await fse3.chmod(tmp, 384);
+  await fse3.rename(tmp, target.file);
+  return true;
+}
+async function writeCodexAtomic(file, content) {
+  await fse3.ensureDir(path22.dirname(file));
+  const suffix = crypto4.randomBytes(6).toString("hex");
+  const tmp = `${file}.${process.pid}.${suffix}.tmp`;
+  await fse3.writeFile(tmp, content, "utf-8");
+  await fse3.chmod(tmp, 384);
+  await fse3.rename(tmp, file);
+}
+var SAFE_BIN_RE;
+var init_mcp_reconcile = __esm({
+  "src/mcp-reconcile.ts"() {
+    "use strict";
+    init_types();
+    init_mcp_format();
+    init_mcp();
+    init_fs();
+    init_logger();
+    SAFE_BIN_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
   }
 });
 
@@ -6068,6 +7496,44 @@ var init_plugin_lifecycle = __esm({
   }
 });
 
+// src/api-key.ts
+var api_key_exports = {};
+__export(api_key_exports, {
+  getApiKeyPath: () => getApiKeyPath,
+  resolveApiKey: () => resolveApiKey,
+  saveApiKey: () => saveApiKey
+});
+import fs10 from "fs";
+import path23 from "path";
+function getApiKeyPath() {
+  return path23.join(getUserHome(), ".teamai", "apikey");
+}
+function resolveApiKey() {
+  const fromEnv = process.env.TEAMAI_API_TOKEN || process.env.TEAMAI_API_KEY;
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  try {
+    const content = fs10.readFileSync(getApiKeyPath(), "utf-8").trim();
+    if (content) return content;
+  } catch {
+  }
+  return null;
+}
+async function saveApiKey(key) {
+  const trimmed = key.trim();
+  if (!trimmed) throw new Error("API key must not be empty");
+  const keyPath = getApiKeyPath();
+  await ensureDir(path23.dirname(keyPath));
+  fs10.writeFileSync(keyPath, trimmed + "\n", { mode: 384 });
+  fs10.chmodSync(keyPath, 384);
+}
+var init_api_key = __esm({
+  "src/api-key.ts"() {
+    "use strict";
+    init_fs();
+    init_home();
+  }
+});
+
 // src/utils/prompt.ts
 var prompt_exports = {};
 __export(prompt_exports, {
@@ -6215,33 +7681,32 @@ __export(local_agent_exports, {
   teardownLocalAgentPlugins: () => teardownLocalAgentPlugins,
   writeTokenFile: () => writeTokenFile
 });
-import fs10 from "fs";
+import fs11 from "fs";
 import os6 from "os";
-import path20 from "path";
-import readline3 from "readline";
+import path24 from "path";
 import { execFile as execFile2 } from "child_process";
 import { promisify } from "util";
-import fse3 from "fs-extra";
-import YAML4 from "yaml";
+import fse4 from "fs-extra";
+import YAML5 from "yaml";
 function isUnimplementedCommand(command) {
   const type = command.type ?? "";
   if (IMPLEMENTED_HOOK_COMMAND_TYPES.has(type)) return false;
   return UNIMPLEMENTED_COMMAND_TYPES.has(type) || command.handle_type === "hook";
 }
 function getTeamaiHomePath() {
-  return path20.join(process.env.HOME ?? "", ".teamai");
+  return path24.join(getUserHome(), ".teamai");
 }
 function getLocalAgentHome() {
-  return path20.join(getTeamaiHomePath(), LOCAL_AGENT_DIR);
+  return path24.join(getTeamaiHomePath(), LOCAL_AGENT_DIR);
 }
 function getConfigPath2() {
-  return path20.join(getLocalAgentHome(), CONFIG_FILE);
+  return path24.join(getLocalAgentHome(), CONFIG_FILE);
 }
 function getManifestPath() {
-  return path20.join(getLocalAgentHome(), MANIFEST_FILE);
+  return path24.join(getLocalAgentHome(), MANIFEST_FILE);
 }
 function getErrorLogPath() {
-  return path20.join(getTeamaiHomePath(), REPORTER_ERROR_LOG);
+  return path24.join(getTeamaiHomePath(), REPORTER_ERROR_LOG);
 }
 function compileClaudemdBlock(contents) {
   const parts = contents.map((content) => content.trim()).filter(Boolean);
@@ -6268,10 +7733,10 @@ function resolveRoute(config, name) {
   return DEFAULT_ROUTES[name];
 }
 function resolveAgentInstallPath(agentType) {
-  const home = process.env.HOME ?? "";
+  const home = getUserHome();
   const skillsRel = createLocalAgentTeamConfig("").toolPaths[agentType]?.skills;
-  const rel = skillsRel ? path20.dirname(skillsRel) : `.${agentType}`;
-  return path20.join(home, rel);
+  const rel = skillsRel ? path24.dirname(skillsRel) : `.${agentType}`;
+  return path24.join(home, rel);
 }
 function resolveLocalAgentId(context) {
   const envOverride = process.env.TEAMAI_LOCAL_AGENT_ID;
@@ -6282,7 +7747,7 @@ function resolveLocalAgentId(context) {
 function isCloudStudioSandbox() {
   if (process.env.X_IDE_IS_CLOUDSTUDIO === "TRUE") return true;
   try {
-    return fs10.existsSync("/var/run/cloudstudio");
+    return fs11.existsSync("/var/run/cloudstudio");
   } catch {
     return false;
   }
@@ -6305,7 +7770,7 @@ async function saveManifest(manifest) {
   await writeJson(getManifestPath(), manifest);
 }
 function getAgentHookManifestPath() {
-  return path20.join(getLocalAgentHome(), "agent-hooks.json");
+  return path24.join(getLocalAgentHome(), "agent-hooks.json");
 }
 async function loadAgentHookManifest() {
   const data = await readJson(getAgentHookManifestPath());
@@ -6319,10 +7784,10 @@ function resolveToolSettingsPath(config, tool) {
   if (!toolPath?.settings) {
     throw new Error(`unsupported tool: ${tool} (no settings path)`);
   }
-  return path20.join(process.env.HOME ?? "", toolPath.settings);
+  return path24.join(getUserHome(), toolPath.settings);
 }
 function getPluginStatePath() {
-  return path20.join(getLocalAgentHome(), "plugins.json");
+  return path24.join(getLocalAgentHome(), "plugins.json");
 }
 async function readPluginState() {
   return await readJson(getPluginStatePath()) ?? {};
@@ -6330,21 +7795,21 @@ async function readPluginState() {
 async function withPluginStateLock(mutate) {
   const statePath = getPluginStatePath();
   const lockPath = `${statePath}.lock`;
-  await ensureDir(path20.dirname(lockPath));
+  await ensureDir(path24.dirname(lockPath));
   const deadline = Date.now() + 5e3;
   let acquired = false;
   while (Date.now() <= deadline) {
     try {
-      const fd = await fs10.promises.open(lockPath, "wx");
+      const fd = await fs11.promises.open(lockPath, "wx");
       await fd.close();
       acquired = true;
       break;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
       try {
-        const st = await fs10.promises.stat(lockPath);
+        const st = await fs11.promises.stat(lockPath);
         if (Date.now() - st.mtimeMs > 3e4) {
-          await fs10.promises.rm(lockPath, { force: true });
+          await fs11.promises.rm(lockPath, { force: true });
           continue;
         }
       } catch {
@@ -6358,7 +7823,7 @@ async function withPluginStateLock(mutate) {
     mutate(m);
     await writeJson(statePath, m);
   } finally {
-    await fs10.promises.rm(lockPath, { force: true });
+    await fs11.promises.rm(lockPath, { force: true });
   }
 }
 function getManifestScope(manifest, scope, workspacePath) {
@@ -6367,9 +7832,9 @@ function getManifestScope(manifest, scope, workspacePath) {
   return manifest.scopes[key];
 }
 async function canonicalizeWorkspacePath(value) {
-  const absolute = path20.resolve(value);
+  const absolute = path24.resolve(value);
   try {
-    return await fs10.promises.realpath(absolute);
+    return await fs11.promises.realpath(absolute);
   } catch {
     return absolute;
   }
@@ -6395,9 +7860,21 @@ async function loadLocalAgentConfig() {
       endpoint: normalizeEndpoint(fileConfig.endpoint),
       workspaceBindings: fileConfig.workspaceBindings ?? {}
     };
+    const removedLegacyPaths = [];
     for (const [wsPath, binding] of Object.entries(config.workspaceBindings)) {
       if ("groupId" in binding && !("projectId" in binding)) {
         delete config.workspaceBindings[wsPath];
+        removedLegacyPaths.push(wsPath);
+      }
+    }
+    if (removedLegacyPaths.length > 0) {
+      log.warn(
+        `Removed ${removedLegacyPaths.length} legacy group-based workspace binding(s); you will be prompted to re-bind on the next session.`
+      );
+      try {
+        await saveLocalAgentConfig(config);
+      } catch (e) {
+        log.debug(`local-agent: failed to persist binding cleanup: ${e.message}`);
       }
     }
     const migrated = {};
@@ -6413,6 +7890,26 @@ async function loadLocalAgentConfig() {
       await saveLocalAgentConfig(config);
     }
     return config;
+  }
+  const { loadLocalConfig: loadLocalConfig3 } = await Promise.resolve().then(() => (init_config(), config_exports));
+  const { resolveApiKey: resolveApiKey2 } = await Promise.resolve().then(() => (init_api_key(), api_key_exports));
+  const legacy = await loadLocalConfig3();
+  if (legacy?.repo?.kind === "http" && legacy.repo.url) {
+    const endpoint = normalizeEndpoint(legacy.repo.url);
+    const token = resolveApiKey2() ?? void 0;
+    const backfilled = {
+      endpoint,
+      token,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+      workspaceBindings: {}
+    };
+    try {
+      await saveLocalAgentConfig(backfilled);
+      log.debug("local-agent: backfilled config.json from legacy ~/.teamai/config.yaml (http repo)");
+    } catch (e) {
+      log.debug(`local-agent: backfill persist failed, using in-memory config: ${e.message}`);
+    }
+    return backfilled;
   }
   const envEndpoint = process.env.TEAMAI_HTTP_ENDPOINT ?? process.env.TEAMAI_ENDPOINT ?? process.env.TEAMAI_API_BASE_URL;
   if (!envEndpoint) return null;
@@ -6449,14 +7946,14 @@ function createResourceLocalConfig(config, scope, repoPath, workspacePath) {
 }
 function getResourceRepoPath(scope, workspacePath) {
   if (scope === "project" && workspacePath) {
-    return path20.join(workspacePath, ".teamai", LOCAL_AGENT_DIR, "resources");
+    return path24.join(workspacePath, ".teamai", LOCAL_AGENT_DIR, "resources");
   }
-  return path20.join(getLocalAgentHome(), "resources", scope);
+  return path24.join(getLocalAgentHome(), "resources", scope);
 }
 async function ensureProjectGitignore(workspacePath) {
-  const teamaiDir = path20.join(workspacePath, ".teamai");
+  const teamaiDir = path24.join(workspacePath, ".teamai");
   await ensureDir(teamaiDir);
-  const gitignorePath = path20.join(teamaiDir, ".gitignore");
+  const gitignorePath = path24.join(teamaiDir, ".gitignore");
   const existing = await readFileSafe(gitignorePath);
   if (!existing) {
     await writeFile(gitignorePath, ["# teamai local state", "local-agent/", ""].join("\n"));
@@ -6506,8 +8003,8 @@ async function localAgentFetch(config, tag, route, init2, opts) {
 }
 async function appendErrorLog(entry) {
   try {
-    await ensureDir(path20.dirname(getErrorLogPath()));
-    await fs10.promises.appendFile(
+    await ensureDir(path24.dirname(getErrorLogPath()));
+    await fs11.promises.appendFile(
       getErrorLogPath(),
       JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), entry }) + "\n",
       "utf-8"
@@ -6572,7 +8069,7 @@ async function fetchPluginConfig(config, tag) {
   return localAgentFetch(config, tag, "getConfig", { method: "GET" }, { redactResponseLog: true });
 }
 function getPluginPullStatePath() {
-  return path20.join(getLocalAgentHome(), "plugin-pull.json");
+  return path24.join(getLocalAgentHome(), "plugin-pull.json");
 }
 function buildReconcileDeps(config, tag) {
   return {
@@ -6617,21 +8114,21 @@ async function maybeReconcilePlugins(context) {
 async function runPluginReconcileWorker() {
   const config = await loadLocalAgentConfig();
   if (!config) return;
-  const lockPath = path20.join(getLocalAgentHome(), "plugin-reconcile.lock");
-  await ensureDir(path20.dirname(lockPath));
+  const lockPath = path24.join(getLocalAgentHome(), "plugin-reconcile.lock");
+  await ensureDir(path24.dirname(lockPath));
   let acquired = false;
   try {
     try {
-      const fd = await fs10.promises.open(lockPath, "wx");
+      const fd = await fs11.promises.open(lockPath, "wx");
       await fd.close();
       acquired = true;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
       try {
-        const st = await fs10.promises.stat(lockPath);
+        const st = await fs11.promises.stat(lockPath);
         if (Date.now() - st.mtimeMs > 30 * 60 * 1e3) {
-          await fs10.promises.rm(lockPath, { force: true });
-          const fd = await fs10.promises.open(lockPath, "wx");
+          await fs11.promises.rm(lockPath, { force: true });
+          const fd = await fs11.promises.open(lockPath, "wx");
           await fd.close();
           acquired = true;
         }
@@ -6680,7 +8177,7 @@ async function runPluginReconcileWorker() {
       log.debug(`${tag} reconcile failed: ${e.message}`);
     }
   } finally {
-    if (acquired) await fs10.promises.rm(lockPath, { force: true });
+    if (acquired) await fs11.promises.rm(lockPath, { force: true });
   }
 }
 async function askViaTty(prompt) {
@@ -6688,30 +8185,7 @@ async function askViaTty(prompt) {
     const { askQuestion: askQuestion2 } = await Promise.resolve().then(() => (init_prompt(), prompt_exports));
     return askQuestion2(prompt, "");
   }
-  if (process.platform === "win32") return null;
-  let fd = null;
-  let input = null;
-  let output = null;
-  let rl = null;
-  try {
-    fd = fs10.openSync("/dev/tty", "r+");
-    input = fs10.createReadStream("", { fd, autoClose: false });
-    output = fs10.createWriteStream("", { fd, autoClose: false });
-    rl = readline3.createInterface({ input, output });
-    return await new Promise((resolve) => {
-      rl.question(prompt, (answer) => resolve(answer.trim()));
-    });
-  } catch {
-    return null;
-  } finally {
-    rl?.close();
-    input?.destroy();
-    output?.destroy();
-    if (fd !== null) try {
-      fs10.closeSync(fd);
-    } catch {
-    }
-  }
+  return null;
 }
 async function promptForProjectBinding(workspacePath, projects) {
   if (projects.length === 0) return null;
@@ -6751,10 +8225,10 @@ async function bindWorkspaceToProject(workspacePath, projectId) {
 async function ensureWorkspaceBinding(config, workspacePath, sessionId) {
   if (config.workspaceBindings[workspacePath]) return;
   const markerKey = sessionId || `ppid-${process.ppid}`;
-  const hintMarker = path20.join(os6.tmpdir(), `teamai-bind-session-${markerKey}`);
-  if (fs10.existsSync(hintMarker)) return;
+  const hintMarker = path24.join(os6.tmpdir(), `teamai-bind-session-${markerKey}`);
+  if (fs11.existsSync(hintMarker)) return;
   try {
-    fs10.writeFileSync(hintMarker, "");
+    fs11.writeFileSync(hintMarker, "");
   } catch {
   }
   let projects;
@@ -6799,10 +8273,10 @@ function isBindPromptEnabled() {
 async function emitBindingHint(config, workspacePath, sessionId) {
   if (config.workspaceBindings[workspacePath]) return;
   const markerKey = sessionId || `ppid-${process.ppid}`;
-  const hintMarker = path20.join(os6.tmpdir(), `teamai-bind-hint-${markerKey}`);
-  if (fs10.existsSync(hintMarker)) return;
+  const hintMarker = path24.join(os6.tmpdir(), `teamai-bind-hint-${markerKey}`);
+  if (fs11.existsSync(hintMarker)) return;
   try {
-    fs10.writeFileSync(hintMarker, "");
+    fs11.writeFileSync(hintMarker, "");
   } catch {
   }
   let projects;
@@ -6838,14 +8312,14 @@ async function emitBindingHint(config, workspacePath, sessionId) {
   process.stdout.write(hookOutput + "\n");
 }
 function isEphemeralTaskDir(dir) {
-  const segments = dir.split(path20.sep);
+  const segments = dir.split(path24.sep);
   const wbIdx = segments.lastIndexOf("WorkBuddy");
   if (wbIdx < 0 || wbIdx >= segments.length - 1) return false;
   return /^\d{4}-\d{2}-\d{2}/.test(segments[wbIdx + 1]);
 }
 async function resolveWorkspacePath(cwd) {
   if (!cwd) return void 0;
-  const absolute = path20.resolve(cwd);
+  const absolute = path24.resolve(cwd);
   if (isEphemeralTaskDir(absolute)) return void 0;
   try {
     const { stdout } = await execFileAsync("git", ["-C", absolute, "rev-parse", "--show-toplevel"]);
@@ -6863,7 +8337,7 @@ async function scanSkillsFromDisk(skillsDir, manifestSlugs) {
   const dirs = (await listDirs(skillsDir)).filter((name) => !name.startsWith(".") && !name.startsWith("_"));
   const results = [];
   for (const dir of dirs) {
-    const skillMd = path20.join(skillsDir, dir, "SKILL.md");
+    const skillMd = path24.join(skillsDir, dir, "SKILL.md");
     if (!await pathExists(skillMd)) continue;
     const fm = await readFrontmatter(skillMd);
     const slug = typeof fm.name === "string" && fm.name ? fm.name : dir;
@@ -6879,11 +8353,15 @@ async function scanSkillsFromDisk(skillsDir, manifestSlugs) {
 }
 async function scanRulesFromDisk(rulesDir, manifestSlugs) {
   if (!await pathExists(rulesDir)) return [];
-  const files = (await listFilesRecursive(rulesDir)).filter((f) => f.endsWith(".md"));
+  const files = await listFilesRecursive(rulesDir);
   const results = [];
+  const seen = /* @__PURE__ */ new Set();
   for (const file of files) {
-    const slug = file.replace(/\.md$/, "");
-    if (EXCLUDED_RULE_NAMES.has(path20.basename(slug)) || EXCLUDED_RULE_NAMES.has(slug)) continue;
+    const slug = ruleStemFromFilename(file);
+    if (slug === null) continue;
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    if (EXCLUDED_RULE_NAMES.has(path24.basename(slug)) || EXCLUDED_RULE_NAMES.has(slug)) continue;
     results.push({
       slug,
       display_name: slug,
@@ -6904,11 +8382,30 @@ function collectManifestSlugs(manifest) {
   }
   return { skills, rules };
 }
+async function scanMcpFromManifest(scope, projectRoot) {
+  const manifestPath = managedMcpManifestPath(
+    scope === "project" ? "project" : "user",
+    projectRoot
+  );
+  const manifest = await readJson(manifestPath);
+  if (!manifest || typeof manifest !== "object") return [];
+  const seen = /* @__PURE__ */ new Set();
+  const results = [];
+  for (const records of Object.values(manifest)) {
+    if (!Array.isArray(records)) continue;
+    for (const rec of records) {
+      if (!rec.name || seen.has(rec.name)) continue;
+      seen.add(rec.name);
+      results.push({ slug: rec.name, source: "enterprise" });
+    }
+  }
+  return results.sort((a, b) => a.slug.localeCompare(b.slug));
+}
 async function pruneDeadWorkspaceBindings(config) {
   let changed = false;
   for (const workspacePath of Object.keys(config.workspaceBindings)) {
     try {
-      await fs10.promises.stat(workspacePath);
+      await fs11.promises.stat(workspacePath);
     } catch (error) {
       if (error.code === "ENOENT") {
         delete config.workspaceBindings[workspacePath];
@@ -6948,14 +8445,16 @@ async function buildReportPayload(config, context) {
   const manifestSlugs = collectManifestSlugs(manifest);
   const scanScope = async (baseDir) => {
     if (!toolPath) return { skills: [], rules: [] };
-    const skills = toolPath.skills ? await scanSkillsFromDisk(path20.join(baseDir, toolPath.skills), manifestSlugs.skills) : [];
-    const rules = toolPath.rules ? await scanRulesFromDisk(path20.join(baseDir, toolPath.rules), manifestSlugs.rules) : [];
+    const skills = toolPath.skills ? await scanSkillsFromDisk(path24.join(baseDir, toolPath.skills), manifestSlugs.skills) : [];
+    const rules = toolPath.rules ? await scanRulesFromDisk(path24.join(baseDir, toolPath.rules), manifestSlugs.rules) : [];
     return { skills, rules };
   };
-  const userScope = await scanScope(process.env.HOME ?? "");
+  const userScope = await scanScope(getUserHome());
   const userLevel = { group_id: config.userGroupId };
   if (userScope.skills.length > 0) userLevel.skills = userScope.skills;
   if (userScope.rules.length > 0) userLevel.rules = userScope.rules;
+  const userMcps = await scanMcpFromManifest("user");
+  if (userMcps.length > 0) userLevel.mcps = userMcps;
   const payload = {
     agent_type: normalizeAgentType(tool),
     agent_version: await getAgentVersion(tool),
@@ -6980,12 +8479,14 @@ async function buildReportPayload(config, context) {
         const wsBinding = config.workspaceBindings[wsPath];
         const workspace = {
           path: wsPath,
-          name: path20.basename(wsPath),
+          name: path24.basename(wsPath),
           ide_type: currentTool,
           project_id: wsBinding?.projectId
         };
         if (wsScope.skills.length > 0) workspace.skills = wsScope.skills;
         if (wsScope.rules.length > 0) workspace.rules = wsScope.rules;
+        const wsMcps = await scanMcpFromManifest("project", wsPath);
+        if (wsMcps.length > 0) workspace.mcps = wsMcps;
         return workspace;
       })
     );
@@ -7007,7 +8508,7 @@ async function buildSyncPayload(config, context) {
       const wsBinding = config.workspaceBindings[wsPath];
       return {
         path: wsPath,
-        name: path20.basename(wsPath),
+        name: path24.basename(wsPath),
         ide_type: currentTool,
         project_id: wsBinding?.projectId
       };
@@ -7033,7 +8534,7 @@ function commandAction(command) {
   return null;
 }
 function validateSlug(slug) {
-  if (!slug || slug.includes("/") || slug.includes("\\") || slug.includes("..") || path20.isAbsolute(slug)) {
+  if (!slug || slug.includes("/") || slug.includes("\\") || slug.includes("..") || path24.isAbsolute(slug)) {
     throw new Error(`Invalid resource slug: ${slug}`);
   }
   return slug;
@@ -7072,8 +8573,8 @@ function assertHttpUrl(rawUrl) {
   return parsed;
 }
 async function downloadResource(downloadUrl) {
-  const tmpDir = await fs10.promises.mkdtemp(path20.join(os6.tmpdir(), "teamai-local-agent-"));
-  const filePath = path20.join(tmpDir, "resource");
+  const tmpDir = await fs11.promises.mkdtemp(path24.join(os6.tmpdir(), "teamai-local-agent-"));
+  const filePath = path24.join(tmpDir, "resource");
   let current = assertHttpUrl(downloadUrl);
   let response;
   const maxRedirects = 5;
@@ -7095,11 +8596,11 @@ async function downloadResource(downloadUrl) {
     throw new Error(`Download failed: ${response.status} ${response.statusText}`);
   }
   const buffer = Buffer.from(await response.arrayBuffer());
-  await fs10.promises.writeFile(filePath, buffer);
+  await fs11.promises.writeFile(filePath, buffer);
   return filePath;
 }
 async function isZipFile(filePath) {
-  const fd = await fs10.promises.open(filePath, "r");
+  const fd = await fs11.promises.open(filePath, "r");
   try {
     const buf = Buffer.alloc(4);
     await fd.read(buf, 0, 4, 0);
@@ -7116,15 +8617,15 @@ async function resolveMarkdownFromDownload(downloadedPath, slug) {
   return downloadedPath;
 }
 async function extractZip(zipPath) {
-  const extractDir = path20.join(path20.dirname(zipPath), "extracted");
+  const extractDir = path24.join(path24.dirname(zipPath), "extracted");
   await ensureDir(extractDir);
   await execFileAsync("unzip", ["-q", zipPath, "-d", extractDir]);
   return extractDir;
 }
 async function findFirst(dir, predicate) {
-  const entries = await fs10.promises.readdir(dir, { withFileTypes: true });
+  const entries = await fs11.promises.readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
-    const absolute = path20.join(dir, entry.name);
+    const absolute = path24.join(dir, entry.name);
     if (await predicate(absolute, entry.name)) return absolute;
     if (entry.isDirectory()) {
       const nested = await findFirst(absolute, predicate);
@@ -7134,10 +8635,10 @@ async function findFirst(dir, predicate) {
   return null;
 }
 async function findSkillRoot(extractDir) {
-  if (await pathExists(path20.join(extractDir, "SKILL.md"))) return extractDir;
+  if (await pathExists(path24.join(extractDir, "SKILL.md"))) return extractDir;
   const skillMd = await findFirst(extractDir, async (absolute, name) => name === "SKILL.md" && await pathExists(absolute));
   if (!skillMd) throw new Error("Downloaded skill package does not contain SKILL.md");
-  return path20.dirname(skillMd);
+  return path24.dirname(skillMd);
 }
 async function findMarkdownFile(extractDir, preferredName) {
   const preferred = await findFirst(
@@ -7155,14 +8656,14 @@ async function readFrontmatter(filePath) {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return {};
   try {
-    const parsed = YAML4.parse(match[1]);
+    const parsed = YAML5.parse(match[1]);
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
   }
 }
 async function resolveSkillDirName(skillRoot, slug) {
-  const fm = await readFrontmatter(path20.join(skillRoot, "SKILL.md"));
+  const fm = await readFrontmatter(path24.join(skillRoot, "SKILL.md"));
   const name = typeof fm.name === "string" ? fm.name.trim() : "";
   if (!name || name === slug) return slug;
   try {
@@ -7202,7 +8703,7 @@ async function installDownloadedResource(input) {
         );
         if (resourceToolPath && resourceToolPath.includes("/")) {
           const rootSegment = resourceToolPath.split("/")[0];
-          await ensureDir(path20.join(baseDir, rootSegment));
+          await ensureDir(path24.join(baseDir, rootSegment));
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -7220,10 +8721,10 @@ async function installDownloadedResource(input) {
       const extractDir = await extractZip(downloadedPath);
       const skillRoot = await findSkillRoot(extractDir);
       skillDirName = await resolveSkillDirName(skillRoot, input.slug);
-      const dest = path20.join(repoPath, "skills", skillDirName);
+      const dest = path24.join(repoPath, "skills", skillDirName);
       await remove(dest);
-      await fse3.copy(skillRoot, dest, { overwrite: true });
-      const fm = await readFrontmatter(path20.join(dest, "SKILL.md"));
+      await fse4.copy(skillRoot, dest, { overwrite: true });
+      const fm = await readFrontmatter(path24.join(dest, "SKILL.md"));
       displayName = typeof fm.name === "string" ? fm.name : displayName;
       await new SkillsHandler().pullItem({
         name: skillDirName,
@@ -7233,15 +8734,15 @@ async function installDownloadedResource(input) {
       }, teamConfig, localConfig);
     } else if (input.kind === "rule") {
       const ruleFile = await resolveMarkdownFromDownload(downloadedPath, input.slug);
-      const dest = path20.join(repoPath, "rules", `${input.slug}.md`);
-      await fse3.ensureDir(path20.dirname(dest));
-      await fse3.copyFile(ruleFile, dest);
+      const dest = path24.join(repoPath, "rules", `${input.slug}.md`);
+      await fse4.ensureDir(path24.dirname(dest));
+      await fse4.copyFile(ruleFile, dest);
       await new RulesHandler().pullAllRules(teamConfig, localConfig);
     } else {
       const mdFile = await resolveMarkdownFromDownload(downloadedPath, input.slug);
-      const dest = path20.join(repoPath, "claudemd", `${input.slug}.md`);
-      await fse3.ensureDir(path20.dirname(dest));
-      await fse3.copyFile(mdFile, dest);
+      const dest = path24.join(repoPath, "claudemd", `${input.slug}.md`);
+      await fse4.ensureDir(path24.dirname(dest));
+      await fse4.copyFile(mdFile, dest);
       await syncClaudemd(teamConfig, localConfig, repoPath, input.workspacePath);
     }
     const version2 = commandVersion(input.command, input.kind);
@@ -7258,7 +8759,7 @@ async function installDownloadedResource(input) {
     await saveManifest(manifest);
     return version2;
   } finally {
-    await remove(path20.dirname(downloadedPath));
+    await remove(path24.dirname(downloadedPath));
   }
 }
 async function uninstallResource(input) {
@@ -7279,7 +8780,7 @@ async function uninstallResource(input) {
   } else if (input.kind === "rule") {
     await new RulesHandler().removeItem(input.slug, teamConfig, localConfig);
   } else {
-    await remove(path20.join(repoPath, "claudemd", `${input.slug}.md`));
+    await remove(path24.join(repoPath, "claudemd", `${input.slug}.md`));
     await syncClaudemd(teamConfig, localConfig, repoPath, input.workspacePath);
   }
   delete scopeManifest[manifestKind(input.kind)][input.slug];
@@ -7288,13 +8789,13 @@ async function uninstallResource(input) {
 async function resolveHermesUserBaseDir() {
   try {
     const envWs = process.env.TEAMAI_HERMES_WORKSPACE;
-    if (envWs && path20.isAbsolute(envWs)) return envWs;
+    if (envWs && path24.isAbsolute(envWs)) return envWs;
     const cfg = await readJson(getConfigPath2());
     const bindings = cfg?.workspaceBindings;
     if (bindings && typeof bindings === "object") {
-      const entries = Object.entries(bindings).filter(([p, v]) => path20.isAbsolute(p) && v?.ideType === "hermes").sort((a, b) => (b[1].boundAt ?? "").localeCompare(a[1].boundAt ?? ""));
+      const entries = Object.entries(bindings).filter(([p, v]) => path24.isAbsolute(p) && v?.ideType === "hermes").sort((a, b) => (b[1].boundAt ?? "").localeCompare(a[1].boundAt ?? ""));
       for (const [p] of entries) {
-        if (await pathExists(path20.join(p, ".hermes"))) return p;
+        if (await pathExists(path24.join(p, ".hermes"))) return p;
       }
     }
   } catch {
@@ -7302,16 +8803,16 @@ async function resolveHermesUserBaseDir() {
   return void 0;
 }
 async function syncClaudemd(teamConfig, localConfig, repoPath, workspacePath) {
-  const claudemdDir = path20.join(repoPath, "claudemd");
-  const files = await pathExists(claudemdDir) ? (await fse3.readdir(claudemdDir)).filter((file) => file.endsWith(".md")).sort() : [];
+  const claudemdDir = path24.join(repoPath, "claudemd");
+  const files = await pathExists(claudemdDir) ? (await fse4.readdir(claudemdDir)).filter((file) => file.endsWith(".md")).sort() : [];
   const contents = [];
   for (const file of files) {
-    const content = await readFileSafe(path20.join(claudemdDir, file));
+    const content = await readFileSafe(path24.join(claudemdDir, file));
     if (content) contents.push(content);
   }
   const block = compileClaudemdBlock(contents);
   let syncedAny = false;
-  const defaultBaseDir = localConfig.scope === "project" && localConfig.projectRoot ? localConfig.projectRoot : process.env.HOME ?? "";
+  const defaultBaseDir = localConfig.scope === "project" && localConfig.projectRoot ? localConfig.projectRoot : getUserHome();
   for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
     if (!toolPath.claudemd) continue;
     let baseDir = defaultBaseDir;
@@ -7319,7 +8820,7 @@ async function syncClaudemd(teamConfig, localConfig, repoPath, workspacePath) {
     if (tool === "openclaw" && localConfig.scope !== "project") {
       const openclawWs = await resolveOpenclawWorkspaceDir(workspacePath);
       if (openclawWs) {
-        resolvedAbsPath = path20.join(openclawWs, path20.basename(toolPath.claudemd));
+        resolvedAbsPath = path24.join(openclawWs, path24.basename(toolPath.claudemd));
       }
     } else if (tool === "hermes" && localConfig.scope !== "project") {
       const hermesBase = workspacePath ?? await resolveHermesUserBaseDir();
@@ -7328,12 +8829,12 @@ async function syncClaudemd(teamConfig, localConfig, repoPath, workspacePath) {
         log.debug(`local-agent: hermes user-scope baseDir resolved to ${baseDir}`);
       }
     }
-    const toolInstalled = resolvedAbsPath ? await pathExists(resolvedAbsPath) : toolPath.claudemd.includes("/") ? await ResourceHandler.isToolInstalled(toolPath.claudemd, baseDir) : await pathExists(path20.join(baseDir, `.${tool}`));
+    const toolInstalled = resolvedAbsPath ? await pathExists(resolvedAbsPath) : toolPath.claudemd.includes("/") ? await ResourceHandler.isToolInstalled(toolPath.claudemd, baseDir) : await pathExists(path24.join(baseDir, `.${tool}`));
     if (!toolInstalled) {
       log.debug(`Skipped CLAUDE.md sync for ${tool}: target not found`);
       continue;
     }
-    const claudeMdPath = resolvedAbsPath ?? path20.join(baseDir, toolPath.claudemd);
+    const claudeMdPath = resolvedAbsPath ?? path24.join(baseDir, toolPath.claudemd);
     try {
       const { injectClaudeMdSection: injectClaudeMdSection2 } = await Promise.resolve().then(() => (init_claudemd(), claudemd_exports));
       if (block) {
@@ -7480,6 +8981,9 @@ async function runHookRuleCommand(config, command, context) {
       } else if (OPENCLAW_TOOLS.has(rec.tool)) {
         const { removeOpenClawAgentHook: removeOpenClawAgentHook2 } = await Promise.resolve().then(() => (init_openclaw_hooks(), openclaw_hooks_exports));
         await removeOpenClawAgentHook2({ slug, tool: rec.tool });
+      } else if (rec.tool === "opencode") {
+        const { removeOpencodeAgentHook: removeOpencodeAgentHook2 } = await Promise.resolve().then(() => (init_opencode_hooks(), opencode_hooks_exports));
+        await removeOpencodeAgentHook2({ slug, baseDir: getUserHome(), scope: "user" });
       } else {
         const settingsPath = resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
@@ -7508,6 +9012,9 @@ async function runHookRuleCommand(config, command, context) {
       } else if (OPENCLAW_TOOLS.has(prior.tool)) {
         const { removeOpenClawAgentHook: removeOpenClawAgentHook2 } = await Promise.resolve().then(() => (init_openclaw_hooks(), openclaw_hooks_exports));
         await removeOpenClawAgentHook2({ slug, tool: prior.tool });
+      } else if (prior.tool === "opencode") {
+        const { removeOpencodeAgentHook: removeOpencodeAgentHook2 } = await Promise.resolve().then(() => (init_opencode_hooks(), opencode_hooks_exports));
+        await removeOpencodeAgentHook2({ slug, baseDir: getUserHome(), scope: "user" });
       } else {
         const priorPath = resolveToolSettingsPath(config, prior.tool);
         await removeAgentHook(priorPath, prior.tool, { slug, command: prior.command });
@@ -7522,6 +9029,9 @@ async function runHookRuleCommand(config, command, context) {
   } else if (OPENCLAW_TOOLS.has(tool)) {
     const { applyOpenClawAgentHook: applyOpenClawAgentHook2 } = await Promise.resolve().then(() => (init_openclaw_hooks(), openclaw_hooks_exports));
     await applyOpenClawAgentHook2({ slug, event, command: cmd, tool, matcher, timeout });
+  } else if (tool === "opencode") {
+    const { applyOpencodeAgentHook: applyOpencodeAgentHook2 } = await Promise.resolve().then(() => (init_opencode_hooks(), opencode_hooks_exports));
+    await applyOpencodeAgentHook2({ slug, event, command: cmd, baseDir: getUserHome(), scope: "user", matcher });
   } else {
     const settingsPath = resolveToolSettingsPath(config, tool);
     await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
@@ -7530,12 +9040,164 @@ async function runHookRuleCommand(config, command, context) {
   await saveAgentHookManifest(manifest);
   return void 0;
 }
+function mcpConfigToDef(slug, cfg) {
+  if (!VALID_MCP_TRANSPORTS.has(cfg.transport)) {
+    throw new Error(`install_mcp: unsupported transport "${cfg.transport}" for server "${slug}"`);
+  }
+  return {
+    name: slug,
+    transport: cfg.transport,
+    command: cfg.command,
+    args: cfg.args,
+    url: cfg.url,
+    headers: cfg.headers,
+    env: cfg.env,
+    timeout: cfg.timeout,
+    requires: cfg.requires
+  };
+}
+function updateManifestRecord(manifest, key, name, hash) {
+  const records = manifest[key] ?? [];
+  const idx = records.findIndex((r) => r.name === name);
+  if (idx >= 0) {
+    records[idx] = { name, hash };
+  } else {
+    records.push({ name, hash });
+  }
+  manifest[key] = records;
+}
+async function installMcpServer(config, command, tool, slug, scope, workspacePath) {
+  if (!command.mcp_config) {
+    throw new Error("install_mcp: missing mcp_config");
+  }
+  const def = mcpConfigToDef(slug, command.mcp_config);
+  const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
+  const toolPath = fullTeamConfig.toolPaths[tool];
+  if (!toolPath) {
+    throw new Error(`install_mcp: unknown tool "${tool}"`);
+  }
+  const projectScope = scope === "project";
+  const mcpRel = projectScope ? toolPath.mcpProject : toolPath.mcp;
+  if (!mcpRel) {
+    throw new Error(`install_mcp: tool "${tool}" has no MCP config path for scope "${scope}"`);
+  }
+  const format = detectMcpFormat(tool);
+  if (!format) {
+    throw new Error(`install_mcp: tool "${tool}" has no known MCP format`);
+  }
+  if (!supportsTransport(format, def.transport)) {
+    throw new Error(`install_mcp: tool "${tool}" does not support ${def.transport} transport`);
+  }
+  const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
+  const targetFile = path24.join(baseDir, mcpRel);
+  const manifestPath = managedMcpManifestPath(
+    projectScope ? "project" : "user",
+    projectScope ? workspacePath : void 0
+  );
+  const manifest = await readJson(manifestPath) ?? {};
+  const manifestKey = `${tool}${projectScope ? ":project" : ""}`;
+  const owned = manifest[manifestKey] ?? [];
+  const ownedNames = new Set(owned.map((r) => r.name));
+  if (format === "codex") {
+    const block = renderCodexBlock(def);
+    const hash = entryHash(block);
+    let source = await readFileSafe(targetFile) ?? "";
+    const present = new Set(codexServerNames(source));
+    if (present.has(slug) && !ownedNames.has(slug)) {
+      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
+    }
+    updateManifestRecord(manifest, manifestKey, slug, hash);
+    await writeJsonAtomic(manifestPath, manifest);
+    source = spliceCodexBlock(source, slug, block);
+    await writeCodexAtomic(targetFile, source);
+  } else {
+    const entry = renderJsonEntry(format, def);
+    const serverKey = MCP_SERVER_KEY[format];
+    const hash = entryHash(entry);
+    const doc = await readJsonDoc(targetFile, serverKey);
+    if (!doc) {
+      throw new Error(`install_mcp: cannot parse ${targetFile}`);
+    }
+    if (doc.servers[slug] !== void 0 && !ownedNames.has(slug)) {
+      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
+    }
+    updateManifestRecord(manifest, manifestKey, slug, hash);
+    await writeJsonAtomic(manifestPath, manifest);
+    doc.servers[slug] = entry;
+    doc.data[serverKey] = doc.servers;
+    await writeJsonAtomic(targetFile, doc.data);
+  }
+  log.debug(`local-agent: installed MCP server "${slug}" for ${tool} (scope=${scope})`);
+  return command.version;
+}
+async function uninstallMcpServer(config, tool, slug, scope, workspacePath) {
+  const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
+  const toolPath = fullTeamConfig.toolPaths[tool];
+  if (!toolPath) return;
+  const projectScope = scope === "project";
+  const mcpRel = projectScope ? toolPath.mcpProject : toolPath.mcp;
+  if (!mcpRel) return;
+  const format = detectMcpFormat(tool);
+  if (!format) return;
+  const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
+  const targetFile = path24.join(baseDir, mcpRel);
+  const manifestPath = managedMcpManifestPath(
+    projectScope ? "project" : "user",
+    projectScope ? workspacePath : void 0
+  );
+  const manifest = await readJson(manifestPath) ?? {};
+  const manifestKey = `${tool}${projectScope ? ":project" : ""}`;
+  const owned = manifest[manifestKey] ?? [];
+  const ownedNames = new Set(owned.map((r) => r.name));
+  if (!ownedNames.has(slug)) return;
+  manifest[manifestKey] = owned.filter((r) => r.name !== slug);
+  if (manifest[manifestKey].length === 0) delete manifest[manifestKey];
+  await writeJsonAtomic(manifestPath, manifest);
+  if (format === "codex") {
+    let source = await readFileSafe(targetFile) ?? "";
+    source = spliceCodexBlock(source, slug, null);
+    await writeCodexAtomic(targetFile, source);
+  } else {
+    const serverKey = MCP_SERVER_KEY[format];
+    const doc = await readJsonDoc(targetFile, serverKey);
+    if (doc && doc.servers[slug] !== void 0) {
+      delete doc.servers[slug];
+      doc.data[serverKey] = doc.servers;
+      await writeJsonAtomic(targetFile, doc.data);
+    }
+  }
+  log.debug(`local-agent: uninstalled MCP server "${slug}" from ${tool} (scope=${scope})`);
+}
+async function runMcpCommand(config, command, context) {
+  const tool = context.tool;
+  if (!tool) {
+    throw new Error(`${command.type}: cannot determine current tool`);
+  }
+  const slug = command.slug;
+  if (!slug) {
+    throw new Error(`${command.type}: missing slug`);
+  }
+  assertSafeResourceName(slug);
+  const scope = normalizeScope(command.scope);
+  const workspacePath = scope === "project" ? await resolveWorkspacePath(command.workspace_path ?? context.cwd) : void 0;
+  if (scope === "project" && !workspacePath) {
+    throw new Error(`${command.type}: workspace command is missing workspace_path`);
+  }
+  if (command.type === "install_mcp") {
+    return installMcpServer(config, command, tool, slug, scope, workspacePath);
+  }
+  await uninstallMcpServer(config, tool, slug, scope, workspacePath);
+  return command.version;
+}
 async function executeCommand(config, command, context) {
   if (command.type === "uninstall_teamai") {
     return runCmdCommand(command, context);
   }
   if (command.type === "install_hook_rule" || command.type === "uninstall_hook_rule") {
     return runHookRuleCommand(config, command, context);
+  }
+  if (command.type === "install_mcp" || command.type === "uninstall_mcp") {
+    return runMcpCommand(config, command, context);
   }
   const kind = commandKind(command);
   const action = commandAction(command);
@@ -7653,7 +9315,7 @@ function statusFromEvent(event) {
 async function reportAndSyncFromHook(stdin, tool) {
   const raw = JSON.stringify(stdin);
   const event = await parseHookEvent(raw, tool);
-  const cwd = typeof stdin.cwd === "string" ? stdin.cwd : event?.cwd ?? process.cwd();
+  const cwd = resolveHookCwd(stdin) ?? process.cwd();
   const isForegroundEvent = event?.type === "session_start" || event?.type === "prompt_submit";
   activeFetchTimeoutMs = isForegroundEvent ? LOCAL_AGENT_HOOK_FETCH_TIMEOUT_MS : LOCAL_AGENT_FETCH_TIMEOUT_MS;
   try {
@@ -7669,8 +9331,8 @@ async function reportAndSyncFromHook(stdin, tool) {
   }
 }
 async function writeTokenFile(tokenPath, token) {
-  await fs10.promises.writeFile(tokenPath, token + "\n", { mode: 384 });
-  await fs10.promises.chmod(tokenPath, 384);
+  await fs11.promises.writeFile(tokenPath, token + "\n", { mode: 384 });
+  await fs11.promises.chmod(tokenPath, 384);
 }
 async function initLocalAgentHttp(options) {
   const endpoint = normalizeEndpoint(options.endpoint);
@@ -7695,7 +9357,7 @@ async function initLocalAgentHttp(options) {
     await writeTokenFile(TEAMAI_TOKEN_PATH, options.token);
   }
   const teamConfig = createLocalAgentTeamConfig(endpoint);
-  await injectHooksToAllTools(teamConfig.toolPaths, process.env.HOME ?? "", options.filterAgents);
+  await injectHooksToAllTools(teamConfig.toolPaths, getUserHome(), options.filterAgents);
   log.success(`HTTP local agent initialized at ${getConfigPath2()}`);
 }
 async function pullLocalAgentForCwd(context) {
@@ -7749,6 +9411,9 @@ async function removeAllAgentHooks() {
       } else if (OPENCLAW_TOOLS.has(rec.tool)) {
         const { removeOpenClawAgentHook: removeOpenClawAgentHook2 } = await Promise.resolve().then(() => (init_openclaw_hooks(), openclaw_hooks_exports));
         await removeOpenClawAgentHook2({ slug, tool: rec.tool });
+      } else if (rec.tool === "opencode") {
+        const { removeOpencodeAgentHook: removeOpencodeAgentHook2 } = await Promise.resolve().then(() => (init_opencode_hooks(), opencode_hooks_exports));
+        await removeOpencodeAgentHook2({ slug, baseDir: getUserHome(), scope: "user" });
       } else {
         const settingsPath = resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
@@ -7808,7 +9473,7 @@ async function bindCurrentProject(options) {
     log.info("\u672A\u7ED1\u5B9A\u9879\u76EE\u3002");
   }
 }
-var execFileAsync, LOCAL_AGENT_DIR, CONFIG_FILE, MANIFEST_FILE, REPORTER_ERROR_LOG, LOCAL_AGENT_FETCH_TIMEOUT_MS, LOCAL_AGENT_HOOK_FETCH_TIMEOUT_MS, activeFetchTimeoutMs, UNIMPLEMENTED_COMMAND_TYPES, IMPLEMENTED_HOOK_COMMAND_TYPES, DEFAULT_ROUTES, PLUGIN_PULL_INTERVAL_MS, PLUGIN_FAIL_BACKOFF_MS, ZIP_MAGIC;
+var execFileAsync, LOCAL_AGENT_DIR, CONFIG_FILE, MANIFEST_FILE, REPORTER_ERROR_LOG, LOCAL_AGENT_FETCH_TIMEOUT_MS, LOCAL_AGENT_HOOK_FETCH_TIMEOUT_MS, activeFetchTimeoutMs, UNIMPLEMENTED_COMMAND_TYPES, IMPLEMENTED_HOOK_COMMAND_TYPES, DEFAULT_ROUTES, PLUGIN_PULL_INTERVAL_MS, PLUGIN_FAIL_BACKOFF_MS, ZIP_MAGIC, VALID_MCP_TRANSPORTS;
 var init_local_agent = __esm({
   "src/local-agent.ts"() {
     "use strict";
@@ -7818,16 +9483,21 @@ var init_local_agent = __esm({
     init_resources();
     init_hooks2();
     init_dashboard_collector();
+    init_hook_cwd();
     init_agent_version();
     init_machine_id();
     init_builtin_rules();
+    init_rule_format();
     init_builtin_hooks();
     init_openclaw_hooks();
     init_path_safety();
+    init_mcp_format();
+    init_mcp_reconcile();
     init_tool_names();
     init_http_log();
     init_plugin_lifecycle();
     init_types();
+    init_home();
     execFileAsync = promisify(execFile2);
     LOCAL_AGENT_DIR = "local-agent";
     CONFIG_FILE = "config.json";
@@ -7848,6 +9518,7 @@ var init_local_agent = __esm({
     PLUGIN_PULL_INTERVAL_MS = 12 * 60 * 60 * 1e3;
     PLUGIN_FAIL_BACKOFF_MS = 60 * 60 * 1e3;
     ZIP_MAGIC = Buffer.from([80, 75, 3, 4]);
+    VALID_MCP_TRANSPORTS = /* @__PURE__ */ new Set(["stdio", "http", "sse"]);
   }
 });
 
@@ -7864,18 +9535,18 @@ __export(source_exports, {
   sourceRemove: () => sourceRemove,
   sourceRemoveHttp: () => sourceRemoveHttp
 });
-import path21 from "path";
-import fse4 from "fs-extra";
-import YAML5 from "yaml";
+import path25 from "path";
+import fse5 from "fs-extra";
+import YAML6 from "yaml";
 function getSourceDir(sourceName) {
   assertSafeResourceName(sourceName);
-  return path21.join(getUserHome(), ".teamai", "sources", sourceName);
+  return path25.join(getUserHome(), ".teamai", "sources", sourceName);
 }
 function getSourceRepoDir(sourceName) {
-  return path21.join(getSourceDir(sourceName), "repo");
+  return path25.join(getSourceDir(sourceName), "repo");
 }
 function getSourceManifestPath(sourceName) {
-  return path21.join(getSourceDir(sourceName), "installed.json");
+  return path25.join(getSourceDir(sourceName), "installed.json");
 }
 async function loadSourceManifest(sourceName) {
   return readJson(getSourceManifestPath(sourceName));
@@ -7906,7 +9577,7 @@ async function ensureSourceRepo(source, force) {
     }
   }
   try {
-    await ensureDir(path21.dirname(repoDir));
+    await ensureDir(path25.dirname(repoDir));
     const cloneSpin = spinner(`[source:${source.name}] Cloning...`).start();
     const providerName = detectProvider(source.repo);
     const provider = getProvider(providerName);
@@ -7956,18 +9627,18 @@ async function sourceAdd(repoUrl, options) {
     log.info(`[dry-run] Would add source "${name}" (${repoUrl})`);
     return;
   }
-  const yamlPath = path21.join(repoPath, "teamai.yaml");
+  const yamlPath = path25.join(repoPath, "teamai.yaml");
   const content = await readFileSafe(yamlPath);
   if (!content) {
     log.error("Could not read teamai.yaml");
     return;
   }
-  const raw = YAML5.parse(content);
+  const raw = YAML6.parse(content);
   if (!raw.sources) {
     raw.sources = [];
   }
   raw.sources.push({ name, repo: repoUrl });
-  await fse4.writeFile(yamlPath, YAML5.stringify(raw));
+  await fse5.writeFile(yamlPath, YAML6.stringify(raw));
   log.success(`Added source "${name}" (${repoUrl})`);
   log.info("Run `teamai push` to share this change with your team.");
 }
@@ -7983,15 +9654,15 @@ async function sourceRemove(name, options) {
     log.info(`[dry-run] Would remove source "${name}"`);
     return;
   }
-  const yamlPath = path21.join(repoPath, "teamai.yaml");
+  const yamlPath = path25.join(repoPath, "teamai.yaml");
   const content = await readFileSafe(yamlPath);
   if (!content) {
     log.error("Could not read teamai.yaml");
     return;
   }
-  const raw = YAML5.parse(content);
+  const raw = YAML6.parse(content);
   raw.sources = (raw.sources ?? []).filter((s) => s.name !== name);
-  await fse4.writeFile(yamlPath, YAML5.stringify(raw));
+  await fse5.writeFile(yamlPath, YAML6.stringify(raw));
   await cleanupSourceSkills(name, teamConfig, localConfig);
   const sourceDir = getSourceDir(name);
   if (await pathExists(sourceDir)) {
@@ -8087,7 +9758,7 @@ async function sourceBrowse(name, options) {
     log.dim("  The source team needs to add `publicSkills: [...]` to their teamai.yaml.");
     return;
   }
-  const skillsDir = path21.join(repoDir, "skills");
+  const skillsDir = path25.join(repoDir, "skills");
   const available = [];
   for (const skillName of publicSkills) {
     const exists3 = await findSkillInRepo(skillsDir, skillName);
@@ -8133,7 +9804,7 @@ async function pullSingleSource(source, teamConfig, localConfig, baseDir, option
     log.debug(`[source:${source.name}] No publicSkills declared, skipping`);
     return;
   }
-  const skillsDir = path21.join(repoDir, "skills");
+  const skillsDir = path25.join(repoDir, "skills");
   const skillsToDeploy = [];
   for (const skillName of publicSkills) {
     const skillPath = await findSkillInRepo(skillsDir, skillName);
@@ -8159,10 +9830,10 @@ async function pullSingleSource(source, teamConfig, localConfig, baseDir, option
       deployed.push(skill.name);
       continue;
     }
-    for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
-      const targetDir = path21.join(baseDir, toolPath.skills, skill.name);
+      const targetDir = path25.join(baseDir, toolPath.skills, skill.name);
       await copyDir(skill.sourcePath, targetDir);
     }
     if (oldInstalled.has(skill.name)) {
@@ -8176,7 +9847,7 @@ async function pullSingleSource(source, teamConfig, localConfig, baseDir, option
     const deployedSet = new Set(deployed);
     for (const oldSkill of oldInstalled) {
       if (!deployedSet.has(oldSkill) && !localTeamSkills.has(oldSkill)) {
-        await removeSkillFromToolPaths(oldSkill, teamConfig, baseDir);
+        await removeSkillFromToolPaths(oldSkill, teamConfig, localConfig, baseDir);
         log.debug(`[source:${source.name}] Removed "${oldSkill}" (no longer public)`);
       }
     }
@@ -8213,21 +9884,21 @@ function deriveSourceName(repoUrl) {
 }
 async function findSkillInRepo(skillsDir, skillName) {
   if (!await pathExists(skillsDir)) return null;
-  const flatPath = path21.join(skillsDir, skillName);
-  if (await pathExists(path21.join(flatPath, "SKILL.md"))) {
+  const flatPath = path25.join(skillsDir, skillName);
+  if (await pathExists(path25.join(flatPath, "SKILL.md"))) {
     return flatPath;
   }
   const topDirs = await listDirs(skillsDir);
   for (const ns of topDirs) {
-    const nsPath = path21.join(skillsDir, ns, skillName);
-    if (await pathExists(path21.join(nsPath, "SKILL.md"))) {
+    const nsPath = path25.join(skillsDir, ns, skillName);
+    if (await pathExists(path25.join(nsPath, "SKILL.md"))) {
       return nsPath;
     }
   }
   return null;
 }
 async function extractSkillDescription(skillDir) {
-  const content = await readFileSafe(path21.join(skillDir, "SKILL.md"));
+  const content = await readFileSafe(path25.join(skillDir, "SKILL.md"));
   if (!content) return "";
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return "";
@@ -8249,10 +9920,10 @@ async function getLocalTeamSkillNames(teamConfig, localConfig) {
   }
   return names;
 }
-async function removeSkillFromToolPaths(skillName, teamConfig, baseDir) {
-  for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+async function removeSkillFromToolPaths(skillName, teamConfig, localConfig, baseDir) {
+  for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.skills) continue;
-    const skillDir = path21.join(baseDir, toolPath.skills, skillName);
+    const skillDir = path25.join(baseDir, toolPath.skills, skillName);
     if (await pathExists(skillDir)) {
       await remove(skillDir);
     }
@@ -8263,12 +9934,12 @@ async function cleanupSourceSkills(sourceName, teamConfig, localConfig) {
   if (!manifest) return;
   const baseDir = resolveBaseDir(localConfig);
   for (const skillName of manifest.installedSkills) {
-    await removeSkillFromToolPaths(skillName, teamConfig, baseDir);
+    await removeSkillFromToolPaths(skillName, teamConfig, localConfig, baseDir);
   }
 }
 async function getAllSourceSkillNames() {
   const names = /* @__PURE__ */ new Set();
-  const sourcesDir = path21.join(getUserHome(), ".teamai", "sources");
+  const sourcesDir = path25.join(getUserHome(), ".teamai", "sources");
   if (!await pathExists(sourcesDir)) return names;
   const sourceDirs = await listDirs(sourcesDir);
   for (const dir of sourceDirs) {
@@ -8299,10 +9970,10 @@ var init_source = __esm({
 });
 
 // src/resources/skills.ts
-import fse5 from "fs-extra";
-import path22 from "path";
+import fse6 from "fs-extra";
+import path26 from "path";
 async function ensureSkillFrontmatter(skillDir, skillName) {
-  const skillMdPath = path22.join(skillDir, SKILL_MD);
+  const skillMdPath = path26.join(skillDir, SKILL_MD);
   const content = await readFileSafe(skillMdPath);
   if (!content) return false;
   const fmMatch = content.match(FRONTMATTER_REGEX);
@@ -8356,13 +10027,13 @@ function extractDescriptionFromContent(content, skillName) {
   return `${skillName} skill`;
 }
 async function scanTeamRepoNamespaces(repoPath) {
-  const teamSkillsDir = path22.join(repoPath, "skills");
+  const teamSkillsDir = path26.join(repoPath, "skills");
   if (!await pathExists(teamSkillsDir)) return [];
   const topDirs = await listDirs(teamSkillsDir);
   const namespaces = [];
   for (const dir of topDirs) {
-    const dirPath = path22.join(teamSkillsDir, dir);
-    const hasSkillMd = await pathExists(path22.join(dirPath, "SKILL.md"));
+    const dirPath = path26.join(teamSkillsDir, dir);
+    const hasSkillMd = await pathExists(path26.join(dirPath, "SKILL.md"));
     if (!hasSkillMd) {
       namespaces.push(dir);
     }
@@ -8390,12 +10061,6 @@ async function resolveSkillNamespaces(localConfig) {
     return [localConfig.primaryRole, ...localConfig.additionalRoles ?? []];
   }
 }
-function getSkillDestination(localConfig, skillName, namespace) {
-  if (namespace) {
-    return path22.join(localConfig.repo.localPath, "skills", namespace, skillName);
-  }
-  return path22.join(localConfig.repo.localPath, "skills", skillName);
-}
 async function scanSkillsRecursively(dirPath) {
   const results = /* @__PURE__ */ new Map();
   async function walk2(currentPath) {
@@ -8404,8 +10069,8 @@ async function scanSkillsRecursively(dirPath) {
     const subdirs = [];
     for (const entry of entries) {
       if (entry.startsWith(".") || entry.endsWith("-workspace")) continue;
-      const entryPath = path22.join(currentPath, entry);
-      const skillMdPath = path22.join(entryPath, SKILL_MD);
+      const entryPath = path26.join(currentPath, entry);
+      const skillMdPath = path26.join(entryPath, SKILL_MD);
       if (await pathExists(skillMdPath)) {
         if (!results.has(entry)) {
           results.set(entry, entryPath);
@@ -8431,7 +10096,9 @@ var init_skills = __esm({
     init_logger();
     init_builtin_skills();
     init_openclaw_hooks();
+    init_hermes_home();
     init_roles();
+    init_path_safety();
     CONTRIBUTORS_FILE = "CONTRIBUTORS";
     SKILL_MD = "SKILL.md";
     FRONTMATTER_REGEX = /^---\n[\s\S]*?\n---/;
@@ -8450,27 +10117,27 @@ var init_skills = __esm({
         const teamSkills = /* @__PURE__ */ new Map();
         const blockedSkills = /* @__PURE__ */ new Set();
         if (scopedNamespaces.length > 0) {
-          const allSkillsDir = path22.join(localConfig.repo.localPath, "skills");
+          const allSkillsDir = path26.join(localConfig.repo.localPath, "skills");
           const topDirs = await listDirs(allSkillsDir);
           for (const dir of topDirs) {
-            const dirPath = path22.join(allSkillsDir, dir);
-            const hasSkillMd = await pathExists(path22.join(dirPath, "SKILL.md"));
+            const dirPath = path26.join(allSkillsDir, dir);
+            const hasSkillMd = await pathExists(path26.join(dirPath, "SKILL.md"));
             if (hasSkillMd) {
               teamSkills.set(dir, { dir: dirPath });
             }
           }
           for (const namespace of scopedNamespaces) {
-            const teamSkillsNsDir = path22.join(allSkillsDir, namespace);
+            const teamSkillsNsDir = path26.join(allSkillsDir, namespace);
             const names = await listDirs(teamSkillsNsDir);
             for (const name of names) {
               if (!teamSkills.has(name)) {
-                teamSkills.set(name, { dir: path22.join(teamSkillsNsDir, name), namespace });
+                teamSkills.set(name, { dir: path26.join(teamSkillsNsDir, name), namespace });
               }
             }
           }
           for (const dir of topDirs) {
-            const dirPath = path22.join(allSkillsDir, dir);
-            const hasSkillMd = await pathExists(path22.join(dirPath, "SKILL.md"));
+            const dirPath = path26.join(allSkillsDir, dir);
+            const hasSkillMd = await pathExists(path26.join(dirPath, "SKILL.md"));
             if (hasSkillMd) continue;
             if (scopedNamespaces.includes(dir)) continue;
             const names = await listDirs(dirPath);
@@ -8481,18 +10148,18 @@ var init_skills = __esm({
             }
           }
         } else {
-          const teamSkillsDir = path22.join(localConfig.repo.localPath, "skills");
+          const teamSkillsDir = path26.join(localConfig.repo.localPath, "skills");
           const topDirs = await listDirs(teamSkillsDir);
           for (const dir of topDirs) {
-            const dirPath = path22.join(teamSkillsDir, dir);
-            const hasSkillMd = await pathExists(path22.join(dirPath, "SKILL.md"));
+            const dirPath = path26.join(teamSkillsDir, dir);
+            const hasSkillMd = await pathExists(path26.join(dirPath, "SKILL.md"));
             if (hasSkillMd) {
               teamSkills.set(dir, { dir: dirPath });
             } else {
               const subDirs = await listDirs(dirPath);
               for (const subDir of subDirs) {
                 if (!teamSkills.has(subDir)) {
-                  teamSkills.set(subDir, { dir: path22.join(dirPath, subDir), namespace: dir });
+                  teamSkills.set(subDir, { dir: path26.join(dirPath, subDir), namespace: dir });
                 }
               }
             }
@@ -8508,9 +10175,9 @@ var init_skills = __esm({
           sourceSkillNames = /* @__PURE__ */ new Set();
         }
         const candidates = /* @__PURE__ */ new Map();
-        for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+        for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
           if (!toolPath.skills) continue;
-          const skillsDir = path22.join(resolveBaseDir(localConfig), toolPath.skills);
+          const skillsDir = path26.join(resolveBaseDir(localConfig), toolPath.skills);
           if (!await pathExists(skillsDir)) continue;
           const localSkills = await scanSkillsRecursively(skillsDir);
           for (const [dir, localDirPath] of localSkills) {
@@ -8563,12 +10230,12 @@ var init_skills = __esm({
        * A directory is treated as a namespace if it does not contain SKILL.md.
        */
       async scanTeamForPull(_teamConfig, localConfig) {
-        const teamSkillsDir = path22.join(localConfig.repo.localPath, "skills");
+        const teamSkillsDir = path26.join(localConfig.repo.localPath, "skills");
         const dirs = await listDirs(teamSkillsDir);
         const items = [];
         for (const dir of dirs) {
-          const dirPath = path22.join(teamSkillsDir, dir);
-          const hasSkillMd = await pathExists(path22.join(dirPath, "SKILL.md"));
+          const dirPath = path26.join(teamSkillsDir, dir);
+          const hasSkillMd = await pathExists(path26.join(dirPath, "SKILL.md"));
           if (hasSkillMd) {
             items.push({
               name: dir,
@@ -8582,7 +10249,7 @@ var init_skills = __esm({
               items.push({
                 name: subDir,
                 type: "skills",
-                sourcePath: path22.join(dirPath, subDir),
+                sourcePath: path26.join(dirPath, subDir),
                 relativePath: `skills/${dir}/${subDir}`,
                 namespace: dir
               });
@@ -8595,11 +10262,17 @@ var init_skills = __esm({
        * Copy a local skill to the team repo.
        */
       async pushItem(item, _teamConfig, localConfig) {
-        const dest = getSkillDestination(localConfig, item.name, item.namespace ?? localConfig.primaryRole);
+        const skillsRoot = path26.join(localConfig.repo.localPath, "skills");
+        const dest = path26.resolve(localConfig.repo.localPath, item.relativePath);
+        assertWithinRoot(
+          skillsRoot,
+          dest,
+          `Invalid skill destination outside team repo skills directory: ${item.relativePath}`
+        );
         await copyDir(item.sourcePath, dest);
         log.debug(`Copied skill ${item.name} \u2192 team repo`);
         await ensureSkillFrontmatter(dest, item.name);
-        const contribPath = path22.join(dest, CONTRIBUTORS_FILE);
+        const contribPath = path26.join(dest, CONTRIBUTORS_FILE);
         const existing = await readFileSafe(contribPath);
         const contributors = existing ? existing.split("\n").map((l) => l.trim()).filter((l) => l.length > 0) : [];
         if (!contributors.includes(localConfig.username)) {
@@ -8613,7 +10286,7 @@ var init_skills = __esm({
        */
       async pullItem(item, teamConfig, localConfig) {
         const baseDir = resolveBaseDir(localConfig);
-        for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+        for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
           if (isAgentDisabled(localConfig, tool)) continue;
           if (!toolPath.skills) continue;
           let dest;
@@ -8623,16 +10296,18 @@ var init_skills = __esm({
               log.debug(`Skipping skill sync for openclaw: workspace dir not found`);
               continue;
             }
-            dest = path22.join(wsDir, "skills", item.name);
+            dest = path26.join(wsDir, "skills", item.name);
+          } else if (tool === "hermes") {
+            dest = path26.join(getHermesHome(), "skills", item.name);
           } else {
             if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) {
               log.debug(`Skipping skill sync for ${tool}: tool not installed`);
               continue;
             }
-            dest = path22.join(baseDir, toolPath.skills, item.name);
+            dest = path26.join(baseDir, toolPath.skills, item.name);
           }
           try {
-            await fse5.remove(dest).catch(() => void 0);
+            await fse6.remove(dest).catch(() => void 0);
             await copyDir(item.sourcePath, dest);
             await ensureSkillFrontmatter(dest, item.name);
             log.debug(`Synced skill ${item.name} \u2192 ${tool}`);
@@ -8650,29 +10325,29 @@ var init_skills = __esm({
         const scopedNamespaces = await resolveSkillNamespaces(localConfig);
         if (scopedNamespaces.length > 0) {
           for (const namespace of scopedNamespaces) {
-            const namespaceDir = path22.join(localConfig.repo.localPath, "skills", namespace, name);
+            const namespaceDir = path26.join(localConfig.repo.localPath, "skills", namespace, name);
             if (await pathExists(namespaceDir)) {
               await remove(namespaceDir);
               removed.push(namespaceDir);
             }
           }
         } else {
-          const teamDir = path22.join(localConfig.repo.localPath, "skills", name);
+          const teamDir = path26.join(localConfig.repo.localPath, "skills", name);
           if (await pathExists(teamDir)) {
             await remove(teamDir);
             removed.push(teamDir);
           }
         }
         await this.addTombstone(name, localConfig);
-        for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+        for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
           if (!toolPath.skills) continue;
           let skillDir;
           if (tool === "openclaw") {
             const wsDir = await resolveOpenclawWorkspaceDir();
             if (!wsDir) continue;
-            skillDir = path22.join(wsDir, "skills", name);
+            skillDir = path26.join(wsDir, "skills", name);
           } else {
-            skillDir = path22.join(baseDir, toolPath.skills, name);
+            skillDir = path26.join(baseDir, toolPath.skills, name);
           }
           if (await pathExists(skillDir)) {
             await remove(skillDir);
@@ -8686,7 +10361,7 @@ var init_skills = __esm({
        * Read the CONTRIBUTORS list for a skill directory.
        */
       static async readContributors(skillDir) {
-        const contribPath = path22.join(skillDir, CONTRIBUTORS_FILE);
+        const contribPath = path26.join(skillDir, CONTRIBUTORS_FILE);
         const content = await readFileSafe(contribPath);
         if (!content) return [];
         return content.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
@@ -8695,8 +10370,68 @@ var init_skills = __esm({
   }
 });
 
+// src/resources/opencode-config.ts
+var opencode_config_exports = {};
+__export(opencode_config_exports, {
+  opencodeRulesGlob: () => opencodeRulesGlob,
+  reconcileOpencodeInstructions: () => reconcileOpencodeInstructions
+});
+import path27 from "path";
+function opencodeRulesGlob(configFileAbs, rulesDirAbs) {
+  const rel = path27.relative(path27.dirname(configFileAbs), rulesDirAbs);
+  const relPosix = rel.split(path27.sep).join("/");
+  return `${relPosix}/*.md`;
+}
+async function reconcileOpencodeInstructions(configFileAbs, glob, present) {
+  const exists3 = await pathExists(configFileAbs);
+  if (!exists3) {
+    if (!present) return false;
+    await writeJsonAtomic(configFileAbs, { instructions: [glob] });
+    log.debug(`Created ${configFileAbs} with teamai rules instructions glob`);
+    return true;
+  }
+  const raw = await readFileSafe(configFileAbs);
+  if (raw === null) return false;
+  let data;
+  if (raw.trim() === "") {
+    data = {};
+  } else {
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        log.warn(`Could not parse ${configFileAbs} as a JSON object \u2014 skipping OpenCode rules activation`);
+        return false;
+      }
+      data = parsed;
+    } catch {
+      log.warn(`Could not parse ${configFileAbs} \u2014 skipping OpenCode rules activation`);
+      return false;
+    }
+  }
+  const original = Array.isArray(data.instructions) ? [...data.instructions] : [];
+  const has = original.includes(glob);
+  if (present && has) return false;
+  if (!present && !has) return false;
+  const next = present ? [...original, glob] : original.filter((g) => g !== glob);
+  if (next.length === 0) {
+    delete data.instructions;
+  } else {
+    data.instructions = next;
+  }
+  await writeJsonAtomic(configFileAbs, data);
+  log.debug(`${present ? "Added" : "Removed"} teamai rules glob in ${configFileAbs}`);
+  return true;
+}
+var init_opencode_config = __esm({
+  "src/resources/opencode-config.ts"() {
+    "use strict";
+    init_fs();
+    init_logger();
+  }
+});
+
 // src/resources/rules.ts
-import path23 from "path";
+import path28 from "path";
 var RulesHandler;
 var init_rules = __esm({
   "src/resources/rules.ts"() {
@@ -8706,6 +10441,8 @@ var init_rules = __esm({
     init_logger();
     init_types();
     init_builtin_rules();
+    init_cursor_mdc();
+    init_rule_format();
     RulesHandler = class extends ResourceHandler {
       type = "rules";
       /**
@@ -8715,27 +10452,41 @@ var init_rules = __esm({
        * with the latest mtime.
        */
       async scanLocalForPush(teamConfig, localConfig) {
-        const teamRulesDir = path23.join(localConfig.repo.localPath, "rules");
+        const teamRulesDir = path28.join(localConfig.repo.localPath, "rules");
         const teamRules = new Set(
           await pathExists(teamRulesDir) ? (await listFilesRecursive(teamRulesDir)).filter((f) => f.endsWith(".md")) : []
         );
         const tombstones = await this.readTombstones(localConfig);
         const candidates = /* @__PURE__ */ new Map();
-        for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+        const teamContentCache = /* @__PURE__ */ new Map();
+        const readTeamRule = async (filePath) => {
+          const cached = teamContentCache.get(filePath);
+          if (cached !== void 0) return cached;
+          const content = await readFileSafe(filePath) ?? "";
+          teamContentCache.set(filePath, content);
+          return content;
+        };
+        for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
           const rulesPath = toolPath.rules;
           if (!rulesPath) continue;
-          const rulesDir = path23.join(resolveBaseDir(localConfig), rulesPath);
+          const rulesDir = path28.join(resolveBaseDir(localConfig), rulesPath);
           if (!await pathExists(rulesDir)) continue;
+          const ext = ruleFileExtensionForTool(tool);
+          const isCursor = usesCursorMdcRules(tool);
           const files = await listFilesRecursive(rulesDir);
           for (const file of files) {
-            if (!file.endsWith(".md")) continue;
-            const name = file.replace(/\.md$/, "");
+            if (!file.endsWith(ext)) continue;
+            const name = file.slice(0, -ext.length);
             if (tombstones.has(name)) continue;
             if (EXCLUDED_RULE_NAMES.has(name)) continue;
-            const localFilePath = path23.join(rulesDir, file);
-            if (teamRules.has(file)) {
-              const teamFilePath = path23.join(teamRulesDir, file);
-              const equal = await fileContentEqual(localFilePath, teamFilePath);
+            const localFilePath = path28.join(rulesDir, file);
+            const teamFileName = `${name}.md`;
+            if (teamRules.has(teamFileName)) {
+              const teamFilePath = path28.join(teamRulesDir, teamFileName);
+              const equal = isCursor ? cursorMdcBodyEqualsTeamMd(
+                await readFileSafe(localFilePath) ?? "",
+                await readTeamRule(teamFilePath)
+              ) : await fileContentEqual(localFilePath, teamFilePath);
               if (equal) continue;
               const mtime = await getFileMtime(localFilePath);
               const existing = candidates.get(name);
@@ -8743,6 +10494,7 @@ var init_rules = __esm({
                 candidates.set(name, { sourcePath: localFilePath, mtime, status: "modified" });
               }
             } else {
+              if (isCursor) continue;
               const existing = candidates.get(name);
               if (!existing) {
                 const mtime = await getFileMtime(localFilePath);
@@ -8769,20 +10521,28 @@ var init_rules = __esm({
         return items;
       }
       async scanTeamForPull(_teamConfig, localConfig) {
-        const rulesDir = path23.join(localConfig.repo.localPath, "rules");
+        const rulesDir = path28.join(localConfig.repo.localPath, "rules");
         if (!await pathExists(rulesDir)) return [];
         const files = await listFilesRecursive(rulesDir);
         return files.filter((f) => f.endsWith(".md")).map((f) => ({
           name: f.replace(/\.md$/, ""),
           type: "rules",
-          sourcePath: path23.join(rulesDir, f),
+          sourcePath: path28.join(rulesDir, f),
           relativePath: `rules/${f}`
         }));
       }
       async pushItem(item, _teamConfig, localConfig) {
-        const dest = path23.join(localConfig.repo.localPath, "rules", `${item.name}.md`);
+        const dest = path28.join(localConfig.repo.localPath, "rules", `${item.name}.md`);
         if (item.sourcePath !== dest) {
-          await copyFile(item.sourcePath, dest);
+          if (item.sourcePath.endsWith(".mdc")) {
+            const raw = await readFileSafe(item.sourcePath);
+            if (raw === null) {
+              throw new Error(`Cannot read rule source ${item.sourcePath}`);
+            }
+            await writeFile(dest, mergeCursorBodyIntoTeamMd(raw, await readFileSafe(dest)));
+          } else {
+            await copyFile(item.sourcePath, dest);
+          }
         }
         log.debug(`Copied rule ${item.name} \u2192 team repo`);
       }
@@ -8791,18 +10551,27 @@ var init_rules = __esm({
        */
       async pullItem(item, teamConfig, localConfig) {
         const baseDir = resolveBaseDir(localConfig);
-        for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+        for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
           if (isAgentDisabled(localConfig, tool)) continue;
           if (!toolPath.rules) continue;
           if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) {
             log.debug(`Skipping rule sync for ${tool}: tool not installed`);
             continue;
           }
-          const destDir = path23.join(baseDir, toolPath.rules);
+          const destDir = path28.join(baseDir, toolPath.rules);
           await ensureDir(destDir);
-          const dest = path23.join(destDir, `${item.name}.md`);
+          const dest = path28.join(destDir, `${item.name}${ruleFileExtensionForTool(tool)}`);
           try {
-            await copyFile(item.sourcePath, dest);
+            if (usesCursorMdcRules(tool)) {
+              const raw = await readFileSafe(item.sourcePath);
+              if (raw === null) {
+                throw new Error(`Cannot read rule source ${item.sourcePath}`);
+              }
+              await writeFile(dest, teamRuleToCursorMdc(raw));
+              await remove(path28.join(destDir, `${item.name}.md`));
+            } else {
+              await copyFile(item.sourcePath, dest);
+            }
             log.debug(`Synced rule ${item.name} \u2192 ${tool}`);
           } catch (e) {
             log.warn(`Failed to sync rule ${item.name} to ${tool}: ${e.message}`);
@@ -8815,20 +10584,22 @@ var init_rules = __esm({
       async removeItem(name, teamConfig, localConfig) {
         const removed = [];
         const baseDir = resolveBaseDir(localConfig);
-        const fileName = `${name}.md`;
-        const teamFile = path23.join(localConfig.repo.localPath, "rules", fileName);
+        const teamFile = path28.join(localConfig.repo.localPath, "rules", `${name}.md`);
         if (await pathExists(teamFile)) {
           await remove(teamFile);
           removed.push(teamFile);
         }
         await this.addTombstone(name, localConfig);
-        for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+        for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
           if (!toolPath.rules) continue;
-          const filePath = path23.join(baseDir, toolPath.rules, fileName);
-          if (await pathExists(filePath)) {
-            await remove(filePath);
-            removed.push(filePath);
-            log.debug(`Removed rule ${name} from ${tool}`);
+          const extensions = /* @__PURE__ */ new Set([ruleFileExtensionForTool(tool), ".md"]);
+          for (const extension of extensions) {
+            const filePath = path28.join(baseDir, toolPath.rules, `${name}${extension}`);
+            if (await pathExists(filePath)) {
+              await remove(filePath);
+              removed.push(filePath);
+              log.debug(`Removed rule ${name} from ${tool}`);
+            }
           }
         }
         await this.pullAllRules(teamConfig, localConfig);
@@ -8852,33 +10623,41 @@ var init_rules = __esm({
             await upsertSoulRules2(bodies.join("\n\n"));
           }
         }
+        await this.activateOpencodeInstructions(teamConfig, localConfig, rules.length > 0);
         if (rules.length === 0) return;
         for (const rule of rules) {
           await this.pullItem(rule, teamConfig, localConfig);
         }
-        const teamRuleFiles = new Set(rules.map((r) => `${r.name}.md`));
+        const teamRuleNames = new Set(rules.map((r) => r.name));
         const baseDir = resolveBaseDir(localConfig);
-        for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+        for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
           if (!toolPath.rules) continue;
           if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
-          const destDir = path23.join(baseDir, toolPath.rules);
+          const destDir = path28.join(baseDir, toolPath.rules);
           if (!await pathExists(destDir)) continue;
+          const ext = ruleFileExtensionForTool(tool);
           const localFiles = await listFilesRecursive(destDir);
           for (const localFile of localFiles) {
-            if (!localFile.endsWith(".md")) continue;
-            const ruleName = localFile.replace(/\.md$/, "");
+            const ruleName = ruleStemFromFilename(localFile);
+            if (ruleName === null) continue;
+            if (isLegacyCursorRuleFile(tool, localFile)) {
+              await remove(path28.join(destDir, localFile));
+              log.debug(`Removed legacy .md rule ${localFile} from ${tool}`);
+              continue;
+            }
+            if (!localFile.endsWith(ext)) continue;
             if (EXCLUDED_RULE_NAMES.has(ruleName)) continue;
-            if (!teamRuleFiles.has(localFile)) {
-              const fullPath = path23.join(destDir, localFile);
+            if (!teamRuleNames.has(ruleName)) {
+              const fullPath = path28.join(destDir, localFile);
               await remove(fullPath);
               log.debug(`Removed stale rule ${localFile} from ${tool}`);
             }
           }
           await this.removeEmptyDirs(destDir);
         }
-        for (const [, toolPath] of Object.entries(teamConfig.toolPaths)) {
+        for (const [, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
           if (!toolPath.claudemd) continue;
-          const claudeMdPath = path23.join(baseDir, toolPath.claudemd);
+          const claudeMdPath = path28.join(baseDir, toolPath.claudemd);
           try {
             const content = await readFileSafe(claudeMdPath);
             if (!content || !content.includes(TEAMAI_RULES_START)) continue;
@@ -8899,13 +10678,38 @@ var init_rules = __esm({
         }
       }
       /**
+       * Add or remove the teamai rules glob in OpenCode's opencode.json `instructions`
+       * array, so copied rule files are actually loaded. No-op for any tool other than
+       * opencode, when opencode is disabled, or when opencode is not installed (we
+       * never create an opencode.json for a user who doesn't use OpenCode).
+       */
+      async activateOpencodeInstructions(teamConfig, localConfig, present) {
+        if (isAgentDisabled(localConfig, "opencode")) return;
+        const scoped = scopedToolPaths(teamConfig, localConfig);
+        const paths = scoped["opencode"];
+        if (!paths?.rules) return;
+        const baseDir = resolveBaseDir(localConfig);
+        if (!await ResourceHandler.isToolInstalled(paths.rules, baseDir)) return;
+        const configRel = localConfig.scope === "project" ? paths.mcpProject : paths.mcp;
+        if (!configRel) return;
+        const configFileAbs = path28.join(baseDir, configRel);
+        const rulesDirAbs = path28.join(baseDir, paths.rules);
+        const { reconcileOpencodeInstructions: reconcileOpencodeInstructions2, opencodeRulesGlob: opencodeRulesGlob2 } = await Promise.resolve().then(() => (init_opencode_config(), opencode_config_exports));
+        const glob = opencodeRulesGlob2(configFileAbs, rulesDirAbs);
+        try {
+          await reconcileOpencodeInstructions2(configFileAbs, glob, present);
+        } catch (e) {
+          log.warn(`Failed to update OpenCode instructions in ${configFileAbs}: ${e.message}`);
+        }
+      }
+      /**
        * Recursively remove empty subdirectories under a given directory.
        */
       async removeEmptyDirs(dir) {
         if (!await pathExists(dir)) return;
         const subdirs = await listDirs(dir);
         for (const sub of subdirs) {
-          const subPath = path23.join(dir, sub);
+          const subPath = path28.join(dir, sub);
           await this.removeEmptyDirs(subPath);
           const remaining = await listFilesRecursive(subPath);
           const remainingDirs = await listDirs(subPath);
@@ -8919,8 +10723,8 @@ var init_rules = __esm({
 });
 
 // src/resources/docs.ts
-import path24 from "path";
-import fse6 from "fs-extra";
+import path29 from "path";
+import fse7 from "fs-extra";
 var DocsHandler;
 var init_docs = __esm({
   "src/resources/docs.ts"() {
@@ -8934,7 +10738,7 @@ var init_docs = __esm({
         return [];
       }
       async scanTeamForPull(_teamConfig, localConfig) {
-        const docsDir = path24.join(localConfig.repo.localPath, "docs");
+        const docsDir = path29.join(localConfig.repo.localPath, "docs");
         if (!await pathExists(docsDir)) return [];
         const files = await listFiles(docsDir);
         const realFiles = files.filter((f) => !f.startsWith("."));
@@ -8959,15 +10763,15 @@ var init_docs = __esm({
         const docsLocalDir = teamConfig.sharing.docs.localDir;
         let localDocsDir;
         if (localConfig.scope === "project" && localConfig.projectRoot) {
-          localDocsDir = docsLocalDir.startsWith("~/") ? path24.join(localConfig.projectRoot, docsLocalDir.substring(2)) : expandHome(docsLocalDir);
+          localDocsDir = docsLocalDir.startsWith("~/") ? path29.join(localConfig.projectRoot, docsLocalDir.substring(2)) : expandHome(docsLocalDir);
         } else {
           localDocsDir = expandHome(docsLocalDir);
         }
         try {
           const src = expandHome(item.sourcePath);
-          await fse6.copy(src, localDocsDir, {
+          await fse7.copy(src, localDocsDir, {
             overwrite: true,
-            filter: (srcPath) => !path24.basename(srcPath).startsWith(".")
+            filter: (srcPath) => !path29.basename(srcPath).startsWith(".")
           });
           log.debug(`Synced docs \u2192 ${localDocsDir}`);
         } catch (e) {
@@ -8983,9 +10787,9 @@ var init_docs = __esm({
 });
 
 // src/resources/env.ts
-import path25 from "path";
-import { z as z4 } from "zod";
-import YAML6 from "yaml";
+import path30 from "path";
+import { z as z5 } from "zod";
+import YAML7 from "yaml";
 function maskEnvValue(value) {
   if (value.length < 4) return "****";
   return `${value.slice(0, 2)}****`;
@@ -9001,13 +10805,14 @@ var init_env = __esm({
     init_types();
     init_fs();
     init_logger();
-    EnvVariableSchema = z4.object({
-      key: z4.string(),
-      value: z4.string(),
-      description: z4.string().optional()
+    init_home();
+    EnvVariableSchema = z5.object({
+      key: z5.string(),
+      value: z5.string(),
+      description: z5.string().optional()
     });
-    EnvYamlSchema = z4.object({
-      variables: z4.array(EnvVariableSchema).default([])
+    EnvYamlSchema = z5.object({
+      variables: z5.array(EnvVariableSchema).default([])
     });
     EnvHandler = class extends ResourceHandler {
       type = "env";
@@ -9017,9 +10822,9 @@ var init_env = __esm({
        */
       async scanLocalForPush(_teamConfig, localConfig) {
         if (isSelfMode(localConfig) && localConfig.projectRoot) {
-          const activeEnv = path25.join(localConfig.projectRoot, ".teamai", "env", "env.yaml");
+          const activeEnv = path30.join(localConfig.projectRoot, ".teamai", "env", "env.yaml");
           if (!await pathExists(activeEnv)) return [];
-          const baseEnv = path25.join(localConfig.repo.localPath, "env", "env.yaml");
+          const baseEnv = path30.join(localConfig.repo.localPath, "env", "env.yaml");
           if (await pathExists(baseEnv) && await fileContentEqual(activeEnv, baseEnv)) {
             return [];
           }
@@ -9030,7 +10835,7 @@ var init_env = __esm({
             relativePath: "env/env.yaml"
           }];
         }
-        const envYamlPath = path25.join(localConfig.repo.localPath, "env", "env.yaml");
+        const envYamlPath = path30.join(localConfig.repo.localPath, "env", "env.yaml");
         if (!await pathExists(envYamlPath)) return [];
         const { execFile: execFile5 } = await import("child_process");
         const { promisify: promisify4 } = await import("util");
@@ -9053,7 +10858,7 @@ var init_env = __esm({
         }];
       }
       async scanTeamForPull(_teamConfig, localConfig) {
-        const envYamlPath = path25.join(localConfig.repo.localPath, "env", "env.yaml");
+        const envYamlPath = path30.join(localConfig.repo.localPath, "env", "env.yaml");
         if (!await pathExists(envYamlPath)) return [];
         return [{
           name: "env.yaml",
@@ -9064,9 +10869,9 @@ var init_env = __esm({
       }
       async pushItem(item, _teamConfig, localConfig) {
         if (isSelfMode(localConfig)) {
-          const dest = path25.join(localConfig.repo.localPath, "env", "env.yaml");
+          const dest = path30.join(localConfig.repo.localPath, "env", "env.yaml");
           if (item.sourcePath !== dest) {
-            await ensureDir(path25.dirname(dest));
+            await ensureDir(path30.dirname(dest));
             const content = await readFileSafe(item.sourcePath);
             if (content !== null) await writeFile(dest, content);
           }
@@ -9080,7 +10885,7 @@ var init_env = __esm({
         if (!content) return;
         let envConfig;
         try {
-          const raw = YAML6.parse(content);
+          const raw = YAML7.parse(content);
           envConfig = EnvYamlSchema.parse(raw);
         } catch (e) {
           log.warn(`Invalid env.yaml format: ${e.message}`);
@@ -9092,7 +10897,7 @@ var init_env = __esm({
         await ensureDir(teamaiHome);
         await writeFile(getEnvBackupPath(localConfig), backupLines.join("\n") + "\n");
         const envShContent = this.generateEnvFile(envConfig.variables);
-        await writeFile(path25.join(teamaiHome, "env.sh"), envShContent);
+        await writeFile(path30.join(teamaiHome, "env.sh"), envShContent);
         const inject = teamConfig.sharing.env.injectShellProfile !== false;
         if (inject) {
           const profilePath = teamConfig.sharing.env.shellProfilePath ? teamConfig.sharing.env.shellProfilePath : this.detectShellProfile();
@@ -9107,7 +10912,7 @@ var init_env = __esm({
         const content = await readFileSafe(sourcePath);
         if (!content) return 0;
         try {
-          const raw = YAML6.parse(content);
+          const raw = YAML7.parse(content);
           const envConfig = EnvYamlSchema.parse(raw);
           return envConfig.variables.length;
         } catch {
@@ -9121,7 +10926,7 @@ var init_env = __esm({
         const content = await readFileSafe(filePath);
         if (!content) return { variables: [] };
         try {
-          const raw = YAML6.parse(content);
+          const raw = YAML7.parse(content);
           return EnvYamlSchema.parse(raw);
         } catch {
           return { variables: [] };
@@ -9131,8 +10936,8 @@ var init_env = __esm({
        * Write env.yaml with the given variables.
        */
       async writeEnvYaml(filePath, envConfig) {
-        await ensureDir(path25.dirname(filePath));
-        await writeFile(filePath, YAML6.stringify(envConfig));
+        await ensureDir(path30.dirname(filePath));
+        await writeFile(filePath, YAML7.stringify(envConfig));
       }
       /**
        * Generate the shell block with a source line (instead of inline exports).
@@ -9163,12 +10968,12 @@ var init_env = __esm({
        * Detect the user's shell profile path.
        */
       detectShellProfile() {
-        const home = process.env.HOME ?? "";
+        const home = getUserHome();
         const shell = process.env.SHELL ?? "";
         if (shell.includes("zsh")) {
-          return path25.join(home, ".zshrc");
+          return path30.join(home, ".zshrc");
         }
-        return path25.join(home, ".bashrc");
+        return path30.join(home, ".bashrc");
       }
       /**
        * Inject the shell block into the profile file (idempotent).
@@ -9197,81 +11002,21 @@ var init_env = __esm({
   }
 });
 
-// src/builtin-agents.ts
-var builtin_agents_exports = {};
-__export(builtin_agents_exports, {
-  BUILTIN_AGENT_NAMES: () => BUILTIN_AGENT_NAMES,
-  deployBuiltinAgents: () => deployBuiltinAgents
-});
-import fs11 from "fs";
-import path26 from "path";
-function getBuiltinAgentsDir() {
-  const distDir = path26.dirname(new URL(import.meta.url).pathname);
-  return path26.join(distDir, "..", "agents");
-}
-async function deployBuiltinAgents(teamConfig, localConfig, options) {
-  const builtinDir = getBuiltinAgentsDir();
-  if (!await pathExists(builtinDir)) {
-    log.debug("No built-in agents directory found, skipping deployment");
-    return 0;
-  }
-  let entries;
-  try {
-    entries = await fs11.promises.readdir(builtinDir);
-  } catch {
-    return 0;
-  }
-  const agentFiles = entries.filter((f) => f.endsWith(".md") && !f.startsWith(".")).filter((f) => !(options?.skipRecall && f === "teamai-recall.md"));
-  if (agentFiles.length === 0) return 0;
-  const baseDir = localConfig ? resolveBaseDir(localConfig) : process.env.HOME ?? "";
-  let deployed = 0;
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
-    if (!toolPath.agents) {
-      log.debug(`Skipping built-in agent deployment for ${tool}: no agents path`);
-      continue;
-    }
-    if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) {
-      log.debug(`Skipping built-in agent deployment for ${tool}: tool not installed`);
-      continue;
-    }
-    if (localConfig && isAgentDisabled(localConfig, tool)) continue;
-    const targetAgentsDir = path26.join(baseDir, toolPath.agents);
-    try {
-      await ensureDir(targetAgentsDir);
-    } catch (e) {
-      log.warn(`Failed to create agents dir for ${tool}: ${e.message}`);
-      continue;
-    }
-    for (const file of agentFiles) {
-      const src = path26.join(builtinDir, file);
-      const dest = path26.join(targetAgentsDir, file);
-      try {
-        await copyFile(src, dest);
-        deployed++;
-      } catch (e) {
-        log.warn(`Failed to deploy built-in agent ${file} to ${tool}: ${e.message}`);
-      }
-    }
-  }
-  return deployed;
-}
-var BUILTIN_AGENT_NAMES;
-var init_builtin_agents = __esm({
-  "src/builtin-agents.ts"() {
-    "use strict";
-    init_fs();
-    init_logger();
-    init_types();
-    init_base();
-    BUILTIN_AGENT_NAMES = /* @__PURE__ */ new Set(["teamai-recall"]);
-  }
-});
-
 // src/resources/agent-format.ts
-import path27 from "path";
+import path31 from "path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import matter from "gray-matter";
+import matter2 from "gray-matter";
 import { stringify as stringifyToml, parse as parseToml } from "smol-toml";
+function agentFileExtensionForTool(tool) {
+  switch (tool) {
+    case "codex":
+    case "codex-internal":
+    case "tcodex":
+      return ".toml";
+    default:
+      return ".md";
+  }
+}
 function parseAgentYaml(content, filename) {
   let raw;
   try {
@@ -9305,19 +11050,34 @@ function serializeAgentYaml(spec) {
   return stringifyYaml(spec, { lineWidth: 120 });
 }
 function renderForClaude(spec) {
-  return { ext: ".md", content: renderMarkdownAgent(spec, spec.tool_extras?.["claude"]) };
+  return {
+    ext: agentFileExtensionForTool("claude"),
+    content: renderMarkdownAgent(spec, spec.tool_extras?.["claude"])
+  };
 }
 function renderForClaudeInternal(spec) {
-  return { ext: ".md", content: renderMarkdownAgent(spec, spec.tool_extras?.["claude-internal"]) };
+  return {
+    ext: agentFileExtensionForTool("claude-internal"),
+    content: renderMarkdownAgent(spec, spec.tool_extras?.["claude-internal"])
+  };
 }
 function renderForCodebuddy(spec) {
-  return { ext: ".md", content: renderMarkdownAgent(spec, spec.tool_extras?.["codebuddy"]) };
+  return {
+    ext: agentFileExtensionForTool("codebuddy"),
+    content: renderMarkdownAgent(spec, spec.tool_extras?.["codebuddy"])
+  };
 }
 function renderForCodex(spec) {
-  return { ext: ".toml", content: renderTomlAgent(spec, spec.tool_extras?.["codex"]) };
+  return {
+    ext: agentFileExtensionForTool("codex"),
+    content: renderTomlAgent(spec, spec.tool_extras?.["codex"])
+  };
 }
 function renderForCodexInternal(spec) {
-  return { ext: ".toml", content: renderTomlAgent(spec, spec.tool_extras?.["codex-internal"]) };
+  return {
+    ext: agentFileExtensionForTool("codex-internal"),
+    content: renderTomlAgent(spec, spec.tool_extras?.["codex-internal"])
+  };
 }
 function renderForCursor(spec) {
   const frontmatterData = {
@@ -9333,8 +11093,25 @@ function renderForCursor(spec) {
       frontmatterData[key] = value;
     }
   }
-  const content = matter.stringify(spec.instructions, frontmatterData);
-  return { ext: ".md", content };
+  const content = matter2.stringify(spec.instructions, frontmatterData);
+  return { ext: agentFileExtensionForTool("cursor"), content };
+}
+function renderForOpencode(spec) {
+  const frontmatterData = {
+    description: spec.description,
+    mode: "subagent"
+  };
+  if (spec.model !== void 0) {
+    frontmatterData["model"] = spec.model;
+  }
+  const extras = spec.tool_extras?.["opencode"];
+  if (extras) {
+    for (const [key, value] of Object.entries(extras)) {
+      frontmatterData[key] = value;
+    }
+  }
+  const content = matter2.stringify(spec.instructions, frontmatterData);
+  return { ext: agentFileExtensionForTool("opencode"), content };
 }
 function renderMarkdownAgent(spec, extras) {
   const frontmatterData = {
@@ -9352,7 +11129,7 @@ function renderMarkdownAgent(spec, extras) {
       frontmatterData[key] = value;
     }
   }
-  return matter.stringify(spec.instructions, frontmatterData);
+  return matter2.stringify(spec.instructions, frontmatterData);
 }
 function renderTomlAgent(spec, extras) {
   const tomlData = {
@@ -9373,13 +11150,13 @@ function renderTomlAgent(spec, extras) {
 function reverseFromClaude(filePath, content) {
   let parsed;
   try {
-    parsed = matter(content);
+    parsed = matter2(content);
   } catch (err) {
     return { ok: false, reason: `parse error: ${err.message}` };
   }
   const fm = parsed.data;
   const body = parsed.content.trim();
-  const name = fm["name"] ?? path27.basename(filePath, ".md");
+  const name = fm["name"] ?? path31.basename(filePath, ".md");
   if (!name) return { ok: false, reason: "missing field name" };
   if (!fm["description"]) return { ok: false, reason: "missing field description" };
   if (!body) return { ok: false, reason: "missing field instructions (empty body)" };
@@ -9415,7 +11192,7 @@ function reverseFromCodex(filePath, content) {
   } catch (err) {
     return { ok: false, reason: `parse error: ${err.message}` };
   }
-  const name = parsed["name"] ?? path27.basename(filePath, ".toml");
+  const name = parsed["name"] ?? path31.basename(filePath, ".toml");
   if (!name) return { ok: false, reason: "missing field name" };
   if (!parsed["description"]) return { ok: false, reason: "missing field description" };
   if (!parsed["developer_instructions"]) return { ok: false, reason: "missing field developer_instructions" };
@@ -9437,13 +11214,13 @@ function reverseFromCodex(filePath, content) {
 function reverseFromCursor(filePath, content) {
   let parsed;
   try {
-    parsed = matter(content);
+    parsed = matter2(content);
   } catch (err) {
     return { ok: false, reason: `parse error: ${err.message}` };
   }
   const fm = parsed.data;
   const body = parsed.content.trim();
-  const name = fm["agent_id"] ?? path27.basename(filePath, ".md");
+  const name = fm["agent_id"] ?? path31.basename(filePath, ".md");
   if (!name) return { ok: false, reason: "missing field agent_id" };
   if (!fm["description"]) return { ok: false, reason: "missing field description" };
   if (!body) return { ok: false, reason: "missing field instructions (empty body)" };
@@ -9461,6 +11238,34 @@ function reverseFromCursor(filePath, content) {
   if (fm["model"] !== void 0) spec.model = fm["model"];
   if (fm["tools"] !== void 0) spec.tools = fm["tools"];
   if (Object.keys(extras).length > 0) spec.tool_extras = { cursor: extras };
+  return { ok: true, spec };
+}
+function reverseFromOpencode(filePath, content) {
+  let parsed;
+  try {
+    parsed = matter2(content);
+  } catch (err) {
+    return { ok: false, reason: `parse error: ${err.message}` };
+  }
+  const fm = parsed.data;
+  const body = parsed.content.trim();
+  const name = path31.basename(filePath, ".md");
+  if (!name) return { ok: false, reason: "missing agent name (empty filename)" };
+  if (!fm["description"]) return { ok: false, reason: "missing field description" };
+  if (!body) return { ok: false, reason: "missing field instructions (empty body)" };
+  const extras = {};
+  for (const [key, value] of Object.entries(fm)) {
+    if (!COMMON_OPENCODE_FIELDS.has(key)) {
+      extras[key] = value;
+    }
+  }
+  const spec = {
+    name,
+    description: fm["description"],
+    instructions: body
+  };
+  if (fm["model"] !== void 0) spec.model = fm["model"];
+  if (Object.keys(extras).length > 0) spec.tool_extras = { opencode: extras };
   return { ok: true, spec };
 }
 function mergeReverseResults(perTool) {
@@ -9524,9 +11329,11 @@ function renderForTool(spec, tool) {
       return renderForCodex(spec);
     case "cursor":
       return renderForCursor(spec);
+    case "opencode":
+      return renderForOpencode(spec);
   }
 }
-var ALL_SUPPORTED_TOOLS, COMMON_CLAUDE_FIELDS, COMMON_CURSOR_FIELDS, COMMON_CODEX_FIELDS, MERGE_COMMON_FIELDS;
+var ALL_SUPPORTED_TOOLS, COMMON_CLAUDE_FIELDS, COMMON_CURSOR_FIELDS, COMMON_CODEX_FIELDS, COMMON_OPENCODE_FIELDS, MERGE_COMMON_FIELDS;
 var init_agent_format = __esm({
   "src/resources/agent-format.ts"() {
     "use strict";
@@ -9538,11 +11345,13 @@ var init_agent_format = __esm({
       "codex",
       "codex-internal",
       "tcodex",
-      "cursor"
+      "cursor",
+      "opencode"
     ];
     COMMON_CLAUDE_FIELDS = /* @__PURE__ */ new Set(["name", "description", "model", "tools"]);
     COMMON_CURSOR_FIELDS = /* @__PURE__ */ new Set(["agent_id", "description", "model", "tools"]);
     COMMON_CODEX_FIELDS = /* @__PURE__ */ new Set(["name", "description", "developer_instructions", "model"]);
+    COMMON_OPENCODE_FIELDS = /* @__PURE__ */ new Set(["description", "model"]);
     MERGE_COMMON_FIELDS = [
       "name",
       "description",
@@ -9553,8 +11362,113 @@ var init_agent_format = __esm({
   }
 });
 
+// src/builtin-agents.ts
+var builtin_agents_exports = {};
+__export(builtin_agents_exports, {
+  BUILTIN_AGENT_NAMES: () => BUILTIN_AGENT_NAMES,
+  deployBuiltinAgents: () => deployBuiltinAgents
+});
+import fs12 from "fs";
+import path32 from "path";
+import { fileURLToPath as fileURLToPath3 } from "url";
+function getBuiltinAgentsDir() {
+  const distDir = path32.dirname(fileURLToPath3(import.meta.url));
+  return path32.join(distDir, "..", "agents");
+}
+async function removeStaleAgentSiblings(targetAgentsDir, stem, targetExt) {
+  let files;
+  try {
+    files = await listFiles(targetAgentsDir);
+  } catch {
+    return;
+  }
+  for (const file of files) {
+    const base = file.replace(/\.(md|toml)$/, "");
+    if (base !== stem) continue;
+    if (file === `${stem}${targetExt}`) continue;
+    try {
+      await remove(path32.join(targetAgentsDir, file));
+      log.debug(`Removed stale agent sibling ${file} for ${stem}`);
+    } catch {
+    }
+  }
+}
+async function deployBuiltinAgents(teamConfig, localConfig, options) {
+  const builtinDir = getBuiltinAgentsDir();
+  if (!await pathExists(builtinDir)) {
+    log.debug("No built-in agents directory found, skipping deployment");
+    return 0;
+  }
+  let entries;
+  try {
+    entries = await fs12.promises.readdir(builtinDir);
+  } catch {
+    return 0;
+  }
+  const agentFiles = entries.filter((f) => f.endsWith(".md") && !f.startsWith(".")).filter((f) => !(options?.skipRecall && f === "teamai-recall.md"));
+  if (agentFiles.length === 0) return 0;
+  const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
+  let deployed = 0;
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
+    if (!toolPath.agents) {
+      log.debug(`Skipping built-in agent deployment for ${tool}: no agents path`);
+      continue;
+    }
+    if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) {
+      log.debug(`Skipping built-in agent deployment for ${tool}: tool not installed`);
+      continue;
+    }
+    if (localConfig && isAgentDisabled(localConfig, tool)) continue;
+    if (!ALL_SUPPORTED_TOOLS.includes(tool)) {
+      log.warn(
+        `Skipping built-in agent deployment for ${tool}: unsupported agent format; disable this target or add a native renderer`
+      );
+      continue;
+    }
+    const targetAgentsDir = path32.join(baseDir, toolPath.agents);
+    try {
+      await ensureDir(targetAgentsDir);
+    } catch (e) {
+      log.warn(`Failed to create agents dir for ${tool}: ${e.message}`);
+      continue;
+    }
+    for (const file of agentFiles) {
+      const src = path32.join(builtinDir, file);
+      try {
+        const source = await readFileSafe(src);
+        const parsed = source ? reverseFromClaude(src, source) : { ok: false, reason: "cannot read source file" };
+        if (!parsed.ok) {
+          throw new Error(`invalid built-in agent ${file}: ${parsed.reason}`);
+        }
+        const rendered = renderForTool(parsed.spec, tool);
+        const stem = path32.basename(file, ".md");
+        await removeStaleAgentSiblings(targetAgentsDir, stem, rendered.ext);
+        const dest = path32.join(targetAgentsDir, `${stem}${rendered.ext}`);
+        await writeFile(dest, rendered.content);
+        deployed++;
+      } catch (e) {
+        log.warn(`Failed to deploy built-in agent ${file} to ${tool}: ${e.message}`);
+      }
+    }
+  }
+  return deployed;
+}
+var BUILTIN_AGENT_NAMES;
+var init_builtin_agents = __esm({
+  "src/builtin-agents.ts"() {
+    "use strict";
+    init_fs();
+    init_logger();
+    init_types();
+    init_base();
+    init_home();
+    init_agent_format();
+    BUILTIN_AGENT_NAMES = /* @__PURE__ */ new Set(["teamai-recall"]);
+  }
+});
+
 // src/resources/agents.ts
-import path28 from "path";
+import path33 from "path";
 function getAgentStem(filename) {
   if (filename.endsWith(".md")) return filename.slice(0, -3);
   if (filename.endsWith(".toml")) return filename.slice(0, -5);
@@ -9577,6 +11491,8 @@ function reverseByTool(tool, filePath, content) {
       return reverseFromCodex(filePath, content);
     case "cursor":
       return reverseFromCursor(filePath, content);
+    case "opencode":
+      return reverseFromOpencode(filePath, content);
   }
 }
 var AgentsHandler;
@@ -9599,13 +11515,13 @@ var init_agents = __esm({
        * Built-in CLI agents are excluded from push.
        */
       async scanLocalForPush(teamConfig, localConfig) {
-        const teamAgentsDir = path28.join(localConfig.repo.localPath, "agents");
+        const teamAgentsDir = path33.join(localConfig.repo.localPath, "agents");
         const tombstones = await this.readTombstones(localConfig);
         const baseDir = resolveBaseDir(localConfig);
         const directItems = [];
         const directStems = /* @__PURE__ */ new Set();
         if (isSelfMode(localConfig) && localConfig.projectRoot) {
-          const activeAgentsDir = path28.join(localConfig.projectRoot, ".teamai", "agents");
+          const activeAgentsDir = path33.join(localConfig.projectRoot, ".teamai", "agents");
           if (await pathExists(activeAgentsDir)) {
             for (const file of await listFiles(activeAgentsDir)) {
               const isYaml = file.endsWith(".yaml");
@@ -9614,8 +11530,8 @@ var init_agents = __esm({
               const stem = file.replace(/\.(yaml|md)$/, "");
               if (tombstones.has(stem)) continue;
               if (BUILTIN_AGENT_NAMES.has(stem)) continue;
-              const activePath = path28.join(activeAgentsDir, file);
-              const basePath = path28.join(teamAgentsDir, file);
+              const activePath = path33.join(activeAgentsDir, file);
+              const basePath = path33.join(teamAgentsDir, file);
               const baseExists = await pathExists(basePath);
               if (baseExists && await fileContentEqual(activePath, basePath)) continue;
               directItems.push({
@@ -9631,9 +11547,9 @@ var init_agents = __esm({
           }
         }
         const grouped = /* @__PURE__ */ new Map();
-        for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+        for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
           if (!toolPath.agents) continue;
-          const agentsDir = path28.join(baseDir, toolPath.agents);
+          const agentsDir = path33.join(baseDir, toolPath.agents);
           if (!await pathExists(agentsDir)) continue;
           const files = await listFiles(agentsDir);
           for (const file of files) {
@@ -9642,7 +11558,7 @@ var init_agents = __esm({
             if (tombstones.has(stem)) continue;
             if (BUILTIN_AGENT_NAMES.has(stem)) continue;
             if (directStems.has(stem)) continue;
-            const filePath = path28.join(agentsDir, file);
+            const filePath = path33.join(agentsDir, file);
             let toolGroup = grouped.get(stem);
             if (!toolGroup) {
               toolGroup = /* @__PURE__ */ new Map();
@@ -9655,8 +11571,8 @@ var init_agents = __esm({
         }
         const items = [...directItems];
         for (const [stem, toolFiles] of grouped) {
-          const teamYamlPath = path28.join(teamAgentsDir, `${stem}.yaml`);
-          const teamMdPath = path28.join(teamAgentsDir, `${stem}.md`);
+          const teamYamlPath = path33.join(teamAgentsDir, `${stem}.yaml`);
+          const teamMdPath = path33.join(teamAgentsDir, `${stem}.md`);
           const hasTeamYaml = await pathExists(teamYamlPath);
           const hasTeamMd = await pathExists(teamMdPath);
           let hasChange = false;
@@ -9737,7 +11653,7 @@ var init_agents = __esm({
        * Hidden files (tombstones) are filtered out by listFiles.
        */
       async scanTeamForPull(_teamConfig, localConfig) {
-        const agentsDir = path28.join(localConfig.repo.localPath, "agents");
+        const agentsDir = path33.join(localConfig.repo.localPath, "agents");
         if (!await pathExists(agentsDir)) return [];
         const files = await listFiles(agentsDir);
         const items = [];
@@ -9747,7 +11663,7 @@ var init_agents = __esm({
             items.push({
               name: stem,
               type: "agents",
-              sourcePath: path28.join(agentsDir, file),
+              sourcePath: path33.join(agentsDir, file),
               relativePath: `agents/${file}`,
               legacy: false
             });
@@ -9756,7 +11672,7 @@ var init_agents = __esm({
             items.push({
               name: stem,
               type: "agents",
-              sourcePath: path28.join(agentsDir, file),
+              sourcePath: path33.join(agentsDir, file),
               relativePath: `agents/${file}`,
               legacy: true
             });
@@ -9778,17 +11694,17 @@ var init_agents = __esm({
           return;
         }
         if (agentItem.mergedSpec) {
-          const dest2 = path28.join(localConfig.repo.localPath, "agents", `${item.name}.yaml`);
-          await ensureDir(path28.dirname(dest2));
+          const dest2 = path33.join(localConfig.repo.localPath, "agents", `${item.name}.yaml`);
+          await ensureDir(path33.dirname(dest2));
           const yamlContent = serializeAgentYaml(agentItem.mergedSpec);
           await writeFile(dest2, yamlContent);
           log.debug(`Wrote agent ${item.name} \u2192 team repo (YAML format)`);
           return;
         }
         const ext = item.sourcePath.endsWith(".yaml") ? ".yaml" : ".md";
-        const dest = path28.join(localConfig.repo.localPath, "agents", `${item.name}${ext}`);
+        const dest = path33.join(localConfig.repo.localPath, "agents", `${item.name}${ext}`);
         if (item.sourcePath !== dest) {
-          await ensureDir(path28.dirname(dest));
+          await ensureDir(path33.dirname(dest));
           await copyFile(item.sourcePath, dest);
         }
         log.debug(`Copied agent ${item.name} \u2192 team repo (${ext} verbatim)`);
@@ -9820,8 +11736,9 @@ var init_agents = __esm({
         }
         spec = parseResult.spec;
         const targets = spec.targets ?? ALL_SUPPORTED_TOOLS;
+        const scoped = scopedToolPaths(teamConfig, localConfig);
         for (const tool of targets) {
-          const toolPath = teamConfig.toolPaths[tool];
+          const toolPath = scoped[tool];
           if (!toolPath?.agents) {
             log.debug(`Skipping agent sync for ${tool}: no agents path configured`);
             continue;
@@ -9831,11 +11748,11 @@ var init_agents = __esm({
             continue;
           }
           if (isAgentDisabled(localConfig, tool)) continue;
-          const destDir = path28.join(baseDir, toolPath.agents);
+          const destDir = path33.join(baseDir, toolPath.agents);
           try {
             await ensureDir(destDir);
             const { ext, content: rendered } = renderForTool(spec, tool);
-            const dest = path28.join(destDir, `${item.name}${ext}`);
+            const dest = path33.join(destDir, `${item.name}${ext}`);
             await writeFile(dest, rendered);
             log.debug(`Rendered agent ${item.name} \u2192 ${tool} (${ext})`);
           } catch (e) {
@@ -9851,19 +11768,19 @@ var init_agents = __esm({
       async removeItem(name, teamConfig, localConfig) {
         const removed = [];
         const baseDir = resolveBaseDir(localConfig);
-        const teamAgentsDir = path28.join(localConfig.repo.localPath, "agents");
+        const teamAgentsDir = path33.join(localConfig.repo.localPath, "agents");
         for (const ext of [".yaml", ".md"]) {
-          const teamFile = path28.join(teamAgentsDir, `${name}${ext}`);
+          const teamFile = path33.join(teamAgentsDir, `${name}${ext}`);
           if (await pathExists(teamFile)) {
             await remove(teamFile);
             removed.push(teamFile);
           }
         }
         await this.addTombstone(name, localConfig);
-        for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+        for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
           if (!toolPath.agents) continue;
           for (const ext of [".md", ".toml"]) {
-            const filePath = path28.join(baseDir, toolPath.agents, `${name}${ext}`);
+            const filePath = path33.join(baseDir, toolPath.agents, `${name}${ext}`);
             if (await pathExists(filePath)) {
               await remove(filePath);
               removed.push(filePath);
@@ -9879,7 +11796,7 @@ var init_agents = __esm({
        */
       async pullLegacyMd(item, teamConfig, baseDir, localConfig) {
         const legacyTools = /* @__PURE__ */ new Set(["claude", "claude-internal", "tclaude", "codebuddy"]);
-        for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+        for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
           if (!legacyTools.has(tool)) continue;
           if (!toolPath.agents) {
             log.debug(`Skipping legacy agent sync for ${tool}: no agents path configured`);
@@ -9890,123 +11807,16 @@ var init_agents = __esm({
             continue;
           }
           if (isAgentDisabled(localConfig, tool)) continue;
-          const destDir = path28.join(baseDir, toolPath.agents);
+          const destDir = path33.join(baseDir, toolPath.agents);
           try {
             await ensureDir(destDir);
-            const dest = path28.join(destDir, `${item.name}.md`);
+            const dest = path33.join(destDir, `${item.name}.md`);
             await copyFile(item.sourcePath, dest);
             log.debug(`Synced legacy agent ${item.name} \u2192 ${tool}`);
           } catch (e) {
             log.warn(`Failed to sync legacy agent ${item.name} to ${tool}: ${e.message}`);
           }
         }
-      }
-    };
-  }
-});
-
-// src/resources/mcp.ts
-import path29 from "path";
-import { z as z5 } from "zod";
-import YAML7 from "yaml";
-function teamMcpYamlPath(repoPath) {
-  return path29.join(repoPath, "mcp", "mcp.yaml");
-}
-async function parseMcpYaml(repoPath) {
-  const content = await readFileSafe(teamMcpYamlPath(repoPath));
-  if (!content) return null;
-  try {
-    return McpYamlSchema.parse(YAML7.parse(content));
-  } catch (e) {
-    log.warn(`Invalid mcp.yaml format: ${e.message} \u2014 skipping team MCP servers this run`);
-    return null;
-  }
-}
-function teamMcpToDef(s) {
-  return {
-    name: s.name,
-    description: s.description,
-    transport: s.transport,
-    command: s.command,
-    args: s.args,
-    url: s.url,
-    headers: s.headers,
-    env: s.env,
-    timeout: s.timeout,
-    requires: s.requires,
-    tools: s.tools
-  };
-}
-async function parseTeamMcpServers(repoPath) {
-  const parsed = await parseMcpYaml(repoPath);
-  if (!parsed) return [];
-  return parsed.servers.map(teamMcpToDef);
-}
-var TeamMcpServerSchema, McpYamlSchema, McpHandler;
-var init_mcp = __esm({
-  "src/resources/mcp.ts"() {
-    "use strict";
-    init_base();
-    init_fs();
-    init_logger();
-    TeamMcpServerSchema = z5.object({
-      name: z5.string().regex(/^[A-Za-z0-9_-]+$/, "name must be alphanumeric with - or _"),
-      description: z5.string().optional(),
-      transport: z5.enum(["stdio", "http", "sse"]),
-      command: z5.string().optional(),
-      args: z5.array(z5.string()).optional(),
-      url: z5.string().optional(),
-      headers: z5.record(z5.string(), z5.string()).optional(),
-      env: z5.record(z5.string(), z5.string()).optional(),
-      timeout: z5.number().int().positive().optional(),
-      requires: z5.array(z5.string()).optional(),
-      tools: z5.array(z5.string()).optional()
-    }).refine((s) => s.transport === "stdio" ? !!s.command : true, {
-      message: "stdio transport requires `command`"
-    }).refine((s) => s.transport === "stdio" ? true : !!s.url, {
-      message: "http/sse transport requires `url`"
-    });
-    McpYamlSchema = z5.object({
-      servers: z5.array(TeamMcpServerSchema).default([])
-    });
-    McpHandler = class extends ResourceHandler {
-      type = "mcp";
-      /**
-       * MCP servers are contributed by editing mcp/mcp.yaml directly (same as hooks),
-       * so there is nothing to discover on the local side for push.
-       */
-      async scanLocalForPush() {
-        return [];
-      }
-      async scanTeamForPull(_teamConfig, localConfig) {
-        const yamlPath = teamMcpYamlPath(localConfig.repo.localPath);
-        if (!await pathExists(yamlPath)) return [];
-        const servers = await parseTeamMcpServers(localConfig.repo.localPath);
-        return servers.map((s) => ({
-          name: s.name,
-          type: "mcp",
-          sourcePath: yamlPath,
-          relativePath: path29.join("mcp", "mcp.yaml")
-        }));
-      }
-      async pushItem() {
-      }
-      async pullItem() {
-      }
-      /**
-       * Remove a server from the team repo's mcp.yaml. Local tool configs are cleaned
-       * up by the next reconcile, which sees the server vanish from the desired set.
-       */
-      async removeItem(name, _teamConfig, localConfig) {
-        const yamlPath = teamMcpYamlPath(localConfig.repo.localPath);
-        const parsed = await parseMcpYaml(localConfig.repo.localPath);
-        if (!parsed) return [];
-        const remaining = parsed.servers.filter((s) => s.name !== name);
-        if (remaining.length === parsed.servers.length) return [];
-        const { writeFile: writeFile12 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
-        await writeFile12(yamlPath, YAML7.stringify({ servers: remaining }));
-        await this.addTombstone(name, localConfig);
-        return [yamlPath];
       }
     };
   }
@@ -10042,6 +11852,111 @@ var init_resources = __esm({
   }
 });
 
+// src/resources/marketplace.ts
+var marketplace_exports = {};
+__export(marketplace_exports, {
+  refreshMarketplace: () => refreshMarketplace
+});
+import path34 from "path";
+async function extractSkillDescription2(skillDir) {
+  const skillMdPath = path34.join(skillDir, SKILL_MD2);
+  const content = await readFileSafe(skillMdPath);
+  if (!content) return "";
+  const match = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return "";
+  const frontmatter = match[1];
+  const descMatch = frontmatter.match(/description:\s*>-?\s*\n([\s\S]*?)(?=\n\w|\n---)/);
+  if (descMatch) {
+    return descMatch[1].split("\n").map((l) => l.trim()).filter((l) => l).join(" ");
+  }
+  const singleMatch = frontmatter.match(/description:\s*["']?(.+?)["']?\s*$/m);
+  if (singleMatch) {
+    return singleMatch[1].trim();
+  }
+  return "";
+}
+async function refreshMarketplace(repoPath) {
+  const marketplacePath = path34.join(repoPath, MARKETPLACE_PATH);
+  if (!await pathExists(marketplacePath)) {
+    return false;
+  }
+  const raw = await readFileSafe(marketplacePath);
+  if (!raw) return false;
+  let marketplace;
+  try {
+    marketplace = JSON.parse(raw);
+  } catch {
+    log.warn("Failed to parse marketplace.json, skipping refresh");
+    return false;
+  }
+  if (!Array.isArray(marketplace.plugins)) return false;
+  const skillsDir = path34.join(repoPath, "skills");
+  const currentSkills = /* @__PURE__ */ new Set();
+  const dirs = await listDirs(skillsDir);
+  for (const dir of dirs) {
+    const hasSkillMd = await pathExists(path34.join(skillsDir, dir, SKILL_MD2));
+    if (hasSkillMd) {
+      currentSkills.add(dir);
+    }
+  }
+  const existingPlugins = /* @__PURE__ */ new Map();
+  const nonAutoPlugins = [];
+  for (const plugin of marketplace.plugins) {
+    if (plugin.strict === false) {
+      existingPlugins.set(plugin.name, plugin);
+    } else {
+      nonAutoPlugins.push(plugin);
+    }
+  }
+  let changed = false;
+  const updatedPlugins = [];
+  for (const skillName of currentSkills) {
+    const existing = existingPlugins.get(skillName);
+    if (existing) {
+      const desc = await extractSkillDescription2(path34.join(skillsDir, skillName));
+      if (desc && desc !== existing.description) {
+        existing.description = desc;
+        changed = true;
+      }
+      updatedPlugins.push(existing);
+      existingPlugins.delete(skillName);
+    } else {
+      const desc = await extractSkillDescription2(path34.join(skillsDir, skillName));
+      updatedPlugins.push({
+        name: skillName,
+        source: `./skills/${skillName}`,
+        description: desc || `${skillName} skill`,
+        version: "1.0.0",
+        strict: false
+      });
+      changed = true;
+      log.debug(`Added ${skillName} to marketplace.json`);
+    }
+  }
+  if (existingPlugins.size > 0) {
+    changed = true;
+    for (const name of existingPlugins.keys()) {
+      log.debug(`Removed ${name} from marketplace.json`);
+    }
+  }
+  if (!changed) return false;
+  updatedPlugins.sort((a, b) => a.name.localeCompare(b.name));
+  marketplace.plugins = [...nonAutoPlugins, ...updatedPlugins];
+  await writeFile(marketplacePath, JSON.stringify(marketplace, null, 2) + "\n");
+  log.debug(`Refreshed marketplace.json (${updatedPlugins.length} auto-managed plugins)`);
+  return true;
+}
+var MARKETPLACE_PATH, SKILL_MD2;
+var init_marketplace = __esm({
+  "src/resources/marketplace.ts"() {
+    "use strict";
+    init_fs();
+    init_logger();
+    MARKETPLACE_PATH = ".codebuddy-plugin/marketplace.json";
+    SKILL_MD2 = "SKILL.md";
+  }
+});
+
 // src/update-policy.ts
 function resolveEffectiveUpdatePolicy(localConfig, teamConfig) {
   if (localConfig?.updatePolicy !== void 0) {
@@ -10074,7 +11989,7 @@ __export(update_exports, {
 });
 import { execFile as execFile3 } from "child_process";
 import { promisify as promisify2 } from "util";
-import fse7 from "fs-extra";
+import fse8 from "fs-extra";
 function resolveRegistryForPackage(pkgName) {
   const override = process.env.TEAMAI_NPM_REGISTRY?.trim();
   if (override) return override;
@@ -10127,21 +12042,21 @@ function isCacheValid(lastCheck, ttlMs = CACHE_TTL_MS) {
 async function acquireLock(lockPath) {
   const resolved = lockPath ?? expandHome(TEAMAI_UPDATE_LOCK_PATH);
   try {
-    if (await fse7.pathExists(resolved)) {
-      const content = await fse7.readFile(resolved, "utf-8");
+    if (await fse8.pathExists(resolved)) {
+      const content = await fse8.readFile(resolved, "utf-8");
       const pid = parseInt(content.trim(), 10);
       if (!isNaN(pid)) {
         try {
           process.kill(pid, 0);
           return false;
         } catch {
-          await fse7.remove(resolved);
+          await fse8.remove(resolved);
         }
       } else {
-        await fse7.remove(resolved);
+        await fse8.remove(resolved);
       }
     }
-    await fse7.writeFile(resolved, String(process.pid));
+    await fse8.writeFile(resolved, String(process.pid));
     return true;
   } catch {
     return false;
@@ -10150,7 +12065,7 @@ async function acquireLock(lockPath) {
 async function releaseLock(lockPath) {
   const resolved = lockPath ?? expandHome(TEAMAI_UPDATE_LOCK_PATH);
   try {
-    await fse7.remove(resolved);
+    await fse8.remove(resolved);
   } catch {
   }
 }
@@ -10282,15 +12197,15 @@ __export(reports_branch_exports, {
   refreshReportsWorktree: () => refreshReportsWorktree,
   withKnowledgeWorktree: () => withKnowledgeWorktree
 });
-import path30 from "path";
-import fse8 from "fs-extra";
+import path35 from "path";
+import fse9 from "fs-extra";
 function businessRoot(localConfig) {
-  return localConfig.repo.businessRepoRoot ?? path30.dirname(localConfig.repo.localPath);
+  return localConfig.repo.businessRepoRoot ?? path35.dirname(localConfig.repo.localPath);
 }
 function reportsWorktreePath(localConfig) {
-  return path30.join(localConfig.repo.localPath, REPORTS_WORKTREE_DIRNAME);
+  return path35.join(localConfig.repo.localPath, REPORTS_WORKTREE_DIRNAME);
 }
-async function remoteBranchExists(repoRoot) {
+async function remoteBranchExists2(repoRoot) {
   const git = createGit2(repoRoot);
   try {
     const res = await git.listRemote(["--heads", "origin", REPORTS_BRANCH]);
@@ -10306,15 +12221,15 @@ async function ensureReportsWorktree(localConfig) {
     return wt;
   }
   if (await pathExists(wt)) {
-    await fse8.remove(wt);
+    await fse9.remove(wt);
   }
-  await ensureDir(path30.dirname(wt));
+  await ensureDir(path35.dirname(wt));
   const git = createGit2(repoRoot);
   try {
     await git.raw(["worktree", "prune"]);
   } catch {
   }
-  if (await remoteBranchExists(repoRoot)) {
+  if (await remoteBranchExists2(repoRoot)) {
     try {
       await git.fetch(["origin", REPORTS_BRANCH]);
     } catch {
@@ -10361,9 +12276,9 @@ async function createOrphanWorktree(repoRoot, wt) {
   }
 }
 async function clearWorktreeFiles(wt) {
-  const entries = await fse8.readdir(wt);
+  const entries = await fse9.readdir(wt);
   await Promise.all(
-    entries.filter((e) => e !== ".git").map((e) => fse8.remove(path30.join(wt, e)))
+    entries.filter((e) => e !== ".git").map((e) => fse9.remove(path35.join(wt, e)))
   );
 }
 async function writeWorktreeGitignore(wt) {
@@ -10373,10 +12288,10 @@ async function writeWorktreeGitignore(wt) {
     "knowledge-wt/",
     ""
   ].join("\n");
-  await writeFile(path30.join(wt, ".gitignore"), content);
+  await writeFile(path35.join(wt, ".gitignore"), content);
 }
 async function commitAndPushReports(localConfig, message, files) {
-  const lockPath = path30.join(localConfig.repo.localPath, REPORTS_LOCK_FILENAME);
+  const lockPath = path35.join(localConfig.repo.localPath, REPORTS_LOCK_FILENAME);
   const locked = await acquireLock(lockPath);
   if (!locked) {
     log.debug("[reports] another reports write is in progress; skipping");
@@ -10439,7 +12354,7 @@ async function ensureReportsDir(localConfig) {
 }
 async function withKnowledgeWorktree(localConfig, fn) {
   const repoRoot = businessRoot(localConfig);
-  const wt = path30.join(localConfig.repo.localPath, KNOWLEDGE_WORKTREE_DIRNAME);
+  const wt = path35.join(localConfig.repo.localPath, KNOWLEDGE_WORKTREE_DIRNAME);
   const git = createGit2(repoRoot);
   if (!await hasCommits(repoRoot)) {
     throw new EmptyRepoError(repoRoot);
@@ -10448,7 +12363,7 @@ async function withKnowledgeWorktree(localConfig, fn) {
     try {
       await git.raw(["worktree", "remove", "--force", wt]);
     } catch {
-      await fse8.remove(wt);
+      await fse9.remove(wt);
     }
   }
   try {
@@ -10471,7 +12386,7 @@ async function withKnowledgeWorktree(localConfig, fn) {
     ...localConfig,
     repo: {
       ...localConfig.repo,
-      localPath: path30.join(wt, ".teamai"),
+      localPath: path35.join(wt, ".teamai"),
       businessRepoRoot: wt
     }
   };
@@ -10481,7 +12396,7 @@ async function withKnowledgeWorktree(localConfig, fn) {
     try {
       await git.raw(["worktree", "remove", "--force", wt]);
     } catch {
-      await fse8.remove(wt);
+      await fse9.remove(wt);
       try {
         await git.raw(["worktree", "prune"]);
       } catch {
@@ -10506,114 +12421,8 @@ var init_reports_branch = __esm({
         this.repoRoot = repoRoot;
         this.name = "EmptyRepoError";
       }
-      repoRoot;
     };
     MAX_PUSH_RETRIES = 5;
-  }
-});
-
-// src/resources/marketplace.ts
-var marketplace_exports = {};
-__export(marketplace_exports, {
-  refreshMarketplace: () => refreshMarketplace
-});
-import path31 from "path";
-async function extractSkillDescription2(skillDir) {
-  const skillMdPath = path31.join(skillDir, SKILL_MD2);
-  const content = await readFileSafe(skillMdPath);
-  if (!content) return "";
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return "";
-  const frontmatter = match[1];
-  const descMatch = frontmatter.match(/description:\s*>-?\s*\n([\s\S]*?)(?=\n\w|\n---)/);
-  if (descMatch) {
-    return descMatch[1].split("\n").map((l) => l.trim()).filter((l) => l).join(" ");
-  }
-  const singleMatch = frontmatter.match(/description:\s*["']?(.+?)["']?\s*$/m);
-  if (singleMatch) {
-    return singleMatch[1].trim();
-  }
-  return "";
-}
-async function refreshMarketplace(repoPath) {
-  const marketplacePath = path31.join(repoPath, MARKETPLACE_PATH);
-  if (!await pathExists(marketplacePath)) {
-    return false;
-  }
-  const raw = await readFileSafe(marketplacePath);
-  if (!raw) return false;
-  let marketplace;
-  try {
-    marketplace = JSON.parse(raw);
-  } catch {
-    log.warn("Failed to parse marketplace.json, skipping refresh");
-    return false;
-  }
-  if (!Array.isArray(marketplace.plugins)) return false;
-  const skillsDir = path31.join(repoPath, "skills");
-  const currentSkills = /* @__PURE__ */ new Set();
-  const dirs = await listDirs(skillsDir);
-  for (const dir of dirs) {
-    const hasSkillMd = await pathExists(path31.join(skillsDir, dir, SKILL_MD2));
-    if (hasSkillMd) {
-      currentSkills.add(dir);
-    }
-  }
-  const existingPlugins = /* @__PURE__ */ new Map();
-  const nonAutoPlugins = [];
-  for (const plugin of marketplace.plugins) {
-    if (plugin.strict === false) {
-      existingPlugins.set(plugin.name, plugin);
-    } else {
-      nonAutoPlugins.push(plugin);
-    }
-  }
-  let changed = false;
-  const updatedPlugins = [];
-  for (const skillName of currentSkills) {
-    const existing = existingPlugins.get(skillName);
-    if (existing) {
-      const desc = await extractSkillDescription2(path31.join(skillsDir, skillName));
-      if (desc && desc !== existing.description) {
-        existing.description = desc;
-        changed = true;
-      }
-      updatedPlugins.push(existing);
-      existingPlugins.delete(skillName);
-    } else {
-      const desc = await extractSkillDescription2(path31.join(skillsDir, skillName));
-      updatedPlugins.push({
-        name: skillName,
-        source: `./skills/${skillName}`,
-        description: desc || `${skillName} skill`,
-        version: "1.0.0",
-        strict: false
-      });
-      changed = true;
-      log.debug(`Added ${skillName} to marketplace.json`);
-    }
-  }
-  if (existingPlugins.size > 0) {
-    changed = true;
-    for (const name of existingPlugins.keys()) {
-      log.debug(`Removed ${name} from marketplace.json`);
-    }
-  }
-  if (!changed) return false;
-  updatedPlugins.sort((a, b) => a.name.localeCompare(b.name));
-  marketplace.plugins = [...nonAutoPlugins, ...updatedPlugins];
-  await writeFile(marketplacePath, JSON.stringify(marketplace, null, 2) + "\n");
-  log.debug(`Refreshed marketplace.json (${updatedPlugins.length} auto-managed plugins)`);
-  return true;
-}
-var MARKETPLACE_PATH, SKILL_MD2;
-var init_marketplace = __esm({
-  "src/resources/marketplace.ts"() {
-    "use strict";
-    init_fs();
-    init_logger();
-    MARKETPLACE_PATH = ".codebuddy-plugin/marketplace.json";
-    SKILL_MD2 = "SKILL.md";
   }
 });
 
@@ -10624,7 +12433,7 @@ __export(push_exports, {
   filterExistingTopLevelPaths: () => filterExistingTopLevelPaths,
   push: () => push
 });
-import path32 from "path";
+import path36 from "path";
 async function filterExistingTopLevelPaths(repoPath, candidates) {
   const seen = /* @__PURE__ */ new Set();
   const result = [];
@@ -10633,7 +12442,7 @@ async function filterExistingTopLevelPaths(repoPath, candidates) {
     seen.add(candidate);
     const trimmed = candidate.replace(/\/+$/, "");
     if (!trimmed) continue;
-    if (await pathExists(path32.join(repoPath, trimmed))) {
+    if (await pathExists(path36.join(repoPath, trimmed))) {
       result.push(candidate);
     }
   }
@@ -10680,6 +12489,97 @@ async function createPrWithFallback(teamConfig, localConfig, branchName, title, 
     return null;
   }
 }
+async function pushGroup(args) {
+  const { group, teamConfig, localConfig, pushState, includeTeamConfig } = args;
+  const { items, reuse } = group;
+  const pushSpin = spinner("Pushing resources...").start();
+  const pushedFiles = [];
+  let workingTreeDirtied = false;
+  try {
+    for (const item of items) {
+      const handler = getHandler(item.type);
+      await handler.pushItem(item, teamConfig, localConfig);
+      workingTreeDirtied = true;
+      pushedFiles.push(item.relativePath);
+    }
+    if (items.some((i) => i.type === "skills")) {
+      try {
+        const { refreshMarketplace: refreshMarketplace2 } = await Promise.resolve().then(() => (init_marketplace(), marketplace_exports));
+        const updated = await refreshMarketplace2(localConfig.repo.localPath);
+        if (updated) {
+          pushedFiles.push(".codebuddy-plugin/marketplace.json");
+          log.debug("Refreshed marketplace.json");
+        }
+      } catch (e) {
+        log.debug(`Marketplace refresh skipped: ${e.message}`);
+      }
+    }
+    const sweeperCandidates = ["rules/", "env/", ".codebuddy-plugin/"];
+    const existingSweepers = await filterExistingTopLevelPaths(
+      localConfig.repo.localPath,
+      sweeperCandidates
+    );
+    const configFiles = includeTeamConfig ? ["teamai.yaml"] : [];
+    const gitFiles = [.../* @__PURE__ */ new Set([...pushedFiles, ...existingSweepers, ...configFiles])];
+    const branchName = reuse?.branch ?? generateBranchName(localConfig.username);
+    const commitMsg = `[teamai] Push ${items.length} resource(s) from ${localConfig.username}`;
+    const hasChanges = await pushRepoBranch(
+      localConfig.repo.localPath,
+      commitMsg,
+      gitFiles,
+      branchName,
+      { reuseBranch: Boolean(reuse) }
+    );
+    workingTreeDirtied = false;
+    if (!hasChanges) {
+      pushSpin.succeed(
+        reuse ? `No changes to push (PR already up to date: ${reuse.prUrl ?? branchName})` : "No changes to push (files already up to date)"
+      );
+      return true;
+    }
+    pushSpin.succeed(`Pushed branch ${branchName}`);
+    let prUrl;
+    if (reuse) {
+      prUrl = reuse.prUrl;
+      log.success(`Existing PR updated: ${prUrl ?? branchName}`);
+    } else {
+      prUrl = await createPrWithFallback(
+        teamConfig,
+        localConfig,
+        branchName,
+        commitMsg,
+        `Pushed ${items.length} resource(s):
+${items.map((i) => `- [${i.type}] ${i.name}`).join("\n")}`
+      );
+      if (!prUrl) {
+        process.exitCode = 1;
+      }
+    }
+    recordPendingPush(pushState, {
+      branch: branchName,
+      prUrl,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+      items: toPendingItems(items)
+    });
+    await checkoutMaster(localConfig.repo.localPath);
+    return true;
+  } catch (e) {
+    pushSpin.fail(`Push failed: ${e.message}`);
+    if (workingTreeDirtied) {
+      try {
+        const git = createGit2(localConfig.repo.localPath);
+        await git.reset(["--hard", "HEAD"]);
+        await git.clean("f", ["-d"]);
+        log.debug("Rolled back team repo working tree after failed push");
+      } catch (cleanupErr) {
+        log.warn(
+          `Warning: team repo may be in a dirty state. Run \`git -C ${localConfig.repo.localPath} reset --hard && git clean -fd\` manually. (${cleanupErr.message})`
+        );
+      }
+    }
+    return false;
+  }
+}
 async function push(options) {
   const { localConfig, teamConfig } = await autoDetectInit();
   assertNotReadOnly(localConfig, "teamai push");
@@ -10698,6 +12598,7 @@ async function push(options) {
       } else {
         log.error(`Push failed: ${e.message}`);
       }
+      process.exitCode = 1;
     }
     return;
   }
@@ -10706,6 +12607,7 @@ async function push(options) {
 async function pushCore(localConfig, teamConfig, options) {
   const selfMode = localConfig.repo.kind === "self";
   const scopeLabel = localConfig.scope;
+  let pendingTeamConfig = null;
   if (!selfMode) {
     const pullSpin = spinner("Pulling latest changes...").start();
     try {
@@ -10713,10 +12615,22 @@ async function pushCore(localConfig, teamConfig, options) {
       const git = createGit2(repoPath);
       if (!await isDedicatedRepoRoot(repoPath)) {
         pullSpin.fail("Cannot push: team repo path is not a dedicated git root. Run `teamai init` to re-clone the team repo before pushing.");
+        process.exitCode = 1;
         return;
+      }
+      const yamlPath = path36.join(repoPath, "teamai.yaml");
+      const workingContent = await readFileSafe(yamlPath);
+      if (workingContent !== null) {
+        const committed = await getFileContentAtRev(repoPath, "HEAD", "teamai.yaml");
+        if (committed === null || committed.toString() !== workingContent) {
+          pendingTeamConfig = workingContent;
+        }
       }
       await resetToCleanMaster(git, repoPath);
       await pullRepo(repoPath);
+      if (pendingTeamConfig !== null) {
+        await writeFile(yamlPath, pendingTeamConfig);
+      }
       pullSpin.succeed("Up to date");
     } catch (e) {
       pullSpin.warn(`Pull failed: ${e.message}`);
@@ -10743,50 +12657,51 @@ async function pushCore(localConfig, teamConfig, options) {
     const items = await handler.scanLocalForPush(scanTeamConfig, localConfig);
     allItems.push(...items);
   }
+  const fullScan = [...allItems];
   spin.stop();
   if (options.skill) {
-    const skillBasename = path32.basename(
+    const skillBasename = path36.basename(
       options.skill.startsWith("~") ? options.skill.slice(1).replace(/^[/\\]+/, "") : options.skill
     );
     try {
       assertSafeResourceName(skillBasename);
     } catch (e) {
-      console.error(`[push] --skill \u53C2\u6570\u4E0D\u5408\u6CD5: ${e.message}`);
+      console.error(`[push] Invalid --skill argument: ${e.message}`);
       process.exitCode = 2;
       return;
     }
-    const os10 = await import("os");
-    const skillPath = options.skill.startsWith("~") ? path32.join(os10.homedir(), options.skill.slice(1)) : path32.resolve(options.skill);
+    const os11 = await import("os");
+    const skillPath = options.skill.startsWith("~") ? path36.join(os11.homedir(), options.skill.slice(1)) : path36.resolve(options.skill);
     let matchedItem;
     for (const item of allItems) {
       if (item.type !== "skills") continue;
-      if (path32.resolve(item.sourcePath) === skillPath) {
+      if (path36.resolve(item.sourcePath) === skillPath) {
         matchedItem = item;
         break;
       }
-      if (item.name === path32.basename(skillPath)) {
+      if (item.name === path36.basename(skillPath)) {
         matchedItem = item;
         break;
       }
-      const skillInput = options.skill.replace(/^~/, os10.homedir());
-      if (item.sourcePath.endsWith(skillInput) || item.sourcePath.includes(path32.sep + skillInput)) {
+      const skillInput = options.skill.replace(/^~/, os11.homedir());
+      if (item.sourcePath.endsWith(skillInput) || item.sourcePath.includes(path36.sep + skillInput)) {
         matchedItem = item;
         break;
       }
     }
     if (!matchedItem) {
-      if (await pathExists(skillPath) && await pathExists(path32.join(skillPath, "SKILL.md"))) {
-        const skillName = path32.basename(skillPath);
+      if (await pathExists(skillPath) && await pathExists(path36.join(skillPath, "SKILL.md"))) {
+        const skillName = path36.basename(skillPath);
         let namespace;
         let status2 = "new";
-        const teamSkillsDir = path32.join(localConfig.repo.localPath, "skills");
+        const teamSkillsDir = path36.join(localConfig.repo.localPath, "skills");
         if (await pathExists(teamSkillsDir)) {
           const { listDirs: listDirs2 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
           const topDirs = await listDirs2(teamSkillsDir);
           for (const dir of topDirs) {
-            const candidatePath = path32.join(teamSkillsDir, dir, skillName);
+            const candidatePath = path36.join(teamSkillsDir, dir, skillName);
             if (await pathExists(candidatePath)) {
-              const isNamespace = !await pathExists(path32.join(teamSkillsDir, dir, "SKILL.md"));
+              const isNamespace = !await pathExists(path36.join(teamSkillsDir, dir, "SKILL.md"));
               if (isNamespace) {
                 namespace = dir;
               }
@@ -10794,7 +12709,7 @@ async function pushCore(localConfig, teamConfig, options) {
               break;
             }
           }
-          if (!namespace && await pathExists(path32.join(teamSkillsDir, skillName))) {
+          if (!namespace && await pathExists(path36.join(teamSkillsDir, skillName))) {
             status2 = "modified";
           }
         }
@@ -10821,14 +12736,52 @@ async function pushCore(localConfig, teamConfig, options) {
     }
     allItems.length = 0;
     allItems.push(matchedItem);
+    if (!fullScan.some((i) => i.type === matchedItem.type && i.name === matchedItem.name)) {
+      fullScan.push(matchedItem);
+    }
   }
+  if (options.role) {
+    try {
+      assertSafeResourceName(options.role);
+      for (const item of allItems) {
+        if (item.type === "skills") {
+          assertSafeResourceName(item.name);
+        }
+      }
+    } catch (e) {
+      log.error(`Invalid skill role or name: ${e.message}`);
+      process.exitCode = 2;
+      return;
+    }
+    for (const item of allItems) {
+      if (item.type !== "skills") continue;
+      item.namespace = options.role;
+      item.relativePath = `skills/${options.role}/${item.name}`;
+    }
+  }
+  const pushState = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
+  const pruned = await prunePendingPushes(
+    localConfig.repo.localPath,
+    pushState.pendingPushes,
+    fullScan
+  );
+  pushState.pendingPushes = pruned.pending;
+  if (pruned.changed) {
+    await saveStateForScope(pushState, localConfig.scope, localConfig.projectRoot);
+  }
+  const pendingPushes = pushState.pendingPushes;
   if (allItems.length === 0) {
+    if (pendingTeamConfig !== null) {
+      await pushTeamConfigOnly(localConfig, teamConfig, options);
+      return;
+    }
     log.info("No new or modified resources to push");
     return;
   }
   console.log("");
   console.log(`Found ${allItems.length} resource(s) to push:`);
   console.log("");
+  const pendingIndices = /* @__PURE__ */ new Set();
   for (let i = 0; i < allItems.length; i++) {
     const item = allItems[i];
     const statusLabel = item.status === "modified" ? " (modified)" : " (new)";
@@ -10838,8 +12791,21 @@ async function pushCore(localConfig, teamConfig, options) {
     if (item.type === "skills" && item.namespace) {
       console.log(`       to:   skills/${item.namespace}/${item.name}`);
     }
+    const openPrs = findPendingForItem(pendingPushes, item);
+    if (openPrs.length > 0) {
+      pendingIndices.add(i);
+      for (const entry of openPrs) {
+        console.log(`       awaiting review: ${entry.prUrl ?? `branch ${entry.branch}`}`);
+      }
+    }
   }
   console.log("");
+  if (pendingIndices.size > 0) {
+    log.info(
+      `${pendingIndices.size} resource(s) already belong to an open PR. Keeping them selected updates that PR instead of opening a duplicate; deselect them to leave it untouched.`
+    );
+    console.log("");
+  }
   if (options.dryRun) {
     log.info("Dry run \u2014 no changes made");
     return;
@@ -10856,7 +12822,28 @@ async function pushCore(localConfig, teamConfig, options) {
     }
     selectedItems = indices.map((i) => allItems[i]);
   }
-  const newSkills = selectedItems.filter((i) => i.type === "skills" && i.status === "new");
+  const groups = planPushGroups(selectedItems, pendingPushes);
+  for (const group of groups) {
+    if (!group.reuse) continue;
+    log.info(
+      `Updating existing PR instead of creating a new one: ${group.reuse.prUrl ?? group.reuse.branch}`
+    );
+    for (const item of group.items) {
+      if (item.type !== "skills" || item.status !== "new") continue;
+      const ns = pendingNamespaceFor(group.reuse, item);
+      if (!ns) continue;
+      item.namespace = ns;
+      item.relativePath = `skills/${ns}/${item.name}`;
+    }
+  }
+  for (const entry of partiallySelectedEntries(selectedItems, pendingPushes)) {
+    log.warn(
+      `Only part of ${entry.prUrl ?? entry.branch} is selected, so the selected resources go into a new PR and will exist in both. Select all of its resources to update it in place instead.`
+    );
+  }
+  const newSkills = selectedItems.filter(
+    (i) => i.type === "skills" && i.status === "new" && !i.namespace
+  );
   let resolvedNamespaceForNew;
   if (newSkills.length > 0) {
     if (options.role) {
@@ -10932,74 +12919,23 @@ async function pushCore(localConfig, teamConfig, options) {
       }
     }
   }
-  const pushSpin = spinner("Pushing resources...").start();
-  const pushedFiles = [];
-  let workingTreeDirtied = false;
-  try {
-    for (const item of selectedItems) {
-      const handler = getHandler(item.type);
-      await handler.pushItem(item, teamConfig, localConfig);
-      workingTreeDirtied = true;
-      pushedFiles.push(item.relativePath);
-    }
-    if (selectedItems.some((i) => i.type === "skills")) {
-      try {
-        const { refreshMarketplace: refreshMarketplace2 } = await Promise.resolve().then(() => (init_marketplace(), marketplace_exports));
-        const updated = await refreshMarketplace2(localConfig.repo.localPath);
-        if (updated) {
-          pushedFiles.push(".codebuddy-plugin/marketplace.json");
-          log.debug("Refreshed marketplace.json");
-        }
-      } catch (e) {
-        log.debug(`Marketplace refresh skipped: ${e.message}`);
-      }
-    }
-    const sweeperCandidates = ["rules/", "env/", ".codebuddy-plugin/"];
-    const existingSweepers = await filterExistingTopLevelPaths(
-      localConfig.repo.localPath,
-      sweeperCandidates
-    );
-    const gitFiles = [.../* @__PURE__ */ new Set([...pushedFiles, ...existingSweepers])];
-    const branchName = generateBranchName(localConfig.username);
-    const commitMsg = `[teamai] Push ${selectedItems.length} resource(s) from ${localConfig.username}`;
-    const hasChanges = await pushRepoBranch(
-      localConfig.repo.localPath,
-      commitMsg,
-      gitFiles,
-      branchName
-    );
-    workingTreeDirtied = false;
-    if (!hasChanges) {
-      pushSpin.succeed("No changes to push (files already up to date)");
-      return;
-    }
-    pushSpin.succeed(`Pushed branch ${branchName}`);
-    await createPrWithFallback(
+  let configRider = pendingTeamConfig !== null;
+  for (const group of groups) {
+    const ok = await pushGroup({
+      group,
       teamConfig,
       localConfig,
-      branchName,
-      commitMsg,
-      `Pushed ${selectedItems.length} resource(s):
-${selectedItems.map((i) => `- [${i.type}] ${i.name}`).join("\n")}`
-    );
-    await checkoutMaster(localConfig.repo.localPath);
-  } catch (e) {
-    pushSpin.fail(`Push failed: ${e.message}`);
-    if (workingTreeDirtied) {
-      try {
-        const git = createGit2(localConfig.repo.localPath);
-        await git.reset(["--hard", "HEAD"]);
-        await git.clean("f", ["-d"]);
-        log.debug("Rolled back team repo working tree after failed push");
-      } catch (cleanupErr) {
-        log.warn(
-          `Warning: team repo may be in a dirty state. Run \`git -C ${localConfig.repo.localPath} reset --hard && git clean -fd\` manually. (${cleanupErr.message})`
-        );
-      }
+      pushState,
+      includeTeamConfig: configRider
+    });
+    if (!ok) {
+      await saveStateForScope(pushState, localConfig.scope, localConfig.projectRoot);
+      process.exitCode = 1;
+      return;
     }
-    return;
+    configRider = false;
   }
-  const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
+  const state = pushState;
   state.lastPush = (/* @__PURE__ */ new Date()).toISOString();
   for (const item of selectedItems) {
     if (item.type === "skills" && !state.pushedSkills.includes(item.name)) {
@@ -11014,6 +12950,52 @@ ${selectedItems.map((i) => `- [${i.type}] ${i.name}`).join("\n")}`
   }
   await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
 }
+async function pushTeamConfigOnly(localConfig, teamConfig, options) {
+  console.log("");
+  console.log("Found team config change to push:");
+  console.log("  - teamai.yaml");
+  console.log("");
+  if (options.dryRun) {
+    log.info("Dry run \u2014 no changes made");
+    return;
+  }
+  const pushSpin = spinner("Pushing team config...").start();
+  const branchName = generateBranchName(localConfig.username);
+  const commitMsg = `[teamai] Update team config from ${localConfig.username}`;
+  try {
+    const hasChanges = await pushRepoBranch(
+      localConfig.repo.localPath,
+      commitMsg,
+      ["teamai.yaml"],
+      branchName
+    );
+    if (!hasChanges) {
+      pushSpin.succeed("No changes to push (config already up to date)");
+      return;
+    }
+    pushSpin.succeed(`Pushed branch ${branchName}`);
+    const prUrl = await createPrWithFallback(
+      teamConfig,
+      localConfig,
+      branchName,
+      commitMsg,
+      "Updated team config (teamai.yaml)"
+    );
+    if (!prUrl) {
+      process.exitCode = 1;
+    }
+    await checkoutMaster(localConfig.repo.localPath);
+  } catch (e) {
+    pushSpin.fail(`Push failed: ${e.message}`);
+    try {
+      await checkoutMaster(localConfig.repo.localPath);
+    } catch (cleanupErr) {
+      log.debug(`Could not switch back to default branch: ${cleanupErr.message}`);
+    }
+    process.exitCode = 1;
+    return;
+  }
+}
 var SELF_KNOWLEDGE_SCAN_KEY;
 var init_push = __esm({
   "src/push.ts"() {
@@ -11021,6 +13003,7 @@ var init_push = __esm({
     init_config();
     init_read_only();
     init_git2();
+    init_pending_push();
     init_pre_push_sync();
     init_providers();
     init_logger();
@@ -11055,15 +13038,20 @@ __export(git_exports, {
   isDedicatedRepoRoot: () => isDedicatedRepoRoot,
   isGitRepo: () => isGitRepo,
   isMetadataOnlyDiff: () => isMetadataOnlyDiff,
+  normalizeRepoUrlForCompare: () => normalizeRepoUrlForCompare,
   pullRepo: () => pullRepo,
+  pushLearningToOrigin: () => pushLearningToOrigin,
   pushRepoBranch: () => pushRepoBranch,
   pushRepoDirectly: () => pushRepoDirectly,
+  redactGitCredentials: () => redactGitCredentials,
+  remoteBranchExists: () => remoteBranchExists,
+  remotesMatch: () => remotesMatch,
   resetToCleanMaster: () => resetToCleanMaster
 });
-import fs12 from "fs";
+import fs13 from "fs";
 import { realpath } from "fs/promises";
-import path33 from "path";
-import fse9 from "fs-extra";
+import path37 from "path";
+import fse10 from "fs-extra";
 import simpleGit from "simple-git";
 function createGit2(basePath) {
   if (basePath) {
@@ -11072,13 +13060,13 @@ function createGit2(basePath) {
   return simpleGit();
 }
 async function isGitRepo(localPath) {
-  if (!await fse9.pathExists(localPath)) {
+  if (!await fse10.pathExists(localPath)) {
     return false;
   }
-  return fse9.pathExists(path33.join(localPath, ".git"));
+  return fse10.pathExists(path37.join(localPath, ".git"));
 }
 async function initRepo(remote, localPath) {
-  await fse9.ensureDir(localPath);
+  await fse10.ensureDir(localPath);
   const git = simpleGit({ baseDir: localPath });
   await git.init();
   await git.addRemote("origin", remote);
@@ -11108,6 +13096,23 @@ async function getRemoteUrl(localPath, remoteName = "origin") {
     return null;
   }
 }
+function redactGitCredentials(url) {
+  return url.replace(/^(https?:\/\/)[^/@]+@/i, "$1");
+}
+function normalizeRepoUrlForCompare(url) {
+  let s = url.trim();
+  const scp = /^[^/@]+@([^:/]+):(.+)$/.exec(s);
+  if (scp) {
+    s = `${scp[1]}/${scp[2]}`;
+  } else {
+    s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/^[^/@]+@/, "");
+  }
+  s = s.replace(/:(\d+)\//, "/").replace(/^\/+/, "").replace(/\/+$/, "").replace(/\.git$/i, "");
+  return s.toLowerCase();
+}
+function remotesMatch(a, b) {
+  return normalizeRepoUrlForCompare(a) === normalizeRepoUrlForCompare(b);
+}
 async function hasCommits(localPath) {
   const git = createGit2(localPath);
   try {
@@ -11119,7 +13124,7 @@ async function hasCommits(localPath) {
 }
 async function commitPaths(localPath, message, files) {
   const git = createGit2(localPath);
-  const existing = files.filter((f) => fs12.existsSync(path33.join(localPath, f)));
+  const existing = files.filter((f) => fs13.existsSync(path37.join(localPath, f)));
   if (existing.length === 0) return false;
   let added = 0;
   for (const f of existing) {
@@ -11137,11 +13142,37 @@ async function commitPaths(localPath, message, files) {
 }
 async function pullRepo(localPath) {
   const git = createGit2(localPath);
-  const result = await git.pull();
-  if (result.summary.changes === 0 && result.summary.insertions === 0 && result.summary.deletions === 0) {
-    return "already up to date";
+  const branch = (await git.revparse(["--abbrev-ref", "HEAD"])).trim();
+  try {
+    const result = await git.pull(["--ff-only"]);
+    if (result.summary.changes === 0 && result.summary.insertions === 0 && result.summary.deletions === 0) {
+      return "already up to date";
+    }
+    return `${result.summary.changes} file(s) changed`;
+  } catch (err) {
+    const dedicated = await isDedicatedRepoRoot(localPath);
+    if (!dedicated) {
+      throw err;
+    }
+    const reason = err instanceof Error ? err.message : String(err);
+    log.debug(`ff-only pull failed (${branch}), attempting fetch + hard reset: ${reason}`);
+    await git.fetch(["origin", branch]);
+    let ahead = 0;
+    try {
+      const out = (await git.raw(["rev-list", "--count", `origin/${branch}..HEAD`])).trim();
+      ahead = Number.parseInt(out, 10) || 0;
+    } catch {
+    }
+    const status2 = await git.status();
+    const dirtyCount = status2.files.length - status2.not_added.length;
+    if (ahead > 0 || dirtyCount > 0) {
+      log.warn(
+        `Team repo diverged from origin/${branch}; realigning discards ${ahead} local commit(s) and ${dirtyCount} uncommitted change(s).`
+      );
+    }
+    await git.reset(["--hard", `origin/${branch}`]);
+    return "reset to origin (diverged)";
   }
-  return `${result.summary.changes} file(s) changed`;
 }
 async function getDefaultBranch(localPath) {
   const cached = defaultBranchCache.get(localPath);
@@ -11173,7 +13204,7 @@ async function pushRepoDirectly(localPath, message, files) {
   const git = createGit2(localPath);
   const existingFiles = [];
   for (const f of files) {
-    const fullPath = fs12.existsSync(`${localPath}/${f}`);
+    const fullPath = fs13.existsSync(`${localPath}/${f}`);
     if (fullPath) existingFiles.push(f);
   }
   if (existingFiles.length === 0) {
@@ -11189,6 +13220,19 @@ async function pushRepoDirectly(localPath, message, files) {
   await git.commit(message);
   const branch = (await git.revparse(["--abbrev-ref", "HEAD"])).trim();
   await git.push(["-u", "origin", branch]);
+}
+async function pushLearningToOrigin(repoPath, filename, message) {
+  const git = createGit2(repoPath);
+  await git.add([`learnings/${filename}`]);
+  const status2 = await git.status();
+  if (status2.staged.length > 0) {
+    await git.commit(message);
+  }
+  const branch = (await git.revparse(["--abbrev-ref", "HEAD"])).trim();
+  await git.push(["origin", branch]);
+  await git.fetch(["origin", branch]);
+  const ahead = (await git.raw(["rev-list", "--count", `origin/${branch}..HEAD`])).trim();
+  return ahead === "0" || ahead === "";
 }
 async function autoPushTeamRepo(repoPath, message) {
   try {
@@ -11244,41 +13288,89 @@ function isMetadataOnlyDiff(diff) {
   }
   return true;
 }
-async function pushRepoBranch(localPath, message, files, branchName) {
+async function remoteBranchExists(localPath, branchName) {
+  try {
+    const out = await createGit2(localPath).listRemote(["--heads", "origin", `refs/heads/${branchName}`]);
+    return out.trim().length > 0;
+  } catch (e) {
+    log.debug(`ls-remote failed for ${branchName}: ${e.message}`);
+    return null;
+  }
+}
+async function pushRepoBranch(localPath, message, files, branchName, opts = {}) {
   const git = createGit2(localPath);
-  await git.checkoutLocalBranch(branchName);
+  if (opts.reuseBranch) {
+    try {
+      await git.fetch(["origin", branchName]);
+    } catch (e) {
+      log.debug(`Could not fetch ${branchName}: ${e.message}`);
+    }
+    await git.checkout(["-B", branchName]);
+  } else {
+    await git.checkoutLocalBranch(branchName);
+  }
   await git.add(files);
   const status2 = await git.status();
   if (status2.staged.length === 0) {
+    await git.reset(["--hard", "HEAD"]);
+    await git.clean("f", ["-d"]);
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Nothing to commit, switching back to ${defaultBranch}`);
-    await switchToDefaultBranch(git, defaultBranch);
-    await git.deleteLocalBranch(branchName, true);
+    await leaveAndDeletePushBranch(git, defaultBranch, branchName);
     return false;
   }
   const diffOutput = await git.diff(["--cached", "--unified=0"]);
   if (isMetadataOnlyDiff(diffOutput)) {
+    await git.reset(["--hard", "HEAD"]);
+    await git.clean("f", ["-d"]);
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Only metadata/timestamp changes detected, switching back to ${defaultBranch}`);
-    await switchToDefaultBranch(git, defaultBranch);
-    await git.deleteLocalBranch(branchName, true);
+    await leaveAndDeletePushBranch(git, defaultBranch, branchName);
     return false;
   }
   await git.commit(message);
+  if (opts.reuseBranch) {
+    if (await treeMatchesRemoteBranch(git, branchName)) {
+      log.debug(`Remote branch ${branchName} already holds this tree, skipping force-push`);
+      const defaultBranch = await getDefaultBranch(localPath);
+      await leaveAndDeletePushBranch(git, defaultBranch, branchName);
+      return false;
+    }
+    await git.push(["--force-with-lease", "-u", "origin", branchName]);
+    return true;
+  }
   await git.push(["-u", "origin", branchName]);
   return true;
+}
+async function treeMatchesRemoteBranch(git, branchName) {
+  try {
+    const local = (await git.revparse([`${branchName}^{tree}`])).trim();
+    const remote = (await git.revparse([`refs/remotes/origin/${branchName}^{tree}`])).trim();
+    return local.length > 0 && local === remote;
+  } catch {
+    return false;
+  }
 }
 async function switchToDefaultBranch(git, defaultBranch) {
   try {
     await git.checkout(defaultBranch);
+    return true;
   } catch (e) {
     const msg = e.message ?? "";
     if (/already (used|checked out) by worktree|is already checked out/i.test(msg)) {
       log.debug(`Skipping switch to ${defaultBranch}: already checked out in another worktree`);
-      return;
+      return false;
     }
     throw e;
   }
+}
+async function leaveAndDeletePushBranch(git, defaultBranch, branchName) {
+  const switched = await switchToDefaultBranch(git, defaultBranch);
+  if (!switched) {
+    log.debug(`Leaving ${branchName} in place: default branch busy in another worktree`);
+    return;
+  }
+  await git.deleteLocalBranch(branchName, true);
 }
 async function checkoutMaster(localPath) {
   const git = createGit2(localPath);
@@ -11331,7 +13423,7 @@ async function resetToCleanMaster(git, localPath) {
   }
   if (branch !== defaultBranch) {
     log.debug(`Switching from stale branch '${branch}' back to ${defaultBranch}`);
-    await git.checkout(defaultBranch);
+    await switchToDefaultBranch(git, defaultBranch);
   }
 }
 async function getFileContentAtRev(repoPath, rev, filePath) {
@@ -11355,8 +13447,8 @@ async function getRepoStatus(localPath) {
 }
 async function ensureTeamaiGitignore(projectRoot) {
   if (process.env.TEAMAI_MANAGE_GITIGNORE === "0") return false;
-  const { readFileSafe: readFileSafe5, writeFile: writeFile12 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
-  const gitignorePath = path33.join(projectRoot, ".gitignore");
+  const { readFileSafe: readFileSafe5, writeFile: writeFile13 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
+  const gitignorePath = path37.join(projectRoot, ".gitignore");
   const current = await readFileSafe5(gitignorePath);
   if (current !== null && current.includes(TEAMAI_GITIGNORE_START)) {
     return false;
@@ -11369,7 +13461,7 @@ async function ensureTeamaiGitignore(projectRoot) {
     TEAMAI_GITIGNORE_END
   ].join("\n");
   const next = current === null || current.trim() === "" ? block + "\n" : current.replace(/\n*$/, "\n") + block + "\n";
-  await writeFile12(gitignorePath, next);
+  await writeFile13(gitignorePath, next);
   log.info(`Added teamai ignore block to ${gitignorePath}`);
   return true;
 }
@@ -11395,7 +13487,7 @@ __export(known_agents_exports, {
   normalizeAgentList: () => normalizeAgentList,
   seedSelfModeToolDirs: () => seedSelfModeToolDirs
 });
-import path34 from "path";
+import path38 from "path";
 function normalizeAgentList(agent) {
   if (agent === void 0) return [];
   const raw = Array.isArray(agent) ? agent : [agent];
@@ -11421,32 +13513,32 @@ async function seedSelfModeToolDirs(localConfig, teamConfig) {
   for (const id of targets) {
     const skillsPath = configured[id]?.skills ?? KNOWN_AGENTS.find((a) => a.id === id)?.skillsPath;
     if (!skillsPath) continue;
-    await ensureDir(path34.join(baseDir, skillsPath));
+    await ensureDir(path38.join(baseDir, skillsPath));
     seeded.push(id);
   }
   return seeded;
 }
 async function detectHomeInstalledAgents(candidateIds = SELF_MODE_AGENT_CHOICES) {
-  const home = process.env.HOME;
-  if (!home) return [];
+  const home = getUserHome();
   const found = [];
   for (const id of candidateIds) {
     const skillsPath = KNOWN_AGENTS.find((a) => a.id === id)?.skillsPath;
     if (!skillsPath) continue;
     const rootSegment = skillsPath.split("/")[0];
     if (!rootSegment) continue;
-    if (await pathExists(path34.join(home, rootSegment))) {
+    if (await pathExists(path38.join(home, rootSegment))) {
       found.push(id);
     }
   }
   return found;
 }
-function getEffectiveAgents(teamConfig) {
+function getEffectiveAgents(teamConfig, localConfig) {
   const byId = /* @__PURE__ */ new Map();
   for (const agent of KNOWN_AGENTS) {
     byId.set(agent.id, { ...agent });
   }
-  for (const [id, paths] of Object.entries(teamConfig.toolPaths)) {
+  const toolPaths = scopedToolPaths(teamConfig, localConfig ?? {});
+  for (const [id, paths] of Object.entries(toolPaths)) {
     if (!paths.skills) continue;
     const existing = byId.get(id);
     if (existing) {
@@ -11465,15 +13557,15 @@ function getEffectiveAgents(teamConfig) {
 }
 async function detectInstalledAgents(localConfig, teamConfig) {
   const baseDir = resolveBaseDir(localConfig);
-  const agents = getEffectiveAgents(teamConfig);
+  const agents = getEffectiveAgents(teamConfig, localConfig);
+  const scoped = scopedToolPaths(teamConfig, localConfig);
   const fromTeamConfig = new Set(
-    Object.entries(teamConfig.toolPaths).filter(([, paths]) => paths.skills).map(([id]) => id)
+    Object.entries(scoped).filter(([, paths]) => paths.skills).map(([id]) => id)
   );
   const results = [];
   for (const agent of agents) {
-    const segments = agent.skillsPath.split("/");
-    const rootSegment = segments[0] ?? "";
-    const rootPath = `${baseDir}/${rootSegment}`;
+    const rootSegment = toolInstallRoot(agent.skillsPath);
+    const rootPath = path38.join(baseDir, rootSegment);
     const installed = rootSegment ? await pathExists(rootPath) : false;
     results.push({
       ...agent,
@@ -11490,6 +13582,8 @@ var init_known_agents = __esm({
     "use strict";
     init_fs();
     init_types();
+    init_base();
+    init_home();
     SELF_MODE_AGENT_CHOICES = ["claude", "codex", "cursor", "codebuddy", "workbuddy"];
     KNOWN_AGENTS = [
       // Coding agents already wired through teamConfig.toolPaths defaults
@@ -11525,6 +13619,11 @@ var init_known_agents = __esm({
       { id: "easyclaw", displayName: "EasyClaw", category: "lobster", skillsPath: ".easyclaw/skills" },
       { id: "autoclaw", displayName: "AutoClaw", category: "lobster", skillsPath: ".openclaw-autoclaw/skills" },
       { id: "workbuddy", displayName: "WorkBuddy", category: "lobster", skillsPath: ".workbuddy/skills" },
+      // DeepSeek Harness (dsh) — plugin-based agent harness. Its skill-filesystem
+      // provider scans user skill roots: ~/.dsh/skills (rank 400) and ~/.agents/skills
+      // (rank 500). We sync to ~/.dsh/skills so dsh keeps its own copy; the central
+      // `.agents` entry below covers the shared root as well.
+      { id: "dsh", displayName: "DeepSeek Harness", category: "coding", skillsPath: ".dsh/skills" },
       // Central agent skills directory (codex / generic)
       { id: "agents", displayName: "Central (Agent Skills)", category: "central", skillsPath: ".agents/skills" }
     ];
@@ -11536,10 +13635,10 @@ var bootstrap_exports = {};
 __export(bootstrap_exports, {
   bootstrapSelfRepo: () => bootstrapSelfRepo
 });
-import path35 from "path";
+import path39 from "path";
 import YAML8 from "yaml";
 async function readSelfModeMarker(dir) {
-  const yamlPath = path35.join(dir, ".teamai", "teamai.yaml");
+  const yamlPath = path39.join(dir, ".teamai", "teamai.yaml");
   const content = await readFileSafe(yamlPath);
   if (!content) return null;
   try {
@@ -11561,7 +13660,7 @@ async function bootstrapSelfRepo(dir, opts) {
   if (await pathExists(configPath)) return "already";
   const marker = await readSelfModeMarker(businessRepoRoot);
   if (!marker) return "skip";
-  const lockPath = path35.join(businessRepoRoot, ".teamai", BOOTSTRAP_LOCK_FILENAME);
+  const lockPath = path39.join(businessRepoRoot, ".teamai", BOOTSTRAP_LOCK_FILENAME);
   const locked = await acquireLock(lockPath);
   if (!locked) {
     log.debug("[bootstrap] another bootstrap is in progress; skipping");
@@ -11569,7 +13668,7 @@ async function bootstrapSelfRepo(dir, opts) {
   }
   try {
     if (await pathExists(configPath)) return "already";
-    const localPath = path35.join(businessRepoRoot, ".teamai");
+    const localPath = path39.join(businessRepoRoot, ".teamai");
     const remoteUrl = await getRemoteUrl(businessRepoRoot) ?? marker.repo ?? "";
     if (!remoteUrl) {
       log.debug("[bootstrap] no remote/repo to derive provider from; skipping");
@@ -11648,9 +13747,9 @@ async function bootstrapSelfRepo(dir, opts) {
     try {
       const { ensureReportsWorktree: ensureReportsWorktree2, commitAndPushReports: commitAndPushReports2 } = await Promise.resolve().then(() => (init_reports_branch(), reports_branch_exports));
       const wt = await ensureReportsWorktree2(localConfig);
-      const memberDir = path35.join(wt, "members");
+      const memberDir = path39.join(wt, "members");
       await ensureDir(memberDir);
-      const memberPath = path35.join(memberDir, `${username}.yaml`);
+      const memberPath = path39.join(memberDir, `${username}.yaml`);
       if (!await pathExists(memberPath)) {
         await writeFile(memberPath, YAML8.stringify({
           username,
@@ -11700,7 +13799,7 @@ __export(config_exports, {
   saveStateForScope: () => saveStateForScope
 });
 import YAML9 from "yaml";
-import path36 from "path";
+import path40 from "path";
 async function migrateLegacyRoleConfig(config, configPath) {
   if (config.primaryRole) {
     return config;
@@ -11726,7 +13825,7 @@ async function migrateLegacyRoleConfig(config, configPath) {
   return migrated;
 }
 async function loadTeamConfig(repoPath) {
-  const content = await readFileSafe(path36.join(repoPath, "teamai.yaml"));
+  const content = await readFileSafe(path40.join(repoPath, "teamai.yaml"));
   if (!content) {
     log.debug("teamai.yaml not found in repo");
     return null;
@@ -11804,7 +13903,7 @@ async function saveStateForScope(state, scope, projectRoot) {
 }
 async function detectProjectConfig(cwd) {
   const dir = cwd ?? process.cwd();
-  const configPath = path36.join(dir, ".teamai", "config.yaml");
+  const configPath = path40.join(dir, ".teamai", "config.yaml");
   if (!await pathExists(configPath)) {
     try {
       const { bootstrapSelfRepo: bootstrapSelfRepo2 } = await Promise.resolve().then(() => (init_bootstrap(), bootstrap_exports));
@@ -11860,43 +13959,6 @@ var init_config = __esm({
   }
 });
 
-// src/api-key.ts
-var api_key_exports = {};
-__export(api_key_exports, {
-  getApiKeyPath: () => getApiKeyPath,
-  resolveApiKey: () => resolveApiKey,
-  saveApiKey: () => saveApiKey
-});
-import fs13 from "fs";
-import path37 from "path";
-function getApiKeyPath() {
-  return path37.join(process.env.HOME ?? "", ".teamai", "apikey");
-}
-function resolveApiKey() {
-  const fromEnv = process.env.TEAMAI_API_TOKEN || process.env.TEAMAI_API_KEY;
-  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
-  try {
-    const content = fs13.readFileSync(getApiKeyPath(), "utf-8").trim();
-    if (content) return content;
-  } catch {
-  }
-  return null;
-}
-async function saveApiKey(key) {
-  const trimmed = key.trim();
-  if (!trimmed) throw new Error("API key must not be empty");
-  const keyPath = getApiKeyPath();
-  await ensureDir(path37.dirname(keyPath));
-  fs13.writeFileSync(keyPath, trimmed + "\n", { mode: 384 });
-  fs13.chmodSync(keyPath, 384);
-}
-var init_api_key = __esm({
-  "src/api-key.ts"() {
-    "use strict";
-    init_fs();
-  }
-});
-
 // src/utils/branch-manager.ts
 var branch_manager_exports = {};
 __export(branch_manager_exports, {
@@ -11908,8 +13970,8 @@ __export(branch_manager_exports, {
   recordInstalledSkills: () => recordInstalledSkills
 });
 import fs14 from "fs";
-import path38 from "path";
-async function remoteBranchExists2(git, branch) {
+import path41 from "path";
+async function remoteBranchExists3(git, branch) {
   try {
     const refs = await git.raw(["ls-remote", "origin", `refs/heads/${branch}`]);
     return refs.trim().length > 0;
@@ -11928,7 +13990,7 @@ async function pinCloneToBranch(localPath, branch) {
     await git.fetch(["origin", branch]);
   } catch (e) {
     try {
-      if (!await remoteBranchExists2(git, branch)) {
+      if (!await remoteBranchExists3(git, branch)) {
         throw new BranchVanishedError(branch);
       }
     } catch (e2) {
@@ -11950,7 +14012,7 @@ async function ensureBranchState(localConfig) {
   const branch = configuredBranch(localConfig);
   if (!branch) return false;
   const git = createGit2(localConfig.repo.localPath);
-  if (!await remoteBranchExists2(git, branch)) {
+  if (!await remoteBranchExists3(git, branch)) {
     throw new BranchVanishedError(branch);
   }
   let repaired = false;
@@ -11990,7 +14052,7 @@ async function ensureBranchState(localConfig) {
   return repaired;
 }
 function ledgerPath(localConfig) {
-  return path38.join(localConfig.repo.localPath, "..", "installed-skills.json");
+  return path41.join(localConfig.repo.localPath, "..", "installed-skills.json");
 }
 function readLedger(localConfig) {
   try {
@@ -12057,9 +14119,9 @@ __export(init_exports, {
 });
 import YAML10 from "yaml";
 import fs15 from "fs";
-import path39 from "path";
+import path42 from "path";
 function resolveRealPath(p) {
-  const resolved = path39.resolve(p);
+  const resolved = path42.resolve(p);
   try {
     return fs15.realpathSync(resolved);
   } catch {
@@ -12181,10 +14243,10 @@ function printScopeSummary(scope, projectRoot, explicit) {
   }
 }
 async function isInsideGitRepo(dir) {
-  let current = path39.resolve(dir);
+  let current = path42.resolve(dir);
   for (; ; ) {
-    if (await pathExists(path39.join(current, ".git"))) return true;
-    const parent = path39.dirname(current);
+    if (await pathExists(path42.join(current, ".git"))) return true;
+    const parent = path42.dirname(current);
     if (parent === current) return false;
     current = parent;
   }
@@ -12245,9 +14307,9 @@ async function initHttp(url, options) {
     log.error("No API key found. Pass --token <key> to `teamai init --http`, or set TEAMAI_API_TOKEN.");
     process.exit(1);
   }
-  const localPath = expandHome(path39.join(teamaiHome, "team-repo"));
+  const localPath = expandHome(path42.join(teamaiHome, "team-repo"));
   await ensureDir(localPath);
-  const stubPath = path39.join(localPath, "teamai.yaml");
+  const stubPath = path42.join(localPath, "teamai.yaml");
   if (!await pathExists(stubPath)) {
     await writeFile(stubPath, YAML10.stringify({ team: "http-reporting", repo: url, sharing: {} }));
   }
@@ -12365,7 +14427,7 @@ function migrateSelfModeGitignoreContent(content) {
 }
 async function migrateSelfModeGitignore(localConfig) {
   if (localConfig.repo.kind !== "self" || !localConfig.projectRoot) return;
-  const gitignorePath = path39.join(localConfig.projectRoot, ".teamai", ".gitignore");
+  const gitignorePath = path42.join(localConfig.projectRoot, ".teamai", ".gitignore");
   try {
     const current = await readFileSafe(gitignorePath);
     if (current === null) return;
@@ -12443,7 +14505,7 @@ async function initSelfRepo(options) {
     return;
   }
   const businessRepoRoot = cwd;
-  const teamaiHome = path39.join(businessRepoRoot, ".teamai");
+  const teamaiHome = path42.join(businessRepoRoot, ".teamai");
   const localPath = teamaiHome;
   let inheritUserScope;
   try {
@@ -12500,13 +14562,13 @@ async function initSelfRepo(options) {
   }
   await ensureDir(localPath);
   for (const dir of ["skills", "rules", "docs", "learnings", "env", "agents", "hooks", "mcp"]) {
-    await ensureDir(path39.join(localPath, dir));
-    const gitkeep = path39.join(localPath, dir, ".gitkeep");
+    await ensureDir(path42.join(localPath, dir));
+    const gitkeep = path42.join(localPath, dir, ".gitkeep");
     if (!await pathExists(gitkeep)) {
       await writeFile(gitkeep, "");
     }
   }
-  const teamaiYamlPath = path39.join(localPath, "teamai.yaml");
+  const teamaiYamlPath = path42.join(localPath, "teamai.yaml");
   if (!await pathExists(teamaiYamlPath)) {
     const defaultConfig = YAML10.stringify({
       team: repoInfo.repo,
@@ -12555,7 +14617,7 @@ async function initSelfRepo(options) {
   await ensureDir(teamaiHome);
   await saveLocalConfigForScope(localConfig, "project", businessRepoRoot);
   log.success(`Local config saved to ${teamaiHome}/config.yaml`);
-  const gitignorePath = path39.join(teamaiHome, ".gitignore");
+  const gitignorePath = path42.join(teamaiHome, ".gitignore");
   await writeFile(gitignorePath, buildSelfModeGitignore());
   log.debug("Generated single-repo .teamai/.gitignore");
   const filterAgents2 = selectedAgents.length > 0 ? selectedAgents : void 0;
@@ -12605,9 +14667,9 @@ async function initSelfRepo(options) {
     try {
       const { ensureReportsWorktree: ensureReportsWorktree2, commitAndPushReports: commitAndPushReports2 } = await Promise.resolve().then(() => (init_reports_branch(), reports_branch_exports));
       const wt = await ensureReportsWorktree2(localConfig);
-      const memberDir = path39.join(wt, "members");
+      const memberDir = path42.join(wt, "members");
       await ensureDir(memberDir);
-      const memberPath = path39.join(memberDir, `${username}.yaml`);
+      const memberPath = path42.join(memberDir, `${username}.yaml`);
       if (!await pathExists(memberPath)) {
         await writeFile(memberPath, YAML10.stringify({
           username,
@@ -12746,11 +14808,34 @@ async function init(options) {
     authSpin.fail(`Authentication failed: ${e.message}`);
     process.exit(1);
   }
-  const defaultLocalPath = path39.join(teamaiHome, "team-repo");
+  const defaultLocalPath = path42.join(teamaiHome, "team-repo");
   const localPath = expandHome(defaultLocalPath);
   if (await pathExists(localPath)) {
     if (await isGitRepo(localPath)) {
-      log.info(`Repo already exists at ${localPath}, using existing clone`);
+      const existingRemote = await getRemoteUrl(localPath);
+      if (existingRemote && !remotesMatch(existingRemote, repoInfo.httpsUrl)) {
+        log.warn(
+          `Existing clone at ${localPath} points at a different repo (${redactGitCredentials(existingRemote)}), not ${repoInfo.httpsUrl}.`
+        );
+        if (options.force) {
+          log.info("Replacing it with a fresh clone (--force)");
+          await remove(localPath);
+        } else {
+          const confirmed = await askConfirmation(
+            "Remove it and clone the requested repo? [y/N] "
+          );
+          if (!confirmed) {
+            log.error(
+              `Aborted. The cached clone belongs to a different repo. Remove ${localPath} manually or re-run with --force to replace it.`
+            );
+            process.exit(1);
+            return;
+          }
+          await remove(localPath);
+        }
+      } else {
+        log.info(`Repo already exists at ${localPath}, using existing clone`);
+      }
     } else {
       log.warn(`Existing ${localPath} is not a git repository, re-cloning`);
       await remove(localPath);
@@ -12837,16 +14922,16 @@ async function init(options) {
         env: { injectShellProfile: true }
       }
     });
-    await writeFile(path39.join(localPath, "teamai.yaml"), defaultConfig);
+    await writeFile(path42.join(localPath, "teamai.yaml"), defaultConfig);
     for (const dir of ["members", "skills", "rules", "docs", "env"]) {
-      await ensureDir(path39.join(localPath, dir));
-      const gitkeep = path39.join(localPath, dir, ".gitkeep");
+      await ensureDir(path42.join(localPath, dir));
+      const gitkeep = path42.join(localPath, dir, ".gitkeep");
       if (!await pathExists(gitkeep)) {
         await writeFile(gitkeep, "");
       }
     }
   }
-  const memberPath = path39.join(localPath, "members", `${username}.yaml`);
+  const memberPath = path42.join(localPath, "members", `${username}.yaml`);
   const isNewMember = !await pathExists(memberPath);
   if (isNewMember) {
     const memberYaml = YAML10.stringify({
@@ -12884,7 +14969,7 @@ async function init(options) {
       const reviewerInput = await askQuestion("Reviewers (comma-separated usernames): ", "");
       const reviewers = reviewerInput.split(",").map((s) => s.trim()).filter(Boolean);
       if (reviewers.length > 0) {
-        const configPath = path39.join(localPath, "teamai.yaml");
+        const configPath = path42.join(localPath, "teamai.yaml");
         const configContent = await readFileSafe(configPath);
         if (configContent) {
           const configData = YAML10.parse(configContent);
@@ -12935,7 +15020,7 @@ async function init(options) {
   if (scope === "project") {
     await saveLocalConfigForScope(localConfig, scope, projectRoot);
     log.success(`Local config saved to ${teamaiHome}/config.yaml`);
-    const gitignorePath = path39.join(teamaiHome, ".gitignore");
+    const gitignorePath = path42.join(teamaiHome, ".gitignore");
     if (!await pathExists(gitignorePath)) {
       const gitignoreContent = [
         "# teamai local config (do not commit)",
@@ -12974,8 +15059,19 @@ async function init(options) {
   if (reloadedTeamConfig) {
     const filterAgents2 = requestedAgents.length > 0 ? requestedAgents : void 0;
     await reconcileTeamHooksForConfig(reloadedTeamConfig, localConfig, { filterAgents: filterAgents2 });
+    try {
+      const { deployBuiltinSkills: deployBuiltinSkills2 } = await Promise.resolve().then(() => (init_builtin_skills(), builtin_skills_exports));
+      const skipRecall = !isRecallEnabled(localConfig, reloadedTeamConfig);
+      const deployed = await deployBuiltinSkills2(reloadedTeamConfig, localConfig, { skipRecall });
+      if (deployed > 0) {
+        log.debug(`Deployed ${deployed} built-in skill(s)`);
+      }
+    } catch (e) {
+      log.debug(`Built-in skills deployment skipped: ${e.message}`);
+    }
   }
   log.success("teamai initialized successfully!");
+  log.info("Built-in skills (e.g. team-wiki-codebase) are ready to use in your IDE now.");
   log.info("Skills, rules, env and docs will auto-sync on each session start (via hooks).");
   log.info("Run `teamai status` to check current config.");
   closePrompt();
@@ -12998,11 +15094,96 @@ var init_init = __esm({
   }
 });
 
+// src/utils/async.ts
+async function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+var init_async = __esm({
+  "src/utils/async.ts"() {
+    "use strict";
+  }
+});
+
+// src/utils/pending-learnings.ts
+import fs16 from "fs";
+import path43 from "path";
+function pendingLearningsDir(repoPath) {
+  return path43.join(path43.dirname(repoPath), "pending-learnings");
+}
+async function savePendingLearning(repoPath, filename, content) {
+  const dir = pendingLearningsDir(repoPath);
+  await ensureDir(dir);
+  await fs16.promises.writeFile(path43.join(dir, filename), content, "utf-8");
+}
+async function flushPendingLearnings(repoPath, username) {
+  const dir = pendingLearningsDir(repoPath);
+  let names;
+  try {
+    names = await fs16.promises.readdir(dir);
+  } catch {
+    return 0;
+  }
+  let pushed = 0;
+  for (const filename of names) {
+    if (filename.startsWith(".")) {
+      continue;
+    }
+    const pendingPath = path43.join(dir, filename);
+    let content;
+    try {
+      content = await fs16.promises.readFile(pendingPath, "utf-8");
+    } catch {
+      continue;
+    }
+    try {
+      const destDir = path43.join(repoPath, "learnings");
+      await ensureDir(destDir);
+      await fs16.promises.writeFile(path43.join(destDir, filename), content, "utf-8");
+      const commitMsg = `[teamai] Contribute session knowledge from ${username}`;
+      const confirmed = await withTimeout(
+        pushLearningToOrigin(repoPath, filename, commitMsg),
+        1e4,
+        "Push timeout (10s)"
+      );
+      if (!confirmed) {
+        log.debug(`flushPendingLearnings: ${filename} not confirmed on origin, keeping backup`);
+        break;
+      }
+      await fs16.promises.rm(pendingPath, { force: true });
+      pushed += 1;
+    } catch (e) {
+      log.debug(`flushPendingLearnings: retry deferred for ${filename}: ${e.message}`);
+      break;
+    }
+  }
+  if (pushed > 0) {
+    log.debug(`flushPendingLearnings: re-pushed ${pushed} pending learning(s)`);
+  }
+  return pushed;
+}
+var init_pending_learnings = __esm({
+  "src/utils/pending-learnings.ts"() {
+    "use strict";
+    init_fs();
+    init_git2();
+    init_async();
+    init_logger();
+  }
+});
+
 // src/utils/tags.ts
-import path40 from "path";
+import path44 from "path";
 import YAML11 from "yaml";
 async function loadTagsConfig(repoPath) {
-  const content = await readFileSafe(path40.join(repoPath, TAGS_FILE));
+  const content = await readFileSafe(path44.join(repoPath, TAGS_FILE));
   if (!content) {
     return null;
   }
@@ -13057,7 +15238,7 @@ function filterByTags(items, tagsConfig, subscribedTags, resourceType) {
   return { included, skipped };
 }
 async function saveTagsConfig(repoPath, config) {
-  const filePath = path40.join(repoPath, TAGS_FILE);
+  const filePath = path44.join(repoPath, TAGS_FILE);
   const content = YAML11.stringify({
     skills: config.skills,
     rules: config.rules
@@ -13193,7 +15374,7 @@ __export(votes_exports, {
   saveUserVotes: () => saveUserVotes,
   syncVotesToTeam: () => syncVotesToTeam
 });
-import path41 from "path";
+import path45 from "path";
 import YAML12 from "yaml";
 function migrateV1ToV2(v1) {
   const votes = {};
@@ -13232,7 +15413,7 @@ async function loadUserVotes(votePath) {
   return { version: 2, votes: {}, deltas: {} };
 }
 async function saveUserVotes(votePath, votes) {
-  await ensureDir(path41.dirname(votePath));
+  await ensureDir(path45.dirname(votePath));
   await writeFile(votePath, YAML12.stringify(votes));
 }
 async function incrementRecalled(votePath, docIds) {
@@ -13293,8 +15474,8 @@ function mergeDeltas(local, remote) {
   return { version: 2, votes, deltas: {} };
 }
 async function syncVotesToTeam(repoPath, username, localVotesDir) {
-  const localVotePath = path41.join(localVotesDir, `${username}.yaml`);
-  const remoteVotePath = path41.join(repoPath, "votes", `${username}.yaml`);
+  const localVotePath = path45.join(localVotesDir, `${username}.yaml`);
+  const remoteVotePath = path45.join(repoPath, "votes", `${username}.yaml`);
   const local = await loadUserVotes(localVotePath);
   if (Object.keys(local.deltas).length === 0) {
     return false;
@@ -13310,7 +15491,7 @@ async function recallFeedback(opts) {
   const { localConfig } = await requireInit3();
   const { username } = localConfig;
   const { VOTES_LOCAL_DIR: VOTES_LOCAL_DIR2 } = await Promise.resolve().then(() => (init_types(), types_exports));
-  const votePath = path41.join(VOTES_LOCAL_DIR2, `${username}.yaml`);
+  const votePath = path45.join(VOTES_LOCAL_DIR2, `${username}.yaml`);
   if (opts.positive) {
     await incrementUpvoted(votePath, [opts.positive]);
     log.success(`Upvoted: ${opts.positive}`);
@@ -13360,8 +15541,8 @@ __export(confidence_exports, {
   computeConfidence: () => computeConfidence,
   writeBackConfidence: () => writeBackConfidence
 });
-import path42 from "path";
-import matter2 from "gray-matter";
+import path46 from "path";
+import matter3 from "gray-matter";
 function computeConfidence(factors) {
   const { recalledCount, upvotedCount, lastRecalledAt } = factors;
   const base = Math.min(1, recalledCount * 0.1 + upvotedCount * 0.3);
@@ -13383,7 +15564,7 @@ async function computeAllConfidence(votesDir) {
   for (const file of files) {
     if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
     try {
-      const data = await loadUserVotes2(path42.join(votesDir, file));
+      const data = await loadUserVotes2(path46.join(votesDir, file));
       for (const [docId, entry] of Object.entries(data.votes)) {
         const existing = aggregated.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: "" };
         existing.recalled += entry.recalled_count ?? 0;
@@ -13419,15 +15600,15 @@ async function writeBackConfidence(learningsDir, confidenceMap) {
     const docId = file.replace(/\.md$/i, "");
     const newConf = confidenceMap.get(docId);
     if (newConf === void 0) continue;
-    const absPath = path42.join(learningsDir, file);
+    const absPath = path46.join(learningsDir, file);
     const content = await readFileSafe(absPath);
     if (!content) continue;
     try {
-      const { data, content: body } = matter2(content);
+      const { data, content: body } = matter3(content);
       const existingConf = typeof data.confidence === "number" ? data.confidence : void 0;
       if (existingConf !== void 0 && Math.abs(existingConf - newConf) <= 0.05) continue;
       data.confidence = newConf;
-      const newContent = matter2.stringify(body, data);
+      const newContent = matter3.stringify(body, data);
       await writeFile(absPath, newContent);
       updated++;
     } catch {
@@ -13489,10 +15670,10 @@ __export(search_index_exports, {
   tokenize: () => tokenize,
   wordSegments: () => wordSegments
 });
-import path43 from "path";
-import matter3 from "gray-matter";
+import path47 from "path";
+import matter4 from "gray-matter";
 function getSearchIndexPath() {
-  return `${process.env.HOME ?? ""}/.teamai/search-index.json`;
+  return path47.join(getUserHome(), ".teamai", "search-index.json");
 }
 function inferQueryDomain(queryTokens) {
   let techScore = 0;
@@ -13544,7 +15725,7 @@ function inferDomain(frontmatterDomain, tags, filePath, type) {
 function parseLearningDoc(content, filename) {
   if (!content.trim()) return null;
   try {
-    const { data, content: body } = matter3(content);
+    const { data, content: body } = matter4(content);
     const meta = {
       title: typeof data.title === "string" ? data.title : void 0,
       author: typeof data.author === "string" ? data.author : void 0,
@@ -13570,7 +15751,7 @@ async function aggregateVotes(votesDir) {
   const files = await listFiles(votesDir);
   for (const file of files) {
     if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
-    const content = await readFileSafe(path43.join(votesDir, file));
+    const content = await readFileSafe(path47.join(votesDir, file));
     if (!content) continue;
     try {
       const YAML20 = (await import("yaml")).default;
@@ -13616,10 +15797,10 @@ async function aggregateVotes(votesDir) {
   return { scores, confidenceMap };
 }
 async function entryFromMdFile(absPath, filenameForId, type, voteCounts) {
-  const basename = path43.basename(absPath);
+  const basename = path47.basename(absPath);
   if (basename === CODEBASE_FULL_FILENAME) {
-    const dir = path43.dirname(absPath);
-    const indexPath = path43.join(dir, CODEBASE_INDEX_FILENAME);
+    const dir = path47.dirname(absPath);
+    const indexPath = path47.join(dir, CODEBASE_INDEX_FILENAME);
     if (await pathExists(indexPath)) {
       log.debug(`Skipping ${absPath}: codebase-index.md exists in same directory`);
       return null;
@@ -13638,7 +15819,7 @@ async function entryFromMdFile(absPath, filenameForId, type, voteCounts) {
   const tags = meta.tags ?? [];
   const rawFrontmatterDomain = (() => {
     try {
-      return matter3(content).data["domain"];
+      return matter4(content).data["domain"];
     } catch {
       return void 0;
     }
@@ -13676,7 +15857,7 @@ async function collectFlatMdEntries(dir, type, voteCounts) {
   const out = [];
   for (const filename of files) {
     if (!filename.endsWith(".md")) continue;
-    const e = await entryFromMdFile(path43.join(dir, filename), filename, type, voteCounts);
+    const e = await entryFromMdFile(path47.join(dir, filename), filename, type, voteCounts);
     if (e) out.push(e);
   }
   return out;
@@ -13687,7 +15868,7 @@ async function collectRecursiveMdEntries(dir, type, voteCounts) {
   const out = [];
   for (const rel of files) {
     if (!rel.endsWith(".md")) continue;
-    const e = await entryFromMdFile(path43.join(dir, rel), rel, type, voteCounts);
+    const e = await entryFromMdFile(path47.join(dir, rel), rel, type, voteCounts);
     if (e) out.push(e);
   }
   return out;
@@ -13699,8 +15880,8 @@ async function collectSkillEntries(dir, voteCounts) {
     const subdirs = await listDirs(current);
     for (const sub of subdirs) {
       if (sub.startsWith(".")) continue;
-      const subPath = path43.join(current, sub);
-      const skillMd = path43.join(subPath, "SKILL.md");
+      const subPath = path47.join(current, sub);
+      const skillMd = path47.join(subPath, "SKILL.md");
       if (await pathExists(skillMd)) {
         const e = await entryFromMdFile(skillMd, `${sub}.md`, "skills", voteCounts);
         if (e) out.push(e);
@@ -13830,7 +16011,7 @@ function search(query, index, limit = 5) {
       const domainMultiplier = domainWeightRow[entry.domain ?? "neutral"];
       const typeMultiplier = TYPE_BONUS[entry.type];
       score *= domainMultiplier * typeMultiplier;
-      if (path43.basename(entry.path ?? "") === CODEBASE_INDEX_FILENAME) {
+      if (path47.basename(entry.path ?? "") === CODEBASE_INDEX_FILENAME) {
         score *= CODEBASE_INDEX_WEIGHT_BOOST;
       }
       if (entry.hotness !== void 0 && entry.hotness < 1) {
@@ -13872,6 +16053,7 @@ var init_search_index = __esm({
     init_tokenizer();
     init_logger();
     init_types();
+    init_home();
     MAX_DOC_BYTES = 50 * 1024;
     TECHNICAL_TAGS = /* @__PURE__ */ new Set([
       "api",
@@ -14109,13 +16291,13 @@ __export(usage_tracker_exports, {
   truncateUsageAfterReport: () => truncateUsageAfterReport,
   updateKnownSkills: () => updateKnownSkills
 });
-import fs16 from "fs";
-import path44 from "path";
+import fs17 from "fs";
+import path48 from "path";
 function getUsagePath() {
-  return path44.join(process.env.HOME ?? "", ".teamai", "usage.jsonl");
+  return path48.join(getUserHome(), ".teamai", "usage.jsonl");
 }
 function getKnownSkillsPath() {
-  return path44.join(process.env.HOME ?? "", ".teamai", "known-skills.json");
+  return path48.join(getUserHome(), ".teamai", "known-skills.json");
 }
 function extractSkillName(toolInput) {
   try {
@@ -14139,15 +16321,15 @@ function isValidSkillName(name) {
   return SKILL_NAME_REGEX.test(name);
 }
 async function skillExistsOnDisk(skillName) {
-  const home = process.env.HOME ?? "";
+  const home = getUserHome();
   for (const dir of SKILL_DIRS) {
-    const skillMd = path44.join(home, dir, skillName, "SKILL.md");
+    const skillMd = path48.join(home, dir, skillName, "SKILL.md");
     if (await pathExists(skillMd)) return true;
   }
   const cwd = process.cwd();
-  if (path44.resolve(cwd) !== path44.resolve(home)) {
+  if (path48.resolve(cwd) !== path48.resolve(home)) {
     for (const dir of SKILL_DIRS) {
-      const skillMd = path44.join(cwd, dir, skillName, "SKILL.md");
+      const skillMd = path48.join(cwd, dir, skillName, "SKILL.md");
       if (await pathExists(skillMd)) return true;
     }
   }
@@ -14155,9 +16337,9 @@ async function skillExistsOnDisk(skillName) {
 }
 async function appendUsageEvent(event) {
   try {
-    await ensureDir(path44.dirname(getUsagePath()));
+    await ensureDir(path48.dirname(getUsagePath()));
     const line = JSON.stringify(event) + "\n";
-    await fs16.promises.appendFile(getUsagePath(), line, "utf-8");
+    await fs17.promises.appendFile(getUsagePath(), line, "utf-8");
     log.debug(`Tracked skill: ${event.skill}`);
   } catch (e) {
     log.error(`Failed to write usage event: ${e.message}`);
@@ -14165,7 +16347,7 @@ async function appendUsageEvent(event) {
 }
 async function readUsageEvents() {
   try {
-    const content = await fs16.promises.readFile(getUsagePath(), "utf-8");
+    const content = await fs17.promises.readFile(getUsagePath(), "utf-8");
     const events = [];
     for (const line of content.split("\n")) {
       const trimmed = line.trim();
@@ -14186,13 +16368,13 @@ async function readUsageEvents() {
 }
 async function truncateUsageAfterReport(reportedCount) {
   try {
-    const content = await fs16.promises.readFile(getUsagePath(), "utf-8");
+    const content = await fs17.promises.readFile(getUsagePath(), "utf-8");
     const lines = content.split("\n").filter((l) => l.trim());
     if (reportedCount >= lines.length) {
-      await fs16.promises.writeFile(getUsagePath(), "", "utf-8");
+      await fs17.promises.writeFile(getUsagePath(), "", "utf-8");
     } else {
       const remaining = lines.slice(reportedCount).join("\n") + "\n";
-      await fs16.promises.writeFile(getUsagePath(), remaining, "utf-8");
+      await fs17.promises.writeFile(getUsagePath(), remaining, "utf-8");
     }
     log.debug(`Truncated usage.jsonl: removed ${reportedCount} reported events`);
   } catch (e) {
@@ -14360,6 +16542,7 @@ var init_usage_tracker = __esm({
     init_tool_names();
     init_types();
     init_fs();
+    init_home();
     SKILL_DIRS = [
       ".claude/skills",
       ".claude-internal/skills",
@@ -14630,16 +16813,16 @@ __export(digest_exports, {
   summarizeInterventions: () => summarizeInterventions
 });
 import YAML13 from "yaml";
-import path45 from "path";
-import fs17 from "fs";
+import path49 from "path";
+import fs18 from "fs";
 async function loadTeamStats(repoPath) {
-  const statsDir = path45.join(repoPath, "stats");
+  const statsDir = path49.join(repoPath, "stats");
   const stats = [];
   try {
     const files = await listFiles(statsDir);
     for (const file of files) {
       if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
-      const content = await readFileSafe(path45.join(statsDir, file));
+      const content = await readFileSafe(path49.join(statsDir, file));
       if (!content) continue;
       try {
         const parsed = YAML13.parse(content);
@@ -14744,17 +16927,17 @@ async function getRecentSkillChanges(repoPath, subdir = "") {
   return changes;
 }
 async function getRecentSessions(repoPath) {
-  const sessionsDir = path45.join(repoPath, "sessions");
+  const sessionsDir = path49.join(repoPath, "sessions");
   const summaries = [];
   try {
-    const userDirs = await fs17.promises.readdir(sessionsDir, { withFileTypes: true });
+    const userDirs = await fs18.promises.readdir(sessionsDir, { withFileTypes: true });
     for (const userDir of userDirs) {
       if (!userDir.isDirectory()) continue;
-      const userSessionsDir = path45.join(sessionsDir, userDir.name);
+      const userSessionsDir = path49.join(sessionsDir, userDir.name);
       const files = await listFiles(userSessionsDir);
       for (const file of files) {
         if (!file.endsWith(".md")) continue;
-        const content = await readFileSafe(path45.join(userSessionsDir, file));
+        const content = await readFileSafe(path49.join(userSessionsDir, file));
         if (content) {
           summaries.push(`[${userDir.name}] ${file}:
 ${content.slice(0, 500)}`);
@@ -14766,7 +16949,7 @@ ${content.slice(0, 500)}`);
   return summaries;
 }
 async function getRecentLearnings(repoPath) {
-  const learningsDir = path45.join(repoPath, "learnings");
+  const learningsDir = path49.join(repoPath, "learnings");
   const recent = [];
   let total = 0;
   try {
@@ -14779,7 +16962,7 @@ async function getRecentLearnings(repoPath) {
       if (!dateMatch) continue;
       const fileDate = dateMatch[1];
       if (fileDate < cutoff) continue;
-      const content = await readFileSafe(path45.join(learningsDir, filename));
+      const content = await readFileSafe(path49.join(learningsDir, filename));
       if (!content) continue;
       const parsed = parseLearningDoc(content, filename);
       const title = parsed?.meta.title ?? titleFromFilename(filename);
@@ -14907,7 +17090,7 @@ async function generateDigest(options) {
       console.log("");
     }
     const skillChanges = localConfig.repo.kind === "self" ? await getRecentSkillChanges(
-      localConfig.repo.businessRepoRoot ?? path45.dirname(repoPath),
+      localConfig.repo.businessRepoRoot ?? path49.dirname(repoPath),
       ".teamai"
     ) : await getRecentSkillChanges(repoPath);
     const newSkills = skillChanges.filter((c) => c.type === "new");
@@ -14973,7 +17156,7 @@ __export(stats_exports, {
   showStats: () => showStats
 });
 import YAML14 from "yaml";
-import path46 from "path";
+import path50 from "path";
 function aggregateUsage(events) {
   const map = /* @__PURE__ */ new Map();
   for (const event of events) {
@@ -15003,7 +17186,7 @@ async function loadReportedStats() {
       const { ensureReportsWorktree: ensureReportsWorktree2 } = await Promise.resolve().then(() => (init_reports_branch(), reports_branch_exports));
       statsRoot = await ensureReportsWorktree2(config);
     }
-    const statsPath = path46.join(statsRoot, "stats", `${config.username}.yaml`);
+    const statsPath = path50.join(statsRoot, "stats", `${config.username}.yaml`);
     const content = await readFileSafe(statsPath);
     if (!content) return null;
     const parsed = YAML14.parse(content);
@@ -15024,15 +17207,15 @@ function mergeLocalAndReported(localStats, reported) {
       });
     }
   }
-  for (const stat6 of localStats) {
-    const existing = map.get(stat6.name);
+  for (const stat8 of localStats) {
+    const existing = map.get(stat8.name);
     if (existing) {
-      existing.count += stat6.count;
-      if (stat6.lastUsed > existing.lastUsed) {
-        existing.lastUsed = stat6.lastUsed;
+      existing.count += stat8.count;
+      if (stat8.lastUsed > existing.lastUsed) {
+        existing.lastUsed = stat8.lastUsed;
       }
     } else {
-      map.set(stat6.name, { ...stat6 });
+      map.set(stat8.name, { ...stat8 });
     }
   }
   return Array.from(map.values()).sort((a, b) => b.count - a.count);
@@ -15095,10 +17278,10 @@ async function showStats(options = {}) {
     console.log("");
     const maxNameLen = Math.max(...stats.map((s) => s.name.length), 4);
     const maxCountLen = Math.max(...stats.map((s) => String(s.count).length), 4);
-    for (const stat6 of stats) {
-      const name = stat6.name.padEnd(maxNameLen);
-      const count = String(stat6.count).padStart(maxCountLen);
-      const recency = formatRelativeTime(stat6.lastUsed);
+    for (const stat8 of stats) {
+      const name = stat8.name.padEnd(maxNameLen);
+      const count = String(stat8.count).padStart(maxCountLen);
+      const recency = formatRelativeTime(stat8.lastUsed);
       console.log(`  ${name}  ${count} uses   last: ${recency}`);
     }
     const totalEvents = stats.reduce((sum, s) => sum + s.count, 0);
@@ -15182,21 +17365,115 @@ var init_stats = __esm({
   }
 });
 
-// src/utils/async.ts
-async function withTimeout(promise, timeoutMs, message) {
-  let timer;
-  const timeoutPromise = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-  });
+// src/utils/import-lock.ts
+var import_lock_exports = {};
+__export(import_lock_exports, {
+  acquireImportLock: () => acquireImportLock,
+  isImportInProgress: () => isImportInProgress
+});
+import { writeFile as writeFile2, readFile as readFile2, unlink, stat, mkdir } from "fs/promises";
+import path51 from "path";
+import os7 from "os";
+function lockPathFor(teamRepoPath) {
+  return path51.join(path51.dirname(path51.resolve(teamRepoPath)), ".teamai-import.lock");
+}
+async function acquireImportLock(teamRepoPath) {
+  const lockPath = lockPathFor(teamRepoPath);
+  const count = refCounts.get(lockPath) ?? 0;
+  refCounts.set(lockPath, count + 1);
+  if (count === 0) {
+    try {
+      await mkdir(path51.dirname(lockPath), { recursive: true });
+      const meta = {
+        pid: process.pid,
+        host: os7.hostname(),
+        startedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        teamRepo: path51.resolve(teamRepoPath)
+      };
+      await writeFile2(lockPath, JSON.stringify(meta, null, 2), "utf8");
+    } catch (e) {
+      log.debug(`[import-lock] Failed to write lock file ${lockPath}: ${e.message}`);
+    }
+  }
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    const cur = refCounts.get(lockPath) ?? 0;
+    const next = Math.max(0, cur - 1);
+    if (next === 0) {
+      refCounts.delete(lockPath);
+      try {
+        await unlink(lockPath);
+      } catch (e) {
+        log.debug(`[import-lock] Failed to remove lock file ${lockPath}: ${e.message}`);
+      }
+    } else {
+      refCounts.set(lockPath, next);
+    }
+  };
+}
+async function isImportInProgress(teamRepoPath) {
+  const lockPath = lockPathFor(teamRepoPath);
+  let raw;
   try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timer) clearTimeout(timer);
+    raw = await readFile2(lockPath, "utf8");
+  } catch {
+    return false;
+  }
+  let meta;
+  try {
+    meta = JSON.parse(raw);
+    const parsed = Date.parse(meta.startedAt);
+    const age = Number.isNaN(parsed) ? Infinity : Date.now() - parsed;
+    if (age > LOCK_TTL_MS) {
+      try {
+        await unlink(lockPath);
+      } catch (e) {
+        log.debug(`[import-lock] Failed to remove stale lock ${lockPath}: ${e.message}`);
+      }
+      return false;
+    }
+    if (meta.host === os7.hostname()) {
+      try {
+        process.kill(meta.pid, 0);
+        return true;
+      } catch {
+        try {
+          await unlink(lockPath);
+        } catch (e) {
+          log.debug(
+            `[import-lock] Failed to remove dead-process lock ${lockPath}: ${e.message}`
+          );
+        }
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    try {
+      const { mtimeMs } = await stat(lockPath);
+      if (Date.now() - mtimeMs <= LOCK_TTL_MS) {
+        return true;
+      }
+      try {
+        await unlink(lockPath);
+      } catch (e) {
+        log.debug(`[import-lock] Failed to remove malformed lock ${lockPath}: ${e.message}`);
+      }
+      return false;
+    } catch {
+      return false;
+    }
   }
 }
-var init_async = __esm({
-  "src/utils/async.ts"() {
+var LOCK_TTL_MS, refCounts;
+var init_import_lock = __esm({
+  "src/utils/import-lock.ts"() {
     "use strict";
+    init_logger();
+    LOCK_TTL_MS = 2 * 60 * 60 * 1e3;
+    refCounts = /* @__PURE__ */ new Map();
   }
 });
 
@@ -15212,7 +17489,7 @@ __export(team_push_exports, {
   reportUsageToTeam: () => reportUsageToTeam
 });
 import YAML15 from "yaml";
-import path47 from "path";
+import path52 from "path";
 async function readExistingStats(statsPath) {
   try {
     const content = await readFileSafe(statsPath);
@@ -15231,16 +17508,16 @@ function mergeStats(existing, username, newEvents) {
       skills[name] = { count: data.count, lastUsed: data.lastUsed };
     }
   }
-  for (const stat6 of newEvents) {
-    const prev = skills[stat6.name];
-    const newLastUsed = stat6.lastUsed.toISOString();
+  for (const stat8 of newEvents) {
+    const prev = skills[stat8.name];
+    const newLastUsed = stat8.lastUsed.toISOString();
     if (prev) {
-      prev.count += stat6.count;
+      prev.count += stat8.count;
       if (newLastUsed > prev.lastUsed) {
         prev.lastUsed = newLastUsed;
       }
     } else {
-      skills[stat6.name] = { count: stat6.count, lastUsed: newLastUsed };
+      skills[stat8.name] = { count: stat8.count, lastUsed: newLastUsed };
     }
   }
   return {
@@ -15250,7 +17527,7 @@ function mergeStats(existing, username, newEvents) {
   };
 }
 function getReportedInterventionsPath() {
-  return path47.join(process.env.HOME ?? "", ".teamai", "dashboard", "reported-interventions.json");
+  return path52.join(getUserHome(), ".teamai", "dashboard", "reported-interventions.json");
 }
 async function readReportedInterventions() {
   const parsed = await readJson(getReportedInterventionsPath());
@@ -15288,7 +17565,7 @@ function hasInterventionDelta(d) {
   return d.sessions > 0 || d.interrupt > 0 || d.toolReject > 0 || d.correction > 0;
 }
 function getReportedPromptTokensPath() {
-  return path47.join(process.env.HOME ?? "", ".teamai", "dashboard", "reported-prompt-tokens.json");
+  return path52.join(getUserHome(), ".teamai", "dashboard", "reported-prompt-tokens.json");
 }
 async function readReportedPromptTokens() {
   try {
@@ -15303,7 +17580,7 @@ async function readReportedPromptTokens() {
 async function writeReportedPromptTokens(data) {
   try {
     const p = getReportedPromptTokensPath();
-    await ensureDir(path47.dirname(p));
+    await ensureDir(path52.dirname(p));
     await writeFile(p, JSON.stringify(data));
   } catch (e) {
     log.error(`Failed to persist reported prompt/token snapshot: ${e.message}`);
@@ -15389,13 +17666,28 @@ async function reportUsageToTeam(repoPath, username, options) {
         log.debug(`Skipping report: ${repoPath} is not a dedicated team-repo root (safety guard)`);
         return;
       }
-      await resetToCleanMaster(git, repoPath);
-      await pullRepo(repoPath);
+      const { isImportInProgress: isImportInProgress2 } = await Promise.resolve().then(() => (init_import_lock(), import_lock_exports));
+      if (await isImportInProgress2(repoPath)) {
+        log.debug(`Skipping report: import in progress for ${repoPath} (would reset uncommitted artifacts)`);
+        return;
+      }
+      const yamlPath = path52.join(repoPath, "teamai.yaml");
+      const workingContent = await readFileSafe(yamlPath);
+      const committedContent = workingContent === null ? null : await getFileContentAtRev(repoPath, "HEAD", "teamai.yaml");
+      const pendingTeamConfig = workingContent !== null && (committedContent === null || committedContent.toString() !== workingContent) ? workingContent : null;
+      try {
+        await resetToCleanMaster(git, repoPath);
+        await pullRepo(repoPath);
+      } finally {
+        if (pendingTeamConfig !== null) {
+          await writeFile(yamlPath, pendingTeamConfig);
+        }
+      }
     }
     if (hasUsage || hasInterventions || hasPromptTokens) {
-      const statsDir = path47.join(writeRoot, "stats");
+      const statsDir = path52.join(writeRoot, "stats");
       await ensureDir(statsDir);
-      const statsPath = path47.join(statsDir, `${username}.yaml`);
+      const statsPath = path52.join(statsDir, `${username}.yaml`);
       const existing = await readExistingStats(statsPath);
       const newStats = hasUsage ? aggregateUsage(events) : [];
       const merged = mergeStats(existing, username, newStats);
@@ -15474,488 +17766,167 @@ var init_team_push = __esm({
     init_fs();
     init_logger();
     init_types();
+    init_home();
   }
 });
 
-// src/resources/mcp-format.ts
-import crypto3 from "crypto";
-function detectMcpFormat(tool) {
-  if (CLAUDE_TOOLS.has(tool)) return "claude";
-  if (CURSOR_TOOLS2.has(tool)) return "cursor";
-  if (CODEX_TOOLS2.has(tool)) return "codex";
-  if (BUDDY_TOOLS.has(tool)) return "buddy";
-  return null;
-}
-function supportsTransport(format, transport) {
-  return SUPPORTED_TRANSPORTS[format].has(transport);
-}
-function supportsEnvExpansion(_format, _projectScope, _def) {
-  return false;
-}
-function planCodexHeaders(headers = {}) {
-  const plan = { envHttpHeaders: {}, httpHeaders: {} };
-  for (const [name, value] of Object.entries(headers)) {
-    if (name.toLowerCase() === "authorization") {
-      const bearer = BEARER_PLACEHOLDER_RE.exec(value);
-      if (bearer) {
-        plan.bearerTokenEnvVar = bearer[1];
-        continue;
-      }
-    }
-    const whole = WHOLE_PLACEHOLDER_RE.exec(value);
-    if (whole) {
-      plan.envHttpHeaders[name] = whole[1];
-      continue;
-    }
-    plan.httpHeaders[name] = value;
-  }
-  return plan;
-}
-function referencedVars(def) {
-  const found = /* @__PURE__ */ new Set();
-  const scan = (v) => {
-    if (!v) return;
-    for (const m of v.matchAll(PLACEHOLDER_RE)) found.add(m[1]);
-  };
-  scan(def.url);
-  scan(def.command);
-  def.args?.forEach(scan);
-  Object.values(def.headers ?? {}).forEach(scan);
-  Object.values(def.env ?? {}).forEach(scan);
-  return [...found];
-}
-function resolvePlaceholders(def, vars) {
-  const missing = /* @__PURE__ */ new Set();
-  const sub = (v) => v.replace(PLACEHOLDER_RE, (whole, name) => {
-    const val = vars[name];
-    if (val === void 0 || val === "") {
-      missing.add(name);
-      return whole;
-    }
-    return val;
-  });
-  const subMap = (m) => m && Object.fromEntries(Object.entries(m).map(([k, v]) => [k, sub(v)]));
-  return {
-    def: {
-      ...def,
-      command: def.command ? sub(def.command) : void 0,
-      args: def.args?.map(sub),
-      url: def.url ? sub(def.url) : void 0,
-      headers: subMap(def.headers),
-      env: subMap(def.env)
-    },
-    missing: [...missing]
-  };
-}
-function renderClaude(def) {
-  const e = { type: def.transport };
-  if (def.transport === "stdio") {
-    e.command = def.command;
-    if (def.args?.length) e.args = def.args;
-    if (def.env && Object.keys(def.env).length) e.env = def.env;
-  } else {
-    e.url = def.url;
-    if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
-  }
-  return e;
-}
-function toCursorEnvSyntax(s) {
-  return s.replace(PLACEHOLDER_RE, (_whole, name) => `\${env:${name}}`);
-}
-function renderCursor(def) {
-  const mapVals = (m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, toCursorEnvSyntax(v)]));
-  const e = {};
-  if (def.transport === "stdio") {
-    e.command = def.command;
-    if (def.args?.length) e.args = def.args.map(toCursorEnvSyntax);
-    if (def.env && Object.keys(def.env).length) e.env = mapVals(def.env);
-  } else {
-    e.type = def.transport;
-    e.url = def.url ? toCursorEnvSyntax(def.url) : def.url;
-    if (def.headers && Object.keys(def.headers).length) e.headers = mapVals(def.headers);
-  }
-  return e;
-}
-function renderBuddy(def) {
-  const e = {};
-  if (def.transport === "stdio") {
-    e.command = def.command;
-    if (def.args?.length) e.args = def.args;
-    if (def.env && Object.keys(def.env).length) e.env = def.env;
-  } else {
-    e.type = def.transport;
-    e.url = def.url;
-    if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
-  }
-  if (def.timeout !== void 0) e.timeout = def.timeout;
-  return e;
-}
-function renderJsonEntry(format, def) {
-  if (format === "claude") return renderClaude(def);
-  if (format === "cursor") return renderCursor(def);
-  return renderBuddy(def);
-}
-function renderCodexBlock(def) {
-  const q = (s) => JSON.stringify(s);
-  const lines = [`[mcp_servers.${def.name}]`];
-  if (def.transport === "http") {
-    const inlineTable = (t) => `{ ${Object.entries(t).map(([k, v]) => `${q(k)} = ${q(v)}`).join(", ")} }`;
-    lines.push(`url = ${q(def.url ?? "")}`);
-    const plan = planCodexHeaders(def.headers);
-    if (plan.bearerTokenEnvVar) lines.push(`bearer_token_env_var = ${q(plan.bearerTokenEnvVar)}`);
-    if (Object.keys(plan.envHttpHeaders).length > 0) {
-      lines.push(`env_http_headers = ${inlineTable(plan.envHttpHeaders)}`);
-    }
-    if (Object.keys(plan.httpHeaders).length > 0) {
-      lines.push(`http_headers = ${inlineTable(plan.httpHeaders)}`);
-    }
-    if (def.timeout !== void 0) {
-      lines.push(`startup_timeout_sec = ${Math.ceil(def.timeout / 1e3)}`);
-    }
-    return lines.join("\n") + "\n";
-  }
-  lines.push(`command = ${q(def.command ?? "")}`);
-  lines.push(`args = [${(def.args ?? []).map(q).join(", ")}]`);
-  if (def.timeout !== void 0) {
-    lines.push(`startup_timeout_sec = ${Math.ceil(def.timeout / 1e3)}`);
-  }
-  const env = def.env ?? {};
-  if (Object.keys(env).length) {
-    lines.push("");
-    lines.push(`[mcp_servers.${def.name}.env]`);
-    for (const [k, v] of Object.entries(env)) lines.push(`${k} = ${q(v)}`);
-  }
-  return lines.join("\n") + "\n";
-}
-function entryHash(rendered) {
-  return crypto3.createHash("sha1").update(JSON.stringify(rendered)).digest("hex").slice(0, 16);
-}
-var CLAUDE_TOOLS, CURSOR_TOOLS2, CODEX_TOOLS2, BUDDY_TOOLS, SUPPORTED_TRANSPORTS, BEARER_PLACEHOLDER_RE, WHOLE_PLACEHOLDER_RE, PLACEHOLDER_RE;
-var init_mcp_format = __esm({
-  "src/resources/mcp-format.ts"() {
-    "use strict";
-    CLAUDE_TOOLS = /* @__PURE__ */ new Set(["claude", "claude-internal", "tclaude"]);
-    CURSOR_TOOLS2 = /* @__PURE__ */ new Set(["cursor"]);
-    CODEX_TOOLS2 = /* @__PURE__ */ new Set(["codex", "codex-internal", "tcodex"]);
-    BUDDY_TOOLS = /* @__PURE__ */ new Set(["codebuddy", "workbuddy"]);
-    SUPPORTED_TRANSPORTS = {
-      claude: /* @__PURE__ */ new Set(["stdio", "http", "sse"]),
-      cursor: /* @__PURE__ */ new Set(["stdio", "http", "sse"]),
-      buddy: /* @__PURE__ */ new Set(["stdio", "http", "sse"]),
-      // Codex speaks streamable HTTP (`url` + header keys) as well as stdio, but has
-      // no SSE transport, so only that one is skipped.
-      codex: /* @__PURE__ */ new Set(["stdio", "http"])
-    };
-    BEARER_PLACEHOLDER_RE = /^Bearer \$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
-    WHOLE_PLACEHOLDER_RE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
-    PLACEHOLDER_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
-  }
+// src/coauthor-reconcile.ts
+var coauthor_reconcile_exports = {};
+__export(coauthor_reconcile_exports, {
+  reconcileCoAuthorForConfig: () => reconcileCoAuthorForConfig,
+  spliceCodexAttribution: () => spliceCodexAttribution
 });
-
-// src/mcp-reconcile.ts
-var mcp_reconcile_exports = {};
-__export(mcp_reconcile_exports, {
-  buildVarTable: () => buildVarTable,
-  codexServerNames: () => codexServerNames,
-  reconcileMcpForConfig: () => reconcileMcpForConfig,
-  resolveMcpTargets: () => resolveMcpTargets,
-  spliceCodexBlock: () => spliceCodexBlock
-});
-import path48 from "path";
-import fse10 from "fs-extra";
-async function readManifest2(manifestPath) {
-  const data = await readJson(expandHome(manifestPath));
-  return data && typeof data === "object" ? data : {};
+import path53 from "path";
+function familyOf(tool) {
+  if (CODEX_TOOLS3.has(tool)) return "codex";
+  return CURSOR_TOOLS3.has(tool) ? "cursor" : "claude";
 }
-async function buildVarTable(localConfig) {
-  const table = {};
-  const envFile = getEnvBackupPath(localConfig);
-  const content = await readFileSafe(envFile);
-  if (content) {
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eq = trimmed.indexOf("=");
-      if (eq <= 0) continue;
-      table[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
-    }
-  }
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== void 0) table[k] = v;
-  }
-  return table;
-}
-function hostAllowed(url, allowedHosts) {
-  if (allowedHosts.length === 0) return true;
-  let host;
-  try {
-    host = new URL(url).hostname;
-  } catch {
-    return false;
-  }
-  return allowedHosts.some(
-    (pattern) => pattern.startsWith("*.") ? host === pattern.slice(2) || host.endsWith(pattern.slice(1)) : host === pattern
-  );
-}
-function policyViolation(def, sharing) {
-  if (def.transport === "stdio") {
-    const { allowedCommands } = sharing;
-    if (allowedCommands.length > 0 && def.command && !allowedCommands.includes(def.command)) {
-      return `command "${def.command}" is not in sharing.mcp.allowedCommands`;
-    }
-  } else if (def.url && !hostAllowed(def.url, sharing.allowedHosts)) {
-    return `host is not in sharing.mcp.allowedHosts`;
-  }
-  return null;
-}
-async function requirementsMet(def) {
-  if (!def.requires?.length) return null;
-  const { execFile: execFile5 } = await import("child_process");
-  const { promisify: promisify4 } = await import("util");
-  const run = promisify4(execFile5);
-  for (const bin of def.requires) {
-    if (!SAFE_BIN_RE.test(bin)) {
-      return `required executable "${bin}" has an invalid name`;
-    }
-    try {
-      await run("command", ["-v", bin], { shell: "/bin/sh" });
-    } catch {
-      return `required executable "${bin}" not found on PATH`;
-    }
-  }
-  return null;
-}
-async function resolveMcpTargets(teamConfig, localConfig) {
+async function resolveTargets(teamConfig, localConfig) {
   const baseDir = resolveBaseDir(localConfig);
   const projectScope = localConfig.scope === "project";
+  const userHome = getUserHome();
   const targets = [];
-  for (const [tool, paths] of Object.entries(teamConfig.toolPaths)) {
-    const format = detectMcpFormat(tool);
-    if (!format) continue;
-    const rel = projectScope ? paths.mcpProject : paths.mcp;
-    if (!rel) continue;
-    const probe = paths.skills ?? paths.settings ?? paths.agents;
+  const disabled = new Set(localConfig.disabledAgents ?? []);
+  const whitelist = localConfig.enabledAgents;
+  for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    if (disabled.has(tool)) continue;
+    if (whitelist && !whitelist.includes(tool)) continue;
+    const family = familyOf(tool);
+    const probe = paths.settings ?? paths.skills ?? paths.agents;
     if (!probe) continue;
-    const toolRoot = path48.join(baseDir, probe.split("/")[0]);
+    const probeDir = path53.dirname(probe);
+    const toolRoot = probeDir === "." ? path53.join(baseDir, probe) : path53.join(baseDir, probeDir);
     if (!await pathExists(toolRoot)) {
-      log.debug(`Skipping MCP sync for ${tool}: tool not installed`);
+      log.debug(`[coauthor] Skipping ${tool}: tool not installed`);
       continue;
     }
-    targets.push({ tool, format, file: path48.join(baseDir, rel), projectScope });
+    if (family === "claude") {
+      if (!paths.settings) continue;
+      targets.push({ tool, family, file: path53.join(baseDir, paths.settings) });
+    } else if (family === "codex") {
+      if (projectScope) {
+        log.debug(`[coauthor] Skipping ${tool}: co-author is user-scope only`);
+        continue;
+      }
+      const home = tool === "tcodex" ? ".tcodex" : tool === "codex-internal" ? ".codex-internal" : ".codex";
+      targets.push({ tool, family, file: path53.join(userHome, home, "config.toml") });
+    } else {
+      if (projectScope) {
+        log.debug(`[coauthor] Skipping ${tool}: co-author is user-scope only`);
+        continue;
+      }
+      targets.push({ tool, family, file: path53.join(userHome, ".cursor", "cli-config.json") });
+    }
   }
   return targets;
 }
-async function readJsonDoc(file) {
-  if (!await pathExists(file)) return { data: {}, servers: {} };
-  const raw = await readFileSafe(file);
-  if (raw === null) return null;
-  if (raw.trim() === "") return { data: {}, servers: {} };
-  try {
-    const data = JSON.parse(raw);
-    if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
-    const servers = data.mcpServers ?? {};
-    if (typeof servers !== "object" || servers === null || Array.isArray(servers)) return null;
-    return { data, servers: { ...servers } };
-  } catch {
-    return null;
+async function applyClaude(file, enabled) {
+  const settings = await readJson(file) ?? {};
+  const attribution = typeof settings.attribution === "object" && settings.attribution !== null ? { ...settings.attribution } : {};
+  const before = JSON.stringify(settings.attribution ?? null);
+  if (enabled) {
+    if (attribution.commit === "") delete attribution.commit;
+    if (attribution.pr === "") delete attribution.pr;
+  } else {
+    attribution.commit = "";
+    attribution.pr = "";
   }
-}
-function spliceCodexBlock(source, name, block) {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(
-    String.raw`^\[mcp_servers\.${escaped}\]\s*$[\s\S]*?(?=^\[(?!mcp_servers\.${escaped}[.\]])|(?![\s\S]))`,
-    "m"
-  );
-  const match = source.match(re);
-  if (match) {
-    if (block === null) {
-      const cleaned = source.replace(re, "");
-      return cleaned.replace(/\n{3,}/g, "\n\n");
-    }
-    return source.replace(re, block.endsWith("\n") ? block + "\n" : block + "\n\n");
+  if (Object.keys(attribution).length === 0) {
+    delete settings.attribution;
+  } else {
+    settings.attribution = attribution;
   }
-  if (block === null) return source;
-  const sep = source.length === 0 || source.endsWith("\n\n") ? "" : source.endsWith("\n") ? "\n" : "\n\n";
-  return source + sep + block;
+  if (JSON.stringify(settings.attribution ?? null) === before) return false;
+  await writeJson(file, settings);
+  return true;
 }
-function codexServerNames(source) {
-  const names = /* @__PURE__ */ new Set();
-  for (const m of source.matchAll(/^\[mcp_servers\.([A-Za-z0-9_-]+)\]\s*$/gm)) names.add(m[1]);
-  return [...names];
+function spliceCodexAttribution(source, enabled) {
+  const firstTable = source.search(/^\[/m);
+  const head = firstTable === -1 ? source : source.slice(0, firstTable);
+  const tail = firstTable === -1 ? "" : source.slice(firstTable);
+  const keyRe = /^[ \t]*commit_attribution[ \t]*=.*$(?:\r?\n)?/m;
+  const hasKey = keyRe.test(head);
+  if (enabled) {
+    if (!hasKey) return source;
+    const cleanedHead = head.replace(keyRe, "");
+    return cleanedHead + tail;
+  }
+  const line = 'commit_attribution = ""\n';
+  if (hasKey) {
+    const replacedHead = head.replace(keyRe, line);
+    return replacedHead + tail;
+  }
+  const lead = head.length === 0 || head.endsWith("\n") ? "" : "\n";
+  const trail = tail.startsWith("[") ? "\n" : "";
+  return head + lead + line + trail + tail;
 }
-async function reconcileMcpForConfig(teamConfig, localConfig, options = {}) {
+async function applyCodex2(file, enabled) {
+  const source = await readFileSafe(file) ?? "";
+  const next = spliceCodexAttribution(source, enabled);
+  if (next === source) return false;
+  await writeFile(file, next);
+  return true;
+}
+async function applyCursor(file, enabled) {
+  const config = await readJson(file) ?? {};
+  const attribution = typeof config.attribution === "object" && config.attribution !== null ? { ...config.attribution } : {};
+  const before = JSON.stringify(config.attribution ?? null);
+  if (enabled) {
+    if (attribution.attributeCommitsToAgent === false) delete attribution.attributeCommitsToAgent;
+  } else {
+    attribution.attributeCommitsToAgent = false;
+  }
+  if (Object.keys(attribution).length === 0) {
+    delete config.attribution;
+  } else {
+    config.attribution = attribution;
+  }
+  if (JSON.stringify(config.attribution ?? null) === before) return false;
+  await writeJson(file, config);
+  return true;
+}
+async function reconcileCoAuthorForConfig(teamConfig, localConfig, state) {
+  const managed = { ...state.coAuthorManaged ?? {} };
   const changes = [];
-  let wrote = false;
-  const sharing = getMcpSharing(teamConfig);
-  const removeAll = options.removeAll === true;
-  const teamDefs = removeAll ? [] : await parseTeamMcpServers(localConfig.repo.localPath);
-  if (!removeAll && teamDefs.length > 0 && !sharing.autoApply) {
-    log.info(`${teamDefs.length} team MCP server(s) available. Run \`teamai mcp inject\` to apply.`);
-    return { changes, wrote };
+  const intent = resolveCoAuthor(localConfig, teamConfig);
+  if (intent === void 0) {
+    return { changes, managed };
   }
-  const excluded = new Set(localConfig.excludedSkills ?? []);
-  const targets = await resolveMcpTargets(teamConfig, localConfig);
-  if (targets.length === 0) return { changes, wrote };
-  const manifestPath = managedMcpManifestPath(localConfig.scope, localConfig.projectRoot);
-  const manifest = await readManifest2(manifestPath);
-  const nothingOwned = Object.values(manifest).every((r) => r.length === 0);
-  if (teamDefs.length === 0 && nothingOwned) return { changes, wrote };
-  const vars = await buildVarTable(localConfig);
-  for (const target of targets) {
-    const manifestKey = `${target.tool}${target.projectScope ? ":project" : ""}`;
-    const owned = manifest[manifestKey] ?? [];
-    const ownedNames = new Set(owned.map((r) => r.name));
-    const nextRecords = [];
-    const desired = /* @__PURE__ */ new Map();
-    for (const raw of teamDefs) {
-      if (raw.tools && !raw.tools.includes(target.tool)) continue;
-      if (excluded.has(raw.name)) {
-        changes.push({ tool: target.tool, server: raw.name, action: "skipped", reason: "excluded by user" });
-        continue;
-      }
-      if (!supportsTransport(target.format, raw.transport)) {
-        changes.push({
-          tool: target.tool,
-          server: raw.name,
-          action: "skipped",
-          reason: `${target.tool} does not support ${raw.transport} transport`
-        });
-        continue;
-      }
-      const violation = policyViolation(raw, sharing);
-      if (violation) {
-        changes.push({ tool: target.tool, server: raw.name, action: "skipped", reason: violation });
-        continue;
-      }
-      const missingBin = await requirementsMet(raw);
-      if (missingBin) {
-        changes.push({ tool: target.tool, server: raw.name, action: "skipped", reason: missingBin });
-        continue;
-      }
-      const passthrough = supportsEnvExpansion(target.format, target.projectScope, raw);
-      let def = raw;
-      if (!passthrough) {
-        const { def: resolved, missing } = resolvePlaceholders(raw, vars);
-        if (missing.length > 0) {
-          changes.push({
-            tool: target.tool,
-            server: raw.name,
-            action: "skipped",
-            reason: `unresolved variable(s): ${missing.join(", ")}`
-          });
-          continue;
-        }
-        def = resolved;
-      } else if (referencedVars(raw).length > 0) {
-        log.debug(`${raw.name}: passing ${referencedVars(raw).join(", ")} through to ${target.tool}`);
-      }
-      if (target.format === "codex") {
-        const block = renderCodexBlock(def);
-        desired.set(raw.name, { entry: block, hash: entryHash(block), block });
-      } else {
-        const entry = renderJsonEntry(target.format, def);
-        desired.set(raw.name, { entry, hash: entryHash(entry) });
-      }
-    }
-    if (target.format === "codex") {
-      wrote = await applyCodex(target, desired, ownedNames, nextRecords, changes, options) || wrote;
-    } else {
-      wrote = await applyJson(target, desired, owned, ownedNames, nextRecords, changes, options) || wrote;
-    }
-    if (nextRecords.length > 0) manifest[manifestKey] = nextRecords;
-    else delete manifest[manifestKey];
-  }
-  if (!options.dryRun && wrote) {
-    await writeJsonAtomic(manifestPath, manifest);
-  }
-  return { changes, wrote };
-}
-async function applyJson(target, desired, owned, ownedNames, nextRecords, changes, options) {
-  const doc = await readJsonDoc(target.file);
-  if (!doc) {
-    log.warn(`Could not parse ${target.file} \u2014 skipping MCP injection for ${target.tool}`);
-    return false;
-  }
-  const ownedHash = new Map(owned.map((r) => [r.name, r.hash]));
-  let dirty = false;
-  for (const [name, { entry, hash }] of desired) {
-    const existing = doc.servers[name];
-    if (existing !== void 0 && !ownedNames.has(name) && !options.force) {
-      changes.push({
-        tool: target.tool,
-        server: name,
-        action: "skipped",
-        reason: "a server with this name already exists and is not managed by teamai"
-      });
+  const targets = await resolveTargets(teamConfig, localConfig);
+  for (const t of targets) {
+    if (managed[t.file] === intent) {
+      changes.push({ tool: t.tool, file: t.file, enabled: intent, action: "skipped", reason: "already applied" });
       continue;
     }
-    nextRecords.push({ name, hash });
-    if (existing !== void 0 && ownedHash.get(name) === hash) continue;
-    doc.servers[name] = entry;
-    dirty = true;
-    changes.push({ tool: target.tool, server: name, action: existing === void 0 ? "added" : "updated" });
-  }
-  for (const name of ownedNames) {
-    if (desired.has(name)) continue;
-    if (doc.servers[name] !== void 0) {
-      delete doc.servers[name];
-      dirty = true;
-    }
-    changes.push({ tool: target.tool, server: name, action: "removed" });
-  }
-  if (!dirty || options.dryRun) return false;
-  doc.data.mcpServers = doc.servers;
-  await writeJsonAtomic(target.file, doc.data);
-  return true;
-}
-async function applyCodex(target, desired, ownedNames, nextRecords, changes, options) {
-  let source = await readFileSafe(target.file) ?? "";
-  const present = new Set(codexServerNames(source));
-  let dirty = false;
-  for (const [name, { hash, block }] of desired) {
-    if (present.has(name) && !ownedNames.has(name) && !options.force) {
+    try {
+      let changed;
+      if (t.family === "claude") changed = await applyClaude(t.file, intent);
+      else if (t.family === "codex") changed = await applyCodex2(t.file, intent);
+      else changed = await applyCursor(t.file, intent);
+      managed[t.file] = intent;
       changes.push({
-        tool: target.tool,
-        server: name,
-        action: "skipped",
-        reason: "a server with this name already exists and is not managed by teamai"
+        tool: t.tool,
+        file: t.file,
+        enabled: intent,
+        action: changed ? "updated" : "skipped",
+        reason: changed ? void 0 : "already up-to-date"
       });
-      continue;
+    } catch (e) {
+      changes.push({ tool: t.tool, file: t.file, enabled: intent, action: "skipped", reason: e.message });
     }
-    nextRecords.push({ name, hash });
-    const next = spliceCodexBlock(source, name, block);
-    if (next === source) continue;
-    source = next;
-    dirty = true;
-    changes.push({ tool: target.tool, server: name, action: present.has(name) ? "updated" : "added" });
   }
-  for (const name of ownedNames) {
-    if (desired.has(name)) continue;
-    const next = spliceCodexBlock(source, name, null);
-    if (next !== source) {
-      source = next;
-      dirty = true;
-    }
-    changes.push({ tool: target.tool, server: name, action: "removed" });
-  }
-  if (!dirty || options.dryRun) return false;
-  await fse10.ensureDir(path48.dirname(target.file));
-  const tmp = `${target.file}.${process.pid}.tmp`;
-  await fse10.writeFile(tmp, source, "utf-8");
-  await fse10.chmod(tmp, 384);
-  await fse10.rename(tmp, target.file);
-  return true;
+  return { changes, managed };
 }
-var SAFE_BIN_RE;
-var init_mcp_reconcile = __esm({
-  "src/mcp-reconcile.ts"() {
+var CODEX_TOOLS3, CURSOR_TOOLS3;
+var init_coauthor_reconcile = __esm({
+  "src/coauthor-reconcile.ts"() {
     "use strict";
     init_types();
-    init_mcp_format();
-    init_mcp();
+    init_home();
     init_fs();
     init_logger();
-    SAFE_BIN_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+    CODEX_TOOLS3 = /* @__PURE__ */ new Set(["codex", "codex-internal", "tcodex"]);
+    CURSOR_TOOLS3 = /* @__PURE__ */ new Set(["cursor"]);
   }
 });
 
@@ -15971,9 +17942,9 @@ __export(pull_exports, {
   pull: () => pull,
   scanRoleAwareSkills: () => scanRoleAwareSkills
 });
-import path49 from "path";
+import path54 from "path";
 import fse11 from "fs-extra";
-import matter4 from "gray-matter";
+import matter5 from "gray-matter";
 async function refreshTeamRepo(localConfig) {
   if (localConfig.repo.kind === "http") {
     const { resolveApiKey: resolveApiKey2 } = await Promise.resolve().then(() => (init_api_key(), api_key_exports));
@@ -15998,6 +17969,11 @@ async function refreshTeamRepo(localConfig) {
     return { label: "single-repo (knowledge on main)", version: version3, reportingOnly: false };
   }
   const result = await pullRepo(localConfig.repo.localPath);
+  try {
+    await flushPendingLearnings(localConfig.repo.localPath, localConfig.username);
+  } catch (e) {
+    log.debug(`pending-learnings flush skipped: ${e.message}`);
+  }
   let version2 = null;
   try {
     version2 = await getHeadRev(localConfig.repo.localPath);
@@ -16035,14 +18011,14 @@ async function buildRolePullContext(localConfig) {
   const activeSkillNames = /* @__PURE__ */ new Set();
   const inactiveSkillNames = /* @__PURE__ */ new Set();
   for (const namespace of activeNamespaces.skills) {
-    const namespaceDir = path49.join(localConfig.repo.localPath, "skills", namespace);
+    const namespaceDir = path54.join(localConfig.repo.localPath, "skills", namespace);
     const names = await listDirs(namespaceDir);
     for (const name of names) {
       activeSkillNames.add(name);
     }
   }
   for (const namespace of inactiveSkillNamespaces) {
-    const namespaceDir = path49.join(localConfig.repo.localPath, "skills", namespace);
+    const namespaceDir = path54.join(localConfig.repo.localPath, "skills", namespace);
     const names = await listDirs(namespaceDir);
     for (const name of names) {
       inactiveSkillNames.add(name);
@@ -16062,7 +18038,7 @@ function filterRulesByKnowledgeNamespaces(rules, knowledgeNamespaces) {
 async function scanRoleAwareSkills(localConfig, namespaces) {
   const items = /* @__PURE__ */ new Map();
   for (const namespace of namespaces.skills) {
-    const namespaceDir = path49.join(localConfig.repo.localPath, "skills", namespace);
+    const namespaceDir = path54.join(localConfig.repo.localPath, "skills", namespace);
     const dirs = await listDirs(namespaceDir);
     for (const dir of dirs) {
       const existing = items.get(dir);
@@ -16072,7 +18048,7 @@ async function scanRoleAwareSkills(localConfig, namespaces) {
       items.set(dir, {
         name: dir,
         type: "skills",
-        sourcePath: path49.join(namespaceDir, dir),
+        sourcePath: path54.join(namespaceDir, dir),
         relativePath: `skills/${namespace}/${dir}`,
         namespace
       });
@@ -16080,19 +18056,19 @@ async function scanRoleAwareSkills(localConfig, namespaces) {
   }
   return [...items.values()];
 }
-async function cleanupInactiveNamespaceSkills(teamConfig, localConfig, activeSkillNames, inactiveSkillNames) {
+async function cleanupInactiveNamespaceSkills(teamConfig, localConfig, retainedSkillNames, inactiveSkillNames) {
   const baseDir = resolveBaseDir(localConfig);
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (isAgentDisabled(localConfig, tool)) continue;
     if (!toolPath.skills) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
-    if (!await pathExists(path49.join(baseDir, toolPath.skills))) continue;
-    const localSkillNames = await listDirs(path49.join(baseDir, toolPath.skills));
+    if (!await pathExists(path54.join(baseDir, toolPath.skills))) continue;
+    const localSkillNames = await listDirs(path54.join(baseDir, toolPath.skills));
     for (const skillName of localSkillNames) {
       if (BUILTIN_SKILL_NAMES.has(skillName)) continue;
-      if (activeSkillNames.has(skillName)) continue;
+      if (retainedSkillNames.has(skillName)) continue;
       if (!inactiveSkillNames.has(skillName)) continue;
-      const localSkillDir = path49.join(baseDir, toolPath.skills, skillName);
+      const localSkillDir = path54.join(baseDir, toolPath.skills, skillName);
       await remove(localSkillDir);
       log.debug(`[${localConfig.scope}] Removed inactive role-scoped skill ${skillName} from ${tool}`);
     }
@@ -16102,12 +18078,12 @@ async function getExistingLocalNames(type, items, teamConfig, localConfig) {
   const existing = /* @__PURE__ */ new Set();
   const baseDir = resolveBaseDir(localConfig);
   if (type === "skills") {
-    for (const [_tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+    for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
-      const skillsDir = path49.join(baseDir, toolPath.skills);
+      const skillsDir = path54.join(baseDir, toolPath.skills);
       if (!await pathExists(skillsDir)) continue;
       for (const item of items) {
-        const skillDir = path49.join(skillsDir, item.name);
+        const skillDir = path54.join(skillsDir, item.name);
         if (await pathExists(skillDir)) {
           existing.add(item.name);
         }
@@ -16136,9 +18112,25 @@ function logSyncDetail(type, items, existingNames, verbose, scopeLabel, skippedC
     log.dim(`    updated: ${updatedNames.join(", ")}`);
   }
 }
+async function getInstalledResourceTargets(teamConfig, localConfig) {
+  const baseDir = resolveBaseDir(localConfig);
+  const targets = [];
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    if (isAgentDisabled(localConfig, tool)) continue;
+    const resourcePaths = [toolPath.skills, toolPath.rules, toolPath.agents].filter((resourcePath) => !!resourcePath);
+    for (const resourcePath of resourcePaths) {
+      if (await ResourceHandler.isToolInstalled(resourcePath, baseDir)) {
+        targets.push(tool);
+        break;
+      }
+    }
+  }
+  return targets.sort();
+}
 async function pullForScope(localConfig, options, policy = {}) {
   const scopeLabel = localConfig.scope;
   const revisionField = policy.revisionField ?? "lastPullRev";
+  const targetsField = revisionField === "lastPullRev" ? "lastPullTargets" : "lastInheritedPullTargets";
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
   if (!teamConfig) {
     log.warn(`[${scopeLabel}] Team config (teamai.yaml) not found. Skipping.`);
@@ -16171,34 +18163,42 @@ async function pullForScope(localConfig, options, policy = {}) {
     pullSpin.fail(`[${scopeLabel}] Pull failed: ${e.message}`);
     return;
   }
+  let currentTargets = null;
   if (!options.force && !options.dryRun) {
     try {
       const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
       if (currentRev && state[revisionField] && state[revisionField] === currentRev) {
-        log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
-        if (!options.dryRun) {
-          const cfg = await loadTeamConfig(localConfig.repo.localPath);
-          if (cfg) {
-            const skipRecall = !isRecallEnabled(localConfig, cfg);
-            try {
-              const { deployBuiltinAgents: deployBuiltinAgents2 } = await Promise.resolve().then(() => (init_builtin_agents(), builtin_agents_exports));
-              await deployBuiltinAgents2(cfg, localConfig, { skipRecall });
-            } catch {
+        currentTargets = await getInstalledResourceTargets(teamConfig, localConfig);
+        const previousTargets = state[targetsField];
+        const syncedTargets = new Set(previousTargets ?? []);
+        const targetSetMatches = previousTargets !== void 0 && previousTargets.length === currentTargets.length && currentTargets.every((target) => syncedTargets.has(target));
+        if (targetSetMatches) {
+          log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
+          if (!options.dryRun) {
+            const cfg = await loadTeamConfig(localConfig.repo.localPath);
+            if (cfg) {
+              const skipRecall = !isRecallEnabled(localConfig, cfg);
+              try {
+                const { deployBuiltinAgents: deployBuiltinAgents2 } = await Promise.resolve().then(() => (init_builtin_agents(), builtin_agents_exports));
+                await deployBuiltinAgents2(cfg, localConfig, { skipRecall });
+              } catch {
+              }
+              try {
+                const { deployBuiltinRules: deployBuiltinRules2 } = await Promise.resolve().then(() => (init_builtin_rules(), builtin_rules_exports));
+                await deployBuiltinRules2(cfg, localConfig, { skipRecall });
+              } catch {
+              }
+              try {
+                const { deployBuiltinSkills: deployBuiltinSkills2 } = await Promise.resolve().then(() => (init_builtin_skills(), builtin_skills_exports));
+                await deployBuiltinSkills2(cfg, localConfig, { reportingOnly, skipRecall });
+              } catch {
+              }
+              await injectRecallBlockIntoTools(cfg, localConfig, scopeLabel);
             }
-            try {
-              const { deployBuiltinRules: deployBuiltinRules2 } = await Promise.resolve().then(() => (init_builtin_rules(), builtin_rules_exports));
-              await deployBuiltinRules2(cfg, localConfig, { skipRecall });
-            } catch {
-            }
-            try {
-              const { deployBuiltinSkills: deployBuiltinSkills2 } = await Promise.resolve().then(() => (init_builtin_skills(), builtin_skills_exports));
-              await deployBuiltinSkills2(cfg, localConfig, { reportingOnly, skipRecall });
-            } catch {
-            }
-            await injectRecallBlockIntoTools(cfg, localConfig, scopeLabel);
           }
+          return;
         }
-        return;
+        log.debug(`[${scopeLabel}] Repo unchanged; resource target set changed, syncing`);
       }
     } catch {
       log.debug(`[${scopeLabel}] Rev check failed, proceeding with full sync`);
@@ -16231,15 +18231,17 @@ async function pullForScope(localConfig, options, policy = {}) {
       const knowledgeNs = roleContext ? roleContext.activeNamespaces.knowledge : null;
       const roleFiltered = filterRulesByKnowledgeNamespaces(allItems, knowledgeNs);
       const { included: items2, skipped } = filterByTags(roleFiltered, tagsConfig, subscribedTags, "rules");
-      if (items2.length > 0) {
-        if (options.dryRun) {
+      if (options.dryRun) {
+        if (items2.length > 0) {
           log.info(`[${scopeLabel}] [dry-run] Would sync ${items2.length} rule(s)${skipped.length > 0 ? ` (skipped ${skipped.length} by tags)` : ""}`);
-        } else {
-          await rulesHandler.pullAllRules(freshConfig, localConfig, items2);
+        }
+      } else {
+        await rulesHandler.pullAllRules(freshConfig, localConfig, items2);
+        if (items2.length > 0) {
           log.success(`[${scopeLabel}] Synced ${items2.length} rule(s)${skipped.length > 0 ? ` (skipped ${skipped.length} by tags)` : ""}`);
         }
-        totalSynced += items2.length;
       }
+      totalSynced += items2.length;
       continue;
     }
     let items;
@@ -16251,7 +18253,11 @@ async function pullForScope(localConfig, options, policy = {}) {
       let tagIncluded = [];
       if (hasActiveTagSubscriptions) {
         const tagResult = filterByTags(allTeamSkills, tagsConfig, subscribedTags, "skills");
-        tagIncluded = tagResult.included;
+        const subscribedTagSet = new Set(subscribedTags);
+        tagIncluded = tagResult.included.filter((item) => {
+          const itemTags = tagsConfig.skills[item.name];
+          return itemTags?.some((tag) => subscribedTagSet.has(tag));
+        });
         skippedByTags = tagResult.skipped.length;
       }
       const merged = /* @__PURE__ */ new Map();
@@ -16326,7 +18332,7 @@ async function pullForScope(localConfig, options, policy = {}) {
               if (isAgentDisabled(localConfig, tool)) continue;
               if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
               for (const item of items) {
-                installs.push({ tool, name: item.name, dir: path49.join(baseDir, toolPath.skills, item.name) });
+                installs.push({ tool, name: item.name, dir: path54.join(baseDir, toolPath.skills, item.name) });
               }
             }
             cleanupOrphanSkills2(localConfig, installs);
@@ -16352,16 +18358,19 @@ async function pullForScope(localConfig, options, policy = {}) {
       const handler = getHandler(type);
       const tombstones = await handler.readTombstones(localConfig);
       if (tombstones.size === 0) continue;
-      for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
+      for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
         const dir = toolPath[toolPathField];
         if (!dir) continue;
         if (!await ResourceHandler.isToolInstalled(dir, baseDir)) continue;
         if (isAgentDisabled(localConfig, tool)) continue;
+        const extensions = type === "rules" ? [.../* @__PURE__ */ new Set([ruleFileExtensionForTool(tool), ".md"])] : [ext];
         for (const name of tombstones) {
-          const localPath = path49.join(baseDir, dir, ext ? `${name}${ext}` : name);
-          if (await pathExists(localPath)) {
-            await remove(localPath);
-            log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);
+          for (const extension of extensions) {
+            const localPath = path54.join(baseDir, dir, extension ? `${name}${extension}` : name);
+            if (await pathExists(localPath)) {
+              await remove(localPath);
+              log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);
+            }
           }
         }
       }
@@ -16370,36 +18379,36 @@ async function pullForScope(localConfig, options, policy = {}) {
       await cleanupInactiveNamespaceSkills(
         freshConfig,
         localConfig,
-        roleContext.activeSkillNames,
+        desiredSkillNames ?? roleContext.activeSkillNames,
         roleContext.inactiveSkillNames
       );
     }
   }
   if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
     const baseDir = resolveBaseDir(localConfig);
-    for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
       if (isAgentDisabled(localConfig, tool)) continue;
       if (!toolPath.skills) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
-      const skillsDir = path49.join(baseDir, toolPath.skills);
+      const skillsDir = path54.join(baseDir, toolPath.skills);
       if (!await pathExists(skillsDir)) continue;
       const localDirs = await listDirs(skillsDir);
       for (const dir of localDirs) {
         if (BUILTIN_SKILL_NAMES.has(dir)) continue;
         if (desiredSkillNames.has(dir)) continue;
         if (!knownRepoSkillNames.has(dir)) continue;
-        const skillDir = path49.join(skillsDir, dir);
+        const skillDir = path54.join(skillsDir, dir);
         await remove(skillDir);
         log.debug(`Removed excluded skill ${dir} from ${tool}`);
       }
       if (excludedSkills.size > 0) {
         for (const namespace of localDirs) {
-          const namespaceDir = path49.join(skillsDir, namespace);
-          if (await pathExists(path49.join(namespaceDir, "SKILL.md"))) continue;
+          const namespaceDir = path54.join(skillsDir, namespace);
+          if (await pathExists(path54.join(namespaceDir, "SKILL.md"))) continue;
           for (const skillName of await listDirs(namespaceDir)) {
             if (!excludedSkills.has(skillName) || BUILTIN_SKILL_NAMES.has(skillName)) continue;
-            const nestedSkillDir = path49.join(namespaceDir, skillName);
-            if (!await pathExists(path49.join(nestedSkillDir, "SKILL.md"))) continue;
+            const nestedSkillDir = path54.join(namespaceDir, skillName);
+            if (!await pathExists(path54.join(nestedSkillDir, "SKILL.md"))) continue;
             await remove(nestedSkillDir);
             log.debug(`Removed excluded skill ${namespace}/${skillName} from ${tool}`);
           }
@@ -16412,15 +18421,15 @@ async function pullForScope(localConfig, options, policy = {}) {
   }
   if (!options.dryRun) {
     try {
-      const learningsRepoDir = path49.join(localConfig.repo.localPath, "learnings");
-      const docsRepoDir = path49.join(localConfig.repo.localPath, "docs");
-      const rulesRepoDir = path49.join(localConfig.repo.localPath, "rules");
-      const skillsRepoDir = path49.join(localConfig.repo.localPath, "skills");
-      let votesDir = path49.join(localConfig.repo.localPath, "votes");
+      const learningsRepoDir = path54.join(localConfig.repo.localPath, "learnings");
+      const docsRepoDir = path54.join(localConfig.repo.localPath, "docs");
+      const rulesRepoDir = path54.join(localConfig.repo.localPath, "rules");
+      const skillsRepoDir = path54.join(localConfig.repo.localPath, "skills");
+      let votesDir = path54.join(localConfig.repo.localPath, "votes");
       if (localConfig.repo.kind === "self") {
         try {
           const { ensureReportsWorktree: ensureReportsWorktree2 } = await Promise.resolve().then(() => (init_reports_branch(), reports_branch_exports));
-          votesDir = path49.join(await ensureReportsWorktree2(localConfig), "votes");
+          votesDir = path54.join(await ensureReportsWorktree2(localConfig), "votes");
         } catch (e) {
           log.debug(`[self] reports worktree for votes unavailable: ${e.message}`);
         }
@@ -16431,7 +18440,7 @@ async function pullForScope(localConfig, options, policy = {}) {
         if (await pathExists(learningsRepoDir)) {
           await fse11.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
             overwrite: true,
-            filter: (src) => !path49.basename(src).startsWith(".")
+            filter: (src) => !path54.basename(src).startsWith(".")
           });
           const allFiles = await listFiles(learningsRepoDir);
           learningsCount = allFiles.filter((f) => f.endsWith(".md")).length;
@@ -16445,12 +18454,12 @@ async function pullForScope(localConfig, options, policy = {}) {
         }
       }
       const hasAnySource = effectiveLearningsDir || await pathExists(docsRepoDir) || await pathExists(rulesRepoDir) || await pathExists(skillsRepoDir);
-      const repoCodebaseDir = path49.join(localConfig.repo.localPath, "docs", "team-codebase");
+      const repoCodebaseDir = path54.join(localConfig.repo.localPath, "docs", "team-codebase");
       const effectiveCodebaseDir = await pathExists(repoCodebaseDir) ? repoCodebaseDir : void 0;
       if (hasAnySource || effectiveCodebaseDir) {
         const votesExist = await pathExists(votesDir);
         const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
-        const indexPath = path49.join(teamaiHome, "search-index.json");
+        const indexPath = path54.join(teamaiHome, "search-index.json");
         const { buildIndex: buildIndex2 } = await Promise.resolve().then(() => (init_search_index(), search_index_exports));
         const elapsed = await buildIndex2({
           learningsDir: effectiveLearningsDir,
@@ -16474,18 +18483,18 @@ async function pullForScope(localConfig, options, policy = {}) {
   }
   if (!options.dryRun) {
     try {
-      const culturePath = path49.join(localConfig.repo.localPath, "culture.md");
+      const culturePath = path54.join(localConfig.repo.localPath, "culture.md");
       if (await pathExists(culturePath)) {
         const cultureContent = await readFileSafe(culturePath);
         if (cultureContent) {
           const compiled = compileCulture(cultureContent);
           if (compiled) {
             const baseDir = resolveBaseDir(localConfig);
-            for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
+            for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
               if (isAgentDisabled(localConfig, tool)) continue;
               if (!toolPath.claudemd) continue;
               if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
-              const claudeMdPath = path49.join(baseDir, toolPath.claudemd);
+              const claudeMdPath = path54.join(baseDir, toolPath.claudemd);
               try {
                 await injectClaudeMdSection(claudeMdPath, TEAMAI_CULTURE_START, TEAMAI_CULTURE_END, compiled);
                 log.debug(`Injected culture into ${tool} CLAUDE.md`);
@@ -16511,11 +18520,11 @@ async function pullForScope(localConfig, options, policy = {}) {
         const compiled = compileClaudemd(claudemdContents);
         if (compiled) {
           const baseDir = resolveBaseDir(localConfig);
-          for (const [tool, toolPath] of Object.entries(freshConfig.toolPaths)) {
+          for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
             if (isAgentDisabled(localConfig, tool)) continue;
             if (!toolPath.claudemd) continue;
             if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
-            const claudeMdPath = path49.join(baseDir, toolPath.claudemd);
+            const claudeMdPath = path54.join(baseDir, toolPath.claudemd);
             try {
               await injectClaudeMdSection(claudeMdPath, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END, compiled);
               log.debug(`Injected shared instructions into ${tool} CLAUDE.md`);
@@ -16583,6 +18592,7 @@ async function pullForScope(localConfig, options, policy = {}) {
         state[revisionField] = null;
       }
     }
+    state[targetsField] = currentTargets ?? await getInstalledResourceTargets(freshConfig, localConfig);
     await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
   }
   if (!options.silent && !options.dryRun) {
@@ -16590,11 +18600,11 @@ async function pullForScope(localConfig, options, policy = {}) {
       const YAML20 = (await import("yaml")).default;
       const { listFiles: listFiles2, readFileSafe: readFileSafe5 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
       const { getRecommendations: getRecommendations2, displayRecommendations: displayRecommendations2 } = await Promise.resolve().then(() => (init_skill_recommend(), skill_recommend_exports));
-      let statsDir = path49.join(localConfig.repo.localPath, "stats");
+      let statsDir = path54.join(localConfig.repo.localPath, "stats");
       if (localConfig.repo.kind === "self") {
         try {
           const { ensureReportsWorktree: ensureReportsWorktree2 } = await Promise.resolve().then(() => (init_reports_branch(), reports_branch_exports));
-          statsDir = path49.join(await ensureReportsWorktree2(localConfig), "stats");
+          statsDir = path54.join(await ensureReportsWorktree2(localConfig), "stats");
         } catch (e) {
           log.debug(`[self] reports worktree for stats unavailable: ${e.message}`);
         }
@@ -16603,7 +18613,7 @@ async function pullForScope(localConfig, options, policy = {}) {
       const teamStats = [];
       for (const file of files) {
         if (!file.endsWith(".yaml")) continue;
-        const content = await readFileSafe5(path49.join(statsDir, file));
+        const content = await readFileSafe5(path54.join(statsDir, file));
         if (!content) continue;
         try {
           const parsed = YAML20.parse(content);
@@ -16622,7 +18632,7 @@ async function pullForScope(localConfig, options, policy = {}) {
 function compileCulture(raw) {
   let parsed;
   try {
-    parsed = matter4(raw);
+    parsed = matter5(raw);
   } catch {
     return null;
   }
@@ -16687,11 +18697,11 @@ async function injectRecallBlockIntoTools(config, localConfig, scopeLabel) {
     const baseDir = resolveBaseDir(localConfig);
     const recallBlock = compileRecallRulesBlock();
     let injected = 0;
-    for (const [tool, toolPath] of Object.entries(config.toolPaths)) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
       if (isAgentDisabled(localConfig, tool)) continue;
       if (!toolPath.claudemd || !toolPath.agents) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
-      const claudeMdPath = path49.join(baseDir, toolPath.claudemd);
+      const claudeMdPath = path54.join(baseDir, toolPath.claudemd);
       try {
         await injectClaudeMdSection(
           claudeMdPath,
@@ -16775,7 +18785,7 @@ function compileRecallRulesBlock() {
   return lines.join("\n");
 }
 async function collectClaudemdFiles(repoPath, roleContext) {
-  const claudemdDir = path49.join(repoPath, "claudemd");
+  const claudemdDir = path54.join(repoPath, "claudemd");
   if (!await pathExists(claudemdDir)) return [];
   let namespaceDirs;
   if (roleContext) {
@@ -16785,19 +18795,19 @@ async function collectClaudemdFiles(repoPath, roleContext) {
   }
   const contents = [];
   for (const ns of namespaceDirs) {
-    const nsDir = path49.join(claudemdDir, ns);
+    const nsDir = path54.join(claudemdDir, ns);
     if (!await pathExists(nsDir)) continue;
     const files = (await listFiles(nsDir)).filter((f) => f.endsWith(".md")).sort();
     for (const file of files) {
-      const content = await readFileSafe(path49.join(nsDir, file));
+      const content = await readFileSafe(path54.join(nsDir, file));
       if (content) contents.push(content);
     }
   }
   return contents;
 }
 async function autoMigrateHooksIfNeeded() {
-  const home = process.env.HOME ?? "";
-  const primarySettings = path49.join(home, ".claude", "settings.json");
+  const home = getUserHome();
+  const primarySettings = path54.join(home, ".claude", "settings.json");
   if (!await pathExists(primarySettings)) return;
   const content = await readFileSafe(primarySettings);
   if (!content) return;
@@ -16807,7 +18817,7 @@ async function autoMigrateHooksIfNeeded() {
   const { autoDetectInit: autoDetectInit2 } = await Promise.resolve().then(() => (init_config(), config_exports));
   const { injectHooksToAllTools: injectHooksToAllTools2 } = await Promise.resolve().then(() => (init_hooks2(), hooks_exports));
   const { localConfig, teamConfig } = await autoDetectInit2();
-  const baseDir = resolveBaseDir(localConfig);
+  const { baseDir } = resolveHookScope(localConfig);
   const disabled = localConfig.disabledAgents;
   let hookFilter = localConfig.enabledAgents;
   if (disabled && disabled.length > 0) {
@@ -16875,6 +18885,7 @@ async function pull(options) {
   }
   await reconcileHooksAllScopes(activeUserConfig, projectConfig, options);
   await reconcileMcpAllScopes(activeUserConfig, projectConfig, options);
+  await reconcileCoAuthorAllScopes(activeUserConfig, projectConfig, options);
   if (!options.dryRun) {
     try {
       const { reportUsageToTeam: reportUsageToTeam2 } = await Promise.resolve().then(() => (init_team_push(), team_push_exports));
@@ -16973,35 +18984,66 @@ async function reconcileMcpAllScopes(userConfig, projectConfig, options) {
     }
   }
 }
+async function reconcileCoAuthorAllScopes(userConfig, projectConfig, options) {
+  if (options.dryRun) return;
+  const scopes = [userConfig, projectConfig].filter((c) => !!c);
+  for (const localConfig of scopes) {
+    try {
+      const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+      if (!teamConfig) continue;
+      const { reconcileCoAuthorForConfig: reconcileCoAuthorForConfig2 } = await Promise.resolve().then(() => (init_coauthor_reconcile(), coauthor_reconcile_exports));
+      const state = await loadStateForScope(localConfig.scope, localConfig.projectRoot);
+      const { changes, managed } = await reconcileCoAuthorForConfig2(teamConfig, localConfig, state);
+      const applied = changes.filter((c) => c.action !== "skipped");
+      for (const c of changes) {
+        if (c.action === "skipped") log.debug(`[coauthor] ${c.tool}: skipped \u2014 ${c.reason}`);
+      }
+      if (applied.length > 0) {
+        state.coAuthorManaged = managed;
+        await saveStateForScope(state, localConfig.scope, localConfig.projectRoot);
+        if (!options.silent) {
+          const verb = applied[0].enabled ? "enabled" : "disabled";
+          const tools = [...new Set(applied.map((c) => c.tool))];
+          log.info(`Co-author trailer ${verb} for ${tools.join(", ")}. Restart your AI tool session to apply.`);
+        }
+      }
+    } catch (e) {
+      log.debug(`[${localConfig.scope}] co-author reconcile skipped: ${e.message}`);
+    }
+  }
+}
 var init_pull = __esm({
   "src/pull.ts"() {
     "use strict";
     init_config();
     init_git2();
+    init_pending_learnings();
     init_logger();
     init_fs();
     init_claudemd();
     init_resources();
     init_base();
+    init_rule_format();
     init_tags();
     init_builtin_skills();
     init_types();
     init_roles();
+    init_home();
   }
 });
 
 // src/agent-skills.ts
-import path50 from "path";
+import path55 from "path";
 import YAML16 from "yaml";
 async function buildClassifyContext(localConfig) {
   const teamSkills = await collectTeamRepoSkills(localConfig.repo.localPath);
   const sourceSkills = /* @__PURE__ */ new Map();
   try {
-    const sourcesDir = path50.join(process.env.HOME ?? "", ".teamai", "sources");
+    const sourcesDir = path55.join(getUserHome(), ".teamai", "sources");
     if (await pathExists(sourcesDir)) {
       const sourceNames = await listDirs(sourcesDir);
       for (const sourceName of sourceNames) {
-        const manifestPath = path50.join(sourcesDir, sourceName, "installed.json");
+        const manifestPath = path55.join(sourcesDir, sourceName, "installed.json");
         const raw = await readFileSafe(manifestPath);
         if (!raw) continue;
         try {
@@ -17018,13 +19060,13 @@ async function buildClassifyContext(localConfig) {
   return { teamSkills, sourceSkills };
 }
 async function collectTeamRepoSkills(repoPath) {
-  const teamSkillsDir = path50.join(repoPath, "skills");
+  const teamSkillsDir = path55.join(repoPath, "skills");
   const result = /* @__PURE__ */ new Map();
   if (!await pathExists(teamSkillsDir)) return result;
   const topDirs = await listDirs(teamSkillsDir);
   for (const dir of topDirs) {
-    const dirPath = path50.join(teamSkillsDir, dir);
-    const hasSkillMd = await pathExists(path50.join(dirPath, "SKILL.md"));
+    const dirPath = path55.join(teamSkillsDir, dir);
+    const hasSkillMd = await pathExists(path55.join(dirPath, "SKILL.md"));
     if (hasSkillMd) {
       result.set(dir, {});
     } else {
@@ -17071,8 +19113,8 @@ async function scanAgentSkills(agent, ctx) {
   const dirs = await listDirs(agent.absoluteSkillsPath);
   for (const name of dirs) {
     if (name.startsWith(".") || name.endsWith("-workspace")) continue;
-    const skillDir = path50.join(agent.absoluteSkillsPath, name);
-    const skillMd = path50.join(skillDir, "SKILL.md");
+    const skillDir = path55.join(agent.absoluteSkillsPath, name);
+    const skillMd = path55.join(skillDir, "SKILL.md");
     if (!await pathExists(skillMd)) continue;
     const description = await readSkillDescription(skillMd);
     skills.push({
@@ -17112,6 +19154,7 @@ var init_agent_skills = __esm({
     init_fs();
     init_known_agents();
     init_builtin_skills();
+    init_home();
     FRONTMATTER_REGEX2 = /^---\n([\s\S]*?)\n---/;
   }
 });
@@ -17122,7 +19165,7 @@ __export(status_exports, {
   list: () => list,
   status: () => status
 });
-import path51 from "path";
+import path56 from "path";
 import YAML17 from "yaml";
 async function status(options) {
   const { localConfig, teamConfig } = await autoDetectInit();
@@ -17155,14 +19198,14 @@ async function status(options) {
   log.info("Team resources:");
   const repoPath = localConfig.repo.localPath;
   const counts = {};
-  const skillsDirs = await listDirs(path51.join(repoPath, "skills"));
+  const skillsDirs = await listDirs(path56.join(repoPath, "skills"));
   counts.skills = skillsDirs.length;
-  const rulesFiles = (await listFiles(path51.join(repoPath, "rules"))).filter((f) => f.endsWith(".md"));
+  const rulesFiles = (await listFiles(path56.join(repoPath, "rules"))).filter((f) => f.endsWith(".md"));
   counts.rules = rulesFiles.length;
-  const docsExists = await pathExists(path51.join(repoPath, "docs"));
-  const docFiles = docsExists ? (await listFiles(path51.join(repoPath, "docs"))).filter((f) => !f.startsWith(".")) : [];
+  const docsExists = await pathExists(path56.join(repoPath, "docs"));
+  const docFiles = docsExists ? (await listFiles(path56.join(repoPath, "docs"))).filter((f) => !f.startsWith(".")) : [];
   counts.docs = docFiles.length;
-  const envYamlPath = path51.join(repoPath, "env", "env.yaml");
+  const envYamlPath = path56.join(repoPath, "env", "env.yaml");
   let envCount = 0;
   if (await pathExists(envYamlPath)) {
     const envContent = await readFileSafe(envYamlPath);
@@ -17250,7 +19293,7 @@ async function printRepoSection(t, options, ctx) {
   console.log("");
   console.log(`=== REPO ${t.toUpperCase()} ===`);
   if (t === "env") {
-    const envYamlPath = path51.join(repoPath, "env", "env.yaml");
+    const envYamlPath = path56.join(repoPath, "env", "env.yaml");
     if (await pathExists(envYamlPath)) {
       const envContent = await readFileSafe(envYamlPath);
       if (envContent) {
@@ -17410,7 +19453,7 @@ var skill_cmd_exports = {};
 __export(skill_cmd_exports, {
   skillShow: () => skillShow
 });
-import path52 from "path";
+import path57 from "path";
 async function skillShow(name, options) {
   const { localConfig, teamConfig } = await autoDetectInit();
   const agents = await detectInstalledAgents(localConfig, teamConfig);
@@ -17423,7 +19466,7 @@ async function skillShow(name, options) {
   }
   const ctx = await buildClassifyContext(localConfig);
   const source = classifySkill(name, ctx);
-  const description = truncate(await readSkillDescription(path52.join(resolved.primaryPath, "SKILL.md")), DESCRIPTION_MAX);
+  const description = truncate(await readSkillDescription(path57.join(resolved.primaryPath, "SKILL.md")), DESCRIPTION_MAX);
   const contributors = await SkillsHandler.readContributors(resolved.primaryPath);
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
   const tags = tagsConfig?.skills?.[name] ?? [];
@@ -17441,28 +19484,28 @@ async function skillShow(name, options) {
   });
   if (options.verbose) {
     console.log("");
-    console.log(`  Verbose: SKILL.md path is ${path52.join(resolved.primaryPath, "SKILL.md")}`);
+    console.log(`  Verbose: SKILL.md path is ${path57.join(resolved.primaryPath, "SKILL.md")}`);
   }
 }
 async function locateSkill(name, localConfig, agents) {
-  const teamSkillsDir = path52.join(localConfig.repo.localPath, "skills");
-  const flat = path52.join(teamSkillsDir, name);
-  if (await pathExists(path52.join(flat, "SKILL.md"))) {
+  const teamSkillsDir = path57.join(localConfig.repo.localPath, "skills");
+  const flat = path57.join(teamSkillsDir, name);
+  if (await pathExists(path57.join(flat, "SKILL.md"))) {
     return { name, primaryPath: flat, primaryOrigin: "team" };
   }
   if (await pathExists(teamSkillsDir)) {
     const namespaces = await listDirs(teamSkillsDir);
     for (const ns of namespaces) {
-      const candidate = path52.join(teamSkillsDir, ns, name);
-      if (await pathExists(path52.join(candidate, "SKILL.md"))) {
+      const candidate = path57.join(teamSkillsDir, ns, name);
+      if (await pathExists(path57.join(candidate, "SKILL.md"))) {
         return { name, primaryPath: candidate, primaryOrigin: "team", namespace: ns };
       }
     }
   }
   for (const agent of agents) {
     if (!agent.installed) continue;
-    const candidate = path52.join(agent.absoluteSkillsPath, name);
-    if (await pathExists(path52.join(candidate, "SKILL.md"))) {
+    const candidate = path57.join(agent.absoluteSkillsPath, name);
+    if (await pathExists(path57.join(candidate, "SKILL.md"))) {
       return { name, primaryPath: candidate, primaryOrigin: "agent" };
     }
   }
@@ -17472,8 +19515,8 @@ async function collectInstalledAgents(name, agents) {
   const matches = [];
   for (const agent of agents) {
     if (!agent.installed) continue;
-    const skillDir = path52.join(agent.absoluteSkillsPath, name);
-    if (await pathExists(path52.join(skillDir, "SKILL.md"))) {
+    const skillDir = path57.join(agent.absoluteSkillsPath, name);
+    if (await pathExists(path57.join(skillDir, "SKILL.md"))) {
       matches.push({ agent, path: skillDir });
     }
   }
@@ -17601,9 +19644,9 @@ __export(members_exports, {
   listMembers: () => listMembers
 });
 import YAML18 from "yaml";
-import path53 from "path";
+import path58 from "path";
 async function getMemberConfig(repoPath, username) {
-  const memberPath = path53.join(repoPath, "members", `${username}.yaml`);
+  const memberPath = path58.join(repoPath, "members", `${username}.yaml`);
   const content = await readFileSafe(memberPath);
   if (!content) return null;
   try {
@@ -17625,7 +19668,7 @@ async function listMembers(options) {
     repoPath = localConfig.repo.localPath;
     await pullRepo(repoPath);
   }
-  const membersDir = path53.join(repoPath, "members");
+  const membersDir = path58.join(repoPath, "members");
   const files = await listFiles(membersDir);
   const yamlFiles = files.filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"));
   if (yamlFiles.length === 0) {
@@ -17636,7 +19679,7 @@ async function listMembers(options) {
   console.log(`Team members (${yamlFiles.length}):`);
   console.log("");
   for (const file of yamlFiles) {
-    const content = await readFileSafe(path53.join(membersDir, file));
+    const content = await readFileSafe(path58.join(membersDir, file));
     if (!content) continue;
     try {
       const raw = YAML18.parse(content);
@@ -17827,13 +19870,13 @@ var doctor_exports = {};
 __export(doctor_exports, {
   doctor: () => doctor
 });
-import path54 from "path";
+import path59 from "path";
 async function buildHookChecks(toolPaths, baseDir) {
   const checks = [];
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (!paths.settings) continue;
-    const settingsPath = path54.join(baseDir, paths.settings);
-    const parentDir = path54.dirname(settingsPath);
+    const settingsPath = path59.join(baseDir, paths.settings);
+    const parentDir = path59.dirname(settingsPath);
     if (!await pathExists(parentDir)) continue;
     checks.push({
       name: `teamai hooks in ${tool} settings`,
@@ -17851,6 +19894,16 @@ async function buildHookChecks(toolPaths, baseDir) {
   }
   return checks;
 }
+async function hasInstalledCodexHooks(toolPaths, baseDir) {
+  for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (!isCodexTrustGatedTool(tool) || !paths.settings) continue;
+    const settingsPath = path59.join(baseDir, paths.settings);
+    if (!await pathExists(settingsPath)) continue;
+    const content = await readFileSafe(settingsPath);
+    if (content?.includes("teamai hook-dispatch")) return true;
+  }
+  return false;
+}
 async function doctor(options) {
   log.info("Running diagnostics...\n");
   const projectConfig = await detectProjectConfig();
@@ -17865,7 +19918,7 @@ async function doctor(options) {
   }
   const toolPaths = teamConfig?.toolPaths ?? TeamaiConfigSchema.shape.toolPaths.parse(void 0);
   const providerName = teamConfig?.provider ?? "tgit";
-  const baseDir = localConfig ? resolveBaseDir(localConfig) : process.env.HOME ?? "";
+  const baseDir = localConfig ? resolveHookScope(localConfig).baseDir : getUserHome();
   const checks = [];
   if (providerName === "tgit") {
     const { isGfInstalled: isGfInstalled2, gfIsAuthenticated: gfIsAuthenticated2 } = await Promise.resolve().then(() => (init_tgit(), tgit_exports));
@@ -17932,13 +19985,16 @@ async function doctor(options) {
       check: async () => {
         if (teamConfig?.sharing?.env?.injectShellProfile === false) return true;
         if (!localConfig) return true;
-        const envYamlPath = path54.join(localConfig.repo.localPath, "env", "env.yaml");
+        const envYamlPath = path59.join(localConfig.repo.localPath, "env", "env.yaml");
         if (!await pathExists(envYamlPath)) return true;
-        const home = process.env.HOME ?? "";
-        const envShPath = path54.join(home, ".teamai", "env.sh");
+        const home = getUserHome();
+        const envShPath = path59.join(
+          getTeamaiHome(localConfig.scope, localConfig.projectRoot),
+          "env.sh"
+        );
         if (!await pathExists(envShPath)) return false;
         const shell = process.env.SHELL ?? "";
-        const profilePath = shell.includes("zsh") ? path54.join(home, ".zshrc") : path54.join(home, ".bashrc");
+        const profilePath = shell.includes("zsh") ? path59.join(home, ".zshrc") : path59.join(home, ".bashrc");
         if (!await pathExists(profilePath)) return false;
         const content = await readFileSafe(profilePath);
         return content?.includes(TEAMAI_ENV_START) ?? false;
@@ -17957,6 +20013,10 @@ async function doctor(options) {
       allPassed = false;
     }
   }
+  if (await hasInstalledCodexHooks(toolPaths, baseDir)) {
+    console.log("");
+    log.info(codexTrustReminder());
+  }
   console.log("");
   if (allPassed) {
     log.success("All checks passed!");
@@ -17972,6 +20032,7 @@ var init_doctor = __esm({
     init_logger();
     init_types();
     init_hooks2();
+    init_home();
   }
 });
 
@@ -17985,7 +20046,7 @@ __export(roles_cmd_exports, {
   rolesSet: () => rolesSet,
   rolesUpdate: () => rolesUpdate
 });
-import path55 from "path";
+import path60 from "path";
 import YAML19 from "yaml";
 function parseNamespaces(input) {
   return input.split(",").map((s) => s.trim()).filter(Boolean);
@@ -18047,7 +20108,7 @@ async function rolesInit(options) {
   const repoPath = localConfig.repo.localPath;
   const selfMode = localConfig.repo.kind === "self";
   if (!selfMode) await pullLatest(repoPath);
-  const manifestPath = path55.join(repoPath, "manifest", "roles.yaml");
+  const manifestPath = path60.join(repoPath, "manifest", "roles.yaml");
   if (await pathExists(manifestPath)) {
     log.warn(`Roles manifest already exists at ${manifestPath}`);
     const overwrite = await askConfirmation("Overwrite existing manifest? [y/N] ");
@@ -18117,7 +20178,7 @@ async function rolesInit(options) {
   const commitMsg = `[teamai] Initialize roles manifest with ${roles.length} role(s)`;
   await runRolesEdit(localConfig, async (editRepoPath, editConfig) => {
     await saveRolesManifest(editRepoPath, manifest);
-    log.success(`Manifest written to ${path55.join(editRepoPath, "manifest", "roles.yaml")}`);
+    log.success(`Manifest written to ${path60.join(editRepoPath, "manifest", "roles.yaml")}`);
     await pushManifestChange({
       repoPath: editRepoPath,
       teamConfig,
@@ -18395,7 +20456,7 @@ __export(tags_exports, {
   tagsSubscribe: () => tagsSubscribe,
   tagsUnsubscribe: () => tagsUnsubscribe
 });
-import path56 from "path";
+import path61 from "path";
 async function resolveTagsScope() {
   const projectConfig = await detectProjectConfig();
   return projectConfig ?? (await requireInit()).localConfig;
@@ -18560,7 +20621,7 @@ async function tagsRemove(resourceType, name, tags, options) {
 async function getTeamSkillCount(repoPath) {
   try {
     const { listDirs: listDirs2 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
-    const skillsDir = path56.join(repoPath, "skills");
+    const skillsDir = path61.join(repoPath, "skills");
     const dirs = await listDirs2(skillsDir);
     return dirs.length;
   } catch {
@@ -18581,27 +20642,26 @@ var uninstall_exports = {};
 __export(uninstall_exports, {
   uninstall: () => uninstall
 });
-import path57 from "path";
+import path62 from "path";
 function hasToolResources(r) {
-  return r.hookFiles.length > 0 || r.openclawHookDirs.length > 0 || r.claudeMdFiles.length > 0 || r.skillDirs.length > 0 || r.ruleFiles.length > 0 || r.agentFiles.length > 0;
+  return r.hookFiles.length > 0 || r.openclawHookDirs.length > 0 || r.opencodeHookScopes.length > 0 || r.claudeMdFiles.length > 0 || r.skillDirs.length > 0 || r.ruleFiles.length > 0 || r.agentFiles.length > 0;
 }
 function detectShellProfile() {
-  const home = process.env.HOME;
-  if (!home) return null;
+  const home = getUserHome();
   const shell = process.env.SHELL ?? "";
   if (shell.includes("zsh")) {
-    return path57.join(home, ".zshrc");
+    return path62.join(home, ".zshrc");
   }
-  return path57.join(home, ".bashrc");
+  return path62.join(home, ".bashrc");
 }
 async function collectTeamSkillNames(repoPath) {
-  const teamSkillsDir = path57.join(repoPath, "skills");
+  const teamSkillsDir = path62.join(repoPath, "skills");
   if (!await pathExists(teamSkillsDir)) return /* @__PURE__ */ new Set();
   const names = /* @__PURE__ */ new Set();
   const topDirs = await listDirs(teamSkillsDir);
   for (const dir of topDirs) {
-    const dirPath = path57.join(teamSkillsDir, dir);
-    const hasSkillMd = await pathExists(path57.join(dirPath, "SKILL.md"));
+    const dirPath = path62.join(teamSkillsDir, dir);
+    const hasSkillMd = await pathExists(path62.join(dirPath, "SKILL.md"));
     if (hasSkillMd) {
       names.add(dir);
     } else {
@@ -18614,11 +20674,19 @@ async function collectTeamSkillNames(repoPath) {
   return names;
 }
 async function collectTeamRuleNames(repoPath) {
-  const teamRulesDir = path57.join(repoPath, "rules");
+  const teamRulesDir = path62.join(repoPath, "rules");
   if (!await pathExists(teamRulesDir)) return /* @__PURE__ */ new Set();
   const files = await listFilesRecursive(teamRulesDir);
   return new Set(
     files.filter((f) => f.endsWith(".md")).map((f) => f.replace(/\.md$/, ""))
+  );
+}
+async function collectTeamAgentNames(repoPath) {
+  const teamAgentsDir = path62.join(repoPath, "agents");
+  if (!await pathExists(teamAgentsDir)) return /* @__PURE__ */ new Set();
+  const files = await listFiles(teamAgentsDir);
+  return new Set(
+    files.filter((file) => file.endsWith(".yaml") || file.endsWith(".md")).map((file) => path62.basename(file).replace(/\.(yaml|md)$/, ""))
   );
 }
 function isEmptyHooksResidue(parsed) {
@@ -18626,69 +20694,103 @@ function isEmptyHooksResidue(parsed) {
   const entries = Object.values(parsed.hooks);
   return entries.length > 0 && entries.every((v) => Array.isArray(v) && v.length === 0);
 }
-async function discoverToolResources(tool, toolPath, baseDir, teamSkillNames, teamRuleNames, managedHooksPath) {
+function opencodePluginTargets(baseDir, scope) {
+  const home = getUserHome();
+  const targets = [{ baseDir: home, scope: "user" }];
+  if (scope === "project" && path62.resolve(baseDir) !== path62.resolve(home)) {
+    targets.push({ baseDir, scope: "project" });
+  }
+  return targets;
+}
+async function discoverToolResources(tool, toolPath, baseDir, teamSkillNames, teamRuleNames, teamAgentNames, hookTargets, scope) {
   const res = {
     hookFiles: [],
     openclawHookDirs: [],
+    opencodeHookScopes: [],
     claudeMdFiles: [],
     skillDirs: [],
     ruleFiles: [],
     agentFiles: []
   };
-  if (toolPath.settings) {
-    const settingsPath = path57.join(baseDir, toolPath.settings);
-    if (await pathExists(settingsPath) && (await hasTeamaiHooks(settingsPath, tool, managedHooksPath) || isEmptyHooksResidue(await readJson(settingsPath)))) {
-      res.hookFiles.push({ path: settingsPath, tool });
+  if (tool === "opencode") {
+    const { resolveOpencodePluginDir: resolveOpencodePluginDir2, OPENCODE_HOOK_FILE: OPENCODE_HOOK_FILE2 } = await Promise.resolve().then(() => (init_opencode_hooks(), opencode_hooks_exports));
+    for (const target of opencodePluginTargets(baseDir, scope)) {
+      const pluginDir = resolveOpencodePluginDir2(target.baseDir, target.scope);
+      if (await pathExists(path62.join(pluginDir, OPENCODE_HOOK_FILE2))) {
+        res.opencodeHookScopes.push(target);
+      } else if (await pathExists(pluginDir)) {
+        const files = await listFilesRecursive(pluginDir);
+        if (files.some((f) => path62.basename(f).startsWith("teamai-agent-"))) {
+          res.opencodeHookScopes.push(target);
+        }
+      }
+    }
+  } else if (toolPath.settings) {
+    for (const { baseDir: hookBaseDir, manifestPath } of hookTargets) {
+      const settingsPath = path62.join(hookBaseDir, toolPath.settings);
+      if (await pathExists(settingsPath) && (await hasTeamaiHooks(settingsPath, tool, manifestPath) || isEmptyHooksResidue(await readJson(settingsPath)))) {
+        res.hookFiles.push({ path: settingsPath, tool, manifestPath });
+      }
     }
   } else {
-    const defaultHooksDir = path57.join(baseDir, `.${tool}`, "hooks");
+    const defaultHooksDir = path62.join(baseDir, `.${tool}`, "hooks");
     const resolvedHooksDir = resolveOpenClawHooksDir(tool);
     const dirsToCheck = /* @__PURE__ */ new Set([defaultHooksDir, resolvedHooksDir]);
+    const workspaceDir = await resolveOpenclawWorkspaceDir();
+    if (workspaceDir) {
+      dirsToCheck.add(path62.join(workspaceDir, "hooks"));
+    }
     for (const hooksDir of dirsToCheck) {
-      if (await pathExists(path57.join(hooksDir, OPENCLAW_HOOK_DIR))) {
+      if (await pathExists(path62.join(hooksDir, OPENCLAW_HOOK_DIR))) {
         res.openclawHookDirs.push({ hooksDir, tool });
       }
     }
   }
   if (toolPath.claudemd) {
-    const claudeMdPath = path57.join(baseDir, toolPath.claudemd);
+    const claudeMdPath = path62.join(baseDir, toolPath.claudemd);
     const content = await readFileSafe(claudeMdPath);
     if (content && CLAUDEMD_MARKER_PAIRS.some(([start]) => content.includes(start))) {
       res.claudeMdFiles.push(claudeMdPath);
     }
   }
   if (toolPath.skills) {
-    const skillsDir = path57.join(baseDir, toolPath.skills);
-    if (await pathExists(skillsDir)) {
-      const dirs = await listDirs(skillsDir);
-      for (const dir of dirs) {
-        if (teamSkillNames.has(dir)) {
-          res.skillDirs.push(path57.join(skillsDir, dir));
+    const skillRoots = /* @__PURE__ */ new Set([path62.join(baseDir, toolPath.skills)]);
+    if (tool === "openclaw") {
+      const workspaceDir = await resolveOpenclawWorkspaceDir();
+      if (workspaceDir) skillRoots.add(path62.join(workspaceDir, "skills"));
+    }
+    for (const skillsDir of skillRoots) {
+      if (await pathExists(skillsDir)) {
+        const dirs = await listDirs(skillsDir);
+        for (const dir of dirs) {
+          if (teamSkillNames.has(dir)) {
+            res.skillDirs.push(path62.join(skillsDir, dir));
+          }
         }
       }
     }
   }
   if (toolPath.rules) {
-    const rulesDir = path57.join(baseDir, toolPath.rules);
+    const rulesDir = path62.join(baseDir, toolPath.rules);
     if (await pathExists(rulesDir)) {
       const files = await listFilesRecursive(rulesDir);
       for (const file of files) {
-        if (!file.endsWith(".md")) continue;
-        const ruleName = file.replace(/\.md$/, "");
+        const ruleName = ruleStemFromFilename(file);
+        if (ruleName === null) continue;
         if (teamRuleNames.has(ruleName)) {
-          res.ruleFiles.push(path57.join(rulesDir, file));
+          res.ruleFiles.push(path62.join(rulesDir, file));
         }
       }
     }
   }
   if (toolPath.agents) {
-    const agentsDir = path57.join(baseDir, toolPath.agents);
+    const agentsDir = path62.join(baseDir, toolPath.agents);
     if (await pathExists(agentsDir)) {
-      for (const name of BUILTIN_AGENT_NAMES) {
-        const agentFile = path57.join(agentsDir, `${name}.md`);
-        if (await pathExists(agentFile)) {
-          res.agentFiles.push(agentFile);
-        }
+      for (const file of await listFiles(agentsDir)) {
+        if (!file.endsWith(".md") && !file.endsWith(".toml")) continue;
+        const name = path62.basename(file).replace(/\.(md|toml)$/, "");
+        if (!teamAgentNames.has(name) && !BUILTIN_AGENT_NAMES.has(name)) continue;
+        res.agentFiles.push(path62.join(agentsDir, file));
       }
     }
   }
@@ -18702,8 +20804,9 @@ async function buildRemovalPlan(localConfig, teamConfig, agentFilter) {
   for (const name of BUILTIN_SKILL_NAMES) teamSkillNames.add(name);
   const teamRuleNames = await collectTeamRuleNames(repoPath);
   for (const name of BUILTIN_RULE_NAMES) teamRuleNames.add(name);
-  const localAgentManifestPath = path57.join(
-    process.env.HOME ?? "",
+  const teamAgentNames = await collectTeamAgentNames(repoPath);
+  const localAgentManifestPath = path62.join(
+    getUserHome(),
     ".teamai",
     "local-agent",
     "manifest.json"
@@ -18721,12 +20824,24 @@ async function buildRemovalPlan(localConfig, teamConfig, agentFilter) {
     } catch {
     }
   }
-  const managedHooksPath = getManagedHooksPath(localConfig.scope, localConfig.projectRoot);
+  const primaryHookScope = resolveHookScope(localConfig);
+  const hookTargets = [primaryHookScope];
+  const legacyHookScope = resolveLegacyProjectHookScope(localConfig);
+  if (legacyHookScope) hookTargets.push(legacyHookScope);
   const perTool = /* @__PURE__ */ new Map();
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     perTool.set(
       tool,
-      await discoverToolResources(tool, toolPath, baseDir, teamSkillNames, teamRuleNames, managedHooksPath)
+      await discoverToolResources(
+        tool,
+        toolPath,
+        baseDir,
+        teamSkillNames,
+        teamRuleNames,
+        teamAgentNames,
+        hookTargets,
+        localConfig.scope
+      )
     );
   }
   let includeShared;
@@ -18744,6 +20859,7 @@ async function buildRemovalPlan(localConfig, teamConfig, agentFilter) {
   const plan = {
     hookFiles: [],
     openclawHookDirs: [],
+    opencodeHookScopes: [],
     claudeMdFiles: [],
     skillDirs: [],
     ruleFiles: [],
@@ -18753,7 +20869,6 @@ async function buildRemovalPlan(localConfig, teamConfig, agentFilter) {
     docsDir: null,
     teamaiHome,
     teamaiHomeExists: includeShared && await pathExists(teamaiHome),
-    managedHooksPath,
     includeShared,
     hermesCleanup: toolsToMerge.includes("hermes"),
     scope: localConfig.scope
@@ -18763,6 +20878,7 @@ async function buildRemovalPlan(localConfig, teamConfig, agentFilter) {
     if (!res) continue;
     plan.hookFiles.push(...res.hookFiles);
     plan.openclawHookDirs.push(...res.openclawHookDirs);
+    plan.opencodeHookScopes.push(...res.opencodeHookScopes);
     plan.claudeMdFiles.push(...res.claudeMdFiles);
     plan.skillDirs.push(...res.skillDirs);
     plan.ruleFiles.push(...res.ruleFiles);
@@ -18789,7 +20905,7 @@ async function buildRemovalPlan(localConfig, teamConfig, agentFilter) {
     const docsLocalDir = teamConfig.sharing.docs.localDir;
     let docsDir;
     if (localConfig.scope === "project" && localConfig.projectRoot) {
-      docsDir = docsLocalDir.startsWith("~/") ? path57.join(localConfig.projectRoot, docsLocalDir.substring(2)) : expandHome(docsLocalDir);
+      docsDir = docsLocalDir.startsWith("~/") ? path62.join(localConfig.projectRoot, docsLocalDir.substring(2)) : expandHome(docsLocalDir);
     } else {
       docsDir = expandHome(docsLocalDir);
     }
@@ -18800,49 +20916,62 @@ async function buildRemovalPlan(localConfig, teamConfig, agentFilter) {
   return plan;
 }
 function isPlanEmpty(plan) {
-  return plan.hookFiles.length === 0 && plan.openclawHookDirs.length === 0 && plan.claudeMdFiles.length === 0 && plan.skillDirs.length === 0 && plan.ruleFiles.length === 0 && plan.agentFiles.length === 0 && plan.mcpServers.length === 0 && plan.shellProfile === null && plan.docsDir === null && !plan.teamaiHomeExists;
+  return plan.hookFiles.length === 0 && plan.openclawHookDirs.length === 0 && plan.opencodeHookScopes.length === 0 && plan.claudeMdFiles.length === 0 && plan.skillDirs.length === 0 && plan.ruleFiles.length === 0 && plan.agentFiles.length === 0 && plan.mcpServers.length === 0 && plan.shellProfile === null && plan.docsDir === null && !plan.teamaiHomeExists;
 }
 function printSummary(plan, agentFilter) {
-  const cn = plan.scope === "project" ? "\u9879\u76EE\u7EA7" : "\u7528\u6237\u7EA7";
   console.log("");
-  console.log(`\u26A0  \u6B63\u5728\u5378\u8F7D ${plan.scope} scope\uFF08${cn}\uFF09\u2014 ${plan.teamaiHome}`);
+  console.log(`\u26A0  Uninstalling ${plan.scope} scope \u2014 ${plan.teamaiHome}`);
   if (agentFilter) {
     const sharedNote = plan.includeShared ? " (last tool \u2014 shared resources removed too)" : " (shared resources kept for remaining tools)";
     console.log(`\u26A0  Uninstalling tool only: ${agentFilter}${sharedNote}`);
   }
-  console.log("\u26A0  \u4EE5\u4E0B teamai \u8D44\u6E90\u5C06\u88AB\u79FB\u9664:");
+  console.log("\u26A0  The following teamai resources will be removed:");
   console.log("");
   if (plan.hookFiles.length > 0) {
-    console.log(`   Hooks (${plan.hookFiles.length} \u4E2A\u6587\u4EF6):`);
+    console.log(`   Hooks (${plan.hookFiles.length} files):`);
     for (const { path: p } of plan.hookFiles) {
       console.log(`     ${p}`);
     }
     console.log("");
   }
   if (plan.openclawHookDirs.length > 0) {
-    console.log(`   OpenClaw Hooks (${plan.openclawHookDirs.length} \u4E2A\u76EE\u5F55):`);
+    console.log(`   OpenClaw Hooks (${plan.openclawHookDirs.length} directories):`);
     for (const { hooksDir } of plan.openclawHookDirs) {
-      console.log(`     ${path57.join(hooksDir, OPENCLAW_HOOK_DIR)}/`);
+      console.log(`     ${path62.join(hooksDir, OPENCLAW_HOOK_DIR)}/`);
+    }
+    console.log("");
+  }
+  if (plan.opencodeHookScopes.length > 0) {
+    console.log(`   OpenCode Hooks (${plan.opencodeHookScopes.length} plugin dirs):`);
+    for (const { baseDir, scope } of plan.opencodeHookScopes) {
+      const configDir = scope === "project" ? ".opencode" : path62.join(".config", "opencode");
+      console.log(`     ${path62.join(baseDir, configDir, "plugin")}/teamai-*.ts`);
     }
     console.log("");
   }
   if (plan.claudeMdFiles.length > 0) {
-    console.log(`   CLAUDE.md \u89C4\u5219\u5757 (${plan.claudeMdFiles.length} \u4E2A\u6587\u4EF6):`);
+    console.log(`   CLAUDE.md rule blocks (${plan.claudeMdFiles.length} files):`);
     for (const p of plan.claudeMdFiles) {
       console.log(`     ${p}`);
     }
     console.log("");
   }
   if (plan.skillDirs.length > 0) {
-    console.log(`   Skills (${plan.skillDirs.length} \u4E2A\u76EE\u5F55)`);
+    console.log(`   Skills (${plan.skillDirs.length} directories):`);
+    for (const skillDir of plan.skillDirs) {
+      console.log(`     ${skillDir}`);
+    }
     console.log("");
   }
   if (plan.ruleFiles.length > 0) {
-    console.log(`   Rules (${plan.ruleFiles.length} \u4E2A\u6587\u4EF6)`);
+    console.log(`   Rules (${plan.ruleFiles.length} files)`);
     console.log("");
   }
   if (plan.agentFiles.length > 0) {
-    console.log(`   Agents (${plan.agentFiles.length} \u4E2A\u6587\u4EF6)`);
+    console.log(`   Agents (${plan.agentFiles.length} files):`);
+    for (const agentFile of plan.agentFiles) {
+      console.log(`     ${agentFile}`);
+    }
     console.log("");
   }
   if (plan.mcpServers.length > 0) {
@@ -18853,17 +20982,17 @@ function printSummary(plan, agentFilter) {
     console.log("");
   }
   if (plan.shellProfile) {
-    console.log("   Shell profile \u73AF\u5883\u53D8\u91CF\u5757:");
+    console.log("   Shell profile env block:");
     console.log(`     ${plan.shellProfile}`);
     console.log("");
   }
   if (plan.docsDir) {
-    console.log("   Docs \u76EE\u5F55:");
+    console.log("   Docs directory:");
     console.log(`     ${plan.docsDir}`);
     console.log("");
   }
   if (plan.teamaiHomeExists) {
-    console.log("   TeamAI \u4E3B\u76EE\u5F55:");
+    console.log("   TeamAI home directory:");
     console.log(`     ${plan.teamaiHome}/`);
     console.log("");
   }
@@ -18877,18 +21006,32 @@ async function teardownPlugins() {
   }
 }
 async function executeRemoval(plan) {
-  for (const { path: settingsPath, tool } of plan.hookFiles) {
+  for (const { path: settingsPath, tool, manifestPath } of plan.hookFiles) {
     try {
-      await reconcileHooks(settingsPath, tool, [], { removeAll: true, manifestPath: plan.managedHooksPath });
+      await reconcileHooks(settingsPath, tool, [], { removeAll: true, manifestPath });
     } catch (e) {
-      log.warn(`\u79FB\u9664 hooks \u5931\u8D25 ${settingsPath}: ${e.message}`);
+      log.warn(`Failed to remove hooks from ${settingsPath}: ${e.message}`);
     }
   }
   for (const { hooksDir } of plan.openclawHookDirs) {
     try {
       await removeOpenClawHooks(hooksDir);
     } catch (e) {
-      log.warn(`\u79FB\u9664 OpenClaw hook \u5931\u8D25 ${hooksDir}: ${e.message}`);
+      log.warn(`Failed to remove OpenClaw hook from ${hooksDir}: ${e.message}`);
+    }
+  }
+  for (const { baseDir, scope } of plan.opencodeHookScopes) {
+    try {
+      const { removeOpencodeHooks: removeOpencodeHooks2, resolveOpencodePluginDir: resolveOpencodePluginDir2 } = await Promise.resolve().then(() => (init_opencode_hooks(), opencode_hooks_exports));
+      await removeOpencodeHooks2(baseDir, scope);
+      const pluginDir = resolveOpencodePluginDir2(baseDir, scope);
+      if (await pathExists(pluginDir)) {
+        for (const rel of await listFilesRecursive(pluginDir)) {
+          if (path62.basename(rel).startsWith("teamai-agent-")) await remove(path62.join(pluginDir, rel));
+        }
+      }
+    } catch (e) {
+      log.warn(`Failed to remove OpenCode hook (${scope} scope): ${e.message}`);
     }
   }
   try {
@@ -18915,40 +21058,40 @@ async function executeRemoval(plan) {
       } else {
         await writeFile(claudeMdPath, content + "\n");
       }
-      log.success(`\u6E05\u7406 CLAUDE.md: ${claudeMdPath}`);
+      log.success(`Cleaned CLAUDE.md: ${claudeMdPath}`);
     } catch (e) {
-      log.warn(`\u6E05\u7406 CLAUDE.md \u5931\u8D25 ${claudeMdPath}: ${e.message}`);
+      log.warn(`Failed to clean CLAUDE.md ${claudeMdPath}: ${e.message}`);
     }
   }
   for (const skillDir of plan.skillDirs) {
     try {
       await remove(skillDir);
     } catch (e) {
-      log.warn(`\u79FB\u9664 skill \u5931\u8D25 ${skillDir}: ${e.message}`);
+      log.warn(`Failed to remove skill ${skillDir}: ${e.message}`);
     }
   }
   if (plan.skillDirs.length > 0) {
-    log.success(`\u79FB\u9664\u4E86 ${plan.skillDirs.length} \u4E2A skill \u76EE\u5F55`);
+    log.success(`Removed ${plan.skillDirs.length} skill directories`);
   }
   for (const ruleFile of plan.ruleFiles) {
     try {
       await remove(ruleFile);
     } catch (e) {
-      log.warn(`\u79FB\u9664 rule \u5931\u8D25 ${ruleFile}: ${e.message}`);
+      log.warn(`Failed to remove rule ${ruleFile}: ${e.message}`);
     }
   }
   if (plan.ruleFiles.length > 0) {
-    log.success(`\u79FB\u9664\u4E86 ${plan.ruleFiles.length} \u4E2A rule \u6587\u4EF6`);
+    log.success(`Removed ${plan.ruleFiles.length} rule files`);
   }
   for (const agentFile of plan.agentFiles) {
     try {
       await remove(agentFile);
     } catch (e) {
-      log.warn(`\u79FB\u9664 agent \u5931\u8D25 ${agentFile}: ${e.message}`);
+      log.warn(`Failed to remove agent ${agentFile}: ${e.message}`);
     }
   }
   if (plan.agentFiles.length > 0) {
-    log.success(`\u79FB\u9664\u4E86 ${plan.agentFiles.length} \u4E2A agent \u6587\u4EF6`);
+    log.success(`Removed ${plan.agentFiles.length} agent files`);
   }
   if (plan.shellProfile) {
     try {
@@ -18960,28 +21103,28 @@ async function executeRemoval(plan) {
           const before = content.substring(0, startIdx).replace(/\n+$/, "\n");
           const after = content.substring(endIdx + TEAMAI_ENV_END.length).replace(/^\n+/, "\n");
           await writeFile(plan.shellProfile, before + after);
-          log.success(`\u6E05\u7406 shell profile: ${plan.shellProfile}`);
+          log.success(`Cleaned shell profile: ${plan.shellProfile}`);
         }
       }
     } catch (e) {
-      log.warn(`\u6E05\u7406 shell profile \u5931\u8D25: ${e.message}`);
+      log.warn(`Failed to clean shell profile: ${e.message}`);
     }
   }
   if (plan.docsDir) {
     try {
       await remove(plan.docsDir);
-      log.success(`\u79FB\u9664 docs: ${plan.docsDir}`);
+      log.success(`Removed docs: ${plan.docsDir}`);
     } catch (e) {
-      log.warn(`\u79FB\u9664 docs \u5931\u8D25: ${e.message}`);
+      log.warn(`Failed to remove docs: ${e.message}`);
     }
   }
   if (plan.teamaiHomeExists) {
     await teardownPlugins();
     try {
       await remove(plan.teamaiHome);
-      log.success(`\u79FB\u9664 ${plan.teamaiHome}/`);
+      log.success(`Removed ${plan.teamaiHome}/`);
     } catch (e) {
-      log.warn(`\u79FB\u9664 ${plan.teamaiHome} \u5931\u8D25: ${e.message}`);
+      log.warn(`Failed to remove ${plan.teamaiHome}: ${e.message}`);
     }
   }
   if (plan.hermesCleanup) {
@@ -19003,7 +21146,7 @@ async function uninstall(opts) {
     localConfig = result.localConfig;
     teamConfig = result.teamConfig;
   } catch {
-    log.warn("teamai \u914D\u7F6E\u672A\u627E\u5230\u6216\u65E0\u6548");
+    log.warn("teamai configuration not found or invalid");
   }
   if (localConfig && teamConfig) {
     let agentKey = opts.agent;
@@ -19019,18 +21162,18 @@ async function uninstall(opts) {
     }
     const plan = await buildRemovalPlan(localConfig, teamConfig, agentKey);
     if (isPlanEmpty(plan)) {
-      log.info("\u6CA1\u6709\u9700\u8981\u5378\u8F7D\u7684\u5185\u5BB9");
+      log.info("Nothing to uninstall");
       return;
     }
     printSummary(plan, agentKey);
     if (opts.dryRun) {
-      log.info("Dry run \u2014 \u672A\u505A\u4EFB\u4F55\u66F4\u6539");
+      log.info("Dry run \u2014 no changes made");
       return;
     }
     if (!opts.force) {
-      const confirmed = await askConfirmation("\u786E\u8BA4\u5378\u8F7D? [y/N] ");
+      const confirmed = await askConfirmation("Confirm uninstall? [y/N] ");
       if (!confirmed) {
-        log.info("\u5DF2\u53D6\u6D88");
+        log.info("Cancelled");
         return;
       }
     }
@@ -19058,46 +21201,41 @@ async function uninstall(opts) {
         await saveLocalConfig(cfg);
       }
     }
-    log.success("teamai \u5378\u8F7D\u5B8C\u6210");
+    log.success("teamai uninstalled");
   } else {
     if (opts.agent) {
       log.warn("No valid teamai configuration detected; cannot target a specific tool with --agent");
       process.exitCode = 2;
       return;
     }
-    const homeDir = process.env.HOME;
-    if (!homeDir) {
-      log.error("\u65E0\u6CD5\u786E\u5B9A\u7528\u6237\u4E3B\u76EE\u5F55\uFF08HOME \u73AF\u5883\u53D8\u91CF\u672A\u8BBE\u7F6E\uFF09");
-      return;
-    }
-    const home = path57.join(homeDir, ".teamai");
+    const home = path62.join(getUserHome(), ".teamai");
     if (!await pathExists(home)) {
-      log.info("\u6CA1\u6709\u9700\u8981\u5378\u8F7D\u7684\u5185\u5BB9");
+      log.info("Nothing to uninstall");
       return;
     }
     console.log("");
-    console.log("\u26A0  \u6B63\u5728\u5378\u8F7D user scope\uFF08\u7528\u6237\u7EA7\uFF0C\u672A\u68C0\u6D4B\u5230\u6709\u6548\u914D\u7F6E\uFF0C\u4EC5\u6E05\u7406\u4E3B\u76EE\u5F55\uFF09");
-    console.log("\u26A0  \u5C06\u79FB\u9664 TeamAI \u4E3B\u76EE\u5F55:");
+    console.log("\u26A0  Uninstalling user scope (no valid configuration detected \u2014 home directory only)");
+    console.log("\u26A0  The following TeamAI home directory will be removed:");
     console.log(`     ${home}/`);
     console.log("");
     if (opts.dryRun) {
-      log.info("Dry run \u2014 \u672A\u505A\u4EFB\u4F55\u66F4\u6539");
+      log.info("Dry run \u2014 no changes made");
       return;
     }
     if (!opts.force) {
-      const confirmed = await askConfirmation("\u786E\u8BA4\u5378\u8F7D? [y/N] ");
+      const confirmed = await askConfirmation("Confirm uninstall? [y/N] ");
       if (!confirmed) {
-        log.info("\u5DF2\u53D6\u6D88");
+        log.info("Cancelled");
         return;
       }
     }
     try {
       await teardownPlugins();
       await remove(home);
-      log.success(`\u79FB\u9664 ${home}/`);
-      log.success("teamai \u5378\u8F7D\u5B8C\u6210");
+      log.success(`Removed ${home}/`);
+      log.success("teamai uninstalled");
     } catch (e) {
-      log.warn(`\u79FB\u9664 ${home} \u5931\u8D25: ${e.message}`);
+      log.warn(`Failed to remove ${home}: ${e.message}`);
     }
   }
 }
@@ -19110,11 +21248,13 @@ var init_uninstall = __esm({
     init_openclaw_hooks();
     init_types();
     init_builtin_rules();
+    init_rule_format();
     init_builtin_agents();
     init_builtin_skills();
     init_fs();
     init_logger();
     init_prompt();
+    init_home();
     CLAUDEMD_MARKER_PAIRS = [
       [TEAMAI_RULES_START, TEAMAI_RULES_END],
       [TEAMAI_CULTURE_START, TEAMAI_CULTURE_END],
@@ -19131,11 +21271,11 @@ __export(env_commands_exports, {
   envList: () => envList,
   envRemove: () => envRemove
 });
-import path58 from "path";
+import path63 from "path";
 async function envList(options) {
   const projectConfig = await detectProjectConfig();
   const localConfig = projectConfig ?? (await requireInit()).localConfig;
-  const envYamlPath = path58.join(localConfig.repo.localPath, "env", "env.yaml");
+  const envYamlPath = path63.join(localConfig.repo.localPath, "env", "env.yaml");
   if (!await pathExists(envYamlPath)) {
     log.info("No env variables defined (env/env.yaml not found)");
     return;
@@ -19164,13 +21304,15 @@ async function envAdd(key, value, options) {
   const projectConfig = await detectProjectConfig();
   const localConfig = projectConfig ?? (await requireInit()).localConfig;
   const repoPath = localConfig.repo.localPath;
-  const envYamlPath = path58.join(repoPath, "env", "env.yaml");
-  const pullSpin = spinner("Pulling latest...").start();
-  try {
-    await pullRepo(repoPath);
-    pullSpin.succeed("Up to date");
-  } catch (e) {
-    pullSpin.warn(`Pull failed: ${e.message}`);
+  const envYamlPath = path63.join(repoPath, "env", "env.yaml");
+  if (!isSelfMode(localConfig)) {
+    const pullSpin = spinner("Pulling latest...").start();
+    try {
+      await pullRepo(repoPath);
+      pullSpin.succeed("Up to date");
+    } catch (e) {
+      pullSpin.warn(`Pull failed: ${e.message}`);
+    }
   }
   const envConfig = await envHandler.parseEnvYaml(envYamlPath);
   const existingIdx = envConfig.variables.findIndex((v) => v.key === key);
@@ -19191,7 +21333,7 @@ async function envAdd(key, value, options) {
     log.info(`[dry-run] Would ${isUpdate ? "update" : "add"} env variable: ${key}=${value}`);
     return;
   }
-  await ensureDir(path58.join(repoPath, "env"));
+  await ensureDir(path63.join(repoPath, "env"));
   await envHandler.writeEnvYaml(envYamlPath, envConfig);
   const action = isUpdate ? "Updated" : "Added";
   log.success(`${action} env variable: ${key}=${value}`);
@@ -19201,13 +21343,15 @@ async function envRemove(key, options) {
   const projectConfig = await detectProjectConfig();
   const localConfig = projectConfig ?? (await requireInit()).localConfig;
   const repoPath = localConfig.repo.localPath;
-  const envYamlPath = path58.join(repoPath, "env", "env.yaml");
-  const pullSpin = spinner("Pulling latest...").start();
-  try {
-    await pullRepo(repoPath);
-    pullSpin.succeed("Up to date");
-  } catch (e) {
-    pullSpin.warn(`Pull failed: ${e.message}`);
+  const envYamlPath = path63.join(repoPath, "env", "env.yaml");
+  if (!isSelfMode(localConfig)) {
+    const pullSpin = spinner("Pulling latest...").start();
+    try {
+      await pullRepo(repoPath);
+      pullSpin.succeed("Up to date");
+    } catch (e) {
+      pullSpin.warn(`Pull failed: ${e.message}`);
+    }
   }
   if (!await pathExists(envYamlPath)) {
     log.error("No env variables defined (env/env.yaml not found)");
@@ -19237,6 +21381,7 @@ var init_env_commands = __esm({
     init_fs();
     init_logger();
     init_env();
+    init_types();
     envHandler = new EnvHandler();
   }
 });
@@ -19248,24 +21393,11 @@ __export(hooks_cmd_exports, {
   hooksList: () => hooksList,
   hooksRemove: () => hooksRemove
 });
-import path59 from "path";
-function resolveHookScopeTargets(localConfig) {
-  if (localConfig.scope !== "project") {
-    return [{
-      baseDir: resolveBaseDir(localConfig) ?? "",
-      manifestPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot)
-    }];
-  }
-  return [{
-    baseDir: process.env.HOME ?? "",
-    manifestPath: getManagedHooksPath("user")
-  }];
-}
+import path64 from "path";
 function formatDisplayPath(settingsPath) {
-  const home = process.env.HOME;
-  if (!home) return settingsPath;
+  const home = getUserHome();
   if (settingsPath === home) return "~";
-  if (settingsPath.startsWith(home + path59.sep) || settingsPath.startsWith(home + "/")) {
+  if (settingsPath.startsWith(home + path64.sep) || settingsPath.startsWith(home + "/")) {
     return `~${settingsPath.slice(home.length)}`;
   }
   return settingsPath;
@@ -19290,30 +21422,35 @@ async function hooksInject(options) {
     auto: false,
     silent: options.silent
   });
-  for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
-    await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin });
+  let codexTrustGated = false;
+  const { baseDir, manifestPath } = resolveHookScope(localConfig);
+  await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin });
+  if (await hasInstalledCodexTrustGatedTool(teamConfig.toolPaths, baseDir)) {
+    codexTrustGated = true;
   }
+  await sweepLegacyProjectHooks(teamConfig.toolPaths, localConfig);
   if (!options.silent) {
     log.success("Hooks injected into all AI tool settings");
+    if (codexTrustGated) {
+      log.warn(codexTrustReminder());
+    }
   }
 }
 async function hooksList(_options) {
   const { localConfig, teamConfig } = await autoDetectInit();
-  const baseDirs = resolveHookScopeTargets(localConfig).map((t) => t.baseDir);
+  const { baseDir } = resolveHookScope(localConfig);
   const rows = [];
   for (const [tool, paths] of Object.entries(teamConfig.toolPaths)) {
     if (!paths.settings) {
       rows.push({ tool, status: "not configured", settingsPath: "no settings configured" });
       continue;
     }
-    for (const baseDir of baseDirs) {
-      const settingsPath = path59.join(baseDir, paths.settings);
-      rows.push({
-        tool,
-        status: await getHookStatus(settingsPath, tool),
-        settingsPath: formatDisplayPath(settingsPath)
-      });
-    }
+    const settingsPath = path64.join(baseDir, paths.settings);
+    rows.push({
+      tool,
+      status: await getHookStatus(settingsPath, tool),
+      settingsPath: formatDisplayPath(settingsPath)
+    });
   }
   console.log(formatHooksList(rows));
   const teamDefs = await parseTeamHooks(localConfig.repo.localPath);
@@ -19338,13 +21475,9 @@ async function hooksList(_options) {
 }
 async function hooksRemove(_options) {
   const { localConfig, teamConfig } = await autoDetectInit();
-  for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
-    await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true });
-  }
-  if (localConfig.scope === "project" && localConfig.projectRoot) {
-    const legacyManifest = getManagedHooksPath("project", localConfig.projectRoot);
-    await reconcileHooksToAllTools(teamConfig.toolPaths, localConfig.projectRoot, [], legacyManifest, { removeAll: true });
-  }
+  const { baseDir, manifestPath } = resolveHookScope(localConfig);
+  await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true });
+  await sweepLegacyProjectHooks(teamConfig.toolPaths, localConfig);
   log.success("Hooks removed from all AI tool settings");
 }
 var init_hooks_cmd = __esm({
@@ -19356,6 +21489,7 @@ var init_hooks_cmd = __esm({
     init_hooks();
     init_logger();
     init_types();
+    init_home();
   }
 });
 
@@ -19366,10 +21500,10 @@ __export(mcp_cmd_exports, {
   mcpList: () => mcpList,
   mcpRemove: () => mcpRemove
 });
-import path60 from "path";
+import path65 from "path";
 function displayPath(p) {
-  const home = process.env.HOME;
-  if (home && (p === home || p.startsWith(home + path60.sep))) return `~${p.slice(home.length)}`;
+  const home = getUserHome();
+  if (p === home || p.startsWith(home + path65.sep)) return `~${p.slice(home.length)}`;
   return p;
 }
 async function mcpList(_options) {
@@ -19444,12 +21578,13 @@ var init_mcp_cmd = __esm({
     init_logger();
     init_types();
     init_fs();
+    init_home();
   }
 });
 
 // src/session-collector.ts
-import fs18 from "fs";
-import path61 from "path";
+import fs19 from "fs";
+import path66 from "path";
 function isValuable(summary) {
   return summary.interventionCount > 0 || summary.distinctTools >= SUBSTANTIAL_TOOL_COUNT;
 }
@@ -19529,25 +21664,25 @@ function monthKey(summary) {
 async function appendMonthlyLog(dir, summary, options = {}) {
   await ensureDir(dir);
   const month = monthKey(summary);
-  const file = path61.join(dir, `${month}.md`);
+  const file = path66.join(dir, `${month}.md`);
   const block = renderSessionMarkdown(summary, options);
   const marker = `<!-- teamai:session ${summary.sessionId} -->`;
   let existing = "";
   try {
-    existing = await fs18.promises.readFile(file, "utf-8");
+    existing = await fs19.promises.readFile(file, "utf-8");
   } catch {
   }
   if (existing.includes(marker)) return null;
   const header = existing ? "" : `# Session log \u2014 ${month}
 
 `;
-  await fs18.promises.writeFile(file, existing + header + block, "utf-8");
+  await fs19.promises.writeFile(file, existing + header + block, "utf-8");
   return file;
 }
 async function pruneMonthlyLogs(dir, now, retentionDays = 90) {
   let entries;
   try {
-    entries = await fs18.promises.readdir(dir);
+    entries = await fs19.promises.readdir(dir);
   } catch {
     return [];
   }
@@ -19559,7 +21694,7 @@ async function pruneMonthlyLogs(dir, now, retentionDays = 90) {
     const monthEnd = new Date(Date.UTC(Number(m[1]), Number(m[2]), 0, 23, 59, 59));
     if (monthEnd.getTime() < cutoff) {
       try {
-        await fs18.promises.unlink(path61.join(dir, entry));
+        await fs19.promises.unlink(path66.join(dir, entry));
         removed.push(entry);
       } catch {
       }
@@ -19585,7 +21720,7 @@ var save_session_exports = {};
 __export(save_session_exports, {
   saveSession: () => saveSession
 });
-import path62 from "path";
+import path67 from "path";
 function mostRecentSessionId(events) {
   let best;
   for (const e of events) {
@@ -19665,13 +21800,13 @@ async function saveSession(options) {
     try {
       const { ensureReportsWorktree: ensureReportsWorktree2, commitAndPushReports: commitAndPushReports2 } = await Promise.resolve().then(() => (init_reports_branch(), reports_branch_exports));
       const wt = await ensureReportsWorktree2(localConfig);
-      const teamDir2 = path62.join(wt, "sessions", username);
+      const teamDir2 = path67.join(wt, "sessions", username);
       const written = await appendMonthlyLog(teamDir2, summary, { includePrompt: options.includePrompt });
       if (!written) {
         spin2.info("Session already present in the team log \u2014 nothing to push.");
         return;
       }
-      const rel = path62.relative(wt, written);
+      const rel = path67.relative(wt, written);
       const pushed = await withTimeout(
         commitAndPushReports2(localConfig, commitMsg, [rel]),
         1e4,
@@ -19686,7 +21821,7 @@ async function saveSession(options) {
     return;
   }
   const repoPath = localConfig.repo.localPath;
-  const teamDir = path62.join(repoPath, "sessions", username);
+  const teamDir = path67.join(repoPath, "sessions", username);
   const spin = spinner("Pushing session summary to team...").start();
   try {
     try {
@@ -19699,7 +21834,7 @@ async function saveSession(options) {
       spin.info("Session already present in the team log \u2014 nothing to push.");
       return;
     }
-    const rel = path62.relative(repoPath, written);
+    const rel = path67.relative(repoPath, written);
     await withTimeout(pushRepoDirectly(repoPath, commitMsg, [rel]), 1e4, "Push timeout (10s)");
     spin.succeed(`Pushed: ${rel}`);
   } catch (e) {
@@ -20468,20 +22603,20 @@ __export(dashboard_exports, {
   startDashboard: () => startDashboard
 });
 import http from "http";
-import fs19 from "fs";
-import path63 from "path";
+import fs20 from "fs";
+import path68 from "path";
 async function startDashboard(port) {
   const serverPort = port ?? DASHBOARD_DEFAULT_PORT;
-  const eventsPath = path63.join(process.env.HOME ?? "", ".teamai", "dashboard", "events.jsonl");
-  await ensureDir(path63.dirname(eventsPath));
+  const eventsPath = path68.join(getUserHome(), ".teamai", "dashboard", "events.jsonl");
+  await ensureDir(path68.dirname(eventsPath));
   try {
-    await fs19.promises.access(eventsPath);
+    await fs20.promises.access(eventsPath);
   } catch {
-    await fs19.promises.writeFile(eventsPath, "", "utf-8");
+    await fs20.promises.writeFile(eventsPath, "", "utf-8");
   }
   const clients = /* @__PURE__ */ new Set();
   let watchDebounce = null;
-  const watcher = fs19.watch(eventsPath, () => {
+  const watcher = fs20.watch(eventsPath, () => {
     if (watchDebounce) clearTimeout(watchDebounce);
     watchDebounce = setTimeout(async () => {
       try {
@@ -20607,6 +22742,7 @@ var init_dashboard = __esm({
     init_pid_monitor();
     init_types();
     init_dashboard_html();
+    init_home();
   }
 });
 
@@ -20674,16 +22810,67 @@ var init_hook_dispatch = __esm({
   }
 });
 
+// src/project-agent-root.ts
+var project_agent_root_exports = {};
+__export(project_agent_root_exports, {
+  seedProjectAgentRoot: () => seedProjectAgentRoot
+});
+import path69 from "path";
+function isSafeRelativeRoot(root) {
+  if (!root) return false;
+  const posix = root.replaceAll("\\", "/");
+  if (path69.isAbsolute(root) || path69.isAbsolute(posix)) return false;
+  if (posix === "~" || posix.startsWith("~/")) return false;
+  const segments = posix.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return false;
+  return segments[0].startsWith(".");
+}
+function resolveSkillsPath(tool, teamConfig, localConfig) {
+  if (teamConfig) {
+    const fromTeam = scopedToolPaths(teamConfig, localConfig)[tool]?.skills;
+    if (fromTeam) return fromTeam;
+  }
+  return KNOWN_AGENTS.find((agent) => agent.id === tool)?.skillsPath;
+}
+async function seedProjectAgentRoot(tool, cwd) {
+  const id = tool.trim();
+  if (!id) return;
+  const projectConfig = await detectProjectConfig(cwd);
+  if (!projectConfig) return;
+  if (isAgentDisabled(projectConfig, id)) return;
+  const enabled = projectConfig.enabledAgents;
+  if (enabled && enabled.length > 0 && !enabled.includes(id)) return;
+  const teamConfig = await loadTeamConfig(projectConfig.repo.localPath);
+  const skillsPath = resolveSkillsPath(id, teamConfig, projectConfig);
+  if (!skillsPath) return;
+  const root = toolInstallRoot(skillsPath);
+  if (!isSafeRelativeRoot(root)) return;
+  const dest = path69.join(resolveBaseDir(projectConfig), root);
+  await ensureDir(dest);
+  log.debug(`Seeded project agent root for ${id}: ${dest}`);
+}
+var init_project_agent_root = __esm({
+  "src/project-agent-root.ts"() {
+    "use strict";
+    init_config();
+    init_known_agents();
+    init_base();
+    init_types();
+    init_fs();
+    init_logger();
+  }
+});
+
 // src/recall-quality.ts
-import path64 from "path";
-import fs20 from "fs";
+import path70 from "path";
+import fs21 from "fs";
 function sanitizeSessionId(sessionId) {
   return sessionId.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 function getCachePath(sessionId) {
   const safeName = sanitizeSessionId(sessionId);
-  return path64.join(
-    process.env.HOME ?? "",
+  return path70.join(
+    getUserHome(),
     ".teamai",
     "sessions",
     `${safeName}-recall-cache.json`
@@ -20692,14 +22879,14 @@ function getCachePath(sessionId) {
 function readCache(sessionId) {
   try {
     const cachePath = getCachePath(sessionId);
-    if (!fs20.existsSync(cachePath)) return null;
-    const raw = fs20.readFileSync(cachePath, "utf-8");
+    if (!fs21.existsSync(cachePath)) return null;
+    const raw = fs21.readFileSync(cachePath, "utf-8");
     const parsed = JSON.parse(raw);
     const age = Date.now() - new Date(parsed.updatedAt ?? "").getTime();
     if (age > CACHE_TTL_MS2) return null;
-    const queries = Array.isArray(parsed.queries) && parsed.queries.every((q) => typeof q === "string") ? parsed.queries : [];
+    const queries2 = Array.isArray(parsed.queries) && parsed.queries.every((q) => typeof q === "string") ? parsed.queries : [];
     return {
-      queries,
+      queries: queries2,
       count: typeof parsed.count === "number" ? parsed.count : 0,
       updatedAt: parsed.updatedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
       topScore: typeof parsed.topScore === "number" ? parsed.topScore : 0,
@@ -20713,11 +22900,11 @@ function readCache(sessionId) {
 function writeCache(sessionId, cache) {
   try {
     const cachePath = getCachePath(sessionId);
-    const dir = path64.dirname(cachePath);
-    if (!fs20.existsSync(dir)) {
-      fs20.mkdirSync(dir, { recursive: true });
+    const dir = path70.dirname(cachePath);
+    if (!fs21.existsSync(dir)) {
+      fs21.mkdirSync(dir, { recursive: true });
     }
-    fs20.writeFileSync(cachePath, JSON.stringify(cache), "utf-8");
+    fs21.writeFileSync(cachePath, JSON.stringify(cache), "utf-8");
   } catch {
   }
 }
@@ -20758,6 +22945,7 @@ var CACHE_TTL_MS2;
 var init_recall_quality = __esm({
   "src/recall-quality.ts"() {
     "use strict";
+    init_home();
     CACHE_TTL_MS2 = 24 * 60 * 60 * 1e3;
   }
 });
@@ -20796,10 +22984,11 @@ __export(contribute_check_exports, {
   hasGitCommitInSession: () => hasGitCommitInSession,
   markContributed: () => markContributed,
   readContributeState: () => readContributeState,
+  takePendingHint: () => takePendingHint,
   writeContributeState: () => writeContributeState
 });
-import fs21 from "fs";
-import path65 from "path";
+import fs22 from "fs";
+import path71 from "path";
 import { execFileSync as execFileSync4 } from "child_process";
 function sanitizeSessionId2(sessionId) {
   return sessionId.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -20825,8 +23014,8 @@ function normalizePromptSummary(raw) {
   return `${truncated}\u2026`;
 }
 function getSessionPath(sessionId) {
-  return path65.join(
-    process.env.HOME ?? "",
+  return path71.join(
+    getUserHome(),
     ".teamai",
     "sessions",
     `${sanitizeSessionId2(sessionId)}.json`
@@ -20852,7 +23041,8 @@ async function readContributeState(sessionId) {
         hasGitCommit: typeof raw.hasGitCommit === "boolean" ? raw.hasGitCommit : void 0,
         isKnowledgeGap: typeof raw.isKnowledgeGap === "boolean" ? raw.isKnowledgeGap : void 0,
         friction: parseSessionFriction(raw.friction),
-        promptSummary: typeof raw.promptSummary === "string" ? normalizePromptSummary(raw.promptSummary) : void 0
+        promptSummary: typeof raw.promptSummary === "string" ? normalizePromptSummary(raw.promptSummary) : void 0,
+        pendingHint: typeof raw.pendingHint === "string" ? raw.pendingHint : void 0
       };
     }
     return defaultState();
@@ -20863,14 +23053,14 @@ async function readContributeState(sessionId) {
 async function writeContributeState(sessionId, state) {
   try {
     const filePath = getSessionPath(sessionId);
-    await ensureDir(path65.dirname(filePath));
+    await ensureDir(path71.dirname(filePath));
     const persistedState = {
       ...state,
       friction: parseSessionFriction(state.friction),
       promptSummary: normalizePromptSummary(state.promptSummary)
     };
     await writeJson(filePath, persistedState);
-    await cleanupStaleSessions(path65.dirname(filePath), sessionId);
+    await cleanupStaleSessions(path71.dirname(filePath), sessionId);
   } catch (e) {
     log.error(`Failed to write contribute state: ${e.message}`);
   }
@@ -20878,16 +23068,16 @@ async function writeContributeState(sessionId, state) {
 async function cleanupStaleSessions(dir, currentSessionId) {
   const now = Date.now();
   const currentBasename = sanitizeSessionId2(currentSessionId);
-  const entries = await fs21.promises.readdir(dir);
+  const entries = await fs22.promises.readdir(dir);
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
     const name = entry.replace(".json", "");
     if (name === currentBasename) continue;
-    const filePath = path65.join(dir, entry);
+    const filePath = path71.join(dir, entry);
     try {
-      const stat6 = await fs21.promises.stat(filePath);
-      if (now - stat6.mtimeMs > STALE_SESSION_MS) {
-        await fs21.promises.unlink(filePath);
+      const stat8 = await fs22.promises.stat(filePath);
+      if (now - stat8.mtimeMs > STALE_SESSION_MS) {
+        await fs22.promises.unlink(filePath);
       }
     } catch {
     }
@@ -20978,8 +23168,9 @@ async function readStdinAndDeriveSession() {
   try {
     const hookData = JSON.parse(raw);
     const sessionId = deriveSessionId(hookData, { includeCwd: true });
-    const cwd = typeof hookData.cwd === "string" ? hookData.cwd : void 0;
-    return { sessionId, cwd };
+    const cwd = resolveHookCwd(hookData);
+    const transcriptPath = typeof hookData.transcript_path === "string" ? hookData.transcript_path : void 0;
+    return { sessionId, cwd, transcriptPath };
   } catch {
     return null;
   }
@@ -20990,15 +23181,19 @@ function countToolUseEvents(events) {
 function countUniqueTools(events) {
   return new Set(events.filter((e) => e.toolName).map((e) => e.toolName)).size;
 }
-function extractFriction(events, sessionId) {
+function extractFriction(events, sessionId, transcriptFriction) {
   let interrupt = 0;
   let toolReject = 0;
   let toolError = 0;
-  for (const e of events) {
-    if (e.type === "stop" && e.interventions) {
-      interrupt = e.interventions.interrupt;
-      toolReject = e.interventions.toolReject;
-      toolError = e.interventions.toolError ?? 0;
+  if (transcriptFriction) {
+    ({ interrupt, toolReject, toolError } = transcriptFriction);
+  } else {
+    for (const e of events) {
+      if (e.type === "stop" && e.interventions) {
+        interrupt = e.interventions.interrupt;
+        toolReject = e.interventions.toolReject;
+        toolError = e.interventions.toolError ?? 0;
+      }
     }
   }
   const correction = aggregateSessionMetrics(events).get(sessionId)?.correction ?? 0;
@@ -21051,7 +23246,7 @@ ${action}`;
 
 ${body}`;
 }
-async function contributeCheckForSession(sessionId, cwd) {
+async function contributeCheckForSession(sessionId, cwd, transcriptPath, stashInsteadOfReturn = false) {
   const state = await readContributeState(sessionId);
   const now = Date.now();
   if (state.contributed) {
@@ -21086,7 +23281,16 @@ async function contributeCheckForSession(sessionId, cwd) {
   } else {
     const allEvents = await readEvents();
     const sessionEvents = allEvents.filter((e) => e.sessionId === sessionId);
-    friction = extractFriction(sessionEvents, sessionId);
+    if (transcriptPath) {
+      const scan = await scanTranscriptStop(transcriptPath, { frictionOnly: true });
+      friction = extractFriction(sessionEvents, sessionId, {
+        interrupt: scan.interrupt,
+        toolReject: scan.toolReject,
+        toolError: scan.toolError
+      });
+    } else {
+      friction = extractFriction(sessionEvents, sessionId);
+    }
     promptSummary = extractPromptSummary(sessionEvents);
     score = computeSmartScore(sessionEvents, friction);
     toolCount = countToolUseEvents(sessionEvents);
@@ -21109,6 +23313,7 @@ async function contributeCheckForSession(sessionId, cwd) {
     );
   }
   const willHint = score >= CONTRIBUTE_SMART_THRESHOLD && toolCount >= CONTRIBUTE_BASE_THRESHOLD;
+  const hintText = willHint ? buildHint({ friction, promptSummary, isKnowledgeGap }) : null;
   if (needsPersist || willHint) {
     const latest = await readContributeState(sessionId);
     const updated = {
@@ -21126,13 +23331,23 @@ async function contributeCheckForSession(sessionId, cwd) {
     if (latest.hinted || willHint) {
       updated.hinted = true;
     }
+    if (willHint && stashInsteadOfReturn) {
+      updated.pendingHint = hintText ?? void 0;
+    }
     await writeContributeState(sessionId, updated);
   }
   if (!willHint) {
     log.debug("contribute-check: score below threshold, skipping hint");
     return { hint: null };
   }
-  return { hint: buildHint({ friction, promptSummary, isKnowledgeGap }) };
+  return { hint: stashInsteadOfReturn ? null : hintText };
+}
+async function takePendingHint(sessionId) {
+  const state = await readContributeState(sessionId);
+  if (!state.pendingHint) return null;
+  const hint = state.pendingHint;
+  await writeContributeState(sessionId, { ...state, pendingHint: void 0 });
+  return state.contributed ? null : hint;
 }
 async function contributeCheck(toolArg) {
   const { setStderrOnly: setStderrOnly2 } = await Promise.resolve().then(() => (init_logger(), logger_exports));
@@ -21142,7 +23357,11 @@ async function contributeCheck(toolArg) {
     log.debug("contribute-check: no STDIN data or no session ID");
     return;
   }
-  const { hint } = await contributeCheckForSession(stdinData.sessionId, stdinData.cwd);
+  const { hint } = await contributeCheckForSession(
+    stdinData.sessionId,
+    stdinData.cwd,
+    stdinData.transcriptPath
+  );
   if (hint !== null) {
     const { formatStopHookOutput: formatStopHookOutput2 } = await Promise.resolve().then(() => (init_hook_output(), hook_output_exports));
     process.stdout.write(formatStopHookOutput2(hint, toolArg ?? "claude"));
@@ -21162,8 +23381,10 @@ var init_contribute_check = __esm({
     init_dashboard_collector();
     init_recall_quality();
     init_session_id();
+    init_hook_cwd();
     init_redact();
     init_types();
+    init_home();
     MAX_CONTRIBUTE_PROMPT_SUMMARY_CHARS = 160;
     STALE_SESSION_MS = 24 * 60 * 60 * 1e3;
   }
@@ -21174,20 +23395,20 @@ var transcript_parser_exports = {};
 __export(transcript_parser_exports, {
   parseTranscriptForVotes: () => parseTranscriptForVotes
 });
-import fs22 from "fs";
-import path66 from "path";
-import readline4 from "readline";
+import fs23 from "fs";
+import path72 from "path";
+import readline3 from "readline";
 async function parseTranscriptForVotes(transcriptPath) {
   const recalledSet = /* @__PURE__ */ new Set();
   const referencedSet = /* @__PURE__ */ new Set();
   try {
-    const stat6 = await fs22.promises.stat(transcriptPath);
-    if (stat6.size === 0) return { recalledDocIds: [], referencedDocIds: [] };
+    const stat8 = await fs23.promises.stat(transcriptPath);
+    if (stat8.size === 0) return { recalledDocIds: [], referencedDocIds: [] };
   } catch {
     return { recalledDocIds: [], referencedDocIds: [] };
   }
-  const rl = readline4.createInterface({
-    input: fs22.createReadStream(transcriptPath, { encoding: "utf-8" }),
+  const rl = readline3.createInterface({
+    input: fs23.createReadStream(transcriptPath, { encoding: "utf-8" }),
     crlfDelay: Infinity
   });
   for await (const line of rl) {
@@ -21245,7 +23466,7 @@ function extractRecalledDocIds(text, out) {
     let match;
     while ((match = filePattern.exec(region)) !== null) {
       const filePath = match[1].trim();
-      const docId = path66.basename(filePath).replace(/\.md$/i, "");
+      const docId = path72.basename(filePath).replace(/\.md$/i, "");
       if (isValidDocId(docId)) out.add(docId);
     }
     searchFrom = endIdx + END.length;
@@ -21277,11 +23498,11 @@ __export(todowrite_hint_exports, {
   shouldSkipTodoWriteHint: () => shouldSkipTodoWriteHint,
   todoWriteHint: () => todoWriteHint
 });
-import path67 from "path";
-import fs23 from "fs";
+import path73 from "path";
+import fs24 from "fs";
 function getTodoWriteHintCachePath(sessionId) {
-  return path67.join(
-    process.env.HOME ?? "",
+  return path73.join(
+    getUserHome(),
     ".teamai",
     "sessions",
     `${sessionId}-todowrite-hint.json`
@@ -21290,8 +23511,8 @@ function getTodoWriteHintCachePath(sessionId) {
 function readCache2(sessionId) {
   try {
     const cachePath = getTodoWriteHintCachePath(sessionId);
-    if (!fs23.existsSync(cachePath)) return null;
-    const raw = fs23.readFileSync(cachePath, "utf-8");
+    if (!fs24.existsSync(cachePath)) return null;
+    const raw = fs24.readFileSync(cachePath, "utf-8");
     const parsed = JSON.parse(raw);
     const age = Date.now() - new Date(parsed.updatedAt).getTime();
     if (age > CACHE_TTL_MS3) return null;
@@ -21303,9 +23524,9 @@ function readCache2(sessionId) {
 function writeCache2(sessionId, cache) {
   try {
     const cachePath = getTodoWriteHintCachePath(sessionId);
-    const dir = path67.dirname(cachePath);
-    if (!fs23.existsSync(dir)) fs23.mkdirSync(dir, { recursive: true });
-    fs23.writeFileSync(cachePath, JSON.stringify(cache), "utf-8");
+    const dir = path73.dirname(cachePath);
+    if (!fs24.existsSync(dir)) fs24.mkdirSync(dir, { recursive: true });
+    fs24.writeFileSync(cachePath, JSON.stringify(cache), "utf-8");
   } catch {
   }
 }
@@ -21370,6 +23591,7 @@ var init_todowrite_hint = __esm({
     "use strict";
     init_logger();
     init_session_id();
+    init_home();
     CACHE_TTL_MS3 = 24 * 60 * 60 * 1e3;
   }
 });
@@ -21384,14 +23606,14 @@ __export(mr_hint_exports, {
   parseRemoteToRepo: () => parseRemoteToRepo
 });
 import { spawnSync as spawnSync6 } from "child_process";
-import fs24 from "fs";
-import path68 from "path";
+import fs25 from "fs";
+import path74 from "path";
 function repoSlug(owner, repo) {
   return `${owner}/${repo}`.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 function getCachePath2(owner, repo) {
-  return path68.join(
-    process.env.HOME ?? "",
+  return path74.join(
+    getUserHome(),
     ".teamai",
     "sessions",
     `mr-hint-${repoSlug(owner, repo)}.json`
@@ -21399,7 +23621,7 @@ function getCachePath2(owner, repo) {
 }
 function loadCache(owner, repo) {
   try {
-    const raw = fs24.readFileSync(getCachePath2(owner, repo), "utf-8");
+    const raw = fs25.readFileSync(getCachePath2(owner, repo), "utf-8");
     const parsed = JSON.parse(raw);
     const age = Date.now() - new Date(parsed.updatedAt).getTime();
     if (age > CACHE_TTL_MS4) {
@@ -21413,9 +23635,9 @@ function loadCache(owner, repo) {
 function saveCache(owner, repo, cache) {
   try {
     const cachePath = getCachePath2(owner, repo);
-    const dir = path68.dirname(cachePath);
-    if (!fs24.existsSync(dir)) fs24.mkdirSync(dir, { recursive: true });
-    fs24.writeFileSync(cachePath, JSON.stringify(cache), "utf-8");
+    const dir = path74.dirname(cachePath);
+    if (!fs25.existsSync(dir)) fs25.mkdirSync(dir, { recursive: true });
+    fs25.writeFileSync(cachePath, JSON.stringify(cache), "utf-8");
   } catch {
   }
 }
@@ -21560,9 +23782,9 @@ function buildHintMessage2(mrs) {
 async function computeMrHintOutput() {
   if (process.env.TEAMAI_MR_HINT_DISABLED === "1") return null;
   const rawCwd = process.env.TEAMAI_MR_HINT_CWD ?? process.cwd();
-  const cwd = path68.resolve(rawCwd);
+  const cwd = path74.resolve(rawCwd);
   try {
-    if (!fs24.statSync(cwd).isDirectory()) {
+    if (!fs25.statSync(cwd).isDirectory()) {
       return null;
     }
   } catch {
@@ -21621,6 +23843,7 @@ var init_mr_hint = __esm({
     "use strict";
     init_rest_auth();
     init_logger();
+    init_home();
     LOOKBACK_DAYS = 7;
     MAX_MRS = 10;
     CACHE_TTL_MS4 = 30 * 24 * 60 * 60 * 1e3;
@@ -21628,7 +23851,7 @@ var init_mr_hint = __esm({
 });
 
 // src/hook-handlers.ts
-import path69 from "path";
+import path75 from "path";
 function buildHandlerRegistry() {
   return [
     // ─── SessionStart ─────────────────────────────────
@@ -21657,6 +23880,7 @@ function buildHandlerRegistry() {
     { event: "post-tool-use", matcher: "TodoWrite", handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
     { event: "post-tool-use", matcher: "*", handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
     // ─── UserPromptSubmit ─────────────────────────────
+    { event: "prompt-submit", matcher: "*", handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
     { event: "prompt-submit", matcher: "*", handler: trackSlashHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: "prompt-submit", matcher: "*", handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: "prompt-submit", matcher: "*", handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS }
@@ -21668,19 +23892,28 @@ function filterHandlersForConfig(registry, localConfig) {
   }
   return registry;
 }
-var FOREGROUND_HOOK_TIMEOUT_MS, TODOWRITE_HINT_TIMEOUT_MS, UPDATE_TIMEOUT_MS2, LOCAL_AGENT_TIMEOUT_MS, pullHandler, updateHandler, dashboardReportHandler, trackHandler, trackSlashHandler, contributeCheckHandler, votesSyncHandler, todowriteHintHandler, mrHintHandler, localAgentHandler;
+var FOREGROUND_HOOK_TIMEOUT_MS, TODOWRITE_HINT_TIMEOUT_MS, UPDATE_TIMEOUT_MS2, LOCAL_AGENT_TIMEOUT_MS, pullHandler, updateHandler, dashboardReportHandler, trackHandler, trackSlashHandler, contributeCheckHandler, pendingHintHandler, votesSyncHandler, todowriteHintHandler, mrHintHandler, localAgentHandler;
 var init_hook_handlers = __esm({
   "src/hook-handlers.ts"() {
     "use strict";
     init_session_id();
+    init_logger();
     init_tool_names();
+    init_hook_cwd();
     FOREGROUND_HOOK_TIMEOUT_MS = 4500;
     TODOWRITE_HINT_TIMEOUT_MS = 2500;
     UPDATE_TIMEOUT_MS2 = 1e4;
     LOCAL_AGENT_TIMEOUT_MS = 15e3;
     pullHandler = {
       name: "pull",
-      async execute(_stdin, _tool) {
+      async execute(stdin, tool) {
+        const cwd = resolveHookCwd(stdin);
+        try {
+          const { seedProjectAgentRoot: seedProjectAgentRoot2 } = await Promise.resolve().then(() => (init_project_agent_root(), project_agent_root_exports));
+          await seedProjectAgentRoot2(tool, cwd);
+        } catch (e) {
+          log.debug(`hook-dispatch: seedProjectAgentRoot failed: ${e.message}`);
+        }
         const { pull: pull2 } = await Promise.resolve().then(() => (init_pull(), pull_exports));
         await pull2({ silent: true });
         return null;
@@ -21757,13 +23990,31 @@ var init_hook_handlers = __esm({
       async execute(stdin, tool) {
         const { contributeCheckForSession: contributeCheckForSession2 } = await Promise.resolve().then(() => (init_contribute_check(), contribute_check_exports));
         const { formatStopHookOutput: formatStopHookOutput2 } = await Promise.resolve().then(() => (init_hook_output(), hook_output_exports));
+        const { STOP_STDOUT_UNSUPPORTED_TOOLS: STOP_STDOUT_UNSUPPORTED_TOOLS2 } = await Promise.resolve().then(() => (init_tool_names(), tool_names_exports));
         const sessionId = deriveSessionId(stdin, { includeCwd: true });
-        const cwd = typeof stdin.cwd === "string" ? stdin.cwd : void 0;
-        const { hint } = await contributeCheckForSession2(sessionId, cwd);
-        if (hint) {
-          return formatStopHookOutput2(hint, tool);
-        }
-        return null;
+        const cwd = resolveHookCwd(stdin);
+        const transcriptPath = typeof stdin.transcript_path === "string" ? stdin.transcript_path : void 0;
+        const stash = STOP_STDOUT_UNSUPPORTED_TOOLS2.has(tool);
+        const { hint } = await contributeCheckForSession2(sessionId, cwd, transcriptPath, stash);
+        if (!hint) return null;
+        return formatStopHookOutput2(hint, tool);
+      }
+    };
+    pendingHintHandler = {
+      name: "pending-hint",
+      async execute(stdin, tool) {
+        const { STOP_STDOUT_UNSUPPORTED_TOOLS: STOP_STDOUT_UNSUPPORTED_TOOLS2 } = await Promise.resolve().then(() => (init_tool_names(), tool_names_exports));
+        if (!STOP_STDOUT_UNSUPPORTED_TOOLS2.has(tool)) return null;
+        const { takePendingHint: takePendingHint2 } = await Promise.resolve().then(() => (init_contribute_check(), contribute_check_exports));
+        const sessionId = deriveSessionId(stdin, { includeCwd: true });
+        const hint = await takePendingHint2(sessionId);
+        if (!hint) return null;
+        return JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "UserPromptSubmit",
+            additionalContext: hint
+          }
+        });
       }
     };
     votesSyncHandler = {
@@ -21780,7 +24031,7 @@ var init_hook_handlers = __esm({
           const { localConfig } = await autoDetectInit2();
           const { VOTES_LOCAL_DIR: VOTES_LOCAL_DIR2, TEAMAI_SESSIONS_DIR: TEAMAI_SESSIONS_DIR2 } = await Promise.resolve().then(() => (init_types(), types_exports));
           const votesDir = VOTES_LOCAL_DIR2;
-          const votePath = path69.join(votesDir, `${localConfig.username}.yaml`);
+          const votePath = path75.join(votesDir, `${localConfig.username}.yaml`);
           if (voteData.referencedDocIds.length > 0) {
             await incrementUpvoted2(votePath, voteData.referencedDocIds);
           }
@@ -21805,7 +24056,7 @@ var init_hook_handlers = __esm({
           if (recalled.length > 0 && declared.length === 0) {
             const fsp = await import("fs/promises");
             const safeId = sessionId.replace(/[^a-zA-Z0-9_.-]/g, "_");
-            const marker = path69.join(TEAMAI_SESSIONS_DIR2, `${safeId}-adoption-nudged`);
+            const marker = path75.join(TEAMAI_SESSIONS_DIR2, `${safeId}-adoption-nudged`);
             let already = false;
             try {
               await fsp.access(marker);
@@ -21910,7 +24161,7 @@ async function readStdin4() {
   });
   return Buffer.concat(chunks).toString("utf-8");
 }
-function spawnBackground(event, tool, matcher, raw) {
+function spawnBackground(event, tool, matcher, raw, cwd) {
   try {
     const args = [
       process.argv[1],
@@ -21925,7 +24176,8 @@ function spawnBackground(event, tool, matcher, raw) {
     }
     const child = spawn(process.execPath, args, {
       detached: true,
-      stdio: ["pipe", "ignore", "ignore"]
+      stdio: ["pipe", "ignore", "ignore"],
+      ...cwd ? { cwd } : {}
     });
     child.on("error", () => {
     });
@@ -21957,6 +24209,8 @@ function parseStdin(raw, event) {
     };
     stdin.hook_event_name = EVENT_MAP2[event] ?? event;
   }
+  const cwd = resolveHookCwd(stdin);
+  if (cwd) stdin.cwd = cwd;
   return stdin;
 }
 async function runDispatch(dispatcher, event, matcher, stdin, tool, mode) {
@@ -21973,7 +24227,14 @@ async function hookDispatchCli(event, tool, matcher, bgOnly = false) {
     const stdin = parseStdin(raw, event);
     if (stdin === null) return;
     const { loadLocalConfig: loadLocalConfig3, detectProjectConfig: detectProjectConfig2 } = await Promise.resolve().then(() => (init_config(), config_exports));
-    const cwd = typeof stdin.cwd === "string" ? stdin.cwd : void 0;
+    const cwd = resolveHookCwd(stdin);
+    if (cwd) {
+      try {
+        process.chdir(cwd);
+      } catch (e) {
+        log.debug(`hook-dispatch: chdir to ${cwd} failed: ${e.message}`);
+      }
+    }
     const localConfig = (cwd ? await detectProjectConfig2(cwd) : null) ?? await loadLocalConfig3();
     const handlers2 = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
     const dispatcher = createDispatcher({ handlers: handlers2 });
@@ -21982,7 +24243,7 @@ async function hookDispatchCli(event, tool, matcher, bgOnly = false) {
       return;
     }
     if (dispatcher.hasBackground(event, matcher)) {
-      spawnBackground(event, tool, matcher, raw);
+      spawnBackground(event, tool, matcher, raw, cwd);
     }
     const output = await runDispatch(dispatcher, event, matcher, stdin, tool, "foreground");
     if (output) {
@@ -21998,6 +24259,7 @@ var init_hook_dispatch_cli = __esm({
     "use strict";
     init_hook_dispatch();
     init_hook_handlers();
+    init_hook_cwd();
     init_logger();
     STDIN_READ_TIMEOUT_MS = 1e3;
   }
@@ -22008,22 +24270,22 @@ var contribute_exports = {};
 __export(contribute_exports, {
   contribute: () => contribute
 });
-import fs25 from "fs";
-import path70 from "path";
+import fs26 from "fs";
+import path76 from "path";
 import fse12 from "fs-extra";
 async function rebuildIndexAfterContribute(localConfig) {
   const repoPath = localConfig.repo.localPath;
-  const learningsRepoDir = path70.join(repoPath, "learnings");
-  const docsRepoDir = path70.join(repoPath, "docs");
-  const rulesRepoDir = path70.join(repoPath, "rules");
-  const skillsRepoDir = path70.join(repoPath, "skills");
-  const votesDir = path70.join(repoPath, "votes");
+  const learningsRepoDir = path76.join(repoPath, "learnings");
+  const docsRepoDir = path76.join(repoPath, "docs");
+  const rulesRepoDir = path76.join(repoPath, "rules");
+  const skillsRepoDir = path76.join(repoPath, "skills");
+  const votesDir = path76.join(repoPath, "votes");
   let effectiveLearningsDir;
   if (localConfig.scope === "user") {
     if (await pathExists(learningsRepoDir)) {
       await fse12.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
         overwrite: true,
-        filter: (src) => !path70.basename(src).startsWith(".")
+        filter: (src) => !path76.basename(src).startsWith(".")
       });
     }
     effectiveLearningsDir = await pathExists(LEARNINGS_LOCAL_DIR) ? LEARNINGS_LOCAL_DIR : void 0;
@@ -22031,7 +24293,7 @@ async function rebuildIndexAfterContribute(localConfig) {
     effectiveLearningsDir = await pathExists(learningsRepoDir) ? learningsRepoDir : void 0;
   }
   const teamaiHome = getTeamaiHome(localConfig.scope, localConfig.projectRoot);
-  const indexPath = path70.join(teamaiHome, "search-index.json");
+  const indexPath = path76.join(teamaiHome, "search-index.json");
   const { buildIndex: buildIndex2 } = await Promise.resolve().then(() => (init_search_index(), search_index_exports));
   await buildIndex2({
     learningsDir: effectiveLearningsDir,
@@ -22055,7 +24317,7 @@ async function contribute(options) {
   }
   let content;
   try {
-    content = await fs25.promises.readFile(options.file, "utf-8");
+    content = await fs26.promises.readFile(options.file, "utf-8");
   } catch (e) {
     log.error(`Cannot read file: ${options.file} \u2014 ${e.message}`);
     return;
@@ -22094,10 +24356,10 @@ async function contribute(options) {
   const pushSpin = spinner("Contributing session knowledge...").start();
   const filename = generateFilename(options.title);
   try {
-    const aiDocsDir = path70.join(repoPath, "learnings");
+    const aiDocsDir = path76.join(repoPath, "learnings");
     await ensureDir(aiDocsDir);
-    const destPath = path70.join(aiDocsDir, filename);
-    await fs25.promises.writeFile(destPath, content, "utf-8");
+    const destPath = path76.join(aiDocsDir, filename);
+    await fs26.promises.writeFile(destPath, content, "utf-8");
     try {
       await pullRepo(repoPath);
     } catch {
@@ -22122,11 +24384,8 @@ async function contribute(options) {
     log.info(`Your session knowledge has been shared with the team.`);
   } catch (e) {
     try {
-      const { execFileSync: execFileSync6 } = await import("child_process");
-      const commitMsg = `[teamai] Contribute: ${options.title || "session knowledge"}`;
-      execFileSync6("git", ["add", `learnings/${filename}`], { cwd: repoPath, timeout: 5e3 });
-      execFileSync6("git", ["commit", "-m", commitMsg], { cwd: repoPath, timeout: 5e3 });
-      pushSpin.warn(`\u5DF2\u4FDD\u5B58\u5230\u672C\u5730\uFF08\u63A8\u9001\u5931\u8D25: ${e.message}\uFF09\u3002\u4E0B\u6B21 pull \u65F6\u5C06\u81EA\u52A8\u91CD\u8BD5\u63A8\u9001\u3002`);
+      await savePendingLearning(repoPath, filename, content);
+      pushSpin.warn(`Saved locally (push failed: ${e.message}). Will retry on the next pull.`);
     } catch {
       pushSpin.fail(`Contribution failed: ${e.message}`);
       log.info("You can retry with: teamai contribute --file <path>");
@@ -22146,23 +24405,23 @@ async function contributeSelf(localConfig, content, options) {
     const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
     await withKnowledgeWorktree2(localConfig, async (wtConfig) => {
       const wtRepo = wtConfig.repo.localPath;
-      await ensureDir(path70.join(wtRepo, "learnings"));
-      await fs25.promises.writeFile(path70.join(wtRepo, relPath), content, "utf-8");
+      await ensureDir(path76.join(wtRepo, "learnings"));
+      await fs26.promises.writeFile(path76.join(wtRepo, relPath), content, "utf-8");
       try {
         const { pathExists: pathExists3 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
-        const wtLearnings = path70.join(wtRepo, "learnings");
+        const wtLearnings = path76.join(wtRepo, "learnings");
         await fse12.copy(wtLearnings, LEARNINGS_LOCAL_DIR, {
           overwrite: true,
-          filter: (src) => !path70.basename(src).startsWith(".")
+          filter: (src) => !path76.basename(src).startsWith(".")
         });
         const repoPath = localConfig.repo.localPath;
-        const docsDir = path70.join(repoPath, "docs");
-        const rulesDir = path70.join(repoPath, "rules");
-        const skillsDir = path70.join(repoPath, "skills");
+        const docsDir = path76.join(repoPath, "docs");
+        const rulesDir = path76.join(repoPath, "rules");
+        const skillsDir = path76.join(repoPath, "skills");
         let votesDir;
         try {
           const { ensureReportsWorktree: ensureReportsWorktree2 } = await Promise.resolve().then(() => (init_reports_branch(), reports_branch_exports));
-          const candidate = path70.join(await ensureReportsWorktree2(localConfig), "votes");
+          const candidate = path76.join(await ensureReportsWorktree2(localConfig), "votes");
           if (await pathExists3(candidate)) votesDir = candidate;
         } catch {
         }
@@ -22174,7 +24433,7 @@ async function contributeSelf(localConfig, content, options) {
           rulesDir: await pathExists3(rulesDir) ? rulesDir : void 0,
           skillsDir: await pathExists3(skillsDir) ? skillsDir : void 0,
           votesDir,
-          indexPath: path70.join(teamaiHome, "search-index.json")
+          indexPath: path76.join(teamaiHome, "search-index.json")
         });
       } catch (e) {
         log.debug(`contribute(self): local index refresh skipped: ${e.message}`);
@@ -22215,12 +24474,13 @@ var init_contribute = __esm({
     init_fs();
     init_logger();
     init_contribute_check();
+    init_pending_learnings();
     init_types();
   }
 });
 
 // src/wiki-engine/core/wiki-protocol.ts
-import path71 from "path";
+import path77 from "path";
 function safeIgnore(filePath) {
   const normalized = toPosix(filePath);
   const parts = normalized.split("/").filter(Boolean);
@@ -22234,7 +24494,7 @@ function safeIgnore(filePath) {
   return /\.(pem|key|p12|pfx)$/i.test(base);
 }
 function toPosix(value) {
-  return value.split(path71.sep).join("/");
+  return value.split(path77.sep).join("/");
 }
 var CONFIDENCE_SCORE_DEFAULTS, SAFE_IGNORE_SEGMENTS, SENSITIVE_FILE_NAMES;
 var init_wiki_protocol = __esm({
@@ -22280,8 +24540,8 @@ __export(graph_index_schema_exports, {
   toPageSlug: () => toPageSlug,
   validateGraph: () => validateGraph
 });
-import { readFile as readFile2, writeFile as writeFile4, mkdir } from "fs/promises";
-import path72 from "path";
+import { readFile as readFile3, writeFile as writeFile5, mkdir as mkdir2 } from "fs/promises";
+import path78 from "path";
 function toPageSlug(relativePath) {
   return relativePath.replace(/\.md$/u, "").replace(/\\/g, "/");
 }
@@ -22452,11 +24712,14 @@ function computeGraphHealth(graph) {
   };
 }
 async function loadGraphIndex(wikiRoot) {
-  const graphPath = path72.join(wikiRoot, ".indices", "graph-index.json");
+  const graphPath = path78.join(wikiRoot, ".indices", "graph-index.json");
   try {
-    const raw = await readFile2(graphPath, "utf8");
+    const raw = await readFile3(graphPath, "utf8");
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed?.nodes) || !Array.isArray(parsed?.edges)) {
+      return null;
+    }
+    if (parsed.schemaVersion !== GRAPH_INDEX_SCHEMA_VERSION) {
       return null;
     }
     return parsed;
@@ -22465,10 +24728,10 @@ async function loadGraphIndex(wikiRoot) {
   }
 }
 async function saveGraphIndex(wikiRoot, graph) {
-  const dir = path72.join(wikiRoot, ".indices");
-  await mkdir(dir, { recursive: true });
-  const outPath = path72.join(dir, "graph-index.json");
-  await writeFile4(outPath, JSON.stringify(graph, null, 2), "utf8");
+  const dir = path78.join(wikiRoot, ".indices");
+  await mkdir2(dir, { recursive: true });
+  const outPath = path78.join(dir, "graph-index.json");
+  await writeFile5(outPath, JSON.stringify(graph, null, 2), "utf8");
   return outPath;
 }
 function mergeGraphs(base, overlay) {
@@ -22519,9 +24782,9 @@ var init_graph_index_schema = __esm({
 });
 
 // src/code-knowledge-recall.ts
-import { readFile as readFile3, readdir } from "fs/promises";
-import path73 from "path";
-import matter5 from "gray-matter";
+import { readFile as readFile4, readdir } from "fs/promises";
+import path79 from "path";
+import matter6 from "gray-matter";
 function countOccurrences(text, token) {
   let count = 0;
   let idx = 0;
@@ -22655,9 +24918,9 @@ function extractSnippet(content, queryTokens, maxLen = 300) {
 async function loadWikiPages(wikiRoot, depth) {
   const pages = [];
   if (depth === "route") {
-    const routerPath = path73.join(wikiRoot, "router.md");
+    const routerPath = path79.join(wikiRoot, "router.md");
     try {
-      const content = await readFile3(routerPath, "utf-8");
+      const content = await readFile4(routerPath, "utf-8");
       const titleMatch = content.match(/^title:\s*(.+)$/m);
       const title = titleMatch ? titleMatch[1].trim() : "Team Wiki Router";
       pages.push({
@@ -22671,7 +24934,7 @@ async function loadWikiPages(wikiRoot, depth) {
     }
     return pages;
   }
-  const evidenceDir = path73.join(wikiRoot, "evidence", "code");
+  const evidenceDir = path79.join(wikiRoot, "evidence", "code");
   let projectDirs;
   try {
     const entries = await readdir(evidenceDir, { withFileTypes: true });
@@ -22680,7 +24943,7 @@ async function loadWikiPages(wikiRoot, depth) {
     return pages;
   }
   for (const project of projectDirs) {
-    const projectDir = path73.join(evidenceDir, project);
+    const projectDir = path79.join(evidenceDir, project);
     await loadPagesRecursive(projectDir, `evidence/code/${project}`, pages, depth);
   }
   return pages;
@@ -22751,7 +25014,7 @@ async function loadPagesRecursive(dir, relativePath, pages, depth, currentDepth 
   if (currentDepth >= MAX_RECURSION_DEPTH) return;
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
-    const fullPath = path73.join(dir, entry.name);
+    const fullPath = path79.join(dir, entry.name);
     if (entry.isDirectory()) {
       await loadPagesRecursive(
         fullPath,
@@ -22769,11 +25032,11 @@ async function loadPagesRecursive(dir, relativePath, pages, depth, currentDepth 
         if (depthFromProject <= 1 && NAVIGATION_FILES.has(entry.name)) continue;
       }
       try {
-        const content = await readFile3(fullPath, "utf-8");
+        const content = await readFile4(fullPath, "utf-8");
         let title;
         let sources;
         try {
-          const { data } = matter5(content);
+          const { data } = matter6(content);
           title = typeof data.title === "string" && data.title.trim() ? data.title.trim() : entry.name.replace(".md", "");
           const raw = data.source;
           if (Array.isArray(raw)) {
@@ -22926,7 +25189,7 @@ __export(recall_exports, {
   isRelevantScore: () => isRelevantScore,
   recall: () => recall
 });
-import path74 from "path";
+import path80 from "path";
 function isRelevantScore(score, isCodebaseHit, idfBaseline) {
   if (isCodebaseHit) return score >= CODEBASE_RELEVANCE_THRESHOLD;
   const baseline = idfBaseline > 0 ? idfBaseline : 1;
@@ -22942,7 +25205,7 @@ function computeIdfBaseline(indexes) {
   return Math.log((maxEntries + 1) / 2) + 1;
 }
 function getVotesLocalDir() {
-  return `${process.env.HOME ?? ""}/.teamai/votes`;
+  return path80.join(getUserHome(), ".teamai", "votes");
 }
 function formatResults(results) {
   const lines = [];
@@ -23001,7 +25264,7 @@ async function autoUpvote(results, username, _repoPath) {
   try {
     const { incrementRecalled: incrementRecalled2 } = await Promise.resolve().then(() => (init_votes(), votes_exports));
     const votesDir = getVotesLocalDir();
-    const localVotePath = path74.join(votesDir, `${username}.yaml`);
+    const localVotePath = path80.join(votesDir, `${username}.yaml`);
     await ensureDir(votesDir);
     const docIds = results.map((r) => r.entry.filename.replace(/\.md$/i, ""));
     await incrementRecalled2(localVotePath, docIds);
@@ -23012,9 +25275,9 @@ async function autoUpvote(results, username, _repoPath) {
 }
 async function loadOrBuildScopeIndex(localConfig, scopeLabel) {
   const teamaiHome = localConfig.scope === "project" && localConfig.projectRoot ? getTeamaiHome("project", localConfig.projectRoot) : getTeamaiHome("user");
-  const indexPath = path74.join(teamaiHome, "search-index.json");
-  const localLearningsDir = path74.join(teamaiHome, "learnings");
-  const repoLearningsDir = path74.join(localConfig.repo.localPath, "learnings");
+  const indexPath = path80.join(teamaiHome, "search-index.json");
+  const localLearningsDir = path80.join(teamaiHome, "learnings");
+  const repoLearningsDir = path80.join(localConfig.repo.localPath, "learnings");
   let effectiveLearningsDir = null;
   if (scopeLabel === "user" && await pathExists(localLearningsDir)) {
     effectiveLearningsDir = localLearningsDir;
@@ -23023,22 +25286,26 @@ async function loadOrBuildScopeIndex(localConfig, scopeLabel) {
   }
   let index = await loadIndex(indexPath);
   const needsRebuild = !index || isLegacyIndex(index);
-  if (needsRebuild && (effectiveLearningsDir || await pathExists(path74.join(localConfig.repo.localPath, "docs")) || await pathExists(path74.join(localConfig.repo.localPath, "rules")) || await pathExists(path74.join(localConfig.repo.localPath, "skills")))) {
+  if (needsRebuild && (effectiveLearningsDir || await pathExists(path80.join(localConfig.repo.localPath, "docs")) || await pathExists(path80.join(localConfig.repo.localPath, "rules")) || await pathExists(path80.join(localConfig.repo.localPath, "skills")))) {
     const { getReportsDir: getReportsDir2 } = await Promise.resolve().then(() => (init_types(), types_exports));
-    const votesDir = path74.join(getReportsDir2(localConfig), "votes");
+    const votesDir = path80.join(getReportsDir2(localConfig), "votes");
     const votesExist = await pathExists(votesDir);
-    const docsDir = path74.join(localConfig.repo.localPath, "docs");
-    const rulesDir = path74.join(localConfig.repo.localPath, "rules");
-    const skillsDir = path74.join(localConfig.repo.localPath, "skills");
-    const repoCodebaseDir = path74.join(localConfig.repo.localPath, "docs", "team-codebase");
-    const codebaseDir = await pathExists(repoCodebaseDir) ? repoCodebaseDir : void 0;
+    const docsDir = path80.join(localConfig.repo.localPath, "docs");
+    const rulesDir = path80.join(localConfig.repo.localPath, "rules");
+    const skillsDir = path80.join(localConfig.repo.localPath, "skills");
+    const repoCodebaseDir = path80.join(localConfig.repo.localPath, "docs", "team-codebase");
+    const hasLegacyCodebase = await pathExists(repoCodebaseDir);
+    if (hasLegacyCodebase) {
+      log.warn(`Legacy 'docs/team-codebase' is no longer indexed. Migrate to 'teamwiki/' for code-knowledge recall.`);
+    }
     try {
       await buildIndex({
         learningsDir: effectiveLearningsDir ?? void 0,
         docsDir: await pathExists(docsDir) ? docsDir : void 0,
         rulesDir: await pathExists(rulesDir) ? rulesDir : void 0,
         skillsDir: await pathExists(skillsDir) ? skillsDir : void 0,
-        codebaseDir,
+        codebaseDir: void 0,
+        // codebase now served by teamwiki/ graph engine
         votesDir: votesExist ? votesDir : void 0,
         indexPath
       });
@@ -23129,7 +25396,7 @@ async function recall(query, options) {
     }
   }
   const wikiConfig = projectConfig ?? scopeIndexes[0]?.config;
-  const wikiRoot = wikiConfig ? path74.join(wikiConfig.repo.localPath, "teamwiki") : path74.join(process.cwd(), ".teamai", "team-repo", "teamwiki");
+  const wikiRoot = wikiConfig ? path80.join(wikiConfig.repo.localPath, "teamwiki") : path80.join(process.cwd(), ".teamai", "team-repo", "teamwiki");
   const hasWiki = await pathExists(wikiRoot);
   if (scopeIndexes.length === 0 && !hasWiki) {
     if (options.check) {
@@ -23170,7 +25437,7 @@ async function recall(query, options) {
           votes: 0,
           type: "docs",
           domain: "technical",
-          path: path74.join(wikiRoot, cr.page),
+          path: path80.join(wikiRoot, cr.page),
           snippet: cr.snippet
         },
         score: Math.min(10, Math.log2(cr.score + 1) * 2),
@@ -23229,6 +25496,7 @@ var init_recall = __esm({
     init_code_knowledge_recall();
     init_recall_quality();
     init_session_id();
+    init_home();
     CODEBASE_RELEVANCE_THRESHOLD = 4;
     LEARNINGS_RELEVANCE_RATIO = 1.35;
     LEARNINGS_ABSOLUTE_FLOOR = 4;
@@ -23242,27 +25510,37 @@ __export(recall_toggle_exports, {
   recallEnable: () => recallEnable,
   recallStatus: () => recallStatus
 });
-import path75 from "path";
+import path81 from "path";
 async function removeRecallArtifacts(teamConfig, localConfig) {
   const baseDir = resolveBaseDir(localConfig);
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (toolPath.rules) {
-      const ruleFile = path75.join(baseDir, toolPath.rules, "teamai-recall.md");
-      if (await pathExists(ruleFile)) {
-        await remove(ruleFile);
-        log.debug(`Removed recall rule from ${tool}`);
+      const extensions = /* @__PURE__ */ new Set([ruleFileExtensionForTool(tool), ".md"]);
+      for (const extension of extensions) {
+        const ruleFile = path81.join(baseDir, toolPath.rules, `teamai-recall${extension}`);
+        if (await pathExists(ruleFile)) {
+          await remove(ruleFile);
+          log.debug(`Removed recall rule from ${tool}`);
+        }
       }
     }
     if (toolPath.agents) {
-      const agentFile = path75.join(baseDir, toolPath.agents, "teamai-recall.md");
-      if (await pathExists(agentFile)) {
-        await remove(agentFile);
-        log.debug(`Removed recall agent from ${tool}`);
+      const agentsDir = path81.join(baseDir, toolPath.agents);
+      const extensions = /* @__PURE__ */ new Set([".md"]);
+      if (ALL_SUPPORTED_TOOLS.includes(tool)) {
+        extensions.add(agentFileExtensionForTool(tool));
+      }
+      for (const extension of extensions) {
+        const agentFile = path81.join(agentsDir, `teamai-recall${extension}`);
+        if (await pathExists(agentFile)) {
+          await remove(agentFile);
+          log.debug(`Removed recall agent from ${tool}`);
+        }
       }
     }
     if (toolPath.skills) {
       for (const skillName of RECALL_DEPENDENT_SKILLS) {
-        const skillDir = path75.join(baseDir, toolPath.skills, skillName);
+        const skillDir = path81.join(baseDir, toolPath.skills, skillName);
         if (await pathExists(skillDir)) {
           await remove(skillDir);
           log.debug(`Removed recall skill ${skillName} from ${tool}`);
@@ -23270,7 +25548,7 @@ async function removeRecallArtifacts(teamConfig, localConfig) {
       }
     }
     if (toolPath.claudemd) {
-      const claudeMdPath = path75.join(baseDir, toolPath.claudemd);
+      const claudeMdPath = path81.join(baseDir, toolPath.claudemd);
       const content = await readFileSafe(claudeMdPath);
       if (content && content.includes(TEAMAI_RECALL_RULES_START)) {
         const startIdx = content.indexOf(TEAMAI_RECALL_RULES_START);
@@ -23301,10 +25579,10 @@ async function deployRecallArtifacts(teamConfig, localConfig) {
   const { compileRecallRulesBlock: compileRecallRulesBlock2 } = await Promise.resolve().then(() => (init_pull(), pull_exports));
   const baseDir = resolveBaseDir(localConfig);
   const recallBlock = compileRecallRulesBlock2();
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.claudemd || !toolPath.agents) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
-    const claudeMdPath = path75.join(baseDir, toolPath.claudemd);
+    const claudeMdPath = path81.join(baseDir, toolPath.claudemd);
     try {
       await injectClaudeMdSection2(
         claudeMdPath,
@@ -23350,32 +25628,34 @@ var init_recall_toggle = __esm({
     init_logger();
     init_fs();
     init_base();
+    init_agent_format();
+    init_rule_format();
     init_builtin_skills();
     init_types();
   }
 });
 
 // src/utils/cache-index.ts
-import path76 from "path";
-import os7 from "os";
-import fs26 from "fs-extra";
+import path82 from "path";
+import os8 from "os";
+import fs27 from "fs-extra";
 function getCacheRoot() {
-  return process.env.TEAMAI_CACHE_DIR ?? path76.join(os7.homedir(), ".teamai", "cache", "repos");
+  return process.env.TEAMAI_CACHE_DIR ?? path82.join(os8.homedir(), ".teamai", "cache", "repos");
 }
 function buildKey(provider, owner, repo) {
   return `${provider}/${owner}/${repo}`;
 }
 function keyToAbsPath(key) {
-  return path76.join(getCacheRoot(), key);
+  return path82.join(getCacheRoot(), key);
 }
 async function loadCacheIndex() {
-  const indexPath = path76.join(getCacheRoot(), INDEX_FILENAME);
+  const indexPath = path82.join(getCacheRoot(), INDEX_FILENAME);
   try {
-    const stat6 = await fs26.stat(indexPath);
-    if (stat6.size > MAX_CONFIG_FILE_BYTES) {
+    const stat8 = await fs27.stat(indexPath);
+    if (stat8.size > MAX_CONFIG_FILE_BYTES) {
       throw new Error(`${indexPath} exceeds max allowed size 10MB`);
     }
-    const raw = await fs26.readFile(indexPath, "utf8");
+    const raw = await fs27.readFile(indexPath, "utf8");
     const parsed = JSON.parse(raw);
     if (parsed.version !== 1 || !Array.isArray(parsed.entries)) {
       log.debug("[cache-index] \u7D22\u5F15\u683C\u5F0F\u4E0D\u7B26\uFF0C\u8FD4\u56DE\u7A7A\u7D22\u5F15");
@@ -23391,41 +25671,41 @@ async function loadCacheIndex() {
 }
 async function saveCacheIndex(idx) {
   const root = getCacheRoot();
-  await fs26.ensureDir(root);
-  const indexPath = path76.join(root, INDEX_FILENAME);
+  await fs27.ensureDir(root);
+  const indexPath = path82.join(root, INDEX_FILENAME);
   const updated = { ...idx, updated_at: (/* @__PURE__ */ new Date()).toISOString() };
-  await fs26.writeFile(indexPath, JSON.stringify(updated, null, 2), "utf8");
+  await fs27.writeFile(indexPath, JSON.stringify(updated, null, 2), "utf8");
 }
 function emptyIndex() {
   return { version: 1, updated_at: (/* @__PURE__ */ new Date()).toISOString(), entries: [] };
 }
 async function statDirSize(absPath) {
   let total = 0;
-  let stat6;
+  let stat8;
   try {
-    stat6 = await fs26.lstat(absPath);
+    stat8 = await fs27.lstat(absPath);
   } catch (err) {
     log.debug(`[cache-index] statDirSize lstat \u5931\u8D25\uFF0C\u8DF3\u8FC7 ${absPath}: ${String(err)}`);
     return 0;
   }
-  if (stat6.isSymbolicLink()) {
+  if (stat8.isSymbolicLink()) {
     return 0;
   }
-  if (stat6.isFile()) {
-    return stat6.size;
+  if (stat8.isFile()) {
+    return stat8.size;
   }
-  if (!stat6.isDirectory()) {
+  if (!stat8.isDirectory()) {
     return 0;
   }
   let entries;
   try {
-    entries = await fs26.readdir(absPath, { withFileTypes: true });
+    entries = await fs27.readdir(absPath, { withFileTypes: true });
   } catch (err) {
     log.debug(`[cache-index] statDirSize readdir \u5931\u8D25\uFF0C\u8DF3\u8FC7 ${absPath}: ${String(err)}`);
     return 0;
   }
   for (const entry of entries) {
-    const childPath = path76.join(absPath, entry.name);
+    const childPath = path82.join(absPath, entry.name);
     if (entry.isSymbolicLink()) {
       continue;
     }
@@ -23433,7 +25713,7 @@ async function statDirSize(absPath) {
       total += await statDirSize(childPath);
     } else if (entry.isFile()) {
       try {
-        const childStat = await fs26.lstat(childPath);
+        const childStat = await fs27.lstat(childPath);
         total += childStat.size;
       } catch (err) {
         log.debug(`[cache-index] statDirSize \u5B50\u6587\u4EF6 stat \u5931\u8D25\uFF0C\u8DF3\u8FC7: ${String(err)}`);
@@ -23495,7 +25775,7 @@ async function gcCache(opts) {
       const absPath = keyToAbsPath(entry.key);
       if (!dryRun) {
         try {
-          await fs26.remove(absPath);
+          await fs27.remove(absPath);
           removed.push({ key: entry.key, size_bytes: entry.size_bytes, reason: "stale" });
         } catch (err) {
           log.debug(`[gc] \u5220\u9664\u5931\u8D25\uFF0C\u8DF3\u8FC7 ${entry.key}: ${String(err)}`);
@@ -23522,7 +25802,7 @@ async function gcCache(opts) {
       const absPath = keyToAbsPath(entry.key);
       if (!dryRun) {
         try {
-          await fs26.remove(absPath);
+          await fs27.remove(absPath);
           removed.push({ key: entry.key, size_bytes: entry.size_bytes, reason: "over-cap" });
           currentTotal -= entry.size_bytes;
         } catch (err) {
@@ -23563,7 +25843,7 @@ async function getCacheStatus() {
   let dirty = false;
   for (const entry of idx.entries) {
     const absPath = keyToAbsPath(entry.key);
-    const exists3 = await fs26.pathExists(absPath);
+    const exists3 = await fs27.pathExists(absPath);
     if (exists3) {
       validEntries.push(entry);
     } else {
@@ -23912,9 +26192,9 @@ var init_ai_client = __esm({
 });
 
 // src/import-local.ts
-import fs27 from "fs";
-import path77 from "path";
-import readline5 from "readline";
+import fs28 from "fs";
+import path83 from "path";
+import readline4 from "readline";
 function toSlug(title) {
   return title.toLowerCase().replace(/[^a-z0-9一-鿿]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 }
@@ -23949,7 +26229,7 @@ function parseClassifyOutput(sourcePath, rawContent, output) {
       sourcePath,
       rawContent,
       type: knownType,
-      title: typeof parsed.title === "string" ? parsed.title : path77.basename(sourcePath),
+      title: typeof parsed.title === "string" ? parsed.title : path83.basename(sourcePath),
       summary: typeof parsed.summary === "string" ? parsed.summary : "",
       tags: Array.isArray(parsed.tags) ? parsed.tags.filter((t) => typeof t === "string") : [],
       confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0,
@@ -23961,7 +26241,7 @@ function parseClassifyOutput(sourcePath, rawContent, output) {
       sourcePath,
       rawContent,
       type: "learning",
-      title: path77.basename(sourcePath),
+      title: path83.basename(sourcePath),
       summary: "",
       tags: [],
       confidence: 0,
@@ -24007,12 +26287,12 @@ async function scanCandidates(opts) {
     const relPaths = await listFilesRecursive(expandedDir);
     for (const relPath of relPaths) {
       if (relPath.split("/").some((seg) => seg.startsWith("."))) continue;
-      const ext = path77.extname(relPath).toLowerCase();
+      const ext = path83.extname(relPath).toLowerCase();
       if (ext !== ".md" && ext !== ".txt") continue;
-      const absPath = path77.join(expandedDir, relPath);
+      const absPath = path83.join(expandedDir, relPath);
       try {
-        const stat6 = fs27.statSync(absPath);
-        if (stat6.size > MAX_FILE_SIZE_BYTES) continue;
+        const stat8 = fs28.statSync(absPath);
+        if (stat8.size > MAX_FILE_SIZE_BYTES) continue;
       } catch (statErr) {
         log.warn(`cannot stat file, skipped: ${absPath} (${String(statErr)})`);
         continue;
@@ -24028,14 +26308,14 @@ async function scanCandidates(opts) {
       expandHome("~/.cursor/rules")
     ];
     for (const baseDir of rulesBaseDirs) {
-      if (!fs27.existsSync(baseDir)) continue;
+      if (!fs28.existsSync(baseDir)) continue;
       const relPaths = await listFilesRecursive(baseDir);
       for (const relPath of relPaths) {
-        if (path77.extname(relPath).toLowerCase() !== ".md") continue;
-        const absPath = path77.join(baseDir, relPath);
+        if (path83.extname(relPath).toLowerCase() !== ".md") continue;
+        const absPath = path83.join(baseDir, relPath);
         try {
-          const stat6 = fs27.statSync(absPath);
-          if (stat6.size > MAX_FILE_SIZE_BYTES) continue;
+          const stat8 = fs28.statSync(absPath);
+          if (stat8.size > MAX_FILE_SIZE_BYTES) continue;
         } catch (statErr) {
           log.warn(`cannot stat file, skipped: ${absPath} (${String(statErr)})`);
           continue;
@@ -24063,7 +26343,7 @@ async function classifyWithAI(candidates) {
       sourcePath: c.path,
       rawContent: c.rawContent,
       type: "learning",
-      title: path77.basename(c.path),
+      title: path83.basename(c.path),
       summary: "",
       tags: [],
       confidence: 0,
@@ -24077,7 +26357,7 @@ async function interactiveReview(items, opts) {
   let session = null;
   if (opts.resume) {
     try {
-      const raw = fs27.readFileSync(expandHome(sessionPath), "utf-8");
+      const raw = fs28.readFileSync(expandHome(sessionPath), "utf-8");
       session = JSON.parse(raw);
     } catch (loadErr) {
       log.warn(`failed to load session file, creating new session: ${String(loadErr)}`);
@@ -24134,7 +26414,7 @@ async function interactiveReview(items, opts) {
     await persistSession(session, sessionPath);
     return session;
   }
-  const rl = readline5.createInterface({
+  const rl = readline4.createInterface({
     input: process.stdin,
     output: process.stdout
   });
@@ -24143,7 +26423,7 @@ async function interactiveReview(items, opts) {
   for (const sessionItem of pendingItems) {
     const currentIndex = session.items.indexOf(sessionItem) + 1;
     const classified = classifiedMap.get(sessionItem.sourcePath ?? "");
-    const title = sessionItem.learningDraft?.title ?? classified?.title ?? path77.basename(sessionItem.sourcePath ?? "");
+    const title = sessionItem.learningDraft?.title ?? classified?.title ?? path83.basename(sessionItem.sourcePath ?? "");
     const itemType = classified?.type ?? "learning";
     const summary = classified?.summary ?? "";
     const tags = classified?.tags ?? [];
@@ -24210,9 +26490,9 @@ async function pushAccepted(session, repoPath, opts) {
     } else {
       const typeInContent = detectTypeFromContent(draft.content);
       const subDir = typeInContent === "rule" ? "rules" : typeInContent === "doc" ? "docs" : "learnings";
-      destDir = path77.join(expandHome(repoPath), subDir);
+      destDir = path83.join(expandHome(repoPath), subDir);
     }
-    const destPath = path77.join(destDir, filename);
+    const destPath = path83.join(destDir, filename);
     if (opts.dryRun) {
       log.info(`[dry-run] would write: ${destPath}`);
       pushed++;
@@ -24238,9 +26518,10 @@ var init_import_local = __esm({
     init_fs();
     init_logger();
     init_path_safety();
+    init_home();
     MAX_FILE_SIZE_BYTES = 50 * 1024;
     MAX_CONTENT_CHARS = 3e3;
-    DEFAULT_SESSION_PATH = `${process.env.HOME}/.teamai/import-session.json`;
+    DEFAULT_SESSION_PATH = path83.join(getUserHome(), ".teamai", "import-session.json");
     AI_CONCURRENCY = 3;
   }
 });
@@ -24477,8 +26758,8 @@ var init_iwiki_client = __esm({
 });
 
 // src/import-iwiki.ts
-import path78 from "path";
-import { readFile as readFile4, writeFile as writeFile5 } from "fs/promises";
+import path84 from "path";
+import { readFile as readFile5, writeFile as writeFile6 } from "fs/promises";
 function parseIWikiInput(input) {
   const trimmed = input.trim();
   if (/^\d+$/.test(trimmed)) {
@@ -24566,8 +26847,8 @@ async function importFromIWiki(opts) {
     dryRun: opts.dryRun,
     outputDir: opts.outputDir
   });
-  const teamwikiRoot = path78.join(repoPath, "teamwiki");
-  if (await pathExists(path78.join(teamwikiRoot, ".indices", "graph-index.json"))) {
+  const teamwikiRoot = path84.join(repoPath, "teamwiki");
+  if (await pathExists(path84.join(teamwikiRoot, ".indices", "graph-index.json"))) {
     try {
       const mapsToEdges = await reconcileIwikiWithCodebase(documents, teamwikiRoot);
       if (mapsToEdges.length > 0) {
@@ -24586,8 +26867,8 @@ async function importFromIWiki(opts) {
   log.success("iWiki import complete");
 }
 async function reconcileIwikiWithCodebase(documents, teamwikiRoot) {
-  const graphPath = path78.join(teamwikiRoot, ".indices", "graph-index.json");
-  const graphRaw = await readFile4(graphPath, "utf-8");
+  const graphPath = path84.join(teamwikiRoot, ".indices", "graph-index.json");
+  const graphRaw = await readFile5(graphPath, "utf-8");
   const graph = JSON.parse(graphRaw);
   const codeLabels = /* @__PURE__ */ new Map();
   for (const node of graph.nodes) {
@@ -24595,17 +26876,17 @@ async function reconcileIwikiWithCodebase(documents, teamwikiRoot) {
     const words = node.label.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
     codeLabels.set(words, node.id);
   }
-  const evidenceDir = path78.join(teamwikiRoot, "evidence", "code");
+  const evidenceDir = path84.join(teamwikiRoot, "evidence", "code");
   const codePageContents = /* @__PURE__ */ new Map();
   if (await pathExists(evidenceDir)) {
     const { readdir: readdir9 } = await import("fs/promises");
     const projects = await readdir9(evidenceDir);
     for (const project of projects) {
-      const projectDir = path78.join(evidenceDir, project);
+      const projectDir = path84.join(evidenceDir, project);
       const files = await readdir9(projectDir).catch(() => []);
       for (const file of files) {
         if (!file.endsWith(".md")) continue;
-        const content = await readFile4(path78.join(projectDir, file), "utf-8").catch(() => "");
+        const content = await readFile5(path84.join(projectDir, file), "utf-8").catch(() => "");
         codePageContents.set(`evidence/code/${project}/${file}`, content);
       }
     }
@@ -24648,7 +26929,7 @@ async function reconcileIwikiWithCodebase(documents, teamwikiRoot) {
         graph.edges.push(edge);
       }
     }
-    await writeFile5(graphPath, JSON.stringify(graph, null, 2), "utf-8");
+    await writeFile6(graphPath, JSON.stringify(graph, null, 2), "utf-8");
   }
   return mapsToEdges;
 }
@@ -24694,7 +26975,7 @@ function parseGitHubPRUrl(url) {
   }
   return { owner: match[1], repo: match[2], number: match[3] };
 }
-async function githubApiGet(path108) {
+async function githubApiGet(path116) {
   return new Promise((resolve, reject) => {
     const token = process.env["GITHUB_TOKEN"];
     const headers = {
@@ -24703,7 +26984,7 @@ async function githubApiGet(path108) {
     };
     if (token) headers["Authorization"] = `Bearer ${token}`;
     const req = https2.request(
-      { hostname: "api.github.com", path: path108, headers },
+      { hostname: "api.github.com", path: path116, headers },
       (res) => {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
@@ -24861,9 +27142,9 @@ var init_mr_fetch3 = __esm({
 });
 
 // src/utils/dedup.ts
-import fs28 from "fs/promises";
-import path79 from "path";
-import matter6 from "gray-matter";
+import fs29 from "fs/promises";
+import path85 from "path";
+import matter7 from "gray-matter";
 function extractKeywords(text) {
   const keywords = /* @__PURE__ */ new Set();
   const enWords = text.match(/[a-zA-Z]+/g) ?? [];
@@ -24902,13 +27183,13 @@ async function resolveDocDate(filePath, filename) {
       return parsed;
     }
   }
-  const stat6 = await fs28.stat(filePath);
-  return stat6.mtime;
+  const stat8 = await fs29.stat(filePath);
+  return stat8.mtime;
 }
 async function findSupersededLearnings(draftKeywords, learningsDir, withinDays = 14) {
   let entries;
   try {
-    entries = await fs28.readdir(learningsDir);
+    entries = await fs29.readdir(learningsDir);
   } catch (err) {
     const code = err.code;
     if (code === "ENOENT") {
@@ -24920,14 +27201,14 @@ async function findSupersededLearnings(draftKeywords, learningsDir, withinDays =
   const cutoffDate = new Date(Date.now() - withinDays * 24 * 60 * 60 * 1e3);
   const results = [];
   for (const filename of mdFiles) {
-    const filePath = path79.join(learningsDir, filename);
+    const filePath = path85.join(learningsDir, filename);
     try {
       const docDate = await resolveDocDate(filePath, filename);
       if (docDate < cutoffDate) {
         continue;
       }
-      const raw = await fs28.readFile(filePath, "utf8");
-      const { content: body } = matter6(raw);
+      const raw = await fs29.readFile(filePath, "utf8");
+      const { content: body } = matter7(raw);
       const fileKeywords = extractKeywords(body);
       const ratio = overlapRatio(draftKeywords, fileKeywords);
       if (ratio >= 0.6) {
@@ -25001,10 +27282,10 @@ var init_dedup = __esm({
 });
 
 // src/import-mr.ts
-import fs29 from "fs/promises";
-import path80 from "path";
-import readline6 from "readline/promises";
-import matter7 from "gray-matter";
+import fs30 from "fs/promises";
+import path86 from "path";
+import readline5 from "readline/promises";
+import matter8 from "gray-matter";
 async function fetchMR(url) {
   if (url.includes("github.com")) {
     return fetchGitHubPR(url);
@@ -25073,7 +27354,7 @@ function parseLearningDraft(raw) {
     content = content.slice(frontmatterStart);
   }
   try {
-    const parsed = matter7(content);
+    const parsed = matter8(content);
     return { content, data: parsed.data };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -25082,7 +27363,7 @@ function parseLearningDraft(raw) {
   }
 }
 async function promptConfirm(question2) {
-  const rl = readline6.createInterface({ input: process.stdin, output: process.stdout });
+  const rl = readline5.createInterface({ input: process.stdin, output: process.stdout });
   try {
     const answer = await rl.question(`${question2} `);
     return answer.trim().toLowerCase() !== "n";
@@ -25155,20 +27436,20 @@ async function importFromMR(opts) {
 }
 async function writeLearning(draft, outputDir, repoPath) {
   if (outputDir) {
-    await fs29.mkdir(outputDir, { recursive: true });
-    const filePath = path80.join(outputDir, "learning.md");
-    await fs29.writeFile(filePath, draft.content, "utf-8");
+    await fs30.mkdir(outputDir, { recursive: true });
+    const filePath = path86.join(outputDir, "learning.md");
+    await fs30.writeFile(filePath, draft.content, "utf-8");
     log.info(`Learning written: ${filePath}`);
     return;
   }
   if (repoPath) {
-    const learningsDir = path80.join(repoPath, "learnings");
-    await fs29.mkdir(learningsDir, { recursive: true });
+    const learningsDir = path86.join(repoPath, "learnings");
+    await fs30.mkdir(learningsDir, { recursive: true });
     const datePrefix = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
     const safeTitle = draft.title.slice(0, 40).replace(/[^a-zA-Z0-9一-鿿_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
     const filename = `${datePrefix}-${safeTitle}.md`;
-    const filePath = path80.join(learningsDir, filename);
-    await fs29.writeFile(filePath, draft.content, "utf-8");
+    const filePath = path86.join(learningsDir, filename);
+    await fs30.writeFile(filePath, draft.content, "utf-8");
     log.info(`Learning written: ${filePath}`);
     return;
   }
@@ -25184,16 +27465,17 @@ var init_import_mr = __esm({
     init_ai_client();
     init_dedup();
     init_logger();
-    DEFAULT_LEARNINGS_DIR = path80.join(process.env.HOME ?? "/tmp", ".teamai", "learnings");
+    init_home();
+    DEFAULT_LEARNINGS_DIR = path86.join(getUserHome(), ".teamai", "learnings");
     SUPERSEDE_THRESHOLD = 0.6;
   }
 });
 
 // src/codebase.ts
 import { execSync as execSync6 } from "child_process";
-import fs30 from "fs";
-import path81 from "path";
-import matter8 from "gray-matter";
+import fs31 from "fs";
+import path87 from "path";
+import matter9 from "gray-matter";
 async function gatherRepoContext(repoPath) {
   const parts = [];
   try {
@@ -25216,10 +27498,10 @@ ${truncated}`);
   } catch (err) {
     log.debug(`gatherRepoContext: find \u5931\u8D25 \u2014 ${String(err)}`);
   }
-  const pkgPath = path81.join(repoPath, "package.json");
-  if (fs30.existsSync(pkgPath)) {
+  const pkgPath = path87.join(repoPath, "package.json");
+  if (fs31.existsSync(pkgPath)) {
     try {
-      const raw = fs30.readFileSync(pkgPath, "utf-8");
+      const raw = fs31.readFileSync(pkgPath, "utf-8");
       const excerpt = raw.length > META_MAX_CHARS ? raw.slice(0, META_MAX_CHARS) + "\n\u2026" : raw;
       parts.push(`## package.json
 \`\`\`json
@@ -25230,10 +27512,10 @@ ${excerpt}
     }
   }
   for (const candidate of ["src/index.ts", "src/main.ts", "index.ts", "main.py"]) {
-    const entryPath = path81.join(repoPath, candidate);
-    if (fs30.existsSync(entryPath)) {
+    const entryPath = path87.join(repoPath, candidate);
+    if (fs31.existsSync(entryPath)) {
       try {
-        const raw = fs30.readFileSync(entryPath, "utf-8");
+        const raw = fs31.readFileSync(entryPath, "utf-8");
         const excerpt = raw.length > META_MAX_CHARS ? raw.slice(0, META_MAX_CHARS) + "\n\u2026" : raw;
         parts.push(`## \u5165\u53E3\u6587\u4EF6\uFF1A${candidate}
 \`\`\`typescript
@@ -25246,10 +27528,10 @@ ${excerpt}
     }
   }
   for (const candidate of ["src/types.ts", "src/types/index.ts", "types.py"]) {
-    const typesPath = path81.join(repoPath, candidate);
-    if (fs30.existsSync(typesPath)) {
+    const typesPath = path87.join(repoPath, candidate);
+    if (fs31.existsSync(typesPath)) {
       try {
-        const raw = fs30.readFileSync(typesPath, "utf-8");
+        const raw = fs31.readFileSync(typesPath, "utf-8");
         const excerpt = raw.length > META_MAX_CHARS ? raw.slice(0, META_MAX_CHARS) + "\n\u2026" : raw;
         parts.push(`## \u7C7B\u578B\u5B9A\u4E49\uFF1A${candidate}
 \`\`\`typescript
@@ -25262,18 +27544,18 @@ ${excerpt}
     }
   }
   const docCandidates = [
-    path81.join(repoPath, "README.md"),
-    path81.join(repoPath, "ARCHITECTURE.md")
+    path87.join(repoPath, "README.md"),
+    path87.join(repoPath, "ARCHITECTURE.md")
   ];
-  const docsDir = path81.join(repoPath, "docs");
-  if (fs30.existsSync(docsDir)) {
+  const docsDir = path87.join(repoPath, "docs");
+  if (fs31.existsSync(docsDir)) {
     try {
-      const entries = fs30.readdirSync(docsDir);
+      const entries = fs31.readdirSync(docsDir);
       let count = 0;
       for (const entry of entries) {
         if (count >= DOCS_MAX_FILES) break;
         if (entry.endsWith(".md")) {
-          docCandidates.push(path81.join(docsDir, entry));
+          docCandidates.push(path87.join(docsDir, entry));
           count++;
         }
       }
@@ -25282,11 +27564,11 @@ ${excerpt}
     }
   }
   for (const docPath of docCandidates) {
-    if (!fs30.existsSync(docPath)) continue;
+    if (!fs31.existsSync(docPath)) continue;
     try {
-      const raw = fs30.readFileSync(docPath, "utf-8");
+      const raw = fs31.readFileSync(docPath, "utf-8");
       const excerpt = raw.length > DOC_MAX_CHARS ? raw.slice(0, DOC_MAX_CHARS) + "\n\u2026\uFF08\u5DF2\u622A\u65AD\uFF09" : raw;
-      const relPath = path81.relative(repoPath, docPath);
+      const relPath = path87.relative(repoPath, docPath);
       parts.push(`## \u6587\u6863\u6458\u8981\uFF1A${relPath}
 ${excerpt}`);
     } catch (err) {
@@ -25308,18 +27590,18 @@ async function gatherLearningsContext(opts) {
     parts.push(`## \u6700\u8FD1 MR \u63D0\u70BC\u5EFA\u8BAE\uFF08\u53C2\u8003\uFF09
 ${lines.join("\n")}`);
   }
-  if (learningsDir && fs30.existsSync(learningsDir)) {
+  if (learningsDir && fs31.existsSync(learningsDir)) {
     try {
-      const entries = fs30.readdirSync(learningsDir);
+      const entries = fs31.readdirSync(learningsDir);
       const tagFreq = {};
       let fileCount = 0;
       for (const entry of entries) {
         if (fileCount >= LEARNINGS_MAX_FILES) break;
         if (!entry.endsWith(".md")) continue;
         try {
-          const filePath = path81.join(learningsDir, entry);
-          const raw = fs30.readFileSync(filePath, "utf-8");
-          const parsed = matter8(raw);
+          const filePath = path87.join(learningsDir, entry);
+          const raw = fs31.readFileSync(filePath, "utf-8");
+          const parsed = matter9(raw);
           const tags = parsed.data["tags"];
           if (Array.isArray(tags)) {
             for (const tag of tags) {
@@ -25511,8 +27793,8 @@ var init_codebase = __esm({
 // src/wiki-engine/code-knowledge/code-collector.ts
 import { createHash as createHash2 } from "crypto";
 import { execFile as execFile4 } from "child_process";
-import { readFile as readFile5, readdir as readdir2, stat } from "fs/promises";
-import path82 from "path";
+import { readFile as readFile6, readdir as readdir2, stat as stat2 } from "fs/promises";
+import path88 from "path";
 import { promisify as promisify3 } from "util";
 function isKeyFile(relativePath, language) {
   const patterns = KEY_FILE_PATTERNS[language];
@@ -25520,12 +27802,12 @@ function isKeyFile(relativePath, language) {
   return patterns.some((pattern) => pattern.test(relativePath));
 }
 async function collectCode(options) {
-  const root = path82.resolve(options.root);
+  const root = path88.resolve(options.root);
   const filePaths = [];
   await walk(root, filePaths, options.includeTests ?? false);
   let filtered = filePaths.sort((a, b) => {
-    const relA = toPosix(path82.relative(root, a));
-    const relB = toPosix(path82.relative(root, b));
+    const relA = toPosix(path88.relative(root, a));
+    const relB = toPosix(path88.relative(root, b));
     const langA = languageFor(a);
     const langB = languageFor(b);
     const keyA = isKeyFile(relA, langA) ? 0 : 1;
@@ -25539,15 +27821,15 @@ async function collectCode(options) {
   if (options.changedFiles && options.changedFiles.length > 0) {
     const changedSet = new Set(options.changedFiles.map((f) => toPosix(f)));
     filtered = filtered.filter((fp) => {
-      const relativePath = toPosix(path82.relative(root, fp));
+      const relativePath = toPosix(path88.relative(root, fp));
       return changedSet.has(relativePath);
     });
   }
   const limited = filtered.slice(0, options.maxFiles ?? 200);
   const files = [];
   for (const filePath of limited) {
-    const content = await readFile5(filePath, "utf8");
-    const relativePath = toPosix(path82.relative(root, filePath));
+    const content = await readFile6(filePath, "utf8");
+    const relativePath = toPosix(path88.relative(root, filePath));
     const language = languageFor(filePath);
     files.push({
       path: filePath,
@@ -25574,27 +27856,27 @@ async function walk(directory, results, includeTests) {
     return;
   }
   for (const entry of await readdir2(directory, { withFileTypes: true })) {
-    const fullPath = path82.join(directory, entry.name);
+    const fullPath = path88.join(directory, entry.name);
     if (safeIgnore(fullPath) || !includeTests && isTestPath(fullPath)) {
       continue;
     }
     if (entry.isDirectory()) {
       await walk(fullPath, results, includeTests);
-    } else if (entry.isFile() && isCodeFile(fullPath) && (await stat(fullPath)).size < 256e3) {
+    } else if (entry.isFile() && isCodeFile(fullPath) && (await stat2(fullPath)).size < 256e3) {
       results.push(fullPath);
     }
   }
 }
 function isCodeFile(filePath) {
   return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".json", ".yaml", ".yml", ".toml", ".sql", ".conf", ".ini"].includes(
-    path82.extname(filePath).toLowerCase()
+    path88.extname(filePath).toLowerCase()
   );
 }
 function isTestPath(filePath) {
   return /(^|\/|\\)(test|tests|__tests__|fixtures)(\/|\\)|\.test\.|\.spec\./u.test(filePath);
 }
 function languageFor(filePath) {
-  const ext = path82.extname(filePath).toLowerCase();
+  const ext = path88.extname(filePath).toLowerCase();
   const map = {
     ".ts": "typescript",
     ".tsx": "typescript",
@@ -26277,17 +28559,21 @@ var init_code_extractors = __esm({
 });
 
 // src/wiki-engine/code-knowledge/code-graph.ts
-import path83 from "path";
+import path89 from "path";
 function buildCodeGraph(facts) {
   const nodes = facts.filter((fact) => fact.kind !== "relation").map((fact) => ({
     slug: `${fact.kind}/${fact.name}`,
     type: mapFactKindToCategory(fact.kind),
     confidence: fact.confidence === "EXTRACTED" ? "EXTRACTED" : "INFERRED",
     title: fact.name,
-    domain: path83.dirname(fact.file).split("/")[0] || void 0
+    domain: path89.dirname(fact.file).split("/")[0] || void 0
   }));
   const nodeFiles = new Set(facts.filter((f) => f.kind !== "relation").map((f) => f.file));
   const edges = facts.filter((fact) => fact.kind === "relation").flatMap((fact) => {
+    const astEdge = parseAstRelationFact(fact);
+    if (astEdge) {
+      return [astEdge];
+    }
     const targets = [...nodeFiles].filter((file) => relationMayTarget(fact.name, file));
     return targets.map((file) => ({
       from: fact.file,
@@ -26298,6 +28584,19 @@ function buildCodeGraph(facts) {
     }));
   });
   return createGraphIndex(nodes, edges);
+}
+function parseAstRelationFact(fact) {
+  if (!fact.detail.includes("(code-ast)")) {
+    return void 0;
+  }
+  const relation = fact.detail.startsWith("REFERENCES") ? "REFERENCES" : fact.detail.startsWith("IMPLEMENTS") ? "IMPLEMENTS" : "DEPENDS_ON";
+  return {
+    from: fact.file,
+    to: fact.name,
+    relation,
+    weight: fact.confidence === "EXTRACTED" ? 0.9 : 0.5,
+    source: "code-ast"
+  };
 }
 function relationMayTarget(importTarget, file) {
   const normalized = importTarget.replace(/^\.\//u, "").replace(/\.\.\//g, "").replace(/\.(ts|tsx|js|jsx)$/u, "");
@@ -26325,11 +28624,998 @@ var init_code_graph = __esm({
   }
 });
 
+// src/wiki-engine/code-knowledge/ast/adapt-code-facts.ts
+function structuralEdgesToCodeFacts(edges) {
+  const facts = [];
+  for (const edge of edges) {
+    const evidence = edge.evidence[0];
+    const lineStart = evidence?.lineStart ?? 1;
+    const lineEnd = evidence?.lineEnd ?? lineStart;
+    const name = edge.to;
+    facts.push({
+      kind: "relation",
+      name,
+      file: edge.from,
+      lineStart,
+      lineEnd,
+      detail: `${edge.relation} \u2192 ${edge.to} (${edge.source})`,
+      confidence: edge.confidence,
+      evidenceType: mapKindToEvidenceType("relation")
+    });
+  }
+  return facts;
+}
+function unresolvedImportsToGaps(imports, resolvedKeys) {
+  const gaps = [];
+  for (const imp of imports) {
+    const key = `${imp.fromFile}:${imp.line}`;
+    if (resolvedKeys.has(key)) continue;
+    if (!imp.specifier.startsWith(".") && !imp.specifier.startsWith("/") && !imp.specifier.startsWith("@")) {
+      gaps.push({
+        kind: "EXTERNAL_IMPORT",
+        message: `External package import not resolved: ${imp.specifier}`,
+        sources: [`${imp.fromFile}:${imp.line}`]
+      });
+    } else {
+      gaps.push({
+        kind: "UNRESOLVED_IMPORT",
+        message: `Could not resolve import "${imp.specifier}" from ${imp.fromFile}`,
+        sources: [`${imp.fromFile}:${imp.line}`]
+      });
+    }
+  }
+  return gaps;
+}
+var init_adapt_code_facts = __esm({
+  "src/wiki-engine/code-knowledge/ast/adapt-code-facts.ts"() {
+    "use strict";
+    init_code_extractors();
+  }
+});
+
+// src/wiki-engine/code-knowledge/ast/call-resolver.ts
+function buildImportBindingsForFile(fromFile, imports, resolved, symbolsByFile) {
+  const localToSymbolId = /* @__PURE__ */ new Map();
+  const localToFile = /* @__PURE__ */ new Map();
+  for (const imp of imports.filter((i) => i.fromFile === fromFile)) {
+    const key = `${imp.fromFile}:${imp.line}`;
+    const target = resolved.get(key);
+    if (!target) continue;
+    localToFile.set(imp.defaultBinding ?? imp.namespaceBinding ?? "", target.targetFile);
+    const targetSymbols = symbolsByFile.get(target.targetFile) ?? [];
+    if (imp.defaultBinding) {
+      const def = targetSymbols.find((s) => s.exported && (s.kind === "function" || s.kind === "class"));
+      if (def) localToSymbolId.set(imp.defaultBinding, def.id);
+      localToFile.set(imp.defaultBinding, target.targetFile);
+    }
+    if (imp.namespaceBinding) {
+      localToFile.set(imp.namespaceBinding, target.targetFile);
+    }
+    for (const name of imp.namedBindings ?? []) {
+      const local = name;
+      const exported = targetSymbols.find((s) => s.name === name && s.exported);
+      if (exported) localToSymbolId.set(local, exported.id);
+      localToFile.set(local, target.targetFile);
+    }
+  }
+  return { localToSymbolId, localToFile };
+}
+function resolveCallSites(callSites, imports, resolved, symbolsByFile) {
+  const bindingsByFile = /* @__PURE__ */ new Map();
+  return callSites.map((site) => {
+    let bindings = bindingsByFile.get(site.fromFile);
+    if (!bindings) {
+      bindings = buildImportBindingsForFile(site.fromFile, imports, resolved, symbolsByFile);
+      bindingsByFile.set(site.fromFile, bindings);
+    }
+    return resolveOneCall(site, symbolsByFile, bindings);
+  });
+}
+function resolveOneCall(site, symbolsByFile, bindings) {
+  const callee = site.calleeText;
+  if (!callee.includes(".")) {
+    const localSymbols2 = symbolsByFile.get(site.fromFile) ?? [];
+    const sameFile = localSymbols2.find((s) => s.name === callee && (s.kind === "function" || s.kind === "class"));
+    if (sameFile) {
+      return {
+        ...site,
+        resolvedTargetId: sameFile.id,
+        resolvedTargetFile: site.fromFile,
+        confidence: "EXTRACTED"
+      };
+    }
+    const importedId = bindings.localToSymbolId.get(callee);
+    const importedFile2 = bindings.localToFile.get(callee);
+    if (importedId) {
+      return {
+        ...site,
+        resolvedTargetId: importedId,
+        resolvedTargetFile: importedFile2,
+        confidence: "EXTRACTED"
+      };
+    }
+    if (importedFile2) {
+      return { ...site, resolvedTargetFile: importedFile2, confidence: "INFERRED" };
+    }
+    return site;
+  }
+  const [recv, member] = callee.split(".", 2);
+  if (!recv || !member) return site;
+  const importedFile = bindings.localToFile.get(recv);
+  if (importedFile) {
+    const targetSymbols = symbolsByFile.get(importedFile) ?? [];
+    const sym = targetSymbols.find((s) => s.name === member);
+    if (sym) {
+      return {
+        ...site,
+        resolvedTargetId: sym.id,
+        resolvedTargetFile: importedFile,
+        receiver: recv,
+        confidence: "EXTRACTED"
+      };
+    }
+    return { ...site, resolvedTargetFile: importedFile, receiver: recv, confidence: "INFERRED" };
+  }
+  const localSymbols = symbolsByFile.get(site.fromFile) ?? [];
+  const localClass = localSymbols.find((s) => s.name === recv && s.kind === "class");
+  if (localClass) {
+    return { ...site, resolvedTargetFile: site.fromFile, confidence: "INFERRED" };
+  }
+  return site;
+}
+function callResolutionWeight(confidence) {
+  switch (confidence) {
+    case "EXTRACTED":
+      return 0.85;
+    case "INFERRED":
+      return 0.75;
+    default:
+      return 0.5;
+  }
+}
+var init_call_resolver = __esm({
+  "src/wiki-engine/code-knowledge/ast/call-resolver.ts"() {
+    "use strict";
+  }
+});
+
+// src/wiki-engine/code-knowledge/ast/import-resolver.ts
+import { readFile as readFile7, stat as stat3 } from "fs/promises";
+import path90 from "path";
+async function loadTsconfigPaths(repoRoot, fromRelativeFile) {
+  const absDir = path90.dirname(path90.resolve(repoRoot, fromRelativeFile));
+  let dir = absDir;
+  const root = path90.resolve(repoRoot);
+  while (dir === root || dir.startsWith(root + path90.sep)) {
+    if (tsconfigCache.has(dir)) {
+      return tsconfigCache.get(dir) ?? null;
+    }
+    const configPath = path90.join(dir, "tsconfig.json");
+    try {
+      const raw = JSON.parse(await readFile7(configPath, "utf8"));
+      const configDir = path90.dirname(configPath);
+      const baseUrl = raw.compilerOptions?.baseUrl ?? ".";
+      const pathsMap = raw.compilerOptions?.paths ?? {};
+      const resolved = {
+        baseUrl: toPosix(path90.resolve(configDir, baseUrl)),
+        paths: Object.fromEntries(
+          Object.entries(pathsMap).map(([key, values]) => [
+            key,
+            values.map((v) => {
+              const withoutStar = v.replace(/\*$/u, "");
+              return toPosix(path90.resolve(configDir, baseUrl, withoutStar));
+            })
+          ])
+        )
+      };
+      tsconfigCache.set(dir, resolved);
+      return resolved;
+    } catch {
+    }
+    if (dir === root) break;
+    const parent = path90.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  tsconfigCache.set(absDir, null);
+  return null;
+}
+async function resolveImportSpecifier(repoRoot, fromFile, specifier, fileExists) {
+  if (specifier.startsWith(".") || specifier.startsWith("/")) {
+    return resolveRelativeImport(fromFile, specifier, fileExists);
+  }
+  if (fromFile.endsWith(".py") || fromFile.endsWith(".go")) {
+    const sibling = await resolveSiblingModuleImport(fromFile, specifier, fileExists);
+    if (sibling) return sibling;
+    if (fromFile.endsWith(".py")) {
+      const absolutePkg = await resolveAbsolutePackageImport(fromFile, specifier, fileExists);
+      if (absolutePkg) return absolutePkg;
+    }
+  }
+  const tsconfig = await loadTsconfigPaths(repoRoot, fromFile);
+  if (tsconfig) {
+    const mapped = await resolvePathsMapping(repoRoot, tsconfig, specifier, fromFile, fileExists);
+    if (mapped) return mapped;
+  }
+  return void 0;
+}
+async function resolveRelativeImport(fromFile, specifier, fileExists) {
+  const fromDir = path90.dirname(fromFile);
+  const base = toPosix(path90.normalize(path90.join(fromDir, specifier)));
+  const candidates = await expandModulePaths(base, fromFile, fileExists);
+  return pickCandidate(candidates);
+}
+async function resolveSiblingModuleImport(fromFile, specifier, fileExists) {
+  if (!MODULE_IDENTIFIER_RE.test(specifier)) {
+    return void 0;
+  }
+  const fromDir = path90.dirname(fromFile);
+  const modulePath = fromFile.endsWith(".py") ? specifier.replace(/\./gu, "/") : specifier;
+  const base = toPosix(path90.normalize(path90.join(fromDir, modulePath)));
+  const candidates = await expandModulePaths(base, fromFile, fileExists);
+  return pickCandidate(candidates);
+}
+async function resolveAbsolutePackageImport(fromFile, specifier, fileExists) {
+  if (!fromFile.endsWith(".py")) {
+    return void 0;
+  }
+  if (!MODULE_IDENTIFIER_RE.test(specifier)) {
+    return void 0;
+  }
+  const modulePath = specifier.replace(/\./gu, "/");
+  const candidates = await expandModulePaths(modulePath, fromFile, fileExists);
+  return pickCandidate(candidates);
+}
+async function resolvePathsMapping(repoRoot, config, specifier, fromFile, fileExists) {
+  const root = path90.resolve(repoRoot);
+  const entries = Object.entries(config.paths).sort((a, b) => b[0].length - a[0].length);
+  for (const [pattern, targets] of entries) {
+    if (pattern.endsWith("/*")) {
+      const prefix = pattern.slice(0, -2);
+      if (!specifier.startsWith(`${prefix}/`)) continue;
+      const rest = specifier.slice(prefix.length + 1);
+      for (const targetBase of targets) {
+        const abs = toPosix(path90.join(targetBase, rest));
+        const rel = toPosix(path90.relative(root, abs));
+        const candidates = await expandModulePaths(rel, fromFile, fileExists);
+        const picked = pickCandidate(candidates);
+        if (picked) return picked;
+      }
+    } else if (pattern === specifier) {
+      for (const target of targets) {
+        const rel = toPosix(path90.relative(root, target));
+        const candidates = await expandModulePaths(rel, fromFile, fileExists);
+        const picked = pickCandidate(candidates);
+        if (picked) return picked;
+      }
+    }
+  }
+  return void 0;
+}
+function moduleExtensions(fromFile) {
+  if (fromFile.endsWith(".py")) {
+    return { extensions: EXTENSIONS_PY, indexSuffixes: INDEX_SUFFIXES_PY };
+  }
+  if (fromFile.endsWith(".go")) {
+    return { extensions: EXTENSIONS_GO, indexSuffixes: [] };
+  }
+  return { extensions: EXTENSIONS_TS, indexSuffixes: INDEX_SUFFIXES_TS };
+}
+async function expandGoPackageDir(normalized, fileExists) {
+  const found = [];
+  const seg = normalized.split("/").pop();
+  if (seg) {
+    const nested = `${normalized}/${seg}.go`;
+    if (await fileExists(nested)) found.push(nested);
+  }
+  return found;
+}
+async function expandModulePaths(baseRelative, fromFile, fileExists) {
+  const found = [];
+  const normalized = baseRelative.replace(/^\.\//u, "");
+  const { extensions, indexSuffixes } = moduleExtensions(fromFile);
+  for (const ext of extensions) {
+    const candidate = `${normalized}${ext}`;
+    if (await fileExists(candidate)) found.push(candidate);
+  }
+  for (const indexSuffix of indexSuffixes) {
+    const candidate = `${normalized}${indexSuffix}`;
+    if (await fileExists(candidate)) found.push(candidate);
+  }
+  if (fromFile.endsWith(".go")) {
+    found.push(...await expandGoPackageDir(normalized, fileExists));
+  }
+  if (await fileExists(normalized)) found.push(normalized);
+  return [...new Set(found)];
+}
+function pickCandidate(candidates) {
+  if (candidates.length === 0) return void 0;
+  if (candidates.length === 1) {
+    return { targetFile: candidates[0], confidence: "EXTRACTED" };
+  }
+  return { targetFile: candidates[0], confidence: "AMBIGUOUS", candidates };
+}
+async function buildFileExistenceChecker(repoRoot, knownFiles) {
+  return async (relativePath) => {
+    if (knownFiles.has(relativePath)) return true;
+    try {
+      const abs = path90.resolve(repoRoot, relativePath);
+      const s = await stat3(abs);
+      return s.isFile();
+    } catch {
+      return false;
+    }
+  };
+}
+var EXTENSIONS_TS, INDEX_SUFFIXES_TS, EXTENSIONS_PY, INDEX_SUFFIXES_PY, EXTENSIONS_GO, MODULE_IDENTIFIER_RE, tsconfigCache;
+var init_import_resolver = __esm({
+  "src/wiki-engine/code-knowledge/ast/import-resolver.ts"() {
+    "use strict";
+    init_wiki_protocol();
+    EXTENSIONS_TS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+    INDEX_SUFFIXES_TS = ["/index.ts", "/index.tsx", "/index.js", "/index.jsx"];
+    EXTENSIONS_PY = [".py"];
+    INDEX_SUFFIXES_PY = ["/__init__.py"];
+    EXTENSIONS_GO = [".go"];
+    MODULE_IDENTIFIER_RE = /^[A-Za-z_][\w.]*$/u;
+    tsconfigCache = /* @__PURE__ */ new Map();
+  }
+});
+
+// src/wiki-engine/code-knowledge/ast/queries.ts
+var TS_AST_QUERY_SOURCE, PYTHON_AST_QUERY_SOURCE, GO_AST_QUERY_SOURCE;
+var init_queries = __esm({
+  "src/wiki-engine/code-knowledge/ast/queries.ts"() {
+    "use strict";
+    TS_AST_QUERY_SOURCE = `
+(import_statement
+  source: (string (string_fragment) @import.spec)
+) @import.stmt
+
+(export_statement) @export.stmt
+
+(class_declaration
+  name: (type_identifier) @symbol.name
+) @symbol.class
+
+(function_declaration
+  name: (identifier) @symbol.name
+) @symbol.function
+
+(interface_declaration
+  name: (type_identifier) @symbol.name
+) @symbol.interface
+
+(call_expression
+  function: (identifier) @call.callee
+) @call.stmt
+
+(call_expression
+  function: (member_expression
+    object: (identifier) @call.receiver
+    property: (property_identifier) @call.member
+  )
+) @call.member
+
+(class_declaration
+  name: (type_identifier) @impl.class
+  (class_heritage
+    (implements_clause
+      (type_identifier) @impl.iface
+    )
+  )
+) @impl.stmt
+`;
+    PYTHON_AST_QUERY_SOURCE = `
+(import_from_statement
+  module_name: (dotted_name) @import.spec
+) @import.stmt
+
+(import_statement
+  name: (dotted_name) @import.spec
+) @import.stmt
+
+(class_definition
+  name: (identifier) @symbol.name
+) @symbol.class
+
+(function_definition
+  name: (identifier) @symbol.name
+) @symbol.function
+
+(call
+  function: (identifier) @call.callee
+) @call.stmt
+
+(call
+  function: (attribute
+    object: (identifier) @call.receiver
+    attribute: (identifier) @call.member
+  )
+) @call.member
+`;
+    GO_AST_QUERY_SOURCE = `
+(import_declaration
+  (import_spec
+    path: (interpreted_string_literal) @import.spec
+  )
+) @import.stmt
+
+(function_declaration
+  name: (identifier) @symbol.name
+) @symbol.function
+
+(method_declaration
+  name: (field_identifier) @symbol.name
+) @symbol.function
+
+(type_declaration
+  (type_spec
+    name: (type_identifier) @symbol.name
+  )
+) @symbol.class
+
+(call_expression
+  function: (identifier) @call.callee
+) @call.stmt
+
+(call_expression
+  function: (selector_expression
+    operand: (identifier) @call.receiver
+    field: (field_identifier) @call.member
+  )
+) @call.member
+`;
+  }
+});
+
+// src/wiki-engine/code-knowledge/ast/parser-registry.ts
+import { createRequire as createRequire2 } from "module";
+import { Language, Parser, Query } from "web-tree-sitter";
+async function ensureAstReady() {
+  if (!initPromise) {
+    initPromise = initAst();
+  }
+  return initPromise;
+}
+async function initAst() {
+  await Parser.init({
+    locateFile: () => require2.resolve("web-tree-sitter/tree-sitter.wasm")
+  });
+  parserInstance = new Parser();
+  for (const variant of Object.keys(GRAMMAR_WASM)) {
+    const language = await Language.load(require2.resolve(GRAMMAR_WASM[variant]));
+    languages.set(variant, language);
+    queries.set(variant, new Query(language, QUERY_SOURCE[variant]));
+  }
+}
+function getParser() {
+  if (!parserInstance) {
+    throw new Error("AST parser not initialized; call ensureAstReady() first");
+  }
+  return parserInstance;
+}
+function grammarForExtension(ext) {
+  switch (ext.toLowerCase()) {
+    case ".ts":
+    case ".mts":
+    case ".cts":
+    case ".js":
+    case ".jsx":
+    case ".mjs":
+    case ".cjs":
+      return "typescript";
+    case ".tsx":
+      return "tsx";
+    case ".py":
+    case ".pyi":
+      return "python";
+    case ".go":
+      return "go";
+    default:
+      return void 0;
+  }
+}
+function getLanguage(variant) {
+  const language = languages.get(variant);
+  if (!language) {
+    throw new Error(`No tree-sitter grammar loaded for variant: ${variant}`);
+  }
+  return language;
+}
+function getQuery(variant) {
+  const query = queries.get(variant);
+  if (!query) {
+    throw new Error(`No tree-sitter query registered for variant: ${variant}`);
+  }
+  return query;
+}
+var require2, GRAMMAR_WASM, QUERY_SOURCE, parserInstance, initPromise, languages, queries;
+var init_parser_registry = __esm({
+  "src/wiki-engine/code-knowledge/ast/parser-registry.ts"() {
+    "use strict";
+    init_queries();
+    require2 = createRequire2(import.meta.url);
+    GRAMMAR_WASM = {
+      typescript: "tree-sitter-wasms/out/tree-sitter-typescript.wasm",
+      tsx: "tree-sitter-wasms/out/tree-sitter-tsx.wasm",
+      python: "tree-sitter-wasms/out/tree-sitter-python.wasm",
+      go: "tree-sitter-wasms/out/tree-sitter-go.wasm"
+    };
+    QUERY_SOURCE = {
+      typescript: TS_AST_QUERY_SOURCE,
+      tsx: TS_AST_QUERY_SOURCE,
+      python: PYTHON_AST_QUERY_SOURCE,
+      go: GO_AST_QUERY_SOURCE
+    };
+    languages = /* @__PURE__ */ new Map();
+    queries = /* @__PURE__ */ new Map();
+  }
+});
+
+// src/wiki-engine/code-knowledge/ast/import-bindings.ts
+function parseImportBindings(importText, variant) {
+  if (variant === "python") {
+    return parsePythonImportBindings(importText);
+  }
+  if (variant === "go") {
+    return {};
+  }
+  return parseTsImportBindings(importText);
+}
+function parseTsImportBindings(importText) {
+  const namedBindings = [];
+  let defaultBinding;
+  let namespaceBinding;
+  const brace = /\{([^}]+)\}/u.exec(importText);
+  if (brace) {
+    for (const part of brace[1].split(",")) {
+      const name = part.trim().split(/\s+as\s+/u)[0]?.trim();
+      if (name && name !== "type") namedBindings.push(name);
+    }
+  }
+  const ns = /\*\s+as\s+([A-Za-z_$][\w$]*)/u.exec(importText);
+  if (ns) namespaceBinding = ns[1];
+  const dm1 = /^import\s+([A-Za-z_$][\w$]*)\s*,/u.exec(importText);
+  const dm2 = /^import\s+([A-Za-z_$][\w$]*)\s+from/u.exec(importText);
+  const defaultMatch = dm1 ?? dm2;
+  if (defaultMatch && !importText.includes("{")) {
+    defaultBinding = defaultMatch[1];
+  }
+  return { namedBindings: namedBindings.length > 0 ? namedBindings : void 0, defaultBinding, namespaceBinding };
+}
+function parsePythonImportBindings(importText) {
+  const namedBindings = [];
+  let defaultBinding;
+  let namespaceBinding;
+  const fromImport = /^from\s+[\w.]+\s+import\s+(.+)$/u.exec(importText.trim());
+  if (fromImport) {
+    const tail = fromImport[1];
+    if (tail.startsWith("(") && tail.endsWith(")")) {
+      for (const part of tail.slice(1, -1).split(",")) {
+        const token = part.trim().split(/\s+as\s+/u)[0]?.trim();
+        if (token && token !== "*") namedBindings.push(token);
+      }
+    } else if (tail === "*") {
+      namespaceBinding = "*";
+    } else {
+      for (const part of tail.split(",")) {
+        const token = part.trim().split(/\s+as\s+/u)[0]?.trim();
+        if (!token) continue;
+        if (!defaultBinding) defaultBinding = token;
+        else namedBindings.push(token);
+      }
+    }
+  }
+  const plain = /^import\s+([\w.]+)(?:\s+as\s+(\w+))?/u.exec(importText.trim());
+  if (plain) {
+    if (plain[2]) namespaceBinding = plain[2];
+    else defaultBinding = plain[1].split(".").pop();
+  }
+  return { namedBindings: namedBindings.length > 0 ? namedBindings : void 0, defaultBinding, namespaceBinding };
+}
+function normalizeImportSpecifier(specText, variant) {
+  if (variant === "go") {
+    return specText.replace(/^["`]|["`]$/gu, "");
+  }
+  return specText.replace(/^['"]|['"]$/gu, "");
+}
+function isTypeOnlyImport(importText, variant) {
+  if (variant === "typescript" || variant === "tsx") {
+    return /^\s*import\s+type\b/u.test(importText);
+  }
+  return false;
+}
+function isExportedSymbol(variant, startIndex, source, lineStart, exportLineStarts) {
+  if (variant === "typescript" || variant === "tsx") {
+    return exportLineStarts.has(lineStart) || isTsExportedDeclaration(startIndex, source);
+  }
+  if (variant === "python") {
+    return exportLineStarts.has(lineStart);
+  }
+  if (variant === "go") {
+    const decl = source.slice(Math.max(0, startIndex - 20), startIndex);
+    return /^func\s+[A-Z]/u.test(decl.trimStart()) || /^type\s+[A-Z]/u.test(decl.trimStart());
+  }
+  return false;
+}
+function isTsExportedDeclaration(startIndex, source) {
+  const prefix = source.slice(Math.max(0, startIndex - 80), startIndex);
+  return /\bexport\s+(?:default\s+)?$/u.test(prefix.trimEnd());
+}
+function collectExportLineStarts(variant, root) {
+  const lines = /* @__PURE__ */ new Set();
+  if (variant === "typescript" || variant === "tsx") {
+    for (const node of root.descendantsOfType("export_statement")) {
+      if (node) lines.add(node.startPosition.row + 1);
+    }
+  }
+  if (variant === "python") {
+    for (const node of root.descendantsOfType(["class_definition", "function_definition"])) {
+      if (node && node.parent?.type === "module") {
+        lines.add(node.startPosition.row + 1);
+      }
+    }
+  }
+  return lines;
+}
+var init_import_bindings = __esm({
+  "src/wiki-engine/code-knowledge/ast/import-bindings.ts"() {
+    "use strict";
+  }
+});
+
+// src/wiki-engine/code-knowledge/ast/walk.ts
+import path91 from "path";
+function isAstParseableFile(relativePath) {
+  return grammarForExtension(path91.extname(relativePath)) !== void 0;
+}
+function walkFile(file) {
+  const symbols = [];
+  const imports = [];
+  const callSites = [];
+  const implementsSites = [];
+  const parseErrors = [];
+  if (!isAstParseableFile(file.relativePath)) {
+    return { symbols, imports, callSites, implementsSites, parseErrors };
+  }
+  if (Buffer.byteLength(file.content, "utf8") > MAX_FILE_BYTES) {
+    parseErrors.push(`skipped large file: ${file.relativePath}`);
+    return { symbols, imports, callSites, implementsSites, parseErrors };
+  }
+  const variant = grammarForExtension(path91.extname(file.relativePath));
+  const language = getLanguage(variant);
+  const parser = getParser();
+  parser.setLanguage(language);
+  let tree;
+  try {
+    tree = parser.parse(file.content);
+  } catch (error) {
+    parseErrors.push(`parse failed: ${file.relativePath}: ${error instanceof Error ? error.message : String(error)}`);
+    return { symbols, imports, callSites, implementsSites, parseErrors };
+  }
+  if (!tree) {
+    parseErrors.push(`parse returned null: ${file.relativePath}`);
+    return { symbols, imports, callSites, implementsSites, parseErrors };
+  }
+  try {
+    const query = getQuery(variant);
+    const exportLineStarts = collectExportLineStarts(variant, tree.rootNode);
+    for (const match of query.matches(tree.rootNode)) {
+      const byName = new Map(match.captures.map((c) => [c.name, c.node]));
+      if (byName.has("import.stmt")) {
+        const stmt = byName.get("import.stmt");
+        const specNode = byName.get("import.spec");
+        if (!specNode) continue;
+        const specifier = normalizeImportSpecifier(specNode.text, variant);
+        const line = stmt.startPosition.row + 1;
+        const isTypeOnly = isTypeOnlyImport(stmt.text, variant);
+        imports.push({
+          fromFile: file.relativePath,
+          specifier,
+          line,
+          isTypeOnly,
+          ...parseImportBindings(stmt.text, variant)
+        });
+        continue;
+      }
+      const symbolName = byName.get("symbol.name")?.text;
+      if (symbolName) {
+        const decl = byName.get("symbol.class") ?? byName.get("symbol.function") ?? byName.get("symbol.interface");
+        if (!decl) continue;
+        const kind = byName.has("symbol.class") ? "class" : byName.has("symbol.interface") ? "interface" : "function";
+        const lineStart = decl.startPosition.row + 1;
+        const lineEnd = decl.endPosition.row + 1;
+        const exported = isExportedSymbol(variant, decl.startIndex, file.content, lineStart, exportLineStarts);
+        symbols.push({
+          id: symbolId(file.relativePath, kind, symbolName),
+          kind,
+          name: symbolName,
+          file: file.relativePath,
+          lineStart,
+          lineEnd,
+          exported
+        });
+        continue;
+      }
+      if (byName.has("call.stmt") || byName.has("call.member")) {
+        const callNode = byName.get("call.stmt") ?? byName.get("call.member");
+        const line = callNode.startPosition.row + 1;
+        const callee = byName.get("call.callee")?.text;
+        const receiver = byName.get("call.receiver")?.text;
+        const member = byName.get("call.member")?.text;
+        const calleeText = callee ?? (receiver && member ? `${receiver}.${member}` : callNode.text);
+        callSites.push({
+          fromFile: file.relativePath,
+          line,
+          calleeText,
+          receiver,
+          confidence: "INFERRED"
+        });
+        continue;
+      }
+      if (byName.has("impl.stmt")) {
+        const classNode = byName.get("impl.class");
+        const ifaceNames = match.captures.filter((c) => c.name === "impl.iface").map((c) => c.node.text);
+        if (classNode && ifaceNames.length > 0) {
+          implementsSites.push({
+            fromFile: file.relativePath,
+            className: classNode.text,
+            ifaceNames,
+            line: classNode.startPosition.row + 1
+          });
+        }
+        continue;
+      }
+    }
+  } finally {
+    tree.delete();
+  }
+  return { symbols, imports, callSites, implementsSites, parseErrors };
+}
+function symbolId(file, kind, name) {
+  const kindLabel = kind.charAt(0).toUpperCase() + kind.slice(1);
+  return `${file}#${kindLabel}:${name}`;
+}
+var MAX_FILE_BYTES;
+var init_walk = __esm({
+  "src/wiki-engine/code-knowledge/ast/walk.ts"() {
+    "use strict";
+    init_import_bindings();
+    init_parser_registry();
+    MAX_FILE_BYTES = 512 * 1024;
+  }
+});
+
+// src/wiki-engine/code-knowledge/ast/types.ts
+var init_types3 = __esm({
+  "src/wiki-engine/code-knowledge/ast/types.ts"() {
+    "use strict";
+  }
+});
+
+// src/wiki-engine/code-knowledge/ast/merge-edges.ts
+function factKey(fact) {
+  return `${fact.kind}:${fact.name}:${fact.file}:${fact.lineStart}`;
+}
+function mergeCodeFacts(astFacts, heuristicFacts) {
+  const astRelationLines = new Set(
+    astFacts.filter((f) => f.kind === "relation").map((f) => `${f.file}:${f.lineStart}`)
+  );
+  const astKeys = new Set(astFacts.map(factKey));
+  const filteredHeuristic = heuristicFacts.filter((fact) => {
+    if (fact.kind === "relation" && astRelationLines.has(`${fact.file}:${fact.lineStart}`)) {
+      return false;
+    }
+    return !astKeys.has(factKey(fact));
+  });
+  const merged = [...astFacts, ...filteredHeuristic];
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const fact of merged) {
+    const key = factKey(fact);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(fact);
+  }
+  return result;
+}
+var init_merge_edges = __esm({
+  "src/wiki-engine/code-knowledge/ast/merge-edges.ts"() {
+    "use strict";
+  }
+});
+
+// src/wiki-engine/code-knowledge/ast/index.ts
+import { createRequire as createRequire3 } from "module";
+function astAvailable() {
+  if (process.env.TEAMAI_SKIP_AST === "1") {
+    return false;
+  }
+  if (astAvailability !== void 0) {
+    return astAvailability;
+  }
+  try {
+    require3.resolve("web-tree-sitter");
+    require3.resolve("web-tree-sitter/tree-sitter.wasm");
+    require3.resolve("tree-sitter-wasms/out/tree-sitter-typescript.wasm");
+    astAvailability = true;
+  } catch {
+    astAvailability = false;
+  }
+  return astAvailability;
+}
+async function extractStructuralGraph(options) {
+  await ensureAstReady();
+  const { repoRoot, files } = options;
+  const symbols = [];
+  const imports = [];
+  const callSites = [];
+  const implementsSites = [];
+  const gaps = [];
+  const edges = [];
+  const knownFiles = new Set(files.map((f) => f.relativePath));
+  const fileExists = await buildFileExistenceChecker(repoRoot, knownFiles);
+  let filesParsed = 0;
+  let filesSkipped = 0;
+  for (const file of files) {
+    if (!isAstParseableFile(file.relativePath)) {
+      filesSkipped++;
+      continue;
+    }
+    const walked = walkFile(file);
+    if (walked.parseErrors.length > 0) {
+      for (const err of walked.parseErrors) {
+        gaps.push({ kind: "PARSE_SKIP", message: err, sources: [file.relativePath] });
+      }
+      if (walked.symbols.length === 0 && walked.imports.length === 0) {
+        filesSkipped++;
+        continue;
+      }
+    }
+    filesParsed++;
+    symbols.push(...walked.symbols);
+    imports.push(...walked.imports);
+    callSites.push(...walked.callSites);
+    implementsSites.push(...walked.implementsSites);
+  }
+  const symbolsByFile = /* @__PURE__ */ new Map();
+  for (const sym of symbols) {
+    const list2 = symbolsByFile.get(sym.file) ?? [];
+    list2.push(sym);
+    symbolsByFile.set(sym.file, list2);
+  }
+  const resolvedImports = /* @__PURE__ */ new Map();
+  const resolvedKeys = /* @__PURE__ */ new Set();
+  for (const imp of imports) {
+    const key = `${imp.fromFile}:${imp.line}`;
+    if (imp.isTypeOnly) continue;
+    const resolved = await resolveImportSpecifier(repoRoot, imp.fromFile, imp.specifier, fileExists);
+    resolvedImports.set(key, resolved);
+    if (resolved) {
+      resolvedKeys.add(key);
+      edges.push({
+        from: imp.fromFile,
+        to: resolved.targetFile,
+        relation: "DEPENDS_ON",
+        source: "code-ast",
+        weight: resolved.confidence === "EXTRACTED" ? 0.9 : 0.5,
+        confidence: resolved.confidence,
+        evidence: [
+          {
+            ref: imp.fromFile,
+            lineStart: imp.line,
+            lineEnd: imp.line,
+            note: `resolved import ${imp.specifier}`
+          }
+        ]
+      });
+    }
+  }
+  gaps.push(...unresolvedImportsToGaps(imports.filter((i) => !i.isTypeOnly), resolvedKeys));
+  const resolvedCalls = resolveCallSites(callSites, imports, resolvedImports, symbolsByFile);
+  for (const call of resolvedCalls) {
+    if (!call.resolvedTargetFile || call.resolvedTargetFile === call.fromFile) {
+      continue;
+    }
+    edges.push({
+      from: call.fromFile,
+      to: call.resolvedTargetFile,
+      relation: "REFERENCES",
+      source: "code-ast",
+      weight: callResolutionWeight(call.confidence),
+      confidence: call.confidence,
+      evidence: [
+        {
+          ref: call.fromFile,
+          lineStart: call.line,
+          lineEnd: call.line,
+          note: `call ${call.calleeText}`
+        }
+      ]
+    });
+  }
+  for (const site of implementsSites) {
+    const bindings = buildImportBindingsForFile(site.fromFile, imports, resolvedImports, symbolsByFile);
+    const localInterfaces = symbolsByFile.get(site.fromFile) ?? [];
+    for (const ifaceName of site.ifaceNames) {
+      let targetFile;
+      const sameFile = localInterfaces.find((s) => s.name === ifaceName && s.kind === "interface");
+      if (sameFile) {
+        targetFile = site.fromFile;
+      } else {
+        targetFile = bindings.localToFile.get(ifaceName);
+      }
+      if (!targetFile) {
+        continue;
+      }
+      edges.push({
+        from: site.fromFile,
+        to: targetFile,
+        relation: "IMPLEMENTS",
+        source: "code-ast",
+        weight: 0.9,
+        confidence: "EXTRACTED",
+        evidence: [
+          {
+            ref: site.fromFile,
+            lineStart: site.line,
+            lineEnd: site.line,
+            note: `${site.className} implements ${ifaceName}`
+          }
+        ]
+      });
+    }
+  }
+  const stats = {
+    symbols: symbols.length,
+    imports: imports.length,
+    importsResolved: resolvedKeys.size,
+    calls: callSites.length,
+    callsResolved: resolvedCalls.filter((c) => c.resolvedTargetFile).length,
+    edges: edges.length,
+    filesParsed,
+    filesSkipped
+  };
+  return {
+    symbols,
+    imports,
+    callSites: resolvedCalls,
+    edges,
+    gaps,
+    stats
+  };
+}
+async function extractStructuralGraphAsFacts(options) {
+  const result = await extractStructuralGraph(options);
+  const facts = structuralEdgesToCodeFacts(result.edges);
+  return { facts, result };
+}
+function formatAstStatsSummary(stats) {
+  const imports = `${stats.imports} imports (${stats.importsResolved} resolved)`;
+  const calls = `${stats.calls} calls (${stats.callsResolved} resolved)`;
+  return `ast: ${stats.symbols} symbols, ${imports}, ${calls}, ${stats.edges} edges`;
+}
+var require3, astAvailability;
+var init_ast = __esm({
+  "src/wiki-engine/code-knowledge/ast/index.ts"() {
+    "use strict";
+    init_adapt_code_facts();
+    init_call_resolver();
+    init_import_resolver();
+    init_parser_registry();
+    init_walk();
+    init_types3();
+    init_merge_edges();
+    require3 = createRequire3(import.meta.url);
+  }
+});
+
 // src/wiki-engine/code-knowledge/code-incremental.ts
-import { readFile as readFile6, writeFile as writeFile6, stat as stat2, mkdir as mkdir3 } from "fs/promises";
-import path84 from "path";
+import { readFile as readFile8, writeFile as writeFile7, stat as stat4, mkdir as mkdir4 } from "fs/promises";
+import path92 from "path";
 async function detectCodeIncrementalChanges(root, manifestPath, project) {
-  const previous = await exists(manifestPath) ? JSON.parse(await readFile6(manifestPath, "utf8")) : { files: [] };
+  const previous = await exists(manifestPath) ? JSON.parse(await readFile8(manifestPath, "utf8")) : { files: [] };
   const oldSha = previous.headSha;
   const newSha = await gitCommit(root);
   if (oldSha && newSha && await isWorkingTreeClean(root)) {
@@ -26367,16 +29653,16 @@ function affectedPages(project, files) {
 }
 async function exists(filePath) {
   try {
-    await stat2(path84.resolve(filePath));
+    await stat4(path92.resolve(filePath));
     return true;
   } catch {
     return false;
   }
 }
 async function loadFactsCache(indicesDir) {
-  const cachePath = path84.join(indicesDir, FACTS_CACHE_FILENAME);
+  const cachePath = path92.join(indicesDir, FACTS_CACHE_FILENAME);
   try {
-    const raw = await readFile6(cachePath, "utf-8");
+    const raw = await readFile8(cachePath, "utf-8");
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -26384,13 +29670,13 @@ async function loadFactsCache(indicesDir) {
   }
 }
 async function saveFactsCache(indicesDir, facts) {
-  await mkdir3(indicesDir, { recursive: true });
-  await writeFile6(path84.join(indicesDir, FACTS_CACHE_FILENAME), JSON.stringify(facts), "utf-8");
+  await mkdir4(indicesDir, { recursive: true });
+  await writeFile7(path92.join(indicesDir, FACTS_CACHE_FILENAME), JSON.stringify(facts), "utf-8");
 }
 async function loadInterfacesCache(indicesDir) {
-  const cachePath = path84.join(indicesDir, INTERFACES_CACHE_FILENAME);
+  const cachePath = path92.join(indicesDir, INTERFACES_CACHE_FILENAME);
   try {
-    const raw = await readFile6(cachePath, "utf-8");
+    const raw = await readFile8(cachePath, "utf-8");
     const parsed = JSON.parse(raw);
     return parsed?.entries ? parsed : { entries: [], scannedAt: "" };
   } catch {
@@ -26398,9 +29684,9 @@ async function loadInterfacesCache(indicesDir) {
   }
 }
 async function saveInterfacesCache(indicesDir, inventory) {
-  await mkdir3(indicesDir, { recursive: true });
-  await writeFile6(
-    path84.join(indicesDir, INTERFACES_CACHE_FILENAME),
+  await mkdir4(indicesDir, { recursive: true });
+  await writeFile7(
+    path92.join(indicesDir, INTERFACES_CACHE_FILENAME),
     JSON.stringify(inventory, null, 2),
     "utf-8"
   );
@@ -26426,7 +29712,7 @@ var init_code_incremental = __esm({
 });
 
 // src/wiki-engine/interface-scanner.ts
-import path85 from "path";
+import path93 from "path";
 async function scanInterfaces(files) {
   const componentMap = groupByComponent(files);
   const entries = [];
@@ -26494,7 +29780,7 @@ function groupByComponent(files) {
     if (file.repo) {
       component = parts.length > 1 ? `${file.repo}/${parts[0]}` : file.repo;
     } else {
-      component = parts.length > 1 ? parts[0] : path85.basename(path85.dirname(file.path));
+      component = parts.length > 1 ? parts[0] : path93.basename(path93.dirname(file.path));
     }
     const group = map.get(component) ?? [];
     group.push(file);
@@ -26779,21 +30065,21 @@ var init_reconciler_v2_types = __esm({
 });
 
 // src/wiki-engine/knowledge-reconciler.ts
-import { readFile as readFile7, readdir as readdir3, stat as stat3 } from "fs/promises";
-import path86 from "path";
+import { readFile as readFile9, readdir as readdir3, stat as stat5 } from "fs/promises";
+import path94 from "path";
 async function exists2(p) {
-  return stat3(p).then(() => true).catch(() => false);
+  return stat5(p).then(() => true).catch(() => false);
 }
 async function readPages(dirPath) {
   if (!await exists2(dirPath)) return [];
   const entries = await readdir3(dirPath, { withFileTypes: true });
   const pages = [];
   for (const entry of entries) {
-    const full = path86.join(dirPath, entry.name);
+    const full = path94.join(dirPath, entry.name);
     if (entry.isDirectory()) {
       pages.push(...await readPages(full));
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      const text = await readFile7(full, "utf8").catch(() => "");
+      const text = await readFile9(full, "utf8").catch(() => "");
       const headingMatch = text.match(/^#\s+(.+)/m);
       const title = headingMatch ? headingMatch[1].trim() : entry.name.replace(/\.md$/, "");
       const updatedMatch = text.match(/updated[:\s]+(\d{4}-\d{2}-\d{2})/i);
@@ -26882,17 +30168,17 @@ async function reconcileKnowledge(options) {
   const productDirNames = options.productDirs ?? ["product", "docs"];
   const codeDirNames = options.codeDirs ?? ["evidence/code"];
   for (const dir of [...productDirNames, ...codeDirNames]) {
-    if (dir.includes("..") || path86.isAbsolute(dir)) {
+    if (dir.includes("..") || path94.isAbsolute(dir)) {
       throw new Error(`Unsafe directory path rejected: ${dir}`);
     }
   }
   const productPages = [];
   for (const dir of productDirNames) {
-    productPages.push(...await readPages(path86.join(wikiRoot, dir)));
+    productPages.push(...await readPages(path94.join(wikiRoot, dir)));
   }
   const codePages = [];
   for (const dir of codeDirNames) {
-    codePages.push(...await readPages(path86.join(wikiRoot, dir)));
+    codePages.push(...await readPages(path94.join(wikiRoot, dir)));
   }
   const graphEdges = [];
   const gaps = [];
@@ -26919,8 +30205,8 @@ async function reconcileKnowledge(options) {
         ];
         const nc = buildConfidence(factors);
         graphEdges.push({
-          from: toPageSlug(path86.relative(wikiRoot, productPage.path)),
-          to: toPageSlug(path86.relative(wikiRoot, codePage.path)),
+          from: toPageSlug(path94.relative(wikiRoot, productPage.path)),
+          to: toPageSlug(path94.relative(wikiRoot, codePage.path)),
           relation: "MAPS_TO",
           term,
           confidence: nc.label,
@@ -27001,10 +30287,10 @@ async function reconcileKnowledge(options) {
   const MS_PER_DAY = 864e5;
   for (const edge of graphEdges) {
     const fromPage = productPages.find(
-      (p) => toPageSlug(path86.relative(wikiRoot, p.path)) === edge.from
+      (p) => toPageSlug(path94.relative(wikiRoot, p.path)) === edge.from
     );
     const toPage = codePages.find(
-      (p) => toPageSlug(path86.relative(wikiRoot, p.path)) === edge.to
+      (p) => toPageSlug(path94.relative(wikiRoot, p.path)) === edge.to
     );
     if (!fromPage?.updated || !toPage?.updated) continue;
     const fromMs = new Date(fromPage.updated).getTime();
@@ -27073,6 +30359,7 @@ var init_knowledge_reconciler = __esm({
 var adapters_exports = {};
 __export(adapters_exports, {
   GRAPH_INDEX_SCHEMA_VERSION: () => GRAPH_INDEX_SCHEMA_VERSION,
+  astAvailable: () => astAvailable,
   buildCodeGraph: () => buildCodeGraph,
   buildConfidence: () => buildConfidence,
   buildIndexHubOverlay: () => buildIndexHubOverlay,
@@ -27080,9 +30367,12 @@ __export(adapters_exports, {
   createGraphIndex: () => createGraphIndex,
   detectCodeIncrementalChanges: () => detectCodeIncrementalChanges,
   extractCodeFacts: () => extractCodeFacts,
+  extractStructuralGraphAsFacts: () => extractStructuralGraphAsFacts,
   findNeighbors: () => findNeighbors,
   findNeighborsNHop: () => findNeighborsNHop,
+  formatAstStatsSummary: () => formatAstStatsSummary,
   loadGraphIndex: () => loadGraphIndex,
+  mergeCodeFacts: () => mergeCodeFacts,
   mergeGraphs: () => mergeGraphs,
   reconcileKnowledge: () => reconcileKnowledge,
   saveGraphIndex: () => saveGraphIndex,
@@ -27095,6 +30385,7 @@ var init_adapters = __esm({
     init_code_collector();
     init_code_extractors();
     init_code_graph();
+    init_ast();
     init_code_incremental();
     init_graph_index_schema();
     init_interface_scanner();
@@ -27260,11 +30551,14 @@ var init_templates = __esm({
 // src/enrich-with-ai.ts
 var enrich_with_ai_exports = {};
 __export(enrich_with_ai_exports, {
+  edgeProvenanceRank: () => edgeProvenanceRank,
+  edgeReason: () => edgeReason,
   enrichWithAI: () => enrichWithAI,
+  parseEdgeProvenance: () => parseEdgeProvenance,
   writeManifest: () => writeManifest
 });
-import path87 from "path";
-import { writeFile as writeFile8, mkdir as mkdir5 } from "fs/promises";
+import path95 from "path";
+import { writeFile as writeFile9, mkdir as mkdir6 } from "fs/promises";
 function sanitizeForPrompt(text) {
   return text.replace(/[\n\r]/g, " ").replace(/[<>]/g, "").slice(0, 200);
 }
@@ -27314,8 +30608,8 @@ function parseJSON(raw) {
 }
 function resolveImportToModule(importerFile, importPath) {
   if (importPath.startsWith(".")) {
-    const importerDir = path87.dirname(importerFile);
-    const resolved = path87.normalize(path87.join(importerDir, importPath));
+    const importerDir = path95.dirname(importerFile);
+    const resolved = path95.normalize(path95.join(importerDir, importPath));
     const topLevel = resolved.split("/")[0];
     if (!topLevel || topLevel === ".." || topLevel === ".") return void 0;
     return topLevel;
@@ -27390,22 +30684,27 @@ async function enrichWithAI(ctx) {
   const edges = [];
   for (const { name } of moduleResults) {
     const moduleImports = ctx.facts.filter((f) => f.kind === "relation" && f.file.startsWith(name + "/"));
-    const targetModules = /* @__PURE__ */ new Set();
+    const targetEdges = /* @__PURE__ */ new Map();
     for (const imp of moduleImports) {
       const resolved = resolveImportToModule(imp.file, imp.name);
-      if (resolved && resolved !== name) {
-        targetModules.add(resolved);
+      if (!resolved || resolved === name) {
+        continue;
+      }
+      const provenance = parseEdgeProvenance(imp.detail);
+      const existing = targetEdges.get(resolved);
+      if (!existing || edgeProvenanceRank(provenance) > edgeProvenanceRank(existing)) {
+        targetEdges.set(resolved, provenance);
       }
     }
-    for (const target of targetModules) {
+    for (const [target, provenance] of targetEdges) {
       if (moduleResults.some((m) => m.name === target)) {
         edges.push({
           from: name,
           to: target,
-          relation: "DEPENDS_ON",
+          relation: provenance.relation,
           confidence: "EXTRACTED",
-          source: "code-heuristic",
-          reason: `${name} imports from ${target}`
+          source: provenance.source,
+          reason: edgeReason(name, target, provenance.relation)
         });
       }
     }
@@ -27419,10 +30718,42 @@ async function enrichWithAI(ctx) {
   };
   return { manifest, domains, repoDomain, repoDescription, repoKeywords };
 }
+function parseEdgeProvenance(detail) {
+  if (detail.includes("(code-ast)")) {
+    const relation = detail.startsWith("REFERENCES") ? "REFERENCES" : detail.startsWith("IMPLEMENTS") ? "IMPLEMENTS" : "DEPENDS_ON";
+    return { relation, source: "code-ast" };
+  }
+  return { relation: "DEPENDS_ON", source: "code-heuristic" };
+}
+function edgeProvenanceRank(provenance) {
+  if (provenance.source !== "code-ast") {
+    return 0;
+  }
+  switch (provenance.relation) {
+    case "DEPENDS_ON":
+      return 3;
+    case "REFERENCES":
+      return 2;
+    case "IMPLEMENTS":
+      return 1;
+    default:
+      return 1;
+  }
+}
+function edgeReason(from, to, relation) {
+  switch (relation) {
+    case "REFERENCES":
+      return `${from} references ${to}`;
+    case "IMPLEMENTS":
+      return `${from} implements ${to}`;
+    default:
+      return `${from} imports from ${to}`;
+  }
+}
 async function writeManifest(manifest, outputDir) {
-  await mkdir5(outputDir, { recursive: true });
-  const manifestPath = path87.join(outputDir, "_manifest.json");
-  await writeFile8(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
+  await mkdir6(outputDir, { recursive: true });
+  const manifestPath = path95.join(outputDir, "_manifest.json");
+  await writeFile9(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
   return manifestPath;
 }
 var init_enrich_with_ai = __esm({
@@ -27438,8 +30769,8 @@ var codebase_extract_exports = {};
 __export(codebase_extract_exports, {
   extractCodebase: () => extractCodebase
 });
-import { mkdir as mkdir6, writeFile as writeFile9, readFile as readFile8 } from "fs/promises";
-import path88 from "path";
+import { mkdir as mkdir7, writeFile as writeFile10, readFile as readFile10 } from "fs/promises";
+import path96 from "path";
 import chalk3 from "chalk";
 function detectKnowledgeGaps(facts, graph, files) {
   const gaps = [];
@@ -27456,7 +30787,7 @@ function detectKnowledgeGaps(facts, graph, files) {
     const target = rel.name;
     if (target.startsWith(".")) continue;
     if (target.startsWith("node:")) continue;
-    const matchesAnyFile = [...scannedFiles].some((f) => f.includes(target.replace(/\//g, path88.sep)));
+    const matchesAnyFile = [...scannedFiles].some((f) => f.includes(target.replace(/\//g, path96.sep)));
     if (!matchesAnyFile) {
       unresolvedImports.add(target);
     }
@@ -27800,21 +31131,21 @@ function buildOverview(facts, graph, project, interfaceInventory, callChains) {
     lines.push("## Key Dependency Paths");
     lines.push("");
     for (const chain of callChains.slice(0, 5)) {
-      const path108 = chain.steps.map((s) => s.symbol).join(" \u2192 ");
-      lines.push(`- ${chain.entryPoint}: ${path108}`);
+      const path116 = chain.steps.map((s) => s.symbol).join(" \u2192 ");
+      lines.push(`- ${chain.entryPoint}: ${path116}`);
     }
   }
   lines.push("");
   return lines.join("\n");
 }
 async function extractCodebase(opts) {
-  const root = path88.resolve(opts.path || ".");
-  const project = opts.project || path88.basename(root);
+  const root = path96.resolve(opts.path || ".");
+  const project = opts.project || path96.basename(root);
   const maxFiles = opts.maxFiles || 200;
-  const outputBase = opts.outputRoot ? path88.resolve(opts.outputRoot) : root;
-  const wikiRoot = path88.join(outputBase, "teamwiki");
-  const evidenceDir = path88.join(wikiRoot, "evidence", "code", project);
-  const manifestPath = path88.join(wikiRoot, "source-manifest.json");
+  const outputBase = opts.outputRoot ? path96.resolve(opts.outputRoot) : root;
+  const wikiRoot = path96.join(outputBase, "teamwiki");
+  const evidenceDir = path96.join(wikiRoot, "evidence", "code", project);
+  const manifestPath = path96.join(wikiRoot, "source-manifest.json");
   let changedFiles;
   let deletedFiles = [];
   if (opts.incremental) {
@@ -27851,7 +31182,7 @@ async function extractCodebase(opts) {
   const newFacts = files.length > 0 ? extractCodeFacts(files) : [];
   let facts;
   let interfaceInventory;
-  const indicesDir = path88.join(wikiRoot, ".indices");
+  const indicesDir = path96.join(wikiRoot, ".indices");
   if (changedFiles !== void 0) {
     const oldFacts = await loadFactsCache(indicesDir);
     const oldInterfaces = await loadInterfacesCache(indicesDir);
@@ -27877,13 +31208,50 @@ async function extractCodebase(opts) {
     facts = newFacts;
     interfaceInventory = await scanInterfaces(files);
   }
+  const astGaps = [];
+  if (files.length > 0 && astAvailable()) {
+    try {
+      const { facts: astFacts, result: astResult } = await extractStructuralGraphAsFacts({
+        repoRoot: root,
+        files
+      });
+      facts = mergeCodeFacts(astFacts, facts);
+      let gapSeq = 0;
+      for (const gap of astResult.gaps) {
+        astGaps.push({
+          id: `AST-${gap.kind}-${gapSeq++}`,
+          kind: gap.kind,
+          description: gap.message,
+          source: gap.sources.join(", ")
+        });
+      }
+      if (!opts.json) {
+        console.log(chalk3.dim(`  [AST: ${formatAstStatsSummary(astResult.stats)}]`));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      astGaps.push({
+        id: "AST-UNAVAILABLE-0",
+        kind: "AST_UNAVAILABLE",
+        description: `code-ast failed: ${message}; used code-heuristic only.`,
+        source: "code-ast"
+      });
+    }
+  } else if (files.length > 0) {
+    astGaps.push({
+      id: "AST-UNAVAILABLE-0",
+      kind: "AST_UNAVAILABLE",
+      description: "web-tree-sitter WASM runtime unavailable or TEAMAI_SKIP_AST=1; used code-heuristic only.",
+      source: "code-ast"
+    });
+  }
   const graph = buildCodeGraph(facts);
   let callChains;
-  const depPathsFile = path88.join(evidenceDir, "dependency-paths.md");
+  const depPathsFile = path96.join(evidenceDir, "dependency-paths.md");
   if (changedFiles) {
     let reused = false;
     try {
-      const existing = await readFile8(depPathsFile, "utf-8");
+      const existing = await readFile10(depPathsFile, "utf-8");
       if (existing.trim()) {
         reused = true;
       }
@@ -27898,16 +31266,16 @@ async function extractCodebase(opts) {
     callChains = traceCallChains(facts, files);
   }
   const pages = buildEvidencePages(facts, project, interfaceInventory, callChains);
-  await mkdir6(evidenceDir, { recursive: true });
+  await mkdir7(evidenceDir, { recursive: true });
   if (changedFiles && !pages.has("dependency-paths.md")) {
     try {
-      const existing = await readFile8(depPathsFile, "utf-8");
+      const existing = await readFile10(depPathsFile, "utf-8");
       pages.set("dependency-paths.md", existing);
     } catch {
     }
   }
   for (const [filename, content] of pages) {
-    await writeIfChanged(path88.join(evidenceDir, filename), content);
+    await writeIfChanged(path96.join(evidenceDir, filename), content);
   }
   const pageSlugs = [...pages.keys()].map((p) => `evidence/code/${project}/${p.replace(".md", "")}`);
   const overlay = buildIndexHubOverlay(project, "evidence/code", pageSlugs);
@@ -27936,7 +31304,7 @@ async function extractCodebase(opts) {
         keywords: enrichResult.repoKeywords || [],
         components: enrichResult.domains[0]?.components ?? []
       };
-      await writeFile9(path88.join(evidenceDir, "_domains.json"), JSON.stringify(domainMeta, null, 2), "utf-8");
+      await writeFile10(path96.join(evidenceDir, "_domains.json"), JSON.stringify(domainMeta, null, 2), "utf-8");
       if (!opts.json) {
         const domainLabel = domainMeta.domain || "uncategorized";
         console.log(`  AI enrich: ${enrichResult.manifest.components.length} modules, domain=${domainLabel}`);
@@ -27949,14 +31317,14 @@ async function extractCodebase(opts) {
   }
   const moduleSummaries = buildModuleSummaries(facts, graph, project);
   if (moduleSummaries.size > 0) {
-    const modulesDir = path88.join(evidenceDir, "modules");
-    await mkdir6(modulesDir, { recursive: true });
+    const modulesDir = path96.join(evidenceDir, "modules");
+    await mkdir7(modulesDir, { recursive: true });
     for (const [filename, content] of moduleSummaries) {
-      await writeIfChanged(path88.join(modulesDir, filename), content);
+      await writeIfChanged(path96.join(modulesDir, filename), content);
     }
   }
   const overview = buildOverview(facts, repoGraph, project, interfaceInventory, callChains);
-  await writeIfChanged(path88.join(evidenceDir, "overview.md"), overview);
+  await writeIfChanged(path96.join(evidenceDir, "overview.md"), overview);
   const proj = [{ slug: project, label: project }];
   const ifByType = {};
   for (const e of interfaceInventory.entries) {
@@ -27969,12 +31337,12 @@ async function extractCodebase(opts) {
     interfaces: Object.keys(ifByType).length > 0 ? ifByType : void 0,
     callChains: callChains.length > 0 ? callChains.length : void 0
   };
-  await writeIfChanged(path88.join(wikiRoot, "router.md"), routerTemplate(proj, aiDomains.length > 0 ? aiDomains : void 0));
-  await writeIfChanged(path88.join(wikiRoot, "hot.md"), HOT_TEMPLATE);
-  await writeIfChanged(path88.join(wikiRoot, "index.md"), indexTemplate(proj, indexStats));
-  const gaps = detectKnowledgeGaps(facts, graph, files);
-  const gapsDir = path88.join(wikiRoot, "gaps");
-  await mkdir6(gapsDir, { recursive: true });
+  await writeIfChanged(path96.join(wikiRoot, "router.md"), routerTemplate(proj, aiDomains.length > 0 ? aiDomains : void 0));
+  await writeIfChanged(path96.join(wikiRoot, "hot.md"), HOT_TEMPLATE);
+  await writeIfChanged(path96.join(wikiRoot, "index.md"), indexTemplate(proj, indexStats));
+  const gaps = [...detectKnowledgeGaps(facts, graph, files), ...astGaps];
+  const gapsDir = path96.join(wikiRoot, "gaps");
+  await mkdir7(gapsDir, { recursive: true });
   const gapLines = [
     "---",
     "title: Knowledge Gaps",
@@ -27996,7 +31364,7 @@ async function extractCodebase(opts) {
     gapLines.push("| \u2014 | \u2014 | \u2014 | \u672A\u53D1\u73B0\u660E\u663E\u77E5\u8BC6\u7F3A\u53E3 | \u2014 |");
   }
   gapLines.push("");
-  await writeIfChanged(path88.join(gapsDir, "detected.md"), gapLines.join("\n"));
+  await writeIfChanged(path96.join(gapsDir, "detected.md"), gapLines.join("\n"));
   await saveFactsCache(indicesDir, facts);
   await saveInterfacesCache(indicesDir, interfaceInventory);
   let allManifestFiles = collectionManifest.files.map((f) => ({
@@ -28006,7 +31374,7 @@ async function extractCodebase(opts) {
   }));
   if (changedFiles !== void 0 && changedFiles.length > 0) {
     try {
-      const oldManifestRaw = await readFile8(manifestPath, "utf-8");
+      const oldManifestRaw = await readFile10(manifestPath, "utf-8");
       const oldManifest = JSON.parse(oldManifestRaw);
       const changedSet = /* @__PURE__ */ new Set([...changedFiles, ...deletedFiles]);
       const unchanged = (oldManifest.files ?? []).filter((f) => !changedSet.has(f.relativePath)).map((f) => ({ relativePath: f.relativePath, sha256: f.sha256, language: f.language ?? "" }));
@@ -28021,7 +31389,7 @@ async function extractCodebase(opts) {
   let prevBranch;
   let prevIngestedMrs = [];
   try {
-    const prev = JSON.parse(await readFile8(manifestPath, "utf-8"));
+    const prev = JSON.parse(await readFile10(manifestPath, "utf-8"));
     prevRepoUrl = prev.repoUrl;
     prevBranch = prev.branch;
     prevIngestedMrs = prev.ingestedMrs ?? [];
@@ -28046,7 +31414,7 @@ async function extractCodebase(opts) {
   }
   if (ingestedMrs.length > 0) manifestObject.ingestedMrs = ingestedMrs;
   const manifestContent = JSON.stringify(manifestObject, null, 2);
-  await writeFile9(manifestPath, manifestContent, "utf-8");
+  await writeFile10(manifestPath, manifestContent, "utf-8");
   const byKind = {};
   for (const fact of facts) {
     byKind[fact.kind] = (byKind[fact.kind] ?? 0) + 1;
@@ -28089,7 +31457,7 @@ var init_codebase_extract = __esm({
 
 // src/clone.ts
 import { spawn as spawn3 } from "child_process";
-import fs31 from "fs-extra";
+import fs32 from "fs-extra";
 function isSshUrl(url) {
   return url.startsWith("git@") || !url.includes("://") && url.includes(":");
 }
@@ -28147,10 +31515,10 @@ async function shallowClone(url, localPath, provider, opts) {
   const forceSsh = opts?.forceSsh ?? false;
   const forceAnonymous = opts?.forceAnonymous ?? false;
   const timeoutMs = opts?.timeoutMs ?? 18e4;
-  if (await fs31.pathExists(localPath)) {
-    await fs31.remove(localPath);
+  if (await fs32.pathExists(localPath)) {
+    await fs32.remove(localPath);
   }
-  await fs31.ensureDir(localPath);
+  await fs32.ensureDir(localPath);
   let cloneUrl2 = url;
   let cloneMethod;
   let extraAuthHeader;
@@ -28217,14 +31585,14 @@ async function shallowClone(url, localPath, provider, opts) {
   try {
     const { code, stderr } = await runCommand("git", cloneArgs, { timeoutMs });
     if (code !== 0) {
-      await fs31.remove(localPath).catch(() => void 0);
+      await fs32.remove(localPath).catch(() => void 0);
       throw new Error(`git clone failed (exit ${code}): ${redactToken(stderr.trim())}`);
     }
   } catch (err) {
     if (err instanceof Error && err.message.startsWith("git clone failed")) {
       throw err;
     }
-    await fs31.remove(localPath).catch(() => void 0);
+    await fs32.remove(localPath).catch(() => void 0);
     throw err;
   }
   const sha = await gitCmd(["rev-parse", "HEAD"], localPath);
@@ -28265,14 +31633,14 @@ __export(repo_cache_exports, {
   readLastSync: () => readLastSync,
   writeLastSync: () => writeLastSync
 });
-import path89 from "path";
-import os8 from "os";
-import fs32 from "fs-extra";
+import path97 from "path";
+import os9 from "os";
+import fs33 from "fs-extra";
 function getCacheRoot2() {
-  return process.env.TEAMAI_CACHE_DIR ?? path89.join(os8.homedir(), ".teamai", "cache", "repos");
+  return process.env.TEAMAI_CACHE_DIR ?? path97.join(os9.homedir(), ".teamai", "cache", "repos");
 }
 function getRepoCacheDir(provider, owner, repo) {
-  return path89.join(getCacheRoot2(), provider, owner, repo);
+  return path97.join(getCacheRoot2(), provider, owner, repo);
 }
 function getRepoSlug(provider, owner, repo) {
   const safeOwner = owner.replace(/\//g, "-");
@@ -28283,15 +31651,15 @@ async function writeLastSync(cacheDir, sha) {
   const content = `${sha}
 ${isoTs}
 `;
-  await fs32.writeFile(path89.join(cacheDir, LAST_SYNC_FILE), content, "utf8");
+  await fs33.writeFile(path97.join(cacheDir, LAST_SYNC_FILE), content, "utf8");
 }
 async function readLastSync(cacheDir) {
-  const filePath = path89.join(cacheDir, LAST_SYNC_FILE);
-  const exists3 = await fs32.pathExists(filePath);
+  const filePath = path97.join(cacheDir, LAST_SYNC_FILE);
+  const exists3 = await fs33.pathExists(filePath);
   if (!exists3) {
     return null;
   }
-  const content = await fs32.readFile(filePath, "utf8");
+  const content = await fs33.readFile(filePath, "utf8");
   const lines = content.split("\n").filter((l) => l.trim());
   if (lines.length < 2) {
     return null;
@@ -28300,7 +31668,7 @@ async function readLastSync(cacheDir) {
 }
 async function ensureCacheRoot() {
   const root = getCacheRoot2();
-  await fs32.ensureDir(root);
+  await fs33.ensureDir(root);
   return root;
 }
 var LAST_SYNC_FILE;
@@ -28316,17 +31684,17 @@ var deep_enrich_exports = {};
 __export(deep_enrich_exports, {
   deepEnrich: () => deepEnrich
 });
-import { readFile as readFile9, writeFile as writeFile10, readdir as readdir4, mkdir as mkdir7 } from "fs/promises";
-import path90 from "path";
+import { readFile as readFile11, writeFile as writeFile11, readdir as readdir4, mkdir as mkdir8 } from "fs/promises";
+import path98 from "path";
 async function readFileSafe4(filePath) {
   try {
-    return await readFile9(filePath, "utf-8");
+    return await readFile11(filePath, "utf-8");
   } catch {
     return "";
   }
 }
 async function loadContext(evidenceDir) {
-  const manifestRaw = await readFileSafe4(path90.join(evidenceDir, "_manifest.json"));
+  const manifestRaw = await readFileSafe4(path98.join(evidenceDir, "_manifest.json"));
   let manifest = {};
   try {
     manifest = JSON.parse(manifestRaw);
@@ -28334,18 +31702,18 @@ async function loadContext(evidenceDir) {
     log.debug("deep-enrich: failed to parse _manifest.json");
   }
   const [indexMd, callChains, overview] = await Promise.all([
-    readFileSafe4(path90.join(evidenceDir, "index.md")),
-    readFileSafe4(path90.join(evidenceDir, "dependency-paths.md")),
-    readFileSafe4(path90.join(evidenceDir, "overview.md"))
+    readFileSafe4(path98.join(evidenceDir, "index.md")),
+    readFileSafe4(path98.join(evidenceDir, "dependency-paths.md")),
+    readFileSafe4(path98.join(evidenceDir, "overview.md"))
   ]);
-  const modulesDir = path90.join(evidenceDir, "modules");
+  const modulesDir = path98.join(evidenceDir, "modules");
   const moduleDocs = /* @__PURE__ */ new Map();
   if (await pathExists(modulesDir)) {
     try {
       const entries = await readdir4(modulesDir);
       await Promise.all(
         entries.filter((e) => e.endsWith(".md")).map(async (e) => {
-          const content = await readFileSafe4(path90.join(modulesDir, e));
+          const content = await readFileSafe4(path98.join(modulesDir, e));
           moduleDocs.set(e.replace(/\.md$/, ""), content);
         })
       );
@@ -28356,7 +31724,7 @@ async function loadContext(evidenceDir) {
   return { manifest, indexMd, callChains, overview, moduleDocs };
 }
 function progressPath(evidenceDir) {
-  return path90.join(evidenceDir, PROGRESS_PATH_SUBDIR, PROGRESS_FILENAME);
+  return path98.join(evidenceDir, PROGRESS_PATH_SUBDIR, PROGRESS_FILENAME);
 }
 function isValidProgressState(v, project) {
   if (typeof v !== "object" || v === null) return false;
@@ -28366,7 +31734,7 @@ function isValidProgressState(v, project) {
 async function loadProgress(evidenceDir, project, allComponents) {
   const p = progressPath(evidenceDir);
   try {
-    const raw = await readFile9(p, "utf-8");
+    const raw = await readFile11(p, "utf-8");
     const parsed = JSON.parse(raw);
     if (isValidProgressState(parsed, project)) return parsed;
   } catch {
@@ -28382,9 +31750,9 @@ async function loadProgress(evidenceDir, project, allComponents) {
 }
 async function saveProgress(evidenceDir, state) {
   const p = progressPath(evidenceDir);
-  await mkdir7(path90.dirname(p), { recursive: true });
+  await mkdir8(path98.dirname(p), { recursive: true });
   const updated = { ...state, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
-  await writeFile10(p, JSON.stringify(updated, null, 2), "utf-8");
+  await writeFile11(p, JSON.stringify(updated, null, 2), "utf-8");
 }
 function buildComponentPrompt(project, component, moduleFacts, relevantCallChains, deps) {
   const moduleName = component.slug;
@@ -28621,9 +31989,9 @@ async function runPhaseComponents(opts, ctx, progress, docsDir) {
         log.warn(`deep-enrich[${project}]: Skipping unsafe component slug "${comp.slug}": ${e.message}`);
         continue;
       }
-      const outPath = path90.join(docsDir, `${comp.slug}.md`);
-      await mkdir7(docsDir, { recursive: true });
-      await writeFile10(outPath, content, "utf-8");
+      const outPath = path98.join(docsDir, `${comp.slug}.md`);
+      await mkdir8(docsDir, { recursive: true });
+      await writeFile11(outPath, content, "utf-8");
       progress.componentsDone.push(comp.slug);
       await saveProgress(evidenceDir, progress);
       log.debug(`deep-enrich[${project}]: Component doc written: ${outPath}`);
@@ -28649,23 +32017,23 @@ async function runPhaseArchitecture(opts, ctx, docsDir) {
     log.warn(`deep-enrich[${project}]: Architecture overview: AI returned empty, skipping write`);
     return;
   }
-  const outPath = path90.join(docsDir, "architecture.md");
-  await mkdir7(docsDir, { recursive: true });
-  await writeFile10(outPath, content, "utf-8");
+  const outPath = path98.join(docsDir, "architecture.md");
+  await mkdir8(docsDir, { recursive: true });
+  await writeFile11(outPath, content, "utf-8");
   log.debug(`deep-enrich[${project}]: Architecture overview written: ${outPath}`);
 }
 async function runPhaseGraph(opts, ctx, docsDir) {
   const { project, evidenceDir } = opts;
   log.info(`deep-enrich[${project}]: Phase 3 \u2014 Generating deterministic graph docs`);
-  const interfacesMd = await readFileSafe4(path90.join(evidenceDir, "interfaces.md"));
+  const interfacesMd = await readFileSafe4(path98.join(evidenceDir, "interfaces.md"));
   const g1 = buildG1RelationsDoc(ctx.manifest);
   const g2 = buildG2DataflowDoc(ctx.callChains);
   const g3 = buildG3InterfacesDoc(interfacesMd);
-  await mkdir7(docsDir, { recursive: true });
+  await mkdir8(docsDir, { recursive: true });
   await Promise.all([
-    writeFile10(path90.join(docsDir, "graph-g1-relations.md"), g1, "utf-8"),
-    writeFile10(path90.join(docsDir, "graph-g2-dataflow.md"), g2, "utf-8"),
-    writeFile10(path90.join(docsDir, "graph-g3-interfaces.md"), g3, "utf-8")
+    writeFile11(path98.join(docsDir, "graph-g1-relations.md"), g1, "utf-8"),
+    writeFile11(path98.join(docsDir, "graph-g2-dataflow.md"), g2, "utf-8"),
+    writeFile11(path98.join(docsDir, "graph-g3-interfaces.md"), g3, "utf-8")
   ]);
   log.debug(`deep-enrich[${project}]: Graph docs written: ${docsDir}`);
 }
@@ -28768,17 +32136,17 @@ function buildG6Content(project, manifest) {
 async function runPhaseAiGraph(opts, ctx, docsDir) {
   const { project, evidenceDir } = opts;
   log.info(`deep-enrich[${project}]: Phase 4 \u2014 Generating AI graph docs (G5/G6)`);
-  await mkdir7(docsDir, { recursive: true });
+  await mkdir8(docsDir, { recursive: true });
   const g6HasEdges = (ctx.manifest.edges ?? []).length > 0;
   const g6 = buildG6Content(project, ctx.manifest);
-  await writeFile10(path90.join(docsDir, "graph-g6-multihop.md"), g6, "utf-8");
+  await writeFile11(path98.join(docsDir, "graph-g6-multihop.md"), g6, "utf-8");
   log.debug(`deep-enrich[${project}]: G6 multi-hop analysis written`);
   let g5Generated = false;
   if (ctx.moduleDocs.size < 2) {
     log.warn(`deep-enrich[${project}]: Insufficient modules (${ctx.moduleDocs.size} < 2), skipping G5`);
     return { g5Generated, g6Generated: g6HasEdges };
   }
-  const architectureMd = await readFileSafe4(path90.join(docsDir, "architecture.md"));
+  const architectureMd = await readFileSafe4(path98.join(docsDir, "architecture.md"));
   if (!architectureMd.trim()) {
     log.warn(`deep-enrich[${project}]: No architecture doc, skipping G5 scenarios`);
     return { g5Generated, g6Generated: g6HasEdges };
@@ -28788,7 +32156,7 @@ async function runPhaseAiGraph(opts, ctx, docsDir) {
   try {
     const g5Content = await callClaude(prompt);
     if (g5Content.trim()) {
-      await writeFile10(path90.join(docsDir, "graph-g5-scenarios.md"), g5Content, "utf-8");
+      await writeFile11(path98.join(docsDir, "graph-g5-scenarios.md"), g5Content, "utf-8");
       log.debug(`deep-enrich[${project}]: G5 scenario diagrams written`);
       g5Generated = true;
     }
@@ -28801,15 +32169,15 @@ async function runPhaseIndexEnhance(opts, ctx, docsDir, graphFlags) {
   const { project, evidenceDir } = opts;
   log.info(`deep-enrich[${project}]: Phase 5 \u2014 Index enhancement`);
   const { graphReadmeTemplate: graphReadmeTemplate2 } = await Promise.resolve().then(() => (init_templates(), templates_exports));
-  await mkdir7(docsDir, { recursive: true });
+  await mkdir8(docsDir, { recursive: true });
   const graphReadme = graphReadmeTemplate2(project, {
     hasG5: graphFlags?.g5Generated ?? false,
     hasG6: graphFlags?.g6Generated ?? true
   });
-  await writeFile10(path90.join(docsDir, "README.md"), graphReadme, "utf-8");
+  await writeFile11(path98.join(docsDir, "README.md"), graphReadme, "utf-8");
   log.debug(`deep-enrich[${project}]: graph/README.md routing table written`);
   const { wikiRoot } = opts;
-  const domainsJson = await readFileSafe4(path90.join(evidenceDir, "_domains.json"));
+  const domainsJson = await readFileSafe4(path98.join(evidenceDir, "_domains.json"));
   let keywords = [];
   let description = "";
   try {
@@ -28818,7 +32186,7 @@ async function runPhaseIndexEnhance(opts, ctx, docsDir, graphFlags) {
     description = domains.description ?? "";
   } catch {
   }
-  const routerPath = path90.join(wikiRoot, "router.md");
+  const routerPath = path98.join(wikiRoot, "router.md");
   const routerContent = await readFileSafe4(routerPath);
   const projectLink = `[[evidence/code/${project}/index]]`;
   if (routerContent && !routerContent.includes(projectLink)) {
@@ -28826,9 +32194,9 @@ async function runPhaseIndexEnhance(opts, ctx, docsDir, graphFlags) {
     const desc = description ? ` \u2014 ${description}` : " \u2014 \u4EE3\u7801\u77E5\u8BC6";
     const line = `- ${projectLink}${desc}${kw}
 `;
-    await writeFile10(routerPath, routerContent.trimEnd() + "\n" + line, "utf-8");
+    await writeFile11(routerPath, routerContent.trimEnd() + "\n" + line, "utf-8");
   }
-  const indexPath = path90.join(wikiRoot, "index.md");
+  const indexPath = path98.join(wikiRoot, "index.md");
   const indexContent = await readFileSafe4(indexPath);
   if (indexContent && !indexContent.includes(`evidence/code/${project}/`)) {
     const navBlock = [
@@ -28844,16 +32212,16 @@ async function runPhaseIndexEnhance(opts, ctx, docsDir, graphFlags) {
     if (navSection > 0) {
       const afterHeader = navSection + navHeader.length;
       const updated = indexContent.slice(0, afterHeader) + "\n\n" + navBlock + indexContent.slice(afterHeader);
-      await writeFile10(indexPath, updated, "utf-8");
+      await writeFile11(indexPath, updated, "utf-8");
     } else {
-      await writeFile10(indexPath, indexContent.trimEnd() + "\n\n" + navBlock, "utf-8");
+      await writeFile11(indexPath, indexContent.trimEnd() + "\n\n" + navBlock, "utf-8");
     }
   }
   log.debug(`deep-enrich[${project}]: Index incremental update complete`);
 }
 async function deepEnrich(opts) {
   const { project, evidenceDir } = opts;
-  const docsDir = path90.join(evidenceDir, "docs");
+  const docsDir = path98.join(evidenceDir, "docs");
   log.info(`deep-enrich[${project}]: Starting deep knowledge generation, evidenceDir=${evidenceDir}`);
   const ctx = await loadContext(evidenceDir);
   let components = ctx.manifest.components ?? [];
@@ -28942,22 +32310,22 @@ var graph_aggregate_exports = {};
 __export(graph_aggregate_exports, {
   aggregateGlobalGraph: () => aggregateGlobalGraph
 });
-import path91 from "path";
+import path99 from "path";
 import { readdir as readdir5 } from "fs/promises";
-import fs33 from "fs-extra";
+import fs34 from "fs-extra";
 async function aggregateGlobalGraph(teamwikiRoot) {
-  const evidenceBase = path91.join(teamwikiRoot, "evidence", "code");
-  if (!await fs33.pathExists(evidenceBase)) return null;
+  const evidenceBase = path99.join(teamwikiRoot, "evidence", "code");
+  if (!await fs34.pathExists(evidenceBase)) return null;
   const { mergeGraphs: mergeGraphs2 } = await Promise.resolve().then(() => (init_adapters(), adapters_exports));
   const { detectCrossRepoEdges: detectCrossRepoEdges2 } = await Promise.resolve().then(() => (init_import_repo(), import_repo_exports));
   let globalGraph = null;
   const projectDirs = await readdir5(evidenceBase, { withFileTypes: true });
   for (const dir of projectDirs) {
     if (!dir.isDirectory()) continue;
-    const graphPath = path91.join(evidenceBase, dir.name, ".indices", "graph-index.json");
-    if (!await fs33.pathExists(graphPath)) continue;
+    const graphPath = path99.join(evidenceBase, dir.name, ".indices", "graph-index.json");
+    if (!await fs34.pathExists(graphPath)) continue;
     try {
-      const overlay = JSON.parse(await fs33.readFile(graphPath, "utf8"));
+      const overlay = JSON.parse(await fs34.readFile(graphPath, "utf8"));
       if (globalGraph) {
         const crossEdges = detectCrossRepoEdges2(overlay, globalGraph);
         globalGraph = mergeGraphs2(globalGraph, overlay);
@@ -28972,9 +32340,9 @@ async function aggregateGlobalGraph(teamwikiRoot) {
     }
   }
   if (globalGraph) {
-    const destPath = path91.join(teamwikiRoot, ".indices", "graph-index.json");
-    await fs33.ensureDir(path91.dirname(destPath));
-    await fs33.writeFile(destPath, JSON.stringify(globalGraph, null, 2), "utf8");
+    const destPath = path99.join(teamwikiRoot, ".indices", "graph-index.json");
+    await fs34.ensureDir(path99.dirname(destPath));
+    await fs34.writeFile(destPath, JSON.stringify(globalGraph, null, 2), "utf8");
     log.info(`global graph-index.json aggregated (${globalGraph.nodes.length} nodes, ${globalGraph.edges.length} edges)`);
     return { nodes: globalGraph.nodes.length, edges: globalGraph.edges.length };
   }
@@ -28987,14 +32355,228 @@ var init_graph_aggregate = __esm({
   }
 });
 
+// src/rebuild-wiki-index.ts
+var rebuild_wiki_index_exports = {};
+__export(rebuild_wiki_index_exports, {
+  rebuildWikiIndex: () => rebuildWikiIndex
+});
+import { readFile as readFile12, readdir as readdir6, stat as stat6, writeFile as writeFile12 } from "fs/promises";
+import path100 from "path";
+async function rebuildWikiIndex(teamwikiRoot) {
+  const evidenceCodeDir = path100.join(teamwikiRoot, "evidence", "code");
+  if (!await pathExists(evidenceCodeDir)) return;
+  const projects = [];
+  let totalFacts = 0, totalNodes = 0, totalEdges = 0;
+  const allInterfaces = {};
+  let totalCallChains = 0;
+  const dirs = await readdir6(evidenceCodeDir);
+  for (const dir of dirs) {
+    const dirPath = path100.join(evidenceCodeDir, dir);
+    const dirStat = await stat6(dirPath).catch(() => null);
+    if (!dirStat?.isDirectory()) continue;
+    const info = {
+      slug: dir,
+      description: "",
+      facts: 0,
+      interfaces: {},
+      callChains: 0,
+      responsibilities: [],
+      keywords: [],
+      domain: ""
+    };
+    const overviewPath = path100.join(dirPath, "overview.md");
+    if (await pathExists(overviewPath)) {
+      const content = await readFile12(overviewPath, "utf-8");
+      const bodyStart = content.indexOf("\n\n", content.indexOf("---", 3));
+      if (bodyStart > 0) {
+        const body = content.slice(bodyStart).trim();
+        const paragraphs = body.split(/\n\n+/);
+        const firstContent = paragraphs.find((p) => !p.startsWith("#") && p.trim().length > 20);
+        if (firstContent) {
+          info.description = firstContent.replace(/\n/g, " ").trim().slice(0, 120);
+        }
+      }
+    }
+    const projectIndex = path100.join(dirPath, "index.md");
+    if (await pathExists(projectIndex)) {
+      const content = await readFile12(projectIndex, "utf-8");
+      const factsMatch = content.match(/Facts:\s*(\d+)/);
+      if (factsMatch) info.facts = parseInt(factsMatch[1], 10);
+      const ifMatches = content.matchAll(/\|\s*(HTTP|MQ|RPC)\s*\|\s*(\d+)\s*\|/g);
+      for (const m of ifMatches) {
+        info.interfaces[m[1]] = (info.interfaces[m[1]] ?? 0) + parseInt(m[2], 10);
+      }
+    }
+    const manifestPath = path100.join(dirPath, "_manifest.json");
+    if (await pathExists(manifestPath)) {
+      try {
+        const raw = await readFile12(manifestPath, "utf-8");
+        const manifest = JSON.parse(raw);
+        for (const comp of manifest.components) {
+          if (comp.responsibilities) info.responsibilities.push(...comp.responsibilities);
+          info.keywords.push(comp.slug);
+        }
+      } catch {
+      }
+    }
+    const domainsPath = path100.join(dirPath, "_domains.json");
+    if (await pathExists(domainsPath)) {
+      try {
+        const raw = await readFile12(domainsPath, "utf-8");
+        const domainMeta = JSON.parse(raw);
+        if (domainMeta.domain) {
+          info.domain = domainMeta.domain;
+        }
+        if (domainMeta.description) {
+          info.description = info.description || domainMeta.description;
+        }
+        if (domainMeta.keywords && domainMeta.keywords.length > 0) {
+          info.keywords = [...domainMeta.keywords, ...info.keywords];
+        }
+      } catch {
+      }
+    }
+    const chainsPath = path100.join(dirPath, "dependency-paths.md");
+    if (await pathExists(chainsPath)) {
+      const content = await readFile12(chainsPath, "utf-8");
+      const chainMatch = content.match(/(\d+)\s*call chain/);
+      if (chainMatch) info.callChains = parseInt(chainMatch[1], 10);
+    }
+    if (!info.domain) {
+      info.domain = inferDomain2(info.responsibilities, info.slug);
+    }
+    totalFacts += info.facts;
+    totalCallChains += info.callChains;
+    for (const [t, c] of Object.entries(info.interfaces)) {
+      allInterfaces[t] = (allInterfaces[t] ?? 0) + c;
+    }
+    projects.push(info);
+  }
+  const graphPath = path100.join(teamwikiRoot, ".indices", "graph-index.json");
+  if (await pathExists(graphPath)) {
+    try {
+      const raw = await readFile12(graphPath, "utf-8");
+      const graph = JSON.parse(raw);
+      totalNodes = Array.isArray(graph.nodes) ? graph.nodes.length : 0;
+      totalEdges = Array.isArray(graph.edges) ? graph.edges.length : 0;
+    } catch {
+    }
+  }
+  const domainMap = /* @__PURE__ */ new Map();
+  for (const p of projects) {
+    const existing = domainMap.get(p.domain) ?? [];
+    existing.push(p);
+    domainMap.set(p.domain, existing);
+  }
+  const routerLines = [
+    "# Team Wiki Router",
+    "",
+    "## \u4EA7\u54C1\u57DF\u8DEF\u7531",
+    "",
+    "| \u57DF | \u5165\u53E3 | \u6838\u5FC3\u804C\u8D23 | \u8DEF\u7531\u5173\u952E\u8BCD |",
+    "|---|---|---|---|"
+  ];
+  for (const [domain, domainProjects] of domainMap) {
+    for (const p of domainProjects) {
+      const entry = `[[code/${p.slug}/index]]`;
+      const duty = p.description || p.responsibilities.slice(0, 2).join("\uFF1B") || p.slug;
+      const kw = p.keywords.slice(0, 6).join(", ") || p.slug;
+      routerLines.push(`| ${domain} | ${entry} | ${duty.slice(0, 80)} | ${kw} |`);
+    }
+  }
+  routerLines.push("");
+  routerLines.push("## \u8DEF\u7531\u89C4\u5219");
+  routerLines.push("");
+  routerLines.push("1. **\u6309\u7EC4\u4EF6\u540D\u5339\u914D** \u2192 \u8DEF\u7531\u5173\u952E\u8BCD\u5217\u5BF9\u5E94\u57DF");
+  routerLines.push("2. **\u8DE8\u4ED3\u5E93\u4F9D\u8D56\u95EE\u9898** \u2192 \u67E5 graph-index.json \u7684 DEPENDS_ON \u8FB9");
+  routerLines.push("3. **\u63A5\u53E3/API \u95EE\u9898** \u2192 \u4F18\u5148\u5339\u914D\u6709 interfaces.md \u7684\u4ED3\u5E93");
+  routerLines.push("4. **\u8C03\u7528\u94FE/\u6392\u969C** \u2192 \u67E5\u5BF9\u5E94\u4ED3\u5E93\u7684 dependency-paths.md");
+  routerLines.push("5. **\u6A21\u5757\u804C\u8D23\u6982\u8FF0** \u2192 \u67E5 overview.md \u6216 modules/*.md");
+  routerLines.push("");
+  await writeFile12(path100.join(teamwikiRoot, "router.md"), routerLines.join("\n"), "utf-8");
+  const indexLines = [
+    "# Team Wiki Index",
+    "",
+    `Last updated: ${(/* @__PURE__ */ new Date()).toISOString()}`,
+    "",
+    "## Stats",
+    "",
+    `- \u4ED3\u5E93: ${projects.length}`,
+    `- Facts: ${totalFacts}`,
+    `- \u56FE\u8C31\u8282\u70B9: ${totalNodes}`,
+    `- \u56FE\u8C31\u8FB9: ${totalEdges}`
+  ];
+  if (Object.keys(allInterfaces).length > 0) {
+    indexLines.push(`- \u63A5\u53E3: ${Object.entries(allInterfaces).map(([t, c]) => `${t}:${c}`).join(", ")}`);
+  }
+  if (totalCallChains > 0) indexLines.push(`- \u8C03\u7528\u94FE: ${totalCallChains}`);
+  indexLines.push("");
+  indexLines.push("## Domain Summaries");
+  indexLines.push("");
+  for (const [domain, domainProjects] of domainMap) {
+    const totalDomainApis = domainProjects.reduce((sum, p) => sum + Object.values(p.interfaces).reduce((a, b) => a + b, 0), 0);
+    const apiStr = totalDomainApis > 0 ? ` (${totalDomainApis} APIs)` : "";
+    indexLines.push(`### ${domain}${apiStr}`);
+    indexLines.push("");
+    for (const p of domainProjects) {
+      const desc = p.description || p.responsibilities[0] || "";
+      indexLines.push(`- [${p.slug}](./evidence/code/${p.slug}/index.md) \u2014 ${desc}`);
+    }
+    indexLines.push("");
+  }
+  indexLines.push("## Navigation");
+  indexLines.push("");
+  indexLines.push("- [router.md](./router.md) \u2014 \u4EA7\u54C1\u57DF\u8DEF\u7531\uFF08\u8868\u683C + \u8DEF\u7531\u89C4\u5219\uFF09");
+  indexLines.push("- [hot.md](./hot.md) \u2014 \u6D3B\u8DC3\u5DE5\u4F5C\u8BB0\u5FC6");
+  indexLines.push("");
+  await writeFile12(path100.join(teamwikiRoot, "index.md"), indexLines.join("\n"), "utf-8");
+  if (!await pathExists(path100.join(teamwikiRoot, "hot.md"))) {
+    await writeFile12(path100.join(teamwikiRoot, "hot.md"), HOT_TEMPLATE, "utf-8");
+  }
+  log.debug(`rebuildWikiIndex: ${projects.length} projects, ${totalNodes} nodes, ${totalEdges} edges`);
+}
+function inferDomain2(responsibilities, slug) {
+  const respText = responsibilities.join(" ").toLowerCase();
+  const slugLower = slug.toLowerCase();
+  if (/balance/.test(slugLower)) return "\u8BA1\u8D39";
+  if (/flow_config|_configs$/.test(slugLower)) return "\u914D\u7F6E";
+  if (/flow/.test(slugLower)) return "\u6D41\u7A0B\u5F15\u64CE";
+  if (/docker|image/.test(slugLower)) return "\u90E8\u7F72/\u955C\u50CF";
+  if (/unit_test/.test(slugLower)) return "\u6D4B\u8BD5";
+  if (/mock/.test(slugLower)) return "\u6D4B\u8BD5/\u6A21\u62DF";
+  if (/infer.*ext|extension/.test(slugLower)) return "\u63A8\u7406\u670D\u52A1";
+  if (/nginx|proxy/.test(slugLower)) return "\u7F51\u5173/\u4EE3\u7406";
+  if (/tool|util/.test(slugLower)) return "\u5DE5\u5177";
+  if (/api/.test(slugLower) && !/config/.test(slugLower)) return "API \u7F51\u5173";
+  if (/计费|扣费|charge|billing/.test(respText)) return "\u8BA1\u8D39";
+  if (/推理|infer|模型部署|serving/.test(respText)) return "\u63A8\u7406\u670D\u52A1";
+  if (/流程|编排|workflow|saga/.test(respText)) return "\u6D41\u7A0B\u5F15\u64CE";
+  if (/调度|schedule|负载|资源管理/.test(respText)) return "\u8C03\u5EA6";
+  if (/api.*网关|请求.*路由|参数校验|鉴权/.test(respText)) return "API \u7F51\u5173";
+  if (/部署|docker|镜像|容器/.test(respText)) return "\u90E8\u7F72/\u955C\u50CF";
+  if (/测试|test|mock/.test(respText)) return "\u6D4B\u8BD5";
+  if (/配置|config/.test(respText)) return "\u914D\u7F6E";
+  if (/数据库|存储|redis|cache/.test(respText)) return "\u6570\u636E";
+  if (/工具|tool|util/.test(respText)) return "\u5DE5\u5177";
+  return "\u5176\u4ED6";
+}
+var init_rebuild_wiki_index = __esm({
+  "src/rebuild-wiki-index.ts"() {
+    "use strict";
+    init_fs();
+    init_logger();
+    init_templates();
+  }
+});
+
 // src/import-repo.ts
 var import_repo_exports = {};
 __export(import_repo_exports, {
   detectCrossRepoEdges: () => detectCrossRepoEdges,
   importFromRepo: () => importFromRepo
 });
-import path92 from "path";
-import fs34 from "fs-extra";
+import path101 from "path";
+import fs35 from "fs-extra";
 import chalk4 from "chalk";
 function detectCrossRepoEdges(overlay, existing) {
   const crossEdges = [];
@@ -29105,7 +32687,7 @@ async function importFromRepo(opts) {
   const cacheDir = getRepoCacheDir(providerName, owner, repoName);
   const slug = getRepoSlug(providerName, owner, repoName);
   const lastSync = await readLastSync(cacheDir);
-  const cacheExists = await fs34.pathExists(path92.join(cacheDir, ".git"));
+  const cacheExists = await fs35.pathExists(path101.join(cacheDir, ".git"));
   const useIncremental = incremental && cacheExists && lastSync !== null;
   let cloneSha;
   let cloneBranch;
@@ -29183,61 +32765,64 @@ async function importFromRepo(opts) {
     mrTeamConfig = { repo: tc.repo, provider: tc.provider, reviewers: tc.reviewers };
     mrLocalConfig = { repo: lc.repo, username: lc.username };
   } catch {
-    teamRepoDir = path92.join(process.cwd(), ".teamai", "team-repo");
+    teamRepoDir = path101.join(process.cwd(), ".teamai", "team-repo");
   }
-  const teamwikiRoot = output ? path92.resolve(output, "..", "teamwiki") : path92.join(teamRepoDir, "teamwiki");
-  if (!dryRun) {
-    const cacheWiki = path92.join(cacheDir, "teamwiki");
-    try {
-      if (incremental) {
-        const destIndices = path92.join(teamwikiRoot, ".indices");
-        const cacheIndices = path92.join(cacheDir, "teamwiki", ".indices");
-        await fs34.ensureDir(cacheIndices);
-        for (const f of ["facts-cache.json", "interfaces-cache.json"]) {
-          const src = path92.join(destIndices, f);
-          if (await fs34.pathExists(src)) {
-            await fs34.copy(src, path92.join(cacheIndices, f));
+  const { acquireImportLock: acquireImportLock2 } = await Promise.resolve().then(() => (init_import_lock(), import_lock_exports));
+  const releaseImportLock = await acquireImportLock2(teamRepoDir);
+  try {
+    const teamwikiRoot = output ? path101.resolve(output, "..", "teamwiki") : path101.join(teamRepoDir, "teamwiki");
+    if (!dryRun) {
+      const cacheWiki = path101.join(cacheDir, "teamwiki");
+      try {
+        if (incremental) {
+          const destIndices = path101.join(teamwikiRoot, ".indices");
+          const cacheIndices = path101.join(cacheDir, "teamwiki", ".indices");
+          await fs35.ensureDir(cacheIndices);
+          for (const f of ["facts-cache.json", "interfaces-cache.json"]) {
+            const src = path101.join(destIndices, f);
+            if (await fs35.pathExists(src)) {
+              await fs35.copy(src, path101.join(cacheIndices, f));
+            }
+          }
+          const existingManifest = path101.join(teamwikiRoot, "source-manifest.json");
+          if (await fs35.pathExists(existingManifest)) {
+            await fs35.copy(existingManifest, path101.join(cacheDir, "teamwiki", "source-manifest.json"));
           }
         }
-        const existingManifest = path92.join(teamwikiRoot, "source-manifest.json");
-        if (await fs34.pathExists(existingManifest)) {
-          await fs34.copy(existingManifest, path92.join(cacheDir, "teamwiki", "source-manifest.json"));
-        }
-      }
-      await extractCodebase({
-        path: cacheDir,
-        project: slug,
-        json: false,
-        skipEnrich,
-        incremental,
-        repoUrl: url,
-        branch: cloneBranch === "HEAD" ? void 0 : cloneBranch,
-        sourceMrUrl
-      });
-      if (await fs34.pathExists(cacheWiki)) {
-        const evidenceSrc = path92.join(cacheWiki, "evidence", "code", slug);
-        const evidenceDest = path92.join(teamwikiRoot, "evidence", "code", slug);
-        if (await fs34.pathExists(evidenceDest)) {
-          const entries = await fs34.readdir(evidenceDest);
-          for (const entry of entries) {
-            if (entry === ".indices") continue;
-            await fs34.remove(path92.join(evidenceDest, entry));
+        await extractCodebase({
+          path: cacheDir,
+          project: slug,
+          json: false,
+          skipEnrich,
+          incremental,
+          repoUrl: url,
+          branch: cloneBranch === "HEAD" ? void 0 : cloneBranch,
+          sourceMrUrl
+        });
+        if (await fs35.pathExists(cacheWiki)) {
+          const evidenceSrc = path101.join(cacheWiki, "evidence", "code", slug);
+          const evidenceDest = path101.join(teamwikiRoot, "evidence", "code", slug);
+          if (await fs35.pathExists(evidenceDest)) {
+            const entries = await fs35.readdir(evidenceDest);
+            for (const entry of entries) {
+              if (entry === ".indices") continue;
+              await fs35.remove(path101.join(evidenceDest, entry));
+            }
           }
-        }
-        await fs34.ensureDir(evidenceDest);
-        await fs34.copy(evidenceSrc, evidenceDest, { overwrite: true });
-        if (codebaseMd) {
-          const overviewPath = path92.join(evidenceDest, "overview.md");
-          const existing = await fs34.readFile(overviewPath, "utf8").catch(() => "");
-          const aiNarrative = codebaseMd.replace(/^---[\s\S]*?---\n*/m, "");
-          const marker = "## AI Architecture Narrative";
-          const oldMarker = "## AI \u67B6\u6784\u53D9\u4E8B";
-          let markerIdx = existing.indexOf(marker);
-          if (markerIdx < 0) markerIdx = existing.indexOf(oldMarker);
-          const base = markerIdx >= 0 ? existing.slice(0, markerIdx).trimEnd() : existing.trimEnd();
-          let combined;
-          if (!base || !base.startsWith("---")) {
-            combined = `---
+          await fs35.ensureDir(evidenceDest);
+          await fs35.copy(evidenceSrc, evidenceDest, { overwrite: true });
+          if (codebaseMd) {
+            const overviewPath = path101.join(evidenceDest, "overview.md");
+            const existing = await fs35.readFile(overviewPath, "utf8").catch(() => "");
+            const aiNarrative = codebaseMd.replace(/^---[\s\S]*?---\n*/m, "");
+            const marker = "## AI Architecture Narrative";
+            const oldMarker = "## AI \u67B6\u6784\u53D9\u4E8B";
+            let markerIdx = existing.indexOf(marker);
+            if (markerIdx < 0) markerIdx = existing.indexOf(oldMarker);
+            const base = markerIdx >= 0 ? existing.slice(0, markerIdx).trimEnd() : existing.trimEnd();
+            let combined;
+            if (!base || !base.startsWith("---")) {
+              combined = `---
 title: ${slug} overview
 domain: code-knowledge
 ---
@@ -29245,142 +32830,121 @@ domain: code-knowledge
 ${marker}
 
 ${aiNarrative}`;
+            } else {
+              combined = base + "\n\n---\n\n" + marker + "\n\n" + aiNarrative;
+            }
+            await fs35.writeFile(overviewPath, combined, "utf8");
+          }
+          const srcGraph = path101.join(cacheWiki, ".indices", "graph-index.json");
+          if (await fs35.pathExists(srcGraph)) {
+            const evidenceGraphDir = path101.join(teamwikiRoot, "evidence", "code", slug, ".indices");
+            await fs35.ensureDir(evidenceGraphDir);
+            await fs35.copy(srcGraph, path101.join(evidenceGraphDir, "graph-index.json"));
           } else {
-            combined = base + "\n\n---\n\n" + marker + "\n\n" + aiNarrative;
+            log.debug(`[graph] per-repo graph-index.json not found, skipping copy`);
           }
-          await fs34.writeFile(overviewPath, combined, "utf8");
-        }
-        const srcGraph = path92.join(cacheWiki, ".indices", "graph-index.json");
-        if (await fs34.pathExists(srcGraph)) {
-          const evidenceGraphDir = path92.join(teamwikiRoot, "evidence", "code", slug, ".indices");
-          await fs34.ensureDir(evidenceGraphDir);
-          await fs34.copy(srcGraph, path92.join(evidenceGraphDir, "graph-index.json"));
-        } else {
-          log.debug(`[graph] per-repo graph-index.json not found, skipping copy`);
-        }
-        const cacheIndices = path92.join(cacheWiki, ".indices");
-        const destIndices = path92.join(teamwikiRoot, ".indices");
-        for (const cacheFile of ["facts-cache.json", "interfaces-cache.json"]) {
-          const src = path92.join(cacheIndices, cacheFile);
-          if (await fs34.pathExists(src)) {
-            await fs34.ensureDir(destIndices);
-            await fs34.copy(src, path92.join(destIndices, cacheFile), { overwrite: true });
+          const cacheIndices = path101.join(cacheWiki, ".indices");
+          const destIndices = path101.join(teamwikiRoot, ".indices");
+          for (const cacheFile of ["facts-cache.json", "interfaces-cache.json"]) {
+            const src = path101.join(cacheIndices, cacheFile);
+            if (await fs35.pathExists(src)) {
+              await fs35.ensureDir(destIndices);
+              await fs35.copy(src, path101.join(destIndices, cacheFile), { overwrite: true });
+            }
           }
-        }
-        const srcManifest = path92.join(cacheWiki, "source-manifest.json");
-        if (await fs34.pathExists(srcManifest)) {
-          await fs34.copy(srcManifest, path92.join(teamwikiRoot, "source-manifest.json"), { overwrite: true });
-        }
-        await fs34.remove(cacheWiki);
-      }
-      if (explicitDomain) {
-        const domainsJsonPath = path92.join(teamwikiRoot, "evidence", "code", slug, "_domains.json");
-        if (await fs34.pathExists(domainsJsonPath)) {
-          try {
-            const existing = JSON.parse(await fs34.readFile(domainsJsonPath, "utf8"));
-            existing.domain = explicitDomain;
-            await fs34.writeFile(domainsJsonPath, JSON.stringify(existing, null, 2), "utf8");
-          } catch {
+          const srcManifest = path101.join(cacheWiki, "source-manifest.json");
+          if (await fs35.pathExists(srcManifest)) {
+            await fs35.copy(srcManifest, path101.join(teamwikiRoot, "source-manifest.json"), { overwrite: true });
           }
-        } else {
-          await fs34.writeFile(domainsJsonPath, JSON.stringify({ domain: explicitDomain }, null, 2), "utf8");
+          await fs35.remove(cacheWiki);
         }
-      }
-      const { routerTemplate: routerTemplate2, indexTemplate: indexTemplate2, HOT_TEMPLATE: HOT_TEMPLATE2 } = await Promise.resolve().then(() => (init_templates(), templates_exports));
-      const routerPath = path92.join(teamwikiRoot, "router.md");
-      const indexPath = path92.join(teamwikiRoot, "index.md");
-      const projectLink = `[[evidence/code/${slug}/index]]`;
-      if (await fs34.pathExists(routerPath)) {
-        const router = await fs34.readFile(routerPath, "utf8");
-        if (!router.includes(projectLink)) {
-          const line = `- ${projectLink} \u2014 ${slug} code knowledge
-`;
-          await fs34.writeFile(routerPath, router.trimEnd() + "\n" + line, "utf8");
-        }
-      } else {
-        await fs34.writeFile(routerPath, routerTemplate2([{ slug, label: slug }]), "utf8");
-      }
-      if (await fs34.pathExists(indexPath)) {
-        const idx = await fs34.readFile(indexPath, "utf8");
-        if (!idx.includes(slug)) {
-          const insertPoint = idx.indexOf("## Navigation");
-          if (insertPoint > 0) {
-            const entry = `- [${slug}](./evidence/code/${slug}/index.md) \u2014 code knowledge graph
-
-`;
-            await fs34.writeFile(indexPath, idx.slice(0, insertPoint) + entry + idx.slice(insertPoint), "utf8");
+        if (explicitDomain) {
+          const domainsJsonPath = path101.join(teamwikiRoot, "evidence", "code", slug, "_domains.json");
+          if (await fs35.pathExists(domainsJsonPath)) {
+            try {
+              const existing = JSON.parse(await fs35.readFile(domainsJsonPath, "utf8"));
+              existing.domain = explicitDomain;
+              await fs35.writeFile(domainsJsonPath, JSON.stringify(existing, null, 2), "utf8");
+            } catch {
+            }
+          } else {
+            await fs35.writeFile(domainsJsonPath, JSON.stringify({ domain: explicitDomain }, null, 2), "utf8");
           }
         }
-      } else {
-        await fs34.writeFile(indexPath, indexTemplate2([{ slug, label: slug }]), "utf8");
+        log.info(chalk4.green(`\u2713 teamwiki/ knowledge graph updated: ${slug}`));
+      } catch (err) {
+        log.debug(`[wiki-engine] Graph generation failed (non-blocking): ${err instanceof Error ? err.message : err}`);
+      } finally {
+        await fs35.remove(cacheWiki).catch(() => {
+        });
       }
-      if (!await fs34.pathExists(path92.join(teamwikiRoot, "hot.md"))) {
-        await fs34.writeFile(path92.join(teamwikiRoot, "hot.md"), HOT_TEMPLATE2, "utf8");
-      }
-      log.info(chalk4.green(`\u2713 teamwiki/ knowledge graph updated: ${slug}`));
-    } catch (err) {
-      log.debug(`[wiki-engine] Graph generation failed (non-blocking): ${err instanceof Error ? err.message : err}`);
-    } finally {
-      await fs34.remove(cacheWiki).catch(() => {
-      });
     }
-  }
-  if (!dryRun && teamwikiRoot) {
-    try {
-      const { reconcileKnowledge: reconcileKnowledge2 } = await Promise.resolve().then(() => (init_adapters(), adapters_exports));
-      const result = await reconcileKnowledge2({ wikiRoot: teamwikiRoot, dryRun: false });
-      if (result.mappings > 0 || result.gaps.length > 0) {
-        log.info(`  reconcile: ${result.mappings} mappings, ${result.gaps.length} gaps, ${result.graphEdges.length} MAPS_TO edges`);
-      }
-    } catch (e) {
-      log.debug(`reconcile skipped: ${e.message}`);
-    }
-  }
-  if (!dryRun && !skipEnrich && teamwikiRoot) {
-    const evidenceDir = path92.join(teamwikiRoot, "evidence", "code", slug);
-    if (await fs34.pathExists(path92.join(evidenceDir, "_manifest.json"))) {
+    if (!dryRun && teamwikiRoot) {
       try {
-        const { deepEnrich: deepEnrich2 } = await Promise.resolve().then(() => (init_deep_enrich(), deep_enrich_exports));
-        await deepEnrich2({ project: slug, evidenceDir, wikiRoot: teamwikiRoot, cacheDir });
-        log.info(chalk4.green(`\u2713 Deep enrich complete: ${slug}`));
+        const { reconcileKnowledge: reconcileKnowledge2 } = await Promise.resolve().then(() => (init_adapters(), adapters_exports));
+        const result = await reconcileKnowledge2({ wikiRoot: teamwikiRoot, dryRun: false });
+        if (result.mappings > 0 || result.gaps.length > 0) {
+          log.info(`  reconcile: ${result.mappings} mappings, ${result.gaps.length} gaps, ${result.graphEdges.length} MAPS_TO edges`);
+        }
       } catch (e) {
-        log.debug(`deep-enrich failed for ${slug} (non-blocking): ${e.message}`);
+        log.debug(`reconcile skipped: ${e.message}`);
       }
     }
-  }
-  if (!dryRun && !skipAutoPush) {
-    if (teamwikiRoot) {
+    if (!dryRun && !skipEnrich && teamwikiRoot) {
+      const evidenceDir = path101.join(teamwikiRoot, "evidence", "code", slug);
+      if (await fs35.pathExists(path101.join(evidenceDir, "_manifest.json"))) {
+        try {
+          const { deepEnrich: deepEnrich2 } = await Promise.resolve().then(() => (init_deep_enrich(), deep_enrich_exports));
+          await deepEnrich2({ project: slug, evidenceDir, wikiRoot: teamwikiRoot, cacheDir });
+          log.info(chalk4.green(`\u2713 Deep enrich complete: ${slug}`));
+        } catch (e) {
+          log.debug(`deep-enrich failed for ${slug} (non-blocking): ${e.message}`);
+        }
+      }
+    }
+    if (!dryRun && !skipAutoPush) {
+      if (teamwikiRoot) {
+        try {
+          const { aggregateGlobalGraph: aggregateGlobalGraph2 } = await Promise.resolve().then(() => (init_graph_aggregate(), graph_aggregate_exports));
+          await aggregateGlobalGraph2(teamwikiRoot);
+        } catch (e) {
+          log.debug(`[graph] Single-repo aggregation skipped: ${e.message}`);
+        }
+        try {
+          const { rebuildWikiIndex: rebuildWikiIndex2 } = await Promise.resolve().then(() => (init_rebuild_wiki_index(), rebuild_wiki_index_exports));
+          await rebuildWikiIndex2(teamwikiRoot);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          log.warn(`[wiki] global index rebuild failed (non-blocking): ${msg}`);
+        }
+      }
+      if (await fs35.pathExists(teamRepoDir) && mrTeamConfig && mrLocalConfig) {
+        const { autoPushViaMR: autoPushViaMR2 } = await Promise.resolve().then(() => (init_git2(), git_exports));
+        const prUrl = await autoPushViaMR2(
+          teamRepoDir,
+          `[teamai] Import codebase knowledge from ${owner}/${repoName}`,
+          ["."],
+          mrTeamConfig,
+          mrLocalConfig
+        );
+        if (prUrl) {
+          log.success(`MR created: ${prUrl}`);
+        } else {
+          log.success(`Branch pushed to team knowledge repo${teamRepoRemote ? ` (${teamRepoRemote})` : ""}`);
+        }
+      }
+    }
+    log.info(chalk4.green(`\u2713 Repo ${owner}/${repoName} import complete`));
+    if (!dryRun) {
+      await writeLastSync(cacheDir, cloneSha);
       try {
-        const { aggregateGlobalGraph: aggregateGlobalGraph2 } = await Promise.resolve().then(() => (init_graph_aggregate(), graph_aggregate_exports));
-        await aggregateGlobalGraph2(teamwikiRoot);
-      } catch (e) {
-        log.debug(`[graph] Single-repo aggregation skipped: ${e.message}`);
+        await touchCacheEntry({ provider: providerName, owner, repo: repoName, lastSyncedSha: cloneSha });
+      } catch (touchErr) {
+        log.debug(`[cache-index] touchCacheEntry failed: ${String(touchErr)}`);
       }
     }
-    if (await fs34.pathExists(teamRepoDir) && mrTeamConfig && mrLocalConfig) {
-      const { autoPushViaMR: autoPushViaMR2 } = await Promise.resolve().then(() => (init_git2(), git_exports));
-      const prUrl = await autoPushViaMR2(
-        teamRepoDir,
-        `[teamai] Import codebase knowledge from ${owner}/${repoName}`,
-        ["."],
-        mrTeamConfig,
-        mrLocalConfig
-      );
-      if (prUrl) {
-        log.success(`MR created: ${prUrl}`);
-      } else {
-        log.success(`Branch pushed to team knowledge repo${teamRepoRemote ? ` (${teamRepoRemote})` : ""}`);
-      }
-    }
-  }
-  log.info(chalk4.green(`\u2713 Repo ${owner}/${repoName} import complete`));
-  if (!dryRun) {
-    await writeLastSync(cacheDir, cloneSha);
-    try {
-      await touchCacheEntry({ provider: providerName, owner, repo: repoName, lastSyncedSha: cloneSha });
-    } catch (touchErr) {
-      log.debug(`[cache-index] touchCacheEntry failed: ${String(touchErr)}`);
-    }
+  } finally {
+    await releaseImportLock();
   }
 }
 var init_import_repo = __esm({
@@ -29428,18 +32992,18 @@ var init_schema = __esm({
 });
 
 // src/repo-list/store.ts
-import fs35 from "fs-extra";
+import fs36 from "fs-extra";
 import { parse as parseYaml2 } from "yaml";
 async function loadRepoList(filePath) {
-  const exists3 = await fs35.pathExists(filePath);
+  const exists3 = await fs36.pathExists(filePath);
   if (!exists3) {
     throw new Error(`Repo list not found: ${filePath}`);
   }
-  const stat6 = await fs35.stat(filePath);
-  if (stat6.size > MAX_CONFIG_FILE_BYTES2) {
+  const stat8 = await fs36.stat(filePath);
+  if (stat8.size > MAX_CONFIG_FILE_BYTES2) {
     throw new Error(`${filePath} exceeds max allowed size 10MB`);
   }
-  const raw = await fs35.readFile(filePath, "utf8");
+  const raw = await fs36.readFile(filePath, "utf8");
   const parsed = parseYaml2(raw);
   const result = RepoListFileSchema.parse(parsed);
   return result;
@@ -29454,7 +33018,8 @@ var init_store = __esm({
 });
 
 // src/import-repo-list.ts
-import path93 from "path";
+import path102 from "path";
+import fs37 from "fs-extra";
 function sortByPriority(entries) {
   const order = { high: 0, normal: 1, low: 2 };
   return [...entries].sort((a, b) => {
@@ -29474,89 +33039,121 @@ async function importFromRepoList(opts) {
     skipEnrich = false
   } = opts;
   const repoListFile = await loadRepoList(listPath);
-  const succeeded = [];
-  const failed = [];
-  const skipped = [];
-  const singleEntries = [];
-  for (const item of repoListFile.repos) {
-    if (isOrgEntry(item)) {
-      log.warn(`org entry not yet supported, skipped: ${item.org}`);
-      skipped.push({ url: item.org, reason: "org entry not yet supported" });
-    } else {
-      singleEntries.push(item);
-    }
-  }
-  const orderedEntries = sortByPriority(singleEntries);
-  const semaphore = { running: 0 };
-  const queue = [...orderedEntries];
-  async function processEntry(entry) {
-    const isPublic = entry.auth === "public";
-    const entryForceSsh = entry.auth === "ssh" || forceSsh;
-    try {
-      await importFromRepo({
-        url: entry.url,
-        forceSsh: entryForceSsh,
-        forceAnonymous: isPublic,
-        explicitDomain: entry.domain,
-        dryRun,
-        output,
-        interactive: false,
-        incremental,
-        skipAutoPush: true,
-        skipEnrich
-      });
-      succeeded.push(1);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.warn(`import failed: ${entry.url} \u2014 ${message}`);
-      failed.push({ url: entry.url, error: message });
-    }
-  }
-  const inFlight = [];
-  for (const entry of queue) {
-    while (semaphore.running >= concurrency) {
-      await Promise.race(inFlight);
-    }
-    semaphore.running++;
-    const task = processEntry(entry).finally(() => {
-      semaphore.running--;
-      const idx = inFlight.indexOf(task);
-      if (idx !== -1) inFlight.splice(idx, 1);
-    });
-    inFlight.push(task);
-  }
-  await Promise.all(inFlight);
-  if (!dryRun && succeeded.length > 0) {
+  let releaseBatchLock = null;
+  if (!dryRun) {
     try {
       const { autoDetectInit: autoDetectInit2 } = await Promise.resolve().then(() => (init_config(), config_exports));
       const { localConfig: lc } = await autoDetectInit2();
-      const teamRepoPath = lc.repo.localPath;
-      const teamwikiRoot = path93.join(teamRepoPath, "teamwiki");
-      const { aggregateGlobalGraph: aggregateGlobalGraph2 } = await Promise.resolve().then(() => (init_graph_aggregate(), graph_aggregate_exports));
-      await aggregateGlobalGraph2(teamwikiRoot);
+      const { acquireImportLock: acquireImportLock2 } = await Promise.resolve().then(() => (init_import_lock(), import_lock_exports));
+      releaseBatchLock = await acquireImportLock2(lc.repo.localPath);
     } catch (e) {
-      log.warn(`[graph] global aggregation failed (non-blocking): ${e.message}`);
+      log.debug(`[import-lock] batch lock acquire skipped: ${e.message}`);
     }
   }
-  if (!dryRun && succeeded.length > 0) {
-    try {
-      const { autoDetectInit: autoDetectInit2 } = await Promise.resolve().then(() => (init_config(), config_exports));
-      const { localConfig: lc, teamConfig: tc } = await autoDetectInit2();
-      const { autoPushViaMR: autoPushViaMR2 } = await Promise.resolve().then(() => (init_git2(), git_exports));
-      const prUrl = await autoPushViaMR2(
-        lc.repo.localPath,
-        "[teamai] Batch import: graph",
-        ["."],
-        { repo: tc.repo, provider: tc.provider, reviewers: tc.reviewers },
-        { repo: lc.repo, username: lc.username }
-      );
-      if (prUrl) {
-        log.success(`MR created: ${prUrl}`);
+  const succeeded = [];
+  const failed = [];
+  const skipped = [];
+  try {
+    const singleEntries = [];
+    for (const item of repoListFile.repos) {
+      if (isOrgEntry(item)) {
+        log.warn(`org entry not yet supported, skipped: ${item.org}`);
+        skipped.push({ url: item.org, reason: "org entry not yet supported" });
       } else {
-        log.success(`Branch pushed to team knowledge repo (${lc.repo.remote})`);
+        singleEntries.push(item);
       }
-    } catch (e) {
-      log.warn(`[git] batch push failed (non-blocking): ${e.message}`);
+    }
+    const orderedEntries = sortByPriority(singleEntries);
+    const semaphore = { running: 0 };
+    const queue = [...orderedEntries];
+    async function processEntry(entry) {
+      const isPublic = entry.auth === "public";
+      const entryForceSsh = entry.auth === "ssh" || forceSsh;
+      try {
+        await importFromRepo({
+          url: entry.url,
+          forceSsh: entryForceSsh,
+          forceAnonymous: isPublic,
+          explicitDomain: entry.domain,
+          dryRun,
+          output,
+          interactive: false,
+          incremental,
+          skipAutoPush: true,
+          skipEnrich
+        });
+        succeeded.push(1);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn(`import failed: ${entry.url} \u2014 ${message}`);
+        failed.push({ url: entry.url, error: message });
+      }
+    }
+    const inFlight = [];
+    for (const entry of queue) {
+      while (semaphore.running >= concurrency) {
+        await Promise.race(inFlight);
+      }
+      semaphore.running++;
+      const task = processEntry(entry).finally(() => {
+        semaphore.running--;
+        const idx = inFlight.indexOf(task);
+        if (idx !== -1) inFlight.splice(idx, 1);
+      });
+      inFlight.push(task);
+    }
+    await Promise.all(inFlight);
+    if (!dryRun && succeeded.length > 0) {
+      try {
+        const { autoDetectInit: autoDetectInit2 } = await Promise.resolve().then(() => (init_config(), config_exports));
+        const { localConfig: lc } = await autoDetectInit2();
+        const teamRepoPath = lc.repo.localPath;
+        const teamwikiRoot = path102.join(teamRepoPath, "teamwiki");
+        const { aggregateGlobalGraph: aggregateGlobalGraph2 } = await Promise.resolve().then(() => (init_graph_aggregate(), graph_aggregate_exports));
+        await aggregateGlobalGraph2(teamwikiRoot);
+      } catch (e) {
+        log.warn(`[graph] global aggregation failed (non-blocking): ${e.message}`);
+      }
+    }
+    if (!dryRun && succeeded.length > 0) {
+      try {
+        const { autoDetectInit: autoDetectInit2 } = await Promise.resolve().then(() => (init_config(), config_exports));
+        const { localConfig } = await autoDetectInit2();
+        const teamwikiRoot = path102.join(localConfig.repo.localPath, "teamwiki");
+        if (await fs37.pathExists(teamwikiRoot)) {
+          const { rebuildWikiIndex: rebuildWikiIndex2 } = await Promise.resolve().then(() => (init_rebuild_wiki_index(), rebuild_wiki_index_exports));
+          await rebuildWikiIndex2(teamwikiRoot);
+          log.info("teamwiki router.md / index.md rebuilt");
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        log.warn(`[wiki] global index rebuild failed (non-blocking): ${msg}`);
+      }
+    }
+    if (!dryRun && succeeded.length > 0) {
+      try {
+        const { autoDetectInit: autoDetectInit2 } = await Promise.resolve().then(() => (init_config(), config_exports));
+        const { localConfig: lc, teamConfig: tc } = await autoDetectInit2();
+        const { autoPushViaMR: autoPushViaMR2 } = await Promise.resolve().then(() => (init_git2(), git_exports));
+        const prUrl = await autoPushViaMR2(
+          lc.repo.localPath,
+          "[teamai] Batch import: graph",
+          ["."],
+          { repo: tc.repo, provider: tc.provider, reviewers: tc.reviewers },
+          { repo: lc.repo, username: lc.username }
+        );
+        if (prUrl) {
+          log.success(`MR created: ${prUrl}`);
+        } else {
+          log.success(`Branch pushed to team knowledge repo (${lc.repo.remote})`);
+        }
+      } catch (e) {
+        log.warn(`[git] batch push failed (non-blocking): ${e.message}`);
+      }
+    }
+  } finally {
+    if (releaseBatchLock) {
+      await releaseBatchLock();
     }
   }
   return {
@@ -29575,223 +33172,9 @@ var init_import_repo_list = __esm({
   }
 });
 
-// src/rebuild-wiki-index.ts
-var rebuild_wiki_index_exports = {};
-__export(rebuild_wiki_index_exports, {
-  rebuildWikiIndex: () => rebuildWikiIndex
-});
-import { readFile as readFile10, readdir as readdir6, stat as stat4, writeFile as writeFile11 } from "fs/promises";
-import path94 from "path";
-async function rebuildWikiIndex(teamwikiRoot) {
-  const evidenceCodeDir = path94.join(teamwikiRoot, "evidence", "code");
-  if (!await pathExists(evidenceCodeDir)) return;
-  const projects = [];
-  let totalFacts = 0, totalNodes = 0, totalEdges = 0;
-  const allInterfaces = {};
-  let totalCallChains = 0;
-  const dirs = await readdir6(evidenceCodeDir);
-  for (const dir of dirs) {
-    const dirPath = path94.join(evidenceCodeDir, dir);
-    const dirStat = await stat4(dirPath).catch(() => null);
-    if (!dirStat?.isDirectory()) continue;
-    const info = {
-      slug: dir,
-      description: "",
-      facts: 0,
-      interfaces: {},
-      callChains: 0,
-      responsibilities: [],
-      keywords: [],
-      domain: ""
-    };
-    const overviewPath = path94.join(dirPath, "overview.md");
-    if (await pathExists(overviewPath)) {
-      const content = await readFile10(overviewPath, "utf-8");
-      const bodyStart = content.indexOf("\n\n", content.indexOf("---", 3));
-      if (bodyStart > 0) {
-        const body = content.slice(bodyStart).trim();
-        const paragraphs = body.split(/\n\n+/);
-        const firstContent = paragraphs.find((p) => !p.startsWith("#") && p.trim().length > 20);
-        if (firstContent) {
-          info.description = firstContent.replace(/\n/g, " ").trim().slice(0, 120);
-        }
-      }
-    }
-    const projectIndex = path94.join(dirPath, "index.md");
-    if (await pathExists(projectIndex)) {
-      const content = await readFile10(projectIndex, "utf-8");
-      const factsMatch = content.match(/Facts:\s*(\d+)/);
-      if (factsMatch) info.facts = parseInt(factsMatch[1], 10);
-      const ifMatches = content.matchAll(/\|\s*(HTTP|MQ|RPC)\s*\|\s*(\d+)\s*\|/g);
-      for (const m of ifMatches) {
-        info.interfaces[m[1]] = (info.interfaces[m[1]] ?? 0) + parseInt(m[2], 10);
-      }
-    }
-    const manifestPath = path94.join(dirPath, "_manifest.json");
-    if (await pathExists(manifestPath)) {
-      try {
-        const raw = await readFile10(manifestPath, "utf-8");
-        const manifest = JSON.parse(raw);
-        for (const comp of manifest.components) {
-          if (comp.responsibilities) info.responsibilities.push(...comp.responsibilities);
-          info.keywords.push(comp.slug);
-        }
-      } catch {
-      }
-    }
-    const domainsPath = path94.join(dirPath, "_domains.json");
-    if (await pathExists(domainsPath)) {
-      try {
-        const raw = await readFile10(domainsPath, "utf-8");
-        const domainMeta = JSON.parse(raw);
-        if (domainMeta.domain) {
-          info.domain = domainMeta.domain;
-        }
-        if (domainMeta.description) {
-          info.description = info.description || domainMeta.description;
-        }
-        if (domainMeta.keywords && domainMeta.keywords.length > 0) {
-          info.keywords = [...domainMeta.keywords, ...info.keywords];
-        }
-      } catch {
-      }
-    }
-    const chainsPath = path94.join(dirPath, "dependency-paths.md");
-    if (await pathExists(chainsPath)) {
-      const content = await readFile10(chainsPath, "utf-8");
-      const chainMatch = content.match(/(\d+)\s*call chain/);
-      if (chainMatch) info.callChains = parseInt(chainMatch[1], 10);
-    }
-    if (!info.domain) {
-      info.domain = inferDomain2(info.responsibilities, info.slug);
-    }
-    totalFacts += info.facts;
-    totalCallChains += info.callChains;
-    for (const [t, c] of Object.entries(info.interfaces)) {
-      allInterfaces[t] = (allInterfaces[t] ?? 0) + c;
-    }
-    projects.push(info);
-  }
-  const graphPath = path94.join(teamwikiRoot, ".indices", "graph-index.json");
-  if (await pathExists(graphPath)) {
-    try {
-      const raw = await readFile10(graphPath, "utf-8");
-      const graph = JSON.parse(raw);
-      totalNodes = Array.isArray(graph.nodes) ? graph.nodes.length : 0;
-      totalEdges = Array.isArray(graph.edges) ? graph.edges.length : 0;
-    } catch {
-    }
-  }
-  const domainMap = /* @__PURE__ */ new Map();
-  for (const p of projects) {
-    const existing = domainMap.get(p.domain) ?? [];
-    existing.push(p);
-    domainMap.set(p.domain, existing);
-  }
-  const routerLines = [
-    "# Team Wiki Router",
-    "",
-    "## \u4EA7\u54C1\u57DF\u8DEF\u7531",
-    "",
-    "| \u57DF | \u5165\u53E3 | \u6838\u5FC3\u804C\u8D23 | \u8DEF\u7531\u5173\u952E\u8BCD |",
-    "|---|---|---|---|"
-  ];
-  for (const [domain, domainProjects] of domainMap) {
-    for (const p of domainProjects) {
-      const entry = `[[code/${p.slug}/index]]`;
-      const duty = p.description || p.responsibilities.slice(0, 2).join("\uFF1B") || p.slug;
-      const kw = p.keywords.slice(0, 6).join(", ") || p.slug;
-      routerLines.push(`| ${domain} | ${entry} | ${duty.slice(0, 80)} | ${kw} |`);
-    }
-  }
-  routerLines.push("");
-  routerLines.push("## \u8DEF\u7531\u89C4\u5219");
-  routerLines.push("");
-  routerLines.push("1. **\u6309\u7EC4\u4EF6\u540D\u5339\u914D** \u2192 \u8DEF\u7531\u5173\u952E\u8BCD\u5217\u5BF9\u5E94\u57DF");
-  routerLines.push("2. **\u8DE8\u4ED3\u5E93\u4F9D\u8D56\u95EE\u9898** \u2192 \u67E5 graph-index.json \u7684 DEPENDS_ON \u8FB9");
-  routerLines.push("3. **\u63A5\u53E3/API \u95EE\u9898** \u2192 \u4F18\u5148\u5339\u914D\u6709 interfaces.md \u7684\u4ED3\u5E93");
-  routerLines.push("4. **\u8C03\u7528\u94FE/\u6392\u969C** \u2192 \u67E5\u5BF9\u5E94\u4ED3\u5E93\u7684 dependency-paths.md");
-  routerLines.push("5. **\u6A21\u5757\u804C\u8D23\u6982\u8FF0** \u2192 \u67E5 overview.md \u6216 modules/*.md");
-  routerLines.push("");
-  await writeFile11(path94.join(teamwikiRoot, "router.md"), routerLines.join("\n"), "utf-8");
-  const indexLines = [
-    "# Team Wiki Index",
-    "",
-    `Last updated: ${(/* @__PURE__ */ new Date()).toISOString()}`,
-    "",
-    "## Stats",
-    "",
-    `- \u4ED3\u5E93: ${projects.length}`,
-    `- Facts: ${totalFacts}`,
-    `- \u56FE\u8C31\u8282\u70B9: ${totalNodes}`,
-    `- \u56FE\u8C31\u8FB9: ${totalEdges}`
-  ];
-  if (Object.keys(allInterfaces).length > 0) {
-    indexLines.push(`- \u63A5\u53E3: ${Object.entries(allInterfaces).map(([t, c]) => `${t}:${c}`).join(", ")}`);
-  }
-  if (totalCallChains > 0) indexLines.push(`- \u8C03\u7528\u94FE: ${totalCallChains}`);
-  indexLines.push("");
-  indexLines.push("## Domain Summaries");
-  indexLines.push("");
-  for (const [domain, domainProjects] of domainMap) {
-    const totalDomainApis = domainProjects.reduce((sum, p) => sum + Object.values(p.interfaces).reduce((a, b) => a + b, 0), 0);
-    const apiStr = totalDomainApis > 0 ? ` (${totalDomainApis} APIs)` : "";
-    indexLines.push(`### ${domain}${apiStr}`);
-    indexLines.push("");
-    for (const p of domainProjects) {
-      const desc = p.description || p.responsibilities[0] || "";
-      indexLines.push(`- [${p.slug}](./evidence/code/${p.slug}/index.md) \u2014 ${desc}`);
-    }
-    indexLines.push("");
-  }
-  indexLines.push("## Navigation");
-  indexLines.push("");
-  indexLines.push("- [router.md](./router.md) \u2014 \u4EA7\u54C1\u57DF\u8DEF\u7531\uFF08\u8868\u683C + \u8DEF\u7531\u89C4\u5219\uFF09");
-  indexLines.push("- [hot.md](./hot.md) \u2014 \u6D3B\u8DC3\u5DE5\u4F5C\u8BB0\u5FC6");
-  indexLines.push("");
-  await writeFile11(path94.join(teamwikiRoot, "index.md"), indexLines.join("\n"), "utf-8");
-  if (!await pathExists(path94.join(teamwikiRoot, "hot.md"))) {
-    await writeFile11(path94.join(teamwikiRoot, "hot.md"), HOT_TEMPLATE, "utf-8");
-  }
-  log.debug(`rebuildWikiIndex: ${projects.length} projects, ${totalNodes} nodes, ${totalEdges} edges`);
-}
-function inferDomain2(responsibilities, slug) {
-  const respText = responsibilities.join(" ").toLowerCase();
-  const slugLower = slug.toLowerCase();
-  if (/balance/.test(slugLower)) return "\u8BA1\u8D39";
-  if (/flow_config|_configs$/.test(slugLower)) return "\u914D\u7F6E";
-  if (/flow/.test(slugLower)) return "\u6D41\u7A0B\u5F15\u64CE";
-  if (/docker|image/.test(slugLower)) return "\u90E8\u7F72/\u955C\u50CF";
-  if (/unit_test/.test(slugLower)) return "\u6D4B\u8BD5";
-  if (/mock/.test(slugLower)) return "\u6D4B\u8BD5/\u6A21\u62DF";
-  if (/infer.*ext|extension/.test(slugLower)) return "\u63A8\u7406\u670D\u52A1";
-  if (/nginx|proxy/.test(slugLower)) return "\u7F51\u5173/\u4EE3\u7406";
-  if (/tool|util/.test(slugLower)) return "\u5DE5\u5177";
-  if (/api/.test(slugLower) && !/config/.test(slugLower)) return "API \u7F51\u5173";
-  if (/计费|扣费|charge|billing/.test(respText)) return "\u8BA1\u8D39";
-  if (/推理|infer|模型部署|serving/.test(respText)) return "\u63A8\u7406\u670D\u52A1";
-  if (/流程|编排|workflow|saga/.test(respText)) return "\u6D41\u7A0B\u5F15\u64CE";
-  if (/调度|schedule|负载|资源管理/.test(respText)) return "\u8C03\u5EA6";
-  if (/api.*网关|请求.*路由|参数校验|鉴权/.test(respText)) return "API \u7F51\u5173";
-  if (/部署|docker|镜像|容器/.test(respText)) return "\u90E8\u7F72/\u955C\u50CF";
-  if (/测试|test|mock/.test(respText)) return "\u6D4B\u8BD5";
-  if (/配置|config/.test(respText)) return "\u914D\u7F6E";
-  if (/数据库|存储|redis|cache/.test(respText)) return "\u6570\u636E";
-  if (/工具|tool|util/.test(respText)) return "\u5DE5\u5177";
-  return "\u5176\u4ED6";
-}
-var init_rebuild_wiki_index = __esm({
-  "src/rebuild-wiki-index.ts"() {
-    "use strict";
-    init_fs();
-    init_logger();
-    init_templates();
-  }
-});
-
 // src/import-org.ts
-import path95 from "path";
-import fs36 from "fs-extra";
+import path103 from "path";
+import fs38 from "fs-extra";
 function parseOrgInput(org) {
   const trimmed = org.trim();
   const httpsMatch = trimmed.match(/^https?:\/\/([^/]+)\/(.+)/);
@@ -29862,21 +33245,21 @@ async function importFromOrg(opts) {
     return;
   }
   log.info(`${filteredRepos.length} repos after filtering, generating whitelist...`);
-  const whitelistDraftPath = path95.join(cwd, WHITELIST_DRAFT_PATH);
+  const whitelistDraftPath = path103.join(cwd, WHITELIST_DRAFT_PATH);
   if (!opts.dryRun) {
-    await fs36.ensureDir(path95.dirname(whitelistDraftPath));
+    await fs38.ensureDir(path103.dirname(whitelistDraftPath));
     const lines = ["version: 1", "repos:"];
     for (const repo of filteredRepos) {
       lines.push(`  - url: ${repo.url}`);
       lines.push(`    auth: token`);
       lines.push(`    priority: normal`);
     }
-    await fs36.writeFile(whitelistDraftPath, lines.join("\n") + "\n", "utf8");
+    await fs38.writeFile(whitelistDraftPath, lines.join("\n") + "\n", "utf8");
     log.info(`Whitelist written: ${WHITELIST_DRAFT_PATH} (${filteredRepos.length} repos)`);
   }
   if (!opts.skipImport) {
     const whitelistPath = whitelistDraftPath;
-    if (await fs36.pathExists(whitelistPath)) {
+    if (await fs38.pathExists(whitelistPath)) {
       log.info(`Starting batch import (whitelist: ${whitelistPath})...`);
       try {
         const result = await importFromRepoList({
@@ -29891,18 +33274,22 @@ async function importFromOrg(opts) {
         log.info(
           `Batch import complete: ${result.succeeded} succeeded, ${result.failed.length} failed, ${result.skipped.length} skipped`
         );
-        try {
-          const { rebuildWikiIndex: rebuildWikiIndex2 } = await Promise.resolve().then(() => (init_rebuild_wiki_index(), rebuild_wiki_index_exports));
-          const teamRepoPath = path95.join(cwd, ".teamai", "team-repo");
-          const teamRepoWiki = path95.join(teamRepoPath, "teamwiki");
-          if (await fs36.pathExists(teamRepoWiki)) {
-            await rebuildWikiIndex2(teamRepoWiki);
-            log.info("teamwiki router.md / index.md rebuilt");
-            const { autoPushTeamRepo: autoPushTeamRepo2 } = await Promise.resolve().then(() => (init_git2(), git_exports));
-            await autoPushTeamRepo2(teamRepoPath, "[teamai] Rebuild teamwiki index after batch import");
+        if (!opts.dryRun) {
+          try {
+            const { rebuildWikiIndex: rebuildWikiIndex2 } = await Promise.resolve().then(() => (init_rebuild_wiki_index(), rebuild_wiki_index_exports));
+            const { autoDetectInit: autoDetectInit2 } = await Promise.resolve().then(() => (init_config(), config_exports));
+            const { localConfig } = await autoDetectInit2();
+            const teamRepoPath = localConfig.repo.localPath;
+            const teamRepoWiki = path103.join(teamRepoPath, "teamwiki");
+            if (await fs38.pathExists(teamRepoWiki)) {
+              await rebuildWikiIndex2(teamRepoWiki);
+              log.info("teamwiki router.md / index.md rebuilt");
+              const { autoPushTeamRepo: autoPushTeamRepo2 } = await Promise.resolve().then(() => (init_git2(), git_exports));
+              await autoPushTeamRepo2(teamRepoPath, "[teamai] Rebuild teamwiki index after batch import");
+            }
+          } catch (e) {
+            log.warn(`wiki index rebuild/push failed: ${e instanceof Error ? e.message : String(e)}`);
           }
-        } catch (e) {
-          log.debug(`wiki index rebuild/push failed: ${e.message}`);
         }
       } catch (err) {
         log.warn(`Batch import error (non-blocking): ${String(err)}`);
@@ -29925,14 +33312,14 @@ var init_import_org = __esm({
 });
 
 // src/review-store.ts
-import crypto4 from "crypto";
-import path96 from "path";
-import fs37 from "fs-extra";
+import crypto5 from "crypto";
+import path104 from "path";
+import fs39 from "fs-extra";
 function getPendingReviewPath(cwd) {
-  return path96.join(cwd, PENDING_REVIEW_PATH);
+  return path104.join(cwd, PENDING_REVIEW_PATH);
 }
 function computeReviewId(file, section, ts) {
-  return crypto4.createHash("sha1").update(`${file}|${section ?? ""}|${ts}`).digest("hex").slice(0, 12);
+  return crypto5.createHash("sha1").update(`${file}|${section ?? ""}|${ts}`).digest("hex").slice(0, 12);
 }
 function inferRisk(target) {
   if (target.section && HIGH_RISK_SECTIONS.has(target.section)) return "high";
@@ -29974,14 +33361,14 @@ function normalizeItem(raw) {
 }
 async function loadPendingReview(cwd) {
   const filePath = getPendingReviewPath(cwd);
-  if (!await fs37.pathExists(filePath)) {
+  if (!await fs39.pathExists(filePath)) {
     return [];
   }
-  const stat6 = await fs37.stat(filePath);
-  if (stat6.size > MAX_CONFIG_FILE_BYTES3) {
+  const stat8 = await fs39.stat(filePath);
+  if (stat8.size > MAX_CONFIG_FILE_BYTES3) {
     throw new Error(`${filePath} exceeds max allowed size 10MB`);
   }
-  const text = await fs37.readFile(filePath, "utf8");
+  const text = await fs39.readFile(filePath, "utf8");
   const items = [];
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -30005,10 +33392,10 @@ async function loadPendingReview(cwd) {
 async function savePendingReview(cwd, items) {
   const filePath = getPendingReviewPath(cwd);
   const tmpPath = `${filePath}.tmp`;
-  await fs37.ensureDir(path96.dirname(filePath));
+  await fs39.ensureDir(path104.dirname(filePath));
   const content = items.map((item) => JSON.stringify(item)).join("\n") + (items.length > 0 ? "\n" : "");
-  await fs37.writeFile(tmpPath, content, "utf8");
-  await fs37.rename(tmpPath, filePath);
+  await fs39.writeFile(tmpPath, content, "utf8");
+  await fs39.rename(tmpPath, filePath);
 }
 async function appendPendingReview(cwd, partial) {
   const ts = partial.ts ?? (/* @__PURE__ */ new Date()).toISOString();
@@ -30025,8 +33412,8 @@ async function appendPendingReview(cwd, partial) {
     risk
   };
   const filePath = getPendingReviewPath(cwd);
-  await fs37.ensureDir(path96.dirname(filePath));
-  await fs37.appendFile(filePath, JSON.stringify(item) + "\n", "utf8");
+  await fs39.ensureDir(path104.dirname(filePath));
+  await fs39.appendFile(filePath, JSON.stringify(item) + "\n", "utf8");
   return item;
 }
 async function removePendingReview(cwd, id) {
@@ -30060,14 +33447,14 @@ var init_review_store = __esm({
 });
 
 // src/utils/team-codebase-paths.ts
-import path97 from "path";
+import path105 from "path";
 function getTeamCodebasePaths(cwd, output) {
-  const root = output ?? path97.join(cwd, "docs", TEAM_CODEBASE_DIR);
+  const root = output ?? path105.join(cwd, "docs", TEAM_CODEBASE_DIR);
   return {
     root,
-    index: path97.join(root, "index.md"),
-    domainsDir: path97.join(root, "domains"),
-    reposDir: path97.join(root, "repos")
+    index: path105.join(root, "index.md"),
+    domainsDir: path105.join(root, "domains"),
+    reposDir: path105.join(root, "repos")
   };
 }
 var TEAM_CODEBASE_DIR;
@@ -30079,8 +33466,8 @@ var init_team_codebase_paths = __esm({
 });
 
 // src/iwiki-dual.ts
-import path98 from "path";
-import fs38 from "fs-extra";
+import path106 from "path";
+import fs40 from "fs-extra";
 function parseIWikiInput2(input) {
   const trimmed = input.trim();
   if (/^\d+$/.test(trimmed)) {
@@ -30244,10 +33631,10 @@ async function importFromIWikiDual(opts) {
     return { sectionsUpdated: [], pendingReview: false };
   }
   const paths = getTeamCodebasePaths(cwd, opts.output);
-  const filePath = path98.join(paths.root, "external-knowledge.md");
+  const filePath = path106.join(paths.root, "external-knowledge.md");
   if (opts.requireReview) {
     if (!opts.dryRun) {
-      const relativeFilePath = path98.relative(cwd, filePath);
+      const relativeFilePath = path106.relative(cwd, filePath);
       for (const sectionKey of sections) {
         const body = aiOutput[sectionKey] ?? "";
         if (!body) continue;
@@ -30264,9 +33651,9 @@ async function importFromIWikiDual(opts) {
   const updatedSections = [];
   const ts = (/* @__PURE__ */ new Date()).toISOString();
   if (!opts.dryRun) {
-    await fs38.ensureDir(paths.root);
-    const exists3 = await fs38.pathExists(filePath);
-    let content = exists3 ? await fs38.readFile(filePath, "utf8") : buildSkeletonContent();
+    await fs40.ensureDir(paths.root);
+    const exists3 = await fs40.pathExists(filePath);
+    let content = exists3 ? await fs40.readFile(filePath, "utf8") : buildSkeletonContent();
     for (const sectionKey of sections) {
       const body = aiOutput[sectionKey] ?? "";
       if (!body) {
@@ -30277,7 +33664,7 @@ async function importFromIWikiDual(opts) {
       updatedSections.push(sectionKey);
     }
     if (updatedSections.length > 0) {
-      await fs38.writeFile(filePath, content, "utf8");
+      await fs40.writeFile(filePath, content, "utf8");
     }
   } else {
     for (const sectionKey of sections) {
@@ -30314,10 +33701,34 @@ var import_exports = {};
 __export(import_exports, {
   importCmd: () => importCmd
 });
-import path99 from "path";
-import os9 from "os";
-import fs39 from "fs-extra";
+import path107 from "path";
+import os10 from "os";
+import fs41 from "fs-extra";
 import { Listr, PRESET_TIMER } from "listr2";
+async function reconcileAndDeepEnrich(params) {
+  const { slug, evidenceDir, wikiRoot, cacheDir, skipEnrich } = params;
+  try {
+    const { reconcileKnowledge: reconcileKnowledge2 } = await Promise.resolve().then(() => (init_adapters(), adapters_exports));
+    const result = await reconcileKnowledge2({ wikiRoot, dryRun: false });
+    if (result.mappings > 0 || result.gaps.length > 0) {
+      log.info(
+        `  reconcile: ${result.mappings} mappings, ${result.gaps.length} gaps, ${result.graphEdges.length} MAPS_TO edges`
+      );
+    }
+  } catch (err) {
+    log.debug(`reconcile skipped: ${err.message}`);
+  }
+  const manifestExists = await fs41.pathExists(path107.join(evidenceDir, "_manifest.json"));
+  if (!skipEnrich && manifestExists) {
+    try {
+      const { deepEnrich: deepEnrich2 } = await Promise.resolve().then(() => (init_deep_enrich(), deep_enrich_exports));
+      await deepEnrich2({ project: slug, evidenceDir, wikiRoot, cacheDir });
+      log.info(`Deep enrich complete: ${slug}`);
+    } catch (err) {
+      log.debug(`deep-enrich failed for ${slug} (non-blocking): ${err.message}`);
+    }
+  }
+}
 async function importCmd(opts) {
   try {
     if (opts.fromOrg) {
@@ -30430,7 +33841,7 @@ async function importCmd(opts) {
           task: async (ctx) => {
             const { learning, repoUrl } = await importFromMR({
               url: opts.fromMr,
-              learningsDir: path99.join(localConfig.repo.localPath, "learnings"),
+              learningsDir: path107.join(localConfig.repo.localPath, "learnings"),
               all: opts.all,
               outputDir: opts.output,
               repoPath: opts.dryRun ? void 0 : localConfig.repo.localPath,
@@ -30444,7 +33855,7 @@ async function importCmd(opts) {
           title: "Incremental teamwiki update",
           skip: (ctx) => !ctx.repoUrl || !!opts.dryRun || !!opts.output,
           task: async (ctx, task) => {
-            const teamwikiRoot = path99.join(localConfig.repo.localPath, "teamwiki");
+            const teamwikiRoot = path107.join(localConfig.repo.localPath, "teamwiki");
             try {
               const { detectProvider: detectProvider2, getProvider: getProvider2 } = await Promise.resolve().then(() => (init_registry(), registry_exports));
               const { getRepoSlug: getRepoSlug2 } = await Promise.resolve().then(() => (init_repo_cache(), repo_cache_exports));
@@ -30452,8 +33863,8 @@ async function importCmd(opts) {
               const provider = getProvider2(providerName);
               const repoInfo = provider.parseRepoInput(ctx.repoUrl);
               const slug = getRepoSlug2(providerName, repoInfo.owner, repoInfo.repo);
-              const evidenceDir = path99.join(teamwikiRoot, "evidence", "code", slug);
-              if (await fs39.pathExists(evidenceDir)) {
+              const evidenceDir = path107.join(teamwikiRoot, "evidence", "code", slug);
+              if (await fs41.pathExists(evidenceDir)) {
                 task.output = `Updating ${slug}...`;
                 await importFromRepo({
                   url: ctx.repoUrl,
@@ -30462,6 +33873,13 @@ async function importCmd(opts) {
                   skipAutoPush: true,
                   sourceMrUrl: opts.fromMr
                 });
+                try {
+                  const { rebuildWikiIndex: rebuildWikiIndex2 } = await Promise.resolve().then(() => (init_rebuild_wiki_index(), rebuild_wiki_index_exports));
+                  await rebuildWikiIndex2(teamwikiRoot);
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  log.warn(`[wiki] global index rebuild failed (non-blocking): ${msg}`);
+                }
                 ctx.didUpdate = true;
               } else {
                 task.skip("No existing evidence for this repo");
@@ -30498,18 +33916,18 @@ async function importCmd(opts) {
         setSilent(false);
       }
     } else if (opts.dir) {
-      const dirPath = path99.resolve(opts.dir);
-      if (!await fs39.pathExists(dirPath)) {
+      const dirPath = path107.resolve(opts.dir);
+      if (!await fs41.pathExists(dirPath)) {
         throw new Error(`Directory not found: ${dirPath}`);
       }
-      const slug = path99.basename(dirPath);
+      const slug = path107.basename(dirPath);
       log.info(`Scanning local directory: ${dirPath} (project: ${slug})`);
       if (opts.dryRun) {
         log.info(`[dry-run] skipping code extraction, no action taken`);
         log.success(`Local directory ${slug} import complete (dry-run)`);
         return;
       }
-      const tmpExtractDir = await fs39.mkdtemp(path99.join(os9.tmpdir(), "teamai-extract-"));
+      const tmpExtractDir = await fs41.mkdtemp(path107.join(os10.tmpdir(), "teamai-extract-"));
       try {
         const { extractCodebase: extractCodebase2 } = await Promise.resolve().then(() => (init_codebase_extract(), codebase_extract_exports));
         await extractCodebase2({
@@ -30519,39 +33937,60 @@ async function importCmd(opts) {
           skipEnrich: opts.skipEnrich ?? false,
           outputRoot: tmpExtractDir
         });
-        const srcWiki = path99.join(tmpExtractDir, "teamwiki");
+        const srcWiki = path107.join(tmpExtractDir, "teamwiki");
         if (opts.output) {
-          const outputWiki = path99.join(opts.output, "teamwiki");
-          if (await fs39.pathExists(srcWiki)) {
-            await fs39.copy(srcWiki, outputWiki, { overwrite: true });
+          const outputWiki = path107.join(opts.output, "teamwiki");
+          if (await fs41.pathExists(srcWiki)) {
+            await fs41.copy(srcWiki, outputWiki, { overwrite: true });
             log.info(`Output written: ${outputWiki}`);
+            await reconcileAndDeepEnrich({
+              slug,
+              evidenceDir: path107.join(outputWiki, "evidence", "code", slug),
+              wikiRoot: outputWiki,
+              cacheDir: dirPath,
+              skipEnrich: opts.skipEnrich ?? false
+            });
           }
         } else {
           const { localConfig } = await autoDetectInit();
           const teamRepoPath = localConfig.repo.localPath;
-          const teamwikiRoot = path99.join(teamRepoPath, "teamwiki");
-          if (await fs39.pathExists(srcWiki)) {
-            const evidenceSrc = path99.join(srcWiki, "evidence", "code", slug);
-            const evidenceDest = path99.join(teamwikiRoot, "evidence", "code", slug);
-            if (await fs39.pathExists(evidenceSrc)) {
-              await fs39.ensureDir(path99.dirname(evidenceDest));
-              await fs39.copy(evidenceSrc, evidenceDest, { overwrite: true });
+          const teamwikiRoot = path107.join(teamRepoPath, "teamwiki");
+          if (await fs41.pathExists(srcWiki)) {
+            const evidenceSrc = path107.join(srcWiki, "evidence", "code", slug);
+            const evidenceDest = path107.join(teamwikiRoot, "evidence", "code", slug);
+            if (await fs41.pathExists(evidenceSrc)) {
+              await fs41.ensureDir(path107.dirname(evidenceDest));
+              await fs41.copy(evidenceSrc, evidenceDest, { overwrite: true });
             }
-            const srcGraph = path99.join(srcWiki, ".indices", "graph-index.json");
-            if (await fs39.pathExists(srcGraph)) {
-              const destGraphDir = path99.join(evidenceDest, ".indices");
-              await fs39.ensureDir(destGraphDir);
-              await fs39.copy(srcGraph, path99.join(destGraphDir, "graph-index.json"), { overwrite: true });
+            const srcGraph = path107.join(srcWiki, ".indices", "graph-index.json");
+            if (await fs41.pathExists(srcGraph)) {
+              const destGraphDir = path107.join(evidenceDest, ".indices");
+              await fs41.ensureDir(destGraphDir);
+              await fs41.copy(srcGraph, path107.join(destGraphDir, "graph-index.json"), { overwrite: true });
             }
             log.info(`teamwiki/ knowledge graph updated: ${slug}`);
+            await reconcileAndDeepEnrich({
+              slug,
+              evidenceDir: evidenceDest,
+              wikiRoot: teamwikiRoot,
+              cacheDir: dirPath,
+              skipEnrich: opts.skipEnrich ?? false
+            });
           }
           const { aggregateGlobalGraph: aggregateGlobalGraph2 } = await Promise.resolve().then(() => (init_graph_aggregate(), graph_aggregate_exports));
           await aggregateGlobalGraph2(teamwikiRoot);
+          try {
+            const { rebuildWikiIndex: rebuildWikiIndex2 } = await Promise.resolve().then(() => (init_rebuild_wiki_index(), rebuild_wiki_index_exports));
+            await rebuildWikiIndex2(teamwikiRoot);
+            log.info("teamwiki router.md / index.md rebuilt");
+          } catch (e) {
+            log.warn(`[wiki] global index rebuild failed (non-blocking): ${e instanceof Error ? e.message : String(e)}`);
+          }
           await autoPushTeamRepo(teamRepoPath, `[teamai] Import from local dir: ${slug}`);
           log.success(`Pushed to team knowledge repo (${localConfig.repo.remote})`);
         }
       } finally {
-        await fs39.remove(tmpExtractDir);
+        await fs41.remove(tmpExtractDir);
       }
       log.success(`Local directory ${slug} import complete`);
     } else if (opts.fromClaude) {
@@ -30601,12 +34040,12 @@ var codebase_upgrade_wiki_exports = {};
 __export(codebase_upgrade_wiki_exports, {
   upgradeCodebaseWiki: () => upgradeCodebaseWiki
 });
-import { readdir as readdir7, readFile as readFile11 } from "fs/promises";
-import path100 from "path";
+import { readdir as readdir7, readFile as readFile13 } from "fs/promises";
+import path108 from "path";
 import chalk5 from "chalk";
-import matter9 from "gray-matter";
+import matter10 from "gray-matter";
 async function upgradeCodebaseWiki(opts) {
-  const teamCodebaseDir = path100.join(opts.cwd, "docs", "team-codebase", "repos");
+  const teamCodebaseDir = path108.join(opts.cwd, "docs", "team-codebase", "repos");
   if (!await pathExists(teamCodebaseDir)) {
     if (opts.json) {
       console.log(JSON.stringify({ status: "nothing-to-migrate", reason: "docs/team-codebase/repos/ not found" }));
@@ -30631,10 +34070,10 @@ async function upgradeCodebaseWiki(opts) {
   const result = { migrated: [], skipped: [], errors: [] };
   for (const file of mdFiles) {
     const slug = file.replace(".md", "");
-    const filePath = path100.join(teamCodebaseDir, file);
+    const filePath = path108.join(teamCodebaseDir, file);
     try {
-      const content = await readFile11(filePath, "utf-8");
-      const parsed = matter9(content);
+      const content = await readFile13(filePath, "utf-8");
+      const parsed = matter10(content);
       const source = parsed.data["source"] ?? parsed.data["repo_url"];
       if (!source) {
         result.skipped.push(`${slug}: \u65E0 source/repo_url \u5B57\u6BB5`);
@@ -30644,9 +34083,9 @@ async function upgradeCodebaseWiki(opts) {
         result.migrated.push(`${slug} \u2192 teamwiki/evidence/code/${slug}/`);
         continue;
       }
-      const cacheBase = path100.join(process.env["HOME"] ?? "", ".teamai", "cache", "repos");
+      const cacheBase = path108.join(process.env["HOME"] ?? "", ".teamai", "cache", "repos");
       const urlParts = String(source).replace(/^https?:\/\//, "").replace(/@.*$/, "").split("/");
-      const cachePath = path100.join(cacheBase, ...urlParts.slice(0, 3));
+      const cachePath = path108.join(cacheBase, ...urlParts.slice(0, 3));
       if (await pathExists(cachePath)) {
         await extractCodebase({ path: cachePath, project: slug });
         result.migrated.push(slug);
@@ -30700,11 +34139,11 @@ __export(codebase_wiki_lint_exports, {
   formatWikiLintReport: () => formatWikiLintReport,
   lintTeamwiki: () => lintTeamwiki
 });
-import { readFile as readFile12, readdir as readdir8, stat as stat5 } from "fs/promises";
-import path101 from "path";
+import { readFile as readFile14, readdir as readdir8, stat as stat7 } from "fs/promises";
+import path109 from "path";
 import chalk6 from "chalk";
 async function lintTeamwiki(opts) {
-  const wikiRoot = opts.wikiRoot ?? path101.join(opts.cwd ?? process.cwd(), "teamwiki");
+  const wikiRoot = opts.wikiRoot ?? path109.join(opts.cwd ?? process.cwd(), "teamwiki");
   const issues = [];
   const minSeverity = opts.severity ?? "info";
   const severityOrder = ["info", "low", "medium", "high"];
@@ -30714,7 +34153,7 @@ async function lintTeamwiki(opts) {
       issues.push(issue);
     }
   }
-  const graphPath = path101.join(wikiRoot, ".indices", "graph-index.json");
+  const graphPath = path109.join(wikiRoot, ".indices", "graph-index.json");
   let graph = null;
   if (!await pathExists(graphPath)) {
     addIssue({
@@ -30725,7 +34164,7 @@ async function lintTeamwiki(opts) {
     });
   } else {
     try {
-      const raw = await readFile12(graphPath, "utf-8");
+      const raw = await readFile14(graphPath, "utf-8");
       graph = JSON.parse(raw);
     } catch {
       addIssue({
@@ -30736,7 +34175,7 @@ async function lintTeamwiki(opts) {
       });
     }
   }
-  const evidenceDir = path101.join(wikiRoot, "evidence", "code");
+  const evidenceDir = path109.join(wikiRoot, "evidence", "code");
   if (!await pathExists(evidenceDir)) {
     addIssue({
       severity: "high",
@@ -30755,8 +34194,8 @@ async function lintTeamwiki(opts) {
       });
     }
     for (const project of projects) {
-      const projectDir = path101.join(evidenceDir, project);
-      const pStat = await stat5(projectDir).catch(() => null);
+      const projectDir = path109.join(evidenceDir, project);
+      const pStat = await stat7(projectDir).catch(() => null);
       if (!pStat?.isDirectory()) {
         if (!pStat) {
           addIssue({ severity: "low", category: "stat-failed", location: `evidence/code/${project}`, message: "\u65E0\u6CD5\u8BFB\u53D6\u76EE\u5F55\u72B6\u6001" });
@@ -30775,7 +34214,7 @@ async function lintTeamwiki(opts) {
     }
   }
   for (const navFile of ["router.md", "index.md", "hot.md"]) {
-    if (!await pathExists(path101.join(wikiRoot, navFile))) {
+    if (!await pathExists(path109.join(wikiRoot, navFile))) {
       addIssue({
         severity: "low",
         category: "nav-missing",
@@ -30784,7 +34223,7 @@ async function lintTeamwiki(opts) {
       });
     }
   }
-  const manifestPath = path101.join(wikiRoot, "source-manifest.json");
+  const manifestPath = path109.join(wikiRoot, "source-manifest.json");
   if (!await pathExists(manifestPath)) {
     addIssue({
       severity: "low",
@@ -30794,7 +34233,7 @@ async function lintTeamwiki(opts) {
     });
   } else {
     try {
-      const raw = await readFile12(manifestPath, "utf-8");
+      const raw = await readFile14(manifestPath, "utf-8");
       const manifest = JSON.parse(raw);
       if (manifest.lastScan) {
         const daysSince = (Date.now() - new Date(manifest.lastScan).getTime()) / (1e3 * 60 * 60 * 24);
@@ -30900,8 +34339,8 @@ var codebase_cmd_exports = {};
 __export(codebase_cmd_exports, {
   codebaseCmd: () => codebaseCmd
 });
-import path102 from "path";
-import { readFile as readFile13 } from "fs/promises";
+import path110 from "path";
+import { readFile as readFile15 } from "fs/promises";
 import chalk7 from "chalk";
 async function codebaseCmd(opts) {
   const cwd = process.cwd();
@@ -30941,14 +34380,14 @@ async function codebaseCmd(opts) {
   const { pathExists: pathExists3 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
   let teamwikiDir;
   if (opts.output) {
-    teamwikiDir = path102.resolve(opts.output, "teamwiki");
+    teamwikiDir = path110.resolve(opts.output, "teamwiki");
   } else {
     try {
       const { autoDetectInit: autoDetectInit2 } = await Promise.resolve().then(() => (init_config(), config_exports));
       const { localConfig: lc } = await autoDetectInit2();
-      teamwikiDir = path102.join(lc.repo.localPath, "teamwiki");
+      teamwikiDir = path110.join(lc.repo.localPath, "teamwiki");
     } catch {
-      teamwikiDir = path102.join(cwd, ".teamai", "team-repo", "teamwiki");
+      teamwikiDir = path110.join(cwd, ".teamai", "team-repo", "teamwiki");
     }
   }
   if (!await pathExists3(teamwikiDir)) {
@@ -30971,20 +34410,20 @@ async function printCodebaseStatus(opts) {
   const cwd = process.cwd();
   let teamwikiDir;
   if (opts.output) {
-    teamwikiDir = path102.resolve(opts.output, "teamwiki");
+    teamwikiDir = path110.resolve(opts.output, "teamwiki");
   } else {
     try {
       const { autoDetectInit: autoDetectInit2 } = await Promise.resolve().then(() => (init_config(), config_exports));
       const { localConfig: lc } = await autoDetectInit2();
-      teamwikiDir = path102.join(lc.repo.localPath, "teamwiki");
+      teamwikiDir = path110.join(lc.repo.localPath, "teamwiki");
     } catch {
-      teamwikiDir = path102.join(cwd, ".teamai", "team-repo", "teamwiki");
+      teamwikiDir = path110.join(cwd, ".teamai", "team-repo", "teamwiki");
     }
   }
-  const manifestPath = path102.join(teamwikiDir, "source-manifest.json");
+  const manifestPath = path110.join(teamwikiDir, "source-manifest.json");
   let manifest;
   try {
-    manifest = JSON.parse(await readFile13(manifestPath, "utf-8"));
+    manifest = JSON.parse(await readFile15(manifestPath, "utf-8"));
   } catch {
     if (opts.json) {
       console.log(JSON.stringify({ error: "no-manifest", manifestPath }));
@@ -31025,7 +34464,7 @@ var init_codebase_cmd = __esm({
 });
 
 // src/section-patcher.ts
-import crypto5 from "crypto";
+import crypto6 from "crypto";
 function patchManagedSection(md, slug, newBody, meta) {
   const fromVariants = "--from-(?:repo|iwiki)";
   const openRe = new RegExp(
@@ -31078,9 +34517,9 @@ var review_cmd_exports = {};
 __export(review_cmd_exports, {
   reviewCmd: () => reviewCmd
 });
-import path103 from "path";
+import path111 from "path";
 import chalk8 from "chalk";
-import fs40 from "fs-extra";
+import fs42 from "fs-extra";
 function riskAtMost(itemRisk, ceiling) {
   return RISK_ORDER[itemRisk] >= RISK_ORDER[ceiling];
 }
@@ -31154,11 +34593,11 @@ async function applyOne(cwd, item) {
   if (!section) {
     return { ok: false, reason: "target.section \u7F3A\u5931" };
   }
-  const filePath = path103.isAbsolute(file) ? file : path103.join(cwd, file);
-  if (!await fs40.pathExists(filePath)) {
+  const filePath = path111.isAbsolute(file) ? file : path111.join(cwd, file);
+  if (!await fs42.pathExists(filePath)) {
     return { ok: false, reason: `\u76EE\u6807\u6587\u4EF6\u4E0D\u5B58\u5728\uFF1A${filePath}` };
   }
-  const oldMd = await fs40.readFile(filePath, "utf8");
+  const oldMd = await fs42.readFile(filePath, "utf8");
   const body = String(item.payload["content"] ?? "");
   if (!body) {
     return { ok: false, reason: "payload.content \u4E3A\u7A7A" };
@@ -31168,7 +34607,7 @@ async function applyOne(cwd, item) {
       source: item.source,
       syncedAt: (/* @__PURE__ */ new Date()).toISOString()
     });
-    await fs40.writeFile(filePath, newMd, "utf8");
+    await fs42.writeFile(filePath, newMd, "utf8");
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
@@ -31311,10 +34750,10 @@ function formatComment(learning, suggestions, marker) {
   lines.push("> _Auto-generated by `teamai ci extract-mr`_");
   return lines.join("\n");
 }
-async function githubRequest(path108, method, body) {
+async function githubRequest(path116, method, body) {
   const token = process.env["GITHUB_TOKEN"];
   if (!token) throw new Error("\u672A\u8BBE\u7F6E GITHUB_TOKEN \u73AF\u5883\u53D8\u91CF");
-  const url = `https://api.github.com${path108}`;
+  const url = `https://api.github.com${path116}`;
   const headers = {
     Authorization: `Bearer ${token}`,
     Accept: "application/vnd.github+json",
@@ -31363,8 +34802,8 @@ async function updateGitHubComment(owner, repo, commentId, body) {
   const data = await resp.json();
   return { created: false, url: data.html_url };
 }
-async function tgitRequest(path108, method, body) {
-  return tgitFetch(path108, {
+async function tgitRequest(path116, method, body) {
+  return tgitFetch(path116, {
     method,
     body: body ? JSON.stringify(body) : void 0
   });
@@ -31647,10 +35086,10 @@ function extractMarkerId(body) {
   const match = body.match(MARKER_REGEX);
   return match ? match[1] : null;
 }
-async function githubRequest2(path108) {
+async function githubRequest2(path116) {
   const token = process.env["GITHUB_TOKEN"];
   if (!token) throw new Error("\u672A\u8BBE\u7F6E GITHUB_TOKEN");
-  return fetch(`https://api.github.com${path108}`, {
+  return fetch(`https://api.github.com${path116}`, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/vnd.github+json",
@@ -31685,8 +35124,8 @@ async function readGitHubRejections(owner, repo, prNumber) {
   }
   return result;
 }
-async function tgitRequest2(path108) {
-  return tgitFetch(path108);
+async function tgitRequest2(path116) {
+  return tgitFetch(path116);
 }
 async function getMrGlobalId2(projectId, mrIid) {
   const resp = await tgitRequest2(`/projects/${projectId}/merge_requests?iid=${mrIid}`);
@@ -31746,8 +35185,8 @@ var extract_mr_exports = {};
 __export(extract_mr_exports, {
   ciExtractMr: () => ciExtractMr
 });
-import fs41 from "fs/promises";
-import path104 from "path";
+import fs43 from "fs/promises";
+import path112 from "path";
 async function configureGitUser2(repoPath, provider) {
   const { execFileSync: execFileSync6 } = await import("child_process");
   let name = "teamai-ci";
@@ -31794,11 +35233,11 @@ async function writeKnowledgeToRepo(teamRepo, learning, suggestions, writeMode, 
     const safeTitle = learning.title.replace(/[^a-zA-Z0-9一-鿿_-]/g, "-").replace(/-+/g, "-").slice(0, 50);
     const dateStr = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
     const filename = `${dateStr}-${safeTitle}.md`;
-    const learningsDir = path104.join(teamRepo, "learnings");
-    const learningPath = path104.join(learningsDir, filename);
+    const learningsDir = path112.join(teamRepo, "learnings");
+    const learningPath = path112.join(learningsDir, filename);
     if (!dryRun) {
-      await fs41.mkdir(learningsDir, { recursive: true });
-      await fs41.writeFile(learningPath, learning.content, "utf-8");
+      await fs43.mkdir(learningsDir, { recursive: true });
+      await fs43.writeFile(learningPath, learning.content, "utf-8");
     }
     log.success(`Learning \u5199\u5165: learnings/${filename}`);
     changedFiles.push(`learnings/${filename}`);
@@ -31833,13 +35272,13 @@ async function writeKnowledgeToRepo(teamRepo, learning, suggestions, writeMode, 
   }
 }
 async function writeArtifacts(outputDir, learning, suggestions) {
-  await fs41.mkdir(outputDir, { recursive: true });
+  await fs43.mkdir(outputDir, { recursive: true });
   if (learning) {
-    await fs41.writeFile(path104.join(outputDir, "learning.md"), learning.content, "utf-8");
+    await fs43.writeFile(path112.join(outputDir, "learning.md"), learning.content, "utf-8");
   }
   if (suggestions && suggestions.length > 0) {
-    await fs41.writeFile(
-      path104.join(outputDir, "codebase-suggestions.json"),
+    await fs43.writeFile(
+      path112.join(outputDir, "codebase-suggestions.json"),
       JSON.stringify(suggestions, null, 2),
       "utf-8"
     );
@@ -31853,7 +35292,7 @@ async function ciExtractMr(opts) {
   const result = await importFromMR({
     url: opts.url,
     all: true,
-    learningsDir: opts.teamRepo ? path104.join(opts.teamRepo, "learnings") : void 0,
+    learningsDir: opts.teamRepo ? path112.join(opts.teamRepo, "learnings") : void 0,
     dryRun: true
     // 不让 importFromMR 自己写文件，我们自己控制写入
   });
@@ -31962,21 +35401,21 @@ ${affectedModules.map((m) => `- \`${m}\` (evidence + G-document)`).join("\n")}` 
           const projectName = parsed.repo;
           await extractCodebase2({ path: businessRepo, project: projectName });
           const fse13 = await import("fs-extra");
-          const srcWiki = path104.join(businessRepo, "teamwiki");
-          const teamWikiRoot = path104.join(path104.resolve(opts.teamRepo), "teamwiki");
+          const srcWiki = path112.join(businessRepo, "teamwiki");
+          const teamWikiRoot = path112.join(path112.resolve(opts.teamRepo), "teamwiki");
           try {
             if (await fse13.pathExists(srcWiki)) {
-              const evidenceSrc = path104.join(srcWiki, "evidence", "code", projectName);
-              const evidenceDest = path104.join(teamWikiRoot, "evidence", "code", projectName);
+              const evidenceSrc = path112.join(srcWiki, "evidence", "code", projectName);
+              const evidenceDest = path112.join(teamWikiRoot, "evidence", "code", projectName);
               if (await fse13.pathExists(evidenceSrc)) {
                 await fse13.ensureDir(evidenceDest);
                 await fse13.copy(evidenceSrc, evidenceDest, { overwrite: true });
               }
-              const srcGraph = path104.join(srcWiki, ".indices", "graph-index.json");
+              const srcGraph = path112.join(srcWiki, ".indices", "graph-index.json");
               if (await fse13.pathExists(srcGraph)) {
-                const destGraphDir = path104.join(evidenceDest, ".indices");
+                const destGraphDir = path112.join(evidenceDest, ".indices");
                 await fse13.ensureDir(destGraphDir);
-                await fse13.copy(srcGraph, path104.join(destGraphDir, "graph-index.json"));
+                await fse13.copy(srcGraph, path112.join(destGraphDir, "graph-index.json"));
               }
               const { aggregateGlobalGraph: aggregateGlobalGraph2 } = await Promise.resolve().then(() => (init_graph_aggregate(), graph_aggregate_exports));
               await aggregateGlobalGraph2(teamWikiRoot);
@@ -32033,8 +35472,8 @@ var init_extract_mr = __esm({
 });
 
 // src/maintenance/prune.ts
-import path105 from "path";
-import matter10 from "gray-matter";
+import path113 from "path";
+import matter11 from "gray-matter";
 async function findPruneCandidates(learningsDir, votesDir, options = {}) {
   const threshold = options.threshold ?? DEFAULT_THRESHOLD;
   const confidenceMap = await computeAllConfidence(votesDir);
@@ -32044,12 +35483,12 @@ async function findPruneCandidates(learningsDir, votesDir, options = {}) {
   for (const file of files) {
     if (!file.endsWith(".md")) continue;
     const docId = file.replace(/\.md$/i, "");
-    const absPath = path105.join(learningsDir, file);
+    const absPath = path113.join(learningsDir, file);
     const content = await readFileSafe(absPath);
     if (!content) continue;
     let date = "";
     try {
-      const { data } = matter10(content);
+      const { data } = matter11(content);
       date = typeof data.date === "string" ? data.date : "";
     } catch {
       continue;
@@ -32086,9 +35525,9 @@ async function executePrune(repoPath, candidates, options = {}) {
   }
   for (const candidate of candidates) {
     if (options.archive) {
-      const archiveDir = path105.join(repoPath, "learnings", "_archive");
+      const archiveDir = path113.join(repoPath, "learnings", "_archive");
       await ensureDir(archiveDir);
-      await copyFile(candidate.path, path105.join(archiveDir, candidate.filename));
+      await copyFile(candidate.path, path113.join(archiveDir, candidate.filename));
       await remove(candidate.path);
       archived++;
     } else {
@@ -32113,7 +35552,7 @@ var init_prune = __esm({
 });
 
 // src/maintenance/quality-update.ts
-import path106 from "path";
+import path114 from "path";
 async function findStaleEntries(votesDir, knowledgeDirs, options = {}) {
   const minRecalled = options.minRecalled ?? DEFAULT_MIN_RECALLED;
   const maxUpvoted = options.maxUpvoted ?? DEFAULT_MAX_UPVOTED;
@@ -32123,7 +35562,7 @@ async function findStaleEntries(votesDir, knowledgeDirs, options = {}) {
   for (const file of voteFiles) {
     if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
     const username = file.replace(/\.(yaml|yml)$/, "");
-    const filePath = path106.join(votesDir, file);
+    const filePath = path114.join(votesDir, file);
     try {
       const data = await loadUserVotes(filePath);
       for (const [docId, entry] of Object.entries(data.votes)) {
@@ -32160,7 +35599,7 @@ async function resolveDocPath(docId, dirs) {
   const filename = docId.endsWith(".md") ? docId : `${docId}.md`;
   for (const dir of [dirs.docs, dirs.rules, dirs.skills]) {
     if (!dir) continue;
-    const candidate = path106.join(dir, filename);
+    const candidate = path114.join(dir, filename);
     if (await pathExists(candidate)) return candidate;
   }
   return null;
@@ -32183,7 +35622,7 @@ async function findRelatedAdoptedLearnings(staleEntry, votesDir, learningsDir, l
   for (const file of voteFiles) {
     if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
     try {
-      const data = await loadUserVotes(path106.join(votesDir, file));
+      const data = await loadUserVotes(path114.join(votesDir, file));
       for (const [docId, entry] of Object.entries(data.votes)) {
         if (docId === staleEntry.docId) continue;
         if ((entry.upvoted_count ?? 0) > 0) {
@@ -32198,7 +35637,7 @@ async function findRelatedAdoptedLearnings(staleEntry, votesDir, learningsDir, l
   const contents = [];
   for (const [docId] of sorted) {
     const filename = docId.endsWith(".md") ? docId : `${docId}.md`;
-    const filePath = path106.join(learningsDir, filename);
+    const filePath = path114.join(learningsDir, filename);
     const content = await readFileSafe(filePath);
     if (content) contents.push(content);
   }
@@ -32254,8 +35693,8 @@ var init_quality_update = __esm({
 });
 
 // src/maintenance/promote.ts
-import path107 from "path";
-import matter11 from "gray-matter";
+import path115 from "path";
+import matter12 from "gray-matter";
 async function findPromotionCandidates(learningsDir, votesDir) {
   const confidenceMap = await computeAllConfidence(votesDir);
   const candidates = [];
@@ -32271,13 +35710,13 @@ async function findPromotionCandidates(learningsDir, votesDir) {
     if (!docVotes) continue;
     if (docVotes.upvoted < MIN_UPVOTED) continue;
     if (docVotes.users.size < MIN_USERS) continue;
-    const absPath = path107.join(learningsDir, file);
+    const absPath = path115.join(learningsDir, file);
     const content = await readFileSafe(absPath);
     if (!content) continue;
     let title = docId;
     let date = "";
     try {
-      const { data } = matter11(content);
+      const { data } = matter12(content);
       title = typeof data.title === "string" ? data.title : docId;
       date = typeof data.date === "string" ? data.date : "";
       if (data.promoted_to) continue;
@@ -32343,9 +35782,9 @@ Output ONLY the transformed markdown content (including YAML frontmatter with ti
 }
 async function executePromotion(candidate, repoPath, options = {}) {
   const category = options.category ?? candidate.suggestedCategory;
-  const targetDir = path107.join(repoPath, category);
+  const targetDir = path115.join(repoPath, category);
   await ensureDir(targetDir);
-  const targetPath = path107.join(targetDir, candidate.filename);
+  const targetPath = path115.join(targetDir, candidate.filename);
   if (options.dryRun) {
     log.info(`[dry-run] Would promote ${candidate.docId} -> ${category}/${candidate.filename}`);
     return targetPath;
@@ -32357,9 +35796,9 @@ async function executePromotion(candidate, repoPath, options = {}) {
   }
   const promotedContent = await generatePromotedContent(originalContent, category, candidate.title);
   await writeFile(targetPath, promotedContent);
-  const { data, content: body } = matter11(originalContent);
+  const { data, content: body } = matter12(originalContent);
   data.promoted_to = `${category}/${candidate.filename}`;
-  const updated = matter11.stringify(body, data);
+  const updated = matter12.stringify(body, data);
   await writeFile(candidate.path, updated);
   log.success(`Promoted: ${candidate.docId} -> ${category}/${candidate.filename}`);
   return targetPath;
@@ -32407,7 +35846,7 @@ async function aggregatePerDocVotes(votesDir) {
   for (const file of voteFiles) {
     if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
     const username = file.replace(/\.(yaml|yml)$/, "");
-    const filePath = path107.join(votesDir, file);
+    const filePath = path115.join(votesDir, file);
     try {
       const data = await loadUserVotes2(filePath);
       for (const [docId, entry] of Object.entries(data.votes)) {
@@ -32468,16 +35907,16 @@ var init_maintenance = __esm({
 
 // src/index.ts
 init_logger();
-import { createRequire as createRequire2 } from "module";
+import { createRequire as createRequire4 } from "module";
 import { Command, Option } from "commander";
-var require2 = createRequire2(import.meta.url);
-var { version } = require2("../package.json");
+var require4 = createRequire4(import.meta.url);
+var { version } = require4("../package.json");
 var program = new Command();
 program.name("teamai").description("TeamAI \u2014 The team harness for AI agents").version(version).option("--dry-run", "Preview mode, no changes made").option("-v, --verbose", "Verbose output").hook("preAction", (thisCommand) => {
   const opts = thisCommand.opts();
   if (opts.verbose) setVerbose(true);
 });
-program.command("init").description("Initialize teamai (configure Git provider, clone repo, register member)").argument("[repo]", 'Team repo (owner/repo or full URL). Pass "." for single-repo mode (the current git repo is the team repo).').option("--repo <repo>", "Team repo (alias of the positional argument)").option("--http <url>", "Git-free HTTP team repo (read-only consumer; only needs an API key)").option("--self", "Single-repo mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.").option("--token <key>", "API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.").option("--scope <scope>", "Install scope: project (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude)").option("--inherit-user-scope", "In project scope, also sync safe user-scope resources and search its knowledge").option("--no-inherit-user-scope", "Disable user-scope inheritance for this project").option("--role <id>", "Primary role ID (e.g. hai_dev) for non-interactive setup").option("--branch <name>", "Track this team-repo branch instead of the default branch (product-line variant; pull/push/MR-target all follow it)").option("--agent <name>", "AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; omit for an interactive picker. Additive on repeated runs.", (val, acc) => acc.concat(val), []).option("--force", "Overwrite existing config without confirmation").action(async (repoArg, cmdOpts) => {
+program.command("init").description("Initialize teamai (configure Git provider, clone repo, register member)").argument("[repo]", 'Team repo (owner/repo or full URL). Pass "." for single-repo mode (the current git repo is the team repo).').option("--repo <repo>", "Team repo (alias of the positional argument)").option("--http <url>", "Git-free HTTP team repo (read-only consumer; only needs an API key)").option("--self", "Single-repo mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.").option("--token <key>", "API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.").option("--scope <scope>", "Install scope: project (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude)").option("--inherit-user-scope", "In project scope, also sync safe user-scope resources and search its knowledge").option("--no-inherit-user-scope", "Disable user-scope inheritance for this project").option("--role <id>", "Primary role ID (e.g. hai_dev) for non-interactive setup").option("--branch <name>", "Track this team-repo branch instead of the default branch (product-line variant; pull/push/MR-target all follow it)").option("--agent <name>", "AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; omit for an interactive picker. Additive on repeated runs.", (val, acc) => acc.concat(val), []).option("--force", "Overwrite existing config without confirmation").action(async (repoArg, cmdOpts) => {
   const globalOpts = program.opts();
   const { init: init2 } = await Promise.resolve().then(() => (init_init(), init_exports));
   await init2({ ...globalOpts, ...cmdOpts, repoPositional: repoArg });
@@ -32922,7 +36361,7 @@ recallCmd.command("maintenance").description("Automatic maintenance of team know
   }
   if (cmdOpts.updateQuality) {
     const { findStaleEntries: findStaleEntries2, reportStaleEntries: reportStaleEntries2, findRelatedAdoptedLearnings: findRelatedAdoptedLearnings2, generateUpdateDraft: generateUpdateDraft2 } = await Promise.resolve().then(() => (init_maintenance(), maintenance_exports));
-    const { writeFile: writeFile12 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
+    const { writeFile: writeFile13 } = await Promise.resolve().then(() => (init_fs(), fs_exports));
     const { log: log4 } = await Promise.resolve().then(() => (init_logger(), logger_exports));
     const entries = await findStaleEntries2(votesDir, {
       docs: `${repoPath}/docs`,
@@ -32937,7 +36376,7 @@ recallCmd.command("maintenance").description("Automatic maintenance of team know
       const draft = await generateUpdateDraft2(entry, related);
       if (draft) {
         const draftPath = `${entry.path}.draft.md`;
-        await writeFile12(draftPath, draft);
+        await writeFile13(draftPath, draft);
         log4.success(`  Draft written: ${draftPath}`);
       }
     }
