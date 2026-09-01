@@ -5,7 +5,7 @@ import { builtinHookDefs } from './builtin-hooks.js';
 import { parseTeamHooks, resolveTeamHooks } from './resources/hooks.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
-import { resolveHookScope } from './types.js';
+import { resolveHookScope, isSelfMode } from './types.js';
 import { getUserHome } from './utils/home.js';
 
 type HookListStatus = HookStatus | 'not configured';
@@ -58,7 +58,13 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
     });
     let codexTrustGated = false;
     const { baseDir, manifestPath } = resolveHookScope(localConfig);
-    await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin });
+    await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, {
+        builtinOverride: builtin,
+        teamHookProjectRoot: localConfig.scope === 'project' && !isSelfMode(localConfig)
+            ? localConfig.projectRoot
+            : undefined,
+        installedBaseDir: localConfig.scope === 'project' ? (localConfig.projectRoot ?? baseDir) : undefined,
+    });
     if (await hasInstalledCodexTrustGatedTool(teamConfig.toolPaths, baseDir)) {
         codexTrustGated = true;
     }

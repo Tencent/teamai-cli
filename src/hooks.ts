@@ -1,8 +1,10 @@
 import path from 'node:path';
+import { realpathSync } from 'node:fs';
 import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, resolveHookScope, resolveLegacyProjectHookScope } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
+import { isSelfMode } from './types.js';
 import { builtinHookDefs, applyBuiltinOverride, ensureWrapperIfShellAvailable, SHELL_DEPENDENT_TOOLS } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { resolveTeamHooks } from './resources/hooks.js';
@@ -173,6 +175,8 @@ export interface ReconcileHooksOptions {
   manifestPath?: string;
   /** §4.8 team override of built-in hooks (disabled / timeout). */
   builtinOverride?: BuiltinHookOverride;
+  /** Project root used to gate non-self project-scope team hooks. */
+  teamHookProjectRoot?: string;
 }
 
 /** One injected team hook recorded in the manifest. */
@@ -192,9 +196,37 @@ async function readManifest(manifestPath: string): Promise<ManagedHooksManifest>
 }
 
 /** Team hooks to record in the manifest for a tool (empty when removing). */
-function manifestRecordsForTool(teamDefs: HookDef[], tool: string, removeAll: boolean): ManagedHookRecord[] {
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function canonicalProjectRoot(projectRoot: string): string {
+  try { return realpathSync.native(projectRoot); } catch { return path.resolve(projectRoot); }
+}
+
+/** Keep a project-scope team hook from firing in every project on the machine. */
+function gateTeamHookCommand(command: string, projectRoot?: string): string {
+  if (!projectRoot) return command;
+  const root = shellQuote(canonicalProjectRoot(projectRoot));
+  return `if [ "$PWD" = ${root} ] || case "$PWD" in ${root}/*) true;; *) false;; esac; then (${command}); fi`;
+}
+
+function isGatedForProject(command: string, projectRoot: string): boolean {
+  return command.startsWith(`if [ "$PWD" = ${shellQuote(canonicalProjectRoot(projectRoot))} ]`);
+}
+
+function isProjectGatedCommand(command: string): boolean {
+  return command.startsWith('if [ "$PWD" = ');
+}
+
+function scopedTeamDefs(teamDefs: HookDef[], projectRoot?: string): HookDef[] {
+  if (!projectRoot) return teamDefs;
+  return teamDefs.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot) }));
+}
+
+function manifestRecordsForTool(teamDefs: HookDef[], tool: string, removeAll: boolean, projectRoot?: string): ManagedHookRecord[] {
   if (removeAll) return [];
-  return teamDefsForTool(teamDefs, tool).map((d) => ({
+  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot), tool).map((d) => ({
     id: d.key,
     event: d.event,
     ...(d.matcher && d.matcher !== '*' ? { matcher: d.matcher } : {}),
@@ -273,12 +305,24 @@ async function reconcileClaudeFormat(
   teamDefs: HookDef[],
   opts: ReconcileHooksOptions,
   teamActive: boolean,
+  desiredTeamCommands: Set<string>,
+  priorTeamCommands: Set<string>,
 ): Promise<void> {
   // Built-in management never removes team hooks; team hooks are reconciled only
   // when a team pass is active (manifest present). This keeps the builtin-only
   // refresh path (injectHooks / autoMigrate) non-destructive to team hooks (§5).
-  const isManaged = (e: HookMatcher): boolean =>
-    isBuiltinClaudeEntry(e) || (teamActive && isTeamClaudeEntry(e)) || (!!opts.removeAll && isAgentClaudeEntry(e));
+  const isManaged = (e: HookMatcher): boolean => {
+    if (isBuiltinClaudeEntry(e) || (!!opts.removeAll && isAgentClaudeEntry(e))) return true;
+    if (!teamActive || !isTeamClaudeEntry(e)) return false;
+    // Project-scope hooks share HOME with other projects. Only remove entries
+    // recorded for this project (or desired by this reconcile); otherwise a
+    // project B pull must not delete project A's hooks.
+    if (opts.teamHookProjectRoot) {
+      const command = e.hooks?.[0]?.command ?? '';
+      return desiredTeamCommands.has(command) || priorTeamCommands.has(command);
+    }
+    return true;
+  };
   const expanded = expandHome(settingsPath);
   await ensureDir(path.dirname(expanded));
   const settings: ClaudeSettingsJson = (await readJson<ClaudeSettingsJson>(expanded)) ?? {};
@@ -612,30 +656,45 @@ export async function reconcileHooks(
 ): Promise<void> {
   const teamActive = !!opts.manifestPath;
   const manifest = opts.manifestPath ? await readManifest(opts.manifestPath) : null;
-  const priorTeamCommands = new Set((manifest?.[tool] ?? []).map((r) => r.command));
+  const allPriorRecords = manifest?.[tool] ?? [];
+  const priorRecords = opts.teamHookProjectRoot
+    ? allPriorRecords.filter((r) => isGatedForProject(r.command, opts.teamHookProjectRoot!))
+    : allPriorRecords;
+  const priorTeamCommands = new Set(priorRecords.map((r) => r.command));
+  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot);
+  const desiredTeamCommands = new Set(scopedDefs.filter((d) => !d.tools || d.tools.includes(tool)).map((d) => d.command));
 
   const format = detectFormat(tool);
   if (format === 'cursor') {
-    await reconcileCursorFormat(settingsPath, tool, teamDefs, opts, priorTeamCommands);
+    await reconcileCursorFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands);
   } else if (format === 'codex') {
-    await reconcileCodexFormat(settingsPath, tool, teamDefs, opts, priorTeamCommands);
+    await reconcileCodexFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands);
   } else {
-    await reconcileClaudeFormat(settingsPath, tool, teamDefs, opts, teamActive);
+    await reconcileClaudeFormat(settingsPath, tool, scopedDefs, {
+      ...opts,
+      // In a shared HOME settings file, only remove team entries belonging to
+      // this project. User-scope installs retain the historical marker sweep.
+      teamHookProjectRoot: opts.teamHookProjectRoot,
+    }, teamActive, desiredTeamCommands, priorTeamCommands);
   }
 
   // Update the manifest's team-hook index for this tool (when manifest is active).
   if (opts.manifestPath && manifest) {
-    const records = manifestRecordsForTool(teamDefs, tool, !!opts.removeAll);
+    const records = manifestRecordsForTool(teamDefs, tool, !!opts.removeAll, opts.teamHookProjectRoot);
     const prev = manifest[tool] ?? [];
-    const sameAsPrev = JSON.stringify(prev) === JSON.stringify(records);
+    const retained = opts.teamHookProjectRoot
+      ? prev.filter((r) => !isGatedForProject(r.command, opts.teamHookProjectRoot!))
+      : prev.filter((r) => isProjectGatedCommand(r.command));
+    const nextRecords = [...retained, ...records];
+    const sameAsPrev = JSON.stringify(prev) === JSON.stringify(nextRecords);
     const hadEntry = Object.prototype.hasOwnProperty.call(manifest, tool);
-    if (records.length === 0) {
+    if (nextRecords.length === 0) {
       if (hadEntry) {
         delete manifest[tool];
         await writeJson(expandHome(opts.manifestPath), manifest);
       }
     } else if (!sameAsPrev) {
-      manifest[tool] = records;
+      manifest[tool] = nextRecords;
       await writeJson(expandHome(opts.manifestPath), manifest);
     }
   }
@@ -761,7 +820,7 @@ export async function hasTeamaiHooks(
  * and gate on the `cwd` fed to `hook-dispatch`. Any project-scope copy left by
  * an earlier layout is deleted on the way through.
  */
-async function reconcileOpencodePlugin(baseDir: string, removeAll = false): Promise<void> {
+async function reconcileOpencodePlugin(baseDir: string, removeAll = false, installedBaseDir?: string): Promise<void> {
   const home = getUserHome();
   const { injectOpencodeHooks, removeOpencodeHooks } = await import('./opencode-hooks.js');
   if (path.resolve(baseDir) !== path.resolve(home)) {
@@ -771,7 +830,11 @@ async function reconcileOpencodePlugin(baseDir: string, removeAll = false): Prom
     await removeOpencodeHooks(home, 'user');
     return;
   }
-  if (await pathExists(path.join(home, '.config', 'opencode'))) {
+  const homeInstalled = await pathExists(path.join(home, '.config', 'opencode'));
+  const projectInstalled = installedBaseDir
+    ? await pathExists(path.join(installedBaseDir, '.opencode'))
+    : false;
+  if (homeInstalled || projectInstalled) {
     await injectOpencodeHooks(home, 'user');
   }
 }
@@ -847,7 +910,7 @@ export async function reconcileHooksToAllTools(
   baseDir: string,
   teamDefs: HookDef[],
   manifestPath: string,
-  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean } = {},
+  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string } = {},
 ): Promise<void> {
   const activeTools = Object.keys(toolPaths).filter(t => !opts.filterAgents || opts.filterAgents.includes(t));
   let shellAvailable = true;
@@ -889,7 +952,7 @@ export async function reconcileHooksToAllTools(
     if (tool === 'opencode') {
       if (opts.settingsOnly) continue;
       try {
-        await reconcileOpencodePlugin(baseDir, opts.removeAll);
+        await reconcileOpencodePlugin(baseDir, opts.removeAll, opts.installedBaseDir);
       } catch (e) {
         log.warn(`Failed to reconcile OpenCode hooks: ${(e as Error).message}`);
       }
@@ -902,13 +965,17 @@ export async function reconcileHooksToAllTools(
     // ensureDir — making uninstalled tools look installed and pulling skills
     // into them on later `pull`s.
     const toolRoot = path.join(baseDir, paths.settings.split('/')[0]);
-    if (!await pathExists(toolRoot)) continue;
+    const installedRoot = opts.installedBaseDir
+      ? path.join(opts.installedBaseDir, paths.settings.split('/')[0])
+      : toolRoot;
+    if (!await pathExists(toolRoot) && !await pathExists(installedRoot)) continue;
     const settingsPath = path.join(baseDir, paths.settings);
     try {
       await reconcileHooks(settingsPath, tool, teamDefs, {
         manifestPath,
         removeAll: opts.removeAll,
         builtinOverride: opts.builtinOverride,
+        teamHookProjectRoot: opts.teamHookProjectRoot,
       });
     } catch (e) {
       log.warn(`Failed to reconcile hooks for ${tool}: ${(e as Error).message}`);
@@ -1004,6 +1071,10 @@ export async function reconcileTeamHooksForConfig(
     removeAll: opts.removeAll,
     builtinOverride: builtin,
     filterAgents,
+    teamHookProjectRoot: localConfig.scope === 'project' && !isSelfMode(localConfig)
+      ? localConfig.projectRoot
+      : undefined,
+    installedBaseDir: localConfig.scope === 'project' ? (localConfig.projectRoot ?? baseDir) : undefined,
   });
   await sweepLegacyProjectHooks(teamConfig.toolPaths, localConfig);
   return teamDefs;

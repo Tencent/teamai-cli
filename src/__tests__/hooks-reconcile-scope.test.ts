@@ -91,16 +91,60 @@ hooks:
 
     const cursor = await cursorSettings();
     expect(cursor.hooks.stop).toHaveLength(2);
-    expect(cursor.hooks.stop.some((h) => h.command === 'npm run lint')).toBe(true);
+    expect(cursor.hooks.stop.some((h) => h.command.includes('npm run lint'))).toBe(true);
 
     const codex = await codexSettings();
     expect(codex.hooks.Stop).toHaveLength(2);
-    expect(codex.hooks.Stop.some((h) => h.hooks[0].command === 'npm run lint')).toBe(true);
+    expect(codex.hooks.Stop.some((h) => h.hooks[0].command.includes('npm run lint'))).toBe(true);
 
     const m = await manifest();
     expect(m.claude.map((r) => r.id)).toEqual(['lint']);
     expect(m.cursor.map((r) => r.id)).toEqual(['lint']);
     expect(m.codex.map((r) => r.id)).toEqual(['lint']);
+  });
+
+  it('keeps project team hooks isolated when projects share HOME', async () => {
+    await writeYaml(`
+hooks:
+  - id: project-a
+    description: project a
+    event: Stop
+    command: echo project-a
+`);
+    await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+    const projectB = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recon-proj-b-'));
+    const repoB = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-recon-repo-b-'));
+    try {
+      await fse.ensureDir(path.join(repoB, 'hooks'));
+      await fse.writeFile(path.join(repoB, 'hooks', 'hooks.yaml'), `
+hooks:
+  - id: project-b
+    description: project b
+    event: Stop
+    command: echo project-b
+`);
+      const configB = {
+        repo: { localPath: repoB, remote: 'x' }, username: 'b', scope: 'project',
+        projectRoot: projectB, additionalRoles: [],
+      } as unknown as LocalConfig;
+      await fse.ensureDir(path.join(projectB, '.claude'));
+      await reconcileTeamHooksForConfig(teamConfig, configB);
+
+      const claude = await claudeSettings();
+      const teamCommands = claude.hooks.Stop
+        .filter((entry) => entry.description?.startsWith('[teamai:hook:'))
+        .map((entry) => entry.hooks[0].command);
+      expect(teamCommands).toHaveLength(2);
+      expect(teamCommands.some((command) => command.includes("echo project-a") && command.includes(project))).toBe(true);
+      expect(teamCommands.some((command) => command.includes("echo project-b") && command.includes(projectB))).toBe(true);
+
+      const m = await manifest();
+      expect(m.claude).toHaveLength(2);
+    } finally {
+      await fse.remove(projectB);
+      await fse.remove(repoB);
+    }
   });
 
   it('applies hooks.yaml edits on the next reconcile (add/remove), built-in untouched', async () => {

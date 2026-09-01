@@ -159,7 +159,11 @@ describe('hooksInject', () => {
         // helper does on disk is covered in hooks-reconcile-scope.test.ts.
         expect(mockedReconcile).toHaveBeenCalledTimes(1);
         expect(mockedReconcile).toHaveBeenCalledWith(
-            mockTeamConfig.toolPaths, '/home/testuser', TEAM_DEFS, expect.any(String), { builtinOverride: undefined },
+            mockTeamConfig.toolPaths, '/home/testuser', TEAM_DEFS, expect.any(String), {
+                builtinOverride: undefined,
+                teamHookProjectRoot: '/path/to/project',
+                installedBaseDir: '/path/to/project',
+            },
         );
         const injectManifest = mockedReconcile.mock.calls[0][3] as string;
         expect(injectManifest).toContain('/home/testuser');
