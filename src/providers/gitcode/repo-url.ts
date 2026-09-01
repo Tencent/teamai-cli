@@ -21,14 +21,22 @@ export const GITCODE_HOST = 'gitcode.com';
  * two leading path segments are taken as `owner/repo`; anything after is a web
  * route and is ignored. Unlike GitLab there is no subgroup nesting and no `/-/`
  * route separator (GitCode uses GitHub/Gitee-style `/owner/repo/pulls/1`).
+ *
+ * Accepted forms: `owner/repo`, `https://gitcode.com/owner/repo(.git)`,
+ * scp-style `git@gitcode.com:owner/repo(.git)`, and `ssh://` URLs including the
+ * port-qualified form GitCode's UI hands out (`ssh://git@gitcode.com:2222/owner/repo.git`).
  */
 export function parseGitCodeRepoInput(input: string): RepoInfo {
   const trimmed = input.trim();
 
-  // Strip a leading scheme+host (HTTPS) or scp-style `git@host:` prefix, then
-  // split into path segments. The first two segments are owner/repo; the rest
-  // are web-route noise.
+  // Strip a leading scheme+host prefix, then split into path segments. The first
+  // two segments are owner/repo; the rest are web-route noise.
+  //   - `ssh://[user@]host[:port]/…`  → drop through the first slash after host
+  //     (handled before the scp rule; the `[:port]` never contains a `/`)
+  //   - `https?://host/…`             → drop scheme+host
+  //   - scp-style `git@host:…`        → drop `git@host:`
   const withoutPrefix = trimmed
+    .replace(/^ssh:\/\/[^/]+\//i, '')
     .replace(/^https?:\/\/[^/]+\//i, '')
     .replace(/^git@[^:]+:/i, '')
     .replace(/^\/+/, '');
@@ -47,7 +55,8 @@ export function parseGitCodeRepoInput(input: string): RepoInfo {
       '  Supported formats:\n' +
       '    owner/repo\n' +
       `    https://${GITCODE_HOST}/owner/repo.git\n` +
-      `    git@${GITCODE_HOST}:owner/repo.git`,
+      `    git@${GITCODE_HOST}:owner/repo.git\n` +
+      `    ssh://git@${GITCODE_HOST}:2222/owner/repo.git`,
   );
 }
 

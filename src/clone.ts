@@ -218,16 +218,19 @@ export async function shallowClone(
             log.debug(`shallowClone: 无 GITLAB_TOKEN，尝试匿名 HTTPS 克隆`);
         }
     } else if (provider === 'gitcode') {
-        // GitCode: PAT 走 HTTP Basic（用户名固定 oauth2），用 http.extraHeader 注入，
-        // token 不进 URL。已实机验证：GitCode git 端点拒绝 Bearer，仅认 Basic oauth2。
-        // 公有云只有 https，故强制 http→https。
+        // GitCode: 把 PAT 以 oauth2:<token>@ 内嵌进 clone URL（而非仅用一次性
+        // http.extraHeader），让 origin remote 持久化凭据——否则后续 shallowFetch()
+        // 的普通 `git fetch` 在无 credential helper 的环境里会对私有仓报
+        // "could not read Username"。已实机验证 GitCode git 端点仅认 Basic oauth2、
+        // 拒绝 Bearer。与 tgit 分支一致。公有云只有 https，故强制 http→https。
         const token = getGitCodeToken();
-        cloneUrl = url.replace(/^http:\/\//, 'https://');
+        const httpsUrl = url.replace(/^http:\/\//, 'https://');
         if (token) {
-            extraAuthHeader = buildAuthHeader(token, 'oauth2');
+            cloneUrl = httpsUrl.replace(/^https:\/\//, `https://oauth2:${token}@`);
             cloneMethod = 'https-token';
             log.debug(`shallowClone: 使用 HTTPS+token 克隆 gitcode 仓库`);
         } else {
+            cloneUrl = httpsUrl;
             cloneMethod = 'https-anonymous';
             log.debug(`shallowClone: 无 GITCODE_TOKEN，尝试匿名 HTTPS 克隆`);
         }

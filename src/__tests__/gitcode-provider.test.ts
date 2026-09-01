@@ -31,6 +31,19 @@ describe('GitCode repo-url parsing', () => {
     expect(info.repo).toBe('repo');
   });
 
+  it('parses ssh:// URL with a non-default port', () => {
+    const info = parseGitCodeRepoInput('ssh://git@gitcode.com:2222/owner/repo.git');
+    expect(info.owner).toBe('owner');
+    expect(info.repo).toBe('repo');
+    expect(info.httpsUrl).toBe('https://gitcode.com/owner/repo.git');
+  });
+
+  it('parses ssh:// URL without a port', () => {
+    const info = parseGitCodeRepoInput('ssh://git@gitcode.com/owner/repo.git');
+    expect(info.owner).toBe('owner');
+    expect(info.repo).toBe('repo');
+  });
+
   it('ignores trailing web-route segments (Gitee-style /pulls/1)', () => {
     const info = parseGitCodeRepoInput('https://gitcode.com/owner/repo/pulls/1');
     expect(info.owner).toBe('owner');
