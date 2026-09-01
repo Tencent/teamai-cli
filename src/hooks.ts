@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, resolveHookScope } from './types.js';
+import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, resolveHookScope, resolveLegacyProjectHookScope } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
 import { builtinHookDefs, applyBuiltinOverride, ensureWrapperIfShellAvailable, SHELL_DEPENDENT_TOOLS } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
@@ -957,5 +957,18 @@ export async function reconcileTeamHooksForConfig(
     builtinOverride: builtin,
     filterAgents,
   });
+  // Sweep the legacy <projectRoot> copy a pre-#370 CLI wrote alongside HOME for
+  // a non-self project scope. Without this, both copies stay live after upgrade
+  // and every session start fires hook-dispatch twice (two background pulls) —
+  // and the auto-migrate guard never converges. Project-owned location only
+  // (resolveLegacyProjectHookScope never returns HOME), so this cannot touch a
+  // coexisting user-scope install.
+  const legacy = resolveLegacyProjectHookScope(localConfig);
+  if (legacy) {
+    await reconcileHooksToAllTools(teamConfig.toolPaths, legacy.baseDir, [], legacy.manifestPath, {
+      removeAll: true,
+      filterAgents,
+    });
+  }
   return teamDefs;
 }

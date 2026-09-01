@@ -4,8 +4,8 @@ import { reconcileHooksToAllTools, getHookStatus, hasInstalledCodexTrustGatedToo
 import { builtinHookDefs } from './builtin-hooks.js';
 import { parseTeamHooks, resolveTeamHooks } from './resources/hooks.js';
 import { log } from './utils/logger.js';
-import type { GlobalOptions, LocalConfig } from './types.js';
-import { resolveHookScope, getManagedHooksPath } from './types.js';
+import type { GlobalOptions } from './types.js';
+import { resolveHookScope, resolveLegacyProjectHookScope } from './types.js';
 import { getUserHome } from './utils/home.js';
 
 type HookListStatus = HookStatus | 'not configured';
@@ -14,25 +14,6 @@ interface HookListRow {
     tool: string;
     status: HookListStatus;
     settingsPath: string;
-}
-
-interface HookScopeTarget {
-    baseDir: string;
-    manifestPath: string;
-}
-
-/**
- * Resolve the (baseDir, manifestPath) pairs for hook reconciliation.
- *
- * Delegates to the shared `resolveHookScope` so this command uses the exact same
- * on-disk target as `init`/`pull`/`bootstrap` and `doctor`:
- * - Non-self project scope → HOME + user manifest (#264). HOME covers every cwd;
- *   the dispatch runtime identifies the active project via detectProjectConfig.
- * - Self single-repo mode → projectRoot (hooks committed to main travel on clone).
- * - User scope → HOME.
- */
-function resolveHookScopeTargets(localConfig: LocalConfig): HookScopeTarget[] {
-    return [resolveHookScope(localConfig)];
 }
 
 function formatDisplayPath(settingsPath: string): string {
@@ -76,11 +57,17 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
         silent: options.silent,
     });
     let codexTrustGated = false;
-    for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
-        await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin });
-        if (await hasInstalledCodexTrustGatedTool(teamConfig.toolPaths, baseDir)) {
-            codexTrustGated = true;
-        }
+    const { baseDir, manifestPath } = resolveHookScope(localConfig);
+    await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, { builtinOverride: builtin });
+    if (await hasInstalledCodexTrustGatedTool(teamConfig.toolPaths, baseDir)) {
+        codexTrustGated = true;
+    }
+
+    // Sweep any legacy <projectRoot> copy a pre-#370 CLI left behind, so the
+    // HOME copy this command just wrote is the only one that fires (#264/#370).
+    const legacy = resolveLegacyProjectHookScope(localConfig);
+    if (legacy) {
+        await reconcileHooksToAllTools(teamConfig.toolPaths, legacy.baseDir, [], legacy.manifestPath, { removeAll: true });
     }
 
     if (!options.silent) {
@@ -101,7 +88,7 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
  */
 export async function hooksList(_options: GlobalOptions): Promise<void> {
     const { localConfig, teamConfig } = await autoDetectInit();
-    const baseDirs = resolveHookScopeTargets(localConfig).map((t) => t.baseDir);
+    const { baseDir } = resolveHookScope(localConfig);
     const rows: HookListRow[] = [];
 
     for (const [tool, paths] of Object.entries(teamConfig.toolPaths)) {
@@ -109,14 +96,12 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             rows.push({ tool, status: 'not configured', settingsPath: 'no settings configured' });
             continue;
         }
-        for (const baseDir of baseDirs) {
-            const settingsPath = path.join(baseDir, paths.settings);
-            rows.push({
-                tool,
-                status: await getHookStatus(settingsPath, tool),
-                settingsPath: formatDisplayPath(settingsPath),
-            });
-        }
+        const settingsPath = path.join(baseDir, paths.settings);
+        rows.push({
+            tool,
+            status: await getHookStatus(settingsPath, tool),
+            settingsPath: formatDisplayPath(settingsPath),
+        });
     }
 
     console.log(formatHooksList(rows));
@@ -151,15 +136,16 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
 export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     const { localConfig, teamConfig } = await autoDetectInit();
 
-    for (const { baseDir, manifestPath } of resolveHookScopeTargets(localConfig)) {
-        await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true });
-    }
+    const { baseDir, manifestPath } = resolveHookScope(localConfig);
+    await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true });
 
-    // Clean up legacy projectRoot entries left by older versions that wrote
-    // hooks into both <projectRoot> and HOME (#264 migration).
-    if (localConfig.scope === 'project' && localConfig.projectRoot) {
-        const legacyManifest = getManagedHooksPath('project', localConfig.projectRoot);
-        await reconcileHooksToAllTools(teamConfig.toolPaths, localConfig.projectRoot, [], legacyManifest, { removeAll: true });
+    // Clean up the legacy <projectRoot> copy a pre-#370 CLI wrote alongside HOME
+    // for a non-self project scope. Gated to a project-owned location that
+    // differs from the primary target — never HOME (shared with user scope), and
+    // never re-running on the primary target itself (self mode).
+    const legacy = resolveLegacyProjectHookScope(localConfig);
+    if (legacy) {
+        await reconcileHooksToAllTools(teamConfig.toolPaths, legacy.baseDir, [], legacy.manifestPath, { removeAll: true });
     }
 
     log.success('Hooks removed from all AI tool settings');

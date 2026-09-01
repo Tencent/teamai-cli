@@ -680,6 +680,44 @@ describe('uninstall', () => {
     expect(await fse.pathExists(teamaiHome)).toBe(false);
   });
 
+  it('non-self project scope removes hooks from HOME, where #370 injects them (not <projectRoot>)', async () => {
+    const projectRoot = path.join(tmpDir, 'proj-hooks');
+    const repoPath = path.join(projectRoot, '.teamai', 'team-repo');
+    const homeDir = path.join(tmpDir, 'home');
+    await fse.ensureDir(repoPath);
+    await fse.ensureDir(path.join(projectRoot, '.teamai'));
+    await fse.writeFile(path.join(projectRoot, '.teamai', 'config.yaml'), 'scope: project');
+
+    // #370: a non-self project scope injects its hooks into HOME, not projectRoot.
+    await fse.ensureDir(path.join(homeDir, '.claude'));
+    await fse.writeJson(path.join(homeDir, '.claude', 'settings.json'), {
+      hooks: { SessionStart: [{ matcher: '*', hooks: [{ type: 'command', command: 'teamai hook-dispatch session-start' }], description: '[teamai] Auto-pull' }] },
+    });
+
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/bash');
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(projectRoot, repoPath, { scope: 'project', projectRoot });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    // The reported bug (#1): uninstall scanned <projectRoot> and left the HOME
+    // SessionStart hook live forever. It must target the HOME settings file.
+    expect(mockReconcileHooks).toHaveBeenCalledWith(
+      path.join(homeDir, '.claude', 'settings.json'),
+      'claude',
+      [],
+      expect.objectContaining({ removeAll: true, manifestPath: expect.stringContaining('managed-hooks.json') }),
+    );
+    // …and never a <projectRoot> settings copy (there is none in this fixture).
+    const targetedProjectRoot = mockReconcileHooks.mock.calls.some(
+      (c) => String(c[0]).startsWith(path.join(projectRoot, '.claude')),
+    );
+    expect(targetedProjectRoot).toBe(false);
+  });
+
   it('命名空间 skills 正确处理', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

@@ -22,6 +22,7 @@ import {
   TEAMAI_RECALL_RULES_END,
   CultureFrontmatterSchema,
   resolveBaseDir,
+  resolveHookScope,
   getTeamaiHome,
   isRecallEnabled,
   isAgentDisabled,
@@ -1198,7 +1199,11 @@ async function autoMigrateHooksIfNeeded(): Promise<void> {
   const { autoDetectInit } = await import('./config.js');
   const { injectHooksToAllTools } = await import('./hooks.js');
   const { localConfig, teamConfig } = await autoDetectInit();
-  const baseDir = resolveBaseDir(localConfig);
+  // Reinject where hooks actually live (resolveHookScope), not resolveBaseDir.
+  // The old-format check above reads HOME; for a non-self project scope
+  // resolveBaseDir → <projectRoot>, so reinjecting there never clears HOME's
+  // legacy format and this migration would re-fire on every pull (#370).
+  const { baseDir } = resolveHookScope(localConfig);
   const disabled = localConfig.disabledAgents;
   let hookFilter = localConfig.enabledAgents;
   if (disabled && disabled.length > 0) {

@@ -144,6 +144,52 @@ describe('doctor — hook checks', () => {
         expect(TEAMAI_HOOK_SUBCOMMANDS).toHaveLength(1);
     });
 
+    // Lock the resolveHookScope branch the doctor fix rides on (#264/#370): the
+    // hook check must look where hooks are actually injected, not at resolveBaseDir.
+    function hookCheckLine(): string | undefined {
+        return consoleSpy.mock.calls
+            .map((c) => c[0] as string)
+            .find((m) => typeof m === 'string' && m.includes('hooks in claude settings'));
+    }
+
+    it('non-self project scope resolves the hook check to HOME, not <projectRoot>', async () => {
+        const projectRoot = '/tmp/teamai-doctor-proj';
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, scope: 'project', projectRoot });
+        // HOME carries the hooks; <projectRoot> is empty. If doctor still used
+        // resolveBaseDir (→ projectRoot) this check would report ✖.
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => {
+            if (filePath.includes('settings.json')) {
+                return filePath.includes(projectRoot) ? '{ "hooks": {} }' : buildFullHooksContent();
+            }
+            return null;
+        });
+
+        await doctor({});
+
+        expect(hookCheckLine()).toContain('✔');
+    });
+
+    it('self single-repo mode resolves the hook check to <projectRoot>, not HOME', async () => {
+        const projectRoot = '/tmp/teamai-doctor-self';
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            scope: 'project',
+            projectRoot,
+            repo: { ...mockLocalConfig.repo, kind: 'self' },
+        });
+        // Only <projectRoot> carries the hooks (committed to the business repo).
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => {
+            if (filePath.includes('settings.json')) {
+                return filePath.includes(projectRoot) ? buildFullHooksContent() : '{ "hooks": {} }';
+            }
+            return null;
+        });
+
+        await doctor({});
+
+        expect(hookCheckLine()).toContain('✔');
+    });
+
     it('should pass env check when env/env.yaml does not exist in team repo', async () => {
         mockedPathExists.mockImplementation(async (filePath: string) => {
             if (filePath.includes('env/env.yaml')) return false;

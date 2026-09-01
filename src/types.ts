@@ -1289,16 +1289,50 @@ export function getManagedHooksPath(scope: Scope, projectRoot?: string): string 
  *   business repo's tool dirs and are committed to main so a teammate's clone
  *   carries the session-start hook that self-heals ("clone = initialized").
  * - User scope → HOME (its resolveBaseDir).
+ *
+ * Degrades gracefully: only self mode reaches the projectRoot branch, and a
+ * self config missing `projectRoot` (optional in the schema) falls back to HOME
+ * rather than throwing — so read-only callers like `doctor` never crash on a
+ * partially-broken config.
  */
 export function resolveHookScope(
   localConfig: LocalConfig,
 ): { baseDir: string; manifestPath: string } {
-  if (localConfig.scope === 'project' && !isSelfMode(localConfig)) {
+  const selfWithRoot = isSelfMode(localConfig) && !!localConfig.projectRoot;
+  if (localConfig.scope === 'project' && !selfWithRoot) {
     return { baseDir: getUserHome(), manifestPath: getManagedHooksPath('user') };
   }
   return {
     baseDir: resolveBaseDir(localConfig),
     manifestPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
+  };
+}
+
+/**
+ * The legacy `<projectRoot>` hook location a pre-#370 CLI wrote to for a
+ * non-self project scope, whose hooks now live in HOME (`resolveHookScope`).
+ * Older `init`/`pull` runs wrote the SessionStart hook into
+ * `<projectRoot>/.claude` as well; left behind after upgrade it double-fires
+ * (two `hook-dispatch session-start` → two concurrent background pulls) and
+ * duplicates every team hook. Callers on the inject path (`init`/`pull`) and
+ * `hooks remove`/`uninstall` sweep it clean.
+ *
+ * Returns null when there is nothing project-owned to sweep:
+ * - user scope (only ever HOME),
+ * - project scope without a projectRoot,
+ * - self single-repo mode. Self mode's alternate location is HOME, which is
+ *   shared with any user-scope install and its user manifest — a blind
+ *   removeAll there would clobber genuine user-scope hooks, so we never sweep
+ *   it. (The cross-scope collision itself is tracked separately.)
+ */
+export function resolveLegacyProjectHookScope(
+  localConfig: LocalConfig,
+): { baseDir: string; manifestPath: string } | null {
+  if (localConfig.scope !== 'project' || !localConfig.projectRoot) return null;
+  if (isSelfMode(localConfig)) return null;
+  return {
+    baseDir: localConfig.projectRoot,
+    manifestPath: getManagedHooksPath('project', localConfig.projectRoot),
   };
 }
 
