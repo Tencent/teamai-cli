@@ -133,6 +133,15 @@ export async function doctor(options: GlobalOptions): Promise<void> {
       fix: 'Export GITLAB_TOKEN (a Personal Access Token with `api` scope). '
         + 'GITLAB_PRIVATE_TOKEN and GITLAB_PAT are accepted as aliases.',
     });
+  } else if (providerName === 'gitcode') {
+    // GitCode needs no CLI — only a Personal Access Token (env or ~/.netrc).
+    const { gitcodeIsAuthenticated } = await import('./providers/gitcode/index.js');
+    checks.push({
+      name: 'GitCode token is configured',
+      check: async () => gitcodeIsAuthenticated(),
+      fix: 'Export GITCODE_TOKEN (a GitCode Personal Access Token), or run `teamai init` '
+        + 'to paste one interactively. GC_TOKEN is accepted as an alias.',
+    });
   }
 
   checks.push(

@@ -3,6 +3,7 @@ import { TGitProvider } from './tgit/index.js';
 import { GitHubProvider } from './github/index.js';
 import { CNBProvider } from './cnb/index.js';
 import { GitLabProvider } from './gitlab/index.js';
+import { GitCodeProvider } from './gitcode/index.js';
 import { GenericGitProvider } from './git/index.js';
 import { getCurrentPackageName } from '../package-info.js';
 
@@ -33,10 +34,11 @@ const HOST_MAP: Record<string, string> = {
   'git.woa.com': 'tgit',
   'cnb.cool': 'cnb',
   'gitlab.com': 'gitlab',
+  'gitcode.com': 'gitcode',
 };
 
 /** Providers we are willing to accept as a default override. */
-const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab']);
+const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab', 'gitcode']);
 
 /**
  * Decide the fallback provider used when the input URL host is unknown or
@@ -165,6 +167,7 @@ const PROVIDERS: Record<string, () => GitProvider> = {
   github: () => new GitHubProvider(),
   cnb: () => new CNBProvider(),
   gitlab: () => new GitLabProvider(),
+  gitcode: () => new GitCodeProvider(),
   git: () => new GenericGitProvider(),
 };
 

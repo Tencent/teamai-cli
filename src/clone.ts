@@ -4,6 +4,7 @@ import fs from 'fs-extra';
 
 import { getGitHubToken } from './providers/github/gh-cli.js';
 import { getGitLabToken } from './providers/gitlab/gitlab-api.js';
+import { getGitCodeToken } from './providers/gitcode/gitcode-api.js';
 import { tgitGitCloneUrl } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
 import { sanitizeGitUrl } from './utils/redact.js';
@@ -215,6 +216,20 @@ export async function shallowClone(
             cloneUrl = url;
             cloneMethod = 'https-anonymous';
             log.debug(`shallowClone: 无 GITLAB_TOKEN，尝试匿名 HTTPS 克隆`);
+        }
+    } else if (provider === 'gitcode') {
+        // GitCode: PAT 走 HTTP Basic（用户名固定 oauth2），用 http.extraHeader 注入，
+        // token 不进 URL。已实机验证：GitCode git 端点拒绝 Bearer，仅认 Basic oauth2。
+        // 公有云只有 https，故强制 http→https。
+        const token = getGitCodeToken();
+        cloneUrl = url.replace(/^http:\/\//, 'https://');
+        if (token) {
+            extraAuthHeader = buildAuthHeader(token, 'oauth2');
+            cloneMethod = 'https-token';
+            log.debug(`shallowClone: 使用 HTTPS+token 克隆 gitcode 仓库`);
+        } else {
+            cloneMethod = 'https-anonymous';
+            log.debug(`shallowClone: 无 GITCODE_TOKEN，尝试匿名 HTTPS 克隆`);
         }
     } else {
         // 其他 provider 依赖 Git 自身的 credential helper / ~/.netrc。

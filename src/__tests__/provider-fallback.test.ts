@@ -122,6 +122,15 @@ describe('detectProvider with package-name fallback', () => {
     expect(detectProvider('https://gitlab.com/org/repo')).toBe('gitlab');
   });
 
+  it('explicit gitcode.com URL resolves to gitcode', () => {
+    setPackageName('@tencent/teamai-cli');
+    expect(detectProvider('https://gitcode.com/org/repo')).toBe('gitcode');
+  });
+
+  it('gitcode.com SSH URL resolves to gitcode', () => {
+    expect(detectProvider('git@gitcode.com:org/repo.git')).toBe('gitcode');
+  });
+
   it('explicit github.com URL still resolves to github on tnpm build', () => {
     setPackageName('@tencent/teamai-cli');
     expect(detectProvider('https://github.com/org/repo')).toBe('github');
