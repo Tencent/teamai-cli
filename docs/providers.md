@@ -1,6 +1,6 @@
 # Git Provider 说明
 
-TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现了五个：
+TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现了六个：
 
 | Provider | Host            | 认证方式                            | 建议场景              |
 |----------|-----------------|--------------------------------------|----------------------|
@@ -8,6 +8,7 @@ TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现
 | `tgit`   | git.woa.com     | `gf` CLI（自动下载）+ `~/.netrc`     | 腾讯内部团队          |
 | `cnb`    | cnb.cool        | `cnb login` 或 `CNB_TOKEN` 环境变量  | CNB（云原生构建）用户 |
 | `gitlab` | gitlab.com 或自托管实例 | `GITLAB_TOKEN` 环境变量              | GitLab / 企业自托管   |
+| `gitcode`| gitcode.com     | `GITCODE_TOKEN` 环境变量或 init 交互粘贴 | GitCode（CSDN）用户 |
 | `git`    | 任意 Git host   | 系统 Git Credential Helper 或 SSH Key | 自建 Gitea 等其他平台 |
 
 ## Provider 自动检测
@@ -24,6 +25,8 @@ https://cnb.cool/org/repo(.git)         → cnb
 git@cnb.cool:org/repo.git               → cnb
 https://gitlab.com/org/repo(.git)       → gitlab
 git@gitlab.com:org/repo.git             → gitlab
+https://gitcode.com/org/repo(.git)      → gitcode
+git@gitcode.com:org/repo.git            → gitcode
 https://git.example.com/group/repo.git  → git
 git@git.example.com:group/repo.git      → git
 ```
@@ -219,9 +222,51 @@ git@git.example.com:Group/Subgroup/repo.git
 
 GitLab Provider 不设默认 email 域（同 GitHub），使用用户的 git 全局配置。
 
+## GitCode Provider（gitcode.com）
+
+GitCode（gitcode.com，CSDN 旗下国内平台）使用 Gitee 风格的 **REST API v5**（`https://api.gitcode.com/api/v5`），不需要任何外部 CLI，只依赖一个 Personal Access Token。结构上参照 GitLab Provider，但 API 方言与 GitLab 完全不同（独立 API 域名、`Authorization: Bearer` 认证、PR 用 `head`/`base`/`title`/`body`、whoami 用 `login`）。
+
+### 认证
+
+按优先级解析 token：
+
+1. `GITCODE_TOKEN`（主）
+2. `GC_TOKEN`（别名，兼容 gitcode-cli 用户已有的环境变量）
+3. `~/.netrc` 中的 `machine gitcode.com` 条目
+
+```bash
+export GITCODE_TOKEN=xxxxxxxxxxxx
+```
+
+在 GitCode → 设置 / Settings → Access Tokens（私人令牌）生成 PAT。
+
+**交互式登录**：首次 `teamai init` 若未配置 token，会提示粘贴一次 PAT，验证通过后写入 `~/.netrc`（权限 `0600`）供后续命令与 `git push` 复用。CI / 无头环境请直接配置 `GITCODE_TOKEN`，不会触发交互。
+
+### 命名空间
+
+GitCode 命名空间为单层（用户或组织），仓库地址形如 `owner/repo`，不支持多级子组。
+
+### 支持的操作
+
+| 操作 | 实现 |
+|------|------|
+| clone | HTTPS 走 `oauth2:<token>@` 内嵌（团队仓，凭据持久化以便后续 push）或 `http.extraHeader`（浅克隆）；亦支持 SSH 公钥 |
+| createRepo | 个人 `POST /user/repos`；组织 `POST /orgs/:org/repos` |
+| createPullRequest | `POST /repos/:owner/:repo/pulls`（`head`/`base`/`title`/`body`） |
+| fetchMergeRequest | `GET /repos/:owner/:repo/pulls/:n` + commits + files；PR URL 的 host 必须为 gitcode.com，否则拒绝，避免把 token 发往未配置的 host |
+| listOrgRepos | `GET /orgs/:org/repos` 分页 |
+
+> 注：仅支持公有云 `gitcode.com`，暂不支持自托管 GitCode 企业版。
+
+**关键方言**：GitCode 的 git-over-HTTPS 端点**拒绝 `Authorization: Bearer`**，只接受 Basic `oauth2:<token>`（已实机验证）。而 REST API 用 Bearer。因此团队仓 clone 把 token 内嵌进 remote URL（`oauth2:<token>@`），使 `git push`（分支 + PR 流程）能通过认证——与 GitHub / TGit 一致。
+
+### 默认 email 域
+
+GitCode 不设默认 email 域，使用用户的 git 全局配置。
+
 ## 手动指定 Provider
 
-除了 URL 自动检测，也可以在 team 仓库的 `teamai.yaml` 中显式写 `provider: github`、`provider: tgit`、`provider: cnb`、`provider: gitlab` 或 `provider: git` 强制切换。一个典型的 `teamai.yaml`：
+除了 URL 自动检测，也可以在 team 仓库的 `teamai.yaml` 中显式写 `provider: github`、`provider: tgit`、`provider: cnb`、`provider: gitlab`、`provider: gitcode` 或 `provider: git` 强制切换。一个典型的 `teamai.yaml`：
 
 ```yaml
 team: my-team
