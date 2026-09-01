@@ -225,7 +225,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         oldSha = lastSync.sha;
         log.info(`[incremental] cache hit ${cacheDir}, syncing from ${oldSha.slice(0, 8)}`);
         try {
-            const fetchResult = await shallowFetch(cacheDir);
+            const fetchResult = await shallowFetch(cacheDir, { provider: providerName });
             cloneSha = fetchResult.sha;
             cloneBranch = 'HEAD';
             log.info(`[incremental] Fetch complete: SHA=${cloneSha.slice(0, 8)}`);

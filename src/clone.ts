@@ -218,19 +218,17 @@ export async function shallowClone(
             log.debug(`shallowClone: 无 GITLAB_TOKEN，尝试匿名 HTTPS 克隆`);
         }
     } else if (provider === 'gitcode') {
-        // GitCode: 把 PAT 以 oauth2:<token>@ 内嵌进 clone URL（而非仅用一次性
-        // http.extraHeader），让 origin remote 持久化凭据——否则后续 shallowFetch()
-        // 的普通 `git fetch` 在无 credential helper 的环境里会对私有仓报
-        // "could not read Username"。已实机验证 GitCode git 端点仅认 Basic oauth2、
-        // 拒绝 Bearer。与 tgit 分支一致。公有云只有 https，故强制 http→https。
+        // GitCode: PAT 走 HTTP Basic（用户名固定 oauth2），用 http.extraHeader 注入，
+        // token 不进 URL、不落 .git/config。shallowFetch 会用同样的 header 复用认证
+        // （见 fetchAuthHeader），故私有仓的增量 fetch 无需 credential helper 也能成功。
+        // 已实机验证：GitCode git 端点拒绝 Bearer，仅认 Basic oauth2。公有云只有 https。
         const token = getGitCodeToken();
-        const httpsUrl = url.replace(/^http:\/\//, 'https://');
+        cloneUrl = url.replace(/^http:\/\//, 'https://');
         if (token) {
-            cloneUrl = httpsUrl.replace(/^https:\/\//, `https://oauth2:${token}@`);
+            extraAuthHeader = buildAuthHeader(token, 'oauth2');
             cloneMethod = 'https-token';
             log.debug(`shallowClone: 使用 HTTPS+token 克隆 gitcode 仓库`);
         } else {
-            cloneUrl = httpsUrl;
             cloneMethod = 'https-anonymous';
             log.debug(`shallowClone: 无 GITCODE_TOKEN，尝试匿名 HTTPS 克隆`);
         }
@@ -283,21 +281,54 @@ export async function shallowClone(
 }
 
 /**
+ * Resolve an `http.extraHeader` auth value for a follow-up `git fetch`, so the
+ * token stays out of the remote URL and out of `.git/config` (it is passed
+ * per-invocation via `-c`). Mirrors the token providers handled in shallowClone
+ * that inject via extraHeader rather than embedding creds in the URL.
+ *
+ * Returns null when the provider needs no header here: `tgit` already carries an
+ * in-URL OAuth credential from clone, and `git` / unknown hosts rely on ambient
+ * Git credentials.
+ */
+function fetchAuthHeader(provider?: string): string | null {
+    if (provider === 'github') {
+        const token = getGitHubToken();
+        return token ? buildAuthHeader(token) : null;
+    }
+    if (provider === 'gitlab') {
+        const token = getGitLabToken();
+        return token ? buildAuthHeader(token, 'oauth2') : null;
+    }
+    if (provider === 'gitcode') {
+        const token = getGitCodeToken();
+        return token ? buildAuthHeader(token, 'oauth2') : null;
+    }
+    return null;
+}
+
+/**
  * 在已有 clone 目录上执行 git fetch 并 reset 到最新 HEAD（用于 P5.3 增量；P5.1 暂不调用）。
  *
  * @param localPath  本地 clone 目录
- * @param opts       选项
+ * @param opts       选项。传入 `provider` 时，token 类 provider（github/gitlab/gitcode）
+ *                   会用 `http.extraHeader` 复用认证——私有仓无需 credential helper 即可 fetch，
+ *                   且 token 不进 URL / .git/config。
  */
 export async function shallowFetch(
     localPath: string,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; provider?: string },
 ): Promise<{ sha: string }> {
     const timeoutMs = opts?.timeoutMs ?? 180_000;
 
     // 获取当前分支
     const branch = await gitCmd(['rev-parse', '--abbrev-ref', 'HEAD'], localPath, timeoutMs);
 
-    await gitCmd(['fetch', '--depth=50', 'origin'], localPath, timeoutMs);
+    // `-c http.extraHeader=` 必须置于 fetch 子命令之前（git-level 选项）。
+    const authHeader = fetchAuthHeader(opts?.provider);
+    const fetchArgs = authHeader
+        ? ['-c', `http.extraHeader=${authHeader}`, 'fetch', '--depth=50', 'origin']
+        : ['fetch', '--depth=50', 'origin'];
+    await gitCmd(fetchArgs, localPath, timeoutMs);
     await gitCmd(['reset', '--hard', `origin/${branch}`], localPath, timeoutMs);
 
     const sha = await gitCmd(['rev-parse', 'HEAD'], localPath);
