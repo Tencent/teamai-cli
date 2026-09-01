@@ -1,11 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import path from 'node:path';
+import os from 'node:os';
 import {
   MemberConfigSchema,
   TeamaiConfigSchema,
   SharingConfigSchema,
   StateSchema,
   LocalConfigSchema,
+  resolveLegacyProjectHookScope,
 } from '../types.js';
+import type { LocalConfig } from '../types.js';
 
 describe('MemberConfigSchema', () => {
   it('should parse a complete member config', () => {
@@ -280,5 +284,46 @@ describe('LocalConfigSchema inheritUserScope', () => {
 
   it('rejects non-boolean values', () => {
     expect(() => LocalConfigSchema.parse({ ...baseConfig, inheritUserScope: 'yes' })).toThrow();
+  });
+});
+
+describe('resolveLegacyProjectHookScope', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const base = {
+    repo: { localPath: '/tmp/repo', remote: 'x' },
+    username: 'u',
+    additionalRoles: [],
+  };
+  const project = (extra: Record<string, unknown> = {}) =>
+    ({ ...base, scope: 'project', projectRoot: '/path/to/project', ...extra }) as unknown as LocalConfig;
+
+  it('returns the <projectRoot> pair for a non-self project scope', () => {
+    const legacy = resolveLegacyProjectHookScope(project());
+    expect(legacy?.baseDir).toBe('/path/to/project');
+    expect(legacy?.manifestPath).toContain('/path/to/project');
+  });
+
+  it('returns null for user scope (hooks only ever lived in HOME)', () => {
+    expect(resolveLegacyProjectHookScope({ ...base, scope: 'user' } as unknown as LocalConfig)).toBeNull();
+  });
+
+  it('returns null without a projectRoot', () => {
+    expect(resolveLegacyProjectHookScope({ ...base, scope: 'project' } as unknown as LocalConfig)).toBeNull();
+  });
+
+  it('returns null in self mode (its alternate location is HOME, shared with user scope)', () => {
+    expect(resolveLegacyProjectHookScope(project({ repo: { ...base.repo, kind: 'self' } }))).toBeNull();
+  });
+
+  it('returns null when projectRoot IS the home dir — never sweeps the live target', () => {
+    // `teamai init .` run in ~ (dotfiles repo): the "legacy" copy and the live
+    // HOME copy are the same file, so sweeping it would delete the hooks the
+    // primary pass just wrote.
+    const home = path.join(os.tmpdir(), 'teamai-legacy-home');
+    vi.stubEnv('HOME', home);
+    expect(resolveLegacyProjectHookScope(project({ projectRoot: home }))).toBeNull();
+    // Also when the two differ only by a trailing separator / relative segment.
+    expect(resolveLegacyProjectHookScope(project({ projectRoot: path.join(home, '.') }))).toBeNull();
   });
 });

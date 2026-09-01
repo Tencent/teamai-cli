@@ -1,11 +1,11 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { reconcileHooksToAllTools, getHookStatus, hasInstalledCodexTrustGatedTool, codexTrustReminder, type HookStatus } from './hooks.js';
+import { reconcileHooksToAllTools, sweepLegacyProjectHooks, getHookStatus, hasInstalledCodexTrustGatedTool, codexTrustReminder, type HookStatus } from './hooks.js';
 import { builtinHookDefs } from './builtin-hooks.js';
 import { parseTeamHooks, resolveTeamHooks } from './resources/hooks.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
-import { resolveHookScope, resolveLegacyProjectHookScope } from './types.js';
+import { resolveHookScope } from './types.js';
 import { getUserHome } from './utils/home.js';
 
 type HookListStatus = HookStatus | 'not configured';
@@ -65,10 +65,7 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
 
     // Sweep any legacy <projectRoot> copy a pre-#370 CLI left behind, so the
     // HOME copy this command just wrote is the only one that fires (#264/#370).
-    const legacy = resolveLegacyProjectHookScope(localConfig);
-    if (legacy) {
-        await reconcileHooksToAllTools(teamConfig.toolPaths, legacy.baseDir, [], legacy.manifestPath, { removeAll: true });
-    }
+    await sweepLegacyProjectHooks(teamConfig.toolPaths, localConfig);
 
     if (!options.silent) {
         log.success('Hooks injected into all AI tool settings');
@@ -141,12 +138,10 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
 
     // Clean up the legacy <projectRoot> copy a pre-#370 CLI wrote alongside HOME
     // for a non-self project scope. Gated to a project-owned location that
-    // differs from the primary target — never HOME (shared with user scope), and
-    // never re-running on the primary target itself (self mode).
-    const legacy = resolveLegacyProjectHookScope(localConfig);
-    if (legacy) {
-        await reconcileHooksToAllTools(teamConfig.toolPaths, legacy.baseDir, [], legacy.manifestPath, { removeAll: true });
-    }
+    // differs from the primary target — never HOME (shared with user scope, and
+    // the primary target itself when projectRoot IS the home dir), and never
+    // re-running on the primary target in self mode.
+    await sweepLegacyProjectHooks(teamConfig.toolPaths, localConfig);
 
     log.success('Hooks removed from all AI tool settings');
 }

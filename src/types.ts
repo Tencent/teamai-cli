@@ -1324,12 +1324,18 @@ export function resolveHookScope(
  *   shared with any user-scope install and its user manifest — a blind
  *   removeAll there would clobber genuine user-scope hooks, so we never sweep
  *   it. (The cross-scope collision itself is tracked separately.)
+ * - projectRoot that IS the home dir (`teamai init .` run in `~`, e.g. a
+ *   dotfiles repo). Then the "legacy" location and the live HOME target are the
+ *   same file, and sweeping it would delete the hooks the primary pass just
+ *   wrote. This is what makes the "never returns HOME" invariant callers rely
+ *   on actually hold.
  */
 export function resolveLegacyProjectHookScope(
   localConfig: LocalConfig,
 ): { baseDir: string; manifestPath: string } | null {
   if (localConfig.scope !== 'project' || !localConfig.projectRoot) return null;
   if (isSelfMode(localConfig)) return null;
+  if (path.resolve(localConfig.projectRoot) === path.resolve(getUserHome())) return null;
   return {
     baseDir: localConfig.projectRoot,
     manifestPath: getManagedHooksPath('project', localConfig.projectRoot),

@@ -202,3 +202,79 @@ builtin:
     expect(await fse.pathExists(path.join(home, '.claude', 'settings.json'))).toBe(false);
   });
 });
+
+// ── Legacy <projectRoot> sweep (#370 follow-up) ──────────────
+//
+// The sweep that clears the pre-#370 <projectRoot> copy must not damage the
+// HOME copy the primary pass just wrote. Two ways it did:
+//  1. Hermes/OpenCode reconcile through global adapters that ignore baseDir, so
+//     a removeAll sweep against <projectRoot> deleted their HOME hooks.
+//  2. When projectRoot IS the home dir, "legacy" and "live" are the same file.
+describe('reconcileTeamHooksForConfig — legacy projectRoot sweep', () => {
+  const withOpencodeAndHermes = {
+    toolPaths: {
+      claude: { settings: '.claude/settings.json' },
+      opencode: { skills: '.opencode/skills' },
+      hermes: {},
+    },
+  } as unknown as TeamaiConfig;
+
+  const opencodePlugin = () =>
+    path.join(home, '.config', 'opencode', 'plugin', 'teamai-hooks.ts');
+  const hermesScript = () => path.join(home, '.hermes', 'hooks', 'teamai-status-report.sh');
+
+  it('keeps the HOME OpenCode plugin and Hermes hook it just installed', async () => {
+    vi.stubEnv('HERMES_HOME', path.join(home, '.hermes'));
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    await fse.ensureDir(path.join(home, '.hermes'));
+
+    await reconcileTeamHooksForConfig(withOpencodeAndHermes, localConfig());
+
+    expect(await fse.pathExists(opencodePlugin())).toBe(true);
+    expect(await fse.pathExists(hermesScript())).toBe(true);
+  });
+
+  it('still deletes the legacy <projectRoot> OpenCode plugin', async () => {
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    const legacyPlugin = path.join(project, '.opencode', 'plugin', 'teamai-hooks.ts');
+    await fse.ensureDir(path.dirname(legacyPlugin));
+    await fse.writeFile(legacyPlugin, '// stale project copy');
+
+    await reconcileTeamHooksForConfig(withOpencodeAndHermes, localConfig());
+
+    expect(await fse.pathExists(legacyPlugin)).toBe(false);
+    expect(await fse.pathExists(opencodePlugin())).toBe(true);
+  });
+
+  it('sweeps the legacy copy of a tool excluded by filterAgents', async () => {
+    // cursor wrote <projectRoot>/.cursor/hooks.json back when it was enabled;
+    // disabling it today must not strand that copy.
+    await fse.ensureDir(path.join(project, '.cursor'));
+    await fse.writeJson(path.join(project, '.cursor', 'hooks.json'), {
+      version: 1,
+      hooks: { stop: [{ command: 'teamai hook-dispatch stop --tool cursor' }] },
+    });
+
+    await reconcileTeamHooksForConfig(teamConfig, localConfig(), { filterAgents: ['claude'] });
+
+    const stale = await fse.readJson(path.join(project, '.cursor', 'hooks.json'));
+    expect(stale.hooks.stop ?? []).toHaveLength(0);
+  });
+
+  it('does not wipe the live hooks when projectRoot IS the home dir', async () => {
+    // `teamai init .` run in ~ (dotfiles-style repo): the legacy location and
+    // the live HOME target are the same file, so there is nothing to sweep.
+    const cfg = {
+      repo: { localPath: repo, remote: 'x' },
+      username: 'u',
+      scope: 'project',
+      projectRoot: home,
+      additionalRoles: [],
+    } as unknown as LocalConfig;
+
+    await reconcileTeamHooksForConfig(teamConfig, cfg);
+
+    const claude = await claudeSettings();
+    expect(claude.hooks.SessionStart).toHaveLength(1);
+  });
+});
