@@ -163,6 +163,25 @@ teamai source remove other-team
 The add/remove change takes effect locally right away, and subscribed skills sync on the next
 `teamai pull`. Run `teamai push` when you want to share the `teamai.yaml` change with teammates.
 
+### Configuration Console (WebUI)
+
+A local web console for the team configuration repository — branch switching, role binding,
+resource browsing, and settings editing, all in one page:
+
+```bash
+teamai config ui          # opens http://127.0.0.1:3722 (binds localhost only)
+teamai config list        # table: key | value | source | group | description
+teamai config get <field> # e.g. teamai config get repo.branch
+teamai config set <field> <value>   # same validation as the WebUI form
+```
+
+Six tabs: **Repo** (remote/provider/branch health), **Branches** (list remote branches and
+re-initialize onto one as a background job with live logs), **Roles** (manifest + your binding,
+effective on next pull), **Resources** (skills/rules/docs/env/agents/hooks/MCP/culture/recall
+inventory with preview — env shows names only, never values), **Settings** (registry-driven form
+with diff preview), **Sync** (state + sync now). The UI is read-only toward the team repo; every
+config write goes through the same zod-validated pipeline as the CLI.
+
 ## Knowledge Base
 
 Beyond distributing the Harness, TeamAI organizes accumulated team experience and code structure into a searchable knowledge base that the AI recalls automatically when needed.
@@ -247,6 +266,8 @@ The WASM parser is a pure-JavaScript dependency — no native toolchain is requi
 | `teamai remove <type> <name>` | Remove a resource and open MR |
 | `teamai session save` | Record a privacy-scrubbed session summary to a monthly log (`--push` feeds `digest`) |
 | `teamai digest` | Generate weekly team usage digest |
+| `teamai config list/get/set` | Manage local config fields (scope-aware, zod-validated) |
+| `teamai config ui` | Start the local Configuration WebUI (repo/branches/roles/resources/settings/sync) |
 | `teamai doctor` | Diagnose configuration issues |
 | `teamai uninstall` | Remove all teamai resources and hooks |
 

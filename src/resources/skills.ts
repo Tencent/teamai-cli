@@ -1,3 +1,4 @@
+import fse from 'fs-extra';
 import path from 'node:path';
 import YAML from 'yaml';
 import { ResourceHandler } from './base.js';
@@ -462,6 +463,14 @@ export class SkillsHandler extends ResourceHandler {
       }
 
       try {
+        // MIRROR semantics: remove the installed copy first, then copy. A
+        // merge-style overwrite (fse.copy overwrite:true) never deletes files
+        // that were removed from the team repo, so in-skill cleanups (e.g.
+        // deleting stale reference docs) would linger on members' machines
+        // forever. The installed dir is fully owned by teamai (tracked by the
+        // installed-skills ledger / namespace scan), so wholesale replacement
+        // is safe and makes deletions inside a skill propagate on pull.
+        await fse.remove(dest).catch(() => undefined);
         await copyDir(item.sourcePath, dest);
         await ensureSkillFrontmatter(dest, item.name);
         log.debug(`Synced skill ${item.name} → ${tool}`);

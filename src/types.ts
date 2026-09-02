@@ -287,6 +287,13 @@ export const LocalConfigSchema = z.object({
     /** Base URL of the HTTP team repo (only when kind === 'http'). */
     url: z.string().optional(),
     /**
+     * Team-repo branch to track instead of the remote default branch
+     * (only when kind === 'git'). Set via `teamai init --branch <name>`.
+     * Product-line variants can then live as long-lived branches of one
+     * team repo; pull/push/MR-target all follow this branch.
+     */
+    branch: z.string().optional(),
+    /**
      * Git root of the business repo (only when kind === 'self').
      * Equals the parent directory of localPath. All git write operations
      * (knowledge PRs, reports orphan branch) run in isolated worktrees under
@@ -386,6 +393,14 @@ export const StateSchema = z.object({
   coAuthorManaged: z.record(z.string(), z.boolean()).optional(),
   lastUpdateCheck: z.string().nullable().default(null),
   availableUpdate: z.string().nullable().default(null),
+  /**
+   * Remote default branch of the team repo, snapshotted once (from
+   * `git ls-remote --symref origin HEAD`) so the Config WebUI can offer
+   * "return to default branch" even after the clone was pinned to a
+   * product-line branch (repo.branch set). Optional: absent until the
+   * first re-init job records it.
+   */
+  teamRepoDefaultBranch: z.string().optional(),
 });
 
 export type State = z.infer<typeof StateSchema>;
@@ -801,6 +816,8 @@ export interface DashboardSession {
 export const DASHBOARD_EVENTS_DIR = `${TEAMAI_HOME}/dashboard`;
 export const DASHBOARD_EVENTS_PATH = `${DASHBOARD_EVENTS_DIR}/events.jsonl`;
 export const DASHBOARD_DEFAULT_PORT = 3721;
+/** Config WebUI port (`teamai config ui`) — one above the dashboard. */
+export const CONFIG_UI_DEFAULT_PORT = 3722;
 /** Sessions with no activity for this long (ms) are marked idle */
 export const DASHBOARD_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 /** Sessions idle for this long (ms) are removed from the dashboard */

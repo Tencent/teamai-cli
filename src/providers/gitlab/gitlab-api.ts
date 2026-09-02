@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { GITLAB_HOST } from './repo-url.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
+import { sshCloneUrl, sshHostFromBaseUrl } from './ssh-fallback.js';
 
 /**
  * GitLab REST API client (API v4).
@@ -152,6 +153,12 @@ export class GitLabRepoNotFoundError extends Error {
  * used in clone.ts.
  */
 function cloneUrl(repo: string): string {
+  const token = getGitLabToken();
+  // No token: fall back to plain SSH (scp-style) so members with only an ssh
+  // key can still clone — subsequent push operations reuse the same remote.
+  if (!token) {
+    return sshCloneUrl(sshHostFromBaseUrl(gitlabBaseUrl()), repo);
+  }
   const base = gitlabBaseUrl().replace(/\/+$/, '');
   return `${base}/${repo}.git`;
 }

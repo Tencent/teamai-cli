@@ -15,6 +15,10 @@ function resolveGitLabHost(): string {
   const direct = process.env.TEAMAI_GITLAB_HOST?.trim();
   if (direct) return direct;
 
+  // Comma-separated alias kept from our internal fork: first entry wins.
+  const hosts = process.env.TEAMAI_GITLAB_HOSTS?.split(',').map(s => s.trim()).filter(Boolean);
+  if (hosts?.length) return hosts[0];
+
   const gitlabUrl = process.env.GITLAB_URL?.trim();
   if (gitlabUrl) {
     try {

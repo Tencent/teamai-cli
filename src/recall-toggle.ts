@@ -21,7 +21,7 @@ import {
   type LocalConfig,
 } from './types.js';
 
-async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+export async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
   const baseDir = resolveBaseDir(localConfig);
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
@@ -88,7 +88,7 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
   }
 }
 
-async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+export async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
   const { deployBuiltinRules } = await import('./builtin-rules.js');
   const { deployBuiltinAgents } = await import('./builtin-agents.js');
   const { deployBuiltinSkills } = await import('./builtin-skills.js');
