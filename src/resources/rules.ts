@@ -3,7 +3,7 @@ import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir, isAgentDisabled, scopedToolPaths } from '../types.js';
+import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir, isAgentDisabled, scopedToolPaths, effectiveToolPaths } from '../types.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { teamRuleToCursorMdc, mergeCursorBodyIntoTeamMd, cursorMdcBodyEqualsTeamMd } from './cursor-mdc.js';
 import {
@@ -47,7 +47,7 @@ export class RulesHandler extends ResourceHandler {
     };
 
     // Scan each tool's rules/ directory (recursively)
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
       const rulesPath = toolPath.rules;
       if (!rulesPath) continue;
       const rulesDir = path.join(resolveBaseDir(localConfig), rulesPath);
@@ -169,7 +169,7 @@ export class RulesHandler extends ResourceHandler {
    */
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
     const baseDir = resolveBaseDir(localConfig);
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
       if (isAgentDisabled(localConfig, tool)) continue;
       if (!toolPath.rules) continue;
 
@@ -224,7 +224,7 @@ export class RulesHandler extends ResourceHandler {
     // Remove from each tool's rules directory. Cursor uses `.mdc`, but an older
     // teamai layout wrote `.md` there, so both are removed — otherwise `remove`
     // would report success while leaving the rule on disk.
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
       if (!toolPath.rules) continue;
       const extensions = new Set<string>([ruleFileExtensionForTool(tool), '.md']);
       for (const extension of extensions) {
@@ -292,7 +292,7 @@ export class RulesHandler extends ResourceHandler {
     // 1.5. Clean up stale local rule files not present in team repo
     const teamRuleNames = new Set(rules.map((r) => r.name));
     const baseDir = resolveBaseDir(localConfig);
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
       if (!toolPath.rules) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
 
@@ -330,7 +330,7 @@ export class RulesHandler extends ResourceHandler {
     }
 
     // 2. Remove legacy rules section from CLAUDE.md (no longer injected)
-    for (const [, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    for (const [, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
       if (!toolPath.claudemd) continue;
       const claudeMdPath = path.join(baseDir, toolPath.claudemd);
       try {
@@ -366,7 +366,7 @@ export class RulesHandler extends ResourceHandler {
     present: boolean,
   ): Promise<void> {
     if (isAgentDisabled(localConfig, 'opencode')) return;
-    const scoped = scopedToolPaths(teamConfig, localConfig);
+    const scoped = await effectiveToolPaths(teamConfig, localConfig);
     const paths = scoped['opencode'];
     if (!paths?.rules) return;
 

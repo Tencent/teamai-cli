@@ -61,18 +61,18 @@ describe('promptForSelfModeAgents — interactive Auto option', () => {
     expect(result).toEqual(['claude', 'codex']);
   });
 
-  it('picking a specific tool (index 3 = Cursor) returns just that tool', async () => {
-    vi.mocked(askSelection).mockResolvedValueOnce([3]); // 1=Auto,2=claude,3=codex... wait: index maps -1
+  it('picking a specific tool (index 5 = Cursor) returns just that tool', async () => {
+    vi.mocked(askSelection).mockResolvedValueOnce([5]);
     const result = await promptForSelfModeAgents({});
-    // resolveSelfModeSelection: index 3 → SELF_MODE_AGENT_CHOICES[2] = cursor
+    // resolveSelfModeSelection: index 5 → SELF_MODE_AGENT_CHOICES[4] = cursor
     expect(result).toEqual(['cursor']);
   });
 
-  it('offers exactly 6 options (Auto + 5 tools)', async () => {
+  it('offers exactly 8 options (Auto + 7 tools)', async () => {
     vi.mocked(askSelection).mockResolvedValueOnce([0]);
     await promptForSelfModeAgents({});
     const [, itemCount] = vi.mocked(askSelection).mock.calls[0];
-    expect(itemCount).toBe(6);
+    expect(itemCount).toBe(8);
   });
 
   it('renders "none detected" when HOME has no known tools, and Auto → claude', async () => {

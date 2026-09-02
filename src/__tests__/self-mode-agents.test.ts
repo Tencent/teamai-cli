@@ -69,8 +69,8 @@ describe('detectHomeInstalledAgents', () => {
     expect(await detectHomeInstalledAgents(['cursor'])).toEqual(['cursor']);
   });
 
-  it('SELF_MODE_AGENT_CHOICES is the 5 common coding agents', () => {
-    expect([...SELF_MODE_AGENT_CHOICES]).toEqual(['claude', 'codex', 'cursor', 'codebuddy', 'workbuddy']);
+  it('SELF_MODE_AGENT_CHOICES is the 7 common coding agents', () => {
+    expect([...SELF_MODE_AGENT_CHOICES]).toEqual(['claude', 'tclaude', 'codex', 'tcodex', 'cursor', 'codebuddy', 'workbuddy']);
   });
 });
 
@@ -157,24 +157,26 @@ describe('resolveSelfModeSelection (interactive picker: option 1 = Auto)', () =>
   });
 
   it('a specific tool maps by (index - 1) into the choices list', () => {
-    // index 2 → SELF_MODE_AGENT_CHOICES[1] = codex
-    expect(resolveSelfModeSelection([2], detected)).toEqual(['codex']);
-    // index 4 → SELF_MODE_AGENT_CHOICES[3] = codebuddy
-    expect(resolveSelfModeSelection([4], detected)).toEqual(['codebuddy']);
+    // index 3 → SELF_MODE_AGENT_CHOICES[2] = codex
+    expect(resolveSelfModeSelection([3], detected)).toEqual(['codex']);
+    // index 6 → SELF_MODE_AGENT_CHOICES[5] = codebuddy
+    expect(resolveSelfModeSelection([6], detected)).toEqual(['codebuddy']);
   });
 
   it('multiple specific tools preserve choice order', () => {
-    // indices 4 (codebuddy) + 2 (codex) → order follows the input
-    expect(resolveSelfModeSelection([4, 2], detected)).toEqual(['codebuddy', 'codex']);
+    // indices 6 (codebuddy) + 3 (codex) → order follows the input
+    expect(resolveSelfModeSelection([6, 3], detected)).toEqual(['codebuddy', 'codex']);
   });
 
   it('Auto + a specific tool merges detected first, then extras, deduped', () => {
-    // Auto → [claude, codex]; index 3 → cursor. codex already present, not dup.
-    expect(resolveSelfModeSelection([0, 3, 2], detected)).toEqual(['claude', 'codex', 'cursor']);
+    // Auto → [claude, codex]; index 5 → cursor. codex already present, not dup.
+    expect(resolveSelfModeSelection([0, 5, 3], detected)).toEqual(['claude', 'codex', 'cursor']);
   });
 
   it('"all" (every index incl. Auto) yields the full choice set once', () => {
-    const allIndices = [0, 1, 2, 3, 4, 5]; // Auto + 5 tools
-    expect(resolveSelfModeSelection(allIndices, detected)).toEqual([...SELF_MODE_AGENT_CHOICES]);
+    const allIndices = [0, 1, 2, 3, 4, 5, 6, 7]; // Auto + 7 tools
+    const result = resolveSelfModeSelection(allIndices, detected);
+    expect(new Set(result)).toEqual(new Set(SELF_MODE_AGENT_CHOICES));
+    expect(result.length).toBe(SELF_MODE_AGENT_CHOICES.length);
   });
 });

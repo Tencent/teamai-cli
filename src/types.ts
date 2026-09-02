@@ -1169,6 +1169,53 @@ export function scopedToolPaths(
   return out;
 }
 
+/**
+ * Derive convention-based tool paths from a KNOWN_AGENTS skillsPath.
+ * e.g. '.tclaude/skills' → { skills: '.tclaude/skills', rules: '.tclaude/rules', agents: '.tclaude/agents', claudemd: '.tclaude/CLAUDE.md' }
+ */
+function deriveToolPaths(skillsPath: string): z.infer<typeof ToolPathsSchema> {
+  const root = skillsPath.split('/')[0]; // e.g. '.tclaude'
+  return {
+    skills: skillsPath,
+    rules: `${root}/rules`,
+    agents: `${root}/agents`,
+    claudemd: `${root}/CLAUDE.md`,
+  };
+}
+
+/**
+ * Merge scopedToolPaths with KNOWN_AGENTS auto-discovery.
+ *
+ * scopedToolPaths only returns tools explicitly listed in teamai.yaml toolPaths.
+ * This function supplements those with any KNOWN_AGENTS entry whose install root
+ * exists on disk but is missing from the explicit config — so a tool like tclaude
+ * that is installed (has ~/.tclaude or <project>/.tclaude) gets resources injected
+ * even when the team's teamai.yaml does not list it.
+ */
+export async function effectiveToolPaths(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<Record<string, z.infer<typeof ToolPathsSchema>>> {
+  const { KNOWN_AGENTS } = await import('./known-agents.js');
+  const { pathExists } = await import('./utils/fs.js');
+  const baseDir = resolveBaseDir(localConfig);
+  const base = scopedToolPaths(teamConfig, localConfig);
+  const merged = { ...base };
+
+  for (const agent of KNOWN_AGENTS) {
+    if (merged[agent.id]) continue;
+    if (isAgentDisabled(localConfig, agent.id)) continue;
+    const rootSegment = agent.skillsPath.split('/')[0];
+    if (!rootSegment) continue;
+    const rootPath = path.join(baseDir, rootSegment);
+    if (await pathExists(rootPath)) {
+      merged[agent.id] = deriveToolPaths(agent.skillsPath);
+    }
+  }
+
+  return merged;
+}
+
 /** True when the local config is single-repo mode (the business repo is the team repo). */
 export function isSelfMode(localConfig: { repo: { kind?: string } }): boolean {
   return localConfig.repo.kind === 'self';
