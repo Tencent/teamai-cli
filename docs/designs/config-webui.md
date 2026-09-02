@@ -306,8 +306,7 @@ markdown renderer (`renderMarkdown`), card/table styling.
 
 - **Repo**: key/value card + health badges + (when uninitialized) a bootstrap form
   (repo URL + scope) that shells to guidance text for `teamai init` (v1 does not
-  POST an arbitrary repo URL — see §7.4).
-- **Branches**: table (name/sha/current/default markers) + actions
+  POST an arbitrary repo URL — see §7.4).- **Branches**: table (name/sha/current/default markers) + actions
   `Re-init with selected branch` (confirm dialog shows: branch, scope, preserved
   role/agents, dirty-tree warning) → POST reinit → poll job → render log tail live
   (`<pre>` auto-scroll) → refresh Repo/Branches on done.
@@ -326,8 +325,10 @@ markdown renderer (`renderMarkdown`), card/table styling.
   and scope switcher (user/project) at top.
 - **Sync**: state key/values + `Sync now` (job poll).
 
-All user-facing strings **English**. XSS discipline: every interpolated value goes
-through `escapeHtml`/`escapeAttr`.
+WebUI 界面文案以**中文**为主（2026-09-02 用户明确要求"界面显示需要以中文为主"，
+覆盖本设计先前的英文文案约定；CLI 输出、代码注释、API 报错仍为英文，符合仓库
+"CLI user-facing output must be in English" 规则）。XSS discipline: every
+interpolated value goes through `escapeHtml`/`escapeAttr`.
 
 ### 5.8 Preview & scan specials
 
@@ -463,7 +464,8 @@ real GitLab teamai-demo repo, commit hygiene.
 ## 12. Constraints
 
 - **Zero new npm dependencies.**
-- All production strings English; no Chinese in code or UI.
+- CLI output / code / API messages in English; the WebUI HTML is the sanctioned
+  Chinese-first exception (user decision, 2026-09-02 — see §5.7).
 - Never modify team-repo files from the UI (read-only toward the clone).
 - Follow `release/*` branch conventions: final `dist` rebuild committed with `-f`.
 - Do not push the branch without explicit user instruction.

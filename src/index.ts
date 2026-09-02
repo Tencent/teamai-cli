@@ -630,6 +630,49 @@ program
     await startDashboard(Number(cmdOpts.port));
   });
 
+// ─── Config commands (local config console) ────────────
+
+const configCmd = program
+  .command('config')
+  .description('Manage local teamai config (list / get / set) and launch the Config WebUI');
+
+configCmd
+  .command('list')
+  .description('List config fields with value, source, group and description')
+  .option('--scope <scope>', 'Config scope: user | project (default: auto-detect)')
+  .action(async (cmdOpts) => {
+    const { configList } = await import('./config-cmd.js');
+    await configList(cmdOpts.scope);
+  });
+
+configCmd
+  .command('get <field>')
+  .description('Print the value of one config field (dot path, e.g. repo.branch)')
+  .option('--scope <scope>', 'Config scope: user | project (default: auto-detect)')
+  .action(async (field: string, cmdOpts) => {
+    const { configGet } = await import('./config-cmd.js');
+    await configGet(field, cmdOpts.scope);
+  });
+
+configCmd
+  .command('set <field> <value>')
+  .description('Set a config field (value parsed by field type; JSON or comma-separated for arrays; unset|true|false for tri-state)')
+  .option('--scope <scope>', 'Config scope: user | project (default: auto-detect)')
+  .action(async (field: string, value: string, cmdOpts) => {
+    const { configSet } = await import('./config-cmd.js');
+    await configSet(field, value, cmdOpts.scope);
+  });
+
+configCmd
+  .command('ui')
+  .description('Start the local Config WebUI (binds 127.0.0.1)')
+  .option('-p, --port <port>', 'Port number', String(3722))
+  .option('--scope <scope>', 'Config scope: user | project (default: auto-detect)')
+  .action(async (cmdOpts) => {
+    const { configUi } = await import('./config-cmd.js');
+    await configUi(Number(cmdOpts.port), cmdOpts.scope);
+  });
+
 program
   .command('dashboard-report', { hidden: true })
   

@@ -393,6 +393,14 @@ export const StateSchema = z.object({
   coAuthorManaged: z.record(z.string(), z.boolean()).optional(),
   lastUpdateCheck: z.string().nullable().default(null),
   availableUpdate: z.string().nullable().default(null),
+  /**
+   * Remote default branch of the team repo, snapshotted once (from
+   * `git ls-remote --symref origin HEAD`) so the Config WebUI can offer
+   * "return to default branch" even after the clone was pinned to a
+   * product-line branch (repo.branch set). Optional: absent until the
+   * first re-init job records it.
+   */
+  teamRepoDefaultBranch: z.string().optional(),
 });
 
 export type State = z.infer<typeof StateSchema>;
@@ -809,6 +817,8 @@ export interface DashboardSession {
 export const DASHBOARD_EVENTS_DIR = `${TEAMAI_HOME}/dashboard`;
 export const DASHBOARD_EVENTS_PATH = `${DASHBOARD_EVENTS_DIR}/events.jsonl`;
 export const DASHBOARD_DEFAULT_PORT = 3721;
+/** Config WebUI port (`teamai config ui`) — one above the dashboard. */
+export const CONFIG_UI_DEFAULT_PORT = 3722;
 /** Sessions with no activity for this long (ms) are marked idle */
 export const DASHBOARD_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 /** Sessions idle for this long (ms) are removed from the dashboard */

@@ -24,6 +24,7 @@
 - [Knowledge Capture & Retrieval](#knowledge-capture--retrieval)
 - [Team Culture](#team-culture)
 - [Advanced Features](#advanced-features)
+- [Configuration Console (WebUI)](#configuration-console-webui)
 - [Configuration Reference](#configuration-reference)
 - [Uninstall](#uninstall)
 - [FAQ](#faq)
@@ -1081,6 +1082,68 @@ teamai source remove-http
 ```
 
 An HTTP source reports status and pulls skill commands via hook dispatch on every session. Only one HTTP source is supported per install. If the main repo is already in HTTP mode (`init --http`), `add-http` is unavailable (the main repo already occupies the HTTP config).
+
+---
+
+## Configuration Console (WebUI)
+
+`teamai config ui` starts a local web console for the team configuration repository at
+`http://127.0.0.1:3722`. It binds the loopback interface only — no LAN access, no auth surface.
+
+### CLI companion commands
+
+```bash
+teamai config list                     # key | value | source | group | description
+teamai config get repo.branch          # print one field (dot path)
+teamai config set updatePolicy skip    # values parsed by field type
+teamai config set recallEnabled unset  # tri-state: unset | true | false
+teamai config set excludedSkills '["a","b"]'   # arrays: JSON or comma-separated
+```
+
+`config list/get/set` and the WebUI settings form share one validation pipeline (a field
+registry + zod schema), so anything the form accepts the CLI accepts, and vice versa.
+`--scope user|project` selects which config file is read/written (default: auto-detect
+from the current directory).
+
+### The six tabs
+
+- **Repo** — remote URL, provider, clone path, tracked/default branch, sync state, and
+  read-only branch-health badges (checkout, upstream tracking, origin/HEAD, ahead/behind).
+  When teamai is not initialized, the tab shows the `teamai init` bootstrap guidance instead.
+- **Branches** — every remote branch (`git ls-remote --heads`). Pick one and press
+  *Re-initialize*: the UI runs `teamai init <remote> --branch <sel> --force` followed by
+  `teamai pull --force` as a **background job** (your primary role and enabled agents are
+  preserved), with the subprocess log streaming live. A dirty clone blocks the job until you
+  explicitly confirm force (discarded commits stay recoverable in the git reflog). Choosing
+  the *default branch* option unpins `repo.branch`.
+- **Roles** — the manifest from `manifest/roles.yaml`, your local binding (primary +
+  additional), and the effective namespaces. Binding changes take effect on the next pull —
+  the UI offers a *Sync now* button. A badge marks a stale `resourceProfileVersion`.
+- **Resources** — full inventory of the current branch: skills (with active/installed/
+  excluded state), rules, docs, agents, team hooks, MCP servers, culture.md, roles, and the
+  recall knowledge base (index status + entries + a search playground). Click a row to
+  preview: markdown is rendered, code is highlighted; **env rows show names and injection
+  policy only — values are never sent to the browser**.
+- **Settings** — the editable local config fields, grouped, with a diff preview before
+  saving and inline per-field errors. Tri-state fields (recall, co-author) offer
+  *unset (follow team) / on / off*. `repo.branch` can also be changed here — saving pins
+  the clone to the new branch without a full re-init.
+- **Sync** — `state.json` summary plus *Sync now* (`teamai pull --force` as a job).
+
+### Security posture
+
+- Binds `127.0.0.1` only; never `0.0.0.0`.
+- No CORS headers; cross-origin POSTs are rejected (403), as are non-local `Host` headers
+  (DNS-rebinding guard).
+- POST bodies must be `application/json`, capped at 1 MB.
+- The team repo is **read-only** for the UI: it never edits `teamai.yaml`, `roles.yaml`,
+  tags, or hook sources — use the CLI/PR flows for those.
+- Preview endpoints are double-gated: the requested id must come from the server-side scan,
+  and the resolved path must pass a symlink-resolved containment check (200 KB cap).
+- API tokens / keys are never loaded by the server, so they can never leak through it.
+- Branch names are validated against the `ls-remote` output — user input never reaches raw
+  git arguments. The re-init API accepts no repo URL: the remote is pinned to your current
+  config.
 
 ---
 

@@ -24,6 +24,7 @@
 - [知识沉淀与检索](#知识沉淀与检索)
 - [团队文化](#团队文化culture)
 - [进阶功能](#进阶功能)
+- [配置台（WebUI）](#配置台webui)
 - [配置文件参考](#配置文件参考)
 - [常见问题 FAQ](#常见问题-faq)
 
@@ -1076,6 +1077,61 @@ teamai source remove-http
 ```
 
 HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill 指令。每个安装仅支持一个 HTTP 源。若主仓本身已是 HTTP 模式（`init --http`），则 `add-http` 不可用（主仓已占用 HTTP 配置）。
+
+---
+
+## 配置台（WebUI）
+
+`teamai config ui` 会在 `http://127.0.0.1:3722` 启动面向团队配置仓库的本地 Web 控制台。
+它只监听回环地址——不开放局域网访问，也不引入任何鉴权面。
+
+### CLI 配套命令
+
+```bash
+teamai config list                     # 键 | 值 | 来源 | 分组 | 说明
+teamai config get repo.branch          # 打印单个字段（点路径）
+teamai config set updatePolicy skip    # 值按字段类型解析
+teamai config set recallEnabled unset  # 三态：unset | true | false
+teamai config set excludedSkills '["a","b"]'   # 数组：JSON 或逗号分隔
+```
+
+`config list/get/set` 与 WebUI 设置表单共用同一条校验管线（字段注册表 + zod schema），
+表单接受的 CLI 都接受，反之亦然。`--scope user|project` 指定读写的配置文件（默认按当前
+目录自动检测）。
+
+### 六个标签页
+
+- **仓库**——远程地址、提供商、克隆路径、跟踪/默认分支、同步状态，以及只读的分支健康
+  徽章（检出、上游跟踪、origin/HEAD、领先/落后）。未初始化时显示 `teamai init` 引导指引。
+- **分支**——列出全部远端分支（`git ls-remote --heads`）。选中一个点击「重新初始化」：
+  UI 会以**后台任务**依次执行 `teamai init <remote> --branch <sel> --force` 与
+  `teamai pull --force`（保留当前主角色与已启用工具），子进程日志实时滚动。克隆工作区
+  有未提交改动时会拦截任务，需明确确认强制执行才会继续（被丢弃的提交仍可在 git
+  reflog 中找回）。选择「默认分支」选项则取消 `repo.branch` 固定。
+- **角色**——`manifest/roles.yaml` 清单、本机绑定（主角色 + 附加角色）与生效命名空间。
+  绑定变更在下次 pull 生效——UI 提供「立即同步」按钮。`resourceProfileVersion` 落后时
+  显示过期徽章。
+- **资源**——当前分支的全量清点：skills（含生效/已安装/已排除状态）、rules、docs、
+  agents、团队 hooks、MCP 服务器、culture.md、roles，以及知识召回库（索引状态 + 条目 +
+  检索试验场）。点击行即可预览：markdown 渲染、代码高亮；**环境变量只显示名称与注入
+  策略——值永远不会下发到浏览器**。
+- **设置**——可编辑的本地配置字段，按分组组织，保存前有差异预览，逐字段行内报错。
+  三态字段（召回、协作署名）提供「未设置（跟随团队）/ 开 / 关」。`repo.branch` 也可在
+  此修改——保存即把克隆固定到新分支，无需完整重新初始化。
+- **同步**——`state.json` 摘要 + 「立即同步」（以任务执行 `teamai pull --force`）。
+
+### 安全姿态
+
+- 仅绑定 `127.0.0.1`，绝不监听 `0.0.0.0`。
+- 不下发任何 CORS 头；跨源 POST 一律 403 拒绝，非本地 `Host` 头同样 403（防 DNS 重绑定）。
+- POST 请求体必须是 `application/json`，上限 1 MB。
+- UI 对团队仓库**只读**：不会修改 `teamai.yaml`、`roles.yaml`、tags 或 hooks 源文件——
+  这些请走 CLI / MR 流程。
+- 预览接口双重把关：请求的 id 必须来自服务端扫描白名单，且解析后的路径必须通过
+  符号链接解析的包含性检查（200 KB 截断）。
+- 服务端从不加载 API token / key，因此不可能经由它泄露。
+- 分支名与 `ls-remote` 输出比对校验——用户输入不会进入原始 git 参数。重新初始化接口
+  不接受任何仓库 URL：远程固定为当前配置。
 
 ---
 

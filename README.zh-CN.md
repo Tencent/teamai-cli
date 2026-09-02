@@ -162,6 +162,19 @@ teamai source remove other-team
 添加/移除会立即在本机生效，订阅的 skills 会在下一次 `teamai pull` 时同步。需要将
 `teamai.yaml` 的改动分享给团队成员时，再运行 `teamai push`。
 
+### 配置台（WebUI）
+
+面向团队配置仓库的本地 Web 控制台——分支切换、角色绑定、资源浏览、设置编辑，一个页面全搞定：
+
+```bash
+teamai config ui          # 打开 http://127.0.0.1:3722（仅监听本机回环地址）
+teamai config list        # 表格：键 | 值 | 来源 | 分组 | 说明
+teamai config get <field> # 例如 teamai config get repo.branch
+teamai config set <field> <value>   # 与 WebUI 表单走同一套校验
+```
+
+六个标签页：**仓库**（远程地址/提供商/分支健康度）、**分支**（列出远端分支，一键以所选分支重新初始化——后台任务执行，日志实时滚动）、**角色**（角色清单 + 本机绑定，下次 pull 生效）、**资源**（skills/rules/docs/env/agents/hooks/MCP/团队文化/知识库全量清点与预览——环境变量只显示名称与策略，永不显示值）、**设置**（注册表驱动的表单，保存前有差异预览）、**同步**（同步状态 + 立即同步）。WebUI 对团队仓库只读；所有配置写入与 CLI 走同一条 zod 校验管线。
+
 ## 知识库
 
 除了分发 Harness，TeamAI 还把团队沉淀的经验和代码结构组织成可检索的知识库，让 AI 在需要时自动召回。
@@ -244,6 +257,8 @@ WASM 解析器是纯 JavaScript 依赖，无需任何原生编译工具链。若
 | `teamai remove <type> <name>` | 删除资源并创建 MR |
 | `teamai session save` | 将脱敏后的 session 摘要记录到月度日志（`--push` 可喂给 `digest`） |
 | `teamai digest` | 生成团队周报 |
+| `teamai config list/get/set` | 管理本地配置字段（区分作用域，zod 校验） |
+| `teamai config ui` | 启动本地配置台 WebUI（仓库/分支/角色/资源/设置/同步） |
 | `teamai doctor` | 诊断配置问题 |
 | `teamai uninstall` | 移除所有 teamai 资源和 hooks |
 
