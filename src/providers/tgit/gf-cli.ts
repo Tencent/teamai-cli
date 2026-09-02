@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathExists, ensureDir } from '../../utils/fs.js';
+import { spawnGit, pinUrlCredential } from '../../utils/git.js';
 import { log, spinner } from '../../utils/logger.js';
 import { TEAMAI_HOME } from '../../types.js';
 import { tgitFetch, tgitGitCloneUrl } from './rest-auth.js';
@@ -347,11 +348,7 @@ function gitOutputSaysRepoMissing(output: string): boolean {
 export function gfRepoClone(repo: string, localPath: string): void {
   const cloneUrl = tgitGitCloneUrl(`https://git.woa.com/${repo}.git`);
   if (cloneUrl) {
-    const result = spawnSync('git', ['clone', cloneUrl, localPath], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 120_000,
-    });
+    const result = spawnGit(['clone', cloneUrl, localPath], { credentialInUrl: true });
     const allOutput = `${result.stderr ?? ''} ${result.stdout ?? ''}`;
     if (gitOutputSaysRepoMissing(allOutput)) {
       throw new RepoNotFoundError(repo);
@@ -361,6 +358,7 @@ export function gfRepoClone(repo: string, localPath: string): void {
       const sanitized = allOutput.replace(/oauth2:[^@]+@/g, 'oauth2:***@');
       throw new Error(`git clone failed: ${sanitized.trim()}`);
     }
+    pinUrlCredential(localPath);
     return;
   }
 

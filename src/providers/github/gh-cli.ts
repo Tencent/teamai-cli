@@ -1,4 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process';
+import { spawnGit, pinUrlCredential } from '../../utils/git.js';
 import { log, spinner } from '../../utils/logger.js';
 
 // ─── Constants ───────────────────────────────────────────
@@ -248,11 +249,7 @@ export function ghRepoClone(repo: string, localPath: string): void {
     ? `https://x-access-token:${token}@github.com/${repo}.git`
     : `https://github.com/${repo}.git`;
 
-  const result = spawnSync('git', ['clone', cloneUrl, localPath], {
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    timeout: 120_000,
-  });
+  const result = spawnGit(['clone', cloneUrl, localPath], { credentialInUrl: Boolean(token) });
 
   const allOutput = `${result.stderr ?? ''} ${result.stdout ?? ''}`;
   if (
@@ -266,6 +263,7 @@ export function ghRepoClone(repo: string, localPath: string): void {
     const sanitized = allOutput.replace(/x-access-token:[^@]+@/g, 'x-access-token:***@');
     throw new Error(`git clone failed: ${sanitized.trim()}`);
   }
+  if (token) pinUrlCredential(localPath);
 }
 
 /**

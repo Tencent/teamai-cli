@@ -1,9 +1,23 @@
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import fs from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import fse from 'fs-extra';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import { log } from './logger.js';
+
+/** Wall-clock budget for a single `git` subprocess teamai spawns itself. */
+const GIT_TIMEOUT_MS = 120_000;
+
+/**
+ * How long a simple-git call may produce no output before it is killed.
+ *
+ * Without it a git process that blocks forever — typically waiting on a
+ * credential prompt nobody can answer — makes `teamai pull` hang with no error
+ * at all. The budget only starts over on output, so a slow but progressing
+ * fetch is unaffected.
+ */
+const GIT_BLOCK_TIMEOUT_MS = GIT_TIMEOUT_MS;
 
 /**
  * Create a SimpleGit instance for a given base path.
@@ -12,10 +26,45 @@ import { log } from './logger.js';
  * facilities such as credential helpers, SSH config, and SSH agents.
  */
 export function createGit(basePath?: string): SimpleGit {
+  const timeout = { block: GIT_BLOCK_TIMEOUT_MS };
   if (basePath) {
-    return simpleGit({ baseDir: basePath });
+    return simpleGit({ baseDir: basePath, timeout });
   }
-  return simpleGit();
+  return simpleGit({ timeout });
+}
+
+/**
+ * Spawn `git` for a remote whose credential teamai embeds in the URL.
+ *
+ * Such a call must not reach the platform credential helper: git would hand it
+ * the credential purely to cache it, and a helper that cannot open a keychain
+ * (CI, containers, an overridden HOME, a locked keychain) blocks on a prompt
+ * nobody can answer. `credentialInUrl: false` keeps the helper in play for the
+ * anonymous and helper-backed fallback paths, which do depend on it.
+ */
+export function spawnGit(
+  args: string[],
+  opts: { credentialInUrl: boolean },
+): SpawnSyncReturns<string> {
+  return spawnSync('git', opts.credentialInUrl ? ['-c', 'credential.helper=', ...args] : args, {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: GIT_TIMEOUT_MS,
+    env: opts.credentialInUrl ? { ...process.env, GIT_TERMINAL_PROMPT: '0' } : process.env,
+  });
+}
+
+/**
+ * Pin a clone to the credential in its own remote URL, so later pull/fetch/push
+ * inside it skip the platform credential helper too (see {@link spawnGit}).
+ *
+ * Best-effort: failing to write the config only costs the protection.
+ */
+export function pinUrlCredential(localPath: string): void {
+  spawnSync('git', ['-C', localPath, 'config', 'credential.helper', ''], {
+    timeout: 5_000,
+    stdio: 'ignore',
+  });
 }
 
 /**
