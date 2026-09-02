@@ -850,7 +850,8 @@ When using `teamai init --http <baseUrl>`, the endpoint must implement the follo
 
 The backend may push an **`apply_model_config`** task whose `cmd` is JSON. Both
 the documented candidate-set shape and the legacy single-model shape are accepted.
-`{"models":[...]}` is a full snapshot; a direct model object is an incremental upsert:
+`{"models":[...]}` is a full snapshot; a direct model object is an incremental upsert.
+`max_tokens` is optional (CodeBuddy `maxOutputTokens`); omitted or `0` defaults to `4096`. Claude does not use it.
 
 ```jsonc
 { "id": 16, "type": "apply_model_config",

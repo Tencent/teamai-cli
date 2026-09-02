@@ -246,6 +246,35 @@ describe('local-agent: apply_model_config', () => {
     expect(secondAcks[0]?.status).toBe('success');
   });
 
+  it('defaults max_tokens to 4096 when the backend omits it or sends a Go zero value', async () => {
+    const acks = stubSync({
+      id: 25,
+      type: 'apply_model_config',
+      cmd: JSON.stringify({
+        provider: 'tencentcodingplan',
+        model_id: 'kimi-k2.5',
+        name: 'kimi-k2.5',
+        base_url: 'https://proxy.example.com/v1',
+        api_key: 'proxy-token',
+        max_tokens: 0,
+        context_window: 128000,
+      }),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'codebuddy', status: 'running' });
+
+    expect(acks[0]?.status).toBe('success');
+    const codebuddy = await fse.readJson(path.join(home, '.codebuddy/models.json'));
+    expect(codebuddy.models).toEqual([
+      expect.objectContaining({
+        id: 'kimi-k2.5',
+        maxOutputTokens: 4096,
+        maxInputTokens: 128000,
+      }),
+    ]);
+  });
+
   it('acks failed for malformed model config without writing tool files', async () => {
     const acks = stubSync({
       id: 20,

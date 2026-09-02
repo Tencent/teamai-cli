@@ -1992,14 +1992,19 @@ function requireModelString(
   return value.trim();
 }
 
+/** CodeBuddy maxOutputTokens when the backend omits max_tokens or sends 0 (Go zero value). */
+const DEFAULT_MAX_TOKENS = 4096;
+
 function optionalPositiveInteger(value: unknown, field: 'max_tokens' | 'context_window'): number | undefined {
-  if (value === undefined || value === null) return undefined;
+  if (value === undefined || value === null || value === '') return undefined;
   const normalized = typeof value === 'string' && /^\d+$/.test(value)
     ? Number(value)
     : value;
-  if (!Number.isSafeInteger(normalized) || (normalized as number) <= 0) {
+  if (!Number.isSafeInteger(normalized) || (normalized as number) < 0) {
     throw new Error(`apply_model_config: ${field} must be a positive integer`);
   }
+  // 0 is the Go zero value for an unset int, not a real output/context cap.
+  if ((normalized as number) === 0) return undefined;
   return normalized as number;
 }
 
@@ -2033,7 +2038,7 @@ function parseDeliveredModels(raw: string | undefined): { models: DeliveredModel
       name: requireModelString(input.name, 'name'),
       base_url: requireModelString(input.base_url, 'base_url'),
       api_key: requireModelString(input.api_key, 'api_key'),
-      max_tokens: optionalPositiveInteger(input.max_tokens, 'max_tokens'),
+      max_tokens: optionalPositiveInteger(input.max_tokens, 'max_tokens') ?? DEFAULT_MAX_TOKENS,
       context_window: optionalPositiveInteger(input.context_window, 'context_window'),
     };
     let parsedUrl: URL;

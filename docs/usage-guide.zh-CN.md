@@ -848,6 +848,7 @@ cat ~/.claude/CLAUDE.md
 
 后端可下发 **`apply_model_config`** 任务，其 `cmd` 为 JSON。客户端同时兼容设计文档中的候选集结构和
 旧版单模型结构：`{"models":[...]}` 按完整快照处理，直接模型对象按增量 upsert 处理。
+`max_tokens` 可选（对应 CodeBuddy 的 `maxOutputTokens`）；缺省或 `0` 时默认 `4096`。Claude 不使用该字段。
 
 ```jsonc
 { "id": 16, "type": "apply_model_config",
