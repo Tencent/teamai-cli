@@ -71,6 +71,7 @@ const execFileAsync = promisify(execFile);
 const LOCAL_AGENT_DIR = 'local-agent';
 const CONFIG_FILE = 'config.json';
 const MANIFEST_FILE = 'manifest.json';
+const MODEL_MANIFEST_FILE = 'model-manifest.json';
 const REPORTER_ERROR_LOG = 'reporter/errors.jsonl';
 
 /**
@@ -225,6 +226,27 @@ interface LocalAgentCommand {
   };
 }
 
+interface DeliveredModel {
+  provider: string;
+  model_id: string;
+  name: string;
+  base_url: string;
+  api_key: string;
+  max_tokens?: number;
+  context_window?: number;
+}
+
+interface ModelConfigManifest {
+  codebuddy?: Record<string, string>;
+  claudeEnv?: Record<string, string>;
+  /**
+   * model_id → provider for every model this reporter has applied. Claude
+   * stores its gateway as plain ANTHROPIC_* env vars that carry no provider,
+   * so this is the only way to report back the provider the server sent.
+   */
+  providers?: Record<string, string>;
+}
+
 /**
  * Whether a sync command is recognized-but-unimplemented and must be skipped
  * before dispatch. Matches both the known unimplemented type strings and any
@@ -259,6 +281,10 @@ function getConfigPath(): string {
 
 function getManifestPath(): string {
   return path.join(getLocalAgentHome(), MANIFEST_FILE);
+}
+
+function getModelManifestPath(): string {
+  return path.join(getLocalAgentHome(), MODEL_MANIFEST_FILE);
 }
 
 function getErrorLogPath(): string {
@@ -1212,6 +1238,71 @@ async function scanMcpFromManifest(
   return results.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
+interface ReportedModel {
+  provider: string;
+  model_id: string;
+  name?: string;
+  source: string;
+}
+
+/**
+ * Scan the models a tool can currently use, as configured on disk. The server
+ * requires both `provider` and `model_id`, so entries that cannot supply them
+ * are dropped rather than reported as incomplete. `source` is derived from the
+ * model manifest, mirroring how skills/rules classify enterprise vs local.
+ *
+ * Only CodeBuddy and Claude keep a discoverable model config; every other tool
+ * reports nothing.
+ */
+async function scanModelsFromDisk(tool: string): Promise<ReportedModel[]> {
+  const manifest = (await readJson<ModelConfigManifest>(getModelManifestPath())) ?? {};
+  const providers = manifest.providers ?? {};
+
+  if (tool === 'codebuddy' || tool === 'codebuddy-internal') {
+    const doc = await readJson<{ models?: unknown }>(
+      path.join(getUserHome(), '.codebuddy', 'models.json'),
+    );
+    const entries = Array.isArray(doc?.models) ? doc.models : [];
+    const owned = manifest.codebuddy ?? {};
+    const results: ReportedModel[] = [];
+    for (const entry of entries) {
+      if (typeof entry !== 'object' || entry === null) continue;
+      const { id, vendor, name } = entry as Record<string, unknown>;
+      if (typeof id !== 'string' || !id) continue;
+      if (typeof vendor !== 'string' || !vendor) continue;
+      results.push({
+        provider: vendor,
+        model_id: id,
+        ...(typeof name === 'string' && name ? { name } : {}),
+        source: owned[id] !== undefined && entryHash(entry) === owned[id] ? 'enterprise' : 'local',
+      });
+    }
+    return results;
+  }
+
+  if (tool === 'claude' || tool === 'claude-internal') {
+    const settings = await readJson<{ env?: unknown }>(
+      path.join(getUserHome(), '.claude', 'settings.json'),
+    );
+    const env = settings?.env;
+    if (typeof env !== 'object' || env === null || Array.isArray(env)) return [];
+    const { ANTHROPIC_CUSTOM_MODEL_OPTION: modelId, ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: name } =
+      env as Record<string, unknown>;
+    if (typeof modelId !== 'string' || !modelId) return [];
+    const managed = manifest.claudeEnv?.ANTHROPIC_CUSTOM_MODEL_OPTION;
+    return [{
+      // A gateway configured by the user carries no provider; it speaks the
+      // Anthropic protocol, so report it as such.
+      provider: providers[modelId] ?? 'anthropic',
+      model_id: modelId,
+      ...(typeof name === 'string' && name ? { name } : {}),
+      source: managed !== undefined && entryHash(modelId) === managed ? 'enterprise' : 'local',
+    }];
+  }
+
+  return [];
+}
+
 /**
  * Remove workspace bindings whose directory no longer exists on disk.
  *
@@ -1323,6 +1414,10 @@ export async function buildReportPayload(
   if (userScope.rules.length > 0) userLevel.rules = userScope.rules;
   const userMcps = await scanMcpFromManifest('user');
   if (userMcps.length > 0) userLevel.mcps = userMcps;
+  // Omitted when empty for the same full-sync reason as skills/rules: the
+  // server treats a present array as a snapshot, so [] would wipe the models.
+  const userModels = await scanModelsFromDisk(tool);
+  if (userModels.length > 0) userLevel.models = userModels;
 
   const payload: Record<string, unknown> = {
     agent_type: normalizeAgentType(tool),
@@ -1887,6 +1982,251 @@ async function ackCommand(
   });
 }
 
+function requireModelString(
+  value: unknown,
+  field: keyof Pick<DeliveredModel, 'provider' | 'model_id' | 'name' | 'base_url' | 'api_key'>,
+): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`apply_model_config: ${field} must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+function optionalPositiveInteger(value: unknown, field: 'max_tokens' | 'context_window'): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const normalized = typeof value === 'string' && /^\d+$/.test(value)
+    ? Number(value)
+    : value;
+  if (!Number.isSafeInteger(normalized) || (normalized as number) <= 0) {
+    throw new Error(`apply_model_config: ${field} must be a positive integer`);
+  }
+  return normalized as number;
+}
+
+function parseDeliveredModels(raw: string | undefined): { models: DeliveredModel[]; fullSnapshot: boolean } {
+  if (!raw) throw new Error('apply_model_config: missing cmd');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('apply_model_config: cmd must be valid JSON');
+  }
+  const fullSnapshot = (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    'models' in parsed
+  );
+  const values = fullSnapshot ? (parsed as { models?: unknown }).models : [parsed];
+  if (!Array.isArray(values)) {
+    throw new Error('apply_model_config: models must be an array');
+  }
+
+  const seen = new Set<string>();
+  const models = values.map((value) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new Error('apply_model_config: each model must be an object');
+    }
+    const input = value as Record<string, unknown>;
+    const model: DeliveredModel = {
+      provider: requireModelString(input.provider, 'provider'),
+      model_id: requireModelString(input.model_id, 'model_id'),
+      name: requireModelString(input.name, 'name'),
+      base_url: requireModelString(input.base_url, 'base_url'),
+      api_key: requireModelString(input.api_key, 'api_key'),
+      max_tokens: optionalPositiveInteger(input.max_tokens, 'max_tokens'),
+      context_window: optionalPositiveInteger(input.context_window, 'context_window'),
+    };
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(model.base_url);
+    } catch {
+      throw new Error('apply_model_config: base_url must be a valid URL');
+    }
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      throw new Error('apply_model_config: base_url must use http or https');
+    }
+    if (seen.has(model.model_id)) {
+      throw new Error(`apply_model_config: duplicate model_id "${model.model_id}"`);
+    }
+    seen.add(model.model_id);
+    return model;
+  });
+  return { models, fullSnapshot };
+}
+
+function codebuddyModelEntry(model: DeliveredModel): Record<string, unknown> {
+  const baseUrl = model.base_url.replace(/\/+$/, '');
+  return {
+    id: model.model_id,
+    name: model.name,
+    vendor: model.provider,
+    apiKey: model.api_key,
+    ...(model.context_window === undefined ? {} : { maxInputTokens: model.context_window }),
+    ...(model.max_tokens === undefined ? {} : { maxOutputTokens: model.max_tokens }),
+    url: baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`,
+    supportsToolCall: true,
+  };
+}
+
+async function readJsonObject(filePath: string): Promise<Record<string, unknown>> {
+  const source = await readFileSafe(filePath);
+  if (source === null) return {};
+  try {
+    const parsed = JSON.parse(source);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('root must be an object');
+    }
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    throw new Error(`apply_model_config: cannot parse ${filePath}: ${(error as Error).message}`);
+  }
+}
+
+async function reconcileCodebuddyModels(
+  models: DeliveredModel[],
+  fullSnapshot: boolean,
+  manifest: ModelConfigManifest,
+): Promise<void> {
+  const targetFile = path.join(getUserHome(), '.codebuddy', 'models.json');
+  const doc = await readJsonObject(targetFile);
+  const existing = doc.models === undefined ? [] : doc.models;
+  if (!Array.isArray(existing)) {
+    throw new Error(`apply_model_config: models must be an array in ${targetFile}`);
+  }
+
+  const previouslyManaged = manifest.codebuddy ?? {};
+  const nextManaged: Record<string, string> = fullSnapshot ? {} : { ...previouslyManaged };
+  const incomingIds = new Set(models.map((model) => model.model_id));
+  const removedManaged = new Set<string>();
+  const preserved: unknown[] = [];
+  const occupiedIds = new Set<string>();
+  for (const entry of existing) {
+    const id = typeof entry === 'object' && entry !== null && typeof (entry as { id?: unknown }).id === 'string'
+      ? (entry as { id: string }).id
+      : undefined;
+    if (id && previouslyManaged[id] && entryHash(entry) === previouslyManaged[id]) {
+      if (fullSnapshot || incomingIds.has(id)) {
+        removedManaged.add(id);
+        continue;
+      }
+      preserved.push(entry);
+      occupiedIds.add(id);
+      continue;
+    }
+    preserved.push(entry);
+    if (id) occupiedIds.add(id);
+    if (id && previouslyManaged[id]) delete nextManaged[id];
+  }
+
+  for (const model of models) {
+    if (occupiedIds.has(model.model_id)) continue;
+    const entry = codebuddyModelEntry(model);
+    preserved.push(entry);
+    nextManaged[model.model_id] = entryHash(entry);
+  }
+  doc.models = preserved;
+
+  if (Array.isArray(doc.availableModels) && doc.availableModels.length > 0) {
+    const available = doc.availableModels.filter(
+      (id): id is string => typeof id === 'string' && !removedManaged.has(id),
+    );
+    for (const id of Object.keys(nextManaged)) {
+      if (!available.includes(id)) available.push(id);
+    }
+    doc.availableModels = available;
+  }
+
+  await writeJsonAtomic(targetFile, doc);
+  await fs.promises.chmod(targetFile, 0o600);
+  manifest.codebuddy = nextManaged;
+}
+
+function claudeEnvForModel(model: DeliveredModel): Record<string, string> {
+  const baseUrl = model.base_url.replace(/\/+$/, '').replace(/\/v1$/, '');
+  return {
+    ANTHROPIC_BASE_URL: baseUrl,
+    ANTHROPIC_AUTH_TOKEN: model.api_key,
+    ANTHROPIC_CUSTOM_MODEL_OPTION: model.model_id,
+    ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: model.name,
+  };
+}
+
+async function reconcileClaudeModels(
+  models: DeliveredModel[],
+  manifest: ModelConfigManifest,
+): Promise<void> {
+  const settingsPath = path.join(getUserHome(), '.claude', 'settings.json');
+  const profilePath = path.join(getUserHome(), '.claude', 'teamai-models.json');
+  const previousHashes = manifest.claudeEnv ?? {};
+  const settings = await readJsonObject(settingsPath);
+  const rawEnv = settings.env === undefined ? {} : settings.env;
+  if (typeof rawEnv !== 'object' || rawEnv === null || Array.isArray(rawEnv)) {
+    throw new Error(`apply_model_config: env must be an object in ${settingsPath}`);
+  }
+  const env = { ...(rawEnv as Record<string, unknown>) };
+
+  if (models.length === 0) {
+    for (const [key, hash] of Object.entries(previousHashes)) {
+      if (entryHash(env[key]) === hash) delete env[key];
+    }
+    settings.env = env;
+    if (Object.keys(previousHashes).length > 0) {
+      await writeJsonAtomic(settingsPath, settings);
+      await fs.promises.chmod(settingsPath, 0o600);
+    }
+    await remove(profilePath);
+    manifest.claudeEnv = {};
+    return;
+  }
+
+  // Claude supports one active custom gateway in settings. The first model
+  // seeds that gateway; other candidates remain discoverable from its
+  // /v1/models endpoint when the gateway implements model discovery.
+  const desired = claudeEnvForModel(models[0]);
+  await writeJsonAtomic(profilePath, { env: desired });
+  await fs.promises.chmod(profilePath, 0o600);
+
+  const conflictKeys = new Set([
+    ...Object.keys(desired),
+    'ANTHROPIC_API_KEY',
+  ]);
+  const canManage = [...conflictKeys].every((key) => (
+    env[key] === undefined ||
+    (previousHashes[key] !== undefined && entryHash(env[key]) === previousHashes[key])
+  ));
+  if (!canManage) {
+    manifest.claudeEnv = {};
+    return;
+  }
+
+  for (const [key, hash] of Object.entries(previousHashes)) {
+    if (entryHash(env[key]) === hash) delete env[key];
+  }
+  Object.assign(env, desired);
+  settings.env = env;
+  await writeJsonAtomic(settingsPath, settings);
+  await fs.promises.chmod(settingsPath, 0o600);
+  manifest.claudeEnv = Object.fromEntries(
+    Object.entries(desired).map(([key, value]) => [key, entryHash(value)]),
+  );
+}
+
+async function applyModelConfig(command: LocalAgentCommand): Promise<void> {
+  const { models, fullSnapshot } = parseDeliveredModels(command.cmd);
+  const manifest = (await readJson<ModelConfigManifest>(getModelManifestPath())) ?? {};
+  manifest.providers = {
+    ...(fullSnapshot ? {} : manifest.providers),
+    ...Object.fromEntries(models.map((model) => [model.model_id, model.provider])),
+  };
+  await reconcileCodebuddyModels(models, fullSnapshot, manifest);
+  // Persist CodeBuddy ownership before touching Claude. If Claude settings are
+  // malformed and the task is retried, the already-written CodeBuddy entries
+  // must still be recognized as managed rather than mistaken for user config.
+  await writeJsonAtomic(getModelManifestPath(), manifest);
+  await reconcileClaudeModels(models, manifest);
+  await writeJsonAtomic(getModelManifestPath(), manifest);
+}
+
 /**
  * Tokenize a restricted `teamai` command string into an argv array.
  *
@@ -2327,6 +2667,10 @@ async function executeCommand(
   command: LocalAgentCommand,
   context: LocalAgentContext,
 ): Promise<string | undefined> {
+  if (command.type === 'apply_model_config') {
+    await applyModelConfig(command);
+    return;
+  }
   // uninstall_teamai (clawpro three-phase: cmd = "teamai uninstall --force
   // --agent <tool>") executes its `cmd` string as a restricted teamai subcommand.
   if (command.type === 'uninstall_teamai') {
@@ -2369,7 +2713,18 @@ async function processCommands(
 ): Promise<void> {
   const tag = localAgentTag(context);
   for (const command of commands) {
-    if (isUnimplementedCommand(command)) {
+    // Keep these special types aligned with executeCommand's direct branches.
+    // Resource commands are recognized generically by commandKind/action;
+    // everything else is a future protocol extension and must be skipped.
+    if (isUnimplementedCommand(command) || (
+      command.type !== 'apply_model_config' &&
+      command.type !== 'uninstall_teamai' &&
+      command.type !== 'install_hook_rule' &&
+      command.type !== 'uninstall_hook_rule' &&
+      command.type !== 'install_mcp' &&
+      command.type !== 'uninstall_mcp' &&
+      (!commandKind(command) || !commandAction(command))
+    )) {
       log.debug(`${tag} skipping unimplemented command ${command.id} (${command.type})`);
       continue;
     }
@@ -2473,6 +2828,7 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
       tag,
       'sync',
       { method: 'POST', body: JSON.stringify(syncPayload) },
+      { redactResponseLog: true },
     );
     // Prefer the unified cmds[] (source of truth). Fall back to the legacy
     // commands[] for older backends that do not yet emit cmds. An empty cmds[]
