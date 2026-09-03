@@ -302,8 +302,8 @@ export class SkillsHandler extends ResourceHandler {
     // Collect the best candidate for each skill name across all tool directories
     const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus; namespace?: string }>();
 
-    // Scan each tool's skills directory
-    for (const [_tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
+    // Scan each tool's skills directory (push stays within team-managed tools)
+    for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
       const skillsDir = path.join(resolveBaseDir(localConfig), toolPath.skills);
       if (!await pathExists(skillsDir)) continue;
@@ -499,8 +499,8 @@ export class SkillsHandler extends ResourceHandler {
     // Record tombstone so the resource won't be re-pushed
     await this.addTombstone(name, localConfig);
 
-    // Remove from each tool's skills directory
-    for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
+    // Remove only from team-managed tools (not auto-discovered ones)
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
       let skillDir: string;
       if (tool === 'openclaw') {

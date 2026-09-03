@@ -46,8 +46,8 @@ export class RulesHandler extends ResourceHandler {
       return content;
     };
 
-    // Scan each tool's rules/ directory (recursively)
-    for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
+    // Scan each tool's rules/ directory (push stays within team-managed tools)
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       const rulesPath = toolPath.rules;
       if (!rulesPath) continue;
       const rulesDir = path.join(resolveBaseDir(localConfig), rulesPath);
@@ -224,7 +224,7 @@ export class RulesHandler extends ResourceHandler {
     // Remove from each tool's rules directory. Cursor uses `.mdc`, but an older
     // teamai layout wrote `.md` there, so both are removed — otherwise `remove`
     // would report success while leaving the rule on disk.
-    for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.rules) continue;
       const extensions = new Set<string>([ruleFileExtensionForTool(tool), '.md']);
       for (const extension of extensions) {
