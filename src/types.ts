@@ -1182,18 +1182,45 @@ export async function effectiveToolPaths(
   const { KNOWN_AGENTS } = await import('./known-agents.js');
   const { pathExists } = await import('./utils/fs.js');
   const baseDir = resolveBaseDir(localConfig);
+  const isUser = localConfig.scope === 'user';
   const base = scopedToolPaths(teamConfig, localConfig);
   const merged = { ...base };
 
   for (const agent of KNOWN_AGENTS) {
     if (merged[agent.id]) continue;
     if (isAgentDisabled(localConfig, agent.id)) continue;
-    const rootSegment = agent.skillsPath.split('/')[0];
-    if (!rootSegment) continue;
-    const rootPath = path.join(baseDir, rootSegment);
+
+    const registered = DEFAULT_TOOL_PATHS[agent.id];
+
+    // Determine the install-detection root. For user scope, tools with a
+    // userScope override (e.g. opencode → ~/.config/opencode) need the
+    // override's prefix, not the project-scope prefix (.opencode).
+    let detectRoot: string;
+    if (isUser && registered?.userScope?.skills) {
+      detectRoot = registered.userScope.skills.split('/').slice(0, -1).join('/') || registered.userScope.skills.split('/')[0];
+    } else {
+      detectRoot = agent.skillsPath.split('/')[0];
+    }
+    if (!detectRoot) continue;
+
+    const rootPath = path.join(baseDir, detectRoot);
     if (await pathExists(rootPath)) {
-      const registered = DEFAULT_TOOL_PATHS[agent.id];
-      merged[agent.id] = registered ?? { skills: agent.skillsPath };
+      if (registered) {
+        // Apply userScope overrides for user scope, mirroring scopedToolPaths logic
+        if (isUser && registered.userScope) {
+          const us = registered.userScope;
+          merged[agent.id] = {
+            ...registered,
+            ...(us.skills !== undefined ? { skills: us.skills } : {}),
+            ...(us.rules !== undefined ? { rules: us.rules } : {}),
+            ...(us.agents !== undefined ? { agents: us.agents } : {}),
+          };
+        } else {
+          merged[agent.id] = registered;
+        }
+      } else {
+        merged[agent.id] = { skills: agent.skillsPath };
+      }
     }
   }
 

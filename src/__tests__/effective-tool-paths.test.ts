@@ -120,4 +120,25 @@ describe('effectiveToolPaths', () => {
     // Only claude was in teamConfig.toolPaths
     expect(Object.keys(result)).toEqual(['claude']);
   });
+
+  it('auto-discovers opencode in user scope via ~/.config/opencode', async () => {
+    await fse.ensureDir(path.join(homeDir, '.config', 'opencode'));
+    const teamConfig = buildTeamConfig({});
+    const result = await effectiveToolPaths(teamConfig, localConfig);
+
+    expect(result['opencode']).toBeDefined();
+    // User-scope paths should have userScope override applied
+    expect(result['opencode'].skills).toBe('.config/opencode/skills');
+    expect(result['opencode'].rules).toBe('.config/opencode/rules');
+  });
+
+  it('does not discover opencode via ~/.opencode in user scope when only ~/.config/opencode exists', async () => {
+    // Only ~/.config/opencode exists (no ~/.opencode)
+    await fse.ensureDir(path.join(homeDir, '.config', 'opencode'));
+    const teamConfig = buildTeamConfig({});
+    const result = await effectiveToolPaths(teamConfig, localConfig);
+
+    // Should still be discovered via the userScope path
+    expect(result['opencode']).toBeDefined();
+  });
 });

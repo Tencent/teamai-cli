@@ -597,7 +597,10 @@ async function pullForScope(
       const tombstones = await handler.readTombstones(localConfig);
       if (tombstones.size === 0) continue;
 
-      for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(freshConfig, localConfig))) {
+      // Tombstone cleanup only touches team-managed tools (scopedToolPaths),
+      // not auto-discovered ones — a personal skill in ~/.gemini/skills/ that
+      // happens to share a name with a tombstoned team skill must not be deleted.
+      for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
         const dir = toolPath[toolPathField];
         if (!dir) continue;
         if (!await ResourceHandler.isToolInstalled(dir, baseDir)) continue;
@@ -633,10 +636,11 @@ async function pullForScope(
   }
 
   // Step 3b: Clean up local skills not in the desired union set (role + tags)
+  // Only in team-managed tools — auto-discovered dirs may have personal skills.
   if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
     const baseDir = resolveBaseDir(localConfig);
 
-    for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(freshConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
       if (isAgentDisabled(localConfig, tool)) continue;
       if (!toolPath.skills) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;

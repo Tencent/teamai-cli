@@ -290,9 +290,10 @@ export class RulesHandler extends ResourceHandler {
     }
 
     // 1.5. Clean up stale local rule files not present in team repo
+    // Only in team-managed tools — auto-discovered tools may have personal rules.
     const teamRuleNames = new Set(rules.map((r) => r.name));
     const baseDir = resolveBaseDir(localConfig);
-    for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.rules) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
 
