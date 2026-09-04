@@ -319,7 +319,7 @@ describe('local-agent: report local model inventory', () => {
     expect(await reportedModels('codebuddy')).toBeUndefined();
   });
 
-  it('reports CodeBuddy models, deriving provider from vendor and source from the manifest', async () => {
+  it('reports only CodeBuddy models still matching a TeamAI delivery', async () => {
     await fse.outputJson(path.join(home, '.codebuddy/models.json'), {
       models: [{ id: 'user-model', name: 'User Model', vendor: 'openai' }],
     });
@@ -329,7 +329,6 @@ describe('local-agent: report local model inventory', () => {
     await reportAndSyncLocalAgent({ tool: 'codebuddy', status: 'running' });
 
     expect(await reportedModels('codebuddy')).toEqual([
-      { provider: 'openai', model_id: 'user-model', name: 'User Model', source: 'local' },
       {
         provider: 'tokenhub',
         model_id: 'deepseek-v3-0324',
@@ -339,18 +338,12 @@ describe('local-agent: report local model inventory', () => {
     ]);
   });
 
-  it('skips CodeBuddy entries missing the backend-required provider or model id', async () => {
+  it('omits user-owned CodeBuddy models the backend did not deliver', async () => {
     await fse.outputJson(path.join(home, '.codebuddy/models.json'), {
-      models: [
-        { id: 'no-vendor', name: 'No Vendor' },
-        { vendor: 'openai', name: 'No Id' },
-        { id: 'ok', vendor: 'openai', name: 'OK' },
-      ],
+      models: [{ id: 'ok', vendor: 'openai', name: 'OK' }],
     });
 
-    expect(await reportedModels('codebuddy')).toEqual([
-      { provider: 'openai', model_id: 'ok', name: 'OK', source: 'local' },
-    ]);
+    expect(await reportedModels('codebuddy')).toBeUndefined();
   });
 
   it('reports the Claude gateway model with the delivered provider restored', async () => {
@@ -369,7 +362,7 @@ describe('local-agent: report local model inventory', () => {
     ]);
   });
 
-  it('reports a user-configured Claude gateway as a local anthropic model', async () => {
+  it('does not report a user-configured Claude gateway', async () => {
     await fse.outputJson(path.join(home, '.claude/settings.json'), {
       env: {
         ANTHROPIC_BASE_URL: 'https://gateway.example.com',
@@ -377,8 +370,6 @@ describe('local-agent: report local model inventory', () => {
       },
     });
 
-    expect(await reportedModels('claude')).toEqual([
-      { provider: 'anthropic', model_id: 'my-own-model', source: 'local' },
-    ]);
+    expect(await reportedModels('claude')).toBeUndefined();
   });
 });

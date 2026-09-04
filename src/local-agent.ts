@@ -1252,7 +1252,8 @@ interface ReportedModel {
  * model manifest, mirroring how skills/rules classify enterprise vs local.
  *
  * Only CodeBuddy and Claude keep a discoverable model config; every other tool
- * reports nothing.
+ * reports nothing. User-owned models are omitted: the backend cannot resolve
+ * them, so only entries still matching a TeamAI delivery are reported.
  */
 async function scanModelsFromDisk(tool: string): Promise<ReportedModel[]> {
   const manifest = (await readJson<ModelConfigManifest>(getModelManifestPath())) ?? {};
@@ -1270,11 +1271,12 @@ async function scanModelsFromDisk(tool: string): Promise<ReportedModel[]> {
       const { id, vendor, name } = entry as Record<string, unknown>;
       if (typeof id !== 'string' || !id) continue;
       if (typeof vendor !== 'string' || !vendor) continue;
+      if (owned[id] === undefined || entryHash(entry) !== owned[id]) continue;
       results.push({
         provider: vendor,
         model_id: id,
         ...(typeof name === 'string' && name ? { name } : {}),
-        source: owned[id] !== undefined && entryHash(entry) === owned[id] ? 'enterprise' : 'local',
+        source: 'enterprise',
       });
     }
     return results;
@@ -1290,13 +1292,14 @@ async function scanModelsFromDisk(tool: string): Promise<ReportedModel[]> {
       env as Record<string, unknown>;
     if (typeof modelId !== 'string' || !modelId) return [];
     const managed = manifest.claudeEnv?.ANTHROPIC_CUSTOM_MODEL_OPTION;
+    if (managed === undefined || entryHash(modelId) !== managed) return [];
+    const provider = providers[modelId];
+    if (!provider) return [];
     return [{
-      // A gateway configured by the user carries no provider; it speaks the
-      // Anthropic protocol, so report it as such.
-      provider: providers[modelId] ?? 'anthropic',
+      provider,
       model_id: modelId,
       ...(typeof name === 'string' && name ? { name } : {}),
-      source: managed !== undefined && entryHash(modelId) === managed ? 'enterprise' : 'local',
+      source: 'enterprise',
     }];
   }
 

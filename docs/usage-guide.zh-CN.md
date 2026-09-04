@@ -861,19 +861,17 @@ cat ~/.claude/CLAUDE.md
 settings。以上含凭证文件权限均为 `0600`。落盘成功后以 `type: "apply_model_config"` 回执；
 非法 payload 回执 `failed`。未来未知任务类型会静默跳过，以保持协议向后兼容。
 
-反向的模型上报走已有的 `report` 接口：当前工具可用的模型放在 `user_level.models` 中。
-服务端要求 `provider` 与 `model_id` 同时存在，因此凑不出这两个字段的条目会被丢弃，而不是
-以不完整的形式上报。与 skills/rules 一致，没有任何模型配置时该字段整体省略——因为存在的
-数组会被当作全量快照。只有 CodeBuddy（`~/.codebuddy/models.json`）和 Claude
+反向的模型上报走已有的 `report` 接口：仅上报 TeamAI 下发且磁盘内容仍匹配的模型，放在
+`user_level.models` 中。用户自有模型不上报，因为后台无法识别。服务端要求 `provider` 与
+`model_id` 同时存在。与 skills/rules 一致，没有任何符合条件的模型时该字段整体省略——因为
+存在的数组会被当作全量快照。只有 CodeBuddy（`~/.codebuddy/models.json`）和 Claude
 （`~/.claude/settings.json` 里的 `ANTHROPIC_CUSTOM_MODEL_OPTION` 网关）有可发现的模型配置，
-其余工具不上报。`source` 对仍与 teamai 下发内容一致的模型取 `enterprise`，用户自有的取
-`local`；用户自行配置的 Claude 网关上报为 `provider: "anthropic"`。
+其余工具不上报。上报条目的 `source` 固定为 `enterprise`。
 **`api_key` 不会被回传** —— ProxyToken 只留在本地磁盘。
 
 ```jsonc
 { "agent_type": "codebuddy", "local_agent_id": "...",
   "user_level": { "models": [
-    { "provider": "openai", "model_id": "my-local-gpt", "name": "My Local GPT", "source": "local" },
     { "provider": "tokenhub", "model_id": "gpt-4o", "name": "GPT-4o", "source": "enterprise" }
   ] } }
 ```

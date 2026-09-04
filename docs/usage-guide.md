@@ -866,22 +866,20 @@ configuration. These files are mode `0600`. A successful write is acknowledged w
 `type: "apply_model_config"`; malformed payloads are acknowledged as `failed`. Unknown
 future task types are silently skipped for protocol compatibility.
 
-The reverse direction is reported through the existing `report` call: the models the
-current tool can use are sent as `user_level.models`. The server requires both
-`provider` and `model_id`, so entries that cannot supply them are dropped instead of
-being reported incomplete. Like skills and rules, the field is omitted entirely when
-no model is configured, because a present array is treated as a full snapshot. Only
-CodeBuddy (`~/.codebuddy/models.json`) and Claude (the `ANTHROPIC_CUSTOM_MODEL_OPTION`
-gateway in `~/.claude/settings.json`) expose a discoverable model config; other tools
-report nothing. `source` is `enterprise` for models still matching what teamai
-delivered and `local` for user-owned ones. A Claude gateway configured by the user
-reports `provider: "anthropic"`. **`api_key` is never reported back** — the ProxyToken
-stays on disk.
+The reverse direction is reported through the existing `report` call: models that
+TeamAI delivered and that still match on disk are sent as `user_level.models`.
+User-owned models are omitted because the backend cannot resolve them. The server
+requires both `provider` and `model_id`. Like skills and rules, the field is omitted
+entirely when nothing qualifies, because a present array is treated as a full
+snapshot. Only CodeBuddy (`~/.codebuddy/models.json`) and Claude (the
+`ANTHROPIC_CUSTOM_MODEL_OPTION` gateway in `~/.claude/settings.json`) expose a
+discoverable model config; other tools report nothing. Reported entries always use
+`source: "enterprise"`. **`api_key` is never reported back** — the ProxyToken stays
+on disk.
 
 ```jsonc
 { "agent_type": "codebuddy", "local_agent_id": "...",
   "user_level": { "models": [
-    { "provider": "openai", "model_id": "my-local-gpt", "name": "My Local GPT", "source": "local" },
     { "provider": "tokenhub", "model_id": "gpt-4o", "name": "GPT-4o", "source": "enterprise" }
   ] } }
 ```
