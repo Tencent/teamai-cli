@@ -461,7 +461,7 @@ async function buildRemovalPlan(
     // ownership model as hooks). These live under ~/.teamai, so they are shared
     // resources: only removed when the target is the last tool using teamai.
     const mcpManifestPath = expandHome(
-      managedMcpManifestPath(localConfig.scope, localConfig.projectRoot),
+      managedMcpManifestPath(getDataHome(localConfig)),
     );
     const mcpManifest = (await readJson<ManagedMcpManifest>(mcpManifestPath)) ?? {};
     for (const [toolKey, records] of Object.entries(mcpManifest)) {

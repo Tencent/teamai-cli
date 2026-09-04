@@ -520,9 +520,9 @@ export interface ManagedMcpRecord {
 /** ~/.teamai/managed-mcp.json — team MCP servers injected per tool+scope key. */
 export type ManagedMcpManifest = Record<string, ManagedMcpRecord[]>;
 
-/** Path of the managed-MCP manifest for a scope. */
-export function managedMcpManifestPath(scope: Scope, projectRoot?: string): string {
-  return path.join(getTeamaiHome(scope, projectRoot), 'managed-mcp.json');
+/** Path of the managed-MCP manifest within a resolved data home. */
+export function managedMcpManifestPath(dataHome: string): string {
+  return path.join(dataHome, 'managed-mcp.json');
 }
 
 // ─── Global options ─────────────────────────────────────
