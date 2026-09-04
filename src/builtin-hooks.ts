@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import type { HookDef } from './types.js';
 import { getUserHome } from './utils/home.js';
+import { log } from './utils/logger.js';
+import { bundledShellFor, resetBundledRuntimeCache, resolveCodebuddyNode, resolveWorkbuddyNode } from './bundled-runtime.js';
 
 // ─── Built-in (A) operational hooks as data ─────────────────
 //
@@ -27,7 +29,6 @@ import { getUserHome } from './utils/home.js';
 //  the golden fixture output is stable across machines.
 //  Other tools keep the plain `bash -lc "teamai ..."` form.
 
-const WORKBUDDY_BUNDLED_NODE_DIR = '.workbuddy/bundled/node/versions';
 const TEAMAI_BIN_DIR = '.teamai/bin';
 const WRAPPER_NAME = 'teamai';
 
@@ -56,73 +57,10 @@ export function hasShell(): boolean {
   return _hasShellCache;
 }
 
-/** Reset the cached hasShell result. Test-only. */
+/** Reset the cached shell results. Test-only. */
 export function _resetShellCache(): void {
   _hasShellCache = undefined;
-}
-
-/**
- * Compare two semver-like version strings numerically (segment by segment).
- * Returns negative if a < b, 0 if equal, positive if a > b.
- */
-function compareSemver(a: string, b: string): number {
-  const aParts = a.split('.').map(s => parseInt(s, 10) || 0);
-  const bParts = b.split('.').map(s => parseInt(s, 10) || 0);
-  const len = Math.max(aParts.length, bParts.length);
-  for (let i = 0; i < len; i++) {
-    const diff = (aParts[i] ?? 0) - (bParts[i] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-}
-
-/**
- * Pick the latest version string from an array using numeric semver comparison.
- */
-function pickLatestVersion(versions: string[]): string | undefined {
-  if (versions.length === 0) return undefined;
-  return versions.reduce((best, v) => compareSemver(v, best) > 0 ? v : best, versions[0]);
-}
-
-/**
- * Find WorkBuddy's bundled Node binary. WorkBuddy ships its own Node under
- * ~/.workbuddy/bundled/node/versions/<ver>/bin/node. Pick the latest version
- * using numeric semver comparison (avoids '9.0.0' > '10.11.0' lexicographic error).
- */
-function resolveWorkbuddyNode(): string | null {
-  const home = getUserHome();
-  const versionsDir = path.join(home, WORKBUDDY_BUNDLED_NODE_DIR);
-  try {
-    const versions = fs.readdirSync(versionsDir).filter(d => !d.startsWith('.'));
-    const latest = pickLatestVersion(versions);
-    if (!latest) return null;
-    const nodeBin = path.join(versionsDir, latest, 'bin', 'node');
-    if (fs.existsSync(nodeBin)) return nodeBin;
-  } catch { /* not installed */ }
-  return null;
-}
-
-/**
- * Find CodeBuddy's bundled Node binary. CodeBuddy ships its own Node under
- * ~/.codebuddy-server-<variant>/bin/stable-<version>/node (prefix may vary).
- */
-function resolveCodebuddyNode(): string | null {
-  const home = getUserHome();
-  try {
-    const entries = fs.readdirSync(home);
-    for (const entry of entries) {
-      if (!entry.startsWith('.codebuddy-server')) continue;
-      try {
-        const binDir = path.join(home, entry, 'bin');
-        const stableDirs = fs.readdirSync(binDir).filter(d => d.startsWith('stable-'));
-        for (const stable of stableDirs) {
-          const nodeBin = path.join(binDir, stable, 'node');
-          if (fs.existsSync(nodeBin)) return nodeBin;
-        }
-      } catch { /* skip unreadable dirs */ }
-    }
-  } catch { /* home not readable */ }
-  return null;
+  resetBundledRuntimeCache();
 }
 
 /**
@@ -174,14 +112,41 @@ export function ensureTeamaiWrapper(): string | null {
 }
 
 /**
- * If /bin/sh is available, write the teamai wrapper and return true.
- * Returns false when /bin/sh is absent — callers should skip
- * shell-dependent tool injection and warn the user.
+ * Per-tool variant of hasShell(). A tool that bundles its own shell (see
+ * bundled-runtime.ts) can execute hook commands even where /bin/sh is
+ * absent; everything else keeps the conservative /bin/sh check. POSIX
+ * always uses /bin/sh.
  */
-export function ensureWrapperIfShellAvailable(): boolean {
-  if (!hasShell()) return false;
-  ensureTeamaiWrapper();
-  return true;
+function hasShellFor(tool: string): boolean {
+  if (bundledShellFor(tool)) return true;
+  return hasShell();
+}
+
+/**
+ * Gate shell-dependent tools on an executable shell: create the PATH wrapper
+ * when any of them has one, warn about the rest, and return the tools that
+ * must be skipped (their hook commands could never execute). Non-dependent
+ * tools are never included.
+ */
+export function skipToolsWithoutShell(tools: string[]): Set<string> {
+  const skipped = new Set<string>();
+  let withShell = false;
+  for (const tool of tools) {
+    if (!SHELL_DEPENDENT_TOOLS.has(tool)) continue;
+    if (hasShellFor(tool)) {
+      withShell = true;
+    } else {
+      skipped.add(tool);
+    }
+  }
+  if (withShell) ensureTeamaiWrapper();
+  if (skipped.size > 0) {
+    log.warn(
+      `Skipping hook injection for ${[...skipped].join(', ')}: no shell is available in this environment to execute hooks. ` +
+      'Other tools (Claude Code, Cursor) are not affected.',
+    );
+  }
+  return skipped;
 }
 
 /** Generate the hook-dispatch command for a given event, tool, and optional matcher. */

@@ -5,7 +5,7 @@ import { log } from './utils/logger.js';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, resolveHookScope, resolveLegacyProjectHookScope } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
 import { isSelfMode } from './types.js';
-import { builtinHookDefs, applyBuiltinOverride, ensureWrapperIfShellAvailable, SHELL_DEPENDENT_TOOLS } from './builtin-hooks.js';
+import { builtinHookDefs, applyBuiltinOverride, skipToolsWithoutShell } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { resolveTeamHooks } from './resources/hooks.js';
 import { getUserHome } from './utils/home.js';
@@ -987,20 +987,12 @@ async function reconcileOpencodePlugin(baseDir: string, removeAll = false, insta
  */
 export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<void> {
   const resolvedBaseDir = baseDir ?? getUserHome();
-  const tools = Object.keys(toolPaths).filter(t => !filterAgents || filterAgents.includes(t));
-  let shellAvailable = true;
-  if (tools.some(t => SHELL_DEPENDENT_TOOLS.has(t))) {
-    shellAvailable = ensureWrapperIfShellAvailable();
-    if (!shellAvailable) {
-      log.warn(
-        'Skipping hook injection for CodeBuddy/WorkBuddy: /bin/sh is not available in this environment. ' +
-        'Hooks require a shell to execute. Other tools (Claude Code, Cursor) are not affected.',
-      );
-    }
-  }
+  const skipped = skipToolsWithoutShell(
+    Object.keys(toolPaths).filter(t => !filterAgents || filterAgents.includes(t)),
+  );
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (filterAgents && !filterAgents.includes(tool)) continue;
-    if (!shellAvailable && SHELL_DEPENDENT_TOOLS.has(tool)) continue;
+    if (skipped.has(tool)) continue;
     if (paths.settings) {
       const toolRoot = path.join(resolvedBaseDir, paths.settings.split('/')[0]);
       if (!await pathExists(toolRoot)) continue;
@@ -1053,20 +1045,17 @@ export async function reconcileHooksToAllTools(
   manifestPath: string,
   opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string } = {},
 ): Promise<void> {
-  const activeTools = Object.keys(toolPaths).filter(t => !opts.filterAgents || opts.filterAgents.includes(t));
-  let shellAvailable = true;
-  if (activeTools.some(t => SHELL_DEPENDENT_TOOLS.has(t))) {
-    shellAvailable = ensureWrapperIfShellAvailable();
-    if (!shellAvailable) {
-      log.warn(
-        'Skipping hook injection for CodeBuddy/WorkBuddy: /bin/sh is not available in this environment. ' +
-        'Hooks require a shell to execute. Other tools (Claude Code, Cursor) are not affected.',
+  // Removal is JSON editing and needs no shell, so the gate only applies to
+  // injection passes — otherwise tools without a shell could never clean up
+  // their injected entries.
+  const skipped = opts.removeAll
+    ? new Set<string>()
+    : skipToolsWithoutShell(
+        Object.keys(toolPaths).filter(t => !opts.filterAgents || opts.filterAgents.includes(t)),
       );
-    }
-  }
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
-    if (!shellAvailable && SHELL_DEPENDENT_TOOLS.has(tool)) continue;
+    if (skipped.has(tool)) continue;
     // Hermes uses config.yaml (YAML) + a script dir + allowlist instead of a
     // JSON settings file, so it bypasses the settings-based reconcile path.
     // Install when the .hermes home exists; removeAll clears the teamai hook.
