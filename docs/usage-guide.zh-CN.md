@@ -1391,6 +1391,21 @@ teamai remove mcp <name>
 usageReport: false
 ```
 
+### Git 子模块
+
+若团队以 git submodule 形式分发 skill，在 `teamai.yaml` 中开启 `submodules: true`：
+
+```yaml
+submodules: true
+```
+
+每次 pull 时 teamai 会执行 `git submodule update --init`，按团队仓钉住的版本
+填充子模块（仅 git 仓后端生效；取完整子模块历史——浅取无法检出较旧的 pin）。
+默认关闭。若更新失败，pull 会记录警告并保留旧的同步版本号，下次 pull 会重新
+完整同步并自动重试（不会被"版本未变化"的快速路径跳过）。注意：子模块拉取
+依赖环境现有的 git 凭据——若宿主机采用按命令注入 token 的认证方式（而非配置
+credential helper），私有子模块将无法通过认证。
+
 ### CI 集成
 
 `teamai ci extract-mr` 接入 CI 流水线，从每个 MR/PR 自动提取知识：

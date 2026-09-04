@@ -1425,6 +1425,25 @@ can turn this off in `teamai.yaml`:
 usageReport: false
 ```
 
+### Git submodules
+
+If your team distributes skills as git submodules, opt in with `submodules: true`
+in `teamai.yaml`:
+
+```yaml
+submodules: true
+```
+
+On every pull, teamai runs `git submodule update --init` so submodule-based
+skills are populated at the revisions pinned by the team repo (git-repo
+backends only; the full submodule history is fetched, since a shallow fetch
+cannot check out older pins). Disabled by default. If the update fails, pull
+logs a warning and holds back the recorded revision, so the next pull
+re-syncs and retries the update instead of skipping it. Note: submodule
+fetching relies on the ambient git credentials — private submodules on hosts
+authenticated by per-command token injection (rather than a configured
+credential helper) will not authenticate.
+
 ### CI Integration
 
 `teamai ci extract-mr` plugs into your CI pipeline, automatically extracting knowledge from every MR/PR:

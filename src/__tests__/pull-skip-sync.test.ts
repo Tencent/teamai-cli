@@ -18,6 +18,7 @@ vi.mock('../config.js', () => ({
 vi.mock('../utils/git.js', () => ({
   pullRepo: vi.fn().mockResolvedValue('already up to date'),
   getHeadRev: vi.fn().mockResolvedValue('abc1234'),
+  createGit: vi.fn(),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -74,7 +75,7 @@ vi.mock('../update.js', () => ({
 
 import { pull, compileRecallRulesBlock } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope, saveStateForScope } from '../config.js';
-import { getHeadRev } from '../utils/git.js';
+import { getHeadRev, createGit } from '../utils/git.js';
 import { log } from '../utils/logger.js';
 import { TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END } from '../types.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
@@ -83,6 +84,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
   let tmpDir: string;
   let homeDir: string;
   let repoPath: string;
+  let baseTeamConfig: TeamaiConfig;
 
   beforeEach(async () => {
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-pull-skip-'));
@@ -117,6 +119,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
         claude: { skills: '.claude/skills', rules: '.claude/rules' },
       },
     };
+    baseTeamConfig = teamConfig;
 
     const localConfig: LocalConfig = {
       repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
@@ -296,6 +299,58 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     expect(log.debug).toHaveBeenCalledWith(
       expect.stringContaining('Rev check failed'),
     );
+  });
+
+  it('does not persist the rev when the submodule update failed', async () => {
+    vi.mocked(loadTeamConfig).mockResolvedValue({ ...baseTeamConfig, submodules: true });
+    vi.mocked(createGit).mockReturnValue({
+      submoduleUpdate: vi.fn().mockRejectedValue(new Error('reference is not a tree')),
+    } as unknown as ReturnType<typeof createGit>);
+    vi.mocked(getHeadRev).mockResolvedValue('def5678');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPull: '2026-04-01',
+      lastPullRev: 'abc1234',
+      lastPush: null,
+      pushedRules: [],
+      pushedSkills: [],
+      pushedEnvVars: [],
+      pendingPushes: [],
+      lastUpdateCheck: null,
+      availableUpdate: null,
+    });
+
+    await pull({});
+
+    // The tree on disk is not a complete snapshot: caching the new rev would
+    // let the unchanged-rev fast path suppress the retry forever.
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Submodule update failed'));
+    expect(saveStateForScope).toHaveBeenCalled();
+    const savedState = vi.mocked(saveStateForScope).mock.calls[0][0];
+    expect(savedState.lastPullRev).toBe('abc1234');
+  });
+
+  it('persists the rev when the submodule update succeeded', async () => {
+    vi.mocked(loadTeamConfig).mockResolvedValue({ ...baseTeamConfig, submodules: true });
+    vi.mocked(createGit).mockReturnValue({
+      submoduleUpdate: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ReturnType<typeof createGit>);
+    vi.mocked(getHeadRev).mockResolvedValue('def5678');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPull: '2026-04-01',
+      lastPullRev: 'abc1234',
+      lastPush: null,
+      pushedRules: [],
+      pushedSkills: [],
+      pushedEnvVars: [],
+      pendingPushes: [],
+      lastUpdateCheck: null,
+      availableUpdate: null,
+    });
+
+    await pull({});
+
+    const savedState = vi.mocked(saveStateForScope).mock.calls[0][0];
+    expect(savedState.lastPullRev).toBe('def5678');
   });
 });
 

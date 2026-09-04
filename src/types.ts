@@ -245,6 +245,9 @@ export const TeamaiConfigSchema = z.object({
    * team repo never receives stat commits (e.g. read-only pull setups).
    * Default: on. */
   usageReport: z.boolean().optional(),
+  /** Run `git submodule update --init` on pull so skills distributed as git
+   * submodules are populated and kept current. Off by default. */
+  submodules: z.boolean().optional(),
   // MCP paths are only set for tools whose config location has been verified.
   // Tools left without `mcp` are skipped by MCP sync rather than guessed at, so a
   // wrong guess can never create a junk config file on a user's machine.

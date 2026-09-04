@@ -1,7 +1,7 @@
 import path from 'node:path';
 import matter from 'gray-matter';
 import { requireInit, loadState, saveState, detectProjectConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
-import { pullRepo, getHeadRev } from './utils/git.js';
+import { pullRepo, getHeadRev, createGit } from './utils/git.js';
 import { flushPendingLearnings } from './utils/pending-learnings.js';
 import { log, spinner } from './utils/logger.js';
 import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
@@ -59,11 +59,14 @@ interface RolePullContext {
  *
  * Returns a display label and the opaque version string used as the
  * incremental-sync cache key (state.lastPullRev). `version` is null only when
- * the git backend can't resolve a rev.
+ * the git backend can't resolve a rev. `submodulesFailed` marks a git pull
+ * whose submodule update failed: the caller must then NOT persist the new rev,
+ * or the next pull's unchanged-rev fast path would skip the retry and leave
+ * tool directories pointed at stale/empty submodule content forever.
  */
 async function refreshTeamRepo(
   localConfig: LocalConfig,
-): Promise<{ label: string; version: string | null; reportingOnly: boolean }> {
+): Promise<{ label: string; version: string | null; reportingOnly: boolean; submodulesFailed: boolean }> {
   if (localConfig.repo.kind === 'http') {
     const { resolveApiKey } = await import('./api-key.js');
     const apiKey = resolveApiKey();
@@ -72,7 +75,7 @@ async function refreshTeamRepo(
     }
     // HTTP backends deliver resources through report/sync (own hook handler),
     // so there is no repo tree to pull here.
-    return { label: 'HTTP (report/sync delivery)', version: null, reportingOnly: true };
+    return { label: 'HTTP (report/sync delivery)', version: null, reportingOnly: true, submodulesFailed: false };
   }
 
   if (localConfig.repo.kind === 'self') {
@@ -96,7 +99,7 @@ async function refreshTeamRepo(
     } catch {
       version = null;
     }
-    return { label: 'single-repo (knowledge on main)', version, reportingOnly: false };
+    return { label: 'single-repo (knowledge on main)', version, reportingOnly: false, submodulesFailed: false };
   }
 
   // The shared team clone is mutated here (git pull + flushPendingLearnings'
@@ -124,7 +127,27 @@ async function refreshTeamRepo(
     log.debug('Rev check failed, proceeding with full sync');
     version = null;
   }
-  return { label: result, version, reportingOnly: false };
+
+  // Skills distributed as git submodules are not populated by clone/fetch.
+  // Opt-in via teamai.yaml `submodules: true`; runs before the resource
+  // deploy step so the freshly checked-out content is what gets deployed.
+  // Deliberately NOT shallow: submodules are pinned to exact SHAs, and a
+  // shallow fetch only brings the remote tip — checking out any older pin
+  // would fail with "reference is not a tree". The full history guarantees
+  // the pinned commit is always present.
+  let submodulesFailed = false;
+  try {
+    const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+    if (teamConfig?.submodules) {
+      await createGit(localConfig.repo.localPath).submoduleUpdate(['--init']);
+      log.debug('Submodules updated');
+    }
+  } catch (e) {
+    submodulesFailed = true;
+    log.warn(`Submodule update failed for ${localConfig.repo.localPath}: ${(e as Error).message}`);
+  }
+
+  return { label: result, version, reportingOnly: false, submodulesFailed };
 }
 
 /** teamai.yaml `usageReport: false` — per-repo opt-out of stat commits. */
@@ -496,11 +519,15 @@ async function pullForScope(
   // team-repo-dependent built-in skill (teamai-share-learnings) is useless
   // there and must not be injected.
   let reportingOnly = false;
+  // A failed submodule update holds the rev back below so the next pull
+  // retries (see refreshTeamRepo).
+  let submodulesFailed = false;
   try {
-    const { label, version, reportingOnly: ro } = await refreshTeamRepo(localConfig);
-    currentRev = version;
-    reportingOnly = ro;
-    pullSpin.succeed(`[${scopeLabel}] Team repo: ${label}`);
+    const refresh = await refreshTeamRepo(localConfig);
+    currentRev = refresh.version;
+    reportingOnly = refresh.reportingOnly;
+    submodulesFailed = refresh.submodulesFailed;
+    pullSpin.succeed(`[${scopeLabel}] Team repo: ${refresh.label}`);
   } catch (e) {
     pullSpin.fail(`[${scopeLabel}] Pull failed: ${(e as Error).message}`);
     return;
@@ -1040,13 +1067,17 @@ async function pullForScope(
     if (revisionField === 'lastPullRev') {
       state.lastPull = new Date().toISOString();
     }
-    if (currentRev !== null) {
-      state[revisionField] = currentRev;
-    } else {
-      try {
-        state[revisionField] = await getHeadRev(localConfig.repo.localPath);
-      } catch {
-        state[revisionField] = null;
+    // A failed submodule update keeps the previous rev so the next pull
+    // retries the update (see refreshTeamRepo).
+    if (!submodulesFailed) {
+      if (currentRev !== null) {
+        state[revisionField] = currentRev;
+      } else {
+        try {
+          state[revisionField] = await getHeadRev(localConfig.repo.localPath);
+        } catch {
+          state[revisionField] = null;
+        }
       }
     }
     state[targetsField] = currentTargets
