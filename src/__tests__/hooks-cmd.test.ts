@@ -12,6 +12,7 @@ vi.mock('../hooks.js', async () => {
     return {
         getHookStatus: vi.fn(),
         reconcileHooksToAllTools: vi.fn(),
+        reconcileTeamHooksForConfig: vi.fn(),
         sweepLegacyProjectHooks: vi.fn(),
         hasInstalledCodexTrustGatedTool: vi.fn(),
         // Keep the real reminder text so assertions verify the actual wording.
@@ -21,7 +22,6 @@ vi.mock('../hooks.js', async () => {
 
 vi.mock('../resources/hooks.js', () => ({
     parseTeamHooks: vi.fn(),
-    resolveTeamHooks: vi.fn(),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -37,8 +37,8 @@ vi.mock('../utils/logger.js', () => ({
 // ── Imports (after mocks) ────────────────────────────────
 
 import { autoDetectInit } from '../config.js';
-import { getHookStatus, reconcileHooksToAllTools, sweepLegacyProjectHooks, hasInstalledCodexTrustGatedTool } from '../hooks.js';
-import { parseTeamHooks, resolveTeamHooks } from '../resources/hooks.js';
+import { getHookStatus, reconcileHooksToAllTools, reconcileTeamHooksForConfig, sweepLegacyProjectHooks, hasInstalledCodexTrustGatedTool } from '../hooks.js';
+import { parseTeamHooks } from '../resources/hooks.js';
 import { log } from '../utils/logger.js';
 import { hooksInject, hooksRemove, hooksList } from '../hooks-cmd.js';
 
@@ -46,9 +46,9 @@ const mockedAutoDetectInit = autoDetectInit as Mock;
 const mockedGetHookStatus = getHookStatus as Mock;
 const mockedSweep = sweepLegacyProjectHooks as Mock;
 const mockedReconcile = reconcileHooksToAllTools as Mock;
+const mockedReconcileForConfig = reconcileTeamHooksForConfig as Mock;
 const mockedHasCodexTrustGated = hasInstalledCodexTrustGatedTool as Mock;
 const mockedParseTeamHooks = parseTeamHooks as Mock;
-const mockedResolveTeamHooks = resolveTeamHooks as Mock;
 const mockedLog = log as unknown as { info: Mock; success: Mock; warn: Mock; error: Mock; debug: Mock };
 
 const mockLocalConfig = {
@@ -83,9 +83,9 @@ beforeEach(() => {
     mockedAutoDetectInit.mockResolvedValue({ localConfig: mockLocalConfig, teamConfig: mockTeamConfig });
     mockedGetHookStatus.mockResolvedValue('missing');
     mockedReconcile.mockResolvedValue(undefined);
+    mockedReconcileForConfig.mockResolvedValue(undefined);
     mockedHasCodexTrustGated.mockResolvedValue(false);
     mockedParseTeamHooks.mockResolvedValue(TEAM_DEFS);
-    mockedResolveTeamHooks.mockResolvedValue({ defs: TEAM_DEFS, builtin: undefined });
 });
 
 describe('hooksInject', () => {
@@ -93,21 +93,22 @@ describe('hooksInject', () => {
         await hooksInject({});
 
         expect(mockedAutoDetectInit).toHaveBeenCalled();
-        expect(mockedResolveTeamHooks).toHaveBeenCalledWith(mockTeamConfig, '/tmp/repo', expect.objectContaining({ auto: false }));
-        expect(mockedReconcile).toHaveBeenCalledTimes(1);
-        expect(mockedReconcile).toHaveBeenCalledWith(
-            mockTeamConfig.toolPaths,
-            expect.any(String),
-            TEAM_DEFS,
-            expect.stringContaining('managed-hooks.json'),
-            { builtinOverride: undefined },
+        // Injection routes through reconcileTeamHooksForConfig so it applies
+        // the same enabledAgents whitelist minus disabledAgents scoping as
+        // pull and init (the per-tool reconciliation itself is covered by the
+        // hooks-reconcile tests).
+        expect(mockedReconcileForConfig).toHaveBeenCalledTimes(1);
+        expect(mockedReconcileForConfig).toHaveBeenCalledWith(
+            mockTeamConfig,
+            mockLocalConfig,
+            expect.objectContaining({ auto: false }),
         );
         expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Hooks injected'));
     });
 
     it('suppresses success message with --silent', async () => {
         await hooksInject({ silent: true });
-        expect(mockedReconcile).toHaveBeenCalled();
+        expect(mockedReconcileForConfig).toHaveBeenCalled();
         expect(mockedLog.success).not.toHaveBeenCalled();
     });
 
@@ -139,38 +140,22 @@ describe('hooksInject', () => {
         await expect(hooksInject({})).rejects.toThrow('not initialized');
     });
 
-    it('injects into HOME and sweeps the legacy <projectRoot> copy (#264/#370)', async () => {
-        const restoreHome = mockHome('/home/testuser');
+    it('delegates reconciliation to the shared per-config choke point (project scope)', async () => {
         mockedAutoDetectInit.mockResolvedValue({
             localConfig: { ...mockLocalConfig, scope: 'project', projectRoot: '/path/to/project' },
             teamConfig: mockTeamConfig,
         });
-        try {
-            await hooksInject({});
-        } finally {
-            restoreHome();
-        }
+        await hooksInject({});
 
-        // #264: project scope injects the single copy into HOME (covers all cwds;
-        // dispatch identifies the project via stdin.cwd). #370: it also sweeps any
-        // legacy <projectRoot> copy an older CLI wrote, so only HOME's copy fires.
-        // The sweep is delegated to the shared sweepLegacyProjectHooks so this
-        // command, init/pull and hooks remove all clean up identically; what that
-        // helper does on disk is covered in hooks-reconcile-scope.test.ts.
-        expect(mockedReconcile).toHaveBeenCalledTimes(1);
-        expect(mockedReconcile).toHaveBeenCalledWith(
-            mockTeamConfig.toolPaths, '/home/testuser', TEAM_DEFS, expect.any(String), {
-                builtinOverride: undefined,
-                teamHookProjectRoot: '/path/to/project',
-                installedBaseDir: '/path/to/project',
-            },
-        );
-        const injectManifest = mockedReconcile.mock.calls[0][3] as string;
-        expect(injectManifest).toContain('/home/testuser');
-        expect(injectManifest).not.toContain('/path/to/project');
-        expect(mockedSweep).toHaveBeenCalledWith(
-            mockTeamConfig.toolPaths,
+        // #264/#370: HOME targeting and the legacy <projectRoot> sweep are owned
+        // by the shared reconcileTeamHooksForConfig choke point (identical to
+        // init/pull); their on-disk behavior is covered in
+        // hooks-reconcile-scope.test.ts.
+        expect(mockedReconcileForConfig).toHaveBeenCalledTimes(1);
+        expect(mockedReconcileForConfig).toHaveBeenCalledWith(
+            mockTeamConfig,
             expect.objectContaining({ scope: 'project', projectRoot: '/path/to/project' }),
+            expect.objectContaining({ auto: false }),
         );
     });
 });

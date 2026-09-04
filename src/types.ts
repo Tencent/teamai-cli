@@ -1378,6 +1378,20 @@ export function isAgentDisabled(localConfig: { disabledAgents?: string[] }, tool
 }
 
 /**
+ * True when `tool` should be skipped during resource sync: explicitly
+ * disabled via disabledAgents, or outside the enabledAgents whitelist when
+ * the team scoped its opt-in with `--agent` (undefined whitelist = all
+ * installed tools).
+ */
+export function isAgentExcluded(
+  localConfig: { disabledAgents?: string[]; enabledAgents?: string[] },
+  tool: string,
+): boolean {
+  if (isAgentDisabled(localConfig, tool)) return true;
+  return localConfig.enabledAgents ? !localConfig.enabledAgents.includes(tool) : false;
+}
+
+/**
  * Return `teamConfig.toolPaths` with per-scope path overrides applied.
  *
  * Almost every tool keeps its user-scope and project-scope resources at the same

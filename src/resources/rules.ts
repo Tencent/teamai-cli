@@ -3,7 +3,7 @@ import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir, isAgentDisabled, scopedToolPaths } from '../types.js';
+import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir, isAgentExcluded, scopedToolPaths } from '../types.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { teamRuleToCursorMdc, mergeCursorBodyIntoTeamMd, cursorMdcBodyEqualsTeamMd } from './cursor-mdc.js';
 import {
@@ -166,7 +166,7 @@ export class RulesHandler extends ResourceHandler {
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
     const baseDir = resolveBaseDir(localConfig);
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-      if (isAgentDisabled(localConfig, tool)) continue;
+      if (isAgentExcluded(localConfig, tool)) continue;
       if (!toolPath.rules) continue;
 
       // Skip tools that are not installed
@@ -252,7 +252,7 @@ export class RulesHandler extends ResourceHandler {
     // Hermes: inline all team rules into a teamai-managed block in SOUL.md
     // (user-level standing instructions). Only when Hermes is actually
     // installed — never create ~/.hermes for users who don't use it.
-    if (!isAgentDisabled(localConfig, 'hermes')) {
+    if (!isAgentExcluded(localConfig, 'hermes')) {
       const { getHermesHome } = await import('../hermes-home.js');
       if (await pathExists(getHermesHome())) {
         const bodies: string[] = [];
@@ -366,7 +366,7 @@ export class RulesHandler extends ResourceHandler {
     localConfig: LocalConfig,
     present: boolean,
   ): Promise<void> {
-    if (isAgentDisabled(localConfig, 'opencode')) return;
+    if (isAgentExcluded(localConfig, 'opencode')) return;
     const scoped = scopedToolPaths(teamConfig, localConfig);
     const paths = scoped['opencode'];
     if (!paths?.rules) return;

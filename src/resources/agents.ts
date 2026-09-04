@@ -5,7 +5,7 @@ import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFiles, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { resolveBaseDir, isAgentDisabled, isSelfMode, scopedToolPaths } from '../types.js';
+import { resolveBaseDir, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import {
   parseAgentYaml,
@@ -154,7 +154,7 @@ export class AgentsHandler extends ResourceHandler {
         // Compare like with like: native files against a native rendering of
         // the canonical YAML. Unchanged/untargeted copies must not join a merge.
         for (const [tool, filePath] of toolFiles) {
-          if (!isKnownTool(tool) || isAgentDisabled(localConfig, tool)
+          if (!isKnownTool(tool) || isAgentExcluded(localConfig, tool)
             || (canonicalSpec.targets && !canonicalSpec.targets.includes(tool))) {
             toolFiles.delete(tool);
             continue;
@@ -383,7 +383,7 @@ export class AgentsHandler extends ResourceHandler {
         log.debug(`Skipping agent sync for ${tool}: tool not installed`);
         continue;
       }
-      if (isAgentDisabled(localConfig, tool)) continue;
+      if (isAgentExcluded(localConfig, tool)) continue;
 
       const destDir = path.join(baseDir, toolPath.agents);
       try {
@@ -458,7 +458,7 @@ export class AgentsHandler extends ResourceHandler {
         log.debug(`Skipping legacy agent sync for ${tool}: tool not installed`);
         continue;
       }
-      if (isAgentDisabled(localConfig, tool)) continue;
+      if (isAgentExcluded(localConfig, tool)) continue;
 
       const destDir = path.join(baseDir, toolPath.agents);
       try {

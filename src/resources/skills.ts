@@ -2,7 +2,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
-import { resolveBaseDir, getPushignorePath, isAgentDisabled, scopedToolPaths } from '../types.js';
+import { resolveBaseDir, getPushignorePath, isAgentExcluded, scopedToolPaths } from '../types.js';
 import { listDirs, pathExists, copyDir, remove, dirContentEqual, dirTeamSubsetEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
@@ -469,7 +469,7 @@ export class SkillsHandler extends ResourceHandler {
     const baseDir = resolveBaseDir(localConfig);
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-      if (isAgentDisabled(localConfig, tool)) continue;
+      if (isAgentExcluded(localConfig, tool)) continue;
       if (!toolPath.skills) continue;
 
       let dest: string;
