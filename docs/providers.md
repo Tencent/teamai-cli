@@ -11,6 +11,20 @@ TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现
 | `gitcode`| gitcode.com     | `GITCODE_TOKEN` 环境变量或 init 交互粘贴 | GitCode（CSDN）用户 |
 | `git`    | 任意 Git host   | 系统 Git Credential Helper 或 SSH Key | 自建 Gitea 等其他平台 |
 
+## 凭据内嵌在 URL 时不走系统 Credential Helper
+
+`github` / `tgit` / `gitcode` 把 token 内嵌进团队仓的 remote URL（见各自章节）。这类 git 调用会以
+`-c credential.helper=` + `GIT_TERMINAL_PROMPT=0` 执行，克隆完成后还会在该仓库的 local config 里写入
+空的 `credential.helper`，让后续 pull / fetch / push 同样跳过系统 helper。
+
+原因：凭据已在 URL 里，git 仍会把它交给平台 helper（macOS osxkeychain、Windows wincred 等）做缓存；
+而 helper 在打不开钥匙串的环境（CI、容器、被改写的 `HOME`、锁定的钥匙串）会弹出无人应答的对话框，
+git 就一直等下去 —— clone 只能等到超时失败，pull 则永远不返回。
+
+`git` 通用 provider 与 `cnb` 依赖 helper 取凭据，因此**不受影响**；`gitlab` 用 `http.extraHeader`，
+也不写 URL 凭据。另外 teamai 自己发起的 git 调用统一有 120s 预算（simple-git 按「无输出」计时），
+避免任意一次挂死变成无限等待。
+
 ## Provider 自动检测
 
 `teamai init <input>`（或等价别名 `teamai init --repo <input>`）根据输入格式自动选择 provider：

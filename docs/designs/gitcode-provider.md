@@ -71,6 +71,20 @@ GitHub / TGit 的做法是把 token 内嵌进 remote URL（持久化到 `.git/co
 使 `git push`（分支 + PR 流程）能认证。token 只落在 `~/.teamai/team-repo` 的私有 clone 中，
 与 GitHub / TGit 一致。（`clone.ts` 的浅克隆路径非 push 目标，沿用 extraHeader。）
 
+### 5.2 关键修复：内嵌凭据必须绕开系统 Credential Helper
+
+凭据已经在 URL 里，git 仍会把它交给平台 helper 缓存。实机复现：隔离 `HOME`（Xcode 的
+`git-core/gitconfig` 仍启用 `credential.helper = osxkeychain`）下，`git credential-osxkeychain store`
+找不到默认钥匙串，弹出「找不到用于储存 oauth2 的钥匙串」模态框并阻塞 git —— `teamai init` 撞满
+clone 的 120s 超时后报 `Clone failed: ... Cloning into ...`（无其他 stderr），`teamai pull` 则卡在
+`Pulling team repo...` 永不返回。
+
+**修复**：内嵌凭据的 git 调用统一经 `spawnGit(..., { credentialInUrl: true })`
+（`-c credential.helper=` + `GIT_TERMINAL_PROMPT=0`），clone 成功后 `pinUrlCredential()` 把空的
+`credential.helper` 写入该 clone 的 local config，使后续 pull/fetch/push 一并跳过 helper；
+`createGit()` 另加 120s「无输出」预算，让任何挂死都以报错收场而不是无限等待。
+GitHub / TGit 走同一条内嵌路径，同步修复。
+
 ## 6. 端到端验证（真实 CLI + 真实 GitCode 仓）
 
 - `teamai init https://gitcode.com/...`：✔ Detected provider gitcode / ✔ Authenticated / ✔ Team repo cloned /

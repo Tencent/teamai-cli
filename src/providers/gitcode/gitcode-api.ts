@@ -1,8 +1,8 @@
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { GITCODE_HOST } from './repo-url.js';
+import { spawnGit, pinUrlCredential } from '../../utils/git.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
 
 /**
@@ -177,13 +177,14 @@ function redactCloneOutput(output: string): string {
  */
 export function gitcodeRepoClone(repo: string, localPath: string): void {
   const token = getGitCodeToken();
-  const result = spawnSync('git', ['clone', cloneUrl(repo, token), localPath], {
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    timeout: 120_000,
+  const result = spawnGit(['clone', cloneUrl(repo, token), localPath], {
+    credentialInUrl: token !== null,
   });
   const allOutput = `${result.stderr ?? ''} ${result.stdout ?? ''}`;
-  if (result.status === 0) return;
+  if (result.status === 0) {
+    if (token) pinUrlCredential(localPath);
+    return;
+  }
 
   if (
     allOutput.includes('not found')
