@@ -940,6 +940,36 @@ cat ~/.claude/CLAUDE.md
 }
 ```
 
+后端可下发 **`apply_model_config`** 任务，其 `cmd` 为 JSON。客户端同时兼容设计文档中的候选集结构和
+旧版单模型结构：`{"models":[...]}` 按完整快照处理，直接模型对象按增量 upsert 处理。
+`max_tokens` 可选（对应 CodeBuddy 的 `maxOutputTokens`）；缺省或 `0` 时默认 `4096`。Claude 不使用该字段。
+
+```jsonc
+{ "id": 16, "type": "apply_model_config",
+  "cmd": "{\"models\":[{\"provider\":\"openai\",\"model_id\":\"gpt-4o\",\"name\":\"GPT-4o\",\"base_url\":\"https://proxy.example.com/v1\",\"api_key\":\"<ProxyToken>\",\"max_tokens\":4096,\"context_window\":128000}]}" }
+```
+
+候选集会合并到 CodeBuddy 用户级 `~/.codebuddy/models.json`；若同一模型 ID 已由用户配置，则保留
+用户条目。Claude 侧会生成独立配置 `~/.claude/teamai-models.json`；仅当
+`~/.claude/settings.json` 中不存在冲突的用户 Anthropic 网关配置时，才把网关环境变量写入默认
+settings。以上含凭证文件权限均为 `0600`。落盘成功后以 `type: "apply_model_config"` 回执；
+非法 payload 回执 `failed`。未来未知任务类型会静默跳过，以保持协议向后兼容。
+
+反向的模型上报走已有的 `report` 接口：仅上报 TeamAI 下发且磁盘内容仍匹配的模型，放在
+`user_level.models` 中。用户自有模型不上报，因为后台无法识别。服务端要求 `provider` 与
+`model_id` 同时存在。与 skills/rules 一致，没有任何符合条件的模型时该字段整体省略——因为
+存在的数组会被当作全量快照。只有 CodeBuddy（`~/.codebuddy/models.json`）和 Claude
+（`~/.claude/settings.json` 里的 `ANTHROPIC_CUSTOM_MODEL_OPTION` 网关）有可发现的模型配置，
+其余工具不上报。上报条目的 `source` 固定为 `enterprise`。
+**`api_key` 不会被回传** —— ProxyToken 只留在本地磁盘。
+
+```jsonc
+{ "agent_type": "codebuddy", "local_agent_id": "...",
+  "user_level": { "models": [
+    { "provider": "tokenhub", "model_id": "gpt-4o", "name": "GPT-4o", "source": "enterprise" }
+  ] } }
+```
+
 后端也可下发 **`uninstall_teamai`** 命令来移除本地 agent。它携带一个 `cmd`（一条 `teamai` 子命令），让客户端执行一次，执行结果经同一 ack 通道回报：
 
 ```json

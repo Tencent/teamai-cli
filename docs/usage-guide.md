@@ -942,6 +942,42 @@ When using `teamai init --http <baseUrl>`, the endpoint must implement the follo
 }
 ```
 
+The backend may push an **`apply_model_config`** task whose `cmd` is JSON. Both
+the documented candidate-set shape and the legacy single-model shape are accepted.
+`{"models":[...]}` is a full snapshot; a direct model object is an incremental upsert.
+`max_tokens` is optional (CodeBuddy `maxOutputTokens`); omitted or `0` defaults to `4096`. Claude does not use it.
+
+```jsonc
+{ "id": 16, "type": "apply_model_config",
+  "cmd": "{\"models\":[{\"provider\":\"openai\",\"model_id\":\"gpt-4o\",\"name\":\"GPT-4o\",\"base_url\":\"https://proxy.example.com/v1\",\"api_key\":\"<ProxyToken>\",\"max_tokens\":4096,\"context_window\":128000}]}" }
+```
+
+The candidate set is merged into CodeBuddy's user-level `~/.codebuddy/models.json`;
+user-owned entries with the same model ID are preserved. For Claude, teamai writes an
+explicit profile at `~/.claude/teamai-models.json` and also adds the gateway environment
+to `~/.claude/settings.json` when it has no conflicting user-owned Anthropic gateway
+configuration. These files are mode `0600`. A successful write is acknowledged with
+`type: "apply_model_config"`; malformed payloads are acknowledged as `failed`. Unknown
+future task types are silently skipped for protocol compatibility.
+
+The reverse direction is reported through the existing `report` call: models that
+TeamAI delivered and that still match on disk are sent as `user_level.models`.
+User-owned models are omitted because the backend cannot resolve them. The server
+requires both `provider` and `model_id`. Like skills and rules, the field is omitted
+entirely when nothing qualifies, because a present array is treated as a full
+snapshot. Only CodeBuddy (`~/.codebuddy/models.json`) and Claude (the
+`ANTHROPIC_CUSTOM_MODEL_OPTION` gateway in `~/.claude/settings.json`) expose a
+discoverable model config; other tools report nothing. Reported entries always use
+`source: "enterprise"`. **`api_key` is never reported back** — the ProxyToken stays
+on disk.
+
+```jsonc
+{ "agent_type": "codebuddy", "local_agent_id": "...",
+  "user_level": { "models": [
+    { "provider": "tokenhub", "model_id": "gpt-4o", "name": "GPT-4o", "source": "enterprise" }
+  ] } }
+```
+
 The backend may also push an **`uninstall_teamai`** command to remove the local agent. It carries a `cmd` (a single `teamai` subcommand) that runs once on the client, with the result reported back through the same ack channel:
 
 ```json
