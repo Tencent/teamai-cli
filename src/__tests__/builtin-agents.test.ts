@@ -143,6 +143,9 @@ describe('deployBuiltinAgents', () => {
   });
 
   it('skips targets without a native agent renderer and warns how to proceed', async () => {
+    // Remove known tool roots so auto-discovery doesn't deploy to them
+    await fse.remove(path.join(homeDir, '.claude'));
+    await fse.remove(path.join(homeDir, '.codebuddy'));
     await fse.ensureDir(path.join(homeDir, '.unknown-tool', 'agents'));
     const teamConfig = buildTeamConfig({
       'unknown-tool': { agents: '.unknown-tool/agents' },
@@ -174,8 +177,9 @@ describe('deployBuiltinAgents', () => {
   });
 
   it('silently skips when the built-in agents directory does not exist', async () => {
-    // Point HOME at a fresh dir; even if the package agents/ dir exists in
-    // workspace, no tool roots are present, so deployment count is 0.
+    // Remove known tool roots so auto-discovery produces no targets either.
+    await fse.remove(path.join(homeDir, '.claude'));
+    await fse.remove(path.join(homeDir, '.codebuddy'));
     const teamConfig = buildTeamConfig({});
     const deployed = await deployBuiltinAgents(teamConfig, localConfig);
     expect(deployed).toBe(0);

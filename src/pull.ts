@@ -28,6 +28,7 @@ import {
   isRecallEnabled,
   isAgentDisabled,
   scopedToolPaths,
+  effectiveToolPaths,
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
@@ -216,7 +217,7 @@ export async function cleanupInactiveNamespaceSkills(
 ): Promise<void> {
   const baseDir = resolveBaseDir(localConfig);
 
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+  for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
     if (isAgentDisabled(localConfig, tool)) continue;
     if (!toolPath.skills) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
@@ -250,7 +251,7 @@ async function getExistingLocalNames(
 
   if (type === 'skills') {
     // Check the first installed tool's skills directory
-    for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    for (const [_tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
       const skillsDir = path.join(baseDir, toolPath.skills);
       if (!await pathExists(skillsDir)) continue;
@@ -318,7 +319,7 @@ async function getInstalledResourceTargets(
   const baseDir = resolveBaseDir(localConfig);
   const targets: string[] = [];
 
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+  for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
     if (isAgentDisabled(localConfig, tool)) continue;
 
     const resourcePaths = [toolPath.skills, toolPath.rules, toolPath.agents]
@@ -596,6 +597,9 @@ async function pullForScope(
       const tombstones = await handler.readTombstones(localConfig);
       if (tombstones.size === 0) continue;
 
+      // Tombstone cleanup only touches team-managed tools (scopedToolPaths),
+      // not auto-discovered ones — a personal skill in ~/.gemini/skills/ that
+      // happens to share a name with a tombstoned team skill must not be deleted.
       for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
         const dir = toolPath[toolPathField];
         if (!dir) continue;
@@ -632,6 +636,7 @@ async function pullForScope(
   }
 
   // Step 3b: Clean up local skills not in the desired union set (role + tags)
+  // Only in team-managed tools — auto-discovered dirs may have personal skills.
   if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
     const baseDir = resolveBaseDir(localConfig);
 
@@ -767,7 +772,7 @@ async function pullForScope(
           const compiled = compileCulture(cultureContent);
           if (compiled) {
             const baseDir = resolveBaseDir(localConfig);
-            for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
+            for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(freshConfig, localConfig))) {
               if (isAgentDisabled(localConfig, tool)) continue;
               if (!toolPath.claudemd) continue;
               if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
@@ -798,7 +803,7 @@ async function pullForScope(
         const compiled = compileClaudemd(claudemdContents);
         if (compiled) {
           const baseDir = resolveBaseDir(localConfig);
-          for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
+          for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(freshConfig, localConfig))) {
             if (isAgentDisabled(localConfig, tool)) continue;
             if (!toolPath.claudemd) continue;
             if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
@@ -1046,7 +1051,7 @@ export async function injectRecallBlockIntoTools(
         const baseDir = resolveBaseDir(localConfig);
         const recallBlock = compileRecallRulesBlock();
         let injected = 0;
-        for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
+        for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(config, localConfig))) {
             if (isAgentDisabled(localConfig, tool)) continue;
             if (!toolPath.claudemd || !toolPath.agents) continue;
             if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;

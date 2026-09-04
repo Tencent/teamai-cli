@@ -3,7 +3,7 @@ import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFiles, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { resolveBaseDir, isAgentDisabled, isSelfMode, scopedToolPaths } from '../types.js';
+import { resolveBaseDir, isAgentDisabled, isSelfMode, scopedToolPaths, effectiveToolPaths } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import {
   parseAgentYaml,
@@ -332,7 +332,7 @@ export class AgentsHandler extends ResourceHandler {
     spec = parseResult.spec;
 
     const targets = spec.targets ?? ALL_SUPPORTED_TOOLS;
-    const scoped = scopedToolPaths(teamConfig, localConfig);
+    const scoped = await effectiveToolPaths(teamConfig, localConfig);
 
     for (const tool of targets) {
       const toolPath = scoped[tool];
@@ -409,7 +409,7 @@ export class AgentsHandler extends ResourceHandler {
   ): Promise<void> {
     const legacyTools = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy']);
 
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(await effectiveToolPaths(teamConfig, localConfig))) {
       if (!legacyTools.has(tool)) continue;
       if (!toolPath.agents) {
         log.debug(`Skipping legacy agent sync for ${tool}: no agents path configured`);

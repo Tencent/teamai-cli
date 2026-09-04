@@ -5,7 +5,7 @@ import { ResourceHandler } from './resources/base.js';
 import { ruleFileExtensionForTool, usesCursorMdcRules } from './resources/rule-format.js';
 import { teamRuleToCursorMdc } from './resources/cursor-mdc.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
+import { resolveBaseDir, isAgentDisabled, scopedToolPaths, effectiveToolPaths } from './types.js';
 import fs from 'node:fs/promises';
 import { getUserHome } from './utils/home.js';
 
@@ -58,7 +58,7 @@ export async function deployBuiltinRules(
         { name: 'teamai-recall', content: TEAMAI_RECALL_RULE_CONTENT },
     ].filter(r => !(options?.skipRecall && r.name === 'teamai-recall'));
 
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
+    for (const [tool, toolPath] of Object.entries(localConfig ? await effectiveToolPaths(teamConfig, localConfig) : scopedToolPaths(teamConfig, localConfig ?? {}))) {
         if (!toolPath.rules) continue;
 
         // Skip tools that are not installed

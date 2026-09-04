@@ -11,7 +11,7 @@ import { getUserHome } from './utils/home.js';
  * against the user's HOME in non-interactive contexts. Order is the display order.
  * Kept small on purpose — the common coding agents, not the full KNOWN_AGENTS list.
  */
-export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'codebuddy', 'workbuddy'] as const;
+export const SELF_MODE_AGENT_CHOICES = ['claude', 'tclaude', 'codex', 'tcodex', 'cursor', 'codebuddy', 'workbuddy'] as const;
 
 /**
  * Normalize the `--agent` option into a deduplicated id list.

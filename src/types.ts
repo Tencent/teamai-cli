@@ -185,6 +185,34 @@ export const SOURCE_PULL_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const TEAMAI_SOURCES_DIR = path.join(getUserHome(), '.teamai', 'sources');
 
+/**
+ * Verified tool-path registry. Each entry has been checked against the actual
+ * tool's directory layout. Auto-discovery looks up paths here rather than
+ * guessing from `skillsPath`, so only declared resource types are synced.
+ */
+export const DEFAULT_TOOL_PATHS: Record<string, z.infer<typeof ToolPathsSchema>> = {
+  claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', agents: '.claude/agents', mcp: '.claude.json', mcpProject: '.mcp.json' },
+  codex: { skills: '.codex/skills', rules: '.codex/rules', settings: '.codex/hooks.json', agents: '.codex/agents', mcp: '.codex/config.toml' },
+  'codex-internal': { skills: '.codex-internal/skills', rules: '.codex-internal/rules', settings: '.codex-internal/hooks.json', agents: '.codex-internal/agents' },
+  'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', agents: '.claude-internal/agents' },
+  tclaude: { skills: '.tclaude/skills', rules: '.tclaude/rules', settings: '.tclaude/settings.json', claudemd: '.tclaude/CLAUDE.md', agents: '.tclaude/agents', mcp: '.tclaude/.claude.json' },
+  tcodex: { skills: '.tcodex/skills', rules: '.tcodex/rules', settings: '.tcodex/hooks.json', agents: '.tcodex/agents' },
+  cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents', mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' },
+  codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents', mcp: '.codebuddy/mcp.json', mcpProject: '.codebuddy/mcp.json' },
+  openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules', claudemd: '.openclaw/workspace/AGENTS.md' },
+  hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
+  dsh: { skills: '.dsh/skills' },
+  workbuddy: { skills: '.workbuddy/skills', rules: '.workbuddy/rules', settings: '.workbuddy/settings.json', claudemd: 'AGENTS.md', mcp: '.workbuddy/mcp.json', mcpProject: '.workbuddy/mcp.json' },
+  opencode: {
+    skills: '.opencode/skills',
+    rules: '.opencode/rules',
+    agents: '.opencode/agents',
+    mcp: '.config/opencode/opencode.json',
+    mcpProject: 'opencode.json',
+    userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules', agents: '.config/opencode/agents' },
+  },
+};
+
 export const TeamaiConfigSchema = z.object({
   team: z.string(),
   description: z.string().default(''),
@@ -214,45 +242,7 @@ export const TeamaiConfigSchema = z.object({
    * can override via `updatePolicy` in local config. Undefined = team has no
    * opinion (preserves legacy behavior). */
   autoUpdate: z.boolean().optional(),
-  // MCP paths are only set for tools whose config location has been verified.
-  // Tools left without `mcp` are skipped by MCP sync rather than guessed at, so a
-  // wrong guess can never create a junk config file on a user's machine.
-  toolPaths: z.record(z.string(), ToolPathsSchema).default({
-    claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', agents: '.claude/agents', mcp: '.claude.json', mcpProject: '.mcp.json' },
-    codex: { skills: '.codex/skills', rules: '.codex/rules', settings: '.codex/hooks.json', agents: '.codex/agents', mcp: '.codex/config.toml' },
-    'codex-internal': { skills: '.codex-internal/skills', rules: '.codex-internal/rules', settings: '.codex-internal/hooks.json', agents: '.codex-internal/agents' },
-    'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', agents: '.claude-internal/agents' },
-    // tclaude ships Claude Code with `customUserDataDir: .tclaude`, which
-    // relocates the whole user data dir — so its MCP file is
-    // ~/.tclaude/.claude.json, not ~/.tclaude.json. No mcpProject: project scope
-    // for the Claude family is <root>/.mcp.json, which the `claude` target
-    // already writes and tclaude reads from the same location.
-    tclaude: { skills: '.tclaude/skills', rules: '.tclaude/rules', settings: '.tclaude/settings.json', claudemd: '.tclaude/CLAUDE.md', agents: '.tclaude/agents', mcp: '.tclaude/.claude.json' },
-    tcodex: { skills: '.tcodex/skills', rules: '.tcodex/rules', settings: '.tcodex/hooks.json', agents: '.tcodex/agents' },
-    cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents', mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' },
-    codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents', mcp: '.codebuddy/mcp.json', mcpProject: '.codebuddy/mcp.json' },
-    openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules', claudemd: '.openclaw/workspace/AGENTS.md' },
-    hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
-    // DeepSeek Harness: skills synced to ~/.dsh/skills, which its skill-filesystem
-    // provider scans as user-dsh root (rank 400). dsh discovers both directory
-    // bundles (<name>/SKILL.md) and flat Markdown files there natively.
-    dsh: { skills: '.dsh/skills' },
-    workbuddy: { skills: '.workbuddy/skills', rules: '.workbuddy/rules', settings: '.workbuddy/settings.json', claudemd: 'AGENTS.md', mcp: '.workbuddy/mcp.json', mcpProject: '.workbuddy/mcp.json' },
-    // OpenCode reads project config from <root>/.opencode/ but user config from
-    // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
-    // read natively from .claude/skills, but we write .opencode/skills so an
-    // OpenCode-only user (no Claude) still gets them. Rules land in .opencode/rules
-    // but must be activated via the `instructions` glob in opencode.json (OpenCode
-    // does not auto-scan a rules dir). MCP shares opencode.json under the `mcp` key.
-    opencode: {
-      skills: '.opencode/skills',
-      rules: '.opencode/rules',
-      agents: '.opencode/agents',
-      mcp: '.config/opencode/opencode.json',
-      mcpProject: 'opencode.json',
-      userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules', agents: '.config/opencode/agents' },
-    },
-  }),
+  toolPaths: z.record(z.string(), ToolPathsSchema).default(DEFAULT_TOOL_PATHS),
 });
 
 export type TeamaiConfig = z.infer<typeof TeamaiConfigSchema>;
@@ -1199,6 +1189,74 @@ export function scopedToolPaths(
     };
   }
   return out;
+}
+
+/**
+ * Merge scopedToolPaths with KNOWN_AGENTS auto-discovery.
+ *
+ * scopedToolPaths only returns tools explicitly listed in teamai.yaml toolPaths.
+ * This function supplements those with any KNOWN_AGENTS entry whose install root
+ * exists on disk but is missing from the explicit config — so a tool like tclaude
+ * that is installed (has ~/.tclaude or <project>/.tclaude) gets resources injected
+ * even when the team's teamai.yaml does not list it.
+ *
+ * Resource paths come from DEFAULT_TOOL_PATHS (verified per-tool layouts), not
+ * convention-based derivation. Agents without a DEFAULT_TOOL_PATHS entry receive
+ * only their skills path — no rules/agents/claudemd are guessed.
+ *
+ * Intended for pull/sync paths only. push and remove should use scopedToolPaths()
+ * to stay within the team-managed boundary.
+ */
+export async function effectiveToolPaths(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<Record<string, z.infer<typeof ToolPathsSchema>>> {
+  const { KNOWN_AGENTS } = await import('./known-agents.js');
+  const { pathExists } = await import('./utils/fs.js');
+  const baseDir = resolveBaseDir(localConfig);
+  const isUser = localConfig.scope === 'user';
+  const base = scopedToolPaths(teamConfig, localConfig);
+  const merged = { ...base };
+
+  for (const agent of KNOWN_AGENTS) {
+    if (merged[agent.id]) continue;
+    if (isAgentDisabled(localConfig, agent.id)) continue;
+
+    const registered = DEFAULT_TOOL_PATHS[agent.id];
+
+    // Determine the install-detection root. For user scope, tools with a
+    // userScope override (e.g. opencode → ~/.config/opencode) need the
+    // override's prefix, not the project-scope prefix (.opencode).
+    let detectRoot: string;
+    if (isUser && registered?.userScope?.skills) {
+      detectRoot = registered.userScope.skills.split('/').slice(0, -1).join('/') || registered.userScope.skills.split('/')[0];
+    } else {
+      detectRoot = agent.skillsPath.split('/')[0];
+    }
+    if (!detectRoot) continue;
+
+    const rootPath = path.join(baseDir, detectRoot);
+    if (await pathExists(rootPath)) {
+      if (registered) {
+        // Apply userScope overrides for user scope, mirroring scopedToolPaths logic
+        if (isUser && registered.userScope) {
+          const us = registered.userScope;
+          merged[agent.id] = {
+            ...registered,
+            ...(us.skills !== undefined ? { skills: us.skills } : {}),
+            ...(us.rules !== undefined ? { rules: us.rules } : {}),
+            ...(us.agents !== undefined ? { agents: us.agents } : {}),
+          };
+        } else {
+          merged[agent.id] = registered;
+        }
+      } else {
+        merged[agent.id] = { skills: agent.skillsPath };
+      }
+    }
+  }
+
+  return merged;
 }
 
 /** True when the local config is single-repo mode (the business repo is the team repo). */
