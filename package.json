@@ -1,6 +1,6 @@
 {
   "name": "teamai-cli",
-  "version": "0.22.0",
+  "version": "0.23.0-beta.1",
   "description": "TeamAI — Make Every Team AI Native (skill sync + shared knowledge base, powered by Git)",
   "type": "module",
   "bin": {
