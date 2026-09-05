@@ -4,7 +4,9 @@ import fs, { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
-import { detectProjectConfig } from '../config.js';
+import { detectProjectConfig, resolveDataHomeForScope } from '../config.js';
+import { getDataHome, getTeamaiHome } from '../types.js';
+import { projectDataHome } from '../utils/partition.js';
 
 // ─── detectProjectConfig subdirectory / worktree awareness (issue #374 P0) ──
 //
@@ -101,5 +103,68 @@ describe('detectProjectConfig — subdirectory / worktree', () => {
     const plain = path.join(base, 'plain');
     fs.mkdirSync(plain);
     expect(await detectProjectConfig(plain)).toBeNull();
+  });
+});
+
+// resolveDataHomeForScope must agree with getDataHome(detectProjectConfig(...))
+// for every scope — otherwise the local-agent side (which only carries
+// scope+projectRoot) and the reconcile side (which holds a full LocalConfig)
+// would resolve managed-mcp.json / the resource cache to different directories
+// and desync (issue #374 P1-2C).
+describe('resolveDataHomeForScope — desync guard', () => {
+  it('matches getDataHome(detected) for a legacy project install', async () => {
+    const detected = await detectProjectConfig(repoRoot);
+    expect(detected).not.toBeNull();
+    const viaConfig = getDataHome(detected!);
+    const viaScope = await resolveDataHomeForScope('project', repoRoot);
+    expect(viaScope).toBe(viaConfig);
+    expect(viaScope).toBe(path.join(repoRoot, '.teamai'));
+  });
+
+  it('matches from a subdirectory of the project', async () => {
+    const sub = path.join(repoRoot, 'a', 'b');
+    fs.mkdirSync(sub, { recursive: true });
+    const detected = await detectProjectConfig(sub);
+    expect(await resolveDataHomeForScope('project', sub)).toBe(getDataHome(detected!));
+  });
+
+  it('resolves user scope to ~/.teamai', async () => {
+    expect(await resolveDataHomeForScope('user')).toBe(getTeamaiHome('user'));
+  });
+
+  it('falls back to legacy <projectRoot>/.teamai for a non-git dir with no config', async () => {
+    const plain = path.join(base, 'plain2');
+    fs.mkdirSync(plain, { recursive: true });
+    expect(await resolveDataHomeForScope('project', plain)).toBe(path.join(plain, '.teamai'));
+  });
+
+  it('matches getDataHome(detected) for a PARTITIONED install (config in ~/.teamai/projects/<slug>)', async () => {
+    // Point HOME at a tmp home, write the project config into the partition, and
+    // confirm both resolvers land on the partition (not the workspace).
+    const home = path.join(base, 'part-home');
+    fs.mkdirSync(home, { recursive: true });
+    const origHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const pRepo = path.join(base, 'prepo');
+      fs.mkdirSync(pRepo);
+      git(pRepo, 'init', '-q');
+      git(pRepo, 'config', 'user.email', 't@e');
+      git(pRepo, 'config', 'user.name', 'T');
+      git(pRepo, 'commit', '--allow-empty', '-q', '-m', 'init');
+      const anchorReal = realpathSync(pRepo);
+      const partition = projectDataHome(anchorReal);
+      fs.mkdirSync(partition, { recursive: true });
+      fs.writeFileSync(path.join(partition, 'config.yaml'), YAML.stringify({
+        repo: { localPath: path.join(partition, 'team-repo'), remote: 'https://example.com/x.git', kind: 'git' },
+        username: 'test', scope: 'project', projectRoot: anchorReal, additionalRoles: [],
+      }));
+      const detected = await detectProjectConfig(pRepo);
+      expect(detected).not.toBeNull();
+      expect(getDataHome(detected!)).toBe(partition);
+      expect(await resolveDataHomeForScope('project', pRepo)).toBe(partition);
+    } finally {
+      if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
+    }
   });
 });

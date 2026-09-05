@@ -10,7 +10,7 @@ import {
 import { referencedVars } from './resources/mcp-format.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
-import { managedMcpManifestPath } from './types.js';
+import { managedMcpManifestPath, getDataHome } from './types.js';
 import { readJson } from './utils/fs.js';
 import type { ManagedMcpManifest } from './types.js';
 import { getUserHome } from './utils/home.js';
@@ -34,7 +34,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   const targets = await resolveMcpTargets(teamConfig, localConfig);
   const vars = await buildVarTable(localConfig);
   const manifest = (await readJson<ManagedMcpManifest>(
-    managedMcpManifestPath(localConfig.scope, localConfig.projectRoot),
+    managedMcpManifestPath(getDataHome(localConfig)),
   )) ?? {};
 
   console.log(`Team MCP servers — mcp/mcp.yaml (${servers.length}):`);

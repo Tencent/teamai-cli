@@ -11,6 +11,7 @@ import type {
 import {
   getMcpSharing,
   getEnvBackupPath,
+  getDataHome,
   managedMcpManifestPath,
   resolveBaseDir,
   scopedToolPaths,
@@ -325,7 +326,7 @@ export async function reconcileMcpForConfig(
   const targets = await resolveMcpTargets(teamConfig, localConfig);
   if (targets.length === 0) return { changes, wrote };
 
-  const manifestPath = managedMcpManifestPath(localConfig.scope, localConfig.projectRoot);
+  const manifestPath = managedMcpManifestPath(getDataHome(localConfig));
   const manifest = await readManifest(manifestPath);
 
   // An empty desired set still has to run: it is how servers dropped from

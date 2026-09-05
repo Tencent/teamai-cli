@@ -620,9 +620,14 @@ function createResourceLocalConfig(
   };
 }
 
-function getResourceRepoPath(scope: LocalAgentScope, workspacePath?: string): string {
+async function getResourceRepoPath(scope: LocalAgentScope, workspacePath?: string): Promise<string> {
   if (scope === 'project' && workspacePath) {
-    return path.join(workspacePath, '.teamai', LOCAL_AGENT_DIR, 'resources');
+    // Project resource cache is A1 (per-project): it lives in the machine-data
+    // home so a partitioned install keeps it out of the business workspace. Same
+    // resolver as detection/reconcile so the path never diverges.
+    const { resolveDataHomeForScope } = await import('./config.js');
+    const dataHome = await resolveDataHomeForScope('project', workspacePath);
+    return path.join(dataHome, LOCAL_AGENT_DIR, 'resources');
   }
   return path.join(getLocalAgentHome(), 'resources', scope);
 }
@@ -1260,9 +1265,9 @@ async function scanMcpFromManifest(
   scope: 'user' | 'project',
   projectRoot?: string,
 ): Promise<ReportedResource[]> {
+  const { resolveDataHomeForScope } = await import('./config.js');
   const manifestPath = managedMcpManifestPath(
-    scope === 'project' ? 'project' : 'user',
-    projectRoot,
+    await resolveDataHomeForScope(scope, projectRoot),
   );
   const manifest = await readJson<ManagedMcpManifest>(manifestPath);
   if (!manifest || typeof manifest !== 'object') return [];
@@ -1697,8 +1702,12 @@ async function installDownloadedResource(input: {
     throw new Error(`Missing download_url for ${input.command.type ?? 'install_skill'}`);
   }
 
-  const repoPath = getResourceRepoPath(input.scope, input.workspacePath);
-  if (input.scope === 'project' && input.workspacePath) {
+  const repoPath = await getResourceRepoPath(input.scope, input.workspacePath);
+  if (input.scope === 'project' && input.workspacePath
+      && repoPath.startsWith(path.join(input.workspacePath, '.teamai') + path.sep)) {
+    // Only gitignore when the cache actually lands inside the workspace (a legacy,
+    // un-migrated install). A partitioned install keeps it under ~/.teamai, so
+    // there is nothing in the workspace to ignore.
     await ensureProjectGitignore(input.workspacePath);
   }
   await ensureDir(repoPath);
@@ -1801,7 +1810,7 @@ async function uninstallResource(input: {
   workspacePath?: string;
   tool?: string;
 }): Promise<void> {
-  const repoPath = getResourceRepoPath(input.scope, input.workspacePath);
+  const repoPath = await getResourceRepoPath(input.scope, input.workspacePath);
   const fullTeamConfig = createLocalAgentTeamConfig(input.config.endpoint);
   const tool = input.tool ?? 'workbuddy';
   const toolPath = fullTeamConfig.toolPaths[tool];
@@ -2265,9 +2274,9 @@ async function installMcpServer(
   const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
   const targetFile = path.join(baseDir, mcpRel);
 
+  const { resolveDataHomeForScope } = await import('./config.js');
   const manifestPath = managedMcpManifestPath(
-    projectScope ? 'project' : 'user',
-    projectScope ? workspacePath : undefined,
+    await resolveDataHomeForScope(projectScope ? 'project' : 'user', projectScope ? workspacePath : undefined),
   );
   const manifest = (await readJson<ManagedMcpManifest>(manifestPath)) ?? {};
   const manifestKey = `${tool}${projectScope ? ':project' : ''}`;
@@ -2328,9 +2337,9 @@ async function uninstallMcpServer(
   const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
   const targetFile = path.join(baseDir, mcpRel);
 
+  const { resolveDataHomeForScope } = await import('./config.js');
   const manifestPath = managedMcpManifestPath(
-    projectScope ? 'project' : 'user',
-    projectScope ? workspacePath : undefined,
+    await resolveDataHomeForScope(projectScope ? 'project' : 'user', projectScope ? workspacePath : undefined),
   );
   const manifest = (await readJson<ManagedMcpManifest>(manifestPath)) ?? {};
   const manifestKey = `${tool}${projectScope ? ':project' : ''}`;

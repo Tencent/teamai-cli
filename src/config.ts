@@ -233,6 +233,26 @@ export async function resolveProjectDataHome(projectRoot: string): Promise<strin
   return anchors ? projectDataHome(anchors.projectAnchor) : path.join(projectRoot, '.teamai');
 }
 
+/**
+ * Resolve the machine-data home for a (scope, projectRoot) pair the SAME way
+ * detection does — so subsystems that only carry `(scope, projectRoot)` (the
+ * local-agent) land on the identical directory as callers that hold a full
+ * LocalConfig and use `getDataHome(localConfig)`. Without this, a partitioned
+ * install's reconcile side (partition) and the local-agent side (legacy) would
+ * disagree on where managed-mcp.json / the resource cache live and desync.
+ *
+ * - user scope → `~/.teamai`
+ * - project scope → the config's dataHome via detectProjectConfig's double-read
+ *   (partition for a new/migrated install, else legacy `<projectRoot>/.teamai`),
+ *   falling back to legacy when no config is present yet.
+ */
+export async function resolveDataHomeForScope(scope: Scope, projectRoot?: string): Promise<string> {
+  if (scope !== 'project' || !projectRoot) return getTeamaiHome('user');
+  const detected = await detectProjectConfig(projectRoot);
+  if (detected) return getDataHome(detected);
+  return path.join(projectRoot, '.teamai');
+}
+
 export async function detectProjectConfig(cwd?: string): Promise<LocalConfig | null> {
   const dir = cwd ?? process.cwd();
 
