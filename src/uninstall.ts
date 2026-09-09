@@ -630,6 +630,21 @@ async function teardownPlugins(): Promise<void> {
   }
 }
 
+async function teardownNamedHttpProviders(): Promise<void> {
+  try {
+    const { loadHttpResourceProviders } = await import('./providers/http/registry.js');
+    for (const provider of await loadHttpResourceProviders()) {
+      try {
+        await provider.teardown();
+      } catch (e) {
+        log.warn(`[provider:${provider.name}] teardown failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  } catch (e) {
+    log.warn(`HTTP provider teardown failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 async function executeRemoval(plan: RemovalPlan): Promise<void> {
   // (a) Remove hooks from tool settings (built-in A + team B via the manifest).
   // Each entry carries the manifest for its own location (HOME/user or a legacy
@@ -774,6 +789,7 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
 
   // (g) Remove ~/.teamai/ directory (last — earlier steps read from it)
   if (plan.teamaiHomeExists) {
+    await teardownNamedHttpProviders();
     // Tear down plugins first: their manifest/config live under ~/.teamai/local-agent.
     await teardownPlugins();
     try {

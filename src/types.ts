@@ -193,6 +193,8 @@ export const SourceConfigSchema = z.object({
   name: z.string().min(1),
   /** Git remote URL (e.g. "git@git.woa.com:other/repo.git"). */
   repo: z.string().min(1),
+  /** Higher-priority providers win when resources share a key. */
+  priority: z.number().int().optional(),
 });
 
 export type SourceConfig = z.infer<typeof SourceConfigSchema>;
