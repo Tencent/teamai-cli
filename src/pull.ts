@@ -35,6 +35,7 @@ import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespac
 import { loadProjectsManifest, resolveProjectResourceNamespaces, mergeNamespaces } from './projects.js';
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
+import { mirrorLearnings } from './learnings-mirror.js';
 
 interface RolePullContext {
   activeNamespaces: ResourceNamespaces;
@@ -850,25 +851,6 @@ async function pullForScope(
       // select them. `activeLearningsNamespaces` is the set from role∪project
       // resolution (roles contribute none, so effectively the project set).
       const activeLearningsNamespaces = roleContext?.activeNamespaces.learnings ?? [];
-      const activeLearningsSet = new Set(activeLearningsNamespaces);
-      // Filter for fse.copy: keep the root and any file/dir whose top-level
-      // segment (relative to learningsRepoDir) is either a root-level .md (shared)
-      // or an active-project subdirectory. Everything else (inactive project dirs)
-      // is excluded so no other project's private learnings land on this machine.
-      const learningsCopyFilter = (src: string): boolean => {
-        if (path.basename(src).startsWith('.')) return false;
-        const rel = path.relative(learningsRepoDir, src);
-        if (rel === '') return true; // the root dir itself
-        const top = rel.split(path.sep)[0];
-        // Root-level file (shared) → top has no further segments and is a file.
-        if (!rel.includes(path.sep)) {
-          // Could be a root-level .md (keep) or a subdirectory entry (keep only
-          // if it's an active namespace dir; fse.copy will then recurse into it).
-          return top.endsWith('.md') || activeLearningsSet.has(top);
-        }
-        // Nested path: keep only if under an active namespace.
-        return activeLearningsSet.has(top);
-      };
       const countLearnings = async (baseDir: string): Promise<number> => {
         // Count root-level shared .md + active-namespace .md only.
         let n = (await listFiles(baseDir)).filter((f) => f.endsWith('.md')).length;
@@ -883,20 +865,8 @@ async function pullForScope(
       let learningsCount = 0;
       let effectiveLearningsDir: string | undefined;
       if (localConfig.scope === 'user') {
+        await mirrorLearnings(learningsRepoDir, LEARNINGS_LOCAL_DIR, activeLearningsNamespaces);
         if (await pathExists(learningsRepoDir)) {
-          // Remove any stale namespace subdirectories no longer active before
-          // re-copying, so deactivating a project cleans up its local learnings.
-          if (await pathExists(LEARNINGS_LOCAL_DIR)) {
-            for (const existing of await listDirs(LEARNINGS_LOCAL_DIR)) {
-              if (!activeLearningsSet.has(existing)) {
-                await fse.remove(path.join(LEARNINGS_LOCAL_DIR, existing));
-              }
-            }
-          }
-          await fse.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
-            overwrite: true,
-            filter: learningsCopyFilter,
-          });
           learningsCount = await countLearnings(learningsRepoDir);
         }
         effectiveLearningsDir = await pathExists(LEARNINGS_LOCAL_DIR) ? LEARNINGS_LOCAL_DIR : undefined;

@@ -12,6 +12,7 @@ import { savePendingLearning } from './utils/pending-learnings.js';
 import { isSafeNamespaceSegment, resolveActiveLearningsNamespaces } from './projects.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { LEARNINGS_LOCAL_DIR, getDataHome } from './types.js';
+import { mirrorLearnings } from './learnings-mirror.js';
 
 /**
  * Rebuild this scope's local search index so the freshly-written contribution
@@ -60,12 +61,8 @@ async function rebuildIndexAfterContribute(localConfig: LocalConfig): Promise<vo
   // same as pull.ts); project scope indexes the repo's learnings/ directly.
   let effectiveLearningsDir: string | undefined;
   if (localConfig.scope === 'user') {
-    if (await pathExists(learningsRepoDir)) {
-      await fse.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
-        overwrite: true,
-        filter: (src: string) => !path.basename(src).startsWith('.'),
-      });
-    }
+    const activeNamespaces = await resolveActiveLearningsNamespaces(repoPath, localConfig.projects ?? []);
+    await mirrorLearnings(learningsRepoDir, LEARNINGS_LOCAL_DIR, activeNamespaces);
     effectiveLearningsDir = (await pathExists(LEARNINGS_LOCAL_DIR)) ? LEARNINGS_LOCAL_DIR : undefined;
   } else {
     effectiveLearningsDir = (await pathExists(learningsRepoDir)) ? learningsRepoDir : undefined;
@@ -305,10 +302,11 @@ async function contributeSelf(
       try {
         const { pathExists } = await import('./utils/fs.js');
         const wtLearnings = path.join(wtRepo, 'learnings');
-        await fse.copy(wtLearnings, LEARNINGS_LOCAL_DIR, {
-          overwrite: true,
-          filter: (src: string) => !path.basename(src).startsWith('.'),
-        });
+        const activeNamespaces = await resolveActiveLearningsNamespaces(
+          localConfig.repo.localPath,
+          localConfig.projects ?? [],
+        );
+        await mirrorLearnings(wtLearnings, LEARNINGS_LOCAL_DIR, activeNamespaces);
 
         const repoPath = localConfig.repo.localPath; // persistent active-tree .teamai
         const docsDir = path.join(repoPath, 'docs');
