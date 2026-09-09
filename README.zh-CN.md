@@ -105,7 +105,7 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 |------|------|------|
 | **角色（Roles）** | `teamai roles` | 定义「角色 → 命名空间」映射，让每位成员只同步与自身角色匹配的 skills。 |
 | **标签（Tags）** | `teamai tags` | 给 skills / rules 打标签，成员只订阅自己需要的标签。 |
-| **订阅源（Sources）** | `teamai source` | 订阅额外的 skill 仓库——其他团队的公开仓库，或本团队内的公共/共享仓库；已订阅的 skills 会在 pull 时自动同步。 |
+| **资源 Provider** | `teamai provider` | 挂载具名 Git 与 HTTP 资源后端；ClawPro 作为 HTTP 协议 adapter 运行，各后端相互隔离地同步。 |
 
 ## Team Execution
 
@@ -237,6 +237,7 @@ teamai recall maintenance --update-quality       # 为过时 skills / docs 生�
 | `teamai packages [install] [target]` | 安装团队 npm 包和 Claude 插件。裸 `teamai packages` 安装全部；`teamai packages install <target>` 添加单个并更新声明 |
 | `teamai status` | 显示本地与团队仓库的差异 |
 | `teamai contribute` | 将 session 经验分享到团队仓库 |
+| `teamai provider add/list/sync/remove` | 管理具名 Git 与 HTTP 资源 Provider |
 | `teamai recall <query>` | 搜索团队知识库（BM25 + 图谱增强） |
 | `teamai recall enable/disable/status` | 开关或查看 recall 状态 |
 | `teamai recall promote [learningId]` | 将高置信度 learning 晋升为正式知识（skills/rules/docs） |

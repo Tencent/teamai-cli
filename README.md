@@ -105,7 +105,7 @@ Team-wide settings an admin configures once and delivers to every member on `tea
 |------------|---------|--------------|
 | **Roles** | `teamai roles` | Define role → namespace mappings so each member syncs only the skills for their role. |
 | **Tags** | `teamai tags` | Tag skills / rules so members subscribe to just the tags they need. |
-| **Sources** | `teamai source` | Subscribe to additional skill repos — other teams' public repos, or shared/public repos within your own org; subscribed skills sync automatically on pull. |
+| **Providers** | `teamai provider` | Mount named Git and HTTP resource backends; ClawPro runs as an HTTP protocol adapter and each backend syncs in isolation. |
 
 ## Team Execution
 
@@ -237,6 +237,7 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 | `teamai packages [install] [target]` | Install declared npm packages and Claude plugins; with a target, also update `teamai.yaml`. Bare `teamai packages` installs everything; `teamai packages install <target>` adds one |
 | `teamai status` | Show local vs team repo diff |
 | `teamai contribute` | Share session experience to team repo |
+| `teamai provider add/list/sync/remove` | Manage named Git and HTTP resource providers |
 | `teamai recall <query>` | Search the team knowledge base (BM25 + graph-boost) |
 | `teamai recall enable/disable/status` | Toggle or check recall state |
 | `teamai recall promote [learningId]` | Promote a high-confidence learning to formal knowledge (skills/rules/docs) |

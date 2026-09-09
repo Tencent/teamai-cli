@@ -79,6 +79,7 @@ program
   .option('--skill <path>', 'Push a specific skill by path (e.g., ~/.claude/skills/hai/my-skill or skills/hai_dev/my-skill)')
   .option('--role <id>', 'Target role namespace for pushed project skills')
   .option('--project <id>', 'Target a project: push skills into the project\'s skills namespace (from manifest/projects.yaml)')
+  .option('--provider <name>', 'Writable resource provider (defaults to the configured primary provider)')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { push } = await import('./push.js');
@@ -465,9 +466,19 @@ sourceCmd
 sourceCmd
   .command('reconcile-plugins', { hidden: true })
   .description('Run plugin reconcile worker (called internally by session_start hook)')
-  .action(async () => {
-    const { runPluginReconcileWorker } = await import('./local-agent.js');
-    await runPluginReconcileWorker();
+  .option('--provider <name>', 'Named HTTP provider')
+  .action(async (cmdOpts) => {
+    const { runPluginReconcileWorker, withLocalAgentProvider } = await import('./local-agent.js');
+    if (!cmdOpts.provider) {
+      await runPluginReconcileWorker();
+      return;
+    }
+    const { getHttpProviderCredentialPath, getHttpProviderHome } = await import('./providers/http/store.js');
+    await withLocalAgentProvider({
+      name: cmdOpts.provider,
+      home: getHttpProviderHome(cmdOpts.provider),
+      credentialPath: getHttpProviderCredentialPath(cmdOpts.provider),
+    }, runPluginReconcileWorker);
   });
 
 sourceCmd
@@ -485,6 +496,79 @@ sourceCmd
     const globalOpts = program.opts() as GlobalOptions;
     const { sourceBrowse } = await import('./source.js');
     await sourceBrowse(name, globalOpts);
+  });
+
+// ─── Unified resource providers ─────────────────────────
+
+const providerCmd = program
+  .command('provider')
+  .description('Manage Git and HTTP resource providers');
+
+const providerAddCmd = providerCmd
+  .command('add')
+  .description('Add a resource provider');
+
+providerAddCmd
+  .command('git <repo>')
+  .requiredOption('--name <name>', 'Unique provider name')
+  .option('--priority <number>', 'Conflict priority', '50')
+  .action(async (repo: string, cmdOpts) => {
+    const { providerAddGit } = await import('./providers/provider-command.js');
+    await providerAddGit(repo, { ...(program.opts() as GlobalOptions), ...cmdOpts });
+  });
+
+providerAddCmd
+  .command('http <endpoint>')
+  .requiredOption('--name <name>', 'Unique provider name')
+  .option('--adapter <name>', 'HTTP protocol adapter', 'clawpro')
+  .option('--priority <number>', 'Conflict priority', '50')
+  .option('--token <key>', 'Provider credential (stored separately with mode 0600)')
+  .action(async (endpoint: string, cmdOpts) => {
+    const { providerAddHttp } = await import('./providers/provider-command.js');
+    await providerAddHttp(endpoint, { ...(program.opts() as GlobalOptions), ...cmdOpts });
+  });
+
+providerCmd
+  .command('list')
+  .description('List configured resource providers')
+  .action(async () => {
+    const { providerList } = await import('./providers/provider-command.js');
+    await providerList();
+  });
+
+providerCmd
+  .command('sync')
+  .description('Sync every enabled resource provider')
+  .option('--force', 'Ignore provider pull caches')
+  .action(async (cmdOpts) => {
+    const { providerSync } = await import('./providers/provider-command.js');
+    await providerSync({ ...(program.opts() as GlobalOptions), ...cmdOpts });
+  });
+
+providerCmd
+  .command('remove <name>')
+  .description('Remove one provider and only its owned state')
+  .action(async (name: string) => {
+    const { providerRemove } = await import('./providers/provider-command.js');
+    await providerRemove(name, program.opts() as GlobalOptions);
+  });
+
+providerCmd
+  .command('set-primary <name>')
+  .description('Select the default writable provider')
+  .action(async (name: string) => {
+    const { providerSetPrimary } = await import('./providers/provider-command.js');
+    await providerSetPrimary(name, program.opts() as GlobalOptions);
+  });
+
+providerCmd
+  .command('migrate-legacy')
+  .description('Migrate the legacy HTTP singleton into an isolated named provider')
+  .option('--name <name>', 'New provider name', 'clawpro')
+  .option('--priority <number>', 'Conflict priority', '50')
+  .action(async (cmdOpts) => {
+    const { providerMigrateLegacy } = await import('./providers/provider-command.js');
+    await providerMigrateLegacy({ ...(program.opts() as GlobalOptions), ...cmdOpts });
   });
 
 // ─── Other subcommands ────────────────────────────────────

@@ -273,9 +273,18 @@ async function pushGroup(args: {
   }
 }
 
-export async function push(options: GlobalOptions & { all?: boolean; role?: string; project?: string }): Promise<void> {
+export async function push(options: GlobalOptions & { all?: boolean; role?: string; project?: string; provider?: string }): Promise<void> {
   // Auto-detect scope: project scope if cwd has project config, else user scope
   const { localConfig, teamConfig } = await autoDetectInit();
+  const { getPrimaryProvider } = await import('./providers/http/store.js');
+  const selectedProvider = options.provider ?? await getPrimaryProvider();
+  // The current main repository is the only writable Git resource provider.
+  // Cross-team Git sources and HTTP providers deliberately expose push=false.
+  if (selectedProvider && selectedProvider !== 'main') {
+    log.error(`Resource provider "${selectedProvider}" is not a writable target. Use --provider main.`);
+    process.exitCode = 2;
+    return;
+  }
   assertNotReadOnly(localConfig, 'teamai push');
 
   // --project is a destination override expressed as a logical project: resolve

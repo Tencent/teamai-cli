@@ -1378,22 +1378,27 @@ teamai source remove other-team
 
 源仓只会共享它在自己 `teamai.yaml` 的 `publicSkills` 列表里显式声明的 skill。如果对方仓库没有 `teamai.yaml`，或没有声明 `publicSkills`，`teamai source add` 仍会成功，但会警告该源将同步 **0 个 skill**——需要对方团队先发布 `publicSkills` 列表，才会有内容流转过来。
 
-#### HTTP 源
+#### 资源 Provider
 
-除了 git 订阅源，还可以在已有 git 主仓的基础上附加一个 HTTP 源——适用于服务端管理的 skill 下发：
+Git 订阅与服务端管理的 HTTP 下发现在使用同一套具名 Provider 生命周期。ClawPro 作为 HTTP 协议 adapter：
 
 ```bash
-# 附加 HTTP 源（git 主仓不受影响）
-teamai source add-http https://your-team-host/api --token <api-key>
+teamai provider add git https://github.com/other-team/teamai-public.git \
+  --name shared-skills --priority 50
 
-# 查看（在 "HTTP source" 下显示）
-teamai source list
+teamai provider add http https://clawpro.example.com/api \
+  --adapter clawpro --name company-clawpro --priority 80 --token <api-key>
 
-# 解绑并卸载其资源
-teamai source remove-http
+teamai provider list
+teamai provider sync
+teamai provider set-primary main
+teamai provider remove company-clawpro
+teamai provider migrate-legacy --name company-clawpro
 ```
 
-HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill 指令。每个安装仅支持一个 HTTP 源。若主仓本身已是 HTTP 模式（`init --http`），则 `add-http` 不可用（主仓已占用 HTTP 配置）。
+一次 hook dispatch 会让每个已启用 HTTP Provider 恰好同步一次；某个 Provider 超时或失败不会阻塞其余 Provider。配置、凭据、workspace 绑定、manifest、插件状态、缓存和错误日志分别保存在 `~/.teamai/providers/http/<name>/` 下；凭据单独放在权限仅限所有者的 `~/.teamai/credentials/<name>`。Git skill 冲突按声明的 priority 决定，移除当前来源后会立即协调下一个候选来源。
+
+`teamai push` 只写入可写的 `main` Provider；可用 `--provider main` 明确指定目标。旧的 `init --http`、`source add-http`、`source remove-http`、`repo.kind: http` 和 `~/.teamai/local-agent/` 布局在迁移期间继续可读。`provider migrate-legacy` 会把单例复制到隔离 Provider，将凭据移出 JSON，并把已禁用的旧目录保留为回滚快照。旧 source 命令会显示弃用提示，但行为保持兼容。
 
 ---
 

@@ -142,6 +142,94 @@ export interface GitProvider {
   getDefaultEmailDomain(): string | null;
 }
 
+// ─── Resource delivery providers ────────────────────────
+
+export type ResourceProviderType = 'git' | 'http';
+
+export interface ProviderCapabilities {
+  pull: boolean;
+  push: boolean;
+  report: boolean;
+  commands: boolean;
+}
+
+export interface SyncContext {
+  cwd?: string;
+  tool?: string;
+  trigger: 'hook' | 'pull' | 'manual';
+  stdin?: Record<string, unknown>;
+  force?: boolean;
+}
+
+export interface ProviderResult {
+  provider: string;
+  ok: boolean;
+  changed: boolean;
+  message?: string;
+  /** Optional hook text returned to the host by protocol adapters. */
+  hookOutput?: string;
+}
+
+export interface ProviderSummary {
+  name: string;
+  type: ResourceProviderType;
+  priority: number;
+  capabilities: ProviderCapabilities;
+  endpoint?: string;
+  adapter?: string;
+}
+
+/** Resource transport abstraction; Git host APIs remain GitProvider adapters. */
+export interface ResourceProvider {
+  readonly name: string;
+  readonly type: ResourceProviderType;
+  readonly priority: number;
+  readonly capabilities: ProviderCapabilities;
+  sync(context: SyncContext): Promise<ProviderResult>;
+  describe(): Promise<ProviderSummary>;
+  teardown(): Promise<void>;
+}
+
+export interface ProviderCommand {
+  id: string | number;
+  type?: string;
+  [key: string]: unknown;
+}
+
+export interface CommandResult {
+  status: 'success' | 'failed' | 'skipped';
+  version?: string;
+  error?: string;
+}
+
+export interface HttpRoutes {
+  projects: string;
+  report: string;
+  sync: string;
+  ack: string;
+  getConfig: string;
+}
+
+export interface HttpProviderConfig {
+  name: string;
+  type: 'http';
+  adapter: string;
+  endpoint: string;
+  priority: number;
+  enabled?: boolean;
+  createdAt?: string;
+}
+
+/** Protocol adapters translate wire formats; the HTTP provider owns lifecycle and isolation. */
+export interface HttpBackendAdapter {
+  readonly name: string;
+  routes(config: HttpProviderConfig): HttpRoutes;
+  initialize?(config: HttpProviderConfig, token?: string): Promise<void>;
+  sync(config: HttpProviderConfig, context: SyncContext): Promise<ProviderResult>;
+  describe(config: HttpProviderConfig): Promise<ProviderSummary>;
+  teardown(config: HttpProviderConfig): Promise<void>;
+}
+
 /** Error indicating a repo was not found on the remote platform. */
 export class RepoNotFoundError extends Error {
   constructor(repo: string) {
