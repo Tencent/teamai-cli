@@ -1,8 +1,21 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 
+const osState = vi.hoisted(() => ({ username: 'os-account' }));
+
 vi.mock('node:child_process', () => ({
   spawnSync: vi.fn(),
 }));
+
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      userInfo: () => ({ username: osState.username }),
+    },
+  };
+});
 
 import { spawnSync } from 'node:child_process';
 import { GenericGitProvider, normalizeGitIdentity } from '../providers/git/index.js';
@@ -98,11 +111,46 @@ describe('parseGenericGitRepoInput', () => {
 });
 
 describe('generic Git identity', () => {
+  beforeEach(() => {
+    osState.username = 'os-account';
+    mockedSpawnSync.mockReset();
+  });
+
   it('normalizes display names and path-like values into safe member ids', () => {
     expect(normalizeGitIdentity('Jane Doe')).toBe('Jane-Doe');
     expect(normalizeGitIdentity('../../outside')).toBe('outside');
     expect(normalizeGitIdentity('CON')).toBe('user-CON');
     expect(normalizeGitIdentity('中文用户')).toBeNull();
+  });
+
+  it('prefers the OS account over the configured git user.name', async () => {
+    // Corporate machine images often ship a shared placeholder git identity.
+    mockedSpawnSync.mockReturnValue({ status: 0, stdout: 'default\n', stderr: '' });
+    await expect(new GenericGitProvider().authenticate()).resolves.toBe('os-account');
+  });
+
+  it('falls back to git config user.name when the OS account is unavailable', async () => {
+    osState.username = '';
+    mockedSpawnSync.mockReturnValue({ status: 0, stdout: 'Jane Doe\n', stderr: '' });
+    await expect(new GenericGitProvider().authenticate()).resolves.toBe('Jane-Doe');
+  });
+
+  it('falls back to GIT_AUTHOR_NAME when neither OS account nor git config exists', async () => {
+    osState.username = '';
+    mockedSpawnSync.mockReturnValue({ status: 1, stdout: '', stderr: '' });
+    process.env.GIT_AUTHOR_NAME = 'author name';
+    try {
+      await expect(new GenericGitProvider().authenticate()).resolves.toBe('author-name');
+    } finally {
+      delete process.env.GIT_AUTHOR_NAME;
+    }
+  });
+
+  it('returns git-user when no candidate yields a usable identity', async () => {
+    osState.username = '';
+    mockedSpawnSync.mockReturnValue({ status: 1, stdout: '', stderr: '' });
+    delete process.env.GIT_AUTHOR_NAME;
+    await expect(new GenericGitProvider().authenticate()).resolves.toBe('git-user');
   });
 });
 
@@ -152,6 +200,7 @@ describe('GenericGitProvider transport', () => {
   });
 
   it('uses a safe normalized identity for member files and branch names', async () => {
+    osState.username = '';
     mockedSpawnSync.mockReturnValue({
       status: 0,
       stdout: '../../outside\n',

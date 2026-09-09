@@ -38,7 +38,11 @@ function gitIdentity(): string {
     // Extremely restricted runtimes may not expose OS account information.
   }
 
-  for (const candidate of [configured, process.env.GIT_AUTHOR_NAME ?? '', osUsername]) {
+  // Priority: OS account first — corporate-managed machines commonly ship a
+  // shared placeholder `git config user.name` (e.g. "default"), which is a
+  // machine-image artifact rather than a team identity. Then the configured
+  // Git name, then GIT_AUTHOR_NAME.
+  for (const candidate of [osUsername, configured, process.env.GIT_AUTHOR_NAME ?? '']) {
     const safe = normalizeGitIdentity(candidate);
     if (safe) return safe;
   }
