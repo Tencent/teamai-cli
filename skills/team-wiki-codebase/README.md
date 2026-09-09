@@ -1,6 +1,6 @@
 # team-wiki-codebase — 大型代码库 AI 认知工程
 
-> Team Wiki 插件内置 skill：方法论、脚本与 Agent 规范均随 `team-wiki install` / `upgrade` 部署到项目的 `.codebuddy/`、`.cursor/` 等目录。
+> TeamAI builtin skill：方法论、脚本与 Agent 规范随 `teamai pull` / `teamai init` 部署到项目的 `.codebuddy/`、`.cursor/` 等目录。TeamAI does not ship a separate team-wiki CLI. No extra plugin is required.
 
 ## 为什么需要这个 skill
 
@@ -22,7 +22,7 @@
 - 每条组件关系有置信度标注（`EXTRACTED` / `INFERRED` / `AMBIGUOUS`）
 - 每次生成后有准确性统计，超标自动警告
 - AI 读知识库而非读源码，**约 1/50 的 token 消耗**获得全局架构认知
-- Phase 0 可用 `team-wiki compile code --extract ast,heuristic` 生成可证据化的结构边（TS/JS/Python/Go）
+- Phase 0 可用 `teamai codebase --extract` 生成可证据化的结构边（TS/JS/Python/Go AST + 多语言 heuristic）
 
 ---
 
@@ -39,7 +39,7 @@
 ├── XX_{项目名}产品规则速查表.md
 ├── XX_{项目名}业务开发规范SOP.md
 ├── {反模式/RPC契约/排障记录} × N
-├── _manifest.json                      ← 机器可读 manifest（供 team-wiki compile 快路径）
+├── _manifest.json                      ← 机器可读 manifest（供后续图谱合并）
 └── graph/                              ← Graph RAG 图谱文档集
     ├── G1 组件依赖关系矩阵
     ├── G2 调用链路全景 + 状态机

@@ -2,9 +2,9 @@
 
 > [English](usage-guide.md) | [简体中文](usage-guide.zh-CN.md)
 
-> **@tencent/teamai-cli** — AI Agents 的团队协作层
+> **teamai-cli** — AI Agents 的团队协作层
 >
-> **让每个团队通过 AI 持续变得更聪明。** 统一工作方式（Team Execution）、共享团队 Context（Team Context），并把真实 Session 沉淀成团队能力（Team Improvement）。Skills、Rules、Docs、Env、MCP 等会自动同步到 Claude Code、CodeBuddy、Cursor、Codex、OpenCode、Gemini CLI、Windsurf 等工具。
+> **让每个团队通过 AI 持续变得更聪明。** 统一工作方式（Team Execution）、共享团队 Context（Team Context），并把真实 Session 沉淀成团队能力（Team Improvement）。TeamAI 统一管理 Claude Code、Codex、CodeBuddy、WorkBuddy、OpenCode、Cursor 及其他受支持 Agent 的 Skills、Rules、Docs、Env、MCP 等资源。
 
 ---
 
@@ -23,9 +23,12 @@
 - [日常使用](#日常使用)
 - [共享团队资源](#共享团队资源)
 - [知识沉淀与检索](#知识沉淀与检索)
-- [团队文化](#团队文化culture)
+- [知识库健康报告](#知识库健康报告)
+- [提交 Co-Author 署名](#提交-co-author-署名)
+- [团队文化](#团队文化)
 - [进阶功能](#进阶功能)
 - [配置文件参考](#配置文件参考)
+- [卸载](#卸载)
 - [常见问题 FAQ](#常见问题-faq)
 
 ---
@@ -81,13 +84,13 @@ TeamAI 的产品是一条闭环，而不是三个独立产品：
 ## 安装
 
 ```bash
-npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
+npm install -g teamai-cli
 
 # 验证
 teamai --version
 ```
 
-**前置依赖：** Node.js ≥ 18、Git（TGit 用户还需 `gf` CLI、CNB 用户还需 `cnb` CLI，`teamai init` 时都会自动安装）
+**前置依赖：** Node.js ≥ 20、Git（TGit 用户还需 `gf` CLI、CNB 用户还需 `cnb` CLI，`teamai init` 时都会自动安装）
 
 ---
 
@@ -95,7 +98,7 @@ teamai --version
 
 > 只需一位管理员完成，其他成员跳到[成员接入](#成员接入)。
 
-在 GitHub、GitLab（gitlab.com 或自建实例）、GitCode（gitcode.com）、CNB（cnb.cool）、TGit（腾讯工蜂），或任意私有/自建 Git 服务上创建一个空仓库（命名建议：`TeamAi-<团队名>`），或者直接执行 `teamai init`，不存在时会提示自动创建。
+在 GitHub、GitLab（gitlab.com 或自建实例）、GitCode（gitcode.com）、CNB（cnb.cool）、TGit，或任意私有/自建 Git 服务上创建一个空仓库（命名建议：`TeamAi-<团队名>`），或者直接执行 `teamai init`，不存在时会提示自动创建。
 
 ### 项目级（Project Scope，默认）
 
@@ -104,23 +107,36 @@ teamai --version
 ```bash
 # project 是默认值，可省略 --scope
 cd /path/to/my-project
-teamai init <group>/TeamAi-<team>
-# 等价别名：teamai init --repo <group>/TeamAi-<team>
+teamai init https://github.com/yourorg/yourrepo
+# 等价别名：teamai init --repo https://github.com/yourorg/yourrepo
 ```
 
 生成的目录结构：
 
 ```
-/path/to/my-project/
-├── .teamai/                     # 项目级配置（含自动生成的 .gitignore）
-│   ├── config.yaml
-│   └── team-repo/
+/path/to/my-project/          # 你的业务仓库 —— 零 teamai 残留
 ├── .claude/skills/              # 项目级 skills（自动同步）
 ├── .claude/rules/               # 项目级 rules（自动同步）
 └── src/
+
+~/.teamai/projects/my-project-<hash>/   # 本项目的机器数据分区
+├── config.yaml
+├── state.json
+└── team-repo/                           # 团队仓库克隆
 ```
 
-`teamai init` 只写入 `.teamai/`。各 Agent 的项目根目录（`.claude/`、`.cursor/`、`.codebuddy/` 等）会在 **SessionStart** 时按刚打开的工具创建（`--tool claude` 会建 `.claude/`，再 pull 写入）。单独执行 `teamai pull` 仍会跳过项目里还不存在根目录的工具，因此不会给尚未在本项目打开过的 Agent 凭空建目录。
+项目的机器数据（config、state、team-repo 克隆、搜索索引、MCP manifest、资源缓存）
+存放在 `~/.teamai/projects/<slug>/` 下的按项目分区里，**不再**放进业务仓库，因此工作区
+无 teamai 残留，且同一仓库的 `git worktree` 共享同一分区。各 Agent 的项目根目录
+（`.claude/`、`.cursor/`、`.codebuddy/` 等）仍在工作区内、于 **SessionStart** 时按刚打开的
+工具创建。例如，打开 Claude Code 时会创建 `.claude/`，再由 pull 写入。单独执行 `teamai pull`
+仍会跳过项目里还不存在根目录的工具，因此不会给尚未在本项目打开过的 Agent 凭空建目录。
+
+> **从旧版 teamai 升级？** 升级后首次执行 `teamai init` / `pull` / `push` 会自动把已有的
+> `<repo>/.teamai/` 迁移进分区（复制 → 校验 → 原子切换），并把旧目录保留为
+> `<repo>/.teamai.bak/`，待你确认一切正常后自行删除。只读命令与 `hook-dispatch` 路径
+> 永不触发迁移；`teamai --dry-run pull` 可预演。**迁移后不支持降级**——旧版会把项目判定为
+> 未初始化；`.teamai.bak/` 是人工回滚路径。
 
 如果仓库启用了角色化 skills（存在 `manifest/roles.yaml`），`teamai init` 还会交互式要求你选择：
 
@@ -130,27 +146,67 @@ teamai init <group>/TeamAi-<team>
 也可以通过 CLI 参数跳过交互，实现完全非交互式初始化（适合 CI/CD 或 AI agent）：
 
 ```bash
-teamai init <group>/TeamAi-<team> --scope project --role hai_dev --force
+teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev --force
 ```
 
 | 参数 | 说明 |
 |------|------|
 | `[repo]` / `--repo <url>` | 团队仓库地址（推荐位置参数；`--repo` 为永久别名） |
-| `--scope <project\|user>` | 安装作用域，默认 `project`（`<cwd>/.teamai`）。需要装到 `~/` 时用 `user` |
+| `--scope <project\|user>` | 安装作用域，默认 `project`（机器数据在 `~/.teamai/projects/<slug>/`,资源落在 `<cwd>`）。需要装到 `~/` 时用 `user` |
 | `--inherit-user-scope` | 仅 project scope：同时同步安全的 user 资源并检索 user 知识 |
 | `--no-inherit-user-scope` | 关闭当前项目先前配置的 user scope 继承 |
 | `--role <id>` | 直接指定 primaryRole，跳过角色交互选择 |
+| `--project <ids>` | 从 `manifest/projects.yaml` 激活的逻辑项目（逗号分隔）。决定本目录同步哪些项目的资源与 learnings。详见下方 [多项目](#多项目project-作为与-role-正交的维度) |
 | `--force` | 覆盖已有配置，跳过确认提示 |
+
+#### 多项目：`project` 作为与 `role` 正交的维度
+
+当一个团队仓库承载多个项目时，`project` 是与 `role` 平级的第二个分发维度，由
+admin 在 `manifest/projects.yaml` 中声明。`role` 回答「我的职能是什么」，`project`
+回答「这个目录属于哪个项目」。两者正交且相加 —— 成员得到的是其 role namespace
+与激活 project namespace 的**并集**（两者之间没有覆盖关系）。
+
+项目身份跟着工作目录走，与 `--role` 完全同一个模式：
+
+```bash
+cd ~/work/hai-inference && teamai init <team-repo> --project hai-inference
+cd ~/work/billing       && teamai init <team-repo> --project billing
+```
+
+此后每个目录只同步自己项目的 skills/rules/CLAUDE.md 与 learnings。要点：
+
+- **learnings 隔离。** 仓库 `learnings/` 根目录对全团队共享；项目私有经验放在
+  `learnings/<project-id>/` 子目录下，只对该项目成员的 `teamai recall` 可见。
+  未激活任何项目的目录只能看到共享的根目录。
+- **不自动激活。** 与「唯一 role 会被自动选中」不同，唯一的 project 不会自动选中
+  —— 成员可以不属于任何项目（仍能获得 `common` 与共享的 learnings 根）。
+- **向后兼容。** 没有 `manifest/projects.yaml` 的仓库行为与之前完全一致；现存扁平
+  的 `learnings/*.md` 继续对所有人共享（零迁移）。
+- **`teamai contribute`** 在恰好激活一个项目时，把经验落到该项目子目录，否则落到
+  共享的根目录。
+
+`manifest/projects.yaml` 示例：
+
+```yaml
+version: 1
+projects:
+  - id: hai-inference
+    name: HAI Inference
+    resources:
+      knowledge: [hai-inference]
+      skills:    [hai-inference]
+      learnings: [hai-inference]
+```
 
 本地配置示例：
 
 ```yaml
 repo:
-  localPath: /path/to/my-project/.teamai/team-repo
-  remote: https://git.woa.com/group/repo.git
+  localPath: ~/.teamai/projects/my-project-<hash>/team-repo
+  remote: https://github.com/yourorg/yourrepo.git
 username: alice
 scope: project
-projectRoot: /path/to/my-project
+projectRoot: /path/to/my-project   # 资源落地位置（当前 checkout）
 inheritUserScope: true            # 可选，仅 project scope
 primaryRole: hai
 additionalRoles:
@@ -163,7 +219,7 @@ resourceProfileVersion: 1
 资源安装到用户主目录（`~/.claude/skills/` 等），适用于通用团队规范、跨项目技能。
 
 ```bash
-teamai init <group>/TeamAi-<team> --scope user
+teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 生成的目录结构：
@@ -197,14 +253,14 @@ teamai init <group>/TeamAi-<team> --scope user
 ```bash
 cd /path/to/my-project
 teamai init .                        # 交互式：选择要启用哪些 AI 工具
-teamai init . --agent claude,codex   # 非交互:启用 Claude Code + Codex
+teamai init . --agent claude,codex   # 非交互：启用 Claude Code + Codex
 ```
 
-**选择启用哪些 AI 工具。** 单仓模式会在你的仓库里为每个工具创建一个目录（如 `.claude/`、`.codex/`）—— 建好 skills 目录、注入 teamai hooks,并把该工具的 settings 提交到 main,让队友 clone 后即可获得。由你决定启用哪些工具:
+**选择启用哪些 AI 工具。** 单仓模式会在你的仓库里为每个工具创建一个目录（如 `.claude/`、`.codex/`）——建好 skills 目录、注入 teamai hooks，并把该工具的 settings 提交到 main，让队友 clone 后即可获得。由你决定启用哪些工具：
 
-- **`--agent <name...>`** —— 显式列表,可重复或逗号分隔:`--agent claude`、`--agent claude,codex`、`--agent claude --agent cursor`。支持的 id 包括 `claude`、`codex`、`cursor`、`joycode`、`codebuddy`、`workbuddy`、`dsh`（DeepSeek Harness）。
-- **交互式（无 `--agent`、有终端）** —— teamai 弹出多选列表。第 1 项是 **Auto**,会列出你本机已安装的 AI 工具（`~/.claude`、`~/.codex`……）并作为回车默认项;其余各项是具体工具。Auto 与具体工具可以组合勾选。
-- **非交互（无 `--agent`、无终端 —— CI、hook、clone 时自愈 bootstrap）** —— teamai 会按你本机 home 目录下已装的工具（`~/.claude`、`~/.codex`……）来建。若一个都没检测到,则什么都不建（你仍拿到知识,可稍后运行 `teamai init .` 再选工具）。
+- **`--agent <name...>`** —— 显式列表，可重复或逗号分隔：`--agent claude`、`--agent claude,codex`、`--agent claude --agent cursor`。常用 id 包括 `claude`、`codex`、`cursor`、`joycode`、`codebuddy`、`workbuddy`、`dsh`（DeepSeek Harness）。
+- **交互式（无 `--agent`、有终端）** —— teamai 弹出多选列表。第 1 项是 **Auto**，会列出你本机已安装的 AI 工具（`~/.claude`、`~/.codex`……）并作为回车默认项；其余各项是具体工具。Auto 与具体工具可以组合勾选。
+- **非交互（无 `--agent`、无终端 —— CI、hook、clone 时自愈 bootstrap）** —— teamai 会按你本机 home 目录下已装的工具（`~/.claude`、`~/.codex`……）来建。若一个都没检测到，则什么都不建（你仍拿到知识，可稍后运行 `teamai init .` 再选工具）。
 
 **数据如何在分支间拆分：**
 
@@ -222,19 +278,19 @@ teamai init . --agent claude,codex   # 非交互:启用 Claude Code + Codex
 
 1. `teamai init .` 已经帮你把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）以及每个所选工具的 settings（如 `.claude/settings.json`、`.codex/hooks.json`）提交到当前分支。
 2. 推送 main，供团队成员 clone。
-3. 之后新增资源用 `teamai push` —— 它会（通过隔离 worktree）向你的仓库开 PR，而不是直接改动你的工作区。单仓模式下，你既可以在 AI 工具目录（如 `~/.claude/skills/`）里编写,**也可以**直接把资源放进仓库里的 `.teamai/`：
+3. 之后新增资源用 `teamai push` —— 它会（通过隔离 worktree）向你的仓库开 PR，而不是直接改动你的工作区。单仓模式下，你既可以在 AI 工具目录（如 `~/.claude/skills/`）里编写，**也可以**直接把资源放进仓库里的 `.teamai/`：
    - `.teamai/skills/` —— 团队 skills
    - `.teamai/rules/` —— 共享 rules
-   - `.teamai/agents/` —— subagent 定义（`<name>.yaml`,或旧版 `<name>.md`）
+   - `.teamai/agents/` —— subagent 定义（`<name>.yaml`，或旧版 `<name>.md`）
    - `.teamai/env/env.yaml` —— 共享环境变量
 
-   `teamai push` 会同时扫描这些目录和你的 AI 工具目录,只呈现真正的新增或修改（已提交的内容会被跳过）。如果你改了某个 agent 的扩展名（如 `helper.md` → `helper.yaml`）,请手动删掉旧文件 —— `teamai push` 不会替你删除,同 stem 的两个文件会在 pull 时冲突。
-4. **docs / hooks / mcp** 通过直接编辑对应文件来贡献 —— 它们不走 `teamai push`,用普通的 `git commit` + push 即可分发：
+   `teamai push` 会同时扫描这些目录和你的 AI 工具目录，只呈现真正的新增或修改（已提交的内容会被跳过）。如果你改了某个 agent 的扩展名（如 `helper.md` → `helper.yaml`），请手动删掉旧文件 —— `teamai push` 不会替你删除，同 stem 的两个文件会在 pull 时冲突。
+4. **docs / hooks / mcp** 通过直接编辑对应文件来贡献 —— 它们不走 `teamai push`，用普通的 `git commit` + push 即可分发：
    - `.teamai/docs/` —— 团队文档
    - `.teamai/hooks/hooks.yaml` —— 团队 hooks
    - `.teamai/mcp/mcp.yaml` —— 共享 MCP servers
 
-> **关于 `env` 的提醒。** 单仓模式下 `.teamai/env/env.yaml` **会被提交到 main**（不同于独立模式的每机本地 env），因此会随 clone 分发给所有人。`env.yaml` 存的是明文键值对 —— 只放非敏感的共享配置,真正的密钥请留在你自己未追踪的环境里。
+> **关于 `env` 的提醒。** 单仓模式下 `.teamai/env/env.yaml` **会被提交到 main**（不同于独立模式的每机本地 env），因此会随 clone 分发给所有人。`env.yaml` 存的是明文键值对 —— 只放非敏感的共享配置，真正的密钥请留在你自己未追踪的环境里。
 
 > **限制。** 单仓模式把一套团队配置绑定到一个业务仓。如果需要一套团队知识库被多个业务仓共享，请改用独立团队仓（`teamai init <repo>`）。
 
@@ -262,17 +318,17 @@ teamai init https://github.com/yourorg/java-service-teamai --inherit-user-scope
 **项目级团队（默认）：**
 
 ```bash
-npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
+npm install -g teamai-cli
 cd /path/to/my-project
-teamai init <group>/TeamAi-<team>
+teamai init https://github.com/yourorg/yourrepo
 # 完成！AI 工具已自动获得团队资源
 ```
 
 **用户级团队：**
 
 ```bash
-npm install -g @tencent/teamai-cli --registry=http://r.tnpm.oa.com
-teamai init <group>/TeamAi-<team> --scope user
+npm install -g teamai-cli
+teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 **HTTP 模式（只读消费者）：**
@@ -323,7 +379,7 @@ teamai pull --dry-run    # 试运行，不实际修改
 
 > Project scope 默认与 user scope 隔离。当前工作目录包含 project scope 的 `.teamai/config.yaml` 时，`pull` 会处理该项目并跳过 user scope；仅当本地配置包含 `inheritUserScope: true` 时，才会先刷新安全的 user 资源通道。当前目录没有 project 配置时，`pull` 处理 user scope。project 模式下，user 的 `env`、MCP 定义、sources、reporting 和写入行为仍保持隔离。hooks 是唯一例外：project scope 的 hooks 会注入到你的 **HOME** 工具设置（`~/.claude/settings.json` 等），而非 `<projectRoot>`——因为内置 hooks 依据传给 `hook-dispatch` 的 `cwd` 门控，且 `~/.claude` 恒存在、能通过「已安装工具」门槛（详见 Hooks 章节）。self 单仓模式则把 hooks 保留在业务仓库里，随 clone 传播。
 
-启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/`、`docs/`、`learnings/` 仍然保持原有全局同步逻辑。
+启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/`、`docs/` 仍然保持原有同步逻辑。`learnings/` 根目录对所有人共享，而 `learnings/<project-id>/` 子目录只对本目录激活的项目同步（见 [多项目](#多项目project-作为与-role-正交的维度)）。
 
 ### 团队包
 
@@ -436,7 +492,7 @@ Choose namespace [1-3] (default: 1 = common):
 
 - 有 `primaryRole` 时，从 manifest 展开可用 namespace 列表
 - 无 `primaryRole` 时，自动扫描团队仓库目录结构
-- 单一命名空间时自动选中；`--silent` 模式使用默认值
+- 单一命名空间时自动选中；也可用 `--role <id>` 显式指定
 - 修改已有 skill 时自动保持原 namespace
 
 **更新已存在的 PR 而非重复创建：** 如果某个资源已在一个未合并的 PR 中等待评审，再次对它执行 `teamai push` 会就地更新那个已存在的 PR（通过 force-push 其分支），而不是新开一个重复的 PR。保持该资源被选中即更新其 PR；取消勾选则不动它。同一次运行中选中的其他无关资源会进入各自新开的 PR。一旦该 PR 合并（或其分支从远端删除），记录会被清除，下次 push 照常新开 PR。
@@ -490,6 +546,18 @@ teamai pull
 ```
 
 > **安全降级：** 如果管理员删除了某个角色，仍然配置了该角色的成员在 pull 时不会报错，而是回退到全量同步并输出警告，提示重新选择角色。
+
+### 标签订阅
+
+标签让成员订阅默认角色 namespace 之外的指定 skills 和 rules。
+
+```bash
+teamai tags list
+teamai tags subscribe frontend testing
+teamai tags unsubscribe testing
+```
+
+管理员可通过 `teamai tags add` 和 `teamai tags remove` 管理资源标签。修改订阅后运行 `teamai pull`。
 
 ---
 
@@ -603,9 +671,9 @@ Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用�
 
 **密钥**：在 `mcp.yaml` 里写 `${VAR}`，不要写明文。取值优先来自环境变量，其次是 `env/env.yaml` → `~/.teamai/env`。变量无法解析则跳过并提示。
 
-teamai 会**把每个 `${VAR}` 解析成取值后原样写入**各工具的配置文件(新建文件权限为 `0600`)。它不依赖任何工具自身的环境变量展开——因为那种展开很脆弱:最典型的是,以 GUI 方式(Dock/Launchpad)启动的 IDE 不会继承你 shell 中 `export` 的变量,`${VAR}` 占位符会展开为空、导致服务端 401。解析成明文可以保证无论工具如何启动,token 都在。
+teamai 会**把每个 `${VAR}` 解析成取值后原样写入**各工具的配置文件（新建文件权限为 `0600`）。它不依赖任何工具自身的环境变量展开——因为那种展开很脆弱：最典型的是，以 GUI 方式（Dock/Launchpad）启动的 IDE 不会继承你 shell 中 `export` 的变量，`${VAR}` 占位符会展开为空、导致服务端 401。解析成明文可以保证无论工具如何启动，token 都在。
 
-> ⚠️ **解析后的 token 会落盘。** 项目级 MCP 配置(`.mcp.json`、`.cursor/mcp.json`、`.codebuddy/mcp.json`、`.codex/config.toml`、`opencode.json`)因此含有明文密钥——请把它们加入 `.gitignore`,切勿提交。
+> ⚠️ **解析后的 token 会落盘。** 项目级 MCP 配置（`.mcp.json`、`.cursor/mcp.json`、`.codebuddy/mcp.json`、`.codex/config.toml`、`opencode.json`）因此含有明文密钥——请把它们加入 `.gitignore`，切勿提交。
 
 Claude Code 可能把来自仓库的 `.mcp.json` 标为待批准，需在交互式会话中确认一次。
 
@@ -635,6 +703,8 @@ Consider running /teamai-share-learnings to summarize what you learned and share
 ```
 
 提醒会列出实际触发它的非零摩擦信号；如果能取得首个任务，还会附上脱敏、单行化后的任务摘要，便于判断本次 session 是否值得分享。使用内置 skill `/teamai-share-learnings`，AI 会自动总结本次 session 经验并贡献到团队知识库。每个 session 最多提示一次。
+
+在 Codex 中，Stop hook 会暂存贡献和知识引用提醒，在同一会话的下一次 UserPromptSubmit 交付，不会强制开启额外一轮。贡献提醒只交付一次；若下一次输入前已经贡献，则丢弃该提醒。
 
 也可以手动指定文件：
 
@@ -791,7 +861,7 @@ teamai push   # 将清理后的知识库分享给团队
 
 ---
 
-## 提交 Co-Author 署名（Commit Co-Author Attribution）
+## 提交 Co-Author 署名
 
 AI 编码工具会在它生成的提交上打一个 `Co-Authored-By:` / attribution 尾注。希望保持干净历史的团队可以为全员关闭它，成员仍可在自己机器上覆盖。`teamai pull` 会把最终生效的意图写入每个已安装工具各自的配置文件。
 
@@ -820,7 +890,7 @@ AI 编码工具会在它生成的提交上打一个 `Co-Authored-By:` / attribut
 
 ---
 
-## 团队文化（Culture）
+## 团队文化
 
 TeamAI 支持将团队文化注入到 AI 工具中，让 AI 编码助手在每次会话中都能感知你的团队文化、价值观和编码准则。
 
@@ -957,27 +1027,30 @@ cat ~/.claude/CLAUDE.md
 
 后端可下发 **`apply_model_config`** 任务，其 `cmd` 为 JSON。客户端同时兼容设计文档中的候选集结构和
 旧版单模型结构：`{"models":[...]}` 按完整快照处理，直接模型对象按增量 upsert 处理。
-`max_tokens` 可选（对应 CodeBuddy 的 `maxOutputTokens`）；缺省或 `0` 时默认 `4096`。Claude 不使用该字段。
+`max_tokens` 可选（对应 CodeBuddy / WorkBuddy 的 `maxOutputTokens`）；缺省或 `0` 时默认 `4096`。Claude 不使用该字段。
 
 ```jsonc
 { "id": 16, "type": "apply_model_config",
   "cmd": "{\"models\":[{\"provider\":\"openai\",\"model_id\":\"gpt-4o\",\"name\":\"GPT-4o\",\"base_url\":\"https://proxy.example.com/v1\",\"api_key\":\"<ProxyToken>\",\"max_tokens\":4096,\"context_window\":128000}]}" }
 ```
 
-候选集只会写入当前上报任务的 agent。CodeBuddy 使用用户级 `~/.codebuddy/models.json`；若同一
-模型 ID 已由用户配置，则保留用户条目。Claude 侧会生成独立配置
-`~/.claude/teamai-models.json`；仅当 `~/.claude/settings.json` 中不存在冲突的用户 Anthropic
-网关配置时，才把网关环境变量写入默认 settings。不支持的 agent 会回执失败，不会误写其他
+候选集只会写入当前上报任务的 agent。CodeBuddy 使用用户级 `~/.codebuddy/models.json`（`{ "models": [...] }`）；
+WorkBuddy 使用 `~/.workbuddy/models.json`；当前 `{ "models": [...] }` 和旧版顶层数组两种结构都支持，
+已有文件保持原结构。CodeBuddy 或 WorkBuddy 的 workspace 级任务写入
+`<workspace>/.codebuddy/models.json`，与产品内嵌模型加载器一致；该含凭证文件会被加入
+`<workspace>/.codebuddy/.gitignore`。仅当目标路径已存在于 reporter 的 workspace bindings 中时，
+才接受 workspace 级下发。若同一模型 ID 已由用户配置，则保留用户条目。
+Claude 侧会生成独立配置 `~/.claude/teamai-models.json`；仅当 `~/.claude/settings.json` 中不存在冲突的用户
+Anthropic 网关配置时，才把网关环境变量写入默认 settings。不支持的 agent 会回执失败，不会误写其他
 agent 的配置。用户配置文件是符号链接时会保留链接。以上含凭证文件权限均为 `0600`。落盘成功后以
-`type: "apply_model_config"` 回执；
-非法 payload 回执 `failed`。未来未知任务类型会静默跳过，以保持协议向后兼容。
+`type: "apply_model_config"` 回执；非法 payload 回执 `failed`。未来未知任务类型会静默跳过，以保持协议向后兼容。
 
 反向的模型上报走已有的 `report` 接口：仅上报 TeamAI manifest 已记录、且磁盘上的模型 ID 和
-provider 仍可识别的模型，放在 `user_level.models` 中。agent 正常补充元数据不会导致漏报；
+provider 仍可识别的模型，用户级放在 `user_level.models`，workspace 级放在对应的
+`workspaces[].models`。agent 正常补充元数据不会导致漏报；
 模型落盘成功后会在同一次 sync 中立即补一次 report，无需等待下一次 session。用户自有模型不上报，
-因为后台无法识别。服务端要求 `provider` 与
-`model_id` 同时存在。与 skills/rules 一致，没有任何符合条件的模型时该字段整体省略——因为
-存在的数组会被当作全量快照。只有 CodeBuddy（`~/.codebuddy/models.json`）和 Claude
+因为后台无法识别。服务端要求 `provider` 与 `model_id` 同时存在。与 skills/rules 一致，没有任何符合条件的
+模型时该字段整体省略——因为存在的数组会被当作全量快照。CodeBuddy、WorkBuddy 和 Claude
 （`~/.claude/settings.json` 里的 `ANTHROPIC_CUSTOM_MODEL_OPTION` 网关）有可发现的模型配置，
 其余工具不上报。上报条目的 `source` 固定为 `enterprise`。
 **`api_key` 不会被回传** —— ProxyToken 只留在本地磁盘。
@@ -989,73 +1062,7 @@ provider 仍可识别的模型，放在 `user_level.models` 中。agent 正常�
   ] } }
 ```
 
-后端也可下发 **`uninstall_teamai`** 命令来移除本地 agent。它携带一个 `cmd`（一条 `teamai` 子命令），让客户端执行一次，执行结果经同一 ack 通道回报：
-
-```json
-{ "id": 42, "type": "uninstall_teamai", "cmd": "teamai uninstall --force --agent codebuddy" }
-```
-
-执行 `cmd` 的安全边界：
-
-- **仅限 teamai 子命令** —— 第一个 token 必须严格等于 `teamai`；其它一律拒绝（ack `failed`）且不执行，不存在任意 shell 面。
-- **无 shell** —— 命令经 `execFile` 用当前 Node 二进制与 teamai 入口脚本运行，shell 元字符（`;`、`|`、`&`、`$` 等）按字面处理，且不依赖 PATH（沙箱内自带 Node 也可运行）。
-- **默认开启** —— 与 install/uninstall 命令一致，会自动执行。客户端设 `TEAMAI_DISABLE_REMOTE_CMD=1` 可拒绝（ack `failed`，错误为 `remote cmd disabled by client`）。
-- **超时** —— 命令卡住 120s 后被杀掉并 ack `failed`。
-
-后端还可下发 **`install_hook_rule`** / **`uninstall_hook_rule`** 命令，按 `slug` 远程管理**当前上报工具**
-settings 里的一个 session hook。结果经同一 ack 通道回报：
-
-```jsonc
-// 按 slug 安装（或替换）一个 hook
-{ "id": 50, "type": "install_hook_rule", "handle_type": "hook", "slug": "my-hook",
-  "event": "SessionStart", "cmd": "echo hi", "timeout": 10 }
-
-// 卸载此前以该 slug 安装的 hook
-{ "id": 51, "type": "uninstall_hook_rule", "handle_type": "hook", "slug": "my-hook" }
-```
-
-agent hook 规则：
-
-- **仅当前工具** —— hook 只写入正在上报的工具（如在 Claude 下运行 ⇒ 只写 `.claude/settings.json`），
-  绝不触碰其它工具。
-- **支持的工具** —— `claude` / `codex` / `workbuddy` / `codebuddy`（含其内部变体）。**Cursor 与 OpenClaw
-  家族被拒绝** → ack `failed`（`unsupported tool`）。
-- **事件白名单** —— `SessionStart` / `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop`。
-  其它事件 → ack `failed`（`unsupported event`）。
-- **可选 `matcher`** —— `PreToolUse` / `PostToolUse` 的工具名过滤；省略时默认为 `*`（全部工具）。
-- **默认超时 10s** —— 省略 `timeout` 时用 10s；后端给了值则以后端为准。
-- **幂等** —— 用相同 `slug` 重装会替换已有 hook 而非重复追加；对不存在的 `slug` 执行
-  `uninstall_hook_rule` 也 ack `success`。
-- **隔离** —— agent hook 使用专属 marker `[teamai:agent-hook:<slug>]`，团队 pull 不会删除它，
-  安装它也不会扰动 built-in 或团队 hook。
-- **清理** —— agent hook 会被 `uninstall_hook_rule`、`teamai source remove` 和 `teamai uninstall`
-  彻底移除（不在任何工具 settings 里留残留）。
-- **关闭开关** —— agent hook 是后端下发、由工具在其事件上自动执行的命令，因此与 `uninstall_teamai`
-  共用信任模型：客户端设 `TEAMAI_DISABLE_REMOTE_CMD=1` 也会拒绝 `install_hook_rule` /
-  `uninstall_hook_rule`（ack `failed`）。
-- **Codex 匹配** —— codex settings 无 description 字段，因此 codex agent hook 按其确切命令匹配，
-  且以 local-agent manifest 作为卸载的权威记录。后端应为**每个 codex `slug` 使用唯一的 `cmd`**，
-  以保证替换/删除的精确性。
-
-可配置环境变量：
-
-| 变量 | 作用 |
-|------|------|
-| `TEAMAI_API_TOKEN` | API key（`--token` 的替代） |
-| `TEAMAI_REPORT_ENDPOINT` | reporter 基础 URL（默认 = `--http` 地址） |
-| `TEAMAI_REPORT_PATHS` | JSON `{ "report", "sync", "ack" }`，覆盖三个路径 |
-| `TEAMAI_REPORT_AGENTS` | 参与上报的 agent，逗号分隔（默认 `workbuddy,codebuddy`） |
-| `TEAMAI_SKILL_DOWNLOAD_HOSTS` | skill `download_url` host 白名单（空 = 全部放行） |
-| `TEAMAI_ALLOW_SANDBOX_REPORT` | 设为 `1` 可强制在 CloudStudio 沙箱内 report/sync（见下方说明） |
-| `TEAMAI_DISABLE_REMOTE_CMD` | 设为 `1` 可拒绝服务端下发的 `uninstall_teamai`、`install_hook_rule`、`uninstall_hook_rule` 命令（会 ack `failed`） |
-| `TEAMAI_SKIP_AST` | 设为 `1` 时强制仅用启发式提取，跳过 WASM tree-sitter AST 轨 |
-
-> **隐私**：install path 和 machine id 仅在本地哈希以派生 `local_agent_id`，不会上报。
-
-> **CloudStudio 沙箱**：当 WorkBuddy 在 CloudStudio 容器内运行 teamai hook 时，该容器的 machine id 与 macOS
-> 宿主不同，会上报一张重复的 agent 卡片。因此在 CloudStudio 沙箱内会自动跳过重复的 report（sync 仍会执行，因此仍能收到下发命令）——
-> 通过 `X_IDE_IS_CLOUDSTUDIO=TRUE` 或 `/var/run/cloudstudio` 目录检测。若你只在 CloudStudio 内使用 teamai，可设
-> `TEAMAI_ALLOW_SANDBOX_REPORT=1` 重新开启上报。
+HTTP 契约用于自建集成。普通用户只需使用[成员接入](#成员接入)中的 `teamai init --http` 命令。
 
 ### 代码知识图谱
 
@@ -1077,9 +1084,6 @@ teamai import --from-repo-list repos.yaml
 # 从已合并的 MR/PR 提取经验
 teamai import --from-mr https://github.com/org/repo/pull/123
 
-# 从 iWiki 导入文档
-teamai import --from-iwiki 12345
-
 # 增量模式（跳过未变更文件）
 teamai import --from-repo https://github.com/org/repo --incremental
 
@@ -1087,13 +1091,21 @@ teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
+对于 API 网关后的 GitLab，先设置 `GITLAB_URL` 和 `GITLAB_API_PREFIX=api/gitlab`，再运行 `teamai import --from-org https://gitlab.example.com/myorg`。组织仓库列表的每一页请求都会使用配置的前缀；未设置或为空时默认使用 `api/v4`。
+
 图谱存储组件、接口、配置和跨仓库依赖关系。`teamai recall` 利用图谱进行 BM25 + graph-boost 增强排名。
 
 依赖边由两条并行轨道提取：WASM tree-sitter **AST 轨**（TypeScript/JavaScript、Python、Go），将 import、调用、以及 TS `implements` 子句解析为精确的文件到文件边（`code-ast`）；以及正则 **启发式轨**（所有语言，`code-heuristic`），同时覆盖 AST 轨未支持的语言。重叠时 AST 结果优先。AST 解析器无需原生编译工具链；加载失败时提取会降级到启发式并记录一条 `AST_UNAVAILABLE` gap。设置 `TEAMAI_SKIP_AST=1` 可强制仅用启发式提取。
 
 ```bash
-# 图谱健康检查
-teamai codebase --lint
+# 从本地仓库提取代码事实与图谱（写入 <repo>/teamwiki/）
+teamai codebase --extract /path/to/repo --project my-service
+
+# 增量刷新：复用首次提取的仓库路径和项目名
+teamai codebase --extract /path/to/repo --project my-service --incremental
+
+# 检查本地提取的图谱；--output 指向仓库根目录，而非 teamwiki/
+teamai codebase --lint --output /path/to/repo
 ```
 
 ### Dashboard
@@ -1162,13 +1174,14 @@ teamai session save --push --include-prompt  # 额外带上（脱敏后的）首
 | `Stop` | CLI 更新检查 + 上报会话结束 |
 
 ```bash
+teamai hooks list      # 查看生效的内置和团队 hooks
 teamai hooks inject    # 重新注入
 teamai hooks remove    # 移除
 ```
 
-这两个命令只会操作你实际已安装的工具（即 `~/.<tool>/` 根目录已存在的工具）。对于 `toolPaths` 中已配置但未安装的工具，命令不会为其凭空创建根目录。
+inject 和 remove 只会操作你实际已安装的工具（即 `~/.<tool>/` 根目录已存在的工具）。对于 `toolPaths` 中已配置但未安装的工具，命令不会为其凭空创建根目录。
 
-> **Codex 信任门槛** — Codex（OpenAI / ChatGPT Codex 应用，工具 id 为 `codex`）对非托管 hooks 设有显式的用户信任机制。teamai 写入 `~/.codex/hooks.json` 后，对于新增或变更的 hook，Codex 可能会跳过执行，直到你在 `/hooks` 或 Settings → Hooks 中 review/trust。当检测到 Codex hooks 已安装时，`teamai hooks inject` 与 `teamai doctor` 会输出提示；teamai 从不修改 Codex 的 `[hooks.state]` 来自动信任 —— 信任操作交由你手动完成。（内部变体 `codex-internal` / `tcodex` 共用 hooks.json 格式但没有信任门槛，因此不会为它们输出提示。）
+> **Codex 信任门槛** — Codex（OpenAI / ChatGPT Codex 应用，工具 id 为 `codex`）对非托管 hooks 设有显式的用户信任机制。teamai 写入 `~/.codex/hooks.json` 后，对于新增或变更的 hook，Codex 可能会跳过执行，直到你在 `/hooks` 或 Settings → Hooks 中 review/trust。当检测到 Codex hooks 已安装时，`teamai hooks inject` 与 `teamai doctor` 会输出提示；teamai 从不修改 Codex 的 `[hooks.state]` 来自动信任 —— 信任操作交由你手动完成。
 
 ### 团队 Hooks 声明
 
@@ -1240,7 +1253,7 @@ JoyCode 规则清理采用保守策略：不在团队规则列表中的本地 `.
 
 对于以 YAML 保存的团队 Agent，push 会将本地文件与对应工具的渲染结果比较，只将真实编辑合并回原始配置。部署范围 `targets`、其他工具的元数据，以及本地格式未输出的字段都会保留。遇到冲突或无法解析的编辑时跳过回写，不会替换团队源文件。
 
-**Hooks 与手动同步**：JoyCode 当前没有提供生命周期 Hooks 机制或专用启动适配器（无类似 `settings.json` hooks 数组或 `hooks.json` 的事件配置）。因此，打开或启动 JoyCode 不会触发 TeamAI 的 `SessionStart` 事件，无法进行后台自动拉取（auto-pull）、使用指标上报（auto-report/track）或自动更新检测。JoyCode 用户需要通过在终端手动运行 `teamai pull` 来同步团队最新技能、规则与 Agent，通过 `teamai push` 贡献变更。若 JoyCode 后续版本提供了 Hooks 或插件生命周期机制，将通过专用适配器接入。
+**Hooks 与手动同步**：JoyCode 当前没有提供生命周期 Hooks 机制或专用启动适配器（无类似 `settings.json` hooks 数组或 `hooks.json` 的事件配置）。因此，打开或启动 JoyCode 不会触发 TeamAI 的 `SessionStart` 事件，无法进行后台自动拉取、使用指标上报（`teamai track`）或自动更新检测。JoyCode 用户需要通过在终端手动运行 `teamai pull` 来同步团队最新技能、规则与 Agent，通过 `teamai push` 贡献变更。若 JoyCode 后续版本提供了 Hooks 或插件生命周期机制，将通过专用适配器接入。
 
 ### Cursor
 
@@ -1263,10 +1276,13 @@ Cursor 的项目规则必须以 **`.mdc`** 文件形式放在 `.cursor/rules/` �
 ```bash
 teamai doctor          # 配置诊断
 teamai stats           # skill 使用统计
-teamai update          # CLI 更新
+teamai update --check  # 仅检查 CLI 更新，不安装
+teamai update          # 检查并安装 CLI 更新
+teamai digest          # 生成团队活动周报
 teamai remove skills <name>   # 删除资源
 teamai remove rules <name>
-teamai remove wiki <name>
+teamai remove agents <name>
+teamai remove mcp <name>
 ```
 
 自动更新在 Stop hook 中执行，可通过两层控制：
@@ -1307,7 +1323,7 @@ teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ./team-repo --indi
 
 ```bash
 # 添加订阅源
-teamai source add https://git.woa.com/other-team/teamai-public.git --name other-team
+teamai source add https://github.com/other-team/teamai-public.git --name other-team
 
 # 查看订阅列表
 teamai source list
@@ -1320,6 +1336,8 @@ teamai source remove other-team
 ```
 
 订阅源的 skills 在 `teamai pull` 时自动同步到本地，与团队自有 skills 共存。`teamai source add`/`remove` 会立即更新当前 scope 的团队仓，因此改动尚未提交时，本机的 `list`、`browse` 和 `pull` 也会使用它。订阅配置存储在该仓库 `teamai.yaml` 的 `sources` 字段中。运行 `teamai push` 会开一个包含配置改动的 PR；合入后，每位成员的 `teamai pull` 都会自动获取到新的订阅源。
+
+源仓只会共享它在自己 `teamai.yaml` 的 `publicSkills` 列表里显式声明的 skill。如果对方仓库没有 `teamai.yaml`，或没有声明 `publicSkills`，`teamai source add` 仍会成功，但会警告该源将同步 **0 个 skill**——需要对方团队先发布 `publicSkills` 列表，才会有内容流转过来。
 
 #### HTTP 源
 
@@ -1347,8 +1365,8 @@ HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill �
 ```yaml
 team: my-team
 description: 团队 AI 资源仓库
-repo: https://git.woa.com/group/repo.git
-provider: tgit
+repo: https://github.com/yourorg/yourrepo.git
+provider: github
 # scope: 若存在则忽略——本机安装位置由 `teamai init --scope` 决定
 
 reviewers:
@@ -1362,6 +1380,8 @@ packages:
 sharing:
   rules:
     enforced: [code-review-guide]
+  recall:
+    enabled: false             # 可选；成员可在本地覆盖
   docs:
     localDir: ./.teamai/docs
   env:
@@ -1377,7 +1397,7 @@ sharing:
 ```yaml
 repo:
   localPath: /path/to/.teamai/team-repo
-  remote: https://git.woa.com/group/repo.git
+  remote: https://github.com/yourorg/yourrepo.git
 username: your-name
 updatePolicy: auto
 scope: project                 # project（init 默认）或 user
@@ -1427,7 +1447,7 @@ teamai uninstall --agent claude
 卸载后如需重新加入：
 
 ```bash
-teamai init --repo <group>/TeamAi-<team> --scope user --role <role_id> --force
+teamai init --repo https://github.com/yourorg/yourrepo --scope user --role <role_id> --force
 teamai pull
 ```
 
@@ -1444,7 +1464,7 @@ teamai pull
 交互模式下会提示是否覆盖，输入 `y` 即可。也可用 `--force` 跳过确认：
 
 ```bash
-teamai init --repo <group>/<repo> --force
+teamai init --repo https://github.com/yourorg/yourrepo --force
 ```
 
 **Q: 在项目里执行 `teamai init` 后没有 `.claude/`（或 `.cursor/`、`.codebuddy/`）目录？**
@@ -1471,5 +1491,5 @@ teamai remove rules <name>
 
 ---
 
-> **仓库**: https://git.woa.com/teamai/teamai-cli
-> **问题反馈**: 提交 Issue 到仓库
+> **仓库**：https://github.com/Tencent/teamai-cli
+> **问题反馈**：https://github.com/Tencent/teamai-cli/issues

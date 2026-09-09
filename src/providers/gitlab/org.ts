@@ -1,5 +1,5 @@
 import type { OrgRepoInfo } from '../types.js';
-import { getGitLabToken, gitlabBaseUrl } from './gitlab-api.js';
+import { getGitLabToken, gitlabApiBase } from './gitlab-api.js';
 
 /** 响应体最大 50 MB，防止恶意服务器返回超大响应导致 OOM */
 const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
@@ -67,7 +67,7 @@ export async function gitlabListOrgRepos(
   while (collected.length < maxRepos) {
     // include_subgroups=true — GitLab defaults it to false, which would silently
     // drop every project nested under a subgroup of the requested group.
-    const url = `${gitlabBaseUrl()}/api/v4/groups/${encodedGroup}/projects`
+    const url = `${gitlabApiBase()}/groups/${encodedGroup}/projects`
       + `?per_page=${perPage}&page=${page}&include_subgroups=true`;
     const resp = await fetch(url, { headers, redirect: 'manual' });
 

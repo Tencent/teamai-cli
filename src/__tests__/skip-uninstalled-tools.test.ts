@@ -572,4 +572,33 @@ describe('deployBuiltinSkills — skip uninstalled tools', () => {
     expect(await fse.pathExists(wikiEnrichFile)).toBe(true);
     expect(await fse.pathExists(path.join(homeDir, '.claude/skills/teamai-share-learnings/SKILL.md'))).toBe(false);
   });
+
+  it('deploys a built-in Codex skill to its existing shared location', async () => {
+    const { deployBuiltinSkills } = await import('../builtin-skills.js');
+    const sharedSkill = path.join(homeDir, '.agents', 'skills', 'team-wiki-codebase');
+    await fse.ensureDir(path.join(homeDir, '.codex'));
+    await fse.ensureDir(sharedSkill);
+
+    const teamConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://example.test/team.git',
+      provider: 'git' as const,
+      reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+      toolPaths: { codex: { skills: '.codex/skills' } },
+    };
+    const localConfig = {
+      repo: { localPath: path.join(tmpDir, 'repo'), remote: 'https://example.test/team.git' },
+      username: 'testuser',
+      updatePolicy: 'auto' as const,
+      additionalRoles: [],
+      scope: 'user' as const,
+    };
+
+    await deployBuiltinSkills(teamConfig, localConfig);
+
+    expect(await fse.pathExists(path.join(sharedSkill, 'SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.codex', 'skills', 'team-wiki-codebase'))).toBe(false);
+  });
 });

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ensureDir } from './fs.js';
+import { ensureDir, listFilesRecursive } from './fs.js';
 import { pushLearningToOrigin } from './git.js';
 import { withTimeout } from './async.js';
 import { log } from './logger.js';
@@ -18,7 +18,11 @@ export function pendingLearningsDir(repoPath: string): string {
  * Persist a learning whose push failed, so the next pull can retry it.
  *
  * @param repoPath - Team-repo clone root.
- * @param filename - Learning file name (e.g. `foo-2026-01-01-ab12cd.md`).
+ * @param relPath - Learning path RELATIVE to `learnings/` (e.g.
+ *   `alpha-notes/foo-2026-01-01-ab12cd.md` for a project-namespaced learning, or
+ *   `foo-....md` for a shared-root one). The namespace subdirectory is preserved
+ *   here and on retry, so a failed project contribution is never downgraded to a
+ *   shared-root learning.
  * @param content - Full learning file content.
  *
  * Precondition: repoPath is a dedicated team-repo clone root, NOT a single-repo
@@ -27,12 +31,13 @@ export function pendingLearningsDir(repoPath: string): string {
  */
 export async function savePendingLearning(
   repoPath: string,
-  filename: string,
+  relPath: string,
   content: string,
 ): Promise<void> {
   const dir = pendingLearningsDir(repoPath);
-  await ensureDir(dir);
-  await fs.promises.writeFile(path.join(dir, filename), content, 'utf-8');
+  const dest = path.join(dir, relPath);
+  await ensureDir(path.dirname(dest));
+  await fs.promises.writeFile(dest, content, 'utf-8');
 }
 
 /**
@@ -52,19 +57,24 @@ export async function savePendingLearning(
  */
 export async function flushPendingLearnings(repoPath: string, username: string): Promise<number> {
   const dir = pendingLearningsDir(repoPath);
-  let names: string[];
+  let relPaths: string[];
   try {
-    names = await fs.promises.readdir(dir);
+    // Recurse: pending learnings may sit under a namespace subdirectory
+    // (e.g. `alpha-notes/foo.md`), which must be preserved on retry.
+    relPaths = await listFilesRecursive(dir);
   } catch {
     return 0;
   }
 
   let pushed = 0;
-  for (const filename of names) {
-    if (filename.startsWith('.')) {
+  for (const relPath of relPaths) {
+    if (relPath.split(path.sep).some((seg) => seg.startsWith('.'))) {
       continue;
     }
-    const pendingPath = path.join(dir, filename);
+    if (!relPath.endsWith('.md')) {
+      continue;
+    }
+    const pendingPath = path.join(dir, relPath);
     let content: string;
     try {
       content = await fs.promises.readFile(pendingPath, 'utf-8');
@@ -73,25 +83,25 @@ export async function flushPendingLearnings(repoPath: string, username: string):
       continue;
     }
     try {
-      const destDir = path.join(repoPath, 'learnings');
-      await ensureDir(destDir);
-      await fs.promises.writeFile(path.join(destDir, filename), content, 'utf-8');
+      const destPath = path.join(repoPath, 'learnings', relPath);
+      await ensureDir(path.dirname(destPath));
+      await fs.promises.writeFile(destPath, content, 'utf-8');
       const commitMsg = `[teamai] Contribute session knowledge from ${username}`;
       const confirmed = await withTimeout(
-        pushLearningToOrigin(repoPath, filename, commitMsg),
+        pushLearningToOrigin(repoPath, relPath, commitMsg),
         10_000,
         'Push timeout (10s)',
       );
       if (!confirmed) {
         // Push returned but the branch is still ahead of origin — do NOT drop
         // the durable backup; retry on the next pull.
-        log.debug(`flushPendingLearnings: ${filename} not confirmed on origin, keeping backup`);
+        log.debug(`flushPendingLearnings: ${relPath} not confirmed on origin, keeping backup`);
         break;
       }
       await fs.promises.rm(pendingPath, { force: true });
       pushed += 1;
     } catch (e) {
-      log.debug(`flushPendingLearnings: retry deferred for ${filename}: ${(e as Error).message}`);
+      log.debug(`flushPendingLearnings: retry deferred for ${relPath}: ${(e as Error).message}`);
       break;
     }
   }

@@ -30,9 +30,16 @@ export function gitlabBaseUrl(): string {
   return resolveGitLabBaseUrl();
 }
 
-/** Base URL for REST API calls (GitLab mounts the API under /api/v4). */
-function gitlabApiBase(): string {
-  return `${gitlabBaseUrl()}/api/v4`;
+/**
+ * Base URL for REST API calls (GitLab mounts the API under /api/v4).
+ *
+ * The API prefix can be customized via GITLAB_API_PREFIX for instances behind
+ * gateways that mount the GitLab API at a non-standard path (e.g., `/api/gitlab`).
+ * Defaults to `api/v4` (standard GitLab).
+ */
+export function gitlabApiBase(): string {
+  const prefix = process.env.GITLAB_API_PREFIX?.trim().replace(/^\/+|\/+$/g, '') || 'api/v4';
+  return `${gitlabBaseUrl()}/${prefix}`;
 }
 
 function resolveGitLabBaseUrl(): string {

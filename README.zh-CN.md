@@ -110,7 +110,7 @@ teamai push → 创建分支 + MR → reviewer 审批合并
            SessionStart hook → teamai pull → 同步到本地 AI 工具
 ```
 
-成员通过 `teamai push` 提交变更并创建合并请求供审核。若某个资源已在未合并的 PR 中等待评审，再次对它执行 `teamai push` 会就地更新该 PR，而非新开一个重复的 PR。合并后，`teamai pull`（由 SessionStart hook 在会话启动时自动触发）将最新资源同步到本地。Skills 会同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/` 等目录。在 **project scope** 安装下，SessionStart 会先为当前工具创建项目根目录（例如 `<project>/.claude`），再 pull 写入；单独执行 `teamai pull` 仍不会凭空创建 Agent 目录。
+成员通过 `teamai push` 提交变更并创建合并请求供审核。若某个资源已在未合并的 PR 中等待评审，再次对它执行 `teamai push` 会就地更新该 PR，而非新开一个重复的 PR。合并后，`teamai pull`（由 SessionStart hook 在会话启动时自动触发）将最新资源同步到本地。Skills 会同步到 `~/.claude/skills/`、`~/.codex/skills/`、`~/.cursor/skills/`、`~/.codebuddy/skills/` 等目录。对于 Codex，若 skill 已存在于 `~/.agents/skills/`，则会在原位置更新，不会在 `~/.codex/skills/` 创建重复副本。在 **project scope** 安装下，SessionStart 会先为当前工具创建项目根目录（例如 `<project>/.claude`），再 pull 写入；单独执行 `teamai pull` 仍不会凭空创建 Agent 目录。
 
 ### 团队 Hooks
 
@@ -226,7 +226,8 @@ Matched: conflict | Missing: port
 ```bash
 teamai import --from-repo https://github.com/org/repo
 teamai import --from-org myorg              # 批量导入所有仓库
-teamai codebase --lint                      # 健康检查
+teamai codebase --extract /path/to/repo     # 本地提取到 teamwiki/
+teamai codebase --lint --output /path/to/repo # 检查本地提取的图谱
 ```
 
 图谱存储组件、接口、配置和跨仓库依赖边。`teamai recall` 利用图谱进行增强排名。
@@ -266,7 +267,8 @@ WASM 解析器是纯 JavaScript 依赖，无需任何原生编译工具链。若
 | `teamai recall enable/disable/status` | 开关或查看 recall 状态 |
 | `teamai recall promote [learningId]` | 将高置信度 learning 晋升为正式知识（skills/rules/docs） |
 | `teamai recall maintenance` | 维护知识库健康：清理低置信度 learnings、回写置信度、标记过时条目 |
-| `teamai import` | 导入知识（`--dir`、`--from-repo`、`--from-org`、`--from-repo-list`、`--from-mr`、`--from-iwiki`） |
+| `teamai import` | 导入知识（`--dir`、`--from-repo`、`--from-org`、`--from-repo-list`、`--from-mr`） |
+| `teamai codebase --extract [path]` | 提取代码事实并在 `teamwiki/` 下构建本地图谱 |
 | `teamai codebase --lint` | 知识图谱健康检查 |
 | `teamai ci extract-mr --url <url>` | CI：从 MR 提取知识、发评论、合并后写入 |
 | `teamai members` | 查看团队成员 |

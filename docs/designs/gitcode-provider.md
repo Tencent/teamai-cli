@@ -17,7 +17,7 @@
 
 | 维度 | GitLab | **GitCode** |
 |---|---|---|
-| API base | `<host>/api/v4`（同域） | `https://api.gitcode.com/api/v5`（独立 API 域名） |
+| API base | `<host>/api/v4`（同域；可通过 `GITLAB_API_PREFIX` 自定义） | `https://api.gitcode.com/api/v5`（独立 API 域名） |
 | REST 认证头 | `PRIVATE-TOKEN` | `Authorization: Bearer` |
 | whoami 字段 | `username` | **`login`** |
 | 建 PR | `POST /projects/{id}/merge_requests` | `POST /repos/{owner}/{repo}/pulls` |

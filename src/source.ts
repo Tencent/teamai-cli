@@ -18,9 +18,10 @@ import {
 } from './utils/fs.js';
 import { getHandler } from './resources/index.js';
 import { ResourceHandler } from './resources/base.js';
+import { resolveSkillDestination } from './resources/skills.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { getUserHome } from './utils/home.js';
-import { assertSafeResourceName } from './utils/path-safety.js';
+import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import type {
   TeamaiConfig,
   LocalConfig,
@@ -151,10 +152,13 @@ export async function sourceAdd(repoUrl: string, options: { name?: string } & Gl
     return;
   }
 
-  // Read source's teamai.yaml to verify it's a valid teamai repo
+  // Warn up front when the source cannot share anything. `pull` opts in on a
+  // source's `publicSkills` declaration, so a repo without a teamai.yaml (or
+  // with an empty publicSkills list) syncs 0 skills. Say so here, at add time,
+  // instead of letting pull skip it silently later.
   const sourceConfig = await loadTeamConfig(cloneResult);
-  if (!sourceConfig) {
-    log.warn(`Source repo has no teamai.yaml. It can still be used, but no publicSkills are declared.`);
+  for (const line of sourceSyncWarnings(name, sourceConfig)) {
+    log.warn(line);
   }
 
   if (options.dryRun) {
@@ -450,6 +454,7 @@ async function pullSingleSource(
 
   // Deploy skills to tool paths
   const deployed: string[] = [];
+  const installedPaths: Record<string, string[]> = { ...oldManifest?.installedPaths };
   let newCount = 0;
   let updatedCount = 0;
 
@@ -468,12 +473,15 @@ async function pullSingleSource(
     }
 
     // Deploy to each tool's skills directory
-    for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
 
-      const targetDir = path.join(baseDir, toolPath.skills, skill.name);
+      const targetDir = await resolveSkillDestination(tool, toolPath.skills, baseDir, skill.name, skill.sourcePath);
       await copyDir(skill.sourcePath, targetDir);
+      const relativeTarget = path.relative(baseDir, targetDir);
+      const skillPaths = installedPaths[skill.name] ??= [];
+      if (!skillPaths.includes(relativeTarget)) skillPaths.push(relativeTarget);
     }
 
     if (oldInstalled.has(skill.name)) {
@@ -489,8 +497,9 @@ async function pullSingleSource(
     const deployedSet = new Set(deployed);
     for (const oldSkill of oldInstalled) {
       if (!deployedSet.has(oldSkill) && !localTeamSkills.has(oldSkill)) {
-        await removeSkillFromToolPaths(oldSkill, teamConfig, localConfig, baseDir);
+        await removeSkillFromToolPaths(oldSkill, teamConfig, localConfig, baseDir, oldManifest?.installedPaths?.[oldSkill]);
         log.debug(`[source:${source.name}] Removed "${oldSkill}" (no longer public)`);
+        delete installedPaths[oldSkill];
       }
     }
   }
@@ -500,6 +509,7 @@ async function pullSingleSource(
     await saveSourceManifest(source.name, {
       lastPull: new Date().toISOString(),
       installedSkills: deployed,
+      installedPaths,
     });
   }
 
@@ -513,6 +523,29 @@ async function pullSingleSource(
 }
 
 // ─── Helpers ─────────────────────────────────────────────
+
+/**
+ * Explain, at `source add` time, why a source would sync 0 skills. `pull`
+ * deploys only skills a source opts into via its teamai.yaml `publicSkills`
+ * list, so a missing teamai.yaml or an empty publicSkills list means nothing
+ * is shared. Returns the warning lines to print (empty when the source is
+ * ready to share). `null` config = no teamai.yaml (or an unparseable one).
+ */
+export function sourceSyncWarnings(name: string, sourceConfig: TeamaiConfig | null): string[] {
+  if (!sourceConfig) {
+    return [
+      `Source repo "${name}" has no teamai.yaml, so it declares no public skills.`,
+      `This source will sync 0 skills until the source team adds a teamai.yaml with a publicSkills list.`,
+    ];
+  }
+  if ((sourceConfig.publicSkills?.length ?? 0) === 0) {
+    return [
+      `Source repo "${name}" has a teamai.yaml but declares no publicSkills.`,
+      `This source will sync 0 skills until the source team adds a publicSkills list to its teamai.yaml.`,
+    ];
+  }
+  return [];
+}
 
 /**
  * Derive a source name from a git remote URL.
@@ -600,8 +633,17 @@ async function getLocalTeamSkillNames(teamConfig: TeamaiConfig, localConfig: Loc
 /**
  * Remove a skill from all tool paths.
  */
-async function removeSkillFromToolPaths(skillName: string, teamConfig: TeamaiConfig, localConfig: LocalConfig, baseDir: string): Promise<void> {
-  for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+async function removeSkillFromToolPaths(skillName: string, teamConfig: TeamaiConfig, localConfig: LocalConfig, baseDir: string, installedPaths?: string[]): Promise<void> {
+  if (installedPaths) {
+    for (const installedPath of installedPaths) {
+      const skillDir = path.resolve(baseDir, installedPath);
+      assertWithinRoot(baseDir, skillDir);
+      if (await pathExists(skillDir)) await remove(skillDir);
+    }
+    return;
+  }
+
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.skills) continue;
     const skillDir = path.join(baseDir, toolPath.skills, skillName);
     if (await pathExists(skillDir)) {
@@ -619,7 +661,7 @@ async function cleanupSourceSkills(sourceName: string, teamConfig: TeamaiConfig,
 
   const baseDir = resolveBaseDir(localConfig);
   for (const skillName of manifest.installedSkills) {
-    await removeSkillFromToolPaths(skillName, teamConfig, localConfig, baseDir);
+    await removeSkillFromToolPaths(skillName, teamConfig, localConfig, baseDir, manifest.installedPaths?.[skillName]);
   }
 }
 

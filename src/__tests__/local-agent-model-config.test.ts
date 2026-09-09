@@ -287,6 +287,40 @@ describe('local-agent: apply_model_config', () => {
     expect(await fse.pathExists(path.join(home, '.claude/teamai-models.json'))).toBe(false);
   });
 
+  it('rejects reserved model IDs used by object prototypes', async () => {
+    const acks = stubSync({
+      id: 49,
+      type: 'apply_model_config',
+      cmd: JSON.stringify({ ...deliveredModel, model_id: '__proto__' }),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
+
+    expect(acks[0]).toMatchObject({
+      id: 49,
+      status: 'failed',
+      error: expect.stringMatching(/reserved model_id/i),
+    });
+  });
+
+  it('redacts the home directory from model parse errors sent in acks', async () => {
+    const configPath = path.join(home, '.workbuddy/models.json');
+    await fse.outputFile(configPath, '{ invalid json');
+    const acks = stubSync({
+      id: 50,
+      type: 'apply_model_config',
+      cmd: JSON.stringify(deliveredModel),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
+
+    expect(acks[0]?.status).toBe('failed');
+    expect(String(acks[0]?.error)).toContain('~/.workbuddy/models.json');
+    expect(String(acks[0]?.error)).not.toContain(home);
+  });
+
   it('silently skips unknown task types without acknowledging failure', async () => {
     const acks = stubSync({ id: 21, type: 'future_model_task', cmd: '{}' });
 
@@ -328,6 +362,163 @@ describe('local-agent: apply_model_config', () => {
     ]);
   });
 
+  it('persists a direct model payload for WorkBuddy as a top-level array', async () => {
+    await fse.outputJson(path.join(home, '.workbuddy/models.json'), [
+      { id: 'hai-glm5-2', name: 'hai-glm5-2', vendor: 'Custom' },
+    ]);
+    const acks = stubSync({
+      id: 35,
+      type: 'apply_model_config',
+      cmd: JSON.stringify(deliveredModel),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
+
+    const workbuddy = await fse.readJson(path.join(home, '.workbuddy/models.json'));
+    expect(Array.isArray(workbuddy)).toBe(true);
+    expect(workbuddy).toEqual([
+      { id: 'hai-glm5-2', name: 'hai-glm5-2', vendor: 'Custom' },
+      {
+        id: 'deepseek-v3-0324',
+        name: 'DeepSeek V3 0324',
+        vendor: 'tokenhub',
+        apiKey: 'proxy-token',
+        maxInputTokens: 128000,
+        maxOutputTokens: 5555,
+        url: 'https://proxy.example.com/v1/chat/completions',
+        supportsToolCall: true,
+      },
+    ]);
+    expect(await fse.pathExists(path.join(home, '.codebuddy/models.json'))).toBe(false);
+    expect(acks).toContainEqual(expect.objectContaining({
+      id: 35,
+      type: 'apply_model_config',
+      status: 'success',
+    }));
+    expect((await fs.promises.stat(path.join(home, '.workbuddy/models.json'))).mode & 0o777).toBe(0o600);
+  });
+
+  it('creates the documented object-wrapped WorkBuddy format when the file is absent', async () => {
+    const acks = stubSync({
+      id: 43,
+      type: 'apply_model_config',
+      cmd: JSON.stringify(deliveredModel),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
+
+    const workbuddy = await fse.readJson(path.join(home, '.workbuddy/models.json'));
+    expect(workbuddy).toEqual({
+      models: [expect.objectContaining({ id: 'deepseek-v3-0324' })],
+    });
+    expect(acks[0]?.status).toBe('success');
+  });
+
+  it('preserves an object-wrapped WorkBuddy file and its availableModels filter', async () => {
+    await fse.outputJson(path.join(home, '.workbuddy/models.json'), {
+      models: [{ id: 'personal-model', name: 'Personal' }],
+      availableModels: ['personal-model'],
+    });
+    stubSync({
+      id: 44,
+      type: 'apply_model_config',
+      cmd: JSON.stringify(deliveredModel),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
+
+    const workbuddy = await fse.readJson(path.join(home, '.workbuddy/models.json'));
+    expect(workbuddy.models.map((entry: { id: string }) => entry.id)).toEqual([
+      'personal-model',
+      'deepseek-v3-0324',
+    ]);
+    expect(workbuddy.availableModels).toEqual(['personal-model', 'deepseek-v3-0324']);
+  });
+
+  it('writes a workspace-scoped WorkBuddy model to the project models file', async () => {
+    const workspace = path.join(home, 'project');
+    await fse.ensureDir(workspace);
+    const configPath = path.join(home, '.teamai/local-agent/config.json');
+    const config = await fse.readJson(configPath);
+    config.workspaceBindings[workspace] = {
+      projectId: 5,
+      projectName: 'Project 5',
+      boundAt: '2026-09-09T00:00:00.000Z',
+      ideType: 'workbuddy',
+    };
+    await fse.writeJson(configPath, config);
+    const acks = stubSync({
+      id: 45,
+      type: 'apply_model_config',
+      scope: 'workspace',
+      workspace_path: workspace,
+      cmd: JSON.stringify(deliveredModel),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ cwd: workspace, tool: 'workbuddy', status: 'running' });
+
+    const projectConfig = await fse.readJson(path.join(workspace, '.codebuddy/models.json'));
+    expect(projectConfig.models[0].id).toBe('deepseek-v3-0324');
+    expect(await fse.readFile(path.join(workspace, '.codebuddy/.gitignore'), 'utf8')).toContain('models.json');
+    expect(await fse.pathExists(path.join(home, '.workbuddy/models.json'))).toBe(false);
+    expect(acks[0]?.status).toBe('success');
+  });
+
+  it('rejects a workspace-scoped model for an unbound path', async () => {
+    const workspace = path.join(home, 'unbound');
+    await fse.ensureDir(workspace);
+    const acks = stubSync({
+      id: 47,
+      type: 'apply_model_config',
+      scope: 'workspace',
+      workspace_path: workspace,
+      cmd: JSON.stringify(deliveredModel),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ cwd: workspace, tool: 'workbuddy', status: 'running' });
+
+    expect(acks[0]).toMatchObject({
+      id: 47,
+      status: 'failed',
+      error: expect.stringMatching(/not a registered binding/i),
+    });
+    expect(await fse.pathExists(path.join(workspace, '.codebuddy/models.json'))).toBe(false);
+  });
+
+  it('supports a workspace-scoped CodeBuddy model without writing WorkBuddy user config', async () => {
+    const workspace = path.join(home, 'code-project');
+    await fse.ensureDir(workspace);
+    const configPath = path.join(home, '.teamai/local-agent/config.json');
+    const config = await fse.readJson(configPath);
+    config.workspaceBindings[workspace] = {
+      projectId: 6,
+      projectName: 'Project 6',
+      boundAt: '2026-09-09T00:00:00.000Z',
+      ideType: 'codebuddy',
+    };
+    await fse.writeJson(configPath, config);
+    const acks = stubSync({
+      id: 48,
+      type: 'apply_model_config',
+      scope: 'workspace',
+      workspace_path: workspace,
+      cmd: JSON.stringify(deliveredModel),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ cwd: workspace, tool: 'codebuddy', status: 'running' });
+
+    const projectConfig = await fse.readJson(path.join(workspace, '.codebuddy/models.json'));
+    expect(projectConfig.models[0].id).toBe('deepseek-v3-0324');
+    expect(await fse.pathExists(path.join(home, '.workbuddy/models.json'))).toBe(false);
+    expect(acks[0]?.status).toBe('success');
+  });
+
   it('fails apply_model_config for an unsupported reporting agent', async () => {
     const acks = stubSync({
       id: 27,
@@ -336,7 +527,7 @@ describe('local-agent: apply_model_config', () => {
     });
 
     const { reportAndSyncLocalAgent } = await import('../local-agent.js');
-    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
+    await reportAndSyncLocalAgent({ tool: 'cursor', status: 'running' });
 
     expect(acks[0]).toMatchObject({
       id: 27,
@@ -345,6 +536,7 @@ describe('local-agent: apply_model_config', () => {
       error: expect.stringMatching(/unsupported agent/i),
     });
     expect(await fse.pathExists(path.join(home, '.codebuddy/models.json'))).toBe(false);
+    expect(await fse.pathExists(path.join(home, '.workbuddy/models.json'))).toBe(false);
     expect(await fse.pathExists(path.join(home, '.claude/settings.json'))).toBe(false);
   });
 
@@ -366,6 +558,26 @@ describe('local-agent: apply_model_config', () => {
     expect(acks[0]?.status).toBe('success');
     expect((await fse.lstat(link)).isSymbolicLink()).toBe(true);
     expect((await fse.readJson(target)).models[0].id).toBe('deepseek-v3-0324');
+  });
+
+  it('preserves a symlinked WorkBuddy models file', async () => {
+    const target = path.join(home, 'dotfiles', 'workbuddy-models.json');
+    const link = path.join(home, '.workbuddy', 'models.json');
+    await fse.outputJson(target, []);
+    await fse.ensureDir(path.dirname(link));
+    await fse.symlink(target, link);
+    const acks = stubSync({
+      id: 36,
+      type: 'apply_model_config',
+      cmd: JSON.stringify(deliveredModel),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
+
+    expect(acks[0]?.status).toBe('success');
+    expect((await fse.lstat(link)).isSymbolicLink()).toBe(true);
+    expect((await fse.readJson(target))[0].id).toBe('deepseek-v3-0324');
   });
 
   it('preserves a symlinked Claude settings file', async () => {
@@ -421,6 +633,18 @@ describe('local-agent: report local model inventory', () => {
       user_level: { models?: Array<Record<string, unknown>> };
     };
     return payload.user_level.models;
+  }
+
+  async function reportedWorkspaceModels(
+    tool: string,
+    cwd: string,
+  ): Promise<Array<Record<string, unknown>> | undefined> {
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = (await buildReportPayload(config!, { cwd, tool })) as {
+      workspaces?: Array<{ models?: Array<Record<string, unknown>> }>;
+    };
+    return payload.workspaces?.find((workspace) => workspace.models)?.models;
   }
 
   it('omits models entirely when the tool has no model config on disk', async () => {
@@ -498,6 +722,132 @@ describe('local-agent: report local model inventory', () => {
     await reportAndSyncLocalAgent({ tool: 'claude', status: 'running' });
 
     expect(await reportedModels('codebuddy')).toEqual([
+      {
+        provider: 'tokenhub',
+        model_id: 'deepseek-v3-0324',
+        name: 'DeepSeek V3 0324',
+        source: 'enterprise',
+      },
+    ]);
+  });
+
+  it('keeps CodeBuddy report ownership after WorkBuddy receives a different full snapshot', async () => {
+    stubSync({
+      id: 37,
+      type: 'apply_model_config',
+      cmd: JSON.stringify({ models: [deliveredModel] }),
+    });
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'codebuddy', status: 'running' });
+
+    stubSync({
+      id: 38,
+      type: 'apply_model_config',
+      cmd: JSON.stringify({
+        models: [{
+          ...deliveredModel,
+          provider: 'Custom',
+          model_id: 'hai',
+          name: 'hai',
+        }],
+      }),
+    });
+    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
+
+    expect(await reportedModels('codebuddy')).toEqual([
+      {
+        provider: 'tokenhub',
+        model_id: 'deepseek-v3-0324',
+        name: 'DeepSeek V3 0324',
+        source: 'enterprise',
+      },
+    ]);
+    expect(await reportedModels('workbuddy')).toEqual([
+      {
+        provider: 'Custom',
+        model_id: 'hai',
+        name: 'hai',
+        source: 'enterprise',
+      },
+    ]);
+  });
+
+  it('replaces a previously managed WorkBuddy model on a full snapshot', async () => {
+    stubSync({ id: 40, type: 'apply_model_config', cmd: JSON.stringify(deliveredModel) });
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
+
+    stubSync({
+      id: 41,
+      type: 'apply_model_config',
+      cmd: JSON.stringify({
+        models: [{
+          ...deliveredModel,
+          provider: 'Custom',
+          model_id: 'hai',
+          name: 'hai',
+        }],
+      }),
+    });
+    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
+
+    const file = await fse.readJson(path.join(home, '.workbuddy/models.json'));
+    expect(file.models.map((entry: { id: string }) => entry.id)).toEqual(['hai']);
+    expect(await reportedModels('workbuddy')).toEqual([
+      {
+        provider: 'Custom',
+        model_id: 'hai',
+        name: 'hai',
+        source: 'enterprise',
+      },
+    ]);
+  });
+
+  it('still reports a delivered WorkBuddy model after WorkBuddy adds metadata', async () => {
+    stubSync({ id: 42, type: 'apply_model_config', cmd: JSON.stringify(deliveredModel) });
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'workbuddy', status: 'running' });
+
+    const configPath = path.join(home, '.workbuddy', 'models.json');
+    const config = await fse.readJson(configPath);
+    config.models[0].supportsImages = false;
+    await fse.writeJson(configPath, config);
+
+    expect(await reportedModels('workbuddy')).toEqual([
+      {
+        provider: 'tokenhub',
+        model_id: 'deepseek-v3-0324',
+        name: 'DeepSeek V3 0324',
+        source: 'enterprise',
+      },
+    ]);
+  });
+
+  it('reports a workspace-scoped WorkBuddy model under that workspace', async () => {
+    const workspace = path.join(home, 'project');
+    await fse.ensureDir(workspace);
+    const configPath = path.join(home, '.teamai/local-agent/config.json');
+    const config = await fse.readJson(configPath);
+    config.workspaceBindings[workspace] = {
+      projectId: 5,
+      projectName: 'Project 5',
+      boundAt: '2026-09-09T00:00:00.000Z',
+      ideType: 'workbuddy',
+    };
+    await fse.writeJson(configPath, config);
+    stubSync({
+      id: 46,
+      type: 'apply_model_config',
+      scope: 'workspace',
+      workspace_path: workspace,
+      cmd: JSON.stringify(deliveredModel),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ cwd: workspace, tool: 'workbuddy', status: 'running' });
+
+    expect(await reportedModels('workbuddy')).toBeUndefined();
+    expect(await reportedWorkspaceModels('workbuddy', workspace)).toEqual([
       {
         provider: 'tokenhub',
         model_id: 'deepseek-v3-0324',

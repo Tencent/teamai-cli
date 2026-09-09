@@ -3,7 +3,7 @@ import YAML from 'yaml';
 import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { resolveBaseDir, getPushignorePath, isAgentDisabled, scopedToolPaths } from '../types.js';
-import { listDirs, pathExists, copyDir, remove, dirTeamSubsetEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
+import { listDirs, pathExists, copyDir, remove, dirContentEqual, dirTeamSubsetEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 import { resolveOpenclawWorkspaceDir } from '../openclaw-hooks.js';
@@ -15,6 +15,35 @@ import { splitFrontmatter, stringifyFrontmatter } from '../utils/frontmatter.js'
 /** File name used to track who has contributed (pushed) a skill. */
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
 const SKILL_MD = 'SKILL.md';
+const CODEX_TOOL = 'codex';
+const SHARED_AGENT_SKILLS_PATH = '.agents/skills';
+
+/** Prefer Codex's shared skill when that skill already lives there. */
+export async function resolveSkillDestination(
+  tool: string,
+  configuredSkillsPath: string,
+  baseDir: string,
+  skillName: string,
+  sourcePath?: string,
+): Promise<string> {
+  const configuredDestination = path.join(baseDir, configuredSkillsPath, skillName);
+  if (tool === CODEX_TOOL) {
+    const sharedDestination = path.join(baseDir, SHARED_AGENT_SKILLS_PATH, skillName);
+    if (await pathExists(sharedDestination)) {
+      if (await pathExists(configuredDestination)) {
+        if (sourcePath && await dirContentEqual(sharedDestination, configuredDestination) && await dirContentEqual(configuredDestination, sourcePath)) {
+          await remove(configuredDestination);
+          log.debug(`Removed identical TeamAI skill ${skillName} from ${configuredSkillsPath}`);
+        } else {
+          log.warn(`Codex skill conflict for ${skillName}: keeping different copies in ${SHARED_AGENT_SKILLS_PATH} and ${configuredSkillsPath}`);
+        }
+      }
+      return sharedDestination;
+    }
+  }
+
+  return configuredDestination;
+}
 
 /** Add fields immediately before the closing delimiter without reformatting existing YAML. */
 function appendFrontmatterFields(raw: string, fields: Record<string, string>): string {
@@ -458,7 +487,7 @@ export class SkillsHandler extends ResourceHandler {
           log.debug(`Skipping skill sync for ${tool}: tool not installed`);
           continue;
         }
-        dest = path.join(baseDir, toolPath.skills, item.name);
+        dest = await resolveSkillDestination(tool, toolPath.skills, baseDir, item.name, item.sourcePath);
       }
 
       try {
@@ -508,7 +537,12 @@ export class SkillsHandler extends ResourceHandler {
         if (!wsDir) continue;
         skillDir = path.join(wsDir, 'skills', name);
       } else {
-        skillDir = path.join(baseDir, toolPath.skills, name);
+        const configuredDir = path.join(baseDir, toolPath.skills, name);
+        skillDir = await resolveSkillDestination(tool, toolPath.skills, baseDir, name);
+        if (skillDir !== configuredDir && await pathExists(configuredDir) && await dirContentEqual(skillDir, configuredDir)) {
+          await remove(configuredDir);
+          removed.push(configuredDir);
+        }
       }
       if (await pathExists(skillDir)) {
         await remove(skillDir);

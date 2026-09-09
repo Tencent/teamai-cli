@@ -31,7 +31,19 @@ const RolesManifestSchema = z.object({
 
 export type TeamRole = z.infer<typeof RoleSchema>;
 export type RolesManifest = z.infer<typeof RolesManifestSchema>;
-export type ResourceNamespaces = Record<RoleResourceType, string[]>;
+
+/**
+ * Active resource namespaces after resolving roles ∪ projects. `learnings` is
+ * always present but only projects ever populate it (roles leave it empty — see
+ * the note on RoleResourceNamespacesSchema). Kept as a superset of the role
+ * resource types so role and project resolutions share one shape and can be
+ * unioned directly.
+ */
+export type ResourceNamespaces = {
+  knowledge: string[];
+  skills: string[];
+  learnings: string[];
+};
 
 function validateManifestShape(raw: unknown): RolesManifest {
   if (!raw || typeof raw !== 'object') {
@@ -140,6 +152,9 @@ export function resolveRoleResourceNamespaces(input: {
   const namespaces: ResourceNamespaces = {
     knowledge: [],
     skills: [],
+    // Roles never contribute learnings namespaces; only projects do. Kept empty
+    // so the shape matches project resolution for a clean union at the call site.
+    learnings: [],
   };
 
   for (const type of ROLE_RESOURCE_TYPES) {

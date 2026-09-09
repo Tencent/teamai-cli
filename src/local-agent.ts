@@ -239,8 +239,13 @@ interface DeliveredModel {
   context_window?: number;
 }
 
-interface ModelConfigManifest {
+interface BuddyModelManifest {
   codebuddy?: Record<string, string>;
+  workbuddy?: Record<string, string>;
+  providersByAgent?: Record<string, Record<string, string>>;
+}
+
+interface ModelConfigManifest extends BuddyModelManifest {
   claudeEnv?: Record<string, string>;
   /**
    * model_id → provider for every model this reporter has applied. Claude
@@ -248,12 +253,16 @@ interface ModelConfigManifest {
    * so this is the only way to report back the provider the server sent.
    */
   providers?: Record<string, string>;
-  providersByAgent?: Record<string, Record<string, string>>;
+  workspaceModels?: Record<string, BuddyModelManifest>;
 }
 
-function modelAgentKind(tool: string | undefined): 'codebuddy' | 'claude' | undefined {
+type ModelAgentKind = 'codebuddy' | 'workbuddy' | 'claude';
+type BuddyAgentKind = 'codebuddy' | 'workbuddy';
+
+function modelAgentKind(tool: string | undefined): ModelAgentKind | undefined {
   const normalized = normalizeAgentType(tool ?? '');
   if (normalized === 'codebuddy' || normalized === 'codebuddy-internal') return 'codebuddy';
+  if (normalized === 'workbuddy') return 'workbuddy';
   if (normalized === 'claude') return 'claude';
   return undefined;
 }
@@ -1353,30 +1362,54 @@ interface ReportedModel {
  * are dropped rather than reported as incomplete. `source` is derived from the
  * model manifest, mirroring how skills/rules classify enterprise vs local.
  *
- * Only CodeBuddy and Claude keep a discoverable model config; every other tool
- * reports nothing. User-owned models are omitted: the backend cannot resolve
- * them, so only entries still matching a TeamAI delivery are reported.
+ * Only CodeBuddy, WorkBuddy, and Claude keep a discoverable model config;
+ * every other tool reports nothing. User-owned models are omitted: the
+ * backend cannot resolve them, so only entries still matching a TeamAI
+ * delivery are reported.
  */
-async function scanModelsFromDisk(tool: string): Promise<ReportedModel[]> {
+function buddyModelsPath(agentKind: BuddyAgentKind, workspacePath?: string): string {
+  return workspacePath
+    ? path.join(workspacePath, '.codebuddy', 'models.json')
+    : path.join(getUserHome(), `.${agentKind}`, 'models.json');
+}
+
+function modelConfigDisplayPath(filePath: string): string {
+  if (filePath.endsWith(`${path.sep}.codebuddy${path.sep}models.json`)) {
+    return '.codebuddy/models.json';
+  }
+  if (filePath.endsWith(`${path.sep}.workbuddy${path.sep}models.json`)) {
+    return '~/.workbuddy/models.json';
+  }
+  return path.basename(filePath);
+}
+
+async function scanModelsFromDisk(tool: string, workspacePath?: string): Promise<ReportedModel[]> {
   const manifest = (await readJson<ModelConfigManifest>(getModelManifestPath())) ?? {};
   const agentKind = modelAgentKind(tool);
-  const providers = (agentKind && manifest.providersByAgent?.[agentKind]) ?? manifest.providers ?? {};
 
-  if (agentKind === 'codebuddy') {
-    const doc = await readJson<{ models?: unknown }>(
-      path.join(getUserHome(), '.codebuddy', 'models.json'),
-    );
-    const entries = Array.isArray(doc?.models) ? doc.models : [];
-    const owned = manifest.codebuddy ?? {};
+  if (agentKind === 'codebuddy' || agentKind === 'workbuddy') {
+    const scopeManifest = workspacePath ? manifest.workspaceModels?.[workspacePath] : manifest;
+    const providers = scopeManifest?.providersByAgent?.[agentKind]
+      ?? (!workspacePath && agentKind !== 'workbuddy' ? manifest.providers : undefined)
+      ?? {};
+    const raw = await readJson<unknown>(buddyModelsPath(agentKind, workspacePath));
+    const entries = Array.isArray(raw)
+      ? raw
+      : (Array.isArray((raw as { models?: unknown } | null)?.models)
+        ? (raw as { models: unknown[] }).models
+        : []);
+    const owned = (agentKind === 'codebuddy'
+      ? scopeManifest?.codebuddy
+      : scopeManifest?.workbuddy) ?? {};
     const results: ReportedModel[] = [];
     for (const entry of entries) {
       if (typeof entry !== 'object' || entry === null) continue;
       const { id, vendor, name } = entry as Record<string, unknown>;
       if (typeof id !== 'string' || !id) continue;
       if (typeof vendor !== 'string' || !vendor) continue;
-      // CodeBuddy may normalize a model entry by adding capability metadata.
-      // The manifest's model id is the durable proof that TeamAI delivered it;
-      // requiring an exact object hash would incorrectly hide such entries.
+      // CodeBuddy / WorkBuddy may normalize a model entry by adding capability
+      // metadata. The manifest's model id is the durable proof that TeamAI
+      // delivered it; requiring an exact object hash would hide such entries.
       if (owned[id] === undefined || providers[id] !== vendor) continue;
       results.push({
         provider: vendor,
@@ -1388,7 +1421,8 @@ async function scanModelsFromDisk(tool: string): Promise<ReportedModel[]> {
     return results;
   }
 
-  if (agentKind === 'claude') {
+  if (agentKind === 'claude' && !workspacePath) {
+    const providers = manifest.providersByAgent?.claude ?? manifest.providers ?? {};
     const settings = await readJson<{ env?: unknown }>(
       path.join(getUserHome(), '.claude', 'settings.json'),
     );
@@ -1561,6 +1595,8 @@ export async function buildReportPayload(
         if (wsScope.rules.length > 0) workspace.rules = wsScope.rules;
         const wsMcps = await scanMcpFromManifest('project', tool, wsPath);
         if (wsMcps.length > 0) workspace.mcps = wsMcps;
+        const wsModels = await scanModelsFromDisk(tool, wsPath);
+        if (wsModels.length > 0) workspace.models = wsModels;
         return workspace;
       }),
     );
@@ -2145,9 +2181,13 @@ function parseDeliveredModels(raw: string | undefined): { models: DeliveredModel
       throw new Error('apply_model_config: each model must be an object');
     }
     const input = value as Record<string, unknown>;
+    const modelId = requireModelString(input.model_id, 'model_id');
+    if (modelId === '__proto__' || modelId === 'prototype' || modelId === 'constructor') {
+      throw new Error(`apply_model_config: reserved model_id "${modelId}"`);
+    }
     const model: DeliveredModel = {
       provider: requireModelString(input.provider, 'provider'),
-      model_id: requireModelString(input.model_id, 'model_id'),
+      model_id: modelId,
       name: requireModelString(input.name, 'name'),
       base_url: requireModelString(input.base_url, 'base_url'),
       api_key: requireModelString(input.api_key, 'api_key'),
@@ -2172,7 +2212,7 @@ function parseDeliveredModels(raw: string | undefined): { models: DeliveredModel
   return { models, fullSnapshot };
 }
 
-function codebuddyModelEntry(model: DeliveredModel): Record<string, unknown> {
+function buddyModelEntry(model: DeliveredModel): Record<string, unknown> {
   const baseUrl = model.base_url.replace(/\/+$/, '');
   return {
     id: model.model_id,
@@ -2196,7 +2236,9 @@ async function readJsonObject(filePath: string): Promise<Record<string, unknown>
     }
     return parsed as Record<string, unknown>;
   } catch (error) {
-    throw new Error(`apply_model_config: cannot parse ${filePath}: ${(error as Error).message}`);
+    throw new Error(
+      `apply_model_config: cannot parse ${modelConfigDisplayPath(filePath)}: ${(error as Error).message}`,
+    );
   }
 }
 
@@ -2215,19 +2257,56 @@ async function writeModelJson(filePath: string, data: unknown): Promise<void> {
   await writeJsonAtomic(targetPath, data, { mode: 0o600 });
 }
 
-async function reconcileCodebuddyModels(
+async function ensureWorkspaceModelGitignore(workspacePath: string): Promise<void> {
+  const gitignorePath = path.join(workspacePath, '.codebuddy', '.gitignore');
+  const existing = await readFileSafe(gitignorePath);
+  if (existing === null) {
+    await writeFile(gitignorePath, '# Local model credentials\nmodels.json\n');
+    return;
+  }
+  if (existing.split(/\r?\n/).some((line) => line.trim() === 'models.json')) return;
+  await writeFile(gitignorePath, `${existing.trimEnd()}\nmodels.json\n`);
+}
+
+async function readBuddyModelEntries(
+  filePath: string,
+): Promise<{ existing: unknown[]; doc?: Record<string, unknown> }> {
+  const source = await readFileSafe(filePath);
+  // The current WorkBuddy / CodeBuddy documentation uses an object wrapper.
+  // Product releases also accept the legacy top-level array, so preserve that
+  // shape when a user already has one instead of forcing a migration.
+  if (source === null) return { existing: [], doc: {} };
+  try {
+    const parsed = JSON.parse(source);
+    if (Array.isArray(parsed)) return { existing: parsed };
+    if (typeof parsed !== 'object' || parsed === null) {
+      throw new Error('root must be an object or array');
+    }
+    const doc = parsed as Record<string, unknown>;
+    const existing = doc.models === undefined ? [] : doc.models;
+    if (!Array.isArray(existing)) {
+      throw new Error('models must be an array');
+    }
+    return { existing, doc };
+  } catch (error) {
+    throw new Error(
+      `apply_model_config: cannot parse ${modelConfigDisplayPath(filePath)}: ${(error as Error).message}`,
+    );
+  }
+}
+
+async function reconcileBuddyModels(
   models: DeliveredModel[],
   fullSnapshot: boolean,
-  manifest: ModelConfigManifest,
+  scopeManifest: BuddyModelManifest,
+  agentKind: BuddyAgentKind,
+  workspacePath?: string,
 ): Promise<void> {
-  const targetFile = path.join(getUserHome(), '.codebuddy', 'models.json');
-  const doc = await readJsonObject(targetFile);
-  const existing = doc.models === undefined ? [] : doc.models;
-  if (!Array.isArray(existing)) {
-    throw new Error(`apply_model_config: models must be an array in ${targetFile}`);
-  }
-
-  const previouslyManaged = manifest.codebuddy ?? {};
+  const targetFile = buddyModelsPath(agentKind, workspacePath);
+  const { existing, doc } = await readBuddyModelEntries(targetFile);
+  const previouslyManaged = (agentKind === 'codebuddy'
+    ? scopeManifest.codebuddy
+    : scopeManifest.workbuddy) ?? {};
   const nextManaged: Record<string, string> = fullSnapshot ? {} : { ...previouslyManaged };
   const incomingIds = new Set(models.map((model) => model.model_id));
   const removedManaged = new Set<string>();
@@ -2253,24 +2332,29 @@ async function reconcileCodebuddyModels(
 
   for (const model of models) {
     if (occupiedIds.has(model.model_id)) continue;
-    const entry = codebuddyModelEntry(model);
+    const entry = buddyModelEntry(model);
     preserved.push(entry);
     nextManaged[model.model_id] = entryHash(entry);
   }
-  doc.models = preserved;
 
-  if (Array.isArray(doc.availableModels) && doc.availableModels.length > 0) {
-    const available = doc.availableModels.filter(
-      (id): id is string => typeof id === 'string' && !removedManaged.has(id),
-    );
-    for (const id of Object.keys(nextManaged)) {
-      if (!available.includes(id)) available.push(id);
+  if (workspacePath) await ensureWorkspaceModelGitignore(workspacePath);
+  if (doc) {
+    doc.models = preserved;
+    if (Array.isArray(doc.availableModels) && doc.availableModels.length > 0) {
+      const available = doc.availableModels.filter(
+        (id): id is string => typeof id === 'string' && !removedManaged.has(id),
+      );
+      for (const id of Object.keys(nextManaged)) {
+        if (!available.includes(id)) available.push(id);
+      }
+      doc.availableModels = available;
     }
-    doc.availableModels = available;
+    await writeModelJson(targetFile, doc);
+  } else {
+    await writeModelJson(targetFile, preserved);
   }
-
-  await writeModelJson(targetFile, doc);
-  manifest.codebuddy = nextManaged;
+  if (agentKind === 'codebuddy') scopeManifest.codebuddy = nextManaged;
+  else scopeManifest.workbuddy = nextManaged;
 }
 
 function claudeEnvForModel(model: DeliveredModel): Record<string, string> {
@@ -2341,26 +2425,55 @@ async function reconcileClaudeModels(
   );
 }
 
-async function applyModelConfig(command: LocalAgentCommand, tool: string | undefined): Promise<void> {
+async function applyModelConfig(
+  config: LocalAgentConfig,
+  command: LocalAgentCommand,
+  context: LocalAgentContext,
+): Promise<void> {
   const { models, fullSnapshot } = parseDeliveredModels(command.cmd);
   const manifest = (await readJson<ModelConfigManifest>(getModelManifestPath())) ?? {};
-  const agentKind = modelAgentKind(tool);
+  const agentKind = modelAgentKind(context.tool);
   if (!agentKind) {
-    throw new Error(`apply_model_config: unsupported agent "${tool ?? ''}"`);
+    throw new Error(`apply_model_config: unsupported agent "${context.tool ?? ''}"`);
   }
-  const previousProviders = manifest.providersByAgent?.[agentKind] ?? manifest.providers ?? {};
+
+  const scope = normalizeScope(command.scope);
+  const workspacePath = scope === 'project'
+    ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
+    : undefined;
+  if (scope === 'project' && !workspacePath) {
+    throw new Error('apply_model_config: workspace command is missing workspace_path');
+  }
+  if (workspacePath && config.workspaceBindings[workspacePath] === undefined) {
+    throw new Error(
+      `apply_model_config: workspace "${path.basename(workspacePath)}" is not a registered binding`,
+    );
+  }
+  if (agentKind === 'claude' && workspacePath) {
+    throw new Error('apply_model_config: workspace scope is unsupported for claude');
+  }
+
+  let scopeManifest: BuddyModelManifest = manifest;
+  if (workspacePath) {
+    manifest.workspaceModels ??= {};
+    manifest.workspaceModels[workspacePath] ??= {};
+    scopeManifest = manifest.workspaceModels[workspacePath];
+  }
+  const previousProviders = scopeManifest.providersByAgent?.[agentKind]
+    ?? (!workspacePath && agentKind !== 'workbuddy' ? manifest.providers : undefined)
+    ?? {};
   const providers = {
     ...(fullSnapshot ? {} : previousProviders),
     ...Object.fromEntries(models.map((model) => [model.model_id, model.provider])),
   };
-  manifest.providersByAgent = {
-    ...manifest.providersByAgent,
+  scopeManifest.providersByAgent = {
+    ...scopeManifest.providersByAgent,
     [agentKind]: providers,
   };
-  if (agentKind === 'codebuddy') {
-    await reconcileCodebuddyModels(models, fullSnapshot, manifest);
-  } else {
+  if (agentKind === 'claude') {
     await reconcileClaudeModels(models, manifest);
+  } else {
+    await reconcileBuddyModels(models, fullSnapshot, scopeManifest, agentKind, workspacePath);
   }
   await writeJsonAtomic(getModelManifestPath(), manifest);
 }
@@ -2824,7 +2937,7 @@ async function executeCommand(
   context: LocalAgentContext,
 ): Promise<string | undefined> {
   if (command.type === 'apply_model_config') {
-    await applyModelConfig(command, context.tool);
+    await applyModelConfig(config, command, context);
     return;
   }
   // uninstall_teamai (clawpro three-phase: cmd = "teamai uninstall --force

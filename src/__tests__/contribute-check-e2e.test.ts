@@ -57,11 +57,12 @@ function readSessionState(homeDir: string, sessionId: string): Record<string, un
 function runContributeCheck(
   homeDir: string,
   stdinPayload: string,
+  tool = 'claude',
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
     const child = execFile(
       'node',
-      [CLI_PATH, 'contribute-check', '--stdin', '--tool', 'claude'],
+      [CLI_PATH, 'contribute-check', '--stdin', '--tool', tool],
       {
         env: { ...process.env, HOME: homeDir, TEAMAI_LOG_LEVEL: 'silent' },
         timeout: 10000,
@@ -152,6 +153,19 @@ describe('contribute-check E2E', () => {
 
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it('standalone Codex Stop queues the hint without emitting incompatible JSON', async () => {
+    writeEventsFile(tmpHome, buildRichSessionEvents(SESSION_ID));
+    const result = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID), 'codex');
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('');
+    const state = readSessionState(tmpHome, SESSION_ID)!;
+    expect(state.hinted).toBe(true);
+    expect(state.pendingHint).toContain('teamai-share-learnings');
+    const repeated = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID), 'codex');
+    expect(repeated.stdout).toBe('');
+    expect(readSessionState(tmpHome, SESSION_ID)!.pendingHint).toBe(state.pendingHint);
   });
 
   it('outputs contextual, sanitized hint JSON for a rich session that exceeds threshold', async () => {

@@ -221,7 +221,7 @@ const contributeCheckHandler: HookHandler = {
     const sessionId = deriveSessionId(stdin, { includeCwd: true });
     const cwd = resolveHookCwd(stdin);
     const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : undefined;
-    // Tools whose Stop hook ignores stdout: the hint is stashed (within the same
+    // Tools whose Stop hook cannot deliver model context: stash the hint (in the same
     // single state write inside contributeCheckForSession) for delivery on the
     // next UserPromptSubmit, so contributeCheckForSession returns null here.
     const stash = STOP_STDOUT_UNSUPPORTED_TOOLS.has(tool);

@@ -155,4 +155,12 @@ describe('teamai list / status resource coverage', () => {
     expect(out).toMatch(/hooks:\s*1/);
     expect(out).toMatch(/mcp:\s*1/);
   });
+
+  it('status counts nested rule files', async () => {
+    await fse.ensureDir(path.join(repoPath, 'rules', 'common'));
+    await fse.writeFile(path.join(repoPath, 'rules', 'common', 'example.md'), '# Rule\n');
+    await status({});
+    const out = lines.join('\n');
+    expect(out).toMatch(/rules:\s*1/);
+  });
 });

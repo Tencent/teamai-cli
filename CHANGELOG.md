@@ -4,28 +4,418 @@ All notable changes to this project will be documented in this file. See [standa
 
 ## [Unreleased]
 
-### 💥 破坏性变更
+### ✨ Features
 
-- **`teamai init` 默认 scope 改为 project**（#250）：未传 `--scope` 时安装到 `<cwd>/.teamai/` 与 `<cwd>/.claude/...`，不再默认装到 `~/`。恢复旧行为：`teamai init <repo> --scope user`
-  - 远端 `teamai.yaml.scope` 不再锁定本机安装位置（`validateScopeMatch` 已移除）；本地 scope 仅由 CLI 决定
-  - 新建默认 `teamai.yaml` 不再写入 `scope:` 字段
-- **移除 `auto-recall` PostToolUse hook**：不再在 `Bash`/`Grep`/`WebSearch`/`WebFetch` 工具调用后被动、隐式地自动搜索团队知识库——这条链路噪音大、命中率低，且与更早前上线的 `teamai-recall` subagent（任务开始前主动检索，支持 codebase 图谱 drill-down、输出结构化摘要）功能重叠。已安装环境的 hooks 配置会在下次 `teamai pull` / `hooks inject` 时自动清理，无需手动迁移
-  - `contribute-check` 的知识空白检测（Phase 2）改为由 `teamai recall`（手动 + `teamai-recall` subagent 均会触发）记录召回质量，缓存格式不变，功能保留
-  - `TEAMAI_RECALL_DISABLED=1` 现在控制 `teamai recall` 的质量记录而非 auto-recall hook
+- Multi-project management: `role` and `project` together resolve resource namespaces, and project-private learnings are isolated ([#426](https://github.com/Tencent/teamai-cli/pull/426), for [#375](https://github.com/Tencent/teamai-cli/issues/375)).
+- Data partitions auto-migrate a legacy `.teamai`, resume interrupted migrations, smoke-check the clone, and keep a git-ignored backup ([#439](https://github.com/Tencent/teamai-cli/pull/439), for [#374](https://github.com/Tencent/teamai-cli/issues/374)).
 
-### ✨ 新功能
+### 🐛 Bug Fixes
 
-- **`teamai init <repo>` 位置参数**（#250）：推荐写法；`--repo` 永久保留为等价别名（无 deprecation 警告）
-- **跨 agent skills 视图**：`teamai list` 新增 `--source <repo|local|all>` 和 `--agent <id>` 参数（默认 `--source all`）。`local` / `all` 模式会扫描所有已安装 AI agent 的 skills 目录，每个 skill 标注来源 `[team]` / `[builtin]` / `[source:<name>]` / `[local-only]`。`--verbose` 时展开每个 agent 的 skill 列表与描述摘要。未安装的 agent 不出现在输出里
-- **Known agents 注册表**：内置 28 个 AI agent 路径（Claude Code / Cursor / Codex / Gemini CLI / Aider / Augment / Hermes / Copilot / KiloCode / Kiro / OpenCode / Qoder / Trae / Windsurf / WorkBuddy 等），自动检测哪些已安装。`teamai.yaml` 中显式配置的 `toolPaths` 优先生效
-- **`teamai skill` 子命令组**：
-  - `teamai skill` 或 `teamai skill list`：等价 `teamai list skills --source all`
-  - `teamai skill show <name>`：查看单个 skill 的来源标签、命名空间、贡献者、`tags.yaml` 中的 tags、已安装的 agent 列表，以及 frontmatter 中的描述（最多 160 字符）。不渲染完整 SKILL.md 正文
+- `teamai status` counts rule files in subdirectories recursively ([#437](https://github.com/Tencent/teamai-cli/pull/437)).
+- Codex Stop-phase contribution hints are deferred to the next prompt, so the host no longer rejects `additionalContext` ([#441](https://github.com/Tencent/teamai-cli/pull/441)).
 
-### 🐛 修复
+### 📝 Documentation
 
-- **OpenCode recall agent 配置修复**（#332）：内置 subagent 现在与团队 subagent 一样按目标工具渲染原生格式，避免启用 recall 后把 Claude 的 `name`/`tools` frontmatter 原样写入 OpenCode 并阻止其启动；不支持的目标格式会跳过并输出可操作警告
-- **项目级 source 配置持久化**（#335）：`teamai pull` 自动上报 usage 时不再丢弃 `source add`/`remove` 尚未提交的 `teamai.yaml` 改动，后续 pull 可正常部署订阅 skills 并写入安装清单
+- Align the public usage guides, drop internal-only details, and cover the missing commands and configuration ([#442](https://github.com/Tencent/teamai-cli/pull/442)).
+
+## [0.23.0](https://github.com/Tencent/teamai-cli/compare/v0.22.0...v0.23.0) (2026-09-08)
+
+### ✨ Features
+
+- Declarative team package management with npm and Claude plugin adapters, team distribution, install hints, and doctor checks; the shipped entry point is `teamai packages install` ([#380](https://github.com/Tencent/teamai-cli/pull/380), [#428](https://github.com/Tencent/teamai-cli/pull/428)).
+- First-class Qoder and JoyCode support that preserves personal rules and native metadata ([#420](https://github.com/Tencent/teamai-cli/pull/420), [#413](https://github.com/Tencent/teamai-cli/pull/413)).
+- ClawPro model configs can be synced, applied, and reported per tool ([#393](https://github.com/Tencent/teamai-cli/pull/393)).
+- `contribute` supports Japanese course-correction prompts, and `sharing.contributeHint.enabled` turns the share hint off ([#431](https://github.com/Tencent/teamai-cli/pull/431), [#432](https://github.com/Tencent/teamai-cli/pull/432)).
+- Plugin install commands substitute any scalar field ([#400](https://github.com/Tencent/teamai-cli/pull/400)).
+
+### 🔧 Refactoring
+
+- Project data moves into the `~/.teamai/projects/<slug>/` partition, unifying machine data, state, resource cache, and the worktree ownership model ([#397](https://github.com/Tencent/teamai-cli/pull/397), [#402](https://github.com/Tencent/teamai-cli/pull/402), [#406](https://github.com/Tencent/teamai-cli/pull/406)).
+- The top-level `install` command from the prereleases is now `packages install` ([#428](https://github.com/Tencent/teamai-cli/pull/428)).
+
+### 🐛 Bug Fixes
+
+- Partition migration adds scope locks, clone race protection, a per-worktree MCP manifest, uninstall cleanup, and legacy ownership migration ([#414](https://github.com/Tencent/teamai-cli/pull/414), [#417](https://github.com/Tencent/teamai-cli/pull/417)).
+- Fix project-scope recall configuration and the self-mode maintenance report paths and refresh ([#398](https://github.com/Tencent/teamai-cli/pull/398), [#401](https://github.com/Tencent/teamai-cli/pull/401)).
+- Plugin install commands run with Bash, and an unclosed YAML frontmatter delimiter now warns ([#399](https://github.com/Tencent/teamai-cli/pull/399), [#409](https://github.com/Tencent/teamai-cli/pull/409)).
+- Agent changes are compared using rendered native content, and commits in isolated worktrees skip repository hooks ([#411](https://github.com/Tencent/teamai-cli/pull/411), [#422](https://github.com/Tencent/teamai-cli/pull/422)).
+- Codex token snapshots are kept per rollout, partial reports preserve existing counters, and MCP inventory is scoped to the current tool ([#423](https://github.com/Tencent/teamai-cli/pull/423), [#429](https://github.com/Tencent/teamai-cli/pull/429), [#433](https://github.com/Tencent/teamai-cli/pull/433)).
+- push/pull unit tests no longer share the real `.sync-lock`, removing the parallel Vitest race ([#438](https://github.com/Tencent/teamai-cli/pull/438)).
+
+### 📝 Documentation
+
+- Align README and the usage guide with the product architecture, trim the agent instructions, and add Contributors ([#412](https://github.com/Tencent/teamai-cli/pull/412), [#415](https://github.com/Tencent/teamai-cli/pull/415), [#430](https://github.com/Tencent/teamai-cli/pull/430), [#434](https://github.com/Tencent/teamai-cli/pull/434)).
+
+## [0.22.0](https://github.com/Tencent/teamai-cli/compare/v0.21.0...v0.22.0) (2026-09-02)
+
+### ✨ Features
+
+- Add the GitCode provider ([#376](https://github.com/Tencent/teamai-cli/pull/376)).
+- Team-controlled commit co-author attribution across AI tools ([#365](https://github.com/Tencent/teamai-cli/pull/365)).
+- Dashboard gains a knowledge base health report and collects CodeBuddy `toolReject`/`toolError` friction ([#368](https://github.com/Tencent/teamai-cli/pull/368), [#336](https://github.com/Tencent/teamai-cli/pull/336)).
+- The wiki engine adds a WASM tree-sitter AST track for the code knowledge graph ([#304](https://github.com/Tencent/teamai-cli/pull/304)).
+- The data layout gains an atomic lock and separates `projectAnchor` from `workspaceRoot` ([#387](https://github.com/Tencent/teamai-cli/pull/387)).
+
+### 🐛 Bug Fixes
+
+- Cursor rules are written as `.mdc` with derived frontmatter, and stale per-tool agent siblings are cleaned up ([#345](https://github.com/Tencent/teamai-cli/pull/345), [#349](https://github.com/Tencent/teamai-cli/pull/349)).
+- Fix the project-scope doctor env path and Cursor SessionStart workspace root resolution ([#348](https://github.com/Tencent/teamai-cli/pull/348), [#353](https://github.com/Tencent/teamai-cli/pull/353)).
+- push updates the open PR instead of opening duplicates, and `--skill` keeps other resources' open-PR records ([#350](https://github.com/Tencent/teamai-cli/pull/350), [#359](https://github.com/Tencent/teamai-cli/pull/359)).
+- `import --dir` runs reconcile and deep enrichment, and init always deploys `team-wiki-codebase` ([#362](https://github.com/Tencent/teamai-cli/pull/362), [#358](https://github.com/Tencent/teamai-cli/pull/358)).
+- hook-dispatch no longer blocks on a tty prompt, injection scope is unified, and project hooks are isolated across a shared home ([#366](https://github.com/Tencent/teamai-cli/pull/366), [#370](https://github.com/Tencent/teamai-cli/pull/370), [#377](https://github.com/Tencent/teamai-cli/pull/377)).
+- pull reconciles a diverged team-repo clone without data loss ([#367](https://github.com/Tencent/teamai-cli/pull/367)).
+- SKILL.md frontmatter handles CRLF, BOM, object values, and malformed metadata ([#378](https://github.com/Tencent/teamai-cli/pull/378), [#383](https://github.com/Tencent/teamai-cli/pull/383)).
+- Fix vote/contribute hints clobbering each other, clipped KB Health labels, and repeated ClawPro binding prompts in worktrees ([#384](https://github.com/Tencent/teamai-cli/pull/384), [#389](https://github.com/Tencent/teamai-cli/pull/389), [#392](https://github.com/Tencent/teamai-cli/pull/392)).
+
+### 🔧 CI/CD
+
+- npm publishing moves to trusted publishing ([#381](https://github.com/Tencent/teamai-cli/pull/381)).
+
+## [0.21.0](https://github.com/Tencent/teamai-cli/compare/v0.20.0...v0.21.0) (2026-08-27)
+
+### ✨ Features
+
+- Support generic private Git hosts and a GitLab provider for self-hosted instances ([#301](https://github.com/Tencent/teamai-cli/pull/301), [#307](https://github.com/Tencent/teamai-cli/pull/307)).
+- OpenCode syncs skills, rules, subagents, and MCP in both scopes, and receives hooks as a native plugin ([#306](https://github.com/Tencent/teamai-cli/pull/306), [#326](https://github.com/Tencent/teamai-cli/pull/326)).
+- Add DeepSeek Harness as a supported agent ([#319](https://github.com/Tencent/teamai-cli/pull/319)).
+- local-agent can install and uninstall MCP servers over the HTTP sync channel ([#290](https://github.com/Tencent/teamai-cli/pull/290)).
+
+### 🐛 Bug Fixes
+
+- Harden Git/GitLab credentials: reject embedded credentials, keep the PAT out of clone URLs and MR fetches, and align the clone timeout ([#308](https://github.com/Tencent/teamai-cli/pull/308), [#314](https://github.com/Tencent/teamai-cli/pull/314)).
+- Resolve the user home and the built-in agents directory consistently on Windows ([#309](https://github.com/Tencent/teamai-cli/pull/309), [#310](https://github.com/Tencent/teamai-cli/pull/310), [#324](https://github.com/Tencent/teamai-cli/pull/324)).
+- Fix silent capability loss when upgrading from old versions, verify a cached clone's remote before reuse, and run `gf auth` from a neutral cwd ([#311](https://github.com/Tencent/teamai-cli/pull/311), [#329](https://github.com/Tencent/teamai-cli/pull/329), [#312](https://github.com/Tencent/teamai-cli/pull/312)).
+- push carries `teamai.yaml` and role-scoped skill changes; pull preserves role isolation for tag subscriptions, keeps pending source config, and syncs newly available agent targets ([#323](https://github.com/Tencent/teamai-cli/pull/323), [#338](https://github.com/Tencent/teamai-cli/pull/338), [#337](https://github.com/Tencent/teamai-cli/pull/337), [#340](https://github.com/Tencent/teamai-cli/pull/340), [#343](https://github.com/Tencent/teamai-cli/pull/343)).
+- uninstall removes managed agents and OpenClaw skills, and the "no workspace dir" warning is silenced when OpenClaw is absent ([#339](https://github.com/Tencent/teamai-cli/pull/339), [#347](https://github.com/Tencent/teamai-cli/pull/347)).
+- Fix the invalid OpenCode agent configuration generated when recall is enabled ([#344](https://github.com/Tencent/teamai-cli/pull/344)).
+
+### 🔒 Security
+
+- Patch runtime advisories in `simple-git` and `js-yaml` ([#316](https://github.com/Tencent/teamai-cli/pull/316)).
+
+### 🔧 CI/CD
+
+- Prereleases publish to their own dist-tag and never to `latest` ([#317](https://github.com/Tencent/teamai-cli/pull/317)).
+
+## [0.20.0](https://github.com/Tencent/teamai-cli/compare/v0.19.0...v0.20.0) (2026-08-20)
+
+### ✨ Features
+
+- Single-repo mode: a business repository can act as the team repository ([#292](https://github.com/Tencent/teamai-cli/pull/292)).
+- recall expands keywords bilingually for cross-language retrieval ([#302](https://github.com/Tencent/teamai-cli/pull/302)).
+
+### 🐛 Bug Fixes
+
+- recall reports per-term coverage, and scoring defects, body truncation, and duplicate results are fixed ([#289](https://github.com/Tencent/teamai-cli/pull/289), [#297](https://github.com/Tencent/teamai-cli/pull/297), [#298](https://github.com/Tencent/teamai-cli/pull/298)).
+- Guard the self/single-repo report flow against resetting the business repository ([#299](https://github.com/Tencent/teamai-cli/pull/299)).
+- Fix the OpenClaw skill path, manifest enrichment import paths, and container agent id/version detection ([#295](https://github.com/Tencent/teamai-cli/pull/295), [#293](https://github.com/Tencent/teamai-cli/pull/293), [#291](https://github.com/Tencent/teamai-cli/pull/291)).
+- TGit clone/fetch must use an OAuth token, never a REST-only PAT ([#287](https://github.com/Tencent/teamai-cli/pull/287)).
+
+## [0.19.0](https://github.com/Tencent/teamai-cli/compare/v0.18.0...v0.19.0) (2026-08-06)
+
+### 💥 Breaking Changes
+
+- `teamai init` defaults to project scope and accepts the repository as a positional argument; user scope now requires `--scope user` ([#256](https://github.com/Tencent/teamai-cli/pull/256)).
+
+### ✨ Features
+
+- The local-agent sync/ack channel installs and uninstalls session hooks and runs `uninstall_teamai` ([#238](https://github.com/Tencent/teamai-cli/pull/238), [#249](https://github.com/Tencent/teamai-cli/pull/249), [#265](https://github.com/Tencent/teamai-cli/pull/265)).
+- Add Hermes agent sync, hooks, and configuration support ([#269](https://github.com/Tencent/teamai-cli/pull/269)).
+- Opt-in inheritance of user-scope resources while keeping scopes isolated by default ([#281](https://github.com/Tencent/teamai-cli/pull/281)).
+
+### 🐛 Bug Fixes
+
+- Simplify project-scope hook injection and dispatch, and skip injection safely when `/bin/sh` is absent ([#272](https://github.com/Tencent/teamai-cli/pull/272), [#274](https://github.com/Tencent/teamai-cli/pull/274)).
+- WorkBuddy ephemeral directories no longer re-prompt for binding, and prompts are deduplicated per session ([#270](https://github.com/Tencent/teamai-cli/pull/270), [#271](https://github.com/Tencent/teamai-cli/pull/271)).
+- Stop the command loop after uninstall, detect empty hooks residue, and improve recall's CJK inference, relevance threshold, and query quality ([#273](https://github.com/Tencent/teamai-cli/pull/273), [#276](https://github.com/Tencent/teamai-cli/pull/276), [#278](https://github.com/Tencent/teamai-cli/pull/278)).
+- Share hints explain the friction that triggered them, and `codebase` drops a stale flag, stale help text, and Chinese strings ([#282](https://github.com/Tencent/teamai-cli/pull/282), [#268](https://github.com/Tencent/teamai-cli/pull/268)).
+
+### ⚡ Performance
+
+- Tighten the hook STDIN timeout, add error guards, and move pull to the background ([#275](https://github.com/Tencent/teamai-cli/pull/275)).
+
+## [0.18.0](https://github.com/Tencent/teamai-cli/compare/v0.17.7...v0.18.0) (2026-07-30)
+
+### ✨ Features
+
+- Add the `mcp` resource: team-declared MCP servers merge into each AI tool's native format, with `teamai mcp list/inject/remove` ([#252](https://github.com/Tencent/teamai-cli/pull/252)).
+- `teamai uninstall --agent <tool>` uninstalls a single tool and records the disabled state persistently ([#244](https://github.com/Tencent/teamai-cli/pull/244)).
+- local-agent reads a unified `cmds[]` from the sync response ([#261](https://github.com/Tencent/teamai-cli/pull/261)).
+
+### 🐛 Bug Fixes
+
+- MR import tolerates malformed learning frontmatter, and workspace paths are normalized on case-insensitive filesystems ([#241](https://github.com/Tencent/teamai-cli/pull/241), [#243](https://github.com/Tencent/teamai-cli/pull/243)).
+- Git-provider-only hints no longer leak to HTTP users or users without a matching remote, and total foreground hook time is bounded ([#247](https://github.com/Tencent/teamai-cli/pull/247), [#248](https://github.com/Tencent/teamai-cli/pull/248)).
+- uninstall removes MCP servers before deleting the manifest and lists the removed servers in the summary ([#253](https://github.com/Tencent/teamai-cli/pull/253), [#254](https://github.com/Tencent/teamai-cli/pull/254)).
+- `teamai list` covers every resource type, and env values are masked unless `--reveal` is passed ([#255](https://github.com/Tencent/teamai-cli/pull/255)).
+- Improve project-scope MCP secret resolution, `requires` command validation, and remote server formats; GUI IDEs receive resolved variable values ([#258](https://github.com/Tencent/teamai-cli/pull/258), [#259](https://github.com/Tencent/teamai-cli/pull/259), [#262](https://github.com/Tencent/teamai-cli/pull/262), [#263](https://github.com/Tencent/teamai-cli/pull/263)).
+
+## [0.17.7](https://github.com/Tencent/teamai-cli/compare/v0.17.6...v0.17.7) (2026-07-27)
+
+### 💥 Breaking Changes
+
+- Complete the move to the teamwiki knowledge graph, removing the old domains subsystem, legacy aggregate/codebase-lint, the hidden `domains drift` command, obsolete flags, and the old CI sync template ([#225](https://github.com/Tencent/teamai-cli/pull/225)).
+
+### ✨ Features
+
+- Add `teamai recall --check`, a side-effect-free relevance pre-check ([#234](https://github.com/Tencent/teamai-cli/pull/234)).
+- codebase recall results include `Sources:` anchors to the source files ([#240](https://github.com/Tencent/teamai-cli/pull/240)).
+- The local-agent binding prompt is enabled by default ([#237](https://github.com/Tencent/teamai-cli/pull/237)).
+
+### 🐛 Bug Fixes
+
+- pull still refreshes the CLAUDE.md recall block on the "Already synced" fast path ([#223](https://github.com/Tencent/teamai-cli/pull/223)).
+- hooks inject/remove no longer create root directories for tools that are not installed, and a non-Git team repo directory is re-cloned ([#224](https://github.com/Tencent/teamai-cli/pull/224), [#236](https://github.com/Tencent/teamai-cli/pull/236)).
+
+### ⚡ Performance
+
+- PostToolUse local-agent sync runs in the background ([#231](https://github.com/Tencent/teamai-cli/pull/231)).
+
+## [0.17.6](https://github.com/Tencent/teamai-cli/compare/v0.17.5...v0.17.6) (2026-07-22)
+
+### 🐛 Bug Fixes
+
+- Fix duplicate binding cards in the CloudStudio sandbox while keeping the workspace binding prompt ([#220](https://github.com/Tencent/teamai-cli/pull/220)).
+- Reported workspaces are attributed to the AI tool that installed them, and tool root directories are created before installing workspace resources ([#221](https://github.com/Tencent/teamai-cli/pull/221), [#222](https://github.com/Tencent/teamai-cli/pull/222)).
+
+## [0.17.5](https://github.com/Tencent/teamai-cli/compare/v0.17.4...v0.17.5) (2026-07-22)
+
+### ✨ Features
+
+- `teamai stats` adds `--by-repo` and `--by-time`, and `teamai session save` stores and pushes session summaries ([#193](https://github.com/Tencent/teamai-cli/pull/193), [#192](https://github.com/Tencent/teamai-cli/pull/192)).
+- Add the CNB Git provider with interactive login and headless `CNB_TOKEN` auth ([#208](https://github.com/Tencent/teamai-cli/pull/208)).
+- local-agent re-runs plugins when the backend-supplied commands change ([#209](https://github.com/Tencent/teamai-cli/pull/209)).
+
+### 🐛 Bug Fixes
+
+- Correct the TGit REST auth scheme and standardize on `TGIT_TOKEN` ([#210](https://github.com/Tencent/teamai-cli/pull/210), [#212](https://github.com/Tencent/teamai-cli/pull/212)).
+- push clears its timeout timer, and CodeBuddy hooks no longer keep the event loop alive ([#211](https://github.com/Tencent/teamai-cli/pull/211), [#214](https://github.com/Tencent/teamai-cli/pull/214), [#218](https://github.com/Tencent/teamai-cli/pull/218)).
+- The source manifest stores a Git baseline so imports are genuinely incremental ([#215](https://github.com/Tencent/teamai-cli/pull/215)).
+- Workspace-scope resources install into project directories and are reported as a full snapshot ([#216](https://github.com/Tencent/teamai-cli/pull/216), [#219](https://github.com/Tencent/teamai-cli/pull/219)).
+
+## [0.17.4](https://github.com/Tencent/teamai-cli/compare/v0.17.3...v0.17.4) (2026-07-20)
+
+### ✨ Features
+
+- The Stop hook asks for a citation when recall ran but no document was declared as used ([#181](https://github.com/Tencent/teamai-cli/pull/181)).
+- local-agent installs, updates, runs, and uninstalls backend plugins, including path mapping ([#185](https://github.com/Tencent/teamai-cli/pull/185), [#186](https://github.com/Tencent/teamai-cli/pull/186), [#187](https://github.com/Tencent/teamai-cli/pull/187)).
+- Add per-user skill exclusion in local config, applied during pull ([#194](https://github.com/Tencent/teamai-cli/pull/194)).
+- Add secret redaction, and `contribute` scores contribution value from session friction ([#191](https://github.com/Tencent/teamai-cli/pull/191), [#204](https://github.com/Tencent/teamai-cli/pull/204)).
+- local-agent workspace binding targets a project instead of a group ([#203](https://github.com/Tencent/teamai-cli/pull/203)).
+
+### 🐛 Bug Fixes
+
+- uninstall cleans the built-in recall agent, rule, and skills, and `agent_type` variants are normalized before reporting ([#183](https://github.com/Tencent/teamai-cli/pull/183), [#188](https://github.com/Tencent/teamai-cli/pull/188)).
+- Avoid opening a duplicate import MR when only metadata changed ([#190](https://github.com/Tencent/teamai-cli/pull/190)).
+
+## [0.17.3](https://github.com/Tencent/teamai-cli/compare/v0.17.2...v0.17.3) (2026-07-14)
+
+### ✨ Features
+
+- Add the HTTP local-agent lifecycle, project binding prompt, and WorkBuddy/CodeBuddy support ([#152](https://github.com/Tencent/teamai-cli/pull/152)).
+- Git users can attach HTTP report/sync/ack sources via `source add-http/remove-http/list` ([#168](https://github.com/Tencent/teamai-cli/pull/168)).
+- Add backend request logging, an update cache, a WorkBuddy hook timeout, and a binding-prompt toggle ([#166](https://github.com/Tencent/teamai-cli/pull/166), [#172](https://github.com/Tencent/teamai-cli/pull/172)).
+
+### 🐛 Bug Fixes
+
+- Fix the paths that prevented `contribute-check` hints from firing ([#160](https://github.com/Tencent/teamai-cli/pull/160)).
+- Fix local-agent ids, install paths, resource naming, installed-resource scanning, version reporting, and log identity ([#161](https://github.com/Tencent/teamai-cli/pull/161), [#162](https://github.com/Tencent/teamai-cli/pull/162), [#167](https://github.com/Tencent/teamai-cli/pull/167), [#169](https://github.com/Tencent/teamai-cli/pull/169), [#170](https://github.com/Tencent/teamai-cli/pull/170), [#171](https://github.com/Tencent/teamai-cli/pull/171)).
+- Scope resource install, uninstall, and hook injection strictly to the requesting tool, and fix hook routing and empty `hook_event_name` handling ([#174](https://github.com/Tencent/teamai-cli/pull/174), [#176](https://github.com/Tencent/teamai-cli/pull/176), [#177](https://github.com/Tencent/teamai-cli/pull/177), [#179](https://github.com/Tencent/teamai-cli/pull/179)).
+
+### 🔧 Refactoring
+
+- Remove the deprecated `/repo` HTTP team repository snapshot path ([#180](https://github.com/Tencent/teamai-cli/pull/180)).
+
+## [0.17.2](https://github.com/Tencent/teamai-cli/compare/v0.17.1...v0.17.2) (2026-07-07)
+
+### 🐛 Bug Fixes
+
+- The team knowledge recall rule relaxes from `MUST` to `SHOULD` with three explicit skip conditions, and the TodoWrite reminder is softened to match ([#158](https://github.com/Tencent/teamai-cli/pull/158)).
+
+## [0.17.1](https://github.com/Tencent/teamai-cli/compare/v0.17.0...v0.17.1) (2026-07-06)
+
+### ✨ Features
+
+- Knowledge base dual-count voting and automated maintenance: adoption detection, multi-device sync, confidence updates, promotion, and pruning ([#137](https://github.com/Tencent/teamai-cli/pull/137)).
+- `teamai init --agent <name>` limits hook injection to the given tools and accumulates across runs ([#155](https://github.com/Tencent/teamai-cli/pull/155)).
+
+### 🐛 Bug Fixes
+
+- Coding CI triggers on `main`, and the default Vitest timeout is raised to reduce CI flakiness ([#149](https://github.com/Tencent/teamai-cli/pull/149), [#150](https://github.com/Tencent/teamai-cli/pull/150)).
+
+## [0.17.0](https://github.com/Tencent/teamai-cli/compare/v0.16.9...v0.17.0) (2026-07-03)
+
+### ✨ Features
+
+- Add `teamai hooks list`, and unify team-declared and built-in hooks into one data model and reconcile flow ([#62](https://github.com/Tencent/teamai-cli/pull/62), [#65](https://github.com/Tencent/teamai-cli/pull/65)).
+- Build a deterministic codebase knowledge pipeline, plus deep-enrich, graph-aware recall, and the `team-wiki-codebase` skill ([#55](https://github.com/Tencent/teamai-cli/pull/55), [#56](https://github.com/Tencent/teamai-cli/pull/56)).
+- Support a git-free HTTP team source with API keys, machine identity, and hooks-driven agent status reporting ([#68](https://github.com/Tencent/teamai-cli/pull/68)).
+- Dashboard and stats add Human Intervention, prompt counts, and token usage ([#70](https://github.com/Tencent/teamai-cli/pull/70), [#78](https://github.com/Tencent/teamai-cli/pull/78), [#122](https://github.com/Tencent/teamai-cli/pull/122)).
+- Isolate user scope when project scope is installed, and add `tclaude`/`tcodex` plus native Codex hooks ([#77](https://github.com/Tencent/teamai-cli/pull/77), [#64](https://github.com/Tencent/teamai-cli/pull/64), [#103](https://github.com/Tencent/teamai-cli/pull/103)).
+- Recall becomes progressive route → context → lookup retrieval with G-document routing and multi-hop analysis ([#102](https://github.com/Tencent/teamai-cli/pull/102)).
+- MR import supports incremental updates from a facts cache, and import gains structured progress and English-only output ([#112](https://github.com/Tencent/teamai-cli/pull/112), [#117](https://github.com/Tencent/teamai-cli/pull/117)).
+- Recall can be toggled by a team default with a local override ([#126](https://github.com/Tencent/teamai-cli/pull/126)).
+
+### 🐛 Bug Fixes
+
+- Fix TGit argument quoting, CodeBuddy tool-name normalization, batch import races, and path traversal ([#60](https://github.com/Tencent/teamai-cli/pull/60), [#66](https://github.com/Tencent/teamai-cli/pull/66), [#67](https://github.com/Tencent/teamai-cli/pull/67), [#74](https://github.com/Tencent/teamai-cli/pull/74)).
+- Fix batches of recall, knowledge graph, reconcile, and scope isolation defects ([#91](https://github.com/Tencent/teamai-cli/pull/91), [#97](https://github.com/Tencent/teamai-cli/pull/97), [#98](https://github.com/Tencent/teamai-cli/pull/98)).
+- Fix Dashboard prompt/token counts and duplicate dispatch, and fix project-scope usage/digest reporting ([#105](https://github.com/Tencent/teamai-cli/pull/105), [#107](https://github.com/Tencent/teamai-cli/pull/107), [#108](https://github.com/Tencent/teamai-cli/pull/108), [#109](https://github.com/Tencent/teamai-cli/pull/109), [#111](https://github.com/Tencent/teamai-cli/pull/111), [#118](https://github.com/Tencent/teamai-cli/pull/118)).
+- doctor, init, hooks, and built-in skill deployment skip targets that are absent or disabled ([#116](https://github.com/Tencent/teamai-cli/pull/116), [#128](https://github.com/Tencent/teamai-cli/pull/128), [#135](https://github.com/Tencent/teamai-cli/pull/135)).
+- Version comparison handles prerelease identifiers correctly ([#147](https://github.com/Tencent/teamai-cli/pull/147)).
+
+### 🔧 Refactoring
+
+- Decommission the old `teamai-wiki` skill and the `wiki/` resource type ([#90](https://github.com/Tencent/teamai-cli/pull/90)).
+- Remove the auto-recall PostToolUse hook in favor of the `teamai-recall` subagent ([#106](https://github.com/Tencent/teamai-cli/pull/106)).
+
+## [0.16.9](https://github.com/Tencent/teamai-cli/compare/v0.16.8...v0.16.9) (2026-06-25)
+
+### ✨ Features
+
+- Add `teamai ci extract-mr`: extract learning and codebase suggestions from an MR/PR, with comment, write, and reaction-based rejection modes ([#36](https://github.com/Tencent/teamai-cli/pull/36), [#39](https://github.com/Tencent/teamai-cli/pull/39)).
+- `teamai doctor` adds `gh` CLI install and login checks for the GitHub provider ([#45](https://github.com/Tencent/teamai-cli/pull/45)).
+
+### 🐛 Bug Fixes
+
+- `uninstall` cleans every TeamAI section from CLAUDE.md ([#33](https://github.com/Tencent/teamai-cli/pull/33)).
+- Values written to `env.sh` are shell-quoted ([#40](https://github.com/Tencent/teamai-cli/pull/40)).
+- Remove project-scope hooks left behind in user-level tool settings ([#44](https://github.com/Tencent/teamai-cli/pull/44)).
+
+## [0.16.8](https://github.com/Tencent/teamai-cli/compare/v0.16.7...v0.16.8) (2026-06-18)
+
+### ✨ Features
+
+- Add knowledge import and codebase maintenance covering local directories, workspaces, MR/PR, iWiki, repository lists, and organization-wide imports ([#28](https://github.com/Tencent/teamai-cli/pull/28)).
+- Add the `agents` resource and the built-in `teamai-recall` subagent, plus TodoWrite and merged-MR hints ([#28](https://github.com/Tencent/teamai-cli/pull/28)).
+- `contribute-check` adds knowledge gap awareness, recall quality scoring, and git-commit down-weighting ([#30](https://github.com/Tencent/teamai-cli/pull/30)).
+
+## [0.16.7](https://github.com/Tencent/teamai-cli/compare/v0.16.6...v0.16.7) (2026-06-12)
+
+### ✨ Features
+
+- Merge the TeamAI commands for one hook event into a single `hook-dispatch` process ([`be158d4`](https://github.com/Tencent/teamai-cli/commit/be158d4)).
+- The first session after an upgrade migrates legacy standalone hooks to the dispatch format ([`b0edb75`](https://github.com/Tencent/teamai-cli/commit/b0edb75)).
+- `teamai init` shows the actual user/project storage paths before asking for a scope ([`843ed79`](https://github.com/Tencent/teamai-cli/commit/843ed79)).
+
+## [0.16.6](https://github.com/Tencent/teamai-cli/compare/v0.16.5...v0.16.6) (2026-05-27)
+
+### 🐛 Bug Fixes
+
+- The release pipeline moves to Node.js 22, and `NPM_TOKEN` auth is restored after the OIDC trusted publisher attempt so npm publishing works.
+
+## [0.16.5](https://github.com/Tencent/teamai-cli/compare/v0.16.4...v0.16.5) (2026-05-27)
+
+### ✨ Features
+
+- An environment variable disables wiki pull, push, and built-in skill deployment, and `status` shows the disabled state ([#22](https://github.com/Tencent/teamai-cli/pull/22)).
+
+### 🐛 Bug Fixes
+
+- Unify wiki skill path resolution and `teamai push` scope logic, fixing wrong paths under project scope ([#15](https://github.com/Tencent/teamai-cli/pull/15)).
+
+## [0.16.4](https://github.com/Tencent/teamai-cli/compare/v0.16.3...v0.16.4) (2026-05-19)
+
+### 💥 Breaking Changes
+
+- The wiki moves from per-agent directories to a shared location: `~/.teamai/wiki/` for user scope and `<projectRoot>/.teamai/wiki/` for project scope ([#9](https://github.com/Tencent/teamai-cli/pull/9), !186).
+
+### 🐛 Bug Fixes
+
+- Exclude a nested `.git` when copying skills so no gitlink/submodule is created ([#12](https://github.com/Tencent/teamai-cli/pull/12)).
+- Disable file-level parallelism in the GitHub E2E run, fixing the missing `dist/index.js` caused by concurrent cleanup ([#5](https://github.com/Tencent/teamai-cli/pull/5)).
+
+### 📝 Documentation
+
+- English is the default README on GitHub, and the Chinese version moves to `README.zh-CN.md` ([#2](https://github.com/Tencent/teamai-cli/pull/2), [#3](https://github.com/Tencent/teamai-cli/pull/3), [#4](https://github.com/Tencent/teamai-cli/pull/4)).
+
+## [0.16.3](https://github.com/Tencent/teamai-cli/compare/v0.16.2...v0.16.3) (2026-05-09)
+
+### 🐛 Bug Fixes
+
+- pull filters rules by the current role's knowledge namespaces; root-level rules are always kept, and everything syncs when no role is configured (!182).
+
+### 🔧 Refactoring
+
+- Normalize npm package metadata: drop the redundant `./` in the `bin` path and standardize the repository URL.
+
+### 📝 Documentation
+
+- Update the project tagline to "The team harness for AI agents" (!180, !181, !184).
+
+## [0.16.2](https://github.com/Tencent/teamai-cli/compare/v0.16.1...v0.16.2) (2026-05-01)
+
+### ⚡ Performance
+
+- Optimize Stop hooks: shorten the update timeout, add a `contribute-check` fast path and score cache, and lower the Dashboard JSONL compaction threshold (!176).
+
+## [0.16.1](https://github.com/Tencent/teamai-cli/compare/v0.16.0...v0.16.1) (2026-04-29)
+
+### 🐛 Bug Fixes
+
+- Ensure `SKILL.md` frontmatter during pull and built-in skill deployment so Codex does not refuse to load them (!177).
+
+### 📝 Documentation
+
+- Update to the Tencent MIT License, remove ROADMAP/TODOS, and add open-source badges plus a full English README (!170, !171, !172, !174, !175).
+
+## [0.16.0](https://github.com/Tencent/teamai-cli/compare/v0.15.0...v0.16.0) (2026-04-27)
+
+### 💥 Breaking Changes
+
+- `teamai list` now shows both the team repository and installed agents; `--source repo` restores the old behavior (!162).
+
+### ✨ Features
+
+- The provider for a bare `owner/repo` is inferred from the installed package name, and `TEAMAI_DEFAULT_PROVIDER` overrides it (!161).
+- Add the built-in `/wiki` skill with multi-source ingestion, incremental updates, query, check, and export (!117).
+- `teamai list` adds `--source` and `--agent`, plus the `teamai skill list/show` commands (!162).
+- `teamai.yaml` adds a team-level `autoUpdate` policy, and `teamai push --skill` supports force-push and recursive skill scanning (!164, !167).
+
+### 🐛 Bug Fixes
+
+- Complete wiki repository push, failure rollback, remove, and tombstone cleanup (!163).
+- Fix built-in wiki skill detection, hidden/workspace directory scanning, and false "modified" reports (!168, !169).
+
+## [0.15.0](https://github.com/Tencent/teamai-cli/compare/v0.14.4...v0.15.0) (2026-04-20)
+
+### 💥 Breaking Changes
+
+- The default provider for a bare `owner/repo` becomes GitHub; TGit users need a full URL or an explicit provider (!156).
+- The public package is `teamai-cli`; internal tnpm releases restore the `@tencent/teamai-cli` name (!156).
+
+### ✨ Features
+
+- Add the GitHub provider with `gh` / `GITHUB_TOKEN` auth, clone, repository creation, and pull requests (!156).
+- Add dual-channel npm/tnpm publishing, and let the update check pick the registry from the package name (!156).
+
+### 🐛 Bug Fixes
+
+- Detect `main`/`master` dynamically, fixing GitHub push, branch cleanup, and PR creation (!156).
+- `doctor` reads project-scope config first, and `source add` clones through the matching provider (!156).
+
+### 🔧 CI/CD
+
+- GitHub Actions adds a Node 20/22 × Ubuntu/macOS matrix and E2E coverage for the main commands; Coding CI is hardened to match (!157, !158).
+
+## [0.14.4](https://github.com/Tencent/teamai-cli/compare/v0.14.3...v0.14.4) (2026-04-17)
+
+### ✨ Features
+
+- Dashboard cards show the AI output, first prompt, and last prompt by default, with Markdown rendering (!153, !154).
+- Session states become `AI Working`, `Your Turn`, and `Ended` (!153).
+
+### 🐛 Bug Fixes
+
+- push syncs teammates' updates before scanning while keeping real local edits, so resources are no longer reported as modified (!152).
+- Dashboard cards sort stably by total runtime (!151).
+
+## [0.14.3](https://github.com/Tencent/teamai-cli/compare/v0.14.2...v0.14.3) (2026-04-17)
+
+### 🐛 Bug Fixes
+
+- The Stop hook waits for user input and monitors the AI tool process, ending the session only after that process exits (!149).
+- The CodeBuddy team instruction path is corrected from `.codebuddy/CLAUDE.md` to `.codebuddy/CODEBUDDY.md` (!150).
 
 ## [0.14.2] (2026-04-16)
 

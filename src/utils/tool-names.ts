@@ -34,8 +34,8 @@ export function normalizeAgentType(name: string): string {
 }
 
 /**
- * Tools whose Stop hook is fire-and-forget: the host executes the command but
- * does not consume its stdout, so a Stop-hook hint printed to stdout is dropped.
+ * Tools whose Stop hook cannot deliver non-blocking model context.
+ * CodeBuddy/WorkBuddy ignore stdout; Codex rejects Stop additionalContext.
  * For these tools the share-learnings hint is stashed as pending state at Stop
  * and injected on the next UserPromptSubmit instead (which they DO consume).
  *
@@ -44,4 +44,4 @@ export function normalizeAgentType(name: string): string {
  * "codebuddy-internal") would miss this Set and fall back to the dropped-stdout
  * Stop path, so add such variants here explicitly.
  */
-export const STOP_STDOUT_UNSUPPORTED_TOOLS = new Set(['codebuddy', 'workbuddy']);
+export const STOP_STDOUT_UNSUPPORTED_TOOLS = new Set(['codebuddy', 'workbuddy', 'codex']);

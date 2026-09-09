@@ -25,7 +25,7 @@ describe('formatStopHookOutput', () => {
   });
 
   it('unknown tool: defaults to hookSpecificOutput (Claude schema)', () => {
-    const result = formatStopHookOutput('x', 'codex');
+    const result = formatStopHookOutput('x', 'unknown');
     const parsed = JSON.parse(result);
     expect(parsed.hookSpecificOutput.additionalContext).toBe('x');
   });
@@ -52,4 +52,8 @@ describe('formatStopHookOutput', () => {
     const parsed = JSON.parse(result);
     expect(parsed.hookSpecificOutput.additionalContext).toBe('');
   });
+});
+
+it.each(['codex', 'Codex'])('%s Stop uses a non-blocking common output field', (tool) => {
+  expect(JSON.parse(formatStopHookOutput('hint', tool))).toEqual({ systemMessage: 'hint' });
 });

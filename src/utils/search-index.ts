@@ -450,6 +450,45 @@ async function collectFlatMdEntries(
 }
 
 /**
+ * Namespace-aware learnings collector. Always indexes the flat `.md` files at the
+ * `learnings/` root (shared with the whole team — the zero-migration invariant),
+ * and additionally indexes `.md` files under each active-project subdirectory.
+ * Any subdirectory NOT in `namespaces` is skipped, so a member never sees another
+ * project's private learnings in recall.
+ *
+ * When `namespaces` is undefined the collector degrades to root-only, matching the
+ * historical flat behavior for teams without a projects manifest.
+ */
+async function collectLearningsEntries(
+  dir: string,
+  namespaces: string[] | undefined,
+  voteCounts: Map<string, number>,
+): Promise<SearchIndexEntry[]> {
+  if (!await pathExists(dir)) return [];
+  // Root-level .md = always shared.
+  const out: SearchIndexEntry[] = await collectFlatMdEntries(dir, 'learnings', voteCounts);
+
+  for (const ns of namespaces ?? []) {
+    // Defense-in-depth: a namespace is a path segment (learnings/<ns>/). Skip
+    // anything that isn't a safe single segment so a hand-edited config can't
+    // make the index scan outside the learnings directory. (Inlined rather than
+    // importing from ../projects.js to keep this low-level util dependency-free.)
+    if (!/^[A-Za-z0-9._-]+$/.test(ns) || ns === '.' || ns === '..') continue;
+    const nsDir = path.join(dir, ns);
+    if (!await pathExists(nsDir)) continue;
+    const files = await listFilesRecursive(nsDir);
+    for (const rel of files) {
+      if (!rel.endsWith('.md')) continue;
+      // Prefix the id with the namespace so it stays unique against the root and
+      // other namespaces (e.g. `hai-inference/deploy-note.md`).
+      const e = await entryFromMdFile(path.join(nsDir, rel), path.join(ns, rel), 'learnings', voteCounts);
+      if (e) out.push(e);
+    }
+  }
+  return out;
+}
+
+/**
  * Collect entries from a recursive *.md directory (used for `docs` and
  * `rules`, which may have subdirectories like `rules/common/`).
  */
@@ -508,6 +547,14 @@ async function collectSkillEntries(
 /** Options for the multi-category build. */
 export interface BuildIndexOptions {
   learningsDir?: string;
+  /**
+   * Active learnings namespaces (project ids). When provided, the learnings
+   * collector indexes the flat root `.md` files (always shared) PLUS the `.md`
+   * files under each named subdirectory, and skips every other subdirectory —
+   * so project-private learnings only surface for members of that project.
+   * When undefined, only the flat root is indexed (legacy behavior).
+   */
+  learningsNamespaces?: string[];
   docsDir?: string;
   rulesDir?: string;
   skillsDir?: string;
@@ -546,7 +593,7 @@ export async function buildIndex(
   const entries: SearchIndexEntry[] = [];
 
   if (opts.learningsDir) {
-    entries.push(...await collectFlatMdEntries(opts.learningsDir, 'learnings', voteCounts));
+    entries.push(...await collectLearningsEntries(opts.learningsDir, opts.learningsNamespaces, voteCounts));
   }
   if (opts.docsDir) {
     entries.push(...await collectRecursiveMdEntries(opts.docsDir, 'docs', voteCounts));

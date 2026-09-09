@@ -110,7 +110,7 @@ teamai push → create branch + MR → reviewer approves + merges
               SessionStart hook → teamai pull → synced to local AI tools
 ```
 
-Members push changes via `teamai push`, which opens a Merge Request for review. Re-running `teamai push` on a resource that is still waiting in an unmerged PR updates that PR in place instead of opening a duplicate. Once merged, `teamai pull` (triggered automatically on session start via the SessionStart hook) syncs the latest resources locally. Skills sync to `~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`, `~/.codebuddy/skills/`, etc. In a **project-scope** install, SessionStart first creates that tool's project root (e.g. `<project>/.claude`) if it is missing, then pulls into it — a bare `teamai pull` still will not invent agent directories.
+Members push changes via `teamai push`, which opens a Merge Request for review. Re-running `teamai push` on a resource that is still waiting in an unmerged PR updates that PR in place instead of opening a duplicate. Once merged, `teamai pull` (triggered automatically on session start via the SessionStart hook) syncs the latest resources locally. Skills sync to `~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`, `~/.codebuddy/skills/`, etc. For Codex, an existing skill under `~/.agents/skills/` is updated there instead of duplicated under `~/.codex/skills/`. In a **project-scope** install, SessionStart first creates that tool's project root (e.g. `<project>/.claude`) if it is missing, then pulls into it — a bare `teamai pull` still will not invent agent directories.
 
 ### Team Hooks
 
@@ -226,7 +226,8 @@ Matched: conflict | Missing: port
 ```bash
 teamai import --from-repo https://github.com/org/repo
 teamai import --from-org myorg              # batch import all repos
-teamai codebase --lint                      # health check
+teamai codebase --extract /path/to/repo     # local extract into teamwiki/
+teamai codebase --lint --output /path/to/repo # check the locally extracted graph
 ```
 
 The graph stores components, interfaces, configs, and cross-repo import edges. `teamai recall` uses it for graph-boosted re-ranking.
@@ -266,7 +267,8 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 | `teamai recall enable/disable/status` | Toggle or check recall state |
 | `teamai recall promote [learningId]` | Promote a high-confidence learning to formal knowledge (skills/rules/docs) |
 | `teamai recall maintenance` | Maintain knowledge base health: prune low-confidence learnings, writeback confidence scores, flag stale entries |
-| `teamai import` | Import knowledge (`--dir`, `--from-repo`, `--from-org`, `--from-repo-list`, `--from-mr`, `--from-iwiki`) |
+| `teamai import` | Import knowledge (`--dir`, `--from-repo`, `--from-org`, `--from-repo-list`, `--from-mr`) |
+| `teamai codebase --extract [path]` | Extract code facts and build the local graph under `teamwiki/` |
 | `teamai codebase --lint` | Knowledge graph health check |
 | `teamai ci extract-mr --url <url>` | CI: extract knowledge from MR, post comments, write after merge |
 | `teamai members` | List team members |

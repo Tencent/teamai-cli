@@ -5,7 +5,7 @@ import { requireInit, loadState, saveState, detectProjectConfig, loadLocalConfig
 import { pullRepo, getHeadRev } from './utils/git.js';
 import { flushPendingLearnings } from './utils/pending-learnings.js';
 import { log, spinner } from './utils/logger.js';
-import { pathExists, remove, listFiles, listDirs, readFileSafe } from './utils/fs.js';
+import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSafe } from './utils/fs.js';
 import { injectClaudeMdSection } from './utils/claudemd.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler } from './resources/index.js';
 import { ResourceHandler } from './resources/base.js';
@@ -32,6 +32,7 @@ import {
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
+import { loadProjectsManifest, resolveProjectResourceNamespaces, mergeNamespaces } from './projects.js';
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
 
@@ -120,32 +121,67 @@ async function refreshTeamRepo(
 }
 
 async function buildRolePullContext(localConfig: LocalConfig): Promise<RolePullContext | null> {
-  if (!localConfig.primaryRole) return null;
+  const activeProjects = localConfig.projects ?? [];
+  const hasRole = !!localConfig.primaryRole;
+  const hasProjects = activeProjects.length > 0;
+  // No role and no active project → nothing to filter by (unchanged behavior).
+  if (!hasRole && !hasProjects) return null;
 
-  let manifest;
-  try {
-    manifest = await loadRolesManifest(localConfig.repo.localPath);
-  } catch {
-    log.warn('Could not load roles manifest. Skipping role-based filtering.');
-    return null;
+  // ── Role namespaces (optional) ──
+  let roleNamespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [] };
+  let allRoleSkillNamespaces = new Set<string>();
+  if (hasRole) {
+    let rolesManifest;
+    try {
+      rolesManifest = await loadRolesManifest(localConfig.repo.localPath);
+    } catch {
+      log.warn('Could not load roles manifest. Skipping role-based filtering.');
+      rolesManifest = null;
+    }
+    if (rolesManifest) {
+      try {
+        roleNamespaces = resolveRoleResourceNamespaces({
+          manifest: rolesManifest,
+          primaryRole: localConfig.primaryRole!,
+          additionalRoles: localConfig.additionalRoles ?? [],
+        });
+        allRoleSkillNamespaces = new Set(rolesManifest.roles.flatMap((role) => role.resources.skills));
+      } catch {
+        log.warn(`Role "${localConfig.primaryRole}" not found in manifest. Falling back to unfiltered sync.`);
+        log.warn('Run `teamai roles set <role>` to pick a valid role.');
+        // A misconfigured role with no active project means we can't filter safely.
+        if (!hasProjects) return null;
+      }
+    } else if (!hasProjects) {
+      return null;
+    }
   }
 
-  let activeNamespaces;
-  try {
-    activeNamespaces = resolveRoleResourceNamespaces({
-      manifest,
-      primaryRole: localConfig.primaryRole,
-      additionalRoles: localConfig.additionalRoles ?? [],
-    });
-  } catch (e) {
-    log.warn(`Role "${localConfig.primaryRole}" not found in manifest. Falling back to unfiltered sync.`);
-    log.warn('Run `teamai roles set <role>` to pick a valid role.');
-    return null;
+  // ── Project namespaces (optional) ──
+  let projectNamespaces = { knowledge: [] as string[], skills: [] as string[], learnings: [] as string[] };
+  let allProjectSkillNamespaces = new Set<string>();
+  if (hasProjects) {
+    const projectsManifest = await loadProjectsManifest(localConfig.repo.localPath);
+    if (!projectsManifest) {
+      log.warn('Active projects configured but no projects manifest found. Skipping project-based filtering.');
+    } else {
+      try {
+        projectNamespaces = resolveProjectResourceNamespaces({
+          manifest: projectsManifest,
+          activeProjects,
+        });
+        allProjectSkillNamespaces = new Set(projectsManifest.projects.flatMap((p) => p.resources.skills));
+      } catch (e) {
+        log.warn(`${(e as Error).message} Falling back to role-only filtering.`);
+      }
+    }
   }
 
-  const allSkillNamespaces = new Set(
-    manifest.roles.flatMap((role) => role.resources.skills),
-  );
+  const activeNamespaces = mergeNamespaces(roleNamespaces, projectNamespaces);
+
+  // Skill activation set spans BOTH dimensions: a skill is inactive only if it
+  // lives in a namespace that neither an active role nor an active project selects.
+  const allSkillNamespaces = new Set<string>([...allRoleSkillNamespaces, ...allProjectSkillNamespaces]);
   const inactiveSkillNamespaces = [...allSkillNamespaces].filter((namespace) => !activeNamespaces.skills.includes(namespace));
   const activeSkillNames = new Set<string>();
   const inactiveSkillNames = new Set<string>();
@@ -708,23 +744,66 @@ async function pullForScope(
 
       // user scope: sync learnings to ~/.teamai/learnings/ (legacy behavior)
       // project scope: use learnings directly from repo
+      //
+      // Learnings namespace isolation: the flat root .md files are always shared;
+      // project subdirectories are synced/indexed only when the active projects
+      // select them. `activeLearningsNamespaces` is the set from role∪project
+      // resolution (roles contribute none, so effectively the project set).
+      const activeLearningsNamespaces = roleContext?.activeNamespaces.learnings ?? [];
+      const activeLearningsSet = new Set(activeLearningsNamespaces);
+      // Filter for fse.copy: keep the root and any file/dir whose top-level
+      // segment (relative to learningsRepoDir) is either a root-level .md (shared)
+      // or an active-project subdirectory. Everything else (inactive project dirs)
+      // is excluded so no other project's private learnings land on this machine.
+      const learningsCopyFilter = (src: string): boolean => {
+        if (path.basename(src).startsWith('.')) return false;
+        const rel = path.relative(learningsRepoDir, src);
+        if (rel === '') return true; // the root dir itself
+        const top = rel.split(path.sep)[0];
+        // Root-level file (shared) → top has no further segments and is a file.
+        if (!rel.includes(path.sep)) {
+          // Could be a root-level .md (keep) or a subdirectory entry (keep only
+          // if it's an active namespace dir; fse.copy will then recurse into it).
+          return top.endsWith('.md') || activeLearningsSet.has(top);
+        }
+        // Nested path: keep only if under an active namespace.
+        return activeLearningsSet.has(top);
+      };
+      const countLearnings = async (baseDir: string): Promise<number> => {
+        // Count root-level shared .md + active-namespace .md only.
+        let n = (await listFiles(baseDir)).filter((f) => f.endsWith('.md')).length;
+        for (const ns of activeLearningsNamespaces) {
+          const nsDir = path.join(baseDir, ns);
+          if (await pathExists(nsDir)) {
+            n += (await listFilesRecursive(nsDir)).filter((f) => f.endsWith('.md')).length;
+          }
+        }
+        return n;
+      };
       let learningsCount = 0;
       let effectiveLearningsDir: string | undefined;
       if (localConfig.scope === 'user') {
         if (await pathExists(learningsRepoDir)) {
+          // Remove any stale namespace subdirectories no longer active before
+          // re-copying, so deactivating a project cleans up its local learnings.
+          if (await pathExists(LEARNINGS_LOCAL_DIR)) {
+            for (const existing of await listDirs(LEARNINGS_LOCAL_DIR)) {
+              if (!activeLearningsSet.has(existing)) {
+                await fse.remove(path.join(LEARNINGS_LOCAL_DIR, existing));
+              }
+            }
+          }
           await fse.copy(learningsRepoDir, LEARNINGS_LOCAL_DIR, {
             overwrite: true,
-            filter: (src: string) => !path.basename(src).startsWith('.'),
+            filter: learningsCopyFilter,
           });
-          const allFiles = await listFiles(learningsRepoDir);
-          learningsCount = allFiles.filter((f) => f.endsWith('.md')).length;
+          learningsCount = await countLearnings(learningsRepoDir);
         }
         effectiveLearningsDir = await pathExists(LEARNINGS_LOCAL_DIR) ? LEARNINGS_LOCAL_DIR : undefined;
       } else {
         effectiveLearningsDir = await pathExists(learningsRepoDir) ? learningsRepoDir : undefined;
         if (effectiveLearningsDir) {
-          const allFiles = await listFiles(learningsRepoDir);
-          learningsCount = allFiles.filter((f) => f.endsWith('.md')).length;
+          learningsCount = await countLearnings(learningsRepoDir);
         }
       }
 
@@ -748,6 +827,7 @@ async function pullForScope(
         const { buildIndex } = await import('./utils/search-index.js');
         const elapsed = await buildIndex({
           learningsDir: effectiveLearningsDir,
+          learningsNamespaces: activeLearningsNamespaces,
           docsDir: await pathExists(docsRepoDir) ? docsRepoDir : undefined,
           rulesDir: await pathExists(rulesRepoDir) ? rulesRepoDir : undefined,
           skillsDir: await pathExists(skillsRepoDir) ? skillsRepoDir : undefined,

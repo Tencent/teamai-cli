@@ -7,7 +7,7 @@ import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
 import { ResourceHandler } from './resources/base.js';
-import { ensureSkillFrontmatter } from './resources/skills.js';
+import { ensureSkillFrontmatter, resolveSkillDestination } from './resources/skills.js';
 import { getUserHome } from './utils/home.js';
 
 // ─── Built-in skills deployment ──────────────────────────
@@ -117,11 +117,9 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
     }
     if (localConfig && isAgentDisabled(localConfig, tool)) continue;
 
-    const targetSkillsDir = path.join(baseDir, toolPath.skills);
-
     for (const skillName of skillNames) {
       const srcDir = path.join(builtinDir, skillName);
-      const destDir = path.join(targetSkillsDir, skillName);
+      const destDir = await resolveSkillDestination(tool, toolPath.skills, baseDir, skillName, srcDir);
 
       try {
         await copyBuiltinSkillDir(srcDir, destDir);

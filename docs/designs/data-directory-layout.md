@@ -1,7 +1,8 @@
 # Design: teamai data directory layout — global home + per-project partitioning
 
-> Status: **P0 implemented** (this doc ships with the P0 PR for issue #374).
-> P1–P3 are follow-up phases, tracked below.
+> Status: **P0 + P1 implemented** (issue #374). P1 shipped as PRs #397 / #402 /
+> #406 / #414 / #417 (partition routing) and the P1-3 auto-migration below.
+> P2–P3 are follow-up phases, tracked below.
 
 ## Problem
 
@@ -114,12 +115,84 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
   deploy to the repo root; run inside a worktree, resources land in the worktree and
   the main checkout is untouched (`src/__tests__/detect-subdir.test.ts` + manual run).
 
+## P1-3 — automatic migration (implemented)
+
+An install created before partitioning keeps its machine data in the business repo
+at `<workspaceRoot>/.teamai/`. P1-2 routed NEW installs to the partition and reads
+old installs through a legacy fallback; P1-3 moves a real legacy `.teamai/` INTO the
+partition on the next write command, so the workspace ends up with zero residue.
+
+**Trigger** (`src/migrate.ts`, wired into the global `preAction` hook in `index.ts`):
+- Only `init` / `pull` / `push`. Read-only commands (`status`, `recall`, …) keep using
+  the double-read fallback and never move data.
+- `hook-dispatch` is excluded outright (via `TEAMAI_HOOK_SUBCOMMANDS`): it is a
+  high-frequency silent path and must never move 12 MB.
+- `--dry-run` (the existing global flag) previews without writing.
+
+**Gate** (`planMigration`, deliberately NOT `detectProjectConfig` — that
+short-circuits on an existing partition and runs the self-heal bootstrap as a side
+effect, both of which would mask the raw legacy state). Act iff:
+- in a git repo (the partition only exists for git repos), AND
+- `<workspaceRoot>/.teamai/config.yaml` exists, AND
+- the legacy config is `scope: project` (user data never lives under `.teamai/`), AND
+- the legacy config is NOT `kind: self` — **self mode is a hard no-op**: its `.teamai/`
+  is team knowledge committed to main, and `init --self` already retires any partition,
+  so moving it would break "knowledge on main".
+
+The plan's **mode** then depends on the partition: a full copy when
+`<partition>/config.yaml` does not exist yet, or **retire-only** when it does (a prior
+run built the partition but was interrupted before retiring the source — see Interrupt
+recovery). retire-only never re-copies onto the authoritative partition; it only cleans
+up the leftover legacy dir.
+
+**Steps** (`runMigration`) — copy → verify → atomic rename, so an interruption never
+leaves data half-in-both-places:
+
+```
+0. Acquire <legacyDir>/.sync-lock (the exact lock an un-migrated pull/push contends
+   on, since their getDataHome still resolves to the legacy dir pre-migration).
+   Contention → skip this attempt (idempotent; the next write command retries).
+1. Copy legacyDir → <partition>.staging  (raw fse.copy, NOT copyDir — copyDir filters
+   out `.git` and would corrupt the team-repo clone). Skip reports-wt/knowledge-wt
+   (disposable worktrees with absolute gitdirs — rebuilt on demand) and lock files.
+2. Verify staging: config.yaml parses; if the source has team-repo/.git the copy must
+   too; every migratable top-level entry is present. Failure → discard staging, abort,
+   source untouched.
+3. Atomic switch: fse.rename(staging → partition)  (same-filesystem, atomic).
+4. Write <partition>/anchor with the projectAnchor path — the slug is a one-way
+   sha256, so this file is the only reverse lookup; it lives off the workspace.
+5. Release the lock, then retire the source:
+   a. Drop a self-contained `.gitignore` (`*`) INTO legacyDir first. An old
+      install's `.teamai/` was often protected only by a repo-root rule matching
+      `.teamai/`, which does NOT match `.teamai.bak/` — so without this the rename
+      would expose the plaintext env/token to the next `git add`. Written before
+      the rename so the credentials are never in a non-ignored directory.
+   b. Rename legacyDir → the first FREE `.teamai.bak[.N]` name. An existing backup
+      (a prior migration's, or the user's own) is NEVER removed — it may hold
+      irreplaceable data — so we pick `.teamai.bak`, else `.teamai.bak.1`, …
+   The backup is NEVER auto-deleted: it is the manual rollback path.
+```
+
+Interrupt recovery: staging is a separate sibling dir, so a crash before step 3 leaves
+the partition absent and the source intact — a rerun discards `.staging/` and starts
+clean. A crash between steps 3 and 5 leaves the partition built with the legacy dir
+still present; the next write command's `planMigration` sees "partition exists AND
+legacy lingers" and returns a **retire-only** plan that finishes the job — it retires
+the leftover legacy dir to `.teamai.bak/` WITHOUT re-copying onto the now-authoritative
+partition. This closes the gap where the legacy dir (including its plaintext `env`)
+would otherwise linger in the workspace forever, breaking the zero-residue guarantee.
+
+The staged team-repo clone is smoke-checked (`git rev-parse HEAD`) before the rename,
+so a partial/corrupt copy aborts with the source untouched rather than promoting a
+broken clone. If a write command's migration fails, teamai prints a clean error and
+exits non-zero (the source is intact, so a rerun retries safely) instead of surfacing
+a raw async-hook rejection.
+
+**Downgrade is not supported** — an older teamai treats a partitioned install as
+uninitialized; `.teamai.bak/` is the manual rollback. Flag prominently in release notes.
+
 ## Follow-up phases (not in this PR)
 
-- **P1** — `slug(projectAnchor) = <basename>-<sha256 prefix>`, `projectDataHome(anchor)`,
-  partition-level `.sync-lock` for shared clones, `status` partition print, and the
-  automatic migration (copy → verify → atomic rename → keep `.teamai.bak/` backup;
-  triggered only on write commands, never on read/hook paths).
 - **P2** — self (single-repo) mode slimming: only team knowledge (class B) stays in
   the repo.
 - **P3** — functionize module-load-time path constants (so tests that swap `$HOME`
@@ -128,6 +201,6 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
 
 ### Explicitly out of scope
 
-`teamai migrate` / `gc` / `--revert` commands; cross-project shared team-repo clone;
-Codex `.agents/skills` landing (separate issue). Downgrade to an older teamai after
+`teamai migrate` / `gc` / `--revert` commands; cross-project shared team-repo clone.
+Downgrade to an older teamai after
 P1 migration is not supported (`.teamai.bak/` is the manual rollback path).

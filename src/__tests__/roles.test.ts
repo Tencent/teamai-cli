@@ -151,6 +151,7 @@ describe('resolveRoleResourceNamespaces', () => {
     expect(resolveRoleResourceNamespaces({ manifest, primaryRole: 'hai', additionalRoles: [] })).toEqual({
       knowledge: ['common', 'hai'],
       skills: ['common', 'hai'],
+      learnings: [],
     });
   });
 
@@ -158,6 +159,7 @@ describe('resolveRoleResourceNamespaces', () => {
     expect(resolveRoleResourceNamespaces({ manifest, primaryRole: 'hai', additionalRoles: ['pm', 'thpc'] })).toEqual({
       knowledge: ['common', 'hai', 'pm', 'thpc'],
       skills: ['common', 'hai', 'pm', 'thpc'],
+      learnings: [],
     });
   });
 
@@ -165,6 +167,7 @@ describe('resolveRoleResourceNamespaces', () => {
     expect(resolveRoleResourceNamespaces({ manifest, primaryRole: 'hai', additionalRoles: ['pm', 'hai'] })).toEqual({
       knowledge: ['common', 'hai', 'pm'],
       skills: ['common', 'hai', 'pm'],
+      learnings: [],
     });
   });
 

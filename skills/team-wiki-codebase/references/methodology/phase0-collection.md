@@ -31,7 +31,7 @@
 **边类型**: `[CALLS]`(同步RPC/HTTP) / `[PUBLISHES]`(异步MQ) / `[CONSUMES]`(MQ消费) / `[READS]`(DB读) / `[WRITES]`(DB写) / `[CONFIGURES]`(配置驱动) / `[MAPS_TO]`(产品→代码)
 
 **构建方法**（按可用性排序）:
-1. **`team-wiki compile code --extract ast,heuristic --write`** — Tree-sitter 结构边（**TS/JS/Python/Go** 等）+ 多语言 heuristic 事实页
+1. **`teamai codebase --extract`** — Tree-sitter 结构边（**TS/JS/Python/Go** 等）+ 多语言 heuristic 事实页（writes `teamwiki/`）
 2. Grep + Read（Agent K1/K2）— 补充动态路由、配置驱动调用
 3. 解析编排配置 → 模块→命令映射
 4. 解析 Proto/IDL/DDL → 数据结构和表关系（结构化文件，可精确解析）
@@ -39,7 +39,7 @@
 6. API 映射 → 外部 API 名称 → 内部 Handler 入口
 
 > `code-ast` 对相对 import 可产出 `DEPENDS_ON` 边；包级/动态调用仍可能遗漏，标 `[UNVERIFIED]` 或 `AMBIGUOUS`。
-> 能力 ID 与边优先级见插件内 `GRAPH-CAPABILITIES.md`。
+> AST 结果优先于 heuristic。There is no separate capabilities doc in this package; use `teamai codebase --extract` output under `teamwiki/`.
 
 ## 输入源优先级
 

@@ -174,13 +174,27 @@ GitLab Provider 通过 GitLab **REST API v4** 工作，**不需要任何外部 C
 通过标准 GitLab 环境变量配置：
 
 ```bash
-export GITLAB_URL=https://gitlab.example.com   # 自托管实例 base URL；默认 https://gitlab.com
-export GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxx      # Personal Access Token，需要 api scope
+export GITLAB_URL=https://gitlab.example.com    # 自托管实例 base URL；默认 https://gitlab.com
+export GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxx       # Personal Access Token，需要 api scope
+export GITLAB_API_PREFIX=api/v4                  # API 路径前缀；默认 api/v4（标准 GitLab）
 ```
 
 token 变量支持三个名字（按优先级）：`GITLAB_TOKEN` > `GITLAB_PRIVATE_TOKEN` > `GITLAB_PAT`。空值/纯空白视为未设置，会继续尝试下一个别名。
 
 `GITLAB_URL` **必须带 scheme**（`https://` 或 `http://`）。写成 `gitlab.example.com` 会在执行 GitLab 操作时报错退出，而不是静默回落到 gitlab.com。内网 http 实例、非标准端口、以及挂在子路径下的部署（`https://example.com/gitlab`）都会被完整保留，包括 clone URL。
+
+`GITLAB_API_PREFIX` 用于网关代理场景：某些自托管实例通过网关统一路由，GitLab API 被挂载到非标准路径（如 `/api/gitlab` 而不是标准的 `/api/v4`）。该配置也适用于 `teamai import --from-org` 的 group 仓库列表请求（包括所有分页）；未设置或为空时仍使用 `api/v4`。此时设置该变量可避免 405 错误。示例：
+
+```bash
+# 标准 GitLab 自托管（默认，无需设置 GITLAB_API_PREFIX）
+export GITLAB_URL=https://gitlab.example.com
+export GITLAB_TOKEN=glpat-xxx
+
+# 网关代理场景（API 路径被改为 /api/gitlab）
+export GITLAB_URL=https://code.company.com
+export GITLAB_API_PREFIX=api/gitlab
+export GITLAB_TOKEN=glpat-xxx
+```
 
 ### 自托管实例检测
 
@@ -217,6 +231,8 @@ git@git.example.com:Group/Subgroup/repo.git
 | 指定 reviewer          | 解析 username → user id，提交 `reviewer_ids`                |
 | 拉取 MR 数据           | `GET /api/v4/projects/:id/merge_requests/:iid` + commits + changes；MR URL 的 host 必须与已配置实例（`GITLAB_URL` / `TEAMAI_GITLAB_HOST`，默认 gitlab.com）一致，否则拒绝请求，避免把 token 发往未配置的 host |
 | 列出 group 仓库        | `GET /api/v4/groups/:path/projects`（分页，`include_subgroups=true` 含子组） |
+
+GitLab API 表中的 `/api/v4` 为默认前缀；设置 `GITLAB_API_PREFIX` 后，API 请求使用配置的前缀。
 
 ### 默认 email 域
 

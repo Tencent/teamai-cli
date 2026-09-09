@@ -253,7 +253,7 @@ describe('hook-handlers registry', () => {
     expect(parsed.followup_message).toBe('[teamai] hello');
   });
 
-  it('contribute-check handler asks to stash (not stdout) for codebuddy', async () => {
+  it.each(['codebuddy', 'codex'])('contribute-check handler asks to stash (not stdout) for %s', async (tool) => {
     const registry = buildHandlerRegistry();
     const handler = registry.find(
       (r) => r.event === 'stop' && r.handler.name === 'contribute-check',
@@ -263,7 +263,7 @@ describe('hook-handlers registry', () => {
     // returns hint:null (it persisted the hint as pendingHint itself).
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: null });
 
-    const result = await handler.execute({ session_id: 's1', cwd: '/x' }, 'codebuddy');
+    const result = await handler.execute({ session_id: 's1', cwd: '/x' }, tool);
     expect(result).toBeNull();
     expect(mockContributeCheckForSession).toHaveBeenCalledWith('s1', '/x', undefined, true);
   });
@@ -364,7 +364,7 @@ describe('hook-handlers registry', () => {
     expect(result).toContain('votes nudge');
   });
 
-  it('pending-hint handler injects stashed hint for codebuddy on prompt-submit', async () => {
+  it.each(['codebuddy', 'codex'])('pending-hint handler injects stashed hint for %s on prompt-submit', async (tool) => {
     const registry = buildHandlerRegistry();
     const handler = registry.find(
       (r) => r.event === 'prompt-submit' && r.handler.name === 'pending-hint',
@@ -372,7 +372,7 @@ describe('hook-handlers registry', () => {
 
     mockTakePendingHint.mockResolvedValueOnce('[teamai] stashed');
 
-    const result = await handler.execute({ session_id: 's3', cwd: '/x' }, 'codebuddy');
+    const result = await handler.execute({ session_id: 's3', cwd: '/x' }, tool);
     expect(result).not.toBeNull();
     const parsed = JSON.parse(result!);
     expect(parsed.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
@@ -697,7 +697,7 @@ describe('hook-handlers registry', () => {
 
   // ── Change 3: votes-sync stash branch (STOP_STDOUT_UNSUPPORTED_TOOLS) ──
 
-  it('votes-sync stashes nudge via stashVotesHint for codebuddy (stdout ignored)', async () => {
+  it.each(['codebuddy', 'codex'])('votes-sync stashes nudge via stashVotesHint for %s (stdout ignored)', async (tool) => {
     const registry = buildHandlerRegistry();
     const handler = registry.find(
       (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
@@ -710,7 +710,7 @@ describe('hook-handlers registry', () => {
 
     const result = await handler.execute(
       { session_id: 'sid-votes-stash', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'codebuddy',
+      tool,
     );
     // Stash path returns null (hint goes to the votes-hint sidecar)
     expect(result).toBeNull();
@@ -781,7 +781,7 @@ describe('hook-handlers registry', () => {
 
   // ── Change 3: pending-hint replays and merges the votes hint ──
 
-  it('pending-hint merges contribute hint and votes hint for codebuddy', async () => {
+  it.each(['codebuddy', 'codex'])('pending-hint merges contribute hint and votes hint for %s', async (tool) => {
     const registry = buildHandlerRegistry();
     const handler = registry.find(
       (r) => r.event === 'prompt-submit' && r.handler.name === 'pending-hint',
@@ -790,7 +790,7 @@ describe('hook-handlers registry', () => {
     mockTakePendingHint.mockResolvedValueOnce('[teamai] contribute hint');
     mockTakePendingVotesHint.mockResolvedValueOnce('[teamai] votes hint');
 
-    const result = await handler.execute({ session_id: 'sid-merge', cwd: '/x' }, 'codebuddy');
+    const result = await handler.execute({ session_id: 'sid-merge', cwd: '/x' }, tool);
     expect(result).not.toBeNull();
     const parsed = JSON.parse(result!);
     const ctx = parsed.hookSpecificOutput.additionalContext;

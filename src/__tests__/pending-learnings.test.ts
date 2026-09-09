@@ -50,6 +50,16 @@ describe('savePendingLearning', () => {
     const written = fs.readFileSync(path.join(pendingDir, filename), 'utf-8');
     expect(written).toBe(content);
   });
+
+  it('preserves a namespace subdirectory in relPath (PR #426 P1 regression)', async () => {
+    const relPath = path.join('alpha-notes', 'session-2026-01-01-abc123.md');
+    const content = '# Project-private learning';
+    await savePendingLearning(repoPath, relPath, content);
+
+    const pendingDir = pendingLearningsDir(repoPath);
+    const written = fs.readFileSync(path.join(pendingDir, relPath), 'utf-8');
+    expect(written).toBe(content);
+  });
 });
 
 describe('flushPendingLearnings', () => {
@@ -138,6 +148,25 @@ describe('flushPendingLearnings', () => {
     // both files should remain
     const remaining = fs.readdirSync(pendingDir).filter((n) => !n.startsWith('.'));
     expect(remaining.length).toBe(2);
+  });
+
+  it('re-pushes a namespaced pending learning into its subdir (PR #426 P1 regression)', async () => {
+    const relPath = path.join('alpha-notes', 'notes-2026-01-01-xyz.md');
+    fs.mkdirSync(path.join(pendingDir, 'alpha-notes'), { recursive: true });
+    fs.writeFileSync(path.join(pendingDir, relPath), '# Alpha private', 'utf-8');
+
+    vi.mocked(pushLearningToOrigin).mockResolvedValueOnce(true);
+
+    const result = await flushPendingLearnings(repoPath, 'alice');
+
+    expect(result).toBe(1);
+    // pushed with the namespace-preserving relPath, not the bare filename
+    expect(pushLearningToOrigin).toHaveBeenCalledWith(repoPath, relPath, expect.any(String));
+    // landed under learnings/alpha-notes/, NOT the shared root
+    expect(fs.existsSync(path.join(repoPath, 'learnings', 'alpha-notes', 'notes-2026-01-01-xyz.md'))).toBe(true);
+    expect(fs.existsSync(path.join(repoPath, 'learnings', 'notes-2026-01-01-xyz.md'))).toBe(false);
+    // pending copy removed after success
+    expect(fs.existsSync(path.join(pendingDir, relPath))).toBe(false);
   });
 
   it('skips entries starting with "."', async () => {

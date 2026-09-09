@@ -664,6 +664,7 @@ describe('gitlabListOrgRepos', () => {
     vi.clearAllMocks();
     process.env.GITLAB_TOKEN = 'glpat_test';
     delete process.env.GITLAB_URL;
+    delete process.env.GITLAB_API_PREFIX;
   });
   afterEach(() => {
     global.fetch = originalFetch;
@@ -678,6 +679,33 @@ describe('gitlabListOrgRepos', () => {
     archived: false,
     star_count: id,
     last_activity_at: '2026-01-01T00:00:00Z',
+  });
+
+  it.each([
+    [undefined, 'api/v4'],
+    ['', 'api/v4'],
+    ['   ', 'api/v4'],
+    ['api/gitlab', 'api/gitlab'],
+    [' /api/gitlab/ ', 'api/gitlab'],
+  ])('uses API prefix %j on every page and preserves the instance root', async (prefix, expected) => {
+    process.env.GITLAB_URL = 'http://gitlab.example.com:8080/gitlab/';
+    if (prefix !== undefined) process.env.GITLAB_API_PREFIX = prefix;
+    const seen: string[] = [];
+    global.fetch = vi.fn(async (url: string) => {
+      seen.push(String(url));
+      const items = seen.length === 1
+        ? Array.from({ length: 100 }, (_, i) => project(i, `g/sub/repo-${i}`))
+        : [project(100, 'g/sub/last')];
+      return new Response(JSON.stringify(items), { status: 200 });
+    }) as never;
+
+    const repos = await gitlabListOrgRepos('g/sub');
+
+    expect(repos).toHaveLength(101);
+    expect(seen).toEqual([1, 2].map(page =>
+      `http://gitlab.example.com:8080/gitlab/${expected}/groups/g%2Fsub/projects`
+      + `?per_page=100&page=${page}&include_subgroups=true`,
+    ));
   });
 
   it('requests subgroup projects too', async () => {

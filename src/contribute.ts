@@ -9,6 +9,7 @@ import { ensureDir, pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { markContributed } from './contribute-check.js';
 import { savePendingLearning } from './utils/pending-learnings.js';
+import { isSafeNamespaceSegment, resolveActiveLearningsNamespaces } from './projects.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { LEARNINGS_LOCAL_DIR, getDataHome } from './types.js';
 
@@ -18,6 +19,35 @@ import { LEARNINGS_LOCAL_DIR, getDataHome } from './types.js';
  * `recall` only picks it up after the next `teamai pull` rebuilds the index (#85).
  * Mirrors the per-scope indexing pull.ts does after syncing learnings.
  */
+/**
+ * Decide which learnings subdirectory a contribution lands in — resolved from
+ * the manifest's `resources.learnings`, the SAME mapping `pull` indexes by (NOT
+ * the raw project id, which the schema allows to differ). Async because it reads
+ * the manifest.
+ *
+ * - Exactly one active learnings namespace → that namespace's subdir (isolated).
+ * - Zero (no project, or the active projects declare no learnings namespace) →
+ *   the shared root (empty string).
+ * - Multiple active learnings namespaces → the shared root, because the
+ *   contribution's ownership is ambiguous; a member on several projects can still
+ *   target one explicitly by contributing from that project's directory. This
+ *   favors the safe default (visible to all) over silently guessing a namespace.
+ */
+async function resolveLearningsSubdir(localConfig: LocalConfig): Promise<string> {
+  const namespaces = await resolveActiveLearningsNamespaces(
+    localConfig.repo.localPath,
+    localConfig.projects ?? [],
+  );
+  const sub = namespaces.length === 1 ? namespaces[0] : '';
+  // Defense-in-depth: the namespace is a path component here. It is validated at
+  // the manifest boundary, but refuse anything that isn't a safe single segment
+  // rather than let it escape the learnings/ directory.
+  if (sub && !isSafeNamespaceSegment(sub)) {
+    throw new Error(`Invalid learnings namespace "${sub}": must not contain path separators or '..'`);
+  }
+  return sub;
+}
+
 async function rebuildIndexAfterContribute(localConfig: LocalConfig): Promise<void> {
   const repoPath = localConfig.repo.localPath;
   const learningsRepoDir = path.join(repoPath, 'learnings');
@@ -46,6 +76,9 @@ async function rebuildIndexAfterContribute(localConfig: LocalConfig): Promise<vo
   const { buildIndex } = await import('./utils/search-index.js');
   await buildIndex({
     learningsDir: effectiveLearningsDir,
+    // Manifest-resolved namespaces — MUST match what pull indexes by, or a
+    // contribute-time rebuild drops the project's other learnings from recall.
+    learningsNamespaces: await resolveActiveLearningsNamespaces(repoPath, localConfig.projects ?? []),
     docsDir: (await pathExists(docsRepoDir)) ? docsRepoDir : undefined,
     rulesDir: (await pathExists(rulesRepoDir)) ? rulesRepoDir : undefined,
     skillsDir: (await pathExists(skillsRepoDir)) ? skillsRepoDir : undefined,
@@ -139,7 +172,9 @@ export async function contribute(
 
   if (options.dryRun) {
     const filename = generateFilename(options.title);
-    log.info(`[dry-run] Would push: learnings/${filename} (${content.length} bytes)`);
+    const subdir = await resolveLearningsSubdir(localConfig);
+    const relPath = subdir ? path.posix.join(subdir, filename) : filename;
+    log.info(`[dry-run] Would push: learnings/${relPath} (${content.length} bytes)`);
     return;
   }
 
@@ -152,10 +187,16 @@ export async function contribute(
 
   const pushSpin = spinner('Contributing session knowledge...').start();
   const filename = generateFilename(options.title);
+  // Route into an active-project subdir when there is exactly one, else the
+  // shared root. `relPath` is the repo-relative learnings path used everywhere.
+  const learningsSubdir = await resolveLearningsSubdir(localConfig);
+  const relPath = learningsSubdir ? path.posix.join(learningsSubdir, filename) : filename;
 
   try {
     // Prepare destination
-    const aiDocsDir = path.join(repoPath, 'learnings');
+    const aiDocsDir = learningsSubdir
+      ? path.join(repoPath, 'learnings', learningsSubdir)
+      : path.join(repoPath, 'learnings');
     await ensureDir(aiDocsDir);
     const destPath = path.join(aiDocsDir, filename);
 
@@ -182,12 +223,12 @@ export async function contribute(
     // event loop (and hanging the CLI) after the work is done.
     const commitMsg = `[teamai] Contribute session knowledge from ${username}`;
     await withTimeout(
-      pushRepoDirectly(repoPath, commitMsg, [`learnings/${filename}`]),
+      pushRepoDirectly(repoPath, commitMsg, [`learnings/${relPath}`]),
       10_000,
       'Push timeout (10s)',
     );
 
-    pushSpin.succeed(`Contributed: learnings/${filename}`);
+    pushSpin.succeed(`Contributed: learnings/${relPath}`);
 
     // Mark session as contributed (dedup for contribute-check)
     const sessionId = options.sessionId || process.env.CLAUDE_SESSION_ID || '';
@@ -201,7 +242,7 @@ export async function contribute(
     // later pullRepo realign (reset --hard) cannot discard it, and retry on the
     // next pull.
     try {
-      await savePendingLearning(repoPath, filename, content);
+      await savePendingLearning(repoPath, relPath, content);
       pushSpin.warn(`Saved locally (push failed: ${(e as Error).message}). Will retry on the next pull.`);
     } catch {
       pushSpin.fail(`Contribution failed: ${(e as Error).message}`);
@@ -227,7 +268,12 @@ async function contributeSelf(
 ): Promise<void> {
   const username = localConfig.username;
   const filename = generateFilename(options.title);
-  const relPath = `learnings/${filename}`;
+  // Route into the active project's learnings namespace subdir (manifest-resolved,
+  // same mapping pull/recall use), else the shared root — mirroring non-self mode.
+  const selfSubdir = await resolveLearningsSubdir(localConfig);
+  const relPath = selfSubdir
+    ? `learnings/${selfSubdir}/${filename}`
+    : `learnings/${filename}`;
   const commitMsg = `[teamai] Contribute session knowledge from ${username}`;
   const spin = spinner('Contributing session knowledge...').start();
 
@@ -239,8 +285,9 @@ async function contributeSelf(
 
     await withKnowledgeWorktree(localConfig, async (wtConfig) => {
       const wtRepo = wtConfig.repo.localPath;
-      await ensureDir(path.join(wtRepo, 'learnings'));
-      await fs.promises.writeFile(path.join(wtRepo, relPath), content, 'utf-8');
+      const destAbs = path.join(wtRepo, relPath);
+      await ensureDir(path.dirname(destAbs));
+      await fs.promises.writeFile(destAbs, content, 'utf-8');
 
       // Mirror the worktree's learnings into the machine-local dir + rebuild the
       // index so recall sees this contribution immediately — without touching the
@@ -280,6 +327,7 @@ async function contributeSelf(
         const { buildIndex } = await import('./utils/search-index.js');
         await buildIndex({
           learningsDir: await pathExists(LEARNINGS_LOCAL_DIR) ? LEARNINGS_LOCAL_DIR : undefined,
+          learningsNamespaces: await resolveActiveLearningsNamespaces(repoPath, localConfig.projects ?? []),
           docsDir: await pathExists(docsDir) ? docsDir : undefined,
           rulesDir: await pathExists(rulesDir) ? rulesDir : undefined,
           skillsDir: await pathExists(skillsDir) ? skillsDir : undefined,

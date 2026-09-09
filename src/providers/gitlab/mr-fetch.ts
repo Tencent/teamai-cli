@@ -1,6 +1,6 @@
 import { type MRData } from '../../types.js';
 import { log } from '../../utils/logger.js';
-import { getGitLabToken } from './gitlab-api.js';
+import { getGitLabToken, gitlabApiBase } from './gitlab-api.js';
 import { GITLAB_HOST } from './repo-url.js';
 
 /** GitLab MR URL 解析结果 */
@@ -42,8 +42,10 @@ function parseGitLabMRUrl(url: string): ParsedGitLabMR {
         `instance if it is trusted.`,
     );
   }
+  // Use the same API prefix as gitlabApiBase() for consistency with MR creation.
+  const apiPrefix = process.env.GITLAB_API_PREFIX?.trim().replace(/^\/+|\/+$/g, '') || 'api/v4';
   return {
-    apiBase: `${scheme}://${host}/api/v4`,
+    apiBase: `${scheme}://${host}/${apiPrefix}`,
     projectPath,
     mrIid: match[4],
   };

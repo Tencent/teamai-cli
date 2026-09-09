@@ -358,11 +358,13 @@ export async function pushRepoDirectly(localPath: string, message: string, files
  */
 export async function pushLearningToOrigin(
   repoPath: string,
-  filename: string,
+  relPath: string,
   message: string,
 ): Promise<boolean> {
   const git = createGit(repoPath);
-  await git.add([`learnings/${filename}`]);
+  // relPath is relative to learnings/ and may include a namespace subdirectory
+  // (e.g. `alpha-notes/foo.md`); normalize to forward slashes for git.
+  await git.add([`learnings/${relPath.split(path.sep).join('/')}`]);
   const status = await git.status();
   if (status.staged.length > 0) {
     await git.commit(message);

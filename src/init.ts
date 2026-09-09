@@ -20,6 +20,7 @@ import {
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { describeRoles, loadRolesManifest } from './roles.js';
+import { loadProjectsManifest, listProjectIds } from './projects.js';
 import { askQuestion, askConfirmation, askSelection, closePrompt } from './utils/prompt.js';
 import {
   normalizeAgentList,
@@ -110,6 +111,48 @@ async function promptForRoleProfile(
     additionalRoles: [],
     resourceProfileVersion: manifest.version,
   };
+}
+
+/**
+ * Resolve the active logical projects for this directory from the `--project`
+ * flag. Non-interactive and non-auto: a lone project is NOT auto-activated (a
+ * member may legitimately belong to no project — see issue #375 Q1). Accepts a
+ * comma-separated list. Returns `{ projects: [] }` when no flag and no manifest,
+ * so behavior is unchanged for teams without project partitioning.
+ */
+async function resolveActiveProjects(
+  repoPath: string,
+  projectFlag?: string,
+): Promise<Pick<LocalConfig, 'projects'>> {
+  const requested = (projectFlag ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (requested.length === 0) {
+    return { projects: [] };
+  }
+
+  const manifest = await loadProjectsManifest(repoPath);
+  if (!manifest) {
+    throw new Error(
+      `--project given but no projects manifest (manifest/projects.yaml) exists in the team repo.`,
+    );
+  }
+
+  const validIds = new Set(listProjectIds(manifest));
+  for (const id of requested) {
+    if (!validIds.has(id)) {
+      throw new Error(
+        `Unknown project "${id}". Available projects: ${[...validIds].join(', ') || '(none)'}`,
+      );
+    }
+  }
+
+  // Dedupe while preserving order.
+  const seen = new Set<string>();
+  const projects = requested.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
+  return { projects };
 }
 
 /**
@@ -236,7 +279,7 @@ async function isInsideGitRepo(dir: string): Promise<boolean> {
  */
 export async function initHttp(
   url: string,
-  options: GlobalOptions & { scope?: string; role?: string; agent?: string | string[]; force?: boolean; token?: string; inheritUserScope?: boolean },
+  options: GlobalOptions & { scope?: string; role?: string; project?: string; agent?: string | string[]; force?: boolean; token?: string; inheritUserScope?: boolean },
 ): Promise<void> {
   const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
 
@@ -338,6 +381,7 @@ export async function initHttp(
       log.debug(`Role selection skipped: ${msg}`);
     }
   }
+  Object.assign(localConfig, await resolveActiveProjects(localPath, options.project));
 
   // Persist --agent into enabledAgents (additive across runs)
   const requestedAgents = normalizeAgentList(options.agent);
@@ -609,6 +653,7 @@ export async function initSelfRepo(options: GlobalOptions & {
   repo?: string;
   repoPositional?: string;
   role?: string;
+  project?: string;
   agent?: string | string[];
   force?: boolean;
   inheritUserScope?: boolean;
@@ -744,6 +789,7 @@ export async function initSelfRepo(options: GlobalOptions & {
       log.debug(`Role selection skipped: ${msg}`);
     }
   }
+  Object.assign(localConfig, await resolveActiveProjects(localPath, options.project));
   // Which AI tools to set up in this repo (create skills dir + inject hooks +
   // commit their settings.json). Resolved from --agent, else HOME detection
   // (non-interactive), else an interactive picker. Written to enabledAgents,
@@ -903,6 +949,7 @@ export async function init(options: GlobalOptions & {
   repoPositional?: string;
   scope?: string;
   role?: string;
+  project?: string;
   agent?: string | string[];
   force?: boolean;
   http?: string;
@@ -1263,6 +1310,14 @@ export async function init(options: GlobalOptions & {
       log.error(msg);
       process.exit(1);
     }
+  }
+
+  try {
+    Object.assign(localConfig, await resolveActiveProjects(localPath, options.project));
+  } catch (error) {
+    // A bad --project is a user error on the main init path: fail loudly.
+    log.error((error as Error).message);
+    process.exit(1);
   }
 
   // Persist --agent into enabledAgents (additive across runs)

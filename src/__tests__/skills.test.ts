@@ -17,6 +17,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { SkillsHandler } from '../resources/skills.js';
 import { scanTeamRepoNamespaces, ensureSkillFrontmatter } from '../resources/skills.js';
+import { log } from '../utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 describe('SkillsHandler.scanLocalForPush', () => {
@@ -1134,5 +1135,90 @@ describe('SkillsHandler.pullItem honors disabledAgents', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(false);
     // codex is not disabled → synced normally
     expect(await fse.pathExists(path.join(homeDir, '.codex', 'skills', 'team-skill'))).toBe(true);
+  });
+});
+
+describe('SkillsHandler.pullItem Codex shared skills', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-skills-pull-codex-'));
+    vi.stubEnv('HOME', path.join(tmpDir, 'home'));
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  it('updates an existing .agents skill and removes an identical TeamAI .codex copy', async () => {
+    const homeDir = path.join(tmpDir, 'home');
+    const sourcePath = path.join(tmpDir, 'team-repo', 'skills', 'team-skill');
+    const sharedSkillPath = path.join(homeDir, '.agents', 'skills', 'team-skill');
+    const codexSkillPath = path.join(homeDir, '.codex', 'skills', 'team-skill');
+    await fse.ensureDir(codexSkillPath);
+    await fse.ensureDir(sharedSkillPath);
+    await fse.ensureDir(sourcePath);
+    const managedContent = '---\nname: team-skill\ndescription: Updated\n---\n';
+    await fse.writeFile(path.join(sharedSkillPath, 'SKILL.md'), managedContent);
+    await fse.writeFile(path.join(codexSkillPath, 'SKILL.md'), managedContent);
+    await fse.writeFile(path.join(sourcePath, 'SKILL.md'), managedContent);
+
+    const teamConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://example.test/team.git',
+      provider: 'git' as const,
+      reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+      toolPaths: { codex: { skills: '.codex/skills' } },
+    };
+    const localConfig = {
+      repo: { localPath: path.join(tmpDir, 'team-repo'), remote: 'https://example.test/team.git' },
+      username: 'testuser',
+      updatePolicy: 'auto' as const,
+      additionalRoles: [],
+      scope: 'user' as const,
+    };
+
+    await new SkillsHandler().pullItem({
+      name: 'team-skill',
+      type: 'skills',
+      sourcePath,
+      relativePath: 'skills/team-skill',
+    }, teamConfig, localConfig);
+
+    expect(await fse.readFile(path.join(sharedSkillPath, 'SKILL.md'), 'utf8')).toContain('description: Updated');
+    expect(await fse.pathExists(codexSkillPath)).toBe(false);
+
+    await new SkillsHandler().removeItem('team-skill', teamConfig, localConfig);
+    expect(await fse.pathExists(sharedSkillPath)).toBe(false);
+  });
+
+  it('preserves and reports a different .codex copy', async () => {
+    const homeDir = path.join(tmpDir, 'home');
+    const sourcePath = path.join(tmpDir, 'team-repo', 'skills', 'team-skill');
+    const sharedSkillPath = path.join(homeDir, '.agents', 'skills', 'team-skill');
+    const codexSkillPath = path.join(homeDir, '.codex', 'skills', 'team-skill');
+    await fse.ensureDir(sharedSkillPath);
+    await fse.ensureDir(codexSkillPath);
+    await fse.ensureDir(sourcePath);
+    await fse.writeFile(path.join(sharedSkillPath, 'SKILL.md'), 'shared copy');
+    await fse.writeFile(path.join(codexSkillPath, 'SKILL.md'), 'different copy');
+    await fse.writeFile(path.join(sourcePath, 'SKILL.md'), '---\nname: team-skill\ndescription: Updated\n---\n');
+
+    await new SkillsHandler().pullItem({
+      name: 'team-skill', type: 'skills', sourcePath, relativePath: 'skills/team-skill',
+    }, {
+      team: 'test', description: '', repo: 'https://example.test/team.git', provider: 'git', reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+      toolPaths: { codex: { skills: '.codex/skills' } },
+    }, {
+      repo: { localPath: path.join(tmpDir, 'team-repo'), remote: 'https://example.test/team.git' },
+      username: 'testuser', updatePolicy: 'auto', additionalRoles: [], scope: 'user',
+    });
+
+    expect(await fse.readFile(path.join(codexSkillPath, 'SKILL.md'), 'utf8')).toBe('different copy');
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Codex skill conflict'));
   });
 });

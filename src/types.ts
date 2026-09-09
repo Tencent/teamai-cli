@@ -203,6 +203,8 @@ export interface SourceInstallManifest {
   lastPull: string;
   /** Skill names currently deployed from this source. */
   installedSkills: string[];
+  /** Per-skill deployment paths, relative to the configured scope root. */
+  installedPaths?: Record<string, string[]>;
 }
 
 /** TTL for source repo pull: don't re-pull within this duration (ms). */
@@ -303,6 +305,14 @@ export const MemberConfigSchema = z.object({
   displayName: z.string().default(''),
   registeredAt: z.string(),
   role: z.string().optional(),
+  /**
+   * Every logical project this member has participated in, across all their
+   * working directories. Append + dedupe semantics (contrast LocalConfig.projects,
+   * which is overwrite per-directory): running `init --project` in two directories
+   * lists both here while each directory syncs only its own. Optional for
+   * backward compatibility with member files written before this field existed.
+   */
+  projects: z.array(z.string()).optional(),
 });
 
 export type MemberConfig = z.infer<typeof MemberConfigSchema>;
@@ -340,6 +350,15 @@ export const LocalConfigSchema = z.object({
   scope: ScopeEnum.default('user'),
   primaryRole: z.string().min(1).optional(),
   additionalRoles: z.array(z.string()).default([]),
+  /**
+   * Logical projects (manifest ids from projects.yaml) active in THIS directory.
+   * Overwrite semantics: the directory syncs exactly these projects' resources.
+   * Distinct from #374's path-slug "project" (which decides where data lives).
+   * Empty/absent means no project partitioning — role namespaces + shared
+   * learnings root only. Optional (not defaulted) so existing configs and test
+   * fixtures without the field remain valid; consumers treat absent as [].
+   */
+  projects: z.array(z.string()).optional(),
   resourceProfileVersion: z.number().int().positive().optional(),
   /** Absolute path to project root; required when scope is 'project'. */
   projectRoot: z.string().optional(),

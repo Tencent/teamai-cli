@@ -707,19 +707,17 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
     return;
   }
 
-  // This standalone CLI path always writes the hint to Stop stdout (no stashing).
-  // It is NOT wired for codebuddy/workbuddy — those route through hook-dispatch's
-  // contributeCheckHandler, which stashes instead. If a future tool whose Stop
-  // hook ignores stdout is ever pointed at this command directly, the hint would
-  // be silently dropped; such a tool must go through the stashing handler.
+  const { STOP_STDOUT_UNSUPPORTED_TOOLS } = await import('./utils/tool-names.js');
+  const tool = toolArg?.toLowerCase() ?? 'claude';
   const { hint } = await contributeCheckForSession(
     stdinData.sessionId,
     stdinData.cwd,
     stdinData.transcriptPath,
+    STOP_STDOUT_UNSUPPORTED_TOOLS.has(tool),
   );
   if (hint !== null) {
     const { formatStopHookOutput } = await import('./utils/hook-output.js');
-    process.stdout.write(formatStopHookOutput(hint, toolArg ?? 'claude'));
+    process.stdout.write(formatStopHookOutput(hint, tool));
   }
 }
 

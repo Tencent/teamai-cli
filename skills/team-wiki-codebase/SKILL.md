@@ -6,7 +6,7 @@ description: |
   
   适用场景：项目有 10+ 仓库或微服务，AI 直接读代码无法全局理解、回答不准确、token 开销大。
   
-  产出：组件设计文档 × N + 架构总览 + 桥梁文档 + Graph RAG 图谱(G1~G9) + _manifest.json + team-wiki 编译产物。
+  产出：组件设计文档 × N + 架构总览 + 桥梁文档 + Graph RAG 图谱(G1~G9) + _manifest.json + teamai extract graph (teamwiki/)。
   
   Trigger: team-wiki-codebase, code-to-knowledge, 代码知识库, 架构分析, 架构逆向
   Prerequisites: 可访问的源码目录（支持多仓库）；本 skill 目录下 `references/` 与 `scripts/`
@@ -14,8 +14,8 @@ description: |
 
 # team-wiki-codebase — 大型代码库 AI 认知工程
 
-> 方法论与脚本位于本 skill 的 `references/`、`scripts/`（`team-wiki upgrade` 后出现在 `.cursor/skills/team-wiki-codebase/` 或 `.codebuddy/skills/team-wiki-codebase/`）。人类可读概览见 [README.md](./README.md)。
-> 图谱 CLI 能力见 [GRAPH-CAPABILITIES.md](../GRAPH-CAPABILITIES.md)。
+> 方法论与脚本位于本 skill 的 `references/`、`scripts/`（`teamai pull` 后出现在 `.cursor/skills/team-wiki-codebase/` 或 `.codebuddy/skills/team-wiki-codebase/`）。人类可读概览见 [README.md](./README.md)。
+> Phase 0 结构基线使用 `teamai codebase --extract`。TeamAI does not ship a separate team-wiki CLI. No extra plugin is required.
 
 **解决什么问题**：大型项目（10+ 仓库、数十微服务、迭代多年）让 AI 无法全局理解——上下文窗口装不下所有代码，组件关系散落各处，业务规则隐藏在深层调用链中。直接让 AI 读代码，既慢（海量 token）又不准（缺乏全局视角）。
 
@@ -300,22 +300,17 @@ FOR repo in repos:
 
 **Step 0D：CLI 结构基线（每个代码仓库，推荐）**
 
-在 K1 深读之前，用 Team Wiki CLI 生成可证据化的 import/call 结构边（Python/Go/TS 等，`code-ast`）并与 regex 基线合并（`code-heuristic`）：
+在 K1 深读之前，用 TeamAI 提取可证据化的 import/call 结构边（Python/Go/TS 等，`code-ast`）并与 regex 基线合并（`code-heuristic`）：
 
 ```bash
-# 对每个 repo（<wiki_root> 通常为项目下的 .teamwiki 或 .wiki）
-team-wiki compile code <repo_abs_path> <wiki_root> \
-  --project <project_slug> \
-  --extract ast,heuristic \
-  --write
-
-# 预览 AST 统计（不写盘）
-team-wiki compile code <repo> <wiki> --extract ast --dry-run
+# For each repo. Writes <repo>/teamwiki/ (evidence pages + .indices/graph-index.json).
+# Existing flags only: --extract [path], optional --project <slug>, optional --incremental.
+teamai codebase --extract <repo_abs_path> --project <project_slug>
 ```
 
-- 输出：`code/<project>/` 下 index/component/relation 等页；`graph/<project>-graph-index.json`（结构边草案）。
-- K1/K2/K3 写 `_manifest.json` 的 `edges[]` 时：**优先引用** compile 的 `code-ast` 边 + `evidenceRefs`（`path:line`），Agent 推断标 `INFERRED`/`AMBIGUOUS`。
-- K3 完成后写入 wiki 图：`team-wiki compile code <output_dir> <wiki_root> --extract ast,heuristic --write`（有 `_manifest.json` 时走 manifest 快路径 merge `graph-index.json`）。
+- Output: `teamwiki/evidence/code/<project>/` pages; `teamwiki/.indices/graph-index.json` (structural edges).
+- K1/K2/K3 写 `_manifest.json` 的 `edges[]` 时：**优先引用** extract 的 `code-ast` 边 + `evidenceRefs`（`path:line`），Agent 推断标 `INFERRED`/`AMBIGUOUS`。
+- After Phase K3, skip any extra graph compile / merge step that is not a `teamai` command. TeamAI does not ship a separate team-wiki CLI. Continue with this skill using `teamai` and the files under this skill directory. No extra plugin is required.
 
 写入初始 progress.json（current_phase: "phase0_done"），进入 **Phase K1**。
 
@@ -889,16 +884,16 @@ _review/                                ← 过程文件（不入知识库）
 
 ---
 
-## 与 Team Wiki CLI 的配合（必读）
+## 与 TeamAI CLI 的配合（必读）
 
 | 阶段 | 命令 / 路径 |
 |------|-------------|
-| Phase 0 结构基线 | `team-wiki compile code <repo> <wiki> --extract ast,heuristic --write` |
-| K3 后编译进 wiki | `team-wiki compile code <knowledge_output> <wiki> --write`（检测 `_manifest.json` → manifest 快路径） |
-| 产品文档入图 | `team-wiki compile docs <docs> <wiki> --extract structure,entity --write` |
-| 产品↔代码桥接 | `team-wiki reconcile <wiki> --write` |
-| 一键刷新 | `team-wiki refresh <wiki> --repo <repo> [--docs <docs>] --extract-code ast,heuristic --write` |
-| 质量评估 | `team-wiki evaluate <wiki>`（含 `graph.structuralEdgeRatio` 等） |
+| Phase 0 结构基线 | `teamai codebase --extract <repo> --project <slug>`（writes `<repo>/teamwiki/`） |
+| K3 后编译进 wiki | Skip. TeamAI does not ship a separate team-wiki CLI. Continue with this skill using `teamai` and the files under this skill directory. No extra plugin is required. |
+| 产品文档入图 | Skip. Same English note as above. |
+| 产品↔代码桥接 | Skip. Same English note as above. |
+| 一键刷新 | Use `teamai codebase --extract <repo> --project <slug> --incremental`, reusing the Phase 0 repository path and project slug even when running from another directory. Do not look for another CLI. |
+| 质量评估 | Use `scripts/validate_kb.py` and `teamai codebase --lint --output <repo>` to check `<repo>/teamwiki/` (`--output` takes the repository root, not the `teamwiki/` directory). Skip any extra evaluate binary. |
 
 **路径约定**（本 skill 安装后）：
 
@@ -906,4 +901,4 @@ _review/                                ← 过程文件（不入知识库）
 - Agent：`references/agents/kb-doc-generator.md`、`references/agents/graph-rag-agent.md`
 - 脚本：`scripts/scan_repo.py`、`scripts/validate_kb.py`
 
-所有流程在本 skill（`references/`、`scripts/`）与 `team-wiki` CLI 内完成。
+所有流程在本 skill（`references/`、`scripts/`）与 `teamai` CLI 内完成。No extra plugin is required.
