@@ -12,10 +12,12 @@ export interface DailySessionSnapshot {
   durationMs: number;
   succeeded: 0 | 1;
   corrected: 0 | 1;
-  pricedRequests: number;
-  costMicros: number;
-  cacheReadTokens: number;
-  cacheEligibleInputTokens: number;
+  requestDaily: Record<string, RequestCostMetrics>;
+  /** Legacy fields retained while previously reported snapshots are upgraded. */
+  pricedRequests?: number;
+  costMicros?: number;
+  cacheReadTokens?: number;
+  cacheEligibleInputTokens?: number;
   priceVersion?: string;
 }
 
@@ -35,13 +37,15 @@ function emptyDaily(): DailyUserStats {
   };
 }
 
-function latestRequestMetrics(events: DashboardEvent[]): RequestCostMetrics | undefined {
+function latestRequestDaily(events: DashboardEvent[]): Record<string, RequestCostMetrics> {
   let latest: DashboardEvent | undefined;
   for (const event of events) {
-    if (!event.requestMetrics) continue;
+    if (!event.requestDaily && !event.requestMetrics) continue;
     if (!latest || Date.parse(event.timestamp) >= Date.parse(latest.timestamp)) latest = event;
   }
-  return latest?.requestMetrics;
+  if (!latest) return {};
+  if (latest.requestDaily) return latest.requestDaily;
+  return latest.requestMetrics ? { [latest.timestamp.slice(0, 10)]: latest.requestMetrics } : {};
 }
 
 /** Fold local events into one cumulative snapshot per session. */
@@ -69,7 +73,7 @@ export function aggregateDailySessions(events: DashboardEvent[]): Map<string, Da
     }
 
     const hasError = own.some((event) => event.status === 'error');
-    const request = latestRequestMetrics(own);
+    const requestDaily = latestRequestDaily(own);
     const corrected = metric.correction > 0 ? 1 : 0;
     result.set(sessionId, {
       date: firstStop.timestamp.slice(0, 10),
@@ -77,11 +81,7 @@ export function aggregateDailySessions(events: DashboardEvent[]): Map<string, Da
       durationMs,
       succeeded: !hasError && metric.interrupt === 0 && corrected === 0 ? 1 : 0,
       corrected,
-      pricedRequests: request?.pricedRequests ?? 0,
-      costMicros: request?.costMicros ?? 0,
-      cacheReadTokens: request?.cacheReadTokens ?? 0,
-      cacheEligibleInputTokens: request?.cacheEligibleInputTokens ?? 0,
-      priceVersion: request?.priceVersion,
+      requestDaily,
     });
   }
   return result;
@@ -109,12 +109,29 @@ export function computeDailyStatsDelta(
     bucket.promptTurns += positiveDelta(snapshot.prompts, previous?.prompts);
     bucket.durationMs += positiveDelta(snapshot.durationMs, previous?.durationMs);
     bucket.sessionsCorrected += positiveDelta(snapshot.corrected, previous?.corrected);
-    bucket.pricedRequests += positiveDelta(snapshot.pricedRequests, previous?.pricedRequests);
-    bucket.costMicros += positiveDelta(snapshot.costMicros, previous?.costMicros);
-    bucket.cacheReadTokens += positiveDelta(snapshot.cacheReadTokens, previous?.cacheReadTokens);
-    bucket.cacheEligibleInputTokens += positiveDelta(snapshot.cacheEligibleInputTokens, previous?.cacheEligibleInputTokens);
-    if (snapshot.priceVersion) bucket.priceVersion = snapshot.priceVersion;
     delta[date] = bucket;
+
+    const previousDaily = previous?.requestDaily ?? (
+      previous?.pricedRequests || previous?.costMicros || previous?.cacheReadTokens || previous?.cacheEligibleInputTokens
+        ? { [previous.date]: {
+          pricedRequests: previous.pricedRequests ?? 0,
+          costMicros: previous.costMicros ?? 0,
+          cacheReadTokens: previous.cacheReadTokens ?? 0,
+          cacheEligibleInputTokens: previous.cacheEligibleInputTokens ?? 0,
+          priceVersion: previous.priceVersion ?? '',
+        } }
+        : {}
+    );
+    for (const [requestDate, request] of Object.entries(snapshot.requestDaily)) {
+      const previousRequest = previousDaily[requestDate];
+      const requestBucket = delta[requestDate] ?? emptyDaily();
+      requestBucket.pricedRequests += positiveDelta(request.pricedRequests, previousRequest?.pricedRequests);
+      requestBucket.costMicros += positiveDelta(request.costMicros, previousRequest?.costMicros);
+      requestBucket.cacheReadTokens += positiveDelta(request.cacheReadTokens, previousRequest?.cacheReadTokens);
+      requestBucket.cacheEligibleInputTokens += positiveDelta(request.cacheEligibleInputTokens, previousRequest?.cacheEligibleInputTokens);
+      requestBucket.priceVersion = request.priceVersion;
+      delta[requestDate] = requestBucket;
+    }
     nextReported[sessionId] = { ...snapshot, date };
   }
   return { delta, nextReported };

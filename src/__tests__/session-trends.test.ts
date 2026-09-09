@@ -17,7 +17,9 @@ describe('daily session trends', () => {
         type: 'stop', timestamp: '2026-09-02T00:01:00Z', sessionId: 's1', tool: 'claude',
         prompts: 1,
         tokens: { input: 100, output: 20, cacheRead: 300, cacheCreation: 40 },
-        requestMetrics: { pricedRequests: 1, costMicros: 530, cacheReadTokens: 300, cacheEligibleInputTokens: 440, priceVersion: 'test' },
+        requestDaily: {
+          '2026-09-01': { pricedRequests: 1, costMicros: 530, cacheReadTokens: 300, cacheEligibleInputTokens: 440, priceVersion: 'test' },
+        },
       },
       // A resumed event after a long idle gap adds no active duration.
       { type: 'tool_use', timestamp: '2026-09-02T01:00:00Z', sessionId: 's1', tool: 'claude' },
@@ -30,20 +32,22 @@ describe('daily session trends', () => {
       durationMs: 3 * 60_000,
       succeeded: 1,
       corrected: 0,
-      pricedRequests: 1,
-      costMicros: 530,
+      requestDaily: { '2026-09-01': { pricedRequests: 1, costMicros: 530 } },
     });
   });
 
   it('reports monotonic deltas and keeps resumed work on the original day', () => {
     const first = new Map([
-      ['s1', { date: '2026-09-02', prompts: 1, durationMs: 60_000, succeeded: 1 as const, corrected: 0 as const, pricedRequests: 1, costMicros: 100, cacheReadTokens: 20, cacheEligibleInputTokens: 100, priceVersion: 'v1' }],
+      ['s1', { date: '2026-09-02', prompts: 1, durationMs: 60_000, succeeded: 1 as const, corrected: 0 as const, requestDaily: { '2026-09-01': { pricedRequests: 1, costMicros: 100, cacheReadTokens: 20, cacheEligibleInputTokens: 100, priceVersion: 'v1' } } }],
     ]);
     const initial = computeDailyStatsDelta(first, {});
     expect(initial.delta['2026-09-02']).toMatchObject({ sessionsEnded: 1, sessionsSucceeded: 1, promptTurns: 1 });
 
     const resumed = new Map([
-      ['s1', { ...first.get('s1')!, prompts: 3, durationMs: 180_000, pricedRequests: 2, costMicros: 250 }],
+      ['s1', { ...first.get('s1')!, prompts: 3, durationMs: 180_000, requestDaily: {
+        '2026-09-01': { pricedRequests: 1, costMicros: 100, cacheReadTokens: 20, cacheEligibleInputTokens: 100, priceVersion: 'v1' },
+        '2026-09-03': { pricedRequests: 1, costMicros: 150, cacheReadTokens: 0, cacheEligibleInputTokens: 10, priceVersion: 'v1' },
+      } }],
     ]);
     const second = computeDailyStatsDelta(resumed, initial.nextReported);
     expect(second.delta['2026-09-02']).toMatchObject({
@@ -51,9 +55,10 @@ describe('daily session trends', () => {
       sessionsSucceeded: 0,
       promptTurns: 2,
       durationMs: 120_000,
-      pricedRequests: 1,
-      costMicros: 150,
+      pricedRequests: 0,
+      costMicros: 0,
     });
+    expect(second.delta['2026-09-03']).toMatchObject({ pricedRequests: 1, costMicros: 150, sessionsEnded: 0 });
   });
 
   it('compares the latest seven UTC days with the prior seven days', () => {

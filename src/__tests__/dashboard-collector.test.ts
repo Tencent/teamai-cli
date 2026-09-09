@@ -11,6 +11,7 @@ import {
   rebuildSessions,
   aggregateSessionInterventions,
   compactEvents,
+  reconcileRequestLog,
 } from '../dashboard-collector.js';
 import type { DashboardEvent } from '../types.js';
 
@@ -238,6 +239,19 @@ describe('parseHookEvent', () => {
     expect(event!.type).toBe('stop');
     expect(event!.stoppedOutput).toBe('AI response here');
     expect(event!.transcriptPath).toBe(transcriptPath);
+  });
+});
+
+describe('local request log', () => {
+  it('deduplicates requests and prunes details older than 90 days', async () => {
+    const old = { id: 'old', timestamp: '2026-05-01T00:00:00Z', model: 'claude-sonnet-5', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costMicros: 1, priceVersion: 'v1' };
+    const current = { ...old, id: 'current', timestamp: '2026-09-01T00:00:00Z' };
+    await reconcileRequestLog([old, current], new Date('2026-09-09T00:00:00Z'));
+    await reconcileRequestLog([current], new Date('2026-09-09T00:00:00Z'));
+
+    const lines = fs.readFileSync(path.join(tmpDir, '.teamai', 'dashboard', 'requests.jsonl'), 'utf-8').trim().split('\n');
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toMatchObject({ id: 'current', timestamp: current.timestamp });
   });
 });
 

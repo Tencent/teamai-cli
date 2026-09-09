@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
+import { createHash, randomUUID } from 'node:crypto';
 import { log } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
@@ -144,6 +145,20 @@ export interface TranscriptScanResult {
   prompts: number;
   /** Cumulative API-equivalent request cost for recognized Claude models. */
   requestMetrics?: RequestCostMetrics;
+  /** Priced request details retained locally; no prompt or response content. */
+  requestRecords?: LocalRequestRecord[];
+}
+
+export interface LocalRequestRecord {
+  id: string;
+  timestamp: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costMicros: number;
+  priceVersion: string;
 }
 
 /**
@@ -213,11 +228,13 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTra
   let prompts = 0;
   const tokens = emptyTokenUsage();
   let requestMetrics: RequestCostMetrics | undefined;
+  const requestRecords: LocalRequestRecord[] = [];
   let codexSessionSnapshot: CodexTokenSnapshot | null = null;
   let codexTranscriptSnapshot: CodexTokenSnapshot | null = null;
   // Dedup assistant usage per message (one turn spans many JSONL lines that repeat
   // the same usage). Prefer message.id; fall back to the top-level requestId.
   const countedUsageKeys = new Set<string>();
+  const historicalRequests = await readLocalRequestRecords();
 
   try {
     const stat = await fs.promises.stat(transcriptPath);
@@ -252,6 +269,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTra
         isMeta?: unknown;
         isSidechain?: unknown;
         requestId?: unknown;
+        timestamp?: unknown;
         payload?: unknown;
         message?: { content?: unknown; id?: unknown; model?: unknown; usage?: Record<string, unknown> };
       };
@@ -291,7 +309,16 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTra
           tokens.cacheRead += requestTokens.cacheRead;
           tokens.cacheCreation += requestTokens.cacheCreation;
           if (typeof entry.message?.model === 'string') {
-            const priced = estimateClaudeRequest(entry.message.model, requestTokens);
+            const id = createHash('sha256').update(`${transcriptPath}\0${dedupKey}`).digest('hex');
+            const historical = historicalRequests.get(id);
+            const priced = historical
+              ? {
+                costMicros: historical.costMicros,
+                cacheReadTokens: historical.cacheReadTokens,
+                cacheEligibleInputTokens: historical.inputTokens + historical.cacheReadTokens + historical.cacheCreationTokens,
+                priceVersion: historical.priceVersion,
+              }
+              : estimateClaudeRequest(entry.message.model, requestTokens);
             if (priced) {
               requestMetrics = {
                 pricedRequests: (requestMetrics?.pricedRequests ?? 0) + 1,
@@ -300,6 +327,20 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTra
                 cacheEligibleInputTokens: (requestMetrics?.cacheEligibleInputTokens ?? 0) + priced.cacheEligibleInputTokens,
                 priceVersion: priced.priceVersion,
               };
+              const timestamp = typeof entry.timestamp === 'string' && Number.isFinite(Date.parse(entry.timestamp))
+                ? new Date(entry.timestamp).toISOString()
+                : '';
+              requestRecords.push({
+                id,
+                timestamp,
+                model: entry.message.model,
+                inputTokens: requestTokens.input,
+                outputTokens: requestTokens.output,
+                cacheReadTokens: requestTokens.cacheRead,
+                cacheCreationTokens: requestTokens.cacheCreation,
+                costMicros: priced.costMicros,
+                priceVersion: priced.priceVersion,
+              });
             }
           }
         }
@@ -366,6 +407,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTra
     tokens: codexSnapshot?.tokens ?? tokens,
     prompts,
     ...(requestMetrics ? { requestMetrics } : {}),
+    ...(requestRecords.length ? { requestRecords } : {}),
     ...(codexSnapshot ? { tokenScope: codexSnapshot.scope } : {}),
   };
   return { result, codexSnapshot };
@@ -893,6 +935,14 @@ export async function parseHookEvent(
     if (scan.requestMetrics) {
       event.requestMetrics = scan.requestMetrics;
     }
+    {
+      const records = (scan.requestRecords ?? []).map((record) => ({
+        ...record,
+        timestamp: record.timestamp || event.timestamp,
+      }));
+      if (records.length) event.requestDaily = aggregateRequestDaily(records);
+      await reconcileRequestLog(records);
+    }
   }
 
   return event;
@@ -903,6 +953,106 @@ export async function parseHookEvent(
 /** Get events path (evaluated at call time). */
 function getEventsPath(): string {
   return path.join(getUserHome(), '.teamai', 'dashboard', 'events.jsonl');
+}
+
+function getRequestsPath(): string {
+  return path.join(getUserHome(), '.teamai', 'dashboard', 'requests.jsonl');
+}
+
+async function readLocalRequestRecords(): Promise<Map<string, LocalRequestRecord>> {
+  const records = new Map<string, LocalRequestRecord>();
+  try {
+    const content = await fs.promises.readFile(getRequestsPath(), 'utf-8');
+    for (const line of content.split('\n')) {
+      try {
+        const record = JSON.parse(line) as LocalRequestRecord;
+        if (record.id && record.timestamp) records.set(record.id, record);
+      } catch {
+        // Skip partial or malformed lines.
+      }
+    }
+  } catch {
+    // No local request history yet.
+  }
+  return records;
+}
+
+function aggregateRequestDaily(records: LocalRequestRecord[]): Record<string, RequestCostMetrics> {
+  const daily: Record<string, RequestCostMetrics> = {};
+  for (const record of records) {
+    const date = record.timestamp.slice(0, 10);
+    const bucket = daily[date] ?? {
+      pricedRequests: 0,
+      costMicros: 0,
+      cacheReadTokens: 0,
+      cacheEligibleInputTokens: 0,
+      priceVersion: record.priceVersion,
+    };
+    bucket.pricedRequests += 1;
+    bucket.costMicros += record.costMicros;
+    bucket.cacheReadTokens += record.cacheReadTokens;
+    bucket.cacheEligibleInputTokens += record.inputTokens + record.cacheReadTokens + record.cacheCreationTokens;
+    bucket.priceVersion = record.priceVersion;
+    daily[date] = bucket;
+  }
+  return daily;
+}
+
+/** Upsert privacy-safe request details and retain only the latest 90 days locally. */
+export async function reconcileRequestLog(
+  incoming: LocalRequestRecord[],
+  now = new Date(),
+): Promise<void> {
+  const requestsPath = getRequestsPath();
+  const lockPath = `${requestsPath}.lock`;
+  const cutoff = now.getTime() - 90 * 86_400_000;
+  let lock: fs.promises.FileHandle | undefined;
+  try {
+    await ensureDir(path.dirname(requestsPath));
+    for (let attempt = 0; attempt < 10 && !lock; attempt++) {
+      try {
+        lock = await fs.promises.open(lockPath, 'wx', 0o600);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    if (!lock) throw new Error('request log is busy');
+    let existing = '';
+    try {
+      existing = await fs.promises.readFile(requestsPath, 'utf-8');
+    } catch {
+      // First write.
+    }
+    const records = new Map<string, LocalRequestRecord>();
+    for (const line of existing.split('\n')) {
+      try {
+        const record = JSON.parse(line) as LocalRequestRecord;
+        if (record.id && Number.isFinite(Date.parse(record.timestamp)) && Date.parse(record.timestamp) >= cutoff) {
+          records.set(record.id, record);
+        }
+      } catch {
+        // Skip partial or malformed lines.
+      }
+    }
+    for (const record of incoming) {
+      if (record.id && Number.isFinite(Date.parse(record.timestamp)) && Date.parse(record.timestamp) >= cutoff) {
+        records.set(record.id, record);
+      }
+    }
+    const content = [...records.values()]
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
+      .map((record) => JSON.stringify(record))
+      .join('\n');
+    const tempPath = `${requestsPath}.${process.pid}.${randomUUID()}.tmp`;
+    await fs.promises.writeFile(tempPath, content ? `${content}\n` : '', { encoding: 'utf-8', mode: 0o600 });
+    await fs.promises.rename(tempPath, requestsPath);
+  } catch (e) {
+    log.warn(`dashboard: failed to update local request log: ${(e as Error).message}`);
+  } finally {
+    await lock?.close().catch(() => undefined);
+    if (lock) await fs.promises.unlink(lockPath).catch(() => undefined);
+  }
 }
 
 /**

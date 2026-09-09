@@ -933,6 +933,8 @@ export interface DashboardEvent {
   prompts?: number;
   /** Cumulative priced-request snapshot collected from a supported transcript. */
   requestMetrics?: RequestCostMetrics;
+  /** Cumulative priced-request snapshots grouped by each request's own UTC day. */
+  requestDaily?: Record<string, RequestCostMetrics>;
 }
 
 export interface RequestCostMetrics {
