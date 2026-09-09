@@ -93,7 +93,7 @@ export async function providerList(): Promise<void> {
 
 export async function providerSync(options: GlobalOptions): Promise<void> {
   const providers = await loadHttpResourceProviders();
-  const results = await syncResourceProviders(providers, { cwd: process.cwd(), trigger: 'manual', force: options.force });
+  const results = await syncResourceProviders([...providers].reverse(), { cwd: process.cwd(), trigger: 'manual', force: options.force });
   for (const result of results) {
     if (result.ok) log.success(`[provider:${result.provider}] ${result.message ?? 'synced'}`);
     else log.warn(`[provider:${result.provider}] ${result.message ?? 'sync failed'}`);
@@ -122,12 +122,16 @@ export async function providerRemove(name: string, options: GlobalOptions): Prom
 }
 
 export async function providerSetPrimary(name: string, options: GlobalOptions): Promise<void> {
+  const writableMain = await hasWritableMain();
   const names = new Set([
-    ...((await hasWritableMain()) ? ['main'] : []),
+    ...(writableMain ? ['main'] : []),
     ...(await gitSources()).map((item) => item.name),
     ...(await listHttpProviderConfigs()).map((item) => item.name),
   ]);
   if (!names.has(name)) throw new Error(`Resource provider "${name}" was not found.`);
+  if (name !== 'main' || !writableMain) {
+    throw new Error(`Resource provider "${name}" does not support push and cannot be primary.`);
+  }
   if (options.dryRun) {
     log.info(`[dry-run] Would set primary provider to "${name}"`);
     return;

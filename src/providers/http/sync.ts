@@ -12,7 +12,9 @@ export async function syncHttpProvidersFromHook(
   if (providers.length === 0) {
     return reportAndSyncFromHook(stdin, tool);
   }
-  const results = await syncResourceProviders(providers, {
+  // Apply lower-priority snapshots first so a later successful provider is the
+  // active on-disk source for any conflicting resource key.
+  const results = await syncResourceProviders([...providers].reverse(), {
     cwd: typeof stdin.cwd === 'string' ? stdin.cwd : undefined,
     tool,
     trigger: 'hook',

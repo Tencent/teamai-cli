@@ -60,4 +60,26 @@ describe('multiple HTTP resource providers', () => {
     expect(fs.existsSync(path.join(home, '.teamai', 'providers', 'http', 'one', 'config.json'))).toBe(true);
     expect(fs.existsSync(path.join(home, '.teamai', 'providers', 'http', 'two', 'config.json'))).toBe(true);
   });
+
+  it('dispatches lower priority providers first so the highest successful source wins', async () => {
+    const order: string[] = [];
+    const low = await backend();
+    const high = await backend();
+    for (const [name, remote, priority] of [['high', high, 100], ['low', low, 10]] as const) {
+      const config = await addHttpProvider({ name, adapter: 'clawpro', endpoint: remote.endpoint, priority });
+      const provider = createHttpResourceProvider(config);
+      await (provider.adapter as ClawProAdapter).initialize(config, `${name}-token`);
+    }
+    low.calls.splice(0);
+    high.calls.splice(0);
+
+    const lowServer = servers[0];
+    const highServer = servers[1];
+    lowServer.prependListener('request', () => order.push('low'));
+    highServer.prependListener('request', () => order.push('high'));
+    await syncHttpProvidersFromHook({ hook_event_name: 'Stop', session_id: 'priority' }, 'claude');
+
+    expect(order[0]).toBe('low');
+    expect(order.at(-1)).toBe('high');
+  });
 });
