@@ -43,7 +43,7 @@ See [docs/providers.md](../docs/providers.md) for how to add a new git provider.
 
 ## Making a Change
 
-1. Fork the repo and create a feature branch from `master`.
+1. Fork the repo and create a feature branch from `main`.
 2. Write tests for your change (we target 80%+ coverage).
 3. Run `npx vitest run` and `npx tsc --noEmit` — both must pass.
 4. Use conventional commits where possible: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.

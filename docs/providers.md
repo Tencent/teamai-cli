@@ -101,7 +101,7 @@ token 需要 `repo` 权限。`GH_TOKEN` 作为别名也会被识别。
 
 ### 默认分支
 
-GitHub 新仓库默认分支通常是 `main`。TeamAI 当前实现中 `push` 的目标分支硬编码为 `master`（历史遗留）。如果你的 GitHub 仓库使用 `main`，可以在仓库 **Settings → Branches** 中将默认分支改为 `master`，或等待后续版本支持可配置目标分支。
+GitHub 新仓库默认分支通常是 `main`。TeamAI 会跟随团队仓库的默认分支（`main` / `master` 均可），`push` 不再硬编码 `master`。使用 GitHub 默认的 `main` 即可，无需在仓库 Settings 里把默认分支改成 `master`。
 
 ## TGit Provider（腾讯工蜂）
 
