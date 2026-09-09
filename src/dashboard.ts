@@ -15,6 +15,7 @@ import {
 import { getDashboardHtml } from './dashboard-html.js';
 import { getUserHome } from './utils/home.js';
 import type { VizSummary } from './viz.js';
+import { aggregateDailySessions, computeDailyStatsDelta, summarizeTrendWindow } from './session-trends.js';
 
 // ─── Dashboard server architecture ──────────────────────
 //
@@ -134,6 +135,19 @@ export async function startDashboard(port?: number): Promise<void> {
         const sessions = rebuildSessions(events);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(sessions));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: (e as Error).message }));
+      }
+      return;
+    }
+
+    if (url.pathname === '/api/trends') {
+      try {
+        const events = await readEvents(eventsPath);
+        const daily = computeDailyStatsDelta(aggregateDailySessions(events), {}).delta;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(summarizeTrendWindow(daily)));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: (e as Error).message }));

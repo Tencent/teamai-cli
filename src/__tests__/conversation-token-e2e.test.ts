@@ -65,11 +65,11 @@ function writeTranscript(): string {
   const lines = [
     JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: 'create hello.txt' }] } }),
     // Turn 1: one message id, two content-block lines (text + tool_use), same usage repeated.
-    JSON.stringify({ type: 'assistant', message: { id: 'msg_A', usage: usage1, content: [{ type: 'text', text: 'sure' }] } }),
-    JSON.stringify({ type: 'assistant', message: { id: 'msg_A', usage: usage1, content: [{ type: 'tool_use', id: 'toolu_1', name: 'Write' }] } }),
+    JSON.stringify({ type: 'assistant', message: { id: 'msg_A', model: 'claude-sonnet-5', usage: usage1, content: [{ type: 'text', text: 'sure' }] } }),
+    JSON.stringify({ type: 'assistant', message: { id: 'msg_A', model: 'claude-sonnet-5', usage: usage1, content: [{ type: 'tool_use', id: 'toolu_1', name: 'Write' }] } }),
     JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }] } }),
     // Turn 2: different message id.
-    JSON.stringify({ type: 'assistant', message: { id: 'msg_B', usage: usage2, content: [{ type: 'text', text: 'done' }] } }),
+    JSON.stringify({ type: 'assistant', message: { id: 'msg_B', model: 'claude-sonnet-5', usage: usage2, content: [{ type: 'text', text: 'done' }] } }),
   ];
   fs.writeFileSync(p, lines.join('\n') + '\n');
   return p;
@@ -93,6 +93,7 @@ describe('conversation + token metric — end to end', () => {
     const stopEvent = events.find((e) => e.type === 'stop')!;
     // msg_A counted once (not twice) + msg_B:
     expect(stopEvent.tokens).toEqual({ input: 120, output: 130, cacheRead: 2500, cacheCreation: 200 });
+    expect(stopEvent.requestMetrics).toMatchObject({ pricedRequests: 2, priceVersion: 'anthropic-2026-09-09' });
 
     // Dashboard rebuild surfaces prompt count + tokens on the card.
     const sessions = rebuildSessions(events);

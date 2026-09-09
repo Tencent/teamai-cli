@@ -68,6 +68,7 @@ describe('reportUsageToTeam — intervention reporting', () => {
     expect(fs.existsSync(statsPath)).toBe(true);
     const stats = YAML.parse(fs.readFileSync(statsPath, 'utf-8'));
     expect(stats.interventions).toEqual({ sessions: 1, interrupt: 2, toolReject: 1, correction: 0 });
+    expect(stats.daily[ts.slice(0, 10)]).toMatchObject({ sessionsEnded: 1, sessionsSucceeded: 0 });
 
     // push was attempted with the stats file staged
     expect(pushRepoDirectly).toHaveBeenCalledTimes(1);
@@ -78,6 +79,8 @@ describe('reportUsageToTeam — intervention reporting', () => {
     expect(JSON.parse(fs.readFileSync(reportedPath, 'utf-8'))).toEqual({
       s1: { interrupt: 2, toolReject: 1, correction: 0 },
     });
+    const dailyPath = path.join(tmpDir, '.teamai', 'dashboard', 'reported-daily-sessions.json');
+    expect(JSON.parse(fs.readFileSync(dailyPath, 'utf-8')).s1.date).toBe(ts.slice(0, 10));
 
     pushRepoDirectly.mockClear();
     await reportUsageToTeam(repoDir, 'me');

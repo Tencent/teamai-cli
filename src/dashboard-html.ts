@@ -95,6 +95,16 @@ export function getDashboardHtml(port: number): string {
       background: var(--gray);
     }
     .connection-dot.connected { background: var(--green); }
+    .trend-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .trend-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+    .trend-label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+    .trend-value { margin-top: 6px; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .trend-previous { margin-top: 3px; color: var(--text-muted); font-size: 11px; }
 
     /* Stats bar */
     .stats-bar {
@@ -427,6 +437,10 @@ export function getDashboardHtml(port: number): string {
       <span id="conn-text">Connecting...</span>
     </div>
   </header>
+  <div class="section-header">7 days vs prior 7 days</div>
+  <div class="trend-grid" id="trend-grid">
+    <div class="trend-card"><div class="trend-label">Session trends</div><div class="trend-value">Collecting…</div></div>
+  </div>
   <a class="kb-health-card" href="/kb-report" target="_blank" rel="noopener">
     <svg viewBox="0 0 148 76" width="132" height="68" aria-hidden="true">
       <circle cx="30" cy="38" r="21" fill="none" stroke="#30363d" stroke-width="7"/>
@@ -447,6 +461,35 @@ export function getDashboardHtml(port: number): string {
     </div>
     <span class="kbc-cta">View report →</span>
   </a>
+  <script>
+    function renderTrendValue(value, kind) {
+      if (value === null || value === undefined) return 'collecting…';
+      if (kind === 'pct') return Math.round(value * 100) + '%';
+      if (kind === 'duration') return Math.round(value / 60000) + 'm';
+      if (kind === 'cost') return '$' + (value / 1000000).toFixed(3) + ' est.';
+      return Number(value).toFixed(1);
+    }
+    function loadTrends() {
+      fetch('/api/trends').then(function (response) { return response.json(); }).then(function (data) {
+        var current = data.current || {}, previous = data.previous || {};
+        var metrics = [
+          ['Session success', 'successRate', 'pct'],
+          ['Prompts / session', 'avgPrompts', 'number'],
+          ['Active duration', 'avgDurationMs', 'duration'],
+          ['LLM request cost', 'avgRequestCostMicros', 'cost'],
+          ['Cache read share', 'cacheReadShare', 'pct'],
+          ['Correction rate', 'correctionRate', 'pct']
+        ];
+        document.getElementById('trend-grid').innerHTML = metrics.map(function (metric) {
+          return '<div class="trend-card"><div class="trend-label">' + metric[0] + '</div>' +
+            '<div class="trend-value">' + renderTrendValue(current[metric[1]], metric[2]) + '</div>' +
+            '<div class="trend-previous">prior: ' + renderTrendValue(previous[metric[1]], metric[2]) + '</div></div>';
+        }).join('');
+      }).catch(function () {});
+    }
+    loadTrends();
+    setInterval(loadTrends, 30000);
+  </script>
   <script>
     (function loadKbSummary() {
       var controller = new AbortController();

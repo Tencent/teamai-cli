@@ -9,6 +9,7 @@ import { calculateTeamHealth } from './skill-health.js';
 import { createGit } from './utils/git.js';
 import type { GlobalOptions, UserStats, TokenUsage } from './types.js';
 import { totalTokens } from './types.js';
+import { mergeDailyStats, summarizeTrendWindow, type TrendPeriod } from './session-trends.js';
 
 interface SkillChange {
   name: string;
@@ -362,6 +363,44 @@ export function summarizeConversation(teamStats: UserStats[]): ConversationSumma
   return { totalPrompts, tokens, totalTokens: totalTokens(tokens), ranked };
 }
 
+export function summarizeTeamTrends(teamStats: UserStats[], now = new Date()): ReturnType<typeof summarizeTrendWindow> | null {
+  let daily: NonNullable<UserStats['daily']> = {};
+  for (const user of teamStats) daily = mergeDailyStats(daily, user.daily ?? {});
+  return Object.keys(daily).length > 0 ? summarizeTrendWindow(daily, now) : null;
+}
+
+function formatPercent(value: number | null): string {
+  return value === null ? 'collecting…' : `${Math.round(value * 100)}%`;
+}
+
+function formatAverage(value: number | null, suffix = ''): string {
+  return value === null ? 'collecting…' : `${value.toFixed(1)}${suffix}`;
+}
+
+function formatDuration(value: number | null): string {
+  return value === null ? 'collecting…' : `${Math.round(value / 60_000)}m`;
+}
+
+function formatCost(value: number | null): string {
+  return value === null ? 'collecting…' : `$${(value / 1_000_000).toFixed(3)}`;
+}
+
+function comparison(current: string, previous: string): string {
+  return `${previous} → ${current}`;
+}
+
+export function formatTrendLines(periods: { current: TrendPeriod; previous: TrendPeriod }): string[] {
+  const { current, previous } = periods;
+  return [
+    `  Session success: ${comparison(formatPercent(current.successRate), formatPercent(previous.successRate))} · ${current.sessionsEnded} ended`,
+    `  Avg prompts/session: ${comparison(formatAverage(current.avgPrompts), formatAverage(previous.avgPrompts))}`,
+    `  Avg active duration: ${comparison(formatDuration(current.avgDurationMs), formatDuration(previous.avgDurationMs))}`,
+    `  Avg LLM request cost (est.): ${comparison(formatCost(current.avgRequestCostMicros), formatCost(previous.avgRequestCostMicros))}`,
+    `  Cache read share: ${comparison(formatPercent(current.cacheReadShare), formatPercent(previous.cacheReadShare))}`,
+    `  Correction rate: ${comparison(formatPercent(current.correctionRate), formatPercent(previous.correctionRate))}`,
+  ];
+}
+
 /**
  * Generate and display weekly team digest.
  */
@@ -404,6 +443,15 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
 
     // Team members active
     console.log(`👥 Active members: ${teamStats.length}`);
+    console.log('');
+
+    const trends = summarizeTeamTrends(teamStats, now);
+    console.log('📈 Session trends (7d vs prior 7d):');
+    if (trends) {
+      for (const line of formatTrendLines(trends)) console.log(line);
+    } else {
+      console.log('  collecting… (daily data starts with the next reported session)');
+    }
     console.log('');
 
     // Most used skills
@@ -492,10 +540,10 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     const conversation = summarizeConversation(teamStats);
     if (conversation) {
       const t = conversation.tokens;
-      console.log('💬 Conversation & Token Usage:');
-      console.log(`  Total human prompts: ${conversation.totalPrompts}`);
+      console.log('💬 Lifetime Conversation & Token Usage:');
+      console.log(`  Lifetime human prompts: ${conversation.totalPrompts}`);
       console.log(
-        `  Total tokens: ${formatTokenCount(conversation.totalTokens)} ` +
+        `  Lifetime tokens: ${formatTokenCount(conversation.totalTokens)} ` +
         `(input ${formatTokenCount(t.input)} · output ${formatTokenCount(t.output)} · ` +
         `cache read ${formatTokenCount(t.cacheRead)} · cache write ${formatTokenCount(t.cacheCreation)})`,
       );

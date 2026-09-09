@@ -1174,6 +1174,14 @@ teamai dashboard --port 8080
 
 这两项同样随 `teamai pull` 聚合到 `stats/<user>.yaml`（`prompts` 与 `tokens` 字段），并在 `teamai digest` 的「对话量与 Token 用量」板块给出团队对话总轮数、token 总量（分桶）与人均 token 用量排行。拿不到 transcript 的工具（如 Cursor）会优雅降级：仍统计对话轮数，token 显示为 0 / N/A。
 
+#### 每日会话趋势与估算成本
+
+Dashboard 和 digest 会比较最近 7 个 UTC 自然日与此前 7 天。会话归属到首次 stop 事件所在日期；活跃时长只累计不超过 5 分钟的相邻事件间隔，避免终端空闲时间把数据放大。会话结束时没有错误、中断或纠偏才计为成功；被拒绝的工具调用仍作为独立干预信号统计。
+
+成本是 API 等价估算值：对可识别的 Claude 模型，根据带版本的公开目录价，以及 transcript 中的输入、输出、缓存读取和缓存写入 token 分桶计算。由于 transcript 不提供缓存 TTL，缓存写入按 5 分钟费率估算。未知模型以及无法取得详细用量的工具不会进入估算成本，也不会进入成本覆盖率分母。该数据适合观察趋势，但不等同于账单或订阅席位费用。
+
+每日聚合会在 `teamai pull` 时写入 `stats/<user>.yaml`；原有累计字段继续作为历史总量展示。恢复执行的会话会在原记录上更新，不会重复累计已完成会话。团队仓库只接收聚合计数和按微美元保存的估算总额；prompt 原文与逐请求记录保留在本机。
+
 ### Session Save（会话存档）
 
 `teamai session save` 把 dashboard 已有的**单次会话事件流**（工具调用序列、prompt 轮次、干预记录）折叠成一份精简、脱敏的 markdown 摘要——不调用 LLM，也不新增采集路径。

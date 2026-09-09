@@ -222,9 +222,9 @@ teamai recall maintenance --update-quality       # 为过时 skills / docs 生�
 
 | 能力 | 命令 | 呈现内容 |
 |------|------|----------|
-| **用量（Usage）** | `teamai digest` | 团队周报——token 用量、会话量、干预率。 |
+| **用量（Usage）** | `teamai digest` | 团队周报——近 7 天成功率、对话、活跃时长、估算成本、缓存与纠偏趋势，以及历史累计数据。 |
 | **会话（Sessions）** | `teamai session save` | 脱敏的单会话摘要（工具序列、对话轮次、干预次数），喂给周报的 Session Highlights。 |
-| **看板（Dashboard）** | `teamai dashboard` | Web 看板，实时展示成员的编码会话状态、干预次数和 token 用量。 |
+| **看板（Dashboard）** | `teamai dashboard` | Web 看板，展示实时会话，以及本机近 7 天相对前 7 天的趋势。 |
 | **知识库健康（KB Health）** | `teamai dashboard` → KB Health | 内置于看板的报告页面，展示知识库使用情况与健康状态——各类型覆盖率、高频召回条目、沉默条目、召回趋势、作者贡献及维护控制台。 |
 
 ## 命令一览

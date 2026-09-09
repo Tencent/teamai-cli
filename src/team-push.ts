@@ -17,6 +17,12 @@ import { log } from './utils/logger.js';
 import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig } from './types.js';
 import { VOTES_LOCAL_DIR, emptyTokenUsage, addTokenUsage } from './types.js';
 import { getUserHome } from './utils/home.js';
+import {
+  aggregateDailySessions,
+  computeDailyStatsDelta,
+  mergeDailyStats,
+  type ReportedDailySessions,
+} from './session-trends.js';
 
 /** Snapshot of already-reported per-session intervention counts (idempotency basis). */
 type ReportedInterventions = Record<string, { interrupt: number; toolReject: number; correction: number }>;
@@ -115,6 +121,7 @@ export function mergeStats(
     ...(existing?.interventions !== undefined ? { interventions: existing.interventions } : {}),
     ...(existing?.prompts !== undefined ? { prompts: existing.prompts } : {}),
     ...(existing?.tokens !== undefined ? { tokens: existing.tokens } : {}),
+    ...(existing?.daily !== undefined ? { daily: existing.daily } : {}),
   };
 }
 
@@ -277,6 +284,26 @@ function hasPromptTokenDelta(d: PromptTokenDelta): boolean {
     || d.tokens.cacheRead > 0 || d.tokens.cacheCreation > 0;
 }
 
+function getReportedDailySessionsPath(): string {
+  return path.join(getUserHome(), '.teamai', 'dashboard', 'reported-daily-sessions.json');
+}
+
+async function readReportedDailySessions(): Promise<ReportedDailySessions> {
+  return (await readJson<ReportedDailySessions>(getReportedDailySessionsPath())) ?? {};
+}
+
+async function writeReportedDailySessions(data: ReportedDailySessions): Promise<void> {
+  await writeJson(getReportedDailySessionsPath(), data);
+}
+
+function hasDailyDelta(delta: ReturnType<typeof computeDailyStatsDelta>['delta']): boolean {
+  return Object.values(delta).some((bucket) =>
+    bucket.sessionsEnded > 0 || bucket.sessionsSucceeded > 0 || bucket.promptTurns > 0
+    || bucket.durationMs > 0 || bucket.sessionsCorrected > 0 || bucket.pricedRequests > 0
+    || bucket.costMicros > 0 || bucket.cacheReadTokens > 0 || bucket.cacheEligibleInputTokens > 0,
+  );
+}
+
 /**
  * Filter dashboard events by scope:
  * - projectRoot set: keep only events whose cwd is under that root.
@@ -353,10 +380,16 @@ export async function reportUsageToTeam(
       metrics,
       reportedPromptTokens,
     );
+    const reportedDailySessions = await readReportedDailySessions();
+    const { delta: dailyDelta, nextReported: nextReportedDailySessions } = computeDailyStatsDelta(
+      aggregateDailySessions(dashboardEvents),
+      reportedDailySessions,
+    );
 
     const hasUsage = events.length > 0;
     const hasInterventions = hasInterventionDelta(interventionDelta);
     const hasPromptTokens = hasPromptTokenDelta(promptTokenDelta);
+    const hasDaily = hasDailyDelta(dailyDelta);
 
     // Resolve where report data is written. In self mode this is the reports
     // orphan-branch worktree; in git mode it is the team repo clone.
@@ -413,7 +446,7 @@ export async function reportUsageToTeam(
     }
 
     // Process usage and/or intervention/prompt/token stats if anything is new to report.
-    if (hasUsage || hasInterventions || hasPromptTokens) {
+    if (hasUsage || hasInterventions || hasPromptTokens || hasDaily) {
       const statsDir = path.join(writeRoot, 'stats');
       await ensureDir(statsDir);
       const statsPath = path.join(statsDir, `${username}.yaml`);
@@ -431,6 +464,9 @@ export async function reportUsageToTeam(
         const pt = mergePromptTokenStats(existing?.prompts, existing?.tokens, promptTokenDelta);
         merged.prompts = pt.prompts;
         merged.tokens = pt.tokens;
+      }
+      if (hasDaily) {
+        merged.daily = mergeDailyStats(existing?.daily, dailyDelta);
       }
 
       await writeFile(statsPath, YAML.stringify(merged));
@@ -459,7 +495,7 @@ export async function reportUsageToTeam(
     // Commit and push with timeout
     const commitMsg = hasUsage
       ? `[teamai] Update usage stats for ${username}`
-      : (hasInterventions || hasPromptTokens)
+      : (hasInterventions || hasPromptTokens || hasDaily)
         ? `[teamai] Update session stats for ${username}`
         : `[teamai] Update votes for ${username}`;
     // Guard the push with a 5s timeout. withTimeout clears its timer once the
@@ -499,7 +535,12 @@ export async function reportUsageToTeam(
       await writeReportedPromptTokens({ ...existingPt, ...nextReportedPromptTokens });
       log.debug(`Reported prompt/token delta (${promptTokenDelta.prompts} prompts) to team repo`);
     }
-    if (!hasUsage && !hasInterventions && !hasPromptTokens) {
+    if (hasDaily) {
+      const existingDaily = await readReportedDailySessions();
+      await writeReportedDailySessions({ ...existingDaily, ...nextReportedDailySessions });
+      log.debug(`Reported daily session trends (${Object.keys(dailyDelta).length} UTC day buckets) to team repo`);
+    }
+    if (!hasUsage && !hasInterventions && !hasPromptTokens && !hasDaily) {
       log.debug('Pushed pending votes to team repo');
     }
   } catch (e) {

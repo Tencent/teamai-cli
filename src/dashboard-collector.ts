@@ -30,8 +30,10 @@ import {
   type TokenUsage,
   type TokenSnapshotScope,
   type SessionMetrics,
+  type RequestCostMetrics,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
+import { estimateClaudeRequest } from './model-pricing.js';
 
 // ─── Event collection data flow ─────────────────────────
 //
@@ -140,6 +142,8 @@ export interface TranscriptScanResult {
    * monotonic across compaction + same-session resume — same guarantee as `tokens`.
    */
   prompts: number;
+  /** Cumulative API-equivalent request cost for recognized Claude models. */
+  requestMetrics?: RequestCostMetrics;
 }
 
 /**
@@ -208,6 +212,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTra
   let toolError = 0;
   let prompts = 0;
   const tokens = emptyTokenUsage();
+  let requestMetrics: RequestCostMetrics | undefined;
   let codexSessionSnapshot: CodexTokenSnapshot | null = null;
   let codexTranscriptSnapshot: CodexTokenSnapshot | null = null;
   // Dedup assistant usage per message (one turn spans many JSONL lines that repeat
@@ -248,7 +253,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTra
         isSidechain?: unknown;
         requestId?: unknown;
         payload?: unknown;
-        message?: { content?: unknown; id?: unknown; usage?: Record<string, unknown> };
+        message?: { content?: unknown; id?: unknown; model?: unknown; usage?: Record<string, unknown> };
       };
       try {
         entry = JSON.parse(trimmed);
@@ -275,10 +280,28 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTra
             : undefined;
         if (usage && dedupKey && !countedUsageKeys.has(dedupKey)) {
           countedUsageKeys.add(dedupKey);
-          tokens.input += toNum(usage.input_tokens);
-          tokens.output += toNum(usage.output_tokens);
-          tokens.cacheRead += toNum(usage.cache_read_input_tokens);
-          tokens.cacheCreation += toNum(usage.cache_creation_input_tokens);
+          const requestTokens: TokenUsage = {
+            input: toNum(usage.input_tokens),
+            output: toNum(usage.output_tokens),
+            cacheRead: toNum(usage.cache_read_input_tokens),
+            cacheCreation: toNum(usage.cache_creation_input_tokens),
+          };
+          tokens.input += requestTokens.input;
+          tokens.output += requestTokens.output;
+          tokens.cacheRead += requestTokens.cacheRead;
+          tokens.cacheCreation += requestTokens.cacheCreation;
+          if (typeof entry.message?.model === 'string') {
+            const priced = estimateClaudeRequest(entry.message.model, requestTokens);
+            if (priced) {
+              requestMetrics = {
+                pricedRequests: (requestMetrics?.pricedRequests ?? 0) + 1,
+                costMicros: (requestMetrics?.costMicros ?? 0) + priced.costMicros,
+                cacheReadTokens: (requestMetrics?.cacheReadTokens ?? 0) + priced.cacheReadTokens,
+                cacheEligibleInputTokens: (requestMetrics?.cacheEligibleInputTokens ?? 0) + priced.cacheEligibleInputTokens,
+                priceVersion: priced.priceVersion,
+              };
+            }
+          }
         }
         continue;
       }
@@ -342,6 +365,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTra
     toolError,
     tokens: codexSnapshot?.tokens ?? tokens,
     prompts,
+    ...(requestMetrics ? { requestMetrics } : {}),
     ...(codexSnapshot ? { tokenScope: codexSnapshot.scope } : {}),
   };
   return { result, codexSnapshot };
@@ -865,6 +889,9 @@ export async function parseHookEvent(
     }
     if (scan.prompts > 0) {
       event.prompts = scan.prompts;
+    }
+    if (scan.requestMetrics) {
+      event.requestMetrics = scan.requestMetrics;
     }
   }
 

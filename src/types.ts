@@ -765,6 +765,24 @@ export interface UserStats {
    * Privacy: counts only.
    */
   tokens?: TokenUsage;
+  /** UTC-day buckets used by digest trends. Existing cumulative fields remain for compatibility. */
+  daily?: Record<string, DailyUserStats>;
+}
+
+/** Aggregated, privacy-preserving activity for one UTC day. */
+export interface DailyUserStats {
+  sessionsEnded: number;
+  sessionsSucceeded: number;
+  promptTurns: number;
+  durationMs: number;
+  sessionsCorrected: number;
+  pricedRequests: number;
+  /** Estimated API-equivalent cost in integer micro-US-dollars. */
+  costMicros: number;
+  cacheReadTokens: number;
+  cacheEligibleInputTokens: number;
+  /** Version of the price table used for new request deltas. */
+  priceVersion?: string;
 }
 
 /** Per-user cumulative intervention totals, persisted to stats/<user>.yaml. */
@@ -911,6 +929,16 @@ export interface DashboardEvent {
    * with no transcript (e.g. Cursor); for those, prompt_submit events are counted.
    */
   prompts?: number;
+  /** Cumulative priced-request snapshot collected from a supported transcript. */
+  requestMetrics?: RequestCostMetrics;
+}
+
+export interface RequestCostMetrics {
+  pricedRequests: number;
+  costMicros: number;
+  cacheReadTokens: number;
+  cacheEligibleInputTokens: number;
+  priceVersion: string;
 }
 
 export interface DashboardSession {
