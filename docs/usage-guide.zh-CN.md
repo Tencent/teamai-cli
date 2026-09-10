@@ -536,6 +536,15 @@ teamai status        # 当前 scope、同步时间、资源统计
 teamai status --all  # 列出 ~/.teamai/projects 下所有项目数据分区
 ```
 
+`Team resources` 中的 `skills` 数量与 `teamai list skills --source repo` 的团队仓库列表一致，
+包含平铺技能（`skills/<name>/SKILL.md`）和 namespace 下的技能
+（`skills/<namespace>/<name>/SKILL.md`）。namespace 目录及技能包内部的子模块不单独计数。
+例如，`skills/ai/` 下有 6 个技能，另有 `skills/officecli/`，总数为 7。
+
+`docs` 递归统计 `docs/` 下的文件，排除隐藏文件和隐藏目录。全部放在子目录里的文档也会被
+`pull` 发现并同步。此资源摘要不包含经验数量；经验在根目录全团队共享，或按启用的项目选择，
+不按角色划分。
+
 `--all` 会枚举每个项目的机器数据分区，并标注为 **active**（项目仍在磁盘上）、
 **ORPHAN**（项目已移动/删除——该分区可安全 `rm -rf`）或 **unknown**（无 `anchor`
 文件，无法确认是否孤儿——绝不建议删除）。ORPHAN 判定只依据 anchor，因此绝不会凭猜测

@@ -5,8 +5,9 @@ import { getRepoStatus } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
 import { getAllHandlers } from './resources/index.js';
-import { listDirs, listFiles, listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
+import { listDirs, listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
 import { SkillsHandler } from './resources/skills.js';
+import { DocsHandler } from './resources/docs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
 import {
   buildClassifyContext,
@@ -81,15 +82,13 @@ export async function status(options: GlobalOptions): Promise<void> {
   const repoPath = localConfig.repo.localPath;
   const counts: Record<string, number> = {};
 
-  const skillsDirs = await listDirs(path.join(repoPath, 'skills'));
-  counts.skills = skillsDirs.length;
+  // Match `list skills --source repo`: count skills, not namespace directories.
+  counts.skills = (await new SkillsHandler().scanTeamForPull(teamConfig, localConfig)).length;
 
   const rulesFiles = (await listFilesRecursive(path.join(repoPath, 'rules'))).filter(f => f.endsWith('.md'));
   counts.rules = rulesFiles.length;
 
-  const docsExists = await pathExists(path.join(repoPath, 'docs'));
-  const docFiles = docsExists ? (await listFiles(path.join(repoPath, 'docs'))).filter(f => !f.startsWith('.')) : [];
-  counts.docs = docFiles.length;
+  counts.docs = await new DocsHandler().countDocFiles(path.join(repoPath, 'docs'));
 
   const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
   let envCount = 0;

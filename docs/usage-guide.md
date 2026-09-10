@@ -551,6 +551,17 @@ teamai status        # Current scope, last sync time, resource stats
 teamai status --all  # List every project data partition under ~/.teamai/projects
 ```
 
+Under `Team resources`, `skills` counts the team repo entries shown by
+`teamai list skills --source repo`: both flat skills (`skills/<name>/SKILL.md`)
+and skills inside namespaces (`skills/<namespace>/<name>/SKILL.md`). Namespace
+directories and modules bundled inside a skill are not counted separately. For
+example, six skills under `skills/ai/` plus `skills/officecli/` count as seven.
+
+`docs` counts files recursively under `docs/`, excluding hidden files and hidden
+directories. Documents stored only in subdirectories are also discovered and
+synced by `pull`. Learnings are not included in this resource summary; they are
+shared at the root or selected by active projects, not by roles.
+
 `--all` enumerates every project's machine-data partition and flags each as
 **active** (project still on disk), **ORPHAN** (project moved/deleted — its
 partition is safe to `rm -rf`), or **unknown** (no `anchor` file, so it cannot be
