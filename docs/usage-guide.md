@@ -135,8 +135,11 @@ Resulting directory structure:
 ~/.teamai/projects/my-project-<hash>/   # this project's machine-data partition
 ├── config.yaml
 ├── state.json
-└── team-repo/                           # clone of the team repo
+├── team-repo/                           # clone of the team repo (knowledge on the default branch)
+└── reports-wt/                          # checkout of the `teamai-reports` orphan branch
 ```
+
+Independent git clones use the same reports split as single-repo mode: `members/` `sessions/` `votes/` `stats/` are written to the `teamai-reports` orphan branch (the checkout sits **beside** the clone, not inside it). Knowledge (`skills/` `rules/` `docs/` `learnings/` `teamai.yaml`) stays on the default branch. Leftover report files already on `main` are left in place and ignored.
 
 Project machine-data (config, state, the team-repo clone, search index, MCP
 manifests, resource cache) lives in a per-project partition under
@@ -265,11 +268,12 @@ Resulting directory structure:
 ```
 ~/.teamai/
 ├── config.yaml          # Local config
-├── team-repo/            # Clone of the team repo
+├── team-repo/            # Clone of the team repo (knowledge on the default branch)
 │   ├── teamai.yaml      # Remote team config
-│   ├── skills/ rules/ docs/ env/ members/
+│   ├── skills/ rules/ docs/ env/
 │   ├── manifest/roles.yaml  # Role definitions (when role-based skills are enabled)
 │   └── learnings/       # Team knowledge base
+├── reports-wt/          # Checkout of `teamai-reports` (`members/` `sessions/` `votes/` `stats/`)
 ~/.claude/skills/        # Team skills (auto-synced)
 ~/.claude/rules/         # Team rules (auto-synced)
 ```
@@ -305,7 +309,7 @@ teamai init . --agent claude,codex   # non-interactive: set up Claude Code + Cod
 | Data | Where it lives | Travels with `git clone`? |
 |------|----------------|---------------------------|
 | Knowledge: `skills/` `rules/` `docs/` `learnings/`, `teamai.yaml` | `.teamai/` on the **main** branch | ✅ Yes |
-| Reports: `members/` `sessions/` `votes/` `stats/` | `teamai-reports` **orphan branch** | Pushed to `origin` (separate history) |
+| Reports: `members/` `sessions/` `votes/` `stats/` | `teamai-reports` **orphan branch** | Pushed to `origin` (separate history). Independent git clones use this same split; learnings stay on the default branch. |
 | Machine-local: `config.yaml`, `state.json`, search index, env backup, MCP manifests | `~/.teamai/projects/<slug>/` (**partition**, outside the repo) | ❌ No (per-machine) |
 | Disposable git worktrees (`reports-wt/`, `knowledge-wt/`) | `.teamai/` (gitignored; rebuilt on demand) | ❌ No (per-machine) |
 
@@ -1257,7 +1261,7 @@ teamai session save --push --include-prompt  # also include the (redacted) first
 
 **Local (always):** appends to `~/.teamai/session-logs/<year-month>.md`. Idempotent per session (a session already recorded that month is skipped), and logs older than 90 days are pruned automatically.
 
-**Team (`--push`, opt-in):** commits the summary directly (no PR) to `sessions/<user>/<year-month>.md` in the team repo — the exact path `teamai digest` reads, so the session shows up under **Session Highlights**. Only a **valuable** session is pushed by default: one that shows friction (an interrupt / tool-reject / correction) or substantial tool use (≥ 3 distinct tools). Trivial sessions stay local unless you pass `--force`. On a read-only (HTTP-mode) team, `--push` fails gracefully and the local log is still kept.
+**Team (`--push`, opt-in):** commits the summary directly (no PR) to `sessions/<user>/<year-month>.md` on the `teamai-reports` branch — the exact path `teamai digest` reads, so the session shows up under **Session Highlights**. Only a **valuable** session is pushed by default: one that shows friction (an interrupt / tool-reject / correction) or substantial tool use (≥ 3 distinct tools). Trivial sessions stay local unless you pass `--force`. On a read-only (HTTP-mode) team, `--push` fails gracefully and the local log is still kept.
 
 > Privacy: the team-pushed payload is **counts + tool names only** by default. The first-ask prompt line is opt-in via `--include-prompt`, and even then it is run through the same secret redaction (`ghp_…` → `<REDACTED:…>`) used elsewhere. Local logs keep the redacted first-ask line since they never leave your machine.
 

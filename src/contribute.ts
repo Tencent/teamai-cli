@@ -54,7 +54,8 @@ async function rebuildIndexAfterContribute(localConfig: LocalConfig): Promise<vo
   const docsRepoDir = path.join(repoPath, 'docs');
   const rulesRepoDir = path.join(repoPath, 'rules');
   const skillsRepoDir = path.join(repoPath, 'skills');
-  const votesDir = path.join(repoPath, 'votes');
+  const { getReportsDir } = await import('./types.js');
+  const votesDir = path.join(getReportsDir(localConfig), 'votes');
 
   // user scope mirrors learnings/ into ~/.teamai/learnings/ (legacy behavior,
   // same as pull.ts); project scope indexes the repo's learnings/ directly.

@@ -152,7 +152,8 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
   const config = await detectProjectConfig() ?? await loadLocalConfig();
 
   if (config?.repo?.localPath) {
-    if (config.repo.kind === 'self') {
+    const { usesReportsBranch } = await import('./types.js');
+    if (usesReportsBranch(config)) {
       const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
       await ensureReportsWorktree(config);
     }

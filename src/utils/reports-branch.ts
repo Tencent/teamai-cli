@@ -1,15 +1,19 @@
 /**
- * Single-repo mode: manage the `teamai-reports` orphan branch via an isolated
- * git worktree under <business-repo>/.teamai/reports-wt.
+ * Manage the `teamai-reports` orphan branch via an isolated git worktree.
+ *
+ * Used for every non-HTTP team repo (`kind !== 'http'`):
+ *  - self: worktree under <business-repo>/.teamai/reports-wt
+ *  - git / legacy: sibling of the clone (`<dirname(localPath)>/reports-wt`) so
+ *    clone `reset --hard` cannot nest-destroy it
  *
  * Why an orphan branch + dedicated worktree?
- *  - In single-repo mode the business repo IS the team repo. High-frequency,
- *    noisy report data (members/sessions/votes/stats) must NOT pollute main.
+ *  - High-frequency report data (members/sessions/votes/stats) must NOT pollute
+ *    the default branch, so members can use the team repo with branch protection.
  *    The orphan branch has an independent history, so main stays clean.
- *  - Report writes involve `git reset --hard` / `rebase --hard`. Running those
- *    on the user's active working tree would destroy their uncommitted business
- *    code. A separate worktree confines every destructive git op to the orphan
- *    branch checkout — the active tree is never touched.
+ *  - Report writes involve `git reset --hard` / rebase. Running those on the
+ *    user's active working tree (self) or nesting the worktree inside the
+ *    knowledge clone (git) would destroy uncommitted work. A separate worktree
+ *    confines every destructive git op to the orphan-branch checkout.
  *
  * Concurrency: the branch is shared by the whole team, but each member only ever
  * writes their own `<user>.yaml`, so files never collide. Pushes race at the git
@@ -17,7 +21,7 @@
  */
 import path from 'node:path';
 import fse from 'fs-extra';
-import { createGit, isGitRepo, getDefaultBranch, hasCommits, commitSkippingHooks } from './git.js';
+import { createGit, isGitRepo, getDefaultBranch, hasCommits, commitSkippingHooks, isDedicatedRepoRoot } from './git.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ensureDir, writeFile, pathExists } from './fs.js';
 import { log } from './logger.js';
@@ -27,6 +31,8 @@ import {
   REPORTS_LOCK_FILENAME,
   KNOWLEDGE_WORKTREE_DIRNAME,
   getReportsDir,
+  isSelfMode,
+  usesReportsBranch,
   type LocalConfig,
 } from '../types.js';
 
@@ -50,9 +56,26 @@ function businessRoot(localConfig: LocalConfig): string {
   return localConfig.repo.businessRepoRoot ?? path.dirname(localConfig.repo.localPath);
 }
 
-/** Path to the reports worktree directory (<repo>/.teamai/reports-wt). */
+/**
+ * Git repository that owns the reports worktree.
+ * - self: the business repo (knowledge lives in `.teamai/` inside it)
+ * - git: the dedicated team clone (`localPath` itself)
+ */
+function reportsGitRoot(localConfig: LocalConfig): string {
+  if (isSelfMode(localConfig)) {
+    return businessRoot(localConfig);
+  }
+  return localConfig.repo.localPath;
+}
+
+/** Path to the reports worktree directory (see getReportsDir). */
 function reportsWorktreePath(localConfig: LocalConfig): string {
-  return path.join(localConfig.repo.localPath, REPORTS_WORKTREE_DIRNAME);
+  return getReportsDir(localConfig);
+}
+
+/** Lock file sitting beside the reports worktree (never inside the clone). */
+function reportsLockPath(localConfig: LocalConfig): string {
+  return path.join(path.dirname(getReportsDir(localConfig)), REPORTS_LOCK_FILENAME);
 }
 
 /** Whether the remote already has the reports branch. */
@@ -67,8 +90,9 @@ async function remoteBranchExists(repoRoot: string): Promise<boolean> {
 }
 
 /**
- * Ensure a git worktree checked out on the `teamai-reports` orphan branch exists
- * at <repo>/.teamai/reports-wt. Idempotent. Returns the worktree absolute path.
+ * Ensure a git worktree checked out on the `teamai-reports` orphan branch exists.
+ * Self: <knowledgeDir>/reports-wt. Independent git: sibling of the clone.
+ * Idempotent. Returns the worktree absolute path.
  *
  * Cold-start cases handled:
  *  - worktree already present  → return it (optionally refreshed by caller).
@@ -88,8 +112,18 @@ export async function ensureReportsWorktree(
   localConfig: LocalConfig,
   options: EnsureReportsWorktreeOptions = {},
 ): Promise<string> {
+  if (!usesReportsBranch(localConfig)) {
+    return getReportsDir(localConfig);
+  }
+
   const wt = reportsWorktreePath(localConfig);
-  const repoRoot = businessRoot(localConfig);
+  const repoRoot = reportsGitRoot(localConfig);
+
+  if (!isSelfMode(localConfig) && !(await isDedicatedRepoRoot(repoRoot))) {
+    throw new Error(
+      `Refusing to create a reports worktree: ${repoRoot} is not a dedicated team-repo clone root`,
+    );
+  }
 
   // Already a valid worktree — nothing to do.
   if (await isGitRepo(wt)) {
@@ -216,7 +250,7 @@ export async function commitAndPushReports(
   message: string,
   files: string[],
 ): Promise<boolean> {
-  const lockPath = path.join(localConfig.repo.localPath, REPORTS_LOCK_FILENAME);
+  const lockPath = reportsLockPath(localConfig);
   const locked = await acquireLock(lockPath);
   if (!locked) {
     log.debug('[reports] another reports write is in progress; skipping');
@@ -291,12 +325,11 @@ export async function refreshReportsWorktree(
 }
 
 /**
- * Ensure the reports directory exists and return it. For self mode this creates
- * the worktree first; for other modes it just returns localPath (reports live
- * alongside knowledge).
+ * Ensure the reports directory exists and return it. For non-HTTP repos this
+ * creates the reports worktree first; HTTP keeps reports alongside knowledge.
  */
 export async function ensureReportsDir(localConfig: LocalConfig): Promise<string> {
-  if (localConfig.repo.kind === 'self') {
+  if (usesReportsBranch(localConfig)) {
     return ensureReportsWorktree(localConfig);
   }
   return getReportsDir(localConfig);

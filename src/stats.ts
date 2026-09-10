@@ -51,9 +51,11 @@ async function loadReportedStats(): Promise<UserStats | null> {
   try {
     const config = await detectProjectConfig() ?? await loadLocalConfig();
     if (!config) return null;
-    // Self mode: stats live on the teamai-reports orphan branch worktree.
+    // Non-HTTP: stats live on the teamai-reports orphan branch worktree.
+    // Leftover stats/ on the default-branch clone is ignored.
     let statsRoot = config.repo.localPath;
-    if (config.repo.kind === 'self') {
+    const { usesReportsBranch } = await import('./types.js');
+    if (usesReportsBranch(config)) {
       const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
       statsRoot = await ensureReportsWorktree(config);
     }

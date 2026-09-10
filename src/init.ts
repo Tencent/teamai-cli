@@ -1233,6 +1233,7 @@ export async function init(options: GlobalOptions & {
   // Remote teamai.yaml.scope (if present) is ignored — local install location
   // is decided only by --scope / default (issue #250).
   const teamConfig = await loadTeamConfig(localPath);
+  const createdSkeleton = !teamConfig;
   if (!teamConfig) {
     log.warn('teamai.yaml not found in repo. Creating default config...');
     const defaultConfig = YAML.stringify({
@@ -1248,7 +1249,8 @@ export async function init(options: GlobalOptions & {
     });
     await writeFile(path.join(localPath, 'teamai.yaml'), defaultConfig);
 
-    // Create standard directories
+    // Knowledge-tree skeleton on the default branch so an empty remote has a
+    // committable HEAD. Member YAML files go to teamai-reports, not here.
     for (const dir of ['members', 'skills', 'rules', 'docs', 'env']) {
       await ensureDir(path.join(localPath, dir));
       const gitkeep = path.join(localPath, dir, '.gitkeep');
@@ -1270,41 +1272,72 @@ export async function init(options: GlobalOptions & {
     process.exit(1);
   }
 
-  // Step 5: Create or update member file. Membership is the union of every
-  // project this user has init'd (append + dedupe), so re-running init in another
-  // project directory adds that project to the roster rather than being a no-op.
-  const memberPath = path.join(localPath, 'members', `${username}.yaml`);
-  const isNewMember = !await pathExists(memberPath);
-  const existingMember = await getMemberConfig(localPath, username);
-  const { config: memberConfig, changed: memberChanged } = mergeMemberConfig(existingMember, {
+  const reportsConfig: LocalConfig = {
+    repo: { localPath, remote: repoInfo.httpsUrl },
     username,
-    projects: resolvedProjects,
-  });
-  if (memberChanged) {
-    await writeFile(memberPath, YAML.stringify(memberConfig));
-    log.success(isNewMember
-      ? `Registered as team member: ${username}`
-      : `Updated member roster: ${username}${memberConfig.projects ? ` (projects: ${memberConfig.projects.join(', ')})` : ''}`);
+    scope,
+    projectRoot,
+    additionalRoles: [],
+  };
 
-    if (!options.dryRun) {
-      try {
-        await pushRepoDirectly(localPath, isNewMember
+  // Empty-repo exception: a one-time skeleton push of teamai.yaml + gitkeeps may
+  // still land on the default branch so the knowledge tree exists. Member files
+  // after that go to teamai-reports.
+  if (createdSkeleton && !options.dryRun) {
+    try {
+      await pushRepoDirectly(localPath, '[teamai] Initialize team repo skeleton', [
+        'teamai.yaml',
+        'skills/.gitkeep',
+        'rules/.gitkeep',
+        'docs/.gitkeep',
+        'env/.gitkeep',
+        'members/.gitkeep',
+      ]);
+    } catch (e) {
+      log.warn(`Push failed (you can push manually later): ${(e as Error).message}`);
+    }
+  }
+
+  // Step 5: member roster on the teamai-reports orphan branch (never the
+  // default branch). Leftover members/ on the clone is ignored.
+  let isNewMember = true;
+  if (!options.dryRun) {
+    try {
+      const { ensureReportsWorktree, commitAndPushReports } = await import('./utils/reports-branch.js');
+      const wt = await ensureReportsWorktree(reportsConfig);
+      const memberDir = path.join(wt, 'members');
+      await ensureDir(memberDir);
+      const memberPath = path.join(memberDir, `${username}.yaml`);
+      isNewMember = !await pathExists(memberPath);
+      const existingMember = await getMemberConfig(wt, username);
+      const { config: memberConfig, changed: memberChanged } = mergeMemberConfig(existingMember, {
+        username,
+        projects: resolvedProjects,
+      });
+      if (memberChanged) {
+        await writeFile(memberPath, YAML.stringify(memberConfig));
+        log.success(isNewMember
+          ? `Registered as team member: ${username}`
+          : `Updated member roster: ${username}${memberConfig.projects ? ` (projects: ${memberConfig.projects.join(', ')})` : ''}`);
+        const pushed = await commitAndPushReports(reportsConfig, isNewMember
           ? `[teamai] Register member: ${username}`
-          : `[teamai] Update member roster: ${username}`, [
-          'members/',
-          'teamai.yaml',
-          'skills/.gitkeep',
-          'rules/.gitkeep',
-          'docs/.gitkeep',
-          'env/.gitkeep',
-        ]);
-        log.success('Member registration pushed to team repo');
-      } catch (e) {
-        log.warn(`Push failed (you can push manually later): ${(e as Error).message}`);
+          : `[teamai] Update member roster: ${username}`, ['members/']);
+        if (pushed) {
+          log.success(isNewMember
+            ? 'Member registered on the teamai-reports branch'
+            : 'Member roster updated on the teamai-reports branch');
+        } else {
+          log.warn('Member registration could not be pushed (no write access?). You are still set up locally.');
+        }
+      } else {
+        log.info(`Member ${username} already registered`);
+        isNewMember = false;
       }
+    } catch (e) {
+      log.warn(`Member registration skipped (non-blocking): ${(e as Error).message}`);
     }
   } else {
-    log.info(`Member ${username} already registered`);
+    log.info(`[dry-run] Would register member ${username} on the teamai-reports branch`);
   }
 
   // Step 5.5: Configure default MR reviewers (only for fresh setup with no reviewers yet).

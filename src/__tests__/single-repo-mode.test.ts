@@ -4,6 +4,7 @@ import {
   getReportsDir,
   getKnowledgeDir,
   isSelfMode,
+  usesReportsBranch,
   REPORTS_WORKTREE_DIRNAME,
   LocalConfigSchema,
   TeamaiConfigSchema,
@@ -33,6 +34,13 @@ describe('single-repo mode path helpers', () => {
     expect(isSelfMode(makeConfig('http'))).toBe(false);
   });
 
+  it('usesReportsBranch is true for every non-HTTP kind, including omitted kind', () => {
+    expect(usesReportsBranch(makeConfig('self'))).toBe(true);
+    expect(usesReportsBranch(makeConfig('git'))).toBe(true);
+    expect(usesReportsBranch(makeConfig('http'))).toBe(false);
+    expect(usesReportsBranch({ repo: {} })).toBe(true);
+  });
+
   it('getKnowledgeDir returns localPath in every mode', () => {
     expect(getKnowledgeDir(makeConfig('self'))).toBe('/repo/.teamai');
     expect(getKnowledgeDir(makeConfig('git', '/home/alice/.teamai/team-repo'))).toBe(
@@ -40,13 +48,13 @@ describe('single-repo mode path helpers', () => {
     );
   });
 
-  it('getReportsDir points at the reports worktree only in self mode', () => {
+  it('getReportsDir points at the reports worktree for self and git, clone/localPath for http', () => {
     expect(getReportsDir(makeConfig('self'))).toBe(
       path.join('/repo/.teamai', REPORTS_WORKTREE_DIRNAME),
     );
-    // Non-self modes keep reports alongside knowledge (localPath) — unchanged behavior.
+    // Independent git clone: sibling of the clone, not nested inside it.
     expect(getReportsDir(makeConfig('git', '/home/alice/.teamai/team-repo'))).toBe(
-      '/home/alice/.teamai/team-repo',
+      path.join('/home/alice/.teamai', REPORTS_WORKTREE_DIRNAME),
     );
     expect(getReportsDir(makeConfig('http', '/home/alice/.teamai/team-repo'))).toBe(
       '/home/alice/.teamai/team-repo',

@@ -342,6 +342,8 @@ export const LocalConfigSchema = z.object({
      *           Knowledge lives on main under <businessRepoRoot>/.teamai/;
      *           reports (members/sessions/votes/stats) live on the
      *           `teamai-reports` orphan branch. localPath = <businessRepoRoot>/.teamai.
+     * Independent git clones (`kind: 'git'` or omitted) use the same reports
+     * branch; the worktree sits beside the clone, not inside it.
      */
     kind: z.enum(['git', 'http', 'self']).optional(),
     /** Base URL of the HTTP team repo (only when kind === 'http'). */
@@ -1418,9 +1420,19 @@ export function isSelfMode(localConfig: { repo: { kind?: string } }): boolean {
   return localConfig.repo.kind === 'self';
 }
 
-/** Orphan branch that carries reports (members/sessions/votes/stats) in single-repo mode. */
+/**
+ * True when report dirs (`members/` `sessions/` `votes/` `stats/`) live on the
+ * `teamai-reports` orphan branch instead of the default branch. HTTP backends
+ * keep their API write path; every other kind (self, git, and legacy configs
+ * that omit `kind`) uses the reports branch.
+ */
+export function usesReportsBranch(localConfig: { repo: { kind?: string } }): boolean {
+  return localConfig.repo.kind !== 'http';
+}
+
+/** Orphan branch that carries reports (members/sessions/votes/stats) for non-HTTP repos. */
 export const REPORTS_BRANCH = 'teamai-reports';
-/** Worktree directory (under .teamai) that checks out the reports orphan branch. */
+/** Worktree directory name that checks out the reports orphan branch. */
 export const REPORTS_WORKTREE_DIRNAME = 'reports-wt';
 /** Worktree directory (under .teamai) used to stage knowledge PRs off the active tree. */
 export const KNOWLEDGE_WORKTREE_DIRNAME = 'knowledge-wt';
@@ -1475,17 +1487,21 @@ export function getDataHome(localConfig: LocalConfig): string {
 
 /**
  * Directory holding reports data (members/sessions/votes/stats).
- * - git/http: same as knowledge (localPath) — reports live alongside knowledge.
- * - self:     <localPath>/reports-wt — a git worktree checked out on the
- *             `teamai-reports` orphan branch, so reports never land on main.
+ * - http: same as knowledge (localPath) — HTTP does not use the git reports branch.
+ * - self: <localPath>/reports-wt — nested under the knowledge dir (`.teamai/`).
+ * - git (and legacy configs with no kind): sibling of the clone
+ *   (`<dirname(localPath)>/reports-wt`) so clone `reset --hard` cannot nest-destroy it.
  * Callers must ensure the worktree exists first (see ensureReportsWorktree)
- * when the returned path is the self-mode worktree.
+ * when the returned path is a reports-branch worktree.
  */
 export function getReportsDir(localConfig: LocalConfig): string {
+  if (!usesReportsBranch(localConfig)) {
+    return localConfig.repo.localPath;
+  }
   if (isSelfMode(localConfig)) {
     return path.join(localConfig.repo.localPath, REPORTS_WORKTREE_DIRNAME);
   }
-  return localConfig.repo.localPath;
+  return path.join(path.dirname(localConfig.repo.localPath), REPORTS_WORKTREE_DIRNAME);
 }
 
 /**

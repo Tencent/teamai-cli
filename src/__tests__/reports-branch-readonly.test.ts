@@ -24,6 +24,7 @@ vi.mock('../utils/git.js', () => ({
   isGitRepo: mocks.isGitRepo,
   getDefaultBranch: vi.fn(),
   hasCommits: vi.fn(),
+  isDedicatedRepoRoot: vi.fn().mockResolvedValue(true),
   commitSkippingHooks: (git: { commit: (...args: unknown[]) => unknown }, message: string) =>
     git.commit(message, { '--no-verify': null }),
 }));

@@ -50,14 +50,15 @@ describe('resolveMaintenancePaths', () => {
     expect(refreshReportsWorktree).toHaveBeenCalledWith(config, { pushIfCreated: false });
   });
 
-  it('keeps knowledge and votes together for standalone team repos', async () => {
+  it('reads git-kind votes from the sibling reports worktree', async () => {
     const config = makeConfig('git');
 
     await expect(resolveMaintenancePaths(config)).resolves.toEqual({
       repoPath: '/home/alice/.teamai/team-repo',
-      votesDir: '/home/alice/.teamai/team-repo/votes',
+      votesDir: path.join('/home/alice/.teamai', REPORTS_WORKTREE_DIRNAME, 'votes'),
       learningsDir: '/home/alice/.teamai/team-repo/learnings',
     });
-    expect(refreshReportsWorktree).not.toHaveBeenCalled();
+    expect(refreshReportsWorktree).toHaveBeenCalledOnce();
+    expect(refreshReportsWorktree).toHaveBeenCalledWith(config, { pushIfCreated: false });
   });
 });

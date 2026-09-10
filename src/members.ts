@@ -65,10 +65,12 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
   const projectConfig = await detectProjectConfig();
   const localConfig = projectConfig ?? (await requireInit()).localConfig;
 
-  // Members live on the teamai-reports orphan branch in self mode; read them from
-  // the reports worktree (refreshed from origin) instead of the team repo clone.
+  // Members live on the teamai-reports orphan branch for non-HTTP repos; read
+  // them from the reports worktree (refreshed from origin). Leftover members/
+  // on the default-branch clone is ignored. HTTP keeps the clone/API path.
   let repoPath: string;
-  if (localConfig.repo.kind === 'self') {
+  const { usesReportsBranch } = await import('./types.js');
+  if (usesReportsBranch(localConfig)) {
     const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
     await refreshReportsWorktree(localConfig);
     repoPath = await ensureReportsWorktree(localConfig);

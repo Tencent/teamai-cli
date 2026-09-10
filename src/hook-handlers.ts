@@ -310,9 +310,10 @@ const votesSyncHandler: HookHandler = {
       if (verifiedDocIds.length > 0) {
         await incrementUpvoted(votePath, verifiedDocIds);
       }
-      if (localConfig.repo.kind === 'self') {
-        // Self mode: votes are report data → the teamai-reports orphan branch,
-        // written through an isolated worktree (never the active tree).
+      const { usesReportsBranch } = await import('./types.js');
+      if (usesReportsBranch(localConfig)) {
+        // Votes are report data → the teamai-reports orphan branch, written
+        // through an isolated worktree (never the default branch / active tree).
         try {
           const { ensureReportsWorktree, commitAndPushReports } = await import('./utils/reports-branch.js');
           const wt = await ensureReportsWorktree(localConfig);

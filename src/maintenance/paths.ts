@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import type { LocalConfig } from '../types.js';
-import { getKnowledgeDir, getReportsDir, isSelfMode } from '../types.js';
+import { getKnowledgeDir, getReportsDir, usesReportsBranch } from '../types.js';
 
 export interface MaintenancePaths {
   repoPath: string;
@@ -12,8 +12,8 @@ export interface MaintenancePaths {
 /**
  * Resolve the knowledge and report roots used by recall maintenance commands.
  *
- * In self mode, knowledge remains on the business repository's main branch,
- * while votes live in the teamai-reports worktree. Other repository kinds keep
+ * Knowledge remains on the default branch (or self-mode `.teamai/` on main).
+ * Votes live in the teamai-reports worktree for every non-HTTP repo. HTTP keeps
  * both data sets under localConfig.repo.localPath. Maintenance is a report
  * reader, so a cold start may create its local cache but never publishes a new
  * reports branch as a side effect.
@@ -21,7 +21,7 @@ export interface MaintenancePaths {
 export async function resolveMaintenancePaths(
   localConfig: LocalConfig,
 ): Promise<MaintenancePaths> {
-  if (isSelfMode(localConfig)) {
+  if (usesReportsBranch(localConfig)) {
     const { refreshReportsWorktree } = await import('../utils/reports-branch.js');
     await refreshReportsWorktree(localConfig, { pushIfCreated: false });
   }
