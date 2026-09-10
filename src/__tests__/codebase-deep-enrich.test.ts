@@ -15,6 +15,7 @@ vi.mock('../utils/ai-client.js', () => ({
   }),
 }));
 
+import { callClaude, callClaudeParallel } from '../utils/ai-client.js';
 import { codebaseCmd } from '../codebase-cmd.js';
 
 const temporaryDirectories: string[] = [];
@@ -82,15 +83,22 @@ describe('codebase deep-enrich', () => {
 
     await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
 
-    expect(process.exitCode).toBeUndefined();
+    expect(process.exitCode).toBe(1);
     const report = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
-    expect(report).toMatchObject({ project: 'faketest', complete: true });
+    expect(report).toMatchObject({
+      project: 'faketest',
+      complete: false,
+      missingComponents: ['Auth'],
+      missingArchitecture: true,
+    });
 
     const docsDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs');
     expect(fs.existsSync(path.join(docsDir, 'graph-g1-relations.md'))).toBe(true);
     expect(fs.existsSync(path.join(docsDir, 'graph-g2-dataflow.md'))).toBe(true);
     expect(fs.existsSync(path.join(docsDir, 'graph-g3-interfaces.md'))).toBe(true);
     expect(fs.readFileSync(path.join(docsDir, 'graph-g1-relations.md'), 'utf8').length).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(docsDir, 'Auth.md'))).toBe(false);
+    expect(fs.existsSync(path.join(docsDir, 'architecture.md'))).toBe(false);
   });
 
   it('does not report success when the evidence dir has no components', async () => {
@@ -118,6 +126,96 @@ describe('codebase deep-enrich', () => {
       dryRun: true,
     });
     expect(fs.existsSync(path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs'))).toBe(false);
+  });
+
+  it('retries missing AI docs after recovery without wiping graph docs', async () => {
+    const root = createEnrichFixture();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const docsDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs');
+
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+    expect(process.exitCode).toBe(1);
+    const first = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
+    expect(first).toMatchObject({ complete: false, missingComponents: ['Auth'], missingArchitecture: true });
+    expect(fs.existsSync(path.join(docsDir, 'Auth.md'))).toBe(false);
+    expect(fs.existsSync(path.join(docsDir, 'architecture.md'))).toBe(false);
+    const graphBefore = fs.readFileSync(path.join(docsDir, 'graph-g1-relations.md'), 'utf8');
+
+    process.exitCode = undefined;
+    vi.mocked(callClaude).mockResolvedValue('# Architecture\n\nAuth sits at the edge.\n');
+    vi.mocked(callClaudeParallel).mockImplementation(async (tasks) => (
+      tasks.map(() => '# Auth\n\nAuthenticates users.\n')
+    ));
+
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+
+    expect(process.exitCode).toBeUndefined();
+    const recovered = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
+    expect(recovered).toMatchObject({ complete: true, missingComponents: [], missingArchitecture: false });
+    expect(fs.readFileSync(path.join(docsDir, 'Auth.md'), 'utf8')).toContain('Authenticates users');
+    expect(fs.readFileSync(path.join(docsDir, 'architecture.md'), 'utf8')).toContain('Auth sits at the edge');
+    expect(fs.readFileSync(path.join(docsDir, 'graph-g1-relations.md'), 'utf8')).toBe(graphBefore);
+
+    process.exitCode = undefined;
+    vi.mocked(callClaude).mockRejectedValue(new Error('mock: AI unavailable'));
+    vi.mocked(callClaudeParallel).mockRejectedValue(new Error('mock: AI batch unavailable'));
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+    expect(process.exitCode).toBeUndefined();
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({ complete: true });
+    expect(fs.readFileSync(path.join(docsDir, 'Auth.md'), 'utf8')).toContain('Authenticates users');
+    expect(fs.readFileSync(path.join(docsDir, 'architecture.md'), 'utf8')).toContain('Auth sits at the edge');
+  });
+
+  it('preserves a completed component doc when architecture generation still fails', async () => {
+    const root = createEnrichFixture();
+    const docsDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs');
+    fs.mkdirSync(docsDir, { recursive: true });
+    fs.writeFileSync(path.join(docsDir, 'Auth.md'), '# Auth\n\nKeep me.\n');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
+      complete: false,
+      missingComponents: [],
+      missingArchitecture: true,
+    });
+    expect(fs.readFileSync(path.join(docsDir, 'Auth.md'), 'utf8')).toBe('# Auth\n\nKeep me.\n');
+    expect(fs.existsSync(path.join(docsDir, 'graph-g1-relations.md'))).toBe(true);
+  });
+
+  it('still reports remaining missing AI work when a later retry also fails', async () => {
+    const root = createEnrichFixture();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const docsDir = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs');
+
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0])).complete).toBe(false);
+    const graphBefore = fs.readFileSync(path.join(docsDir, 'graph-g1-relations.md'), 'utf8');
+
+    process.exitCode = undefined;
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+
+    expect(process.exitCode).toBe(1);
+    const second = JSON.parse(String(log.mock.calls.at(-1)?.[0]));
+    expect(second).toMatchObject({
+      complete: false,
+      missingComponents: ['Auth'],
+      missingArchitecture: true,
+    });
+    expect(fs.existsSync(path.join(docsDir, 'Auth.md'))).toBe(false);
+    expect(fs.existsSync(path.join(docsDir, 'architecture.md'))).toBe(false);
+    expect(fs.readFileSync(path.join(docsDir, 'graph-g1-relations.md'), 'utf8')).toBe(graphBefore);
+
+    process.exitCode = undefined;
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root });
+    const text = log.mock.calls.flat().map(String).join('\n');
+    expect(text).toContain('Deep enrichment incomplete');
+    expect(text).toContain('missing component docs: Auth');
+    expect(text).toContain('missing architecture.md');
+    expect(text).not.toMatch(/Deep enrichment complete: project=faketest/);
+    expect(process.exitCode).toBe(1);
   });
 
   it('rejects a project slug that escapes the evidence directory', async () => {

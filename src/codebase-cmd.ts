@@ -138,12 +138,26 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
             return;
         }
         const { deepEnrich } = await import('./deep-enrich.js');
-        await deepEnrich({ project, evidenceDir, wikiRoot: teamwikiDir });
+        const result = await deepEnrich({ project, evidenceDir, wikiRoot: teamwikiDir });
         if (opts.json) {
-            console.log(JSON.stringify({ project, evidenceDir, complete: true }, null, 2));
-        } else {
+            console.log(JSON.stringify({
+                project,
+                evidenceDir,
+                complete: result.complete,
+                missingComponents: result.missingComponents,
+                missingArchitecture: result.missingArchitecture,
+            }, null, 2));
+        } else if (result.complete) {
             console.log(`Deep enrichment complete: project=${project}`);
+        } else {
+            const parts: string[] = [];
+            if (result.missingComponents.length > 0) {
+                parts.push(`missing component docs: ${result.missingComponents.join(', ')}`);
+            }
+            if (result.missingArchitecture) parts.push('missing architecture.md');
+            console.log(`Deep enrichment incomplete: project=${project}, ${parts.join(', ')}`);
         }
+        if (!result.complete) process.exitCode = 1;
         return;
     }
 

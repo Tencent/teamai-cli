@@ -13,6 +13,14 @@ export interface DeepEnrichOptions {
   maxModules?: number;  // 限制 AI 处理的最大组件数（费用控制）
 }
 
+/** Public-command status: full completion vs remaining AI docs. */
+export interface DeepEnrichResult {
+  project: string;
+  complete: boolean;
+  missingComponents: string[];
+  missingArchitecture: boolean;
+}
+
 interface ProgressState {
   project: string;
   phase: 'pending' | 'components' | 'architecture' | 'graph' | 'ai-graph' | 'index-enhance' | 'done';
@@ -627,6 +635,11 @@ async function runPhaseAiGraph(
   await writeFile(path.join(docsDir, 'graph-g6-multihop.md'), g6, 'utf-8');
   log.debug(`deep-enrich[${project}]: G6 multi-hop analysis written`);
 
+  const g5Path = path.join(docsDir, 'graph-g5-scenarios.md');
+  if (await pathExists(g5Path)) {
+    return { g5Generated: true, g6Generated: g6HasEdges };
+  }
+
   // G5: AI 生成场景序列图（需要足够的模块数据）
   let g5Generated = false;
   if (ctx.moduleDocs.size < 2) {
@@ -728,6 +741,34 @@ async function runPhaseIndexEnhance(
   log.debug(`deep-enrich[${project}]: Index incremental update complete`);
 }
 
+function architectureDocPath(docsDir: string): string {
+  return path.join(docsDir, 'architecture.md');
+}
+
+async function existingComponentSlugs(docsDir: string, slugs: string[]): Promise<string[]> {
+  const found: string[] = [];
+  for (const slug of slugs) {
+    try {
+      assertSafeResourceName(slug);
+    } catch {
+      continue;
+    }
+    if (await pathExists(path.join(docsDir, `${slug}.md`))) found.push(slug);
+  }
+  return found;
+}
+
+async function collectMissingAiDocs(
+  docsDir: string,
+  slugs: string[],
+): Promise<{ missingComponents: string[]; missingArchitecture: boolean }> {
+  const existing = new Set(await existingComponentSlugs(docsDir, slugs));
+  return {
+    missingComponents: slugs.filter((slug) => !existing.has(slug)),
+    missingArchitecture: !(await pathExists(architectureDocPath(docsDir))),
+  };
+}
+
 // ─── 主函数 ─────────────────────────────────────────────────
 
 /**
@@ -740,11 +781,13 @@ async function runPhaseIndexEnhance(
  * - Phase 4: AI 图谱文档（G5 场景序列图 + G6 多跳路径）
  * - Phase 5: 索引增强（graph/README.md 路由分发表）
  *
- * 支持断点续传：通过 _review/progress.json 记录已完成组件。
+ * Resume is based on files on disk: missing component/architecture docs are
+ * retried even when progress.json says `done` (deterministic graph files keep
+ * `docs/` nonempty). Completed AI docs are not overwritten.
  *
  * @param opts DeepEnrichOptions
  */
-export async function deepEnrich(opts: DeepEnrichOptions): Promise<void> {
+export async function deepEnrich(opts: DeepEnrichOptions): Promise<DeepEnrichResult> {
   const { project, evidenceDir } = opts;
   const docsDir = path.join(evidenceDir, 'docs');
 
@@ -756,7 +799,7 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<void> {
 
   if (components.length === 0) {
     log.warn(`deep-enrich[${project}]: No components in _manifest.json, aborting`);
-    return;
+    return { project, complete: false, missingComponents: [], missingArchitecture: true };
   }
 
   if (opts.maxModules && components.length > opts.maxModules) {
@@ -765,69 +808,55 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<void> {
     ctx.manifest = { ...ctx.manifest, components };
   }
 
-  // 2. 初始化 progress（断点续传）
   const allSlugs = components.map(c => c.slug);
   const progress = await loadProgress(evidenceDir, project, allSlugs);
 
-  // 2b. Stale progress guard: reset when progress is outdated relative to the manifest.
-  // This happens when import writes a fresh _manifest.json but an old progress.json
-  // (from a prior run) survives on the git branch that deep-enrich executes against.
-  if (progress.phase === 'done') {
-    const manifestTime = ctx.manifest.generatedAt;
-    const progressStale = manifestTime && progress.startedAt < manifestTime;
-    let docsEmpty = true;
-    if (await pathExists(docsDir)) {
-      const entries = await readdir(docsDir).catch(() => [] as string[]);
-      docsEmpty = entries.filter(e => e.endsWith('.md')).length === 0;
-    }
-    if (docsEmpty || progressStale) {
-      log.info(`deep-enrich[${project}]: stale progress detected (phase=done, docs_empty=${docsEmpty}, progress_stale=${Boolean(progressStale)}), resetting`);
-      progress.phase = 'pending';
-      progress.componentsDone = [];
-      progress.componentsPending = [...allSlugs];
-      progress.startedAt = new Date().toISOString();
-      await saveProgress(evidenceDir, progress);
-    }
-  }
+  // Disk is the source of truth for resume. A prior AI skip still writes
+  // deterministic graph markdown, so `phase: done` + nonempty docs/ must not
+  // skip missing component/architecture files.
+  const existing = await existingComponentSlugs(docsDir, allSlugs);
+  progress.componentsDone = existing;
+  progress.componentsPending = allSlugs.filter((slug) => !existing.includes(slug));
 
-  // 3. Phase 1: 组件设计文档
-  if (progress.phase === 'pending' || progress.phase === 'components') {
+  if (progress.componentsPending.length > 0) {
     progress.phase = 'components';
     await saveProgress(evidenceDir, progress);
     await runPhaseComponents(opts, ctx, progress, docsDir);
   }
 
-  // 4. Phase 2: 架构总览
-  if (progress.phase === 'components' || progress.phase === 'architecture') {
+  if (!(await pathExists(architectureDocPath(docsDir)))) {
     progress.phase = 'architecture';
     await saveProgress(evidenceDir, progress);
     await runPhaseArchitecture(opts, ctx, docsDir);
   }
 
-  // 5. Phase 3: 确定性图谱文档
-  if (progress.phase === 'architecture' || progress.phase === 'graph') {
-    progress.phase = 'graph';
-    await saveProgress(evidenceDir, progress);
-    await runPhaseGraph(opts, ctx, docsDir);
-  }
-
-  // 6. Phase 4: AI 图谱（G5 场景序列图 + G6 多跳路径）
-  let graphFlags = { g5Generated: false, g6Generated: true };
-  if (progress.phase === 'graph' || progress.phase === 'ai-graph') {
-    progress.phase = 'ai-graph';
-    await saveProgress(evidenceDir, progress);
-    graphFlags = await runPhaseAiGraph(opts, ctx, docsDir);
-  }
-
-  // 7. Phase 5: 索引增强（graph/README.md 路由表）
-  if (progress.phase === 'ai-graph' || progress.phase === 'index-enhance') {
-    progress.phase = 'index-enhance';
-    await saveProgress(evidenceDir, progress);
-    await runPhaseIndexEnhance(opts, ctx, docsDir, graphFlags);
-  }
-
-  // 8. 完成
-  progress.phase = 'done';
+  progress.phase = 'graph';
   await saveProgress(evidenceDir, progress);
-  log.success(`deep-enrich[${project}]: Deep knowledge generation complete`);
+  await runPhaseGraph(opts, ctx, docsDir);
+
+  progress.phase = 'ai-graph';
+  await saveProgress(evidenceDir, progress);
+  const graphFlags = await runPhaseAiGraph(opts, ctx, docsDir);
+
+  progress.phase = 'index-enhance';
+  await saveProgress(evidenceDir, progress);
+  await runPhaseIndexEnhance(opts, ctx, docsDir, graphFlags);
+
+  const missing = await collectMissingAiDocs(docsDir, allSlugs);
+  const complete = missing.missingComponents.length === 0 && !missing.missingArchitecture;
+  progress.componentsDone = allSlugs.filter((slug) => !missing.missingComponents.includes(slug));
+  progress.componentsPending = missing.missingComponents;
+  progress.phase = complete ? 'done' : (missing.missingComponents.length > 0 ? 'components' : 'architecture');
+  await saveProgress(evidenceDir, progress);
+
+  if (complete) {
+    log.success(`deep-enrich[${project}]: Deep knowledge generation complete`);
+  } else {
+    const missingComps = missing.missingComponents.join(', ') || '(none)';
+    log.warn(
+      `deep-enrich[${project}]: incomplete — missing component docs: ${missingComps}, architecture: ${missing.missingArchitecture}`,
+    );
+  }
+
+  return { project, complete, ...missing };
 }
