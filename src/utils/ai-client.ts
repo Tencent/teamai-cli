@@ -178,8 +178,8 @@ function detectClaudeCli(): CliInfo {
   }
 
   throw new Error(
-    'AI CLI 不可用：请安装以下任意一个 CLI 工具：' +
-    'claude / claude-internal / codex / codex-internal / codebuddy / workbuddy / openclaw'
+    'AI CLI unavailable: install one of claude / claude-internal / codex / ' +
+    'codex-internal / codebuddy / workbuddy / openclaw'
   );
 }
 
