@@ -30,6 +30,8 @@ import type {
   GlobalOptions,
 } from './types.js';
 import { resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
+import { GitResourceProvider } from './providers/git/resource-provider.js';
+import { syncResourceProviders } from './providers/resource-registry.js';
 
 // ─── Source repo management ──────────────────────────────
 
@@ -117,7 +119,7 @@ async function ensureSourceRepo(source: SourceConfig, force: boolean): Promise<s
  * Add a source to the team's teamai.yaml.
  * This modifies the team repo and requires a push (via MR or direct).
  */
-export async function sourceAdd(repoUrl: string, options: { name?: string } & GlobalOptions): Promise<void> {
+export async function sourceAdd(repoUrl: string, options: { name?: string; priority?: number } & GlobalOptions): Promise<void> {
   const { localConfig, teamConfig } = await autoDetectInit();
   const repoPath = localConfig.repo.localPath;
 
@@ -178,7 +180,7 @@ export async function sourceAdd(repoUrl: string, options: { name?: string } & Gl
   if (!raw.sources) {
     raw.sources = [];
   }
-  raw.sources.push({ name, repo: repoUrl });
+  raw.sources.push({ name, repo: repoUrl, ...(options.priority !== undefined ? { priority: options.priority } : {}) });
   await fse.writeFile(yamlPath, YAML.stringify(raw));
 
   log.success(`Added source "${name}" (${repoUrl})`);
@@ -224,6 +226,10 @@ export async function sourceRemove(name: string, options: GlobalOptions): Promis
     await remove(sourceDir);
     log.debug(`Removed local cache for source "${name}"`);
   }
+
+  // Reconcile remaining providers immediately so a lower-priority candidate
+  // takes over any resource that was owned by the removed provider.
+  await pullSources(localConfig, { ...options, force: true });
 
   log.success(`Removed source "${name}"`);
   log.info('Run `teamai push` to share this change with your team.');
@@ -287,6 +293,7 @@ export async function sourceAddHttp(
   endpoint: string,
   options: { token?: string; force?: boolean } & GlobalOptions,
 ): Promise<void> {
+  log.warn('`teamai source add-http` is deprecated; use `teamai provider add http --name <name>` for isolated providers.');
   const trimmed = endpoint.trim();
   if (!trimmed) {
     log.error('Endpoint is required. Usage: teamai source add-http <endpoint> --token <key>');
@@ -318,6 +325,7 @@ export async function sourceAddHttp(
  * Remove the personal HTTP source: uninstall its resources and clear its config.
  */
 export async function sourceRemoveHttp(options: GlobalOptions): Promise<void> {
+  log.warn('`teamai source remove-http` is deprecated; use `teamai provider remove <name>`.');
   if (options.dryRun) {
     log.info('[dry-run] Would remove the HTTP source');
     return;
@@ -398,12 +406,43 @@ export async function pullSources(localConfig: LocalConfig, options: GlobalOptio
 
   const baseDir = resolveBaseDir(localConfig);
 
+  // Inventory first so every provider sees the same ownership decision. A
+  // lower-priority cached source can immediately take over when a winner drops
+  // a skill, without a transient delete or dependence on source order.
+  const prepared: Array<{ source: SourceConfig; repoDir: string; config: TeamaiConfig }> = [];
   for (const source of sources) {
-    try {
-      await pullSingleSource(source, teamConfig, localConfig, baseDir, options);
-    } catch (e) {
-      log.warn(`[source:${source.name}] Pull failed: ${(e as Error).message}`);
+    const repoDir = await ensureSourceRepo(source, !!options.force);
+    if (!repoDir) continue;
+    const config = await loadTeamConfig(repoDir);
+    if (config) prepared.push({ source, repoDir, config });
+  }
+  const winners = new Map<string, string>();
+  for (const item of [...prepared].sort((a, b) =>
+    (b.source.priority ?? 50) - (a.source.priority ?? 50) || a.source.name.localeCompare(b.source.name))) {
+    for (const skill of item.config.publicSkills ?? []) {
+      if (!winners.has(skill) && await findSkillInRepo(path.join(item.repoDir, 'skills'), skill)) {
+        winners.set(skill, item.source.name);
+      }
     }
+  }
+
+  const providers = prepared.map(({ source, repoDir, config }) => new GitResourceProvider(
+    source.name,
+    source.priority ?? 50,
+    source.repo,
+    async () => {
+      await pullSingleSource(source, teamConfig, localConfig, baseDir, options, winners, repoDir, config);
+      return { provider: source.name, ok: true, changed: true };
+    },
+    async () => cleanupSourceSkills(source.name, teamConfig, localConfig),
+  )).sort((a, b) => b.priority - a.priority || a.name.localeCompare(b.name));
+  const results = await syncResourceProviders(providers, {
+    cwd: localConfig.projectRoot,
+    trigger: 'pull',
+    force: options.force,
+  });
+  for (const result of results) {
+    if (!result.ok) log.warn(`[source:${result.provider}] Pull failed: ${result.message}`);
   }
 }
 
@@ -413,13 +452,16 @@ async function pullSingleSource(
   localConfig: LocalConfig,
   baseDir: string,
   options: GlobalOptions,
+  winners?: Map<string, string>,
+  preparedRepoDir?: string,
+  preparedConfig?: TeamaiConfig,
 ): Promise<void> {
   // Ensure source repo is cloned/updated
-  const repoDir = await ensureSourceRepo(source, !!options.force);
+  const repoDir = preparedRepoDir ?? await ensureSourceRepo(source, !!options.force);
   if (!repoDir) return;
 
   // Load source's teamai.yaml
-  const sourceTeamConfig = await loadTeamConfig(repoDir);
+  const sourceTeamConfig = preparedConfig ?? await loadTeamConfig(repoDir);
   if (!sourceTeamConfig) {
     log.debug(`[source:${source.name}] No teamai.yaml, skipping`);
     return;
@@ -464,6 +506,10 @@ async function pullSingleSource(
       log.debug(`[source:${source.name}] Skipping "${skill.name}" (local team has same name)`);
       continue;
     }
+    if (winners && winners.get(skill.name) !== source.name) {
+      log.debug(`[source:${source.name}] Skipping "${skill.name}" (owned by higher-priority source "${winners.get(skill.name)}")`);
+      continue;
+    }
 
     if (options.dryRun) {
       const label = oldInstalled.has(skill.name) ? 'update' : 'new';
@@ -497,6 +543,12 @@ async function pullSingleSource(
     const deployedSet = new Set(deployed);
     for (const oldSkill of oldInstalled) {
       if (!deployedSet.has(oldSkill) && !localTeamSkills.has(oldSkill)) {
+        // A different winner will replace the same resource path in this pass.
+        // Do not remove its freshly-deployed copy while retiring our manifest.
+        if (winners?.has(oldSkill) && winners.get(oldSkill) !== source.name) {
+          delete installedPaths[oldSkill];
+          continue;
+        }
         await removeSkillFromToolPaths(oldSkill, teamConfig, localConfig, baseDir, oldManifest?.installedPaths?.[oldSkill]);
         log.debug(`[source:${source.name}] Removed "${oldSkill}" (no longer public)`);
         delete installedPaths[oldSkill];

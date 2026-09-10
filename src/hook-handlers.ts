@@ -436,8 +436,8 @@ const packageHintHandler: HookHandler = {
 const localAgentHandler: HookHandler = {
   name: 'local-agent-sync',
   async execute(stdin, tool) {
-    const { reportAndSyncFromHook } = await import('./local-agent.js');
-    return reportAndSyncFromHook(stdin, tool);
+    const { syncHttpProvidersFromHook } = await import('./providers/http/sync.js');
+    return syncHttpProvidersFromHook(stdin, tool);
   },
 };
 

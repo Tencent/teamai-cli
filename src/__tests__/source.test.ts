@@ -210,6 +210,35 @@ describe('source', () => {
       expect(manifest.installedSkills).toContain('cool-skill');
     });
 
+    it('uses provider priority for conflicts and falls back when the winner removes a skill', async () => {
+      teamConfig.sources = [
+        { name: 'low', repo: 'https://example.test/low.git', priority: 10 },
+        { name: 'high', repo: 'https://example.test/high.git', priority: 100 },
+      ];
+      const YAML = (await import('yaml')).default;
+      await fse.writeFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), YAML.stringify(teamConfig));
+      for (const name of ['low', 'high']) {
+        const repo = path.join(sourcesDir, name, 'repo');
+        await fse.ensureDir(path.join(repo, 'skills', 'shared'));
+        await fse.writeFile(path.join(repo, 'skills', 'shared', 'SKILL.md'), `# ${name}`);
+        await fse.writeFile(path.join(repo, 'teamai.yaml'), YAML.stringify({
+          team: name,
+          repo: `https://example.test/${name}.git`,
+          publicSkills: ['shared'],
+        }));
+      }
+
+      await pullSources(localConfig, {});
+      const deployed = path.join(homeDir, '.claude', 'skills', 'shared', 'SKILL.md');
+      expect(await fse.readFile(deployed, 'utf8')).toBe('# high');
+
+      await fse.writeFile(path.join(sourcesDir, 'high', 'repo', 'teamai.yaml'), YAML.stringify({
+        team: 'high', repo: 'https://example.test/high.git', publicSkills: [],
+      }));
+      await pullSources(localConfig, { force: true });
+      expect(await fse.readFile(deployed, 'utf8')).toBe('# low');
+    });
+
     it('deploys a source Codex skill to its existing shared location', async () => {
       teamConfig.sources = [{ name: 'platform', repo: 'https://example.test/platform/repo.git' }];
       teamConfig.toolPaths = { codex: { skills: '.codex/skills' } };

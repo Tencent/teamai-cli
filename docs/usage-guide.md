@@ -1414,22 +1414,27 @@ A subscription source's skills are automatically synced locally on `teamai pull`
 
 A source only shares the skills it opts in via a `publicSkills` list in its own `teamai.yaml`. If the repo has no `teamai.yaml`, or declares no `publicSkills`, `teamai source add` succeeds but warns that the source will sync **0 skills** — the source team has to publish a `publicSkills` list before anything flows through.
 
-#### HTTP Source
+#### Resource Providers
 
-In addition to a git subscription source, you can attach an HTTP source on top of an existing git main repo — useful for server-managed skill delivery:
+Git subscriptions and server-managed HTTP delivery use the same named provider lifecycle. ClawPro is an HTTP protocol adapter:
 
 ```bash
-# Attach an HTTP source (the git main repo is unaffected)
-teamai source add-http https://your-team-host/api --token <api-key>
+teamai provider add git https://github.com/other-team/teamai-public.git \
+  --name shared-skills --priority 50
 
-# View it (shown under "HTTP source")
-teamai source list
+teamai provider add http https://clawpro.example.com/api \
+  --adapter clawpro --name company-clawpro --priority 80 --token <api-key>
 
-# Detach and uninstall its resources
-teamai source remove-http
+teamai provider list
+teamai provider sync
+teamai provider set-primary main
+teamai provider remove company-clawpro
+teamai provider migrate-legacy --name company-clawpro
 ```
 
-An HTTP source reports status and pulls skill commands via hook dispatch on every session. Only one HTTP source is supported per install. If the main repo is already in HTTP mode (`init --http`), `add-http` is unavailable (the main repo already occupies the HTTP config).
+One hook dispatch synchronizes every enabled HTTP provider once. A timeout or failure is contained to that provider. Configuration, credentials, workspace bindings, manifests, plugin state, caches, and error logs live under provider-specific paths in `~/.teamai/providers/http/<name>/`; credentials are stored separately in `~/.teamai/credentials/<name>` with owner-only permissions. Git skill conflicts use the declared priority, and removing the active Git source immediately reconciles the next candidate.
+
+`teamai push` writes only to the writable `main` provider; use `--provider main` to make the target explicit. The older `init --http`, `source add-http`, `source remove-http`, `repo.kind: http`, and `~/.teamai/local-agent/` layout remain readable during migration. `provider migrate-legacy` copies the singleton into an isolated provider, moves its credential out of JSON, and keeps the disabled old directory as a rollback snapshot. The old source commands print a deprecation notice but keep their existing behavior.
 
 ---
 
