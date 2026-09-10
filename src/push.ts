@@ -23,7 +23,7 @@ import { acquireLock, releaseLock } from './update.js';
 import { assertSafePath, assertSafeResourceName, defaultAllowedRoots } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces } from './roles.js';
 import { askQuestion, askSelection } from './utils/prompt.js';
-import { pathExists, readFileSafe, writeFile } from './utils/fs.js';
+import { pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.js';
 
 /**
  * Synthetic toolPaths key used only to make `teamai push` scan the active tree's
@@ -254,6 +254,13 @@ async function pushGroup(args: {
 
     // Switch back to the default branch so the next group starts clean
     await checkoutMaster(localConfig.repo.localPath);
+    // git tracks files, not directories: any empty subdirectory a pushed
+    // resource carried (e.g. an unused `assets/`) survives that checkout as an
+    // untracked shell. A skill-shaped shell has no SKILL.md, so the next push
+    // would read it as a namespace and nest every new skill inside it.
+    for (const rel of pushedFiles) {
+      await pruneEmptyDirs(path.resolve(localConfig.repo.localPath, rel));
+    }
     return true;
   } catch (e) {
     pushSpin.fail(`Push failed: ${(e as Error).message}`);

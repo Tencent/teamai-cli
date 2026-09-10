@@ -797,6 +797,20 @@ describe('scanTeamRepoNamespaces', () => {
     expect(namespaces).toEqual([]);
   });
 
+  it('ignores a leftover directory that holds no skills', async () => {
+    // A skill whose source has empty subdirectories (e.g. an unused assets/)
+    // leaves those untracked, empty shells behind in the team repo working tree
+    // once git switches back to the default branch — git tracks files, not
+    // directories. The shell has no SKILL.md, so it used to be reported as a
+    // namespace and the next push nested every new skill inside it.
+    const repoPath = path.join(tmpDir, 'repo');
+    await fse.ensureDir(path.join(repoPath, 'skills', 'channel-bill-push-test', 'assets'));
+    await fse.ensureDir(path.join(repoPath, 'skills', 'channel-bill-push-test', 'references'));
+
+    const namespaces = await scanTeamRepoNamespaces(repoPath);
+    expect(namespaces).toEqual([]);
+  });
+
   it('detects multiple namespaces', async () => {
     const repoPath = path.join(tmpDir, 'repo');
     await fse.ensureDir(path.join(repoPath, 'skills', 'tencent', 'tgit'));

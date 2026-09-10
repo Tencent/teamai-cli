@@ -8,6 +8,7 @@ import {
   getFileMtime,
   getDirLatestMtime,
   hasVcsMetadataRecursive,
+  pruneEmptyDirs,
 } from '../utils/fs.js';
 
 describe('fileContentEqual', () => {
@@ -346,5 +347,51 @@ describe('hasVcsMetadataRecursive', () => {
 
   it('returns false for a missing directory', async () => {
     expect(await hasVcsMetadataRecursive(path.join(tmpDir, 'nope'))).toBe(false);
+  });
+});
+
+describe('pruneEmptyDirs', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-prune-test-'));
+  });
+
+  afterEach(async () => {
+    await fse.remove(tmpDir);
+  });
+
+  it('removes a directory tree that contains no files', async () => {
+    const target = path.join(tmpDir, 'skills', 'channel-bill-push-test');
+    await fse.ensureDir(path.join(target, 'assets'));
+    await fse.ensureDir(path.join(target, 'references'));
+
+    await pruneEmptyDirs(target);
+
+    expect(await fse.pathExists(target)).toBe(false);
+    expect(await fse.pathExists(path.join(tmpDir, 'skills'))).toBe(true);
+  });
+
+  it('keeps the directory and prunes only its empty subdirectories', async () => {
+    const target = path.join(tmpDir, 'skills', 'my-skill');
+    await fse.outputFile(path.join(target, 'SKILL.md'), '# x');
+    await fse.ensureDir(path.join(target, 'assets'));
+    await fse.outputFile(path.join(target, 'scripts', 'run.sh'), 'echo hi');
+
+    await pruneEmptyDirs(target);
+
+    expect(await fse.pathExists(path.join(target, 'SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(target, 'scripts', 'run.sh'))).toBe(true);
+    expect(await fse.pathExists(path.join(target, 'assets'))).toBe(false);
+  });
+
+  it('does nothing for a missing path or a file', async () => {
+    const file = path.join(tmpDir, 'teamai.yaml');
+    await fse.outputFile(file, 'team: x');
+
+    await pruneEmptyDirs(path.join(tmpDir, 'nope'));
+    await pruneEmptyDirs(file);
+
+    expect(await fse.pathExists(file)).toBe(true);
   });
 });

@@ -137,6 +137,45 @@ export async function copyDir(src: string, dest: string): Promise<void> {
 }
 
 /**
+ * Recursively delete directories under `target` that contain no files at any
+ * depth, and `target` itself when it ends up empty.
+ *
+ * Git tracks files, not directories: a copied skill whose source has an empty
+ * subdirectory (e.g. an unused `assets/`) leaves that subdirectory behind as an
+ * untracked shell when git switches back to the default branch after a push.
+ * Such a shell has no SKILL.md, which makes later scans mistake it for a skill
+ * namespace. Missing paths and files are left untouched.
+ */
+export async function pruneEmptyDirs(target: string): Promise<boolean> {
+  const expanded = expandHome(target);
+  let entries;
+  try {
+    const stat = await fse.lstat(expanded);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    entries = await fse.readdir(expanded, { withFileTypes: true });
+  } catch {
+    return false; // missing or unreadable — nothing to prune
+  }
+
+  let empty = true;
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (!await pruneEmptyDirs(path.join(expanded, entry.name))) empty = false;
+    } else {
+      empty = false;
+    }
+  }
+
+  if (!empty) return false;
+  try {
+    await fse.rmdir(expanded);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Copy a file
  */
 export async function copyFile(src: string, dest: string): Promise<void> {

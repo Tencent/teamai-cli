@@ -129,7 +129,12 @@ function extractDescriptionFromContent(content: string, skillName: string): stri
 /**
  * Scan the team repo skills/ directory to discover namespace subdirectories.
  * A directory is a namespace if it does NOT contain SKILL.md (i.e. it contains
- * skill subdirectories rather than being a skill itself).
+ * skill subdirectories rather than being a skill itself) AND it actually holds
+ * at least one skill. The second condition matters: git tracks files, not
+ * directories, so a pushed skill whose source had an empty subdirectory (e.g.
+ * an unused `assets/`) leaves an untracked, SKILL.md-less shell behind in the
+ * working tree. Treating that shell as a namespace nested every later push
+ * inside a skill's own name.
  * Returns the list of namespace names found, or [] if layout is purely flat.
  */
 export async function scanTeamRepoNamespaces(repoPath: string): Promise<string[]> {
@@ -142,9 +147,16 @@ export async function scanTeamRepoNamespaces(repoPath: string): Promise<string[]
   for (const dir of topDirs) {
     const dirPath = path.join(teamSkillsDir, dir);
     const hasSkillMd = await pathExists(path.join(dirPath, 'SKILL.md'));
-    if (!hasSkillMd) {
-      namespaces.push(dir);
+    if (hasSkillMd) continue;
+    const subDirs = await listDirs(dirPath);
+    let holdsSkill = false;
+    for (const subDir of subDirs) {
+      if (await pathExists(path.join(dirPath, subDir, 'SKILL.md'))) {
+        holdsSkill = true;
+        break;
+      }
     }
+    if (holdsSkill) namespaces.push(dir);
   }
 
   return namespaces;
