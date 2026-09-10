@@ -103,9 +103,12 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 
 | 能力 | 命令 | 作用 |
 |------|------|------|
+| **项目（Projects）** | `teamai projects` | 将工作目录绑定到一个或多个逻辑项目，使其同步该项目的 skills、knowledge 以及隔离的 learnings。与角色正交。 |
 | **角色（Roles）** | `teamai roles` | 定义「角色 → 命名空间」映射，让每位成员只同步与自身角色匹配的 skills。 |
 | **标签（Tags）** | `teamai tags` | 给 skills / rules 打标签，成员只订阅自己需要的标签。 |
 | **订阅源（Sources）** | `teamai source` | 订阅额外的 skill 仓库——其他团队的公开仓库，或本团队内的公共/共享仓库；已订阅的 skills 会在 pull 时自动同步。 |
+
+learnings 隔离：仓库 `learnings/` 根目录对所有人共享；`learnings/<project-id>/` 为项目私有。详见[使用指南](docs/usage-guide.zh-CN.md#多项目project-作为与-role-正交的维度)。
 
 ## Team Execution
 
@@ -250,6 +253,7 @@ teamai recall maintenance --update-quality       # 为过时 skills / docs 生�
 | `teamai codebase --lint` | 知识图谱健康检查 |
 | `teamai ci extract-mr --url <url>` | CI：从 MR 提取知识、发评论、合并后写入 |
 | `teamai members` | 查看团队成员 |
+| `teamai projects` | 将工作目录绑定到一个或多个逻辑项目 |
 | `teamai roles` | 管理团队角色和命名空间 |
 | `teamai tags` | 管理基于标签的 skill/rule 过滤 |
 | `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](docs/usage-guide.zh-CN.md#排除个人不需要的-skill)） |

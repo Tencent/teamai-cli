@@ -103,9 +103,12 @@ Team-wide settings an admin configures once and delivers to every member on `tea
 
 | Capability | Command | What it does |
 |------------|---------|--------------|
+| **Projects** | `teamai projects` | Bind a working directory to one or more logical projects so it syncs that project's skills, knowledge, and isolated learnings. Orthogonal to roles. |
 | **Roles** | `teamai roles` | Define role → namespace mappings so each member syncs only the skills for their role. |
 | **Tags** | `teamai tags` | Tag skills / rules so members subscribe to just the tags they need. |
 | **Sources** | `teamai source` | Subscribe to additional skill repos — other teams' public repos, or shared/public repos within your own org; subscribed skills sync automatically on pull. |
+
+Learnings isolation: `learnings/` at the repo root is shared with everyone; `learnings/<project-id>/` is project-private. See the [usage guide](docs/usage-guide.md#multi-project-project-as-a-dimension-orthogonal-to-role).
 
 ## Team Execution
 
@@ -250,6 +253,7 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 | `teamai codebase --lint` | Knowledge graph health check |
 | `teamai ci extract-mr --url <url>` | CI: extract knowledge from MR, post comments, write after merge |
 | `teamai members` | List team members |
+| `teamai projects` | Bind a working directory to one or more logical projects |
 | `teamai roles` | Manage team roles and namespaces |
 | `teamai tags` | Manage tag-based skill/rule filtering |
 | `teamai skill exclude add/remove/list` | Manage skills excluded from local sync ([usage guide](docs/usage-guide.md#excluding-skills-you-dont-need)) |

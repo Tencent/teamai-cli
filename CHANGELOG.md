@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file. See [standa
 ### 📝 Documentation
 
 - Align the public usage guides, drop internal-only details, and cover the missing commands and configuration ([#442](https://github.com/Tencent/teamai-cli/pull/442)).
+- Document `teamai projects` in the bilingual READMEs as the lead distribution control, including learnings isolation ([#490](https://github.com/Tencent/teamai-cli/pull/490), for [#487](https://github.com/Tencent/teamai-cli/issues/487)).
 
 ## [0.23.0](https://github.com/Tencent/teamai-cli/compare/v0.22.0...v0.23.0) (2026-09-08)
 
