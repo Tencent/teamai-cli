@@ -125,9 +125,18 @@ export async function ensureReportsWorktree(
     );
   }
 
-  // Already a valid worktree — nothing to do.
+  // Already a valid worktree — nothing to do. `isGitRepo` only checks that a
+  // `.git` file/dir exists; after a sibling clone is deleted and re-cloned the
+  // worktree gitdir (`<clone>/.git/worktrees/reports-wt`) is gone and git ops
+  // fail with "not a git repository". Probe a real git command and fall through
+  // to remove+recreate when the link is stale.
   if (await isGitRepo(wt)) {
-    return wt;
+    try {
+      await createGit(wt).revparse(['--is-inside-work-tree']);
+      return wt;
+    } catch {
+      // stale/dangling worktree link (clone was re-cloned/pruned) — recreate below.
+    }
   }
 
   // Path exists but is not a git worktree (stale/partial) — clear it so we can recreate.

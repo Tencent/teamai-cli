@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
     commit: vi.fn(),
     push: vi.fn(),
     status: vi.fn(),
+    revparse: vi.fn(),
   },
   isGitRepo: vi.fn(),
 }));
@@ -110,6 +111,7 @@ describe('commitAndPushReports', () => {
     mocks.worktreeGit.add.mockResolvedValue(undefined);
     mocks.worktreeGit.commit.mockResolvedValue(undefined);
     mocks.worktreeGit.push.mockResolvedValue(undefined);
+    mocks.worktreeGit.revparse.mockResolvedValue('true');
     mocks.worktreeGit.status.mockResolvedValue({ staged: ['members/alice.yaml'] });
     vi.mocked(acquireLock).mockResolvedValue(true);
     vi.mocked(releaseLock).mockResolvedValue(undefined);

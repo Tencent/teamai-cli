@@ -207,4 +207,33 @@ describe('git-kind reports branch', () => {
     const logAfter = await git.log();
     expect(logAfter.total).toBe(logBefore.total);
   });
+
+  it('rebuilds a dangling sibling reports worktree after the clone is removed and re-cloned', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const cfg = gitConfig(clone, origin);
+
+    const wt = await ensureReportsWorktree(cfg);
+    fs.mkdirSync(path.join(wt, 'members'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'members', 'alice.yaml'), 'username: alice\n');
+    expect(await commitAndPushReports(cfg, '[teamai] Register member: alice', ['members/'])).toBe(true);
+
+    fs.rmSync(clone, { recursive: true, force: true });
+    await simpleGit().clone(origin, clone);
+    await configureGit(clone);
+
+    // The sibling husk is still on disk; isGitRepo would return true, but the
+    // gitdir under the old clone is gone. ensureReportsWorktree must recreate.
+    expect(fs.existsSync(wt)).toBe(true);
+    const rebuilt = await ensureReportsWorktree(cfg);
+    expect(rebuilt).toBe(wt);
+
+    fs.mkdirSync(path.join(wt, 'members'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'members', 'bob.yaml'), 'username: bob\n');
+    expect(await commitAndPushReports(cfg, '[teamai] Register member: bob', ['members/'])).toBe(true);
+
+    const originGit = simpleGit(origin);
+    const reportsTree = await originGit.raw(['ls-tree', '-r', '--name-only', 'teamai-reports']);
+    expect(reportsTree).toContain('members/alice.yaml');
+    expect(reportsTree).toContain('members/bob.yaml');
+  });
 });
