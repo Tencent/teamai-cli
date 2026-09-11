@@ -1,6 +1,7 @@
 /**
  * E2E (real git, NO mocks): proves reportUsageToTeam never wipes a self-mode
- * business repo working tree, and still resets a genuine git-mode cache clone.
+ * business repo working tree, and git-kind reports land on the sibling
+ * teamai-reports checkout instead of resetting the knowledge clone.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -71,29 +72,60 @@ describe('E2E self-mode: business repo working tree is never reset', () => {
     expect(content).toContain('MY UNCOMMITTED WORK');
   });
 
-  it('git mode: resets cache garbage but preserves an uncommitted teamai.yaml edit', async () => {
-    // A dedicated cache clone: repoPath IS the git top level.
-    // Use 'main' as default branch so resetToCleanMaster's fallback checkout matches.
+  it('git mode: writes stats to sibling teamai-reports and does not reset the clone', async () => {
+    const origin = path.join(tmp, 'origin.git');
+    await simpleGit().init(['--bare', '--initial-branch=main', origin]);
+
     const cacheRoot = path.join(tmp, 'cache');
     await makeRepo(cacheRoot, 'main');
     const git = simpleGit(cacheRoot);
-
     fs.writeFileSync(path.join(cacheRoot, 'teamai.yaml'), 'team: original\n');
     await git.add('teamai.yaml');
     await git.commit('add team config');
+    await git.addRemote('origin', origin);
+    await git.push(['-u', 'origin', 'main']);
 
-    // Simulate both disposable cache garbage and a pending source add.
     fs.writeFileSync(path.join(cacheRoot, 'app.js'), 'garbage\n');
     fs.writeFileSync(
       path.join(cacheRoot, 'teamai.yaml'),
       'team: original\nsources:\n  - name: beta-source\n    repo: https://source.test/root/beta-source.git\n',
     );
+    fs.mkdirSync(path.join(cacheRoot, 'members'), { recursive: true });
+    fs.writeFileSync(path.join(cacheRoot, 'members', 'stale.yaml'), 'username: stale\n');
 
-    await reportUsageToTeam(cacheRoot, 'me', { skipTruncate: true });
+    const ts = new Date().toISOString();
+    const eventsDir = path.join(process.env.HOME!, '.teamai', 'dashboard');
+    fs.mkdirSync(eventsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(eventsDir, 'events.jsonl'),
+      `${JSON.stringify({ type: 'session_start', timestamp: ts, sessionId: 's1', tool: 'claude', cwd: '/p' })}\n` +
+      `${JSON.stringify({ type: 'stop', timestamp: ts, sessionId: 's1', tool: 'claude', interventions: { interrupt: 1, toolReject: 0 } })}\n`,
+    );
 
-    expect(fs.readFileSync(path.join(cacheRoot, 'app.js'), 'utf-8')).toBe('console.log(1)\n');
+    const cfg: LocalConfig = {
+      repo: { localPath: cacheRoot, remote: origin, kind: 'git' },
+      username: 'me',
+      scope: 'user',
+      additionalRoles: [],
+    } as unknown as LocalConfig;
+
+    await reportUsageToTeam(cacheRoot, 'me', { skipTruncate: true, selfConfig: cfg });
+
+    // Knowledge clone is not reset — uncommitted clone edits survive.
+    expect(fs.readFileSync(path.join(cacheRoot, 'app.js'), 'utf-8')).toBe('garbage\n');
     expect(fs.readFileSync(path.join(cacheRoot, 'teamai.yaml'), 'utf-8'))
       .toContain('name: beta-source');
+    expect(fs.readFileSync(path.join(cacheRoot, 'members', 'stale.yaml'), 'utf-8'))
+      .toContain('username: stale');
+    expect(fs.existsSync(path.join(cacheRoot, 'stats', 'me.yaml'))).toBe(false);
+
+    const reportsWt = path.join(tmp, 'reports-wt');
+    expect(fs.existsSync(path.join(reportsWt, 'stats', 'me.yaml'))).toBe(true);
+    const originReports = simpleGit(origin);
+    const reportsTree = await originReports.raw(['ls-tree', '-r', '--name-only', 'teamai-reports']);
+    expect(reportsTree).toContain('stats/me.yaml');
+    const mainTree = await originReports.raw(['ls-tree', '-r', '--name-only', 'main']);
+    expect(mainTree).not.toContain('stats/me.yaml');
   });
 
   it('project scope (git kind): business repo is NOT reset when team-repo dir lacks its own .git', async () => {

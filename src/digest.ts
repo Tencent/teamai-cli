@@ -410,11 +410,12 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     const localConfig = projectConfig ?? (await requireInit()).localConfig;
     const repoPath = localConfig.repo.localPath;
 
-    // In self mode, knowledge (learnings, skill git-log) lives under localPath on
-    // main, but report data (stats, sessions) lives on the teamai-reports orphan
-    // branch — read those from the reports worktree, refreshed from origin.
+    // Knowledge (learnings, skill git-log) lives under localPath on the default
+    // branch; report data (stats, sessions) lives on the teamai-reports orphan
+    // branch for non-HTTP repos — read those from the reports worktree.
     let reportsRoot = repoPath;
-    if (localConfig.repo.kind === 'self') {
+    const { usesReportsBranch } = await import('./types.js');
+    if (usesReportsBranch(localConfig)) {
       const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
       await refreshReportsWorktree(localConfig);
       reportsRoot = await ensureReportsWorktree(localConfig);

@@ -15,7 +15,7 @@ import { withTimeout } from './utils/async.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig } from './types.js';
-import { getUserVotesDir, emptyTokenUsage, addTokenUsage } from './types.js';
+import { getUserVotesDir, emptyTokenUsage, addTokenUsage, usesReportsBranch } from './types.js';
 import { getUserHome } from './utils/home.js';
 import {
   aggregateDailySessions,
@@ -345,18 +345,16 @@ export async function reportUsageToTeam(
   username: string,
   options?: { skipTruncate?: boolean; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig?: LocalConfig },
 ): Promise<void> {
-  // Single-repo mode: stats + votes are report data → the teamai-reports orphan
+  // Non-HTTP repos: stats + votes are report data → the teamai-reports orphan
   // branch (isolated worktree). We must NOT resetToCleanMaster / pullRepo /
-  // pushRepoDirectly on the business repo root — that would touch the user's
-  // active working tree. The dedicated writer handles the worktree + rebase race.
-  const selfConfig = options?.selfConfig;
-  const selfMode = selfConfig?.repo.kind === 'self';
+  // pushRepoDirectly on the default branch (or, in self mode, the business
+  // working tree). The dedicated writer handles the worktree + rebase race.
+  const reportsConfig = options?.selfConfig;
+  const useReportsBranch = !!reportsConfig && usesReportsBranch(reportsConfig);
 
-  // git-mode auto-report reset/pull/commit/pushes the SHARED team clone. Its
-  // caller (pull()) holds the partition sync-lock across this scope's whole
-  // clone-consuming lifecycle, so we must NOT acquire it here — the lock is
-  // non-reentrant and re-acquiring in the same process would fail. (self mode
-  // writes the reports orphan-branch worktree, coordinated by its own reports-lock.)
+  // Reports-branch writes use the reports-lock, not the partition sync-lock
+  // (non-reentrant; pull() already holds it). The else-branch clone reset is
+  // only for callers that did not pass a config.
 
   try {
     const events = await readUsageEvents();
@@ -394,12 +392,13 @@ export async function reportUsageToTeam(
     const hasPromptTokens = hasPromptTokenDelta(promptTokenDelta);
     const hasDaily = hasDailyDelta(dailyDelta);
 
-    // Resolve where report data is written. In self mode this is the reports
-    // orphan-branch worktree; in git mode it is the team repo clone.
+    // Resolve where report data is written. Non-HTTP repos use the reports
+    // orphan-branch worktree; HTTP / callers without a config still write the
+    // dedicated clone (legacy path used by unit tests of merge logic).
     let writeRoot = repoPath;
-    if (selfMode && selfConfig) {
+    if (useReportsBranch && reportsConfig) {
       const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
-      writeRoot = await ensureReportsWorktree(selfConfig);
+      writeRoot = await ensureReportsWorktree(reportsConfig);
     } else {
       // The team repo is a disposable cache clone here — safe to discard local state
       // and reset to the default branch before pulling (same pattern as push.ts).
@@ -504,10 +503,10 @@ export async function reportUsageToTeam(
     // Guard the push with a 5s timeout. withTimeout clears its timer once the
     // push settles, so a fast success does not leave a 5s timer pinning the
     // event loop (and hanging `teamai pull`) after the work is done.
-    if (selfMode && selfConfig) {
+    if (useReportsBranch && reportsConfig) {
       const { commitAndPushReports } = await import('./utils/reports-branch.js');
       await withTimeout(
-        commitAndPushReports(selfConfig, commitMsg, filesToPush),
+        commitAndPushReports(reportsConfig, commitMsg, filesToPush),
         5000,
         'Auto-report timeout (5s)',
       );

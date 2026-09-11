@@ -274,6 +274,15 @@ describe('pull scope isolation (issue #73)', () => {
     expect(log.info).not.toHaveBeenCalledWith(SKIP_MSG);
     expect(pullSources).toHaveBeenCalledTimes(1);
     expect(vi.mocked(pullSources).mock.calls[0][0]).toMatchObject({ scope: 'user' });
+    expect(reportUsageToTeam).toHaveBeenCalledWith(
+      userRepoPath,
+      'userscope',
+      expect.objectContaining({
+        selfConfig: expect.objectContaining({
+          repo: expect.objectContaining({ localPath: userRepoPath }),
+        }),
+      }),
+    );
   });
 
   it('user mode self-repo: reportUsageToTeam receives selfConfig so business repo is never reset', async () => {

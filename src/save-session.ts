@@ -27,7 +27,7 @@ import {
 } from './session-collector.js';
 import { log, spinner } from './utils/logger.js';
 import { withTimeout } from './utils/async.js';
-import { getSessionLogsDir } from './types.js';
+import { getSessionLogsDir, usesReportsBranch } from './types.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 
 export interface SaveSessionOptions extends GlobalOptions {
@@ -132,10 +132,10 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
     return;
   }
 
-  // Single-repo mode: session summaries are report data → the teamai-reports
-  // orphan branch, written through an isolated worktree so main / the user's
-  // active tree is never touched.
-  if (localConfig.repo.kind === 'self') {
+  // Non-HTTP repos: session summaries are report data → the teamai-reports
+  // orphan branch, written through an isolated worktree so the default branch
+  // (and in self mode, the user's active tree) is never touched.
+  if (usesReportsBranch(localConfig)) {
     const spin = spinner('Pushing session summary to team...').start();
     try {
       const { ensureReportsWorktree, commitAndPushReports } = await import('./utils/reports-branch.js');

@@ -130,25 +130,27 @@ export async function projectsMembers(
 ): Promise<void> {
   const { localConfig } = await autoDetectInit();
 
-  // Members live on the teamai-reports orphan branch in self mode; read them from
-  // the refreshed reports worktree. Otherwise read the team repo clone.
-  let repoPath: string;
-  if (localConfig.repo.kind === 'self') {
+  // Members live on the teamai-reports orphan branch for non-HTTP repos; the
+  // projects manifest is knowledge on the default branch. Split the two roots
+  // so leftover clone members/ is ignored and projects.yaml is still found.
+  const knowledgePath = localConfig.repo.localPath;
+  let membersRoot = knowledgePath;
+  const { usesReportsBranch } = await import('./types.js');
+  if (usesReportsBranch(localConfig)) {
     const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
     await refreshReportsWorktree(localConfig);
-    repoPath = await ensureReportsWorktree(localConfig);
+    membersRoot = await ensureReportsWorktree(localConfig);
   } else {
-    repoPath = localConfig.repo.localPath;
-    await pullRepo(repoPath).catch(() => { /* offline — read local copy */ });
+    await pullRepo(knowledgePath).catch(() => { /* offline — read local copy */ });
   }
 
-  const manifest = await loadProjectsManifest(repoPath);
+  const manifest = await loadProjectsManifest(knowledgePath);
   if (manifest && !listProjectIds(manifest).includes(projectId)) {
     log.warn(`Project "${projectId}" is not defined in manifest/projects.yaml.`);
     // Continue anyway — the roster may still record historical membership.
   }
 
-  const membersDir = path.join(repoPath, 'members');
+  const membersDir = path.join(membersRoot, 'members');
   const files = (await listFiles(membersDir)).filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'));
 
   const members: string[] = [];

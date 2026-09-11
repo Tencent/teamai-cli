@@ -28,6 +28,7 @@ import {
   isAgentDisabled,
   scopedToolPaths,
   SYNC_LOCK_FILENAME,
+  usesReportsBranch,
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
@@ -828,18 +829,19 @@ async function pullForScope(
       const docsRepoDir = path.join(localConfig.repo.localPath, 'docs');
       const rulesRepoDir = path.join(localConfig.repo.localPath, 'rules');
       const skillsRepoDir = path.join(localConfig.repo.localPath, 'skills');
-      // votes/ lives on the teamai-reports orphan branch in self mode (gitignored
-      // under localPath), so vote-weighted recall must read it from the reports
-      // worktree — otherwise ranking is silently disabled. Best-effort: fall back
-      // to localPath/votes (empty) if the worktree can't be resolved.
-      let votesDir = path.join(localConfig.repo.localPath, 'votes');
-      if (localConfig.repo.kind === 'self') {
+      // votes/ lives on the teamai-reports orphan branch for non-HTTP repos, so
+      // vote-weighted recall must read it from the reports worktree. Do not fall
+      // back to leftover default-branch clone votes after the switch.
+      let votesDir: string | undefined;
+      if (usesReportsBranch(localConfig)) {
         try {
           const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
           votesDir = path.join(await ensureReportsWorktree(localConfig), 'votes');
         } catch (e) {
-          log.debug(`[self] reports worktree for votes unavailable: ${(e as Error).message}`);
+          log.debug(`reports worktree for votes unavailable: ${(e as Error).message}`);
         }
+      } else {
+        votesDir = path.join(localConfig.repo.localPath, 'votes');
       }
 
       // user scope: sync learnings to ~/.teamai/learnings/ (legacy behavior)
@@ -894,7 +896,7 @@ async function pullForScope(
       const effectiveCodebaseDir = await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
 
       if (hasAnySource || effectiveCodebaseDir) {
-        const votesExist = await pathExists(votesDir);
+        const votesExist = votesDir ? await pathExists(votesDir) : false;
         const teamaiHome = getDataHome(localConfig);
         const indexPath = path.join(teamaiHome, 'search-index.json');
         const { buildIndex } = await import('./utils/search-index.js');
@@ -1059,23 +1061,24 @@ async function pullForScope(
       const YAML = (await import('yaml')).default;
       const { listFiles, readFileSafe } = await import('./utils/fs.js');
       const { getRecommendations, displayRecommendations } = await import('./skill-recommend.js');
-      // stats/ lives on the teamai-reports orphan branch in self mode (gitignored
-      // under localPath), so recommendations must read it from the reports worktree
-      // — otherwise they never appear. Best-effort fallback to localPath/stats.
-      let statsDir = path.join(localConfig.repo.localPath, 'stats');
-      if (localConfig.repo.kind === 'self') {
+      // stats/ lives on the teamai-reports orphan branch for non-HTTP repos.
+      // Do not fall back to leftover default-branch clone stats after the switch.
+      let statsDir: string | undefined;
+      if (usesReportsBranch(localConfig)) {
         try {
           const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
           statsDir = path.join(await ensureReportsWorktree(localConfig), 'stats');
         } catch (e) {
-          log.debug(`[self] reports worktree for stats unavailable: ${(e as Error).message}`);
+          log.debug(`reports worktree for stats unavailable: ${(e as Error).message}`);
         }
+      } else {
+        statsDir = path.join(localConfig.repo.localPath, 'stats');
       }
-      const files = await listFiles(statsDir);
+      const files = statsDir ? await listFiles(statsDir) : [];
       const teamStats = [];
       for (const file of files) {
         if (!file.endsWith('.yaml')) continue;
-        const content = await readFileSafe(path.join(statsDir, file));
+        const content = await readFileSafe(path.join(statsDir!, file));
         if (!content) continue;
         try {
           const parsed = YAML.parse(content);
@@ -1556,8 +1559,8 @@ export async function pull(options: GlobalOptions): Promise<void> {
           opts: {
             skipTruncate: true,
             projectRoot: reconcileProject.projectRoot,
-            // Self mode routes stats/votes to the teamai-reports orphan branch.
-            ...(reconcileProject.repo.kind === 'self' ? { selfConfig: reconcileProject } : {}),
+            // Non-HTTP repos route stats/votes to the teamai-reports orphan branch.
+            selfConfig: reconcileProject,
           },
         });
       }
@@ -1568,9 +1571,9 @@ export async function pull(options: GlobalOptions): Promise<void> {
           opts: {
             skipTruncate: true,
             excludeProjectRoots: projectConfig?.projectRoot ? [projectConfig.projectRoot] : [],
-            // Self mode routes stats/votes to the teamai-reports orphan branch —
-            // never reset/pull the business repo working tree.
-            ...(reconcileUser.repo.kind === 'self' ? { selfConfig: reconcileUser } : {}),
+            // Non-HTTP repos route stats/votes to the teamai-reports orphan branch —
+            // never reset/pull the default branch (or, in self mode, the business tree).
+            selfConfig: reconcileUser,
           },
         });
       }

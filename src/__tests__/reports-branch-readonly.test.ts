@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
     commit: vi.fn(),
     push: vi.fn(),
     status: vi.fn(),
+    revparse: vi.fn(),
   },
   isGitRepo: vi.fn(),
 }));
@@ -24,6 +25,7 @@ vi.mock('../utils/git.js', () => ({
   isGitRepo: mocks.isGitRepo,
   getDefaultBranch: vi.fn(),
   hasCommits: vi.fn(),
+  isDedicatedRepoRoot: vi.fn().mockResolvedValue(true),
   commitSkippingHooks: (git: { commit: (...args: unknown[]) => unknown }, message: string) =>
     git.commit(message, { '--no-verify': null }),
 }));
@@ -109,6 +111,7 @@ describe('commitAndPushReports', () => {
     mocks.worktreeGit.add.mockResolvedValue(undefined);
     mocks.worktreeGit.commit.mockResolvedValue(undefined);
     mocks.worktreeGit.push.mockResolvedValue(undefined);
+    mocks.worktreeGit.revparse.mockResolvedValue('true');
     mocks.worktreeGit.status.mockResolvedValue({ staged: ['members/alice.yaml'] });
     vi.mocked(acquireLock).mockResolvedValue(true);
     vi.mocked(releaseLock).mockResolvedValue(undefined);

@@ -134,8 +134,11 @@ teamai init https://github.com/yourorg/yourrepo
 ~/.teamai/projects/my-project-<hash>/   # 本项目的机器数据分区
 ├── config.yaml
 ├── state.json
-└── team-repo/                           # 团队仓库克隆
+├── team-repo/                           # 团队仓库克隆（知识资产在默认分支）
+└── reports-wt/                          # `teamai-reports` 孤儿分支的检出
 ```
+
+独立 git clone 与单仓模式使用同一套上报拆分：`members/` `sessions/` `votes/` `stats/` 写到 `teamai-reports` 孤儿分支（检出目录在 clone **旁边**，不嵌在 clone 里）。知识资产（`skills/` `rules/` `docs/` `learnings/` `teamai.yaml`）仍在默认分支。默认分支上已有的上报文件会留在原地并被忽略。
 
 项目的机器数据（config、state、team-repo 克隆、搜索索引、MCP manifest、资源缓存）
 存放在 `~/.teamai/projects/<slug>/` 下的按项目分区里，**不再**放进业务仓库，因此工作区
@@ -252,11 +255,12 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 ~/.teamai/
 ├── config.yaml          # 本地配置
-├── team-repo/           # 团队仓库克隆
+├── team-repo/           # 团队仓库克隆（知识资产在默认分支）
 │   ├── teamai.yaml      # 远端团队配置
-│   ├── skills/ rules/ docs/ env/ members/
+│   ├── skills/ rules/ docs/ env/
 │   ├── manifest/roles.yaml  # 角色定义（启用角色化 skills 时）
 │   └── learnings/       # 团队知识库
+├── reports-wt/          # `teamai-reports` 检出（`members/` `sessions/` `votes/` `stats/`）
 ~/.claude/skills/        # 团队 skills（自动同步）
 ~/.claude/rules/         # 团队 rules（自动同步）
 ```
@@ -292,7 +296,7 @@ teamai init . --agent claude,codex   # 非交互：启用 Claude Code + Codex
 | 数据 | 存放位置 | 随 `git clone` 一起带走？ |
 |------|----------|---------------------------|
 | 知识资产：`skills/` `rules/` `docs/` `learnings/`、`teamai.yaml` | **main** 分支的 `.teamai/` | ✅ 会 |
-| 上报数据：`members/` `sessions/` `votes/` `stats/` | `teamai-reports` **孤儿分支** | 推送到 `origin`（独立历史） |
+| 上报数据：`members/` `sessions/` `votes/` `stats/` | `teamai-reports` **孤儿分支** | 推送到 `origin`（独立历史）。独立 git clone 使用同一套拆分；learnings 仍在默认分支。 |
 | 本机私有：`config.yaml`、`state.json`、搜索索引、env 备份、MCP manifest | `~/.teamai/projects/<slug>/`（**分区**，在仓库之外） | ❌ 不会（每台机器本地） |
 | 可丢弃的 git worktree（`reports-wt/`、`knowledge-wt/`） | `.teamai/`（已 gitignore；按需重建） | ❌ 不会（每台机器本地） |
 
@@ -1237,7 +1241,7 @@ teamai session save --push --include-prompt  # 额外带上（脱敏后的）首
 
 **本地（始终执行）：** 追加到 `~/.teamai/session-logs/<年-月>.md`。按会话幂等（当月已记录的会话会跳过），且超过 90 天的日志会自动清理。
 
-**团队（`--push`，需显式开启）：** 直接提交（不走 PR）到团队仓库的 `sessions/<user>/<年-月>.md`——正是 `teamai digest` 读取的路径，于是该会话会出现在 **Session Highlights** 板块。默认只推送**有价值**的会话：出现摩擦（interrupt / tool-reject / correction）或工具使用充分（≥ 3 种不同工具）。琐碎会话除非加 `--force`，否则只留本地。对只读（HTTP 模式）的团队，`--push` 会优雅失败并保留本地日志。
+**团队（`--push`，需显式开启）：** 直接提交（不走 PR）到 `teamai-reports` 分支的 `sessions/<user>/<年-月>.md`——正是 `teamai digest` 读取的路径，于是该会话会出现在 **Session Highlights** 板块。默认只推送**有价值**的会话：出现摩擦（interrupt / tool-reject / correction）或工具使用充分（≥ 3 种不同工具）。琐碎会话除非加 `--force`，否则只留本地。对只读（HTTP 模式）的团队，`--push` 会优雅失败并保留本地日志。
 
 > 隐私：推送到团队的内容默认**只含计数 + 工具名**。首个 prompt 行需通过 `--include-prompt` 显式开启，且即便开启也会经过与别处一致的密钥脱敏（`ghp_…` → `<REDACTED:…>`）。本地日志因为不出本机，会保留脱敏后的首个 prompt 行。
 

@@ -91,6 +91,15 @@ vi.mock('../votes.js', () => ({
   syncVotesToTeam: mockSyncVotesToTeam,
 }));
 
+const reportsBranchMocks = vi.hoisted(() => ({
+  ensureReportsWorktree: vi.fn().mockResolvedValue('/tmp/reports-wt'),
+  commitAndPushReports: vi.fn().mockResolvedValue(true),
+}));
+vi.mock('../utils/reports-branch.js', () => ({
+  ensureReportsWorktree: (...args: unknown[]) => reportsBranchMocks.ensureReportsWorktree(...args),
+  commitAndPushReports: (...args: unknown[]) => reportsBranchMocks.commitAndPushReports(...args),
+}));
+
 const mockSeedProjectAgentRoot = vi.fn().mockResolvedValue(undefined);
 vi.mock('../project-agent-root.js', () => ({
   seedProjectAgentRoot: mockSeedProjectAgentRoot,
