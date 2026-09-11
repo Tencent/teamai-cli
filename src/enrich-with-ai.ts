@@ -296,3 +296,46 @@ export async function writeManifest(manifest: CodebaseOutputManifestV2, outputDi
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
   return manifestPath;
 }
+
+/**
+ * Build a minimal manifest from the component facts an extract already holds.
+ *
+ * `enrichWithAI` returns `null` — and therefore nothing is written — whenever no
+ * top-level module reaches the five-fact threshold, the AI call fails, or
+ * enrichment is skipped. `deep-enrich` then aborts with "No components in
+ * _manifest.json", so `--extract` and `deep-enrich` were not a closed loop.
+ *
+ * The component facts are enough to describe which modules exist, which is all
+ * `deep-enrich` needs to proceed. Slugs are module names (the first path segment
+ * of a fact's file), matching the `components[]` a successful `enrichWithAI`
+ * run produces. `docPath` follows the same convention and is only descriptive:
+ * `deep-enrich` derives the document location from the slug itself.
+ */
+export function buildFallbackManifest(project: string, facts: CodeFact[]): CodebaseOutputManifestV2 {
+  const slugs: string[] = [];
+  const seen = new Set<string>();
+  for (const fact of facts) {
+    if (fact.kind !== 'component') continue;
+    const parts = fact.file.split('/');
+    const moduleName = parts.length > 1 ? parts[0] : '_root';
+    if (seen.has(moduleName)) continue;
+    seen.add(moduleName);
+    slugs.push(moduleName);
+  }
+
+  const components: ManifestComponentV2[] = slugs.map((slug) => ({
+    slug,
+    docPath: `evidence/code/${project}/${slug}.md`,
+    title: slug,
+    category: 'unknown',
+    confidence: 'EXTRACTED' as const,
+  }));
+
+  return {
+    schemaVersion: 'team-wiki.codebase-output-manifest.v2',
+    project,
+    generatedAt: new Date().toISOString(),
+    components,
+    edges: [],
+  };
+}

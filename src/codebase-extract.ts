@@ -712,6 +712,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
 
   // AI enrichment (optional, non-blocking; skipped with --skip-enrich)
   let aiDomains: DomainGroup[] = [];
+  let manifestWritten = false;
   if (opts.skipEnrich) {
     if (!opts.json) console.log(chalk.dim('  [AI enrich: skipped (--skip-enrich)]'));
   } else try {
@@ -728,6 +729,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     const enrichResult = await enrichWithAI({ project, facts, interfaceInventory, modules });
     if (enrichResult) {
       await writeManifest(enrichResult.manifest, evidenceDir);
+      manifestWritten = true;
       aiDomains = enrichResult.domains;
       // Persist AI-inferred domain classification for rebuildWikiIndex
       const domainMeta = {
@@ -745,6 +747,29 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   } catch (e) {
     if (!opts.json) {
       console.log(chalk.dim(`  [AI enrich skipped: ${(e as Error).message}]`));
+    }
+  }
+
+  // `deep-enrich` reads `_manifest.json` and aborts when it holds no components.
+  // AI enrichment writes nothing whenever no module reaches the five-fact
+  // threshold, the AI call fails, or `--skip-enrich` was given — so on a small
+  // repo `--extract` reported success while leaving `deep-enrich` with nothing
+  // to work on, and the two commands never formed a closed loop. Fall back to
+  // the component facts the extract already has so a successful extract always
+  // leaves a usable manifest behind.
+  if (!manifestWritten) {
+    const { buildFallbackManifest, writeManifest } = await import('./enrich-with-ai.js');
+    const fallback = buildFallbackManifest(project, facts);
+    if (fallback.components.length > 0) {
+      await writeManifest(fallback, evidenceDir);
+      if (!opts.json) {
+        const n = fallback.components.length;
+        console.log(chalk.dim(
+          `  [AI enrich: no AI manifest; wrote a minimal _manifest.json covering ${n} module${n === 1 ? '' : 's'}]`,
+        ));
+      }
+    } else if (!opts.json) {
+      console.log(chalk.dim('  [AI enrich: no AI manifest and no component facts found; deep-enrich will have nothing to do]'));
     }
   }
 

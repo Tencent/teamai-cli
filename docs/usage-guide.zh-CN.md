@@ -1164,6 +1164,7 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 ```bash
 # 从本地仓库提取代码事实与图谱（写入 <repo>/teamwiki/）
+# --deep-enrich 读取的 evidence manifest 一定会写出，即使 AI 增强被跳过或无产出
 teamai codebase --extract /path/to/repo --project my-service
 
 # 增量刷新：复用首次提取的仓库路径和项目名
