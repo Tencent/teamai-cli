@@ -17,6 +17,7 @@ vi.mock('../utils/ai-client.js', () => ({
 
 import { callClaude, callClaudeParallel } from '../utils/ai-client.js';
 import { codebaseCmd } from '../codebase-cmd.js';
+import { runHiddenDeepEnrich } from '../deep-enrich.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -110,7 +111,8 @@ describe('codebase deep-enrich', () => {
     await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
 
     expect(process.exitCode).toBe(1);
-    expect(log.mock.calls.flat().join('\n')).toContain('No components in evidence');
+    expect(log.mock.calls.flat().join('\n')).toContain('No components in _manifest.json');
+    expect(log.mock.calls.flat().join('\n')).not.toContain('Run `teamai codebase --extract` first');
     expect(fs.existsSync(path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', 'docs'))).toBe(false);
   });
 
@@ -294,6 +296,18 @@ describe('codebase deep-enrich', () => {
     });
     expect(fs.existsSync(path.join(docsDir, 'Auth.md'))).toBe(false);
     expect(fs.existsSync(path.join(docsDir, 'architecture.md'))).toBe(false);
+  });
+
+  it('hidden deep-enrich exits non-zero when _manifest.json has no components', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hidden-deep-enrich-empty-'));
+    temporaryDirectories.push(root);
+    const wikiRoot = path.join(root, 'teamwiki');
+    fs.mkdirSync(path.join(wikiRoot, 'evidence', 'code', 'widget'), { recursive: true });
+
+    const result = await runHiddenDeepEnrich({ project: 'widget', wikiRoot });
+
+    expect(result.complete).toBe(false);
+    expect(process.exitCode).toBe(1);
   });
 
   it('rejects a project slug that escapes the evidence directory', async () => {

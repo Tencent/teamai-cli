@@ -1212,6 +1212,8 @@ teamai codebase --reconcile --output /path/to/repo
 teamai codebase --lint --output /path/to/repo
 ```
 
+When extract finds components, it writes `teamwiki/evidence/code/<project>/_manifest.json` even if AI enrichment is skipped or produces nothing, so `--deep-enrich` can start.
+
 ### Dashboard
 
 ```bash

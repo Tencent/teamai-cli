@@ -64,6 +64,12 @@ interface ExtractResult {
   graph: { nodes: number; edges: number };
   incremental: boolean;
   outputDir: string;
+  manifest: {
+    written: boolean;
+    source: 'ai' | 'fallback' | 'none';
+    components: number;
+    note?: string;
+  };
 }
 
 interface KnowledgeGap {
@@ -710,43 +716,61 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   // in import-repo.ts after all per-repo graphs are in place (avoids write races).
   await saveGraphIndex(wikiRoot, repoGraph);
 
-  // AI enrichment (optional, non-blocking; skipped with --skip-enrich)
+  // AI enrichment (optional, non-blocking; skipped with --skip-enrich).
+  // When enrich yields nothing, still write a deterministic _manifest.json so
+  // deep-enrich has components to work with (#508).
   let aiDomains: DomainGroup[] = [];
+  let manifestSource: 'ai' | 'fallback' | 'none' = 'none';
+  let manifestComponentCount = 0;
+  const {
+    enrichWithAI,
+    writeManifest,
+    buildFallbackManifest,
+    groupFactsByModule,
+    describeEvidenceManifest,
+  } = await import('./enrich-with-ai.js');
+  const modules = groupFactsByModule(facts);
+
   if (opts.skipEnrich) {
     if (!opts.json) console.log(chalk.dim('  [AI enrich: skipped (--skip-enrich)]'));
-  } else try {
-    const { enrichWithAI, writeManifest } = await import('./enrich-with-ai.js');
-    const modules = new Map<string, CodeFact[]>();
-    for (const fact of facts) {
-      if (fact.kind === 'relation') continue;
-      const mod = fact.file.split('/')[0] || '_root';
-      const existing = modules.get(mod) ?? [];
-      existing.push(fact);
-      modules.set(mod, existing);
-    }
-
-    const enrichResult = await enrichWithAI({ project, facts, interfaceInventory, modules });
-    if (enrichResult) {
-      await writeManifest(enrichResult.manifest, evidenceDir);
-      aiDomains = enrichResult.domains;
-      // Persist AI-inferred domain classification for rebuildWikiIndex
-      const domainMeta = {
-        domain: enrichResult.repoDomain || (enrichResult.domains[0]?.name ?? ''),
-        description: enrichResult.repoDescription || '',
-        keywords: enrichResult.repoKeywords || [],
-        components: enrichResult.domains[0]?.components ?? [],
-      };
-      await writeFile(path.join(evidenceDir, '_domains.json'), JSON.stringify(domainMeta, null, 2), 'utf-8');
+  } else {
+    try {
+      const enrichResult = await enrichWithAI({ project, facts, interfaceInventory, modules });
+      if (enrichResult) {
+        await writeManifest(enrichResult.manifest, evidenceDir);
+        manifestSource = 'ai';
+        manifestComponentCount = enrichResult.manifest.components.length;
+        aiDomains = enrichResult.domains;
+        // Persist AI-inferred domain classification for rebuildWikiIndex
+        const domainMeta = {
+          domain: enrichResult.repoDomain || (enrichResult.domains[0]?.name ?? ''),
+          description: enrichResult.repoDescription || '',
+          keywords: enrichResult.repoKeywords || [],
+          components: enrichResult.domains[0]?.components ?? [],
+        };
+        await writeFile(path.join(evidenceDir, '_domains.json'), JSON.stringify(domainMeta, null, 2), 'utf-8');
+        if (!opts.json) {
+          const domainLabel = domainMeta.domain || 'uncategorized';
+          console.log(`  AI enrich: ${enrichResult.manifest.components.length} modules, domain=${domainLabel}`);
+        }
+      }
+    } catch (e) {
       if (!opts.json) {
-        const domainLabel = domainMeta.domain || 'uncategorized';
-        console.log(`  AI enrich: ${enrichResult.manifest.components.length} modules, domain=${domainLabel}`);
+        console.log(chalk.dim(`  [AI enrich skipped: ${(e as Error).message}]`));
       }
     }
-  } catch (e) {
-    if (!opts.json) {
-      console.log(chalk.dim(`  [AI enrich skipped: ${(e as Error).message}]`));
+  }
+
+  if (manifestSource === 'none') {
+    const fallback = buildFallbackManifest({ project, facts, modules });
+    if (fallback && fallback.components.length > 0) {
+      await writeManifest(fallback, evidenceDir);
+      manifestSource = 'fallback';
+      manifestComponentCount = fallback.components.length;
     }
   }
+
+  const manifestNote = describeEvidenceManifest(manifestSource, manifestComponentCount);
 
   // 生成模块级摘要页（按顶层目录聚合）
   const moduleSummaries = buildModuleSummaries(facts, graph, project);
@@ -886,6 +910,12 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     graph: { nodes: repoGraph.nodes.length, edges: repoGraph.edges.length },
     incremental: !!opts.incremental && !!changedFiles,
     outputDir: wikiRoot,
+    manifest: {
+      written: manifestSource !== 'none',
+      source: manifestSource,
+      components: manifestComponentCount,
+      ...(manifestNote ? { note: manifestNote } : {}),
+    },
   };
 
   if (opts.json) {
@@ -904,5 +934,8 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
       console.log(`  Call chains: ${callChains.length} chains (max depth ${Math.max(...callChains.map(c => c.depth))})`);
     }
     console.log(`  Output: ${wikiRoot}`);
+    if (manifestNote) {
+      console.log(`  ${manifestNote}`);
+    }
   }
 }

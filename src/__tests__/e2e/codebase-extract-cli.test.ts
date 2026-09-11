@@ -193,6 +193,101 @@ describe('teamai codebase reconcile CLI (issue #360 slice 2)', () => {
   });
 });
 
+describe('teamai codebase extract CLI (issue #508)', () => {
+  it('writes fallback _manifest.json for a one-file Widget repo', async () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-508-cli-'));
+    try {
+      const srcDir = path.join(fixture, 'src');
+      fs.mkdirSync(srcDir);
+      fs.writeFileSync(
+        path.join(srcDir, 'widget.ts'),
+        'export class Widget {\n  render() { return "hi"; }\n}\n',
+      );
+
+      const result = await runCLI(
+        ['codebase', '--extract', fixture, '--project', 'widget'],
+        fixture,
+      );
+      expect(result.code, result.output).toBe(0);
+      expect(result.output).toMatch(/Wrote fallback _manifest\.json/);
+      expect(result.output).toMatch(/no AI enrich/);
+      expect(result.output).not.toMatch(/AI enrich produced no manifest; deep-enrich will have no components/);
+
+      const manifestPath = path.join(fixture, 'teamwiki', 'evidence', 'code', 'widget', '_manifest.json');
+      expect(fs.existsSync(manifestPath), result.output).toBe(true);
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+        components?: Array<{ slug?: string; docPath?: string }>;
+      };
+      expect(manifest.components?.length).toBeGreaterThanOrEqual(1);
+      for (const component of manifest.components ?? []) {
+        expect(component.slug).toBeTruthy();
+        expect(component.docPath).toBeTruthy();
+      }
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('writes fallback _manifest.json fields in --json extract output', async () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-508-json-'));
+    try {
+      const srcDir = path.join(fixture, 'src');
+      fs.mkdirSync(srcDir);
+      fs.writeFileSync(
+        path.join(srcDir, 'widget.ts'),
+        'export class Widget {\n  render() { return "hi"; }\n}\n',
+      );
+
+      const result = await runCLI(
+        ['codebase', '--extract', fixture, '--project', 'widget', '--json'],
+        fixture,
+      );
+      expect(result.code, result.output).toBe(0);
+      const report = JSON.parse(result.stdout) as {
+        manifest: { written: boolean; source: string; components: number; note?: string };
+      };
+      expect(report.manifest.written).toBe(true);
+      expect(report.manifest.source).toBe('fallback');
+      expect(report.manifest.components).toBeGreaterThanOrEqual(1);
+      expect(report.manifest.note).toMatch(/Wrote fallback _manifest\.json/);
+      expect(report.manifest.note).toMatch(/no AI enrich/);
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('hidden deep-enrich exits non-zero when _manifest.json has no components', async () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hidden-deep-enrich-508-'));
+    try {
+      const wikiRoot = path.join(fixture, 'teamwiki');
+      fs.mkdirSync(path.join(wikiRoot, 'evidence', 'code', 'widget'), { recursive: true });
+      const result = await runCLI(
+        ['deep-enrich', '--project', 'widget', '--wiki-root', wikiRoot],
+        fixture,
+      );
+      expect(result.code, result.output).toBe(1);
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('public deep-enrich does not tell the user to extract first when evidence exists without components', async () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-public-deep-enrich-508-'));
+    try {
+      fs.mkdirSync(path.join(fixture, 'teamwiki', 'evidence', 'code', 'widget'), { recursive: true });
+      const result = await runCLI(
+        ['codebase', '--deep-enrich', '--project', 'widget', '--output', fixture],
+        fixture,
+      );
+      expect(result.code, result.output).toBe(1);
+      expect(result.output).toMatch(/No components in _manifest\.json/);
+      expect(result.output).not.toMatch(/Run `teamai codebase --extract` first/);
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('teamai codebase deep-enrich CLI (issue #360 slice 3)', () => {
   it('lists --deep-enrich, documents it in the skill, and fails when teamwiki is missing', async () => {
     const help = await runCLI(['codebase', '--help']);

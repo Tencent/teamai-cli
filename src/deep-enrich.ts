@@ -794,6 +794,27 @@ async function invalidateStaleAiDocs(docsDir: string, slugs: string[]): Promise<
 // ─── 主函数 ─────────────────────────────────────────────────
 
 /**
+ * Hidden `teamai deep-enrich` CLI entry. Sets a failing exit code when
+ * enrichment cannot complete (empty `_manifest.json` or missing AI docs).
+ */
+export async function runHiddenDeepEnrich(opts: {
+  project: string;
+  wikiRoot?: string;
+  maxModules?: number;
+}): Promise<DeepEnrichResult> {
+  const wikiRoot = opts.wikiRoot ?? path.join(process.cwd(), '.teamai', 'team-repo', 'teamwiki');
+  const evidenceDir = path.join(wikiRoot, 'evidence', 'code', opts.project);
+  const result = await deepEnrich({
+    project: opts.project,
+    evidenceDir,
+    wikiRoot,
+    maxModules: opts.maxModules,
+  });
+  if (!result.complete) process.exitCode = 1;
+  return result;
+}
+
+/**
  * 对已导入仓库执行深度 AI 知识生成。
  *
  * 读取 evidenceDir 中已有的确定性提取结果，分阶段生成：

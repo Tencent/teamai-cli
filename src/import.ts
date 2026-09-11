@@ -73,8 +73,8 @@ interface ImportOptions extends GlobalOptions {
  * the --from-repo flow.
  *
  * Both stages are non-blocking: failures are logged at debug level and
- * swallowed so they never abort the import. Deep enrich runs only when AI
- * enrichment produced a `_manifest.json` and `skipEnrich` is not set.
+ * swallowed so they never abort the import. Deep enrich runs only when
+ * `_manifest.json` exists (AI or fallback) and `skipEnrich` is not set.
  *
  * @param params - Reconcile/enrich parameters
  * @param params.slug - Project slug, used for evidence dir naming and logging

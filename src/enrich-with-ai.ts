@@ -2,6 +2,7 @@ import path from 'node:path';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { callClaudeParallel, getAICliName } from './utils/ai-client.js';
 import { log } from './utils/logger.js';
+import { assertSafeResourceName } from './utils/path-safety.js';
 import type { CodeFact } from './wiki-engine/adapters/index.js';
 import type { InterfaceInventory } from './wiki-engine/interface-scanner.js';
 import type { CodebaseOutputManifestV2, ManifestComponentV2, ManifestEdgeV2, ManifestEdgeSource } from './wiki-engine/manifest-schema.js';
@@ -116,6 +117,84 @@ function resolveImportToModule(importerFile: string, importPath: string): string
   // Skip npm scoped packages (@scope/pkg) — not project modules
   if (first.startsWith('@')) return undefined;
   return first;
+}
+
+/** Group non-relation facts by top-level directory (same buckets as AI enrich). */
+export function groupFactsByModule(facts: CodeFact[]): Map<string, CodeFact[]> {
+  const modules = new Map<string, CodeFact[]>();
+  for (const fact of facts) {
+    if (fact.kind === 'relation') continue;
+    const mod = fact.file.split('/')[0] || '_root';
+    const existing = modules.get(mod) ?? [];
+    existing.push(fact);
+    modules.set(mod, existing);
+  }
+  return modules;
+}
+
+function isSafeSlug(name: string): boolean {
+  try {
+    assertSafeResourceName(name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Deterministic evidence manifest when AI enrich yields nothing.
+ *
+ * Component granularity matches deep-enrich: one slug per top-level module.
+ * If that list is empty, fall back to `kind === 'component'` fact names so a
+ * one-file repo still produces a consumable `components[]`.
+ */
+export function buildFallbackManifest(ctx: {
+  project: string;
+  facts: CodeFact[];
+  modules: Map<string, CodeFact[]>;
+}): CodebaseOutputManifestV2 | null {
+  const moduleNames = [...ctx.modules.keys()].filter(isSafeSlug);
+  const componentNames = [...new Set(
+    ctx.facts.filter(f => f.kind === 'component').map(f => f.name),
+  )].filter(isSafeSlug);
+  const slugs = moduleNames.length > 0 ? moduleNames : componentNames;
+  if (slugs.length === 0) return null;
+
+  const components: ManifestComponentV2[] = slugs.map((name) => {
+    const moduleFacts = ctx.modules.get(name) ?? ctx.facts.filter(f => f.name === name);
+    const entrypoints = moduleFacts
+      .filter(f => f.kind === 'component')
+      .filter(f => /handler|route|controller|endpoint|main|server|app/i.test(f.name))
+      .slice(0, 5)
+      .map(f => `${f.name} (${f.file}:${f.lineStart})`);
+    return {
+      slug: name,
+      docPath: `evidence/code/${ctx.project}/${name}.md`,
+      title: name,
+      category: 'component',
+      confidence: 'EXTRACTED',
+      ...(entrypoints.length > 0 ? { entrypoints } : {}),
+    };
+  });
+
+  return {
+    schemaVersion: 'team-wiki.codebase-output-manifest.v2',
+    project: ctx.project,
+    generatedAt: new Date().toISOString(),
+    components,
+    edges: [],
+  };
+}
+
+export function describeEvidenceManifest(source: 'ai' | 'fallback' | 'none', componentCount: number): string | undefined {
+  if (source === 'fallback') {
+    const noun = componentCount === 1 ? 'component' : 'components';
+    return `Wrote fallback _manifest.json (${componentCount} ${noun}, no AI enrich)`;
+  }
+  if (source === 'none') {
+    return 'AI enrich produced no manifest; deep-enrich will have no components';
+  }
+  return undefined;
 }
 
 export async function enrichWithAI(ctx: EnrichContext): Promise<EnrichResult | null> {

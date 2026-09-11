@@ -125,7 +125,7 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
             componentCount = 0;
         }
         if (componentCount === 0) {
-            console.log(`No components in evidence for project "${project}". Run \`teamai codebase --extract\` first.`);
+            console.log(`No components in _manifest.json for project "${project}".`);
             process.exitCode = 1;
             return;
         }
