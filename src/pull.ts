@@ -63,10 +63,13 @@ interface RolePullContext {
  * whose submodule update failed: the caller must then NOT persist the new rev,
  * or the next pull's unchanged-rev fast path would skip the retry and leave
  * tool directories pointed at stale/empty submodule content forever.
+ * `submodulesChanged` marks a run whose submodule update succeeded but moved the
+ * tree on disk: the caller must then NOT take that same fast path *this* run,
+ * because the parent rev alone cannot see the change (issue #525).
  */
 async function refreshTeamRepo(
   localConfig: LocalConfig,
-): Promise<{ label: string; version: string | null; reportingOnly: boolean; submodulesFailed: boolean }> {
+): Promise<{ label: string; version: string | null; reportingOnly: boolean; submodulesFailed: boolean; submodulesChanged: boolean }> {
   if (localConfig.repo.kind === 'http') {
     const { resolveApiKey } = await import('./api-key.js');
     const apiKey = resolveApiKey();
@@ -75,7 +78,7 @@ async function refreshTeamRepo(
     }
     // HTTP backends deliver resources through report/sync (own hook handler),
     // so there is no repo tree to pull here.
-    return { label: 'HTTP (report/sync delivery)', version: null, reportingOnly: true, submodulesFailed: false };
+    return { label: 'HTTP (report/sync delivery)', version: null, reportingOnly: true, submodulesFailed: false, submodulesChanged: false };
   }
 
   if (localConfig.repo.kind === 'self') {
@@ -99,7 +102,7 @@ async function refreshTeamRepo(
     } catch {
       version = null;
     }
-    return { label: 'single-repo (knowledge on main)', version, reportingOnly: false, submodulesFailed: false };
+    return { label: 'single-repo (knowledge on main)', version, reportingOnly: false, submodulesFailed: false, submodulesChanged: false };
   }
 
   // The shared team clone is mutated here (git pull + flushPendingLearnings'
@@ -136,18 +139,53 @@ async function refreshTeamRepo(
   // would fail with "reference is not a tree". The full history guarantees
   // the pinned commit is always present.
   let submodulesFailed = false;
+  let submodulesChanged = false;
   try {
     const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
     if (teamConfig?.submodules) {
-      await createGit(localConfig.repo.localPath).submoduleUpdate(['--init']);
-      log.debug('Submodules updated');
+      // Capture `git submodule status` before and after the update. The parent
+      // rev is the only cache key the fast path has, and a submodule update does
+      // not move it: a member who capped the parent SHA while the CLI still
+      // ignored `submodules: true` has empty submodule dirs, and the upgrade that
+      // fills them leaves HEAD untouched. Without this signal the fast path skips
+      // the deploy and the tool dirs stay empty until `pull --force` (issue #525).
+      // The leading status char is `-` while uninitialized and ` ` (or `+` when
+      // the checkout is behind its pin) afterwards, so a changed status string
+      // means the on-disk tree the deploy step reads is not what was cached.
+      const git = createGit(localConfig.repo.localPath);
+      // Only the status read is guarded here: an unavailable/unsupported status
+      // must degrade to "changed" (see below), NOT be reported as an update
+      // failure — the update itself is still allowed to fail into the outer
+      // catch and hold the rev back.
+      let before: string | null = null;
+      try {
+        before = await git.subModule(['status']);
+      } catch {
+        before = null;
+      }
+      await git.submoduleUpdate(['--init']);
+      let after: string | null = null;
+      try {
+        after = await git.subModule(['status']);
+      } catch {
+        after = null;
+      }
+      // An unreadable status is treated as "changed": a redundant full sync is
+      // cheap and self-correcting, whereas wrongly skipping re-pins the empty
+      // tool dirs this fix exists to clear.
+      submodulesChanged = before === null || before !== after;
+      log.debug(
+        submodulesChanged
+          ? 'Submodules updated (tree changed — full sync this pull)'
+          : 'Submodules updated (no change)',
+      );
     }
   } catch (e) {
     submodulesFailed = true;
     log.warn(`Submodule update failed for ${localConfig.repo.localPath}: ${(e as Error).message}`);
   }
 
-  return { label: result, version, reportingOnly: false, submodulesFailed };
+  return { label: result, version, reportingOnly: false, submodulesFailed, submodulesChanged };
 }
 
 /** teamai.yaml `usageReport: false` — per-repo opt-out of stat commits. */
@@ -522,11 +560,15 @@ async function pullForScope(
   // A failed submodule update holds the rev back below so the next pull
   // retries (see refreshTeamRepo).
   let submodulesFailed = false;
+  // A successful submodule update that moved the tree must bypass the
+  // unchanged-rev fast path for THIS run — the parent rev cannot see it (#525).
+  let submodulesChanged = false;
   try {
     const refresh = await refreshTeamRepo(localConfig);
     currentRev = refresh.version;
     reportingOnly = refresh.reportingOnly;
     submodulesFailed = refresh.submodulesFailed;
+    submodulesChanged = refresh.submodulesChanged;
     pullSpin.succeed(`[${scopeLabel}] Team repo: ${refresh.label}`);
   } catch (e) {
     pullSpin.fail(`[${scopeLabel}] Pull failed: ${(e as Error).message}`);
@@ -535,7 +577,7 @@ async function pullForScope(
 
   // Step 1b: Skip sync if the repo version hasn't changed since last pull
   let currentTargets: string[] | null = null;
-  if (!options.force && !options.dryRun) {
+  if (!options.force && !options.dryRun && !submodulesChanged) {
     try {
       const state = await loadStateForScope(localConfig);
       if (currentRev && state[revisionField] && state[revisionField] === currentRev) {

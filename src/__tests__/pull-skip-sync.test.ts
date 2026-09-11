@@ -352,6 +352,80 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     const savedState = vi.mocked(saveStateForScope).mock.calls[0][0];
     expect(savedState.lastPullRev).toBe('def5678');
   });
+
+  // A successful `submodule update` can still change the deployed tree while the
+  // PARENT revision stays the same: a member who pulled with a CLI that ignored
+  // `submodules: true` (unknown yaml key stripped) cached the parent SHA with
+  // empty submodule dirs, and upgrading the CLI then fills those dirs without
+  // moving HEAD. The unchanged-rev fast path would skip the deploy and leave
+  // ~/.claude/skills empty until `pull --force`. See issue #525.
+  it('does not skip sync when a successful submodule update changed the tree', async () => {
+    vi.mocked(loadTeamConfig).mockResolvedValue({ ...baseTeamConfig, submodules: true });
+    // `git submodule status` before the update marks the submodule uninitialized
+    // (leading `-`); after it, the submodule is checked out at its pinned SHA.
+    const subModule = vi.fn()
+      .mockResolvedValueOnce('-abc1234 skills/distributed\n')
+      .mockResolvedValueOnce(' abc1234 skills/distributed\n');
+    const submoduleUpdate = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(createGit).mockReturnValue({
+      subModule,
+      submoduleUpdate,
+    } as unknown as ReturnType<typeof createGit>);
+    // Parent SHA is unchanged — the pre-fix fast path would skip here.
+    vi.mocked(getHeadRev).mockResolvedValue('abc1234');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPull: '2026-04-01',
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['claude'],
+      lastPush: null,
+      pushedRules: [],
+      pushedSkills: [],
+      pushedEnvVars: [],
+      pendingPushes: [],
+      lastUpdateCheck: null,
+      availableUpdate: null,
+    });
+
+    await pull({});
+
+    expect(log.success).not.toHaveBeenCalledWith(
+      expect.stringContaining('Already synced'),
+    );
+    expect(saveStateForScope).toHaveBeenCalled();
+  });
+
+  it('still skips sync when the submodule update changed nothing', async () => {
+    vi.mocked(loadTeamConfig).mockResolvedValue({ ...baseTeamConfig, submodules: true });
+    // Already initialized and current both before and after the update: the
+    // common steady-state case must keep taking the fast path, or every pull in
+    // a submodule-using team pays a full re-deploy.
+    const subModule = vi.fn()
+      .mockResolvedValueOnce(' abc1234 skills/distributed\n')
+      .mockResolvedValueOnce(' abc1234 skills/distributed\n');
+    vi.mocked(createGit).mockReturnValue({
+      subModule,
+      submoduleUpdate: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ReturnType<typeof createGit>);
+    vi.mocked(getHeadRev).mockResolvedValue('abc1234');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPull: '2026-04-01',
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['claude'],
+      lastPush: null,
+      pushedRules: [],
+      pushedSkills: [],
+      pushedEnvVars: [],
+      pendingPushes: [],
+      lastUpdateCheck: null,
+      availableUpdate: null,
+    });
+
+    await pull({});
+
+    expect(log.success).toHaveBeenCalledWith(
+      expect.stringContaining('Already synced at abc1234, skipping'),
+    );
+  });
 });
 
 // Regression: a CLI upgrade that ships a new recall block must reach CLAUDE.md
