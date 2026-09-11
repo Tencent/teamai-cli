@@ -137,4 +137,59 @@ describe('builtin-rules', () => {
             expect(BUILTIN_RULE_NAMES.has('teamai-recall')).toBe(true);
         });
     });
+
+    describe('enabledAgents whitelist (#510)', () => {
+        it('does not write builtin rules into an installed tool outside the whitelist', async () => {
+            const workbuddyRules = path.join(tmpDir, '.workbuddy', 'rules');
+            const hermesRules = path.join(tmpDir, '.hermes', 'rules');
+            fs.mkdirSync(workbuddyRules, { recursive: true });
+            fs.mkdirSync(hermesRules, { recursive: true });
+
+            const teamConfig = {
+                toolPaths: {
+                    workbuddy: { rules: '.workbuddy/rules' },
+                    hermes: { rules: '.hermes/rules' },
+                },
+            } as any;
+            const localConfig = {
+                repo: { localPath: path.join(tmpDir, 'repo'), remote: 'https://example.com/repo.git' },
+                username: 'testuser',
+                additionalRoles: [],
+                scope: 'user',
+                enabledAgents: ['workbuddy'],
+            } as any;
+
+            const { deployBuiltinRules } = await import('../builtin-rules.js');
+            const deployed = await deployBuiltinRules(teamConfig, localConfig);
+
+            expect(deployed).toBe(1);
+            expect(fs.existsSync(path.join(workbuddyRules, 'teamai-recall.md'))).toBe(true);
+            expect(fs.existsSync(path.join(hermesRules, 'teamai-recall.md'))).toBe(false);
+        });
+
+        it('still deploys to every installed tool when enabledAgents is unset', async () => {
+            fs.mkdirSync(path.join(tmpDir, '.workbuddy', 'rules'), { recursive: true });
+            fs.mkdirSync(path.join(tmpDir, '.hermes', 'rules'), { recursive: true });
+
+            const teamConfig = {
+                toolPaths: {
+                    workbuddy: { rules: '.workbuddy/rules' },
+                    hermes: { rules: '.hermes/rules' },
+                },
+            } as any;
+            const localConfig = {
+                repo: { localPath: path.join(tmpDir, 'repo'), remote: 'https://example.com/repo.git' },
+                username: 'testuser',
+                additionalRoles: [],
+                scope: 'user',
+            } as any;
+
+            const { deployBuiltinRules } = await import('../builtin-rules.js');
+            const deployed = await deployBuiltinRules(teamConfig, localConfig);
+
+            expect(deployed).toBe(2);
+            expect(fs.existsSync(path.join(tmpDir, '.workbuddy', 'rules', 'teamai-recall.md'))).toBe(true);
+            expect(fs.existsSync(path.join(tmpDir, '.hermes', 'rules', 'teamai-recall.md'))).toBe(true);
+        });
+    });
 });

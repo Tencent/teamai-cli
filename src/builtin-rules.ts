@@ -5,7 +5,7 @@ import { ResourceHandler } from './resources/base.js';
 import { ruleFileExtensionForTool, usesCursorMdcRules } from './resources/rule-format.js';
 import { teamRuleToCursorMdc } from './resources/cursor-mdc.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
+import { resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
 import fs from 'node:fs/promises';
 import { getUserHome } from './utils/home.js';
 
@@ -66,7 +66,7 @@ export async function deployBuiltinRules(
             log.debug(`Skipping built-in rules for ${tool}: tool not installed`);
             continue;
         }
-        if (localConfig && isAgentDisabled(localConfig, tool)) continue;
+        if (localConfig && isAgentExcluded(localConfig, tool)) continue;
 
         const rulesDir = path.join(baseDir, toolPath.rules);
         if (!await pathExists(rulesDir)) continue;

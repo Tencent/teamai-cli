@@ -216,4 +216,37 @@ describe('deployBuiltinAgents', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'agents', 'teamai-recall.md'))).toBe(true);
     expect(await fse.pathExists(staleToml)).toBe(false);
   });
+
+  it('does not copy builtin agents into an installed tool outside the whitelist', async () => {
+    const recallSrc = path.join(builtinAgentsDir, 'teamai-recall.md');
+    if (!fs.existsSync(recallSrc)) return;
+
+    const teamConfig = buildTeamConfig({
+      claude: { agents: '.claude/agents' },
+      codebuddy: { agents: '.codebuddy/agents' },
+    });
+    const deployed = await deployBuiltinAgents(teamConfig, {
+      ...localConfig,
+      enabledAgents: ['claude'],
+    });
+
+    expect(deployed).toBeGreaterThanOrEqual(1);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/agents/teamai-recall.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.codebuddy/agents/teamai-recall.md'))).toBe(false);
+  });
+
+  it('still deploys to every installed tool when enabledAgents is unset', async () => {
+    const recallSrc = path.join(builtinAgentsDir, 'teamai-recall.md');
+    if (!fs.existsSync(recallSrc)) return;
+
+    const teamConfig = buildTeamConfig({
+      claude: { agents: '.claude/agents' },
+      codebuddy: { agents: '.codebuddy/agents' },
+    });
+    const deployed = await deployBuiltinAgents(teamConfig, localConfig);
+
+    expect(deployed).toBeGreaterThanOrEqual(2);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/agents/teamai-recall.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.codebuddy/agents/teamai-recall.md'))).toBe(true);
+  });
 });

@@ -602,3 +602,71 @@ describe('deployBuiltinSkills — skip uninstalled tools', () => {
     expect(await fse.pathExists(path.join(homeDir, '.codex', 'skills', 'team-wiki-codebase'))).toBe(false);
   });
 });
+
+describe('deployBuiltinSkills — enabledAgents whitelist (#510)', () => {
+  let tmpDir: string;
+  let homeDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-builtin-whitelist-'));
+    homeDir = path.join(tmpDir, 'home');
+    await fse.ensureDir(path.join(homeDir, '.workbuddy'));
+    await fse.ensureDir(path.join(homeDir, '.hermes'));
+    vi.stubEnv('HOME', homeDir);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  function teamConfig() {
+    return {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        workbuddy: { skills: '.workbuddy/skills' },
+        hermes: { skills: '.hermes/skills' },
+      },
+    };
+  }
+
+  function localConfig(enabledAgents?: string[]) {
+    return {
+      repo: { localPath: path.join(tmpDir, 'repo'), remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto' as const,
+      additionalRoles: [],
+      scope: 'user' as const,
+      ...(enabledAgents ? { enabledAgents } : {}),
+    };
+  }
+
+  it('does not copy builtin skills into an installed tool outside the whitelist', async () => {
+    const { deployBuiltinSkills } = await import('../builtin-skills.js');
+    const deployed = await deployBuiltinSkills(teamConfig(), localConfig(['workbuddy']));
+
+    expect(deployed).toBeGreaterThan(0);
+    expect(await fse.pathExists(path.join(homeDir, '.workbuddy/skills/team-wiki-codebase/SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.hermes/skills/team-wiki-codebase'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.hermes/skills'))).toBe(false);
+  });
+
+  it('still deploys to every installed tool when enabledAgents is unset', async () => {
+    const { deployBuiltinSkills } = await import('../builtin-skills.js');
+    const deployed = await deployBuiltinSkills(teamConfig(), localConfig());
+
+    expect(deployed).toBeGreaterThan(0);
+    expect(await fse.pathExists(path.join(homeDir, '.workbuddy/skills/team-wiki-codebase/SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.hermes/skills/team-wiki-codebase/SKILL.md'))).toBe(true);
+  });
+});

@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 🐛 Bug Fixes
 
+- `enabledAgents` now also gates CLI builtin deploy, CLAUDE.md-class injects, and last-pull skip-sync targets, so an already-installed tool outside the whitelist is not written to ([#510](https://github.com/Tencent/teamai-cli/issues/510)).
 - `teamai status` counts rule files in subdirectories recursively ([#437](https://github.com/Tencent/teamai-cli/pull/437)).
 - Codex Stop-phase contribution hints are deferred to the next prompt, so the host no longer rejects `additionalContext` ([#441](https://github.com/Tencent/teamai-cli/pull/441)).
 

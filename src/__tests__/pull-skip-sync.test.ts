@@ -72,12 +72,17 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { pull, compileRecallRulesBlock } from '../pull.js';
+import { pull, compileRecallRulesBlock, cleanupInactiveNamespaceSkills } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope, saveStateForScope } from '../config.js';
 import { getHeadRev } from '../utils/git.js';
 import { log } from '../utils/logger.js';
-import { TEAMAI_RECALL_RULES_START, TEAMAI_RECALL_RULES_END } from '../types.js';
-import type { TeamaiConfig, LocalConfig } from '../types.js';
+import {
+  TEAMAI_RECALL_RULES_START,
+  TEAMAI_RECALL_RULES_END,
+  TEAMAI_CULTURE_START,
+  TEAMAI_CLAUDEMD_START,
+} from '../types.js';
+import type { TeamaiConfig, LocalConfig, State } from '../types.js';
 
 describe('pull skip-sync when repo HEAD unchanged', () => {
   let tmpDir: string;
@@ -428,5 +433,325 @@ describe('pull skip-sync refreshes CLAUDE.md recall block (CLI upgrade)', () => 
     const after = await fse.readFile(claudeMdPath, 'utf8');
     // Untouched: the stale block remains exactly as seeded.
     expect(after).toContain('you **MUST** first invoke the `teamai-recall` subagent');
+  });
+});
+
+function emptyState(overrides: Partial<State> = {}): State {
+  return {
+    lastPull: null,
+    lastPullRev: null,
+    lastPush: null,
+    pushedRules: [],
+    pushedSkills: [],
+    pushedEnvVars: [],
+    pendingPushes: [],
+    lastUpdateCheck: null,
+    availableUpdate: null,
+    ...overrides,
+  };
+}
+
+describe('enabledAgents whitelist on pull inject, skip-sync, and cleanup (#510)', () => {
+  let tmpDir: string;
+  let homeDir: string;
+  let repoPath: string;
+
+  const skillBody = '---\nname: team-skill\ndescription: Team skill fixture\n---\n\n# Team skill\n';
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-pull-whitelist-'));
+    homeDir = path.join(tmpDir, 'home');
+    repoPath = path.join(tmpDir, 'team-repo');
+
+    await fse.ensureDir(path.join(repoPath, 'rules'));
+    await fse.ensureDir(path.join(repoPath, 'skills', 'common', 'team-skill'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'common', 'team-skill', 'SKILL.md'), skillBody);
+    await fse.ensureDir(path.join(repoPath, 'learnings', 'common'));
+    await fse.ensureDir(path.join(repoPath, 'manifest'));
+    await fse.writeFile(path.join(repoPath, 'manifest', 'roles.yaml'), 'version: 1\n');
+    await fse.writeFile(
+      path.join(repoPath, 'culture.md'),
+      '---\ncompany:\n  name: Acme\n---\n\nBe kind to teammates.\n',
+    );
+    await fse.ensureDir(path.join(repoPath, 'claudemd', 'common'));
+    await fse.writeFile(path.join(repoPath, 'claudemd', 'common', 'note.md'), 'Shared team instructions.\n');
+
+    vi.stubEnv('HOME', homeDir);
+    vi.mocked(detectProjectConfig).mockResolvedValue(null);
+    vi.mocked(getHeadRev).mockResolvedValue('abc1234');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    vi.clearAllMocks();
+    await fse.remove(tmpDir);
+  });
+
+  it('does not inject culture, shared instructions, or recall into an out-of-whitelist tool', async () => {
+    await fse.ensureDir(path.join(homeDir, '.claude', 'agents'));
+    await fse.ensureDir(path.join(homeDir, '.claude', 'rules'));
+    await fse.ensureDir(path.join(homeDir, '.claude', 'skills'));
+    await fse.ensureDir(path.join(homeDir, '.codebuddy', 'agents'));
+    await fse.ensureDir(path.join(homeDir, '.codebuddy', 'rules'));
+    await fse.writeFile(path.join(homeDir, '.claude', 'CLAUDE.md'), '# Claude\n');
+    await fse.writeFile(path.join(homeDir, '.codebuddy', 'CODEBUDDY.md'), '# User notes\n');
+
+    const teamConfig: TeamaiConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit',
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+        recall: { enabled: true },
+      },
+      toolPaths: {
+        claude: {
+          skills: '.claude/skills',
+          rules: '.claude/rules',
+          agents: '.claude/agents',
+          claudemd: '.claude/CLAUDE.md',
+        },
+        codebuddy: {
+          skills: '.codebuddy/skills',
+          rules: '.codebuddy/rules',
+          agents: '.codebuddy/agents',
+          claudemd: '.codebuddy/CODEBUDDY.md',
+        },
+      },
+    };
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+      recallEnabled: true,
+      enabledAgents: ['claude'],
+    };
+
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(localConfig);
+    vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState());
+
+    await pull({});
+
+    const claudeMd = await fse.readFile(path.join(homeDir, '.claude', 'CLAUDE.md'), 'utf8');
+    expect(claudeMd).toContain(TEAMAI_CULTURE_START);
+    expect(claudeMd).toContain(TEAMAI_CLAUDEMD_START);
+    expect(claudeMd).toContain(TEAMAI_RECALL_RULES_START);
+
+    const codebuddyMd = await fse.readFile(path.join(homeDir, '.codebuddy', 'CODEBUDDY.md'), 'utf8');
+    expect(codebuddyMd).toBe('# User notes\n');
+    expect(codebuddyMd).not.toContain(TEAMAI_CULTURE_START);
+    expect(codebuddyMd).not.toContain(TEAMAI_CLAUDEMD_START);
+    expect(codebuddyMd).not.toContain(TEAMAI_RECALL_RULES_START);
+  });
+
+  it('records only whitelist-eligible tools in lastPullTargets', async () => {
+    await fse.ensureDir(path.join(homeDir, '.workbuddy'));
+    await fse.ensureDir(path.join(homeDir, '.claude'));
+
+    const teamConfig: TeamaiConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit',
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        workbuddy: { skills: '.workbuddy/skills' },
+        claude: { skills: '.claude/skills' },
+      },
+    };
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+      enabledAgents: ['workbuddy'],
+    };
+
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(localConfig);
+    vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState());
+
+    await pull({});
+
+    expect(vi.mocked(saveStateForScope).mock.calls[0][0].lastPullTargets).toEqual(['workbuddy']);
+    expect(await fse.pathExists(path.join(homeDir, '.workbuddy/skills/team-skill/SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills/team-skill'))).toBe(false);
+  });
+
+  it('does not skip when a previously installed tool is added to the whitelist', async () => {
+    await fse.ensureDir(path.join(homeDir, '.workbuddy'));
+    await fse.ensureDir(path.join(homeDir, '.claude'));
+
+    const teamConfig: TeamaiConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit',
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        workbuddy: { skills: '.workbuddy/skills' },
+        claude: { skills: '.claude/skills' },
+      },
+    };
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+      enabledAgents: ['workbuddy'],
+    };
+
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(localConfig);
+    vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState());
+
+    await pull({});
+    expect(vi.mocked(saveStateForScope).mock.calls[0][0].lastPullTargets).toEqual(['workbuddy']);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills/team-skill'))).toBe(false);
+
+    vi.mocked(log.success).mockClear();
+    vi.mocked(saveStateForScope).mockClear();
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue({
+      ...localConfig,
+      enabledAgents: ['workbuddy', 'claude'],
+    });
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
+      lastPull: '2026-04-01',
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['workbuddy'],
+    }));
+
+    await pull({});
+
+    expect(log.success).not.toHaveBeenCalledWith(
+      expect.stringContaining('Already synced'),
+    );
+    expect(await fse.pathExists(path.join(homeDir, '.claude/skills/team-skill/SKILL.md'))).toBe(true);
+  });
+
+  it('skip-sync still deploys builtins only to the whitelist', async () => {
+    await fse.ensureDir(path.join(homeDir, '.workbuddy'));
+    await fse.ensureDir(path.join(homeDir, '.hermes'));
+
+    const teamConfig: TeamaiConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit',
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        workbuddy: { skills: '.workbuddy/skills' },
+        hermes: { skills: '.hermes/skills' },
+      },
+    };
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+      enabledAgents: ['workbuddy'],
+    };
+
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(localConfig);
+    vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
+      lastPull: '2026-04-01',
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['workbuddy'],
+    }));
+
+    await pull({});
+
+    expect(log.success).toHaveBeenCalledWith(
+      expect.stringContaining('Already synced at abc1234, skipping'),
+    );
+    expect(await fse.pathExists(path.join(homeDir, '.workbuddy/skills/team-wiki-codebase/SKILL.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(homeDir, '.hermes/skills/team-wiki-codebase'))).toBe(false);
+  });
+
+  it('does not delete leftover copies on out-of-whitelist tools', async () => {
+    const leftover = path.join(homeDir, '.hermes', 'skills', 'stale-skill');
+    const workbuddyCopy = path.join(homeDir, '.workbuddy', 'skills', 'stale-skill');
+    const source = path.join(repoPath, 'skills', 'common', 'stale-skill');
+    await fse.ensureDir(leftover);
+    await fse.ensureDir(workbuddyCopy);
+    await fse.ensureDir(source);
+    await fse.writeFile(path.join(source, 'SKILL.md'), '---\nname: stale-skill\ndescription: stale\n---\n# Stale\n');
+    await fse.copy(source, leftover, { overwrite: true });
+    await fse.copy(source, workbuddyCopy, { overwrite: true });
+
+    const teamConfig: TeamaiConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit',
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        workbuddy: { skills: '.workbuddy/skills' },
+        hermes: { skills: '.hermes/skills' },
+      },
+    };
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      additionalRoles: [],
+      scope: 'user',
+      enabledAgents: ['workbuddy'],
+    };
+
+    await cleanupInactiveNamespaceSkills(
+      teamConfig,
+      localConfig,
+      new Set(),
+      new Set(['stale-skill']),
+      new Map([['stale-skill', source]]),
+    );
+
+    expect(await fse.pathExists(leftover)).toBe(true);
+    expect(await fse.pathExists(workbuddyCopy)).toBe(false);
   });
 });

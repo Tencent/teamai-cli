@@ -5,7 +5,7 @@ import fse from 'fs-extra';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
+import { resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
 import { ResourceHandler } from './resources/base.js';
 import { ensureSkillFrontmatter, resolveSkillDestination } from './resources/skills.js';
 import { getUserHome } from './utils/home.js';
@@ -115,7 +115,7 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
       log.debug(`Skipping built-in skill deployment for ${tool}: tool not installed`);
       continue;
     }
-    if (localConfig && isAgentDisabled(localConfig, tool)) continue;
+    if (localConfig && isAgentExcluded(localConfig, tool)) continue;
 
     for (const skillName of skillNames) {
       const srcDir = path.join(builtinDir, skillName);
