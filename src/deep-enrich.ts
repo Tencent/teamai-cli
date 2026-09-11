@@ -1,4 +1,4 @@
-import { readFile, writeFile, readdir, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, readdir, mkdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { pathExists } from './utils/fs.js';
 import { callClaude, callClaudeParallel } from './utils/ai-client.js';
@@ -769,6 +769,28 @@ async function collectMissingAiDocs(
   };
 }
 
+async function removeIfExists(filePath: string): Promise<void> {
+  try {
+    await unlink(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+}
+
+/** Drop AI docs that belong to a previous extract so file-based resume retries them. */
+async function invalidateStaleAiDocs(docsDir: string, slugs: string[]): Promise<void> {
+  for (const slug of slugs) {
+    try {
+      assertSafeResourceName(slug);
+    } catch {
+      continue;
+    }
+    await removeIfExists(path.join(docsDir, `${slug}.md`));
+  }
+  await removeIfExists(architectureDocPath(docsDir));
+  await removeIfExists(path.join(docsDir, 'graph-g5-scenarios.md'));
+}
+
 // ─── 主函数 ─────────────────────────────────────────────────
 
 /**
@@ -783,7 +805,8 @@ async function collectMissingAiDocs(
  *
  * Resume is based on files on disk: missing component/architecture docs are
  * retried even when progress.json says `done` (deterministic graph files keep
- * `docs/` nonempty). Completed AI docs are not overwritten.
+ * `docs/` nonempty). Completed AI docs are kept for the same extract, but a
+ * newer `_manifest.json` generatedAt invalidates component/architecture/G5 docs.
  *
  * @param opts DeepEnrichOptions
  */
@@ -810,6 +833,21 @@ export async function deepEnrich(opts: DeepEnrichOptions): Promise<DeepEnrichRes
 
   const allSlugs = components.map(c => c.slug);
   const progress = await loadProgress(evidenceDir, project, allSlugs);
+
+  // A newer extract rewrites _manifest.json without clearing docs/. File-based
+  // resume would otherwise keep old component/architecture/G5 docs forever.
+  const manifestTime = ctx.manifest.generatedAt;
+  if (manifestTime && progress.startedAt < manifestTime) {
+    log.info(
+      `deep-enrich[${project}]: stale progress detected (manifest newer than progress.startedAt), invalidating AI docs`,
+    );
+    await invalidateStaleAiDocs(docsDir, allSlugs);
+    progress.phase = 'pending';
+    progress.componentsDone = [];
+    progress.componentsPending = [...allSlugs];
+    progress.startedAt = new Date().toISOString();
+    await saveProgress(evidenceDir, progress);
+  }
 
   // Disk is the source of truth for resume. A prior AI skip still writes
   // deterministic graph markdown, so `phase: done` + nonempty docs/ must not

@@ -218,6 +218,84 @@ describe('codebase deep-enrich', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('regenerates component and architecture docs when the extract manifest is newer', async () => {
+    const root = createEnrichFixture();
+    const evidence = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest');
+    const docsDir = path.join(evidence, 'docs');
+    fs.mkdirSync(path.join(evidence, '_review'), { recursive: true });
+    fs.mkdirSync(docsDir, { recursive: true });
+    const manifest = JSON.parse(fs.readFileSync(path.join(evidence, '_manifest.json'), 'utf8')) as {
+      generatedAt: string;
+      components: Array<{ responsibilities: string[] }>;
+    };
+    manifest.generatedAt = '2026-09-11T00:00:00Z';
+    manifest.components[0].responsibilities = ['NEW OAuth flow'];
+    fs.writeFileSync(path.join(evidence, '_manifest.json'), JSON.stringify(manifest, null, 2));
+    fs.writeFileSync(path.join(evidence, '_review', 'progress.json'), JSON.stringify({
+      project: 'faketest',
+      phase: 'done',
+      componentsDone: ['Auth'],
+      componentsPending: [],
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    }));
+    fs.writeFileSync(path.join(docsDir, 'Auth.md'), '# OLD password flow');
+    fs.writeFileSync(path.join(docsDir, 'architecture.md'), '# OLD architecture');
+    fs.writeFileSync(path.join(docsDir, 'graph-g1-relations.md'), '# graph placeholder\n');
+    fs.writeFileSync(path.join(docsDir, 'graph-g5-scenarios.md'), '# OLD G5');
+
+    vi.mocked(callClaude).mockResolvedValue('# NEW architecture\n');
+    vi.mocked(callClaudeParallel).mockImplementation(async (tasks) => (
+      tasks.map(() => '# NEW Auth\n')
+    ));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+
+    expect(process.exitCode).toBeUndefined();
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({ complete: true });
+    expect(fs.readFileSync(path.join(docsDir, 'Auth.md'), 'utf8')).toContain('NEW Auth');
+    expect(fs.readFileSync(path.join(docsDir, 'Auth.md'), 'utf8')).not.toContain('OLD password flow');
+    expect(fs.readFileSync(path.join(docsDir, 'architecture.md'), 'utf8')).toContain('NEW architecture');
+    expect(fs.existsSync(path.join(docsDir, 'graph-g1-relations.md'))).toBe(true);
+    expect(fs.existsSync(path.join(docsDir, 'graph-g5-scenarios.md'))).toBe(false);
+  });
+
+  it('does not report complete with stale AI docs after a newer extract when AI still fails', async () => {
+    const root = createEnrichFixture();
+    const evidence = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest');
+    const docsDir = path.join(evidence, 'docs');
+    fs.mkdirSync(path.join(evidence, '_review'), { recursive: true });
+    fs.mkdirSync(docsDir, { recursive: true });
+    const manifest = JSON.parse(fs.readFileSync(path.join(evidence, '_manifest.json'), 'utf8')) as {
+      generatedAt: string;
+    };
+    manifest.generatedAt = '2026-09-11T00:00:00Z';
+    fs.writeFileSync(path.join(evidence, '_manifest.json'), JSON.stringify(manifest, null, 2));
+    fs.writeFileSync(path.join(evidence, '_review', 'progress.json'), JSON.stringify({
+      project: 'faketest',
+      phase: 'done',
+      componentsDone: ['Auth'],
+      componentsPending: [],
+      startedAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    }));
+    fs.writeFileSync(path.join(docsDir, 'Auth.md'), '# OLD password flow');
+    fs.writeFileSync(path.join(docsDir, 'architecture.md'), '# OLD architecture');
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await codebaseCmd({ deepEnrich: true, project: 'faketest', output: root, json: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
+      complete: false,
+      missingComponents: ['Auth'],
+      missingArchitecture: true,
+    });
+    expect(fs.existsSync(path.join(docsDir, 'Auth.md'))).toBe(false);
+    expect(fs.existsSync(path.join(docsDir, 'architecture.md'))).toBe(false);
+  });
+
   it('rejects a project slug that escapes the evidence directory', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-deep-enrich-escape-'));
     temporaryDirectories.push(root);
