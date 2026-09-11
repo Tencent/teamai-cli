@@ -168,7 +168,7 @@ teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev -
 | `--inherit-user-scope` | 仅 project scope：同时同步安全的 user 资源并检索 user 知识 |
 | `--no-inherit-user-scope` | 关闭当前项目先前配置的 user scope 继承 |
 | `--role <id>` | 直接指定 primaryRole，跳过角色交互选择 |
-| `--project <ids>` | 从 `manifest/projects.yaml` 激活的逻辑项目（逗号分隔）。决定本目录同步哪些项目的资源与 learnings。详见下方 [多项目](#多项目project-作为与-role-正交的维度) |
+| `--project <ids>` | 从 `manifest/projects.yaml` 激活的逻辑项目（逗号分隔）。决定本目录同步哪些项目的资源与 learnings。传 `all` 可激活 manifest 声明的全部项目。详见下方 [多项目](#多项目project-作为与-role-正交的维度) |
 | `--force` | 覆盖已有配置，跳过确认提示 |
 
 #### 多项目：`project` 作为与 `role` 正交的维度
@@ -192,6 +192,11 @@ cd ~/work/billing       && teamai init <team-repo> --project billing
   未激活任何项目的目录只能看到共享的根目录。
 - **不自动激活。** 与「唯一 role 会被自动选中」不同，唯一的 project 不会自动选中
   —— 成员可以不属于任何项目（仍能获得 `common` 与共享的 learnings 根）。
+- **一次激活全部。** `--project all` 是保留值：展开为 manifest 声明的全部 id
+  并落盘为快照，于是 monorepo 的接入文档只写一行，而不必维护一份「新增项目就会
+  漂移」的清单。它是对全部项目（含项目私有 learnings）的显式选择，重跑 `init`
+  即重新解析。id 恰好叫 `all` 的项目会被该展开覆盖，但无法用这个 flag 单独选中；
+  `teamai projects set all` 走的是字面 id，仍能单独激活它。
 - **向后兼容。** 没有 `manifest/projects.yaml` 的仓库行为与之前完全一致；现存扁平
   的 `learnings/*.md` 继续对所有人共享（零迁移）。
 - **`teamai contribute`** 在恰好激活一个项目时，把经验落到该项目子目录，否则落到

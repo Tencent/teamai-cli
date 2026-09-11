@@ -174,7 +174,7 @@ teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev -
 | `--inherit-user-scope` | Project scope only: also sync safe user resources and search user knowledge |
 | `--no-inherit-user-scope` | Disable previously configured user-scope inheritance for this project |
 | `--role <id>` | Directly specify the primary role, skipping the interactive role prompt |
-| `--project <ids>` | Active logical project(s) from `manifest/projects.yaml` (comma-separated). Scopes which project resources and learnings this directory syncs. See [Multi-project](#multi-project-project-as-a-dimension-orthogonal-to-role) below |
+| `--project <ids>` | Active logical project(s) from `manifest/projects.yaml` (comma-separated). Scopes which project resources and learnings this directory syncs. Pass `all` to activate every project the manifest declares. See [Multi-project](#multi-project-project-as-a-dimension-orthogonal-to-role) below |
 | `--force` | Overwrite existing config, skipping confirmation prompts |
 
 #### Multi-project: `project` as a dimension orthogonal to `role`
@@ -203,6 +203,14 @@ learnings. Key points:
 - **Not auto-activated.** Unlike a lone role, a lone project is not auto-selected
   — a member may legitimately belong to no project (they still get `common` and
   the shared learnings root).
+- **Activate everything at once.** `--project all` is a reserved value: it
+  expands to every id the manifest declares and persists that snapshot, so a
+  monorepo's onboarding docs carry one line instead of a list that drifts
+  whenever a project is added. It is an explicit opt-in to every project —
+  project-private learnings included — and re-running `init` re-resolves it. A
+  project whose id is literally `all` is covered by the expansion but cannot be
+  selected on its own through this flag; `teamai projects set all` takes plain
+  ids and still activates exactly it.
 - **Backward compatible.** A repo without `manifest/projects.yaml` behaves exactly
   as before; existing flat `learnings/*.md` stay shared with everyone (zero
   migration).
