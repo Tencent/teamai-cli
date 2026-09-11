@@ -92,6 +92,7 @@ function spawnBackground(
     }
     const child = spawn(process.execPath, args, {
       detached: true,
+      windowsHide: true,
       stdio: ['pipe', 'ignore', 'ignore'],
       ...(cwd ? { cwd } : {}),
     });
