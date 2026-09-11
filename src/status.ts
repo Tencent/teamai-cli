@@ -52,7 +52,16 @@ export async function status(options: GlobalOptions): Promise<void> {
   // Git status
   console.log('');
   log.info('Team repo status:');
-  try {
+  if (localConfig.repo.kind === 'server') {
+    // Management backend: no git; show the server, the binding and the last synced revision.
+    const { loadJournal, loadSnapshot } = await import('./server-repo.js');
+    const journal = await loadJournal(localConfig.repo.localPath);
+    const snap = await loadSnapshot(localConfig.repo.localPath);
+    console.log(`  server: ${localConfig.repo.url ?? localConfig.repo.remote}`);
+    console.log(`  projects: ${snap?.projects.map((p) => p.slug).join(', ') || '(none)'}`);
+    console.log(`  revision: ${journal.revision ? journal.revision.slice(0, 19) : 'not synced yet'}`);
+    console.log(`  local: ${localConfig.repo.localPath}`);
+  } else try {
     const gitStatus = await getRepoStatus(localConfig.repo.localPath);
     console.log(`  repo: ${localConfig.repo.remote}`);
     console.log(`  local: ${localConfig.repo.localPath}`);

@@ -323,6 +323,15 @@ const votesSyncHandler: HookHandler = {
         } catch {
           // Push failed — will retry next session
         }
+      } else if (localConfig.repo.kind === 'server') {
+        // Management backend: votes are report events. Keep the pending deltas
+        // local and send them now; whatever fails is retried by the next pull.
+        try {
+          const { reportToServer } = await import('./server-write.js');
+          await reportToServer(localConfig);
+        } catch {
+          // Offline — the deltas stay in the local vote file
+        }
       } else {
         await syncVotesToTeam(localConfig.repo.localPath, localConfig.username, votesDir).catch(() => {
           // Push failed — will retry next session

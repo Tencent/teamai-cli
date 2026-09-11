@@ -53,6 +53,8 @@ program
   .argument('[repo]', 'Team repo (owner/repo or full URL). Pass "." for single-repo mode (the current git repo is the team repo).')
   .option('--repo <repo>', 'Team repo (alias of the positional argument)')
   .option('--http <url>', 'Git-free HTTP team repo (read-only consumer; only needs an API key)')
+  .option('--server <url>', 'Git-free team repo served by the TeamAI management backend: logs in with a browser code, binds this directory to your projects, syncs. No git needed.')
+  .option('--code <code>', 'One-time enrollment code from your admin (with --server): pre-selects the projects and skips the project picker')
   .option('--self', 'Single-repo mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.')
   .option('--token <key>', 'API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.')
   .option('--scope <scope>', 'Install scope: project (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude)')
@@ -78,7 +80,8 @@ program
   .option('--all', 'Push all without confirmation')
   .option('--skill <path>', 'Push a specific skill by path (e.g., ~/.claude/skills/hai/my-skill or skills/hai_dev/my-skill)')
   .option('--role <id>', 'Target role namespace for pushed project skills')
-  .option('--project <id>', 'Target a project: push skills into the project\'s skills namespace (from manifest/projects.yaml)')
+  .option('--project <id>', 'Target a project: push skills into the project\'s skills namespace (from manifest/projects.yaml); with a team server, the project slug new resources land in')
+  .option('--fast-track', 'Team server only: publish immediately when you have release permission (skips review)')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { push } = await import('./push.js');

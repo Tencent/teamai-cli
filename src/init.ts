@@ -431,6 +431,225 @@ export async function initHttp(
 }
 
 /**
+ * Git-free onboarding against the TeamAI management backend (issue #341).
+ *
+ * The member never sees a repo URL, credentials, branches or MRs:
+ *   1. device-flow login — a short code approved in the browser, or an admin's
+ *      one-time enrollment code that also pre-selects the projects;
+ *   2. pick the projects this directory should follow (skipped with --code /
+ *      --project, or when there is exactly one);
+ *   3. bind the workspace, materialize the snapshot, save config, inject hooks,
+ *      run the first pull.
+ */
+export async function initServer(
+  url: string,
+  options: GlobalOptions & { scope?: string; project?: string; agent?: string | string[]; force?: boolean; code?: string; inheritUserScope?: boolean },
+): Promise<void> {
+  const server = url.trim().replace(/\/+$/, '');
+  const {
+    fetchCapabilities, deviceLogin, loadCredentials, listProjects, createBinding, deleteBinding, syncServerRepo,
+  } = await import('./server-repo.js');
+
+  log.info('Initializing teamai (team server, no git needed)...');
+
+  // Step 0: scope — same rules as every other init (default project)
+  let scope: Scope;
+  let projectRoot: string | undefined;
+  let explicit: boolean;
+  let fallbackReason: string | undefined;
+  try {
+    ({ scope, projectRoot, explicit, fallbackReason } = resolveInitScope(options.scope, process.cwd(), getUserHome()));
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exit(1);
+    return;
+  }
+  const existingLocalConfig = await loadLocalConfigForScope(scope, projectRoot);
+  let inheritUserScope: boolean | undefined;
+  try {
+    inheritUserScope = resolveInheritUserScope(scope, options.inheritUserScope, existingLocalConfig?.inheritUserScope);
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exit(1);
+    return;
+  }
+  if (fallbackReason) log.warn(fallbackReason);
+  const teamaiHome = scope === 'project' && projectRoot
+    ? (existingLocalConfig?.dataHome ?? await resolveProjectDataHome(projectRoot))
+    : getTeamaiHome(scope, projectRoot);
+  printScopeSummary(scope, projectRoot, explicit);
+
+  const existingConfigPath = path.join(teamaiHome, 'config.yaml');
+  if (await pathExists(existingConfigPath) && !options.force) {
+    const confirmed = await askConfirmation(`teamai already initialized at ${existingConfigPath}. Overwrite? [y/N] `);
+    if (!confirmed) {
+      log.info('Aborted. Existing config is unchanged.');
+      return;
+    }
+  }
+
+  // Step 1: reachability + version handshake before asking the member to do anything
+  try {
+    await fetchCapabilities(server);
+  } catch (e) {
+    log.error(`Cannot reach team server ${server}: ${(e as Error).message}`);
+    process.exit(1);
+    return;
+  }
+
+  // Step 2: login — reuse a valid device login for this server, else device flow
+  let creds = await loadCredentials();
+  let enrolledProjectIds: string[] = [];
+  if (creds && creds.server === server && !options.code) {
+    log.info('Using the existing login for this machine.');
+  } else {
+    const loginSpin = spinner('Waiting for approval in the browser...');
+    try {
+      const result = await deviceLogin(server, {
+        enrollmentCode: options.code?.trim() || undefined,
+        onCode: (code, verifyUrl) => {
+          log.info(`Open ${verifyUrl} in your browser and enter this code: ${code}`);
+          loginSpin.start();
+        },
+      });
+      creds = result.credentials;
+      enrolledProjectIds = result.enrollmentProjectIds;
+      loginSpin.succeed('Logged in.');
+    } catch (e) {
+      loginSpin.fail(`Login failed: ${(e as Error).message}`);
+      process.exit(1);
+      return;
+    }
+  }
+
+  // Step 3: projects — enrollment code > --project slugs > single project > picker
+  let projectIds: string[] = enrolledProjectIds;
+  if (projectIds.length === 0) {
+    const projects = await listProjects(creds!);
+    if (projects.length === 0) {
+      log.error('You are not a member of any project yet. Ask an admin for an enrollment code or to add you to a project.');
+      process.exit(1);
+      return;
+    }
+    if (options.project) {
+      const wanted = options.project.split(',').map((x) => x.trim()).filter(Boolean);
+      for (const slug of wanted) {
+        const p = projects.find((x) => x.slug === slug);
+        if (!p) {
+          log.error(`Unknown project "${slug}". Your projects: ${projects.map((x) => x.slug).join(', ')}`);
+          process.exit(1);
+          return;
+        }
+        projectIds.push(p.id);
+      }
+    } else if (projects.length === 1) {
+      projectIds = [projects[0].id];
+      log.info(`Project: ${projects[0].slug} (${projects[0].name})`);
+    } else {
+      log.info('Your projects:');
+      projects.forEach((p, i) => log.info(`  ${i + 1}. ${p.slug}  ${p.name}`));
+      const picked = await askSelection('Select project(s) for this directory (e.g. 1 or 1,3): ', projects.length, false);
+      if (!picked || picked.length === 0) {
+        log.info('Aborted: no project selected.');
+        return;
+      }
+      projectIds = picked.map((i) => projects[i].id);
+    }
+  }
+
+  // Step 4: bind this workspace (replacing a previous binding of the same directory)
+  const workspaceDir = scope === 'project' && projectRoot ? projectRoot : getUserHome();
+  if (existingLocalConfig?.repo.kind === 'server' && existingLocalConfig.repo.bindingId) {
+    try { await deleteBinding(creds!, existingLocalConfig.repo.bindingId); } catch { /* best-effort */ }
+  }
+  let bindingId: string;
+  try {
+    bindingId = await createBinding(creds!, workspaceDir, projectIds);
+  } catch (e) {
+    log.error(`Binding failed: ${(e as Error).message}`);
+    process.exit(1);
+    return;
+  }
+
+  // Step 5: local config (kind: server). Tokens live in the credentials file, never here.
+  const localPath = expandHome(path.join(teamaiHome, 'team-repo'));
+  await ensureDir(localPath);
+  const localConfig: LocalConfig = {
+    repo: { localPath, remote: server, kind: 'server', url: server, bindingId },
+    username: existingLocalConfig?.username ?? 'server-member',
+    scope,
+    projectRoot,
+    additionalRoles: [],
+    ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
+    ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
+  };
+  // Which AI tools to set up: --agent, else the tools already installed under
+  // HOME, else Claude Code (same picker as single-repo mode). Their resource dirs
+  // are created below so the deploy step treats them as installed.
+  const requestedAgents = await promptForSelfModeAgents(options);
+  const prev = existingLocalConfig?.enabledAgents ?? [];
+  localConfig.enabledAgents = [...new Set([...prev, ...requestedAgents])];
+  localConfig.disabledAgents = (existingLocalConfig?.disabledAgents ?? []).filter((t) => !requestedAgents.includes(t));
+
+  // Step 6: first materialization, so teamai.yaml exists before hooks are reconciled
+  const syncSpin = spinner('Syncing team resources...').start();
+  try {
+    const outcome = await syncServerRepo(localConfig, { force: true });
+    const n = outcome.results.filter((r) => r.action === 'installed' || r.action === 'updated').length;
+    syncSpin.succeed(`Synced ${n} file(s) at revision ${outcome.revision.slice(0, 19)}`);
+  } catch (e) {
+    syncSpin.fail(`Sync failed: ${(e as Error).message}`);
+    process.exit(1);
+    return;
+  }
+  const teamConfig = await loadTeamConfig(localPath);
+  if (!teamConfig) {
+    log.error('The server snapshot did not produce a valid teamai.yaml.');
+    process.exit(1);
+    return;
+  }
+  try {
+    const { seedSelfModeToolDirs } = await import('./known-agents.js');
+    const seeded = await seedSelfModeToolDirs(localConfig, teamConfig);
+    if (seeded.length > 0) log.info(`AI tools: ${seeded.join(', ')}`);
+  } catch (e) {
+    log.debug(`tool dir seeding skipped: ${(e as Error).message}`);
+  }
+
+  // Use the login identity for the username so learnings/votes carry a real author.
+  try {
+    const { apiCall } = await import('./server-repo.js');
+    const me = await apiCall<{ account: { email: string; name: string } }>(creds!, 'GET', '/v1/me');
+    localConfig.username = me.data.account.email || localConfig.username;
+  } catch { /* keep default */ }
+
+  await ensureDir(teamaiHome);
+  if (scope === 'project') {
+    await saveLocalConfigForScope(localConfig, scope, projectRoot);
+  } else {
+    await ensureDir(getTeamaiHomeDir());
+    await saveLocalConfig(localConfig);
+  }
+  log.success(`Local config saved to ${teamaiHome}/config.yaml`);
+
+  try {
+    const state = await loadStateForScope(localConfig);
+    state.lastPullRev = null;
+    await saveStateForScope(state, localConfig);
+  } catch { /* state may not exist yet */ }
+
+  // Step 7: hooks, then the regular pull deploys everything into the AI tools
+  const filterAgents = requestedAgents.length > 0 ? requestedAgents : undefined;
+  await reconcileTeamHooksForConfig(teamConfig, localConfig, { filterAgents });
+
+  const { pull } = await import('./pull.js');
+  await pull({ ...options, force: true } as GlobalOptions);
+
+  log.success('teamai initialized against the team server. Resources auto-sync on each session start.');
+  closePrompt();
+}
+
+/**
  * Build the .teamai/.gitignore for single-repo mode. Unlike the standalone
  * project-scope gitignore, knowledge (skills/rules/docs/learnings) is COMMITTED
  * to main here, so it must NOT be ignored.
@@ -985,12 +1204,17 @@ export async function init(options: GlobalOptions & {
   agent?: string | string[];
   force?: boolean;
   http?: string;
+  server?: string;
+  code?: string;
   token?: string;
   inheritUserScope?: boolean;
   self?: boolean;
 }): Promise<void> {
   if (options.http) {
     return initHttp(options.http, options);
+  }
+  if (options.server) {
+    return initServer(options.server, options);
   }
   // Single-repo mode: `teamai init .` or `teamai init --self`. The current git
   // repo IS the team repo; knowledge lives on main under .teamai/, reports go to

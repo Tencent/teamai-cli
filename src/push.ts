@@ -278,6 +278,13 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
   const { localConfig, teamConfig } = await autoDetectInit();
   assertNotReadOnly(localConfig, 'teamai push');
 
+  // Management backend: resources become a change set (no branch, no MR).
+  if (localConfig.repo.kind === 'server') {
+    const { pushServer } = await import('./server-write.js');
+    await pushServer(localConfig, teamConfig, options as typeof options & { skill?: string; fastTrack?: boolean });
+    return;
+  }
+
   // --project is a destination override expressed as a logical project: resolve
   // it to the project's skills namespace (from manifest/projects.yaml) and reuse
   // the --role landing logic below. Deliberately manifest-resolved, not the raw
