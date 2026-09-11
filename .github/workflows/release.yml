@@ -15,6 +15,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Release notes need every stable tag to pick their comparison base.
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -81,8 +84,66 @@ jobs:
       - name: Publish
         run: npm publish --access public --tag "${{ steps.disttag.outputs.dist_tag }}"
 
+      - name: Resolve release notes base
+        id: notesbase
+        env:
+          IS_PRERELEASE: ${{ steps.disttag.outputs.is_prerelease }}
+        run: |
+          # GitHub picks the base as the newest tag reachable from the tagged
+          # commit. Release commits are created detached and never land on a
+          # branch, so no release tag is an ancestor of the next one and the
+          # base walks back to whichever old release happened to be merged.
+          # Pick it explicitly instead.
+          #
+          # A prerelease compares against the tag right before it, keeping its
+          # notes incremental; a stable release compares against the previous
+          # stable tag. Either way, skip tags whose own parent is not in this
+          # release's history: those were cut from an unrelated lineage (an
+          # internal mirror sync), so their merge-base sits months back and
+          # would drag hundreds of unrelated PRs into the notes.
+          git config --add versionsort.suffix -beta
+          git config --add versionsort.suffix -rc
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            CANDIDATES=$(git tag -l 'v*' --sort=-v:refname)
+          else
+            CANDIDATES=$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$')
+          fi
+          PREV=""
+          PAST_CURRENT=""
+          for TAG in $CANDIDATES; do
+            if [ "$TAG" = "$GITHUB_REF_NAME" ]; then
+              PAST_CURRENT=1
+              continue
+            fi
+            [ -n "$PAST_CURRENT" ] || continue
+            if git merge-base --is-ancestor "$TAG^{commit}^1" "$GITHUB_REF_NAME^{commit}" 2>/dev/null; then
+              PREV="$TAG"
+              break
+            fi
+            echo "Skipping $TAG: cut from an unrelated lineage."
+          done
+          if [ -n "$PREV" ]; then
+            echo "Release notes base: $PREV"
+            echo "prev_tag=$PREV" >> "$GITHUB_OUTPUT"
+          else
+            echo "No usable earlier tag; letting GitHub pick the base."
+          fi
+
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREV_TAG: ${{ steps.notesbase.outputs.prev_tag }}
+        run: |
+          ARGS=(-f tag_name="$GITHUB_REF_NAME")
+          if [ -n "$PREV_TAG" ]; then
+            ARGS+=(-f previous_tag_name="$PREV_TAG")
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            "${ARGS[@]}" -q .body > "${RUNNER_TEMP}/release-notes.md"
+          cat "${RUNNER_TEMP}/release-notes.md"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/release-notes.md
           prerelease: ${{ steps.disttag.outputs.is_prerelease == 'true' }}
