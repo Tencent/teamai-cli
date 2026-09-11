@@ -25,7 +25,7 @@ import {
   resolveHookScope,
   getDataHome,
   isRecallEnabled,
-  isAgentDisabled,
+  isAgentExcluded,
   scopedToolPaths,
   SYNC_LOCK_FILENAME,
 } from './types.js';
@@ -338,7 +338,7 @@ export async function cleanupInactiveNamespaceSkills(
   const baseDir = resolveBaseDir(localConfig);
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    if (isAgentDisabled(localConfig, tool)) continue;
+    if (isAgentExcluded(localConfig, tool)) continue;
     if (!toolPath.skills) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
     if (!await pathExists(path.join(baseDir, toolPath.skills))) continue;
@@ -451,7 +451,7 @@ async function getInstalledResourceTargets(
   const targets: string[] = [];
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    if (isAgentDisabled(localConfig, tool)) continue;
+    if (isAgentExcluded(localConfig, tool)) continue;
 
     const resourcePaths = [toolPath.skills, toolPath.rules, toolPath.agents]
       .filter((resourcePath): resourcePath is string => !!resourcePath);
@@ -735,7 +735,7 @@ async function pullForScope(
         const dir = toolPath[toolPathField];
         if (!dir) continue;
         if (!await ResourceHandler.isToolInstalled(dir, baseDir)) continue;
-        if (isAgentDisabled(localConfig, tool)) continue;
+        if (isAgentExcluded(localConfig, tool)) continue;
 
         // Rules carry a per-tool extension (`.mdc` for compatible tools), and those dirs
         // may still hold a `.md` copy from the layout that predates it, so a
@@ -779,7 +779,7 @@ async function pullForScope(
     const baseDir = resolveBaseDir(localConfig);
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
-      if (isAgentDisabled(localConfig, tool)) continue;
+      if (isAgentExcluded(localConfig, tool)) continue;
       if (!toolPath.skills) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
       const skillsDir = path.join(baseDir, toolPath.skills);
@@ -935,7 +935,7 @@ async function pullForScope(
           if (compiled) {
             const baseDir = resolveBaseDir(localConfig);
             for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
-              if (isAgentDisabled(localConfig, tool)) continue;
+              if (isAgentExcluded(localConfig, tool)) continue;
               if (!toolPath.claudemd) continue;
               if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
 
@@ -966,7 +966,7 @@ async function pullForScope(
         if (compiled) {
           const baseDir = resolveBaseDir(localConfig);
           for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
-            if (isAgentDisabled(localConfig, tool)) continue;
+            if (isAgentExcluded(localConfig, tool)) continue;
             if (!toolPath.claudemd) continue;
             if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
             const claudeMdPath = path.join(baseDir, toolPath.claudemd);
@@ -1214,7 +1214,7 @@ export async function injectRecallBlockIntoTools(
         const recallBlock = compileRecallRulesBlock();
         let injected = 0;
         for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
-            if (isAgentDisabled(localConfig, tool)) continue;
+            if (isAgentExcluded(localConfig, tool)) continue;
             if (!toolPath.claudemd || !toolPath.agents) continue;
             if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
 

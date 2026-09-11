@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { ensureDir, pathExists, readFileSafe, writeFile, remove, listFiles } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
+import { resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
 import { ResourceHandler } from './resources/base.js';
 import { getUserHome } from './utils/home.js';
 import { ALL_SUPPORTED_TOOLS, renderForTool, reverseFromClaude } from './resources/agent-format.js';
@@ -126,7 +126,7 @@ export async function deployBuiltinAgents(
       log.debug(`Skipping built-in agent deployment for ${tool}: tool not installed`);
       continue;
     }
-    if (localConfig && isAgentDisabled(localConfig, tool)) continue;
+    if (localConfig && isAgentExcluded(localConfig, tool)) continue;
     if (!(ALL_SUPPORTED_TOOLS as string[]).includes(tool)) {
       log.warn(
         `Skipping built-in agent deployment for ${tool}: unsupported agent format; ` +
