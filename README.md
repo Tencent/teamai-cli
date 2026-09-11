@@ -31,6 +31,8 @@ Made with [contrib.rocks](https://contrib.rocks).
 npm install -g teamai-cli
 ```
 
+> **Never used Git?** Paste an [onboarding prompt](docs/prompts/README.md) into your current AI tool and let it run the commands.
+
 ### Team admin / solo user
 
 Create a shared-experience repo on your git host (GitHub, GitLab, GitCode, CNB, TGit, or a private Git service), **grant write access to team members**, then run `teamai init https://github.com/yourorg/yourrepo`.

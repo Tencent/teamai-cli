@@ -31,6 +31,8 @@ TeamAI 统一管理团队的 Skills、Rules、MCP 和知识，驾驭 Claude Code
 npm install -g teamai-cli
 ```
 
+> **没用过 Git？** 把[接入提示词](docs/prompts/README.zh-CN.md)粘贴给当前的 AI 工具，让它代跑命令。
+
 ### 团队管理员 / 个人使用者
 
 在 Git 托管平台（GitHub、GitLab、GitCode、CNB、TGit，或私有 Git 服务）创建共享经验仓库，**授予团队成员写权限**，然后运行 `teamai init https://github.com/yourorg/yourrepo`。

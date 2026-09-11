@@ -13,6 +13,7 @@
 - [What TeamAI is](#what-teamai-is)
 - [Core Concepts](#core-concepts)
 - [Installation](#installation)
+  - [Paste-able prompts](#paste-able-prompts)
 - [Admin Initialization](#admin-initialization)
   - [Project Scope](#project-scope)
   - [User Scope](#user-scope)
@@ -92,6 +93,16 @@ teamai --version
 ```
 
 **Prerequisites:** Node.js ≥ 20, Git (TGit users also need the `gf` CLI, and CNB users the `cnb` CLI — `teamai init` installs either automatically)
+
+### Paste-able prompts
+
+If you have not used Git, paste one of the [onboarding prompts](prompts/README.md) into your current AI tool (Claude Code, Codex, Cursor, CodeBuddy, WorkBuddy, OpenCode, Qoder, and other supported agents). The agent runs `teamai init` / `pull` / `push` / `doctor` and only asks when a web login or a choice is required.
+
+| Situation | Prompt |
+|-----------|--------|
+| No team repo URL yet | [Getting started](prompts/getting-started.md) |
+| You already have a repo URL | [Member](prompts/member.md) |
+| Already initialized; day-to-day admin | [Admin](prompts/admin.md) |
 
 ---
 
@@ -358,7 +369,7 @@ With inheritance enabled, `teamai pull` refreshes user `skills`, `rules`, `docs`
 
 ## Member Onboarding
 
-Once the admin shares the team repo URL with members:
+Once the admin shares the team repo URL with members (or forwards the [member prompt](prompts/member.md) with that URL filled in):
 
 **Project-scoped teams (default):**
 
@@ -1585,6 +1596,10 @@ teamai pull
 ---
 
 ## FAQ
+
+**Q: I have never used Git?**
+
+Paste an [onboarding prompt](prompts/README.md) into your current AI tool and let it run the commands. Use [getting started](prompts/getting-started.md) if you do not have a repo URL yet, or [member](prompts/member.md) if you already have one.
 
 **Q: Can user scope and project scope coexist?**
 

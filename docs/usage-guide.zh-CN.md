@@ -13,6 +13,7 @@
 - [TeamAI 是什么](#teamai-是什么)
 - [核心概念](#核心概念)
 - [安装](#安装)
+  - [可粘贴接入提示词](#可粘贴接入提示词)
 - [管理员初始化](#管理员初始化)
   - [项目级（Project Scope）](#项目级project-scope)
   - [用户级（User Scope）](#用户级user-scope)
@@ -91,6 +92,16 @@ teamai --version
 ```
 
 **前置依赖：** Node.js ≥ 20、Git（TGit 用户还需 `gf` CLI、CNB 用户还需 `cnb` CLI，`teamai init` 时都会自动安装）
+
+### 可粘贴接入提示词
+
+如果没用过 Git，把[接入提示词](prompts/README.zh-CN.md)粘贴给当前的 AI 工具（Claude Code、Codex、Cursor、CodeBuddy、WorkBuddy、OpenCode、Qoder 等）。Agent 代跑 `teamai init` / `pull` / `push` / `doctor`，只在要网页登录或二选一时问你。
+
+| 场景 | 提示词 |
+|------|--------|
+| 还没有团队仓库 URL | [建库](prompts/getting-started.zh-CN.md) |
+| 已经拿到仓库 URL | [成员](prompts/member.zh-CN.md) |
+| 已经 init，日常维护 | [管理员](prompts/admin.zh-CN.md) |
 
 ---
 
@@ -343,7 +354,7 @@ teamai init https://github.com/yourorg/java-service-teamai --inherit-user-scope
 
 ## 成员接入
 
-管理员将团队仓库地址分享给成员后：
+管理员将团队仓库地址分享给成员后（或把填好 URL 的[成员提示词](prompts/member.zh-CN.md)转发出去）：
 
 **项目级团队（默认）：**
 
@@ -1551,6 +1562,10 @@ teamai pull
 ---
 
 ## 常见问题 FAQ
+
+**Q: 我没用过 Git？**
+
+把[接入提示词](prompts/README.zh-CN.md)粘贴给当前的 AI 工具，让它代跑命令。还没有仓库 URL 用[建库](prompts/getting-started.zh-CN.md)，已经有 URL 用[成员](prompts/member.zh-CN.md)。
 
 **Q: User scope 和 Project scope 可以共存吗？**
 
