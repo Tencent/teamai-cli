@@ -127,6 +127,11 @@ async function refreshTeamRepo(
   return { label: result, version, reportingOnly: false };
 }
 
+/** teamai.yaml `usageReport: false` — per-repo opt-out of stat commits. */
+async function usageReportDisabled(repoPath: string): Promise<boolean> {
+  return (await loadTeamConfig(repoPath))?.usageReport === false;
+}
+
 export async function buildRolePullContext(localConfig: LocalConfig): Promise<RolePullContext | null> {
   const activeProjects = localConfig.projects ?? [];
   const hasRole = !!localConfig.primaryRole;
@@ -1549,7 +1554,11 @@ export async function pull(options: GlobalOptions): Promise<void> {
       const { reportUsageToTeam } = await import('./team-push.js');
       const { truncateUsageAfterReport, readUsageEvents } = await import('./usage-tracker.js');
       const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig?: LocalConfig } }> = [];
-      if (reconcileProject && reconcileProject.repo.kind !== 'http') {
+      // Per-target opt-out (teamai.yaml `usageReport: false`): a repo that
+      // disables stat commits is dropped from the targets — e.g. teams
+      // pulling from a read-only remote never accumulate unpushable commits.
+      if (reconcileProject && reconcileProject.repo.kind !== 'http'
+        && !await usageReportDisabled(reconcileProject.repo.localPath)) {
         targets.push({
           repoPath: reconcileProject.repo.localPath,
           username: reconcileProject.username,
@@ -1561,7 +1570,8 @@ export async function pull(options: GlobalOptions): Promise<void> {
           },
         });
       }
-      if (reconcileUser && reconcileUser.repo.kind !== 'http') {
+      if (reconcileUser && reconcileUser.repo.kind !== 'http'
+        && !await usageReportDisabled(reconcileUser.repo.localPath)) {
         targets.push({
           repoPath: reconcileUser.repo.localPath,
           username: reconcileUser.username,
@@ -1583,6 +1593,8 @@ export async function pull(options: GlobalOptions): Promise<void> {
           log.error(`Auto-report to ${t.repoPath} skipped: ${(e as Error).message}`);
         }
       }
+      // Truncate only what was reported — an opted-out repo keeps its local
+      // event log (the dashboard still reads it).
       if (eventCount > 0 && targets.length > 0) {
         await truncateUsageAfterReport(eventCount);
       }

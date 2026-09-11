@@ -1402,6 +1402,16 @@ Auto-update runs in the Stop hook and is controlled by two tiers:
 
 The user-level `updatePolicy` always takes priority over the team-level `autoUpdate`.
 
+### Usage reporting
+
+By default, `teamai pull` commits session/usage stats into the team repo.
+Teams that pull from a read-only remote (or simply don't want stat commits)
+can turn this off in `teamai.yaml`:
+
+```yaml
+usageReport: false
+```
+
 ### CI Integration
 
 `teamai ci extract-mr` plugs into your CI pipeline, automatically extracting knowledge from every MR/PR:

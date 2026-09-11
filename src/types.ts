@@ -241,6 +241,10 @@ export const TeamaiConfigSchema = z.object({
    * can override via `updatePolicy` in local config. Undefined = team has no
    * opinion (preserves legacy behavior). */
   autoUpdate: z.boolean().optional(),
+  /** Report session/usage stats back into the team repo on pull. Off = the
+   * team repo never receives stat commits (e.g. read-only pull setups).
+   * Default: on. */
+  usageReport: z.boolean().optional(),
   // MCP paths are only set for tools whose config location has been verified.
   // Tools left without `mcp` are skipped by MCP sync rather than guessed at, so a
   // wrong guess can never create a junk config file on a user's machine.
