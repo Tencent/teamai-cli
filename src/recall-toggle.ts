@@ -13,6 +13,7 @@ import { RECALL_DEPENDENT_SKILLS } from './builtin-skills.js';
 import {
   resolveBaseDir,
   isRecallEnabled,
+  isAgentExcluded,
   scopedToolPaths,
   TEAMAI_RECALL_RULES_START,
   TEAMAI_RECALL_RULES_END,
@@ -104,6 +105,7 @@ async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
   const recallBlock = compileRecallRulesBlock();
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    if (isAgentExcluded(localConfig, tool)) continue;
     if (!toolPath.claudemd || !toolPath.agents) continue;
     if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
 
