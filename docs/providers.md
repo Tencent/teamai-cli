@@ -303,6 +303,17 @@ reviewers:
   - bob
 ```
 
+## CLI 解析与启动（跨平台）
+
+GitHub 与 CNB 两个 provider 都把操作委托给平台自己的 CLI，因此二者共用同一套解析与启动逻辑（[`src/utils/cli-path.ts`](../src/utils/cli-path.ts)）：
+
+- **解析**：`resolveCliPath(cmd)` 在 Windows 上走原生 `where`，在 macOS / Linux 上依次尝试 `bash -lc` → `zsh -lc` → `which`，返回一个**存在且可启动**的绝对路径；找不到时返回 `null`。
+  - Windows 上不能用 `which`：它来自 Git Bash / WSL，返回 MSYS 风格路径（如 `/c/Program Files/GitHub CLI/gh`），Node 会把 `/c/...` 当成 `C:\c\...`，于是 `existsSync` 恒为 false、`spawn` 报 ENOENT。表现为 `isGhInstalled()` 回答"已安装"，而每次 `ghExec()` 都以 status 1 + **空 stderr** 静默失败。
+  - `where` 的输出里，npm 生成的不带扩展名的 shim 往往排在 `.cmd` 之前；`pickWindowsCommand()` 只接受 `.exe` / `.cmd` / `.bat`，因为无扩展名的文件 CreateProcess 无法启动。
+- **启动**：解析出的绝对路径交给 `cross-spawn` 启动。Node 原生 `spawn` 无法直接执行 `.cmd`（报 `EINVAL`）——`cnb` 由 npm 安装，在 Windows 上只有 `.cmd` / `.ps1`、没有 `.exe`，所以"能解析"和"能启动"必须同时成立；CLI 缺失时返回 127 并在 stderr 里说明原因，不再静默返回 status 1。
+
+TGit 的 `gf` CLI 是例外：它只支持 macOS / Linux，且其路径会作为参数传给 `bash -c`，因此保留原样。
+
 ## 新增 Provider
 
 Provider 是一个 TypeScript 接口（见 [`src/providers/types.ts`](../src/providers/types.ts)），新增带平台 API 能力的 GitLab / Bitbucket / Gitea provider 只需要：

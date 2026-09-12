@@ -1,14 +1,25 @@
 import { execSync, spawnSync } from 'node:child_process';
+import crossSpawn from 'cross-spawn';
 import { log, spinner } from '../../utils/logger.js';
+import { resolveCliPath } from '../../utils/cli-path.js';
 import type { RepoInfo } from '../types.js';
 
 /**
  * Thin wrapper around the CNB (cnb.cool) OpenAPI CLI — `@cnbcool/cnb-cli`.
  *
  * Mirrors the shape of tgit/gf-cli.ts: delegate auth + repo + PR operations to
- * the platform's own CLI. CNB's CLI is a plain binary (not a bash launcher), so
- * we invoke it via spawnSync with an args array — no shell, so repo paths /
- * branch names / titles cannot inject shell metacharacters.
+ * the platform's own CLI. Arguments are passed as an array and never through a
+ * shell string, so repo paths / branch names / titles cannot inject shell
+ * metacharacters. Two Windows details decide how we launch it:
+ *
+ *   - the package is `bin: { cnb: 'bin/cnb.js' }`, so npm only writes
+ *     `cnb.cmd` / `cnb.ps1` shims on Windows — there is no `cnb.exe`;
+ *   - a bare `cnb` therefore fails with ENOENT, and handing the resolved
+ *     `cnb.cmd` to `child_process.spawnSync` fails with EINVAL.
+ *
+ * `cross-spawn` handles both cases (same reason `utils/ai-client.ts` uses it),
+ * while `resolveCliPath` keeps "is it installed?" and "can we run it?" based on
+ * the same answer.
  *
  * Auth has two paths, matching how the GitHub provider treats GITHUB_TOKEN:
  *   - Interactive (dev laptop): `cnb login` (OAuth2 device flow) stores a token;
@@ -32,12 +43,23 @@ export function cnbExec(
   args: string[],
   options?: { inheritStdio?: boolean; cwd?: string },
 ): { stdout: string; stderr: string; status: number } {
-  log.debug(`cnb exec: cnb ${args.join(' ')}`);
+  // Resolve the executable first, then launch it through cross-spawn: on
+  // Windows the npm-installed CLI is only a `.cmd` shim, which neither a bare
+  // name (ENOENT) nor a direct child_process.spawnSync (EINVAL) can start. That
+  // used to come back as status 1 with an empty stderr, so cnbIsAuthenticated()
+  // reported "not logged in" for a perfectly installed CLI.
+  const cnbPath = resolveCliPath('cnb');
+  if (!cnbPath) {
+    log.debug('cnb CLI not found on PATH');
+    return { stdout: '', stderr: 'cnb CLI not found on PATH', status: 127 };
+  }
+
+  log.debug(`cnb exec: ${cnbPath} ${args.join(' ')}`);
   if (options?.inheritStdio) {
-    const r = spawnSync('cnb', args, { stdio: 'inherit', env: { ...process.env }, cwd: options.cwd });
+    const r = crossSpawn.sync(cnbPath, args, { stdio: 'inherit', env: { ...process.env }, cwd: options.cwd });
     return { stdout: '', stderr: '', status: r.status ?? 1 };
   }
-  const r = spawnSync('cnb', args, {
+  const r = crossSpawn.sync(cnbPath, args, {
     env: { ...process.env },
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,
@@ -69,12 +91,7 @@ export function assertCnbApiOk(out: string, action: string): void {
 // ─── Installation ────────────────────────────────────────
 
 export function isCnbInstalled(): boolean {
-  try {
-    execSync('which cnb', { stdio: ['pipe', 'pipe', 'pipe'] });
-    return true;
-  } catch {
-    return false;
-  }
+  return resolveCliPath('cnb') !== null;
 }
 
 /** Ensure the CNB CLI is available; install globally via npm if missing. */

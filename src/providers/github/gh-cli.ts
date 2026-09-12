@@ -1,5 +1,7 @@
-import { execSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import crossSpawn from 'cross-spawn';
 import { log, spinner } from '../../utils/logger.js';
+import { resolveCliPath } from '../../utils/cli-path.js';
 
 // ─── Constants ───────────────────────────────────────────
 
@@ -14,18 +16,18 @@ function shellQuote(s: string): string {
 
 // ─── gh CLI detection ────────────────────────────────────
 
-/** Returns the full path to gh if available on PATH, else null. */
+/**
+ * Absolute path to the `gh` executable if available on PATH, else null.
+ *
+ * Not `which gh`: on Windows that lands on Git's `which`, which prints an MSYS
+ * path (`/c/Program Files/GitHub CLI/gh`) that Node resolves as
+ * `C:\c\Program Files\...` — `spawnSync` then fails with ENOENT, i.e.
+ * `isGhInstalled()` answered "installed" while every `ghExec()` returned
+ * status 1 with an empty stderr. `resolveCliPath` uses the native `where` on
+ * Windows and accepts only a launchable path (`.exe` / `.cmd` / `.bat`).
+ */
 function getGhPath(): string | null {
-  try {
-    const which = execSync('which gh', {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    const trimmed = which.trim();
-    return trimmed || null;
-  } catch {
-    return null;
-  }
+  return resolveCliPath('gh');
 }
 
 /** Check whether the gh CLI is installed and on PATH. */
@@ -36,6 +38,12 @@ export function isGhInstalled(): boolean {
 /**
  * Execute a gh CLI command.
  * Returns { stdout, stderr, status }.
+ *
+ * Launches through cross-spawn rather than the native `spawnSync`, for the same
+ * reason `callClaude` does: a `gh` that npm installed is a `.cmd` shim, and Node
+ * cannot execute `.cmd` directly (EINVAL). Resolving the path alone is not
+ * enough — `pickWindowsCommand` accepts `.cmd`, so the launcher has to be able
+ * to run what it resolves.
  */
 export function ghExec(
   args: string[],
@@ -51,7 +59,7 @@ export function ghExec(
   log.debug(`gh exec: ${ghPath} ${args.join(' ')}`);
 
   if (options?.inheritStdio) {
-    const result = spawnSync(ghPath, args, {
+    const result = crossSpawn.sync(ghPath, args, {
       stdio: 'inherit',
       env: { ...process.env, ...(options.env ?? {}) },
       cwd: options.cwd,
@@ -59,7 +67,7 @@ export function ghExec(
     return { stdout: '', stderr: '', status: result.status ?? 1 };
   }
 
-  const result = spawnSync(ghPath, args, {
+  const result = crossSpawn.sync(ghPath, args, {
     env: { ...process.env, ...(options?.env ?? {}) },
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,

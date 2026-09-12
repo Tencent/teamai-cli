@@ -3,8 +3,14 @@ import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vite
 // ─── Mocks ──────────────────────────────────────────────
 
 vi.mock('node:child_process', () => ({
-  execSync: vi.fn(),
   spawnSync: vi.fn(),
+}));
+
+// gh-cli resolves the CLI through utils/cli-path.js. Tests used to fake "gh not
+// installed" by making execSync('which gh') throw; the seam is now the resolver,
+// so drive that instead (default: not installed, see beforeEach blocks).
+vi.mock('../utils/cli-path.js', () => ({
+  resolveCliPath: vi.fn(),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -27,7 +33,7 @@ vi.mock('../utils/logger.js', () => ({
 
 // ─── Imports after mocks ────────────────────────────────
 
-import { execSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { parseGitHubRepoInput } from '../providers/github/repo-url.js';
 import {
   ghPrCreate,
@@ -37,11 +43,12 @@ import {
   getGitHubToken,
   RepoNotFoundError,
 } from '../providers/github/gh-cli.js';
+import { resolveCliPath } from '../utils/cli-path.js';
 import { detectProvider, getProvider } from '../providers/registry.js';
 import { GitHubProvider } from '../providers/github/index.js';
 
-const mockedExecSync = execSync as Mock;
 const mockedSpawnSync = spawnSync as Mock;
+const mockedResolveCliPath = resolveCliPath as Mock;
 
 // ─── repo-url parsing ───────────────────────────────────
 
@@ -145,7 +152,7 @@ describe('ghIsAuthenticated', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockedExecSync.mockReset();
+    mockedResolveCliPath.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -160,9 +167,6 @@ describe('ghIsAuthenticated', () => {
   it('returns false when no gh, no token', () => {
     delete process.env.GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
-    mockedExecSync.mockImplementation(() => {
-      throw new Error('command not found: gh');
-    });
     expect(ghIsAuthenticated()).toBe(false);
   });
 });
@@ -175,11 +179,8 @@ describe('ghRepoClone', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedSpawnSync.mockReset();
-    mockedExecSync.mockReset();
-    // no gh CLI, no token by default
-    mockedExecSync.mockImplementation(() => {
-      throw new Error('not found');
-    });
+    mockedResolveCliPath.mockReturnValue(null);
+    // no gh CLI (resolver -> null), no token by default
     delete process.env.GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
   });
@@ -225,7 +226,7 @@ describe('ghCreateRepo', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockedExecSync.mockReset();
+    mockedResolveCliPath.mockReturnValue(null);
     process.env.GITHUB_TOKEN = 'ghp_test';
   });
 
@@ -282,9 +283,6 @@ describe('ghCreateRepo', () => {
   it('throws when no token is available', async () => {
     delete process.env.GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
-    mockedExecSync.mockImplementation(() => {
-      throw new Error('not found');
-    });
 
     await expect(ghCreateRepo('teamai', 'cli')).rejects.toThrow(/Cannot retrieve GitHub token/);
   });
@@ -298,11 +296,8 @@ describe('ghPrCreate via REST API', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockedExecSync.mockReset();
-    // no gh CLI → should use API
-    mockedExecSync.mockImplementation(() => {
-      throw new Error('not found');
-    });
+    mockedResolveCliPath.mockReturnValue(null);
+    // no gh CLI (resolver -> null) → should use API
     process.env.GITHUB_TOKEN = 'ghp_test';
   });
 
