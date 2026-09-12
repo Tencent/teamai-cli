@@ -157,6 +157,14 @@ teamai init https://cnb.cool/yourorg/yourrepo
 | 创建 PR   | `cnb pulls post-pull`                                             |
 | 用户名    | `cnb users get-user-info`（或 `CNB_USERNAME`）                    |
 
+> **组织和仓库都需在网页创建**：`cnb login` 的 OAuth 令牌不含创建组织（`group-manage:rw`）
+> 或创建仓库（`group-resource:rw`）的权限，无法通过 CLI 创建。`teamai init` 遇到以下情况会打印
+> 网页链接引导你创建后重新运行：
+> - 组织不存在 → `https://cnb.cool/new/groups`
+> - 组织存在但无权限建仓库 → `https://cnb.cool/new/repos`
+>
+> 若要让 CLI 直接创建，需改用带 `group-manage:rw` / `group-resource:rw` 权限的 access token（经 `CNB_TOKEN`）。
+
 ### 多级命名空间
 
 与 TGit 类似，CNB 支持 `org/subgroup/repo` 这种嵌套路径。

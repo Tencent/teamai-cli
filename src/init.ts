@@ -5,7 +5,7 @@ import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConf
 import { reconcileTeamHooksForConfig } from './hooks.js';
 import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
-import { getProvider, detectProviderForInit, RepoNotFoundError } from './providers/index.js';
+import { getProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import {
@@ -976,6 +976,27 @@ export async function initSelfRepo(options: GlobalOptions & {
   closePrompt();
 }
 
+/**
+ * Tell the user a resource (organization or repo) must be created on the
+ * platform's website, then let the caller exit. The CLI token often can't
+ * perform these writes (e.g. CNB needs `group-manage:rw` for orgs and
+ * `group-resource:rw` for repos, neither granted by the login flow), so we
+ * print the create page URL and stop rather than failing obscurely.
+ *
+ * @param kind  human-readable resource name, e.g. "organization" or "repo"
+ * @param name  the resource identifier being created (org path or owner/repo)
+ * @param url   the platform's web create page, or null if none is known
+ */
+function guideWebCreation(kind: string, name: string, url: string | null): void {
+  log.info(`${kind} "${name}" can't be created from the CLI (insufficient token permission).`);
+  if (url) {
+    log.info(`Create it here, then re-run this command:`);
+    log.info(`  ${url}`);
+  } else {
+    log.info(`Create the ${kind} on the platform, then re-run this command.`);
+  }
+}
+
 export async function init(options: GlobalOptions & {
   repo?: string;
   repoPositional?: string;
@@ -1174,6 +1195,29 @@ export async function init(options: GlobalOptions & {
     } catch (e) {
       if (e instanceof RepoNotFoundError) {
         cloneSpin.info(`Repo ${repoInfo.owner}/${repoInfo.repo} does not exist`);
+        // Before offering to create the repo, check the owning organization
+        // exists. Creating a repo under a missing org fails anyway, and the CLI
+        // token cannot create an org, so detect it up front and guide the user
+        // to the web UI instead of a confusing create-repo failure.
+        if (typeof provider.organizationExists === 'function') {
+          let orgMissing = false;
+          try {
+            orgMissing = !provider.organizationExists(repoInfo.owner);
+          } catch (checkErr) {
+            // Existence couldn't be determined (network/auth) — fall through to
+            // the normal create flow rather than blocking on an unknown.
+            log.debug(`Organization check failed: ${(checkErr as Error).message}`);
+          }
+          if (orgMissing) {
+            cloneSpin.info(`Organization "${repoInfo.owner}" does not exist`);
+            guideWebCreation(
+              'organization',
+              repoInfo.owner,
+              provider.getOrganizationCreateUrl?.() ?? null,
+            );
+            process.exit(1);
+          }
+        }
         const confirmed = await askConfirmation(
           `Create repo ${repoInfo.owner}/${repoInfo.repo}? [Y/n] `,
           true,
@@ -1187,6 +1231,20 @@ export async function init(options: GlobalOptions & {
           await provider.createRepo(repoInfo.owner, repoInfo.repo);
           createSpin.succeed(`Repo ${repoInfo.owner}/${repoInfo.repo} created`);
         } catch (ce) {
+          if (ce instanceof OrganizationNotFoundError) {
+            // Reached when org existence couldn't be pre-checked (provider has no
+            // check, or the check errored). Guide to the web UI and stop.
+            createSpin.fail(`Organization "${ce.org}" does not exist`);
+            guideWebCreation('organization', ce.org, ce.createUrl ?? null);
+            process.exit(1);
+          }
+          if (ce instanceof RepoCreatePermissionError) {
+            // The token cannot create the repo (e.g. CNB group-resource:rw).
+            // Guide the user to create it in the browser instead.
+            createSpin.fail(`No permission to create repo "${ce.repo}" from the CLI`);
+            guideWebCreation('repo', ce.repo, ce.createUrl ?? null);
+            process.exit(1);
+          }
           const msg = (ce as Error).message;
           if (/already been taken|already exists/i.test(msg)) {
             // Repo already exists — not fatal; fall through to retry the clone.

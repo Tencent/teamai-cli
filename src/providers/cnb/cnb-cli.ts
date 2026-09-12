@@ -1,6 +1,7 @@
 import { execSync, spawnSync } from 'node:child_process';
 import { log, spinner } from '../../utils/logger.js';
 import type { RepoInfo } from '../types.js';
+import { OrganizationNotFoundError, RepoCreatePermissionError } from '../types.js';
 
 /**
  * Thin wrapper around the CNB (cnb.cool) OpenAPI CLI — `@cnbcool/cnb-cli`.
@@ -242,13 +243,61 @@ export function cnbRepoClone(repo: string, localPath: string): void {
   }
 }
 
-/** Create a repo: `cnb repositories create-repo --slug <owner> --name <repo>`. */
+/** Web page for creating a CNB organization (group). */
+export function cnbOrganizationCreateUrl(): string {
+  return `https://${CNB_HOST}/new/groups`;
+}
+
+/** Web page for creating a CNB repository. */
+export function cnbRepoCreateUrl(): string {
+  return `https://${CNB_HOST}/new/repos`;
+}
+
+/**
+ * Check whether an organization/group exists: `cnb organizations get-group
+ * --group <path>`. This is a read-only lookup (`group-resource:r`) available to
+ * the ordinary login token, unlike creating an org. Returns true on HTTP 200,
+ * false on 404; throws on any other outcome so a transient/auth error is not
+ * mistaken for "missing".
+ */
+export function cnbOrganizationExists(org: string): boolean {
+  const r = cnbExec(['organizations', 'get-group', '--group', org]);
+  const out = r.stdout || r.stderr;
+  if (/(?:^|["\s])status["\s:]+\s*200\b/.test(out)) return true;
+  if (/(?:^|["\s])status["\s:]+\s*404\b/.test(out) || /not found|不存在/i.test(out)) return false;
+  throw new Error(`cnb get-group failed for "${org}": ${out || `exit ${r.status}`}`);
+}
+
+/**
+ * Create a repo: `cnb repositories create-repo --slug <owner> --name <repo>`.
+ *
+ * When the owning organization/group does not exist, the CNB API rejects the
+ * call with a 404 ("Resource not found"); we surface that as
+ * {@link OrganizationNotFoundError} so `init` can point the user at the CNB web
+ * UI to create the organization (the `cnb` CLI's OAuth token cannot create one —
+ * that needs the `group-manage:rw` scope, which the device-flow login never
+ * grants).
+ */
 export async function cnbCreateRepo(owner: string, repo: string): Promise<void> {
-  const r = cnbExec(['repositories', 'create-repo', '--slug', owner, '--name', repo]);
-  if (r.status !== 0) {
-    throw new Error(`cnb create-repo failed: ${r.stderr || r.stdout}`);
+  try {
+    const r = cnbExec(['repositories', 'create-repo', '--slug', owner, '--name', repo]);
+    if (r.status !== 0) {
+      throw new Error(`cnb create-repo failed: ${r.stderr || r.stdout}`);
+    }
+    assertCnbApiOk(r.stdout, 'create-repo');
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (/HTTP 404|not found|不存在/i.test(msg)) {
+      throw new OrganizationNotFoundError(owner, cnbOrganizationCreateUrl());
+    }
+    // The login token lacks the group-resource:rw scope needed to create a repo
+    // (403). It cannot be granted via `cnb login`, so guide the user to the web
+    // UI instead of surfacing a raw scope error.
+    if (/HTTP 403|scope|permission|forbidden|权限/i.test(msg)) {
+      throw new RepoCreatePermissionError(`${owner}/${repo}`, cnbRepoCreateUrl());
+    }
+    throw e;
   }
-  assertCnbApiOk(r.stdout, 'create-repo');
 }
 
 // ─── Pull requests ───────────────────────────────────────

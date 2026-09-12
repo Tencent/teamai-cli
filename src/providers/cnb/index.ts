@@ -8,6 +8,8 @@ import {
   ensureCnbInstalled,
   cnbRepoClone,
   cnbCreateRepo,
+  cnbOrganizationExists,
+  cnbOrganizationCreateUrl,
   cnbPullCreate,
   CnbRepoNotFoundError,
 } from './cnb-cli.js';
@@ -52,6 +54,14 @@ export class CNBProvider implements GitProvider {
 
   async createRepo(owner: string, repo: string): Promise<void> {
     await cnbCreateRepo(owner, repo);
+  }
+
+  organizationExists(org: string): boolean {
+    return cnbOrganizationExists(org);
+  }
+
+  getOrganizationCreateUrl(): string | null {
+    return cnbOrganizationCreateUrl();
   }
 
   async createPullRequest(opts: PrCreateOptions): Promise<string> {

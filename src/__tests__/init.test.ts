@@ -59,6 +59,12 @@ const mockGfIsAuthenticated = vi.fn().mockReturnValue(true);
 const mockGfAuthWhoami = vi.fn().mockReturnValue('testuser');
 const mockEnsureGfInstalled = vi.fn();
 
+// ── CNB provider mocks ───────────────────────────────────
+const mockCnbRepoClone = vi.fn();
+const mockCnbCreateRepo = vi.fn();
+const mockCnbOrganizationExists = vi.fn();
+const mockEnsureCnbInstalled = vi.fn();
+
 // Mock the provider-level gf-cli module (init.ts now uses providers)
 vi.mock('../providers/tgit/gf-cli.js', () => {
   class RepoNotFoundError extends Error {
@@ -77,6 +83,21 @@ vi.mock('../providers/tgit/gf-cli.js', () => {
     ensureAuthenticated: vi.fn().mockReturnValue('testuser'),
     isGfInstalled: vi.fn().mockReturnValue(true),
     RepoNotFoundError,
+  };
+});
+
+vi.mock('../providers/cnb/cnb-cli.js', async (importOriginal) => {
+  const original = await importOriginal() as Record<string, unknown>;
+  return {
+    ...original,
+    cnbRepoClone: (...args: unknown[]) => mockCnbRepoClone(...args),
+    cnbCreateRepo: (...args: unknown[]) => mockCnbCreateRepo(...args),
+    cnbOrganizationExists: (...args: unknown[]) => mockCnbOrganizationExists(...args),
+    cnbOrganizationCreateUrl: () => 'https://cnb.cool/new/groups',
+    cnbIsAuthenticated: () => true,
+    cnbWhoami: () => 'testuser',
+    ensureCnbAuthenticated: () => 'testuser',
+    ensureCnbInstalled: () => mockEnsureCnbInstalled(),
   };
 });
 
@@ -192,7 +213,8 @@ vi.mock('../utils/prompt.js', () => ({
 const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
 
 import { init } from '../init.js';
-import { RepoNotFoundError } from '../providers/types.js';
+import { RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from '../providers/types.js';
+import { CnbRepoNotFoundError } from '../providers/cnb/cnb-cli.js';
 import { saveLocalConfig } from '../config.js';
 import fse from 'fs-extra';
 
@@ -381,6 +403,84 @@ describe('init', () => {
 
       expect(mockGfCreateRepo).toHaveBeenCalledWith('HyperAI', 'new-repo');
       expect(mockExit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe('organization not found — guide to web UI (CNB)', () => {
+    /** Collect all log.info lines emitted during a run. */
+    const infoLines = async (): Promise<string[]> => {
+      const { log } = await import('../utils/logger.js');
+      return vi.mocked(log.info).mock.calls.map((c) => String(c[0]));
+    };
+
+    it('detects the missing org before prompting to create the repo, prints the URL, and never calls createRepo', async () => {
+      mockExit.mockImplementationOnce(() => {
+        throw new Error('EXIT');
+      });
+      mockCnbRepoClone.mockImplementation(() => {
+        throw new CnbRepoNotFoundError('my-org/new-repo');
+      });
+      mockCnbOrganizationExists.mockReturnValue(false); // org missing
+      pathExistsFn = () => false;
+
+      await expect(
+        init({ repo: 'https://cnb.cool/my-org/new-repo.git', scope: 'user' }),
+      ).rejects.toThrow('EXIT');
+
+      // Org checked up front; repo creation never attempted; URL surfaced.
+      expect(mockCnbOrganizationExists).toHaveBeenCalledWith('my-org');
+      expect(mockCnbCreateRepo).not.toHaveBeenCalled();
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect((await infoLines()).some((l) => l.includes('https://cnb.cool/new/groups'))).toBe(true);
+    });
+
+    it('proceeds to create the repo when the org exists', async () => {
+      let cloneCallCount = 0;
+      let cloneDone = false;
+      mockCnbRepoClone.mockImplementation(() => {
+        cloneCallCount++;
+        if (cloneCallCount === 1) {
+          throw new CnbRepoNotFoundError('my-org/new-repo');
+        }
+        cloneDone = true;
+      });
+      mockCnbOrganizationExists.mockReturnValue(true); // org exists
+      mockCnbCreateRepo.mockResolvedValue(undefined);
+      pathExistsFn = (p: string) => (p === localPath ? cloneDone : false);
+
+      // Answers: confirm repo creation (Y), skip reviewers (n), primary role (1).
+      questionAnswers = ['Y', 'n', '1'];
+
+      await init({ repo: 'https://cnb.cool/my-org/new-repo.git', scope: 'user' });
+
+      expect(mockCnbOrganizationExists).toHaveBeenCalledWith('my-org');
+      expect(mockCnbCreateRepo).toHaveBeenCalledWith('my-org', 'new-repo');
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it('prints the repo create URL and exits when the org exists but the token cannot create the repo (403)', async () => {
+      mockExit.mockImplementationOnce(() => {
+        throw new Error('EXIT');
+      });
+      mockCnbRepoClone.mockImplementation(() => {
+        throw new CnbRepoNotFoundError('my-org/new-repo');
+      });
+      mockCnbOrganizationExists.mockReturnValue(true); // org exists
+      mockCnbCreateRepo.mockRejectedValue(
+        new RepoCreatePermissionError('my-org/new-repo', 'https://cnb.cool/new/repos'),
+      );
+      pathExistsFn = () => false;
+
+      // Answer: confirm repo creation (Y). No browser prompt any more.
+      questionAnswers = ['Y'];
+
+      await expect(
+        init({ repo: 'https://cnb.cool/my-org/new-repo.git', scope: 'user' }),
+      ).rejects.toThrow('EXIT');
+
+      expect(mockCnbCreateRepo).toHaveBeenCalledWith('my-org', 'new-repo');
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect((await infoLines()).some((l) => l.includes('https://cnb.cool/new/repos'))).toBe(true);
     });
   });
 
