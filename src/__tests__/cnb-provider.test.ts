@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 
 // Provider modules import the logger; stub it so importing has no side effects.
 vi.mock('../utils/logger.js', () => ({
@@ -12,9 +12,20 @@ vi.mock('../utils/logger.js', () => ({
   }),
 }));
 
+// Stub child_process so cnbRepoClone tests can assert git invocations without a
+// real git/cnb binary. execSync is only used by isCnbInstalled (not exercised
+// here) but must exist so the module loads.
+vi.mock('node:child_process', () => ({
+  spawnSync: vi.fn(),
+  execSync: vi.fn(),
+}));
+
+import { spawnSync } from 'node:child_process';
 import { detectProvider, getProvider } from '../providers/registry.js';
 import { CNBProvider } from '../providers/cnb/index.js';
-import { cnbParseRepoInput, CNB_HOST, assertCnbApiOk } from '../providers/cnb/cnb-cli.js';
+import { cnbParseRepoInput, cnbRepoClone, CNB_HOST, assertCnbApiOk } from '../providers/cnb/cnb-cli.js';
+
+const mockedSpawnSync = spawnSync as Mock;
 
 describe('CNB provider registration', () => {
   it('detects cnb.cool URLs (https and ssh) as the cnb provider', () => {
@@ -72,5 +83,63 @@ describe('assertCnbApiOk', () => {
 
   it('is a no-op when the output carries no HTTP status', () => {
     expect(() => assertCnbApiOk('some human text', 'x')).not.toThrow();
+  });
+});
+
+describe('cnbRepoClone credential persistence', () => {
+  beforeEach(() => {
+    mockedSpawnSync.mockReset();
+  });
+  afterEach(() => {
+    delete process.env.CNB_TOKEN;
+    delete process.env.CNB_ACCESS_TOKEN;
+  });
+
+  it('persists the cnb git-credential helper into the cloned repo on the interactive path', () => {
+    // No CNB_TOKEN → interactive path. First spawnSync is `git clone`; the
+    // second is `git config --local credential.helper`.
+    mockedSpawnSync
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' }) // clone
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' }); // config
+
+    cnbRepoClone('acme/harness', '/tmp/clone');
+
+    // First call: the clone itself, scoped to this one invocation via -c.
+    const cloneCall = mockedSpawnSync.mock.calls[0];
+    expect(cloneCall[0]).toEqual('git');
+    expect(cloneCall[1]).toContain('-c');
+    expect(cloneCall[1]).toContain('credential.helper=!cnb git-credential');
+    expect(cloneCall[1]).toContain('clone');
+    expect(cloneCall[1]).toContain(`https://${CNB_HOST}/acme/harness.git`);
+
+    // Second call: persist the helper into the repo's local config so later
+    // push/pull auth without prompting. cwd must point at the clone.
+    const cfgCall = mockedSpawnSync.mock.calls[1];
+    expect(cfgCall[0]).toEqual('git');
+    expect(cfgCall[1]).toEqual(['config', '--local', 'credential.helper', '!cnb git-credential']);
+    expect(cfgCall[2]?.cwd).toBe('/tmp/clone');
+  });
+
+  it('embeds the token in the clone URL and skips the helper-config step (CI path)', () => {
+    process.env.CNB_TOKEN = 'tok123';
+    mockedSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+
+    cnbRepoClone('acme/harness', '/tmp/clone');
+
+    // Only one git invocation — the clone — with creds baked into the URL.
+    expect(mockedSpawnSync).toHaveBeenCalledTimes(1);
+    const cloneCall = mockedSpawnSync.mock.calls[0];
+    expect(cloneCall[1]).toContain(`clone`);
+    expect(cloneCall[1]).toContain(`https://cnb:tok123@${CNB_HOST}/acme/harness.git`);
+    // No `git config --local credential.helper` follow-up.
+    expect(mockedSpawnSync.mock.calls.some(
+      (c) => c[1]?.[0] === 'config' && c[1]?.includes('credential.helper'),
+    )).toBe(false);
+  });
+
+  it('still throws CnbRepoNotFoundError when the remote does not exist', async () => {
+    mockedSpawnSync.mockReturnValue({ status: 128, stdout: '', stderr: 'Repository not found' });
+    const { CnbRepoNotFoundError } = await import('../providers/cnb/cnb-cli.js');
+    expect(() => cnbRepoClone('acme/missing', '/tmp/clone')).toThrow(CnbRepoNotFoundError);
   });
 });
