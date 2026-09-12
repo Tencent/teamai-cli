@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // one the assertions hold a reference to.
 const RESOLVED_CNB = '/opt/npm/bin/cnb';
 
-const crossSpawnSync = vi.fn();
+const crossSpawnSync = vi.fn<(...args: unknown[]) => unknown>();
 vi.mock('cross-spawn', () => ({
   default: { sync: (...args: unknown[]) => crossSpawnSync(...args) },
 }));
@@ -20,7 +20,7 @@ vi.mock('cross-spawn', () => ({
 // Returning a path rather than the bare name is what makes the assertions prove
 // the exec went through the resolver: `expect(cmd).toBe('cnb')` would also pass
 // for a direct spawn of the command name, i.e. the bug.
-const resolveCliPathMock = vi.fn(() => RESOLVED_CNB);
+const resolveCliPathMock = vi.fn<(...args: unknown[]) => string | null>(() => RESOLVED_CNB);
 vi.mock('../utils/cli-path.js', () => ({
   resolveCliPath: (...args: unknown[]) => resolveCliPathMock(...args),
 }));
