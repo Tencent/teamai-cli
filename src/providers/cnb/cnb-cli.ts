@@ -135,10 +135,19 @@ export function cnbWhoami(): string | null {
   return process.env.CNB_USERNAME?.trim() || null;
 }
 
-/** Trigger the interactive OAuth2 device-flow login. */
+/**
+ * Trigger the interactive OAuth2 device-flow login.
+ *
+ * Pass `--host ${CNB_HOST}` explicitly: left to its own devices the `cnb` CLI
+ * infers the platform URL from the first `git remote` of the current directory,
+ * so running this inside a repo whose remote points at a non-CNB host (e.g. an
+ * internal git server) sends the device-auth request there and fails with 401.
+ * CNB_HOST is already the single source of truth for every other CNB operation
+ * (clone / create-repo / PR), so anchoring login to it keeps auth consistent.
+ */
 export function cnbLogin(): void {
   log.info('Starting cnb authentication (OAuth2 device flow)...');
-  const r = cnbExec(['login'], { inheritStdio: true });
+  const r = cnbExec(['login', '--host', CNB_HOST], { inheritStdio: true });
   if (r.status !== 0) throw new Error('cnb login failed. Please try again.');
 }
 

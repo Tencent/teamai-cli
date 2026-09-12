@@ -133,9 +133,11 @@ CNB（[云原生构建](https://cnb.cool)）provider 是对官方 CLI `@cnbcool/
 **方式 1：`cnb login`（交互式，开发机推荐）**
 
 ```bash
-cnb login   # OAuth2 device flow，登录后 `cnb git-credential` 为 git 提供凭据
+cnb login --host cnb.cool   # OAuth2 device flow，登录后 `cnb git-credential` 为 git 提供凭据
 teamai init https://cnb.cool/yourorg/yourrepo
 ```
+
+> **为什么要带 `--host`**：`cnb` CLI 在未显式指定 host 时，会从当前目录第一个 git remote 推断平台地址。若在一个 remote 指向非 CNB 平台（如内网 git 服务器）的仓库里直接跑 `cnb login`，请求会被打到那个 host 并返回 `401`。显式 `--host cnb.cool` 可避免此问题（自托管实例改用对应域名）。由 `teamai init` 自动触发登录时，teamai 已按 `TEAMAI_CNB_HOST`（默认 `cnb.cool`）带上 `--host`，无需手动处理。
 
 **方式 2：`CNB_TOKEN` 环境变量（headless / CI）**
 
