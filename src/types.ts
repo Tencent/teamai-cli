@@ -230,7 +230,7 @@ export const TeamaiConfigSchema = z.object({
    * side (write local config, inject hooks, register member). undefined = a
    * standalone team repo (existing behavior). See detectProjectConfig / bootstrapSelfRepo.
    */
-  mode: z.enum(['self']).optional(),
+  mode: z.enum(['self', 'server']).optional(),
   reviewers: z.array(z.string()).default([]),
   /** Skills this team makes available to other teams via cross-team subscription. */
   publicSkills: z.array(z.string()).optional(),
@@ -349,10 +349,17 @@ export const LocalConfigSchema = z.object({
      *           Knowledge lives on main under <businessRepoRoot>/.teamai/;
      *           reports (members/sessions/votes/stats) live on the
      *           `teamai-reports` orphan branch. localPath = <businessRepoRoot>/.teamai.
+     * - 'server': git-free team repo served by the TeamAI management backend
+     *           (issue #341). The backend resolves org/team/project levels and
+     *           permissions; snapshots are materialized into <home>/team-repo,
+     *           so every ResourceHandler reads it like a clone. Read AND write
+     *           (push/contribute go through change sets), no git anywhere.
      */
-    kind: z.enum(['git', 'http', 'self']).optional(),
-    /** Base URL of the HTTP team repo (only when kind === 'http'). */
+    kind: z.enum(['git', 'http', 'self', 'server']).optional(),
+    /** Base URL of the HTTP team repo / management backend (kind === 'http' | 'server'). */
     url: z.string().optional(),
+    /** Workspace binding id on the management backend (only when kind === 'server'). */
+    bindingId: z.string().optional(),
     /**
      * Git root of the business repo (only when kind === 'self').
      * Equals the parent directory of localPath. All git write operations

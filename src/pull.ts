@@ -81,6 +81,25 @@ async function refreshTeamRepo(
     return { label: 'HTTP (report/sync delivery)', version: null, reportingOnly: true, submodulesFailed: false, submodulesChanged: false };
   }
 
+  if (localConfig.repo.kind === 'server') {
+    // Management backend (issue #341): pull the binding's snapshot and materialize
+    // it into localPath. 304 means the tree is already at this revision. The
+    // revision doubles as the incremental-sync cache key.
+    const { syncServerRepo } = await import('./server-repo.js');
+    const outcome = await syncServerRepo(localConfig);
+    for (const c of outcome.conflicts) {
+      log.warn(`[server] ${c.kind}/${c.name}: bound projects ship different versions — kept the local copy`);
+    }
+    const skipped = outcome.results.filter((r) => r.action === 'conflict_skipped');
+    for (const r of skipped) {
+      log.warn(`[server] ${r.kind}/${r.name}: modified locally, not overwritten`);
+    }
+    const label = outcome.changed
+      ? `team server (revision ${outcome.revision.slice(0, 19)})`
+      : `team server (unchanged at ${outcome.revision.slice(0, 19)})`;
+    return { label, version: outcome.revision, reportingOnly: false, submodulesFailed: false, submodulesChanged: false };
+  }
+
   if (localConfig.repo.kind === 'self') {
     // Single-repo mode: knowledge lives under <business-repo>/.teamai on main and
     // arrives with the business repo's own `git clone`/`git pull`. teamai must NOT
@@ -1633,7 +1652,8 @@ export async function pull(options: GlobalOptions): Promise<void> {
       // Per-target opt-out (teamai.yaml `usageReport: false`): a repo that
       // disables stat commits is dropped from the targets — e.g. teams
       // pulling from a read-only remote never accumulate unpushable commits.
-      if (reconcileProject && reconcileProject.repo.kind !== 'http'
+      // Server-backed scopes report over HTTP (see serverTargets above).
+      if (reconcileProject && reconcileProject.repo.kind !== 'http' && reconcileProject.repo.kind !== 'server'
         && !await usageReportDisabled(reconcileProject.repo.localPath)) {
         targets.push({
           repoPath: reconcileProject.repo.localPath,
@@ -1646,7 +1666,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
           },
         });
       }
-      if (reconcileUser && reconcileUser.repo.kind !== 'http'
+      if (reconcileUser && reconcileUser.repo.kind !== 'http' && reconcileUser.repo.kind !== 'server'
         && !await usageReportDisabled(reconcileUser.repo.localPath)) {
         targets.push({
           repoPath: reconcileUser.repo.localPath,
@@ -1661,6 +1681,22 @@ export async function pull(options: GlobalOptions): Promise<void> {
         });
       }
 
+      // Management backend scopes report over HTTP instead of a git commit.
+      const serverTargets = [reconcileProject, reconcileUser].filter((c): c is LocalConfig => !!c && c.repo.kind === 'server');
+      let serverReported = false;
+      for (const c of serverTargets) {
+        try {
+          const { reportToServer } = await import('./server-write.js');
+          const r = await reportToServer(c, c.scope === 'project'
+            ? { projectRoot: c.projectRoot }
+            : { excludeProjectRoots: projectConfig?.projectRoot ? [projectConfig.projectRoot] : [] });
+          if (r.sent > 0) log.debug(`Reported ${r.sent} event(s) to the team server`);
+          serverReported = true;
+        } catch (e) {
+          log.debug(`Server report skipped: ${(e as Error).message}`);
+        }
+      }
+
       const eventCount = (await readUsageEvents()).length;
       for (const t of targets) {
         try {
@@ -1671,7 +1707,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
       }
       // Truncate only what was reported — an opted-out repo keeps its local
       // event log (the dashboard still reads it).
-      if (eventCount > 0 && targets.length > 0) {
+      if (eventCount > 0 && (targets.length > 0 || serverReported)) {
         await truncateUsageAfterReport(eventCount);
       }
     } catch (e) {

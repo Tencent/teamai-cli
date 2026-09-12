@@ -52,6 +52,21 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 
 Once initialized, every AI session automatically pulls the latest skills / rules and other Harness updates published by admins — no manual sync needed.
 
+### Team server (no git)
+
+Teams that run the TeamAI management backend do not need a git repo at all. Members log in with a
+one-time code shown in the browser, pick the projects this directory should follow, and everything
+else — pull, push, contribute, usage reports — goes over HTTP:
+
+```bash
+teamai init --server https://teamai.example.com            # approve the code in your browser
+teamai init --server https://teamai.example.com --code ABCD-1234   # or paste an admin's enrollment code
+teamai push        # becomes a change set reviewed in the console
+teamai contribute  # published (or reviewed, per org policy) with secret scanning
+```
+
+The current directory needs no `.git`, no remote and no credentials on disk beyond the device token.
+
 > **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — covers everything from team creation to day-to-day use.
 
 ## Product architecture

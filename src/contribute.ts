@@ -177,6 +177,13 @@ export async function contribute(
     return;
   }
 
+  // Management backend: one call, published directly (or reviewed, per org policy).
+  if (localConfig.repo.kind === 'server') {
+    const { contributeServer } = await import('./server-write.js');
+    await contributeServer(localConfig, content, { title: options.title, sessionId: options.sessionId || process.env.CLAUDE_SESSION_ID || '' });
+    return;
+  }
+
   // Single-repo mode: learnings are knowledge on main → contribute via a PR from
   // an isolated worktree (never the active tree / direct push to main).
   if (localConfig.repo.kind === 'self') {

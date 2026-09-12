@@ -28,6 +28,13 @@ export async function remove(
   const { localConfig, teamConfig } = await autoDetectInit();
   assertNotReadOnly(localConfig, 'teamai remove');
 
+  // Management backend: a change set with delete operations, reviewed in the console.
+  if (localConfig.repo.kind === 'server') {
+    const { removeServer } = await import('./server-write.js');
+    await removeServer(localConfig, type, names, options);
+    return;
+  }
+
   // Single-repo mode: run the removal PR in an isolated knowledge worktree so the
   // branch/commit never touches the user's active tree.
   if (localConfig.repo.kind === 'self') {
