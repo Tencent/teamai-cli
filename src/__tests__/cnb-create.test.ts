@@ -1,5 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// `cnbExec` launches the `cnb` CLI through the shared resolver + cross-spawn
+// (see providers/cnb/cnb-cli.ts): it resolves the path with resolveCliPath()
+// and runs it via crossSpawn.sync(), not a bare spawnSync('cnb', ...). Stub
+// both layers — same pattern as cnb-login-host.test.ts — so the cases can feed
+// back canned CLI output without touching PATH or the network. Returning a
+// resolved path (not the bare name) also keeps resolveCliPath non-null, so
+// cnbExec does not short-circuit with "cnb CLI not found on PATH".
+const RESOLVED_CNB = '/opt/npm/bin/cnb';
+
+const crossSpawnSync = vi.fn<(...args: unknown[]) => unknown>();
+vi.mock('cross-spawn', () => ({
+  default: { sync: (...args: unknown[]) => crossSpawnSync(...args) },
+}));
+
+const resolveCliPathMock = vi.fn<(...args: unknown[]) => string | null>(() => RESOLVED_CNB);
+vi.mock('../utils/cli-path.js', () => ({
+  resolveCliPath: (...args: unknown[]) => resolveCliPathMock(...args),
+}));
+
 // Stub the logger so importing the provider module has no side effects.
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
@@ -12,33 +31,32 @@ vi.mock('../utils/logger.js', () => ({
   }),
 }));
 
-// `cnbExec` shells out via spawnSync('cnb', ...). Mock node:child_process so we
-// can feed back canned CLI output without invoking the real binary.
-const mockSpawnSync = vi.fn();
-vi.mock('node:child_process', () => ({
-  spawnSync: (...args: unknown[]) => mockSpawnSync(...args),
-  execSync: vi.fn(),
-}));
-
 import { cnbCreateRepo, cnbOrganizationExists, CNB_HOST } from '../providers/cnb/cnb-cli.js';
 import { OrganizationNotFoundError, RepoCreatePermissionError } from '../providers/types.js';
 
 /** Shape a cnb CLI response: { stdout, stderr, status }. */
 function cnbResponse(stdout = '', status = 0, stderr = ''): void {
-  mockSpawnSync.mockReturnValue({ stdout, stderr, status });
+  crossSpawnSync.mockReturnValue({ stdout, stderr, status });
+}
+
+/** Restore resolveCliPath to a resolved path after a mockReset(). */
+function resetCnbMocks(): void {
+  crossSpawnSync.mockReset();
+  resolveCliPathMock.mockReset();
+  resolveCliPathMock.mockReturnValue(RESOLVED_CNB);
 }
 
 describe('cnbCreateRepo', () => {
   beforeEach(() => {
-    mockSpawnSync.mockReset();
+    resetCnbMocks();
   });
 
   it('calls cnb repositories create-repo with slug and name', async () => {
     cnbResponse('{"status": 201}', 0);
 
     await expect(cnbCreateRepo('acme', 'widget')).resolves.toBeUndefined();
-    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
-    const [, args] = mockSpawnSync.mock.calls[0];
+    expect(crossSpawnSync).toHaveBeenCalledTimes(1);
+    const [, args] = crossSpawnSync.mock.calls[0];
     expect(args).toEqual(['repositories', 'create-repo', '--slug', 'acme', '--name', 'widget']);
   });
 
@@ -78,14 +96,14 @@ describe('cnbCreateRepo', () => {
 
 describe('cnbOrganizationExists', () => {
   beforeEach(() => {
-    mockSpawnSync.mockReset();
+    resetCnbMocks();
   });
 
   it('calls cnb organizations get-group with the org path', () => {
     cnbResponse('status: 200\nname: acme\npath: acme', 0);
 
     expect(cnbOrganizationExists('acme')).toBe(true);
-    const [, args] = mockSpawnSync.mock.calls[0];
+    const [, args] = crossSpawnSync.mock.calls[0];
     expect(args).toEqual(['organizations', 'get-group', '--group', 'acme']);
   });
 
@@ -102,7 +120,7 @@ describe('cnbOrganizationExists', () => {
   it('passes a nested group path through unchanged', () => {
     cnbResponse('status: 200\npath: acme/backend', 0);
     expect(cnbOrganizationExists('acme/backend')).toBe(true);
-    const [, args] = mockSpawnSync.mock.calls[0];
+    const [, args] = crossSpawnSync.mock.calls[0];
     expect(args).toEqual(['organizations', 'get-group', '--group', 'acme/backend']);
   });
 
@@ -111,4 +129,3 @@ describe('cnbOrganizationExists', () => {
     expect(() => cnbOrganizationExists('acme')).toThrow(/get-group failed/);
   });
 });
-
