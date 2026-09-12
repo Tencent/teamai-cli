@@ -189,6 +189,15 @@ export function cnbParseRepoInput(input: string): RepoInfo {
 /**
  * Clone via git. With a CNB_TOKEN we embed Basic creds in the URL (CI path);
  * otherwise we let git call `cnb git-credential` (interactive-login path).
+ *
+ * In the interactive path the credential helper must persist beyond the clone
+ * itself: `git -c credential.helper=... clone` only applies for that one
+ * invocation, so the cloned repo's `remote.origin.url` carries no credentials
+ * and the next push/pull falls back to an interactive Username/Password prompt.
+ * GitHub/TGit solve this by embedding the token in the clone URL; CNB has no
+ * user-readable token in the interactive path, so we persist the helper into
+ * the repo's local config instead, making every later git operation on it auth
+ * transparently.
  */
 export function cnbRepoClone(repo: string, localPath: string): void {
   const token = getCnbToken();
@@ -207,6 +216,20 @@ export function cnbRepoClone(repo: string, localPath: string): void {
   if (r.status !== 0) {
     const sanitized = out.replace(/cnb:[^@]+@/g, 'cnb:***@').trim();
     throw new Error(`git clone failed: ${sanitized}`);
+  }
+
+  // Persist the credential helper into the cloned repo so push/pull (which init
+  // runs after cloning) authenticate without prompting. Token-path clones bake
+  // creds into remote.origin.url, so only the interactive path needs this.
+  if (!token) {
+    const cfg = spawnSync('git', ['config', '--local', 'credential.helper', '!cnb git-credential'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: localPath,
+    });
+    if (cfg.status !== 0) {
+      log.warn(`Could not persist CNB credential helper: ${(cfg.stderr ?? '').trim()}. Push/pull may prompt for credentials.`);
+    }
   }
 }
 
