@@ -159,6 +159,17 @@ suggested it does not hold: tags express a personal preference with no external
 basis and need an explicit toggle; a project has an external basis (cwd) and is
 already known at `init` time. Recorded here so it isn't re-proposed.
 
+`--project all` (issue #509) is the one reserved value for the flag: it expands to
+every id the manifest declares, via `listProjectIds(manifest)`, and that snapshot
+is what `config.yaml` records. It keeps a monorepo's onboarding to a single line
+and keeps `projects.yaml` the single source of truth for the project set. Snapshot
+rather than a live alias is deliberate — the active set is re-resolved only by
+re-running `init`, like every other activation — and it stays an explicit operator
+action, not the auto-activation ruled out above. Because the value is reserved, a
+project whose id is literally `all` is shadowed: it is still covered by the
+expansion, but selecting only it goes through `teamai projects set all`, which
+takes plain ids.
+
 `teamai projects set/list/members` are kept as low-frequency after-the-fact
 correction/query, mirroring `teamai roles set` relative to `init --role`
 (registered in `src/index.ts` next to the `roles` command at `src/index.ts:206`).
@@ -245,7 +256,9 @@ cross-talking — which is exactly the most painful half (P2). P3 is a separate 
 ### Explicitly out of scope
 
 `teamai projects join/leave`; Organization/Team hierarchy; auto-activation of a
-lone project; migrating existing flat learnings into a `shared/` subdirectory.
+lone project; migrating existing flat learnings into a `shared/` subdirectory;
+`teamai projects set --all` (the `all` selector is limited to `init --project` —
+re-running `init --project all` already re-resolves the current manifest).
 
 ## End-to-end test plan (real CLI, per CLAUDE.md — type-check/unit tests don't count)
 

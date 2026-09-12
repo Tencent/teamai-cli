@@ -114,14 +114,30 @@ async function promptForRoleProfile(
   };
 }
 
+/** Reserved value for `--project`: expand to every id the manifest declares. */
+export const ALL_PROJECTS_SELECTOR = 'all';
+
+/** Dedupe while preserving order. */
+function dedupeIds(ids: readonly string[]): string[] {
+  const seen = new Set<string>();
+  return ids.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
+}
+
 /**
  * Resolve the active logical projects for this directory from the `--project`
  * flag. Non-interactive and non-auto: a lone project is NOT auto-activated (a
  * member may legitimately belong to no project — see issue #375 Q1). Accepts a
  * comma-separated list. Returns `{ projects: [] }` when no flag and no manifest,
  * so behavior is unchanged for teams without project partitioning.
+ *
+ * The literal `all` is a reserved selector (issue #509): it expands to every id
+ * declared by `manifest/projects.yaml` and that snapshot is what gets persisted,
+ * so a monorepo keeps a single `--project all` in its onboarding docs instead of
+ * repeating the id list. It stays an EXPLICIT operator choice to activate
+ * everything, project-private learnings included — it does not introduce
+ * auto-activation, which the multi-project design deliberately avoids.
  */
-async function resolveActiveProjects(
+export async function resolveActiveProjects(
   repoPath: string,
   projectFlag?: string,
 ): Promise<Pick<LocalConfig, 'projects'>> {
@@ -141,7 +157,44 @@ async function resolveActiveProjects(
     );
   }
 
-  const validIds = new Set(listProjectIds(manifest));
+  const declared = listProjectIds(manifest);
+
+  if (requested.includes(ALL_PROJECTS_SELECTOR)) {
+    // `all` already covers the rest, so a mixed list is redundant at best and a
+    // typo in one of the other ids at worst — reject instead of guessing.
+    if (requested.length > 1) {
+      throw new Error(
+        `--project "${ALL_PROJECTS_SELECTOR}" already covers every declared project; ` +
+        `drop the other ids (got: ${requested.join(', ')}).`,
+      );
+    }
+
+    if (declared.length === 0) {
+      log.warn(
+        `--project "${ALL_PROJECTS_SELECTOR}" was given but manifest/projects.yaml declares no projects; ` +
+        'nothing was activated.',
+      );
+      return { projects: [] };
+    }
+
+    // A real project named `all` is shadowed by the selector. It is never
+    // silently dropped — the expansion still covers it — but it can no longer be
+    // activated on its own through this flag; `teamai projects set all` takes
+    // plain ids and still selects exactly it.
+    if (declared.includes(ALL_PROJECTS_SELECTOR)) {
+      log.warn(
+        `manifest/projects.yaml declares a project with the id "${ALL_PROJECTS_SELECTOR}", which is the ` +
+        `reserved --project selector: every project is activated (that one included). To activate only it, ` +
+        `run \`teamai projects set ${ALL_PROJECTS_SELECTOR}\`.`,
+      );
+    }
+
+    // This is a snapshot in the manifest's own order. It needs no dedupe: the
+    // manifest schema rejects duplicate ids, so listProjectIds yields each once.
+    return { projects: declared };
+  }
+
+  const validIds = new Set(declared);
   for (const id of requested) {
     if (!validIds.has(id)) {
       throw new Error(
@@ -150,10 +203,7 @@ async function resolveActiveProjects(
     }
   }
 
-  // Dedupe while preserving order.
-  const seen = new Set<string>();
-  const projects = requested.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
-  return { projects };
+  return { projects: dedupeIds(requested) };
 }
 
 /**
