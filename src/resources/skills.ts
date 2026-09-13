@@ -248,6 +248,53 @@ async function scanSkillsRecursively(dirPath: string): Promise<Map<string, strin
   return results;
 }
 
+/**
+ * Get the set of skill names that belong to the local team (team repo +
+ * CLI built-ins). Shared by every feature that must not overwrite/shadow a
+ * team-authored skill: cross-team `sources` (source.ts, local-wins-silently)
+ * and the DSH Team Context adapter (team-context.ts, local-wins-observably).
+ * Deliberately independent of both callers — neither owns this helper.
+ */
+export async function getLocalTeamSkillNames(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<Set<string>> {
+  const items = await new SkillsHandler().scanTeamForPull(teamConfig, localConfig);
+  const names = new Set(items.map((i) => i.name));
+  // Also include builtin skills
+  for (const name of BUILTIN_SKILL_NAMES) {
+    names.add(name);
+  }
+  return names;
+}
+
+/**
+ * Remove a skill from all tool paths. Shared by `sources` and the DSH Team
+ * Context adapter for cleaning up a skill THEY deployed (never a team-authored
+ * one) — neither the team repo nor any tombstone is touched here.
+ */
+export async function removeSkillFromToolPaths(
+  skillName: string,
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  baseDir: string,
+  installedPaths?: string[],
+): Promise<void> {
+  if (installedPaths) {
+    for (const installedPath of installedPaths) {
+      const skillDir = path.resolve(baseDir, installedPath);
+      assertWithinRoot(baseDir, skillDir);
+      if (await pathExists(skillDir)) await remove(skillDir);
+    }
+    return;
+  }
+
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    if (!toolPath.skills) continue;
+    const skillDir = path.join(baseDir, toolPath.skills, skillName);
+    if (await pathExists(skillDir)) {
+      await remove(skillDir);
+    }
+  }
+}
+
 export class SkillsHandler extends ResourceHandler {
   readonly type = 'skills' as const;
 
