@@ -140,7 +140,7 @@ Each resource is delivered to every agent:
 | **Hooks** | `hooks/hooks.yaml` | |
 | **MCP** | `mcp/mcp.yaml` | |
 | **Packages** | `teamai.yaml` | Currently npm packages and Claude Code plugins only |
-| **Models** | — | Not implemented for every provider yet |
+| **Models** | — | Injected locally on demand via `teamai model inject` (not stored in the team repo) |
 
 For file formats and full workflows, see the [Usage Guide](docs/usage-guide.md).
 
@@ -260,6 +260,7 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 | `teamai tags` | Manage tag-based skill/rule filtering |
 | `teamai skill exclude add/remove/list` | Manage skills excluded from local sync ([usage guide](docs/usage-guide.md#excluding-skills-you-dont-need)) |
 | `teamai source` | Manage skill subscription sources (other teams or your org's shared repos) |
+| `teamai model inject [--provider <id>] [--tool <name>]` | Inject a provider's model config into installed AI tools (default provider: `deepseek`; `teamai model list` to list providers/tools) |
 | `teamai remove <type> <name>` | Remove a resource and open MR |
 | `teamai session save` | Record a privacy-scrubbed session summary to a monthly log (`--push` feeds `digest`) |
 | `teamai digest` | Generate weekly team usage digest |

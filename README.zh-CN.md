@@ -140,7 +140,7 @@ teamai push → 创建分支 + MR → reviewer 审批合并
 | **Hooks** | `hooks/hooks.yaml` | |
 | **MCP** | `mcp/mcp.yaml` | |
 | **Packages** | `teamai.yaml` | 目前只支持 npm 包和 Claude 插件 |
-| **Models** | — | 暂时没有对全部 provider 实现 |
+| **Models** | — | 通过 `teamai model inject` 按需注入到本地（不存于团队仓库） |
 
 文件格式与完整工作流见[使用指南](docs/usage-guide.zh-CN.md)。
 
@@ -260,6 +260,7 @@ teamai recall maintenance --update-quality       # 为过时 skills / docs 生�
 | `teamai tags` | 管理基于标签的 skill/rule 过滤 |
 | `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](docs/usage-guide.zh-CN.md#排除个人不需要的-skill)） |
 | `teamai source` | 管理 skill 订阅源（其他团队或本团队公共仓库） |
+| `teamai model inject [--provider <id>] [--tool <name>]` | 将某个 provider 的模型配置注入本地已安装的 AI 工具（默认 provider：`deepseek`；`teamai model list` 查看 provider/工具） |
 | `teamai remove <type> <name>` | 删除资源并创建 MR |
 | `teamai session save` | 将脱敏后的 session 摘要记录到月度日志（`--push` 可喂给 `digest`） |
 | `teamai digest` | 生成团队周报 |

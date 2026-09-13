@@ -621,6 +621,36 @@ mcpCmd
     await mcpRemove(globalOpts);
   });
 
+// ─── Model provider commands ────────────────────────────
+
+const modelCmd = program
+  .command('model')
+  .description('Inject a provider model configuration into local AI tools');
+
+modelCmd
+  .command('inject')
+  .description('Inject a provider model config into installed AI tools')
+  .option('--provider <id>', 'Provider id (default: deepseek)')
+  // Non-variadic + collecting coercer: repeatable (`--tool a --tool b`) and
+  // comma-separated (`--tool a,b`) both work. Omitted → [] → all installed tools.
+  .option('--tool <name>', 'Target tool (repeatable or comma-separated); default: all installed', (val: string, acc: string[]) => acc.concat(val), [] as string[])
+  .option('--endpoint <name>', 'Endpoint override: anthropic | openai')
+  .option('--dry-run', 'Show what would be written without writing')
+  .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { modelInject } = await import('./model-cmd.js');
+    await modelInject({ ...globalOpts, ...cmdOpts, dryRun: cmdOpts.dryRun ?? globalOpts.dryRun });
+  });
+
+modelCmd
+  .command('list')
+  .description('List built-in providers and per-tool model-inject support')
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { modelList } = await import('./model-cmd.js');
+    await modelList(globalOpts);
+  });
+
 // ─── Usage tracking commands ────────────────────────────
 
 program

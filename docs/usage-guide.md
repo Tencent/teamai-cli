@@ -762,6 +762,39 @@ teamai mcp inject            # apply now; --dry-run to preview, --force to overr
 teamai mcp remove            # remove every teamai-managed server
 ```
 
+### Model providers
+
+Point an installed AI tool at a provider's OpenAI/Anthropic-compatible endpoint and model list in one command. Provider definitions are built in — no team repo is involved:
+
+```bash
+teamai model inject                              # deepseek into every installed supported tool
+teamai model inject --tool opencode              # one tool
+teamai model inject --provider kimi --tool claude --endpoint anthropic
+teamai model inject --tool opencode --dry-run    # preview the merged config
+teamai model list                                # providers, key env vars, and tool support
+```
+
+- **Default provider:** `deepseek`. Run `teamai model list` for the full set (`deepseek`, `glm`, `kimi`, `minimax`, `ollama`, `qwen`, `volcengine`).
+- **No `--tool`:** injects into every supported tool whose config directory already exists.
+- **API key:** each provider declares a `${VAR}` placeholder (e.g. `DEEPSEEK_API_KEY`). The variable must be set; the resolved value is written literally into the tool's config. New files are created `0600` and a `.bak` copy of the previous file is kept.
+- **Merge:** existing config is preserved (objects merge, model lists upsert by id), so unrelated settings — including teamai-managed `instructions`/`mcp` in `opencode.json` — are left intact.
+
+Where each tool's model config lands (Phase 1):
+
+| Tool | Config file | Format | Endpoint |
+|---|---|---|---|
+| Claude Code | `~/.claude/settings.json` | json | anthropic |
+| Codex | `~/.codex/config.toml` | toml | openai |
+| OpenCode | `~/.config/opencode/opencode.json` | json | openai |
+| DeepSeek Harness | `~/.dsh/settings.yaml` | yaml | openai |
+| CodeBuddy | `~/.codebuddy/models.json` | json | openai |
+| WorkBuddy | `~/.workbuddy/models.json` | json | openai |
+
+Each tool honors its config-directory env override (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `DSH_HOME`).
+
+> **Cursor is not supported:** the Cursor CLI has no custom-provider/BYOK contract and authenticates only through a Cursor account.
+
+`openclaw`, `hermes`, `qoder`, and `zcode` are planned for a follow-up release. Codex only supports the OpenAI Responses API (`wire_api = "responses"`); providers that expose only chat-completions need a Responses-compatible gateway.
 
 ---
 

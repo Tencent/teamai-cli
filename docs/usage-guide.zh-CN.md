@@ -742,6 +742,39 @@ teamai mcp inject            # 立即注入；--dry-run 预览，--force 覆盖�
 teamai mcp remove            # 移除所有 teamai 管理的 server
 ```
 
+### 模型 Provider（模型配置注入）
+
+一条命令把本地已安装的 AI 工具指向某个 provider 的 OpenAI/Anthropic 兼容端点与模型列表。Provider 定义内置，不依赖团队仓库：
+
+```bash
+teamai model inject                              # 把 deepseek 注入所有已安装且受支持的工具
+teamai model inject --tool opencode              # 指定单个工具
+teamai model inject --provider kimi --tool claude --endpoint anthropic
+teamai model inject --tool opencode --dry-run    # 预览合并后的配置
+teamai model list                                # 查看 provider、密钥环境变量与工具支持情况
+```
+
+- **默认 provider：** `deepseek`。运行 `teamai model list` 查看全部（`deepseek`、`glm`、`kimi`、`minimax`、`ollama`、`qwen`、`volcengine`）。
+- **不指定 `--tool`：** 注入到所有配置目录已存在（即已安装）的受支持工具。
+- **API Key：** 每个 provider 声明 `${VAR}` 占位符（如 `DEEPSEEK_API_KEY`）。该环境变量必须已设置；解析后的值会以明文写入工具配置。新文件权限为 `0600`，并保留上一份文件的 `.bak` 备份。
+- **合并：** 保留既有配置（对象递归合并，模型列表按 id upsert），因此其他设置——包括 `opencode.json` 中 teamai 管理的 `instructions`/`mcp`——不会被破坏。
+
+各工具的模型配置落点（第一阶段）：
+
+| 工具 | 配置文件 | 格式 | 端点 |
+|---|---|---|---|
+| Claude Code | `~/.claude/settings.json` | json | anthropic |
+| Codex | `~/.codex/config.toml` | toml | openai |
+| OpenCode | `~/.config/opencode/opencode.json` | json | openai |
+| DeepSeek Harness | `~/.dsh/settings.yaml` | yaml | openai |
+| CodeBuddy | `~/.codebuddy/models.json` | json | openai |
+| WorkBuddy | `~/.workbuddy/models.json` | json | openai |
+
+各工具都遵循其配置目录环境变量（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_CONFIG_HOME`、`DSH_HOME`）。
+
+> **Cursor 不支持：** Cursor CLI 没有自定义 provider（BYOK）能力，只能通过 Cursor 账号鉴权。
+
+`openclaw`、`hermes`、`qoder`、`zcode` 计划在后续版本支持。Codex 仅支持 OpenAI Responses API（`wire_api = "responses"`）；只提供 chat-completions 的 provider 需要 Responses 兼容网关。
 
 ---
 
