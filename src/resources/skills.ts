@@ -387,6 +387,16 @@ export class SkillsHandler extends ResourceHandler {
       sourceSkillNames = new Set();
     }
 
+    // Canonical DSH Team Context skills are read-only, materialized copies —
+    // never push them back as if they were team-authored.
+    let teamContextSkillNames: Set<string>;
+    try {
+      const { getTeamContextItemNames } = await import('../team-context.js');
+      teamContextSkillNames = await getTeamContextItemNames(teamConfig, 'skills');
+    } catch {
+      teamContextSkillNames = new Set();
+    }
+
     // Collect the best candidate for each skill name across all tool directories
     const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus; namespace?: string }>();
 
@@ -405,6 +415,7 @@ export class SkillsHandler extends ResourceHandler {
         if (blockedSkills.has(dir)) continue; // Skip skills in non-allowed namespaces
         if (BUILTIN_SKILL_NAMES.has(dir)) continue; // Skip CLI built-in skills
         if (sourceSkillNames.has(dir)) continue; // Skip cross-team source skills
+        if (teamContextSkillNames.has(dir)) continue; // Skip canonical DSH Team Context skills
 
         if (teamSkills.has(dir)) {
           // Skill exists in team repo — check if content differs

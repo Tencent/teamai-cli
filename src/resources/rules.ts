@@ -34,6 +34,16 @@ export class RulesHandler extends ResourceHandler {
     // Read tombstones to skip previously deleted resources
     const tombstones = await this.readTombstones(localConfig);
 
+    // Canonical DSH Team Context rules are read-only, materialized copies —
+    // never push them back as if they were team-authored.
+    let teamContextRuleNames: Set<string>;
+    try {
+      const { getTeamContextItemNames } = await import('../team-context.js');
+      teamContextRuleNames = await getTeamContextItemNames(teamConfig, 'rules');
+    } catch {
+      teamContextRuleNames = new Set();
+    }
+
     // Collect the best candidate for each rule name across all tool directories
     const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus }>();
     // One read per team rule, shared across every tool dir that compares against it.
@@ -64,6 +74,7 @@ export class RulesHandler extends ResourceHandler {
         const name = file.slice(0, -ext.length);
         if (tombstones.has(name)) continue;
         if (EXCLUDED_RULE_NAMES.has(name)) continue; // Skip CLI built-in and legacy rules
+        if (teamContextRuleNames.has(name)) continue; // Skip canonical DSH Team Context rules
 
         const localFilePath = path.join(rulesDir, file);
         // Team repo always stores `.md`, keyed by rule name.
