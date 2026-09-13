@@ -400,7 +400,7 @@ teamai skill show hai-deploy-test   # 看单个 skill 的来源 / 贡献者 / �
 
 `teamai init` 时已注入 Hooks 到你的 AI 工具中。**每次启动 AI 会话时会自动执行 `teamai pull`**，无需手动操作。在 project scope 下，该 SessionStart hook 会先为当前 Agent 创建项目根目录（例如用 Claude Code 打开仓库时创建 `<project>/.claude`），然后再 pull。
 
-*(注：会话启动自动同步依赖工具的生命周期 Hooks 支持，如 Claude Code、Codex、Cursor、CodeBuddy、WorkBuddy、Qoder、OpenCode、Hermes、OpenClaw 等。对于暂无 Hooks 支持的工具（如 JoyCode、Gemini CLI 等），无法触发会话启动 Hook，需在终端手动执行 `teamai pull` 同步团队资源。)*
+*(注：会话启动自动同步依赖工具的生命周期 Hooks 支持，如 [CC]、Codex、Cursor、CodeBuddy、WorkBuddy、Qoder、OpenCode、Hermes、OpenClaw 等。对于暂无 teamai 可写入 Hooks 的工具（如 JoyCode、Kiro、Gemini CLI 等），无法触发会话启动 Hook，需在终端手动执行 `teamai pull` 同步团队资源。)*
 
 如果需要立即同步，可以手动执行：
 
@@ -713,6 +713,7 @@ servers:
 | workbuddy | `~/.workbuddy/mcp.json` | `<project>/.workbuddy/mcp.json` |
 | codex | `~/.codex/config.toml` | 不支持 |
 | qoder | `~/.qoder/settings.json` | `<project>/.qoder/settings.json` |
+| kiro | `~/.kiro/settings/mcp.json` | `<project>/.kiro/settings/mcp.json` |
 | opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 
 
@@ -726,7 +727,7 @@ CodeBuddy Code 的 [MCP 文档](https://www.codebuddy.cn/docs/cli/mcp)
 TeamAI 不会迁移或删除旧文件。Claude Code 也读取根目录的 `.mcp.json`，
 因此两个工具共享该文件。
 
-Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用域 `.qoder/settings.json` 中与 Claude 兼容的 `mcpServers` 格式。OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）与 `http`（`type:"remote"`），`sse` 会被跳过，其 server 位于共享 `opencode.json` 的 `mcp` 键下。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；与手写同名则跳过，除非 `--force`。
+Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用域 `.qoder/settings.json` 中与 Claude 兼容的 `mcpServers` 格式。Kiro 在专用的、只含 `mcpServers` 的 `.kiro/settings/mcp.json` 中使用同一格式（见 [Kiro MCP 配置文档](https://kiro.dev/docs/mcp/configuration/)）。OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）与 `http`（`type:"remote"`），`sse` 会被跳过，其 server 位于共享 `opencode.json` 的 `mcp` 键下。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；与手写同名则跳过，除非 `--force`。
 
 **密钥**：在 `mcp.yaml` 里写 `${VAR}`，不要写明文。取值优先来自环境变量，其次是 `env/env.yaml` → `~/.teamai/env`。变量无法解析则跳过并提示。
 
@@ -1327,6 +1328,10 @@ team-repo/
 ### Qoder
 
 Qoder 已作为内置目标支持。TeamAI 会将 Skills、Rules 和 Subagents 分别下发到 `.qoder/skills/`、`.qoder/rules/` 和 `.qoder/agents/`。Hooks 与 MCP Server 会合并进对应作用域的 `.qoder/settings.json`，并保留用户已有的其他设置；这些路径与 Qoder 的用户级和项目级配置约定一致。
+
+### Kiro
+
+Kiro 已作为内置目标支持。TeamAI 会将 Skills、Rules 和 Subagents 分别下发到 `.kiro/skills/`、`.kiro/steering/` 和 `.kiro/agents/`，与 Kiro 官方文档定义的[工作区 Skills](https://kiro.dev/docs/skills/)、[Steering](https://kiro.dev/docs/steering/)和自定义 agents（YAML frontmatter 的 Markdown agent 文件，Kiro 原生支持该格式）布局一致。MCP Server 会合并进对应作用域的 `.kiro/settings/mcp.json`（见上文 MCP 章节）。Kiro 自带一套 Hooks 机制——`.kiro/hooks/` 下 Kiro 专属 schema 的 JSON 文件，且其 Session Start 触发器仅在 IDE 中生效——因此 TeamAI 不为它写入 Hooks，需要手动执行 `teamai pull` 保持 Kiro 资源更新。
 
 ### ZCode
 

@@ -415,7 +415,7 @@ teamai skill show hai-deploy-test   # View a single skill's source / contributor
 
 `teamai init` already injected Hooks into your AI tools. **`teamai pull` runs automatically every time you start an AI session** — no manual action needed. In project scope, that SessionStart hook first creates the current agent's project root (e.g. `<project>/.claude` when Claude Code opens the repo) if it is missing, then pulls.
 
-*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as Claude Code, Codex, Cursor, CodeBuddy, WorkBuddy, Qoder, OpenCode, Hermes, or OpenClaw. For tools without hooks support such as JoyCode or Gemini CLI, session start hooks do not fire, so you should run `teamai pull` manually to keep resources up to date.)*
+*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as [CC], Codex, Cursor, CodeBuddy, WorkBuddy, Qoder, OpenCode, Hermes, or OpenClaw. For tools without a teamai-writable hooks surface such as JoyCode, Kiro, or Gemini CLI, session start hooks do not fire, so you should run `teamai pull` manually to keep resources up to date.)*
 
 If you need to sync immediately, you can run it manually:
 
@@ -733,6 +733,7 @@ Where each tool's servers land:
 | workbuddy | `~/.workbuddy/mcp.json` | `<project>/.workbuddy/mcp.json` |
 | codex | `~/.codex/config.toml` | not supported |
 | qoder | `~/.qoder/settings.json` | `<project>/.qoder/settings.json` |
+| kiro | `~/.kiro/settings/mcp.json` | `<project>/.kiro/settings/mcp.json` |
 | opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 
 
@@ -746,7 +747,7 @@ precedence. For an existing team that pins run
 servers in either file; TeamAI does not migrate or delete the old file.
 Claude Code also reads the root `.mcp.json`, so this file is shared by both tools.
 
-Codex supports `stdio` and `http`; `sse` is skipped. Qoder supports the Claude-compatible `mcpServers` format in its scope-specific `.qoder/settings.json`. OpenCode supports `stdio` (written as its `type:"local"` shape) and `http` (`type:"remote"`); `sse` is skipped, and its servers live under the `mcp` key of the shared `opencode.json`. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
+Codex supports `stdio` and `http`; `sse` is skipped. Qoder supports the Claude-compatible `mcpServers` format in its scope-specific `.qoder/settings.json`. Kiro supports the same `mcpServers` format in its dedicated, mcpServers-only `.kiro/settings/mcp.json` (see [Kiro's MCP configuration docs](https://kiro.dev/docs/mcp/configuration/)). OpenCode supports `stdio` (written as its `type:"local"` shape) and `http` (`type:"remote"`); `sse` is skipped, and its servers live under the `mcp` key of the shared `opencode.json`. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
 
 **Secrets.** Write `${VAR}`, never a literal, in `mcp.yaml`. Values resolve from the environment, then from `env/env.yaml` → `~/.teamai/env`. Unresolved variables skip the server with a hint.
 
@@ -1360,6 +1361,10 @@ team-repo/
 ### Qoder
 
 Qoder is available as a built-in target. TeamAI deploys skills, rules, and subagents to `.qoder/skills/`, `.qoder/rules/`, and `.qoder/agents/`. Hooks and MCP servers are merged into the scope-specific `.qoder/settings.json`, preserving unrelated user settings. The paths match Qoder's user and project configuration contracts.
+
+### Kiro
+
+Kiro is available as a built-in target. TeamAI deploys skills, rules, and subagents to `.kiro/skills/`, `.kiro/steering/`, and `.kiro/agents/`, matching [Kiro's documented layouts](https://kiro.dev/docs/skills/) for workspace skills, [steering](https://kiro.dev/docs/steering/), and custom agents (Markdown agent files with YAML frontmatter, a format Kiro reads natively). MCP servers merge into the scope-specific `.kiro/settings/mcp.json` (see the MCP section above). Kiro has its own hooks system — JSON files in `.kiro/hooks/` with a Kiro-specific schema, whose Session Start trigger only fires in the IDE — so TeamAI does not write hooks for it; run `teamai pull` by hand to keep Kiro resources current.
 
 ### ZCode
 

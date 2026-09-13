@@ -5,7 +5,7 @@ import { stringify as stringifyToml, parse as parseToml } from 'smol-toml';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
-export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'joycode' | 'qoder' | 'zcode' | 'opencode';
+export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'joycode' | 'qoder' | 'kiro' | 'zcode' | 'opencode';
 
 export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'claude',
@@ -18,6 +18,7 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'cursor',
   'joycode',
   'qoder',
+  'kiro',
   'zcode',
   'opencode',
 ];
@@ -69,6 +70,7 @@ export interface AgentSpec {
     cursor?: Record<string, unknown>;
     joycode?: Record<string, unknown>;
     qoder?: Record<string, unknown>;
+    kiro?: Record<string, unknown>;
     zcode?: Record<string, unknown>;
     opencode?: Record<string, unknown>;
   };
@@ -637,6 +639,7 @@ export function renderForTool(spec: AgentSpec, tool: ToolName): RenderResult {
     case 'cursor': return renderForCursor(spec);
     case 'joycode': return renderForJoycode(spec);
     case 'qoder': return renderForClaude(spec);
+    case 'kiro': return renderForClaude(spec);
     case 'zcode': return renderForClaude(spec);
     case 'opencode': return renderForOpencode(spec);
   }

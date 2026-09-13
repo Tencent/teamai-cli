@@ -278,6 +278,20 @@ export const TeamaiConfigSchema = z.object({
       mcp: '.qoder/settings.json',
       mcpProject: '.qoder/settings.json',
     },
+    // Kiro: skills, steering (rules), and custom agents sync to .kiro/. Kiro has
+    // its own hook system — JSON files in .kiro/hooks/ with a Kiro-specific
+    // schema, and its Session Start trigger only fires in the IDE — so teamai
+    // deliberately ships no `settings` path: hook reconciliation skips Kiro
+    // cleanly and users run `teamai pull` by hand (JoyCode pattern).
+    // MCP uses the dedicated, mcpServers-only .kiro/settings/mcp.json:
+    // https://kiro.dev/docs/mcp/configuration/
+    kiro: {
+      skills: '.kiro/skills',
+      rules: '.kiro/steering',
+      agents: '.kiro/agents',
+      mcp: '.kiro/settings/mcp.json',
+      mcpProject: '.kiro/settings/mcp.json',
+    },
     // ZCode: user-level config lives at ~/.zcode/cli/config.json (a shared file
     // that also carries plugin state — reconcile must merge, never replace).
     // Hooks are Claude-shaped but nested under `hooks.events` and gated by
