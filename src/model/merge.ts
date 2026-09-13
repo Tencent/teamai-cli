@@ -11,23 +11,44 @@ function isIdArray(value: unknown): value is Array<Record<string, unknown> & { i
   );
 }
 
-/** Upsert patch entries into base by `id`: existing ids are replaced in place, new ids appended. */
-export function upsertById(
-  base: Array<Record<string, unknown> & { id: string }>,
-  patch: Array<Record<string, unknown> & { id: string }>,
-): Array<Record<string, unknown> & { id: string }> {
+/**
+ * Upsert patch entries into base keyed by `keyOf`: an existing key is replaced
+ * in place, a new key is appended. Entries with no key are always appended.
+ */
+export function upsertBy<T>(
+  base: T[],
+  patch: T[],
+  keyOf: (item: T) => string | undefined,
+): T[] {
   const merged = [...base];
-  const index = new Map(merged.map((item, i) => [item.id, i]));
+  const index = new Map<string, number>();
+  merged.forEach((item, i) => {
+    const key = keyOf(item);
+    if (key !== undefined) index.set(key, i);
+  });
   for (const item of patch) {
-    const at = index.get(item.id);
+    const key = keyOf(item);
+    if (key === undefined) {
+      merged.push(item);
+      continue;
+    }
+    const at = index.get(key);
     if (at === undefined) {
-      index.set(item.id, merged.length);
+      index.set(key, merged.length);
       merged.push(item);
     } else {
       merged[at] = item;
     }
   }
   return merged;
+}
+
+/** Upsert patch entries into base by `id`: existing ids are replaced in place, new ids appended. */
+export function upsertById(
+  base: Array<Record<string, unknown> & { id: string }>,
+  patch: Array<Record<string, unknown> & { id: string }>,
+): Array<Record<string, unknown> & { id: string }> {
+  return upsertBy(base, patch, (item) => item.id);
 }
 
 /** Append patch entries not already present (by JSON value), preserving base order. */

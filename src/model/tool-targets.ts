@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { ModelProvider, EndpointName, ProviderModel } from './providers.js';
 import type { ConfigFormat } from './config-file.js';
-import { deepMerge, isPlainObject, upsertById } from './merge.js';
+import { deepMerge, isPlainObject, upsertBy, upsertById } from './merge.js';
 
 /** View model handed to a tool's render function. */
 export interface RenderContext {
@@ -50,14 +50,19 @@ function trimTrailingSlash(url: string): string {
   return url.replace(/\/+$/, '');
 }
 
+/** Expand a leading `~` in a path/env value; other values pass through. */
+function expandTilde(value: string, home: string): string {
+  if (value === '~') return home;
+  if (value.startsWith('~/') || value.startsWith('~\\')) {
+    return path.join(home, value.slice(2));
+  }
+  return value;
+}
+
 /** Resolve a config-dir env override, expanding a leading `~`; falls back when unset. */
 function resolveDir(envValue: string | undefined, fallback: string, home: string): string {
   if (!envValue) return fallback;
-  if (envValue === '~') return home;
-  if (envValue.startsWith('~/') || envValue.startsWith('~\\')) {
-    return path.join(home, envValue.slice(2));
-  }
-  return envValue;
+  return expandTilde(envValue, home);
 }
 
 function renderClaude(ctx: RenderContext): unknown {
@@ -176,6 +181,119 @@ function mergeBuddyModels(existing: unknown, fragment: unknown): unknown {
   return doc;
 }
 
+function renderOpenclaw(ctx: RenderContext): unknown {
+  const id = ctx.provider.provider;
+  return {
+    models: {
+      providers: {
+        [id]: {
+          baseUrl: ctx.baseUrl,
+          apiKey: ctx.apiKey,
+          api: ctx.endpoint === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
+          models: ctx.modelList.map((model) => ({
+            id: model.id,
+            name: model.id,
+            ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+          })),
+        },
+      },
+    },
+    agents: {
+      defaults: {
+        model: { primary: `${id}/${ctx.defaultModelId}` },
+      },
+    },
+  };
+}
+
+function renderHermes(ctx: RenderContext): unknown {
+  const contextWindow = ctx.provider.models.default.contextWindow;
+  return {
+    model: {
+      provider: 'custom',
+      default: ctx.defaultModelId,
+      base_url: ctx.baseUrl,
+      api_key: ctx.apiKey,
+      ...(contextWindow === undefined ? {} : { context_length: contextWindow }),
+    },
+  };
+}
+
+function renderQoder(ctx: RenderContext): unknown {
+  const format = ctx.endpoint === 'anthropic' ? 'anthropic' : 'openai';
+  return {
+    modelConfigs: {
+      customModels: ctx.modelList.map((model) => ({
+        provider: ctx.provider.provider,
+        apiKey: ctx.apiKey,
+        model: model.id,
+        baseURL: ctx.baseUrl,
+        key: model.id,
+        displayName: model.id,
+        format,
+        ...(model.contextWindow === undefined ? {} : { maxInputTokens: model.contextWindow }),
+      })),
+    },
+    model: { name: ctx.defaultModelId },
+  };
+}
+
+function renderZcode(ctx: RenderContext): unknown {
+  const id = ctx.provider.provider;
+  const models: Record<string, unknown> = {};
+  for (const model of ctx.modelList) {
+    models[model.id] = {
+      name: model.id,
+      ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+    };
+  }
+  return {
+    model: { main: `${id}/${ctx.defaultModelId}`, lite: `${id}/${ctx.defaultModelId}` },
+    provider: {
+      [id]: {
+        name: ctx.provider.name,
+        kind: ctx.endpoint === 'anthropic' ? 'anthropic' : 'openai-compatible',
+        options: { baseURL: ctx.baseUrl, apiKey: ctx.apiKey, apiKeyRequired: true },
+        models,
+        enabled: true,
+      },
+    },
+  };
+}
+
+/**
+ * Qoder's `modelConfigs.customModels` entries are keyed by `key` (not `id`), so
+ * upsert them by key instead of the generic append; `model` and any other keys
+ * merge shallowly.
+ */
+function mergeQoderModels(existing: unknown, fragment: unknown): unknown {
+  const doc = isPlainObject(existing) ? { ...existing } : {};
+  const frag = isPlainObject(fragment) ? fragment : {};
+
+  const mergedModel = {
+    ...(isPlainObject(doc.model) ? doc.model : {}),
+    ...(isPlainObject(frag.model) ? frag.model : {}),
+  };
+
+  const docConfigs = isPlainObject(doc.modelConfigs) ? doc.modelConfigs : {};
+  const fragConfigs = isPlainObject(frag.modelConfigs) ? frag.modelConfigs : {};
+  const current = Array.isArray(docConfigs.customModels)
+    ? (docConfigs.customModels as Array<Record<string, unknown>>)
+    : [];
+  const incoming = Array.isArray(fragConfigs.customModels)
+    ? (fragConfigs.customModels as Array<Record<string, unknown>>)
+    : [];
+  const customModels = upsertBy(current, incoming, (item) => (
+    typeof item.key === 'string' ? item.key : undefined
+  ));
+
+  return {
+    ...doc,
+    model: mergedModel,
+    modelConfigs: { ...docConfigs, ...fragConfigs, customModels },
+  };
+}
+
 const define = (target: ToolTarget): [string, ToolTarget] => [target.name, target];
 
 /** Supported tool registry (Phase 1). */
@@ -231,6 +349,47 @@ export const TOOL_TARGETS = new Map<string, ToolTarget>([
     render: renderBuddy,
     merge: mergeBuddyModels,
   }),
+  define({
+    name: 'openclaw',
+    format: 'json5',
+    preferredEndpoint: 'openai',
+    // OPENCLAW_CONFIG_PATH points straight at the file; OPENCLAW_STATE_DIR at the
+    // state directory that holds openclaw.json. Both fall back to ~/.openclaw.
+    configPath: (home) => {
+      const direct = process.env.OPENCLAW_CONFIG_PATH;
+      if (direct) return expandTilde(direct, home);
+      const stateDir = process.env.OPENCLAW_STATE_DIR;
+      if (stateDir) return path.join(expandTilde(stateDir, home), 'openclaw.json');
+      return path.join(home, '.openclaw', 'openclaw.json');
+    },
+    render: renderOpenclaw,
+  }),
+  define({
+    name: 'hermes',
+    format: 'yaml',
+    preferredEndpoint: 'openai',
+    // Hermes custom endpoints are OpenAI-compatible; keep it on the openai endpoint.
+    forceEndpoint: 'openai',
+    configPath: (home) =>
+      path.join(resolveDir(process.env.HERMES_HOME, path.join(home, '.hermes'), home), 'config.yaml'),
+    render: renderHermes,
+  }),
+  define({
+    name: 'qoder',
+    format: 'json5',
+    preferredEndpoint: 'openai',
+    configPath: (home) =>
+      path.join(resolveDir(process.env.QODER_CONFIG_DIR, path.join(home, '.qoder'), home), 'settings.json'),
+    render: renderQoder,
+    merge: mergeQoderModels,
+  }),
+  define({
+    name: 'zcode',
+    format: 'json',
+    preferredEndpoint: 'openai',
+    configPath: (home) => path.join(home, '.zcode', 'cli', 'config.json'),
+    render: renderZcode,
+  }),
 ]);
 
 /** Tools that exist but cannot accept a custom provider/model config. */
@@ -238,9 +397,6 @@ const UNSUPPORTED_TOOLS: Record<string, string> = {
   cursor:
     'Cursor CLI does not support custom model providers (BYOK); it authenticates only through a Cursor account',
 };
-
-/** Tools planned for a follow-up release. */
-const PLANNED_TOOLS = new Set(['openclaw', 'hermes', 'qoder', 'zcode']);
 
 export function supportedToolNames(): string[] {
   return [...TOOL_TARGETS.keys()];
@@ -250,25 +406,11 @@ export function unsupportedTools(): Array<{ name: string; reason: string }> {
   return Object.entries(UNSUPPORTED_TOOLS).map(([name, reason]) => ({ name, reason }));
 }
 
-export function plannedToolNames(): string[] {
-  return [...PLANNED_TOOLS];
-}
-
-/** All tool ids the CLI knows about (supported, unsupported, planned), for `model list`. */
-export function knownToolNames(): string[] {
-  return [...TOOL_TARGETS.keys(), ...Object.keys(UNSUPPORTED_TOOLS), ...PLANNED_TOOLS];
-}
-
 export function getToolTarget(name: string): ToolTarget {
   const target = TOOL_TARGETS.get(name);
   if (target) return target;
   if (UNSUPPORTED_TOOLS[name]) {
     throw new Error(`Tool "${name}" is not supported: ${UNSUPPORTED_TOOLS[name]}`);
-  }
-  if (PLANNED_TOOLS.has(name)) {
-    throw new Error(
-      `Tool "${name}" is not supported yet (planned); supported now: ${supportedToolNames().join(', ')}`,
-    );
   }
   throw new Error(`Unknown tool "${name}" (available: ${supportedToolNames().join(', ')})`);
 }

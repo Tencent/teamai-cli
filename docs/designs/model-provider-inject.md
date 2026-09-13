@@ -2,7 +2,7 @@
 
 > 目标：一条命令把本地已安装的 AI 工具指向某个 provider 的 OpenAI/Anthropic 兼容端点与模型列表。
 > 参考实现：`dry-martine-harness/scripts/model`（provider 中立的 `*.model.json` → 各工具原生配置）。
-> 范围：第一阶段 6 个工具；`openclaw`/`hermes`/`qoder`/`zcode` 为后续；Cursor 不支持。
+> 范围：10 个工具；Cursor 不支持。
 
 ## 1. 背景
 
@@ -24,7 +24,7 @@ teamai model list
 
 `deepseek`（默认）、`glm`、`kimi`、`minimax`、`ollama`、`qwen`、`volcengine`。字段与参考实现一致：`provider`/`name`/`apiKey`(`${VAR}` 占位符)/`defaultEndpoint`/`endpoints.{anthropic,openai}.baseUrl`/`models.{fast,default,powerful}`（`contextWindow` 可选）。内置数据以 zod schema 校验，避免运行期出现半成品。
 
-## 4. 工具目标（第一阶段）
+## 4. 工具目标
 
 | 工具 | 配置文件（env 覆盖） | 格式 | 端点 | Key 存储 |
 |---|---|---|---|---|
@@ -34,6 +34,10 @@ teamai model list
 | dsh | `~/.dsh/settings.yaml`（`DSH_HOME`） | yaml | openai | `apiKeyEnv`（仅变量名） |
 | codebuddy | `~/.codebuddy/models.json` | json | openai | 明文 |
 | workbuddy | `~/.workbuddy/models.json` | json | openai | 明文 |
+| openclaw | `~/.openclaw/openclaw.json`（`OPENCLAW_STATE_DIR`/`OPENCLAW_CONFIG_PATH`） | json5 | openai/anthropic | 明文 |
+| hermes | `~/.hermes/config.yaml`（`HERMES_HOME`） | yaml | openai | 明文 |
+| qoder | `~/.qoder/settings.json`（`QODER_CONFIG_DIR`） | json（容忍注释） | openai/anthropic | 明文 |
+| zcode | `~/.zcode/cli/config.json` | json | openai/anthropic | 明文 |
 
 - “已安装”判定 = 配置文件所在目录存在。
 - codex/dsh 的格式没有明文字段，只能写环境变量名；其余写解析后的明文（按用户决策）。
@@ -46,6 +50,10 @@ teamai model list
 - **opencode**：`provider.<id>{npm,name,options{baseURL,apiKey},models{...}}` + `model="<id>/<default>"`。
 - **dsh**：`llm-pi-ai.providers.<id>{apiKeyEnv,api,baseURL,models[]}` + `agent-default-model`。
 - **codebuddy/workbuddy**：扁平 `models[]`（fast/default/powerful 去重），字段对齐 `local-agent.ts` 的 `buddyModelEntry`；`url` 以 `/chat/completions` 结尾；不写 `availableModels`（空=不限制）。
+- **openclaw**：`models.providers.<id>{baseUrl,apiKey,api,models[]}` + `agents.defaults.model.primary`；`api` 按端点取 `openai-completions`/`anthropic-messages`；不写 `models.mode`（避免覆盖用户设置）。
+- **hermes**：`model{provider: custom, default, base_url, api_key, context_length?}`；自定义端点仅支持 OpenAI 兼容，强制 openai 端点。
+- **qoder**：`modelConfigs.customModels[]`（按 `key` upsert）+ `model.name`；`format` 按端点取 `openai`/`anthropic`。
+- **zcode**：`provider.<id>{name,kind,options{baseURL,apiKey,apiKeyRequired},models,enabled}` + `model.main`/`model.lite`；`kind` 按端点取 `openai-compatible`/`anthropic`。
 
 ## 6. 合并与落盘
 
@@ -67,9 +75,9 @@ teamai model list
 测试：`src/__tests__/model-config.test.ts`、`src/__tests__/model-cmd.test.ts`。
 文档：`README(.zh-CN).md`、`docs/usage-guide(.zh-CN).md`、本文件。
 
-## 9. 后续（第二阶段）
+## 9. 工具特有说明
 
-`openclaw`（`~/.openclaw/openclaw.json` 的 `models.providers` + `agents.defaults.model.primary`）、
-`hermes`（`~/.hermes/config.yaml` 的 `model`）、
-`qoder`（`~/.qoder/settings.json` 的 `modelConfigs.customModels`）、
-`zcode`（`~/.zcode/cli/config.json` 的 `provider` + `model.main/lite`）。
+- **OpenClaw / Qoder** 的配置允许注释（JSON5），因此以容忍注释的方式解析（新增 `json5` 依赖），但一律写回严格 JSON（同时是合法 JSON5 / 带注释 JSON），并保留 `.bak`。
+- **ZCode** 的无登录 TUI 路径要求 provider 键为 `zai` 或 `bigmodel` 才会被视为已配置；本实现按真实 provider id 建键（合法的模型配置），若用户未登录可能需要一次登录，或在 ZCode 中改键。
+- **Hermes** 官方建议密钥放 `~/.hermes/.env`；按既定策略写入明文 `model.api_key`。
+- **OpenClaw** 文档说明其写入会替换符号链接目标；本实现先解析真实路径再写，保留链接。

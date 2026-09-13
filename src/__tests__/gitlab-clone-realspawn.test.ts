@@ -7,7 +7,10 @@ import path from 'node:path';
 // and that error output is sanitized end-to-end.
 import { gitlabRepoClone } from '../providers/gitlab/gitlab-api.js';
 
-describe('gitlabRepoClone — real spawn (e2e)', () => {
+// POSIX-only: the fake `git` is a `#!/bin/bash` script and the PATH override uses
+// `:` as the separator. On Windows the fake git can't run, so the real git takes
+// over and hangs trying to reach the GitLab host. Skip there; keep it on CI.
+describe.skipIf(process.platform === 'win32')('gitlabRepoClone — real spawn (e2e)', () => {
   let tmp: string;
   const origPath = process.env.PATH;
   const origEnv = { ...process.env };

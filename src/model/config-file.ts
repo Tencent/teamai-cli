@@ -1,16 +1,19 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
+import JSON5 from 'json5';
 import YAML from 'yaml';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 
-export type ConfigFormat = 'json' | 'yaml' | 'toml';
+export type ConfigFormat = 'json' | 'json5' | 'yaml' | 'toml';
 
 /** Parse a config document in the given format. */
 export function parseConfig(format: ConfigFormat, text: string): unknown {
   switch (format) {
     case 'json':
       return JSON.parse(text);
+    case 'json5':
+      return JSON5.parse(text);
     case 'yaml':
       return YAML.parse(text);
     case 'toml':
@@ -22,6 +25,11 @@ export function parseConfig(format: ConfigFormat, text: string): unknown {
 export function stringifyConfig(format: ConfigFormat, value: unknown): string {
   switch (format) {
     case 'json':
+      return `${JSON.stringify(value, null, 2)}\n`;
+    case 'json5':
+      // Parse tolerantly (comments / trailing commas) but always emit strict
+      // JSON: it is valid JSON5 *and* valid JSON-with-comments, so both OpenClaw
+      // and Qoder accept it. A `.bak` copy preserves the original comments.
       return `${JSON.stringify(value, null, 2)}\n`;
     case 'yaml':
       return YAML.stringify(value);

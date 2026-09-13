@@ -6,7 +6,6 @@ import { ModelConfigService } from './model/service.js';
 import { DEFAULT_PROVIDER, getProvider, listProviders, resolveApiKey } from './model/providers.js';
 import {
   getToolTarget,
-  plannedToolNames,
   supportedToolNames,
   unsupportedTools,
 } from './model/tool-targets.js';
@@ -128,8 +127,5 @@ export async function modelList(_options: GlobalOptions): Promise<void> {
   }
   for (const { name, reason } of unsupportedTools()) {
     console.log(`  ${name.padEnd(12)} unsupported  ${reason}`);
-  }
-  for (const name of plannedToolNames()) {
-    console.log(`  ${name.padEnd(12)} planned      not supported yet`);
   }
 }

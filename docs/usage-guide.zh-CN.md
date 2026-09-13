@@ -759,7 +759,7 @@ teamai model list                                # 查看 provider、密钥环�
 - **API Key：** 每个 provider 声明 `${VAR}` 占位符（如 `DEEPSEEK_API_KEY`）。该环境变量必须已设置；解析后的值会以明文写入工具配置。新文件权限为 `0600`，并保留上一份文件的 `.bak` 备份。
 - **合并：** 保留既有配置（对象递归合并，模型列表按 id upsert），因此其他设置——包括 `opencode.json` 中 teamai 管理的 `instructions`/`mcp`——不会被破坏。
 
-各工具的模型配置落点（第一阶段）：
+各工具的模型配置落点：
 
 | 工具 | 配置文件 | 格式 | 端点 |
 |---|---|---|---|
@@ -769,12 +769,16 @@ teamai model list                                # 查看 provider、密钥环�
 | DeepSeek Harness | `~/.dsh/settings.yaml` | yaml | openai |
 | CodeBuddy | `~/.codebuddy/models.json` | json | openai |
 | WorkBuddy | `~/.workbuddy/models.json` | json | openai |
+| OpenClaw | `~/.openclaw/openclaw.json` | json5 | openai |
+| Hermes | `~/.hermes/config.yaml` | yaml | openai |
+| Qoder | `~/.qoder/settings.json` | json | openai |
+| ZCode | `~/.zcode/cli/config.json` | json | openai |
 
-各工具都遵循其配置目录环境变量（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_CONFIG_HOME`、`DSH_HOME`）。
+各工具都遵循其配置目录环境变量（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_CONFIG_HOME`、`DSH_HOME`、`OPENCLAW_STATE_DIR`/`OPENCLAW_CONFIG_PATH`、`HERMES_HOME`、`QODER_CONFIG_DIR`）。
 
 > **Cursor 不支持：** Cursor CLI 没有自定义 provider（BYOK）能力，只能通过 Cursor 账号鉴权。
 
-`openclaw`、`hermes`、`qoder`、`zcode` 计划在后续版本支持。Codex 仅支持 OpenAI Responses API（`wire_api = "responses"`）；只提供 chat-completions 的 provider 需要 Responses 兼容网关。
+Codex 仅支持 OpenAI Responses API（`wire_api = "responses"`）；只提供 chat-completions 的 provider 需要 Responses 兼容网关。
 
 ---
 

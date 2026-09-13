@@ -118,8 +118,11 @@ describe('modelList', () => {
     expect(output).toContain('deepseek');
     expect(output).toContain('DEEPSEEK_API_KEY');
     expect(output).toContain('opencode');
+    expect(output).toContain('openclaw');
+    expect(output).toContain('hermes');
+    expect(output).toContain('qoder');
+    expect(output).toContain('zcode');
     expect(output).toContain('cursor');
     expect(output).toContain('unsupported');
-    expect(output).toContain('planned');
   });
 });

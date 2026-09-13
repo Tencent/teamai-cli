@@ -13,7 +13,16 @@ import { deepMerge } from '../model/merge.js';
 import { DEFAULT_PROVIDER, getProvider, resolveApiKey, uniqueModels } from '../model/providers.js';
 import { ModelConfigService } from '../model/service.js';
 
-const DIR_OVERRIDES = ['CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'DSH_HOME', 'CODEX_HOME'];
+const DIR_OVERRIDES = [
+  'CLAUDE_CONFIG_DIR',
+  'XDG_CONFIG_HOME',
+  'DSH_HOME',
+  'CODEX_HOME',
+  'OPENCLAW_STATE_DIR',
+  'OPENCLAW_CONFIG_PATH',
+  'HERMES_HOME',
+  'QODER_CONFIG_DIR',
+];
 
 let home: string;
 let originalHome: string | undefined;
@@ -180,6 +189,74 @@ describe('rendering per tool', () => {
     });
   });
 
+  it('openclaw renders models.providers and the agent default model', () => {
+    const plan = service.buildPlan({ providerId: 'deepseek', tool: 'openclaw' });
+    const fragment = plan.fragment as Record<string, any>;
+    const entry = fragment.models.providers.deepseek;
+    expect(entry.baseUrl).toBe('https://api.deepseek.com/v1');
+    expect(entry.apiKey).toBe('test-key');
+    expect(entry.api).toBe('openai-completions');
+    expect(entry.models[0]).toMatchObject({ id: 'deepseek-v4-flash', contextWindow: 1000000 });
+    expect(fragment.agents.defaults.model.primary).toBe('deepseek/deepseek-v4-flash-vision-exp');
+  });
+
+  it('openclaw uses the anthropic adapter for the anthropic endpoint', () => {
+    const plan = service.buildPlan({ tool: 'openclaw', endpoint: 'anthropic' });
+    const fragment = plan.fragment as Record<string, any>;
+    expect(fragment.models.providers.deepseek.api).toBe('anthropic-messages');
+    expect(fragment.models.providers.deepseek.baseUrl).toBe('https://api.deepseek.com/anthropic');
+  });
+
+  it('hermes renders a custom-endpoint model block', () => {
+    const plan = service.buildPlan({ providerId: 'deepseek', tool: 'hermes' });
+    expect(plan.endpointName).toBe('openai');
+    expect((plan.fragment as Record<string, any>).model).toEqual({
+      provider: 'custom',
+      default: 'deepseek-v4-flash-vision-exp',
+      base_url: 'https://api.deepseek.com/v1',
+      api_key: 'test-key',
+      context_length: 1000000,
+    });
+  });
+
+  it('qoder renders customModels and the active model', () => {
+    const plan = service.buildPlan({ providerId: 'deepseek', tool: 'qoder' });
+    const fragment = plan.fragment as Record<string, any>;
+    expect(fragment.modelConfigs.customModels).toHaveLength(3);
+    expect(fragment.modelConfigs.customModels[0]).toMatchObject({
+      provider: 'deepseek',
+      apiKey: 'test-key',
+      model: 'deepseek-v4-flash',
+      baseURL: 'https://api.deepseek.com/v1',
+      key: 'deepseek-v4-flash',
+      format: 'openai',
+      maxInputTokens: 1000000,
+    });
+    expect(fragment.model.name).toBe('deepseek-v4-flash-vision-exp');
+  });
+
+  it('zcode renders a provider registry entry and main/lite models', () => {
+    const plan = service.buildPlan({ providerId: 'deepseek', tool: 'zcode' });
+    const fragment = plan.fragment as Record<string, any>;
+    const entry = fragment.provider.deepseek;
+    expect(entry.kind).toBe('openai-compatible');
+    expect(entry.options).toEqual({
+      baseURL: 'https://api.deepseek.com/v1',
+      apiKey: 'test-key',
+      apiKeyRequired: true,
+    });
+    expect(entry.models['deepseek-v4-pro']).toMatchObject({ contextWindow: 1000000 });
+    expect(fragment.model).toEqual({
+      main: 'deepseek/deepseek-v4-flash-vision-exp',
+      lite: 'deepseek/deepseek-v4-flash-vision-exp',
+    });
+  });
+
+  it('zcode uses the anthropic kind for the anthropic endpoint', () => {
+    const plan = service.buildPlan({ tool: 'zcode', endpoint: 'anthropic' });
+    expect((plan.fragment as Record<string, any>).provider.deepseek.kind).toBe('anthropic');
+  });
+
   it('defaults to deepseek when the provider is omitted', () => {
     expect(service.buildPlan({ tool: 'opencode' }).provider.provider).toBe('deepseek');
   });
@@ -210,6 +287,28 @@ describe('config paths', () => {
   it('defaults to the home-relative config path', () => {
     expect(service.buildPlan({ tool: 'codebuddy' }).configFile.filePath)
       .toBe(path.join(home, '.codebuddy', 'models.json'));
+  });
+
+  it('honors the phase-2 tool config-dir overrides', () => {
+    process.env.OPENCLAW_STATE_DIR = path.join(home, 'oc-state');
+    process.env.HERMES_HOME = '~/.hermes-alt';
+    process.env.QODER_CONFIG_DIR = path.join(home, 'qoder-cfg');
+
+    expect(service.buildPlan({ tool: 'openclaw' }).configFile.filePath)
+      .toBe(path.join(home, 'oc-state', 'openclaw.json'));
+    expect(service.buildPlan({ tool: 'hermes' }).configFile.filePath)
+      .toBe(path.join(home, '.hermes-alt', 'config.yaml'));
+    expect(service.buildPlan({ tool: 'qoder' }).configFile.filePath)
+      .toBe(path.join(home, 'qoder-cfg', 'settings.json'));
+    expect(service.buildPlan({ tool: 'zcode' }).configFile.filePath)
+      .toBe(path.join(home, '.zcode', 'cli', 'config.json'));
+  });
+
+  it('prefers OPENCLAW_CONFIG_PATH over the state dir', () => {
+    process.env.OPENCLAW_STATE_DIR = path.join(home, 'oc-state');
+    process.env.OPENCLAW_CONFIG_PATH = '~/oc/custom.json';
+    expect(service.buildPlan({ tool: 'openclaw' }).configFile.filePath)
+      .toBe(path.join(home, 'oc', 'custom.json'));
   });
 });
 
@@ -285,6 +384,46 @@ describe('apply', () => {
     const ids = doc.models.map((m: { id: string }) => m.id);
     expect(ids).toContain('personal');
     expect(ids).toContain('deepseek-v4-pro');
+  });
+
+  it('parses and upserts a Qoder settings.json containing JSON5 comments', async () => {
+    const file = path.join(home, '.qoder', 'settings.json');
+    await fse.outputFile(
+      file,
+      '{\n  // personal models stay put\n  "modelConfigs": { "customModels": [ { "key": "personal", "model": "personal" } ] }\n}\n',
+    );
+
+    await service.apply({ providerId: 'deepseek', tool: 'qoder' });
+    process.env.DEEPSEEK_API_KEY = 'rotated-key';
+    await service.apply({ providerId: 'deepseek', tool: 'qoder' });
+
+    const doc = await fse.readJson(file);
+    const keys = doc.modelConfigs.customModels.map((m: { key: string }) => m.key);
+    expect(keys).toEqual([
+      'personal',
+      'deepseek-v4-flash',
+      'deepseek-v4-flash-vision-exp',
+      'deepseek-v4-pro',
+    ]);
+    expect(doc.modelConfigs.customModels.find((m: { key: string }) => m.key === 'deepseek-v4-pro').apiKey)
+      .toBe('rotated-key');
+  });
+
+  it('upserts OpenClaw provider models by id without duplicating', async () => {
+    const file = path.join(home, '.openclaw', 'openclaw.json');
+    await fse.outputFile(
+      file,
+      '{\n  // keep my gateway\n  "models": { "providers": { "deepseek": { "models": [ { "id": "deepseek-v4-pro", "name": "old" } ] } } }\n}\n',
+    );
+
+    await service.apply({ providerId: 'deepseek', tool: 'openclaw' });
+    await service.apply({ providerId: 'deepseek', tool: 'openclaw' });
+
+    const doc = await fse.readJson(file);
+    const ids = doc.models.providers.deepseek.models.map((m: { id: string }) => m.id);
+    expect(ids.filter((id: string) => id === 'deepseek-v4-pro')).toHaveLength(1);
+    expect(ids).toContain('deepseek-v4-flash');
+    expect(doc.agents.defaults.model.primary).toBe('deepseek/deepseek-v4-flash-vision-exp');
   });
 
   it('writes through a symlinked config file without replacing the link', async () => {

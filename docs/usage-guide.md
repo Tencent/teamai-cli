@@ -779,7 +779,7 @@ teamai model list                                # providers, key env vars, and 
 - **API key:** each provider declares a `${VAR}` placeholder (e.g. `DEEPSEEK_API_KEY`). The variable must be set; the resolved value is written literally into the tool's config. New files are created `0600` and a `.bak` copy of the previous file is kept.
 - **Merge:** existing config is preserved (objects merge, model lists upsert by id), so unrelated settings — including teamai-managed `instructions`/`mcp` in `opencode.json` — are left intact.
 
-Where each tool's model config lands (Phase 1):
+Where each tool's model config lands:
 
 | Tool | Config file | Format | Endpoint |
 |---|---|---|---|
@@ -789,12 +789,16 @@ Where each tool's model config lands (Phase 1):
 | DeepSeek Harness | `~/.dsh/settings.yaml` | yaml | openai |
 | CodeBuddy | `~/.codebuddy/models.json` | json | openai |
 | WorkBuddy | `~/.workbuddy/models.json` | json | openai |
+| OpenClaw | `~/.openclaw/openclaw.json` | json5 | openai |
+| Hermes | `~/.hermes/config.yaml` | yaml | openai |
+| Qoder | `~/.qoder/settings.json` | json | openai |
+| ZCode | `~/.zcode/cli/config.json` | json | openai |
 
-Each tool honors its config-directory env override (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `DSH_HOME`).
+Each tool honors its config-directory env override (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `DSH_HOME`, `OPENCLAW_STATE_DIR`/`OPENCLAW_CONFIG_PATH`, `HERMES_HOME`, `QODER_CONFIG_DIR`).
 
 > **Cursor is not supported:** the Cursor CLI has no custom-provider/BYOK contract and authenticates only through a Cursor account.
 
-`openclaw`, `hermes`, `qoder`, and `zcode` are planned for a follow-up release. Codex only supports the OpenAI Responses API (`wire_api = "responses"`); providers that expose only chat-completions need a Responses-compatible gateway.
+Codex only supports the OpenAI Responses API (`wire_api = "responses"`); providers that expose only chat-completions need a Responses-compatible gateway.
 
 ---
 
