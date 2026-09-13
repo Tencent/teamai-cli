@@ -1510,6 +1510,31 @@ teamai source remove-http
 
 An HTTP source reports status and pulls skill commands via hook dispatch on every session. Only one HTTP source is supported per install. If the main repo is already in HTTP mode (`init --http`), `add-http` is unavailable (the main repo already occupies the HTTP config).
 
+### DSH Team Context (Canonical, Read-Only)
+
+`teamContext` in `teamai.yaml` points at a canonical, org-wide DSH Team Context repo. Unlike `sources` (opt-in per skill via `publicSkills`, peer-team, local-wins on every collision), a Team Context repo is trusted by default: everything under its `skills/`, `rules/`, and `governance/` directories is canonical published content, no allow-list required.
+
+```yaml
+teamContext:
+  repo: https://github.com/acme/dsh-team-context.git
+```
+
+The Team Context repo itself must publish a `team-context.yaml` at its root declaring a contract version:
+
+```yaml
+schemaVersion: 1
+```
+
+`teamai pull` clones/refreshes this repo (same TTL-cached, read-only pattern as `sources`) and materializes it locally. v0 is entirely **read-only and one-directional (Team Context → teamai)** — there is no command that pushes or proposes anything back to it. Per-entity behavior differs deliberately:
+
+- **Skills** — a local team-authored skill of the same name wins; the canonical copy is skipped and the override is logged (`teamai pull` prints it, and it is not silent).
+- **Rules** — canonical always wins on a name collision, overwriting a same-named team rule at its tool-dir location.
+- **Governance** (`governance/*.md`) — compiled into a dedicated, always-regenerated CLAUDE.md block. There is no config flag anywhere (team or local) that disables or shadows it; every `teamai pull` re-asserts it from the upstream repo's current content.
+
+An invalid or unsupported `schemaVersion` fails loudly and is never partially applied — the previous pull's materialized skills, rules, and governance are left exactly as they were until the upstream repo is fixed.
+
+Curated cross-team learnings are deferred (not part of v0). Editing `teamContext` itself is a team-level `teamai.yaml` change like any other (goes through `teamai push` review) — v0 does not yet make that field admin-enforced against a local team member removing or repointing it.
+
 ---
 
 ## Configuration Reference
@@ -1525,6 +1550,9 @@ provider: github
 
 reviewers:
   - reviewer1
+
+teamContext:                      # optional; canonical, org-wide DSH Team Context (read-only)
+  repo: https://github.com/acme/dsh-team-context.git
 
 packages:
   npm:
