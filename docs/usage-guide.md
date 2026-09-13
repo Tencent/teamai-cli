@@ -719,9 +719,11 @@ servers:
     args: ['-y', '@acme/formatter-mcp']
     env:
       FORMATTER_MODE: strict
-    requires: [npx]                      # skipped with a hint when npx is absent
+    requires: [npx]                      # skipped with a hint when npx is absent from PATH
     tools: [claude, cursor]              # optional; default is every capable tool
 ```
+
+`requires` is resolved from `PATH`. On Windows a name also matches a `PATHEXT` suffix (`uvx` matches `uvx.exe` / `uvx.cmd`).
 
 Where each tool's servers land:
 

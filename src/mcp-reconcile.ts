@@ -39,6 +39,7 @@ import {
 } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { loadProjectMcpManifest } from './utils/mcp-manifest.js';
+import { isOnPath, SAFE_BIN_RE, type LookPathOptions } from './utils/lookpath.js';
 
 // ─── Reconcile engine ────────────────────────────────────────
 //
@@ -62,6 +63,12 @@ export interface McpReconcileOptions {
   dryRun?: boolean;
   /** Overwrite user-owned servers that collide by name. */
   force?: boolean;
+  /**
+   * Override PATH lookup for `requires`. Production inject omits this and
+   * reads `process.env` / `process.platform`. Tests inject win32 + PATHEXT
+   * without mutating the host platform.
+   */
+  lookPath?: LookPathOptions;
 }
 
 export interface McpChange {
@@ -142,26 +149,17 @@ function policyViolation(def: McpServerDef, sharing: ReturnType<typeof getMcpSha
   return null;
 }
 
-/** An executable name — no path separators or shell metacharacters. */
-const SAFE_BIN_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
-/** True when every executable in `requires` is on PATH. */
-async function requirementsMet(def: McpServerDef): Promise<string | null> {
+/** True when every executable in `requires` is on PATH. Returns a reason, or null when OK. */
+function requirementsMet(def: McpServerDef, lookPath?: LookPathOptions): string | null {
   if (!def.requires?.length) return null;
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
-  const run = promisify(execFile);
   for (const bin of def.requires) {
-    // `requires` comes from the team repo's mcp.yaml. `command -v` runs under a
-    // shell (builtin), so an unvalidated name like `npx; rm -rf ~` would be
-    // executed. A bare executable name has no shell metacharacters, so reject
-    // anything else rather than pass it to the shell.
+    // `requires` comes from the team repo's mcp.yaml. Reject anything that is
+    // not a bare executable name so a value like `npx; rm -rf ~` is never
+    // interpolated into a PATH entry or handed to a shell.
     if (!SAFE_BIN_RE.test(bin)) {
       return `required executable "${bin}" has an invalid name`;
     }
-    try {
-      await run('command', ['-v', bin], { shell: '/bin/sh' });
-    } catch {
+    if (!isOnPath(bin, lookPath)) {
       return `required executable "${bin}" not found on PATH`;
     }
   }
@@ -378,7 +376,7 @@ export async function reconcileMcpForConfig(
         changes.push({ tool: target.tool, server: raw.name, action: 'skipped', reason: violation });
         continue;
       }
-      const missingBin = await requirementsMet(raw);
+      const missingBin = requirementsMet(raw, options.lookPath);
       if (missingBin) {
         changes.push({ tool: target.tool, server: raw.name, action: 'skipped', reason: missingBin });
         continue;

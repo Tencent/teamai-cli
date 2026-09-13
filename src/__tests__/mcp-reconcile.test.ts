@@ -454,6 +454,69 @@ servers:
     expect(changes.some((c) => c.server === 'evil' && c.action === 'added')).toBe(false);
   });
 
+  it('injects a server whose requires binary is on PATH', async () => {
+    const binDir = path.join(tmpDir, 'bin');
+    await fse.ensureDir(binDir);
+    const bin = path.join(binDir, 'teamai-req-bin-539');
+    await fse.writeFile(bin, '#!/bin/sh\nexit 0\n');
+    await fse.chmod(bin, 0o755);
+    vi.stubEnv('PATH', `${binDir}${path.delimiter}${process.env.PATH ?? ''}`);
+
+    await writeMcpYaml(`
+servers:
+  - name: needs-bin
+    transport: stdio
+    command: teamai-req-bin-539
+    requires: [teamai-req-bin-539]
+`);
+
+    const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+    const skipped = changes.filter((c) => c.server === 'needs-bin' && c.action === 'skipped');
+    expect(skipped.some((c) => /not found on PATH/.test(c.reason ?? ''))).toBe(false);
+    expect(changes.some((c) => c.server === 'needs-bin' && c.action === 'added')).toBe(true);
+  });
+
+  it('skips a server whose requires binary is absent from PATH', async () => {
+    await writeMcpYaml(`
+servers:
+  - name: needs-missing
+    transport: stdio
+    command: teamai-missing-bin-539
+    requires: [teamai-missing-bin-539]
+`);
+
+    const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+    const skipped = changes.filter((c) => c.server === 'needs-missing' && c.action === 'skipped');
+    expect(skipped.length).toBeGreaterThan(0);
+    expect(skipped.every((c) => /not found on PATH/.test(c.reason ?? ''))).toBe(true);
+    expect(changes.some((c) => c.server === 'needs-missing' && c.action === 'added')).toBe(false);
+  });
+
+  it('treats uvx.exe as satisfying requires: [uvx] on Windows', async () => {
+    const binDir = path.join(tmpDir, 'win-bin');
+    await fse.ensureDir(binDir);
+    await fse.writeFile(path.join(binDir, 'uvx.exe'), '');
+
+    await writeMcpYaml(`
+servers:
+  - name: volces-search
+    transport: stdio
+    command: uvx
+    requires: [uvx]
+`);
+
+    const { changes } = await reconcileMcpForConfig(teamConfig, localConfig, {
+      lookPath: {
+        platform: 'win32',
+        pathEnv: binDir,
+        pathExt: '.EXE;.CMD',
+      },
+    });
+    const skipped = changes.filter((c) => c.server === 'volces-search' && c.action === 'skipped');
+    expect(skipped.some((c) => /not found on PATH/.test(c.reason ?? ''))).toBe(false);
+    expect(changes.some((c) => c.server === 'volces-search' && c.action === 'added')).toBe(true);
+  });
+
   // Verified against codex-cli 0.142.5: it speaks streamable HTTP. Secrets are
   // resolved to plaintext like every other tool — codex's env-var naming
   // (`bearer_token_env_var`) is not used, so the token is present regardless of

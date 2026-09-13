@@ -699,9 +699,11 @@ servers:
     args: ['-y', '@acme/formatter-mcp']
     env:
       FORMATTER_MODE: strict
-    requires: [npx]                      # npx 不存在时跳过并提示
+    requires: [npx]                      # PATH 上找不到 npx 时跳过并提示
     tools: [claude, cursor]              # 可选；默认所有支持 MCP 的工具
 ```
+
+`requires` 从 `PATH` 解析。Windows 上还会匹配 `PATHEXT` 后缀（`uvx` 可匹配 `uvx.exe` / `uvx.cmd`）。
 
 各工具的落点：
 
