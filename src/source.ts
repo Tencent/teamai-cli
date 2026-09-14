@@ -53,9 +53,9 @@ async function saveSourceManifest(sourceName: string, manifest: SourceInstallMan
 
 /**
  * Clone or pull a source repo. Returns the repo path, or null on failure.
- * Clone-or-pull-with-TTL is the shared `ensureRepoCache` primitive (also used
- * by the DSH Team Context adapter); only the manifest shape and dir layout
- * are source-specific.
+ * Clone-or-pull-with-TTL is the shared `ensureRepoCache` primitive (reusable
+ * by other read-only external-repository integrations); only the manifest
+ * shape and dir layout are source-specific.
  */
 async function ensureSourceRepo(source: SourceConfig, force: boolean): Promise<string | null> {
   const repoDir = getSourceRepoDir(source.name);

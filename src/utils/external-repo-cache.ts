@@ -7,11 +7,11 @@ import { pathExists, ensureDir } from './fs.js';
 /**
  * Generic "external read-only repo mirror" primitives shared by every teamai
  * feature that mirrors someone else's git repo onto the local machine without
- * ever writing back to it: cross-team `sources` (source.ts) and the DSH Team
- * Context adapter (team-context.ts). Both need the same two things — clone-
- * or-pull with a TTL, and a name-set diff for tombstone-style cleanup — so
- * those are the only two primitives here. Everything entity-specific (what a
- * "skill" is, collision policy, manifest shape) stays in the caller.
+ * ever writing back to it, such as cross-team `sources` (source.ts). Any such
+ * integration needs the same two things — clone-or-pull with a TTL, and a
+ * name-set diff for tombstone-style cleanup — so those are the only two
+ * primitives here. Everything entity-specific (what a "skill" is, collision
+ * policy, manifest shape) stays in the caller.
  *
  * Not to be confused with `repo-cache.ts` (import command's LAST_SYNC cache
  * for `teamai import`), which is an unrelated, pre-existing cache keyed by

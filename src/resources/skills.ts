@@ -251,9 +251,8 @@ async function scanSkillsRecursively(dirPath: string): Promise<Map<string, strin
 /**
  * Get the set of skill names that belong to the local team (team repo +
  * CLI built-ins). Shared by every feature that must not overwrite/shadow a
- * team-authored skill: cross-team `sources` (source.ts, local-wins-silently)
- * and the DSH Team Context adapter (team-context.ts, local-wins-observably).
- * Deliberately independent of both callers — neither owns this helper.
+ * team-authored skill, such as cross-team `sources` (source.ts). Deliberately
+ * independent of any one caller — no caller owns this helper.
  */
 export async function getLocalTeamSkillNames(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<Set<string>> {
   const items = await new SkillsHandler().scanTeamForPull(teamConfig, localConfig);
@@ -266,9 +265,10 @@ export async function getLocalTeamSkillNames(teamConfig: TeamaiConfig, localConf
 }
 
 /**
- * Remove a skill from all tool paths. Shared by `sources` and the DSH Team
- * Context adapter for cleaning up a skill THEY deployed (never a team-authored
- * one) — neither the team repo nor any tombstone is touched here.
+ * Remove a skill from all tool paths. Shared by any read-only external
+ * integration (e.g. `sources`) for cleaning up a skill IT deployed (never a
+ * team-authored one) — neither the team repo nor any tombstone is touched
+ * here.
  */
 export async function removeSkillFromToolPaths(
   skillName: string,
