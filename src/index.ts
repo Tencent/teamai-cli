@@ -666,7 +666,7 @@ program
 // ─── Session subcommands ──────────────────────────────────
 const sessionCmd = program
   .command('session')
-  .description('Record and inspect coding-session summaries');
+  .description('Session recording, cross-platform migration, and team sync');
 
 sessionCmd
   .command('save')
@@ -681,6 +681,10 @@ sessionCmd
     const { saveSession } = await import('./save-session.js');
     await saveSession({ ...globalOpts, ...cmdOpts });
   });
+
+// SessionFlow: cross-platform session migration / sync / search / resume
+const { registerSessionFlowCommands } = await import('./session-flow/session-cmd.js');
+registerSessionFlowCommands(sessionCmd);
 
 program
   .command('digest')
