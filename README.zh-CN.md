@@ -263,7 +263,7 @@ teamai recall maintenance --update-quality       # 为过时 skills / docs 生�
 | `teamai remove <type> <name>` | 删除资源并创建 MR |
 | `teamai session save` | 将脱敏后的 session 摘要记录到月度日志（`--push` 可喂给 `digest`） |
 | `teamai digest` | 生成团队周报 |
-| `teamai doctor` | 诊断配置问题 |
+| `teamai doctor` | 诊断配置问题；任一检查失败时以状态码 1 退出 |
 | `teamai uninstall` | 移除所有 teamai 资源和 hooks |
 
 ## 许可证

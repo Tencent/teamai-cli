@@ -2,9 +2,8 @@ import path from 'node:path';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import type { GlobalOptions, Scope } from './types.js';
+import type { GlobalOptions } from './types.js';
 import {
-  TeamaiConfigSchema,
   TEAMAI_ENV_START,
   resolveHookScope,
   getDataHome,
@@ -66,25 +65,32 @@ async function hasInstalledCodexHooks(toolPaths: TeamaiConfig['toolPaths'], base
   return false;
 }
 
-export async function doctor(options: GlobalOptions): Promise<void> {
+export async function doctor(options: GlobalOptions): Promise<boolean> {
   log.info('Running diagnostics...\n');
   const projectConfig = await detectProjectConfig();
   const localConfig = projectConfig ?? (await loadLocalConfig());
-  const scope: Scope = localConfig?.scope ?? 'user';
+  if (!localConfig) {
+    console.log('  Scope: not initialized\n');
+    console.log('  ✖ TeamAI is not initialized');
+    console.log('    → Run `teamai init <repo-url>` in a project, or add `--scope user` for all projects');
+    console.log('');
+    log.warn('Initialization is required before diagnostics can run.');
+    return false;
+  }
+
+  const scope = localConfig.scope ?? 'user';
   const configPathLabel = projectConfig
     ? `${projectConfig.projectRoot}/.teamai/config.yaml`
     : '~/.teamai/config.yaml';
 
-  console.log(`  Scope: ${scope}${scope === 'project' && localConfig?.projectRoot ? ` (${localConfig.projectRoot})` : ''}\n`);
+  const scopeLabel = `${scope}${scope === 'project' && localConfig.projectRoot ? ` (${localConfig.projectRoot})` : ''}`;
+  console.log(`  Scope: ${scopeLabel}\n`);
 
   // Try to load team config for dynamic tool paths and provider
   let teamConfig: TeamaiConfig | null = null;
-  if (localConfig) {
-    teamConfig = await loadTeamConfig(localConfig.repo.localPath);
-  }
-  // Fall back to schema defaults if team config is unavailable
-  const toolPaths = teamConfig?.toolPaths ?? TeamaiConfigSchema.shape.toolPaths.parse(undefined);
-  const providerName = teamConfig?.provider ?? 'tgit';
+  teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const toolPaths: TeamaiConfig['toolPaths'] = teamConfig?.toolPaths ?? {};
+  const providerName = teamConfig?.provider;
   // Hook checks must look where hooks are actually injected. resolveHookScope
   // maps a non-self project scope to HOME (#264), matching the injection path in
   // init/pull/hooks-cmd — otherwise doctor checks <projectRoot>/.claude while the
@@ -235,4 +241,5 @@ export async function doctor(options: GlobalOptions): Promise<void> {
   } else {
     log.warn('Some checks failed. See suggestions above.');
   }
+  return allPassed;
 }
