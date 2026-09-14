@@ -191,6 +191,28 @@ describe('ZCode support', () => {
     }
   });
 
+  it('heals unknown keys in the hooks block (ZCode strict schema rejects the whole block otherwise)', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-zcode-test-'));
+    try {
+      const configPath = path.join(home, '.zcode', 'cli', 'config.json');
+      await fse.ensureDir(path.dirname(configPath));
+      // A hand-added annotation key is enough for ZCode to drop every hook.
+      await fse.writeJson(configPath, {
+        plugins: {},
+        hooks: { enabled: false, description: 'my hooks', events: {} },
+      });
+
+      await reconcileHooks(configPath, 'zcode');
+
+      const cfg = await fse.readJson(configPath);
+      expect(Object.keys(cfg.hooks).sort()).toEqual(['enabled', 'events']);
+      expect(cfg.hooks.enabled).toBe(true);
+      expect(await getHookStatus(configPath, 'zcode')).toBe('installed');
+    } finally {
+      await fse.remove(home);
+    }
+  });
+
   it('removeAll preserves a user-disabled hooks.enabled while stripping entries', async () => {
     const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-zcode-test-'));
     try {

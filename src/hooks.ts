@@ -542,6 +542,15 @@ async function reconcileZcodeFormat(
   const cfg: ZcodeHooksJson = (await readJson<ZcodeHooksJson>(expanded)) ?? {};
   if (!cfg.hooks) cfg.hooks = {};
   let changed = false;
+  // ZCode validates the hooks block against a strict schema and REJECTS THE
+  // WHOLE BLOCK on any unrecognized key (observed: `config_file_invalid —
+  // hooks: Unrecognized key: "description"` → hookCount 0 → nothing fires).
+  // Heal the config by keeping only the keys the schema knows about.
+  const unknownHookKeys = Object.keys(cfg.hooks).filter((k) => k !== 'enabled' && k !== 'events');
+  if (unknownHookKeys.length > 0) {
+    for (const k of unknownHookKeys) delete cfg.hooks[k];
+    changed = true;
+  }
   // Config-file hooks are disabled by default in ZCode; entries we write would
   // never fire unless the runner is explicitly enabled. Persist the flip even
   // when the event arrays are already up to date — but only when installing.
