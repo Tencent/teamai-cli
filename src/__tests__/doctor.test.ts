@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import path from 'node:path';
 
 // ── Mocks ────────────────────────────────────────────────
 
@@ -35,6 +36,7 @@ import { loadLocalConfig, loadTeamConfig } from '../config.js';
 import { pathExists, readFileSafe } from '../utils/fs.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from '../hooks.js';
 import { log } from '../utils/logger.js';
+import { isGfInstalled, gfIsAuthenticated } from '../providers/tgit/index.js';
 import { doctor } from '../doctor.js';
 
 const mockedLoadLocalConfig = loadLocalConfig as Mock;
@@ -42,6 +44,8 @@ const mockedLoadTeamConfig = loadTeamConfig as Mock;
 const mockedPathExists = pathExists as Mock;
 const mockedReadFileSafe = readFileSafe as Mock;
 const mockedLog = log as unknown as { info: Mock; success: Mock; warn: Mock; error: Mock; debug: Mock };
+const mockedIsGfInstalled = isGfInstalled as Mock;
+const mockedGfIsAuthenticated = gfIsAuthenticated as Mock;
 
 const mockLocalConfig = {
     repo: { localPath: '/tmp/repo', remote: 'https://git.woa.com/team/repo.git' },
@@ -92,12 +96,17 @@ beforeEach(() => {
 
 describe('doctor — hook checks', () => {
     it('should pass when all subcommands are present in settings', async () => {
-        await doctor({});
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            sharing: { env: { injectShellProfile: false } },
+        });
+        const allPassed = await doctor({});
 
         // Should show the hooks check passing (✔)
         expect(consoleSpy).toHaveBeenCalledWith(
             expect.stringContaining('✔'),
         );
+        expect(allPassed).toBe(true);
     });
 
     it('should fail when a subcommand is missing from settings', async () => {
@@ -113,7 +122,7 @@ describe('doctor — hook checks', () => {
             return null;
         });
 
-        await doctor({});
+        const allPassed = await doctor({});
 
         // Should show the hooks check failing (✖) with fix suggestion
         expect(consoleSpy).toHaveBeenCalledWith(
@@ -122,6 +131,7 @@ describe('doctor — hook checks', () => {
         expect(consoleSpy).toHaveBeenCalledWith(
             expect.stringContaining('teamai hooks inject'),
         );
+        expect(allPassed).toBe(false);
     });
 
     it('should fail when settings file does not exist', async () => {
@@ -180,7 +190,7 @@ describe('doctor — hook checks', () => {
         // Only <projectRoot> carries the hooks (committed to the business repo).
         mockedReadFileSafe.mockImplementation(async (filePath: string) => {
             if (filePath.includes('settings.json')) {
-                return filePath.includes(projectRoot) ? buildFullHooksContent() : '{ "hooks": {} }';
+                return filePath.includes(path.normalize(projectRoot)) ? buildFullHooksContent() : '{ "hooks": {} }';
             }
             return null;
         });
@@ -192,7 +202,7 @@ describe('doctor — hook checks', () => {
 
     it('should pass env check when env/env.yaml does not exist in team repo', async () => {
         mockedPathExists.mockImplementation(async (filePath: string) => {
-            if (filePath.includes('env/env.yaml')) return false;
+            if (filePath.endsWith(path.join('env', 'env.yaml'))) return false;
             return true;
         });
         mockedReadFileSafe.mockImplementation(async (filePath: string) => {
@@ -281,5 +291,43 @@ describe('doctor — hook checks', () => {
         expect(allCalls.some((msg: string) => msg.includes('codex-internal'))).toBe(false);
         // Should still show claude check
         expect(allCalls.some((msg: string) => msg.includes('claude'))).toBe(true);
+    });
+
+    it('does not assume a provider before initialization', async () => {
+        mockedLoadLocalConfig.mockResolvedValue(null);
+        mockedLoadTeamConfig.mockResolvedValue(null);
+
+        const allPassed = await doctor({});
+
+        const allLines = consoleSpy.mock.calls.map((c) => String(c[0]));
+        expect(allLines).toContain('  Scope: not initialized\n');
+        expect(allLines).toContain('  ✖ TeamAI is not initialized');
+        expect(allLines.some((line) => line.includes('gf CLI'))).toBe(false);
+        expect(allLines.some((line) => line.includes('hooks in'))).toBe(false);
+        expect(mockedIsGfInstalled).not.toHaveBeenCalled();
+        expect(mockedGfIsAuthenticated).not.toHaveBeenCalled();
+        expect(allPassed).toBe(false);
+    });
+
+    it('checks hooks only for enabled agents', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            enabledAgents: ['claude'],
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            sharing: { env: { injectShellProfile: false } },
+            toolPaths: {
+                claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
+                codex: { settings: '.codex/hooks.json', skills: '.codex/skills' },
+            },
+        });
+
+        const allPassed = await doctor({});
+
+        const allLines = consoleSpy.mock.calls.map((c) => String(c[0]));
+        expect(allLines.some((line) => line.includes('hooks in claude settings'))).toBe(true);
+        expect(allLines.some((line) => line.includes('hooks in codex settings'))).toBe(false);
+        expect(allPassed).toBe(true);
     });
 });

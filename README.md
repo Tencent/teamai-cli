@@ -266,7 +266,7 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 | `teamai remove <type> <name>` | Remove a resource and open MR |
 | `teamai session save` | Record a privacy-scrubbed session summary to a monthly log (`--push` feeds `digest`) |
 | `teamai digest` | Generate weekly team usage digest |
-| `teamai doctor` | Diagnose configuration issues |
+| `teamai doctor` | Diagnose configuration issues; exits with code 1 when any check fails |
 | `teamai uninstall` | Remove all teamai resources and hooks |
 
 ## License
