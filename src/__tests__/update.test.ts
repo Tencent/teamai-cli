@@ -13,6 +13,19 @@ vi.mock('node:child_process', async () => {
   return { execFile };
 });
 
+// Controllable fileURLToPath so resolveInstallPrefix can be pointed at a
+// chosen entry path. Defaults to pass-through; tests override per case.
+const { fileURLToPathMock, actualFileURLToPath } = vi.hoisted(() => ({
+  fileURLToPathMock: vi.fn(),
+  actualFileURLToPath: { fn: null as null | ((p: string | URL) => string) },
+}));
+vi.mock('node:url', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:url')>();
+  actualFileURLToPath.fn = actual.fileURLToPath;
+  fileURLToPathMock.mockImplementation((p: string | URL) => actualFileURLToPath.fn!(p));
+  return { ...actual, fileURLToPath: fileURLToPathMock };
+});
+
 vi.mock('fs-extra', () => ({
   default: {
     pathExists: vi.fn(),
@@ -826,7 +839,7 @@ describe('prefixFromEntryPath', () => {
     const entry = path.join('/usr', 'local', 'lib', 'node_modules', 'teamai-cli', 'dist', 'index.js');
     existsSpy.mockReturnValue(true);
 
-    expect(prefixFromEntryPath(entry, true)).toBe(path.join('/usr', 'local'));
+    expect(prefixFromEntryPath(entry, true)).toEqual({ prefix: path.join('/usr', 'local'), global: true });
     // The sanity check must look under <prefix>/lib/node_modules/<pkg>.
     expect(existsSpy).toHaveBeenCalledWith(
       path.join('/usr', 'local', 'lib', 'node_modules', 'teamai-cli'),
@@ -837,15 +850,30 @@ describe('prefixFromEntryPath', () => {
     const entry = path.join('C:', 'tools', 'node_modules', 'teamai-cli', 'dist', 'index.js');
     existsSpy.mockReturnValue(true);
 
-    expect(prefixFromEntryPath(entry, false)).toBe(path.join('C:', 'tools'));
+    expect(prefixFromEntryPath(entry, false)).toEqual({ prefix: path.join('C:', 'tools'), global: true });
     expect(existsSpy).toHaveBeenCalledWith(path.join('C:', 'tools', 'node_modules', 'teamai-cli'));
+  });
+
+  it('detects the flat vendored layout on POSIX (no lib component)', () => {
+    // The bundled-runtime shape: <prefix>/node_modules/<pkg> without the lib/
+    // nesting npm -g would create. The sanity check must verify the layout
+    // that was actually matched — not <prefix>/lib/node_modules/<pkg>, which
+    // does not exist here.
+    const entry = path.join('/home', 'u', '.teamai', 'node_modules', 'teamai-cli', 'dist', 'index.js');
+    existsSpy.mockReturnValue(true);
+
+    expect(prefixFromEntryPath(entry, true)).toEqual({ prefix: path.join('/home', 'u', '.teamai'), global: false });
+    expect(existsSpy).toHaveBeenCalledWith(
+      path.join('/home', 'u', '.teamai', 'node_modules', 'teamai-cli'),
+    );
   });
 
   it('keeps non-lib roots on POSIX (project-local installs)', () => {
     const entry = path.join('/home', 'u', 'proj', 'node_modules', 'teamai-cli', 'dist', 'index.js');
     existsSpy.mockReturnValue(true);
 
-    expect(prefixFromEntryPath(entry, true)).toBe(path.join('/home', 'u', 'proj'));
+    expect(prefixFromEntryPath(entry, true)).toEqual({ prefix: path.join('/home', 'u', 'proj'), global: false });
+    expect(existsSpy).toHaveBeenCalledWith(path.join('/home', 'u', 'proj', 'node_modules', 'teamai-cli'));
   });
 
   it('returns null for paths outside an npm-managed layout', () => {
@@ -859,5 +887,95 @@ describe('prefixFromEntryPath', () => {
     existsSpy.mockReturnValue(false);
 
     expect(prefixFromEntryPath(entry, true)).toBeNull();
+    expect(existsSpy).toHaveBeenCalledWith(
+      path.join('/usr', 'local', 'lib', 'node_modules', 'teamai-cli'),
+    );
+  });
+});
+
+// ─── Self-update install-target safety ──────────────────
+
+/** Temporarily replace process.platform (read by resolveInstallPrefix). */
+function stubPlatform(value: NodeJS.Platform): () => void {
+  const original = process.platform;
+  Object.defineProperty(process, 'platform', { value, configurable: true });
+  return () => Object.defineProperty(process, 'platform', { value: original, configurable: true });
+}
+
+describe('self-update install-target safety', () => {
+  const FLAT_ENTRY = path.join('/home', 'u', '.teamai', 'node_modules', 'teamai-cli', 'dist', 'update.js');
+  const mockedEntry = resolveTeamaiEntryScript as Mock;
+  let existsSpy: MockInstance<typeof fs.existsSync>;
+  let readSpy: MockInstance<typeof fs.readFileSync>;
+  let restorePlatform: () => void;
+
+  beforeEach(() => {
+    existsSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(((p: fs.PathLike) => {
+      if (String(p).endsWith('package.json')) {
+        return JSON.stringify({ version: '99.0.0' });
+      }
+      throw new Error(`unexpected read: ${String(p)}`);
+    }) as unknown as typeof fs.readFileSync);
+  });
+  afterEach(() => {
+    restorePlatform?.();
+    existsSpy.mockRestore();
+    readSpy.mockRestore();
+    fileURLToPathMock.mockImplementation((p: string | URL) => actualFileURLToPath.fn!(p));
+  });
+
+  it('refuses to run npm against a POSIX vendored (flat) install', async () => {
+    restorePlatform = stubPlatform('linux');
+    fileURLToPathMock.mockReturnValue(FLAT_ENTRY);
+    mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
+
+    await doUpdate();
+
+    // A non-global npm install reconciles <prefix> as a project and prunes
+    // undeclared siblings (including a co-located npm); -g lands in
+    // <prefix>/lib. Neither may touch the vendored tree — stay out entirely.
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Self-update is not supported'));
+    expect(mockedExecSync).toHaveBeenCalledTimes(1); // the version check only
+    expect(mockedExecSync).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining(['install']),
+      expect.anything(),
+    );
+  });
+
+  it('warns when the post-update verification finds the running install stale', async () => {
+    restorePlatform = stubPlatform('win32');
+    fileURLToPathMock.mockReturnValue(FLAT_ENTRY);
+    mockedEntry.mockReturnValue(FLAT_ENTRY);
+    readSpy.mockImplementation(((p: fs.PathLike) => {
+      if (String(p).endsWith('package.json')) return JSON.stringify({ version: '0.0.9' });
+      throw new Error(`unexpected read: ${String(p)}`);
+    }) as unknown as typeof fs.readFileSync);
+    mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
+
+    await doUpdate();
+
+    expect(mockedExecSync).toHaveBeenCalledTimes(3); // view + install + hook refresh
+    expect(mockedExecSync).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining(['install', '-g', expect.stringContaining('--prefix=')]),
+      expect.anything(),
+    );
+    expect(mockedLog.warn).toHaveBeenCalledWith(
+      expect.stringContaining('still v0.0.9 (expected v99.0.0)'),
+    );
+  });
+
+  it('logs plain success when the running install is the updated version', async () => {
+    restorePlatform = stubPlatform('win32');
+    fileURLToPathMock.mockReturnValue(FLAT_ENTRY);
+    mockedEntry.mockReturnValue(FLAT_ENTRY);
+    mockedExecSync.mockResolvedValue({ stdout: '99.0.0\n', stderr: '' });
+
+    await doUpdate();
+
+    expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Updated teamai to v99.0.0'));
+    expect(mockedLog.warn).not.toHaveBeenCalledWith(expect.stringContaining('still v'));
   });
 });

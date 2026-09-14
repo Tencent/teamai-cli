@@ -75,35 +75,46 @@ export function resolveNpmCommand(): { cmd: string; args: string[] } {
 }
 
 /**
- * Derive the npm install prefix from an entry-script path: the slice before
- * `<prefix>/[lib/]node_modules/<pkg>`, sanity-checked so only genuine
- * npm-managed layouts yield a prefix. `posix` selects the layout — POSIX npm
- * global installs nest one level deeper (<prefix>/lib/node_modules) and npm
- * re-adds the lib/ component itself, so the prefix it expects is the slice
- * above it. Exported for testing — split out from resolveInstallPrefix.
+ * Derive the npm install target from an entry-script path. Two npm-managed
+ * layouts are recognized:
+ * - POSIX global: `<prefix>/lib/node_modules/<pkg>` — npm -g re-adds the lib/
+ *   component itself, so the prefix it expects is the slice above it.
+ * - Flat/vendored: `<prefix>/node_modules/<pkg>` (bundled runtimes). POSIX npm
+ *   -g CANNOT reinstall into this layout (it always nests under lib/), so the
+ *   caller must install non-globally with --prefix — hence the `global` flag.
+ * Returns null when the entry cannot be attributed to an npm-managed install
+ * (e.g. a linked checkout). Exported for testing — split out from
+ * resolveInstallPrefix.
  */
-export function prefixFromEntryPath(entry: string, posix: boolean): string | null {
+export function prefixFromEntryPath(entry: string, posix: boolean): { prefix: string; global: boolean } | null {
   const marker = `${path.sep}node_modules${path.sep}`;
   const idx = entry.lastIndexOf(marker);
   if (idx <= 0) return null;
   const root = entry.slice(0, idx);
-  const prefix = posix && path.basename(root) === 'lib' ? path.dirname(root) : root;
-  // Sanity-check the slice: only trust it when the running package actually
-  // sits in the npm-managed layout under the prefix we would hand back.
-  const nmDir = posix ? path.join('lib', 'node_modules') : 'node_modules';
-  return fs.existsSync(path.join(prefix, nmDir, getCurrentPackageName()))
-    ? prefix
+  const pkgDir = getCurrentPackageName();
+  // POSIX global layout: npm re-adds the lib/ component, so hand it the slice
+  // above and let it nest back down to where the running package sits.
+  if (posix && path.basename(root) === 'lib') {
+    const prefix = path.dirname(root);
+    return fs.existsSync(path.join(prefix, 'lib', 'node_modules', pkgDir))
+      ? { prefix, global: true }
+      : null;
+  }
+  // Flat layout (<root>/node_modules/<pkg>): the sanity check verifies the
+  // layout that was actually matched, not the one npm would have created.
+  return fs.existsSync(path.join(root, 'node_modules', pkgDir))
+    ? { prefix: root, global: !posix }
     : null;
 }
 
 /**
- * Resolve the install prefix the running CLI lives in
- * (<prefix>/node_modules/<pkg>/...) so a self-update reinstalls into the
- * same location. Returns null when the entry cannot be attributed to an
+ * Resolve the install target the running CLI lives in
+ * (<prefix>/[lib/]node_modules/<pkg>/...) so a self-update reinstalls into
+ * the same location. Returns null when the entry cannot be attributed to an
  * npm-managed install (e.g. a linked checkout) — callers then keep the
  * default global install behavior.
  */
-function resolveInstallPrefix(): string | null {
+function resolveInstallPrefix(): { prefix: string; global: boolean } | null {
   return prefixFromEntryPath(fileURLToPath(import.meta.url), process.platform !== 'win32');
 }
 
@@ -485,25 +496,56 @@ export async function doUpdate(): Promise<void> {
     const pkgName = getCurrentPackageName();
     const registry = resolveRegistryForPackage(pkgName);
     const npm = resolveNpmCommand();
-    const prefix = resolveInstallPrefix();
+    const target = resolveInstallPrefix();
+    if (target && !target.global) {
+      // POSIX vendored (flat) layouts cannot be reinstalled by npm without
+      // destroying the tree: a non-global install reconciles <prefix> as a
+      // project and prunes every undeclared sibling in <prefix>/node_modules
+      // (including a co-located npm), while -g always lands in
+      // <prefix>/lib. Stay out and let the user update manually.
+      log.warn(
+        `Self-update is not supported for the vendored install at ${target.prefix} ` +
+        '(npm would relocate or prune the runtime tree) — update manually.',
+      );
+      return;
+    }
     await execFileAsync(
       npm.cmd,
       [
         ...npm.args,
         'install', '-g', pkgName,
-        ...(prefix ? [`--prefix=${prefix}`] : []),
+        ...(target ? [`--prefix=${target.prefix}`] : []),
         `--registry=${registry}`,
       ],
       { timeout: INSTALL_TIMEOUT },
     );
     log.success(`Updated teamai to v${result.latest}`);
 
+    const entry = resolveTeamaiEntryScript();
+
+    // Verify the RUNNING install actually changed. A null target (linked
+    // checkout, exotic layout) updates npm's default global prefix — which is
+    // not necessarily where this process runs from — and a stale success
+    // message here is exactly how self-update silently stops working.
+    if (entry) {
+      try {
+        const installed = JSON.parse(fs.readFileSync(
+          path.join(path.dirname(path.dirname(entry)), 'package.json'), 'utf-8',
+        )) as { version?: string };
+        if (installed.version !== result.latest) {
+          log.warn(
+            `The running install at ${path.dirname(path.dirname(entry))} is still ` +
+            `v${installed.version ?? 'unknown'} (expected v${result.latest}) — it may need a manual update.`,
+          );
+        }
+      } catch { /* verification is best-effort */ }
+    }
+
     // Refresh hooks using new version's code (spawn new process so updated code is loaded).
     // PATH-less subprocesses (bundled runtimes) may not have `teamai` on PATH:
-    // resolve the running CLI's entry and run it with the current Node binary —
-    // spawning the .js directly only works behind a shebang + PATH on POSIX.
+    // run the resolved entry with the current Node binary — spawning the .js
+    // directly only works behind a shebang + PATH on POSIX.
     try {
-      const entry = resolveTeamaiEntryScript();
       const refresh = entry
         ? { cmd: process.execPath, args: [entry, 'hooks', 'inject', '--silent'] }
         : { cmd: 'teamai', args: ['hooks', 'inject', '--silent'] };
