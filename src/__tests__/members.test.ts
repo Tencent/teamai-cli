@@ -12,6 +12,7 @@ vi.mock('../config.js', () => ({
 
 vi.mock('../utils/git.js', () => ({
   pullRepo: vi.fn().mockResolvedValue('Already up to date.'),
+  redactGitCredentials: vi.fn((url: string) => url.replace(/\/\/[^/@]+@/, '//')),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -32,7 +33,7 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-import { getMemberConfig, listMembers, mergeMemberConfig } from '../members.js';
+import { buildMemberInvite, getMemberConfig, listMembers, mergeMemberConfig, printMemberInvite } from '../members.js';
 import { requireInit } from '../config.js';
 import { log } from '../utils/logger.js';
 
@@ -56,6 +57,66 @@ scope: 'user',
     },
   });
 }
+
+describe('member invitation', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.mocked(log.error).mockClear();
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  it('builds a self-contained, verifiable invitation without embedded credentials', () => {
+    const invite = buildMemberInvite('https://oauth2:secret@example.com/team/repo.git');
+
+    expect(invite).toContain('Goal: within 8 minutes');
+    expect(invite).toContain('https://example.com/team/repo.git');
+    expect(invite).not.toContain('secret');
+    expect(invite).toContain('Never ask me to paste a password, token, or key into chat');
+    expect(invite).toContain('teamai doctor');
+    expect(invite).toContain('exits with code 0');
+    expect(invite).toContain('teamai list skills --source local --agent <agent-id>');
+    expect(invite).toContain('fresh session');
+    expect(invite).toContain('I confirm the skill responded');
+  });
+
+  it('prints an invitation from the configured repo', async () => {
+    mockRequireInit('/tmp/team-repo');
+
+    await expect(printMemberInvite()).resolves.toBe(true);
+
+    const output = consoleSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(output).toContain('https://git.woa.com/team/repo.git');
+  });
+
+  it('explains how an uninitialized admin can create an invitation', async () => {
+    vi.mocked(requireInit).mockRejectedValue(new Error('not initialized'));
+
+    await expect(printMemberInvite()).resolves.toBe(false);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('teamai init <repo-url>'));
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses to put an HTTP API key workflow into a pasteable invitation', async () => {
+    mockRequireInit('/tmp/team-repo');
+    const initResult = await requireInit();
+    vi.mocked(requireInit).mockResolvedValue({
+      ...initResult,
+      localConfig: {
+        ...initResult.localConfig,
+        repo: { ...initResult.localConfig.repo, kind: 'http' },
+      },
+    });
+
+    await expect(printMemberInvite()).resolves.toBe(false);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('API key must be shared out of band'));
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+});
 
 describe('getMemberConfig', () => {
   let tmpDir: string;

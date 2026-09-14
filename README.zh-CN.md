@@ -35,9 +35,15 @@ npm install -g teamai-cli
 
 在 Git 托管平台（GitHub、GitLab、GitCode、CNB、TGit，或私有 Git 服务）创建共享经验仓库，**授予团队成员写权限**，然后运行 `teamai init https://github.com/yourorg/yourrepo`。
 
+初始化后运行 `teamai members --invite`，把生成的邀请信息发给成员。成员无需输入 Git 命令或在对话中粘贴密钥，AI 工具会完成接入，并在新会话中验证首个 Skill。
+
 > **还没有团队仓库？** 可以从内置了成套 skills、rules、review agents 的模板起步。浏览 [teamai-hub](https://github.com/teamai-hub) org，点 **Use this template** 生成自己的仓库，再对它执行 `teamai init`。
 
 ### 团队成员
+
+把管理员发来的邀请信息粘贴到你想使用的 AI 工具中，让它代为完成接入。只有 `teamai doctor` 通过、本地能列出团队 Skill，且该 Skill 在新会话中实际响应，才算接入完成。
+
+如果管理员只发了仓库地址，可按以下方式手动接入：
 
 ```bash
 # 二选一：按你想要的安装范围选择其中一条
@@ -254,7 +260,7 @@ teamai recall maintenance --update-quality       # 为过时 skills / docs 生�
 | `teamai codebase --reconcile` | 将产品文档与提取的代码知识进行对账 |
 | `teamai codebase --lint` | 知识图谱健康检查 |
 | `teamai ci extract-mr --url <url>` | CI：从 MR 提取知识、发评论、合并后写入 |
-| `teamai members` | 查看团队成员 |
+| `teamai members [--invite]` | 查看团队成员或生成可交给 AI 执行的接入邀请 |
 | `teamai projects` | 将工作目录绑定到一个或多个逻辑项目 |
 | `teamai roles` | 管理团队角色和命名空间 |
 | `teamai tags` | 管理基于标签的 skill/rule 过滤 |

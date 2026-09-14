@@ -1509,6 +1509,7 @@ export async function init(options: GlobalOptions & {
   log.info('Built-in skills (e.g. team-wiki-codebase) are ready to use in your IDE now.');
   log.info('Skills, rules, env and docs will auto-sync on each session start (via hooks).');
   log.info('Run `teamai status` to check current config.');
+  log.info('Invite a teammate with `teamai members --invite`.');
 
   // Close the readline singleton so the process can exit cleanly.
   closePrompt();

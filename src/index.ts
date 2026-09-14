@@ -185,11 +185,17 @@ excludeCmd
 const membersCmd = program
   .command('members')
   .description('Manage team members')
-  .action(async () => {
+  .option('--invite', 'Print an AI-ready onboarding invitation for a teammate')
+  .action(async (cmdOpts: { invite?: boolean }) => {
     // Default action: list members (backward compatible)
     const globalOpts = program.opts() as GlobalOptions;
-    const { listMembers } = await import('./members.js');
-    await listMembers(globalOpts);
+    const { listMembers, printMemberInvite } = await import('./members.js');
+    if (cmdOpts.invite) {
+      const printed = await printMemberInvite();
+      if (!printed) process.exitCode = 1;
+    } else {
+      await listMembers(globalOpts);
+    }
   });
 
 membersCmd

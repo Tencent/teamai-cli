@@ -308,4 +308,26 @@ describe('doctor — hook checks', () => {
         expect(mockedGfIsAuthenticated).not.toHaveBeenCalled();
         expect(allPassed).toBe(false);
     });
+
+    it('checks hooks only for agents selected during onboarding', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            enabledAgents: ['claude'],
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            sharing: { env: { injectShellProfile: false } },
+            toolPaths: {
+                claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
+                codex: { settings: '.codex/hooks.json', skills: '.codex/skills' },
+            },
+        });
+
+        const allPassed = await doctor({});
+
+        const allLines = consoleSpy.mock.calls.map((c) => String(c[0]));
+        expect(allLines.some((line) => line.includes('hooks in claude settings'))).toBe(true);
+        expect(allLines.some((line) => line.includes('hooks in codex settings'))).toBe(false);
+        expect(allPassed).toBe(true);
+    });
 });

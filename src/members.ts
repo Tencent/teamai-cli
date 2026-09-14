@@ -2,10 +2,68 @@ import YAML from 'yaml';
 import path from 'node:path';
 import { requireInit, detectProjectConfig } from './config.js';
 import { readFileSafe, listFiles } from './utils/fs.js';
-import { pullRepo } from './utils/git.js';
+import { pullRepo, redactGitCredentials } from './utils/git.js';
 import { log } from './utils/logger.js';
 import { MemberConfigSchema } from './types.js';
-import type { GlobalOptions, MemberConfig } from './types.js';
+import type { GlobalOptions, LocalConfig, MemberConfig } from './types.js';
+
+export function buildMemberInvite(repoUrl: string): string {
+  const safeRepoUrl = redactGitCredentials(repoUrl.trim());
+  if (!safeRepoUrl) throw new Error('Team repo URL is missing from local config.');
+
+  return [
+    'TeamAI member invitation',
+    '',
+    'Paste everything between BEGIN and END into the AI tool you want to use:',
+    '',
+    '----- BEGIN TEAMAI INVITE -----',
+    'Help me join my team\'s TeamAI setup.',
+    `Team repo: ${safeRepoUrl}`,
+    '',
+    'Goal: within 8 minutes, make at least one team skill available in this AI tool.',
+    '',
+    'Rules:',
+    '- Run the setup for me. Do not ask me to type or understand Git commands, and do not run raw `git` commands; use `teamai`.',
+    '- Never ask me to paste a password, token, or key into chat. Use the provider\'s official browser/device login. If that is unavailable, pause and tell me how to enter the credential outside chat.',
+    '- Do not create another team repo.',
+    '- Detect my OS, Node.js version, current folder, current AI tool, and existing login before asking questions. Ask only for decisions you cannot infer, and recommend a default.',
+    '- Use project scope only after confirming the current folder is the project I want to equip. Otherwise ask me to open that project first.',
+    '',
+    'Steps:',
+    '1. Ensure Node.js 20 or newer is available, then install `teamai-cli` globally if needed.',
+    '2. Infer the provider from the repo URL and complete its official sign-in flow if needed.',
+    '3. Identify the TeamAI agent id for this AI tool, then run `teamai init "' + safeRepoUrl + '" --agent <agent-id>` from the target project.',
+    '4. Run `teamai doctor` and resolve actionable failures until it exits with code 0.',
+    '5. Run `teamai list skills --source local --agent <agent-id>` and verify that at least one skill is listed.',
+    '6. Tell me the exact skill name and one natural-language sentence to invoke it. Ask me to open a fresh session of this AI tool, use that sentence, and confirm the skill responded.',
+    '',
+    'Do not declare onboarding complete until steps 4 and 5 pass and I confirm the skill responded in the fresh session.',
+    '----- END TEAMAI INVITE -----',
+  ].join('\n');
+}
+
+export async function printMemberInvite(): Promise<boolean> {
+  let localConfig: LocalConfig;
+  try {
+    const projectConfig = await detectProjectConfig();
+    localConfig = projectConfig ?? (await requireInit()).localConfig;
+  } catch {
+    log.error('TeamAI is not initialized. Run `teamai init <repo-url>` first, then rerun `teamai members --invite`.');
+    return false;
+  }
+
+  if (localConfig.repo.kind === 'self') {
+    log.error('AI-ready member invites are not available in single-repo mode; teammates receive TeamAI when they clone the business repo.');
+    return false;
+  }
+  if (localConfig.repo.kind === 'http') {
+    log.error('AI-ready member invites are not available in HTTP mode because the API key must be shared out of band.');
+    return false;
+  }
+
+  console.log(buildMemberInvite(localConfig.repo.remote));
+  return true;
+}
 
 /**
  * Read a specific member's config from the repo.

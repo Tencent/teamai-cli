@@ -35,9 +35,15 @@ npm install -g teamai-cli
 
 Create a shared-experience repo on your git host (GitHub, GitLab, GitCode, CNB, TGit, or a private Git service), **grant write access to team members**, then run `teamai init https://github.com/yourorg/yourrepo`.
 
+After initialization, run `teamai members --invite` and send the generated invitation to each member. It guides their AI tool through a no-Git-command, no-secret-in-chat setup and verifies the first skill in a fresh session.
+
 > **No team repo yet?** Start from a template pre-loaded with production-ready skills, rules, and review agents. Browse the [teamai-hub](https://github.com/teamai-hub) org, click **Use this template**, then `teamai init` against your new repo.
 
 ### Team members
+
+Paste the invitation from your admin into the AI tool you want to equip. Let it run the setup; onboarding is complete only after `teamai doctor` passes, a local team skill is listed, and that skill responds in a fresh session.
+
+If your admin sent only the repo URL, the manual fallback is:
 
 ```bash
 # Choose one, depending on where you want resources installed
@@ -254,7 +260,7 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 | `teamai codebase --reconcile` | Reconcile product documentation with extracted code knowledge |
 | `teamai codebase --lint` | Knowledge graph health check |
 | `teamai ci extract-mr --url <url>` | CI: extract knowledge from MR, post comments, write after merge |
-| `teamai members` | List team members |
+| `teamai members [--invite]` | List team members or print an AI-ready onboarding invitation |
 | `teamai projects` | Bind a working directory to one or more logical projects |
 | `teamai roles` | Manage team roles and namespaces |
 | `teamai tags` | Manage tag-based skill/rule filtering |

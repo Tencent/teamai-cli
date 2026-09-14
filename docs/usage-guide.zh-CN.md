@@ -345,7 +345,17 @@ teamai init https://github.com/yourorg/java-service-teamai --inherit-user-scope
 
 ## 成员接入
 
-管理员将团队仓库地址分享给成员后：
+管理员完成初始化后，生成一段自包含的邀请信息：
+
+```bash
+teamai members --invite
+```
+
+成员把邀请信息粘贴到想使用的 AI 工具中。AI 会代为完成接入，不要求成员输入 Git 命令，也不要求把凭据粘贴进对话；认证使用托管平台的官方登录流程，只询问无法自行判断的选择。
+
+接入只有一个以用户结果为中心的验收标准：8 分钟内，`teamai doctor` 以状态码 0 退出，`teamai list skills --source local --agent <agent-id>` 至少列出一个团队 Skill，并且成员确认该 Skill 在新的 AI 会话中实际响应。
+
+如果管理员只分享了团队仓库地址，可按以下方式手动接入：
 
 **项目级团队（默认）：**
 
@@ -379,6 +389,8 @@ teamai init --http https://your-team-host/api --token <api-key>
 **验证：**
 
 ```bash
+teamai doctor                       # 所有检查通过；退出码为 0
+teamai list skills --source local --agent claude
 teamai status                       # 查看状态
 teamai members                      # 查看团队成员
 teamai list                         # 全部资源类型（skills|rules|docs|env|agents|hooks|mcp）+ 本地 skills

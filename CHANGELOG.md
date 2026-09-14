@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### ✨ Features
 
+- `teamai members --invite` generates an AI-ready onboarding invitation that keeps Git commands and secrets away from non-technical members, then verifies a team skill in a fresh session ([#517](https://github.com/Tencent/teamai-cli/issues/517)).
 - Multi-project management: `role` and `project` together resolve resource namespaces, and project-private learnings are isolated ([#426](https://github.com/Tencent/teamai-cli/pull/426), for [#375](https://github.com/Tencent/teamai-cli/issues/375)).
 - Data partitions auto-migrate a legacy `.teamai`, resume interrupted migrations, smoke-check the clone, and keep a git-ignored backup ([#439](https://github.com/Tencent/teamai-cli/pull/439), for [#374](https://github.com/Tencent/teamai-cli/issues/374)).
 

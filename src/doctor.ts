@@ -7,6 +7,8 @@ import {
   TEAMAI_ENV_START,
   resolveHookScope,
   getDataHome,
+  isAgentExcluded,
+  scopedToolPaths,
   type TeamaiConfig,
 } from './types.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder } from './hooks.js';
@@ -89,7 +91,12 @@ export async function doctor(options: GlobalOptions): Promise<boolean> {
   // Try to load team config for dynamic tool paths and provider
   let teamConfig: TeamaiConfig | null = null;
   teamConfig = await loadTeamConfig(localConfig.repo.localPath);
-  const toolPaths: TeamaiConfig['toolPaths'] = teamConfig?.toolPaths ?? {};
+  const toolPaths: TeamaiConfig['toolPaths'] = teamConfig
+    ? Object.fromEntries(
+      Object.entries(scopedToolPaths(teamConfig, localConfig))
+        .filter(([tool]) => !isAgentExcluded(localConfig, tool)),
+    )
+    : {};
   const providerName = teamConfig?.provider;
   // Hook checks must look where hooks are actually injected. resolveHookScope
   // maps a non-self project scope to HOME (#264), matching the injection path in

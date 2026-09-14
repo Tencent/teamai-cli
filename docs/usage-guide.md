@@ -360,7 +360,17 @@ With inheritance enabled, `teamai pull` refreshes user `skills`, `rules`, `docs`
 
 ## Member Onboarding
 
-Once the admin shares the team repo URL with members:
+The admin generates a self-contained invitation after initialization:
+
+```bash
+teamai members --invite
+```
+
+The member pastes the invitation into the AI tool they want to equip. The AI performs setup without asking the member to type Git commands or paste credentials into chat. It uses the provider's official sign-in flow and asks only for decisions it cannot infer.
+
+Onboarding has one user-centered success contract: within eight minutes, `teamai doctor` exits with code 0, `teamai list skills --source local --agent <agent-id>` lists at least one team skill, and the member confirms that skill responds in a fresh AI session.
+
+If the admin shares only the team repo URL, use this manual fallback:
 
 **Project-scoped teams (default):**
 
@@ -394,6 +404,8 @@ teamai init --http https://your-team-host/api --token <api-key>
 **Verify:**
 
 ```bash
+teamai doctor                       # All checks pass; exit code 0
+teamai list skills --source local --agent claude
 teamai status                       # View status
 teamai members                      # View team members
 teamai list                         # All resource types (skills|rules|docs|env|agents|hooks|mcp) + local skills
