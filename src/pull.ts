@@ -597,18 +597,13 @@ async function pullForScope(
         if (targetSetMatches) {
           log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
           // 即使 repo 未变化，仍部署 CLI 内置资源（确保 CLI 升级后新版本 agent/rules 生效）
-          if (!options.dryRun) {
-            const cfg = await loadTeamConfig(localConfig.repo.localPath);
-            if (cfg) {
-              const skipRecall = !isRecallEnabled(localConfig, cfg);
-              try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(cfg, localConfig, { skipRecall }); } catch {}
-              try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(cfg, localConfig, { skipRecall }); } catch {}
-              try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(cfg, localConfig, { reportingOnly, skipRecall }); } catch {}
-              // Also refresh the CLAUDE.md recall block so a CLI upgrade that ships
-              // a new block reaches CLAUDE.md even when the repo HEAD is unchanged.
-              await injectRecallBlockIntoTools(cfg, localConfig, scopeLabel);
-            }
-          }
+          const skipRecall = !isRecallEnabled(localConfig, freshConfig);
+          try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(freshConfig, localConfig, { skipRecall }); } catch {}
+          try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(freshConfig, localConfig, { skipRecall }); } catch {}
+          try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(freshConfig, localConfig, { reportingOnly, skipRecall }); } catch {}
+          // Also refresh the CLAUDE.md recall block so a CLI upgrade that ships
+          // a new block reaches CLAUDE.md even when the repo HEAD is unchanged.
+          await injectRecallBlockIntoTools(freshConfig, localConfig, scopeLabel);
           return;
         }
 
