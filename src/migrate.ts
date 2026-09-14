@@ -3,7 +3,7 @@ import fse from 'fs-extra';
 import YAML from 'yaml';
 import { LocalConfigSchema, SYNC_LOCK_FILENAME } from './types.js';
 import { resolveAnchors } from './utils/git.js';
-import { projectDataHome, writeAnchorFile } from './utils/partition.js';
+import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
 import { realpath } from 'node:fs/promises';
 import { expandHome, pathExists, readFileSafe, remove, writeFile } from './utils/fs.js';
 import { acquireLock, releaseLock } from './update.js';
@@ -100,7 +100,12 @@ export async function planMigration(cwd?: string): Promise<MigrationPlan | null>
   if (!anchors) return null;
 
   const legacyDir = path.join(anchors.workspaceRoot, '.teamai');
-  const partitionDir = projectDataHome(anchors.projectAnchor);
+  // resolvePartitionDir (not bare projectDataHome): a partition written before
+  // the #546 naming widening still carries the legacy `<basename>-<hash>` name;
+  // adopting (renaming) it FIRST is what keeps the "partition already built"
+  // checks below honest — otherwise an upgraded CLI would see "no partition"
+  // and re-copy a retired workspace's data into a second, empty partition.
+  const partitionDir = await resolvePartitionDir(anchors.projectAnchor);
   const legacyConfig = path.join(legacyDir, 'config.yaml');
 
   // Gate on scope/kind read from config.yaml. It is normally in the repo, but a

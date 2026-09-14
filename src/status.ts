@@ -18,7 +18,7 @@ import {
   type AgentSkillsView,
 } from './agent-skills.js';
 import { RESOURCE_TYPES, LocalConfigSchema, getDataHome, type GlobalOptions, type ResourceType } from './types.js';
-import { projectsRootDir, readAnchorFile, projectSlug } from './utils/partition.js';
+import { projectsRootDir, readAnchorFile, projectSlug, legacyProjectSlug } from './utils/partition.js';
 import { maskEnvValue } from './resources/env.js';
 import { parseTeamMcpServers } from './resources/mcp.js';
 import { parseHooksYaml } from './resources/hooks.js';
@@ -159,7 +159,11 @@ export async function status(options: GlobalOptions): Promise<void> {
  *   - orphan  : anchor is gone (project deleted/moved) → safe to delete
  *   - unknown : no anchor → cannot confirm orphan (partition may still be active,
  *               e.g. a pre-P3 partition still loaded by its main checkout)
- *   - corrupt : the dir name does not match slug(anchor) → tampered/half-written
+ *   - active (legacy name) : dir named in the pre-#546 `<basename>-<hash>`
+ *               format — data is fine, the name just predates the widening;
+ *               the next command that resolves the project adopts it
+ *   - corrupt : the dir name matches neither slug(anchor) nor
+ *               legacyProjectSlug(anchor) → tampered/half-written
  */
 async function statusAll(): Promise<void> {
   const root = projectsRootDir();
@@ -208,10 +212,16 @@ async function statusAll(): Promise<void> {
     } else if (!(await pathExists(anchor))) {
       state = 'ORPHAN — project path is gone, safe to delete';
       orphanCount++;
-    } else if (projectSlug(anchor) !== slug) {
-      state = 'corrupt — dir name does not match anchor';
-    } else {
+    } else if (projectSlug(anchor) === slug) {
       state = 'active';
+    } else if (legacyProjectSlug(anchor) === slug) {
+      // Pre-#546 naming (`<basename>-<hash>`): the data is fine, the name is
+      // just the older format. status --all never renames anything, so report
+      // it as active with a hint — the next command that resolves this
+      // project's partition adopts it under the current name automatically.
+      state = 'active (legacy name; renamed automatically on next command)';
+    } else {
+      state = 'corrupt — dir name does not match anchor';
     }
 
     const kindLabel = kind ? ` ${kind}` : '';

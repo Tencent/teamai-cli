@@ -65,6 +65,29 @@ worktree reports the same first entry, giving a shared-yet-distinct identity in 
 cases. Both anchors are `realpath`-normalized so a symlinked prefix (macOS `/tmp` →
 `/private/tmp`) does not make one checkout look like two.
 
+### Partition naming (#546 + adoption)
+
+`slug(anchor) = <safe-path>-<sha256(normalized anchor) first 16 hex>` — the whole
+anchor path made filesystem-safe (leading separator dropped, separators and other
+unsafe chars → `-`), so the directory name reads back to its project, mirroring
+Claude Code's `~/.claude/projects/` naming: `/Users/x/Project/app` →
+`Users-x-Project-app-<hash>`. The trailing hash is what guarantees uniqueness
+(a `/`→`-` escape alone is not injective: `/x/my-proj` and `/x/my/proj` would
+collide and silently merge two projects' plaintext env), and the prefix is
+length-bounded so a deep path can never overflow `NAME_MAX`. The per-partition
+`anchor` file stays the authoritative reverse lookup.
+
+Because #546 changed the prefix without changing the hash, partitions written by
+older teamai (`<safe-basename>-<hash>`) are **adopted, not stranded**: every seam
+that resolves "this project's partition" (detection, init, migration) goes through
+`resolvePartitionDir`, which computes the anchor's exact legacy name and ATOMICALLY
+RENAMES the directory into the current name (same-parent metadata move — no data
+copied, an interruption leaves either name intact). A partition that cannot be
+renamed (read-only home) keeps serving under its legacy name; an authoritative
+current-format partition is never clobbered by a leftover legacy one. `status
+--all` never renames (read-only) — it reports a legacy-named partition as
+`active (legacy name; renamed automatically on next command)` instead of corrupt.
+
 ## P0 (this PR) — atomic lock + anchor split
 
 P0 is deliberately **structural**: it establishes the primitive and fixes

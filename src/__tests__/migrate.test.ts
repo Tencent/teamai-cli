@@ -135,6 +135,27 @@ describe('planMigration', () => {
     expect(plan!.mode).toBe('retire-only');
   });
 
+  it('adopts a pre-#546 legacy-NAMED partition before planning (retire-only, not a re-copy)', async () => {
+    // A partition built by a teamai older than the #546 naming widening carries
+    // the legacy <basename>-<hash> name. planMigration must adopt (rename) it
+    // FIRST — otherwise it would see "no partition" and plan a FULL re-copy of
+    // the legacy dir onto a second, empty partition.
+    await seedLegacyLayout();
+    const { legacyProjectSlug } = await import('../utils/partition.js');
+    const legacyNamed = path.join(homeDir, '.teamai', 'projects', legacyProjectSlug(repoRoot));
+    await fse.ensureDir(legacyNamed);
+    await fse.writeFile(path.join(legacyNamed, 'config.yaml'), 'repo: {}\n');
+
+    const plan = await planMigration(repoRoot);
+
+    expect(plan).not.toBeNull();
+    expect(plan!.mode).toBe('retire-only');
+    expect(plan!.partitionDir).toBe(projectDataHome(repoRoot));
+    // Adopted: the data now lives under the current-format slug.
+    expect(fse.existsSync(path.join(projectDataHome(repoRoot), 'config.yaml'))).toBe(true);
+    expect(fse.existsSync(legacyNamed)).toBe(false);
+  });
+
   it('skips a user-scope legacy config', async () => {
     await writeLegacyConfig({ scope: 'user' });
     expect(await planMigration(repoRoot)).toBeNull();

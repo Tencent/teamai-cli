@@ -17,7 +17,7 @@ import {
 } from './types.js';
 import { readFileSafe, readJson, writeFile, writeJson, expandHome, pathExists } from './utils/fs.js';
 import { resolveAnchors } from './utils/git.js';
-import { projectDataHome, writeAnchorFile } from './utils/partition.js';
+import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
 import { log } from './utils/logger.js';
 import { loadRolesManifest } from './roles.js';
 
@@ -247,7 +247,9 @@ export async function saveStateForScope(state: State, localConfig: LocalConfig):
  */
 export async function resolveProjectDataHome(projectRoot: string): Promise<string> {
   const anchors = await resolveAnchors(projectRoot);
-  return anchors ? projectDataHome(anchors.projectAnchor) : path.join(projectRoot, '.teamai');
+  // resolvePartitionDir (not bare projectDataHome) so an install whose partition
+  // predates the #546 naming widening is adopted (renamed) at init time too.
+  return anchors ? resolvePartitionDir(anchors.projectAnchor) : path.join(projectRoot, '.teamai');
 }
 
 /**
@@ -286,7 +288,11 @@ export async function detectProjectConfig(cwd?: string): Promise<LocalConfig | n
     //    (which may be untracked/unverified) must never hijack it. Switching that
     //    project to single-repo mode is `init --self`'s job (it retires the
     //    partition), not detection's.
-    const partitionDir = projectDataHome(anchors.projectAnchor);
+    // resolvePartitionDir (not bare projectDataHome): a partition written
+    // before the #546 naming widening still carries the legacy
+    // `<basename>-<hash>` name; adoption renames it into the current name so
+    // detection — and every command after it — keeps finding the config.
+    const partitionDir = await resolvePartitionDir(anchors.projectAnchor);
     const fromPartition = await readConfigFrom(partitionDir, anchors.workspaceRoot);
     if (fromPartition) return fromPartition;
     // 2. No partition config yet. A workspace that declares `mode: self` self-heals

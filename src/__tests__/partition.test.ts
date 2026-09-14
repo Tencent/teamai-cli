@@ -1,8 +1,16 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { projectSlug, projectDataHome, isCaseInsensitiveFs, resetCaseProbeCache } from '../utils/partition.js';
+import { realpathSync } from 'node:fs';
+import {
+  projectSlug,
+  legacyProjectSlug,
+  projectDataHome,
+  resolvePartitionDir,
+  isCaseInsensitiveFs,
+  resetCaseProbeCache,
+} from '../utils/partition.js';
 
 const originalHome = process.env.HOME;
 
@@ -107,5 +115,108 @@ describe('projectSlug / projectDataHome (issue #374 partition identity)', () => 
     expect(typeof first).toBe('boolean');
     expect(second).toBe(first);
     fs.rmSync(probeDir, { recursive: true, force: true });
+  });
+});
+
+describe('legacyProjectSlug (pre-#546 partition naming)', () => {
+  it('keeps the old <basename>-<hash> format and shares the hash with the current slug', () => {
+    resetCaseProbeCache();
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false); // force case-sensitive
+    const legacy = legacyProjectSlug('/Users/x/Project/teamai-cli');
+    expect(legacy).toMatch(/^teamai-cli-[0-9a-f]{16}$/);
+    // Same hash suffix — this shared suffix is what makes rename-based
+    // adoption of a legacy partition exact (same anchor, same digest).
+    expect(legacy.split('-').pop()).toBe(projectSlug('/Users/x/Project/teamai-cli').split('-').pop());
+    // …while the current slug differs (whole-path prefix).
+    expect(legacy).not.toBe(projectSlug('/Users/x/Project/teamai-cli'));
+  });
+
+  it('folds the basename like the pre-#546 implementation (cleaned, bounded to 40)', () => {
+    resetCaseProbeCache();
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    const longName = 'x'.repeat(60);
+    const legacy = legacyProjectSlug(`/work/${longName}`);
+    expect(legacy).toMatch(/^x{40}-[0-9a-f]{16}$/);
+  });
+});
+
+describe('resolvePartitionDir (legacy partition adoption)', () => {
+  let base: string;
+  let home: string;
+  let anchor: string;
+
+  const projectsRoot = () => path.join(home, '.teamai', 'projects');
+  const canonical = () => path.join(projectsRoot(), projectSlug(anchor));
+  const legacy = () => path.join(projectsRoot(), legacyProjectSlug(anchor));
+
+  beforeEach(() => {
+    base = realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-adopt-')));
+    home = path.join(base, 'home');
+    fs.mkdirSync(home, { recursive: true });
+    process.env.HOME = home;
+    anchor = path.join(base, 'project');
+    fs.mkdirSync(anchor, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  it('returns the canonical path for a fresh install (pure resolution, no mkdir)', async () => {
+    const dir = await resolvePartitionDir(anchor);
+    expect(dir).toBe(canonical());
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('adopts a legacy-named partition by renaming it under the current name', async () => {
+    fs.mkdirSync(legacy(), { recursive: true });
+    fs.writeFileSync(path.join(legacy(), 'config.yaml'), 'repo: {}\n');
+    fs.writeFileSync(path.join(legacy(), 'env.local'), 'TOKEN=s3cret\n');
+
+    const dir = await resolvePartitionDir(anchor);
+
+    expect(dir).toBe(canonical());
+    expect(fs.existsSync(legacy())).toBe(false);
+    expect(fs.readFileSync(path.join(dir, 'config.yaml'), 'utf-8')).toBe('repo: {}\n');
+    expect(fs.readFileSync(path.join(dir, 'env.local'), 'utf-8')).toBe('TOKEN=s3cret\n');
+  });
+
+  it('keeps an authoritative canonical partition and leaves a leftover legacy dir alone', async () => {
+    fs.mkdirSync(canonical(), { recursive: true });
+    fs.writeFileSync(path.join(canonical(), 'config.yaml'), 'authoritative\n');
+    fs.mkdirSync(legacy(), { recursive: true });
+    fs.writeFileSync(path.join(legacy(), 'config.yaml'), 'stale\n');
+
+    const dir = await resolvePartitionDir(anchor);
+
+    expect(dir).toBe(canonical());
+    expect(fs.readFileSync(path.join(dir, 'config.yaml'), 'utf-8')).toBe('authoritative\n');
+    // Never clobber the authoritative partition; the stale dir stays for
+    // `status --all` / manual cleanup (same rule as migration).
+    expect(fs.readFileSync(path.join(legacy(), 'config.yaml'), 'utf-8')).toBe('stale\n');
+  });
+
+  it('replaces an empty canonical leftover with the full legacy partition', async () => {
+    fs.mkdirSync(legacy(), { recursive: true });
+    fs.writeFileSync(path.join(legacy(), 'config.yaml'), 'real\n');
+    fs.mkdirSync(canonical(), { recursive: true }); // bare mkdir from a crashed init
+
+    const dir = await resolvePartitionDir(anchor);
+
+    expect(dir).toBe(canonical());
+    expect(fs.readFileSync(path.join(dir, 'config.yaml'), 'utf-8')).toBe('real\n');
+    expect(fs.existsSync(legacy())).toBe(false);
+  });
+
+  it('is idempotent: a resolve after adoption lands on the canonical dir', async () => {
+    fs.mkdirSync(legacy(), { recursive: true });
+    fs.writeFileSync(path.join(legacy(), 'state.json'), '{}\n');
+
+    await resolvePartitionDir(anchor);
+    const again = await resolvePartitionDir(anchor);
+
+    expect(again).toBe(canonical());
+    expect(fs.existsSync(path.join(canonical(), 'state.json'))).toBe(true);
+    expect(fs.existsSync(legacy())).toBe(false);
   });
 });

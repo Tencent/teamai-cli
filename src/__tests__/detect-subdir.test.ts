@@ -6,7 +6,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { detectProjectConfig, resolveDataHomeForScope } from '../config.js';
 import { getDataHome, getTeamaiHome } from '../types.js';
-import { projectDataHome } from '../utils/partition.js';
+import { legacyProjectSlug, projectDataHome } from '../utils/partition.js';
 
 // ─── detectProjectConfig subdirectory / worktree awareness (issue #374 P0) ──
 //
@@ -163,6 +163,42 @@ describe('resolveDataHomeForScope — desync guard', () => {
       expect(detected).not.toBeNull();
       expect(getDataHome(detected!)).toBe(partition);
       expect(await resolveDataHomeForScope('project', pRepo)).toBe(partition);
+    } finally {
+      if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
+    }
+  });
+
+  it('adopts a pre-#546 legacy-NAMED partition on detection (renamed to the current slug)', async () => {
+    // A partition written before the #546 naming widening lives under
+    // ~/.teamai/projects/<basename>-<hash>/. Detection must resolve it —
+    // adopting (renaming) it into the current <path>-<hash> name — instead of
+    // treating the project as uninitialized.
+    const home = path.join(base, 'adopt-home');
+    fs.mkdirSync(home, { recursive: true });
+    const origHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const pRepo = path.join(base, 'adopt-repo');
+      fs.mkdirSync(pRepo);
+      git(pRepo, 'init', '-q');
+      git(pRepo, 'config', 'user.email', 't@e');
+      git(pRepo, 'config', 'user.name', 'T');
+      git(pRepo, 'commit', '--allow-empty', '-q', '-m', 'init');
+      const anchorReal = realpathSync(pRepo);
+      const legacyPartition = path.join(home, '.teamai', 'projects', legacyProjectSlug(anchorReal));
+      fs.mkdirSync(legacyPartition, { recursive: true });
+      fs.writeFileSync(path.join(legacyPartition, 'config.yaml'), YAML.stringify({
+        repo: { localPath: path.join(legacyPartition, 'team-repo'), remote: 'https://example.com/x.git', kind: 'git' },
+        username: 'test', scope: 'project', projectRoot: anchorReal, additionalRoles: [],
+      }));
+
+      const detected = await detectProjectConfig(pRepo);
+
+      expect(detected).not.toBeNull();
+      expect(getDataHome(detected!)).toBe(projectDataHome(anchorReal));
+      // Adopted: the legacy-named dir is gone, the data lives under the new name.
+      expect(fs.existsSync(legacyPartition)).toBe(false);
+      expect(fs.existsSync(path.join(projectDataHome(anchorReal), 'config.yaml'))).toBe(true);
     } finally {
       if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
     }

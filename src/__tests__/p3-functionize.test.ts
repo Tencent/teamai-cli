@@ -184,4 +184,25 @@ describe('P3 status --all orphan verdict rests on the anchor, not a persisted wo
     expect(out).toMatch(/\[active\]/);
     expect(out).not.toContain('ORPHAN');
   });
+
+  it('a partition in the pre-#546 legacy name format is active (legacy hint), NOT corrupt', async () => {
+    // #546 widened the slug prefix from the basename to the whole path. A
+    // partition named the OLD way (<basename>-<hash>) holds perfectly good
+    // data until the next command adopts it — status --all must recognize the
+    // legacy name instead of crying corrupt.
+    const { legacyProjectSlug, writeAnchorFile } = await import('../utils/partition.js');
+    const liveProject = path.join(base, 'legacy-named-project');
+    fs.mkdirSync(liveProject, { recursive: true });
+    const partition = path.join(home, '.teamai', 'projects', legacyProjectSlug(liveProject));
+    fs.mkdirSync(partition, { recursive: true });
+    await writeAnchorFile(partition, liveProject);
+
+    const { status } = await import('../status.js');
+    await status({ all: true } as never);
+
+    const out = logLines.join('\n');
+    expect(out).toMatch(/\[active \(legacy name/);
+    expect(out).not.toContain('corrupt');
+    expect(out).not.toContain('ORPHAN');
+  });
 });
