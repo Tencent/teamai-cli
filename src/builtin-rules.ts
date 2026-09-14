@@ -101,6 +101,10 @@ export async function deployBuiltinRules(
 
 const TEAMAI_RECALL_RULE_CONTENT = `# Team Knowledge Recall (teamai)
 
+> **Self-exemption (must read first):** If you ARE the \`teamai-recall\` subagent yourself, this rule does NOT apply to you — do not invoke \`teamai-recall\` (or any recall) again. Proceed directly to performing the knowledge search that is your task. This prevents infinite subagent recursion in tools (e.g. Cursor) whose always-apply rules leak into subagent sessions.
+>
+> **自豁免（务必先读）：** 如果你自己就是 \`teamai-recall\` subagent，本规则对你不适用——不要再调用 \`teamai-recall\`（或任何 recall），直接执行你本职的知识检索任务。此举防止在（如 Cursor 等）会把 always-apply 规则泄漏进 subagent 会话的工具中发生无限递归。
+
 ## 规则：任务开始前检索团队知识库（推荐）
 
 **Before** starting a task that involves code changes, debugging,
