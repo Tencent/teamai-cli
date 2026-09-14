@@ -547,11 +547,6 @@ async function pullForScope(
   const targetsField = revisionField === 'lastPullRev'
     ? 'lastPullTargets' as const
     : 'lastInheritedPullTargets' as const;
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
-  if (!teamConfig) {
-    log.warn(`[${scopeLabel}] Team config (teamai.yaml) not found. Skipping.`);
-    return;
-  }
 
   // Step 1: refresh team repo (git pull, or HTTP /repo materialization)
   const pullSpin = spinner(`[${scopeLabel}] Pulling team repo...`).start();
@@ -575,6 +570,14 @@ async function pullForScope(
     pullSpin.succeed(`[${scopeLabel}] Team repo: ${refresh.label}`);
   } catch (e) {
     pullSpin.fail(`[${scopeLabel}] Pull failed: ${(e as Error).message}`);
+    return;
+  }
+
+  // Read teamai.yaml only after the refresh: a clone that lacks it must still
+  // be able to fetch it from the remote instead of skipping forever.
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  if (!teamConfig) {
+    log.warn(`[${scopeLabel}] Team config (teamai.yaml) not found. Skipping.`);
     return;
   }
 

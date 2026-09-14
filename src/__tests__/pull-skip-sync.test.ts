@@ -75,7 +75,7 @@ vi.mock('../update.js', () => ({
 
 import { pull, compileRecallRulesBlock, cleanupInactiveNamespaceSkills } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope, saveStateForScope } from '../config.js';
-import { getHeadRev, createGit } from '../utils/git.js';
+import { getHeadRev, createGit, pullRepo } from '../utils/git.js';
 import { log } from '../utils/logger.js';
 import {
   TEAMAI_RECALL_RULES_START,
@@ -169,6 +169,19 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     );
     // State should NOT be re-saved (no sync happened)
     expect(saveStateForScope).not.toHaveBeenCalled();
+  });
+
+  it('should refresh the clone before reading teamai.yaml when it is missing locally', async () => {
+    // The clone lacks teamai.yaml until git pull brings it from the remote.
+    let pulled = false;
+    vi.mocked(pullRepo).mockImplementationOnce(async () => { pulled = true; return 'updated'; });
+    vi.mocked(loadTeamConfig).mockImplementation(async () => (pulled ? baseTeamConfig : null));
+    vi.mocked(getHeadRev).mockResolvedValue('def5678');
+
+    await pull({ force: true });
+
+    expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('teamai.yaml) not found'));
+    expect(saveStateForScope).toHaveBeenCalled();
   });
 
   it('should sync once when a matching legacy state has no target marker', async () => {
