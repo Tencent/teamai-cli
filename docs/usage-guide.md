@@ -1428,6 +1428,18 @@ The user-level `updatePolicy` always takes priority over the team-level `autoUpd
 ### Usage reporting
 
 By default, `teamai pull` commits session/usage stats into the team repo.
+Pull waits up to 5 seconds for the reporting batch, then continues its other
+work while reporting finishes. A late successful push still updates the local
+reported snapshots. Usage events are removed only after every selected target
+confirms success; failed pushes preserve them. The affected sync locks remain
+held until reporting finishes, preventing another pull from racing the report.
+
+This is best-effort reporting, not crash-safe delivery: termination between a
+remote push and local acknowledgement can still cause duplicate statistics.
+It does not provide durable per-target deduplication for partial multi-repo
+reports. The 5-second wait limit does not cancel Git or force the CLI process
+to exit while a subprocess is still running.
+
 Teams that pull from a read-only remote (or simply don't want stat commits)
 can turn this off in `teamai.yaml`:
 

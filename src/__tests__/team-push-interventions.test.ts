@@ -37,6 +37,7 @@ vi.mock('../utils/fs.js', async (importActual) => {
 });
 
 import { reportUsageToTeam } from '../team-push.js';
+import { withTimeout } from '../utils/async.js';
 
 let tmpDir: string;
 let repoDir: string;
@@ -61,7 +62,7 @@ beforeEach(() => {
   process.env.HOME = tmpDir;
   repoDir = path.join(tmpDir, 'repo');
   fs.mkdirSync(repoDir, { recursive: true });
-  pushRepoDirectly.mockClear();
+  pushRepoDirectly.mockReset().mockResolvedValue(undefined);
   reportsMocks.commitAndPushReports.mockClear().mockResolvedValue(true);
   reportsMocks.ensureReportsWorktree.mockReset().mockImplementation(async (cfg: LocalConfig) => {
     const dir = path.join(path.dirname(cfg.repo.localPath), 'reports-wt');
@@ -71,6 +72,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   process.env.HOME = originalHome;
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -82,6 +84,69 @@ function writeDashboardEvents(lines: object[]): void {
 }
 
 describe('reportUsageToTeam — intervention reporting', () => {
+  function seedReport(): string {
+    const timestamp = new Date().toISOString();
+    writeDashboardEvents([
+      { type: 'session_start', timestamp, sessionId: 'slow', tool: 'claude', cwd: '/p' },
+      { type: 'prompt_submit', timestamp, sessionId: 'slow', tool: 'claude', promptSummary: 'hi' },
+      { type: 'stop', timestamp, sessionId: 'slow', tool: 'claude',
+        interventions: { interrupt: 1, toolReject: 0 },
+        tokens: { input: 10, output: 5, cacheRead: 0, cacheCreation: 0 } },
+    ]);
+    const usagePath = path.join(tmpDir, '.teamai', 'usage.jsonl');
+    fs.writeFileSync(usagePath, JSON.stringify({ skill: 'review', timestamp, tool: 'claude' }) + '\n');
+    return usagePath;
+  }
+
+  it.each(['reports', 'legacy'])('finishes acknowledgement after the caller times out (%s)', async (backend) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const usagePath = seedReport();
+    let finish!: (value: boolean) => void;
+    let started!: () => void;
+    const pushStarted = new Promise<void>((resolve) => { started = resolve; });
+    const pushResult = new Promise<boolean>((resolve) => { finish = resolve; });
+    const delayedPush = () => { started(); return pushResult; };
+    if (backend === 'reports') reportsMocks.commitAndPushReports.mockImplementationOnce(delayedPush);
+    else pushRepoDirectly.mockImplementationOnce(delayedPush);
+
+    const operation = reportUsageToTeam(repoDir, 'me', backend === 'reports' ? { selfConfig: gitConfig() } : undefined);
+    const timeout = expect(withTimeout(operation, 5000, 'report pending')).rejects.toThrow('report pending');
+    await pushStarted;
+    await vi.advanceTimersByTimeAsync(5000);
+    await timeout;
+    expect(fs.readFileSync(usagePath, 'utf-8')).toContain('review');
+    const dashboard = path.join(tmpDir, '.teamai', 'dashboard');
+    expect(fs.existsSync(path.join(dashboard, 'reported-prompt-tokens.json'))).toBe(false);
+
+    finish(true);
+    expect(await operation).toBe(true);
+    expect(fs.readFileSync(usagePath, 'utf-8')).toBe('');
+    for (const name of ['interventions', 'prompt-tokens', 'daily-sessions']) {
+      expect(JSON.parse(fs.readFileSync(path.join(dashboard, `reported-${name}.json`), 'utf-8')).slow).toBeDefined();
+    }
+    const statsPath = backend === 'reports' ? reportsStatsPath() : path.join(repoDir, 'stats', 'me.yaml');
+    const before = fs.readFileSync(statsPath, 'utf-8');
+    expect(await reportUsageToTeam(repoDir, 'me', backend === 'reports' ? { selfConfig: gitConfig() } : undefined)).toBe(true);
+    expect(fs.readFileSync(statsPath, 'utf-8')).toBe(before);
+  });
+
+  it.each(['false', 'rejection'])('retains events and snapshots when push returns %s', async (failure) => {
+    const usagePath = seedReport();
+    const before = fs.readFileSync(usagePath, 'utf-8');
+    if (failure === 'false') reportsMocks.commitAndPushReports.mockResolvedValueOnce(false);
+    else reportsMocks.commitAndPushReports.mockRejectedValueOnce(new Error('offline'));
+    expect(await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() })).toBe(false);
+    expect(fs.readFileSync(usagePath, 'utf-8')).toBe(before);
+    for (const name of ['interventions', 'prompt-tokens', 'daily-sessions']) {
+      expect(fs.existsSync(path.join(tmpDir, '.teamai', 'dashboard', `reported-${name}.json`))).toBe(false);
+    }
+    expect(await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() })).toBe(true);
+    const stats = YAML.parse(fs.readFileSync(reportsStatsPath(), 'utf-8'));
+    expect(stats.skills.review.count).toBe(1);
+    expect(stats.prompts).toBe(1);
+    expect(stats.tokens.input).toBe(10);
+  });
+
   it('writes intervention totals into stats/<user>.yaml and advances the reported snapshot', async () => {
     const ts = new Date().toISOString();
     writeDashboardEvents([

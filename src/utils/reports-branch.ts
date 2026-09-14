@@ -258,6 +258,7 @@ export async function commitAndPushReports(
   localConfig: LocalConfig,
   message: string,
   files: string[],
+  options: { pushIfUnchanged?: boolean } = {},
 ): Promise<boolean> {
   const lockPath = reportsLockPath(localConfig);
   const locked = await acquireLock(lockPath);
@@ -272,12 +273,14 @@ export async function commitAndPushReports(
 
     await git.add(files);
     const status = await git.status();
-    if (status.staged.length === 0) {
+    if (status.staged.length === 0 && !options.pushIfUnchanged) {
       log.debug('[reports] nothing to commit');
       return false;
     }
 
-    await commitSkippingHooks(git, message);
+    // A report retry may reconstruct the same tree as a previously committed
+    // but unconfirmed push. It still needs a push, without an empty commit.
+    if (status.staged.length > 0) await commitSkippingHooks(git, message);
 
     // Push with fetch+rebase retry. Each member only writes <user>.yaml, so
     // rebase conflicts are effectively impossible; retries handle the pure

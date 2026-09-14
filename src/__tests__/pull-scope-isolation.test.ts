@@ -57,7 +57,7 @@ vi.mock('../mcp-reconcile.js', () => ({
 }));
 
 vi.mock('../team-push.js', () => ({
-  reportUsageToTeam: vi.fn().mockResolvedValue(undefined),
+  reportUsageToTeam: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('../usage-tracker.js', () => ({
@@ -95,6 +95,8 @@ import { log } from '../utils/logger.js';
 import { reconcileTeamHooksForConfig } from '../hooks.js';
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { reportUsageToTeam } from '../team-push.js';
+import { readUsageEvents, truncateUsageAfterReport } from '../usage-tracker.js';
+import { releaseLock } from '../update.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 const SKIP_MSG = 'project scope detected, skipped user scope';
@@ -110,6 +112,8 @@ describe('pull scope isolation (issue #73)', () => {
   let projectConfig: LocalConfig;
 
   beforeEach(async () => {
+    vi.mocked(reportUsageToTeam).mockReset().mockResolvedValue(true);
+    vi.mocked(readUsageEvents).mockResolvedValue([]);
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-scope-iso-'));
     homeDir = path.join(tmpDir, 'home');
     userRepoPath = path.join(tmpDir, 'user-repo');
@@ -185,9 +189,51 @@ describe('pull scope isolation (issue #73)', () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     vi.unstubAllEnvs();
     vi.clearAllMocks();
     await fse.remove(tmpDir);
+  });
+
+  it.each([false, true])('only consumes usage after confirmed success: %s', async (success) => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(readUsageEvents).mockResolvedValue([{ skill: 'review', timestamp: new Date().toISOString(), tool: 'claude' }]);
+    vi.mocked(reportUsageToTeam).mockResolvedValueOnce(success);
+    await pull({ silent: true });
+    if (success) {
+      expect(truncateUsageAfterReport).toHaveBeenCalledTimes(1);
+      expect(truncateUsageAfterReport).toHaveBeenCalledWith(1);
+    }
+    else expect(truncateUsageAfterReport).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('keeps late completion alive without starting a second report: %s', async (success) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(readUsageEvents).mockResolvedValue([{ skill: 'review', timestamp: new Date().toISOString(), tool: 'claude' }]);
+    let finish!: (value: boolean) => void;
+    let started!: () => void;
+    const pushStarted = new Promise<void>((resolve) => { started = resolve; });
+    const pushResult = new Promise<boolean>((resolve) => { finish = resolve; });
+    vi.mocked(reportUsageToTeam).mockImplementationOnce(() => { started(); return pushResult; });
+    const pulling = pull({ silent: true });
+    await pushStarted;
+    await vi.advanceTimersByTimeAsync(5000);
+    await pulling;
+    expect(truncateUsageAfterReport).not.toHaveBeenCalled();
+    expect(releaseLock).not.toHaveBeenCalled();
+    expect(pullSources).toHaveBeenCalled();
+    await pull({ silent: true });
+    expect(reportUsageToTeam).toHaveBeenCalledTimes(1);
+    finish(success);
+    await vi.advanceTimersByTimeAsync(0);
+    if (success) {
+      expect(truncateUsageAfterReport).toHaveBeenCalledTimes(1);
+      expect(truncateUsageAfterReport).toHaveBeenCalledWith(1);
+    }
+    else expect(truncateUsageAfterReport).not.toHaveBeenCalled();
+    await pull({ silent: true });
+    expect(reportUsageToTeam).toHaveBeenCalledTimes(2);
   });
 
   it('project mode: skips user scope entirely and pulls source against project', async () => {
