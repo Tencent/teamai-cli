@@ -98,6 +98,13 @@ is left untouched) and self-healing (it finishes an adoption that crashed betwee
 the rename and the config rewrite) — the same `repo.localPath` rebase that
 `migrate.ts` applies when moving a legacy `.teamai/` into a partition.
 
+The rewrite is ATOMIC (same-dir temp file + rename, via `writeFileAtomic`). By
+this point the legacy source has already been renamed away, so config.yaml is the
+partition's only copy; a plain overwrite that failed partway (ENOSPC, EFBIG, a
+crash mid-write) would truncate it with no way back. rename(2) is atomic, so a
+failed write removes the temp file and leaves the original config.yaml intact —
+the next command retries the (idempotent) rebase and converges.
+
 ## P0 (this PR) — atomic lock + anchor split
 
 P0 is deliberately **structural**: it establishes the primitive and fixes

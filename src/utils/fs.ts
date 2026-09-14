@@ -54,6 +54,38 @@ export async function writeFile(filePath: string, content: string): Promise<void
 }
 
 /**
+ * Write a text file atomically (same-dir temp file + rename), preserving the
+ * target's existing permission bits (or defaulting to 0o600 for a new file).
+ *
+ * rename(2) within a filesystem is atomic, so a failed or interrupted write
+ * (ENOSPC, EFBIG, a crash mid-write) can NEVER truncate or corrupt an existing
+ * target — the original file is untouched until the fully-written temp file
+ * replaces it in one step, and on any error the temp file is removed and the
+ * original left in place. Use this for a single-copy, must-not-be-lost file
+ * such as a partition's config.yaml; `writeFile` (a plain overwrite) is fine
+ * for regenerable files.
+ */
+export async function writeFileAtomic(filePath: string, content: string): Promise<void> {
+  const expanded = expandHome(filePath);
+  await fse.ensureDir(path.dirname(expanded));
+  let mode = 0o600;
+  try {
+    mode = (await fse.stat(expanded)).mode & 0o777;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const tmp = `${expanded}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await fse.writeFile(tmp, content, 'utf-8');
+    await fse.chmod(tmp, mode);
+    await fse.rename(tmp, expanded);
+  } catch (error) {
+    await fse.remove(tmp).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
  * Read JSON file, return null if not found
  */
 export async function readJson<T = unknown>(filePath: string): Promise<T | null> {

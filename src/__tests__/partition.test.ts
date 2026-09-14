@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { realpathSync } from 'node:fs';
+import fse from 'fs-extra';
 import YAML from 'yaml';
 import {
   projectSlug,
@@ -271,5 +272,33 @@ describe('resolvePartitionDir (legacy partition adoption)', () => {
 
     expect(dir).toBe(canonical());
     expect(fs.readFileSync(path.join(canonical(), 'config.yaml'), 'utf-8')).toBe(yaml);
+  });
+
+  it('preserves config.yaml intact when the localPath rewrite fails mid-write (atomic)', async () => {
+    // The legacy source is already renamed away, so config.yaml is the only copy.
+    // A partial overwrite (ENOSPC/EFBIG/crash) must never truncate it — the write
+    // is atomic (same-dir temp + rename), so a failed write leaves the original.
+    const original = YAML.stringify({
+      repo: { localPath: path.join(legacy(), 'team-repo'), remote: 'https://x', kind: 'git' },
+      username: 'a', scope: 'project', projectRoot: anchor, additionalRoles: [],
+    });
+    fs.mkdirSync(legacy(), { recursive: true });
+    fs.writeFileSync(path.join(legacy(), 'config.yaml'), original);
+
+    // Fail the temp-file write the atomic writer performs (simulates EFBIG).
+    const spy = vi.spyOn(fse, 'writeFile').mockRejectedValueOnce(
+      Object.assign(new Error('EFBIG: file too large, write'), { code: 'EFBIG' }) as never,
+    );
+
+    // The adoption rename still happens; only the config rewrite fails and rethrows.
+    await expect(resolvePartitionDir(anchor)).rejects.toThrow(/EFBIG/);
+    spy.mockRestore();
+
+    // config.yaml survived byte-for-byte at the canonical location — not truncated,
+    // not empty — so the next command can retry (the rebase is idempotent).
+    const after = fs.readFileSync(path.join(canonical(), 'config.yaml'), 'utf-8');
+    expect(after).toBe(original);
+    // No temp file left behind.
+    expect(fs.readdirSync(canonical()).some((f) => f.endsWith('.tmp'))).toBe(false);
   });
 });

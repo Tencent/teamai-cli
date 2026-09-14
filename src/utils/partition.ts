@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import YAML from 'yaml';
 import { getUserHome } from './home.js';
-import { readFileSafe, writeFile, expandHome } from './fs.js';
+import { readFileSafe, writeFileAtomic, expandHome } from './fs.js';
 
 /**
  * Per-project data partition identity (issue #374 P1).
@@ -289,7 +289,11 @@ async function rebaseLocalPathAfterAdoption(canonical: string, legacyDir: string
   const rebased = rel === '' ? canonical : path.join(canonical, rel);
   if (rebased === repo.localPath) return;
   repo.localPath = rebased;
-  await writeFile(configPath, YAML.stringify(doc));
+  // Atomic write (same-dir temp + rename): config.yaml is the partition's only
+  // copy and the legacy source has already been renamed away, so a partial
+  // overwrite (ENOSPC/EFBIG/crash mid-write) would truncate it with no way back.
+  // A failed rename leaves the original config.yaml untouched.
+  await writeFileAtomic(configPath, YAML.stringify(doc));
 }
 
 async function dirExists(p: string): Promise<boolean> {
