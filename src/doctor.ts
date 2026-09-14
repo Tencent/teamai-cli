@@ -2,12 +2,13 @@ import path from 'node:path';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import type { GlobalOptions, Scope } from './types.js';
+import type { GlobalOptions } from './types.js';
 import {
-  TeamaiConfigSchema,
   TEAMAI_ENV_START,
   resolveHookScope,
   getDataHome,
+  isAgentExcluded,
+  scopedToolPaths,
   type TeamaiConfig,
 } from './types.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder } from './hooks.js';
@@ -66,30 +67,37 @@ async function hasInstalledCodexHooks(toolPaths: TeamaiConfig['toolPaths'], base
   return false;
 }
 
-export async function doctor(options: GlobalOptions): Promise<void> {
+export async function doctor(options: GlobalOptions): Promise<boolean> {
   log.info('Running diagnostics...\n');
   const projectConfig = await detectProjectConfig();
   const localConfig = projectConfig ?? (await loadLocalConfig());
-  const scope: Scope = localConfig?.scope ?? 'user';
-  const configPathLabel = projectConfig
-    ? `${projectConfig.projectRoot}/.teamai/config.yaml`
-    : '~/.teamai/config.yaml';
+  if (!localConfig) {
+    console.log('  Scope: not initialized\n');
+    console.log('  ✖ TeamAI is not initialized');
+    console.log('    → Run `teamai init <repo-url>` in a project, or add `--scope user` for all projects');
+    console.log('');
+    log.warn('Initialization is required before diagnostics can run.');
+    return false;
+  }
 
-  console.log(`  Scope: ${scope}${scope === 'project' && localConfig?.projectRoot ? ` (${localConfig.projectRoot})` : ''}\n`);
+  const scope = localConfig.scope ?? 'user';
+  const scopeLabel = `${scope}${scope === 'project' && localConfig.projectRoot ? ` (${localConfig.projectRoot})` : ''}`;
+  console.log(`  Scope: ${scopeLabel}\n`);
 
   // Try to load team config for dynamic tool paths and provider
-  let teamConfig: TeamaiConfig | null = null;
-  if (localConfig) {
-    teamConfig = await loadTeamConfig(localConfig.repo.localPath);
-  }
-  // Fall back to schema defaults if team config is unavailable
-  const toolPaths = teamConfig?.toolPaths ?? TeamaiConfigSchema.shape.toolPaths.parse(undefined);
-  const providerName = teamConfig?.provider ?? 'tgit';
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const toolPaths: TeamaiConfig['toolPaths'] = teamConfig
+    ? Object.fromEntries(
+      Object.entries(scopedToolPaths(teamConfig, localConfig))
+        .filter(([tool]) => !isAgentExcluded(localConfig, tool)),
+    )
+    : {};
+  const providerName = teamConfig?.provider;
   // Hook checks must look where hooks are actually injected. resolveHookScope
   // maps a non-self project scope to HOME (#264), matching the injection path in
   // init/pull/hooks-cmd — otherwise doctor checks <projectRoot>/.claude while the
   // hooks live in ~/.claude and always reports them missing.
-  const baseDir = localConfig ? resolveHookScope(localConfig).baseDir : getUserHome();
+  const baseDir = resolveHookScope(localConfig).baseDir;
 
   const checks: Check[] = [];
 
@@ -146,22 +154,13 @@ export async function doctor(options: GlobalOptions): Promise<void> {
 
   checks.push(
     {
-      name: `Local config exists (${configPathLabel})`,
-      check: async () => localConfig !== null,
-      fix: 'Run `teamai init` to initialize',
-    },
-    {
       name: 'Team repo exists locally',
-      check: async () => {
-        if (!localConfig) return false;
-        return pathExists(localConfig.repo.localPath);
-      },
+      check: async () => pathExists(localConfig.repo.localPath),
       fix: 'Run `teamai init` to clone the team repo',
     },
     {
       name: 'Team config (teamai.yaml) is valid',
       check: async () => {
-        if (!localConfig) return false;
         const config = await loadTeamConfig(localConfig.repo.localPath);
         return config !== null;
       },
@@ -173,7 +172,6 @@ export async function doctor(options: GlobalOptions): Promise<void> {
       check: async () => {
         if (teamConfig?.sharing?.env?.injectShellProfile === false) return true;
 
-        if (!localConfig) return true;
         const envYamlPath = path.join(localConfig.repo.localPath, 'env', 'env.yaml');
         if (!await pathExists(envYamlPath)) return true;
 
@@ -212,13 +210,11 @@ export async function doctor(options: GlobalOptions): Promise<void> {
     }
   }
 
-  if (localConfig) {
-    const { pkgDoctorReport } = await import('./pkg/commands.js');
-    const packageReport = await pkgDoctorReport(localConfig, process.cwd());
-    if (packageReport) {
-      for (const line of packageReport.lines) console.log(line);
-      if (!packageReport.allPassed) allPassed = false;
-    }
+  const { pkgDoctorReport } = await import('./pkg/commands.js');
+  const packageReport = await pkgDoctorReport(localConfig, process.cwd());
+  if (packageReport) {
+    for (const line of packageReport.lines) console.log(line);
+    if (!packageReport.allPassed) allPassed = false;
   }
 
   // Codex trust-gate reminder: even when hooks are installed, Codex may not run
@@ -235,4 +231,5 @@ export async function doctor(options: GlobalOptions): Promise<void> {
   } else {
     log.warn('Some checks failed. See suggestions above.');
   }
+  return allPassed;
 }

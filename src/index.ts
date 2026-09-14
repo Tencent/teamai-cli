@@ -218,7 +218,8 @@ program
   .action(async () => {
     const globalOpts = program.opts() as GlobalOptions;
     const { doctor } = await import('./doctor.js');
-    await doctor(globalOpts);
+    const allPassed = await doctor(globalOpts);
+    if (!allPassed) process.exitCode = 1;
   });
 
 // ─── Roles subcommand ─────────────────────────────────────

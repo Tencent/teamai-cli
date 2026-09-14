@@ -480,7 +480,7 @@ The existing SessionStart hook runs `teamai pull`. When the `packages` declarati
 ```bash
 teamai packages             # Install every team declaration
 teamai packages --dry-run   # Preview native commands without installing or writing files
-teamai doctor              # Check runtimes and declared package/marketplace/plugin status
+teamai doctor              # Check runtimes and declared package/marketplace/plugin status; exits 1 when any check fails
 ```
 
 After a successful install, TeamAI writes a local snapshot to `teamai.lock` under the active scope's `.teamai` directory. The lock records installed versions and the declaration hash used by the SessionStart hint; it is not stored in the team repository. In user scope, machine-wide npm tools and Claude plugins are acknowledged once, while project npm dependencies are acknowledged separately for each working directory so installing in one repository cannot silence another repository's hint.
@@ -1459,6 +1459,8 @@ teamai remove rules <name>
 teamai remove agents <name>
 teamai remove mcp <name>
 ```
+
+`teamai doctor` exits with code 0 only when every check passes, and code 1 when any check fails. Before initialization, it reports the missing configuration without assuming a Git provider.
 
 Auto-update runs in the Stop hook and is controlled by two tiers:
 

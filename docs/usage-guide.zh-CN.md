@@ -462,7 +462,7 @@ Claude 插件 target 使用 `plugin@marketplace` 格式。`claude-plugins-offici
 ```bash
 teamai packages             # 安装团队声明的全部包和插件
 teamai packages --dry-run   # 预览底层命令，不安装也不写文件
-teamai doctor              # 检查运行环境及声明的包、marketplace、插件状态
+teamai doctor              # 检查运行环境及声明的包、marketplace、插件状态；任一检查失败时退出码为 1
 ```
 
 安装成功后，TeamAI 会在当前 scope 的 `.teamai` 目录下写入本地快照 `teamai.lock`。该文件记录已安装版本，以及供 SessionStart 提示比对的声明哈希，不会写入团队仓库。在 user scope 下，全局 npm 工具和 Claude 插件只需确认一次；项目 npm 依赖会按工作目录分别确认，避免在一个仓库安装后错误关闭另一个仓库的提示。
@@ -1423,6 +1423,8 @@ teamai remove rules <name>
 teamai remove agents <name>
 teamai remove mcp <name>
 ```
+
+仅当所有检查通过时，`teamai doctor` 才以状态码 0 退出；任一检查失败时以状态码 1 退出。尚未初始化时，它只报告缺少配置，不会臆测 Git 托管平台。
 
 自动更新在 Stop hook 中执行，可通过两层控制：
 
