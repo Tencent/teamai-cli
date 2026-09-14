@@ -20,7 +20,16 @@ describe('projectSlug / projectDataHome (issue #374 partition identity)', () => 
     const a = projectSlug('/Users/x/Project/teamai-cli');
     const b = projectSlug('/Users/x/Project/teamai-cli');
     expect(a).toBe(b);
-    expect(a).toMatch(/^teamai-cli-[0-9a-f]{16}$/);
+    expect(a).toMatch(/^Users-x-Project-teamai-cli-[0-9a-f]{16}$/);
+  });
+
+  it('prefix reads back to the full project path (Claude-style readability)', () => {
+    resetCaseProbeCache();
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false); // force case-sensitive
+    const slug = projectSlug('/Users/x/Project/teamai-cli');
+    // The whole path is encoded (leading '/' dropped, separators → '-'), not
+    // just the basename — the directory name says which project it belongs to.
+    expect(slug.startsWith('Users-x-Project-teamai-cli-')).toBe(true);
   });
 
   it('does NOT collide for escape-ambiguous paths (/x/my-proj vs /x/my/proj)', () => {
@@ -31,14 +40,17 @@ describe('projectSlug / projectDataHome (issue #374 partition identity)', () => 
     expect(projectSlug('/x/my-proj')).not.toBe(projectSlug('/x/my/proj'));
   });
 
-  it('distinguishes two projects sharing a basename by hash', () => {
+  it('distinguishes two projects sharing a basename by full path + hash', () => {
     resetCaseProbeCache();
     vi.spyOn(fs, 'existsSync').mockReturnValue(false);
     const a = projectSlug('/work/a/teamai-cli');
     const b = projectSlug('/work/b/teamai-cli');
     expect(a).not.toBe(b);
-    expect(a.startsWith('teamai-cli-')).toBe(true);
-    expect(b.startsWith('teamai-cli-')).toBe(true);
+    // The full path is in the prefix, so the parent dir already tells them apart.
+    expect(a.startsWith('work-a-teamai-cli-')).toBe(true);
+    expect(b.startsWith('work-b-teamai-cli-')).toBe(true);
+    // …and the hash suffixes still differ as a second guarantee.
+    expect(a.split('-').pop()).not.toBe(b.split('-').pop());
   });
 
   it('case-insensitive FS: different spellings of one dir map to the SAME slug', () => {
@@ -66,6 +78,17 @@ describe('projectSlug / projectDataHome (issue #374 partition identity)', () => 
     const hex = slug.split('-').pop() ?? '';
     // 32-bit (8 hex) is cheaply collidable; require the widened suffix.
     expect(hex).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('bounds an overlong path prefix while the hash keeps it unique', () => {
+    resetCaseProbeCache();
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    const deep = '/' + Array.from({ length: 40 }, (_, i) => `segment${i}`).join('/');
+    const slug = projectSlug(deep);
+    // The whole slug (prefix + '-' + 16 hex) must stay well under NAME_MAX (255).
+    expect(slug.length).toBeLessThanOrEqual(200);
+    // Two long paths sharing a truncated head still resolve to distinct slugs.
+    expect(projectSlug(deep + '/alpha')).not.toBe(projectSlug(deep + '/beta'));
   });
 
   it('projectDataHome roots under ~/.teamai/projects/<slug>', () => {

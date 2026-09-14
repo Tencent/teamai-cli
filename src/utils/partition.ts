@@ -11,13 +11,17 @@ import { getUserHome } from './home.js';
  * the per-worktree workspace root. The partition lives at
  * `~/.teamai/projects/<slug>/`, entirely outside the business workspace.
  *
- * slug(anchor) = <safe-basename>-<sha256(normalized anchor) first 8 hex>
+ * slug(anchor) = <safe-path>-<sha256(normalized anchor) first 16 hex>
  *
- * The hash — not a raw path escape — is what guarantees uniqueness: escaping
- * separators is not injective (`/x/my-proj` and `/x/my/proj` would collide), and
- * the hash also avoids leaking the full home-directory structure into the
- * directory name. The human-readable basename is a convenience prefix only;
- * collisions between two projects with the same basename are broken by the hash.
+ * The prefix is the WHOLE anchor path made filesystem-safe (leading separator
+ * dropped, path separators → `-`), so the directory name reads back to the
+ * project it belongs to — mirroring how Claude Code names `~/.claude/projects/`.
+ * It is a human-readable convenience only; the trailing hash is what guarantees
+ * uniqueness. A raw path escape alone is NOT injective (`/x/my-proj` and
+ * `/x/my/proj` would collide after `/`→`-`), so the sha256 suffix breaks any
+ * such collision. The prefix is length-bounded (the hash still disambiguates
+ * when two long paths share a truncated head), and the authoritative reverse
+ * lookup remains the `anchor` file, not the (lossy, one-way) directory name.
  */
 
 let caseInsensitiveCache = new Map<string, boolean>();
@@ -84,17 +88,30 @@ function normalizeAnchor(anchor: string): string {
   return isCaseInsensitiveFs(probeDir) ? anchor.toLowerCase() : anchor;
 }
 
-/** Filesystem-safe, length-bounded basename for the human-readable slug prefix. */
-function safeBasename(anchor: string): string {
-  const raw = path.basename(anchor) || 'project';
-  const cleaned = raw.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
-  // Bound the prefix; the hash carries uniqueness so truncation is safe.
-  const bounded = (cleaned || 'project').slice(0, 40);
-  return bounded;
+/**
+ * Filesystem-safe, length-bounded prefix built from the WHOLE anchor path, so
+ * the slug reads back to its project (e.g. `/Users/x/Project/app` →
+ * `Users-x-Project-app`). Every path separator and illegal char folds to `-`;
+ * the leading `-` from the root separator is trimmed.
+ */
+function safePathPrefix(anchor: string): string {
+  const cleaned = anchor
+    // Every separator / illegal char (`/`, `\`, `:`, spaces, …) → `-`.
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    // Trim the leading `-` produced by the root separator, and any trailing one.
+    .replace(/^-+|-+$/g, '');
+  const safe = cleaned || 'project';
+  // Bound the segment well under NAME_MAX (255): prefix + '-' + 16-hex hash must
+  // fit. Keep the TAIL — the project name and its immediate parents are the
+  // identifying part; the hash disambiguates any two paths sharing a truncated
+  // head. Drop a partial leading token so we never start mid-word.
+  const MAX = 180;
+  if (safe.length <= MAX) return safe;
+  return safe.slice(safe.length - MAX).replace(/^[^-]*-/, '');
 }
 
 /**
- * `<safe-basename>-<sha256(normalized anchor)[:16]>` — stable per projectAnchor.
+ * `<safe-path>-<sha256(normalized anchor)[:16]>` — stable per projectAnchor.
  *
  * 16 hex = 64 bits of the digest. An 8-hex (32-bit) suffix is NOT collision-safe
  * — a second-preimage against a target slug is constructible in well under a
@@ -103,12 +120,12 @@ function safeBasename(anchor: string): string {
  * hashes, out of casual reach, while keeping the directory name reasonable.
  */
 export function projectSlug(anchor: string): string {
-  // Normalize once so BOTH the basename prefix and the hash are derived from the
+  // Normalize once so BOTH the path prefix and the hash are derived from the
   // same canonical spelling — on a case-insensitive volume this makes the whole
   // slug string identical for any spelling of one directory.
   const norm = normalizeAnchor(anchor);
   const hash = createHash('sha256').update(norm).digest('hex').slice(0, 16);
-  return `${safeBasename(norm)}-${hash}`;
+  return `${safePathPrefix(norm)}-${hash}`;
 }
 
 /**

@@ -159,8 +159,9 @@ leaves data half-in-both-places:
    too; every migratable top-level entry is present. Failure → discard staging, abort,
    source untouched.
 3. Atomic switch: fse.rename(staging → partition)  (same-filesystem, atomic).
-4. Write <partition>/anchor with the projectAnchor path — the slug is a one-way
-   sha256, so this file is the only reverse lookup; it lives off the workspace.
+4. Write <partition>/anchor with the projectAnchor path — the slug's readable
+   prefix is lossy (path chars folded, length-bounded) and its hash is one-way,
+   so this file is the authoritative reverse lookup; it lives off the workspace.
 5. Release the lock, then retire the source:
    a. Drop a self-contained `.gitignore` (`*`) INTO legacyDir first. An old
       install's `.teamai/` was often protected only by a repo-root rule matching
