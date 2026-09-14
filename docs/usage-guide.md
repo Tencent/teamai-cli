@@ -1425,6 +1425,8 @@ Auto-update runs in the Stop hook and is controlled by two tiers:
 
 The user-level `updatePolicy` always takes priority over the team-level `autoUpdate`.
 
+On Windows, the update check, installation, and hook refresh run without opening console windows.
+
 ### Usage reporting
 
 By default, `teamai pull` commits session/usage stats into the team repo.

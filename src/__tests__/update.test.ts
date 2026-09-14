@@ -257,7 +257,7 @@ describe('checkForUpdate', () => {
     expect(mockedExecSync).toHaveBeenCalledWith(
       expect.any(String),
       expect.arrayContaining(['view', 'version']),
-      expect.any(Object),
+      expect.objectContaining({ windowsHide: true }),
     );
     expect(result.available).toBe(true);
     expect(result.latest).toBe('99.0.0');
@@ -330,6 +330,11 @@ describe('doUpdate', () => {
     await doUpdate();
 
     expect(mockedExecSync).toHaveBeenCalledTimes(3);
+    // The hook dispatcher is hidden, but every child must opt out of Windows
+    // console creation too: registry lookup, install, and hook refresh.
+    for (const [, , options] of mockedExecSync.mock.calls) {
+      expect(options.windowsHide).toBe(true);
+    }
     expect(mockedExecSync).toHaveBeenCalledWith(
       expect.any(String),
       expect.arrayContaining(['install', '-g']),

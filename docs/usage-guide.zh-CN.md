@@ -1392,6 +1392,8 @@ teamai remove mcp <name>
 
 用户级 `updatePolicy` 始终优先于团队级 `autoUpdate`。
 
+在 Windows 上，更新检查、安装和 hooks 刷新均不会弹出命令行窗口。
+
 ### 使用统计上报
 
 默认情况下，`teamai pull` 会把会话/使用统计提交进团队仓。从只读远端拉取（或
