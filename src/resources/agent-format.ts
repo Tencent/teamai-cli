@@ -2,6 +2,7 @@ import path from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import matter from 'gray-matter';
 import { stringify as stringifyToml, parse as parseToml } from 'smol-toml';
+import { getDispatchCommand } from '../builtin-hooks.js';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
@@ -23,7 +24,7 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'opencode',
 ];
 
-export type AgentFileExtension = '.md' | '.toml';
+export type AgentFileExtension = '.md' | '.toml' | '.json';
 
 export function agentFileExtensionForTool(tool: ToolName): AgentFileExtension {
   switch (tool) {
@@ -31,6 +32,8 @@ export function agentFileExtensionForTool(tool: ToolName): AgentFileExtension {
     case 'codex-internal':
     case 'tcodex':
       return '.toml';
+    case 'kiro':
+      return '.json';
     default:
       return '.md';
   }
@@ -150,7 +153,7 @@ export function serializeAgentYaml(spec: AgentSpec): string {
 
 /** Result of rendering an AgentSpec for a specific tool. */
 export interface RenderResult {
-  ext: '.md' | '.toml';
+  ext: AgentFileExtension;
   content: string;
 }
 
@@ -196,6 +199,52 @@ export function renderForJoycode(spec: AgentSpec): RenderResult {
   return {
     ext: agentFileExtensionForTool('joycode'),
     content: renderMarkdownAgent(spec, spec.tool_extras?.['joycode']),
+  };
+}
+
+/** TeamAI-managed Kiro CLI session-start hook embedded in each agent config. */
+export const KIRO_SESSION_START_COMMAND = getDispatchCommand('session-start', 'kiro');
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isManagedKiroSessionHook(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value['command'] === 'string'
+    && value['command'].includes('teamai hook-dispatch session-start --tool kiro');
+}
+
+/**
+ * Render a Kiro custom agent as JSON. JSON is supported by both the 2.x and 3.x
+ * agent harnesses, while 2.x requires this format for embedded `agentSpawn`
+ * hooks. TeamAI owns only its session-start entry and preserves all other
+ * Kiro-private fields and hook entries from `tool_extras.kiro`.
+ */
+export function renderForKiro(spec: AgentSpec): RenderResult {
+  const extras = { ...(spec.tool_extras?.['kiro'] ?? {}) };
+  const existingHooks = isRecord(extras['hooks']) ? { ...extras['hooks'] } : {};
+  const existingAgentSpawn = Array.isArray(existingHooks['agentSpawn'])
+    ? existingHooks['agentSpawn'].filter((entry) => !isManagedKiroSessionHook(entry))
+    : [];
+  existingHooks['agentSpawn'] = [
+    ...existingAgentSpawn,
+    { command: KIRO_SESSION_START_COMMAND },
+  ];
+  extras['hooks'] = existingHooks;
+
+  const json: Record<string, unknown> = {
+    name: spec.name,
+    description: spec.description,
+    prompt: spec.instructions,
+  };
+  if (spec.model !== undefined) json['model'] = spec.model;
+  if (spec.tools !== undefined && spec.tools.length > 0) json['tools'] = spec.tools;
+  Object.assign(json, extras);
+
+  return {
+    ext: agentFileExtensionForTool('kiro'),
+    content: `${JSON.stringify(json, null, 2)}\n`,
   };
 }
 
@@ -330,6 +379,7 @@ export type ReverseResult =
 const COMMON_CLAUDE_FIELDS = new Set(['name', 'description', 'model', 'tools']);
 const COMMON_CURSOR_FIELDS = new Set(['agent_id', 'description', 'model', 'tools']);
 const COMMON_CODEX_FIELDS = new Set(['name', 'description', 'developer_instructions', 'model']);
+const COMMON_KIRO_FIELDS = new Set(['name', 'description', 'prompt', 'model', 'tools']);
 // `mode` is not carried to the AgentSpec root — it is an OpenCode-only concept
 // (teamai always renders `subagent`), so it round-trips through tool_extras.opencode.
 const COMMON_OPENCODE_FIELDS = new Set(['description', 'model']);
@@ -406,6 +456,53 @@ export function reverseFromJoycode(filePath: string, content: string): ReverseRe
   if (spec.tool_extras?.['claude']) {
     spec.tool_extras = { joycode: spec.tool_extras['claude'] };
   }
+  return { ok: true, spec };
+}
+
+/**
+ * Reverse a Kiro JSON agent config. The TeamAI-managed `agentSpawn` entry is a
+ * local delivery detail, so it is removed before remaining private fields are
+ * returned under `tool_extras.kiro`.
+ */
+export function reverseFromKiro(filePath: string, content: string): ReverseResult {
+  let parsed: Record<string, unknown>;
+  try {
+    const raw = JSON.parse(content) as unknown;
+    if (!isRecord(raw)) return { ok: false, reason: 'agent config must be a JSON object' };
+    parsed = raw;
+  } catch (err) {
+    return { ok: false, reason: `parse error: ${(err as Error).message}` };
+  }
+
+  const name = (parsed['name'] as string | undefined) ?? path.basename(filePath, '.json');
+  if (!name) return { ok: false, reason: 'missing field name' };
+  if (!parsed['description']) return { ok: false, reason: 'missing field description' };
+  if (!parsed['prompt']) return { ok: false, reason: 'missing field prompt' };
+
+  const extras: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!COMMON_KIRO_FIELDS.has(key)) extras[key] = value;
+  }
+
+  if (isRecord(extras['hooks'])) {
+    const hooks = { ...extras['hooks'] };
+    if (Array.isArray(hooks['agentSpawn'])) {
+      const remaining = hooks['agentSpawn'].filter((entry) => !isManagedKiroSessionHook(entry));
+      if (remaining.length > 0) hooks['agentSpawn'] = remaining;
+      else delete hooks['agentSpawn'];
+    }
+    if (Object.keys(hooks).length > 0) extras['hooks'] = hooks;
+    else delete extras['hooks'];
+  }
+
+  const spec: AgentSpec = {
+    name,
+    description: parsed['description'] as string,
+    instructions: parsed['prompt'] as string,
+  };
+  if (parsed['model'] !== undefined) spec.model = parsed['model'] as string;
+  if (parsed['tools'] !== undefined) spec.tools = parsed['tools'] as string[];
+  if (Object.keys(extras).length > 0) spec.tool_extras = { kiro: extras };
   return { ok: true, spec };
 }
 
@@ -639,7 +736,7 @@ export function renderForTool(spec: AgentSpec, tool: ToolName): RenderResult {
     case 'cursor': return renderForCursor(spec);
     case 'joycode': return renderForJoycode(spec);
     case 'qoder': return renderForClaude(spec);
-    case 'kiro': return renderForClaude(spec);
+    case 'kiro': return renderForKiro(spec);
     case 'zcode': return renderForClaude(spec);
     case 'opencode': return renderForOpencode(spec);
   }
