@@ -88,6 +88,16 @@ current-format partition is never clobbered by a leftover legacy one. `status
 --all` never renames (read-only) — it reports a legacy-named partition as
 `active (legacy name; renamed automatically on next command)` instead of corrupt.
 
+The rename alone is not enough: `repo.localPath` is stored in config.yaml as an
+ABSOLUTE path to the team-repo clone (`<oldPartition>/team-repo`), so adoption
+also rebases it onto the new directory — otherwise `pull` would read the team
+config from a now-gone path and silently skip the sync (exit 0, "Team config not
+found"). The rewrite is idempotent (a modern install's localPath already sits in
+the canonical dir and is left untouched; an external clone outside the partition
+is left untouched) and self-healing (it finishes an adoption that crashed between
+the rename and the config rewrite) — the same `repo.localPath` rebase that
+`migrate.ts` applies when moving a legacy `.teamai/` into a partition.
+
 ## P0 (this PR) — atomic lock + anchor split
 
 P0 is deliberately **structural**: it establishes the primitive and fixes

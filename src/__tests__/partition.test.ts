@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { realpathSync } from 'node:fs';
+import YAML from 'yaml';
 import {
   projectSlug,
   legacyProjectSlug,
@@ -218,5 +219,57 @@ describe('resolvePartitionDir (legacy partition adoption)', () => {
     expect(again).toBe(canonical());
     expect(fs.existsSync(path.join(canonical(), 'state.json'))).toBe(true);
     expect(fs.existsSync(legacy())).toBe(false);
+  });
+
+  it('rebases repo.localPath off the legacy dir so pull can still find the team clone', async () => {
+    // The team-repo clone was stored as an ABSOLUTE path inside the legacy dir.
+    // A bare rename would leave config.yaml pointing at a now-gone path and every
+    // later `pull` would silently skip the sync ("Team config not found", exit 0).
+    fs.mkdirSync(legacy(), { recursive: true });
+    fs.writeFileSync(
+      path.join(legacy(), 'config.yaml'),
+      YAML.stringify({
+        repo: { localPath: path.join(legacy(), 'team-repo'), remote: 'https://x', kind: 'git' },
+        username: 'a', scope: 'project', projectRoot: anchor, additionalRoles: [],
+      }),
+    );
+
+    const dir = await resolvePartitionDir(anchor);
+
+    expect(dir).toBe(canonical());
+    const doc = YAML.parse(fs.readFileSync(path.join(dir, 'config.yaml'), 'utf-8'));
+    // localPath now points inside the NEW partition, and that path exists.
+    expect(doc.repo.localPath).toBe(path.join(canonical(), 'team-repo'));
+    // Other fields survive the YAML round-trip untouched.
+    expect(doc.repo.remote).toBe('https://x');
+    expect(doc.username).toBe('a');
+  });
+
+  it('leaves an external repo.localPath (outside the legacy dir) untouched', async () => {
+    const external = path.join(base, 'elsewhere', 'team-repo');
+    fs.mkdirSync(legacy(), { recursive: true });
+    fs.writeFileSync(
+      path.join(legacy(), 'config.yaml'),
+      YAML.stringify({ repo: { localPath: external, remote: 'https://x', kind: 'git' } }),
+    );
+
+    const dir = await resolvePartitionDir(anchor);
+
+    const doc = YAML.parse(fs.readFileSync(path.join(dir, 'config.yaml'), 'utf-8'));
+    expect(doc.repo.localPath).toBe(external); // not inside legacyDir → left alone
+  });
+
+  it('is a no-op on a modern install whose localPath is already in the canonical dir', async () => {
+    // Fresh (current-format) partition; resolve must not rewrite anything.
+    fs.mkdirSync(canonical(), { recursive: true });
+    const yaml = YAML.stringify({
+      repo: { localPath: path.join(canonical(), 'team-repo'), remote: 'https://x', kind: 'git' },
+    });
+    fs.writeFileSync(path.join(canonical(), 'config.yaml'), yaml);
+
+    const dir = await resolvePartitionDir(anchor);
+
+    expect(dir).toBe(canonical());
+    expect(fs.readFileSync(path.join(canonical(), 'config.yaml'), 'utf-8')).toBe(yaml);
   });
 });

@@ -1,7 +1,9 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import YAML from 'yaml';
 import { getUserHome } from './home.js';
+import { readFileSafe, writeFile, expandHome } from './fs.js';
 
 /**
  * Per-project data partition identity (issue #374 P1).
@@ -201,11 +203,26 @@ export function projectDataHome(anchor: string): string {
  * The microscopic race (two processes adopting at once) is benign: the loser
  * observes the legacy name gone, finds the canonical name in place, and lands
  * on the same directory.
+ *
+ * Whenever the resolution lands on `canonical`, the stored `repo.localPath` is
+ * rebased off the legacy directory (see `rebaseLocalPathAfterAdoption`): the
+ * team-repo clone lived at `<legacyDir>/team-repo` as an ABSOLUTE path in
+ * config.yaml, so a bare directory rename would leave the config pointing at a
+ * now-gone path and every later `pull` would silently skip the sync. The
+ * rewrite is idempotent, so it also finishes an adoption that crashed between
+ * the rename and the config rewrite.
  */
 export async function resolvePartitionDir(anchor: string): Promise<string> {
   const canonical = projectDataHome(anchor);
   const legacyDir = path.join(projectsRootDir(), legacyProjectSlug(anchor));
   if (legacyDir === canonical) return canonical; // whole-path prefix == basename (root-level anchor)
+  const dir = await adoptLegacyPartition(canonical, legacyDir);
+  if (dir === canonical) await rebaseLocalPathAfterAdoption(canonical, legacyDir);
+  return dir;
+}
+
+/** Perform the rename-based adoption, returning the directory that holds the data. */
+async function adoptLegacyPartition(canonical: string, legacyDir: string): Promise<string> {
   try {
     await fs.promises.rename(legacyDir, canonical);
     return canonical;
@@ -233,6 +250,46 @@ export async function resolvePartitionDir(anchor: string): Promise<string> {
     // dir: keep serving the legacy partition so the data stays reachable.
     return legacyExists ? legacyDir : canonical;
   }
+}
+
+/**
+ * After a legacy partition is adopted (renamed) into `canonical`, its
+ * config.yaml still stores `repo.localPath` as an absolute path inside the old
+ * `legacyDir` — the team-repo clone was at `<legacyDir>/team-repo`. That path is
+ * gone, so `pull` would read the team config from a dead directory and skip the
+ * sync (exit 0, "Team config not found"). Rewrite the stored path into the new
+ * partition.
+ *
+ * Idempotent and safe to run on every resolve that lands on canonical:
+ *  - a modern install's localPath is already inside canonical (not legacyDir),
+ *    so the `path.relative` containment check leaves it untouched;
+ *  - an adoption that crashed after the rename but before this rewrite is
+ *    finished by the next command (the stale localPath is detected and fixed).
+ *
+ * `repo.localPath` is the only absolute path persisted in config.yaml (mirrors
+ * migrate.ts's `rebaseConfigPaths`); an external clone whose localPath sits
+ * outside legacyDir is left alone. The legacy path is gone at this point, so we
+ * compare on the expanded (not realpath'd) spelling — both `legacyDir` and the
+ * persisted path are built from the same `getUserHome()` root.
+ */
+async function rebaseLocalPathAfterAdoption(canonical: string, legacyDir: string): Promise<void> {
+  const configPath = path.join(canonical, 'config.yaml');
+  const content = await readFileSafe(configPath);
+  if (!content) return;
+  let doc: Record<string, unknown>;
+  try {
+    doc = YAML.parse(content) as Record<string, unknown>;
+  } catch {
+    return; // malformed config — leave it for status/doctor to surface
+  }
+  const repo = doc?.repo as { localPath?: string } | undefined;
+  if (!repo?.localPath) return;
+  const rel = path.relative(legacyDir, expandHome(repo.localPath));
+  if (rel === '' ? false : rel.startsWith('..') || path.isAbsolute(rel)) return; // not inside legacyDir
+  const rebased = rel === '' ? canonical : path.join(canonical, rel);
+  if (rebased === repo.localPath) return;
+  repo.localPath = rebased;
+  await writeFile(configPath, YAML.stringify(doc));
 }
 
 async function dirExists(p: string): Promise<boolean> {
