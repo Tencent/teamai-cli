@@ -86,18 +86,18 @@ vi.mock('../transcript-parser.js', () => ({
   parseTranscriptForVotes: mockParseTranscriptForVotes,
 }));
 
-const mockHasPendingVoteDeltas = vi.fn().mockResolvedValue(false);
 vi.mock('../votes.js', () => ({
   incrementUpvoted: mockIncrementUpvoted,
   syncVotesToTeam: mockSyncVotesToTeam,
-  hasPendingVoteDeltas: mockHasPendingVoteDeltas,
 }));
 
 const reportsBranchMocks = vi.hoisted(() => ({
-  updateReports: vi.fn().mockResolvedValue(true),
+  ensureReportsWorktree: vi.fn().mockResolvedValue('/tmp/reports-wt'),
+  commitAndPushReports: vi.fn().mockResolvedValue(true),
 }));
 vi.mock('../utils/reports-branch.js', () => ({
-  updateReports: (...args: unknown[]) => reportsBranchMocks.updateReports(...args),
+  ensureReportsWorktree: (...args: unknown[]) => reportsBranchMocks.ensureReportsWorktree(...args),
+  commitAndPushReports: (...args: unknown[]) => reportsBranchMocks.commitAndPushReports(...args),
 }));
 
 const mockSeedProjectAgentRoot = vi.fn().mockResolvedValue(undefined);
@@ -663,50 +663,6 @@ describe('hook-handlers registry', () => {
     );
 
     expect(mockIncrementUpvoted).not.toHaveBeenCalled();
-  });
-
-  it('votes-sync skips the reports fetch/push round-trip when no vote deltas are pending', async () => {
-    const registry = buildHandlerRegistry();
-    const handler = registry.find(
-      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
-    )!.handler;
-
-    mockParseTranscriptForVotes.mockResolvedValue({ referencedDocIds: [], recalledDocIds: [] });
-    mockHasPendingVoteDeltas.mockResolvedValueOnce(false);
-
-    await handler.execute(
-      { session_id: 'sid-votes-idle', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
-    );
-
-    expect(reportsBranchMocks.updateReports).not.toHaveBeenCalled();
-    expect(mockSyncVotesToTeam).not.toHaveBeenCalled();
-  });
-
-  it('votes-sync merges pending vote deltas into the synced reports worktree via updateReports', async () => {
-    const registry = buildHandlerRegistry();
-    const handler = registry.find(
-      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
-    )!.handler;
-
-    mockParseTranscriptForVotes.mockResolvedValue({ referencedDocIds: ['doc-a'], recalledDocIds: ['doc-a'] });
-    mockHasPendingVoteDeltas.mockResolvedValueOnce(true);
-    mockSyncVotesToTeam.mockResolvedValueOnce(true);
-    reportsBranchMocks.updateReports.mockImplementationOnce(
-      async (_cfg: unknown, write: (wt: string) => Promise<unknown>) => write('/tmp/reports-wt'),
-    );
-
-    await handler.execute(
-      { session_id: 'sid-votes-pending', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
-    );
-
-    expect(reportsBranchMocks.updateReports).toHaveBeenCalledOnce();
-    expect(mockSyncVotesToTeam).toHaveBeenCalledWith('/tmp/reports-wt', 'test', expect.any(String));
-    await expect(reportsBranchMocks.updateReports.mock.results[0].value).resolves.toEqual({
-      files: ['votes/test.yaml'],
-      message: '[teamai] Update votes for test',
-    });
   });
 
   it('votes-sync: incrementUpvoted receives all ids when referenced and recalled are identical', async () => {

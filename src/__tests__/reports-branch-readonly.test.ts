@@ -16,7 +16,6 @@ const mocks = vi.hoisted(() => ({
     status: vi.fn(),
     revparse: vi.fn(),
     fetch: vi.fn(),
-    rebase: vi.fn(),
   },
   isGitRepo: vi.fn(),
 }));
@@ -52,7 +51,7 @@ vi.mock('../update.js', () => ({
 }));
 
 import { acquireLock, releaseLock } from '../update.js';
-import { ensureReportsWorktree, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
+import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree } from '../utils/reports-branch.js';
 
 const config: LocalConfig = {
   repo: {
@@ -132,51 +131,27 @@ describe('ensureReportsWorktree read-only cold start', () => {
   });
 });
 
-describe('updateReports', () => {
+describe('commitAndPushReports', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isGitRepo.mockResolvedValue(true);
-    mocks.worktreeGit.revparse.mockResolvedValue('true');
-    // Offline: sync keeps the local copy and the write proceeds.
-    mocks.worktreeGit.fetch.mockRejectedValue(new Error('offline'));
     mocks.worktreeGit.add.mockResolvedValue(undefined);
     mocks.worktreeGit.commit.mockResolvedValue(undefined);
     mocks.worktreeGit.push.mockResolvedValue(undefined);
-    mocks.worktreeGit.status.mockResolvedValue({ staged: ['members/alice.yaml'], isClean: () => true });
+    mocks.worktreeGit.revparse.mockResolvedValue('true');
+    mocks.worktreeGit.status.mockResolvedValue({ staged: ['members/alice.yaml'] });
     vi.mocked(acquireLock).mockResolvedValue(true);
     vi.mocked(releaseLock).mockResolvedValue(undefined);
   });
 
   it('skips git hooks on the isolated reports worktree commit', async () => {
-    const pushed = await updateReports(config, async (wt) => {
-      expect(wt).toBe(WT);
-      return { files: ['members/'], message: '[teamai] Register member: alice' };
-    });
+    const pushed = await commitAndPushReports(config, '[teamai] Register member: alice', ['members/']);
 
     expect(pushed).toBe(true);
     expect(mocks.worktreeGit.commit).toHaveBeenCalledWith(
       '[teamai] Register member: alice',
       { '--no-verify': null },
     );
-    expect(releaseLock).toHaveBeenCalledOnce();
-  });
-
-  it('does not run the write while another report write holds the lock', async () => {
-    vi.mocked(acquireLock).mockResolvedValue(false);
-    const write = vi.fn();
-
-    await expect(updateReports(config, write)).resolves.toBe(false);
-
-    expect(write).not.toHaveBeenCalled();
-    expect(mocks.worktreeGit.commit).not.toHaveBeenCalled();
-  });
-
-  it('returns false without committing when the write has nothing to publish', async () => {
-    await expect(updateReports(config, async () => null)).resolves.toBe(false);
-
-    expect(mocks.worktreeGit.add).not.toHaveBeenCalled();
-    expect(mocks.worktreeGit.commit).not.toHaveBeenCalled();
-    expect(releaseLock).toHaveBeenCalledOnce();
   });
 });
 
@@ -196,5 +171,15 @@ describe('refreshReportsWorktree', () => {
     expect(mocks.worktreeGit.fetch).not.toHaveBeenCalled();
     expect(mocks.worktreeGit.raw).not.toHaveBeenCalled();
     expect(releaseLock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the local copy when fetch fails (offline)', async () => {
+    vi.mocked(acquireLock).mockResolvedValue(true);
+    mocks.worktreeGit.fetch.mockRejectedValue(new Error('offline'));
+
+    await refreshReportsWorktree(config, { pushIfCreated: false });
+
+    expect(mocks.worktreeGit.raw).not.toHaveBeenCalled();
+    expect(releaseLock).toHaveBeenCalledOnce();
   });
 });

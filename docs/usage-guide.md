@@ -143,7 +143,7 @@ Resulting directory structure:
 
 Independent git clones use the same reports split as single-repo mode: `members/` `sessions/` `votes/` `stats/` are written to the `teamai-reports` orphan branch (the checkout sits **beside** the clone, not inside it). Knowledge (`skills/` `rules/` `docs/` `learnings/` `teamai.yaml`) stays on the default branch. Leftover report files already on `main` are left in place and ignored.
 
-In both modes, commands that only read reports (`members`, `digest`, `projects members`, `stats`, `viz`) never create or push the `teamai-reports` branch. `teamai pull` refreshes the reports checkout from `origin` before it rebuilds the search index (vote hotness) and skill recommendations. Every report write merges into the latest `origin` copy first, so the same member reporting from several machines does not get stuck on a diverged checkout.
+In both modes, commands that only read reports (`members`, `digest`, `projects members`, `stats`, `viz`) never create or push the `teamai-reports` branch. `teamai pull` refreshes the reports checkout from `origin` before it rebuilds the search index (vote hotness) and skill recommendations.
 
 Project machine-data (config, state, the team-repo clone, search index, MCP
 manifests, resource cache) lives in a per-project partition under
