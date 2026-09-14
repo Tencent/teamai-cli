@@ -922,24 +922,34 @@ export async function initSelfRepo(options: GlobalOptions & {
   // Step 6: register member on the reports orphan branch (never touches main / active tree).
   if (!options.dryRun) {
     try {
-      const { ensureReportsWorktree, commitAndPushReports } = await import('./utils/reports-branch.js');
-      const wt = await ensureReportsWorktree(localConfig);
-      const memberDir = path.join(wt, 'members');
-      await ensureDir(memberDir);
-      const memberPath = path.join(memberDir, `${username}.yaml`);
-      const isNewSelfMember = !await pathExists(memberPath);
-      const existingSelfMember = await getMemberConfig(wt, username);
-      const { config: selfMemberConfig, changed: selfMemberChanged } = mergeMemberConfig(existingSelfMember, {
-        username,
-        projects: localConfig.projects,
-      });
-      if (selfMemberChanged) {
+      const { updateReports } = await import('./utils/reports-branch.js');
+      // updateReports syncs the worktree with origin first, so the roster merge
+      // starts from origin's copy of this member. `changed` stays undefined when
+      // another report write held the lock.
+      const roster: { changed?: boolean; isNew?: boolean } = {};
+      const pushed = await updateReports(localConfig, async (wt) => {
+        const memberDir = path.join(wt, 'members');
+        await ensureDir(memberDir);
+        const memberPath = path.join(memberDir, `${username}.yaml`);
+        roster.isNew = !await pathExists(memberPath);
+        const existingSelfMember = await getMemberConfig(wt, username);
+        const { config: selfMemberConfig, changed: selfMemberChanged } = mergeMemberConfig(existingSelfMember, {
+          username,
+          projects: localConfig.projects,
+        });
+        roster.changed = selfMemberChanged;
+        if (!selfMemberChanged) return null;
         await writeFile(memberPath, YAML.stringify(selfMemberConfig));
-        const pushed = await commitAndPushReports(localConfig, isNewSelfMember
-          ? `[teamai] Register member: ${username}`
-          : `[teamai] Update member roster: ${username}`, ['members/']);
+        return {
+          files: ['members/'],
+          message: roster.isNew
+            ? `[teamai] Register member: ${username}`
+            : `[teamai] Update member roster: ${username}`,
+        };
+      });
+      if (roster.changed !== false) {
         if (pushed) {
-          log.success(isNewSelfMember
+          log.success(roster.isNew
             ? 'Member registered on the teamai-reports branch'
             : 'Member roster updated on the teamai-reports branch');
         } else {
@@ -1361,35 +1371,43 @@ export async function init(options: GlobalOptions & {
   let isNewMember = true;
   if (!options.dryRun) {
     try {
-      const { ensureReportsWorktree, commitAndPushReports } = await import('./utils/reports-branch.js');
-      const wt = await ensureReportsWorktree(reportsConfig);
-      const memberDir = path.join(wt, 'members');
-      await ensureDir(memberDir);
-      const memberPath = path.join(memberDir, `${username}.yaml`);
-      isNewMember = !await pathExists(memberPath);
-      const existingMember = await getMemberConfig(wt, username);
-      const { config: memberConfig, changed: memberChanged } = mergeMemberConfig(existingMember, {
-        username,
-        projects: resolvedProjects,
-      });
-      if (memberChanged) {
+      const { updateReports } = await import('./utils/reports-branch.js');
+      // updateReports syncs the worktree with origin first, so the roster merge
+      // starts from origin's copy of this member. `changed` stays undefined when
+      // another report write held the lock.
+      const roster: { changed?: boolean } = {};
+      const pushed = await updateReports(reportsConfig, async (wt) => {
+        const memberDir = path.join(wt, 'members');
+        await ensureDir(memberDir);
+        const memberPath = path.join(memberDir, `${username}.yaml`);
+        isNewMember = !await pathExists(memberPath);
+        const existingMember = await getMemberConfig(wt, username);
+        const { config: memberConfig, changed: memberChanged } = mergeMemberConfig(existingMember, {
+          username,
+          projects: resolvedProjects,
+        });
+        roster.changed = memberChanged;
+        if (!memberChanged) return null;
         await writeFile(memberPath, YAML.stringify(memberConfig));
         log.success(isNewMember
           ? `Registered as team member: ${username}`
           : `Updated member roster: ${username}${memberConfig.projects ? ` (projects: ${memberConfig.projects.join(', ')})` : ''}`);
-        const pushed = await commitAndPushReports(reportsConfig, isNewMember
-          ? `[teamai] Register member: ${username}`
-          : `[teamai] Update member roster: ${username}`, ['members/']);
-        if (pushed) {
-          log.success(isNewMember
-            ? 'Member registered on the teamai-reports branch'
-            : 'Member roster updated on the teamai-reports branch');
-        } else {
-          log.warn('Member registration could not be pushed (no write access?). You are still set up locally.');
-        }
-      } else {
+        return {
+          files: ['members/'],
+          message: isNewMember
+            ? `[teamai] Register member: ${username}`
+            : `[teamai] Update member roster: ${username}`,
+        };
+      });
+      if (roster.changed === false) {
         log.info(`Member ${username} already registered`);
         isNewMember = false;
+      } else if (pushed) {
+        log.success(isNewMember
+          ? 'Member registered on the teamai-reports branch'
+          : 'Member roster updated on the teamai-reports branch');
+      } else {
+        log.warn('Member registration could not be pushed (no write access?). You are still set up locally.');
       }
     } catch (e) {
       log.warn(`Member registration skipped (non-blocking): ${(e as Error).message}`);

@@ -155,7 +155,8 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
     const { usesReportsBranch } = await import('./types.js');
     if (usesReportsBranch(config)) {
       const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
-      await ensureReportsWorktree(config);
+      // Read-only: never publish a missing reports branch.
+      await ensureReportsWorktree(config, { pushIfCreated: false });
     }
     const knowledgeRoot = getKnowledgeDir(config);
     const reportsRoot = getReportsDir(config);

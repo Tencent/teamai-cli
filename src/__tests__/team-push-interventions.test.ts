@@ -4,13 +4,14 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import type { LocalConfig } from '../types.js';
+import type { ReportsWrite } from '../utils/reports-branch.js';
 
 // Stub out git I/O so we exercise reportUsageToTeam's reporting logic
 // (delta → stats yaml → reported snapshot) without a real repo/remote.
 const pushRepoDirectly = vi.fn().mockResolvedValue(undefined);
 const reportsMocks = vi.hoisted(() => ({
-  commitAndPushReports: vi.fn().mockResolvedValue(true),
-  ensureReportsWorktree: vi.fn(),
+  updateReports: vi.fn(),
+  lastWrite: null as ReportsWrite | null,
 }));
 vi.mock('../utils/git.js', () => ({
   createGit: vi.fn(() => ({})),
@@ -20,8 +21,7 @@ vi.mock('../utils/git.js', () => ({
   isDedicatedRepoRoot: vi.fn().mockResolvedValue(true),
 }));
 vi.mock('../utils/reports-branch.js', () => ({
-  ensureReportsWorktree: (...args: unknown[]) => reportsMocks.ensureReportsWorktree(...args),
-  commitAndPushReports: (...args: unknown[]) => reportsMocks.commitAndPushReports(...args),
+  updateReports: (...args: unknown[]) => reportsMocks.updateReports(...args),
 }));
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -62,12 +62,17 @@ beforeEach(() => {
   repoDir = path.join(tmpDir, 'repo');
   fs.mkdirSync(repoDir, { recursive: true });
   pushRepoDirectly.mockClear();
-  reportsMocks.commitAndPushReports.mockClear().mockResolvedValue(true);
-  reportsMocks.ensureReportsWorktree.mockReset().mockImplementation(async (cfg: LocalConfig) => {
-    const dir = path.join(path.dirname(cfg.repo.localPath), 'reports-wt');
-    fs.mkdirSync(dir, { recursive: true });
-    return dir;
-  });
+  reportsMocks.lastWrite = null;
+  // Run the writer callback against a plain reports-wt dir, like updateReports
+  // does after syncing the real worktree.
+  reportsMocks.updateReports.mockReset().mockImplementation(
+    async (cfg: LocalConfig, write: (wt: string) => Promise<ReportsWrite | null>) => {
+      const dir = path.join(path.dirname(cfg.repo.localPath), 'reports-wt');
+      fs.mkdirSync(dir, { recursive: true });
+      reportsMocks.lastWrite = await write(dir);
+      return reportsMocks.lastWrite !== null;
+    },
+  );
 });
 
 afterEach(() => {
@@ -99,8 +104,9 @@ describe('reportUsageToTeam — intervention reporting', () => {
     expect(stats.daily[ts.slice(0, 10)]).toMatchObject({ sessionsEnded: 1, sessionsSucceeded: 0 });
 
     expect(pushRepoDirectly).not.toHaveBeenCalled();
-    expect(reportsMocks.commitAndPushReports).toHaveBeenCalledTimes(1);
-    expect(reportsMocks.commitAndPushReports.mock.calls[0][2]).toContain('stats/me.yaml');
+    expect(reportsMocks.updateReports).toHaveBeenCalledTimes(1);
+    expect(reportsMocks.lastWrite?.files).toContain('stats/me.yaml');
+    expect(reportsMocks.lastWrite?.message).toBe('[teamai] Update session stats for me');
 
     // reported snapshot persisted so a second run reports nothing new
     const reportedPath = path.join(tmpDir, '.teamai', 'dashboard', 'reported-interventions.json');
@@ -110,18 +116,38 @@ describe('reportUsageToTeam — intervention reporting', () => {
     const dailyPath = path.join(tmpDir, '.teamai', 'dashboard', 'reported-daily-sessions.json');
     expect(JSON.parse(fs.readFileSync(dailyPath, 'utf-8')).s1.date).toBe(ts.slice(0, 10));
 
-    reportsMocks.commitAndPushReports.mockClear();
+    reportsMocks.updateReports.mockClear();
     await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
-    // Nothing new (no usage, no intervention delta, no votes) → no push
-    expect(reportsMocks.commitAndPushReports).not.toHaveBeenCalled();
+    // Nothing new (no usage, no intervention delta, no votes) → no reports round-trip
+    expect(reportsMocks.updateReports).not.toHaveBeenCalled();
     expect(pushRepoDirectly).not.toHaveBeenCalled();
   });
 
   it('does nothing when there are no events, interventions, or votes', async () => {
     await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
-    expect(reportsMocks.commitAndPushReports).not.toHaveBeenCalled();
+    expect(reportsMocks.updateReports).not.toHaveBeenCalled();
     expect(pushRepoDirectly).not.toHaveBeenCalled();
     expect(fs.existsSync(reportsStatsPath())).toBe(false);
+  });
+
+  it('keeps the delta for the next report when another report write holds the lock', async () => {
+    const ts = new Date().toISOString();
+    writeDashboardEvents([
+      { type: 'session_start', timestamp: ts, sessionId: 's1', tool: 'claude', cwd: '/p' },
+      { type: 'stop', timestamp: ts, sessionId: 's1', tool: 'claude', interventions: { interrupt: 1, toolReject: 0 } },
+    ]);
+    // updateReports skips the write callback while the reports lock is busy.
+    reportsMocks.updateReports.mockResolvedValueOnce(false);
+
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+
+    expect(fs.existsSync(reportsStatsPath())).toBe(false);
+    const reportedPath = path.join(tmpDir, '.teamai', 'dashboard', 'reported-interventions.json');
+    expect(fs.existsSync(reportedPath)).toBe(false);
+
+    await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
+    const stats = YAML.parse(fs.readFileSync(reportsStatsPath(), 'utf-8'));
+    expect(stats.interventions).toEqual({ sessions: 1, interrupt: 1, toolReject: 0, correction: 0 });
   });
 });
 
@@ -157,7 +183,7 @@ describe('reportUsageToTeam — preserve fields across partial reports (Issue #4
         tokens: { input: 50, output: 20, cacheRead: 0, cacheCreation: 0 },
       },
     ]);
-    reportsMocks.commitAndPushReports.mockClear();
+    reportsMocks.updateReports.mockClear();
     await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
 
     stats = YAML.parse(fs.readFileSync(statsPath, 'utf-8'));
@@ -165,7 +191,7 @@ describe('reportUsageToTeam — preserve fields across partial reports (Issue #4
     expect(stats.interventions).toEqual({ sessions: 1, interrupt: 2, toolReject: 1, correction: 0 });
     expect(stats.prompts).toBe(2);
     expect(stats.tokens).toEqual({ input: 50, output: 20, cacheRead: 0, cacheCreation: 0 });
-    expect(reportsMocks.commitAndPushReports).toHaveBeenCalledTimes(1);
+    expect(reportsMocks.updateReports).toHaveBeenCalledTimes(1);
     expect(pushRepoDirectly).not.toHaveBeenCalled();
   });
 
@@ -197,7 +223,7 @@ describe('reportUsageToTeam — preserve fields across partial reports (Issue #4
         tokens: { input: 10, output: 5, cacheRead: 0, cacheCreation: 0 },
       },
     ]);
-    reportsMocks.commitAndPushReports.mockClear();
+    reportsMocks.updateReports.mockClear();
     await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });
 
     stats = YAML.parse(fs.readFileSync(statsPath, 'utf-8'));
@@ -205,7 +231,7 @@ describe('reportUsageToTeam — preserve fields across partial reports (Issue #4
     // Must still have prompts/tokens after an intervention-only report
     expect(stats.prompts).toBe(1);
     expect(stats.tokens).toEqual({ input: 10, output: 5, cacheRead: 0, cacheCreation: 0 });
-    expect(reportsMocks.commitAndPushReports).toHaveBeenCalledTimes(1);
+    expect(reportsMocks.updateReports).toHaveBeenCalledTimes(1);
     expect(pushRepoDirectly).not.toHaveBeenCalled();
   });
 });

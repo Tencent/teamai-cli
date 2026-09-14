@@ -188,7 +188,9 @@ describe('listMembers', () => {
 
     expect(log.info).toHaveBeenCalledWith('No team members registered');
     expect(consoleSpy).not.toHaveBeenCalled();
-    expect(reportsMocks.ensureReportsWorktree).toHaveBeenCalled();
+    // Listing is read-only: a cold start must not publish the reports branch.
+    expect(reportsMocks.refreshReportsWorktree).toHaveBeenCalledWith(expect.anything(), { pushIfCreated: false });
+    expect(reportsMocks.ensureReportsWorktree).toHaveBeenCalledWith(expect.anything(), { pushIfCreated: false });
   });
 
   it('should display members without role tags', async () => {

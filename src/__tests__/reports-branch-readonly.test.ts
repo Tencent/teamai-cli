@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   repoGit: {
     listRemote: vi.fn(),
     raw: vi.fn(),
+    branchLocal: vi.fn(),
   },
   worktreeGit: {
     raw: vi.fn(),
@@ -14,6 +15,8 @@ const mocks = vi.hoisted(() => ({
     push: vi.fn(),
     status: vi.fn(),
     revparse: vi.fn(),
+    fetch: vi.fn(),
+    rebase: vi.fn(),
   },
   isGitRepo: vi.fn(),
 }));
@@ -49,7 +52,7 @@ vi.mock('../update.js', () => ({
 }));
 
 import { acquireLock, releaseLock } from '../update.js';
-import { commitAndPushReports, ensureReportsWorktree } from '../utils/reports-branch.js';
+import { ensureReportsWorktree, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
 
 const config: LocalConfig = {
   repo: {
@@ -64,12 +67,15 @@ const config: LocalConfig = {
   additionalRoles: [],
 };
 
+const WT = '/workspace/project/.teamai/reports-wt';
+
 describe('ensureReportsWorktree read-only cold start', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isGitRepo.mockResolvedValue(false);
     mocks.repoGit.listRemote.mockResolvedValue('');
     mocks.repoGit.raw.mockResolvedValue('');
+    mocks.repoGit.branchLocal.mockResolvedValue({ all: ['main'] });
     mocks.worktreeGit.raw.mockResolvedValue('');
     mocks.worktreeGit.add.mockResolvedValue(undefined);
     mocks.worktreeGit.commit.mockResolvedValue(undefined);
@@ -79,7 +85,7 @@ describe('ensureReportsWorktree read-only cold start', () => {
   it('does not publish a new reports branch when pushIfCreated is false', async () => {
     await expect(
       ensureReportsWorktree(config, { pushIfCreated: false }),
-    ).resolves.toBe('/workspace/project/.teamai/reports-wt');
+    ).resolves.toBe(WT);
 
     expect(mocks.worktreeGit.push).not.toHaveBeenCalled();
   });
@@ -102,28 +108,93 @@ describe('ensureReportsWorktree read-only cold start', () => {
       { '--no-verify': null },
     );
   });
+
+  it('reuses an unpublished local reports branch instead of recreating the orphan branch', async () => {
+    mocks.repoGit.branchLocal.mockResolvedValue({ all: ['main', 'teamai-reports'] });
+
+    await expect(
+      ensureReportsWorktree(config, { pushIfCreated: false }),
+    ).resolves.toBe(WT);
+
+    expect(mocks.repoGit.raw).toHaveBeenCalledWith(['worktree', 'add', WT, 'teamai-reports']);
+    const orphanAdds = mocks.repoGit.raw.mock.calls.filter(([args]) => (args as string[]).includes('--orphan'));
+    expect(orphanAdds).toEqual([]);
+    expect(mocks.worktreeGit.commit).not.toHaveBeenCalled();
+    expect(mocks.worktreeGit.push).not.toHaveBeenCalled();
+  });
+
+  it('lets a writer publish a reused local reports branch', async () => {
+    mocks.repoGit.branchLocal.mockResolvedValue({ all: ['main', 'teamai-reports'] });
+
+    await ensureReportsWorktree(config);
+
+    expect(mocks.worktreeGit.push).toHaveBeenCalledWith(['-u', 'origin', 'teamai-reports']);
+  });
 });
 
-describe('commitAndPushReports', () => {
+describe('updateReports', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.isGitRepo.mockResolvedValue(true);
+    mocks.worktreeGit.revparse.mockResolvedValue('true');
+    // Offline: sync keeps the local copy and the write proceeds.
+    mocks.worktreeGit.fetch.mockRejectedValue(new Error('offline'));
     mocks.worktreeGit.add.mockResolvedValue(undefined);
     mocks.worktreeGit.commit.mockResolvedValue(undefined);
     mocks.worktreeGit.push.mockResolvedValue(undefined);
-    mocks.worktreeGit.revparse.mockResolvedValue('true');
-    mocks.worktreeGit.status.mockResolvedValue({ staged: ['members/alice.yaml'] });
+    mocks.worktreeGit.status.mockResolvedValue({ staged: ['members/alice.yaml'], isClean: () => true });
     vi.mocked(acquireLock).mockResolvedValue(true);
     vi.mocked(releaseLock).mockResolvedValue(undefined);
   });
 
   it('skips git hooks on the isolated reports worktree commit', async () => {
-    const pushed = await commitAndPushReports(config, '[teamai] Register member: alice', ['members/']);
+    const pushed = await updateReports(config, async (wt) => {
+      expect(wt).toBe(WT);
+      return { files: ['members/'], message: '[teamai] Register member: alice' };
+    });
 
     expect(pushed).toBe(true);
     expect(mocks.worktreeGit.commit).toHaveBeenCalledWith(
       '[teamai] Register member: alice',
       { '--no-verify': null },
     );
+    expect(releaseLock).toHaveBeenCalledOnce();
+  });
+
+  it('does not run the write while another report write holds the lock', async () => {
+    vi.mocked(acquireLock).mockResolvedValue(false);
+    const write = vi.fn();
+
+    await expect(updateReports(config, write)).resolves.toBe(false);
+
+    expect(write).not.toHaveBeenCalled();
+    expect(mocks.worktreeGit.commit).not.toHaveBeenCalled();
+  });
+
+  it('returns false without committing when the write has nothing to publish', async () => {
+    await expect(updateReports(config, async () => null)).resolves.toBe(false);
+
+    expect(mocks.worktreeGit.add).not.toHaveBeenCalled();
+    expect(mocks.worktreeGit.commit).not.toHaveBeenCalled();
+    expect(releaseLock).toHaveBeenCalledOnce();
+  });
+});
+
+describe('refreshReportsWorktree', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.isGitRepo.mockResolvedValue(true);
+    mocks.worktreeGit.revparse.mockResolvedValue('true');
+    mocks.worktreeGit.fetch.mockResolvedValue(undefined);
+  });
+
+  it('reads the local copy without syncing while a report write holds the lock', async () => {
+    vi.mocked(acquireLock).mockResolvedValue(false);
+
+    await refreshReportsWorktree(config, { pushIfCreated: false });
+
+    expect(mocks.worktreeGit.fetch).not.toHaveBeenCalled();
+    expect(mocks.worktreeGit.raw).not.toHaveBeenCalled();
+    expect(releaseLock).not.toHaveBeenCalled();
   });
 });

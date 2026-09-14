@@ -392,14 +392,86 @@ export async function reportUsageToTeam(
     const hasPromptTokens = hasPromptTokenDelta(promptTokenDelta);
     const hasDaily = hasDailyDelta(dailyDelta);
 
-    // Resolve where report data is written. Non-HTTP repos use the reports
-    // orphan-branch worktree; HTTP / callers without a config still write the
-    // dedicated clone (legacy path used by unit tests of merge logic).
-    let writeRoot = repoPath;
+    const hasStats = hasUsage || hasInterventions || hasPromptTokens || hasDaily;
+    const commitMsg = hasUsage
+      ? `[teamai] Update usage stats for ${username}`
+      : (hasInterventions || hasPromptTokens || hasDaily)
+        ? `[teamai] Update session stats for ${username}`
+        : `[teamai] Update votes for ${username}`;
+
+    // Merge the new stats and pending local votes into `root` (the reports
+    // worktree or the dedicated clone) and record the root-relative paths.
+    const stageReportFiles = async (root: string): Promise<void> => {
+      // Process usage and/or intervention/prompt/token stats if anything is new to report.
+      if (hasStats) {
+        const statsDir = path.join(root, 'stats');
+        await ensureDir(statsDir);
+        const statsPath = path.join(statsDir, `${username}.yaml`);
+
+        // See also: stats.ts mergeLocalAndReported() — same merge logic for display.
+        // mergeStats with [] preserves existing skills while refreshing username/updatedAt,
+        // and carries interventions/prompts/tokens so partial reports do not clobber them (#425).
+        const existing = await readExistingStats(statsPath);
+        const newStats = hasUsage ? aggregateUsage(events) : [];
+        const merged = mergeStats(existing, username, newStats);
+        if (hasInterventions) {
+          merged.interventions = mergeInterventionStats(existing?.interventions, interventionDelta);
+        }
+        if (hasPromptTokens) {
+          const pt = mergePromptTokenStats(existing?.prompts, existing?.tokens, promptTokenDelta);
+          merged.prompts = pt.prompts;
+          merged.tokens = pt.tokens;
+        }
+        if (hasDaily) {
+          merged.daily = mergeDailyStats(existing?.daily, dailyDelta);
+        }
+
+        await writeFile(statsPath, YAML.stringify(merged));
+        filesToPush.push(`stats/${username}.yaml`);
+      }
+
+      // Always stage pending local votes (V2 delta-aware merge)
+      try {
+        if (await pathExists(getUserVotesDir())) {
+          const { syncVotesToTeam } = await import('./votes.js');
+          const synced = await syncVotesToTeam(root, username, getUserVotesDir());
+          if (synced) {
+            filesToPush.push(`votes/${username}.yaml`);
+          }
+        }
+      } catch (e) {
+        log.error(`Vote staging skipped: ${(e as Error).message}`);
+      }
+    };
+
+    // Guard the push with a 5s timeout. withTimeout clears its timer once the
+    // push settles, so a fast success does not leave a 5s timer pinning the
+    // event loop (and hanging `teamai pull`) after the work is done.
     if (useReportsBranch && reportsConfig) {
-      const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
-      writeRoot = await ensureReportsWorktree(reportsConfig);
+      // Non-HTTP repos write the reports orphan-branch worktree. updateReports
+      // syncs it with origin under the reports lock before the merge, so the
+      // stats/votes merge never starts from a stale checkout. Skip that
+      // round-trip entirely when nothing is pending.
+      let hasVotes = false;
+      if (!hasStats && await pathExists(getUserVotesDir())) {
+        const { hasPendingVoteDeltas } = await import('./votes.js');
+        hasVotes = await hasPendingVoteDeltas(getUserVotesDir(), username);
+      }
+      if (hasStats || hasVotes) {
+        const { updateReports } = await import('./utils/reports-branch.js');
+        await withTimeout(
+          updateReports(reportsConfig, async (wt) => {
+            await stageReportFiles(wt);
+            return filesToPush.length > 0 ? { files: filesToPush, message: commitMsg } : null;
+          }),
+          5000,
+          'Auto-report timeout (5s)',
+        );
+      }
     } else {
+      // HTTP / callers without a config still write the dedicated clone (legacy
+      // path used by unit tests of merge logic).
+      //
       // The team repo is a disposable cache clone here — safe to discard local state
       // and reset to the default branch before pulling (same pattern as push.ts).
       //
@@ -445,77 +517,22 @@ export async function reportUsageToTeam(
           await writeFile(yamlPath, pendingTeamConfig);
         }
       }
+
+      await stageReportFiles(repoPath);
+      if (filesToPush.length > 0) {
+        await withTimeout(
+          pushRepoDirectly(repoPath, commitMsg, filesToPush),
+          5000,
+          'Auto-report timeout (5s)',
+        );
+      }
     }
 
-    // Process usage and/or intervention/prompt/token stats if anything is new to report.
-    if (hasUsage || hasInterventions || hasPromptTokens || hasDaily) {
-      const statsDir = path.join(writeRoot, 'stats');
-      await ensureDir(statsDir);
-      const statsPath = path.join(statsDir, `${username}.yaml`);
-
-      // See also: stats.ts mergeLocalAndReported() — same merge logic for display.
-      // mergeStats with [] preserves existing skills while refreshing username/updatedAt,
-      // and carries interventions/prompts/tokens so partial reports do not clobber them (#425).
-      const existing = await readExistingStats(statsPath);
-      const newStats = hasUsage ? aggregateUsage(events) : [];
-      const merged = mergeStats(existing, username, newStats);
-      if (hasInterventions) {
-        merged.interventions = mergeInterventionStats(existing?.interventions, interventionDelta);
-      }
-      if (hasPromptTokens) {
-        const pt = mergePromptTokenStats(existing?.prompts, existing?.tokens, promptTokenDelta);
-        merged.prompts = pt.prompts;
-        merged.tokens = pt.tokens;
-      }
-      if (hasDaily) {
-        merged.daily = mergeDailyStats(existing?.daily, dailyDelta);
-      }
-
-      await writeFile(statsPath, YAML.stringify(merged));
-      filesToPush.push(`stats/${username}.yaml`);
-    }
-
-    // Always stage pending local votes (V2 delta-aware merge)
-    try {
-      if (await pathExists(getUserVotesDir())) {
-        const { syncVotesToTeam } = await import('./votes.js');
-        const synced = await syncVotesToTeam(writeRoot, username, getUserVotesDir());
-        if (synced) {
-          filesToPush.push(`votes/${username}.yaml`);
-        }
-      }
-    } catch (e) {
-      log.error(`Vote staging skipped: ${(e as Error).message}`);
-    }
-
-    // Nothing to push — skip commit
+    // Nothing staged (or another report write held the lock) — keep the deltas
+    // for the next report.
     if (filesToPush.length === 0) {
       log.debug('No usage events or votes to report');
       return;
-    }
-
-    // Commit and push with timeout
-    const commitMsg = hasUsage
-      ? `[teamai] Update usage stats for ${username}`
-      : (hasInterventions || hasPromptTokens || hasDaily)
-        ? `[teamai] Update session stats for ${username}`
-        : `[teamai] Update votes for ${username}`;
-    // Guard the push with a 5s timeout. withTimeout clears its timer once the
-    // push settles, so a fast success does not leave a 5s timer pinning the
-    // event loop (and hanging `teamai pull`) after the work is done.
-    if (useReportsBranch && reportsConfig) {
-      const { commitAndPushReports } = await import('./utils/reports-branch.js');
-      await withTimeout(
-        commitAndPushReports(reportsConfig, commitMsg, filesToPush),
-        5000,
-        'Auto-report timeout (5s)',
-      );
-    } else {
-      await withTimeout(
-        pushRepoDirectly(repoPath, commitMsg, filesToPush),
-        5000,
-        'Auto-report timeout (5s)',
-      );
     }
 
     // Success — truncate reported usage events (only if caller allows it)

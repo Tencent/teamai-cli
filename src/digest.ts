@@ -417,8 +417,9 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     const { usesReportsBranch } = await import('./types.js');
     if (usesReportsBranch(localConfig)) {
       const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
-      await refreshReportsWorktree(localConfig);
-      reportsRoot = await ensureReportsWorktree(localConfig);
+      // Read-only: never publish a missing reports branch.
+      await refreshReportsWorktree(localConfig, { pushIfCreated: false });
+      reportsRoot = await ensureReportsWorktree(localConfig, { pushIfCreated: false });
     }
 
     const teamStats = await loadTeamStats(reportsRoot);
