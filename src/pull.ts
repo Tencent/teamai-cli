@@ -6,7 +6,7 @@ import { flushPendingLearnings } from './utils/pending-learnings.js';
 import { log, spinner } from './utils/logger.js';
 import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
 import { injectClaudeMdSection } from './utils/claudemd.js';
-import { getHandler, RulesHandler, DocsHandler, EnvHandler } from './resources/index.js';
+import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
 import { ResourceHandler } from './resources/base.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { loadTagsConfig, filterByTags } from './utils/tags.js';
@@ -880,6 +880,13 @@ async function pullForScope(
         desiredSkillNames ?? roleContext.activeSkillNames,
         roleContext.inactiveSkillNames,
         roleContext.inactiveSkillSources,
+      );
+      // Same revocation for agents: a role change must remove the previous
+      // role's agents, not just stop deploying them.
+      await (getHandler('agents') as AgentsHandler).cleanupInactiveNamespaces(
+        freshConfig,
+        localConfig,
+        roleContext.activeNamespaces.agents,
       );
     }
   }

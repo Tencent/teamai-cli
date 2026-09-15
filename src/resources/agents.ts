@@ -22,7 +22,7 @@ import {
   mergeReverseResults,
   ALL_SUPPORTED_TOOLS,
 } from './agent-format.js';
-import type { AgentSpec, ToolName, ReverseResult, ParseResult, MergeResult } from './agent-format.js';
+import type { AgentSpec, ToolName, ReverseResult, ParseResult, MergeResult, RenderResult } from './agent-format.js';
 
 /**
  * Extended ResourceItem for agents — carries merged spec or skip reason
@@ -441,6 +441,65 @@ export class AgentsHandler extends ResourceHandler {
     return removed;
   }
 
+  /**
+   * Revocation pass for role/project scoping. Removes the deployed copies of
+   * every agent whose namespace is no longer active, on every installed tool.
+   *
+   * Data-safety gate, same as inactive skills: a file is deleted only when it
+   * is byte-equal to what pull would render from the team source. A local edit
+   * is kept and reported so nothing unpushed is lost. Root-level agents and
+   * agents whose stem is still active never qualify.
+   */
+  async cleanupInactiveNamespaces(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    activeNamespaces: string[],
+  ): Promise<void> {
+    const items = await this.scanTeamForPull(teamConfig, localConfig);
+    const isActive = (item: AgentResourceItem): boolean => !item.namespace || activeNamespaces.includes(item.namespace);
+    const activeStems = new Set(items.filter(isActive).map((item) => item.name));
+    const inactive = items.filter((item) => !isActive(item) && !activeStems.has(item.name) && !BUILTIN_AGENT_NAMES.has(item.name));
+    if (inactive.length === 0) return;
+
+    const baseDir = resolveBaseDir(localConfig);
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+      if (!toolPath.agents || !isKnownTool(tool) || isAgentExcluded(localConfig, tool)) continue;
+      if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
+      const destDir = path.join(baseDir, toolPath.agents);
+
+      for (const item of inactive) {
+        const expected = await this.renderedForTool(item, tool);
+        if (!expected) continue;
+        const deployed = path.join(destDir, `${item.name}${expected.ext}`);
+        const current = await readFileSafe(deployed);
+        if (current === null) continue;
+        if (current !== expected.content) {
+          log.warn(`[${localConfig.scope}] Kept agent "${item.name}" (${tool}): it differs from the team source ${item.relativePath}. Back it up, then delete it manually.`);
+          continue;
+        }
+        await remove(deployed);
+        log.debug(`[${localConfig.scope}] Removed inactive role-scoped agent ${item.name} from ${tool}`);
+      }
+    }
+  }
+
+  /**
+   * What `pullItem` writes for this agent on this tool, or null when the tool
+   * is not a target (legacy `.md` only reaches LEGACY_MD_TOOLS, a YAML spec
+   * honours `targets`, an unparsable spec is skipped like pull skips it).
+   */
+  private async renderedForTool(item: AgentResourceItem, tool: ToolName): Promise<RenderResult | null> {
+    const content = await readFileSafe(item.sourcePath);
+    if (content === null) return null;
+    if (item.legacy) {
+      return LEGACY_MD_TOOLS.has(tool) ? { ext: '.md', content } : null;
+    }
+    const parsed = parseAgentYaml(content, `${item.name}.yaml`);
+    if (!parsed.ok) return null;
+    if (parsed.spec.targets && !parsed.spec.targets.includes(tool)) return null;
+    return renderForTool(parsed.spec, tool);
+  }
+
   // ─── Private helpers ──────────────────────────────────────────────────────
 
   /**
@@ -452,10 +511,8 @@ export class AgentsHandler extends ResourceHandler {
     baseDir: string,
     localConfig: LocalConfig,
   ): Promise<void> {
-    const legacyTools = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy', 'joycode']);
-
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-      if (!legacyTools.has(tool)) continue;
+      if (!LEGACY_MD_TOOLS.has(tool)) continue;
       if (!toolPath.agents) {
         log.debug(`Skipping legacy agent sync for ${tool}: no agents path configured`);
         continue;
@@ -480,6 +537,9 @@ export class AgentsHandler extends ResourceHandler {
 }
 
 // ─── Module-level helpers ──────────────────────────────────────────────────
+
+/** Tools that receive a legacy `agents/<name>.md` copied verbatim. */
+const LEGACY_MD_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy', 'joycode']);
 
 /** Apply native-file deltas to the canonical spec, never replace it with a
  * lossy reverse rendering. Compare against each tool's projection so omitted
