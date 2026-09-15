@@ -48,7 +48,7 @@ vi.mock('../roles.js', () => ({
         id: 'hai',
         name: 'HAI R&D',
         description: 'HyperAI resources',
-        resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'], learnings: ['common', 'hai'] },
+        resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'], learnings: ['common', 'hai'], agents: [] },
       },
     ],
     defaults: { shareTarget: 'primary-role' },
@@ -62,6 +62,7 @@ vi.mock('../roles.js', () => ({
       knowledge: dedupe(allRoles.flatMap((role: { resources: { knowledge: string[] } }) => role.resources.knowledge)),
       skills: dedupe(allRoles.flatMap((role: { resources: { skills: string[] } }) => role.resources.skills)),
       learnings: dedupe(allRoles.flatMap((role: { resources: { learnings: string[] } }) => role.resources.learnings)),
+      agents: [],
     };
   }),
 }));

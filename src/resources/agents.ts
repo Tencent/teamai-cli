@@ -74,28 +74,31 @@ export class AgentsHandler extends ResourceHandler {
     if (isSelfMode(localConfig) && localConfig.projectRoot) {
       const activeAgentsDir = path.join(localConfig.projectRoot, '.teamai', 'agents');
       if (await pathExists(activeAgentsDir)) {
-        for (const file of await listFiles(activeAgentsDir)) {
-          const isYaml = file.endsWith('.yaml');
-          const isMd = file.endsWith('.md');
-          if (!isYaml && !isMd) continue;
-          const stem = file.replace(/\.(yaml|md)$/, '');
-          if (tombstones.has(stem)) continue;
-          if (BUILTIN_AGENT_NAMES.has(stem)) continue;
+        for (const { dir, namespace } of await listTeamAgentDirs(activeAgentsDir)) {
+          const relDir = namespace ? `agents/${namespace}` : 'agents';
+          for (const file of await listFiles(dir)) {
+            const isYaml = file.endsWith('.yaml');
+            const isMd = file.endsWith('.md');
+            if (!isYaml && !isMd) continue;
+            const stem = file.replace(/\.(yaml|md)$/, '');
+            if (tombstones.has(stem)) continue;
+            if (BUILTIN_AGENT_NAMES.has(stem)) continue;
 
-          const activePath = path.join(activeAgentsDir, file);
-          const basePath = path.join(teamAgentsDir, file);
-          const baseExists = await pathExists(basePath);
-          if (baseExists && await fileContentEqual(activePath, basePath)) continue; // unchanged
+            const activePath = path.join(dir, file);
+            const basePath = path.join(localConfig.repo.localPath, relDir, file);
+            const baseExists = await pathExists(basePath);
+            if (baseExists && await fileContentEqual(activePath, basePath)) continue; // unchanged
 
-          directItems.push({
-            name: stem,
-            type: 'agents',
-            sourcePath: activePath,
-            relativePath: `agents/${file}`,
-            status: (baseExists ? 'modified' : 'new') as ResourceItemStatus,
-            legacy: isMd,
-          });
-          directStems.add(stem);
+            directItems.push({
+              name: stem,
+              type: 'agents',
+              sourcePath: activePath,
+              relativePath: `${relDir}/${file}`,
+              status: (baseExists ? 'modified' : 'new') as ResourceItemStatus,
+              legacy: isMd,
+            });
+            directStems.add(stem);
+          }
         }
       }
     }
@@ -299,10 +302,8 @@ export class AgentsHandler extends ResourceHandler {
       }
     };
 
-    await scanDir(agentsDir);
-    for (const namespace of await listDirs(agentsDir)) {
-      if (!isSafeNamespaceSegment(namespace)) continue;
-      await scanDir(path.join(agentsDir, namespace), namespace);
+    for (const { dir, namespace } of await listTeamAgentDirs(agentsDir)) {
+      await scanDir(dir, namespace);
     }
 
     return items;
@@ -428,9 +429,8 @@ export class AgentsHandler extends ResourceHandler {
 
     const teamAgentsDir = path.join(localConfig.repo.localPath, 'agents');
 
-    // Root or agents/<ns>/; both extensions. A stem may exist under several
-    // (inactive) namespaces, so keep looking until nothing is left.
-    for (let located = await findTeamAgentFile(teamAgentsDir, name); located; located = await findTeamAgentFile(teamAgentsDir, name)) {
+    // Root or agents/<ns>/, both extensions, every namespace the stem lives in.
+    for (const located of await findTeamAgentFiles(teamAgentsDir, name)) {
       await remove(located.path);
       removed.push(located.path);
     }
@@ -550,29 +550,45 @@ export class AgentsHandler extends ResourceHandler {
 
 // ─── Module-level helpers ──────────────────────────────────────────────────
 
+/** Tools that receive a legacy `agents/<name>.md` copied verbatim. */
+const LEGACY_MD_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy', 'joycode']);
+
+type TeamAgentDir = { dir: string; namespace?: string };
+
 /**
- * Locate a team agent by stem: root first, then one level of namespace
- * directories, `.yaml` before `.md` in each. Returns null when absent.
+ * The directories that hold team agents: the root plus one level of
+ * namespace subdirectories (`agents/<namespace>/`). Unsafe segment names are
+ * skipped so a namespace can never become a path traversal.
  */
-export async function findTeamAgentFile(
-  teamAgentsDir: string,
-  stem: string,
-): Promise<{ path: string; ext: '.yaml' | '.md'; namespace?: string } | null> {
-  const dirs: Array<{ dir: string; namespace?: string }> = [{ dir: teamAgentsDir }];
+export async function listTeamAgentDirs(teamAgentsDir: string): Promise<TeamAgentDir[]> {
+  const dirs: TeamAgentDir[] = [{ dir: teamAgentsDir }];
   for (const namespace of await listDirs(teamAgentsDir)) {
     if (isSafeNamespaceSegment(namespace)) dirs.push({ dir: path.join(teamAgentsDir, namespace), namespace });
   }
-  for (const { dir, namespace } of dirs) {
-    for (const ext of ['.yaml', '.md'] as const) {
-      const candidate = path.join(dir, `${stem}${ext}`);
-      if (await pathExists(candidate)) return { path: candidate, ext, ...(namespace ? { namespace } : {}) };
-    }
-  }
-  return null;
+  return dirs;
 }
 
-/** Tools that receive a legacy `agents/<name>.md` copied verbatim. */
-const LEGACY_MD_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy', 'joycode']);
+type TeamAgentFile = { path: string; ext: '.yaml' | '.md'; namespace?: string };
+
+/**
+ * Every team file for a stem, root first, then namespaces in directory order,
+ * `.yaml` before `.md` in each. A stem may legitimately live in several
+ * namespaces, so `remove` needs all of them; push and status take the first.
+ */
+export async function findTeamAgentFiles(teamAgentsDir: string, stem: string): Promise<TeamAgentFile[]> {
+  const found: TeamAgentFile[] = [];
+  for (const { dir, namespace } of await listTeamAgentDirs(teamAgentsDir)) {
+    for (const ext of ['.yaml', '.md'] as const) {
+      const candidate = path.join(dir, `${stem}${ext}`);
+      if (await pathExists(candidate)) found.push({ path: candidate, ext, ...(namespace ? { namespace } : {}) });
+    }
+  }
+  return found;
+}
+
+export async function findTeamAgentFile(teamAgentsDir: string, stem: string): Promise<TeamAgentFile | null> {
+  return (await findTeamAgentFiles(teamAgentsDir, stem))[0] ?? null;
+}
 
 /** Apply native-file deltas to the canonical spec, never replace it with a
  * lossy reverse rendering. Compare against each tool's projection so omitted

@@ -32,6 +32,7 @@ import {
 } from './types.js';
 import { BUILTIN_RULE_NAMES } from './builtin-rules.js';
 import { ruleStemFromFilename } from './resources/rule-format.js';
+import { listTeamAgentDirs } from './resources/agents.js';
 import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import {
@@ -184,9 +185,8 @@ async function collectTeamAgentNames(repoPath: string): Promise<Set<string>> {
   const teamAgentsDir = path.join(repoPath, 'agents');
   if (!await pathExists(teamAgentsDir)) return new Set();
 
-  const dirs = [teamAgentsDir, ...(await listDirs(teamAgentsDir)).map((ns) => path.join(teamAgentsDir, ns))];
   const names = new Set<string>();
-  for (const dir of dirs) {
+  for (const { dir } of await listTeamAgentDirs(teamAgentsDir)) {
     for (const file of await listFiles(dir)) {
       if (file.endsWith('.yaml') || file.endsWith('.md')) names.add(file.replace(/\.(yaml|md)$/, ''));
     }

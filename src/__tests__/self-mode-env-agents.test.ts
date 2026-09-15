@@ -148,6 +148,17 @@ describe('single-repo mode: env + agents direct .teamai scan', () => {
     expect(item!.relativePath).toBe('agents/helper.md');
   });
 
+  it('agents: picks up a namespaced canonical file and keeps its namespace path', async () => {
+    await fse.ensureDir(path.join(worktreeTeamai, 'agents', 'frontend'));
+    await fse.writeFile(path.join(worktreeTeamai, 'agents', 'frontend', 'vr.yaml'), 'name: vr\ndescription: old\n');
+    await fse.ensureDir(path.join(bizRoot, '.teamai', 'agents', 'frontend'));
+    await fse.writeFile(path.join(bizRoot, '.teamai', 'agents', 'frontend', 'vr.yaml'), 'name: vr\ndescription: edited\n');
+    const items = await new AgentsHandler().scanLocalForPush(teamConfig, localConfig);
+    const item = items.find((i) => i.name === 'vr');
+    expect(item?.status).toBe('modified');
+    expect(item?.relativePath).toBe('agents/frontend/vr.yaml');
+  });
+
   it('agents: skips a canonical file identical to the baseline', async () => {
     const content = 'name: same\ndescription: d\n';
     await fse.writeFile(path.join(worktreeTeamai, 'agents', 'same.yaml'), content);

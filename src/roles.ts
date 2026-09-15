@@ -165,9 +165,7 @@ export function resolveRoleResourceNamespaces(input: {
   for (const type of ROLE_RESOURCE_TYPES) {
     const seen = new Set<string>();
     for (const role of resolvedRoles) {
-      // `agents` may be absent on manifests built in memory (older shapes);
-      // the loader defaults it, so `?? []` only guards that path.
-      for (const namespace of role.resources[type] ?? []) {
+      for (const namespace of role.resources[type]) {
         if (seen.has(namespace)) continue;
         seen.add(namespace);
         namespaces[type].push(namespace);

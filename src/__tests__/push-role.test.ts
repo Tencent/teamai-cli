@@ -176,8 +176,8 @@ describe('push namespace routing', () => {
     mockLoadRolesManifest.mockResolvedValue({
       version: 1,
       roles: [
-        { id: 'hai', description: 'HyperAI', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'] } },
-        { id: 'pm', description: 'Product Manager', resources: { knowledge: ['common', 'pm'], skills: ['common', 'pm'] } },
+        { id: 'hai', description: 'HyperAI', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'], agents: [] } },
+        { id: 'pm', description: 'Product Manager', resources: { knowledge: ['common', 'pm'], skills: ['common', 'pm'], agents: [] } },
       ],
     });
     readlineAnswer = '1';
@@ -188,7 +188,7 @@ describe('push namespace routing', () => {
     mockLoadRolesManifest.mockResolvedValue({
       version: 1,
       roles: [
-        { id: 'solo', description: 'Solo role', resources: { knowledge: ['solo'], skills: ['solo'] } },
+        { id: 'solo', description: 'Solo role', resources: { knowledge: ['solo'], skills: ['solo'], agents: [] } },
       ],
     });
     const pushedItems: Array<Record<string, unknown>> = [];
@@ -564,7 +564,7 @@ describe('push item selection', () => {
     mockLoadRolesManifest.mockResolvedValue({
       version: 1,
       roles: [
-        { id: 'hai', description: 'HyperAI', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'] } },
+        { id: 'hai', description: 'HyperAI', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'], agents: [] } },
       ],
     });
     readlineAnswer = '1';

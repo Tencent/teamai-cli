@@ -179,7 +179,7 @@ export function resolveProjectResourceNamespaces(input: {
   for (const type of PROJECT_RESOURCE_TYPES) {
     const seen = new Set<string>();
     for (const project of resolved) {
-      for (const namespace of project.resources[type] ?? []) {
+      for (const namespace of project.resources[type]) {
         if (seen.has(namespace)) continue;
         seen.add(namespace);
         namespaces[type].push(namespace);
@@ -242,6 +242,6 @@ export function mergeNamespaces(
     skills: dedupe(roleNamespaces.skills, projectNamespaces.skills),
     // Roles never contribute learnings; this is effectively the project set.
     learnings: dedupe(roleNamespaces.learnings, projectNamespaces.learnings),
-    agents: dedupe(roleNamespaces.agents ?? [], projectNamespaces.agents ?? []),
+    agents: dedupe(roleNamespaces.agents, projectNamespaces.agents),
   };
 }

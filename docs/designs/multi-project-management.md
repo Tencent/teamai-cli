@@ -78,6 +78,7 @@ projects:
       knowledge: [hai-inference]
       skills:    [hai-inference]
       learnings: [hai-inference]   # makes the learnings namespace actually take effect
+      agents:    [hai-inference]   # optional; agents/<namespace>/ scoped to this project
 ```
 
 Directory layout reuses the existing namespace convention, adding one learnings layer:
