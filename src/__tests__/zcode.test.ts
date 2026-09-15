@@ -43,7 +43,6 @@ describe('ZCode support', () => {
       expect(def.command.startsWith('teamai hook-dispatch ')).toBe(true);
       expect(def.command).toContain('--tool zcode');
       expect(def.command).not.toContain('bash -lc');
-      expect(def.timeout).toBeDefined();
     }
     const events = new Set(defs.map((d) => d.event));
     expect(events).toEqual(new Set(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit']));

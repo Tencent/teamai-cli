@@ -105,8 +105,8 @@ interface ZcodeHookMatcher {
 interface ZcodeHooksJson {
   hooks?: {
     enabled?: boolean;
-    description?: string;
     events?: Record<string, ZcodeHookMatcher[]>;
+    [key: string]: unknown;
   };
   [key: string]: unknown;
 }
@@ -303,6 +303,16 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
 }
 
 function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
+  // ZCode sessions run hooks inline: a session-start dispatch carries a network
+  // pull (SSH to the team host), which on slower links exceeds the 10–15s
+  // builtin defaults and gets killed mid-pull — so the timeouts here are
+  // network-scale, not the shell-hook defaults.
+  const ZCODE_TIMEOUT_MS: Record<string, number> = {
+    SessionStart: 180000,
+    Stop: 60000,
+    PostToolUse: 30000,
+    UserPromptSubmit: 60000,
+  };
   const entry: ZcodeHookEntry = {
     type: 'process',
     command: 'bash',
@@ -312,7 +322,7 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
     // hook-dispatch is silent and failure-tolerant on its success paths, so no
     // shell redirection is layered on top of the payload.
     args: ['-lc', def.command],
-    ...(def.timeout !== undefined ? { timeoutMs: def.timeout * 1000 } : {}),
+    timeoutMs: ZCODE_TIMEOUT_MS[def.event] ?? 60000,
   };
   const group: ZcodeHookMatcher = { hooks: [entry] };
   // ZCode's matcher is a case-sensitive regex on the match value; '*' is an
