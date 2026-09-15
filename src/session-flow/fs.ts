@@ -80,6 +80,22 @@ export function encodeCwdGeneric(cwd: string): string {
 }
 
 /**
+ * CodeBuddy CLI 的 cwd → 目录名编码：只把路径分隔符换成 `-`。
+ *
+ * 不能用上面的通用版本——它把所有非字母数字都换成 `-`，而 CodeBuddy 自己
+ * **保留空格**，实测 `.../Desktop/Code/teamai cli` 落盘为
+ * `Users-caiwenzhe-Desktop-Code-teamai cli`。通用版会算成 `...-teamai-cli`，
+ * 于是这类工作区永远匹配不上：列出为空、读取报「文件未找到」，
+ * 而带空格的项目目录很常见。
+ */
+export function encodeCwdCodeBuddy(cwd: string): string {
+  return path
+    .resolve(cwd)
+    .replace(/^([a-zA-Z]:)?[\\/]+/, '') // 去掉盘符与根分隔符
+    .replace(/[\\/]/g, '-');
+}
+
+/**
  * Claude Code 的 cwd 解码: 无法精确还原（`-` 可能来自 `/`、空格等），
  * 但目录名本身不需要解码为可用路径——仅用于显示。
  * 这里返回原始 encoded 字符串作为显示用 cwd。
