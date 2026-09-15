@@ -172,4 +172,64 @@ describe("init --project all activates every project in the manifest (issue #509
     // expansion behind.
     expect(readProjects(projectRoot)).toEqual(['billing']);
   }, 60_000);
+
+
+  it('reuses the clone but refreshes so a newly added remote project is activated', async () => {
+    // First init seeds ~/.teamai/team-repo and activates the original three ids.
+    const first = await runCLI(
+      ['init', FAKE_URL, '--scope', 'project', '--role', 'common', '--project', 'all', '--force'],
+      projectRoot,
+      home,
+    );
+    expect(first.code, first.output).toBe(0);
+    expect(readProjects(projectRoot)).toEqual(['gamma', 'alpha', 'billing']);
+
+    const teamRepo = path.join(home, '.teamai', 'team-repo');
+    expect(fs.existsSync(path.join(teamRepo, '.git'))).toBe(true);
+
+    // The clone from insteadOf often records a filesystem origin URL. Restore the
+    // synthetic HTTPS origin so the second init's remotesMatch reuses the clone
+    // (instead of replacing it under --force), and point push/fetch at the bare
+    // remote so pullRepo can see the upcoming manifest update without a network.
+    const remote = path.join(sandbox, 'team.git');
+    git(['remote', 'set-url', 'origin', FAKE_URL], teamRepo);
+    git(['remote', 'set-url', '--add', '--push', 'origin', remote], teamRepo);
+    // Keep insteadOf so `git pull` of FAKE_URL resolves to the local bare repo.
+
+    // Add a fourth project on the remote and push it.
+    const update = path.join(sandbox, 'update-work');
+    if (fs.existsSync(update)) fs.rmSync(update, { recursive: true, force: true });
+    git(['clone', '-q', remote, update], sandbox);
+    const manifestPath = path.join(update, 'manifest', 'projects.yaml');
+    let manifest = fs.readFileSync(manifestPath, 'utf8');
+    if (!manifest.includes('id: delta')) {
+      manifest = manifest.trimEnd() + [
+        '',
+        '  - id: delta',
+        '    name: Delta',
+        '    resources:',
+        '      skills: [delta]',
+        '',
+      ].join('\n');
+      fs.writeFileSync(manifestPath, manifest);
+      const deltaSkill = path.join(update, 'skills', 'delta', 'delta-only');
+      fs.mkdirSync(deltaSkill, { recursive: true });
+      fs.writeFileSync(
+        path.join(deltaSkill, 'SKILL.md'),
+        '---\nname: delta-only\ndescription: delta fixture\n---\n\n# delta\n',
+      );
+      git(['add', '-A'], update);
+      git(['commit', '-q', '-m', 'add delta project'], update);
+      git(['push', '-q', 'origin', 'HEAD'], update);
+    }
+
+    const second = await runCLI(
+      ['init', FAKE_URL, '--scope', 'project', '--role', 'common', '--project', 'all', '--force'],
+      projectRoot,
+      home,
+    );
+    expect(second.code, second.output).toBe(0);
+    expect(second.output).toMatch(/using existing clone/i);
+    expect(readProjects(projectRoot)).toEqual(['gamma', 'alpha', 'billing', 'delta']);
+  }, 90_000);
 });
