@@ -4,7 +4,7 @@
 
 # TeamAI — Make Every Team AI Native
 
-> [English](README.md) | [简体中文](README.zh-CN.md)
+> [English](README.md) | [中文](README.zh-CN.md)
 
 [![CI](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
@@ -16,6 +16,8 @@ TeamAI 统一管理团队的 Skills、Rules、MCP 和知识，驾驭 Claude Code
 ## 贡献者
 
 感谢每一位为 TeamAI 贡献代码的伙伴！
+
+<a href="https://trendshift.io/repositories/123184?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-123184" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/123184" alt="Tencent%2Fteamai-cli | Trendshift" width="250" height="55"/></a>
 
 <a href="https://github.com/Tencent/teamai-cli/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=Tencent/teamai-cli" alt="Contributors" />
@@ -35,7 +37,7 @@ npm install -g teamai-cli
 
 在 Git 托管平台（GitHub、GitLab、GitCode、CNB、TGit，或私有 Git 服务）创建共享经验仓库，**授予团队成员写权限**，然后运行 `teamai init https://github.com/yourorg/yourrepo`。
 
-> **还没有团队仓库？** 可以从内置了成套 skills、rules、review agents 的模板起步。浏览 [teamai-hub](https://github.com/teamai-hub) org，点 **Use this template** 生成自己的仓库，再对它执行 `teamai init`。
+> **还没有团队仓库？** 可以从内置了成套 skills、rules、review agents 的模板起步。浏览 [teamai-hub](https://github.com/teamai-hub) org，点 **Fork** 生成自己的仓库，再对它执行 `teamai init`。
 
 ### 团队成员
 

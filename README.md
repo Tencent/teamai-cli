@@ -4,7 +4,7 @@
 
 # TeamAI — Make Every Team AI Native
 
-> [English](README.md) | [简体中文](README.zh-CN.md)
+> [English](README.md) | [中文](README.zh-CN.md)
 
 [![CI](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
@@ -16,6 +16,8 @@ TeamAI manages your team's skills, rules, MCP, and knowledge across Claude Code,
 ## Contributors
 
 Thanks to everyone who has contributed to TeamAI!
+
+<a href="https://trendshift.io/repositories/123184?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-123184" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/123184" alt="Tencent%2Fteamai-cli | Trendshift" width="250" height="55"/></a>
 
 <a href="https://github.com/Tencent/teamai-cli/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=Tencent/teamai-cli" alt="Contributors" />
@@ -35,7 +37,7 @@ npm install -g teamai-cli
 
 Create a shared-experience repo on your git host (GitHub, GitLab, GitCode, CNB, TGit, or a private Git service), **grant write access to team members**, then run `teamai init https://github.com/yourorg/yourrepo`.
 
-> **No team repo yet?** Start from a template pre-loaded with production-ready skills, rules, and review agents. Browse the [teamai-hub](https://github.com/teamai-hub) org, click **Use this template**, then `teamai init` against your new repo.
+> **No team repo yet?** Start from a template pre-loaded with production-ready skills, rules, and review agents. Browse the [teamai-hub](https://github.com/teamai-hub) org, click **Fork**, then `teamai init` against your new repo.
 
 ### Team members
 
