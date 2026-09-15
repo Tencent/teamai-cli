@@ -333,6 +333,40 @@ export function filterRulesByKnowledgeNamespaces(
   });
 }
 
+/**
+ * Filter team agents by the active `agents` namespaces, then reject stem
+ * collisions among what survives.
+ *
+ * Same convention as rules: a root-level agent (no `namespace`) always ships;
+ * `agents/<ns>/x.yaml` ships only when `<ns>` is active. `null` means no role
+ * or project is configured and everything passes through.
+ *
+ * Agents deploy flattened to `<tool>/agents/<stem><ext>`, so two kept items
+ * with one stem would overwrite each other. That is an admin-side layout
+ * error, reported the way `scanRoleAwareSkills` reports duplicate skills.
+ */
+export function filterAgentsByNamespaces(
+  agents: ResourceItem[],
+  agentNamespaces: string[] | null,
+): ResourceItem[] {
+  const kept = agentNamespaces
+    ? agents.filter((agent) => !agent.namespace || agentNamespaces.includes(agent.namespace))
+    : agents;
+
+  const seen = new Map<string, ResourceItem>();
+  for (const agent of kept) {
+    const existing = seen.get(agent.name);
+    if (existing) {
+      throw new Error(
+        `Duplicate agent "${agent.name}" found in active namespaces "${existing.namespace ?? '(root)'}" and "${agent.namespace ?? '(root)'}"`,
+      );
+    }
+    seen.set(agent.name, agent);
+  }
+
+  return kept;
+}
+
 export async function scanRoleAwareSkills(localConfig: LocalConfig, namespaces: ResourceNamespaces): Promise<ResourceItem[]> {
   const items = new Map<string, ResourceItem>();
 
@@ -711,6 +745,13 @@ async function pullForScope(
       desiredSkillNames = new Set(items.map((i) => i.name));
       knownRepoSkillNames = new Set(allTeamSkills.map((i) => i.name));
       knownRepoSkillSources = new Map(allTeamSkills.map((i) => [i.name, i.sourcePath]));
+    } else if (type === 'agents') {
+      // Role/project namespace filter (root = everyone), same as rules. Throws
+      // on a stem collision; the caller's try/catch logs it and aborts the scope.
+      items = filterAgentsByNamespaces(
+        await handler.scanTeamForPull(freshConfig, localConfig),
+        roleContext ? roleContext.activeNamespaces.agents : null,
+      );
     } else {
       items = await handler.scanTeamForPull(freshConfig, localConfig);
     }
