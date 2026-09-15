@@ -53,7 +53,7 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pushLearningToOrigin } from '../utils/git.js';
+import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pullRepoFastForward, pushLearningToOrigin } from '../utils/git.js';
 import fse from 'fs-extra';
 
 describe('generateBranchName', () => {
@@ -658,6 +658,27 @@ describe('pullRepo', () => {
     expect(result).toBe('reset to origin (diverged)');
     const { log: testLog } = await import('../utils/logger.js');
     expect(testLog.warn).toHaveBeenCalled();
+  });
+});
+
+describe('pullRepoFastForward', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('returns already up to date on empty ff-only pull', async () => {
+    mockGit.pull.mockResolvedValue({ summary: { changes: 0, insertions: 0, deletions: 0 } });
+    await expect(pullRepoFastForward('/tmp/x')).resolves.toBe('already up to date');
+    expect(mockGit.pull).toHaveBeenCalledWith(['--ff-only']);
+    expect(mockGit.reset).not.toHaveBeenCalled();
+    expect(mockGit.fetch).not.toHaveBeenCalled();
+  });
+
+  it('never hard-resets when ff-only fails', async () => {
+    mockGit.pull.mockRejectedValue(new Error('Not possible to fast-forward, aborting.'));
+    await expect(pullRepoFastForward('/tmp/x')).rejects.toThrow('fast-forward');
+    expect(mockGit.fetch).not.toHaveBeenCalled();
+    expect(mockGit.reset).not.toHaveBeenCalled();
   });
 });
 
