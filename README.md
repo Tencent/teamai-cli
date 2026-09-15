@@ -136,7 +136,7 @@ Each resource is delivered to every agent:
 | **Skills** | `skills/<name>/SKILL.md` | |
 | **Rules** | `rules/*.md` | |
 | **Docs** | `docs/` | Foundational project docs; not all loaded by default (progressive disclosure) |
-| **Agents** | `agents/<name>.yaml` | |
+| **Agents** | `agents/<name>.yaml`, `agents/<namespace>/<name>.yaml` | Root agents reach everyone; a namespace directory ships only to roles/projects that list it under `agents:` |
 | **Culture** | `culture.md` | Team mission, values, and working principles — injected into each agent's CLAUDE.md / AGENTS.md so every session inherits them |
 | **CLAUDE.md** | `claudemd/*.md` | |
 | **Env** | `env/` | Shared team-level environment variables and switches; do not put secrets here |

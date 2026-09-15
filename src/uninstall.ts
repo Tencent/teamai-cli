@@ -32,6 +32,7 @@ import {
 } from './types.js';
 import { BUILTIN_RULE_NAMES } from './builtin-rules.js';
 import { ruleStemFromFilename } from './resources/rule-format.js';
+import { listTeamAgentDirs } from './resources/agents.js';
 import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import {
@@ -175,17 +176,22 @@ async function collectTeamRuleNames(repoPath: string): Promise<Set<string>> {
   );
 }
 
-/** Collect custom agent names from canonical YAML and legacy Markdown files. */
+/**
+ * Collect custom agent names from canonical YAML and legacy Markdown files,
+ * at the root and one level of `agents/<namespace>/` (role-scoped agents
+ * deploy flattened, so their stems are removal candidates too).
+ */
 async function collectTeamAgentNames(repoPath: string): Promise<Set<string>> {
   const teamAgentsDir = path.join(repoPath, 'agents');
   if (!await pathExists(teamAgentsDir)) return new Set();
 
-  const files = await listFiles(teamAgentsDir);
-  return new Set(
-    files
-      .filter((file) => file.endsWith('.yaml') || file.endsWith('.md'))
-      .map((file) => path.basename(file).replace(/\.(yaml|md)$/, '')),
-  );
+  const names = new Set<string>();
+  for (const { dir } of await listTeamAgentDirs(teamAgentsDir)) {
+    for (const file of await listFiles(dir)) {
+      if (file.endsWith('.yaml') || file.endsWith('.md')) names.add(file.replace(/\.(yaml|md)$/, ''));
+    }
+  }
+  return names;
 }
 
 /** Detect hooks cleared to empty arrays — a residue of prior teamai installation. */

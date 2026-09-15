@@ -213,6 +213,7 @@ projects:
       knowledge: [hai-inference]
       skills:    [hai-inference]
       learnings: [hai-inference]
+      agents:    [hai-inference]   # 可选
 ```
 
 **命令**（低频的事后修正与查询，对标 `teamai roles …`）：
@@ -415,7 +416,7 @@ teamai pull --dry-run    # 试运行，不实际修改
 
 > Project scope 默认与 user scope 隔离。当前工作目录包含 project scope 的 `.teamai/config.yaml` 时，`pull` 会处理该项目并跳过 user scope；仅当本地配置包含 `inheritUserScope: true` 时，才会先刷新安全的 user 资源通道。当前目录没有 project 配置时，`pull` 处理 user scope。project 模式下，user 的 `env`、MCP 定义、sources、reporting 和写入行为仍保持隔离。hooks 是唯一例外：project scope 的 hooks 会注入到你的 **HOME** 工具设置（`~/.claude/settings.json` 等），而非 `<projectRoot>`——因为内置 hooks 依据传给 `hook-dispatch` 的 `cwd` 门控，且 `~/.claude` 恒存在、能通过「已安装工具」门槛（详见 Hooks 章节）。self 单仓模式则把 hooks 保留在业务仓库里，随 clone 传播。
 
-启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/`、`docs/` 仍然保持原有同步逻辑。`learnings/` 根目录对所有人共享，而 `learnings/<project-id>/` 子目录只对本目录激活的项目同步（见 [多项目](#多项目project-作为与-role-正交的维度)）。
+启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/`、`docs/` 仍然保持原有同步逻辑；`agents/<namespace>/` 按角色的 `agents` namespace 同步（见 [Agents 资源类型](#agents-资源类型)）。`learnings/` 根目录对所有人共享，而 `learnings/<project-id>/` 子目录只对本目录激活的项目同步（见 [多项目](#多项目project-作为与-role-正交的维度)）。
 
 ### 团队包
 
@@ -558,7 +559,7 @@ teamai status --all  # 列出 ~/.teamai/projects 下所有项目数据分区
 
 ### 角色管理
 
-角色（Roles）控制每个成员看到哪些 skills。管理员通过 `manifest/roles.yaml` 定义角色，成员选择自己的角色后，pull 会同步对应 namespace 的 skills。启用标签订阅后，还可以额外同步其他 namespace 中显式匹配标签的 skills，但不会包含非活跃 namespace 中未打标签的 skills。
+角色（Roles）控制每个成员看到哪些 skills、namespace 化的 rules 与 agents。管理员通过 `manifest/roles.yaml` 定义角色，成员选择自己的角色后，pull 会同步对应 namespace 的 skills。启用标签订阅后，还可以额外同步其他 namespace 中显式匹配标签的 skills，但不会包含非活跃 namespace 中未打标签的 skills。
 
 **管理员操作：**
 
@@ -580,7 +581,7 @@ teamai roles remove devops
 teamai roles add test --namespaces common,test --dry-run
 ```
 
-以上命令会自动 push 分支并创建 MR，合并后对全团队生效。
+`--namespaces` 列表会同时应用到 `knowledge`、`skills` 与 `agents`。以上命令会自动 push 分支并创建 MR，合并后对全团队生效。
 
 **成员操作：**
 
@@ -1319,16 +1320,27 @@ builtin:
 
 ### Agents 资源类型
 
-团队仓库可在 `agents/` 目录下维护自定义 subagent 定义（每个 agent 一个 `*.md` 文件）：
+团队仓库可在 `agents/` 目录下维护自定义 subagent 定义（每个 agent 一个 `*.yaml` 或旧格式 `*.md` 文件）。根目录文件对所有成员生效；一层子目录可按角色/项目划分 agents，规则与 `rules/<namespace>/` 相同：
 
 ```text
 team-repo/
   agents/
-    code-reviewer.md      # 团队自定义 subagent
-    .removed              # tombstone（由 teamai remove agents <name> 自动管理）
+    code-reviewer.md              # 团队自定义 subagent，所有人共享
+    frontend/vr-reviewer.yaml     # 仅同步给 `agents:` 中列出 `frontend` 的角色/项目
+    .removed                      # tombstone（由 teamai remove agents <name> 自动管理）
 ```
 
-`teamai pull` 会将它们复制到每个 Tier-1 工具的 `agents/` 目录（如 `~/.claude/agents/`）。CLI 内置的 `teamai-recall.md` 与团队 agents 并列部署，但不会被 `teamai push` 上传。
+```yaml
+# manifest/roles.yaml（manifest/projects.yaml 使用同一个 key）
+roles:
+  - id: frontend
+    resources:
+      knowledge: [common, frontend]
+      skills:    [common, frontend]
+      agents:    [common, frontend]   # 可选；省略 = 只同步根目录 agents
+```
+
+`teamai pull` 会将它们按文件名拍平复制到每个 Tier-1 工具的 `agents/` 目录（如 `~/.claude/agents/`），因此两个活跃 namespace 不能定义同名 agent（pull 会报告冲突并跳过该 scope）。成员切换角色后，不再活跃的 namespace 中的 agents 会在下一次 pull 时被移除；若本地副本已被手动修改，则保留并给出警告。未配置角色时同步全部 agents。`teamai push` 会把修改过的 agent 写回它所在的 namespace，新 agent 落在根目录。CLI 内置的 `teamai-recall.md` 与团队 agents 并列部署，但不会被 `teamai push` 上传。
 
 ### OpenCode
 

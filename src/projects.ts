@@ -9,7 +9,7 @@ import type { ResourceNamespaces } from './roles.js';
  * projects are the only carrier of learnings-namespace isolation (roles ignore it
  * on purpose — see src/roles.ts). knowledge/skills mirror the role convention.
  */
-const PROJECT_RESOURCE_TYPES = ['knowledge', 'skills', 'learnings'] as const;
+const PROJECT_RESOURCE_TYPES = ['knowledge', 'skills', 'learnings', 'agents'] as const;
 
 export type ProjectResourceType = typeof PROJECT_RESOURCE_TYPES[number];
 
@@ -17,6 +17,7 @@ const ProjectResourceNamespacesSchema = z.object({
   knowledge: z.array(z.string().min(1)).default([]),
   skills: z.array(z.string().min(1)).default([]),
   learnings: z.array(z.string().min(1)).default([]),
+  agents: z.array(z.string().min(1)).default([]),
 });
 
 /**
@@ -172,6 +173,7 @@ export function resolveProjectResourceNamespaces(input: {
     knowledge: [],
     skills: [],
     learnings: [],
+    agents: [],
   };
 
   for (const type of PROJECT_RESOURCE_TYPES) {
@@ -240,5 +242,6 @@ export function mergeNamespaces(
     skills: dedupe(roleNamespaces.skills, projectNamespaces.skills),
     // Roles never contribute learnings; this is effectively the project set.
     learnings: dedupe(roleNamespaces.learnings, projectNamespaces.learnings),
+    agents: dedupe(roleNamespaces.agents, projectNamespaces.agents),
   };
 }

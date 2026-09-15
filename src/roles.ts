@@ -3,13 +3,16 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import { readFileSafe, ensureDir, writeFile } from './utils/fs.js';
 
-const ROLE_RESOURCE_TYPES = ['knowledge', 'skills'] as const;
+const ROLE_RESOURCE_TYPES = ['knowledge', 'skills', 'agents'] as const;
 
 export type RoleResourceType = typeof ROLE_RESOURCE_TYPES[number];
 
 const RoleResourceNamespacesSchema = z.object({
   knowledge: z.array(z.string().min(1)),
   skills: z.array(z.string().min(1)),
+  // Optional: a role without `agents` receives root-level agents only, which
+  // is what every manifest written before this key existed already got.
+  agents: z.array(z.string().min(1)).default([]),
   // learnings is accepted for backward compatibility but ignored at runtime.
   // All learnings are shared flat across the entire team (no namespace isolation).
   learnings: z.array(z.string()).optional(),
@@ -43,6 +46,7 @@ export type ResourceNamespaces = {
   knowledge: string[];
   skills: string[];
   learnings: string[];
+  agents: string[];
 };
 
 function validateManifestShape(raw: unknown): RolesManifest {
@@ -155,6 +159,7 @@ export function resolveRoleResourceNamespaces(input: {
     // Roles never contribute learnings namespaces; only projects do. Kept empty
     // so the shape matches project resolution for a clean union at the call site.
     learnings: [],
+    agents: [],
   };
 
   for (const type of ROLE_RESOURCE_TYPES) {

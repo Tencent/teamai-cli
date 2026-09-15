@@ -6,7 +6,7 @@ import { flushPendingLearnings } from './utils/pending-learnings.js';
 import { log, spinner } from './utils/logger.js';
 import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
 import { injectClaudeMdSection } from './utils/claudemd.js';
-import { getHandler, RulesHandler, DocsHandler, EnvHandler } from './resources/index.js';
+import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
 import { ResourceHandler } from './resources/base.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { loadTagsConfig, filterByTags } from './utils/tags.js';
@@ -222,7 +222,7 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
   if (!hasRole && !hasProjects && !teamHasProjects) return null;
 
   // ── Role namespaces (optional) ──
-  let roleNamespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [] };
+  let roleNamespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
   let allRoleSkillNamespaces = new Set<string>();
   if (hasRole) {
     let rolesManifest;
@@ -256,7 +256,7 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
   // the team defines projects — even with none active — so every non-selected
   // project namespace is treated as inactive and cleaned up below. The ACTIVE
   // namespaces come only from the projects this directory selected.
-  let projectNamespaces = { knowledge: [] as string[], skills: [] as string[], learnings: [] as string[] };
+  let projectNamespaces = { knowledge: [] as string[], skills: [] as string[], learnings: [] as string[], agents: [] as string[] };
   let allProjectSkillNamespaces = new Set<string>();
   if (projectsManifest) {
     allProjectSkillNamespaces = new Set(projectsManifest.projects.flatMap((p) => p.resources.skills));
@@ -331,6 +331,40 @@ export function filterRulesByKnowledgeNamespaces(
     const namespace = rule.name.slice(0, slashIndex);
     return knowledgeNamespaces.includes(namespace);
   });
+}
+
+/**
+ * Filter team agents by the active `agents` namespaces, then reject stem
+ * collisions among what survives.
+ *
+ * Same convention as rules: a root-level agent (no `namespace`) always ships;
+ * `agents/<ns>/x.yaml` ships only when `<ns>` is active. `null` means no role
+ * or project is configured and everything passes through.
+ *
+ * Agents deploy flattened to `<tool>/agents/<stem><ext>`, so two kept items
+ * with one stem would overwrite each other. That is an admin-side layout
+ * error, reported the way `scanRoleAwareSkills` reports duplicate skills.
+ */
+export function filterAgentsByNamespaces(
+  agents: ResourceItem[],
+  agentNamespaces: string[] | null,
+): ResourceItem[] {
+  const kept = agentNamespaces
+    ? agents.filter((agent) => !agent.namespace || agentNamespaces.includes(agent.namespace))
+    : agents;
+
+  const seen = new Map<string, ResourceItem>();
+  for (const agent of kept) {
+    const existing = seen.get(agent.name);
+    if (existing) {
+      throw new Error(
+        `Duplicate agent "${agent.name}" found in active namespaces "${existing.namespace ?? '(root)'}" and "${agent.namespace ?? '(root)'}"`,
+      );
+    }
+    seen.set(agent.name, agent);
+  }
+
+  return kept;
 }
 
 export async function scanRoleAwareSkills(localConfig: LocalConfig, namespaces: ResourceNamespaces): Promise<ResourceItem[]> {
@@ -711,6 +745,13 @@ async function pullForScope(
       desiredSkillNames = new Set(items.map((i) => i.name));
       knownRepoSkillNames = new Set(allTeamSkills.map((i) => i.name));
       knownRepoSkillSources = new Map(allTeamSkills.map((i) => [i.name, i.sourcePath]));
+    } else if (type === 'agents') {
+      // Role/project namespace filter (root = everyone), same as rules. Throws
+      // on a stem collision; the caller's try/catch logs it and aborts the scope.
+      items = filterAgentsByNamespaces(
+        await handler.scanTeamForPull(freshConfig, localConfig),
+        roleContext ? roleContext.activeNamespaces.agents : null,
+      );
     } else {
       items = await handler.scanTeamForPull(freshConfig, localConfig);
     }
@@ -839,6 +880,13 @@ async function pullForScope(
         desiredSkillNames ?? roleContext.activeSkillNames,
         roleContext.inactiveSkillNames,
         roleContext.inactiveSkillSources,
+      );
+      // Same revocation for agents: a role change must remove the previous
+      // role's agents, not just stop deploying them.
+      await (getHandler('agents') as AgentsHandler).cleanupInactiveNamespaces(
+        freshConfig,
+        localConfig,
+        roleContext.activeNamespaces.agents,
       );
     }
   }

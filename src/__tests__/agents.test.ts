@@ -102,6 +102,23 @@ describe('AgentsHandler — Phase 1 push/pull/remove', () => {
     expect(items.every((i) => i.type === 'agents')).toBe(true);
   });
 
+  it('scanTeamForPull returns namespaced agents from one level of subdirectories', async () => {
+    await fse.writeFile(path.join(repoPath, 'agents', 'shared.md'), '# shared');
+    await fse.ensureDir(path.join(repoPath, 'agents', 'frontend'));
+    await fse.writeFile(path.join(repoPath, 'agents', 'frontend', 'vr-reviewer.yaml'), 'name: vr-reviewer\n');
+    await fse.writeFile(path.join(repoPath, 'agents', 'frontend', 'notes.txt'), 'ignored');
+    // Two levels deep is not a namespace and must be ignored
+    await fse.ensureDir(path.join(repoPath, 'agents', 'frontend', 'nested'));
+    await fse.writeFile(path.join(repoPath, 'agents', 'frontend', 'nested', 'deep.md'), '# deep');
+
+    const items = await handler.scanTeamForPull(teamConfig, localConfig);
+    expect(items.map((i) => [i.name, i.namespace, i.relativePath]).sort()).toEqual([
+      ['shared', undefined, 'agents/shared.md'],
+      ['vr-reviewer', 'frontend', 'agents/frontend/vr-reviewer.yaml'],
+    ]);
+    expect(items.find((i) => i.name === 'vr-reviewer')?.legacy).toBe(false);
+  });
+
   it('scanTeamForPull returns empty when team repo has no agents directory', async () => {
     await fse.remove(path.join(repoPath, 'agents'));
     const items = await handler.scanTeamForPull(teamConfig, localConfig);
@@ -177,6 +194,17 @@ describe('AgentsHandler — Phase 1 push/pull/remove', () => {
     const item = items.find((i) => i.name === 'shared');
     expect(item).toBeDefined();
     expect(item!.status).toBe('modified');
+  });
+
+  it('scanLocalForPush routes a modified namespaced agent back to its namespace', async () => {
+    await fse.ensureDir(path.join(repoPath, 'agents', 'frontend'));
+    await fse.writeFile(path.join(repoPath, 'agents', 'frontend', 'vr.md'), 'team version');
+    await fse.writeFile(path.join(homeDir, '.claude/agents', 'vr.md'), 'local edits');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const item = items.find((i) => i.name === 'vr');
+    expect(item?.status).toBe('modified');
+    expect(item?.relativePath).toBe('agents/frontend/vr.md');
   });
 
   it('scanLocalForPush detects a brand-new local agent as "new"', async () => {
@@ -287,6 +315,22 @@ describe('AgentsHandler — Phase 1 push/pull/remove', () => {
     expect((await fse.readFile(teamFile, 'utf8'))).toBe('# pushed agent');
   });
 
+  it('pushItem writes a namespaced agent to its own namespace directory, not the root', async () => {
+    await fse.ensureDir(path.join(repoPath, 'agents', 'frontend'));
+    await fse.writeFile(path.join(repoPath, 'agents', 'frontend', 'vr.md'), 'team version');
+    const localFile = path.join(homeDir, '.claude/agents', 'vr.md');
+    await fse.writeFile(localFile, 'local edits');
+
+    await handler.pushItem(
+      { name: 'vr', type: 'agents', sourcePath: localFile, relativePath: 'agents/frontend/vr.md' },
+      teamConfig,
+      localConfig,
+    );
+
+    expect(await fse.readFile(path.join(repoPath, 'agents', 'frontend', 'vr.md'), 'utf8')).toBe('local edits');
+    expect(await fse.pathExists(path.join(repoPath, 'agents', 'vr.md'))).toBe(false);
+  });
+
   // ── removeItem + tombstone ──────────────────────────────
 
   it('removeItem deletes from team repo and all tool agents/ dirs and writes a tombstone', async () => {
@@ -305,6 +349,19 @@ describe('AgentsHandler — Phase 1 push/pull/remove', () => {
     // copy reappears.
     const tombstone = await fse.readFile(path.join(repoPath, 'agents', '.removed'), 'utf8');
     expect(tombstone.split('\n').map((l) => l.trim())).toContain('old');
+  });
+
+  it('removeItem deletes a namespaced agent from the team repo and tombstones it', async () => {
+    await fse.ensureDir(path.join(repoPath, 'agents', 'devops'));
+    await fse.writeFile(path.join(repoPath, 'agents', 'devops', 'tf.yaml'), 'name: tf\n');
+    await fse.writeFile(path.join(homeDir, '.claude/agents', 'tf.md'), 'rendered');
+
+    await handler.removeItem('tf', teamConfig, localConfig);
+
+    expect(await fse.pathExists(path.join(repoPath, 'agents', 'devops', 'tf.yaml'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.claude/agents', 'tf.md'))).toBe(false);
+    const tombstone = await fse.readFile(path.join(repoPath, 'agents', '.removed'), 'utf8');
+    expect(tombstone.split('\n').map((l) => l.trim())).toContain('tf');
   });
 
   it('scanLocalForPush respects tombstones (skips removed items)', async () => {

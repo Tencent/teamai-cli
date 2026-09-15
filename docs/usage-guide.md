@@ -225,6 +225,7 @@ projects:
       knowledge: [hai-inference]
       skills:    [hai-inference]
       learnings: [hai-inference]
+      agents:    [hai-inference]   # optional
 ```
 
 **Commands** (low-frequency correction/query, mirroring `teamai roles …`):
@@ -430,7 +431,7 @@ teamai pull --dry-run    # Dry run, no actual changes
 
 > Project scope is isolated by default. When the current working directory contains a project-scope `.teamai/config.yaml`, `pull` processes that project and skips user scope unless the local config has `inheritUserScope: true`; in that case it first refreshes the safe user-resource channel. Without a project config in the current directory, `pull` processes user scope. User `env`, MCP definitions, sources, reporting, and writes remain isolated in project mode. Hooks are the one exception: a project scope's hooks are injected into your **HOME** tool settings (`~/.claude/settings.json`, …), not `<projectRoot>`, because the built-in hooks gate on the `cwd` handed to `hook-dispatch` and `~/.claude` always exists so the "installed tool" gate passes (see the Hooks section). Self single-repo mode keeps its hooks in the business repo so they travel on clone.
 
-With role-based skills enabled, `pull`'s skill sync source becomes the contents of `skills/<namespace>/`, expanded according to `primaryRole + additionalRoles` and flattened into each local AI tool's skills directory. `rules/` and `docs/` keep their original sync behavior. `learnings/` at the root is shared with everyone, while `learnings/<project-id>/` subdirectories sync only for the directory's active projects (see [Multi-project](#multi-project-project-as-a-dimension-orthogonal-to-role)).
+With role-based skills enabled, `pull`'s skill sync source becomes the contents of `skills/<namespace>/`, expanded according to `primaryRole + additionalRoles` and flattened into each local AI tool's skills directory. `rules/` and `docs/` keep their original sync behavior; `agents/<namespace>/` follows the role's `agents` namespaces (see [Agents Resource Type](#agents-resource-type)). `learnings/` at the root is shared with everyone, while `learnings/<project-id>/` subdirectories sync only for the directory's active projects (see [Multi-project](#multi-project-project-as-a-dimension-orthogonal-to-role)).
 
 ### Team packages
 
@@ -578,7 +579,7 @@ delete by hand.
 
 ### Role management
 
-Roles control which skills each member sees. Admins define roles via `manifest/roles.yaml`; once a member selects their role, `pull` syncs skills from the matching namespace. Active tag subscriptions may additionally sync explicitly matching skills from other namespaces, but untagged skills in inactive namespaces are not included.
+Roles control which skills, namespaced rules and namespaced agents each member sees. Admins define roles via `manifest/roles.yaml`; once a member selects their role, `pull` syncs skills from the matching namespace. Active tag subscriptions may additionally sync explicitly matching skills from other namespaces, but untagged skills in inactive namespaces are not included.
 
 **Admin operations:**
 
@@ -600,7 +601,7 @@ teamai roles remove devops
 teamai roles add test --namespaces common,test --dry-run
 ```
 
-The commands above automatically push a branch and create an MR; the change takes effect team-wide once merged.
+The `--namespaces` list is applied to `knowledge`, `skills` and `agents` alike. The commands above automatically push a branch and create an MR; the change takes effect team-wide once merged.
 
 **Member operations:**
 
@@ -1352,16 +1353,27 @@ Security governance:
 
 ### Agents Resource Type
 
-The team repo can maintain custom subagent definitions under an `agents/` directory (one `*.md` file per agent):
+The team repo can maintain custom subagent definitions under an `agents/` directory (one `*.yaml` or legacy `*.md` file per agent). Root-level files reach every member. One level of subdirectories scopes agents by role or project, the same way `rules/<namespace>/` works:
 
 ```text
 team-repo/
   agents/
-    code-reviewer.md      # Team custom subagent
-    .removed              # tombstone (auto-managed by teamai remove agents <name>)
+    code-reviewer.md              # Team custom subagent, shared with everyone
+    frontend/vr-reviewer.yaml     # Only for roles/projects whose `agents:` lists `frontend`
+    .removed                      # tombstone (auto-managed by teamai remove agents <name>)
 ```
 
-`teamai pull` copies these into each Tier-1 tool's `agents/` directory (e.g. `~/.claude/agents/`). The CLI's built-in `teamai-recall.md` is deployed alongside team agents but is not uploaded by `teamai push`.
+```yaml
+# manifest/roles.yaml (manifest/projects.yaml takes the same key)
+roles:
+  - id: frontend
+    resources:
+      knowledge: [common, frontend]
+      skills:    [common, frontend]
+      agents:    [common, frontend]   # optional; omitted = root-level agents only
+```
+
+`teamai pull` copies these into each Tier-1 tool's `agents/` directory (e.g. `~/.claude/agents/`), flattened by file name, so two active namespaces must not define the same agent name (pull reports the collision and skips the scope). When a member changes role, agents of the namespaces that stopped being active are removed on the next pull, unless the deployed copy was edited locally, in which case it is kept with a warning. Without a configured role, every agent syncs. `teamai push` writes a modified agent back to the namespace it came from; a new agent lands at the root. The CLI's built-in `teamai-recall.md` is deployed alongside team agents but is not uploaded by `teamai push`.
 
 ### OpenCode
 

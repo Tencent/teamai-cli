@@ -35,12 +35,12 @@ vi.mock('../roles.js', () => ({
       id: 'dev',
       name: 'Dev',
       description: '',
-      resources: { knowledge: ['common'], skills: ['common'], learnings: ['common'] },
+      resources: { knowledge: ['common'], skills: ['common'], learnings: ['common'], agents: [] },
     }],
     defaults: { shareTarget: 'primary-role' },
   }),
   resolveRoleResourceNamespaces: vi.fn(() => ({
-    knowledge: ['common'], skills: ['common'], learnings: ['common'],
+    knowledge: ['common'], skills: ['common'], learnings: ['common'], agents: [],
   })),
 }));
 

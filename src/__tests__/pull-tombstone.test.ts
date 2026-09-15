@@ -54,6 +54,7 @@ vi.mock('../roles.js', () => ({
           knowledge: ['common', 'hai'],
           skills: ['common', 'hai'],
           learnings: ['common', 'hai'],
+          agents: [],
         },
       },
       {
@@ -64,6 +65,7 @@ vi.mock('../roles.js', () => ({
           knowledge: ['common', 'pm'],
           skills: ['common', 'pm'],
           learnings: ['common', 'pm'],
+          agents: [],
         },
       },
     ],
@@ -81,6 +83,7 @@ vi.mock('../roles.js', () => ({
       knowledge: dedupe(allRoles.flatMap((role: { resources: { knowledge: string[] } }) => role.resources.knowledge)),
       skills: dedupe(allRoles.flatMap((role: { resources: { skills: string[] } }) => role.resources.skills)),
       learnings: dedupe(allRoles.flatMap((role: { resources: { learnings: string[] } }) => role.resources.learnings)),
+      agents: [],
     };
   }),
 }));
@@ -466,7 +469,7 @@ describe('pull role-aware sync and cleanup', () => {
 
     await expect(scanRoleAwareSkills(
       localConfig,
-      { knowledge: ['common', 'hai'], skills: ['common', 'hai'], learnings: [] },
+      { knowledge: ['common', 'hai'], skills: ['common', 'hai'], learnings: [], agents: [] },
     )).rejects.toThrow(/Duplicate skill "shared-skill"/);
   });
 

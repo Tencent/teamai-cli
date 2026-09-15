@@ -77,6 +77,7 @@ projects:
       expect(p.resources.skills).toEqual(['billing']);
       expect(p.resources.knowledge).toEqual([]);
       expect(p.resources.learnings).toEqual([]);
+      expect(p.resources.agents).toEqual([]);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -134,7 +135,7 @@ projects:
       const manifest: ProjectsManifest = {
         version: 1,
         projects: [
-          { id: 'a', name: 'A', description: '', resources: { knowledge: ['a'], skills: ['a'], learnings: ['a'] } },
+          { id: 'a', name: 'A', description: '', resources: { knowledge: ['a'], skills: ['a'], learnings: ['a'], agents: [] } },
         ],
       };
       await saveProjectsManifest(repoDir, manifest);
@@ -150,8 +151,8 @@ describe('resolveProjectResourceNamespaces', () => {
   const manifest: ProjectsManifest = {
     version: 1,
     projects: [
-      { id: 'hai', name: '', description: '', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'], learnings: ['hai'] } },
-      { id: 'billing', name: '', description: '', resources: { knowledge: ['common', 'billing'], skills: ['billing'], learnings: ['billing'] } },
+      { id: 'hai', name: '', description: '', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'], learnings: ['hai'], agents: [] } },
+      { id: 'billing', name: '', description: '', resources: { knowledge: ['common', 'billing'], skills: ['billing'], learnings: ['billing'], agents: [] } },
     ],
   };
 
@@ -160,6 +161,7 @@ describe('resolveProjectResourceNamespaces', () => {
       knowledge: ['common', 'hai'],
       skills: ['common', 'hai'],
       learnings: ['hai'],
+      agents: [],
     });
   });
 
@@ -168,6 +170,7 @@ describe('resolveProjectResourceNamespaces', () => {
       knowledge: ['common', 'hai', 'billing'],
       skills: ['common', 'hai', 'billing'],
       learnings: ['hai', 'billing'],
+      agents: [],
     });
   });
 
@@ -176,6 +179,7 @@ describe('resolveProjectResourceNamespaces', () => {
       knowledge: [],
       skills: [],
       learnings: [],
+      agents: [],
     });
   });
 
@@ -185,23 +189,31 @@ describe('resolveProjectResourceNamespaces', () => {
 });
 
 describe('mergeNamespaces', () => {
-  const role: ResourceNamespaces = { knowledge: ['common', 'dev'], skills: ['common', 'dev'], learnings: [] };
-  const project = { knowledge: ['common', 'hai'], skills: ['hai'], learnings: ['hai'] };
+  const role: ResourceNamespaces = { knowledge: ['common', 'dev'], skills: ['common', 'dev'], learnings: [], agents: [] };
+  const project = { knowledge: ['common', 'hai'], skills: ['hai'], learnings: ['hai'], agents: [] };
 
   it('unions role and project on knowledge/skills and takes learnings from project only', () => {
     expect(mergeNamespaces(role, project)).toEqual({
       knowledge: ['common', 'dev', 'hai'],
       skills: ['common', 'dev', 'hai'],
       learnings: ['hai'],
+      agents: [],
     });
   });
 
   it('is a no-op union when project contributes nothing', () => {
-    expect(mergeNamespaces(role, { knowledge: [], skills: [], learnings: [] })).toEqual({
+    expect(mergeNamespaces(role, { knowledge: [], skills: [], learnings: [], agents: [] })).toEqual({
       knowledge: ['common', 'dev'],
       skills: ['common', 'dev'],
       learnings: [],
+      agents: [],
     });
+  });
+
+  it('unions the agents axis from roles and projects', () => {
+    const roleWithAgents: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: ['common', 'frontend'] };
+    expect(mergeNamespaces(roleWithAgents, { knowledge: [], skills: [], learnings: [], agents: ['frontend', 'billing'] }).agents)
+      .toEqual(['common', 'frontend', 'billing']);
   });
 });
 

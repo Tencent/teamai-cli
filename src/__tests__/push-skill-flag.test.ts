@@ -151,7 +151,7 @@ function setupDefaultMocks() {
   mockLoadRolesManifest.mockResolvedValue({
     version: 1,
     roles: [
-      { id: 'hai', description: 'HyperAI', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'] } },
+      { id: 'hai', description: 'HyperAI', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'], agents: [] } },
     ],
   });
   // Default: pathExists returns false (most paths don't exist)

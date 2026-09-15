@@ -131,7 +131,7 @@ export async function rolesInit(options: GlobalOptions): Promise<void> {
     const roles: Array<{
         id: string;
         description: string;
-        resources: { knowledge: string[]; skills: string[] };
+        resources: { knowledge: string[]; skills: string[]; agents: string[] };
     }> = [];
 
     let addMore = true;
@@ -165,6 +165,7 @@ export async function rolesInit(options: GlobalOptions): Promise<void> {
             resources: {
                 knowledge: namespaces,
                 skills: namespaces,
+                agents: namespaces,
             },
         });
 
@@ -356,6 +357,7 @@ export async function rolesAdd(
             resources: {
                 knowledge: namespaces,
                 skills: namespaces,
+                agents: namespaces,
             },
         };
 
@@ -508,6 +510,7 @@ export async function rolesUpdate(
             resources: {
                 knowledge: updatedNamespaces,
                 skills: updatedNamespaces,
+                agents: updatedNamespaces,
             },
         };
 
