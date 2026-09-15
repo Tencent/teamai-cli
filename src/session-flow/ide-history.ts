@@ -601,7 +601,7 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
   return {
     synced,
     messageCount: messages.length,
-    ...(synced > 0 ? { convId } : { skipped: 'IDE history 目录写入失败' }),
+    ...(synced > 0 ? { convId } : { skipped: 'failed to write IDE history directories' }),
   };
 }
 
