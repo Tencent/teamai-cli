@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { reconcileTeamHooksForConfig } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials } from './utils/git.js';
+import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepo } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
 import { getProvider, detectProviderForInit, RepoNotFoundError } from './providers/index.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
@@ -1200,6 +1200,22 @@ export async function init(options: GlobalOptions & {
         }
       } else {
         log.info(`Repo already exists at ${localPath}, using existing clone`);
+        // Refresh before resolveActiveProjects so selectors like `--project all`
+        // expand against the current remote manifest, not a stale local snapshot
+        // (re-running init after a new project is added would otherwise keep the
+        // old project list — see PR #518 review).
+        try {
+          const pullResult = await pullRepo(localPath);
+          if (pullResult !== 'already up to date') {
+            log.info(`Refreshed existing clone (${pullResult})`);
+          }
+        } catch (e) {
+          log.error(
+            `Failed to refresh existing clone at ${localPath}: ${(e as Error).message}. ` +
+            'Fix network/auth, or re-run with --force to replace the clone.',
+          );
+          process.exit(1);
+        }
       }
     } else {
       // The path exists but isn't a git repo — typically a leftover from a
