@@ -1240,9 +1240,19 @@ Each session card shows a `⚠ N` badge, counting the **number of human interven
 |------|------|----------|
 | `interrupt` | User pressed ESC to interrupt the agent mid-execution | An interrupted turn in the transcript |
 | `toolReject` | User rejected a tool call (permission deny) | A tool_result marked as rejected in the transcript |
-| `correction` | Within 60s after the agent stops, the user submits a follow-up prompt containing a correction keyword ("not right" / "redo" / "wrong" / 「違う」 / 「やり直し」 / etc. — Chinese, English and Japanese) | The stop → prompt_submit event pattern |
+| `correction` | Within 60s after the agent stops, the user submits a follow-up prompt containing a correction keyword ("not right" / "redo" / "wrong" / 「違う」 / 「やり直し」 / etc. — Chinese, English and Japanese built in, plus any team keywords) | The stop → prompt_submit event pattern |
 
 > Privacy: only counts are tracked — no prompt or transcript text is ever stored.
+
+Keywords in a space-separated script (English, Spanish, ...) must appear as a whole word, so Spanish "segundo" does not count as `undo`. Chinese and Japanese keywords match as substrings. Teams whose members correct the agent in another language add their own words in `teamai.yaml`; they are merged with the built-in list and matched case-insensitively under the same rules:
+
+```yaml
+sharing:
+  intervention:
+    correctionKeywords: [rehazlo, deshaz, "no era eso", "otra vez"]
+```
+
+The prompt is checked when the `UserPromptSubmit` hook captures it, so a change to the team keywords applies to new prompts after the next `teamai pull`; sessions recorded earlier are not re-evaluated.
 
 Intervention data is automatically aggregated and reported to the team's `stats/<user>.yaml` during `teamai pull`, and shown in the "Session Autonomy" leaderboard of `teamai digest`, with team averages and per-person intervention rate rankings — useful for verifying whether a skill/rule reduces intervention rates after rollout. Tools without a transcript (e.g. Cursor) degrade gracefully, tracking only `correction`.
 
@@ -1569,6 +1579,8 @@ sharing:
     enabled: false             # optional; strip AI-tool commit trailers team-wide
   contributeHint:
     enabled: true              # optional; false = no /teamai-share-learnings nudge after high-friction sessions
+  intervention:
+    correctionKeywords: []     # optional; extra course-correction words merged with the built-in zh/en/ja list
 ```
 
 ### config.yaml (local config)

@@ -5,6 +5,7 @@ import {
   MemberConfigSchema,
   TeamaiConfigSchema,
   SharingConfigSchema,
+  getInterventionSharing,
   StateSchema,
   LocalConfigSchema,
   resolveLegacyProjectHookScope,
@@ -178,6 +179,24 @@ describe('SharingConfigSchema env', () => {
     });
     expect(result.sharing.env).toBeDefined();
     expect(result.sharing.env.injectShellProfile).toBe(true);
+  });
+});
+
+describe('SharingConfigSchema intervention', () => {
+  it('leaves intervention undefined when absent and defaults keywords to []', () => {
+    const result = SharingConfigSchema.parse({});
+    expect(result.intervention).toBeUndefined();
+    expect(getInterventionSharing({ sharing: result })).toEqual({ correctionKeywords: [] });
+    expect(getInterventionSharing({})).toEqual({ correctionKeywords: [] });
+  });
+
+  it('accepts team correctionKeywords', () => {
+    const result = SharingConfigSchema.parse({ intervention: { correctionKeywords: ['rehazlo', 'no era eso'] } });
+    expect(getInterventionSharing({ sharing: result }).correctionKeywords).toEqual(['rehazlo', 'no era eso']);
+  });
+
+  it('rejects non-string keywords', () => {
+    expect(() => SharingConfigSchema.parse({ intervention: { correctionKeywords: [1] } })).toThrow();
   });
 });
 

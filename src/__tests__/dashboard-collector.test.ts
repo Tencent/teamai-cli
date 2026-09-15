@@ -106,6 +106,62 @@ describe('parseHookEvent', () => {
     expect(event!.tool).toBe('claude-internal');
   });
 
+  it('flags a correction prompt on UserPromptSubmit', async () => {
+    const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'wrong, redo it' });
+    const event = await parseHookEvent(raw, 'claude');
+    expect(event!.correction).toBe(true);
+  });
+
+  it('does not flag a Latin keyword inside a longer word (issue #564)', async () => {
+    // "undo" / "redo" are common Spanish and Portuguese word endings.
+    for (const word of ['segundo', 'mundo', 'profundo', 'rotundo', 'redondo', 'enredo', 'oriundo']) {
+      const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: `dame el ${word} fichero` });
+      const event = await parseHookEvent(raw, 'claude');
+      expect(event!.correction, word).toBe(false);
+    }
+  });
+
+  it('matches Latin keywords as whole words, including multi-word ones', async () => {
+    for (const prompt of ['undo that', 'Undo.', "that's not it", "don't do that", 'wrong!']) {
+      const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt });
+      const event = await parseHookEvent(raw, 'claude');
+      expect(event!.correction, prompt).toBe(true);
+    }
+  });
+
+  it('keeps substring matching for Chinese and Japanese keywords', async () => {
+    for (const prompt of ['这不对', '違うよ']) {
+      const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt });
+      const event = await parseHookEvent(raw, 'claude');
+      expect(event!.correction, prompt).toBe(true);
+    }
+  });
+
+  it('merges team correctionKeywords with the built-in list', async () => {
+    const options = { correctionKeywords: ['rehazlo', 'no era eso', 'mal', '重做'] };
+    const cases: Array<[string, boolean]> = [
+      ['esto está mal, rehazlo', true],
+      ['No era eso', true],
+      ['请重做一遍', true],
+      // Team Latin keywords also need a whole word: accented letters count as letters.
+      ['no está malísimo', false],
+      ['continúa con el siguiente paso', false],
+    ];
+    for (const [prompt, expected] of cases) {
+      const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt });
+      const event = await parseHookEvent(raw, 'claude', options);
+      expect(event!.correction, prompt).toBe(expected);
+    }
+  });
+
+  it('checks the full prompt, not only the 200-char summary', async () => {
+    const prompt = `${'x '.repeat(150)}wrong`;
+    const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt });
+    const event = await parseHookEvent(raw, 'claude');
+    expect(event!.promptSummary!.length).toBe(200);
+    expect(event!.correction).toBe(true);
+  });
+
   it('truncates long prompts to 200 chars', async () => {
     const longPrompt = 'x'.repeat(500);
     const raw = JSON.stringify({
@@ -741,6 +797,43 @@ describe('rebuildSessions interventions', () => {
       { type: 'prompt_submit', timestamp: new Date(t0.getTime() + 120_000).toISOString(), sessionId: 's1', tool: 'claude', promptSummary: '错了，改一下' },
     ]);
     expect(sessions[0].interventions.correction).toBe(0);
+  });
+
+  it('honors the correction flag written by the hook over the summary text', () => {
+    const t0 = new Date();
+    const later = new Date(t0.getTime() + 5_000).toISOString();
+    const flagged = rebuildSessions([
+      { type: 'session_start', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude', cwd: '/p' },
+      { type: 'stop', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude' },
+      // Team keyword matched at capture time; the summary alone would not match.
+      { type: 'prompt_submit', timestamp: later, sessionId: 's1', tool: 'claude', promptSummary: 'esto está mal, rehazlo', correction: true },
+    ]);
+    expect(flagged[0].interventions.correction).toBe(1);
+
+    const unflagged = rebuildSessions([
+      { type: 'session_start', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude', cwd: '/p' },
+      { type: 'stop', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude' },
+      { type: 'prompt_submit', timestamp: later, sessionId: 's1', tool: 'claude', promptSummary: 'wrong, redo it', correction: false },
+    ]);
+    expect(unflagged[0].interventions.correction).toBe(0);
+  });
+
+  it('falls back to whole-word matching on legacy events without the flag (issue #564)', () => {
+    const t0 = new Date();
+    const later = new Date(t0.getTime() + 5_000).toISOString();
+    const spanish = rebuildSessions([
+      { type: 'session_start', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude', cwd: '/p' },
+      { type: 'stop', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude' },
+      { type: 'prompt_submit', timestamp: later, sessionId: 's1', tool: 'claude', promptSummary: 'dame el segundo fichero' },
+    ]);
+    expect(spanish[0].interventions.correction).toBe(0);
+
+    const english = rebuildSessions([
+      { type: 'session_start', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude', cwd: '/p' },
+      { type: 'stop', timestamp: t0.toISOString(), sessionId: 's1', tool: 'claude' },
+      { type: 'prompt_submit', timestamp: later, sessionId: 's1', tool: 'claude', promptSummary: 'undo that' },
+    ]);
+    expect(english[0].interventions.correction).toBe(1);
   });
 
   it('aggregates all three intervention types together', () => {

@@ -873,3 +873,35 @@ describe('post-tool-use dispatch — local-agent runs detached, never blocks hos
     expect(mockParseHookEvent).toHaveBeenCalled();
   });
 });
+
+describe('dashboard-report team correction keywords', () => {
+  const handler = () => buildHandlerRegistry().find(
+    (r) => r.event === 'prompt-submit' && r.handler.name === 'dashboard-report',
+  )!.handler;
+
+  beforeEach(() => {
+    mockParseHookEvent.mockClear();
+    mockAutoDetectInit.mockClear();
+  });
+
+  it('passes sharing.intervention.correctionKeywords to parseHookEvent on prompt hooks', async () => {
+    mockAutoDetectInit.mockResolvedValueOnce({
+      localConfig: { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user' },
+      teamConfig: { team: 'test', repo: '', toolPaths: {}, sharing: { intervention: { correctionKeywords: ['rehazlo'] } } },
+    });
+    await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'rehazlo' }, 'claude');
+    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: ['rehazlo'] });
+  });
+
+  it('falls back to built-in keywords only when team config cannot be read', async () => {
+    mockAutoDetectInit.mockRejectedValueOnce(new Error('not initialized'));
+    await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'wrong' }, 'claude');
+    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [] });
+  });
+
+  it('does not read team config for hooks without a prompt', async () => {
+    await handler().execute({ hook_event_name: 'Stop', session_id: 's' }, 'claude');
+    expect(mockAutoDetectInit).not.toHaveBeenCalled();
+    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [] });
+  });
+});

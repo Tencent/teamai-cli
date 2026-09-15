@@ -114,12 +114,28 @@ const updateHandler: HookHandler = {
   },
 };
 
+/**
+ * Team course-correction keywords for the current project. Only prompt hooks pay
+ * for the config read; an unreadable config means "built-in keywords only".
+ */
+async function teamCorrectionKeywords(stdin: Record<string, unknown>): Promise<readonly string[]> {
+  if (typeof stdin.prompt !== 'string') return [];
+  try {
+    const { autoDetectInit } = await import('./config.js');
+    const { getInterventionSharing } = await import('./types.js');
+    const { teamConfig } = await autoDetectInit();
+    return getInterventionSharing(teamConfig).correctionKeywords;
+  } catch {
+    return [];
+  }
+}
+
 const dashboardReportHandler: HookHandler = {
   name: 'dashboard-report',
   async execute(stdin, tool) {
     const { parseHookEvent, appendEvent, compactEvents } = await import('./dashboard-collector.js');
     const raw = JSON.stringify(stdin);
-    const event = await parseHookEvent(raw, tool);
+    const event = await parseHookEvent(raw, tool, { correctionKeywords: await teamCorrectionKeywords(stdin) });
     if (event) {
       await appendEvent(event);
       // Non-blocking compaction

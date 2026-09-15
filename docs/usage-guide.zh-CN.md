@@ -1207,9 +1207,19 @@ teamai dashboard --port 8080
 |------|------|----------|
 | `interrupt` | 用户在 agent 执行中途按 ESC 打断 | transcript 中被中断的 turn |
 | `toolReject` | 用户拒绝某个工具调用（permission deny） | transcript 中标记拒绝的 tool_result |
-| `correction` | agent stop 后 60s 内用户追加含「不对 / 重来 / 错了 / wrong / redo / 違う / やり直し」等纠偏词（中、英、日）的 prompt | stop → prompt_submit 事件模式 |
+| `correction` | agent stop 后 60s 内用户追加含「不对 / 重来 / 错了 / wrong / redo / 違う / やり直し」等纠偏词（内置中、英、日，外加团队自定义词）的 prompt | stop → prompt_submit 事件模式 |
 
 > 隐私：只统计**次数**，不落地任何 prompt 或 transcript 原文。
+
+以空格分词的文字（英语、西班牙语等）中的纠偏词必须整词匹配，因此西班牙语 "segundo" 不会被算作 `undo`；中文、日文纠偏词仍按子串匹配。成员用其他语言纠偏的团队可在 `teamai.yaml` 添加自己的词，与内置列表合并，忽略大小写，遵循同样的匹配规则：
+
+```yaml
+sharing:
+  intervention:
+    correctionKeywords: [rehazlo, deshaz, "no era eso", "otra vez"]
+```
+
+匹配在 `UserPromptSubmit` hook 捕获 prompt 时完成，因此修改团队纠偏词后，下一次 `teamai pull` 之后的新 prompt 才会生效；之前记录的会话不会重新评估。
 
 干预数据会随 `teamai pull` 自动聚合上报到团队 `stats/<user>.yaml`，并在 `teamai digest` 的「会话自主性」榜单中给出团队均值与人均干预率排行，可用于验证某个 skill / rule 上线后干预率是否下降。无 transcript 的工具（如 Cursor）会优雅降级，只统计 `correction`。
 
@@ -1528,6 +1538,8 @@ sharing:
     enabled: false             # 可选，为全团队去除 AI 工具提交尾注
   contributeHint:
     enabled: true              # 可选，false = 高摩擦 session 结束后不再提示 /teamai-share-learnings
+  intervention:
+    correctionKeywords: []     # 可选，额外的纠偏词，与内置中/英/日列表合并
 ```
 
 ### config.yaml（本地配置）

@@ -810,11 +810,39 @@ export async function countInterventions(
   return { interrupt, toolReject, toolError };
 }
 
-/** True when a prompt looks like a course-correction (vs. a fresh task). */
-function isCorrectionPrompt(text?: string): boolean {
+/** Scripts that do not separate words with spaces: substring matching is correct there. */
+const UNSPACED_SCRIPT_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+/** Match a keyword as a whole word: no letter or digit may touch either end. */
+function wordBoundaryPattern(keyword: string): RegExp {
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'u');
+}
+
+const wordBoundaryCache = new Map<string, RegExp>();
+
+/** True when `lower` contains `keyword`, whole-word for spaced scripts, substring otherwise. */
+function containsKeyword(lower: string, keyword: string): boolean {
+  const k = keyword.trim().toLowerCase();
+  if (!k) return false;
+  if (UNSPACED_SCRIPT_RE.test(k)) return lower.includes(k);
+  let re = wordBoundaryCache.get(k);
+  if (!re) {
+    re = wordBoundaryPattern(k);
+    wordBoundaryCache.set(k, re);
+  }
+  return re.test(lower);
+}
+
+/**
+ * True when a prompt looks like a course-correction (vs. a fresh task).
+ * `extraKeywords` are the team's `sharing.intervention.correctionKeywords`.
+ */
+function isCorrectionPrompt(text?: string, extraKeywords: readonly string[] = []): boolean {
   if (!text) return false;
   const lower = text.toLowerCase();
-  return CORRECTION_KEYWORDS.some((k) => lower.includes(k));
+  return CORRECTION_KEYWORDS.some((k) => containsKeyword(lower, k))
+    || extraKeywords.some((k) => containsKeyword(lower, k));
 }
 
 /**
@@ -841,6 +869,11 @@ function mapEventType(hookEventName: string): DashboardEventType | null {
   }
 }
 
+export interface ParseHookEventOptions {
+  /** Team keywords (`sharing.intervention.correctionKeywords`) merged with the built-in list. */
+  correctionKeywords?: readonly string[];
+}
+
 /**
  * Parse a hook STDIN JSON payload into a DashboardEvent.
  * Returns null if the payload is invalid or irrelevant.
@@ -849,6 +882,7 @@ function mapEventType(hookEventName: string): DashboardEventType | null {
 export async function parseHookEvent(
   raw: string,
   tool: string,
+  options?: ParseHookEventOptions,
 ): Promise<DashboardEvent | null> {
   if (!raw.trim()) return null;
 
@@ -903,6 +937,10 @@ export async function parseHookEvent(
   if (eventType === 'prompt_submit' && typeof hookData.prompt === 'string') {
     // Keep first 200 chars of the prompt as summary
     event.promptSummary = hookData.prompt.slice(0, 200);
+    // Decide "correction" here, over the full prompt, because only the hook knows
+    // which team (and so which extra keywords) the prompt belongs to. The
+    // machine-level events file mixes sessions from every team.
+    event.correction = isCorrectionPrompt(hookData.prompt, options?.correctionKeywords);
   }
 
   // Extract transcript path, AI output and intervention counts from Stop event
@@ -1339,7 +1377,9 @@ export function aggregateSessionMetrics(
       const stopAt = lastStopAt.get(event.sessionId);
       if (stopAt !== undefined) {
         const gap = new Date(event.timestamp).getTime() - stopAt;
-        if (gap >= 0 && gap <= CORRECTION_WINDOW_MS && isCorrectionPrompt(event.promptSummary)) {
+        // Legacy events (no `correction` flag) fall back to the built-in list.
+        const isCorrection = event.correction ?? isCorrectionPrompt(event.promptSummary);
+        if (gap >= 0 && gap <= CORRECTION_WINDOW_MS && isCorrection) {
           m.correction++;
         }
         // Each stop is consumed once — a later prompt is a new task, not a correction.

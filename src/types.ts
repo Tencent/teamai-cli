@@ -98,7 +98,23 @@ export const SharingConfigSchema = z.object({
     /** Allowed http/sse hosts (supports a leading `*.` wildcard). Empty = no restriction. */
     allowedHosts: z.array(z.string()).default([]),
   }).optional(),
+  // Optional (not .default) so existing TeamaiConfig literals stay valid; use
+  // getInterventionSharing() for the defaulted view.
+  intervention: z.object({
+    /** Extra course-correction keywords, merged with the built-in list
+     *  (CORRECTION_KEYWORDS). Teams add the words their members actually type,
+     *  e.g. Spanish "rehazlo" or "no era eso". Matched case-insensitively; a
+     *  keyword in a space-separated script must appear as a whole word. */
+    correctionKeywords: z.array(z.string()).default([]),
+  }).optional(),
 });
+
+/** Defaulted view of the optional `sharing.intervention` config. */
+export function getInterventionSharing(config: {
+  sharing?: { intervention?: { correctionKeywords?: string[] } };
+}): { correctionKeywords: string[] } {
+  return { correctionKeywords: config.sharing?.intervention?.correctionKeywords ?? [] };
+}
 
 /** Defaulted view of the optional `sharing.hooks` config. */
 export function getHooksSharing(config: { sharing?: { hooks?: { autoApply?: boolean; requireTeamScripts?: boolean } } }): {
@@ -938,6 +954,14 @@ export interface DashboardEvent {
   cwd?: string;
   /** First user prompt (captured from UserPromptSubmit) */
   promptSummary?: string;
+  /**
+   * Whether the full prompt matched a course-correction keyword (built-in list plus
+   * the team's `sharing.intervention.correctionKeywords`) when the prompt_submit
+   * hook captured it. Absent on events written before this field existed;
+   * rebuildSessions then falls back to matching `promptSummary` against the
+   * built-in list only.
+   */
+  correction?: boolean;
   /** Tool name from PostToolUse (e.g. "Edit", "Bash", "Read") */
   toolName?: string;
   /** Inferred session status at event time */
@@ -1054,12 +1078,18 @@ export const DASHBOARD_PID_CHECK_INTERVAL_MS = 15_000;
 //
 //  A `correction` is counted when the user submits a new prompt within
 //  CORRECTION_WINDOW_MS after the agent stopped AND the prompt looks like a
-//  course-correction (contains one of CORRECTION_KEYWORDS) rather than a new task.
+//  course-correction (contains one of CORRECTION_KEYWORDS or a team keyword from
+//  `sharing.intervention.correctionKeywords`) rather than a new task.
+//
+//  Keywords in a space-separated script (Latin, Cyrillic, ...) must match a whole
+//  word: `undo` must not fire on Spanish "segundo" (issue #564). Keywords that
+//  contain Han, Hiragana, Katakana or Hangul stay substring matches because those
+//  scripts do not separate words with spaces.
 //
 
 /** Max time (ms) between a stop and the next prompt for it to count as a correction. */
 export const CORRECTION_WINDOW_MS = 60 * 1000;
-/** Substrings (lowercased) that mark a prompt as a course-correction, not a new task. */
+/** Built-in keywords (lowercased) that mark a prompt as a course-correction, not a new task. */
 export const CORRECTION_KEYWORDS = [
   '不对', '不是', '错了', '错误', '重来', '重新', '撤销', '回退', '别这样', '不要',
   'wrong', 'redo', 'undo', 'revert', 'mistake', 'instead', "don't", "that's not", 'not what',
