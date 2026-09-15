@@ -50,6 +50,8 @@ teamai init git@code.qschou.com:Enterprise/arb-workflow-kit.git --scope user
 - HTTPS：预先配置 Git Credential Helper；不要把用户名、密码或 Token 写进 URL。
 - SSH：预先配置 SSH Key，并确保 `ssh-agent` 能访问私钥。
 
+`teamai init .` 是一个受限例外：它只读取当前业务仓已经配置的 `origin`。若该 origin 是遗留的 HTTP Basic URL（例如 `http://user:token@host/group/repo.git`），初始化会使用其 host/path 识别仓库，但会在写入 `.teamai/teamai.yaml`、本地 TeamAI 配置和日志前移除用户名与 Token。普通 `teamai init <url>`、clone 和其他通用 Git URL 输入仍拒绝 HTTP 与 URL 内嵌凭据。HTTP 本身不会加密 Git 传输；应尽快迁移到 HTTPS + Credential Helper 或 SSH。
+
 clone、pull、push 均可正常使用。平台 API 操作（自动建仓、自动创建 MR/PR）无法跨不同服务统一实现，因此暂不支持；`teamai push` 会先推送分支，再提示用户到对应平台手动创建 MR，并以非零退出码表明自动 PR/MR 创建未完成。
 
 若已有 `provider: git` 的仓库在创建 PR 时失败，CLI 会额外检查该 host；确认是 GitLab 后，会提示设置实例地址和 token，并将团队仓库 `teamai.yaml` 的 `provider` 改为 `gitlab`。这个提示不会自动修改配置，也不会撤回已经推送的分支。

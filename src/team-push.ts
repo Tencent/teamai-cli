@@ -11,7 +11,6 @@ import {
   isDedicatedRepoRoot,
   getFileContentAtRev,
 } from './utils/git.js';
-import { withTimeout } from './utils/async.js';
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig } from './types.js';
@@ -59,10 +58,11 @@ interface PromptTokenDelta {
 //  [anything to push?] ──no──▶ SKIP
 //      │
 //      ▼
-//  [git add + commit + push (5s timeout)]
+//  [git add + commit + push]
 //      │
 //      ├──success──▶ truncate JSONL (if events existed)
-//      └──fail──▶ log debug + skip (next pull retries)
+//      └──fail──▶ retain local events and reported snapshots
+//  pull bounds its wait for the whole operation, including success bookkeeping.
 //
 
 /**
@@ -338,19 +338,23 @@ export function filterEventsByScope(
  * Auto-report usage data to team repo during pull.
  * Merges new events with existing stats to preserve historical data.
  * Best-effort: silently fails on any error.
- * Timeout: 5 seconds max to avoid blocking session start.
+ * Resolves only after push and success bookkeeping settle. The caller may bound
+ * its wait, but must keep this operation alive so late success is acknowledged.
+ * Returns false when reporting was skipped or failed; true when there is no
+ * pending data or the report completed successfully.
  */
 export async function reportUsageToTeam(
   repoPath: string,
   username: string,
   options?: { skipTruncate?: boolean; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig?: LocalConfig },
-): Promise<void> {
+): Promise<boolean> {
   // Non-HTTP repos: stats + votes are report data → the teamai-reports orphan
   // branch (isolated worktree). We must NOT resetToCleanMaster / pullRepo /
   // pushRepoDirectly on the default branch (or, in self mode, the business
   // working tree). The dedicated writer handles the worktree + rebase race.
   const reportsConfig = options?.selfConfig;
   const useReportsBranch = !!reportsConfig && usesReportsBranch(reportsConfig);
+  let restoreStats: (() => Promise<void>) | undefined;
 
   // Reports-branch writes use the reports-lock, not the partition sync-lock
   // (non-reentrant; pull() already holds it). The else-branch clone reset is
@@ -416,12 +420,12 @@ export async function reportUsageToTeam(
       const git = createGit(repoPath);
       if (!(await isDedicatedRepoRoot(repoPath))) {
         log.debug(`Skipping report: ${repoPath} is not a dedicated team-repo root (safety guard)`);
-        return;
+        return false;
       }
       const { isImportInProgress } = await import('./utils/import-lock.js');
       if (await isImportInProgress(repoPath)) {
         log.debug(`Skipping report: import in progress for ${repoPath} (would reset uncommitted artifacts)`);
-        return;
+        return false;
       }
       const yamlPath = path.join(repoPath, 'teamai.yaml');
       const workingContent = await readFileSafe(yamlPath);
@@ -457,6 +461,12 @@ export async function reportUsageToTeam(
       // mergeStats with [] preserves existing skills while refreshing username/updatedAt,
       // and carries interventions/prompts/tokens so partial reports do not clobber them (#425).
       const existing = await readExistingStats(statsPath);
+      if (useReportsBranch) {
+        const previousContent = await readFileSafe(statsPath);
+        // A failed push can leave an already-incremented file in the reports
+        // worktree. Restore its input so a normal retry does not add it twice.
+        restoreStats = () => writeFile(statsPath, previousContent ?? '');
+      }
       const newStats = hasUsage ? aggregateUsage(events) : [];
       const merged = mergeStats(existing, username, newStats);
       if (hasInterventions) {
@@ -491,32 +501,27 @@ export async function reportUsageToTeam(
     // Nothing to push — skip commit
     if (filesToPush.length === 0) {
       log.debug('No usage events or votes to report');
-      return;
+      return true;
     }
 
-    // Commit and push with timeout
+    // Keep push and acknowledgement in the same operation. A caller timing out
+    // must not abandon the success bookkeeping below.
     const commitMsg = hasUsage
       ? `[teamai] Update usage stats for ${username}`
       : (hasInterventions || hasPromptTokens || hasDaily)
         ? `[teamai] Update session stats for ${username}`
         : `[teamai] Update votes for ${username}`;
-    // Guard the push with a 5s timeout. withTimeout clears its timer once the
-    // push settles, so a fast success does not leave a 5s timer pinning the
-    // event loop (and hanging `teamai pull`) after the work is done.
     if (useReportsBranch && reportsConfig) {
       const { commitAndPushReports } = await import('./utils/reports-branch.js');
-      await withTimeout(
-        commitAndPushReports(reportsConfig, commitMsg, filesToPush),
-        5000,
-        'Auto-report timeout (5s)',
-      );
+      if (!await commitAndPushReports(reportsConfig, commitMsg, filesToPush, { pushIfUnchanged: true })) {
+        log.debug('Auto-report push was not confirmed; keeping local report data');
+        await restoreStats?.();
+        return false;
+      }
     } else {
-      await withTimeout(
-        pushRepoDirectly(repoPath, commitMsg, filesToPush),
-        5000,
-        'Auto-report timeout (5s)',
-      );
+      await pushRepoDirectly(repoPath, commitMsg, filesToPush);
     }
+    restoreStats = undefined;
 
     // Success — truncate reported usage events (only if caller allows it)
     if (hasUsage && !options?.skipTruncate) {
@@ -545,7 +550,14 @@ export async function reportUsageToTeam(
     if (!hasUsage && !hasInterventions && !hasPromptTokens && !hasDaily) {
       log.debug('Pushed pending votes to team repo');
     }
+    return true;
   } catch (e) {
+    try {
+      await restoreStats?.();
+    } catch (restoreError) {
+      log.error(`Could not restore report stats after failure: ${(restoreError as Error).message}`);
+    }
     log.error(`Auto-report skipped: ${(e as Error).message}`);
+    return false;
   }
 }

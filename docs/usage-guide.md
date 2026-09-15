@@ -421,7 +421,7 @@ teamai skill show hai-deploy-test   # View a single skill's source / contributor
 
 `teamai init` already injected Hooks into your AI tools. **`teamai pull` runs automatically every time you start an AI session** — no manual action needed. In project scope, that SessionStart hook first creates the current agent's project root (e.g. `<project>/.claude` when Claude Code opens the repo) if it is missing, then pulls.
 
-*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as Claude Code, Codex, Cursor, CodeBuddy, WorkBuddy, Qoder, OpenCode, Hermes, or OpenClaw. For tools without hooks support such as JoyCode or Gemini CLI, session start hooks do not fire, so you should run `teamai pull` manually to keep resources up to date.)*
+*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as [CC], Codex, Cursor, CodeBuddy, WorkBuddy, Qoder, Kiro, OpenCode, Hermes, or OpenClaw. Kiro runs the hook when a TeamAI-rendered custom agent is activated in an interactive CLI session; its in-memory built-in default agent is not writable, and non-interactive mode does not fire `agentSpawn`. For tools without a teamai-writable hooks surface such as JoyCode or Gemini CLI, run `teamai pull` manually.)*
 
 If you need to sync immediately, you can run it manually:
 
@@ -741,6 +741,7 @@ Where each tool's servers land:
 | workbuddy | `~/.workbuddy/mcp.json` | `<project>/.workbuddy/mcp.json` |
 | codex | `~/.codex/config.toml` | not supported |
 | qoder | `~/.qoder/settings.json` | `<project>/.qoder/settings.json` |
+| kiro | `~/.kiro/settings/mcp.json` | `<project>/.kiro/settings/mcp.json` |
 | opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 
 
@@ -754,7 +755,7 @@ precedence. For an existing team that pins run
 servers in either file; TeamAI does not migrate or delete the old file.
 Claude Code also reads the root `.mcp.json`, so this file is shared by both tools.
 
-Codex supports `stdio` and `http`; `sse` is skipped. Qoder supports the Claude-compatible `mcpServers` format in its scope-specific `.qoder/settings.json`. OpenCode supports `stdio` (written as its `type:"local"` shape) and `http` (`type:"remote"`); `sse` is skipped, and its servers live under the `mcp` key of the shared `opencode.json`. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
+Codex supports `stdio` and `http`; `sse` is skipped. Qoder supports the Claude-compatible `mcpServers` format in its scope-specific `.qoder/settings.json`. Kiro supports the same `mcpServers` format in its dedicated, mcpServers-only `.kiro/settings/mcp.json` (see [Kiro's MCP configuration docs](https://kiro.dev/docs/mcp/configuration/)). OpenCode supports `stdio` (written as its `type:"local"` shape) and `http` (`type:"remote"`); `sse` is skipped, and its servers live under the `mcp` key of the shared `opencode.json`. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
 
 **Secrets.** Write `${VAR}`, never a literal, in `mcp.yaml`. Values resolve from the environment, then from `env/env.yaml` → `~/.teamai/env`. Unresolved variables skip the server with a hint.
 
@@ -1369,6 +1370,10 @@ team-repo/
 
 Qoder is available as a built-in target. TeamAI deploys skills, rules, and subagents to `.qoder/skills/`, `.qoder/rules/`, and `.qoder/agents/`. Hooks and MCP servers are merged into the scope-specific `.qoder/settings.json`, preserving unrelated user settings. The paths match Qoder's user and project configuration contracts.
 
+### Kiro
+
+Kiro is available as a built-in target. TeamAI deploys skills, rules, and subagents to `.kiro/skills/`, `.kiro/steering/`, and `.kiro/agents/`, matching [Kiro's documented layouts](https://kiro.dev/docs/skills/) for workspace skills, [steering](https://kiro.dev/docs/steering/), and custom agents. Subagents are rendered as JSON so they work with both Kiro CLI 2.x and 3.x. Each rendered agent preserves Kiro-specific fields and custom hooks, and adds a managed `hooks.agentSpawn` command that dispatches TeamAI's `session-start` event when that custom agent is activated in an interactive CLI session. This verified CLI 2.x hook is embedded in `.kiro/agents/*.json`, not written to the standalone `.kiro/hooks/` surface introduced for IDE 1.x and CLI 3.x; Kiro's in-memory built-in default agent cannot be modified, and `--no-interactive` does not fire `agentSpawn`. MCP servers merge into the scope-specific `.kiro/settings/mcp.json` (see the MCP section above).
+
 ### ZCode
 
 ZCode is available as a built-in target. Skills deploy to `.zcode/skills/` (ZCode also reads the central `~/.agents/skills/`, which the `agents` entry covers), and subagents deploy as Claude-style Markdown to `.zcode/agents/`. Hooks are merged into the shared `~/.zcode/cli/config.json`, preserving unrelated keys such as plugin state. Two ZCode specifics the writer handles for you:
@@ -1427,9 +1432,23 @@ Auto-update runs in the Stop hook and is controlled by two tiers:
 
 The user-level `updatePolicy` always takes priority over the team-level `autoUpdate`.
 
+On Windows, the update check, installation, and hook refresh run without opening console windows.
+
 ### Usage reporting
 
 By default, `teamai pull` commits session/usage stats into the team repo.
+Pull waits up to 5 seconds for the reporting batch, then continues its other
+work while reporting finishes. A late successful push still updates the local
+reported snapshots. Usage events are removed only after every selected target
+confirms success; failed pushes preserve them. The affected sync locks remain
+held until reporting finishes, preventing another pull from racing the report.
+
+This is best-effort reporting, not crash-safe delivery: termination between a
+remote push and local acknowledgement can still cause duplicate statistics.
+It does not provide durable per-target deduplication for partial multi-repo
+reports. The 5-second wait limit does not cancel Git or force the CLI process
+to exit while a subprocess is still running.
+
 Teams that pull from a read-only remote (or simply don't want stat commits)
 can turn this off in `teamai.yaml`:
 

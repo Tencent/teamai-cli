@@ -17,12 +17,12 @@ Transform TeamAI from a simple skill-sharing CLI into a **Team Intelligence Plat
 | 2 | Skill 使用追踪 | PostToolUse hook + JSONL | 追踪 Claude Code Skill 工具调用，JSONL 避免并发写入竞争 |
 | 3 | Session 存储格式 | 按月聚合 MD 文件 | 平衡文件数量和可读性，10人团队90天≈30文件 |
 | 4 | Hook 注入方式 | 扩展现有 hooks.ts | 最小 diff，复用现有模式 |
-| 5 | 团队推送方式 | SessionStart hook 自动上报（随 pull 捎带） | 零用户操作，per-user 目录避免冲突，best-effort + 5s 超时 |
+| 5 | 团队推送方式 | SessionStart hook 自动上报（随 pull 捎带） | 整批上报最多等待 5s；超时不取消推送或成功后的本地确认 |
 | 6 | Health Score 公式 | usage(0-60) + freshness(0-40) | 小团队 contributor 维度区分度低，简化为两维 |
 | 7 | Session 内容来源 | AI 对话和工具使用（非 git diff） | 核心目的是记录 AI 用错工具的情况 |
 | 8 | Session 过滤 | 有价值才推送（包含工具错误/重试→有价值） | 避免团队仓库充斥无用信息 |
 | 9 | Hook 追踪范围 | 只追踪 Skill 工具调用 | 追踪所有工具会产生大量噪音数据，核心需求是 skill 使用统计 |
-| 10 | JSONL 生命周期 | 上报成功后截断已上报数据 | 文件永远很小，不丢数据 |
+| 10 | JSONL 生命周期 | 全部选中目标确认成功后截断已上报数据 | 失败保留事件；推送期间新增事件保留到下一批 |
 | 11 | 错误处理策略 | 所有 I/O 操作 try-catch + graceful degrade | 零静默失败原则 |
 | 12 | Feature 3 推送方式 | 删除 `push --stats`，只用 auto-report | Decision 5 已决定自动上报，手动命令冗余 |
 | 13 | Hook 命令实现 | `teamai track` TypeScript CLI 命令 | 类型安全 + 输入验证，比 bash one-liner 稳健 |
@@ -84,20 +84,28 @@ Skill Usage Statistics:
 ```
 
 #### 3. Team Usage Aggregation
-**What:** `teamai push --stats` 聚合本地 usage.jsonl 为 `stats/<user>.yaml`，直接 commit 到团队仓库（不创建 MR）。
+**What:** `teamai pull` 自动聚合本地 usage.jsonl 为 `stats/<user>.yaml`；Git 仓库写入独立的 `teamai-reports` 分支（不创建 MR）。
 
 **Push flow:**
 ```
-teamai push --stats
+teamai pull
     │
     ▼
 聚合 ~/.teamai/usage.jsonl → stats/<user>.yaml
     │
     ▼
-git pull → git add → git commit → git push (直接到 master)
+reports worktree → git add → git commit → git push (teamai-reports)
     │
-    失败 → retry 3 次 (pull-rebase)
+    ├─ 成功 → 更新已上报快照 → 全部目标成功后清理本批使用事件
+    └─ 失败 → 保留本地事件和快照，恢复累计前的统计文件
 ```
+
+5 秒限制放在完整上报操作外层；超时后 Pull 继续其他工作，后台操作仍完成
+推送和本地确认，并在完成后释放相关同步锁。失败重试即使重建出与上次提交
+相同的文件，也会重新推送已有提交，无需创建空提交。
+
+此修复不提供持久化批次或远端去重：进程在推送与确认之间终止、多仓库部分
+成功后的重试仍可能产生重复统计。等待超时不等于取消 Git 或强制退出进程。
 
 ### Expansion Features
 

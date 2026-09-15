@@ -16,6 +16,7 @@ import {
   reverseFromCodex,
   reverseFromCursor,
   reverseFromJoycode,
+  reverseFromKiro,
   reverseFromOpencode,
   mergeReverseResults,
   ALL_SUPPORTED_TOOLS,
@@ -389,6 +390,7 @@ export class AgentsHandler extends ResourceHandler {
       try {
         await ensureDir(destDir);
         const { ext, content: rendered } = renderForTool(spec, tool);
+        await removeStaleAgentSiblings(destDir, item.name, ext);
         const dest = path.join(destDir, `${item.name}${ext}`);
         await writeFile(dest, rendered);
         log.debug(`Rendered agent ${item.name} → ${tool} (${ext})`);
@@ -421,8 +423,8 @@ export class AgentsHandler extends ResourceHandler {
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.agents) continue;
-      // Try removing both .md and .toml variants
-      for (const ext of ['.md', '.toml'] as const) {
+      // Try every native agent extension.
+      for (const ext of ['.md', '.toml', '.json'] as const) {
         const filePath = path.join(baseDir, toolPath.agents, `${name}${ext}`);
         if (await pathExists(filePath)) {
           await remove(filePath);
@@ -529,12 +531,22 @@ function mergeCanonicalEdits(
 
 /**
  * Extract agent name stem from a filename.
- * Accepts .md and .toml extensions only; returns null for other files.
+ * Accepts supported native agent extensions; returns null for other files.
  */
 function getAgentStem(filename: string): string | null {
   if (filename.endsWith('.md')) return filename.slice(0, -3);
   if (filename.endsWith('.toml')) return filename.slice(0, -5);
+  if (filename.endsWith('.json')) return filename.slice(0, -5);
   return null;
+}
+
+/** Remove an obsolete same-stem native rendering after a format migration. */
+async function removeStaleAgentSiblings(agentsDir: string, stem: string, targetExt: string): Promise<void> {
+  for (const file of await listFiles(agentsDir)) {
+    if (getAgentStem(file) !== stem || file === `${stem}${targetExt}`) continue;
+    await remove(path.join(agentsDir, file));
+    log.debug(`Removed stale agent sibling ${file} for ${stem}`);
+  }
 }
 
 /**
@@ -585,6 +597,8 @@ function reverseByTool(tool: ToolName, filePath: string, content: string): Rever
       return reverseFromJoycode(filePath, content);
     case 'qoder':
       return reverseFromClaude(filePath, content);
+    case 'kiro':
+      return reverseFromKiro(filePath, content);
     case 'zcode':
       return reverseFromClaude(filePath, content);
     case 'opencode':

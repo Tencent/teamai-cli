@@ -327,13 +327,13 @@ async function discoverToolResources(
   }
 
   // (d2) Team-synced custom agents plus CLI built-ins. Native output uses
-  // .md for most tools and .toml for Codex, so match installed files by stem.
+  // .md for most tools, .toml for Codex, and .json for Kiro, so match by stem.
   if (toolPath.agents) {
     const agentsDir = path.join(baseDir, toolPath.agents);
     if (await pathExists(agentsDir)) {
       for (const file of await listFiles(agentsDir)) {
-        if (!file.endsWith('.md') && !file.endsWith('.toml')) continue;
-        const name = path.basename(file).replace(/\.(md|toml)$/, '');
+        if (!file.endsWith('.md') && !file.endsWith('.toml') && !file.endsWith('.json')) continue;
+        const name = path.basename(file).replace(/\.(md|toml|json)$/, '');
         if (!teamAgentNames.has(name) && !BUILTIN_AGENT_NAMES.has(name)) continue;
         res.agentFiles.push(path.join(agentsDir, file));
       }

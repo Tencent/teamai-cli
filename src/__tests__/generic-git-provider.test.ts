@@ -6,7 +6,7 @@ vi.mock('node:child_process', () => ({
 
 import { spawnSync } from 'node:child_process';
 import { GenericGitProvider, normalizeGitIdentity } from '../providers/git/index.js';
-import { parseGenericGitRepoInput } from '../providers/git/repo-url.js';
+import { parseGenericGitExistingRemote, parseGenericGitRepoInput } from '../providers/git/repo-url.js';
 import { detectProvider, getProvider } from '../providers/registry.js';
 
 const mockedSpawnSync = spawnSync as Mock;
@@ -94,6 +94,17 @@ describe('parseGenericGitRepoInput', () => {
     }
     expect(message).toMatch(/query strings and fragments are not supported/);
     expect(message).not.toContain('secret-value');
+  });
+
+  it('parses an existing insecure origin without preserving its credentials', () => {
+    expect(parseGenericGitExistingRemote(
+      'http://user:token-must-not-persist@git.example.com/group/repo.git',
+    )).toEqual({
+      owner: 'group',
+      repo: 'repo',
+      httpsUrl: 'http://git.example.com/group/repo.git',
+      projectId: encodeURIComponent('group/repo'),
+    });
   });
 });
 

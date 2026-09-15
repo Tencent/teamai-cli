@@ -138,7 +138,7 @@ export async function fetchLatestVersion(
     const { stdout } = await execFileAsync(
       npm.cmd,
       [...npm.args, 'view', pkgName, 'version', `--registry=${resolvedRegistry}`],
-      { timeout, encoding: 'utf-8' },
+      { timeout, encoding: 'utf-8', windowsHide: true },
     );
     const version = stdout.trim();
     if (!version) return null;
@@ -517,7 +517,7 @@ export async function doUpdate(): Promise<void> {
         ...(target ? [`--prefix=${target.prefix}`] : []),
         `--registry=${registry}`,
       ],
-      { timeout: INSTALL_TIMEOUT },
+      { timeout: INSTALL_TIMEOUT, windowsHide: true },
     );
     log.success(`Updated teamai to v${result.latest}`);
 
@@ -551,6 +551,7 @@ export async function doUpdate(): Promise<void> {
         : { cmd: 'teamai', args: ['hooks', 'inject', '--silent'] };
       await execFileAsync(refresh.cmd, refresh.args, {
         timeout: 15_000,
+        windowsHide: true,
       });
       log.success('Refreshed hooks with new version');
     } catch (e) {

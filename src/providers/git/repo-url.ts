@@ -39,15 +39,19 @@ function buildRepoInfo(owner: string, repo: string, remoteUrl: string): RepoInfo
   };
 }
 
-/** Parse a full HTTPS or SSH clone URL for an arbitrary Git host. */
-export function parseGenericGitRepoInput(input: string): RepoInfo {
-  const trimmed = input.trim();
+interface ParseOptions {
+  allowExistingInsecureOrigin?: boolean;
+}
 
-  if (/^http:\/\//i.test(trimmed)) {
+function parseGenericGitRepoInputWithOptions(input: string, options: ParseOptions = {}): RepoInfo {
+  const trimmed = input.trim();
+  const allowExistingInsecureOrigin = options.allowExistingInsecureOrigin === true;
+
+  if (/^http:\/\//i.test(trimmed) && !allowExistingInsecureOrigin) {
     throw invalidRepoUrl('plain HTTP is not supported; use HTTPS or SSH');
   }
 
-  if (/^https:\/\//i.test(trimmed) || /^ssh:\/\//i.test(trimmed)) {
+  if (/^https?:\/\//i.test(trimmed) || /^ssh:\/\//i.test(trimmed)) {
     let parsed: URL;
     try {
       parsed = new URL(trimmed);
@@ -56,7 +60,7 @@ export function parseGenericGitRepoInput(input: string): RepoInfo {
     }
 
     const httpCredentials = /^https?:$/i.test(parsed.protocol) && (parsed.username || parsed.password);
-    if (!parsed.hostname || parsed.password || httpCredentials) {
+    if (!parsed.hostname || (!allowExistingInsecureOrigin && (parsed.password || httpCredentials))) {
       throw new Error(
         'Invalid Git repo URL. Do not embed credentials in the URL; '
         + 'configure a Git credential helper or SSH key instead.',
@@ -67,7 +71,9 @@ export function parseGenericGitRepoInput(input: string): RepoInfo {
     }
 
     const { owner, repo, fullPath } = parsePath(parsed.pathname);
-    const auth = parsed.username ? `${parsed.username}@` : '';
+    // A pre-existing local origin may contain HTTP Basic credentials. They are
+    // needed only by the user's Git config, never by TeamAI configuration.
+    const auth = /^ssh:$/i.test(parsed.protocol) && parsed.username ? `${parsed.username}@` : '';
     const remoteUrl = `${parsed.protocol}//${auth}${parsed.host}/${fullPath}.git`;
     return buildRepoInfo(owner, repo, remoteUrl);
   }
@@ -88,4 +94,20 @@ export function parseGenericGitRepoInput(input: string): RepoInfo {
   }
 
   throw invalidRepoUrl();
+}
+
+/** Parse a full HTTPS or SSH clone URL for an arbitrary Git host. */
+export function parseGenericGitRepoInput(input: string): RepoInfo {
+  return parseGenericGitRepoInputWithOptions(input);
+}
+
+/**
+ * Parse the already-configured `origin` of a single-repo installation.
+ *
+ * This accepts legacy HTTP and URL userinfo only to identify the existing
+ * repository. The returned canonical URL deliberately strips userinfo so
+ * TeamAI never persists credentials into config or teamai.yaml.
+ */
+export function parseGenericGitExistingRemote(input: string): RepoInfo {
+  return parseGenericGitRepoInputWithOptions(input, { allowExistingInsecureOrigin: true });
 }

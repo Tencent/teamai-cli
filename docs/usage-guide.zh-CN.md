@@ -406,7 +406,7 @@ teamai skill show hai-deploy-test   # 看单个 skill 的来源 / 贡献者 / �
 
 `teamai init` 时已注入 Hooks 到你的 AI 工具中。**每次启动 AI 会话时会自动执行 `teamai pull`**，无需手动操作。在 project scope 下，该 SessionStart hook 会先为当前 Agent 创建项目根目录（例如用 Claude Code 打开仓库时创建 `<project>/.claude`），然后再 pull。
 
-*(注：会话启动自动同步依赖工具的生命周期 Hooks 支持，如 Claude Code、Codex、Cursor、CodeBuddy、WorkBuddy、Qoder、OpenCode、Hermes、OpenClaw 等。对于暂无 Hooks 支持的工具（如 JoyCode、Gemini CLI 等），无法触发会话启动 Hook，需在终端手动执行 `teamai pull` 同步团队资源。)*
+*(注：会话启动自动同步依赖工具的生命周期 Hooks 支持，如 [CC]、Codex、Cursor、CodeBuddy、WorkBuddy、Qoder、Kiro、OpenCode、Hermes、OpenClaw 等。Kiro 仅在交互式 CLI 会话激活由 TeamAI 渲染的自定义 agent 时触发该 Hook；其内存中的内置默认 agent 无法写入，非交互模式也不会触发 `agentSpawn`。对于暂无 teamai 可写入 Hooks 的工具（如 JoyCode、Gemini CLI 等），需手动执行 `teamai pull`。)*
 
 如果需要立即同步，可以手动执行：
 
@@ -721,6 +721,7 @@ servers:
 | workbuddy | `~/.workbuddy/mcp.json` | `<project>/.workbuddy/mcp.json` |
 | codex | `~/.codex/config.toml` | 不支持 |
 | qoder | `~/.qoder/settings.json` | `<project>/.qoder/settings.json` |
+| kiro | `~/.kiro/settings/mcp.json` | `<project>/.kiro/settings/mcp.json` |
 | opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 
 
@@ -734,7 +735,7 @@ CodeBuddy Code 的 [MCP 文档](https://www.codebuddy.cn/docs/cli/mcp)
 TeamAI 不会迁移或删除旧文件。Claude Code 也读取根目录的 `.mcp.json`，
 因此两个工具共享该文件。
 
-Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用域 `.qoder/settings.json` 中与 Claude 兼容的 `mcpServers` 格式。OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）与 `http`（`type:"remote"`），`sse` 会被跳过，其 server 位于共享 `opencode.json` 的 `mcp` 键下。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；与手写同名则跳过，除非 `--force`。
+Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用域 `.qoder/settings.json` 中与 Claude 兼容的 `mcpServers` 格式。Kiro 在专用的、只含 `mcpServers` 的 `.kiro/settings/mcp.json` 中使用同一格式（见 [Kiro MCP 配置文档](https://kiro.dev/docs/mcp/configuration/)）。OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）与 `http`（`type:"remote"`），`sse` 会被跳过，其 server 位于共享 `opencode.json` 的 `mcp` 键下。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；与手写同名则跳过，除非 `--force`。
 
 **密钥**：在 `mcp.yaml` 里写 `${VAR}`，不要写明文。取值优先来自环境变量，其次是 `env/env.yaml` → `~/.teamai/env`。变量无法解析则跳过并提示。
 
@@ -1336,6 +1337,10 @@ team-repo/
 
 Qoder 已作为内置目标支持。TeamAI 会将 Skills、Rules 和 Subagents 分别下发到 `.qoder/skills/`、`.qoder/rules/` 和 `.qoder/agents/`。Hooks 与 MCP Server 会合并进对应作用域的 `.qoder/settings.json`，并保留用户已有的其他设置；这些路径与 Qoder 的用户级和项目级配置约定一致。
 
+### Kiro
+
+Kiro 已作为内置目标支持。TeamAI 会将 Skills、Rules 和 Subagents 分别下发到 `.kiro/skills/`、`.kiro/steering/` 和 `.kiro/agents/`，与 Kiro 官方文档定义的[工作区 Skills](https://kiro.dev/docs/skills/)、[Steering](https://kiro.dev/docs/steering/)和自定义 agents 布局一致。Subagents 渲染为 Kiro CLI 2.x 与 3.x 都支持的 JSON；每个文件都会保留 Kiro 私有字段和自定义 Hooks，并加入 TeamAI 管理的 `hooks.agentSpawn` 命令，在交互式 CLI 会话激活该自定义 agent 时派发 `session-start`。这一经验证的 CLI 2.x Hook 内嵌在 `.kiro/agents/*.json`，而不是写入 IDE 1.x / CLI 3.x 引入的独立 `.kiro/hooks/`；Kiro 内存中的内置默认 agent 无法修改，`--no-interactive` 也不会触发 `agentSpawn`。MCP Server 会合并进对应作用域的 `.kiro/settings/mcp.json`（见上文 MCP 章节）。
+
 ### ZCode
 
 ZCode 已作为内置目标支持。Skills 下发到 `.zcode/skills/`（ZCode 同时会读取中央目录 `~/.agents/skills/`，该目录由 `agents` 条目覆盖），Subagents 以 Claude 风格 Markdown 下发到 `.zcode/agents/`。Hooks 会合并进共享的 `~/.zcode/cli/config.json`，并保留插件状态等无关键值。写入器为你处理了两个 ZCode 特有的细节：
@@ -1394,7 +1399,18 @@ teamai remove mcp <name>
 
 用户级 `updatePolicy` 始终优先于团队级 `autoUpdate`。
 
+在 Windows 上，更新检查、安装和 hooks 刷新均不会弹出命令行窗口。
+
 ### 使用统计上报
+
+Pull 对整批统计上报最多等待 5 秒，之后继续其他工作，上报任务仍会完成。
+超时后推送成功，仍会更新本地已上报快照；只有全部选中的目标确认成功后，
+才清理对应使用事件。推送失败会保留事件。上报完成前继续持有相关同步锁，
+避免另一次 Pull 与尚未完成的上报竞争。
+
+这仍是尽力上报，不提供崩溃恢复保证：远端推送成功与本地确认之间如果进程
+被终止，统计仍可能重复；也不提供多仓库部分成功时的持久化逐目标去重。
+5 秒限制只结束等待，不取消 Git，也不强制仍有子进程运行的 CLI 退出。
 
 默认情况下，`teamai pull` 会把会话/使用统计提交进团队仓。从只读远端拉取（或
 不想要统计提交）的团队可在 `teamai.yaml` 中关闭：

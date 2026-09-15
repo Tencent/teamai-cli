@@ -12,6 +12,7 @@ const mockGit = {
   commit: vi.fn(),
   push: vi.fn(),
   revparse: vi.fn().mockResolvedValue('main'),
+  raw: vi.fn(),
 };
 
 vi.mock('simple-git', () => ({
@@ -713,6 +714,43 @@ describe('init', () => {
       expect(mockExit).not.toHaveBeenCalled();
       expect(saveLocalConfigForScope).toHaveBeenCalledWith(
         expect.objectContaining({ scope: 'project' }),
+        'project',
+        process.cwd(),
+      );
+    });
+  });
+
+  describe('single-repo mode', () => {
+    it('accepts an existing HTTP origin without persisting its credentials', async () => {
+      pathExistsFn = (p: string) => p.endsWith(`${path.sep}.git`) || p.endsWith('/.git');
+      mockGit.raw.mockResolvedValue(
+        'http://user:token-must-not-appear@git.example.com/group/repo.git\n',
+      );
+
+      const { log } = await import('../utils/logger.js');
+      const { loadTeamConfig, saveLocalConfigForScope } = await import('../config.js');
+      vi.mocked(loadTeamConfig).mockResolvedValue({
+        team: 'repo',
+        description: '',
+        repo: 'http://git.example.com/group/repo.git',
+        provider: 'git',
+        reviewers: [],
+        sharing: { rules: { enforced: [] }, docs: {}, env: { injectShellProfile: true } },
+        toolPaths: {},
+      } as never);
+
+      await init({ repo: '.', dryRun: true });
+
+      const errorCalls = vi.mocked(log.error).mock.calls.map(([message]) => String(message));
+      const debugCalls = vi.mocked(log.debug).mock.calls.map(([message]) => String(message));
+      expect(mockExit).not.toHaveBeenCalled();
+      expect(errorCalls).not.toContainEqual(expect.stringContaining('Could not parse the business repo remote'));
+      expect(errorCalls.join('\n')).not.toContain('token-must-not-appear');
+      expect(debugCalls.join('\n')).not.toContain('token-must-not-appear');
+      expect(saveLocalConfigForScope).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repo: expect.objectContaining({ remote: 'http://git.example.com/group/repo.git' }),
+        }),
         'project',
         process.cwd(),
       );

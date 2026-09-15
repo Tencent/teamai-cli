@@ -36,6 +36,11 @@ import { loadProjectsManifest, resolveProjectResourceNamespaces, mergeNamespaces
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
+import { withTimeout } from './utils/async.js';
+
+// A timed-out report still owns its success bookkeeping. Do not start another
+// batch in this process until it settles and finishes consuming its events.
+let pendingUsageReport: Promise<void> | undefined;
 
 interface RolePullContext {
   activeNamespaces: ResourceNamespaces;
@@ -1497,6 +1502,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
   // from every clone-consuming stage (idempotent — the next pull syncs it).
   const contended = new Set<LocalConfig>();
   const heldLocks = new Map<LocalConfig, string>();
+  let usageReport: Promise<void> | undefined;
   const lockScope = async (config: LocalConfig): Promise<boolean> => {
     // git-mode guards its shared team clone; self mode guards its machine-data
     // writes (state/env/search-index) against a concurrent P2 migration relocating
@@ -1623,57 +1629,68 @@ export async function pull(options: GlobalOptions): Promise<void> {
   //    skipTruncate=true first, then truncate once at the end.
   //    Scope filtering: project scope only gets sessions whose cwd is under
   //    projectRoot; user scope excludes those sessions.
-  if (!options.dryRun) {
-    try {
-      const { reportUsageToTeam } = await import('./team-push.js');
-      const { truncateUsageAfterReport, readUsageEvents } = await import('./usage-tracker.js');
-      const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig?: LocalConfig } }> = [];
-      // Per-target opt-out (teamai.yaml `usageReport: false`): a repo that
-      // disables stat commits is dropped from the targets — e.g. teams
-      // pulling from a read-only remote never accumulate unpushable commits.
-      if (reconcileProject && reconcileProject.repo.kind !== 'http'
-        && !await usageReportDisabled(reconcileProject.repo.localPath)) {
-        targets.push({
-          repoPath: reconcileProject.repo.localPath,
-          username: reconcileProject.username,
-          opts: {
-            skipTruncate: true,
-            projectRoot: reconcileProject.projectRoot,
-            // Non-HTTP repos route stats/votes to the teamai-reports orphan branch.
-            selfConfig: reconcileProject,
-          },
-        });
-      }
-      if (reconcileUser && reconcileUser.repo.kind !== 'http'
-        && !await usageReportDisabled(reconcileUser.repo.localPath)) {
-        targets.push({
-          repoPath: reconcileUser.repo.localPath,
-          username: reconcileUser.username,
-          opts: {
-            skipTruncate: true,
-            excludeProjectRoots: projectConfig?.projectRoot ? [projectConfig.projectRoot] : [],
-            // Non-HTTP repos route stats/votes to the teamai-reports orphan branch —
-            // never reset/pull the default branch (or, in self mode, the business tree).
-            selfConfig: reconcileUser,
-          },
-        });
-      }
-
-      const eventCount = (await readUsageEvents()).length;
-      for (const t of targets) {
-        try {
-          await reportUsageToTeam(t.repoPath, t.username, t.opts);
-        } catch (e) {
-          log.error(`Auto-report to ${t.repoPath} skipped: ${(e as Error).message}`);
+  if (!options.dryRun && !pendingUsageReport) {
+    pendingUsageReport = (async () => {
+      try {
+        const { reportUsageToTeam } = await import('./team-push.js');
+        const { truncateUsageAfterReport, readUsageEvents } = await import('./usage-tracker.js');
+        const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig?: LocalConfig } }> = [];
+        // Per-target opt-out (teamai.yaml `usageReport: false`): a repo that
+        // disables stat commits is dropped from the targets — e.g. teams
+        // pulling from a read-only remote never accumulate unpushable commits.
+        if (reconcileProject && reconcileProject.repo.kind !== 'http'
+          && !await usageReportDisabled(reconcileProject.repo.localPath)) {
+          targets.push({
+            repoPath: reconcileProject.repo.localPath,
+            username: reconcileProject.username,
+            opts: {
+              skipTruncate: true,
+              projectRoot: reconcileProject.projectRoot,
+              // Non-HTTP repos route stats/votes to the teamai-reports orphan branch.
+              selfConfig: reconcileProject,
+            },
+          });
         }
+        if (reconcileUser && reconcileUser.repo.kind !== 'http'
+          && !await usageReportDisabled(reconcileUser.repo.localPath)) {
+          targets.push({
+            repoPath: reconcileUser.repo.localPath,
+            username: reconcileUser.username,
+            opts: {
+              skipTruncate: true,
+              excludeProjectRoots: projectConfig?.projectRoot ? [projectConfig.projectRoot] : [],
+              // Non-HTTP repos route stats/votes to the teamai-reports orphan branch —
+              // never reset/pull the default branch (or, in self mode, the business tree).
+              selfConfig: reconcileUser,
+            },
+          });
+        }
+
+        const eventCount = (await readUsageEvents()).length;
+        let allReported = true;
+        for (const t of targets) {
+          try {
+            const reported = await reportUsageToTeam(t.repoPath, t.username, t.opts);
+            if (!reported) allReported = false;
+          } catch (e) {
+            allReported = false;
+            log.error(`Auto-report to ${t.repoPath} skipped: ${(e as Error).message}`);
+          }
+        }
+        // A failed target must not lose its events. This also runs after a late
+        // success, even if pull has already stopped waiting for the report.
+        if (allReported && eventCount > 0 && targets.length > 0) {
+          await truncateUsageAfterReport(eventCount);
+        }
+      } catch (e) {
+        log.debug(`Auto-report skipped: ${(e as Error).message}`);
       }
-      // Truncate only what was reported — an opted-out repo keeps its local
-      // event log (the dashboard still reads it).
-      if (eventCount > 0 && targets.length > 0) {
-        await truncateUsageAfterReport(eventCount);
-      }
+    })().finally(() => { pendingUsageReport = undefined; });
+    usageReport = pendingUsageReport;
+    try {
+      await withTimeout(pendingUsageReport, 5000, 'Auto-report is still running after 5s');
     } catch (e) {
-      log.debug(`Auto-report skipped: ${(e as Error).message}`);
+      log.debug((e as Error).message);
     }
   }
 
@@ -1693,10 +1710,18 @@ export async function pull(options: GlobalOptions): Promise<void> {
     }
   }
   } finally {
-    // Release every partition sync-lock this pull held, now that all
-    // shared-clone reads/writes for every scope are done.
-    for (const lock of heldLocks.values()) {
-      await releaseLock(lock);
+    const releaseSyncLocks = async () => {
+      for (const lock of heldLocks.values()) await releaseLock(lock);
+    };
+    // Late reporting still writes the shared clone and local acknowledgement.
+    // Keep its partition locks until completion so another CLI cannot re-report
+    // the same data while this pull is no longer waiting.
+    if (usageReport && usageReport === pendingUsageReport) {
+      void usageReport.then(releaseSyncLocks, releaseSyncLocks).catch((e) => {
+        log.error(`Could not release report sync locks: ${(e as Error).message}`);
+      });
+    } else {
+      await releaseSyncLocks();
     }
   }
 }

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
 
 import type { LocalConfig } from '../types.js';
 
@@ -22,7 +23,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../utils/git.js', () => ({
   createGit: vi.fn((cwd: string) => (
-    cwd.endsWith('/reports-wt') ? mocks.worktreeGit : mocks.repoGit
+    cwd.endsWith(`${path.sep}reports-wt`) ? mocks.worktreeGit : mocks.repoGit
   )),
   isGitRepo: mocks.isGitRepo,
   getDefaultBranch: vi.fn(),
@@ -66,7 +67,7 @@ const config: LocalConfig = {
   additionalRoles: [],
 };
 
-const WT = '/workspace/project/.teamai/reports-wt';
+const WT = path.join('/workspace/project/.teamai', 'reports-wt');
 
 describe('ensureReportsWorktree read-only cold start', () => {
   beforeEach(() => {
@@ -152,6 +153,20 @@ describe('commitAndPushReports', () => {
       '[teamai] Register member: alice',
       { '--no-verify': null },
     );
+  });
+
+  it('pushes an unchanged report retry without making an empty commit', async () => {
+    mocks.worktreeGit.status.mockResolvedValue({ staged: [] });
+    expect(await commitAndPushReports(config, 'retry stats', ['stats/alice.yaml'], { pushIfUnchanged: true })).toBe(true);
+    expect(mocks.worktreeGit.commit).not.toHaveBeenCalled();
+    expect(mocks.worktreeGit.push).toHaveBeenCalledWith(['origin', 'teamai-reports']);
+    expect(releaseLock).toHaveBeenCalled();
+  });
+
+  it('preserves the default no-op when no changes are staged', async () => {
+    mocks.worktreeGit.status.mockResolvedValue({ staged: [] });
+    expect(await commitAndPushReports(config, 'unchanged member', ['members/'])).toBe(false);
+    expect(mocks.worktreeGit.push).not.toHaveBeenCalled();
   });
 });
 

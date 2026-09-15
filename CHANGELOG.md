@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### ✨ Features
 
+- First-class Kiro support: skills, steering rules, JSON subagents with CLI `agentSpawn` session-start hooks, and MCP sync to `.kiro/` (for [#500](https://github.com/Tencent/teamai-cli/issues/500)).
 - Multi-project management: `role` and `project` together resolve resource namespaces, and project-private learnings are isolated ([#426](https://github.com/Tencent/teamai-cli/pull/426), for [#375](https://github.com/Tencent/teamai-cli/issues/375)).
 - Data partitions auto-migrate a legacy `.teamai`, resume interrupted migrations, smoke-check the clone, and keep a git-ignored backup ([#439](https://github.com/Tencent/teamai-cli/pull/439), for [#374](https://github.com/Tencent/teamai-cli/issues/374)).
 

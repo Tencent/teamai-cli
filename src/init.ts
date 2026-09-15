@@ -6,6 +6,7 @@ import { reconcileTeamHooksForConfig } from './hooks.js';
 import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
 import { getProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
+import { parseGenericGitExistingRemote } from './providers/git/repo-url.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import {
@@ -744,13 +745,15 @@ export async function initSelfRepo(options: GlobalOptions & {
     return;
   }
   const provider = getProvider(providerName);
-  log.debug(`Detected provider: ${providerName} (from ${remoteUrl})`);
+  log.debug(`Detected provider: ${providerName} (from ${redactGitCredentials(remoteUrl)})`);
 
   let repoInfo;
   try {
-    repoInfo = provider.parseRepoInput(remoteUrl);
+    repoInfo = providerName === 'git'
+      ? parseGenericGitExistingRemote(remoteUrl)
+      : provider.parseRepoInput(remoteUrl);
   } catch (e) {
-    log.error(`Could not parse the business repo remote "${remoteUrl}": ${(e as Error).message}`);
+    log.error(`Could not parse the business repo remote "${redactGitCredentials(remoteUrl)}": ${(e as Error).message}`);
     process.exit(1);
     return;
   }

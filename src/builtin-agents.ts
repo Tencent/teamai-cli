@@ -63,11 +63,10 @@ function getBuiltinAgentsDir(): string {
  * Remove any same-stem sibling agent file whose extension differs from `targetExt`.
  *
  * Per-tool rendering can change an agent's native extension (e.g. Codex ships as
- * `.toml` while Claude ships as `.md`). When re-rendering on `teamai pull`, a
+ * `.toml` while Claude ships as `.md` and Kiro as `.json`). On re-render, a
  * stale file from a previous extension (left behind by an upgrade or a renderer
  * change) must be cleaned up so the tool does not load two conflicting copies —
- * the stale `.md` would be invalid TOML for Codex, and the stale `.toml` would
- * be invalid frontmatter for Claude.
+ * stale sibling would otherwise make the tool load two conflicting copies.
  *
  * Mirrors the stem-based match already used by `src/uninstall.ts`.
  */
@@ -79,7 +78,7 @@ async function removeStaleAgentSiblings(targetAgentsDir: string, stem: string, t
     return; // dir missing or unreadable — nothing to clean
   }
   for (const file of files) {
-    const base = file.replace(/\.(md|toml)$/, '');
+    const base = file.replace(/\.(md|toml|json)$/, '');
     if (base !== stem) continue;
     if (file === `${stem}${targetExt}`) continue;
     try {
@@ -157,8 +156,7 @@ export async function deployBuiltinAgents(
         const stem = path.basename(file, '.md');
         // Clean up any same-stem sibling with a different extension before
         // writing the (possibly new) native extension — e.g. an upgrade that
-        // switches a tool from .md to .toml must not leave the stale .md behind
-        // (it would be invalid TOML for Codex, or invalid frontmatter for Claude).
+        // switches a tool's native extension must not leave the stale file behind.
         await removeStaleAgentSiblings(targetAgentsDir, stem, rendered.ext);
         const dest = path.join(targetAgentsDir, `${stem}${rendered.ext}`);
         await writeFile(dest, rendered.content);
