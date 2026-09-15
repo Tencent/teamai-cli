@@ -105,8 +105,8 @@ interface ZcodeHookMatcher {
 interface ZcodeHooksJson {
   hooks?: {
     enabled?: boolean;
-    description?: string;
     events?: Record<string, ZcodeHookMatcher[]>;
+    [key: string]: unknown;
   };
   [key: string]: unknown;
 }
@@ -303,17 +303,38 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
 }
 
 function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
-  const entry: ZcodeHookEntry = {
-    type: 'process',
-    command: 'bash',
-    // Stored verbatim: the shell payload must equal `def.command` exactly so
-    // managed-entry detection and the managed-hooks manifest share one command
-    // representation (the same invariant the Codex format keeps). teamai
-    // hook-dispatch is silent and failure-tolerant on its success paths, so no
-    // shell redirection is layered on top of the payload.
-    args: ['-lc', def.command],
-    ...(def.timeout !== undefined ? { timeoutMs: def.timeout * 1000 } : {}),
+  // ZCode sessions run hooks inline: a session-start dispatch carries a network
+  // pull (SSH to the team host), which on slower links exceeds the 10–15s
+  // builtin defaults and gets killed mid-pull — so the timeouts here are
+  // network-scale, not the shell-hook defaults.
+  const ZCODE_TIMEOUT_MS: Record<string, number> = {
+    SessionStart: 180000,
+    Stop: 60000,
+    PostToolUse: 30000,
+    UserPromptSubmit: 60000,
   };
+  const entry: ZcodeHookEntry =
+    process.platform === 'win32'
+      ? {
+          // Windows must NOT spawn bare `bash`: CreateProcess resolves it to
+          // System32's WSL launcher before any PATH directory, and the WSL side
+          // has a different $HOME (no ~/.teamai state) and often no Node ≥ 20.
+          // cmd.exe is always present in System32 and resolves teamai from the
+          // Windows PATH (the npm shim is a .cmd, so a shell is required).
+          type: 'process',
+          command: 'cmd',
+          args: ['/c', def.command],
+          timeoutMs: ZCODE_TIMEOUT_MS[def.event] ?? 60000,
+        }
+      : {
+          type: 'process',
+          command: 'bash',
+          // Stored verbatim: the shell payload must equal `def.command` exactly
+          // so managed-entry detection and the managed-hooks manifest share one
+          // command representation (the same invariant the Codex format keeps).
+          args: ['-lc', def.command],
+          timeoutMs: ZCODE_TIMEOUT_MS[def.event] ?? 60000,
+        };
   const group: ZcodeHookMatcher = { hooks: [entry] };
   // ZCode's matcher is a case-sensitive regex on the match value; '*' is an
   // invalid pattern that would never match. Omitted matcher matches everything.
@@ -324,7 +345,8 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
 /** Shell payload of a ZCode hook entry, for managed-entry matching. */
 function zcodeEntryCommand(entry: ZcodeHookMatcher): string {
   const hook = entry.hooks?.[0];
-  if (hook?.command === 'bash' && hook.args?.[0] === '-lc') return hook.args[1] ?? '';
+  // Both variants (posix bash -lc / win32 cmd /c) carry the payload at args[1].
+  if (Array.isArray(hook?.args) && hook.args.length > 1) return hook.args[1] ?? '';
   return hook?.command ?? '';
 }
 
@@ -542,6 +564,15 @@ async function reconcileZcodeFormat(
   const cfg: ZcodeHooksJson = (await readJson<ZcodeHooksJson>(expanded)) ?? {};
   if (!cfg.hooks) cfg.hooks = {};
   let changed = false;
+  // ZCode validates the hooks block against a strict schema and REJECTS THE
+  // WHOLE BLOCK on any unrecognized key (observed: `config_file_invalid —
+  // hooks: Unrecognized key: "description"` → hookCount 0 → nothing fires).
+  // Heal the config by keeping only the keys the schema knows about.
+  const unknownHookKeys = Object.keys(cfg.hooks).filter((k) => k !== 'enabled' && k !== 'events');
+  if (unknownHookKeys.length > 0) {
+    for (const k of unknownHookKeys) delete cfg.hooks[k];
+    changed = true;
+  }
   // Config-file hooks are disabled by default in ZCode; entries we write would
   // never fire unless the runner is explicitly enabled. Persist the flip even
   // when the event arrays are already up to date — but only when installing.

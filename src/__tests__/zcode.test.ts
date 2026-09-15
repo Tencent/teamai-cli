@@ -43,7 +43,6 @@ describe('ZCode support', () => {
       expect(def.command.startsWith('teamai hook-dispatch ')).toBe(true);
       expect(def.command).toContain('--tool zcode');
       expect(def.command).not.toContain('bash -lc');
-      expect(def.timeout).toBeDefined();
     }
     const events = new Set(defs.map((d) => d.event));
     expect(events).toEqual(new Set(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit']));
@@ -70,17 +69,24 @@ describe('ZCode support', () => {
         for (const group of entries) {
           // ZCode matchers are regexes: '*' would be an invalid pattern that
           // never matches, so wildcard groups must omit the matcher entirely.
-          if (group.hooks[0].args?.[1]?.includes('--matcher')) {
+          const hook = group.hooks[0];
+          if (hook.args?.[1]?.includes('--matcher')) {
             expect(group.matcher).toBeDefined();
           } else {
             expect(group.matcher).toBeUndefined();
           }
-          expect(group.hooks[0].type).toBe('process');
-          expect(group.hooks[0].command).toBe('bash');
-          expect(group.hooks[0].args?.[0]).toBe('-lc');
-          expect(group.hooks[0].args?.[1]).toContain('teamai hook-dispatch');
-          expect(group.hooks[0].args?.[1]).toContain('--tool zcode');
-          expect(group.hooks[0].timeoutMs).toBeGreaterThan(0);
+          expect(hook.type).toBe('process');
+          if (process.platform === 'win32') {
+            // Bare `bash` would resolve to the WSL launcher via System32.
+            expect(hook.command).toBe('cmd');
+            expect(hook.args?.[0]).toBe('/c');
+          } else {
+            expect(hook.command).toBe('bash');
+            expect(hook.args?.[0]).toBe('-lc');
+          }
+          expect(hook.args?.[1]).toContain('teamai hook-dispatch');
+          expect(hook.args?.[1]).toContain('--tool zcode');
+          expect(hook.timeoutMs).toBeGreaterThan(0);
         }
       }
 
@@ -185,6 +191,28 @@ describe('ZCode support', () => {
       const cfg = await fse.readJson(configPath);
       expect(cfg.hooks.enabled).toBe(true);
       expect(Object.keys(cfg.hooks.events).length).toBeGreaterThan(0);
+      expect(await getHookStatus(configPath, 'zcode')).toBe('installed');
+    } finally {
+      await fse.remove(home);
+    }
+  });
+
+  it('heals unknown keys in the hooks block (ZCode strict schema rejects the whole block otherwise)', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-zcode-test-'));
+    try {
+      const configPath = path.join(home, '.zcode', 'cli', 'config.json');
+      await fse.ensureDir(path.dirname(configPath));
+      // A hand-added annotation key is enough for ZCode to drop every hook.
+      await fse.writeJson(configPath, {
+        plugins: {},
+        hooks: { enabled: false, description: 'my hooks', events: {} },
+      });
+
+      await reconcileHooks(configPath, 'zcode');
+
+      const cfg = await fse.readJson(configPath);
+      expect(Object.keys(cfg.hooks).sort()).toEqual(['enabled', 'events']);
+      expect(cfg.hooks.enabled).toBe(true);
       expect(await getHookStatus(configPath, 'zcode')).toBe('installed');
     } finally {
       await fse.remove(home);

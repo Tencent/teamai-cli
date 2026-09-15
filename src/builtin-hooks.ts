@@ -217,7 +217,9 @@ const BUILTIN_HOOK_SPECS: BuiltinHookSpec[] = [
 const WRAPPER_TOOLS = SHELL_DEPENDENT_TOOLS;
 
 export function builtinHookDefs(tool: string): HookDef[] {
-  const withTimeout = tool === 'cursor' || tool === 'workbuddy' || tool === 'codebuddy' || tool === 'zcode';
+  // ZCode renders per-event timeouts from the ZCODE_TIMEOUT_MS table in its own
+  // writer (toZcodeEntry), so def.timeout stays unset for it.
+  const withTimeout = tool === 'cursor' || tool === 'workbuddy' || tool === 'codebuddy';
   const buildCommand = tool === 'zcode'
     ? getRawDispatchCommand
     : WRAPPER_TOOLS.has(tool) ? getWrapperDispatchCommand : getDispatchCommand;
