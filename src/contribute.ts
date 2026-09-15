@@ -318,10 +318,11 @@ async function contributeSelf(
         const skillsDir = path.join(repoPath, 'skills');
 
         // votes are on the teamai-reports orphan branch, not in the knowledge worktree.
+        // Reading them must not publish a missing reports branch.
         let votesDir: string | undefined;
         try {
           const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
-          const candidate = path.join(await ensureReportsWorktree(localConfig), 'votes');
+          const candidate = path.join(await ensureReportsWorktree(localConfig, { pushIfCreated: false }), 'votes');
           if (await pathExists(candidate)) votesDir = candidate;
         } catch { /* reports worktree unavailable — index without votes */ }
 

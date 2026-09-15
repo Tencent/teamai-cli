@@ -21,6 +21,7 @@
  */
 import path from 'node:path';
 import fse from 'fs-extra';
+import type { SimpleGit } from 'simple-git';
 import { createGit, isGitRepo, getDefaultBranch, hasCommits, commitSkippingHooks, isDedicatedRepoRoot } from './git.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ensureDir, writeFile, pathExists } from './fs.js';
@@ -95,15 +96,17 @@ async function remoteBranchExists(repoRoot: string): Promise<boolean> {
  * Idempotent. Returns the worktree absolute path.
  *
  * Cold-start cases handled:
- *  - worktree already present  → return it (optionally refreshed by caller).
+ *  - worktree already present  → return it (readers refresh it via refreshReportsWorktree).
  *  - remote branch exists      → worktree add --track -b from origin/teamai-reports.
- *  - remote branch absent      → create the orphan branch locally, then first-push.
+ *  - remote branch absent      → reuse an unpublished local branch, or create the
+ *                                orphan branch locally; then first-push unless
+ *                                `pushIfCreated` is false.
  */
 export interface EnsureReportsWorktreeOptions {
   /**
    * Whether a cold start may publish a newly created reports branch. Writers
-   * keep the default; read-only callers can materialize a local view without
-   * changing origin.
+   * keep the default; read-only callers must pass false so they materialize a
+   * local view without changing origin.
    */
   pushIfCreated?: boolean;
 }
@@ -169,15 +172,22 @@ export async function ensureReportsWorktree(
       await git.raw(['worktree', 'add', wt, '--track', '-b', REPORTS_BRANCH, `origin/${REPORTS_BRANCH}`]);
     }
   } else {
-    // Remote branch absent: create the orphan branch in the worktree.
-    await createOrphanWorktree(repoRoot, wt);
-    await writeWorktreeGitignore(wt);
-    const wtGit = createGit(wt);
-    await wtGit.add(['.gitignore']);
-    await commitSkippingHooks(wtGit, '[teamai] Initialize reports branch');
+    // Remote branch absent. A read-only cold start (or a failed first push)
+    // leaves an unpublished local branch; reuse it, because creating the orphan
+    // branch again fails with "a branch named 'teamai-reports' already exists".
+    const branches = await git.branchLocal();
+    if (branches.all.includes(REPORTS_BRANCH)) {
+      await git.raw(['worktree', 'add', wt, REPORTS_BRANCH]);
+    } else {
+      await createOrphanWorktree(repoRoot, wt);
+      await writeWorktreeGitignore(wt);
+      const wtGit = createGit(wt);
+      await wtGit.add(['.gitignore']);
+      await commitSkippingHooks(wtGit, '[teamai] Initialize reports branch');
+    }
     if (options.pushIfCreated !== false) {
       try {
-        await wtGit.push(['-u', 'origin', REPORTS_BRANCH]);
+        await createGit(wt).push(['-u', 'origin', REPORTS_BRANCH]);
       } catch (e) {
         log.debug(`[reports] initial push skipped: ${(e as Error).message}`);
       }
@@ -317,22 +327,192 @@ export async function commitAndPushReports(
   }
 }
 
+async function gitPathExists(git: SimpleGit, gitPath: string): Promise<boolean> {
+  try {
+    const resolved = (await git.raw(['rev-parse', '--git-path', gitPath])).trim();
+    return resolved.length > 0 && (await pathExists(resolved));
+  } catch {
+    return false;
+  }
+}
+
+/** True while `git rebase` has not finished (as opposed to a completed rebase whose autostash conflicted). */
+async function rebaseInProgress(git: SimpleGit): Promise<boolean> {
+  return (await gitPathExists(git, 'rebase-merge')) || (await gitPathExists(git, 'rebase-apply'));
+}
+
 /**
- * Best-effort refresh of the reports worktree from origin so reader commands
- * (digest/members/stats) see other members' latest data. Safe: only touches the
- * orphan-branch worktree, never the active tree.
+ * Restore the "Stashed changes" / `--theirs` side of a stash-apply conflict
+ * and leave it uncommitted. Does not read or drop `refs/stash`: worktrees of
+ * the same repo share that ref, so a reports refresh must never clean it up.
+ * Skip when a rebase is still in progress so a real commit conflict is
+ * aborted by the caller instead.
+ */
+async function restoreConflictedFiles(git: SimpleGit): Promise<void> {
+  let conflicted: string[] = [];
+  try {
+    conflicted = (await git.status()).conflicted ?? [];
+  } catch {
+    return;
+  }
+  if (conflicted.length === 0) {
+    return;
+  }
+  if (await rebaseInProgress(git)) {
+    return;
+  }
+
+  try {
+    await git.raw(['checkout', '--theirs', '--', ...conflicted]);
+    await git.raw(['add', '--', ...conflicted]);
+    await git.raw(['reset', 'HEAD', '--', ...conflicted]);
+    log.debug('[reports] restored uncommitted report files after a stash-apply conflict; using the local copy');
+  } catch (e) {
+    log.debug(`[reports] could not restore stash-apply conflicts: ${(e as Error).message}`);
+    try {
+      await git.raw(['reset', '--hard', 'HEAD']);
+    } catch {
+      // best effort: at least try not to leave conflict markers
+    }
+  }
+}
+
+/**
+ * Snapshot dirty tracked files without touching `refs/stash` (`git stash create`
+ * returns a dangling commit). `git rebase --autostash` would push onto the
+ * shared stash list, which other worktrees of this repo also see.
+ */
+async function snapshotDirtyTree(git: SimpleGit): Promise<string | null> {
+  try {
+    const sha = (await git.raw(['stash', 'create'])).trim();
+    return sha.length > 0 ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
+async function applyDirtySnapshot(git: SimpleGit, sha: string): Promise<void> {
+  try {
+    await git.raw(['stash', 'apply', sha]);
+  } catch {
+    // apply conflicts leave UU paths; restoreConflictedFiles recovers them
+  }
+  await restoreConflictedFiles(git);
+}
+
+/**
+ * Bring the reports worktree up to date with origin. The caller holds the
+ * reports lock, so no commitAndPushReports runs at the same time.
+ *
+ *  - fetch fails (offline, or origin has no reports branch yet) → keep the local copy.
+ *  - no unpushed commits → fast-forward to origin.
+ *  - unpushed commits (e.g. a push that failed offline) → rebase them onto origin
+ *    so the next push delivers them.
+ *  - uncommitted report files (a writer wrote them but has not committed yet)
+ *    are carried along, never discarded; if they block the update, keep the
+ *    local copy.
+ *  - unpushed commits that conflict with origin (the same member reported from
+ *    another checkout) → dropped, so the worktree is not left diverged forever.
+ *  - dirty + ahead: snapshot with `git stash create` (not `--autostash`), rebase,
+ *    then re-apply. That object is never stored in `refs/stash`, so a concurrent
+ *    `git stash` in another worktree of this repo is left alone. Stash-apply
+ *    conflicts restore the original uncommitted files, never conflict markers.
+ */
+async function syncReportsWorktree(wt: string): Promise<void> {
+  const git = createGit(wt);
+  const upstream = `origin/${REPORTS_BRANCH}`;
+  try {
+    await git.fetch(['origin', REPORTS_BRANCH]);
+  } catch (e) {
+    log.debug(`[reports] fetch failed, using the local copy: ${(e as Error).message}`);
+    return;
+  }
+
+  await restoreConflictedFiles(git);
+
+  const dirty = !(await git.status()).isClean();
+  const ahead = Number.parseInt((await git.raw(['rev-list', '--count', `${upstream}..HEAD`])).trim(), 10);
+
+  let carried: string | null = null;
+  if (dirty && ahead > 0) {
+    carried = await snapshotDirtyTree(git);
+    if (!carried) {
+      log.debug('[reports] uncommitted report files block the refresh; using the local copy');
+      return;
+    }
+    try {
+      await git.raw(['reset', '--hard', 'HEAD']);
+    } catch (e) {
+      log.debug(`[reports] could not clear the worktree for rebase; using the local copy: ${(e as Error).message}`);
+      await applyDirtySnapshot(git, carried);
+      return;
+    }
+  }
+
+  try {
+    if (ahead > 0) {
+      await git.rebase([upstream]);
+    } else {
+      await git.raw(['merge', '--ff-only', upstream]);
+    }
+  } catch (e) {
+    if (ahead > 0) {
+      try {
+        await git.rebase(['--abort']);
+      } catch {
+        // no rebase in progress
+      }
+    }
+    if (carried) {
+      await applyDirtySnapshot(git, carried);
+      log.debug(`[reports] uncommitted report files block the refresh; using the local copy: ${(e as Error).message}`);
+      return;
+    }
+    if (dirty) {
+      log.debug(`[reports] uncommitted report files block the refresh; using the local copy: ${(e as Error).message}`);
+      return;
+    }
+    log.debug(`[reports] dropping ${ahead} unpushed report commit(s) that conflict with ${upstream}: ${(e as Error).message}`);
+    await git.raw(['reset', '--hard', upstream]);
+    return;
+  }
+
+  if (carried) {
+    await applyDirtySnapshot(git, carried);
+  }
+}
+
+/**
+ * Best-effort refresh of the reports worktree from origin so readers (pull's
+ * search index and recommendations, members, digest, maintenance) see other
+ * members' latest data. Read-only callers pass `pushIfCreated: false`. When a
+ * report write holds the lock, the local copy is used as-is. Never throws.
+ * Safe: only touches the orphan-branch worktree, never the active tree.
  */
 export async function refreshReportsWorktree(
   localConfig: LocalConfig,
   options: EnsureReportsWorktreeOptions = {},
 ): Promise<void> {
+  if (!usesReportsBranch(localConfig)) {
+    return;
+  }
+
+  const lockPath = reportsLockPath(localConfig);
+  let locked = false;
   try {
+    locked = await acquireLock(lockPath);
     const wt = await ensureReportsWorktree(localConfig, options);
-    const git = createGit(wt);
-    await git.fetch(['origin', REPORTS_BRANCH]);
-    await git.raw(['reset', '--hard', `origin/${REPORTS_BRANCH}`]);
+    if (!locked) {
+      log.debug('[reports] a reports write is in progress; reading the local copy');
+      return;
+    }
+    await syncReportsWorktree(wt);
   } catch (e) {
     log.debug(`[reports] refresh skipped: ${(e as Error).message}`);
+  } finally {
+    if (locked) {
+      await releaseLock(lockPath);
+    }
   }
 }
 

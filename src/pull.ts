@@ -894,6 +894,28 @@ async function pullForScope(
     log.info(`[${scopeLabel}] No resources to sync`);
   }
 
+  // votes/ (search index) and stats/ (recommendations) live on the
+  // teamai-reports orphan branch for non-HTTP repos. Refresh that worktree from
+  // origin before the first read, at most once per scope, so pull never ranks
+  // or recommends from a stale checkout. A read never publishes a missing
+  // branch (the auto-report writer does that), and never falls back to leftover
+  // default-branch clone votes/stats after the switch.
+  let reportsReadRoot: Promise<string | undefined> | undefined;
+  const resolveReportsReadRoot = (): Promise<string | undefined> => {
+    reportsReadRoot ??= (async () => {
+      if (!usesReportsBranch(localConfig)) return localConfig.repo.localPath;
+      try {
+        const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
+        await refreshReportsWorktree(localConfig, { pushIfCreated: false });
+        return await ensureReportsWorktree(localConfig, { pushIfCreated: false });
+      } catch (e) {
+        log.debug(`reports worktree unavailable: ${(e as Error).message}`);
+        return undefined;
+      }
+    })();
+    return reportsReadRoot;
+  };
+
   // Step 3.5: Sync learnings and rebuild the multi-category search index
   // (Phase 1: covers learnings + docs + rules + skills). Both scopes supported.
   if (!options.dryRun) {
@@ -902,20 +924,8 @@ async function pullForScope(
       const docsRepoDir = path.join(localConfig.repo.localPath, 'docs');
       const rulesRepoDir = path.join(localConfig.repo.localPath, 'rules');
       const skillsRepoDir = path.join(localConfig.repo.localPath, 'skills');
-      // votes/ lives on the teamai-reports orphan branch for non-HTTP repos, so
-      // vote-weighted recall must read it from the reports worktree. Do not fall
-      // back to leftover default-branch clone votes after the switch.
-      let votesDir: string | undefined;
-      if (usesReportsBranch(localConfig)) {
-        try {
-          const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
-          votesDir = path.join(await ensureReportsWorktree(localConfig), 'votes');
-        } catch (e) {
-          log.debug(`reports worktree for votes unavailable: ${(e as Error).message}`);
-        }
-      } else {
-        votesDir = path.join(localConfig.repo.localPath, 'votes');
-      }
+      const reportsRoot = await resolveReportsReadRoot();
+      const votesDir = reportsRoot ? path.join(reportsRoot, 'votes') : undefined;
 
       // user scope: sync learnings to ~/.teamai/learnings/ (legacy behavior)
       // project scope: use learnings directly from repo
@@ -1138,19 +1148,9 @@ async function pullForScope(
       const YAML = (await import('yaml')).default;
       const { listFiles, readFileSafe } = await import('./utils/fs.js');
       const { getRecommendations, displayRecommendations } = await import('./skill-recommend.js');
-      // stats/ lives on the teamai-reports orphan branch for non-HTTP repos.
-      // Do not fall back to leftover default-branch clone stats after the switch.
-      let statsDir: string | undefined;
-      if (usesReportsBranch(localConfig)) {
-        try {
-          const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
-          statsDir = path.join(await ensureReportsWorktree(localConfig), 'stats');
-        } catch (e) {
-          log.debug(`reports worktree for stats unavailable: ${(e as Error).message}`);
-        }
-      } else {
-        statsDir = path.join(localConfig.repo.localPath, 'stats');
-      }
+      // stats/ is read from the refreshed reports worktree (see resolveReportsReadRoot).
+      const reportsRoot = await resolveReportsReadRoot();
+      const statsDir = reportsRoot ? path.join(reportsRoot, 'stats') : undefined;
       const files = statsDir ? await listFiles(statsDir) : [];
       const teamStats = [];
       for (const file of files) {

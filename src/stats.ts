@@ -52,12 +52,13 @@ async function loadReportedStats(): Promise<UserStats | null> {
     const config = await detectProjectConfig() ?? await loadLocalConfig();
     if (!config) return null;
     // Non-HTTP: stats live on the teamai-reports orphan branch worktree.
-    // Leftover stats/ on the default-branch clone is ignored.
+    // Leftover stats/ on the default-branch clone is ignored. Read-only: never
+    // publish a missing reports branch.
     let statsRoot = config.repo.localPath;
     const { usesReportsBranch } = await import('./types.js');
     if (usesReportsBranch(config)) {
       const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
-      statsRoot = await ensureReportsWorktree(config);
+      statsRoot = await ensureReportsWorktree(config, { pushIfCreated: false });
     }
     const statsPath = path.join(statsRoot, 'stats', `${config.username}.yaml`);
     const content = await readFileSafe(statsPath);

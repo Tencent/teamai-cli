@@ -9,7 +9,7 @@ import path from 'node:path';
 import { simpleGit } from 'simple-git';
 
 import { getReportsDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig } from '../types.js';
-import { commitAndPushReports, ensureReportsWorktree } from '../utils/reports-branch.js';
+import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree } from '../utils/reports-branch.js';
 import { pushRepoDirectly } from '../utils/git.js';
 import { reportUsageToTeam } from '../team-push.js';
 
@@ -68,10 +68,10 @@ exit 0
   return { origin, clone };
 }
 
-function gitConfig(clone: string, origin: string): LocalConfig {
+function gitConfig(clone: string, origin: string, username = 'alice'): LocalConfig {
   return {
     repo: { localPath: clone, remote: origin, kind: 'git' },
-    username: 'alice',
+    username,
     scope: 'user',
     additionalRoles: [],
   };
@@ -235,5 +235,286 @@ describe('git-kind reports branch', () => {
     const reportsTree = await originGit.raw(['ls-tree', '-r', '--name-only', 'teamai-reports']);
     expect(reportsTree).toContain('members/alice.yaml');
     expect(reportsTree).toContain('members/bob.yaml');
+  });
+});
+
+const READ_ONLY = { pushIfCreated: false } as const;
+
+/** Another independent checkout of the same team repo (a second member or machine). */
+async function cloneCheckout(origin: string, name: string, username = 'alice'): Promise<LocalConfig> {
+  const clone = path.join(tmp, name, 'team-repo');
+  fs.mkdirSync(path.dirname(clone), { recursive: true });
+  await simpleGit().clone(origin, clone);
+  await configureGit(clone);
+  return gitConfig(clone, origin, username);
+}
+
+/** Write one report file into the reports worktree and publish it. */
+async function publish(cfg: LocalConfig, relPath: string, content: string): Promise<boolean> {
+  const wt = await ensureReportsWorktree(cfg);
+  fs.mkdirSync(path.dirname(path.join(wt, relPath)), { recursive: true });
+  fs.writeFileSync(path.join(wt, relPath), content);
+  return commitAndPushReports(cfg, `[teamai] Update ${relPath}`, [relPath]);
+}
+
+async function originReportsFile(origin: string, relPath: string): Promise<string> {
+  return simpleGit(origin).show([`teamai-reports:${relPath}`]);
+}
+
+async function originHasReportsBranch(origin: string): Promise<boolean> {
+  const heads = await simpleGit(origin).raw(['for-each-ref', '--format=%(refname:short)', 'refs/heads']);
+  return heads.split('\n').includes('teamai-reports');
+}
+
+describe('git-kind reports: read-only cold start (#558)', () => {
+  it('materializes a local reports view without publishing the branch', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const cfg = gitConfig(clone, origin);
+
+    await refreshReportsWorktree(cfg, READ_ONLY);
+    const wt = await ensureReportsWorktree(cfg, READ_ONLY);
+
+    expect(fs.existsSync(path.join(wt, '.gitignore'))).toBe(true);
+    expect(await originHasReportsBranch(origin)).toBe(false);
+  });
+
+  it('reuses the unpublished local branch after its worktree is removed, and a writer publishes it', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const cfg = gitConfig(clone, origin);
+
+    const wt = await ensureReportsWorktree(cfg, READ_ONLY);
+    fs.rmSync(wt, { recursive: true, force: true });
+
+    await expect(ensureReportsWorktree(cfg, READ_ONLY)).resolves.toBe(wt);
+    expect(await originHasReportsBranch(origin)).toBe(false);
+
+    expect(await publish(cfg, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    expect(await originReportsFile(origin, 'members/alice.yaml')).toBe('username: alice\n');
+  });
+});
+
+describe('git-kind reports: refresh before reading (#557)', () => {
+  it('picks up report data another member pushed', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const alice = gitConfig(clone, origin);
+    expect(await publish(alice, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+
+    const bob = await cloneCheckout(origin, 'bob', 'bob');
+    expect(await publish(bob, 'votes/bob.yaml', 'version: 2\n')).toBe(true);
+
+    const wt = await ensureReportsWorktree(alice, READ_ONLY);
+    expect(fs.existsSync(path.join(wt, 'votes', 'bob.yaml'))).toBe(false);
+
+    await refreshReportsWorktree(alice, READ_ONLY);
+    expect(fs.readFileSync(path.join(wt, 'votes', 'bob.yaml'), 'utf-8')).toBe('version: 2\n');
+  });
+
+  it('keeps an unpushed report commit that rebases cleanly, so the next push delivers it', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const alice = gitConfig(clone, origin);
+    const wt = await ensureReportsWorktree(alice);
+
+    // A report committed while the push failed (e.g. offline).
+    fs.mkdirSync(path.join(wt, 'stats'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'stats', 'alice.yaml'), 'n: 1\n');
+    const wtGit = simpleGit(wt);
+    await wtGit.add(['stats/alice.yaml']);
+    await wtGit.commit('offline stats');
+
+    const bob = await cloneCheckout(origin, 'bob', 'bob');
+    expect(await publish(bob, 'votes/bob.yaml', 'version: 2\n')).toBe(true);
+
+    await refreshReportsWorktree(alice, READ_ONLY);
+    expect(fs.existsSync(path.join(wt, 'votes', 'bob.yaml'))).toBe(true);
+    expect(fs.readFileSync(path.join(wt, 'stats', 'alice.yaml'), 'utf-8')).toBe('n: 1\n');
+
+    expect(await publish(alice, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    expect(await originReportsFile(origin, 'stats/alice.yaml')).toBe('n: 1\n');
+    expect(await originReportsFile(origin, 'votes/bob.yaml')).toBe('version: 2\n');
+  });
+
+  it('keeps uncommitted report files while updating to origin', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const alice = gitConfig(clone, origin);
+    const wt = await ensureReportsWorktree(alice);
+
+    // A writer has written its file but not committed it yet.
+    fs.mkdirSync(path.join(wt, 'stats'), { recursive: true });
+    fs.writeFileSync(path.join(wt, 'stats', 'alice.yaml'), 'n: 1\n');
+
+    const bob = await cloneCheckout(origin, 'bob', 'bob');
+    expect(await publish(bob, 'votes/bob.yaml', 'version: 2\n')).toBe(true);
+
+    await refreshReportsWorktree(alice, READ_ONLY);
+    expect(fs.existsSync(path.join(wt, 'votes', 'bob.yaml'))).toBe(true);
+    expect(fs.readFileSync(path.join(wt, 'stats', 'alice.yaml'), 'utf-8')).toBe('n: 1\n');
+
+    expect(await commitAndPushReports(alice, '[teamai] Update usage stats for alice', ['stats/alice.yaml'])).toBe(true);
+    expect(await originReportsFile(origin, 'stats/alice.yaml')).toBe('n: 1\n');
+  });
+
+  it('does not leave autostash conflict markers when an unpushed commit, a dirty report, and origin all touch the same file', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const machineA = gitConfig(clone, origin);
+    const machineB = await cloneCheckout(origin, 'machine-b');
+
+    expect(await publish(machineA, 'stats/alice.yaml', 'n: 1\n')).toBe(true);
+    const wtA = await ensureReportsWorktree(machineA);
+
+    // Unpushed local commit (e.g. a session report written while offline).
+    fs.mkdirSync(path.join(wtA, 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(wtA, 'sessions', 'alice.yaml'), 'session: a1\n');
+    const wtGit = simpleGit(wtA);
+    await wtGit.add(['sessions/alice.yaml']);
+    await wtGit.commit('offline session');
+
+    // Dirty tracked stats, plus a newer copy of the same file on origin.
+    fs.writeFileSync(path.join(wtA, 'stats', 'alice.yaml'), 'n: 3\n');
+    expect(await publish(machineB, 'stats/alice.yaml', 'n: 2\n')).toBe(true);
+
+    await refreshReportsWorktree(machineA, READ_ONLY);
+
+    const stats = fs.readFileSync(path.join(wtA, 'stats', 'alice.yaml'), 'utf-8');
+    expect(stats).not.toMatch(/^(<<<<<<<|=======|>>>>>>>)/m);
+    expect(stats).toBe('n: 3\n');
+    expect(fs.readFileSync(path.join(wtA, 'sessions', 'alice.yaml'), 'utf-8')).toBe('session: a1\n');
+
+    const status = await wtGit.status();
+    expect(status.conflicted).toEqual([]);
+    expect((await wtGit.raw(['stash', 'list'])).trim()).toBe('');
+  });
+
+  it('drops an unpushed commit that conflicts with newer origin data so the checkout never stays diverged', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const machineA = gitConfig(clone, origin);
+    const machineB = await cloneCheckout(origin, 'machine-b');
+
+    expect(await publish(machineA, 'stats/alice.yaml', 'n: 1\n')).toBe(true);
+    const wtB = await ensureReportsWorktree(machineB);
+
+    // Machine B commits a merge from its stale copy but never pushes it...
+    fs.writeFileSync(path.join(wtB, 'stats', 'alice.yaml'), 'n: 100\n');
+    const wtGit = simpleGit(wtB);
+    await wtGit.add(['stats/alice.yaml']);
+    await wtGit.commit('stale stats');
+    // ...while machine A publishes a newer copy of the same file.
+    expect(await publish(machineA, 'stats/alice.yaml', 'n: 2\n')).toBe(true);
+
+    await refreshReportsWorktree(machineB, READ_ONLY);
+    expect(fs.readFileSync(path.join(wtB, 'stats', 'alice.yaml'), 'utf-8')).toBe('n: 2\n');
+    const ahead = await wtGit.raw(['rev-list', '--count', 'origin/teamai-reports..HEAD']);
+    expect(ahead.trim()).toBe('0');
+
+    expect(await publish(machineB, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    expect(await originReportsFile(origin, 'members/alice.yaml')).toBe('username: alice\n');
+  });
+});
+
+describe('self-mode reports: shared stash', () => {
+  it('does not drop a pre-existing business-worktree stash whose message contains autostash', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const teamaiDir = path.join(clone, '.teamai');
+    fs.mkdirSync(teamaiDir, { recursive: true });
+    const alice: LocalConfig = {
+      repo: { localPath: teamaiDir, remote: origin, kind: 'self', businessRepoRoot: clone },
+      username: 'alice',
+      scope: 'user',
+      additionalRoles: [],
+    };
+    const machineB = await cloneCheckout(origin, 'machine-b');
+
+    expect(await publish(alice, 'stats/alice.yaml', 'n: 1\n')).toBe(true);
+    const wtA = await ensureReportsWorktree(alice);
+
+    fs.mkdirSync(path.join(wtA, 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(wtA, 'sessions', 'alice.yaml'), 'session: a1\n');
+    const wtGit = simpleGit(wtA);
+    await wtGit.add(['sessions/alice.yaml']);
+    await wtGit.commit('offline session');
+
+    const businessGit = simpleGit(clone);
+    fs.writeFileSync(path.join(clone, 'app.txt'), 'committed\n');
+    await businessGit.add(['app.txt']);
+    await businessGit.commit('app');
+    fs.writeFileSync(path.join(clone, 'app.txt'), 'wip\n');
+    await businessGit.stash(['push', '-m', 'autostash']);
+    const stashBefore = (await businessGit.raw(['stash', 'list'])).trim();
+    expect(stashBefore).toMatch(/autostash/);
+
+    fs.writeFileSync(path.join(wtA, 'stats', 'alice.yaml'), 'n: 3\n');
+    expect(await publish(machineB, 'stats/alice.yaml', 'n: 2\n')).toBe(true);
+
+    await refreshReportsWorktree(alice, READ_ONLY);
+
+    const stats = fs.readFileSync(path.join(wtA, 'stats', 'alice.yaml'), 'utf-8');
+    expect(stats).not.toMatch(/^(<<<<<<<|=======|>>>>>>>)/m);
+    expect(stats).toBe('n: 3\n');
+    expect((await wtGit.status()).conflicted).toEqual([]);
+
+    const stashAfter = (await businessGit.raw(['stash', 'list'])).trim();
+    expect(stashAfter).toBe(stashBefore);
+    expect(fs.readFileSync(path.join(clone, 'app.txt'), 'utf-8')).toBe('committed\n');
+  });
+
+  it('does not drop a business-worktree stash created while reports rebase is running', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const teamaiDir = path.join(clone, '.teamai');
+    fs.mkdirSync(teamaiDir, { recursive: true });
+    const alice: LocalConfig = {
+      repo: { localPath: teamaiDir, remote: origin, kind: 'self', businessRepoRoot: clone },
+      username: 'alice',
+      scope: 'user',
+      additionalRoles: [],
+    };
+    const machineB = await cloneCheckout(origin, 'machine-b');
+
+    expect(await publish(alice, 'stats/alice.yaml', 'n: 1\n')).toBe(true);
+    const wtA = await ensureReportsWorktree(alice);
+
+    fs.mkdirSync(path.join(wtA, 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(wtA, 'sessions', 'alice.yaml'), 'session: a1\n');
+    const wtGit = simpleGit(wtA);
+    await wtGit.add(['sessions/alice.yaml']);
+    await wtGit.commit('offline session');
+
+    const businessGit = simpleGit(clone);
+    fs.writeFileSync(path.join(clone, 'app.txt'), 'committed\n');
+    await businessGit.add(['app.txt']);
+    await businessGit.commit('app');
+
+    const marker = path.join(tmp, 'rebase-started');
+    const release = path.join(tmp, 'rebase-continue');
+    const hookDir = path.join(clone, '.git', 'hooks');
+    fs.mkdirSync(hookDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(hookDir, 'pre-rebase'),
+      `#!/bin/sh\nprintf 'ready\\n' > ${JSON.stringify(marker)}\nwhile [ ! -f ${JSON.stringify(release)} ]; do sleep 0.05; done\n`,
+    );
+    fs.chmodSync(path.join(hookDir, 'pre-rebase'), 0o755);
+
+    fs.writeFileSync(path.join(wtA, 'stats', 'alice.yaml'), 'n: 3\n');
+    expect(await publish(machineB, 'stats/alice.yaml', 'n: 2\n')).toBe(true);
+
+    const refreshing = refreshReportsWorktree(alice, READ_ONLY);
+    const deadline = Date.now() + 8000;
+    while (!fs.existsSync(marker) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(fs.existsSync(marker)).toBe(true);
+
+    fs.writeFileSync(path.join(clone, 'app.txt'), 'wip-during-rebase\n');
+    await businessGit.stash(['push', '-m', 'business-wip']);
+    const stashDuring = (await businessGit.raw(['stash', 'list'])).trim();
+    expect(stashDuring).toMatch(/business-wip/);
+
+    fs.writeFileSync(release, 'go\n');
+    await refreshing;
+
+    const stats = fs.readFileSync(path.join(wtA, 'stats', 'alice.yaml'), 'utf-8');
+    expect(stats).not.toMatch(/^(<<<<<<<|=======|>>>>>>>)/m);
+    expect(stats).toBe('n: 3\n');
+    expect((await wtGit.status()).conflicted).toEqual([]);
+    expect((await businessGit.raw(['stash', 'list'])).trim()).toBe(stashDuring);
+    expect(fs.readFileSync(path.join(clone, 'app.txt'), 'utf-8')).toBe('committed\n');
   });
 });

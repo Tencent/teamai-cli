@@ -138,8 +138,9 @@ export async function projectsMembers(
   const { usesReportsBranch } = await import('./types.js');
   if (usesReportsBranch(localConfig)) {
     const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
-    await refreshReportsWorktree(localConfig);
-    membersRoot = await ensureReportsWorktree(localConfig);
+    // Read-only: never publish a missing reports branch.
+    await refreshReportsWorktree(localConfig, { pushIfCreated: false });
+    membersRoot = await ensureReportsWorktree(localConfig, { pushIfCreated: false });
   } else {
     await pullRepo(knowledgePath).catch(() => { /* offline — read local copy */ });
   }

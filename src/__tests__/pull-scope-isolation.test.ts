@@ -97,7 +97,7 @@ import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { reportUsageToTeam } from '../team-push.js';
 import { readUsageEvents, truncateUsageAfterReport } from '../usage-tracker.js';
 import { releaseLock } from '../update.js';
-import type { TeamaiConfig, LocalConfig } from '../types.js';
+import { SYNC_LOCK_FILENAME, type TeamaiConfig, type LocalConfig } from '../types.js';
 
 const SKIP_MSG = 'project scope detected, skipped user scope';
 
@@ -221,7 +221,14 @@ describe('pull scope isolation (issue #73)', () => {
     await vi.advanceTimersByTimeAsync(5000);
     await pulling;
     expect(truncateUsageAfterReport).not.toHaveBeenCalled();
-    expect(releaseLock).not.toHaveBeenCalled();
+    // Partition sync-locks stay held until the late report finishes. The
+    // reports worktree lock (.reports-lock) is acquired and released around
+    // the earlier read-only refresh, which is independent of that wait.
+    expect(
+      vi.mocked(releaseLock).mock.calls.filter(
+        ([lock]) => typeof lock === 'string' && path.basename(lock) === SYNC_LOCK_FILENAME,
+      ),
+    ).toEqual([]);
     expect(pullSources).toHaveBeenCalled();
     await pull({ silent: true });
     expect(reportUsageToTeam).toHaveBeenCalledTimes(1);
