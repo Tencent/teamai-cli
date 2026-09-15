@@ -108,15 +108,35 @@ function spawnBackground(
 }
 
 /** Parse STDIN JSON and normalize the event name for downstream handlers. */
-function parseStdin(raw: string, event: string): Record<string, unknown> | null {
+export function parseStdin(raw: string, event: string): Record<string, unknown> {
   let stdin: Record<string, unknown> = {};
   if (raw.trim()) {
     try {
       stdin = JSON.parse(raw);
     } catch {
-      log.debug(`hook-dispatch: failed to parse STDIN JSON for event=${event}`);
-      return null;
+      // Degrade to {} instead of short-circuiting: handlers that depend on
+      // stdin fields (votes-sync, contribute-check) self-skip when
+      // transcript_path is absent, while background handlers that don't read
+      // stdin (version-check, etc.) still get to run. Include a bounded
+      // preview so concurrent STDIN corruption is diagnosable in debug.log.
+      const preview = raw.length > 160
+        ? `${raw.slice(0, 80)}...${raw.slice(-80)}`
+        : raw;
+      log.debug(
+        `hook-dispatch: failed to parse STDIN JSON for event=${event}` +
+          ` (len=${raw.length}, body=${JSON.stringify(preview)})`,
+      );
     }
+  }
+
+  // JSON.parse succeeds for non-object values (`null`, numbers, booleans,
+  // strings, arrays) that are not valid hook payloads. Without this guard,
+  // the next `stdin.hook_event_name` access/assign throws TypeError in ESM
+  // strict mode, which the outer try/catch swallows and short-circuits the
+  // whole dispatch — the exact failure the malformed-JSON path above was
+  // meant to prevent. Degrade any non-plain-object to {}.
+  if (!stdin || typeof stdin !== 'object' || Array.isArray(stdin)) {
+    stdin = {};
   }
 
   // WorkBuddy/CodeBuddy may pass hook_event_name: "" — normalize to the
@@ -168,7 +188,6 @@ export async function hookDispatchCli(
   try {
     const raw = await readStdin();
     const stdin = parseStdin(raw, event);
-    if (stdin === null) return;
 
     // Provider-config gate: HTTP-only teams must not receive git-provider-only
     // hook prompts (contribute / mr-hint / votes). Prefer the project-scope
