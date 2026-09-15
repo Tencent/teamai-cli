@@ -102,6 +102,23 @@ describe('AgentsHandler — Phase 1 push/pull/remove', () => {
     expect(items.every((i) => i.type === 'agents')).toBe(true);
   });
 
+  it('scanTeamForPull returns namespaced agents from one level of subdirectories', async () => {
+    await fse.writeFile(path.join(repoPath, 'agents', 'shared.md'), '# shared');
+    await fse.ensureDir(path.join(repoPath, 'agents', 'frontend'));
+    await fse.writeFile(path.join(repoPath, 'agents', 'frontend', 'vr-reviewer.yaml'), 'name: vr-reviewer\n');
+    await fse.writeFile(path.join(repoPath, 'agents', 'frontend', 'notes.txt'), 'ignored');
+    // Two levels deep is not a namespace and must be ignored
+    await fse.ensureDir(path.join(repoPath, 'agents', 'frontend', 'nested'));
+    await fse.writeFile(path.join(repoPath, 'agents', 'frontend', 'nested', 'deep.md'), '# deep');
+
+    const items = await handler.scanTeamForPull(teamConfig, localConfig);
+    expect(items.map((i) => [i.name, i.namespace, i.relativePath]).sort()).toEqual([
+      ['shared', undefined, 'agents/shared.md'],
+      ['vr-reviewer', 'frontend', 'agents/frontend/vr-reviewer.yaml'],
+    ]);
+    expect(items.find((i) => i.name === 'vr-reviewer')?.legacy).toBe(false);
+  });
+
   it('scanTeamForPull returns empty when team repo has no agents directory', async () => {
     await fse.remove(path.join(repoPath, 'agents'));
     const items = await handler.scanTeamForPull(teamConfig, localConfig);

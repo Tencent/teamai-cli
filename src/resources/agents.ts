@@ -3,10 +3,11 @@ import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml } from 'yaml';
 import { ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
-import { listFiles, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe } from '../utils/fs.js';
+import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { resolveBaseDir, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
+import { isSafeNamespaceSegment } from '../projects.js';
 import {
   parseAgentYaml,
   serializeAgentYaml,
@@ -267,34 +268,37 @@ export class AgentsHandler extends ResourceHandler {
    * Scan team repo `agents/` for files to pull.
    * Recognizes both *.yaml (new) and *.md (legacy).
    * Hidden files (tombstones) are filtered out by listFiles.
+   *
+   * Root-level files are shared with everyone. One level of subdirectories
+   * (`agents/<namespace>/`) carries role/project-scoped agents, the same
+   * convention `rules/<namespace>/` uses; pull filters them by the active
+   * `agents` namespaces. Deeper nesting is not scanned.
    */
   async scanTeamForPull(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<AgentResourceItem[]> {
     const agentsDir = path.join(localConfig.repo.localPath, 'agents');
     if (!await pathExists(agentsDir)) return [];
 
-    const files = await listFiles(agentsDir);
     const items: AgentResourceItem[] = [];
-
-    for (const file of files) {
-      if (file.endsWith('.yaml')) {
-        const stem = file.replace(/\.yaml$/, '');
+    const scanDir = async (dir: string, namespace?: string): Promise<void> => {
+      const prefix = namespace ? `agents/${namespace}` : 'agents';
+      for (const file of await listFiles(dir)) {
+        const legacy = file.endsWith('.md');
+        if (!legacy && !file.endsWith('.yaml')) continue;
         items.push({
-          name: stem,
+          name: file.replace(/\.(yaml|md)$/, ''),
           type: 'agents',
-          sourcePath: path.join(agentsDir, file),
-          relativePath: `agents/${file}`,
-          legacy: false,
-        });
-      } else if (file.endsWith('.md')) {
-        const stem = file.replace(/\.md$/, '');
-        items.push({
-          name: stem,
-          type: 'agents',
-          sourcePath: path.join(agentsDir, file),
-          relativePath: `agents/${file}`,
-          legacy: true,
+          sourcePath: path.join(dir, file),
+          relativePath: `${prefix}/${file}`,
+          legacy,
+          ...(namespace ? { namespace } : {}),
         });
       }
+    };
+
+    await scanDir(agentsDir);
+    for (const namespace of await listDirs(agentsDir)) {
+      if (!isSafeNamespaceSegment(namespace)) continue;
+      await scanDir(path.join(agentsDir, namespace), namespace);
     }
 
     return items;
