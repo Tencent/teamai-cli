@@ -116,6 +116,12 @@ export async function incrementUpvoted(votePath: string, docIds: string[]): Prom
 /**
  * Merge local deltas into a remote votes snapshot.
  * Returns merged result with empty deltas.
+ *
+ * Scope note: this is a delta-merge, not a full-snapshot consistency sweep.
+ * The zeroed-counter timestamp cleanup below only runs for docs that appear
+ * in `local.deltas` — pure-remote docs with no local delta are copied as-is
+ * and are NOT re-validated. Callers needing a full consistency pass must run
+ * it separately; do not assume mergeDeltas sanitizes the entire result.
  */
 export function mergeDeltas(local: UserVotesV2, remote: UserVotesV2): UserVotesV2 {
   const votes: Record<string, VoteEntryV2> = {};
@@ -143,6 +149,14 @@ export function mergeDeltas(local: UserVotesV2, remote: UserVotesV2): UserVotesV
       ) {
         votes[docId].last_upvoted_at = localEntry.last_upvoted_at;
       }
+    }
+
+    // Consistency constraint: a zeroed counter must not retain a timestamp.
+    if (votes[docId].recalled_count === 0) {
+      votes[docId].last_recalled_at = '';
+    }
+    if (votes[docId].upvoted_count === 0) {
+      delete votes[docId].last_upvoted_at;
     }
   }
 
@@ -204,11 +218,17 @@ export async function recallFeedback(opts: { positive?: string; negative?: strin
       return;
     }
     const existingDelta = data.deltas[opts.negative] ?? { recalled_delta: 0, upvoted_delta: 0 };
+    const decrementedCount = entry.upvoted_count - 1;
+    const updatedEntry: VoteEntryV2 = { ...entry, upvoted_count: decrementedCount };
+    // Consistency: a zeroed counter must not retain a timestamp.
+    if (decrementedCount === 0) {
+      delete updatedEntry.last_upvoted_at;
+    }
     const updated: UserVotesV2 = {
       ...data,
       votes: {
         ...data.votes,
-        [opts.negative]: { ...entry, upvoted_count: entry.upvoted_count - 1 },
+        [opts.negative]: updatedEntry,
       },
       deltas: {
         ...data.deltas,

@@ -190,6 +190,90 @@ describe('mergeDeltas', () => {
     expect(merged.votes['doc-a'].upvoted_count).toBe(0);
     expect(merged.votes['doc-a'].recalled_count).toBe(1);
   });
+
+  it('does not keep last_upvoted_at when upvoted_count is 0', () => {
+    const local: UserVotesV2 = {
+      version: 2,
+      votes: {
+        'doc-bug': {
+          recalled_count: 1,
+          upvoted_count: 0,
+          last_recalled_at: '2026-09-15T00:00:00Z',
+          last_upvoted_at: '2026-09-15T00:00:00Z',
+        },
+      },
+      deltas: { 'doc-bug': { recalled_delta: 1, upvoted_delta: 0 } },
+    };
+    const remote: UserVotesV2 = {
+      version: 2,
+      votes: {
+        'doc-bug': { recalled_count: 0, upvoted_count: 0, last_recalled_at: '' },
+      },
+      deltas: {},
+    };
+
+    const merged = mergeDeltas(local, remote);
+    expect(merged.votes['doc-bug'].upvoted_count).toBe(0);
+    expect(merged.votes['doc-bug'].last_upvoted_at).toBeUndefined();
+  });
+
+  it('does not keep last_recalled_at when recalled_count is 0', () => {
+    const local: UserVotesV2 = {
+      version: 2,
+      votes: {
+        'doc-bug': {
+          recalled_count: 0,
+          upvoted_count: 0,
+          last_recalled_at: '2026-09-15T00:00:00Z',
+        },
+      },
+      deltas: { 'doc-bug': { recalled_delta: -1, upvoted_delta: 0 } },
+    };
+    const remote: UserVotesV2 = {
+      version: 2,
+      votes: {
+        'doc-bug': { recalled_count: 1, upvoted_count: 0, last_recalled_at: '2026-09-05T00:00:00Z' },
+      },
+      deltas: {},
+    };
+
+    const merged = mergeDeltas(local, remote);
+    expect(merged.votes['doc-bug'].recalled_count).toBe(0);
+    expect(merged.votes['doc-bug'].last_recalled_at).toBe('');
+  });
+
+  it('preserves timestamps when counts stay positive (regression)', () => {
+    const local: UserVotesV2 = {
+      version: 2,
+      votes: {
+        'doc-a': {
+          recalled_count: 5,
+          upvoted_count: 2,
+          last_recalled_at: '2026-06-10T00:00:00Z',
+          last_upvoted_at: '2026-06-10T00:00:00Z',
+        },
+      },
+      deltas: { 'doc-a': { recalled_delta: 3, upvoted_delta: 1 } },
+    };
+    const remote: UserVotesV2 = {
+      version: 2,
+      votes: {
+        'doc-a': {
+          recalled_count: 2,
+          upvoted_count: 1,
+          last_recalled_at: '2026-06-05T00:00:00Z',
+          last_upvoted_at: '2026-06-04T00:00:00Z',
+        },
+      },
+      deltas: {},
+    };
+
+    const merged = mergeDeltas(local, remote);
+    expect(merged.votes['doc-a'].recalled_count).toBe(5);
+    expect(merged.votes['doc-a'].upvoted_count).toBe(2);
+    expect(merged.votes['doc-a'].last_recalled_at).toBe('2026-06-10T00:00:00Z');
+    expect(merged.votes['doc-a'].last_upvoted_at).toBe('2026-06-10T00:00:00Z');
+  });
 });
 
 describe('syncVotesToTeam', () => {
@@ -280,5 +364,25 @@ describe('recallFeedback', () => {
 
     // Should not throw
     await expect(recallFeedback({ negative: 'nonexistent' })).resolves.not.toThrow();
+  });
+
+  it('negative deletes last_upvoted_at when upvoted_count reaches 0', async () => {
+    const votesDir = path.join(tmpDir, '.teamai', 'votes');
+    fs.mkdirSync(votesDir, { recursive: true });
+    const votePath = path.join(votesDir, 'testuser.yaml');
+
+    // Set up: recalled_count=1, upvoted_count=1 with last_upvoted_at populated
+    await incrementRecalled(votePath, ['doc-zero']);
+    await incrementUpvoted(votePath, ['doc-zero']);
+
+    const before = await loadUserVotes(votePath);
+    expect(before.votes['doc-zero'].upvoted_count).toBe(1);
+    expect(before.votes['doc-zero'].last_upvoted_at).toBeTruthy();
+
+    await recallFeedback({ negative: 'doc-zero' });
+
+    const after = YAML.parse(fs.readFileSync(votePath, 'utf-8')) as UserVotesV2;
+    expect(after.votes['doc-zero'].upvoted_count).toBe(0);
+    expect(after.votes['doc-zero'].last_upvoted_at).toBeUndefined();
   });
 });
