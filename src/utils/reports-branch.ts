@@ -21,6 +21,7 @@
  */
 import path from 'node:path';
 import fse from 'fs-extra';
+import type { SimpleGit } from 'simple-git';
 import { createGit, isGitRepo, getDefaultBranch, hasCommits, commitSkippingHooks, isDedicatedRepoRoot } from './git.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ensureDir, writeFile, pathExists } from './fs.js';
@@ -323,6 +324,75 @@ export async function commitAndPushReports(
   }
 }
 
+async function gitPathExists(git: SimpleGit, gitPath: string): Promise<boolean> {
+  try {
+    const resolved = (await git.raw(['rev-parse', '--git-path', gitPath])).trim();
+    return resolved.length > 0 && (await pathExists(resolved));
+  } catch {
+    return false;
+  }
+}
+
+/** True while `git rebase` has not finished (as opposed to a completed rebase whose autostash conflicted). */
+async function rebaseInProgress(git: SimpleGit): Promise<boolean> {
+  return (await gitPathExists(git, 'rebase-merge')) || (await gitPathExists(git, 'rebase-apply'));
+}
+
+async function dropRebaseAutostash(git: SimpleGit): Promise<void> {
+  try {
+    for (let n = 0; n < 8; n++) {
+      const lines = (await git.raw(['stash', 'list'])).split('\n').filter((line) => line.trim().length > 0);
+      const index = lines.findIndex((line) => /\bautostash\b/.test(line));
+      if (index < 0) {
+        return;
+      }
+      await git.raw(['stash', 'drop', `stash@{${index}}`]);
+    }
+  } catch {
+    // no stash
+  }
+}
+
+/**
+ * `git rebase --autostash` can exit 0 after the rebase itself succeeds but
+ * reapplying the autostash conflicts. That leaves UU paths, conflict markers,
+ * and a leftover `autostash` stash — invalid YAML for readers and a stuck
+ * index for writers.
+ *
+ * Restore the original uncommitted content (the "Stashed changes" / `--theirs`
+ * side of a stash apply) and drop the autostash. Skip when a rebase is still
+ * in progress so a real commit conflict is aborted by the caller instead.
+ */
+async function restoreAutostashConflicts(git: SimpleGit): Promise<void> {
+  let conflicted: string[] = [];
+  try {
+    conflicted = (await git.status()).conflicted ?? [];
+  } catch {
+    return;
+  }
+  if (conflicted.length === 0) {
+    return;
+  }
+  if (await rebaseInProgress(git)) {
+    return;
+  }
+
+  try {
+    await git.raw(['checkout', '--theirs', '--', ...conflicted]);
+    await git.raw(['add', '--', ...conflicted]);
+    await git.raw(['reset', 'HEAD', '--', ...conflicted]);
+    await dropRebaseAutostash(git);
+    log.debug('[reports] restored uncommitted report files after an autostash conflict; using the local copy');
+  } catch (e) {
+    log.debug(`[reports] could not restore autostash conflicts: ${(e as Error).message}`);
+    try {
+      await git.raw(['reset', '--hard', 'HEAD']);
+    } catch {
+      // best effort: at least try not to leave conflict markers
+    }
+  }
+}
+
 /**
  * Bring the reports worktree up to date with origin. The caller holds the
  * reports lock, so no commitAndPushReports runs at the same time.
@@ -336,6 +406,9 @@ export async function commitAndPushReports(
  *    local copy.
  *  - unpushed commits that conflict with origin (the same member reported from
  *    another checkout) → dropped, so the worktree is not left diverged forever.
+ *  - rebase --autostash can succeed and still leave stash-apply conflicts;
+ *    those are restored to the original uncommitted files, never left as
+ *    conflict markers.
  */
 async function syncReportsWorktree(wt: string): Promise<void> {
   const git = createGit(wt);
@@ -347,6 +420,8 @@ async function syncReportsWorktree(wt: string): Promise<void> {
     return;
   }
 
+  await restoreAutostashConflicts(git);
+
   const dirty = !(await git.status()).isClean();
   const ahead = Number.parseInt((await git.raw(['rev-list', '--count', `${upstream}..HEAD`])).trim(), 10);
   try {
@@ -355,7 +430,6 @@ async function syncReportsWorktree(wt: string): Promise<void> {
     } else {
       await git.raw(['merge', '--ff-only', upstream]);
     }
-    return;
   } catch (e) {
     if (ahead > 0) {
       try {
@@ -366,11 +440,17 @@ async function syncReportsWorktree(wt: string): Promise<void> {
     }
     if (dirty) {
       log.debug(`[reports] uncommitted report files block the refresh; using the local copy: ${(e as Error).message}`);
+      await restoreAutostashConflicts(git);
       return;
     }
     log.debug(`[reports] dropping ${ahead} unpushed report commit(s) that conflict with ${upstream}: ${(e as Error).message}`);
+    await git.raw(['reset', '--hard', upstream]);
+    return;
   }
-  await git.raw(['reset', '--hard', upstream]);
+
+  // Rebase/merge reported success. Still inspect the worktree: autostash
+  // reapply can conflict after a successful rebase and does not throw.
+  await restoreAutostashConflicts(git);
 }
 
 /**

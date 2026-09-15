@@ -353,6 +353,37 @@ describe('git-kind reports: refresh before reading (#557)', () => {
     expect(await originReportsFile(origin, 'stats/alice.yaml')).toBe('n: 1\n');
   });
 
+  it('does not leave autostash conflict markers when an unpushed commit, a dirty report, and origin all touch the same file', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const machineA = gitConfig(clone, origin);
+    const machineB = await cloneCheckout(origin, 'machine-b');
+
+    expect(await publish(machineA, 'stats/alice.yaml', 'n: 1\n')).toBe(true);
+    const wtA = await ensureReportsWorktree(machineA);
+
+    // Unpushed local commit (e.g. a session report written while offline).
+    fs.mkdirSync(path.join(wtA, 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(wtA, 'sessions', 'alice.yaml'), 'session: a1\n');
+    const wtGit = simpleGit(wtA);
+    await wtGit.add(['sessions/alice.yaml']);
+    await wtGit.commit('offline session');
+
+    // Dirty tracked stats, plus a newer copy of the same file on origin.
+    fs.writeFileSync(path.join(wtA, 'stats', 'alice.yaml'), 'n: 3\n');
+    expect(await publish(machineB, 'stats/alice.yaml', 'n: 2\n')).toBe(true);
+
+    await refreshReportsWorktree(machineA, READ_ONLY);
+
+    const stats = fs.readFileSync(path.join(wtA, 'stats', 'alice.yaml'), 'utf-8');
+    expect(stats).not.toMatch(/^(<<<<<<<|=======|>>>>>>>)/m);
+    expect(stats).toBe('n: 3\n');
+    expect(fs.readFileSync(path.join(wtA, 'sessions', 'alice.yaml'), 'utf-8')).toBe('session: a1\n');
+
+    const status = await wtGit.status();
+    expect(status.conflicted).toEqual([]);
+    expect((await wtGit.raw(['stash', 'list'])).trim()).toBe('');
+  });
+
   it('drops an unpushed commit that conflicts with newer origin data so the checkout never stays diverged', async () => {
     const { origin, clone } = await seedBareOrigin();
     const machineA = gitConfig(clone, origin);
