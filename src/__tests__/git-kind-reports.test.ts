@@ -409,3 +409,50 @@ describe('git-kind reports: refresh before reading (#557)', () => {
     expect(await originReportsFile(origin, 'members/alice.yaml')).toBe('username: alice\n');
   });
 });
+
+describe('self-mode reports: shared stash', () => {
+  it('does not drop a pre-existing business-worktree stash whose message contains autostash', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const teamaiDir = path.join(clone, '.teamai');
+    fs.mkdirSync(teamaiDir, { recursive: true });
+    const alice: LocalConfig = {
+      repo: { localPath: teamaiDir, remote: origin, kind: 'self', businessRepoRoot: clone },
+      username: 'alice',
+      scope: 'user',
+      additionalRoles: [],
+    };
+    const machineB = await cloneCheckout(origin, 'machine-b');
+
+    expect(await publish(alice, 'stats/alice.yaml', 'n: 1\n')).toBe(true);
+    const wtA = await ensureReportsWorktree(alice);
+
+    fs.mkdirSync(path.join(wtA, 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(wtA, 'sessions', 'alice.yaml'), 'session: a1\n');
+    const wtGit = simpleGit(wtA);
+    await wtGit.add(['sessions/alice.yaml']);
+    await wtGit.commit('offline session');
+
+    const businessGit = simpleGit(clone);
+    fs.writeFileSync(path.join(clone, 'app.txt'), 'committed\n');
+    await businessGit.add(['app.txt']);
+    await businessGit.commit('app');
+    fs.writeFileSync(path.join(clone, 'app.txt'), 'wip\n');
+    await businessGit.stash(['push', '-m', 'autostash']);
+    const stashBefore = (await businessGit.raw(['stash', 'list'])).trim();
+    expect(stashBefore).toMatch(/autostash/);
+
+    fs.writeFileSync(path.join(wtA, 'stats', 'alice.yaml'), 'n: 3\n');
+    expect(await publish(machineB, 'stats/alice.yaml', 'n: 2\n')).toBe(true);
+
+    await refreshReportsWorktree(alice, READ_ONLY);
+
+    const stats = fs.readFileSync(path.join(wtA, 'stats', 'alice.yaml'), 'utf-8');
+    expect(stats).not.toMatch(/^(<<<<<<<|=======|>>>>>>>)/m);
+    expect(stats).toBe('n: 3\n');
+    expect((await wtGit.status()).conflicted).toEqual([]);
+
+    const stashAfter = (await businessGit.raw(['stash', 'list'])).trim();
+    expect(stashAfter).toBe(stashBefore);
+    expect(fs.readFileSync(path.join(clone, 'app.txt'), 'utf-8')).toBe('committed\n');
+  });
+});

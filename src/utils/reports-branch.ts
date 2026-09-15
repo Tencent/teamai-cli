@@ -341,18 +341,41 @@ async function rebaseInProgress(git: SimpleGit): Promise<boolean> {
   return (await gitPathExists(git, 'rebase-merge')) || (await gitPathExists(git, 'rebase-apply'));
 }
 
-async function dropRebaseAutostash(git: SimpleGit): Promise<void> {
+async function listStashShas(git: SimpleGit): Promise<string[]> {
   try {
-    for (let n = 0; n < 8; n++) {
-      const lines = (await git.raw(['stash', 'list'])).split('\n').filter((line) => line.trim().length > 0);
-      const index = lines.findIndex((line) => /\bautostash\b/.test(line));
-      if (index < 0) {
-        return;
+    const out = (await git.raw(['stash', 'list', '--format=%H'])).trim();
+    if (!out) {
+      return [];
+    }
+    return out.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+async function stashShasCreatedSince(git: SimpleGit, before: readonly string[]): Promise<Set<string>> {
+  const beforeSet = new Set(before);
+  return new Set((await listStashShas(git)).filter((sha) => !beforeSet.has(sha)));
+}
+
+/**
+ * Drop only the given stash objects, by SHA. Worktrees of the same repo share
+ * `refs/stash`, so a reports refresh must never select entries by message
+ * (a business-tree `git stash push -m autostash` would match).
+ */
+async function dropStashShas(git: SimpleGit, shas: ReadonlySet<string>): Promise<void> {
+  if (shas.size === 0) {
+    return;
+  }
+  try {
+    const listed = await listStashShas(git);
+    for (let i = listed.length - 1; i >= 0; i--) {
+      if (shas.has(listed[i]!)) {
+        await git.raw(['stash', 'drop', `stash@{${i}}`]);
       }
-      await git.raw(['stash', 'drop', `stash@{${index}}`]);
     }
   } catch {
-    // no stash
+    // best effort
   }
 }
 
@@ -363,10 +386,15 @@ async function dropRebaseAutostash(git: SimpleGit): Promise<void> {
  * index for writers.
  *
  * Restore the original uncommitted content (the "Stashed changes" / `--theirs`
- * side of a stash apply) and drop the autostash. Skip when a rebase is still
- * in progress so a real commit conflict is aborted by the caller instead.
+ * side of a stash apply). Drop only stash objects created by this refresh
+ * (`createdStashShas`); never scan the shared stash list by message. Skip when
+ * a rebase is still in progress so a real commit conflict is aborted by the
+ * caller instead.
  */
-async function restoreAutostashConflicts(git: SimpleGit): Promise<void> {
+async function restoreAutostashConflicts(
+  git: SimpleGit,
+  createdStashShas: ReadonlySet<string> = new Set(),
+): Promise<void> {
   let conflicted: string[] = [];
   try {
     conflicted = (await git.status()).conflicted ?? [];
@@ -384,7 +412,7 @@ async function restoreAutostashConflicts(git: SimpleGit): Promise<void> {
     await git.raw(['checkout', '--theirs', '--', ...conflicted]);
     await git.raw(['add', '--', ...conflicted]);
     await git.raw(['reset', 'HEAD', '--', ...conflicted]);
-    await dropRebaseAutostash(git);
+    await dropStashShas(git, createdStashShas);
     log.debug('[reports] restored uncommitted report files after an autostash conflict; using the local copy');
   } catch (e) {
     log.debug(`[reports] could not restore autostash conflicts: ${(e as Error).message}`);
@@ -423,10 +451,13 @@ async function syncReportsWorktree(wt: string): Promise<void> {
     return;
   }
 
+  // Leftover UU from a previous run: restore files, but do not drop stashes by
+  // name — this repo's worktrees share refs/stash with the business tree.
   await restoreAutostashConflicts(git);
 
   const dirty = !(await git.status()).isClean();
   const ahead = Number.parseInt((await git.raw(['rev-list', '--count', `${upstream}..HEAD`])).trim(), 10);
+  const stashBefore = ahead > 0 ? await listStashShas(git) : [];
   try {
     if (ahead > 0) {
       await git.rebase(['--autostash', upstream]);
@@ -443,7 +474,7 @@ async function syncReportsWorktree(wt: string): Promise<void> {
     }
     if (dirty) {
       log.debug(`[reports] uncommitted report files block the refresh; using the local copy: ${(e as Error).message}`);
-      await restoreAutostashConflicts(git);
+      await restoreAutostashConflicts(git, await stashShasCreatedSince(git, stashBefore));
       return;
     }
     log.debug(`[reports] dropping ${ahead} unpushed report commit(s) that conflict with ${upstream}: ${(e as Error).message}`);
@@ -453,7 +484,7 @@ async function syncReportsWorktree(wt: string): Promise<void> {
 
   // Rebase/merge reported success. Still inspect the worktree: autostash
   // reapply can conflict after a successful rebase and does not throw.
-  await restoreAutostashConflicts(git);
+  await restoreAutostashConflicts(git, await stashShasCreatedSince(git, stashBefore));
 }
 
 /**
