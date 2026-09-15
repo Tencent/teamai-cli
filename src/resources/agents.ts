@@ -8,6 +8,7 @@ import { log } from '../utils/logger.js';
 import { resolveBaseDir, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import { isSafeNamespaceSegment } from '../projects.js';
+import { assertWithinRoot } from '../utils/path-safety.js';
 import {
   parseAgentYaml,
   serializeAgentYaml,
@@ -133,12 +134,15 @@ export class AgentsHandler extends ResourceHandler {
     const items: AgentResourceItem[] = [...directItems];
 
     for (const [stem, toolFiles] of grouped) {
-      const teamYamlPath = path.join(teamAgentsDir, `${stem}.yaml`);
-      const teamMdPath = path.join(teamAgentsDir, `${stem}.md`);
-
-      // Determine if this agent is already in the team repo
-      const hasTeamYaml = await pathExists(teamYamlPath);
-      const hasTeamMd = await pathExists(teamMdPath);
+      // Determine if this agent is already in the team repo (root or agents/<ns>/).
+      // A modified agent must be written back where it lives, so its namespace
+      // directory is carried into `relativePath` below.
+      const located = await findTeamAgentFile(teamAgentsDir, stem);
+      const teamYamlPath = located?.ext === '.yaml' ? located.path : path.join(teamAgentsDir, `${stem}.yaml`);
+      const teamMdPath = located?.ext === '.md' ? located.path : path.join(teamAgentsDir, `${stem}.md`);
+      const hasTeamYaml = located?.ext === '.yaml';
+      const hasTeamMd = located?.ext === '.md';
+      const teamDir = located?.namespace ? `agents/${located.namespace}` : 'agents';
 
       let canonicalSpec: AgentSpec | undefined;
       if (hasTeamYaml) {
@@ -146,7 +150,7 @@ export class AgentsHandler extends ResourceHandler {
         const parsed = raw === null ? null : parseAgentYaml(raw, `${stem}.yaml`);
         if (!parsed?.ok) {
           items.push({ name: stem, type: 'agents', sourcePath: teamYamlPath,
-            relativePath: `agents/${stem}.yaml`, status: 'modified',
+            relativePath: `${teamDir}/${stem}.yaml`, status: 'modified',
             skipReason: 'cannot read or parse canonical agent YAML' });
           continue;
         }
@@ -242,7 +246,7 @@ export class AgentsHandler extends ResourceHandler {
             name: stem,
             type: 'agents',
             sourcePath: bestPath,
-            relativePath: `agents/${stem}.yaml`,
+            relativePath: `${teamDir}/${stem}.yaml`,
             status,
             mergedSpec: mergeResult.spec,
           });
@@ -255,7 +259,7 @@ export class AgentsHandler extends ResourceHandler {
         name: stem,
         type: 'agents',
         sourcePath: bestPath,
-        relativePath: `agents/${stem}.md`,
+        relativePath: `${teamDir}/${stem}.md`,
         status,
         skipReason,
       });
@@ -319,8 +323,17 @@ export class AgentsHandler extends ResourceHandler {
       return;
     }
 
+    // `relativePath` carries the namespace directory of an existing team agent
+    // (agents/<ns>/<name>.<ext>); a brand-new agent lands at the root.
+    const teamDir = path.resolve(localConfig.repo.localPath, path.dirname(item.relativePath));
+    assertWithinRoot(
+      path.join(localConfig.repo.localPath, 'agents'),
+      teamDir,
+      `Invalid agent destination outside team repo agents directory: ${item.relativePath}`,
+    );
+
     if (agentItem.mergedSpec) {
-      const dest = path.join(localConfig.repo.localPath, 'agents', `${item.name}.yaml`);
+      const dest = path.join(teamDir, `${item.name}.yaml`);
       await ensureDir(path.dirname(dest));
       const yamlContent = serializeAgentYaml(agentItem.mergedSpec);
       await writeFile(dest, yamlContent);
@@ -333,7 +346,7 @@ export class AgentsHandler extends ResourceHandler {
     // `<name>.yaml` a user placed directly under .teamai/agents/. Derive the ext
     // from the source so both .yaml and .md round-trip correctly.
     const ext = item.sourcePath.endsWith('.yaml') ? '.yaml' : '.md';
-    const dest = path.join(localConfig.repo.localPath, 'agents', `${item.name}${ext}`);
+    const dest = path.join(teamDir, `${item.name}${ext}`);
     if (item.sourcePath !== dest) {
       await ensureDir(path.dirname(dest));
       await copyFile(item.sourcePath, dest);
@@ -415,12 +428,11 @@ export class AgentsHandler extends ResourceHandler {
 
     const teamAgentsDir = path.join(localConfig.repo.localPath, 'agents');
 
-    for (const ext of ['.yaml', '.md'] as const) {
-      const teamFile = path.join(teamAgentsDir, `${name}${ext}`);
-      if (await pathExists(teamFile)) {
-        await remove(teamFile);
-        removed.push(teamFile);
-      }
+    // Root or agents/<ns>/; both extensions. A stem may exist under several
+    // (inactive) namespaces, so keep looking until nothing is left.
+    for (let located = await findTeamAgentFile(teamAgentsDir, name); located; located = await findTeamAgentFile(teamAgentsDir, name)) {
+      await remove(located.path);
+      removed.push(located.path);
     }
 
     await this.addTombstone(name, localConfig);
@@ -537,6 +549,27 @@ export class AgentsHandler extends ResourceHandler {
 }
 
 // ─── Module-level helpers ──────────────────────────────────────────────────
+
+/**
+ * Locate a team agent by stem: root first, then one level of namespace
+ * directories, `.yaml` before `.md` in each. Returns null when absent.
+ */
+export async function findTeamAgentFile(
+  teamAgentsDir: string,
+  stem: string,
+): Promise<{ path: string; ext: '.yaml' | '.md'; namespace?: string } | null> {
+  const dirs: Array<{ dir: string; namespace?: string }> = [{ dir: teamAgentsDir }];
+  for (const namespace of await listDirs(teamAgentsDir)) {
+    if (isSafeNamespaceSegment(namespace)) dirs.push({ dir: path.join(teamAgentsDir, namespace), namespace });
+  }
+  for (const { dir, namespace } of dirs) {
+    for (const ext of ['.yaml', '.md'] as const) {
+      const candidate = path.join(dir, `${stem}${ext}`);
+      if (await pathExists(candidate)) return { path: candidate, ext, ...(namespace ? { namespace } : {}) };
+    }
+  }
+  return null;
+}
 
 /** Tools that receive a legacy `agents/<name>.md` copied verbatim. */
 const LEGACY_MD_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy', 'joycode']);

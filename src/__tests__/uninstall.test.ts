@@ -483,10 +483,15 @@ describe('uninstall', () => {
     vi.stubEnv('HOME', homeDir);
     vi.stubEnv('SHELL', '/bin/zsh');
 
-    await fse.ensureDir(path.join(repoPath, 'agents'));
+    await fse.ensureDir(path.join(repoPath, 'agents', 'frontend'));
     await fse.writeFile(
       path.join(repoPath, 'agents', 'beta-proof-agent.yaml'),
       'name: beta-proof-agent\ndescription: Team agent\ninstructions: Help the team\n',
+    );
+    // Role-scoped agent (agents/<namespace>/) deploys flattened like the rest.
+    await fse.writeFile(
+      path.join(repoPath, 'agents', 'frontend', 'scoped-agent.yaml'),
+      'name: scoped-agent\ndescription: Frontend agent\ninstructions: Help frontend\n',
     );
     await fse.ensureDir(path.join(repoPath, 'skills', 'former-role-skill'));
     await fse.writeFile(
@@ -500,6 +505,8 @@ describe('uninstall', () => {
       path.join(homeDir, '.cursor', 'agents', 'beta-proof-agent.md'),
       path.join(homeDir, '.codebuddy', 'agents', 'beta-proof-agent.md'),
       path.join(homeDir, '.opencode', 'agents', 'beta-proof-agent.md'),
+      path.join(homeDir, '.claude', 'agents', 'scoped-agent.md'),
+      path.join(homeDir, '.codex', 'agents', 'scoped-agent.toml'),
     ];
     for (const agentPath of managedAgentPaths) {
       await fse.ensureDir(path.dirname(agentPath));
