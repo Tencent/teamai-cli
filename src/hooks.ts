@@ -313,17 +313,28 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
     PostToolUse: 30000,
     UserPromptSubmit: 60000,
   };
-  const entry: ZcodeHookEntry = {
-    type: 'process',
-    command: 'bash',
-    // Stored verbatim: the shell payload must equal `def.command` exactly so
-    // managed-entry detection and the managed-hooks manifest share one command
-    // representation (the same invariant the Codex format keeps). teamai
-    // hook-dispatch is silent and failure-tolerant on its success paths, so no
-    // shell redirection is layered on top of the payload.
-    args: ['-lc', def.command],
-    timeoutMs: ZCODE_TIMEOUT_MS[def.event] ?? 60000,
-  };
+  const entry: ZcodeHookEntry =
+    process.platform === 'win32'
+      ? {
+          // Windows must NOT spawn bare `bash`: CreateProcess resolves it to
+          // System32's WSL launcher before any PATH directory, and the WSL side
+          // has a different $HOME (no ~/.teamai state) and often no Node ≥ 20.
+          // cmd.exe is always present in System32 and resolves teamai from the
+          // Windows PATH (the npm shim is a .cmd, so a shell is required).
+          type: 'process',
+          command: 'cmd',
+          args: ['/c', def.command],
+          timeoutMs: ZCODE_TIMEOUT_MS[def.event] ?? 60000,
+        }
+      : {
+          type: 'process',
+          command: 'bash',
+          // Stored verbatim: the shell payload must equal `def.command` exactly
+          // so managed-entry detection and the managed-hooks manifest share one
+          // command representation (the same invariant the Codex format keeps).
+          args: ['-lc', def.command],
+          timeoutMs: ZCODE_TIMEOUT_MS[def.event] ?? 60000,
+        };
   const group: ZcodeHookMatcher = { hooks: [entry] };
   // ZCode's matcher is a case-sensitive regex on the match value; '*' is an
   // invalid pattern that would never match. Omitted matcher matches everything.
@@ -334,7 +345,8 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
 /** Shell payload of a ZCode hook entry, for managed-entry matching. */
 function zcodeEntryCommand(entry: ZcodeHookMatcher): string {
   const hook = entry.hooks?.[0];
-  if (hook?.command === 'bash' && hook.args?.[0] === '-lc') return hook.args[1] ?? '';
+  // Both variants (posix bash -lc / win32 cmd /c) carry the payload at args[1].
+  if (Array.isArray(hook?.args) && hook.args.length > 1) return hook.args[1] ?? '';
   return hook?.command ?? '';
 }
 

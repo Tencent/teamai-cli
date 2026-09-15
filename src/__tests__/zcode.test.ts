@@ -69,17 +69,24 @@ describe('ZCode support', () => {
         for (const group of entries) {
           // ZCode matchers are regexes: '*' would be an invalid pattern that
           // never matches, so wildcard groups must omit the matcher entirely.
-          if (group.hooks[0].args?.[1]?.includes('--matcher')) {
+          const hook = group.hooks[0];
+          if (hook.args?.[1]?.includes('--matcher')) {
             expect(group.matcher).toBeDefined();
           } else {
             expect(group.matcher).toBeUndefined();
           }
-          expect(group.hooks[0].type).toBe('process');
-          expect(group.hooks[0].command).toBe('bash');
-          expect(group.hooks[0].args?.[0]).toBe('-lc');
-          expect(group.hooks[0].args?.[1]).toContain('teamai hook-dispatch');
-          expect(group.hooks[0].args?.[1]).toContain('--tool zcode');
-          expect(group.hooks[0].timeoutMs).toBeGreaterThan(0);
+          expect(hook.type).toBe('process');
+          if (process.platform === 'win32') {
+            // Bare `bash` would resolve to the WSL launcher via System32.
+            expect(hook.command).toBe('cmd');
+            expect(hook.args?.[0]).toBe('/c');
+          } else {
+            expect(hook.command).toBe('bash');
+            expect(hook.args?.[0]).toBe('-lc');
+          }
+          expect(hook.args?.[1]).toContain('teamai hook-dispatch');
+          expect(hook.args?.[1]).toContain('--tool zcode');
+          expect(hook.timeoutMs).toBeGreaterThan(0);
         }
       }
 
