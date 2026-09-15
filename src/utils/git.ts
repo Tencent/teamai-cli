@@ -282,6 +282,24 @@ export async function pullRepo(localPath: string): Promise<string> {
  * Result is cached per-repo for the process lifetime to avoid repeated git calls.
  */
 const defaultBranchCache = new Map<string, string>();
+/**
+ * Fast-forward-only refresh of a local team-repo clone.
+ *
+ * Unlike {@link pullRepo}, this never falls back to `fetch` + `reset --hard`.
+ * Use it from paths (e.g. `init` clone reuse) where discarding local commits or
+ * uncommitted edits would be surprising. Callers should surface the thrown
+ * error and suggest `--force` / manual recovery when refresh cannot proceed.
+ */
+export async function pullRepoFastForward(localPath: string): Promise<string> {
+  const git = createGit(localPath);
+  const result = await git.pull(['--ff-only']);
+  if (result.summary.changes === 0 && result.summary.insertions === 0 && result.summary.deletions === 0) {
+    return 'already up to date';
+  }
+  return `${result.summary.changes} file(s) changed`;
+}
+
+
 export async function getDefaultBranch(localPath: string): Promise<string> {
   const cached = defaultBranchCache.get(localPath);
   if (cached) return cached;

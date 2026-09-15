@@ -19,6 +19,11 @@ import YAML from 'yaml';
 // CLI validates a synthetic HTTPS URL, and git rewrites it to a local bare repo.
 // The rewrite target is a plain filesystem path, not `file:///C:/…`: on Git for
 // Windows the latter parses as `/C:/…` and the clone fails.
+//
+// For clone-reuse scenarios we also install a test-only `git` wrapper ahead of
+// PATH that returns the synthetic HTTPS origin for `remote get-url`. Real git's
+// `insteadOf` expansion would otherwise make remotesMatch treat the clone as a
+// different repository and force a replace/reclone path.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -46,11 +51,66 @@ function git(args: string[], cwd: string, home?: string): string {
   }).trim();
 }
 
-function runCLI(args: string[], cwd: string, home: string): Promise<RunResult> {
+function readProjects(projectRoot: string): string[] {
+  const configPath = path.join(projectRoot, '.teamai', 'config.yaml');
+  const config = YAML.parse(fs.readFileSync(configPath, 'utf8')) as { projects?: string[] };
+  return config.projects ?? [];
+}
+
+function readClonePath(projectRoot: string): string {
+  const configPath = path.join(projectRoot, '.teamai', 'config.yaml');
+  const config = YAML.parse(fs.readFileSync(configPath, 'utf8')) as {
+    repo?: { localPath?: string };
+  };
+  const localPath = config.repo?.localPath;
+  if (!localPath) {
+    throw new Error(`Missing repo.localPath in ${configPath}`);
+  }
+  return localPath;
+}
+
+function installGitRemoteGetUrlWrapper(binDir: string, syntheticOrigin: string): string {
+  fs.mkdirSync(binDir, { recursive: true });
+  const wrapper = path.join(binDir, 'git');
+  // Resolve the real git once so the wrapper never re-invokes itself.
+  const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  fs.writeFileSync(
+    wrapper,
+    `#!/bin/sh
+# Test-only: keep remotesMatch on the synthetic HTTPS origin while insteadOf
+# still rewrites network ops to the local bare remote.
+if [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then
+  case "$3" in
+    ""|origin|--all)
+      printf '%s\\n' '${syntheticOrigin.replace(/'/g, `'\"'\"'`)}'
+      exit 0
+      ;;
+  esac
+fi
+exec '${realGit.replace(/'/g, `'\"'\"'`)}' "$@"
+`,
+    { mode: 0o755 },
+  );
+  return binDir;
+}
+
+function runCLI(
+  args: string[],
+  cwd: string,
+  home: string,
+  extraEnv: Record<string, string> = {},
+): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn('node', [CLI, ...args], {
       cwd,
-      env: { ...process.env, ...GIT_ENV, HOME: home, USERPROFILE: home, FORCE_COLOR: '0' },
+      env: {
+        ...process.env,
+        ...GIT_ENV,
+        HOME: home,
+        USERPROFILE: home,
+        FORCE_COLOR: '0',
+        ...extraEnv,
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
@@ -60,16 +120,13 @@ function runCLI(args: string[], cwd: string, home: string): Promise<RunResult> {
   });
 }
 
-function readProjects(projectRoot: string): string[] {
-  const configPath = path.join(projectRoot, '.teamai', 'config.yaml');
-  const config = YAML.parse(fs.readFileSync(configPath, 'utf8')) as { projects?: string[] };
-  return config.projects ?? [];
-}
-
 describe("init --project all activates every project in the manifest (issue #509)", () => {
   let sandbox: string;
   let home: string;
   let projectRoot: string;
+  let remote: string;
+  let gitWrapperBin: string;
+  let cliEnv: Record<string, string>;
 
   beforeAll(() => {
     if (!fs.existsSync(CLI)) {
@@ -80,11 +137,15 @@ describe("init --project all activates every project in the manifest (issue #509
     home = path.join(sandbox, 'home');
     projectRoot = path.join(sandbox, 'project');
     const seed = path.join(sandbox, 'seed');
-    const remote = path.join(sandbox, 'team.git');
+    remote = path.join(sandbox, 'team.git');
+    gitWrapperBin = path.join(sandbox, 'bin');
 
     fs.mkdirSync(home, { recursive: true });
     fs.mkdirSync(projectRoot, { recursive: true });
     fs.mkdirSync(path.join(seed, 'manifest'), { recursive: true });
+
+    // Intentionally NOT a git repo: project-scope init then keeps dataHome at
+    // `<projectRoot>/.teamai` (a git workspace would partition under ~/.teamai/projects/...).
 
     fs.writeFileSync(path.join(seed, 'teamai.yaml'), [
       'team: init-all-e2e',
@@ -145,6 +206,11 @@ describe("init --project all activates every project in the manifest (issue #509
     // Bridge the synthetic HTTPS remote to the local bare repo, in the sandbox
     // HOME so the real one is never touched.
     git(['config', '--global', `url.${remote}.insteadOf`, FAKE_URL], sandbox, home);
+
+    installGitRemoteGetUrlWrapper(gitWrapperBin, FAKE_URL);
+    cliEnv = {
+      PATH: `${gitWrapperBin}${path.delimiter}${process.env.PATH ?? ''}`,
+    };
   });
 
   afterAll(() => {
@@ -156,6 +222,7 @@ describe("init --project all activates every project in the manifest (issue #509
       ['init', FAKE_URL, '--scope', 'project', '--role', 'common', '--project', 'all', '--force'],
       projectRoot,
       home,
+      cliEnv,
     );
     expect(result.code, result.output).toBe(0);
     expect(readProjects(projectRoot)).toEqual(['gamma', 'alpha', 'billing']);
@@ -166,6 +233,7 @@ describe("init --project all activates every project in the manifest (issue #509
       ['init', FAKE_URL, '--scope', 'project', '--role', 'common', '--project', 'billing', '--force'],
       projectRoot,
       home,
+      cliEnv,
     );
     expect(result.code, result.output).toBe(0);
     // `--project` overwrites: an explicit id must NOT leave the previous `all`
@@ -173,28 +241,27 @@ describe("init --project all activates every project in the manifest (issue #509
     expect(readProjects(projectRoot)).toEqual(['billing']);
   }, 60_000);
 
-
   it('reuses the clone but refreshes so a newly added remote project is activated', async () => {
-    // First init seeds ~/.teamai/team-repo and activates the original three ids.
     const first = await runCLI(
       ['init', FAKE_URL, '--scope', 'project', '--role', 'common', '--project', 'all', '--force'],
       projectRoot,
       home,
+      cliEnv,
     );
     expect(first.code, first.output).toBe(0);
     expect(readProjects(projectRoot)).toEqual(['gamma', 'alpha', 'billing']);
 
-    const teamRepo = path.join(home, '.teamai', 'team-repo');
+    const teamRepo = readClonePath(projectRoot);
     expect(fs.existsSync(path.join(teamRepo, '.git'))).toBe(true);
+    // Project scope stores the clone under the project dataHome, not ~/.teamai.
+    expect(path.resolve(teamRepo)).toBe(
+      path.resolve(path.join(projectRoot, '.teamai', 'team-repo')),
+    );
 
-    // The clone from insteadOf often records a filesystem origin URL. Restore the
-    // synthetic HTTPS origin so the second init's remotesMatch reuses the clone
-    // (instead of replacing it under --force), and point push/fetch at the bare
-    // remote so pullRepo can see the upcoming manifest update without a network.
-    const remote = path.join(sandbox, 'team.git');
+    // Point push at the bare remote so pull can see upcoming updates without a
+    // network; keep origin URL as the synthetic HTTPS (wrapper reinforces this).
     git(['remote', 'set-url', 'origin', FAKE_URL], teamRepo);
     git(['remote', 'set-url', '--add', '--push', 'origin', remote], teamRepo);
-    // Keep insteadOf so `git pull` of FAKE_URL resolves to the local bare repo.
 
     // Add a fourth project on the remote and push it.
     const update = path.join(sandbox, 'update-work');
@@ -227,9 +294,62 @@ describe("init --project all activates every project in the manifest (issue #509
       ['init', FAKE_URL, '--scope', 'project', '--role', 'common', '--project', 'all', '--force'],
       projectRoot,
       home,
+      cliEnv,
     );
     expect(second.code, second.output).toBe(0);
     expect(second.output).toMatch(/using existing clone/i);
     expect(readProjects(projectRoot)).toEqual(['gamma', 'alpha', 'billing', 'delta']);
+  }, 90_000);
+
+  it('preserves tracked local edits when refresh cannot fast-forward (no hard reset)', async () => {
+    // Seed with an explicit project id (reviewer reproduction used --project billing).
+    const first = await runCLI(
+      ['init', FAKE_URL, '--scope', 'project', '--role', 'common', '--project', 'billing', '--force'],
+      projectRoot,
+      home,
+      cliEnv,
+    );
+    expect(first.code, first.output).toBe(0);
+    expect(readProjects(projectRoot)).toEqual(['billing']);
+
+    const teamRepo = readClonePath(projectRoot);
+    git(['remote', 'set-url', 'origin', FAKE_URL], teamRepo);
+    git(['remote', 'set-url', '--add', '--push', 'origin', remote], teamRepo);
+
+    // Advance the remote manifest.
+    const update = path.join(sandbox, 'update-dirty');
+    if (fs.existsSync(update)) fs.rmSync(update, { recursive: true, force: true });
+    git(['clone', '-q', remote, update], sandbox);
+    const remoteManifest = path.join(update, 'manifest', 'projects.yaml');
+    fs.appendFileSync(remoteManifest, '\n# remote-advance-marker\n');
+    git(['add', '-A'], update);
+    git(['commit', '-q', '-m', 'advance remote manifest'], update);
+    git(['push', '-q', 'origin', 'HEAD'], update);
+
+    // Leave a tracked local edit that would be discarded by reset --hard.
+    const localManifest = path.join(teamRepo, 'manifest', 'projects.yaml');
+    const marker = `\n# local-edit-must-survive-${Date.now()}\n`;
+    fs.appendFileSync(localManifest, marker);
+    expect(fs.readFileSync(localManifest, 'utf8')).toContain(marker.trim());
+
+    // Drop only the project config so init re-runs without --force while the
+    // dedicated clone (and dirty working tree) remain.
+    fs.rmSync(path.join(projectRoot, '.teamai', 'config.yaml'), { force: true });
+
+    const second = await runCLI(
+      ['init', FAKE_URL, '--scope', 'project', '--role', 'common', '--project', 'billing'],
+      projectRoot,
+      home,
+      cliEnv,
+    );
+
+    // Must not hard-reset: local edit survives. Refresh may fail (exit non-zero)
+    // because ff-only cannot proceed with a dirty overlapping file — that is OK.
+    const after = fs.readFileSync(localManifest, 'utf8');
+    expect(after).toContain(marker.trim());
+    expect(second.output).not.toMatch(/realigning discards/i);
+    if (second.code !== 0) {
+      expect(second.output).toMatch(/Failed to refresh existing clone|fast-forward|ff-only|not possible|diverg/i);
+    }
   }, 90_000);
 });
