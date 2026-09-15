@@ -64,6 +64,25 @@ hooks:
     expect(defs[0].matcher).toBeUndefined();
   });
 
+  it('carries an optional roles list through, and leaves it undefined when omitted', async () => {
+    await writeHooksYaml(`
+hooks:
+  - id: guard-tf
+    description: guard terraform apply
+    event: PreToolUse
+    matcher: Bash
+    command: 'bash -lc "~/.teamai/team-scripts/guard-tf.sh"'
+    roles: [devops]
+  - id: everyone
+    description: for all
+    event: Stop
+    command: echo hi
+`);
+    const defs = await parseTeamHooks(repo);
+    expect(defs[0].roles).toEqual(['devops']);
+    expect(defs[1].roles).toBeUndefined();
+  });
+
   it('rejects an invalid id and skips the whole file (never writes a broken set)', async () => {
     await writeHooksYaml(`
 hooks:

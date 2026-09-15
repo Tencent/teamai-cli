@@ -582,6 +582,11 @@ export interface HookDef {
   description: string;
   /** Team hooks only: restrict to these tools (default = all hook-capable tools). */
   tools?: string[];
+  /**
+   * Team hooks only: ship only to members whose primaryRole/additionalRoles
+   * include one of these ids. Omitted = every member; [] = nobody, like tools.
+   */
+  roles?: string[];
 }
 
 // ─── MCP server definitions ──────────────────────────────
@@ -617,6 +622,8 @@ export interface McpServerDef {
   requires?: string[];
   /** Restrict to these tools (default = every MCP-capable tool). */
   tools?: string[];
+  /** Restrict to members holding one of these role ids (default = every member; [] = nobody). */
+  roles?: string[];
 }
 
 /** One injected MCP server recorded in the manifest. */

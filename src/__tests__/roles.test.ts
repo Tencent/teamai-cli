@@ -9,6 +9,8 @@ import {
   loadRolesManifest,
   saveRolesManifest,
   resolveRoleResourceNamespaces,
+  activeRoleIds,
+  matchesRoles,
 } from '../roles.js';
 import type { RolesManifest } from '../roles.js';
 
@@ -268,5 +270,38 @@ describe('findRole', () => {
   it('returns undefined when role does not exist', () => {
     const role = findRole(manifest, 'nonexistent');
     expect(role).toBeUndefined();
+  });
+});
+
+describe('activeRoleIds', () => {
+  it('returns null when no primary role is configured (legacy member: nothing is filtered)', () => {
+    expect(activeRoleIds({ additionalRoles: [] })).toBeNull();
+    expect(activeRoleIds({ additionalRoles: ['pm'] })).toBeNull();
+  });
+
+  it('returns the primary role followed by additional roles, deduped', () => {
+    expect(activeRoleIds({ primaryRole: 'frontend', additionalRoles: ['devops', 'frontend'] }))
+      .toEqual(['frontend', 'devops']);
+  });
+});
+
+describe('matchesRoles', () => {
+  it('matches everyone when the entry has no roles', () => {
+    expect(matchesRoles(undefined, ['frontend'])).toBe(true);
+    expect(matchesRoles(undefined, null)).toBe(true);
+  });
+
+  it('matches every member when no role is configured locally', () => {
+    expect(matchesRoles(['devops'], null)).toBe(true);
+  });
+
+  it('matches when any active role is listed', () => {
+    expect(matchesRoles(['devops', 'data'], ['frontend', 'data'])).toBe(true);
+    expect(matchesRoles(['devops'], ['frontend'])).toBe(false);
+  });
+
+  it('matches nobody for an empty roles list, like tools: []', () => {
+    expect(matchesRoles([], ['frontend'])).toBe(false);
+    expect(matchesRoles([], null)).toBe(true);
   });
 });

@@ -115,7 +115,8 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
         for (const d of teamDefs) {
             const matcher = d.matcher ? ` [${d.matcher}]` : '';
             const tools = d.tools && d.tools.length > 0 ? d.tools.join(',') : 'all';
-            console.log(`  [${d.key}] ${d.event}${matcher}  →  ${d.command}  (tools: ${tools})`);
+            const roles = d.roles ? `, roles: ${d.roles.length > 0 ? d.roles.join(',') : 'nobody'}` : '';
+            console.log(`  [${d.key}] ${d.event}${matcher}  →  ${d.command}  (tools: ${tools}${roles})`);
         }
     }
     console.log('');

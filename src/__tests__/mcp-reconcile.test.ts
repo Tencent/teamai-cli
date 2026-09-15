@@ -209,6 +209,106 @@ servers:
     expect(after.mcpServers.temp).toBeUndefined();
   });
 
+  describe('roles filter', () => {
+    const ROLES_YAML = `
+version: 1
+roles:
+  - id: frontend
+    description: Frontend
+    resources: { knowledge: [common], skills: [common] }
+  - id: devops
+    description: DevOps
+    resources: { knowledge: [common], skills: [common] }
+`;
+    const SCOPED_YAML = `
+servers:
+  - name: playwright
+    transport: http
+    url: https://example.com/playwright
+    roles: [frontend]
+  - name: gpu
+    transport: http
+    url: https://example.com/gpu
+    roles: [devops, data]
+  - name: shared
+    transport: http
+    url: https://example.com/shared
+`;
+    async function writeRolesYaml(): Promise<void> {
+      await fse.ensureDir(path.join(repoPath, 'manifest'));
+      await fse.writeFile(path.join(repoPath, 'manifest', 'roles.yaml'), ROLES_YAML);
+    }
+    async function claudeServers(): Promise<Record<string, unknown>> {
+      return (await fse.readJson(path.join(homeDir, '.claude.json'))).mcpServers ?? {};
+    }
+
+    it('installs a server only for members whose active roles it lists', async () => {
+      await writeRolesYaml();
+      await writeMcpYaml(SCOPED_YAML);
+
+      await reconcileMcpForConfig(teamConfig, { ...localConfig, primaryRole: 'frontend', additionalRoles: [] });
+      expect(Object.keys(await claudeServers()).sort()).toEqual(['playwright', 'shared']);
+    });
+
+    it('counts additional roles as active', async () => {
+      await writeRolesYaml();
+      await writeMcpYaml(SCOPED_YAML);
+
+      await reconcileMcpForConfig(teamConfig, { ...localConfig, primaryRole: 'frontend', additionalRoles: ['devops'] });
+      expect(Object.keys(await claudeServers()).sort()).toEqual(['gpu', 'playwright', 'shared']);
+    });
+
+    it('removes a server once the member switches to a role it does not list', async () => {
+      await writeRolesYaml();
+      await writeMcpYaml(SCOPED_YAML);
+      await reconcileMcpForConfig(teamConfig, { ...localConfig, primaryRole: 'frontend', additionalRoles: [] });
+      expect(await claudeServers()).toHaveProperty('playwright');
+
+      const { changes } = await reconcileMcpForConfig(teamConfig, { ...localConfig, primaryRole: 'devops', additionalRoles: [] });
+      expect(Object.keys(await claudeServers()).sort()).toEqual(['gpu', 'shared']);
+      expect(changes.some((c) => c.server === 'playwright' && c.action === 'removed')).toBe(true);
+    });
+
+    it('installs every server when no role is configured (legacy member)', async () => {
+      await writeRolesYaml();
+      await writeMcpYaml(SCOPED_YAML);
+
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      expect(Object.keys(await claudeServers()).sort()).toEqual(['gpu', 'playwright', 'shared']);
+    });
+
+    it('skips silently, without a change record, like the tools filter', async () => {
+      await writeRolesYaml();
+      await writeMcpYaml(SCOPED_YAML);
+
+      const { changes } = await reconcileMcpForConfig(teamConfig, { ...localConfig, primaryRole: 'frontend', additionalRoles: [] });
+      expect(changes.some((c) => c.server === 'gpu')).toBe(false);
+    });
+
+    it('warns once about a role id that is not in roles.yaml and still applies the rest', async () => {
+      await writeRolesYaml();
+      await writeMcpYaml(`
+servers:
+  - name: typo
+    transport: http
+    url: https://example.com/typo
+    roles: [frontned]
+  - name: shared
+    transport: http
+    url: https://example.com/shared
+`);
+      const { log } = await import('../utils/logger.js');
+      vi.mocked(log.warn).mockClear();
+
+      await reconcileMcpForConfig(teamConfig, { ...localConfig, primaryRole: 'frontend', additionalRoles: [] });
+
+      expect(Object.keys(await claudeServers())).toEqual(['shared']);
+      const warnings = vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).filter((m) => /frontned/.test(m));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/unknown role id "frontned".*mcp\.yaml.*"typo"/);
+    });
+  });
+
   it('does not prune managed servers in http mode (install_mcp survives second sync)', async () => {
     // First, inject a server as a git-mode team would, so managed-mcp.json and
     // the tool config both record it (stands in for an install_mcp write).

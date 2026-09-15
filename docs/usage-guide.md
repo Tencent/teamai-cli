@@ -725,9 +725,12 @@ servers:
       FORMATTER_MODE: strict
     requires: [npx]                      # skipped with a hint when npx is absent from PATH
     tools: [claude, cursor]              # optional; default is every capable tool
+    roles: [devops]                      # optional; default is every member
 ```
 
 `requires` is resolved from `PATH`. On Windows a name also matches a `PATHEXT` suffix (`uvx` matches `uvx.exe` / `uvx.cmd`).
+
+`roles` lists role ids from `manifest/roles.yaml`. A server ships to a member when one of their roles (`primaryRole` or `additionalRoles`) is listed; `roles: []` ships to nobody, the same way `tools: []` does. A member with no role configured receives every server, matching the unfiltered fallback skills and rules use. When a member changes role, servers that no longer match are removed on the next pull. Hand-added servers are never touched. An id that is not in `roles.yaml` produces one warning per pull. A teamai release older than this field ignores it and installs the server for everyone.
 
 Where each tool's servers land:
 
@@ -764,7 +767,7 @@ teamai **resolves every `${VAR}` to its value and writes it verbatim** into each
 Claude Code may show project `.mcp.json` servers as pending approval until you accept them once in an interactive session.
 
 ```bash
-teamai mcp list              # servers, secret status, and where they are installed
+teamai mcp list              # servers, secret status, roles restriction, and where they are installed
 teamai mcp inject            # apply now; --dry-run to preview, --force to override collisions
 teamai mcp remove            # remove every teamai-managed server
 ```
@@ -1329,6 +1332,7 @@ hooks:
     command: 'bash -lc "~/.teamai/team-scripts/scan-secret.sh" || true'
     timeout: 15
     tools: [claude, cursor]
+    roles: [devops]                      # optional; default is every member
 
 builtin:
   disabled: [Hook dispatch post-tool-use TodoWrite]
@@ -1342,6 +1346,7 @@ builtin:
 | `event` | Claude PascalCase event name (shared across tools) |
 | `matcher` | Optional tool matcher |
 | `tools` | Optional list of target tools (default = all tools that support hooks) |
+| `roles` | Optional list of role ids from `manifest/roles.yaml` (default = every member; `[]` = nobody). Applied before the security gates below; a role change removes the previous role's hooks on the next pull. Ignored by older teamai releases. |
 | `builtin.disabled` | List of disabled built-in hooks |
 | `builtin.overrides` | Only the `timeout` of a built-in hook can be overridden |
 

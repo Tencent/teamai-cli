@@ -5,6 +5,7 @@ import { log } from './utils/logger.js';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, resolveHookScope, resolveLegacyProjectHookScope } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
 import { isSelfMode } from './types.js';
+import { activeRoleIds } from './roles.js';
 import { builtinHookDefs, applyBuiltinOverride, skipToolsWithoutShell } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { resolveTeamHooks } from './resources/hooks.js';
@@ -1187,7 +1188,11 @@ export async function reconcileTeamHooksForConfig(
 ): Promise<HookDef[]> {
   const { defs: teamDefs, builtin } = opts.removeAll
     ? { defs: [] as HookDef[], builtin: undefined }
-    : await resolveTeamHooks(teamConfig, localConfig.repo.localPath, { auto: opts.auto, silent: opts.silent });
+    : await resolveTeamHooks(teamConfig, localConfig.repo.localPath, {
+        auto: opts.auto,
+        silent: opts.silent,
+        activeRoles: activeRoleIds(localConfig),
+      });
   const { baseDir, manifestPath } = resolveHookScope(localConfig);
   let filterAgents = opts.filterAgents ?? localConfig.enabledAgents;
   const disabled = localConfig.disabledAgents;

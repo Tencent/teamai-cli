@@ -179,6 +179,53 @@ hooks:
     expect(m.codex).toBeUndefined();
   });
 
+  it('a role switch removes the previous role\'s hooks and adds the new role\'s, built-in untouched', async () => {
+    await fse.ensureDir(path.join(repo, 'manifest'));
+    await fse.writeFile(path.join(repo, 'manifest', 'roles.yaml'), `
+version: 1
+roles:
+  - id: frontend
+    description: Frontend
+    resources: { knowledge: [common], skills: [common] }
+  - id: devops
+    description: DevOps
+    resources: { knowledge: [common], skills: [common] }
+`);
+    await writeYaml(`
+hooks:
+  - id: stylelint
+    description: frontend only
+    event: Stop
+    command: npm run lint:css
+    roles: [frontend]
+  - id: guard-tf
+    description: devops only
+    event: Stop
+    command: guard-tf.sh
+    roles: [devops]
+`);
+    const asRole = (role: string): LocalConfig => ({ ...localConfig(), primaryRole: role, additionalRoles: [] });
+
+    // Project scope wraps team commands in a $PWD guard, so match by inclusion.
+    const stopCommands = async (): Promise<string[]> => (await claudeSettings()).hooks.Stop.map((h) => h.hooks[0].command);
+
+    await reconcileTeamHooksForConfig(teamConfig, asRole('frontend'));
+    expect((await stopCommands()).some((c) => c.includes('npm run lint:css'))).toBe(true);
+    expect((await stopCommands()).some((c) => c.includes('guard-tf.sh'))).toBe(false);
+    expect((await manifest()).claude.map((r) => r.id)).toEqual(['stylelint']);
+
+    await reconcileTeamHooksForConfig(teamConfig, asRole('devops'));
+    expect((await stopCommands()).some((c) => c.includes('guard-tf.sh'))).toBe(true);
+    expect((await stopCommands()).some((c) => c.includes('npm run lint:css'))).toBe(false);
+    const claude = await claudeSettings();
+    expect(claude.hooks.Stop.filter((h) => h.description?.startsWith('[teamai] '))).toHaveLength(1);
+    expect((await manifest()).claude.map((r) => r.id)).toEqual(['guard-tf']);
+
+    const cursor = await cursorSettings();
+    expect(cursor.hooks.stop.some((h) => h.command.includes('npm run lint:css'))).toBe(false);
+    expect(cursor.hooks.stop.some((h) => h.command.includes('guard-tf.sh'))).toBe(true);
+  });
+
   it('removeAll clears built-in + team hooks', async () => {
     await writeYaml(`
 hooks:

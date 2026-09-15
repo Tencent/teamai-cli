@@ -30,6 +30,7 @@ import {
   type McpFormat,
 } from './resources/mcp-format.js';
 import { parseTeamMcpServers } from './resources/mcp.js';
+import { activeRoleIds, matchesRoles, warnUnknownRoleIds } from './roles.js';
 import {
   readJson,
   writeJsonAtomic,
@@ -323,6 +324,15 @@ export async function reconcileMcpForConfig(
   }
 
   const excluded = new Set(localConfig.excludedSkills ?? []);
+  // Role filter (mcp.yaml `roles:`): same shape as `tools:`, applied per member.
+  const activeRoles = activeRoleIds(localConfig);
+  if (!removeAll) {
+    await warnUnknownRoleIds(
+      localConfig.repo.localPath,
+      'mcp.yaml',
+      teamDefs.map((def) => ({ kind: 'server', name: def.name, roles: def.roles })),
+    );
+  }
   const targets = await resolveMcpTargets(teamConfig, localConfig);
   if (targets.length === 0) return { changes, wrote };
 
@@ -358,6 +368,7 @@ export async function reconcileMcpForConfig(
 
     for (const raw of teamDefs) {
       if (raw.tools && !raw.tools.includes(target.tool)) continue;
+      if (!matchesRoles(raw.roles, activeRoles)) continue;
       if (excluded.has(raw.name)) {
         changes.push({ tool: target.tool, server: raw.name, action: 'skipped', reason: 'excluded by user' });
         continue;

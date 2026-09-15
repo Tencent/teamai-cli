@@ -140,8 +140,8 @@ Each resource is delivered to every agent:
 | **Culture** | `culture.md` | Team mission, values, and working principles — injected into each agent's CLAUDE.md / AGENTS.md so every session inherits them |
 | **CLAUDE.md** | `claudemd/*.md` | |
 | **Env** | `env/` | Shared team-level environment variables and switches; do not put secrets here |
-| **Hooks** | `hooks/hooks.yaml` | |
-| **MCP** | `mcp/mcp.yaml` | |
+| **Hooks** | `hooks/hooks.yaml` | Each hook may carry `roles:` to reach only members holding one of those roles |
+| **MCP** | `mcp/mcp.yaml` | Each server may carry `roles:` to reach only members holding one of those roles |
 | **Packages** | `teamai.yaml` | Currently npm packages and Claude Code plugins only |
 | **Models** | — | Not implemented for every provider yet |
 

@@ -180,6 +180,23 @@ describe('hooksList', () => {
         expect(text).toContain('npm run lint');
         expect(text).toContain('(tools: claude)');
     });
+
+    it('prints the roles restriction next to the tools one', async () => {
+        mockedParseTeamHooks.mockResolvedValue([
+            { source: 'team', key: 'guard-tf', event: 'PreToolUse', matcher: 'Bash', command: 'guard-tf.sh', description: '[teamai:hook:guard-tf] x', roles: ['devops'] },
+            { source: 'team', key: 'lint', event: 'Stop', command: 'npm run lint', description: '[teamai:hook:lint] lint' },
+        ]);
+        const out: string[] = [];
+        const spy = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
+        try {
+            await hooksList({});
+        } finally {
+            spy.mockRestore();
+        }
+        const text = out.join('\n');
+        expect(text).toContain('(tools: all, roles: devops)');
+        expect(text).toContain('npm run lint  (tools: all)');
+    });
 });
 
 describe('hooksList', () => {

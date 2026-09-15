@@ -140,8 +140,8 @@ teamai push → 创建分支 + MR → reviewer 审批合并
 | **Culture** | `culture.md` | 团队使命、价值观与协作准则——注入各 Agent 的 CLAUDE.md / AGENTS.md，成为每次会话的行事底色 |
 | **CLAUDE.md** | `claudemd/*.md` | |
 | **Env** | `env/` | 通用环境变量、团队级开关；不建议直接放密钥 |
-| **Hooks** | `hooks/hooks.yaml` | |
-| **MCP** | `mcp/mcp.yaml` | |
+| **Hooks** | `hooks/hooks.yaml` | 每条 hook 可加 `roles:`，只分发给持有这些角色的成员 |
+| **MCP** | `mcp/mcp.yaml` | 每个 server 可加 `roles:`，只分发给持有这些角色的成员 |
 | **Packages** | `teamai.yaml` | 目前只支持 npm 包和 Claude 插件 |
 | **Models** | — | 暂时没有对全部 provider 实现 |
 

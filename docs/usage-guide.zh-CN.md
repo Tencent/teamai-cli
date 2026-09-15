@@ -705,9 +705,12 @@ servers:
       FORMATTER_MODE: strict
     requires: [npx]                      # PATH 上找不到 npx 时跳过并提示
     tools: [claude, cursor]              # 可选；默认所有支持 MCP 的工具
+    roles: [devops]                      # 可选；默认所有成员
 ```
 
 `requires` 从 `PATH` 解析。Windows 上还会匹配 `PATHEXT` 后缀（`uvx` 可匹配 `uvx.exe` / `uvx.cmd`）。
+
+`roles` 填写 `manifest/roles.yaml` 中的角色 id。成员的任一角色（`primaryRole` 或 `additionalRoles`）被列出时才会安装该 server；`roles: []` 对任何人都不安装，与 `tools: []` 一致。未配置角色的成员会收到全部 server，与 skills、rules 的无过滤回退一致。成员切换角色后，不再匹配的 server 会在下一次 pull 时移除，手动添加的 server 不受影响。`roles.yaml` 中不存在的 id 每次 pull 只提示一次。不支持该字段的旧版 teamai 会忽略它并为所有人安装。
 
 各工具的落点：
 
@@ -744,7 +747,7 @@ teamai 会**把每个 `${VAR}` 解析成取值后原样写入**各工具的配�
 Claude Code 可能把来自仓库的 `.mcp.json` 标为待批准，需在交互式会话中确认一次。
 
 ```bash
-teamai mcp list              # 查看 server、密钥状态与安装位置
+teamai mcp list              # 查看 server、密钥状态、角色限制与安装位置
 teamai mcp inject            # 立即注入；--dry-run 预览，--force 覆盖同名
 teamai mcp remove            # 移除所有 teamai 管理的 server
 ```
@@ -1296,6 +1299,7 @@ hooks:
     command: 'bash -lc "~/.teamai/team-scripts/scan-secret.sh" || true'
     timeout: 15
     tools: [claude, cursor]
+    roles: [devops]                      # 可选；默认所有成员
 
 builtin:
   disabled: [Hook dispatch post-tool-use TodoWrite]
@@ -1309,6 +1313,7 @@ builtin:
 | `event` | Claude PascalCase 事件名（跨工具通用） |
 | `matcher` | 可选，工具 matcher |
 | `tools` | 可选，目标工具列表（默认 = 所有 hook 支持的工具） |
+| `roles` | 可选，`manifest/roles.yaml` 中的角色 id 列表（默认 = 所有成员；`[]` = 无人）。在下方安全治理之前生效；切换角色后，原角色的 hooks 会在下一次 pull 时移除。旧版 teamai 会忽略该字段。 |
 | `builtin.disabled` | 禁用的内置 hook 列表 |
 | `builtin.overrides` | 仅可覆盖内置 hook 的 `timeout` |
 

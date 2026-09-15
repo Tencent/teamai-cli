@@ -2,6 +2,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import { readFileSafe, ensureDir, writeFile } from './utils/fs.js';
+import { log } from './utils/logger.js';
 
 const ROLE_RESOURCE_TYPES = ['knowledge', 'skills'] as const;
 
@@ -169,4 +170,55 @@ export function resolveRoleResourceNamespaces(input: {
   }
 
   return namespaces;
+}
+
+/**
+ * Role ids this member holds, primary first, or null when no primary role is
+ * configured. Null means "no role filter": a member without a role keeps
+ * receiving every resource, the same fallback pull applies to skills and rules.
+ */
+export function activeRoleIds(localConfig: { primaryRole?: string; additionalRoles?: string[] }): string[] | null {
+  if (!localConfig.primaryRole) return null;
+  return [...new Set([localConfig.primaryRole, ...(localConfig.additionalRoles ?? [])])];
+}
+
+/**
+ * Does an entry with an optional `roles:` list apply to this member? Mirrors
+ * the `tools:` filter: omitted = everyone, an empty list = nobody. A null
+ * active set (no role configured) matches everything, see activeRoleIds.
+ */
+export function matchesRoles(entryRoles: string[] | undefined, active: string[] | null | undefined): boolean {
+  if (!entryRoles || active == null) return true;
+  return entryRoles.some((role) => active.includes(role));
+}
+
+/** `${file}:${role}` pairs already reported in this process (pull runs each
+ *  reconciler once per scope; the member should read the warning once). */
+const reportedUnknownRoles = new Set<string>();
+
+/**
+ * Warn once per pull for each role id that an entry's `roles:` names but
+ * roles.yaml does not define. A typo would otherwise ship the entry to nobody
+ * in silence. Never fails the run: without a readable manifest there is
+ * nothing to check against.
+ */
+export async function warnUnknownRoleIds(
+  repoPath: string,
+  file: string,
+  entries: Array<{ kind: string; name: string; roles?: string[] }>,
+): Promise<void> {
+  if (!entries.some((entry) => entry.roles && entry.roles.length > 0)) return;
+  let known: Set<string>;
+  try {
+    known = new Set(listRoleIds(await loadRolesManifest(repoPath)));
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    for (const role of entry.roles ?? []) {
+      if (known.has(role) || reportedUnknownRoles.has(`${file}:${role}`)) continue;
+      reportedUnknownRoles.add(`${file}:${role}`);
+      log.warn(`roles: unknown role id "${role}" in ${file} ${entry.kind} "${entry.name}". Valid roles: ${[...known].join(', ')}`);
+    }
+  }
 }
