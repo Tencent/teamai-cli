@@ -824,7 +824,7 @@ function wordBoundaryPattern(keyword: string): RegExp {
 
 /** True when `lower` contains `keyword`, whole-word for spaced scripts, substring otherwise. */
 function containsKeyword(lower: string, keyword: string): boolean {
-  const k = keyword.trim().toLowerCase();
+  const k = keyword.trim().normalize('NFC').toLowerCase();
   if (!k) return false;
   if (UNSPACED_SCRIPT_RE.test(k)) return lower.includes(k);
   return wordBoundaryPattern(k).test(lower);
@@ -836,7 +836,7 @@ function containsKeyword(lower: string, keyword: string): boolean {
  */
 function isCorrectionPrompt(text?: string, extraKeywords: readonly string[] = []): boolean {
   if (!text) return false;
-  const lower = text.toLowerCase();
+  const lower = text.normalize('NFC').toLowerCase();
   return [...CORRECTION_KEYWORDS, ...extraKeywords].some((k) => containsKeyword(lower, k));
 }
 

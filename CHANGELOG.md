@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 🐛 Bug Fixes
 
+- Course-correction matching normalizes prompts and keywords to Unicode NFC, so composed and decomposed accents match. Stored prompt summaries and the 60-second correction window are unchanged. Fixes [#573](https://github.com/Tencent/teamai-cli/issues/573).
 - Course-correction detection matches keywords in space-separated scripts as whole words, so Spanish "segundo" no longer counts as `undo` (for [#564](https://github.com/Tencent/teamai-cli/issues/564)).
 - MCP `requires` is resolved from `PATH` (including Windows `PATHEXT`), so `teamai mcp inject` no longer skips servers such as `uvx` on Windows ([#540](https://github.com/Tencent/teamai-cli/pull/540), for [#539](https://github.com/Tencent/teamai-cli/issues/539)).
 - The GitHub and CNB providers resolve their CLI to a launchable absolute path and start it through cross-spawn, so on Windows they no longer answer "installed" while every call fails silently ([#520](https://github.com/Tencent/teamai-cli/pull/520)).

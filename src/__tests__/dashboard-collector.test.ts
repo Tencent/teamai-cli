@@ -163,6 +163,37 @@ describe('parseHookEvent', () => {
     }
   });
 
+  it.each([
+    ['NFC keyword and NFD prompt', 'r\u00e9essaye', 're\u0301essaye'],
+    ['NFD keyword and NFC prompt', 're\u0301essaye', 'r\u00e9essaye'],
+    ['NFD keyword and uppercase prompt', 're\u0301essaye', 'R\u00c9ESSAYE!'],
+    ['NFD prompt past the summary limit', 'r\u00e9essaye', `${'x '.repeat(150)}re\u0301essaye`],
+  ])('matches canonically equivalent text: %s', async (_label, keyword, prompt) => {
+    const event = await parseHookEvent(
+      JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt }),
+      'claude',
+      { correctionKeywords: [keyword] },
+    );
+    expect(event?.correction).toBe(true);
+    expect(event?.promptSummary).toBe(prompt.slice(0, 200));
+  });
+
+  it.each([
+    ['missing accent', 'reessaye'],
+    ['different accent', 're\u0300essaye'],
+    ['letter prefix', 'pre\u0301essaye'],
+    ['letter suffix', 're\u0301essayez'],
+    ['underscore prefix', 'test_re\u0301essaye'],
+    ['underscore suffix', 're\u0301essaye_it'],
+  ])('does not match a team keyword with a %s', async (_label, prompt) => {
+    const event = await parseHookEvent(
+      JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt }),
+      'claude',
+      { correctionKeywords: ['r\u00e9essaye'] },
+    );
+    expect(event?.correction).toBe(false);
+  });
+
   it('checks the full prompt, not only the 200-char summary', async () => {
     const prompt = `${'x '.repeat(150)}wrong`;
     const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt });
@@ -734,12 +765,40 @@ describe('parseHookEvent interventions', () => {
 describe('rebuildSessions interventions', () => {
   const now = new Date().toISOString();
 
+  it.each([
+    ['NFC keyword and NFD prompt', 'r\u00e9essaye', 're\u0301essaye'],
+    ['NFD keyword and NFC prompt', 're\u0301essaye', 'r\u00e9essaye'],
+  ])('counts a Unicode correction within the time window: %s', async (_label, keyword, prompt) => {
+    const event = await parseHookEvent(
+      JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt }),
+      'claude',
+      { correctionKeywords: [keyword] },
+    );
+    if (!event) throw new Error('Expected a prompt-submit event');
+
+    for (const [gap, expected] of [[0, 1], [60_000, 1], [60_001, 0]]) {
+      const sessions = rebuildSessions([
+        { type: 'stop', timestamp: now, sessionId: 's', tool: 'claude' },
+        { ...event, timestamp: new Date(new Date(now).getTime() + gap).toISOString() },
+      ]);
+      expect(sessions[0]?.interventions.correction, `gap ${gap}`).toBe(expected);
+    }
+  });
+
   it('defaults to zero interventions', () => {
     const sessions = rebuildSessions([
       { type: 'session_start', timestamp: now, sessionId: 's1', tool: 'claude', cwd: '/p' },
     ]);
     expect(sessions[0].interventions).toEqual({ interrupt: 0, toolReject: 0, correction: 0 });
     expect(sessions[0].interventionCount).toBe(0);
+  });
+
+  it('normalizes built-in keywords when a legacy event has no correction flag', () => {
+    const sessions = rebuildSessions([
+      { type: 'stop', timestamp: now, sessionId: 's', tool: 'claude' },
+      { type: 'prompt_submit', timestamp: now, sessionId: 's', tool: 'claude', promptSummary: '\u3061\u304b\u3099\u3046' },
+    ]);
+    expect(sessions[0]?.interventions.correction).toBe(1);
   });
 
   it('takes interrupt/toolReject from the latest stop snapshot (idempotent)', () => {
