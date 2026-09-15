@@ -115,21 +115,19 @@ const updateHandler: HookHandler = {
 };
 
 /**
- * Team course-correction keywords for the project the prompt belongs to. The
- * project is resolved from the hook payload's cwd, not process.cwd(): Cursor runs
- * hooks from ~/.cursor (see resolveHookCwd). Only prompt hooks pay for the config
- * read; an unreadable config means "built-in keywords only".
+ * Team course-correction keywords for the current project. The dispatcher has
+ * already chdir'd to the hook payload's cwd (hook-dispatch-cli), so
+ * autoDetectInit() resolves the right project, as it does for
+ * contributeHintAllowed. Only prompt hooks pay for the config read; an
+ * unreadable config means "built-in keywords only".
  */
 async function teamCorrectionKeywords(stdin: Record<string, unknown>): Promise<readonly string[]> {
   if (typeof stdin.prompt !== 'string') return [];
   try {
-    const { detectProjectConfig, loadTeamConfig, requireInit } = await import('./config.js');
+    const { autoDetectInit } = await import('./config.js');
     const { getInterventionSharing } = await import('./types.js');
-    const projectConfig = await detectProjectConfig(resolveHookCwd(stdin));
-    const teamConfig = projectConfig
-      ? await loadTeamConfig(projectConfig.repo.localPath)
-      : (await requireInit()).teamConfig;
-    return teamConfig ? getInterventionSharing(teamConfig).correctionKeywords : [];
+    const { teamConfig } = await autoDetectInit();
+    return getInterventionSharing(teamConfig).correctionKeywords;
   } catch {
     return [];
   }
