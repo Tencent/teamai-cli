@@ -63,8 +63,18 @@ const mockAutoDetectInit = vi.fn().mockResolvedValue({
   teamConfig: { team: 'test', repo: '', toolPaths: {} },
 });
 
+const mockDetectProjectConfig = vi.fn().mockResolvedValue(null);
+const mockLoadTeamConfig = vi.fn().mockResolvedValue(null);
+const mockRequireInit = vi.fn().mockResolvedValue({
+  localConfig: { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user' },
+  teamConfig: { team: 'test', repo: '', toolPaths: {} },
+});
+
 vi.mock('../config.js', () => ({
   autoDetectInit: mockAutoDetectInit,
+  detectProjectConfig: mockDetectProjectConfig,
+  loadTeamConfig: mockLoadTeamConfig,
+  requireInit: mockRequireInit,
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -879,29 +889,42 @@ describe('dashboard-report team correction keywords', () => {
     (r) => r.event === 'prompt-submit' && r.handler.name === 'dashboard-report',
   )!.handler;
 
+  const teamWithKeywords = { team: 'test', repo: '', toolPaths: {}, sharing: { intervention: { correctionKeywords: ['rehazlo'] } } };
+
   beforeEach(() => {
     mockParseHookEvent.mockClear();
-    mockAutoDetectInit.mockClear();
+    mockDetectProjectConfig.mockClear();
+    mockLoadTeamConfig.mockClear();
+    mockRequireInit.mockClear();
   });
 
-  it('passes sharing.intervention.correctionKeywords to parseHookEvent on prompt hooks', async () => {
-    mockAutoDetectInit.mockResolvedValueOnce({
-      localConfig: { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user' },
-      teamConfig: { team: 'test', repo: '', toolPaths: {}, sharing: { intervention: { correctionKeywords: ['rehazlo'] } } },
-    });
-    await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'rehazlo' }, 'claude');
+  it('resolves the project from the hook payload cwd, not process.cwd() (Cursor runs hooks from ~/.cursor)', async () => {
+    mockDetectProjectConfig.mockResolvedValueOnce({ repo: { localPath: '/tmp/proj/.teamai', remote: '' }, username: 'test', scope: 'project' });
+    mockLoadTeamConfig.mockResolvedValueOnce(teamWithKeywords);
+    await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', cwd: '', workspace_roots: ['/tmp/proj'], prompt: 'rehazlo' }, 'cursor');
+    expect(mockDetectProjectConfig).toHaveBeenCalledWith('/tmp/proj');
+    expect(mockLoadTeamConfig).toHaveBeenCalledWith('/tmp/proj/.teamai');
+    expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'cursor', { correctionKeywords: ['rehazlo'] });
+  });
+
+  it('uses the user-scope team config when the cwd has no project config', async () => {
+    mockRequireInit.mockResolvedValueOnce({ localConfig: {}, teamConfig: teamWithKeywords });
+    await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', cwd: '/tmp/elsewhere', prompt: 'rehazlo' }, 'claude');
+    expect(mockDetectProjectConfig).toHaveBeenCalledWith('/tmp/elsewhere');
+    expect(mockRequireInit).toHaveBeenCalledOnce();
     expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: ['rehazlo'] });
   });
 
   it('falls back to built-in keywords only when team config cannot be read', async () => {
-    mockAutoDetectInit.mockRejectedValueOnce(new Error('not initialized'));
+    mockRequireInit.mockRejectedValueOnce(new Error('not initialized'));
     await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'wrong' }, 'claude');
     expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [] });
   });
 
   it('does not read team config for hooks without a prompt', async () => {
     await handler().execute({ hook_event_name: 'Stop', session_id: 's' }, 'claude');
-    expect(mockAutoDetectInit).not.toHaveBeenCalled();
+    expect(mockDetectProjectConfig).not.toHaveBeenCalled();
+    expect(mockRequireInit).not.toHaveBeenCalled();
     expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [] });
   });
 });

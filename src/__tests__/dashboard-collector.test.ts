@@ -129,6 +129,15 @@ describe('parseHookEvent', () => {
     }
   });
 
+  it('treats underscore as part of a word, so identifiers do not match', async () => {
+    const cases: Array<[string, boolean]> = [['run test_undo again', false], ['undo_it', false], ['undo it', true]];
+    for (const [prompt, expected] of cases) {
+      const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt });
+      const event = await parseHookEvent(raw, 'claude');
+      expect(event!.correction, prompt).toBe(expected);
+    }
+  });
+
   it('keeps substring matching for Chinese and Japanese keywords', async () => {
     for (const prompt of ['这不对', '違うよ']) {
       const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt });

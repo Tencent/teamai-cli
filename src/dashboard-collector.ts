@@ -813,25 +813,21 @@ export async function countInterventions(
 /** Scripts that do not separate words with spaces: substring matching is correct there. */
 const UNSPACED_SCRIPT_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
-/** Match a keyword as a whole word: no letter or digit may touch either end. */
+/**
+ * Match a keyword as a whole word: no letter, digit or underscore may touch either
+ * end, so `undo` does not fire on "segundo" or on the identifier "test_undo".
+ */
 function wordBoundaryPattern(keyword: string): RegExp {
   const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'u');
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'u');
 }
-
-const wordBoundaryCache = new Map<string, RegExp>();
 
 /** True when `lower` contains `keyword`, whole-word for spaced scripts, substring otherwise. */
 function containsKeyword(lower: string, keyword: string): boolean {
   const k = keyword.trim().toLowerCase();
   if (!k) return false;
   if (UNSPACED_SCRIPT_RE.test(k)) return lower.includes(k);
-  let re = wordBoundaryCache.get(k);
-  if (!re) {
-    re = wordBoundaryPattern(k);
-    wordBoundaryCache.set(k, re);
-  }
-  return re.test(lower);
+  return wordBoundaryPattern(k).test(lower);
 }
 
 /**
@@ -841,8 +837,7 @@ function containsKeyword(lower: string, keyword: string): boolean {
 function isCorrectionPrompt(text?: string, extraKeywords: readonly string[] = []): boolean {
   if (!text) return false;
   const lower = text.toLowerCase();
-  return CORRECTION_KEYWORDS.some((k) => containsKeyword(lower, k))
-    || extraKeywords.some((k) => containsKeyword(lower, k));
+  return [...CORRECTION_KEYWORDS, ...extraKeywords].some((k) => containsKeyword(lower, k));
 }
 
 /**

@@ -1244,7 +1244,7 @@ Each session card shows a `⚠ N` badge, counting the **number of human interven
 
 > Privacy: only counts are tracked — no prompt or transcript text is ever stored.
 
-Keywords in a space-separated script (English, Spanish, ...) must appear as a whole word, so Spanish "segundo" does not count as `undo`. Chinese and Japanese keywords match as substrings. Teams whose members correct the agent in another language add their own words in `teamai.yaml`; they are merged with the built-in list and matched case-insensitively under the same rules:
+Keywords in a space-separated script (English, Spanish, ...) must appear as a whole word, so Spanish "segundo" does not count as `undo`. Chinese and Japanese keywords match as substrings. The built-in list covers only Chinese, English and Japanese; a correction typed in any other language is not detected until the team adds its own words in `teamai.yaml`. Team words are merged with the built-in list and matched case-insensitively under the same rules:
 
 ```yaml
 sharing:
