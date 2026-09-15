@@ -466,7 +466,7 @@ describe('pull role-aware sync and cleanup', () => {
 
     await expect(scanRoleAwareSkills(
       localConfig,
-      { knowledge: ['common', 'hai'], skills: ['common', 'hai'], learnings: [] },
+      { knowledge: ['common', 'hai'], skills: ['common', 'hai'], learnings: [], agents: [] },
     )).rejects.toThrow(/Duplicate skill "shared-skill"/);
   });
 

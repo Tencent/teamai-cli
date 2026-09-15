@@ -222,7 +222,7 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
   if (!hasRole && !hasProjects && !teamHasProjects) return null;
 
   // ── Role namespaces (optional) ──
-  let roleNamespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [] };
+  let roleNamespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
   let allRoleSkillNamespaces = new Set<string>();
   if (hasRole) {
     let rolesManifest;
@@ -256,7 +256,7 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
   // the team defines projects — even with none active — so every non-selected
   // project namespace is treated as inactive and cleaned up below. The ACTIVE
   // namespaces come only from the projects this directory selected.
-  let projectNamespaces = { knowledge: [] as string[], skills: [] as string[], learnings: [] as string[] };
+  let projectNamespaces = { knowledge: [] as string[], skills: [] as string[], learnings: [] as string[], agents: [] as string[] };
   let allProjectSkillNamespaces = new Set<string>();
   if (projectsManifest) {
     allProjectSkillNamespaces = new Set(projectsManifest.projects.flatMap((p) => p.resources.skills));

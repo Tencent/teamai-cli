@@ -258,6 +258,7 @@ describe('roles add — manifest manipulation', () => {
         knowledge: ['common', 'infra'],
         skills: ['common', 'infra'],
         learnings: ['common', 'infra'],
+        agents: [],
       },
     };
 
@@ -287,7 +288,7 @@ describe('roles add — manifest manipulation', () => {
     const duplicate: TeamRole = {
       id: 'hai',
       description: 'duplicate',
-      resources: { knowledge: ['x'], skills: ['x'], learnings: ['x'] },
+      resources: { knowledge: ['x'], skills: ['x'], learnings: ['x'], agents: [] },
     };
     const bad: RolesManifest = { ...manifest, roles: [...manifest.roles, duplicate] };
 
@@ -374,7 +375,7 @@ describe('roles update — manifest manipulation', () => {
 
     const updatedRole: TeamRole = {
       ...role,
-      resources: { knowledge: updatedNs, skills: updatedNs, learnings: updatedNs },
+      resources: { knowledge: updatedNs, skills: updatedNs, learnings: updatedNs, agents: [] },
     };
 
     const updated: RolesManifest = {
@@ -403,7 +404,7 @@ describe('roles update — manifest manipulation', () => {
 
     const updatedRole: TeamRole = {
       ...role,
-      resources: { knowledge: remaining, skills: remaining, learnings: remaining },
+      resources: { knowledge: remaining, skills: remaining, learnings: remaining, agents: [] },
     };
 
     const updated: RolesManifest = {
@@ -446,7 +447,7 @@ describe('roles update — manifest manipulation', () => {
     const role = findRole(manifest, 'hai')!;
     const updatedRole: TeamRole = {
       ...role,
-      resources: { knowledge: [], skills: [], learnings: [] },
+      resources: { knowledge: [], skills: [], learnings: [], agents: [] },
     };
 
     const updated: RolesManifest = {
