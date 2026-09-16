@@ -35,6 +35,7 @@ import {
   dirExists,
   removeDirRecursive,
 } from '../fs.js';
+import { cleanTitleText, fallbackTitle, isInjectedText } from '../title.js';
 
 // ---------------------------------------------------------------------------
 // 工具名归一化映射
@@ -190,7 +191,9 @@ export class CursorAdapter extends AgentAdapter {
           if (Array.isArray(content)) {
             for (const block of content) {
               if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'text') {
-                firstUserText = String((block as Record<string, unknown>).text ?? '');
+                const text = String((block as Record<string, unknown>).text ?? '');
+                // 首个文本块常是 system-reminder 等注入，跳过继续找真正的提问
+                if (!isInjectedText(text)) firstUserText = text;
                 break;
               }
             }
@@ -201,7 +204,7 @@ export class CursorAdapter extends AgentAdapter {
       return null;
     }
 
-    title = firstUserText ? firstUserText.slice(0, 50) : `Session ${sessionId.slice(0, 8)}`;
+    title = cleanTitleText(firstUserText) || fallbackTitle(sessionId);
 
     let sizeBytes = 0;
     try {
@@ -274,8 +277,9 @@ export class CursorAdapter extends AgentAdapter {
       if (msg.role === 'user') {
         for (const block of msg.content) {
           if (block.type === 'text' && block.text) {
-            title = block.text.slice(0, 50);
-            break;
+            if (isInjectedText(block.text)) continue; // 注入块不当标题
+            title = cleanTitleText(block.text);
+            if (title) break;
           }
         }
         if (title) break;

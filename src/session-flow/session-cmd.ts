@@ -163,6 +163,22 @@ function resolveRepoRoot(repoRoot?: string): string {
   return repoRoot ?? process.cwd();
 }
 
+/**
+ * 推送团队仓远端；失败时降级为警告而非崩溃。
+ *
+ * 走到这里时本地 saveSession + gitCommit 已经成功——会话数据没有丢。
+ * 远端失败的原因常常与数据无关（无 upstream、只读 HTTP 模式、网络），
+ * 用堆栈炸掉会把一次成功的归档伪装成彻底失败，用户再跑一次还会造出重复提交。
+ */
+function pushToRemote(syncMgr: SyncManager): void {
+  try {
+    syncMgr.gitPush();
+  } catch (err) {
+    const reason = err instanceof Error ? err.message.split('\n')[0] : String(err);
+    console.log(`  · Remote push failed (local commit kept): ${reason}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 命令注册
 // ---------------------------------------------------------------------------
@@ -358,7 +374,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         }
         const commitHash = syncMgr.gitCommit(`sync: migrate ${saved} session(s) ${source}→${target}`);
         if (commitHash) {
-          syncMgr.gitPush();
+          pushToRemote(syncMgr);
           console.log(`\n  ✓ Pushed ${saved} session(s) to team repo`);
           console.log(`  commit: ${commitHash.slice(0, 8)}`);
         } else {
@@ -451,7 +467,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       }
       const commitHash = syncMgr.gitCommit(`sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`);
       if (commitHash) {
-        syncMgr.gitPush();
+        pushToRemote(syncMgr);
         console.log(`\n  ✓ Pushed ${saved} session(s) from ${source}`);
         console.log(`  commit: ${commitHash.slice(0, 8)}\n`);
       } else {
