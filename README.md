@@ -13,6 +13,10 @@
 
 TeamAI manages your team's skills, rules, MCP, and knowledge across Claude Code, Codex, CodeBuddy, WorkBuddy, OpenCode, Cursor, and other AI agents.
 
+## Fixed-commit knowledge previews (development increment)
+
+Read PRDs, meetings, and code from exact local Git commits, produce evidence-backed candidate knowledge packages, and validate/search/query exact object versions with Go. This is a local development preview, without Web, enterprise authorization, review/publishing, or `recall` integration. See the [usage and format guide](docs/designs/knowledge-pack.md).
+
 ## Contributors
 
 Thanks to everyone who has contributed to TeamAI!

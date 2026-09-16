@@ -13,6 +13,10 @@
 
 TeamAI 统一管理团队的 Skills、Rules、MCP 和知识，驾驭 Claude Code、Codex、CodeBuddy、WorkBuddy、OpenCode、Cursor 等 AI Agents。
 
+## 固定 Git 版本的知识预览（开发增量）
+
+从本地 Git 的准确 commit 读取 PRD、会议和代码，生成有证据的候选知识包，并用 Go 校验、搜索和查询准确对象版本。当前仅为本地开发预览，尚未接入网页、企业鉴权、审核发布或 `recall`。详见[使用与格式说明](docs/designs/knowledge-pack.zh-CN.md)。
+
 ## 贡献者
 
 感谢每一位为 TeamAI 贡献代码的伙伴！

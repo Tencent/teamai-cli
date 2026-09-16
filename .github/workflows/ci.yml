@@ -15,6 +15,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  knowledge-pack:
+    name: Knowledge preview (Node producer / Go reader)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache: false
+      - name: Install and build
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - name: Go knowledge contract and query tests
+        working-directory: server
+        run: go test ./...
+      - name: Fixed-commit cross-language CLI E2E
+        run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/knowledge-pack-cli.test.ts
+
   lint-and-test:
     name: Lint & Test (Node ${{ matrix.node-version }} on ${{ matrix.os }})
     strategy:

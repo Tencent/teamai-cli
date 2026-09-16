@@ -1195,6 +1195,16 @@ teamai codebase --lint --output /path/to/repo
 
 只要 extract 发现了组件，就会写入 `teamwiki/evidence/code/<project>/_manifest.json`（包括跳过 AI 增强或增强没有产出的情况），因此 `--deep-enrich` 可以接着跑。
 
+### 固定 Git 版本的知识预览（开发增量）
+
+PRD 和会议资料先按原流程提交资料 Git 仓库，再在 manifest 中选择文件及完整 commit。
+
+```bash
+teamai codebase --knowledge-manifest input.json --output out --json
+```
+
+该命令只生成候选预览，不修改原资料或正式发布。Go 校验与查询需要源码 checkout 和 Go 1.24+；输入格式、权限边界及示例见[知识包指南](designs/knowledge-pack.zh-CN.md)。
+
 ### Dashboard
 
 ```bash

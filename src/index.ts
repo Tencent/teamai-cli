@@ -915,6 +915,7 @@ program
   .command('codebase')
   .description('Inspect and maintain team-codebase outputs')
   .option('--extract [path]', 'Extract code knowledge and build graph from source')
+  .option('--knowledge-manifest <file>', 'Build a local knowledge preview from fixed Git commits (requires --output)')
   .addOption(new Option('--incremental', 'Only re-extract changed files (requires prior manifest)').hideHelp())
   .addOption(new Option('--project <name>', 'Project slug for --extract (defaults to directory name) and required for --deep-enrich').hideHelp())
   .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)').hideHelp())
@@ -926,7 +927,7 @@ program
   .option('--status', 'Show knowledge-base git baseline (headSha / repoUrl / branch)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
   .option('--json', 'Output report as JSON (suitable for CI)')
-  .addOption(new Option('--output <path>', 'Custom teamwiki output root directory').hideHelp())
+  .addOption(new Option('--output <path>', 'Output root directory for teamwiki or a knowledge preview package').hideHelp())
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { codebaseCmd } = await import('./codebase-cmd.js');

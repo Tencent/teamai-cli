@@ -7,6 +7,8 @@
 或 ClawPro HTTP 实现。本阶段交付物仅为本文及英文版本；实现前需要确认下文的
 开放决策并满足各阶段验收条件。
 
+独立实现进度：[知识包 A/B 开发增量](knowledge-pack.zh-CN.md) 已提供本地 TS 生产器和 `server/internal/knowledge/pack` Go 校验/查询模块。它没有启动管理服务、提供网页/身份或实现本文资源发布协议，不能据此视为 #341 已交付。
+
 ## 1. 范围与现有实现
 
 对照基线为 main 提交 `3f7fa1dedbccac1416fe329bdd308bb45de30b0e`。

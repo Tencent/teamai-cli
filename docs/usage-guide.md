@@ -1228,6 +1228,16 @@ teamai codebase --lint --output /path/to/repo
 
 When extract finds components, it writes `teamwiki/evidence/code/<project>/_manifest.json` even if AI enrichment is skipped or produces nothing, so `--deep-enrich` can start.
 
+### Fixed-commit knowledge previews (development increment)
+
+Commit PRDs and meeting material through the existing documentation Git workflow, then select files and full commit IDs in a manifest.
+
+```bash
+teamai codebase --knowledge-manifest input.json --output out --json
+```
+
+This produces a candidate preview without editing sources or publishing resources. Go validation/query requires a source checkout and Go 1.24+; see the [knowledge-package guide](designs/knowledge-pack.md) for input, authorization boundaries, and examples.
+
 ### Dashboard
 
 ```bash

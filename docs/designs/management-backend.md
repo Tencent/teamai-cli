@@ -8,6 +8,8 @@ option, or change to the current Git or ClawPro HTTP implementation. The issue's
 first deliverable is this design and its Chinese counterpart; implementation
 requires the decisions and acceptance gates below.
 
+Separate implementation progress: the [knowledge-package A/B development increment](knowledge-pack.md) provides a local TS producer and the Go validator/query module in `server/internal/knowledge/pack`. It does not start a management service, supply Web/identity, or implement this document’s resource publication protocol; #341 is not delivered by that module.
+
 ## 1. Scope and current implementation
 
 The reference is main commit `3f7fa1dedbccac1416fe329bdd308bb45de30b0e`.

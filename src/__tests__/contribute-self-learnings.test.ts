@@ -52,6 +52,8 @@ function git(args: string[], cwd: string) {
 
 describe('contributeSelf — machine-local learnings cache (issue #472)', () => {
   beforeEach(async () => {
+    // afterEach restores HOME, so every case must re-enter the isolated fixture.
+    process.env.HOME = path.join(testRoot, 'home');
     fs.rmSync(businessRoot, { recursive: true, force: true });
     fs.rmSync(remote, { recursive: true, force: true });
     fs.rmSync(getUserLearningsDir(), { recursive: true, force: true });

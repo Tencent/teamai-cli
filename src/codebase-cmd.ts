@@ -22,6 +22,7 @@ export interface CodebaseCmdOptions extends GlobalOptions {
     status?: boolean;
     reconcile?: boolean;
     deepEnrich?: boolean;
+    knowledgeManifest?: string;
 }
 
 // ─── Command handler ─────────────────────────────────────────────────────────
@@ -31,6 +32,12 @@ export interface CodebaseCmdOptions extends GlobalOptions {
  */
 export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
     const cwd = process.cwd();
+
+    if (opts.knowledgeManifest !== undefined) {
+        const { buildKnowledgePackCommand } = await import('./knowledge-producer/cli.js');
+        await buildKnowledgePackCommand(opts);
+        return;
+    }
 
     if (opts.upgradeWiki) {
         const { upgradeCodebaseWiki } = await import('./codebase-upgrade-wiki.js');
@@ -69,6 +76,7 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         console.log('  teamai codebase --reconcile             Reconcile product and code knowledge');
         console.log('  teamai codebase --deep-enrich           Generate deep knowledge from extracted evidence');
         console.log('  teamai codebase --status                Show knowledge-base git baseline');
+        console.log('  teamai codebase --knowledge-manifest <file> --output <dir>  Build a fixed-commit knowledge preview');
         return;
     }
 
