@@ -152,20 +152,31 @@ export interface SessionSyncMeta {
   status: 'active' | 'archived';
 }
 
-export function defaultSyncMeta(partial: {
-  platform: string;
-  author: string;
-  cwd: string;
-  sessionId: string;
-  repoIdentity?: string | null;
-}): SessionSyncMeta {
+/**
+ * 构造默认 meta。
+ *
+ * @param partial 基础字段
+ * @param createdAt 会话原生创建时间（session.createdAt）。不传时降级为当前时间——
+ *   但调用方（push / migrate --push）应始终传入，否则 origin.createdAt 记录的是
+ *   推送时间而非会话创建时间，会破坏 search 的时间衰减排序（见设计文档 P7）。
+ */
+export function defaultSyncMeta(
+  partial: {
+    platform: string;
+    author: string;
+    cwd: string;
+    sessionId: string;
+    repoIdentity?: string | null;
+  },
+  createdAt?: string,
+): SessionSyncMeta {
   return {
     origin: {
       platform: partial.platform,
       author: partial.author,
       cwd: partial.cwd,
       repoIdentity: partial.repoIdentity ?? null,
-      createdAt: utcNow(),
+      createdAt: createdAt ?? utcNow(),
       sessionId: partial.sessionId,
     },
     migration: {
@@ -198,6 +209,14 @@ export interface IndexEntry {
   createdAt: string;
   updatedAt: string;
   status: string;
+  /**
+   * 源平台的会话 ID（origin.sessionId）。
+   *
+   * push 去重键（P8）= sessionId + author：重复推送同一会话时更新既有条目，
+   * 而不是 resolveNameConflict 生成 `xxx_1` 副本。可选项——旧索引/损坏索引
+   * 重建前没有该字段，此时去重退化为旧的名冲突行为。
+   */
+  sessionId?: string;
 }
 
 interface RepoIndex {
@@ -316,6 +335,23 @@ export class SyncManager {
   // ------------------------------------------------------------------
 
   /**
+   * 按源平台 sessionId（+可选 author）在 repo 索引中查找既有条目。
+   *
+   * push 去重键（P8）：origin.sessionId + author。命中说明该会话曾推送过，
+   * 应更新既有条目与文件，而不是再写一个 `_1` 副本。
+   */
+  private findByOriginSessionId(
+    repoIdentity: string | null,
+    sessionId: string,
+    author?: string,
+  ): IndexEntry | undefined {
+    const index = this.readIndex(repoIdentity);
+    return index.sessions.find(
+      (s) => s.sessionId === sessionId && (!author || s.author === author),
+    );
+  }
+
+  /**
    * 保存会话到团队仓。
    *
    * @param session IR Session
@@ -327,7 +363,15 @@ export class SyncManager {
     const author = meta.origin.author;
 
     let sessionName = generateSessionName(session.platform, session.title, session.createdAt);
-    sessionName = this.resolveNameConflict(repoId, author, sessionName);
+    // P8 去重：同一 origin.sessionId + author 重复推送时，复用原 sessionName
+    // 覆盖写（upsertIndexEntry 按 sessionName:author 命中既有条目原地更新），
+    // 而不是 resolveNameConflict 生成 `xxx_1` 副本。
+    const existing = this.findByOriginSessionId(repoId, meta.origin.sessionId, author);
+    if (existing) {
+      sessionName = existing.sessionName;
+    } else {
+      sessionName = this.resolveNameConflict(repoId, author, sessionName);
+    }
 
     const paths = this.sessionPaths(repoId, author, sessionName);
     fs.mkdirSync(path.dirname(paths.jsonl), { recursive: true });
@@ -352,6 +396,7 @@ export class SyncManager {
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       status: meta.status,
+      sessionId: meta.origin.sessionId,
     });
 
     return path.relative(this.repoRoot, paths.jsonl);
@@ -369,10 +414,10 @@ export class SyncManager {
     const paths = this.sessionPaths(repoIdentity, resolvedAuthor, sessionName);
 
     if (!fs.existsSync(paths.jsonl)) {
-      throw new Error(`会话文件不存在: ${paths.jsonl}`);
+      throw new Error(`Session file not found: ${paths.jsonl}`);
     }
     if (!fs.existsSync(paths.meta)) {
-      throw new Error(`元数据文件不存在: ${paths.meta}`);
+      throw new Error(`Meta file not found: ${paths.meta}`);
     }
 
     // 读 meta
@@ -405,7 +450,7 @@ export class SyncManager {
   /** 在 repo 目录下搜索 sessionName 属于哪个 author */
   private findAuthor(repoIdentity: string | null, sessionName: string): string {
     const dir = this.repoDir(repoIdentity);
-    if (!fs.existsSync(dir)) throw new Error(`仓库目录不存在: ${dir}`);
+    if (!fs.existsSync(dir)) throw new Error(`Repo directory not found: ${dir}`);
     for (const entry of fs.readdirSync(dir)) {
       if (entry.startsWith('_')) continue;
       const candidate = path.join(dir, entry);
@@ -414,7 +459,7 @@ export class SyncManager {
         return entry;
       }
     }
-    throw new Error(`会话 ${sessionName} 未找到（已搜索所有 author 目录）`);
+    throw new Error(`Session ${sessionName} not found (searched all author directories)`);
   }
 
   private extractTitleFromSessionName(sessionName: string): string {
@@ -454,6 +499,74 @@ export class SyncManager {
     return fs.readdirSync(reposDir).filter((d) => {
       return fs.statSync(path.join(reposDir, d)).isDirectory();
     });
+  }
+
+  /**
+   * 列出团队仓中**所有** repo 的 canonical identity（含 `_unattributed` → null）。
+   *
+   * 目录名是编码后的（`/` → `_`）且解码有损，不能反推 canonical 原文——
+   * 每个 repo 目录的 `_index.json` 存有 RepoIndex.repoIdentity（canonical 原文），
+   * 从索引反查。目录损坏 / 无索引 / 无 identity 的目录跳过。
+   *
+   * `_unattributed` 在其 `_index.json` 存在或目录下有会话文件时以 null 一并返回。
+   */
+  listAllRepoIdentities(): Array<string | null> {
+    const identities: Array<string | null> = [];
+    const reposDir = path.join(this.sessionsDir, 'repos');
+    if (fs.existsSync(reposDir)) {
+      for (const dir of fs.readdirSync(reposDir)) {
+        const full = path.join(reposDir, dir);
+        try {
+          if (!fs.statSync(full).isDirectory()) continue;
+          const idxPath = path.join(full, '_index.json');
+          if (!fs.existsSync(idxPath)) continue;
+          const index = JSON.parse(fs.readFileSync(idxPath, 'utf-8')) as RepoIndex;
+          if (index.repoIdentity) identities.push(index.repoIdentity);
+        } catch {
+          // corrupted index / unreadable directory → skip
+        }
+      }
+    }
+
+    // _unattributed：索引存在，或目录下有会话内容（author 子目录）时纳入
+    const unattrDir = path.join(this.sessionsDir, '_unattributed');
+    if (fs.existsSync(unattrDir)) {
+      let hasContent = fs.existsSync(path.join(unattrDir, '_index.json'));
+      if (!hasContent) {
+        try {
+          hasContent = fs.readdirSync(unattrDir).some((e) => {
+            if (e.startsWith('_')) return false;
+            try {
+              return fs.statSync(path.join(unattrDir, e)).isDirectory();
+            } catch {
+              return false;
+            }
+          });
+        } catch {
+          hasContent = false;
+        }
+      }
+      if (hasContent) identities.push(null);
+    }
+
+    return identities;
+  }
+
+  /**
+   * 跨 repo 列出全部会话（`list --all` / `search --all` 的数据源）。
+   *
+   * 对 listAllRepoIdentities() 的每个 identity 调 listSessions 并合并。
+   * 每个条目的 repoIdentity 字段标识来源 repo（null → `_unattributed`），
+   * 供展示层输出「来源」列；旧索引条目缺该值时用所在 repo 的 identity 回填。
+   */
+  listSessionsAcrossRepos(author?: string): IndexEntry[] {
+    const out: IndexEntry[] = [];
+    for (const identity of this.listAllRepoIdentities()) {
+      for (const entry of this.listSessions(identity, author)) {
+        out.push({ ...entry, repoIdentity: entry.repoIdentity ?? identity });
+      }
+    }
+    return out;
   }
 
   deleteSession(repoIdentity: string | null, sessionName: string, author?: string): void {
@@ -507,6 +620,7 @@ export class SyncManager {
             createdAt: meta.origin.createdAt,
             updatedAt: meta.sync.pushedAt ?? meta.origin.createdAt,
             status: meta.status,
+            sessionId: meta.origin.sessionId,
           });
         } catch {
           // skip corrupted entries
@@ -542,9 +656,17 @@ export class SyncManager {
     }
   }
 
-  /** git add sessions/ && git commit → 返回 commit hash */
-  gitCommit(message: string): string {
+  /**
+   * git add sessions/ && git commit → 返回 commit hash。
+   *
+   * 无变更时 commit 静默失败，而 `rev-parse HEAD` 仍会返回旧 HEAD——调用方会
+   * 误报 "Pushed N"。因此 commit 前先用 `status --porcelain -- sessions/`
+   * 检测暂存区是否有变更，无变更返回 null，由调用方打印 "No changes to push"。
+   */
+  gitCommit(message: string): string | null {
     this.runGit(['add', 'sessions/']);
+    const staged = this.runGit(['status', '--porcelain', '--', 'sessions/'], false);
+    if (!staged.trim()) return null;
     this.runGit(['commit', '-m', message], false);
     return this.runGit(['rev-parse', 'HEAD']);
   }

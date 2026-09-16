@@ -23,6 +23,7 @@ export const THINKING_SUPPORT: Record<string, boolean> = {
   'codex-internal': true,
   tcodex: true,
   codebuddy: true,
+  'codebuddy-ide': true,
   cursor: false, // Cursor 无 thinking，降级为 text
 };
 
@@ -44,6 +45,14 @@ export const NATIVE_TOOLS: Record<string, Set<string>> = {
   tcodex: new Set(['bash', 'edit_file', 'read_file', 'write_file']),
   codebuddy: new Set([
     'read_file', 'write_file', 'edit_file', 'bash', 'grep', 'glob', 'task', 'todo_write',
+  ]),
+  // IDE 侧工具名与 CLI 不完全一致（write_to_file / execute_command / search_content …），
+  // 不登记的话迁移预览会把这些正常工具全报成 tool_not_in_target。
+  'codebuddy-ide': new Set([
+    'read_file', 'write_file', 'write_to_file', 'edit_file', 'replace_in_file', 'delete_file',
+    'bash', 'execute_command', 'grep', 'search_content', 'glob', 'list_dir', 'codebase_search',
+    'web_search', 'web_fetch', 'preview_url', 'lsp', 'task', 'todo_write', 'use_skill',
+    'update_memory', 'image_gen',
   ]),
   cursor: new Set([
     'read_file', 'write_file', 'edit_file', 'bash', 'grep', 'glob', 'delete_file',

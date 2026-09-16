@@ -19,6 +19,7 @@
 
 import type { Command } from 'commander';
 import readline from 'node:readline';
+import * as path from 'node:path';
 import { getAdapter, listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
 import { MigrationEngine } from './migrate.js';
 import { SyncManager, getRepoIdentity, getGitAuthor, defaultSyncMeta } from './sync.js';
@@ -131,6 +132,27 @@ function safeGetAdapter(platform: string) {
  */
 function resolveRepoIdentity(cwd?: string): string | null {
   return getRepoIdentity(cwd ?? process.cwd());
+}
+
+/**
+ * 按会话**原生 cwd** 派生归档键（repoIdentity）——Key invariant：
+ * 归档键来自会话自身的工作目录，绝不是 CLI 恰好运行所在的目录（设计文档 P3）。
+ *
+ * 各适配器 readSession 已尽量恢复原生 cwd：
+ * - codex / workbuddy：存储自带真实路径
+ * - claude-code / codebuddy / cursor：从 JSONL 记录的 cwd 字段恢复
+ * - codebuddy-ide：工作区目录是 md5(cwd) 不可逆——恢复不出真实路径时
+ *   session.cwd 是 `md5:<hash>` 占位，归 `_unattributed` 并打印英文警告
+ */
+function deriveArchiveIdentity(session: { cwd: string }, platform: string): string | null {
+  const nativeCwd = session.cwd;
+  if (nativeCwd && path.isAbsolute(nativeCwd)) {
+    return getRepoIdentity(nativeCwd);
+  }
+  console.warn(
+    `  ⚠ native cwd unknowable for ${platform} session, archived under _unattributed`,
+  );
+  return null;
 }
 
 /**
@@ -248,6 +270,9 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
 
       const engine = new MigrationEngine(source, target);
       let migrated = 0;
+      // 记录每次成功迁移产出的目标会话 ID + 真实保真度，
+      // --push 时精确回读这些 ID（而非"目标平台最近 N 条"，避免推错，见 P4/P7）。
+      const migratedTargets: { sessionId: string; fidelityScore: number }[] = [];
 
       for (const m of targets) {
         const preview = await engine.preview(m.sessionId, workCwd);
@@ -276,7 +301,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         // 迁移没有确认环节（打完 Preview 就直接执行），不接全局 --dry-run 的话，
         // 想看保真度和告警就只能真迁一次、不满意再 rollback。
         if (isDryRun()) {
-          console.log(`\n  · --dry-run：仅预览，未迁移 ${m.sessionId.slice(0, 8)}...\n`);
+          console.log(`\n  · --dry-run: preview only, not migrated: ${m.sessionId.slice(0, 8)}...\n`);
           continue;
         }
 
@@ -292,6 +317,12 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           }
           console.log(`  Fidelity: ${(result.preview.fidelity.score * 100).toFixed(1)}%`);
           migrated++;
+          if (result.targetSessionId) {
+            migratedTargets.push({
+              sessionId: result.targetSessionId,
+              fidelityScore: result.preview.fidelity.score,
+            });
+          }
         } else {
           console.error(`\n  ✗ Migration failed: ${result.error}`);
         }
@@ -300,34 +331,39 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       // --push: 推送到团队仓
       if (opts.push && migrated > 0) {
         const repoRoot = resolveRepoRoot(opts.repoRoot);
-        const repoIdentity = resolveRepoIdentity(workCwd);
         const author = getGitAuthor(workCwd);
         const targetAdapter = safeGetAdapter(target);
-        const targetMetas = await targetAdapter.listConversations(opts.targetCwd ?? workCwd);
-        const recent = targetMetas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, migrated);
 
         const syncMgr = new SyncManager(repoRoot);
         let saved = 0;
-        for (const m of recent) {
-          const session = await targetAdapter.readSession(m.sessionId, opts.targetCwd ?? workCwd);
-          const meta = defaultSyncMeta({
-            platform: target,
-            author,
-            cwd: opts.targetCwd ?? workCwd,
-            sessionId: m.sessionId,
-            repoIdentity,
-          });
+        for (const t of migratedTargets) {
+          const session = await targetAdapter.readSession(t.sessionId, opts.targetCwd ?? workCwd);
+          // P3：归档键按会话原生 cwd 派生，而非 migrate 运行目录（见 deriveArchiveIdentity）
+          const meta = defaultSyncMeta(
+            {
+              platform: target,
+              author,
+              cwd: session.cwd || opts.targetCwd || workCwd,
+              sessionId: t.sessionId,
+              repoIdentity: deriveArchiveIdentity(session, target),
+            },
+            session.createdAt,
+          );
           meta.migration.migratedAt = new Date().toISOString();
           meta.migration.sourcePlatform = source;
           meta.migration.targetPlatform = target;
-          meta.migration.fidelityScore = 1.0;
+          meta.migration.fidelityScore = t.fidelityScore;
           syncMgr.saveSession(session, meta);
           saved++;
         }
         const commitHash = syncMgr.gitCommit(`sync: migrate ${saved} session(s) ${source}→${target}`);
-        syncMgr.gitPush();
-        console.log(`\n  ✓ Pushed ${saved} session(s) to team repo`);
-        console.log(`  commit: ${commitHash.slice(0, 8)}`);
+        if (commitHash) {
+          syncMgr.gitPush();
+          console.log(`\n  ✓ Pushed ${saved} session(s) to team repo`);
+          console.log(`  commit: ${commitHash.slice(0, 8)}`);
+        } else {
+          console.log(`\n  · No changes to push\n`);
+        }
       }
 
       console.log(
@@ -347,46 +383,83 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--source <platform>', 'Source platform to read sessions from')
     .option('--repo-root <path>', 'Team repo root (defaults to cwd)')
     .option('--cwd <path>', 'Working directory (defaults to current directory)')
-    .option('--limit <n>', 'Max sessions to push (default: 5)', '5')
+    .option('--limit <n>', 'Max sessions to push (default: 5; ignored with --all)', '5')
+    .option('--all', 'Push every session of the platform across all workspace directories (ignores --limit)')
+    .option('-y, --yes', 'Skip the confirmation prompt for large batches (--all)')
     .action(async (opts) => {
+      try {
       const source = opts.source;
       if (!source) {
         console.error('Error: --source <platform> required.');
-        console.error('Usage: teamai session push --source <platform> [--repo-root <path>]');
+        console.error('Usage: teamai session push --source <platform> [--repo-root <path>] [--all]');
         process.exit(1);
       }
       const workCwd = opts.cwd ?? process.cwd();
       const repoRoot = resolveRepoRoot(opts.repoRoot);
-      const repoIdentity = resolveRepoIdentity(workCwd);
       const author = getGitAuthor(workCwd);
       const adapter = safeGetAdapter(source);
-      const metas = await adapter.listConversations(workCwd);
+      // --all：listConversations() 无参即枚举该平台的全部工作区目录（P5），
+      // 影响面收敛在单一平台（与 status --all 一致）；单 cwd 模式保持原行为。
+      const metas = opts.all
+        ? await adapter.listConversations()
+        : await adapter.listConversations(workCwd);
       const limit = parseInt(opts.limit, 10) || 5;
-      const sorted = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit);
+      const sorted = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      const selected = opts.all ? sorted : sorted.slice(0, limit);
 
-      if (sorted.length === 0) {
+      if (selected.length === 0) {
         console.log('No sessions found to push.');
         return;
       }
 
+      // 大批量确认：--all 推送超过 5 条时列清单（id/标题/条数）要求确认，-y 跳过
+      if (opts.all && selected.length > 5 && !opts.yes) {
+        console.log(`\nAbout to push ${selected.length} session(s) from ${source}:`);
+        for (const m of selected) {
+          const title = m.title.length > 50 ? m.title.slice(0, 50) + '...' : m.title;
+          console.log(`  ${m.sessionId.slice(0, 8)}  ${title}  (${m.messageCount} msgs)`);
+        }
+        const ans = await ask('\nPush all of the above? (y/N): ');
+        if (ans.toLowerCase() !== 'y' && ans.toLowerCase() !== 'yes') {
+          console.log('Cancelled.');
+          return;
+        }
+      }
+
       const syncMgr = new SyncManager(repoRoot);
       let saved = 0;
-      for (const m of sorted) {
-        const session = await adapter.readSession(m.sessionId, workCwd);
-        const meta = defaultSyncMeta({
-          platform: source,
-          author,
-          cwd: workCwd,
-          sessionId: m.sessionId,
-          repoIdentity,
-        });
+      for (const m of selected) {
+        // --all 时会话可能来自任意工作区，scoped 查找（按 cwd 编码目录）会因
+        // 目录名解码有损而 miss——交由适配器全局查找；单 cwd 模式仍传 workCwd。
+        const session = await adapter.readSession(m.sessionId, opts.all ? undefined : workCwd);
+        if (opts.all) {
+          console.log(`  Source: ${session.cwd || 'unknown directory'}`);
+        }
+        // P3：归档键按会话原生 cwd 派生（见 deriveArchiveIdentity），而非 CLI 运行目录
+        const meta = defaultSyncMeta(
+          {
+            platform: source,
+            author,
+            cwd: session.cwd || workCwd,
+            sessionId: m.sessionId,
+            repoIdentity: deriveArchiveIdentity(session, source),
+          },
+          session.createdAt,
+        );
         syncMgr.saveSession(session, meta);
         saved++;
       }
-      const commitHash = syncMgr.gitCommit(`sync: push ${saved} session(s) from ${source}`);
-      syncMgr.gitPush();
-      console.log(`\n  ✓ Pushed ${saved} session(s) from ${source}`);
-      console.log(`  commit: ${commitHash.slice(0, 8)}\n`);
+      const commitHash = syncMgr.gitCommit(`sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`);
+      if (commitHash) {
+        syncMgr.gitPush();
+        console.log(`\n  ✓ Pushed ${saved} session(s) from ${source}`);
+        console.log(`  commit: ${commitHash.slice(0, 8)}\n`);
+      } else {
+        console.log(`\n  · No changes to push\n`);
+      }
+      } finally {
+        closeStdin();
+      }
     });
 
   // ── session pull ───────────────────────────────────────────
@@ -395,15 +468,26 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .description('Pull team sessions for the current project')
     .option('--repo-root <path>', 'Team repo root (defaults to cwd)')
     .option('--cwd <path>', 'Working directory (defaults to current directory)')
+    .option('--all', 'Rebuild indexes for every repo in the team repo (not just the current project)')
     .action(async (opts) => {
       const workCwd = opts.cwd ?? process.cwd();
       const repoRoot = resolveRepoRoot(opts.repoRoot);
-      const repoIdentity = resolveRepoIdentity(workCwd);
 
       const syncMgr = new SyncManager(repoRoot);
       syncMgr.gitPull();
-      const count = syncMgr.rebuildIndex(repoIdentity);
-      console.log(`\n  ✓ Pulled and indexed ${count} session(s)\n`);
+      if (opts.all) {
+        // P2：对所有 identity（含 _unattributed）逐个幂等重建索引
+        const identities = syncMgr.listAllRepoIdentities();
+        let total = 0;
+        for (const identity of identities) {
+          total += syncMgr.rebuildIndex(identity);
+        }
+        console.log(`\n  ✓ Pulled and indexed ${total} session(s) across ${identities.length} repo(s)\n`);
+      } else {
+        const repoIdentity = resolveRepoIdentity(workCwd);
+        const count = syncMgr.rebuildIndex(repoIdentity);
+        console.log(`\n  ✓ Pulled and indexed ${count} session(s)\n`);
+      }
     });
 
   // ── session list ───────────────────────────────────────────
@@ -413,30 +497,49 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--repo-root <path>', 'Team repo root (defaults to cwd)')
     .option('--cwd <path>', 'Working directory (defaults to current directory)')
     .option('--author <name>', 'Filter by author')
+    .option('--all', 'List sessions across all projects in the team repo (not just the current one)')
     .action(async (opts) => {
       const workCwd = opts.cwd ?? process.cwd();
       const repoRoot = resolveRepoRoot(opts.repoRoot);
       const repoIdentity = resolveRepoIdentity(workCwd);
 
       const syncMgr = new SyncManager(repoRoot);
-      const sessions = syncMgr.listSessions(repoIdentity, opts.author);
+      // P2：--all 走跨 repo 视图（含 _unattributed）；条目 repoIdentity 标识来源
+      const sessions = opts.all
+        ? syncMgr.listSessionsAcrossRepos(opts.author)
+        : syncMgr.listSessions(repoIdentity, opts.author);
 
       if (sessions.length === 0) {
         console.log('No team sessions found.');
         return;
       }
 
-      const repoLabel = repoIdentity ?? '_unattributed';
-      console.log(`\nSessions for ${repoLabel}:\n`);
-      console.log(`  SESSION                              AUTHOR       PLATFORM        MSGS  UPDATED`);
-      console.log(`  ──────────────────────────────────────────────────────────────────────────`);
-      for (const s of sessions) {
-        const name = s.sessionName.length > 36 ? s.sessionName.slice(0, 34) + '..' : s.sessionName.padEnd(36);
-        const authorCol = s.author.padEnd(12);
-        const platCol = s.platform.padEnd(16);
-        const msgCol = String(s.messageCount).padStart(4);
-        const dateCol = s.updatedAt.slice(0, 10);
-        console.log(`  ${name}  ${authorCol}${platCol}${msgCol}  ${dateCol}`);
+      if (opts.all) {
+        console.log(`\nSessions across all projects:\n`);
+        console.log(`  SESSION                              AUTHOR       PLATFORM        MSGS  UPDATED    SOURCE`);
+        console.log(`  ─────────────────────────────────────────────────────────────────────────────────────`);
+        for (const s of sessions) {
+          const name = s.sessionName.length > 36 ? s.sessionName.slice(0, 34) + '..' : s.sessionName.padEnd(36);
+          const authorCol = s.author.padEnd(12);
+          const platCol = s.platform.padEnd(16);
+          const msgCol = String(s.messageCount).padStart(4);
+          const dateCol = s.updatedAt.slice(0, 10);
+          const source = s.repoIdentity ?? '_unattributed';
+          console.log(`  ${name}  ${authorCol}${platCol}${msgCol}  ${dateCol}  ${source}`);
+        }
+      } else {
+        const repoLabel = repoIdentity ?? '_unattributed';
+        console.log(`\nSessions for ${repoLabel}:\n`);
+        console.log(`  SESSION                              AUTHOR       PLATFORM        MSGS  UPDATED`);
+        console.log(`  ──────────────────────────────────────────────────────────────────────────`);
+        for (const s of sessions) {
+          const name = s.sessionName.length > 36 ? s.sessionName.slice(0, 34) + '..' : s.sessionName.padEnd(36);
+          const authorCol = s.author.padEnd(12);
+          const platCol = s.platform.padEnd(16);
+          const msgCol = String(s.messageCount).padStart(4);
+          const dateCol = s.updatedAt.slice(0, 10);
+          console.log(`  ${name}  ${authorCol}${platCol}${msgCol}  ${dateCol}`);
+        }
       }
       console.log(`\n  ${sessions.length} session(s)\n`);
     });
@@ -458,7 +561,19 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const repoIdentity = resolveRepoIdentity(workCwd);
 
       const syncMgr = new SyncManager(repoRoot);
-      const { session } = syncMgr.loadSession(repoIdentity, sessionName, opts.author);
+      // resume 无 try/catch 时 loadSession 的错误会以未捕获异常打到终端。
+      // 常见根因是会话归档在其他项目名下（repoIdentity 不匹配）——
+      // 给出可操作的指引而不是裸 stack trace（见设计文档 P9）。
+      let session;
+      try {
+        ({ session } = syncMgr.loadSession(repoIdentity, sessionName, opts.author));
+      } catch (e) {
+        console.error(`Error: ${(e as Error).message}`);
+        console.error('The session may be archived under another project identity.');
+        console.error('Try `teamai session search --all <keyword>` to find it,');
+        console.error('or rerun with `--cwd <project path>` of the project it belongs to.');
+        process.exit(1);
+      }
 
       const resumeAdapter = safeGetAdapter(opts.platform);
       const resumeCwd = opts.cwd ?? process.cwd();
@@ -491,39 +606,21 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const syncMgr = new SyncManager(repoRoot);
       const loadedSessions: LoadedSession[] = [];
 
-      if (opts.all) {
-        // 遍历所有 repo
-        const repos = syncMgr.listRepos();
-        for (const repo of repos) {
-          const entries = syncMgr.listSessions(null); // _unattributed
-          // listRepos 返回的是编码后的目录名，需要用 null 遍历 _unattributed
-        }
-        // 简化：直接遍历 sessions/repos/ 下所有子目录
-        const allRepos = syncMgr.listRepos();
-        for (const _repo of allRepos) {
-          // listSessions 需要 repoIdentity（canonical），但 listRepos 返回的是编码名
-          // 这里用一个简化方案：遍历 _index.json
-        }
-        // _unattributed
-        const unattributed = syncMgr.listSessions(null);
-        for (const entry of unattributed) {
+      // P1：--all 遍历所有 repo（含 _unattributed）加载会话；
+      // 非 --all 只加载当前 repo。原实现的循环体是死代码——listRepos()
+      // 返回编码后的目录名且无解码器，canonical identity 只能从各 repo 的
+      // _index.json 反查（见 SyncManager.listAllRepoIdentities）。
+      const identitiesToSearch: Array<string | null> = opts.all
+        ? syncMgr.listAllRepoIdentities()
+        : [repoIdentity];
+      for (const identity of identitiesToSearch) {
+        for (const entry of syncMgr.listSessions(identity)) {
           try {
-            const { session } = syncMgr.loadSession(null, entry.sessionName, entry.author);
+            const { session } = syncMgr.loadSession(identity, entry.sessionName, entry.author);
             loadedSessions.push({ sessionName: entry.sessionName, author: entry.author, session });
           } catch {
             // skip corrupted
           }
-        }
-      }
-
-      // 当前 repo
-      const entries = syncMgr.listSessions(repoIdentity);
-      for (const entry of entries) {
-        try {
-          const { session } = syncMgr.loadSession(repoIdentity, entry.sessionName, entry.author);
-          loadedSessions.push({ sessionName: entry.sessionName, author: entry.author, session });
-        } catch {
-          // skip corrupted
         }
       }
 
@@ -559,8 +656,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       // 回滚是破坏性操作（删 CLI 文件 + 删 IDE 侧边栏条目），先看清楚再删。
       if (isDryRun()) {
         console.log(
-          `\n  · --dry-run：将删除 ${opts.platform}/${sessionId}` +
-            `${opts.cwd ? ` (仅 ${opts.cwd})` : ' (所有工作区)'}\n`,
+          `\n  · --dry-run: would delete ${opts.platform}/${sessionId}` +
+            `${opts.cwd ? ` (only ${opts.cwd})` : ' (all workspaces)'}\n`,
         );
         return;
       }
@@ -570,7 +667,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       // 适配器返回 false 表示确认没删到任何东西（会话不存在）。
       // 之前无论是否存在都打印 ✓，静默 no-op 却报成功，脚本无法判断是否生效。
       if (deleted === false) {
-        console.log(`\n  · 未找到会话 ${opts.platform}/${sessionId}，无变更（可能已被删除）\n`);
+        console.log(`\n  · Session not found: ${opts.platform}/${sessionId}, no changes (may have already been deleted)\n`);
         return;
       }
       console.log(`\n  ✓ Rolled back: ${opts.platform}/${sessionId}\n`);

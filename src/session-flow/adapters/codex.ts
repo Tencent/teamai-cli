@@ -237,7 +237,7 @@ export class CodexAdapter extends AgentAdapter {
 
   async readSession(sessionId: string, projectPath?: string): Promise<Session> {
     const f = this.findSessionFile(sessionId);
-    if (!f) throw new Error(`未找到 Codex 会话: ${sessionId}`);
+    if (!f) throw new Error(`Codex session not found: ${sessionId}`);
 
     const records = [...readJsonl(f)];
 

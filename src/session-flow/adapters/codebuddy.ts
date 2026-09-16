@@ -1,5 +1,9 @@
 /**
- * adapters/codebuddy.ts — CodeBuddy 平台适配器。
+ * adapters/codebuddy.ts — CodeBuddy **CLI** 平台适配器。
+ *
+ * 只覆盖 CLI 存储；CodeBuddy **IDE**（图形化侧边栏「历史对话」）是另一套
+ * 独立存储，由 `adapters/codebuddy-ide.ts` 负责。两者会话互不通用，
+ * 本适配器不再读写 IDE 侧。
  *
  * 读取/写入 `~/.codebuddy/projects/<encoded-cwd>/<session-uuid>.jsonl` 格式。
  * cwd 编码: `/` → `-`，无前导 `-`。
@@ -22,10 +26,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta } from './base.js';
 import type { Session, Message, ContentBlock, TextBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
-import { writeIdeSession, deleteIdeSession } from '../ide-history.js';
 import {
   getCodeBuddyProjectsDir,
-  encodeCwdGeneric,
+  encodeCwdCodeBuddy,
   decodeCwdGeneric,
   readJsonl,
   readJsonlHead,
@@ -34,6 +37,7 @@ import {
   dirExists,
   removeDirRecursive,
 } from '../fs.js';
+import { cleanTitleText, isInjectedText, fallbackTitle } from '../title.js';
 
 // ---------------------------------------------------------------------------
 // 工具名归一化映射
@@ -111,7 +115,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
   private resolveProjectDir(projectPath?: string): string {
     const root = getCodeBuddyProjectsDir();
     if (projectPath) {
-      return path.join(root, encodeCwdGeneric(projectPath));
+      return path.join(root, encodeCwdCodeBuddy(projectPath));
     }
     return root;
   }
@@ -205,8 +209,12 @@ export class CodeBuddyAdapter extends AgentAdapter {
             if (Array.isArray(content)) {
               for (const block of content) {
                 if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'input_text') {
-                  firstUserText = String((block as Record<string, unknown>).text ?? '');
-                  break;
+                  const text = String((block as Record<string, unknown>).text ?? '');
+                  // 首个文本块常是 system-reminder 等注入，跳过继续找真正的提问
+                  if (!isInjectedText(text)) {
+                    firstUserText = text;
+                    break;
+                  }
                 }
               }
             }
@@ -220,7 +228,14 @@ export class CodeBuddyAdapter extends AgentAdapter {
     if (!createdAt) createdAt = new Date().toISOString();
     if (!updatedAt) updatedAt = createdAt;
 
-    title = aiTitle || (firstUserText ? firstUserText.slice(0, 50) : `Session ${sessionId.slice(0, 8)}`);
+    // ai-title 是 CodeBuddy 自己起的标题，最可靠；否则退回首条用户文本。
+    // 首条「用户消息」常常是 system-reminder 等注入块，不清洗的话
+    // 会话列表里显示的就是一整段提示词原文。
+    if (aiTitle && !isInjectedText(aiTitle)) {
+      title = aiTitle.slice(0, 60);
+    } else {
+      title = cleanTitleText(firstUserText) || fallbackTitle(sessionId);
+    }
 
     let sizeBytes = 0;
     try {
@@ -245,11 +260,23 @@ export class CodeBuddyAdapter extends AgentAdapter {
   async readSession(sessionId: string, projectPath?: string): Promise<Session> {
     const jsonlPath = this.findSessionFile(sessionId, projectPath);
     if (!jsonlPath) {
-      throw new Error(`CodeBuddy 会话文件未找到: session_id=${sessionId}`);
+      throw new Error(`CodeBuddy session file not found: session_id=${sessionId}`);
     }
 
     const cwd = decodeCwdGeneric(path.basename(path.dirname(jsonlPath)));
     const records = [...readJsonl(jsonlPath)];
+
+    // writeSession 写入的每行都带 cwd（真实绝对路径）。目录名解码是恒等函数
+    // （还原不出真实路径），归档键（repoIdentity）必须优先用记录里的原生 cwd
+    // （设计文档 Key invariant）；恢复失败退回目录名。
+    let nativeCwd: string | undefined;
+    for (const rec of records) {
+      if (typeof rec.cwd === 'string' && path.isAbsolute(rec.cwd)) {
+        nativeCwd = rec.cwd;
+        break;
+      }
+    }
+    const sessionCwd = nativeCwd ?? cwd;
 
     let title = '';
     let createdAt: string | undefined;
@@ -262,7 +289,10 @@ export class CodeBuddyAdapter extends AgentAdapter {
       const rtype = rec.type as string;
 
       if (rtype === 'ai-title') {
-        title = String(rec.aiTitle ?? '');
+        // CodeBuddy 偶尔把注入块原文存成 ai-title，照收会污染整个迁移链路
+        // （预览、目标侧标题全是提示词原文）。
+        const t = String(rec.aiTitle ?? '');
+        if (t && !isInjectedText(t)) title = t.slice(0, 100);
         continue;
       }
 
@@ -360,15 +390,16 @@ export class CodeBuddyAdapter extends AgentAdapter {
         if (msg.role === 'user') {
           for (const block of msg.content) {
             if (block.type === 'text' && block.text) {
-              title = block.text.slice(0, 50);
-              break;
+              if (isInjectedText(block.text)) continue; // 注入块不当标题
+              title = cleanTitleText(block.text);
+              if (title) break;
             }
           }
           if (title) break;
         }
       }
     }
-    if (!title) title = `Session ${sessionId.slice(0, 8)}`;
+    if (!title) title = fallbackTitle(sessionId);
 
     if (!createdAt) createdAt = new Date().toISOString();
     if (!updatedAt) updatedAt = createdAt;
@@ -376,7 +407,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     return {
       sessionId,
       title,
-      cwd,
+      cwd: sessionCwd,
       platform: this.platform,
       createdAt,
       updatedAt,
@@ -416,7 +447,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     }
 
     const cwd = projectPath ?? session.cwd;
-    const projDir = path.join(getCodeBuddyProjectsDir(), encodeCwdGeneric(cwd));
+    const projDir = path.join(getCodeBuddyProjectsDir(), encodeCwdCodeBuddy(cwd));
     const jsonlPath = path.join(projDir, `${sessionId}.jsonl`);
 
     const records: Record<string, unknown>[] = [];
@@ -545,28 +576,17 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
     writeJsonl(jsonlPath, records);
 
-    // 同步进 CodeBuddy IDE 侧边栏「历史对话」。
-    // CLI 路径（~/.codebuddy/projects/...）与 IDE 的 history 是两套独立存储，
-    // 只写前者的话 IDE 侧边栏看不到。此为增强步骤，失败静默降级。
-    try {
-      const ideResult = writeIdeSession({ ...session, sessionId }, cwd);
-      if (ideResult.synced > 0) {
-        console.log(`  ✓ IDE 侧边栏已同步（${ideResult.messageCount} 条消息）`);
-      } else if (ideResult.skipped && process.env.TEAMAI_DEBUG) {
-        console.log(`  · IDE 侧边栏未同步：${ideResult.skipped}`);
-      }
-    } catch {
-      // IDE 同步失败不影响 CLI 路径的迁移结果
-    }
+    // 这里**不再**顺带写 CodeBuddy IDE 的 history。
+    // CLI（~/.codebuddy/projects/...）与 IDE（CodeBuddyExtension/.../history）是两套
+    // 独立存储，而本适配器的 list/read/delete 只覆盖 CLI 一侧——写入时偷偷双写会造
+    // 成读写不对称：迁进来的会话出现在 IDE 侧边栏，却既列不出来也删不掉。
+    // 需要 IDE 侧会话请显式迁移到 `codebuddy-ide` 平台。
 
     return sessionId;
   }
 
   async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
     const jsonlPaths = this.findAllSessionFiles(sessionId, projectPath);
-    const cwd =
-      projectPath ??
-      (jsonlPaths[0] ? decodeCwdGeneric(path.basename(path.dirname(jsonlPaths[0]))) : undefined);
 
     let cliDeleted = false;
     for (const jsonlPath of jsonlPaths) {
@@ -584,17 +604,8 @@ export class CodeBuddyAdapter extends AgentAdapter {
       }
     }
 
-    // 同步清理 IDE 侧边栏里的对应会话。
-    // 不能包在 if (cwd) 里——jsonl 缺失时 cwd 为 undefined，
-    // 会导致 IDE 侧会话永久残留且再也清不掉（此后也无法再用 rollback 清理）。
-    // 反过来，cwd 存在时 deleteIdeSession 只清理该工作区，避免误删别的项目里的同名副本。
-    let ideCleaned = 0;
-    try {
-      ideCleaned = deleteIdeSession(sessionId, cwd);
-    } catch {
-      // ignore
-    }
-
-    return cliDeleted || ideCleaned > 0;
+    // 只清理 CLI 侧。IDE 侧会话由 `codebuddy-ide` 平台负责，
+    // 本适配器不再越界删除自己从未写入过的存储。
+    return cliDeleted;
   }
 }

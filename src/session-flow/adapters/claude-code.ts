@@ -376,19 +376,27 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   async readSession(sessionId: string, projectPath?: string): Promise<Session> {
     const jsonlPath = this.findSessionFile(sessionId, projectPath);
     if (!jsonlPath) {
-      throw new Error(`Claude Code 会话文件未找到: session_id=${sessionId}, project_path=${projectPath ?? 'undefined'}`);
+      throw new Error(`Claude Code session file not found: session_id=${sessionId}, project_path=${projectPath ?? 'undefined'}`);
     }
 
     const cwd = decodeCwdClaude(path.basename(path.dirname(jsonlPath)));
 
     // 收集所有消息记录
     const rawRecords: Record<string, unknown>[] = [];
+    let nativeCwd: string | undefined;
     for (const record of readJsonl(jsonlPath)) {
       const rtype = record.type as string;
       if (SKIP_TYPES.has(rtype)) continue;
       if (rtype !== 'user' && rtype !== 'assistant') continue;
+      // 每条消息记录都带真实 cwd（绝对路径）。目录名解码是有损的
+      // （`-` 可能来自 `/` 或空格），归档键（repoIdentity）必须优先用
+      // 记录里的原生 cwd（设计文档 Key invariant）；恢复失败退回解码目录名。
+      if (nativeCwd === undefined && typeof record.cwd === 'string' && path.isAbsolute(record.cwd)) {
+        nativeCwd = record.cwd;
+      }
       rawRecords.push(record);
     }
+    const sessionCwd = nativeCwd ?? cwd;
 
     // DAG 拍平
     const messages = this.flattenDag(rawRecords);
@@ -437,7 +445,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     return {
       sessionId,
       title,
-      cwd,
+      cwd: sessionCwd,
       platform: this.platform,
       createdAt,
       updatedAt,
