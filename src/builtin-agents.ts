@@ -7,7 +7,7 @@ import type { TeamaiConfig, LocalConfig } from './types.js';
 import { resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
 import { ResourceHandler } from './resources/base.js';
 import { getUserHome } from './utils/home.js';
-import { ALL_SUPPORTED_TOOLS, renderForTool, reverseFromClaude } from './resources/agent-format.js';
+import { ALL_SUPPORTED_TOOLS, agentStemFromFilename, renderForTool, reverseFromClaude } from './resources/agent-format.js';
 import type { ToolName } from './resources/agent-format.js';
 
 // ─── Built-in agents deployment ──────────────────────────
@@ -78,8 +78,7 @@ async function removeStaleAgentSiblings(targetAgentsDir: string, stem: string, t
     return; // dir missing or unreadable — nothing to clean
   }
   for (const file of files) {
-    const base = file.replace(/\.(md|toml|json)$/, '');
-    if (base !== stem) continue;
+    if (agentStemFromFilename(file) !== stem) continue;
     if (file === `${stem}${targetExt}`) continue;
     try {
       await remove(path.join(targetAgentsDir, file));

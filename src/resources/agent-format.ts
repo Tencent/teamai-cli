@@ -26,6 +26,25 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
 
 export type AgentFileExtension = '.md' | '.toml' | '.json';
 
+/**
+ * Every extension an agent render may carry on disk.
+ *
+ * Writers use `agentFileExtensionForTool`. Scanners and deleters use this list,
+ * so a removal clears a name on every tool whatever format that tool renders.
+ */
+export const AGENT_FILE_EXTENSIONS = ['.md', '.toml', '.json'] as const satisfies readonly AgentFileExtension[];
+
+/**
+ * Extract an agent name stem from a filename.
+ * Accepts every native agent extension; returns null for other files.
+ */
+export function agentStemFromFilename(filename: string): string | null {
+  for (const ext of AGENT_FILE_EXTENSIONS) {
+    if (filename.endsWith(ext)) return filename.slice(0, -ext.length);
+  }
+  return null;
+}
+
 export function agentFileExtensionForTool(tool: ToolName): AgentFileExtension {
   switch (tool) {
     case 'codex':

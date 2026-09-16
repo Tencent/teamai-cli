@@ -32,6 +32,7 @@ import {
 } from './types.js';
 import { BUILTIN_RULE_NAMES } from './builtin-rules.js';
 import { ruleStemFromFilename } from './resources/rule-format.js';
+import { agentStemFromFilename } from './resources/agent-format.js';
 import { listTeamAgentDirs } from './resources/agents.js';
 import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
@@ -338,8 +339,8 @@ async function discoverToolResources(
     const agentsDir = path.join(baseDir, toolPath.agents);
     if (await pathExists(agentsDir)) {
       for (const file of await listFiles(agentsDir)) {
-        if (!file.endsWith('.md') && !file.endsWith('.toml') && !file.endsWith('.json')) continue;
-        const name = path.basename(file).replace(/\.(md|toml|json)$/, '');
+        const name = agentStemFromFilename(path.basename(file));
+        if (name === null) continue;
         if (!teamAgentNames.has(name) && !BUILTIN_AGENT_NAMES.has(name)) continue;
         res.agentFiles.push(path.join(agentsDir, file));
       }
