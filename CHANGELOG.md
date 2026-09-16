@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 🐛 Bug Fixes
 
+- `teamai tags subscribe` and `teamai tags unsubscribe` now invalidate the pull revision cache, as `teamai skill exclude` already does, so the next `teamai pull` applies the new subscriptions instead of reporting "Already synced" when the team repo has not changed.
 - `teamai pull` now deletes a tombstoned agent under all three render extensions, so the Codex `.toml` and Kiro `.json` copies of a removed agent no longer survive on other machines. The cleanup also runs when the team repo rev is unchanged, so an upgrade reaches machines that already pulled the tombstone with an older CLI. `teamai remove agents <name>` also honours `enabledAgents` and no longer deletes from excluded tools. Fixes [#576](https://github.com/Tencent/teamai-cli/issues/576).
 - `teamai remove rules <name>` and `teamai remove skills <name>` now honour `enabledAgents` and leave excluded tools untouched, matching the whitelist `teamai pull` already applies when it cleans up a tombstoned resource. Fixes [#590](https://github.com/Tencent/teamai-cli/issues/590).
 - `teamai import --cache-status` and `--cache-gc` now expose their existing JSON output through the CLI `--json` option.

@@ -616,7 +616,7 @@ teamai tags subscribe frontend testing
 teamai tags unsubscribe testing
 ```
 
-管理员可通过 `teamai tags add` 和 `teamai tags remove` 管理资源标签。修改订阅后运行 `teamai pull`。
+管理员可通过 `teamai tags add` 和 `teamai tags remove` 管理资源标签。修改订阅后运行 `teamai pull`，即使团队仓库没有变化也会执行全量同步，新匹配的资源会被安装，取消订阅的资源会被清理。
 
 ---
 

@@ -639,7 +639,7 @@ teamai tags subscribe frontend testing
 teamai tags unsubscribe testing
 ```
 
-Admins can manage resource tags with `teamai tags add` and `teamai tags remove`. Run `teamai pull` after changing your subscriptions.
+Admins can manage resource tags with `teamai tags add` and `teamai tags remove`. Run `teamai pull` after changing your subscriptions; it does a full sync even when the team repo has not changed, so newly matched resources are installed and unsubscribed ones are removed.
 
 ---
 
