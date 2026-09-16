@@ -49,6 +49,8 @@ See [docs/providers.md](../docs/providers.md) for how to add a new git provider.
 4. Use conventional commits where possible: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
 5. Open a PR with a clear description: what's the problem, what's the fix, anything reviewers should pay attention to.
 
+Your PR also gets an informational `Code Erosion` report (SlopCodeBench verbosity/erosion metrics) posted as a comment — it never blocks the merge and is just there to flag creeping complexity. See [docs/ci-code-erosion.md](../docs/ci-code-erosion.md).
+
 ## Coding Style
 
 - TypeScript strict mode is on; avoid `any` unless genuinely needed.
