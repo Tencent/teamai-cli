@@ -11,6 +11,7 @@ import type {
 import {
   getMcpSharing,
   getEnvBackupPath,
+  isAgentExcluded,
   getDataHome,
   managedMcpManifestPath,
   managedMcpManifestKey,
@@ -292,6 +293,13 @@ export function codexServerNames(source: string): string[] {
 
 // ─── Main entry ──────────────────────────────────────────────
 
+function mcpTargetExcluded(localConfig: LocalConfig, target: McpTarget): boolean {
+  if (!isAgentExcluded(localConfig, target.tool)) return false;
+  // tclaude has no project-scope MCP file: it reads the <root>/.mcp.json the
+  // claude target writes, so that target stays live while tclaude is enabled.
+  return !(target.projectScope && target.tool === 'claude' && !isAgentExcluded(localConfig, 'tclaude'));
+}
+
 /**
  * Reconcile one scope's tool configs to the team's desired MCP server set.
  * Idempotent: unchanged servers produce no write at all.
@@ -358,6 +366,10 @@ export async function reconcileMcpForConfig(
   const vars = await buildVarTable(localConfig);
 
   for (const target of targets) {
+    // Same enabledAgents / disabledAgents gate as the other resource syncs. The
+    // manifest entry is left as is: an excluded tool is skipped, not cleaned,
+    // and `removeAll` (uninstall) still reaches every tool.
+    if (!removeAll && mcpTargetExcluded(localConfig, target)) continue;
     const manifestKey = managedMcpManifestKey(target.tool, target.projectScope);
     const owned = manifest[manifestKey] ?? [];
     const ownedNames = new Set(owned.map((r) => r.name));
