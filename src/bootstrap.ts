@@ -191,8 +191,8 @@ export async function bootstrapSelfRepo(
     // Seed the tool skills-dir so hooks + skills inject on this fresh clone
     // (isToolInstalled would otherwise skip everything — no <repo>/.claude yet).
     try {
-      const { seedSelfModeToolDirs } = await import('./known-agents.js');
-      await seedSelfModeToolDirs(localConfig, teamConfig);
+      const { seedEnabledAgentDirs } = await import('./known-agents.js');
+      await seedEnabledAgentDirs(localConfig, teamConfig);
     } catch (e) {
       log.debug(`[bootstrap] tool-dir seeding skipped: ${(e as Error).message}`);
     }

@@ -249,6 +249,7 @@ export class RulesHandler extends ResourceHandler {
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
     filteredRules?: ResourceItem[],
+    force?: boolean,
   ): Promise<void> {
     const rules = filteredRules ?? await this.scanTeamForPull(teamConfig, localConfig);
 
@@ -283,6 +284,13 @@ export class RulesHandler extends ResourceHandler {
     if (rules.length === 0) return;
 
     // 1. Distribute rule files to each tool's rules/ directory
+    if (force) {
+      const baseDir = resolveBaseDir(localConfig);
+      for (const [, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+        if (!toolPath.rules) continue;
+        await ensureDir(path.join(baseDir, toolPath.rules));
+      }
+    }
     for (const rule of rules) {
       await this.pullItem(rule, teamConfig, localConfig);
     }

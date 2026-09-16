@@ -472,27 +472,114 @@ function logSyncDetail(
  * this set alongside the revision prevents a pull for one tool from suppressing
  * the first resource sync for another.
  */
+/**
+ * Tool ids whose <field> directory currently exists for this scope, excluding
+ * agents disabled via enabledAgents/disabledAgents. The same walk (installed
+ * dir → not excluded) previously repeated once per resource type; shared here
+ * so rules/skills/agents' "did anything actually get written" checks and the
+ * revision-cache target list all agree on one answer (issue #574/#585).
+ */
+async function installedToolsFor(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  field: 'rules' | 'skills' | 'agents',
+): Promise<string[]> {
+  const baseDir = resolveBaseDir(localConfig);
+  const found: string[] = [];
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    if (isAgentExcluded(localConfig, tool)) continue;
+    const dir = toolPath[field];
+    if (!dir) continue;
+    if (await ResourceHandler.isToolInstalled(dir, baseDir)) found.push(tool);
+  }
+  return found;
+}
+
+/** Whether at least one configured tool's <field> directory currently exists. */
+async function hasInstalledTargetFor(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  field: 'rules' | 'skills' | 'agents',
+): Promise<boolean> {
+  return (await installedToolsFor(teamConfig, localConfig, field)).length > 0;
+}
+
 async function getInstalledResourceTargets(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
 ): Promise<string[]> {
+  const targets = new Set<string>();
+  for (const field of ['skills', 'rules', 'agents'] as const) {
+    for (const tool of await installedToolsFor(teamConfig, localConfig, field)) {
+      targets.add(tool);
+    }
+  }
+  return [...targets].sort();
+}
+
+/**
+ * Every extension a tombstoned resource may wear in a tool's directory.
+ *
+ * Rules carry a per-tool extension (`.mdc` for compatible tools), and those
+ * dirs may still hold a `.md` copy from the layout that predates it. Agents are
+ * rendered per tool as `.md`, `.toml` or `.json`. Skills are directories, so
+ * their empty suffix leaves the bare name.
+ */
+function tombstoneExtensions(type: ResourceType, tool: string): readonly string[] {
+  if (type === 'rules') return [...new Set([ruleFileExtensionForTool(tool), '.md'])];
+  if (type === 'agents') return AGENT_FILE_EXTENSIONS;
+  return [''];
+}
+
+/**
+ * Delete the local copies of every resource the team has tombstoned.
+ *
+ * Called from the full sync and from the "already synced" fast path: a CLI
+ * upgrade that widens the extensions above must still reach a machine whose
+ * team repo HEAD has not moved since it pulled the tombstone (issue #576).
+ */
+async function cleanupTombstonedResources(
+  freshConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  scopeLabel: string,
+): Promise<void> {
+  // Each entry maps a resource type to the field on toolPath that names the
+  // tool-side directory; `tombstoneExtensions` supplies the filename suffixes.
+  const tombstoneTypes: { type: ResourceType; toolPathField: 'rules' | 'skills' | 'agents' }[] = [
+    { type: 'rules', toolPathField: 'rules' },
+    { type: 'skills', toolPathField: 'skills' },
+    { type: 'agents', toolPathField: 'agents' },
+  ];
+
   const baseDir = resolveBaseDir(localConfig);
-  const targets: string[] = [];
+  for (const { type, toolPathField } of tombstoneTypes) {
+    const handler = getHandler(type);
+    const tombstones = await handler.readTombstones(localConfig);
+    if (tombstones.size === 0) continue;
 
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    if (isAgentExcluded(localConfig, tool)) continue;
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
+      const dir = toolPath[toolPathField];
+      if (!dir) continue;
+      if (!await ResourceHandler.isToolInstalled(dir, baseDir)) continue;
+      if (isAgentExcluded(localConfig, tool)) continue;
 
-    const resourcePaths = [toolPath.skills, toolPath.rules, toolPath.agents]
-      .filter((resourcePath): resourcePath is string => !!resourcePath);
-    for (const resourcePath of resourcePaths) {
-      if (await ResourceHandler.isToolInstalled(resourcePath, baseDir)) {
-        targets.push(tool);
-        break;
+      for (const name of tombstones) {
+        for (const extension of tombstoneExtensions(type, tool)) {
+          const localPath = path.join(baseDir, dir, `${name}${extension}`);
+          if (!await pathExists(localPath)) continue;
+          // Even an upstream (tombstone) removal must not blow away a local
+          // repo's stash/unpushed history inside a skill directory. Keep
+          // + warn; the user can delete it manually once backed up.
+          if (type === 'skills' && await hasVcsMetadataRecursive(localPath)) {
+            log.warn(`[${scopeLabel}] Kept tombstoned skill "${name}" (${tool}): it has local VCS metadata (.git) that may hold unpushed history. Back it up, then delete it manually.`);
+            continue;
+          }
+          await remove(localPath);
+          log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);
+        }
       }
     }
   }
-
-  return targets.sort();
 }
 
 /**
@@ -564,7 +651,7 @@ async function cleanupTombstonedResources(
  * Pull resources for a single scope. This is the core sync logic extracted
  * from the original pull() function to support both user and project scope.
  */
-async function pullForScope(
+export async function pullForScope(
   localConfig: LocalConfig,
   options: GlobalOptions,
   policy: {
@@ -691,12 +778,17 @@ async function pullForScope(
         // stale local rule files and deactivates the OpenCode instructions glob
         // when the team's last rule is removed. Guarding on items.length > 0
         // would leak those artifacts on the machine after upstream deletion.
-        await rulesHandler.pullAllRules(freshConfig, localConfig, items);
+        await rulesHandler.pullAllRules(freshConfig, localConfig, items, options.force);
         if (items.length > 0) {
-          log.success(`[${scopeLabel}] Synced ${items.length} rule(s)${skipped.length > 0 ? ` (skipped ${skipped.length} by tags)` : ''}`);
+          const hasTarget = await hasInstalledTargetFor(freshConfig, localConfig, 'rules');
+          if (hasTarget) {
+            log.success(`[${scopeLabel}] Synced ${items.length} rule(s)${skipped.length > 0 ? ` (skipped ${skipped.length} by tags)` : ''}`);
+            totalSynced += items.length;
+          } else {
+            log.warn(`[${scopeLabel}] ${items.length} rule(s) available but no installed tool directory found — nothing written. Create the tool's directory (e.g. mkdir .claude) and pull again, or use teamai init --agent.`);
+          }
         }
       }
-      totalSynced += items.length;
       continue;
     }
 
@@ -800,18 +892,22 @@ async function pullForScope(
         }
       }
     } else {
-      for (const item of items) {
-        await handler.pullItem(item, freshConfig, localConfig);
-      }
-
-      if (type === 'skills') {
-        logSyncDetail(type, items, existingNames, !!options.verbose, scopeLabel, skippedByTags);
+      const hasTarget = await hasInstalledTargetFor(freshConfig, localConfig, type as 'skills' | 'agents');
+      if (!hasTarget) {
+        log.warn(`[${scopeLabel}] ${items.length} ${type} available but no installed tool directory found — nothing written. Create the tool's directory and pull again, or use teamai init --agent.`);
       } else {
-        log.success(`[${scopeLabel}] Synced ${items.length} ${type}`);
+        for (const item of items) {
+          await handler.pullItem(item, freshConfig, localConfig);
+        }
+
+        if (type === 'skills') {
+          logSyncDetail(type, items, existingNames, !!options.verbose, scopeLabel, skippedByTags);
+        } else {
+          log.success(`[${scopeLabel}] Synced ${items.length} ${type}`);
+        }
+        totalSynced += items.length;
       }
     }
-
-    totalSynced += items.length;
   }
 
   // Step 3: Clean up tombstoned resources

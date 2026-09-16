@@ -150,7 +150,7 @@ export interface ResolvedAgent extends KnownAgent {
  *
  * Returns the list of agent ids whose dirs were ensured.
  */
-export async function seedSelfModeToolDirs(
+export async function seedEnabledAgentDirs(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
 ): Promise<string[]> {

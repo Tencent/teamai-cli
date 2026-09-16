@@ -476,6 +476,23 @@ export async function initHttp(
     log.debug(`Local agent init: ${(e as Error).message}`);
   }
 
+  // Step 6.5: init --agent explicitly declares which tools to set up, so
+  // seed their dirs and do one real sync now instead of waiting for a
+  // SessionStart hook that may never fire (issue #574/#585).
+  if (requestedAgents.length > 0) {
+    try {
+      const { seedEnabledAgentDirs } = await import('./known-agents.js');
+      const seeded = await seedEnabledAgentDirs(localConfig, teamConfig);
+      if (seeded.length > 0) {
+        const { pullForScope } = await import('./pull.js');
+        await pullForScope(localConfig, {});
+        log.success(`Synced skills, rules, and docs for: ${seeded.join(', ')}`);
+      }
+    } catch (e) {
+      log.warn(`Initial sync skipped: ${(e as Error).message}`);
+    }
+  }
+
   log.success('teamai initialized (HTTP read-only)!');
   log.info('Skills/rules will auto-sync on each session start via report/sync. This team is read-only (no push).');
   closePrompt();
@@ -883,7 +900,7 @@ export async function initSelfRepo(options: GlobalOptions & {
   // Which AI tools to set up in this repo (create skills dir + inject hooks +
   // commit their settings.json). Resolved from --agent, else HOME detection
   // (non-interactive), else an interactive picker. Written to enabledAgents,
-  // which drives seedSelfModeToolDirs and hook injection alike.
+  // which drives seedEnabledAgentDirs and hook injection alike.
   const selectedAgents = await promptForSelfModeAgents(options);
   if (selectedAgents.length > 0) {
     const existing = await loadLocalConfigForScope('project', businessRepoRoot);
@@ -914,8 +931,8 @@ export async function initSelfRepo(options: GlobalOptions & {
   // otherwise skip everything).
   const filterAgents = selectedAgents.length > 0 ? selectedAgents : undefined;
   try {
-    const { seedSelfModeToolDirs } = await import('./known-agents.js');
-    const seeded = await seedSelfModeToolDirs(localConfig, teamConfig);
+    const { seedEnabledAgentDirs } = await import('./known-agents.js');
+    const seeded = await seedEnabledAgentDirs(localConfig, teamConfig);
     if (seeded.length > 0) log.debug(`Seeded tool dirs for: ${seeded.join(', ')}`);
   } catch (e) {
     log.debug(`Tool-dir seeding skipped: ${(e as Error).message}`);
@@ -1623,6 +1640,23 @@ export async function init(options: GlobalOptions & {
       }
     } catch (e) {
       log.debug(`Built-in skills deployment skipped: ${(e as Error).message}`);
+    }
+
+    // Step 7.6: init --agent explicitly declares which tools to set up, so
+    // seed their dirs and do one real sync now instead of waiting for a
+    // SessionStart hook that may never fire (issue #574/#585).
+    if (requestedAgents.length > 0) {
+      try {
+        const { seedEnabledAgentDirs } = await import('./known-agents.js');
+        const seeded = await seedEnabledAgentDirs(localConfig, reloadedTeamConfig);
+        if (seeded.length > 0) {
+          const { pullForScope } = await import('./pull.js');
+          await pullForScope(localConfig, {});
+          log.success(`Synced skills, rules, and docs for: ${seeded.join(', ')}`);
+        }
+      } catch (e) {
+        log.warn(`Initial sync skipped: ${(e as Error).message}`);
+      }
     }
   }
 
