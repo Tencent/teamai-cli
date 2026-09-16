@@ -104,6 +104,27 @@ M1 and M2 are independent in code but share the same branch; M3 lands last and v
 - Streaming/lazy loading for search (known limitation: full sessions are read into memory; recorded, not fixed)
 - SessionSave/`teamai session save` (different system — digest summaries)
 
+## Known limitations (QA sweep, recorded — not fixed by design)
+
+Verified by `src/__tests__/fidelity-sweep.test.ts` (roundtrip matrix, kept as the fidelity
+regression suite):
+
+- **fidelityScore is a proxy metric.** It only measures IR-block-level degradations. Content
+  deformation (dropped empty messages, timestamp collapse, sessionId regeneration, title
+  drift, message splitting in codex) is invisible to it. Do not treat 100% as "byte-perfect".
+- **codex message splitting**: `[thinking, text, tool_call]` assistant turns are written as
+  separate codex response_items and read back as more messages than went in.
+- **Empty-content messages** are dropped by several adapters' writers/readers (semantic
+  choice per adapter; unifying would change existing behavior).
+- **sessionId is platform-native.** v4 (claude-code), v7 (codex), 32-hex (codebuddy-ide)
+  each regenerate on write; a cross-platform chain therefore accumulates one archive per
+  platform. The session id you resume with is always the target platform's.
+- **claude-code flattenDag** drops sidechain branches and can promote orphan nodes early;
+  fork branches interleave into the main timeline.
+- **cursor has no stored title** — the title is derived from the first real user text;
+  sessions whose only real content is tool output may title from that snippet.
+- **codex has no on-disk title mechanism** — roundtrip titles degrade to `Session <ts>`.
+
 ## End-to-end test plan (real CLI, per AGENTS.md — type-check/unit tests don't count)
 
 1. `node dist/index.js session platforms` — all 6 platforms listed, `codebuddy` and `codebuddy-ide` both `✓ installed`

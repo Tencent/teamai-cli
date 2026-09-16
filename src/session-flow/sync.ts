@@ -284,7 +284,10 @@ export class SyncManager {
         return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
       }
     } catch {
-      // corrupted index → rebuild
+      // 索引损坏（解析失败）时静默重建会让 dedup 键丢失——同一会话再推
+      // 会生成 _1 副本而用户毫无感知。至少喊一声，并给出自救命令。
+      console.warn(`Warning: corrupted session index at ${p}, treating as empty.`);
+      console.warn(`Run 'teamai session pull --all --repo-root <repo>' to rebuild indexes.`);
     }
     return { version: 1, repoIdentity, updatedAt: utcNow(), sessions: [] };
   }
@@ -344,10 +347,17 @@ export class SyncManager {
     repoIdentity: string | null,
     sessionId: string,
     author?: string,
+    platform?: string,
   ): IndexEntry | undefined {
     const index = this.readIndex(repoIdentity);
     return index.sessions.find(
-      (s) => s.sessionId === sessionId && (!author || s.author === author),
+      (s) =>
+        s.sessionId === sessionId &&
+        (!author || s.author === author) &&
+        // platform 参与去重键：同一 sessionId 迁移到不同平台是不同的归档物
+        // （meta.platform 各自独立），不能互相顶替——否则先 push codebuddy
+        // 再 migrate --push 到 claude-code 会把前一条归档覆盖掉。
+        (!platform || s.platform === platform),
     );
   }
 
@@ -366,7 +376,7 @@ export class SyncManager {
     // P8 去重：同一 origin.sessionId + author 重复推送时，复用原 sessionName
     // 覆盖写（upsertIndexEntry 按 sessionName:author 命中既有条目原地更新），
     // 而不是 resolveNameConflict 生成 `xxx_1` 副本。
-    const existing = this.findByOriginSessionId(repoId, meta.origin.sessionId, author);
+    const existing = this.findByOriginSessionId(repoId, meta.origin.sessionId, author, session.platform);
     if (existing) {
       sessionName = existing.sessionName;
     } else {

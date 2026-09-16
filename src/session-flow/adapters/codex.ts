@@ -23,6 +23,7 @@ import { AgentAdapter, type SessionMeta } from './base.js';
 import type { Session, Message, ContentBlock, TextBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
 import {
   getCodexSessionsDir,
+  resolveRealCwd,
   readJsonl,
   readJsonlHead,
   writeJsonl,
@@ -144,7 +145,10 @@ export class CodexAdapter extends AgentAdapter {
 
   private findSessionFile(sessionId: string): string | null {
     for (const f of this.scanJsonlFiles()) {
-      if (path.basename(f).includes(sessionId)) return f;
+      // 文件名是 rollout-<时间戳>-<sessionId>，中缀匹配；但前缀只认 ≥8 位，
+      // 否则 4 位前缀的子串会读到别人的会话
+      const base = path.basename(f, '.jsonl');
+      if (base === sessionId || (sessionId.length >= 8 && base.endsWith(sessionId))) return f;
     }
     return null;
   }
@@ -188,7 +192,10 @@ export class CodexAdapter extends AgentAdapter {
       const tsRaw = payload.timestamp;
 
       if (projectPath) {
-        if (cwd !== projectPath) continue;
+        // 不能用精确字符串比较：macOS 上 /tmp 与 /private/tmp 是同一目录的两种拼写
+        // （symlink），写入时与列出时的拼写不一致会让会话「列出为空」。
+        // 与 encodeCwd*/hashWorkspace 一致，先 realpath 再比较。
+        if (resolveRealCwd(cwd) !== resolveRealCwd(projectPath)) continue;
       }
 
       const createdAt = parseCodexTimestamp(tsRaw);
@@ -313,7 +320,7 @@ export class CodexAdapter extends AgentAdapter {
 
         const irRole = role === 'user' ? 'user' : 'assistant';
         const content = this.parseMessageContent(payload);
-        messages.push({ role: irRole, content });
+        messages.push({ role: irRole, content, timestamp: parseCodexTimestamp(rec.timestamp) });
       } else if (ptype === 'function_call' || ptype === 'custom_tool_call') {
         const name = String(payload.name ?? '');
         const irName = normalizeToolName(name);
@@ -331,7 +338,7 @@ export class CodexAdapter extends AgentAdapter {
         if (messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
           messages[messages.length - 1].content.push(block);
         } else {
-          messages.push({ role: 'assistant', content: [block] });
+          messages.push({ role: 'assistant', content: [block], timestamp: parseCodexTimestamp(rec.timestamp) });
         }
       } else if (ptype === 'function_call_output' || ptype === 'custom_tool_call_output') {
         const callId = String(payload.call_id ?? '');
@@ -341,7 +348,7 @@ export class CodexAdapter extends AgentAdapter {
         if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
           messages[messages.length - 1].content.push(block);
         } else {
-          messages.push({ role: 'user', content: [block] });
+          messages.push({ role: 'user', content: [block], timestamp: parseCodexTimestamp(rec.timestamp) });
         }
       } else if (ptype === 'reasoning') {
         // reasoning → ThinkingBlock
@@ -359,7 +366,7 @@ export class CodexAdapter extends AgentAdapter {
         if (messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
           messages[messages.length - 1].content.push(block);
         } else {
-          messages.push({ role: 'assistant', content: [block] });
+          messages.push({ role: 'assistant', content: [block], timestamp: parseCodexTimestamp(rec.timestamp) });
         }
       }
     }
@@ -397,7 +404,10 @@ export class CodexAdapter extends AgentAdapter {
       sessionId = generateUuidV7();
     }
 
-    const createdAt = new Date(session.createdAt);
+    // 损坏输入防御：session.createdAt 非法时 new Date(...) 得到 Invalid Date，
+    // 直接 toISOString() 会抛 RangeError 让整个写入崩溃。
+    const rawCreated = new Date(session.createdAt);
+    const createdAt = isNaN(rawCreated.getTime()) ? new Date() : rawCreated;
     const tsIso = createdAt.toISOString();
     const tsMs = createdAt.getTime();
     const fileTs = formatFilenameTimestamp(tsIso);
@@ -432,35 +442,43 @@ export class CodexAdapter extends AgentAdapter {
     // 2. 遍历 messages，写 response_item + turn_context + event_msg
     let turnId = generateUuidV7();
     let turnStarted = false;
+    // 消息原生时间戳优先——全部用迁移时刻会让时间线塌缩成一点，
+    // 经 claude-code 中转后甚至无法恢复先后顺序
+    let lastTs = tsIso;
 
     for (const msg of session.messages) {
+      const parsedTs = msg.timestamp ? new Date(msg.timestamp) : null;
+      const msgTs =
+        parsedTs && !isNaN(parsedTs.getTime()) ? parsedTs.toISOString() : lastTs;
+      lastTs = msgTs;
+
       // 每个 user 消息开始一个新 turn
       if (msg.role === 'user') {
         // 如果上一个 turn 已开始，先完成它
         if (turnStarted) {
           records.push({
-            timestamp: new Date().toISOString(),
+            timestamp: msgTs,
             type: 'event_msg',
             payload: {
               type: 'task_complete',
               turn_id: turnId,
-              completed_at: Math.floor(Date.now() / 1000),
+              completed_at: Math.floor(new Date(msgTs).getTime() / 1000),
             },
           });
         }
         // 新 turn
         turnId = generateUuidV7();
         records.push({
-          timestamp: new Date().toISOString(),
+          timestamp: msgTs,
           type: 'event_msg',
           payload: {
             type: 'task_started',
             turn_id: turnId,
-            started_at: Math.floor(Date.now() / 1000),
+            started_at: Math.floor(new Date(msgTs).getTime() / 1000),
           },
         });
         records.push({
-          timestamp: new Date().toISOString(),
+          timestamp: msgTs,
           type: 'turn_context',
           payload: {
             turn_id: turnId,
@@ -473,7 +491,7 @@ export class CodexAdapter extends AgentAdapter {
 
       // 写消息的每个 content block
       for (const block of msg.content) {
-        const rec = this.blockToResponseItem(msg.role, block);
+        const rec = this.blockToResponseItem(msg.role, block, msgTs);
         if (rec) records.push(rec);
       }
     }
@@ -481,12 +499,12 @@ export class CodexAdapter extends AgentAdapter {
     // 最后一个 turn 的 task_complete
     if (turnStarted) {
       records.push({
-        timestamp: new Date().toISOString(),
+        timestamp: lastTs,
         type: 'event_msg',
         payload: {
           type: 'task_complete',
           turn_id: turnId,
-          completed_at: Math.floor(Date.now() / 1000),
+          completed_at: Math.floor(new Date(lastTs).getTime() / 1000),
         },
       });
     }
@@ -495,14 +513,14 @@ export class CodexAdapter extends AgentAdapter {
     return sessionId;
   }
 
-  private blockToResponseItem(role: string, block: ContentBlock): Record<string, unknown> | null {
-    const timestamp = new Date().toISOString();
+  private blockToResponseItem(role: string, block: ContentBlock, timestamp?: string): Record<string, unknown> | null {
+    const ts = timestamp ?? new Date().toISOString();
 
     switch (block.type) {
       case 'text': {
         const contentType = role === 'user' ? 'input_text' : 'output_text';
         return {
-          timestamp,
+          timestamp: ts,
           type: 'response_item',
           payload: {
             type: 'message',
@@ -514,7 +532,7 @@ export class CodexAdapter extends AgentAdapter {
       case 'tool_call': {
         const codexName = denormalizeToolName(block.toolName);
         return {
-          timestamp,
+          timestamp: ts,
           type: 'response_item',
           payload: {
             type: 'function_call',
@@ -526,7 +544,7 @@ export class CodexAdapter extends AgentAdapter {
       }
       case 'tool_result': {
         return {
-          timestamp,
+          timestamp: ts,
           type: 'response_item',
           payload: {
             type: 'function_call_output',
@@ -538,7 +556,7 @@ export class CodexAdapter extends AgentAdapter {
       case 'thinking': {
         // Codex 支持 reasoning，写入为 reasoning response_item
         return {
-          timestamp,
+          timestamp: ts,
           type: 'response_item',
           payload: {
             type: 'reasoning',

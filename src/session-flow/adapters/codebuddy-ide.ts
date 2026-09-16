@@ -71,6 +71,15 @@ function firstUserText(messages: IdeMessageParsed[]): string {
   return '';
 }
 
+/**
+ * IDE 会把 index.json 里的 conversation.name 原样落盘，偶尔也混入
+ * <system-reminder> 等注入块原文。不清洗的话会污染整个迁移链路
+ * （列表标题、readSession.title、目标侧标题全是提示词原文）。
+ */
+function safeConversationName(name: string): string {
+  return name && !isInjectedText(name) ? name.slice(0, 100) : '';
+}
+
 // ---------------------------------------------------------------------------
 // CodeBuddyIdeAdapter
 // ---------------------------------------------------------------------------
@@ -122,7 +131,7 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
     // 标题兜底只读开头几条：IDE 会话动辄几千条消息，为拿个标题把整会话读一遍
     // 会让列一次表耗时十几秒。
     const title =
-      entry.name ||
+      safeConversationName(entry.name) ||
       firstUserText(readIdeConversation(entry.convDir, TITLE_LOOKAHEAD)) ||
       `Session ${entry.id.slice(0, 8)}`;
 
@@ -196,7 +205,9 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
           if (last && last.role === 'user') {
             last.content.push(irBlock);
           } else {
-            messages.push({ role: 'user', content: [irBlock] });
+            // 带上原始时间戳：缺失时下游 writeSession（如 claude-code）会用
+            // 迁移时刻填充，产生「后一条消息早于前一条」的时间倒挂。
+            messages.push({ role: 'user', content: [irBlock], timestamp: raw.createdAt });
           }
         }
         continue;
@@ -216,7 +227,9 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
     }
 
     const title =
-      entry?.name || firstUserText(rawMessages) || `Session ${convId.slice(0, 8)}`;
+      safeConversationName(entry?.name ?? '') ||
+      firstUserText(rawMessages) ||
+      `Session ${convId.slice(0, 8)}`;
     const createdAt = entry?.createdAt || rawMessages[0]?.createdAt || new Date().toISOString();
     const updatedAt =
       entry?.lastMessageAt || rawMessages[rawMessages.length - 1]?.createdAt || createdAt;
@@ -300,7 +313,9 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
 
     // writeIdeSession 依赖 md5(cwd) 定位工作区；cwd 是 `md5:<hash>` 这类占位值时
     // 算不出 hash 会静默跳过。静默成功比失败更危险——用户以为迁完了，侧边栏却是空的。
-    if (!cwd || !cwd.startsWith('/')) {
+    // Windows 盘符路径（C:\...）也是合法绝对路径，一并放行。
+    const absoluteLike = cwd.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(cwd);
+    if (!cwd || !absoluteLike) {
       throw new Error(
         `Writing to CodeBuddy IDE requires an absolute working directory, got "${cwd}". Pass --cwd/--target-cwd.`,
       );
