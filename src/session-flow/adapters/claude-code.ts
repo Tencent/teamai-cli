@@ -691,6 +691,20 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       sessionId,
     });
 
+    // 4. summary 行（标题）
+    // Claude Code 的 /resume 列表靠 type:"summary" 记录显示会话标题，
+    // 缺失时退回显示 session id 前缀（如 824ff784），迁移来的会话全中招。
+    // 源适配器读出的 title 已经过注入清洗，这里直接落盘。
+    const summary = cleanTitleText(session.title ?? '') || fallbackTitle(sessionId);
+    if (summary) {
+      records.push({
+        type: 'summary',
+        summary,
+        leafUuid: parentUuid,
+        sessionId,
+      });
+    }
+
     return records;
   }
 
