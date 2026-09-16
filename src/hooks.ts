@@ -314,6 +314,12 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
     PostToolUse: 30000,
     UserPromptSubmit: 60000,
   };
+  // The table is ZCode's DEFAULT, not an override: a timeout the team stated in
+  // hooks.yaml (per-hook `timeout`, or `builtin.overrides.<key>.timeout`) is the
+  // one the user asked for and still wins, as it does on every other tool.
+  // `def.timeout` is in seconds; ZCode entries are in milliseconds.
+  const timeoutMs =
+    def.timeout !== undefined ? def.timeout * 1000 : ZCODE_TIMEOUT_MS[def.event] ?? 60000;
   const entry: ZcodeHookEntry =
     process.platform === 'win32'
       ? {
@@ -325,7 +331,7 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
           type: 'process',
           command: 'cmd',
           args: ['/c', def.command],
-          timeoutMs: ZCODE_TIMEOUT_MS[def.event] ?? 60000,
+          timeoutMs,
         }
       : {
           type: 'process',
@@ -334,7 +340,7 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
           // so managed-entry detection and the managed-hooks manifest share one
           // command representation (the same invariant the Codex format keeps).
           args: ['-lc', def.command],
-          timeoutMs: ZCODE_TIMEOUT_MS[def.event] ?? 60000,
+          timeoutMs,
         };
   const group: ZcodeHookMatcher = { hooks: [entry] };
   // ZCode's matcher is a case-sensitive regex on the match value; '*' is an

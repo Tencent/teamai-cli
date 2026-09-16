@@ -219,6 +219,39 @@ describe('ZCode support', () => {
     }
   });
 
+  it('honors an explicitly configured timeout over the per-event ZCode default', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-zcode-test-'));
+    try {
+      const configPath = path.join(home, '.zcode', 'cli', 'config.json');
+      const manifestPath = path.join(home, 'managed-hooks.json');
+      const teamDef: HookDef = {
+        source: 'team',
+        key: 'slow-sync',
+        event: 'Stop',
+        command: 'slow-team-sync',
+        timeout: 300,
+        description: '[teamai:hook:slow-sync] slow team sync',
+      };
+
+      await reconcileHooks(configPath, 'zcode', [teamDef], {
+        manifestPath,
+        builtinOverride: { overrides: { 'Hook dispatch stop': { timeout: 240 } } },
+      });
+
+      const cfg = await fse.readJson(configPath);
+      const stop = cfg.hooks.events.Stop as Array<{ hooks: Array<{ args?: string[]; timeoutMs?: number }> }>;
+      const team = stop.find((g) => g.hooks[0].args?.[1] === 'slow-team-sync');
+      const builtin = stop.find((g) => g.hooks[0].args?.[1]?.includes('hook-dispatch stop'));
+
+      // hooks.yaml states seconds; the entry is written in milliseconds.
+      expect(team?.hooks[0].timeoutMs).toBe(300_000);
+      // A team `builtin.overrides.<key>.timeout` must reach ZCode too.
+      expect(builtin?.hooks[0].timeoutMs).toBe(240_000);
+    } finally {
+      await fse.remove(home);
+    }
+  });
+
   it('removeAll preserves a user-disabled hooks.enabled while stripping entries', async () => {
     const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-zcode-test-'));
     try {
