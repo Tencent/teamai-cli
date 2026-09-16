@@ -1215,7 +1215,7 @@ export async function init(options: GlobalOptions & {
           log.error(
             `Failed to refresh existing clone at ${localPath}: ${(e as Error).message}. ` +
             'The local clone was left unchanged. Fix network/auth or resolve ' +
-            'divergence (commit/stash local edits), or re-run with --force to replace the clone.',
+            `divergence (commit/stash local edits), or remove ${localPath} manually to start fresh.`,
           );
           process.exit(1);
         }

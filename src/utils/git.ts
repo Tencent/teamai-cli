@@ -288,7 +288,8 @@ const defaultBranchCache = new Map<string, string>();
  * Unlike {@link pullRepo}, this never falls back to `fetch` + `reset --hard`.
  * Use it from paths (e.g. `init` clone reuse) where discarding local commits or
  * uncommitted edits would be surprising. Callers should surface the thrown
- * error and suggest `--force` / manual recovery when refresh cannot proceed.
+ * error with manual recovery advice when refresh cannot proceed — a
+ * matching-origin clone is always reused, so `--force` does not replace it.
  */
 export async function pullRepoFastForward(localPath: string): Promise<string> {
   const git = createGit(localPath);
