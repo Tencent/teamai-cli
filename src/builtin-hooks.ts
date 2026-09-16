@@ -78,6 +78,16 @@ export function resolveTeamaiEntryScript(): string | null {
 }
 
 /**
+ * Resolve the entry to re-spawn the CLI itself with: the one this process is
+ * running, else the bundle's own dist/index.js. Some sandboxed hook launchers
+ * leave `argv[1]` empty, and a spawn with an empty script path fails silently —
+ * so "re-run our own subcommand" resolves through here, everywhere.
+ */
+export function resolveCliEntry(): string | null {
+  return process.argv[1] || resolveTeamaiEntryScript();
+}
+
+/**
  * Write a `teamai` wrapper script to `~/.teamai/bin/teamai` that invokes
  * the real entry script with the best available Node binary. Idempotent —
  * overwrites on every init/pull so the paths stay current after upgrades.

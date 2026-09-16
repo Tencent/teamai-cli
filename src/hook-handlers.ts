@@ -70,6 +70,17 @@ const UPDATE_TIMEOUT_MS = 10_000;
  * resource downloads. Foreground local-agent runs use FOREGROUND_HOOK_TIMEOUT_MS.
  */
 const LOCAL_AGENT_TIMEOUT_MS = 15_000;
+/**
+ * Budget for the detached session-start pull.
+ *
+ * A background handler's timeout is not advisory: the dispatch pass settles on
+ * it and index.ts then `process.exit(0)`s, truncating whatever is still running
+ * (git children orphaned, later sync stages never run). Cold pulls — fetch,
+ * submodule update, resource reconcile — measured 10-25s, so the shared 15s
+ * budget silently cut the pull short. Size any background handler that must
+ * finish accordingly: this one only bounds a wedged git otherwise.
+ */
+const PULL_TIMEOUT_MS = 120_000;
 
 // ─── Handler implementations ────────────────────────────
 //
@@ -478,9 +489,9 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
   return [
     // ─── SessionStart ─────────────────────────────────
     // pull does not produce output the host needs; run detached so git fetch
-    // on a slow network cannot delay session startup. Reuses LOCAL_AGENT_TIMEOUT_MS
-    // (15s) — ample for a background git pull that is not awaited by the host.
-    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
+    // on a slow network cannot delay session startup. Its own generous budget
+    // (PULL_TIMEOUT_MS) — the shared 15s truncated the pull itself.
+    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS, background: true },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
