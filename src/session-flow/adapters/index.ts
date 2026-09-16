@@ -8,6 +8,7 @@ import type { AgentAdapter } from './base.js';
 import { ClaudeCodeAdapter } from './claude-code.js';
 import { CodexAdapter } from './codex.js';
 import { CodeBuddyAdapter } from './codebuddy.js';
+import { CodeBuddyIdeAdapter } from './codebuddy-ide.js';
 import { WorkBuddyAdapter } from './workbuddy.js';
 import { CursorAdapter } from './cursor.js';
 import {
@@ -25,7 +26,11 @@ export const ADAPTER_REGISTRY: Record<string, AdapterFactory> = {
   // 基础平台
   'claude-code': () => new ClaudeCodeAdapter('claude-code', getClaudeCodeProjectsDir()),
   codex: () => new CodexAdapter('codex', getCodexSessionsDir()),
+  // CodeBuddy 有两套独立存储，拆成两个平台：
+  //   codebuddy     = CLI（~/.codebuddy/projects/...）
+  //   codebuddy-ide = IDE 图形化（CodeBuddyExtension/.../history）
   codebuddy: () => new CodeBuddyAdapter(),
+  'codebuddy-ide': () => new CodeBuddyIdeAdapter(),
   workbuddy: () => new WorkBuddyAdapter(),
   cursor: () => new CursorAdapter(),
   // TeamAI 变体（路径前缀不同，格式完全相同）
@@ -64,5 +69,6 @@ export { AgentAdapter, type SessionMeta } from './base.js';
 export { ClaudeCodeAdapter } from './claude-code.js';
 export { CodexAdapter } from './codex.js';
 export { CodeBuddyAdapter } from './codebuddy.js';
+export { CodeBuddyIdeAdapter } from './codebuddy-ide.js';
 export { WorkBuddyAdapter } from './workbuddy.js';
 export { CursorAdapter } from './cursor.js';

@@ -261,7 +261,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
   async readSession(sessionId: string, projectPath?: string): Promise<Session> {
     const jsonlPath = this.findSessionFile(sessionId, projectPath);
     if (!jsonlPath) {
-      throw new Error(`WorkBuddy 会话文件未找到: session_id=${sessionId}`);
+      throw new Error(`WorkBuddy session file not found: session_id=${sessionId}`);
     }
 
     const metaInfo = readMeta(jsonlPath);

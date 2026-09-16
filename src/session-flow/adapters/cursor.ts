@@ -226,7 +226,7 @@ export class CursorAdapter extends AgentAdapter {
   async readSession(sessionId: string, projectPath?: string): Promise<Session> {
     const jsonlPath = this.findSessionFile(sessionId, projectPath);
     if (!jsonlPath) {
-      throw new Error(`Cursor 会话文件未找到: session_id=${sessionId}`);
+      throw new Error(`Cursor session file not found: session_id=${sessionId}`);
     }
 
     // 目录层级是 <encoded-cwd>/agent-transcripts/<uuid>/<uuid>.jsonl，
@@ -236,6 +236,17 @@ export class CursorAdapter extends AgentAdapter {
       path.basename(path.dirname(path.dirname(path.dirname(jsonlPath)))),
     );
     const records = [...readJsonl(jsonlPath)];
+
+    // 归档键（repoIdentity）优先用记录里的原生 cwd（真实绝对路径）；
+    // 目录名解码有损，恢复失败退回解码目录名（设计文档 Key invariant）。
+    let nativeCwd: string | undefined;
+    for (const rec of records) {
+      if (typeof rec.cwd === 'string' && path.isAbsolute(rec.cwd)) {
+        nativeCwd = rec.cwd;
+        break;
+      }
+    }
+    const sessionCwd = nativeCwd ?? cwd;
 
     const messages: Message[] = [];
 
@@ -286,7 +297,7 @@ export class CursorAdapter extends AgentAdapter {
     return {
       sessionId,
       title,
-      cwd,
+      cwd: sessionCwd,
       platform: this.platform,
       createdAt,
       updatedAt,
@@ -370,6 +381,8 @@ export class CursorAdapter extends AgentAdapter {
       if (cursorContent.length > 0) {
         records.push({
           role: msg.role,
+          // 写入 cwd 使 readSession 能恢复真实路径（归档键派生依赖它）
+          cwd,
           message: { content: cursorContent },
         });
       }
