@@ -1373,9 +1373,7 @@ export async function init(options: GlobalOptions & {
   if (!options.dryRun) {
     try {
       const { updateReports } = await import('./utils/reports-branch.js');
-      // 'skipped' until the callback runs: lock-busy / ensure failure must not
-      // be treated as "already registered" (that would skip the reviewers prompt).
-      const roster = { state: 'skipped' as 'written' | 'unchanged' | 'skipped' };
+      let memberChanged = false;
       let memberProjects: string[] | undefined;
       const pushed = await updateReports(reportsConfig, async (wt) => {
         const memberDir = path.join(wt, 'members');
@@ -1387,13 +1385,10 @@ export async function init(options: GlobalOptions & {
           username,
           projects: resolvedProjects,
         });
+        memberChanged = merged.changed;
         memberProjects = merged.config.projects;
-        if (!merged.changed) {
-          roster.state = 'unchanged';
-          return null;
-        }
+        if (!merged.changed) return null;
         await writeFile(memberPath, YAML.stringify(merged.config));
-        roster.state = 'written';
         return {
           files: ['members/'],
           message: isNewMember
@@ -1401,7 +1396,7 @@ export async function init(options: GlobalOptions & {
             : `[teamai] Update member roster: ${username}`,
         };
       });
-      if (roster.state === 'written') {
+      if (memberChanged) {
         log.success(isNewMember
           ? `Registered as team member: ${username}`
           : `Updated member roster: ${username}${memberProjects ? ` (projects: ${memberProjects.join(', ')})` : ''}`);
@@ -1412,11 +1407,8 @@ export async function init(options: GlobalOptions & {
         } else {
           log.warn('Member registration could not be pushed (no write access?). You are still set up locally.');
         }
-      } else if (roster.state === 'unchanged') {
+      } else if (!isNewMember) {
         log.info(`Member ${username} already registered`);
-        isNewMember = false;
-      } else {
-        log.warn('Member registration could not be pushed (no write access?). You are still set up locally.');
       }
     } catch (e) {
       log.warn(`Member registration skipped (non-blocking): ${(e as Error).message}`);

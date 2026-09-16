@@ -403,14 +403,21 @@ export async function reportUsageToTeam(
         ? `[teamai] Update session stats for ${username}`
         : `[teamai] Update votes for ${username}`;
 
-    const stageReportFiles = async (root: string): Promise<void> => {
+    const writeReportFiles = async (writeRoot: string): Promise<void> => {
+      // Process usage and/or intervention/prompt/token stats if anything is new to report.
       if (hasStats) {
-        const statsDir = path.join(root, 'stats');
+        const statsDir = path.join(writeRoot, 'stats');
         await ensureDir(statsDir);
         const statsPath = path.join(statsDir, `${username}.yaml`);
+
+        // See also: stats.ts mergeLocalAndReported() — same merge logic for display.
+        // mergeStats with [] preserves existing skills while refreshing username/updatedAt,
+        // and carries interventions/prompts/tokens so partial reports do not clobber them (#425).
         const existing = await readExistingStats(statsPath);
         if (useReportsBranch) {
           const previousContent = await readFileSafe(statsPath);
+          // A failed push can leave an already-incremented file in the reports
+          // worktree. Restore its input so a normal retry does not add it twice.
           restoreStats = () => writeFile(statsPath, previousContent ?? '');
         }
         const newStats = hasUsage ? aggregateUsage(events) : [];
@@ -426,20 +433,27 @@ export async function reportUsageToTeam(
         if (hasDaily) {
           merged.daily = mergeDailyStats(existing?.daily, dailyDelta);
         }
+
         await writeFile(statsPath, YAML.stringify(merged));
         filesToPush.push(`stats/${username}.yaml`);
       }
+
+      // Always stage pending local votes (V2 delta-aware merge)
       try {
         if (await pathExists(getUserVotesDir())) {
           const { syncVotesToTeam } = await import('./votes.js');
-          const synced = await syncVotesToTeam(root, username, getUserVotesDir());
-          if (synced) filesToPush.push(`votes/${username}.yaml`);
+          const synced = await syncVotesToTeam(writeRoot, username, getUserVotesDir());
+          if (synced) {
+            filesToPush.push(`votes/${username}.yaml`);
+          }
         }
       } catch (e) {
         log.error(`Vote staging skipped: ${(e as Error).message}`);
       }
     };
 
+    // Keep push and acknowledgement in the same operation. A caller timing out
+    // must not abandon the success bookkeeping below.
     if (useReportsBranch && reportsConfig) {
       let hasVotes = false;
       if (!hasStats && await pathExists(getUserVotesDir())) {
@@ -453,7 +467,7 @@ export async function reportUsageToTeam(
       const { updateReports } = await import('./utils/reports-branch.js');
       const pushed = await updateReports(reportsConfig, async (wt) => {
         filesToPush.length = 0;
-        await stageReportFiles(wt);
+        await writeReportFiles(wt);
         return filesToPush.length > 0 ? { files: [...filesToPush], message: commitMsg } : null;
       }, { pushIfUnchanged: true });
       if (!pushed) {
@@ -508,7 +522,7 @@ export async function reportUsageToTeam(
         }
       }
 
-      await stageReportFiles(repoPath);
+      await writeReportFiles(repoPath);
       if (filesToPush.length === 0) {
         log.debug('No usage events or votes to report');
         return true;

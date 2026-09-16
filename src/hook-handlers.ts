@@ -331,10 +331,9 @@ const votesSyncHandler: HookHandler = {
       }
       const { usesReportsBranch } = await import('./types.js');
       if (usesReportsBranch(localConfig)) {
-        // Votes are report data → the teamai-reports orphan branch, merged onto
-        // origin's latest copy through an isolated worktree (never the default
-        // branch / active tree). Stop fires every turn, so skip the fetch + push
-        // round-trip when there are no pending deltas.
+        // Votes are report data → the teamai-reports orphan branch, written
+        // through an isolated worktree (never the default branch / active tree).
+        // Stop fires every turn: skip the fetch when nothing is pending.
         try {
           const { hasPendingVoteDeltas } = await import('./votes.js');
           if (await hasPendingVoteDeltas(votesDir, localConfig.username)) {
