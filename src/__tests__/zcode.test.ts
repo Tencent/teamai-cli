@@ -70,7 +70,7 @@ describe('ZCode support', () => {
           // ZCode matchers are regexes: '*' would be an invalid pattern that
           // never matches, so wildcard groups must omit the matcher entirely.
           const hook = group.hooks[0];
-          if (hook.args?.[1]?.includes('--matcher')) {
+          if (hook.args?.[2]?.includes('--matcher')) {
             expect(group.matcher).toBeDefined();
           } else {
             expect(group.matcher).toBeUndefined();
@@ -81,8 +81,9 @@ describe('ZCode support', () => {
           // start non-blocking even while the dispatch pulls over the network.
           expect(hook.command).toBe('wscript.exe');
           expect(hook.args?.[0]).toContain('teamai-hook-dispatch.vbs');
-          expect(hook.args?.[1]).toContain('teamai hook-dispatch');
-          expect(hook.args?.[1]).toContain('--tool zcode');
+          expect(hook.args?.[1]).toBe('wait');
+          expect(hook.args?.[2]).toContain('teamai hook-dispatch');
+          expect(hook.args?.[2]).toContain('--tool zcode');
           expect(hook.timeoutMs).toBeGreaterThan(0);
         }
       }
@@ -152,7 +153,7 @@ describe('ZCode support', () => {
       const countAudit = async () => {
         const cfg = await fse.readJson(configPath);
         const groups = cfg.hooks.events.SessionStart as Array<{ hooks: Array<{ args?: string[] }> }>;
-        return groups.filter((g) => g.hooks[0].args?.[1] === 'sh /tmp/audit.sh').length;
+        return groups.filter((g) => g.hooks[0].args?.[2] === 'sh /tmp/audit.sh').length;
       };
 
       await reconcileHooks(configPath, 'zcode', teamDefs, { manifestPath });
@@ -237,8 +238,8 @@ describe('ZCode support', () => {
 
       const cfg = await fse.readJson(configPath);
       const stop = cfg.hooks.events.Stop as Array<{ hooks: Array<{ args?: string[]; timeoutMs?: number }> }>;
-      const team = stop.find((g) => g.hooks[0].args?.[1] === 'slow-team-sync');
-      const builtin = stop.find((g) => g.hooks[0].args?.[1]?.includes('hook-dispatch stop'));
+      const team = stop.find((g) => g.hooks[0].args?.[2] === 'slow-team-sync');
+      const builtin = stop.find((g) => g.hooks[0].args?.[2]?.includes('hook-dispatch stop'));
 
       // hooks.yaml states seconds; the entry is written in milliseconds.
       expect(team?.hooks[0].timeoutMs).toBe(300_000);

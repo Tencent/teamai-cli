@@ -1,6 +1,6 @@
 import path from 'node:path';
-import { realpathSync } from 'node:fs';
-import { readJson, writeJson, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
+import { rmSync, realpathSync } from 'node:fs';
+import { readJson, writeJson, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, resolveHookScope, resolveLegacyProjectHookScope } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
@@ -314,22 +314,25 @@ function toZcodeEntry(def: HookDef, vbsPath: string): ZcodeHookMatcher {
     PostToolUse: 30000,
     UserPromptSubmit: 60000,
   };
+  // wscript.exe is a GUI-subsystem binary: unlike cmd/bash it never allocates
+  // a console window, so hook runs don't flash a black box over the desktop.
+  // The VBS launcher preserves the STDIN contract (ZCode's payload reaches
+  // hook-dispatch via a spooled temp file), waits for the dispatch bounded by
+  // the per-event timeout, and runs everything hidden (window style 0) with
+  // the dispatch tail cmd-level quoted so team-declared commands survive
+  // cmd's operator parsing. The payload travels verbatim as a single argument
+  // so managed-entry detection and the manifest keep one command
+  // representation.
   // The table is ZCode's DEFAULT, not an override: a timeout the team stated in
   // hooks.yaml (per-hook `timeout`, or `builtin.overrides.<key>.timeout`) is the
   // one the user asked for and still wins, as it does on every other tool.
   // `def.timeout` is in seconds; ZCode entries are in milliseconds.
   const timeoutMs =
     def.timeout !== undefined ? def.timeout * 1000 : ZCODE_TIMEOUT_MS[def.event] ?? 60000;
-  // wscript.exe is a GUI-subsystem binary: unlike cmd/bash it never allocates
-  // a console window, so hook runs don't flash a black box over the desktop.
-  // The VBS launcher runs the payload hidden (window style 0) and does NOT
-  // wait for it — session start stays instant even when the dispatch pulls
-  // over the network. The payload travels verbatim as a single argument so
-  // managed-entry detection and the manifest keep one command representation.
   const entry: ZcodeHookEntry = {
     type: 'process',
     command: 'wscript.exe',
-    args: [vbsPath, def.command],
+    args: [vbsPath, 'wait', def.command],
     timeoutMs,
   };
   const group: ZcodeHookMatcher = { hooks: [entry] };
@@ -342,8 +345,9 @@ function toZcodeEntry(def: HookDef, vbsPath: string): ZcodeHookMatcher {
 /** Shell payload of a ZCode hook entry, for managed-entry matching. */
 function zcodeEntryCommand(entry: ZcodeHookMatcher): string {
   const hook = entry.hooks?.[0];
-  // Both variants (posix bash -lc / win32 cmd /c) carry the payload at args[1].
-  if (Array.isArray(hook?.args) && hook.args.length > 1) return hook.args[1] ?? '';
+  // The wscript launcher's argv: [vbsPath, mode, payload] — the payload is the
+  // dispatch tail ('teamai hook-dispatch <event> --tool <tool>').
+  if (Array.isArray(hook?.args) && hook.args.length > 2) return hook.args[2] ?? '';
   return hook?.command ?? '';
 }
 
@@ -559,17 +563,31 @@ async function reconcileZcodeFormat(
   const expanded = expandHome(settingsPath);
   await ensureDir(path.dirname(expanded));
   const vbsPath = path.join(path.dirname(expanded), 'teamai-hook-dispatch.vbs');
-  if (!opts.removeAll) {
-    // Hidden, fire-and-forget launcher: wscript.exe never allocates a console
-    // window, so hook runs don't flash a black box over the desktop.
-    await writeFile(
-      vbsPath,
-      [
-        "' TeamAI hook dispatcher - hidden, fire-and-forget (no console window).",
-        'Set sh = CreateObject("WScript.Shell")',
-        'If WScript.Arguments.Count > 0 Then sh.Run "cmd /c " & WScript.Arguments(0), 0, False',
-      ].join('\r\n'),
-    );
+  // Hidden launcher: wscript.exe is a GUI-subsystem binary, so hook runs don't
+  // flash a black box over the desktop, and the spool file keeps the STDIN
+  // payload contract intact (ZCode's JSON reaches hook-dispatch even though
+  // WScript.Shell.Run cannot forward a live stdin pipe).
+  const vbsScript = [
+    "' TeamAI hook dispatcher - hidden, timeout-bounded, stdin-preserving.",
+    'Option Explicit',
+    'Dim sh, fso, spool, f',
+    'Set sh = CreateObject("WScript.Shell")',
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    'spool = fso.GetSpecialFolder(2) & "\\teamai-hook-" & fso.GetTempName',
+    'Set f = fso.CreateTextFile(spool, True)',
+    'On Error Resume Next',
+    'f.Write WScript.StdIn.ReadAll()',
+    'f.Close',
+    'sh.Run "cmd /d /s /c ""teamai hook-dispatch " & WScript.Arguments(0) & " < """ & spool & """ >nul 2>&1""", 0, True',
+    'fso.DeleteFile spool, True',
+  ].join('\r\n');
+  const existingVbs = await readFileSafe(vbsPath);
+  if (existingVbs !== vbsScript) {
+    if (opts.removeAll) {
+      await rmSync(vbsPath, { force: true });
+    } else {
+      await writeFile(vbsPath, vbsScript);
+    }
   }
   const cfg: ZcodeHooksJson = (await readJson<ZcodeHooksJson>(expanded)) ?? {};
   if (!cfg.hooks) cfg.hooks = {};
