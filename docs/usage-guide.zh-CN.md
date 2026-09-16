@@ -4,7 +4,7 @@
 
 > **teamai-cli** — AI Agents 的团队协作层
 >
-> **让每个团队通过 AI 持续变得更聪明。** 统一工作方式（Team Execution）、共享团队 Context（Team Context），并把真实 Session 沉淀成团队能力（Team Improvement）。TeamAI 统一管理 Claude Code、Codex、CodeBuddy、WorkBuddy、OpenCode、Cursor 及其他受支持 Agent 的 Skills、Rules、Docs、Env、MCP 等资源。
+> **让每个团队通过 AI 持续变得更聪明。** 统一工作方式（Team Execution）、共享团队 Context（Team Context），并把真实 Session 沉淀成团队能力（Team Improvement）。TeamAI 统一管理 Claude Code、Codex、GitHub Copilot CLI、CodeBuddy、WorkBuddy、OpenCode、Cursor 及其他受支持 Agent 的 Skills、Rules、Docs、Env、MCP 等资源。
 
 ---
 
@@ -412,7 +412,7 @@ teamai skill show hai-deploy-test   # 看单个 skill 的来源 / 贡献者 / �
 
 `teamai init` 时已注入 Hooks 到你的 AI 工具中。**每次启动 AI 会话时会自动执行 `teamai pull`**，无需手动操作。在 project scope 下，该 SessionStart hook 会先为当前 Agent 创建项目根目录（例如用 Claude Code 打开仓库时创建 `<project>/.claude`），然后再 pull。
 
-*(注：会话启动自动同步依赖工具的生命周期 Hooks 支持，如 [CC]、Codex、Cursor、CodeBuddy、WorkBuddy、Qoder、Kiro、OpenCode、Hermes、OpenClaw 等。Kiro 仅在交互式 CLI 会话激活由 TeamAI 渲染的自定义 agent 时触发该 Hook；其内存中的内置默认 agent 无法写入，非交互模式也不会触发 `agentSpawn`。对于暂无 teamai 可写入 Hooks 的工具（如 JoyCode、Gemini CLI 等），需手动执行 `teamai pull`。)*
+*(注：会话启动自动同步依赖工具的生命周期 Hooks 支持，如 [CC]、Codex、GitHub Copilot CLI、Cursor、CodeBuddy、WorkBuddy、Qoder、Kiro、OpenCode、Hermes、OpenClaw 等。Kiro 仅在交互式 CLI 会话激活由 TeamAI 渲染的自定义 agent 时触发该 Hook；其内存中的内置默认 agent 无法写入，非交互模式也不会触发 `agentSpawn`。对于暂无 teamai 可写入 Hooks 的工具（如 JoyCode、Gemini CLI 等），需手动执行 `teamai pull`。)*
 
 如果需要立即同步，可以手动执行：
 
@@ -1355,6 +1355,17 @@ roles:
 ```
 
 `teamai pull` 会将它们按文件名拍平复制到每个 Tier-1 工具的 `agents/` 目录（如 `~/.claude/agents/`），因此两个活跃 namespace 不能定义同名 agent（pull 会报告冲突并跳过该 scope）。`teamai pull` 为 Codex 系工具写入 `<name>.toml`，为 Kiro 写入 `<name>.json`，其余工具写入 `<name>.md`。成员切换角色后，不再活跃的 namespace 中的 agents 会在下一次 pull 时被移除；若本地副本已被手动修改，则保留并给出警告。未配置角色时同步全部 agents。`teamai push` 使用与 pull 相同的活跃角色和项目 namespace 来确定源文件，并将修改写回该源文件；若存在多个候选目标，则跳过并给出警告。若源文件均不活跃，也会跳过。跳过的 agent 不会阻止同一次 push 中的其他资源。新 agent 落在根目录。清理会逐个工具检查 YAML 的 `targets` 和旧格式支持；只有活跃的同名 agent 会写入该工具的同一输出文件时，才保留该文件。`teamai remove agents <name>` 会记录 tombstone。其他机器下一次 pull 时，会从每个同步中的工具的 agents 目录删除 `<name>.md`、`<name>.toml` 和 `<name>.json`。即使该次 pull 发现团队仓库没有变化，也会执行清理。CLI 内置的 `teamai-recall.md` 与团队 agents 并列部署，但不会被 `teamai push` 上传。
+
+### GitHub Copilot CLI
+
+GitHub Copilot CLI 已支持其官方 Rules、Skills 和 Hooks 配置面：
+
+- **作用域。** 用户资源位于 `$COPILOT_HOME`（默认 `~/.copilot`）下，项目资源位于 `<project>/.github` 下。TeamAI 在检测以及所有用户级读写中都会遵循 `COPILOT_HOME`。
+- **Skills。** `teamai pull` 将用户级 Skills 写入 `$COPILOT_HOME/skills/`，将项目级 Skills 写入 `.github/skills/`；任一作用域中的修改都可像其他 TeamAI Skills 一样被 `teamai push` 检测。
+- **Rules。** 团队 Rules 会转换为 `$COPILOT_HOME/instructions/` 或 `.github/instructions/` 下的原生 `*.instructions.md` 文件。TeamAI 从团队 Rule 的 `paths` 派生 Copilot 必需的 `applyTo` frontmatter；没有 `paths` 时使用 `**`。Push 时只有 Markdown 正文回流，团队拥有的 `paths` 元数据保持不变。未知的 Copilot instructions 文件属于用户，不会被上传或删除。
+- **Hooks。** TeamAI 在 `$COPILOT_HOME/hooks/teamai.json` 或 `.github/hooks/teamai.json` 写入独立的 version-1 Hook 文件，使用 Copilot 与 VS Code 兼容的 PascalCase 事件（`SessionStart`、`UserPromptSubmit`、`PostToolUse` 和 `Stop`），从而保留 TeamAI 所需的 snake_case Hook 负载字段，并生成 `bash`、`powershell` 和后备 `command` 字段。文件会被幂等合并，且保留无关条目。TeamAI 从不修改 Copilot 的 `settings.json`。
+
+团队 Hooks 仍以团队仓库中的 `hooks/hooks.yaml` 为来源：直接编辑该文件，再使用正常的 pull/push 流程。TeamAI 不会从 Copilot 配置文件反向导入任意原生 Hook 条目。
 
 ### OpenCode
 

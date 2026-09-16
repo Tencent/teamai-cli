@@ -200,6 +200,129 @@ describe('doctor — hook checks', () => {
         expect(hookCheckLine()).toContain('✔');
     });
 
+    it('checks standalone Copilot hooks under COPILOT_HOME', async () => {
+        const copilotHome = '/tmp/teamai-doctor-copilot';
+        const originalCopilotHome = process.env.COPILOT_HOME;
+        process.env.COPILOT_HOME = copilotHome;
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            scope: 'user',
+            enabledAgents: ['copilot'],
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            sharing: { env: { injectShellProfile: false } },
+            toolPaths: {
+                copilot: {
+                    hooks: '.github/hooks/teamai.json',
+                    userScope: { hooks: 'hooks/teamai.json' },
+                },
+            },
+        });
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+            filePath === path.join(copilotHome, 'hooks', 'teamai.json')
+                ? buildFullHooksContent()
+                : null
+        ));
+
+        let copilotLine: string | undefined;
+        try {
+            await doctor({});
+            copilotLine = consoleSpy.mock.calls
+                .map((call) => call[0] as string)
+                .find((message) => message.includes('hooks in copilot'));
+        } finally {
+            if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+            else process.env.COPILOT_HOME = originalCopilotHome;
+        }
+
+        expect(copilotLine).toContain('✔');
+    });
+
+    it('reports missing project hooks for explicitly selected Copilot', async () => {
+        const projectRoot = '/tmp/teamai-doctor-copilot-project';
+        const hookPath = path.join(projectRoot, '.github', 'hooks', 'teamai.json');
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            scope: 'project',
+            projectRoot,
+            enabledAgents: ['copilot'],
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            sharing: { env: { injectShellProfile: false } },
+            toolPaths: {
+                copilot: { hooks: '.github/hooks/teamai.json' },
+            },
+        });
+        mockedPathExists.mockImplementation(async (filePath: string) => (
+            filePath !== hookPath && filePath !== path.dirname(hookPath)
+        ));
+
+        const allPassed = await doctor({});
+        const copilotLine = consoleSpy.mock.calls
+            .map((call) => String(call[0]))
+            .find((message) => message.includes('hooks in copilot'));
+
+        expect(copilotLine).toContain('✖');
+        expect(allPassed).toBe(false);
+    });
+
+    it('does not infer project Copilot installation from .github/hooks alone', async () => {
+        const projectRoot = '/tmp/teamai-doctor-unselected-copilot';
+        const copilotHome = '/tmp/teamai-doctor-unselected-home';
+        const originalCopilotHome = process.env.COPILOT_HOME;
+        process.env.COPILOT_HOME = copilotHome;
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            scope: 'project',
+            projectRoot,
+            enabledAgents: undefined,
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            sharing: { env: { injectShellProfile: false } },
+            toolPaths: {
+                copilot: { hooks: '.github/hooks/teamai.json' },
+            },
+        });
+        mockedPathExists.mockImplementation(async (filePath: string) => filePath !== copilotHome);
+
+        let allPassed: boolean;
+        try {
+            allPassed = await doctor({});
+        } finally {
+            if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+            else process.env.COPILOT_HOME = originalCopilotHome;
+        }
+        const hasCopilotCheck = consoleSpy.mock.calls
+            .map((call) => String(call[0]))
+            .some((message) => message.includes('hooks in copilot'));
+
+        expect(hasCopilotCheck).toBe(false);
+        expect(allPassed).toBe(true);
+    });
+
+    it('skips enabled tools that have no hook configuration', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            enabledAgents: ['codex'],
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            sharing: { env: { injectShellProfile: false } },
+            toolPaths: {
+                codex: { skills: '.codex/skills' },
+            },
+        });
+
+        const allPassed = await doctor({});
+
+        const allLines = consoleSpy.mock.calls.map((call) => String(call[0]));
+        expect(allLines.some((line) => line.includes('hooks in codex'))).toBe(false);
+        expect(allPassed).toBe(true);
+    });
+
     it('should pass env check when env/env.yaml does not exist in team repo', async () => {
         mockedPathExists.mockImplementation(async (filePath: string) => {
             if (filePath.endsWith(path.join('env', 'env.yaml'))) return false;

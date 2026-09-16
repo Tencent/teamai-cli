@@ -9,6 +9,8 @@ export const ToolPathsSchema = z.object({
   skills: z.string().optional(),
   rules: z.string().optional(),
   settings: z.string().optional(),
+  /** Standalone hooks file for tools that do not store hooks in settings. */
+  hooks: z.string().optional(),
   claudemd: z.string().optional(),
   /** Per-tool agents directory (Phase 1: teamai-recall subagent target).
    * Optional — tools without subagent support omit this and agents sync skips them. */
@@ -33,6 +35,7 @@ export const ToolPathsSchema = z.object({
       skills: z.string().optional(),
       rules: z.string().optional(),
       agents: z.string().optional(),
+      hooks: z.string().optional(),
     })
     .optional(),
 });
@@ -280,6 +283,15 @@ export const TeamaiConfigSchema = z.object({
     tclaude: { skills: '.tclaude/skills', rules: '.tclaude/rules', settings: '.tclaude/settings.json', claudemd: '.tclaude/CLAUDE.md', agents: '.tclaude/agents', mcp: '.tclaude/.claude.json' },
     tcodex: { skills: '.tcodex/skills', rules: '.tcodex/rules', settings: '.tcodex/hooks.json', agents: '.tcodex/agents' },
     cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents', mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' },
+    // GitHub Copilot CLI keeps project customizations under .github and moves
+    // the complete user customization root when COPILOT_HOME is set. Hooks are
+    // a standalone file; settings.json is deliberately never managed.
+    copilot: {
+      skills: '.github/skills',
+      rules: '.github/instructions',
+      hooks: '.github/hooks/teamai.json',
+      userScope: { skills: 'skills', rules: 'instructions', hooks: 'hooks/teamai.json' },
+    },
     // JoyCode: skills, rules (.mdc), and subagents are synced to .joycode/.
     // JoyCode currently does not provide a lifecycle hooks system or startup
     // adapter, so it intentionally has no `settings` path. Hook reconciliation
@@ -1431,6 +1443,21 @@ export function resolveBaseDir(localConfig: LocalConfig): string {
   return getUserHome();
 }
 
+export const COPILOT_TOOL_ID = 'copilot';
+const DEFAULT_COPILOT_HOME = '.copilot';
+
+/** GitHub Copilot CLI's user configuration root, honoring COPILOT_HOME. */
+export function getCopilotHome(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.COPILOT_HOME?.trim();
+  return configured ? path.resolve(configured) : path.join(getUserHome(), DEFAULT_COPILOT_HOME);
+}
+
+/** Base directory for one tool's resources in the active scope. */
+export function resolveToolBaseDir(tool: string, localConfig: LocalConfig): string {
+  if (tool === COPILOT_TOOL_ID && localConfig.scope === 'user') return getCopilotHome();
+  return resolveBaseDir(localConfig);
+}
+
 /** True when `tool` is in localConfig.disabledAgents (excluded from teamai sync). */
 export function isAgentDisabled(localConfig: { disabledAgents?: string[] }, tool: string): boolean {
   return localConfig.disabledAgents?.includes(tool) ?? false;
@@ -1481,6 +1508,7 @@ export function scopedToolPaths(
       ...(us.skills !== undefined ? { skills: us.skills } : {}),
       ...(us.rules !== undefined ? { rules: us.rules } : {}),
       ...(us.agents !== undefined ? { agents: us.agents } : {}),
+      ...(us.hooks !== undefined ? { hooks: us.hooks } : {}),
     };
   }
   return out;

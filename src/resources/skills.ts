@@ -1,8 +1,8 @@
 import path from 'node:path';
 import YAML from 'yaml';
-import { ResourceHandler } from './base.js';
+import { isToolInstalledForConfig, ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
-import { resolveBaseDir, getPushignorePath, isAgentExcluded, scopedToolPaths } from '../types.js';
+import { getPushignorePath, isAgentExcluded, resolveToolBaseDir, scopedToolPaths } from '../types.js';
 import { listDirs, pathExists, copyDir, remove, dirContentEqual, dirTeamSubsetEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
@@ -344,9 +344,9 @@ export class SkillsHandler extends ResourceHandler {
     const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus; namespace?: string }>();
 
     // Scan each tool's skills directory
-    for (const [_tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
-      const skillsDir = path.join(resolveBaseDir(localConfig), toolPath.skills);
+      const skillsDir = path.join(resolveToolBaseDir(tool, localConfig), toolPath.skills);
       if (!await pathExists(skillsDir)) continue;
 
       // Use recursive scanning to find all skills at any depth
@@ -478,8 +478,6 @@ export class SkillsHandler extends ResourceHandler {
    * Pull a skill from team repo to all configured AI tool directories.
    */
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    const baseDir = resolveBaseDir(localConfig);
-
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (isAgentExcluded(localConfig, tool)) continue;
       if (!toolPath.skills) continue;
@@ -502,10 +500,11 @@ export class SkillsHandler extends ResourceHandler {
         }
         dest = path.join(getHermesHome(), 'skills', item.name);
       } else {
-        if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) {
+        if (!await isToolInstalledForConfig(tool, toolPath.skills, localConfig)) {
           log.debug(`Skipping skill sync for ${tool}: tool not installed`);
           continue;
         }
+        const baseDir = resolveToolBaseDir(tool, localConfig);
         dest = await resolveSkillDestination(tool, toolPath.skills, baseDir, item.name, item.sourcePath);
       }
 
@@ -524,7 +523,6 @@ export class SkillsHandler extends ResourceHandler {
    */
   async removeItem(name: string, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
     const removed: string[] = [];
-    const baseDir = resolveBaseDir(localConfig);
 
     // Remove from team repo
     const scopedNamespaces = await resolveSkillNamespaces(localConfig);
@@ -559,6 +557,7 @@ export class SkillsHandler extends ResourceHandler {
         if (!wsDir) continue;
         skillDir = path.join(wsDir, 'skills', name);
       } else {
+        const baseDir = resolveToolBaseDir(tool, localConfig);
         const configuredDir = path.join(baseDir, toolPath.skills, name);
         skillDir = await resolveSkillDestination(tool, toolPath.skills, baseDir, name);
         if (skillDir !== configuredDir && await pathExists(configuredDir) && await dirContentEqual(skillDir, configuredDir)) {

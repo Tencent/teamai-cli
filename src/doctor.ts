@@ -4,13 +4,17 @@ import { pathExists, readFileSafe } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
 import {
+  COPILOT_TOOL_ID,
   TEAMAI_ENV_START,
   resolveHookScope,
+  resolveToolBaseDir,
   getDataHome,
   isAgentExcluded,
   scopedToolPaths,
+  type LocalConfig,
   type TeamaiConfig,
 } from './types.js';
+import { isToolInstalledForConfig } from './resources/base.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder } from './hooks.js';
 import { getUserHome } from './utils/home.js';
 
@@ -24,13 +28,25 @@ interface Check {
  * Build hook checks only for tools whose settings parent directory already
  * exists (i.e. the tool is installed). Tools that are not installed are skipped.
  */
-async function buildHookChecks(toolPaths: TeamaiConfig['toolPaths'], baseDir: string): Promise<Check[]> {
+async function buildHookChecks(
+  toolPaths: TeamaiConfig['toolPaths'],
+  baseDir: string,
+  localConfig: LocalConfig,
+): Promise<Check[]> {
   const checks: Check[] = [];
   for (const [tool, paths] of Object.entries(toolPaths)) {
-    if (!paths.settings) continue;
-    const settingsPath = path.join(baseDir, paths.settings);
+    const hookPath = paths.hooks
+      ? path.join(resolveToolBaseDir(tool, localConfig), paths.hooks)
+      : paths.settings
+        ? path.join(baseDir, paths.settings)
+        : undefined;
+    if (!hookPath) continue;
+    const settingsPath = hookPath;
     const parentDir = path.dirname(settingsPath);
-    if (!await pathExists(parentDir)) continue;
+    const installed = tool === COPILOT_TOOL_ID
+      ? await isToolInstalledForConfig(tool, paths.hooks ?? paths.settings ?? '', localConfig)
+      : await pathExists(parentDir);
+    if (!installed) continue;
     checks.push({
       name: `teamai hooks in ${tool} settings`,
       check: async () => {
@@ -166,7 +182,7 @@ export async function doctor(options: GlobalOptions): Promise<boolean> {
       },
       fix: 'Check teamai.yaml in team repo for syntax errors',
     },
-    ...await buildHookChecks(toolPaths, baseDir),
+    ...await buildHookChecks(toolPaths, baseDir, localConfig),
     {
       name: 'Env variables injected in shell profile',
       check: async () => {

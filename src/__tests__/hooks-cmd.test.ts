@@ -11,6 +11,7 @@ vi.mock('../hooks.js', async () => {
     const actual = await vi.importActual<typeof import('../hooks.js')>('../hooks.js');
     return {
         getHookStatus: vi.fn(),
+        reconcileHooks: vi.fn(),
         reconcileHooksToAllTools: vi.fn(),
         reconcileTeamHooksForConfig: vi.fn(),
         sweepLegacyProjectHooks: vi.fn(),
@@ -37,7 +38,7 @@ vi.mock('../utils/logger.js', () => ({
 // ── Imports (after mocks) ────────────────────────────────
 
 import { autoDetectInit } from '../config.js';
-import { getHookStatus, reconcileHooksToAllTools, reconcileTeamHooksForConfig, sweepLegacyProjectHooks, hasInstalledCodexTrustGatedTool } from '../hooks.js';
+import { getHookStatus, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, sweepLegacyProjectHooks, hasInstalledCodexTrustGatedTool } from '../hooks.js';
 import { parseTeamHooks } from '../resources/hooks.js';
 import { log } from '../utils/logger.js';
 import { hooksInject, hooksRemove, hooksList } from '../hooks-cmd.js';
@@ -45,6 +46,7 @@ import { hooksInject, hooksRemove, hooksList } from '../hooks-cmd.js';
 const mockedAutoDetectInit = autoDetectInit as Mock;
 const mockedGetHookStatus = getHookStatus as Mock;
 const mockedSweep = sweepLegacyProjectHooks as Mock;
+const mockedReconcileStandalone = reconcileHooks as Mock;
 const mockedReconcile = reconcileHooksToAllTools as Mock;
 const mockedReconcileForConfig = reconcileTeamHooksForConfig as Mock;
 const mockedHasCodexTrustGated = hasInstalledCodexTrustGatedTool as Mock;
@@ -68,6 +70,19 @@ const mockTeamConfig = {
 };
 
 const TEAM_DEFS = [{ source: 'team', key: 'x', event: 'Stop', command: 'echo x', description: '[teamai:hook:x] x' }];
+const COPILOT_HOME_FIXTURE = '/tmp/custom-copilot';
+
+function copilotConfig() {
+    return {
+        ...mockTeamConfig,
+        toolPaths: {
+            copilot: {
+                hooks: '.github/hooks/teamai.json',
+                userScope: { hooks: 'hooks/teamai.json' },
+            },
+        },
+    };
+}
 
 function mockHome(home: string): () => void {
     const originalHome = process.env.HOME;
@@ -82,6 +97,7 @@ beforeEach(() => {
     vi.clearAllMocks();
     mockedAutoDetectInit.mockResolvedValue({ localConfig: mockLocalConfig, teamConfig: mockTeamConfig });
     mockedGetHookStatus.mockResolvedValue('missing');
+    mockedReconcileStandalone.mockResolvedValue(undefined);
     mockedReconcile.mockResolvedValue(undefined);
     mockedReconcileForConfig.mockResolvedValue(undefined);
     mockedHasCodexTrustGated.mockResolvedValue(false);
@@ -277,6 +293,29 @@ describe('hooksList', () => {
 
         await expect(hooksList({})).rejects.toThrow('not initialized');
     });
+
+    it('lists standalone Copilot hooks under COPILOT_HOME', async () => {
+        const originalCopilotHome = process.env.COPILOT_HOME;
+        process.env.COPILOT_HOME = COPILOT_HOME_FIXTURE;
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+        mockedAutoDetectInit.mockResolvedValue({
+            localConfig: { ...mockLocalConfig, enabledAgents: ['copilot'] },
+            teamConfig: copilotConfig(),
+        });
+
+        try {
+            await hooksList({});
+        } finally {
+            if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+            else process.env.COPILOT_HOME = originalCopilotHome;
+            consoleLog.mockRestore();
+        }
+
+        expect(mockedGetHookStatus).toHaveBeenCalledWith(
+            path.join(COPILOT_HOME_FIXTURE, 'hooks/teamai.json'),
+            'copilot',
+        );
+    });
 });
 
 describe('hooksRemove', () => {
@@ -343,6 +382,29 @@ describe('hooksRemove', () => {
         expect(mockedReconcile).toHaveBeenCalledTimes(1);
         expect(mockedReconcile).toHaveBeenCalledWith(
             mockTeamConfig.toolPaths, '/path/to/project', [], expect.any(String), { removeAll: true },
+        );
+    });
+
+    it('removes standalone Copilot hooks under COPILOT_HOME', async () => {
+        const originalCopilotHome = process.env.COPILOT_HOME;
+        process.env.COPILOT_HOME = COPILOT_HOME_FIXTURE;
+        mockedAutoDetectInit.mockResolvedValue({
+            localConfig: { ...mockLocalConfig, enabledAgents: ['copilot'] },
+            teamConfig: copilotConfig(),
+        });
+
+        try {
+            await hooksRemove({});
+        } finally {
+            if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+            else process.env.COPILOT_HOME = originalCopilotHome;
+        }
+
+        expect(mockedReconcileStandalone).toHaveBeenCalledWith(
+            path.join(COPILOT_HOME_FIXTURE, 'hooks/teamai.json'),
+            'copilot',
+            [],
+            expect.objectContaining({ removeAll: true }),
         );
     });
 

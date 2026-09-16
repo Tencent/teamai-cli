@@ -1,7 +1,14 @@
 import path from 'node:path';
 import { pathExists, ensureDir } from './utils/fs.js';
-import { resolveBaseDir, isAgentDisabled, scopedToolPaths } from './types.js';
-import { toolInstallRoot } from './resources/base.js';
+import {
+  COPILOT_TOOL_ID,
+  getCopilotHome,
+  resolveBaseDir,
+  resolveToolBaseDir,
+  isAgentDisabled,
+  scopedToolPaths,
+} from './types.js';
+import { isToolInstalledForConfig } from './resources/base.js';
 import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
 import { getUserHome } from './utils/home.js';
 
@@ -11,7 +18,7 @@ import { getUserHome } from './utils/home.js';
  * against the user's HOME in non-interactive contexts. Order is the display order.
  * Kept small on purpose — the common coding agents, not the full KNOWN_AGENTS list.
  */
-export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'joycode', 'codebuddy', 'workbuddy'] as const;
+export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'copilot', 'joycode', 'codebuddy', 'workbuddy'] as const;
 
 /**
  * Normalize the `--agent` option into a deduplicated id list.
@@ -191,6 +198,10 @@ export async function detectHomeInstalledAgents(
 
   const found: string[] = [];
   for (const id of candidateIds) {
+    if (id === COPILOT_TOOL_ID) {
+      if (await pathExists(getCopilotHome())) found.push(id);
+      continue;
+    }
     const skillsPath = KNOWN_AGENTS.find((a) => a.id === id)?.skillsPath;
     if (!skillsPath) continue;
     const rootSegment = skillsPath.split('/')[0]; // e.g. ".claude"
@@ -240,7 +251,6 @@ export function getEffectiveAgents(
  * detection lines up with what `teamai pull` actually writes to.
  */
 export async function detectInstalledAgents(localConfig: LocalConfig, teamConfig: TeamaiConfig): Promise<ResolvedAgent[]> {
-  const baseDir = resolveBaseDir(localConfig);
   const agents = getEffectiveAgents(teamConfig, localConfig);
   const scoped = scopedToolPaths(teamConfig, localConfig);
   const fromTeamConfig = new Set(
@@ -251,12 +261,11 @@ export async function detectInstalledAgents(localConfig: LocalConfig, teamConfig
 
   const results: ResolvedAgent[] = [];
   for (const agent of agents) {
-    const rootSegment = toolInstallRoot(agent.skillsPath);
-    const rootPath = path.join(baseDir, rootSegment);
-    const installed = rootSegment ? await pathExists(rootPath) : false;
+    const baseDir = resolveToolBaseDir(agent.id, localConfig);
+    const installed = await isToolInstalledForConfig(agent.id, agent.skillsPath, localConfig);
     results.push({
       ...agent,
-      absoluteSkillsPath: `${baseDir}/${agent.skillsPath}`,
+      absoluteSkillsPath: path.join(baseDir, agent.skillsPath),
       installed,
       fromTeamConfig: fromTeamConfig.has(agent.id),
     });

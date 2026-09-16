@@ -19,10 +19,12 @@ import {
   TEAMAI_ENV_START,
   TEAMAI_ENV_END,
   getDataHome,
+  getManagedHooksPath,
   managedMcpManifestPath,
   resolveBaseDir,
   resolveHookScope,
   resolveLegacyProjectHookScope,
+  resolveToolBaseDir,
   scopedToolPaths,
   type GlobalOptions,
   type TeamaiConfig,
@@ -229,6 +231,7 @@ async function discoverToolResources(
   teamRuleNames: Set<string>,
   teamAgentNames: Set<string>,
   hookTargets: Array<{ baseDir: string; manifestPath: string }>,
+  standaloneHookManifestPath: string,
   scope: Scope,
 ): Promise<ToolResources> {
   const res: ToolResources = {
@@ -237,7 +240,18 @@ async function discoverToolResources(
   };
 
   // (a) Hooks — settings.json / hooks.json
-  if (tool === 'opencode') {
+  if (toolPath.hooks) {
+    const hooksPath = path.join(baseDir, toolPath.hooks);
+    if (await pathExists(hooksPath)
+      && (await hasTeamaiHooks(hooksPath, tool, standaloneHookManifestPath)
+        || isEmptyHooksResidue(await readJson<Record<string, unknown>>(hooksPath)))) {
+      res.hookFiles.push({
+        path: hooksPath,
+        tool,
+        manifestPath: standaloneHookManifestPath,
+      });
+    }
+  } else if (tool === 'opencode') {
     // OpenCode has no settings file; its teamai hooks are plugin .ts files under
     // <base>/.config/opencode/plugin (where teamai writes them) or
     // <base>/.opencode/plugin (a project-scope copy from an earlier layout).
@@ -357,6 +371,10 @@ async function buildRemovalPlan(
 ): Promise<RemovalPlan> {
   const baseDir = resolveBaseDir(localConfig);
   const teamaiHome = getDataHome(localConfig);
+  const standaloneHookManifestPath = getManagedHooksPath(
+    localConfig.scope,
+    localConfig.projectRoot,
+  );
 
   // Discover team repo resource names for targeted removal. CLI built-in
   // resources (recall agent/rule, share-learnings skill, …) are deployed by
@@ -403,11 +421,12 @@ async function buildRemovalPlan(
       await discoverToolResources(
         tool,
         toolPath,
-        baseDir,
+        resolveToolBaseDir(tool, localConfig),
         teamSkillNames,
         teamRuleNames,
         teamAgentNames,
         hookTargets,
+        standaloneHookManifestPath,
         localConfig.scope,
       ),
     );

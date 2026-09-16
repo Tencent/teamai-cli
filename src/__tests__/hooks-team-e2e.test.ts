@@ -138,6 +138,36 @@ describe('teamai hooks — unified A+B end-to-end', () => {
     }
   });
 
+  it('lists and removes standalone Copilot hooks while preserving user hooks', async () => {
+    const copilotHome = path.join(home, 'custom-copilot-home');
+    const copilotEnv = { COPILOT_HOME: copilotHome };
+    const hookPath = path.join(copilotHome, 'hooks', 'teamai.json');
+    writeHooksYaml(TEAM_HOOK);
+    fs.mkdirSync(copilotHome, { recursive: true });
+
+    await run(['hooks', 'inject', '--silent'], copilotEnv);
+    const injected = JSON.parse(fs.readFileSync(hookPath, 'utf8')) as {
+      version: number;
+      hooks: Record<string, Array<Record<string, unknown>>>;
+    };
+    injected.hooks.SessionStart.unshift({
+      type: 'command', bash: 'echo user', powershell: 'echo user', command: 'echo user',
+    });
+    fs.writeFileSync(hookPath, JSON.stringify(injected, null, 2));
+
+    const { stdout } = await run(['hooks', 'list'], copilotEnv);
+    expect(stdout).toMatch(/copilot\s+installed/);
+    expect(stdout).toContain('~/custom-copilot-home/hooks/teamai.json');
+
+    await run(['hooks', 'remove'], copilotEnv);
+    const removed = JSON.parse(fs.readFileSync(hookPath, 'utf8')) as {
+      hooks: Record<string, Array<{ command: string }>>;
+    };
+    const commands = Object.values(removed.hooks).flat().map((entry) => entry.command);
+    expect(commands).toContain('echo user');
+    expect(commands.some((command) => command.includes('teamai hook-dispatch'))).toBe(false);
+  });
+
   // Regression: `hooks inject` must NOT materialize root directories for tools
   // the user never installed. Doing so used to make uninstalled tools (e.g.
   // .tclaude / .tcodex / .codex-internal, all present in default toolPaths)

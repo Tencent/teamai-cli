@@ -2,7 +2,18 @@ import path from 'node:path';
 import { realpathSync } from 'node:fs';
 import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, resolveHookScope, resolveLegacyProjectHookScope } from './types.js';
+import {
+  COPILOT_TOOL_ID,
+  TEAMAI_HOOK_DESCRIPTION_PREFIX,
+  TEAMAI_CUSTOM_HOOK_PREFIX,
+  TEAMAI_AGENT_HOOK_PREFIX,
+  getManagedHooksPath,
+  getCopilotHome,
+  resolveHookScope,
+  resolveLegacyProjectHookScope,
+  resolveToolBaseDir,
+  scopedToolPaths,
+} from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
 import { isSelfMode } from './types.js';
 import { activeRoleIds } from './roles.js';
@@ -34,6 +45,19 @@ export const CLAUDE_TO_CURSOR_EVENTS: Record<string, string> = {
   Stop: 'stop',
   PostToolUse: 'postToolUse',
   UserPromptSubmit: 'beforeSubmitPrompt',
+};
+
+/**
+ * TeamAI hook events supported by Copilot's Claude-compatible schema. Keeping
+ * PascalCase also keeps Copilot's stdin payload snake_case, which is the
+ * contract consumed by hook-dispatch.
+ */
+export const CLAUDE_TO_COPILOT_EVENTS: Record<string, string> = {
+  SessionStart: 'SessionStart',
+  Stop: 'Stop',
+  UserPromptSubmit: 'UserPromptSubmit',
+  PreToolUse: 'PreToolUse',
+  PostToolUse: 'PostToolUse',
 };
 
 // ─── On-disk shapes ─────────────────────────────────────────
@@ -83,6 +107,22 @@ interface CodexHooksJson {
   [key: string]: unknown;
 }
 
+interface CopilotHookEntry {
+  type: 'command';
+  bash: string;
+  powershell: string;
+  command: string;
+  matcher?: string;
+  timeoutSec?: number;
+}
+
+interface CopilotHooksJson {
+  version: number;
+  hooks: Record<string, CopilotHookEntry[]>;
+}
+
+const COPILOT_HOOK_SCHEMA_VERSION = 1;
+
 // ZCode (~/.zcode/cli/config.json): Claude-shaped hooks nested under
 // `hooks.events`, gated by `hooks.enabled` (config-file hooks are disabled by
 // default — the writer must force it on). The file is shared with ZCode's own
@@ -126,7 +166,7 @@ interface ZcodeHooksJson {
 //  Reconcile is idempotent and only writes when content actually changes, so an
 //  upgraded CLI re-running over an already-injected file produces a zero-diff.
 
-type ToolFormat = 'claude' | 'cursor' | 'codex' | 'zcode';
+type ToolFormat = 'claude' | 'cursor' | 'codex' | 'copilot' | 'zcode';
 export type HookStatus = 'installed' | 'missing';
 
 const CURSOR_TOOLS = new Set(['cursor']);
@@ -134,6 +174,7 @@ const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
 const ZCODE_TOOLS = new Set(['zcode']);
 
 function detectFormat(tool: string): ToolFormat {
+  if (tool === COPILOT_TOOL_ID) return 'copilot';
   if (CODEX_TOOLS.has(tool)) return 'codex';
   if (ZCODE_TOOLS.has(tool)) return 'zcode';
   return CURSOR_TOOLS.has(tool) ? 'cursor' : 'claude';
@@ -301,6 +342,25 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
   };
   if (def.matcher && def.matcher !== '*') entry.matcher = def.matcher;
   return entry;
+}
+
+const COPILOT_BUILTIN_COMMAND_RE = /^bash -lc "(teamai hook-dispatch [^"]+) 2>\/dev\/null" \|\| true$/;
+
+/** Render a valid PowerShell equivalent for TeamAI's generated bash wrapper. */
+function copilotPowershellCommand(command: string): string {
+  const match = command.match(COPILOT_BUILTIN_COMMAND_RE);
+  return match ? `${match[1]} 2>$null; exit 0` : command;
+}
+
+function toCopilotEntry(def: HookDef): CopilotHookEntry {
+  return {
+    type: 'command',
+    bash: def.command,
+    powershell: copilotPowershellCommand(def.command),
+    command: def.command,
+    ...(def.matcher && def.matcher !== '*' ? { matcher: def.matcher } : {}),
+    ...(def.timeout !== undefined ? { timeoutSec: def.timeout } : {}),
+  };
 }
 
 function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
@@ -507,6 +567,75 @@ async function reconcileCursorFormat(
   }
 
   if (changed) {
+    await writeJson(expanded, hooksJson);
+    log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);
+  } else {
+    log.debug(`teamai hooks already up-to-date in ${hooksPath}`);
+  }
+}
+
+// ─── GitHub Copilot CLI (standalone hooks/*.json) reconcile ──
+
+function copilotEntryCommands(entry: CopilotHookEntry): string[] {
+  return [entry.bash, entry.powershell, entry.command].filter(Boolean);
+}
+
+async function reconcileCopilotFormat(
+  hooksPath: string,
+  tool: string,
+  teamDefs: HookDef[],
+  opts: ReconcileHooksOptions,
+  priorTeamCommands: Set<string>,
+): Promise<void> {
+  const expanded = expandHome(hooksPath);
+  const existed = await pathExists(expanded);
+  if (opts.removeAll && !existed) {
+    log.debug(`No teamai hooks to remove from ${hooksPath}`);
+    return;
+  }
+  await ensureDir(path.dirname(expanded));
+  const hooksJson: CopilotHooksJson = (await readJson<CopilotHooksJson>(expanded)) ?? {
+    version: COPILOT_HOOK_SCHEMA_VERSION,
+    hooks: {},
+  };
+  let changed = hooksJson.version !== COPILOT_HOOK_SCHEMA_VERSION;
+  hooksJson.version = COPILOT_HOOK_SCHEMA_VERSION;
+  if (!hooksJson.hooks) hooksJson.hooks = {};
+
+  const isManaged = (entry: CopilotHookEntry): boolean => copilotEntryCommands(entry).some((command) =>
+    TEAMAI_COMMAND_MARKERS.some((marker) => command.includes(marker)) || priorTeamCommands.has(command),
+  );
+  const defs = opts.removeAll ? [] : desiredDefs(tool, teamDefs, opts.builtinOverride);
+  const desiredByEvent: Record<string, CopilotHookEntry[]> = {};
+  for (const def of defs) {
+    const event = CLAUDE_TO_COPILOT_EVENTS[def.event];
+    if (!event) continue;
+    (desiredByEvent[event] ??= []).push(toCopilotEntry(def));
+  }
+
+  for (const event of Object.keys(hooksJson.hooks)) {
+    const existing = hooksJson.hooks[event] ?? [];
+    const untouched = existing.filter((entry) => !isManaged(entry));
+    const desired = desiredByEvent[event] ?? [];
+    const next = [...untouched, ...desired];
+    if (next.length === 0 && !opts.removeAll) {
+      if (existing.length > 0) changed = true;
+      delete hooksJson.hooks[event];
+      continue;
+    }
+    if (JSON.stringify(existing) !== JSON.stringify(next)) {
+      hooksJson.hooks[event] = next;
+      changed = true;
+    }
+  }
+
+  for (const event of desiredEventOrder(defs, (value) => CLAUDE_TO_COPILOT_EVENTS[value])) {
+    if (hooksJson.hooks[event]) continue;
+    hooksJson.hooks[event] = desiredByEvent[event];
+    changed = true;
+  }
+
+  if (changed || !existed) {
     await writeJson(expanded, hooksJson);
     log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);
   } else {
@@ -819,6 +948,8 @@ export async function reconcileHooks(
   const format = detectFormat(tool);
   if (format === 'cursor') {
     await reconcileCursorFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands);
+  } else if (format === 'copilot') {
+    await reconcileCopilotFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands);
   } else if (format === 'codex') {
     await reconcileCodexFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands);
   } else if (format === 'zcode') {
@@ -890,6 +1021,24 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
     return present ? 'installed' : 'missing';
   }
 
+  if (format === 'copilot') {
+    const hooksJson = await readJson<CopilotHooksJson>(expanded);
+    if (hooksJson?.version !== COPILOT_HOOK_SCHEMA_VERSION || !hooksJson.hooks) return 'missing';
+    const present = defs.every((def) => {
+      const event = CLAUDE_TO_COPILOT_EVENTS[def.event];
+      if (!event) return true;
+      const want = toCopilotEntry(def);
+      return (hooksJson.hooks[event] ?? []).some((entry) =>
+        entry.type === want.type
+        && entry.bash === want.bash
+        && entry.powershell === want.powershell
+        && entry.command === want.command
+        && entry.matcher === want.matcher,
+      );
+    });
+    return present ? 'installed' : 'missing';
+  }
+
   if (format === 'codex') {
     const hooksJson = await readJson<CodexHooksJson>(expanded);
     if (!hooksJson?.hooks) return 'missing';
@@ -951,6 +1100,16 @@ export async function hasTeamaiHooks(
     if (!j?.hooks) return false;
     return Object.values(j.hooks).some((entries) =>
       (entries ?? []).some((e) => isTeamaiHookCommand(e.command) || priorTeamCommands.has(e.command)),
+    );
+  }
+  if (format === 'copilot') {
+    const j = await readJson<CopilotHooksJson>(expanded);
+    if (!j?.hooks) return false;
+    return Object.values(j.hooks).some((entries) =>
+      (entries ?? []).some((entry) => copilotEntryCommands(entry).some((command) =>
+        TEAMAI_COMMAND_MARKERS.some((marker) => command.includes(marker))
+        || priorTeamCommands.has(command),
+      )),
     );
   }
 
@@ -1231,7 +1390,8 @@ export async function reconcileTeamHooksForConfig(
         activeRoles: activeRoleIds(localConfig),
       });
   const { baseDir, manifestPath } = resolveHookScope(localConfig);
-  let filterAgents = opts.filterAgents ?? localConfig.enabledAgents;
+  const explicitlySelectedAgents = opts.filterAgents ?? localConfig.enabledAgents;
+  let filterAgents = explicitlySelectedAgents;
   const disabled = localConfig.disabledAgents;
   if (disabled && disabled.length > 0) {
     // Exclusion always applies, even when there is no whitelist. When no
@@ -1248,6 +1408,30 @@ export async function reconcileTeamHooksForConfig(
       : undefined,
     installedBaseDir: localConfig.scope === 'project' ? (localConfig.projectRoot ?? baseDir) : undefined,
   });
+
+  const copilotExcluded = disabled?.includes(COPILOT_TOOL_ID) ?? false;
+  const copilotSelected = !copilotExcluded
+    && (explicitlySelectedAgents?.includes(COPILOT_TOOL_ID) ?? false);
+  const copilotEnabled = !copilotExcluded && (
+    copilotSelected
+    || (explicitlySelectedAgents === undefined && await pathExists(getCopilotHome()))
+  );
+  const copilotPaths = scopedToolPaths(teamConfig, localConfig)[COPILOT_TOOL_ID];
+  if (copilotEnabled && copilotPaths?.hooks) {
+    const copilotBase = resolveToolBaseDir(COPILOT_TOOL_ID, localConfig);
+    if (copilotSelected || await pathExists(getCopilotHome())) {
+      await reconcileHooks(
+        path.join(copilotBase, copilotPaths.hooks),
+        COPILOT_TOOL_ID,
+        teamDefs,
+        {
+          manifestPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
+          removeAll: opts.removeAll,
+          builtinOverride: builtin,
+        },
+      );
+    }
+  }
   await sweepLegacyProjectHooks(teamConfig.toolPaths, localConfig);
   return teamDefs;
 }

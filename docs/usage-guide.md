@@ -4,7 +4,7 @@
 
 > **teamai-cli** — the team collaboration layer for AI agents
 >
-> **Make every team continuously smarter with AI.** Define how agents work (Team Execution), give them team knowledge (Team Context), and turn real sessions into shared capability (Team Improvement). TeamAI manages Skills, Rules, Docs, Env, MCP, and more across Claude Code, Codex, CodeBuddy, WorkBuddy, OpenCode, Cursor, and other supported agents.
+> **Make every team continuously smarter with AI.** Define how agents work (Team Execution), give them team knowledge (Team Context), and turn real sessions into shared capability (Team Improvement). TeamAI manages Skills, Rules, Docs, Env, MCP, and more across Claude Code, Codex, GitHub Copilot CLI, CodeBuddy, WorkBuddy, OpenCode, Cursor, and other supported agents.
 
 ---
 
@@ -430,7 +430,7 @@ teamai skill show hai-deploy-test   # View a single skill's source / contributor
 
 `teamai init` already injected Hooks into your AI tools. **`teamai pull` runs automatically every time you start an AI session** — no manual action needed. In project scope, that SessionStart hook first creates the current agent's project root (e.g. `<project>/.claude` when Claude Code opens the repo) if it is missing, then pulls.
 
-*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as [CC], Codex, Cursor, CodeBuddy, WorkBuddy, Qoder, Kiro, OpenCode, Hermes, or OpenClaw. Kiro runs the hook when a TeamAI-rendered custom agent is activated in an interactive CLI session; its in-memory built-in default agent is not writable, and non-interactive mode does not fire `agentSpawn`. For tools without a teamai-writable hooks surface such as JoyCode or Gemini CLI, run `teamai pull` manually.)*
+*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as [CC], Codex, GitHub Copilot CLI, Cursor, CodeBuddy, WorkBuddy, Qoder, Kiro, OpenCode, Hermes, or OpenClaw. Kiro runs the hook when a TeamAI-rendered custom agent is activated in an interactive CLI session; its in-memory built-in default agent is not writable, and non-interactive mode does not fire `agentSpawn`. For tools without a teamai-writable hooks surface such as JoyCode or Gemini CLI, run `teamai pull` manually.)*
 
 If you need to sync immediately, you can run it manually:
 
@@ -1391,6 +1391,17 @@ roles:
 ```
 
 `teamai pull` copies these into each Tier-1 tool's `agents/` directory (e.g. `~/.claude/agents/`), flattened by file name, so two active namespaces must not define the same agent name (pull reports the collision and skips the scope). `teamai pull` writes `<name>.toml` for Codex tools, `<name>.json` for Kiro, and `<name>.md` for every other tool. When a member changes role, agents of the namespaces that stopped being active are removed on the next pull, unless the deployed copy was edited locally, in which case it is kept with a warning. Without a configured role, every agent syncs. `teamai push` resolves the source using the same active role and project namespaces as pull. It writes edits to that source and skips ambiguous destinations with a warning; an agent with only inactive sources is also skipped. Skipped agents do not block other resources in the same push. A new agent lands at the root. Cleanup checks each tool separately, respecting YAML `targets` and legacy format support. An active same-named agent protects a deployed file only when it targets that tool and output file. `teamai remove agents <name>` records a tombstone. The next pull on every other machine deletes `<name>.md`, `<name>.toml` and `<name>.json` from each synced tool's agents directory. That cleanup also runs when the pull finds the team repo unchanged. The CLI's built-in `teamai-recall.md` is deployed alongside team agents but is not uploaded by `teamai push`.
+
+### GitHub Copilot CLI
+
+GitHub Copilot CLI is supported for its official Rules, Skills, and hooks surfaces:
+
+- **Scopes.** User resources live below `$COPILOT_HOME` (default `~/.copilot`); project resources live below `<project>/.github`. TeamAI honors `COPILOT_HOME` for detection and every user-scope read or write.
+- **Skills.** `teamai pull` writes user skills to `$COPILOT_HOME/skills/` and project skills to `.github/skills/`. Edits in either scope are detected by `teamai push` like other TeamAI skills.
+- **Rules.** Team rules become native `*.instructions.md` files under `$COPILOT_HOME/instructions/` or `.github/instructions/`. TeamAI derives Copilot's required `applyTo` frontmatter from the team rule's `paths`; a rule without `paths` uses `**`. On push, only the Markdown body flows back, preserving the team-owned `paths` metadata. Unknown Copilot instruction files remain user-owned and are not uploaded or deleted.
+- **Hooks.** TeamAI writes a dedicated version-1 hook file at `$COPILOT_HOME/hooks/teamai.json` or `.github/hooks/teamai.json`. It uses Copilot's VS Code-compatible PascalCase events (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop`) so hook payloads retain the snake_case fields consumed by TeamAI, and emits `bash`, `powershell`, and fallback `command` fields. The file is reconciled idempotently while preserving unrelated entries. TeamAI never edits Copilot's `settings.json`.
+
+Team hooks still come from the team's `hooks/hooks.yaml`: edit that source in the team repository and use the normal pull/push workflow. TeamAI does not reverse-import arbitrary native hook entries from a Copilot configuration file.
 
 ### OpenCode
 
