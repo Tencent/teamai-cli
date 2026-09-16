@@ -164,6 +164,15 @@ export function mergeDeltas(local: UserVotesV2, remote: UserVotesV2): UserVotesV
 }
 
 /**
+ * Whether the local votes file holds deltas not yet synced to the team repo.
+ * Lets report writers skip a network round-trip when nothing is pending.
+ */
+export async function hasPendingVoteDeltas(localVotesDir: string, username: string): Promise<boolean> {
+  const local = await loadUserVotes(path.join(localVotesDir, `${username}.yaml`));
+  return Object.keys(local.deltas).length > 0;
+}
+
+/**
  * Sync local vote deltas to the team repo votes file for a given user.
  * Returns true if sync was performed, false if deltas were empty.
  */

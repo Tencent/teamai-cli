@@ -396,13 +396,71 @@ export async function reportUsageToTeam(
     const hasPromptTokens = hasPromptTokenDelta(promptTokenDelta);
     const hasDaily = hasDailyDelta(dailyDelta);
 
-    // Resolve where report data is written. Non-HTTP repos use the reports
-    // orphan-branch worktree; HTTP / callers without a config still write the
-    // dedicated clone (legacy path used by unit tests of merge logic).
-    let writeRoot = repoPath;
+    const hasStats = hasUsage || hasInterventions || hasPromptTokens || hasDaily;
+    const commitMsg = hasUsage
+      ? `[teamai] Update usage stats for ${username}`
+      : (hasInterventions || hasPromptTokens || hasDaily)
+        ? `[teamai] Update session stats for ${username}`
+        : `[teamai] Update votes for ${username}`;
+
+    const stageReportFiles = async (root: string): Promise<void> => {
+      if (hasStats) {
+        const statsDir = path.join(root, 'stats');
+        await ensureDir(statsDir);
+        const statsPath = path.join(statsDir, `${username}.yaml`);
+        const existing = await readExistingStats(statsPath);
+        if (useReportsBranch) {
+          const previousContent = await readFileSafe(statsPath);
+          restoreStats = () => writeFile(statsPath, previousContent ?? '');
+        }
+        const newStats = hasUsage ? aggregateUsage(events) : [];
+        const merged = mergeStats(existing, username, newStats);
+        if (hasInterventions) {
+          merged.interventions = mergeInterventionStats(existing?.interventions, interventionDelta);
+        }
+        if (hasPromptTokens) {
+          const pt = mergePromptTokenStats(existing?.prompts, existing?.tokens, promptTokenDelta);
+          merged.prompts = pt.prompts;
+          merged.tokens = pt.tokens;
+        }
+        if (hasDaily) {
+          merged.daily = mergeDailyStats(existing?.daily, dailyDelta);
+        }
+        await writeFile(statsPath, YAML.stringify(merged));
+        filesToPush.push(`stats/${username}.yaml`);
+      }
+      try {
+        if (await pathExists(getUserVotesDir())) {
+          const { syncVotesToTeam } = await import('./votes.js');
+          const synced = await syncVotesToTeam(root, username, getUserVotesDir());
+          if (synced) filesToPush.push(`votes/${username}.yaml`);
+        }
+      } catch (e) {
+        log.error(`Vote staging skipped: ${(e as Error).message}`);
+      }
+    };
+
     if (useReportsBranch && reportsConfig) {
-      const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
-      writeRoot = await ensureReportsWorktree(reportsConfig);
+      let hasVotes = false;
+      if (!hasStats && await pathExists(getUserVotesDir())) {
+        const { hasPendingVoteDeltas } = await import('./votes.js');
+        hasVotes = await hasPendingVoteDeltas(getUserVotesDir(), username);
+      }
+      if (!hasStats && !hasVotes) {
+        log.debug('No usage events or votes to report');
+        return true;
+      }
+      const { updateReports } = await import('./utils/reports-branch.js');
+      const pushed = await updateReports(reportsConfig, async (wt) => {
+        filesToPush.length = 0;
+        await stageReportFiles(wt);
+        return filesToPush.length > 0 ? { files: [...filesToPush], message: commitMsg } : null;
+      }, { pushIfUnchanged: true });
+      if (!pushed) {
+        log.debug('Auto-report push was not confirmed; keeping local report data');
+        await restoreStats?.();
+        return false;
+      }
     } else {
       // The team repo is a disposable cache clone here — safe to discard local state
       // and reset to the default branch before pulling (same pattern as push.ts).
@@ -449,76 +507,12 @@ export async function reportUsageToTeam(
           await writeFile(yamlPath, pendingTeamConfig);
         }
       }
-    }
 
-    // Process usage and/or intervention/prompt/token stats if anything is new to report.
-    if (hasUsage || hasInterventions || hasPromptTokens || hasDaily) {
-      const statsDir = path.join(writeRoot, 'stats');
-      await ensureDir(statsDir);
-      const statsPath = path.join(statsDir, `${username}.yaml`);
-
-      // See also: stats.ts mergeLocalAndReported() — same merge logic for display.
-      // mergeStats with [] preserves existing skills while refreshing username/updatedAt,
-      // and carries interventions/prompts/tokens so partial reports do not clobber them (#425).
-      const existing = await readExistingStats(statsPath);
-      if (useReportsBranch) {
-        const previousContent = await readFileSafe(statsPath);
-        // A failed push can leave an already-incremented file in the reports
-        // worktree. Restore its input so a normal retry does not add it twice.
-        restoreStats = () => writeFile(statsPath, previousContent ?? '');
+      await stageReportFiles(repoPath);
+      if (filesToPush.length === 0) {
+        log.debug('No usage events or votes to report');
+        return true;
       }
-      const newStats = hasUsage ? aggregateUsage(events) : [];
-      const merged = mergeStats(existing, username, newStats);
-      if (hasInterventions) {
-        merged.interventions = mergeInterventionStats(existing?.interventions, interventionDelta);
-      }
-      if (hasPromptTokens) {
-        const pt = mergePromptTokenStats(existing?.prompts, existing?.tokens, promptTokenDelta);
-        merged.prompts = pt.prompts;
-        merged.tokens = pt.tokens;
-      }
-      if (hasDaily) {
-        merged.daily = mergeDailyStats(existing?.daily, dailyDelta);
-      }
-
-      await writeFile(statsPath, YAML.stringify(merged));
-      filesToPush.push(`stats/${username}.yaml`);
-    }
-
-    // Always stage pending local votes (V2 delta-aware merge)
-    try {
-      if (await pathExists(getUserVotesDir())) {
-        const { syncVotesToTeam } = await import('./votes.js');
-        const synced = await syncVotesToTeam(writeRoot, username, getUserVotesDir());
-        if (synced) {
-          filesToPush.push(`votes/${username}.yaml`);
-        }
-      }
-    } catch (e) {
-      log.error(`Vote staging skipped: ${(e as Error).message}`);
-    }
-
-    // Nothing to push — skip commit
-    if (filesToPush.length === 0) {
-      log.debug('No usage events or votes to report');
-      return true;
-    }
-
-    // Keep push and acknowledgement in the same operation. A caller timing out
-    // must not abandon the success bookkeeping below.
-    const commitMsg = hasUsage
-      ? `[teamai] Update usage stats for ${username}`
-      : (hasInterventions || hasPromptTokens || hasDaily)
-        ? `[teamai] Update session stats for ${username}`
-        : `[teamai] Update votes for ${username}`;
-    if (useReportsBranch && reportsConfig) {
-      const { commitAndPushReports } = await import('./utils/reports-branch.js');
-      if (!await commitAndPushReports(reportsConfig, commitMsg, filesToPush, { pushIfUnchanged: true })) {
-        log.debug('Auto-report push was not confirmed; keeping local report data');
-        await restoreStats?.();
-        return false;
-      }
-    } else {
       await pushRepoDirectly(repoPath, commitMsg, filesToPush);
     }
     restoreStats = undefined;

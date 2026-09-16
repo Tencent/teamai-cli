@@ -52,7 +52,7 @@ vi.mock('../update.js', () => ({
 }));
 
 import { acquireLock, releaseLock } from '../update.js';
-import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree } from '../utils/reports-branch.js';
+import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
 
 const config: LocalConfig = {
   repo: {
@@ -196,5 +196,21 @@ describe('refreshReportsWorktree', () => {
 
     expect(mocks.worktreeGit.raw).not.toHaveBeenCalled();
     expect(releaseLock).toHaveBeenCalledOnce();
+  });
+});
+
+describe('updateReports', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(acquireLock).mockResolvedValue(false);
+  });
+
+  it('does not run the write callback when another reports write holds the lock', async () => {
+    const write = vi.fn();
+
+    expect(await updateReports(config, write)).toBe(false);
+
+    expect(write).not.toHaveBeenCalled();
+    expect(releaseLock).not.toHaveBeenCalled();
   });
 });

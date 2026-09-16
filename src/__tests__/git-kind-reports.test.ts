@@ -9,7 +9,7 @@ import path from 'node:path';
 import { simpleGit } from 'simple-git';
 
 import { getReportsDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig } from '../types.js';
-import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree } from '../utils/reports-branch.js';
+import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
 import { pushRepoDirectly } from '../utils/git.js';
 import { reportUsageToTeam } from '../team-push.js';
 
@@ -407,6 +407,26 @@ describe('git-kind reports: refresh before reading (#557)', () => {
 
     expect(await publish(machineB, 'members/alice.yaml', 'username: alice\n')).toBe(true);
     expect(await originReportsFile(origin, 'members/alice.yaml')).toBe('username: alice\n');
+  });
+
+  it('merges a stale checkout of the same member onto origin instead of diverging', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const machineA = gitConfig(clone, origin);
+    const machineB = await cloneCheckout(origin, 'machine-b');
+
+    expect(await publish(machineA, 'stats/alice.yaml', 'n: 1\n')).toBe(true);
+    await ensureReportsWorktree(machineB);
+    expect(await publish(machineA, 'stats/alice.yaml', 'n: 2\n')).toBe(true);
+
+    const pushed = await updateReports(machineB, async (wt) => {
+      const statsPath = path.join(wt, 'stats', 'alice.yaml');
+      const current = Number(/n: (\d+)/.exec(fs.readFileSync(statsPath, 'utf-8'))![1]);
+      fs.writeFileSync(statsPath, `n: ${current + 10}\n`);
+      return { files: ['stats/alice.yaml'], message: '[teamai] Update usage stats for alice' };
+    });
+
+    expect(pushed).toBe(true);
+    expect(await originReportsFile(origin, 'stats/alice.yaml')).toBe('n: 12\n');
   });
 });
 

@@ -254,13 +254,73 @@ async function writeWorktreeGitignore(wt: string): Promise<void> {
 
 const MAX_PUSH_RETRIES = 5;
 
+/** A report change written into the worktree by an `updateReports` callback. */
+export interface ReportsWrite {
+  /** Paths relative to the reports worktree (files or directories) to commit. */
+  files: string[];
+  message: string;
+}
+
+export interface CommitReportsOptions {
+  /**
+   * A report retry may reconstruct the same tree as a previously committed
+   * but unconfirmed push. It still needs a push, without an empty commit.
+   */
+  pushIfUnchanged?: boolean;
+}
+
+/** Commit `files` in an already-locked reports worktree and push them. */
+async function commitAndPushReportsAt(
+  wt: string,
+  message: string,
+  files: string[],
+  options: CommitReportsOptions = {},
+): Promise<boolean> {
+  const git = createGit(wt);
+
+  await git.add(files);
+  const status = await git.status();
+  if (status.staged.length === 0 && !options.pushIfUnchanged) {
+    log.debug('[reports] nothing to commit');
+    return false;
+  }
+
+  if (status.staged.length > 0) await commitSkippingHooks(git, message);
+
+  // Push with fetch+rebase retry. Merge-writers go through updateReports, which
+  // syncs first, so a rebase here is the remaining non-fast-forward race.
+  for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
+    try {
+      await git.push(['origin', REPORTS_BRANCH]);
+      return true;
+    } catch (pushErr) {
+      if (attempt === MAX_PUSH_RETRIES) {
+        log.debug(`[reports] push failed after ${attempt} attempts: ${(pushErr as Error).message}`);
+        return false;
+      }
+      try {
+        await git.fetch(['origin', REPORTS_BRANCH]);
+        await git.rebase([`origin/${REPORTS_BRANCH}`]);
+      } catch (rebaseErr) {
+        log.debug(`[reports] rebase failed, retrying: ${(rebaseErr as Error).message}`);
+        try {
+          await git.rebase(['--abort']);
+        } catch {
+          // no rebase in progress
+        }
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Commit the given files (relative to the reports worktree) to the reports orphan
  * branch and push, retrying with fetch + rebase on non-fast-forward races.
  *
- * Callers write their files into getReportsDir(localConfig)/<...> (which is the
- * worktree) BEFORE calling this. Best-effort: logs and returns false on failure
- * rather than throwing, matching the existing pushRepoDirectly contract.
+ * Callers that **merge** into an existing per-member file must use
+ * {@link updateReports} instead: this helper does not sync with origin before
+ * the commit, so a stale checkout can still lose the write.
  *
  * @returns true if something was committed & pushed, false if nothing to do or on failure.
  */
@@ -268,7 +328,7 @@ export async function commitAndPushReports(
   localConfig: LocalConfig,
   message: string,
   files: string[],
-  options: { pushIfUnchanged?: boolean } = {},
+  options: CommitReportsOptions = {},
 ): Promise<boolean> {
   const lockPath = reportsLockPath(localConfig);
   const locked = await acquireLock(lockPath);
@@ -279,48 +339,57 @@ export async function commitAndPushReports(
 
   try {
     const wt = await ensureReportsWorktree(localConfig);
-    const git = createGit(wt);
-
-    await git.add(files);
-    const status = await git.status();
-    if (status.staged.length === 0 && !options.pushIfUnchanged) {
-      log.debug('[reports] nothing to commit');
-      return false;
-    }
-
-    // A report retry may reconstruct the same tree as a previously committed
-    // but unconfirmed push. It still needs a push, without an empty commit.
-    if (status.staged.length > 0) await commitSkippingHooks(git, message);
-
-    // Push with fetch+rebase retry. Each member only writes <user>.yaml, so
-    // rebase conflicts are effectively impossible; retries handle the pure
-    // non-fast-forward race.
-    for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
-      try {
-        await git.push(['origin', REPORTS_BRANCH]);
-        return true;
-      } catch (pushErr) {
-        if (attempt === MAX_PUSH_RETRIES) {
-          log.debug(`[reports] push failed after ${attempt} attempts: ${(pushErr as Error).message}`);
-          return false;
-        }
-        try {
-          await git.fetch(['origin', REPORTS_BRANCH]);
-          await git.rebase([`origin/${REPORTS_BRANCH}`]);
-        } catch (rebaseErr) {
-          log.debug(`[reports] rebase failed, retrying: ${(rebaseErr as Error).message}`);
-          // Abort a half-finished rebase so the next attempt starts clean.
-          try {
-            await git.rebase(['--abort']);
-          } catch {
-            // no rebase in progress
-          }
-        }
-      }
-    }
-    return false;
+    return await commitAndPushReportsAt(wt, message, files, options);
   } catch (e) {
     log.debug(`[reports] commitAndPushReports failed (non-blocking): ${(e as Error).message}`);
+    return false;
+  } finally {
+    await releaseLock(lockPath);
+  }
+}
+
+/**
+ * Sync the reports worktree with origin, run `write` (read / merge / write
+ * inside the worktree), then commit and push — all under the reports lock.
+ *
+ * Use this for every writer that merges into an existing per-member file
+ * (stats, votes, session log, member roster). The callback does not run when
+ * another reports write holds the lock, so callers must not consume local
+ * deltas unless this returns true.
+ *
+ * @returns true if something was committed and pushed. false when the lock was
+ *   busy, `write` returned null, or commit/push failed.
+ */
+export async function updateReports(
+  localConfig: LocalConfig,
+  write: (worktree: string) => Promise<ReportsWrite | null>,
+  options: CommitReportsOptions = {},
+): Promise<boolean> {
+  if (!usesReportsBranch(localConfig)) {
+    throw new Error('updateReports requires a repo that stores reports on the teamai-reports branch');
+  }
+
+  const lockPath = reportsLockPath(localConfig);
+  if (!(await acquireLock(lockPath))) {
+    log.debug('[reports] another reports write is in progress; skipping');
+    return false;
+  }
+
+  try {
+    const wt = await ensureReportsWorktree(localConfig);
+    try {
+      await syncReportsWorktree(wt);
+    } catch (e) {
+      log.debug(`[reports] sync before write failed, writing onto the local copy: ${(e as Error).message}`);
+    }
+
+    const change = await write(wt);
+    if (!change || change.files.length === 0) {
+      return false;
+    }
+    return await commitAndPushReportsAt(wt, change.message, change.files, options);
+  } catch (e) {
+    log.debug(`[reports] updateReports failed (non-blocking): ${(e as Error).message}`);
     return false;
   } finally {
     await releaseLock(lockPath);

@@ -14,6 +14,7 @@ import {
   mergeDeltas,
   syncVotesToTeam,
   recallFeedback,
+  hasPendingVoteDeltas,
 } from '../votes.js';
 import type { UserVotes, UserVotesV2 } from '../types.js';
 
@@ -95,6 +96,29 @@ describe('loadUserVotes', () => {
     const result = await loadUserVotes(filePath);
     expect(result.version).toBe(2);
     expect(Object.keys(result.votes)).toHaveLength(0);
+  });
+});
+
+describe('hasPendingVoteDeltas', () => {
+  it('is false when there is no votes file', async () => {
+    expect(await hasPendingVoteDeltas(tmpDir, 'alice')).toBe(false);
+  });
+
+  it('is true only when the local file still holds deltas', async () => {
+    const filePath = path.join(tmpDir, 'alice.yaml');
+    await saveUserVotes(filePath, {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 1, upvoted_count: 0, last_recalled_at: '2026-06-01T00:00:00Z' } },
+      deltas: { 'doc-a': { recalled_delta: 1, upvoted_delta: 0 } },
+    });
+    expect(await hasPendingVoteDeltas(tmpDir, 'alice')).toBe(true);
+
+    await saveUserVotes(filePath, {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 1, upvoted_count: 0, last_recalled_at: '2026-06-01T00:00:00Z' } },
+      deltas: {},
+    });
+    expect(await hasPendingVoteDeltas(tmpDir, 'alice')).toBe(false);
   });
 });
 

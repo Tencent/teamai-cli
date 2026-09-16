@@ -142,7 +142,7 @@ teamai init https://github.com/yourorg/yourrepo
 
 独立 git clone 与单仓模式使用同一套上报拆分：`members/` `sessions/` `votes/` `stats/` 写到 `teamai-reports` 孤儿分支（检出目录在 clone **旁边**，不嵌在 clone 里）。知识资产（`skills/` `rules/` `docs/` `learnings/` `teamai.yaml`）仍在默认分支。默认分支上已有的上报文件会留在原地并被忽略。
 
-两种模式下，只读取上报数据的命令（`members`、`digest`、`projects members`、`stats`、`viz`）都不会创建或推送 `teamai-reports` 分支。`teamai pull` 在重建检索索引（投票热度）和技能推荐之前，会先从 `origin` 刷新上报检出。
+两种模式下，只读取上报数据的命令（`members`、`digest`、`projects members`、`stats`、`viz`）都不会创建或推送 `teamai-reports` 分支。`teamai pull` 在重建检索索引（投票热度）和技能推荐之前，会先从 `origin` 刷新上报检出。写入上报（`session save --push`、Stop hook 投票、成员注册、自动上报）会先合并 `origin` 上该成员文件的最新副本，因此同一成员在两台机器上报时不会丢掉会话、投票或统计。
 
 项目的机器数据（config、state、team-repo 克隆、搜索索引、MCP manifest、资源缓存）
 存放在 `~/.teamai/projects/<slug>/` 下的按项目分区里，**不再**放进业务仓库，因此工作区

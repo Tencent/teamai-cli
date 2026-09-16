@@ -331,14 +331,22 @@ const votesSyncHandler: HookHandler = {
       }
       const { usesReportsBranch } = await import('./types.js');
       if (usesReportsBranch(localConfig)) {
-        // Votes are report data → the teamai-reports orphan branch, written
-        // through an isolated worktree (never the default branch / active tree).
+        // Votes are report data → the teamai-reports orphan branch, merged onto
+        // origin's latest copy through an isolated worktree (never the default
+        // branch / active tree). Stop fires every turn, so skip the fetch + push
+        // round-trip when there are no pending deltas.
         try {
-          const { ensureReportsWorktree, commitAndPushReports } = await import('./utils/reports-branch.js');
-          const wt = await ensureReportsWorktree(localConfig);
-          const synced = await syncVotesToTeam(wt, localConfig.username, votesDir);
-          if (synced) {
-            await commitAndPushReports(localConfig, `[teamai] Update votes for ${localConfig.username}`, [`votes/${localConfig.username}.yaml`]);
+          const { hasPendingVoteDeltas } = await import('./votes.js');
+          if (await hasPendingVoteDeltas(votesDir, localConfig.username)) {
+            const { updateReports } = await import('./utils/reports-branch.js');
+            await updateReports(localConfig, async (wt) => (
+              await syncVotesToTeam(wt, localConfig.username, votesDir)
+                ? {
+                  files: [`votes/${localConfig.username}.yaml`],
+                  message: `[teamai] Update votes for ${localConfig.username}`,
+                }
+                : null
+            ));
           }
         } catch {
           // Push failed — will retry next session

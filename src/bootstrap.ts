@@ -208,19 +208,19 @@ export async function bootstrapSelfRepo(
     // Register member on the reports orphan branch. Best-effort: no write access
     // just means the member isn't listed — they still get the knowledge.
     try {
-      const { ensureReportsWorktree, commitAndPushReports } = await import('./utils/reports-branch.js');
-      const wt = await ensureReportsWorktree(localConfig);
-      const memberDir = path.join(wt, 'members');
-      await ensureDir(memberDir);
-      const memberPath = path.join(memberDir, `${username}.yaml`);
-      if (!(await pathExists(memberPath))) {
+      const { updateReports } = await import('./utils/reports-branch.js');
+      await updateReports(localConfig, async (wt) => {
+        const memberDir = path.join(wt, 'members');
+        await ensureDir(memberDir);
+        const memberPath = path.join(memberDir, `${username}.yaml`);
+        if (await pathExists(memberPath)) return null;
         await writeFile(memberPath, YAML.stringify({
           username,
           displayName: username,
           registeredAt: new Date().toISOString(),
         }));
-        await commitAndPushReports(localConfig, `[teamai] Register member: ${username}`, ['members/']);
-      }
+        return { files: ['members/'], message: `[teamai] Register member: ${username}` };
+      });
     } catch (e) {
       log.debug(`[bootstrap] member registration skipped (non-blocking): ${(e as Error).message}`);
     }
