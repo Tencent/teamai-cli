@@ -74,7 +74,10 @@ function denormalizeToolName(irName: string): string {
 // UUID 工具
 // ---------------------------------------------------------------------------
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// 任意合法 UUID 形状（不校验 version 位）。收紧到 v4 会让 codex v7 等来源的
+// sessionId 每次写入都被换成新随机 id：同一会话反复迁移各生成一份副本，
+// 既不幂等也无法按源 sessionId 回滚。与 codebuddy.ts 的放宽策略保持一致。
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isUuid(s: string): boolean {
   return UUID_RE.test(s);
@@ -193,8 +196,10 @@ export class CursorAdapter extends AgentAdapter {
               if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'text') {
                 const text = String((block as Record<string, unknown>).text ?? '');
                 // 首个文本块常是 system-reminder 等注入，跳过继续找真正的提问
-                if (!isInjectedText(text)) firstUserText = text;
-                break;
+                if (!isInjectedText(text)) {
+                  firstUserText = text;
+                  break;
+                }
               }
             }
           }
@@ -277,6 +282,8 @@ export class CursorAdapter extends AgentAdapter {
       if (msg.role === 'user') {
         for (const block of msg.content) {
           if (block.type === 'text' && block.text) {
+            // 写入端把 tool_result 降级为带该前缀的 text 块——工具输出不是标题
+            if (block.text.startsWith('[tool_result')) continue;
             if (isInjectedText(block.text)) continue; // 注入块不当标题
             title = cleanTitleText(block.text);
             if (title) break;

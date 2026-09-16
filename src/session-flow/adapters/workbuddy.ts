@@ -224,8 +224,10 @@ export class WorkBuddyAdapter extends AgentAdapter {
                 if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'input_text') {
                   const text = String((block as Record<string, unknown>).text ?? '');
                   // 首个文本块常是 system-reminder 等注入，跳过继续找真正的提问
-                  if (!isInjectedText(text)) firstUserText = text;
-                  break;
+                  if (!isInjectedText(text)) {
+                    firstUserText = text;
+                    break;
+                  }
                 }
               }
             }
@@ -290,7 +292,9 @@ export class WorkBuddyAdapter extends AgentAdapter {
       const rtype = rec.type as string;
 
       if (rtype === 'ai-title') {
-        title = String(rec.aiTitle ?? '');
+        // 与 codebuddy 适配器一致：注入块原文偶尔会被存成 ai-title，照收会污染迁移链路
+        const t = String(rec.aiTitle ?? '');
+        if (t && !isInjectedText(t)) title = t.slice(0, 100);
         continue;
       }
 
