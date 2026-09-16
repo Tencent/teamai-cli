@@ -76,14 +76,11 @@ describe('ZCode support', () => {
             expect(group.matcher).toBeUndefined();
           }
           expect(hook.type).toBe('process');
-          if (process.platform === 'win32') {
-            // Bare `bash` would resolve to the WSL launcher via System32.
-            expect(hook.command).toBe('cmd');
-            expect(hook.args?.[0]).toBe('/c');
-          } else {
-            expect(hook.command).toBe('bash');
-            expect(hook.args?.[0]).toBe('-lc');
-          }
+          // wscript.exe is a GUI-subsystem binary — hook runs never flash a
+          // console window, and the hidden VBS launcher keeps the session
+          // start non-blocking even while the dispatch pulls over the network.
+          expect(hook.command).toBe('wscript.exe');
+          expect(hook.args?.[0]).toContain('teamai-hook-dispatch.vbs');
           expect(hook.args?.[1]).toContain('teamai hook-dispatch');
           expect(hook.args?.[1]).toContain('--tool zcode');
           expect(hook.timeoutMs).toBeGreaterThan(0);

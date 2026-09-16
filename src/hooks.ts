@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
-import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/fs.js';
+import { readJson, writeJson, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, resolveHookScope, resolveLegacyProjectHookScope } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
@@ -303,7 +303,7 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
   return entry;
 }
 
-function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
+function toZcodeEntry(def: HookDef, vbsPath: string): ZcodeHookMatcher {
   // ZCode sessions run hooks inline: a session-start dispatch carries a network
   // pull (SSH to the team host), which on slower links exceeds the 10–15s
   // builtin defaults and gets killed mid-pull — so the timeouts here are
@@ -320,28 +320,18 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
   // `def.timeout` is in seconds; ZCode entries are in milliseconds.
   const timeoutMs =
     def.timeout !== undefined ? def.timeout * 1000 : ZCODE_TIMEOUT_MS[def.event] ?? 60000;
-  const entry: ZcodeHookEntry =
-    process.platform === 'win32'
-      ? {
-          // Windows must NOT spawn bare `bash`: CreateProcess resolves it to
-          // System32's WSL launcher before any PATH directory, and the WSL side
-          // has a different $HOME (no ~/.teamai state) and often no Node ≥ 20.
-          // cmd.exe is always present in System32 and resolves teamai from the
-          // Windows PATH (the npm shim is a .cmd, so a shell is required).
-          type: 'process',
-          command: 'cmd',
-          args: ['/c', def.command],
-          timeoutMs,
-        }
-      : {
-          type: 'process',
-          command: 'bash',
-          // Stored verbatim: the shell payload must equal `def.command` exactly
-          // so managed-entry detection and the managed-hooks manifest share one
-          // command representation (the same invariant the Codex format keeps).
-          args: ['-lc', def.command],
-          timeoutMs,
-        };
+  // wscript.exe is a GUI-subsystem binary: unlike cmd/bash it never allocates
+  // a console window, so hook runs don't flash a black box over the desktop.
+  // The VBS launcher runs the payload hidden (window style 0) and does NOT
+  // wait for it — session start stays instant even when the dispatch pulls
+  // over the network. The payload travels verbatim as a single argument so
+  // managed-entry detection and the manifest keep one command representation.
+  const entry: ZcodeHookEntry = {
+    type: 'process',
+    command: 'wscript.exe',
+    args: [vbsPath, def.command],
+    timeoutMs,
+  };
   const group: ZcodeHookMatcher = { hooks: [entry] };
   // ZCode's matcher is a case-sensitive regex on the match value; '*' is an
   // invalid pattern that would never match. Omitted matcher matches everything.
@@ -568,6 +558,19 @@ async function reconcileZcodeFormat(
 ): Promise<void> {
   const expanded = expandHome(settingsPath);
   await ensureDir(path.dirname(expanded));
+  const vbsPath = path.join(path.dirname(expanded), 'teamai-hook-dispatch.vbs');
+  if (!opts.removeAll) {
+    // Hidden, fire-and-forget launcher: wscript.exe never allocates a console
+    // window, so hook runs don't flash a black box over the desktop.
+    await writeFile(
+      vbsPath,
+      [
+        "' TeamAI hook dispatcher - hidden, fire-and-forget (no console window).",
+        'Set sh = CreateObject("WScript.Shell")',
+        'If WScript.Arguments.Count > 0 Then sh.Run "cmd /c " & WScript.Arguments(0), 0, False',
+      ].join('\r\n'),
+    );
+  }
   const cfg: ZcodeHooksJson = (await readJson<ZcodeHooksJson>(expanded)) ?? {};
   if (!cfg.hooks) cfg.hooks = {};
   let changed = false;
@@ -607,7 +610,7 @@ async function reconcileZcodeFormat(
   for (const event of events) {
     const existing = eventsMap[event] ?? [];
     const untouched = existing.filter((e) => !isManaged(e));
-    const desiredEntries = defs.filter((d) => d.event === event).map(toZcodeEntry);
+    const desiredEntries = defs.filter((d) => d.event === event).map((d) => toZcodeEntry(d, vbsPath));
     const newArr = [...untouched, ...desiredEntries];
     if (JSON.stringify(existing) !== JSON.stringify(newArr)) {
       eventsMap[event] = newArr;
@@ -902,11 +905,12 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
   }
 
   if (format === 'zcode') {
+    const vbsPath = path.join(path.dirname(expanded), 'teamai-hook-dispatch.vbs');
     const cfg = await readJson<ZcodeHooksJson>(expanded);
     const eventsMap = cfg?.hooks?.events;
     if (!eventsMap) return 'missing';
     const present = defs.every((def) => {
-      const want = toZcodeEntry(def);
+      const want = toZcodeEntry(def, vbsPath);
       const wantCmd = zcodeEntryCommand(want);
       const entries = eventsMap[def.event] ?? [];
       return entries.some((e) => e.matcher === want.matcher && zcodeEntryCommand(e) === wantCmd);
