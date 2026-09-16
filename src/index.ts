@@ -878,6 +878,7 @@ program
   .addOption(new Option('--require-review', 'Defer codebase section writes to .teamai/pending-review.jsonl for human review').hideHelp())
   .option('--cache-status', 'Show import cache status (repos cached, disk usage)')
   .option('--cache-gc', 'Garbage-collect stale import cache entries')
+  .option('--json', 'Output cache status or GC result as JSON')
   .addOption(new Option('--max-bytes <n>', 'Override capacity cap for --cache-gc').hideHelp())
   .addOption(new Option('--stale-days <n>', 'Threshold for stale-eviction in days (default 30)').default('30').hideHelp())
   .action(async (cmdOpts) => {
