@@ -70,6 +70,19 @@ const UPDATE_TIMEOUT_MS = 10_000;
  * resource downloads. Foreground local-agent runs use FOREGROUND_HOOK_TIMEOUT_MS.
  */
 const LOCAL_AGENT_TIMEOUT_MS = 15_000;
+/**
+ * Budget for the detached session-start pull.
+ *
+ * Deliberately NOT the shared 15s local-agent budget: a handler timeout does not
+ * merely stop us waiting — the dispatch pass settles on it, and index.ts
+ * `process.exit(0)`s the moment the pass settles, so an expired budget truncates
+ * the pull mid-flight (git children orphaned, later sync stages never run).
+ * Measured cold pulls — fetch, submodule update, resource reconcile — take
+ * 10-25s+, which 15s silently cut short on exactly the machines that needed the
+ * sync most. The pull is detached and unawaited either way, so a generous budget
+ * costs nothing; it only bounds a wedged git.
+ */
+const PULL_TIMEOUT_MS = 120_000;
 
 // ─── Handler implementations ────────────────────────────
 //
@@ -451,9 +464,9 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
   return [
     // ─── SessionStart ─────────────────────────────────
     // pull does not produce output the host needs; run detached so git fetch
-    // on a slow network cannot delay session startup. Reuses LOCAL_AGENT_TIMEOUT_MS
-    // (15s) — ample for a background git pull that is not awaited by the host.
-    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
+    // on a slow network cannot delay session startup. Its own generous budget
+    // (PULL_TIMEOUT_MS) — the shared 15s truncated the pull itself.
+    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS, background: true },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },

@@ -14,7 +14,10 @@
  *   fire-and-forget work before it finishes.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { createDispatcher, type Dispatcher } from './hook-dispatch.js';
 import { buildHandlerRegistry, filterHandlersForConfig } from './hook-handlers.js';
@@ -66,10 +69,14 @@ async function readStdin(): Promise<string> {
 
 /**
  * Spawn a detached child that re-runs this same dispatch for background-only
- * handlers, feeding it the already-consumed STDIN. The child is unref'd and
- * detached so the parent (and thus the host's hook) can exit — even via the
+ * handlers, feeding it the already-consumed STDIN. The child is detached and
+ * unref'd so the parent (and thus the host's hook) can exit — even via the
  * caller's process.exit(0) — without waiting for or killing it; its
  * stdout/stderr are ignored so no open pipe keeps the parent alive.
+ *
+ * On Windows detaching alone does not free the child — it would still inherit
+ * the hook's job object — so it is created through WMI first (see
+ * trySpawnDetachedViaWmi) and only falls back to the plain spawn below.
  */
 function spawnBackground(
   event: string,
@@ -78,18 +85,19 @@ function spawnBackground(
   raw: string,
   cwd?: string,
 ): void {
+  const args = [
+    process.argv[1],
+    'hook-dispatch',
+    event,
+    '--tool',
+    tool,
+    '--bg-only',
+  ];
+  if (matcher && matcher !== '*') {
+    args.push('--matcher', matcher);
+  }
+  if (process.platform === 'win32' && trySpawnDetachedViaWmi(process.execPath, args, cwd, raw)) return;
   try {
-    const args = [
-      process.argv[1],
-      'hook-dispatch',
-      event,
-      '--tool',
-      tool,
-      '--bg-only',
-    ];
-    if (matcher && matcher !== '*') {
-      args.push('--matcher', matcher);
-    }
     const child = spawn(process.execPath, args, {
       detached: true,
       windowsHide: true,
@@ -104,6 +112,103 @@ function spawnBackground(
     child.unref();
   } catch {
     // Never let a spawn failure surface to the host — background work is best-effort.
+  }
+}
+
+/**
+ * Create a detached child through the WMI service instead of CreateProcess.
+ *
+ * Windows hosts (WorkBuddy/CodeBuddy) run hook commands inside a job object and
+ * terminate that job the moment the hook's direct child exits, so a child of
+ * ours — even a `detached: true` one, which only gets DETACHED_PROCESS and
+ * CREATE_NEW_PROCESS_GROUP — dies with the hook. Leaving a job requires
+ * CREATE_BREAKAWAY_FROM_JOB, which node never passes; a process created by the
+ * WMI service is outside our job by construction. Costs ~0.3s (PowerShell
+ * startup + the provider round trip), which the hook pays.
+ *
+ * Two details this depends on:
+ *   - Win32_ProcessStartup.ShowWindow = 0 hides the new console AT CREATION.
+ *     `-WindowStyle Hidden` only hides it once PowerShell has started (the
+ *     window still flashes), and the provider rejects CREATE_NO_WINDOW with
+ *     ReturnValue 21.
+ *   - the creating PowerShell runs with `windowsHide` (CREATE_NO_WINDOW), so not
+ *     even it flashes.
+ *
+ * WMI has no STDIN pipe, so `stdin` travels as a temp file named on the command
+ * line (`--stdin-file`); the child reads and removes it (readStdinFile).
+ *
+ * @returns true when the child was created; false when WMI refused or failed —
+ *   the caller then falls back to the plain detached spawn.
+ */
+export function trySpawnDetachedViaWmi(
+  command: string,
+  args: string[],
+  cwd: string | undefined,
+  stdin: string,
+): boolean {
+  const payloadFile = path.join(os.tmpdir(), `teamai-hook-${process.pid}-${Date.now()}.json`);
+  try {
+    fs.writeFileSync(payloadFile, stdin, 'utf8');
+  } catch {
+    return false;
+  }
+
+  const argv = [...args, '--stdin-file', payloadFile];
+  const commandLine = [command, ...argv].map(quoteWindowsArg).join(' ');
+  const script = [
+    "$s = ([wmiclass]'Win32_ProcessStartup').CreateInstance()",
+    '$s.ShowWindow = 0',
+    `$r = ([wmiclass]'Win32_Process').Create(${psLiteral(commandLine)}, ${psLiteral(cwd ?? '')}, $s)`,
+    'if ($r.ReturnValue -ne 0) { exit 1 }',
+  ].join('; ');
+
+  let status: number | null = null;
+  try {
+    status = spawnSync(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { windowsHide: true, stdio: 'ignore' },
+    ).status;
+  } catch {
+    status = null;
+  }
+
+  if (status === 0) return true;
+  try {
+    fs.unlinkSync(payloadFile);
+  } catch {
+    // the temp file is inert without the child that reads it
+  }
+  return false;
+}
+
+/** Encode a value as a PowerShell single-quoted literal. */
+function psLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/** Quote one CreateProcess argument, leaving plain paths and flags untouched. */
+function quoteWindowsArg(arg: string): string {
+  return /[\s"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg;
+}
+
+/**
+ * Read the STDIN payload a parent could not pipe. The Windows/WMI spawn path has
+ * no STDIN pipe, so the parent hands the payload over as a temp file; it is
+ * removed here, on every path.
+ */
+function readStdinFile(file: string): string {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    log.debug(`hook-dispatch: could not read STDIN file ${file}: ${(e as Error).message}`);
+    return '';
+  } finally {
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      // a stale temp file is inert
+    }
   }
 }
 
@@ -157,16 +262,19 @@ async function runDispatch(
  *
  * @param bgOnly When true, this is the detached child: run only background
  *   handlers and never spawn again (prevents recursion).
+ * @param stdinFile Payload file used instead of the STDIN pipe on the Windows
+ *   spawn path, where the creating service cannot hand one over.
  */
 export async function hookDispatchCli(
   event: string,
   tool: string,
   matcher: string,
   bgOnly = false,
+  stdinFile?: string,
 ): Promise<void> {
   setStderrOnly(true);
   try {
-    const raw = await readStdin();
+    const raw = stdinFile ? readStdinFile(stdinFile) : await readStdin();
     const stdin = parseStdin(raw, event);
     if (stdin === null) return;
 
