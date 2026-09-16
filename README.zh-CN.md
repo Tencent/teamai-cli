@@ -234,6 +234,7 @@ teamai recall maintenance --update-quality       # 为过时 skills / docs 生�
 |------|------|----------|
 | **用量（Usage）** | `teamai digest` | 团队周报——近 7 天成功率、对话、活跃时长、估算成本、缓存与纠偏趋势，以及历史累计数据。 |
 | **会话（Sessions）** | `teamai session save` | 脱敏的单会话摘要（工具序列、对话轮次、干预次数），喂给周报的 Session Highlights。 |
+| **会话同步（Session Sync）** | `teamai session migrate` | 在 AI 工具间迁移完整会话；团队会话的归档、搜索与恢复（`push` / `pull` / `list` / `resume` / `search`）。 |
 | **看板（Dashboard）** | `teamai dashboard` | Web 看板，展示实时会话，以及本机近 7 天相对前 7 天的趋势。 |
 | **知识库健康（KB Health）** | `teamai dashboard` → KB Health | 内置于看板的报告页面，展示知识库使用情况与健康状态——各类型覆盖率、高频召回条目、沉默条目、召回趋势、作者贡献及维护控制台。 |
 
@@ -265,6 +266,7 @@ teamai recall maintenance --update-quality       # 为过时 skills / docs 生�
 | `teamai source` | 管理 skill 订阅源（其他团队或本团队公共仓库） |
 | `teamai remove <type> <name>` | 删除资源并创建 MR |
 | `teamai session save` | 将脱敏后的 session 摘要记录到月度日志（`--push` 可喂给 `digest`） |
+| `teamai session migrate/push/pull/list/resume/search/rollback` | 跨 AI 工具迁移完整会话；归档到团队仓库并从中恢复 |
 | `teamai digest` | 生成团队周报 |
 | `teamai doctor` | 诊断配置问题 |
 | `teamai uninstall` | 移除所有 teamai 资源和 hooks |

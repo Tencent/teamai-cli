@@ -62,12 +62,30 @@ export function getCursorProjectsDir(): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * 把 cwd 解析为真实路径后再编码。
+ *
+ * macOS 上 `/tmp` 是 `/private/tmp` 的符号链接，同一个目录有两种拼写。
+ * AI 工具以 `process.cwd()` 落盘——那是**解析后**的路径——于是用未解析拼写
+ * 写入（如 `--target-cwd /tmp/x`）会落进一个谁也读不回的目录：
+ * 写入成功，列出却为空。与 ide-history.hashWorkspace 的处理保持一致。
+ * 路径不存在（待创建场景）时回退原路径。
+ */
+export function resolveRealCwd(cwd: string): string {
+  const resolved = path.resolve(cwd);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+/**
  * Claude Code 的 cwd 编码: 所有非字母数字字符 → `-`，有前导 `-`。
  * 例: `/home/user/project` → `-home-user-project`
  *     `/Users/foo/my project` → `-Users-foo-my-project`
  */
 export function encodeCwdClaude(cwd: string): string {
-  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  return resolveRealCwd(cwd).replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 /**
@@ -76,7 +94,7 @@ export function encodeCwdClaude(cwd: string): string {
  *     `/Users/foo/my project` → `Users-foo-my-project`
  */
 export function encodeCwdGeneric(cwd: string): string {
-  return cwd.replace(/[^a-zA-Z0-9]/g, '-').replace(/^-+/, '');
+  return resolveRealCwd(cwd).replace(/[^a-zA-Z0-9]/g, '-').replace(/^-+/, '');
 }
 
 /**
@@ -89,8 +107,7 @@ export function encodeCwdGeneric(cwd: string): string {
  * 而带空格的项目目录很常见。
  */
 export function encodeCwdCodeBuddy(cwd: string): string {
-  return path
-    .resolve(cwd)
+  return resolveRealCwd(cwd)
     .replace(/^([a-zA-Z]:)?[\\/]+/, '') // 去掉盘符与根分隔符
     .replace(/[\\/]/g, '-');
 }
