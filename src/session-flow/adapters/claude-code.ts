@@ -339,8 +339,10 @@ export class ClaudeCodeAdapter extends AgentAdapter {
                 if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'text') {
                   const text = String((block as Record<string, unknown>).text ?? '');
                   // 首个文本块常是 system-reminder 等注入，跳过继续找真正的提问
-                  if (!isInjectedText(text)) firstUserText = text;
-                  break;
+                  if (!isInjectedText(text)) {
+                    firstUserText = text;
+                    break;
+                  }
                 }
               }
             }
@@ -387,8 +389,16 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     // 收集所有消息记录
     const rawRecords: Record<string, unknown>[] = [];
     let nativeCwd: string | undefined;
+    let summaryTitle: string | undefined;
     for (const record of readJsonl(jsonlPath)) {
       const rtype = record.type as string;
+      if (rtype === 'summary') {
+        // writeSession 落盘的标题行（CC /resume 也以它为准）。读取侧不认的话，
+        // roundtrip 后标题会漂移成首条用户文本（可能是注入清洗后的残句）。
+        const t = String(record.summary ?? '');
+        if (t) summaryTitle = t; // 取最后一条（writeSession 追加在文件末尾）
+        continue;
+      }
       if (SKIP_TYPES.has(rtype)) continue;
       if (rtype !== 'user' && rtype !== 'assistant') continue;
       // 每条消息记录都带真实 cwd（绝对路径）。目录名解码是有损的
@@ -404,18 +414,21 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     // DAG 拍平
     const messages = this.flattenDag(rawRecords);
 
-    // 提取标题
-    let title = '';
-    for (const msg of messages) {
-      if (msg.role === 'user') {
-        for (const block of msg.content) {
-          if (block.type === 'text' && block.text) {
-            if (isInjectedText(block.text)) continue; // 注入块不当标题
-            title = cleanTitleText(block.text);
-            if (title) break;
+    // 提取标题：优先 summary 标题行（写入侧落盘、CC /resume 亦采用），
+    // 其次首条非注入用户文本，最后退回 id 前缀。
+    let title = summaryTitle ? cleanTitleText(summaryTitle) : '';
+    if (!title) {
+      for (const msg of messages) {
+        if (msg.role === 'user') {
+          for (const block of msg.content) {
+            if (block.type === 'text' && block.text) {
+              if (isInjectedText(block.text)) continue; // 注入块不当标题
+              title = cleanTitleText(block.text);
+              if (title) break;
+            }
           }
+          if (title) break;
         }
-        if (title) break;
       }
     }
     if (!title) title = fallbackTitle(sessionId);

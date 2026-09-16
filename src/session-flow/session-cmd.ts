@@ -86,7 +86,21 @@ function ask(question: string): Promise<string> {
       resolve(lineQueue.shift() as string);
       return;
     }
-    lineResolver = resolve;
+    // stdin 关闭（EOF/管道结束）时 'line' 永不触发，promise 悬挂到事件循环
+    // 清空后进程静默退出——脚本化调用得到 exit 0 + 无输出，被当成成功。
+    // 显式 resolve 空串，让调用方走各自的 "Cancelled." 分支。
+    const onEnd = () => {
+      if (lineResolver) {
+        const r = lineResolver;
+        lineResolver = null;
+        r('');
+      }
+    };
+    sharedRl?.once?.('close', onEnd);
+    lineResolver = (line) => {
+      sharedRl?.off?.('close', onEnd);
+      resolve(line);
+    };
     process.stdout.write(question);
   });
 }
@@ -174,8 +188,27 @@ function pushToRemote(syncMgr: SyncManager): void {
   try {
     syncMgr.gitPush();
   } catch (err) {
-    const reason = err instanceof Error ? err.message.split('\n')[0] : String(err);
+    // "Command failed: git push origin" 首行没有信息量，git 的 fatal 行才是原因
+    const msg = err instanceof Error ? err.message : String(err);
+    const fatal = msg.split('\n').find((l) => /^(fatal|error):/i.test(l.trim()));
+    const reason = fatal?.trim() ?? msg.split('\n')[0];
     console.log(`  · Remote push failed (local commit kept): ${reason}`);
+  }
+}
+
+/**
+ * 包装 gitCommit / gitPull：git 层失败（非 git 目录、无 remote、index.lock
+ * 竞态等）给出单行英文错误并 exit 1，而不是让 execFileSync 的异常以裸
+ * stack trace 打到用户面（内部路径泄漏 + 伪造的崩溃感）。
+ */
+function runGitStep(step: () => string | null, repoRoot: string, what: string): string | null {
+  try {
+    return step();
+  } catch (err) {
+    const reason = err instanceof Error ? err.message.split('\n')[0] : String(err);
+    console.error(`Error: ${what} failed in ${repoRoot}: ${reason}`);
+    console.error(`Check that ${repoRoot} is a git repository with a configured remote, then retry.`);
+    process.exit(1);
   }
 }
 
@@ -187,6 +220,13 @@ function pushToRemote(syncMgr: SyncManager): void {
  * 在 `teamai session` 子命令对象上注册 SessionFlow 的 7 个子命令。
  */
 export function registerSessionFlowCommands(sessionCmd: Command): void {
+  // 输出管道被下游关闭（如 `session push --all | head`）时，EPIPE 会让整条
+  // 命令以堆栈崩溃收场——数据早已写完，这不是错误，安静退出即可。
+  process.stdout?.on?.('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') process.exit(0);
+    throw err;
+  });
+
   // --dry-run / -v 是顶层 program 上的全局选项，不会自动出现在子命令的 opts 里。
   // 原项目各命令统一用 `program.opts()` 取全局选项再与命令自身选项合并
   // （见 src/index.ts 中 init/push/pull 的 action），这里保持一致。
@@ -372,7 +412,12 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           syncMgr.saveSession(session, meta);
           saved++;
         }
-        const commitHash = syncMgr.gitCommit(`sync: migrate ${saved} session(s) ${source}→${target}`);
+        // [已修] gitCommit 失败（非 git 目录 / index.lock 竞态）此前裸堆栈崩溃
+        const commitHash = runGitStep(
+          () => syncMgr.gitCommit(`sync: migrate ${saved} session(s) ${source}→${target}`),
+          repoRoot,
+          'git commit',
+        );
         if (commitHash) {
           pushToRemote(syncMgr);
           console.log(`\n  ✓ Pushed ${saved} session(s) to team repo`);
@@ -387,6 +432,16 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           ? `\n  ${targets.length} session(s) would be migrated (--dry-run, no changes made).\n`
           : `\n  ${migrated} session(s) migrated.\n`,
       );
+      } catch (err) {
+        // 交互取消（promptSelect 抛 'Selection cancelled'，EOF 时 ask 返回空串
+        // 触发该路径）不是故障——静默退出，不能变成 unhandled rejection 堆栈。
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/cancel/i.test(msg)) {
+          console.log('Cancelled.');
+          return;
+        }
+        console.error(`Error: ${msg}`);
+        process.exit(1);
       } finally {
         closeStdin();
       }
@@ -419,7 +474,9 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const metas = opts.all
         ? await adapter.listConversations()
         : await adapter.listConversations(workCwd);
-      const limit = parseInt(opts.limit, 10) || 5;
+      const limitRaw = parseInt(opts.limit, 10);
+      // 非数字/0/负数一律回退默认——slice(0, -1) 的负数语义会把结果悄悄吃掉一条
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 5;
       const sorted = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       const selected = opts.all ? sorted : sorted.slice(0, limit);
 
@@ -465,7 +522,12 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         syncMgr.saveSession(session, meta);
         saved++;
       }
-      const commitHash = syncMgr.gitCommit(`sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`);
+      // [已修] gitCommit 失败（非 git 目录 / index.lock 竞态）此前裸堆栈崩溃
+      const commitHash = runGitStep(
+        () => syncMgr.gitCommit(`sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`),
+        repoRoot,
+        'git commit',
+      );
       if (commitHash) {
         pushToRemote(syncMgr);
         console.log(`\n  ✓ Pushed ${saved} session(s) from ${source}`);
@@ -490,7 +552,11 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const repoRoot = resolveRepoRoot(opts.repoRoot);
 
       const syncMgr = new SyncManager(repoRoot);
-      syncMgr.gitPull();
+      // [已修] gitPull 失败（无 remote / repoRoot 不存在）此前裸堆栈崩溃
+      runGitStep(() => {
+        syncMgr.gitPull();
+        return null;
+      }, repoRoot, 'git pull');
       if (opts.all) {
         // P2：对所有 identity（含 _unattributed）逐个幂等重建索引
         const identities = syncMgr.listAllRepoIdentities();
@@ -617,7 +683,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const workCwd = opts.cwd ?? process.cwd();
       const repoRoot = resolveRepoRoot(opts.repoRoot);
       const repoIdentity = resolveRepoIdentity(workCwd);
-      const limit = parseInt(opts.limit, 10) || 10;
+      const limitRaw = parseInt(opts.limit, 10);
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10;
 
       const syncMgr = new SyncManager(repoRoot);
       const loadedSessions: LoadedSession[] = [];

@@ -84,7 +84,8 @@ function hex32(): string {
  * 返回 null 让调用方跳过——宁可不同步，也不能用错误 hash 写进无关目录。
  */
 export function hashWorkspace(cwd: string): string | null {
-  if (!cwd || !cwd.startsWith('/')) return null;
+  // POSIX 绝对路径，或 Windows 盘符绝对路径（C:\ 或 C:/）
+  if (!cwd || !(cwd.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(cwd))) return null;
   let normalized = path.resolve(cwd).replace(/\/+$/, '');
   // macOS 上 /tmp 是 /private/tmp 的符号链接，VSCode 传给 IDE 的是解析后的真实路径。
   // 不做 realpath 的话，「用 /tmp 写入、在 /private/tmp 列出」会算出两个不同的
@@ -531,7 +532,7 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
     return {
       synced: 0,
       messageCount: 0,
-      skipped: 'CodeBuddy IDE 存储未找到（未安装或未初始化），仅写入 CLI 路径',
+      skipped: 'CodeBuddy IDE storage not found (not installed or initialized); only the CLI path was written',
     };
   }
 
