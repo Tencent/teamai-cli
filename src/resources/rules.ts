@@ -221,6 +221,9 @@ export class RulesHandler extends ResourceHandler {
     // would report success while leaving the rule on disk.
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.rules) continue;
+      // Not ours to write to, so not ours to delete from. Same gate as the
+      // tombstone pass in pull.
+      if (isAgentExcluded(localConfig, tool)) continue;
       const extensions = new Set<string>([ruleFileExtensionForTool(tool), '.md']);
       for (const extension of extensions) {
         const filePath = path.join(baseDir, toolPath.rules, `${name}${extension}`);
@@ -290,6 +293,9 @@ export class RulesHandler extends ResourceHandler {
     const baseDir = resolveBaseDir(localConfig);
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.rules) continue;
+      // `pullItem` above skips excluded tools, so this pass must skip them too.
+      // Without it the stale sweep deletes from a directory teamai never wrote.
+      if (isAgentExcluded(localConfig, tool)) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
 
       const destDir = path.join(baseDir, toolPath.rules);

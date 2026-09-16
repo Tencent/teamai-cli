@@ -550,6 +550,9 @@ export class SkillsHandler extends ResourceHandler {
     // Remove from each tool's skills directory
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
+      // Not ours to write to, so not ours to delete from. Above the OpenClaw
+      // branch, so the workspace copy is covered by the same gate.
+      if (isAgentExcluded(localConfig, tool)) continue;
       let skillDir: string;
       if (tool === 'openclaw') {
         const wsDir = await resolveOpenclawWorkspaceDir();
