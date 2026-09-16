@@ -1503,6 +1503,9 @@ export async function pull(options: GlobalOptions): Promise<void> {
   // from every clone-consuming stage (idempotent — the next pull syncs it).
   const contended = new Set<LocalConfig>();
   const heldLocks = new Map<LocalConfig, string>();
+  // Scopes whose pull completed, for `scripts.postPull` — launched once the
+  // whole pipeline is done and its locks are released.
+  const postPullScopes: LocalConfig[] = [];
   const lockScope = async (config: LocalConfig): Promise<boolean> => {
     // git-mode guards its shared team clone; self mode guards its machine-data
     // writes (state/env/search-index) against a concurrent P2 migration relocating
@@ -1589,6 +1592,11 @@ export async function pull(options: GlobalOptions): Promise<void> {
   // — the next uncontended pull reconciles and reports normally.
   const reconcileUser = activeUserConfig && !contended.has(activeUserConfig) ? activeUserConfig : null;
   const reconcileProject = projectConfig && !contended.has(projectConfig) ? projectConfig : null;
+  for (const scope of [reconcileProject, reconcileUser]) {
+    if (scope && !postPullScopes.some((s) => s.repo.localPath === scope.repo.localPath)) {
+      postPullScopes.push(scope);
+    }
+  }
 
   // 3.4. Legacy hook-format migration (pre-dispatch era). Runs UNDER the scope
   // lock (unlike the old step-0 call) against a locked, non-contended scope, so
@@ -1704,6 +1712,16 @@ export async function pull(options: GlobalOptions): Promise<void> {
     for (const lock of heldLocks.values()) {
       await releaseLock(lock);
     }
+  }
+
+  // 6. Team post-pull scripts (teamai.yaml `scripts.postPull`): the team's own
+  //    hook into "the pull finished". Launched after the sync locks are released
+  //    so the script's own git/resource work cannot contend with this pull, and
+  //    detached + unawaited so neither the pull nor the host hook that triggered
+  //    it waits for it. Nothing here can fail the pull — see post-pull.ts.
+  if (!options.dryRun && postPullScopes.length > 0) {
+    const { launchDeclaredPostPull } = await import('./post-pull.js');
+    for (const scope of postPullScopes) await launchDeclaredPostPull(scope);
   }
 }
 

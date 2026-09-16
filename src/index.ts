@@ -721,7 +721,8 @@ program
   .option('--tool <name>', 'Tool identifier (e.g. codebuddy, workbuddy, claude)')
   .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
   .option('--bg-only', 'Internal: run only fire-and-forget background handlers (used by the detached child)')
-  .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean }) => {
+  .option('--stdin-file <path>', 'Internal: read the hook payload from this file instead of STDIN')
+  .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean; stdinFile?: string }) => {
     const bgOnly = cmdOpts.bgOnly ?? false;
 
     // Hard wall-clock safety net for the FOREGROUND (parent) hook process, which
@@ -743,7 +744,7 @@ program
 
     const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
     try {
-      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*', bgOnly);
+      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*', bgOnly, cmdOpts.stdinFile);
     } finally {
       if (hardExit) clearTimeout(hardExit);
       // Hook subprocesses must exit promptly: a hung/unreachable backend fetch can
@@ -754,6 +755,21 @@ program
       // is idempotent/best-effort and safe to drop.
       process.exit(0);
     }
+  });
+
+program
+  .command('post-pull-run', { hidden: true })
+  .description('Internal: run a team post-pull script under its deadline (detached child)')
+  .requiredOption('--repo <path>', 'Team repo root the script belongs to')
+  .requiredOption('--script <path>', 'Absolute path of the script to run')
+  .option('--timeout-sec <seconds>', 'Wall-clock budget before the script is killed')
+  .action(async (cmdOpts: { repo: string; script: string; timeoutSec?: string }) => {
+    const { runPostPull, DEFAULT_POST_PULL_TIMEOUT_SEC } = await import('./post-pull.js');
+    await runPostPull({
+      repoPath: cmdOpts.repo,
+      scriptPath: cmdOpts.script,
+      timeoutSec: Number.parseInt(cmdOpts.timeoutSec ?? '', 10) || DEFAULT_POST_PULL_TIMEOUT_SEC,
+    });
   });
 
 program
