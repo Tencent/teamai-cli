@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Render scb-check's JSON report as a Markdown block.
 
-Used by .github/workflows/code-erosion.yml. Reads the report path and the
-scb-check exit code from argv, writes Markdown to stdout. The workflow feeds
-that Markdown both into the PR comment and the job summary.
+Used by .github/workflows/code-erosion.yml. Reads the report path, the
+scb-check exit code, and (optionally) the ast-grep rule-hits path from argv,
+writes Markdown to stdout. The workflow feeds that Markdown both into the PR
+comment and the job summary.
 
 This never raises on a missing/garbled report or a renamed key: the workflow
 is informational and must not fail. See docs/ci-code-erosion.md.
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import Counter
 
 MARKER = "<!-- code-erosion-report -->"
 
@@ -26,9 +28,50 @@ def band(value: float, human_hi: float, agent_lo: float) -> str:
     return "between"
 
 
+def rule_hits_section(path: str) -> list[str]:
+    """Render the independent ast-grep TS-verbosity layer as Markdown.
+
+    Reads ast-grep's `--json=stream` output (one JSON object per line).
+    Returns an empty list when the file is missing or unreadable, so the
+    section is simply omitted rather than ever failing the report.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            hits = [json.loads(line) for line in handle if line.strip()]
+    except (OSError, ValueError):
+        return []
+
+    lines = [
+        "",
+        "### Rule hits (TS verbosity layer)",
+        "",
+        "Structural slop rules ported from SlopCodeBench and run via a "
+        "standalone `ast-grep` (scb-check only rules Python files). "
+        "**Separate from the verbosity number above; also non-blocking.**",
+        "",
+    ]
+    if not hits:
+        lines.append("No rule hits. 🎉")
+        return lines
+
+    by_rule = Counter(h.get("ruleId", "?") for h in hits)
+    distinct = {
+        (h.get("file"), h.get("range", {}).get("start", {}).get("line"))
+        for h in hits
+    }
+    lines.append("| Rule | Hits |")
+    lines.append("|---|---|")
+    for rule, count in by_rule.most_common():
+        lines.append(f"| `{rule}` | {count} |")
+    lines.append("")
+    lines.append(f"{len(distinct)} distinct lines flagged across `src/`.")
+    return lines
+
+
 def main() -> int:
     report_path = sys.argv[1]
     exit_code = sys.argv[2] if len(sys.argv) > 2 else "0"
+    rule_hits_path = sys.argv[3] if len(sys.argv) > 3 else ""
 
     out: list[str] = [
         MARKER,
@@ -96,6 +139,9 @@ def main() -> int:
             "as direction, not verdict. See `docs/ci-code-erosion.md`.",
         ],
     )
+
+    if rule_hits_path:
+        out.extend(rule_hits_section(rule_hits_path))
 
     print("\n".join(out))
     return 0

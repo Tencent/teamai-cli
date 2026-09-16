@@ -94,6 +94,36 @@ uvx --from 'scb-check==0.2.0' scb-check check src \
 Add `--output-format human` for a readable console table, or drop `--report`
 for the default human output.
 
+## TS verbosity rule layer
+
+Because scb-check's ast-grep rules never run on TypeScript (see the caveat
+above), a small **independent** layer runs a standalone `ast-grep` with a
+hand-ported rule set at `.github/ast-grep-rules/ts-verbosity.yml`, and the
+report gains a `Rule hits (TS verbosity layer)` table.
+
+Honest scope: this is **not** a reproduction of the paper's verbosity number.
+It is an extra, separate signal. Of SlopCodeBench's 197 Python rules, roughly
+half are Python-syntax-specific (dict idioms, comprehensions, `typing`) and
+cannot exist in TypeScript. Of the rest, only **purely structural** rules were
+ported — rules that hinge on truthiness or type semantics were tried and
+**deliberately dropped** because they are false positives in TypeScript:
+
+- `len(x) == 0` → `arr.length > 0` is idiomatic TS, not slop.
+- `x == True` → `x !== true` handles `boolean | undefined` and is *not*
+  equivalent to `x === false` (TS has `undefined`; Python does not).
+- template-string checks mostly flag multi-line string concatenation.
+
+What is ported (all structural, verified against `src/` for false positives):
+`unnecessary-else-after-return`, `empty-catch-block`, `redundant-ternary-same`,
+`if-return-boolean-literal`, `return-ternary-boolean-literal`,
+`duplicated-if-condition`, `self-assignment`. Rules use `severity: hint` so the
+scan never blocks CI. Run it locally with:
+
+```bash
+npx -p @ast-grep/cli@0.45.3 ast-grep scan \
+  -r .github/ast-grep-rules/ts-verbosity.yml --json=stream src
+```
+
 ## Where to read results
 
 1. **PR comment** — one comment per PR, updated in place on each push.

@@ -84,6 +84,33 @@ uvx --from 'scb-check==0.2.0' scb-check check src \
 想要可读的控制台表格就加 `--output-format human`，或去掉 `--report` 用默认的
 human 输出。
 
+## TS verbosity 规则层
+
+因为 scb-check 的 ast-grep 规则在 TypeScript 上永远不跑（见上文局限），我们额外跑一层
+**独立的** `ast-grep`，用手工移植的规则集 `.github/ast-grep-rules/ts-verbosity.yml`，
+报告里会多出一张 `Rule hits (TS verbosity layer)` 表。
+
+诚实边界：这**不是**还原了论文的 verbosity 数值，而是一个额外、独立的信号。
+SlopCodeBench 的 197 条 Python 规则里约一半是 Python 语法专属（dict 惯用法、推导式、
+`typing`），在 TypeScript 里根本不存在；剩下的里只移植了**纯结构性**的规则——涉及
+真值/类型语义的都试过并**刻意弃用**，因为它们在 TypeScript 里是假阳性：
+
+- `len(x) == 0` → TS 的 `arr.length > 0` 是地道写法，不是 slop。
+- `x == True` → TS 的 `x !== true` 处理 `boolean | undefined`，与 `x === false`
+  **不等价**（TS 有 `undefined`，Python 没有）。
+- 模板串检查大多误伤多行字符串拼接。
+
+已移植的（全部纯结构性，且在 `src/` 上验过无假阳性）：
+`unnecessary-else-after-return`、`empty-catch-block`、`redundant-ternary-same`、
+`if-return-boolean-literal`、`return-ternary-boolean-literal`、
+`duplicated-if-condition`、`self-assignment`。规则用 `severity: hint`，扫描永不卡关。
+本地运行：
+
+```bash
+npx -p @ast-grep/cli@0.45.3 ast-grep scan \
+  -r .github/ast-grep-rules/ts-verbosity.yml --json=stream src
+```
+
 ## 去哪看结果
 
 1. **PR 评论**——每个 PR 一条评论，每次 push 就地更新。

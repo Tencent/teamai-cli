@@ -60,13 +60,26 @@ jobs:
           echo "scb_exit=$?" >> "$GITHUB_ENV"
           set -e
 
+      # Independent TS-verbosity layer: scb-check only runs its ast-grep rules
+      # on Python files, so on this TS repo we run a standalone ast-grep with a
+      # small hand-ported rule set (see .github/ast-grep-rules/ts-verbosity.yml).
+      # Rules use severity: hint so scan never exits non-zero on a match; the
+      # `|| true` is a belt-and-braces guard. Pinned to the same ast-grep line
+      # scb-check bundles. Empty output on any failure just omits the section.
+      - name: Rule scan (TS verbosity)
+        run: |
+          npx --yes -p @ast-grep/cli@0.45.3 ast-grep scan \
+            -r "$GITHUB_WORKSPACE/.github/ast-grep-rules/ts-verbosity.yml" \
+            --json=stream "$GITHUB_WORKSPACE/src" \
+            > "$RUNNER_TEMP/rule-hits.jsonl" || true
+
       # The renderer is written to always exit 0, but this whole workflow is
       # informational — a bug in the renderer itself must not fail the job
       # either, so we guard the step regardless.
       - name: Render report
         run: |
           python3 "$GITHUB_WORKSPACE/.github/scripts/erosion-summary.py" \
-            "$RUNNER_TEMP/erosion.json" "$scb_exit" \
+            "$RUNNER_TEMP/erosion.json" "$scb_exit" "$RUNNER_TEMP/rule-hits.jsonl" \
             | tee "$RUNNER_TEMP/erosion.md" >> "$GITHUB_STEP_SUMMARY" || true
 
       # Post or update a single PR comment, keyed by the marker the renderer
