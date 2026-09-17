@@ -135,8 +135,8 @@ export async function projectsMembers(
   // so leftover clone members/ is ignored and projects.yaml is still found.
   const knowledgePath = localConfig.repo.localPath;
   let membersRoot = knowledgePath;
-  const { usesReportsBranch } = await import('./types.js');
-  if (usesReportsBranch(localConfig)) {
+  const { usesBranchWorktree } = await import('./types.js');
+  if (usesBranchWorktree(localConfig)) {
     const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
     // Read-only: never publish a missing reports branch.
     await refreshReportsWorktree(localConfig, { pushIfCreated: false });

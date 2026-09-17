@@ -1,4 +1,5 @@
 import spawn from 'cross-spawn';
+import type { ChildProcess } from 'node:child_process';
 
 export interface ExecOptions {
   cwd?: string;
@@ -87,4 +88,21 @@ export function formatCommand(command: string, args: string[]): string {
     ? value
     : JSON.stringify(value);
   return [command, ...args.map(quote)].join(' ');
+}
+
+/**
+ * Watch a child's output and hand back a reader for its last `maxChars`
+ * characters. Detached workers report failure with a single log line, so they
+ * keep a bounded tail rather than the whole stream: the reader collapses
+ * whitespace (a multi-line error becomes one readable line) and reads whatever
+ * has arrived by the time it is called.
+ */
+export function captureTail(child: ChildProcess, maxChars: number): () => string {
+  let output = '';
+  const collect = (chunk: Buffer) => {
+    output = (output + chunk.toString('utf8')).slice(-maxChars);
+  };
+  child.stdout?.on('data', collect);
+  child.stderr?.on('data', collect);
+  return () => output.trim().replace(/\s+/g, ' ').slice(-maxChars);
 }

@@ -2,7 +2,9 @@ import path from 'node:path';
 import matter from 'gray-matter';
 import { requireInit, loadState, saveState, detectProjectConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
 import { pullRepo, getHeadRev, createGit } from './utils/git.js';
-import { flushPendingLearnings } from './utils/pending-learnings.js';
+import { publishQueuedLearnings } from './utils/learnings-publish.js';
+import { pendingLearningsDir } from './utils/pending-learnings.js';
+import { learningsRoots } from './utils/learnings-roots.js';
 import { log, spinner } from './utils/logger.js';
 import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
 import { injectClaudeMdSection } from './utils/claudemd.js';
@@ -29,7 +31,7 @@ import {
   isAgentExcluded,
   scopedToolPaths,
   SYNC_LOCK_FILENAME,
-  usesReportsBranch,
+  usesBranchWorktree,
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
 import type { ResourceNamespaces } from './roles.js';
@@ -112,22 +114,14 @@ async function refreshTeamRepo(
     return { label: 'single-repo (knowledge on main)', version, reportingOnly: false, submodulesFailed: false, submodulesChanged: false };
   }
 
-  // The shared team clone is mutated here (git pull + flushPendingLearnings'
-  // add/commit/push). The partition sync-lock that serializes this against a
+  // The shared team clone is mutated here (git pull). The partition sync-lock
+  // that serializes this against a
   // concurrent pull/push is acquired by the CALLER (pull()) and held across this
   // scope's ENTIRE clone-consuming lifecycle — fetch, resource scan/deploy, and
   // the reconcile/source/report stages — so there is no unlocked window in which
   // another writer could reset/checkout the tree. We must NOT lock here: the lock
   // is non-reentrant, so re-acquiring it in the same process would fail.
   const result = await pullRepo(localConfig.repo.localPath);
-
-  // Retry any learnings whose push previously failed (see savePendingLearning).
-  // Best-effort: never let a flush error block the pull.
-  try {
-    await flushPendingLearnings(localConfig.repo.localPath, localConfig.username);
-  } catch (e) {
-    log.debug(`pending-learnings flush skipped: ${(e as Error).message}`);
-  }
 
   let version: string | null = null;
   try {
@@ -603,6 +597,21 @@ async function pullForScope(
     return;
   }
 
+  // Publish anything a contribute could not publish at the time (offline, or no
+  // push rights yet). Here rather than inside the refresh, which returns early
+  // for single-repo and HTTP: contribute promises the next pull will retry, and
+  // that promise has to hold in every mode. pull() holds the partition sync lock
+  // across this scope and the lock is not reentrant, so publishing must not try
+  // to take it again. Best-effort: never let it block the pull.
+  try {
+    const queue = await publishQueuedLearnings(localConfig, localConfig.username, { holdsSyncLock: true });
+    if (queue.published.length > 0) {
+      log.success(`Published ${queue.published.length} learning(s) that could not be pushed earlier`);
+    }
+  } catch (e) {
+    log.debug(`publishing queued learnings skipped: ${(e as Error).message}`);
+  }
+
   // Read teamai.yaml only after the refresh: a clone that lacks it must still
   // be able to fetch it from the remote instead of skipping forever.
   const freshConfig = await loadTeamConfig(localConfig.repo.localPath);
@@ -896,7 +905,7 @@ async function pullForScope(
   let reportsReadRoot: Promise<string | undefined> | undefined;
   const resolveReportsReadRoot = (): Promise<string | undefined> => {
     reportsReadRoot ??= (async () => {
-      if (!usesReportsBranch(localConfig)) return localConfig.repo.localPath;
+      if (!usesBranchWorktree(localConfig)) return localConfig.repo.localPath;
       try {
         const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
         await refreshReportsWorktree(localConfig, { pushIfCreated: false });
@@ -913,7 +922,18 @@ async function pullForScope(
   // (Phase 1: covers learnings + docs + rules + skills). Both scopes supported.
   if (!options.dryRun) {
     try {
-      const learningsRepoDir = path.join(localConfig.repo.localPath, 'learnings');
+      // Bring the learnings branch up to date before reading it, or a member
+      // only ever sees their own contributions. Read-only: a cold start
+      // materializes a local view and never publishes the branch.
+      try {
+        const { learningsBranch } = await import('./utils/learnings-branch.js');
+        await learningsBranch.refresh(localConfig, { pushIfCreated: false });
+      } catch (e) {
+        log.debug(`learnings worktree unavailable: ${(e as Error).message}`);
+      }
+
+      const roots = learningsRoots(localConfig);
+      const publishedRoots = roots.read;
       const docsRepoDir = path.join(localConfig.repo.localPath, 'docs');
       const rulesRepoDir = path.join(localConfig.repo.localPath, 'rules');
       const skillsRepoDir = path.join(localConfig.repo.localPath, 'skills');
@@ -928,33 +948,46 @@ async function pullForScope(
       // select them. `activeLearningsNamespaces` is the set from role∪project
       // resolution (roles contribute none, so effectively the project set).
       const activeLearningsNamespaces = roleContext?.activeNamespaces.learnings ?? [];
-      const countLearnings = async (baseDir: string): Promise<number> => {
-        // Count root-level shared .md + active-namespace .md only.
-        let n = (await listFiles(baseDir)).filter((f) => f.endsWith('.md')).length;
+      // The names of the learnings one root contributes: root-level shared .md
+      // plus active-namespace .md, each relative to that root.
+      const countLearnings = async (baseDir: string): Promise<string[]> => {
+        if (!await pathExists(baseDir)) return [];
+        const names = (await listFiles(baseDir)).filter((f) => f.endsWith('.md'));
         for (const ns of activeLearningsNamespaces) {
           const nsDir = path.join(baseDir, ns);
           if (await pathExists(nsDir)) {
-            n += (await listFilesRecursive(nsDir)).filter((f) => f.endsWith('.md')).length;
+            names.push(
+              ...(await listFilesRecursive(nsDir))
+                .filter((f) => f.endsWith('.md'))
+                .map((f) => path.join(ns, f)),
+            );
           }
         }
-        return n;
+        return names;
       };
       let learningsCount = 0;
       let effectiveLearningsDir: string | undefined;
+      // Every published root feeds the mirror except the mirror itself: it
+      // deletes what no source has, so including the destination would stop it
+      // ever dropping a learning deleted upstream (#458).
+      const mirrorSources = publishedRoots.filter((dir) => dir !== getUserLearningsDir());
+      // Count what recall would find, not what every root holds: the same
+      // relative path in two roots is one learning, and the index says so too.
+      const counted = new Set<string>();
+      for (const dir of publishedRoots) {
+        for (const name of await countLearnings(dir)) counted.add(name);
+      }
+      learningsCount = counted.size;
       if (localConfig.scope === 'user') {
         await mirrorLearnings(
-          learningsRepoDir,
+          mirrorSources,
           getUserLearningsDir(),
           activeLearningsNamespaces,
         );
-        if (await pathExists(learningsRepoDir)) {
-          learningsCount = await countLearnings(learningsRepoDir);
-        }
         effectiveLearningsDir = await pathExists(getUserLearningsDir()) ? getUserLearningsDir() : undefined;
       } else {
-        effectiveLearningsDir = await pathExists(learningsRepoDir) ? learningsRepoDir : undefined;
-        if (effectiveLearningsDir) {
-          learningsCount = await countLearnings(learningsRepoDir);
+        for (const dir of publishedRoots) {
+          if (await pathExists(dir)) { effectiveLearningsDir = dir; break; }
         }
       }
 
@@ -977,7 +1010,17 @@ async function pullForScope(
         const indexPath = path.join(teamaiHome, 'search-index.json');
         const { buildIndex } = await import('./utils/search-index.js');
         const elapsed = await buildIndex({
-          learningsDir: effectiveLearningsDir,
+          // The queue comes first: a contribution that could not be published
+          // yet stays recallable, and a queued edit wins over the published copy.
+          // Then every published root, so nothing is indexed from one directory
+          // that happened to be picked.
+          learningsDirs: [
+            // Same reason as contribute: a learning that could not be published
+            // is kept in the queue, and it has to stay findable here until it is.
+            pendingLearningsDir(localConfig),
+            ...(effectiveLearningsDir ? [effectiveLearningsDir] : []),
+            ...publishedRoots,
+          ],
           learningsNamespaces: activeLearningsNamespaces,
           docsDir: await pathExists(docsRepoDir) ? docsRepoDir : undefined,
           rulesDir: await pathExists(rulesRepoDir) ? rulesRepoDir : undefined,

@@ -246,7 +246,7 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 | `teamai push` | 로컬 리소스를 브랜치에 push하고 Merge Request를 엽니다 |
 | `teamai packages [install] [target]` | 선언된 npm 패키지와 Claude 플러그인을 설치합니다. target이 있으면 `teamai.yaml`도 갱신합니다. 인자 없는 `teamai packages`는 전부를 설치하고, `teamai packages install <target>`은 하나를 추가합니다 |
 | `teamai status` | 로컬과 팀 저장소의 diff 및 리소스 개수(네임스페이스 Skills, 중첩 docs 포함)를 표시 |
-| `teamai contribute` | 세션 경험을 팀 저장소에 공유 |
+| `teamai contribute` | 세션 경험을 팀 저장소의 `teamai-learnings` 브랜치에 공유 |
 | `teamai recall <query>` | 팀 지식 베이스 검색 (BM25 + graph-boost) |
 | `teamai recall enable/disable/status` | recall 상태를 켜거나 끄거나 확인 |
 | `teamai recall promote [learningId]` | 신뢰도가 높은 learning을 정식 지식(skills/rules/docs)으로 승격 |

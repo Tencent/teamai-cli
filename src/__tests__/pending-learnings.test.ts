@@ -3,10 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-vi.mock('../utils/git.js', () => ({
-  pushLearningToOrigin: vi.fn(),
-}));
-
 vi.mock('../utils/logger.js', () => ({
   log: {
     debug: vi.fn(),
@@ -16,166 +12,170 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { pendingLearningsDir, savePendingLearning, flushPendingLearnings } from '../utils/pending-learnings.js';
-import { pushLearningToOrigin } from '../utils/git.js';
+import {
+  pendingLearningsDir,
+  savePendingLearning,
+  listPendingLearnings,
+  readPendingLearning,
+  dropPendingLearning,
+} from '../utils/pending-learnings.js';
+import { publishQueuedLearnings } from '../utils/learnings-publish.js';
+import type { LocalConfig } from '../types.js';
+
+function cloneConfig(localPath: string): LocalConfig {
+  return {
+    repo: { localPath, remote: 'https://example.com/team.git', kind: 'git' },
+    username: 'alice',
+    scope: 'user',
+    additionalRoles: [],
+  };
+}
 
 describe('pendingLearningsDir', () => {
-  it('returns a sibling directory named pending-learnings', () => {
-    const repoPath = '/home/user/.teamai/team-repo';
-    const result = pendingLearningsDir(repoPath);
-    expect(result).toBe('/home/user/.teamai/pending-learnings');
+  it('sits beside an independent clone, where a clone reset cannot reach it', () => {
+    expect(pendingLearningsDir(cloneConfig('/home/user/.teamai/team-repo')))
+      .toBe('/home/user/.teamai/pending-learnings');
+  });
+
+  it('stays inside .teamai in single-repo mode, so it never shows up in the business repo', () => {
+    const result = pendingLearningsDir({
+      repo: {
+        localPath: '/workspace/product/.teamai',
+        remote: 'https://example.com/product.git',
+        kind: 'self',
+        businessRepoRoot: '/workspace/product',
+      },
+      username: 'alice',
+      scope: 'project',
+      projectRoot: '/workspace/product',
+      additionalRoles: [],
+    });
+    expect(result).toBe('/workspace/product/.teamai/pending-learnings');
   });
 });
 
-describe('savePendingLearning', () => {
+describe('the learnings queue', () => {
   let tmpDir: string;
-  let repoPath: string;
+  let config: LocalConfig;
+  let pendingDir: string;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-pending-test-'));
-    repoPath = path.join(tmpDir, 'team-repo');
+    const repoPath = path.join(tmpDir, 'team-repo');
     fs.mkdirSync(repoPath);
+    config = cloneConfig(repoPath);
+    pendingDir = pendingLearningsDir(config);
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('writes content to pendingLearningsDir/<filename>', async () => {
+  it('writes content into the queue', async () => {
     const filename = 'session-2026-01-01-abc123.md';
-    const content = '# My learning\nSome notes.';
-    await savePendingLearning(repoPath, filename, content);
+    await savePendingLearning(config, filename, '# My learning\nSome notes.');
 
-    const pendingDir = pendingLearningsDir(repoPath);
-    const written = fs.readFileSync(path.join(pendingDir, filename), 'utf-8');
-    expect(written).toBe(content);
+    expect(fs.readFileSync(path.join(pendingDir, filename), 'utf-8')).toBe('# My learning\nSome notes.');
+    expect(await readPendingLearning(config, filename)).toBe('# My learning\nSome notes.');
   });
 
   it('preserves a namespace subdirectory in relPath (PR #426 P1 regression)', async () => {
     const relPath = path.join('alpha-notes', 'session-2026-01-01-abc123.md');
-    const content = '# Project-private learning';
-    await savePendingLearning(repoPath, relPath, content);
+    await savePendingLearning(config, relPath, '# Project-private learning');
 
-    const pendingDir = pendingLearningsDir(repoPath);
-    const written = fs.readFileSync(path.join(pendingDir, relPath), 'utf-8');
-    expect(written).toBe(content);
+    expect(fs.readFileSync(path.join(pendingDir, relPath), 'utf-8')).toBe('# Project-private learning');
+    expect(await listPendingLearnings(config)).toEqual([relPath]);
+  });
+
+  it('lists nothing when the queue was never created', async () => {
+    expect(await listPendingLearnings(config)).toEqual([]);
+  });
+
+  it('ignores hidden entries and anything that is not markdown', async () => {
+    fs.mkdirSync(pendingDir, { recursive: true });
+    fs.writeFileSync(path.join(pendingDir, '.DS_Store'), 'junk');
+    fs.writeFileSync(path.join(pendingDir, 'notes.md.swp'), 'junk');
+    await savePendingLearning(config, 'real.md', '# real');
+
+    expect(await listPendingLearnings(config)).toEqual(['real.md']);
+  });
+
+  it('forgets an entry on request', async () => {
+    await savePendingLearning(config, 'gone.md', '# gone');
+    await dropPendingLearning(config, 'gone.md');
+
+    expect(await listPendingLearnings(config)).toEqual([]);
   });
 });
 
-describe('flushPendingLearnings', () => {
+describe('publishQueuedLearnings, from an independent clone', () => {
   let tmpDir: string;
   let repoPath: string;
+  let config: LocalConfig;
   let pendingDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-flush-test-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-publish-test-'));
     repoPath = path.join(tmpDir, 'team-repo');
     fs.mkdirSync(repoPath);
-    pendingDir = pendingLearningsDir(repoPath);
-    vi.mocked(pushLearningToOrigin).mockReset();
+    config = cloneConfig(repoPath);
+    pendingDir = pendingLearningsDir(config);
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('returns 0 and does not call pushLearningToOrigin when pending dir does not exist', async () => {
-    const result = await flushPendingLearnings(repoPath, 'alice');
-    expect(result).toBe(0);
-    expect(pushLearningToOrigin).not.toHaveBeenCalled();
+  it('does nothing when the queue is empty', async () => {
+    const report = await publishQueuedLearnings(config, 'alice');
+
+    expect(report).toEqual({ published: [], remaining: 0 });
   });
 
-  it('pushes a pending file and removes it after success', async () => {
-    fs.mkdirSync(pendingDir, { recursive: true });
-    const filename = 'notes-2026-01-01-abc123.md';
-    const content = '# Notes';
-    fs.writeFileSync(path.join(pendingDir, filename), content, 'utf-8');
+  it('keeps the queued copy when the repository cannot be written', async () => {
+    // `repoPath` is not a git repository at all, so publishing cannot succeed.
+    await savePendingLearning(config, 'notes-2026-01-01-ghi789.md', '# Unpublished notes');
 
-    vi.mocked(pushLearningToOrigin).mockResolvedValueOnce(true);
+    const report = await publishQueuedLearnings(config, 'alice');
 
-    const result = await flushPendingLearnings(repoPath, 'alice');
-
-    expect(result).toBe(1);
-    // pending file should be removed
-    expect(fs.existsSync(path.join(pendingDir, filename))).toBe(false);
-    // file should be written into repoPath/learnings/
-    const dest = path.join(repoPath, 'learnings', filename);
-    expect(fs.existsSync(dest)).toBe(true);
-    expect(fs.readFileSync(dest, 'utf-8')).toBe(content);
+    expect(report.published).toEqual([]);
+    expect(report.remaining).toBe(1);
+    expect(report.lastError).toBeDefined();
+    expect(fs.existsSync(path.join(pendingDir, 'notes-2026-01-01-ghi789.md'))).toBe(true);
   });
 
-  it('returns 0 and keeps pending file when pushLearningToOrigin rejects (offline)', async () => {
-    fs.mkdirSync(pendingDir, { recursive: true });
-    const filename = 'notes-2026-01-01-def456.md';
-    fs.writeFileSync(path.join(pendingDir, filename), '# Offline notes', 'utf-8');
+  it('leaves every entry queued when publishing fails', async () => {
+    await savePendingLearning(config, 'first-2026-01-01-aaa111.md', '# First');
+    await savePendingLearning(config, 'second-2026-01-01-bbb222.md', '# Second');
 
-    vi.mocked(pushLearningToOrigin).mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    const report = await publishQueuedLearnings(config, 'alice');
 
-    const result = await flushPendingLearnings(repoPath, 'alice');
-
-    expect(result).toBe(0);
-    // pending file must NOT be removed
-    expect(fs.existsSync(path.join(pendingDir, filename))).toBe(true);
+    expect(report.published).toEqual([]);
+    expect(report.remaining).toBe(2);
+    expect(fs.readdirSync(pendingDir).filter((n) => !n.startsWith('.'))).toHaveLength(2);
   });
 
-  it('returns 0 and keeps pending file when push is not confirmed on origin (P1 regression)', async () => {
-    fs.mkdirSync(pendingDir, { recursive: true });
-    const filename = 'notes-2026-01-01-ghi789.md';
-    fs.writeFileSync(path.join(pendingDir, filename), '# Unconfirmed notes', 'utf-8');
+  it('leaves the queue alone while a pull or push holds the sync lock', async () => {
+    const realHome = process.env.HOME;
+    process.env.HOME = path.join(tmpDir, 'home');
+    fs.mkdirSync(path.join(tmpDir, 'home', '.teamai'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'home', '.teamai', '.sync-lock'),
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), owner: 'someone-else' }),
+    );
 
-    // Push returned false: branch still ahead, learning did not land on origin
-    vi.mocked(pushLearningToOrigin).mockResolvedValueOnce(false);
+    try {
+      await savePendingLearning(config, 'held.md', '# held');
 
-    const result = await flushPendingLearnings(repoPath, 'alice');
+      const report = await publishQueuedLearnings(config, 'alice');
 
-    expect(result).toBe(0);
-    // pending backup must NOT be removed — would be lost on next reset --hard
-    expect(fs.existsSync(path.join(pendingDir, filename))).toBe(true);
+      expect(report.published).toEqual([]);
+      expect(report.remaining).toBe(1);
+      expect(report.lastError).toContain('in progress');
+      expect(fs.existsSync(path.join(pendingDir, 'held.md'))).toBe(true);
+    } finally {
+      process.env.HOME = realHome;
+    }
   });
 
-  it('stops at first failure and leaves remaining files untouched', async () => {
-    fs.mkdirSync(pendingDir, { recursive: true });
-    const file1 = 'first-2026-01-01-aaa111.md';
-    const file2 = 'second-2026-01-01-bbb222.md';
-    fs.writeFileSync(path.join(pendingDir, file1), '# First', 'utf-8');
-    fs.writeFileSync(path.join(pendingDir, file2), '# Second', 'utf-8');
-
-    vi.mocked(pushLearningToOrigin).mockRejectedValueOnce(new Error('Network error'));
-
-    const result = await flushPendingLearnings(repoPath, 'alice');
-
-    expect(result).toBe(0);
-    // both files should remain
-    const remaining = fs.readdirSync(pendingDir).filter((n) => !n.startsWith('.'));
-    expect(remaining.length).toBe(2);
-  });
-
-  it('re-pushes a namespaced pending learning into its subdir (PR #426 P1 regression)', async () => {
-    const relPath = path.join('alpha-notes', 'notes-2026-01-01-xyz.md');
-    fs.mkdirSync(path.join(pendingDir, 'alpha-notes'), { recursive: true });
-    fs.writeFileSync(path.join(pendingDir, relPath), '# Alpha private', 'utf-8');
-
-    vi.mocked(pushLearningToOrigin).mockResolvedValueOnce(true);
-
-    const result = await flushPendingLearnings(repoPath, 'alice');
-
-    expect(result).toBe(1);
-    // pushed with the namespace-preserving relPath, not the bare filename
-    expect(pushLearningToOrigin).toHaveBeenCalledWith(repoPath, relPath, expect.any(String));
-    // landed under learnings/alpha-notes/, NOT the shared root
-    expect(fs.existsSync(path.join(repoPath, 'learnings', 'alpha-notes', 'notes-2026-01-01-xyz.md'))).toBe(true);
-    expect(fs.existsSync(path.join(repoPath, 'learnings', 'notes-2026-01-01-xyz.md'))).toBe(false);
-    // pending copy removed after success
-    expect(fs.existsSync(path.join(pendingDir, relPath))).toBe(false);
-  });
-
-  it('skips entries starting with "."', async () => {
-    fs.mkdirSync(pendingDir, { recursive: true });
-    fs.writeFileSync(path.join(pendingDir, '.DS_Store'), 'binary garbage', 'utf-8');
-
-    const result = await flushPendingLearnings(repoPath, 'alice');
-
-    expect(result).toBe(0);
-    expect(pushLearningToOrigin).not.toHaveBeenCalled();
-  });
 });

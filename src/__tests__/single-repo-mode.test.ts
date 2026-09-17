@@ -4,7 +4,7 @@ import {
   getReportsDir,
   getKnowledgeDir,
   isSelfMode,
-  usesReportsBranch,
+  usesBranchWorktree,
   REPORTS_WORKTREE_DIRNAME,
   LocalConfigSchema,
   TeamaiConfigSchema,
@@ -34,11 +34,11 @@ describe('single-repo mode path helpers', () => {
     expect(isSelfMode(makeConfig('http'))).toBe(false);
   });
 
-  it('usesReportsBranch is true for every non-HTTP kind, including omitted kind', () => {
-    expect(usesReportsBranch(makeConfig('self'))).toBe(true);
-    expect(usesReportsBranch(makeConfig('git'))).toBe(true);
-    expect(usesReportsBranch(makeConfig('http'))).toBe(false);
-    expect(usesReportsBranch({ repo: {} })).toBe(true);
+  it('usesBranchWorktree is true for every non-HTTP kind, including omitted kind', () => {
+    expect(usesBranchWorktree(makeConfig('self'))).toBe(true);
+    expect(usesBranchWorktree(makeConfig('git'))).toBe(true);
+    expect(usesBranchWorktree(makeConfig('http'))).toBe(false);
+    expect(usesBranchWorktree({ repo: {} })).toBe(true);
   });
 
   it('getKnowledgeDir returns localPath in every mode', () => {
@@ -140,6 +140,13 @@ describe('buildSelfModeGitignore', () => {
   it('still ignores the locally-generated env.sh (only env.yaml is shared)', () => {
     expect(gi.split('\n').map((l) => l.trim())).toContain('env.sh');
   });
+
+  it('ignores the learnings worktree, its lock and the queue, so contributing leaves git status clean', () => {
+    const lines = gi.split('\n').map((l) => l.trim());
+    expect(lines).toContain('learnings-wt/');
+    expect(lines).toContain('.learnings-lock');
+    expect(lines).toContain('pending-learnings/');
+  });
 });
 
 describe('migrateSelfModeGitignoreContent (self-heal old gitignore)', () => {
@@ -156,7 +163,10 @@ describe('migrateSelfModeGitignoreContent (self-heal old gitignore)', () => {
   });
 
   it('does not touch env.sh, env.local, or env/', () => {
-    const old = ['env.sh', 'env.local', 'teamai.lock', 'env/'].join('\n');
+    const old = [
+      'env.sh', 'env.local', 'teamai.lock',
+      'learnings-wt/', '.learnings-lock', 'pending-learnings/', 'env/',
+    ].join('\n');
     const { changed, content } = migrateSelfModeGitignoreContent(old);
     expect(changed).toBe(false); // nothing to remove, env.local already present
     const lines = content.split('\n').map((l) => l.trim());
@@ -183,7 +193,10 @@ describe('migrateSelfModeGitignoreContent (self-heal old gitignore)', () => {
   });
 
   it('ignores commented lines containing env', () => {
-    const old = ['# env is machine-local', 'config.yaml', 'env.local', 'teamai.lock'].join('\n');
+    const old = [
+      '# env is machine-local', 'config.yaml', 'env.local', 'teamai.lock',
+      'learnings-wt/', '.learnings-lock', 'pending-learnings/',
+    ].join('\n');
     const { changed, content } = migrateSelfModeGitignoreContent(old);
     // No bare `env` line, env.local already present → unchanged.
     expect(changed).toBe(false);
@@ -195,5 +208,15 @@ describe('migrateSelfModeGitignoreContent (self-heal old gitignore)', () => {
     const { changed, content } = migrateSelfModeGitignoreContent(old);
     expect(changed).toBe(true);
     expect(content).toContain('token\nteamai.lock');
+  });
+
+  it('adds the learnings worktree, its lock and the queue', () => {
+    const old = ['config.yaml', 'token', 'teamai.lock', 'env.local', 'reports-wt/', 'knowledge-wt/'].join('\n');
+    const { changed, content } = migrateSelfModeGitignoreContent(old);
+    expect(changed).toBe(true);
+    const lines = content.split('\n').map((l) => l.trim());
+    expect(lines).toContain('learnings-wt/');
+    expect(lines).toContain('.learnings-lock');
+    expect(lines).toContain('pending-learnings/');
   });
 });

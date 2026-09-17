@@ -2,7 +2,7 @@ import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LocalConfig } from '../types.js';
-import { REPORTS_WORKTREE_DIRNAME } from '../types.js';
+import { LEARNINGS_WORKTREE_DIRNAME, REPORTS_WORKTREE_DIRNAME } from '../types.js';
 import { resolveMaintenancePaths } from '../maintenance/paths.js';
 import { refreshReportsWorktree } from '../utils/reports-branch.js';
 
@@ -44,7 +44,8 @@ describe('resolveMaintenancePaths', () => {
         REPORTS_WORKTREE_DIRNAME,
         'votes',
       ),
-      learningsDir: '/workspace/project/.teamai/learnings',
+      learningsWriteDir: path.join('/workspace/project/.teamai', LEARNINGS_WORKTREE_DIRNAME, 'learnings'),
+      learningsReadDirs: expect.arrayContaining(['/workspace/project/.teamai/learnings']),
     });
     expect(refreshReportsWorktree).toHaveBeenCalledOnce();
     expect(refreshReportsWorktree).toHaveBeenCalledWith(config, { pushIfCreated: false });
@@ -56,7 +57,8 @@ describe('resolveMaintenancePaths', () => {
     await expect(resolveMaintenancePaths(config)).resolves.toEqual({
       repoPath: '/home/alice/.teamai/team-repo',
       votesDir: path.join('/home/alice/.teamai', REPORTS_WORKTREE_DIRNAME, 'votes'),
-      learningsDir: '/home/alice/.teamai/team-repo/learnings',
+      learningsWriteDir: path.join('/home/alice/.teamai', LEARNINGS_WORKTREE_DIRNAME, 'learnings'),
+      learningsReadDirs: expect.arrayContaining(['/home/alice/.teamai/team-repo/learnings']),
     });
     expect(refreshReportsWorktree).toHaveBeenCalledOnce();
     expect(refreshReportsWorktree).toHaveBeenCalledWith(config, { pushIfCreated: false });

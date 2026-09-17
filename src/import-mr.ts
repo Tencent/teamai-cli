@@ -172,22 +172,23 @@ function extractRepoUrlFromMrUrl(mrUrl: string): string {
  * Implements P0.5: fetch MR data → AI extraction → dedup → interactive confirm → write file.
  *
  * @param opts.url          Full MR / PR URL (required)
- * @param opts.learningsDir Directory for dedup scanning, default ~/.teamai/learnings
+ * @param opts.learningsDirs Directories scanned for a superseded draft
  * @param opts.all          Skip interactive confirmation, accept all
  * @param opts.outputDir    Output mode: write to this directory (learning.md)
- * @param opts.repoPath     Team repo path (written to learnings/ when outputDir is not set)
+ * @param opts.writeLearningsDir  Where a new learning is written when outputDir is not set
  * @param opts.dryRun       Dry run, no disk writes
  * @returns                 Extraction result containing the learning draft and inferred repo URL
  */
 export async function importFromMR(opts: {
   url: string;
-  learningsDir?: string;
+  /** Learnings roots to scan for a superseded draft, highest precedence first. */
+  learningsDirs?: readonly string[];
   all?: boolean;
   outputDir?: string;
-  repoPath?: string;
+  writeLearningsDir?: string;
   dryRun?: boolean;
 }): Promise<{ learning?: LearningDraft; repoUrl: string }> {
-  const learningsDir = opts.learningsDir ?? DEFAULT_LEARNINGS_DIR;
+  const learningsDirs = opts.learningsDirs ?? [DEFAULT_LEARNINGS_DIR];
 
   // ── 步骤 1：获取 MR 数据 ────────────────────────────────
   const fetchSpinner = spinner('Fetching MR data...');
@@ -221,7 +222,7 @@ export async function importFromMR(opts: {
   const learningTitle = (frontmatter['title'] as string | undefined) ?? mr.title;
 
   const draftKeywords = extractKeywords(learningContent);
-  const supersededEntries = await findSupersededLearnings(draftKeywords, learningsDir);
+  const supersededEntries = await findSupersededLearnings(draftKeywords, learningsDirs);
   const supersedes = supersededEntries
     .filter((entry) => entry.overlap >= SUPERSEDE_THRESHOLD)
     .map((entry) => entry.filename);
@@ -253,7 +254,7 @@ export async function importFromMR(opts: {
 
   // ── 步骤 6：写文件 ─────────────────────────────────────
   if (!opts.dryRun && acceptLearning) {
-    await writeLearning(learning, opts.outputDir, opts.repoPath);
+    await writeLearning(learning, opts.outputDir, opts.writeLearningsDir);
   }
 
   // 推断仓库 URL
@@ -268,16 +269,16 @@ export async function importFromMR(opts: {
 /**
  * 将 learning 草稿写入磁盘。
  *
- * outputDir 优先；否则尝试写到 repoPath/learnings/；两者均未设则打印警告跳过。
+ * Writes to outputDir when given, else to learningsDir. With neither, it warns and skips.
  *
- * @param draft      LearningDraft 对象
- * @param outputDir  输出目录（可选）
- * @param repoPath   团队 repo 根路径（可选）
+ * @param draft         The learning draft
+ * @param outputDir     Output directory (optional)
+ * @param learningsDir  Where new learnings are written (the write root, optional)
  */
 async function writeLearning(
   draft: LearningDraft,
   outputDir?: string,
-  repoPath?: string,
+  learningsDir?: string,
 ): Promise<void> {
   if (outputDir) {
     await fs.mkdir(outputDir, { recursive: true });
@@ -287,8 +288,7 @@ async function writeLearning(
     return;
   }
 
-  if (repoPath) {
-    const learningsDir = path.join(repoPath, 'learnings');
+  if (learningsDir) {
     await fs.mkdir(learningsDir, { recursive: true });
     const datePrefix = new Date().toISOString().slice(0, 10);
     // 将标题转为合法文件名：取前 40 字符，替换非法字符为连字符
@@ -304,5 +304,5 @@ async function writeLearning(
     return;
   }
 
-  log.warn('No outputDir or repoPath specified, learning draft not saved to disk');
+  log.warn('No outputDir or learnings directory specified, learning draft not saved to disk');
 }

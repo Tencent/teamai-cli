@@ -246,7 +246,7 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 | `teamai push` | ผลักทรัพยากรในเครื่องไปยังสาขาแล้วเปิด Merge Request |
 | `teamai packages [install] [target]` | ติดตั้งแพ็กเกจ npm และปลั๊กอิน Claude ที่ประกาศไว้; ถ้ามี target จะอัปเดต `teamai.yaml` ด้วย `teamai packages` เปล่าติดตั้งทั้งหมด; `teamai packages install <target>` เพิ่มทีละรายการ |
 | `teamai status` | แสดงความต่างระหว่างเครื่องกับรีโปทีม และจำนวนทรัพยากร รวมถึง Skills ที่มี namespace และ docs ที่ซ้อนกัน |
-| `teamai contribute` | แชร์ประสบการณ์จากเซสชันไปยังรีโปทีม |
+| `teamai contribute` | แชร์ประสบการณ์จากเซสชันไปยังแบรนช์ `teamai-learnings` ของรีโปทีม |
 | `teamai recall <query>` | ค้นหาคลังความรู้ทีม (BM25 + graph-boost) |
 | `teamai recall enable/disable/status` | เปิด/ปิด หรือตรวจสถานะ recall |
 | `teamai recall promote [learningId]` | เลื่อน learning ที่ความเชื่อมั่นสูงให้เป็นความรู้ทางการ (skills/rules/docs) |

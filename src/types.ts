@@ -1528,7 +1528,12 @@ export function isSelfMode(localConfig: { repo: { kind?: string } }): boolean {
  * keep their API write path; every other kind (self, git, and legacy configs
  * that omit `kind`) uses the reports branch.
  */
-export function usesReportsBranch(localConfig: { repo: { kind?: string } }): boolean {
+/**
+ * True when this repo keeps side data on a teamai orphan branch rather than on
+ * the default branch. HTTP backends keep their API write path; every other kind
+ * (self, git, and legacy configs that omit `kind`) uses the side branches.
+ */
+export function usesBranchWorktree(localConfig: { repo: { kind?: string } }): boolean {
   return localConfig.repo.kind !== 'http';
 }
 
@@ -1536,10 +1541,25 @@ export function usesReportsBranch(localConfig: { repo: { kind?: string } }): boo
 export const REPORTS_BRANCH = 'teamai-reports';
 /** Worktree directory name that checks out the reports orphan branch. */
 export const REPORTS_WORKTREE_DIRNAME = 'reports-wt';
+/** Orphan branch that carries `learnings/` for non-HTTP repos. */
+export const LEARNINGS_BRANCH = 'teamai-learnings';
+/** Worktree directory name that checks out the learnings orphan branch. */
+export const LEARNINGS_WORKTREE_DIRNAME = 'learnings-wt';
 /** Worktree directory (under .teamai) used to stage knowledge PRs off the active tree. */
 export const KNOWLEDGE_WORKTREE_DIRNAME = 'knowledge-wt';
+/**
+ * Every worktree directory teamai creates. A side branch's `.gitignore` lists
+ * all of them, so no worktree can ever nest-track another.
+ */
+export const WORKTREE_DIRNAMES: readonly string[] = [
+  REPORTS_WORKTREE_DIRNAME,
+  LEARNINGS_WORKTREE_DIRNAME,
+  KNOWLEDGE_WORKTREE_DIRNAME,
+];
 /** Lock filename (under <repo>/.teamai) guarding concurrent reports-branch writes. */
 export const REPORTS_LOCK_FILENAME = '.reports-lock';
+/** Lock filename (under <repo>/.teamai) guarding concurrent learnings-branch writes. */
+export const LEARNINGS_LOCK_FILENAME = '.learnings-lock';
 /** Lock filename (under <repo>/.teamai) guarding concurrent self-mode bootstrap. */
 export const BOOTSTRAP_LOCK_FILENAME = '.bootstrap-lock';
 /**
@@ -1597,13 +1617,36 @@ export function getDataHome(localConfig: LocalConfig): string {
  * when the returned path is a reports-branch worktree.
  */
 export function getReportsDir(localConfig: LocalConfig): string {
-  if (!usesReportsBranch(localConfig)) {
+  return getWorktreeDir(localConfig, REPORTS_WORKTREE_DIRNAME);
+}
+
+/**
+ * Where a side-branch worktree lives for this repo.
+ * - http: the knowledge dir itself — HTTP has no git branch to check out.
+ * - self: <localPath>/<dirname> — nested under the knowledge dir (`.teamai/`).
+ * - git (and legacy configs with no kind): sibling of the clone
+ *   (`<dirname(localPath)>/<dirname>`) so clone `reset --hard` cannot
+ *   nest-destroy it.
+ * Callers must ensure the worktree exists first (see the branch-worktree
+ * module) when the returned path is a side-branch checkout.
+ */
+export function getWorktreeDir(localConfig: LocalConfig, dirname: string): string {
+  if (!usesBranchWorktree(localConfig)) {
     return localConfig.repo.localPath;
   }
   if (isSelfMode(localConfig)) {
-    return path.join(localConfig.repo.localPath, REPORTS_WORKTREE_DIRNAME);
+    return path.join(localConfig.repo.localPath, dirname);
   }
-  return path.join(path.dirname(localConfig.repo.localPath), REPORTS_WORKTREE_DIRNAME);
+  return path.join(path.dirname(localConfig.repo.localPath), dirname);
+}
+
+/**
+ * The business repo root for a self-mode config: knowledge lives in `.teamai/`
+ * inside it. Falls back to the parent of the knowledge dir for configs written
+ * before `businessRepoRoot` was recorded.
+ */
+export function getBusinessRoot(localConfig: LocalConfig): string {
+  return localConfig.repo.businessRepoRoot ?? path.dirname(localConfig.repo.localPath);
 }
 
 /**

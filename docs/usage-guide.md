@@ -138,10 +138,12 @@ Resulting directory structure:
 ├── config.yaml
 ├── state.json
 ├── team-repo/                           # clone of the team repo (knowledge on the default branch)
+├── learnings-wt/                        # checkout of the `teamai-learnings` orphan branch
+├── pending-learnings/                   # contributions not published yet
 └── reports-wt/                          # checkout of the `teamai-reports` orphan branch
 ```
 
-Independent git clones use the same reports split as single-repo mode: `members/` `sessions/` `votes/` `stats/` are written to the `teamai-reports` orphan branch (the checkout sits **beside** the clone, not inside it). Knowledge (`skills/` `rules/` `docs/` `learnings/` `teamai.yaml`) stays on the default branch. Leftover report files already on `main` are left in place and ignored.
+Independent git clones use the same split as single-repo mode: `members/` `sessions/` `votes/` `stats/` go to the `teamai-reports` orphan branch and `learnings/` goes to `teamai-learnings` (both checkouts sit **beside** the clone, not inside it). Knowledge (`skills/` `rules/` `docs/` `teamai.yaml`) stays on the default branch, reached by pull request. Report files and learnings already on `main` are left in place: reports are ignored from then on, learnings keep being read.
 
 In both modes, commands that only read reports (`members`, `digest`, `projects members`, `stats`, `viz`) never create or push the `teamai-reports` branch. `teamai pull` refreshes the reports checkout from `origin` before it rebuilds the search index (vote hotness) and skill recommendations. Report writers (session save `--push`, Stop-hook votes, member registration, auto-report) merge into origin's latest copy of the member's file first, so the same member reporting from two machines does not lose a session, vote, or stats entry.
 
@@ -285,7 +287,9 @@ Resulting directory structure:
 │   ├── teamai.yaml      # Remote team config
 │   ├── skills/ rules/ docs/ env/
 │   ├── manifest/roles.yaml  # Role definitions (when role-based skills are enabled)
-│   └── learnings/       # Team knowledge base
+│   └── learnings/       # Learnings written before they moved to their own branch
+├── learnings-wt/        # Checkout of `teamai-learnings` (the team knowledge base)
+├── pending-learnings/   # Contributions not published yet
 ├── reports-wt/          # Checkout of `teamai-reports` (`members/` `sessions/` `votes/` `stats/`)
 ~/.claude/skills/        # Team skills (auto-synced)
 ~/.claude/rules/         # Team rules (auto-synced)
@@ -319,12 +323,39 @@ teamai init . --agent claude,codex   # non-interactive: set up Claude Code + Cod
 
 **How it splits data across branches:**
 
-| Data | Where it lives | Travels with `git clone`? |
-|------|----------------|---------------------------|
-| Knowledge: `skills/` `rules/` `docs/` `learnings/`, `teamai.yaml` | `.teamai/` on the **main** branch | ✅ Yes |
-| Reports: `members/` `sessions/` `votes/` `stats/` | `teamai-reports` **orphan branch** | Pushed to `origin` (separate history). Independent git clones use this same split; learnings stay on the default branch. |
-| Machine-local: `config.yaml`, `state.json`, search index, env backup, MCP manifests | `~/.teamai/projects/<slug>/` (**partition**, outside the repo) | ❌ No (per-machine) |
-| Disposable git worktrees (`reports-wt/`, `knowledge-wt/`) | `.teamai/` (gitignored; rebuilt on demand) | ❌ No (per-machine) |
+| Data | Where it lives | How it is written | Needs write access to the default branch? |
+|------|----------------|-------------------|-------------------------------------------|
+| Knowledge: `skills/` `rules/` `docs/` `env/` `agents/`, `teamai.yaml` | `.teamai/` on the **main** branch | `teamai push` → pull request | No: push a branch, open a pull request |
+| `learnings/` | `teamai-learnings` **orphan branch** | `teamai contribute` → direct push | No |
+| Reports: `members/` `sessions/` `votes/` `stats/` | `teamai-reports` **orphan branch** | `init`, `session save`, hooks, pull auto-report | No |
+| Machine-local: `config.yaml`, `state.json`, search index, env backup, MCP manifests | `~/.teamai/projects/<slug>/` (**partition**, outside the repo) | local only | — |
+| Disposable git worktrees (`reports-wt/`, `learnings-wt/`, `knowledge-wt/`) and the contribution queue (`pending-learnings/`) | `.teamai/` (gitignored; rebuilt on demand) | local only | — |
+
+Learnings a team wrote before they moved to their own branch stay on the default
+branch, exactly where they are. Nothing is copied, deleted or migrated: that
+directory is still read, so every existing learning keeps coming back from
+`teamai recall`. New learnings go to `teamai-learnings`.
+
+**Minimum Git permissions with a protected default branch.**
+
+A member needs to:
+
+- push to `teamai-reports` and `teamai-learnings`, and create either ref when it
+  does not exist yet
+- push the feature branches `teamai push` creates
+- open pull requests against the default branch
+
+A member does not need to:
+
+- push directly to `main` / `master`
+- bypass branch protection, or hold admin rights
+
+Turn protection on and everyday use keeps working: `init` registers the member,
+`pull` syncs, `contribute` publishes, and `push` opens a pull request. With
+`provider: git` teamai cannot open that pull request for you — it pushes the
+branch and prints the command to open it by hand. `teamai contribute` never
+needs it. An HTTP backend is unaffected: it writes through its API and has no
+branches at all.
 
 Machine-local data lives in the per-project **partition** outside the repo, so a
 single-repo `.teamai/` holds only the team knowledge committed to main — `git
@@ -338,7 +369,7 @@ knowledge on main is left exactly in place).
 
 **Admin checklist after `teamai init .`:**
 
-1. `teamai init .` already commits `.teamai/` (skills, rules, docs, learnings, `teamai.yaml`, `.gitignore`) plus each selected tool's settings (e.g. `.claude/settings.json`, `.codex/hooks.json`) to the current branch for you.
+1. `teamai init .` already commits `.teamai/` (skills, rules, docs, an empty `learnings/`, `teamai.yaml`, `.gitignore`) plus each selected tool's settings (e.g. `.claude/settings.json`, `.codex/hooks.json`) to the current branch for you. Contributions do not go there: `teamai contribute` pushes them to the `teamai-learnings` branch.
 2. Push main so teammates can clone.
 3. Add resources later with `teamai push` — it opens a PR against your repo (via an isolated worktree) rather than committing to your working tree. In single-repo mode you can author them either in an AI tool dir (e.g. `~/.claude/skills/`) **or** by dropping them straight into `.teamai/` in your repo:
    - `.teamai/skills/` — team skills

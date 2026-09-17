@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { requireInit, detectProjectConfig, loadLocalConfigForScope } from './config.js';
 import { loadIndex, buildIndex, search, isLegacyIndex } from './utils/search-index.js';
 import type { SearchResult } from './utils/search-index.js';
@@ -161,6 +162,27 @@ interface ScopedSearchResult extends SearchResult {
  * Each entry includes a scope label (user/project) when source is known and
  * a type tag (skills/learnings/docs/rules) introduced in Phase 1.
  */
+/**
+ * The path a reader can actually open.
+ *
+ * The index stores the absolute path a file had when it was indexed, and a
+ * worktree that is removed and rebuilt leaves that pointing nowhere. Whoever
+ * reads this output, an agent most of the time, would be handed a path that
+ * does not exist, so fall back to the same file under the current learnings
+ * root before giving up.
+ */
+function resolveReadablePath(
+  indexedPath: string | undefined,
+  filename: string,
+  learningsBase?: string,
+): string {
+  if (indexedPath && existsSync(indexedPath)) return indexedPath;
+  const underBase = learningsBase ? path.join(learningsBase, filename) : null;
+  if (underBase && existsSync(underBase)) return underBase;
+  // learnings-root ok: a display-only hint when nothing on disk matches
+  return indexedPath ?? underBase ?? path.join('~', '.teamai', 'learnings', filename);
+}
+
 export function formatResults(results: ScopedSearchResult[]): string {
   const lines: string[] = [];
   lines.push(`--- [teamai:recall:start] --- (${results.length} result${results.length !== 1 ? 's' : ''})`);
@@ -186,12 +208,7 @@ export function formatResults(results: ScopedSearchResult[]): string {
       const matchedStr = matchedTerms && matchedTerms.length > 0 ? matchedTerms.join(', ') : 'none';
       lines.push(`Matched: ${matchedStr} | Missing: ${missingTerms.join(', ')}`);
     }
-    const filePath = entry.path
-      ? entry.path
-      : learningsBase
-        ? `${learningsBase}/${entry.filename}`
-        : `~/.teamai/learnings/${entry.filename}`;
-    lines.push(`File: ${filePath}`);
+    lines.push(`File: ${resolveReadablePath(entry.path, entry.filename, learningsBase)}`);
     if (sources && sources.length > 0) {
       lines.push(`Sources: ${sources.map((s) => s.desc ? `${s.path} (${s.desc})` : s.path).join(', ')}`);
     }
@@ -275,17 +292,22 @@ async function loadOrBuildScopeIndex(
     : getTeamaiHome('user');
   const indexPath = path.join(teamaiHome, 'search-index.json');
 
-  // user scope: learnings 已被 pull 同步到 ~/.teamai/learnings/
-  // project scope: learnings 只在 repo.localPath/learnings/ 中
-  const localLearningsDir = path.join(teamaiHome, 'learnings');
-  const repoLearningsDir = path.join(localConfig.repo.localPath, 'learnings');
+  // Learnings come from several roots: the learnings branch, the machine-local
+  // mirror, and the corpus the team wrote before the split. Picking one of them,
+  // as this used to, silently returned less.
+  const { learningsRoots } = await import('./utils/learnings-roots.js');
+  const { pendingLearningsDir } = await import('./utils/pending-learnings.js');
+  const roots = learningsRoots(localConfig);
+  // The queue holds contributions that could not be published yet. Leaving it
+  // out here would make one of them disappear from recall the moment anything
+  // invalidates the index.
+  const indexLearningsDirs = [pendingLearningsDir(localConfig), ...roots.read];
 
-  // 确定实际 learnings 目录：user scope 优先用本地副本，project scope 只用 repo
+  // The first root that exists is where `File:` paths point when an index entry
+  // predates absolute paths.
   let effectiveLearningsDir: string | null = null;
-  if (scopeLabel === 'user' && await pathExists(localLearningsDir)) {
-    effectiveLearningsDir = localLearningsDir;
-  } else if (await pathExists(repoLearningsDir)) {
-    effectiveLearningsDir = repoLearningsDir;
+  for (const dir of indexLearningsDirs) {
+    if (await pathExists(dir)) { effectiveLearningsDir = dir; break; }
   }
 
   let index = await loadIndex(indexPath);
@@ -311,9 +333,18 @@ async function loadOrBuildScopeIndex(
     if (hasLegacyCodebase) {
       log.warn(`Legacy 'docs/team-codebase' is no longer indexed. Migrate to 'teamwiki/' for code-knowledge recall.`);
     }
+    // Same namespaces pull indexes by. Omitting them, as this used to, dropped
+    // every project-private learning from a recall-triggered rebuild.
+    const { resolveActiveLearningsNamespaces } = await import('./projects.js');
+    const learningsNamespaces = await resolveActiveLearningsNamespaces(
+      localConfig.repo.localPath,
+      localConfig.projects ?? [],
+    );
+
     try {
       await buildIndex({
-        learningsDir: effectiveLearningsDir ?? undefined,
+        learningsDirs: indexLearningsDirs,
+        learningsNamespaces,
         docsDir: await pathExists(docsDir) ? docsDir : undefined,
         rulesDir: await pathExists(rulesDir) ? rulesDir : undefined,
         skillsDir: await pathExists(skillsDir) ? skillsDir : undefined,
@@ -330,7 +361,7 @@ async function loadOrBuildScopeIndex(
   if (!index) return null;
 
   // learningsBase: 实际文件所在路径，用于输出给用户/AI 读取
-  const learningsBase = effectiveLearningsDir ?? localLearningsDir;
+  const learningsBase = effectiveLearningsDir ?? roots.write;
   return { index, learningsBase };
 }
 
@@ -406,8 +437,8 @@ export async function recall(
       if (result && result.index.entries.length > 0) {
         scopeIndexes.push({ index: result.index, scope: 'project', config: projectConfig, learningsBase: result.learningsBase });
       }
-    } catch {
-      log.debug('recall: project scope not available');
+    } catch (e) {
+      log.debug(`recall: project scope not available: ${(e as Error).message}`);
     }
 
     if (projectConfig.inheritUserScope === true) {
@@ -419,8 +450,8 @@ export async function recall(
             scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
           }
         }
-      } catch {
-        log.debug('recall: inherited user scope not available');
+      } catch (e) {
+        log.debug(`recall: inherited user scope not available: ${(e as Error).message}`);
       }
     }
   } else {
@@ -431,8 +462,8 @@ export async function recall(
       if (result && result.index.entries.length > 0) {
         scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
       }
-    } catch {
-      log.debug('recall: user scope not available');
+    } catch (e) {
+      log.debug(`recall: user scope not available: ${(e as Error).message}`);
     }
   }
 

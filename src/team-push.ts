@@ -14,7 +14,7 @@ import {
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig } from './types.js';
-import { getUserVotesDir, emptyTokenUsage, addTokenUsage, usesReportsBranch } from './types.js';
+import { getUserVotesDir, emptyTokenUsage, addTokenUsage, usesBranchWorktree } from './types.js';
 import { getUserHome } from './utils/home.js';
 import {
   aggregateDailySessions,
@@ -353,7 +353,7 @@ export async function reportUsageToTeam(
   // pushRepoDirectly on the default branch (or, in self mode, the business
   // working tree). The dedicated writer handles the worktree + rebase race.
   const reportsConfig = options?.selfConfig;
-  const useReportsBranch = !!reportsConfig && usesReportsBranch(reportsConfig);
+  const useReportsBranch = !!reportsConfig && usesBranchWorktree(reportsConfig);
   let restoreStats: (() => Promise<void>) | undefined;
 
   // Reports-branch writes use the reports-lock, not the partition sync-lock

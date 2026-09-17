@@ -1,112 +1,81 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir, listFilesRecursive } from './fs.js';
-import { pushLearningToOrigin } from './git.js';
-import { withTimeout } from './async.js';
-import { log } from './logger.js';
+import { isSelfMode, type LocalConfig } from '../types.js';
 
 /**
- * Directory holding learnings whose push failed, persisted OUTSIDE the team-repo
- * clone so a `git reset --hard` inside the clone (pullRepo's diverged realign)
- * cannot discard them. Placed as a sibling of the clone root.
+ * Durable queue of learnings a member has written but that are not published
+ * yet. Every contribution lands here first, so nothing depends on the network,
+ * on push rights, or on a git operation succeeding right now.
+ *
+ * It lives outside anything git rewrites:
+ *  - git: beside the clone, where pullRepo's diverged `reset --hard` on the
+ *    clone cannot reach it.
+ *  - self: inside `.teamai/`, which is gitignored. The parent is the user's own
+ *    product repo, where an untracked directory would show up in `git status`
+ *    and be swept into a commit by `git add -A`.
  */
-export function pendingLearningsDir(repoPath: string): string {
-  return path.join(path.dirname(repoPath), 'pending-learnings');
+export function pendingLearningsDir(localConfig: LocalConfig): string {
+  if (isSelfMode(localConfig)) {
+    return path.join(localConfig.repo.localPath, 'pending-learnings');
+  }
+  return path.join(path.dirname(localConfig.repo.localPath), 'pending-learnings');
 }
 
 /**
- * Persist a learning whose push failed, so the next pull can retry it.
+ * Write a learning into the queue.
  *
- * @param repoPath - Team-repo clone root.
  * @param relPath - Learning path RELATIVE to `learnings/` (e.g.
  *   `alpha-notes/foo-2026-01-01-ab12cd.md` for a project-namespaced learning, or
  *   `foo-....md` for a shared-root one). The namespace subdirectory is preserved
- *   here and on retry, so a failed project contribution is never downgraded to a
+ *   here and when publishing, so a project contribution is never downgraded to a
  *   shared-root learning.
- * @param content - Full learning file content.
- *
- * Precondition: repoPath is a dedicated team-repo clone root, NOT a single-repo
- * `<business>/.teamai` path — callers must guard self mode (pull.ts and
- * contribute.ts already do).
  */
 export async function savePendingLearning(
-  repoPath: string,
+  localConfig: LocalConfig,
   relPath: string,
   content: string,
-): Promise<void> {
-  const dir = pendingLearningsDir(repoPath);
-  const dest = path.join(dir, relPath);
+): Promise<string> {
+  const dest = path.join(pendingLearningsDir(localConfig), relPath);
   await ensureDir(path.dirname(dest));
   await fs.promises.writeFile(dest, content, 'utf-8');
+  return dest;
 }
 
 /**
- * Re-push learnings saved by a previous failed contribute. Best-effort:
- * copies each into the clone's `learnings/` and pushes it, dropping the pending
- * copy only after a successful push. Stops at the first push failure (network
- * still down) so the remainder are retried next time; unreadable entries are
- * skipped. Returns the number successfully pushed.
- *
- * @param repoPath - Team-repo clone root.
- * @param username - Contributor name for the commit message.
- * @returns Count of pending learnings pushed this run.
- *
- * Precondition: repoPath is a dedicated team-repo clone root, NOT a single-repo
- * `<business>/.teamai` path — callers must guard self mode (pull.ts and
- * contribute.ts already do).
+ * Every queued learning, as paths relative to `learnings/`, oldest entries
+ * included. Hidden files and anything that is not Markdown are ignored, so a
+ * stray editor swap file never reaches the team repo.
  */
-export async function flushPendingLearnings(repoPath: string, username: string): Promise<number> {
-  const dir = pendingLearningsDir(repoPath);
-  let relPaths: string[];
+export async function listPendingLearnings(localConfig: LocalConfig): Promise<string[]> {
   try {
-    // Recurse: pending learnings may sit under a namespace subdirectory
-    // (e.g. `alpha-notes/foo.md`), which must be preserved on retry.
-    relPaths = await listFilesRecursive(dir);
+    return (await listFilesRecursive(pendingLearningsDir(localConfig)))
+      .filter((relPath) => relPath.endsWith('.md'))
+      .filter((relPath) => !relPath.split(path.sep).some((segment) => segment.startsWith('.')));
   } catch {
-    return 0;
+    return [];
   }
+}
 
-  let pushed = 0;
-  for (const relPath of relPaths) {
-    if (relPath.split(path.sep).some((seg) => seg.startsWith('.'))) {
-      continue;
-    }
-    if (!relPath.endsWith('.md')) {
-      continue;
-    }
-    const pendingPath = path.join(dir, relPath);
-    let content: string;
-    try {
-      content = await fs.promises.readFile(pendingPath, 'utf-8');
-    } catch {
-      // Not a readable file (e.g. a subdirectory) — skip it.
-      continue;
-    }
-    try {
-      const destPath = path.join(repoPath, 'learnings', relPath);
-      await ensureDir(path.dirname(destPath));
-      await fs.promises.writeFile(destPath, content, 'utf-8');
-      const commitMsg = `[teamai] Contribute session knowledge from ${username}`;
-      const confirmed = await withTimeout(
-        pushLearningToOrigin(repoPath, relPath, commitMsg),
-        10_000,
-        'Push timeout (10s)',
-      );
-      if (!confirmed) {
-        // Push returned but the branch is still ahead of origin — do NOT drop
-        // the durable backup; retry on the next pull.
-        log.debug(`flushPendingLearnings: ${relPath} not confirmed on origin, keeping backup`);
-        break;
-      }
-      await fs.promises.rm(pendingPath, { force: true });
-      pushed += 1;
-    } catch (e) {
-      log.debug(`flushPendingLearnings: retry deferred for ${relPath}: ${(e as Error).message}`);
-      break;
-    }
+/** Read one queued learning, or null when it is unreadable. */
+export async function readPendingLearning(
+  localConfig: LocalConfig,
+  relPath: string,
+): Promise<string | null> {
+  try {
+    return await fs.promises.readFile(path.join(pendingLearningsDir(localConfig), relPath), 'utf-8');
+  } catch {
+    return null;
   }
-  if (pushed > 0) {
-    log.debug(`flushPendingLearnings: re-pushed ${pushed} pending learning(s)`);
-  }
-  return pushed;
+}
+
+/**
+ * Forget a queued learning. Only ever called once its content is confirmed on
+ * origin: this copy is the only one that survives a worktree reset.
+ */
+export async function dropPendingLearning(
+  localConfig: LocalConfig,
+  relPath: string,
+): Promise<void> {
+  await fs.promises.rm(path.join(pendingLearningsDir(localConfig), relPath), { force: true });
 }

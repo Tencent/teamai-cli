@@ -55,8 +55,8 @@ async function loadReportedStats(): Promise<UserStats | null> {
     // Leftover stats/ on the default-branch clone is ignored. Read-only: never
     // publish a missing reports branch.
     let statsRoot = config.repo.localPath;
-    const { usesReportsBranch } = await import('./types.js');
-    if (usesReportsBranch(config)) {
+    const { usesBranchWorktree } = await import('./types.js');
+    if (usesBranchWorktree(config)) {
       const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
       statsRoot = await ensureReportsWorktree(config, { pushIfCreated: false });
     }

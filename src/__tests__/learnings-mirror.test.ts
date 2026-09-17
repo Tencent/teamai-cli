@@ -25,6 +25,43 @@ describe('mirrorLearnings', () => {
     await fse.remove(tmpDir);
   });
 
+  it('keeps what another source root provides instead of deleting it', async () => {
+    // The mirror deletes anything its source does not have. With learnings split
+    // across roots (#485) a single-source mirror would wipe the other root's
+    // learnings out of the machine-local cache on the next pull.
+    const otherRoot = path.join(tmpDir, 'learnings-wt-learnings');
+    await fse.outputFile(path.join(otherRoot, 'from-the-branch.md'), '# on the branch');
+    await fse.outputFile(path.join(otherRoot, 'alpha', 'branch-note.md'), '# alpha on the branch');
+
+    await mirrorLearnings([otherRoot, sourceDir], destinationDir, ['alpha']);
+
+    expect(await fse.pathExists(path.join(destinationDir, 'from-the-branch.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(destinationDir, 'shared-a.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(destinationDir, 'alpha', 'branch-note.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(destinationDir, 'alpha', 'keep.md'))).toBe(true);
+  });
+
+  it('gives the first root precedence when a relative path is in two of them', async () => {
+    const otherRoot = path.join(tmpDir, 'learnings-wt-learnings');
+    await fse.outputFile(path.join(otherRoot, 'shared-a.md'), '# current');
+
+    await mirrorLearnings([otherRoot, sourceDir], destinationDir, []);
+
+    expect(await fse.readFile(path.join(destinationDir, 'shared-a.md'), 'utf8')).toBe('# current');
+  });
+
+  it('still removes a learning no root provides any more', async () => {
+    const otherRoot = path.join(tmpDir, 'learnings-wt-learnings');
+    await fse.outputFile(path.join(otherRoot, 'from-the-branch.md'), '# on the branch');
+    await mirrorLearnings([otherRoot, sourceDir], destinationDir, []);
+
+    await fse.remove(path.join(sourceDir, 'shared-b.md'));
+    await mirrorLearnings([otherRoot, sourceDir], destinationDir, []);
+
+    expect(await fse.pathExists(path.join(destinationDir, 'shared-b.md'))).toBe(false);
+    expect(await fse.pathExists(path.join(destinationDir, 'from-the-branch.md'))).toBe(true);
+  });
+
   it('copies shared learnings and active namespaces only', async () => {
     await mirrorLearnings(sourceDir, destinationDir, ['alpha']);
 

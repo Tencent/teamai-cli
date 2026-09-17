@@ -70,8 +70,8 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
   // on the default-branch clone is ignored. HTTP keeps the clone/API path.
   // Listing is read-only: never publish a missing reports branch.
   let repoPath: string;
-  const { usesReportsBranch } = await import('./types.js');
-  if (usesReportsBranch(localConfig)) {
+  const { usesBranchWorktree } = await import('./types.js');
+  if (usesBranchWorktree(localConfig)) {
     const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
     await refreshReportsWorktree(localConfig, { pushIfCreated: false });
     repoPath = await ensureReportsWorktree(localConfig, { pushIfCreated: false });

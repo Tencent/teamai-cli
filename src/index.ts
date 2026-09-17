@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { Command, Option } from 'commander';
 import { setVerbose, setSilent, log } from './utils/logger.js';
-import type { GlobalOptions } from './types.js';
+import type { GlobalOptions, LocalConfig } from './types.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
 import { registerPackagesCommand } from './pkg/register-command.js';
 
@@ -724,7 +724,8 @@ program
   .option('--tool <name>', 'Tool identifier (e.g. codebuddy, workbuddy, claude)')
   .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
   .option('--bg-only', 'Internal: run only fire-and-forget background handlers (used by the detached child)')
-  .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean }) => {
+  .option('--stdin-file <path>', 'Internal: read the hook payload from this file instead of STDIN')
+  .action(async (event: string, cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean; stdinFile?: string }) => {
     const bgOnly = cmdOpts.bgOnly ?? false;
 
     // Hard wall-clock safety net for the FOREGROUND (parent) hook process, which
@@ -746,7 +747,7 @@ program
 
     const { hookDispatchCli } = await import('./hook-dispatch-cli.js');
     try {
-      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*', bgOnly);
+      await hookDispatchCli(event, cmdOpts.tool ?? 'claude', cmdOpts.matcher ?? '*', cmdOpts);
     } finally {
       if (hardExit) clearTimeout(hardExit);
       // Hook subprocesses must exit promptly: a hung/unreachable backend fetch can
@@ -1021,18 +1022,23 @@ recallCmd
     const { autoDetectInit } = await import('./config.js');
     const { localConfig } = await autoDetectInit();
     const { resolveMaintenancePaths } = await import('./maintenance/index.js');
-    const { repoPath, votesDir, learningsDir } = await resolveMaintenancePaths(localConfig);
+    const {
+      repoPath, votesDir, learningsReadDirs, learningsWriteDir,
+    } = await resolveMaintenancePaths(localConfig);
 
     if (cmdOpts.confidenceWriteback) {
       const { computeAllConfidence, writeBackConfidence } = await import('./maintenance/index.js');
       const map = await computeAllConfidence(votesDir);
-      await writeBackConfidence(learningsDir, map);
+      const updated = await writeBackConfidence(learningsReadDirs, map, learningsWriteDir);
+      if (updated > 0) {
+        await publishMaintenance(localConfig, `[teamai] Update confidence for ${updated} learning(s)`);
+      }
       return;
     }
 
     if (cmdOpts.prune) {
       const { findPruneCandidates, executePrune } = await import('./maintenance/index.js');
-      const candidates = await findPruneCandidates(learningsDir, votesDir, {
+      const candidates = await findPruneCandidates(learningsReadDirs, votesDir, {
         threshold: cmdOpts.threshold,
       });
       if (candidates.length === 0) {
@@ -1045,10 +1051,16 @@ recallCmd
       for (const c of candidates) {
         log.info(`  - ${c.filename} (confidence: ${c.confidence.toFixed(2)}, reason: ${c.reason})`);
       }
-      await executePrune(repoPath, candidates, {
+      const pruned = await executePrune(learningsWriteDir, candidates, {
         dryRun: cmdOpts.dryRun,
         archive: cmdOpts.archive,
       });
+      if (pruned.archived + pruned.removed > 0) {
+        await publishMaintenance(
+          localConfig,
+          `[teamai] Prune ${pruned.archived + pruned.removed} learning(s)`,
+        );
+      }
       return;
     }
 
@@ -1067,7 +1079,7 @@ recallCmd
 
       log.info('\nGenerating AI-powered update drafts...');
       for (const entry of entries) {
-        const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsDir);
+        const related = await findRelatedAdoptedLearnings(entry, votesDir, learningsReadDirs);
         const draft = await generateUpdateDraft(entry, related);
         if (draft) {
           const draftPath = `${entry.path}.draft.md`;
@@ -1093,10 +1105,12 @@ recallCmd
       findPromotionCandidates,
       executePromotion,
     } = await import('./maintenance/index.js');
-    const { repoPath, votesDir, learningsDir } = await resolveMaintenancePaths(localConfig);
+    const {
+      repoPath, votesDir, learningsReadDirs, learningsWriteDir,
+    } = await resolveMaintenancePaths(localConfig);
     const { log } = await import('./utils/logger.js');
 
-    const candidates = await findPromotionCandidates(learningsDir, votesDir);
+    const candidates = await findPromotionCandidates(learningsReadDirs, votesDir);
 
     if (candidates.length === 0) {
       log.info('No learnings eligible for promotion yet.');
@@ -1121,7 +1135,30 @@ recallCmd
     await executePromotion(candidate, repoPath, {
       category: cmdOpts.category as 'skills' | 'rules' | 'docs' | undefined,
       dryRun: cmdOpts.dryRun,
+      learningsWriteDir,
     });
+    if (!cmdOpts.dryRun) {
+      await publishMaintenance(localConfig, `[teamai] Mark ${candidate.docId} as promoted`);
+    }
   });
+
+
+/**
+ * Publish what a maintenance command just changed in the learnings worktree.
+ * Best-effort: the change is already on disk, so a failure to publish is worth
+ * reporting but never worth failing the command over.
+ */
+async function publishMaintenance(localConfig: LocalConfig, message: string): Promise<void> {
+  const { publishLearningsMaintenance } = await import('./utils/learnings-publish.js');
+  const { log } = await import('./utils/logger.js');
+  const result = await publishLearningsMaintenance(localConfig, message);
+  if (result.status === 'published') {
+    log.success('Published maintenance changes to the learnings branch');
+  } else if (result.status === 'failed') {
+    log.warn(`Maintenance changes stay local for now: ${result.reason}`);
+  } else if (result.status === 'busy') {
+    log.warn('Maintenance changes stay local for now: another teamai write is in progress');
+  }
+}
 
 program.parse();

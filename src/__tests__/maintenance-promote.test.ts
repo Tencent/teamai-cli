@@ -66,7 +66,7 @@ describe('findPromotionCandidates', () => {
     };
     fs.writeFileSync(path.join(votesDir, 'jeff.yaml'), YAML.stringify(data));
 
-    const candidates = await findPromotionCandidates(learningsDir, votesDir);
+    const candidates = await findPromotionCandidates([learningsDir], votesDir);
     expect(candidates).toHaveLength(0);
   });
 
@@ -79,7 +79,7 @@ describe('findPromotionCandidates', () => {
     makeLearning(learningsDir, 'great-doc');
     makeHighVotes(votesDir, 'great-doc');
 
-    const candidates = await findPromotionCandidates(learningsDir, votesDir);
+    const candidates = await findPromotionCandidates([learningsDir], votesDir);
     expect(candidates.length).toBeGreaterThan(0);
     expect(candidates[0].docId).toBe('great-doc');
     expect(candidates[0].suggestedCategory).toBeDefined();
@@ -96,7 +96,7 @@ describe('findPromotionCandidates', () => {
     fs.writeFileSync(path.join(learningsDir, 'promoted.md'), content);
     makeHighVotes(votesDir, 'promoted');
 
-    const candidates = await findPromotionCandidates(learningsDir, votesDir);
+    const candidates = await findPromotionCandidates([learningsDir], votesDir);
     expect(candidates.find((c) => c.docId === 'promoted')).toBeUndefined();
   });
 
@@ -111,7 +111,7 @@ describe('findPromotionCandidates', () => {
     makeLearning(learningsDir, 'too-new', { date: recentDate });
     makeHighVotes(votesDir, 'too-new');
 
-    const candidates = await findPromotionCandidates(learningsDir, votesDir);
+    const candidates = await findPromotionCandidates([learningsDir], votesDir);
     expect(candidates.find((c) => c.docId === 'too-new')).toBeUndefined();
   });
 });

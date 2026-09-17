@@ -193,7 +193,7 @@ leaves data half-in-both-places:
    on, since their getDataHome still resolves to the legacy dir pre-migration).
    Contention → skip this attempt (idempotent; the next write command retries).
 1. Copy legacyDir → <partition>.staging  (raw fse.copy, NOT copyDir — copyDir filters
-   out `.git` and would corrupt the team-repo clone). Skip reports-wt/knowledge-wt
+   out `.git` and would corrupt the team-repo clone). Skip reports-wt/learnings-wt/knowledge-wt
    (disposable worktrees with absolute gitdirs — rebuilt on demand) and lock files.
 2. Verify staging: config.yaml parses; if the source has team-repo/.git the copy must
    too; every migratable top-level entry is present. Failure → discard staging, abort,
@@ -249,9 +249,12 @@ installs: attach a partition `dataHome` to the self LocalConfig, and every
 
 **Invariant:** `getKnowledgeDir` / `repo.localPath` stay `<repo>/.teamai` — that is
 the class-B knowledge anchor, committed to main, and the ~230 `path.join(localPath,
-…)` call sites do not change. `reports-wt/` and `knowledge-wt/` stay in the repo
-too (git worktrees must live in the same repo; they anchor on `localPath`, not
-`getDataHome`).
+…)` call sites do not change. `reports-wt/`, `learnings-wt/` and `knowledge-wt/`
+stay in the repo too (git worktrees must live in the same repo; they anchor on
+`localPath`, not `getDataHome`). Learnings themselves left the default branch in
+issue #485: new ones are written to `learnings-wt/` (the `teamai-learnings`
+branch) and queued in `pending-learnings/` until they are published, while the
+learnings already on main are read from where they are.
 
 - **init** (`initSelfRepo`): resolves the partition up front, attaches it as
   `dataHome`, and writes config/state there. The pre-P2 "retire the stale

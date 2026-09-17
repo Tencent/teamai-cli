@@ -247,7 +247,7 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 | `teamai push` | Push local resources to a branch and open a Merge Request |
 | `teamai packages [install] [target]` | Install declared npm packages and Claude plugins; with a target, also update `teamai.yaml`. Bare `teamai packages` installs everything; `teamai packages install <target>` adds one |
 | `teamai status` | Show local vs team repo diff and resource counts, including namespaced skills and nested docs |
-| `teamai contribute` | Share session experience to team repo |
+| `teamai contribute` | Share session experience to the team repo's `teamai-learnings` branch |
 | `teamai recall <query>` | Search the team knowledge base (BM25 + graph-boost) |
 | `teamai recall enable/disable/status` | Toggle or check recall state |
 | `teamai recall promote [learningId]` | Promote a high-confidence learning to formal knowledge (skills/rules/docs) |

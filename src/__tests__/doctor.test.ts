@@ -557,4 +557,5 @@ describe('buildChecks', () => {
 
         expect(await resolveDoctorContext()).toBeNull();
     });
+
 });

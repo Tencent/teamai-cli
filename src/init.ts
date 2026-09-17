@@ -509,6 +509,7 @@ export function buildSelfModeGitignore(): string {
     'teamai.lock',
     '.update-lock',
     '.reports-lock',
+    '.learnings-lock',
     '.bootstrap-lock',
     '.sync-lock',
     // NB: env/ is intentionally NOT ignored in single-repo mode — team env vars
@@ -527,9 +528,12 @@ export function buildSelfModeGitignore(): string {
     // cache). Not ignored before P2 — a real leak source in self repos.
     'workspaces/',
     'dashboard/',
-    '# git worktrees for reports (orphan branch) and knowledge PRs',
+    '# git worktrees for the reports and learnings orphan branches, and knowledge PRs',
     'reports-wt/',
+    'learnings-wt/',
     'knowledge-wt/',
+    '# contributions not published yet — machine-local until they reach the team repo',
+    'pending-learnings/',
     '# report data lives on the teamai-reports orphan branch, not on main',
     'members/',
     'sessions/',
@@ -565,32 +569,25 @@ export function migrateSelfModeGitignoreContent(content: string): { changed: boo
     return true;
   });
 
-  // Ensure env.local is present (older files predate it). Insert next to env.sh if
-  // found, else append before the trailing blank/knowledge comment.
-  const hasEnvLocal = filtered.some((l) => l.trim() === 'env.local');
-  if (!hasEnvLocal) {
-    const envShIdx = filtered.findIndex((l) => l.trim() === 'env.sh');
-    if (envShIdx >= 0) {
-      filtered.splice(envShIdx + 1, 0, 'env.local');
-    } else {
-      // Append at a sensible spot: before a trailing empty line if any.
-      const lastNonEmpty = filtered.reduce((acc, l, i) => (l.trim() ? i : acc), -1);
-      filtered.splice(lastNonEmpty + 1, 0, 'env.local');
-    }
+  // Ensure an entry older files predate is present. Insert it next to the entry
+  // it belongs with when that one is there, else before a trailing blank line.
+  const ensure = (entry: string, anchor: string): void => {
+    if (filtered.some((l) => l.trim() === entry)) return;
+    const anchorIdx = filtered.findIndex((l) => l.trim() === anchor);
+    const at = anchorIdx >= 0
+      ? anchorIdx
+      : filtered.reduce((acc, l, i) => (l.trim() ? i : acc), -1);
+    filtered.splice(at + 1, 0, entry);
     changed = true;
-  }
+  };
 
-  const hasPackageLock = filtered.some((l) => l.trim() === 'teamai.lock');
-  if (!hasPackageLock) {
-    const tokenIdx = filtered.findIndex((l) => l.trim() === 'token');
-    if (tokenIdx >= 0) {
-      filtered.splice(tokenIdx + 1, 0, 'teamai.lock');
-    } else {
-      const lastNonEmpty = filtered.reduce((acc, l, i) => (l.trim() ? i : acc), -1);
-      filtered.splice(lastNonEmpty + 1, 0, 'teamai.lock');
-    }
-    changed = true;
-  }
+  ensure('env.local', 'env.sh');
+  ensure('teamai.lock', 'token');
+  // The learnings worktree and its lock arrived with the teamai-learnings branch
+  // (#485). Without them a contribution shows up in the business repo's git status.
+  ensure('learnings-wt/', 'reports-wt/');
+  ensure('.learnings-lock', '.reports-lock');
+  ensure('pending-learnings/', 'knowledge-wt/');
 
   return { changed, content: filtered.join('\n') };
 }

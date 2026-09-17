@@ -103,7 +103,17 @@ token 需要 `repo` 权限。`GH_TOKEN` 作为别名也会被识别。
 
 ### 默认分支
 
-GitHub 新仓库默认分支通常是 `main`。TeamAI 当前实现中 `push` 的目标分支硬编码为 `master`（历史遗留）。如果你的 GitHub 仓库使用 `main`，可以在仓库 **Settings → Branches** 中将默认分支改为 `master`，或等待后续版本支持可配置目标分支。
+TeamAI 通过 `getDefaultBranch()` 自动识别默认分支：先看 `origin/HEAD`，再依次探测
+`origin/main`、`origin/master`。`main` 和 `master` 都可以，无需改动仓库设置。
+
+### 默认分支受保护时的最小权限
+
+成员需要能推送 `teamai-reports` 与 `teamai-learnings`（含首次创建这两个 ref）、推送
+`teamai push` 创建的特性分支，并能向默认分支开 PR。不需要直接推送 `main` / `master`，
+也不需要绕过分支保护或管理员权限。详见[使用指南](usage-guide.zh-CN.md)的数据拆分一节。
+
+注意：`provider: git` 无法自动开 PR，`teamai push` 会推送分支并打印手动开 PR 的命令；
+`teamai contribute` 直接推送 `teamai-learnings`，不走 PR。
 
 ## TGit Provider（腾讯工蜂）
 

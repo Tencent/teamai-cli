@@ -3,7 +3,8 @@ import path from 'node:path';
 
 import matter from 'gray-matter';
 
-import { readFileSafe, listFiles, ensureDir, remove, copyFile } from '../utils/fs.js';
+import { readFileSafe, ensureDir, remove, copyFile } from '../utils/fs.js';
+import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
 import { computeAllConfidence } from './confidence.js';
 
@@ -29,20 +30,18 @@ const STALE_DAYS = 180;
  * or inactive for more than STALE_DAYS.
  */
 export async function findPruneCandidates(
-  learningsDir: string,
+  learningsDirs: readonly string[],
   votesDir: string,
   options: PruneOptions = {},
 ): Promise<PruneCandidate[]> {
   const threshold = options.threshold ?? DEFAULT_THRESHOLD;
   const confidenceMap = await computeAllConfidence(votesDir);
   const candidates: PruneCandidate[] = [];
-  const files = await listFiles(learningsDir);
+  const files = await listLearningFiles(learningsDirs);
   const now = Date.now();
 
-  for (const file of files) {
-    if (!file.endsWith('.md')) continue;
+  for (const { file, absPath } of files) {
     const docId = file.replace(/\.md$/i, '');
-    const absPath = path.join(learningsDir, file);
     const content = await readFileSafe(absPath);
     if (!content) continue;
 
@@ -85,7 +84,7 @@ export async function findPruneCandidates(
  * Execute prune: archive or remove low-confidence documents.
  */
 export async function executePrune(
-  repoPath: string,
+  learningsWriteDir: string,
   candidates: PruneCandidate[],
   options: PruneOptions = {},
 ): Promise<{ archived: number; removed: number }> {
@@ -97,9 +96,18 @@ export async function executePrune(
     return { archived: 0, removed: 0 };
   }
 
+  const inherited: string[] = [];
+
   for (const candidate of candidates) {
+    // A learning outside the write root lives where nothing is pushed: deleting
+    // it here would look like it worked, reach no teammate, and come back on the
+    // next realign. Say so instead of pretending.
+    if (!isInWriteRoot(candidate.path, learningsWriteDir)) {
+      inherited.push(candidate.filename);
+      continue;
+    }
     if (options.archive) {
-      const archiveDir = path.join(repoPath, 'learnings', '_archive');
+      const archiveDir = path.join(learningsWriteDir, '_archive');
       await ensureDir(archiveDir);
       await copyFile(candidate.path, path.join(archiveDir, candidate.filename));
       await remove(candidate.path);
@@ -112,5 +120,11 @@ export async function executePrune(
 
   if (archived > 0) log.success(`Archived ${archived} learning(s)`);
   if (removed > 0) log.success(`Removed ${removed} learning(s)`);
+  if (inherited.length > 0) {
+    log.warn(
+      `${inherited.length} learning(s) are on the default branch and cannot be pruned from here: `
+      + `${inherited.join(', ')}. Remove them with a pull request against the team repo.`,
+    );
+  }
   return { archived, removed };
 }

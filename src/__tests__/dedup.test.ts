@@ -102,7 +102,7 @@ optimize performance solution issue resolve method
     fs.writeFileSync(path.join(tmpDir, filename), content, 'utf-8');
 
     const draftKeywords = new Set(['optimize', 'performance', 'solution', 'issue', 'resolve']);
-    const results = await findSupersededLearnings(draftKeywords, tmpDir, 14);
+    const results = await findSupersededLearnings(draftKeywords, [tmpDir], 14);
 
     expect(results.length).toBeGreaterThan(0);
     expect(results[0].filename).toBe(filename);
@@ -120,7 +120,7 @@ optimize performance solution issue resolve method
     fs.writeFileSync(path.join(tmpDir, filename), content, 'utf-8');
 
     const draftKeywords = new Set(['optimize', 'performance', 'solution', 'issue', 'resolve']);
-    const results = await findSupersededLearnings(draftKeywords, tmpDir, 14);
+    const results = await findSupersededLearnings(draftKeywords, [tmpDir], 14);
 
     expect(results).toHaveLength(0);
   });
@@ -128,7 +128,7 @@ optimize performance solution issue resolve method
   it('目录不存在时返回空数组', async () => {
     const nonExistentDir = path.join(tmpDir, 'not-exist');
     const draftKeywords = new Set(['optimize', 'performance']);
-    const results = await findSupersededLearnings(draftKeywords, nonExistentDir, 14);
+    const results = await findSupersededLearnings(draftKeywords, [nonExistentDir], 14);
 
     expect(results).toEqual([]);
   });
@@ -144,7 +144,7 @@ kubernetes docker container deployment cluster
     fs.writeFileSync(path.join(tmpDir, filename), content, 'utf-8');
 
     const draftKeywords = new Set(['python', 'pandas', 'dataframe', 'numpy', 'csv']);
-    const results = await findSupersededLearnings(draftKeywords, tmpDir, 14);
+    const results = await findSupersededLearnings(draftKeywords, [tmpDir], 14);
 
     expect(results).toHaveLength(0);
   });

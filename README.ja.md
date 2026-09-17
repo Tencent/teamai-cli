@@ -246,7 +246,7 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 | `teamai push` | ローカルリソースをブランチへ push し、Merge Request を開く |
 | `teamai packages [install] [target]` | 宣言済みの npm パッケージと Claude plugins をインストール。target 指定時は `teamai.yaml` も更新。引数なしの `teamai packages` はすべてインストール、`teamai packages install <target>` は 1 件追加 |
 | `teamai status` | ローカルとチームリポジトリの差分とリソース件数を表示。名前空間付き skills と入れ子の docs も含む |
-| `teamai contribute` | セッション経験をチームリポジトリへ共有 |
+| `teamai contribute` | セッション経験をチームリポジトリの `teamai-learnings` ブランチへ共有 |
 | `teamai recall <query>` | チームナレッジベースを検索（BM25 + graph-boost） |
 | `teamai recall enable/disable/status` | recall のオン/オフ、または状態確認 |
 | `teamai recall promote [learningId]` | 信頼度の高い learning を正式ナレッジ（skills/rules/docs）へ昇格 |

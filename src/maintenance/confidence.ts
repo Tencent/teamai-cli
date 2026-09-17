@@ -3,7 +3,8 @@ import path from 'node:path';
 
 import matter from 'gray-matter';
 
-import { readFileSafe, writeFile, listFiles } from '../utils/fs.js';
+import { ensureDir, readFileSafe, writeFile, listFiles } from '../utils/fs.js';
+import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
 
 export interface ConfidenceFactors {
@@ -90,19 +91,18 @@ export async function computeAllConfidence(votesDir: string): Promise<Map<string
  * Returns count of files updated.
  */
 export async function writeBackConfidence(
-  learningsDir: string,
+  learningsDirs: readonly string[],
   confidenceMap: Map<string, number>,
+  writeRoot?: string,
 ): Promise<number> {
   let updated = 0;
-  const files = await listFiles(learningsDir);
+  const files = await listLearningFiles(learningsDirs);
 
-  for (const file of files) {
-    if (!file.endsWith('.md')) continue;
+  for (const { file, absPath, root } of files) {
     const docId = file.replace(/\.md$/i, '');
     const newConf = confidenceMap.get(docId);
     if (newConf === undefined) continue;
 
-    const absPath = path.join(learningsDir, file);
     const content = await readFileSafe(absPath);
     if (!content) continue;
 
@@ -114,7 +114,15 @@ export async function writeBackConfidence(
 
       data.confidence = newConf;
       const newContent = matter.stringify(body, data);
-      await writeFile(absPath, newContent);
+      // An inherited learning lives in a root nothing pushes, so rewriting it
+      // there would be discarded by the next realign and never reach the team.
+      // The new version goes to the write root instead, where it takes
+      // precedence over the copy it supersedes.
+      const target = writeRoot && !isInWriteRoot(absPath, writeRoot)
+        ? path.join(writeRoot, file)
+        : absPath;
+      await ensureDir(path.dirname(target));
+      await writeFile(target, newContent);
       updated++;
     } catch {
       log.debug(`confidence: failed to update frontmatter for: ${file}`);

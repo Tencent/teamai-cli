@@ -10,6 +10,7 @@ import { importFromRepo } from './import-repo.js';
 import { importFromRepoList } from './import-repo-list.js';
 import { importFromOrg } from './import-org.js';
 import { importFromIWikiDual } from './iwiki-dual.js';
+import { learningsRoots } from './utils/learnings-roots.js';
 import type { GlobalOptions, LearningDraft } from './types.js';
 import { Listr, PRESET_TIMER } from 'listr2';
 import { log, setSilent } from './utils/logger.js';
@@ -244,10 +245,10 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
           task: async (ctx) => {
             const { learning, repoUrl } = await importFromMR({
               url: opts.fromMr!,
-              learningsDir: path.join(localConfig.repo.localPath, 'learnings'),
+              learningsDirs: learningsRoots(localConfig).read,
               all: opts.all,
               outputDir: opts.output,
-              repoPath: opts.dryRun ? undefined : localConfig.repo.localPath,
+              writeLearningsDir: opts.dryRun ? undefined : learningsRoots(localConfig).write,
               dryRun: opts.dryRun,
             });
             ctx.learning = learning;

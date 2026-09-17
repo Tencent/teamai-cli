@@ -137,10 +137,12 @@ teamai init https://github.com/yourorg/yourrepo
 ├── config.yaml
 ├── state.json
 ├── team-repo/                           # 团队仓库克隆（知识资产在默认分支）
+├── learnings-wt/                        # `teamai-learnings` 孤儿分支的检出
+├── pending-learnings/                   # 尚未发布的贡献
 └── reports-wt/                          # `teamai-reports` 孤儿分支的检出
 ```
 
-独立 git clone 与单仓模式使用同一套上报拆分：`members/` `sessions/` `votes/` `stats/` 写到 `teamai-reports` 孤儿分支（检出目录在 clone **旁边**，不嵌在 clone 里）。知识资产（`skills/` `rules/` `docs/` `learnings/` `teamai.yaml`）仍在默认分支。默认分支上已有的上报文件会留在原地并被忽略。
+独立 git clone 与单仓模式使用同一套拆分：`members/` `sessions/` `votes/` `stats/` 写到 `teamai-reports` 孤儿分支，`learnings/` 写到 `teamai-learnings`（两个检出目录都在 clone **旁边**，不嵌在 clone 里）。知识资产（`skills/` `rules/` `docs/` `teamai.yaml`）仍在默认分支，通过 PR 写入。默认分支上已有的上报文件与 learnings 都留在原地：上报数据从此被忽略，learnings 仍会被读取。
 
 两种模式下，只读取上报数据的命令（`members`、`digest`、`projects members`、`stats`、`viz`）都不会创建或推送 `teamai-reports` 分支。`teamai pull` 在重建检索索引（投票热度）和技能推荐之前，会先从 `origin` 刷新上报检出。写入上报（`session save --push`、Stop hook 投票、成员注册、自动上报）会先合并 `origin` 上该成员文件的最新副本，因此同一成员在两台机器上报时不会丢掉会话、投票或统计。
 
@@ -269,7 +271,9 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 │   ├── teamai.yaml      # 远端团队配置
 │   ├── skills/ rules/ docs/ env/
 │   ├── manifest/roles.yaml  # 角色定义（启用角色化 skills 时）
-│   └── learnings/       # 团队知识库
+│   └── learnings/       # 迁到独立分支之前写下的 learnings
+├── learnings-wt/        # `teamai-learnings` 检出（团队知识库）
+├── pending-learnings/   # 尚未发布的贡献
 ├── reports-wt/          # `teamai-reports` 检出（`members/` `sessions/` `votes/` `stats/`）
 ~/.claude/skills/        # 团队 skills（自动同步）
 ~/.claude/rules/         # 团队 rules（自动同步）
@@ -303,12 +307,35 @@ teamai init . --agent claude,codex   # 非交互：启用 Claude Code + Codex
 
 **数据如何在分支间拆分：**
 
-| 数据 | 存放位置 | 随 `git clone` 一起带走？ |
-|------|----------|---------------------------|
-| 知识资产：`skills/` `rules/` `docs/` `learnings/`、`teamai.yaml` | **main** 分支的 `.teamai/` | ✅ 会 |
-| 上报数据：`members/` `sessions/` `votes/` `stats/` | `teamai-reports` **孤儿分支** | 推送到 `origin`（独立历史）。独立 git clone 使用同一套拆分；learnings 仍在默认分支。 |
-| 本机私有：`config.yaml`、`state.json`、搜索索引、env 备份、MCP manifest | `~/.teamai/projects/<slug>/`（**分区**，在仓库之外） | ❌ 不会（每台机器本地） |
-| 可丢弃的 git worktree（`reports-wt/`、`knowledge-wt/`） | `.teamai/`（已 gitignore；按需重建） | ❌ 不会（每台机器本地） |
+| 数据 | 存放位置 | 如何写入 | 需要默认分支写权限吗？ |
+|------|----------|----------|------------------------|
+| 知识资产：`skills/` `rules/` `docs/` `env/` `agents/`、`teamai.yaml` | **main** 分支的 `.teamai/` | `teamai push` → PR | 不需要：推送分支并开 PR 即可 |
+| `learnings/` | `teamai-learnings` **孤儿分支** | `teamai contribute` 直接推送 | 不需要 |
+| 上报数据：`members/` `sessions/` `votes/` `stats/` | `teamai-reports` **孤儿分支** | `init`、`session save`、hook、pull 自动上报 | 不需要 |
+| 本机私有：`config.yaml`、`state.json`、搜索索引、env 备份、MCP manifest | `~/.teamai/projects/<slug>/`（**分区**，在仓库之外） | 仅本地 | — |
+| 可丢弃的 git worktree（`reports-wt/`、`learnings-wt/`、`knowledge-wt/`）与待发布队列（`pending-learnings/`） | `.teamai/`（已 gitignore；按需重建） | 仅本地 | — |
+
+learnings 迁到独立分支之前团队已经写下的内容，原地留在默认分支上。不复制、不删除、
+不迁移：该目录仍会被读取，所有既有 learning 依然能从 `teamai recall` 中找回。新的
+learning 写入 `teamai-learnings`。
+
+**默认分支受保护时所需的最小 Git 权限。**
+
+成员需要：
+
+- 推送 `teamai-reports` 与 `teamai-learnings`，并在这两个 ref 不存在时创建它们
+- 推送 `teamai push` 创建的特性分支
+- 向默认分支开 PR
+
+成员不需要：
+
+- 直接推送 `main` / `master`
+- 绕过分支保护，或拥有管理员权限
+
+打开分支保护后日常使用照常：`init` 注册成员、`pull` 同步、`contribute` 发布、
+`push` 开 PR。`provider: git` 下 teamai 无法替你开 PR —— 它会推送分支并打印手动开 PR
+的命令；`teamai contribute` 则完全不需要 PR。HTTP 后端不受影响：它通过 API 写入，
+根本没有分支。
 
 本机私有数据存放在仓库之外的按项目**分区**里，因此单仓模式的 `.teamai/` 只保留提交到
 main 的团队知识 —— `git status` 保持干净。旧版单仓装升级后，下一次
@@ -320,7 +347,7 @@ main 的团队知识 —— `git status` 保持干净。旧版单仓装升级后
 
 **管理员在 `teamai init .` 之后的清单：**
 
-1. `teamai init .` 已经帮你把 `.teamai/`（skills、rules、docs、learnings、`teamai.yaml`、`.gitignore`）以及每个所选工具的 settings（如 `.claude/settings.json`、`.codex/hooks.json`）提交到当前分支。
+1. `teamai init .` 已经帮你把 `.teamai/`（skills、rules、docs、空的 `learnings/`、`teamai.yaml`、`.gitignore`）以及每个所选工具的 settings（如 `.claude/settings.json`、`.codex/hooks.json`）提交到当前分支。贡献的内容不在其中：`teamai contribute` 会把它们推送到 `teamai-learnings` 分支。
 2. 推送 main，供团队成员 clone。
 3. 之后新增资源用 `teamai push` —— 它会（通过隔离 worktree）向你的仓库开 PR，而不是直接改动你的工作区。单仓模式下，你既可以在 AI 工具目录（如 `~/.claude/skills/`）里编写，**也可以**直接把资源放进仓库里的 `.teamai/`：
    - `.teamai/skills/` —— 团队 skills

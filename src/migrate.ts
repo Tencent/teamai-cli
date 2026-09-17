@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
-import { LocalConfigSchema, SYNC_LOCK_FILENAME } from './types.js';
+import { LocalConfigSchema, SYNC_LOCK_FILENAME, WORKTREE_DIRNAMES } from './types.js';
 import { resolveAnchors } from './utils/git.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
 import { realpath } from 'node:fs/promises';
@@ -30,17 +30,22 @@ import { log } from './utils/logger.js';
  */
 
 /** Directories/files under a legacy `.teamai/` that must NOT be copied. */
-const SKIP_ENTRIES = new Set([
+const SKIP_ENTRIES = new Set<string>([
   // Disposable git worktrees: their gitdir records an ABSOLUTE path, so moving
   // them breaks the linkage. They are rebuilt on demand (git.ts calls them
-  // "disposable worktrees"). Self-mode only, but skip defensively either way.
-  'reports-wt',
-  'knowledge-wt',
+  // "disposable worktrees"). Taken from the shared list, so a worktree added
+  // later is skipped here without anyone having to remember this file.
+  // Self-mode only, but skip defensively either way.
+  ...WORKTREE_DIRNAMES,
   // Lock files: transient, and a stale one copied into the partition would be
   // mistaken for a live lock.
   SYNC_LOCK_FILENAME,
   '.update-lock',
 ]);
+
+// `pending-learnings/` is deliberately not in that set: it holds contributions
+// the member has already made, and nothing else has a copy of them, so it has
+// to travel with the partition.
 
 export interface MigrationPlan {
   legacyDir: string;
