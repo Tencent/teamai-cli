@@ -23,3 +23,15 @@ TypeScript, Node 20+, tsup (ESM), Vitest. Commands: `npm run build`, `npx tsc --
 
 - Agent：Claude、Codex、CodeBuddy、OpenCode
 - Provider：`git`、`gitlab`、`github`
+
+## Code Review Rules
+
+- The PR description must document sufficient testing, including an
+  end-to-end / real-CLI verification record — not only unit tests or type
+  checks. Flag a PR whose description lacks a test plan or an e2e record.
+- Reject over-engineering. Favor the smallest code that solves the problem;
+  flag speculative abstractions, unused flexibility or config, error handling
+  for cases that cannot occur, and new CLI commands added where an existing
+  command could be reused or extended.
+- Changes must be surgical. Every changed line should trace directly to the
+  PR's stated goal; flag unrelated drive-by edits.
