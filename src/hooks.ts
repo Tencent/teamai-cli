@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { rmSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { readJson, writeJson, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import {
@@ -389,12 +390,33 @@ function toZcodeEntry(def: HookDef, vbsPath: string): ZcodeHookMatcher {
   // `def.timeout` is in seconds; ZCode entries are in milliseconds.
   const timeoutMs =
     def.timeout !== undefined ? def.timeout * 1000 : ZCODE_TIMEOUT_MS[def.event] ?? 60000;
-  const entry: ZcodeHookEntry = {
-    type: 'process',
-    command: 'wscript.exe',
-    args: [vbsPath, def.command],
-    timeoutMs,
-  };
+  const entry: ZcodeHookEntry =
+    process.platform === 'win32'
+      ? {
+          // wscript.exe is a GUI-subsystem binary: unlike cmd/bash it never
+          // allocates a console window, so hook runs don't flash a black box
+          // over the desktop. The VBS launcher preserves the STDIN contract
+          // (ZCode's payload reaches hook-dispatch via a spooled temp file),
+          // waits bounded by the per-event timeout, and runs hidden (window
+          // style 0). The payload travels verbatim as a single argument so
+          // managed-entry detection and the manifest keep one command
+          // representation.
+          type: 'process',
+          command: 'wscript.exe',
+          args: [vbsPath, def.command],
+          timeoutMs,
+        }
+      : {
+          // POSIX has no console-flash problem: run the tail directly, like
+          // every other shell-based tool format.
+          type: 'process',
+          command: 'bash',
+          // Stored verbatim: the shell payload must equal `def.command` exactly
+          // so managed-entry detection and the managed-hooks manifest share one
+          // command representation (the same invariant the Codex format keeps).
+          args: ['-lc', def.command],
+          timeoutMs,
+        };
   const group: ZcodeHookMatcher = { hooks: [entry] };
   // ZCode's matcher is a case-sensitive regex on the match value; '*' is an
   // invalid pattern that would never match. Omitted matcher matches everything.
@@ -715,11 +737,15 @@ async function reconcileZcodeFormat(
     'sh.Run "cmd /d /s /c """ & WScript.Arguments(0) & " < """ & spool & """ >nul 2>&1""", 0, True',
     'fso.DeleteFile spool, True',
   ].join('\r\n');
-  const existingVbs = await readFileSafe(vbsPath);
-  if (existingVbs !== vbsScript) {
-    if (opts.removeAll) {
-      await rmSync(vbsPath, { force: true });
-    } else {
+  if (opts.removeAll) {
+    // Unconditional: after a normal inject the file equals the template, so a
+    // content-diff gate never fires and the script would be left behind.
+    await rm(vbsPath, { force: true });
+  } else if (process.platform === 'win32') {
+    // POSIX never runs the launcher — writing it there would litter ~/.zcode
+    // with a script no entry references.
+    const existingVbs = await readFileSafe(vbsPath);
+    if (existingVbs !== vbsScript) {
       await writeFile(vbsPath, vbsScript);
     }
   }
