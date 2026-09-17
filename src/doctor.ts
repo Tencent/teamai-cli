@@ -73,8 +73,14 @@ export interface DoctorReport {
 }
 
 /**
- * Build hook checks only for tools whose settings parent directory already
- * exists (i.e. the tool is installed). Tools that are not installed are skipped.
+ * Build hook checks for tools whose settings parent directory already exists
+ * (i.e. the tool is installed).
+ *
+ * A tool that is not installed yields a check only when `enabledAgents` lists
+ * it: that list is the user's own claim that they use the tool, so answering it
+ * with silence reproduces inside `doctor` the skip #574 reports in `pull` —
+ * "Synced N" while the tool receives nothing. Without `enabledAgents` the team's
+ * tool list is aspirational, and an absent tool stays silent as before.
  */
 async function buildHookChecks(
   toolPaths: TeamaiConfig['toolPaths'],
@@ -91,10 +97,22 @@ async function buildHookChecks(
     if (!hookPath) continue;
     const settingsPath = hookPath;
     const parentDir = path.dirname(settingsPath);
-    const installed = tool === COPILOT_TOOL_ID
-      ? await isToolInstalledForConfig(tool, paths.hooks ?? paths.settings ?? '', localConfig)
-      : await pathExists(parentDir);
-    if (!installed) continue;
+    const isInstalled = (): Promise<boolean> => (tool === COPILOT_TOOL_ID
+      ? isToolInstalledForConfig(tool, paths.hooks ?? paths.settings ?? '', localConfig)
+      : pathExists(parentDir));
+    if (!await isInstalled()) {
+      if (localConfig.enabledAgents?.includes(tool)) {
+        checks.push({
+          name: `${tool} is installed`,
+          source: 'local',
+          check: isInstalled,
+          fix: `enabledAgents lists ${tool}, but ${parentDir} does not exist, so `
+            + `${tool} receives nothing from a pull. Install ${tool}, or run `
+            + `\`teamai uninstall --agent ${tool}\` to stop syncing to it.`,
+        });
+      }
+      continue;
+    }
     checks.push({
       name: `teamai hooks in ${tool} settings`,
       source: 'local',

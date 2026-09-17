@@ -570,3 +570,67 @@ describe('buildChecks', () => {
         expect(check?.fix).toContain('teamai pull');
     });
 });
+
+// A tool listed in enabledAgents is a claim by the user that they use it. Until
+// #598 the registry answered that claim with silence: buildHookChecks skipped
+// any tool whose settings directory was missing — the same silent skip #574
+// reports in pull, reproduced inside doctor.
+describe('buildChecks — a tool enabled but not installed', () => {
+    const twoToolPaths = {
+        claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
+        codex: { settings: '.codex/hooks.json', skills: '.codex/skills' },
+    };
+
+    /** Everything exists except codex's settings directory. */
+    function onlyCodexMissing(): void {
+        mockedPathExists.mockImplementation(async (filePath: string) => !filePath.includes('.codex'));
+    }
+
+    async function checksFor(localOverrides: Record<string, unknown>) {
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, ...localOverrides });
+        mockedLoadTeamConfig.mockResolvedValue({ ...mockTeamConfig, toolPaths: twoToolPaths });
+        onlyCodexMissing();
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+        return buildChecks(ctx);
+    }
+
+    it('fails a check naming the tool the user enabled', async () => {
+        const checks = await checksFor({ enabledAgents: ['claude', 'codex'] });
+
+        const codex = checks.find((c) => c.name === 'codex is installed');
+        expect(codex).toBeDefined();
+        expect(await codex!.check()).toBe(false);
+        expect(codex!.source).toBe('local');
+        expect(codex!.fix).toContain('enabledAgents');
+    });
+
+    it('stays silent about an uninstalled tool nobody enabled', async () => {
+        const checks = await checksFor({});
+
+        expect(checks.map((c) => c.name)).not.toContain('codex is installed');
+        // And no other check stands in for it: an unlisted tool is simply absent.
+        expect(checks.map((c) => c.name)).not.toContain('teamai hooks in codex settings');
+    });
+
+    it('reaches the JSON report with the shape every check has', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            enabledAgents: ['claude', 'codex'],
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            toolPaths: twoToolPaths,
+            sharing: { env: { injectShellProfile: false } },
+        });
+        onlyCodexMissing();
+
+        const allPassed = await doctor({ json: true });
+
+        const report = JSON.parse(String(consoleSpy.mock.calls[0][0])) as DoctorReport;
+        const codex = report.checks.find((c) => c.name === 'codex is installed');
+        expect(codex).toMatchObject({ name: 'codex is installed', ok: false });
+        expect(codex?.fix).toBeTruthy();
+        expect(allPassed).toBe(false);
+    });
+});
