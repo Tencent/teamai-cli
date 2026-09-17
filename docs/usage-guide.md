@@ -470,6 +470,8 @@ teamai pull              # Manual pull
 teamai pull --dry-run    # Dry run, no actual changes
 ```
 
+A manual `teamai pull` ends by running the `teamai doctor` checks and printing each one that failed, with its fix — including whether the skills it just reported syncing are readable on disk for every enabled tool. It prints nothing when they all pass, and the exit code is unchanged. The SessionStart hook path and `--dry-run` run no checks at all, so session startup stays as fast as before. Provider checks (`gh`/`gf` authentication) are left to `teamai doctor`: the pull just used the provider.
+
 > Project scope is isolated by default. When the current working directory contains a project-scope `.teamai/config.yaml`, `pull` processes that project and skips user scope unless the local config has `inheritUserScope: true`; in that case it first refreshes the safe user-resource channel. Without a project config in the current directory, `pull` processes user scope. User `env`, MCP definitions, sources, reporting, and writes remain isolated in project mode. Hooks are the one exception: a project scope's hooks are injected into your **HOME** tool settings (`~/.claude/settings.json`, …), not `<projectRoot>`, because the built-in hooks gate on the `cwd` handed to `hook-dispatch` and `~/.claude` always exists so the "installed tool" gate passes (see the Hooks section). Self single-repo mode keeps its hooks in the business repo so they travel on clone.
 
 With role-based skills enabled, `pull`'s skill sync source becomes the contents of `skills/<namespace>/`, expanded according to `primaryRole + additionalRoles` and flattened into each local AI tool's skills directory. `rules/` and `docs/` keep their original sync behavior; `agents/<namespace>/` follows the role's `agents` namespaces (see [Agents Resource Type](#agents-resource-type)). `learnings/` at the root is shared with everyone, while `learnings/<project-id>/` subdirectories sync only for the directory's active projects (see [Multi-project](#multi-project-project-as-a-dimension-orthogonal-to-role)).
@@ -511,7 +513,7 @@ The existing SessionStart hook runs `teamai pull`. When the `packages` declarati
 ```bash
 teamai packages             # Install every team declaration
 teamai packages --dry-run   # Preview native commands without installing or writing files
-teamai doctor              # Check runtimes and declared package/marketplace/plugin status; exits 1 when any check fails
+teamai doctor              # Check runtimes, declared package/marketplace/plugin status, and what actually landed on disk; exits 1 when any check fails
 ```
 
 After a successful install, TeamAI writes a local snapshot to `teamai.lock` under the active scope's `.teamai` directory. The lock records installed versions and the declaration hash used by the SessionStart hint; it is not stored in the team repository. In user scope, machine-wide npm tools and Claude plugins are acknowledged once, while project npm dependencies are acknowledged separately for each working directory so installing in one repository cannot silence another repository's hint.
@@ -563,7 +565,7 @@ excludedSkills:
   - using-superpowers
 ```
 
-Exclusion rules take effect after role and tag filtering. When running `teamai pull`, excluded skills are not synced, and any copies previously installed by `pull` are cleaned up.
+Exclusion rules take effect after role and tag filtering. When running `teamai pull`, excluded skills are not synced, and any copies previously installed by `pull` are cleaned up. `teamai doctor` checks the resulting set against what is on disk, and asks nothing of an excluded skill.
 
 ### Push local resources
 
@@ -670,7 +672,7 @@ teamai tags subscribe frontend testing
 teamai tags unsubscribe testing
 ```
 
-Admins can manage resource tags with `teamai tags add` and `teamai tags remove`. Run `teamai pull` after changing your subscriptions; it does a full sync even when the team repo has not changed, so newly matched resources are installed and unsubscribed ones are removed.
+Admins can manage resource tags with `teamai tags add` and `teamai tags remove`. Run `teamai pull` after changing your subscriptions; it does a full sync even when the team repo has not changed, so newly matched resources are installed and unsubscribed ones are removed. The checks at the end of that pull verify the newly matched skills reached every enabled tool.
 
 ---
 
@@ -1506,7 +1508,9 @@ teamai remove mcp <name>
 teamai remove rules <name> --force   # Skip the prompt, for scripts and CI
 ```
 
-`teamai doctor` exits with code 0 only when every check passes, and code 1 when any check fails. Before initialization, it reports the missing configuration without assuming a Git provider.
+`teamai doctor` exits with code 0 only when every check passes, and code 1 when any check fails. Before initialization, it reports the missing configuration without assuming a Git provider. The same checks run at the end of a manual `teamai pull`, minus the provider ones.
+
+Besides the provider, clone, config, hook and env checks, `doctor` verifies two things about your tools. `<tool> is installed` fails when `enabledAgents` lists a tool that has no directory here, which is the case where a pull reports success and that tool receives nothing. `Skills delivered to <tool>` compares the skills your role namespaces, tag subscriptions and exclusions resolve to against what is on disk for each installed tool: it reports a skill that was never delivered separately from one that arrived unreadable — `SKILL.md` missing, its frontmatter unparseable, or its `name` not matching the directory, which keeps the agent from ever discovering it.
 
 `--json` prints the same report as one object on stdout and routes every log line to stderr, so `teamai doctor --json 2>/dev/null` parses whole. The exit code is unchanged. Each check carries the fix suggestion it prints in human mode:
 

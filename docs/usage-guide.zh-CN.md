@@ -448,6 +448,8 @@ teamai pull              # 手动拉取
 teamai pull --dry-run    # 试运行，不实际修改
 ```
 
+手动执行 `teamai pull` 会在结束时运行 `teamai doctor` 的检查，并逐条打印失败项及其修复建议——包括它刚刚报告同步的 skill 是否真的落到每个启用工具的磁盘上、且可被读取。全部通过时不会有任何额外输出，退出码也不变。SessionStart hook 路径和 `--dry-run` 完全不运行检查，会话启动速度保持不变。托管平台相关的检查（`gh`/`gf` 认证）留给 `teamai doctor`：这次 pull 刚刚用过该平台。
+
 > Project scope 默认与 user scope 隔离。当前工作目录包含 project scope 的 `.teamai/config.yaml` 时，`pull` 会处理该项目并跳过 user scope；仅当本地配置包含 `inheritUserScope: true` 时，才会先刷新安全的 user 资源通道。当前目录没有 project 配置时，`pull` 处理 user scope。project 模式下，user 的 `env`、MCP 定义、sources、reporting 和写入行为仍保持隔离。hooks 是唯一例外：project scope 的 hooks 会注入到你的 **HOME** 工具设置（`~/.claude/settings.json` 等），而非 `<projectRoot>`——因为内置 hooks 依据传给 `hook-dispatch` 的 `cwd` 门控，且 `~/.claude` 恒存在、能通过「已安装工具」门槛（详见 Hooks 章节）。self 单仓模式则把 hooks 保留在业务仓库里，随 clone 传播。
 
 启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/`、`docs/` 仍然保持原有同步逻辑；`agents/<namespace>/` 按角色的 `agents` namespace 同步（见 [Agents 资源类型](#agents-资源类型)）。`learnings/` 根目录对所有人共享，而 `learnings/<project-id>/` 子目录只对本目录激活的项目同步（见 [多项目](#多项目project-作为与-role-正交的维度)）。
@@ -489,7 +491,7 @@ Claude 插件 target 使用 `plugin@marketplace` 格式。`claude-plugins-offici
 ```bash
 teamai packages             # 安装团队声明的全部包和插件
 teamai packages --dry-run   # 预览底层命令，不安装也不写文件
-teamai doctor              # 检查运行环境及声明的包、marketplace、插件状态；任一检查失败时退出码为 1
+teamai doctor              # 检查运行环境、声明的包/marketplace/插件状态，以及磁盘上实际落地的资源；任一检查失败时退出码为 1
 ```
 
 安装成功后，TeamAI 会在当前 scope 的 `.teamai` 目录下写入本地快照 `teamai.lock`。该文件记录已安装版本，以及供 SessionStart 提示比对的声明哈希，不会写入团队仓库。在 user scope 下，全局 npm 工具和 Claude 插件只需确认一次；项目 npm 依赖会按工作目录分别确认，避免在一个仓库安装后错误关闭另一个仓库的提示。
@@ -541,7 +543,7 @@ excludedSkills:
   - using-superpowers
 ```
 
-排除规则在角色和标签过滤之后生效。执行 `teamai pull` 时，被排除的 skill 不会同步，并且会清理由之前 pull 安装的副本。
+排除规则在角色和标签过滤之后生效。执行 `teamai pull` 时，被排除的 skill 不会同步，并且会清理由之前 pull 安装的副本。`teamai doctor` 会把最终结果集与磁盘实际内容比对，并且不会要求被排除的 skill 存在。
 
 ### 推送本地资源
 
@@ -643,7 +645,7 @@ teamai tags subscribe frontend testing
 teamai tags unsubscribe testing
 ```
 
-管理员可通过 `teamai tags add` 和 `teamai tags remove` 管理资源标签。修改订阅后运行 `teamai pull`，即使团队仓库没有变化也会执行全量同步，新匹配的资源会被安装，取消订阅的资源会被清理。
+管理员可通过 `teamai tags add` 和 `teamai tags remove` 管理资源标签。修改订阅后运行 `teamai pull`，即使团队仓库没有变化也会执行全量同步，新匹配的资源会被安装，取消订阅的资源会被清理。该次 pull 结束时的检查会确认新匹配的 skill 已送达每个启用的工具。
 
 ---
 
@@ -1466,7 +1468,9 @@ teamai remove mcp <name>
 teamai remove rules <name> --force   # 跳过确认，用于脚本和 CI
 ```
 
-仅当所有检查通过时，`teamai doctor` 才以状态码 0 退出；任一检查失败时以状态码 1 退出。尚未初始化时，它只报告缺少配置，不会臆测 Git 托管平台。
+仅当所有检查通过时，`teamai doctor` 才以状态码 0 退出；任一检查失败时以状态码 1 退出。尚未初始化时，它只报告缺少配置，不会臆测 Git 托管平台。手动执行 `teamai pull` 结束时会运行同一批检查（不含托管平台相关的检查）。
+
+除了托管平台、clone、配置、hook 和 env 检查之外，`doctor` 还会验证工具本身的两件事。`<tool> is installed` 在 `enabledAgents` 列出了本机不存在目录的工具时失败——这正是 pull 报告成功、而该工具什么都没收到的情况。`Skills delivered to <tool>` 会把角色命名空间、标签订阅与排除规则解析出的 skill 集合，与每个已安装工具磁盘上的内容比对：从未送达的 skill 与送达但不可读的 skill 会分别报告——后者指 `SKILL.md` 缺失、frontmatter 无法解析，或其 `name` 与目录名不一致，导致 agent 永远发现不了它。
 
 `--json` 把同一份报告作为单个对象打印到 stdout，并将所有日志改走 stderr，因此 `teamai doctor --json 2>/dev/null` 可以整体解析；退出码不变。每个检查都会带上人类模式下显示的修复建议：
 
