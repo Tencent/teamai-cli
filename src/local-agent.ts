@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fse from 'fs-extra';
 import { log } from './utils/logger.js';
+import { detachChild } from './utils/exec.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import {
   ensureDir,
@@ -793,20 +794,11 @@ export async function execPluginCommand(cmd: string, timeoutMs: number): Promise
     let settled = false;
     let timer: ReturnType<typeof setTimeout>;
     child.stderr?.on('data', (d) => { stderr += d.toString(); if (stderr.length > 8192) stderr = stderr.slice(-8192); });
-    const detachStderr = (): void => {
-      // Drain and unref the stderr pipe without closing it: a daemonized child may still hold
-      // the write end, and closing our read end would send it SIGPIPE. Unref-ing lets this
-      // worker process exit without waiting on — or killing — the daemon.
-      child.stderr?.removeAllListeners('data');
-      child.stderr?.resume();
-      (child.stderr as unknown as { unref?: () => void } | undefined)?.unref?.();
-    };
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      detachStderr();
-      child.unref();
+      detachChild(child);
       fn();
     };
     timer = setTimeout(() => {

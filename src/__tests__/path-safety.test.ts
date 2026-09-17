@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { assertSafePath, assertSafeResourceName, defaultAllowedRoots } from '../utils/path-safety.js';
+import { trySymlink } from './helpers/symlink.js';
 
 describe('assertSafePath', () => {
   const home = os.homedir();
@@ -32,6 +34,39 @@ describe('assertSafePath', () => {
     const root = path.join(home, 'safe-dir');
     const tricky = home + '-malicious/file.txt';
     expect(() => assertSafePath(tricky, [root])).toThrow('Path traversal detected');
+  });
+});
+
+describe('assertSafePath with a symlinked root', () => {
+  let base: string;
+
+  beforeEach(() => {
+    base = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-path-safety-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  it('allows a missing child under a root reached through a symlink', () => {
+    // macOS reaches tmpdirs as /var/... but they resolve to /private/var/...;
+    // the missing child must come back in the same form as the existing root.
+    const real = path.join(base, 'real');
+    const link = path.join(base, 'link');
+    fs.mkdirSync(real);
+    if (!trySymlink(real, link)) return;
+    expect(() => assertSafePath(path.join(link, 'missing.mjs'), [link])).not.toThrow();
+  });
+
+  it('still rejects a missing leaf reached through a symlink that escapes the root', () => {
+    const real = path.join(base, 'real');
+    const escape = path.join(base, 'escape');
+    fs.mkdirSync(real);
+    fs.mkdirSync(escape);
+    if (!trySymlink(escape, path.join(real, 'out-link'))) return;
+    expect(() => assertSafePath(path.join(real, 'out-link', 'file.mjs'), [real])).toThrow(
+      'Path traversal detected',
+    );
   });
 });
 

@@ -41,6 +41,7 @@ import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
+import { runDeclaredPostPull } from './post-pull.js';
 
 // A timed-out report still owns its success bookkeeping. Do not start another
 // batch in this process until it settles and finishes consuming its events.
@@ -1545,6 +1546,9 @@ export async function pull(options: GlobalOptions): Promise<void> {
   const contended = new Set<LocalConfig>();
   const heldLocks = new Map<LocalConfig, string>();
   let usageReport: Promise<void> | undefined;
+  // Team repo whose pull completed, for `scripts.postPull` — run at the very
+  // end of pull().
+  let postPullRepo: string | null = null;
   const lockScope = async (config: LocalConfig): Promise<boolean> => {
     // git-mode guards its shared team clone; self mode guards its machine-data
     // writes (state/env/search-index) against a concurrent P2 migration relocating
@@ -1631,6 +1635,13 @@ export async function pull(options: GlobalOptions): Promise<void> {
   // — the next uncontended pull reconciles and reports normally.
   const reconcileUser = activeUserConfig && !contended.has(activeUserConfig) ? activeUserConfig : null;
   const reconcileProject = projectConfig && !contended.has(projectConfig) ? projectConfig : null;
+  // The deploy owner for this pull: the project scope's repo when a project
+  // is active, else the user scope's — the two are mutually exclusive by
+  // derivation above. An inherited user scope (inheritUserScope) is
+  // resources+knowledge only by design and deliberately runs no postPull:
+  // postPull is part of the deploy surface, which follows the active scope
+  // alone — the same boundary as its resourceTypes narrowing above.
+  postPullRepo = (reconcileProject ?? reconcileUser)?.repo.localPath ?? null;
 
   // 3.4. Legacy hook-format migration (pre-dispatch era). Runs UNDER the scope
   // lock (unlike the old step-0 call) against a locked, non-contended scope, so
@@ -1765,6 +1776,15 @@ export async function pull(options: GlobalOptions): Promise<void> {
     } else {
       await releaseSyncLocks();
     }
+  }
+
+  // 6. Team post-pull scripts (teamai.yaml `scripts.postPull`), for the
+  //    pull's deploy owner. Sync locks are usually released by now — a late
+  //    usage report (above) may still hold them; its writes go to the reports
+  //    worktree, not this clone's tree. Launch shape: post-pull.ts. Nothing
+  //    here can fail the pull.
+  if (!options.dryRun && postPullRepo) {
+    await runDeclaredPostPull(postPullRepo, { interactive: options.interactive === true });
   }
 }
 

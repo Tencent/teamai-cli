@@ -1579,6 +1579,31 @@ fetching relies on the ambient git credentials — private submodules on hosts
 authenticated by per-command token injection (rather than a configured
 credential helper) will not authenticate.
 
+### Post-pull scripts
+
+Teams often deploy more than teamai's built-in surfaces (models a client
+offers, machine-local installs, a PATH shim). `scripts.postPull` in
+`teamai.yaml` declares a Node entrypoint teamai runs once a pull has fully
+finished, for the team repo that owns this machine's deployment — the
+project scope's repo when a project is active, otherwise the user scope's
+(an inherited user scope brings resources and knowledge only, not deploys):
+
+```yaml
+scripts:
+  postPull:
+    path: scripts/deploy.mjs
+```
+
+The path is relative to the team repo root; one that resolves outside it
+(symlink included) is rejected. On the
+session-start path the script runs as a child of the pull process and is
+waited on under a fixed budget (`TEAMAI_POSTPULL_TIMEOUT_SEC` is exported so
+the script can self-limit its heavy steps); on expiry the script is left
+running rather than killed, and the next pull reconciles. An interactive
+`teamai pull` launches it fire-and-forget into the terminal instead. A bad
+path, a missing file or a failed spawn is a line in `~/.teamai/debug.log`
+(`postPull: launched / exited / timed out`), never a failed pull.
+
 ### CI Integration
 
 `teamai ci extract-mr` plugs into your CI pipeline, automatically extracting knowledge from every MR/PR:

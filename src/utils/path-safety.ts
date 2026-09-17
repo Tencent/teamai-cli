@@ -14,16 +14,13 @@ import fs from 'node:fs';
  */
 export function assertSafePath(target: string, allowedRoots: string[]): void {
   const resolvedTarget = resolveReal(target);
-
-  for (const root of allowedRoots) {
-    const resolvedRoot = resolveReal(root);
-    if (resolvedTarget === resolvedRoot || resolvedTarget.startsWith(resolvedRoot + path.sep)) {
-      return;
-    }
+  const resolvedRoots = allowedRoots.map(resolveReal);
+  if (resolvedRoots.some((root) => resolvedTarget === root || resolvedTarget.startsWith(root + path.sep))) {
+    return;
   }
 
   throw new Error(
-    `Path traversal detected: "${target}" is outside allowed directories: ${allowedRoots.join(', ')}`,
+    `Path traversal detected: "${resolvedTarget}" is outside allowed directories: ${resolvedRoots.join(', ')}`,
   );
 }
 
@@ -31,10 +28,10 @@ export function assertSafePath(target: string, allowedRoots: string[]): void {
  * Assert that `candidate` stays within `root`, comparing resolved paths WITHOUT
  * following symlinks on either side.
  *
- * Use this for "write a new file under root" guards: the candidate need not exist
- * yet, and because neither side is symlink-resolved the check stays consistent
- * even when `root` is reached through a symlink (e.g. macOS `/var` → `/private/var`
- * tmpdirs). When symlink resolution IS required, use {@link assertSafePath}.
+ * Use this for "write a new file under root" guards where root is ours and the
+ * candidate need not exist yet. Comparing lexically stays consistent under any
+ * symlinked prefix but cannot see a symlink inside the tree; where that gap
+ * matters, use {@link assertSafePath}.
  *
  * @param root       The directory the candidate must stay inside.
  * @param candidate  The path to validate.
@@ -52,9 +49,14 @@ export function assertWithinRoot(root: string, candidate: string, message?: stri
 /**
  * Resolve a path to its real absolute form.
  *
- * Uses fs.realpathSync when the path exists (follows symlinks).
- * Falls back to path.resolve for non-existent paths (parent must exist check is
- * left to the caller — we still resolve as far as possible).
+ * An existing path and a missing one under the same prefix come back in one
+ * form, so paths that differ only by a symlinked prefix compare equal — as on
+ * macOS, where tmpdirs are reached as /var/... but really live in /private/var.
+ *
+ * Uses fs.realpathSync when the path exists (follows symlinks); a missing path
+ * resolves through its nearest existing ancestor and re-appends the rest. Never
+ * throws and never checks existence or containment — where a dangling symlink
+ * blocks the walk, the unresolved prefix is kept as given.
  *
  * @param p  Input path (may be relative, may contain ~).
  * @returns  Resolved absolute path string.
@@ -65,9 +67,8 @@ function resolveReal(p: string): string {
   try {
     return fs.realpathSync(abs);
   } catch {
-    // Path does not exist yet — return the resolved absolute path without following symlinks.
-    // The parent-directory check is sufficient to prevent path traversal for new files.
-    return abs;
+    const parent = path.dirname(abs);
+    return parent === abs ? abs : path.join(resolveReal(parent), path.basename(abs));
   }
 }
 

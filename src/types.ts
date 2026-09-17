@@ -267,6 +267,21 @@ export const TeamaiConfigSchema = z.object({
   /** Run `git submodule update --init` on pull so skills distributed as git
    * submodules are populated and kept current. Off by default. */
   submodules: z.boolean().optional(),
+  /** Team-owned scripts the CLI runs at defined points of a pull — repo-committed
+   * entrypoints, distinct from `sharing.hooks.requireTeamScripts` (the
+   * `~/.teamai/team-scripts/` trust boundary for hook commands). Every entry is
+   * optional, and older CLIs strip the unknown section instead of rejecting the
+   * file — so a team repo can adopt one before its members upgrade. */
+  scripts: z.object({
+    /** Run at the end of a pull, after every sync step (resources,
+     * hooks, MCP, reports) has finished. `path` is a Node entrypoint (`.mjs`,
+     * `.js`, `.cjs`) relative to the team repo root, and must resolve inside it:
+     * a symlink leaving the clone is rejected, since this script runs on every
+     * member's machine. */
+    postPull: z.object({
+      path: z.string().min(1),
+    }).optional(),
+  }).optional(),
   // MCP paths are only set for tools whose config location has been verified.
   // Tools left without `mcp` are skipped by MCP sync rather than guessed at, so a
   // wrong guess can never create a junk config file on a user's machine.
@@ -720,6 +735,12 @@ export interface GlobalOptions {
   claude?: boolean;
   verbose?: boolean;
   silent?: boolean;
+  /**
+   * A human ran the command (the CLI sets it from !--silent): background work
+   * may attach to the user's terminal and run on unawaited. Absent = headless
+   * (hook) caller: everything must be waited out and captured instead.
+   */
+  interactive?: boolean;
   /**
    * Force full sync even when repo HEAD matches lastPullRev (`pull`), or skip
    * the confirmation prompt (`remove`).
