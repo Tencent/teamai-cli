@@ -224,6 +224,58 @@ describe('doctor — skills delivered on disk', () => {
     });
   });
 
+  // Docs are the one payload with a single destination instead of one per tool:
+  // DocsHandler copies the whole bundle into `sharing.docs.localDir`.
+  describe('team docs', () => {
+    const CHECK = 'Team docs delivered';
+
+    async function writeTeamDoc(...segments: string[]): Promise<void> {
+      const file = path.join(repoPath, 'docs', ...segments);
+      await fse.ensureDir(path.dirname(file));
+      await fse.writeFile(file, '# doc\n');
+    }
+
+    async function docsCheck(): Promise<Check | undefined> {
+      const ctx = await resolveDoctorContext();
+      if (!ctx) throw new Error('expected a resolved doctor context');
+      return (await buildChecks(ctx)).find((c) => c.name === CHECK);
+    }
+
+    beforeEach(() => {
+      teamConfig.sharing.docs.localDir = '~/team-docs';
+    });
+
+    it('passes when the bundle is on disk', async () => {
+      await writeTeamDoc('guide.md');
+      await writeTeamDoc('api', 'reference.md');
+      await fse.ensureDir(path.join(homeDir, 'team-docs', 'api'));
+      await fse.writeFile(path.join(homeDir, 'team-docs', 'guide.md'), '# doc\n');
+      await fse.writeFile(path.join(homeDir, 'team-docs', 'api', 'reference.md'), '# doc\n');
+
+      const check = await docsCheck();
+
+      expect(check).toBeDefined();
+      expect(await check!.check()).toBe(true);
+    });
+
+    it('fails and names what is missing from the bundle', async () => {
+      await writeTeamDoc('guide.md');
+      await writeTeamDoc('api', 'reference.md');
+      await fse.ensureDir(path.join(homeDir, 'team-docs'));
+      await fse.writeFile(path.join(homeDir, 'team-docs', 'guide.md'), '# doc\n');
+
+      const check = await docsCheck();
+
+      expect(await check!.check()).toBe(false);
+      expect(check!.fix).toContain('api/reference.md');
+      expect(check!.fix).not.toContain('guide.md');
+    });
+
+    it('asks nothing when the team repo ships no docs', async () => {
+      expect(await docsCheck()).toBeUndefined();
+    });
+  });
+
   // The command whose job is reporting bad state must not stack-trace on it.
   it('reports a team repo it cannot resolve a desired set from, instead of throwing', async () => {
     // The same skill in two active role namespaces: scanRoleAwareSkills throws.

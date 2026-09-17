@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
-import { pathExists, readFileSafe } from './utils/fs.js';
+import { listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import type { GlobalOptions, ResourceItem } from './types.js';
 import {
@@ -256,6 +256,48 @@ async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {
   return checks;
 }
 
+/** At most this many names in a fix string; the rest are counted. */
+const MAX_NAMED_IN_FIX = 5;
+
+/** `a, b, c and 4 more` — a fix a human reads, not a wall of paths. */
+function nameList(names: string[]): string {
+  if (names.length <= MAX_NAMED_IN_FIX) return names.join(', ');
+  const shown = names.slice(0, MAX_NAMED_IN_FIX).join(', ');
+  return `${shown} and ${names.length - MAX_NAMED_IN_FIX} more`;
+}
+
+/**
+ * The docs bundle has one destination rather than one per tool: `DocsHandler`
+ * copies the whole `docs/` tree into `sharing.docs.localDir`. So this check
+ * compares the two trees, file by file, rather than asking each tool.
+ */
+async function buildDocsCheck(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig, teamConfig } = ctx;
+  if (!teamConfig) return [];
+
+  const { DocsHandler, resolveDocsDestination } = await import('./resources/docs.js');
+  const handler = new DocsHandler();
+  const [item] = await handler.scanTeamForPull(teamConfig, localConfig);
+  if (!item) return [];
+
+  const dest = resolveDocsDestination(teamConfig, localConfig);
+  const teamFiles = (await listFilesRecursive(item.sourcePath))
+    // Same filter DocsHandler.pullItem copies with: dotfiles never travel.
+    .filter((file) => file.split('/').every((segment) => !segment.startsWith('.')));
+
+  const missing: string[] = [];
+  for (const file of teamFiles) {
+    if (!await pathExists(path.join(dest, file))) missing.push(file);
+  }
+
+  return [{
+    name: 'Team docs delivered',
+    source: 'local',
+    check: async () => missing.length === 0,
+    fix: `Missing from ${dest}: ${nameList(missing)}. Run \`teamai pull\`.`,
+  }];
+}
+
 /**
  * True if a trust-gated Codex tool (the public `codex`) already has teamai hooks
  * installed on disk (settings file exists and contains the hook-dispatch
@@ -397,6 +439,7 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
     ...await buildEnabledToolChecks(ctx),
     ...await buildHookChecks(toolPaths, baseDir, localConfig),
     ...await buildDeliveryChecks(ctx),
+    ...await buildDocsCheck(ctx),
     {
       name: 'Env variables injected in shell profile',
       source: 'local',
