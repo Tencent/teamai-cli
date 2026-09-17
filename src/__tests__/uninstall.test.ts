@@ -39,6 +39,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { uninstall } from '../uninstall.js';
+import { TeamaiConfigSchema } from '../types.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 // ─── Helpers ───────────────────────────────────────────
@@ -813,6 +814,45 @@ describe('uninstall', () => {
     expect(claudeMd).not.toContain('Team Culture');
     expect(claudeMd).not.toContain('Shared Instructions');
     expect(claudeMd).not.toContain('Recall Rules');
+  });
+
+  it('removes TeamAI blocks from COPILOT_HOME instructions and preserves user text', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const copilotHome = path.join(tmpDir, 'copilot-home');
+    const instructionsPath = path.join(copilotHome, 'copilot-instructions.md');
+    const userInstructions = '# Personal Copilot instructions';
+    await fse.ensureDir(copilotHome);
+    await fse.writeFile(instructionsPath, [
+      userInstructions,
+      '',
+      TEAMAI_CULTURE_START,
+      'Team culture',
+      TEAMAI_CULTURE_END,
+      '',
+      TEAMAI_CLAUDEMD_START,
+      'Shared instructions',
+      TEAMAI_CLAUDEMD_END,
+      '',
+    ].join('\n'));
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('COPILOT_HOME', copilotHome);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    const teamConfig = TeamaiConfigSchema.parse({
+      team: 'test',
+      repo: 'https://github.com/example/team.git',
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath, { enabledAgents: ['copilot'] });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'copilot' });
+
+    const result = await fse.readFile(instructionsPath, 'utf8');
+    expect(result).toContain(userInstructions);
+    expect(result).not.toContain(TEAMAI_CULTURE_START);
+    expect(result).not.toContain(TEAMAI_CULTURE_END);
+    expect(result).not.toContain(TEAMAI_CLAUDEMD_START);
+    expect(result).not.toContain(TEAMAI_CLAUDEMD_END);
   });
 
   it('多工具场景：清理 codebuddy 和 claude-internal 的 CLAUDE.md', async () => {

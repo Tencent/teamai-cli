@@ -23,12 +23,12 @@ export const ToolPathsSchema = z.object({
    * <root>/.mcp.json, breaking the usual `.<tool>/<file>` convention. */
   mcpProject: z.string().optional(),
   /**
-   * User-scope path overrides for skills/rules/agents. Most tools store their
+   * User-scope path overrides for tool resources. Most tools store their
    * user-scope resources at the same `.<tool>/<resource>` relative path as their
    * project-scope ones, so this is omitted. OpenCode is the exception: its
    * project-scope config lives at `<root>/.opencode/...` but its user-scope config
    * lives at `~/.config/opencode/...`, a different prefix entirely. When set and the
-   * active scope is `user`, these values replace the base skills/rules/agents paths.
+   * active scope is `user`, these values replace the corresponding base paths.
    */
   userScope: z
     .object({
@@ -36,6 +36,7 @@ export const ToolPathsSchema = z.object({
       rules: z.string().optional(),
       agents: z.string().optional(),
       hooks: z.string().optional(),
+      claudemd: z.string().optional(),
     })
     .optional(),
 });
@@ -292,7 +293,14 @@ export const TeamaiConfigSchema = z.object({
       rules: '.github/instructions',
       agents: '.github/agents',
       hooks: '.github/hooks/teamai.json',
-      userScope: { skills: 'skills', rules: 'instructions', agents: 'agents', hooks: 'hooks/teamai.json' },
+      claudemd: '.github/copilot-instructions.md',
+      userScope: {
+        skills: 'skills',
+        rules: 'instructions',
+        agents: 'agents',
+        hooks: 'hooks/teamai.json',
+        claudemd: 'copilot-instructions.md',
+      },
     },
     // JoyCode: skills, rules (.mdc), and subagents are synced to .joycode/.
     // JoyCode currently does not provide a lifecycle hooks system or startup
@@ -1490,8 +1498,8 @@ export function isAgentExcluded(
  * one exception is OpenCode, whose user-scope config lives under
  * `~/.config/opencode/` (a different prefix from its project `<root>/.opencode/`);
  * its `userScope` block carries those paths and is spliced in only when the active
- * scope is `user`. Callers that iterate `toolPaths` for skills/rules/agents should
- * iterate the result of this function instead, so the correct scope path is used.
+ * scope is `user`. Callers that iterate `toolPaths` for scoped resources should
+ * iterate the result of this function instead, so the correct path is used.
  *
  * MCP is untouched here: its two scopes are already distinct fields
  * (`mcp` / `mcpProject`), resolved separately in the reconcile engine.
@@ -1514,6 +1522,7 @@ export function scopedToolPaths(
       ...(us.rules !== undefined ? { rules: us.rules } : {}),
       ...(us.agents !== undefined ? { agents: us.agents } : {}),
       ...(us.hooks !== undefined ? { hooks: us.hooks } : {}),
+      ...(us.claudemd !== undefined ? { claudemd: us.claudemd } : {}),
     };
   }
   return out;

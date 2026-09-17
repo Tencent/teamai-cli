@@ -1055,11 +1055,11 @@ async function pullForScope(
         if (cultureContent) {
           const compiled = compileCulture(cultureContent);
           if (compiled) {
-            const baseDir = resolveBaseDir(localConfig);
             for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
               if (isAgentExcluded(localConfig, tool)) continue;
               if (!toolPath.claudemd) continue;
-              if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
+              const baseDir = resolveToolBaseDir(tool, localConfig);
+              if (toolPath.rules && !await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
 
               const claudeMdPath = path.join(baseDir, toolPath.claudemd);
               try {
@@ -1086,11 +1086,11 @@ async function pullForScope(
       if (claudemdContents.length > 0) {
         const compiled = compileClaudemd(claudemdContents);
         if (compiled) {
-          const baseDir = resolveBaseDir(localConfig);
           for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
             if (isAgentExcluded(localConfig, tool)) continue;
             if (!toolPath.claudemd) continue;
-            if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
+            const baseDir = resolveToolBaseDir(tool, localConfig);
+            if (toolPath.rules && !await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
             const claudeMdPath = path.join(baseDir, toolPath.claudemd);
             try {
               await injectClaudeMdSection(claudeMdPath, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END, compiled);

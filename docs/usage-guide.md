@@ -1425,13 +1425,15 @@ roles:
 
 ### GitHub Copilot CLI
 
-GitHub Copilot CLI is supported for its official Rules, Skills, custom-agent, and hooks surfaces:
+GitHub Copilot CLI is supported for its official custom-instructions, Rules, Skills, custom-agent, and hooks surfaces, plus TeamAI Docs and Env delivery:
 
 - **Scopes.** User resources live below `$COPILOT_HOME` (default `~/.copilot`); project resources live below `<project>/.github`. TeamAI honors `COPILOT_HOME` for detection and every user-scope read or write.
 - **Skills.** `teamai pull` writes user skills to `$COPILOT_HOME/skills/` and project skills to `.github/skills/`. Edits in either scope are detected by `teamai push` like other TeamAI skills.
+- **Custom instructions.** TeamAI injects team culture and shared instructions into `$COPILOT_HOME/copilot-instructions.md` for user scope or `.github/copilot-instructions.md` for project scope. Marker-delimited TeamAI blocks are replaced idempotently, while text outside the markers remains user-owned. `teamai uninstall` removes only the managed blocks.
 - **Rules.** Team rules become native `*.instructions.md` files under `$COPILOT_HOME/instructions/` or `.github/instructions/`. TeamAI derives Copilot's required `applyTo` frontmatter from the team rule's `paths`; a rule without `paths` uses `**`. On push, only the Markdown body flows back, preserving the team-owned `paths` metadata. Unknown Copilot instruction files remain user-owned and are not uploaded or deleted.
 - **Custom agents.** Team agents become official `<name>.agent.md` profiles under `$COPILOT_HOME/agents/` or `.github/agents/`. TeamAI maps compatible tool names onto Copilot's primary aliases, preserves Copilot-only frontmatter through `tool_extras.copilot`, and removes only profiles that match team agents or the built-in recall profile. User-authored profiles remain untouched. See [GitHub's custom-agent configuration](https://docs.github.com/en/copilot/reference/custom-agents-configuration).
 - **Team Context recall.** The built-in `teamai-recall.agent.md` profile receives only `execute`, `read`, and `search`. It invokes the existing `teamai recall` pipeline, so Copilot can retrieve learnings, codebase evidence, and teamwiki results without copying or creating a second knowledge store.
+- **Docs and Env.** Team docs sync to the configured local docs directory (`~/.teamai/docs` by default, or the project-relative equivalent in project scope). Team env values sync to the scope's managed `env.sh`; launch Copilot from a shell that has sourced that file. TeamAI does not copy environment values into Copilot configuration.
 - **Hooks.** TeamAI writes a dedicated version-1 hook file at `$COPILOT_HOME/hooks/teamai.json` or `.github/hooks/teamai.json`. It uses Copilot's VS Code-compatible PascalCase events (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop`) so hook payloads retain the snake_case fields consumed by TeamAI, and emits `bash`, `powershell`, and fallback `command` fields. The file is reconciled idempotently while preserving unrelated entries. TeamAI never edits Copilot's `settings.json`.
 
 Team hooks still come from the team's `hooks/hooks.yaml`: edit that source in the team repository and use the normal pull/push workflow. TeamAI does not reverse-import arbitrary native hook entries from a Copilot configuration file.

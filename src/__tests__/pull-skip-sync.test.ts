@@ -79,6 +79,7 @@ import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadState
 import { getHeadRev, createGit, pullRepo } from '../utils/git.js';
 import { log } from '../utils/logger.js';
 import {
+  TeamaiConfigSchema,
   TEAMAI_RECALL_RULES_START,
   TEAMAI_RECALL_RULES_END,
   TEAMAI_CULTURE_START,
@@ -696,6 +697,78 @@ describe('enabledAgents whitelist on pull inject, skip-sync, and cleanup (#510)'
     expect(codebuddyMd).not.toContain(TEAMAI_CLAUDEMD_START);
     expect(codebuddyMd).not.toContain(TEAMAI_RECALL_RULES_START);
   });
+
+  it.each(['user', 'project'] as const)(
+    'delivers idempotent Copilot instructions in %s scope without replacing user content or settings',
+    async (scope) => {
+      const copilotHome = path.join(tmpDir, 'copilot-home');
+      const projectRoot = path.join(tmpDir, 'project');
+      const instructionPath = scope === 'user'
+        ? path.join(copilotHome, 'copilot-instructions.md')
+        : path.join(projectRoot, '.github', 'copilot-instructions.md');
+      const settingsPath = path.join(copilotHome, 'settings.json');
+      const docsPath = scope === 'user'
+        ? path.join(homeDir, '.teamai', 'docs', 'copilot-context.md')
+        : path.join(projectRoot, '.teamai', 'docs', 'copilot-context.md');
+      const envPath = scope === 'user'
+        ? path.join(homeDir, '.teamai', 'env.sh')
+        : path.join(projectRoot, '.teamai', 'env.sh');
+      const userInstructions = '# Personal Copilot instructions\n\nKeep this text.\n';
+      const userSettings = '{"theme":"dark"}\n';
+      const sharedDoc = '# Copilot team context\n';
+      const sharedEnvValue = 'copilot-scope-ready';
+
+      vi.stubEnv('COPILOT_HOME', copilotHome);
+      await fse.ensureDir(copilotHome);
+      await fse.ensureDir(path.join(projectRoot, '.github'));
+      await fse.ensureDir(path.join(repoPath, 'docs'));
+      await fse.ensureDir(path.join(repoPath, 'env'));
+      await fse.writeFile(instructionPath, userInstructions);
+      await fse.writeFile(settingsPath, userSettings);
+      await fse.writeFile(path.join(repoPath, 'docs', 'copilot-context.md'), sharedDoc);
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), [
+        'variables:',
+        '  - key: TEAMAI_COPILOT_SCOPE',
+        `    value: ${sharedEnvValue}`,
+        '',
+      ].join('\n'));
+
+      const teamConfig = TeamaiConfigSchema.parse({
+        team: 'test',
+        repo: 'https://github.com/example/team.git',
+      });
+      const localConfig: LocalConfig = {
+        repo: { localPath: repoPath, remote: 'https://github.com/example/team.git' },
+        username: 'testuser',
+        updatePolicy: 'auto',
+        primaryRole: 'hai',
+        additionalRoles: [],
+        resourceProfileVersion: 1,
+        scope,
+        projectRoot: scope === 'project' ? projectRoot : undefined,
+        enabledAgents: ['copilot'],
+      };
+
+      vi.mocked(loadLocalConfigForScope).mockResolvedValue(localConfig);
+      vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
+      vi.mocked(loadStateForScope).mockResolvedValue(emptyState());
+
+      await pull({ force: true, silent: true });
+      const first = await fse.readFile(instructionPath, 'utf8');
+      await pull({ force: true, silent: true });
+      const second = await fse.readFile(instructionPath, 'utf8');
+
+      expect(first).toContain(userInstructions.trim());
+      expect(first).toContain(TEAMAI_CULTURE_START);
+      expect(first).toContain(TEAMAI_CLAUDEMD_START);
+      expect(second).toBe(first);
+      expect(second.split(TEAMAI_CULTURE_START)).toHaveLength(2);
+      expect(second.split(TEAMAI_CLAUDEMD_START)).toHaveLength(2);
+      expect(await fse.readFile(settingsPath, 'utf8')).toBe(userSettings);
+      expect(await fse.readFile(docsPath, 'utf8')).toBe(sharedDoc);
+      expect(await fse.readFile(envPath, 'utf8')).toContain(`export TEAMAI_COPILOT_SCOPE='${sharedEnvValue}'`);
+    },
+  );
 
   it('records only whitelist-eligible tools in lastPullTargets', async () => {
     await fse.ensureDir(path.join(homeDir, '.workbuddy'));
