@@ -266,7 +266,7 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 | `teamai remove <type> <name>` | ลบทรัพยากรแล้วเปิด MR |
 | `teamai session save` | บันทึกสรุปเซสชันที่ล้างข้อมูลส่วนตัวแล้วลงล็อกรายเดือน (`--push` จะป้อน `digest`) |
 | `teamai digest` | สร้างสรุปการใช้งานทีมรายสัปดาห์ |
-| `teamai doctor` | วินิจฉัยปัญหาคอนฟิก |
+| `teamai doctor` | วินิจฉัยปัญหาคอนฟิก (`--json` แสดงผลเป็น JSON สำหรับ CI, hook และ agent) |
 | `teamai uninstall` | ลบทรัพยากรและ hooks ของ teamai ทั้งหมด |
 
 ## ใบอนุญาต

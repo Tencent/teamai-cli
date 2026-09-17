@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### ✨ Features
 
+- `teamai remove` accepts `--force` to skip its confirmation prompt, spelled the same way as `teamai uninstall --force`. Without a TTY the prompt answers itself with no, so this is the only way to remove a resource from a script or a test (for [#591](https://github.com/Tencent/teamai-cli/issues/591)).
 - MCP servers in `mcp/mcp.yaml` and hooks in `hooks/hooks.yaml` accept an optional `roles:` list and ship only to members holding one of those roles; a role change removes the previous role's entries on the next pull, and `teamai mcp list` / `teamai hooks list` show the restriction (for [#563](https://github.com/Tencent/teamai-cli/issues/563)).
 - Agents can be scoped by role or project: `agents/<namespace>/` ships only to members whose `roles.yaml` / `projects.yaml` entry lists that namespace under a new optional `agents:` key, and a role change removes the previous namespaces' agents on the next pull (for [#563](https://github.com/Tencent/teamai-cli/issues/563)).
 - First-class Kiro support: skills, steering rules, JSON subagents with CLI `agentSpawn` session-start hooks, and MCP sync to `.kiro/` (for [#500](https://github.com/Tencent/teamai-cli/issues/500)).
@@ -15,6 +16,10 @@ All notable changes to this project will be documented in this file. See [standa
 
 ### 🐛 Bug Fixes
 
+- `teamai tags subscribe` and `teamai tags unsubscribe` now invalidate the pull revision cache, as `teamai skill exclude` already does, so the next `teamai pull` applies the new subscriptions instead of reporting "Already synced" when the team repo has not changed.
+- `teamai pull` now deletes a tombstoned agent under all three render extensions, so the Codex `.toml` and Kiro `.json` copies of a removed agent no longer survive on other machines. The cleanup also runs when the team repo rev is unchanged, so an upgrade reaches machines that already pulled the tombstone with an older CLI. `teamai remove agents <name>` also honours `enabledAgents` and no longer deletes from excluded tools. Fixes [#576](https://github.com/Tencent/teamai-cli/issues/576).
+- `teamai remove rules <name>` and `teamai remove skills <name>` now honour `enabledAgents` and leave excluded tools untouched, matching the whitelist `teamai pull` already applies when it cleans up a tombstoned resource. Fixes [#590](https://github.com/Tencent/teamai-cli/issues/590).
+- `teamai pull` and `teamai mcp inject` no longer write team MCP servers into installed tools outside `enabledAgents` or listed in `disabledAgents`, the same gate skills, rules, agents and hooks already use. Servers injected before the upgrade are left in place, and `teamai uninstall` still removes them.
 - `teamai import --cache-status` and `--cache-gc` now expose their existing JSON output through the CLI `--json` option.
 - Course-correction matching normalizes prompts and keywords to Unicode NFC, so composed and decomposed accents match. Stored prompt summaries and the 60-second correction window are unchanged. Fixes [#573](https://github.com/Tencent/teamai-cli/issues/573).
 - Course-correction detection matches keywords in space-separated scripts as whole words, so Spanish "segundo" no longer counts as `undo` (for [#564](https://github.com/Tencent/teamai-cli/issues/564)).
@@ -24,6 +29,7 @@ All notable changes to this project will be documented in this file. See [standa
 - `enabledAgents` now also gates CLI builtin deploy, CLAUDE.md-class injects, and last-pull skip-sync targets, so an already-installed tool outside the whitelist is not written to ([#510](https://github.com/Tencent/teamai-cli/issues/510)).
 - `teamai status` counts rule files in subdirectories recursively ([#437](https://github.com/Tencent/teamai-cli/pull/437)).
 - Codex Stop-phase contribution hints are deferred to the next prompt, so the host no longer rejects `additionalContext` ([#441](https://github.com/Tencent/teamai-cli/pull/441)).
+- Agent version detection launches the agent CLI through cross-spawn, so on Windows an npm-installed agent CLI such as `codebuddy`, `claude` or `openclaw` (a `.cmd` shim) reports its version instead of an empty `agent_version`.
 
 ### 📝 Documentation
 

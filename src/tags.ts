@@ -1,6 +1,13 @@
 import path from 'node:path';
 import YAML from 'yaml';
-import { requireInit, saveLocalConfig, saveLocalConfigForScope, detectProjectConfig } from './config.js';
+import {
+    requireInit,
+    saveLocalConfig,
+    saveLocalConfigForScope,
+    detectProjectConfig,
+    loadStateForScope,
+    saveStateForScope,
+} from './config.js';
 import { loadTagsConfig, collectTagStats, saveTagsConfig } from './utils/tags.js';
 import { log } from './utils/logger.js';
 import { readFileSafe } from './utils/fs.js';
@@ -25,6 +32,16 @@ async function saveTagsScopeConfig(localConfig: LocalConfig): Promise<void> {
         await saveLocalConfigForScope(localConfig, 'project', localConfig.projectRoot);
     } else {
         await saveLocalConfig(localConfig);
+    }
+
+    // Changed subscriptions must bypass pull's unchanged-revision fast path so
+    // newly matched resources are installed and filtered-out ones removed.
+    try {
+        const state = await loadStateForScope(localConfig);
+        state.lastPullRev = null;
+        await saveStateForScope(state, localConfig);
+    } catch {
+        // Missing/corrupt state is non-critical: the next pull performs a full sync.
     }
 }
 

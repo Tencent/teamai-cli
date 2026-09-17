@@ -106,6 +106,24 @@ scope: 'user',
     expect(await fse.pathExists(path.join(homeDir, '.claude-internal', 'rules', 'my-rule.md'))).toBe(false);
   });
 
+  it('should leave rules of an excluded tool alone', async () => {
+    // Regression for #590: a tool outside enabledAgents is not ours to write
+    // to, so it is not ours to delete from either.
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'rules', 'my-rule.md'), 'rule content');
+    // A second team rule keeps `pullAllRules` from returning early, so the
+    // stale-file pass it runs after the removal is exercised too.
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'rules', 'other-rule.md'), 'other content');
+    await fse.writeFile(path.join(homeDir, '.claude', 'rules', 'my-rule.md'), 'rule content');
+    await fse.writeFile(path.join(homeDir, '.codex', 'rules', 'my-rule.md'), 'rule content');
+
+    const removed = await handler.removeItem('my-rule', teamConfig, { ...localConfig, enabledAgents: ['claude'] });
+
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'rules', 'my-rule.md'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.codex', 'rules', 'my-rule.md'))).toBe(true);
+    // `removed` is what the CLI reports back, so it must not name the excluded tool.
+    expect(removed.some((p) => p.includes('.codex'))).toBe(false);
+  });
+
   it('should only remove from locations where the rule exists', async () => {
     // Only create in team repo and one tool
     await fse.writeFile(path.join(localConfig.repo.localPath, 'rules', 'partial-rule.md'), 'content');
@@ -210,6 +228,27 @@ scope: 'user',
     expect(await fse.pathExists(teamSkill)).toBe(false);
     expect(await fse.pathExists(claudeSkill)).toBe(false);
     expect(await fse.pathExists(codexSkill)).toBe(false);
+  });
+
+  it('should leave skills of an excluded tool alone', async () => {
+    // Regression for #590, the skills half: same gate as rules and agents.
+    const teamSkill = path.join(localConfig.repo.localPath, 'skills', 'my-skill');
+    await fse.ensureDir(teamSkill);
+    await fse.writeFile(path.join(teamSkill, 'SKILL.md'), '# My Skill');
+
+    const claudeSkill = path.join(homeDir, '.claude', 'skills', 'my-skill');
+    await fse.ensureDir(claudeSkill);
+    await fse.writeFile(path.join(claudeSkill, 'SKILL.md'), '# My Skill');
+
+    const codexSkill = path.join(homeDir, '.codex', 'skills', 'my-skill');
+    await fse.ensureDir(codexSkill);
+    await fse.writeFile(path.join(codexSkill, 'SKILL.md'), '# My Skill');
+
+    const removed = await handler.removeItem('my-skill', teamConfig, { ...localConfig, enabledAgents: ['claude'] });
+
+    expect(await fse.pathExists(claudeSkill)).toBe(false);
+    expect(await fse.pathExists(codexSkill)).toBe(true);
+    expect(removed.some((p) => p.includes('.codex'))).toBe(false);
   });
 
   it('should only remove from locations where the skill exists', async () => {

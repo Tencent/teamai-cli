@@ -1,0 +1,83 @@
+# TypeScript verbosity rules for the code-erosion CI layer.
+#
+# These are hand-ported from the SlopCodeBench Python ast-grep rule set
+# (scb-check 0.2.0, 197 Python rules). scb-check only runs its rules on
+# Python files, so on this TypeScript repo its verbosity rule component is
+# always 0; this file is the independent TS layer that fills that gap.
+#
+# IMPORTANT — only PURELY STRUCTURAL rules are ported. Python rules that hinge
+# on truthiness or type semantics (`len(x) == 0`, `x == True`) were tried and
+# DELIBERATELY DROPPED: they are false positives in TypeScript, where
+# `arr.length > 0` is idiomatic and `x !== true` is not equivalent to
+# `x === false` (TS has `undefined`; Python does not). See docs/ci-code-erosion.md.
+#
+# severity is `hint` so `ast-grep scan` never exits non-zero on a match — this
+# layer is informational and must never block CI.
+
+id: unnecessary-else-after-return
+language: typescript
+severity: hint
+message: "else after a return in the if-branch - drop the else and flatten the body"
+rule:
+  kind: if_statement
+  all:
+    - has:
+        field: consequence
+        has:
+          kind: return_statement
+          stopBy: end
+    - has:
+        field: alternative
+        kind: else_clause
+---
+id: empty-catch-block
+language: typescript
+severity: hint
+message: "empty catch block swallows errors silently - handle or log, or add a comment saying why it is safe"
+rule:
+  kind: catch_clause
+  has:
+    kind: statement_block
+    regex: "^\\{\\s*\\}$"
+---
+id: redundant-ternary-same
+language: typescript
+severity: hint
+message: "ternary with identical branches - drop it, the condition is irrelevant"
+rule:
+  pattern: "$C ? $X : $X"
+---
+id: if-return-boolean-literal
+language: typescript
+severity: hint
+message: "if/else returning boolean literals - return the condition directly"
+rule:
+  any:
+    - pattern: "if ($COND) { return true; } else { return false; }"
+    - pattern: "if ($COND) { return false; } else { return true; }"
+    - pattern: "if ($COND) return true; else return false;"
+    - pattern: "if ($COND) return false; else return true;"
+---
+id: return-ternary-boolean-literal
+language: typescript
+severity: hint
+message: "return cond ? true : false - return the condition (or its negation) directly"
+rule:
+  any:
+    - pattern: "return $C ? true : false;"
+    - pattern: "return $C ? false : true;"
+---
+id: duplicated-if-condition
+language: typescript
+severity: hint
+message: "same condition in if and else-if - the later branch is unreachable"
+rule:
+  kind: if_statement
+  pattern: "if ($COND) { $$$ } else if ($COND) { $$$ }"
+---
+id: self-assignment
+language: typescript
+severity: hint
+message: "self-assignment has no effect"
+rule:
+  pattern: "$X = $X;"

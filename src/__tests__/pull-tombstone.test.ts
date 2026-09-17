@@ -15,8 +15,14 @@ vi.mock('../config.js', () => ({
   saveStateForScope: vi.fn(),
 }));
 
+/** The rev `refreshTeamRepo` resolves for the fake team repo in these tests. */
+const { HEAD_REV } = vi.hoisted(() => ({ HEAD_REV: 'rev-unchanged' }));
+
 vi.mock('../utils/git.js', () => ({
   pullRepo: vi.fn().mockResolvedValue('Already up to date.'),
+  // Needed by the unchanged-rev fast path: without a rev, pull always does a
+  // full sync and that branch is unreachable.
+  getHeadRev: vi.fn().mockResolvedValue(HEAD_REV),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -39,7 +45,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { pull, cleanupInactiveNamespaceSkills } from '../pull.js';
-import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig } from '../config.js';
+import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope } from '../config.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 vi.mock('../roles.js', () => ({
@@ -153,6 +159,13 @@ describe('pull role-aware sync and cleanup', () => {
     vi.mocked(loadLocalConfigForScope).mockResolvedValue(localConfig);
     vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
     vi.mocked(detectProjectConfig).mockResolvedValue(null);
+    // No stored rev by default, so every test does a full sync unless it opts
+    // into the unchanged-rev fast path. A fresh object per call, like the real
+    // loader: pull writes the rev onto what it reads, and a shared object would
+    // leak that into the next pull of the same test.
+    vi.mocked(loadStateForScope).mockImplementation(
+      async () => ({ lastPull: null }) as Awaited<ReturnType<typeof loadStateForScope>>,
+    );
   });
 
   afterEach(async () => {
@@ -188,6 +201,77 @@ describe('pull role-aware sync and cleanup', () => {
 
     expect(await fse.pathExists(path.join(homeDir, '.claude/skills/old-skill'))).toBe(false);
     expect(await fse.pathExists(path.join(homeDir, '.codex/skills/old-skill'))).toBe(false);
+  });
+
+  /** Deploys agents to the three tools whose render formats differ (#576). */
+  const useAgentToolPaths = (): void => {
+    vi.mocked(loadTeamConfig).mockResolvedValue({
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: {
+        claude: { agents: '.claude/agents' },
+        codex: { agents: '.codex/agents' },
+        kiro: { agents: '.kiro/agents' },
+      },
+    });
+  };
+
+  /** Writes a tombstone for `foo` plus one stale render per tool. */
+  const seedTombstonedAgent = async (): Promise<void> => {
+    await fse.ensureDir(path.join(repoPath, 'agents'));
+    await fse.writeFile(path.join(repoPath, 'agents', '.removed'), 'foo\n');
+
+    for (const [dir, file] of [
+      ['.claude/agents', 'foo.md'],
+      ['.codex/agents', 'foo.toml'],
+      ['.kiro/agents', 'foo.json'],
+    ]) {
+      await fse.ensureDir(path.join(homeDir, dir));
+      await fse.writeFile(path.join(homeDir, dir, file), 'stale');
+    }
+  };
+
+  const expectAgentRendersGone = async (): Promise<void> => {
+    expect(await fse.pathExists(path.join(homeDir, '.claude/agents', 'foo.md'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.codex/agents', 'foo.toml'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.kiro/agents', 'foo.json'))).toBe(false);
+  };
+
+  it('should clean up tombstoned agent renders under every native extension', async () => {
+    // Regression for #576: the tool-side render extension varies (.md Claude,
+    // .toml Codex, .json Kiro), so the tombstone pass must clear all of them.
+    useAgentToolPaths();
+    await seedTombstonedAgent();
+
+    await pull({});
+
+    await expectAgentRendersGone();
+  });
+
+  it('should clean up tombstoned agents even when the repo rev is unchanged', async () => {
+    // Regression for #576 on the upgrade path: a machine that pulled the
+    // tombstone with the older CLI keeps the copies that CLI could not delete,
+    // and its stored rev never moves again, so the fast path must clean too.
+    useAgentToolPaths();
+    await seedTombstonedAgent();
+    vi.mocked(loadStateForScope).mockImplementation(async () => ({
+      lastPull: null,
+      lastPullRev: HEAD_REV,
+      lastPullTargets: ['claude', 'codex', 'kiro'],
+    }) as Awaited<ReturnType<typeof loadStateForScope>>);
+
+    await pull({});
+
+    await expectAgentRendersGone();
   });
 
   it('should not delete files that are NOT tombstoned', async () => {

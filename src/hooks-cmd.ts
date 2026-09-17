@@ -1,11 +1,17 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { reconcileHooksToAllTools, reconcileTeamHooksForConfig, sweepLegacyProjectHooks, getHookStatus, hasInstalledCodexTrustGatedTool, codexTrustReminder, type HookStatus } from './hooks.js';
+import { reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, sweepLegacyProjectHooks, getHookStatus, hasInstalledCodexTrustGatedTool, codexTrustReminder, type HookStatus } from './hooks.js';
 import { builtinHookDefs } from './builtin-hooks.js';
 import { parseTeamHooks } from './resources/hooks.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
-import { resolveHookScope } from './types.js';
+import {
+    COPILOT_TOOL_ID,
+    getManagedHooksPath,
+    resolveHookScope,
+    resolveToolBaseDir,
+    scopedToolPaths,
+} from './types.js';
 import { getUserHome } from './utils/home.js';
 
 type HookListStatus = HookStatus | 'not configured';
@@ -83,16 +89,20 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
     const { baseDir } = resolveHookScope(localConfig);
     const rows: HookListRow[] = [];
 
-    for (const [tool, paths] of Object.entries(teamConfig.toolPaths)) {
-        if (!paths.settings) {
+    for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+        const hookPath = paths.hooks
+            ? path.join(resolveToolBaseDir(tool, localConfig), paths.hooks)
+            : paths.settings
+                ? path.join(baseDir, paths.settings)
+                : undefined;
+        if (!hookPath) {
             rows.push({ tool, status: 'not configured', settingsPath: 'no settings configured' });
             continue;
         }
-        const settingsPath = path.join(baseDir, paths.settings);
         rows.push({
             tool,
-            status: await getHookStatus(settingsPath, tool),
-            settingsPath: formatDisplayPath(settingsPath),
+            status: await getHookStatus(hookPath, tool),
+            settingsPath: formatDisplayPath(hookPath),
         });
     }
 
@@ -131,6 +141,19 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
 
     const { baseDir, manifestPath } = resolveHookScope(localConfig);
     await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true });
+
+    const copilotPaths = scopedToolPaths(teamConfig, localConfig)[COPILOT_TOOL_ID];
+    if (copilotPaths?.hooks) {
+        await reconcileHooks(
+            path.join(resolveToolBaseDir(COPILOT_TOOL_ID, localConfig), copilotPaths.hooks),
+            COPILOT_TOOL_ID,
+            [],
+            {
+                manifestPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
+                removeAll: true,
+            },
+        );
+    }
 
     // Clean up the legacy <projectRoot> copy a pre-#370 CLI wrote alongside HOME
     // for a non-self project scope. Gated to a project-owned location that

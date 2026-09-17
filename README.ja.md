@@ -266,7 +266,7 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 | `teamai remove <type> <name>` | リソースを削除し、MR を開く |
 | `teamai session save` | プライバシー除去済みのセッション要約を月次ログへ記録（`--push` は `digest` へ供給） |
 | `teamai digest` | チーム利用の週次 digest を生成 |
-| `teamai doctor` | 設定の問題を診断 |
+| `teamai doctor` | 設定の問題を診断（`--json` で JSON 出力、CI・hook・agent 向け）|
 | `teamai uninstall` | すべての teamai リソースと hooks を削除 |
 
 ## ライセンス

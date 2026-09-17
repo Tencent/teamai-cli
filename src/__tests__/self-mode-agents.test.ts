@@ -59,7 +59,7 @@ describe('detectHomeInstalledAgents', () => {
     await fse.ensureDir(path.join(home, '.codex'));
     await fse.ensureDir(path.join(home, '.claude'));
     const found = await detectHomeInstalledAgents();
-    // candidate order is claude, codex, cursor, joycode, codebuddy, workbuddy
+    // candidate order is claude, codex, cursor, copilot, joycode, codebuddy, workbuddy
     expect(found).toEqual(['claude', 'codex']);
   });
 
@@ -69,8 +69,16 @@ describe('detectHomeInstalledAgents', () => {
     expect(await detectHomeInstalledAgents(['cursor'])).toEqual(['cursor']);
   });
 
-  it('SELF_MODE_AGENT_CHOICES includes JoyCode among the common coding agents', () => {
-    expect([...SELF_MODE_AGENT_CHOICES]).toEqual(['claude', 'codex', 'cursor', 'joycode', 'codebuddy', 'workbuddy']);
+  it('SELF_MODE_AGENT_CHOICES includes Copilot and JoyCode among the common coding agents', () => {
+    expect([...SELF_MODE_AGENT_CHOICES]).toEqual([
+      'claude',
+      'codex',
+      'cursor',
+      'copilot',
+      'joycode',
+      'codebuddy',
+      'workbuddy',
+    ]);
   });
 });
 
@@ -145,7 +153,7 @@ describe('seedSelfModeToolDirs (no hardcoded claude default)', () => {
 });
 
 describe('resolveSelfModeSelection (interactive picker: option 1 = Auto)', () => {
-  // Option order in the picker: 0 = Auto, 1..6 = SELF_MODE_AGENT_CHOICES.
+  // Option order in the picker: 0 = Auto, then SELF_MODE_AGENT_CHOICES.
   const detected = ['claude', 'codex'];
 
   it('Auto (index 0) expands to the detected tools', () => {
@@ -159,13 +167,13 @@ describe('resolveSelfModeSelection (interactive picker: option 1 = Auto)', () =>
   it('a specific tool maps by (index - 1) into the choices list', () => {
     // index 2 → SELF_MODE_AGENT_CHOICES[1] = codex
     expect(resolveSelfModeSelection([2], detected)).toEqual(['codex']);
-    // index 4 → SELF_MODE_AGENT_CHOICES[3] = joycode
-    expect(resolveSelfModeSelection([4], detected)).toEqual(['joycode']);
+    // index 4 → SELF_MODE_AGENT_CHOICES[3] = copilot
+    expect(resolveSelfModeSelection([4], detected)).toEqual(['copilot']);
   });
 
   it('multiple specific tools preserve choice order', () => {
-    // indices 5 (codebuddy) + 2 (codex) → order follows the input
-    expect(resolveSelfModeSelection([5, 2], detected)).toEqual(['codebuddy', 'codex']);
+    // indices 6 (codebuddy) + 2 (codex) → order follows the input
+    expect(resolveSelfModeSelection([6, 2], detected)).toEqual(['codebuddy', 'codex']);
   });
 
   it('Auto + a specific tool merges detected first, then extras, deduped', () => {
@@ -174,7 +182,7 @@ describe('resolveSelfModeSelection (interactive picker: option 1 = Auto)', () =>
   });
 
   it('"all" (every index incl. Auto) yields the full choice set once', () => {
-    const allIndices = [0, 1, 2, 3, 4, 5, 6]; // Auto + 6 tools
+    const allIndices = Array.from({ length: SELF_MODE_AGENT_CHOICES.length + 1 }, (_, index) => index);
     expect(resolveSelfModeSelection(allIndices, detected)).toEqual([...SELF_MODE_AGENT_CHOICES]);
   });
 });

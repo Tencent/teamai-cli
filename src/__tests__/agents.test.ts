@@ -417,6 +417,18 @@ projects:
     expect(tombstone.split('\n').map((l) => l.trim())).toContain('old');
   });
 
+  it('removeItem leaves agents of an excluded tool alone', async () => {
+    await fse.writeFile(path.join(repoPath, 'agents', 'old.md'), 'old');
+    await fse.writeFile(path.join(homeDir, '.claude/agents', 'old.md'), 'old');
+    await fse.writeFile(path.join(homeDir, '.codebuddy/agents', 'old.md'), 'old');
+
+    // enabledAgents whitelists claude only, so codebuddy is not ours to touch.
+    await handler.removeItem('old', teamConfig, { ...localConfig, enabledAgents: ['claude'] });
+
+    expect(await fse.pathExists(path.join(homeDir, '.claude/agents', 'old.md'))).toBe(false);
+    expect(await fse.pathExists(path.join(homeDir, '.codebuddy/agents', 'old.md'))).toBe(true);
+  });
+
   it('removeItem deletes a namespaced agent from the team repo and tombstones it', async () => {
     await fse.ensureDir(path.join(repoPath, 'agents', 'devops'));
     await fse.writeFile(path.join(repoPath, 'agents', 'devops', 'tf.yaml'), 'name: tf\n');

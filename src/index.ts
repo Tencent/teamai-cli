@@ -204,10 +204,11 @@ membersCmd
 program
   .command('remove <type> <names...>')
   .description('Remove resource(s) from team repo and all local AI tools (type: skills|rules|agents|mcp)')
-  .action(async (type, names) => {
+  .option('--force', 'Skip confirmation prompt')
+  .action(async (type, names, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { remove } = await import('./remove.js');
-    await remove(type, names, globalOpts);
+    await remove(type, names, { ...globalOpts, ...cmdOpts });
   });
 
 registerPackagesCommand(program);
@@ -215,10 +216,11 @@ registerPackagesCommand(program);
 program
   .command('doctor')
   .description('Diagnose configuration issues')
-  .action(async () => {
+  .option('--json', 'Output the report as JSON (suitable for CI)')
+  .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { doctor } = await import('./doctor.js');
-    const allPassed = await doctor(globalOpts);
+    const allPassed = await doctor({ ...globalOpts, ...cmdOpts });
     if (!allPassed) process.exitCode = 1;
   });
 

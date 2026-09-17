@@ -266,7 +266,7 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 | `teamai remove <type> <name>` | 리소스를 제거하고 MR을 엽니다 |
 | `teamai session save` | 개인정보를 제거한 세션 요약을 월별 로그에 기록 (`--push`는 `digest`에 공급) |
 | `teamai digest` | 주간 팀 사용 digest 생성 |
-| `teamai doctor` | 구성 문제 진단 |
+| `teamai doctor` | 구성 문제 진단 (`--json`으로 JSON 출력, CI·hook·agent용) |
 | `teamai uninstall` | 모든 teamai 리소스와 hooks 제거 |
 
 ## 라이선스

@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFile } from 'node:child_process';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { getAgentVersion, clearVersionCache, _readPlistVersion } from '../agent-version.js';
 
 beforeEach(() => {
@@ -66,6 +69,35 @@ describe('getAgentVersion', () => {
     const ver1 = await getAgentVersion('claude');
     const ver2 = await getAgentVersion('claude');
     expect(ver1).toBe(ver2);
+  });
+});
+
+describe('getAgentVersion with an npm-installed CLI', () => {
+  let binDir: string;
+  let savedPath: string | undefined;
+
+  beforeEach(async () => {
+    binDir = await mkdtemp(path.join(os.tmpdir(), 'teamai-agent-version-'));
+    savedPath = process.env.PATH;
+    // npm writes only `codebuddy.cmd` / `codebuddy.ps1` on Windows, so the
+    // bare name has no `.exe` for CreateProcess to find.
+    if (process.platform === 'win32') {
+      await writeFile(path.join(binDir, 'codebuddy.cmd'), '@echo 2.5.0\r\n');
+    } else {
+      const script = path.join(binDir, 'codebuddy');
+      await writeFile(script, '#!/bin/sh\necho 2.5.0\n');
+      await chmod(script, 0o755);
+    }
+    process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ''}`;
+  });
+
+  afterEach(async () => {
+    process.env.PATH = savedPath;
+    await rm(binDir, { recursive: true, force: true });
+  });
+
+  it('reads the version through the platform launcher', async () => {
+    expect(await getAgentVersion('codebuddy')).toBe('2.5.0');
   });
 });
 

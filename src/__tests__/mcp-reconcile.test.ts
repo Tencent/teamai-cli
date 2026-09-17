@@ -532,6 +532,48 @@ servers:
     expect(await fse.pathExists(path.join(homeDir, '.codebuddy', 'mcp.json'))).toBe(false);
   });
 
+  it('leaves installed tools outside enabledAgents or in disabledAgents alone', async () => {
+    // Same gate as skills, rules, agents, hooks and builtin deploy: cursor is
+    // installed here, but the member only opted in to claude.
+    await writeMcpYaml(`
+servers:
+  - name: s1
+    transport: http
+    url: https://example.com/mcp
+`);
+    await reconcileMcpForConfig(teamConfig, { ...localConfig, enabledAgents: ['claude'] });
+
+    expect((await fse.readJson(path.join(homeDir, '.claude.json'))).mcpServers.s1).toBeDefined();
+    expect(await fse.pathExists(path.join(homeDir, '.cursor', 'mcp.json'))).toBe(false);
+
+    // `uninstall --agent cursor` records the tool here; pull must not bring its
+    // MCP servers back either.
+    await reconcileMcpForConfig(teamConfig, { ...localConfig, disabledAgents: ['cursor'] });
+    expect(await fse.pathExists(path.join(homeDir, '.cursor', 'mcp.json'))).toBe(false);
+  });
+
+  it('keeps writing <root>/.mcp.json for a tclaude-only whitelist in project scope', async () => {
+    // tclaude has no project-scope MCP file of its own; it reads the one the
+    // claude target writes, so excluding claude must not drop that file.
+    const projectRoot = path.join(tmpDir, 'tclaude-proj');
+    await fse.ensureDir(path.join(projectRoot, '.claude', 'skills'));
+    await fse.ensureDir(path.join(projectRoot, '.tclaude', 'skills'));
+    await writeMcpYaml(`
+servers:
+  - name: s1
+    transport: http
+    url: https://example.com/mcp
+`);
+    await reconcileMcpForConfig(teamConfig, {
+      ...localConfig,
+      scope: 'project',
+      projectRoot,
+      enabledAgents: ['tclaude'],
+    } as unknown as LocalConfig);
+
+    expect(await fse.pathExists(path.join(projectRoot, '.mcp.json'))).toBe(true);
+  });
+
   it('rejects a requires entry with shell metacharacters instead of running it', async () => {
     const marker = path.join(tmpDir, 'requires-injection-proof');
     await writeMcpYaml(`

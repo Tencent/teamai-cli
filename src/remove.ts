@@ -109,10 +109,15 @@ async function removeCore(
     return;
   }
 
-  const confirmed = await askConfirmation('Are you sure? [y/N] ');
-  if (!confirmed) {
-    log.info('Cancelled');
-    return;
+  // `askConfirmation` returns false without a TTY, so a scripted run can only
+  // get past this prompt through `--force` (issue #591). Same shape as the
+  // uninstall prompt, so the two stay refactorable together.
+  if (!options.force) {
+    const confirmed = await askConfirmation('Are you sure? [y/N] ');
+    if (!confirmed) {
+      log.info('Cancelled');
+      return;
+    }
   }
 
   const spin = spinner(`Removing ${found.length} ${type}...`).start();

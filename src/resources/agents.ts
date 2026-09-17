@@ -23,6 +23,8 @@ import {
   reverseFromOpencode,
   mergeReverseResults,
   ALL_SUPPORTED_TOOLS,
+  AGENT_FILE_EXTENSIONS,
+  agentStemFromFilename,
 } from './agent-format.js';
 import type { AgentSpec, ToolName, ReverseResult, ParseResult, MergeResult, RenderResult } from './agent-format.js';
 
@@ -114,7 +116,7 @@ export class AgentsHandler extends ResourceHandler {
 
       const files = await listFiles(agentsDir);
       for (const file of files) {
-        const stem = getAgentStem(file);
+        const stem = agentStemFromFilename(file);
         if (stem === null) continue;
         if (tombstones.has(stem)) continue;
         if (BUILTIN_AGENT_NAMES.has(stem)) continue;
@@ -457,8 +459,11 @@ export class AgentsHandler extends ResourceHandler {
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.agents) continue;
-      // Try every native agent extension.
-      for (const ext of ['.md', '.toml', '.json'] as const) {
+      // A tool the member excluded is not ours to write to, so it is not ours
+      // to delete from either. This is the gate pull's tombstone pass applies.
+      if (isAgentExcluded(localConfig, tool)) continue;
+      // Try every native agent extension: the render format varies per tool.
+      for (const ext of AGENT_FILE_EXTENSIONS) {
         const filePath = path.join(baseDir, toolPath.agents, `${name}${ext}`);
         if (await pathExists(filePath)) {
           await remove(filePath);
@@ -661,21 +666,10 @@ function mergeCanonicalEdits(
   return { ok: true, spec: merged };
 }
 
-/**
- * Extract agent name stem from a filename.
- * Accepts supported native agent extensions; returns null for other files.
- */
-function getAgentStem(filename: string): string | null {
-  if (filename.endsWith('.md')) return filename.slice(0, -3);
-  if (filename.endsWith('.toml')) return filename.slice(0, -5);
-  if (filename.endsWith('.json')) return filename.slice(0, -5);
-  return null;
-}
-
 /** Remove an obsolete same-stem native rendering after a format migration. */
 async function removeStaleAgentSiblings(agentsDir: string, stem: string, targetExt: string): Promise<void> {
   for (const file of await listFiles(agentsDir)) {
-    if (getAgentStem(file) !== stem || file === `${stem}${targetExt}`) continue;
+    if (agentStemFromFilename(file) !== stem || file === `${stem}${targetExt}`) continue;
     await remove(path.join(agentsDir, file));
     log.debug(`Removed stale agent sibling ${file} for ${stem}`);
   }

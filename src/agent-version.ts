@@ -7,23 +7,17 @@
  *  - Fallback: return '' when detection fails (best-effort, never throws).
  */
 
-import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { log } from './utils/logger.js';
+import { probeBinary } from './utils/exec.js';
 
 const VERSION_CACHE = new Map<string, string>();
 
+// Launch through cross-spawn (probeBinary): on Windows npm installs these CLIs
+// as `<name>.cmd` shims, which the native execFile cannot find or start.
 async function execVersion(bin: string, args: string[] = ['--version']): Promise<string> {
-  return new Promise((resolve) => {
-    execFile(bin, args, { timeout: 5000 }, (err, stdout) => {
-      if (err) {
-        resolve('');
-        return;
-      }
-      resolve(stdout.trim());
-    });
-  });
+  return probeBinary(bin, args);
 }
 
 async function readPlistVersion(appPath: string): Promise<string> {

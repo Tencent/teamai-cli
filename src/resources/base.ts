@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { COPILOT_TOOL_ID, getCopilotHome, resolveToolBaseDir } from '../types.js';
 import type { ResourceType, ResourceItem, ResourceDiff, TeamaiConfig, LocalConfig } from '../types.js';
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
@@ -22,6 +23,20 @@ export function toolInstallRoot(toolPath: string): string {
     return `${segments[0]}/${segments[1]}`;
   }
   return segments[0] ?? toolPath;
+}
+
+/** Detect an installed tool while respecting tool-specific user roots. */
+export async function isToolInstalledForConfig(
+  tool: string,
+  toolPath: string,
+  localConfig: LocalConfig,
+): Promise<boolean> {
+  const baseDir = resolveToolBaseDir(tool, localConfig);
+  if (tool === COPILOT_TOOL_ID) {
+    return localConfig.enabledAgents?.includes(COPILOT_TOOL_ID) === true
+      || pathExists(getCopilotHome());
+  }
+  return ResourceHandler.isToolInstalled(toolPath, baseDir);
 }
 
 /**
