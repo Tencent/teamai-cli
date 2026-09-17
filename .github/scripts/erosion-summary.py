@@ -45,9 +45,8 @@ def rule_hits_section(path: str) -> list[str]:
         "",
         "### Rule hits (TS verbosity layer)",
         "",
-        "Structural slop rules ported from SlopCodeBench and run via a "
-        "standalone `ast-grep` (scb-check only rules Python files). "
-        "**Separate from the verbosity number above; also non-blocking.**",
+        "_Standalone `ast-grep`, separate from the number above — see "
+        "`docs/ci-code-erosion.md`._",
         "",
     ]
     if not hits:
@@ -75,10 +74,10 @@ def main() -> int:
 
     out: list[str] = [
         MARKER,
-        "## Code Erosion Report (informational)",
+        "## Code Erosion Report",
         "",
-        "Reported by `scb-check==0.2.0` (SlopCodeBench metrics). "
-        "**This never blocks CI.**",
+        "_Informational — **never blocks the merge**. `scb-check==0.2.0` "
+        "SlopCodeBench metrics; method & caveats in `docs/ci-code-erosion.md`._",
         "",
     ]
 
@@ -133,10 +132,8 @@ def main() -> int:
             f"Scanned {files_scanned} files / {total_loc} SLOC "
             f"· high-CC functions {high_cc}/{total_functions}",
             "",
-            "\\* On TypeScript, `verbosity` covers clone + wrapper detection "
-            "only (scb-check's 197 ast-grep rules are Python-only). `erosion` "
-            "is faithful. Reference bands are Python-calibrated — read them "
-            "as direction, not verdict. See `docs/ci-code-erosion.md`.",
+            "\\* On TypeScript, `verbosity` is partial and the bands are "
+            "Python-calibrated — see `docs/ci-code-erosion.md`.",
         ],
     )
 
