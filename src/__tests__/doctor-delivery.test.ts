@@ -161,6 +161,69 @@ describe('doctor — skills delivered on disk', () => {
     expect(await (await deliveryCheck()).check()).toBe(true);
   });
 
+  // The write succeeded, so no write-time gate has anything to report — and the
+  // agent still never discovers the skill (#372's class).
+  describe('delivered but invisible', () => {
+    it('fails when SKILL.md is gone', async () => {
+      await deliver(CLAUDE_SKILLS, 'alpha');
+      await fse.ensureDir(path.join(homeDir, ...CLAUDE_SKILLS, 'beta'));
+
+      const check = await deliveryCheck();
+
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain('beta');
+      expect(check.fix).toMatch(/unreadable/i);
+    });
+
+    it('fails when the frontmatter does not parse', async () => {
+      await deliver(CLAUDE_SKILLS, 'alpha');
+      const beta = path.join(homeDir, ...CLAUDE_SKILLS, 'beta');
+      await fse.ensureDir(beta);
+      await fse.writeFile(path.join(beta, 'SKILL.md'), '---\nname: [oops\n---\n# beta\n');
+
+      expect(await (await deliveryCheck()).check()).toBe(false);
+    });
+
+    it('fails when the frontmatter name does not match the directory', async () => {
+      await deliver(CLAUDE_SKILLS, 'alpha');
+      const beta = path.join(homeDir, ...CLAUDE_SKILLS, 'beta');
+      await fse.ensureDir(beta);
+      await fse.writeFile(path.join(beta, 'SKILL.md'), '---\nname: renamed\ndescription: d\n---\n');
+
+      const check = await deliveryCheck();
+
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain('beta');
+    });
+
+    it('separates what was never delivered from what is unreadable', async () => {
+      const beta = path.join(homeDir, ...CLAUDE_SKILLS, 'beta');
+      await fse.ensureDir(beta);
+      await fse.writeFile(path.join(beta, 'SKILL.md'), '---\nname: renamed\n---\n');
+
+      const check = await deliveryCheck();
+      const fix = check.fix ?? '';
+
+      // alpha never arrived; beta arrived broken. Same tool, different cause.
+      expect(fix.indexOf('alpha')).toBeGreaterThan(-1);
+      expect(fix.indexOf('beta')).toBeGreaterThan(-1);
+      expect(fix).toMatch(/not delivered/i);
+      expect(fix).toMatch(/unreadable/i);
+    });
+
+    it('accepts extra frontmatter fields', async () => {
+      await deliver(CLAUDE_SKILLS, 'alpha');
+      const beta = path.join(homeDir, ...CLAUDE_SKILLS, 'beta');
+      await fse.ensureDir(beta);
+      await fse.writeFile(
+        path.join(beta, 'SKILL.md'),
+        '---\nname: beta\ndescription: d\nallowed-tools: [Read]\nversion: 2\n---\n',
+      );
+
+      expect(await (await deliveryCheck()).check()).toBe(true);
+    });
+  });
+
   it('never writes to the tool directory it inspects', async () => {
     await deliver(CLAUDE_SKILLS, 'alpha');
 

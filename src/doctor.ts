@@ -15,6 +15,7 @@ import {
   type TeamaiConfig,
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
+import { splitFrontmatter } from './utils/frontmatter.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder } from './hooks.js';
 import { getUserHome } from './utils/home.js';
 
@@ -133,6 +134,20 @@ async function buildHookChecks(
 }
 
 /**
+ * Whether a delivered skill directory is one an agent can actually discover:
+ * SKILL.md present, frontmatter parses, and its `name` is the directory's own.
+ * A copy that fails this landed successfully — no write-time gate can see it.
+ */
+async function skillIsDiscoverable(skillDir: string, skillName: string): Promise<boolean> {
+  const content = await readFileSafe(path.join(skillDir, 'SKILL.md'));
+  if (!content) return false;
+
+  const { data, valid } = splitFrontmatter(content);
+  if (!valid) return false;
+  return data.name === skillName;
+}
+
+/**
  * Build one delivery check per installed tool: every skill the member should
  * have, against what is actually on disk for that tool.
  *
@@ -163,6 +178,7 @@ async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {
     if (!skillsPath) continue;
 
     const missing: string[] = [];
+    const unreadable: string[] = [];
     let installed = true;
     for (const item of items) {
       const dest = await skillTargetForTool(tool, skillsPath, localConfig, item.name);
@@ -173,14 +189,21 @@ async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {
         break;
       }
       if (!await pathExists(dest)) missing.push(item.name);
+      else if (!await skillIsDiscoverable(dest, item.name)) unreadable.push(item.name);
     }
     if (!installed) continue;
+
+    const problems: string[] = [];
+    if (missing.length > 0) problems.push(`not delivered: ${missing.join(', ')}`);
+    if (unreadable.length > 0) problems.push(`delivered but unreadable: ${unreadable.join(', ')}`);
 
     checks.push({
       name: `Skills delivered to ${tool}`,
       source: 'local',
-      check: async () => missing.length === 0,
-      fix: `Not delivered to ${tool}: ${missing.join(', ')}. Run \`teamai pull\`.`,
+      check: async () => problems.length === 0,
+      fix: `In ${tool}, ${problems.join('; ')}. Run \`teamai pull\`. If a skill stays `
+        + 'unreadable, fix its SKILL.md in the team repo: the frontmatter needs a `name` '
+        + 'matching the directory, or the agent never discovers it.',
     });
   }
 
