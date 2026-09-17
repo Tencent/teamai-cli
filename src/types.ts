@@ -3,6 +3,10 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getUserHome } from './utils/home.js';
 
+const DEFAULT_COPILOT_HOME = '.copilot';
+const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
+const COPILOT_PROJECT_MCP_CONFIG = '.github/mcp.json';
+
 // ─── Tool path config ───────────────────────────────────
 
 export const ToolPathsSchema = z.object({
@@ -15,7 +19,7 @@ export const ToolPathsSchema = z.object({
   /** Per-tool agents directory (Phase 1: teamai-recall subagent target).
    * Optional — tools without subagent support omit this and agents sync skips them. */
   agents: z.string().optional(),
-  /** User-scope MCP config file (relative to $HOME). Omitted = tool has no MCP support. */
+  /** User-scope MCP config file (relative to the tool's user root). Omitted = no MCP support. */
   mcp: z.string().optional(),
   /** Project-scope MCP config file. Never defaults from `mcp` — omitting it means
    * the tool has no project-scope MCP support at all. Claude Code shows why the two
@@ -301,14 +305,16 @@ export const TeamaiConfigSchema = z.object({
     cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents', mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' },
     // GitHub Copilot CLI keeps project customizations under .github and moves
     // the complete user customization root when COPILOT_HOME is set. Agents use
-    // the official .agent.md format. Hooks are a standalone file; settings.json
-    // is deliberately never managed.
+    // the official .agent.md format. Hooks and MCP use standalone files;
+    // settings.json is deliberately never managed.
     copilot: {
       skills: '.github/skills',
       rules: '.github/instructions',
       agents: '.github/agents',
       hooks: '.github/hooks/teamai.json',
       claudemd: '.github/copilot-instructions.md',
+      mcp: COPILOT_USER_MCP_CONFIG,
+      mcpProject: COPILOT_PROJECT_MCP_CONFIG,
       userScope: {
         skills: 'skills',
         rules: 'instructions',
@@ -1534,7 +1540,6 @@ export function resolveBaseDir(localConfig: LocalConfig): string {
 }
 
 export const COPILOT_TOOL_ID = 'copilot';
-const DEFAULT_COPILOT_HOME = '.copilot';
 
 /** GitHub Copilot CLI's user configuration root, honoring COPILOT_HOME. */
 export function getCopilotHome(env: NodeJS.ProcessEnv = process.env): string {

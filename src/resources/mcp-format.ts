@@ -7,19 +7,22 @@ import type { McpServerDef, McpTransport } from '../types.js';
 //
 //    claude family   { "type": "http", "url", "headers" }
 //    cursor          { "url", "headers" }                     (type omitted)
+//    copilot         { "type": "local"|"http", ..., "tools": ["*"] }
 //    buddy family    { "transportType": "streamable-http", … } (+ timeout)
 //    codex           [mcp_servers.<name>] TOML table          (stdio + http)
 //
 //  Keeping the differences here — rather than in the reconcile engine — is the
 //  same split agents uses between agent-format.ts and its handler.
 
-export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode';
+export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot';
 
 const CLAUDE_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'qoder', 'kiro', 'zcode', 'omp']);
 const CURSOR_TOOLS = new Set(['cursor']);
 const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
 const BUDDY_TOOLS = new Set(['codebuddy', 'workbuddy']);
 const OPENCODE_TOOLS = new Set(['opencode']);
+const COPILOT_TOOLS = new Set(['copilot']);
+const COPILOT_ALL_TOOLS = '*';
 
 export function detectMcpFormat(tool: string): McpFormat | null {
   if (CLAUDE_TOOLS.has(tool)) return 'claude';
@@ -27,6 +30,7 @@ export function detectMcpFormat(tool: string): McpFormat | null {
   if (CODEX_TOOLS.has(tool)) return 'codex';
   if (BUDDY_TOOLS.has(tool)) return 'buddy';
   if (OPENCODE_TOOLS.has(tool)) return 'opencode';
+  if (COPILOT_TOOLS.has(tool)) return 'copilot';
   return null;
 }
 
@@ -40,6 +44,7 @@ export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
   cursor: 'mcpServers',
   buddy: 'mcpServers',
   opencode: 'mcp',
+  copilot: 'mcpServers',
 };
 
 /** Transports each format can actually express. */
@@ -53,6 +58,7 @@ const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
   // OpenCode splits transports into `type: local` (stdio) and `type: remote`
   // (streamable HTTP). It has no SSE transport.
   opencode: new Set<McpTransport>(['stdio', 'http']),
+  copilot: new Set<McpTransport>(['stdio', 'http', 'sse']),
 };
 
 export function supportsTransport(format: McpFormat, transport: McpTransport): boolean {
@@ -227,6 +233,24 @@ function renderBuddy(def: McpServerDef): McpJsonEntry {
   return e;
 }
 
+/** Copilot requires a transport type and an explicit tool allowlist. */
+function renderCopilot(def: McpServerDef): McpJsonEntry {
+  const e: McpJsonEntry = {
+    type: def.transport === 'stdio' ? 'local' : def.transport,
+    tools: [COPILOT_ALL_TOOLS],
+  };
+  if (def.transport === 'stdio') {
+    e.command = def.command;
+    e.args = def.args ?? [];
+    if (def.env && Object.keys(def.env).length) e.env = def.env;
+  } else {
+    e.url = def.url;
+    if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
+  }
+  if (def.timeout !== undefined) e.timeout = def.timeout;
+  return e;
+}
+
 /**
  * OpenCode's shape is unlike the others: transport is expressed as
  * `type: "local"` (stdio) or `type: "remote"` (http), a local server's command
@@ -256,6 +280,7 @@ export function renderJsonEntry(format: Exclude<McpFormat, 'codex'>, def: McpSer
   if (format === 'claude') return renderClaude(def);
   if (format === 'cursor') return renderCursor(def);
   if (format === 'opencode') return renderOpencode(def);
+  if (format === 'copilot') return renderCopilot(def);
   return renderBuddy(def);
 }
 

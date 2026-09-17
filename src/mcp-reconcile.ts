@@ -15,7 +15,7 @@ import {
   getDataHome,
   managedMcpManifestPath,
   managedMcpManifestKey,
-  resolveBaseDir,
+  resolveToolBaseDir,
   scopedToolPaths,
 } from './types.js';
 import {
@@ -190,7 +190,6 @@ export async function resolveMcpTargets(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
 ): Promise<McpTarget[]> {
-  const baseDir = resolveBaseDir(localConfig);
   const projectScope = localConfig.scope === 'project';
   const targets: McpTarget[] = [];
 
@@ -207,6 +206,8 @@ export async function resolveMcpTargets(
     // reads the <root>/.mcp.json that `claude` writes).
     const rel = projectScope ? paths.mcpProject : paths.mcp;
     if (!rel) continue;
+
+    const baseDir = resolveToolBaseDir(tool, localConfig);
 
     const probe = paths.skills ?? paths.settings ?? paths.agents;
     if (!probe) continue;
