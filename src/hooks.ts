@@ -332,7 +332,7 @@ function toZcodeEntry(def: HookDef, vbsPath: string): ZcodeHookMatcher {
   const entry: ZcodeHookEntry = {
     type: 'process',
     command: 'wscript.exe',
-    args: [vbsPath, 'wait', def.command],
+    args: [vbsPath, def.command],
     timeoutMs,
   };
   const group: ZcodeHookMatcher = { hooks: [entry] };
