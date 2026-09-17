@@ -45,8 +45,7 @@ def rule_hits_section(path: str) -> list[str]:
         "",
         "### Rule hits (TS verbosity layer)",
         "",
-        "_Standalone `ast-grep`, separate from the number above — see "
-        "`docs/ci-code-erosion.md`._",
+        "_Standalone `ast-grep`, separate from the number above._",
         "",
     ]
     if not hits:
@@ -133,7 +132,7 @@ def main() -> int:
             f"· high-CC functions {high_cc}/{total_functions}",
             "",
             "\\* On TypeScript, `verbosity` is partial and the bands are "
-            "Python-calibrated — see `docs/ci-code-erosion.md`.",
+            "Python-calibrated.",
         ],
     )
 
