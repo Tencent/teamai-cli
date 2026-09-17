@@ -345,9 +345,14 @@ function toZcodeEntry(def: HookDef, vbsPath: string): ZcodeHookMatcher {
 /** Shell payload of a ZCode hook entry, for managed-entry matching. */
 function zcodeEntryCommand(entry: ZcodeHookMatcher): string {
   const hook = entry.hooks?.[0];
-  // The wscript launcher's argv: [vbsPath, mode, payload] — the payload is the
-  // dispatch tail ('teamai hook-dispatch <event> --tool <tool>').
-  if (Array.isArray(hook?.args) && hook.args.length > 2) return hook.args[2] ?? '';
+  // The wscript launcher carries the command tail as its LAST argument —
+  // [vbsPath, tail] today; an earlier generation used a mode slot
+  // ([vbsPath, 'wait', tail]). Reading the last slot recognizes both shapes
+  // (and team commands, which carry no teamai marker and are matched against
+  // the managed-hooks manifest) so they get replaced or removed, not duplicated.
+  if (Array.isArray(hook?.args) && hook.args.length > 0) {
+    return hook.args[hook.args.length - 1] ?? '';
+  }
   return hook?.command ?? '';
 }
 
@@ -578,7 +583,7 @@ async function reconcileZcodeFormat(
     'On Error Resume Next',
     'f.Write WScript.StdIn.ReadAll()',
     'f.Close',
-    'sh.Run "cmd /d /s /c ""teamai hook-dispatch " & WScript.Arguments(0) & " < """ & spool & """ >nul 2>&1""", 0, True',
+    'sh.Run "cmd /d /s /c """ & WScript.Arguments(0) & " < """ & spool & """ >nul 2>&1""", 0, True',
     'fso.DeleteFile spool, True',
   ].join('\r\n');
   const existingVbs = await readFileSafe(vbsPath);

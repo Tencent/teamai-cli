@@ -110,6 +110,52 @@ describe('ZCode support', () => {
     }
   });
 
+  it('replaces legacy launcher shapes (mode-slot argv) instead of duplicating', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-zcode-test-'));
+    try {
+      const configPath = path.join(home, '.zcode', 'cli', 'config.json');
+      await fse.ensureDir(path.dirname(configPath));
+      // An entry written by an older generation: [vbsPath, 'wait', tail].
+      const vbs = path.join(path.dirname(configPath), 'teamai-hook-dispatch.vbs');
+      await fse.writeJson(configPath, {
+        hooks: {
+          enabled: true,
+          events: {
+            SessionStart: [
+              {
+                hooks: [
+                  {
+                    type: 'process',
+                    command: 'wscript.exe',
+                    args: [vbs, 'wait', 'teamai hook-dispatch session-start --tool zcode'],
+                    timeoutMs: 180000,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      });
+
+      await reconcileHooks(configPath, 'zcode');
+
+      const cfg = await fse.readJson(configPath);
+      const groups = cfg.hooks.events.SessionStart as Array<{ hooks: Array<{ args?: string[] }> }>;
+      const withPayload = groups.filter((g) =>
+        g.hooks[0].args?.some((a) => a?.includes('hook-dispatch session-start')),
+      );
+      // The legacy entry must be recognized as managed and replaced, not
+      // kept alongside a fresh copy.
+      expect(withPayload).toHaveLength(1);
+      expect(withPayload[0].hooks[0].args).toEqual([
+        vbs,
+        'teamai hook-dispatch session-start --tool zcode',
+      ]);
+    } finally {
+      await fse.remove(home);
+    }
+  });
+
   it('removeAll strips teamai entries but keeps the runner and unrelated keys', async () => {
     const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-zcode-test-'));
     try {
@@ -237,8 +283,8 @@ describe('ZCode support', () => {
 
       const cfg = await fse.readJson(configPath);
       const stop = cfg.hooks.events.Stop as Array<{ hooks: Array<{ args?: string[]; timeoutMs?: number }> }>;
-      const team = stop.find((g) => g.hooks[0].args?.[2] === 'slow-team-sync');
-      const builtin = stop.find((g) => g.hooks[0].args?.[2]?.includes('hook-dispatch stop'));
+      const team = stop.find((g) => g.hooks[0].args?.[1] === 'slow-team-sync');
+      const builtin = stop.find((g) => g.hooks[0].args?.[1]?.includes('hook-dispatch stop'));
 
       // hooks.yaml states seconds; the entry is written in milliseconds.
       expect(team?.hooks[0].timeoutMs).toBe(300_000);
