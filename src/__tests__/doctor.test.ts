@@ -12,6 +12,10 @@ vi.mock('../config.js', () => ({
 vi.mock('../utils/fs.js', () => ({
     pathExists: vi.fn(),
     readFileSafe: vi.fn(),
+    // The delivery check walks the team repo through resolveDesiredSkills. This
+    // machine has no skills; delivery on a real disk is covered by
+    // doctor-delivery.test.ts.
+    listDirs: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -91,7 +95,12 @@ beforeEach(() => {
     mockedLoadLocalConfig.mockResolvedValue(mockLocalConfig);
     mockedLoadTeamConfig.mockResolvedValue(mockTeamConfig);
     mockedPathExists.mockResolvedValue(true);
-    mockedReadFileSafe.mockResolvedValue(buildFullHooksContent());
+    // One blob answers every read, except the role/project manifests the
+    // delivery check resolves the desired skill set from: parsing hook JSON as a
+    // manifest throws. Absent manifests are the shape this fixture wants anyway.
+    mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+        filePath.includes(`${path.sep}manifest${path.sep}`) ? null : buildFullHooksContent()
+    ));
 });
 
 // ── Tests ────────────────────────────────────────────────

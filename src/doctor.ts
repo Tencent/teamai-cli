@@ -133,6 +133,61 @@ async function buildHookChecks(
 }
 
 /**
+ * Build one delivery check per installed tool: every skill the member should
+ * have, against what is actually on disk for that tool.
+ *
+ * This is the only check that looks at the payload rather than the plumbing. A
+ * write-time gate cannot cover it — `SkillsHandler.pullItem` skips each
+ * uninstalled tool on its own, and a directory deleted by hand after a correct
+ * pull leaves every gate happy (#598).
+ *
+ * The scan runs here rather than inside `check()` because the fix names the
+ * skills that are missing, and a `Check`'s fix is read as it was built.
+ */
+async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig, teamConfig, toolPaths } = ctx;
+  if (!teamConfig) return [];
+
+  // Dynamic: pull.ts imports this module for its post-pull pass, and the desired
+  // set is policy that must not be restated here.
+  const { buildRolePullContext, resolveDesiredSkills } = await import('./pull.js');
+  const { skillTargetForTool } = await import('./resources/skills.js');
+
+  const roleContext = await buildRolePullContext(localConfig);
+  const { items } = await resolveDesiredSkills(teamConfig, localConfig, roleContext);
+  if (items.length === 0) return [];
+
+  const checks: Check[] = [];
+  for (const [tool, paths] of Object.entries(toolPaths)) {
+    const skillsPath = paths.skills;
+    if (!skillsPath) continue;
+
+    const missing: string[] = [];
+    let installed = true;
+    for (const item of items) {
+      const dest = await skillTargetForTool(tool, skillsPath, localConfig, item.name);
+      if (!dest) {
+        // Not installed. Nothing was promised to this tool, so nothing is owed;
+        // a tool the user listed in enabledAgents is caught by its own check.
+        installed = false;
+        break;
+      }
+      if (!await pathExists(dest)) missing.push(item.name);
+    }
+    if (!installed) continue;
+
+    checks.push({
+      name: `Skills delivered to ${tool}`,
+      source: 'local',
+      check: async () => missing.length === 0,
+      fix: `Not delivered to ${tool}: ${missing.join(', ')}. Run \`teamai pull\`.`,
+    });
+  }
+
+  return checks;
+}
+
+/**
  * True if a trust-gated Codex tool (the public `codex`) already has teamai hooks
  * installed on disk (settings file exists and contains the hook-dispatch
  * command). Used to emit a lightweight reminder that Codex may still require the
@@ -271,6 +326,7 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
         + 'can push to the team repo (run with --verbose to see the push error).',
     },
     ...await buildHookChecks(toolPaths, baseDir, localConfig),
+    ...await buildDeliveryChecks(ctx),
     {
       name: 'Env variables injected in shell profile',
       source: 'local',

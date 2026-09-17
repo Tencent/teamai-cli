@@ -45,6 +45,56 @@ export async function resolveSkillDestination(
   return configuredDestination;
 }
 
+/**
+ * Where `skillName` lands for `tool` on this machine, or null when the tool
+ * cannot receive it: no skills path configured, or the tool is not installed.
+ *
+ * One place answers that question, so `pull` writes and `doctor` checks the very
+ * same paths (#598). A second copy of these gates is how "Synced 12 skills"
+ * ends up true for one tool and silently false for another.
+ *
+ * `sourcePath` belongs to the write path: it lets the Codex shared-directory
+ * reconciliation delete a duplicate it can prove is identical. Omit it to
+ * resolve a destination without that side effect.
+ */
+export async function skillTargetForTool(
+  tool: string,
+  configuredSkillsPath: string | undefined,
+  localConfig: LocalConfig,
+  skillName: string,
+  sourcePath?: string,
+): Promise<string | null> {
+  if (!configuredSkillsPath) return null;
+
+  if (tool === 'openclaw') {
+    const wsDir = await resolveOpenclawWorkspaceDir();
+    if (!wsDir) {
+      log.debug('Skipping skill sync for openclaw: workspace dir not found');
+      return null;
+    }
+    return path.join(wsDir, 'skills', skillName);
+  }
+
+  if (tool === 'hermes') {
+    // Like every other tool, skip when not installed: getHermesHome() always
+    // resolves (HERMES_HOME or ~/.hermes), so without this check every pull
+    // creates a hermes home the user never asked for.
+    if (!await pathExists(getHermesHome())) {
+      log.debug(`Skipping skill sync for ${tool}: tool not installed`);
+      return null;
+    }
+    return path.join(getHermesHome(), 'skills', skillName);
+  }
+
+  if (!await isToolInstalledForConfig(tool, configuredSkillsPath, localConfig)) {
+    log.debug(`Skipping skill sync for ${tool}: tool not installed`);
+    return null;
+  }
+
+  const baseDir = resolveToolBaseDir(tool, localConfig);
+  return resolveSkillDestination(tool, configuredSkillsPath, baseDir, skillName, sourcePath);
+}
+
 /** Add fields immediately before the closing delimiter without reformatting existing YAML. */
 function appendFrontmatterFields(raw: string, fields: Record<string, string>): string {
   const eol = raw.includes('\r\n') ? '\r\n' : '\n';
@@ -480,33 +530,9 @@ export class SkillsHandler extends ResourceHandler {
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (isAgentExcluded(localConfig, tool)) continue;
-      if (!toolPath.skills) continue;
 
-      let dest: string;
-      if (tool === 'openclaw') {
-        const wsDir = await resolveOpenclawWorkspaceDir();
-        if (!wsDir) {
-          log.debug(`Skipping skill sync for openclaw: workspace dir not found`);
-          continue;
-        }
-        dest = path.join(wsDir, 'skills', item.name);
-      } else if (tool === 'hermes') {
-        // Like every other tool, skip when not installed: getHermesHome()
-        // always resolves (HERMES_HOME or ~/.hermes), so without this check
-        // every pull creates a hermes home the user never asked for.
-        if (!await pathExists(getHermesHome())) {
-          log.debug(`Skipping skill sync for ${tool}: tool not installed`);
-          continue;
-        }
-        dest = path.join(getHermesHome(), 'skills', item.name);
-      } else {
-        if (!await isToolInstalledForConfig(tool, toolPath.skills, localConfig)) {
-          log.debug(`Skipping skill sync for ${tool}: tool not installed`);
-          continue;
-        }
-        const baseDir = resolveToolBaseDir(tool, localConfig);
-        dest = await resolveSkillDestination(tool, toolPath.skills, baseDir, item.name, item.sourcePath);
-      }
+      const dest = await skillTargetForTool(tool, toolPath.skills, localConfig, item.name, item.sourcePath);
+      if (!dest) continue;
 
       try {
         await copyDir(item.sourcePath, dest);
