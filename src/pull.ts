@@ -1751,6 +1751,11 @@ export async function pull(options: GlobalOptions): Promise<void> {
       log.debug(`Source pull skipped: ${(e as Error).message}`);
     }
   }
+
+  // 6. Post-conditions. Everything above reported what it *did*; these report
+  //    what is actually on disk (issue #598). Only after an explicit pull: the
+  //    SessionStart hook runs pull({ silent: true }) and must stay free.
+  await reportPostPullChecks(options);
   } finally {
     const releaseSyncLocks = async () => {
       for (const lock of heldLocks.values()) await releaseLock(lock);
@@ -1765,6 +1770,48 @@ export async function pull(options: GlobalOptions): Promise<void> {
     } else {
       await releaseSyncLocks();
     }
+  }
+}
+
+/** Post-pull diagnostics are a courtesy, not the job. Do not wait forever. */
+const POST_PULL_CHECKS_TIMEOUT_MS = 5000;
+
+/**
+ * Re-run the `teamai doctor` registry after an explicit pull and print only what
+ * failed. Every line above this one reports what the pull *did*; these report
+ * what is actually on disk — the gap behind #574, #525, #342 and friends, where
+ * the command says "Synced N" and the tool receives nothing.
+ *
+ * Provider checks are left out: this pull just used the provider successfully,
+ * so re-probing `gh auth status` would add a subprocess to every sync and prove
+ * nothing new. `teamai doctor` still runs the full registry.
+ */
+async function reportPostPullChecks(options: GlobalOptions): Promise<void> {
+  if (options.silent || options.dryRun) return;
+  try {
+    const { resolveDoctorContext, buildChecks, runChecks } = await import('./doctor.js');
+    const ctx = await resolveDoctorContext();
+    if (!ctx) return;
+
+    const local = (await buildChecks(ctx)).filter((c) => c.source === 'local');
+    const results = await withTimeout(
+      runChecks(local),
+      POST_PULL_CHECKS_TIMEOUT_MS,
+      'Post-pull checks are still running after 5s',
+    );
+
+    const failures = results.filter((r) => !r.ok);
+    if (failures.length === 0) return;
+
+    log.warn(`Pull finished, but ${failures.length} check(s) failed:`);
+    for (const { name, fix } of failures) {
+      log.warn(`  ✖ ${name}`);
+      if (fix) log.dim(`    → ${fix}`);
+    }
+    log.dim('  Run `teamai doctor` for the full report.');
+  } catch (e) {
+    // The sync already succeeded. A diagnostic that breaks must not undo that.
+    log.debug(`Post-pull checks skipped: ${(e as Error).message}`);
   }
 }
 

@@ -18,8 +18,18 @@ import { isToolInstalledForConfig } from './resources/base.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder } from './hooks.js';
 import { getUserHome } from './utils/home.js';
 
+/**
+ * Where a check gets its answer. `provider` checks shell out to a provider CLI
+ * or the network; `local` checks only read this machine. Callers that run the
+ * registry outside `teamai doctor` filter on it — see the post-pull pass in
+ * `pull()`, which has just used the provider successfully and must not pay for
+ * an auth probe on every sync.
+ */
+export type CheckSource = 'local' | 'provider';
+
 export interface Check {
   name: string;
+  source: CheckSource;
   check: () => Promise<boolean>;
   fix?: string;
 }
@@ -87,6 +97,7 @@ async function buildHookChecks(
     if (!installed) continue;
     checks.push({
       name: `teamai hooks in ${tool} settings`,
+      source: 'local',
       check: async () => {
         if (!await pathExists(settingsPath)) return false;
         const content = await readFileSafe(settingsPath);
@@ -162,11 +173,13 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
     checks.push(
       {
         name: 'gf CLI is installed',
+        source: 'provider',
         check: async () => isGfInstalled(),
         fix: 'Run `teamai init` to install gf CLI automatically',
       },
       {
         name: 'gf CLI is authenticated',
+        source: 'provider',
         check: async () => gfIsAuthenticated(),
         fix: 'Run `teamai init` to authenticate via gf auth login',
       },
@@ -177,11 +190,13 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
     checks.push(
       {
         name: 'gh CLI is installed',
+        source: 'provider',
         check: async () => isGhInstalled(),
         fix: 'Install from https://cli.github.com/ or run `brew install gh`',
       },
       {
         name: 'gh CLI is authenticated',
+        source: 'provider',
         check: async () => ghIsAuthenticated(),
         fix: 'Run `gh auth login` to authenticate',
       },
@@ -191,6 +206,7 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
     const { gitlabIsAuthenticated } = await import('./providers/gitlab/index.js');
     checks.push({
       name: 'GitLab token is configured',
+      source: 'provider',
       check: async () => gitlabIsAuthenticated(),
       fix: 'Export GITLAB_TOKEN (a Personal Access Token with `api` scope). '
         + 'GITLAB_PRIVATE_TOKEN and GITLAB_PAT are accepted as aliases.',
@@ -200,6 +216,7 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
     const { gitcodeIsAuthenticated } = await import('./providers/gitcode/index.js');
     checks.push({
       name: 'GitCode token is configured',
+      source: 'provider',
       check: async () => gitcodeIsAuthenticated(),
       fix: 'Export GITCODE_TOKEN (a GitCode Personal Access Token), or run `teamai init` '
         + 'to paste one interactively. GC_TOKEN is accepted as an alias.',
@@ -209,11 +226,13 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
   checks.push(
     {
       name: 'Team repo exists locally',
+      source: 'local',
       check: async () => pathExists(localConfig.repo.localPath),
       fix: 'Run `teamai init` to clone the team repo',
     },
     {
       name: 'Team config (teamai.yaml) is valid',
+      source: 'local',
       check: async () => {
         const config = await loadTeamConfig(localConfig.repo.localPath);
         return config !== null;
@@ -225,6 +244,7 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
       // this check a member whose pushes are rejected queues notes forever and
       // is told each time that the next pull will retry.
       name: 'Contributed learnings are published',
+      source: 'local',
       check: async () => {
         const { listPendingLearnings } = await import('./utils/pending-learnings.js');
         return (await listPendingLearnings(localConfig)).length === 0;
@@ -235,6 +255,7 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
     ...await buildHookChecks(toolPaths, baseDir, localConfig),
     {
       name: 'Env variables injected in shell profile',
+      source: 'local',
       check: async () => {
         if (teamConfig?.sharing?.env?.injectShellProfile === false) return true;
 
@@ -272,7 +293,7 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
  * lands, so the human rendering keeps streaming while a slow check (a provider
  * CLI auth probe) is still running.
  */
-async function runChecks(
+export async function runChecks(
   checks: Check[],
   onResult?: (result: CheckResult) => void,
 ): Promise<CheckResult[]> {
