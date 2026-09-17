@@ -9,7 +9,7 @@ import { log, spinner } from './utils/logger.js';
 import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
 import { injectClaudeMdSection } from './utils/claudemd.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
-import { ResourceHandler } from './resources/base.js';
+import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
 import { loadTagsConfig, filterByTags } from './utils/tags.js';
@@ -25,6 +25,7 @@ import {
   TEAMAI_RECALL_RULES_END,
   CultureFrontmatterSchema,
   resolveBaseDir,
+  resolveToolBaseDir,
   resolveHookScope,
   getDataHome,
   isRecallEnabled,
@@ -470,7 +471,6 @@ async function getInstalledResourceTargets(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
 ): Promise<string[]> {
-  const baseDir = resolveBaseDir(localConfig);
   const targets: string[] = [];
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
@@ -479,7 +479,7 @@ async function getInstalledResourceTargets(
     const resourcePaths = [toolPath.skills, toolPath.rules, toolPath.agents]
       .filter((resourcePath): resourcePath is string => !!resourcePath);
     for (const resourcePath of resourcePaths) {
-      if (await ResourceHandler.isToolInstalled(resourcePath, baseDir)) {
+      if (await isToolInstalledForConfig(tool, resourcePath, localConfig)) {
         targets.push(tool);
         break;
       }
@@ -494,8 +494,8 @@ async function getInstalledResourceTargets(
  *
  * Rules carry a per-tool extension (`.mdc` for compatible tools), and those
  * dirs may still hold a `.md` copy from the layout that predates it. Agents are
- * rendered per tool as `.md`, `.toml` or `.json`. Skills are directories, so
- * their empty suffix leaves the bare name.
+ * rendered per tool as `.agent.md`, `.md`, `.toml` or `.json`. Skills are
+ * directories, so their empty suffix leaves the bare name.
  */
 function tombstoneExtensions(type: ResourceType, tool: string): readonly string[] {
   if (type === 'rules') return [...new Set([ruleFileExtensionForTool(tool), '.md'])];
@@ -523,7 +523,6 @@ async function cleanupTombstonedResources(
     { type: 'agents', toolPathField: 'agents' },
   ];
 
-  const baseDir = resolveBaseDir(localConfig);
   for (const { type, toolPathField } of tombstoneTypes) {
     const handler = getHandler(type);
     const tombstones = await handler.readTombstones(localConfig);
@@ -532,8 +531,9 @@ async function cleanupTombstonedResources(
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
       const dir = toolPath[toolPathField];
       if (!dir) continue;
-      if (!await ResourceHandler.isToolInstalled(dir, baseDir)) continue;
+      if (!await isToolInstalledForConfig(tool, dir, localConfig)) continue;
       if (isAgentExcluded(localConfig, tool)) continue;
+      const baseDir = resolveToolBaseDir(tool, localConfig);
 
       for (const name of tombstones) {
         for (const extension of tombstoneExtensions(type, tool)) {

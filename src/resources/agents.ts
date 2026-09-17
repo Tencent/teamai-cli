@@ -1,11 +1,11 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml } from 'yaml';
-import { ResourceHandler } from './base.js';
+import { isToolInstalledForConfig, ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { resolveBaseDir, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
+import { resolveToolBaseDir, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../projects.js';
@@ -18,6 +18,7 @@ import {
   reverseFromCodebuddy,
   reverseFromCodex,
   reverseFromCursor,
+  reverseFromCopilot,
   reverseFromJoycode,
   reverseFromKiro,
   reverseFromOpencode,
@@ -63,8 +64,6 @@ export class AgentsHandler extends ResourceHandler {
   async scanLocalForPush(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<AgentResourceItem[]> {
     const teamAgentsDir = path.join(localConfig.repo.localPath, 'agents');
     const tombstones = await this.readTombstones(localConfig);
-    const baseDir = resolveBaseDir(localConfig);
-
     // Single-repo mode: users drop canonical agent files straight into the repo's
     // own .teamai/agents/ (<name>.yaml, or legacy <name>.md) rather than authoring
     // them in a tool's agents dir. Those are ALREADY in team-repo format, so we
@@ -111,6 +110,7 @@ export class AgentsHandler extends ResourceHandler {
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.agents) continue;
+      const baseDir = resolveToolBaseDir(tool, localConfig);
       const agentsDir = path.join(baseDir, toolPath.agents);
       if (!await pathExists(agentsDir)) continue;
 
@@ -383,14 +383,13 @@ export class AgentsHandler extends ResourceHandler {
    */
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
     const agentItem = item as AgentResourceItem;
-    const baseDir = resolveBaseDir(localConfig);
 
     // Determine format: explicit flag takes precedence; fall back to extension detection
     const isLegacy = agentItem.legacy === true || (!agentItem.legacy && !item.sourcePath.endsWith('.yaml'));
 
     if (isLegacy) {
       // Legacy: copy .md to tools that support agents
-      await this.pullLegacyMd(item, teamConfig, baseDir, localConfig);
+      await this.pullLegacyMd(item, teamConfig, localConfig);
       return;
     }
 
@@ -418,12 +417,13 @@ export class AgentsHandler extends ResourceHandler {
         log.debug(`Skipping agent sync for ${tool}: no agents path configured`);
         continue;
       }
-      if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) {
+      if (!await isToolInstalledForConfig(tool, toolPath.agents, localConfig)) {
         log.debug(`Skipping agent sync for ${tool}: tool not installed`);
         continue;
       }
       if (isAgentExcluded(localConfig, tool)) continue;
 
+      const baseDir = resolveToolBaseDir(tool, localConfig);
       const destDir = path.join(baseDir, toolPath.agents);
       try {
         await ensureDir(destDir);
@@ -445,7 +445,6 @@ export class AgentsHandler extends ResourceHandler {
    */
   async removeItem(name: string, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
     const removed: string[] = [];
-    const baseDir = resolveBaseDir(localConfig);
 
     const teamAgentsDir = path.join(localConfig.repo.localPath, 'agents');
 
@@ -462,6 +461,7 @@ export class AgentsHandler extends ResourceHandler {
       // A tool the member excluded is not ours to write to, so it is not ours
       // to delete from either. This is the gate pull's tombstone pass applies.
       if (isAgentExcluded(localConfig, tool)) continue;
+      const baseDir = resolveToolBaseDir(tool, localConfig);
       // Try every native agent extension: the render format varies per tool.
       for (const ext of AGENT_FILE_EXTENSIONS) {
         const filePath = path.join(baseDir, toolPath.agents, `${name}${ext}`);
@@ -496,10 +496,10 @@ export class AgentsHandler extends ResourceHandler {
     const inactive = items.filter((item) => !isActive(item) && !BUILTIN_AGENT_NAMES.has(item.name));
     if (inactive.length === 0) return;
 
-    const baseDir = resolveBaseDir(localConfig);
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.agents || !isKnownTool(tool) || isAgentExcluded(localConfig, tool)) continue;
-      if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
+      if (!await isToolInstalledForConfig(tool, toolPath.agents, localConfig)) continue;
+      const baseDir = resolveToolBaseDir(tool, localConfig);
       const destDir = path.join(baseDir, toolPath.agents);
 
       const activeDestinations = new Set<string>();
@@ -548,7 +548,6 @@ export class AgentsHandler extends ResourceHandler {
   private async pullLegacyMd(
     item: ResourceItem,
     teamConfig: TeamaiConfig,
-    baseDir: string,
     localConfig: LocalConfig,
   ): Promise<void> {
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
@@ -557,12 +556,13 @@ export class AgentsHandler extends ResourceHandler {
         log.debug(`Skipping legacy agent sync for ${tool}: no agents path configured`);
         continue;
       }
-      if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) {
+      if (!await isToolInstalledForConfig(tool, toolPath.agents, localConfig)) {
         log.debug(`Skipping legacy agent sync for ${tool}: tool not installed`);
         continue;
       }
       if (isAgentExcluded(localConfig, tool)) continue;
 
+      const baseDir = resolveToolBaseDir(tool, localConfig);
       const destDir = path.join(baseDir, toolPath.agents);
       try {
         await ensureDir(destDir);
@@ -719,6 +719,8 @@ function reverseByTool(tool: ToolName, filePath: string, content: string): Rever
       return reverseFromCodex(filePath, content);
     case 'cursor':
       return reverseFromCursor(filePath, content);
+    case 'copilot':
+      return reverseFromCopilot(filePath, content);
     case 'joycode':
       return reverseFromJoycode(filePath, content);
     case 'qoder':

@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { ensureDir, pathExists, readFileSafe, writeFile, remove, listFiles } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
-import { ResourceHandler } from './resources/base.js';
+import { resolveToolBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
+import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { getUserHome } from './utils/home.js';
 import { ALL_SUPPORTED_TOOLS, agentStemFromFilename, renderForTool, reverseFromClaude } from './resources/agent-format.js';
 import type { ToolName } from './resources/agent-format.js';
@@ -112,7 +112,7 @@ export async function deployBuiltinAgents(
     .filter((f) => !(options?.skipRecall && f === 'teamai-recall.md'));
   if (agentFiles.length === 0) return 0;
 
-  const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
+  const defaultBaseDir = getUserHome();
   let deployed = 0;
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
@@ -120,7 +120,11 @@ export async function deployBuiltinAgents(
       log.debug(`Skipping built-in agent deployment for ${tool}: no agents path`);
       continue;
     }
-    if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) {
+    const baseDir = localConfig ? resolveToolBaseDir(tool, localConfig) : defaultBaseDir;
+    const installed = localConfig
+      ? await isToolInstalledForConfig(tool, toolPath.agents, localConfig)
+      : await ResourceHandler.isToolInstalled(toolPath.agents, baseDir);
+    if (!installed) {
       log.debug(`Skipping built-in agent deployment for ${tool}: tool not installed`);
       continue;
     }

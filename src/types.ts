@@ -284,13 +284,15 @@ export const TeamaiConfigSchema = z.object({
     tcodex: { skills: '.tcodex/skills', rules: '.tcodex/rules', settings: '.tcodex/hooks.json', agents: '.tcodex/agents' },
     cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents', mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' },
     // GitHub Copilot CLI keeps project customizations under .github and moves
-    // the complete user customization root when COPILOT_HOME is set. Hooks are
-    // a standalone file; settings.json is deliberately never managed.
+    // the complete user customization root when COPILOT_HOME is set. Agents use
+    // the official .agent.md format. Hooks are a standalone file; settings.json
+    // is deliberately never managed.
     copilot: {
       skills: '.github/skills',
       rules: '.github/instructions',
+      agents: '.github/agents',
       hooks: '.github/hooks/teamai.json',
-      userScope: { skills: 'skills', rules: 'instructions', hooks: 'hooks/teamai.json' },
+      userScope: { skills: 'skills', rules: 'instructions', agents: 'agents', hooks: 'hooks/teamai.json' },
     },
     // JoyCode: skills, rules (.mdc), and subagents are synced to .joycode/.
     // JoyCode currently does not provide a lifecycle hooks system or startup

@@ -348,7 +348,8 @@ async function discoverToolResources(
   }
 
   // (d2) Team-synced custom agents plus CLI built-ins. Native output uses
-  // .md for most tools, .toml for Codex, and .json for Kiro, so match by stem.
+  // .agent.md for Copilot, .md for most tools, .toml for Codex, and .json for
+  // Kiro, so match by stem.
   if (toolPath.agents) {
     const agentsDir = path.join(baseDir, toolPath.agents);
     if (await pathExists(agentsDir)) {

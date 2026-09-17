@@ -6,7 +6,7 @@ import { getDispatchCommand } from '../builtin-hooks.js';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
-export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'joycode' | 'qoder' | 'kiro' | 'zcode' | 'opencode';
+export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'kiro' | 'zcode' | 'opencode';
 
 export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'claude',
@@ -17,6 +17,7 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'codex-internal',
   'tcodex',
   'cursor',
+  'copilot',
   'joycode',
   'qoder',
   'kiro',
@@ -24,7 +25,7 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'opencode',
 ];
 
-export type AgentFileExtension = '.md' | '.toml' | '.json';
+export type AgentFileExtension = '.agent.md' | '.md' | '.toml' | '.json';
 
 /**
  * Every extension an agent render may carry on disk.
@@ -32,7 +33,7 @@ export type AgentFileExtension = '.md' | '.toml' | '.json';
  * Writers use `agentFileExtensionForTool`. Scanners and deleters use this list,
  * so a removal clears a name on every tool whatever format that tool renders.
  */
-export const AGENT_FILE_EXTENSIONS = ['.md', '.toml', '.json'] as const satisfies readonly AgentFileExtension[];
+export const AGENT_FILE_EXTENSIONS = ['.agent.md', '.md', '.toml', '.json'] as const satisfies readonly AgentFileExtension[];
 
 /**
  * Extract an agent name stem from a filename.
@@ -47,6 +48,8 @@ export function agentStemFromFilename(filename: string): string | null {
 
 export function agentFileExtensionForTool(tool: ToolName): AgentFileExtension {
   switch (tool) {
+    case 'copilot':
+      return '.agent.md';
     case 'codex':
     case 'codex-internal':
     case 'tcodex':
@@ -90,6 +93,7 @@ export interface AgentSpec {
     'codex-internal'?: Record<string, unknown>;
     tcodex?: Record<string, unknown>;
     cursor?: Record<string, unknown>;
+    copilot?: Record<string, unknown>;
     joycode?: Record<string, unknown>;
     qoder?: Record<string, unknown>;
     kiro?: Record<string, unknown>;
@@ -312,6 +316,53 @@ export function renderForCursor(spec: AgentSpec): RenderResult {
   return { ext: agentFileExtensionForTool('cursor'), content };
 }
 
+const COPILOT_TOOL_ALIASES = new Map<string, string>([
+  ['execute', 'execute'],
+  ['shell', 'execute'],
+  ['bash', 'execute'],
+  ['powershell', 'execute'],
+  ['read', 'read'],
+  ['notebookread', 'read'],
+  ['edit', 'edit'],
+  ['multiedit', 'edit'],
+  ['write', 'edit'],
+  ['notebookedit', 'edit'],
+  ['search', 'search'],
+  ['grep', 'search'],
+  ['glob', 'search'],
+  ['agent', 'agent'],
+  ['custom-agent', 'agent'],
+  ['task', 'agent'],
+  ['web', 'web'],
+  ['websearch', 'web'],
+  ['webfetch', 'web'],
+  ['todo', 'todo'],
+  ['todowrite', 'todo'],
+]);
+
+/** Collapse compatible tool names onto Copilot's primary aliases. */
+function normalizeCopilotTools(tools: string[] | string): string[] {
+  const values = Array.isArray(tools)
+    ? tools
+    : tools.split(',').map((tool) => tool.trim()).filter(Boolean);
+  return [...new Set(values.map((tool) => COPILOT_TOOL_ALIASES.get(tool.toLowerCase()) ?? tool))];
+}
+
+/** Render GitHub Copilot CLI's official `<name>.agent.md` profile. */
+export function renderForCopilot(spec: AgentSpec): RenderResult {
+  const frontmatterData: Record<string, unknown> = {
+    name: spec.name,
+    description: spec.description,
+  };
+  if (spec.model !== undefined) frontmatterData['model'] = spec.model;
+  if (spec.tools !== undefined) frontmatterData['tools'] = normalizeCopilotTools(spec.tools);
+  Object.assign(frontmatterData, spec.tool_extras?.copilot ?? {});
+  return {
+    ext: agentFileExtensionForTool('copilot'),
+    content: matter.stringify(spec.instructions, frontmatterData),
+  };
+}
+
 /**
  * Render an AgentSpec for OpenCode.
  * Output: YAML frontmatter (.md). OpenCode derives the agent name from the
@@ -397,6 +448,7 @@ export type ReverseResult =
 /** Common fields that belong in the AgentSpec root (not tool_extras). */
 const COMMON_CLAUDE_FIELDS = new Set(['name', 'description', 'model', 'tools']);
 const COMMON_CURSOR_FIELDS = new Set(['agent_id', 'description', 'model', 'tools']);
+const COMMON_COPILOT_FIELDS = new Set(['name', 'description', 'model', 'tools']);
 const COMMON_CODEX_FIELDS = new Set(['name', 'description', 'developer_instructions', 'model']);
 const COMMON_KIRO_FIELDS = new Set(['name', 'description', 'prompt', 'model', 'tools']);
 // `mode` is not carried to the AgentSpec root — it is an OpenCode-only concept
@@ -443,6 +495,38 @@ export function reverseFromClaude(filePath: string, content: string): ReverseRes
   if (fm['tools'] !== undefined) spec.tools = fm['tools'] as string[];
   if (Object.keys(extras).length > 0) spec.tool_extras = { claude: extras };
 
+  return { ok: true, spec };
+}
+
+/** Reverse a Copilot `.agent.md` profile into TeamAI's canonical agent spec. */
+export function reverseFromCopilot(filePath: string, content: string): ReverseResult {
+  let parsed: matter.GrayMatterFile<string>;
+  try {
+    parsed = matter(content);
+  } catch (err) {
+    return { ok: false, reason: `parse error: ${(err as Error).message}` };
+  }
+
+  const fm = parsed.data as Record<string, unknown>;
+  const body = parsed.content.trim();
+  const stem = agentStemFromFilename(path.basename(filePath));
+  const name = (fm['name'] as string | undefined) ?? stem;
+  if (!name) return { ok: false, reason: 'missing field name' };
+  if (!fm['description']) return { ok: false, reason: 'missing field description' };
+  if (!body) return { ok: false, reason: 'missing field instructions (empty body)' };
+
+  const extras: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fm)) {
+    if (!COMMON_COPILOT_FIELDS.has(key)) extras[key] = value;
+  }
+  const spec: AgentSpec = {
+    name,
+    description: fm['description'] as string,
+    instructions: body,
+  };
+  if (fm['model'] !== undefined) spec.model = fm['model'] as string;
+  if (fm['tools'] !== undefined) spec.tools = fm['tools'] as string[];
+  if (Object.keys(extras).length > 0) spec.tool_extras = { copilot: extras };
   return { ok: true, spec };
 }
 
@@ -753,6 +837,7 @@ export function renderForTool(spec: AgentSpec, tool: ToolName): RenderResult {
     case 'codex-internal': return renderForCodexInternal(spec);
     case 'tcodex': return renderForCodex(spec);
     case 'cursor': return renderForCursor(spec);
+    case 'copilot': return renderForCopilot(spec);
     case 'joycode': return renderForJoycode(spec);
     case 'qoder': return renderForClaude(spec);
     case 'kiro': return renderForKiro(spec);
