@@ -247,9 +247,11 @@ async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {
       name: `Skills delivered to ${tool}`,
       source: 'local',
       check: async () => problems.length === 0,
-      fix: `In ${tool}, ${problems.join('; ')}. Run \`teamai pull\`. If a skill stays `
-        + 'unreadable, fix its SKILL.md in the team repo: the frontmatter needs a `name` '
-        + 'matching the directory, or the agent never discovers it.',
+      fix: `In ${tool}, ${problems.join('; ')}. Run \`teamai pull --force\`: a plain pull `
+        + 'skips a scope whose team repo has not changed, so it cannot restore this. '
+        + 'If a skill stays unreadable, fix its SKILL.md in the team repo — the '
+        + 'frontmatter needs a `name` matching the directory, or the agent never '
+        + 'discovers it.',
     });
   }
 
@@ -294,7 +296,8 @@ async function buildDocsCheck(ctx: DoctorContext): Promise<Check[]> {
     name: 'Team docs delivered',
     source: 'local',
     check: async () => missing.length === 0,
-    fix: `Missing from ${dest}: ${nameList(missing)}. Run \`teamai pull\`.`,
+    fix: `Missing from ${dest}: ${nameList(missing)}. Run \`teamai pull --force\`: a plain `
+      + 'pull skips a scope whose team repo has not changed, so it cannot restore these.',
   }];
 }
 

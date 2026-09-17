@@ -112,7 +112,9 @@ describe('doctor — skills delivered on disk', () => {
     expect(await check.check()).toBe(false);
     expect(check.fix).toContain('beta');
     expect(check.fix).not.toContain('alpha');
-    expect(check.fix).toContain('teamai pull');
+    // Not a plain `teamai pull`: this check is printed at the end of one, and a
+    // scope whose team repo has not moved is skipped, so it cannot restore this.
+    expect(check.fix).toContain('teamai pull --force');
   });
 
   it('reports each installed tool separately', async () => {
@@ -269,6 +271,7 @@ describe('doctor — skills delivered on disk', () => {
       expect(await check!.check()).toBe(false);
       expect(check!.fix).toContain('api/reference.md');
       expect(check!.fix).not.toContain('guide.md');
+      expect(check!.fix).toContain('teamai pull --force');
     });
 
     it('asks nothing when the team repo ships no docs', async () => {
