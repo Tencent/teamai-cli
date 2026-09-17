@@ -1139,6 +1139,19 @@ function isBindPromptEnabled(): boolean {
   return normalized !== '0' && normalized !== 'false';
 }
 
+/**
+ * ClawPro project binding only backs CodeBuddy/WorkBuddy (the ClawPro-native
+ * agents); the prompt is noise for every other host (Claude, Cursor, Codex, …),
+ * which drove the poor UX. Gate the whole prompt — both the SessionStart TTY
+ * prompt and the UserPromptSubmit hint — on the current tool being a buddy
+ * agent. Reuses `modelAgentKind` so tool-name variants like `codebuddy-internal`
+ * still match (a raw Set would miss them).
+ */
+function isBindPromptTool(tool: string | undefined): boolean {
+  const kind = modelAgentKind(tool);
+  return kind === 'codebuddy' || kind === 'workbuddy';
+}
+
 async function emitBindingHint(
   config: LocalAgentConfig,
   workspacePath: string,
@@ -3069,8 +3082,10 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   // Binding prompt is injected via stdout hook context (not HTTP), so it must run
   // even inside the CloudStudio sandbox — the sandbox guard below only skips the
   // HTTP report/sync that would produce a duplicate card. Resolve the workspace
-  // only when the prompt is enabled, so the disabled path forks no git process.
-  if (isBindPromptEnabled()) {
+  // only when the prompt is enabled AND the host is a buddy agent, so every other
+  // path (disabled flag, or a non-buddy tool like Claude/Cursor/Codex) forks no
+  // git process.
+  if (isBindPromptEnabled() && isBindPromptTool(context.tool)) {
     const workspacePath = await resolveWorkspacePath(context.cwd);
     if (workspacePath) {
       const sid = context.event?.sessionId;
