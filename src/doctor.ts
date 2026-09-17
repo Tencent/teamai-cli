@@ -2,7 +2,7 @@ import path from 'node:path';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { log, setStderrOnly } from './utils/logger.js';
-import type { GlobalOptions, LocalConfig } from './types.js';
+import type { GlobalOptions } from './types.js';
 import {
   COPILOT_TOOL_ID,
   TEAMAI_ENV_START,
