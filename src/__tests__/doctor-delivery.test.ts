@@ -224,6 +224,38 @@ describe('doctor — skills delivered on disk', () => {
     });
   });
 
+  // The command whose job is reporting bad state must not stack-trace on it.
+  it('reports a team repo it cannot resolve a desired set from, instead of throwing', async () => {
+    // The same skill in two active role namespaces: scanRoleAwareSkills throws.
+    localConfig.primaryRole = 'dev';
+    await fse.ensureDir(path.join(repoPath, 'manifest'));
+    await fse.writeFile(path.join(repoPath, 'manifest', 'roles.yaml'), [
+      'version: 1',
+      'roles:',
+      '  - id: dev',
+      '    resources:',
+      '      knowledge: []',
+      '      skills: [one, two]',
+      '      learnings: []',
+      '      agents: []',
+      '',
+    ].join('\n'));
+    for (const ns of ['one', 'two']) {
+      const dir = path.join(repoPath, 'skills', ns, 'clash');
+      await fse.ensureDir(dir);
+      await fse.writeFile(path.join(dir, 'SKILL.md'), '---\nname: clash\n---\n');
+    }
+
+    const ctx = await resolveDoctorContext();
+    if (!ctx) throw new Error('expected a resolved doctor context');
+    const checks = await buildChecks(ctx);
+
+    const resolution = checks.find((c) => c.name === 'Skills to deliver can be resolved');
+    expect(resolution).toBeDefined();
+    expect(await resolution!.check()).toBe(false);
+    expect(resolution!.fix).toContain('clash');
+  });
+
   it('never writes to the tool directory it inspects', async () => {
     await deliver(CLAUDE_SKILLS, 'alpha');
 

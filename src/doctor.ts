@@ -2,7 +2,7 @@ import path from 'node:path';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { log, setStderrOnly } from './utils/logger.js';
-import type { GlobalOptions } from './types.js';
+import type { GlobalOptions, ResourceItem } from './types.js';
 import {
   COPILOT_TOOL_ID,
   TEAMAI_ENV_START,
@@ -74,7 +74,10 @@ export interface DoctorReport {
 }
 
 /**
- * Check that every tool the user put in `enabledAgents` is actually here.
+ * Check that every tool the team declares and the user enabled is actually here.
+ * Scope note: the loop is over `ctx.toolPaths`, already narrowed to the enabled,
+ * non-excluded agents, so a name in `enabledAgents` that `teamai.yaml` declares
+ * no paths for is out of scope — nothing would be written to it either way.
  *
  * That list is the user's own claim that they use the tool, and every writer —
  * skills, rules, agents, hooks — silently skips a tool whose root is missing.
@@ -93,6 +96,11 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
 
   const checks: Check[] = [];
   for (const [tool, paths] of Object.entries(toolPaths)) {
+    // Copilot counts itself installed as soon as enabledAgents names it
+    // (isToolInstalledForConfig), so this check could never fail for it. Its
+    // delivery check still reports what did not arrive.
+    if (tool === COPILOT_TOOL_ID) continue;
+
     const probePath = paths.skills ?? paths.rules ?? paths.agents ?? paths.settings ?? paths.hooks;
     if (!probePath) continue;
 
@@ -192,8 +200,22 @@ async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {
   const { buildRolePullContext, resolveDesiredSkills } = await import('./pull.js');
   const { skillTargetForTool } = await import('./resources/skills.js');
 
-  const roleContext = await buildRolePullContext(localConfig);
-  const { items } = await resolveDesiredSkills(teamConfig, localConfig, roleContext);
+  let items: ResourceItem[];
+  try {
+    const roleContext = await buildRolePullContext(localConfig);
+    ({ items } = await resolveDesiredSkills(teamConfig, localConfig, roleContext));
+  } catch (e) {
+    // A team repo whose active namespaces collide cannot say what should be
+    // delivered — `pull` aborts the scope with this same message. The command
+    // whose job is explaining bad state must report it, not stack-trace on it.
+    return [{
+      name: 'Skills to deliver can be resolved',
+      source: 'local',
+      check: async () => false,
+      fix: `${(e as Error).message}. Until the team repo is fixed, `
+        + 'pull cannot sync skills for this role.',
+    }];
+  }
   if (items.length === 0) return [];
 
   const checks: Check[] = [];
@@ -434,14 +456,18 @@ function emitReport(report: DoctorReport): void {
   console.log(JSON.stringify(report, null, 2));
 }
 
-/** The human rendering of one finished check. */
-function renderResult({ name, ok, fix }: CheckResult): void {
-  if (ok) {
-    console.log(`  ✔ ${name}`);
-    return;
-  }
-  console.log(`  ✖ ${name}`);
-  if (fix) console.log(`    → ${fix}`);
+/**
+ * The human rendering of one finished check, as lines. Exported because `pull`
+ * prints the same shape through the logger rather than stdout — one definition
+ * of the glyphs and the indent, two sinks.
+ */
+export function formatCheckResult({ name, ok, fix }: CheckResult): string[] {
+  if (ok) return [`  ✔ ${name}`];
+  return fix ? [`  ✖ ${name}`, `    → ${fix}`] : [`  ✖ ${name}`];
+}
+
+function renderResult(result: CheckResult): void {
+  for (const line of formatCheckResult(result)) console.log(line);
 }
 
 export async function doctor(options: DoctorOptions): Promise<boolean> {

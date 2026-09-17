@@ -312,35 +312,6 @@ export async function scanRoleAwareSkills(localConfig: LocalConfig, namespaces: 
   return [...items.values()];
 }
 
-// Deployment adds a CONTRIBUTORS file that the team source may not have; ignore it
-// when checking whether a deployed skill still matches its source (same file as
-// resources/skills.ts and pre-push-sync.ts use for modification detection).
-const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
-
-/**
- * Data-safety gate for deleting a deployed skill during cleanup. A deployed skill
- * is safe to remove only when its content matches its team-repo source exactly
- * (ignoring the deployment-added CONTRIBUTORS file). That means:
- *   - every team file is present and unchanged (no local edits), AND
- *   - there are NO extra files (no unpushed work like a user's own scripts).
- * `dirContentEqual` enforces both directions (same file set + same content), which
- * is what protects unpushed files — a team-subset check would wrongly ignore them.
- * `ensureSkillFrontmatter` is idempotent for a source that already has complete
- * frontmatter (the normal case), so a cleanly-deployed skill compares equal.
- * If the source is unknown/missing (can't verify) or anything differs, it is NOT
- * safe: keep it and let the caller warn. Prevents silent loss of uncommitted work.
- *
- * Known conservative edge: if a team source skill lacks frontmatter, deploy
- * injects it, so the deployed copy never compares equal and the skill is kept
- * rather than auto-pruned. That errs on the safe side (no data loss); the user
- * can delete it manually. Real team skills carry frontmatter, so this is rare.
- *
- * Local VCS metadata: a deployed skill that contains its own version-control
- * directory (`.git`/`.hg`/`.svn`) is ALWAYS kept. `dirContentEqual` skips these
- * (see IGNORED_NAMES), so a byte-identical working tree can still hide unpushed
- * commits, stashes, or reflog history inside `.git` — deleting the dir would lose
- * them silently. Their presence can't be proven safe by a file compare, so keep.
- */
 /** What a member should have on disk, and what the team repo holds. */
 export interface DesiredSkills {
   /** The skills this member should have: role namespaces ∪ subscribed tags − exclusions. */
@@ -408,6 +379,36 @@ export async function resolveDesiredSkills(
 
   return { items, teamItems, skippedByTags };
 }
+
+// Deployment adds a CONTRIBUTORS file that the team source may not have; ignore it
+// when checking whether a deployed skill still matches its source (same file as
+// resources/skills.ts and pre-push-sync.ts use for modification detection).
+const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
+
+/**
+ * Data-safety gate for deleting a deployed skill during cleanup. A deployed skill
+ * is safe to remove only when its content matches its team-repo source exactly
+ * (ignoring the deployment-added CONTRIBUTORS file). That means:
+ *   - every team file is present and unchanged (no local edits), AND
+ *   - there are NO extra files (no unpushed work like a user's own scripts).
+ * `dirContentEqual` enforces both directions (same file set + same content), which
+ * is what protects unpushed files — a team-subset check would wrongly ignore them.
+ * `ensureSkillFrontmatter` is idempotent for a source that already has complete
+ * frontmatter (the normal case), so a cleanly-deployed skill compares equal.
+ * If the source is unknown/missing (can't verify) or anything differs, it is NOT
+ * safe: keep it and let the caller warn. Prevents silent loss of uncommitted work.
+ *
+ * Known conservative edge: if a team source skill lacks frontmatter, deploy
+ * injects it, so the deployed copy never compares equal and the skill is kept
+ * rather than auto-pruned. That errs on the safe side (no data loss); the user
+ * can delete it manually. Real team skills carry frontmatter, so this is rare.
+ *
+ * Local VCS metadata: a deployed skill that contains its own version-control
+ * directory (`.git`/`.hg`/`.svn`) is ALWAYS kept. `dirContentEqual` skips these
+ * (see IGNORED_NAMES), so a byte-identical working tree can still hide unpushed
+ * commits, stashes, or reflog history inside `.git` — deleting the dir would lose
+ * them silently. Their presence can't be proven safe by a file compare, so keep.
+ */
 
 async function skillSafeToRemove(deployedDir: string, source: string | undefined): Promise<boolean> {
   if (!source || !await pathExists(source)) return false;
@@ -1828,7 +1829,7 @@ const POST_PULL_CHECKS_TIMEOUT_MS = 5000;
 async function reportPostPullChecks(options: GlobalOptions): Promise<void> {
   if (options.silent || options.dryRun) return;
   try {
-    const { resolveDoctorContext, buildChecks, runChecks } = await import('./doctor.js');
+    const { resolveDoctorContext, buildChecks, runChecks, formatCheckResult } = await import('./doctor.js');
     const ctx = await resolveDoctorContext();
     if (!ctx) return;
 
@@ -1836,16 +1837,17 @@ async function reportPostPullChecks(options: GlobalOptions): Promise<void> {
     const results = await withTimeout(
       runChecks(local),
       POST_PULL_CHECKS_TIMEOUT_MS,
-      'Post-pull checks are still running after 5s',
+      `Post-pull checks are still running after ${POST_PULL_CHECKS_TIMEOUT_MS}ms`,
     );
 
     const failures = results.filter((r) => !r.ok);
     if (failures.length === 0) return;
 
     log.warn(`Pull finished, but ${failures.length} check(s) failed:`);
-    for (const { name, fix } of failures) {
-      log.warn(`  ✖ ${name}`);
-      if (fix) log.dim(`    → ${fix}`);
+    for (const failure of failures) {
+      const [headline, ...detail] = formatCheckResult(failure);
+      log.warn(headline);
+      for (const line of detail) log.dim(line);
     }
     log.dim('  Run `teamai doctor` for the full report.');
   } catch (e) {
