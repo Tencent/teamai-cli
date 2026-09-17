@@ -46,7 +46,7 @@ import { withTimeout } from './utils/async.js';
 // batch in this process until it settles and finishes consuming its events.
 let pendingUsageReport: Promise<void> | undefined;
 
-interface RolePullContext {
+export interface RolePullContext {
   activeNamespaces: ResourceNamespaces;
   activeSkillNames: Set<string>;
   inactiveSkillNames: Set<string>;
@@ -341,6 +341,74 @@ const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
  * commits, stashes, or reflog history inside `.git` — deleting the dir would lose
  * them silently. Their presence can't be proven safe by a file compare, so keep.
  */
+/** What a member should have on disk, and what the team repo holds. */
+export interface DesiredSkills {
+  /** The skills this member should have: role namespaces ∪ subscribed tags − exclusions. */
+  items: ResourceItem[];
+  /** Every skill in the team repo — the set cleanup is allowed to prune from. */
+  teamItems: ResourceItem[];
+  /** How many skills the tag channel left out, for the sync line. */
+  skippedByTags: number;
+}
+
+/**
+ * Resolve the skills this member should have. Read-only: `pull` calls it to
+ * decide what to install, and `doctor` calls it to check what landed (#598).
+ * Keeping it in one place is the point — re-deriving the union inside the check
+ * would put role namespaces, tag subscriptions and exclusions in a second place
+ * that drifts on its own.
+ *
+ * `roleContext` is explicit rather than resolved here: `pullForScope` already
+ * holds one (it also drives rules, agents and cleanup), and null means "no roles
+ * configured", not "not looked up yet".
+ */
+export async function resolveDesiredSkills(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  roleContext: RolePullContext | null,
+): Promise<DesiredSkills> {
+  const handler = getHandler('skills');
+  const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
+  const subscribedTags = localConfig.subscribedTags;
+  const excludedSkills = new Set(localConfig.excludedSkills ?? []);
+
+  const directoryItems = roleContext
+    ? await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces)
+    : await handler.scanTeamForPull(teamConfig, localConfig);
+
+  const teamItems = await handler.scanTeamForPull(teamConfig, localConfig);
+
+  // Tag channel: only augment when subscriptions are actually active
+  const hasActiveTagSubscriptions = tagsConfig != null
+    && subscribedTags != null
+    && subscribedTags.length > 0;
+
+  let tagIncluded: ResourceItem[] = [];
+  let skippedByTags = 0;
+  if (hasActiveTagSubscriptions) {
+    const tagResult = filterByTags(teamItems, tagsConfig, subscribedTags, 'skills');
+    const subscribedTagSet = new Set(subscribedTags);
+    tagIncluded = tagResult.included.filter((item) => {
+      const itemTags = tagsConfig.skills[item.name];
+      return itemTags?.some((tag) => subscribedTagSet.has(tag));
+    });
+    skippedByTags = tagResult.skipped.length;
+  }
+
+  // Union: merge directory items with tag-matched items
+  const merged = new Map<string, ResourceItem>();
+  for (const item of directoryItems) merged.set(item.name, item);
+  for (const item of tagIncluded) {
+    if (!merged.has(item.name)) merged.set(item.name, item);
+  }
+
+  const items = excludedSkills.size > 0
+    ? [...merged.values()].filter((item) => !excludedSkills.has(item.name))
+    : [...merged.values()];
+
+  return { items, teamItems, skippedByTags };
+}
+
 async function skillSafeToRemove(deployedDir: string, source: string | undefined): Promise<boolean> {
   if (!source || !await pathExists(source)) return false;
   // Recursive: a git repo nested anywhere under the skill (e.g. scripts/.git)
@@ -721,41 +789,12 @@ async function pullForScope(
     let items: ResourceItem[];
     let skippedByTags = 0;
     if (type === 'skills') {
-      const directoryItems = roleContext
-        ? await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces)
-        : await handler.scanTeamForPull(freshConfig, localConfig);
-
-      const allTeamSkills = await handler.scanTeamForPull(freshConfig, localConfig);
-
-      // Tag channel: only augment when subscriptions are actually active
-      const hasActiveTagSubscriptions = tagsConfig != null
-        && subscribedTags != null
-        && subscribedTags.length > 0;
-
-      let tagIncluded: ResourceItem[] = [];
-      if (hasActiveTagSubscriptions) {
-        const tagResult = filterByTags(allTeamSkills, tagsConfig, subscribedTags, 'skills');
-        const subscribedTagSet = new Set(subscribedTags);
-        tagIncluded = tagResult.included.filter((item) => {
-          const itemTags = tagsConfig.skills[item.name];
-          return itemTags?.some((tag) => subscribedTagSet.has(tag));
-        });
-        skippedByTags = tagResult.skipped.length;
-      }
-
-      // Union: merge directory items with tag-matched items
-      const merged = new Map<string, ResourceItem>();
-      for (const item of directoryItems) merged.set(item.name, item);
-      for (const item of tagIncluded) {
-        if (!merged.has(item.name)) merged.set(item.name, item);
-      }
-      items = [...merged.values()];
-      if (excludedSkills.size > 0) {
-        items = items.filter((item) => !excludedSkills.has(item.name));
-      }
+      const desired = await resolveDesiredSkills(freshConfig, localConfig, roleContext);
+      items = desired.items;
+      skippedByTags = desired.skippedByTags;
       desiredSkillNames = new Set(items.map((i) => i.name));
-      knownRepoSkillNames = new Set(allTeamSkills.map((i) => i.name));
-      knownRepoSkillSources = new Map(allTeamSkills.map((i) => [i.name, i.sourcePath]));
+      knownRepoSkillNames = new Set(desired.teamItems.map((i) => i.name));
+      knownRepoSkillSources = new Map(desired.teamItems.map((i) => [i.name, i.sourcePath]));
     } else if (type === 'agents') {
       // Role/project namespace filter (root = everyone), same as rules. Throws
       // on a stem collision; the caller's try/catch logs it and aborts the scope.
