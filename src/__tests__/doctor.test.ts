@@ -604,6 +604,31 @@ describe('buildChecks — a tool enabled but not installed', () => {
         return buildChecks(ctx);
     }
 
+    it('fails for a tool that carries no hook configuration at all', async () => {
+        // opencode ships skills and nothing else. Hanging this check off the hook
+        // registry made it invisible for exactly the tools most likely to be
+        // declared and absent.
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            enabledAgents: ['claude', 'opencode'],
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            toolPaths: {
+                claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
+                opencode: { skills: '.opencode/skills' },
+            },
+        });
+        mockedPathExists.mockImplementation(async (filePath: string) => !filePath.includes('.opencode'));
+
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+        const opencode = (await buildChecks(ctx)).find((c) => c.name === 'opencode is installed');
+
+        expect(opencode).toBeDefined();
+        expect(await opencode!.check()).toBe(false);
+    });
+
     it('fails a check naming the tool the user enabled', async () => {
         const checks = await checksFor({ enabledAgents: ['claude', 'codex'] });
 

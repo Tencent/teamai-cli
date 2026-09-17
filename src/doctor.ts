@@ -74,14 +74,48 @@ export interface DoctorReport {
 }
 
 /**
- * Build hook checks for tools whose settings parent directory already exists
- * (i.e. the tool is installed).
+ * Check that every tool the user put in `enabledAgents` is actually here.
  *
- * A tool that is not installed yields a check only when `enabledAgents` lists
- * it: that list is the user's own claim that they use the tool, so answering it
- * with silence reproduces inside `doctor` the skip #574 reports in `pull` —
- * "Synced N" while the tool receives nothing. Without `enabledAgents` the team's
- * tool list is aspirational, and an absent tool stays silent as before.
+ * That list is the user's own claim that they use the tool, and every writer —
+ * skills, rules, agents, hooks — silently skips a tool whose root is missing.
+ * Answering the claim with silence reproduces inside `doctor` the skip #574
+ * reports in `pull`: "Synced N" while the tool receives nothing. Without
+ * `enabledAgents` the team's tool list is aspirational, so an absent tool stays
+ * silent, as it always has.
+ *
+ * The probe uses a resource path rather than the settings path: resources land
+ * under `resolveToolBaseDir` (the project root in project scope), which is the
+ * root a pull would have to write into.
+ */
+async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig, toolPaths } = ctx;
+  if (!localConfig.enabledAgents) return [];
+
+  const checks: Check[] = [];
+  for (const [tool, paths] of Object.entries(toolPaths)) {
+    const probePath = paths.skills ?? paths.rules ?? paths.agents ?? paths.settings ?? paths.hooks;
+    if (!probePath) continue;
+
+    const isInstalled = (): Promise<boolean> => isToolInstalledForConfig(tool, probePath, localConfig);
+    if (await isInstalled()) continue;
+
+    checks.push({
+      name: `${tool} is installed`,
+      source: 'local',
+      check: isInstalled,
+      fix: `enabledAgents lists ${tool}, but it has no directory under `
+        + `${resolveToolBaseDir(tool, localConfig)}, so a pull delivers nothing to it. `
+        + `Install ${tool} (in project scope, opening a session there creates its root), `
+        + `or run \`teamai uninstall --agent ${tool}\` to stop syncing to it.`,
+    });
+  }
+
+  return checks;
+}
+
+/**
+ * Build hook checks for tools whose settings parent directory already exists
+ * (i.e. the tool is installed). Tools that are not installed are skipped.
  */
 async function buildHookChecks(
   toolPaths: TeamaiConfig['toolPaths'],
@@ -98,22 +132,12 @@ async function buildHookChecks(
     if (!hookPath) continue;
     const settingsPath = hookPath;
     const parentDir = path.dirname(settingsPath);
-    const isInstalled = (): Promise<boolean> => (tool === COPILOT_TOOL_ID
-      ? isToolInstalledForConfig(tool, paths.hooks ?? paths.settings ?? '', localConfig)
-      : pathExists(parentDir));
-    if (!await isInstalled()) {
-      if (localConfig.enabledAgents?.includes(tool)) {
-        checks.push({
-          name: `${tool} is installed`,
-          source: 'local',
-          check: isInstalled,
-          fix: `enabledAgents lists ${tool}, but ${parentDir} does not exist, so `
-            + `${tool} receives nothing from a pull. Install ${tool}, or run `
-            + `\`teamai uninstall --agent ${tool}\` to stop syncing to it.`,
-        });
-      }
-      continue;
-    }
+    const installed = tool === COPILOT_TOOL_ID
+      ? await isToolInstalledForConfig(tool, paths.hooks ?? paths.settings ?? '', localConfig)
+      : await pathExists(parentDir);
+    // An uninstalled tool has no hooks to check. Whether it should be installed
+    // at all is a different question — see buildEnabledToolChecks.
+    if (!installed) continue;
     checks.push({
       name: `teamai hooks in ${tool} settings`,
       source: 'local',
@@ -348,6 +372,7 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
       fix: 'Run `teamai pull` to publish them. If they stay queued, check that you '
         + 'can push to the team repo (run with --verbose to see the push error).',
     },
+    ...await buildEnabledToolChecks(ctx),
     ...await buildHookChecks(toolPaths, baseDir, localConfig),
     ...await buildDeliveryChecks(ctx),
     {
