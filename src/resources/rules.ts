@@ -11,6 +11,7 @@ import {
   mergeCopilotBodyIntoTeamMd,
   teamRuleToCopilotInstructions,
 } from './copilot-instructions.js';
+import { assertWithinRoot } from '../utils/path-safety.js';
 import {
   ruleFileExtensionForTool,
   ruleStemFromFilename,
@@ -152,7 +153,13 @@ export class RulesHandler extends ResourceHandler {
   }
 
   async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    const dest = path.join(localConfig.repo.localPath, 'rules', `${item.name}.md`);
+    const rulesRoot = path.join(localConfig.repo.localPath, 'rules');
+    const dest = path.resolve(localConfig.repo.localPath, item.relativePath);
+    assertWithinRoot(
+      rulesRoot,
+      dest,
+      `Invalid rule destination outside team repo rules directory: ${item.relativePath}`,
+    );
     if (item.sourcePath !== dest) {
       if (item.sourcePath.endsWith('.mdc')) {
         // Source is a tool-native `.mdc`. Only its markdown body is pushed: the
