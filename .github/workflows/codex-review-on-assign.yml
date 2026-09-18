@@ -108,6 +108,9 @@ jobs:
     needs: gate
     if: needs.gate.outputs.authorized == 'true'
     runs-on: ubuntu-latest
+    # A normal review finishes in ~2 min. Cap the job so a hung run cannot idle
+    # for hours (the default 6h) burning runner time before it is killed.
+    timeout-minutes: 15
     permissions:
       contents: read # read the base code + git objects for the diff
       pull-requests: write # the comment step posts to the PR
@@ -131,7 +134,14 @@ jobs:
 
       - name: Run Codex review
         id: codex
-        uses: openai/codex-action@v1
+        # Pinned to v1.11, NOT @v1 (which resolves to v1.12+). v1.12 rewrote the
+        # codex-exec runner to wait on the whole process tree's stdio; the
+        # backgrounded Responses API proxy keeps those descriptors open, so the
+        # step never sees stdio close and hangs until timeout even though the
+        # review already finished — the result is produced and then thrown away.
+        # See openai/codex-action#151 and openai/codex#9269. v1.11 is the last
+        # good release (its final-message output contract is identical).
+        uses: openai/codex-action@v1.11
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           # Delegate the "who may run" decision to our own `gate` job above.
