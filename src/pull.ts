@@ -7,7 +7,7 @@ import { pendingLearningsDir } from './utils/pending-learnings.js';
 import { learningsRoots } from './utils/learnings-roots.js';
 import { log, spinner } from './utils/logger.js';
 import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
-import { injectClaudeMdSection } from './utils/claudemd.js';
+import { injectClaudeMdSection, removeClaudeMdSection } from './utils/claudemd.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
 import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
@@ -1266,13 +1266,13 @@ async function syncManagedInstructions(
   const culturePath = path.join(localConfig.repo.localPath, 'culture.md');
   const cultureContent = await readFileSafe(culturePath);
   const compiledCulture = cultureContent ? compileCulture(cultureContent) : null;
-  if (compiledCulture) {
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
-      if (isAgentExcluded(localConfig, tool) || !toolPath.claudemd) continue;
-      if (toolPath.rules && !await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
+    if (isAgentExcluded(localConfig, tool) || !toolPath.claudemd) continue;
+    if (toolPath.rules && !await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
 
-      const claudeMdPath = path.join(resolveToolBaseDir(tool, localConfig), toolPath.claudemd);
-      try {
+    const claudeMdPath = path.join(resolveToolBaseDir(tool, localConfig), toolPath.claudemd);
+    try {
+      if (compiledCulture) {
         await injectClaudeMdSection(
           claudeMdPath,
           TEAMAI_CULTURE_START,
@@ -1280,17 +1280,21 @@ async function syncManagedInstructions(
           compiledCulture,
         );
         log.debug(`Injected culture into ${tool} CLAUDE.md`);
-      } catch (e) {
-        log.warn(`Failed to inject culture into ${tool} CLAUDE.md: ${(e as Error).message}`);
+      } else {
+        await removeClaudeMdSection(claudeMdPath, TEAMAI_CULTURE_START, TEAMAI_CULTURE_END);
       }
+    } catch (e) {
+      const action = compiledCulture ? 'inject culture into' : 'remove culture from';
+      log.warn(`Failed to ${action} ${tool} CLAUDE.md: ${(e as Error).message}`);
     }
+  }
+  if (compiledCulture) {
     log.success('Synced team culture');
   }
 
   try {
     const claudemdContents = await collectClaudemdFiles(localConfig.repo.localPath, roleContext);
     const compiled = compileClaudemd(claudemdContents);
-    if (!compiled) return;
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
       if (isAgentExcluded(localConfig, tool) || !toolPath.claudemd) continue;
@@ -1298,18 +1302,25 @@ async function syncManagedInstructions(
 
       const claudeMdPath = path.join(resolveToolBaseDir(tool, localConfig), toolPath.claudemd);
       try {
-        await injectClaudeMdSection(
-          claudeMdPath,
-          TEAMAI_CLAUDEMD_START,
-          TEAMAI_CLAUDEMD_END,
-          compiled,
-        );
-        log.debug(`Injected shared instructions into ${tool} CLAUDE.md`);
+        if (compiled) {
+          await injectClaudeMdSection(
+            claudeMdPath,
+            TEAMAI_CLAUDEMD_START,
+            TEAMAI_CLAUDEMD_END,
+            compiled,
+          );
+          log.debug(`Injected shared instructions into ${tool} CLAUDE.md`);
+        } else {
+          await removeClaudeMdSection(claudeMdPath, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END);
+        }
       } catch (e) {
-        log.warn(`Failed to inject shared instructions into ${tool} CLAUDE.md: ${(e as Error).message}`);
+        const action = compiled ? 'inject shared instructions into' : 'remove shared instructions from';
+        log.warn(`Failed to ${action} ${tool} CLAUDE.md: ${(e as Error).message}`);
       }
     }
-    log.success(`[${scopeLabel}] Synced shared instructions (${claudemdContents.length} file(s))`);
+    if (compiled) {
+      log.success(`[${scopeLabel}] Synced shared instructions (${claudemdContents.length} file(s))`);
+    }
   } catch (e) {
     log.debug(`Shared instructions sync skipped: ${(e as Error).message}`);
   }

@@ -23,7 +23,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { recallDisable, recallEnable } from '../recall-toggle.js';
-import { TEAMAI_RECALL_RULES_START } from '../types.js';
+import { TeamaiConfigSchema, TEAMAI_RECALL_RULES_START } from '../types.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 describe('recall toggle native agent cleanup', () => {
@@ -91,6 +91,75 @@ describe('recall toggle native agent cleanup', () => {
     await recallDisable({});
 
     expect(await fse.readFile(backup, 'utf8')).toBe('user backup');
+  });
+
+  it('uses custom COPILOT_HOME for recall injection and cleanup', async () => {
+    const copilotHome = path.join(tmpDir, 'copilot-home');
+    const instructionPath = path.join(copilotHome, 'copilot-instructions.md');
+    const userInstructions = '# Personal Copilot instructions\n';
+    vi.stubEnv('COPILOT_HOME', copilotHome);
+    await fse.ensureDir(path.join(copilotHome, 'agents'));
+    await fse.ensureDir(path.join(copilotHome, 'instructions'));
+    await fse.ensureDir(path.join(copilotHome, 'skills'));
+    await fse.writeFile(instructionPath, userInstructions);
+
+    const localConfig: LocalConfig = {
+      repo: {
+        localPath: path.join(tmpDir, 'team-repo'),
+        remote: 'https://github.com/example/team.git',
+      },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      additionalRoles: [],
+      scope: 'user',
+      enabledAgents: ['copilot'],
+      recallEnabled: true,
+    };
+    const teamConfig = TeamaiConfigSchema.parse({
+      team: 'test',
+      repo: 'https://github.com/example/team.git',
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await recallEnable({});
+    const enabled = await fse.readFile(instructionPath, 'utf8');
+    expect(enabled).toContain(userInstructions.trim());
+    expect(enabled).toContain(TEAMAI_RECALL_RULES_START);
+    await expect(fse.pathExists(path.join(
+      copilotHome,
+      'instructions',
+      'teamai-recall.instructions.md',
+    ))).resolves.toBe(true);
+    await expect(fse.pathExists(path.join(
+      copilotHome,
+      'agents',
+      'teamai-recall.agent.md',
+    ))).resolves.toBe(true);
+    await expect(fse.pathExists(path.join(
+      copilotHome,
+      'skills',
+      'teamai-share-learnings',
+      'SKILL.md',
+    ))).resolves.toBe(true);
+
+    await recallDisable({});
+    const disabled = await fse.readFile(instructionPath, 'utf8');
+    expect(disabled).toBe(userInstructions);
+    await expect(fse.pathExists(path.join(
+      copilotHome,
+      'instructions',
+      'teamai-recall.instructions.md',
+    ))).resolves.toBe(false);
+    await expect(fse.pathExists(path.join(
+      copilotHome,
+      'agents',
+      'teamai-recall.agent.md',
+    ))).resolves.toBe(false);
+    await expect(fse.pathExists(path.join(
+      copilotHome,
+      'skills',
+      'teamai-share-learnings',
+    ))).resolves.toBe(false);
   });
 });
 

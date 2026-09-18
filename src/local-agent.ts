@@ -18,7 +18,7 @@ import {
   writeJson,
   writeJsonAtomic,
 } from './utils/fs.js';
-import { ResourceHandler } from './resources/base.js';
+import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
 import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, OPENCLAW_TOOLS } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
@@ -46,9 +46,13 @@ import {
 } from './mcp-reconcile.js';
 import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
+import { injectClaudeMdSection, removeClaudeMdSection } from './utils/claudemd.js';
 import { reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
 import {
   resolveBaseDir,
+  resolveToolBaseDir,
+  scopedToolPaths,
+  COPILOT_TOOL_ID,
   getTokenPath,
   TEAMAI_CLAUDEMD_START,
   TEAMAI_CLAUDEMD_END,
@@ -2053,14 +2057,10 @@ async function syncClaudemd(
   const block = compileClaudemdBlock(contents);
   let syncedAny = false;
 
-  const defaultBaseDir = localConfig.scope === 'project' && localConfig.projectRoot
-    ? localConfig.projectRoot
-    : getUserHome();
-
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.claudemd) continue;
 
-    let baseDir = defaultBaseDir;
+    let baseDir = resolveToolBaseDir(tool, localConfig);
     let resolvedAbsPath: string | null = null;
 
     if (tool === 'openclaw' && localConfig.scope !== 'project') {
@@ -2078,6 +2078,8 @@ async function syncClaudemd(
 
     const toolInstalled = resolvedAbsPath
       ? await pathExists(resolvedAbsPath)
+      : tool === COPILOT_TOOL_ID && localConfig.scope === 'user'
+        ? await isToolInstalledForConfig(tool, toolPath.claudemd, localConfig)
       : toolPath.claudemd.includes('/')
         ? await ResourceHandler.isToolInstalled(toolPath.claudemd, baseDir)
         : await pathExists(path.join(baseDir, `.${tool}`));
@@ -2088,7 +2090,6 @@ async function syncClaudemd(
 
     const claudeMdPath = resolvedAbsPath ?? path.join(baseDir, toolPath.claudemd);
     try {
-      const { injectClaudeMdSection } = await import('./utils/claudemd.js');
       if (block) {
         await injectClaudeMdSection(claudeMdPath, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END, block);
         log.debug(`local-agent: synced CLAUDE.md instructions to ${tool}`);
@@ -2106,21 +2107,6 @@ async function syncClaudemd(
   if (files.length > 0 && !syncedAny) {
     throw new Error('CLAUDE.md sync landed on no tool: every configured target was skipped');
   }
-}
-
-async function removeClaudeMdSection(
-  filePath: string,
-  startMarker: string,
-  endMarker: string,
-): Promise<void> {
-  const existing = await readFileSafe(filePath);
-  if (!existing) return;
-  const startIdx = existing.indexOf(startMarker);
-  const endIdx = existing.indexOf(endMarker);
-  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return;
-  const before = existing.substring(0, startIdx).replace(/\n+$/, '\n');
-  const after = existing.substring(endIdx + endMarker.length).replace(/^\n+/, '\n');
-  await writeFile(filePath, (before + after).trimEnd() + '\n');
 }
 
 async function ackCommand(

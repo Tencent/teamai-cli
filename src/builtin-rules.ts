@@ -1,11 +1,11 @@
 import path from 'node:path';
 import { ensureDir, writeFile, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { ResourceHandler } from './resources/base.js';
+import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { ruleFileExtensionForTool, usesCursorMdcRules } from './resources/rule-format.js';
 import { teamRuleToCursorMdc } from './resources/cursor-mdc.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
+import { resolveToolBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
 import fs from 'node:fs/promises';
 import { getUserHome } from './utils/home.js';
 
@@ -51,7 +51,7 @@ export async function deployBuiltinRules(
     localConfig?: LocalConfig,
     options?: { skipRecall?: boolean },
 ): Promise<number> {
-    const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
+    const defaultBaseDir = getUserHome();
     let deployed = 0;
 
     const builtinRules: Array<{ name: string; content: string }> = [
@@ -60,9 +60,13 @@ export async function deployBuiltinRules(
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
         if (!toolPath.rules) continue;
+        const baseDir = localConfig ? resolveToolBaseDir(tool, localConfig) : defaultBaseDir;
 
         // Skip tools that are not installed
-        if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) {
+        const installed = localConfig
+            ? await isToolInstalledForConfig(tool, toolPath.rules, localConfig)
+            : await ResourceHandler.isToolInstalled(toolPath.rules, baseDir);
+        if (!installed) {
             log.debug(`Skipping built-in rules for ${tool}: tool not installed`);
             continue;
         }

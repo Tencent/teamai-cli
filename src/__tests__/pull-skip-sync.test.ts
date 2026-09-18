@@ -821,6 +821,16 @@ describe('enabledAgents whitelist on pull inject, skip-sync, and cleanup (#510)'
       expect(await fse.readFile(settingsPath, 'utf8')).toBe(userSettings);
       expect(await fse.readFile(docsPath, 'utf8')).toBe(sharedDoc);
       expect(await fse.readFile(envPath, 'utf8')).toContain(`export TEAMAI_COPILOT_SCOPE='${sharedEnvValue}'`);
+
+      await fse.remove(path.join(repoPath, 'culture.md'));
+      await fse.remove(path.join(repoPath, 'claudemd'));
+      await pull({ force: true, silent: true });
+
+      const revoked = await fse.readFile(instructionPath, 'utf8');
+      expect(revoked).toContain(userInstructions.trim());
+      expect(revoked).not.toContain(TEAMAI_CULTURE_START);
+      expect(revoked).not.toContain(TEAMAI_CLAUDEMD_START);
+      expect(await fse.readFile(settingsPath, 'utf8')).toBe(userSettings);
     },
   );
 

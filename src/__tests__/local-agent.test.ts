@@ -17,6 +17,7 @@ vi.mock('../utils/logger.js', () => ({
 
 let tmpDir: string;
 let origHome: string | undefined;
+let origCopilotHome: string | undefined;
 let origPpid: number;
 
 const TEST_SESSION_ID = 'test-session';
@@ -24,6 +25,7 @@ const TEST_SESSION_ID = 'test-session';
 beforeEach(async () => {
   tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-test-'));
   origHome = process.env.HOME;
+  origCopilotHome = process.env.COPILOT_HOME;
   process.env.HOME = tmpDir;
   origPpid = process.ppid;
   // Bind prompt is on by default — start each test from that baseline.
@@ -35,6 +37,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   process.env.HOME = origHome;
+  if (origCopilotHome === undefined) delete process.env.COPILOT_HOME;
+  else process.env.COPILOT_HOME = origCopilotHome;
   delete process.env.TEAMAI_BIND_PROMPT_ENABLED;
   await fse.remove(path.join(os.tmpdir(), `teamai-bind-hint-${TEST_SESSION_ID}`));
   await fse.remove(path.join(os.tmpdir(), `teamai-bind-session-${TEST_SESSION_ID}`));
@@ -1641,6 +1645,37 @@ describe('local-agent: cmds[] migration', () => {
     const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
     expect(manifest.scopes.user.claudemd?.['doc-a']).toBeDefined();
     expect(manifest.scopes.user.rules?.['doc-a']).toBeUndefined();
+  });
+
+  it('syncs and removes prompts under custom COPILOT_HOME without replacing user content', async () => {
+    const copilotHome = path.join(tmpDir, 'copilot-home');
+    const instructionPath = path.join(copilotHome, 'copilot-instructions.md');
+    const userInstructions = '# Personal Copilot instructions\n';
+    process.env.COPILOT_HOME = copilotHome;
+    await fse.ensureDir(copilotHome);
+    await fse.writeFile(instructionPath, userInstructions);
+
+    const installed = await runResponse({
+      cmds: [{
+        id: 32, type: 'install_prompt_rule', handle_type: 'prompt', slug: 'copilot-doc',
+        version: '1.0.0', download_url: 'http://127.0.0.1:42100/copilot-doc.md', scope: 'user',
+      }],
+    }, undefined, 'copilot');
+
+    expect(installed.find((ack) => ack.id === 32)?.status).toBe('success');
+    const injected = await fse.readFile(instructionPath, 'utf8');
+    expect(injected).toContain(userInstructions.trim());
+    expect(injected).toContain('# content');
+
+    const removed = await runResponse({
+      cmds: [{
+        id: 33, type: 'uninstall_prompt_rule', handle_type: 'prompt', slug: 'copilot-doc',
+        scope: 'user',
+      }],
+    }, undefined, 'copilot');
+
+    expect(removed.find((ack) => ack.id === 33)?.status).toBe('success');
+    expect(await fse.readFile(instructionPath, 'utf8')).toBe(userInstructions);
   });
 
   it('handle_type=rule routes to rule', async () => {
