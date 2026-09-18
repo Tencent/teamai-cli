@@ -17,6 +17,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { loadLocalConfig, loadTeamConfig } from '../config.js';
+import { log } from '../utils/logger.js';
 import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
@@ -127,6 +128,24 @@ describe('doctor — skills delivered on disk', () => {
     expect(await check.check()).toBe(false);
     expect(check.fix).toContain('and 6 more');
     expect(check.fix).not.toContain('extra-8');
+  });
+
+  it('does not warn about a Codex conflict while only reading', async () => {
+    // buildDeliveryChecks resolves destinations without a sourcePath. Codex's
+    // shared-directory reconciliation needs the team copy to prove two copies
+    // are identical, so without one there is nothing to decide: a read-only
+    // `doctor` must not report a conflict the write path would have settled.
+    teamConfig.toolPaths = { codex: { skills: '.codex/skills' } };
+    await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
+    for (const name of ['alpha', 'beta']) {
+      await deliver(['.agents', 'skills'], name);
+      await deliver(['.codex', 'skills'], name);
+    }
+
+    const check = await deliveryCheck('codex');
+
+    expect(await check.check()).toBe(true);
+    expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('Codex skill conflict'));
   });
 
   it('reports each installed tool separately', async () => {

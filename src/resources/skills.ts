@@ -30,8 +30,14 @@ export async function resolveSkillDestination(
   if (tool === CODEX_TOOL) {
     const sharedDestination = path.join(baseDir, SHARED_AGENT_SKILLS_PATH, skillName);
     if (await pathExists(sharedDestination)) {
+      // No source to compare against: the caller only wants to know where the
+      // skill lives. Reconciling needs the team copy to prove the two are the
+      // same, so without it there is nothing to decide and nothing to report —
+      // `doctor` and the post-pull pass would otherwise warn about a conflict
+      // on every skill, for copies the write path treats as identical.
+      if (!sourcePath) return sharedDestination;
       if (await pathExists(configuredDestination)) {
-        if (sourcePath && await dirContentEqual(sharedDestination, configuredDestination) && await dirContentEqual(configuredDestination, sourcePath)) {
+        if (await dirContentEqual(sharedDestination, configuredDestination) && await dirContentEqual(configuredDestination, sourcePath)) {
           await remove(configuredDestination);
           log.debug(`Removed identical TeamAI skill ${skillName} from ${configuredSkillsPath}`);
         } else {
