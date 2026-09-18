@@ -27,6 +27,17 @@ TeamAI 统一管理团队的 Skills、Rules、MCP 和知识，驾驭 Claude Code
 
 ## 快速开始
 
+把下面这一句发给你的 AI 工具:
+
+> 帮我装好 teamai skill : https://github.com/Tencent/teamai-cli/tree/main/skills/teamai , 加载 teamai skill, 然后从零搭建团队的 TeamAI。
+
+装好 TeamAI 后,在 AI 工具里直接跟 `/teamai` 对话就行:
+
+- **从零搭建团队:** `/teamai 帮我从零搭建团队的 TeamAI`
+- **加入团队:** `/teamai 帮我加入团队的 TeamAI,仓库地址是 https://github.com/yourorg/yourrepo`
+- **把 skill 分享给团队:** `/teamai 帮我把 xxx skill 分享给团队`
+- **打开团队看板:** `/teamai 帮我打开 TeamAI 看板`
+
 ### 安装
 
 ```bash

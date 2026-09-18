@@ -27,6 +27,17 @@ Made with [contrib.rocks](https://contrib.rocks).
 
 ## Quick Start
 
+Send this one line to your AI tool:
+
+> Install the teamai skill: https://github.com/Tencent/teamai-cli/tree/main/skills/teamai , load the teamai skill, then set up TeamAI for my team from scratch.
+
+Once TeamAI is set up, just talk to the `/teamai` skill in your AI tool:
+
+- **Set up a team from scratch:** `/teamai Help me set up TeamAI for my team from scratch`
+- **Join a team:** `/teamai Help me join my team's TeamAI, repo URL is https://github.com/yourorg/yourrepo`
+- **Share a skill with the team:** `/teamai Share my xxx skill with the team`
+- **Open the dashboard:** `/teamai Open the TeamAI dashboard`
+
 ### Install
 
 ```bash

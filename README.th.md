@@ -27,6 +27,17 @@ TeamAI จัดการ Skills, Rules, MCP และความรู้ข�
 
 ## เริ่มต้นอย่างรวดเร็ว
 
+ส่งข้อความบรรทัดเดียวนี้ให้ AI ของคุณ:
+
+> ช่วยติดตั้ง teamai skill ให้หน่อย: https://github.com/Tencent/teamai-cli/tree/main/skills/teamai , โหลด teamai skill แล้วตั้งค่า TeamAI ให้ทีมของฉันตั้งแต่ต้น
+
+เมื่อตั้งค่า TeamAI แล้ว แค่คุยกับ `/teamai` skill ใน AI ของคุณได้เลย:
+
+- **ตั้งค่าทีมตั้งแต่ต้น:** `/teamai ช่วยตั้งค่า TeamAI ให้ทีมของฉันตั้งแต่ต้น`
+- **เข้าร่วมทีม:** `/teamai ช่วยพาฉันเข้าร่วม TeamAI ของทีม, URL รีโปคือ https://github.com/yourorg/yourrepo`
+- **แชร์ skill ให้ทีม:** `/teamai ช่วยแชร์ xxx skill ให้ทีม`
+- **เปิดแดชบอร์ด:** `/teamai เปิดแดชบอร์ด TeamAI`
+
 ### ติดตั้ง
 
 ```bash
