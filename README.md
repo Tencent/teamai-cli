@@ -235,6 +235,7 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 |------------|---------|---------------|
 | **Usage** | `teamai digest` | Weekly team digest — 7-day success, prompt, active-time, estimated cost, cache, and correction trends, plus lifetime totals. |
 | **Sessions** | `teamai session save` | Privacy-scrubbed per-session summaries (tool sequence, prompt turns, interventions) that feed the digest's Session Highlights. |
+| **Session Sync** | `teamai session migrate` | Move full transcripts between AI tools; archive, search, and restore team sessions (`push` / `pull` / `list` / `resume` / `search`). |
 | **Dashboard** | `teamai dashboard` | Web dashboard showing live sessions and local 7-day trends compared with the prior 7 days. |
 | **KB Health** | `teamai dashboard` → KB Health | Built-in dashboard page reporting knowledge-base usage & health — coverage by type, top recalled entries, silent entries, recall trend, author contributions, and a maintenance console. |
 
@@ -266,6 +267,7 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 | `teamai source` | Manage skill subscription sources (other teams or your org's shared repos) |
 | `teamai remove <type> <name>` | Remove a resource and open MR |
 | `teamai session save` | Record a privacy-scrubbed session summary to a monthly log (`--push` feeds `digest`) |
+| `teamai session migrate/push/pull/list/resume/search/rollback` | Migrate full sessions across AI tools; archive to and restore from the team repo |
 | `teamai digest` | Generate weekly team usage digest |
 | `teamai doctor` | Diagnose configuration issues (`--json` for CI, hooks and agents) |
 | `teamai uninstall` | Remove all teamai resources and hooks |

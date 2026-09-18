@@ -1302,6 +1302,32 @@ teamai session save --push --include-prompt  # 额外带上（脱敏后的）首
 
 > 隐私：推送到团队的内容默认**只含计数 + 工具名**。首个 prompt 行需通过 `--include-prompt` 显式开启，且即便开启也会经过与别处一致的密钥脱敏（`ghp_…` → `<REDACTED:…>`）。本地日志因为不出本机，会保留脱敏后的首个 prompt 行。
 
+### Session 同步与迁移（Session Sync & Migration）
+
+除了摘要之外，`teamai session` 还能在不同 AI 工具之间迁移完整会话，并把会话归档到团队仓库。`session save` 记录的是脱敏摘要，而这一组命令搬运的是会话的全部消息。
+
+支持的平台：`claude-code`（含 `claude-internal` / `tclaude` 变体）、`codex`（含 `codex-internal` / `tcodex`）、`codebuddy`（CLI）、`codebuddy-ide`（IDE 侧边栏）、`cursor`、`workbuddy`。运行 `teamai session platforms` 查看本机已安装哪些。
+
+```bash
+teamai session platforms                                             # 支持 vs 已安装
+teamai session migrate <sessionId> -s codebuddy-ide -t claude-code   # 跨工具迁移单条会话
+teamai session migrate --all -s codebuddy -t claude-code              # 最近 5 条
+teamai session rollback <targetSessionId> --platform claude-code     # 撤销一次迁移
+teamai session push --source codebuddy            # 归档当前目录的会话
+teamai session push --source codebuddy --all      # 该平台的全部工作区
+teamai session pull                               # 拉取并重建团队会话索引
+teamai session list                               # 当前项目的团队会话
+teamai session list --all                         # 全部归档项目
+teamai session search <query> [--all]             # 全文搜索归档内容
+teamai session resume <sessionName> --platform claude-code   # 恢复到本地工具
+```
+
+以上命令均支持 `--dry-run` 与 `-v`。`migrate --push` 一步完成迁移 + 归档；`resume` 会打印新的会话 id，用工具自身的 resume 参数继续。
+
+**归档布局。** 会话按其工作目录的 git 标识归档到团队仓库的 `sessions/repos/<repo>/<author>/`；非 git 目录的会话落入 `_unattributed`。归档键取自会话自身的工作区——而不是执行命令时所在的目录——从别的目录迁入也会归到正确的项目名下。CodeBuddy IDE 中无法还原工作区的会话会带警告归入 `_unattributed`。
+
+**项目级 vs 用户级仓库。** `list` / `pull` / `resume` 按当前目录的 git remote 过滤，项目级团队仓库因此只显示本项目的会话。传入 `--repo-root <任意 clone>`（例如个人仓库）并配合 `--all`，即可跨全部归档项目读取。
+
 ### Hooks
 
 `teamai init` 自动注入的 Hooks：
