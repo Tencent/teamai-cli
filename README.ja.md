@@ -29,14 +29,35 @@ TeamAI に貢献してくださったみなさんに感謝します。
 
 次の一文を AI ツールに送るだけ:
 
-> teamai skill をインストールして: https://github.com/Tencent/teamai-cli/tree/main/skills/teamai , teamai skill を読み込み、チームの TeamAI をゼロから構築して。
+```text
+teamai skill をインストールして: https://github.com/Tencent/teamai-cli/tree/main/skills/teamai , teamai skill を読み込み、チームの TeamAI をゼロから構築して。
+```
 
 TeamAI をセットアップしたら、AI ツールで `/teamai` skill に話しかけるだけ:
 
-- **チームをゼロから構築:** `/teamai チームの TeamAI をゼロから構築して`
-- **チームに参加:** `/teamai チームの TeamAI に参加したい、リポジトリ URL は https://github.com/yourorg/yourrepo`
-- **skill をチームに共有:** `/teamai xxx skill をチームに共有して`
-- **ダッシュボードを開く:** `/teamai TeamAI ダッシュボードを開いて`
+**チームをゼロから構築**
+
+```text
+/teamai チームの TeamAI をゼロから構築して
+```
+
+**チームに参加**
+
+```text
+/teamai チームの TeamAI に参加したい、リポジトリ URL は https://github.com/yourorg/yourrepo
+```
+
+**skill をチームに共有**
+
+```text
+/teamai xxx skill をチームに共有して
+```
+
+**ダッシュボードを開く**
+
+```text
+/teamai TeamAI ダッシュボードを開いて
+```
 
 ### インストール
 

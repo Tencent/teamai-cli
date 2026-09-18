@@ -29,14 +29,35 @@ TeamAI에 기여해 주신 모든 분께 감사합니다!
 
 아래 한 문장을 AI 도구에 보내세요:
 
-> teamai skill을 설치해줘: https://github.com/Tencent/teamai-cli/tree/main/skills/teamai , teamai skill을 로드한 다음 우리 팀의 TeamAI를 처음부터 구축해줘.
+```text
+teamai skill을 설치해줘: https://github.com/Tencent/teamai-cli/tree/main/skills/teamai , teamai skill을 로드한 다음 우리 팀의 TeamAI를 처음부터 구축해줘.
+```
 
 TeamAI를 설정한 뒤에는 AI 도구에서 `/teamai` skill에게 말만 걸면 됩니다:
 
-- **팀을 처음부터 구축:** `/teamai 우리 팀의 TeamAI를 처음부터 구축해줘`
-- **팀 참여:** `/teamai 우리 팀의 TeamAI에 참여하고 싶어, 저장소 URL은 https://github.com/yourorg/yourrepo`
-- **skill을 팀에 공유:** `/teamai xxx skill을 팀에 공유해줘`
-- **대시보드 열기:** `/teamai TeamAI 대시보드 열어줘`
+**팀을 처음부터 구축**
+
+```text
+/teamai 우리 팀의 TeamAI를 처음부터 구축해줘
+```
+
+**팀 참여**
+
+```text
+/teamai 우리 팀의 TeamAI에 참여하고 싶어, 저장소 URL은 https://github.com/yourorg/yourrepo
+```
+
+**skill을 팀에 공유**
+
+```text
+/teamai xxx skill을 팀에 공유해줘
+```
+
+**대시보드 열기**
+
+```text
+/teamai TeamAI 대시보드 열어줘
+```
 
 ### 설치
 
