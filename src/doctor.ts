@@ -28,9 +28,27 @@ import { getUserHome } from './utils/home.js';
  */
 export type CheckSource = 'local' | 'provider';
 
+/**
+ * Something `teamai pull` says in its own words, better than a static `fix`
+ * can — the queue warning carries the push error, which `doctor` cannot learn
+ * without attempting a push of its own, and a read-only diagnostic must not.
+ *
+ * A check tagged with a topic is left out of the post-pull pass, but only on a
+ * run where the pull actually said it. That is not every run: a scope whose
+ * team repo fails to refresh returns before the publish step, and a publish
+ * that throws is swallowed into a debug line. On those paths nobody has spoken
+ * yet, so the check is the only voice left and must be heard.
+ *
+ * A union rather than a boolean: the pull proves what it reported by naming it,
+ * so a second tagged check cannot be silenced by the first one's evidence.
+ */
+export type PullReportedTopic = 'pending-learnings';
+
 export interface Check {
   name: string;
   source: CheckSource;
+  /** See {@link PullReportedTopic}. */
+  reportedByPull?: PullReportedTopic;
   check: () => Promise<boolean>;
   fix?: string;
 }
@@ -432,6 +450,9 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
       // is told each time that the next pull will retry.
       name: 'Contributed learnings are published',
       source: 'local',
+      // pullForScope warns about the queue on its own, with the push error
+      // attached; this check is the standing version of it for `teamai doctor`.
+      reportedByPull: 'pending-learnings',
       check: async () => {
         const { listPendingLearnings } = await import('./utils/pending-learnings.js');
         return (await listPendingLearnings(localConfig)).length === 0;

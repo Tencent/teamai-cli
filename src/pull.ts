@@ -41,10 +41,22 @@ import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
+// Type-only: the value side of doctor.js stays a dynamic import below,
+// because doctor.js imports this module for its delivery check.
+import type { PullReportedTopic } from './doctor.js';
 
 // A timed-out report still owns its success bookkeeping. Do not start another
 // batch in this process until it settles and finishes consuming its events.
 let pendingUsageReport: Promise<void> | undefined;
+
+/**
+ * What this run of `pull()` has already told the member about, so the post-pull
+ * pass does not say it a second time in weaker words. Scope-level, because a
+ * pull spans up to three scopes and one warning is enough; reset by `pull()`
+ * rather than left to accumulate, since hook-dispatch calls it more than once
+ * in the same process.
+ */
+const reportedTopics = new Set<PullReportedTopic>();
 
 export interface RolePullContext {
   activeNamespaces: ResourceNamespaces;
@@ -679,6 +691,7 @@ async function pullForScope(
     if (queue.remaining > 0) {
       // Say it out loud. A member whose pushes are rejected would otherwise
       // queue notes forever and never hear about it.
+      reportedTopics.add('pending-learnings');
       log.warn(
         `${queue.remaining} learning(s) are written locally but not published`
         + `${queue.lastError ? `: ${queue.lastError}` : ''}. `
@@ -1568,6 +1581,8 @@ async function reinjectLegacyHooks(localConfig: LocalConfig): Promise<void> {
  * source skills are pulled only for the active project scope.
  */
 export async function pull(options: GlobalOptions): Promise<void> {
+  reportedTopics.clear();
+
   // Whether HOME's settings.json still has the pre-dispatch hook format. Read now
   // (HOME-only, no shared clone), but the actual reinject runs later under the
   // scope lock so it never consumes a concurrent push's transient branch config.
@@ -1822,9 +1837,13 @@ const POST_PULL_CHECKS_TIMEOUT_MS = 5000;
  * what is actually on disk — the gap behind #574, #525, #342 and friends, where
  * the command says "Synced N" and the tool receives nothing.
  *
- * Provider checks are left out: this pull just used the provider successfully,
- * so re-probing `gh auth status` would add a subprocess to every sync and prove
- * nothing new. `teamai doctor` still runs the full registry.
+ * Two kinds are left out. Provider checks: this pull just used the provider
+ * successfully, so re-probing `gh auth status` would add a subprocess to every
+ * sync and prove nothing new. And a check whose `reportedByPull` topic this run
+ * actually reported — repeating it would say the same thing twice and, since
+ * its `fix` is written for `doctor`, tell the member to run the pull they just
+ * ran. A topic the pull stayed silent about is NOT suppressed: the scope may
+ * have aborted before reaching it. `teamai doctor` still runs everything.
  */
 async function reportPostPullChecks(options: GlobalOptions): Promise<void> {
   if (options.silent || options.dryRun) return;
@@ -1833,7 +1852,9 @@ async function reportPostPullChecks(options: GlobalOptions): Promise<void> {
     const ctx = await resolveDoctorContext();
     if (!ctx) return;
 
-    const local = (await buildChecks(ctx)).filter((c) => c.source === 'local');
+    const local = (await buildChecks(ctx))
+      .filter((c) => c.source === 'local')
+      .filter((c) => !c.reportedByPull || !reportedTopics.has(c.reportedByPull));
     const results = await withTimeout(
       runChecks(local),
       POST_PULL_CHECKS_TIMEOUT_MS,

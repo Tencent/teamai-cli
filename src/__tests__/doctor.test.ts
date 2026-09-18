@@ -579,6 +579,21 @@ describe('buildChecks', () => {
         const check = (await buildChecks(ctx)).find((c) => c.name.includes('learnings'));
         expect(check).toBeDefined();
         expect(check?.fix).toContain('teamai pull');
+        // Correct advice here, where doctor is the whole command. The pull's own
+        // warning already says it, with the push error, so the post-pull pass
+        // skips this one rather than repeat it — see pull-post-checks.test.ts.
+        expect(check?.reportedByPull).toBe('pending-learnings');
+    });
+
+    it('flags only the queue check as one the pull reports itself', async () => {
+        mockedLoadLocalConfig.mockResolvedValue(mockLocalConfig);
+        mockedLoadTeamConfig.mockResolvedValue(mockTeamConfig);
+
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+
+        const flagged = (await buildChecks(ctx)).filter((c) => c.reportedByPull);
+        expect(flagged.map((c) => c.name)).toEqual(['Contributed learnings are published']);
     });
 });
 

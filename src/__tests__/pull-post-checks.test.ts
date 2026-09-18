@@ -184,6 +184,50 @@ describe('checks at the end of an interactive pull', () => {
     expect(printedOutput()).not.toContain('gh CLI is authenticated');
   });
 
+  /** The registry's queue check, as buildChecks builds it. */
+  function queueCheck(check: Check['check']): Check {
+    return {
+      name: 'Contributed learnings are published',
+      source: 'local',
+      reportedByPull: 'pending-learnings',
+      check,
+      fix: 'Run `teamai pull` to publish them.',
+    };
+  }
+
+  it('skips a check the pull reported itself on this run', async () => {
+    // A queue entry the pull will fail to publish: remote is a bare path that
+    // is not a repo, so publishQueuedLearnings comes back with remaining > 0
+    // and pullForScope warns, with the push error attached.
+    await fse.outputFile(
+      path.join(tempDir, 'pending-learnings', 'stuck.md'),
+      '---\ntitle: stuck\n---\nbody\n',
+    );
+    const check = vi.fn().mockResolvedValue(false);
+    vi.mocked(buildChecks).mockResolvedValue([queueCheck(check)]);
+
+    await pull({ force: true });
+
+    expect(printedOutput()).toContain('not published');
+    // Repeating it would tell the member to run the pull they just ran, in
+    // weaker words: the warning carries the push error, the fix cannot.
+    expect(check).not.toHaveBeenCalled();
+    expect(printedOutput()).not.toContain('Contributed learnings are published');
+  });
+
+  it('still reports a flagged check when the pull said nothing about it', async () => {
+    // Nothing queued, so pullForScope never warns. A scope that aborts before
+    // the publish step lands here too. The flag must not silence the check on
+    // a run where the pull has not spoken \u2014 nobody else would.
+    const check = vi.fn().mockResolvedValue(false);
+    vi.mocked(buildChecks).mockResolvedValue([queueCheck(check)]);
+
+    await pull({ force: true });
+
+    expect(check).toHaveBeenCalled();
+    expect(printedOutput()).toContain('Contributed learnings are published');
+  });
+
   it('runs no checks on the silent hook path', async () => {
     await pull({ force: true, silent: true });
 

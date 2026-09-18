@@ -1468,9 +1468,11 @@ teamai remove mcp <name>
 teamai remove rules <name> --force   # 跳过确认，用于脚本和 CI
 ```
 
-仅当所有检查通过时，`teamai doctor` 才以状态码 0 退出；任一检查失败时以状态码 1 退出。尚未初始化时，它只报告缺少配置，不会臆测 Git 托管平台。手动执行 `teamai pull` 结束时会运行同一批检查（不含托管平台相关的检查）。
+仅当所有检查通过时，`teamai doctor` 才以状态码 0 退出；任一检查失败时以状态码 1 退出。尚未初始化时，它只报告缺少配置，不会臆测 Git 托管平台。手动执行 `teamai pull` 结束时会运行同一批检查（不含托管平台相关的检查，也不含本次 pull 已经自行报告过的检查）。
 
-除了托管平台、clone、配置、hook 和 env 检查之外，`doctor` 还会验证工具本身的两件事。`<tool> is installed` 在 `enabledAgents` 列出了本机不存在目录的工具时失败——这正是 pull 报告成功、而该工具什么都没收到的情况。`Skills delivered to <tool>` 会把角色命名空间、标签订阅与排除规则解析出的 skill 集合，与每个已安装工具磁盘上的内容比对：从未送达的 skill 与送达但不可读的 skill 会分别报告——后者指 `SKILL.md` 缺失、frontmatter 无法解析，或其 `name` 与目录名不一致，导致 agent 永远发现不了它。`Team docs delivered` 对 docs 包做同样的比对（目标是 `sharing.docs.localDir`，它只有一个目标目录，而非每个工具一个）。rules、agents 和 MCP server 目前尚未检查。
+除了托管平台、clone、配置、hook 和 env 检查之外，`doctor` 还会验证落到本机上的三件事。`<tool> is installed` 在 `enabledAgents` 列出了本机不存在目录的工具时失败——这正是 pull 报告成功、而该工具什么都没收到的情况。`Skills delivered to <tool>` 会把角色命名空间、标签订阅与排除规则解析出的 skill 集合，与每个已安装工具磁盘上的内容比对：从未送达的 skill 与送达但不可读的 skill 会分别报告——后者指 `SKILL.md` 缺失、frontmatter 无法解析，或其 `name` 与目录名不一致，导致 agent 永远发现不了它。`Team docs delivered` 对 docs 包做同样的比对（目标是 `sharing.docs.localDir`，它只有一个目标目录，而非每个工具一个）。rules、agents 和 MCP server 目前尚未检查。
+
+`Contributed learnings are published` 会在 `teamai contribute` 写下、但尚未推送成功的笔记仍在队列中时失败。当本次 pull 已经说过时，手动 `teamai pull` 结束时不会再重复它：pull 会尝试发布队列并自行报告结果，还会带上导致失败的推送错误——这是该检查本身给不出的信息。如果 pull 因为团队仓库刷新失败而根本没走到那一步，该检查会照常打印。
 
 `--json` 把同一份报告作为单个对象打印到 stdout，并将所有日志改走 stderr，因此 `teamai doctor --json 2>/dev/null` 可以整体解析；退出码不变。每个检查都会带上人类模式下显示的修复建议：
 
