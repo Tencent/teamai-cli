@@ -1,7 +1,9 @@
 // Bundled-runtime resolution: where GUI tools (WorkBuddy, CodeBuddy) ship
-// their own Node and shell, and which of them bundle a shell their hook
-// commands can execute with. All layout knowledge for these runtimes lives
-// here so hook injection can stay tool-agnostic.
+// their own Node and shell, and which of them provide a shell their hook
+// commands can execute with — either a POSIX shell they bundle themselves
+// (WorkBuddy's PortableGit) or one the OS guarantees (CodeBuddy's cmd.exe on
+// Windows). All layout knowledge for these runtimes lives here so hook
+// injection can stay tool-agnostic.
 import fs from 'node:fs';
 import path from 'node:path';
 import { getUserHome } from './utils/home.js';
@@ -10,10 +12,12 @@ const WORKBUDDY_BUNDLED_NODE_DIR = '.workbuddy/bundled/node/versions';
 const WORKBUDDY_PORTABLE_GIT_DIR = '.workbuddy/binaries/PortableGit/versions';
 
 let _wbShellCache: string | null | undefined;
+let _cbShellCache: string | null | undefined;
 
 /** Reset cached bundled-runtime lookups. Test-only. */
 export function resetBundledRuntimeCache(): void {
   _wbShellCache = undefined;
+  _cbShellCache = undefined;
 }
 
 /**
@@ -119,16 +123,37 @@ function resolveWorkbuddyShell(): string | null {
 }
 
 /**
- * Tools that bundle a shell their hook commands can execute with, per tool id.
+ * The shell CodeBuddy runs hook commands with on Windows.
+ *
+ * CodeBuddy's hook runner executes a hook's `command` string through
+ * `child_process.spawn(command, [], { shell: true })` (genie's
+ * HookExecutorImpl), which on Windows goes through %ComSpec% — cmd.exe, a shell
+ * the OS always provides — and NOT /bin/sh. Windows builds of the CodeBuddy IDE
+ * ship no POSIX shell at all (no sh.exe/bash.exe anywhere in the install tree),
+ * so gating the tool on /bin/sh is a false negative there. POSIX builds keep
+ * the conservative /bin/sh check. Memoized like its WorkBuddy sibling.
+ */
+function resolveCodebuddyShell(): string | null {
+  if (_cbShellCache === undefined) {
+    _cbShellCache = process.platform === 'win32'
+      ? (process.env.ComSpec?.trim() || 'cmd.exe')
+      : null;
+  }
+  return _cbShellCache;
+}
+
+/**
+ * Tools that provide a shell their hook commands can execute with, per tool id.
  * A tool without an entry falls back to the conservative /bin/sh gate.
  */
 const BUNDLED_SHELLS: Record<string, () => string | null> = {
   workbuddy: resolveWorkbuddyShell,
+  codebuddy: resolveCodebuddyShell,
 };
 
 /**
- * Return the bundled shell for a tool, or null when the tool does not bundle
- * one (the caller should then fall back to the /bin/sh check).
+ * Return the shell a tool provides for hook commands, or null when it provides
+ * none (the caller should then fall back to the /bin/sh check).
  */
 export function bundledShellFor(tool: string): string | null {
   const resolver = BUNDLED_SHELLS[tool];
