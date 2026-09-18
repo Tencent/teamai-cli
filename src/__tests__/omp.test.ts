@@ -156,6 +156,42 @@ describe('OMP rules directory is user-owned', () => {
       await fse.remove(tmp);
     }
   });
+
+  it('never offers personal rules as teamai push candidates', async () => {
+    const tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-omp-rules-p-'));
+    try {
+      const homeDir = path.join(tmp, 'home');
+      const repoPath = path.join(tmp, 'repo');
+      await fse.ensureDir(path.join(repoPath, 'rules'));
+      await fse.writeFile(path.join(repoPath, 'rules', 'team.md'), 'Team rule.');
+      await fse.outputFile(path.join(homeDir, '.omp/agent/rules', 'personal.md'), 'Personal rule.');
+      vi.stubEnv('HOME', homeDir);
+
+      const teamConfig = TeamaiConfigSchema.parse({
+        team: 'test', repo: 'test/repo',
+        toolPaths: { omp: { skills: '.omp/skills', rules: '.omp/agent/rules' } },
+      });
+      const localConfig = {
+        repo: { localPath: repoPath, remote: 'test/repo' },
+        username: 'test',
+        scope: 'user',
+        additionalRoles: [],
+      } as unknown as LocalConfig;
+
+      const handler = new RulesHandler();
+      await handler.pullAllRules(teamConfig, localConfig);
+      // Personal rule stays local-only; a locally edited team rule is still a
+      // legitimate "modified" push candidate from the shared dir.
+      await fse.writeFile(path.join(homeDir, '.omp/agent/rules', 'team.md'), 'Edited team rule.');
+
+      const items = await handler.scanLocalForPush(teamConfig, localConfig);
+      expect(items.find((i) => i.name === 'personal')).toBeUndefined();
+      expect(items.find((i) => i.name === 'team')).toMatchObject({ status: 'modified' });
+    } finally {
+      vi.unstubAllEnvs();
+      await fse.remove(tmp);
+    }
+  });
 });
 
 describe('OMP receives legacy markdown team agents', () => {
