@@ -41,22 +41,10 @@ import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
-// Type-only: the value side of doctor.js stays a dynamic import below,
-// because doctor.js imports this module for its delivery check.
-import type { PullReportedTopic } from './doctor.js';
 
 // A timed-out report still owns its success bookkeeping. Do not start another
 // batch in this process until it settles and finishes consuming its events.
 let pendingUsageReport: Promise<void> | undefined;
-
-/**
- * What this run of `pull()` has already told the member about, so the post-pull
- * pass does not say it a second time in weaker words. Scope-level, because a
- * pull spans up to three scopes and one warning is enough; reset by `pull()`
- * rather than left to accumulate, since hook-dispatch calls it more than once
- * in the same process.
- */
-const reportedTopics = new Set<PullReportedTopic>();
 
 export interface RolePullContext {
   activeNamespaces: ResourceNamespaces;
@@ -641,6 +629,13 @@ async function cleanupTombstonedResources(
 async function pullForScope(
   localConfig: LocalConfig,
   options: GlobalOptions,
+  /**
+   * Collects what this scope tells the member in its own words, so the
+   * post-pull pass does not repeat it. Required rather than optional on
+   * `policy`: a call site that forgot it would silently stop recording, which
+   * is the failure this mechanism exists to avoid. See `Check.reportedByPull`.
+   */
+  reported: Set<string>,
   policy: {
     resourceTypes?: readonly ResourceType[];
     revisionField?: 'lastPullRev' | 'lastInheritedPullRev';
@@ -690,7 +685,7 @@ async function pullForScope(
     if (queue.remaining > 0) {
       // Say it out loud. A member whose pushes are rejected would otherwise
       // queue notes forever and never hear about it.
-      reportedTopics.add('pending-learnings');
+      reported.add('pending-learnings');
       log.warn(
         `${queue.remaining} learning(s) are written locally but not published`
         + `${queue.lastError ? `: ${queue.lastError}` : ''}. `
@@ -1580,7 +1575,10 @@ async function reinjectLegacyHooks(localConfig: LocalConfig): Promise<void> {
  * source skills are pulled only for the active project scope.
  */
 export async function pull(options: GlobalOptions): Promise<void> {
-  reportedTopics.clear();
+  // What the scopes below say in their own words, so the post-pull pass does
+  // not repeat it. Owned here rather than at module scope so nothing survives
+  // into another call.
+  const reported = new Set<string>();
 
   // Whether HOME's settings.json still has the pre-dispatch hook format. Read now
   // (HOME-only, no shared clone), but the actual reinject runs later under the
@@ -1647,7 +1645,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
           inheritedUserConfig = loadedUserConfig;
           log.info('project scope detected, inheriting user-scope resources and knowledge');
           if (await lockScope(inheritedUserConfig)) {
-            await pullForScope(inheritedUserConfig, options, {
+            await pullForScope(inheritedUserConfig, options, reported, {
               resourceTypes: ['skills', 'rules', 'docs', 'agents'],
               revisionField: 'lastInheritedPullRev',
             });
@@ -1655,7 +1653,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
         } else {
           activeUserConfig = loadedUserConfig;
           if (await lockScope(activeUserConfig)) {
-            await pullForScope(activeUserConfig, options);
+            await pullForScope(activeUserConfig, options, reported);
           }
         }
       } else if (inheritUserScope) {
@@ -1672,7 +1670,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
   if (projectConfig) {
     try {
       if (await lockScope(projectConfig)) {
-        await pullForScope(projectConfig, options);
+        await pullForScope(projectConfig, options, reported);
       }
     } catch (e) {
       log.warn(`Project-scope pull error: ${(e as Error).message}`);
@@ -1809,7 +1807,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
   // 6. Post-conditions. Everything above reported what it *did*; these report
   //    what is actually on disk (issue #598). Only after an explicit pull: the
   //    SessionStart hook runs pull({ silent: true }) and must stay free.
-  await reportPostPullChecks(options);
+  await reportPostPullChecks(options, reported);
   } finally {
     const releaseSyncLocks = async () => {
       for (const lock of heldLocks.values()) await releaseLock(lock);
@@ -1844,18 +1842,26 @@ const POST_PULL_CHECKS_TIMEOUT_MS = 5000;
  * ran. A topic the pull stayed silent about is NOT suppressed: the scope may
  * have aborted before reaching it. `teamai doctor` still runs everything.
  */
-async function reportPostPullChecks(options: GlobalOptions): Promise<void> {
+async function reportPostPullChecks(
+  options: GlobalOptions,
+  reported: ReadonlySet<string>,
+): Promise<void> {
   if (options.silent || options.dryRun) return;
   try {
     const { resolveDoctorContext, buildChecks, runChecks, formatCheckResult } = await import('./doctor.js');
     const ctx = await resolveDoctorContext();
     if (!ctx) return;
 
-    const local = (await buildChecks(ctx))
-      .filter((c) => c.source === 'local')
-      .filter((c) => !c.reportedByPull || !reportedTopics.has(c.reportedByPull));
+    // The budget covers building the registry as well as running it: the
+    // delivery checks stat every desired skill for every tool while the
+    // registry is built, which is where the I/O actually is.
     const results = await withTimeout(
-      runChecks(local),
+      (async () => {
+        const local = (await buildChecks(ctx))
+          .filter((c) => c.source === 'local')
+          .filter((c) => !c.reportedByPull || !reported.has(c.reportedByPull));
+        return runChecks(local);
+      })(),
       POST_PULL_CHECKS_TIMEOUT_MS,
       `Post-pull checks are still running after ${POST_PULL_CHECKS_TIMEOUT_MS}ms`,
     );
@@ -1871,8 +1877,13 @@ async function reportPostPullChecks(options: GlobalOptions): Promise<void> {
     }
     log.dim('  Run `teamai doctor` for the full report.');
   } catch (e) {
-    // The sync already succeeded. A diagnostic that breaks must not undo that.
+    // The sync already succeeded. A diagnostic that breaks must not undo that,
+    // so this never rethrows. It does say one line though: staying silent after
+    // the whole budget is the same "reported success, nothing happened" shape
+    // these checks exist to catch. The reason stays on the debug channel
+    // because it is about teamai, not about the member's repo.
     log.debug(`Post-pull checks skipped: ${(e as Error).message}`);
+    log.dim('  Post-pull checks did not run. Run `teamai doctor` for the full report.');
   }
 }
 

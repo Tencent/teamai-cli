@@ -646,6 +646,17 @@ describe('buildChecks — a tool enabled but not installed', () => {
         expect(await opencode!.check()).toBe(false);
     });
 
+    it('reports an installed tool as passing rather than omitting it', async () => {
+        // `doctor --json` is consumed by hooks and CI. A check that only appears
+        // when it fails cannot be told apart from one that was never evaluated,
+        // and no other check in the registry behaves that way.
+        const checks = await checksFor({ enabledAgents: ['claude', 'codex'] });
+
+        const claude = checks.find((c) => c.name === 'claude is installed');
+        expect(claude).toBeDefined();
+        expect(await claude!.check()).toBe(true);
+    });
+
     it('fails a check naming the tool the user enabled', async () => {
         const checks = await checksFor({ enabledAgents: ['claude', 'codex'] });
 

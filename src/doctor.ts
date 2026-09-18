@@ -28,27 +28,20 @@ import { getUserHome } from './utils/home.js';
  */
 export type CheckSource = 'local' | 'provider';
 
-/**
- * Something `teamai pull` says in its own words, better than a static `fix`
- * can — the queue warning carries the push error, which `doctor` cannot learn
- * without attempting a push of its own, and a read-only diagnostic must not.
- *
- * A check tagged with a topic is left out of the post-pull pass, but only on a
- * run where the pull actually said it. That is not every run: a scope whose
- * team repo fails to refresh returns before the publish step, and a publish
- * that throws is swallowed into a debug line. On those paths nobody has spoken
- * yet, so the check is the only voice left and must be heard.
- *
- * A union rather than a boolean: the pull proves what it reported by naming it,
- * so a second tagged check cannot be silenced by the first one's evidence.
- */
-export type PullReportedTopic = 'pending-learnings';
-
 export interface Check {
   name: string;
   source: CheckSource;
-  /** See {@link PullReportedTopic}. */
-  reportedByPull?: PullReportedTopic;
+  /**
+   * Names something `teamai pull` says in its own words, better than a static
+   * `fix` can: the queue warning carries the push error, which `doctor` cannot
+   * learn without attempting a push of its own, and a read-only diagnostic must
+   * not. The post-pull pass drops a check whose topic that run actually
+   * reported. Not every run does: a scope whose team repo fails to refresh
+   * returns before the publish step, and a publish that throws is swallowed
+   * into a debug line. On those paths nobody has spoken, so the check is the
+   * only voice left and must be heard.
+   */
+  reportedByPull?: string;
   check: () => Promise<boolean>;
   fix?: string;
 }
@@ -123,8 +116,10 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
     if (!probePath) continue;
 
     const isInstalled = (): Promise<boolean> => isToolInstalledForConfig(tool, probePath, localConfig);
-    if (await isInstalled()) continue;
 
+    // Pushed whether or not it passes. Every other check in the registry
+    // reports both ways, and `doctor --json` is consumed by hooks and CI, where
+    // a missing entry cannot be told apart from one that passed.
     checks.push({
       name: `${tool} is installed`,
       source: 'local',

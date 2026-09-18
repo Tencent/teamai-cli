@@ -228,6 +228,29 @@ describe('checks at the end of an interactive pull', () => {
     expect(printedOutput()).toContain('Contributed learnings are published');
   });
 
+  it('bounds building the registry, not only running it', async () => {
+    // buildChecks is where the I/O is: the delivery checks stat every desired
+    // skill for every tool while the registry is built. A build that never
+    // settles must still end the pull, and say so rather than go quiet.
+    // Real timers, because faking them stalls the pull's own filesystem work.
+    // This costs one budget's wall clock, which is why there is only one.
+    vi.mocked(buildChecks).mockImplementation(() => new Promise(() => {}));
+
+    await expect(pull({ force: true })).resolves.toBeUndefined();
+
+    expect(printedOutput()).toContain('Post-pull checks did not run');
+    // The sync itself still happened.
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'kept-skill'))).toBe(true);
+  }, 20_000);
+
+  it('says nothing extra when the registry cannot be built at all', async () => {
+    vi.mocked(buildChecks).mockRejectedValue(new Error('registry exploded'));
+
+    await expect(pull({ force: true })).resolves.toBeUndefined();
+
+    expect(printedOutput()).toContain('Post-pull checks did not run');
+  });
+
   it('runs no checks on the silent hook path', async () => {
     await pull({ force: true, silent: true });
 
