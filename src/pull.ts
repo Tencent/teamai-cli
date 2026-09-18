@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import matter from 'gray-matter';
 import { requireInit, loadState, saveState, detectProjectConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
 import { pullRepo, getHeadRev, createGit } from './utils/git.js';
@@ -45,6 +46,7 @@ import { withTimeout } from './utils/async.js';
 // A timed-out report still owns its success bookkeeping. Do not start another
 // batch in this process until it settles and finishes consuming its events.
 let pendingUsageReport: Promise<void> | undefined;
+const FILE_NOT_FOUND_ERROR_CODE = 'ENOENT';
 
 interface RolePullContext {
   activeNamespaces: ResourceNamespaces;
@@ -1264,28 +1266,43 @@ async function syncManagedInstructions(
   scopeLabel: string,
 ): Promise<void> {
   const culturePath = path.join(localConfig.repo.localPath, 'culture.md');
-  const cultureContent = await readFileSafe(culturePath);
-  const compiledCulture = cultureContent ? compileCulture(cultureContent) : null;
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
-    if (isAgentExcluded(localConfig, tool) || !toolPath.claudemd) continue;
-    if (toolPath.rules && !await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
+  let compiledCulture: string | null | undefined;
+  try {
+    const cultureContent = await readFile(culturePath, 'utf8');
+    compiledCulture = compileCulture(cultureContent) ?? undefined;
+    if (compiledCulture === undefined) {
+      log.warn(`Skipped team culture sync because ${culturePath} is empty or invalid`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === FILE_NOT_FOUND_ERROR_CODE) {
+      compiledCulture = null;
+    } else {
+      log.warn(`Failed to read team culture from ${culturePath}: ${(error as Error).message}`);
+    }
+  }
 
-    const claudeMdPath = path.join(resolveToolBaseDir(tool, localConfig), toolPath.claudemd);
-    try {
-      if (compiledCulture) {
-        await injectClaudeMdSection(
-          claudeMdPath,
-          TEAMAI_CULTURE_START,
-          TEAMAI_CULTURE_END,
-          compiledCulture,
-        );
-        log.debug(`Injected culture into ${tool} CLAUDE.md`);
-      } else {
-        await removeClaudeMdSection(claudeMdPath, TEAMAI_CULTURE_START, TEAMAI_CULTURE_END);
+  if (compiledCulture !== undefined) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
+      if (isAgentExcluded(localConfig, tool) || !toolPath.claudemd) continue;
+      if (toolPath.rules && !await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
+
+      const claudeMdPath = path.join(resolveToolBaseDir(tool, localConfig), toolPath.claudemd);
+      try {
+        if (compiledCulture) {
+          await injectClaudeMdSection(
+            claudeMdPath,
+            TEAMAI_CULTURE_START,
+            TEAMAI_CULTURE_END,
+            compiledCulture,
+          );
+          log.debug(`Injected culture into ${tool} CLAUDE.md`);
+        } else {
+          await removeClaudeMdSection(claudeMdPath, TEAMAI_CULTURE_START, TEAMAI_CULTURE_END);
+        }
+      } catch (e) {
+        const action = compiledCulture ? 'inject culture into' : 'remove culture from';
+        log.warn(`Failed to ${action} ${tool} CLAUDE.md: ${(e as Error).message}`);
       }
-    } catch (e) {
-      const action = compiledCulture ? 'inject culture into' : 'remove culture from';
-      log.warn(`Failed to ${action} ${tool} CLAUDE.md: ${(e as Error).message}`);
     }
   }
   if (compiledCulture) {
