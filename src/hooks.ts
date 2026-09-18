@@ -1107,6 +1107,9 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
     const cfg = await readJson<ZcodeHooksJson>(expanded);
     const eventsMap = cfg?.hooks?.events;
     if (!eventsMap) return 'missing';
+    // On Windows the entries are dead without the launcher script — a deleted,
+    // stale, or AV-quarantined VBS must not be reported as installed.
+    if (process.platform === 'win32' && !(await readFileSafe(vbsPath))) return 'missing';
     const present = defs.every((def) => {
       const want = toZcodeEntry(def, vbsPath);
       const wantCmd = zcodeEntryCommand(want);

@@ -109,6 +109,11 @@ describe('ZCode support', () => {
         );
         expect(vbs).toContain('WScript.Arguments(0)');
         expect(vbs).not.toContain('""teamai hook-dispatch');
+
+        // A deleted/quarantined launcher must not be reported as installed:
+        // the entries are dead without the script.
+        await fse.remove(path.join(path.dirname(configPath), 'teamai-hook-dispatch.vbs'));
+        expect(await getHookStatus(configPath, 'zcode')).toBe('missing');
       }
     } finally {
       await fse.remove(home);
