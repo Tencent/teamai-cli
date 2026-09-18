@@ -340,6 +340,28 @@ export const TeamaiConfigSchema = z.object({
     // .zcode/config.json (a different key), which the Claude writer cannot
     // emit — so no mcpProject. ZCode has no user-level rules dir convention.
     zcode: { skills: '.zcode/skills', agents: '.zcode/agents', settings: '.zcode/cli/config.json', mcp: '.agents/mcp.json' },
+    // Oh My Pi (OMP): the config root is ~/.omp on every platform (no %APPDATA%
+    // on Windows); user-scope resources live in the agent dir ~/.omp/agent/, a
+    // different prefix from the project <root>/.omp/, hence userScope. Rules are
+    // plain .md, instructions land in AGENTS.md, and MCP uses the Claude-shaped
+    // {"mcpServers": …} mcp.json. OMP runs lifecycle hooks as in-process TS
+    // extensions rather than a settings hook list, so there is no `settings`
+    // path. Profiles (OMP_PROFILE / PI_CODING_AGENT_DIR / PI_CONFIG_DIR) move
+    // the agent dir and are not supported.
+    omp: {
+      skills: '.omp/skills',
+      rules: '.omp/rules',
+      claudemd: '.omp/AGENTS.md',
+      agents: '.omp/agents',
+      mcp: '.omp/agent/mcp.json',
+      mcpProject: '.omp/mcp.json',
+      userScope: {
+        skills: '.omp/agent/skills',
+        rules: '.omp/agent/rules',
+        claudemd: '.omp/agent/AGENTS.md',
+        agents: '.omp/agent/agents',
+      },
+    },
     codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' },
     openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules', claudemd: '.openclaw/workspace/AGENTS.md' },
     hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },

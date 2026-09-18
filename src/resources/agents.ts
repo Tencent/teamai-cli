@@ -729,6 +729,8 @@ function reverseByTool(tool: ToolName, filePath: string, content: string): Rever
       return reverseFromKiro(filePath, content);
     case 'zcode':
       return reverseFromClaude(filePath, content);
+    case 'omp':
+      return reverseFromClaude(filePath, content);
     case 'opencode':
       return reverseFromOpencode(filePath, content);
   }

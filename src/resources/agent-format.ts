@@ -6,7 +6,7 @@ import { getDispatchCommand } from '../builtin-hooks.js';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
-export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'kiro' | 'zcode' | 'opencode';
+export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'kiro' | 'zcode' | 'omp' | 'opencode';
 
 export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'claude',
@@ -22,6 +22,7 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'qoder',
   'kiro',
   'zcode',
+  'omp',
   'opencode',
 ];
 
@@ -98,6 +99,7 @@ export interface AgentSpec {
     qoder?: Record<string, unknown>;
     kiro?: Record<string, unknown>;
     zcode?: Record<string, unknown>;
+    omp?: Record<string, unknown>;
     opencode?: Record<string, unknown>;
   };
   /**
@@ -842,6 +844,7 @@ export function renderForTool(spec: AgentSpec, tool: ToolName): RenderResult {
     case 'qoder': return renderForClaude(spec);
     case 'kiro': return renderForKiro(spec);
     case 'zcode': return renderForClaude(spec);
+    case 'omp': return renderForClaude(spec);
     case 'opencode': return renderForOpencode(spec);
   }
 }
