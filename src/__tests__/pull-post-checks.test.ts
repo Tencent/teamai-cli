@@ -61,6 +61,7 @@ vi.mock('../doctor.js', async (importOriginal) => ({
 }));
 
 import { detectProjectConfig, loadLocalConfigForScope, loadTeamConfig } from '../config.js';
+import { acquireLock } from '../update.js';
 import { buildChecks, resolveDoctorContext, type Check, type DoctorContext } from '../doctor.js';
 import { log } from '../utils/logger.js';
 import { pull } from '../pull.js';
@@ -129,6 +130,9 @@ describe('checks at the end of an interactive pull', () => {
     };
     vi.mocked(resolveDoctorContext).mockResolvedValue(ctx);
     vi.mocked(buildChecks).mockResolvedValue([]);
+    // clearAllMocks resets calls, not implementations, so a test that makes the
+    // lock contended would otherwise leak into the next one.
+    vi.mocked(acquireLock).mockResolvedValue(true);
   });
 
   afterEach(async () => {
@@ -249,6 +253,22 @@ describe('checks at the end of an interactive pull', () => {
     await expect(pull({ force: true })).resolves.toBeUndefined();
 
     expect(printedOutput()).toContain('Post-pull checks did not run');
+  });
+
+  it('runs no checks when another process holds a scope lock', async () => {
+    // A contended scope is dropped from every stage that reads the shared clone,
+    // because the other process may have it on a transient branch. The checks
+    // resolve their own context from that same clone, so running them here is
+    // how a diagnostic invents a failure about someone else's work in progress.
+    vi.mocked(acquireLock).mockResolvedValue(false);
+    vi.mocked(buildChecks).mockResolvedValue([
+      { name: 'Team repo exists locally', source: 'local', check: async () => false },
+    ]);
+
+    await pull({ force: true });
+
+    expect(buildChecks).not.toHaveBeenCalled();
+    expect(printedOutput()).not.toContain('Team repo exists locally');
   });
 
   it('runs no checks on the silent hook path', async () => {

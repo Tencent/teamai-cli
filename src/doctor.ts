@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
-import { listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
+import fs from 'node:fs';
+import { expandHome, listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import type { GlobalOptions, ResourceItem } from './types.js';
 import {
@@ -15,6 +16,7 @@ import {
   type TeamaiConfig,
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
+import { skillsReachTool } from './resources/skills.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder } from './hooks.js';
 import { getUserHome } from './utils/home.js';
@@ -115,7 +117,16 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
     const probePath = paths.skills ?? paths.rules ?? paths.agents ?? paths.settings ?? paths.hooks;
     if (!probePath) continue;
 
-    const isInstalled = (): Promise<boolean> => isToolInstalledForConfig(tool, probePath, localConfig);
+    // A tool that receives skills is asked the way the skills write path asks:
+    // OpenClaw lives at its workspace directory, not at the tool root, so the
+    // generic probe passes for a `~/.openclaw` with no workspace while delivery
+    // silently skips it — the same "reported success, received nothing" this
+    // check exists to catch. A tool with no skills path (rules only) has no
+    // such resolver, so it keeps the generic probe.
+    const skillsPath = paths.skills;
+    const isInstalled = skillsPath
+      ? (): Promise<boolean> => skillsReachTool(tool, skillsPath, localConfig)
+      : (): Promise<boolean> => isToolInstalledForConfig(tool, probePath, localConfig);
 
     // Pushed whether or not it passes. Every other check in the registry
     // reports both ways, and `doctor --json` is consumed by hooks and CI, where
@@ -190,6 +201,19 @@ async function skillIsDiscoverable(skillDir: string, skillName: string): Promise
   const { data, valid } = splitFrontmatter(content);
   if (!valid) return false;
   return data.name === skillName;
+}
+
+/**
+ * Whether `filePath` is a file something can actually read. `pathExists`
+ * follows symlinks but says yes to a directory too, so on its own it cannot
+ * tell a delivered document from a name occupied by something else.
+ */
+async function isReadableFile(filePath: string): Promise<boolean> {
+  try {
+    return (await fs.promises.stat(expandHome(filePath))).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /** At most this many names in a fix string; the rest are counted. */
@@ -300,9 +324,12 @@ async function buildDocsCheck(ctx: DoctorContext): Promise<Check[]> {
     // Same filter DocsHandler.pullItem copies with: dotfiles never travel.
     .filter((file) => file.split('/').every((segment) => !segment.startsWith('.')));
 
+  // isFile, not merely "something is there": a directory sitting on the
+  // expected name, or a symlink with nothing behind it, would satisfy a plain
+  // existence check while the doc is no more readable than a missing one.
   const missing: string[] = [];
   for (const file of teamFiles) {
-    if (!await pathExists(path.join(dest, file))) missing.push(file);
+    if (!await isReadableFile(path.join(dest, file))) missing.push(file);
   }
 
   return [{

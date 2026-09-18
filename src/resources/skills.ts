@@ -52,6 +52,30 @@ export async function resolveSkillDestination(
 }
 
 /**
+ * Name used only to ask the resolver a yes/no question. It shapes the path that
+ * comes back, never the installed gate, so no skill by this name need exist.
+ */
+const INSTALL_PROBE_SKILL = '__teamai_probe__';
+
+/**
+ * Whether skills reach `tool` at all on this machine.
+ *
+ * Asks `skillTargetForTool`, which is the gate the write path itself runs:
+ * OpenClaw resolves through its workspace directory, Hermes through its home,
+ * Copilot counts itself installed once `enabledAgents` names it, and everything
+ * else falls back to the tool root. A probe that answered any of those
+ * differently is exactly how "Synced N skills" ends up true while a tool
+ * receives nothing (#598), which is the failure `doctor` exists to catch.
+ */
+export async function skillsReachTool(
+  tool: string,
+  configuredSkillsPath: string,
+  localConfig: LocalConfig,
+): Promise<boolean> {
+  return await skillTargetForTool(tool, configuredSkillsPath, localConfig, INSTALL_PROBE_SKILL) !== null;
+}
+
+/**
  * Where `skillName` lands for `tool` on this machine, or null when the tool
  * cannot receive it: no skills path configured, or the tool is not installed.
  *

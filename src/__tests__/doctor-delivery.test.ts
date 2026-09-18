@@ -148,6 +148,36 @@ describe('doctor — skills delivered on disk', () => {
     expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('Codex skill conflict'));
   });
 
+  it('asks the skills write path whether a tool is installed', async () => {
+    // OpenClaw lives at its workspace directory, not at the tool root. A tool
+    // root with no workspace passes a generic probe while skill delivery skips
+    // the tool entirely, which is "reported success, received nothing" inside
+    // the command whose job is to catch it (#598).
+    teamConfig.toolPaths = { openclaw: { skills: '.openclaw/skills' } };
+    localConfig.enabledAgents = ['openclaw'];
+    await fse.ensureDir(path.join(homeDir, '.openclaw'));
+
+    const ctx = await resolveDoctorContext();
+    if (!ctx) throw new Error('expected a resolved doctor context');
+    const installed = (await buildChecks(ctx)).find((c) => c.name === 'openclaw is installed');
+
+    expect(installed).toBeDefined();
+    expect(await installed!.check()).toBe(false);
+  });
+
+  it('passes once that tool\'s workspace is there', async () => {
+    teamConfig.toolPaths = { openclaw: { skills: '.openclaw/skills' } };
+    localConfig.enabledAgents = ['openclaw'];
+    await fse.ensureDir(path.join(homeDir, '.openclaw', 'workspace', 'skills'));
+
+    const ctx = await resolveDoctorContext();
+    if (!ctx) throw new Error('expected a resolved doctor context');
+    const installed = (await buildChecks(ctx)).find((c) => c.name === 'openclaw is installed');
+
+    expect(installed).toBeDefined();
+    expect(await installed!.check()).toBe(true);
+  });
+
   it('reports each installed tool separately', async () => {
     teamConfig.toolPaths = {
       claude: { skills: '.claude/skills' },
@@ -303,6 +333,20 @@ describe('doctor — skills delivered on disk', () => {
       expect(check!.fix).toContain('api/reference.md');
       expect(check!.fix).not.toContain('guide.md');
       expect(check!.fix).toContain('teamai pull --force');
+    });
+
+    it('does not accept a directory sitting on a doc\'s name', async () => {
+      // pathExists follows symlinks and says yes to a directory, so on its own
+      // it cannot tell a delivered document from a name occupied by something
+      // else. The bundle is no more readable than if the file were missing.
+      await writeTeamDoc('guide.md');
+      await fse.ensureDir(path.join(homeDir, 'team-docs', 'guide.md'));
+
+      const check = await docsCheck();
+
+      expect(check).toBeDefined();
+      expect(await check!.check()).toBe(false);
+      expect(check!.fix).toContain('guide.md');
     });
 
     it('asks nothing when the team repo ships no docs', async () => {

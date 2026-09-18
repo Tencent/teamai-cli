@@ -1807,7 +1807,11 @@ export async function pull(options: GlobalOptions): Promise<void> {
   // 6. Post-conditions. Everything above reported what it *did*; these report
   //    what is actually on disk (issue #598). Only after an explicit pull: the
   //    SessionStart hook runs pull({ silent: true }) and must stay free.
-  await reportPostPullChecks(options, reported);
+  //    Skipped when any scope was contended: those are dropped from every
+  //    clone-consuming stage above for the same reason the checks would need
+  //    the clone, and reading it while the other process holds it on a
+  //    transient branch is how a diagnostic invents a failure.
+  await reportPostPullChecks(options, reported, contended.size > 0);
   } finally {
     const releaseSyncLocks = async () => {
       for (const lock of heldLocks.values()) await releaseLock(lock);
@@ -1845,8 +1849,21 @@ const POST_PULL_CHECKS_TIMEOUT_MS = 5000;
 async function reportPostPullChecks(
   options: GlobalOptions,
   reported: ReadonlySet<string>,
+  /**
+   * True when another process held a scope's sync lock this run. The checks
+   * resolve their own context from the shared clone, which that process may
+   * have on a transient branch, so their answers would be about its work in
+   * progress rather than about this machine.
+   */
+  contended: boolean,
 ): Promise<void> {
   if (options.silent || options.dryRun) return;
+  if (contended) {
+    // The pull already said the scope was skipped. Saying nothing more is the
+    // honest outcome; `teamai doctor` runs them once the other process is done.
+    log.debug('Post-pull checks skipped: another pull/push holds a scope lock');
+    return;
+  }
   try {
     const { resolveDoctorContext, buildChecks, runChecks, formatCheckResult } = await import('./doctor.js');
     const ctx = await resolveDoctorContext();
