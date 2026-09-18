@@ -13,6 +13,7 @@ import {
     scopedToolPaths,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
+import { pathExists } from './utils/fs.js';
 
 type HookListStatus = HookStatus | 'not configured';
 
@@ -95,6 +96,19 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             : paths.settings
                 ? path.join(baseDir, paths.settings)
                 : undefined;
+        // OMP has no settings/hooks file to parse: its hooks are a single
+        // generated extension under the user agent dir, so presence of the
+        // file (with our marker) is the whole status.
+        if (tool === 'omp') {
+            const { resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
+            const extFile = path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+            rows.push({
+                tool,
+                status: await pathExists(extFile) ? 'installed' : 'missing',
+                settingsPath: formatDisplayPath(extFile),
+            });
+            continue;
+        }
         if (!hookPath) {
             rows.push({ tool, status: 'not configured', settingsPath: 'no settings configured' });
             continue;
