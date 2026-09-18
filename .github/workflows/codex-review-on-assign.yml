@@ -1,15 +1,25 @@
 name: Codex Review on Assign
 
-# Runs an automated, read-only Codex review when a PR is assigned, and posts the
-# result as a PR comment.
+# Runs an automated, read-only Codex review and posts the result as a PR comment.
+#
+# TRIGGER MODEL — "assign once, then auto re-review on push":
+#   * assigned          — a maintainer assigning the PR authorizes review, and
+#                         runs one immediately.
+#   * synchronize       — a later push re-reviews the updated code, but ONLY if
+#                         the PR already carries a maintainer as an assignee
+#                         (i.e. it was authorized earlier). So the author does
+#                         not have to be re-assigned after every push, yet an
+#                         un-authorized fork PR still never runs on its own pushes.
+#   * ready_for_review  — same authorization check, for draft→ready transitions.
 #
 # SECURITY MODEL — this workflow uses `pull_request_target`, which grants access
 # to repository secrets (needed for the Codex API key) EVEN FOR FORK PRs. That
 # power is dangerous if misused, so this workflow follows the safe pattern from
 # GitHub's "Preventing pwn requests" guidance:
 #
-#   1. Maintainer gate: only a user with write/admin permission can trigger the
-#      review (the `gate` job). A fork PR author cannot start it themselves.
+#   1. Maintainer gate: review only runs when a maintainer (write/admin/maintain)
+#      authorized this PR — either the current assigner, or an existing assignee.
+#      A fork PR author's own pushes cannot start it. (The `gate` job.)
 #   2. The PR's code is treated as PASSIVE DATA only. We check out the trusted
 #      BASE commit (never the PR head), and expose the PR changes to Codex solely
 #      through `git diff` — which reads git objects, it does not execute them.
@@ -23,15 +33,17 @@ name: Codex Review on Assign
 
 on:
   pull_request_target:
-    types: [assigned]
+    types: [assigned, synchronize, ready_for_review]
 
 concurrency:
+  # One review per PR; a new push cancels the in-flight review of the old commit.
   group: codex-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  # Gate: only maintainers (write/admin) may trigger a secret-bearing review on
-  # untrusted PR code. Unauthorized assigns skip the review job silently.
+  # Gate: review only runs when a maintainer (write/admin/maintain) has authorized
+  # this PR. On `assigned` that is the assigner; on `synchronize`/`ready_for_review`
+  # it is any current assignee with maintainer permission. Otherwise skip silently.
   gate:
     name: Authorize trigger
     runs-on: ubuntu-latest
@@ -40,26 +52,53 @@ jobs:
     outputs:
       authorized: ${{ steps.check.outputs.authorized }}
     steps:
-      - name: Check actor permission
+      - name: Check maintainer authorization
         id: check
         uses: actions/github-script@v7
         with:
           script: |
-            const actor = context.actor;
-            let perm = 'none';
-            try {
-              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                username: actor,
-              });
-              perm = data.permission; // one of: admin, write, read, none
-            } catch (e) {
-              core.info(`permission lookup failed for ${actor}: ${e.message}`);
+            const MAINTAINER = new Set(['admin', 'write', 'maintain']);
+
+            async function permOf(username) {
+              if (!username) return 'none';
+              try {
+                const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  username,
+                });
+                return data.permission; // admin | write | read | none
+              } catch (e) {
+                core.info(`permission lookup failed for ${username}: ${e.message}`);
+                return 'none';
+              }
             }
-            const ok = ['admin', 'write', 'maintain'].includes(perm);
-            core.info(`actor=${actor} permission=${perm} authorized=${ok}`);
-            core.setOutput('authorized', ok ? 'true' : 'false');
+
+            const action = context.payload.action;
+            let authorized = false;
+
+            if (action === 'assigned') {
+              // The person doing the assigning must be a maintainer.
+              const actor = context.actor;
+              const perm = await permOf(actor);
+              authorized = MAINTAINER.has(perm);
+              core.info(`assigned by ${actor} (perm=${perm}) -> authorized=${authorized}`);
+            } else if (action === 'synchronize' && context.payload.pull_request.draft) {
+              // Don't burn a review on every push to a draft — wait until the
+              // author marks it ready (which fires ready_for_review).
+              core.info('draft PR push -> skip re-review until ready_for_review');
+            } else {
+              // synchronize / ready_for_review: the PR must already carry a
+              // maintainer as an assignee (authorized earlier by an assign).
+              const assignees = (context.payload.pull_request.assignees || []).map(a => a.login);
+              for (const login of assignees) {
+                const perm = await permOf(login);
+                if (MAINTAINER.has(perm)) { authorized = true; core.info(`assignee ${login} (perm=${perm}) authorizes re-review`); break; }
+              }
+              if (!authorized) core.info(`no maintainer assignee among [${assignees.join(', ')}] -> skip (action=${action})`);
+            }
+
+            core.setOutput('authorized', authorized ? 'true' : 'false');
 
   review:
     name: Codex PR Review
