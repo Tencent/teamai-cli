@@ -329,10 +329,12 @@ export class RulesHandler extends ResourceHandler {
         const ruleName = ruleStemFromFilename(localFile);
         if (ruleName === null) continue;
 
-        // JoyCode's rules directory is shared with user-authored rules. Absence
-        // from the current team set is not proof of TeamAI ownership (including
-        // legacy .md files). Only explicit team removals authorize cleanup.
-        if ((tool === 'joycode' || usesCopilotInstructions(tool)) && !tombstones.has(ruleName)) continue;
+        // JoyCode's, OMP's, and Copilot's rules directories are shared with
+        // user-authored rules (OMP's native rules dirs are exactly where its
+        // users keep personal rules). Absence from the current team set is not
+        // proof of TeamAI ownership (including legacy .md files). Only explicit
+        // team removals authorize cleanup.
+        if ((tool === 'joycode' || tool === 'omp' || usesCopilotInstructions(tool)) && !tombstones.has(ruleName)) continue;
 
         // `.mdc` tools only read `.mdc`, so any `.md` here is inert leftover from the
         // layout that predates it — removed whether or not the rule is still

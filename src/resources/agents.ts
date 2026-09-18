@@ -579,7 +579,7 @@ export class AgentsHandler extends ResourceHandler {
 // ─── Module-level helpers ──────────────────────────────────────────────────
 
 /** Tools that receive a legacy `agents/<name>.md` copied verbatim. */
-const LEGACY_MD_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy', 'joycode']);
+const LEGACY_MD_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy', 'joycode', 'omp']);
 
 type TeamAgentDir = { dir: string; namespace?: string };
 
