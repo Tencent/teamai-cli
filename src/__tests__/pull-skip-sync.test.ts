@@ -173,6 +173,22 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     expect(saveStateForScope).not.toHaveBeenCalled();
   });
 
+  it('stops before the revision fast path when role-scoped resources cannot be resolved', async () => {
+    await fse.remove(path.join(repoPath, 'skills', 'common'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'common'), 'not a directory\n');
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['claude'],
+    }));
+
+    await pull({});
+
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('ENOTDIR'));
+    expect(log.success).not.toHaveBeenCalledWith(
+      expect.stringContaining('Already synced at abc1234, skipping'),
+    );
+  });
+
   it('should refresh the clone before reading teamai.yaml when it is missing locally', async () => {
     // The clone lacks teamai.yaml until git pull brings it from the remote.
     let pulled = false;
@@ -578,6 +594,44 @@ describe('pull skip-sync refreshes CLAUDE.md recall block (CLI upgrade)', () => 
     // Untouched: the stale block remains exactly as seeded.
     expect(after).toContain('you **MUST** first invoke the `teamai-recall` subagent');
   });
+
+  it('refreshes Copilot recall instructions under a custom COPILOT_HOME', async () => {
+    const copilotHome = path.join(tmpDir, 'copilot-home');
+    const copilotInstructions = path.join(copilotHome, 'copilot-instructions.md');
+    await fse.ensureDir(path.join(copilotHome, 'agents'));
+    await fse.writeFile(copilotInstructions, '# Personal instructions\n');
+    vi.stubEnv('COPILOT_HOME', copilotHome);
+
+    const teamConfig = TeamaiConfigSchema.parse({
+      team: 'test',
+      repo: 'https://github.com/example/team.git',
+      sharing: { recall: { enabled: true } },
+    });
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://github.com/example/team.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+      recallEnabled: true,
+      enabledAgents: ['copilot'],
+    };
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(localConfig);
+    vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
+      lastPull: '2026-04-01',
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['copilot'],
+    }));
+
+    await pull({});
+
+    const updated = await fse.readFile(copilotInstructions, 'utf8');
+    expect(updated).toContain('# Personal instructions');
+    expect(updated).toContain(compileRecallRulesBlock());
+  });
 });
 
 function emptyState(overrides: Partial<State> = {}): State {
@@ -769,6 +823,109 @@ describe('enabledAgents whitelist on pull inject, skip-sync, and cleanup (#510)'
       expect(await fse.readFile(envPath, 'utf8')).toContain(`export TEAMAI_COPILOT_SCOPE='${sharedEnvValue}'`);
     },
   );
+
+  it('delivers new Copilot instructions after a CLI upgrade when the repo revision is unchanged', async () => {
+    const copilotHome = path.join(tmpDir, 'copilot-home');
+    const instructionPath = path.join(copilotHome, 'copilot-instructions.md');
+    const userInstructions = '# Personal Copilot instructions\n\nKeep this text.\n';
+    vi.stubEnv('COPILOT_HOME', copilotHome);
+    await fse.ensureDir(copilotHome);
+    await fse.writeFile(instructionPath, userInstructions);
+
+    const teamConfig = TeamaiConfigSchema.parse({
+      team: 'test',
+      repo: 'https://github.com/example/team.git',
+    });
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://github.com/example/team.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+      enabledAgents: ['copilot'],
+    };
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(localConfig);
+    vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
+      lastPull: '2026-04-01',
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['copilot'],
+    }));
+
+    await pull({ silent: true });
+
+    expect(log.success).toHaveBeenCalledWith(
+      expect.stringContaining('Already synced at abc1234, skipping'),
+    );
+    const updated = await fse.readFile(instructionPath, 'utf8');
+    expect(updated).toContain(userInstructions.trim());
+    expect(updated).toContain(TEAMAI_CULTURE_START);
+    expect(updated).toContain(TEAMAI_CLAUDEMD_START);
+  });
+
+  it('warns without replacing an unwritable Copilot instruction target', async () => {
+    const copilotHome = path.join(tmpDir, 'copilot-home');
+    const instructionPath = path.join(copilotHome, 'copilot-instructions.md');
+    vi.stubEnv('COPILOT_HOME', copilotHome);
+    await fse.ensureDir(instructionPath);
+
+    const teamConfig = TeamaiConfigSchema.parse({
+      team: 'test',
+      repo: 'https://github.com/example/team.git',
+    });
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://github.com/example/team.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      primaryRole: 'hai',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+      enabledAgents: ['copilot'],
+    };
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(localConfig);
+    vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['copilot'],
+    }));
+
+    await pull({ silent: true });
+
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to inject culture into copilot'));
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to inject shared instructions into copilot'));
+    expect((await fse.stat(instructionPath)).isDirectory()).toBe(true);
+  });
+
+  it('keeps the pull fast path available when shared-instruction discovery fails', async () => {
+    await fse.remove(path.join(repoPath, 'claudemd'));
+    await fse.writeFile(path.join(repoPath, 'claudemd'), 'not a directory\n');
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://github.com/example/team.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      additionalRoles: [],
+      resourceProfileVersion: 1,
+      scope: 'user',
+      enabledAgents: ['copilot'],
+    };
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(localConfig);
+    vi.mocked(loadTeamConfig).mockResolvedValue(TeamaiConfigSchema.parse({
+      team: 'test',
+      repo: 'https://github.com/example/team.git',
+    }));
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['copilot'],
+    }));
+
+    await pull({ silent: true });
+
+    expect(log.debug).toHaveBeenCalledWith(expect.stringContaining('Shared instructions sync skipped: ENOTDIR'));
+    expect(log.success).toHaveBeenCalledWith(expect.stringContaining('Already synced at abc1234, skipping'));
+  });
 
   it('records only whitelist-eligible tools in lastPullTargets', async () => {
     await fse.ensureDir(path.join(homeDir, '.workbuddy'));
