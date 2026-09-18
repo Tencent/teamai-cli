@@ -35,6 +35,7 @@ import {
 import { BUILTIN_RULE_NAMES } from './builtin-rules.js';
 import { ruleStemFromFilename } from './resources/rule-format.js';
 import { agentStemFromFilename } from './resources/agent-format.js';
+import { resolveDocsDestination } from './resources/docs.js';
 import { listTeamAgentDirs } from './resources/agents.js';
 import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
@@ -528,15 +529,7 @@ async function buildRemovalPlan(
     }
 
     // (f) Docs directory
-    const docsLocalDir = teamConfig.sharing.docs.localDir;
-    let docsDir: string;
-    if (localConfig.scope === 'project' && localConfig.projectRoot) {
-      docsDir = docsLocalDir.startsWith('~/')
-        ? path.join(localConfig.projectRoot, docsLocalDir.substring(2))
-        : expandHome(docsLocalDir);
-    } else {
-      docsDir = expandHome(docsLocalDir);
-    }
+    const docsDir = resolveDocsDestination(teamConfig, localConfig);
     if (await pathExists(docsDir)) {
       plan.docsDir = docsDir;
     }
