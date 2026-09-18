@@ -1234,6 +1234,29 @@ async function reconcileOpencodePlugin(baseDir: string, removeAll = false, insta
 }
 
 /**
+ * Reconcile the single teamai OMP extension.
+ *
+ * OMP auto-loads extensions from BOTH ~/.omp/agent/extensions (user) and
+ * <cwd>/.omp/extensions (project), and dedups by absolute path — two copies
+ * of the teamai file would dispatch every event twice. teamai therefore
+ * writes exactly one copy, in the user agent dir, matching the OpenCode
+ * plugin policy and the settings.json hooks of every other tool (which also
+ * live in HOME and gate on the `cwd` fed to hook-dispatch). Install only when
+ * ~/.omp exists, so a machine without OMP never grows a config dir.
+ */
+async function reconcileOmpExtension(removeAll = false): Promise<void> {
+  const home = getUserHome();
+  const { injectOmpHooks, removeOmpHooks } = await import('./omp-hooks.js');
+  if (removeAll) {
+    await removeOmpHooks();
+    return;
+  }
+  if (await pathExists(path.join(home, '.omp'))) {
+    await injectOmpHooks();
+  }
+}
+
+/**
  * Inject teamai built-in hooks into all AI tool settings.
  * Only writes to tools whose root directory already exists on disk,
  * preventing creation of config dirs for tools the user hasn't installed.
@@ -1275,6 +1298,12 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
       } catch (e) {
         log.warn(`Failed to inject OpenCode hook into ${tool}: ${(e as Error).message}`);
       }
+    } else if (tool === 'omp') {
+      try {
+        await reconcileOmpExtension();
+      } catch (e) {
+        log.warn(`Failed to inject OMP hook into ${tool}: ${(e as Error).message}`);
+      }
     }
   }
 }
@@ -1285,11 +1314,11 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
  * injection path used by `teamai pull` / `init` / `hooks inject`.
  *
  * `settingsOnly` restricts the pass to tools reconciled through their settings
- * file, skipping Hermes and OpenCode. Those two go through global adapters that
- * ignore `baseDir` — `removeHermesHooks()` takes none, and the OpenCode
- * adapter's removeAll branch always targets HOME — so a caller sweeping a
- * secondary location (the legacy `<projectRoot>` copy) must opt out, or it
- * deletes the hooks the primary pass just installed.
+ * file, skipping Hermes, OpenCode, and OMP. Those three go through global
+ * adapters that ignore `baseDir` — `removeHermesHooks()` takes none, and the
+ * OpenCode / OMP adapters' removeAll branches always target HOME — so a caller
+ * sweeping a secondary location (the legacy `<projectRoot>` copy) must opt out,
+ * or it deletes the hooks the primary pass just installed.
  */
 export async function reconcileHooksToAllTools(
   toolPaths: Record<string, { settings?: string }>,
@@ -1338,6 +1367,17 @@ export async function reconcileHooksToAllTools(
         await reconcileOpencodePlugin(baseDir, opts.removeAll, opts.installedBaseDir);
       } catch (e) {
         log.warn(`Failed to reconcile OpenCode hooks: ${(e as Error).message}`);
+      }
+      continue;
+    }
+    // OMP likewise has no settings hook list: it auto-loads TS extensions from
+    // the agent dir. Route it to the extension adapter.
+    if (tool === 'omp') {
+      if (opts.settingsOnly) continue;
+      try {
+        await reconcileOmpExtension(opts.removeAll);
+      } catch (e) {
+        log.warn(`Failed to reconcile OMP hooks: ${(e as Error).message}`);
       }
       continue;
     }

@@ -361,8 +361,10 @@ export const TeamaiConfigSchema = z.object({
     // plain .md, instructions land in AGENTS.md, and MCP uses the Claude-shaped
     // {"mcpServers": …} mcp.json. OMP runs lifecycle hooks as in-process TS
     // extensions rather than a settings hook list, so there is no `settings`
-    // path. Profiles (OMP_PROFILE / PI_CODING_AGENT_DIR / PI_CONFIG_DIR) move
-    // the agent dir and are not supported.
+    // path — the adapter in omp-hooks.ts writes the single user-root extension
+    // (~/.omp/agent/extensions/teamai-hooks.ts). Profiles (OMP_PROFILE /
+    // PI_CODING_AGENT_DIR / PI_CONFIG_DIR) move the agent dir and are not
+    // supported.
     omp: {
       skills: '.omp/skills',
       rules: '.omp/rules',
