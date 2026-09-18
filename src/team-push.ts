@@ -308,22 +308,47 @@ function hasDailyDelta(delta: ReturnType<typeof computeDailyStatsDelta>['delta']
 }
 
 /**
+ * A Windows-style root: a drive letter (`C:\`, `c:/`) or a UNC share
+ * (`\\server\share`). Tested per path rather than per platform, because the
+ * dashboard event log is shared — a team repo can hold events pushed from
+ * Windows and from Linux in the same file.
+ */
+const WINDOWS_ROOT = /^(?:[A-Za-z]:[\\/]|\\\\)/;
+
+type ScopeRoot = { key: string; windows: boolean };
+
+/**
  * Normalize a directory path for scope comparison.
  *
  * Both sides are native paths: `projectRoot` is stored as `path.resolve(cwd)`
  * at init time, and an event's `cwd` is whatever the AI tool put in its hook
  * payload. On Windows both use backslashes, so a literal `root + '/'` prefix
- * can never match a subdirectory. Separators are unified to `/` and trailing
- * ones dropped, which leaves POSIX paths exactly as they were.
+ * can never match a subdirectory, and the two sources can also disagree on the
+ * case of the drive letter or of any directory along the way. Windows paths
+ * therefore get their separators unified and their case folded.
+ *
+ * POSIX paths keep both distinctions: they are case-sensitive, and `\` is a
+ * legal character in a POSIX filename, so `/work/a\b` and `/work/a/b` are two
+ * different directories and must not collapse onto one key.
+ *
+ * The root decides which set of rules applies to both sides, so a Windows root
+ * still matches a cwd the tool reported with forward slashes, and a POSIX root
+ * never has a backslash rewritten underneath it.
  */
-function scopeKey(dir: string): string {
-  return dir.replace(/\\/g, '/').replace(/\/+$/, '');
+function scopeKey(dir: string, windows: boolean): string {
+  if (!windows) return dir.replace(/\/+$/, '');
+  return dir.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function scopeRoot(dir: string): ScopeRoot {
+  const windows = WINDOWS_ROOT.test(dir);
+  return { key: scopeKey(dir, windows), windows };
 }
 
 /** True when `cwd` is the root itself or sits below it. */
-function isUnderScopeRoot(cwd: string, rootKey: string): boolean {
-  const key = scopeKey(cwd);
-  return key === rootKey || key.startsWith(rootKey + '/');
+function isUnderScopeRoot(cwd: string, root: ScopeRoot): boolean {
+  const key = scopeKey(cwd, root.windows);
+  return key === root.key || key.startsWith(root.key + '/');
 }
 
 /**
@@ -338,11 +363,11 @@ export function filterEventsByScope(
 ): DashboardEvent[] {
   if (!opts) return events;
   if (opts.projectRoot) {
-    const root = scopeKey(opts.projectRoot);
+    const root = scopeRoot(opts.projectRoot);
     return events.filter((e) => !!e.cwd && isUnderScopeRoot(e.cwd, root));
   }
   if (opts.excludeProjectRoots && opts.excludeProjectRoots.length > 0) {
-    const roots = opts.excludeProjectRoots.map(scopeKey);
+    const roots = opts.excludeProjectRoots.map(scopeRoot);
     return events.filter((e) => {
       if (!e.cwd) return true;
       return !roots.some((root) => isUnderScopeRoot(e.cwd!, root));

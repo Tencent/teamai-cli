@@ -100,5 +100,56 @@ describe('filterEventsByScope', () => {
       });
       expect(result.map((e) => e.sessionId)).toEqual(['w1', 'w2']);
     });
+
+    it('ignores drive-letter and directory casing', () => {
+      const result = filterEventsByScope(winEvents, {
+        projectRoot: 'c:\\users\\JEFF\\Project-A',
+      });
+      expect(result.map((e) => e.sessionId)).toEqual(['w1', 'w2']);
+    });
+
+    it('excludeProjectRoots ignores casing too', () => {
+      const result = filterEventsByScope(winEvents, {
+        excludeProjectRoots: ['c:/users/jeff/project-a'],
+      });
+      expect(result.map((e) => e.sessionId)).toEqual(['w3', 'w4']);
+    });
+
+    it('matches a UNC root whatever its case or separators', () => {
+      const uncEvents: DashboardEvent[] = [
+        makeEvent('\\\\Server\\Share\\Proj', 'u1'),
+        makeEvent('\\\\server\\share\\proj\\src', 'u2'),
+        makeEvent('\\\\server\\share\\other', 'u3'),
+      ];
+      const result = filterEventsByScope(uncEvents, {
+        projectRoot: '\\\\SERVER\\SHARE\\proj',
+      });
+      expect(result.map((e) => e.sessionId)).toEqual(['u1', 'u2']);
+    });
+  });
+
+  // A POSIX path is case-sensitive, and `\` is a legal character in a POSIX
+  // filename, so neither folding may be applied to one.
+  describe('POSIX paths keep their own rules', () => {
+    it('does not fold case', () => {
+      const result = filterEventsByScope(events, { projectRoot: '/users/jeff/PROJECT-A' });
+      expect(result.map((e) => e.sessionId)).toEqual([]);
+    });
+
+    it('treats a backslash in a filename as part of the name', () => {
+      const evts = [makeEvent('/work/a\\b', 'p1'), makeEvent('/work/a/b', 'p2')];
+      expect(
+        filterEventsByScope(evts, { projectRoot: '/work/a/b' }).map((e) => e.sessionId),
+      ).toEqual(['p2']);
+      expect(
+        filterEventsByScope(evts, { projectRoot: '/work/a\\b' }).map((e) => e.sessionId),
+      ).toEqual(['p1']);
+    });
+
+    it('does not let a backslash filename escape an excluded root', () => {
+      const evts = [makeEvent('/work/a\\b', 'p1'), makeEvent('/work/a/b', 'p2')];
+      const result = filterEventsByScope(evts, { excludeProjectRoots: ['/work/a/b'] });
+      expect(result.map((e) => e.sessionId)).toEqual(['p1']);
+    });
   });
 });
