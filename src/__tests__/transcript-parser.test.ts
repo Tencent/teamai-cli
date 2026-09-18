@@ -352,4 +352,21 @@ describe('parseTranscriptForVotes', () => {
     const result = await parseTranscriptForVotes(filePath);
     expect(result.referencedDocIds).toEqual([]);
   });
+
+  it('empty referenced-doc-ids [] is treated as a valid declaration', async () => {
+    const filePath = path.join(tmpDir, 'transcript.jsonl');
+    writeLine(filePath, {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'text',
+          text: '<!-- teamai:referenced-doc-ids: [] -->',
+        }],
+      },
+    });
+
+    const result = await parseTranscriptForVotes(filePath);
+    expect(result.referencedDocIds).toEqual([]);
+    expect(result.hasReferencedDocIdsDeclaration).toBe(true);
+  });
 });

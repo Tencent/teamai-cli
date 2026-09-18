@@ -359,6 +359,8 @@ const votesSyncHandler: HookHandler = {
       // Enforcement: recall happened but nothing was declared → nudge the model
       // to declare which recalled docs it actually used. The nudge makes the
       // model continue; on the next Stop the declaration is recorded above.
+      // An explicit empty declaration (`[]`) counts as declared, otherwise a
+      // model that correctly reports "nothing used" would be nudged forever.
       // Most tools can retry until the model declares on the next turn. Cursor
       // is capped below because followup_message itself forces another turn and
       // would otherwise create an unbounded Stop loop.
@@ -367,7 +369,7 @@ const votesSyncHandler: HookHandler = {
       const declared = voteData.referencedDocIds;
       let nudged = false;
 
-      if (recalled.length > 0 && declared.length === 0) {
+      if (recalled.length > 0 && !voteData.hasReferencedDocIdsDeclaration) {
         nudged = true;
         // Cursor's followup_message forces another model turn. Cap it to one
         // per session so a model that never emits the declaration cannot enter
