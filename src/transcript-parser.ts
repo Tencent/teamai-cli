@@ -148,11 +148,16 @@ function extractReferencedDocIds(text: string, out: Set<string>): boolean {
 
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
-    found = true;
     const raw = match[1];
+    // A declaration counts only when it is explicitly empty or carries at least
+    // one valid id; a placeholder-only list like `[<id1>]` is not a declaration.
+    if (raw.trim() === '') found = true;
     for (const item of raw.split(',')) {
       const docId = item.trim().replace(/^['"]|['"]$/g, '');
-      if (isValidDocId(docId)) out.add(docId);
+      if (isValidDocId(docId)) {
+        out.add(docId);
+        found = true;
+      }
     }
   }
   return found;
