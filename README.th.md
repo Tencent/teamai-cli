@@ -59,6 +59,9 @@ TeamAI จัดการ Skills, Rules, MCP และความรู้ข�
 /teamai เปิดแดชบอร์ด TeamAI
 ```
 
+<details>
+<summary>ถนัดใช้คอมมานด์ไลน์มากกว่า? (ติดตั้งเอง)</summary>
+
 ### ติดตั้ง
 
 ```bash
@@ -85,6 +88,8 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 เมื่อเริ่มต้นแล้ว ทุกเซสชัน AI จะดึง Skills / Rules และการอัปเดต Harness อื่นๆ ล่าสุดที่ผู้ดูแลเผยแพร่โดยอัตโนมัติ — ไม่ต้องซิงก์ด้วยตนเอง
+
+</details>
 
 > **คู่มือการใช้งานฉบับเต็ม:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — ครอบคลุมตั้งแต่การสร้างทีมไปจนถึงการใช้งานประจำวัน
 

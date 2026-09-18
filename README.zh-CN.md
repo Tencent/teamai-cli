@@ -59,6 +59,9 @@ TeamAI 统一管理团队的 Skills、Rules、MCP 和知识，驾驭 Claude Code
 /teamai 帮我打开 TeamAI 看板
 ```
 
+<details>
+<summary>更习惯用命令行？（手动安装）</summary>
+
 ### 安装
 
 ```bash
@@ -85,6 +88,8 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 初始化完成后，每次开启 AI 会话时都会自动拉取管理员发布的 skills / rules 等 Harness 更新，无需手动同步。
+
+</details>
 
 > **完整使用指南**：[docs/usage-guide.zh-CN.md](docs/usage-guide.zh-CN.md)（[English](docs/usage-guide.md)）— 涵盖从团队创建到日常使用的全流程。
 

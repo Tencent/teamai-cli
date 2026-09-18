@@ -59,6 +59,9 @@ TeamAI をセットアップしたら、AI ツールで `/teamai` skill に話�
 /teamai TeamAI ダッシュボードを開いて
 ```
 
+<details>
+<summary>コマンドラインの方が好みですか？（手動セットアップ）</summary>
+
 ### インストール
 
 ```bash
@@ -85,6 +88,8 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 初期化後は、管理者が公開した最新の skills / rules などの Harness 更新が、AI セッション開始時に自動で取り込まれます。手動同期は不要です。
+
+</details>
 
 > **完全な利用ガイド:** [docs/usage-guide.md](docs/usage-guide.md)（[中文版](docs/usage-guide.zh-CN.md)）— チーム作成から日常利用までをカバーします。
 

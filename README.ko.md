@@ -59,6 +59,9 @@ TeamAI를 설정한 뒤에는 AI 도구에서 `/teamai` skill에게 말만 걸�
 /teamai TeamAI 대시보드 열어줘
 ```
 
+<details>
+<summary>명령줄이 더 편한가요? (수동 설치)</summary>
+
 ### 설치
 
 ```bash
@@ -85,6 +88,8 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 초기화가 끝나면 관리자가 배포한 최신 Skills / Rules 및 기타 Harness 업데이트가 매 AI 세션에서 자동으로 반영됩니다. 수동 동기화는 필요 없습니다.
+
+</details>
 
 > **전체 사용 가이드:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — 팀 생성부터 일상 사용까지 모두 다룹니다.
 

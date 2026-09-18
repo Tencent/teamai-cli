@@ -59,6 +59,9 @@ Once TeamAI is set up, just talk to the `/teamai` skill in your AI tool:
 /teamai Open the TeamAI dashboard
 ```
 
+<details>
+<summary>Prefer the command line? (manual setup)</summary>
+
 ### Install
 
 ```bash
@@ -85,6 +88,8 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 Once initialized, every AI session automatically pulls the latest skills / rules and other Harness updates published by admins — no manual sync needed.
+
+</details>
 
 > **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — covers everything from team creation to day-to-day use.
 
