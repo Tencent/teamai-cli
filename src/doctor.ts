@@ -197,6 +197,16 @@ async function skillIsDiscoverable(skillDir: string, skillName: string): Promise
   return data.name === skillName;
 }
 
+/** At most this many names in a fix string; the rest are counted. */
+const MAX_NAMED_IN_FIX = 5;
+
+/** `a, b, c and 4 more` — a fix a human reads, not a wall of paths. */
+function nameList(names: string[]): string {
+  if (names.length <= MAX_NAMED_IN_FIX) return names.join(', ');
+  const shown = names.slice(0, MAX_NAMED_IN_FIX).join(', ');
+  return `${shown} and ${names.length - MAX_NAMED_IN_FIX} more`;
+}
+
 /**
  * Build one delivery check per installed tool: every skill the member should
  * have, against what is actually on disk for that tool.
@@ -258,8 +268,8 @@ async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {
     if (!installed) continue;
 
     const problems: string[] = [];
-    if (missing.length > 0) problems.push(`not delivered: ${missing.join(', ')}`);
-    if (unreadable.length > 0) problems.push(`delivered but unreadable: ${unreadable.join(', ')}`);
+    if (missing.length > 0) problems.push(`not delivered: ${nameList(missing)}`);
+    if (unreadable.length > 0) problems.push(`delivered but unreadable: ${nameList(unreadable)}`);
 
     checks.push({
       name: `Skills delivered to ${tool}`,
@@ -274,16 +284,6 @@ async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {
   }
 
   return checks;
-}
-
-/** At most this many names in a fix string; the rest are counted. */
-const MAX_NAMED_IN_FIX = 5;
-
-/** `a, b, c and 4 more` — a fix a human reads, not a wall of paths. */
-function nameList(names: string[]): string {
-  if (names.length <= MAX_NAMED_IN_FIX) return names.join(', ');
-  const shown = names.slice(0, MAX_NAMED_IN_FIX).join(', ');
-  return `${shown} and ${names.length - MAX_NAMED_IN_FIX} more`;
 }
 
 /**

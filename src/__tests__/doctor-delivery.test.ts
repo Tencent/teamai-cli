@@ -117,6 +117,18 @@ describe('doctor — skills delivered on disk', () => {
     expect(check.fix).toContain('teamai pull --force');
   });
 
+  it('counts the rest rather than printing every name', async () => {
+    // A fresh machine is missing everything. The fix is a line a human reads,
+    // not the whole desired set pasted into the terminal.
+    for (let i = 0; i < 9; i += 1) await writeTeamSkill(`extra-${i}`);
+
+    const check = await deliveryCheck();
+
+    expect(await check.check()).toBe(false);
+    expect(check.fix).toContain('and 6 more');
+    expect(check.fix).not.toContain('extra-8');
+  });
+
   it('reports each installed tool separately', async () => {
     teamConfig.toolPaths = {
       claude: { skills: '.claude/skills' },

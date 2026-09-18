@@ -421,7 +421,6 @@ const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
  * commits, stashes, or reflog history inside `.git` — deleting the dir would lose
  * them silently. Their presence can't be proven safe by a file compare, so keep.
  */
-
 async function skillSafeToRemove(deployedDir: string, source: string | undefined): Promise<boolean> {
   if (!source || !await pathExists(source)) return false;
   // Recursive: a git repo nested anywhere under the skill (e.g. scripts/.git)
