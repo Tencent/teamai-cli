@@ -33,8 +33,8 @@ curl -sS -m 3 -D - -o /dev/null https://git.woa.com 2>/dev/null | grep -qi '^x-e
 ```
 
 If it prints `tgit: OK`, **list Tencent TGit (工蜂) first** and prefer it —
-TeamAI supports it natively (it auto-installs the `gf` CLI and detects
-`git.woa.com` on its own). Then ask:
+TeamAI supports it natively as the `tgit` provider (it detects `git.woa.com` on
+its own; you install `gf` and log in in Step 3). Then ask:
 *"Have you heard of / do you have an account on any of these — Tencent TGit
 (工蜂), GitHub, GitLab, or CNB (cnb.cool)?"*
 
@@ -79,10 +79,12 @@ the repository, then continue to the next step:
 | GitLab   | https://gitlab.com/users/sign_in | https://gitlab.com/projects/new |
 | CNB      | https://cnb.cool             | https://cnb.cool/new/repos (org first: https://cnb.cool/new/groups) |
 
-> **Tencent TGit (工蜂):** you may skip creating the repo in the browser — in
-> Step 5, `teamai init` can create it for you. It also installs the `gf` CLI and
-> handles the login on its own during init; you run no login command.
-> git.woa.com is Tencent-internal only.
+> **Tencent TGit (工蜂):** **prefer letting `teamai init` create the repo for you**
+> in Step 5 — don't send the user to the browser first. Once you are logged in
+> (Step 3), init creates the repo under the chosen owner via the API. Only fall
+> back to https://git.woa.com/projects/new if init reports it can't (e.g. the
+> group/namespace doesn't exist, or you lack create permission). git.woa.com is
+> Tencent-internal only.
 
 Tell the user to sign in, create an **empty** repo (suggested name
 `TeamAi-<team-name>`), and give you the resulting repo URL. Explain in one
@@ -99,39 +101,40 @@ computer only holds a synced copy — you never put business code in it."*
 Signing in on the website (Step 2c) is not enough — `teamai init` also needs the
 platform's CLI credentials. Have the user complete the matching CLI login:
 
-### Tencent TGit (工蜂) — `teamai init` handles login; gf install is automatic
+### Tencent TGit (工蜂) — install `gf`, then log in (you do this, not the user)
 
 TeamAI supports git.woa.com natively as the `tgit` provider (it recognizes the
-host on its own — no `GITLAB_URL` needed). **You do not run any login command.**
-When you reach Step 5, `teamai init` **auto-downloads the `gf` CLI** (工蜂命令行
-工具) if it is missing and, if the user is not yet authorized, **launches the login
-for them during init** — the user just approves it in the browser / iOA when
-prompted. In the normal flow you can skip straight to Step 4.
+host on its own — no `GITLAB_URL` needed). **You** install the `gf` CLI (工蜂命令行
+工具) and drive the login for the user — they only approve the browser / iOA prompt.
 
-**Optional — pre-install `gf` yourself** (only if you want it ready before init,
-e.g. a flaky network you'd rather retry separately). Use the **same source, path,
-and check `teamai init` uses** — do not invent your own URL. `${TEAMAI_HOME}` is
-`~/.teamai` unless overridden:
+**1. Install `gf`** using the **same source, path, and check teamai uses** — do not
+invent your own URL. `${TEAMAI_HOME}` is `~/.teamai` unless overridden:
 
 ```bash
-# 1. pick the tarball for this machine's OS/arch (darwin|linux × x64|arm64)
+# pick the tarball for this machine's OS/arch (darwin|linux × x64|arm64)
 os=$(uname -s | tr '[:upper:]' '[:lower:]')          # darwin | linux
 arch=$(uname -m); [ "$arch" = "x86_64" ] && arch=x64; [ "$arch" = "aarch64" ] && arch=arm64
 dir="${TEAMAI_HOME:-$HOME/.teamai}/gf"
 
-# 2. download + extract from the Tencent-internal mirror (same URL teamai uses)
+# download + extract from the Tencent-internal mirror (same URL teamai uses)
 mkdir -p "$dir"
 curl -fsSL "http://mirrors.tencent.com/repository/generic/gongfeng-cli/files/channels/stable/gf-${os}-${arch}.tar.gz" | tar xz -C "$dir"
 
-# 3. verify exactly as teamai does: the binary exists and is executable
+# verify exactly as teamai does: the binary exists and is executable
 test -x "$dir/gf/bin/gf" && echo "gf installed OK" || echo "gf install FAILED"
 ```
 
-If this fails, just skip it — `teamai init` will install `gf` the same way on its
-own. Only macOS and Linux, on x64 or arm64, are supported.
+Only macOS and Linux, on x64 or arm64, are supported.
 
-(Headless/CI only: pre-set `TGIT_TOKEN` — a git.woa.com Personal Access Token — so
-init needs no interactive login.)
+**2. Log in** with the `gf` you just installed. Run it, and have the user approve
+the login in the browser / iOA (device-code flow); wait until they confirm:
+
+```bash
+"${TEAMAI_HOME:-$HOME/.teamai}/gf/gf/bin/gf" auth login
+```
+
+(Headless/CI only: instead of the login, pre-set `TGIT_TOKEN` — a git.woa.com
+Personal Access Token.)
 
 ### CNB — install the CLI, authorize, then read the repo (in this order)
 
@@ -197,10 +200,11 @@ teamai init https://<platform>/<org>/<repo-name> --scope user
 
 If the repo does not exist yet, `init` offers to create it — accept the prompt.
 
-- **Tencent TGit (工蜂):** on the first init, `init` auto-downloads the `gf` CLI
-  and, if the user isn't authorized yet, opens the login mid-init — have the user
-  approve it in the browser / iOA when prompted. No separate login step, no
-  `GITLAB_URL`.
+- **Tencent TGit (工蜂):** `gf` and login are already done (Step 3), so init goes
+  straight to creating/cloning. When the repo doesn't exist, **accept the create
+  prompt and init creates it via the API** — no browser needed. It only sends you
+  to https://git.woa.com/projects/new if the group/namespace is missing or you
+  lack create permission. No `GITLAB_URL`.
 - **CNB caveat:** a `cnb login` token **cannot create** an org or repo — that is
   exactly why the CNB flow has the user create the repo on the website first
   (Step 2c). If the org/repo is still missing here, `init` prints web links
