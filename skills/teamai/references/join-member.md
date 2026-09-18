@@ -39,11 +39,11 @@ If it fails, Node.js ≥ 20 is missing — have them install Node 20+ first.
 
 Match the login to the URL's host (do NOT create a second repo):
 
-- **`git.woa.com/...`** (Tencent TGit / 工蜂) → **you** install the `gf` CLI and
-  drive the login; the user only approves the browser / iOA prompt. Use the exact
-  download/verify commands and the `gf … auth login` step from `setup-admin.md`
-  (Step 3, Tencent TGit). No `GITLAB_URL` needed. (Headless only: pre-set
-  `TGIT_TOKEN`.)
+- **`git.woa.com/...`** (Tencent TGit / 工蜂) → **you run both the `gf` install and
+  the `gf … auth login`** (never tell the user to run them). Use the exact
+  download/verify commands and login step from `setup-admin.md` (Step 3, Tencent
+  TGit). The user's only action is approving the login URL in their browser / iOA.
+  No `GITLAB_URL` needed. (Headless only: pre-set `TGIT_TOKEN`.)
 - **`cnb.cool/...`** → install the CNB CLI, then authorize, in this order:
   1. `npm install -g @cnbcool/cnb-cli`
   2. `cnb login` — have the user approve it in the browser (OAuth2 device flow);

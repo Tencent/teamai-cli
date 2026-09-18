@@ -101,14 +101,16 @@ computer only holds a synced copy — you never put business code in it."*
 Signing in on the website (Step 2c) is not enough — `teamai init` also needs the
 platform's CLI credentials. Have the user complete the matching CLI login:
 
-### Tencent TGit (工蜂) — install `gf`, then log in (you do this, not the user)
+### Tencent TGit (工蜂) — YOU run gf install and login; user only clicks approve
 
 TeamAI supports git.woa.com natively as the `tgit` provider (it recognizes the
-host on its own — no `GITLAB_URL` needed). **You** install the `gf` CLI (工蜂命令行
-工具) and drive the login for the user — they only approve the browser / iOA prompt.
+host on its own — no `GITLAB_URL` needed). **Run every command below yourself** —
+both the install and the login. **Never tell the user to run a `gf` command.** The
+user's only action is approving the login in their browser / iOA when it opens.
 
-**1. Install `gf`** using the **same source, path, and check teamai uses** — do not
-invent your own URL. `${TEAMAI_HOME}` is `~/.teamai` unless overridden:
+**1. Install `gf` (you run this)** using the **same source, path, and check teamai
+uses** — do not invent your own URL. `${TEAMAI_HOME}` is `~/.teamai` unless
+overridden:
 
 ```bash
 # pick the tarball for this machine's OS/arch (darwin|linux × x64|arm64)
@@ -126,15 +128,21 @@ test -x "$dir/gf/bin/gf" && echo "gf installed OK" || echo "gf install FAILED"
 
 Only macOS and Linux, on x64 or arm64, are supported.
 
-**2. Log in** with the `gf` you just installed. Run it, and have the user approve
-the login in the browser / iOA (device-code flow); wait until they confirm:
+**2. Log in (you run this too — don't hand it to the user):**
 
 ```bash
 "${TEAMAI_HOME:-$HOME/.teamai}/gf/gf/bin/gf" auth login
 ```
 
-(Headless/CI only: instead of the login, pre-set `TGIT_TOKEN` — a git.woa.com
-Personal Access Token.)
+`gf auth login` starts an interactive flow offering three ways to sign in — iOA, a
+browser device code, or pasting a token. Pick the browser/iOA option, relay
+whatever URL / device code it prints to the user, and ask them to approve it in
+their browser — that approval is the *only* thing they do; the command finishes on
+its own once they do. Confirm with
+`"${TEAMAI_HOME:-$HOME/.teamai}/gf/gf/bin/gf" auth whoami` before continuing.
+
+(Headless/CI only: skip the interactive login and pre-set `TGIT_TOKEN` — a
+git.woa.com Personal Access Token — instead.)
 
 ### CNB — install the CLI, authorize, then read the repo (in this order)
 
