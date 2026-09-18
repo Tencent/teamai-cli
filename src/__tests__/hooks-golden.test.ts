@@ -23,6 +23,16 @@ const cases: Array<[string, string]> = [
   ['workbuddy', 'settings.json'],
 ];
 
+/**
+ * Tools whose rendered command is platform-specific, so they have no
+ * cross-platform baseline: codebuddy is rendered in cmd.exe syntax on Windows
+ * (its hook runner there is cmd.exe, not a POSIX shell — see
+ * bundled-runtime.ts), exactly like ZCode, which is absent from the fixture set
+ * for the same reason. Their Windows shape is pinned by
+ * hooks-shell-check.test.ts instead, so the anchor stays platform-independent.
+ */
+const PLATFORM_SPECIFIC_TOOLS = new Set(['codebuddy']);
+
 describe('hooks golden — built-in output is byte-identical to the captured baseline', () => {
   let tmp: string;
   beforeEach(async () => {
@@ -33,7 +43,8 @@ describe('hooks golden — built-in output is byte-identical to the captured bas
   });
 
   for (const [tool, file] of cases) {
-    it(`${tool} output matches golden fixture`, async () => {
+    const skip = process.platform === 'win32' && PLATFORM_SPECIFIC_TOOLS.has(tool);
+    it.skipIf(skip)(`${tool} output matches golden fixture`, async () => {
       const p = path.join(tmp, tool, file);
       await injectHooks(p, tool);
       const got = await fse.readFile(p, 'utf-8');

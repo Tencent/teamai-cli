@@ -369,3 +369,62 @@ describe('reconcileTeamHooksForConfig — legacy projectRoot sweep', () => {
     expect(claude.hooks.SessionStart).toHaveLength(1);
   });
 });
+
+// ── Project gate rendering per host shell ────────────────────
+//
+// A tool whose Windows hook runner is cmd.exe cannot execute a POSIX
+// `if [ "$PWD" ... ]` gate: cmd aborts on that syntax, so the whole team hook —
+// gate and payload alike — never runs. Pin the cmd rendering for those tools and
+// the POSIX rendering for everything else.
+describe('project gate rendering per host shell', () => {
+  const codebuddyOnly = {
+    toolPaths: { codebuddy: { settings: '.codebuddy/settings.json' } },
+  } as unknown as TeamaiConfig;
+
+  async function teamStopCommands(file: string): Promise<string[]> {
+    const settings = await fse.readJson(path.join(home, file));
+    return (settings.hooks.Stop ?? [])
+      .filter((e: { description?: string }) => e.description?.startsWith('[teamai:hook:'))
+      .map((e: { hooks: Array<{ command: string }> }) => e.hooks[0].command);
+  }
+
+  const telemetryYaml = (tool: string): string => `
+hooks:
+  - id: telemetry
+    description: inject telemetry
+    event: Stop
+    matcher: "*"
+    command: python3 .docs/script/inject-telemetry.py
+    tools: [${tool}]
+`;
+
+  it('renders a cmd.exe gate for a tool whose Windows hook runner is cmd.exe', async () => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    try {
+      await writeYaml(telemetryYaml('codebuddy'));
+      await fse.ensureDir(path.join(home, '.codebuddy'));
+      await reconcileTeamHooksForConfig(codebuddyOnly, localConfig());
+
+      const [command] = await teamStopCommands('.codebuddy/settings.json');
+      expect(command.startsWith('echo %CD%\\| findstr /i /b /l /c:"')).toBe(true);
+      expect(command.endsWith('\\\\" >nul && (python3 .docs/script/inject-telemetry.py)')).toBe(true);
+      expect(command).not.toContain('$PWD');
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
+  it('keeps the POSIX gate for a tool whose runner is not cmd.exe', async () => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    try {
+      await writeYaml(telemetryYaml('claude'));
+      await reconcileTeamHooksForConfig(teamConfig, localConfig());
+
+      const [command] = await teamStopCommands('.claude/settings.json');
+      expect(command.startsWith('if [ "$PWD" = ')).toBe(true);
+      expect(command.endsWith('); fi')).toBe(true);
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+});
