@@ -133,12 +133,32 @@ async function teamCorrectionKeywords(stdin: Record<string, unknown>): Promise<r
   }
 }
 
+/**
+ * Per-machine gateway model-alias map from the user-scope config, used to price
+ * requests whose transcript records an opaque alias instead of a Claude model
+ * name. Only read on stop events (where pricing happens); an unreadable config
+ * means "no aliases", i.e. built-in model-name matching only.
+ */
+async function userModelAliases(stdin: Record<string, unknown>): Promise<Record<string, string> | undefined> {
+  const eventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name.toLowerCase() : '';
+  if (eventName !== 'stop') return undefined;
+  try {
+    const { loadLocalConfig } = await import('./config.js');
+    return (await loadLocalConfig())?.modelAliases;
+  } catch {
+    return undefined;
+  }
+}
+
 const dashboardReportHandler: HookHandler = {
   name: 'dashboard-report',
   async execute(stdin, tool) {
     const { parseHookEvent, appendEvent, compactEvents } = await import('./dashboard-collector.js');
     const raw = JSON.stringify(stdin);
-    const event = await parseHookEvent(raw, tool, { correctionKeywords: await teamCorrectionKeywords(stdin) });
+    const event = await parseHookEvent(raw, tool, {
+      correctionKeywords: await teamCorrectionKeywords(stdin),
+      modelAliases: await userModelAliases(stdin),
+    });
     if (event) {
       await appendEvent(event);
       // Non-blocking compaction

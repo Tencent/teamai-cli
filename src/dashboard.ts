@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { dashboardWorkspaces, workspaceEvents } from './dashboard/workspaces.js';
+import { dashboardWorkspaces, workspaceEvents, type DashboardWorkspace } from './dashboard/workspaces.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './utils/logger.js';
@@ -52,9 +52,19 @@ export async function startDashboard(port?: number): Promise<void> {
     await fs.promises.writeFile(eventsPath, '', 'utf-8');
   }
 
-  const workspaces = await dashboardWorkspaces(await readEvents(eventsPath));
+  // Workspace membership is re-derived on a short TTL rather than frozen at startup,
+  // so a project installed (or first seen in events) after boot appears without a
+  // restart instead of its sessions silently folding elsewhere (PR #604 review #3).
+  let workspacesCache: { ts: number; data: DashboardWorkspace[] } | null = null;
+  const getWorkspaces = async (events: DashboardEvent[]): Promise<DashboardWorkspace[]> => {
+    if (!workspacesCache || Date.now() - workspacesCache.ts > KB_SUMMARY_TTL_MS) {
+      workspacesCache = { ts: Date.now(), data: await dashboardWorkspaces(events) };
+    }
+    return workspacesCache.data;
+  };
   const scopedEvents = async (id: string | null) => {
     const events = await readEvents(eventsPath);
+    const workspaces = await getWorkspaces(events);
     const workspace = workspaces.find(w => w.id === id);
     return workspace ? workspaceEvents(events, workspace, workspaces) : events;
   };
@@ -73,6 +83,7 @@ export async function startDashboard(port?: number): Promise<void> {
     watchDebounce = setTimeout(async () => {
       try {
         const events = await readEvents(eventsPath);
+        const workspaces = await getWorkspaces(events);
         const sessions = rebuildSessions(events);
         const data = JSON.stringify(sessions);
         for (const client of clients) {
@@ -139,6 +150,7 @@ export async function startDashboard(port?: number): Promise<void> {
     }
 
     const scopeId = url.searchParams.get('workspace');
+    const workspaces = await getWorkspaces(await readEvents(eventsPath));
     const workspace = workspaces.find(w => w.id === scopeId);
     if (scopeId && !workspace) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -241,7 +253,8 @@ export async function startDashboard(port?: number): Promise<void> {
         }
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(cached.data));
-      } catch {
+      } catch (e) {
+        log.debug(`dashboard: /api/context failed: ${(e as Error).message}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load knowledge base health.' }));
       }

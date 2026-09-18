@@ -26,9 +26,22 @@ const RATES: Array<{ match: RegExp; rates: TokenRates }> = [
   { match: /haiku[-_ ]?3[-_.]?5/i, rates: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 } },
 ];
 
-/** Estimate standard first-party API token cost. Subscription and enterprise discounts are excluded. */
-export function estimateClaudeRequest(model: string, usage: TokenUsage): RequestCostMetrics | null {
-  const entry = RATES.find(({ match }) => match.test(model));
+/**
+ * Estimate standard first-party API token cost. Subscription and enterprise
+ * discounts are excluded.
+ *
+ * `aliases` maps a gateway/proxy model alias (e.g. `ep-qxst1hw4`) to a known
+ * Claude model name the price table can match. When the raw `model` is an alias,
+ * the mapped name is used for rate lookup; unmapped models fall through to the
+ * built-in regexes unchanged.
+ */
+export function estimateClaudeRequest(
+  model: string,
+  usage: TokenUsage,
+  aliases?: Record<string, string>,
+): RequestCostMetrics | null {
+  const resolved = aliases?.[model] ?? model;
+  const entry = RATES.find(({ match }) => match.test(resolved));
   if (!entry) return null;
   const { rates } = entry;
   return {

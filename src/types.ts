@@ -441,6 +441,14 @@ export const LocalConfigSchema = z.object({
   enabledAgents: z.array(z.string()).optional(),
   /** Tools explicitly excluded from all teamai sync (set by `uninstall --agent`). Removed again by `init --agent`. */
   disabledAgents: z.array(z.string()).optional(),
+  /**
+   * Per-machine map from a gateway/proxy model alias to a known Claude model
+   * name, so cost/cache estimation works when the transcript records an opaque
+   * alias (e.g. `ep-qxst1hw4`) instead of `claude-opus-...`. The value must
+   * contain a token the price table matches (opus / sonnet / haiku / fable /
+   * mythos + version). Unset means "match the raw model name only".
+   */
+  modelAliases: z.record(z.string(), z.string()).optional(),
 });
 
 /**
@@ -1119,10 +1127,34 @@ export const CORRECTION_KEYWORDS = [
 export const INTERVENTION_SCAN_MAX_BYTES = 50 * 1024 * 1024;
 /** Marker that prefixes a user-interrupt entry in the Claude Code transcript. */
 export const TRANSCRIPT_INTERRUPT_PREFIX = '[Request interrupted by user';
-/** Prefixes of system-injected user messages that are NOT genuine human prompts. */
+/** Prefixes of system-injected user messages that are NOT genuine human prompts.
+ *  These arrive as user-role transcript entries / UserPromptSubmit payloads but
+ *  are harness or hook injections (background-task completions, system reminders,
+ *  interrupt markers), so they must not be counted as human turns or shown as prompts. */
 export const TRANSCRIPT_SYSTEM_PREFIXES = [
   '<task-notification>',
+  '<system-reminder>',
+  TRANSCRIPT_INTERRUPT_PREFIX,
 ];
+
+/**
+ * Return the genuine human text from a raw prompt/user-entry, stripping any
+ * trailing system-injected block (a real prompt sometimes has a task-notification
+ * or system-reminder appended when the user typed mid-turn). Returns '' when the
+ * whole message is injected content (no human text before the first marker).
+ */
+export function stripInjectedPrompt(raw: string): string {
+  const trimmed = raw.trimStart();
+  // Pure injection: the message itself starts with a marker → no human text.
+  if (TRANSCRIPT_SYSTEM_PREFIXES.some((p) => trimmed.startsWith(p))) return '';
+  // Mixed: cut at the earliest injected-block marker that appears later.
+  let cut = raw.length;
+  for (const marker of TRANSCRIPT_SYSTEM_PREFIXES) {
+    const i = raw.indexOf(marker);
+    if (i >= 0 && i < cut) cut = i;
+  }
+  return raw.slice(0, cut).trim();
+}
 /** Substrings that mark a tool_result as a user rejection (permission deny). */
 export const TRANSCRIPT_REJECT_MARKERS = [
   'The tool use was rejected',

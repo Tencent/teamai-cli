@@ -1,6 +1,6 @@
 # Unified dashboard
 
-The logo's charcoal/blue palette, four-module navigation, English/Simplified Chinese UI and light/dark/system themes replace the previous session-only layout. All data comes from the existing local collectors and KB report aggregation; the design demo is not a production data source.
+The logo's charcoal/blue palette, four-module navigation, English/Simplified Chinese UI and light/dark/system themes replace the previous session-only layout. All data comes from the existing local collectors and KB report aggregation.
 
 ## Functional mapping
 

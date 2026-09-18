@@ -13,6 +13,10 @@ export interface DailySessionSnapshot {
   succeeded: 0 | 1;
   corrected: 0 | 1;
   requestDaily: Record<string, RequestCostMetrics>;
+  /** Session-level cache tokens, straight from the transcript (pricing-independent),
+   *  so cache-read share works even when the model can't be priced. */
+  sessionCacheReadTokens?: number;
+  sessionCacheEligibleTokens?: number;
   /** Legacy fields retained while previously reported snapshots are upgraded. */
   pricedRequests?: number;
   costMicros?: number;
@@ -82,6 +86,8 @@ export function aggregateDailySessions(events: DashboardEvent[]): Map<string, Da
       succeeded: !hasError && metric.interrupt === 0 && corrected === 0 ? 1 : 0,
       corrected,
       requestDaily,
+      sessionCacheReadTokens: metric.tokens.cacheRead,
+      sessionCacheEligibleTokens: metric.tokens.input + metric.tokens.cacheRead + metric.tokens.cacheCreation,
     });
   }
   return result;
@@ -126,13 +132,24 @@ export function computeDailyStatsDelta(
         } }
         : {}
     );
+    // Cache-read share is pricing-independent: fold session-level cache tokens onto
+    // the firstStop day (like prompts/duration), so it works even when the model
+    // can't be priced. Legacy fallback: a session reported under the old code has no
+    // sessionCache* fields but does have requestDaily cache — sum it as the baseline
+    // so this first post-upgrade report doesn't re-add already-counted tokens.
+    const prevCacheRead = previous?.sessionCacheReadTokens
+      ?? Object.values(previousDaily).reduce((sum, r) => sum + r.cacheReadTokens, 0);
+    const prevCacheEligible = previous?.sessionCacheEligibleTokens
+      ?? Object.values(previousDaily).reduce((sum, r) => sum + r.cacheEligibleInputTokens, 0);
+    bucket.cacheReadTokens += positiveDelta(snapshot.sessionCacheReadTokens ?? 0, prevCacheRead);
+    bucket.cacheEligibleInputTokens += positiveDelta(snapshot.sessionCacheEligibleTokens ?? 0, prevCacheEligible);
+    delta[date] = bucket;
+    // Cost stays per-requestDate from pricing; cache no longer flows through here.
     for (const [requestDate, request] of Object.entries(snapshot.requestDaily)) {
       const previousRequest = previousDaily[requestDate];
       const requestBucket = delta[requestDate] ?? emptyDaily();
       requestBucket.pricedRequests += positiveDelta(request.pricedRequests, previousRequest?.pricedRequests);
       requestBucket.costMicros += positiveDelta(request.costMicros, previousRequest?.costMicros);
-      requestBucket.cacheReadTokens += positiveDelta(request.cacheReadTokens, previousRequest?.cacheReadTokens);
-      requestBucket.cacheEligibleInputTokens += positiveDelta(request.cacheEligibleInputTokens, previousRequest?.cacheEligibleInputTokens);
       requestBucket.priceVersion = request.priceVersion;
       delta[requestDate] = requestBucket;
     }

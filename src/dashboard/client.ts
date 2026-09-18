@@ -19,7 +19,8 @@ let trendError = false, kbError = false, selectedSession = null, selectedSnapsho
 let trendLoading = false, kbLoading = false, eventSource = null, reconnectTimer = null, fallbackGeneration = 0;
 let workspaceId = '', workspaceGeneration = 0, workspaces = [];
 const api = route => route + (workspaceId ? '?workspace=' + encodeURIComponent(workspaceId) : '');
-function workspaceOptions() { $('workspace').innerHTML='<option value="">'+label('All local workspaces')+'</option>'+workspaces.map(w=>'<option value="'+e(w.id)+'">'+(w.scope==='user'?label('User scope'):e(w.label)+' · '+label('Project'))+'</option>').join('');$('workspace').value=workspaceId;const w=workspaces.find(w=>w.id===workspaceId);$('workspace-root').textContent=w?w.root:t('Sessions: all projects · Knowledge: startup scope'); }
+function workspaceLabel(w) { return w.scope==='user'?label('User scope'):w.scope==='unassigned'?label('Unassigned sessions'):e(w.label)+' · '+label('Project'); }
+function workspaceOptions() { $('workspace').innerHTML=workspaces.map(w=>'<option value="'+e(w.id)+'">'+workspaceLabel(w)+'</option>').join('');$('workspace').value=workspaceId;const w=workspaces.find(w=>w.id===workspaceId);$('workspace-root').textContent=w?w.root:''; }
 const icons = {
  overview:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
  execution:'<path d="M4 12h4l3-8 4 16 3-8h3"/>',context:'<path d="M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4zM12 6v15"/>',improvement:'<path d="M4 17l6-6 4 3 6-10M14 4h6v6"/>'
@@ -55,9 +56,9 @@ function overview() {
  '<article class="card"><div class="cardtop">'+label('Team Improvement')+'</div><div class="source">'+label('KB Health maintenance candidates')+'</div><div class="big summary-value">'+(maintenance===null?'—':number(maintenance))+'<small>'+label('candidates for review')+'</small></div><div class="statusline">'+(kb?number(kb.maintenanceCounts.promote)+' '+label('Promotion')+' · '+number(kb.maintenanceCounts.prune)+' '+label('Archive')+' · '+number(kb.maintenanceCounts.stale)+' '+label('Stale'):label(kbError?'Unavailable':'Loading…'))+'</div><div class="cardfoot">'+link('improvement','View maintenance')+'</div></article></div>'+
  (kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+trendPanel()+sessionTable(sessions);
 }
-function formatMetric(value, kind) { if (value===null || value===undefined) return trends ? '—' : label(trendError?'Unavailable':'Loading…'); if(kind==='pct')return number(Math.round(value*100))+'%'; if(kind==='duration')return number(Math.round(value/60000))+'m';if(kind==='cost')return new Intl.NumberFormat(language,{style:'currency',currency:'USD',minimumFractionDigits:3}).format(value/1000000)+' '+label('est.');return Number(value).toFixed(1); }
+function formatMetric(value, kind) { if (value===null || value===undefined) return trends ? '—' : label(trendError?'Unavailable':'Loading…'); if(kind==='pct')return number(Math.round(value*100))+'%'; if(kind==='cost')return new Intl.NumberFormat(language,{style:'currency',currency:'USD',minimumFractionDigits:3}).format(value/1000000)+' '+label('est.');return Number(value).toFixed(1); }
 function trendPanel() {
- const metrics=[['Session success','successRate','pct'],['Prompts / session','avgPrompts','number'],['Active duration','avgDurationMs','duration'],['Cost / session','avgSessionCostMicros','cost'],['Cache read share','cacheReadShare','pct'],['Correction rate','correctionRate','pct']];
+ const metrics=[['Prompts / session','avgPrompts','number'],['Cost / session','avgSessionCostMicros','cost'],['Cache read share','cacheReadShare','pct'],['Correction rate','correctionRate','pct']];
  return '<h2 class="section-label">'+label('7 days vs prior 7 days')+' <span class="tag">'+label('Local · UTC')+'</span></h2>'+(trendError?errorPanel('Could not refresh trends. Any displayed values are the last successful result.','trends'):'')+'<div class="trends">'+metrics.map(([title,key,kind])=>'<article class="card trend"><h2>'+label(title)+'</h2><div class="big">'+formatMetric(trends?.current[key],kind)+'</div><span class="label">'+label('Prior')+': '+(trends && trends.previous[key]==null ? label(!trends.previous.sessionsEnded?'No ended sessions in prior period':kind==='cost'?'No priced sessions':'No usage data') : formatMetric(trends?.previous[key],kind))+'</span>'+(kind==='cost'?'<p class="label cost-note">'+label('Average known cost per priced session; first-stop cohort.')+' '+(trends?number(trends.current.pricedSessions)+' / '+number(trends.current.sessionsEnded)+' '+label('sessions priced'):'')+'</p>':'')+'</article>').join('')+'</div>';
 }
 function sessionTable(data) {
@@ -70,8 +71,7 @@ function execution() { const data=scopeSessions(); return '<div class="statuslin
 function knowledge() {
  return '<div class="actions">'+source()+'<button class="link" data-retry="kb">'+label('Refresh report')+'</button>'+link('improvement','View maintenance')+'</div>'+(kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+(kb?'<div class="report" id="kb-content">'+kb.context+'</div>':kbError?'':'<div class="empty">'+label('Loading…')+'</div>');
 }
-function resource(title,text,cmd) { return '<div class="resource"><h3>'+label(title)+'</h3><p>'+label(text)+'</p><code class="command">'+e(cmd)+'</code></div>'; }
-function improvement() { return trendPanel()+'<div class="actions">'+source()+'<button class="link" data-retry="kb">'+label('Refresh report')+'</button></div>'+(kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+(kb?'<div class="report" id="kb-content">'+kb.maintenance+'</div>':'<div class="empty">'+label('Loading…')+'</div>')+'<div class="two"><section class="panel"><div class="panelhead"><h2>'+label('Usage & sessions')+'</h2><span class="tag">CLI</span></div>'+resource('Weekly team digest','7-day success, prompt, active-time, estimated cost, cache and correction trends, plus lifetime totals.','teamai digest')+resource('Session summaries','Save privacy-scrubbed summaries with tool sequences, prompt turns and interventions.','teamai session save')+'</section><section class="panel"><div class="panelhead"><h2>'+label('Share learnings')+'</h2><span class="tag">'+label('Agent skill')+'</span></div>'+resource('Friction-based sharing','After a session with interruptions, corrections, tool denials or repeated tool failures, the Stop hook can suggest sharing reusable experience.','/teamai-share-learnings')+'</section></div>'; }
+function improvement() { return trendPanel()+'<div class="actions">'+source()+'<button class="link" data-retry="kb">'+label('Refresh report')+'</button></div>'+(kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+(kb?'<div class="report" id="kb-content">'+kb.maintenance+'</div>':'<div class="empty">'+label('Loading…')+'</div>'); }
 // Translate static report labels only; never translate knowledge titles, authors, commands or session text.
 function localizeReport() {
  const root=$('kb-content');if(!root)return;
@@ -80,13 +80,10 @@ function localizeReport() {
   const node=walker.currentNode;
   if(!node.parentElement.matches('[data-i18n]') && node.parentElement.closest('code,svg,td,.entry-title,.maint-item,li'))continue;
   const text=node.nodeValue.trim();
+  // Parametrized titles now wrap their translatable text in <span data-i18n> with the
+  // count outside, so a whole-string message match covers every case — the old
+  // regex special-cases for "Never-Recalled Entries (N total)" / "type (N)" are gone.
   if(messages[text]) node.nodeValue=node.nodeValue.replace(text,t(text));
-  else if(language==='zh-CN') {
-   const never=text.match(/^Never-Recalled Entries \\((\\d+) total\\)$/);
-   const type=text.match(/^(learnings|skills|rules|docs) \\((\\d+)\\)$/);
-   if(never)node.nodeValue=t('Never-Recalled Entries')+' ('+never[1]+')';
-   if(type)node.nodeValue=t(type[1])+' ('+type[2]+')';
-  }
  }
 }
 function render() {
@@ -268,7 +265,7 @@ function switchWorkspace(id) {
 }
 $('workspace').onchange=()=>switchWorkspace($('workspace').value);
 preferences();
-json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');switchWorkspace(workspaces.some(w=>w.id===saved)?saved:'');}).catch(()=>{workspaceOptions();connect();loadTrends();loadKb();});
+json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadKb();});
 setInterval(loadTrends,30000);
 // Reconcile idle/ended expiry even when no hook emits another SSE event.
 setInterval(()=>{

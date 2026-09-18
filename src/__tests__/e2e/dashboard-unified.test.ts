@@ -61,6 +61,9 @@ describe('built dashboard CLI (offline provider fixtures)', () => {
       expect(trends.current.avgRequestCostMicros).toBe(200_000);
       expect(trends.current.pricedSessions).toBe(1);
       expect(trends.current.sessionsEnded).toBe(4);
+      // Cache-read share is pricing-independent: all four sessions carry cacheRead 30
+      // of eligible 130, so the unpriced three contribute too (would be null if coupled to pricing).
+      expect(trends.current.cacheReadShare).toBeCloseTo(30 / 130, 5);
       const context=await (await fetch(base+'/api/context')).json();
       expect(context.source.scope).toBe('team');expect(context.totalEntries).toBeGreaterThan(0);
       expect(context.context).toContain('Provider guide');expect(context.context).toContain('Author Contributions');

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getDashboardHtml } from '../dashboard-html.js';
 import { renderDashboardReport } from '../viz-render.js';
+import { dashboardMessages } from '../dashboard/locales.js';
 import { summarizeSessionCosts, type DailySessionSnapshot } from '../session-trends.js';
 import type { VizData } from '../viz.js';
 
@@ -54,5 +55,30 @@ describe('unified dashboard', () => {
     expect(sections.context).not.toContain('<script>bad');
     expect(sections.context).not.toContain('<img src=x');
     expect(sections.context).toContain('&lt;img');
+  });
+
+  it('every data-i18n label in the report has a zh-CN translation (guards silent drift)', () => {
+    // Rich fixture that exercises every non-empty branch so all data-i18n tags render.
+    const data: VizData = {
+      generatedAt: new Date().toISOString(), root: '/tmp/fixture', source: { scope: 'team', label: 'Team' },
+      totalEntries: 3, totalRecalls: 5, overallCoveragePct: 60, contributorCount: 2,
+      coverage: [{ type: 'docs', total: 3, covered: 2, coveragePct: 60 }],
+      topRecalled: [{ docId: 'a', title: 'A', author: 'x', type: 'docs', date: '', tags: [], recalledCount: 5, upvotedCount: 1, lastRecalledAt: null }],
+      silent: [{ docId: 'b', title: 'B', author: 'x', type: 'docs', date: '', tags: [], recalledCount: 0, upvotedCount: 0, lastRecalledAt: null }],
+      trend: [{ period: '2026-08', count: 1 }, { period: '2026-09', count: 2 }],
+      authors: [{ author: 'x', entries: 3, totalRecalled: 5 }],
+      maintenance: {
+        promote: [{ docId: 'p', filename: 'p.md', path: '/p.md', title: 'P', suggestedCategory: 'skills', confidence: 0.95, upvotedCount: 3, userCount: 2 }],
+        prune: [{ filename: 'q.md', path: '/q.md', confidence: 0.2, lastActivity: '2026-01-01T00:00:00Z', reason: 'inactive' }],
+        stale: [{ docId: 's', path: '/s.md', type: 'docs', recalledCount: 9, upvotedCount: 0, userCount: 4 }],
+      },
+    };
+    const { context, maintenance } = renderDashboardReport(data);
+    // Every element/attribute tagged data-i18n exposes translatable text; collect the
+    // trimmed text of the tagged node (text before the next tag) and require a zh key.
+    const tagged = [...`${context}${maintenance}`.matchAll(/data-i18n[^>]*>([^<]+)</g)].map(m => m[1].trim());
+    expect(tagged.length).toBeGreaterThan(10);
+    const missing = tagged.filter(text => text && !Object.hasOwn(dashboardMessages, text));
+    expect(missing).toEqual([]);
   });
 });
