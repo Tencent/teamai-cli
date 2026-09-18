@@ -35,3 +35,9 @@ TypeScript, Node 20+, tsup (ESM), Vitest. Commands: `npm run build`, `npx tsc --
   command could be reused or extended.
 - Changes must be surgical. Every changed line should trace directly to the
   PR's stated goal; flag unrelated drive-by edits.
+- Label every finding with an explicit severity a first-time reader can
+  understand — never a bare `P1`/`P2` code. Keep the `P` marker but spell out
+  what it means inline on each finding, using the PR author's language:
+  `[P1 blocking]` for issues that must be fixed before merge, and
+  `[P2 non-blocking]` for suggestions that do not block merge. (In Chinese,
+  `[P1 阻断]` / `[P2 非阻断]`.)
