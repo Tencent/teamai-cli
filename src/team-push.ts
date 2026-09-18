@@ -308,6 +308,25 @@ function hasDailyDelta(delta: ReturnType<typeof computeDailyStatsDelta>['delta']
 }
 
 /**
+ * Normalize a directory path for scope comparison.
+ *
+ * Both sides are native paths: `projectRoot` is stored as `path.resolve(cwd)`
+ * at init time, and an event's `cwd` is whatever the AI tool put in its hook
+ * payload. On Windows both use backslashes, so a literal `root + '/'` prefix
+ * can never match a subdirectory. Separators are unified to `/` and trailing
+ * ones dropped, which leaves POSIX paths exactly as they were.
+ */
+function scopeKey(dir: string): string {
+  return dir.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+/** True when `cwd` is the root itself or sits below it. */
+function isUnderScopeRoot(cwd: string, rootKey: string): boolean {
+  const key = scopeKey(cwd);
+  return key === rootKey || key.startsWith(rootKey + '/');
+}
+
+/**
  * Filter dashboard events by scope:
  * - projectRoot set: keep only events whose cwd is under that root.
  * - excludeProjectRoots set: exclude events whose cwd is under any listed root.
@@ -319,16 +338,14 @@ export function filterEventsByScope(
 ): DashboardEvent[] {
   if (!opts) return events;
   if (opts.projectRoot) {
-    const root = opts.projectRoot.replace(/\/$/, '');
-    const prefix = root + '/';
-    return events.filter((e) => e.cwd === root || e.cwd?.startsWith(prefix));
+    const root = scopeKey(opts.projectRoot);
+    return events.filter((e) => !!e.cwd && isUnderScopeRoot(e.cwd, root));
   }
   if (opts.excludeProjectRoots && opts.excludeProjectRoots.length > 0) {
-    const normalized = opts.excludeProjectRoots.map((r) => r.replace(/\/$/, ''));
-    const prefixes = normalized.map((r) => r + '/');
+    const roots = opts.excludeProjectRoots.map(scopeKey);
     return events.filter((e) => {
       if (!e.cwd) return true;
-      return !normalized.some((r, i) => e.cwd === r || e.cwd!.startsWith(prefixes[i]));
+      return !roots.some((root) => isUnderScopeRoot(e.cwd!, root));
     });
   }
   return events;

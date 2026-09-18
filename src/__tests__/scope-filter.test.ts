@@ -60,4 +60,45 @@ describe('filterEventsByScope', () => {
     const result = filterEventsByScope(evts, { projectRoot: '/Users/jeff/project-a' });
     expect(result.map((e) => e.sessionId)).toEqual(['x2']);
   });
+
+  // Windows paths are plain strings here, so these run on the ubuntu CI too.
+  // Both sides of the comparison are native paths in production: projectRoot is
+  // path.resolve(cwd) from init, and cwd is whatever the tool's hook payload
+  // carried.
+  describe('Windows paths', () => {
+    const winEvents: DashboardEvent[] = [
+      makeEvent('C:\\Users\\jeff\\project-a', 'w1'),
+      makeEvent('C:\\Users\\jeff\\project-a\\src', 'w2'),
+      makeEvent('C:\\Users\\jeff\\project-ab', 'w3'),
+      makeEvent('C:\\Users\\jeff\\other-work', 'w4'),
+    ];
+
+    it('filters to projectRoot including subdirectories', () => {
+      const result = filterEventsByScope(winEvents, {
+        projectRoot: 'C:\\Users\\jeff\\project-a',
+      });
+      expect(result.map((e) => e.sessionId)).toEqual(['w1', 'w2']);
+    });
+
+    it('excludeProjectRoots removes subdirectory sessions too', () => {
+      const result = filterEventsByScope(winEvents, {
+        excludeProjectRoots: ['C:\\Users\\jeff\\project-a'],
+      });
+      expect(result.map((e) => e.sessionId)).toEqual(['w3', 'w4']);
+    });
+
+    it('matches a root and a cwd that disagree on separator style', () => {
+      const result = filterEventsByScope(winEvents, {
+        projectRoot: 'C:/Users/jeff/project-a',
+      });
+      expect(result.map((e) => e.sessionId)).toEqual(['w1', 'w2']);
+    });
+
+    it('trailing backslash on the root works the same', () => {
+      const result = filterEventsByScope(winEvents, {
+        projectRoot: 'C:\\Users\\jeff\\project-a\\',
+      });
+      expect(result.map((e) => e.sessionId)).toEqual(['w1', 'w2']);
+    });
+  });
 });
