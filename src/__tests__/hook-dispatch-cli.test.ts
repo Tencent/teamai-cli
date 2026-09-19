@@ -39,6 +39,11 @@ describe('parseStdin', () => {
     expect(result.hook_event_name).toBe('SessionStart');
   });
 
+  it('maps the Copilot lifecycle alias to SessionEnd', () => {
+    const result = parseStdin('', 'session-end');
+    expect(result.hook_event_name).toBe('SessionEnd');
+  });
+
   it('degrades JSON `null` to {} instead of throwing', () => {
     // RED BASELINE: before the fix, JSON.parse('null') returns null, and the
     // subsequent `stdin.hook_event_name` access throws TypeError in ESM strict

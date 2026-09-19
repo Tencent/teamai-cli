@@ -96,6 +96,93 @@ describe('parseHookEvent', () => {
     expect(event!.toolName).toBe('Edit');
   });
 
+  it('normalizes Copilot lowercase skill tool usage', async () => {
+    const event = await parseHookEvent(JSON.stringify({
+      hook_event_name: 'PostToolUse',
+      session_id: 'copilot-session',
+      tool_name: 'skill',
+    }), 'copilot');
+    expect(event?.toolName).toBe('Skill');
+  });
+
+  it('retains only the correction signal from Copilot prompts', async () => {
+    const sensitivePrompt = 'wrong, use token ghp_private_value instead';
+    const event = await parseHookEvent(JSON.stringify({
+      hook_event_name: 'UserPromptSubmit',
+      session_id: 'copilot-session',
+      prompt: sensitivePrompt,
+    }), 'copilot');
+    expect(event).toEqual(expect.objectContaining({
+      type: 'prompt_submit',
+      sessionId: 'copilot-session',
+      correction: true,
+    }));
+    expect(event?.promptSummary).toBeUndefined();
+    expect(JSON.stringify(event)).not.toContain(sensitivePrompt);
+    expect(JSON.stringify(event)).not.toContain('ghp_private_value');
+  });
+
+  it('reads only final Copilot token totals and redacts transcript content', async () => {
+    const transcript = path.join(tmpDir, 'copilot-events.jsonl');
+    const secret = 'TOP-SECRET-COPILOT-PROMPT';
+    fs.writeFileSync(transcript, [
+      JSON.stringify({
+        type: 'session.usage_checkpoint',
+        data: { prompt: secret, inputTokens: 999_999, request: { authorization: secret } },
+      }),
+      JSON.stringify({ type: 'assistant.message', data: { content: secret } }),
+      JSON.stringify({
+        type: 'session.shutdown',
+        data: {
+          tokenDetails: {
+            input: { tokenCount: 101 },
+            output: { tokenCount: 29 },
+            cache_read: { tokenCount: 17 },
+            cache_write: { tokenCount: 3 },
+          },
+          prompt: secret,
+        },
+      }),
+    ].join('\n'));
+
+    const event = await parseHookEvent(JSON.stringify({
+      hook_event_name: 'SessionEnd',
+      session_id: 'copilot-stable-session',
+      transcript_path: transcript,
+    }), 'copilot');
+
+    expect(event).toEqual(expect.objectContaining({
+      type: 'session_end',
+      sessionId: 'copilot-stable-session',
+      tool: 'copilot',
+      tokens: { input: 101, output: 29, cacheRead: 17, cacheCreation: 3 },
+      tokenScope: 'session',
+    }));
+    expect(event?.transcriptPath).toBeUndefined();
+    expect(event?.stoppedOutput).toBeUndefined();
+    expect(JSON.stringify(event)).not.toContain(secret);
+    expect(JSON.stringify(event)).not.toContain(transcript);
+    expect(JSON.stringify(event)).not.toContain('999999');
+  });
+
+  it('keeps Copilot SessionEnd when final token details are unavailable', async () => {
+    const transcript = path.join(tmpDir, 'copilot-no-tokens.jsonl');
+    fs.writeFileSync(transcript, JSON.stringify({
+      type: 'session.shutdown',
+      data: { reason: 'complete' },
+    }));
+    const event = await parseHookEvent(JSON.stringify({
+      hook_event_name: 'SessionEnd',
+      sessionId: 'copilot-camel-session',
+      transcript_path: transcript,
+    }), 'copilot');
+    expect(event).toEqual(expect.objectContaining({
+      type: 'session_end',
+      sessionId: 'copilot-camel-session',
+    }));
+    expect(event?.tokens).toBeUndefined();
+  });
+
   it('parses UserPromptSubmit event with prompt', async () => {
     const raw = JSON.stringify({
       hook_event_name: 'UserPromptSubmit',
@@ -523,6 +610,26 @@ describe('rebuildSessions', () => {
     const sessions = rebuildSessions(events);
     expect(sessions).toHaveLength(1);
     expect(sessions[0].status).toBe('waiting_for_input');
+  });
+
+  it('rebuilds a privacy-safe Copilot lifecycle with final token totals', () => {
+    const events: DashboardEvent[] = [
+      { type: 'session_start', timestamp: now, sessionId: 'copilot-1', tool: 'copilot', cwd: '/proj' },
+      { type: 'prompt_submit', timestamp: now, sessionId: 'copilot-1', tool: 'copilot', correction: false },
+      { type: 'tool_use', timestamp: now, sessionId: 'copilot-1', tool: 'copilot', toolName: 'Skill' },
+      {
+        type: 'session_end', timestamp: now, sessionId: 'copilot-1', tool: 'copilot',
+        tokens: { input: 10, output: 4, cacheRead: 2, cacheCreation: 1 }, tokenScope: 'session',
+      },
+    ];
+    const sessions = rebuildSessions(events);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toEqual(expect.objectContaining({
+      status: 'stopped',
+      promptCount: 1,
+      lastTool: 'Skill',
+      tokens: { input: 10, output: 4, cacheRead: 2, cacheCreation: 1 },
+    }));
   });
 
   it('stop then prompt_submit returns to running', () => {
