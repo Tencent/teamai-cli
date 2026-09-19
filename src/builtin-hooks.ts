@@ -290,6 +290,14 @@ const BUILTIN_HOOK_SPECS: BuiltinHookSpec[] = [
   { key: 'Hook dispatch prompt-submit', event: 'UserPromptSubmit', dispatchEvent: 'prompt-submit', matcher: '*', timeoutSec: 10 },
 ];
 
+const COPILOT_SESSION_END_SPEC: BuiltinHookSpec = {
+  key: 'Hook dispatch session-end',
+  event: 'SessionEnd',
+  dispatchEvent: 'session-end',
+  matcher: '*',
+  timeoutSec: 15,
+};
+
 /**
  * Build the built-in hook definitions for a tool.
  *
@@ -310,7 +318,10 @@ export function builtinHookDefs(tool: string): HookDef[] {
   const buildCommand = tool === 'zcode'
     ? getRawDispatchCommand
     : WRAPPER_TOOLS.has(tool) ? getWrapperDispatchCommand : getDispatchCommand;
-  return BUILTIN_HOOK_SPECS.map((spec) => ({
+  const specs = tool === 'copilot'
+    ? [...BUILTIN_HOOK_SPECS, COPILOT_SESSION_END_SPEC]
+    : BUILTIN_HOOK_SPECS;
+  return specs.map((spec) => ({
     source: 'builtin' as const,
     key: spec.key,
     event: spec.event,

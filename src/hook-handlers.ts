@@ -550,6 +550,10 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
 
+    // Copilot emits SessionEnd after its final turn. Only the dashboard needs
+    // this lifecycle event; detaching it avoids delaying CLI shutdown.
+    { event: 'session-end', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+
     // ─── Stop ─────────────────────────────────────────
     // votes-sync and contribute-check may return a hint the host injects back
     // into the session, so they run inline (capped at FOREGROUND_HOOK_TIMEOUT_MS).

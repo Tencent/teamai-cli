@@ -147,6 +147,14 @@ describe('skillExistsOnDisk — Copilot', () => {
       process.chdir(previousCwd);
     }
   });
+
+  it('does not treat the home .github directory as a user skill scope', async () => {
+    const skillDir = path.join(tmpDir, '.github', 'skills', 'project-only');
+    await fse.ensureDir(skillDir);
+    await fse.writeFile(path.join(skillDir, 'SKILL.md'), '# Project only\n');
+
+    await expect(skillExistsOnDisk('project-only')).resolves.toBe(false);
+  });
 });
 
 describe('appendUsageEvent', () => {

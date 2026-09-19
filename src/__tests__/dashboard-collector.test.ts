@@ -16,6 +16,7 @@ import {
   dedupeEvents,
 } from '../dashboard-collector.js';
 import type { DashboardEvent } from '../types.js';
+import { _resetState as resetLogger, _setLogFilePath } from '../utils/logger.js';
 
 // ─── Transcript fixtures for intervention scanning ──────
 const INTERRUPT_LINE = JSON.stringify({
@@ -165,6 +166,25 @@ describe('parseHookEvent', () => {
     expect(JSON.stringify(event)).not.toContain('999999');
   });
 
+  it('skips an incomplete Copilot shutdown record and uses the valid final record', async () => {
+    const transcript = path.join(tmpDir, 'copilot-in-flight.jsonl');
+    fs.writeFileSync(transcript, [
+      '{"type":"session.shutdown",',
+      JSON.stringify({
+        type: 'session.shutdown',
+        data: { tokenDetails: { input: { tokenCount: 7 }, output: { tokenCount: 2 } } },
+      }),
+    ].join('\n'));
+
+    const event = await parseHookEvent(JSON.stringify({
+      hook_event_name: 'SessionEnd',
+      session_id: 'copilot-in-flight',
+      transcript_path: transcript,
+    }), 'copilot');
+
+    expect(event?.tokens).toEqual({ input: 7, output: 2, cacheRead: 0, cacheCreation: 0 });
+  });
+
   it('keeps Copilot SessionEnd when final token details are unavailable', async () => {
     const transcript = path.join(tmpDir, 'copilot-no-tokens.jsonl');
     fs.writeFileSync(transcript, JSON.stringify({
@@ -181,6 +201,29 @@ describe('parseHookEvent', () => {
       sessionId: 'copilot-camel-session',
     }));
     expect(event?.tokens).toBeUndefined();
+  });
+
+  it('keeps a missing Copilot transcript path out of events and debug logs', async () => {
+    const sensitivePath = path.join(tmpDir, 'private-customer-name.jsonl');
+    const debugLog = path.join(tmpDir, 'debug.log');
+    _setLogFilePath(debugLog);
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        session_id: 'copilot-missing-transcript',
+        transcript_path: sensitivePath,
+      }), 'copilot');
+
+      expect(event).toEqual(expect.objectContaining({
+        type: 'session_end',
+        sessionId: 'copilot-missing-transcript',
+      }));
+      expect(event?.tokens).toBeUndefined();
+      expect(JSON.stringify(event)).not.toContain(sensitivePath);
+      expect(fs.readFileSync(debugLog, 'utf-8')).not.toContain(sensitivePath);
+    } finally {
+      resetLogger();
+    }
   });
 
   it('parses UserPromptSubmit event with prompt', async () => {

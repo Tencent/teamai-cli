@@ -55,6 +55,7 @@ export const CLAUDE_TO_CURSOR_EVENTS: Record<string, string> = {
  */
 export const CLAUDE_TO_COPILOT_EVENTS: Record<string, string> = {
   SessionStart: 'SessionStart',
+  SessionEnd: 'SessionEnd',
   Stop: 'Stop',
   UserPromptSubmit: 'UserPromptSubmit',
   PreToolUse: 'PreToolUse',
@@ -364,12 +365,17 @@ function copilotPowershellCommand(command: string): string {
 }
 
 function toCopilotEntry(def: HookDef): CopilotHookEntry {
+  const matcher = def.source === 'builtin'
+    && def.event === 'PostToolUse'
+    && def.matcher === 'Skill'
+    ? 'skill'
+    : def.matcher;
   return {
     type: 'command',
     bash: def.command,
     powershell: copilotPowershellCommand(def.command),
     command: def.command,
-    ...(def.matcher && def.matcher !== '*' ? { matcher: def.matcher } : {}),
+    ...(matcher && matcher !== '*' ? { matcher } : {}),
     ...(def.timeout !== undefined ? { timeoutSec: def.timeout } : {}),
   };
 }
