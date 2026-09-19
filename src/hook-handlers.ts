@@ -502,6 +502,35 @@ const localAgentHandler: HookHandler = {
   },
 };
 
+/** Webhook notification handler — sends events to configured endpoints. */
+const webhookHandler: HookHandler = {
+  name: 'webhook-dispatch',
+  async execute(stdin, tool) {
+    const { sendWebhook, loadWebhookConfig } = await import('./webhook.js');
+
+    try {
+      const config = await loadWebhookConfig();
+      if (!config.enabled || config.endpoints.length === 0) return null;
+
+      const event = typeof stdin.event === 'string' ? stdin.event : 'unknown';
+
+      const payload = {
+        tool,
+        sessionId: deriveSessionId(stdin),
+        cwd: resolveHookCwd(stdin),
+        username: typeof stdin.username === 'string' ? stdin.username : undefined,
+        data: stdin as Record<string, unknown>,
+      };
+
+      await sendWebhook(event, payload, config);
+    } catch (error) {
+      log.debug(`Webhook dispatch failed: ${(error as Error).message}`);
+    }
+
+    return null;
+  },
+};
+
 // ─── Registry builder ───────────────────────────────────
 
 /**
@@ -519,6 +548,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
 
     // ─── Stop ─────────────────────────────────────────
     // votes-sync and contribute-check may return a hint the host injects back
@@ -532,12 +562,14 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
     { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
     { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
 
     // ─── PostToolUse ──────────────────────────────────
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
+    { event: 'post-tool-use', matcher: 'Skill', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
 
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },

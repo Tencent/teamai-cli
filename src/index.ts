@@ -624,6 +624,40 @@ mcpCmd
     await mcpRemove(globalOpts);
   });
 
+// ─── Webhook commands ───────────────────────────────────
+
+const webhookCmd = program
+  .command('webhook')
+  .description('Manage webhook integrations for team notifications');
+
+webhookCmd
+  .command('list')
+  .description('List configured webhook endpoints')
+  .action(async () => {
+    const { listWebhooks } = await import('./webhook.js');
+    const endpoints = await listWebhooks();
+    if (endpoints.length === 0) {
+      console.log('No webhook endpoints configured.');
+      return;
+    }
+    console.log('Configured webhook endpoints:\n');
+    for (const ep of endpoints) {
+      console.log(`  URL: ${ep.url}`);
+      console.log(`  Type: ${ep.type}`);
+      console.log(`  Events: ${ep.events.join(', ')}`);
+      console.log('');
+    }
+  });
+
+webhookCmd
+  .command('test')
+  .description('Send test event to webhook endpoints')
+  .option('--url <url>', 'Test specific endpoint URL')
+  .action(async (cmdOpts) => {
+    const { testWebhook } = await import('./webhook.js');
+    await testWebhook(cmdOpts.url);
+  });
+
 // ─── Usage tracking commands ────────────────────────────
 
 program
