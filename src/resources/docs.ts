@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fse from 'fs-extra';
 import { ResourceHandler } from './base.js';
-import type { ResourceItem, TeamaiConfig, LocalConfig } from '../types.js';
+import { resolveBaseDir, type ResourceItem, type TeamaiConfig, type LocalConfig } from '../types.js';
 import { expandHome, listFilesRecursive } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 
@@ -15,7 +15,8 @@ export function resolveDocsDestination(teamConfig: TeamaiConfig, localConfig: Lo
   if (localConfig.scope === 'project' && localConfig.projectRoot && localDir.startsWith('~/')) {
     return path.join(localConfig.projectRoot, localDir.substring(2));
   }
-  return expandHome(localDir);
+  const expanded = expandHome(localDir);
+  return path.isAbsolute(expanded) ? expanded : path.resolve(resolveBaseDir(localConfig), expanded);
 }
 
 export class DocsHandler extends ResourceHandler {
