@@ -208,6 +208,37 @@ describe('Copilot MCP reconciliation', () => {
     expect(await fse.readJson(userFile)).toEqual(userDocument);
   });
 
+  it('preserves a bare project server map and skips an unmanaged name collision', async () => {
+    const projectRoot = path.join(sandbox, 'bare-project');
+    const projectFile = path.join(projectRoot, '.github', 'mcp.json');
+    const existingLocal = { type: 'local', command: 'personal-server', args: ['--user-owned'] };
+    const existingUser = { type: 'http', url: 'https://user.example/mcp' };
+    await fse.ensureDir(path.dirname(projectFile));
+    await fse.writeJson(projectFile, {
+      [LOCAL_SERVER]: existingLocal,
+      [USER_SERVER]: existingUser,
+    });
+    const projectConfig = {
+      ...userConfig,
+      scope: 'project',
+      projectRoot,
+    } as LocalConfig;
+
+    const result = await reconcileMcpForConfig(teamConfig, projectConfig);
+    const after = await fse.readJson(projectFile);
+
+    expect(result.changes).toContainEqual({
+      tool: 'copilot',
+      server: LOCAL_SERVER,
+      action: 'skipped',
+      reason: 'a server with this name already exists and is not managed by teamai',
+    });
+    expect(after[LOCAL_SERVER]).toEqual(existingLocal);
+    expect(after[USER_SERVER]).toEqual(existingUser);
+    expect(after[HTTP_SERVER]).toEqual(expect.objectContaining({ type: 'http' }));
+    expect(after.mcpServers).toBeUndefined();
+  });
+
   it('removes only TeamAI-owned entries when definitions disappear or removeAll is requested', async () => {
     const configFile = path.join(copilotHome, 'mcp-config.json');
     await fse.writeJson(configFile, {

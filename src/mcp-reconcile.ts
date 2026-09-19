@@ -228,24 +228,32 @@ export async function resolveMcpTargets(
 export interface JsonDoc {
   data: Record<string, unknown>;
   servers: Record<string, unknown>;
+  /** The existing document stores server names directly at the top level. */
+  bare: boolean;
 }
 
 /**
  * Read a JSON MCP config. Returns null when the file exists but cannot be
  * parsed — we abandon the injection rather than risk clobbering a file we do
- * not understand (it may hold the user's OAuth session).
+ * not understand (it may hold the user's OAuth session). Copilot project files
+ * additionally allow a bare top-level server map, whose shape we preserve.
  */
-export async function readJsonDoc(file: string, serverKey: string): Promise<JsonDoc | null> {
-  if (!await pathExists(file)) return { data: {}, servers: {} };
+export async function readJsonDoc(
+  file: string,
+  serverKey: string,
+  allowBare = false,
+): Promise<JsonDoc | null> {
+  if (!await pathExists(file)) return { data: {}, servers: {}, bare: false };
   const raw = await readFileSafe(file);
   if (raw === null) return null;
-  if (raw.trim() === '') return { data: {}, servers: {} };
+  if (raw.trim() === '') return { data: {}, servers: {}, bare: allowBare };
   try {
     const data = JSON.parse(raw) as Record<string, unknown>;
     if (typeof data !== 'object' || data === null || Array.isArray(data)) return null;
-    const servers = (data[serverKey] as Record<string, unknown>) ?? {};
+    const bare = allowBare && !(serverKey in data);
+    const servers = bare ? data : (data[serverKey] as Record<string, unknown>) ?? {};
     if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) return null;
-    return { data, servers: { ...servers } };
+    return { data, servers: { ...servers }, bare };
   } catch {
     return null;
   }
@@ -463,7 +471,8 @@ async function applyJson(
   options: McpReconcileOptions,
 ): Promise<boolean> {
   const serverKey = MCP_SERVER_KEY[target.format as Exclude<McpFormat, 'codex'>];
-  const doc = await readJsonDoc(target.file, serverKey);
+  const allowBare = target.format === 'copilot' && target.projectScope;
+  const doc = await readJsonDoc(target.file, serverKey, allowBare);
   if (!doc) {
     log.warn(`Could not parse ${target.file} — skipping MCP injection for ${target.tool}`);
     return false;
@@ -505,8 +514,12 @@ async function applyJson(
   // Some tools (OpenCode) key the server map under `mcp`, not `mcpServers`;
   // writing the wrong key would strip the servers and, worse, leave a phantom
   // empty `mcpServers` in a file the tool never reads under that name.
-  doc.data[serverKey] = doc.servers;
-  await writeJsonAtomic(target.file, doc.data);
+  if (doc.bare) {
+    await writeJsonAtomic(target.file, doc.servers);
+  } else {
+    doc.data[serverKey] = doc.servers;
+    await writeJsonAtomic(target.file, doc.data);
+  }
   return true;
 }
 
