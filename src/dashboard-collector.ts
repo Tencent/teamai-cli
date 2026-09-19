@@ -21,6 +21,8 @@ import {
   TRANSCRIPT_SYSTEM_PREFIXES,
   stripInjectedPrompt,
   TRANSCRIPT_REJECT_MARKERS,
+  COPILOT_TOOL_ID,
+  getCopilotHome,
   emptyTokenUsage,
   addTokenUsage,
   type DashboardEvent,
@@ -535,6 +537,112 @@ async function waitForCodexUsageFlush(
   return latest;
 }
 
+const COPILOT_USAGE_TAIL_BYTES = 256 * 1024;
+const COPILOT_USAGE_MAX_ATTEMPTS = 8;
+const COPILOT_USAGE_RETRY_MS = 250;
+const COPILOT_SHUTDOWN_EVENT = 'session.shutdown';
+const COPILOT_SESSION_STATE_DIR = 'session-state';
+const COPILOT_SESSION_EVENTS_FILE = 'events.jsonl';
+const COPILOT_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+interface CopilotUsageObservation {
+  shutdownObserved: boolean;
+  tokens?: TokenUsage;
+}
+
+/** Parse only Copilot's final aggregate token counters from a shutdown record. */
+function parseCopilotShutdown(entry: unknown): CopilotUsageObservation {
+  const record = asRecord(entry);
+  if (record?.type !== COPILOT_SHUTDOWN_EVENT) return { shutdownObserved: false };
+
+  const details = asRecord(asRecord(record.data)?.tokenDetails);
+  if (!details) return { shutdownObserved: true };
+  const tokenCount = (bucket: string): number | undefined => {
+    const value = asRecord(details[bucket])?.tokenCount;
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? value
+      : undefined;
+  };
+  const input = tokenCount('input');
+  const output = tokenCount('output');
+  const cacheRead = tokenCount('cache_read');
+  const cacheCreation = tokenCount('cache_write');
+  if ([input, output, cacheRead, cacheCreation].every((value) => value === undefined)) {
+    return { shutdownObserved: true };
+  }
+  return {
+    shutdownObserved: true,
+    tokens: {
+      input: input ?? 0,
+      output: output ?? 0,
+      cacheRead: cacheRead ?? 0,
+      cacheCreation: cacheCreation ?? 0,
+    },
+  };
+}
+
+/** Read a bounded tail without retaining any prompt, output, or request fields. */
+async function readLatestCopilotUsageFromTail(
+  transcriptPath: string,
+): Promise<CopilotUsageObservation> {
+  try {
+    const stat = await fs.promises.stat(transcriptPath);
+    if (stat.size === 0) return { shutdownObserved: false };
+    const readSize = Math.min(stat.size, COPILOT_USAGE_TAIL_BYTES);
+    const offset = stat.size - readSize;
+    const fh = await fs.promises.open(transcriptPath, 'r');
+    try {
+      const buffer = Buffer.alloc(readSize);
+      await fh.read(buffer, 0, readSize, offset);
+      const lines = buffer.toString('utf-8').split('\n');
+      if (offset > 0) lines.shift();
+      let latest: CopilotUsageObservation = { shutdownObserved: false };
+      for (const line of lines) {
+        if (!line.includes(`"${COPILOT_SHUTDOWN_EVENT}"`)) continue;
+        try {
+          const observed = parseCopilotShutdown(JSON.parse(line));
+          if (observed.shutdownObserved) latest = observed;
+        } catch {
+          // The last line may still be in flight; the bounded retry sees it later.
+        }
+      }
+      return latest;
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    log.debug('dashboard: failed to read Copilot usage tail');
+    return { shutdownObserved: false };
+  }
+}
+
+/** Wait briefly because Copilot can append session.shutdown after SessionEnd. */
+async function waitForCopilotShutdownUsage(
+  transcriptPath: string,
+): Promise<CopilotUsageObservation> {
+  for (let attempt = 0; attempt < COPILOT_USAGE_MAX_ATTEMPTS; attempt++) {
+    const observed = await readLatestCopilotUsageFromTail(transcriptPath);
+    if (observed.shutdownObserved) return observed;
+    if (attempt < COPILOT_USAGE_MAX_ATTEMPTS - 1) {
+      await new Promise((resolve) => setTimeout(resolve, COPILOT_USAGE_RETRY_MS));
+    }
+  }
+  return { shutdownObserved: false };
+}
+
+/** Resolve Copilot's local event log without accepting path traversal via sessionId. */
+function resolveCopilotUsageTranscript(
+  sessionId: string,
+): string | null {
+  if (!COPILOT_SESSION_ID_RE.test(sessionId) || sessionId === '.' || sessionId === '..') return null;
+  return path.join(
+    getCopilotHome(),
+    COPILOT_SESSION_STATE_DIR,
+    sessionId,
+    COPILOT_SESSION_EVENTS_FILE,
+  );
+}
+
 /**
  * Read a CodeBuddy `index.json` transcript once. CodeBuddy's schema differs from
  * Claude Code:
@@ -850,6 +958,9 @@ function mapEventType(hookEventName: string): DashboardEventType | null {
     case 'SessionStart':
     case 'sessionStart':
       return 'session_start';
+    case 'SessionEnd':
+    case 'sessionEnd':
+      return 'session_end';
     case 'PostToolUse':
     case 'postToolUse':
       return 'tool_use';
@@ -904,6 +1015,7 @@ export async function parseHookEvent(
 
   const sessionId = deriveSessionId(hookData, { includeCwd: true });
   const cwd = resolveHookCwd(hookData);
+  const isCopilot = tool.toLowerCase() === COPILOT_TOOL_ID;
 
   const event: DashboardEvent = {
     type: eventType,
@@ -922,12 +1034,7 @@ export async function parseHookEvent(
   if (eventType === 'session_start') {
     const ppid = process.ppid ?? process.pid;
     if (ppid > 1) {
-      try {
-        event.monitorPid = resolveMonitorPid(ppid);
-      } catch {
-        // PID resolution failed — fall back to ppid
-        event.monitorPid = ppid;
-      }
+      event.monitorPid = resolveMonitorPid(ppid);
     }
   }
 
@@ -940,7 +1047,7 @@ export async function parseHookEvent(
     const human = stripInjectedPrompt(hookData.prompt);
     if (!human) return null;
     // Keep first 200 chars of the genuine prompt as summary.
-    event.promptSummary = human.slice(0, 200);
+    if (!isCopilot) event.promptSummary = human.slice(0, 200);
     // Decide "correction" here, over the full prompt, because only the hook knows
     // which team (and so which extra keywords) the prompt belongs to. The
     // machine-level events file mixes sessions from every team.
@@ -948,7 +1055,7 @@ export async function parseHookEvent(
   }
 
   // Extract transcript path, AI output and intervention counts from Stop event
-  if (eventType === 'stop' && typeof hookData.transcript_path === 'string') {
+  if (eventType === 'stop' && !isCopilot && typeof hookData.transcript_path === 'string') {
     event.transcriptPath = hookData.transcript_path;
     const output = await readLastAssistantOutput(hookData.transcript_path);
     if (output) {
@@ -982,6 +1089,20 @@ export async function parseHookEvent(
       }));
       if (records.length) event.requestDaily = aggregateRequestDaily(records);
       await reconcileRequestLog(records);
+    }
+  }
+
+  // Copilot's session log contains prompts, tool arguments, assistant output,
+  // and auth-bearing request metadata. Read only the final shutdown token
+  // counters and never persist the path or any transcript content.
+  if (eventType === 'session_end' && isCopilot) {
+    const transcriptPath = resolveCopilotUsageTranscript(sessionId);
+    if (transcriptPath) {
+      const usage = await waitForCopilotShutdownUsage(transcriptPath);
+      if (usage.tokens) {
+        event.tokens = usage.tokens;
+        event.tokenScope = 'session';
+      }
     }
   }
 
@@ -1159,7 +1280,7 @@ function eventSignature(e: DashboardEvent): string {
   switch (e.type) {
     case 'tool_use': return `tool_use\0${e.toolName ?? ''}`;
     case 'prompt_submit': return `prompt_submit\0${e.promptSummary ?? ''}`;
-    default: return e.type; // session_start | stop | process_exit
+    default: return e.type; // session_start | session_end | stop | process_exit
   }
 }
 
@@ -1234,7 +1355,7 @@ export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]>
  * - tool_use → update lastActivity + lastTool, mark running
  * - prompt_submit → capture prompt, mark running
  * - stop → mark as waiting_for_input (LLM finished, user still in session)
- * - process_exit → mark as stopped (process truly exited)
+ * - session_end / process_exit → mark as stopped (process truly exited)
  * Then apply timeouts: idle after 5 min, remove stale after 30 min.
  * Stopped sessions are kept for 30 seconds before removal.
  */
@@ -1299,6 +1420,10 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
         if (event.stoppedOutput) {
           session.stoppedOutput = event.stoppedOutput;
         }
+        break;
+      case 'session_end':
+        session.status = 'stopped';
+        session.stoppedAt = event.timestamp;
         break;
       case 'process_exit':
         // The AI tool process has truly exited (detected by PID liveness monitor).
@@ -1427,24 +1552,6 @@ export function aggregateSessionMetrics(
         m.interrupt = event.interventions.interrupt;
         m.toolReject = event.interventions.toolReject;
       }
-      if (event.tokens) {
-        if (event.tokenScope === 'session') {
-          setLatestTokenSnapshot(sessionTokens, event.sessionId, event);
-        } else if (event.tokenScope === 'transcript' && event.transcriptPath) {
-          let segments = transcriptTokens.get(event.sessionId);
-          if (!segments) {
-            segments = new Map<string, TimedTokenSnapshot>();
-            transcriptTokens.set(event.sessionId, segments);
-          }
-          // A rollout's counter is cumulative within that file. Repeated Stop scans
-          // replace the same segment; a resumed rollout has a distinct path and adds
-          // one new segment to the logical session total.
-          setLatestTokenSnapshot(segments, event.transcriptPath, event);
-        } else {
-          // Claude, CodeBuddy, and pre-existing events retain latest-Stop semantics.
-          setLatestTokenSnapshot(unscopedTokens, event.sessionId, event);
-        }
-      }
       if (typeof event.prompts === 'number') {
         stopPrompts.set(event.sessionId, event.prompts);
       }
@@ -1461,6 +1568,25 @@ export function aggregateSessionMetrics(
         }
         // Each stop is consumed once — a later prompt is a new task, not a correction.
         lastStopAt.delete(event.sessionId);
+      }
+    }
+
+    if ((event.type === 'stop' || event.type === 'session_end') && event.tokens) {
+      if (event.tokenScope === 'session') {
+        setLatestTokenSnapshot(sessionTokens, event.sessionId, event);
+      } else if (event.tokenScope === 'transcript' && event.transcriptPath) {
+        let segments = transcriptTokens.get(event.sessionId);
+        if (!segments) {
+          segments = new Map<string, TimedTokenSnapshot>();
+          transcriptTokens.set(event.sessionId, segments);
+        }
+        // A rollout's counter is cumulative within that file. Repeated Stop scans
+        // replace the same segment; a resumed rollout has a distinct path and adds
+        // one new segment to the logical session total.
+        setLatestTokenSnapshot(segments, event.transcriptPath, event);
+      } else {
+        // Claude, CodeBuddy, and pre-existing events retain latest-Stop semantics.
+        setLatestTokenSnapshot(unscopedTokens, event.sessionId, event);
       }
     }
   }

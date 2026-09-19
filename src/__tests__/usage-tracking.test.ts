@@ -26,6 +26,7 @@ import {
   updateKnownSkills,
   readKnownSkills,
   extractSkillName,
+  skillExistsOnDisk,
 } from '../usage-tracker.js';
 import { aggregateUsage } from '../stats.js';
 import { mergeStats } from '../team-push.js';
@@ -114,6 +115,45 @@ describe('isValidSkillName', () => {
     expect(isValidSkillName('skill name')).toBe(false);
     expect(isValidSkillName('skill\n')).toBe(false);
     expect(isValidSkillName('<script>')).toBe(false);
+  });
+});
+
+describe('skillExistsOnDisk — Copilot', () => {
+  it('finds user skills under a custom COPILOT_HOME', async () => {
+    const copilotHome = path.join(tmpDir, 'copilot-home');
+    const skillDir = path.join(copilotHome, 'skills', 'copilot-review');
+    await fse.ensureDir(skillDir);
+    await fse.writeFile(path.join(skillDir, 'SKILL.md'), '# Copilot review\n');
+    const previous = process.env.COPILOT_HOME;
+    process.env.COPILOT_HOME = copilotHome;
+    try {
+      await expect(skillExistsOnDisk('copilot-review')).resolves.toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = previous;
+    }
+  });
+
+  it('finds project skills under .github/skills', async () => {
+    const project = path.join(tmpDir, 'project');
+    const skillDir = path.join(project, '.github', 'skills', 'copilot-test');
+    await fse.ensureDir(skillDir);
+    await fse.writeFile(path.join(skillDir, 'SKILL.md'), '# Copilot test\n');
+    const previousCwd = process.cwd();
+    process.chdir(project);
+    try {
+      await expect(skillExistsOnDisk('copilot-test')).resolves.toBe(true);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it('does not treat the home .github directory as a user skill scope', async () => {
+    const skillDir = path.join(tmpDir, '.github', 'skills', 'project-only');
+    await fse.ensureDir(skillDir);
+    await fse.writeFile(path.join(skillDir, 'SKILL.md'), '# Project only\n');
+
+    await expect(skillExistsOnDisk('project-only')).resolves.toBe(false);
   });
 });
 

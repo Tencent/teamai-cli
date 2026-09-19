@@ -23,6 +23,16 @@ describe('parseStdin', () => {
     expect(result.hook_event_name).toBe('Stop');
   });
 
+  it('never writes malformed hook body fragments to debug logs', () => {
+    const secret = 'ghp_sensitive_hook_fragment';
+    parseStdin(`{"prompt":"${secret}`, 'user-prompt-submit');
+
+    const debugOutput = vi.mocked(log.debug).mock.calls.flat().join('\n');
+    expect(debugOutput).toContain('failed to parse STDIN JSON');
+    expect(debugOutput).not.toContain(secret);
+    expect(debugOutput).not.toContain('body=');
+  });
+
   it('returns an empty object (plus event name) for blank STDIN', () => {
     const result = parseStdin('', 'stop');
     expect(result).toEqual({ hook_event_name: 'Stop' });
@@ -37,6 +47,11 @@ describe('parseStdin', () => {
   it('maps lower-case event aliases to their canonical hook names', () => {
     const result = parseStdin('', 'session-start');
     expect(result.hook_event_name).toBe('SessionStart');
+  });
+
+  it('maps the Copilot lifecycle alias to SessionEnd', () => {
+    const result = parseStdin('', 'session-end');
+    expect(result.hook_event_name).toBe('SessionEnd');
   });
 
   it('degrades JSON `null` to {} instead of throwing', () => {

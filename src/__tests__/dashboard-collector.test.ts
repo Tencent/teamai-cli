@@ -16,6 +16,7 @@ import {
   dedupeEvents,
 } from '../dashboard-collector.js';
 import type { DashboardEvent } from '../types.js';
+import { _resetState as resetLogger, _setLogFilePath } from '../utils/logger.js';
 
 // ─── Transcript fixtures for intervention scanning ──────
 const INTERRUPT_LINE = JSON.stringify({
@@ -94,6 +95,281 @@ describe('parseHookEvent', () => {
     const event = await parseHookEvent(raw, 'claude');
     expect(event!.type).toBe('tool_use');
     expect(event!.toolName).toBe('Edit');
+  });
+
+  it('normalizes Copilot lowercase skill tool usage', async () => {
+    const event = await parseHookEvent(JSON.stringify({
+      hook_event_name: 'PostToolUse',
+      session_id: 'copilot-session',
+      tool_name: 'skill',
+    }), 'copilot');
+    expect(event?.toolName).toBe('Skill');
+  });
+
+  it('retains only the correction signal from Copilot prompts', async () => {
+    const sensitivePrompt = 'wrong, use token ghp_private_value instead';
+    const event = await parseHookEvent(JSON.stringify({
+      hook_event_name: 'UserPromptSubmit',
+      session_id: 'copilot-session',
+      prompt: sensitivePrompt,
+    }), 'copilot');
+    expect(event).toEqual(expect.objectContaining({
+      type: 'prompt_submit',
+      sessionId: 'copilot-session',
+      correction: true,
+    }));
+    expect(event?.promptSummary).toBeUndefined();
+    expect(JSON.stringify(event)).not.toContain(sensitivePrompt);
+    expect(JSON.stringify(event)).not.toContain('ghp_private_value');
+  });
+
+  it('reads only final Copilot token totals and redacts transcript content', async () => {
+    const sessionId = 'copilot-stable-session';
+    const copilotHome = path.join(tmpDir, '.copilot-token-totals');
+    const transcript = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
+    const originalCopilotHome = process.env.COPILOT_HOME;
+    const secret = 'TOP-SECRET-COPILOT-PROMPT';
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, [
+      JSON.stringify({
+        type: 'session.usage_checkpoint',
+        data: { prompt: secret, inputTokens: 999_999, request: { authorization: secret } },
+      }),
+      JSON.stringify({ type: 'assistant.message', data: { content: secret } }),
+      JSON.stringify({
+        type: 'session.shutdown',
+        data: {
+          tokenDetails: {
+            input: { tokenCount: 101 },
+            output: { tokenCount: 29 },
+            cache_read: { tokenCount: 17 },
+            cache_write: { tokenCount: 3 },
+          },
+          prompt: secret,
+        },
+      }),
+    ].join('\n'));
+    process.env.COPILOT_HOME = copilotHome;
+
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        session_id: sessionId,
+        transcript_path: path.join(tmpDir, 'ignored-supplied-path.jsonl'),
+      }), 'copilot');
+
+      expect(event).toEqual(expect.objectContaining({
+        type: 'session_end',
+        sessionId,
+        tool: 'copilot',
+        tokens: { input: 101, output: 29, cacheRead: 17, cacheCreation: 3 },
+        tokenScope: 'session',
+      }));
+      expect(event?.transcriptPath).toBeUndefined();
+      expect(event?.stoppedOutput).toBeUndefined();
+      expect(JSON.stringify(event)).not.toContain(secret);
+      expect(JSON.stringify(event)).not.toContain(transcript);
+      expect(JSON.stringify(event)).not.toContain('999999');
+    } finally {
+      if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = originalCopilotHome;
+    }
+  });
+
+  it('finds Copilot shutdown usage when the real SessionEnd payload omits transcriptPath', async () => {
+    const sessionId = 'copilot-real-lifecycle';
+    const copilotHome = path.join(tmpDir, '.copilot');
+    const transcript = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
+    const originalCopilotHome = process.env.COPILOT_HOME;
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, JSON.stringify({
+      type: 'session.shutdown',
+      data: {
+        tokenDetails: {
+          input: { tokenCount: 61 },
+          output: { tokenCount: 7 },
+          cache_read: { tokenCount: 43 },
+          cache_write: { tokenCount: 2 },
+        },
+      },
+    }));
+    process.env.COPILOT_HOME = copilotHome;
+
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        sessionId,
+        reason: 'complete',
+      }), 'copilot');
+
+      expect(event).toEqual(expect.objectContaining({
+        type: 'session_end',
+        sessionId,
+        tokens: { input: 61, output: 7, cacheRead: 43, cacheCreation: 2 },
+        tokenScope: 'session',
+      }));
+      expect(event?.transcriptPath).toBeUndefined();
+      expect(JSON.stringify(event)).not.toContain(transcript);
+    } finally {
+      if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = originalCopilotHome;
+    }
+  });
+
+  it('ignores a supplied Copilot transcript outside the validated session-state path', async () => {
+    const sessionId = 'copilot-contained-session';
+    const copilotHome = path.join(tmpDir, '.copilot-contained');
+    const safeTranscript = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
+    const outsiderTranscript = path.join(tmpDir, 'unrelated-sensitive.jsonl');
+    const originalCopilotHome = process.env.COPILOT_HOME;
+    fs.mkdirSync(path.dirname(safeTranscript), { recursive: true });
+    fs.writeFileSync(safeTranscript, JSON.stringify({
+      type: 'session.shutdown',
+      data: { reason: 'complete' },
+    }));
+    fs.writeFileSync(outsiderTranscript, JSON.stringify({
+      type: 'session.shutdown',
+      data: { tokenDetails: { input: { tokenCount: 999_999 } } },
+    }));
+    process.env.COPILOT_HOME = copilotHome;
+
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        sessionId,
+        transcript_path: outsiderTranscript,
+      }), 'copilot');
+
+      expect(event?.tokens).toBeUndefined();
+      expect(JSON.stringify(event)).not.toContain(outsiderTranscript);
+      expect(JSON.stringify(event)).not.toContain('999999');
+    } finally {
+      if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = originalCopilotHome;
+    }
+  });
+
+  it('does not resolve Copilot usage for a traversal session ID', async () => {
+    const outsiderTranscript = path.join(tmpDir, 'traversal-sensitive.jsonl');
+    fs.writeFileSync(outsiderTranscript, JSON.stringify({
+      type: 'session.shutdown',
+      data: { tokenDetails: { input: { tokenCount: 999_999 } } },
+    }));
+
+    const event = await parseHookEvent(JSON.stringify({
+      hook_event_name: 'SessionEnd',
+      sessionId: '../escape',
+      transcript_path: outsiderTranscript,
+    }), 'copilot');
+
+    expect(event?.tokens).toBeUndefined();
+    expect(JSON.stringify(event)).not.toContain(outsiderTranscript);
+    expect(JSON.stringify(event)).not.toContain('999999');
+  });
+
+  it('skips an incomplete Copilot shutdown record and uses the valid final record', async () => {
+    const sessionId = 'copilot-in-flight';
+    const copilotHome = path.join(tmpDir, '.copilot-in-flight');
+    const transcript = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
+    const originalCopilotHome = process.env.COPILOT_HOME;
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, [
+      '{"type":"session.shutdown",',
+      JSON.stringify({
+        type: 'session.shutdown',
+        data: { tokenDetails: { input: { tokenCount: 7 }, output: { tokenCount: 2 } } },
+      }),
+    ].join('\n'));
+    process.env.COPILOT_HOME = copilotHome;
+
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        session_id: sessionId,
+      }), 'copilot');
+
+      expect(event?.tokens).toEqual({ input: 7, output: 2, cacheRead: 0, cacheCreation: 0 });
+    } finally {
+      if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = originalCopilotHome;
+    }
+  });
+
+  it('keeps Copilot SessionEnd when final token details are unavailable', async () => {
+    const sessionId = 'copilot-camel-session';
+    const copilotHome = path.join(tmpDir, '.copilot-no-tokens');
+    const transcript = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
+    const originalCopilotHome = process.env.COPILOT_HOME;
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, JSON.stringify({
+      type: 'session.shutdown',
+      data: { reason: 'complete' },
+    }));
+    process.env.COPILOT_HOME = copilotHome;
+
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        sessionId,
+      }), 'copilot');
+      expect(event).toEqual(expect.objectContaining({
+        type: 'session_end',
+        sessionId,
+      }));
+      expect(event?.tokens).toBeUndefined();
+    } finally {
+      if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = originalCopilotHome;
+    }
+  });
+
+  it('does not store an all-zero snapshot for empty Copilot token details', async () => {
+    const sessionId = 'copilot-empty-token-details';
+    const copilotHome = path.join(tmpDir, '.copilot-empty-token-details');
+    const transcript = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
+    const originalCopilotHome = process.env.COPILOT_HOME;
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, JSON.stringify({
+      type: 'session.shutdown',
+      data: { tokenDetails: {} },
+    }));
+    process.env.COPILOT_HOME = copilotHome;
+
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        sessionId,
+      }), 'copilot');
+
+      expect(event?.tokens).toBeUndefined();
+      expect(event?.tokenScope).toBeUndefined();
+    } finally {
+      if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = originalCopilotHome;
+    }
+  });
+
+  it('keeps a missing Copilot transcript path out of events and debug logs', async () => {
+    const sensitivePath = path.join(tmpDir, 'private-customer-name.jsonl');
+    const debugLog = path.join(tmpDir, 'debug.log');
+    _setLogFilePath(debugLog);
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        session_id: 'copilot-missing-transcript',
+        transcript_path: sensitivePath,
+      }), 'copilot');
+
+      expect(event).toEqual(expect.objectContaining({
+        type: 'session_end',
+        sessionId: 'copilot-missing-transcript',
+      }));
+      expect(event?.tokens).toBeUndefined();
+      expect(JSON.stringify(event)).not.toContain(sensitivePath);
+      expect(fs.readFileSync(debugLog, 'utf-8')).not.toContain(sensitivePath);
+    } finally {
+      resetLogger();
+    }
   });
 
   it('parses UserPromptSubmit event with prompt', async () => {
@@ -362,6 +638,38 @@ describe('parseHookEvent', () => {
     expect(event!.stoppedOutput).toBe('AI response here');
     expect(event!.transcriptPath).toBe(transcriptPath);
   });
+
+  it('captures aggregate tokens and request cost metrics from a Claude Stop transcript', async () => {
+    const transcriptPath = path.join(tmpDir, 'usage-transcript.jsonl');
+    fs.writeFileSync(transcriptPath, JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-09-19T12:00:00Z',
+      message: {
+        id: 'usage-message',
+        model: 'claude-sonnet-5',
+        usage: {
+          input_tokens: 13,
+          output_tokens: 5,
+          cache_read_input_tokens: 8,
+          cache_creation_input_tokens: 3,
+        },
+        content: [{ type: 'text', text: 'done' }],
+      },
+    }) + '\n');
+
+    const event = await parseHookEvent(JSON.stringify({
+      hook_event_name: 'Stop',
+      session_id: 'sess-usage',
+      transcript_path: transcriptPath,
+    }), 'claude');
+
+    expect(event?.tokens).toEqual({ input: 13, output: 5, cacheRead: 8, cacheCreation: 3 });
+    expect(event?.requestMetrics).toMatchObject({
+      pricedRequests: 1,
+      cacheReadTokens: 8,
+      cacheEligibleInputTokens: 24,
+    });
+  });
 });
 
 describe('local request log', () => {
@@ -523,6 +831,26 @@ describe('rebuildSessions', () => {
     const sessions = rebuildSessions(events);
     expect(sessions).toHaveLength(1);
     expect(sessions[0].status).toBe('waiting_for_input');
+  });
+
+  it('rebuilds a privacy-safe Copilot lifecycle with final token totals', () => {
+    const events: DashboardEvent[] = [
+      { type: 'session_start', timestamp: now, sessionId: 'copilot-1', tool: 'copilot', cwd: '/proj' },
+      { type: 'prompt_submit', timestamp: now, sessionId: 'copilot-1', tool: 'copilot', correction: false },
+      { type: 'tool_use', timestamp: now, sessionId: 'copilot-1', tool: 'copilot', toolName: 'Skill' },
+      {
+        type: 'session_end', timestamp: now, sessionId: 'copilot-1', tool: 'copilot',
+        tokens: { input: 10, output: 4, cacheRead: 2, cacheCreation: 1 }, tokenScope: 'session',
+      },
+    ];
+    const sessions = rebuildSessions(events);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toEqual(expect.objectContaining({
+      status: 'stopped',
+      promptCount: 1,
+      lastTool: 'Skill',
+      tokens: { input: 10, output: 4, cacheRead: 2, cacheCreation: 1 },
+    }));
   });
 
   it('stop then prompt_submit returns to running', () => {
