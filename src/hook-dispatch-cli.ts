@@ -377,6 +377,7 @@ export function parseStdin(raw: string, event: string): Record<string, unknown> 
   if (!stdin.hook_event_name) {
     const EVENT_MAP: Record<string, string> = {
       'session-start': 'SessionStart',
+      'session-end': 'SessionEnd',
       'stop': 'Stop',
       'post-tool-use': 'PostToolUse',
       'prompt-submit': 'UserPromptSubmit',
