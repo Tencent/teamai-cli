@@ -1520,8 +1520,8 @@ export function compileRecallRulesBlock(): string {
 /**
  * Collect claudemd .md files filtered by the user's active knowledge namespaces.
  *
- * Walks claudemd/<namespace>/*.md for each active namespace.
- * Falls back to collecting ALL namespace dirs when no role context is available.
+ * Always collects root-level claudemd/*.md files, then walks claudemd/<namespace>/*.md
+ * for each active namespace. Root-level instructions are shared with every member.
  */
 async function collectClaudemdFiles(
     repoPath: string,
@@ -1529,6 +1529,15 @@ async function collectClaudemdFiles(
 ): Promise<string[]> {
     const claudemdDir = path.join(repoPath, 'claudemd');
     if (!await pathExists(claudemdDir)) return [];
+
+    const contents: string[] = [];
+    const rootFiles = (await listFiles(claudemdDir))
+        .filter((f) => f.endsWith('.md'))
+        .sort();
+    for (const file of rootFiles) {
+        const content = await readFileSafe(path.join(claudemdDir, file));
+        if (content) contents.push(content);
+    }
 
     // Determine which namespace dirs to scan
     let namespaceDirs: string[];
@@ -1539,7 +1548,6 @@ async function collectClaudemdFiles(
         namespaceDirs = await listDirs(claudemdDir);
     }
 
-    const contents: string[] = [];
     for (const ns of namespaceDirs) {
         const nsDir = path.join(claudemdDir, ns);
         if (!await pathExists(nsDir)) continue;
