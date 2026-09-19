@@ -23,6 +23,16 @@ describe('parseStdin', () => {
     expect(result.hook_event_name).toBe('Stop');
   });
 
+  it('never writes malformed hook body fragments to debug logs', () => {
+    const secret = 'ghp_sensitive_hook_fragment';
+    parseStdin(`{"prompt":"${secret}`, 'user-prompt-submit');
+
+    const debugOutput = vi.mocked(log.debug).mock.calls.flat().join('\n');
+    expect(debugOutput).toContain('failed to parse STDIN JSON');
+    expect(debugOutput).not.toContain(secret);
+    expect(debugOutput).not.toContain('body=');
+  });
+
   it('returns an empty object (plus event name) for blank STDIN', () => {
     const result = parseStdin('', 'stop');
     expect(result).toEqual({ hook_event_name: 'Stop' });

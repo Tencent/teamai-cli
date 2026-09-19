@@ -348,14 +348,12 @@ export function parseStdin(raw: string, event: string): Record<string, unknown> 
       // Degrade instead of short-circuiting: handlers that depend on stdin
       // fields (votes-sync, contribute-check) self-skip when transcript_path
       // is absent, while background handlers that don't read stdin
-      // (version-check, etc.) still get to run. Include a bounded preview so
-      // concurrent STDIN corruption is diagnosable in debug.log.
-      const preview = raw.length > 160
-        ? `${raw.slice(0, 80)}...${raw.slice(-80)}`
-        : raw;
+      // (version-check, etc.) still get to run. Hook payloads can contain
+      // prompts, credentials, and tool arguments, so diagnostics record only
+      // structural metadata and never any part of the raw body.
       log.debug(
         `hook-dispatch: failed to parse STDIN JSON for event=${event}` +
-          ` (len=${raw.length}, body=${JSON.stringify(preview)})`,
+          ` (len=${raw.length})`,
       );
       stdin = salvageStdinFields(raw);
     }
