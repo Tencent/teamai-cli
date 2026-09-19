@@ -166,6 +166,46 @@ describe('parseHookEvent', () => {
     expect(JSON.stringify(event)).not.toContain('999999');
   });
 
+  it('finds Copilot shutdown usage when the real SessionEnd payload omits transcriptPath', async () => {
+    const sessionId = 'copilot-real-lifecycle';
+    const copilotHome = path.join(tmpDir, '.copilot');
+    const transcript = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
+    const originalCopilotHome = process.env.COPILOT_HOME;
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, JSON.stringify({
+      type: 'session.shutdown',
+      data: {
+        tokenDetails: {
+          input: { tokenCount: 61 },
+          output: { tokenCount: 7 },
+          cache_read: { tokenCount: 43 },
+          cache_write: { tokenCount: 2 },
+        },
+      },
+    }));
+    process.env.COPILOT_HOME = copilotHome;
+
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        sessionId,
+        reason: 'complete',
+      }), 'copilot');
+
+      expect(event).toEqual(expect.objectContaining({
+        type: 'session_end',
+        sessionId,
+        tokens: { input: 61, output: 7, cacheRead: 43, cacheCreation: 2 },
+        tokenScope: 'session',
+      }));
+      expect(event?.transcriptPath).toBeUndefined();
+      expect(JSON.stringify(event)).not.toContain(transcript);
+    } finally {
+      if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = originalCopilotHome;
+    }
+  });
+
   it('skips an incomplete Copilot shutdown record and uses the valid final record', async () => {
     const transcript = path.join(tmpDir, 'copilot-in-flight.jsonl');
     fs.writeFileSync(transcript, [
@@ -491,6 +531,38 @@ describe('parseHookEvent', () => {
     expect(event!.type).toBe('stop');
     expect(event!.stoppedOutput).toBe('AI response here');
     expect(event!.transcriptPath).toBe(transcriptPath);
+  });
+
+  it('captures aggregate tokens and request cost metrics from a Claude Stop transcript', async () => {
+    const transcriptPath = path.join(tmpDir, 'usage-transcript.jsonl');
+    fs.writeFileSync(transcriptPath, JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-09-19T12:00:00Z',
+      message: {
+        id: 'usage-message',
+        model: 'claude-sonnet-5',
+        usage: {
+          input_tokens: 13,
+          output_tokens: 5,
+          cache_read_input_tokens: 8,
+          cache_creation_input_tokens: 3,
+        },
+        content: [{ type: 'text', text: 'done' }],
+      },
+    }) + '\n');
+
+    const event = await parseHookEvent(JSON.stringify({
+      hook_event_name: 'Stop',
+      session_id: 'sess-usage',
+      transcript_path: transcriptPath,
+    }), 'claude');
+
+    expect(event?.tokens).toEqual({ input: 13, output: 5, cacheRead: 8, cacheCreation: 3 });
+    expect(event?.requestMetrics).toMatchObject({
+      pricedRequests: 1,
+      cacheReadTokens: 8,
+      cacheEligibleInputTokens: 24,
+    });
   });
 });
 
