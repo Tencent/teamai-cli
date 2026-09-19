@@ -3,7 +3,7 @@ import YAML from 'yaml';
 import { isToolInstalledForConfig, ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { getPushignorePath, isAgentExcluded, resolveToolBaseDir, scopedToolPaths } from '../types.js';
-import { listDirs, pathExists, copyDir, remove, dirContentEqual, dirTeamSubsetEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
+import { listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 import { resolveOpenclawWorkspaceDir } from '../openclaw-hooks.js';
@@ -536,6 +536,13 @@ export class SkillsHandler extends ResourceHandler {
       `Invalid skill destination outside team repo skills directory: ${item.relativePath}`,
     );
     await copyDir(item.sourcePath, dest);
+    const sourceFiles = new Set(await listFilesRecursive(item.sourcePath));
+    const teamFiles = await listFilesRecursive(dest);
+    for (const relativePath of teamFiles) {
+      if (sourceFiles.has(relativePath) || relativePath === CONTRIBUTORS_FILE) continue;
+      await remove(path.join(dest, relativePath));
+    }
+    await pruneEmptyDirs(dest);
     log.debug(`Copied skill ${item.name} → team repo`);
 
     // Ensure SKILL.md has proper YAML frontmatter (name + description)
