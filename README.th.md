@@ -19,7 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-TeamAI จัดการ Skills, Rules, MCP และความรู้ของทีมให้ใช้ร่วมกันได้บน Claude Code, Codex, CodeBuddy, WorkBuddy, OpenCode, Cursor, Oh My Pi และ AI Agents อื่นๆ
+**รากฐานร่วมสำหรับการทำงาน การเรียนรู้ และการพัฒนาอย่างต่อเนื่องของทีมด้วย AI**
+
+TeamAI เปลี่ยนความสามารถด้าน AI ของแต่ละคนให้เป็นความสามารถร่วมของทีม ใช้ได้ข้าม Agent อุปกรณ์ และสมาชิกในทีม
 
 ## ผู้ร่วมพัฒนา
 

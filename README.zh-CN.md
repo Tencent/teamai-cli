@@ -19,7 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-TeamAI 统一管理团队的 Skills、Rules、MCP 和知识，驾驭 Claude Code、Codex、GitHub Copilot CLI、CodeBuddy、WorkBuddy、OpenCode、Cursor、Oh My Pi 等 AI Agents。
+**为团队构建共享的 AI 基础，统一协作方式、沉淀团队上下文，并持续改进。**
+
+TeamAI 将个人的 AI 能力转化为团队共享能力，并在不同 Agent、设备和团队成员之间复用。
 
 ## 贡献者
 

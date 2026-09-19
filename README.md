@@ -19,7 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-TeamAI manages your team's skills, rules, MCP, and knowledge across Claude Code, Codex, GitHub Copilot CLI, CodeBuddy, WorkBuddy, OpenCode, Cursor, Oh My Pi, and other AI agents.
+**The shared foundation for how your team works, learns, and improves with AI.**
+
+TeamAI turns individual AI capabilities into shared team capabilities — across agents, machines, and team members.
 
 ## Contributors
 
