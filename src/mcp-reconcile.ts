@@ -31,6 +31,7 @@ import {
   type McpFormat,
 } from './resources/mcp-format.js';
 import { parseTeamMcpServers } from './resources/mcp.js';
+import { isToolInstalledForConfig } from './resources/base.js';
 import { activeRoleIds, matchesRoles, warnUnknownRoleIds } from './roles.js';
 import {
   readJson,
@@ -211,12 +212,7 @@ export async function resolveMcpTargets(
 
     const probe = paths.skills ?? paths.settings ?? paths.agents;
     if (!probe) continue;
-    // Probe the tool's root dir (the resource dir's parent), so a multi-segment
-    // path like `.config/opencode/skills` resolves to `.config/opencode` rather
-    // than the near-universal `.config`. Matches ResourceHandler.isToolInstalled.
-    const probeDir = path.dirname(probe);
-    const toolRoot = probeDir === '.' ? path.join(baseDir, probe) : path.join(baseDir, probeDir);
-    if (!await pathExists(toolRoot)) {
+    if (!await isToolInstalledForConfig(tool, probe, localConfig)) {
       log.debug(`Skipping MCP sync for ${tool}: tool not installed`);
       continue;
     }
