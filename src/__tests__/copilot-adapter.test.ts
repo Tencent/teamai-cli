@@ -9,6 +9,7 @@ import {
   reconcileHooks,
   reconcileTeamHooksForConfig,
 } from '../hooks.js';
+import { _resetShellCache } from '../builtin-hooks.js';
 import { RulesHandler } from '../resources/rules.js';
 import { SkillsHandler } from '../resources/skills.js';
 import { teamRuleToCopilotInstructions } from '../resources/copilot-instructions.js';
@@ -344,5 +345,48 @@ describe('GitHub Copilot adapter', () => {
     const destination = path.join(copilotHome, 'instructions', `${TEAM_RULE_NAME}.instructions.md`);
     await handler.pullItem(missingTeamRule, teamConfig, localConfig('user'));
     expect(await fse.pathExists(destination)).toBe(false);
+  });
+
+  describe('Windows Git Bash launcher rendering', () => {
+    let fakeGitRoot: string;
+
+    beforeEach(async () => {
+      // A host may carry a real Git for Windows under ProgramFiles; point every
+      // candidate at the fake tree so the resolved launcher is deterministic.
+      fakeGitRoot = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-copilot-gitbash-'));
+      const bin = path.join(fakeGitRoot, 'Programs', 'Git', 'bin');
+      await fse.ensureDir(bin);
+      await fse.writeFile(path.join(bin, 'bash.exe'), '');
+      vi.stubEnv('ProgramFiles', path.join(fakeGitRoot, 'missing-pf'));
+      vi.stubEnv('ProgramFiles(x86)', path.join(fakeGitRoot, 'missing-pf86'));
+      vi.stubEnv('LOCALAPPDATA', fakeGitRoot);
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+      _resetShellCache();
+    });
+
+    afterEach(async () => {
+      _resetShellCache();
+      vi.restoreAllMocks();
+      await fse.remove(fakeGitRoot);
+    });
+
+    it('renders the powershell field with the call operator when Git Bash is found', async () => {
+      await reconcileTeamHooksForConfig(teamConfig, localConfig('user'));
+      const hookPath = path.join(copilotHome, 'hooks', COPILOT_HOOK_FILE);
+      const first = await fse.readFile(hookPath, 'utf8');
+      await reconcileTeamHooksForConfig(teamConfig, localConfig('user'));
+      const second = await fse.readFile(hookPath, 'utf8');
+      expect(second).toBe(first);
+
+      const parsed = JSON.parse(second) as {
+        hooks: Record<string, Array<{ bash: string; powershell: string; command: string }>>;
+      };
+      const entry = parsed.hooks.SessionStart[0];
+      const bashExe = path.join(fakeGitRoot, 'Programs', 'Git', 'bin', 'bash.exe').split(path.sep).join('/');
+      const dispatch = 'teamai hook-dispatch session-start --tool copilot';
+      expect(entry.bash).toBe(`"${bashExe}" -lc "${dispatch} 2>/dev/null" || true`);
+      expect(entry.powershell).toBe(`& "${bashExe}" -lc "${dispatch} 2>/dev/null"; exit 0`);
+      expect(entry.command).toBe(entry.bash);
+    });
   });
 });

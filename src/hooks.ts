@@ -345,12 +345,22 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
   return entry;
 }
 
-const COPILOT_BUILTIN_COMMAND_RE = /^bash -lc "(teamai hook-dispatch [^"]+) 2>\/dev\/null" \|\| true$/;
+// getDispatchCommand() prefixes the launcher with a quoted, forward-slash Git
+// Bash path on Windows and keeps bare `bash` everywhere else (and on Windows
+// machines where Git Bash cannot be found).
+const COPILOT_BUILTIN_COMMAND_RE = /^("[^"]+"|bash) -lc "(teamai hook-dispatch [^"]+) 2>\/dev\/null" \|\| true$/;
 
 /** Render a valid PowerShell equivalent for TeamAI's generated bash wrapper. */
 function copilotPowershellCommand(command: string): string {
   const match = command.match(COPILOT_BUILTIN_COMMAND_RE);
-  return match ? `${match[1]} 2>$null; exit 0` : command;
+  if (!match) return command;
+  // PowerShell needs the call operator before a quoted executable path, and
+  // `|| true` maps to `; exit 0`. The dispatch command inside is
+  // builtin-generated (no `$`, backticks or double quotes), so echoing it
+  // inside a double-quoted PowerShell string is interpolation-safe.
+  return match[1] === 'bash'
+    ? `${match[2]} 2>$null; exit 0`
+    : `& ${match[1]} -lc "${match[2]} 2>/dev/null"; exit 0`;
 }
 
 function toCopilotEntry(def: HookDef): CopilotHookEntry {

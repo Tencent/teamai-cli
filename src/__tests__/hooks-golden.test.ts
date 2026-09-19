@@ -13,14 +13,21 @@ import { injectHooks } from '../hooks.js';
 // fixtures/hooks/<tool>.json were captured from the pre-refactor injector.
 // Any refactor of the injection engine MUST keep these byte-identical so that
 // already-installed machines see a zero-diff reconcile after a CLI upgrade.
+//
+// Windows: the dispatch shell resolves a bare `bash` to the WSL launcher, so
+// the injector names Git Bash by absolute path instead — machine-specific, and
+// the Linux-captured fixtures cannot match it. Only the dispatch-command
+// renderers (claude, claude-internal, cursor) skip there; the wrapper
+// renderers (codebuddy, workbuddy) stay machine-independent and keep coverage.
 const fixturesDir = path.resolve(__dirname, 'fixtures', 'hooks');
 
-const cases: Array<[string, string]> = [
-  ['claude', 'settings.json'],
-  ['claude-internal', 'settings.json'],
-  ['codebuddy', 'settings.json'],
-  ['cursor', 'hooks.json'],
-  ['workbuddy', 'settings.json'],
+// true = the command carries the dispatch shell prefix (`getDispatchCommand`).
+const cases: Array<[string, string, boolean]> = [
+  ['claude', 'settings.json', true],
+  ['claude-internal', 'settings.json', true],
+  ['codebuddy', 'settings.json', false],
+  ['cursor', 'hooks.json', true],
+  ['workbuddy', 'settings.json', false],
 ];
 
 describe('hooks golden — built-in output is byte-identical to the captured baseline', () => {
@@ -32,8 +39,8 @@ describe('hooks golden — built-in output is byte-identical to the captured bas
     await fse.remove(tmp);
   });
 
-  for (const [tool, file] of cases) {
-    it(`${tool} output matches golden fixture`, async () => {
+  for (const [tool, file, usesDispatchCommand] of cases) {
+    it.skipIf(process.platform === 'win32' && usesDispatchCommand)(`${tool} output matches golden fixture`, async () => {
       const p = path.join(tmp, tool, file);
       await injectHooks(p, tool);
       const got = await fse.readFile(p, 'utf-8');

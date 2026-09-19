@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import type { HookDef } from './types.js';
@@ -60,6 +61,7 @@ export function hasShell(): boolean {
 /** Reset the cached shell results. Test-only. */
 export function _resetShellCache(): void {
   _hasShellCache = undefined;
+  _winBashLauncherCache = undefined;
   resetBundledRuntimeCache();
 }
 
@@ -159,11 +161,86 @@ export function skipToolsWithoutShell(tools: string[]): Set<string> {
   return skipped;
 }
 
+/**
+ * Read the machine-wide InstallPath the Git for Windows installer records
+ * in HKLM. Exported so tests stub it at the module boundary instead of
+ * shelling out to a real reg.exe. Returns null on any failure — an
+ * unreadable registry just means "no extra candidate".
+ */
+export function queryGitInstallPath(): string | null {
+  try {
+    const out = execFileSync(
+      'reg.exe',
+      ['query', 'HKLM\\SOFTWARE\\GitForWindows', '/v', 'InstallPath'],
+      { timeout: 5000, windowsHide: true, encoding: 'utf8' },
+    );
+    const match = out.match(/InstallPath\s+REG_SZ\s+(.+)/);
+    return match?.[1]?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Locate Git Bash on Windows. CreateProcess resolves a bare `bash` to
+ * System32's WSL launcher before any PATH entry (the rationale already
+ * documented for ZCode in hooks.ts), and the ZCode cmd fallback is not
+ * available to rendered shell-string commands, so on Windows the
+ * interpreter has to be an absolute path. Standard install locations
+ * first; the HKLM `GitForWindows` key covers custom InstallPath.
+ * Returns the exe path, or null when Git is not found.
+ */
+export function findGitBashWindows(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = getUserHome(),
+  readInstallPath: () => string | null = queryGitInstallPath,
+): string | null {
+  const candidates: string[] = [];
+  if (env.ProgramFiles) candidates.push(path.join(env.ProgramFiles, 'Git', 'bin', 'bash.exe'));
+  if (env['ProgramFiles(x86)']) candidates.push(path.join(env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'));
+  if (env.LOCALAPPDATA) candidates.push(path.join(env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'));
+  candidates.push(path.join(home, 'AppData', 'Local', 'Programs', 'Git', 'bin', 'bash.exe'));
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  const installPath = readInstallPath();
+  if (installPath) {
+    const candidate = path.join(installPath, 'bin', 'bash.exe');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+let _winBashLauncherCache: string | undefined;
+
+/**
+ * The shell word to emit in a rendered hook command. POSIX keeps the bare
+ * `bash`; Windows substitutes the resolved Git Bash path (quoted, forward
+ * slashes so it stays JSON-safe — the default install location contains a
+ * space) so the command never reaches the WSL launcher. Falls back to
+ * plain `bash` only when Git is absent — there the old form was already
+ * dead anyway.
+ */
+function getHookShellCommand(): string {
+  if (process.platform !== 'win32') return 'bash';
+  if (_winBashLauncherCache === undefined) {
+    const found = findGitBashWindows();
+    if (found) {
+      _winBashLauncherCache = `"${found.split(path.sep).join('/')}"`;
+    } else {
+      _winBashLauncherCache = 'bash';
+      log.debug('teamai hooks: Git Bash not found on this Windows machine; hook commands keep bare `bash` and may resolve to the WSL launcher.');
+    }
+  }
+  return _winBashLauncherCache;
+}
+
 /** Generate the hook-dispatch command for a given event, tool, and optional matcher. */
 export function getDispatchCommand(event: string, tool: string, matcher?: string, binPath?: string): string {
   const bin = binPath ?? 'teamai';
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
-  return `bash -lc "${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
+  return `${getHookShellCommand()} -lc "${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
 }
 
 /**
