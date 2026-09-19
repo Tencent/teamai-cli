@@ -1,0 +1,176 @@
+import { createHmac } from 'node:crypto';
+import { autoDetectInit } from './config.js';
+import { log } from './utils/logger.js';
+import { getWebhookSharing, type WebhookEndpoint, type WebhookConfig, type WebhookPayload } from './types.js';
+import { formatFeishuMessage, formatWecomMessage, formatGenericJson } from './webhook-formatters.js';
+
+/**
+ * Send a webhook notification to all configured endpoints.
+ */
+export async function sendWebhook(
+  event: string,
+  payload: Partial<WebhookPayload>,
+  config?: WebhookConfig,
+): Promise<void> {
+  if (!config) {
+    const { teamConfig } = await autoDetectInit();
+    config = getWebhookSharing(teamConfig);
+  }
+
+  if (!config.enabled || config.endpoints.length === 0) return;
+
+  const fullPayload: WebhookPayload = {
+    event,
+    timestamp: new Date().toISOString(),
+    tool: payload.tool ?? 'unknown',
+    sessionId: payload.sessionId,
+    cwd: payload.cwd,
+    team: payload.team,
+    username: payload.username,
+    data: payload.data ?? {},
+  };
+
+  const matchingEndpoints = config.endpoints.filter(
+    (ep) => ep.events.includes(event) || ep.events.includes('*'),
+  );
+
+  if (matchingEndpoints.length === 0) return;
+
+  await Promise.allSettled(
+    matchingEndpoints.map((ep) => sendToEndpoint(ep, fullPayload)),
+  );
+}
+
+/**
+ * Send webhook to a single endpoint with retry logic.
+ */
+async function sendToEndpoint(
+  endpoint: WebhookEndpoint,
+  payload: WebhookPayload,
+): Promise<void> {
+  const { url, type, secret, timeout, retries } = endpoint;
+
+  const body = formatMessage(type, payload);
+
+  const headers: Record<string, string> = {
+    'Content-Type': type === 'json' ? 'application/json' : 'text/plain; charset=utf-8',
+  };
+
+  if (secret) {
+    const signature = createHmac('sha256', secret)
+      .update(JSON.stringify(body))
+      .digest('hex');
+    headers['X-TeamAI-Signature'] = `sha256=${signature}`;
+  }
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: typeof body === 'string' ? body : JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        log.debug(`Webhook sent successfully to ${url}`);
+        return;
+      }
+
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+        log.warn(`Webhook to ${url} failed with status ${response.status} (not retrying)`);
+        return;
+      }
+
+      if (attempt < retries) {
+        const delay = Math.pow(2, attempt) * 1000;
+        log.debug(`Webhook to ${url} failed, retrying in ${delay}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        log.warn(`Webhook to ${url} timed out after ${timeout}ms`);
+      } else if (attempt < retries) {
+        const delay = Math.pow(2, attempt) * 1000;
+        log.debug(`Webhook to ${url} failed, retrying in ${delay}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      } else {
+        log.warn(`Webhook to ${url} failed after ${retries + 1} attempts: ${(error as Error).message}`);
+      }
+    }
+  }
+}
+
+/**
+ * Format message based on webhook type.
+ */
+function formatMessage(
+  type: WebhookEndpoint['type'],
+  payload: WebhookPayload,
+): string | Record<string, unknown> {
+  switch (type) {
+    case 'feishu':
+      return formatFeishuMessage(payload);
+    case 'wecom':
+      return formatWecomMessage(payload);
+    case 'json':
+    default:
+      return formatGenericJson(payload);
+  }
+}
+
+/**
+ * Load webhook config from team config.
+ */
+export async function loadWebhookConfig(): Promise<WebhookConfig> {
+  const { teamConfig } = await autoDetectInit();
+  return getWebhookSharing(teamConfig);
+}
+
+/**
+ * List all configured webhook endpoints.
+ */
+export async function listWebhooks(): Promise<WebhookEndpoint[]> {
+  const config = await loadWebhookConfig();
+  return config.endpoints;
+}
+
+/**
+ * Test webhook by sending a test event.
+ */
+export async function testWebhook(url?: string): Promise<void> {
+  const config = await loadWebhookConfig();
+
+  const endpoints = url
+    ? config.endpoints.filter((ep) => ep.url === url)
+    : config.endpoints;
+
+  if (endpoints.length === 0) {
+    log.warn('No webhook endpoints configured.');
+    return;
+  }
+
+  const testPayload: WebhookPayload = {
+    event: 'webhook-test',
+    timestamp: new Date().toISOString(),
+    tool: 'teamai-cli',
+    data: {
+      message: 'This is a test webhook from TeamAI CLI',
+    },
+  };
+
+  for (const endpoint of endpoints) {
+    log.info(`Testing webhook to ${endpoint.url}...`);
+    try {
+      await sendToEndpoint(endpoint, testPayload);
+      log.success(`Webhook test successful: ${endpoint.url}`);
+    } catch (error) {
+      log.error(`Webhook test failed: ${endpoint.url} - ${(error as Error).message}`);
+    }
+  }
+}

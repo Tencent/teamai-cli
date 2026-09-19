@@ -111,6 +111,27 @@ export const SharingConfigSchema = z.object({
      *  keyword in a space-separated script must appear as a whole word. */
     correctionKeywords: z.array(z.string()).default([]),
   }).optional(),
+  // Optional (not .default) so existing TeamaiConfig literals stay valid; use
+  // getWebhookSharing() for the defaulted view.
+  webhooks: z.object({
+    /** Enable webhook notifications for team events. */
+    enabled: z.boolean().default(false),
+    /** List of webhook endpoints to notify. */
+    endpoints: z.array(z.object({
+      /** Target URL for the webhook. */
+      url: z.string().url(),
+      /** Webhook type: feishu (Lark), wecom (WeChat Work), or json (generic). */
+      type: z.enum(['feishu', 'wecom', 'json']),
+      /** Optional HMAC-SHA256 secret for signature verification. */
+      secret: z.string().optional(),
+      /** Events to send: push, pull, skill-use, session-start, session-stop. */
+      events: z.array(z.string()).default(['push', 'pull', 'skill-use', 'session-start', 'session-stop']),
+      /** Request timeout in milliseconds. */
+      timeout: z.number().default(5000),
+      /** Number of retries on failure with exponential backoff. */
+      retries: z.number().default(3),
+    })).default([]),
+  }).optional(),
 });
 
 /** Defaulted view of the optional `sharing.intervention` config. */
@@ -2018,4 +2039,51 @@ export interface ImportSession {
   items: ImportSessionItem[];
   /** 已处理条目数（用于 --resume 进度恢复） */
   progress: number;
+}
+
+// ─── Webhook types ──────────────────────────────────────
+
+export const WebhookEndpointSchema = z.object({
+  url: z.string().url(),
+  type: z.enum(['feishu', 'wecom', 'json']),
+  secret: z.string().optional(),
+  events: z.array(z.string()).default(['push', 'pull', 'skill-use', 'session-start', 'session-stop']),
+  timeout: z.number().default(5000),
+  retries: z.number().default(3),
+});
+
+export const WebhookConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  endpoints: z.array(WebhookEndpointSchema).default([]),
+});
+
+export type WebhookEndpoint = z.infer<typeof WebhookEndpointSchema>;
+export type WebhookConfig = z.infer<typeof WebhookConfigSchema>;
+
+export interface WebhookPayload {
+  event: string;
+  timestamp: string;
+  tool: string;
+  sessionId?: string;
+  cwd?: string;
+  team?: string;
+  username?: string;
+  data: Record<string, unknown>;
+}
+
+/** Defaulted view of the optional `sharing.webhooks` config. */
+export function getWebhookSharing(config: {
+  sharing?: { webhooks?: { enabled?: boolean; endpoints?: Array<{ url: string; type: string; events?: string[] }> } };
+}): WebhookConfig {
+  const w = config.sharing?.webhooks;
+  return {
+    enabled: w?.enabled ?? false,
+    endpoints: (w?.endpoints ?? []).map((ep) => ({
+      url: ep.url,
+      type: ep.type as 'feishu' | 'wecom' | 'json',
+      events: ep.events ?? ['push', 'pull', 'skill-use', 'session-start', 'session-stop'],
+      timeout: 5000,
+      retries: 3,
+    })),
+  };
 }
