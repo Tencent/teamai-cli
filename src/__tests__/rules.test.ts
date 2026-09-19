@@ -813,6 +813,21 @@ describe('RulesHandler — Cursor-compatible .mdc handling', () => {
     expect(teamContent).not.toContain('globs');
   });
 
+  it('pushItem preserves a namespaced rule destination', async () => {
+    const sourcePath = path.join(homeDir, '.claude/rules/scoped.md');
+    await fse.ensureDir(path.dirname(sourcePath));
+    await fse.writeFile(sourcePath, 'Scoped rule body.');
+
+    await handler.pushItem(
+      { name: 'scoped', type: 'rules', sourcePath, relativePath: 'rules/frontend/scoped.md' },
+      teamConfig,
+      localConfig,
+    );
+
+    expect(await fse.readFile(path.join(repoPath, 'rules/frontend/scoped.md'), 'utf-8')).toBe('Scoped rule body.');
+    expect(await fse.pathExists(path.join(repoPath, 'rules/scoped.md'))).toBe(false);
+  });
+
   it('pushItem preserves the team rule `paths:` frontmatter when pushing from cursor', async () => {
     // The team rule is scoped; only its body may cross back from Cursor.
     await fse.writeFile(
