@@ -152,6 +152,28 @@ describe('Copilot MCP reconciliation', () => {
     }));
   });
 
+  it('targets an existing Copilot project MCP file without user installation or explicit enablement', async () => {
+    const projectRoot = path.join(sandbox, 'config-only-project');
+    const projectFile = path.join(projectRoot, '.github', 'mcp.json');
+    await fse.remove(copilotHome);
+    await fse.ensureDir(path.dirname(projectFile));
+    await fse.writeJson(projectFile, { mcpServers: {} });
+    const { enabledAgents: _enabledAgents, ...configWithoutSelection } = userConfig;
+    const projectConfig = {
+      ...configWithoutSelection,
+      scope: 'project',
+      projectRoot,
+    } as LocalConfig;
+
+    const targets = await resolveMcpTargets(teamConfig, projectConfig);
+
+    expect(targets).toContainEqual(expect.objectContaining({
+      tool: 'copilot',
+      file: projectFile,
+      projectScope: true,
+    }));
+  });
+
   it('uses .github/mcp.json for project scope and leaves user configuration unchanged', async () => {
     const projectRoot = path.join(sandbox, 'project');
     const projectFile = path.join(projectRoot, '.github', 'mcp.json');

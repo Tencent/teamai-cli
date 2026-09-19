@@ -209,15 +209,16 @@ export async function resolveMcpTargets(
     if (!rel) continue;
 
     const baseDir = resolveToolBaseDir(tool, localConfig);
+    const file = path.join(baseDir, rel);
 
     const probe = paths.skills ?? paths.settings ?? paths.agents;
     if (!probe) continue;
-    if (!await isToolInstalledForConfig(tool, probe, localConfig)) {
+    if (!await isToolInstalledForConfig(tool, probe, localConfig, file)) {
       log.debug(`Skipping MCP sync for ${tool}: tool not installed`);
       continue;
     }
 
-    targets.push({ tool, format, file: path.join(baseDir, rel), projectScope });
+    targets.push({ tool, format, file, projectScope });
   }
   return targets;
 }
