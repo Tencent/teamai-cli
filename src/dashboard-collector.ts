@@ -557,14 +557,26 @@ function parseCopilotShutdown(entry: unknown): CopilotUsageObservation {
 
   const details = asRecord(asRecord(record.data)?.tokenDetails);
   if (!details) return { shutdownObserved: true };
-  const tokenCount = (bucket: string): number => toNum(asRecord(details[bucket])?.tokenCount);
+  const tokenCount = (bucket: string): number | undefined => {
+    const value = asRecord(details[bucket])?.tokenCount;
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? value
+      : undefined;
+  };
+  const input = tokenCount('input');
+  const output = tokenCount('output');
+  const cacheRead = tokenCount('cache_read');
+  const cacheCreation = tokenCount('cache_write');
+  if ([input, output, cacheRead, cacheCreation].every((value) => value === undefined)) {
+    return { shutdownObserved: true };
+  }
   return {
     shutdownObserved: true,
     tokens: {
-      input: tokenCount('input'),
-      output: tokenCount('output'),
-      cacheRead: tokenCount('cache_read'),
-      cacheCreation: tokenCount('cache_write'),
+      input: input ?? 0,
+      output: output ?? 0,
+      cacheRead: cacheRead ?? 0,
+      cacheCreation: cacheCreation ?? 0,
     },
   };
 }
@@ -620,13 +632,8 @@ async function waitForCopilotShutdownUsage(
 
 /** Resolve Copilot's local event log without accepting path traversal via sessionId. */
 function resolveCopilotUsageTranscript(
-  hookData: Record<string, unknown>,
   sessionId: string,
 ): string | null {
-  const supplied = typeof hookData.transcript_path === 'string'
-    ? hookData.transcript_path
-    : typeof hookData.transcriptPath === 'string' ? hookData.transcriptPath : null;
-  if (supplied) return supplied;
   if (!COPILOT_SESSION_ID_RE.test(sessionId) || sessionId === '.' || sessionId === '..') return null;
   return path.join(
     getCopilotHome(),
@@ -1089,7 +1096,7 @@ export async function parseHookEvent(
   // and auth-bearing request metadata. Read only the final shutdown token
   // counters and never persist the path or any transcript content.
   if (eventType === 'session_end' && isCopilot) {
-    const transcriptPath = resolveCopilotUsageTranscript(hookData, sessionId);
+    const transcriptPath = resolveCopilotUsageTranscript(sessionId);
     if (transcriptPath) {
       const usage = await waitForCopilotShutdownUsage(transcriptPath);
       if (usage.tokens) {
