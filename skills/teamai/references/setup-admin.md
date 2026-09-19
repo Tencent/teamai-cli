@@ -166,23 +166,19 @@ three steps **in order**:
 
 (Headless/CI alternative: set `CNB_TOKEN` instead of `cnb login`.)
 
-### GitHub — YOU log the user in; user only clicks approve
+### GitHub — YOU run the login; user only clicks approve
 
 **Don't hand the user a `gh` command to run** — you run the login, they only approve
-it in the browser. Two ways, both driven by you:
+it in the browser. Log them in before `teamai init`:
 
-- **Simplest — let `teamai init` do it (Step 5).** When `gh` is installed but not
-  signed in, `teamai init` auto-starts `gh auth login --web` on its own. You don't
-  need a separate login step; just run init and handle the browser approval below.
-- **Or log in first, yourself:**
-  ```bash
-  gh auth login --web --git-protocol https
-  ```
+```bash
+gh auth login --web --git-protocol https
+```
 
-Either way, the flow prints a one-time code and a `https://github.com/login/device`
-URL. **Relay both to the user and ask them to open that URL and approve** — that
-approval is the *only* thing they do; the command finishes on its own once they do.
-Confirm with `gh auth status` before continuing.
+The flow prints a one-time code and a `https://github.com/login/device` URL.
+**Relay both to the user and ask them to open that URL and approve** — that approval
+is the *only* thing they do; the command finishes on its own once they do. Confirm
+with `gh auth status` before continuing.
 
 (Headless/CI only: skip the interactive login and pre-set `GITHUB_TOKEN` — a token
 with `repo` scope — instead.)
