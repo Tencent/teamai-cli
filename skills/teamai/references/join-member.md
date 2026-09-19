@@ -48,7 +48,14 @@ Match the login to the URL's host (do NOT create a second repo):
   1. `npm install -g @cnbcool/cnb-cli`
   2. `cnb login` — have the user approve it in the browser (OAuth2 device flow);
      wait until they confirm before continuing.
-- **`github.com/...`** → `gh auth login`
+- **`github.com/...`** → **you log the user in — do NOT hand them a command.** The
+  simplest path is to just run `teamai init` (Step 4): when `gh` is not signed in,
+  it auto-starts `gh auth login --web` for you. Or run `gh auth login --web
+  --git-protocol https` yourself first. Either way, **you** run it; relay the
+  one-time code and the `https://github.com/login/device` URL it prints, and ask the
+  user to open that URL and approve — that approval is their *only* action. Never
+  tell them to paste a `gh …` command themselves. (Headless/CI only: pre-set
+  `GITHUB_TOKEN` — a token with `repo` scope — instead.)
 - **`gitlab.com/...`** or self-hosted GitLab → set `GITLAB_TOKEN` (and `GITLAB_URL`
   for self-hosted, with `api` scope)
 
