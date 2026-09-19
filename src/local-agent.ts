@@ -41,6 +41,7 @@ import {
 } from './resources/mcp-format.js';
 import {
   readJsonDoc,
+  writeJsonDoc,
   writeCodexAtomic,
   spliceCodexBlock,
   codexServerNames,
@@ -2817,7 +2818,8 @@ async function installMcpServer(
     throw new Error(`install_mcp: tool "${tool}" does not support ${def.transport} transport`);
   }
 
-  const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
+  const localConfig = createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
+  const baseDir = resolveToolBaseDir(tool, localConfig);
   const targetFile = path.join(baseDir, mcpRel);
 
   const { resolveDataHomeForScope } = await import('./config.js');
@@ -2854,7 +2856,8 @@ async function installMcpServer(
     const entry = renderJsonEntry(format, def);
     const serverKey = MCP_SERVER_KEY[format];
     const hash = entryHash(entry);
-    const doc = await readJsonDoc(targetFile, serverKey);
+    const allowBare = format === 'copilot' && projectScope;
+    const doc = await readJsonDoc(targetFile, serverKey, allowBare);
     if (!doc) {
       throw new Error(`install_mcp: cannot parse ${targetFile}`);
     }
@@ -2864,8 +2867,7 @@ async function installMcpServer(
     updateManifestRecord(manifest, manifestKey, slug, hash);
     await writeJsonAtomic(manifestPath, manifest);
     doc.servers[slug] = entry;
-    doc.data[serverKey] = doc.servers;
-    await writeJsonAtomic(targetFile, doc.data);
+    await writeJsonDoc(targetFile, serverKey, doc);
   }
   log.debug(`local-agent: installed MCP server "${slug}" for ${tool} (scope=${scope})`);
   return command.version;
@@ -2889,7 +2891,8 @@ async function uninstallMcpServer(
   const format = detectMcpFormat(tool);
   if (!format) return;
 
-  const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
+  const localConfig = createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
+  const baseDir = resolveToolBaseDir(tool, localConfig);
   const targetFile = path.join(baseDir, mcpRel);
 
   const { resolveDataHomeForScope } = await import('./config.js');
@@ -2922,11 +2925,11 @@ async function uninstallMcpServer(
     await writeCodexAtomic(targetFile, source);
   } else {
     const serverKey = MCP_SERVER_KEY[format];
-    const doc = await readJsonDoc(targetFile, serverKey);
+    const allowBare = format === 'copilot' && projectScope;
+    const doc = await readJsonDoc(targetFile, serverKey, allowBare);
     if (doc && doc.servers[slug] !== undefined) {
       delete doc.servers[slug];
-      doc.data[serverKey] = doc.servers;
-      await writeJsonAtomic(targetFile, doc.data);
+      await writeJsonDoc(targetFile, serverKey, doc);
     }
   }
   log.debug(`local-agent: uninstalled MCP server "${slug}" from ${tool} (scope=${scope})`);

@@ -259,6 +259,20 @@ export async function readJsonDoc(
   }
 }
 
+/** Write a parsed JSON MCP config while preserving its original container shape. */
+export async function writeJsonDoc(
+  file: string,
+  serverKey: string,
+  doc: JsonDoc,
+): Promise<void> {
+  if (doc.bare) {
+    await writeJsonAtomic(file, doc.servers);
+    return;
+  }
+  doc.data[serverKey] = doc.servers;
+  await writeJsonAtomic(file, doc.data);
+}
+
 // ─── Codex TOML target I/O ───────────────────────────────────
 
 /**
@@ -514,12 +528,7 @@ async function applyJson(
   // Some tools (OpenCode) key the server map under `mcp`, not `mcpServers`;
   // writing the wrong key would strip the servers and, worse, leave a phantom
   // empty `mcpServers` in a file the tool never reads under that name.
-  if (doc.bare) {
-    await writeJsonAtomic(target.file, doc.servers);
-  } else {
-    doc.data[serverKey] = doc.servers;
-    await writeJsonAtomic(target.file, doc.data);
-  }
+  await writeJsonDoc(target.file, serverKey, doc);
   return true;
 }
 
