@@ -9,8 +9,27 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: mockSpawn,
 }));
 
-const { parseStdin, trySpawnDetachedViaWmi } = await import('../hook-dispatch-cli.js');
+const { parseStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId } = await import('../hook-dispatch-cli.js');
 const { log } = await import('../utils/logger.js');
+
+describe('deriveDispatchSessionId', () => {
+  it('keeps a Copilot background fallback ID free of workspace paths', () => {
+    const cwd = path.join(os.tmpdir(), 'private-customer-project');
+    const originalClaudeSessionId = process.env.CLAUDE_SESSION_ID;
+    delete process.env.CLAUDE_SESSION_ID;
+    try {
+      const copilotId = deriveDispatchSessionId({ cwd }, 'copilot');
+      expect(copilotId).toMatch(/^pid-\d+$/);
+      expect(copilotId).not.toContain(cwd);
+
+      // Other providers retain the existing fallback used to distinguish projects.
+      expect(deriveDispatchSessionId({ cwd }, 'claude')).toContain(cwd);
+    } finally {
+      if (originalClaudeSessionId === undefined) delete process.env.CLAUDE_SESSION_ID;
+      else process.env.CLAUDE_SESSION_ID = originalClaudeSessionId;
+    }
+  });
+});
 
 describe('parseStdin', () => {
   it('degrades malformed JSON to an empty object instead of null', () => {

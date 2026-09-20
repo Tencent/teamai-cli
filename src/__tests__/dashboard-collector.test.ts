@@ -270,6 +270,14 @@ describe('parseHookEvent', () => {
       expect(event?.cwd).toBeUndefined();
       expect(event?.sessionId).toMatch(/^pid-\d+$/);
       expect(JSON.stringify(event)).not.toContain(sensitiveCwd);
+
+      const pathIdEvent = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionStart',
+        sessionId: sensitiveCwd,
+        cwd: sensitiveCwd,
+      }), 'copilot');
+      expect(pathIdEvent?.sessionId).toMatch(/^pid-\d+$/);
+      expect(JSON.stringify(pathIdEvent)).not.toContain(sensitiveCwd);
     } finally {
       if (originalClaudeSessionId === undefined) delete process.env.CLAUDE_SESSION_ID;
       else process.env.CLAUDE_SESSION_ID = originalClaudeSessionId;

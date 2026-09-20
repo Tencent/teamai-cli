@@ -1045,7 +1045,11 @@ export async function parseHookEvent(
   }
 
   const isCopilot = tool.toLowerCase() === COPILOT_TOOL_ID;
-  const sessionId = deriveSessionId(hookData, { includeCwd: !isCopilot });
+  const derivedSessionId = deriveSessionId(hookData, { includeCwd: !isCopilot });
+  // Copilot IDs are persisted, so reject path-like IDs even when supplied directly.
+  const sessionId = isCopilot && !COPILOT_SESSION_ID_RE.test(derivedSessionId)
+    ? `pid-${process.ppid ?? process.pid}`
+    : derivedSessionId;
   const cwd = isCopilot ? undefined : resolveHookCwd(hookData);
 
   const event: DashboardEvent = {

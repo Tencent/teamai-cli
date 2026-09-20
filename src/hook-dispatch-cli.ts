@@ -26,6 +26,7 @@ import { buildHandlerRegistry, filterHandlersForConfig } from './hook-handlers.j
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { COPILOT_TOOL_ID } from './types.js';
 
 /**
  * Max time to wait for STDIN EOF before proceeding with whatever was received.
@@ -403,6 +404,14 @@ async function runDispatch(
   return result.output;
 }
 
+/** Keep the detached Copilot fallback stable without persisting a workspace path. */
+export function deriveDispatchSessionId(
+  stdin: Record<string, unknown>,
+  tool: string,
+): string {
+  return deriveSessionId(stdin, { includeCwd: tool.toLowerCase() !== COPILOT_TOOL_ID });
+}
+
 /**
  * Main CLI handler for hook-dispatch.
  *
@@ -455,7 +464,7 @@ export async function hookDispatchCli(
       // this, hosts that omit session_id produce different PID-based IDs and
       // the foreground and post-pull paths can claim the same hint twice.
       if (typeof stdin.session_id !== 'string' || !stdin.session_id) {
-        stdin.session_id = deriveSessionId(stdin, { includeCwd: true });
+        stdin.session_id = deriveDispatchSessionId(stdin, tool);
       }
       settling = spawnBackground(event, tool, matcher, JSON.stringify(stdin), cwd);
     }
