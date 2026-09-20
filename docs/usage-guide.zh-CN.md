@@ -551,7 +551,10 @@ excludedSkills:
 teamai push          # 扫描新增/修改的资源，创建 MR
 teamai push --all    # 跳过确认，直接推送
 teamai push --role pm  # 将本次 skill 推送到 skills/pm/<skill-name>/
+teamai push --branch feature/gitee-destination  # 使用显式目标分支
 ```
+
+`--branch` 指定新推送使用的分支；已有开放 PR 始终沿用其记录的分支进行更新。如果团队仓库 clone 存在用户修改、暂存、未跟踪或冲突文件，TeamAI 会在 push 前拒绝执行；TeamAI 自己管理的 `teamai.yaml` 和 sync-lock 状态会单独处理。其他本地改动请先提交或 stash。
 
 **命名空间选择（新 skill）：** 推送新 skill 时，CLI 会自动检测可用的命名空间并提供交互式选择：
 

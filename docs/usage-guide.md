@@ -573,7 +573,10 @@ Exclusion rules take effect after role and tag filtering. When running `teamai p
 teamai push          # Scan for new/modified resources, create an MR
 teamai push --all    # Skip confirmation, push directly
 teamai push --role pm  # Push this skill to skills/pm/<skill-name>/
+teamai push --branch feature/gitee-destination  # Use an explicit destination branch
 ```
+
+`--branch` names the branch that receives a new push; an existing open PR is always updated on its recorded branch. TeamAI refuses to start a push when the team-repo clone has user changes (modified, staged, untracked, or conflicted files); TeamAI-owned `teamai.yaml` and sync-lock state are handled separately. Commit or stash other local changes first.
 
 **Namespace selection (new skills):** When pushing a new skill, the CLI automatically detects available namespaces and offers an interactive choice:
 

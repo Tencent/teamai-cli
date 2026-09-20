@@ -158,6 +158,13 @@ function mockSkillHandler(pushedItems?: Array<Record<string, unknown>>) {
 describe('push namespace routing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGitStatus.mockResolvedValue({
+      modified: [],
+      not_added: [],
+      created: [],
+      conflicted: [],
+      staged: [],
+    });
     mockPullRepo.mockResolvedValue('Already up to date.');
     mockPushRepoBranch.mockResolvedValue(true);
     mockCheckoutMaster.mockResolvedValue(undefined);
@@ -524,7 +531,7 @@ it('blocks skills that exist in non-allowed namespaces', async () => {
     consoleSpy.mockRestore();
   });
 
-  it('resets dirty team repo to clean master before pull', async () => {
+  it('aborts before resetting a dirty team repo', async () => {
     mockAutoDetectInit.mockResolvedValue({
       localConfig: makeLocalConfig({ primaryRole: undefined }),
       teamConfig: makeTeamConfig(),
@@ -532,21 +539,34 @@ it('blocks skills that exist in non-allowed namespaces', async () => {
     mockSkillHandler();
     mockScanTeamRepoNamespaces.mockResolvedValue([]);
 
+    const previousExitCode = process.exitCode;
+    mockGitStatus.mockResolvedValue({
+      modified: ['local-edit.txt'],
+      not_added: [],
+      created: [],
+      conflicted: [],
+      staged: [],
+    });
+
     await push({ all: true });
 
-    // Should have called resetToCleanMaster before pull
-    expect(mockResetToCleanMaster).toHaveBeenCalled();
-    expect(mockPullRepo).toHaveBeenCalled();
-    // resetToCleanMaster must be called before pullRepo
-    const resetOrder = mockResetToCleanMaster.mock.invocationCallOrder[0];
-    const pullOrder = mockPullRepo.mock.invocationCallOrder[0];
-    expect(resetOrder).toBeLessThan(pullOrder);
+    expect(mockResetToCleanMaster).not.toHaveBeenCalled();
+    expect(mockPullRepo).not.toHaveBeenCalled();
+    expect(mockPushRepoBranch).not.toHaveBeenCalled();
+    process.exitCode = previousExitCode;
   });
 });
 
 describe('push item selection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGitStatus.mockResolvedValue({
+      modified: [],
+      not_added: [],
+      created: [],
+      conflicted: [],
+      staged: [],
+    });
     mockPullRepo.mockResolvedValue('Already up to date.');
     mockPushRepoBranch.mockResolvedValue(true);
     mockCheckoutMaster.mockResolvedValue(undefined);

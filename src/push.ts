@@ -140,6 +140,45 @@ async function createPrWithFallback(
 
 export { createPrWithFallback };
 
+type PushRepoStatus = {
+  conflicted?: string[];
+  modified?: string[];
+  not_added?: string[];
+  created?: string[];
+  deleted?: string[];
+  staged?: string[];
+  renamed?: Array<string | { from: string; to: string }>;
+};
+
+/** Return every path that would be at risk before a destructive push reset. */
+function collectDirtyPaths(status: PushRepoStatus): string[] {
+  const paths = new Set<string>();
+  for (const values of [
+    status.conflicted,
+    status.modified,
+    status.not_added,
+    status.created,
+    status.deleted,
+    status.staged,
+  ]) {
+    for (const value of values ?? []) paths.add(value);
+  }
+  for (const renamed of status.renamed ?? []) {
+    if (typeof renamed === 'string') paths.add(renamed);
+    else {
+      paths.add(renamed.from);
+      paths.add(renamed.to);
+    }
+  }
+  return [...paths].sort();
+}
+
+const TEAMAI_OWNED_DIRTY_PATHS = new Set(['teamai.yaml', '.teamai/.sync-lock']);
+
+function isTeamaiOwnedDirtyPath(filePath: string): boolean {
+  return TEAMAI_OWNED_DIRTY_PATHS.has(filePath.replaceAll('\\', '/'));
+}
+
 /**
  * Push each selected resource into the team repo, commit it on a branch, and
  * open (or update) the matching PR. Returns false when the push failed, after
@@ -151,8 +190,9 @@ async function pushGroup(args: {
   localConfig: LocalConfig;
   pushState: State;
   includeTeamConfig: boolean;
+  branch?: string;
 }): Promise<boolean> {
-  const { group, teamConfig, localConfig, pushState, includeTeamConfig } = args;
+  const { group, teamConfig, localConfig, pushState, includeTeamConfig, branch } = args;
   const { items, reuse } = group;
 
   // pushItem copies files into the team repo's working tree. If any later
@@ -199,7 +239,7 @@ async function pushGroup(args: {
     // sources / publicSkills changes ride along in the same PR as the resources.
     const configFiles = includeTeamConfig ? ['teamai.yaml'] : [];
     const gitFiles = [...new Set([...pushedFiles, ...existingSweepers, ...configFiles])];
-    const branchName = reuse?.branch ?? generateBranchName(localConfig.username);
+    const branchName = reuse?.branch ?? branch ?? generateBranchName(localConfig.username);
     const commitMsg = `[teamai] Push ${items.length} resource(s) from ${localConfig.username}`;
 
     const hasChanges = await pushRepoBranch(
@@ -280,7 +320,7 @@ async function pushGroup(args: {
   }
 }
 
-export async function push(options: GlobalOptions & { all?: boolean; role?: string; project?: string }): Promise<void> {
+export async function push(options: GlobalOptions & { all?: boolean; role?: string; project?: string; branch?: string }): Promise<void> {
   // Auto-detect scope: project scope if cwd has project config, else user scope
   const { localConfig, teamConfig } = await autoDetectInit();
   assertNotReadOnly(localConfig, 'teamai push');
@@ -415,7 +455,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
 async function pushCore(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
-  options: GlobalOptions & { all?: boolean; role?: string },
+  options: GlobalOptions & { all?: boolean; role?: string; branch?: string },
   initialPendingTeamConfig: string | null = null,
 ): Promise<void> {
   const selfMode = localConfig.repo.kind === 'self';
@@ -426,15 +466,11 @@ async function pushCore(
   //   - Unmerged (conflicted) files without MERGE_HEAD (incomplete merge)
   //   - Stuck on a stale push branch instead of master
   //   - Uncommitted changes (e.g. votes written by autoUpvote)
-  // We recover from all of these before pulling.
+  // We reject dirty repos before pulling so no reset/clean operation can
+  // silently discard the user's work.
   // In self mode the worktree is already a fresh detached checkout of
   // origin/<default>, so resetToCleanMaster/pullRepo (which assume a normal
   // clone on a branch) are neither needed nor safe — skip them.
-  // Uncommitted teamai.yaml edits (e.g. from `teamai source add`, which writes the
-  // file but does not commit) live in the team repo working tree. resetToCleanMaster
-  // below does `git reset --hard`, which would silently destroy them. Capture the
-  // working-tree content before the reset and restore it after pull, so config edits
-  // survive and get committed alongside resources (see gitFiles construction below).
   let pendingTeamConfig: string | null = initialPendingTeamConfig;
   if (!selfMode) {
     const pullSpin = spinner('Pulling latest changes...').start();
@@ -460,10 +496,20 @@ async function pushCore(
           pendingTeamConfig = workingContent;
         }
       }
+      const dirtyPaths = collectDirtyPaths(await git.status());
+      const unsafeDirtyPaths = dirtyPaths.filter((filePath) => !isTeamaiOwnedDirtyPath(filePath));
+      if (unsafeDirtyPaths.length > 0) {
+        pullSpin.fail(
+          'Cannot push: the team repo has uncommitted changes. Commit or stash them first. '
+          + `Paths: ${unsafeDirtyPaths.join(', ')}`,
+        );
+        process.exitCode = 1;
+        return;
+      }
       await resetToCleanMaster(git, repoPath);
       await pullRepo(repoPath);
       if (pendingTeamConfig !== null) {
-        // Re-apply the user's config edits on top of the freshly pulled default branch.
+        // Re-apply the TeamAI-owned config edit after refreshing the default branch.
         await writeFile(yamlPath, pendingTeamConfig);
       }
       pullSpin.succeed('Up to date');
@@ -774,6 +820,12 @@ async function pushCore(
   // can happen in one run, so editing a resource under review updates its PR
   // without dragging unrelated resources into that review.
   const groups = planPushGroups(selectedItems, pendingPushes);
+  const newGroupCount = groups.filter((group) => !group.reuse).length;
+  if (options.branch && newGroupCount > 1) {
+    log.error('`--branch` can only target one new push branch at a time; select one resource group or omit it.');
+    process.exitCode = 2;
+    return;
+  }
   for (const group of groups) {
     if (!group.reuse) continue;
     log.info(
@@ -893,6 +945,7 @@ async function pushCore(
       localConfig,
       pushState,
       includeTeamConfig: configRider,
+      branch: options.branch,
     });
     if (!ok) {
       // The branch/PR for earlier groups is already on the remote, so their
@@ -932,7 +985,7 @@ async function pushCore(
 async function pushTeamConfigOnly(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
-  options: GlobalOptions,
+  options: GlobalOptions & { branch?: string },
 ): Promise<void> {
   console.log('');
   console.log('Found team config change to push:');
@@ -945,7 +998,7 @@ async function pushTeamConfigOnly(
   }
 
   const pushSpin = spinner('Pushing team config...').start();
-  const branchName = generateBranchName(localConfig.username);
+  const branchName = options.branch ?? generateBranchName(localConfig.username);
   const commitMsg = `[teamai] Update team config from ${localConfig.username}`;
 
   try {
