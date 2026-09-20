@@ -1590,6 +1590,8 @@ teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ./team-repo --indi
 2. Reviewer 审查评论，对不需要的建议添加拒绝标记（GitHub 👎 / TGit ☝️）
 3. MR 合并 → CI 触发 `--mode write`，将未被拒绝的建议写入团队知识仓库
 
+如果审核状态 API 返回非 2xx 响应，write 模式会按 fail-closed 处理：任务失败退出，且不会向团队知识仓库写入文件、提交或 push。
+
 开箱即用模板：
 
 - `examples/ci/github-actions-mr-extract.yml`（GitHub Actions）

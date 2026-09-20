@@ -1642,6 +1642,8 @@ Workflow:
 2. Reviewer reviews the comments, marking unwanted suggestions as rejected (GitHub 👎 / TGit ☝️)
 3. MR merged → CI triggers `--mode write`, writing non-rejected suggestions into the team knowledge repo
 
+If the review-status API returns a non-2xx response, write mode fails closed: the job exits without writing files, committing, or pushing to the team knowledge repo.
+
 Ready-to-use templates:
 
 - `examples/ci/github-actions-mr-extract.yml` (GitHub Actions)
