@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { reconcileTeamHooksForConfig } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward } from './utils/git.js';
-import { pushRepoDirectly } from './utils/git.js';
+import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, pushRepoDirectly, autoPushViaMR } from './utils/git.js';
+import { withTimeout } from './utils/async.js';
 import { getProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
 import { parseGenericGitExistingRemote } from './providers/git/repo-url.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
@@ -1420,14 +1420,18 @@ export async function init(options: GlobalOptions & {
   // after that go to teamai-reports.
   if (createdSkeleton && !options.dryRun) {
     try {
-      await pushRepoDirectly(localPath, '[teamai] Initialize team repo skeleton', [
-        'teamai.yaml',
-        'skills/.gitkeep',
-        'rules/.gitkeep',
-        'docs/.gitkeep',
-        'env/.gitkeep',
-        'members/.gitkeep',
-      ]);
+      await withTimeout(
+        pushRepoDirectly(localPath, '[teamai] Initialize team repo skeleton', [
+          'teamai.yaml',
+          'skills/.gitkeep',
+          'rules/.gitkeep',
+          'docs/.gitkeep',
+          'env/.gitkeep',
+          'members/.gitkeep',
+        ]),
+        30_000,
+        'Skeleton push',
+      );
     } catch (e) {
       log.warn(`Push failed (you can push manually later): ${(e as Error).message}`);
     }
@@ -1509,10 +1513,29 @@ export async function init(options: GlobalOptions & {
 
           if (!options.dryRun) {
             try {
-              await pushRepoDirectly(localPath, `[teamai] Configure reviewers: ${reviewers.join(', ')}`, [
-                'teamai.yaml',
-              ]);
-              log.success('Reviewer config pushed to team repo');
+              const mrTeamConfig = await loadTeamConfig(localPath);
+              const mrLocalConfig = {
+                repo: { remote: repoInfo.httpsUrl, localPath },
+                username,
+              };
+              if (mrTeamConfig) {
+                const prUrl = await withTimeout(
+                  autoPushViaMR(
+                    localPath,
+                    `[teamai] Configure reviewers: ${reviewers.join(', ')}`,
+                    ['teamai.yaml'],
+                    mrTeamConfig,
+                    mrLocalConfig,
+                  ),
+                  30_000,
+                  'Reviewer config push',
+                );
+                if (prUrl) {
+                  log.success(`Reviewer config pushed via MR: ${prUrl}`);
+                } else {
+                  log.warn('Reviewer config MR could not be created (you can push manually later)');
+                }
+              }
             } catch (e) {
               log.warn(`Push failed (you can push manually later): ${(e as Error).message}`);
             }
