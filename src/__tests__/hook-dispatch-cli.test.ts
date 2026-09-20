@@ -3,13 +3,24 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const { mockSpawn } = vi.hoisted(() => ({ mockSpawn: vi.fn() }));
+const { mockSpawn, mockDispatcher } = vi.hoisted(() => ({
+  mockSpawn: vi.fn(),
+  mockDispatcher: {
+    hasBackground: vi.fn(() => true),
+    dispatch: vi.fn(async () => ({ errors: [], output: null })),
+  },
+}));
+vi.mock('../hook-dispatch.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hook-dispatch.js')>()),
+  createDispatcher: vi.fn(() => mockDispatcher),
+}));
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
   spawn: mockSpawn,
 }));
 
-const { parseStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId } = await import('../hook-dispatch-cli.js');
+const { parseStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli } =
+  await import('../hook-dispatch-cli.js');
 const { log } = await import('../utils/logger.js');
 
 describe('deriveDispatchSessionId', () => {
@@ -27,6 +38,39 @@ describe('deriveDispatchSessionId', () => {
     } finally {
       if (originalClaudeSessionId === undefined) delete process.env.CLAUDE_SESSION_ID;
       else process.env.CLAUDE_SESSION_ID = originalClaudeSessionId;
+    }
+  });
+});
+
+describe('hookDispatchCli', () => {
+  it('passes a path-free fallback session ID to a Copilot detached handler', async () => {
+    const stdinFile = path.join(os.tmpdir(), `copilot-hook-${process.pid}-${Date.now()}.json`);
+    const cwd = process.cwd();
+    const previousClaudeId = process.env.CLAUDE_SESSION_ID;
+    delete process.env.CLAUDE_SESSION_ID;
+    fs.writeFileSync(stdinFile, JSON.stringify({
+      hook_event_name: 'SessionStart', cwd,
+    }));
+    let detachedPayload = '';
+    const child = {
+      on: vi.fn(),
+      stdin: { on: vi.fn(), end: vi.fn((raw: string, done: () => void) => {
+        detachedPayload = raw;
+        done();
+      }) },
+      unref: vi.fn(),
+    };
+    mockSpawn.mockReturnValue(child);
+
+    try {
+      await hookDispatchCli('session-start', 'copilot', '*', { stdinFile });
+      expect(mockSpawn).toHaveBeenCalled();
+      expect(JSON.parse(detachedPayload).session_id).toMatch(/^pid-\d+$/);
+      expect(JSON.parse(detachedPayload).session_id).not.toContain(cwd);
+    } finally {
+      fs.rmSync(stdinFile, { force: true });
+      if (previousClaudeId === undefined) delete process.env.CLAUDE_SESSION_ID;
+      else process.env.CLAUDE_SESSION_ID = previousClaudeId;
     }
   });
 });

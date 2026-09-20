@@ -538,6 +538,7 @@ async function waitForCodexUsageFlush(
 }
 
 const COPILOT_USAGE_TAIL_BYTES = 256 * 1024;
+const COPILOT_RUN_SCAN_BYTES = 8 * 1024 * 1024;
 const COPILOT_USAGE_MAX_ATTEMPTS = 8;
 const COPILOT_USAGE_RETRY_MS = 250;
 const COPILOT_SHUTDOWN_EVENT = 'session.shutdown';
@@ -646,17 +647,137 @@ async function waitForCopilotShutdownUsage(
   transcriptPath: string,
   initial: CopilotUsageObservation,
 ): Promise<CopilotUsageObservation> {
+  const isCurrent = (observed: CopilotUsageObservation): boolean => {
+    if (!observed.shutdownObserved) return false;
+    // Legacy sessions have no run marker; only a newly observed record is safe.
+    return !initial.shutdownObserved
+      || observed.shutdownOffset !== initial.shutdownOffset
+      || !copilotUsageEquals(initial, observed);
+  };
+  if (isCurrent(initial)) return initial;
   for (let attempt = 1; attempt < COPILOT_USAGE_MAX_ATTEMPTS; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, COPILOT_USAGE_RETRY_MS));
     const observed = await readLatestCopilotUsageFromTail(transcriptPath);
-    if (!observed.shutdownObserved) continue;
-    if (!initial.shutdownObserved
-      || observed.shutdownOffset !== initial.shutdownOffset
-      || !copilotUsageEquals(initial, observed)) {
-      return observed;
+    if (isCurrent(observed)) return observed;
+  }
+  return { shutdownObserved: false };
+}
+
+interface CopilotRunMarker {
+  id: string;
+  offset: number;
+}
+
+/** Recover a marker written after SessionStart from a bounded private-log tail. */
+async function findCopilotRunMarkerAfter(
+  transcriptPath: string,
+  startOffset: number,
+  startedAt: number,
+  endedAt: number,
+  useProviderTime: boolean,
+): Promise<CopilotRunMarker | undefined> {
+  try {
+    const stat = await fs.promises.stat(transcriptPath);
+    if (startOffset > stat.size || stat.size - startOffset > COPILOT_RUN_SCAN_BYTES) {
+      return undefined;
+    }
+    const readSize = stat.size - startOffset;
+    const offset = startOffset;
+    const fh = await fs.promises.open(transcriptPath, 'r');
+    try {
+      const buffer = Buffer.alloc(readSize);
+      await fh.read(buffer, 0, readSize, offset);
+      let lineStart = 0;
+      let selected: CopilotRunMarker | undefined;
+      while (lineStart < buffer.length) {
+        const newline = buffer.indexOf('\n', lineStart);
+        const lineEnd = newline < 0 ? buffer.length : newline;
+        const line = buffer.subarray(lineStart, lineEnd).toString('utf-8');
+        if (line.includes('"session.start"') || line.includes('"session.resume"')) {
+          try {
+            const record = asRecord(JSON.parse(line));
+            const markerTime = record?.timestamp;
+            const time = typeof markerTime === 'string' || typeof markerTime === 'number'
+              ? new Date(markerTime).getTime() : NaN;
+            if ((record?.type === 'session.start' || record?.type === 'session.resume')
+              && typeof record.id === 'string'
+              && offset + lineStart >= startOffset
+              && (!useProviderTime || (Number.isFinite(time)
+                && time >= startedAt && time <= endedAt))) {
+              selected = { id: record.id, offset: offset + lineStart };
+            }
+          } catch {
+            // Partial records provide no safe run linkage.
+          }
+        }
+        if (newline < 0) break;
+        lineStart = newline + 1;
+      }
+      return selected;
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    log.debug('dashboard: failed to recover Copilot run marker');
+    return undefined;
+  }
+}
+
+/** Follow Copilot event parent IDs from the current run marker, discarding content. */
+async function readCopilotUsageForRun(
+  transcriptPath: string,
+  marker: CopilotRunMarker,
+): Promise<CopilotUsageObservation> {
+  const descendants = new Set<string>([marker.id]);
+  let latest: CopilotUsageObservation = { shutdownObserved: false };
+  try {
+    const stat = await fs.promises.stat(transcriptPath);
+    // Large transcript bodies are private and may be arbitrarily long. Missing
+    // totals are safer than rereading an unbounded log on every retry.
+    if (stat.size - marker.offset > COPILOT_RUN_SCAN_BYTES) return latest;
+    const stream = fs.createReadStream(transcriptPath, {
+      start: marker.offset, encoding: 'utf-8',
+    });
+    const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    try {
+      for await (const line of lines) {
+        let record: Record<string, unknown> | null;
+        try {
+          record = asRecord(JSON.parse(line));
+        } catch {
+          continue;
+        }
+        if (!record || typeof record.id !== 'string') continue;
+        if ((record.type === 'session.start' || record.type === 'session.resume')
+          && record.id !== marker.id) break;
+        if (typeof record.parentId === 'string' && descendants.has(record.parentId)) {
+          descendants.add(record.id);
+        }
+        if (record.type === COPILOT_SHUTDOWN_EVENT && descendants.has(record.id)) {
+          latest = parseCopilotShutdown(record);
+        }
+      }
+    } finally {
+      lines.close();
+      stream.destroy();
+    }
+  } catch {
+    log.debug('dashboard: failed to read Copilot run lineage');
+  }
+  return latest;
+}
+
+async function waitForCopilotRunUsage(
+  transcriptPath: string,
+  marker: CopilotRunMarker,
+): Promise<CopilotUsageObservation> {
+  for (let attempt = 0; attempt < COPILOT_USAGE_MAX_ATTEMPTS; attempt++) {
+    const observed = await readCopilotUsageForRun(transcriptPath, marker);
+    if (observed.tokens) return observed;
+    if (attempt < COPILOT_USAGE_MAX_ATTEMPTS - 1) {
+      await new Promise((resolve) => setTimeout(resolve, COPILOT_USAGE_RETRY_MS));
     }
   }
-  // A prior shutdown belongs to an earlier run when no new record arrives.
   return { shutdownObserved: false };
 }
 
@@ -1051,9 +1172,13 @@ export async function parseHookEvent(
     : derivedSessionId;
   const cwd = isCopilot ? undefined : resolveHookCwd(hookData);
 
+  const providerTime = isCopilot && (typeof hookData.timestamp === 'string'
+    || typeof hookData.timestamp === 'number')
+    ? new Date(hookData.timestamp).getTime() : NaN;
   const event: DashboardEvent = {
     type: eventType,
-    timestamp: new Date().toISOString(),
+    timestamp: Number.isFinite(providerTime)
+      ? new Date(providerTime).toISOString() : new Date().toISOString(),
     sessionId,
     tool,
     cwd,
@@ -1131,14 +1256,107 @@ export async function parseHookEvent(
     }
   }
 
+  // SessionStart and SessionEnd run in separate processes. Capture the log
+  // boundary and an already-written marker only when it has not closed or
+  // appeared in a previous start event for this session.
+  if (eventType === 'session_start' && isCopilot) {
+    const transcriptPath = resolveCopilotUsageTranscript(sessionId);
+    if (transcriptPath) {
+      try {
+        let boundary = (await fs.promises.stat(transcriptPath)).size;
+        if (boundary > 0) {
+          const tailSize = Math.min(boundary, COPILOT_USAGE_TAIL_BYTES);
+          const tail = Buffer.alloc(tailSize);
+          const fh = await fs.promises.open(transcriptPath, 'r');
+          try {
+            await fh.read(tail, 0, tailSize, boundary - tailSize);
+          } finally {
+            await fh.close();
+          }
+          if (tail[tailSize - 1] !== 10) {
+            const newline = tail.lastIndexOf(10);
+            if (newline >= 0) boundary = boundary - tailSize + newline + 1;
+            else if (tailSize === boundary) boundary = 0;
+          }
+        }
+        event.copilotRunStartOffset = boundary;
+        const candidate = await findCopilotRunMarkerAfter(
+          transcriptPath, Math.max(0, boundary - COPILOT_USAGE_TAIL_BYTES),
+          NaN, NaN, false,
+        );
+        if (candidate) {
+          const shutdown = await readLatestCopilotUsageFromTail(transcriptPath);
+          const history = await readEventsRaw(getEventsPath());
+          const previousStarts = history.filter((entry) => entry.tool === COPILOT_TOOL_ID
+            && entry.sessionId === sessionId && entry.type === 'session_start');
+          const reused = previousStarts.some((entry) => entry.copilotRunMarkerId === candidate.id);
+          const unclaimedPrior = previousStarts.some(
+            (entry) => typeof entry.copilotRunMarkerId !== 'string',
+          );
+          const closed = shutdown.shutdownObserved
+            && typeof shutdown.shutdownOffset === 'number'
+            && shutdown.shutdownOffset > candidate.offset;
+          if (!reused && !unclaimedPrior && !closed) {
+            event.copilotRunMarkerId = candidate.id;
+            event.copilotRunMarkerOffset = candidate.offset;
+          }
+        }
+      } catch {
+        event.copilotRunStartOffset = 0;
+      }
+    }
+  }
+
   // Copilot's session log contains prompts, tool arguments, assistant output,
-  // and auth-bearing request metadata. Read only the final shutdown token
-  // counters and never persist the path or any transcript content.
+  // and auth-bearing request metadata. Follow opaque event IDs, extract only
+  // final shutdown counters, and never persist paths or transcript content.
   if (eventType === 'session_end' && isCopilot) {
     const transcriptPath = resolveCopilotUsageTranscript(sessionId);
     if (transcriptPath) {
-      const initial = await readLatestCopilotUsageFromTail(transcriptPath);
-      const usage = await waitForCopilotShutdownUsage(transcriptPath, initial);
+      const history = await readEventsRaw(getEventsPath());
+      const endTime = Date.parse(event.timestamp);
+      const sessionHistory = history.filter((entry) => entry.tool === COPILOT_TOOL_ID
+        && entry.sessionId === sessionId);
+      // Copilot may omit the provider timestamp. A delayed End handler then has
+      // only its receipt time, so two unmatched Starts make its run ambiguous.
+      const starts = sessionHistory.filter((entry) => entry.type === 'session_start');
+      let lastEnd = -1;
+      for (let index = 0; index < sessionHistory.length; index++) {
+        if (sessionHistory[index].type === 'session_end') lastEnd = index;
+      }
+      const pendingStarts = sessionHistory.slice(lastEnd + 1)
+        .filter((entry) => entry.type === 'session_start');
+      const start = Number.isFinite(providerTime)
+        ? [...starts].reverse().find((entry) => Date.parse(entry.timestamp) <= endTime)
+        : starts.length === 1 ? starts[0]
+          : pendingStarts.length === 1 ? pendingStarts[0] : undefined;
+      let usage: CopilotUsageObservation = { shutdownObserved: false };
+      const startTime = start ? Date.parse(start.timestamp) : NaN;
+      const boundary = start?.copilotRunStartOffset;
+      const recovered = Number.isFinite(providerTime)
+        && typeof boundary === 'number' && Number.isFinite(boundary)
+        ? await findCopilotRunMarkerAfter(
+          transcriptPath, boundary, startTime, endTime, Number.isFinite(providerTime),
+        )
+        : undefined;
+      const stored = typeof start?.copilotRunMarkerId === 'string'
+        && typeof start.copilotRunMarkerOffset === 'number'
+        && Number.isFinite(start.copilotRunMarkerOffset)
+        ? { id: start.copilotRunMarkerId, offset: start.copilotRunMarkerOffset }
+        : undefined;
+      // Without a provider End time, a later marker may belong to the next run
+      // whose Start handler has not persisted yet. Only the marker claimed at
+      // this Start can safely supply totals.
+      const marker = Number.isFinite(providerTime) ? recovered ?? stored : stored;
+      if (marker) {
+        usage = await waitForCopilotRunUsage(transcriptPath, marker);
+      } else if ((start && boundary === undefined && !stored)
+        || (!start && sessionHistory.every((entry) => entry.type !== 'session_start'))) {
+        // Pre-upgrade sessions lack a run marker: accept only a new shutdown
+        // observed during this handler, never an unchanged historical record.
+        const initial = await readLatestCopilotUsageFromTail(transcriptPath);
+        usage = await waitForCopilotShutdownUsage(transcriptPath, initial);
+      }
       if (usage.tokens) {
         event.tokens = usage.tokens;
         event.tokenScope = 'session';
