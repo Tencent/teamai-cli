@@ -240,6 +240,21 @@ describe('checkForUpdate', () => {
     expect(mockedExecSync).not.toHaveBeenCalled();
   });
 
+  it('should skip npm view when cache is valid and no update was available', async () => {
+    const recentCheck = new Date(Date.now() - 1000).toISOString();
+    mockedLoadState.mockResolvedValue({
+      ...defaultState,
+      lastUpdateCheck: recentCheck,
+      availableUpdate: null, // no update last time — the common case
+    });
+
+    const result = await checkForUpdate();
+
+    expect(result.available).toBe(false);
+    expect(result.current).toBe(result.latest);
+    expect(mockedExecSync).not.toHaveBeenCalled();
+  });
+
   // ─── Test #2: Cache expired, npm view called ──────────
 
   it('should call npm view when cache is expired', async () => {
