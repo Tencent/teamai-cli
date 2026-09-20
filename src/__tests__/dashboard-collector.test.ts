@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -16,6 +16,7 @@ import {
   dedupeEvents,
 } from '../dashboard-collector.js';
 import type { DashboardEvent } from '../types.js';
+import * as pidMonitor from '../pid-monitor.js';
 import { _resetState as resetLogger, _setLogFilePath } from '../utils/logger.js';
 
 // ─── Transcript fixtures for intervention scanning ──────
@@ -57,6 +58,13 @@ const TOOL_ERROR_LINE = JSON.stringify({
 let tmpDir: string;
 let originalHome: string;
 
+/** Simulate Copilot flushing its current shutdown after SessionEnd fires. */
+function appendCopilotShutdownLater(transcript: string, entry: object): NodeJS.Timeout {
+  return setTimeout(() => {
+    fs.appendFileSync(transcript, `\n${JSON.stringify(entry)}\n`);
+  }, 50);
+}
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dashboard-test-'));
   originalHome = process.env.HOME ?? '';
@@ -83,6 +91,21 @@ describe('parseHookEvent', () => {
     expect(event!.sessionId).toBe('sess-123');
     expect(event!.tool).toBe('claude');
     expect(event!.cwd).toBe('/home/jeff/project');
+  });
+
+  it('keeps SessionStart when monitor PID resolution fails', async () => {
+    const spy = vi.spyOn(pidMonitor, 'resolveMonitorPid').mockImplementation(() => {
+      throw new Error('PID lookup failed');
+    });
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionStart',
+        session_id: 'pid-fallback-session',
+      }), 'claude');
+      expect(event?.monitorPid).toBe(process.ppid);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('parses PostToolUse event with tool_name', async () => {
@@ -136,19 +159,19 @@ describe('parseHookEvent', () => {
         data: { prompt: secret, inputTokens: 999_999, request: { authorization: secret } },
       }),
       JSON.stringify({ type: 'assistant.message', data: { content: secret } }),
-      JSON.stringify({
-        type: 'session.shutdown',
-        data: {
-          tokenDetails: {
-            input: { tokenCount: 101 },
-            output: { tokenCount: 29 },
-            cache_read: { tokenCount: 17 },
-            cache_write: { tokenCount: 3 },
-          },
-          prompt: secret,
-        },
-      }),
     ].join('\n'));
+    const appendTimer = appendCopilotShutdownLater(transcript, {
+      type: 'session.shutdown',
+      data: {
+        tokenDetails: {
+          input: { tokenCount: 101 },
+          output: { tokenCount: 29 },
+          cache_read: { tokenCount: 17 },
+          cache_write: { tokenCount: 3 },
+        },
+        prompt: secret,
+      },
+    });
     process.env.COPILOT_HOME = copilotHome;
 
     try {
@@ -171,6 +194,7 @@ describe('parseHookEvent', () => {
       expect(JSON.stringify(event)).not.toContain(transcript);
       expect(JSON.stringify(event)).not.toContain('999999');
     } finally {
+      clearTimeout(appendTimer);
       if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
       else process.env.COPILOT_HOME = originalCopilotHome;
     }
@@ -182,7 +206,8 @@ describe('parseHookEvent', () => {
     const transcript = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
     const originalCopilotHome = process.env.COPILOT_HOME;
     fs.mkdirSync(path.dirname(transcript), { recursive: true });
-    fs.writeFileSync(transcript, JSON.stringify({
+    fs.writeFileSync(transcript, '');
+    const appendTimer = appendCopilotShutdownLater(transcript, {
       type: 'session.shutdown',
       data: {
         tokenDetails: {
@@ -192,7 +217,7 @@ describe('parseHookEvent', () => {
           cache_write: { tokenCount: 2 },
         },
       },
-    }));
+    });
     process.env.COPILOT_HOME = copilotHome;
 
     try {
@@ -211,6 +236,7 @@ describe('parseHookEvent', () => {
       expect(event?.transcriptPath).toBeUndefined();
       expect(JSON.stringify(event)).not.toContain(transcript);
     } finally {
+      clearTimeout(appendTimer);
       if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
       else process.env.COPILOT_HOME = originalCopilotHome;
     }
@@ -251,6 +277,30 @@ describe('parseHookEvent', () => {
       });
     } finally {
       clearTimeout(appendTimer);
+      if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = originalCopilotHome;
+    }
+  });
+
+  it('uses the missing-token fallback when no new Copilot shutdown arrives', async () => {
+    const sessionId = 'copilot-resumed-without-shutdown';
+    const copilotHome = path.join(tmpDir, '.copilot-stale');
+    const transcript = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
+    const originalCopilotHome = process.env.COPILOT_HOME;
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, `${JSON.stringify({
+      type: 'session.shutdown',
+      data: { tokenDetails: { input: { tokenCount: 11 } } },
+    })}\n`);
+    process.env.COPILOT_HOME = copilotHome;
+
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        sessionId,
+      }), 'copilot');
+      expect(event?.tokens).toBeUndefined();
+    } finally {
       if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
       else process.env.COPILOT_HOME = originalCopilotHome;
     }
@@ -341,13 +391,11 @@ describe('parseHookEvent', () => {
     const transcript = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
     const originalCopilotHome = process.env.COPILOT_HOME;
     fs.mkdirSync(path.dirname(transcript), { recursive: true });
-    fs.writeFileSync(transcript, [
-      '{"type":"session.shutdown",',
-      JSON.stringify({
-        type: 'session.shutdown',
-        data: { tokenDetails: { input: { tokenCount: 7 }, output: { tokenCount: 2 } } },
-      }),
-    ].join('\n'));
+    fs.writeFileSync(transcript, '{"type":"session.shutdown",');
+    const appendTimer = appendCopilotShutdownLater(transcript, {
+      type: 'session.shutdown',
+      data: { tokenDetails: { input: { tokenCount: 7 }, output: { tokenCount: 2 } } },
+    });
     process.env.COPILOT_HOME = copilotHome;
 
     try {
@@ -358,6 +406,7 @@ describe('parseHookEvent', () => {
 
       expect(event?.tokens).toEqual({ input: 7, output: 2, cacheRead: 0, cacheCreation: 0 });
     } finally {
+      clearTimeout(appendTimer);
       if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
       else process.env.COPILOT_HOME = originalCopilotHome;
     }

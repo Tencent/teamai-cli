@@ -646,19 +646,18 @@ async function waitForCopilotShutdownUsage(
   transcriptPath: string,
   initial: CopilotUsageObservation,
 ): Promise<CopilotUsageObservation> {
-  let latest = initial;
   for (let attempt = 1; attempt < COPILOT_USAGE_MAX_ATTEMPTS; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, COPILOT_USAGE_RETRY_MS));
     const observed = await readLatestCopilotUsageFromTail(transcriptPath);
     if (!observed.shutdownObserved) continue;
-    latest = observed;
     if (!initial.shutdownObserved
       || observed.shutdownOffset !== initial.shutdownOffset
       || !copilotUsageEquals(initial, observed)) {
       return observed;
     }
   }
-  return latest;
+  // A prior shutdown belongs to an earlier run when no new record arrives.
+  return { shutdownObserved: false };
 }
 
 /** Resolve Copilot's local event log without accepting path traversal via sessionId. */
@@ -1069,7 +1068,12 @@ export async function parseHookEvent(
   if (eventType === 'session_start') {
     const ppid = process.ppid ?? process.pid;
     if (ppid > 1) {
-      event.monitorPid = resolveMonitorPid(ppid);
+      try {
+        event.monitorPid = resolveMonitorPid(ppid);
+      } catch {
+        // PID lookup failure must not discard the session lifecycle event.
+        event.monitorPid = ppid;
+      }
     }
   }
 
