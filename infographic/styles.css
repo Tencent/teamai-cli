@@ -1,0 +1,242 @@
+/* TeamAI infographic — HTML replica of the source poster.
+   Design canvas is 866 x 908 px (the original image size).
+   Illustrations stay as cropped bitmaps (img/cNa.png, img/cNb.png);
+   every piece of text is a plain HTML node painted on top of them. */
+
+:root {
+  --ink: #1b2440;
+  --ink-soft: #4d5772;
+  --title: #101a45;
+  --accent: #2f64dc;
+  --card-bg: #ffffff;
+  --card-border: #e9eef7;
+  --page-bg: #f4f7fd;
+
+  --fs-bubble: 7.75px;
+  --lh-bubble: 11.2px;
+  --fs-card-title: 12.8px;
+  --fs-card-sub: 10px;
+  --fs-tag: 9.5px;
+
+  --font: "Helvetica Neue", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  --font-display: "Arial Black", "Helvetica Neue", sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #e7ecf5;
+  font-family: var(--font);
+  display: flex;
+  justify-content: center;
+  padding: 24px 0;
+}
+
+/* ---------- page ---------- */
+
+.page {
+  position: relative;
+  width: 866px;
+  height: 908px;
+  background: var(--page-bg);
+  overflow: hidden;
+  zoom: var(--zoom, 1);
+}
+
+/* ---------- header ---------- */
+
+.logo {
+  position: absolute;
+  left: 18px;
+  top: 3px;
+  font-family: var(--font-display);
+  font-size: 45px;
+  line-height: 45px;
+  font-weight: 900;
+  letter-spacing: -0.4px;
+  color: #16205c;
+}
+.logo em { font-style: normal; color: var(--accent); }
+
+.tagline {
+  position: absolute;
+  left: 20px;
+  top: 43.5px;
+  font-size: 16.65px;
+  line-height: 16.65px;
+  font-weight: 400;
+  color: #464c63;
+}
+
+.hand {
+  position: absolute;
+  left: 556px;
+  top: 6px;
+  width: 204px;
+  height: 62px;
+}
+
+.pillars {
+  position: absolute;
+  left: 791px;
+  top: 13px;
+  list-style: none;
+  font-size: 8.1px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: #3b4459;
+  line-height: 16px;
+}
+.pillars::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 2px;
+  width: 1px;
+  height: 62px;
+  background: #d7deea;
+}
+
+.footer {
+  position: absolute;
+  left: 0;
+  top: 856px;
+  width: 866px;
+  height: 52px;
+}
+
+/* ---------- cards ---------- */
+
+.card {
+  position: absolute;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(26, 48, 99, 0.05);
+}
+
+.num {
+  position: absolute;
+  left: 11px;
+  top: 7px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #7aa0ff 0%, #4372ef 60%, #3260e0 100%);
+  color: #fff;
+  font-size: 9.6px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.card h2 {
+  position: absolute;
+  left: 34px;
+  top: 10px;
+  font-size: 13.5px;
+  line-height: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.45px;
+  color: var(--title);
+}
+
+.card p {
+  position: absolute;
+  left: 34px;
+  top: 24.5px;
+  font-size: var(--fs-card-sub);
+  line-height: 10px;
+  font-weight: 400;
+  color: #5c6883;
+}
+
+/* ---------- panels ---------- */
+
+.panel {
+  position: absolute;
+  border-radius: 10px;
+  overflow: visible;
+}
+
+.panel .art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  display: block;
+}
+
+.tag {
+  position: absolute;
+  left: 4px;
+  top: 8px;
+  height: 13px;
+  padding: 0 0 0 6px;
+  border-radius: 5px;
+  font-size: var(--fs-tag);
+  font-weight: 700;
+  line-height: 13px;
+  white-space: nowrap;
+}
+.tag-b { background: #fbe3e5; color: #cf4a50; width: 46px; }
+.tag-a { background: #dcf5e8; color: #157b5e; width: 78px; }
+
+/* Text overlay: an opaque white patch that hides the baked-in text of the
+   bitmap underneath, carrying the editable copy. Anything sitting on a white
+   bubble / white card in the artwork uses this. */
+.t {
+  position: absolute;
+  background: #fff;
+  color: var(--ink);
+  font-size: var(--fs-bubble);
+  line-height: var(--lh-bubble);
+  letter-spacing: 0.02px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.t.c { text-align: center; }
+.t.mid { display: flex; align-items: center; }
+.t.mid.c { justify-content: center; }
+
+/* headline inside a white knowledge card */
+.t.head {
+  color: #1f56cf;
+  font-weight: 700;
+  font-size: 8.2px;
+}
+.t.head.dark { color: #17224a; }
+
+.t.blue { color: #1f56cf; font-weight: 700; }
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* ---------- toolbar (not part of the poster) ---------- */
+
+.toolbar {
+  position: fixed;
+  right: 14px;
+  top: 14px;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #d5dced;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: 12px var(--font);
+  color: #33405c;
+  box-shadow: 0 4px 14px rgba(20, 40, 90, 0.12);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.toolbar input { width: 120px; }
+
+@media print {
+  body { background: #fff; padding: 0; }
+  .toolbar { display: none; }
+}
