@@ -64,7 +64,7 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
 
   // 读取所有 comments
   const resp = await githubRequest(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`);
-  if (!resp.ok) return result;
+  if (!resp.ok) throw new Error(`GitHub comments request failed (${resp.status})`);
   const comments = (await resp.json()) as GitHubComment[];
 
   for (const comment of comments) {
@@ -77,8 +77,7 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
       `/repos/${owner}/${repo}/issues/comments/${comment.id}/reactions?per_page=100`,
     );
     if (!reactResp.ok) {
-      result.approvedIds.add(markerId); // 读取失败默认 approve
-      continue;
+      throw new Error(`GitHub reactions request failed for comment ${comment.id} (${reactResp.status})`);
     }
     const reactions = (await reactResp.json()) as GitHubReaction[];
     const hasThumbsDown = reactions.some((r) => r.content === '-1');
@@ -132,7 +131,7 @@ async function readTGitRejections(owner: string, repo: string, mrIid: string): P
 
   // 读取所有 notes
   const resp = await tgitRequest(`/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100`);
-  if (!resp.ok) return result;
+  if (!resp.ok) throw new Error(`TGit notes request failed (${resp.status})`);
   const notes = (await resp.json()) as TGitNote[];
 
   for (const note of notes) {

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { extractMarkerId, shouldWrite } from '../ci/read-rejections.js';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { extractMarkerId, readRejections, shouldWrite } from '../ci/read-rejections.js';
 import type { RejectionResult } from '../ci/read-rejections.js';
 
 describe('extractMarkerId', () => {
@@ -59,5 +59,42 @@ describe('shouldWrite', () => {
     it('未知 id（不在任何集合中）→ 写入（默认）', () => {
       expect(shouldWrite('suggestion:99', rejections, 'tgit')).toBe(true);
     });
+  });
+});
+
+describe('readRejections API failures', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('fails when the GitHub comment list cannot be read', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'test-token');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 500 })));
+
+    await expect(readRejections('https://github.com/acme/app/pull/7'))
+      .rejects.toThrow('GitHub comments request failed (500)');
+  });
+
+  it('fails when GitHub reactions cannot be read', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'test-token');
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { id: 42, body: '<!-- teamai:ci-extract:learning -->' },
+      ]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 403 })));
+
+    await expect(readRejections('https://github.com/acme/app/pull/7'))
+      .rejects.toThrow('GitHub reactions request failed for comment 42 (403)');
+  });
+
+  it('fails when the TGit note list cannot be read', async () => {
+    vi.stubEnv('TGIT_TOKEN', 'test-token');
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 42, iid: 7 }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 500 })));
+
+    await expect(readRejections('https://git.woa.com/acme/app/merge_requests/7'))
+      .rejects.toThrow('TGit notes request failed (500)');
   });
 });
