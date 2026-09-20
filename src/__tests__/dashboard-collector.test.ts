@@ -16,6 +16,7 @@ import {
   dedupeEvents,
 } from '../dashboard-collector.js';
 import type { DashboardEvent } from '../types.js';
+import { _resetState as resetLogger, _setLogFilePath } from '../utils/logger.js';
 
 // ─── Transcript fixtures for intervention scanning ──────
 const INTERRUPT_LINE = JSON.stringify({
@@ -60,10 +61,12 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dashboard-test-'));
   originalHome = process.env.HOME ?? '';
   process.env.HOME = tmpDir;
+  _setLogFilePath(path.join(tmpDir, '.teamai', 'debug.log'));
 });
 
 afterEach(() => {
   process.env.HOME = originalHome;
+  resetLogger();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -237,6 +240,21 @@ describe('parseHookEvent', () => {
     });
     const event = await parseHookEvent(raw, 'claude');
     expect(event!.promptSummary!.length).toBe(200);
+  });
+
+  it('redacts prompt secrets before truncating the summary', async () => {
+    const rawToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const prompt = `${'x'.repeat(180)} ${rawToken} wrong`;
+    const event = await parseHookEvent(
+      JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt }),
+      'claude',
+    );
+
+    expect(event!.correction).toBe(true);
+    expect(event!.promptSummary).toContain('<REDACTED:gh_tok>');
+    expect(event!.promptSummary).not.toContain('ghp_');
+    expect(event!.promptSummary).not.toContain('wrong');
+    expect(event!.promptSummary!.length).toBeLessThanOrEqual(200);
   });
 
   it('parses Stop event', async () => {
@@ -459,6 +477,27 @@ describe('appendEvent / readEvents', () => {
     expect(events).toHaveLength(2);
     expect(events[0].type).toBe('session_start');
     expect(events[1].toolName).toBe('Edit');
+  });
+
+  it('persists the same redacted prompt summary to events and debug log', async () => {
+    const rawToken = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const prompt = `Review login flow with token ${rawToken} and keep this extra context for the dashboard`;
+    const event = await parseHookEvent(
+      JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'sess-secret', prompt }),
+      'claude',
+    );
+    await appendEvent(event!);
+
+    const summary = 'Review login flow with token <REDACTED:gh_tok> and keep this extra context for the dashboard';
+    const eventsPath = path.join(tmpDir, '.teamai', 'dashboard', 'events.jsonl');
+    const debugPath = path.join(tmpDir, '.teamai', 'debug.log');
+    const persisted = JSON.parse(fs.readFileSync(eventsPath, 'utf-8')) as DashboardEvent;
+    const debugLog = fs.readFileSync(debugPath, 'utf-8');
+
+    expect(persisted.promptSummary).toBe(summary);
+    expect(debugLog).toContain(`[prompt=${summary}]`);
+    expect(fs.readFileSync(eventsPath, 'utf-8')).not.toContain(rawToken);
+    expect(debugLog).not.toContain(rawToken);
   });
 
   it('returns empty array when file does not exist', async () => {
