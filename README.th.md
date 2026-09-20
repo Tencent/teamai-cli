@@ -2,22 +2,30 @@
   <img src="assets/teamai-cli-logo.svg" alt="teamai-cli">
 </p>
 
-# TeamAI — Make Every Team AI Native
+<h1 align="center">TeamAI — Make Every Team AI Native</h1>
 
-> [English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [ไทย](README.th.md)
+<p align="center">
+  <a href="https://trendshift.io/repositories/123184?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-123184" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/123184" alt="Tencent%2Fteamai-cli | Trendshift" width="250" height="55"/></a>
+</p>
 
-[![CI](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
-[![npm downloads](https://img.shields.io/npm/dm/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a> | <a href="README.th.md">ไทย</a>
+</p>
 
-TeamAI จัดการ Skills, Rules, MCP และความรู้ของทีมให้ใช้ร่วมกันได้บน Claude Code, Codex, CodeBuddy, WorkBuddy, OpenCode, Cursor และ AI Agents อื่นๆ
+<p align="center">
+  <a href="https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml"><img src="https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/teamai-cli"><img src="https://img.shields.io/npm/v/teamai-cli.svg" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/teamai-cli"><img src="https://img.shields.io/npm/dm/teamai-cli.svg" alt="npm downloads"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+</p>
+
+**รากฐานร่วมสำหรับการทำงาน การเรียนรู้ และการพัฒนาอย่างต่อเนื่องของทีมด้วย AI**
+
+TeamAI เปลี่ยนความสามารถด้าน AI ของแต่ละคนให้เป็นความสามารถร่วมของทีม ใช้ได้ข้าม Agent อุปกรณ์ และสมาชิกในทีม
 
 ## ผู้ร่วมพัฒนา
 
 ขอขอบคุณทุกคนที่ได้ร่วมพัฒนา TeamAI!
-
-<a href="https://trendshift.io/repositories/123184?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-123184" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/123184" alt="Tencent%2Fteamai-cli | Trendshift" width="250" height="55"/></a>
 
 <a href="https://github.com/Tencent/teamai-cli/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=Tencent/teamai-cli" alt="Contributors" />
@@ -26,6 +34,41 @@ TeamAI จัดการ Skills, Rules, MCP และความรู้ข�
 สร้างด้วย [contrib.rocks](https://contrib.rocks)
 
 ## เริ่มต้นอย่างรวดเร็ว
+
+ส่งข้อความบรรทัดเดียวนี้ให้ AI ของคุณ:
+
+```text
+ช่วยติดตั้ง teamai skill ให้หน่อย: https://github.com/Tencent/teamai-cli/tree/main/skills/teamai , โหลด teamai skill แล้วตั้งค่า TeamAI ให้ทีมของฉันตั้งแต่ต้น
+```
+
+เมื่อตั้งค่า TeamAI แล้ว แค่คุยกับ `/teamai` skill ใน AI ของคุณได้เลย:
+
+**ตั้งค่าทีมตั้งแต่ต้น**
+
+```text
+/teamai ช่วยตั้งค่า TeamAI ให้ทีมของฉันตั้งแต่ต้น
+```
+
+**เข้าร่วมทีม**
+
+```text
+/teamai ช่วยพาฉันเข้าร่วม TeamAI ของทีม, URL รีโปคือ https://github.com/yourorg/yourrepo
+```
+
+**แชร์ skill ให้ทีม**
+
+```text
+/teamai ช่วยแชร์ xxx skill ให้ทีม
+```
+
+**เปิดแดชบอร์ด**
+
+```text
+/teamai เปิดแดชบอร์ด TeamAI
+```
+
+<details>
+<summary>ถนัดใช้คอมมานด์ไลน์มากกว่า? (ติดตั้งเอง)</summary>
 
 ### ติดตั้ง
 
@@ -53,6 +96,8 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 เมื่อเริ่มต้นแล้ว ทุกเซสชัน AI จะดึง Skills / Rules และการอัปเดต Harness อื่นๆ ล่าสุดที่ผู้ดูแลเผยแพร่โดยอัตโนมัติ — ไม่ต้องซิงก์ด้วยตนเอง
+
+</details>
 
 > **คู่มือการใช้งานฉบับเต็ม:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — ครอบคลุมตั้งแต่การสร้างทีมไปจนถึงการใช้งานประจำวัน
 
@@ -86,6 +131,7 @@ teamai init https://github.com/yourorg/yourrepo --scope user
     <tr><td>Claude Code</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>Codex</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>Cursor</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>GitHub Copilot CLI</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
     <tr><td>CodeBuddy</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>WorkBuddy</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>OpenCode</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
@@ -95,6 +141,7 @@ teamai init https://github.com/yourorg/yourrepo --scope user
     <tr><td>Qoder</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>Kiro</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>ZCode</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>Oh My Pi</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
   </tbody>
 </table>
 
@@ -234,8 +281,8 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 |------------|---------|---------------|
 | **Usage** | `teamai digest` | สรุปทีมรายสัปดาห์ — ความสำเร็จใน 7 วัน, prompt, เวลาที่ใช้งาน, ต้นทุนโดยประมาณ, cache และแนวโน้มการแก้ไข รวมถึงยอดสะสมตลอดอายุการใช้งาน |
 | **Sessions** | `teamai session save` | สรุปรายเซสชันที่ล้างข้อมูลส่วนตัวแล้ว (ลำดับเครื่องมือ, รอบ prompt, การแทรกแซง) ซึ่งป้อน Session Highlights ของ digest |
-| **Dashboard** | `teamai dashboard` | แดชบอร์ดเว็บที่แสดงเซสชันสดและแนวโน้ม 7 วันในเครื่องเทียบกับ 7 วันก่อนหน้า |
-| **KB Health** | `teamai dashboard` → KB Health | หน้าในแดชบอร์ดที่รายงานการใช้งานและสุขภาพของคลังความรู้ — ความครอบคลุมตามประเภท, รายการที่ถูก recall บ่อย, รายการที่เงียบ, แนวโน้ม recall, ผลงานของผู้เขียน และคอนโซลบำรุงรักษา |
+| **Dashboard** | `teamai dashboard` | รวม Overview / Team Execution / Team Context / Team Improvement พร้อมเซสชันสดในเครื่อง แนวโน้ม 7 วัน ค่าใช้จ่ายโดยประมาณต่อเซสชัน ภาษาอังกฤษ/จีนตัวย่อ และธีมสว่าง/มืด/ตามระบบ |
+| **KB Health** | `teamai dashboard` → Team Context / Team Improvement | หน้าในแดชบอร์ดที่รายงานการใช้งานและสุขภาพของคลังความรู้ — ความครอบคลุมตามประเภท, รายการที่ถูก recall บ่อย, รายการที่เงียบ, แนวโน้ม recall, ผลงานของผู้เขียน และคอนโซลบำรุงรักษา |
 
 ## คำสั่ง
 

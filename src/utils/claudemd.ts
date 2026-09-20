@@ -36,3 +36,21 @@ export async function injectClaudeMdSection(
 
     await writeFile(filePath, updated);
 }
+
+/** Remove a marker-delimited managed section while preserving user content. */
+export async function removeClaudeMdSection(
+    filePath: string,
+    startMarker: string,
+    endMarker: string,
+): Promise<void> {
+    const existing = await readFileSafe(filePath);
+    if (!existing) return;
+
+    const startIdx = existing.indexOf(startMarker);
+    const endIdx = existing.indexOf(endMarker);
+    if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return;
+
+    const before = existing.substring(0, startIdx).replace(/\n+$/, '\n');
+    const after = existing.substring(endIdx + endMarker.length).replace(/^\n+/, '\n');
+    await writeFile(filePath, (before + after).trimEnd() + '\n');
+}

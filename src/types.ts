@@ -3,6 +3,10 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getUserHome } from './utils/home.js';
 
+const DEFAULT_COPILOT_HOME = '.copilot';
+const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
+const COPILOT_PROJECT_MCP_CONFIG = '.github/mcp.json';
+
 // ─── Tool path config ───────────────────────────────────
 
 export const ToolPathsSchema = z.object({
@@ -15,7 +19,7 @@ export const ToolPathsSchema = z.object({
   /** Per-tool agents directory (Phase 1: teamai-recall subagent target).
    * Optional — tools without subagent support omit this and agents sync skips them. */
   agents: z.string().optional(),
-  /** User-scope MCP config file (relative to $HOME). Omitted = tool has no MCP support. */
+  /** User-scope MCP config file (relative to the tool's user root). Omitted = no MCP support. */
   mcp: z.string().optional(),
   /** Project-scope MCP config file. Never defaults from `mcp` — omitting it means
    * the tool has no project-scope MCP support at all. Claude Code shows why the two
@@ -23,12 +27,12 @@ export const ToolPathsSchema = z.object({
    * <root>/.mcp.json, breaking the usual `.<tool>/<file>` convention. */
   mcpProject: z.string().optional(),
   /**
-   * User-scope path overrides for skills/rules/agents. Most tools store their
+   * User-scope path overrides for tool resources. Most tools store their
    * user-scope resources at the same `.<tool>/<resource>` relative path as their
    * project-scope ones, so this is omitted. OpenCode is the exception: its
    * project-scope config lives at `<root>/.opencode/...` but its user-scope config
    * lives at `~/.config/opencode/...`, a different prefix entirely. When set and the
-   * active scope is `user`, these values replace the base skills/rules/agents paths.
+   * active scope is `user`, these values replace the corresponding base paths.
    */
   userScope: z
     .object({
@@ -36,6 +40,7 @@ export const ToolPathsSchema = z.object({
       rules: z.string().optional(),
       agents: z.string().optional(),
       hooks: z.string().optional(),
+      claudemd: z.string().optional(),
     })
     .optional(),
 });
@@ -267,6 +272,21 @@ export const TeamaiConfigSchema = z.object({
   /** Run `git submodule update --init` on pull so skills distributed as git
    * submodules are populated and kept current. Off by default. */
   submodules: z.boolean().optional(),
+  /** Team-owned scripts the CLI runs at defined points of a pull — repo-committed
+   * entrypoints, distinct from `sharing.hooks.requireTeamScripts` (the
+   * `~/.teamai/team-scripts/` trust boundary for hook commands). Every entry is
+   * optional, and older CLIs strip the unknown section instead of rejecting the
+   * file — so a team repo can adopt one before its members upgrade. */
+  scripts: z.object({
+    /** Run at the end of a pull, after every sync step (resources,
+     * hooks, MCP, reports) has finished. `path` is a Node entrypoint (`.mjs`,
+     * `.js`, `.cjs`) relative to the team repo root, and must resolve inside it:
+     * a symlink leaving the clone is rejected, since this script runs on every
+     * member's machine. */
+    postPull: z.object({
+      path: z.string().min(1),
+    }).optional(),
+  }).optional(),
   // MCP paths are only set for tools whose config location has been verified.
   // Tools left without `mcp` are skipped by MCP sync rather than guessed at, so a
   // wrong guess can never create a junk config file on a user's machine.
@@ -285,14 +305,23 @@ export const TeamaiConfigSchema = z.object({
     cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents', mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' },
     // GitHub Copilot CLI keeps project customizations under .github and moves
     // the complete user customization root when COPILOT_HOME is set. Agents use
-    // the official .agent.md format. Hooks are a standalone file; settings.json
-    // is deliberately never managed.
+    // the official .agent.md format. Hooks and MCP use standalone files;
+    // settings.json is deliberately never managed.
     copilot: {
       skills: '.github/skills',
       rules: '.github/instructions',
       agents: '.github/agents',
       hooks: '.github/hooks/teamai.json',
-      userScope: { skills: 'skills', rules: 'instructions', agents: 'agents', hooks: 'hooks/teamai.json' },
+      claudemd: '.github/copilot-instructions.md',
+      mcp: COPILOT_USER_MCP_CONFIG,
+      mcpProject: COPILOT_PROJECT_MCP_CONFIG,
+      userScope: {
+        skills: 'skills',
+        rules: 'instructions',
+        agents: 'agents',
+        hooks: 'hooks/teamai.json',
+        claudemd: 'copilot-instructions.md',
+      },
     },
     // JoyCode: skills, rules (.mdc), and subagents are synced to .joycode/.
     // JoyCode currently does not provide a lifecycle hooks system or startup
@@ -332,6 +361,30 @@ export const TeamaiConfigSchema = z.object({
     // .zcode/config.json (a different key), which the Claude writer cannot
     // emit — so no mcpProject. ZCode has no user-level rules dir convention.
     zcode: { skills: '.zcode/skills', agents: '.zcode/agents', settings: '.zcode/cli/config.json', mcp: '.agents/mcp.json' },
+    // Oh My Pi (OMP): the config root is ~/.omp on every platform (no %APPDATA%
+    // on Windows); user-scope resources live in the agent dir ~/.omp/agent/, a
+    // different prefix from the project <root>/.omp/, hence userScope. Rules are
+    // plain .md, instructions land in AGENTS.md, and MCP uses the Claude-shaped
+    // {"mcpServers": …} mcp.json. OMP runs lifecycle hooks as in-process TS
+    // extensions rather than a settings hook list, so there is no `settings`
+    // path — the adapter in omp-hooks.ts writes the single user-root extension
+    // (~/.omp/agent/extensions/teamai-hooks.ts). Profiles (OMP_PROFILE /
+    // PI_CODING_AGENT_DIR / PI_CONFIG_DIR) move the agent dir and are not
+    // supported.
+    omp: {
+      skills: '.omp/skills',
+      rules: '.omp/rules',
+      claudemd: '.omp/AGENTS.md',
+      agents: '.omp/agents',
+      mcp: '.omp/agent/mcp.json',
+      mcpProject: '.omp/mcp.json',
+      userScope: {
+        skills: '.omp/agent/skills',
+        rules: '.omp/agent/rules',
+        claudemd: '.omp/agent/AGENTS.md',
+        agents: '.omp/agent/agents',
+      },
+    },
     codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' },
     openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules', claudemd: '.openclaw/workspace/AGENTS.md' },
     hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
@@ -443,6 +496,14 @@ export const LocalConfigSchema = z.object({
   enabledAgents: z.array(z.string()).optional(),
   /** Tools explicitly excluded from all teamai sync (set by `uninstall --agent`). Removed again by `init --agent`. */
   disabledAgents: z.array(z.string()).optional(),
+  /**
+   * Per-machine map from a gateway/proxy model alias to a known Claude model
+   * name, so cost/cache estimation works when the transcript records an opaque
+   * alias (e.g. `ep-qxst1hw4`) instead of `claude-opus-...`. The value must
+   * contain a token the price table matches (opus / sonnet / haiku / fable /
+   * mythos + version). Unset means "match the raw model name only".
+   */
+  modelAliases: z.record(z.string(), z.string()).optional(),
 });
 
 /**
@@ -720,6 +781,12 @@ export interface GlobalOptions {
   claude?: boolean;
   verbose?: boolean;
   silent?: boolean;
+  /**
+   * A human ran the command (the CLI sets it from !--silent): background work
+   * may attach to the user's terminal and run on unawaited. Absent = headless
+   * (hook) caller: everything must be waited out and captured instead.
+   */
+  interactive?: boolean;
   /**
    * Force full sync even when repo HEAD matches lastPullRev (`pull`), or skip
    * the confirmation prompt (`remove`).
@@ -1124,10 +1191,34 @@ export const CORRECTION_KEYWORDS = [
 export const INTERVENTION_SCAN_MAX_BYTES = 50 * 1024 * 1024;
 /** Marker that prefixes a user-interrupt entry in the Claude Code transcript. */
 export const TRANSCRIPT_INTERRUPT_PREFIX = '[Request interrupted by user';
-/** Prefixes of system-injected user messages that are NOT genuine human prompts. */
+/** Prefixes of system-injected user messages that are NOT genuine human prompts.
+ *  These arrive as user-role transcript entries / UserPromptSubmit payloads but
+ *  are harness or hook injections (background-task completions, system reminders,
+ *  interrupt markers), so they must not be counted as human turns or shown as prompts. */
 export const TRANSCRIPT_SYSTEM_PREFIXES = [
   '<task-notification>',
+  '<system-reminder>',
+  TRANSCRIPT_INTERRUPT_PREFIX,
 ];
+
+/**
+ * Return the genuine human text from a raw prompt/user-entry, stripping any
+ * trailing system-injected block (a real prompt sometimes has a task-notification
+ * or system-reminder appended when the user typed mid-turn). Returns '' when the
+ * whole message is injected content (no human text before the first marker).
+ */
+export function stripInjectedPrompt(raw: string): string {
+  const trimmed = raw.trimStart();
+  // Pure injection: the message itself starts with a marker → no human text.
+  if (TRANSCRIPT_SYSTEM_PREFIXES.some((p) => trimmed.startsWith(p))) return '';
+  // Mixed: cut at the earliest injected-block marker that appears later.
+  let cut = raw.length;
+  for (const marker of TRANSCRIPT_SYSTEM_PREFIXES) {
+    const i = raw.indexOf(marker);
+    if (i >= 0 && i < cut) cut = i;
+  }
+  return raw.slice(0, cut).trim();
+}
 /** Substrings that mark a tool_result as a user rejection (permission deny). */
 export const TRANSCRIPT_REJECT_MARKERS = [
   'The tool use was rejected',
@@ -1449,7 +1540,6 @@ export function resolveBaseDir(localConfig: LocalConfig): string {
 }
 
 export const COPILOT_TOOL_ID = 'copilot';
-const DEFAULT_COPILOT_HOME = '.copilot';
 
 /** GitHub Copilot CLI's user configuration root, honoring COPILOT_HOME. */
 export function getCopilotHome(env: NodeJS.ProcessEnv = process.env): string {
@@ -1490,8 +1580,8 @@ export function isAgentExcluded(
  * one exception is OpenCode, whose user-scope config lives under
  * `~/.config/opencode/` (a different prefix from its project `<root>/.opencode/`);
  * its `userScope` block carries those paths and is spliced in only when the active
- * scope is `user`. Callers that iterate `toolPaths` for skills/rules/agents should
- * iterate the result of this function instead, so the correct scope path is used.
+ * scope is `user`. Callers that iterate `toolPaths` for scoped resources should
+ * iterate the result of this function instead, so the correct path is used.
  *
  * MCP is untouched here: its two scopes are already distinct fields
  * (`mcp` / `mcpProject`), resolved separately in the reconcile engine.
@@ -1514,6 +1604,7 @@ export function scopedToolPaths(
       ...(us.rules !== undefined ? { rules: us.rules } : {}),
       ...(us.agents !== undefined ? { agents: us.agents } : {}),
       ...(us.hooks !== undefined ? { hooks: us.hooks } : {}),
+      ...(us.claudemd !== undefined ? { claudemd: us.claudemd } : {}),
     };
   }
   return out;

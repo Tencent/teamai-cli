@@ -12,6 +12,12 @@ vi.mock('../config.js', () => ({
 vi.mock('../utils/fs.js', () => ({
     pathExists: vi.fn(),
     readFileSafe: vi.fn(),
+    // The delivery checks walk the team repo through resolveDesiredSkills and
+    // DocsHandler. This machine has neither skills nor docs; delivery on a real
+    // disk is covered by doctor-delivery.test.ts.
+    listDirs: vi.fn().mockResolvedValue([]),
+    listFilesRecursive: vi.fn().mockResolvedValue([]),
+    expandHome: vi.fn((p: string) => p),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -91,7 +97,12 @@ beforeEach(() => {
     mockedLoadLocalConfig.mockResolvedValue(mockLocalConfig);
     mockedLoadTeamConfig.mockResolvedValue(mockTeamConfig);
     mockedPathExists.mockResolvedValue(true);
-    mockedReadFileSafe.mockResolvedValue(buildFullHooksContent());
+    // One blob answers every read, except the role/project manifests the
+    // delivery check resolves the desired skill set from: parsing hook JSON as a
+    // manifest throws. Absent manifests are the shape this fixture wants anyway.
+    mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+        filePath.includes(`${path.sep}manifest${path.sep}`) ? null : buildFullHooksContent()
+    ));
 });
 
 // ── Tests ────────────────────────────────────────────────
@@ -568,5 +579,120 @@ describe('buildChecks', () => {
         const check = (await buildChecks(ctx)).find((c) => c.name.includes('learnings'));
         expect(check).toBeDefined();
         expect(check?.fix).toContain('teamai pull');
+        // Correct advice here, where doctor is the whole command. The pull's own
+        // warning already says it, with the push error, so the post-pull pass
+        // skips this one rather than repeat it — see pull-post-checks.test.ts.
+        expect(check?.reportedByPull).toBe('pending-learnings');
+    });
+
+    it('flags only the queue check as one the pull reports itself', async () => {
+        mockedLoadLocalConfig.mockResolvedValue(mockLocalConfig);
+        mockedLoadTeamConfig.mockResolvedValue(mockTeamConfig);
+
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+
+        const flagged = (await buildChecks(ctx)).filter((c) => c.reportedByPull);
+        expect(flagged.map((c) => c.name)).toEqual(['Contributed learnings are published']);
+    });
+});
+
+// A tool listed in enabledAgents is a claim by the user that they use it. Until
+// #598 the registry answered that claim with silence: buildHookChecks skipped
+// any tool whose settings directory was missing — the same silent skip #574
+// reports in pull, reproduced inside doctor.
+describe('buildChecks — a tool enabled but not installed', () => {
+    const twoToolPaths = {
+        claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
+        codex: { settings: '.codex/hooks.json', skills: '.codex/skills' },
+    };
+
+    /** Everything exists except codex's settings directory. */
+    function onlyCodexMissing(): void {
+        mockedPathExists.mockImplementation(async (filePath: string) => !filePath.includes('.codex'));
+    }
+
+    async function checksFor(localOverrides: Record<string, unknown>) {
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, ...localOverrides });
+        mockedLoadTeamConfig.mockResolvedValue({ ...mockTeamConfig, toolPaths: twoToolPaths });
+        onlyCodexMissing();
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+        return buildChecks(ctx);
+    }
+
+    it('fails for a tool that carries no hook configuration at all', async () => {
+        // opencode ships skills and nothing else. Hanging this check off the hook
+        // registry made it invisible for exactly the tools most likely to be
+        // declared and absent.
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            enabledAgents: ['claude', 'opencode'],
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            toolPaths: {
+                claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
+                opencode: { skills: '.opencode/skills' },
+            },
+        });
+        mockedPathExists.mockImplementation(async (filePath: string) => !filePath.includes('.opencode'));
+
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+        const opencode = (await buildChecks(ctx)).find((c) => c.name === 'opencode is installed');
+
+        expect(opencode).toBeDefined();
+        expect(await opencode!.check()).toBe(false);
+    });
+
+    it('reports an installed tool as passing rather than omitting it', async () => {
+        // `doctor --json` is consumed by hooks and CI. A check that only appears
+        // when it fails cannot be told apart from one that was never evaluated,
+        // and no other check in the registry behaves that way.
+        const checks = await checksFor({ enabledAgents: ['claude', 'codex'] });
+
+        const claude = checks.find((c) => c.name === 'claude is installed');
+        expect(claude).toBeDefined();
+        expect(await claude!.check()).toBe(true);
+    });
+
+    it('fails a check naming the tool the user enabled', async () => {
+        const checks = await checksFor({ enabledAgents: ['claude', 'codex'] });
+
+        const codex = checks.find((c) => c.name === 'codex is installed');
+        expect(codex).toBeDefined();
+        expect(await codex!.check()).toBe(false);
+        expect(codex!.source).toBe('local');
+        expect(codex!.fix).toContain('enabledAgents');
+    });
+
+    it('stays silent about an uninstalled tool nobody enabled', async () => {
+        const checks = await checksFor({});
+
+        expect(checks.map((c) => c.name)).not.toContain('codex is installed');
+        // And no other check stands in for it: an unlisted tool is simply absent.
+        expect(checks.map((c) => c.name)).not.toContain('teamai hooks in codex settings');
+    });
+
+    it('reaches the JSON report with the shape every check has', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            enabledAgents: ['claude', 'codex'],
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            toolPaths: twoToolPaths,
+            sharing: { env: { injectShellProfile: false } },
+        });
+        onlyCodexMissing();
+
+        const allPassed = await doctor({ json: true });
+
+        const report = JSON.parse(String(consoleSpy.mock.calls[0][0])) as DoctorReport;
+        const codex = report.checks.find((c) => c.name === 'codex is installed');
+        expect(codex).toMatchObject({ name: 'codex is installed', ok: false });
+        expect(codex?.fix).toBeTruthy();
+        expect(allPassed).toBe(false);
     });
 });

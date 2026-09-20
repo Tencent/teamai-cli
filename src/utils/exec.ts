@@ -1,5 +1,6 @@
 import spawn from 'cross-spawn';
 import type { ChildProcess } from 'node:child_process';
+import type { Readable } from 'node:stream';
 
 export interface ExecOptions {
   cwd?: string;
@@ -105,4 +106,27 @@ export function captureTail(child: ChildProcess, maxChars: number): () => string
   child.stdout?.on('data', collect);
   child.stderr?.on('data', collect);
   return () => output.trim().replace(/\s+/g, ' ').slice(-maxChars);
+}
+
+/**
+ * Detach one pipe stream without closing it: drop the listeners, keep it
+ * draining, and unref the handle. Closing the read end instead would SIGPIPE
+ * a child that keeps writing; detaching lets this process exit without
+ * waiting on - or killing - that child.
+ */
+export function detachPipe(stream: Readable): void {
+  stream.removeAllListeners('data');
+  stream.resume();
+  (stream as unknown as { unref?: () => void }).unref?.();
+}
+
+/**
+ * Stop owning a child this process must neither wait on nor kill: unref the
+ * child and detach any pipe streams it still shares with us, so the event
+ * loop is free to exit and the child runs on as an orphan.
+ */
+export function detachChild(child: ChildProcess): void {
+  child.unref();
+  if (child.stdout) detachPipe(child.stdout);
+  if (child.stderr) detachPipe(child.stderr);
 }

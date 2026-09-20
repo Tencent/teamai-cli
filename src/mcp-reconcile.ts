@@ -15,7 +15,7 @@ import {
   getDataHome,
   managedMcpManifestPath,
   managedMcpManifestKey,
-  resolveBaseDir,
+  resolveToolBaseDir,
   scopedToolPaths,
 } from './types.js';
 import {
@@ -31,6 +31,7 @@ import {
   type McpFormat,
 } from './resources/mcp-format.js';
 import { parseTeamMcpServers } from './resources/mcp.js';
+import { isToolInstalledForConfig } from './resources/base.js';
 import { activeRoleIds, matchesRoles, warnUnknownRoleIds } from './roles.js';
 import {
   readJson,
@@ -190,7 +191,6 @@ export async function resolveMcpTargets(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
 ): Promise<McpTarget[]> {
-  const baseDir = resolveBaseDir(localConfig);
   const projectScope = localConfig.scope === 'project';
   const targets: McpTarget[] = [];
 
@@ -208,19 +208,17 @@ export async function resolveMcpTargets(
     const rel = projectScope ? paths.mcpProject : paths.mcp;
     if (!rel) continue;
 
+    const baseDir = resolveToolBaseDir(tool, localConfig);
+    const file = path.join(baseDir, rel);
+
     const probe = paths.skills ?? paths.settings ?? paths.agents;
     if (!probe) continue;
-    // Probe the tool's root dir (the resource dir's parent), so a multi-segment
-    // path like `.config/opencode/skills` resolves to `.config/opencode` rather
-    // than the near-universal `.config`. Matches ResourceHandler.isToolInstalled.
-    const probeDir = path.dirname(probe);
-    const toolRoot = probeDir === '.' ? path.join(baseDir, probe) : path.join(baseDir, probeDir);
-    if (!await pathExists(toolRoot)) {
+    if (!await isToolInstalledForConfig(tool, probe, localConfig, file)) {
       log.debug(`Skipping MCP sync for ${tool}: tool not installed`);
       continue;
     }
 
-    targets.push({ tool, format, file: path.join(baseDir, rel), projectScope });
+    targets.push({ tool, format, file, projectScope });
   }
   return targets;
 }
@@ -230,27 +228,49 @@ export async function resolveMcpTargets(
 export interface JsonDoc {
   data: Record<string, unknown>;
   servers: Record<string, unknown>;
+  /** The existing document stores server names directly at the top level. */
+  bare: boolean;
 }
 
 /**
  * Read a JSON MCP config. Returns null when the file exists but cannot be
  * parsed — we abandon the injection rather than risk clobbering a file we do
- * not understand (it may hold the user's OAuth session).
+ * not understand (it may hold the user's OAuth session). Copilot project files
+ * additionally allow a bare top-level server map, whose shape we preserve.
  */
-export async function readJsonDoc(file: string, serverKey: string): Promise<JsonDoc | null> {
-  if (!await pathExists(file)) return { data: {}, servers: {} };
+export async function readJsonDoc(
+  file: string,
+  serverKey: string,
+  allowBare = false,
+): Promise<JsonDoc | null> {
+  if (!await pathExists(file)) return { data: {}, servers: {}, bare: false };
   const raw = await readFileSafe(file);
   if (raw === null) return null;
-  if (raw.trim() === '') return { data: {}, servers: {} };
+  if (raw.trim() === '') return { data: {}, servers: {}, bare: allowBare };
   try {
     const data = JSON.parse(raw) as Record<string, unknown>;
     if (typeof data !== 'object' || data === null || Array.isArray(data)) return null;
-    const servers = (data[serverKey] as Record<string, unknown>) ?? {};
+    const bare = allowBare && !(serverKey in data);
+    const servers = bare ? data : (data[serverKey] as Record<string, unknown>) ?? {};
     if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) return null;
-    return { data, servers: { ...servers } };
+    return { data, servers: { ...servers }, bare };
   } catch {
     return null;
   }
+}
+
+/** Write a parsed JSON MCP config while preserving its original container shape. */
+export async function writeJsonDoc(
+  file: string,
+  serverKey: string,
+  doc: JsonDoc,
+): Promise<void> {
+  if (doc.bare) {
+    await writeJsonAtomic(file, doc.servers);
+    return;
+  }
+  doc.data[serverKey] = doc.servers;
+  await writeJsonAtomic(file, doc.data);
 }
 
 // ─── Codex TOML target I/O ───────────────────────────────────
@@ -465,7 +485,8 @@ async function applyJson(
   options: McpReconcileOptions,
 ): Promise<boolean> {
   const serverKey = MCP_SERVER_KEY[target.format as Exclude<McpFormat, 'codex'>];
-  const doc = await readJsonDoc(target.file, serverKey);
+  const allowBare = target.format === 'copilot' && target.projectScope;
+  const doc = await readJsonDoc(target.file, serverKey, allowBare);
   if (!doc) {
     log.warn(`Could not parse ${target.file} — skipping MCP injection for ${target.tool}`);
     return false;
@@ -507,8 +528,7 @@ async function applyJson(
   // Some tools (OpenCode) key the server map under `mcp`, not `mcpServers`;
   // writing the wrong key would strip the servers and, worse, leave a phantom
   // empty `mcpServers` in a file the tool never reads under that name.
-  doc.data[serverKey] = doc.servers;
-  await writeJsonAtomic(target.file, doc.data);
+  await writeJsonDoc(target.file, serverKey, doc);
   return true;
 }
 

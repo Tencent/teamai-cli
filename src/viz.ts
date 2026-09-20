@@ -33,6 +33,8 @@ export type { PromotionCandidate, PruneCandidate, StaleEntry };
 // ─── Public option / data types ──────────────────────────────────────────────
 
 export interface VizOptions {
+  /** Explicit installed dashboard scope; null selects unconfigured user scope. */
+  config?: import('./types.js').LocalConfig | null;
   /** Path to a team repo root directory to aggregate instead of local ~/.teamai. */
   repo?: string;
 }
@@ -154,7 +156,7 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
     };
   }
 
-  const config = await detectProjectConfig() ?? await loadLocalConfig();
+  const config = opts.config !== undefined ? opts.config : await detectProjectConfig() ?? await loadLocalConfig();
 
   if (config?.repo?.localPath) {
     const { usesBranchWorktree } = await import('./types.js');
@@ -454,5 +456,24 @@ export async function getVizSummary(opts: VizOptions = {}): Promise<VizSummary> 
     overallCoveragePct: data.overallCoveragePct,
     coverage: (data.coverage ?? []).map((stat) => ({ type: stat.type, coveragePct: stat.coveragePct })),
     source: data.source,
+  };
+}
+
+/** Read-only dashboard payload; report HTML is escaped by the existing renderer. */
+export async function getDashboardContext(opts: VizOptions = {}) {
+  const data = await buildVizData(await resolveVizRoot(opts));
+  const { renderDashboardReport } = await import('./viz-render.js');
+  return {
+    generatedAt: data.generatedAt,
+    source: data.source,
+    totalEntries: data.totalEntries,
+    overallCoveragePct: data.overallCoveragePct,
+    silentCount: data.silent.length,
+    maintenanceCounts: {
+      promote: data.maintenance.promote.length,
+      prune: data.maintenance.prune.length,
+      stale: data.maintenance.stale.length,
+    },
+    ...renderDashboardReport(data),
   };
 }

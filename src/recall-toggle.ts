@@ -2,7 +2,7 @@ import path from 'node:path';
 import { autoDetectInit, saveLocalConfigForScope } from './config.js';
 import { log } from './utils/logger.js';
 import { readFileSafe, writeFile, remove, pathExists } from './utils/fs.js';
-import { ResourceHandler } from './resources/base.js';
+import { isToolInstalledForConfig } from './resources/base.js';
 import {
   ALL_SUPPORTED_TOOLS,
   agentFileExtensionForTool,
@@ -11,7 +11,7 @@ import {
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { RECALL_DEPENDENT_SKILLS } from './builtin-skills.js';
 import {
-  resolveBaseDir,
+  resolveToolBaseDir,
   isRecallEnabled,
   isAgentExcluded,
   scopedToolPaths,
@@ -23,9 +23,8 @@ import {
 } from './types.js';
 
 async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-  const baseDir = resolveBaseDir(localConfig);
-
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    const baseDir = resolveToolBaseDir(tool, localConfig);
     // Remove recall rule file
     if (toolPath.rules) {
       // Cursor-compatible copies are `.mdc`; older layouts also left `.md` files.
@@ -101,14 +100,14 @@ async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
   // Inject recall rules block into CLAUDE.md for Tier-1 tools
   const { injectClaudeMdSection } = await import('./utils/claudemd.js');
   const { compileRecallRulesBlock } = await import('./pull.js');
-  const baseDir = resolveBaseDir(localConfig);
   const recallBlock = compileRecallRulesBlock();
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (isAgentExcluded(localConfig, tool)) continue;
     if (!toolPath.claudemd || !toolPath.agents) continue;
-    if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
+    if (!await isToolInstalledForConfig(tool, toolPath.agents, localConfig)) continue;
 
+    const baseDir = resolveToolBaseDir(tool, localConfig);
     const claudeMdPath = path.join(baseDir, toolPath.claudemd);
     try {
       await injectClaudeMdSection(

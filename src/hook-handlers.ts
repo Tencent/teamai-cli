@@ -77,10 +77,11 @@ const LOCAL_AGENT_TIMEOUT_MS = 15_000;
  * it and index.ts then `process.exit(0)`s, truncating whatever is still running
  * (git children orphaned, later sync stages never run). Cold pulls — fetch,
  * submodule update, resource reconcile — measured 10-25s, so the shared 15s
- * budget silently cut the pull short. Size any background handler that must
- * finish accordingly: this one only bounds a wedged git otherwise.
+ * budget silently cut the pull short. Since the postPull script runs inside
+ * the pull, this budget also covers the deploy wait (sizing lives with the
+ * constants in post-pull.ts, pinned by its guard test).
  */
-const PULL_TIMEOUT_MS = 120_000;
+export const PULL_TIMEOUT_MS = 120_000;
 
 // ─── Handler implementations ────────────────────────────
 //
@@ -144,12 +145,32 @@ async function teamCorrectionKeywords(stdin: Record<string, unknown>): Promise<r
   }
 }
 
+/**
+ * Per-machine gateway model-alias map from the user-scope config, used to price
+ * requests whose transcript records an opaque alias instead of a Claude model
+ * name. Only read on stop events (where pricing happens); an unreadable config
+ * means "no aliases", i.e. built-in model-name matching only.
+ */
+async function userModelAliases(stdin: Record<string, unknown>): Promise<Record<string, string> | undefined> {
+  const eventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name.toLowerCase() : '';
+  if (eventName !== 'stop') return undefined;
+  try {
+    const { loadLocalConfig } = await import('./config.js');
+    return (await loadLocalConfig())?.modelAliases;
+  } catch {
+    return undefined;
+  }
+}
+
 const dashboardReportHandler: HookHandler = {
   name: 'dashboard-report',
   async execute(stdin, tool) {
     const { parseHookEvent, appendEvent, compactEvents } = await import('./dashboard-collector.js');
     const raw = JSON.stringify(stdin);
-    const event = await parseHookEvent(raw, tool, { correctionKeywords: await teamCorrectionKeywords(stdin) });
+    const event = await parseHookEvent(raw, tool, {
+      correctionKeywords: await teamCorrectionKeywords(stdin),
+      modelAliases: await userModelAliases(stdin),
+    });
     if (event) {
       await appendEvent(event);
       // Non-blocking compaction
@@ -370,6 +391,8 @@ const votesSyncHandler: HookHandler = {
       // Enforcement: recall happened but nothing was declared → nudge the model
       // to declare which recalled docs it actually used. The nudge makes the
       // model continue; on the next Stop the declaration is recorded above.
+      // An explicit empty declaration (`[]`) counts as declared, otherwise a
+      // model that correctly reports "nothing used" would be nudged forever.
       // Most tools can retry until the model declares on the next turn. Cursor
       // is capped below because followup_message itself forces another turn and
       // would otherwise create an unbounded Stop loop.
@@ -378,7 +401,7 @@ const votesSyncHandler: HookHandler = {
       const declared = voteData.referencedDocIds;
       let nudged = false;
 
-      if (recalled.length > 0 && declared.length === 0) {
+      if (recalled.length > 0 && !voteData.hasReferencedDocIdsDeclaration) {
         nudged = true;
         // Cursor's followup_message forces another model turn. Cap it to one
         // per session so a model that never emits the declaration cannot enter

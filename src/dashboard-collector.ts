@@ -19,6 +19,7 @@ import {
   INTERVENTION_SCAN_MAX_BYTES,
   TRANSCRIPT_INTERRUPT_PREFIX,
   TRANSCRIPT_SYSTEM_PREFIXES,
+  stripInjectedPrompt,
   TRANSCRIPT_REJECT_MARKERS,
   emptyTokenUsage,
   addTokenUsage,
@@ -183,7 +184,7 @@ export interface LocalRequestRecord {
  */
 export async function scanTranscriptStop(
   transcriptPath: string,
-  opts?: { frictionOnly?: boolean; tool?: string },
+  opts?: { frictionOnly?: boolean; tool?: string; modelAliases?: Record<string, string> },
 ): Promise<TranscriptScanResult> {
   // CodeBuddy persists its transcript as a single `index.json` document (a JSON
   // object with `requests[].usage` + `messages[]`), NOT the JSONL schema used by
@@ -193,7 +194,7 @@ export async function scanTranscriptStop(
     if (cb) return cb;
   }
 
-  const initial = await scanJsonlTranscriptOnce(transcriptPath);
+  const initial = await scanJsonlTranscriptOnce(transcriptPath, opts?.modelAliases);
   if (opts?.frictionOnly || !isCodexTool(opts?.tool)) return initial.result;
 
   // Codex can append the final cumulative usage record shortly after firing Stop.
@@ -219,7 +220,7 @@ interface JsonlTranscriptScan {
 }
 
 /** Scan the Claude/Codex JSONL transcript once. */
-async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTranscriptScan> {
+async function scanJsonlTranscriptOnce(transcriptPath: string, modelAliases?: Record<string, string>): Promise<JsonlTranscriptScan> {
   let interrupt = 0;
   let toolReject = 0;
   let toolError = 0;
@@ -316,7 +317,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTra
                 cacheEligibleInputTokens: historical.inputTokens + historical.cacheReadTokens + historical.cacheCreationTokens,
                 priceVersion: historical.priceVersion,
               }
-              : estimateClaudeRequest(entry.message.model, requestTokens);
+              : estimateClaudeRequest(entry.message.model, requestTokens, modelAliases);
             if (priced) {
               requestMetrics = {
                 pricedRequests: (requestMetrics?.pricedRequests ?? 0) + 1,
@@ -867,6 +868,8 @@ function mapEventType(hookEventName: string): DashboardEventType | null {
 export interface ParseHookEventOptions {
   /** Team keywords (`sharing.intervention.correctionKeywords`) merged with the built-in list. */
   correctionKeywords?: readonly string[];
+  /** Per-machine gateway model-alias → known Claude model name, for cost/cache estimation. */
+  modelAliases?: Record<string, string>;
 }
 
 /**
@@ -928,14 +931,20 @@ export async function parseHookEvent(
     }
   }
 
-  // Extract prompt summary from UserPromptSubmit
+  // Extract prompt summary from UserPromptSubmit. Strip harness/hook injections
+  // (task-notifications, system-reminders, interrupt markers) that also fire this
+  // hook — a background task completing is not a human prompt turn. A prompt that
+  // is purely injected content produces no event at all, so it neither inflates the
+  // prompt count nor shows up as a session prompt.
   if (eventType === 'prompt_submit' && typeof hookData.prompt === 'string') {
-    // Keep first 200 chars of the prompt as summary
-    event.promptSummary = hookData.prompt.slice(0, 200);
+    const human = stripInjectedPrompt(hookData.prompt);
+    if (!human) return null;
+    // Keep first 200 chars of the genuine prompt as summary.
+    event.promptSummary = human.slice(0, 200);
     // Decide "correction" here, over the full prompt, because only the hook knows
     // which team (and so which extra keywords) the prompt belongs to. The
     // machine-level events file mixes sessions from every team.
-    event.correction = isCorrectionPrompt(hookData.prompt, options?.correctionKeywords);
+    event.correction = isCorrectionPrompt(human, options?.correctionKeywords);
   }
 
   // Extract transcript path, AI output and intervention counts from Stop event
@@ -947,7 +956,7 @@ export async function parseHookEvent(
     }
     // Full-transcript snapshot of interrupt/tool_reject counts + token usage +
     // human prompt count (all idempotent, sourced from the non-compactable transcript).
-    const scan = await scanTranscriptStop(hookData.transcript_path, { tool });
+    const scan = await scanTranscriptStop(hookData.transcript_path, { tool, modelAliases: options?.modelAliases });
     if (scan.interrupt > 0 || scan.toolReject > 0 || scan.toolError > 0) {
       event.interventions = {
         interrupt: scan.interrupt,
@@ -1108,10 +1117,11 @@ export async function appendEvent(event: DashboardEvent): Promise<void> {
 }
 
 /**
- * Read all events from the JSONL file. Skips corrupted lines.
+ * Read raw events from the JSONL file, in file (append) order. Skips corrupted
+ * lines. Callers that must preserve the on-disk stream verbatim (e.g. compaction)
+ * use this; everything else goes through {@link readEvents}, which also dedupes.
  */
-export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]> {
-  const filePath = eventsPath ?? getEventsPath();
+async function readEventsRaw(filePath: string): Promise<DashboardEvent[]> {
   try {
     const content = await fs.promises.readFile(filePath, 'utf-8');
     const events: DashboardEvent[] = [];
@@ -1131,6 +1141,78 @@ export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]>
   } catch {
     return [];
   }
+}
+
+/**
+ * Cross-tool duplicate window. When a host (e.g. Cursor) also loads claude's
+ * `~/.claude/settings.json`, one action fires both that hook (`--tool claude`)
+ * and the host's own hook (`--tool cursor`), writing two near-identical events
+ * under the SAME sessionId. Observed skew is 7–172ms; 2s is a generous guard.
+ * A shared sessionId across two DIFFERENT tools only happens under this bug —
+ * genuine distinct-tool sessions get distinct session ids — so the window is a
+ * secondary safety check, not the primary discriminator.
+ */
+const CROSS_TOOL_DEDUP_WINDOW_MS = 2000;
+
+/** Content signature within a session: distinguishes genuine repeats from dupes. */
+function eventSignature(e: DashboardEvent): string {
+  switch (e.type) {
+    case 'tool_use': return `tool_use\0${e.toolName ?? ''}`;
+    case 'prompt_submit': return `prompt_submit\0${e.promptSummary ?? ''}`;
+    default: return e.type; // session_start | stop | process_exit
+  }
+}
+
+/** Higher = richer payload; the richer record is kept as the surviving carrier. */
+function eventPayloadScore(e: DashboardEvent): number {
+  return (e.tokens ? 8 : 0) + (e.stoppedOutput ? 4 : 0) + (e.interventions ? 2 : 0)
+    + (typeof e.prompts === 'number' ? 2 : 0) + (e.requestMetrics || e.requestDaily ? 2 : 0)
+    + (e.monitorPid ? 1 : 0);
+}
+
+/** A specific host wins over the generic `claude` default (index.ts hook --tool). */
+function preferTool(a: string, b: string): string {
+  if (a === b) return a;
+  if (a === 'claude') return b;
+  if (b === 'claude') return a;
+  return a; // both specific (shouldn't occur under the bug): keep earliest deterministically
+}
+
+/**
+ * Collapse cross-tool duplicate events (see {@link CROSS_TOOL_DEDUP_WINDOW_MS}).
+ * Two events merge only when they share sessionId + type + content signature, are
+ * within the window, and have DIFFERENT tools — so genuine same-tool repeats and
+ * single-tool sessions pass through untouched. The surviving record keeps the
+ * richest payload and adopts the specific host tool. Output is timestamp-ascending.
+ */
+export function dedupeEvents(events: DashboardEvent[]): DashboardEvent[] {
+  const sorted = [...events].sort((x, y) => Date.parse(x.timestamp) - Date.parse(y.timestamp));
+  const result: DashboardEvent[] = [];
+  const lastByKey = new Map<string, number>(); // (sessionId\0signature) -> index in result
+  for (const e of sorted) {
+    const key = `${e.sessionId}\0${eventSignature(e)}`;
+    const idx = lastByKey.get(key);
+    if (idx !== undefined) {
+      const prev = result[idx];
+      const gap = Math.abs(Date.parse(e.timestamp) - Date.parse(prev.timestamp));
+      if (prev.tool !== e.tool && gap <= CROSS_TOOL_DEDUP_WINDOW_MS) {
+        const carrier = eventPayloadScore(e) > eventPayloadScore(prev) ? e : prev; // tie -> prev (earlier)
+        result[idx] = { ...carrier, tool: preferTool(prev.tool, e.tool) };
+        continue; // collapsed; do not push
+      }
+    }
+    result.push(e);
+    lastByKey.set(key, result.length - 1);
+  }
+  return result;
+}
+
+/**
+ * Read all events from the JSONL file, cross-tool-deduped. Skips corrupted lines.
+ */
+export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]> {
+  const filePath = eventsPath ?? getEventsPath();
+  return dedupeEvents(await readEventsRaw(filePath));
 }
 
 // ─── Session state rebuild ──────────────────────────────
@@ -1434,7 +1516,10 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
 
     if (lines.length < DASHBOARD_COMPACTION_THRESHOLD) return;
 
-    const events = await readEvents(filePath);
+    // Compaction rewrites the file, so it must preserve raw (append-order,
+    // un-deduped) events — dedup is a read-time view, not a disk mutation.
+    // Dedup never changes the active-session set, so activeIds is identical.
+    const events = await readEventsRaw(filePath);
     const activeSessions = rebuildSessions(events);
     const activeIds = new Set(activeSessions.map(s => s.sessionId));
 

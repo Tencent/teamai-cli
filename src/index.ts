@@ -94,7 +94,7 @@ program
     const globalOpts = program.opts() as GlobalOptions;
     if (cmdOpts.silent) setSilent(true);
     const { pull } = await import('./pull.js');
-    await pull({ ...globalOpts, ...cmdOpts });
+    await pull({ ...globalOpts, ...cmdOpts, interactive: !cmdOpts.silent });
   });
 
 program

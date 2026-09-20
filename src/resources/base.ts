@@ -30,10 +30,12 @@ export async function isToolInstalledForConfig(
   tool: string,
   toolPath: string,
   localConfig: LocalConfig,
+  exactConfigPath?: string,
 ): Promise<boolean> {
   const baseDir = resolveToolBaseDir(tool, localConfig);
   if (tool === COPILOT_TOOL_ID) {
     return localConfig.enabledAgents?.includes(COPILOT_TOOL_ID) === true
+      || (exactConfigPath !== undefined && await pathExists(exactConfigPath))
       || pathExists(getCopilotHome());
   }
   return ResourceHandler.isToolInstalled(toolPath, baseDir);

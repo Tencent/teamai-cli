@@ -10,8 +10,10 @@ import {
   readEvents,
   rebuildSessions,
   aggregateSessionInterventions,
+  aggregateSessionMetrics,
   compactEvents,
   reconcileRequestLog,
+  dedupeEvents,
 } from '../dashboard-collector.js';
 import type { DashboardEvent } from '../types.js';
 
@@ -119,6 +121,30 @@ describe('parseHookEvent', () => {
       const event = await parseHookEvent(raw, 'claude');
       expect(event!.correction, word).toBe(false);
     }
+  });
+
+  it('drops a UserPromptSubmit that is purely injected content (no human turn)', async () => {
+    // Background-task completions and system reminders fire this hook too, but are
+    // not human prompts — they must not become events (else they inflate the count
+    // and appear as session prompts).
+    for (const injected of [
+      '<task-notification>\n<task-id>abc123</task-id>\n<output-file>/tmp/x</output-file>\n</task-notification>',
+      '<system-reminder>The user changed X</system-reminder>',
+      '[Request interrupted by user for tool use]',
+    ]) {
+      const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: injected });
+      expect(await parseHookEvent(raw, 'claude')).toBeNull();
+    }
+  });
+
+  it('keeps the human text when a real prompt has an injection appended (mid-turn send)', async () => {
+    const raw = JSON.stringify({
+      hook_event_name: 'UserPromptSubmit', session_id: 's',
+      prompt: 'fix the trend panel\n\n<task-notification>\n<task-id>xyz</task-id>\n</task-notification>',
+    });
+    const event = await parseHookEvent(raw, 'claude');
+    expect(event!.type).toBe('prompt_submit');
+    expect(event!.promptSummary).toBe('fix the trend panel');
   });
 
   it('matches Latin keywords as whole words, including multi-word ones', async () => {
@@ -1122,5 +1148,108 @@ describe('countInterventions (CodeBuddy index.json)', () => {
     fs.writeFileSync(path.join(tmpDir, 'malformed', 'messages', 'bad.json'), 'NOT JSON');
     const iv = await countInterventions(p);
     expect(iv.toolReject).toBe(1);
+  });
+});
+
+// ─── dedupeEvents (cross-tool double-fire, e.g. Cursor reusing claude hooks) ──
+describe('dedupeEvents', () => {
+  const ev = (over: Partial<DashboardEvent> & Pick<DashboardEvent, 'type' | 'tool' | 'timestamp'>): DashboardEvent =>
+    ({ sessionId: 's1', ...over } as DashboardEvent);
+
+  it('leaves a single-tool session untouched (only sorts by time)', () => {
+    const events: DashboardEvent[] = [
+      ev({ type: 'session_start', tool: 'claude', timestamp: '2026-09-18T00:00:00.000Z' }),
+      ev({ type: 'prompt_submit', tool: 'claude', timestamp: '2026-09-18T00:00:01.000Z', promptSummary: 'first' }),
+      ev({ type: 'prompt_submit', tool: 'claude', timestamp: '2026-09-18T00:00:02.000Z', promptSummary: 'second' }),
+      ev({ type: 'tool_use', tool: 'claude', timestamp: '2026-09-18T00:00:03.000Z', toolName: 'Bash' }),
+      ev({ type: 'stop', tool: 'claude', timestamp: '2026-09-18T00:00:04.000Z' }),
+    ];
+    expect(dedupeEvents(events)).toHaveLength(5);
+  });
+
+  it('keeps genuine same-tool repeats in the same second', () => {
+    const events: DashboardEvent[] = [
+      ev({ type: 'tool_use', tool: 'claude', timestamp: '2026-09-18T00:00:00.000Z', toolName: 'Bash' }),
+      ev({ type: 'tool_use', tool: 'claude', timestamp: '2026-09-18T00:00:00.100Z', toolName: 'Bash' }),
+    ];
+    expect(dedupeEvents(events)).toHaveLength(2); // same tool → not a cross-tool dupe
+  });
+
+  it('collapses a cross-tool prompt_submit pair and keeps the specific host tool', () => {
+    const events: DashboardEvent[] = [
+      ev({ type: 'prompt_submit', tool: 'claude', timestamp: '2026-09-18T00:00:00.000Z', promptSummary: 'review PR' }),
+      ev({ type: 'prompt_submit', tool: 'cursor', timestamp: '2026-09-18T00:00:00.050Z', promptSummary: 'review PR' }),
+    ];
+    const out = dedupeEvents(events);
+    expect(out).toHaveLength(1);
+    expect(out[0].tool).toBe('cursor');
+  });
+
+  it('picks the specific host even when claude was appended first', () => {
+    const events: DashboardEvent[] = [
+      ev({ type: 'session_start', tool: 'claude', timestamp: '2026-09-18T00:00:00.000Z', monitorPid: 50529 }),
+      ev({ type: 'session_start', tool: 'cursor', timestamp: '2026-09-18T00:00:00.008Z', monitorPid: 50529 }),
+    ];
+    const out = dedupeEvents(events);
+    expect(out).toHaveLength(1);
+    expect(out[0].tool).toBe('cursor');
+  });
+
+  it('does not double-count turns for a doubled cross-tool session', () => {
+    const events: DashboardEvent[] = [
+      ev({ type: 'session_start', tool: 'claude', timestamp: '2026-09-18T00:00:00.000Z' }),
+      ev({ type: 'session_start', tool: 'cursor', timestamp: '2026-09-18T00:00:00.010Z' }),
+      ev({ type: 'prompt_submit', tool: 'claude', timestamp: '2026-09-18T00:00:01.000Z', promptSummary: 'one' }),
+      ev({ type: 'prompt_submit', tool: 'cursor', timestamp: '2026-09-18T00:00:01.007Z', promptSummary: 'one' }),
+    ];
+    const metrics = aggregateSessionMetrics(dedupeEvents(events));
+    expect(metrics.get('s1')!.prompts).toBe(1); // one genuine turn, not two
+  });
+
+  it('keeps the richest payload on a collapsed stop, but adopts the host tool', () => {
+    const events: DashboardEvent[] = [
+      ev({ type: 'stop', tool: 'claude', timestamp: '2026-09-18T00:00:00.000Z',
+        prompts: 1, stoppedOutput: 'done', tokens: { input: 100, output: 20, cacheRead: 30, cacheCreation: 0 } }),
+      ev({ type: 'stop', tool: 'cursor', timestamp: '2026-09-18T00:00:00.050Z' }),
+    ];
+    const out = dedupeEvents(events);
+    expect(out).toHaveLength(1);
+    expect(out[0].tool).toBe('cursor');
+    expect(out[0].stoppedOutput).toBe('done');
+    expect(out[0].tokens?.input).toBe(100);
+  });
+
+  it('does not merge a cross-tool pair beyond the dedup window', () => {
+    const events: DashboardEvent[] = [
+      ev({ type: 'prompt_submit', tool: 'claude', timestamp: '2026-09-18T00:00:00.000Z', promptSummary: 'x' }),
+      ev({ type: 'prompt_submit', tool: 'cursor', timestamp: '2026-09-18T00:00:03.000Z', promptSummary: 'x' }),
+    ];
+    expect(dedupeEvents(events)).toHaveLength(2); // 3s apart → two distinct
+  });
+
+  it('resolves the session tool to the host end-to-end via rebuildSessions', () => {
+    // Recent timestamps so rebuildSessions' idle/stale timeouts keep the session.
+    const t0 = Date.now();
+    const iso = (offsetMs: number) => new Date(t0 + offsetMs).toISOString();
+    const events: DashboardEvent[] = [
+      ev({ type: 'session_start', tool: 'claude', timestamp: iso(0) }),
+      ev({ type: 'session_start', tool: 'cursor', timestamp: iso(10) }),
+      ev({ type: 'prompt_submit', tool: 'claude', timestamp: iso(1000), promptSummary: 'q' }),
+      ev({ type: 'prompt_submit', tool: 'cursor', timestamp: iso(1006), promptSummary: 'q' }),
+    ];
+    const sessions = rebuildSessions(dedupeEvents(events));
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].tool).toBe('cursor');
+    expect(sessions[0].promptCount).toBe(1); // turn not doubled
+  });
+
+  it('returns events sorted by timestamp', () => {
+    const events: DashboardEvent[] = [
+      ev({ type: 'tool_use', tool: 'claude', timestamp: '2026-09-18T00:00:02.000Z', toolName: 'Read' }),
+      ev({ type: 'session_start', tool: 'claude', timestamp: '2026-09-18T00:00:00.000Z' }),
+      ev({ type: 'tool_use', tool: 'claude', timestamp: '2026-09-18T00:00:01.000Z', toolName: 'Bash' }),
+    ];
+    const out = dedupeEvents(events).map(e => e.timestamp);
+    expect(out).toEqual([...out].sort());
   });
 });

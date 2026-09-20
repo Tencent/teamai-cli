@@ -13,6 +13,10 @@ export interface DailySessionSnapshot {
   succeeded: 0 | 1;
   corrected: 0 | 1;
   requestDaily: Record<string, RequestCostMetrics>;
+  /** Session-level cache tokens, straight from the transcript (pricing-independent),
+   *  so cache-read share works even when the model can't be priced. */
+  sessionCacheReadTokens?: number;
+  sessionCacheEligibleTokens?: number;
   /** Legacy fields retained while previously reported snapshots are upgraded. */
   pricedRequests?: number;
   costMicros?: number;
@@ -82,6 +86,8 @@ export function aggregateDailySessions(events: DashboardEvent[]): Map<string, Da
       succeeded: !hasError && metric.interrupt === 0 && corrected === 0 ? 1 : 0,
       corrected,
       requestDaily,
+      sessionCacheReadTokens: metric.tokens.cacheRead,
+      sessionCacheEligibleTokens: metric.tokens.input + metric.tokens.cacheRead + metric.tokens.cacheCreation,
     });
   }
   return result;
@@ -126,13 +132,24 @@ export function computeDailyStatsDelta(
         } }
         : {}
     );
+    // Cache-read share is pricing-independent: fold session-level cache tokens onto
+    // the firstStop day (like prompts/duration), so it works even when the model
+    // can't be priced. Legacy fallback: a session reported under the old code has no
+    // sessionCache* fields but does have requestDaily cache — sum it as the baseline
+    // so this first post-upgrade report doesn't re-add already-counted tokens.
+    const prevCacheRead = previous?.sessionCacheReadTokens
+      ?? Object.values(previousDaily).reduce((sum, r) => sum + r.cacheReadTokens, 0);
+    const prevCacheEligible = previous?.sessionCacheEligibleTokens
+      ?? Object.values(previousDaily).reduce((sum, r) => sum + r.cacheEligibleInputTokens, 0);
+    bucket.cacheReadTokens += positiveDelta(snapshot.sessionCacheReadTokens ?? 0, prevCacheRead);
+    bucket.cacheEligibleInputTokens += positiveDelta(snapshot.sessionCacheEligibleTokens ?? 0, prevCacheEligible);
+    delta[date] = bucket;
+    // Cost stays per-requestDate from pricing; cache no longer flows through here.
     for (const [requestDate, request] of Object.entries(snapshot.requestDaily)) {
       const previousRequest = previousDaily[requestDate];
       const requestBucket = delta[requestDate] ?? emptyDaily();
       requestBucket.pricedRequests += positiveDelta(request.pricedRequests, previousRequest?.pricedRequests);
       requestBucket.costMicros += positiveDelta(request.costMicros, previousRequest?.costMicros);
-      requestBucket.cacheReadTokens += positiveDelta(request.cacheReadTokens, previousRequest?.cacheReadTokens);
-      requestBucket.cacheEligibleInputTokens += positiveDelta(request.cacheEligibleInputTokens, previousRequest?.cacheEligibleInputTokens);
       requestBucket.priceVersion = request.priceVersion;
       delta[requestDate] = requestBucket;
     }
@@ -212,4 +229,33 @@ export function summarizeTrendWindow(
     else if (timestamp >= previousStart && timestamp < currentStart) previous.push(bucket);
   }
   return { current: summarizePeriod(current), previous: summarizePeriod(previous) };
+}
+
+/** Session-cost cohorts use the first Stop day, including the session's known request costs.
+ * Sessions with no priced requests are excluded, rather than treated as free.
+ * Kept separate from request-day digest totals for backwards compatibility.
+ */
+export function summarizeSessionCosts(sessions: Map<string, DailySessionSnapshot>, now = new Date()): {
+  current: { avgSessionCostMicros: number | null; pricedSessions: number };
+  previous: { avgSessionCostMicros: number | null; pricedSessions: number };
+} {
+  const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + 86_400_000;
+  const currentStart = end - 7 * 86_400_000;
+  const previousStart = currentStart - 7 * 86_400_000;
+  const totals = { current: { cost: 0, count: 0 }, previous: { cost: 0, count: 0 } };
+  for (const session of sessions.values()) {
+    const day = Date.parse(`${session.date}T00:00:00Z`);
+    if (!Number.isFinite(day) || day < previousStart || day >= end) continue;
+    const requests = Object.values(session.requestDaily);
+    const priced = requests.reduce((sum, request) => sum + request.pricedRequests, 0);
+    if (priced <= 0) continue;
+    const period = day >= currentStart ? totals.current : totals.previous;
+    period.count++;
+    period.cost += requests.reduce((sum, request) => sum + request.costMicros, 0);
+  }
+  const summarize = (period: { cost: number; count: number }) => ({
+    avgSessionCostMicros: period.count ? period.cost / period.count : null,
+    pricedSessions: period.count,
+  });
+  return { current: summarize(totals.current), previous: summarize(totals.previous) };
 }

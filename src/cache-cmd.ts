@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 
 import type { GlobalOptions } from './types.js';
-import { getCacheStatus, gcCache } from './utils/cache-index.js';
+import { getCacheStatus, gcCache, parsePositiveInteger } from './utils/cache-index.js';
 import { log } from './utils/logger.js';
 
 // ─── Types ───────────────────────────────────────────────
@@ -43,6 +43,15 @@ function formatBytes(bytes: number): string {
 function shortSha(sha?: string): string {
     if (!sha) return '-';
     return sha.slice(0, 8);
+}
+
+function parseGcOption(value: string, option: string): number | undefined {
+    const parsed = parsePositiveInteger(value);
+    if (parsed !== undefined) return parsed;
+
+    log.error(`${option} must be a positive integer; received "${value}"`);
+    process.exitCode = 2;
+    return undefined;
 }
 
 // ─── Command ──────────────────────────────────────────────
@@ -117,22 +126,14 @@ async function runStatus(opts: CacheCmdOptions): Promise<void> {
 async function runGc(opts: CacheCmdOptions): Promise<void> {
     let maxBytes: number | undefined;
     if (opts.maxBytes !== undefined) {
-        const parsed = parseInt(opts.maxBytes, 10);
-        if (!isNaN(parsed) && parsed > 0) {
-            maxBytes = parsed;
-        } else {
-            log.warn(`--max-bytes 值无效: ${opts.maxBytes}，将使用默认值`);
-        }
+        maxBytes = parseGcOption(opts.maxBytes, '--max-bytes');
+        if (maxBytes === undefined) return;
     }
 
     let staleDays: number | undefined;
     if (opts.staleDays !== undefined) {
-        const parsed = parseInt(opts.staleDays, 10);
-        if (!isNaN(parsed) && parsed > 0) {
-            staleDays = parsed;
-        } else {
-            log.warn(`--stale-days 值无效: ${opts.staleDays}，将使用默认值`);
-        }
+        staleDays = parseGcOption(opts.staleDays, '--stale-days');
+        if (staleDays === undefined) return;
     }
 
     const gcOpts = {

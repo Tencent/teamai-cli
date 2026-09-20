@@ -102,8 +102,10 @@ export class RulesHandler extends ResourceHandler {
         } else {
           // File does not exist in team repo — candidate for "new".
           // Native rule directories can also contain personal rules created by
-          // the target tool. Unknown files there are user-owned and stay local.
-          if (isMdcTool || isCopilotTool) continue;
+          // the target tool. Unknown files there are user-owned and stay local:
+          // the .mdc and Copilot-instructions dirs, plus OMP's native rules dir
+          // (the same ownership policy the pull-side sweep applies to OMP).
+          if (isMdcTool || isCopilotTool || tool === 'omp') continue;
           const existing = candidates.get(name);
           if (!existing) {
             const mtime = await getFileMtime(localFilePath);
@@ -329,10 +331,13 @@ export class RulesHandler extends ResourceHandler {
         const ruleName = ruleStemFromFilename(localFile);
         if (ruleName === null) continue;
 
-        // JoyCode's rules directory is shared with user-authored rules. Absence
-        // from the current team set is not proof of TeamAI ownership (including
-        // legacy .md files). Only explicit team removals authorize cleanup.
-        if ((tool === 'joycode' || usesCopilotInstructions(tool)) && !tombstones.has(ruleName)) continue;
+        // JoyCode's, OMP's, and Copilot's rules directories are shared with
+        // user-authored rules (OMP's native rules dirs are exactly where its
+        // users keep personal rules). Absence from the current team set is not
+        // proof of TeamAI ownership (including legacy .md files). Only explicit
+        // team removals authorize cleanup. Cursor is deliberately absent —
+        // teamai owns .cursor/rules and sweeps it.
+        if ((tool === 'joycode' || tool === 'omp' || usesCopilotInstructions(tool)) && !tombstones.has(ruleName)) continue;
 
         // `.mdc` tools only read `.mdc`, so any `.md` here is inert leftover from the
         // layout that predates it — removed whether or not the rule is still

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
-import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/fs.js';
+import { rm } from 'node:fs/promises';
+import { readJson, writeJson, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import {
   COPILOT_TOOL_ID,
@@ -388,7 +389,7 @@ function toCopilotEntry(def: HookDef): CopilotHookEntry {
   };
 }
 
-function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
+function toZcodeEntry(def: HookDef, vbsPath: string): ZcodeHookMatcher {
   // ZCode sessions run hooks inline: a session-start dispatch carries a network
   // pull (SSH to the team host), which on slower links exceeds the 10–15s
   // builtin defaults and gets killed mid-pull — so the timeouts here are
@@ -399,6 +400,15 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
     PostToolUse: 30000,
     UserPromptSubmit: 60000,
   };
+  // wscript.exe is a GUI-subsystem binary: unlike cmd/bash it never allocates
+  // a console window, so hook runs don't flash a black box over the desktop.
+  // The VBS launcher preserves the STDIN contract (ZCode's payload reaches
+  // hook-dispatch via a spooled temp file), waits for the dispatch bounded by
+  // the per-event timeout, and runs everything hidden (window style 0) with
+  // the dispatch tail cmd-level quoted so team-declared commands survive
+  // cmd's operator parsing. The payload travels verbatim as a single argument
+  // so managed-entry detection and the manifest keep one command
+  // representation.
   // The table is ZCode's DEFAULT, not an override: a timeout the team stated in
   // hooks.yaml (per-hook `timeout`, or `builtin.overrides.<key>.timeout`) is the
   // one the user asked for and still wins, as it does on every other tool.
@@ -408,17 +418,22 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
   const entry: ZcodeHookEntry =
     process.platform === 'win32'
       ? {
-          // Windows must NOT spawn bare `bash`: CreateProcess resolves it to
-          // System32's WSL launcher before any PATH directory, and the WSL side
-          // has a different $HOME (no ~/.teamai state) and often no Node ≥ 20.
-          // cmd.exe is always present in System32 and resolves teamai from the
-          // Windows PATH (the npm shim is a .cmd, so a shell is required).
+          // wscript.exe is a GUI-subsystem binary: unlike cmd/bash it never
+          // allocates a console window, so hook runs don't flash a black box
+          // over the desktop. The VBS launcher preserves the STDIN contract
+          // (ZCode's payload reaches hook-dispatch via a spooled temp file),
+          // waits bounded by the per-event timeout, and runs hidden (window
+          // style 0). The payload travels verbatim as a single argument so
+          // managed-entry detection and the manifest keep one command
+          // representation.
           type: 'process',
-          command: 'cmd',
-          args: ['/c', def.command],
+          command: 'wscript.exe',
+          args: [vbsPath, def.command],
           timeoutMs,
         }
       : {
+          // POSIX has no console-flash problem: run the tail directly, like
+          // every other shell-based tool format.
           type: 'process',
           command: 'bash',
           // Stored verbatim: the shell payload must equal `def.command` exactly
@@ -437,8 +452,14 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
 /** Shell payload of a ZCode hook entry, for managed-entry matching. */
 function zcodeEntryCommand(entry: ZcodeHookMatcher): string {
   const hook = entry.hooks?.[0];
-  // Both variants (posix bash -lc / win32 cmd /c) carry the payload at args[1].
-  if (Array.isArray(hook?.args) && hook.args.length > 1) return hook.args[1] ?? '';
+  // The wscript launcher carries the command tail as its LAST argument —
+  // [vbsPath, tail] today; an earlier generation used a mode slot
+  // ([vbsPath, 'wait', tail]). Reading the last slot recognizes both shapes
+  // (and team commands, which carry no teamai marker and are matched against
+  // the managed-hooks manifest) so they get replaced or removed, not duplicated.
+  if (Array.isArray(hook?.args) && hook.args.length > 0) {
+    return hook.args[hook.args.length - 1] ?? '';
+  }
   return hook?.command ?? '';
 }
 
@@ -746,6 +767,37 @@ async function reconcileZcodeFormat(
 ): Promise<void> {
   const expanded = expandHome(settingsPath);
   await ensureDir(path.dirname(expanded));
+  const vbsPath = path.join(path.dirname(expanded), 'teamai-hook-dispatch.vbs');
+  // Hidden launcher: wscript.exe is a GUI-subsystem binary, so hook runs don't
+  // flash a black box over the desktop, and the spool file keeps the STDIN
+  // payload contract intact (ZCode's JSON reaches hook-dispatch even though
+  // WScript.Shell.Run cannot forward a live stdin pipe).
+  const vbsScript = [
+    "' TeamAI hook dispatcher - hidden, timeout-bounded, stdin-preserving.",
+    'Option Explicit',
+    'Dim sh, fso, spool, f',
+    'Set sh = CreateObject("WScript.Shell")',
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    'spool = fso.GetSpecialFolder(2) & "\\teamai-hook-" & fso.GetTempName',
+    'Set f = fso.CreateTextFile(spool, True)',
+    'On Error Resume Next',
+    'f.Write WScript.StdIn.ReadAll()',
+    'f.Close',
+    'sh.Run "cmd /d /s /c """ & WScript.Arguments(0) & " < """ & spool & """ >nul 2>&1""", 0, True',
+    'fso.DeleteFile spool, True',
+  ].join('\r\n');
+  if (opts.removeAll) {
+    // Unconditional: after a normal inject the file equals the template, so a
+    // content-diff gate never fires and the script would be left behind.
+    await rm(vbsPath, { force: true });
+  } else if (process.platform === 'win32') {
+    // POSIX never runs the launcher — writing it there would litter ~/.zcode
+    // with a script no entry references.
+    const existingVbs = await readFileSafe(vbsPath);
+    if (existingVbs !== vbsScript) {
+      await writeFile(vbsPath, vbsScript);
+    }
+  }
   const cfg: ZcodeHooksJson = (await readJson<ZcodeHooksJson>(expanded)) ?? {};
   if (!cfg.hooks) cfg.hooks = {};
   let changed = false;
@@ -785,7 +837,7 @@ async function reconcileZcodeFormat(
   for (const event of events) {
     const existing = eventsMap[event] ?? [];
     const untouched = existing.filter((e) => !isManaged(e));
-    const desiredEntries = defs.filter((d) => d.event === event).map(toZcodeEntry);
+    const desiredEntries = defs.filter((d) => d.event === event).map((d) => toZcodeEntry(d, vbsPath));
     const newArr = [...untouched, ...desiredEntries];
     if (JSON.stringify(existing) !== JSON.stringify(newArr)) {
       eventsMap[event] = newArr;
@@ -1100,11 +1152,15 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
   }
 
   if (format === 'zcode') {
+    const vbsPath = path.join(path.dirname(expanded), 'teamai-hook-dispatch.vbs');
     const cfg = await readJson<ZcodeHooksJson>(expanded);
     const eventsMap = cfg?.hooks?.events;
     if (!eventsMap) return 'missing';
+    // On Windows the entries are dead without the launcher script — a deleted,
+    // stale, or AV-quarantined VBS must not be reported as installed.
+    if (process.platform === 'win32' && !(await readFileSafe(vbsPath))) return 'missing';
     const present = defs.every((def) => {
-      const want = toZcodeEntry(def);
+      const want = toZcodeEntry(def, vbsPath);
       const wantCmd = zcodeEntryCommand(want);
       const entries = eventsMap[def.event] ?? [];
       return entries.some((e) => e.matcher === want.matcher && zcodeEntryCommand(e) === wantCmd);
@@ -1227,6 +1283,29 @@ async function reconcileOpencodePlugin(baseDir: string, removeAll = false, insta
 }
 
 /**
+ * Reconcile the single teamai OMP extension.
+ *
+ * OMP auto-loads extensions from BOTH ~/.omp/agent/extensions (user) and
+ * <cwd>/.omp/extensions (project), and dedups by absolute path — two copies
+ * of the teamai file would dispatch every event twice. teamai therefore
+ * writes exactly one copy, in the user agent dir, matching the OpenCode
+ * plugin policy and the settings.json hooks of every other tool (which also
+ * live in HOME and gate on the `cwd` fed to hook-dispatch). Install only when
+ * ~/.omp exists, so a machine without OMP never grows a config dir.
+ */
+async function reconcileOmpExtension(removeAll = false): Promise<void> {
+  const home = getUserHome();
+  const { injectOmpHooks, removeOmpHooks } = await import('./omp-hooks.js');
+  if (removeAll) {
+    await removeOmpHooks();
+    return;
+  }
+  if (await pathExists(path.join(home, '.omp'))) {
+    await injectOmpHooks();
+  }
+}
+
+/**
  * Inject teamai built-in hooks into all AI tool settings.
  * Only writes to tools whose root directory already exists on disk,
  * preventing creation of config dirs for tools the user hasn't installed.
@@ -1268,6 +1347,12 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
       } catch (e) {
         log.warn(`Failed to inject OpenCode hook into ${tool}: ${(e as Error).message}`);
       }
+    } else if (tool === 'omp') {
+      try {
+        await reconcileOmpExtension();
+      } catch (e) {
+        log.warn(`Failed to inject OMP hook into ${tool}: ${(e as Error).message}`);
+      }
     }
   }
 }
@@ -1278,11 +1363,11 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
  * injection path used by `teamai pull` / `init` / `hooks inject`.
  *
  * `settingsOnly` restricts the pass to tools reconciled through their settings
- * file, skipping Hermes and OpenCode. Those two go through global adapters that
- * ignore `baseDir` — `removeHermesHooks()` takes none, and the OpenCode
- * adapter's removeAll branch always targets HOME — so a caller sweeping a
- * secondary location (the legacy `<projectRoot>` copy) must opt out, or it
- * deletes the hooks the primary pass just installed.
+ * file, skipping Hermes, OpenCode, and OMP. Those three go through global
+ * adapters that ignore `baseDir` — `removeHermesHooks()` takes none, and the
+ * OpenCode / OMP adapters' removeAll branches always target HOME — so a caller
+ * sweeping a secondary location (the legacy `<projectRoot>` copy) must opt out,
+ * or it deletes the hooks the primary pass just installed.
  */
 export async function reconcileHooksToAllTools(
   toolPaths: Record<string, { settings?: string }>,
@@ -1331,6 +1416,17 @@ export async function reconcileHooksToAllTools(
         await reconcileOpencodePlugin(baseDir, opts.removeAll, opts.installedBaseDir);
       } catch (e) {
         log.warn(`Failed to reconcile OpenCode hooks: ${(e as Error).message}`);
+      }
+      continue;
+    }
+    // OMP likewise has no settings hook list: it auto-loads TS extensions from
+    // the agent dir. Route it to the extension adapter.
+    if (tool === 'omp') {
+      if (opts.settingsOnly) continue;
+      try {
+        await reconcileOmpExtension(opts.removeAll);
+      } catch (e) {
+        log.warn(`Failed to reconcile OMP hooks: ${(e as Error).message}`);
       }
       continue;
     }

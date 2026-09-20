@@ -68,6 +68,8 @@ interface RemovalPlan {
   openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
   /** OpenCode teamai plugin files (.opencode/plugin/teamai-*.ts) to delete. */
   opencodeHookScopes: Array<{ baseDir: string; scope: Scope }>;
+  /** teamai-managed OMP extension file (~/.omp/agent/extensions/teamai-hooks.ts), if present. */
+  ompHookFile: string | null;
   /** CLAUDE.md files with teamai rules blocks. */
   claudeMdFiles: string[];
   /** Skill directories synced from team repo. */
@@ -99,6 +101,7 @@ interface ToolResources {
   hookFiles: Array<{ path: string; tool: string; manifestPath: string }>;
   openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
   opencodeHookScopes: Array<{ baseDir: string; scope: Scope }>;
+  ompHookFile: string | null;
   claudeMdFiles: string[];
   skillDirs: string[];
   ruleFiles: string[];
@@ -110,6 +113,7 @@ function hasToolResources(r: ToolResources): boolean {
     r.hookFiles.length > 0 ||
     r.openclawHookDirs.length > 0 ||
     r.opencodeHookScopes.length > 0 ||
+    r.ompHookFile !== null ||
     r.claudeMdFiles.length > 0 ||
     r.skillDirs.length > 0 ||
     r.ruleFiles.length > 0 ||
@@ -235,7 +239,7 @@ async function discoverToolResources(
   scope: Scope,
 ): Promise<ToolResources> {
   const res: ToolResources = {
-    hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], claudeMdFiles: [],
+    hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], ompHookFile: null, claudeMdFiles: [],
     skillDirs: [], ruleFiles: [], agentFiles: [],
   };
 
@@ -267,6 +271,15 @@ async function discoverToolResources(
           res.opencodeHookScopes.push(target);
         }
       }
+    }
+  } else if (tool === 'omp') {
+    // OMP hooks are a single teamai-managed TS extension in the user agent dir
+    // (~/.omp/agent/extensions/teamai-hooks.ts) — the adapter never writes a
+    // project copy, so there is just the one place to look.
+    const { resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
+    const extFile = path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+    if (await pathExists(extFile)) {
+      res.ompHookFile = extFile;
     }
   } else if (toolPath.settings) {
     // Hooks live where resolveHookScope injected them (HOME for a non-self
@@ -456,6 +469,7 @@ async function buildRemovalPlan(
     hookFiles: [],
     openclawHookDirs: [],
     opencodeHookScopes: [],
+    ompHookFile: null,
     claudeMdFiles: [],
     skillDirs: [],
     ruleFiles: [],
@@ -477,6 +491,7 @@ async function buildRemovalPlan(
     plan.hookFiles.push(...res.hookFiles);
     plan.openclawHookDirs.push(...res.openclawHookDirs);
     plan.opencodeHookScopes.push(...res.opencodeHookScopes);
+    if (res.ompHookFile) plan.ompHookFile = res.ompHookFile;
     plan.claudeMdFiles.push(...res.claudeMdFiles);
     plan.skillDirs.push(...res.skillDirs);
     plan.ruleFiles.push(...res.ruleFiles);
@@ -537,6 +552,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.hookFiles.length === 0 &&
     plan.openclawHookDirs.length === 0 &&
     plan.opencodeHookScopes.length === 0 &&
+    plan.ompHookFile === null &&
     plan.claudeMdFiles.length === 0 &&
     plan.skillDirs.length === 0 &&
     plan.ruleFiles.length === 0 &&
@@ -582,6 +598,12 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
       const configDir = scope === 'project' ? '.opencode' : path.join('.config', 'opencode');
       console.log(`     ${path.join(baseDir, configDir, 'plugin')}/teamai-*.ts`);
     }
+    console.log('');
+  }
+
+  if (plan.ompHookFile !== null) {
+    console.log('   OMP Hook (extension):');
+    console.log(`     ${plan.ompHookFile}`);
     console.log('');
   }
 
@@ -693,6 +715,16 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
       }
     } catch (e) {
       log.warn(`Failed to remove OpenCode hook (${scope} scope): ${(e as Error).message}`);
+    }
+  }
+
+  // (a2c) Remove the teamai OMP extension (single user-agent-dir copy).
+  if (plan.ompHookFile !== null) {
+    try {
+      const { removeOmpHooks } = await import('./omp-hooks.js');
+      await removeOmpHooks();
+    } catch (e) {
+      log.warn(`Failed to remove OMP hook: ${(e as Error).message}`);
     }
   }
 

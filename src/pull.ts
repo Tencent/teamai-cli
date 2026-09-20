@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import matter from 'gray-matter';
 import { requireInit, loadState, saveState, detectProjectConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
 import { pullRepo, getHeadRev, createGit } from './utils/git.js';
@@ -7,7 +8,7 @@ import { pendingLearningsDir } from './utils/pending-learnings.js';
 import { learningsRoots } from './utils/learnings-roots.js';
 import { log, spinner } from './utils/logger.js';
 import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
-import { injectClaudeMdSection } from './utils/claudemd.js';
+import { injectClaudeMdSection, removeClaudeMdSection } from './utils/claudemd.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
 import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
@@ -41,12 +42,14 @@ import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
+import { runDeclaredPostPull } from './post-pull.js';
 
 // A timed-out report still owns its success bookkeeping. Do not start another
 // batch in this process until it settles and finishes consuming its events.
 let pendingUsageReport: Promise<void> | undefined;
+const FILE_NOT_FOUND_ERROR_CODE = 'ENOENT';
 
-interface RolePullContext {
+export interface RolePullContext {
   activeNamespaces: ResourceNamespaces;
   activeSkillNames: Set<string>;
   inactiveSkillNames: Set<string>;
@@ -312,6 +315,74 @@ export async function scanRoleAwareSkills(localConfig: LocalConfig, namespaces: 
   return [...items.values()];
 }
 
+/** What a member should have on disk, and what the team repo holds. */
+export interface DesiredSkills {
+  /** The skills this member should have: role namespaces ∪ subscribed tags − exclusions. */
+  items: ResourceItem[];
+  /** Every skill in the team repo — the set cleanup is allowed to prune from. */
+  teamItems: ResourceItem[];
+  /** How many skills the tag channel left out, for the sync line. */
+  skippedByTags: number;
+}
+
+/**
+ * Resolve the skills this member should have. Read-only: `pull` calls it to
+ * decide what to install, and `doctor` calls it to check what landed (#598).
+ * Keeping it in one place is the point — re-deriving the union inside the check
+ * would put role namespaces, tag subscriptions and exclusions in a second place
+ * that drifts on its own.
+ *
+ * `roleContext` is explicit rather than resolved here: `pullForScope` already
+ * holds one (it also drives rules, agents and cleanup), and null means "no roles
+ * configured", not "not looked up yet".
+ */
+export async function resolveDesiredSkills(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  roleContext: RolePullContext | null,
+): Promise<DesiredSkills> {
+  const handler = getHandler('skills');
+  const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
+  const subscribedTags = localConfig.subscribedTags;
+  const excludedSkills = new Set(localConfig.excludedSkills ?? []);
+
+  const directoryItems = roleContext
+    ? await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces)
+    : await handler.scanTeamForPull(teamConfig, localConfig);
+
+  const teamItems = await handler.scanTeamForPull(teamConfig, localConfig);
+
+  // Tag channel: only augment when subscriptions are actually active
+  const hasActiveTagSubscriptions = tagsConfig != null
+    && subscribedTags != null
+    && subscribedTags.length > 0;
+
+  let tagIncluded: ResourceItem[] = [];
+  let skippedByTags = 0;
+  if (hasActiveTagSubscriptions) {
+    const tagResult = filterByTags(teamItems, tagsConfig, subscribedTags, 'skills');
+    const subscribedTagSet = new Set(subscribedTags);
+    tagIncluded = tagResult.included.filter((item) => {
+      const itemTags = tagsConfig.skills[item.name];
+      return itemTags?.some((tag) => subscribedTagSet.has(tag));
+    });
+    skippedByTags = tagResult.skipped.length;
+  }
+
+  // Union: merge directory items with tag-matched items
+  const merged = new Map<string, ResourceItem>();
+  for (const item of directoryItems) merged.set(item.name, item);
+  for (const item of tagIncluded) {
+    if (!merged.has(item.name)) merged.set(item.name, item);
+  }
+
+  const items = excludedSkills.size > 0
+    ? [...merged.values()].filter((item) => !excludedSkills.has(item.name))
+    : [...merged.values()];
+
+  return { items, teamItems, skippedByTags };
+}
+
 // Deployment adds a CONTRIBUTORS file that the team source may not have; ignore it
 // when checking whether a deployed skill still matches its source (same file as
 // resources/skills.ts and pre-push-sync.ts use for modification detection).
@@ -561,6 +632,13 @@ async function cleanupTombstonedResources(
 async function pullForScope(
   localConfig: LocalConfig,
   options: GlobalOptions,
+  /**
+   * Collects what this scope tells the member in its own words, so the
+   * post-pull pass does not repeat it. Required rather than optional on
+   * `policy`: a call site that forgot it would silently stop recording, which
+   * is the failure this mechanism exists to avoid. See `Check.reportedByPull`.
+   */
+  reported: Set<string>,
   policy: {
     resourceTypes?: readonly ResourceType[];
     revisionField?: 'lastPullRev' | 'lastInheritedPullRev';
@@ -610,6 +688,7 @@ async function pullForScope(
     if (queue.remaining > 0) {
       // Say it out loud. A member whose pushes are rejected would otherwise
       // queue notes forever and never hear about it.
+      reported.add('pending-learnings');
       log.warn(
         `${queue.remaining} learning(s) are written locally but not published`
         + `${queue.lastError ? `: ${queue.lastError}` : ''}. `
@@ -625,6 +704,16 @@ async function pullForScope(
   const freshConfig = await loadTeamConfig(localConfig.repo.localPath);
   if (!freshConfig) {
     log.warn(`[${scopeLabel}] Team config (teamai.yaml) not found. Skipping.`);
+    return;
+  }
+
+  // Resolve role-scoped instruction sources before the revision fast path so
+  // CLI upgrades can refresh managed instruction blocks without a repo change.
+  let roleContext: RolePullContext | null = null;
+  try {
+    roleContext = await buildRolePullContext(localConfig);
+  } catch (e) {
+    log.error(`[${scopeLabel}] ${(e as Error).message}`);
     return;
   }
 
@@ -648,6 +737,10 @@ async function pullForScope(
           try { const { deployBuiltinAgents } = await import('./builtin-agents.js'); await deployBuiltinAgents(freshConfig, localConfig, { skipRecall }); } catch {}
           try { const { deployBuiltinRules } = await import('./builtin-rules.js'); await deployBuiltinRules(freshConfig, localConfig, { skipRecall }); } catch {}
           try { const { deployBuiltinSkills } = await import('./builtin-skills.js'); await deployBuiltinSkills(freshConfig, localConfig, { reportingOnly, skipRecall }); } catch {}
+          // Refresh managed culture/shared-instruction blocks as well. A CLI
+          // upgrade may add a new target file while the team repo SHA and tool
+          // target set remain unchanged.
+          await syncManagedInstructions(freshConfig, localConfig, roleContext, scopeLabel);
           // Also refresh the CLAUDE.md recall block so a CLI upgrade that ships
           // a new block reaches CLAUDE.md even when the repo HEAD is unchanged.
           await injectRecallBlockIntoTools(freshConfig, localConfig, scopeLabel);
@@ -664,15 +757,6 @@ async function pullForScope(
       // If rev check fails, proceed with full sync
       log.debug(`[${scopeLabel}] Rev check failed, proceeding with full sync`);
     }
-  }
-
-  // Load role context (if primaryRole configured)
-  let roleContext: RolePullContext | null = null;
-  try {
-    roleContext = await buildRolePullContext(localConfig);
-  } catch (e) {
-    log.error(`[${scopeLabel}] ${(e as Error).message}`);
-    return;
   }
 
   // Load tags config for filtering
@@ -721,41 +805,12 @@ async function pullForScope(
     let items: ResourceItem[];
     let skippedByTags = 0;
     if (type === 'skills') {
-      const directoryItems = roleContext
-        ? await scanRoleAwareSkills(localConfig, roleContext.activeNamespaces)
-        : await handler.scanTeamForPull(freshConfig, localConfig);
-
-      const allTeamSkills = await handler.scanTeamForPull(freshConfig, localConfig);
-
-      // Tag channel: only augment when subscriptions are actually active
-      const hasActiveTagSubscriptions = tagsConfig != null
-        && subscribedTags != null
-        && subscribedTags.length > 0;
-
-      let tagIncluded: ResourceItem[] = [];
-      if (hasActiveTagSubscriptions) {
-        const tagResult = filterByTags(allTeamSkills, tagsConfig, subscribedTags, 'skills');
-        const subscribedTagSet = new Set(subscribedTags);
-        tagIncluded = tagResult.included.filter((item) => {
-          const itemTags = tagsConfig.skills[item.name];
-          return itemTags?.some((tag) => subscribedTagSet.has(tag));
-        });
-        skippedByTags = tagResult.skipped.length;
-      }
-
-      // Union: merge directory items with tag-matched items
-      const merged = new Map<string, ResourceItem>();
-      for (const item of directoryItems) merged.set(item.name, item);
-      for (const item of tagIncluded) {
-        if (!merged.has(item.name)) merged.set(item.name, item);
-      }
-      items = [...merged.values()];
-      if (excludedSkills.size > 0) {
-        items = items.filter((item) => !excludedSkills.has(item.name));
-      }
+      const desired = await resolveDesiredSkills(freshConfig, localConfig, roleContext);
+      items = desired.items;
+      skippedByTags = desired.skippedByTags;
       desiredSkillNames = new Set(items.map((i) => i.name));
-      knownRepoSkillNames = new Set(allTeamSkills.map((i) => i.name));
-      knownRepoSkillSources = new Map(allTeamSkills.map((i) => [i.name, i.sourcePath]));
+      knownRepoSkillNames = new Set(desired.teamItems.map((i) => i.name));
+      knownRepoSkillSources = new Map(desired.teamItems.map((i) => [i.name, i.sourcePath]));
     } else if (type === 'agents') {
       // Role/project namespace filter (root = everyone), same as rules. Throws
       // on a stem collision; the caller's try/catch logs it and aborts the scope.
@@ -1046,65 +1101,9 @@ async function pullForScope(
     }
   }
 
-  // Step 3.6: Inject team culture into CLAUDE.md
+  // Steps 3.6-3.7: Inject team culture and shared instructions.
   if (!options.dryRun) {
-    try {
-      const culturePath = path.join(localConfig.repo.localPath, 'culture.md');
-      if (await pathExists(culturePath)) {
-        const cultureContent = await readFileSafe(culturePath);
-        if (cultureContent) {
-          const compiled = compileCulture(cultureContent);
-          if (compiled) {
-            const baseDir = resolveBaseDir(localConfig);
-            for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
-              if (isAgentExcluded(localConfig, tool)) continue;
-              if (!toolPath.claudemd) continue;
-              if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
-
-              const claudeMdPath = path.join(baseDir, toolPath.claudemd);
-              try {
-                await injectClaudeMdSection(claudeMdPath, TEAMAI_CULTURE_START, TEAMAI_CULTURE_END, compiled);
-                log.debug(`Injected culture into ${tool} CLAUDE.md`);
-              } catch (e) {
-                log.warn(`Failed to inject culture into ${tool} CLAUDE.md: ${(e as Error).message}`);
-              }
-            }
-            log.success('Synced team culture');
-          }
-        }
-      }
-    } catch (e) {
-      log.debug(`Culture sync skipped: ${(e as Error).message}`);
-    }
-  }
-
-  // Step 3.7: Inject shared claudemd instructions into CLAUDE.md
-  if (!options.dryRun) {
-    try {
-      const claudemdContents = await collectClaudemdFiles(
-          localConfig.repo.localPath, roleContext);
-      if (claudemdContents.length > 0) {
-        const compiled = compileClaudemd(claudemdContents);
-        if (compiled) {
-          const baseDir = resolveBaseDir(localConfig);
-          for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
-            if (isAgentExcluded(localConfig, tool)) continue;
-            if (!toolPath.claudemd) continue;
-            if (toolPath.rules && !await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
-            const claudeMdPath = path.join(baseDir, toolPath.claudemd);
-            try {
-              await injectClaudeMdSection(claudeMdPath, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END, compiled);
-              log.debug(`Injected shared instructions into ${tool} CLAUDE.md`);
-            } catch (e) {
-              log.warn(`Failed to inject shared instructions into ${tool} CLAUDE.md: ${(e as Error).message}`);
-            }
-          }
-          log.success(`[${scopeLabel}] Synced shared instructions (${claudemdContents.length} file(s))`);
-        }
-      }
-    } catch (e) {
-      log.debug(`Shared instructions sync skipped: ${(e as Error).message}`);
-    }
+    await syncManagedInstructions(freshConfig, localConfig, roleContext, scopeLabel);
   }
 
   // Step 3.8: Inject teamai-recall subagent rules block (Phase 1)
@@ -1307,6 +1306,91 @@ export function compileClaudemd(contents: string[]): string | null {
     ].join('\n');
 }
 
+/** Refresh culture and shared-instruction blocks for every installed target. */
+async function syncManagedInstructions(
+  config: TeamaiConfig,
+  localConfig: LocalConfig,
+  roleContext: RolePullContext | null,
+  scopeLabel: string,
+): Promise<void> {
+  const culturePath = path.join(localConfig.repo.localPath, 'culture.md');
+  let compiledCulture: string | null | undefined;
+  try {
+    const cultureContent = await readFile(culturePath, 'utf8');
+    compiledCulture = compileCulture(cultureContent) ?? undefined;
+    if (compiledCulture === undefined) {
+      log.warn(`Skipped team culture sync because ${culturePath} is empty or invalid`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === FILE_NOT_FOUND_ERROR_CODE) {
+      compiledCulture = null;
+    } else {
+      log.warn(`Failed to read team culture from ${culturePath}: ${(error as Error).message}`);
+    }
+  }
+
+  if (compiledCulture !== undefined) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
+      if (isAgentExcluded(localConfig, tool) || !toolPath.claudemd) continue;
+      if (toolPath.rules && !await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
+
+      const claudeMdPath = path.join(resolveToolBaseDir(tool, localConfig), toolPath.claudemd);
+      try {
+        if (compiledCulture) {
+          await injectClaudeMdSection(
+            claudeMdPath,
+            TEAMAI_CULTURE_START,
+            TEAMAI_CULTURE_END,
+            compiledCulture,
+          );
+          log.debug(`Injected culture into ${tool} CLAUDE.md`);
+        } else {
+          await removeClaudeMdSection(claudeMdPath, TEAMAI_CULTURE_START, TEAMAI_CULTURE_END);
+        }
+      } catch (e) {
+        const action = compiledCulture ? 'inject culture into' : 'remove culture from';
+        log.warn(`Failed to ${action} ${tool} CLAUDE.md: ${(e as Error).message}`);
+      }
+    }
+  }
+  if (compiledCulture) {
+    log.success('Synced team culture');
+  }
+
+  try {
+    const claudemdContents = await collectClaudemdFiles(localConfig.repo.localPath, roleContext);
+    const compiled = compileClaudemd(claudemdContents);
+
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
+      if (isAgentExcluded(localConfig, tool) || !toolPath.claudemd) continue;
+      if (toolPath.rules && !await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
+
+      const claudeMdPath = path.join(resolveToolBaseDir(tool, localConfig), toolPath.claudemd);
+      try {
+        if (compiled) {
+          await injectClaudeMdSection(
+            claudeMdPath,
+            TEAMAI_CLAUDEMD_START,
+            TEAMAI_CLAUDEMD_END,
+            compiled,
+          );
+          log.debug(`Injected shared instructions into ${tool} CLAUDE.md`);
+        } else {
+          await removeClaudeMdSection(claudeMdPath, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END);
+        }
+      } catch (e) {
+        const action = compiled ? 'inject shared instructions into' : 'remove shared instructions from';
+        log.warn(`Failed to ${action} ${tool} CLAUDE.md: ${(e as Error).message}`);
+      }
+    }
+    if (compiled) {
+      log.success(`[${scopeLabel}] Synced shared instructions (${claudemdContents.length} file(s))`);
+    }
+  } catch (e) {
+    log.debug(`Shared instructions sync skipped: ${(e as Error).message}`);
+  }
+}
+
 /**
  * Inject (or replace) the teamai-recall block into every Tier-1 tool's CLAUDE.md.
  *
@@ -1327,14 +1411,14 @@ export async function injectRecallBlockIntoTools(
 ): Promise<void> {
     if (!isRecallEnabled(localConfig, config)) return;
     try {
-        const baseDir = resolveBaseDir(localConfig);
         const recallBlock = compileRecallRulesBlock();
         let injected = 0;
         for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
             if (isAgentExcluded(localConfig, tool)) continue;
             if (!toolPath.claudemd || !toolPath.agents) continue;
-            if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
+            if (!await isToolInstalledForConfig(tool, toolPath.agents, localConfig)) continue;
 
+            const baseDir = resolveToolBaseDir(tool, localConfig);
             const claudeMdPath = path.join(baseDir, toolPath.claudemd);
             try {
                 await injectClaudeMdSection(
@@ -1528,6 +1612,11 @@ async function reinjectLegacyHooks(localConfig: LocalConfig): Promise<void> {
  * source skills are pulled only for the active project scope.
  */
 export async function pull(options: GlobalOptions): Promise<void> {
+  // What the scopes below say in their own words, so the post-pull pass does
+  // not repeat it. Owned here rather than at module scope so nothing survives
+  // into another call.
+  const reported = new Set<string>();
+
   // Whether HOME's settings.json still has the pre-dispatch hook format. Read now
   // (HOME-only, no shared clone), but the actual reinject runs later under the
   // scope lock so it never consumes a concurrent push's transient branch config.
@@ -1545,6 +1634,9 @@ export async function pull(options: GlobalOptions): Promise<void> {
   const contended = new Set<LocalConfig>();
   const heldLocks = new Map<LocalConfig, string>();
   let usageReport: Promise<void> | undefined;
+  // Team repo whose pull completed, for `scripts.postPull` — run at the very
+  // end of pull().
+  let postPullRepo: string | null = null;
   const lockScope = async (config: LocalConfig): Promise<boolean> => {
     // git-mode guards its shared team clone; self mode guards its machine-data
     // writes (state/env/search-index) against a concurrent P2 migration relocating
@@ -1593,7 +1685,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
           inheritedUserConfig = loadedUserConfig;
           log.info('project scope detected, inheriting user-scope resources and knowledge');
           if (await lockScope(inheritedUserConfig)) {
-            await pullForScope(inheritedUserConfig, options, {
+            await pullForScope(inheritedUserConfig, options, reported, {
               resourceTypes: ['skills', 'rules', 'docs', 'agents'],
               revisionField: 'lastInheritedPullRev',
             });
@@ -1601,7 +1693,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
         } else {
           activeUserConfig = loadedUserConfig;
           if (await lockScope(activeUserConfig)) {
-            await pullForScope(activeUserConfig, options);
+            await pullForScope(activeUserConfig, options, reported);
           }
         }
       } else if (inheritUserScope) {
@@ -1618,7 +1710,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
   if (projectConfig) {
     try {
       if (await lockScope(projectConfig)) {
-        await pullForScope(projectConfig, options);
+        await pullForScope(projectConfig, options, reported);
       }
     } catch (e) {
       log.warn(`Project-scope pull error: ${(e as Error).message}`);
@@ -1631,6 +1723,13 @@ export async function pull(options: GlobalOptions): Promise<void> {
   // — the next uncontended pull reconciles and reports normally.
   const reconcileUser = activeUserConfig && !contended.has(activeUserConfig) ? activeUserConfig : null;
   const reconcileProject = projectConfig && !contended.has(projectConfig) ? projectConfig : null;
+  // The deploy owner for this pull: the project scope's repo when a project
+  // is active, else the user scope's — the two are mutually exclusive by
+  // derivation above. An inherited user scope (inheritUserScope) is
+  // resources+knowledge only by design and deliberately runs no postPull:
+  // postPull is part of the deploy surface, which follows the active scope
+  // alone — the same boundary as its resourceTypes narrowing above.
+  postPullRepo = (reconcileProject ?? reconcileUser)?.repo.localPath ?? null;
 
   // 3.4. Legacy hook-format migration (pre-dispatch era). Runs UNDER the scope
   // lock (unlike the old step-0 call) against a locked, non-contended scope, so
@@ -1751,6 +1850,15 @@ export async function pull(options: GlobalOptions): Promise<void> {
       log.debug(`Source pull skipped: ${(e as Error).message}`);
     }
   }
+
+  // 6. Post-conditions. Everything above reported what it *did*; these report
+  //    what is actually on disk (issue #598). Only after an explicit pull: the
+  //    SessionStart hook runs pull({ silent: true }) and must stay free.
+  //    Skipped when any scope was contended: those are dropped from every
+  //    clone-consuming stage above for the same reason the checks would need
+  //    the clone, and reading it while the other process holds it on a
+  //    transient branch is how a diagnostic invents a failure.
+  await reportPostPullChecks(options, reported, contended.size > 0);
   } finally {
     const releaseSyncLocks = async () => {
       for (const lock of heldLocks.values()) await releaseLock(lock);
@@ -1765,6 +1873,90 @@ export async function pull(options: GlobalOptions): Promise<void> {
     } else {
       await releaseSyncLocks();
     }
+  }
+
+  // 6. Team post-pull scripts (teamai.yaml `scripts.postPull`), for the
+  //    pull's deploy owner. Sync locks are usually released by now — a late
+  //    usage report (above) may still hold them; its writes go to the reports
+  //    worktree, not this clone's tree. Launch shape: post-pull.ts. Nothing
+  //    here can fail the pull.
+  if (!options.dryRun && postPullRepo) {
+    await runDeclaredPostPull(postPullRepo, { interactive: options.interactive === true });
+  }
+}
+
+/** Post-pull diagnostics are a courtesy, not the job. Do not wait forever. */
+const POST_PULL_CHECKS_TIMEOUT_MS = 5000;
+
+/**
+ * Re-run the `teamai doctor` registry after an explicit pull and print only what
+ * failed. Every line above this one reports what the pull *did*; these report
+ * what is actually on disk — the gap behind #574, #525, #342 and friends, where
+ * the command says "Synced N" and the tool receives nothing.
+ *
+ * Two kinds are left out. Provider checks: this pull just used the provider
+ * successfully, so re-probing `gh auth status` would add a subprocess to every
+ * sync and prove nothing new. And a check whose `reportedByPull` topic this run
+ * actually reported — repeating it would say the same thing twice and, since
+ * its `fix` is written for `doctor`, tell the member to run the pull they just
+ * ran. A topic the pull stayed silent about is NOT suppressed: the scope may
+ * have aborted before reaching it. `teamai doctor` still runs everything.
+ */
+async function reportPostPullChecks(
+  options: GlobalOptions,
+  reported: ReadonlySet<string>,
+  /**
+   * True when another process held a scope's sync lock this run. The checks
+   * resolve their own context from the shared clone, which that process may
+   * have on a transient branch, so their answers would be about its work in
+   * progress rather than about this machine.
+   */
+  contended: boolean,
+): Promise<void> {
+  if (options.silent || options.dryRun) return;
+  if (contended) {
+    // The pull already said the scope was skipped. Saying nothing more is the
+    // honest outcome; `teamai doctor` runs them once the other process is done.
+    log.debug('Post-pull checks skipped: another pull/push holds a scope lock');
+    return;
+  }
+  try {
+    const { resolveDoctorContext, buildChecks, runChecks, formatCheckResult } = await import('./doctor.js');
+    const ctx = await resolveDoctorContext();
+    if (!ctx) return;
+
+    // The budget covers building the registry as well as running it: the
+    // delivery checks stat every desired skill for every tool while the
+    // registry is built, which is where the I/O actually is.
+    const results = await withTimeout(
+      (async () => {
+        const local = (await buildChecks(ctx))
+          .filter((c) => c.source === 'local')
+          .filter((c) => !c.reportedByPull || !reported.has(c.reportedByPull));
+        return runChecks(local);
+      })(),
+      POST_PULL_CHECKS_TIMEOUT_MS,
+      `Post-pull checks are still running after ${POST_PULL_CHECKS_TIMEOUT_MS}ms`,
+    );
+
+    const failures = results.filter((r) => !r.ok);
+    if (failures.length === 0) return;
+
+    log.warn(`Pull finished, but ${failures.length} check(s) failed:`);
+    for (const failure of failures) {
+      const [headline, ...detail] = formatCheckResult(failure);
+      log.warn(headline);
+      for (const line of detail) log.dim(line);
+    }
+    log.dim('  Run `teamai doctor` for the full report.');
+  } catch (e) {
+    // The sync already succeeded. A diagnostic that breaks must not undo that,
+    // so this never rethrows. It does say one line though: staying silent after
+    // the whole budget is the same "reported success, nothing happened" shape
+    // these checks exist to catch. The reason stays on the debug channel
+    // because it is about teamai, not about the member's repo.
+    log.debug(`Post-pull checks skipped: ${(e as Error).message}`);
+    log.dim('  Post-pull checks did not run. Run `teamai doctor` for the full report.');
   }
 }
 

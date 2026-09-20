@@ -78,10 +78,12 @@ describe('GitHub Copilot adapter', () => {
       skills: '.github/skills',
       rules: '.github/instructions',
       hooks: '.github/hooks/teamai.json',
+      claudemd: '.github/copilot-instructions.md',
       userScope: expect.objectContaining({
         skills: 'skills',
         rules: 'instructions',
         hooks: 'hooks/teamai.json',
+        claudemd: 'copilot-instructions.md',
       }),
     }));
 

@@ -66,6 +66,32 @@ describe('parseStdin', () => {
     expect(Array.isArray(result)).toBe(false);
     expect(result).toEqual({ hook_event_name: 'Stop' });
   });
+
+  it('salvages identity fields from a payload mangled at its multi-byte section', () => {
+    // Simulates the Windows VBS launcher's ANSI-codepage round trip: the UTF-8
+    // payload breaks at the first multi-byte sequence (quote swallowed, tail
+    // lost), but the ASCII head is intact. The degraded dispatch must still be
+    // linked to the right session and tool.
+    const mangled =
+      '{"cwd":"D:\\\\proj","hookEventName":"PostToolUse","sessionId":"sess_abc-123"' +
+      ',"toolName":"Bash","tool_response":{"content":"经验';
+    const result = parseStdin(mangled, 'post-tool-use');
+    expect(result.sessionId).toBe('sess_abc-123');
+    expect(result.toolName).toBe('Bash');
+    expect(result.cwd).toBe('D:\\proj');
+    expect(result.hook_event_name).toBe('PostToolUse');
+  });
+
+  it('skips salvage fields whose value itself was truncated mid-string', () => {
+    // The quote that closes transcript_path was swallowed by the codepage
+    // round trip, so no intact value exists — the field must be absent rather
+    // than garbage.
+    const mangled = '{"sessionId":"sess_ok","transcript_path":"C:\\\\logs\\u4e2d';
+    const result = parseStdin(mangled, 'stop');
+    expect(result.sessionId).toBe('sess_ok');
+    expect(result.transcript_path).toBeUndefined();
+    expect(result.hook_event_name).toBe('Stop');
+  });
 });
 /** A child that reports the given outcome once its listeners are attached. */
 function fakePowerShell(code: number | null, error?: Error, output = '') {

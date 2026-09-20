@@ -183,12 +183,12 @@ function renderOverviewCards(data: VizData): string {
     .map(
       (c) =>
         `<div class="card">` +
-        `<div class="card-label">${escapeHtml(c.label)}</div>` +
+        `<div class="card-label" data-i18n>${escapeHtml(c.label)}</div>` +
         `<div class="card-value">${escapeHtml(c.value)}</div>` +
         `</div>`,
     )
     .join('');
-  return `<section id="overview"><h2>Overview</h2><div class="cards">${cardHtml}</div></section>`;
+  return `<section id="overview"><h2 data-i18n>Overview</h2><div class="cards">${cardHtml}</div></section>`;
 }
 
 /** Render the coverage-by-type progress bar section as an HTML string. */
@@ -208,7 +208,7 @@ function renderCoverageSection(coverage: CoverageStat[]): string {
       ].join('');
     })
     .join('');
-  return `<section id="coverage"><h2>Coverage by Type</h2>${rows}</section>`;
+  return `<section id="coverage"><h2 data-i18n>Coverage by Type</h2>${rows}</section>`;
 }
 
 /** Render the top-recalled entries bar chart section as an HTML string. */
@@ -219,15 +219,15 @@ function renderTopRecalledSection(topRecalled: EntryMetric[]): string {
     badge: m.type,
   }));
   const chart = renderBarChart(items);
-  return `<section id="top-recalled"><h2>Top Recalled Entries</h2>${chart}</section>`;
+  return `<section id="top-recalled"><h2 data-i18n>Top Recalled Entries</h2>${chart}</section>`;
 }
 
 /** Render the never-recalled entries section, grouped by type with collapsible details, as an HTML string. */
 function renderSilentSection(silent: EntryMetric[]): string {
   if (silent.length === 0) {
     return (
-      `<section id="silent"><h2>Never-Recalled Entries</h2>` +
-      `<p>All entries have been recalled at least once.</p></section>`
+      `<section id="silent"><h2 data-i18n>Never-Recalled Entries</h2>` +
+      `<p data-i18n>All entries have been recalled at least once.</p></section>`
     );
   }
 
@@ -249,7 +249,7 @@ function renderSilentSection(silent: EntryMetric[]): string {
         .join('');
       return [
         `<details>`,
-        `  <summary>${escapeHtml(type)} (${entries.length})</summary>`,
+        `  <summary><span data-i18n>${escapeHtml(type)}</span> (${entries.length})</summary>`,
         `  <ul>${rows}</ul>`,
         `</details>`,
       ].join('');
@@ -258,7 +258,7 @@ function renderSilentSection(silent: EntryMetric[]): string {
 
   return [
     `<section id="silent">`,
-    `  <h2>Never-Recalled Entries (${silent.length} total)</h2>`,
+    `  <h2><span data-i18n>Never-Recalled Entries</span> (${silent.length})</h2>`,
     `  ${groups}`,
     `</section>`,
   ].join('');
@@ -267,16 +267,16 @@ function renderSilentSection(silent: EntryMetric[]): string {
 /** Render the monthly last-recall trend line chart section as an HTML string. */
 function renderTrendSection(trend: TrendPoint[]): string {
   const chart = renderLineChart(trend);
-  const note = '<p class="muted">Each entry is counted once, in the month it was last recalled.</p>';
-  return `<section id="trend"><h2>Entries by Last-Recall Month</h2>${note}${chart}</section>`;
+  const note = '<p class="muted" data-i18n>Each entry is counted once, in the month it was last recalled.</p>';
+  return `<section id="trend"><h2 data-i18n>Entries by Last-Recall Month</h2>${note}${chart}</section>`;
 }
 
 /** Render the author contributions table section as an HTML string. */
 function renderAuthorsSection(authors: AuthorStat[]): string {
   if (authors.length === 0) {
-    return `<section id="authors"><h2>Author Contributions</h2><p>No author data.</p></section>`;
+    return `<section id="authors"><h2 data-i18n>Author Contributions</h2><p data-i18n>No author data.</p></section>`;
   }
-  const header = '<tr><th>Author</th><th>Entries</th><th>Total Recalled</th></tr>';
+  const header = '<tr><th data-i18n>Author</th><th data-i18n>Entries</th><th data-i18n>Total Recalled</th></tr>';
   const rows = authors
     .map(
       (a) =>
@@ -285,7 +285,7 @@ function renderAuthorsSection(authors: AuthorStat[]): string {
     .join('');
   return [
     `<section id="authors">`,
-    `  <h2>Author Contributions</h2>`,
+    `  <h2 data-i18n>Author Contributions</h2>`,
     `  <table><thead>${header}</thead><tbody>${rows}</tbody></table>`,
     `</section>`,
   ].join('');
@@ -301,7 +301,7 @@ function renderPromotionBlock(promote: PromotionCandidate[]): string {
     ' — Review a candidate below, then run (each entry shows its own ready-to-copy command):' +
     '<code>teamai recall promote &lt;learning-id&gt; --category skill|rule|doc</code></div>';
   if (promote.length === 0) {
-    return `<div class="maint-block"><h3>Promotable Learnings</h3>${intro}${guide}<p>None right now.</p></div>`;
+    return `<div class="maint-block"><h3 data-i18n>Promotable Learnings</h3>${intro}${guide}<p data-i18n>None right now.</p></div>`;
   }
   const rows = promote
     .map((c) => {
@@ -310,15 +310,15 @@ function renderPromotionBlock(promote: PromotionCandidate[]): string {
       return [
         `<div class="maint-item">`,
         `  <div><strong>${escapeHtml(c.title)}</strong>`,
-        `    <span class="badge">${escapeHtml(c.suggestedCategory)}</span></div>`,
-        `  <div class="muted">Confidence: ${(c.confidence * 100).toFixed(0)}%`,
-        ` | Upvotes: ${c.upvotedCount} | Users: ${c.userCount}</div>`,
+        `    <span class="badge" data-i18n>${escapeHtml(c.suggestedCategory)}</span></div>`,
+        `  <div class="muted"><span data-i18n>Confidence</span>: ${(c.confidence * 100).toFixed(0)}%`,
+        ` | <span data-i18n>Upvotes</span>: ${c.upvotedCount} | <span data-i18n>Users</span>: ${c.userCount}</div>`,
         `  <code>${cmd}</code>`,
         `</div>`,
       ].join('');
     })
     .join('');
-  return `<div class="maint-block"><h3>Promotable Learnings</h3>${intro}${guide}${rows}</div>`;
+  return `<div class="maint-block"><h3 data-i18n>Promotable Learnings</h3>${intro}${guide}${rows}</div>`;
 }
 
 /** Render the suggested-for-archive maintenance block as an HTML string. */
@@ -330,7 +330,7 @@ function renderPruneBlock(prune: PruneCandidate[]): string {
     ' — These are batch-archived together. Review the list below, then run:' +
     '<code>teamai recall maintenance --prune --archive</code></div>';
   if (prune.length === 0) {
-    return `<div class="maint-block"><h3>Suggested for Archive</h3>${intro}${guide}<p>None right now.</p></div>`;
+    return `<div class="maint-block"><h3 data-i18n>Suggested for Archive</h3>${intro}${guide}<p data-i18n>None right now.</p></div>`;
   }
   const rows = prune
     .map((c) => {
@@ -338,13 +338,13 @@ function renderPruneBlock(prune: PruneCandidate[]): string {
       return [
         `<div class="maint-item">`,
         `  <div><strong>${escapeHtml(c.filename)}</strong></div>`,
-        `  <div class="muted">Confidence: ${(c.confidence * 100).toFixed(0)}%`,
-        ` | Last activity: ${activity} | Reason: ${escapeHtml(c.reason)}</div>`,
+        `  <div class="muted"><span data-i18n>Confidence</span>: ${(c.confidence * 100).toFixed(0)}%`,
+        ` | <span data-i18n>Last activity</span>: ${activity} | <span data-i18n>Reason</span>: ${escapeHtml(c.reason)}</div>`,
         `</div>`,
       ].join('');
     })
     .join('');
-  return `<div class="maint-block"><h3>Suggested for Archive</h3>${intro}${guide}${rows}</div>`;
+  return `<div class="maint-block"><h3 data-i18n>Suggested for Archive</h3>${intro}${guide}${rows}</div>`;
 }
 
 /** Render the stale-entries (needs quality update) maintenance block as an HTML string. */
@@ -358,12 +358,12 @@ function renderStaleBlock(stale: StaleEntry[]): string {
     '<code>teamai recall maintenance --update-quality</code></div>';
   if (stale.length === 0) {
     return (
-      `<div class="maint-block"><h3>Stale (Needs Quality Update)</h3>` +
-      `${intro}${guide}<p>None right now.</p></div>`
+      `<div class="maint-block"><h3 data-i18n>Stale (Needs Quality Update)</h3>` +
+      `${intro}${guide}<p data-i18n>None right now.</p></div>`
     );
   }
   const header =
-    '<tr><th>Doc ID</th><th>Type</th><th>Recalls</th><th>Upvotes</th><th>Users</th></tr>';
+    '<tr><th data-i18n>Doc ID</th><th data-i18n>Type</th><th data-i18n>Recalls</th><th data-i18n>Upvotes</th><th data-i18n>Users</th></tr>';
   const rows = stale
     .map(
       (s) =>
@@ -373,7 +373,7 @@ function renderStaleBlock(stale: StaleEntry[]): string {
     .join('');
   return [
     `<div class="maint-block">`,
-    `  <h3>Stale (Needs Quality Update)</h3>`,
+    `  <h3 data-i18n>Stale (Needs Quality Update)</h3>`,
     `  ${intro}`,
     `  ${guide}`,
     `  <table><thead>${header}</thead><tbody>${rows}</tbody></table>`,
@@ -386,7 +386,17 @@ function renderMaintenanceSection(data: VizData): string {
   const promote = renderPromotionBlock(data.maintenance.promote);
   const prune = renderPruneBlock(data.maintenance.prune);
   const stale = renderStaleBlock(data.maintenance.stale);
-  return `<section id="maintenance"><h2>Maintenance Console</h2>${promote}${prune}${stale}</section>`;
+  return `<section id="maintenance"><h2 data-i18n>Maintenance Console</h2>${promote}${prune}${stale}</section>`;
+}
+
+/** Reuse every existing KB report section inside the unified dashboard. */
+export function renderDashboardReport(data: VizData): { context: string; maintenance: string } {
+  return {
+    context: renderOverviewCards(data) + renderCoverageSection(data.coverage)
+      + renderTopRecalledSection(data.topRecalled) + renderSilentSection(data.silent)
+      + renderTrendSection(data.trend) + renderAuthorsSection(data.authors),
+    maintenance: renderMaintenanceSection(data),
+  };
 }
 
 // ─── CSS ──────────────────────────────────────────────────────────────────────

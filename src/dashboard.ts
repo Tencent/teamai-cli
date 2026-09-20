@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { dashboardWorkspaces, workspaceEvents, type DashboardWorkspace } from './dashboard/workspaces.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './utils/logger.js';
@@ -13,7 +14,7 @@ import {
 import { getDashboardHtml } from './dashboard-html.js';
 import { getUserHome } from './utils/home.js';
 import type { VizSummary } from './viz.js';
-import { aggregateDailySessions, computeDailyStatsDelta, summarizeTrendWindow } from './session-trends.js';
+import { aggregateDailySessions, computeDailyStatsDelta, summarizeTrendWindow, summarizeSessionCosts } from './session-trends.js';
 
 // ─── Dashboard server architecture ──────────────────────
 //
@@ -51,6 +52,26 @@ export async function startDashboard(port?: number): Promise<void> {
     await fs.promises.writeFile(eventsPath, '', 'utf-8');
   }
 
+  // Workspace membership is re-derived on a short TTL rather than frozen at startup,
+  // so a project installed (or first seen in events) after boot appears without a
+  // restart instead of its sessions silently folding elsewhere (PR #604 review #3).
+  let workspacesCache: { ts: number; data: DashboardWorkspace[] } | null = null;
+  const getWorkspaces = async (events: DashboardEvent[]): Promise<DashboardWorkspace[]> => {
+    if (!workspacesCache || Date.now() - workspacesCache.ts > KB_SUMMARY_TTL_MS) {
+      workspacesCache = { ts: Date.now(), data: await dashboardWorkspaces(events) };
+    }
+    return workspacesCache.data;
+  };
+  const scopedEvents = async (id: string | null) => {
+    const events = await readEvents(eventsPath);
+    const workspaces = await getWorkspaces(events);
+    const workspace = workspaces.find(w => w.id === id);
+    return workspace ? workspaceEvents(events, workspace, workspaces) : events;
+  };
+  const clientScopes = new Map<SSEClient, string | null>();
+  const contextRequests = new Map<string, Promise<unknown>>();
+  const contextCaches = new Map<string, { ts: number; data: unknown }>();
+
   // SSE clients
   const clients: Set<SSEClient> = new Set();
 
@@ -62,10 +83,12 @@ export async function startDashboard(port?: number): Promise<void> {
     watchDebounce = setTimeout(async () => {
       try {
         const events = await readEvents(eventsPath);
+        const workspaces = await getWorkspaces(events);
         const sessions = rebuildSessions(events);
         const data = JSON.stringify(sessions);
         for (const client of clients) {
-          client.write(`data: ${data}\n\n`);
+          const workspace = workspaces.find(w => w.id === clientScopes.get(client));
+          client.write(`data: ${workspace ? JSON.stringify(rebuildSessions(workspaceEvents(events, workspace, workspaces))) : data}\n\n`);
         }
       } catch (e) {
         log.debug(`dashboard: SSE push error: ${(e as Error).message}`);
@@ -126,10 +149,24 @@ export async function startDashboard(port?: number): Promise<void> {
       return;
     }
 
+    const scopeId = url.searchParams.get('workspace');
+    const workspaces = await getWorkspaces(await readEvents(eventsPath));
+    const workspace = workspaces.find(w => w.id === scopeId);
+    if (scopeId && !workspace) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unknown workspace' }));
+      return;
+    }
+    if (url.pathname === '/api/workspaces') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(workspaces.map(({ config, roots, ...item }) => item)));
+      return;
+    }
+
     if (url.pathname === '/api/sessions') {
       // Return current sessions as JSON
       try {
-        const events = await readEvents(eventsPath);
+        const events = await scopedEvents(scopeId);
         const sessions = rebuildSessions(events);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(sessions));
@@ -142,10 +179,16 @@ export async function startDashboard(port?: number): Promise<void> {
 
     if (url.pathname === '/api/trends') {
       try {
-        const events = await readEvents(eventsPath);
-        const daily = computeDailyStatsDelta(aggregateDailySessions(events), {}).delta;
+        const events = await scopedEvents(scopeId);
+        const snapshots = aggregateDailySessions(events);
+        const daily = computeDailyStatsDelta(snapshots, {}).delta;
+        const trends = summarizeTrendWindow(daily);
+        const costs = summarizeSessionCosts(snapshots);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(summarizeTrendWindow(daily)));
+        res.end(JSON.stringify({
+          current: { ...trends.current, ...costs.current },
+          previous: { ...trends.previous, ...costs.previous },
+        }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: (e as Error).message }));
@@ -162,10 +205,11 @@ export async function startDashboard(port?: number): Promise<void> {
       });
       res.write('\n');
       clients.add(res);
+      clientScopes.set(res, scopeId);
 
       // Send initial state immediately
       try {
-        const events = await readEvents(eventsPath);
+        const events = await scopedEvents(scopeId);
         const sessions = rebuildSessions(events);
         res.write(`data: ${JSON.stringify(sessions)}\n\n`);
       } catch {
@@ -174,6 +218,7 @@ export async function startDashboard(port?: number): Promise<void> {
 
       req.on('close', () => {
         clients.delete(res);
+        clientScopes.delete(res);
       });
       return;
     }
@@ -188,6 +233,30 @@ export async function startDashboard(port?: number): Promise<void> {
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Failed to generate KB health report: ' + (e instanceof Error ? e.message : String(e)));
+      }
+      return;
+    }
+
+    if (url.pathname === '/api/context') {
+      try {
+        const key = scopeId ?? 'all';
+        let cached = contextCaches.get(key);
+        if (!cached || Date.now() - cached.ts > KB_SUMMARY_TTL_MS) {
+          let pending = contextRequests.get(key);
+          if (!pending) {
+            pending = import('./viz.js').then(({ getDashboardContext }) => getDashboardContext(workspace ? { config: workspace.config } : {}));
+            contextRequests.set(key, pending);
+          }
+          try { cached = { ts: Date.now(), data: await pending }; }
+          finally { contextRequests.delete(key); }
+          contextCaches.set(key, cached);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(cached.data));
+      } catch (e) {
+        log.debug(`dashboard: /api/context failed: ${(e as Error).message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to load knowledge base health.' }));
       }
       return;
     }

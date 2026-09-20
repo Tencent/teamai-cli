@@ -19,7 +19,10 @@ name: Codex Review on Assign
 #
 #   1. Maintainer gate: review only runs when a maintainer (write/admin/maintain)
 #      authorized this PR — either the current assigner, or an existing assignee.
-#      A fork PR author's own pushes cannot start it. (The `gate` job.)
+#      A fork PR author's own pushes cannot start it. (The `gate` job.) This gate
+#      is THE authorization door; codex-action's own actor check is disabled with
+#      `allow-users: "*"` because it keys off the fork author and cannot see our
+#      maintainer authorization — see the note on that input below.
 #   2. The PR's code is treated as PASSIVE DATA only. We check out the trusted
 #      BASE commit (never the PR head), and expose the PR changes to Codex solely
 #      through `git diff` — which reads git objects, it does not execute them.
@@ -105,6 +108,9 @@ jobs:
     needs: gate
     if: needs.gate.outputs.authorized == 'true'
     runs-on: ubuntu-latest
+    # A normal review finishes in ~2 min. Cap the job so a hung run cannot idle
+    # for hours (the default 6h) burning runner time before it is killed.
+    timeout-minutes: 15
     permissions:
       contents: read # read the base code + git objects for the diff
       pull-requests: write # the comment step posts to the PR
@@ -128,9 +134,24 @@ jobs:
 
       - name: Run Codex review
         id: codex
-        uses: openai/codex-action@v1
+        # Pinned to v1.11, NOT @v1 (which resolves to v1.12+). v1.12 rewrote the
+        # codex-exec runner to wait on the whole process tree's stdio; the
+        # backgrounded Responses API proxy keeps those descriptors open, so the
+        # step never sees stdio close and hangs until timeout even though the
+        # review already finished — the result is produced and then thrown away.
+        # See openai/codex-action#151 and openai/codex#9269. v1.11 is the last
+        # good release (its final-message output contract is identical).
+        uses: openai/codex-action@v1.11
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          # Delegate the "who may run" decision to our own `gate` job above.
+          # codex-action's built-in check keys off the TRIGGERING ACTOR, which on
+          # a fork PR's `synchronize` is the PR author (read access) — so it would
+          # reject every auto re-review even though a maintainer authorized the PR.
+          # Our gate already enforces maintainer authorization (an un-authorized PR
+          # never reaches this job), so this check is redundant here; disabling it
+          # does NOT widen who can run — the gate remains the single, stricter door.
+          allow-users: "*"
           # Optional overrides. Leave the corresponding secret/variable unset to
           # use Codex's built-in defaults (both fall back safely when empty).
           responses-api-endpoint: ${{ secrets.OPENAI_RESPONSES_API_ENDPOINT }}

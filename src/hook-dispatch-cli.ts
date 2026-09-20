@@ -117,6 +117,60 @@ async function spawnPlainDetached(
 }
 
 /**
+ * Identity fields worth salvaging when STDIN JSON cannot be parsed. On Windows
+ * the hidden VBS launcher decodes the UTF-8 payload through the ANSI codepage,
+ * so a payload containing multi-byte text can break the JSON structure at the
+ * first non-ASCII sequence — everything after it is lost, but the ASCII head
+ * (session id, tool name, paths) is intact and regex-extractable. Salvaging
+ * keeps a degraded dispatch linked to the right session and tool in the
+ * dashboard instead of collapsing into an anonymous event. Snake_case and
+ * camelCase variants are both listed because hosts differ here (ZCode sends
+ * hookEventName, Claude sends hook_event_name).
+ */
+const SALVAGEABLE_STDIN_FIELDS = [
+  'session_id',
+  'sessionId',
+  'transcript_path',
+  'transcriptPath',
+  'tool_name',
+  'toolName',
+  'tool_use_id',
+  'toolUseId',
+  'cwd',
+] as const;
+
+/** camelCase salvage hits are mirrored onto the snake_case names handlers read. */
+const CANONICAL_FIELD_ALIASES: Record<string, string> = {
+  sessionId: 'session_id',
+  transcriptPath: 'transcript_path',
+  toolName: 'tool_name',
+  toolUseId: 'tool_use_id',
+};
+
+/** Extract intact identity fields from an unparsable STDIN body (best-effort). */
+export function salvageStdinFields(raw: string): Record<string, string> {
+  const salvaged: Record<string, string> = {};
+  for (const field of SALVAGEABLE_STDIN_FIELDS) {
+    const m = raw.match(new RegExp(`"${field}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+    if (!m) continue;
+    try {
+      salvaged[field] = JSON.parse(`"${m[1]}"`) as string;
+    } catch {
+      // A mangled escape inside this field's value — skip it; degraded
+      // payloads are best-effort by definition.
+    }
+    // Handlers read the canonical snake_case names (session_id, tool_name,
+    // ...) — alias camelCase hits so a salvage from a camelCase host (ZCode)
+    // still feeds deriveSessionId and the dashboard.
+    const alias = CANONICAL_FIELD_ALIASES[field];
+    if (alias && salvaged[field] !== undefined && salvaged[alias] === undefined) {
+      salvaged[alias] = salvaged[field];
+    }
+  }
+  return salvaged;
+}
+
+/**
  * Create a detached child through the WMI service instead of CreateProcess.
  *
  * Windows hosts (WorkBuddy/CodeBuddy) run hook commands inside a job object and
@@ -291,11 +345,11 @@ export function parseStdin(raw: string, event: string): Record<string, unknown> 
     try {
       stdin = JSON.parse(raw);
     } catch {
-      // Degrade to {} instead of short-circuiting: handlers that depend on
-      // stdin fields (votes-sync, contribute-check) self-skip when
-      // transcript_path is absent, while background handlers that don't read
-      // stdin (version-check, etc.) still get to run. Include a bounded
-      // preview so concurrent STDIN corruption is diagnosable in debug.log.
+      // Degrade instead of short-circuiting: handlers that depend on stdin
+      // fields (votes-sync, contribute-check) self-skip when transcript_path
+      // is absent, while background handlers that don't read stdin
+      // (version-check, etc.) still get to run. Include a bounded preview so
+      // concurrent STDIN corruption is diagnosable in debug.log.
       const preview = raw.length > 160
         ? `${raw.slice(0, 80)}...${raw.slice(-80)}`
         : raw;
@@ -303,6 +357,7 @@ export function parseStdin(raw: string, event: string): Record<string, unknown> 
         `hook-dispatch: failed to parse STDIN JSON for event=${event}` +
           ` (len=${raw.length}, body=${JSON.stringify(preview)})`,
       );
+      stdin = salvageStdinFields(raw);
     }
   }
 

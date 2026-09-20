@@ -2,9 +2,21 @@ import path from 'node:path';
 import fse from 'fs-extra';
 import { ResourceHandler } from './base.js';
 import type { ResourceItem, TeamaiConfig, LocalConfig } from '../types.js';
-import { resolveBaseDir } from '../types.js';
 import { expandHome, listFilesRecursive } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+
+/**
+ * The single directory the team docs bundle is copied into. In project scope a
+ * `~/`-prefixed `sharing.docs.localDir` is relative to the project root, not to
+ * HOME. `pull` writes here and `doctor` checks here (#598).
+ */
+export function resolveDocsDestination(teamConfig: TeamaiConfig, localConfig: LocalConfig): string {
+  const localDir = teamConfig.sharing.docs.localDir;
+  if (localConfig.scope === 'project' && localConfig.projectRoot && localDir.startsWith('~/')) {
+    return path.join(localConfig.projectRoot, localDir.substring(2));
+  }
+  return expandHome(localDir);
+}
 
 export class DocsHandler extends ResourceHandler {
   readonly type = 'docs' as const;
@@ -40,17 +52,7 @@ export class DocsHandler extends ResourceHandler {
    * Sync docs from team repo to local docs directory.
    */
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    // For project scope, resolve docs dir relative to projectRoot
-    const docsLocalDir = teamConfig.sharing.docs.localDir;
-    let localDocsDir: string;
-    if (localConfig.scope === 'project' && localConfig.projectRoot) {
-      // Replace ~ with projectRoot
-      localDocsDir = docsLocalDir.startsWith('~/')
-        ? path.join(localConfig.projectRoot, docsLocalDir.substring(2))
-        : expandHome(docsLocalDir);
-    } else {
-      localDocsDir = expandHome(docsLocalDir);
-    }
+    const localDocsDir = resolveDocsDestination(teamConfig, localConfig);
     try {
       const src = expandHome(item.sourcePath);
       await fse.copy(src, localDocsDir, {
