@@ -181,7 +181,11 @@ describe('injectHooksToAllTools — codebuddy runs hooks through cmd.exe (win32)
     expect(vi.mocked(log.warn)).not.toHaveBeenCalled();
     const settings = await fse.readJson(path.join(tmp, '.codebuddy', 'settings.json'));
     const command: string = settings.hooks.SessionStart[0].hooks[0].command;
-    expect(command).toContain('set "PATH=%USERPROFILE%\\.teamai\\bin;%PATH%"');
+    // Must point at the SAME bin dir the wrapper writer resolved through
+    // getUserHome() (HOME wins over USERPROFILE) — a %USERPROFILE% literal could
+    // name a different directory and the hook would silently miss the shim.
+    expect(command).toContain(`set "PATH=${path.join(tmp, '.teamai', 'bin')};%PATH%"`);
+    expect(command).not.toContain('%USERPROFILE%');
     expect(command).toContain('2>nul || exit /b 0');
     // The POSIX form never runs under cmd.exe (no VAR=value prefix, no /dev/null).
     expect(command).not.toContain('/dev/null');

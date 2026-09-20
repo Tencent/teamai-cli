@@ -298,11 +298,22 @@ function cmdProjectGate(root: string): string {
  * `if [ "$PWD" ... ]` there is a syntax error that kills the whole command,
  * gate and payload alike, before it ever runs — and POSIX sh for every other
  * tool.
+ *
+ * Exit-status contract, identical for both renderings: outside the project the
+ * gate is a no-op that exits 0, and inside it the command's own status is
+ * passed through. A gate mismatch that returned non-zero would make CodeBuddy
+ * read the hook as `allowed:false` and BLOCK every UserPromptSubmit outside the
+ * project, so the cmd form must not inherit `findstr`'s failure status. That is
+ * also why the cmd form is not `${gate} || exit /b 0 && (…)`: the `||` would
+ * swallow a genuine payload failure along with the mismatch, losing the
+ * pass-through the POSIX `if …; then …; fi` gives for free.
  */
 function gateTeamHookCommand(command: string, projectRoot: string | undefined, tool: string): string {
   if (!projectRoot) return command;
   const root = canonicalProjectRoot(projectRoot);
-  if (toolUsesCmdShell(tool)) return `${cmdProjectGate(root)} && (${command})`;
+  if (toolUsesCmdShell(tool)) {
+    return `${cmdProjectGate(root)} & if not errorlevel 1 (${command}) else exit /b 0`;
+  }
   const quoted = shellQuote(root);
   return `if [ "$PWD" = ${quoted} ] || case "$PWD" in ${quoted}/*) true;; *) false;; esac; then (${command}); fi`;
 }

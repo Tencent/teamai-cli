@@ -26,14 +26,13 @@ import { bundledShellFor, resetBundledRuntimeCache, resolveCodebuddyNode, resolv
 //  next to it on Windows, because cmd.exe cannot execute the extensionless sh
 //  script — that invokes the real entry script with the best available Node,
 //  then prepend `~/.teamai/bin` to PATH in hook commands for WorkBuddy and
-//  CodeBuddy. The PATH is expressed as `$HOME/.teamai/bin` (shell literal) so
-//  that the golden fixture output is stable across machines; the cmd.exe
-//  variant uses `%USERPROFILE%\.teamai\bin`.
+//  CodeBuddy. The POSIX PATH is expressed as `$HOME/.teamai/bin` (shell
+//  literal) so that the golden fixture output is stable across machines; the
+//  cmd.exe variant embeds the same bin dir resolved through getUserHome(), the
+//  resolver the wrapper writer uses, so write and lookup cannot diverge.
 //  Other tools keep the plain `bash -lc "teamai ..."` form.
 
 const TEAMAI_BIN_DIR = '.teamai/bin';
-/** Same directory as TEAMAI_BIN_DIR, in cmd.exe path syntax. */
-const TEAMAI_BIN_DIR_WIN = TEAMAI_BIN_DIR.replace(/\//g, '\\');
 const WRAPPER_NAME = 'teamai';
 
 /**
@@ -237,12 +236,20 @@ function getWrapperDispatchCommand(event: string, tool: string, matcher?: string
  * falling through to the npm shim further down PATH) and force exit 0 on
  * failure, mirroring the POSIX `|| true` — CodeBuddy reads a non-zero hook
  * status as `allowed:false`, which would BLOCK a UserPromptSubmit instead of
- * failing open. The PATH value uses the `%USERPROFILE%` cmd literal so that
- * golden fixture output stays stable across machines.
+ * failing open.
+ *
+ * The PATH value is the bin dir resolved through getUserHome() — the SAME
+ * resolver ensureTeamaiWrapper() writes `teamai.cmd` through — embedded as a
+ * concrete path. A `%USERPROFILE%` literal here would disagree with the writer
+ * whenever HOME wins (Git Bash, a custom environment) or USERPROFILE is absent:
+ * the shim would land in one directory while the hook searched another, and the
+ * hook would silently fail to find the CLI. The POSIX form keeps its `$HOME`
+ * literal because getUserHome() prefers HOME and the shell expands it.
  */
 function getCmdWrapperDispatchCommand(event: string, tool: string, matcher?: string): string {
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
-  return `set "PATH=%USERPROFILE%\\${TEAMAI_BIN_DIR_WIN};%PATH%" && teamai hook-dispatch ${event} --tool ${tool}${matcherArg} 2>nul || exit /b 0`;
+  const binDir = path.join(getUserHome(), TEAMAI_BIN_DIR);
+  return `set "PATH=${binDir};%PATH%" && teamai hook-dispatch ${event} --tool ${tool}${matcherArg} 2>nul || exit /b 0`;
 }
 
 /** Canonical, ordered description of each built-in hook. Order is load-bearing

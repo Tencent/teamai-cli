@@ -407,7 +407,11 @@ hooks:
 
       const [command] = await teamStopCommands('.codebuddy/settings.json');
       expect(command.startsWith('echo %CD%\\| findstr /i /b /l /c:"')).toBe(true);
-      expect(command.endsWith('\\\\" >nul && (python3 .docs/script/inject-telemetry.py)')).toBe(true);
+      // Outside the project the gate must exit 0 (a non-zero status would make
+      // CodeBuddy treat UserPromptSubmit as allowed:false and block the prompt),
+      // while the payload's own status is passed through inside it.
+      expect(command.endsWith('\\\\" >nul & if not errorlevel 1 (python3 .docs/script/inject-telemetry.py) else exit /b 0')).toBe(true);
+      expect(command).not.toContain('&& (python3');
       expect(command).not.toContain('$PWD');
     } finally {
       platformSpy.mockRestore();
