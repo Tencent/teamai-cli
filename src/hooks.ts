@@ -1391,6 +1391,26 @@ export async function reconcileHooksToAllTools(
       }
       continue;
     }
+    // DeepSeek Harness has no settings-file hook surface. Its official
+    // Claude-hook bridge is a Cordis plugin loaded through a user-supplied
+    // profile patch, so keep the generated config and patch in ~/.teamai.
+    if (tool === 'dsh') {
+      if (opts.settingsOnly) continue;
+      try {
+        const dshHome = getUserHome();
+        if (opts.removeAll || await pathExists(path.join(dshHome, '.dsh'))) {
+          const { reconcileDshHooks } = await import('./dsh-hooks.js');
+          await reconcileDshHooks(teamDefs, {
+            manifestPath,
+            removeAll: opts.removeAll,
+            builtinOverride: opts.builtinOverride,
+          });
+        }
+      } catch (e) {
+        log.warn(`Failed to reconcile DeepSeek Harness hooks: ${(e as Error).message}`);
+      }
+      continue;
+    }
     if (!paths.settings) continue;
     // Only reconcile hooks for tools the user actually has installed. Without
     // this gate, `hooks inject`/`remove` would create root directories for
