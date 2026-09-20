@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { z } from 'zod';
 import YAML from 'yaml';
 import { ResourceHandler } from './base.js';
@@ -345,6 +346,23 @@ export class EnvHandler extends ResourceHandler {
     if (shell.includes('zsh')) {
       return path.join(home, '.zshrc');
     }
+
+    // SHELL is a POSIX convention that Windows never sets, so this bash
+    // fallback used to always mean .bashrc — but Git Bash on Windows starts
+    // as a login shell (its default launch is effectively `bash --login`),
+    // and a login shell reads .bash_profile / .bash_login / .profile, never
+    // .bashrc. Prefer whichever of those already exists (bash's own lookup
+    // order); if none do, create .bash_profile, the file most Windows dev
+    // tooling (nvm-windows, etc.) already targets. Scoped to win32 only —
+    // non-Windows bash is correctly a non-login shell here and keeps .bashrc.
+    if (process.platform === 'win32') {
+      for (const name of ['.bash_profile', '.bash_login', '.profile']) {
+        const candidate = path.join(home, name);
+        if (existsSync(candidate)) return candidate;
+      }
+      return path.join(home, '.bash_profile');
+    }
+
     return path.join(home, '.bashrc');
   }
 

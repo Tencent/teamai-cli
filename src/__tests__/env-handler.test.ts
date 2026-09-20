@@ -234,6 +234,66 @@ scope: 'user',
     });
   });
 
+  // ─── detectShellProfile ──────────────────────────────────
+
+  describe('detectShellProfile', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('should return .zshrc when SHELL contains zsh', () => {
+      vi.stubEnv('SHELL', '/bin/zsh');
+      expect(handler.detectShellProfile()).toBe(path.join(homeDir, '.zshrc'));
+    });
+
+    it('should return .bashrc on non-Windows when SHELL is unset (unchanged behavior)', () => {
+      vi.stubEnv('SHELL', '');
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+      expect(handler.detectShellProfile()).toBe(path.join(homeDir, '.bashrc'));
+    });
+
+    it('should prefer an existing .bash_profile on Windows over .bashrc (#682)', async () => {
+      // Windows never sets SHELL, and Git Bash's default launch is a login
+      // shell, which reads .bash_profile — never .bashrc.
+      vi.stubEnv('SHELL', '');
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+      await fse.writeFile(path.join(homeDir, '.bash_profile'), '# existing\n');
+
+      expect(handler.detectShellProfile()).toBe(path.join(homeDir, '.bash_profile'));
+    });
+
+    it('should fall back to .bash_login on Windows when only that exists', async () => {
+      vi.stubEnv('SHELL', '');
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+      await fse.writeFile(path.join(homeDir, '.bash_login'), '# existing\n');
+
+      expect(handler.detectShellProfile()).toBe(path.join(homeDir, '.bash_login'));
+    });
+
+    it('should fall back to .profile on Windows when only that exists', async () => {
+      vi.stubEnv('SHELL', '');
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+      await fse.writeFile(path.join(homeDir, '.profile'), '# existing\n');
+
+      expect(handler.detectShellProfile()).toBe(path.join(homeDir, '.profile'));
+    });
+
+    it('should default to .bash_profile on Windows when none of the login files exist', () => {
+      vi.stubEnv('SHELL', '');
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+
+      expect(handler.detectShellProfile()).toBe(path.join(homeDir, '.bash_profile'));
+    });
+
+    it('should never return .bashrc on Windows, even if it exists alongside login files', async () => {
+      vi.stubEnv('SHELL', '');
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+      await fse.writeFile(path.join(homeDir, '.bashrc'), '# existing\n');
+
+      expect(handler.detectShellProfile()).not.toBe(path.join(homeDir, '.bashrc'));
+    });
+  });
+
   // ─── pullItem ────────────────────────────────────────────
 
   describe('pullItem', () => {
