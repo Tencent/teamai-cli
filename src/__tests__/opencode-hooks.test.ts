@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import vm from 'node:vm';
+import { EventEmitter } from 'node:events';
 import fse from 'fs-extra';
 
 /** Assert a generated ESM plugin body parses as valid JS (strip `export`). */
@@ -46,18 +47,21 @@ describe('buildPluginSource', () => {
     expect(src).toContain("'tool.execute.after'");
     expect(src).toContain("'post-tool-use'");
   });
-  it('shells out to teamai hook-dispatch --tool opencode, swallowing errors', () => {
+  it('spawns teamai hook-dispatch with hidden Windows consoles and swallowed errors', () => {
     expect(src).toContain("'hook-dispatch'");
     expect(src).toContain("'--tool', 'opencode'");
-    expect(src).toContain('.quiet().nothrow()');
+    expect(src).toContain("import('node:child_process')");
+    expect(src).toContain('windowsHide: true');
+    expect(src).not.toContain('.quiet().nothrow()');
   });
-  it('forwards a STDIN payload (cwd + per-event fields) via a Response', () => {
+  it('forwards a STDIN payload (cwd + per-event fields) through child_process', () => {
     // cwd comes from the plugin ctx (directory / worktree), fed on STDIN so the
     // provider-config gate and track/hint handlers work.
     expect(src).toContain('directory');
     expect(src).toContain('worktree');
     expect(src).toContain('JSON.stringify({ cwd');
-    expect(src).toContain('new Response(stdin)');
+    expect(src).toContain('child.stdin.write(stdin)');
+    expect(src).not.toContain('new Response(stdin)');
   });
   it('maps lowercase OpenCode tool ids back to PascalCase matchers', () => {
     // OpenCode passes `skill` / `todowrite`; the handler registry keys matchers
@@ -75,6 +79,38 @@ describe('buildPluginSource', () => {
   });
   it('is syntactically valid JavaScript', () => {
     assertValidJs(src);
+  });
+
+  it('does not retain child-process listeners across repeated dispatches', async () => {
+    const spawns: Array<{ child: any; options: any }> = [];
+    const fakeSpawn = vi.fn((_command: string, _args: string[], options: any) => {
+      const child = new EventEmitter() as any;
+      child.stdin = {
+        write: vi.fn(),
+        end: vi.fn(() => Promise.resolve().then(() => child.emit('close', 0))),
+      };
+      spawns.push({ child, options });
+      return child;
+    });
+    const executable = src
+      .replace('await import(\'node:child_process\')', 'globalThis.__childProcess')
+      .replace('export const TeamaiHooks =', 'globalThis.TeamaiHooks =');
+    const context = {
+      __childProcess: { spawn: fakeSpawn },
+      process: { platform: 'win32' },
+    } as any;
+    vm.runInNewContext(executable, context);
+    const hooks = await context.TeamaiHooks({ directory: 'C:/workspace' });
+
+    for (let i = 0; i < 12; i += 1) {
+      await hooks.event({ event: { type: 'session.created' } });
+    }
+
+    expect(fakeSpawn).toHaveBeenCalledTimes(12);
+    expect(spawns.every(({ options }) => options.windowsHide === true)).toBe(true);
+    expect(spawns.every(({ options }) => options.stdio[0] === 'pipe')).toBe(true);
+    expect(spawns.every(({ child }) => child.listenerCount('close') === 0)).toBe(true);
+    expect(spawns.every(({ child }) => child.listenerCount('error') === 0)).toBe(true);
   });
 });
 
