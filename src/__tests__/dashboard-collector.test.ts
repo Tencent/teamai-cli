@@ -216,6 +216,66 @@ describe('parseHookEvent', () => {
     }
   });
 
+  it('waits for a new Copilot shutdown record when a resumed session has an older one', async () => {
+    const sessionId = 'copilot-resumed-session';
+    const copilotHome = path.join(tmpDir, '.copilot-resumed');
+    const transcript = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
+    const originalCopilotHome = process.env.COPILOT_HOME;
+    const appendDelayMs = 50;
+    const previousInputTokens = 11;
+    const currentInputTokens = 37;
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, `${JSON.stringify({
+      type: 'session.shutdown',
+      data: { tokenDetails: { input: { tokenCount: previousInputTokens } } },
+    })}\n`);
+    process.env.COPILOT_HOME = copilotHome;
+    const appendTimer = setTimeout(() => {
+      fs.appendFileSync(transcript, `${JSON.stringify({
+        type: 'session.shutdown',
+        data: { tokenDetails: { input: { tokenCount: currentInputTokens } } },
+      })}\n`);
+    }, appendDelayMs);
+
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        sessionId,
+      }), 'copilot');
+
+      expect(event?.tokens).toEqual({
+        input: currentInputTokens,
+        output: 0,
+        cacheRead: 0,
+        cacheCreation: 0,
+      });
+    } finally {
+      clearTimeout(appendTimer);
+      if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = originalCopilotHome;
+    }
+  });
+
+  it('does not persist a path in Copilot cwd or its fallback session ID', async () => {
+    const sensitiveCwd = path.join(tmpDir, 'private-customer-project');
+    const originalClaudeSessionId = process.env.CLAUDE_SESSION_ID;
+    delete process.env.CLAUDE_SESSION_ID;
+
+    try {
+      const event = await parseHookEvent(JSON.stringify({
+        hook_event_name: 'SessionStart',
+        cwd: sensitiveCwd,
+      }), 'copilot');
+
+      expect(event?.cwd).toBeUndefined();
+      expect(event?.sessionId).toMatch(/^pid-\d+$/);
+      expect(JSON.stringify(event)).not.toContain(sensitiveCwd);
+    } finally {
+      if (originalClaudeSessionId === undefined) delete process.env.CLAUDE_SESSION_ID;
+      else process.env.CLAUDE_SESSION_ID = originalClaudeSessionId;
+    }
+  });
+
   it('ignores a supplied Copilot transcript outside the validated session-state path', async () => {
     const sessionId = 'copilot-contained-session';
     const copilotHome = path.join(tmpDir, '.copilot-contained');

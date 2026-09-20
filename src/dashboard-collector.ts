@@ -547,7 +547,20 @@ const COPILOT_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 interface CopilotUsageObservation {
   shutdownObserved: boolean;
+  shutdownOffset?: number;
   tokens?: TokenUsage;
+}
+
+function copilotUsageEquals(
+  first: CopilotUsageObservation,
+  second: CopilotUsageObservation,
+): boolean {
+  if (first.shutdownObserved !== second.shutdownObserved) return false;
+  if (!first.tokens || !second.tokens) return first.tokens === second.tokens;
+  return first.tokens.input === second.tokens.input
+    && first.tokens.output === second.tokens.output
+    && first.tokens.cacheRead === second.tokens.cacheRead
+    && first.tokens.cacheCreation === second.tokens.cacheCreation;
 }
 
 /** Parse only Copilot's final aggregate token counters from a shutdown record. */
@@ -594,17 +607,29 @@ async function readLatestCopilotUsageFromTail(
     try {
       const buffer = Buffer.alloc(readSize);
       await fh.read(buffer, 0, readSize, offset);
-      const lines = buffer.toString('utf-8').split('\n');
-      if (offset > 0) lines.shift();
+      let lineStart = 0;
+      if (offset > 0) {
+        const partialLineEnd = buffer.indexOf('\n');
+        if (partialLineEnd < 0) return { shutdownObserved: false };
+        lineStart = partialLineEnd + 1;
+      }
       let latest: CopilotUsageObservation = { shutdownObserved: false };
-      for (const line of lines) {
-        if (!line.includes(`"${COPILOT_SHUTDOWN_EVENT}"`)) continue;
-        try {
-          const observed = parseCopilotShutdown(JSON.parse(line));
-          if (observed.shutdownObserved) latest = observed;
-        } catch {
-          // The last line may still be in flight; the bounded retry sees it later.
+      while (lineStart < buffer.length) {
+        const newline = buffer.indexOf('\n', lineStart);
+        const lineEnd = newline < 0 ? buffer.length : newline;
+        const line = buffer.subarray(lineStart, lineEnd).toString('utf-8');
+        if (line.includes(`"${COPILOT_SHUTDOWN_EVENT}"`)) {
+          try {
+            const observed = parseCopilotShutdown(JSON.parse(line));
+            if (observed.shutdownObserved) {
+              latest = { ...observed, shutdownOffset: offset + lineEnd };
+            }
+          } catch {
+            // The last line may still be in flight; the bounded retry sees it later.
+          }
         }
+        if (newline < 0) break;
+        lineStart = newline + 1;
       }
       return latest;
     } finally {
@@ -619,15 +644,21 @@ async function readLatestCopilotUsageFromTail(
 /** Wait briefly because Copilot can append session.shutdown after SessionEnd. */
 async function waitForCopilotShutdownUsage(
   transcriptPath: string,
+  initial: CopilotUsageObservation,
 ): Promise<CopilotUsageObservation> {
-  for (let attempt = 0; attempt < COPILOT_USAGE_MAX_ATTEMPTS; attempt++) {
+  let latest = initial;
+  for (let attempt = 1; attempt < COPILOT_USAGE_MAX_ATTEMPTS; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, COPILOT_USAGE_RETRY_MS));
     const observed = await readLatestCopilotUsageFromTail(transcriptPath);
-    if (observed.shutdownObserved) return observed;
-    if (attempt < COPILOT_USAGE_MAX_ATTEMPTS - 1) {
-      await new Promise((resolve) => setTimeout(resolve, COPILOT_USAGE_RETRY_MS));
+    if (!observed.shutdownObserved) continue;
+    latest = observed;
+    if (!initial.shutdownObserved
+      || observed.shutdownOffset !== initial.shutdownOffset
+      || !copilotUsageEquals(initial, observed)) {
+      return observed;
     }
   }
-  return { shutdownObserved: false };
+  return latest;
 }
 
 /** Resolve Copilot's local event log without accepting path traversal via sessionId. */
@@ -1013,9 +1044,9 @@ export async function parseHookEvent(
     return null;
   }
 
-  const sessionId = deriveSessionId(hookData, { includeCwd: true });
-  const cwd = resolveHookCwd(hookData);
   const isCopilot = tool.toLowerCase() === COPILOT_TOOL_ID;
+  const sessionId = deriveSessionId(hookData, { includeCwd: !isCopilot });
+  const cwd = isCopilot ? undefined : resolveHookCwd(hookData);
 
   const event: DashboardEvent = {
     type: eventType,
@@ -1098,7 +1129,8 @@ export async function parseHookEvent(
   if (eventType === 'session_end' && isCopilot) {
     const transcriptPath = resolveCopilotUsageTranscript(sessionId);
     if (transcriptPath) {
-      const usage = await waitForCopilotShutdownUsage(transcriptPath);
+      const initial = await readLatestCopilotUsageFromTail(transcriptPath);
+      const usage = await waitForCopilotShutdownUsage(transcriptPath, initial);
       if (usage.tokens) {
         event.tokens = usage.tokens;
         event.tokenScope = 'session';
