@@ -316,6 +316,37 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 | `teamai doctor` | Diagnose configuration issues (`--json` for CI, hooks and agents) |
 | `teamai uninstall` | Remove all teamai resources and hooks |
 
+## Troubleshooting
+
+### `teamai init` hangs after "Registered as team member"
+
+**Symptom**: init stops at `✔ Registered as team member: <you>` with no further output and no error. No `~/.teamai/config.yaml` is written, no skills are pulled.
+
+**Root cause**: the team repo's default branch is protected (`push: No one` — common for team repos). Older teamai versions pushed the member file directly to the default branch via `git push`, which (a) is rejected by the server and (b) has no timeout, so a missing-credential push hangs forever instead of failing. Init never reaches the local-config step.
+
+**Quick fix (no code change)** — register via MR, then re-run init:
+
+```bash
+# 1. Make sure a GitLab/GitHub PAT (api + read_repository scope) is available.
+#    For GitLab self-hosted, also export the instance URL:
+export GITLAB_TOKEN="$(cat ~/.config/gl_token)"      # or use glab auth
+export GITLAB_URL=http://gitlab.irootech.com          # self-hosted only
+
+# 2. Push the member file to a new branch instead of the protected default.
+cd ~/.teamai/team-repo
+git checkout -b feat/register-$USER
+git push "http://oauth2:${GITLAB_TOKEN}@<host>/<path>.git" feat/register-$USER
+
+# 3. Open a Merge Request from that branch → main, and merge it (Maintainers/Owners).
+
+# 4. Sync local main, then re-run init — the member is now registered, so the
+#    push step is skipped and init completes (config + skills are written).
+git checkout main && git pull --ff-only
+cd /tmp && teamai init "<repo-url>" --scope user --agent <agent> --force
+```
+
+**Permanent fix**: apply the patch in `patches/init-push-via-mr-and-timeout.patch` (or upgrade once PR #677 lands). It routes the reviewer-config push through a branch + MR and wraps every direct push in a 30s timeout, so a hung push can never stall init again.
+
 ## License
 
 [MIT](LICENSE)
