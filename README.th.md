@@ -316,6 +316,18 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 | `teamai doctor` | วินิจฉัยปัญหาคอนฟิก (`--json` แสดงผลเป็น JSON สำหรับ CI, hook และ agent) |
 | `teamai uninstall` | ลบทรัพยากรและ hooks ของ teamai ทั้งหมด |
 
+## การแก้ปัญหา
+
+### `teamai init` ค้างหลัง "Registered as team member"
+
+**อาการ**: init หยุดที่ `✔ Registered as team member: <คุณ>` แล้วไม่มีผลลัพธ์หรือข้อผิดพลาดใด ๆ ต่อ ไม่มีการเขียน `~/.teamai/config.yaml` และไม่ดึง skills
+
+**สาเหตุ**: สาขา default ของทีม repo ถูกป้องกันไว้ (`push: No one` — เป็นเรื่องปกติของ team repo) เวอร์ชันเก่าของ teamai push ไฟล์สมาชิกลงสาขา default โดยตรงด้วย `git push` ซึ่ง (a) ถูกเซิร์ฟเวอร์ปฏิเสธ และ (b) push ไม่มี timeout ทำให้เมื่อขาด credential มันค้างตลอดไปแทนที่จะล้มเหลว init จึงไปไม่ถึงขั้นตอน config ในเครื่อง
+
+**การแก้ไข**: อัปเกรดเป็นเวอร์ชันที่มี PR #677 การลงทะเบียนสมาชิกและการตั้งค่า reviewer จะไปทาง orphan branch `teamai-reports` / branch + MR (ไม่ push ตรงไปสาขา default ที่ถูกป้องกัน) และ git subprocess ทุกตัวมี timeout 30 วินาทีพร้อม `GIT_TERMINAL_PROMPT=0` push ที่ค้างหรือไม่มี credential จะล้มเหลวทันทีโดยไม่บล็อก init init เสร็จสมบูรณ์เสมอและเขียน config + skills ในเครื่อง ความล้มเหลวของ push/MR เป็นเพียงคำเตือน
+
+วิธีแก้ชั่วคราวบนเวอร์ชันเก่า: ลงทะเบียนสมาชิกเองผ่าน branch + MR (push `members/<คุณ>.yaml` บน feature branch ใน `~/.teamai/team-repo` แล้วเปิด MR ไปสาขา default) เมื่อ merge แล้วรัน `teamai init` อีกครั้ง
+
 ## ใบอนุญาต
 
 [MIT](LICENSE)

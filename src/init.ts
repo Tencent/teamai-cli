@@ -975,26 +975,30 @@ export async function initSelfRepo(options: GlobalOptions & {
       const { updateReports } = await import('./utils/reports-branch.js');
       let isNewSelfMember = false;
       let selfMemberChanged = false;
-      const pushed = await updateReports(localConfig, async (wt) => {
-        const memberDir = path.join(wt, 'members');
-        await ensureDir(memberDir);
-        const memberPath = path.join(memberDir, `${username}.yaml`);
-        isNewSelfMember = !await pathExists(memberPath);
-        const existingSelfMember = await getMemberConfig(wt, username);
-        const merged = mergeMemberConfig(existingSelfMember, {
-          username,
-          projects: localConfig.projects,
-        });
-        selfMemberChanged = merged.changed;
-        if (!merged.changed) return null;
-        await writeFile(memberPath, YAML.stringify(merged.config));
-        return {
-          files: ['members/'],
-          message: isNewSelfMember
-            ? `[teamai] Register member: ${username}`
-            : `[teamai] Update member roster: ${username}`,
-        };
-      });
+      const pushed = await withTimeout(
+        updateReports(localConfig, async (wt) => {
+          const memberDir = path.join(wt, 'members');
+          await ensureDir(memberDir);
+          const memberPath = path.join(memberDir, `${username}.yaml`);
+          isNewSelfMember = !await pathExists(memberPath);
+          const existingSelfMember = await getMemberConfig(wt, username);
+          const merged = mergeMemberConfig(existingSelfMember, {
+            username,
+            projects: localConfig.projects,
+          });
+          selfMemberChanged = merged.changed;
+          if (!merged.changed) return null;
+          await writeFile(memberPath, YAML.stringify(merged.config));
+          return {
+            files: ['members/'],
+            message: isNewSelfMember
+              ? `[teamai] Register member: ${username}`
+              : `[teamai] Update member roster: ${username}`,
+          };
+        }),
+        30_000,
+        'Member registration push',
+      );
       if (selfMemberChanged) {
         if (pushed) {
           log.success(isNewSelfMember
@@ -1445,27 +1449,31 @@ export async function init(options: GlobalOptions & {
       const { updateReports } = await import('./utils/reports-branch.js');
       let memberChanged = false;
       let memberProjects: string[] | undefined;
-      const pushed = await updateReports(reportsConfig, async (wt) => {
-        const memberDir = path.join(wt, 'members');
-        await ensureDir(memberDir);
-        const memberPath = path.join(memberDir, `${username}.yaml`);
-        isNewMember = !await pathExists(memberPath);
-        const existingMember = await getMemberConfig(wt, username);
-        const merged = mergeMemberConfig(existingMember, {
-          username,
-          projects: resolvedProjects,
-        });
-        memberChanged = merged.changed;
-        memberProjects = merged.config.projects;
-        if (!merged.changed) return null;
-        await writeFile(memberPath, YAML.stringify(merged.config));
-        return {
-          files: ['members/'],
-          message: isNewMember
-            ? `[teamai] Register member: ${username}`
-            : `[teamai] Update member roster: ${username}`,
-        };
-      });
+      const pushed = await withTimeout(
+        updateReports(reportsConfig, async (wt) => {
+          const memberDir = path.join(wt, 'members');
+          await ensureDir(memberDir);
+          const memberPath = path.join(memberDir, `${username}.yaml`);
+          isNewMember = !await pathExists(memberPath);
+          const existingMember = await getMemberConfig(wt, username);
+          const merged = mergeMemberConfig(existingMember, {
+            username,
+            projects: resolvedProjects,
+          });
+          memberChanged = merged.changed;
+          memberProjects = merged.config.projects;
+          if (!merged.changed) return null;
+          await writeFile(memberPath, YAML.stringify(merged.config));
+          return {
+            files: ['members/'],
+            message: isNewMember
+              ? `[teamai] Register member: ${username}`
+              : `[teamai] Update member roster: ${username}`,
+          };
+        }),
+        30_000,
+        'Member registration push',
+      );
       if (memberChanged) {
         log.success(isNewMember
           ? `Registered as team member: ${username}`

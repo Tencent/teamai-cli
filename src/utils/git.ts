@@ -6,16 +6,43 @@ import simpleGit, { type SimpleGit } from 'simple-git';
 import { log } from './logger.js';
 
 /**
+ * Per-spawn guard that stops git ever blocking on an interactive credential
+ * prompt. With this unset, a missing PAT/SSH key makes `git push` open a
+ * username/password prompt on the tty instead of failing — and since teamai
+ * runs git as a subprocess with no tty, the push hangs forever, stalling init
+ * before the local config is written. `GIT_TERMINAL_PROMPT=0` makes git fail
+ * fast with a clear "could not read Username" error instead.
+ */
+const NO_PROMPT_ENV = { GIT_TERMINAL_PROMPT: '0' } as const;
+
+/**
+ * Hard ceiling for any single git subprocess. simple-git's `timeout.block`
+ * actually kills the spawned git process when no data arrives for this long
+ * (unlike a Promise.race, which only stops awaiting while the child keeps
+ * running and keeps the Node process alive). 30s covers every legitimate git
+ * operation teamai issues; a hung push/clone/fetch is killed at the process
+ * level, not just the await level.
+ */
+const GIT_BLOCK_TIMEOUT_MS = 30_000;
+
+/**
  * Create a SimpleGit instance for a given base path.
  *
  * Authentication is handled by the provider's remote URL or by normal Git
  * facilities such as credential helpers, SSH config, and SSH agents.
+ *
+ * Every instance gets a 30s block timeout (kills a hung git subprocess at the
+ * spawn level) and `GIT_TERMINAL_PROMPT=0` (so a missing credential fails fast
+ * instead of hanging on an invisible prompt). Together these make the old
+ * "init hangs forever on push" failure mode structurally impossible.
  */
 export function createGit(basePath?: string): SimpleGit {
-  if (basePath) {
-    return simpleGit({ baseDir: basePath });
-  }
-  return simpleGit();
+  const options = {
+    timeout: { block: GIT_BLOCK_TIMEOUT_MS },
+    env: NO_PROMPT_ENV,
+    ...(basePath ? { baseDir: basePath } : {}),
+  };
+  return simpleGit(options);
 }
 
 /**
@@ -54,7 +81,7 @@ export async function isGitRepo(localPath: string): Promise<boolean> {
  */
 export async function initRepo(remote: string, localPath: string): Promise<void> {
   await fse.ensureDir(localPath);
-  const git = simpleGit({ baseDir: localPath });
+  const git = createGit(localPath);
   await git.init();
   await git.addRemote('origin', remote);
 }

@@ -316,6 +316,18 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 | `teamai doctor` | 設定の問題を診断（`--json` で JSON 出力、CI・hook・agent 向け）|
 | `teamai uninstall` | すべての teamai リソースと hooks を削除 |
 
+## トラブルシューティング
+
+### `teamai init` が "Registered as team member" の後で固まる
+
+**症状**:init が `✔ Registered as team member: <あなた>` で停止し、その後の出力もエラーもありません。`~/.teamai/config.yaml` は書き込まれず、skills も取得されません。
+
+**根本原因**:チームリポジトリのデフォルトブランチが保護されています(`push: No one` — チームリポジトリでは一般的)。旧バージョンの teamai はメンバーファイルを `git push` でデフォルトブランチに直接プッシュしており、(a) サーバーに拒否され、(b) プッシュにタイムアウトがないため、認証情報がない場合に失敗せず永久にハングしていました。init はローカル設定のステップに到達できません。
+
+**修正**:PR #677 を含むバージョンにアップグレードしてください。メンバー登録と reviewer 設定は `teamai-reports` orphan ブランチ / ブランチ + MR 経由になり(保護されたデフォルトブランチには直接プッシュしません)、すべての git サブプロセスに 30 秒のタイムアウトと `GIT_TERMINAL_PROMPT=0` が付きます。ハングした、または認証情報のないプッシュは init を止めることなく即座に失敗します。init は必ず完了し、ローカル設定 + skills を書き込みます。プッシュ/MR の失敗は警告のみです。
+
+旧バージョンでの手動回避策:`~/.teamai/team-repo` で `members/<あなた>.yaml` を feature ブランチにプッシュし、デフォルトブランチへ MR を作成してマージした後、`teamai init` を再実行してください。
+
 ## ライセンス
 
 [MIT](LICENSE)

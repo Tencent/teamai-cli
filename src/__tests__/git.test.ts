@@ -22,8 +22,14 @@ const mockGit = {
   raw: vi.fn(),
 };
 
+// Capture the options every createGit() call passes to simple-git, so tests
+// can assert the hang guards (block timeout + GIT_TERMINAL_PROMPT) are present.
+const simpleGitCalls: unknown[][] = [];
 vi.mock('simple-git', () => ({
-  default: () => mockGit,
+  default: (...args: unknown[]) => {
+    simpleGitCalls.push(args);
+    return mockGit;
+  },
 }));
 
 vi.mock('fs-extra', () => ({
@@ -55,6 +61,43 @@ vi.mock('../utils/logger.js', () => ({
 
 import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pullRepoFastForward, pushLearningToOrigin } from '../utils/git.js';
 import fse from 'fs-extra';
+import { createGit } from '../utils/git.js';
+
+describe('createGit', () => {
+  // The init-hang bug: a push with missing credentials opened an invisible
+  // prompt (no tty) and blocked forever; a stuck network op also blocked
+  // forever. Every git instance must therefore carry both guards.
+  beforeEach(() => {
+    simpleGitCalls.length = 0;
+  });
+
+  it('passes the spawn-level block timeout so a hung git subprocess is killed, not just un-awaited', () => {
+    createGit('/some/path');
+    const options = simpleGitCalls.at(-1)![0] as { timeout?: { block?: number } };
+    // simple-git's timeout.block actually kills the spawned process; a
+    // Promise.race-style timeout would leave it running.
+    expect(options.timeout?.block).toBe(30_000);
+  });
+
+  it('sets GIT_TERMINAL_PROMPT=0 so missing credentials fail fast instead of hanging on a prompt', () => {
+    createGit('/some/path');
+    const options = simpleGitCalls.at(-1)![0] as { env?: Record<string, string> };
+    expect(options.env?.GIT_TERMINAL_PROMPT).toBe('0');
+  });
+
+  it('forwards basePath as baseDir', () => {
+    createGit('/some/path');
+    const options = simpleGitCalls.at(-1)![0] as { baseDir?: string };
+    expect(options.baseDir).toBe('/some/path');
+  });
+
+  it('creates an instance without a basePath too (guards still applied)', () => {
+    createGit();
+    const options = simpleGitCalls.at(-1)![0] as { timeout?: { block?: number }; env?: Record<string, string> };
+    expect(options.timeout?.block).toBe(30_000);
+    expect(options.env?.GIT_TERMINAL_PROMPT).toBe('0');
+  });
+});
 
 describe('generateBranchName', () => {
   it('should produce teamai/push/<username>/<timestamp> format', () => {
