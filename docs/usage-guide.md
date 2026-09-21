@@ -1658,6 +1658,8 @@ Workflow:
 
 If the review-status API returns a non-2xx response, write mode fails closed: the job exits without writing files, committing, or pushing to the team knowledge repo.
 
+Comment mode also fails closed when it cannot list the existing marker comment, so a transient provider error cannot create a duplicate comment.
+
 Ready-to-use templates:
 
 - `examples/ci/github-actions-mr-extract.yml` (GitHub Actions)

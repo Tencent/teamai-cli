@@ -1606,6 +1606,8 @@ teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ./team-repo --indi
 
 如果审核状态 API 返回非 2xx 响应，write 模式会按 fail-closed 处理：任务失败退出，且不会向团队知识仓库写入文件、提交或 push。
 
+评论模式在无法列出已有 marker 评论时也会按 fail-closed 处理，避免临时的 Provider 错误创建重复评论。
+
 开箱即用模板：
 
 - `examples/ci/github-actions-mr-extract.yml`（GitHub Actions）
