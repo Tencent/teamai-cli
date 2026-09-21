@@ -1329,6 +1329,8 @@ teamai hooks remove    # 移除
 
 inject 和 remove 只会操作你实际已安装的工具（即 `~/.<tool>/` 根目录已存在的工具）。对于 `toolPaths` 中已配置但未安装的工具，命令不会为其凭空创建根目录。
 
+在 Windows 上，经由 bash 执行的内置 hook 派发命令（如 Claude、Codex、Cursor、Copilot CLI）会以绝对路径引用 Git Bash——先查标准安装位置，再回退到 `HKLM\SOFTWARE\GitForWindows` 注册表——从而避免解析到 WSL 的 `bash.exe`；若找不到 Git Bash，则退回裸 `bash`。
+
 > **Codex 信任门槛** — Codex（OpenAI / ChatGPT Codex 应用，工具 id 为 `codex`）对非托管 hooks 设有显式的用户信任机制。teamai 写入 `~/.codex/hooks.json` 后，对于新增或变更的 hook，Codex 可能会跳过执行，直到你在 `/hooks` 或 Settings → Hooks 中 review/trust。当检测到 Codex hooks 已安装时，`teamai hooks inject` 与 `teamai doctor` 会输出提示；teamai 从不修改 Codex 的 `[hooks.state]` 来自动信任 —— 信任操作交由你手动完成。
 
 ### 团队 Hooks 声明
@@ -1402,7 +1404,7 @@ GitHub Copilot CLI 已支持其官方自定义指令、Rules、Skills、自定�
 - **自定义 Agents。** 团队 Agents 会转换为 `$COPILOT_HOME/agents/` 或 `.github/agents/` 下的官方 `<name>.agent.md` 配置。TeamAI 将兼容的工具名映射为 Copilot 主别名，通过 `tool_extras.copilot` 保留 Copilot 专属 frontmatter，并且只删除与团队 Agent 或内置 recall 配置匹配的文件；用户自建配置保持不变。详见 [GitHub 自定义 Agent 配置](https://docs.github.com/zh/copilot/reference/custom-agents-configuration)。
 - **Team Context recall。** 内置 `teamai-recall.agent.md` 只获得 `execute`、`read` 和 `search`。它调用现有的 `teamai recall` 流程，让 Copilot 检索 learnings、codebase 证据和 teamwiki 结果，而不会复制或创建第二套知识库。
 - **Docs 和 Env。** 团队 Docs 同步到配置的本地文档目录（默认 `~/.teamai/docs`；project scope 使用项目内对应路径）。团队环境变量同步到该作用域由 TeamAI 管理的 `env.sh`；请从已 source 此文件的 shell 启动 Copilot。TeamAI 不会把环境变量值复制到 Copilot 配置中。
-- **Hooks。** TeamAI 在 `$COPILOT_HOME/hooks/teamai.json` 或 `.github/hooks/teamai.json` 写入独立的 version-1 Hook 文件，使用 Copilot 与 VS Code 兼容的 PascalCase 事件（`SessionStart`、`UserPromptSubmit`、`PostToolUse` 和 `Stop`），从而保留 TeamAI 所需的 snake_case Hook 负载字段，并生成 `bash`、`powershell` 和后备 `command` 字段。文件会被幂等合并，且保留无关条目。TeamAI 从不修改 Copilot 的 `settings.json`。
+- **Hooks 与隐私遥测。** TeamAI 在 `$COPILOT_HOME/hooks/teamai.json` 或 `.github/hooks/teamai.json` 写入独立的 version-1 Hook 文件，使用 Copilot 与 VS Code 兼容的 PascalCase 事件（`SessionStart`、`UserPromptSubmit`、`PostToolUse`、`Stop` 和 `SessionEnd`），从而保留 TeamAI 所需的 snake_case Hook 负载字段，并生成 `bash`、`powershell` 和后备 `command` 字段。会话 ID、Skill 使用、提示次数、生命周期状态和最终 Token 总数会进入本地 Dashboard；Copilot 提示原文、助手输出、Transcript 路径和请求元数据绝不会被保存。若最终 Token 计数不可用，会话仍会被记录，但不包含 Token 数据。对于恢复的会话，TeamAI 在 SessionStart 时保存不含路径的日志字节边界；只有此前的运行标记尚未关闭、且未被上次运行使用时，才会采纳该标记。关闭计数必须关联这个标记或边界之后写入的标记。若标记仅在 SessionStart 之后出现，而 SessionEnd 没有提供方时间戳，则无法确认它属于本次运行；会话仍会被记录，但不包含 Token 数据。文件会被幂等合并，且保留无关条目。TeamAI 从不修改 Copilot 的 `settings.json`。
 - **MCP。** `teamai pull` 和 `teamai mcp inject` 使用 Copilot 原生结构，把本地与远程 Server 合并到 `$COPILOT_HOME/mcp-config.json` 或 `.github/mcp.json`。归属信息保存在 Copilot 文件之外，因此重复 pull 保持幂等，`mcp remove` 或卸载只会移除 TeamAI 管理的条目；手写 Server 与 `settings.json` 均保持不变。
 
 团队 Hooks 仍以团队仓库中的 `hooks/hooks.yaml` 为来源：直接编辑该文件，再使用正常的 pull/push 流程。TeamAI 不会从 Copilot 配置文件反向导入任意原生 Hook 条目。
@@ -1484,7 +1486,13 @@ teamai remove rules <name> --force   # 跳过确认，用于脚本和 CI
 
 仅当所有检查通过时，`teamai doctor` 才以状态码 0 退出；任一检查失败时以状态码 1 退出。尚未初始化时，它只报告缺少配置，不会臆测 Git 托管平台。手动执行 `teamai pull` 结束时会运行同一批检查（不含托管平台相关的检查，也不含本次 pull 已经自行报告过的检查）。
 
-除了托管平台、clone、配置、hook 和 env 检查之外，`doctor` 还会验证落到本机上的三件事。`<tool> is installed` 在 `enabledAgents` 列出了不会收到任何内容的工具时失败——这正是 pull 报告成功、而该工具什么都没收到的情况。它使用与同步相同的解析逻辑，因此像 OpenClaw 这样把 skills 放在 workspace 目录而非工具根目录的工具，会在同步真正写入的位置被判断。工具已安装时也会作为通过项报告，因此 `--json` 无论哪种情况都会为每个已启用工具给出一条记录。pull 结束时的检查只覆盖它从当前目录解析出的那个 scope；其他 scope 请在对应目录下运行 `teamai doctor`。`Skills delivered to <tool>` 会把角色命名空间、标签订阅与排除规则解析出的 skill 集合，与每个已安装工具磁盘上的内容比对：从未送达的 skill 与送达但不可读的 skill 会分别报告——后者指 `SKILL.md` 缺失、frontmatter 无法解析，或其 `name` 与目录名不一致，导致 agent 永远发现不了它。`Team docs delivered` 将 docs 包与 `sharing.docs.localDir` 比对（它只有一个目标目录，而非每个工具一个）；每个应有的文档都必须是可读取的文件，因此占用了该名字的目录或断链接也算缺失。rules、agents 和 MCP server 目前尚未检查。
+除了托管平台、clone、配置和 hook 检查之外，`doctor` 还会验证落到本机上的内容。`<tool> is installed` 在 `enabledAgents` 列出了不会收到任何内容的工具时失败——这正是 pull 报告成功、而该工具什么都没收到的情况。它使用与同步相同的解析逻辑，因此像 OpenClaw 这样把 skills 放在 workspace 目录而非工具根目录的工具，会在同步真正写入的位置被判断。工具已安装时也会作为通过项报告，因此 `--json` 无论哪种情况都会为每个已启用工具给出一条记录。pull 结束时的检查只覆盖它从当前目录解析出的那个 scope；其他 scope 请在对应目录下运行 `teamai doctor`。`Skills delivered to <tool>` 会把角色命名空间、标签订阅与排除规则解析出的 skill 集合，与每个已安装工具磁盘上的内容比对：从未送达的 skill 与送达但不可读的 skill 会分别报告——后者指 `SKILL.md` 缺失、frontmatter 无法解析，或其 `name` 与目录名不一致，导致 agent 永远发现不了它。`Team docs delivered` 将 docs 包与 `sharing.docs.localDir` 比对（它只有一个目标目录，而非每个工具一个）；每个应有的文档都必须是可读取的文件，因此占用了该名字的目录或断链接也算缺失。
+
+`Rules delivered to <tool>` 与 `Agents delivered to <tool>` 对另外两类按工具下发的资源做同样的事，并且都向 handler 询问落点，而不是自行拼路径：rule 的文件名和内容因工具而异（`.md` 原样、`.mdc` 带派生的 `globs`/`alwaysApply`、`.instructions.md` 带 `applyTo`），agent 的落点来自渲染结果，且由 `targets:` 决定哪些工具应当收到。已送达的 rule 会与 handler 为该工具渲染出的字节逐一比对，而不只是检查该工具所需的键是否存在：`globs` 与团队 rule 的 `paths:` 不再一致的 `.mdc`，即使 `alwaysApply` 取值合法，也会作用到错误的文件上；这里会报告为 `delivered from an older copy`——正文漂移的副本同样如此，因为两者都写入成功，却都是错的。agent 会与渲染结果逐字节比对：旧版 spec 留下的副本（普通 pull 会跳过团队仓库未变化的 scope，它可能一直留在那里）报告为 `delivered from an older spec`，而不是当作已送达。`Every team agent reaches a tool` 会指出在任何已安装工具上都无法渲染的 agent，通常是 spec 解析失败，或 `targets:` 只列了本机没有的工具。这两项仅在 `doctor` 中运行：它们会按工具读取每条 rule、解析每个 agent，放进 pull 结束时的检查会耗尽其时间预算。
+
+有两个工具并不读取 rules 目录，按文件比对的检查无法代表它们，因此各自单列一项。`Team rules are active in opencode` 检查 `opencode.json` 的 `instructions` 中是否仍列着 teamai 所拥有的那条 glob：OpenCode 不会自动扫描 `.opencode/rules`，缺了它，已送达的每个 `.md` 都不会生效，而按文件比对的检查依旧通过。`Team rules are inlined in Hermes SOUL.md` 把 `SOUL.md` 中 teamai 管理的代码块与团队 rule 内联后的内容比对——Hermes 的常驻指令来自这一个文件而非某个目录，因此代码块被删除或停留在旧版规则集上，都意味着该工具读到的是错误的规则，而磁盘上看不出任何异常。
+
+`MCP servers delivered to <tool>` 将团队 `mcp.yaml` 为该工具解析出的每个 server 与该工具自己配置文件中的条目逐一比对，并列出 reconcile 跳过的 server 及原因。比对的是条目内容而非名字：reconcile 不会覆盖不属于 teamai 的条目，因此你自己写的同名 server 会占住这个名字，团队的定义从未真正送达；过期的旧副本同样等于没送达。两者都报告为 `not the team's definition`，而覆盖非 teamai 写入的条目只有 `teamai pull --force` 能做到。未解析的 `${VAR}` 会在这里连同变量名一起报告——否则它只在 pull 时出现一次，之后再无提示。无法解析的 `mcp.yaml` 并不等于团队没有 MCP：它会作为 `Team MCP servers can be read` 连同解析错误一起报告，因为这种文件不会向任何工具注入内容，而且除第一次之外的每次运行都对此保持沉默。`Env variables injected in shell profile` 不再只查标记注释：它会检查 `env/env.yaml` 能否解析、以及是否在 `variables:` 键下声明了变量（写成普通的 `KEY: value` 映射等于没有声明；而显式写成 `variables: []` 属于没有内容要下发的配置，不会判为失败）、每个变量是否以 `env.yaml` 声明的值写进了 `env.sh`（残留的旧值会一直被导出到每个 shell 和 MCP server，直到下次 pull；比对时会用生成器自身的逆运算读回 `env.sh`，因此跨多行引用的多行值能够正确匹配，而不会被误判为过期），以及注入的代码块是否真的能加载它——未加引号的 Windows 路径在 POSIX shell 中会被转义破坏，`source` 从不执行，而且没有任何提示。
 
 `Contributed learnings are published` 会在 `teamai contribute` 写下、但尚未推送成功的笔记仍在队列中时失败。当本次 pull 已经说过时，手动 `teamai pull` 结束时不会再重复它：pull 会尝试发布队列并自行报告结果，还会带上导致失败的推送错误——这是该检查本身给不出的信息。如果 pull 因为团队仓库刷新失败而根本没走到那一步，该检查会照常打印。
 
@@ -1589,6 +1597,8 @@ teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ./team-repo --indi
 1. MR 打开/更新 → CI 触发 `--mode comment`，提取知识建议并发布为 MR 评论
 2. Reviewer 审查评论，对不需要的建议添加拒绝标记（GitHub 👎 / TGit ☝️）
 3. MR 合并 → CI 触发 `--mode write`，将未被拒绝的建议写入团队知识仓库
+
+如果审核状态 API 返回非 2xx 响应，write 模式会按 fail-closed 处理：任务失败退出，且不会向团队知识仓库写入文件、提交或 push。
 
 开箱即用模板：
 

@@ -29,6 +29,10 @@ function gitIdentity(): string {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 10_000,
+    // A console-less parent (a GUI or hook host) makes Windows give the child a
+    // console of its own, which flashes a window; CI has no Windows runner, so
+    // the option is the only guard.
+    windowsHide: true,
   });
   const configured = result.status === 0 ? (result.stdout ?? '').trim() : '';
   let osUsername = '';
@@ -73,6 +77,7 @@ export class GenericGitProvider implements GitProvider {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10_000,
+      windowsHide: true,
     });
     if (result.error || result.status !== 0) {
       throw new Error('git is required for generic Git repositories but was not found on PATH.');
@@ -89,6 +94,7 @@ export class GenericGitProvider implements GitProvider {
       // large self-hosted repos over slow/VPN links need the extra headroom.
       timeout: 180_000,
       maxBuffer: 10 * 1024 * 1024,
+      windowsHide: true,
     });
     if (result.error || result.status !== 0) {
       const output = `${result.stderr ?? ''} ${result.stdout ?? ''}`.trim();

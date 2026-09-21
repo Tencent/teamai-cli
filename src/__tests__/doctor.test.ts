@@ -12,10 +12,13 @@ vi.mock('../config.js', () => ({
 vi.mock('../utils/fs.js', () => ({
     pathExists: vi.fn(),
     readFileSafe: vi.fn(),
-    // The delivery checks walk the team repo through resolveDesiredSkills and
-    // DocsHandler. This machine has neither skills nor docs; delivery on a real
-    // disk is covered by doctor-delivery.test.ts.
+    // The delivery checks walk the team repo through resolveDesiredSkills,
+    // resolveDesiredRules, resolveDesiredAgents and DocsHandler. This machine
+    // has none of those; delivery on a real disk is covered by
+    // doctor-delivery.test.ts, doctor-rules-delivery.test.ts and
+    // doctor-agents-delivery.test.ts.
     listDirs: vi.fn().mockResolvedValue([]),
+    listFiles: vi.fn().mockResolvedValue([]),
     listFilesRecursive: vi.fn().mockResolvedValue([]),
     expandHome: vi.fn((p: string) => p),
 }));

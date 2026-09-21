@@ -613,6 +613,30 @@ scope: 'user',
     expect(content).toBe('alice\ntestuser\n');
   });
 
+  it('should mirror deleted local skill files without removing CONTRIBUTORS', async () => {
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'my-skill');
+    await fse.ensureDir(path.join(localSkillDir, 'references'));
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# My Skill');
+    await fse.writeFile(path.join(localSkillDir, 'references', 'new.md'), 'new');
+
+    const destDir = path.join(localConfig.repo.localPath, 'skills', 'my-skill');
+    await fse.ensureDir(path.join(destDir, 'references'));
+    await fse.writeFile(path.join(destDir, 'SKILL.md'), '# My Skill');
+    await fse.writeFile(path.join(destDir, 'references', 'old.md'), 'old');
+    await fse.writeFile(path.join(destDir, 'CONTRIBUTORS'), 'alice\n');
+
+    await handler.pushItem({
+      name: 'my-skill',
+      type: 'skills',
+      sourcePath: localSkillDir,
+      relativePath: 'skills/my-skill',
+    }, teamConfig, localConfig);
+
+    expect(await fse.pathExists(path.join(destDir, 'references', 'old.md'))).toBe(false);
+    expect(await fse.readFile(path.join(destDir, 'references', 'new.md'), 'utf-8')).toBe('new');
+    expect(await fse.readFile(path.join(destDir, 'CONTRIBUTORS'), 'utf-8')).toBe('alice\ntestuser\n');
+  });
+
   it('should preserve existing contributors when user already listed', async () => {
     const localSkillDir = path.join(homeDir, '.claude/skills', 'my-skill');
     await fse.ensureDir(localSkillDir);

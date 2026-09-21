@@ -31,6 +31,7 @@ export const execCommand: CommandExecutor = (
     env: options.env,
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: false,
+    windowsHide: true,
   });
 
   let stdout = '';

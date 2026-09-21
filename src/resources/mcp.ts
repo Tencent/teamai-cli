@@ -51,13 +51,31 @@ export function teamMcpYamlPath(repoPath: string): string {
  * absent or fails validation, so callers never act on a half-broken server set.
  */
 export async function parseMcpYaml(repoPath: string): Promise<McpYaml | null> {
+  const read = await readMcpYaml(repoPath);
+  if (read.ok) return read.yaml;
+  log.warn(`Invalid mcp.yaml format: ${read.reason} — skipping team MCP servers this run`);
+  return null;
+}
+
+/** An mcp.yaml that is absent (`yaml: null`), parsed, or refused with a reason. */
+export type McpYamlRead =
+  | { ok: true; yaml: McpYaml | null }
+  | { ok: false; reason: string };
+
+/**
+ * Read the team repo's mcp/mcp.yaml, keeping the reason a bad file yielded no
+ * servers. `parseMcpYaml` flattens both to `null`, which is right for a pull
+ * that can only skip the run — but a file that does not parse injects nothing
+ * into any tool, and a check that cannot tell it from a repo with no MCP at
+ * all reports `ok: true` over a team whose MCP is entirely broken (#624 review).
+ */
+export async function readMcpYaml(repoPath: string): Promise<McpYamlRead> {
   const content = await readFileSafe(teamMcpYamlPath(repoPath));
-  if (!content) return null;
+  if (!content) return { ok: true, yaml: null };
   try {
-    return McpYamlSchema.parse(YAML.parse(content));
+    return { ok: true, yaml: McpYamlSchema.parse(YAML.parse(content)) };
   } catch (e) {
-    log.warn(`Invalid mcp.yaml format: ${(e as Error).message} — skipping team MCP servers this run`);
-    return null;
+    return { ok: false, reason: (e as Error).message };
   }
 }
 

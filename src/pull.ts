@@ -11,6 +11,7 @@ import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSa
 import { injectClaudeMdSection, removeClaudeMdSection } from './utils/claudemd.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
 import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
+import { skillsDirForTool } from './resources/skills.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
 import { loadTagsConfig, filterByTags } from './utils/tags.js';
@@ -383,6 +384,47 @@ export async function resolveDesiredSkills(
   return { items, teamItems, skippedByTags };
 }
 
+export interface DesiredRules {
+  /** The rules this member should have: active knowledge namespaces ∩ tag subscriptions. */
+  items: ResourceItem[];
+  /** How many rules the tag channel left out, for the sync line. */
+  skippedByTags: number;
+}
+
+/**
+ * Resolve the rules this member should have. Same contract as
+ * `resolveDesiredSkills`, and for the same reason: `pull` calls it to decide
+ * what to install and `doctor` calls it to check what landed (#624), so the
+ * namespace convention and the tag channel are stated once.
+ */
+export async function resolveDesiredRules(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  roleContext: RolePullContext | null,
+): Promise<DesiredRules> {
+  const handler = getHandler('rules');
+  const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
+  const allItems = await handler.scanTeamForPull(teamConfig, localConfig);
+  const knowledgeNs = roleContext ? roleContext.activeNamespaces.knowledge : null;
+  const roleFiltered = filterRulesByKnowledgeNamespaces(allItems, knowledgeNs);
+  const { included, skipped } = filterByTags(roleFiltered, tagsConfig, localConfig.subscribedTags, 'rules');
+  return { items: included, skippedByTags: skipped.length };
+}
+
+/**
+ * Resolve the agents this member should have. Throws on a stem collision
+ * between two active namespaces, the same way `pull` aborts the scope: a
+ * caller that cannot say what should be delivered must not guess.
+ */
+export async function resolveDesiredAgents(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  roleContext: RolePullContext | null,
+): Promise<ResourceItem[]> {
+  const items = await getHandler('agents').scanTeamForPull(teamConfig, localConfig);
+  return filterAgentsByNamespaces(items, roleContext ? roleContext.activeNamespaces.agents : null);
+}
+
 // Deployment adds a CONTRIBUTORS file that the team source may not have; ignore it
 // when checking whether a deployed skill still matches its source (same file as
 // resources/skills.ts and pre-push-sync.ts use for modification detection).
@@ -427,21 +469,22 @@ export async function cleanupInactiveNamespaceSkills(
   inactiveSkillNames: Set<string>,
   inactiveSkillSources?: Map<string, string>,
 ): Promise<void> {
-  const baseDir = resolveBaseDir(localConfig);
-
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (isAgentExcluded(localConfig, tool)) continue;
-    if (!toolPath.skills) continue;
-    if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
-    if (!await pathExists(path.join(baseDir, toolPath.skills))) continue;
+    // Ask where delivery writes, not where the tool root sits: OpenClaw keeps
+    // its skills under a workspace directory, so the generic probe sweeps a
+    // directory a pull never wrote to and leaves the real one untouched (#624).
+    const skillsDir = await skillsDirForTool(tool, toolPath.skills, localConfig);
+    if (skillsDir === null) continue;
+    if (!await pathExists(skillsDir)) continue;
 
-    const localSkillNames = await listDirs(path.join(baseDir, toolPath.skills));
+    const localSkillNames = await listDirs(skillsDir);
     for (const skillName of localSkillNames) {
       if (BUILTIN_SKILL_NAMES.has(skillName)) continue;
       if (retainedSkillNames.has(skillName)) continue;
       if (!inactiveSkillNames.has(skillName)) continue;
 
-      const localSkillDir = path.join(baseDir, toolPath.skills, skillName);
+      const localSkillDir = path.join(skillsDir, skillName);
 
       // Data-safety guard: only delete a deployed skill when it is byte-identical
       // to its team-repo source. If the user modified SKILL.md or added unpushed
@@ -629,6 +672,35 @@ async function cleanupTombstonedResources(
  * Pull resources for a single scope. This is the core sync logic extracted
  * from the original pull() function to support both user and project scope.
  */
+/**
+ * Report the one shape that makes an env count of 0 a mistake rather than an
+ * empty file: no top-level `variables:` key, which zod accepts without a word.
+ * The env resource is skipped the moment its count reads 0, so this is the only
+ * place the check can run (#662).
+ *
+ * Called from both the full sync and the "Already synced" fast path. A machine
+ * that recorded `lastPullRev` before the file was mangled keeps that rev and
+ * takes the fast path on every later pull, so the Step 2 call site alone would
+ * never reach it — the misconfiguration would stay invisible.
+ */
+async function warnIfEnvYamlShapeIsWrong(
+  freshConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<void> {
+  try {
+    const envHandler = getHandler('env') as EnvHandler;
+    const envItems = await envHandler.scanTeamForPull(freshConfig, localConfig);
+    if (envItems.length === 0) return;
+    const varCount = await envHandler.countEnvVars(envItems[0].sourcePath);
+    if (varCount !== 0) return;
+    const shapeProblem = await envHandler.describeEnvYamlShapeProblemAt(envItems[0].sourcePath);
+    if (shapeProblem) log.warn(shapeProblem);
+  } catch (e) {
+    // Never let a diagnostic take down the pull it is diagnosing.
+    log.debug(`env.yaml shape check skipped: ${(e as Error).message}`);
+  }
+}
+
 async function pullForScope(
   localConfig: LocalConfig,
   options: GlobalOptions,
@@ -717,6 +789,11 @@ async function pullForScope(
     return;
   }
 
+  // Hoisted above the revision fast path: the env.yaml shape check has to run
+  // even on a pull that skips the sync itself.
+  const resourceTypes: readonly ResourceType[] = policy.resourceTypes
+    ?? ['skills', 'rules', 'docs', 'env', 'agents'];
+
   // Step 1b: Skip sync if the repo version hasn't changed since last pull
   let currentTargets: string[] | null = null;
   if (!options.force && !options.dryRun && !submodulesChanged) {
@@ -748,6 +825,11 @@ async function pullForScope(
           // CLI keeps the copies that CLI failed to delete, and its stored rev
           // never moves again. Re-run the cleanup so the upgrade reaches it (#576).
           await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel);
+          // A repo that has not moved can still carry a malformed env.yaml, and
+          // the Step 2 check below is unreachable from this branch.
+          if (resourceTypes.includes('env')) {
+            await warnIfEnvYamlShapeIsWrong(freshConfig, localConfig);
+          }
           return;
         }
 
@@ -759,14 +841,9 @@ async function pullForScope(
     }
   }
 
-  // Load tags config for filtering
-  const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
-  const subscribedTags = localConfig.subscribedTags;
   const excludedSkills = new Set(localConfig.excludedSkills ?? []);
 
   // Step 2: Sync each resource type
-  const resourceTypes: readonly ResourceType[] = policy.resourceTypes
-    ?? ['skills', 'rules', 'docs', 'env', 'agents'];
   let totalSynced = 0;
   let desiredSkillNames: Set<string> | null = null;
   let knownRepoSkillNames: Set<string> | null = null;
@@ -778,14 +855,10 @@ async function pullForScope(
 
     if (type === 'rules') {
       const rulesHandler = handler as RulesHandler;
-      const allItems = await rulesHandler.scanTeamForPull(freshConfig, localConfig);
-      // Filter by role knowledge namespaces first, then by tags
-      const knowledgeNs = roleContext ? roleContext.activeNamespaces.knowledge : null;
-      const roleFiltered = filterRulesByKnowledgeNamespaces(allItems, knowledgeNs);
-      const { included: items, skipped } = filterByTags(roleFiltered, tagsConfig, subscribedTags, 'rules');
+      const { items, skippedByTags } = await resolveDesiredRules(freshConfig, localConfig, roleContext);
       if (options.dryRun) {
         if (items.length > 0) {
-          log.info(`[${scopeLabel}] [dry-run] Would sync ${items.length} rule(s)${skipped.length > 0 ? ` (skipped ${skipped.length} by tags)` : ''}`);
+          log.info(`[${scopeLabel}] [dry-run] Would sync ${items.length} rule(s)${skippedByTags > 0 ? ` (skipped ${skippedByTags} by tags)` : ''}`);
         }
       } else {
         // Always call pullAllRules, even with an empty set: it also cleans up
@@ -794,7 +867,7 @@ async function pullForScope(
         // would leak those artifacts on the machine after upstream deletion.
         await rulesHandler.pullAllRules(freshConfig, localConfig, items);
         if (items.length > 0) {
-          log.success(`[${scopeLabel}] Synced ${items.length} rule(s)${skipped.length > 0 ? ` (skipped ${skipped.length} by tags)` : ''}`);
+          log.success(`[${scopeLabel}] Synced ${items.length} rule(s)${skippedByTags > 0 ? ` (skipped ${skippedByTags} by tags)` : ''}`);
         }
       }
       totalSynced += items.length;
@@ -812,12 +885,9 @@ async function pullForScope(
       knownRepoSkillNames = new Set(desired.teamItems.map((i) => i.name));
       knownRepoSkillSources = new Map(desired.teamItems.map((i) => [i.name, i.sourcePath]));
     } else if (type === 'agents') {
-      // Role/project namespace filter (root = everyone), same as rules. Throws
-      // on a stem collision; the caller's try/catch logs it and aborts the scope.
-      items = filterAgentsByNamespaces(
-        await handler.scanTeamForPull(freshConfig, localConfig),
-        roleContext ? roleContext.activeNamespaces.agents : null,
-      );
+      // Throws on a stem collision; the caller's try/catch logs it and aborts
+      // the scope.
+      items = await resolveDesiredAgents(freshConfig, localConfig, roleContext);
     } else {
       items = await handler.scanTeamForPull(freshConfig, localConfig);
     }
@@ -826,7 +896,16 @@ async function pullForScope(
     if (type === 'env') {
       const envHandler = handler as EnvHandler;
       const varCount = await envHandler.countEnvVars(items[0].sourcePath);
-      if (varCount === 0) continue;
+      if (varCount === 0) {
+        // Report the one shape that makes a count of 0 a mistake rather than an
+        // empty file: no top-level `variables:` key, which zod accepts without
+        // a word. The resource is skipped right here, so this is the only point
+        // a check can run from — inside `pullItem` it would never execute on a
+        // real pull, and the misconfiguration would stay invisible (#662).
+        const shapeProblem = await envHandler.describeEnvYamlShapeProblemAt(items[0].sourcePath);
+        if (shapeProblem) log.warn(shapeProblem);
+        continue;
+      }
 
       if (options.dryRun) {
         log.info(`[${scopeLabel}] [dry-run] Would sync ${varCount} env variable(s)`);
@@ -1520,8 +1599,8 @@ export function compileRecallRulesBlock(): string {
 /**
  * Collect claudemd .md files filtered by the user's active knowledge namespaces.
  *
- * Walks claudemd/<namespace>/*.md for each active namespace.
- * Falls back to collecting ALL namespace dirs when no role context is available.
+ * Always collects root-level claudemd/*.md files, then walks claudemd/<namespace>/*.md
+ * for each active namespace. Root-level instructions are shared with every member.
  */
 async function collectClaudemdFiles(
     repoPath: string,
@@ -1529,6 +1608,15 @@ async function collectClaudemdFiles(
 ): Promise<string[]> {
     const claudemdDir = path.join(repoPath, 'claudemd');
     if (!await pathExists(claudemdDir)) return [];
+
+    const contents: string[] = [];
+    const rootFiles = (await listFiles(claudemdDir))
+        .filter((f) => f.endsWith('.md'))
+        .sort();
+    for (const file of rootFiles) {
+        const content = await readFileSafe(path.join(claudemdDir, file));
+        if (content) contents.push(content);
+    }
 
     // Determine which namespace dirs to scan
     let namespaceDirs: string[];
@@ -1539,7 +1627,6 @@ async function collectClaudemdFiles(
         namespaceDirs = await listDirs(claudemdDir);
     }
 
-    const contents: string[] = [];
     for (const ns of namespaceDirs) {
         const nsDir = path.join(claudemdDir, ns);
         if (!await pathExists(nsDir)) continue;
@@ -1927,10 +2014,12 @@ async function reportPostPullChecks(
 
     // The budget covers building the registry as well as running it: the
     // delivery checks stat every desired skill for every tool while the
-    // registry is built, which is where the I/O actually is.
+    // registry is built, which is where the I/O actually is. The `'pull'`
+    // stage leaves out the two that would spend it — rules read every file per
+    // tool, agents parse every spec — so the cheap ones still get to run.
     const results = await withTimeout(
       (async () => {
-        const local = (await buildChecks(ctx))
+        const local = (await buildChecks(ctx, 'pull'))
           .filter((c) => c.source === 'local')
           .filter((c) => !c.reportedByPull || !reported.has(c.reportedByPull));
         return runChecks(local);

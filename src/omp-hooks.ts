@@ -39,7 +39,7 @@ import { log } from './utils/logger.js';
 /** Filename of the teamai-managed OMP extension. */
 export const OMP_HOOK_FILE = 'teamai-hooks.ts';
 
-/** Marker so `teamai doctor` / `uninstall` can recognize our generated file. */
+/** Marker so `teamai uninstall` / `teamai hooks list` can recognize our generated file. */
 const TEAMAI_MARKER = '[teamai]';
 
 /**

@@ -128,6 +128,18 @@ describe('hook-handlers registry', () => {
     expect(events).toContain('stop');
     expect(events).toContain('post-tool-use');
     expect(events).toContain('prompt-submit');
+    expect(events).toContain('session-end');
+  });
+
+  it('session-end only records the final dashboard snapshot in the background', () => {
+    const handlers = buildHandlerRegistry().filter((r) => r.event === 'session-end');
+    expect(handlers).toEqual([
+      expect.objectContaining({
+        matcher: '*',
+        background: true,
+        handler: expect.objectContaining({ name: 'dashboard-report' }),
+      }),
+    ]);
   });
 
   it('session-start has pull and dashboard-report handlers', () => {

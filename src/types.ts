@@ -115,6 +115,27 @@ export const SharingConfigSchema = z.object({
      *  keyword in a space-separated script must appear as a whole word. */
     correctionKeywords: z.array(z.string()).default([]),
   }).optional(),
+  // Optional (not .default) so existing TeamaiConfig literals stay valid; use
+  // getWebhookSharing() for the defaulted view.
+  webhooks: z.object({
+    /** Enable webhook notifications for team events. */
+    enabled: z.boolean().default(false),
+    /** List of webhook endpoints to notify. */
+    endpoints: z.array(z.object({
+      /** Target URL for the webhook. */
+      url: z.string().url(),
+      /** Webhook type: feishu (Lark), wecom (WeChat Work), or json (generic). */
+      type: z.enum(['feishu', 'wecom', 'json']),
+      /** Optional HMAC-SHA256 secret for signature verification. */
+      secret: z.string().optional(),
+      /** Events to send: push, pull, skill-use, session-start, session-stop. */
+      events: z.array(z.string()).default(['push', 'pull', 'skill-use', 'session-start', 'session-stop']),
+      /** Request timeout in milliseconds. */
+      timeout: z.number().default(5000),
+      /** Number of retries on failure with exponential backoff. */
+      retries: z.number().default(3),
+    })).default([]),
+  }).optional(),
 });
 
 /** Defaulted view of the optional `sharing.intervention` config. */
@@ -630,6 +651,19 @@ export interface ResourceDiff {
   removed: ResourceItem[];
 }
 
+/** Where one item lands for one tool. See `ResourceHandler.deliveryTargets`. */
+export interface DeliveryTarget {
+  tool: string;
+  dest: string;
+  /**
+   * The exact bytes `pullItem` writes at `dest`, for a handler that renders
+   * its destination rather than copying a tree there. It is what tells a copy
+   * rendered from an older spec from the current one; absent means the handler
+   * cannot say, and only the destination's existence can be judged.
+   */
+  content?: string;
+}
+
 // ─── Hook definitions (unified model, issue #19) ─────────
 //
 //  A single declarative model for both built-in operational hooks (source:
@@ -1030,7 +1064,7 @@ export interface SessionMetrics {
 
 export type DashboardSessionStatus = 'running' | 'waiting_for_input' | 'error' | 'idle' | 'stopped';
 
-export type DashboardEventType = 'session_start' | 'tool_use' | 'prompt_submit' | 'stop' | 'process_exit';
+export type DashboardEventType = 'session_start' | 'session_end' | 'tool_use' | 'prompt_submit' | 'stop' | 'process_exit';
 
 export interface DashboardEvent {
   /** Event type mapped from hook event */
@@ -1063,6 +1097,11 @@ export interface DashboardEvent {
   transcriptPath?: string;
   /** Resolved PID of the AI tool main process (for liveness monitoring) */
   monitorPid?: number;
+  /** Byte boundary captured at Copilot SessionStart; private log path is never stored. */
+  copilotRunStartOffset?: number;
+  /** Opaque marker metadata retained for events written by older collector versions. */
+  copilotRunMarkerId?: string;
+  copilotRunMarkerOffset?: number;
   /**
    * Cumulative human-intervention counts scanned from the transcript at Stop time.
    * Full snapshot (idempotent): each Stop event carries the running total for the
@@ -2023,4 +2062,51 @@ export interface ImportSession {
   items: ImportSessionItem[];
   /** 已处理条目数（用于 --resume 进度恢复） */
   progress: number;
+}
+
+// ─── Webhook types ──────────────────────────────────────
+
+export const WebhookEndpointSchema = z.object({
+  url: z.string().url(),
+  type: z.enum(['feishu', 'wecom', 'json']),
+  secret: z.string().optional(),
+  events: z.array(z.string()).default(['push', 'pull', 'skill-use', 'session-start', 'session-stop']),
+  timeout: z.number().default(5000),
+  retries: z.number().default(3),
+});
+
+export const WebhookConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  endpoints: z.array(WebhookEndpointSchema).default([]),
+});
+
+export type WebhookEndpoint = z.infer<typeof WebhookEndpointSchema>;
+export type WebhookConfig = z.infer<typeof WebhookConfigSchema>;
+
+export interface WebhookPayload {
+  event: string;
+  timestamp: string;
+  tool: string;
+  sessionId?: string;
+  cwd?: string;
+  team?: string;
+  username?: string;
+  data: Record<string, unknown>;
+}
+
+/** Defaulted view of the optional `sharing.webhooks` config. */
+export function getWebhookSharing(config: {
+  sharing?: { webhooks?: { enabled?: boolean; endpoints?: Array<{ url: string; type: string; events?: string[] }> } };
+}): WebhookConfig {
+  const w = config.sharing?.webhooks;
+  return {
+    enabled: w?.enabled ?? false,
+    endpoints: (w?.endpoints ?? []).map((ep) => ({
+      url: ep.url,
+      type: ep.type as 'feishu' | 'wecom' | 'json',
+      events: ep.events ?? ['push', 'pull', 'skill-use', 'session-start', 'session-stop'],
+      timeout: 5000,
+      retries: 3,
+    })),
+  };
 }

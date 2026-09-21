@@ -235,7 +235,7 @@ export function cnbRepoClone(repo: string, localPath: string): void {
   } else {
     args = ['-c', 'credential.helper=!cnb git-credential', 'clone', `https://${CNB_HOST}/${repo}.git`, localPath];
   }
-  const r = spawnSync('git', args, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000 });
+  const r = spawnSync('git', args, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000, windowsHide: true });
   const out = `${r.stderr ?? ''} ${r.stdout ?? ''}`;
   if (/not found|does not exist|Repository not found|404/i.test(out)) {
     throw new CnbRepoNotFoundError(repo);
@@ -253,6 +253,7 @@ export function cnbRepoClone(repo: string, localPath: string): void {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: localPath,
+      windowsHide: true,
     });
     if (cfg.status !== 0) {
       log.warn(`Could not persist CNB credential helper: ${(cfg.stderr ?? '').trim()}. Push/pull may prompt for credentials.`);

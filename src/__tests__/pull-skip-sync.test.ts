@@ -673,6 +673,7 @@ describe('enabledAgents whitelist on pull inject, skip-sync, and cleanup (#510)'
     );
     await fse.ensureDir(path.join(repoPath, 'claudemd', 'common'));
     await fse.writeFile(path.join(repoPath, 'claudemd', 'common', 'note.md'), 'Shared team instructions.\n');
+    await fse.writeFile(path.join(repoPath, 'claudemd', 'shared.md'), 'Root-level shared instructions.\n');
 
     vi.stubEnv('HOME', homeDir);
     vi.mocked(detectProjectConfig).mockResolvedValue(null);
@@ -743,6 +744,7 @@ describe('enabledAgents whitelist on pull inject, skip-sync, and cleanup (#510)'
     const claudeMd = await fse.readFile(path.join(homeDir, '.claude', 'CLAUDE.md'), 'utf8');
     expect(claudeMd).toContain(TEAMAI_CULTURE_START);
     expect(claudeMd).toContain(TEAMAI_CLAUDEMD_START);
+    expect(claudeMd).toContain('Root-level shared instructions.');
     expect(claudeMd).toContain(TEAMAI_RECALL_RULES_START);
 
     const codebuddyMd = await fse.readFile(path.join(homeDir, '.codebuddy', 'CODEBUDDY.md'), 'utf8');

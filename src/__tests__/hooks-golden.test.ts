@@ -13,22 +13,30 @@ import { injectHooks } from '../hooks.js';
 // fixtures/hooks/<tool>.json were captured from the pre-refactor injector.
 // Any refactor of the injection engine MUST keep these byte-identical so that
 // already-installed machines see a zero-diff reconcile after a CLI upgrade.
+//
+// Windows: the dispatch shell resolves a bare `bash` to the WSL launcher, so
+// the injector names Git Bash by absolute path instead — machine-specific, and
+// the Linux-captured fixtures cannot match it. Only the dispatch-command
+// renderers (claude, claude-internal, cursor) skip for that reason; workbuddy
+// stays machine-independent and keeps coverage. codebuddy also skips there, but
+// for its own reason — see PLATFORM_SPECIFIC_TOOLS below.
 const fixturesDir = path.resolve(__dirname, 'fixtures', 'hooks');
 
-const cases: Array<[string, string]> = [
-  ['claude', 'settings.json'],
-  ['claude-internal', 'settings.json'],
-  ['codebuddy', 'settings.json'],
-  ['cursor', 'hooks.json'],
-  ['workbuddy', 'settings.json'],
+// true = the command carries the dispatch shell prefix (`getDispatchCommand`).
+const cases: Array<[string, string, boolean]> = [
+  ['claude', 'settings.json', true],
+  ['claude-internal', 'settings.json', true],
+  ['codebuddy', 'settings.json', false],
+  ['cursor', 'hooks.json', true],
+  ['workbuddy', 'settings.json', false],
 ];
 
 /**
- * Tools whose rendered command is platform-specific, so they have no
- * cross-platform baseline: codebuddy is rendered in cmd.exe syntax on Windows
- * (its hook runner there is cmd.exe, not a POSIX shell — see
- * bundled-runtime.ts), exactly like ZCode, which is absent from the fixture set
- * for the same reason. Their Windows shape is pinned by
+ * Tools whose rendered command is platform-specific for a reason other than the
+ * dispatch shell, so they have no cross-platform baseline: codebuddy is
+ * rendered in cmd.exe syntax on Windows (its hook runner there is cmd.exe, not
+ * a POSIX shell — see bundled-runtime.ts), exactly like ZCode, which is absent
+ * from the fixture set for the same reason. Its Windows shape is pinned by
  * hooks-shell-check.test.ts instead, so the anchor stays platform-independent.
  */
 const PLATFORM_SPECIFIC_TOOLS = new Set(['codebuddy']);
@@ -42,8 +50,9 @@ describe('hooks golden — built-in output is byte-identical to the captured bas
     await fse.remove(tmp);
   });
 
-  for (const [tool, file] of cases) {
-    const skip = process.platform === 'win32' && PLATFORM_SPECIFIC_TOOLS.has(tool);
+  for (const [tool, file, usesDispatchCommand] of cases) {
+    const skip = process.platform === 'win32'
+      && (usesDispatchCommand || PLATFORM_SPECIFIC_TOOLS.has(tool));
     it.skipIf(skip)(`${tool} output matches golden fixture`, async () => {
       const p = path.join(tmp, tool, file);
       await injectHooks(p, tool);

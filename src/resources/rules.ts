@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { isToolInstalledForConfig, ResourceHandler } from './base.js';
-import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
+import type { ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir, resolveToolBaseDir, isAgentExcluded, scopedToolPaths } from '../types.js';
@@ -11,6 +11,7 @@ import {
   mergeCopilotBodyIntoTeamMd,
   teamRuleToCopilotInstructions,
 } from './copilot-instructions.js';
+import { assertWithinRoot } from '../utils/path-safety.js';
 import {
   ruleFileExtensionForTool,
   ruleStemFromFilename,
@@ -152,7 +153,13 @@ export class RulesHandler extends ResourceHandler {
   }
 
   async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    const dest = path.join(localConfig.repo.localPath, 'rules', `${item.name}.md`);
+    const rulesRoot = path.join(localConfig.repo.localPath, 'rules');
+    const dest = path.resolve(localConfig.repo.localPath, item.relativePath);
+    assertWithinRoot(
+      rulesRoot,
+      dest,
+      `Invalid rule destination outside team repo rules directory: ${item.relativePath}`,
+    );
     if (item.sourcePath !== dest) {
       if (item.sourcePath.endsWith('.mdc')) {
         // Source is a tool-native `.mdc`. Only its markdown body is pushed: the
@@ -179,9 +186,23 @@ export class RulesHandler extends ResourceHandler {
   }
 
   /**
-   * Pull a single rule file to all configured AI tool rules/ directories.
+   * Where `item` lands for each tool that receives rules. The filename is
+   * tool-dependent — `.md` verbatim, `.mdc` for Cursor-compatible tools,
+   * `.instructions.md` for Copilot — so a reader cannot derive it from the
+   * rule's name alone.
    */
-  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+  async deliveryTargets(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    item: ResourceItem,
+  ): Promise<DeliveryTarget[]> {
+    // The bytes as well as the path: Cursor and Copilot read frontmatter this
+    // derives from the team `.md`, so a copy whose `globs`, `alwaysApply` or
+    // `applyTo` no longer match the source is inert in exactly the way a
+    // missing file is. Only a comparison against the render can see that, and
+    // the render belongs here rather than in a second copy inside `doctor`.
+    const source = await readFileSafe(item.sourcePath);
+    const targets: DeliveryTarget[] = [];
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (isAgentExcluded(localConfig, tool)) continue;
       if (!toolPath.rules) continue;
@@ -193,29 +214,32 @@ export class RulesHandler extends ResourceHandler {
       }
 
       const destDir = path.join(resolveToolBaseDir(tool, localConfig), toolPath.rules);
-      await ensureDir(destDir);
-      const dest = path.join(destDir, `${item.name}${ruleFileExtensionForTool(tool)}`);
+      targets.push({
+        tool,
+        dest: path.join(destDir, `${item.name}${ruleFileExtensionForTool(tool)}`),
+        content: source === null ? undefined : renderRuleForTool(tool, source),
+      });
+    }
+    return targets;
+  }
+
+  /**
+   * Pull a single rule file to all configured AI tool rules/ directories.
+   */
+  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+    for (const { tool, dest, content } of await this.deliveryTargets(teamConfig, localConfig, item)) {
+      const destDir = path.dirname(dest);
       try {
-        if (usesCursorMdcRules(tool)) {
-          // Cursor-compatible tools need `.mdc` with derived frontmatter.
-          const raw = await readFileSafe(item.sourcePath);
-          if (raw === null) {
-            // Never write a stub always-on rule in place of an unreadable source.
-            throw new Error(`Cannot read rule source ${item.sourcePath}`);
-          }
-          await writeFile(dest, teamRuleToCursorMdc(raw));
-          // Drop the `.md` copy left by an older layout; these tools do not read it.
-          await remove(path.join(destDir, `${item.name}.md`));
-        } else if (usesCopilotInstructions(tool)) {
-          const raw = await readFileSafe(item.sourcePath);
-          if (raw === null) {
-            throw new Error(`Cannot read rule source ${item.sourcePath}`);
-          }
-          await writeFile(dest, teamRuleToCopilotInstructions(raw));
-          await remove(path.join(destDir, `${item.name}.md`));
-        } else {
-          await copyFile(item.sourcePath, dest);
+        if (content === undefined) {
+          // Never write a stub always-on rule in place of an unreadable source.
+          throw new Error(`Cannot read rule source ${item.sourcePath}`);
         }
+        await ensureDir(destDir);
+        await writeFile(dest, content);
+        // Drop the `.md` copy left by an older layout; a tool that reads a
+        // derived extension does not read it, and it would outlive the rule.
+        const legacyCopy = path.join(destDir, `${item.name}.md`);
+        if (dest !== legacyCopy) await remove(legacyCopy);
         log.debug(`Synced rule ${item.name} → ${tool}`);
       } catch (e) {
         log.warn(`Failed to sync rule ${item.name} to ${tool}: ${(e as Error).message}`);
@@ -282,13 +306,8 @@ export class RulesHandler extends ResourceHandler {
     if (!isAgentExcluded(localConfig, 'hermes')) {
       const { getHermesHome } = await import('../hermes-home.js');
       if (await pathExists(getHermesHome())) {
-        const bodies: string[] = [];
-        for (const rule of rules) {
-          const body = await readFileSafe(rule.sourcePath);
-          if (body && body.trim() !== '') bodies.push(body.trim());
-        }
         const { upsertSoulRules } = await import('../hermes-config.js');
-        await upsertSoulRules(bodies.join('\n\n'));
+        await upsertSoulRules(await hermesRulesText(rules));
       }
     }
 
@@ -400,29 +419,47 @@ export class RulesHandler extends ResourceHandler {
     localConfig: LocalConfig,
     present: boolean,
   ): Promise<void> {
-    if (isAgentExcluded(localConfig, 'opencode')) return;
-    const scoped = scopedToolPaths(teamConfig, localConfig);
-    const paths = scoped['opencode'];
-    if (!paths?.rules) return;
+    const target = await this.opencodeInstructionsTarget(teamConfig, localConfig);
+    if (target === null) return;
+
+    const { reconcileOpencodeInstructions } = await import('./opencode-config.js');
+    try {
+      await reconcileOpencodeInstructions(target.configFile, target.glob, present);
+    } catch (e) {
+      log.warn(`Failed to update OpenCode instructions in ${target.configFile}: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * The opencode.json this scope activates rules through, and the one glob
+   * teamai owns inside it. Null when OpenCode receives no rules here:
+   * excluded, not installed, or configured without a rules or config path.
+   *
+   * Read-only, and public for the same reason `deliveryTargets` is: OpenCode
+   * does not auto-scan its rules directory, so a `.md` sitting there is inert
+   * until this glob references it. A check that derived the path a second time
+   * could look at a different file than the pull writes (#624).
+   */
+  async opencodeInstructionsTarget(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+  ): Promise<{ configFile: string; glob: string } | null> {
+    if (isAgentExcluded(localConfig, 'opencode')) return null;
+    const paths = scopedToolPaths(teamConfig, localConfig)['opencode'];
+    if (!paths?.rules) return null;
 
     const baseDir = resolveBaseDir(localConfig);
     // Only touch opencode.json when OpenCode is actually installed for this scope.
-    if (!await ResourceHandler.isToolInstalled(paths.rules, baseDir)) return;
+    if (!await ResourceHandler.isToolInstalled(paths.rules, baseDir)) return null;
 
     // The config file mirrors the MCP scope fields: <root>/opencode.json in
     // project scope, ~/.config/opencode/opencode.json in user scope.
     const configRel = localConfig.scope === 'project' ? paths.mcpProject : paths.mcp;
-    if (!configRel) return;
-    const configFileAbs = path.join(baseDir, configRel);
-    const rulesDirAbs = path.join(baseDir, paths.rules);
+    if (!configRel) return null;
 
-    const { reconcileOpencodeInstructions, opencodeRulesGlob } = await import('./opencode-config.js');
-    const glob = opencodeRulesGlob(configFileAbs, rulesDirAbs);
-    try {
-      await reconcileOpencodeInstructions(configFileAbs, glob, present);
-    } catch (e) {
-      log.warn(`Failed to update OpenCode instructions in ${configFileAbs}: ${(e as Error).message}`);
-    }
+    const configFile = path.join(baseDir, configRel);
+    const { opencodeRulesGlob } = await import('./opencode-config.js');
+    return { configFile, glob: opencodeRulesGlob(configFile, path.join(baseDir, paths.rules)) };
   }
 
   /**
@@ -442,4 +479,36 @@ export class RulesHandler extends ResourceHandler {
       }
     }
   }
+}
+
+/**
+ * The bytes a team rule becomes for one tool. `.md` is copied verbatim;
+ * Cursor-compatible tools and Copilot read frontmatter derived from the same
+ * source, so their file is a render rather than a copy.
+ *
+ * This is the single spelling of that mapping: `pullItem` writes it and
+ * `doctor` compares the delivered file against it, so a stale render is a
+ * reported failure rather than a file that merely exists.
+ */
+function renderRuleForTool(tool: string, source: string): string {
+  if (usesCursorMdcRules(tool)) return teamRuleToCursorMdc(source);
+  if (usesCopilotInstructions(tool)) return teamRuleToCopilotInstructions(source);
+  return source;
+}
+
+/**
+ * The text `upsertSoulRules` inlines into the teamai block of Hermes SOUL.md.
+ *
+ * Hermes reads standing instructions from one file rather than a rules
+ * directory, so its rules are delivered as this block's contents. `doctor`
+ * compares what is in the block with this, the same way it compares a rule
+ * file with its render.
+ */
+export async function hermesRulesText(rules: ResourceItem[]): Promise<string> {
+  const bodies: string[] = [];
+  for (const rule of rules) {
+    const body = await readFileSafe(rule.sourcePath);
+    if (body && body.trim() !== '') bodies.push(body.trim());
+  }
+  return bodies.join('\n\n');
 }

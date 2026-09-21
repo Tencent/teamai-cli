@@ -16,6 +16,17 @@ describe('deriveSessionId', () => {
         expect(deriveSessionId({ session_id: 'explicit-session' })).toBe('explicit-session');
     });
 
+    it('uses Copilot camelCase sessionId when the snake_case field is absent', () => {
+        expect(deriveSessionId({ sessionId: 'copilot-session' })).toBe('copilot-session');
+    });
+
+    it('prefers canonical snake_case when both session ID forms are present', () => {
+        expect(deriveSessionId({
+            session_id: 'canonical-session',
+            sessionId: 'copilot-session',
+        })).toBe('canonical-session');
+    });
+
     it('falls back to CLAUDE_SESSION_ID env var', () => {
         delete process.env.CLAUDE_SESSION_ID;
         process.env.CLAUDE_SESSION_ID = 'env-session';

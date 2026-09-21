@@ -1,9 +1,9 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { isToolInstalledForConfig, ResourceHandler } from './base.js';
-import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
+import type { ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { getPushignorePath, isAgentExcluded, resolveToolBaseDir, scopedToolPaths } from '../types.js';
-import { listDirs, pathExists, copyDir, remove, dirContentEqual, dirTeamSubsetEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
+import { listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
 import { resolveOpenclawWorkspaceDir } from '../openclaw-hooks.js';
@@ -52,32 +52,53 @@ export async function resolveSkillDestination(
 }
 
 /**
- * Name used only to ask the resolver a yes/no question. It shapes the path that
- * comes back, never the installed gate, so no skill by this name need exist.
- */
-const INSTALL_PROBE_SKILL = '__teamai_probe__';
-
-/**
- * Whether skills reach `tool` at all on this machine.
+ * The directory `tool` receives skills into on this machine, or null when it
+ * cannot receive them: no skills path configured, or the tool is not installed.
  *
- * Asks `skillTargetForTool`, which is the gate the write path itself runs:
- * OpenClaw resolves through its workspace directory, Hermes through its home,
- * Copilot counts itself installed once `enabledAgents` names it, and everything
- * else falls back to the tool root. A probe that answered any of those
- * differently is exactly how "Synced N skills" ends up true while a tool
- * receives nothing (#598), which is the failure `doctor` exists to catch.
+ * This is the gate on its own, asked without inventing a skill name. OpenClaw
+ * resolves through its workspace directory, Hermes through its home, Copilot
+ * counts itself installed once `enabledAgents` names it, and everything else
+ * falls back to the tool root. A second spelling of these gates is exactly how
+ * "Synced N skills" ends up true while a tool receives nothing (#598).
  */
-export async function skillsReachTool(
+export async function skillsDirForTool(
   tool: string,
-  configuredSkillsPath: string,
+  configuredSkillsPath: string | undefined,
   localConfig: LocalConfig,
-): Promise<boolean> {
-  return await skillTargetForTool(tool, configuredSkillsPath, localConfig, INSTALL_PROBE_SKILL) !== null;
+): Promise<string | null> {
+  if (!configuredSkillsPath) return null;
+
+  if (tool === 'openclaw') {
+    const wsDir = await resolveOpenclawWorkspaceDir();
+    if (!wsDir) {
+      log.debug('Skipping skill sync for openclaw: workspace dir not found');
+      return null;
+    }
+    return path.join(wsDir, 'skills');
+  }
+
+  if (tool === 'hermes') {
+    // Like every other tool, skip when not installed: getHermesHome() always
+    // resolves (HERMES_HOME or ~/.hermes), so without this check every pull
+    // creates a hermes home the user never asked for.
+    if (!await pathExists(getHermesHome())) {
+      log.debug(`Skipping skill sync for ${tool}: tool not installed`);
+      return null;
+    }
+    return path.join(getHermesHome(), 'skills');
+  }
+
+  if (!await isToolInstalledForConfig(tool, configuredSkillsPath, localConfig)) {
+    log.debug(`Skipping skill sync for ${tool}: tool not installed`);
+    return null;
+  }
+
+  return path.join(resolveToolBaseDir(tool, localConfig), configuredSkillsPath);
 }
 
 /**
  * Where `skillName` lands for `tool` on this machine, or null when the tool
- * cannot receive it: no skills path configured, or the tool is not installed.
+ * cannot receive it.
  *
  * One place answers that question, so `pull` writes and `doctor` checks the very
  * same paths (#598). A second copy of these gates is how "Synced 12 skills"
@@ -94,35 +115,18 @@ export async function skillTargetForTool(
   skillName: string,
   sourcePath?: string,
 ): Promise<string | null> {
-  if (!configuredSkillsPath) return null;
+  const skillsDir = await skillsDirForTool(tool, configuredSkillsPath, localConfig);
+  if (skillsDir === null || configuredSkillsPath === undefined) return null;
 
-  if (tool === 'openclaw') {
-    const wsDir = await resolveOpenclawWorkspaceDir();
-    if (!wsDir) {
-      log.debug('Skipping skill sync for openclaw: workspace dir not found');
-      return null;
-    }
-    return path.join(wsDir, 'skills', skillName);
+  // Codex alone can redirect a skill to the shared `.agents/skills` directory,
+  // and only for a skill that already lives there — so the destination is
+  // per-skill and the gate above cannot answer it.
+  if (tool === CODEX_TOOL) {
+    const baseDir = resolveToolBaseDir(tool, localConfig);
+    return resolveSkillDestination(tool, configuredSkillsPath, baseDir, skillName, sourcePath);
   }
 
-  if (tool === 'hermes') {
-    // Like every other tool, skip when not installed: getHermesHome() always
-    // resolves (HERMES_HOME or ~/.hermes), so without this check every pull
-    // creates a hermes home the user never asked for.
-    if (!await pathExists(getHermesHome())) {
-      log.debug(`Skipping skill sync for ${tool}: tool not installed`);
-      return null;
-    }
-    return path.join(getHermesHome(), 'skills', skillName);
-  }
-
-  if (!await isToolInstalledForConfig(tool, configuredSkillsPath, localConfig)) {
-    log.debug(`Skipping skill sync for ${tool}: tool not installed`);
-    return null;
-  }
-
-  const baseDir = resolveToolBaseDir(tool, localConfig);
-  return resolveSkillDestination(tool, configuredSkillsPath, baseDir, skillName, sourcePath);
+  return path.join(skillsDir, skillName);
 }
 
 /** Add fields immediately before the closing delimiter without reformatting existing YAML. */
@@ -536,6 +540,13 @@ export class SkillsHandler extends ResourceHandler {
       `Invalid skill destination outside team repo skills directory: ${item.relativePath}`,
     );
     await copyDir(item.sourcePath, dest);
+    const sourceFiles = new Set(await listFilesRecursive(item.sourcePath));
+    const teamFiles = await listFilesRecursive(dest);
+    for (const relativePath of teamFiles) {
+      if (sourceFiles.has(relativePath) || relativePath === CONTRIBUTORS_FILE) continue;
+      await remove(path.join(dest, relativePath));
+    }
+    await pruneEmptyDirs(dest);
     log.debug(`Copied skill ${item.name} → team repo`);
 
     // Ensure SKILL.md has proper YAML frontmatter (name + description)
@@ -555,15 +566,41 @@ export class SkillsHandler extends ResourceHandler {
   }
 
   /**
-   * Pull a skill from team repo to all configured AI tool directories.
+   * Every tool that receives `item`, and where it lands.
+   *
+   * `sourcePath` opts into the write path's Codex shared-directory
+   * reconciliation, which can delete a duplicate it proves identical. A reader
+   * omits it and gets the same destinations without the side effect.
    */
-  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+  private async resolveTargets(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    item: ResourceItem,
+    sourcePath?: string,
+  ): Promise<DeliveryTarget[]> {
+    const targets: DeliveryTarget[] = [];
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (isAgentExcluded(localConfig, tool)) continue;
 
-      const dest = await skillTargetForTool(tool, toolPath.skills, localConfig, item.name, item.sourcePath);
-      if (!dest) continue;
+      const dest = await skillTargetForTool(tool, toolPath.skills, localConfig, item.name, sourcePath);
+      if (dest) targets.push({ tool, dest });
+    }
+    return targets;
+  }
 
+  async deliveryTargets(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    item: ResourceItem,
+  ): Promise<DeliveryTarget[]> {
+    return this.resolveTargets(teamConfig, localConfig, item);
+  }
+
+  /**
+   * Pull a skill from team repo to all configured AI tool directories.
+   */
+  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+    for (const { tool, dest } of await this.resolveTargets(teamConfig, localConfig, item, item.sourcePath)) {
       try {
         await copyDir(item.sourcePath, dest);
         await ensureSkillFrontmatter(dest, item.name);

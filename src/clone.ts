@@ -90,6 +90,7 @@ function runCommand(
 ): Promise<{ stdout: string; stderr: string; code: number }> {
     return new Promise((resolve, reject) => {
         const child = spawn(cmd, args, {
+            windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
             cwd: opts.cwd,
         });

@@ -1,25 +1,28 @@
 import path from 'node:path';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
-import fs from 'node:fs';
-import { expandHome, listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
+import { pathExists, readFileSafe } from './utils/fs.js';
 import { log, setStderrOnly } from './utils/logger.js';
-import type { GlobalOptions, ResourceItem } from './types.js';
+import type { GlobalOptions } from './types.js';
 import {
   COPILOT_TOOL_ID,
-  TEAMAI_ENV_START,
   resolveHookScope,
   resolveToolBaseDir,
-  getDataHome,
   isAgentExcluded,
   scopedToolPaths,
   type LocalConfig,
   type TeamaiConfig,
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
-import { skillsReachTool } from './resources/skills.js';
-import { splitFrontmatter } from './utils/frontmatter.js';
+import { skillsDirForTool } from './resources/skills.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder } from './hooks.js';
-import { getUserHome } from './utils/home.js';
+import {
+  buildDeliveryChecks,
+  buildRulesDeliveryChecks,
+  buildAgentsDeliveryChecks,
+  buildMcpDeliveryChecks,
+  buildEnvDeliveryCheck,
+  buildDocsCheck,
+} from './doctor-delivery.js';
 
 /**
  * Where a check gets its answer. `provider` checks shell out to a provider CLI
@@ -125,7 +128,7 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
     // such resolver, so it keeps the generic probe.
     const skillsPath = paths.skills;
     const isInstalled = skillsPath
-      ? (): Promise<boolean> => skillsReachTool(tool, skillsPath, localConfig)
+      ? async (): Promise<boolean> => await skillsDirForTool(tool, skillsPath, localConfig) !== null
       : (): Promise<boolean> => isToolInstalledForConfig(tool, probePath, localConfig);
 
     // Pushed whether or not it passes. Every other check in the registry
@@ -189,157 +192,6 @@ async function buildHookChecks(
   return checks;
 }
 
-/**
- * Whether a delivered skill directory is one an agent can actually discover:
- * SKILL.md present, frontmatter parses, and its `name` is the directory's own.
- * A copy that fails this landed successfully — no write-time gate can see it.
- */
-async function skillIsDiscoverable(skillDir: string, skillName: string): Promise<boolean> {
-  const content = await readFileSafe(path.join(skillDir, 'SKILL.md'));
-  if (!content) return false;
-
-  const { data, valid } = splitFrontmatter(content);
-  if (!valid) return false;
-  return data.name === skillName;
-}
-
-/**
- * Whether `filePath` is a file something can actually read. `pathExists`
- * follows symlinks but says yes to a directory too, so on its own it cannot
- * tell a delivered document from a name occupied by something else.
- */
-async function isReadableFile(filePath: string): Promise<boolean> {
-  try {
-    return (await fs.promises.stat(expandHome(filePath))).isFile();
-  } catch {
-    return false;
-  }
-}
-
-/** At most this many names in a fix string; the rest are counted. */
-const MAX_NAMED_IN_FIX = 5;
-
-/** `a, b, c and 4 more` — a fix a human reads, not a wall of paths. */
-function nameList(names: string[]): string {
-  if (names.length <= MAX_NAMED_IN_FIX) return names.join(', ');
-  const shown = names.slice(0, MAX_NAMED_IN_FIX).join(', ');
-  return `${shown} and ${names.length - MAX_NAMED_IN_FIX} more`;
-}
-
-/**
- * Build one delivery check per installed tool: every skill the member should
- * have, against what is actually on disk for that tool.
- *
- * This is the only check that looks at the payload rather than the plumbing. A
- * write-time gate cannot cover it — `SkillsHandler.pullItem` skips each
- * uninstalled tool on its own, and a directory deleted by hand after a correct
- * pull leaves every gate happy (#598).
- *
- * The scan runs here rather than inside `check()` because the fix names the
- * skills that are missing, and a `Check`'s fix is read as it was built.
- */
-async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {
-  const { localConfig, teamConfig, toolPaths } = ctx;
-  if (!teamConfig) return [];
-
-  // Dynamic: pull.ts imports this module for its post-pull pass, and the desired
-  // set is policy that must not be restated here.
-  const { buildRolePullContext, resolveDesiredSkills } = await import('./pull.js');
-  const { skillTargetForTool } = await import('./resources/skills.js');
-
-  let items: ResourceItem[];
-  try {
-    const roleContext = await buildRolePullContext(localConfig);
-    ({ items } = await resolveDesiredSkills(teamConfig, localConfig, roleContext));
-  } catch (e) {
-    // A team repo whose active namespaces collide cannot say what should be
-    // delivered — `pull` aborts the scope with this same message. The command
-    // whose job is explaining bad state must report it, not stack-trace on it.
-    return [{
-      name: 'Skills to deliver can be resolved',
-      source: 'local',
-      check: async () => false,
-      fix: `${(e as Error).message}. Until the team repo is fixed, `
-        + 'pull cannot sync skills for this role.',
-    }];
-  }
-  if (items.length === 0) return [];
-
-  const checks: Check[] = [];
-  for (const [tool, paths] of Object.entries(toolPaths)) {
-    const skillsPath = paths.skills;
-    if (!skillsPath) continue;
-
-    const missing: string[] = [];
-    const unreadable: string[] = [];
-    let installed = true;
-    for (const item of items) {
-      const dest = await skillTargetForTool(tool, skillsPath, localConfig, item.name);
-      if (!dest) {
-        // Not installed. Nothing was promised to this tool, so nothing is owed;
-        // a tool the user listed in enabledAgents is caught by its own check.
-        installed = false;
-        break;
-      }
-      if (!await pathExists(dest)) missing.push(item.name);
-      else if (!await skillIsDiscoverable(dest, item.name)) unreadable.push(item.name);
-    }
-    if (!installed) continue;
-
-    const problems: string[] = [];
-    if (missing.length > 0) problems.push(`not delivered: ${nameList(missing)}`);
-    if (unreadable.length > 0) problems.push(`delivered but unreadable: ${nameList(unreadable)}`);
-
-    checks.push({
-      name: `Skills delivered to ${tool}`,
-      source: 'local',
-      check: async () => problems.length === 0,
-      fix: `In ${tool}, ${problems.join('; ')}. Run \`teamai pull --force\`: a plain pull `
-        + 'skips a scope whose team repo has not changed, so it cannot restore this. '
-        + 'If a skill stays unreadable, fix its SKILL.md in the team repo — the '
-        + 'frontmatter needs a `name` matching the directory, or the agent never '
-        + 'discovers it.',
-    });
-  }
-
-  return checks;
-}
-
-/**
- * The docs bundle has one destination rather than one per tool: `DocsHandler`
- * copies the whole `docs/` tree into `sharing.docs.localDir`. So this check
- * compares the two trees, file by file, rather than asking each tool.
- */
-async function buildDocsCheck(ctx: DoctorContext): Promise<Check[]> {
-  const { localConfig, teamConfig } = ctx;
-  if (!teamConfig) return [];
-
-  const { DocsHandler, resolveDocsDestination } = await import('./resources/docs.js');
-  const handler = new DocsHandler();
-  const [item] = await handler.scanTeamForPull(teamConfig, localConfig);
-  if (!item) return [];
-
-  const dest = resolveDocsDestination(teamConfig, localConfig);
-  const teamFiles = (await listFilesRecursive(item.sourcePath))
-    // Same filter DocsHandler.pullItem copies with: dotfiles never travel.
-    .filter((file) => file.split('/').every((segment) => !segment.startsWith('.')));
-
-  // isFile, not merely "something is there": a directory sitting on the
-  // expected name, or a symlink with nothing behind it, would satisfy a plain
-  // existence check while the doc is no more readable than a missing one.
-  const missing: string[] = [];
-  for (const file of teamFiles) {
-    if (!await isReadableFile(path.join(dest, file))) missing.push(file);
-  }
-
-  return [{
-    name: 'Team docs delivered',
-    source: 'local',
-    check: async () => missing.length === 0,
-    fix: `Missing from ${dest}: ${nameList(missing)}. Run \`teamai pull --force\`: a plain `
-      + 'pull skips a scope whose team repo has not changed, so it cannot restore these.',
-  }];
-}
 
 /**
  * True if a trust-gated Codex tool (the public `codex`) already has teamai hooks
@@ -385,10 +237,25 @@ export async function resolveDoctorContext(): Promise<DoctorContext | null> {
 }
 
 /**
+ * Which caller the registry is being built for.
+ *
+ * `pull` runs the registry again at the end of an interactive sync, under a
+ * budget that covers building it as well as running it. Skills and docs cost a
+ * stat per item; rules cost a read per rule per tool and agents parse every
+ * spec. Spending the budget on those loses the cheap checks that catch the bug
+ * this whole line of work exists for, so they are `doctor`-only.
+ *
+ * The stage is a property of the caller, not of a check, which is why it is an
+ * argument here rather than a third optional flag on `Check` beside `source`
+ * and `reportedByPull`.
+ */
+export type CheckStage = 'pull' | 'doctor';
+
+/**
  * The check registry. Exported so callers other than `teamai doctor` can run
  * the same diagnostics and act on the result.
  */
-export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
+export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'doctor'): Promise<Check[]> {
   const { localConfig, teamConfig, toolPaths, baseDir } = ctx;
   const providerName = teamConfig?.provider;
   const checks: Check[] = [];
@@ -485,37 +352,13 @@ export async function buildChecks(ctx: DoctorContext): Promise<Check[]> {
     ...await buildEnabledToolChecks(ctx),
     ...await buildHookChecks(toolPaths, baseDir, localConfig),
     ...await buildDeliveryChecks(ctx),
+    // Built only for `doctor`: the work is in building these, not in running
+    // them, so skipping them post-pull is what keeps the budget for the rest.
+    ...(stage === 'doctor' ? await buildRulesDeliveryChecks(ctx) : []),
+    ...(stage === 'doctor' ? await buildAgentsDeliveryChecks(ctx) : []),
+    ...await buildMcpDeliveryChecks(ctx),
     ...await buildDocsCheck(ctx),
-    {
-      name: 'Env variables injected in shell profile',
-      source: 'local',
-      check: async () => {
-        if (teamConfig?.sharing?.env?.injectShellProfile === false) return true;
-
-        const envYamlPath = path.join(localConfig.repo.localPath, 'env', 'env.yaml');
-        if (!await pathExists(envYamlPath)) return true;
-
-        const home = getUserHome();
-
-        // env.sh lives under teamaiHome, which is <projectRoot>/.teamai in
-        // project scope and ~/.teamai in user scope — mirror the path that
-        // `teamai pull` actually writes to, not a hardcoded user-home path.
-        const envShPath = path.join(
-          getDataHome(localConfig),
-          'env.sh',
-        );
-        if (!await pathExists(envShPath)) return false;
-
-        const shell = process.env.SHELL ?? '';
-        const profilePath = shell.includes('zsh')
-          ? path.join(home, '.zshrc')
-          : path.join(home, '.bashrc');
-        if (!await pathExists(profilePath)) return false;
-        const content = await readFileSafe(profilePath);
-        return content?.includes(TEAMAI_ENV_START) ?? false;
-      },
-      fix: 'Run `teamai pull` to inject env variables into shell profile',
-    },
+    ...await buildEnvDeliveryCheck(ctx),
   );
 
   return checks;

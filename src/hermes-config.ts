@@ -128,6 +128,22 @@ export async function upsertSoulRules(rulesText: string): Promise<void> {
 }
 
 /**
+ * The text inside the teamai-managed block of SOUL.md, or null when the block
+ * is not there. Read-only: `doctor` has to compare what Hermes actually reads
+ * with what `upsertSoulRules` would write, and reusing the writer to find out
+ * would edit the file the command is only meant to describe.
+ */
+export async function readSoulRules(): Promise<string | null> {
+  const content = await readFileSafe(getHermesSoulPath());
+  if (content === null) return null;
+
+  const startIdx = content.indexOf(RULES_BLOCK_START);
+  const endIdx = content.indexOf(RULES_BLOCK_END);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return null;
+  return content.slice(startIdx + RULES_BLOCK_START.length, endIdx).trim();
+}
+
+/**
  * Remove the teamai-managed rules block from Hermes SOUL.md, leaving user
  * content intact. No-op when nothing is present.
  */
