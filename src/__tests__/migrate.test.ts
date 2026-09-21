@@ -268,12 +268,28 @@ describe('runMigration', () => {
     await seedLegacyLayout();
     await fse.ensureDir(path.join(legacyDir, 'reports-wt'));
     await fse.writeFile(path.join(legacyDir, 'reports-wt', 'x'), 'stale\n');
+    // Same reason as the other worktrees: its gitdir records an absolute path.
+    await fse.ensureDir(path.join(legacyDir, 'learnings-wt'));
+    await fse.writeFile(path.join(legacyDir, 'learnings-wt', 'x'), 'stale\n');
     await fse.writeFile(path.join(legacyDir, '.update-lock'), '{}');
     const plan = await planMigration(repoRoot);
     await runMigration(plan!);
     const partition = projectDataHome(repoRoot);
     expect(await fse.pathExists(path.join(partition, 'reports-wt'))).toBe(false);
+    expect(await fse.pathExists(path.join(partition, 'learnings-wt'))).toBe(false);
     expect(await fse.pathExists(path.join(partition, '.update-lock'))).toBe(false);
+  });
+
+  it('carries contributions that are not published yet', async () => {
+    await seedLegacyLayout();
+    // Unlike a worktree, the queue holds work the member has already done and
+    // nothing else has a copy of. It has to travel with the partition.
+    await fse.outputFile(path.join(legacyDir, 'pending-learnings', 'note.md'), '# queued\n');
+    const plan = await planMigration(repoRoot);
+    await runMigration(plan!);
+    expect(
+      await fse.pathExists(path.join(projectDataHome(repoRoot), 'pending-learnings', 'note.md')),
+    ).toBe(true);
   });
 
   it('is idempotent: a second run stands down once the partition exists', async () => {

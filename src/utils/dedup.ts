@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
 
 import matter from 'gray-matter';
 
+import { listLearningFiles } from './learnings-roots.js';
 import { log } from './logger.js';
 
 /** 英文停用词集合 */
@@ -96,28 +96,14 @@ async function resolveDocDate(filePath: string, filename: string): Promise<Date>
  */
 export async function findSupersededLearnings(
   draftKeywords: Set<string>,
-  learningsDir: string,
+  learningsDirs: readonly string[],
   withinDays: number = 14,
 ): Promise<Array<{ filename: string; overlap: number }>> {
-  let entries: string[];
-
-  try {
-    entries = await fs.readdir(learningsDir);
-  } catch (err: unknown) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') {
-      return [];
-    }
-    throw err;
-  }
-
-  const mdFiles = entries.filter((name) => name.endsWith('.md'));
+  const mdFiles = await listLearningFiles(learningsDirs);
   const cutoffDate = new Date(Date.now() - withinDays * 24 * 60 * 60 * 1000);
   const results: Array<{ filename: string; overlap: number }> = [];
 
-  for (const filename of mdFiles) {
-    const filePath = path.join(learningsDir, filename);
-
+  for (const { file: filename, absPath: filePath } of mdFiles) {
     try {
       const docDate = await resolveDocDate(filePath, filename);
       if (docDate < cutoffDate) {

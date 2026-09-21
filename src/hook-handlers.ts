@@ -70,6 +70,18 @@ const UPDATE_TIMEOUT_MS = 10_000;
  * resource downloads. Foreground local-agent runs use FOREGROUND_HOOK_TIMEOUT_MS.
  */
 const LOCAL_AGENT_TIMEOUT_MS = 15_000;
+/**
+ * Budget for the detached session-start pull.
+ *
+ * A background handler's timeout is not advisory: the dispatch pass settles on
+ * it and index.ts then `process.exit(0)`s, truncating whatever is still running
+ * (git children orphaned, later sync stages never run). Cold pulls — fetch,
+ * submodule update, resource reconcile — measured 10-25s, so the shared 15s
+ * budget silently cut the pull short. Since the postPull script runs inside
+ * the pull, this budget also covers the deploy wait (sizing lives with the
+ * constants in post-pull.ts, pinned by its guard test).
+ */
+export const PULL_TIMEOUT_MS = 120_000;
 
 // ─── Handler implementations ────────────────────────────
 //
@@ -133,12 +145,32 @@ async function teamCorrectionKeywords(stdin: Record<string, unknown>): Promise<r
   }
 }
 
+/**
+ * Per-machine gateway model-alias map from the user-scope config, used to price
+ * requests whose transcript records an opaque alias instead of a Claude model
+ * name. Only read on stop events (where pricing happens); an unreadable config
+ * means "no aliases", i.e. built-in model-name matching only.
+ */
+async function userModelAliases(stdin: Record<string, unknown>): Promise<Record<string, string> | undefined> {
+  const eventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name.toLowerCase() : '';
+  if (eventName !== 'stop') return undefined;
+  try {
+    const { loadLocalConfig } = await import('./config.js');
+    return (await loadLocalConfig())?.modelAliases;
+  } catch {
+    return undefined;
+  }
+}
+
 const dashboardReportHandler: HookHandler = {
   name: 'dashboard-report',
   async execute(stdin, tool) {
     const { parseHookEvent, appendEvent, compactEvents } = await import('./dashboard-collector.js');
     const raw = JSON.stringify(stdin);
-    const event = await parseHookEvent(raw, tool, { correctionKeywords: await teamCorrectionKeywords(stdin) });
+    const event = await parseHookEvent(raw, tool, {
+      correctionKeywords: await teamCorrectionKeywords(stdin),
+      modelAliases: await userModelAliases(stdin),
+    });
     if (event) {
       await appendEvent(event);
       // Non-blocking compaction
@@ -329,8 +361,8 @@ const votesSyncHandler: HookHandler = {
       if (verifiedDocIds.length > 0) {
         await incrementUpvoted(votePath, verifiedDocIds);
       }
-      const { usesReportsBranch } = await import('./types.js');
-      if (usesReportsBranch(localConfig)) {
+      const { usesBranchWorktree } = await import('./types.js');
+      if (usesBranchWorktree(localConfig)) {
         // Votes are report data → the teamai-reports orphan branch, written
         // through an isolated worktree (never the default branch / active tree).
         // Stop fires every turn: skip the fetch when nothing is pending.
@@ -359,6 +391,8 @@ const votesSyncHandler: HookHandler = {
       // Enforcement: recall happened but nothing was declared → nudge the model
       // to declare which recalled docs it actually used. The nudge makes the
       // model continue; on the next Stop the declaration is recorded above.
+      // An explicit empty declaration (`[]`) counts as declared, otherwise a
+      // model that correctly reports "nothing used" would be nudged forever.
       // Most tools can retry until the model declares on the next turn. Cursor
       // is capped below because followup_message itself forces another turn and
       // would otherwise create an unbounded Stop loop.
@@ -367,7 +401,7 @@ const votesSyncHandler: HookHandler = {
       const declared = voteData.referencedDocIds;
       let nudged = false;
 
-      if (recalled.length > 0 && declared.length === 0) {
+      if (recalled.length > 0 && !voteData.hasReferencedDocIdsDeclaration) {
         nudged = true;
         // Cursor's followup_message forces another model turn. Cap it to one
         // per session so a model that never emits the declaration cannot enter
@@ -468,6 +502,35 @@ const localAgentHandler: HookHandler = {
   },
 };
 
+/** Webhook notification handler — sends events to configured endpoints. */
+const webhookHandler: HookHandler = {
+  name: 'webhook-dispatch',
+  async execute(stdin, tool) {
+    const { sendWebhook, loadWebhookConfig } = await import('./webhook.js');
+
+    try {
+      const config = await loadWebhookConfig();
+      if (!config.enabled || config.endpoints.length === 0) return null;
+
+      const event = typeof stdin.event === 'string' ? stdin.event : 'unknown';
+
+      const payload = {
+        tool,
+        sessionId: deriveSessionId(stdin),
+        cwd: resolveHookCwd(stdin),
+        username: typeof stdin.username === 'string' ? stdin.username : undefined,
+        data: stdin as Record<string, unknown>,
+      };
+
+      await sendWebhook(event, payload, config);
+    } catch (error) {
+      log.debug(`Webhook dispatch failed: ${(error as Error).message}`);
+    }
+
+    return null;
+  },
+};
+
 // ─── Registry builder ───────────────────────────────────
 
 /**
@@ -478,13 +541,18 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
   return [
     // ─── SessionStart ─────────────────────────────────
     // pull does not produce output the host needs; run detached so git fetch
-    // on a slow network cannot delay session startup. Reuses LOCAL_AGENT_TIMEOUT_MS
-    // (15s) — ample for a background git pull that is not awaited by the host.
-    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
+    // on a slow network cannot delay session startup. Its own generous budget
+    // (PULL_TIMEOUT_MS) — the shared 15s truncated the pull itself.
+    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS, background: true },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+
+    // Copilot emits SessionEnd after its final turn. Only the dashboard needs
+    // this lifecycle event; detaching it avoids delaying CLI shutdown.
+    { event: 'session-end', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
 
     // ─── Stop ─────────────────────────────────────────
     // votes-sync and contribute-check may return a hint the host injects back
@@ -498,12 +566,14 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
     { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
     { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
 
     // ─── PostToolUse ──────────────────────────────────
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
+    { event: 'post-tool-use', matcher: 'Skill', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
 
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },

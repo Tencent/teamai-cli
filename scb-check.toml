@@ -1,0 +1,8 @@
+# Informational slop-metric config for scb-check (see docs/ci-code-erosion.md).
+# Exclude test code so verbosity/erosion reflect the product surface, not the
+# far larger and structurally different test suite.
+exclude = [
+  "**/__tests__/**",
+  "**/*.test.ts",
+  "**/*.spec.ts",
+]

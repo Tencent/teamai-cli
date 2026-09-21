@@ -1,5 +1,6 @@
 import path from 'node:path';
-import type { ResourceType, ResourceItem, ResourceDiff, TeamaiConfig, LocalConfig } from '../types.js';
+import { COPILOT_TOOL_ID, getCopilotHome, resolveToolBaseDir } from '../types.js';
+import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
 
@@ -22,6 +23,22 @@ export function toolInstallRoot(toolPath: string): string {
     return `${segments[0]}/${segments[1]}`;
   }
   return segments[0] ?? toolPath;
+}
+
+/** Detect an installed tool while respecting tool-specific user roots. */
+export async function isToolInstalledForConfig(
+  tool: string,
+  toolPath: string,
+  localConfig: LocalConfig,
+  exactConfigPath?: string,
+): Promise<boolean> {
+  const baseDir = resolveToolBaseDir(tool, localConfig);
+  if (tool === COPILOT_TOOL_ID) {
+    return localConfig.enabledAgents?.includes(COPILOT_TOOL_ID) === true
+      || (exactConfigPath !== undefined && await pathExists(exactConfigPath))
+      || pathExists(getCopilotHome());
+  }
+  return ResourceHandler.isToolInstalled(toolPath, baseDir);
 }
 
 /**
@@ -76,6 +93,30 @@ export abstract class ResourceHandler {
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<string[]>;
+
+  /**
+   * Where `item` lands for each tool that can receive it on this machine.
+   *
+   * Read-only by contract: resolving a destination must never write, so the
+   * same answer serves the sync and the checks that verify it. Two resolvers
+   * for one destination is how "Synced N skills" ends up true while a tool
+   * receives nothing (#598, #624).
+   *
+   * A tool that cannot receive the item is absent from the result: not
+   * installed, no configured path, or outside the item's own targets.
+   *
+   * The default is empty, which also covers a resource with no per-tool file
+   * destination at all. Docs land in one directory, env in one shell profile,
+   * and hooks and MCP are entries inside a tool's own config file, so those
+   * keep checks of their own instead of a sentinel tool.
+   */
+  async deliveryTargets(
+    _teamConfig: TeamaiConfig,
+    _localConfig: LocalConfig,
+    _item: ResourceItem,
+  ): Promise<DeliveryTarget[]> {
+    return [];
+  }
 
   /**
    * Check if an AI tool is installed by verifying its root directory exists.

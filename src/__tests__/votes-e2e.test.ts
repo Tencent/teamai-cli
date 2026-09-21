@@ -160,7 +160,7 @@ describe('Phase 3+4 end-to-end data flow', () => {
     fs.writeFileSync(path.join(votesDir, 'user1.yaml'), YAML.stringify(v2));
 
     const map = await computeAllConfidence(votesDir);
-    const updated = await writeBackConfidence(learningsDir, map);
+    const updated = await writeBackConfidence([learningsDir], map);
     expect(updated).toBe(1);
 
     // Verify frontmatter has confidence
@@ -180,7 +180,7 @@ describe('Phase 3+4 end-to-end data flow', () => {
     const content = matter.stringify('Brand new learning.', { title: 'new-doc', date: '2026-07-01', tags: ['test'] });
     fs.writeFileSync(path.join(learningsDir, 'new-doc.md'), content);
 
-    const candidates = await findPruneCandidates(learningsDir, votesDir);
+    const candidates = await findPruneCandidates([learningsDir], votesDir);
     expect(candidates).toHaveLength(0);
   });
 });

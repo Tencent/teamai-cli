@@ -19,7 +19,10 @@ import {
   INTERVENTION_SCAN_MAX_BYTES,
   TRANSCRIPT_INTERRUPT_PREFIX,
   TRANSCRIPT_SYSTEM_PREFIXES,
+  stripInjectedPrompt,
   TRANSCRIPT_REJECT_MARKERS,
+  COPILOT_TOOL_ID,
+  getCopilotHome,
   emptyTokenUsage,
   addTokenUsage,
   type DashboardEvent,
@@ -183,7 +186,7 @@ export interface LocalRequestRecord {
  */
 export async function scanTranscriptStop(
   transcriptPath: string,
-  opts?: { frictionOnly?: boolean; tool?: string },
+  opts?: { frictionOnly?: boolean; tool?: string; modelAliases?: Record<string, string> },
 ): Promise<TranscriptScanResult> {
   // CodeBuddy persists its transcript as a single `index.json` document (a JSON
   // object with `requests[].usage` + `messages[]`), NOT the JSONL schema used by
@@ -193,7 +196,7 @@ export async function scanTranscriptStop(
     if (cb) return cb;
   }
 
-  const initial = await scanJsonlTranscriptOnce(transcriptPath);
+  const initial = await scanJsonlTranscriptOnce(transcriptPath, opts?.modelAliases);
   if (opts?.frictionOnly || !isCodexTool(opts?.tool)) return initial.result;
 
   // Codex can append the final cumulative usage record shortly after firing Stop.
@@ -219,7 +222,7 @@ interface JsonlTranscriptScan {
 }
 
 /** Scan the Claude/Codex JSONL transcript once. */
-async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTranscriptScan> {
+async function scanJsonlTranscriptOnce(transcriptPath: string, modelAliases?: Record<string, string>): Promise<JsonlTranscriptScan> {
   let interrupt = 0;
   let toolReject = 0;
   let toolError = 0;
@@ -316,7 +319,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<JsonlTra
                 cacheEligibleInputTokens: historical.inputTokens + historical.cacheReadTokens + historical.cacheCreationTokens,
                 priceVersion: historical.priceVersion,
               }
-              : estimateClaudeRequest(entry.message.model, requestTokens);
+              : estimateClaudeRequest(entry.message.model, requestTokens, modelAliases);
             if (priced) {
               requestMetrics = {
                 pricedRequests: (requestMetrics?.pricedRequests ?? 0) + 1,
@@ -532,6 +535,263 @@ async function waitForCodexUsageFlush(
     }
   }
   return latest;
+}
+
+const COPILOT_USAGE_TAIL_BYTES = 256 * 1024;
+const COPILOT_RUN_SCAN_BYTES = 8 * 1024 * 1024;
+const COPILOT_USAGE_MAX_ATTEMPTS = 8;
+const COPILOT_USAGE_RETRY_MS = 250;
+const COPILOT_SHUTDOWN_EVENT = 'session.shutdown';
+const COPILOT_SESSION_STATE_DIR = 'session-state';
+const COPILOT_SESSION_EVENTS_FILE = 'events.jsonl';
+const COPILOT_SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+interface CopilotUsageObservation {
+  shutdownObserved: boolean;
+  shutdownOffset?: number;
+  tokens?: TokenUsage;
+}
+
+function copilotUsageEquals(
+  first: CopilotUsageObservation,
+  second: CopilotUsageObservation,
+): boolean {
+  if (first.shutdownObserved !== second.shutdownObserved) return false;
+  if (!first.tokens || !second.tokens) return first.tokens === second.tokens;
+  return first.tokens.input === second.tokens.input
+    && first.tokens.output === second.tokens.output
+    && first.tokens.cacheRead === second.tokens.cacheRead
+    && first.tokens.cacheCreation === second.tokens.cacheCreation;
+}
+
+/** Parse only Copilot's final aggregate token counters from a shutdown record. */
+function parseCopilotShutdown(entry: unknown): CopilotUsageObservation {
+  const record = asRecord(entry);
+  if (record?.type !== COPILOT_SHUTDOWN_EVENT) return { shutdownObserved: false };
+
+  const details = asRecord(asRecord(record.data)?.tokenDetails);
+  if (!details) return { shutdownObserved: true };
+  const tokenCount = (bucket: string): number | undefined => {
+    const value = asRecord(details[bucket])?.tokenCount;
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? value
+      : undefined;
+  };
+  const input = tokenCount('input');
+  const output = tokenCount('output');
+  const cacheRead = tokenCount('cache_read');
+  const cacheCreation = tokenCount('cache_write');
+  if ([input, output, cacheRead, cacheCreation].every((value) => value === undefined)) {
+    return { shutdownObserved: true };
+  }
+  return {
+    shutdownObserved: true,
+    tokens: {
+      input: input ?? 0,
+      output: output ?? 0,
+      cacheRead: cacheRead ?? 0,
+      cacheCreation: cacheCreation ?? 0,
+    },
+  };
+}
+
+/** Read a bounded tail without retaining any prompt, output, or request fields. */
+async function readLatestCopilotUsageFromTail(
+  transcriptPath: string,
+): Promise<CopilotUsageObservation> {
+  try {
+    const stat = await fs.promises.stat(transcriptPath);
+    if (stat.size === 0) return { shutdownObserved: false };
+    const readSize = Math.min(stat.size, COPILOT_USAGE_TAIL_BYTES);
+    const offset = stat.size - readSize;
+    const fh = await fs.promises.open(transcriptPath, 'r');
+    try {
+      const buffer = Buffer.alloc(readSize);
+      await fh.read(buffer, 0, readSize, offset);
+      let lineStart = 0;
+      if (offset > 0) {
+        const partialLineEnd = buffer.indexOf('\n');
+        if (partialLineEnd < 0) return { shutdownObserved: false };
+        lineStart = partialLineEnd + 1;
+      }
+      let latest: CopilotUsageObservation = { shutdownObserved: false };
+      while (lineStart < buffer.length) {
+        const newline = buffer.indexOf('\n', lineStart);
+        const lineEnd = newline < 0 ? buffer.length : newline;
+        const line = buffer.subarray(lineStart, lineEnd).toString('utf-8');
+        if (line.includes(`"${COPILOT_SHUTDOWN_EVENT}"`)) {
+          try {
+            const observed = parseCopilotShutdown(JSON.parse(line));
+            if (observed.shutdownObserved) {
+              latest = { ...observed, shutdownOffset: offset + lineEnd };
+            }
+          } catch {
+            // The last line may still be in flight; the bounded retry sees it later.
+          }
+        }
+        if (newline < 0) break;
+        lineStart = newline + 1;
+      }
+      return latest;
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    log.debug('dashboard: failed to read Copilot usage tail');
+    return { shutdownObserved: false };
+  }
+}
+
+/** Wait briefly because Copilot can append session.shutdown after SessionEnd. */
+async function waitForCopilotShutdownUsage(
+  transcriptPath: string,
+  initial: CopilotUsageObservation,
+): Promise<CopilotUsageObservation> {
+  const isCurrent = (observed: CopilotUsageObservation): boolean => {
+    if (!observed.shutdownObserved) return false;
+    // Legacy sessions have no run marker; only a newly observed record is safe.
+    return !initial.shutdownObserved
+      || observed.shutdownOffset !== initial.shutdownOffset
+      || !copilotUsageEquals(initial, observed);
+  };
+  if (isCurrent(initial)) return initial;
+  for (let attempt = 1; attempt < COPILOT_USAGE_MAX_ATTEMPTS; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, COPILOT_USAGE_RETRY_MS));
+    const observed = await readLatestCopilotUsageFromTail(transcriptPath);
+    if (isCurrent(observed)) return observed;
+  }
+  return { shutdownObserved: false };
+}
+
+interface CopilotRunMarker {
+  id: string;
+  offset: number;
+}
+
+/** Recover a marker written after SessionStart from a bounded private-log tail. */
+async function findCopilotRunMarkerAfter(
+  transcriptPath: string,
+  startOffset: number,
+  startedAt: number,
+  endedAt: number,
+  useProviderTime: boolean,
+): Promise<CopilotRunMarker | undefined> {
+  try {
+    const stat = await fs.promises.stat(transcriptPath);
+    if (startOffset > stat.size || stat.size - startOffset > COPILOT_RUN_SCAN_BYTES) {
+      return undefined;
+    }
+    const readSize = stat.size - startOffset;
+    const offset = startOffset;
+    const fh = await fs.promises.open(transcriptPath, 'r');
+    try {
+      const buffer = Buffer.alloc(readSize);
+      await fh.read(buffer, 0, readSize, offset);
+      let lineStart = 0;
+      let selected: CopilotRunMarker | undefined;
+      while (lineStart < buffer.length) {
+        const newline = buffer.indexOf('\n', lineStart);
+        const lineEnd = newline < 0 ? buffer.length : newline;
+        const line = buffer.subarray(lineStart, lineEnd).toString('utf-8');
+        if (line.includes('"session.start"') || line.includes('"session.resume"')) {
+          try {
+            const record = asRecord(JSON.parse(line));
+            const markerTime = record?.timestamp;
+            const time = typeof markerTime === 'string' || typeof markerTime === 'number'
+              ? new Date(markerTime).getTime() : NaN;
+            if ((record?.type === 'session.start' || record?.type === 'session.resume')
+              && typeof record.id === 'string'
+              && offset + lineStart >= startOffset
+              && (!useProviderTime || (Number.isFinite(time)
+                && time >= startedAt && time <= endedAt))) {
+              selected = { id: record.id, offset: offset + lineStart };
+            }
+          } catch {
+            // Partial records provide no safe run linkage.
+          }
+        }
+        if (newline < 0) break;
+        lineStart = newline + 1;
+      }
+      return selected;
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    log.debug('dashboard: failed to recover Copilot run marker');
+    return undefined;
+  }
+}
+
+/** Follow Copilot event parent IDs from the current run marker, discarding content. */
+async function readCopilotUsageForRun(
+  transcriptPath: string,
+  marker: CopilotRunMarker,
+): Promise<CopilotUsageObservation> {
+  const descendants = new Set<string>([marker.id]);
+  let latest: CopilotUsageObservation = { shutdownObserved: false };
+  try {
+    const stat = await fs.promises.stat(transcriptPath);
+    // Large transcript bodies are private and may be arbitrarily long. Missing
+    // totals are safer than rereading an unbounded log on every retry.
+    if (stat.size - marker.offset > COPILOT_RUN_SCAN_BYTES) return latest;
+    const stream = fs.createReadStream(transcriptPath, {
+      start: marker.offset, encoding: 'utf-8',
+    });
+    const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    try {
+      for await (const line of lines) {
+        let record: Record<string, unknown> | null;
+        try {
+          record = asRecord(JSON.parse(line));
+        } catch {
+          continue;
+        }
+        if (!record || typeof record.id !== 'string') continue;
+        if ((record.type === 'session.start' || record.type === 'session.resume')
+          && record.id !== marker.id) break;
+        if (typeof record.parentId === 'string' && descendants.has(record.parentId)) {
+          descendants.add(record.id);
+        }
+        if (record.type === COPILOT_SHUTDOWN_EVENT && descendants.has(record.id)) {
+          latest = parseCopilotShutdown(record);
+        }
+      }
+    } finally {
+      lines.close();
+      stream.destroy();
+    }
+  } catch {
+    log.debug('dashboard: failed to read Copilot run lineage');
+  }
+  return latest;
+}
+
+async function waitForCopilotRunUsage(
+  transcriptPath: string,
+  marker: CopilotRunMarker,
+): Promise<CopilotUsageObservation> {
+  for (let attempt = 0; attempt < COPILOT_USAGE_MAX_ATTEMPTS; attempt++) {
+    const observed = await readCopilotUsageForRun(transcriptPath, marker);
+    if (observed.tokens) return observed;
+    if (attempt < COPILOT_USAGE_MAX_ATTEMPTS - 1) {
+      await new Promise((resolve) => setTimeout(resolve, COPILOT_USAGE_RETRY_MS));
+    }
+  }
+  return { shutdownObserved: false };
+}
+
+/** Resolve Copilot's local event log without accepting path traversal via sessionId. */
+function resolveCopilotUsageTranscript(
+  sessionId: string,
+): string | null {
+  if (!COPILOT_SESSION_ID_RE.test(sessionId) || sessionId === '.' || sessionId === '..') return null;
+  return path.join(
+    getCopilotHome(),
+    COPILOT_SESSION_STATE_DIR,
+    sessionId,
+    COPILOT_SESSION_EVENTS_FILE,
+  );
 }
 
 /**
@@ -849,6 +1109,9 @@ function mapEventType(hookEventName: string): DashboardEventType | null {
     case 'SessionStart':
     case 'sessionStart':
       return 'session_start';
+    case 'SessionEnd':
+    case 'sessionEnd':
+      return 'session_end';
     case 'PostToolUse':
     case 'postToolUse':
       return 'tool_use';
@@ -867,6 +1130,8 @@ function mapEventType(hookEventName: string): DashboardEventType | null {
 export interface ParseHookEventOptions {
   /** Team keywords (`sharing.intervention.correctionKeywords`) merged with the built-in list. */
   correctionKeywords?: readonly string[];
+  /** Per-machine gateway model-alias → known Claude model name, for cost/cache estimation. */
+  modelAliases?: Record<string, string>;
 }
 
 /**
@@ -899,12 +1164,21 @@ export async function parseHookEvent(
     return null;
   }
 
-  const sessionId = deriveSessionId(hookData, { includeCwd: true });
-  const cwd = resolveHookCwd(hookData);
+  const isCopilot = tool.toLowerCase() === COPILOT_TOOL_ID;
+  const derivedSessionId = deriveSessionId(hookData, { includeCwd: !isCopilot });
+  // Copilot IDs are persisted, so reject path-like IDs even when supplied directly.
+  const sessionId = isCopilot && !COPILOT_SESSION_ID_RE.test(derivedSessionId)
+    ? `pid-${process.ppid ?? process.pid}`
+    : derivedSessionId;
+  const cwd = isCopilot ? undefined : resolveHookCwd(hookData);
 
+  const providerTime = isCopilot && (typeof hookData.timestamp === 'string'
+    || typeof hookData.timestamp === 'number')
+    ? new Date(hookData.timestamp).getTime() : NaN;
   const event: DashboardEvent = {
     type: eventType,
-    timestamp: new Date().toISOString(),
+    timestamp: Number.isFinite(providerTime)
+      ? new Date(providerTime).toISOString() : new Date().toISOString(),
     sessionId,
     tool,
     cwd,
@@ -922,24 +1196,30 @@ export async function parseHookEvent(
       try {
         event.monitorPid = resolveMonitorPid(ppid);
       } catch {
-        // PID resolution failed — fall back to ppid
+        // PID lookup failure must not discard the session lifecycle event.
         event.monitorPid = ppid;
       }
     }
   }
 
-  // Extract prompt summary from UserPromptSubmit
+  // Extract prompt summary from UserPromptSubmit. Strip harness/hook injections
+  // (task-notifications, system-reminders, interrupt markers) that also fire this
+  // hook — a background task completing is not a human prompt turn. A prompt that
+  // is purely injected content produces no event at all, so it neither inflates the
+  // prompt count nor shows up as a session prompt.
   if (eventType === 'prompt_submit' && typeof hookData.prompt === 'string') {
-    // Keep first 200 chars of the prompt as summary
-    event.promptSummary = hookData.prompt.slice(0, 200);
+    const human = stripInjectedPrompt(hookData.prompt);
+    if (!human) return null;
+    // Keep first 200 chars of the genuine prompt as summary.
+    if (!isCopilot) event.promptSummary = human.slice(0, 200);
     // Decide "correction" here, over the full prompt, because only the hook knows
     // which team (and so which extra keywords) the prompt belongs to. The
     // machine-level events file mixes sessions from every team.
-    event.correction = isCorrectionPrompt(hookData.prompt, options?.correctionKeywords);
+    event.correction = isCorrectionPrompt(human, options?.correctionKeywords);
   }
 
   // Extract transcript path, AI output and intervention counts from Stop event
-  if (eventType === 'stop' && typeof hookData.transcript_path === 'string') {
+  if (eventType === 'stop' && !isCopilot && typeof hookData.transcript_path === 'string') {
     event.transcriptPath = hookData.transcript_path;
     const output = await readLastAssistantOutput(hookData.transcript_path);
     if (output) {
@@ -947,7 +1227,7 @@ export async function parseHookEvent(
     }
     // Full-transcript snapshot of interrupt/tool_reject counts + token usage +
     // human prompt count (all idempotent, sourced from the non-compactable transcript).
-    const scan = await scanTranscriptStop(hookData.transcript_path, { tool });
+    const scan = await scanTranscriptStop(hookData.transcript_path, { tool, modelAliases: options?.modelAliases });
     if (scan.interrupt > 0 || scan.toolReject > 0 || scan.toolError > 0) {
       event.interventions = {
         interrupt: scan.interrupt,
@@ -973,6 +1253,114 @@ export async function parseHookEvent(
       }));
       if (records.length) event.requestDaily = aggregateRequestDaily(records);
       await reconcileRequestLog(records);
+    }
+  }
+
+  // SessionStart and SessionEnd run in separate processes. Capture the log
+  // boundary and an already-written marker only when it has not closed or
+  // appeared in a previous start event for this session.
+  if (eventType === 'session_start' && isCopilot) {
+    const transcriptPath = resolveCopilotUsageTranscript(sessionId);
+    if (transcriptPath) {
+      try {
+        let boundary = (await fs.promises.stat(transcriptPath)).size;
+        if (boundary > 0) {
+          const tailSize = Math.min(boundary, COPILOT_USAGE_TAIL_BYTES);
+          const tail = Buffer.alloc(tailSize);
+          const fh = await fs.promises.open(transcriptPath, 'r');
+          try {
+            await fh.read(tail, 0, tailSize, boundary - tailSize);
+          } finally {
+            await fh.close();
+          }
+          if (tail[tailSize - 1] !== 10) {
+            const newline = tail.lastIndexOf(10);
+            if (newline >= 0) boundary = boundary - tailSize + newline + 1;
+            else if (tailSize === boundary) boundary = 0;
+          }
+        }
+        event.copilotRunStartOffset = boundary;
+        const candidate = await findCopilotRunMarkerAfter(
+          transcriptPath, Math.max(0, boundary - COPILOT_USAGE_TAIL_BYTES),
+          NaN, NaN, false,
+        );
+        if (candidate) {
+          const shutdown = await readLatestCopilotUsageFromTail(transcriptPath);
+          const history = await readEventsRaw(getEventsPath());
+          const previousStarts = history.filter((entry) => entry.tool === COPILOT_TOOL_ID
+            && entry.sessionId === sessionId && entry.type === 'session_start');
+          const reused = previousStarts.some((entry) => entry.copilotRunMarkerId === candidate.id);
+          const unclaimedPrior = previousStarts.some(
+            (entry) => typeof entry.copilotRunMarkerId !== 'string',
+          );
+          const closed = shutdown.shutdownObserved
+            && typeof shutdown.shutdownOffset === 'number'
+            && shutdown.shutdownOffset > candidate.offset;
+          if (!reused && !unclaimedPrior && !closed) {
+            event.copilotRunMarkerId = candidate.id;
+            event.copilotRunMarkerOffset = candidate.offset;
+          }
+        }
+      } catch {
+        event.copilotRunStartOffset = 0;
+      }
+    }
+  }
+
+  // Copilot's session log contains prompts, tool arguments, assistant output,
+  // and auth-bearing request metadata. Follow opaque event IDs, extract only
+  // final shutdown counters, and never persist paths or transcript content.
+  if (eventType === 'session_end' && isCopilot) {
+    const transcriptPath = resolveCopilotUsageTranscript(sessionId);
+    if (transcriptPath) {
+      const history = await readEventsRaw(getEventsPath());
+      const endTime = Date.parse(event.timestamp);
+      const sessionHistory = history.filter((entry) => entry.tool === COPILOT_TOOL_ID
+        && entry.sessionId === sessionId);
+      // Copilot may omit the provider timestamp. A delayed End handler then has
+      // only its receipt time, so two unmatched Starts make its run ambiguous.
+      const starts = sessionHistory.filter((entry) => entry.type === 'session_start');
+      let lastEnd = -1;
+      for (let index = 0; index < sessionHistory.length; index++) {
+        if (sessionHistory[index].type === 'session_end') lastEnd = index;
+      }
+      const pendingStarts = sessionHistory.slice(lastEnd + 1)
+        .filter((entry) => entry.type === 'session_start');
+      const start = Number.isFinite(providerTime)
+        ? [...starts].reverse().find((entry) => Date.parse(entry.timestamp) <= endTime)
+        : starts.length === 1 ? starts[0]
+          : pendingStarts.length === 1 ? pendingStarts[0] : undefined;
+      let usage: CopilotUsageObservation = { shutdownObserved: false };
+      const startTime = start ? Date.parse(start.timestamp) : NaN;
+      const boundary = start?.copilotRunStartOffset;
+      const recovered = Number.isFinite(providerTime)
+        && typeof boundary === 'number' && Number.isFinite(boundary)
+        ? await findCopilotRunMarkerAfter(
+          transcriptPath, boundary, startTime, endTime, Number.isFinite(providerTime),
+        )
+        : undefined;
+      const stored = typeof start?.copilotRunMarkerId === 'string'
+        && typeof start.copilotRunMarkerOffset === 'number'
+        && Number.isFinite(start.copilotRunMarkerOffset)
+        ? { id: start.copilotRunMarkerId, offset: start.copilotRunMarkerOffset }
+        : undefined;
+      // Without a provider End time, a later marker may belong to the next run
+      // whose Start handler has not persisted yet. Only the marker claimed at
+      // this Start can safely supply totals.
+      const marker = Number.isFinite(providerTime) ? recovered ?? stored : stored;
+      if (marker) {
+        usage = await waitForCopilotRunUsage(transcriptPath, marker);
+      } else if ((start && boundary === undefined && !stored)
+        || (!start && sessionHistory.every((entry) => entry.type !== 'session_start'))) {
+        // Pre-upgrade sessions lack a run marker: accept only a new shutdown
+        // observed during this handler, never an unchanged historical record.
+        const initial = await readLatestCopilotUsageFromTail(transcriptPath);
+        usage = await waitForCopilotShutdownUsage(transcriptPath, initial);
+      }
+      if (usage.tokens) {
+        event.tokens = usage.tokens;
+        event.tokenScope = 'session';
+      }
     }
   }
 
@@ -1108,10 +1496,11 @@ export async function appendEvent(event: DashboardEvent): Promise<void> {
 }
 
 /**
- * Read all events from the JSONL file. Skips corrupted lines.
+ * Read raw events from the JSONL file, in file (append) order. Skips corrupted
+ * lines. Callers that must preserve the on-disk stream verbatim (e.g. compaction)
+ * use this; everything else goes through {@link readEvents}, which also dedupes.
  */
-export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]> {
-  const filePath = eventsPath ?? getEventsPath();
+async function readEventsRaw(filePath: string): Promise<DashboardEvent[]> {
   try {
     const content = await fs.promises.readFile(filePath, 'utf-8');
     const events: DashboardEvent[] = [];
@@ -1133,6 +1522,78 @@ export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]>
   }
 }
 
+/**
+ * Cross-tool duplicate window. When a host (e.g. Cursor) also loads claude's
+ * `~/.claude/settings.json`, one action fires both that hook (`--tool claude`)
+ * and the host's own hook (`--tool cursor`), writing two near-identical events
+ * under the SAME sessionId. Observed skew is 7–172ms; 2s is a generous guard.
+ * A shared sessionId across two DIFFERENT tools only happens under this bug —
+ * genuine distinct-tool sessions get distinct session ids — so the window is a
+ * secondary safety check, not the primary discriminator.
+ */
+const CROSS_TOOL_DEDUP_WINDOW_MS = 2000;
+
+/** Content signature within a session: distinguishes genuine repeats from dupes. */
+function eventSignature(e: DashboardEvent): string {
+  switch (e.type) {
+    case 'tool_use': return `tool_use\0${e.toolName ?? ''}`;
+    case 'prompt_submit': return `prompt_submit\0${e.promptSummary ?? ''}`;
+    default: return e.type; // session_start | session_end | stop | process_exit
+  }
+}
+
+/** Higher = richer payload; the richer record is kept as the surviving carrier. */
+function eventPayloadScore(e: DashboardEvent): number {
+  return (e.tokens ? 8 : 0) + (e.stoppedOutput ? 4 : 0) + (e.interventions ? 2 : 0)
+    + (typeof e.prompts === 'number' ? 2 : 0) + (e.requestMetrics || e.requestDaily ? 2 : 0)
+    + (e.monitorPid ? 1 : 0);
+}
+
+/** A specific host wins over the generic `claude` default (index.ts hook --tool). */
+function preferTool(a: string, b: string): string {
+  if (a === b) return a;
+  if (a === 'claude') return b;
+  if (b === 'claude') return a;
+  return a; // both specific (shouldn't occur under the bug): keep earliest deterministically
+}
+
+/**
+ * Collapse cross-tool duplicate events (see {@link CROSS_TOOL_DEDUP_WINDOW_MS}).
+ * Two events merge only when they share sessionId + type + content signature, are
+ * within the window, and have DIFFERENT tools — so genuine same-tool repeats and
+ * single-tool sessions pass through untouched. The surviving record keeps the
+ * richest payload and adopts the specific host tool. Output is timestamp-ascending.
+ */
+export function dedupeEvents(events: DashboardEvent[]): DashboardEvent[] {
+  const sorted = [...events].sort((x, y) => Date.parse(x.timestamp) - Date.parse(y.timestamp));
+  const result: DashboardEvent[] = [];
+  const lastByKey = new Map<string, number>(); // (sessionId\0signature) -> index in result
+  for (const e of sorted) {
+    const key = `${e.sessionId}\0${eventSignature(e)}`;
+    const idx = lastByKey.get(key);
+    if (idx !== undefined) {
+      const prev = result[idx];
+      const gap = Math.abs(Date.parse(e.timestamp) - Date.parse(prev.timestamp));
+      if (prev.tool !== e.tool && gap <= CROSS_TOOL_DEDUP_WINDOW_MS) {
+        const carrier = eventPayloadScore(e) > eventPayloadScore(prev) ? e : prev; // tie -> prev (earlier)
+        result[idx] = { ...carrier, tool: preferTool(prev.tool, e.tool) };
+        continue; // collapsed; do not push
+      }
+    }
+    result.push(e);
+    lastByKey.set(key, result.length - 1);
+  }
+  return result;
+}
+
+/**
+ * Read all events from the JSONL file, cross-tool-deduped. Skips corrupted lines.
+ */
+export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]> {
+  const filePath = eventsPath ?? getEventsPath();
+  return dedupeEvents(await readEventsRaw(filePath));
+}
+
 // ─── Session state rebuild ──────────────────────────────
 //
 //  events.jsonl (append-only)
@@ -1152,7 +1613,7 @@ export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]>
  * - tool_use → update lastActivity + lastTool, mark running
  * - prompt_submit → capture prompt, mark running
  * - stop → mark as waiting_for_input (LLM finished, user still in session)
- * - process_exit → mark as stopped (process truly exited)
+ * - session_end / process_exit → mark as stopped (process truly exited)
  * Then apply timeouts: idle after 5 min, remove stale after 30 min.
  * Stopped sessions are kept for 30 seconds before removal.
  */
@@ -1217,6 +1678,10 @@ export function rebuildSessions(events: DashboardEvent[]): DashboardSession[] {
         if (event.stoppedOutput) {
           session.stoppedOutput = event.stoppedOutput;
         }
+        break;
+      case 'session_end':
+        session.status = 'stopped';
+        session.stoppedAt = event.timestamp;
         break;
       case 'process_exit':
         // The AI tool process has truly exited (detected by PID liveness monitor).
@@ -1345,24 +1810,6 @@ export function aggregateSessionMetrics(
         m.interrupt = event.interventions.interrupt;
         m.toolReject = event.interventions.toolReject;
       }
-      if (event.tokens) {
-        if (event.tokenScope === 'session') {
-          setLatestTokenSnapshot(sessionTokens, event.sessionId, event);
-        } else if (event.tokenScope === 'transcript' && event.transcriptPath) {
-          let segments = transcriptTokens.get(event.sessionId);
-          if (!segments) {
-            segments = new Map<string, TimedTokenSnapshot>();
-            transcriptTokens.set(event.sessionId, segments);
-          }
-          // A rollout's counter is cumulative within that file. Repeated Stop scans
-          // replace the same segment; a resumed rollout has a distinct path and adds
-          // one new segment to the logical session total.
-          setLatestTokenSnapshot(segments, event.transcriptPath, event);
-        } else {
-          // Claude, CodeBuddy, and pre-existing events retain latest-Stop semantics.
-          setLatestTokenSnapshot(unscopedTokens, event.sessionId, event);
-        }
-      }
       if (typeof event.prompts === 'number') {
         stopPrompts.set(event.sessionId, event.prompts);
       }
@@ -1379,6 +1826,25 @@ export function aggregateSessionMetrics(
         }
         // Each stop is consumed once — a later prompt is a new task, not a correction.
         lastStopAt.delete(event.sessionId);
+      }
+    }
+
+    if ((event.type === 'stop' || event.type === 'session_end') && event.tokens) {
+      if (event.tokenScope === 'session') {
+        setLatestTokenSnapshot(sessionTokens, event.sessionId, event);
+      } else if (event.tokenScope === 'transcript' && event.transcriptPath) {
+        let segments = transcriptTokens.get(event.sessionId);
+        if (!segments) {
+          segments = new Map<string, TimedTokenSnapshot>();
+          transcriptTokens.set(event.sessionId, segments);
+        }
+        // A rollout's counter is cumulative within that file. Repeated Stop scans
+        // replace the same segment; a resumed rollout has a distinct path and adds
+        // one new segment to the logical session total.
+        setLatestTokenSnapshot(segments, event.transcriptPath, event);
+      } else {
+        // Claude, CodeBuddy, and pre-existing events retain latest-Stop semantics.
+        setLatestTokenSnapshot(unscopedTokens, event.sessionId, event);
       }
     }
   }
@@ -1434,7 +1900,10 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
 
     if (lines.length < DASHBOARD_COMPACTION_THRESHOLD) return;
 
-    const events = await readEvents(filePath);
+    // Compaction rewrites the file, so it must preserve raw (append-order,
+    // un-deduped) events — dedup is a read-time view, not a disk mutation.
+    // Dedup never changes the active-session set, so activeIds is identical.
+    const events = await readEventsRaw(filePath);
     const activeSessions = rebuildSessions(events);
     const activeIds = new Set(activeSessions.map(s => s.sessionId));
 

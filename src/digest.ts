@@ -224,20 +224,21 @@ async function getRecentSessions(repoPath: string): Promise<string[]> {
  * Filters by date embedded in filename (YYYY-MM-DD pattern),
  * then parses frontmatter for title metadata.
  */
-async function getRecentLearnings(repoPath: string): Promise<{ recent: LearningInfo[]; total: number }> {
-  const learningsDir = path.join(repoPath, 'learnings');
+async function getRecentLearnings(
+  learningsDirs: readonly string[],
+): Promise<{ recent: LearningInfo[]; total: number }> {
   const recent: LearningInfo[] = [];
   let total = 0;
 
   try {
-    const files = await listFiles(learningsDir);
-    const mdFiles = files.filter((f) => f.endsWith('.md'));
+    const { listLearningFiles } = await import('./utils/learnings-roots.js');
+    const mdFiles = await listLearningFiles(learningsDirs);
     total = mdFiles.length;
 
     // Calculate 7-day cutoff as YYYY-MM-DD string for comparison
     const cutoff = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
 
-    for (const filename of mdFiles) {
+    for (const { file: filename, absPath } of mdFiles) {
       // Extract date from filename pattern: *-YYYY-MM-DD-*.md
       const dateMatch = filename.match(/-(\d{4}-\d{2}-\d{2})-/);
       if (!dateMatch) continue;
@@ -246,7 +247,7 @@ async function getRecentLearnings(repoPath: string): Promise<{ recent: LearningI
       if (fileDate < cutoff) continue;
 
       // Parse frontmatter for title
-      const content = await readFileSafe(path.join(learningsDir, filename));
+      const content = await readFileSafe(absPath);
       if (!content) continue;
 
       const parsed = parseLearningDoc(content, filename);
@@ -414,8 +415,8 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     // branch; report data (stats, sessions) lives on the teamai-reports orphan
     // branch for non-HTTP repos — read those from the reports worktree.
     let reportsRoot = repoPath;
-    const { usesReportsBranch } = await import('./types.js');
-    if (usesReportsBranch(localConfig)) {
+    const { usesBranchWorktree } = await import('./types.js');
+    if (usesBranchWorktree(localConfig)) {
       const { ensureReportsWorktree, refreshReportsWorktree } = await import('./utils/reports-branch.js');
       // Read-only: never publish a missing reports branch.
       await refreshReportsWorktree(localConfig, { pushIfCreated: false });
@@ -482,7 +483,10 @@ export async function generateDigest(options: GlobalOptions): Promise<void> {
     }
 
     // Learnings
-    const { recent: recentLearnings, total: totalLearnings } = await getRecentLearnings(repoPath);
+    const { learningsRoots } = await import('./utils/learnings-roots.js');
+    const { recent: recentLearnings, total: totalLearnings } = await getRecentLearnings(
+      learningsRoots(localConfig).read,
+    );
     if (recentLearnings.length > 0) {
       console.log(`📚 New Learnings This Week: ${recentLearnings.length}`);
       for (const learning of recentLearnings) {

@@ -5,8 +5,8 @@ import fse from 'fs-extra';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
-import { ResourceHandler } from './resources/base.js';
+import { resolveToolBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
+import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { ensureSkillFrontmatter, resolveSkillDestination } from './resources/skills.js';
 import { getUserHome } from './utils/home.js';
 
@@ -104,14 +104,18 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
 
   if (skillNames.length === 0) return 0;
 
-  const baseDir = localConfig ? resolveBaseDir(localConfig) : getUserHome();
+  const defaultBaseDir = getUserHome();
   let deployed = 0;
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
     if (!toolPath.skills) continue;
+    const baseDir = localConfig ? resolveToolBaseDir(tool, localConfig) : defaultBaseDir;
 
     // Skip tools that are not installed
-    if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) {
+    const installed = localConfig
+      ? await isToolInstalledForConfig(tool, toolPath.skills, localConfig)
+      : await ResourceHandler.isToolInstalled(toolPath.skills, baseDir);
+    if (!installed) {
       log.debug(`Skipping built-in skill deployment for ${tool}: tool not installed`);
       continue;
     }

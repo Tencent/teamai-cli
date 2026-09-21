@@ -419,13 +419,12 @@ export async function checkForUpdate(options?: { force?: boolean }): Promise<Che
   const current = getCurrentVersion();
 
   // Use cached result if valid
-  if (!options?.force && isCacheValid(state.lastUpdateCheck) && state.availableUpdate) {
-    const cmp = compareVersions(current, state.availableUpdate);
-    return {
-      available: cmp < 0,
-      current,
-      latest: state.availableUpdate,
-    };
+  if (!options?.force && isCacheValid(state.lastUpdateCheck)) {
+    if (state.availableUpdate) {
+      const cmp = compareVersions(current, state.availableUpdate);
+      return { available: cmp < 0, current, latest: state.availableUpdate };
+    }
+    return { available: false, current, latest: current };
   }
 
   // Fetch latest version from registry

@@ -454,6 +454,32 @@ describe('deployBuiltinSkills — skip uninstalled tools', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude'))).toBe(true);
   });
 
+  it('uses the default home when no local config is available', async () => {
+    const { deployBuiltinSkills } = await import('../builtin-skills.js');
+    const teamConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: {
+        skills: {},
+        rules: { enforced: [] },
+        docs: { localDir: '' },
+        env: { injectShellProfile: true },
+      },
+      toolPaths: { claude: { skills: '.claude/skills' } },
+    };
+
+    const deployed = await deployBuiltinSkills(teamConfig);
+
+    expect(deployed).toBeGreaterThan(0);
+    expect(await fse.pathExists(path.join(
+      homeDir,
+      '.claude/skills/team-wiki-codebase/SKILL.md',
+    ))).toBe(true);
+  });
+
   it('should recursively deploy nested built-in skill files', async () => {
     const { deployBuiltinSkills } = await import('../builtin-skills.js');
 

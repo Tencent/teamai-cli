@@ -17,6 +17,7 @@ vi.mock('../utils/logger.js', () => ({
 
 let tmpDir: string;
 let origHome: string | undefined;
+let origCopilotHome: string | undefined;
 let origPpid: number;
 
 const TEST_SESSION_ID = 'test-session';
@@ -24,6 +25,7 @@ const TEST_SESSION_ID = 'test-session';
 beforeEach(async () => {
   tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-test-'));
   origHome = process.env.HOME;
+  origCopilotHome = process.env.COPILOT_HOME;
   process.env.HOME = tmpDir;
   origPpid = process.ppid;
   // Bind prompt is on by default — start each test from that baseline.
@@ -35,6 +37,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   process.env.HOME = origHome;
+  if (origCopilotHome === undefined) delete process.env.COPILOT_HOME;
+  else process.env.COPILOT_HOME = origCopilotHome;
   delete process.env.TEAMAI_BIND_PROMPT_ENABLED;
   await fse.remove(path.join(os.tmpdir(), `teamai-bind-hint-${TEST_SESSION_ID}`));
   await fse.remove(path.join(os.tmpdir(), `teamai-bind-session-${TEST_SESSION_ID}`));
@@ -311,8 +315,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
       const { reportAndSyncLocalAgent } = await import('../local-agent.js');
       await reportAndSyncLocalAgent({
         cwd: projectDir,
-        tool: 'claude',
-        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'claude' },
+        tool: 'codebuddy',
+        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'codebuddy' },
       });
     } finally {
       process.stdout.write = origWrite;
@@ -332,6 +336,50 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
     expect(ctx).toContain('teamai bind-project --project-id 200');
     expect(ctx).toContain('teamai bind-project --skip');
   });
+
+  // ClawPro project binding only backs CodeBuddy/WorkBuddy, so every other host
+  // must stay silent — and must not even fetch projects (no git/network work).
+  it.each(['claude', 'cursor'])(
+    'does NOT emit hint for non-buddy agent %s (and skips project fetch)',
+    async (tool) => {
+      process.env.TEAMAI_BIND_PROMPT_ENABLED = '1';
+      await setupConfig();
+      const projectDir = path.join(tmpDir, `non-buddy-${tool}`);
+      await fse.ensureDir(projectDir);
+      const { execFileSync } = await import('node:child_process');
+      execFileSync('git', ['init'], { cwd: projectDir, stdio: 'ignore' });
+
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.includes('/api/projects/mine')) {
+          return new Response(JSON.stringify({ ok: true, projects: [{ id: 100, name: 'alpha' }] }));
+        }
+        return new Response(JSON.stringify({ ok: true }));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const stdoutChunks: string[] = [];
+      const origWrite = process.stdout.write;
+      process.stdout.write = ((chunk: string | Buffer) => {
+        stdoutChunks.push(typeof chunk === 'string' ? chunk : chunk.toString());
+        return true;
+      }) as typeof process.stdout.write;
+
+      try {
+        const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+        await reportAndSyncLocalAgent({
+          cwd: projectDir,
+          tool,
+          event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: `sid-${tool}`, tool },
+        });
+      } finally {
+        process.stdout.write = origWrite;
+      }
+
+      expect(stdoutChunks.join('')).not.toContain('ClawPro项目 绑定提示');
+      // The gate short-circuits before fetchUserProjects, so /projects/mine is never hit.
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/projects/mine'))).toBe(false);
+    },
+  );
 
   it('does NOT emit hint when TEAMAI_BIND_PROMPT_ENABLED is explicitly disabled', async () => {
     // Explicitly disable the bind prompt via TEAMAI_BIND_PROMPT_ENABLED=0.
@@ -356,8 +404,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
       const { reportAndSyncLocalAgent } = await import('../local-agent.js');
       await reportAndSyncLocalAgent({
         cwd: projectDir,
-        tool: 'claude',
-        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'claude' },
+        tool: 'codebuddy',
+        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'codebuddy' },
       });
     } finally {
       process.stdout.write = origWrite;
@@ -394,8 +442,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
       const { reportAndSyncLocalAgent } = await import('../local-agent.js');
       await reportAndSyncLocalAgent({
         cwd: projectDir,
-        tool: 'claude',
-        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'claude' },
+        tool: 'codebuddy',
+        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'codebuddy' },
       });
     } finally {
       process.stdout.write = origWrite;
@@ -430,8 +478,8 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
       const { reportAndSyncLocalAgent } = await import('../local-agent.js');
       await reportAndSyncLocalAgent({
         cwd: projectDir,
-        tool: 'claude',
-        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'claude' },
+        tool: 'codebuddy',
+        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'codebuddy' },
       });
     } finally {
       process.stdout.write = origWrite;
@@ -509,17 +557,17 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
         type: 'prompt_submit' as const,
         timestamp: new Date().toISOString(),
         sessionId: TEST_SESSION_ID,
-        tool: 'claude',
+        tool: 'codebuddy',
       });
 
       // First call — should emit hint
-      await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'claude', event: makeEvent() });
+      await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'codebuddy', event: makeEvent() });
       const firstOutput = allOutput.join('');
       expect(firstOutput).toContain('ClawPro项目 绑定提示');
 
       // Second call with same sessionId — should NOT emit hint
       allOutput.length = 0;
-      await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'claude', event: makeEvent() });
+      await reportAndSyncLocalAgent({ cwd: projectDir, tool: 'codebuddy', event: makeEvent() });
       const secondOutput = allOutput.join('');
       expect(secondOutput).not.toContain('ClawPro项目 绑定提示');
     } finally {
@@ -564,12 +612,12 @@ describe('local-agent: emitBindingHint via reportAndSyncLocalAgent', () => {
       // Assertion 1: call resolves without hanging (no /dev/tty readline block).
       const promise = reportAndSyncLocalAgent({
         cwd: projectDir,
-        tool: 'claude',
+        tool: 'codebuddy',
         event: {
           type: 'session_start',
           timestamp: new Date().toISOString(),
           sessionId: TEST_SESSION_ID,
-          tool: 'claude',
+          tool: 'codebuddy',
         },
       });
       await expect(promise).resolves.not.toThrow();
@@ -630,8 +678,8 @@ describe('local-agent: worktree binding inheritance', () => {
       const { reportAndSyncLocalAgent } = await import('../local-agent.js');
       await reportAndSyncLocalAgent({
         cwd: worktreeDir,
-        tool: 'claude',
-        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'claude' },
+        tool: 'codebuddy',
+        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'codebuddy' },
       });
     } finally {
       process.stdout.write = origWrite;
@@ -1369,8 +1417,8 @@ describe('local-agent: CloudStudio sandbox suppression', () => {
       const { reportAndSyncLocalAgent } = await import('../local-agent.js');
       result = await reportAndSyncLocalAgent({
         cwd: projectDir,
-        tool: 'claude',
-        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'claude' },
+        tool: 'codebuddy',
+        event: { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId: 'test-session', tool: 'codebuddy' },
       });
     } finally {
       process.stdout.write = origWrite;
@@ -1597,6 +1645,37 @@ describe('local-agent: cmds[] migration', () => {
     const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
     expect(manifest.scopes.user.claudemd?.['doc-a']).toBeDefined();
     expect(manifest.scopes.user.rules?.['doc-a']).toBeUndefined();
+  });
+
+  it('syncs and removes prompts under custom COPILOT_HOME without replacing user content', async () => {
+    const copilotHome = path.join(tmpDir, 'copilot-home');
+    const instructionPath = path.join(copilotHome, 'copilot-instructions.md');
+    const userInstructions = '# Personal Copilot instructions\n';
+    process.env.COPILOT_HOME = copilotHome;
+    await fse.ensureDir(copilotHome);
+    await fse.writeFile(instructionPath, userInstructions);
+
+    const installed = await runResponse({
+      cmds: [{
+        id: 32, type: 'install_prompt_rule', handle_type: 'prompt', slug: 'copilot-doc',
+        version: '1.0.0', download_url: 'http://127.0.0.1:42100/copilot-doc.md', scope: 'user',
+      }],
+    }, undefined, 'copilot');
+
+    expect(installed.find((ack) => ack.id === 32)?.status).toBe('success');
+    const injected = await fse.readFile(instructionPath, 'utf8');
+    expect(injected).toContain(userInstructions.trim());
+    expect(injected).toContain('# content');
+
+    const removed = await runResponse({
+      cmds: [{
+        id: 33, type: 'uninstall_prompt_rule', handle_type: 'prompt', slug: 'copilot-doc',
+        scope: 'user',
+      }],
+    }, undefined, 'copilot');
+
+    expect(removed.find((ack) => ack.id === 33)?.status).toBe('success');
+    expect(await fse.readFile(instructionPath, 'utf8')).toBe(userInstructions);
   });
 
   it('handle_type=rule routes to rule', async () => {

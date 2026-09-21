@@ -44,6 +44,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 const { contribute } = await import('../contribute.js');
+const { buildSelfModeGitignore } = await import('../init.js');
 const { getUserLearningsDir } = await import('../types.js');
 
 function git(args: string[], cwd: string) {
@@ -64,6 +65,8 @@ describe('contributeSelf — machine-local learnings cache (issue #472)', () => 
     git(['config', 'user.name', 't'], businessRoot);
     fs.mkdirSync(localPath, { recursive: true });
     fs.writeFileSync(path.join(localPath, '.gitkeep'), '');
+    // What `teamai init .` commits for a single-repo install.
+    fs.writeFileSync(path.join(localPath, '.gitignore'), buildSelfModeGitignore());
     git(['add', '.'], businessRoot);
     git(['commit', '-qm', 'init'], businessRoot);
     git(['remote', 'add', 'origin', remote], businessRoot);
@@ -87,30 +90,50 @@ describe('contributeSelf — machine-local learnings cache (issue #472)', () => 
     return fs.readdirSync(getUserLearningsDir()).sort();
   }
 
+  /** Everything this machine can read a learning from, published or not. */
+  async function readableLearnings(): Promise<string[]> {
+    const { learningsRoots, listLearningFiles } = await import('../utils/learnings-roots.js');
+    const { pendingLearningsDir } = await import('../utils/pending-learnings.js');
+    const roots = [pendingLearningsDir(localConfig), ...learningsRoots(localConfig).read];
+    return (await listLearningFiles(roots)).map((learning) => learning.file).sort();
+  }
+
   function noteFile(text: string): string {
     const notePath = path.join(testRoot, `note-${Math.random().toString(36).slice(2)}.md`);
     fs.writeFileSync(notePath, text);
     return notePath;
   }
 
-  it('adds a new contribution without deleting unrelated cache entries', async () => {
+  it('makes the contribution readable without touching unrelated cache entries', async () => {
     await contribute({ scope: 'project', title: 'first-pending', file: noteFile('first unique knowledge') });
 
+    expect((await readableLearnings()).some((f) => f.startsWith('first-pending-'))).toBe(true);
+    // The machine-local cache is shared by every project on this machine, so a
+    // contribution must not add to it or remove from it.
     expect(fs.existsSync(path.join(getUserLearningsDir(), 'other-team.md'))).toBe(true);
     expect(fs.existsSync(path.join(getUserLearningsDir(), 'other-namespace', 'note.md'))).toBe(true);
-    expect(cacheFiles().some((f) => f.startsWith('first-pending-'))).toBe(true);
+    expect(cacheFiles().some((f) => f.startsWith('first-pending-'))).toBe(false);
   });
 
-  it('keeps an earlier still-unmerged contribution recallable after a second one', async () => {
+  it('keeps an earlier contribution readable after a second one', async () => {
     await contribute({ scope: 'project', title: 'first-pending', file: noteFile('first unique knowledge') });
-    const firstFile = cacheFiles().find((f) => f.startsWith('first-pending-'));
+    const firstFile = (await readableLearnings()).find((f) => f.startsWith('first-pending-'));
     expect(firstFile).toBeDefined();
 
     await contribute({ scope: 'project', title: 'second-pending', file: noteFile('second unique knowledge') });
-    const afterSecond = cacheFiles();
+    const afterSecond = await readableLearnings();
 
     expect(afterSecond).toContain(firstFile);
     expect(afterSecond.some((f) => f.startsWith('second-pending-'))).toBe(true);
-    expect(afterSecond).toContain('other-team.md');
+    expect(cacheFiles()).toContain('other-team.md');
+  });
+
+  it('leaves the business repo working tree exactly as it was', async () => {
+    const before = execFileSync('git', ['status', '--porcelain'], { cwd: businessRoot, encoding: 'utf8' });
+
+    await contribute({ scope: 'project', title: 'clean-tree', file: noteFile('knowledge') });
+
+    expect(execFileSync('git', ['status', '--porcelain'], { cwd: businessRoot, encoding: 'utf8' }))
+      .toBe(before);
   });
 });

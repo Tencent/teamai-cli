@@ -181,6 +181,7 @@ export function gitcodeRepoClone(repo: string, localPath: string): void {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: 120_000,
+    windowsHide: true,
   });
   const allOutput = `${result.stderr ?? ''} ${result.stdout ?? ''}`;
   if (result.status === 0) return;

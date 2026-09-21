@@ -16,6 +16,7 @@ const IDE_TO_CLI: Record<string, string> = {
   web_fetch: 'WebFetch',
   read_file: 'Read',
   task: 'Task',
+  skill: 'Skill',
 };
 
 export function normalizeToolName(name: string): string {

@@ -128,6 +128,18 @@ describe('hook-handlers registry', () => {
     expect(events).toContain('stop');
     expect(events).toContain('post-tool-use');
     expect(events).toContain('prompt-submit');
+    expect(events).toContain('session-end');
+  });
+
+  it('session-end only records the final dashboard snapshot in the background', () => {
+    const handlers = buildHandlerRegistry().filter((r) => r.event === 'session-end');
+    expect(handlers).toEqual([
+      expect.objectContaining({
+        matcher: '*',
+        background: true,
+        handler: expect.objectContaining({ name: 'dashboard-report' }),
+      }),
+    ]);
   });
 
   it('session-start has pull and dashboard-report handlers', () => {
@@ -621,6 +633,25 @@ describe('hook-handlers registry', () => {
 
     const result = await handler.execute(
       { session_id: 'sid-votes-2', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
+      'claude',
+    );
+    expect(result).toBeNull();
+  });
+
+  it('votes-sync does not nudge when the model declared an empty [] (recalled>0, declared===0)', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
+    )!.handler;
+
+    mockParseTranscriptForVotes.mockResolvedValue({
+      referencedDocIds: [],
+      recalledDocIds: ['doc-a'],
+      hasReferencedDocIdsDeclaration: true,
+    });
+
+    const result = await handler.execute(
+      { session_id: 'sid-votes-3', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
       'claude',
     );
     expect(result).toBeNull();

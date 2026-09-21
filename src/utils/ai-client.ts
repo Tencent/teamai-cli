@@ -118,7 +118,10 @@ export async function callClaude(
       log.debug(`[ai-client] using CLI: ${_cliInfo.cmd} (${_cliInfo.absPath})`);
     }
     log.debug(`[ai-client] calling ${_cliInfo.cmd}, timeout=${Math.round(timeoutMs / 1000)}s, prompt=${prompt.slice(0, 60).replace(/\n/g, ' ')}...`);
-    const child = spawn(_cliInfo.absPath, buildCliArgs(_cliInfo.cmd, prompt), { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(_cliInfo.absPath, buildCliArgs(_cliInfo.cmd, prompt), {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
 
     child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk));
     child.stderr?.on('data', (chunk: Buffer) => errChunks.push(chunk));

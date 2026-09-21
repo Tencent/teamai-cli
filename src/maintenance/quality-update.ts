@@ -2,6 +2,7 @@
 import path from 'node:path';
 
 import { listFiles, pathExists, readFileSafe } from '../utils/fs.js';
+import { listLearningFiles } from '../utils/learnings-roots.js';
 import { loadUserVotes } from '../votes.js';
 import { log } from '../utils/logger.js';
 
@@ -125,7 +126,7 @@ export function reportStaleEntries(entries: StaleEntry[]): void {
 export async function findRelatedAdoptedLearnings(
   staleEntry: StaleEntry,
   votesDir: string,
-  learningsDir: string,
+  learningsDirs: readonly string[],
   limit: number = 5,
 ): Promise<string[]> {
   const perDoc = new Map<string, number>();
@@ -150,10 +151,14 @@ export async function findRelatedAdoptedLearnings(
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit);
 
+  const byName = new Map(
+    (await listLearningFiles(learningsDirs)).map((learning) => [learning.file, learning.absPath]),
+  );
   const contents: string[] = [];
   for (const [docId] of sorted) {
     const filename = docId.endsWith('.md') ? docId : `${docId}.md`;
-    const filePath = path.join(learningsDir, filename);
+    const filePath = byName.get(filename);
+    if (!filePath) continue;
     const content = await readFileSafe(filePath);
     if (content) contents.push(content);
   }

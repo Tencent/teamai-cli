@@ -348,7 +348,7 @@ async function selfHealAndReadPartition(
   return readConfigFrom(partitionDir, workspaceRoot);
 }
 
-async function readConfigFrom(
+export async function readConfigFrom(
   dataHomeDir: string,
   projectRoot: string,
   selfHealRepoRoot?: string,

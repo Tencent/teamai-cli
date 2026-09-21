@@ -19,10 +19,12 @@ import {
   TEAMAI_ENV_START,
   TEAMAI_ENV_END,
   getDataHome,
+  getManagedHooksPath,
   managedMcpManifestPath,
   resolveBaseDir,
   resolveHookScope,
   resolveLegacyProjectHookScope,
+  resolveToolBaseDir,
   scopedToolPaths,
   type GlobalOptions,
   type TeamaiConfig,
@@ -33,6 +35,7 @@ import {
 import { BUILTIN_RULE_NAMES } from './builtin-rules.js';
 import { ruleStemFromFilename } from './resources/rule-format.js';
 import { agentStemFromFilename } from './resources/agent-format.js';
+import { resolveDocsDestination } from './resources/docs.js';
 import { listTeamAgentDirs } from './resources/agents.js';
 import { BUILTIN_AGENT_NAMES } from './builtin-agents.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
@@ -66,6 +69,8 @@ interface RemovalPlan {
   openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
   /** OpenCode teamai plugin files (.opencode/plugin/teamai-*.ts) to delete. */
   opencodeHookScopes: Array<{ baseDir: string; scope: Scope }>;
+  /** teamai-managed OMP extension file (~/.omp/agent/extensions/teamai-hooks.ts), if present. */
+  ompHookFile: string | null;
   /** CLAUDE.md files with teamai rules blocks. */
   claudeMdFiles: string[];
   /** Skill directories synced from team repo. */
@@ -97,6 +102,7 @@ interface ToolResources {
   hookFiles: Array<{ path: string; tool: string; manifestPath: string }>;
   openclawHookDirs: Array<{ hooksDir: string; tool: string }>;
   opencodeHookScopes: Array<{ baseDir: string; scope: Scope }>;
+  ompHookFile: string | null;
   claudeMdFiles: string[];
   skillDirs: string[];
   ruleFiles: string[];
@@ -108,6 +114,7 @@ function hasToolResources(r: ToolResources): boolean {
     r.hookFiles.length > 0 ||
     r.openclawHookDirs.length > 0 ||
     r.opencodeHookScopes.length > 0 ||
+    r.ompHookFile !== null ||
     r.claudeMdFiles.length > 0 ||
     r.skillDirs.length > 0 ||
     r.ruleFiles.length > 0 ||
@@ -229,15 +236,27 @@ async function discoverToolResources(
   teamRuleNames: Set<string>,
   teamAgentNames: Set<string>,
   hookTargets: Array<{ baseDir: string; manifestPath: string }>,
+  standaloneHookManifestPath: string,
   scope: Scope,
 ): Promise<ToolResources> {
   const res: ToolResources = {
-    hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], claudeMdFiles: [],
+    hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], ompHookFile: null, claudeMdFiles: [],
     skillDirs: [], ruleFiles: [], agentFiles: [],
   };
 
   // (a) Hooks — settings.json / hooks.json
-  if (tool === 'opencode') {
+  if (toolPath.hooks) {
+    const hooksPath = path.join(baseDir, toolPath.hooks);
+    if (await pathExists(hooksPath)
+      && (await hasTeamaiHooks(hooksPath, tool, standaloneHookManifestPath)
+        || isEmptyHooksResidue(await readJson<Record<string, unknown>>(hooksPath)))) {
+      res.hookFiles.push({
+        path: hooksPath,
+        tool,
+        manifestPath: standaloneHookManifestPath,
+      });
+    }
+  } else if (tool === 'opencode') {
     // OpenCode has no settings file; its teamai hooks are plugin .ts files under
     // <base>/.config/opencode/plugin (where teamai writes them) or
     // <base>/.opencode/plugin (a project-scope copy from an earlier layout).
@@ -253,6 +272,15 @@ async function discoverToolResources(
           res.opencodeHookScopes.push(target);
         }
       }
+    }
+  } else if (tool === 'omp') {
+    // OMP hooks are a single teamai-managed TS extension in the user agent dir
+    // (~/.omp/agent/extensions/teamai-hooks.ts) — the adapter never writes a
+    // project copy, so there is just the one place to look.
+    const { resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
+    const extFile = path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+    if (await pathExists(extFile)) {
+      res.ompHookFile = extFile;
     }
   } else if (toolPath.settings) {
     // Hooks live where resolveHookScope injected them (HOME for a non-self
@@ -334,7 +362,8 @@ async function discoverToolResources(
   }
 
   // (d2) Team-synced custom agents plus CLI built-ins. Native output uses
-  // .md for most tools, .toml for Codex, and .json for Kiro, so match by stem.
+  // .agent.md for Copilot, .md for most tools, .toml for Codex, and .json for
+  // Kiro, so match by stem.
   if (toolPath.agents) {
     const agentsDir = path.join(baseDir, toolPath.agents);
     if (await pathExists(agentsDir)) {
@@ -357,6 +386,10 @@ async function buildRemovalPlan(
 ): Promise<RemovalPlan> {
   const baseDir = resolveBaseDir(localConfig);
   const teamaiHome = getDataHome(localConfig);
+  const standaloneHookManifestPath = getManagedHooksPath(
+    localConfig.scope,
+    localConfig.projectRoot,
+  );
 
   // Discover team repo resource names for targeted removal. CLI built-in
   // resources (recall agent/rule, share-learnings skill, …) are deployed by
@@ -403,11 +436,12 @@ async function buildRemovalPlan(
       await discoverToolResources(
         tool,
         toolPath,
-        baseDir,
+        resolveToolBaseDir(tool, localConfig),
         teamSkillNames,
         teamRuleNames,
         teamAgentNames,
         hookTargets,
+        standaloneHookManifestPath,
         localConfig.scope,
       ),
     );
@@ -436,6 +470,7 @@ async function buildRemovalPlan(
     hookFiles: [],
     openclawHookDirs: [],
     opencodeHookScopes: [],
+    ompHookFile: null,
     claudeMdFiles: [],
     skillDirs: [],
     ruleFiles: [],
@@ -457,6 +492,7 @@ async function buildRemovalPlan(
     plan.hookFiles.push(...res.hookFiles);
     plan.openclawHookDirs.push(...res.openclawHookDirs);
     plan.opencodeHookScopes.push(...res.opencodeHookScopes);
+    if (res.ompHookFile) plan.ompHookFile = res.ompHookFile;
     plan.claudeMdFiles.push(...res.claudeMdFiles);
     plan.skillDirs.push(...res.skillDirs);
     plan.ruleFiles.push(...res.ruleFiles);
@@ -493,15 +529,7 @@ async function buildRemovalPlan(
     }
 
     // (f) Docs directory
-    const docsLocalDir = teamConfig.sharing.docs.localDir;
-    let docsDir: string;
-    if (localConfig.scope === 'project' && localConfig.projectRoot) {
-      docsDir = docsLocalDir.startsWith('~/')
-        ? path.join(localConfig.projectRoot, docsLocalDir.substring(2))
-        : expandHome(docsLocalDir);
-    } else {
-      docsDir = expandHome(docsLocalDir);
-    }
+    const docsDir = resolveDocsDestination(teamConfig, localConfig);
     if (await pathExists(docsDir)) {
       plan.docsDir = docsDir;
     }
@@ -517,6 +545,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.hookFiles.length === 0 &&
     plan.openclawHookDirs.length === 0 &&
     plan.opencodeHookScopes.length === 0 &&
+    plan.ompHookFile === null &&
     plan.claudeMdFiles.length === 0 &&
     plan.skillDirs.length === 0 &&
     plan.ruleFiles.length === 0 &&
@@ -562,6 +591,12 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
       const configDir = scope === 'project' ? '.opencode' : path.join('.config', 'opencode');
       console.log(`     ${path.join(baseDir, configDir, 'plugin')}/teamai-*.ts`);
     }
+    console.log('');
+  }
+
+  if (plan.ompHookFile !== null) {
+    console.log('   OMP Hook (extension):');
+    console.log(`     ${plan.ompHookFile}`);
     console.log('');
   }
 
@@ -673,6 +708,16 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
       }
     } catch (e) {
       log.warn(`Failed to remove OpenCode hook (${scope} scope): ${(e as Error).message}`);
+    }
+  }
+
+  // (a2c) Remove the teamai OMP extension (single user-agent-dir copy).
+  if (plan.ompHookFile !== null) {
+    try {
+      const { removeOmpHooks } = await import('./omp-hooks.js');
+      await removeOmpHooks();
+    } catch (e) {
+      log.warn(`Failed to remove OMP hook: ${(e as Error).message}`);
     }
   }
 

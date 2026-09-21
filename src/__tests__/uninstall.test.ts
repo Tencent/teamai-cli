@@ -39,6 +39,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { uninstall } from '../uninstall.js';
+import { TeamaiConfigSchema } from '../types.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 // ─── Helpers ───────────────────────────────────────────
@@ -815,6 +816,45 @@ describe('uninstall', () => {
     expect(claudeMd).not.toContain('Recall Rules');
   });
 
+  it('removes TeamAI blocks from COPILOT_HOME instructions and preserves user text', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const copilotHome = path.join(tmpDir, 'copilot-home');
+    const instructionsPath = path.join(copilotHome, 'copilot-instructions.md');
+    const userInstructions = '# Personal Copilot instructions';
+    await fse.ensureDir(copilotHome);
+    await fse.writeFile(instructionsPath, [
+      userInstructions,
+      '',
+      TEAMAI_CULTURE_START,
+      'Team culture',
+      TEAMAI_CULTURE_END,
+      '',
+      TEAMAI_CLAUDEMD_START,
+      'Shared instructions',
+      TEAMAI_CLAUDEMD_END,
+      '',
+    ].join('\n'));
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('COPILOT_HOME', copilotHome);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    const teamConfig = TeamaiConfigSchema.parse({
+      team: 'test',
+      repo: 'https://github.com/example/team.git',
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath, { enabledAgents: ['copilot'] });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'copilot' });
+
+    const result = await fse.readFile(instructionsPath, 'utf8');
+    expect(result).toContain(userInstructions);
+    expect(result).not.toContain(TEAMAI_CULTURE_START);
+    expect(result).not.toContain(TEAMAI_CULTURE_END);
+    expect(result).not.toContain(TEAMAI_CLAUDEMD_START);
+    expect(result).not.toContain(TEAMAI_CLAUDEMD_END);
+  });
+
   it('多工具场景：清理 codebuddy 和 claude-internal 的 CLAUDE.md', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);
@@ -920,6 +960,61 @@ describe('uninstall', () => {
     expect(mockReconcileHooks).toHaveBeenCalledWith(
       path.join(homeDir, '.claude', 'settings.json'),
       'claude',
+      [],
+      expect.objectContaining({ removeAll: true }),
+    );
+  });
+
+  it('--agent copilot honors COPILOT_HOME and removes only TeamAI-owned resources', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const copilotHome = path.join(tmpDir, 'custom-copilot-home');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('COPILOT_HOME', copilotHome);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    await fse.ensureDir(path.join(copilotHome, 'skills', 'team-skill'));
+    await fse.writeFile(path.join(copilotHome, 'skills', 'team-skill', 'SKILL.md'), '# Team Skill');
+    await fse.ensureDir(path.join(copilotHome, 'skills', 'personal-skill'));
+    await fse.writeFile(path.join(copilotHome, 'skills', 'personal-skill', 'SKILL.md'), '# Personal');
+    await fse.ensureDir(path.join(copilotHome, 'instructions'));
+    await fse.writeFile(path.join(copilotHome, 'instructions', 'team-rule.instructions.md'), '# Team Rule');
+    await fse.writeFile(path.join(copilotHome, 'instructions', 'personal.instructions.md'), '# Personal');
+    const hookPath = path.join(copilotHome, 'hooks', 'teamai.json');
+    await fse.ensureDir(path.dirname(hookPath));
+    await fse.writeJson(hookPath, {
+      version: 1,
+      hooks: {
+        SessionStart: [{
+          type: 'command',
+          bash: 'teamai hook-dispatch session-start --tool copilot',
+          powershell: 'teamai hook-dispatch session-start --tool copilot',
+          command: 'teamai hook-dispatch session-start --tool copilot',
+        }],
+      },
+    });
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        copilot: {
+          skills: '.github/skills',
+          rules: '.github/instructions',
+          hooks: '.github/hooks/teamai.json',
+          userScope: { skills: 'skills', rules: 'instructions', hooks: 'hooks/teamai.json' },
+        },
+      },
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath, { enabledAgents: ['copilot'] });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'copilot' });
+
+    expect(await fse.pathExists(path.join(copilotHome, 'skills', 'team-skill'))).toBe(false);
+    expect(await fse.pathExists(path.join(copilotHome, 'instructions', 'team-rule.instructions.md'))).toBe(false);
+    expect(await fse.pathExists(path.join(copilotHome, 'skills', 'personal-skill'))).toBe(true);
+    expect(await fse.pathExists(path.join(copilotHome, 'instructions', 'personal.instructions.md'))).toBe(true);
+    expect(mockReconcileHooks).toHaveBeenCalledWith(
+      hookPath,
+      'copilot',
       [],
       expect.objectContaining({ removeAll: true }),
     );

@@ -14,8 +14,8 @@ describe('teamai doctor CLI (e2e)', () => {
   let initializedHome: string;
   let missingHookHome: string;
 
-  function runDoctor(home: string) {
-    return spawnSync(process.execPath, [CLI, 'doctor'], {
+  function runDoctor(home: string, ...args: string[]) {
+    return spawnSync(process.execPath, [CLI, 'doctor', ...args], {
       cwd: home,
       env: {
         ...process.env,
@@ -110,5 +110,40 @@ describe('teamai doctor CLI (e2e)', () => {
     expect(result.status, output).toBe(1);
     expect(output).toContain('✖ teamai hooks in claude settings');
     expect(output).toContain('Some checks failed. See suggestions above.');
+  });
+
+  it('--json puts the report on stdout and nothing else', () => {
+    const result = runDoctor(missingHookHome, '--json');
+
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(1);
+
+    // stdout must parse whole: any human line leaking there breaks a consumer.
+    const report = JSON.parse(result.stdout) as {
+      ok: boolean;
+      scope: string;
+      checks: Array<{ name: string; ok: boolean; fix?: string }>;
+    };
+    expect(report.ok).toBe(false);
+    expect(report.scope).toBe('user');
+
+    const hookCheck = report.checks.find((c) => c.name === 'teamai hooks in claude settings');
+    expect(hookCheck?.ok).toBe(false);
+    expect(hookCheck?.fix).toContain('teamai hooks inject');
+    expect(report.checks.some((c) => c.name === 'Team repo exists locally' && c.ok)).toBe(true);
+  });
+
+  it('--json keeps its envelope before initialization', () => {
+    const result = runDoctor(uninitializedHome, '--json');
+
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(1);
+
+    const report = JSON.parse(result.stdout) as {
+      ok: boolean;
+      scope: string | null;
+      checks: Array<{ name: string; ok: boolean }>;
+    };
+    expect(report.ok).toBe(false);
+    expect(report.scope).toBeNull();
+    expect(report.checks[0]?.name).toBe('TeamAI is not initialized');
   });
 });

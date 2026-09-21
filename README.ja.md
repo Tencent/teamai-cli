@@ -2,22 +2,30 @@
   <img src="assets/teamai-cli-logo.svg" alt="teamai-cli">
 </p>
 
-# TeamAI — Make Every Team AI Native
+<h1 align="center">TeamAI — Make Every Team AI Native</h1>
 
-> [English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [ไทย](README.th.md)
+<p align="center">
+  <a href="https://trendshift.io/repositories/123184?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-123184" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/123184" alt="Tencent%2Fteamai-cli | Trendshift" width="250" height="55"/></a>
+</p>
 
-[![CI](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
-[![npm downloads](https://img.shields.io/npm/dm/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a> | <a href="README.th.md">ไทย</a>
+</p>
 
-TeamAI は、チームの Skills、Rules、MCP、ナレッジを Claude Code、Codex、CodeBuddy、WorkBuddy、OpenCode、Cursor などの AI Agents 横断で管理します。
+<p align="center">
+  <a href="https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml"><img src="https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/teamai-cli"><img src="https://img.shields.io/npm/v/teamai-cli.svg" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/teamai-cli"><img src="https://img.shields.io/npm/dm/teamai-cli.svg" alt="npm downloads"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+</p>
+
+**チームが AI とともに働き、学び、改善し続けるための共通基盤。**
+
+TeamAI は個人の AI 能力をチーム共有の能力へと変え、Agent・マシン・メンバーをまたいで活用できるようにします。
 
 ## コントリビューター
 
 TeamAI に貢献してくださったみなさんに感謝します。
-
-<a href="https://trendshift.io/repositories/123184?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-123184" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/123184" alt="Tencent%2Fteamai-cli | Trendshift" width="250" height="55"/></a>
 
 <a href="https://github.com/Tencent/teamai-cli/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=Tencent/teamai-cli" alt="Contributors" />
@@ -26,6 +34,41 @@ TeamAI に貢献してくださったみなさんに感謝します。
 [contrib.rocks](https://contrib.rocks) で生成しています。
 
 ## クイックスタート
+
+次の一文を AI ツールに送るだけ:
+
+```text
+teamai skill をインストールして: https://github.com/Tencent/teamai-cli/tree/main/skills/teamai , teamai skill を読み込み、チームの TeamAI をゼロから構築して。
+```
+
+TeamAI をセットアップしたら、AI ツールで `/teamai` skill に話しかけるだけ:
+
+**チームをゼロから構築**
+
+```text
+/teamai チームの TeamAI をゼロから構築して
+```
+
+**チームに参加**
+
+```text
+/teamai チームの TeamAI に参加したい、リポジトリ URL は https://github.com/yourorg/yourrepo
+```
+
+**skill をチームに共有**
+
+```text
+/teamai xxx skill をチームに共有して
+```
+
+**ダッシュボードを開く**
+
+```text
+/teamai TeamAI ダッシュボードを開いて
+```
+
+<details>
+<summary>コマンドラインの方が好みですか？（手動セットアップ）</summary>
 
 ### インストール
 
@@ -53,6 +96,8 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 初期化後は、管理者が公開した最新の skills / rules などの Harness 更新が、AI セッション開始時に自動で取り込まれます。手動同期は不要です。
+
+</details>
 
 > **完全な利用ガイド:** [docs/usage-guide.md](docs/usage-guide.md)（[中文版](docs/usage-guide.zh-CN.md)）— チーム作成から日常利用までをカバーします。
 
@@ -86,6 +131,7 @@ teamai init https://github.com/yourorg/yourrepo --scope user
     <tr><td>Claude Code</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>Codex</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>Cursor</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>GitHub Copilot CLI</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
     <tr><td>CodeBuddy</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>WorkBuddy</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>OpenCode</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
@@ -95,6 +141,7 @@ teamai init https://github.com/yourorg/yourrepo --scope user
     <tr><td>Qoder</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>Kiro</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>ZCode</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>Oh My Pi</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
   </tbody>
 </table>
 
@@ -234,8 +281,8 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 |------|----------|----------|
 | **Usage** | `teamai digest` | チームの週次 digest — 直近 7 日の成功率、prompt、アクティブ時間、推定コスト、cache、訂正の傾向と、累計値。 |
 | **Sessions** | `teamai session save` | プライバシーを除去したセッション要約（ツール列、prompt ターン、介入）。digest の Session Highlights の入力になります。 |
-| **Dashboard** | `teamai dashboard` | ライブセッションと、直近 7 日をその前の 7 日と比較したローカルトレンドを示す Web dashboard。 |
-| **KB Health** | `teamai dashboard` → KB Health | 組み込みの dashboard ページ。ナレッジベースの利用と健全性（タイプ別カバレッジ、よく recall されるエントリ、沈黙エントリ、recall トレンド、作者の貢献、メンテナンスコンソール）を報告します。 |
+| **Dashboard** | `teamai dashboard` | Overview / Team Execution / Team Context / Team Improvement を統合。本機のライブセッション、7 日間の傾向、セッション当たり推定コスト、英語/簡体字中国語、ライト/ダーク/システムテーマに対応。 |
+| **KB Health** | `teamai dashboard` → Team Context / Team Improvement | 組み込みの dashboard ページ。ナレッジベースの利用と健全性（タイプ別カバレッジ、よく recall されるエントリ、沈黙エントリ、recall トレンド、作者の貢献、メンテナンスコンソール）を報告します。 |
 
 ## コマンド
 
@@ -246,7 +293,7 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 | `teamai push` | ローカルリソースをブランチへ push し、Merge Request を開く |
 | `teamai packages [install] [target]` | 宣言済みの npm パッケージと Claude plugins をインストール。target 指定時は `teamai.yaml` も更新。引数なしの `teamai packages` はすべてインストール、`teamai packages install <target>` は 1 件追加 |
 | `teamai status` | ローカルとチームリポジトリの差分とリソース件数を表示。名前空間付き skills と入れ子の docs も含む |
-| `teamai contribute` | セッション経験をチームリポジトリへ共有 |
+| `teamai contribute` | セッション経験をチームリポジトリの `teamai-learnings` ブランチへ共有 |
 | `teamai recall <query>` | チームナレッジベースを検索（BM25 + graph-boost） |
 | `teamai recall enable/disable/status` | recall のオン/オフ、または状態確認 |
 | `teamai recall promote [learningId]` | 信頼度の高い learning を正式ナレッジ（skills/rules/docs）へ昇格 |
@@ -266,7 +313,7 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 | `teamai remove <type> <name>` | リソースを削除し、MR を開く |
 | `teamai session save` | プライバシー除去済みのセッション要約を月次ログへ記録（`--push` は `digest` へ供給） |
 | `teamai digest` | チーム利用の週次 digest を生成 |
-| `teamai doctor` | 設定の問題を診断 |
+| `teamai doctor` | 設定の問題を診断（`--json` で JSON 出力、CI・hook・agent 向け）|
 | `teamai uninstall` | すべての teamai リソースと hooks を削除 |
 
 ## ライセンス

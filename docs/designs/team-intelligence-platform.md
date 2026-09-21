@@ -28,6 +28,10 @@ Transform TeamAI from a simple skill-sharing CLI into a **Team Intelligence Plat
 | 13 | Hook 命令实现 | `teamai track` TypeScript CLI 命令 | 类型安全 + 输入验证，比 bash one-liner 稳健 |
 | 14 | Git 直推实现 | 复用 `utils/git.ts` pushRepoDirectly() | DRY，不新建 git 逻辑 |
 
+> 更新（#484 / #485）：上报数据与 learnings 都不再直推默认分支。上报写入
+> `teamai-reports`、learnings 写入 `teamai-learnings`，均通过各自孤儿分支的 worktree
+> 推送（`utils/branch-worktree.ts`）。`pushRepoDirectly()` 现在只用于 init 首次建仓与 CI。
+
 ## Accepted Features
 
 ### Core Features

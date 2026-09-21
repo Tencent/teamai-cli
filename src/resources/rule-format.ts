@@ -2,9 +2,8 @@
  * Per-tool on-disk format for rule files.
  *
  * The team repo always stores rules as tool-neutral `<name>.md`. Most tools take
- * a verbatim `.md` copy, but Cursor and JoyCode use `.mdc` rules — so their
- * copies carry the `.mdc` extension and machine-derived frontmatter (see
- * `./cursor-mdc.ts`).
+ * a verbatim `.md` copy. Cursor and JoyCode use `.mdc` rules, while GitHub
+ * Copilot CLI uses `.instructions.md`; those copies carry native frontmatter.
  *
  * This module is the single place that decision lives, mirroring
  * `agentFileExtensionForTool` in `./agent-format.ts`. Every site that writes,
@@ -13,15 +12,22 @@
  */
 
 const CURSOR_MDC_RULE_TOOLS = new Set(['cursor', 'joycode']);
+const COPILOT_INSTRUCTIONS_RULE_TOOLS = new Set(['copilot']);
 
 /** Extension teamai writes rules with for a given tool. */
-export function ruleFileExtensionForTool(tool: string): '.md' | '.mdc' {
-  return usesCursorMdcRules(tool) ? '.mdc' : '.md';
+export function ruleFileExtensionForTool(tool: string): '.md' | '.mdc' | '.instructions.md' {
+  if (usesCursorMdcRules(tool)) return '.mdc';
+  return usesCopilotInstructions(tool) ? '.instructions.md' : '.md';
 }
 
 /** True when the tool stores rules in Cursor-compatible `.mdc` format. */
 export function usesCursorMdcRules(tool: string): boolean {
   return CURSOR_MDC_RULE_TOOLS.has(tool);
+}
+
+/** True when the tool stores rules as GitHub Copilot instruction files. */
+export function usesCopilotInstructions(tool: string): boolean {
+  return COPILOT_INSTRUCTIONS_RULE_TOOLS.has(tool);
 }
 
 /**
@@ -31,13 +37,14 @@ export function usesCursorMdcRules(tool: string): boolean {
  * they also see copies left by an older teamai layout (e.g. `.cursor/rules/*.md`
  * written before Cursor rules moved to `.mdc`).
  */
-export const RULE_FILE_EXTENSIONS = ['.mdc', '.md'] as const;
+export const RULE_FILE_EXTENSIONS = ['.instructions.md', '.mdc', '.md'] as const;
 
 /**
- * Extract a rule name stem from a filename, accepting either extension.
+ * Extract a rule name stem from a filename, accepting any supported extension.
  * Returns null for files that are not rule files.
  */
 export function ruleStemFromFilename(filename: string): string | null {
+  if (filename.endsWith('.instructions.md')) return filename.slice(0, -'.instructions.md'.length);
   if (filename.endsWith('.mdc')) return filename.slice(0, -'.mdc'.length);
   if (filename.endsWith('.md')) return filename.slice(0, -'.md'.length);
   return null;

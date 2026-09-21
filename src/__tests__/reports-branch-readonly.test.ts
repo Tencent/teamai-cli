@@ -140,6 +140,9 @@ describe('commitAndPushReports', () => {
     mocks.worktreeGit.commit.mockResolvedValue(undefined);
     mocks.worktreeGit.push.mockResolvedValue(undefined);
     mocks.worktreeGit.revparse.mockResolvedValue('true');
+    // `rev-list --count origin/<branch>..HEAD`: the publish confirms the ref
+    // moved before reporting success. '0' is "nothing left to deliver".
+    mocks.worktreeGit.raw.mockResolvedValue('0');
     mocks.worktreeGit.status.mockResolvedValue({ staged: ['members/alice.yaml'] });
     vi.mocked(acquireLock).mockResolvedValue(true);
     vi.mocked(releaseLock).mockResolvedValue(undefined);

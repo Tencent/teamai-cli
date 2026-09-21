@@ -335,7 +335,8 @@ export async function getDefaultBranch(localPath: string): Promise<string> {
 }
 
 /**
- * Push directly to the current branch (master). Used only during init for first-time setup.
+ * Push directly to whatever branch is checked out, whether that is `main`,
+ * `master` or anything else. Used during init for first-time setup, and by CI.
  */
 export async function pushRepoDirectly(localPath: string, message: string, files: string[]): Promise<void> {
   const git = createGit(localPath);

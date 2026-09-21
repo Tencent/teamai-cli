@@ -82,6 +82,6 @@ teamai contribute --file /tmp/session-summary.md --title "K8s pod 启动超时�
 ## Important
 
 - Run this as a **sub-agent** (Agent tool) to avoid polluting the main session's context
-- The document is pushed directly to master in the team repo's `learnings/` directory
+- The document is pushed to the team repo's `teamai-learnings` branch, under `learnings/`, with no pull request
 - Team members will see it on their next `teamai pull`
 - Keep summaries concise and actionable — this is a knowledge base, not a diary

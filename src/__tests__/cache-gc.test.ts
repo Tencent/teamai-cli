@@ -123,6 +123,23 @@ describe('cache-gc', () => {
         expect(keys).toEqual(['github/owner/a']);
     });
 
+    it('ignores an invalid TEAMAI_CACHE_MAX_BYTES numeric prefix', async () => {
+        await makeRepoDir(tmpDir, 'github/owner/recent', 100);
+        await saveCacheIndex({
+            version: 1,
+            updated_at: new Date().toISOString(),
+            entries: [
+                { key: 'github/owner/recent', size_bytes: 100, last_used: daysAgo(0) },
+            ],
+        });
+        process.env.TEAMAI_CACHE_MAX_BYTES = '12abc';
+
+        const result = await gcCache({ staleDays: 30 });
+
+        expect(result.removed).toEqual([]);
+        expect(await fs.pathExists(path.join(tmpDir, 'github/owner/recent'))).toBe(true);
+    });
+
     it('dryRun=true 不动盘', async () => {
         await buildFixture();
 

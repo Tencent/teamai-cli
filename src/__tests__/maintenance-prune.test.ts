@@ -41,7 +41,7 @@ describe('findPruneCandidates', () => {
 
     makeLearning(learningsDir, 'new-doc', '2026-06-01');
 
-    const candidates = await findPruneCandidates(learningsDir, votesDir);
+    const candidates = await findPruneCandidates([learningsDir], votesDir);
     expect(candidates).toHaveLength(0);
   });
 
@@ -58,7 +58,7 @@ describe('findPruneCandidates', () => {
       'stale-doc': { recalled_count: 1, upvoted_count: 0, last_recalled_at: oldDate },
     });
 
-    const candidates = await findPruneCandidates(learningsDir, votesDir);
+    const candidates = await findPruneCandidates([learningsDir], votesDir);
     expect(candidates.length).toBeGreaterThan(0);
     expect(candidates[0].filename).toBe('stale-doc.md');
   });
@@ -75,11 +75,11 @@ describe('findPruneCandidates', () => {
     });
 
     // With very high threshold, should find it
-    const highThreshold = await findPruneCandidates(learningsDir, votesDir, { threshold: 0.99 });
+    const highThreshold = await findPruneCandidates([learningsDir], votesDir, { threshold: 0.99 });
     expect(highThreshold.length).toBeGreaterThan(0);
 
     // With very low threshold, should not find it
-    const lowThreshold = await findPruneCandidates(learningsDir, votesDir, { threshold: 0.01 });
+    const lowThreshold = await findPruneCandidates([learningsDir], votesDir, { threshold: 0.01 });
     expect(lowThreshold).toHaveLength(0);
   });
 
@@ -96,7 +96,7 @@ describe('findPruneCandidates', () => {
       'nodate': { recalled_count: 1, upvoted_count: 0, last_recalled_at: oldDate },
     });
 
-    const candidates = await findPruneCandidates(learningsDir, votesDir);
+    const candidates = await findPruneCandidates([learningsDir], votesDir);
     // Should work without crashing; doc may end up in confidence-too-low OR stale branch
     const nodateCandidate = candidates.find((c) => c.filename === 'nodate.md');
     expect(nodateCandidate).toBeDefined();
@@ -112,7 +112,7 @@ describe('executePrune', () => {
     makeLearning(learningsDir, 'target', '2026-01-01');
 
     const candidates = [{ filename: 'target.md', path: path.join(learningsDir, 'target.md'), confidence: 0.05, lastActivity: '', reason: 'test' }];
-    const result = await executePrune(tmpDir, candidates, { dryRun: true });
+    const result = await executePrune(learningsDir, candidates, { dryRun: true });
 
     expect(result.archived).toBe(0);
     expect(result.removed).toBe(0);
@@ -125,7 +125,7 @@ describe('executePrune', () => {
     makeLearning(learningsDir, 'target', '2026-01-01');
 
     const candidates = [{ filename: 'target.md', path: path.join(learningsDir, 'target.md'), confidence: 0.05, lastActivity: '', reason: 'test' }];
-    const result = await executePrune(tmpDir, candidates, { archive: true });
+    const result = await executePrune(learningsDir, candidates, { archive: true });
 
     expect(result.archived).toBe(1);
     expect(fs.existsSync(path.join(learningsDir, 'target.md'))).toBe(false);

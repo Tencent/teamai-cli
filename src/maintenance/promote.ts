@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import matter from 'gray-matter';
 import { readFileSafe, writeFile, listFiles, ensureDir, copyFile } from '../utils/fs.js';
+import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
 import { computeAllConfidence } from './confidence.js';
 
@@ -31,18 +32,17 @@ const MIN_AGE_DAYS = 14;
  * Find learnings eligible for promotion to formal knowledge.
  */
 export async function findPromotionCandidates(
-  learningsDir: string,
+  learningsDirs: readonly string[],
   votesDir: string,
 ): Promise<PromotionCandidate[]> {
   const confidenceMap = await computeAllConfidence(votesDir);
   const candidates: PromotionCandidate[] = [];
 
   const perDoc = await aggregatePerDocVotes(votesDir);
-  const files = await listFiles(learningsDir);
+  const files = await listLearningFiles(learningsDirs);
   const now = Date.now();
 
-  for (const file of files) {
-    if (!file.endsWith('.md')) continue;
+  for (const { file, absPath } of files) {
     const docId = file.replace(/\.md$/i, '');
     const confidence = confidenceMap.get(docId) ?? 0;
     if (confidence < MIN_CONFIDENCE) continue;
@@ -52,7 +52,6 @@ export async function findPromotionCandidates(
     if (docVotes.upvoted < MIN_UPVOTED) continue;
     if (docVotes.users.size < MIN_USERS) continue;
 
-    const absPath = path.join(learningsDir, file);
     const content = await readFileSafe(absPath);
     if (!content) continue;
 
@@ -152,7 +151,7 @@ Output ONLY the transformed markdown content (including YAML frontmatter with ti
 export async function executePromotion(
   candidate: PromotionCandidate,
   repoPath: string,
-  options: PromoteOptions = {},
+  options: PromoteOptions & { learningsWriteDir?: string } = {},
 ): Promise<string> {
   const category = options.category ?? candidate.suggestedCategory;
   const targetDir = path.join(repoPath, category);
@@ -175,11 +174,19 @@ export async function executePromotion(
   const promotedContent = await generatePromotedContent(originalContent, category, candidate.title);
   await writeFile(targetPath, promotedContent);
 
-  // Mark original learning as promoted
+  // Mark the learning as promoted. When it lives in a root nothing pushes, the
+  // mark goes to the write root instead: written in place it would be discarded
+  // by the next realign, and the same learning would be promoted again on the
+  // next run, paying for another model call.
   const { data, content: body } = matter(originalContent);
   data.promoted_to = `${category}/${candidate.filename}`;
   const updated = matter.stringify(body, data);
-  await writeFile(candidate.path, updated);
+  const markPath = options.learningsWriteDir
+    && !isInWriteRoot(candidate.path, options.learningsWriteDir)
+    ? path.join(options.learningsWriteDir, candidate.filename)
+    : candidate.path;
+  await ensureDir(path.dirname(markPath));
+  await writeFile(markPath, updated);
 
   log.success(`Promoted: ${candidate.docId} -> ${category}/${candidate.filename}`);
   return targetPath;

@@ -1,15 +1,22 @@
 import path from 'node:path';
-import { ResourceHandler } from './base.js';
-import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
+import { isToolInstalledForConfig, ResourceHandler } from './base.js';
+import type { ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir, isAgentExcluded, scopedToolPaths } from '../types.js';
+import { TEAMAI_RULES_START, TEAMAI_RULES_END, resolveBaseDir, resolveToolBaseDir, isAgentExcluded, scopedToolPaths } from '../types.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { teamRuleToCursorMdc, mergeCursorBodyIntoTeamMd, cursorMdcBodyEqualsTeamMd } from './cursor-mdc.js';
+import {
+  copilotInstructionsBodyEqualsTeamMd,
+  mergeCopilotBodyIntoTeamMd,
+  teamRuleToCopilotInstructions,
+} from './copilot-instructions.js';
+import { assertWithinRoot } from '../utils/path-safety.js';
 import {
   ruleFileExtensionForTool,
   ruleStemFromFilename,
   usesCursorMdcRules,
+  usesCopilotInstructions,
   isLegacyCursorRuleFile,
 } from './rule-format.js';
 
@@ -50,12 +57,13 @@ export class RulesHandler extends ResourceHandler {
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       const rulesPath = toolPath.rules;
       if (!rulesPath) continue;
-      const rulesDir = path.join(resolveBaseDir(localConfig), rulesPath);
+      const rulesDir = path.join(resolveToolBaseDir(tool, localConfig), rulesPath);
       if (!await pathExists(rulesDir)) continue;
 
-      // Cursor-compatible tools store rules as `.mdc`; every other tool as `.md`.
+      // Some tools require native rule extensions and derived frontmatter.
       const ext = ruleFileExtensionForTool(tool);
       const isMdcTool = usesCursorMdcRules(tool);
+      const isCopilotTool = usesCopilotInstructions(tool);
 
       const files = await listFilesRecursive(rulesDir);
       for (const file of files) {
@@ -72,14 +80,17 @@ export class RulesHandler extends ResourceHandler {
         if (teamRules.has(teamFileName)) {
           // File exists in team repo — check if content differs
           const teamFilePath = path.join(teamRulesDir, teamFileName);
-          // For `.mdc` tools, compare markdown bodies only: the frontmatter is
-          // machine-derived on pull, so a clean pull-then-push must not look
-          // modified. For other tools the files are byte-identical copies.
+          // For native formats, compare markdown bodies only: frontmatter is
+          // machine-derived on pull, so a clean round trip is not a change.
+          const localRule = (await readFileSafe(localFilePath)) ?? '';
+          const teamRule = await readTeamRule(teamFilePath);
           const equal = isMdcTool
             ? cursorMdcBodyEqualsTeamMd(
-                (await readFileSafe(localFilePath)) ?? '',
-                await readTeamRule(teamFilePath),
+                localRule,
+                teamRule,
               )
+            : isCopilotTool
+              ? copilotInstructionsBodyEqualsTeamMd(localRule, teamRule)
             : await fileContentEqual(localFilePath, teamFilePath);
           if (equal) continue; // This tool dir's copy is identical, skip
 
@@ -91,9 +102,11 @@ export class RulesHandler extends ResourceHandler {
           }
         } else {
           // File does not exist in team repo — candidate for "new".
-          // `.mdc` directories can also contain personal rules created by the
-          // target tool. Unknown files there are user-owned and stay local.
-          if (isMdcTool) continue;
+          // Native rule directories can also contain personal rules created by
+          // the target tool. Unknown files there are user-owned and stay local:
+          // the .mdc and Copilot-instructions dirs, plus OMP's native rules dir
+          // (the same ownership policy the pull-side sweep applies to OMP).
+          if (isMdcTool || isCopilotTool || tool === 'omp') continue;
           const existing = candidates.get(name);
           if (!existing) {
             const mtime = await getFileMtime(localFilePath);
@@ -140,7 +153,13 @@ export class RulesHandler extends ResourceHandler {
   }
 
   async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    const dest = path.join(localConfig.repo.localPath, 'rules', `${item.name}.md`);
+    const rulesRoot = path.join(localConfig.repo.localPath, 'rules');
+    const dest = path.resolve(localConfig.repo.localPath, item.relativePath);
+    assertWithinRoot(
+      rulesRoot,
+      dest,
+      `Invalid rule destination outside team repo rules directory: ${item.relativePath}`,
+    );
     if (item.sourcePath !== dest) {
       if (item.sourcePath.endsWith('.mdc')) {
         // Source is a tool-native `.mdc`. Only its markdown body is pushed: the
@@ -153,6 +172,12 @@ export class RulesHandler extends ResourceHandler {
           throw new Error(`Cannot read rule source ${item.sourcePath}`);
         }
         await writeFile(dest, mergeCursorBodyIntoTeamMd(raw, await readFileSafe(dest)));
+      } else if (item.sourcePath.endsWith('.instructions.md')) {
+        const raw = await readFileSafe(item.sourcePath);
+        if (raw === null) {
+          throw new Error(`Cannot read rule source ${item.sourcePath}`);
+        }
+        await writeFile(dest, mergeCopilotBodyIntoTeamMd(raw, await readFileSafe(dest)));
       } else {
         await copyFile(item.sourcePath, dest);
       }
@@ -161,37 +186,60 @@ export class RulesHandler extends ResourceHandler {
   }
 
   /**
-   * Pull a single rule file to all configured AI tool rules/ directories.
+   * Where `item` lands for each tool that receives rules. The filename is
+   * tool-dependent — `.md` verbatim, `.mdc` for Cursor-compatible tools,
+   * `.instructions.md` for Copilot — so a reader cannot derive it from the
+   * rule's name alone.
    */
-  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    const baseDir = resolveBaseDir(localConfig);
+  async deliveryTargets(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    item: ResourceItem,
+  ): Promise<DeliveryTarget[]> {
+    // The bytes as well as the path: Cursor and Copilot read frontmatter this
+    // derives from the team `.md`, so a copy whose `globs`, `alwaysApply` or
+    // `applyTo` no longer match the source is inert in exactly the way a
+    // missing file is. Only a comparison against the render can see that, and
+    // the render belongs here rather than in a second copy inside `doctor`.
+    const source = await readFileSafe(item.sourcePath);
+    const targets: DeliveryTarget[] = [];
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (isAgentExcluded(localConfig, tool)) continue;
       if (!toolPath.rules) continue;
 
       // Skip tools that are not installed
-      if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) {
+      if (!await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) {
         log.debug(`Skipping rule sync for ${tool}: tool not installed`);
         continue;
       }
 
-      const destDir = path.join(baseDir, toolPath.rules);
-      await ensureDir(destDir);
-      const dest = path.join(destDir, `${item.name}${ruleFileExtensionForTool(tool)}`);
+      const destDir = path.join(resolveToolBaseDir(tool, localConfig), toolPath.rules);
+      targets.push({
+        tool,
+        dest: path.join(destDir, `${item.name}${ruleFileExtensionForTool(tool)}`),
+        content: source === null ? undefined : renderRuleForTool(tool, source),
+      });
+    }
+    return targets;
+  }
+
+  /**
+   * Pull a single rule file to all configured AI tool rules/ directories.
+   */
+  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+    for (const { tool, dest, content } of await this.deliveryTargets(teamConfig, localConfig, item)) {
+      const destDir = path.dirname(dest);
       try {
-        if (usesCursorMdcRules(tool)) {
-          // Cursor-compatible tools need `.mdc` with derived frontmatter.
-          const raw = await readFileSafe(item.sourcePath);
-          if (raw === null) {
-            // Never write a stub always-on rule in place of an unreadable source.
-            throw new Error(`Cannot read rule source ${item.sourcePath}`);
-          }
-          await writeFile(dest, teamRuleToCursorMdc(raw));
-          // Drop the `.md` copy left by an older layout; these tools do not read it.
-          await remove(path.join(destDir, `${item.name}.md`));
-        } else {
-          await copyFile(item.sourcePath, dest);
+        if (content === undefined) {
+          // Never write a stub always-on rule in place of an unreadable source.
+          throw new Error(`Cannot read rule source ${item.sourcePath}`);
         }
+        await ensureDir(destDir);
+        await writeFile(dest, content);
+        // Drop the `.md` copy left by an older layout; a tool that reads a
+        // derived extension does not read it, and it would outlive the rule.
+        const legacyCopy = path.join(destDir, `${item.name}.md`);
+        if (dest !== legacyCopy) await remove(legacyCopy);
         log.debug(`Synced rule ${item.name} → ${tool}`);
       } catch (e) {
         log.warn(`Failed to sync rule ${item.name} to ${tool}: ${(e as Error).message}`);
@@ -204,7 +252,6 @@ export class RulesHandler extends ResourceHandler {
    */
   async removeItem(name: string, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
     const removed: string[] = [];
-    const baseDir = resolveBaseDir(localConfig);
 
     // Remove from team repo (always `.md`)
     const teamFile = path.join(localConfig.repo.localPath, 'rules', `${name}.md`);
@@ -224,6 +271,7 @@ export class RulesHandler extends ResourceHandler {
       // Not ours to write to, so not ours to delete from. Same gate as the
       // tombstone pass in pull.
       if (isAgentExcluded(localConfig, tool)) continue;
+      const baseDir = resolveToolBaseDir(tool, localConfig);
       const extensions = new Set<string>([ruleFileExtensionForTool(tool), '.md']);
       for (const extension of extensions) {
         const filePath = path.join(baseDir, toolPath.rules, `${name}${extension}`);
@@ -259,13 +307,8 @@ export class RulesHandler extends ResourceHandler {
     if (!isAgentExcluded(localConfig, 'hermes')) {
       const { getHermesHome } = await import('../hermes-home.js');
       if (await pathExists(getHermesHome())) {
-        const bodies: string[] = [];
-        for (const rule of rules) {
-          const body = await readFileSafe(rule.sourcePath);
-          if (body && body.trim() !== '') bodies.push(body.trim());
-        }
         const { upsertSoulRules } = await import('../hermes-config.js');
-        await upsertSoulRules(bodies.join('\n\n'));
+        await upsertSoulRules(await hermesRulesText(rules));
       }
     }
 
@@ -298,14 +341,14 @@ export class RulesHandler extends ResourceHandler {
     // 1.5. Clean up stale local rule files not present in team repo
     const teamRuleNames = new Set(rules.map((r) => r.name));
     const tombstones = await this.readTombstones(localConfig);
-    const baseDir = resolveBaseDir(localConfig);
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.rules) continue;
       // `pullItem` above skips excluded tools, so this pass must skip them too.
       // Without it the stale sweep deletes from a directory teamai never wrote.
       if (isAgentExcluded(localConfig, tool)) continue;
-      if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
+      if (!await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
 
+      const baseDir = resolveToolBaseDir(tool, localConfig);
       const destDir = path.join(baseDir, toolPath.rules);
       if (!await pathExists(destDir)) continue;
 
@@ -315,10 +358,13 @@ export class RulesHandler extends ResourceHandler {
         const ruleName = ruleStemFromFilename(localFile);
         if (ruleName === null) continue;
 
-        // JoyCode's rules directory is shared with user-authored rules. Absence
-        // from the current team set is not proof of TeamAI ownership (including
-        // legacy .md files). Only explicit team removals authorize cleanup.
-        if (tool === 'joycode' && !tombstones.has(ruleName)) continue;
+        // JoyCode's, OMP's, and Copilot's rules directories are shared with
+        // user-authored rules (OMP's native rules dirs are exactly where its
+        // users keep personal rules). Absence from the current team set is not
+        // proof of TeamAI ownership (including legacy .md files). Only explicit
+        // team removals authorize cleanup. Cursor is deliberately absent —
+        // teamai owns .cursor/rules and sweeps it.
+        if ((tool === 'joycode' || tool === 'omp' || usesCopilotInstructions(tool)) && !tombstones.has(ruleName)) continue;
 
         // `.mdc` tools only read `.mdc`, so any `.md` here is inert leftover from the
         // layout that predates it — removed whether or not the rule is still
@@ -345,8 +391,9 @@ export class RulesHandler extends ResourceHandler {
     }
 
     // 2. Remove legacy rules section from CLAUDE.md (no longer injected)
-    for (const [, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.claudemd) continue;
+      const baseDir = resolveToolBaseDir(tool, localConfig);
       const claudeMdPath = path.join(baseDir, toolPath.claudemd);
       try {
         const content = await readFileSafe(claudeMdPath);
@@ -380,29 +427,47 @@ export class RulesHandler extends ResourceHandler {
     localConfig: LocalConfig,
     present: boolean,
   ): Promise<void> {
-    if (isAgentExcluded(localConfig, 'opencode')) return;
-    const scoped = scopedToolPaths(teamConfig, localConfig);
-    const paths = scoped['opencode'];
-    if (!paths?.rules) return;
+    const target = await this.opencodeInstructionsTarget(teamConfig, localConfig);
+    if (target === null) return;
+
+    const { reconcileOpencodeInstructions } = await import('./opencode-config.js');
+    try {
+      await reconcileOpencodeInstructions(target.configFile, target.glob, present);
+    } catch (e) {
+      log.warn(`Failed to update OpenCode instructions in ${target.configFile}: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * The opencode.json this scope activates rules through, and the one glob
+   * teamai owns inside it. Null when OpenCode receives no rules here:
+   * excluded, not installed, or configured without a rules or config path.
+   *
+   * Read-only, and public for the same reason `deliveryTargets` is: OpenCode
+   * does not auto-scan its rules directory, so a `.md` sitting there is inert
+   * until this glob references it. A check that derived the path a second time
+   * could look at a different file than the pull writes (#624).
+   */
+  async opencodeInstructionsTarget(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+  ): Promise<{ configFile: string; glob: string } | null> {
+    if (isAgentExcluded(localConfig, 'opencode')) return null;
+    const paths = scopedToolPaths(teamConfig, localConfig)['opencode'];
+    if (!paths?.rules) return null;
 
     const baseDir = resolveBaseDir(localConfig);
     // Only touch opencode.json when OpenCode is actually installed for this scope.
-    if (!await ResourceHandler.isToolInstalled(paths.rules, baseDir)) return;
+    if (!await ResourceHandler.isToolInstalled(paths.rules, baseDir)) return null;
 
     // The config file mirrors the MCP scope fields: <root>/opencode.json in
     // project scope, ~/.config/opencode/opencode.json in user scope.
     const configRel = localConfig.scope === 'project' ? paths.mcpProject : paths.mcp;
-    if (!configRel) return;
-    const configFileAbs = path.join(baseDir, configRel);
-    const rulesDirAbs = path.join(baseDir, paths.rules);
+    if (!configRel) return null;
 
-    const { reconcileOpencodeInstructions, opencodeRulesGlob } = await import('./opencode-config.js');
-    const glob = opencodeRulesGlob(configFileAbs, rulesDirAbs);
-    try {
-      await reconcileOpencodeInstructions(configFileAbs, glob, present);
-    } catch (e) {
-      log.warn(`Failed to update OpenCode instructions in ${configFileAbs}: ${(e as Error).message}`);
-    }
+    const configFile = path.join(baseDir, configRel);
+    const { opencodeRulesGlob } = await import('./opencode-config.js');
+    return { configFile, glob: opencodeRulesGlob(configFile, path.join(baseDir, paths.rules)) };
   }
 
   /**
@@ -422,4 +487,36 @@ export class RulesHandler extends ResourceHandler {
       }
     }
   }
+}
+
+/**
+ * The bytes a team rule becomes for one tool. `.md` is copied verbatim;
+ * Cursor-compatible tools and Copilot read frontmatter derived from the same
+ * source, so their file is a render rather than a copy.
+ *
+ * This is the single spelling of that mapping: `pullItem` writes it and
+ * `doctor` compares the delivered file against it, so a stale render is a
+ * reported failure rather than a file that merely exists.
+ */
+function renderRuleForTool(tool: string, source: string): string {
+  if (usesCursorMdcRules(tool)) return teamRuleToCursorMdc(source);
+  if (usesCopilotInstructions(tool)) return teamRuleToCopilotInstructions(source);
+  return source;
+}
+
+/**
+ * The text `upsertSoulRules` inlines into the teamai block of Hermes SOUL.md.
+ *
+ * Hermes reads standing instructions from one file rather than a rules
+ * directory, so its rules are delivered as this block's contents. `doctor`
+ * compares what is in the block with this, the same way it compares a rule
+ * file with its render.
+ */
+export async function hermesRulesText(rules: ResourceItem[]): Promise<string> {
+  const bodies: string[] = [];
+  for (const rule of rules) {
+    const body = await readFileSafe(rule.sourcePath);
+    if (body && body.trim() !== '') bodies.push(body.trim());
+  }
+  return bodies.join('\n\n');
 }

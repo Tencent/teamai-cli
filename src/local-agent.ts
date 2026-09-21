@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fse from 'fs-extra';
 import { log } from './utils/logger.js';
+import { detachChild } from './utils/exec.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import {
   ensureDir,
@@ -18,7 +19,7 @@ import {
   writeJson,
   writeJsonAtomic,
 } from './utils/fs.js';
-import { ResourceHandler } from './resources/base.js';
+import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
 import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, OPENCLAW_TOOLS } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
@@ -40,15 +41,20 @@ import {
 } from './resources/mcp-format.js';
 import {
   readJsonDoc,
+  writeJsonDoc,
   writeCodexAtomic,
   spliceCodexBlock,
   codexServerNames,
 } from './mcp-reconcile.js';
 import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
+import { injectClaudeMdSection, removeClaudeMdSection } from './utils/claudemd.js';
 import { reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
 import {
   resolveBaseDir,
+  resolveToolBaseDir,
+  scopedToolPaths,
+  COPILOT_TOOL_ID,
   getTokenPath,
   TEAMAI_CLAUDEMD_START,
   TEAMAI_CLAUDEMD_END,
@@ -793,20 +799,11 @@ export async function execPluginCommand(cmd: string, timeoutMs: number): Promise
     let settled = false;
     let timer: ReturnType<typeof setTimeout>;
     child.stderr?.on('data', (d) => { stderr += d.toString(); if (stderr.length > 8192) stderr = stderr.slice(-8192); });
-    const detachStderr = (): void => {
-      // Drain and unref the stderr pipe without closing it: a daemonized child may still hold
-      // the write end, and closing our read end would send it SIGPIPE. Unref-ing lets this
-      // worker process exit without waiting on — or killing — the daemon.
-      child.stderr?.removeAllListeners('data');
-      child.stderr?.resume();
-      (child.stderr as unknown as { unref?: () => void } | undefined)?.unref?.();
-    };
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      detachStderr();
-      child.unref();
+      detachChild(child);
       fn();
     };
     timer = setTimeout(() => {
@@ -1137,6 +1134,19 @@ function isBindPromptEnabled(): boolean {
   if (flag === undefined) return true;
   const normalized = flag.toLowerCase();
   return normalized !== '0' && normalized !== 'false';
+}
+
+/**
+ * ClawPro project binding only backs CodeBuddy/WorkBuddy (the ClawPro-native
+ * agents); the prompt is noise for every other host (Claude, Cursor, Codex, …),
+ * which drove the poor UX. Gate the whole prompt — both the SessionStart TTY
+ * prompt and the UserPromptSubmit hint — on the current tool being a buddy
+ * agent. Reuses `modelAgentKind` so tool-name variants like `codebuddy-internal`
+ * still match (a raw Set would miss them).
+ */
+function isBindPromptTool(tool: string | undefined): boolean {
+  const kind = modelAgentKind(tool);
+  return kind === 'codebuddy' || kind === 'workbuddy';
 }
 
 async function emitBindingHint(
@@ -2040,14 +2050,10 @@ async function syncClaudemd(
   const block = compileClaudemdBlock(contents);
   let syncedAny = false;
 
-  const defaultBaseDir = localConfig.scope === 'project' && localConfig.projectRoot
-    ? localConfig.projectRoot
-    : getUserHome();
-
-  for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.claudemd) continue;
 
-    let baseDir = defaultBaseDir;
+    let baseDir = resolveToolBaseDir(tool, localConfig);
     let resolvedAbsPath: string | null = null;
 
     if (tool === 'openclaw' && localConfig.scope !== 'project') {
@@ -2065,6 +2071,8 @@ async function syncClaudemd(
 
     const toolInstalled = resolvedAbsPath
       ? await pathExists(resolvedAbsPath)
+      : tool === COPILOT_TOOL_ID && localConfig.scope === 'user'
+        ? await isToolInstalledForConfig(tool, toolPath.claudemd, localConfig)
       : toolPath.claudemd.includes('/')
         ? await ResourceHandler.isToolInstalled(toolPath.claudemd, baseDir)
         : await pathExists(path.join(baseDir, `.${tool}`));
@@ -2075,7 +2083,6 @@ async function syncClaudemd(
 
     const claudeMdPath = resolvedAbsPath ?? path.join(baseDir, toolPath.claudemd);
     try {
-      const { injectClaudeMdSection } = await import('./utils/claudemd.js');
       if (block) {
         await injectClaudeMdSection(claudeMdPath, TEAMAI_CLAUDEMD_START, TEAMAI_CLAUDEMD_END, block);
         log.debug(`local-agent: synced CLAUDE.md instructions to ${tool}`);
@@ -2093,21 +2100,6 @@ async function syncClaudemd(
   if (files.length > 0 && !syncedAny) {
     throw new Error('CLAUDE.md sync landed on no tool: every configured target was skipped');
   }
-}
-
-async function removeClaudeMdSection(
-  filePath: string,
-  startMarker: string,
-  endMarker: string,
-): Promise<void> {
-  const existing = await readFileSafe(filePath);
-  if (!existing) return;
-  const startIdx = existing.indexOf(startMarker);
-  const endIdx = existing.indexOf(endMarker);
-  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return;
-  const before = existing.substring(0, startIdx).replace(/\n+$/, '\n');
-  const after = existing.substring(endIdx + endMarker.length).replace(/^\n+/, '\n');
-  await writeFile(filePath, (before + after).trimEnd() + '\n');
 }
 
 async function ackCommand(
@@ -2826,7 +2818,8 @@ async function installMcpServer(
     throw new Error(`install_mcp: tool "${tool}" does not support ${def.transport} transport`);
   }
 
-  const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
+  const localConfig = createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
+  const baseDir = resolveToolBaseDir(tool, localConfig);
   const targetFile = path.join(baseDir, mcpRel);
 
   const { resolveDataHomeForScope } = await import('./config.js');
@@ -2863,7 +2856,8 @@ async function installMcpServer(
     const entry = renderJsonEntry(format, def);
     const serverKey = MCP_SERVER_KEY[format];
     const hash = entryHash(entry);
-    const doc = await readJsonDoc(targetFile, serverKey);
+    const allowBare = format === 'copilot' && projectScope;
+    const doc = await readJsonDoc(targetFile, serverKey, allowBare);
     if (!doc) {
       throw new Error(`install_mcp: cannot parse ${targetFile}`);
     }
@@ -2873,8 +2867,7 @@ async function installMcpServer(
     updateManifestRecord(manifest, manifestKey, slug, hash);
     await writeJsonAtomic(manifestPath, manifest);
     doc.servers[slug] = entry;
-    doc.data[serverKey] = doc.servers;
-    await writeJsonAtomic(targetFile, doc.data);
+    await writeJsonDoc(targetFile, serverKey, doc);
   }
   log.debug(`local-agent: installed MCP server "${slug}" for ${tool} (scope=${scope})`);
   return command.version;
@@ -2898,7 +2891,8 @@ async function uninstallMcpServer(
   const format = detectMcpFormat(tool);
   if (!format) return;
 
-  const baseDir = projectScope && workspacePath ? workspacePath : getUserHome();
+  const localConfig = createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
+  const baseDir = resolveToolBaseDir(tool, localConfig);
   const targetFile = path.join(baseDir, mcpRel);
 
   const { resolveDataHomeForScope } = await import('./config.js');
@@ -2931,11 +2925,11 @@ async function uninstallMcpServer(
     await writeCodexAtomic(targetFile, source);
   } else {
     const serverKey = MCP_SERVER_KEY[format];
-    const doc = await readJsonDoc(targetFile, serverKey);
+    const allowBare = format === 'copilot' && projectScope;
+    const doc = await readJsonDoc(targetFile, serverKey, allowBare);
     if (doc && doc.servers[slug] !== undefined) {
       delete doc.servers[slug];
-      doc.data[serverKey] = doc.servers;
-      await writeJsonAtomic(targetFile, doc.data);
+      await writeJsonDoc(targetFile, serverKey, doc);
     }
   }
   log.debug(`local-agent: uninstalled MCP server "${slug}" from ${tool} (scope=${scope})`);
@@ -3069,8 +3063,10 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
   // Binding prompt is injected via stdout hook context (not HTTP), so it must run
   // even inside the CloudStudio sandbox — the sandbox guard below only skips the
   // HTTP report/sync that would produce a duplicate card. Resolve the workspace
-  // only when the prompt is enabled, so the disabled path forks no git process.
-  if (isBindPromptEnabled()) {
+  // only when the prompt is enabled AND the host is a buddy agent, so every other
+  // path (disabled flag, or a non-buddy tool like Claude/Cursor/Codex) forks no
+  // git process.
+  if (isBindPromptEnabled() && isBindPromptTool(context.tool)) {
     const workspacePath = await resolveWorkspacePath(context.cwd);
     if (workspacePath) {
       const sid = context.event?.sessionId;

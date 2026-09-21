@@ -184,6 +184,27 @@ describe('AgentsHandler — Phase 1 push/pull/remove', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude-internal/agents/helper.md'))).toBe(false);
   });
 
+  it('pullItem leaves a member\'s same-stem file alone beside a legacy .md agent', async () => {
+    // A legacy `.md` is copied verbatim to one extension for every tool, so it
+    // can never leave a sibling of its own behind. Anything else on the stem is
+    // the member's file: a rendered spec sweeps its own stale extensions, this
+    // does not get to delete an unrelated `.toml`, `.json` or `.agent.md`.
+    const srcPath = path.join(repoPath, 'agents', 'helper.md');
+    await fse.writeFile(srcPath, '# helper agent');
+    const mine = path.join(homeDir, '.claude/agents/helper.toml');
+    await fse.ensureDir(path.dirname(mine));
+    await fse.writeFile(mine, 'name = "my own helper"\n');
+
+    await handler.pullItem(
+      { name: 'helper', type: 'agents', sourcePath: srcPath, relativePath: 'agents/helper.md' },
+      teamConfig,
+      localConfig,
+    );
+
+    expect(await fse.pathExists(path.join(homeDir, '.claude/agents/helper.md'))).toBe(true);
+    expect(await fse.readFile(mine, 'utf8')).toBe('name = "my own helper"\n');
+  });
+
   // ── scanLocalForPush ────────────────────────────────────
 
   it('scanLocalForPush detects a modified agent across tool dirs as "modified"', async () => {

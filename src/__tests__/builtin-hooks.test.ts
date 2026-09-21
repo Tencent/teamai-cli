@@ -13,6 +13,18 @@ describe('builtinHookDefs — unified built-in hook model', () => {
     ]);
   });
 
+  it('adds a lifecycle-complete SessionEnd hook only for Copilot', () => {
+    const defs = builtinHookDefs('copilot');
+    expect(defs).toHaveLength(7);
+    expect(defs.at(-1)).toEqual(expect.objectContaining({
+      event: 'SessionEnd',
+      matcher: '*',
+      timeout: 15,
+      command: expect.stringContaining('hook-dispatch session-end --tool copilot'),
+    }));
+    expect(builtinHookDefs('claude')).toHaveLength(6);
+  });
+
   it('Claude defs carry no timeout; Cursor defs carry per-hook timeouts', () => {
     expect(builtinHookDefs('claude').every((d) => d.timeout === undefined)).toBe(true);
     const cursor = builtinHookDefs('cursor');

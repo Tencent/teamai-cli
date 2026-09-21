@@ -352,4 +352,55 @@ describe('parseTranscriptForVotes', () => {
     const result = await parseTranscriptForVotes(filePath);
     expect(result.referencedDocIds).toEqual([]);
   });
+
+  it('empty referenced-doc-ids [] is treated as a valid declaration', async () => {
+    const filePath = path.join(tmpDir, 'transcript.jsonl');
+    writeLine(filePath, {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'text',
+          text: '<!-- teamai:referenced-doc-ids: [] -->',
+        }],
+      },
+    });
+
+    const result = await parseTranscriptForVotes(filePath);
+    expect(result.referencedDocIds).toEqual([]);
+    expect(result.hasReferencedDocIdsDeclaration).toBe(true);
+  });
+
+  it('placeholder-only referenced-doc-ids is not treated as a declaration', async () => {
+    const filePath = path.join(tmpDir, 'transcript.jsonl');
+    writeLine(filePath, {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'text',
+          text: '<!-- teamai:referenced-doc-ids: [<id1>, <id2>, ...] -->',
+        }],
+      },
+    });
+
+    const result = await parseTranscriptForVotes(filePath);
+    expect(result.referencedDocIds).toEqual([]);
+    expect(result.hasReferencedDocIdsDeclaration).toBe(false);
+  });
+
+  it('mixed real + placeholder referenced-doc-ids counts as a declaration', async () => {
+    const filePath = path.join(tmpDir, 'transcript.jsonl');
+    writeLine(filePath, {
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'text',
+          text: '<!-- teamai:referenced-doc-ids: [<id1>, real-doc-id] -->',
+        }],
+      },
+    });
+
+    const result = await parseTranscriptForVotes(filePath);
+    expect(result.referencedDocIds).toEqual(['real-doc-id']);
+    expect(result.hasReferencedDocIdsDeclaration).toBe(true);
+  });
 });

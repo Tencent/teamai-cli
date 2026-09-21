@@ -14,6 +14,7 @@ TypeScript, Node 20+, tsup (ESM), Vitest. Commands: `npm run build`, `npx tsc --
 
 - CLI user-facing output must be English. No Chinese in production code. Tests assert English output.
 - Keep bilingual docs in sync (`README` / `*.zh-CN.md`, `docs/usage-guide.*`). Behavior changes must update every affected doc (including `docs/designs/`); grep old wording before opening the PR.
+- **README 精简**：尽量少改动 README，保持简洁。确需改动时，所有语言版本（`README.md` 及全部 `README.*.md`，改前先 `ls README*` 确认清单）必须全部改完并保持一致。
 - **奥卡姆剃刀**：避免过早添加新 CLI 命令；非必要不加；优先复用或扩展现有命令与选项。
 
 ## PR 前测试
@@ -22,3 +23,21 @@ TypeScript, Node 20+, tsup (ESM), Vitest. Commands: `npm run build`, `npx tsc --
 
 - Agent：Claude、Codex、CodeBuddy、OpenCode
 - Provider：`git`、`gitlab`、`github`
+
+## Code Review Rules
+
+- The PR description must document sufficient testing, including an
+  end-to-end / real-CLI verification record — not only unit tests or type
+  checks. Flag a PR whose description lacks a test plan or an e2e record.
+- Reject over-engineering. Favor the smallest code that solves the problem;
+  flag speculative abstractions, unused flexibility or config, error handling
+  for cases that cannot occur, and new CLI commands added where an existing
+  command could be reused or extended.
+- Changes must be surgical. Every changed line should trace directly to the
+  PR's stated goal; flag unrelated drive-by edits.
+- Label every finding with an explicit severity a first-time reader can
+  understand — never a bare `P1`/`P2` code. Keep the `P` marker but spell out
+  what it means inline on each finding, using the PR author's language:
+  `[P1 blocking]` for issues that must be fixed before merge, and
+  `[P2 non-blocking]` for suggestions that do not block merge. (In Chinese,
+  `[P1 阻断]` / `[P2 非阻断]`.)

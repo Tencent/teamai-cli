@@ -460,6 +460,28 @@ async function collectFlatMdEntries(
  * historical flat behavior for teams without a projects manifest.
  */
 async function collectLearningsEntries(
+  dirs: readonly string[],
+  namespaces: string[] | undefined,
+  voteCounts: Map<string, number>,
+): Promise<SearchIndexEntry[]> {
+  // Roots are ordered by precedence. The relative path doubles as the entry id
+  // that votes are counted by, so the same path in two roots must yield ONE
+  // entry: the first root's. Deduplicating here rather than downstream is what
+  // keeps votes from being counted twice and keeps recall from silently
+  // dropping whichever copy it happened to see second (#485).
+  const out: SearchIndexEntry[] = [];
+  const claimed = new Set<string>();
+  for (const dir of dirs) {
+    for (const entry of await collectLearningsEntriesFromDir(dir, namespaces, voteCounts)) {
+      if (claimed.has(entry.filename)) continue;
+      claimed.add(entry.filename);
+      out.push(entry);
+    }
+  }
+  return out;
+}
+
+async function collectLearningsEntriesFromDir(
   dir: string,
   namespaces: string[] | undefined,
   voteCounts: Map<string, number>,
@@ -546,7 +568,14 @@ async function collectSkillEntries(
 
 /** Options for the multi-category build. */
 export interface BuildIndexOptions {
+  /** One learnings root. Equivalent to `learningsDirs: [dir]`. */
   learningsDir?: string;
+  /**
+   * Learnings roots, highest precedence first. For the same relative path in
+   * two roots the first one wins and the rest are skipped. Takes precedence
+   * over `learningsDir` when both are given.
+   */
+  learningsDirs?: readonly string[];
   /**
    * Active learnings namespaces (project ids). When provided, the learnings
    * collector indexes the flat root `.md` files (always shared) PLUS the `.md`
@@ -592,8 +621,9 @@ export async function buildIndex(
 
   const entries: SearchIndexEntry[] = [];
 
-  if (opts.learningsDir) {
-    entries.push(...await collectLearningsEntries(opts.learningsDir, opts.learningsNamespaces, voteCounts));
+  const learningsDirs = opts.learningsDirs ?? (opts.learningsDir ? [opts.learningsDir] : []);
+  if (learningsDirs.length > 0) {
+    entries.push(...await collectLearningsEntries(learningsDirs, opts.learningsNamespaces, voteCounts));
   }
   if (opts.docsDir) {
     entries.push(...await collectRecursiveMdEntries(opts.docsDir, 'docs', voteCounts));

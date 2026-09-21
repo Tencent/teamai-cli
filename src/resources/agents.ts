@@ -1,11 +1,11 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml } from 'yaml';
-import { ResourceHandler } from './base.js';
-import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
+import { isToolInstalledForConfig, ResourceHandler } from './base.js';
+import type { ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { resolveBaseDir, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
+import { resolveToolBaseDir, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../projects.js';
@@ -18,6 +18,7 @@ import {
   reverseFromCodebuddy,
   reverseFromCodex,
   reverseFromCursor,
+  reverseFromCopilot,
   reverseFromJoycode,
   reverseFromKiro,
   reverseFromOpencode,
@@ -63,8 +64,6 @@ export class AgentsHandler extends ResourceHandler {
   async scanLocalForPush(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<AgentResourceItem[]> {
     const teamAgentsDir = path.join(localConfig.repo.localPath, 'agents');
     const tombstones = await this.readTombstones(localConfig);
-    const baseDir = resolveBaseDir(localConfig);
-
     // Single-repo mode: users drop canonical agent files straight into the repo's
     // own .teamai/agents/ (<name>.yaml, or legacy <name>.md) rather than authoring
     // them in a tool's agents dir. Those are ALREADY in team-repo format, so we
@@ -111,6 +110,7 @@ export class AgentsHandler extends ResourceHandler {
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.agents) continue;
+      const baseDir = resolveToolBaseDir(tool, localConfig);
       const agentsDir = path.join(baseDir, toolPath.agents);
       if (!await pathExists(agentsDir)) continue;
 
@@ -383,55 +383,38 @@ export class AgentsHandler extends ResourceHandler {
    */
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
     const agentItem = item as AgentResourceItem;
-    const baseDir = resolveBaseDir(localConfig);
 
     // Determine format: explicit flag takes precedence; fall back to extension detection
-    const isLegacy = agentItem.legacy === true || (!agentItem.legacy && !item.sourcePath.endsWith('.yaml'));
-
-    if (isLegacy) {
-      // Legacy: copy .md to tools that support agents
-      await this.pullLegacyMd(item, teamConfig, baseDir, localConfig);
-      return;
-    }
-
-    // New YAML format: parse + render per-tool
     const content = await readFileSafe(item.sourcePath);
-    if (!content) {
+    if (content === null) {
       log.warn(`agents: cannot read ${item.sourcePath}`);
       return;
     }
 
-    let spec: AgentSpec;
-    const parseResult: ParseResult = parseAgentYaml(content, item.name + '.yaml');
-    if (!parseResult.ok) {
-      console.warn(`[agents] 解析失败 ${item.name}.yaml: ${parseResult.reason}, 已跳过`);
-      return;
+    // Say why an agent reaches nothing before the loop silently delivers
+    // nowhere: `resolveRenders` skips an unparsable spec for every tool alike.
+    if (!isLegacyAgent(agentItem)) {
+      const parseResult: ParseResult = parseAgentYaml(content, `${item.name}.yaml`);
+      if (!parseResult.ok) {
+        log.warn(`[agents] Skipped ${item.name}.yaml: ${parseResult.reason}`);
+        return;
+      }
     }
-    spec = parseResult.spec;
 
-    const targets = spec.targets ?? ALL_SUPPORTED_TOOLS;
-    const scoped = scopedToolPaths(teamConfig, localConfig);
-
-    for (const tool of targets) {
-      const toolPath = scoped[tool];
-      if (!toolPath?.agents) {
-        log.debug(`Skipping agent sync for ${tool}: no agents path configured`);
-        continue;
-      }
-      if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) {
-        log.debug(`Skipping agent sync for ${tool}: tool not installed`);
-        continue;
-      }
-      if (isAgentExcluded(localConfig, tool)) continue;
-
-      const destDir = path.join(baseDir, toolPath.agents);
+    for (const { tool, dest, render } of await this.resolveRenders(teamConfig, localConfig, item)) {
+      const destDir = path.dirname(dest);
       try {
         await ensureDir(destDir);
-        const { ext, content: rendered } = renderForTool(spec, tool);
-        await removeStaleAgentSiblings(destDir, item.name, ext);
-        const dest = path.join(destDir, `${item.name}${ext}`);
-        await writeFile(dest, rendered);
-        log.debug(`Rendered agent ${item.name} → ${tool} (${ext})`);
+        // Only a rendered spec can leave a sibling behind: its extension follows
+        // the tool's format and changes when `targets` does. A legacy `.md` is
+        // copied verbatim to one extension for every tool, so a same-stem
+        // `.toml`, `.json` or `.agent.md` beside it is the member's own file
+        // and not ours to delete (#624 review).
+        if (!isLegacyAgent(agentItem)) {
+          await removeStaleAgentSiblings(destDir, item.name, render.ext);
+        }
+        await writeFile(dest, render.content);
+        log.debug(`Rendered agent ${item.name} → ${tool} (${render.ext})`);
       } catch (e) {
         log.warn(`Failed to sync agent ${item.name} to ${tool}: ${(e as Error).message}`);
       }
@@ -445,7 +428,6 @@ export class AgentsHandler extends ResourceHandler {
    */
   async removeItem(name: string, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
     const removed: string[] = [];
-    const baseDir = resolveBaseDir(localConfig);
 
     const teamAgentsDir = path.join(localConfig.repo.localPath, 'agents');
 
@@ -462,6 +444,7 @@ export class AgentsHandler extends ResourceHandler {
       // A tool the member excluded is not ours to write to, so it is not ours
       // to delete from either. This is the gate pull's tombstone pass applies.
       if (isAgentExcluded(localConfig, tool)) continue;
+      const baseDir = resolveToolBaseDir(tool, localConfig);
       // Try every native agent extension: the render format varies per tool.
       for (const ext of AGENT_FILE_EXTENSIONS) {
         const filePath = path.join(baseDir, toolPath.agents, `${name}${ext}`);
@@ -496,12 +479,7 @@ export class AgentsHandler extends ResourceHandler {
     const inactive = items.filter((item) => !isActive(item) && !BUILTIN_AGENT_NAMES.has(item.name));
     if (inactive.length === 0) return;
 
-    const baseDir = resolveBaseDir(localConfig);
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-      if (!toolPath.agents || !isKnownTool(tool) || isAgentExcluded(localConfig, tool)) continue;
-      if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) continue;
-      const destDir = path.join(baseDir, toolPath.agents);
-
+    for (const { tool, dir: destDir } of await this.agentToolDirs(teamConfig, localConfig)) {
       const activeDestinations = new Set<string>();
       for (const item of active) {
         const rendered = await this.renderedForTool(item, tool);
@@ -524,6 +502,69 @@ export class AgentsHandler extends ResourceHandler {
   }
 
   /**
+   * Every tool that receives `item`, with the path and the bytes `pullItem`
+   * writes there.
+   *
+   * An agent's desired set is a relation, not a product: a YAML spec carries
+   * `targets`, a legacy `.md` only reaches LEGACY_MD_TOOLS, and the filename
+   * extension comes from the render rather than the item. So this is the only
+   * place that can answer where an agent lands.
+   */
+  private async resolveRenders(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    item: ResourceItem,
+  ): Promise<{ tool: ToolName; dest: string; render: RenderResult }[]> {
+    const agentItem = item as AgentResourceItem;
+    const renders: { tool: ToolName; dest: string; render: RenderResult }[] = [];
+
+    for (const { tool, dir } of await this.agentToolDirs(teamConfig, localConfig)) {
+      const render = await this.renderedForTool(agentItem, tool);
+      if (!render) continue;
+
+      renders.push({ tool, dest: path.join(dir, `${item.name}${render.ext}`), render });
+    }
+
+    return renders;
+  }
+
+  /**
+   * Every installed tool that receives agents at all, with the directory its
+   * copies land in — the gate, without asking any agent to render.
+   *
+   * `doctor` needs this on its own. "This agent reaches no tool" is a team-repo
+   * problem only once some tool was there to receive it, and taking the
+   * successful renders as proof of that hides the case where every agent is
+   * malformed: no render, no tool, no failure reported (#624).
+   */
+  async agentToolDirs(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+  ): Promise<{ tool: ToolName; dir: string }[]> {
+    const dirs: { tool: ToolName; dir: string }[] = [];
+
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+      if (!toolPath.agents || !isKnownTool(tool) || isAgentExcluded(localConfig, tool)) continue;
+      if (!await isToolInstalledForConfig(tool, toolPath.agents, localConfig)) {
+        log.debug(`Skipping agent sync for ${tool}: tool not installed`);
+        continue;
+      }
+      dirs.push({ tool, dir: path.join(resolveToolBaseDir(tool, localConfig), toolPath.agents) });
+    }
+
+    return dirs;
+  }
+
+  async deliveryTargets(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    item: ResourceItem,
+  ): Promise<DeliveryTarget[]> {
+    return (await this.resolveRenders(teamConfig, localConfig, item))
+      .map(({ tool, dest, render }) => ({ tool, dest, content: render.content }));
+  }
+
+  /**
    * What `pullItem` writes for this agent on this tool, or null when the tool
    * is not a target (legacy `.md` only reaches LEGACY_MD_TOOLS, a YAML spec
    * honours `targets`, an unparsable spec is skipped like pull skips it).
@@ -531,7 +572,7 @@ export class AgentsHandler extends ResourceHandler {
   private async renderedForTool(item: AgentResourceItem, tool: ToolName): Promise<RenderResult | null> {
     const content = await readFileSafe(item.sourcePath);
     if (content === null) return null;
-    if (item.legacy) {
+    if (isLegacyAgent(item)) {
       return LEGACY_MD_TOOLS.has(tool) ? { ext: '.md', content } : null;
     }
     const parsed = parseAgentYaml(content, `${item.name}.yaml`);
@@ -542,44 +583,12 @@ export class AgentsHandler extends ResourceHandler {
 
   // ─── Private helpers ──────────────────────────────────────────────────────
 
-  /**
-   * Legacy pull: copies .md as-is to Claude-compatible tools, including JoyCode.
-   */
-  private async pullLegacyMd(
-    item: ResourceItem,
-    teamConfig: TeamaiConfig,
-    baseDir: string,
-    localConfig: LocalConfig,
-  ): Promise<void> {
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-      if (!LEGACY_MD_TOOLS.has(tool)) continue;
-      if (!toolPath.agents) {
-        log.debug(`Skipping legacy agent sync for ${tool}: no agents path configured`);
-        continue;
-      }
-      if (!await ResourceHandler.isToolInstalled(toolPath.agents, baseDir)) {
-        log.debug(`Skipping legacy agent sync for ${tool}: tool not installed`);
-        continue;
-      }
-      if (isAgentExcluded(localConfig, tool)) continue;
-
-      const destDir = path.join(baseDir, toolPath.agents);
-      try {
-        await ensureDir(destDir);
-        const dest = path.join(destDir, `${item.name}.md`);
-        await copyFile(item.sourcePath, dest);
-        log.debug(`Synced legacy agent ${item.name} → ${tool}`);
-      } catch (e) {
-        log.warn(`Failed to sync legacy agent ${item.name} to ${tool}: ${(e as Error).message}`);
-      }
-    }
-  }
 }
 
 // ─── Module-level helpers ──────────────────────────────────────────────────
 
 /** Tools that receive a legacy `agents/<name>.md` copied verbatim. */
-const LEGACY_MD_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy', 'joycode']);
+const LEGACY_MD_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'codebuddy', 'joycode', 'omp']);
 
 type TeamAgentDir = { dir: string; namespace?: string };
 
@@ -676,6 +685,17 @@ async function removeStaleAgentSiblings(agentsDir: string, stem: string, targetE
 }
 
 /**
+ * Whether an agent is the legacy `.md` kind, copied verbatim to Claude-shaped
+ * tools rather than rendered from a spec. `scanTeamForPull` sets the flag; a
+ * caller that builds an item by hand may not, so the source extension decides
+ * when it is absent. Pull and the delivery check must agree on this, or one
+ * renders a `.md` body as YAML while the other copies it.
+ */
+function isLegacyAgent(item: AgentResourceItem): boolean {
+  return item.legacy === true || !item.sourcePath.endsWith('.yaml');
+}
+
+/**
  * Check if a tool name is a known agent-capable tool.
  */
 function isKnownTool(tool: string): tool is ToolName {
@@ -719,6 +739,8 @@ function reverseByTool(tool: ToolName, filePath: string, content: string): Rever
       return reverseFromCodex(filePath, content);
     case 'cursor':
       return reverseFromCursor(filePath, content);
+    case 'copilot':
+      return reverseFromCopilot(filePath, content);
     case 'joycode':
       return reverseFromJoycode(filePath, content);
     case 'qoder':
@@ -726,6 +748,8 @@ function reverseByTool(tool: ToolName, filePath: string, content: string): Rever
     case 'kiro':
       return reverseFromKiro(filePath, content);
     case 'zcode':
+      return reverseFromClaude(filePath, content);
+    case 'omp':
       return reverseFromClaude(filePath, content);
     case 'opencode':
       return reverseFromOpencode(filePath, content);

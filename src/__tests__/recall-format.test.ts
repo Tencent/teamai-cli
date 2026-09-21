@@ -5,6 +5,9 @@
  * a formatted string.  No filesystem or network access required.
  */
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { formatResults } from '../recall.js';
 import type { SearchIndexEntry } from '../types.js';
@@ -141,5 +144,31 @@ describe('formatResults — term coverage', () => {
       },
     ]);
     expect(codebaseHit).not.toContain('Missing:');
+  });
+});
+
+describe('formatResults — a path that no longer exists', () => {
+  it('falls back to the learnings root when the indexed absolute path is gone', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-recall-format-'));
+    const base = path.join(tmp, 'learnings');
+    fs.mkdirSync(base, { recursive: true });
+    fs.writeFileSync(path.join(base, 'fixture.md'), '# still here');
+
+    try {
+      const output = formatResults([
+        {
+          // A worktree that was removed and rebuilt leaves this pointing nowhere.
+          entry: makeEntry({ path: path.join(tmp, 'learnings-wt-gone', 'learnings', 'fixture.md') }),
+          score: 3,
+          scope: 'user',
+          learningsBase: base,
+        },
+      ]);
+
+      expect(output).toContain(`File: ${path.join(base, 'fixture.md')}`);
+      expect(output).not.toContain('learnings-wt-gone');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

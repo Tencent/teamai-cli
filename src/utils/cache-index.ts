@@ -58,6 +58,15 @@ export interface GcResult {
 
 // ─── Helpers ────────────────────────────────────────────
 
+/** Parse a complete decimal string as a positive safe integer. */
+export function parsePositiveInteger(value: string): number | undefined {
+    const normalized = value.trim();
+    if (!/^\+?\d+$/.test(normalized)) return undefined;
+
+    const parsed = Number(normalized);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 /**
  * 读取 cache root（与 repo-cache.ts 行为完全一致：env TEAMAI_CACHE_DIR 优先，否则 ~/.teamai/cache/repos）。
  */
@@ -262,8 +271,8 @@ export async function gcCache(opts?: GcOptions): Promise<GcResult> {
     let maxBytes = opts?.maxBytes ?? DEFAULT_MAX_BYTES;
     const envVal = process.env.TEAMAI_CACHE_MAX_BYTES;
     if (opts?.maxBytes === undefined && envVal !== undefined) {
-        const parsed = parseInt(envVal, 10);
-        if (!isNaN(parsed) && parsed > 0) {
+        const parsed = parsePositiveInteger(envVal);
+        if (parsed !== undefined) {
             maxBytes = parsed;
         }
     }

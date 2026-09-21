@@ -6,6 +6,8 @@ import readline from 'node:readline';
 export interface TranscriptVoteData {
   recalledDocIds: string[];
   referencedDocIds: string[];
+  /** Whether the model wrote any `<!-- teamai:referenced-doc-ids: [...] -->` marker. */
+  hasReferencedDocIdsDeclaration: boolean;
 }
 
 /**
@@ -15,12 +17,13 @@ export interface TranscriptVoteData {
 export async function parseTranscriptForVotes(transcriptPath: string): Promise<TranscriptVoteData> {
   const recalledSet = new Set<string>();
   const referencedSet = new Set<string>();
+  let hasDeclaration = false;
 
   try {
     const stat = await fs.promises.stat(transcriptPath);
-    if (stat.size === 0) return { recalledDocIds: [], referencedDocIds: [] };
+    if (stat.size === 0) return { recalledDocIds: [], referencedDocIds: [], hasReferencedDocIdsDeclaration: false };
   } catch {
-    return { recalledDocIds: [], referencedDocIds: [] };
+    return { recalledDocIds: [], referencedDocIds: [], hasReferencedDocIdsDeclaration: false };
   }
 
   const rl = readline.createInterface({
@@ -60,13 +63,16 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
       if (typeof text !== 'string') continue;
 
       extractRecalledDocIds(text, recalledSet);
-      extractReferencedDocIds(text, referencedSet);
+      if (extractReferencedDocIds(text, referencedSet)) {
+        hasDeclaration = true;
+      }
     }
   }
 
   return {
     recalledDocIds: [...recalledSet],
     referencedDocIds: [...referencedSet],
+    hasReferencedDocIdsDeclaration: hasDeclaration,
   };
 }
 
@@ -134,17 +140,25 @@ function extractRecalledDocIds(text: string, out: Set<string>): void {
   }
 }
 
-function extractReferencedDocIds(text: string, out: Set<string>): void {
+function extractReferencedDocIds(text: string, out: Set<string>): boolean {
   // Case-insensitive; accept smart-punctuation variants of both delimiters.
   // Closed delimiter is required — bare [^\]]* prevents unclosed strings from bleeding past.
   const pattern = /(?:<!--|<!—)\s*teamai:referenced-doc-ids:\s*\[([^\]]*)\]\s*(?:-->|—>)/gi;
+  let found = false;
 
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
     const raw = match[1];
+    // A declaration counts only when it is explicitly empty or carries at least
+    // one valid id; a placeholder-only list like `[<id1>]` is not a declaration.
+    if (raw.trim() === '') found = true;
     for (const item of raw.split(',')) {
       const docId = item.trim().replace(/^['"]|['"]$/g, '');
-      if (isValidDocId(docId)) out.add(docId);
+      if (isValidDocId(docId)) {
+        out.add(docId);
+        found = true;
+      }
     }
   }
+  return found;
 }

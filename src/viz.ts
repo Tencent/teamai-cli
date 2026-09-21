@@ -33,6 +33,8 @@ export type { PromotionCandidate, PruneCandidate, StaleEntry };
 // ─── Public option / data types ──────────────────────────────────────────────
 
 export interface VizOptions {
+  /** Explicit installed dashboard scope; null selects unconfigured user scope. */
+  config?: import('./types.js').LocalConfig | null;
   /** Path to a team repo root directory to aggregate instead of local ~/.teamai. */
   repo?: string;
 }
@@ -119,6 +121,8 @@ interface VizPaths {
   knowledgeRoot: string;
   votesDir: string;
   learningsDir: string;
+  /** Every learnings root to read, highest precedence first. */
+  learningsDirs: readonly string[];
   statsDir: string;
   indexPath: string | undefined;
   source: VizSource;
@@ -142,18 +146,21 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
       root,
       knowledgeRoot: root,
       votesDir: path.join(root, 'votes'),
+      // learnings-root ok: an explicit --repo path, with no config to resolve
       learningsDir: path.join(root, 'learnings'),
+      // learnings-root ok: same explicit --repo path
+      learningsDirs: [path.join(root, 'learnings')],
       statsDir: path.join(root, 'stats'),
       indexPath: undefined,
       source: { scope: 'team', label: 'Team repo · aggregated across the team' },
     };
   }
 
-  const config = await detectProjectConfig() ?? await loadLocalConfig();
+  const config = opts.config !== undefined ? opts.config : await detectProjectConfig() ?? await loadLocalConfig();
 
   if (config?.repo?.localPath) {
-    const { usesReportsBranch } = await import('./types.js');
-    if (usesReportsBranch(config)) {
+    const { usesBranchWorktree } = await import('./types.js');
+    if (usesBranchWorktree(config)) {
       const { ensureReportsWorktree } = await import('./utils/reports-branch.js');
       // Read-only: never publish a missing reports branch.
       await ensureReportsWorktree(config, { pushIfCreated: false });
@@ -166,9 +173,10 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
     // configs that are project-scoped but lack projectRoot (getDataHome would
     // otherwise throw via getTeamaiHome and fail the dashboard report).
     const teamaiHome = useProjectScope ? getDataHome(config) : getTeamaiHome('user');
-    const learningsDir = useProjectScope
-      ? path.join(knowledgeRoot, 'learnings')
-      : getUserLearningsDir();
+    const { learningsRoots } = await import('./utils/learnings-roots.js');
+    const roots = learningsRoots(config);
+    const learningsDir = useProjectScope ? roots.write : getUserLearningsDir();
+    const learningsDirs = useProjectScope ? roots.read : [getUserLearningsDir(), ...roots.read];
     const source: VizSource = config.repo.kind === 'self'
       ? { scope: 'local', label: 'Personal repo · your recalls only' }
       : { scope: 'team', label: 'Team repo · aggregated across the team' };
@@ -177,6 +185,7 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
       knowledgeRoot,
       votesDir: path.join(reportsRoot, 'votes'),
       learningsDir,
+      learningsDirs,
       statsDir: path.join(reportsRoot, 'stats'),
       indexPath: path.join(teamaiHome, 'search-index.json'),
       source,
@@ -190,6 +199,7 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
     knowledgeRoot: teamaiHome,
     votesDir: getUserVotesDir(),
     learningsDir: getUserLearningsDir(),
+    learningsDirs: [getUserLearningsDir()],
     statsDir: path.join(teamaiHome, 'stats'),
     indexPath: getUserSearchIndexPath(),
     source: { scope: 'local', label: 'Local ~/.teamai · your recalls only' },
@@ -263,7 +273,7 @@ async function loadEntries(paths: VizPaths): Promise<SearchIndexEntry[]> {
     const tmpIndexPath = path.join(tmpDir, 'index.json');
     try {
       await buildIndex({
-        learningsDir: paths.learningsDir,
+        learningsDirs: paths.learningsDirs,
         docsDir: path.join(paths.knowledgeRoot, 'docs'),
         rulesDir: path.join(paths.knowledgeRoot, 'rules'),
         skillsDir: path.join(paths.knowledgeRoot, 'skills'),
@@ -374,11 +384,11 @@ export async function buildVizData(paths: VizPaths): Promise<VizData> {
   const authors = buildAuthors(metrics);
 
   const [promote, prune, stale] = await Promise.all([
-    findPromotionCandidates(paths.learningsDir, paths.votesDir).catch((err: Error) => {
+    findPromotionCandidates(paths.learningsDirs, paths.votesDir).catch((err: Error) => {
       console.warn(`Warning: could not load promotion candidates: ${err.message}`);
       return [] as PromotionCandidate[];
     }),
-    findPruneCandidates(paths.learningsDir, paths.votesDir).catch((err: Error) => {
+    findPruneCandidates(paths.learningsDirs, paths.votesDir).catch((err: Error) => {
       console.warn(`Warning: could not load prune candidates: ${err.message}`);
       return [] as PruneCandidate[];
     }),
@@ -446,5 +456,24 @@ export async function getVizSummary(opts: VizOptions = {}): Promise<VizSummary> 
     overallCoveragePct: data.overallCoveragePct,
     coverage: (data.coverage ?? []).map((stat) => ({ type: stat.type, coveragePct: stat.coveragePct })),
     source: data.source,
+  };
+}
+
+/** Read-only dashboard payload; report HTML is escaped by the existing renderer. */
+export async function getDashboardContext(opts: VizOptions = {}) {
+  const data = await buildVizData(await resolveVizRoot(opts));
+  const { renderDashboardReport } = await import('./viz-render.js');
+  return {
+    generatedAt: data.generatedAt,
+    source: data.source,
+    totalEntries: data.totalEntries,
+    overallCoveragePct: data.overallCoveragePct,
+    silentCount: data.silent.length,
+    maintenanceCounts: {
+      promote: data.maintenance.promote.length,
+      prune: data.maintenance.prune.length,
+      stale: data.maintenance.stale.length,
+    },
+    ...renderDashboardReport(data),
   };
 }

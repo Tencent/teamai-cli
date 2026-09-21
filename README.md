@@ -2,22 +2,30 @@
   <img src="assets/teamai-cli-logo.svg" alt="teamai-cli">
 </p>
 
-# TeamAI — Make Every Team AI Native
+<h1 align="center">TeamAI — Make Every Team AI Native</h1>
 
-> [English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [ไทย](README.th.md)
+<p align="center">
+  <a href="https://trendshift.io/repositories/123184?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-123184" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/123184" alt="Tencent%2Fteamai-cli | Trendshift" width="250" height="55"/></a>
+</p>
 
-[![CI](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
-[![npm downloads](https://img.shields.io/npm/dm/teamai-cli.svg)](https://www.npmjs.com/package/teamai-cli)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">中文</a> | <a href="README.ja.md">日本語</a> | <a href="README.ko.md">한국어</a> | <a href="README.th.md">ไทย</a>
+</p>
 
-TeamAI manages your team's skills, rules, MCP, and knowledge across Claude Code, Codex, CodeBuddy, WorkBuddy, OpenCode, Cursor, and other AI agents.
+<p align="center">
+  <a href="https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml"><img src="https://github.com/Tencent/teamai-cli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/teamai-cli"><img src="https://img.shields.io/npm/v/teamai-cli.svg" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/teamai-cli"><img src="https://img.shields.io/npm/dm/teamai-cli.svg" alt="npm downloads"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+</p>
+
+**The shared foundation for how your team works, learns, and improves with AI.**
+
+TeamAI turns individual AI capabilities into shared team capabilities — across agents, machines, and team members.
 
 ## Contributors
 
 Thanks to everyone who has contributed to TeamAI!
-
-<a href="https://trendshift.io/repositories/123184?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-123184" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/123184" alt="Tencent%2Fteamai-cli | Trendshift" width="250" height="55"/></a>
 
 <a href="https://github.com/Tencent/teamai-cli/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=Tencent/teamai-cli" alt="Contributors" />
@@ -26,6 +34,41 @@ Thanks to everyone who has contributed to TeamAI!
 Made with [contrib.rocks](https://contrib.rocks).
 
 ## Quick Start
+
+Send this one line to your AI tool:
+
+```text
+Install the teamai skill: https://github.com/Tencent/teamai-cli/tree/main/skills/teamai , load the teamai skill, then set up TeamAI for my team from scratch.
+```
+
+Once TeamAI is set up, just talk to the `/teamai` skill in your AI tool:
+
+**Set up a team from scratch**
+
+```text
+/teamai Help me set up TeamAI for my team from scratch
+```
+
+**Join a team**
+
+```text
+/teamai Help me join my team's TeamAI, repo URL is https://github.com/yourorg/yourrepo
+```
+
+**Share a skill with the team**
+
+```text
+/teamai Share my xxx skill with the team
+```
+
+**Open the dashboard**
+
+```text
+/teamai Open the TeamAI dashboard
+```
+
+<details>
+<summary>Prefer the command line? (manual setup)</summary>
 
 ### Install
 
@@ -53,6 +96,8 @@ teamai init https://github.com/yourorg/yourrepo --scope user
 ```
 
 Once initialized, every AI session automatically pulls the latest skills / rules and other Harness updates published by admins — no manual sync needed.
+
+</details>
 
 > **Full usage guide:** [docs/usage-guide.md](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — covers everything from team creation to day-to-day use.
 
@@ -86,6 +131,7 @@ Once initialized, every AI session automatically pulls the latest skills / rules
     <tr><td>Claude Code</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>Codex</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>Cursor</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>GitHub Copilot CLI</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
     <tr><td>CodeBuddy</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>WorkBuddy</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>OpenCode</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
@@ -95,6 +141,7 @@ Once initialized, every AI session automatically pulls the latest skills / rules
     <tr><td>Qoder</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>Kiro</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
     <tr><td>ZCode</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">—</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td></tr>
+    <tr><td>Oh My Pi</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">✓</td><td align="center">—</td><td align="center">—</td><td align="center">—</td></tr>
   </tbody>
 </table>
 
@@ -234,8 +281,8 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 |------------|---------|---------------|
 | **Usage** | `teamai digest` | Weekly team digest — 7-day success, prompt, active-time, estimated cost, cache, and correction trends, plus lifetime totals. |
 | **Sessions** | `teamai session save` | Privacy-scrubbed per-session summaries (tool sequence, prompt turns, interventions) that feed the digest's Session Highlights. |
-| **Dashboard** | `teamai dashboard` | Web dashboard showing live sessions and local 7-day trends compared with the prior 7 days. |
-| **KB Health** | `teamai dashboard` → KB Health | Built-in dashboard page reporting knowledge-base usage & health — coverage by type, top recalled entries, silent entries, recall trend, author contributions, and a maintenance console. |
+| **Dashboard** | `teamai dashboard` | Unified Overview / Team Execution / Team Context / Team Improvement views with local live sessions, 7-day trends, estimated cost per session, English/Chinese, and light/dark/system themes. |
+| **KB Health** | `teamai dashboard` → Team Context / Team Improvement | Coverage by type, top-recalled and silent entries, last-recall month distribution, author contributions, and maintenance; the full `/kb-report` remains available. |
 
 ## Commands
 
@@ -246,7 +293,7 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 | `teamai push` | Push local resources to a branch and open a Merge Request |
 | `teamai packages [install] [target]` | Install declared npm packages and Claude plugins; with a target, also update `teamai.yaml`. Bare `teamai packages` installs everything; `teamai packages install <target>` adds one |
 | `teamai status` | Show local vs team repo diff and resource counts, including namespaced skills and nested docs |
-| `teamai contribute` | Share session experience to team repo |
+| `teamai contribute` | Share session experience to the team repo's `teamai-learnings` branch |
 | `teamai recall <query>` | Search the team knowledge base (BM25 + graph-boost) |
 | `teamai recall enable/disable/status` | Toggle or check recall state |
 | `teamai recall promote [learningId]` | Promote a high-confidence learning to formal knowledge (skills/rules/docs) |
@@ -266,7 +313,7 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 | `teamai remove <type> <name>` | Remove a resource and open MR |
 | `teamai session save` | Record a privacy-scrubbed session summary to a monthly log (`--push` feeds `digest`) |
 | `teamai digest` | Generate weekly team usage digest |
-| `teamai doctor` | Diagnose configuration issues |
+| `teamai doctor` | Diagnose configuration issues (`--json` for CI, hooks and agents) |
 | `teamai uninstall` | Remove all teamai resources and hooks |
 
 ## License

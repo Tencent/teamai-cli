@@ -1,8 +1,20 @@
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
-import { readJson, writeJson, expandHome, ensureDir, pathExists } from './utils/fs.js';
+import { rm } from 'node:fs/promises';
+import { readJson, writeJson, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { TEAMAI_HOOK_DESCRIPTION_PREFIX, TEAMAI_CUSTOM_HOOK_PREFIX, TEAMAI_AGENT_HOOK_PREFIX, resolveHookScope, resolveLegacyProjectHookScope } from './types.js';
+import {
+  COPILOT_TOOL_ID,
+  TEAMAI_HOOK_DESCRIPTION_PREFIX,
+  TEAMAI_CUSTOM_HOOK_PREFIX,
+  TEAMAI_AGENT_HOOK_PREFIX,
+  getManagedHooksPath,
+  getCopilotHome,
+  resolveHookScope,
+  resolveLegacyProjectHookScope,
+  resolveToolBaseDir,
+  scopedToolPaths,
+} from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
 import { isSelfMode } from './types.js';
 import { activeRoleIds } from './roles.js';
@@ -34,6 +46,20 @@ export const CLAUDE_TO_CURSOR_EVENTS: Record<string, string> = {
   Stop: 'stop',
   PostToolUse: 'postToolUse',
   UserPromptSubmit: 'beforeSubmitPrompt',
+};
+
+/**
+ * TeamAI hook events supported by Copilot's Claude-compatible schema. Keeping
+ * PascalCase also keeps Copilot's stdin payload snake_case, which is the
+ * contract consumed by hook-dispatch.
+ */
+export const CLAUDE_TO_COPILOT_EVENTS: Record<string, string> = {
+  SessionStart: 'SessionStart',
+  SessionEnd: 'SessionEnd',
+  Stop: 'Stop',
+  UserPromptSubmit: 'UserPromptSubmit',
+  PreToolUse: 'PreToolUse',
+  PostToolUse: 'PostToolUse',
 };
 
 // ─── On-disk shapes ─────────────────────────────────────────
@@ -83,6 +109,22 @@ interface CodexHooksJson {
   [key: string]: unknown;
 }
 
+interface CopilotHookEntry {
+  type: 'command';
+  bash: string;
+  powershell: string;
+  command: string;
+  matcher?: string;
+  timeoutSec?: number;
+}
+
+interface CopilotHooksJson {
+  version: number;
+  hooks: Record<string, CopilotHookEntry[]>;
+}
+
+const COPILOT_HOOK_SCHEMA_VERSION = 1;
+
 // ZCode (~/.zcode/cli/config.json): Claude-shaped hooks nested under
 // `hooks.events`, gated by `hooks.enabled` (config-file hooks are disabled by
 // default — the writer must force it on). The file is shared with ZCode's own
@@ -126,7 +168,7 @@ interface ZcodeHooksJson {
 //  Reconcile is idempotent and only writes when content actually changes, so an
 //  upgraded CLI re-running over an already-injected file produces a zero-diff.
 
-type ToolFormat = 'claude' | 'cursor' | 'codex' | 'zcode';
+type ToolFormat = 'claude' | 'cursor' | 'codex' | 'copilot' | 'zcode';
 export type HookStatus = 'installed' | 'missing';
 
 const CURSOR_TOOLS = new Set(['cursor']);
@@ -134,6 +176,7 @@ const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
 const ZCODE_TOOLS = new Set(['zcode']);
 
 function detectFormat(tool: string): ToolFormat {
+  if (tool === COPILOT_TOOL_ID) return 'copilot';
   if (CODEX_TOOLS.has(tool)) return 'codex';
   if (ZCODE_TOOLS.has(tool)) return 'zcode';
   return CURSOR_TOOLS.has(tool) ? 'cursor' : 'claude';
@@ -303,7 +346,41 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
   return entry;
 }
 
-function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
+// getDispatchCommand() prefixes the launcher with a quoted, forward-slash Git
+// Bash path on Windows and keeps bare `bash` everywhere else (and on Windows
+// machines where Git Bash cannot be found).
+const COPILOT_BUILTIN_COMMAND_RE = /^("[^"]+"|bash) -lc "(teamai hook-dispatch [^"]+) 2>\/dev\/null" \|\| true$/;
+
+/** Render a valid PowerShell equivalent for TeamAI's generated bash wrapper. */
+function copilotPowershellCommand(command: string): string {
+  const match = command.match(COPILOT_BUILTIN_COMMAND_RE);
+  if (!match) return command;
+  // PowerShell needs the call operator before a quoted executable path, and
+  // `|| true` maps to `; exit 0`. The dispatch command inside is
+  // builtin-generated (no `$`, backticks or double quotes), so echoing it
+  // inside a double-quoted PowerShell string is interpolation-safe.
+  return match[1] === 'bash'
+    ? `${match[2]} 2>$null; exit 0`
+    : `& ${match[1]} -lc "${match[2]} 2>/dev/null"; exit 0`;
+}
+
+function toCopilotEntry(def: HookDef): CopilotHookEntry {
+  const matcher = def.source === 'builtin'
+    && def.event === 'PostToolUse'
+    && def.matcher === 'Skill'
+    ? 'skill'
+    : def.matcher;
+  return {
+    type: 'command',
+    bash: def.command,
+    powershell: copilotPowershellCommand(def.command),
+    command: def.command,
+    ...(matcher && matcher !== '*' ? { matcher } : {}),
+    ...(def.timeout !== undefined ? { timeoutSec: def.timeout } : {}),
+  };
+}
+
+function toZcodeEntry(def: HookDef, vbsPath: string): ZcodeHookMatcher {
   // ZCode sessions run hooks inline: a session-start dispatch carries a network
   // pull (SSH to the team host), which on slower links exceeds the 10–15s
   // builtin defaults and gets killed mid-pull — so the timeouts here are
@@ -314,6 +391,15 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
     PostToolUse: 30000,
     UserPromptSubmit: 60000,
   };
+  // wscript.exe is a GUI-subsystem binary: unlike cmd/bash it never allocates
+  // a console window, so hook runs don't flash a black box over the desktop.
+  // The VBS launcher preserves the STDIN contract (ZCode's payload reaches
+  // hook-dispatch via a spooled temp file), waits for the dispatch bounded by
+  // the per-event timeout, and runs everything hidden (window style 0) with
+  // the dispatch tail cmd-level quoted so team-declared commands survive
+  // cmd's operator parsing. The payload travels verbatim as a single argument
+  // so managed-entry detection and the manifest keep one command
+  // representation.
   // The table is ZCode's DEFAULT, not an override: a timeout the team stated in
   // hooks.yaml (per-hook `timeout`, or `builtin.overrides.<key>.timeout`) is the
   // one the user asked for and still wins, as it does on every other tool.
@@ -323,17 +409,22 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
   const entry: ZcodeHookEntry =
     process.platform === 'win32'
       ? {
-          // Windows must NOT spawn bare `bash`: CreateProcess resolves it to
-          // System32's WSL launcher before any PATH directory, and the WSL side
-          // has a different $HOME (no ~/.teamai state) and often no Node ≥ 20.
-          // cmd.exe is always present in System32 and resolves teamai from the
-          // Windows PATH (the npm shim is a .cmd, so a shell is required).
+          // wscript.exe is a GUI-subsystem binary: unlike cmd/bash it never
+          // allocates a console window, so hook runs don't flash a black box
+          // over the desktop. The VBS launcher preserves the STDIN contract
+          // (ZCode's payload reaches hook-dispatch via a spooled temp file),
+          // waits bounded by the per-event timeout, and runs hidden (window
+          // style 0). The payload travels verbatim as a single argument so
+          // managed-entry detection and the manifest keep one command
+          // representation.
           type: 'process',
-          command: 'cmd',
-          args: ['/c', def.command],
+          command: 'wscript.exe',
+          args: [vbsPath, def.command],
           timeoutMs,
         }
       : {
+          // POSIX has no console-flash problem: run the tail directly, like
+          // every other shell-based tool format.
           type: 'process',
           command: 'bash',
           // Stored verbatim: the shell payload must equal `def.command` exactly
@@ -352,8 +443,14 @@ function toZcodeEntry(def: HookDef): ZcodeHookMatcher {
 /** Shell payload of a ZCode hook entry, for managed-entry matching. */
 function zcodeEntryCommand(entry: ZcodeHookMatcher): string {
   const hook = entry.hooks?.[0];
-  // Both variants (posix bash -lc / win32 cmd /c) carry the payload at args[1].
-  if (Array.isArray(hook?.args) && hook.args.length > 1) return hook.args[1] ?? '';
+  // The wscript launcher carries the command tail as its LAST argument —
+  // [vbsPath, tail] today; an earlier generation used a mode slot
+  // ([vbsPath, 'wait', tail]). Reading the last slot recognizes both shapes
+  // (and team commands, which carry no teamai marker and are matched against
+  // the managed-hooks manifest) so they get replaced or removed, not duplicated.
+  if (Array.isArray(hook?.args) && hook.args.length > 0) {
+    return hook.args[hook.args.length - 1] ?? '';
+  }
   return hook?.command ?? '';
 }
 
@@ -514,6 +611,75 @@ async function reconcileCursorFormat(
   }
 }
 
+// ─── GitHub Copilot CLI (standalone hooks/*.json) reconcile ──
+
+function copilotEntryCommands(entry: CopilotHookEntry): string[] {
+  return [entry.bash, entry.powershell, entry.command].filter(Boolean);
+}
+
+async function reconcileCopilotFormat(
+  hooksPath: string,
+  tool: string,
+  teamDefs: HookDef[],
+  opts: ReconcileHooksOptions,
+  priorTeamCommands: Set<string>,
+): Promise<void> {
+  const expanded = expandHome(hooksPath);
+  const existed = await pathExists(expanded);
+  if (opts.removeAll && !existed) {
+    log.debug(`No teamai hooks to remove from ${hooksPath}`);
+    return;
+  }
+  await ensureDir(path.dirname(expanded));
+  const hooksJson: CopilotHooksJson = (await readJson<CopilotHooksJson>(expanded)) ?? {
+    version: COPILOT_HOOK_SCHEMA_VERSION,
+    hooks: {},
+  };
+  let changed = hooksJson.version !== COPILOT_HOOK_SCHEMA_VERSION;
+  hooksJson.version = COPILOT_HOOK_SCHEMA_VERSION;
+  if (!hooksJson.hooks) hooksJson.hooks = {};
+
+  const isManaged = (entry: CopilotHookEntry): boolean => copilotEntryCommands(entry).some((command) =>
+    TEAMAI_COMMAND_MARKERS.some((marker) => command.includes(marker)) || priorTeamCommands.has(command),
+  );
+  const defs = opts.removeAll ? [] : desiredDefs(tool, teamDefs, opts.builtinOverride);
+  const desiredByEvent: Record<string, CopilotHookEntry[]> = {};
+  for (const def of defs) {
+    const event = CLAUDE_TO_COPILOT_EVENTS[def.event];
+    if (!event) continue;
+    (desiredByEvent[event] ??= []).push(toCopilotEntry(def));
+  }
+
+  for (const event of Object.keys(hooksJson.hooks)) {
+    const existing = hooksJson.hooks[event] ?? [];
+    const untouched = existing.filter((entry) => !isManaged(entry));
+    const desired = desiredByEvent[event] ?? [];
+    const next = [...untouched, ...desired];
+    if (next.length === 0 && !opts.removeAll) {
+      if (existing.length > 0) changed = true;
+      delete hooksJson.hooks[event];
+      continue;
+    }
+    if (JSON.stringify(existing) !== JSON.stringify(next)) {
+      hooksJson.hooks[event] = next;
+      changed = true;
+    }
+  }
+
+  for (const event of desiredEventOrder(defs, (value) => CLAUDE_TO_COPILOT_EVENTS[value])) {
+    if (hooksJson.hooks[event]) continue;
+    hooksJson.hooks[event] = desiredByEvent[event];
+    changed = true;
+  }
+
+  if (changed || !existed) {
+    await writeJson(expanded, hooksJson);
+    log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);
+  } else {
+    log.debug(`teamai hooks already up-to-date in ${hooksPath}`);
+  }
+}
+
 // ─── Codex (hooks.json) reconcile ───────────────────────────
 
 async function reconcileCodexFormat(
@@ -568,6 +734,37 @@ async function reconcileZcodeFormat(
 ): Promise<void> {
   const expanded = expandHome(settingsPath);
   await ensureDir(path.dirname(expanded));
+  const vbsPath = path.join(path.dirname(expanded), 'teamai-hook-dispatch.vbs');
+  // Hidden launcher: wscript.exe is a GUI-subsystem binary, so hook runs don't
+  // flash a black box over the desktop, and the spool file keeps the STDIN
+  // payload contract intact (ZCode's JSON reaches hook-dispatch even though
+  // WScript.Shell.Run cannot forward a live stdin pipe).
+  const vbsScript = [
+    "' TeamAI hook dispatcher - hidden, timeout-bounded, stdin-preserving.",
+    'Option Explicit',
+    'Dim sh, fso, spool, f',
+    'Set sh = CreateObject("WScript.Shell")',
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    'spool = fso.GetSpecialFolder(2) & "\\teamai-hook-" & fso.GetTempName',
+    'Set f = fso.CreateTextFile(spool, True)',
+    'On Error Resume Next',
+    'f.Write WScript.StdIn.ReadAll()',
+    'f.Close',
+    'sh.Run "cmd /d /s /c """ & WScript.Arguments(0) & " < """ & spool & """ >nul 2>&1""", 0, True',
+    'fso.DeleteFile spool, True',
+  ].join('\r\n');
+  if (opts.removeAll) {
+    // Unconditional: after a normal inject the file equals the template, so a
+    // content-diff gate never fires and the script would be left behind.
+    await rm(vbsPath, { force: true });
+  } else if (process.platform === 'win32') {
+    // POSIX never runs the launcher — writing it there would litter ~/.zcode
+    // with a script no entry references.
+    const existingVbs = await readFileSafe(vbsPath);
+    if (existingVbs !== vbsScript) {
+      await writeFile(vbsPath, vbsScript);
+    }
+  }
   const cfg: ZcodeHooksJson = (await readJson<ZcodeHooksJson>(expanded)) ?? {};
   if (!cfg.hooks) cfg.hooks = {};
   let changed = false;
@@ -607,7 +804,7 @@ async function reconcileZcodeFormat(
   for (const event of events) {
     const existing = eventsMap[event] ?? [];
     const untouched = existing.filter((e) => !isManaged(e));
-    const desiredEntries = defs.filter((d) => d.event === event).map(toZcodeEntry);
+    const desiredEntries = defs.filter((d) => d.event === event).map((d) => toZcodeEntry(d, vbsPath));
     const newArr = [...untouched, ...desiredEntries];
     if (JSON.stringify(existing) !== JSON.stringify(newArr)) {
       eventsMap[event] = newArr;
@@ -819,6 +1016,8 @@ export async function reconcileHooks(
   const format = detectFormat(tool);
   if (format === 'cursor') {
     await reconcileCursorFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands);
+  } else if (format === 'copilot') {
+    await reconcileCopilotFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands);
   } else if (format === 'codex') {
     await reconcileCodexFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands);
   } else if (format === 'zcode') {
@@ -890,6 +1089,24 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
     return present ? 'installed' : 'missing';
   }
 
+  if (format === 'copilot') {
+    const hooksJson = await readJson<CopilotHooksJson>(expanded);
+    if (hooksJson?.version !== COPILOT_HOOK_SCHEMA_VERSION || !hooksJson.hooks) return 'missing';
+    const present = defs.every((def) => {
+      const event = CLAUDE_TO_COPILOT_EVENTS[def.event];
+      if (!event) return true;
+      const want = toCopilotEntry(def);
+      return (hooksJson.hooks[event] ?? []).some((entry) =>
+        entry.type === want.type
+        && entry.bash === want.bash
+        && entry.powershell === want.powershell
+        && entry.command === want.command
+        && entry.matcher === want.matcher,
+      );
+    });
+    return present ? 'installed' : 'missing';
+  }
+
   if (format === 'codex') {
     const hooksJson = await readJson<CodexHooksJson>(expanded);
     if (!hooksJson?.hooks) return 'missing';
@@ -902,11 +1119,15 @@ export async function getHookStatus(settingsPath: string, tool?: string): Promis
   }
 
   if (format === 'zcode') {
+    const vbsPath = path.join(path.dirname(expanded), 'teamai-hook-dispatch.vbs');
     const cfg = await readJson<ZcodeHooksJson>(expanded);
     const eventsMap = cfg?.hooks?.events;
     if (!eventsMap) return 'missing';
+    // On Windows the entries are dead without the launcher script — a deleted,
+    // stale, or AV-quarantined VBS must not be reported as installed.
+    if (process.platform === 'win32' && !(await readFileSafe(vbsPath))) return 'missing';
     const present = defs.every((def) => {
-      const want = toZcodeEntry(def);
+      const want = toZcodeEntry(def, vbsPath);
       const wantCmd = zcodeEntryCommand(want);
       const entries = eventsMap[def.event] ?? [];
       return entries.some((e) => e.matcher === want.matcher && zcodeEntryCommand(e) === wantCmd);
@@ -951,6 +1172,16 @@ export async function hasTeamaiHooks(
     if (!j?.hooks) return false;
     return Object.values(j.hooks).some((entries) =>
       (entries ?? []).some((e) => isTeamaiHookCommand(e.command) || priorTeamCommands.has(e.command)),
+    );
+  }
+  if (format === 'copilot') {
+    const j = await readJson<CopilotHooksJson>(expanded);
+    if (!j?.hooks) return false;
+    return Object.values(j.hooks).some((entries) =>
+      (entries ?? []).some((entry) => copilotEntryCommands(entry).some((command) =>
+        TEAMAI_COMMAND_MARKERS.some((marker) => command.includes(marker))
+        || priorTeamCommands.has(command),
+      )),
     );
   }
 
@@ -1019,6 +1250,29 @@ async function reconcileOpencodePlugin(baseDir: string, removeAll = false, insta
 }
 
 /**
+ * Reconcile the single teamai OMP extension.
+ *
+ * OMP auto-loads extensions from BOTH ~/.omp/agent/extensions (user) and
+ * <cwd>/.omp/extensions (project), and dedups by absolute path — two copies
+ * of the teamai file would dispatch every event twice. teamai therefore
+ * writes exactly one copy, in the user agent dir, matching the OpenCode
+ * plugin policy and the settings.json hooks of every other tool (which also
+ * live in HOME and gate on the `cwd` fed to hook-dispatch). Install only when
+ * ~/.omp exists, so a machine without OMP never grows a config dir.
+ */
+async function reconcileOmpExtension(removeAll = false): Promise<void> {
+  const home = getUserHome();
+  const { injectOmpHooks, removeOmpHooks } = await import('./omp-hooks.js');
+  if (removeAll) {
+    await removeOmpHooks();
+    return;
+  }
+  if (await pathExists(path.join(home, '.omp'))) {
+    await injectOmpHooks();
+  }
+}
+
+/**
  * Inject teamai built-in hooks into all AI tool settings.
  * Only writes to tools whose root directory already exists on disk,
  * preventing creation of config dirs for tools the user hasn't installed.
@@ -1060,6 +1314,12 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
       } catch (e) {
         log.warn(`Failed to inject OpenCode hook into ${tool}: ${(e as Error).message}`);
       }
+    } else if (tool === 'omp') {
+      try {
+        await reconcileOmpExtension();
+      } catch (e) {
+        log.warn(`Failed to inject OMP hook into ${tool}: ${(e as Error).message}`);
+      }
     }
   }
 }
@@ -1070,11 +1330,11 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
  * injection path used by `teamai pull` / `init` / `hooks inject`.
  *
  * `settingsOnly` restricts the pass to tools reconciled through their settings
- * file, skipping Hermes and OpenCode. Those two go through global adapters that
- * ignore `baseDir` — `removeHermesHooks()` takes none, and the OpenCode
- * adapter's removeAll branch always targets HOME — so a caller sweeping a
- * secondary location (the legacy `<projectRoot>` copy) must opt out, or it
- * deletes the hooks the primary pass just installed.
+ * file, skipping Hermes, OpenCode, and OMP. Those three go through global
+ * adapters that ignore `baseDir` — `removeHermesHooks()` takes none, and the
+ * OpenCode / OMP adapters' removeAll branches always target HOME — so a caller
+ * sweeping a secondary location (the legacy `<projectRoot>` copy) must opt out,
+ * or it deletes the hooks the primary pass just installed.
  */
 export async function reconcileHooksToAllTools(
   toolPaths: Record<string, { settings?: string }>,
@@ -1123,6 +1383,17 @@ export async function reconcileHooksToAllTools(
         await reconcileOpencodePlugin(baseDir, opts.removeAll, opts.installedBaseDir);
       } catch (e) {
         log.warn(`Failed to reconcile OpenCode hooks: ${(e as Error).message}`);
+      }
+      continue;
+    }
+    // OMP likewise has no settings hook list: it auto-loads TS extensions from
+    // the agent dir. Route it to the extension adapter.
+    if (tool === 'omp') {
+      if (opts.settingsOnly) continue;
+      try {
+        await reconcileOmpExtension(opts.removeAll);
+      } catch (e) {
+        log.warn(`Failed to reconcile OMP hooks: ${(e as Error).message}`);
       }
       continue;
     }
@@ -1231,7 +1502,8 @@ export async function reconcileTeamHooksForConfig(
         activeRoles: activeRoleIds(localConfig),
       });
   const { baseDir, manifestPath } = resolveHookScope(localConfig);
-  let filterAgents = opts.filterAgents ?? localConfig.enabledAgents;
+  const explicitlySelectedAgents = opts.filterAgents ?? localConfig.enabledAgents;
+  let filterAgents = explicitlySelectedAgents;
   const disabled = localConfig.disabledAgents;
   if (disabled && disabled.length > 0) {
     // Exclusion always applies, even when there is no whitelist. When no
@@ -1248,6 +1520,30 @@ export async function reconcileTeamHooksForConfig(
       : undefined,
     installedBaseDir: localConfig.scope === 'project' ? (localConfig.projectRoot ?? baseDir) : undefined,
   });
+
+  const copilotExcluded = disabled?.includes(COPILOT_TOOL_ID) ?? false;
+  const copilotSelected = !copilotExcluded
+    && (explicitlySelectedAgents?.includes(COPILOT_TOOL_ID) ?? false);
+  const copilotEnabled = !copilotExcluded && (
+    copilotSelected
+    || (explicitlySelectedAgents === undefined && await pathExists(getCopilotHome()))
+  );
+  const copilotPaths = scopedToolPaths(teamConfig, localConfig)[COPILOT_TOOL_ID];
+  if (copilotEnabled && copilotPaths?.hooks) {
+    const copilotBase = resolveToolBaseDir(COPILOT_TOOL_ID, localConfig);
+    if (copilotSelected || await pathExists(getCopilotHome())) {
+      await reconcileHooks(
+        path.join(copilotBase, copilotPaths.hooks),
+        COPILOT_TOOL_ID,
+        teamDefs,
+        {
+          manifestPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
+          removeAll: opts.removeAll,
+          builtinOverride: builtin,
+        },
+      );
+    }
+  }
   await sweepLegacyProjectHooks(teamConfig.toolPaths, localConfig);
   return teamDefs;
 }
