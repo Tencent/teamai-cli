@@ -280,16 +280,44 @@ function canonicalProjectRoot(projectRoot: string): string {
 }
 
 /**
+ * Embed a Windows path in a cmd.exe command line so the child receives it
+ * byte-for-byte.
+ *
+ * A path interpolated into cmd text is re-parsed: `%…%` expands and
+ * `& ^ ( ) | < >` act on the line even inside double quotes, so a project at
+ * `C:\src\x&whoami&` would run part of its own name every time a hook fires.
+ * Caret escapes stop that during cmd's parsing, but cmd consumes them before
+ * CreateProcess and the child then re-splits the line, where a caret cannot
+ * keep a space in one token. Emitting the quotes as `^"` covers both: cmd
+ * consumes the caret and hands over a real quote, so the value reaches the
+ * child literally and spaces stay inside one argument.
+ */
+function cmdLiteral(value: string): string {
+  return `^"${value.replace(/[%^&()<>|,;=]/g, (ch) => `^${ch}`)}^"`;
+}
+
+/**
  * cmd.exe equivalent of the POSIX project gate, as a prefix that resolves to
- * true only inside `root`. Appending the separator makes the gate match the
- * root itself and anything under it, while a sibling whose name merely shares
- * the prefix (`C:\a\proj` vs `C:\a\proj-2`) does not. The pattern ends in `\\`
- * because findstr's CRT argument parser consumes one backslash; `/l` keeps it
- * literal, `/b` anchors it at the start of the line, and `/i` matches the
- * case-insensitive Windows path.
+ * true only inside `root`.
+ *
+ * The cwd is read with a bare `cd`, whose output goes straight into the pipe:
+ * unlike `echo %CD%`, the directory name is never part of a parsed command, so
+ * `&`, `%` and `^` in it cannot be re-interpreted. `cd` prints no trailing
+ * separator, so the root itself needs its own end-anchored test. The
+ * separator-suffixed `/b` form covers everything below the root while a
+ * sibling that merely shares the prefix (`C:\a\proj` vs `C:\a\proj-2`) does
+ * not; `/e` accepts the root's own `C:\a\proj`, and a longer line ending in it
+ * is not a valid absolute Windows path. `/l` keeps the pattern literal and
+ * `/i` matches the case-insensitive Windows path. The pattern ends in `\\`
+ * because findstr's CRT argument parser consumes one backslash.
  */
 function cmdProjectGate(root: string): string {
-  return `echo %CD%\\| findstr /i /b /l /c:"${root}\\\\" >nul`;
+  // A root that ends in a separator (a drive root, `C:\`) would end the quoted
+  // literal with a backslash and escape its closing quote, unbalancing the
+  // whole command line. Stripping it also leaves the `/b` form matching the
+  // drive root's own `C:\` cwd.
+  const literal = cmdLiteral(root.replace(/[\\/]+$/, ''));
+  return `cd| findstr /i /b /l /c:${literal}\\\\ >nul || cd| findstr /i /e /l /c:${literal} >nul`;
 }
 
 /**
@@ -327,7 +355,7 @@ function isGatedForProject(command: string, projectRoot: string): boolean {
 }
 
 function isProjectGatedCommand(command: string): boolean {
-  return command.startsWith('if [ "$PWD" = ') || command.startsWith('echo %CD%\\| findstr ');
+  return command.startsWith('if [ "$PWD" = ') || command.startsWith('cd| findstr ');
 }
 
 function scopedTeamDefs(teamDefs: HookDef[], projectRoot: string | undefined, tool: string): HookDef[] {

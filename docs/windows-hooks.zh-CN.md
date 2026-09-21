@@ -6,11 +6,16 @@
 
 ## 摘要（TL;DR）
 
-在 Windows 上，TeamAI 注入的钩子使用裸 `bash` 启动器，会**静默崩溃**（WSL 的
-`bash` 自带 Node 18，无法解析 TeamAI 打包产物），因此钩子实际上处于失效状态——
-`|| true` 把错误吞掉了。此外，`codebuddy` / `workbuddy` 的钩子**根本不会被写入**，
-因为 TeamAI 的 shell 检测（`fs.existsSync('/bin/sh')`）在 Windows 上永远为
-假。
+在较早版本的 TeamAI 上，Windows 注入的钩子使用裸 `bash` 启动器，会**静默崩溃**
+（WSL 的 `bash` 自带 Node 18，无法解析 TeamAI 打包产物），因此钩子实际上处于失效
+状态——`|| true` 把错误吞掉了。同样的版本中，`codebuddy` / `workbuddy` 的钩子
+**根本不会被写入**，因为 shell 检测（`fs.existsSync('/bin/sh')`）在 Windows 上
+永远为假。
+
+当前版本的 `teamai` 已自行处理 Windows，因此下文的用户侧绕行方案仅在旧版本上需要：
+钩子命令通过 Git Bash 的绝对路径启动，且每个 GUI 工具都会解析各自的钩子 shell——
+WorkBuddy 使用其自带的 PortableGit `sh.exe`，**CodeBuddy 使用 cmd.exe**
+（`%ComSpec%`），任何 Windows 安装都提供 cmd.exe。两者都不再被跳过。
 
 持久化的用户侧修复结合两种机制，无论 `teamai` 写入什么都能让钩子触发：
 
@@ -47,7 +52,7 @@
 结尾，崩溃被吞掉、不记录日志——钩子永不触发，但 `teamai doctor` 仍报告它们
 “存在”。
 
-### 故障模式 2 — `hasShell()` 跳过 CodeBuddy / WorkBuddy
+### 故障模式 2 — `hasShell()` 曾跳过 CodeBuddy / WorkBuddy
 
 `src/builtin-hooks.ts` 用 `hasShell()` 来门控依赖 shell 的工具：
 
@@ -65,13 +70,15 @@ export function hasShell(): boolean {
 ```
 
 `/bin/sh` 在 Windows 上不存在，因此 `hasShell()` 为 `false`，`skipToolsWithoutShell()`
-会把 `codebuddy` / `workbuddy`（`SHELL_DEPENDENT_TOOLS`）加入跳过集合。这两个代理
+曾把 `codebuddy` / `workbuddy`（`SHELL_DEPENDENT_TOOLS`）加入跳过集合，这两个代理
 在 Windows 上**完全不会获得钩子**，即使其他一切都正常。
 
-> 说明：`workbuddy` 有一个局部逃生通道——若 `bundledShellFor(tool)` 找到了
-> WorkBuddy 自带的 PortableGit `sh.exe`，`hasShellFor()` 会返回 `true`。但这仅在
-> 该二进制确实存在时才有用，而 `codebuddy` 没有自带 shell，因此在 Windows 上会被
-> 无条件跳过。
+该跳过已不再存在：门控会先向每个工具询问其自身的钩子 shell
+（`hasShellFor()` → `bundledShellFor()`）。`workbuddy` 通过其自带的 PortableGit
+`sh.exe` 解析；`codebuddy` 通过 cmd.exe 解析——CodeBuddy 在 Windows 上的钩子运行器
+是 `%ComSpec%`（它通过 `child_process.spawn(command, [], { shell: true })` 执行钩子
+的 `command`），而任何 Windows 安装都提供 cmd.exe。只有无法解析出 shell 的工具才会
+被跳过。
 
 ---
 
@@ -80,7 +87,8 @@ export function hasShell(): boolean {
 1. **裸 `bash` → WSL Node 18.** Windows 的 `PATH` 会把 `bash` 解析到 WSL 启动器，
    而非 Git Bash；WSL 的 Node 18 无法解析 TeamAI 打包产物。
 2. **`hasShell()` 的 Windows bug.** `fs.existsSync('/bin/sh')` 在 Windows 上永远为假，
-   因此跳过 `codebuddy` / `workbuddy` 的钩子注入。
+   过去会跳过 `codebuddy` / `workbuddy` 的钩子注入；现在由按工具的
+   `bundledShellFor()` 解析器覆盖它们。
 3. **WSL 路径转换.** 在 WSL 侧用 `/mnt/c/...` 路径 `exec` Windows Node 的包装脚本会被
    改写成 `C:\mnt\c\...`，导致 `MODULE_NOT_FOUND`。
 
@@ -173,9 +181,8 @@ dispatch (裸 bash/WSL):  claude=0 codex=0 zcode=0 codebuddy=0 qoder=0 workbuddy
   覆盖，机制 B 仅在 **WSL 保持安装** 时有效。若移除 WSL，裸 `bash` 钩子会再次失效。
 - **机制 B 需要 WSL.** 在没有 WSL 的机器上，只有机制 A（当前配置文件中的 Git Bash
   绝对路径）可用。
-- **不会修补 TeamAI 本身.** 上游的 `hasShell()` bug 与裸 `bash` 默认值并未在
-  `teamai-cli` 内部修复。执行 `npm update teamai-cli` 后需重新应用本修复（或依赖
-  WSL 包装脚本）。
+- **不会修补旧版 TeamAI.** 上游的 `hasShell()` 跳过与裸 `bash` 默认值已在当前
+  `teamai-cli` 中修复；执行 `npm update teamai-cli` 即可获得，之后可移除本绕行方案。
 - **macOS / Linux 无需修复.** 在这些系统上，裸 `bash` 已解析到系统 Node，原生可用。
 - **`teamai doctor` 的 `gh` 检查可能是误报.** 它可能在没有 `APPDATA` 的情况下启动
   `gh`，因此即使 `gh auth status` 显示已登录，它也看不到登录状态。若其他检查均通过，
@@ -186,7 +193,8 @@ dispatch (裸 bash/WSL):  claude=0 codex=0 zcode=0 codebuddy=0 qoder=0 workbuddy
 
 ## 给维护者的修复建议（上游）
 
-两处小改动即可让 Windows 开箱即用：
+两处小改动即可让 Windows 开箱即用——目前均已在 `teamai-cli` 中落地，本节保留作背景
+说明：
 
 ### 1. 让 `hasShell()` 感知 Windows
 
@@ -218,7 +226,8 @@ export function hasShell(): boolean {
 }
 ```
 
-仅此一项改动即可让 `codebuddy` / `workbuddy` 的钩子在 Windows 上被注入。
+当前 `teamai` 通过 `hasShellFor()` → `bundledShellFor()` 实现了这一点，因此
+`codebuddy` / `workbuddy` 的钩子如今会在 Windows 上被注入。
 
 ### 2. 在 Windows 上把 dispatch 命令默认指向 Git Bash 绝对路径
 
