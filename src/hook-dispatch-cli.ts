@@ -24,6 +24,7 @@ import { captureTail } from './utils/exec.js';
 import { createDispatcher, type Dispatcher } from './hook-dispatch.js';
 import { buildHandlerRegistry, filterHandlersForConfig } from './hook-handlers.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
+import { windowsPowerShell } from './utils/powershell.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
 
@@ -287,30 +288,6 @@ async function runPowerShell(script: string): Promise<{ code: number | null; tai
 
 /** Output kept from a failed attempt, for its log line. */
 const TAIL_CHARS = 200;
-
-let resolvedPowerShell: string | undefined;
-
-/**
- * Windows PowerShell by absolute path. The hook inherits whatever environment
- * its host hands over, and that environment need not carry a usable PATH (or
- * even `SystemRoot`), so probe the usual roots — once per process — and only
- * fall back to a PATH lookup when none of them holds the binary.
- */
-function windowsPowerShell(): string {
-  if (resolvedPowerShell) return resolvedPowerShell;
-  const roots = [process.env.SystemRoot, 'C:\\Windows', process.env.windir].filter(
-    (r): r is string => !!r,
-  );
-  resolvedPowerShell = 'powershell.exe';
-  for (const root of roots) {
-    const candidate = path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    if (fs.existsSync(candidate)) {
-      resolvedPowerShell = candidate;
-      break;
-    }
-  }
-  return resolvedPowerShell;
-}
 
 /** Encode a value as a PowerShell single-quoted literal. */
 function psLiteral(value: string): string {
