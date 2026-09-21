@@ -1295,7 +1295,7 @@ Each session row shows the **number of human interventions**. Hover over the cou
 | `toolReject` | User rejected a tool call (permission deny) | A tool_result marked as rejected in the transcript |
 | `correction` | Within 60s after the agent stops, the user submits a follow-up prompt containing a correction keyword ("not right" / "redo" / "wrong" / 「違う」 / 「やり直し」 / etc. — Chinese, English and Japanese built in, plus any team keywords) | The stop → prompt_submit event pattern |
 
-> Privacy: shared intervention statistics contain counts. The local dashboard event stream can retain secret-redacted prompt summaries and AI output for session details; these are not uploaded by this page.
+> Privacy: shared intervention statistics contain counts. The local dashboard event stream can retain secret-redacted prompt summaries (capped at 200 characters) and AI output for session details; `~/.teamai/debug.log` records the same redacted prompt summary. These are not uploaded by this page.
 
 Keywords in a space-separated script (English, Spanish, ...) must appear as a whole word, so Spanish "segundo" does not count as `undo`. Chinese and Japanese keywords match as substrings. The built-in list covers only Chinese, English and Japanese; a correction typed in any other language is not detected until the team adds its own words in `teamai.yaml`. Team words are merged with the built-in list and matched case-insensitively under the same rules:
 
