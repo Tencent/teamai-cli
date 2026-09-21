@@ -2680,6 +2680,9 @@ async function runHookRuleCommand(
       } else if (rec.tool === 'opencode') {
         const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
         await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
+      } else if (rec.tool === 'pi') {
+        const { removePiAgentHook } = await import('./pi-hooks.js');
+        await removePiAgentHook(slug);
       } else {
         const settingsPath = resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
@@ -2720,6 +2723,9 @@ async function runHookRuleCommand(
       } else if (prior.tool === 'opencode') {
         const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
         await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
+      } else if (prior.tool === 'pi') {
+        const { removePiAgentHook } = await import('./pi-hooks.js');
+        await removePiAgentHook(slug);
       } else {
         const priorPath = resolveToolSettingsPath(config, prior.tool);
         await removeAgentHook(priorPath, prior.tool, { slug, command: prior.command });
@@ -2739,6 +2745,9 @@ async function runHookRuleCommand(
     // OpenCode loads plugins from ~/.config/opencode/plugin (user scope).
     const { applyOpencodeAgentHook } = await import('./opencode-hooks.js');
     await applyOpencodeAgentHook({ slug, event, command: cmd, baseDir: getUserHome(), scope: 'user', matcher });
+  } else if (tool === 'pi') {
+    const { applyPiAgentHook } = await import('./pi-hooks.js');
+    await applyPiAgentHook({ slug, event, command: cmd, matcher, timeout });
   } else {
     const settingsPath = resolveToolSettingsPath(config, tool);
     await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
@@ -3351,6 +3360,9 @@ export async function removeAllAgentHooks(): Promise<void> {
       } else if (rec.tool === 'opencode') {
         const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
         await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
+      } else if (rec.tool === 'pi') {
+        const { removePiAgentHook } = await import('./pi-hooks.js');
+        await removePiAgentHook(slug);
       } else {
         const settingsPath = resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });

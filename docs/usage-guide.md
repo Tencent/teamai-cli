@@ -4,7 +4,7 @@
 
 > **teamai-cli** — the team collaboration layer for AI agents
 >
-> **Make every team continuously smarter with AI.** Define how agents work (Team Execution), give them team knowledge (Team Context), and turn real sessions into shared capability (Team Improvement). TeamAI manages Skills, Rules, Docs, Env, MCP, and more across Claude Code, Codex, GitHub Copilot CLI, CodeBuddy, WorkBuddy, OpenCode, Cursor, and other supported agents.
+> **Make every team continuously smarter with AI.** Define how agents work (Team Execution), give them team knowledge (Team Context), and turn real sessions into shared capability (Team Improvement). TeamAI manages Skills, Rules, Docs, Env, MCP, and more across Claude Code, Codex, GitHub Copilot CLI, CodeBuddy, WorkBuddy, OpenCode, Pi, Cursor, and other supported agents.
 
 ---
 
@@ -461,7 +461,7 @@ teamai skill show hai-deploy-test   # View a single skill's source / contributor
 
 `teamai init` already injected Hooks into your AI tools. **`teamai pull` runs automatically every time you start an AI session** — no manual action needed. In project scope, that SessionStart hook first creates the current agent's project root (e.g. `<project>/.claude` when Claude Code opens the repo) if it is missing, then pulls.
 
-*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as [CC], Codex, GitHub Copilot CLI, Cursor, CodeBuddy, WorkBuddy, Qoder, Kiro, OpenCode, Oh My Pi, Hermes, or OpenClaw. Kiro runs the hook when a TeamAI-rendered custom agent is activated in an interactive CLI session; its in-memory built-in default agent is not writable, and non-interactive mode does not fire `agentSpawn`. For tools without a teamai-writable hooks surface such as JoyCode or Gemini CLI, run `teamai pull` manually.)*
+*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as [CC], Codex, GitHub Copilot CLI, Cursor, CodeBuddy, WorkBuddy, Qoder, Kiro, OpenCode, Oh My Pi, Pi, Hermes, or OpenClaw. Kiro runs the hook when a TeamAI-rendered custom agent is activated in an interactive CLI session; its in-memory built-in default agent is not writable, and non-interactive mode does not fire `agentSpawn`. For tools without a teamai-writable hooks surface such as JoyCode or Gemini CLI, run `teamai pull` manually.)*
 
 If you need to sync immediately, you can run it manually:
 
@@ -1381,7 +1381,7 @@ On Windows, the built-in hook dispatch commands that shell out through bash (e.g
 
 ### Team Hooks Declaration
 
-A team can declare custom hooks in the repo's `hooks/hooks.yaml`; `teamai pull` automatically distributes them to all members' AI tools:
+A team can declare custom hooks in the repo's `hooks/hooks.yaml`; `teamai pull` automatically distributes them to supported hook adapters. Pi is currently limited to TeamAI's built-in lifecycle bridge: custom hooks and built-in overrides from this file are not applied to Pi.
 
 ```yaml
 hooks:
@@ -1465,6 +1465,17 @@ Team hooks still come from the team's `hooks/hooks.yaml`: edit that source in th
 - **Rules** are copied into `.opencode/rules/` (or `~/.config/opencode/rules/`), but OpenCode does not auto-scan a rules directory — the files are inert until referenced. teamai therefore adds a `rules/*.md` glob to the `instructions` array in `opencode.json` and removes it again when the team's last rule goes away, editing only that one key and leaving your own `instructions` entries untouched.
 - **Hooks** are delivered as an OpenCode *plugin*, not a settings-file entry — OpenCode has no `hooks` array; it auto-loads JS/TS plugins from **both** `~/.config/opencode/plugin/` and `<project>/.opencode/plugin/`. A plugin present in both dirs is loaded twice and would dispatch every event twice, so teamai keeps exactly one copy: `teamai-hooks.ts` in the user dir, which covers every project. Any project-scope copy left by an earlier layout is deleted on the next sync. This matches the other tools, whose `settings.json` hooks also live in HOME and gate on the `cwd` handed to `hook-dispatch`. The plugin subscribes to OpenCode's own events and shelling out to the same `teamai hook-dispatch` entry point every other tool uses. The event mapping mirrors the Claude built-in set: `session.created` → session-start, `session.idle` → stop, `chat.message` → prompt-submit, `tool.execute.after` → post-tool-use. The plugin forwards the same STDIN payload other agents send (`cwd`, `tool_name`, `tool_input`, `prompt`), and maps OpenCode's lowercase tool ids (`skill`, `todowrite`) back to the PascalCase matchers the handler registry expects. OpenCode cannot inject a hook's stdout back into the session, so hooks run purely for their side effects (status report / sync / update). Note that OpenCode *awaits* its named hooks (`chat.message`, `tool.execute.after`), so those dispatches briefly wait on the `teamai` subprocess before the agent continues; the errors are always swallowed so a hook can never fail the session. Server-pushed agent hooks (`teamai-agent-<slug>.ts`) install into the same user plugin dir.
 - **MCP** servers live under the `mcp` key of the shared `opencode.json` (see the MCP section above).
+
+### Pi Coding Agent
+
+[Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) is supported through its documented skills, instruction, and extension surfaces:
+
+- **Scopes.** Project skills and TeamAI-managed rules are written to `.pi/skills/` and `.pi/rules/`. User-scope copies use `~/.pi/agent/skills/` and `~/.pi/agent/rules/`.
+- **Instructions.** Project instructions use `AGENTS.md`; user instructions use `~/.pi/agent/AGENTS.md`. Pi also accepts `CLAUDE.md` as a project instruction file, but TeamAI keeps the canonical TeamAI block in `AGENTS.md`.
+- **Hooks.** TeamAI generates one user-scoped `teamai-hooks.ts` under `~/.pi/agent/extensions/`. It maps `session_start` → session-start, `before_agent_start` → prompt-submit, and `agent_settled` → stop; `tool_execution_start` caches the tool's input, and `tool_execution_end` dispatches post-tool-use forwarding that cached input as `tool_input` (no separate result/output field — matching the OMP adapter's post-tool-use payload). Pi loads both user and project extension roots, so TeamAI never creates a project copy — a second copy would double-dispatch every event, the same single-copy policy as the OMP adapter. An older TeamAI-managed project copy is removed during the next sync, and injection never overwrites a same-named file that lacks the TeamAI marker. Pi has no settings file for self mode to commit, so a fresh clone still needs one `teamai init`/`pull` on that machine before Pi hooks are active there. Any targeted removal — the explicit `teamai hooks remove` command, or a scoped `teamai uninstall --agent pi` — deletes this shared extension outright, the same single-file removal semantics as the OMP adapter: Pi has no way to scope one shared file to a single project, so it doesn't pretend to preserve it for other projects while the extension keeps firing for this one anyway; files without the TeamAI marker are never removed. `teamai hooks list` always reports this global path. Pi profile overrides (`PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`), which relocate the agent directory, are not supported — same as the OMP adapter — and the default `~/.pi/agent/` layout is used.
+- **Team hooks boundary.** The Pi adapter installs only the built-in lifecycle bridge. Custom team hooks and built-in hook overrides declared in `hooks/hooks.yaml` are skipped with a warning. Full team-hook and per-project ownership semantics require a separate cross-adapter design and are deferred to a follow-up PR.
+- **Server-pushed agent hooks.** HTTP-source hooks are installed as `teamai-agent-<slug>.ts` extensions in the same global extension directory. Unsupported lifecycle events are skipped with a warning.
+- **MCP and subagents.** Pi has no adapter in this phase for MCP or TeamAI custom subagent files.
 
 ### Qoder
 

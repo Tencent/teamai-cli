@@ -59,7 +59,7 @@ describe('detectHomeInstalledAgents', () => {
     await fse.ensureDir(path.join(home, '.codex'));
     await fse.ensureDir(path.join(home, '.claude'));
     const found = await detectHomeInstalledAgents();
-    // candidate order is claude, codex, cursor, copilot, joycode, codebuddy, workbuddy
+    // candidate order is claude, codex, cursor, copilot, pi, joycode, codebuddy, workbuddy
     expect(found).toEqual(['claude', 'codex']);
   });
 
@@ -69,12 +69,13 @@ describe('detectHomeInstalledAgents', () => {
     expect(await detectHomeInstalledAgents(['cursor'])).toEqual(['cursor']);
   });
 
-  it('SELF_MODE_AGENT_CHOICES includes Copilot and JoyCode among the common coding agents', () => {
+  it('SELF_MODE_AGENT_CHOICES includes Pi, Copilot and JoyCode among the common coding agents', () => {
     expect([...SELF_MODE_AGENT_CHOICES]).toEqual([
       'claude',
       'codex',
       'cursor',
       'copilot',
+      'pi',
       'joycode',
       'codebuddy',
       'workbuddy',
@@ -172,8 +173,8 @@ describe('resolveSelfModeSelection (interactive picker: option 1 = Auto)', () =>
   });
 
   it('multiple specific tools preserve choice order', () => {
-    // indices 6 (codebuddy) + 2 (codex) → order follows the input
-    expect(resolveSelfModeSelection([6, 2], detected)).toEqual(['codebuddy', 'codex']);
+    // indices 7 (codebuddy) + 2 (codex) → order follows the input
+    expect(resolveSelfModeSelection([7, 2], detected)).toEqual(['codebuddy', 'codex']);
   });
 
   it('Auto + a specific tool merges detected first, then extras, deduped', () => {

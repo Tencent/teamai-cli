@@ -15,7 +15,7 @@ import {
   resolveToolBaseDir,
   scopedToolPaths,
 } from './types.js';
-import type { HookDef, TeamaiConfig, LocalConfig } from './types.js';
+import type { HookDef, TeamaiConfig, LocalConfig, Scope } from './types.js';
 import { isSelfMode } from './types.js';
 import { activeRoleIds } from './roles.js';
 import { builtinHookDefs, applyBuiltinOverride, skipToolsWithoutShell } from './builtin-hooks.js';
@@ -1272,6 +1272,46 @@ async function reconcileOmpExtension(removeAll = false): Promise<void> {
   }
 }
 
+/** True when Pi looks installed at the user or the resolved project root. */
+async function isPiInstalled(baseDir: string, installedBaseDir?: string): Promise<boolean> {
+  return await pathExists(path.join(getUserHome(), '.pi'))
+    || await pathExists(path.join(installedBaseDir ?? baseDir, '.pi'));
+}
+
+/**
+ * Reconcile the single TeamAI Pi extension in the user agent directory. Pi
+ * also auto-loads a project extensions dir with absolute-path dedup, so
+ * writing a second copy there would dispatch every event twice (the same
+ * single-copy policy as the OMP adapter) — only the user-scope copy is ever
+ * written. A TeamAI-marked project copy left by an earlier revision is
+ * cleaned up when reconciling that project. Mirrors the OMP adapter on
+ * removal too: any `removeAll` pass — a scoped `uninstall --agent pi` or the
+ * explicit `hooks remove` command — deletes the single global copy outright.
+ * Pi has no way to scope a shared file to one project, so a "preserve for
+ * other projects" guarantee was never actually enforceable at dispatch time
+ * anyway (the generated extension fires for every Pi session regardless of
+ * which project asked to be excluded).
+ */
+async function reconcilePiExtension(
+  baseDir: string,
+  removeAll = false,
+  installedBaseDir?: string,
+): Promise<void> {
+  const home = getUserHome();
+  const { injectPiHooks, removePiHooks, removePiProjectHooks } = await import('./pi-hooks.js');
+  const inferredProjectScope = path.resolve(baseDir) !== path.resolve(home);
+  const projectRoot = installedBaseDir ?? (inferredProjectScope ? baseDir : undefined);
+
+  if (projectRoot && path.resolve(projectRoot) !== path.resolve(home)) {
+    await removePiProjectHooks(projectRoot);
+  }
+  if (removeAll) {
+    await removePiHooks();
+    return;
+  }
+  if (await isPiInstalled(baseDir, installedBaseDir)) await injectPiHooks();
+}
+
 /**
  * Inject teamai built-in hooks into all AI tool settings.
  * Only writes to tools whose root directory already exists on disk,
@@ -1285,7 +1325,13 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (filterAgents && !filterAgents.includes(tool)) continue;
     if (skipped.has(tool)) continue;
-    if (paths.settings) {
+    if (tool === 'pi') {
+      try {
+        await reconcilePiExtension(resolvedBaseDir);
+      } catch (e) {
+        log.warn(`Failed to inject Pi hook: ${(e as Error).message}`);
+      }
+    } else if (paths.settings) {
       const toolRoot = path.join(resolvedBaseDir, paths.settings.split('/')[0]);
       if (!await pathExists(toolRoot)) continue;
       const settingsPath = path.join(resolvedBaseDir, paths.settings);
@@ -1341,7 +1387,7 @@ export async function reconcileHooksToAllTools(
   baseDir: string,
   teamDefs: HookDef[],
   manifestPath: string,
-  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string } = {},
+  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string; scope?: Scope } = {},
 ): Promise<void> {
   // Removal is JSON editing and needs no shell, so the gate only applies to
   // injection passes — otherwise tools without a shell could never clean up
@@ -1394,6 +1440,34 @@ export async function reconcileHooksToAllTools(
         await reconcileOmpExtension(opts.removeAll);
       } catch (e) {
         log.warn(`Failed to reconcile OMP hooks: ${(e as Error).message}`);
+      }
+      continue;
+    }
+    if (tool === 'pi') {
+      if (opts.settingsOnly) continue;
+      try {
+        // Only warn about skipped team/override hooks when Pi is actually
+        // installed — Pi is in every team's default toolPaths, so without this
+        // gate teammates who never use Pi see this warning on every
+        // reconcile whenever the team defines a Pi-targeted hook.
+        if (!opts.removeAll && await isPiInstalled(baseDir, opts.installedBaseDir)) {
+          const applicableTeamDefs = teamDefsForTool(teamDefs, 'pi');
+          if (applicableTeamDefs.length > 0) {
+            log.warn(
+              `Pi supports built-in lifecycle hooks only; skipping ${applicableTeamDefs.length} custom team hook(s) from hooks/hooks.yaml`,
+            );
+          }
+          const builtinOverrideCount = (opts.builtinOverride?.disabled?.length ?? 0)
+            + Object.keys(opts.builtinOverride?.overrides ?? {}).length;
+          if (builtinOverrideCount > 0) {
+            log.warn(
+              `Pi supports built-in lifecycle hooks only; skipping ${builtinOverrideCount} built-in hook override(s) from hooks/hooks.yaml`,
+            );
+          }
+        }
+        await reconcilePiExtension(baseDir, opts.removeAll, opts.installedBaseDir);
+      } catch (e) {
+        log.warn(`Failed to reconcile Pi hooks: ${(e as Error).message}`);
       }
       continue;
     }
@@ -1481,6 +1555,14 @@ export async function sweepLegacyProjectHooks(
       log.warn(`Failed to remove legacy OpenCode project plugin: ${(e as Error).message}`);
     }
   }
+  if (toolPaths.pi) {
+    try {
+      const { removePiProjectHooks } = await import('./pi-hooks.js');
+      await removePiProjectHooks(legacy.baseDir);
+    } catch (e) {
+      log.warn(`Failed to remove legacy Pi project extension: ${(e as Error).message}`);
+    }
+  }
 }
 
 /**
@@ -1519,6 +1601,7 @@ export async function reconcileTeamHooksForConfig(
       ? localConfig.projectRoot
       : undefined,
     installedBaseDir: localConfig.scope === 'project' ? (localConfig.projectRoot ?? baseDir) : undefined,
+    scope: localConfig.scope,
   });
 
   const copilotExcluded = disabled?.includes(COPILOT_TOOL_ID) ?? false;

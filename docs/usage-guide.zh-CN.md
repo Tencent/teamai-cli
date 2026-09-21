@@ -4,7 +4,7 @@
 
 > **teamai-cli** — AI Agents 的团队协作层
 >
-> **让每个团队通过 AI 持续变得更聪明。** 统一工作方式（Team Execution）、共享团队 Context（Team Context），并把真实 Session 沉淀成团队能力（Team Improvement）。TeamAI 统一管理 Claude Code、Codex、GitHub Copilot CLI、CodeBuddy、WorkBuddy、OpenCode、Cursor 及其他受支持 Agent 的 Skills、Rules、Docs、Env、MCP 等资源。
+> **让每个团队通过 AI 持续变得更聪明。** 统一工作方式（Team Execution）、共享团队 Context（Team Context），并把真实 Session 沉淀成团队能力（Team Improvement）。TeamAI 统一管理 Claude Code、Codex、GitHub Copilot CLI、CodeBuddy、WorkBuddy、OpenCode、Pi、Cursor 及其他受支持 Agent 的 Skills、Rules、Docs、Env、MCP 等资源。
 
 ---
 
@@ -439,7 +439,7 @@ teamai skill show hai-deploy-test   # 看单个 skill 的来源 / 贡献者 / �
 
 `teamai init` 时已注入 Hooks 到你的 AI 工具中。**每次启动 AI 会话时会自动执行 `teamai pull`**，无需手动操作。在 project scope 下，该 SessionStart hook 会先为当前 Agent 创建项目根目录（例如用 Claude Code 打开仓库时创建 `<project>/.claude`），然后再 pull。
 
-*(注：会话启动自动同步依赖工具的生命周期 Hooks 支持，如 [CC]、Codex、GitHub Copilot CLI、Cursor、CodeBuddy、WorkBuddy、Qoder、Kiro、OpenCode、Oh My Pi、Hermes、OpenClaw 等。Kiro 仅在交互式 CLI 会话激活由 TeamAI 渲染的自定义 agent 时触发该 Hook；其内存中的内置默认 agent 无法写入，非交互模式也不会触发 `agentSpawn`。对于暂无 teamai 可写入 Hooks 的工具（如 JoyCode、Gemini CLI 等），需手动执行 `teamai pull`。)*
+*(注：会话启动自动同步依赖工具的生命周期 Hooks 支持，如 [CC]、Codex、GitHub Copilot CLI、Cursor、CodeBuddy、WorkBuddy、Qoder、Kiro、OpenCode、Oh My Pi、Pi、Hermes、OpenClaw 等。Kiro 仅在交互式 CLI 会话激活由 TeamAI 渲染的自定义 agent 时触发该 Hook；其内存中的内置默认 agent 无法写入，非交互模式也不会触发 `agentSpawn`。对于暂无 teamai 可写入 Hooks 的工具（如 JoyCode、Gemini CLI 等），需手动执行 `teamai pull`。)*
 
 如果需要立即同步，可以手动执行：
 
@@ -1341,7 +1341,7 @@ inject 和 remove 只会操作你实际已安装的工具（即 `~/.<tool>/` 根
 
 ### 团队 Hooks 声明
 
-团队可在仓库 `hooks/hooks.yaml` 中声明自定义 hooks，`teamai pull` 自动分发到所有成员的 AI 工具：
+团队可在仓库 `hooks/hooks.yaml` 中声明自定义 hooks，`teamai pull` 会自动分发到支持团队 Hooks 的适配器。Pi 目前仅支持 TeamAI 内置生命周期桥接；此文件中的自定义 Hooks 和内置 Hook 覆盖不会应用到 Pi。
 
 ```yaml
 hooks:
@@ -1425,6 +1425,17 @@ GitHub Copilot CLI 已支持其官方自定义指令、Rules、Skills、自定�
 - **Rules** 会被复制到 `.opencode/rules/`（或 `~/.config/opencode/rules/`），但 OpenCode 不会自动扫描 rules 目录——文件在被引用前是惰性的。因此 teamai 会往 `opencode.json` 的 `instructions` 数组里加一条 `rules/*.md` glob，并在团队最后一条 rule 消失时再把它移除，且只编辑这一个键、不动你自己的 `instructions` 条目。
 - **Hooks** 以 OpenCode *plugin* 形式交付，而非配置文件条目——OpenCode 没有 `hooks` 数组，它会**同时**加载 `~/.config/opencode/plugin/` 和 `<project>/.opencode/plugin/` 下的 JS/TS 插件。两个目录都有插件时会被加载两次，每个事件也就派发两次，因此 teamai 只保留一份：写在用户目录的 `teamai-hooks.ts`，覆盖所有项目；早期布局残留的项目级副本会在下次同步时被删除。这与其他工具一致——它们的 `settings.json` hooks 同样放在 HOME，靠传给 `hook-dispatch` 的 `cwd` 做作用域判断。插件订阅 OpenCode 自己的事件，并 shell 到其他所有工具共用的 `teamai hook-dispatch` 入口。事件映射对齐 Claude 内置集合：`session.created` → session-start、`session.idle` → stop、`chat.message` → prompt-submit、`tool.execute.after` → post-tool-use。插件会转发与其他工具一致的 STDIN 负载（`cwd`、`tool_name`、`tool_input`、`prompt`），并把 OpenCode 的小写工具 id（`skill`、`todowrite`）映射回 handler 注册表期望的 PascalCase matcher。OpenCode 无法把 hook 的 stdout 回注到会话，因此 hooks 只为副作用运行（状态上报 / 同步 / 更新）。注意 OpenCode 会 **await** 它的具名 hook（`chat.message`、`tool.execute.after`），所以这两个事件的派发会短暂等待 `teamai` 子进程后 agent 才继续；错误始终被吞掉，hook 永远不会让会话失败。服务端下发的 agent hook（`teamai-agent-<slug>.ts`）同样装在这个用户级 plugin 目录下。
 - **MCP** server 位于共享 `opencode.json` 的 `mcp` 键下（详见上文 MCP 章节）。
+
+### Pi Coding Agent
+
+[Pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) 通过其公开的 Skills、指令文件和扩展机制接入：
+
+- **作用域。** 项目级 Skills 和 TeamAI 管理的 Rules 写入 `.pi/skills/`、`.pi/rules/`；用户级副本写入 `~/.pi/agent/skills/`、`~/.pi/agent/rules/`。
+- **指令文件。** 项目级使用 `AGENTS.md`，用户级使用 `~/.pi/agent/AGENTS.md`。Pi 也接受项目级 `CLAUDE.md`，但 TeamAI 将规范的 TeamAI 区块保留在 `AGENTS.md`。
+- **Hooks。** TeamAI 只在用户级 `~/.pi/agent/extensions/` 生成一份 `teamai-hooks.ts`，把 `session_start` 映射为 session-start、`before_agent_start` 映射为 prompt-submit、`agent_settled` 映射为 stop；`tool_execution_start` 缓存工具输入，`tool_execution_end` 派发 post-tool-use 时把缓存的输入转发为 `tool_input`（不带单独的结果/输出字段，与 OMP 适配器的 post-tool-use payload 一致）。Pi 会同时加载用户级与项目级扩展目录，因此 TeamAI 不创建项目副本——第二份副本会导致每个事件被派发两次，这与 OMP 适配器的单副本策略一致。早期版本遗留且带 TeamAI 标记的项目副本会在下次同步时移除，注入逻辑也不会覆盖没有 TeamAI 标记的同名文件。Pi 没有可供 self mode 提交的设置文件，所以 fresh clone 仍需在该机器上手动跑一次 `teamai init`/`pull` 才能激活 Pi hooks。任何一次显式移除——`teamai hooks remove`，或者某个 scope 下的 `teamai uninstall --agent pi`——都会直接删除这份共享扩展，和 OMP 适配器的单文件删除语义完全一致：Pi 没有办法把一份共享文件限定在某一个项目里，所以不会假装"为其他项目保留"却让这份扩展继续对当前项目触发；没有 TeamAI 标记的同名文件不会被删除。`teamai hooks list` 始终显示这个全局路径。Pi 的 profile 覆盖项（`PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`，会迁移 agent 目录）暂不支持，与 OMP 适配器一致，使用默认的 `~/.pi/agent/` 布局。
+- **团队 Hooks 边界。** Pi 适配器只安装内置生命周期桥接。`hooks/hooks.yaml` 声明的自定义团队 Hooks 和内置 Hook 覆盖会被跳过并给出警告。完整团队 Hooks 与逐项目归属语义需要单独的跨适配器设计，留待后续 PR。
+- **服务端下发的 Agent Hooks。** HTTP source hooks 会以同一用户级扩展目录中的 `teamai-agent-<slug>.ts` 形式安装。不支持的生命周期事件会警告并跳过。
+- **MCP 与 Subagents。** 本阶段没有为 Pi 接入 MCP 或 TeamAI 自定义 subagent 文件适配器。
 
 ### Qoder
 

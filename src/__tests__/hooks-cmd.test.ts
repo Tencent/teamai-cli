@@ -1,4 +1,6 @@
 import path from 'node:path';
+import os from 'node:os';
+import fse from 'fs-extra';
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 
 // ── Mocks ────────────────────────────────────────────────
@@ -328,7 +330,7 @@ describe('hooksRemove', () => {
             expect.any(String),
             [],
             expect.stringContaining('managed-hooks.json'),
-            { removeAll: true },
+            { removeAll: true, scope: 'user', installedBaseDir: undefined },
         );
         expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Hooks removed'));
     });
@@ -348,7 +350,11 @@ describe('hooksRemove', () => {
         // <projectRoot> cleanup is delegated to the shared sweep helper.
         expect(mockedReconcile).toHaveBeenCalledTimes(1);
         expect(mockedReconcile).toHaveBeenCalledWith(
-            mockTeamConfig.toolPaths, '/home/testuser', [], expect.any(String), { removeAll: true },
+            mockTeamConfig.toolPaths,
+            '/home/testuser',
+            [],
+            expect.any(String),
+            { removeAll: true, scope: 'project', installedBaseDir: '/path/to/project' },
         );
         const userManifest = mockedReconcile.mock.calls[0][3] as string;
         expect(userManifest).toContain('/home/testuser');
@@ -381,8 +387,32 @@ describe('hooksRemove', () => {
         // returns null for self mode (see types.test.ts).
         expect(mockedReconcile).toHaveBeenCalledTimes(1);
         expect(mockedReconcile).toHaveBeenCalledWith(
-            mockTeamConfig.toolPaths, '/path/to/project', [], expect.any(String), { removeAll: true },
+            mockTeamConfig.toolPaths,
+            '/path/to/project',
+            [],
+            expect.any(String),
+            { removeAll: true, scope: 'project', installedBaseDir: '/path/to/project' },
         );
+    });
+
+    it('explicit project removal deletes the shared Pi extension', async () => {
+        const tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-hooks-remove-pi-'));
+        const restoreHome = mockHome(tmp);
+        const globalPiHook = path.join(tmp, '.pi', 'agent', 'extensions', 'teamai-hooks.ts');
+        await fse.ensureDir(path.dirname(globalPiHook));
+        await fse.writeFile(globalPiHook, '// [teamai] hooks extension');
+        mockedAutoDetectInit.mockResolvedValue({
+            localConfig: { ...mockLocalConfig, scope: 'project', projectRoot: '/path/to/project' },
+            teamConfig: { toolPaths: { pi: { skills: '.pi/skills' } } },
+        });
+
+        try {
+            await hooksRemove({});
+            expect(await fse.pathExists(globalPiHook)).toBe(false);
+        } finally {
+            restoreHome();
+            await fse.remove(tmp);
+        }
     });
 
     it('removes standalone Copilot hooks under COPILOT_HOME', async () => {

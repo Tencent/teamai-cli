@@ -1742,6 +1742,23 @@ describe('local-agent: cmds[] migration', () => {
     expect(mine[0].hooks[0].timeout).toBe(45);
   });
 
+  it('passes the configured timeout through to a Pi agent hook extension', async () => {
+    const acks = await runResponse({
+      cmds: [{
+        id: 45, type: 'install_hook_rule', handle_type: 'hook', slug: 'pi-slow',
+        event: 'SessionStart', cmd: 'echo slow', timeout: 45, scope: 'user',
+      }],
+    }, undefined, 'pi');
+    expect(acks.find((a) => a.id === 45)?.status).toBe('success');
+    const extension = await fse.readFile(
+      path.join(tmpDir, '.pi', 'agent', 'extensions', 'teamai-agent-pi-slow.ts'),
+      'utf8',
+    );
+    expect(extension).toContain('}, 45000);');
+    const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'agent-hooks.json'));
+    expect(manifest['pi-slow']).toMatchObject({ tool: 'pi', timeout: 45 });
+  });
+
   it('install_hook_rule writes a codex hook (no description, command-matched)', async () => {
     await fse.ensureDir(path.join(tmpDir, '.codex'));
     const cmd23 = {

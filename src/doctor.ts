@@ -32,6 +32,7 @@ import {
  * an auth probe on every sync.
  */
 export type CheckSource = 'local' | 'provider';
+import { hasPiHooks } from './pi-hooks.js';
 
 export interface Check {
   name: string;
@@ -167,6 +168,17 @@ async function buildHookChecks(
 ): Promise<Check[]> {
   const checks: Check[] = [];
   for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (tool === 'pi') {
+      const installed = await isToolInstalledForConfig(tool, paths.skills ?? '.pi/skills', localConfig);
+      if (!installed) continue;
+      checks.push({
+        name: 'teamai hooks in pi extension',
+        source: 'local',
+        check: async () => hasPiHooks(),
+        fix: 'Run `teamai hooks inject` to inject/update hooks',
+      });
+      continue;
+    }
     const hookPath = paths.hooks
       ? path.join(resolveToolBaseDir(tool, localConfig), paths.hooks)
       : paths.settings

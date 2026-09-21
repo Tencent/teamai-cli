@@ -14,6 +14,7 @@ import {
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { pathExists } from './utils/fs.js';
+import { hasPiHooks, removePiHooks, resolvePiExtensionsDir, PI_HOOK_FILE } from './pi-hooks.js';
 
 type HookListStatus = HookStatus | 'not configured';
 
@@ -91,6 +92,15 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
     const rows: HookListRow[] = [];
 
     for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+        if (tool === 'pi') {
+            const hookPath = path.join(resolvePiExtensionsDir(), PI_HOOK_FILE);
+            rows.push({
+                tool,
+                status: await hasPiHooks() ? 'installed' : 'missing',
+                settingsPath: formatDisplayPath(hookPath),
+            });
+            continue;
+        }
         const hookPath = paths.hooks
             ? path.join(resolveToolBaseDir(tool, localConfig), paths.hooks)
             : paths.settings
@@ -154,7 +164,11 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     const { localConfig, teamConfig } = await autoDetectInit();
 
     const { baseDir, manifestPath } = resolveHookScope(localConfig);
-    await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, { removeAll: true });
+    await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, [], manifestPath, {
+        removeAll: true,
+        scope: localConfig.scope,
+        installedBaseDir: localConfig.scope === 'project' ? localConfig.projectRoot : undefined,
+    });
 
     const copilotPaths = scopedToolPaths(teamConfig, localConfig)[COPILOT_TOOL_ID];
     if (copilotPaths?.hooks) {
@@ -175,6 +189,13 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     // the primary target itself when projectRoot IS the home dir), and never
     // re-running on the primary target in self mode.
     await sweepLegacyProjectHooks(teamConfig.toolPaths, localConfig);
+
+    // Pi has one shared user extension. `hooks remove` is an explicit global
+    // hook-disable action even when invoked from a project; project uninstall
+    // follows scope ownership separately and preserves this file.
+    if (teamConfig.toolPaths.pi) {
+        await removePiHooks();
+    }
 
     log.success('Hooks removed from all AI tool settings');
 }

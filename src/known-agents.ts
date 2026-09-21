@@ -18,7 +18,7 @@ import { getUserHome } from './utils/home.js';
  * against the user's HOME in non-interactive contexts. Order is the display order.
  * Kept small on purpose — the common coding agents, not the full KNOWN_AGENTS list.
  */
-export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'copilot', 'joycode', 'codebuddy', 'workbuddy'] as const;
+export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'copilot', 'pi', 'joycode', 'codebuddy', 'workbuddy'] as const;
 
 /**
  * Normalize the `--agent` option into a deduplicated id list.
@@ -93,6 +93,7 @@ export const KNOWN_AGENTS: KnownAgent[] = [
   { id: 'amp', displayName: 'Amp', category: 'coding', skillsPath: '.amp/skills' },
   { id: 'augment', displayName: 'Augment', category: 'coding', skillsPath: '.augment/skills' },
   { id: 'copilot', displayName: 'Copilot', category: 'coding', skillsPath: '.copilot/skills' },
+  { id: 'pi', displayName: 'Pi Coding Agent', category: 'coding', skillsPath: '.pi/skills' },
   { id: 'factory', displayName: 'Factory Droid', category: 'coding', skillsPath: '.factory/skills' },
   { id: 'hermes', displayName: 'Hermes', category: 'coding', skillsPath: '.hermes/skills' },
   { id: 'junie', displayName: 'Junie', category: 'coding', skillsPath: '.junie/skills' },

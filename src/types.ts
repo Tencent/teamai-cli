@@ -406,6 +406,23 @@ export const TeamaiConfigSchema = z.object({
         agents: '.omp/agent/agents',
       },
     },
+    // Pi Coding Agent: skills/rules/extensions live under the agent root. Pi
+    // discovers global context from ~/.pi/agent/AGENTS.md and project context
+    // from AGENTS.md/CLAUDE.md walking up the workspace tree. Hooks are
+    // TypeScript extensions rather than a settings hook list, so the adapter
+    // keeps one user extension and forwards the active cwd to hook-dispatch.
+    // Profile overrides (PI_CODING_AGENT_DIR / PI_CONFIG_DIR) that relocate
+    // the agent dir are not supported, same as the OMP adapter.
+    pi: {
+      skills: '.pi/skills',
+      rules: '.pi/rules',
+      claudemd: 'AGENTS.md',
+      userScope: {
+        skills: '.pi/agent/skills',
+        rules: '.pi/agent/rules',
+        claudemd: '.pi/agent/AGENTS.md',
+      },
+    },
     codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' },
     openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules', claudemd: '.openclaw/workspace/AGENTS.md' },
     hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
