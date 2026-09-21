@@ -224,6 +224,7 @@ describe('GitHub Copilot adapter', () => {
     expect(parsed.hooks.UserPromptSubmit).toBeDefined();
     expect(parsed.hooks.PostToolUse).toBeDefined();
     expect(parsed.hooks.Stop).toBeDefined();
+    expect(parsed.hooks.SessionEnd).toBeDefined();
     expect(parsed.hooks.SessionStart[0]).toEqual(expect.objectContaining({
       type: 'command',
       bash: expect.stringContaining('teamai hook-dispatch session-start --tool copilot'),
@@ -232,7 +233,10 @@ describe('GitHub Copilot adapter', () => {
       timeoutSec: expect.any(Number),
     }));
     expect(parsed.hooks.PostToolUse).toEqual(expect.arrayContaining([
-      expect.objectContaining({ matcher: 'Skill' }),
+      expect.objectContaining({
+        matcher: 'skill',
+        command: expect.stringContaining('--matcher Skill'),
+      }),
       expect.objectContaining({ matcher: 'TodoWrite' }),
     ]));
     expect(parsed.hooks.PostToolUse.some((entry) => entry.matcher === undefined)).toBe(true);

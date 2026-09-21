@@ -3,6 +3,7 @@ import path from 'node:path';
 import { log } from './utils/logger.js';
 import { normalizeToolName } from './utils/tool-names.js';
 import {
+  getCopilotHome,
   SKILL_NAME_REGEX,
   type UsageEvent,
 } from './types.js';
@@ -123,24 +124,29 @@ const SKILL_DIRS = [
   '.openclaw/skills',
   '.hermes/skills',
 ];
+const PROJECT_SKILL_DIRS = [...SKILL_DIRS, '.github/skills'];
 
 /**
  * Check whether a skill actually exists on disk (has a SKILL.md in any tool's skills directory).
  * This prevents tracking phantom skills from typos or path inputs like "/data".
  *
- * Performance: Checks at most 12 directories (6 user + 6 project) with a single stat() each — sub-millisecond.
+ * Performance: Checks a bounded list of user and project directories with one stat() each.
  */
 export async function skillExistsOnDisk(skillName: string): Promise<boolean> {
   const home = getUserHome();
+  const userSkillDirs = [
+    ...SKILL_DIRS.map((dir) => path.join(home, dir)),
+    path.join(getCopilotHome(), 'skills'),
+  ];
   // Check user-level directories
-  for (const dir of SKILL_DIRS) {
-    const skillMd = path.join(home, dir, skillName, 'SKILL.md');
+  for (const dir of userSkillDirs) {
+    const skillMd = path.join(dir, skillName, 'SKILL.md');
     if (await pathExists(skillMd)) return true;
   }
   // Check project-level directories (cwd)
   const cwd = process.cwd();
   if (path.resolve(cwd) !== path.resolve(home)) {
-    for (const dir of SKILL_DIRS) {
+    for (const dir of PROJECT_SKILL_DIRS) {
       const skillMd = path.join(cwd, dir, skillName, 'SKILL.md');
       if (await pathExists(skillMd)) return true;
     }

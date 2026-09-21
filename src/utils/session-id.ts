@@ -18,8 +18,9 @@ export interface DeriveSessionIdOptions {
  *
  * Priority:
  *   1. Explicit `session_id` field from the hook payload
- *   2. `CLAUDE_SESSION_ID` environment variable
- *   3. `pid-${process.ppid ?? process.pid}` (or `pid-${ppid}-${cwd}` when includeCwd is true)
+ *   2. Explicit `sessionId` field from camelCase hook payloads
+ *   3. `CLAUDE_SESSION_ID` environment variable
+ *   4. `pid-${process.ppid ?? process.pid}` (or `pid-${ppid}-${cwd}` when includeCwd is true)
  */
 export function deriveSessionId(
     data: Record<string, unknown>,
@@ -27,6 +28,10 @@ export function deriveSessionId(
 ): string {
     if (typeof data.session_id === 'string' && data.session_id) {
         return data.session_id;
+    }
+
+    if (typeof data.sessionId === 'string' && data.sessionId) {
+        return data.sessionId;
     }
 
     if (process.env.CLAUDE_SESSION_ID) {

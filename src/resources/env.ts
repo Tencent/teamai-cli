@@ -29,6 +29,46 @@ export type EnvYamlRead =
   | { ok: false; reason: string };
 
 /**
+ * Report the one env.yaml shape mistake zod cannot surface on its own: a
+ * mapping that has no top-level `variables:` key but does have at least one
+ * other top-level key. That is what a bare `FOO: bar` list looks like, and
+ * also what a misspelling looks like.
+ *
+ * `variables` is declared with `.default([])`, and zod drops unknown keys
+ * without a word, so such a file parses cleanly as "no variables": every env
+ * variable silently stops being delivered, with nothing in the output
+ * explaining why (#662).
+ *
+ * Reported from `pullForScope`, which is the only place that can — it skips
+ * the env resource as soon as `countEnvVars` reports 0, so the check cannot
+ * live in `pullItem`. `describeEnvYamlShapeProblemAt` reads the file and
+ * applies this to it.
+ *
+ * Only this shape is reported. Every other shape stays permissive on purpose —
+ * most importantly a valid `variables:` list that also carries an extra
+ * top-level key, which must keep being delivered rather than start failing to
+ * parse.
+ *
+ * @returns the warning to log, or `null` when there is nothing to report.
+ */
+export function describeEnvYamlShapeProblem(raw: unknown): string | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+
+  const keys = Object.keys(raw as Record<string, unknown>);
+  if (keys.length === 0 || keys.includes('variables')) return null;
+
+  return [
+    'env.yaml has no top-level `variables:` key, so no environment variable was delivered.',
+    `Top-level keys found instead: ${keys.map(k => `\`${k}\``).join(', ')}.`,
+    '`variables:` must be present and hold a list of `key`/`value` entries, e.g.',
+    '',
+    '  variables:',
+    '    - key: FOO',
+    '      value: bar',
+  ].join('\n');
+}
+
+/**
  * Mask an env variable value for display.
  * Shows first 2 chars + "****", or "****" for very short values.
  */
@@ -45,6 +85,18 @@ export function maskEnvValue(value: string): string {
  */
 function shellQuoteValue(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * True for a path a shell must read the Windows way: a drive-letter path
+ * (`C:\...` or `C:/...`) or a UNC path (`\\server\share`).
+ *
+ * A POSIX path is deliberately excluded: there a backslash is an ordinary
+ * filename character, not a separator, so collapsing every one of them would
+ * silently point the shell at a different directory.
+ */
+function isWindowsFormPath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }
 
 /**
@@ -252,6 +304,28 @@ export class EnvHandler extends ResourceHandler {
   }
 
   /**
+   * Read an env.yaml and report the shape problem `describeEnvYamlShapeProblem`
+   * detects, or `null` when the file yields a usable shape.
+   *
+   * `countEnvVars` answers the different question of "how many variables", and
+   * a file with no `variables:` key answers 0 just like a genuinely empty one —
+   * which is why the caller needs this separate probe before it skips the
+   * resource.
+   */
+  async describeEnvYamlShapeProblemAt(sourcePath: string): Promise<string | null> {
+    const content = await readFileSafe(sourcePath);
+    if (!content) return null;
+
+    try {
+      return describeEnvYamlShapeProblem(YAML.parse(content));
+    } catch {
+      // Malformed YAML never yields a mapping to inspect; it is a separate
+      // failure, left to the caller's own handling.
+      return null;
+    }
+  }
+
+  /**
    * Parse the env.yaml file and return variables.
    */
   async parseEnvYaml(filePath: string): Promise<EnvYaml> {
@@ -306,12 +380,32 @@ export class EnvHandler extends ResourceHandler {
 
   /**
    * Generate the shell block with a source line (instead of inline exports).
+   *
+   * The block is read back by a POSIX shell (bash/zsh/sh) even on Windows,
+   * where `teamaiHome` is a native path such as `C:\Users\me\.teamai`. The
+   * block used to interpolate that path as-is, so on Windows `[ -f ... ]`
+   * tested a backslash path the shell treats as an escape sequence, and
+   * `source` never ran — while nothing reported a failure (#661).
+   *
+   * A Windows-form home is rewritten to forward slashes, which Git Bash, WSL
+   * and MSYS all accept, so one block loads on every shell the CLI supports.
+   * The rewrite keys off the path's own shape, never `path.sep`, so the output
+   * is byte-identical across platforms and the Windows form stays assertable
+   * from the Linux/macOS CI runners. A POSIX home is passed through untouched:
+   * its backslashes are filename characters, not separators.
+   *
+   * The path is quoted unconditionally (`shellQuoteValue`). It sits inside a
+   * `[ -f ... ]` test, so an unquoted space or glob metacharacter in a home
+   * directory would break that test and split the `source` builtin. Quoting
+   * only "when needed" would put the quoted form out of reach of the runner.
    */
   generateShellBlock(teamaiHome: string): string {
+    const shellHome = isWindowsFormPath(teamaiHome) ? teamaiHome.replace(/\\/g, '/') : teamaiHome;
+    const envShPath = shellQuoteValue(`${shellHome}/env.sh`);
     const lines = [
       TEAMAI_ENV_START,
       '# DO NOT EDIT: This section is auto-managed by teamai',
-      `[ -f ${teamaiHome}/env.sh ] && source ${teamaiHome}/env.sh`,
+      `[ -f ${envShPath} ] && source ${envShPath}`,
       TEAMAI_ENV_END,
     ];
     return lines.join('\n');

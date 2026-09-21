@@ -26,6 +26,7 @@ import { buildHandlerRegistry, filterHandlersForConfig } from './hook-handlers.j
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { COPILOT_TOOL_ID } from './types.js';
 
 /**
  * Max time to wait for STDIN EOF before proceeding with whatever was received.
@@ -348,14 +349,12 @@ export function parseStdin(raw: string, event: string): Record<string, unknown> 
       // Degrade instead of short-circuiting: handlers that depend on stdin
       // fields (votes-sync, contribute-check) self-skip when transcript_path
       // is absent, while background handlers that don't read stdin
-      // (version-check, etc.) still get to run. Include a bounded preview so
-      // concurrent STDIN corruption is diagnosable in debug.log.
-      const preview = raw.length > 160
-        ? `${raw.slice(0, 80)}...${raw.slice(-80)}`
-        : raw;
+      // (version-check, etc.) still get to run. Hook payloads can contain
+      // prompts, credentials, and tool arguments, so diagnostics record only
+      // structural metadata and never any part of the raw body.
       log.debug(
         `hook-dispatch: failed to parse STDIN JSON for event=${event}` +
-          ` (len=${raw.length}, body=${JSON.stringify(preview)})`,
+          ` (len=${raw.length})`,
       );
       stdin = salvageStdinFields(raw);
     }
@@ -377,6 +376,7 @@ export function parseStdin(raw: string, event: string): Record<string, unknown> 
   if (!stdin.hook_event_name) {
     const EVENT_MAP: Record<string, string> = {
       'session-start': 'SessionStart',
+      'session-end': 'SessionEnd',
       'stop': 'Stop',
       'post-tool-use': 'PostToolUse',
       'prompt-submit': 'UserPromptSubmit',
@@ -402,6 +402,14 @@ async function runDispatch(
     log.debug(`hook-dispatch: handler "${err.handlerName}" failed: ${err.error.message}`);
   }
   return result.output;
+}
+
+/** Keep the detached Copilot fallback stable without persisting a workspace path. */
+export function deriveDispatchSessionId(
+  stdin: Record<string, unknown>,
+  tool: string,
+): string {
+  return deriveSessionId(stdin, { includeCwd: tool.toLowerCase() !== COPILOT_TOOL_ID });
 }
 
 /**
@@ -456,7 +464,7 @@ export async function hookDispatchCli(
       // this, hosts that omit session_id produce different PID-based IDs and
       // the foreground and post-pull paths can claim the same hint twice.
       if (typeof stdin.session_id !== 'string' || !stdin.session_id) {
-        stdin.session_id = deriveSessionId(stdin, { includeCwd: true });
+        stdin.session_id = deriveDispatchSessionId(stdin, tool);
       }
       settling = spawnBackground(event, tool, matcher, JSON.stringify(stdin), cwd);
     }

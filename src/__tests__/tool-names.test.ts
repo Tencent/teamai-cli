@@ -13,6 +13,7 @@ describe('normalizeToolName', () => {
     expect(normalizeToolName('web_fetch')).toBe('WebFetch');
     expect(normalizeToolName('read_file')).toBe('Read');
     expect(normalizeToolName('task')).toBe('Task');
+    expect(normalizeToolName('skill')).toBe('Skill');
   });
 
   it('passes through CLI-style names unchanged', () => {

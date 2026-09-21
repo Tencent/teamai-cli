@@ -672,6 +672,35 @@ async function cleanupTombstonedResources(
  * Pull resources for a single scope. This is the core sync logic extracted
  * from the original pull() function to support both user and project scope.
  */
+/**
+ * Report the one shape that makes an env count of 0 a mistake rather than an
+ * empty file: no top-level `variables:` key, which zod accepts without a word.
+ * The env resource is skipped the moment its count reads 0, so this is the only
+ * place the check can run (#662).
+ *
+ * Called from both the full sync and the "Already synced" fast path. A machine
+ * that recorded `lastPullRev` before the file was mangled keeps that rev and
+ * takes the fast path on every later pull, so the Step 2 call site alone would
+ * never reach it — the misconfiguration would stay invisible.
+ */
+async function warnIfEnvYamlShapeIsWrong(
+  freshConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<void> {
+  try {
+    const envHandler = getHandler('env') as EnvHandler;
+    const envItems = await envHandler.scanTeamForPull(freshConfig, localConfig);
+    if (envItems.length === 0) return;
+    const varCount = await envHandler.countEnvVars(envItems[0].sourcePath);
+    if (varCount !== 0) return;
+    const shapeProblem = await envHandler.describeEnvYamlShapeProblemAt(envItems[0].sourcePath);
+    if (shapeProblem) log.warn(shapeProblem);
+  } catch (e) {
+    // Never let a diagnostic take down the pull it is diagnosing.
+    log.debug(`env.yaml shape check skipped: ${(e as Error).message}`);
+  }
+}
+
 async function pullForScope(
   localConfig: LocalConfig,
   options: GlobalOptions,
@@ -760,6 +789,11 @@ async function pullForScope(
     return;
   }
 
+  // Hoisted above the revision fast path: the env.yaml shape check has to run
+  // even on a pull that skips the sync itself.
+  const resourceTypes: readonly ResourceType[] = policy.resourceTypes
+    ?? ['skills', 'rules', 'docs', 'env', 'agents'];
+
   // Step 1b: Skip sync if the repo version hasn't changed since last pull
   let currentTargets: string[] | null = null;
   if (!options.force && !options.dryRun && !submodulesChanged) {
@@ -791,6 +825,11 @@ async function pullForScope(
           // CLI keeps the copies that CLI failed to delete, and its stored rev
           // never moves again. Re-run the cleanup so the upgrade reaches it (#576).
           await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel);
+          // A repo that has not moved can still carry a malformed env.yaml, and
+          // the Step 2 check below is unreachable from this branch.
+          if (resourceTypes.includes('env')) {
+            await warnIfEnvYamlShapeIsWrong(freshConfig, localConfig);
+          }
           return;
         }
 
@@ -805,8 +844,6 @@ async function pullForScope(
   const excludedSkills = new Set(localConfig.excludedSkills ?? []);
 
   // Step 2: Sync each resource type
-  const resourceTypes: readonly ResourceType[] = policy.resourceTypes
-    ?? ['skills', 'rules', 'docs', 'env', 'agents'];
   let totalSynced = 0;
   let desiredSkillNames: Set<string> | null = null;
   let knownRepoSkillNames: Set<string> | null = null;
@@ -859,7 +896,16 @@ async function pullForScope(
     if (type === 'env') {
       const envHandler = handler as EnvHandler;
       const varCount = await envHandler.countEnvVars(items[0].sourcePath);
-      if (varCount === 0) continue;
+      if (varCount === 0) {
+        // Report the one shape that makes a count of 0 a mistake rather than an
+        // empty file: no top-level `variables:` key, which zod accepts without
+        // a word. The resource is skipped right here, so this is the only point
+        // a check can run from — inside `pullItem` it would never execute on a
+        // real pull, and the misconfiguration would stay invisible (#662).
+        const shapeProblem = await envHandler.describeEnvYamlShapeProblemAt(items[0].sourcePath);
+        if (shapeProblem) log.warn(shapeProblem);
+        continue;
+      }
 
       if (options.dryRun) {
         log.info(`[${scopeLabel}] [dry-run] Would sync ${varCount} env variable(s)`);
