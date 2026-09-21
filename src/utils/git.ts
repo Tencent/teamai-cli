@@ -109,10 +109,69 @@ function isNativeExecutable(file: string): boolean {
 }
 
 /**
+ * Disables git's interactive credential prompt for the whole teamai process.
+ *
+ * With this unset, a push with missing credentials opens a username/password
+ * prompt on the tty — and since teamai runs git as a subprocess with no tty,
+ * the push hangs forever, stalling init before the local config is written.
+ * `GIT_TERMINAL_PROMPT=0` makes git fail fast with "could not read Username"
+ * instead.
+ *
+ * Set once at process start (see {@link disableGitTerminalPrompt}) so every
+ * spawned git subprocess inherits it. We do NOT use simple-git's `.env()`
+ * chainable for this: both its overloads *replace* the child's entire
+ * environment (`this.env` is used verbatim as the spawn `env`, not merged
+ * with `process.env`), which would drop PATH/HOME and break git itself.
+ */
+const NO_PROMPT_VAR = 'GIT_TERMINAL_PROMPT' as const;
+const NO_PROMPT_VAL = '0' as const;
+
+/**
+ * Set `GIT_TERMINAL_PROMPT=0` process-wide so no git subprocess can block on
+ * an interactive credential prompt. Idempotent; safe to call multiple times.
+ * Preserves an explicit user override if one is already set.
+ */
+export function disableGitTerminalPrompt(): void {
+  if (process.env[NO_PROMPT_VAR] === undefined) {
+    process.env[NO_PROMPT_VAR] = NO_PROMPT_VAL;
+  }
+}
+
+/**
+ * Block timeout for git subprocesses spawned during `teamai init` pushes.
+ * simple-git's `timeout.block` kills the spawned process when it produces no
+ * output for this long (unlike `withTimeout`, a Promise.race that only stops
+ * awaiting while the child keeps running and holds the Node event loop open).
+ *
+ * Scoped to init's network pushes only: a global ceiling here would also kill
+ * legitimate slow clones/fetches/rebases in unrelated commands. The env var
+ * lets a slow link or a very large team repo raise the ceiling without a new
+ * release. Read at call time (not module load) so tests can override it.
+ *
+ * Validates the env var: a non-numeric, negative, or non-finite value falls
+ * back to the default rather than reaching simple-git (which would either
+ * silently disable the timeout or misbehave).
+ */
+export function initPushBlockTimeoutMs(): number {
+  const raw = process.env.TEAMAI_INIT_PUSH_TIMEOUT_MS;
+  if (raw !== undefined) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 30_000;
+}
+
+/**
  * Create a SimpleGit instance for a given base path.
  *
  * Authentication is handled by the provider's remote URL or by normal Git
  * facilities such as credential helpers, SSH config, and SSH agents.
+ *
+ * Every instance inherits the process-wide `GIT_TERMINAL_PROMPT=0` set by
+ * {@link disableGitTerminalPrompt}, so a missing credential fails fast
+ * instead of hanging on a prompt that can never be answered.
  */
 export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
   const git = basePath
@@ -127,6 +186,20 @@ export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
   return git.outputHandler((_command, stdout) => {
     stdout.once('end', () => stdout.emit('data', Buffer.alloc(0)));
   });
+}
+
+/**
+ * Like {@link createGit}, but additionally kills any git subprocess that
+ * produces no output for the configured init-push block timeout. Reserved for
+ * `teamai init` pushes: a hung push is killed at the process level (the
+ * `withTimeout` wrapper around the await is only a second layer), while
+ * unrelated commands keep simple-git's default of no spawn timeout.
+ */
+export function createGitForInitPush(basePath?: string): SimpleGit {
+  const block = initPushBlockTimeoutMs();
+  return basePath
+    ? simpleGit({ baseDir: basePath, timeout: { block } })
+    : simpleGit({ timeout: { block } });
 }
 
 /**
