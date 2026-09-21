@@ -406,7 +406,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             }
             log.info(chalk.green(`✓ teamwiki/ knowledge graph updated: ${slug}`));
         } catch (err) {
-            log.debug(`[wiki-engine] Graph generation failed (non-blocking): ${err instanceof Error ? err.message : err}`);
+            throw new Error(`Knowledge extraction failed: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
             await fs.remove(cacheWiki).catch(() => {});
         }

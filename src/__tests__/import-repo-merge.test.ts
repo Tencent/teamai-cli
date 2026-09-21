@@ -33,7 +33,7 @@ vi.mock('../config.js', () => ({
 // ─── Imports (after mocks) ──────────────────────────────
 
 import { importFromRepo } from '../import-repo.js';
-import { shallowClone } from '../clone.js';
+import { shallowClone, shallowFetch } from '../clone.js';
 import { generateCodebaseMd } from '../codebase.js';
 import { extractCodebase } from '../codebase-extract.js';
 
@@ -81,7 +81,7 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
         process.env.TEAMAI_CACHE_DIR = path.join(workdir, 'cache');
 
         vi.mocked(shallowClone).mockImplementation(async (_url: string, localPath: string) => {
-            await fs.ensureDir(localPath);
+            await fs.ensureDir(path.join(localPath, '.git'));
             return { sha: CLONE_SHA, branch: 'main', cloneMethod: 'https-token' as const };
         });
 
@@ -158,5 +158,22 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
             const content = await fs.readFile(overviewPath, 'utf8');
             expect(content).not.toContain('## AI Architecture Narrative');
         }
+    });
+
+    it('retries extraction after a failed import of the same commit', async () => {
+        vi.mocked(extractCodebase).mockRejectedValueOnce(new Error('write failed'));
+        vi.mocked(shallowFetch).mockResolvedValue({ sha: CLONE_SHA });
+        const options = { url: TEST_URL, incremental: true, interactive: false, skipEnrich: true, skipAutoPush: true };
+        const lastSyncPath = path.join(workdir, 'cache', 'github', 'owner', 'mergetest', 'LAST_SYNC');
+        await fs.ensureDir(path.join(path.dirname(lastSyncPath), '.git'));
+        await fs.writeFile(lastSyncPath, 'previous-sha\n2024-01-01T00:00:00.000Z\n');
+
+        await expect(importFromRepo(options)).rejects.toThrow('Knowledge extraction failed: write failed');
+        expect(await fs.readFile(lastSyncPath, 'utf8')).toContain('previous-sha');
+
+        await importFromRepo(options);
+        expect(extractCodebase).toHaveBeenCalledTimes(2);
+        expect(shallowFetch).toHaveBeenCalledTimes(2);
+        expect(await fs.readFile(lastSyncPath, 'utf8')).toContain(CLONE_SHA);
     });
 });

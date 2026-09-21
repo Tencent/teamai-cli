@@ -15,6 +15,10 @@ vi.mock('../codebase.js', () => ({
     generateCodebaseMd: vi.fn().mockResolvedValue('# Codebase\n\n生成的 codebase 文档内容\n'),
 }));
 
+vi.mock('../codebase-extract.js', () => ({
+    extractCodebase: vi.fn(),
+}));
+
 vi.mock('../utils/prompt.js', () => ({
     askQuestion: vi.fn().mockResolvedValue('y'),
     askConfirmation: vi.fn().mockResolvedValue(true),
@@ -29,6 +33,7 @@ vi.mock('../config.js', () => ({
 import { importFromRepo } from '../import-repo.js';
 import { shallowClone, shallowFetch } from '../clone.js';
 import { generateCodebaseMd } from '../codebase.js';
+import { extractCodebase } from '../codebase-extract.js';
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -80,6 +85,11 @@ describe('importFromRepo — incremental mode', () => {
         });
 
         vi.mocked(generateCodebaseMd).mockResolvedValue('# Codebase\n\n生成的 codebase 文档内容\n');
+        vi.mocked(extractCodebase).mockImplementation(async (opts) => {
+            const evidenceDir = path.join(opts.path!, 'teamwiki', 'evidence', 'code', opts.project!);
+            await fs.ensureDir(evidenceDir);
+            await fs.writeFile(path.join(evidenceDir, 'overview.md'), '---\ntitle: test\n---\n\n# Overview\n');
+        });
     });
 
     afterEach(async () => {
