@@ -125,13 +125,28 @@ async function remoteBranchExists(spec: BranchWorktreeSpec, repoRoot: string): P
 }
 
 /**
+ * Fetch a side branch into its remote-tracking ref with an explicit refspec.
+ *
+ * `git fetch origin <branch>` updates only FETCH_HEAD. A clone made with
+ * `--single-branch` (CI checkouts and some business repos) has a fetch refspec
+ * that covers only the default branch, so plain `fetch origin <branch>` leaves
+ * `refs/remotes/origin/<branch>` non-existent — and then the worktree checkout,
+ * `rebase origin/<branch>` and `merge --ff-only origin/<branch>` all fail or read
+ * stale. An explicit refspec creates and updates that tracking ref in every
+ * clone (#706). Used by both the reports and learnings branches.
+ */
+async function fetchTrackingRef(git: SimpleGit, branch: string): Promise<void> {
+  await git.fetch(['origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+}
+
+/**
  * Ensure a git worktree checked out on this branch exists.
  * Self: <knowledgeDir>/<dirname>. Independent git: sibling of the clone.
  * Idempotent. Returns the worktree absolute path.
  *
  * Cold-start cases handled:
  *  - worktree already present  → return it (readers refresh it via refreshReportsWorktree).
- *  - remote branch exists      → worktree add --track -b from origin/<branch>.
+ *  - remote branch exists      → worktree add --no-track -b from origin/<branch>.
  *  - remote branch absent      → reuse an unpublished local branch, or create the
  *                                orphan branch locally; then first-push unless
  *                                `pushIfCreated` is false.
@@ -195,16 +210,25 @@ async function ensureWorktree(
   if (await remoteBranchExists(spec, repoRoot)) {
     // Remote branch exists: fetch and check it out into the worktree.
     try {
-      await git.fetch(['origin', spec.branch]);
+      // Explicit refspec, not `fetch origin <branch>`: a --single-branch clone
+      // would otherwise only move FETCH_HEAD, leaving origin/<branch> absent and
+      // the checkout below failing (#706).
+      await fetchTrackingRef(git, spec.branch);
     } catch {
       // fetch may fail offline; worktree add can still work if we have it locally
     }
-    // If a local branch of the same name exists, add tracking it; otherwise create tracking branch.
+    // If a local branch of the same name exists, add tracking it; otherwise create branch.
     const branches = await git.branchLocal();
     if (branches.all.includes(spec.branch)) {
       await git.raw(['worktree', 'add', wt, spec.branch]);
     } else {
-      await git.raw(['worktree', 'add', wt, '--track', '-b', spec.branch, `origin/${spec.branch}`]);
+      // `--no-track`, not `--track`: a --single-branch clone's `remote.origin.fetch`
+      // does not cover this side branch, so `--track` errors ("cannot set up
+      // tracking information; starting point 'origin/<branch>' is not a branch")
+      // even once the explicit fetch above created the ref. Nothing here relies on
+      // git's upstream config — every sync references `origin/<branch>` directly —
+      // so branching off it without tracking is correct in every clone (#706).
+      await git.raw(['worktree', 'add', wt, '--no-track', '-b', spec.branch, `origin/${spec.branch}`]);
     }
   } else {
     // Remote branch absent. A read-only cold start (or a failed first push)
@@ -335,7 +359,7 @@ async function commitAndPushAt(
         return { status: 'failed', reason: (pushErr as Error).message };
       }
       try {
-        await git.fetch(['origin', spec.branch]);
+        await fetchTrackingRef(git, spec.branch);
         await git.rebase([`origin/${spec.branch}`]);
       } catch (rebaseErr) {
         log.debug(`[${spec.logTag}] rebase failed, retrying: ${(rebaseErr as Error).message}`);
@@ -526,7 +550,9 @@ async function syncWorktree(spec: BranchWorktreeSpec, wt: string): Promise<void>
   const git = createGit(wt);
   const upstream = `origin/${spec.branch}`;
   try {
-    await git.fetch(['origin', spec.branch]);
+    // Explicit refspec so the `merge --ff-only`/`rebase` against origin/<branch>
+    // below sees fresh commits even in a --single-branch clone (#706).
+    await fetchTrackingRef(git, spec.branch);
   } catch (e) {
     log.debug(`[${spec.logTag}] fetch failed, using the local copy: ${(e as Error).message}`);
     return;

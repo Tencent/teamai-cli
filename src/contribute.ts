@@ -202,6 +202,20 @@ export async function contribute(
 
   const report = await publishQueuedLearnings(localConfig, username);
 
+  // Publishing dropped the just-published files from the pending queue, but the
+  // index built above still points recall at those now-deleted pending paths —
+  // the agent is handed a File that no longer exists (#705). Rebuild once more so
+  // every published entry resolves to its durable worktree copy instead. Only
+  // when something actually reached origin; a still-queued contribution keeps its
+  // pending path, which is exactly where it is still readable.
+  if (report.published.length > 0) {
+    try {
+      await rebuildIndexAfterContribute(localConfig);
+    } catch (e) {
+      log.debug(`contribute: post-publish index rebuild skipped: ${(e as Error).message}`);
+    }
+  }
+
   // The session counts as contributed once the note is durably queued, not once
   // it reaches origin: the queue always retries, and re-contributing the same
   // session would add a second copy of the same knowledge rather than fix

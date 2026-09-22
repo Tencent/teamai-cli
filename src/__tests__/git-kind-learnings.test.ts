@@ -254,6 +254,47 @@ describe('contributing to a repo whose default branch is protected', () => {
     expect(files).toContain('from-alice-2026-01-01-hhh888.md');
   });
 
+  it("checks out an existing learnings branch from a single-branch clone (#706)", async () => {
+    // Alice publishes so teamai-learnings exists on origin.
+    const { origin, clone } = await seedProtectedOrigin();
+    const alice = gitConfig(clone, 'alice');
+    await savePendingLearning(alice, 'from-alice-2026-01-01-mmm111.md', '# alice knows');
+    await publishQueuedLearnings(alice, 'alice');
+
+    // Charlie clones with --single-branch: his fetch refspec covers main only,
+    // so `fetch origin teamai-learnings` moves FETCH_HEAD but never creates
+    // origin/teamai-learnings, and `worktree add --track` used to fail with
+    // "invalid reference: origin/teamai-learnings". The worktree was never
+    // created and recall saw no knowledge.
+    //
+    // The clone lives in its own subdir so its sibling worktree
+    // (<dirname>/learnings-wt) does NOT collide with Alice's — otherwise Charlie
+    // would reuse Alice's already-materialized worktree and never exercise the
+    // cold-start `--track` checkout this test is about.
+    const charlieHome = path.join(tmp, 'charlie-home');
+    fs.mkdirSync(charlieHome, { recursive: true });
+    const narrow = path.join(charlieHome, 'team-repo');
+    await simpleGit().clone(origin, narrow, ['--single-branch', '--branch', 'main']);
+    await configureGit(narrow);
+    const charlie: LocalConfig = {
+      repo: { localPath: narrow, remote: origin, kind: 'git' },
+      username: 'charlie',
+      scope: 'user',
+      additionalRoles: [],
+    };
+
+    const { learningsBranch } = await import('../utils/learnings-branch.js');
+    await learningsBranch.refresh(charlie, { pushIfCreated: false });
+
+    // The worktree exists and carries Alice's learning.
+    const worktree = path.join(path.dirname(narrow), LEARNINGS_WORKTREE_DIRNAME);
+    expect(fs.existsSync(path.join(worktree, 'learnings', 'from-alice-2026-01-01-mmm111.md'))).toBe(true);
+
+    const { listLearningFiles } = await import('../utils/learnings-roots.js');
+    const files = (await listLearningFiles(learningsRoots(charlie).read)).map((f) => f.file);
+    expect(files).toContain('from-alice-2026-01-01-mmm111.md');
+  });
+
   it('lands both learnings when two members publish at the same time', async () => {
     const { origin, clone } = await seedProtectedOrigin();
     const alice = gitConfig(clone, 'alice');
