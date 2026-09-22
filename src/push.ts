@@ -347,6 +347,7 @@ async function createPrWithFallback(
   branchName: string,
   title: string,
   description: string,
+  opts: { spawnTimeoutMs?: number } = {},
 ): Promise<string | null> {
   // A member's `init --provider` choice outranks the team's provider (#789).
   const provider = getProvider(localConfig.provider ?? teamConfig.provider);
@@ -370,6 +371,7 @@ async function createPrWithFallback(
       description,
       reviewers: teamConfig.reviewers?.length ? teamConfig.reviewers : undefined,
       cwd: localConfig.repo.localPath,
+      spawnTimeoutMs: opts.spawnTimeoutMs,
     });
     mrSpin.succeed(`Pull Request created: ${prUrl}`);
     return prUrl;

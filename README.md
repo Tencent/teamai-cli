@@ -172,18 +172,6 @@ Made with [contrib.rocks](https://contrib.rocks).
 
 Join the conversation, or open an issue or PR. See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for how to contribute.
 
-## Troubleshooting
-
-### `teamai init` hangs after "Registered as team member"
-
-**Symptom**: init stops at `✔ Registered as team member: <you>` with no further output and no error. No `~/.teamai/config.yaml` is written, no skills are pulled.
-
-**Root cause**: the team repo's default branch is protected (`push: No one` — common for team repos). Older teamai versions pushed the member file directly to the default branch via `git push`, which (a) is rejected by the server and (b) has no timeout, so a missing-credential push hangs forever instead of failing. Init never reaches the local-config step.
-
-**Fix**: upgrade to a version with PR #677. Member registration and reviewer-config changes go through the `teamai-reports` orphan branch / a branch + MR (never the protected default branch), and every git subprocess gets a 30s timeout plus `GIT_TERMINAL_PROMPT=0`, so a hung or credential-less push fails fast instead of stalling init. Init always completes and writes the local config + skills; the push/MR failure is only a warning.
-
-On an older version, the manual workaround is to register the member yourself via a branch + MR (`~/.teamai/team-repo`, push `members/<you>.yaml` on a feature branch, open an MR to the default branch), merge it, then re-run `teamai init`.
-
 ## License
 
 [MIT](LICENSE)
