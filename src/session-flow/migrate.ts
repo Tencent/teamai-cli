@@ -24,6 +24,7 @@ export const THINKING_SUPPORT: Record<string, boolean> = {
   tcodex: true,
   codebuddy: true,
   'codebuddy-ide': true,
+  workbuddy: true,
   cursor: false, // Cursor 无 thinking，降级为 text
 };
 
@@ -54,10 +55,32 @@ export const NATIVE_TOOLS: Record<string, Set<string>> = {
     'web_search', 'web_fetch', 'preview_url', 'lsp', 'task', 'todo_write', 'use_skill',
     'update_memory', 'image_gen',
   ]),
+  // workbuddy 与 codebuddy 同构，但此前完全没登记：保真度会把未知工具算成
+  // preserved（100%）且**一条警告都不产生**，用户完全看不到工具不兼容。
+  workbuddy: new Set([
+    'read_file', 'write_file', 'edit_file', 'bash', 'grep', 'glob', 'task', 'todo_write',
+  ]),
   cursor: new Set([
     'read_file', 'write_file', 'edit_file', 'bash', 'grep', 'glob', 'delete_file',
     'web_fetch', 'web_search', 'semantic_search',
   ]),
+};
+
+/**
+ * 图片支持矩阵。目标平台能原生表示消息内嵌图片（用户消息 content 里的 image 块）
+ * 才算 true；false 时图片降级为占位文本（保真度计 degraded，见 fidelityFromSession）。
+ */
+export const IMAGE_SUPPORT: Record<string, boolean> = {
+  'claude-code': true,
+  'claude-internal': true,
+  tclaude: true,
+  'codebuddy-ide': true, // 写回 assets/ + codebuddy-asset:// 引用，完整还原
+  codex: false, // rollout UserMessage 只支持 text
+  'codex-internal': false,
+  tcodex: false,
+  codebuddy: false,
+  workbuddy: false,
+  cursor: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -89,9 +112,11 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
   const warnings: string[] = [];
   const platformSpecificLosses: string[] = [];
   let thinkingCount = 0;
+  let imageCount = 0;
   const unknownTools = new Set<string>();
 
   const targetSupportsThinking = THINKING_SUPPORT[targetPlatform] ?? true;
+  const targetSupportsImage = IMAGE_SUPPORT[targetPlatform] ?? false;
   const nativeTools = NATIVE_TOOLS[targetPlatform] ?? new Set();
 
   for (const msg of session.messages) {
@@ -116,9 +141,21 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
           preservedBlocks++;
         }
       } else if (block.type === 'tool_call') {
-        preservedBlocks++;
+        // 未知工具不再计满分：工具本身会写进去，但目标端不认识 → 执行语义丢失，
+        // 与 thinking 降级同类，计 degraded（0.7 权重），让虚高的 100% 真实回落。
         if (nativeTools.size > 0 && !nativeTools.has(block.toolName)) {
           unknownTools.add(block.toolName);
+          degradedBlocks++;
+        } else {
+          preservedBlocks++;
+        }
+      } else if (block.type === 'image') {
+        imageCount++;
+        if (targetSupportsImage) {
+          preservedBlocks++;
+        } else {
+          // 降级为占位文本（保留文件名/大小的指针，视觉内容丢失）
+          degradedBlocks++;
         }
       }
     }
@@ -127,12 +164,15 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
   if (thinkingCount > 0 && !targetSupportsThinking) {
     degradations.push('thinking_blocks_degraded_to_text');
   }
+  if (imageCount > 0 && !targetSupportsImage) {
+    degradations.push(`image_blocks_degraded_to_placeholder (${imageCount})`);
+  }
 
   for (const toolName of [...unknownTools].sort()) {
     warnings.push(`tool_not_in_target: ${toolName}`);
   }
 
-  const score = totalBlocks === 0 ? 1.0 : (preservedBlocks + 0.7 * degradedBlocks) / totalBlocks;
+  const score = totalBlocks === 0 ? 1.0 : (preservedBlocks + 0.7 * degradedBlocks + 0 * lostBlocks) / totalBlocks;
 
   return {
     score,
@@ -190,10 +230,36 @@ export interface MigrationResult {
   preview: MigrationPreview;
   success: boolean;
   targetSessionId?: string;
+  /** 实际写入的目标工作区（默认 = 源会话 cwd，显式 --target-cwd 时为其值）。 */
+  targetCwd?: string;
   targetFilePath?: string;
   error?: string;
   startedAt: string;
   completedAt?: string;
+}
+
+/** cwd 是否是可写入的真实绝对路径（排除 md5:<hash> 这类不可逆占位）。 */
+function isUsableCwd(cwd: string | undefined): cwd is string {
+  if (!cwd) return false;
+  // Windows 盘符路径（C:\... / C:/...）同样是合法绝对路径
+  return cwd.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(cwd);
+}
+
+/**
+ * 解析目标工作区：**默认保持源会话的工作区**。
+ *
+ * 优先级：显式指定 > 源会话 cwd > 源端定位用的 projectPath。
+ * 源会话 cwd 可能是 `md5:<hash>` 占位（codebuddy-ide 未传工作区时），不是可写路径，
+ * 此时回退到 projectPath（通常是命令运行的目录），让 writeSession 有确定的落点。
+ */
+export function resolveTargetCwd(
+  explicit: string | undefined,
+  sourceSessionCwd: string | undefined,
+  fallback: string | undefined,
+): string | undefined {
+  if (explicit) return explicit;
+  if (isUsableCwd(sourceSessionCwd)) return sourceSessionCwd;
+  return fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -230,20 +296,33 @@ export class MigrationEngine {
       const source = getAdapter(this.sourcePlatform);
       const target = getAdapter(this.targetPlatform);
 
+      // 目标端安装检查：没装客户端时写入只会落到一个无人读取的目录，
+      // 之前会照样报「迁移成功」。这里提前失败并给出明确原因。
+      if (!target.isReady()) {
+        throw new Error(
+          `Target platform "${this.targetPlatform}" is not installed or its storage directory was not found. ` +
+            `Install the client first, or pick another target (available: ${listInstalledPlatforms().join(', ') || 'none'}).`,
+        );
+      }
+
       const session = await source.readSession(sessionId, projectPath);
       const fidelity = fidelityFromSession(session, this.targetPlatform);
 
       // 降级 ThinkingBlock
       const enhancedSession = degradeThinkingBlocks(session, this.targetPlatform);
 
-      targetSid = await target.writeSession(enhancedSession, targetProjectPath);
+      // 目标工作区语义：**默认保持源会话的工作区**。
+      // 迁移是「把 thpc 的会话搬到 Codex/WorkBuddy」，而不是「搬到我当前所在的目录」；
+      // 只有显式指定 targetProjectPath（--target-cwd）才搬走。
+      const targetCwd = resolveTargetCwd(targetProjectPath, session.cwd, projectPath);
+      targetSid = await target.writeSession(enhancedSession, targetCwd);
 
       // 尝试定位目标文件路径
       let targetFilePath: string | undefined;
       try {
         const targetAdapter = getAdapter(this.targetPlatform);
         // 通过 list 查找刚写入的会话
-        const metas = await targetAdapter.listConversations(targetProjectPath);
+        const metas = await targetAdapter.listConversations(targetCwd);
         const found = metas.find((m) => m.sessionId === targetSid);
         if (found) targetFilePath = found.filePath;
       } catch {
@@ -264,6 +343,7 @@ export class MigrationEngine {
         },
         success: true,
         targetSessionId: targetSid,
+        targetCwd,
         targetFilePath,
         startedAt,
         completedAt,

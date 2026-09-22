@@ -25,9 +25,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta } from './base.js';
 import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
+import { imagePlaceholderText } from '../ir.js';
 import {
   getWorkBuddyProjectsDir,
   encodeCwdGeneric,
+  encodeCwdCodeBuddy,
   decodeCwdGeneric,
   readJsonl,
   readJsonlHead,
@@ -36,7 +38,10 @@ import {
   dirExists,
   removeDirRecursive,
 } from '../fs.js';
-import { cleanTitleText, fallbackTitle, isInjectedText } from '../title.js';
+import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates, titleFromUserText } from '../title.js';
+import { deriveTargetSessionId } from '../ids.js';
+import { registerWorkBuddySession, unregisterWorkBuddySession } from '../workbuddy-store.js';
+import { log } from '../../utils/logger.js';
 
 // ---------------------------------------------------------------------------
 // 工具名归一化映射
@@ -53,9 +58,37 @@ const WB_TO_IR_TOOL: Record<string, string> = {
   todo_write: 'todo_write',
 };
 
-const IR_TO_WB_TOOL: Record<string, string> = Object.fromEntries(
-  Object.entries(WB_TO_IR_TOOL).map(([k, v]) => [v, k]),
-);
+/**
+ * IR → WorkBuddy 工具名。
+ *
+ * 与 CodeBuddy 同构：客户端按驼峰 UI 名（Bash / Read / Write / Edit / Grep / Glob /
+ * Task / TodoWrite …）查表渲染图标与折叠标题；直接写 IR 的 `read_file`/`bash` 会导致
+ * 工具调用显示为空白。源平台别名也在这里收口，避免原样透传。
+ */
+const IR_TO_WB_TOOL: Record<string, string> = {
+  read_file: 'Read',
+  write_file: 'Write',
+  edit_file: 'Edit',
+  bash: 'Bash',
+  grep: 'Grep',
+  glob: 'Glob',
+  task: 'Task',
+  todo_write: 'TodoWrite',
+  delete_file: 'DeleteFile',
+  web_fetch: 'WebFetch',
+  web_search: 'WebSearch',
+  semantic_search: 'SemanticSearch',
+  execute_command: 'Bash',
+  run_command: 'Bash',
+  write_to_file: 'Write',
+  replace_in_file: 'Edit',
+  multi_edit: 'Edit',
+  search_file: 'Glob',
+  search_content: 'Grep',
+  list_dir: 'Glob',
+  codebase_search: 'SemanticSearch',
+  read_lints: 'LSP',
+};
 
 function normalizeToolName(name: string): string {
   return WB_TO_IR_TOOL[name] ?? name;
@@ -63,6 +96,36 @@ function normalizeToolName(name: string): string {
 
 function denormalizeToolName(irName: string): string {
   return IR_TO_WB_TOOL[irName] ?? irName;
+}
+
+/** 会话标题：首条真实用户提问 > 源标题清洗 > Session <id>（与 codebuddy-ide 写入侧同策略）。 */
+function resolveSessionTitle(session: Session, sessionId: string): string {
+  for (const m of session.messages) {
+    if (m.role !== 'user') continue;
+    for (const b of m.content) {
+      if (b.type !== 'text') continue;
+      const t = titleFromUserText(b.text);
+      if (t) return t;
+    }
+  }
+  return cleanTitleText(session.title) || fallbackTitle(sessionId);
+}
+
+/** 工具调用折叠态显示的摘要文本（原生 providerData.argumentsDisplayText）。 */
+function argumentsDisplayText(name: string, args: Record<string, unknown> | undefined): string {
+  if (!args) return name;
+  const preferred =
+    args.command ?? args.path ?? args.pattern ?? args.glob_pattern ?? args.target_directory ??
+    args.target_file ?? args.query ?? args.url ?? args.filePath;
+  if (typeof preferred === 'string' && preferred.trim()) {
+    return preferred.length > 160 ? `${preferred.slice(0, 160)}…` : preferred;
+  }
+  try {
+    const s = JSON.stringify(args);
+    return s.length > 160 ? `${s.slice(0, 160)}…` : s;
+  } catch {
+    return name;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +210,10 @@ export class WorkBuddyAdapter extends AgentAdapter {
   private resolveProjectDir(projectPath?: string): string {
     const root = getWorkBuddyProjectsDir();
     if (projectPath) {
-      return path.join(root, encodeCwdGeneric(projectPath));
+      // 必须与 writeSession 用同一个编码（encodeCwdCodeBuddy，保留空格）：
+      // 原生工作区目录名是保留空格的，用 encodeCwdGeneric（空格→'-'）会指到空目录，
+      // 表现为「按 cwd 列出 = 0 条」——读得到全量、按工作区过滤却漏光。
+      return path.join(root, encodeCwdCodeBuddy(projectPath));
     }
     return root;
   }
@@ -194,7 +260,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     let createdAt = metaInfo.createdAt !== undefined ? fromUnixMs(metaInfo.createdAt) : undefined;
     let updatedAt = metaInfo.updatedAt !== undefined ? fromUnixMs(metaInfo.updatedAt) : undefined;
     let messageCount = 0;
-    let firstUserText = '';
+    const userTextCandidates: string[] = [];
     let aiTitle = '';
 
     try {
@@ -217,19 +283,16 @@ export class WorkBuddyAdapter extends AgentAdapter {
         if (rtype === 'message') {
           messageCount++;
           const role = record.role as string;
-          if (role === 'user' && !firstUserText) {
+          if (role === 'user' && userTextCandidates.length < 5) {
             const content = record.content;
             if (Array.isArray(content)) {
+              const parts: string[] = [];
               for (const block of content) {
                 if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'input_text') {
-                  const text = String((block as Record<string, unknown>).text ?? '');
-                  // 首个文本块常是 system-reminder 等注入，跳过继续找真正的提问
-                  if (!isInjectedText(text)) {
-                    firstUserText = text;
-                    break;
-                  }
+                  parts.push(String((block as Record<string, unknown>).text ?? ''));
                 }
               }
+              if (parts.length) userTextCandidates.push(parts.join(' '));
             }
           }
         }
@@ -244,7 +307,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     // aiTitle 是 WorkBuddy 自己起的标题，最可靠；注入文本清洗同 codebuddy 适配器
     title =
       (aiTitle && !isInjectedText(aiTitle) && aiTitle.slice(0, 60)) ||
-      cleanTitleText(firstUserText) ||
+      titleFromCandidates(userTextCandidates) ||
       fallbackTitle(sessionId);
 
     let sizeBytes = 0;
@@ -446,16 +509,30 @@ export class WorkBuddyAdapter extends AgentAdapter {
   }
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
-    let sessionId = session.sessionId;
-    if (!isUuidV4(sessionId)) {
-      sessionId = uuidV4();
-    }
+    // 非 UUID 源 id 用确定性派生（同一源会话反复迁移命中同一个 id → 不产生重复会话）
+    const sessionId = isUuidV4(session.sessionId)
+      ? session.sessionId
+      : deriveTargetSessionId('workbuddy', session.sessionId);
 
     const cwd = projectPath ?? session.cwd;
-    const projDir = path.join(getWorkBuddyProjectsDir(), encodeCwdGeneric(cwd));
+    // WorkBuddy 与 CodeBuddy 同构：项目目录名**保留空格**（实测 CodeBuddy 落盘为
+    // `Users-caiwenzhe-Desktop-Code-teamai cli`）。用 encodeCwdGeneric 会把空格也换成
+    // `-`，目录名与客户端按当前 cwd 算出的不一致 → 会话不出现在该项目列表里。
+    const projDir = path.join(getWorkBuddyProjectsDir(), encodeCwdCodeBuddy(cwd));
     const jsonlPath = path.join(projDir, `${sessionId}.jsonl`);
 
     const records: Record<string, unknown>[] = [];
+
+    // callId → 工具名：让 function_call_result 行带上真实工具名（而不是一律 'Agent'）
+    const toolNamesByCallId = new Map<string, string>();
+    for (const m of session.messages) {
+      for (const b of m.content) {
+        if (b.type === 'tool_call' && b.callId) {
+          toolNamesByCallId.set(b.callId, denormalizeToolName(b.toolName));
+        }
+      }
+    }
+    const resultToolName = (callId: string): string | undefined => toolNamesByCallId.get(callId);
 
     // 1. ai-title 行
     records.push({
@@ -502,6 +579,13 @@ export class WorkBuddyAdapter extends AgentAdapter {
               text: block.text,
             });
             hasText = true;
+          } else if (block.type === 'image') {
+            // WorkBuddy 消息体不存图片，降级为占位文本（保真度计 degraded）
+            wbContent.push({
+              type: msg.role === 'user' ? 'input_text' : 'output_text',
+              text: imagePlaceholderText(block),
+            });
+            hasText = true;
           }
         }
 
@@ -523,18 +607,24 @@ export class WorkBuddyAdapter extends AgentAdapter {
       }
 
       // function_call 行
+      // 与 CodeBuddy/原生一致：顶层 arguments 是 JSON 字符串、折叠摘要放
+      // argumentsDisplayText、callId 必须非空（否则与结果无法配对）。
       for (const block of otherBlocks) {
         if (block.type === 'tool_call') {
           const fcId = block.callId || uuidV4();
+          const callId = block.callId || `call_${uuidV4()}`;
+          const name = denormalizeToolName(block.toolName);
           records.push({
             id: fcId,
             parentId,
             timestamp: toUnixMs(msg.timestamp),
             type: 'function_call',
-            name: denormalizeToolName(block.toolName),
-            callId: block.callId,
+            name,
+            callId,
+            arguments: JSON.stringify(block.arguments ?? {}),
             providerData: {
               arguments: block.arguments,
+              argumentsDisplayText: argumentsDisplayText(name, block.arguments),
               ...(msg.metadata?.model ? { model: msg.metadata.model } : {}),
             },
             sessionId,
@@ -548,12 +638,13 @@ export class WorkBuddyAdapter extends AgentAdapter {
       for (const block of otherBlocks) {
         if (block.type === 'tool_result') {
           const fcrId = uuidV4();
+          const name = resultToolName(block.callId) ?? 'Agent';
           records.push({
             id: fcrId,
             parentId,
             timestamp: toUnixMs(msg.timestamp),
             type: 'function_call_result',
-            name: 'Agent',
+            name,
             callId: block.callId,
             status: block.isError ? 'failed' : 'completed',
             output: { type: 'text', text: block.content },
@@ -578,6 +669,8 @@ export class WorkBuddyAdapter extends AgentAdapter {
             updatedAt: toUnixMs(session.updatedAt),
             cwd,
             sourceConversationId: sessionId,
+            // 与 DB 的 is_playground 保持一致：0 / false → 归入「空间」列表
+            isPlayground: false,
           },
           null,
           2,
@@ -588,10 +681,39 @@ export class WorkBuddyAdapter extends AgentAdapter {
       // meta.json 写入失败不影响主流程
     }
 
+    // 注册进 workbuddy.db —— WorkBuddy 的列表查的是 sessions 表，不注册则完全不可见
+    // （jsonl 只是会话正文，列表项/空间归属都在 DB 里）。best-effort。
+    try {
+      const reg = registerWorkBuddySession({
+        cwd,
+        sessionId,
+        title: resolveSessionTitle(session, sessionId),
+        createdAtMs: toUnixMs(session.createdAt),
+        // 最近活动 = 迁移时刻：列表按 updated_at 排序，保留源时间会埋进旧日期分组
+        updatedAtMs: Date.now(),
+        model: session.metadata?.model,
+      });
+      if (!reg.ok) {
+        log.debug(`workbuddy register failed: session=${sessionId} reason=${reg.reason ?? 'unknown'}`);
+        log.warn(
+          `WorkBuddy session list registration failed (transcript written, session may be invisible in WorkBuddy): ${reg.reason ?? 'unknown'}`,
+        );
+      }
+    } catch (e) {
+      log.warn(`WorkBuddy session list registration error: ${(e as Error).message}`);
+    }
+
     return sessionId;
   }
 
   async deleteSession(sessionId: string, projectPath?: string): Promise<void> {
+    // 先摘掉 DB 注册（否则删了 jsonl，WorkBuddy 列表里还留着一条点不开的会话）
+    try {
+      unregisterWorkBuddySession(sessionId);
+    } catch {
+      // best-effort
+    }
+
     const jsonlPath = this.findSessionFile(sessionId, projectPath);
     if (!jsonlPath) return;
 
