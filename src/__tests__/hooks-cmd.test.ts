@@ -523,6 +523,31 @@ describe('hooksList', () => {
         expect(claude.join('\n')).not.toContain('Stop  →');
     });
 
+    it('reports adapter-driven tools by their generated artifact, not "not configured"', async () => {
+        // Hermes / OpenCode / OMP / OpenClaw have no settings file to probe:
+        // reconciliation writes one generated artifact each, so its presence
+        // is the status. Falling through to the generic branch printed
+        // "not configured" for tools the pipeline does install hooks for.
+        const restoreHome = mockHome('/home/testuser');
+        const out: string[] = [];
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
+        mockedAutoDetectInit.mockResolvedValue({
+            localConfig: mockLocalConfig,
+            teamConfig: { toolPaths: { hermes: { skills: '.hermes/skills' } } },
+        });
+
+        try {
+            await hooksList({});
+        } finally {
+            restoreHome();
+            consoleLog.mockRestore();
+        }
+
+        const text = out.join('\n');
+        expect(text).toContain('~/.hermes/hooks/teamai-status-report.sh');
+        expect(text).not.toContain('no settings configured');
+    });
+
     it('lists only the built-in hooks a tool actually receives (#717)', async () => {
         const out: string[] = [];
         const consoleLog = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });

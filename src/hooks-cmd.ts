@@ -55,6 +55,37 @@ function formatHooksList(rows: HookListRow[]): string {
 }
 
 /**
+ * Path of the single generated artifact an adapter-driven tool's built-in hooks
+ * live in, or null when the tool is reconciled through a settings file (or its
+ * target location cannot be resolved, e.g. no OpenClaw workspace on this
+ * machine). Presence of that file is the tool's whole install status.
+ */
+async function adapterHookArtifact(
+    tool: string,
+    baseDir: string,
+    scope: 'user' | 'project',
+): Promise<string | null> {
+    if (tool === 'omp') {
+        const { resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
+        return path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+    }
+    if (tool === 'opencode') {
+        const { resolveOpencodePluginDir, OPENCODE_HOOK_FILE } = await import('./opencode-hooks.js');
+        return path.join(resolveOpencodePluginDir(baseDir, scope), OPENCODE_HOOK_FILE);
+    }
+    if (tool === 'hermes') {
+        const { getReportScriptPath } = await import('./hermes-hooks.js');
+        return getReportScriptPath();
+    }
+    if (tool === 'openclaw') {
+        const { resolveOpenclawWorkspaceDir, OPENCLAW_HOOK_DIR } = await import('./openclaw-hooks.js');
+        const workspace = await resolveOpenclawWorkspaceDir();
+        return workspace ? path.join(workspace, 'hooks', OPENCLAW_HOOK_DIR, 'HOOK.md') : null;
+    }
+    return null;
+}
+
+/**
  * Handler for `teamai hooks inject`.
  * Reconciles built-in (A) + team (B) hooks into all configured AI tool settings.
  */
@@ -127,16 +158,15 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             if (seenSettingsFiles.has(hookPath)) continue;
             seenSettingsFiles.add(hookPath);
         }
-        // OMP has no settings/hooks file to parse: its hooks are a single
-        // generated extension under the user agent dir, so presence of the
-        // file (with our marker) is the whole status.
-        if (tool === 'omp') {
-            const { resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
-            const extFile = path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+        // The adapter-driven tools have no settings/hooks file to parse: each
+        // installs a single generated artifact, so its presence is the whole
+        // status.
+        const artifact = await adapterHookArtifact(tool, baseDir, localConfig.scope);
+        if (artifact) {
             rows.push({
                 tool,
-                status: await pathExists(extFile) ? 'installed' : 'missing',
-                settingsPath: formatDisplayPath(extFile),
+                status: await pathExists(artifact) ? 'installed' : 'missing',
+                settingsPath: formatDisplayPath(artifact),
                 builtinDefs: installedBuiltinHookDefs(tool, false),
             });
             continue;
@@ -154,6 +184,9 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             tool,
             status: await getHookStatus(hookPath, tool),
             settingsPath: formatDisplayPath(hookPath),
+            // The override is applied to the settings-driven defs only: the
+            // standalone adapters generate a fixed handler and ignore it, so
+            // filtering their rows would hide hooks they still install.
             builtinDefs: applyBuiltinOverride(installedBuiltinHookDefs(tool, true), builtinOverride),
         });
     }

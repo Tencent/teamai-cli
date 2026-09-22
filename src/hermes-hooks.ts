@@ -24,7 +24,7 @@ import {
 const REPORT_EVENT = 'on_session_start';
 
 /** Absolute path to the generated status-report shell script. */
-function getReportScriptPath(): string {
+export function getReportScriptPath(): string {
   return path.join(getHermesHome(), 'hooks', 'teamai-status-report.sh');
 }
 
