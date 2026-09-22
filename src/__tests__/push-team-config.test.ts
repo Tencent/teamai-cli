@@ -263,3 +263,104 @@ describe('push carries teamai.yaml (source add regression)', () => {
     }
   });
 });
+
+// Codex review finding 4: the push webhook fired unconditionally after push()
+// returned, so dry-run / no-change / handled-failure runs sent a misleading
+// "Push Complete". push() now reports real completion via an out-param the CLI
+// gates the webhook on.
+describe('push completion signal gates the webhook (#702 follow-up)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-push-done-'));
+    vi.clearAllMocks();
+    mockCreatePullRequest.mockResolvedValue('https://example.test/pr/1');
+    mockLoadStateForScope.mockResolvedValue({
+      lastPush: null, pushedSkills: [], pushedRules: [], pushedEnvVars: [],
+    });
+    mockSaveStateForScope.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function mockConfig(teamRepo: string): void {
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: {
+        repo: { localPath: teamRepo, remote: path.join(tmpDir, 'remote.git'), kind: undefined },
+        username: 'alice',
+        scope: 'project',
+        projectRoot: teamRepo,
+      },
+      teamConfig: { repo: 'acme/team', toolPaths: {} },
+    });
+  }
+
+  it('reports completed=true when a real config push happens', async () => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'),
+      'version: 1\npublicSkills: []\nsources:\n  - name: dev\n    repo: https://git.example/dev\n');
+    mockConfig(teamRepo);
+
+    const { push } = await import('../push.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const outcome = { completed: false };
+    await push({ all: true }, outcome);
+    logSpy.mockRestore();
+
+    expect(mockCreatePullRequest).toHaveBeenCalledTimes(1);
+    expect(outcome.completed).toBe(true);
+  });
+
+  it('does NOT report completed on dry-run', async () => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'),
+      'version: 1\npublicSkills: []\nsources:\n  - name: dev\n    repo: https://git.example/dev\n');
+    mockConfig(teamRepo);
+
+    const { push } = await import('../push.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const outcome = { completed: false };
+    await push({ all: true, dryRun: true }, outcome);
+    logSpy.mockRestore();
+
+    expect(mockCreatePullRequest).not.toHaveBeenCalled();
+    expect(outcome.completed).toBe(false);
+  });
+
+  it('does NOT report completed when there is nothing to push', async () => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    mockConfig(teamRepo);
+
+    const { push } = await import('../push.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const outcome = { completed: false };
+    await push({ all: true }, outcome);
+    logSpy.mockRestore();
+
+    expect(mockCreatePullRequest).not.toHaveBeenCalled();
+    expect(outcome.completed).toBe(false);
+  });
+
+  it('does NOT report completed when PR creation fails', async () => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'version: 1\npublicSkills:\n  - beta-proof\n');
+    mockCreatePullRequest.mockRejectedValue(new Error('PR API unavailable'));
+    mockConfig(teamRepo);
+    const originalExitCode = process.exitCode;
+
+    try {
+      const { push } = await import('../push.js');
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const outcome = { completed: false };
+      await push({ all: true }, outcome);
+      logSpy.mockRestore();
+
+      expect(process.exitCode).toBe(1);
+      expect(outcome.completed).toBe(false);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+});

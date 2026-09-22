@@ -183,7 +183,7 @@ const dashboardReportHandler: HookHandler = {
 const trackHandler: HookHandler = {
   name: 'track',
   async execute(stdin, tool) {
-    const { extractSkillName, isValidSkillName, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
+    const { resolveSkillUse, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
 
     const rawToolName = stdin.tool_name;
     if (typeof rawToolName !== 'string') return null;
@@ -192,30 +192,16 @@ const trackHandler: HookHandler = {
     const toolInput = stdin.tool_input;
     if (!toolInput || typeof toolInput !== 'object') return null;
 
-    // Only track Skill (Claude/CodeBuddy) or Read+SKILL.md (Cursor)
-    let skillName: string | null = null;
-    let toolSource = tool;
+    // Shared resolver: Skill (Claude/CodeBuddy) or Read+SKILL.md (Cursor).
+    const resolved = resolveSkillUse(toolName, toolInput as Record<string, unknown>);
+    if (!resolved) return null;
 
-    if (toolName === 'Skill') {
-      skillName = extractSkillName(toolInput as Record<string, unknown>);
-    } else if (toolName === 'Read') {
-      const input = toolInput as Record<string, unknown>;
-      const filePath =
-        (typeof input.file_path === 'string' ? input.file_path : null) ??
-        (typeof input.filePath === 'string' ? input.filePath : null) ??
-        (typeof input.path === 'string' ? input.path : null);
-      if (typeof filePath === 'string' && /\/SKILL\.md$/i.test(filePath)) {
-        skillName = extractSkillName({ skill: filePath });
-        toolSource = 'cursor';
-      }
-    } else {
-      return null;
-    }
-
-    if (!skillName || !isValidSkillName(skillName)) return null;
-
-    await appendUsageEvent({ skill: skillName, timestamp: new Date().toISOString(), tool: toolSource });
-    await updateKnownSkills(skillName);
+    await appendUsageEvent({
+      skill: resolved.skillName,
+      timestamp: new Date().toISOString(),
+      tool: resolved.source ?? tool,
+    });
+    await updateKnownSkills(resolved.skillName);
     return null;
   },
 };
@@ -502,6 +488,59 @@ const localAgentHandler: HookHandler = {
   },
 };
 
+/**
+ * Map a host's `hook_event_name` (as normalized by parseStdin) to the canonical
+ * webhook event names teams subscribe to. The handler used to read `stdin.event`,
+ * which hosts never send, so every event was forwarded as `unknown` and no
+ * `skill-use` / `session-start` / `session-stop` subscription ever matched (#702).
+ *
+ * Keyed by the lowercased hook name for a case-insensitive lookup: Claude sends
+ * PascalCase (`SessionStart`) while Cursor/CodeBuddy send camelCase
+ * (`sessionStart`) — see dashboard-collector's mapEventType, which handles both.
+ * A case-sensitive PascalCase-only map silently dropped the camelCase hosts.
+ */
+const WEBHOOK_EVENT_BY_HOOK: Record<string, string> = {
+  sessionstart: 'session-start',
+  stop: 'session-stop',
+  sessionend: 'session-stop',
+  posttooluse: 'skill-use',
+};
+
+/**
+ * Build the minimal, whitelisted data payload for a webhook event.
+ *
+ * Only a fixed set of non-sensitive fields per event is forwarded. Raw
+ * `tool_input` (which can carry API keys in tool args) and `tool_response`
+ * (which can carry private tool output) are never included (#701). The result is
+ * additionally deep-redacted at the send boundary (see sendWebhook).
+ */
+async function buildWebhookData(
+  event: string,
+  stdin: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (event === 'skill-use') {
+    const rawToolName = stdin.tool_name;
+    const toolInput = stdin.tool_input;
+    if (typeof rawToolName !== 'string' || !toolInput || typeof toolInput !== 'object') return {};
+    const { resolveSkillUse } = await import('./usage-tracker.js');
+    // Same resolver trackHandler uses, so the webhook reaches parity: it fires
+    // for Claude/CodeBuddy `Skill` AND Cursor's `Read` of a SKILL.md path, and
+    // never for a normal file Read (#702 follow-up). The resolver already
+    // validates the name with isValidSkillName, so a tool-arg string cannot
+    // escape as skillName (#701).
+    const resolved = resolveSkillUse(
+      normalizeToolName(rawToolName),
+      toolInput as Record<string, unknown>,
+    );
+    return resolved ? { skillName: resolved.skillName } : {};
+  }
+  if (event === 'session-start' || event === 'session-stop') {
+    const sessionId = deriveSessionId(stdin);
+    return sessionId ? { sessionId } : {};
+  }
+  return {};
+}
+
 /** Webhook notification handler — sends events to configured endpoints. */
 const webhookHandler: HookHandler = {
   name: 'webhook-dispatch',
@@ -512,14 +551,19 @@ const webhookHandler: HookHandler = {
       const config = await loadWebhookConfig();
       if (!config.enabled || config.endpoints.length === 0) return null;
 
-      const event = typeof stdin.event === 'string' ? stdin.event : 'unknown';
+      const hookEventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name : '';
+      // Case-insensitive so both PascalCase (Claude) and camelCase (Cursor/
+      // CodeBuddy) hook names resolve (#702).
+      const event = WEBHOOK_EVENT_BY_HOOK[hookEventName.toLowerCase()];
+      // Only forward events we can map to a canonical name — never emit `unknown` (#702).
+      if (!event) return null;
 
       const payload = {
         tool,
         sessionId: deriveSessionId(stdin),
         cwd: resolveHookCwd(stdin),
         username: typeof stdin.username === 'string' ? stdin.username : undefined,
-        data: stdin as Record<string, unknown>,
+        data: await buildWebhookData(event, stdin),
       };
 
       await sendWebhook(event, payload, config);
@@ -550,9 +594,11 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
 
-    // Copilot emits SessionEnd after its final turn. Only the dashboard needs
-    // this lifecycle event; detaching it avoids delaying CLI shutdown.
+    // Copilot emits SessionEnd after its final turn (not Stop), so the webhook
+    // handler must run here too or those sessions emit no session-stop
+    // notification (#702). Detached, mirroring the stop registration.
     { event: 'session-end', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+    { event: 'session-end', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
 
     // ─── Stop ─────────────────────────────────────────
     // votes-sync and contribute-check may return a hint the host injects back

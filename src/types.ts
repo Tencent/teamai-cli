@@ -2096,17 +2096,34 @@ export interface WebhookPayload {
 
 /** Defaulted view of the optional `sharing.webhooks` config. */
 export function getWebhookSharing(config: {
-  sharing?: { webhooks?: { enabled?: boolean; endpoints?: Array<{ url: string; type: string; events?: string[] }> } };
+  sharing?: {
+    webhooks?: {
+      enabled?: boolean;
+      endpoints?: Array<{
+        url: string;
+        type: string;
+        secret?: string;
+        events?: string[];
+        timeout?: number;
+        retries?: number;
+      }>;
+    };
+  };
 }): WebhookConfig {
   const w = config.sharing?.webhooks;
   return {
     enabled: w?.enabled ?? false,
+    // Preserve every schema-accepted field. Previously `secret` was dropped and
+    // `timeout`/`retries` were force-overridden, so a configured signing secret
+    // never reached the request and receivers with signature verification
+    // rejected the (unsigned) webhook (#703).
     endpoints: (w?.endpoints ?? []).map((ep) => ({
       url: ep.url,
       type: ep.type as 'feishu' | 'wecom' | 'json',
+      secret: ep.secret,
       events: ep.events ?? ['push', 'pull', 'skill-use', 'session-start', 'session-stop'],
-      timeout: 5000,
-      retries: 3,
+      timeout: ep.timeout ?? 5000,
+      retries: ep.retries ?? 3,
     })),
   };
 }

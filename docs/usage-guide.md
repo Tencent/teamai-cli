@@ -1738,6 +1738,15 @@ sharing:
     enabled: true              # optional; false = no /teamai-share-learnings nudge after high-friction sessions
   intervention:
     correctionKeywords: []     # optional; extra course-correction words merged with the built-in zh/en/ja list
+  webhooks:                    # optional; notify external endpoints on team events (see "Webhook notifications")
+    enabled: true
+    endpoints:
+      - url: https://example.com/hook
+        type: json             # json | feishu | wecom
+        events: ["*"]          # any of: session-start, session-stop, skill-use, push, pull, or "*" for all
+        secret: my-signing-key # optional; enables the X-TeamAI-Signature header
+        timeout: 5000          # optional; per-request timeout in ms (default 5000)
+        retries: 3             # optional; retry attempts on failure (default 3)
 ```
 
 ### config.yaml (local config)
@@ -1754,6 +1763,25 @@ inheritUserScope: true         # optional; project scope only, defaults to false
 coAuthorEnabled: true          # optional; per-machine co-author override
 contributeHintEnabled: false   # optional; per-machine override of sharing.contributeHint.enabled
 ```
+
+### Webhook notifications (`sharing.webhooks`)
+
+Notify external endpoints when team events happen. Each endpoint declares a `url`, a `type` (`json`, `feishu`, or `wecom`), and the `events` it subscribes to; `secret`, `timeout` (default `5000` ms), and `retries` (default `3`) are optional.
+
+**Events and when they fire:**
+
+| Event | Fires when |
+| --- | --- |
+| `session-start` | An AI session starts |
+| `session-stop` | An AI session ends (includes Copilot's `SessionEnd`) |
+| `skill-use` | A skill is invoked |
+| `push` | `teamai push` **actually completes a real push** — not on `--dry-run`, a cancelled selection, a no-change run, or a failed PR creation |
+| `pull` | `teamai pull` completes a real (non-`--dry-run`) sync |
+| `*` | Wildcard — subscribe to every event above |
+
+**Payload.** Only whitelisted, non-sensitive fields are sent: `skillName` for `skill-use`, `sessionId` for session events; `push`/`pull` carry the event and metadata only. Raw tool input and tool output are **never** forwarded, and the whole body is passed through teamai's secret redactor before it leaves the machine.
+
+**Signature.** When `secret` is set, each request carries `X-TeamAI-Signature: sha256=<hmac>`, an HMAC-SHA256 computed over the exact request body — so a receiver can verify authenticity. `teamai webhook list` and `teamai webhook test` inspect and exercise configured endpoints.
 
 ---
 

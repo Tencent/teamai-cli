@@ -167,4 +167,128 @@ describe('webhook', () => {
       );
     });
   });
+
+  // Regression #701: any secret that slips into the outbound payload must be
+  // scrubbed before it leaves the machine.
+  describe('redaction (#701)', () => {
+    it('redacts secret-shaped values from the outbound JSON body', async () => {
+      mockAutoDetectInit.mockResolvedValueOnce({
+        localConfig: { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user' },
+        teamConfig: {
+          team: 'test',
+          sharing: {
+            webhooks: {
+              enabled: true,
+              endpoints: [
+                { url: 'https://example.test/hook', type: 'json', events: ['*'], timeout: 5000, retries: 0 },
+              ],
+            },
+          },
+        },
+      });
+
+      const { sendWebhook } = await import('../webhook.js');
+      await sendWebhook('skill-use', {
+        tool: 'claude',
+        data: { blob: 'api_key=SYNTHETIC_SECRET_abcdefghij1234' },
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const body = mockFetch.mock.calls[0][1].body as string;
+      expect(body).not.toContain('SYNTHETIC_SECRET_abcdefghij1234');
+      expect(body).toContain('<REDACTED');
+    });
+  });
+
+  // Regression #703: a configured secret must reach the request as an
+  // X-TeamAI-Signature computed over the exact bytes sent.
+  describe('signature (#703)', () => {
+    it('signs the outbound body with the configured secret', async () => {
+      mockAutoDetectInit.mockResolvedValueOnce({
+        localConfig: { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user' },
+        teamConfig: {
+          team: 'test',
+          sharing: {
+            webhooks: {
+              enabled: true,
+              endpoints: [
+                {
+                  url: 'https://example.test/hook',
+                  type: 'json',
+                  secret: 'synthetic-signing-key',
+                  events: ['*'],
+                  timeout: 5000,
+                  retries: 0,
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      const { sendWebhook } = await import('../webhook.js');
+      await sendWebhook('skill-use', { tool: 'claude', data: { skillName: 'demo' } });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [, init] = mockFetch.mock.calls[0];
+      const header = init.headers['X-TeamAI-Signature'] as string | undefined;
+      expect(header).toMatch(/^sha256=/);
+
+      const { createHmac } = await import('node:crypto');
+      const expected = createHmac('sha256', 'synthetic-signing-key')
+        .update(init.body as string)
+        .digest('hex');
+      expect(header).toBe(`sha256=${expected}`);
+    });
+  });
+});
+
+// Regression #703: getWebhookSharing dropped `secret` and force-overrode
+// timeout/retries, so configured signing/backoff never took effect.
+describe('getWebhookSharing (#703)', () => {
+  it('preserves secret, timeout, and retries from config', async () => {
+    const { getWebhookSharing } = await import('../types.js');
+    const config = getWebhookSharing({
+      sharing: {
+        webhooks: {
+          enabled: true,
+          endpoints: [
+            {
+              url: 'https://example.test/hook',
+              type: 'json',
+              secret: 'synthetic-signing-key',
+              events: ['skill-use'],
+              timeout: 123,
+              retries: 0,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(config.endpoints).toHaveLength(1);
+    const ep = config.endpoints[0];
+    expect(ep.secret).toBe('synthetic-signing-key');
+    expect(ep.timeout).toBe(123);
+    expect(ep.retries).toBe(0);
+    expect(ep.events).toEqual(['skill-use']);
+  });
+
+  it('applies defaults when optional fields are omitted', async () => {
+    const { getWebhookSharing } = await import('../types.js');
+    const config = getWebhookSharing({
+      sharing: {
+        webhooks: {
+          enabled: true,
+          endpoints: [{ url: 'https://example.test/hook', type: 'json' }],
+        },
+      },
+    });
+
+    const ep = config.endpoints[0];
+    expect(ep.secret).toBeUndefined();
+    expect(ep.timeout).toBe(5000);
+    expect(ep.retries).toBe(3);
+    expect(ep.events).toContain('push');
+  });
 });

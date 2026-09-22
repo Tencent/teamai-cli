@@ -1686,6 +1686,15 @@ sharing:
     enabled: true              # 可选，false = 高摩擦 session 结束后不再提示 /teamai-share-learnings
   intervention:
     correctionKeywords: []     # 可选，额外的纠偏词，与内置中/英/日列表合并
+  webhooks:                    # 可选，在团队事件发生时通知外部端点（见"Webhook 通知"）
+    enabled: true
+    endpoints:
+      - url: https://example.com/hook
+        type: json             # json | feishu | wecom
+        events: ["*"]          # 可取：session-start、session-stop、skill-use、push、pull，或 "*" 表示全部
+        secret: my-signing-key # 可选，设置后启用 X-TeamAI-Signature 头
+        timeout: 5000          # 可选，单次请求超时（毫秒，默认 5000）
+        retries: 3             # 可选，失败重试次数（默认 3）
 ```
 
 ### config.yaml（本地配置）
@@ -1702,6 +1711,25 @@ inheritUserScope: true         # 可选，仅 project scope，默认 false
 coAuthorEnabled: true          # 可选，每机器的 co-author 覆盖
 contributeHintEnabled: false   # 可选，每机器覆盖 sharing.contributeHint.enabled
 ```
+
+### Webhook 通知（`sharing.webhooks`）
+
+在团队事件发生时通知外部端点。每个 endpoint 声明 `url`、`type`（`json`、`feishu` 或 `wecom`）以及订阅的 `events`；`secret`、`timeout`（默认 `5000` 毫秒）、`retries`（默认 `3`）均为可选。
+
+**事件及触发时机：**
+
+| 事件 | 触发时机 |
+| --- | --- |
+| `session-start` | AI session 开始 |
+| `session-stop` | AI session 结束（含 Copilot 的 `SessionEnd`） |
+| `skill-use` | 调用某个 skill |
+| `push` | `teamai push` **真正完成一次推送**——`--dry-run`、取消选择、无变更、或 PR 创建失败都不触发 |
+| `pull` | `teamai pull` 完成一次真实（非 `--dry-run`）同步 |
+| `*` | 通配符——订阅以上全部事件 |
+
+**载荷。** 仅发送白名单内的非敏感字段：`skill-use` 发送 `skillName`，session 事件发送 `sessionId`；`push`/`pull` 只带事件与元数据。原始工具入参与工具输出**绝不**外发，且整个请求体在离开本机前会经过 teamai 的密钥脱敏处理。
+
+**签名。** 设置 `secret` 后，每个请求都会带上 `X-TeamAI-Signature: sha256=<hmac>`——对**实际发送的请求体**计算的 HMAC-SHA256，供接收端校验真实性。`teamai webhook list` 与 `teamai webhook test` 可查看和测试已配置的端点。
 
 ---
 

@@ -141,9 +141,21 @@ async function createPrWithFallback(
 export { createPrWithFallback };
 
 /**
+ * Outcome of a single {@link pushGroup} call:
+ *  - `pushed`    — a real push AND a PR obtained (created, or an existing PR reused).
+ *  - `nochange`  — nothing to push (branch already up to date). No PR, no error.
+ *  - `pr-failed` — the branch was pushed but PR creation failed (exit code set to 1).
+ *  - `failed`    — pushItem/pushRepoBranch threw; the working tree was rolled back.
+ *
+ * The caller distinguishes these so the `push` webhook fires only after a real
+ * completed push — never on a no-change or PR-creation-failed run (#702 follow-up).
+ */
+type PushGroupOutcome = 'pushed' | 'nochange' | 'pr-failed' | 'failed';
+
+/**
  * Push each selected resource into the team repo, commit it on a branch, and
- * open (or update) the matching PR. Returns false when the push failed, after
- * rolling back the copies so the next scan sees a clean tree.
+ * open (or update) the matching PR. On a thrown failure it rolls back the copies
+ * so the next scan sees a clean tree and returns `'failed'`.
  */
 async function pushGroup(args: {
   group: PushGroup;
@@ -151,7 +163,7 @@ async function pushGroup(args: {
   localConfig: LocalConfig;
   pushState: State;
   includeTeamConfig: boolean;
-}): Promise<boolean> {
+}): Promise<PushGroupOutcome> {
   const { group, teamConfig, localConfig, pushState, includeTeamConfig } = args;
   const { items, reuse } = group;
 
@@ -213,23 +225,45 @@ async function pushGroup(args: {
     // clean either way from the branch's perspective.
     workingTreeDirtied = false;
 
-    if (!hasChanges) {
+    // A reuse branch whose earlier PR creation failed is recorded with
+    // prUrl:null: the branch and its resources are already on the remote, only
+    // the PR is missing. Re-running push then produces no tree change, so
+    // `hasChanges` is false — but there IS outstanding work (the PR). Only such
+    // an entry may proceed past the no-change gate to (re)create the PR for the
+    // already-pushed branch; it must NOT re-push (nothing changed) (#702 follow-up).
+    const needsPrRetry = Boolean(reuse) && !reuse?.prUrl;
+
+    if (!hasChanges && !needsPrRetry) {
+      // Genuinely nothing to do: a brand-new branch with no changes, or a reuse
+      // entry whose PR already exists.
       pushSpin.succeed(
         reuse
           ? `No changes to push (PR already up to date: ${reuse.prUrl ?? branchName})`
           : 'No changes to push (files already up to date)',
       );
-      return true;
+      return 'nochange';
     }
 
-    pushSpin.succeed(`Pushed branch ${branchName}`);
+    pushSpin.succeed(
+      hasChanges
+        ? `Pushed branch ${branchName}`
+        : `No new changes; retrying PR creation for ${branchName}`,
+    );
 
     let prUrl: string | null;
-    if (reuse) {
-      // The PR tracks this branch, so the force-push above already updated it.
+    let prFailed = false;
+    if (reuse?.prUrl) {
+      // A PR already tracks this branch, so the force-push above updated it in
+      // place — don't create a duplicate.
       prUrl = reuse.prUrl;
-      log.success(`Existing PR updated: ${prUrl ?? branchName}`);
+      log.success(`Existing PR updated: ${prUrl}`);
     } else {
+      // No PR yet. Either a brand-new branch, OR a reuse branch whose earlier
+      // PR creation failed (recorded with prUrl:null). In both cases the branch
+      // is on the remote but has no PR, so create one now — otherwise the reuse
+      // branch's resources would sit on a branch that never enters review. This
+      // reaches here even when hasChanges is false (needsPrRetry): the branch is
+      // already pushed, so we only create the PR, never re-push.
       prUrl = await createPrWithFallback(
         teamConfig,
         localConfig,
@@ -239,6 +273,7 @@ async function pushGroup(args: {
       );
       if (!prUrl) {
         process.exitCode = 1;
+        prFailed = true;
       }
     }
 
@@ -261,7 +296,10 @@ async function pushGroup(args: {
     for (const rel of pushedFiles) {
       await pruneEmptyDirs(path.resolve(localConfig.repo.localPath, rel));
     }
-    return true;
+    // The branch is on the remote either way, but a run whose PR creation failed
+    // is not a completed push — report it distinctly so the caller does not fire
+    // the `push` webhook (#702 follow-up).
+    return prFailed ? 'pr-failed' : 'pushed';
   } catch (e) {
     pushSpin.fail(`Push failed: ${(e as Error).message}`);
     if (workingTreeDirtied) {
@@ -276,11 +314,20 @@ async function pushGroup(args: {
         );
       }
     }
-    return false;
+    return 'failed';
   }
 }
 
-export async function push(options: GlobalOptions & { all?: boolean; role?: string; project?: string }): Promise<void> {
+export async function push(
+  options: GlobalOptions & { all?: boolean; role?: string; project?: string },
+  /**
+   * Optional out-param: set to `{ completed: true }` only when a real push
+   * actually happened (resources or config pushed) — never on dry-run, cancel,
+   * no-change, or a handled failure. Lets the CLI gate the `push` webhook so it
+   * does not fire a misleading "Push Complete" on those paths (#702 follow-up).
+   */
+  result?: { completed: boolean },
+): Promise<void> {
   // Auto-detect scope: project scope if cwd has project config, else user scope
   const { localConfig, teamConfig } = await autoDetectInit();
   assertNotReadOnly(localConfig, 'teamai push');
@@ -378,7 +425,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
           if (pendingTeamConfig !== null) {
             await writeFile(path.join(wtConfig.repo.localPath, 'teamai.yaml'), pendingTeamConfig);
           }
-          await pushCore(wtConfig, teamConfig, options, pendingTeamConfig);
+          await pushCore(wtConfig, teamConfig, options, pendingTeamConfig, result);
         });
       } catch (e) {
         if (e instanceof EmptyRepoError) {
@@ -406,7 +453,7 @@ export async function push(options: GlobalOptions & { all?: boolean; role?: stri
     return;
   }
   try {
-    await pushCore(localConfig, teamConfig, options);
+    await pushCore(localConfig, teamConfig, options, null, result);
   } finally {
     await releaseLock(syncLock);
   }
@@ -417,6 +464,7 @@ async function pushCore(
   teamConfig: TeamaiConfig,
   options: GlobalOptions & { all?: boolean; role?: string },
   initialPendingTeamConfig: string | null = null,
+  result?: { completed: boolean },
 ): Promise<void> {
   const selfMode = localConfig.repo.kind === 'self';
   const scopeLabel = localConfig.scope;
@@ -706,7 +754,7 @@ async function pushCore(
     // publicSkills) via `teamai source add`. Push that config change on its own
     // rather than reporting "nothing to push".
     if (pendingTeamConfig !== null) {
-      await pushTeamConfigOnly(localConfig, teamConfig, options);
+      await pushTeamConfigOnly(localConfig, teamConfig, options, result);
       return;
     }
     log.info('No new or modified resources to push');
@@ -886,21 +934,27 @@ async function pushCore(
   // ── Step 5: Push each group — one branch/PR per group ──────────────
   // Config edits ride along with the first group so they land in a single PR.
   let configRider = pendingTeamConfig !== null;
+  // Track the outcome across groups: a run counts as completed only if at least
+  // one group actually pushed AND no group's PR creation failed (#702 follow-up).
+  let anyPushed = false;
+  let anyPrFailed = false;
   for (const group of groups) {
-    const ok = await pushGroup({
+    const outcome = await pushGroup({
       group,
       teamConfig,
       localConfig,
       pushState,
       includeTeamConfig: configRider,
     });
-    if (!ok) {
+    if (outcome === 'failed') {
       // The branch/PR for earlier groups is already on the remote, so their
       // records must survive this failure or the next run would duplicate them.
       await saveStateForScope(pushState, localConfig);
       process.exitCode = 1;
       return;
     }
+    if (outcome === 'pushed') anyPushed = true;
+    if (outcome === 'pr-failed') anyPrFailed = true;
     configRider = false;
   }
 
@@ -919,6 +973,11 @@ async function pushCore(
     }
   }
   await saveStateForScope(state, localConfig);
+  // A real push completed only when a group actually pushed and no PR creation
+  // failed. Not set on dry-run/cancel (return earlier), a no-change run (every
+  // group 'nochange' → anyPushed stays false), or a PR-creation failure
+  // (anyPrFailed) — so the caller does not fire a misleading webhook (#702 follow-up).
+  if (result && anyPushed && !anyPrFailed) result.completed = true;
 }
 
 /**
@@ -933,6 +992,7 @@ async function pushTeamConfigOnly(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
   options: GlobalOptions,
+  result?: { completed: boolean },
 ): Promise<void> {
   console.log('');
   console.log('Found team config change to push:');
@@ -970,6 +1030,10 @@ async function pushTeamConfigOnly(
     );
     if (!prUrl) {
       process.exitCode = 1;
+    } else if (result) {
+      // A real config PR was pushed. Not set on dry-run or no-change (both
+      // return earlier) or on PR-creation failure (#702 follow-up).
+      result.completed = true;
     }
 
     await checkoutMaster(localConfig.repo.localPath);

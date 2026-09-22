@@ -715,6 +715,8 @@ async function pullForScope(
     resourceTypes?: readonly ResourceType[];
     revisionField?: 'lastPullRev' | 'lastInheritedPullRev';
   } = {},
+  /** Set to `{ completed: true }` on a real (non-dry-run) sync. See pull(). */
+  result?: { completed: boolean },
 ): Promise<void> {
   const scopeLabel = localConfig.scope;
   const revisionField = policy.revisionField ?? 'lastPullRev';
@@ -1290,6 +1292,11 @@ async function pullForScope(
       // Recommendations are optional — don't fail pull
     }
   }
+
+  // A real sync ran to completion for this scope. The "Already synced" fast path
+  // and every error/skip path return before here, and dry-run is excluded so a
+  // preview never reports completion (#702 follow-up).
+  if (result && !options.dryRun) result.completed = true;
 }
 
 /**
@@ -1698,7 +1705,16 @@ async function reinjectLegacyHooks(localConfig: LocalConfig): Promise<void> {
  * Executable configuration (env, hooks, and MCP) stays isolated, and external
  * source skills are pulled only for the active project scope.
  */
-export async function pull(options: GlobalOptions): Promise<void> {
+export async function pull(
+  options: GlobalOptions,
+  /**
+   * Optional out-param: set to `{ completed: true }` only when a scope performed
+   * a real (non-dry-run) sync. Left false on dry-run, the "Already synced" fast
+   * path, and error/skip paths — so the CLI does not fire a misleading "Pull
+   * Complete" webhook on those (#702 follow-up).
+   */
+  result?: { completed: boolean },
+): Promise<void> {
   // What the scopes below say in their own words, so the post-pull pass does
   // not repeat it. Owned here rather than at module scope so nothing survives
   // into another call.
@@ -1775,12 +1791,12 @@ export async function pull(options: GlobalOptions): Promise<void> {
             await pullForScope(inheritedUserConfig, options, reported, {
               resourceTypes: ['skills', 'rules', 'docs', 'agents'],
               revisionField: 'lastInheritedPullRev',
-            });
+            }, result);
           }
         } else {
           activeUserConfig = loadedUserConfig;
           if (await lockScope(activeUserConfig)) {
-            await pullForScope(activeUserConfig, options, reported);
+            await pullForScope(activeUserConfig, options, reported, {}, result);
           }
         }
       } else if (inheritUserScope) {
@@ -1797,7 +1813,7 @@ export async function pull(options: GlobalOptions): Promise<void> {
   if (projectConfig) {
     try {
       if (await lockScope(projectConfig)) {
-        await pullForScope(projectConfig, options, reported);
+        await pullForScope(projectConfig, options, reported, {}, result);
       }
     } catch (e) {
       log.warn(`Project-scope pull error: ${(e as Error).message}`);

@@ -13,6 +13,20 @@ const MIGRATION_TRIGGER_COMMANDS = new Set(['init', 'pull', 'push']);
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
 
+/**
+ * Fire a command-lifecycle webhook (`push` / `pull`) best-effort. These are
+ * default subscription events with no other production call site into
+ * sendWebhook (#702). Never let a webhook failure affect the command's result.
+ */
+async function notifyWebhook(event: 'push' | 'pull'): Promise<void> {
+  try {
+    const { sendWebhook } = await import('./webhook.js');
+    await sendWebhook(event, { tool: 'teamai-cli', data: {} });
+  } catch {
+    // Best-effort notification; never surface to the user.
+  }
+}
+
 const program = new Command();
 
 program
@@ -82,7 +96,11 @@ program
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { push } = await import('./push.js');
-    await push({ ...globalOpts, ...cmdOpts });
+    // Only notify when a real push actually happened — not on dry-run, cancel,
+    // no-change, or a handled failure (#702 follow-up).
+    const outcome = { completed: false };
+    await push({ ...globalOpts, ...cmdOpts }, outcome);
+    if (outcome.completed) await notifyWebhook('push');
   });
 
 program
@@ -94,7 +112,12 @@ program
     const globalOpts = program.opts() as GlobalOptions;
     if (cmdOpts.silent) setSilent(true);
     const { pull } = await import('./pull.js');
-    await pull({ ...globalOpts, ...cmdOpts, interactive: !cmdOpts.silent });
+    // Only notify when a real (non-dry-run) sync completed. The SessionStart hook
+    // drives its own `session-start` webhook, so the silent hook pull never fires
+    // the `pull` command event (#702 follow-up).
+    const outcome = { completed: false };
+    await pull({ ...globalOpts, ...cmdOpts, interactive: !cmdOpts.silent }, outcome);
+    if (!cmdOpts.silent && outcome.completed) await notifyWebhook('pull');
   });
 
 program

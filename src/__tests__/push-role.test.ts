@@ -61,6 +61,8 @@ vi.mock('../utils/git.js', () => ({
   generateBranchName: (...args: unknown[]) => mockGenerateBranchName(...args),
   resetToCleanMaster: (...args: unknown[]) => mockResetToCleanMaster(...args),
   isDedicatedRepoRoot: vi.fn().mockResolvedValue(true),
+  getDefaultBranch: vi.fn().mockResolvedValue('main'),
+  getFileContentAtRev: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('../roles.js', async () => {
@@ -684,5 +686,89 @@ describe('push item selection', () => {
     expect(askSelection).not.toHaveBeenCalled();
     // But all items should have been pushed
     expect(pushedItems).toHaveLength(2);
+  });
+});
+
+// Codex review finding 5: push()'s result.completed was set whenever pushGroup
+// returned truthy, but pushGroup returned true on BOTH the no-change and the
+// PR-creation-failed paths — so a no-op or PR-failed run wrongly flipped
+// completed=true and fired the `push` webhook. These drive the REAL pushGroup
+// path (not pushTeamConfigOnly).
+describe('push completion signal through pushGroup (#702 follow-up, finding 5)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPullRepo.mockResolvedValue('Already up to date.');
+    mockPushRepoBranch.mockResolvedValue(true);
+    mockCheckoutMaster.mockResolvedValue(undefined);
+    mockGenerateBranchName.mockReturnValue('teamai/push/test/20260403-120000');
+    mockLoadStateForScope.mockResolvedValue({
+      lastPush: null, lastPull: null, pushedRules: [], pushedSkills: [], pushedEnvVars: [],
+      lastUpdateCheck: null, availableUpdate: null, pendingPushes: [],
+    });
+    mockSaveStateForScope.mockResolvedValue(undefined);
+    mockLoadRolesManifest.mockResolvedValue({
+      version: 1,
+      roles: [{ id: 'solo', description: 'Solo', resources: { knowledge: ['solo'], skills: ['solo'], agents: [] } }],
+    });
+    mockScanTeamRepoNamespaces.mockResolvedValue([]);
+  });
+
+  async function setCreatePullRequest(impl: () => Promise<string | null> | string | null): Promise<void> {
+    const { getProvider } = await import('../providers/index.js');
+    vi.mocked(vi.mocked(getProvider)().createPullRequest).mockImplementation(impl as never);
+  }
+
+  it('reports completed=true when a real resource push succeeds and a PR is created', async () => {
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig({ primaryRole: 'solo', additionalRoles: [] }),
+      teamConfig: makeTeamConfig(),
+    });
+    mockSkillHandler();
+    await setCreatePullRequest(() => 'https://git.woa.com/mr/42');
+
+    const outcome = { completed: false };
+    await push({ all: true }, outcome);
+
+    expect(mockPushRepoBranch).toHaveBeenCalled();
+    expect(outcome.completed).toBe(true);
+  });
+
+  it('does NOT report completed when PR creation fails (pushGroup path)', async () => {
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig({ primaryRole: 'solo', additionalRoles: [] }),
+      teamConfig: makeTeamConfig(),
+    });
+    mockSkillHandler();
+    // Provider returns null (branch pushed, PR not created) → exit code 1.
+    await setCreatePullRequest(() => null);
+    const originalExitCode = process.exitCode;
+
+    try {
+      const outcome = { completed: false };
+      await push({ all: true }, outcome);
+
+      expect(mockPushRepoBranch).toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      expect(outcome.completed).toBe(false);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
+  it('does NOT report completed when there are no changes to push (pushGroup path)', async () => {
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig({ primaryRole: 'solo', additionalRoles: [] }),
+      teamConfig: makeTeamConfig(),
+    });
+    mockSkillHandler();
+    // Branch has no changes: pushRepoBranch reports nothing committed.
+    mockPushRepoBranch.mockResolvedValue(false);
+    await setCreatePullRequest(() => 'https://git.woa.com/mr/42');
+
+    const outcome = { completed: false };
+    await push({ all: true }, outcome);
+
+    expect(mockPushRepoBranch).toHaveBeenCalled();
+    expect(outcome.completed).toBe(false);
   });
 });

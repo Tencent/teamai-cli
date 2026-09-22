@@ -476,4 +476,122 @@ describe('push() with an open PR', () => {
       expect(saved.pendingPushes.map((p) => p.branch)).toContain('teamai/push/testuser/solo-branch');
     });
   });
+
+  // Codex review finding 7: a reuse entry recorded with prUrl:null (earlier PR
+  // creation failed) previously skipped createPrWithFallback entirely — so the
+  // PR was never re-created (resources stranded on a branch) AND the run wrongly
+  // reported completed=true, firing the `push` webhook. The reuse branch with an
+  // absent prUrl must now retry PR creation.
+  describe('reuse entry whose earlier PR creation failed (prUrl:null)', () => {
+    it('retries PR creation for the reuse branch and heals the record on success (with tree changes)', async () => {
+      mockLoadStateForScope.mockResolvedValue(makeState([makeEntry({ prUrl: null })]));
+      mockCreatePullRequest.mockResolvedValue('https://github.com/team/repo/pull/17');
+
+      const outcome = { completed: false };
+      await push({}, outcome);
+
+      // The absent PR is (re)created for the EXISTING reuse branch — no duplicate,
+      // and force-pushed in place.
+      expect(mockCreatePullRequest).toHaveBeenCalledTimes(1);
+      expect(mockPushRepoBranch.mock.calls[0][3]).toBe('teamai/push/testuser/20260827-065032');
+      expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true });
+      // A real completed push → webhook may fire.
+      expect(outcome.completed).toBe(true);
+      // The pending entry now carries the newly-created prUrl (healed).
+      const saved = mockSaveStateForScope.mock.calls.at(-1)?.[0] as State;
+      const entry = saved.pendingPushes.find((p) => p.branch === 'teamai/push/testuser/20260827-065032');
+      expect(entry?.prUrl).toBe('https://github.com/team/repo/pull/17');
+    });
+
+    it('does NOT complete when the retry PR creation fails (stays prUrl:null, exitCode 1)', async () => {
+      mockLoadStateForScope.mockResolvedValue(makeState([makeEntry({ prUrl: null })]));
+      mockCreatePullRequest.mockResolvedValue(null);
+      const originalExitCode = process.exitCode;
+
+      try {
+        const outcome = { completed: false };
+        await push({}, outcome);
+
+        expect(mockCreatePullRequest).toHaveBeenCalledTimes(1);
+        expect(process.exitCode).toBe(1);
+        // No completed push → no webhook.
+        expect(outcome.completed).toBe(false);
+        // The entry stays prUrl:null so a future run retries again.
+        const saved = mockSaveStateForScope.mock.calls.at(-1)?.[0] as State;
+        const entry = saved.pendingPushes.find((p) => p.branch === 'teamai/push/testuser/20260827-065032');
+        expect(entry?.prUrl).toBeNull();
+      } finally {
+        process.exitCode = originalExitCode;
+      }
+    });
+
+    it('does NOT re-create a PR when the reuse entry already has a prUrl', async () => {
+      mockLoadStateForScope.mockResolvedValue(makeState([makeEntry()]));  // prUrl present
+
+      const outcome = { completed: false };
+      await push({}, outcome);
+
+      // Existing PR is updated in place — never a duplicate creation.
+      expect(mockCreatePullRequest).not.toHaveBeenCalled();
+      expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true });
+      expect(outcome.completed).toBe(true);
+    });
+  });
+
+  // Codex review finding 11: the recovery must also work when the tree is
+  // UNCHANGED. On re-run the branch already holds the resources, so
+  // pushRepoBranch({reuseBranch:true}) returns false (nothing to push). The old
+  // code short-circuited to 'nochange' BEFORE the PR-retry block, so the missing
+  // PR was never created. These drive the REAL no-change path (pushRepoBranch
+  // false) rather than inheriting the beforeEach's `true`.
+  describe('reuse entry with prUrl:null AND no tree change (finding 11 recovery)', () => {
+    it('still (re)creates the PR without re-pushing, and heals the record', async () => {
+      mockLoadStateForScope.mockResolvedValue(makeState([makeEntry({ prUrl: null })]));
+      mockPushRepoBranch.mockResolvedValue(false);  // no tree change
+      mockCreatePullRequest.mockResolvedValue('https://github.com/team/repo/pull/21');
+
+      const outcome = { completed: false };
+      await push({}, outcome);
+
+      // The missing PR IS created even though nothing was pushed.
+      expect(mockCreatePullRequest).toHaveBeenCalledTimes(1);
+      expect(outcome.completed).toBe(true);
+      const saved = mockSaveStateForScope.mock.calls.at(-1)?.[0] as State;
+      const entry = saved.pendingPushes.find((p) => p.branch === 'teamai/push/testuser/20260827-065032');
+      expect(entry?.prUrl).toBe('https://github.com/team/repo/pull/21');
+    });
+
+    it('does NOT complete when the no-change retry PR creation fails (exitCode 1, stays null)', async () => {
+      mockLoadStateForScope.mockResolvedValue(makeState([makeEntry({ prUrl: null })]));
+      mockPushRepoBranch.mockResolvedValue(false);  // no tree change
+      mockCreatePullRequest.mockResolvedValue(null);
+      const originalExitCode = process.exitCode;
+
+      try {
+        const outcome = { completed: false };
+        await push({}, outcome);
+
+        expect(mockCreatePullRequest).toHaveBeenCalledTimes(1);
+        expect(process.exitCode).toBe(1);
+        expect(outcome.completed).toBe(false);
+        const saved = mockSaveStateForScope.mock.calls.at(-1)?.[0] as State;
+        const entry = saved.pendingPushes.find((p) => p.branch === 'teamai/push/testuser/20260827-065032');
+        expect(entry?.prUrl).toBeNull();
+      } finally {
+        process.exitCode = originalExitCode;
+      }
+    });
+
+    it('reports nochange (no PR call) when the reuse entry already has a prUrl and no tree change', async () => {
+      mockLoadStateForScope.mockResolvedValue(makeState([makeEntry()]));  // prUrl present
+      mockPushRepoBranch.mockResolvedValue(false);  // no tree change
+
+      const outcome = { completed: false };
+      await push({}, outcome);
+
+      // PR already exists and nothing changed → genuinely nothing to do.
+      expect(mockCreatePullRequest).not.toHaveBeenCalled();
+      expect(outcome.completed).toBe(false);
+    });
+  });
 });

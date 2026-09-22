@@ -35,13 +35,28 @@ vi.mock('../dashboard-collector.js', () => ({
   dashboardReport: mockDashboardReport,
 }));
 
-vi.mock('../usage-tracker.js', () => ({
-  trackFromStdin: mockTrackFromParsed,
-  trackSlashCommand: mockTrackSlashFromParsed,
-  extractSkillName: vi.fn(),
-  isValidSkillName: vi.fn().mockReturnValue(true),
-  appendUsageEvent: vi.fn().mockResolvedValue(undefined),
-  updateKnownSkills: vi.fn().mockResolvedValue(undefined),
+// Use the REAL resolveSkillUse (pure Skill/Read+SKILL.md logic, no I/O) so the
+// webhook + track tests exercise the actual skill-name resolution shared by both
+// callers, rather than a stub that could drift from production behavior.
+vi.mock('../usage-tracker.js', async () => {
+  const actual = await vi.importActual<typeof import('../usage-tracker.js')>('../usage-tracker.js');
+  return {
+    trackFromStdin: mockTrackFromParsed,
+    trackSlashCommand: mockTrackSlashFromParsed,
+    resolveSkillUse: actual.resolveSkillUse,
+    appendUsageEvent: vi.fn().mockResolvedValue(undefined),
+    updateKnownSkills: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
+const mockSendWebhook = vi.fn().mockResolvedValue(undefined);
+const mockLoadWebhookConfig = vi.fn().mockResolvedValue({
+  enabled: true,
+  endpoints: [{ url: 'https://example.test/hook', type: 'json', events: ['*'], timeout: 5000, retries: 3 }],
+});
+vi.mock('../webhook.js', () => ({
+  sendWebhook: mockSendWebhook,
+  loadWebhookConfig: mockLoadWebhookConfig,
 }));
 
 vi.mock('../contribute-check.js', () => ({
@@ -131,13 +146,20 @@ describe('hook-handlers registry', () => {
     expect(events).toContain('session-end');
   });
 
-  it('session-end only records the final dashboard snapshot in the background', () => {
+  it('session-end records the final dashboard snapshot and dispatches the webhook, both in the background', () => {
     const handlers = buildHandlerRegistry().filter((r) => r.event === 'session-end');
+    // Copilot fires SessionEnd (not Stop), so the webhook handler must run here
+    // too — otherwise those sessions emit no session-stop notification (#702).
     expect(handlers).toEqual([
       expect.objectContaining({
         matcher: '*',
         background: true,
         handler: expect.objectContaining({ name: 'dashboard-report' }),
+      }),
+      expect.objectContaining({
+        matcher: '*',
+        background: true,
+        handler: expect.objectContaining({ name: 'webhook-dispatch' }),
       }),
     ]);
   });
@@ -975,5 +997,220 @@ describe('dashboard-report team correction keywords', () => {
     await handler().execute({ hook_event_name: 'Stop', session_id: 's' }, 'claude');
     expect(mockAutoDetectInit).not.toHaveBeenCalled();
     expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [] });
+  });
+});
+
+// Regression #702 (event mapping) + #701 (field whitelist). The handler used to
+// read stdin.event (never sent by hosts) → every event forwarded as `unknown`,
+// and forwarded the entire stdin (tool args + tool_response) as `data`.
+describe('webhook-dispatch handler (#701, #702)', () => {
+  const handler = () => buildHandlerRegistry().find(
+    (r) => r.handler.name === 'webhook-dispatch',
+  )!.handler;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadWebhookConfig.mockResolvedValue({
+      enabled: true,
+      endpoints: [{ url: 'https://example.test/hook', type: 'json', events: ['*'], timeout: 5000, retries: 3 }],
+    });
+  });
+
+  it('maps PostToolUse/Skill to skill-use and forwards only the skill name (#701, #702)', async () => {
+    await handler().execute(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Skill',
+        tool_input: { skill: 'demo', args: 'api_key=SYNTHETIC_SECRET_NOT_REAL' },
+        tool_response: 'SYNTHETIC_PRIVATE_OUTPUT',
+        session_id: 'sid',
+      },
+      'claude',
+    );
+
+    expect(mockSendWebhook).toHaveBeenCalledOnce();
+    const [event, payload] = mockSendWebhook.mock.calls[0];
+    expect(event).toBe('skill-use');
+    expect(payload.data).toEqual({ skillName: 'demo' });
+    // The raw tool args and tool_response must never be forwarded.
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toContain('SYNTHETIC_SECRET_NOT_REAL');
+    expect(serialized).not.toContain('SYNTHETIC_PRIVATE_OUTPUT');
+  });
+
+  it('maps SessionStart to session-start (#702)', async () => {
+    await handler().execute({ hook_event_name: 'SessionStart', session_id: 'sid' }, 'claude');
+    expect(mockSendWebhook).toHaveBeenCalledOnce();
+    expect(mockSendWebhook.mock.calls[0][0]).toBe('session-start');
+  });
+
+  it('maps Stop to session-stop (#702)', async () => {
+    await handler().execute({ hook_event_name: 'Stop', session_id: 'sid' }, 'claude');
+    expect(mockSendWebhook).toHaveBeenCalledOnce();
+    expect(mockSendWebhook.mock.calls[0][0]).toBe('session-stop');
+  });
+
+  it('never emits an "unknown" event for an unmapped hook (#702)', async () => {
+    await handler().execute({ hook_event_name: 'PreToolUse', session_id: 'sid' }, 'claude');
+    expect(mockSendWebhook).not.toHaveBeenCalled();
+  });
+
+  // Codex review finding 1: hosts that send camelCase hook names (Cursor/
+  // CodeBuddy) were silently dropped by the PascalCase-only lookup.
+  it('maps camelCase sessionStart to session-start (#702, camelCase host)', async () => {
+    await handler().execute({ hook_event_name: 'sessionStart', session_id: 'sid' }, 'cursor');
+    expect(mockSendWebhook).toHaveBeenCalledOnce();
+    expect(mockSendWebhook.mock.calls[0][0]).toBe('session-start');
+  });
+
+  // Codex review finding 9: Cursor represents skill use as a `Read` of a
+  // SKILL.md file (tool_name: 'Read'), NOT a `Skill` tool — and it dispatches
+  // via the camelCase `postToolUse` event. The webhook must reach the same
+  // parity trackHandler has (shared resolveSkillUse), forwarding {skillName}.
+  it('maps a Cursor camelCase postToolUse Read of SKILL.md to skill-use (#702, #9)', async () => {
+    await handler().execute(
+      {
+        hook_event_name: 'postToolUse',
+        tool_name: 'Read',
+        tool_input: { path: '/root/.cursor/skills/tdd/SKILL.md' },
+        tool_response: 'SYNTHETIC_PRIVATE_OUTPUT',
+        session_id: 'sid',
+      },
+      'cursor',
+    );
+    expect(mockSendWebhook).toHaveBeenCalledOnce();
+    const [event, payload] = mockSendWebhook.mock.calls[0];
+    expect(event).toBe('skill-use');
+    expect(payload.data).toEqual({ skillName: 'tdd' });
+    expect(JSON.stringify(payload)).not.toContain('SYNTHETIC_PRIVATE_OUTPUT');
+  });
+
+  // Finding 9 guard: a NORMAL (non-SKILL.md) Read must NOT produce a skill-use
+  // webhook — data must be empty so a plain file read never leaks or fires.
+  it('does NOT emit skill-use data for a normal (non-SKILL.md) Read (#9 guard)', async () => {
+    await handler().execute(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Read',
+        tool_input: { path: '/root/project/src/secrets.ts' },
+        tool_response: 'const API_KEY = "SYNTHETIC_SECRET_NOT_REAL";',
+        session_id: 'sid',
+      },
+      'cursor',
+    );
+    expect(mockSendWebhook).toHaveBeenCalledOnce();
+    const [event, payload] = mockSendWebhook.mock.calls[0];
+    expect(event).toBe('skill-use');
+    expect(payload.data).toEqual({});
+    expect(JSON.stringify(payload)).not.toContain('SYNTHETIC_SECRET_NOT_REAL');
+    expect(JSON.stringify(payload)).not.toContain('secrets.ts');
+  });
+
+  // Codex review finding 2: Copilot fires SessionEnd (not Stop); the handler
+  // must be registered on session-end and map it to session-stop.
+  it('registers webhook-dispatch on the session-end event (#702, Copilot)', () => {
+    const sessionEndWebhook = buildHandlerRegistry().find(
+      (r) => r.event === 'session-end' && r.matcher === '*' && r.handler.name === 'webhook-dispatch',
+    );
+    expect(sessionEndWebhook).toBeDefined();
+    expect(sessionEndWebhook!.background).toBe(true);
+  });
+
+  it('maps SessionEnd to session-stop (#702, Copilot)', async () => {
+    await handler().execute({ hook_event_name: 'SessionEnd', session_id: 'sid' }, 'copilot');
+    expect(mockSendWebhook).toHaveBeenCalledOnce();
+    expect(mockSendWebhook.mock.calls[0][0]).toBe('session-stop');
+  });
+
+  // Codex review finding 3: an extracted skillName that fails isValidSkillName
+  // (e.g. a path-like `command` arg) must be dropped, not forwarded. Uses the
+  // real resolveSkillUse, which validates with isValidSkillName.
+  it('drops an invalid skillName instead of forwarding it (#701)', async () => {
+    await handler().execute(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Skill',
+        tool_input: { command: '/etc/passwd; rm -rf /' },
+        session_id: 'sid',
+      },
+      'claude',
+    );
+
+    expect(mockSendWebhook).toHaveBeenCalledOnce();
+    const [, payload] = mockSendWebhook.mock.calls[0];
+    expect(payload.data).toEqual({});
+    expect(JSON.stringify(payload)).not.toContain('passwd');
+  });
+});
+
+// Codex review finding 12: the tests above call handler.execute() directly,
+// bypassing dispatcher routing. These drive the REAL dispatcher for the
+// post-tool-use `Skill` matcher — the matcher Cursor's SKILL.md Read is wired to
+// (git f0ab4eb switched Cursor tracking from Read to the Skill matcher;
+// BUILTIN_HOOK_SPECS has no Read matcher) — to prove a Read payload routes
+// through it to webhookHandler. webhookHandler is background: true, so it runs in
+// the 'background' dispatch pass. (Cursor's own runtime is external and not
+// testable in this repo; this covers the CLI-side routing that is.)
+describe('post-tool-use Skill-matcher dispatch routes Cursor SKILL.md Read to the webhook (#702, #9, #12)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadWebhookConfig.mockResolvedValue({
+      enabled: true,
+      endpoints: [{ url: 'https://example.test/hook', type: 'json', events: ['*'], timeout: 5000, retries: 3 }],
+    });
+  });
+
+  it('registers webhook-dispatch under the post-tool-use Skill matcher', () => {
+    const reg = buildHandlerRegistry().find(
+      (r) => r.event === 'post-tool-use' && r.matcher === 'Skill' && r.handler.name === 'webhook-dispatch',
+    );
+    expect(reg).toBeDefined();
+    expect(reg!.background).toBe(true);
+  });
+
+  it('a Cursor Read of SKILL.md dispatched via the Skill matcher produces a skill-use webhook with {skillName}', async () => {
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    await dispatcher.dispatch(
+      'post-tool-use',
+      'Skill',
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Read',
+        tool_input: { path: '/root/.cursor/skills/tdd/SKILL.md' },
+        tool_response: 'SYNTHETIC_PRIVATE_OUTPUT',
+        session_id: 'sid',
+      },
+      'cursor',
+      'background',
+    );
+
+    expect(mockSendWebhook).toHaveBeenCalledOnce();
+    const [event, payload] = mockSendWebhook.mock.calls[0];
+    expect(event).toBe('skill-use');
+    expect(payload.data).toEqual({ skillName: 'tdd' });
+    expect(JSON.stringify(payload)).not.toContain('SYNTHETIC_PRIVATE_OUTPUT');
+  });
+
+  it('a normal Read (non-SKILL.md) dispatched via the Skill matcher produces empty skill-use data', async () => {
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    await dispatcher.dispatch(
+      'post-tool-use',
+      'Skill',
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Read',
+        tool_input: { path: '/root/project/src/secrets.ts' },
+        tool_response: 'const API_KEY = "SYNTHETIC_SECRET_NOT_REAL";',
+        session_id: 'sid',
+      },
+      'cursor',
+      'background',
+    );
+
+    expect(mockSendWebhook).toHaveBeenCalledOnce();
+    const [, payload] = mockSendWebhook.mock.calls[0];
+    expect(payload.data).toEqual({});
+    expect(JSON.stringify(payload)).not.toContain('SYNTHETIC_SECRET_NOT_REAL');
+    expect(JSON.stringify(payload)).not.toContain('secrets.ts');
   });
 });
