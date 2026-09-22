@@ -62,8 +62,10 @@ their browser — that approval is the *only* thing they do; the command finishe
 its own once they do. Confirm with
 `"${TEAMAI_HOME:-$HOME/.teamai}/gf/gf/bin/gf" auth whoami` before continuing.
 
-(Headless/CI only: skip the interactive login and pre-set `TGIT_TOKEN` — a
-git.woa.com Personal Access Token — instead.)
+There is no headless substitute for this step: a `TGIT_TOKEN` Personal Access
+Token reaches the git.woa.com REST API only, and the git endpoint rejects it, so
+`init` cannot clone with it. Run the login once on the machine (interactively);
+later unattended runs reuse the credential it stores.
 
 ## When you `teamai init` on TGit
 

@@ -246,11 +246,17 @@ export function ensureAuthenticated(): string {
 
   // `gf auth login` inherits stdio and waits for iOA / a browser device flow.
   // Without a person at a terminal that never completes (issue #711).
+  //
+  // Unlike the other providers there is no token to name here: a `TGIT_TOKEN`
+  // PAT is REST-API-only, and git.woa.com's git endpoint rejects it in every
+  // form (see {@link tgitGitCloneUrl}), so it can neither satisfy this check nor
+  // clone. The only credential that works is the one `gf auth login` stores.
   if (!isInteractive()) {
     throw new Error(
       'TGit authentication unavailable without a terminal. ' +
-        'Export TGIT_TOKEN (a TGit Personal Access Token), ' +
-        'or run `gf auth login` in an interactive shell first.',
+        'Run `gf auth login` in an interactive shell first — this machine then ' +
+        'reuses the credential it stores (TGIT_TOKEN is REST-API-only and ' +
+        'cannot clone).',
     );
   }
 

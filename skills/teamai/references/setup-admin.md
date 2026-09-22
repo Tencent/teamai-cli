@@ -190,7 +190,9 @@ If the repo does not exist yet, `init` offers to create it — accept the prompt
 If the repo has roles enabled, `init` may ask for a primary role — pick one with
 the user, or pass `--role <id>` for a non-interactive run. Without a terminal
 (or with `CI` / `TEAMAI_NONINTERACTIVE` set) `init` never waits: a provider that
-would need a browser login fails at once and names the token variable to export.
+would need a browser login fails at once and names the credential to prepare —
+a token for GitHub / CNB / GitLab / GitCode, and for TGit a prior `gf auth
+login` run in an interactive shell (see Step 3).
 
 **Which AI tools to set up — all of them by default (global rule 9).** Do not add
 `--agent` to restrict the install unless the user explicitly said to (e.g. "only

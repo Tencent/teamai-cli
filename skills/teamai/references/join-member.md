@@ -42,8 +42,9 @@ Match the login to the URL's host (do NOT create a second repo):
 - **`git.woa.com/...`** (Tencent TGit / 工蜂) → **you run both the `gf` install and
   the `gf … auth login`** (never tell the user to run them). Follow
   `provider-tgit.md` ("Log in"); the user's only action is approving the login URL
-  in their browser / iOA. No `GITLAB_URL` needed. (Headless only: pre-set
-  `TGIT_TOKEN`.)
+  in their browser / iOA. No `GITLAB_URL` needed. (No headless shortcut:
+  `TGIT_TOKEN` is REST-API-only and cannot clone, so the login has to be run once
+  on the machine.)
 - **`cnb.cool/...`** → install the CNB CLI, then authorize, in this order:
   1. `npm install -g @cnbcool/cnb-cli`
   2. `cnb login` — have the user approve it in the browser (OAuth2 device flow);

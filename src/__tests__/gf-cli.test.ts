@@ -285,14 +285,18 @@ describe('gf auth commands run from a neutral cwd', () => {
 
   // issue #711: the inherited-stdio login waits for iOA / a browser with nobody
   // there. Without a terminal, ensureAuthenticated must refuse before spawning it.
-  it('ensureAuthenticated refuses without a terminal and names TGIT_TOKEN', () => {
+  // The message must point at `gf auth login`, the only credential that works:
+  // a TGIT_TOKEN PAT is REST-only and git.woa.com rejects it for clone, so
+  // naming it would send an unattended run after a token that cannot help.
+  it('ensureAuthenticated refuses without a terminal and points at gf auth login', () => {
     const originalIsTTY = process.stdin.isTTY;
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
     try {
       // whoami: not logged in
       mockSpawnSync.mockReturnValue({ stdout: '', stderr: 'not logged in', status: 1 } as any);
 
-      expect(() => ensureAuthenticated()).toThrow(/TGIT_TOKEN/);
+      expect(() => ensureAuthenticated()).toThrow(/gf auth login/);
+      expect(() => ensureAuthenticated()).toThrow(/REST-API-only/);
 
       const loginCalls = mockSpawnSync.mock.calls.filter(
         ([, args]) => Array.isArray(args) && args[0] === 'auth' && args[1] === 'login',

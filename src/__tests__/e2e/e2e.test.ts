@@ -703,7 +703,8 @@ describe('remote commands', () => {
 //
 // GitHub-only: TGit's `gf` CLI authenticates via ~/.netrc, which we lose
 // when we isolate $HOME to a temp dir, and `gf auth whoami` reads only that
-// store (TGIT_TOKEN below reaches `git clone`, not gf). Since #711 the CLI
+// store. The TGIT_TOKEN below cannot stand in for it: the PAT is REST-only,
+// and git.woa.com's git endpoint rejects it too. Since #711 the CLI
 // refuses to start `gf auth login` without a terminal instead of hanging on
 // it, so a TGit run here would fail fast rather than block; it still cannot
 // pass. GitHub provider auths via GITHUB_TOKEN env, so it works fine under

@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { Command, Option } from 'commander';
 import { setVerbose, setSilent, log } from './utils/logger.js';
-import { isInteractive } from './utils/prompt.js';
+import { applyNonInteractiveGitEnv } from './utils/git-env.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
 import { registerPackagesCommand } from './pkg/register-command.js';
@@ -28,14 +28,11 @@ async function notifyWebhook(event: 'push' | 'pull'): Promise<void> {
   }
 }
 
-// Without a person at a terminal, git must not stop to ask for a username or
-// password (or open a GUI credential helper): a missing credential should fail
-// the clone at once with `could not read Username`, not hang the run (issue
-// #711). Every provider spawns git with the inherited environment, so one
-// assignment here covers them all. An explicit value set by the caller wins.
-if (!isInteractive() && process.env.GIT_TERMINAL_PROMPT === undefined) {
-  process.env.GIT_TERMINAL_PROMPT = '0';
-}
+// Without a person at a terminal, no git child may stop to ask for anything: a
+// terminal prompt, an askpass dialog, an ssh passphrase or a credential manager
+// window all park the run with no output. A missing credential should fail the
+// clone at once instead (issue #711). See utils/git-env.ts for each door.
+applyNonInteractiveGitEnv();
 
 const program = new Command();
 

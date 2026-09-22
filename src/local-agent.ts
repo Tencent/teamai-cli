@@ -24,6 +24,7 @@ import { RulesHandler, SkillsHandler } from './resources/index.js';
 import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, OPENCLAW_TOOLS } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
+import { isInteractive } from './utils/prompt.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
@@ -951,11 +952,11 @@ async function askViaTty(prompt: string): Promise<string | null> {
   // waiting for input that never comes — hanging the hook until the host's
   // timeout and stalling the IDE. Callers fall back to injecting a stdout
   // binding hint when this returns null, so degrade to that instead.
-  const { askQuestion, isInteractive } = await import('./utils/prompt.js');
-  if (isInteractive()) {
-    return askQuestion(prompt, '');
-  }
-  return null;
+  // The decline stays synchronous — this runs on the hook path, where loading
+  // the prompt module only to say no is work nobody asked for.
+  if (!isInteractive()) return null;
+  const { askQuestion } = await import('./utils/prompt.js');
+  return askQuestion(prompt, '');
 }
 
 async function promptForProjectBinding(
