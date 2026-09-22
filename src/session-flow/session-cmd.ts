@@ -21,6 +21,7 @@ import type { Command } from 'commander';
 import readline from 'node:readline';
 import * as path from 'node:path';
 import { getAdapter, listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
+import { scrubSession } from './scrub.js';
 import { MigrationEngine } from './migrate.js';
 import { SyncManager, getRepoIdentity, getGitAuthor, defaultSyncMeta } from './sync.js';
 import { SessionSearchEngine, type LoadedSession } from './search.js';
@@ -511,6 +512,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--limit <n>', 'Max sessions to push (default: 5; ignored with --all)', '5')
     .option('--all', 'Push every session of the platform across all workspace directories (ignores --limit)')
     .option('-y, --yes', 'Skip the confirmation prompt for large batches (--all)')
+    .option('--scrub', 'Redact secrets before archiving (archived sessions are team-readable)')
     .action(async (opts) => {
       try {
       const source = opts.source;
@@ -555,10 +557,15 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
 
       const syncMgr = new SyncManager(repoRoot);
       let saved = 0;
+      let redactedTotal = 0;
       for (const m of selected) {
         // --all 时会话可能来自任意工作区，scoped 查找（按 cwd 编码目录）会因
         // 目录名解码有损而 miss——交由适配器全局查找；单 cwd 模式仍传 workCwd。
-        const session = await adapter.readSession(m.sessionId, opts.all ? undefined : workCwd);
+        const readSession = await adapter.readSession(m.sessionId, opts.all ? undefined : workCwd);
+        // 归档的是完整原文，团队可读：--scrub 时先脱敏；未脱敏时明确提示一次。
+        const scrubbed = opts.scrub ? scrubSession(readSession) : null;
+        const session = scrubbed ? scrubbed.session : readSession;
+        if (scrubbed) redactedTotal += scrubbed.redactedCount;
         if (opts.all) {
           console.log(`  Source: ${session.cwd || 'unknown directory'}`);
         }
@@ -575,6 +582,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         );
         syncMgr.saveSession(session, meta);
         saved++;
+      }
+      if (opts.scrub) {
+        console.log(`  Redacted: ${redactedTotal} secret-looking value(s) (best-effort; review before sharing)`);
+      } else if (saved > 0) {
+        console.log(
+          '  ⚠ Archived as-is: full transcripts (possibly secrets/paths) are team-readable. Use --scrub to redact.',
+        );
       }
       // [已修] gitCommit 失败（非 git 目录 / index.lock 竞态）此前裸堆栈崩溃
       const commitHash = runGitStep(
