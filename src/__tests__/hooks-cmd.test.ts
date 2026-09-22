@@ -269,14 +269,17 @@ describe('hooksList', () => {
             expect(mockedGetHookStatus).toHaveBeenCalledWith(
                 path.join('/home/testuser', '.claude/settings.json'),
                 'claude',
+                undefined,
             );
             expect(mockedGetHookStatus).toHaveBeenCalledWith(
                 path.join('/home/testuser', '.claude-internal/settings.json'),
                 'claude-internal',
+                undefined,
             );
             expect(mockedGetHookStatus).toHaveBeenCalledWith(
                 path.join('/home/testuser', '.cursor/hooks.json'),
                 'cursor',
+                undefined,
             );
 
             const output = consoleLog.mock.calls.map((call) => String(call[0])).join('\n');
@@ -315,10 +318,12 @@ describe('hooksList', () => {
             expect(mockedGetHookStatus).toHaveBeenCalledWith(
                 path.join('/home/testuser', '.claude/settings.json'),
                 'claude',
+                undefined,
             );
             expect(mockedGetHookStatus).not.toHaveBeenCalledWith(
                 path.join('/path/to/project', '.claude/settings.json'),
                 'claude',
+                undefined,
             );
         } finally {
             restoreHome();
@@ -354,10 +359,12 @@ describe('hooksList', () => {
         expect(mockedGetHookStatus).toHaveBeenCalledWith(
             path.join('/home/testuser', '.qoder-cn', 'settings.json'),
             'qoder-cn',
+            undefined,
         );
         expect(mockedGetHookStatus).not.toHaveBeenCalledWith(
             path.join('/home/testuser', '.qoder', 'settings.json'),
             'qoder-cn',
+            undefined,
         );
     });
 
@@ -386,8 +393,8 @@ describe('hooksList', () => {
         }
 
         const shared = path.join(projectRoot, '.qoder', 'settings.json');
-        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, 'qoder');
-        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, 'qoder-cn');
+        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, 'qoder', undefined);
+        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, 'qoder-cn', undefined);
     });
 
     // #667: ownership of the file shared by Qoder and Qoder CN follows the
@@ -420,9 +427,9 @@ describe('hooksList', () => {
         }
 
         const shared = path.join(projectRoot, '.qoder', 'settings.json');
-        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, 'qoder-cn');
+        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, 'qoder-cn', undefined);
         // `qoder` is not enabled, so it must not claim — and mis-probe — the file.
-        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, 'qoder');
+        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, 'qoder', undefined);
     });
 
     // The same rule with no whitelist: `disabledAgents` alone moves ownership.
@@ -449,8 +456,8 @@ describe('hooksList', () => {
         }
 
         const shared = path.join(projectRoot, '.qoder', 'settings.json');
-        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, 'qoder-cn');
-        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, 'qoder');
+        expect(mockedGetHookStatus).toHaveBeenCalledWith(shared, 'qoder-cn', undefined);
+        expect(mockedGetHookStatus).not.toHaveBeenCalledWith(shared, 'qoder', undefined);
     });
 
     it('lists standalone Copilot hooks under COPILOT_HOME', async () => {
@@ -473,6 +480,7 @@ describe('hooksList', () => {
         expect(mockedGetHookStatus).toHaveBeenCalledWith(
             path.join(COPILOT_HOME_FIXTURE, 'hooks/teamai.json'),
             'copilot',
+            undefined,
         );
     });
 
@@ -546,6 +554,25 @@ describe('hooksList', () => {
         const text = out.join('\n');
         expect(text).toContain('~/.hermes/hooks/teamai-status-report.sh');
         expect(text).not.toContain('no settings configured');
+    });
+
+    it('checks tool status against the overridden built-in set', async () => {
+        // Reconciliation applies `builtin.disabled` when writing, so a status
+        // check that still expects the disabled hook reads `missing` forever.
+        mockedParseTeamHooks.mockResolvedValue(hooksYaml([], { disabled: ['Hook dispatch stop'] }));
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+        try {
+            await hooksList({});
+        } finally {
+            consoleLog.mockRestore();
+        }
+
+        expect(mockedGetHookStatus).toHaveBeenCalledWith(
+            expect.any(String),
+            'claude',
+            { disabled: ['Hook dispatch stop'] },
+        );
     });
 
     it('lists only the built-in hooks a tool actually receives (#717)', async () => {

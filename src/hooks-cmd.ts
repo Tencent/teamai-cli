@@ -60,18 +60,16 @@ function formatHooksList(rows: HookListRow[]): string {
  * target location cannot be resolved, e.g. no OpenClaw workspace on this
  * machine). Presence of that file is the tool's whole install status.
  */
-async function adapterHookArtifact(
-    tool: string,
-    baseDir: string,
-    scope: 'user' | 'project',
-): Promise<string | null> {
+async function adapterHookArtifact(tool: string): Promise<string | null> {
     if (tool === 'omp') {
         const { resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
         return path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
     }
     if (tool === 'opencode') {
+        // reconcileOpencodePlugin always installs the single plugin under the
+        // user path, whatever the config scope, so probe there.
         const { resolveOpencodePluginDir, OPENCODE_HOOK_FILE } = await import('./opencode-hooks.js');
-        return path.join(resolveOpencodePluginDir(baseDir, scope), OPENCODE_HOOK_FILE);
+        return path.join(resolveOpencodePluginDir(getUserHome(), 'user'), OPENCODE_HOOK_FILE);
     }
     if (tool === 'hermes') {
         const { getReportScriptPath } = await import('./hermes-hooks.js');
@@ -161,7 +159,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
         // The adapter-driven tools have no settings/hooks file to parse: each
         // installs a single generated artifact, so its presence is the whole
         // status.
-        const artifact = await adapterHookArtifact(tool, baseDir, localConfig.scope);
+        const artifact = await adapterHookArtifact(tool);
         if (artifact) {
             rows.push({
                 tool,
@@ -182,7 +180,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
         }
         rows.push({
             tool,
-            status: await getHookStatus(hookPath, tool),
+            status: await getHookStatus(hookPath, tool, builtinOverride),
             settingsPath: formatDisplayPath(hookPath),
             // The override is applied to the settings-driven defs only: the
             // standalone adapters generate a fixed handler and ignore it, so

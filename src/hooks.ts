@@ -1158,11 +1158,19 @@ export async function removeHooks(settingsPath: string, tool?: string): Promise<
  * Report whether the current built-in (A) hook set is present in a tool settings
  * file. Computed against the unified HookDef model: every built-in entry for the
  * tool must already exist on disk.
+ *
+ * `builtinOverride` is the team's §4.8 override. Reconciliation applies it when
+ * writing, so the status check must apply it too — otherwise a hook the team
+ * disabled is still expected on disk and every tool reads as `missing`.
  */
-export async function getHookStatus(settingsPath: string, tool?: string): Promise<HookStatus> {
+export async function getHookStatus(
+  settingsPath: string,
+  tool?: string,
+  builtinOverride?: BuiltinHookOverride,
+): Promise<HookStatus> {
   const toolName = tool ?? 'claude';
   const expanded = expandHome(settingsPath);
-  const defs = builtinHookDefs(toolName);
+  const defs = applyBuiltinOverride(builtinHookDefs(toolName), builtinOverride);
 
   const format = detectFormat(toolName);
   if (format === 'cursor') {
