@@ -78,13 +78,13 @@ describe('acquireLock (real fs)', () => {
     await releaseLock(lockPath);
   });
 
-  it('grants the lock to exactly one of many concurrent reclaimers of a STALE lock', { retry: 3 }, async () => {
+  it('grants the lock to exactly one of many concurrent reclaimers of a STALE lock', async () => {
     // The reviewer's repro: a dead-PID lock already on disk, many processes race
     // to reclaim it at once. The reclaim is serialized behind a sentinel, so the
     // stale lock is taken over exactly once — never two winners.
     fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, owner: 'dead', startedAt: 'x' }));
     const results = await Promise.all(
-      Array.from({ length: 8 }, () => acquireLock(lockPath)),
+      Array.from({ length: 32 }, () => acquireLock(lockPath)),
     );
     expect(results.filter(Boolean)).toHaveLength(1);
     // The surviving lock belongs to this process (the single winner).
