@@ -45,12 +45,6 @@ Usage examples (copy one to get started):
       /teamai Uninstall TeamAI
 ```
 
-> **Sharing a session's learnings is automatic — not a menu choice.** TeamAI
-> prompts on its own at the end of a session that produced something worth sharing,
-> and the **`teamai-share-learnings`** skill takes over. The user does not invoke
-> `/teamai` for it. (Only appears when the admin left team sharing enabled — on by
-> default.)
-
 **If they DID describe a scenario**, match it to one row of the table below,
 then open that reference file and follow it step by step.
 
@@ -63,13 +57,13 @@ then open that reference file and follow it step by step.
 | Open the team dashboard (web UI)                    | run `teamai dashboard` (see cheat sheet) |
 | Remove / uninstall TeamAI from this machine         | `references/uninstall.md`                |
 
-> **Sharing session learnings is automatic, via a separate skill — do not route it
+> **Sharing session *learnings* is automatic — not a menu choice, and not routed
 > here.** TeamAI prompts on its own at the end of a session worth sharing, and the
-> **`teamai-share-learnings`** skill summarizes the session and runs
-> `teamai contribute`. The user does not ask for it through `/teamai`. (Only when
-> the admin left team sharing on — the default.) `contribute-member.md` here is for
-> a member **publishing a reusable skill** on request ("share this xxx skill with
-> my team").
+> separate **`teamai-share-learnings`** skill summarizes it and runs
+> `teamai contribute`. The user never asks for it through `/teamai`. (Only when the
+> admin left team sharing on — the default.) The `contribute-member.md` row above is
+> a *different* task: a member **publishing a reusable skill** on request ("share
+> this xxx skill with my team").
 
 Choosing between "set up" and "join": a user **setting up a new team** becomes its
 admin and creates the repo; a user **joining an existing team** needs a repo URL

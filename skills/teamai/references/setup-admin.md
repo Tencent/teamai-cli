@@ -24,19 +24,11 @@ through these sub-steps **in order**:
 
 ### 2a — Ask which platform they know
 
-**Tencent-internal first:** before asking, probe whether this machine is on the
-Tencent corporate network — a request to `git.woa.com` that returns the header
-`x-env: tgit` means Tencent TGit (工蜂) is reachable:
-
-```bash
-curl -sS -m 3 -D - -o /dev/null https://git.woa.com 2>/dev/null | grep -qi '^x-env:[[:space:]]*tgit' && echo "tgit: OK" || echo "tgit: unreachable"
-```
-
-If it prints `tgit: OK`, **list Tencent TGit (工蜂) first** and prefer it —
-TeamAI supports it natively as the `tgit` provider (it detects `git.woa.com` on
-its own; you install `gf` and log in in Step 3). Then ask:
-*"Have you heard of / do you have an account on any of these — Tencent TGit
-(工蜂), GitHub, GitLab, or CNB (cnb.cool)?"*
+**Tencent-internal first:** before asking, probe whether TGit (工蜂) is reachable
+on this machine — see `provider-tgit.md` ("Probe reachability") for the one-line
+`x-env: tgit` check. If it says `tgit: OK`, **list Tencent TGit (工蜂) first** and
+prefer it. Then ask: *"Have you heard of / do you have an account on any of these —
+Tencent TGit (工蜂), GitHub, GitLab, or CNB (cnb.cool)?"*
 
 - **Tencent TGit (工蜂)** — https://git.woa.com (Tencent-internal only; shown
   first when the probe above says `tgit: OK`)
@@ -49,7 +41,8 @@ If they name one, use that platform and go to sub-step 2c.
 ### 2b — If they've heard of NONE, auto-probe reachability
 
 Test which sites this network can actually reach (probe each, ~3s timeout each).
-The TGit probe checks the `x-env: tgit` header, not just reachability:
+The TGit probe checks the `x-env: tgit` header, not just reachability (see
+`provider-tgit.md`); the others just check reachability:
 
 ```bash
 curl -sS -m 3 -D - -o /dev/null https://git.woa.com 2>/dev/null | grep -qi '^x-env:[[:space:]]*tgit' && echo "tgit: OK" || echo "tgit: unreachable"
@@ -79,12 +72,9 @@ the repository, then continue to the next step:
 | GitLab   | https://gitlab.com/users/sign_in | https://gitlab.com/projects/new |
 | CNB      | https://cnb.cool             | https://cnb.cool/new/repos (org first: https://cnb.cool/new/groups) |
 
-> **Tencent TGit (工蜂):** **prefer letting `teamai init` create the repo for you**
-> in Step 5 — don't send the user to the browser first. Once you are logged in
-> (Step 3), init creates the repo under the chosen owner via the API. Only fall
-> back to https://git.woa.com/projects/new if init reports it can't (e.g. the
-> group/namespace doesn't exist, or you lack create permission). git.woa.com is
-> Tencent-internal only.
+> **Tencent TGit (工蜂):** don't send the user to the browser to create the repo —
+> prefer letting `teamai init` create it via the API in Step 5. See
+> `provider-tgit.md` ("When you `teamai init` on TGit").
 
 Tell the user to sign in, create an **empty** repo (suggested name
 `TeamAi-<team-name>`), and give you the resulting repo URL. Explain in one
@@ -101,48 +91,11 @@ computer only holds a synced copy — you never put business code in it."*
 Signing in on the website (Step 2c) is not enough — `teamai init` also needs the
 platform's CLI credentials. Have the user complete the matching CLI login:
 
-### Tencent TGit (工蜂) — YOU run gf install and login; user only clicks approve
+### Tencent TGit (工蜂)
 
-TeamAI supports git.woa.com natively as the `tgit` provider (it recognizes the
-host on its own — no `GITLAB_URL` needed). **Run every command below yourself** —
-both the install and the login. **Never tell the user to run a `gf` command.** The
-user's only action is approving the login in their browser / iOA when it opens.
-
-**1. Install `gf` (you run this)** using the **same source, path, and check teamai
-uses** — do not invent your own URL. `${TEAMAI_HOME}` is `~/.teamai` unless
-overridden:
-
-```bash
-# pick the tarball for this machine's OS/arch (darwin|linux × x64|arm64)
-os=$(uname -s | tr '[:upper:]' '[:lower:]')          # darwin | linux
-arch=$(uname -m); [ "$arch" = "x86_64" ] && arch=x64; [ "$arch" = "aarch64" ] && arch=arm64
-dir="${TEAMAI_HOME:-$HOME/.teamai}/gf"
-
-# download + extract from the Tencent-internal mirror (same URL teamai uses)
-mkdir -p "$dir"
-curl -fsSL "http://mirrors.tencent.com/repository/generic/gongfeng-cli/files/channels/stable/gf-${os}-${arch}.tar.gz" | tar xz -C "$dir"
-
-# verify exactly as teamai does: the binary exists and is executable
-test -x "$dir/gf/bin/gf" && echo "gf installed OK" || echo "gf install FAILED"
-```
-
-Only macOS and Linux, on x64 or arm64, are supported.
-
-**2. Log in (you run this too — don't hand it to the user):**
-
-```bash
-"${TEAMAI_HOME:-$HOME/.teamai}/gf/gf/bin/gf" auth login
-```
-
-`gf auth login` starts an interactive flow offering three ways to sign in — iOA, a
-browser device code, or pasting a token. Pick the browser/iOA option, relay
-whatever URL / device code it prints to the user, and ask them to approve it in
-their browser — that approval is the *only* thing they do; the command finishes on
-its own once they do. Confirm with
-`"${TEAMAI_HOME:-$HOME/.teamai}/gf/gf/bin/gf" auth whoami` before continuing.
-
-(Headless/CI only: skip the interactive login and pre-set `TGIT_TOKEN` — a
-git.woa.com Personal Access Token — instead.)
+See `provider-tgit.md` ("Log in") — you install `gf` and run `gf auth login`
+yourself; the user only approves in the browser / iOA. No `GITLAB_URL` needed.
+Then return here for Step 4.
 
 ### CNB — install the CLI, authorize, then read the repo (in this order)
 
@@ -219,11 +172,9 @@ teamai init https://<platform>/<org>/<repo-name> --scope user
 
 If the repo does not exist yet, `init` offers to create it — accept the prompt.
 
-- **Tencent TGit (工蜂):** `gf` and login are already done (Step 3), so init goes
-  straight to creating/cloning. When the repo doesn't exist, **accept the create
-  prompt and init creates it via the API** — no browser needed. It only sends you
-  to https://git.woa.com/projects/new if the group/namespace is missing or you
-  lack create permission. No `GITLAB_URL`.
+- **Tencent TGit (工蜂):** `gf` and login are already done, so init creates the
+  repo via the API when it's missing — see `provider-tgit.md` ("When you
+  `teamai init` on TGit").
 - **CNB caveat:** a `cnb login` token **cannot create** an org or repo — that is
   exactly why the CNB flow has the user create the repo on the website first
   (Step 2c). If the org/repo is still missing here, `init` prints web links
@@ -256,13 +207,12 @@ teamai hooks list      # per-tool: which AI tools actually got the hooks
 
 Resolve everything `doctor` flags before continuing.
 
-**Do not trust the "Hooks injected into all AI tool settings" message on its own.**
-That line prints even for tools where nothing was written. Use `teamai doctor` /
-`teamai hooks list` to see the real per-tool status. It is expected that only the
-tool you set up with `--agent` (e.g. `claude`) shows the hooks installed; several
-other tools are skipped by design or not yet supported — this is CLI behaviour, not
-a broken setup. See `troubleshooting.md` ("Which tools actually get hooks") before
-worrying about a tool that shows as missing.
+**Don't trust the "Hooks injected into all AI tool settings" message on its own** —
+it prints even for tools where nothing was written. `teamai doctor` / `teamai hooks
+list` show the real per-tool status. Only the tool you set up (e.g. `claude`) is
+expected to show hooks installed; others are skipped by design or not yet supported,
+which is normal. Full table in `troubleshooting.md` ("Which tools actually get
+hooks").
 
 ## Step 7 — Grant members repo access (required before they can join)
 

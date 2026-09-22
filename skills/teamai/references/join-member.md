@@ -40,10 +40,10 @@ If it fails, Node.js ≥ 20 is missing — have them install Node 20+ first.
 Match the login to the URL's host (do NOT create a second repo):
 
 - **`git.woa.com/...`** (Tencent TGit / 工蜂) → **you run both the `gf` install and
-  the `gf … auth login`** (never tell the user to run them). Use the exact
-  download/verify commands and login step from `setup-admin.md` (Step 3, Tencent
-  TGit). The user's only action is approving the login URL in their browser / iOA.
-  No `GITLAB_URL` needed. (Headless only: pre-set `TGIT_TOKEN`.)
+  the `gf … auth login`** (never tell the user to run them). Follow
+  `provider-tgit.md` ("Log in"); the user's only action is approving the login URL
+  in their browser / iOA. No `GITLAB_URL` needed. (Headless only: pre-set
+  `TGIT_TOKEN`.)
 - **`cnb.cool/...`** → install the CNB CLI, then authorize, in this order:
   1. `npm install -g @cnbcool/cnb-cli`
   2. `cnb login` — have the user approve it in the browser (OAuth2 device flow);
@@ -94,12 +94,10 @@ teamai doctor
 teamai hooks list      # per-tool: which AI tools actually got the hooks
 ```
 
-Fix anything `doctor` reports. **Do not trust the "Hooks injected into all AI tool
-settings" message alone** — it prints even for tools where nothing was written.
-Check the real per-tool status with `teamai doctor` / `teamai hooks list`. Only the
-tool you set up (e.g. `claude`) is expected to show hooks installed; some tools are
-skipped by design or not yet supported (CLI behaviour, not a broken setup). If it
-flags hook problems, load `troubleshooting.md` ("Which tools actually get hooks").
+Fix anything `doctor` reports. **Don't trust the "Hooks injected into all AI tool
+settings" message alone** — it prints even for tools where nothing was written;
+`teamai doctor` / `teamai hooks list` show the real per-tool status. If it flags
+hook problems, load `troubleshooting.md` ("Which tools actually get hooks").
 
 ## Step 6 — Confirm the skills actually arrived
 
