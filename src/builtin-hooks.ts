@@ -398,6 +398,68 @@ export function builtinHookDefs(tool: string): HookDef[] {
   }));
 }
 
+/**
+ * Built-in hooks each non-settings tool really receives from the hook
+ * reconciliation pipeline, and how the installed artifact runs them.
+ *
+ * Tools driven by a settings/hooks file get the full `builtinHookDefs(tool)`
+ * set through `reconcileHooks`. The adapters below own their own format, each
+ * cover a narrower slice, and spawn the dispatcher directly — so the shell
+ * wrapper the settings tools carry would misreport what is on disk.
+ *
+ * A tool in neither place is not listed: JoyCode has no hook surface at all,
+ * and Kiro's session-start command is embedded per agent by the agent sync
+ * (`renderForKiro`), so it exists only for agents that were actually synced
+ * rather than coming from the hook pipeline.
+ */
+const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }> = {
+  // hermes-hooks.ts registers one on_session_start script whose single line is
+  // the dispatch command with errors swallowed (buildReportScript).
+  hermes: { keys: ['Hook dispatch session-start'], suffix: ' >/dev/null 2>&1 || true' },
+  // omp-hooks.ts subscribes to four OMP extension events and spawns the
+  // dispatcher with argv; `tool_result` carries no matcher, so the Skill /
+  // TodoWrite passes do not exist there.
+  omp: {
+    keys: [
+      'Hook dispatch session-start',
+      'Hook dispatch stop',
+      'Hook dispatch post-tool-use wildcard',
+      'Hook dispatch prompt-submit',
+    ],
+  },
+  // opencode-hooks.ts covers the same four events plus the matcher-scoped
+  // post-tool-use passes (TOOL_MATCHER), i.e. the whole built-in set.
+  opencode: { keys: BUILTIN_HOOK_SPECS.map((spec) => spec.key) },
+  // openclaw-hooks.ts EVENT_MAP maps session:start and command:new only, and
+  // its generated handler spawns the dispatcher with argv. Only `openclaw`:
+  // the other claw variants share its workspace resolver, so reconciliation
+  // does not route them (see reconcileHooksToAllTools).
+  openclaw: { keys: ['Hook dispatch session-start', 'Hook dispatch prompt-submit'] },
+};
+
+/**
+ * Built-in hook definitions a tool actually receives, for reporting
+ * (`teamai hooks list`).
+ *
+ * `settingsDriven` tools go through the settings-file reconcile path and get
+ * the full set; the others are limited to what their own adapter installs, and
+ * a tool the pipeline never installs a built-in hook for gets an empty list so
+ * callers can omit it instead of advertising hooks it never receives (#717).
+ */
+export function installedBuiltinHookDefs(tool: string, settingsDriven: boolean): HookDef[] {
+  if (settingsDriven) return builtinHookDefs(tool);
+  const adapter = ADAPTER_BUILTIN_HOOKS[tool];
+  if (!adapter) return [];
+  return BUILTIN_HOOK_SPECS.filter((spec) => adapter.keys.includes(spec.key)).map((spec) => ({
+    source: 'builtin' as const,
+    key: spec.key,
+    event: spec.event,
+    matcher: spec.matcher,
+    command: getRawDispatchCommand(spec.dispatchEvent, tool, spec.matcher) + (adapter.suffix ?? ''),
+    description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} ${spec.key}`,
+  }));
+}
+
 /** §4.8 team override of built-in hooks. Only whitelisted fields are honored. */
 export interface BuiltinHookOverride {
   /** Built-in hook keys to disable (drop entirely). */

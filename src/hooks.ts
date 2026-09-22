@@ -1482,6 +1482,29 @@ export async function reconcileHooksToAllTools(
       }
       continue;
     }
+    // OpenClaw has no settings hook list either: its hook is a HOOK.md +
+    // handler.ts pair under the resolved workspace dir. Route it to that
+    // adapter, which no-ops when the workspace cannot be resolved, so an
+    // uninstalled OpenClaw never grows a config dir. Only `openclaw` itself:
+    // resolveOpenclawWorkspaceDir resolves the OpenClaw workspace, so routing
+    // the other claw variants here would make them overwrite that one handler
+    // with each other's --tool value.
+    if (tool === 'openclaw') {
+      if (opts.settingsOnly) continue;
+      try {
+        if (opts.removeAll) {
+          const { removeOpenClawHooks, resolveOpenclawWorkspaceDir } = await import('./openclaw-hooks.js');
+          const wsDir = await resolveOpenclawWorkspaceDir();
+          if (wsDir) await removeOpenClawHooks(path.join(wsDir, 'hooks'));
+        } else {
+          const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
+          await injectOpenClawHooks(undefined, tool);
+        }
+      } catch (e) {
+        log.warn(`Failed to reconcile OpenClaw hooks for ${tool}: ${(e as Error).message}`);
+      }
+      continue;
+    }
     // OpenCode has no settings.json hook list; it auto-loads JS/TS plugins from
     // its config dirs. Route it to the plugin-file adapter instead of the
     // settings-based path.

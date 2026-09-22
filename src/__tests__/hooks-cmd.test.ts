@@ -22,7 +22,7 @@ vi.mock('../hooks.js', async () => {
 });
 
 vi.mock('../resources/hooks.js', () => ({
-    parseTeamHooks: vi.fn(),
+    parseTeamHooksConfig: vi.fn(),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -39,7 +39,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { autoDetectInit } from '../config.js';
 import { getHookStatus, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, sweepLegacyProjectHooks, hasInstalledCodexTrustGatedTool } from '../hooks.js';
-import { parseTeamHooks } from '../resources/hooks.js';
+import { parseTeamHooksConfig } from '../resources/hooks.js';
 import { log } from '../utils/logger.js';
 import { hooksInject, hooksRemove, hooksList } from '../hooks-cmd.js';
 import { TeamaiConfigSchema } from '../types.js';
@@ -51,7 +51,12 @@ const mockedReconcileStandalone = reconcileHooks as Mock;
 const mockedReconcile = reconcileHooksToAllTools as Mock;
 const mockedReconcileForConfig = reconcileTeamHooksForConfig as Mock;
 const mockedHasCodexTrustGated = hasInstalledCodexTrustGatedTool as Mock;
-const mockedParseTeamHooks = parseTeamHooks as Mock;
+const mockedParseTeamHooks = parseTeamHooksConfig as Mock;
+
+/** hooks.yaml parse result: team defs (B) plus the optional builtin override. */
+function hooksYaml(defs: unknown[], builtin?: unknown) {
+    return { defs, builtin };
+}
 const mockedLog = log as unknown as { info: Mock; success: Mock; warn: Mock; error: Mock; debug: Mock };
 
 const mockLocalConfig = {
@@ -85,6 +90,19 @@ function copilotConfig() {
     };
 }
 
+/** Hook lines listed under `<tool>:` in the built-in (A) block. */
+function builtinBlock(text: string, tool: string): string[] | undefined {
+    const lines = text.split('\n');
+    const start = lines.findIndex((l) => /^ {2}\S/.test(l) && l.trim().slice(0, -1).split(', ').includes(tool));
+    if (start === -1) return undefined;
+    const block: string[] = [];
+    for (const line of lines.slice(start + 1)) {
+        if (!line.startsWith('    ')) break;
+        block.push(line.trim());
+    }
+    return block;
+}
+
 function mockHome(home: string): () => void {
     const originalHome = process.env.HOME;
     process.env.HOME = home;
@@ -102,7 +120,7 @@ beforeEach(() => {
     mockedReconcile.mockResolvedValue(undefined);
     mockedReconcileForConfig.mockResolvedValue(undefined);
     mockedHasCodexTrustGated.mockResolvedValue(false);
-    mockedParseTeamHooks.mockResolvedValue(TEAM_DEFS);
+    mockedParseTeamHooks.mockResolvedValue(hooksYaml(TEAM_DEFS));
 });
 
 describe('hooksInject', () => {
@@ -179,9 +197,9 @@ describe('hooksInject', () => {
 
 describe('hooksList', () => {
     it('prints built-in hooks and team hooks from hooks.yaml', async () => {
-        mockedParseTeamHooks.mockResolvedValue([
+        mockedParseTeamHooks.mockResolvedValue(hooksYaml([
             { source: 'team', key: 'lint', event: 'Stop', command: 'npm run lint', description: '[teamai:hook:lint] lint', tools: ['claude'] },
-        ]);
+        ]));
         const out: string[] = [];
         const spy = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
         try {
@@ -199,10 +217,10 @@ describe('hooksList', () => {
     });
 
     it('prints the roles restriction next to the tools one', async () => {
-        mockedParseTeamHooks.mockResolvedValue([
+        mockedParseTeamHooks.mockResolvedValue(hooksYaml([
             { source: 'team', key: 'guard-tf', event: 'PreToolUse', matcher: 'Bash', command: 'guard-tf.sh', description: '[teamai:hook:guard-tf] x', roles: ['devops'] },
             { source: 'team', key: 'lint', event: 'Stop', command: 'npm run lint', description: '[teamai:hook:lint] lint' },
-        ]);
+        ]));
         const out: string[] = [];
         const spy = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
         try {
@@ -216,11 +234,11 @@ describe('hooksList', () => {
     });
 
     it('prints the projects restriction next to the roles one', async () => {
-        mockedParseTeamHooks.mockResolvedValue([
+        mockedParseTeamHooks.mockResolvedValue(hooksYaml([
             { source: 'team', key: 'checkout-lint', event: 'Stop', command: 'echo checkout', description: '[teamai:hook:checkout-lint] x', projects: ['checkout'] },
             { source: 'team', key: 'both', event: 'Stop', command: 'echo both', description: '[teamai:hook:both] x', roles: ['frontend'], projects: ['checkout', 'billing'] },
             { source: 'team', key: 'nobody', event: 'Stop', command: 'echo none', description: '[teamai:hook:nobody] x', projects: [] },
-        ]);
+        ]));
         const out: string[] = [];
         const spy = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
         try {
@@ -456,6 +474,108 @@ describe('hooksList', () => {
             path.join(COPILOT_HOME_FIXTURE, 'hooks/teamai.json'),
             'copilot',
         );
+    });
+
+    it('prints the built-in hook set of each listed tool, including Copilot SessionEnd', async () => {
+        const originalCopilotHome = process.env.COPILOT_HOME;
+        process.env.COPILOT_HOME = COPILOT_HOME_FIXTURE;
+        const out: string[] = [];
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
+        mockedAutoDetectInit.mockResolvedValue({
+            localConfig: { ...mockLocalConfig, enabledAgents: ['copilot'] },
+            teamConfig: copilotConfig(),
+        });
+
+        try {
+            await hooksList({});
+        } finally {
+            if (originalCopilotHome === undefined) delete process.env.COPILOT_HOME;
+            else process.env.COPILOT_HOME = originalCopilotHome;
+            consoleLog.mockRestore();
+        }
+
+        // Copilot's built-in set carries an extra SessionEnd entry that no other
+        // tool has; listing a hardcoded tool's set hides it even though inject
+        // really installs it.
+        const text = out.join('\n');
+        expect(text).toContain('  copilot:');
+        expect(text).toContain('SessionEnd');
+        expect(text).toContain('hook-dispatch session-end');
+    });
+
+    it('hides a built-in hook the team disabled in hooks.yaml', async () => {
+        // The reconcile engine applies `builtin.disabled`, so a hook listed
+        // here that is no longer in the settings file would be a lie.
+        mockedParseTeamHooks.mockResolvedValue(hooksYaml([], { disabled: ['Hook dispatch stop'] }));
+        const out: string[] = [];
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
+
+        try {
+            await hooksList({});
+        } finally {
+            consoleLog.mockRestore();
+        }
+
+        const text = out.join('\n');
+        const builtin = text.slice(text.indexOf('Built-in hooks (A)'), text.indexOf('Team hooks (B)'));
+        const claude = builtinBlock(builtin, 'claude') ?? [];
+        expect(claude).toHaveLength(5);
+        expect(claude.join('\n')).not.toContain('Stop  →');
+    });
+
+    it('lists only the built-in hooks a tool actually receives (#717)', async () => {
+        const out: string[] = [];
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
+        mockedAutoDetectInit.mockResolvedValue({
+            localConfig: mockLocalConfig,
+            teamConfig: {
+                toolPaths: {
+                    claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
+                    // Standalone adapters: each covers a narrower slice of the
+                    // built-in set than the settings-file tools.
+                    hermes: { skills: '.hermes/skills' },
+                    omp: { skills: '.omp/skills' },
+                    openclaw: { skills: '.openclaw/skills' },
+                    // No built-in hook from the hook pipeline.
+                    joycode: { skills: '.joycode/skills' },
+                    kiro: { skills: '.kiro/skills', agents: '.kiro/agents' },
+                },
+            },
+        });
+
+        try {
+            await hooksList({});
+        } finally {
+            consoleLog.mockRestore();
+        }
+
+        const text = out.join('\n');
+        const builtin = text.slice(text.indexOf('Built-in hooks (A)'), text.indexOf('Team hooks (B)'));
+
+        // Claude is reconciled through its settings file: the whole set.
+        expect(builtinBlock(builtin, 'claude')).toHaveLength(6);
+        // Hermes installs a single on_session_start script running the raw
+        // dispatch command (hermes-hooks.ts).
+        expect(builtinBlock(builtin, 'hermes')).toEqual([
+            'SessionStart  →  teamai hook-dispatch session-start --tool <tool> >/dev/null 2>&1 || true',
+        ]);
+        // OMP's extension subscribes to four events and has no matcher-scoped
+        // PostToolUse pass (omp-hooks.ts).
+        const omp = builtinBlock(builtin, 'omp') ?? [];
+        expect(omp).toHaveLength(4);
+        expect(omp.join('\n')).not.toContain('[Skill]');
+        expect(omp.join('\n')).not.toContain('[TodoWrite]');
+        // OpenClaw's handler maps session:start and command:new only
+        // (openclaw-hooks.ts EVENT_MAP).
+        expect(builtinBlock(builtin, 'openclaw')).toEqual([
+            'SessionStart  →  teamai hook-dispatch session-start --tool <tool>',
+            'UserPromptSubmit  →  teamai hook-dispatch prompt-submit --tool <tool>',
+        ]);
+        // JoyCode has no hook surface, and Kiro's session-start command is
+        // embedded per agent by the agent sync instead of the hook pipeline:
+        // neither may be listed.
+        expect(builtinBlock(builtin, 'joycode')).toBeUndefined();
+        expect(builtinBlock(builtin, 'kiro')).toBeUndefined();
     });
 });
 
