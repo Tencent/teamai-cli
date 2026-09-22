@@ -1,17 +1,22 @@
 /**
- * workbuddy-store.ts — 把迁移出来的会话注册进 WorkBuddy 的本地数据库。
+ * workbuddy-store.ts -- register migrated sessions into WorkBuddy's local database.
  *
- * 背景：WorkBuddy 的「任务 / 空间」列表**不是**扫 `~/.workbuddy/projects/<proj>/*.jsonl`
- * 列出来的，而是查 `~/.workbuddy/workbuddy.db` 的 `sessions` 表（Drizzle + WAL）：
- *   - 列表项 = sessions 行（title / updated_at / cwd / is_playground …）
- *   - 空间分组 = workspaces 表（path + last_opened_at）
- * 只写 jsonl 的话会话在 WorkBuddy 里完全不可见（迁移「成功」但看不到），
- * 与 Cursor 的 composerHeaders / Codex 的 state_5.threads 是同一类问题。
+ * Background: WorkBuddy's task/space list does **not** scan
+ * `~/.workbuddy/projects/<proj>/*.jsonl`; it queries the `sessions` table in
+ * `~/.workbuddy/workbuddy.db` (Drizzle + WAL):
+ *   - list entries = sessions rows (title / updated_at / cwd / is_playground ...)
+ *   - space grouping = the workspaces table (path + last_opened_at)
+ * Writing only the jsonl leaves the session invisible in WorkBuddy -- the
+ * migration "succeeds" but shows nothing. Same class of problem as Cursor's
+ * composerHeaders and Codex's state_5.threads.
  *
- * 这里 best-effort 做三件事：
- *   1. 确保 workspaces 里有该 cwd（否则会话不属于任何「空间」）
- *   2. upsert 一条 sessions 行（user_id 沿用库内既有值——它是账号标识，不能编造）
- *   3. 失败一律返回 {ok:false, reason}，由调用方决定是否提示；不影响 jsonl 已落盘
+ * Best-effort, in order:
+ *   1. make sure the cwd exists in workspaces (otherwise the session belongs
+ *      to no space)
+ *   2. upsert a sessions row (user_id reuses the value already in the DB --
+ *      it is an account id and must not be invented)
+ *   3. on failure return {ok:false, reason}; the caller decides what to show.
+ *      The jsonl is already on disk either way.
  */
 
 import * as fs from 'node:fs';
@@ -21,7 +26,7 @@ import { spawnSync } from 'node:child_process';
 import { getWorkBuddyProjectsDir } from './fs.js';
 import { findSqlite3 } from './sqlite.js';
 
-/** WorkBuddy 数据根目录（`~/.workbuddy`，projects/db 都在其下）。 */
+ /** WorkBuddy data root (`~/.workbuddy`; projects/ and the DB live under it). */
 export function getWorkBuddyHome(): string {
   return path.dirname(getWorkBuddyProjectsDir());
 }
@@ -34,7 +39,7 @@ function esc(value: string): string {
   return value.replace(/'/g, "''");
 }
 
-/** 用 sqlite3 CLI 执行一段 SQL（临时文件 mode 0600，执行完删除）。 */
+ /** Run a SQL script through the sqlite3 CLI (temp file, mode 0600, deleted after). */
 function runSql(dbPath: string, sql: string, timeoutMs = 30_000): { ok: boolean; reason?: string } {
   const sqlite3 = findSqlite3();
   if (!sqlite3) return { ok: false, reason: 'sqlite3 CLI not found' };
@@ -66,21 +71,21 @@ function runSql(dbPath: string, sql: string, timeoutMs = 30_000): { ok: boolean;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * 取得本机的 WorkBuddy 账号标识 user_id（sessions.user_id 是 NOT NULL，且客户端按它过滤列表）。
+ * Resolve the account id (sessions.user_id is NOT NULL and the client filters the list by it).
  *
- * 多源探测，按可靠度降序：
- *   1. workbuddy.db 里既有会话行的 user_id —— 最权威（就是客户端自己写的）
- *   2. ~/.workbuddy/connectors/<uuid>/ 的目录名 —— 客户端按账号分的目录，实测与 user_id 同值
- *   3. ~/.workbuddy/app/sessions.json 里出现的 uuid —— 兜底
+ * Multi-source discovery, most reliable first:
+ *   1. user_id on existing session rows in workbuddy.db -- most authoritative (the client wrote it)
+ *   2. directory name of ~/.workbuddy/connectors/<uuid>/ -- per-account dir, observed to equal user_id
+ *   3. a uuid found in ~/.workbuddy/app/sessions.json -- last resort
  *
- * 注意：**不要用 ~/.workbuddy/device-id 兜底**。实测 device-id(76345293-…) ≠ user_id(b2778798-…)，
- * 它是设备标识不是账号标识，写进去客户端仍按 user_id 过滤 → 会话照样不可见，还留一条脏数据。
- * 三个来源都拿不到（真·全新未登录）时返回 null，由调用方跳过注册并告警。
+ * Do **not** fall back to ~/.workbuddy/device-id: it is a device id, not the account id
+ * (they differ in practice), so the client's user filter would still hide the session and we
+ * would leave a dirty row behind. Returns null when no source has it; the caller skips registration and warns.
  */
 function readUserId(dbPath: string): string | null {
   const sqlite3 = findSqlite3();
 
-  // 1) 库内既有会话
+   // 1) existing session rows
   if (sqlite3 && fs.existsSync(dbPath)) {
     try {
       const r = spawnSync(
@@ -91,44 +96,44 @@ function readUserId(dbPath: string): string | null {
       const v = (r.stdout ?? '').trim();
       if (UUID_RE.test(v)) return v;
     } catch {
-      // 落到下一来源
+       // fall through to the next source
     }
   }
 
   const home = getWorkBuddyHome();
 
-  // 2) connectors/<uuid> 目录名
+   // 2) connectors/<uuid> directory names
   try {
     const connectorsDir = path.join(home, 'connectors');
     for (const name of fs.readdirSync(connectorsDir)) {
       if (UUID_RE.test(name)) return name;
     }
   } catch {
-    // 落到下一来源
+     // fall through to the next source
   }
 
-  // 3) app/sessions.json 里的 uuid
+   // 3) uuid in app/sessions.json
   try {
     const raw = fs.readFileSync(path.join(home, 'app', 'sessions.json'), 'utf-8');
     for (const m of raw.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)) {
       return m[0];
     }
   } catch {
-    // 拿不到就跳过注册
+     // nothing available: skip registration
   }
 
   return null;
 }
 
 export interface RegisterWorkBuddySessionArgs {
-  /** 会话工作目录（绝对路径，决定归属哪个「空间」）。 */
+   /** Session working directory (absolute; decides which space it lands in). */
   cwd: string;
   sessionId: string;
   title: string;
-  /** epoch 毫秒。 */
+   /** epoch milliseconds. */
   createdAtMs: number;
   updatedAtMs: number;
-  /** 源会话模型名（可空，原生常见 'auto'）。 */
+   /** Source session model name (optional; natives commonly use 'auto'). */
   model?: string;
 }
 
@@ -138,9 +143,9 @@ export interface RegisterWorkBuddyResult {
 }
 
 /**
- * 把会话注册进 WorkBuddy 的 sessions 表（并按需补 workspaces 行）。
+ * Register the session in WorkBuddy's sessions table (and the workspaces row as needed).
  *
- * 幂等：同一 sessionId 重复迁移走 ON CONFLICT DO UPDATE，不会产生重复项。
+ * Idempotent: re-migrating the same sessionId hits ON CONFLICT DO UPDATE -- no duplicates.
  */
 export function registerWorkBuddySession(args: RegisterWorkBuddySessionArgs): RegisterWorkBuddyResult {
   const dbPath = getWorkBuddyDbPath();
@@ -148,7 +153,7 @@ export function registerWorkBuddySession(args: RegisterWorkBuddySessionArgs): Re
     return { ok: false, reason: `workbuddy.db not found: ${dbPath}` };
   }
 
-  // user_id 是账号标识，编造会导致列表按用户过滤时看不到 → 没有既有行就不写
+   // user_id is the account id; inventing one makes the client's user filter hide the row.
   const userId = readUserId(dbPath);
   if (!userId) {
     return { ok: false, reason: 'no existing session row to derive user_id from' };
@@ -159,15 +164,15 @@ export function registerWorkBuddySession(args: RegisterWorkBuddySessionArgs): Re
   const model = args.model && args.model.trim() ? args.model.trim() : 'auto';
 
   const sql = [
-    // WorkBuddy 运行时持有写锁：给有限 busy 超时，避免 CLI 挂起
+     // The client holds a write lock at runtime: bound the wait so the CLI cannot hang.
     'PRAGMA busy_timeout=5000;',
     'BEGIN IMMEDIATE;',
-    // 1) 空间（workspaces）——没有这行会话不属于任何空间，界面里无处显示
+     // 1) the space row -- without it the session belongs to no space and has nowhere to show
     'INSERT INTO workspaces (path, last_opened_at) VALUES ' +
       `('${esc(args.cwd)}', ${updated}) ` +
       `ON CONFLICT(path) DO UPDATE SET last_opened_at = MAX(last_opened_at, ${updated});`,
-    // 2) 会话行。is_playground=0 → 归入「空间」列表（=0 与原生在项目里开的会话一致）；
-    //    custom_title 留空，让 title 生效。
+     // 2) the session row. is_playground=0 puts it in the space list (matches a native
+     //    in-project session); custom_title stays empty so `title` takes effect.
     'INSERT INTO sessions ' +
       '(id, cwd, user_id, title, custom_title, status, created_at, updated_at, deleted_at, ' +
       'is_playground, source_mode, model, last_activity_at) VALUES (' +
@@ -182,7 +187,7 @@ export function registerWorkBuddySession(args: RegisterWorkBuddySessionArgs): Re
   return runSql(dbPath, sql);
 }
 
-/** 从 WorkBuddy 列表里移除该会话（迁移回滚 / 删除会话时调用）。 */
+ /** Remove the session from WorkBuddy's list (called on rollback / delete). */
 export function unregisterWorkBuddySession(sessionId: string): RegisterWorkBuddyResult {
   const dbPath = getWorkBuddyDbPath();
   if (!fs.existsSync(dbPath)) return { ok: false, reason: 'workbuddy.db not found' };
