@@ -316,18 +316,6 @@ teamai recall maintenance --update-quality       # draft updates for stale skill
 | `teamai doctor` | 구성 문제 진단 (`--json`으로 JSON 출력, CI·hook·agent용) |
 | `teamai uninstall` | 모든 teamai 리소스와 hooks 제거 |
 
-## 문제 해결
-
-### `teamai init`이 "Registered as team member" 후 멈춤
-
-**증상**: init이 `✔ Registered as team member: <본인>`에서 멈추고 이후 출력도 에러도 없습니다. `~/.teamai/config.yaml`이 작성되지 않고 skills도 가져오지 않습니다.
-
-**근본 원인**: 팀 저장소의 기본 브랜치가 보호되어 있습니다(`push: No one` — 팀 저장소에서 흔함). 이전 버전의 teamai는 멤버 파일을 `git push`로 기본 브랜치에 직접 밀었는데, (a) 서버가 거부하고 (b) push에 타임아웃이 없어 자격 증명이 없으면 실패하지 않고 영원히 걸렸습니다. init이 로컬 설정 단계에 도달하지 못합니다.
-
-**수정**: PR #677이 포함된 버전으로 업그레이드하세요. 멤버 등록과 reviewer 구성은 `teamai-reports` orphan 브랜치 / 브랜치 + MR로 진행되며(보호된 기본 브랜치에 직접 push하지 않음), 모든 git 서브프로세스에 30초 타임아웃과 `GIT_TERMINAL_PROMPT=0`이 적용됩니다. 멈추거나 자격 증명 없는 push는 init을 멈추지 않고 즉시 실패합니다. init은 항상 완료되어 로컬 설정 + skills를 기록하며, push/MR 실패는 경고일 뿐입니다.
-
-이전 버전에서의 수동 해결책: `~/.teamai/team-repo`에서 `members/<본인>.yaml`을 feature 브랜치에 push하고 기본 브랜치로 MR을 만들어 병합한 뒤 `teamai init`을 다시 실행하세요.
-
 ## 라이선스
 
 [MIT](LICENSE)

@@ -316,18 +316,6 @@ teamai recall maintenance --update-quality       # 为过时 skills / docs 生�
 | `teamai doctor` | 诊断配置问题（`--json` 输出 JSON，供 CI、hook 与 agent 消费）|
 | `teamai uninstall` | 移除所有 teamai 资源和 hooks |
 
-## 故障排查
-
-### `teamai init` 在 "Registered as team member" 后卡住
-
-**现象**：init 停在 `✔ Registered as team member: <你>`，之后没有任何输出也没有报错。`~/.teamai/config.yaml` 未写入，skills 也没有拉取。
-
-**根因**：团队仓库的默认分支受保护（`push: No one`——团队仓常见配置）。旧版 teamai 直接用 `git push` 把成员文件推到默认分支，(a) 会被服务端拒绝，(b) push 没有超时，凭据缺失时会永远挂起而不是失败。init 因此永远走不到本地配置那一步。
-
-**修复**：升级到包含 PR #677 的版本。成员注册与 reviewer 配置改走 `teamai-reports` 孤儿分支 / 分支 + MR（不再直推受保护的默认分支），且每个 git 子进程都有 30 秒超时和 `GIT_TERMINAL_PROMPT=0` 守护——挂起或缺凭据的 push 会快速失败而不是卡住 init。init 总能完成并写入本地配置 + skills,push/MR 失败只是一条警告。
-
-旧版本上的手动解法：自己通过分支 + MR 注册成员（在 `~/.teamai/team-repo` 里把 `members/<你>.yaml` 推到 feature 分支，向默认分支提 MR），合入后重新跑 `teamai init`。
-
 ## 许可证
 
 [MIT](LICENSE)
