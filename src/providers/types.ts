@@ -38,6 +38,14 @@ export interface PrCreateOptions {
   reviewers?: string[];
   /** Working directory for CLI operations */
   cwd?: string;
+  /**
+   * Hard timeout (ms) for any synchronous provider CLI subprocess (e.g.
+   * `gh pr create`, `gf mr`). When set, the spawned process is killed at the
+   * OS level once it exceeds this — a spawnSync blocks the event loop, so a
+   * plain withTimeout cannot interrupt it; this is the only way to guarantee
+   * a stalled MR creation cannot hold init hostage.
+   */
+  spawnTimeoutMs?: number;
 }
 
 /**
