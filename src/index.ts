@@ -28,10 +28,11 @@ async function notifyWebhook(event: 'push' | 'pull'): Promise<void> {
   }
 }
 
-// Without a person at a terminal, no git child may stop to ask for anything: a
-// terminal prompt, an askpass dialog, an ssh passphrase or a credential manager
+// Without a person at a terminal, no git child may stop to ask for a
+// credential: a terminal prompt, an askpass dialog or a credential manager
 // window all park the run with no output. A missing credential should fail the
-// clone at once instead (issue #711). See utils/git-env.ts for each door.
+// clone at once instead (issue #711). See utils/git-env.ts for each door, and
+// for why ssh's own questions are left to the repository's configuration.
 applyNonInteractiveGitEnv();
 
 const program = new Command();

@@ -50,10 +50,6 @@ describe('detectShellProfile', () => {
     });
   });
 
-  // Every case stubs `SHELL`: `detectShellProfile` reads it before the platform
-  // branch, so a suite run from a zsh login shell would otherwise resolve
-  // `.zshrc` here and fail cases that never reach the Windows branch at all
-  // (CI runners use bash, which is why this only bit locally — #713 review).
   describe('Windows (win32)', () => {
     it('returns .zshrc when SHELL is zsh, even on win32 (MSYS2/Cygwin zsh)', async () => {
       // A zsh installed via MSYS2/Cygwin sets SHELL just like it does on
@@ -69,7 +65,6 @@ describe('detectShellProfile', () => {
     });
 
     it('prefers an existing .bash_profile over .bash_login, .profile and .bashrc', async () => {
-      vi.stubEnv('SHELL', '');
       await fse.writeFile(path.join(homeDir, '.bash_profile'), '');
       await fse.writeFile(path.join(homeDir, '.bash_login'), '');
       await fse.writeFile(path.join(homeDir, '.profile'), '');
@@ -78,7 +73,6 @@ describe('detectShellProfile', () => {
     });
 
     it('prefers .bash_login over .profile and .bashrc when .bash_profile is absent', async () => {
-      vi.stubEnv('SHELL', '');
       await fse.writeFile(path.join(homeDir, '.bash_login'), '');
       await fse.writeFile(path.join(homeDir, '.profile'), '');
       await fse.writeFile(path.join(homeDir, '.bashrc'), '');
@@ -88,7 +82,6 @@ describe('detectShellProfile', () => {
     it('falls back to .profile when only it exists — the case from #682', async () => {
       // Reported setup: ~/.bashrc present, ~/.bash_profile absent, ~/.profile
       // present. Git Bash starts as a login shell and never reads .bashrc.
-      vi.stubEnv('SHELL', '');
       await fse.writeFile(path.join(homeDir, '.bashrc'), '');
       await fse.writeFile(path.join(homeDir, '.profile'), '');
       expect(await detectShellProfile('win32')).toBe(path.join(homeDir, '.profile'));

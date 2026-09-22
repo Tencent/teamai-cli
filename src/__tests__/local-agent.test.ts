@@ -18,44 +18,30 @@ vi.mock('../utils/logger.js', () => ({
 let tmpDir: string;
 let origHome: string | undefined;
 let origCopilotHome: string | undefined;
-let origTmp: Record<string, string | undefined>;
 let origPpid: number;
 
 const TEST_SESSION_ID = 'test-session';
-
-/**
- * The once-per-session markers live in `os.tmpdir()` under a key these tests
- * all share (`TEST_SESSION_ID`), so on the real shared temp directory one
- * test's marker decides whether the next one emits a hint — and every run of
- * the suite competes for the same two paths. Pointing the temp directory at
- * this test's own sandbox makes each test start from no markers by
- * construction, whatever else is running (#713 review).
- */
-function useSandboxTmp(dir: string): void {
-  origTmp = { TMPDIR: process.env.TMPDIR, TEMP: process.env.TEMP, TMP: process.env.TMP };
-  for (const name of ['TMPDIR', 'TEMP', 'TMP']) process.env[name] = dir;
-}
 
 beforeEach(async () => {
   tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-test-'));
   origHome = process.env.HOME;
   origCopilotHome = process.env.COPILOT_HOME;
   process.env.HOME = tmpDir;
-  useSandboxTmp(tmpDir);
   origPpid = process.ppid;
   // Bind prompt is on by default — start each test from that baseline.
   delete process.env.TEAMAI_BIND_PROMPT_ENABLED;
+  // Clean hint markers (both old ppid-based and new sessionId-based)
+  await fse.remove(path.join(os.tmpdir(), `teamai-bind-hint-${TEST_SESSION_ID}`));
+  await fse.remove(path.join(os.tmpdir(), `teamai-bind-session-${TEST_SESSION_ID}`));
 });
 
 afterEach(async () => {
   process.env.HOME = origHome;
   if (origCopilotHome === undefined) delete process.env.COPILOT_HOME;
   else process.env.COPILOT_HOME = origCopilotHome;
-  for (const [name, value] of Object.entries(origTmp)) {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
   delete process.env.TEAMAI_BIND_PROMPT_ENABLED;
+  await fse.remove(path.join(os.tmpdir(), `teamai-bind-hint-${TEST_SESSION_ID}`));
+  await fse.remove(path.join(os.tmpdir(), `teamai-bind-session-${TEST_SESSION_ID}`));
   await fse.remove(tmpDir);
   vi.restoreAllMocks();
 });
