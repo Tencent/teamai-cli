@@ -26,6 +26,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta } from './base.js';
 import type { Session, Message, ContentBlock, TextBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
+import { imagePlaceholderText } from '../ir.js';
+import { deriveTargetSessionId } from '../ids.js';
 import {
   getCodeBuddyProjectsDir,
   encodeCwdCodeBuddy,
@@ -37,7 +39,7 @@ import {
   dirExists,
   removeDirRecursive,
 } from '../fs.js';
-import { cleanTitleText, isInjectedText, fallbackTitle } from '../title.js';
+import { isInjectedText, fallbackTitle, titleFromCandidates } from '../title.js';
 
 // ---------------------------------------------------------------------------
 // 工具名归一化映射
@@ -54,9 +56,40 @@ const CB_TO_IR_TOOL: Record<string, string> = {
   todo_write: 'todo_write',
 };
 
-const IR_TO_CB_TOOL: Record<string, string> = Object.fromEntries(
-  Object.entries(CB_TO_IR_TOOL).map(([k, v]) => [v, k]),
-);
+/**
+ * IR → CodeBuddy 工具名。
+ *
+ * CodeBuddy / WorkBuddy 客户端按「UI 工具名」查表渲染图标与折叠标题，实测原生行里是
+ * `Bash` / `Read` / `Write` / `Edit` / `Grep` / `Glob` / `Task` / `TodoWrite` 这类驼峰名。
+ * 直接把 IR 的 `read_file` / `bash` 写进去，客户端查不到 → 工具调用显示为空白。
+ * 同时把源平台别名（execute_command / replace_in_file / search_file …）收口到这里，
+ * 否则它们会原样落到目标文件里。
+ */
+const IR_TO_CB_TOOL: Record<string, string> = {
+  read_file: 'Read',
+  write_file: 'Write',
+  edit_file: 'Edit',
+  bash: 'Bash',
+  grep: 'Grep',
+  glob: 'Glob',
+  task: 'Task',
+  todo_write: 'TodoWrite',
+  delete_file: 'DeleteFile',
+  web_fetch: 'WebFetch',
+  web_search: 'WebSearch',
+  semantic_search: 'SemanticSearch',
+  // 源平台别名 → CodeBuddy 语义工具
+  execute_command: 'Bash',
+  run_command: 'Bash',
+  write_to_file: 'Write',
+  replace_in_file: 'Edit',
+  multi_edit: 'Edit',
+  search_file: 'Glob',
+  search_content: 'Grep',
+  list_dir: 'Glob',
+  codebase_search: 'SemanticSearch',
+  read_lints: 'LSP',
+};
 
 function normalizeToolName(cbName: string): string {
   return CB_TO_IR_TOOL[cbName] ?? cbName;
@@ -64,6 +97,23 @@ function normalizeToolName(cbName: string): string {
 
 function denormalizeToolName(irName: string): string {
   return IR_TO_CB_TOOL[irName] ?? irName;
+}
+
+/** 工具调用在折叠态显示的摘要文本（原生 providerData.argumentsDisplayText）。 */
+function argumentsDisplayText(name: string, args: Record<string, unknown> | undefined): string {
+  if (!args) return name;
+  const preferred =
+    args.command ?? args.path ?? args.pattern ?? args.glob_pattern ?? args.target_directory ??
+    args.target_file ?? args.query ?? args.url ?? args.filePath;
+  if (typeof preferred === 'string' && preferred.trim()) {
+    return preferred.length > 160 ? `${preferred.slice(0, 160)}…` : preferred;
+  }
+  try {
+    const s = JSON.stringify(args);
+    return s.length > 160 ? `${s.slice(0, 160)}…` : s;
+  } catch {
+    return name;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +232,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     let createdAt: string | undefined;
     let updatedAt: string | undefined;
     let messageCount = 0;
-    let firstUserText = '';
+    const userTextCandidates: string[] = [];
     let aiTitle = '';
 
     try {
@@ -204,19 +254,16 @@ export class CodeBuddyAdapter extends AgentAdapter {
         if (rtype === 'message') {
           messageCount++;
           const role = record.role as string;
-          if (role === 'user' && !firstUserText) {
+          if (role === 'user' && userTextCandidates.length < 5) {
             const content = record.content;
             if (Array.isArray(content)) {
+              const parts: string[] = [];
               for (const block of content) {
                 if (block && typeof block === 'object' && (block as Record<string, unknown>).type === 'input_text') {
-                  const text = String((block as Record<string, unknown>).text ?? '');
-                  // 首个文本块常是 system-reminder 等注入，跳过继续找真正的提问
-                  if (!isInjectedText(text)) {
-                    firstUserText = text;
-                    break;
-                  }
+                  parts.push(String((block as Record<string, unknown>).text ?? ''));
                 }
               }
+              if (parts.length) userTextCandidates.push(parts.join(' '));
             }
           }
         }
@@ -234,7 +281,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     if (aiTitle && !isInjectedText(aiTitle)) {
       title = aiTitle.slice(0, 60);
     } else {
-      title = cleanTitleText(firstUserText) || fallbackTitle(sessionId);
+      title = titleFromCandidates(userTextCandidates) || fallbackTitle(sessionId);
     }
 
     let sizeBytes = 0;
@@ -386,18 +433,16 @@ export class CodeBuddyAdapter extends AgentAdapter {
     }
 
     if (!title) {
+      // 与 claude-code 同策略：候选文本统一解包（注入头 + 真实提问的混合消息也能救回）
+      const candidates: string[] = [];
       for (const msg of messages) {
-        if (msg.role === 'user') {
-          for (const block of msg.content) {
-            if (block.type === 'text' && block.text) {
-              if (isInjectedText(block.text)) continue; // 注入块不当标题
-              title = cleanTitleText(block.text);
-              if (title) break;
-            }
-          }
-          if (title) break;
+        if (msg.role !== 'user') continue;
+        for (const block of msg.content) {
+          if (block.type === 'text' && block.text) candidates.push(block.text);
         }
+        if (candidates.length >= 5) break;
       }
+      title = titleFromCandidates(candidates);
     }
     if (!title) title = fallbackTitle(sessionId);
 
@@ -441,16 +486,27 @@ export class CodeBuddyAdapter extends AgentAdapter {
   }
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
-    let sessionId = session.sessionId;
-    if (!isUuid(sessionId)) {
-      sessionId = uuidV4();
-    }
+    // 非 UUID 源 id 用确定性派生（同一源会话反复迁移命中同一个 id → 不产生重复会话）
+    const sessionId = isUuid(session.sessionId)
+      ? session.sessionId
+      : deriveTargetSessionId('codebuddy', session.sessionId);
 
     const cwd = projectPath ?? session.cwd;
     const projDir = path.join(getCodeBuddyProjectsDir(), encodeCwdCodeBuddy(cwd));
     const jsonlPath = path.join(projDir, `${sessionId}.jsonl`);
 
     const records: Record<string, unknown>[] = [];
+
+    // callId → 工具名：让 function_call_result 行带上真实工具名（而不是一律 'Agent'）
+    const toolNamesByCallId = new Map<string, string>();
+    for (const m of session.messages) {
+      for (const b of m.content) {
+        if (b.type === 'tool_call' && b.callId) {
+          toolNamesByCallId.set(b.callId, denormalizeToolName(b.toolName));
+        }
+      }
+    }
+    const resultToolName = (callId: string): string | undefined => toolNamesByCallId.get(callId);
 
     // 1. ai-title 行
     records.push({
@@ -498,6 +554,13 @@ export class CodeBuddyAdapter extends AgentAdapter {
               text: block.text,
             });
             hasText = true;
+          } else if (block.type === 'image') {
+            // CLI 存储不含图片，降级为占位文本（保真度计 degraded）
+            cbContent.push({
+              type: msg.role === 'user' ? 'input_text' : 'output_text',
+              text: imagePlaceholderText(block),
+            });
+            hasText = true;
           }
         }
 
@@ -519,18 +582,24 @@ export class CodeBuddyAdapter extends AgentAdapter {
       }
 
       // function_call 行（tool_call blocks）
+      // 原生结构要点：顶层 `arguments` 是 JSON 字符串（客户端展开参数面板读它）、
+      // providerData.argumentsDisplayText 是折叠态摘要、callId 必须非空（与结果配对）。
       for (const block of otherBlocks) {
         if (block.type === 'tool_call') {
           const fcId = block.callId || uuidV4();
+          const callId = block.callId || `call_${uuidV4()}`;
+          const name = denormalizeToolName(block.toolName);
           records.push({
             id: fcId,
             parentId,
             timestamp: toUnixMs(msg.timestamp),
             type: 'function_call',
-            name: denormalizeToolName(block.toolName),
-            callId: block.callId,
+            name,
+            callId,
+            arguments: JSON.stringify(block.arguments ?? {}),
             providerData: {
               arguments: block.arguments,
+              argumentsDisplayText: argumentsDisplayText(name, block.arguments),
               ...(msg.metadata?.model ? { model: msg.metadata.model } : {}),
             },
             sessionId,
@@ -541,15 +610,17 @@ export class CodeBuddyAdapter extends AgentAdapter {
       }
 
       // function_call_result 行（tool_result blocks）
+      // name 用真实工具名：写死 'Agent' 会让所有工具结果都显示成 "Agent"。
       for (const block of otherBlocks) {
         if (block.type === 'tool_result') {
           const fcrId = uuidV4();
+          const name = resultToolName(block.callId) ?? 'Agent';
           records.push({
             id: fcrId,
             parentId,
             timestamp: toUnixMs(msg.timestamp),
             type: 'function_call_result',
-            name: 'Agent',
+            name,
             callId: block.callId,
             status: block.isError ? 'failed' : 'completed',
             output: { type: 'text', text: block.content },

@@ -20,7 +20,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta } from './base.js';
-import type { Session, Message, ContentBlock, ToolResultBlock } from '../ir.js';
+import type { Session, Message, ContentBlock, ImageBlock, ToolResultBlock } from '../ir.js';
 import {
   findIdeHistoryDirs,
   findIdeConversationDirs,
@@ -34,7 +34,7 @@ import {
   type IdeConversationEntry,
   type IdeMessageParsed,
 } from '../ide-history.js';
-import { cleanTitleText, isInjectedText } from '../title.js';
+import { isInjectedText, titleFromCandidates } from '../title.js';
 
 // ---------------------------------------------------------------------------
 // 工具
@@ -55,20 +55,88 @@ function unknownWorkspace(hash: string): string {
   return `md5:${hash}`;
 }
 
-/** 标题兜底时最多看的消息条数（第一条通常就是用户提问）。 */
-const TITLE_LOOKAHEAD = 8;
+const MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  bmp: 'image/bmp',
+};
+
+/**
+ * 解析 IDE 的图片块为 IR ImageBlock。
+ *
+ * IDE 侧三种引用形态都处理：
+ *   - `codebuddy-asset://assets/xxx.png`（相对 convDir，主流形态）
+ *   - 绝对路径（某些版本直接落绝对路径）
+ *   - `data:image/...;base64,....`（内联，无需读文件）
+ *
+ * 文件可读时带 base64（写 claude-code 等原生平台用），并始终带 filePath
+ * （写回 IDE 时按文件复制，避免 base64 往返）。读不到文件也返回 ImageBlock：
+ * 保真度能如实计一块，写入侧自行降级为占位文本。
+ */
+function parseImageBlock(block: Record<string, unknown>, convDir: string): ImageBlock | null {
+  const ref = String(block.image ?? block.url ?? block.path ?? '').trim();
+  if (!ref) return null;
+
+  // data URI：直接解出 base64
+  const dataUri = ref.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
+  if (dataUri) {
+    return {
+      type: 'image',
+      mimeType: dataUri[1].toLowerCase(),
+      data: dataUri[2],
+      label: 'inline-image',
+    };
+  }
+
+  // 解析文件路径
+  let filePath = '';
+  if (ref.startsWith('codebuddy-asset://')) {
+    const rel = ref.slice('codebuddy-asset://'.length).replace(/^\/+/, '');
+    filePath = path.join(convDir, rel);
+  } else if (path.isAbsolute(ref)) {
+    filePath = ref;
+  } else {
+    filePath = path.join(convDir, ref);
+  }
+
+  const ext = path.extname(filePath).replace('.', '').toLowerCase();
+  const mimeType = MIME_BY_EXT[ext] ?? 'image/png';
+  const label = path.basename(filePath);
+
+  let data: string | undefined;
+  try {
+    data = fs.readFileSync(filePath).toString('base64');
+  } catch {
+    data = undefined; // 文件缺失（被清理/跨机器）：保留指针，写入侧降级
+  }
+
+  return { type: 'image', mimeType, data, filePath, label };
+}
+
+/**
+ * 标题兜底时最多看的消息条数。
+ *
+ * 8 条常常全是注入/命令记录（slash 命令会话、压缩摘要会话），导致标题 fallback
+ * 成 "Session <id>"；放宽到 30 条与 claude-code/codex 的扫描预算同量级。
+ */
+const TITLE_LOOKAHEAD = 30;
 
 function firstUserText(messages: IdeMessageParsed[]): string {
+  // 收集候选后统一解包：整条注入跳过 ≠ 丢弃，slash 命令类混合消息里的真实提问要救回来
+  const candidates: string[] = [];
   for (const m of messages) {
     if (m.role !== 'user') continue;
     for (const block of m.content) {
       if (block.type !== 'text' || typeof block.text !== 'string') continue;
-      if (isInjectedText(block.text)) continue; // 整条是注入，看下一条
-      const cleaned = cleanTitleText(block.text);
-      if (cleaned) return cleaned;
+      candidates.push(block.text);
     }
+    if (candidates.length >= 5) break;
   }
-  return '';
+  return titleFromCandidates(candidates);
 }
 
 /**
@@ -213,7 +281,7 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
         continue;
       }
 
-      const content = this.parseContent(raw);
+      const content = this.parseContent(raw, convDir);
       if (content.length === 0) continue;
 
       const msg: Message = {
@@ -246,7 +314,7 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
     };
   }
 
-  private parseContent(raw: IdeMessageParsed): ContentBlock[] {
+  private parseContent(raw: IdeMessageParsed, convDir: string): ContentBlock[] {
     const blocks: ContentBlock[] = [];
 
     for (const block of raw.content) {
@@ -277,8 +345,16 @@ export class CodeBuddyIdeAdapter extends AgentAdapter {
           if (irBlock) blocks.push(irBlock);
           break;
         }
+        case 'image': {
+          // 用户拖进输入框的图片：content 里是 `codebuddy-asset://assets/xxx.png`
+          // 相对引用，实际文件在 <convDir>/assets/ 下。此前直接跳过——图片既不进
+          // IR，保真度也照算 100%，用户直到打开迁移结果才发现图全没了。
+          const img = parseImageBlock(block, convDir);
+          if (img) blocks.push(img);
+          break;
+        }
         default:
-          // image / 文件引用等 IDE 特有块：IR 无对应类型，跳过（保真度统计会体现）
+          // 其他 IDE 特有块（文件引用等）：IR 无对应类型，跳过
           break;
       }
     }

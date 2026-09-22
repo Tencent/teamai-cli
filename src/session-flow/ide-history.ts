@@ -24,7 +24,9 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { Session } from './ir.js';
+import type { ContentBlock, Session } from './ir.js';
+import { imagePlaceholderText } from './ir.js';
+import { isInjectedText, titleFromUserText } from './title.js';
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -282,8 +284,20 @@ function resolveTimestamps(session: Session): string[] {
   return ts.map((t) => new Date(Number.isFinite(t) ? t : base).toISOString());
 }
 
-function irToIdeMessages(session: Session): IdeMessageFile[] {
+/** 待落盘的会话资源（图片）。data 优先，其次从 sourcePath 复制。 */
+export interface IdeAsset {
+  /** assets/ 下的文件名（沿用原生命名 image.<hash8>.<ext> 风格） */
+  name: string;
+  /** 源端文件绝对路径（有它优先复制，避免 base64 往返） */
+  sourcePath?: string;
+  /** base64 内容（filePath 不可读时的兜底） */
+  data?: string;
+}
+
+function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets: IdeAsset[] } {
   const out: IdeMessageFile[] = [];
+  const assets: IdeAsset[] = [];
+  const usedNames = new Set<string>();
   const model = pickModel(session);
   const timestamps = resolveTimestamps(session);
 
@@ -295,6 +309,24 @@ function irToIdeMessages(session: Session): IdeMessageFile[] {
     }
   }
 
+  // IR 图片块 → assets/<name> + codebuddy-asset:// 引用（与原生存储一致）
+  const assetRef = (b: Extract<ContentBlock, { type: 'image' }>): string | null => {
+    const base = b.label || path.basename(b.filePath ?? 'image.png') || 'image.png';
+    const ext = path.extname(base) || `.${(b.mimeType.split('/')[1] ?? 'png').replace('jpeg', 'jpg')}`;
+    const stem = base.slice(0, base.length - ext.length) || 'image';
+    let name = `${stem}${ext}`;
+    for (let i = 1; usedNames.has(name); i++) name = `${stem}-${i}${ext}`;
+    usedNames.add(name);
+    if (b.filePath && fs.existsSync(b.filePath)) {
+      assets.push({ name, sourcePath: b.filePath });
+    } else if (b.data) {
+      assets.push({ name, data: b.data });
+    } else {
+      return null; // 无内容可用：调用方降级为占位文本
+    }
+    return `codebuddy-asset://assets/${name}`;
+  };
+
   session.messages.forEach((msg, msgIdx) => {
     const ts = timestamps[msgIdx];
     const msgModel = msg.metadata?.model ?? model;
@@ -305,13 +337,20 @@ function irToIdeMessages(session: Session): IdeMessageFile[] {
       isHelperMessage: false,
     });
 
-    // 1) thinking + text + tool_call → 一条
+    // 1) thinking + text + image + tool_call → 一条
     const content: Record<string, unknown>[] = [];
     for (const b of msg.content) {
       if (b.type === 'thinking') {
         content.push({ type: 'reasoning', text: b.text });
       } else if (b.type === 'text') {
         content.push({ type: 'text', text: b.text });
+      } else if (b.type === 'image') {
+        const ref = assetRef(b);
+        if (ref) {
+          content.push({ type: 'image', image: ref });
+        } else {
+          content.push({ type: 'text', text: imagePlaceholderText(b) });
+        }
       } else if (b.type === 'tool_call') {
         content.push({
           type: 'tool-call',
@@ -376,7 +415,7 @@ function irToIdeMessages(session: Session): IdeMessageFile[] {
     }
   });
 
-  return out;
+  return { messages: out, assets };
 }
 
 // ---------------------------------------------------------------------------
@@ -429,6 +468,9 @@ function upsertConversation(historyDir: string, conv: IdeConversation): void {
   if (i >= 0) convs[i] = conv;
   else convs.push(conv);
   data.conversations = convs;
+  // 原生 index.json 顶层必有 current（指向当前会话）。新建工作区时不会天然存在，
+  // 缺失可能让 IDE 打开该工作区时没有选中项 → 补上刚写入的这条。
+  if (!data.current) data.current = conv.id;
   writeIndex(historyDir, data);
 }
 
@@ -457,21 +499,31 @@ function removeDirRecursive(dir: string): void {
  * 源平台注入的系统前缀。首条「用户消息」常常是这类包装文本，
  * 直接当标题会把提示词原文泄漏到 IDE 侧边栏历史列表里。
  */
-const SYSTEM_INJECTED_TITLE = /^\s*<(local-command-caveat|system-reminder|system|command-name|command-message|command-args|timestamp)\b/i;
+const SYSTEM_INJECTED_TITLE = /^\s*<(local-command-caveat|local-command-stdout|system-reminder|system|command-name|command-message|command-args|command-contents|timestamp)\b/i;
 
 /**
  * 会话标题：清洗系统注入文本，拿不到有效标题时退回首条真实用户文本。
  */
+/** 源适配器给不出标题时的占位名（如 "Session 2bf4d3be"）——不能拿它当会话标题。 */
+const PLACEHOLDER_TITLE = /^session\s+[0-9a-f]{8}$/i;
+
 function cleanTitle(session: Session, convId: string): string {
   const raw = (session.title ?? '').replace(/\s+/g, ' ').trim();
-  if (raw && !SYSTEM_INJECTED_TITLE.test(raw)) return raw.slice(0, 100);
+  if (raw && !PLACEHOLDER_TITLE.test(raw) && !SYSTEM_INJECTED_TITLE.test(raw)) return raw.slice(0, 100);
 
   for (const m of session.messages) {
     if (m.role !== 'user') continue;
     for (const b of m.content) {
       if (b.type !== 'text') continue;
+      // 源平台的首条用户消息常被 <user_info>/<rules>/<additional_data> 与附件路径包裹，
+      // 直接用原文当标题会整段被判定为注入文本 → 退回 "Session xxxxxxxx"。
+      // 先走清洗（解 <user_query> 包裹 + 剥元信息 + 去附件路径）再取标题。
+      const cleaned = titleFromUserText(b.text);
+      if (cleaned) return cleaned.slice(0, 100);
       const t = b.text.replace(/\s+/g, ' ').trim();
-      if (t && !SYSTEM_INJECTED_TITLE.test(t)) return t.slice(0, 100);
+      // isInjectedText 是 title.ts 维护的完整注入标签头清单（与 META_BLOCK_RE 同源演进），
+      // SYSTEM_INJECTED_TITLE 只保留作双保险——单一来源，避免再加标签时两边漏同步。
+      if (t && !isInjectedText(t) && !SYSTEM_INJECTED_TITLE.test(t)) return t.slice(0, 100);
     }
   }
   return `Session ${convId.slice(0, 8)}`;
@@ -537,7 +589,7 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
   }
 
   const convId = toIdeConvId(session.sessionId);
-  const messages = irToIdeMessages(session);
+  const { messages, assets } = irToIdeMessages(session);
   const model = pickModel(session);
   const requests = buildIdeRequests(session, messages);
 
@@ -546,7 +598,10 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
     type: 'craft',
     name: cleanTitle(session, convId),
     createdAt: session.createdAt,
-    lastMessageAt: session.updatedAt,
+    // lastMessageAt 用迁移时刻而非源会话时间：IDE 列表按最近活动排序分组，
+    // 保留源时间会把迁移会话埋进「N 天前」分组，用户迁完在顶部找不到。
+    // 源时间轴保留在 createdAt（列表详情）与消息时间戳（打开会话后）里。
+    lastMessageAt: new Date().toISOString(),
     ...(model ? { modelMap: { ask: model, craft: model, plan: model } } : {}),
   };
 
@@ -565,6 +620,52 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
         }
       }
       fs.mkdirSync(msgDir, { recursive: true });
+
+      // 落盘图片资源：与原生存储一致放 <convDir>/assets/，消息里用
+      // codebuddy-asset://assets/<name> 相对引用。某个资源失败只降级该图片
+      // （替换成占位文本），不阻断整个会话写入。
+      if (assets.length > 0) {
+        const assetsDir = path.join(convDir, 'assets');
+        try {
+          fs.mkdirSync(assetsDir, { recursive: true });
+        } catch {
+          // 建不了目录时下方逐个写入会失败并走占位降级
+        }
+        for (const asset of assets) {
+          let ok = false;
+          try {
+            const dest = path.join(assetsDir, asset.name);
+            if (asset.sourcePath && fs.existsSync(asset.sourcePath)) {
+              fs.copyFileSync(asset.sourcePath, dest);
+              ok = true;
+            } else if (asset.data) {
+              fs.writeFileSync(dest, Buffer.from(asset.data, 'base64'));
+              ok = true;
+            }
+          } catch {
+            ok = false;
+          }
+          if (!ok) {
+            const ref = `codebuddy-asset://assets/${asset.name}`;
+            for (const m of messages) {
+              let body: { role?: string; content?: Array<Record<string, unknown>> };
+              try {
+                body = JSON.parse(m.message);
+              } catch {
+                continue;
+              }
+              if (!Array.isArray(body.content)) continue;
+              const idx = body.content.findIndex(
+                (c) => c.type === 'image' && c.image === ref,
+              );
+              if (idx >= 0) {
+                body.content[idx] = { type: 'text', text: `[image: ${asset.name} (asset write failed)]` };
+                m.message = JSON.stringify(body);
+              }
+            }
+          }
+        }
+      }
 
       // 写每条消息，同时收集顺序索引。
       // conversation 级 index.json 是**消息顺序索引**——IDE 靠它决定显示顺序，

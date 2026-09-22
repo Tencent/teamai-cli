@@ -123,6 +123,26 @@ export function decodeCwdClaude(encoded: string): string {
 }
 
 /**
+ * 最佳努力反解 Claude Code 的项目目录名 → 真实工作区路径。
+ *
+ * 部分版本的 Claude Code 会把编码后的目录名（`-Users-foo-project`）直接写进记录里的
+ * cwd 字段，导致迁移时拿不到真实工作区：目标 cwd 只能回退到「命令运行的目录」，
+ * 会话就被搬到了错误的项目下。这里按编码规则还原（前导 `-` → `/`，其余 `-` → `/`）
+ * 并用磁盘存在性校验；路径本身含 `-` 或空格时还原结果会不存在，直接放弃（返回 undefined）。
+ */
+export function bestEffortDecodeCwdClaude(encoded: string): string | undefined {
+  if (!encoded.startsWith('-')) return undefined;
+  const candidate = '/' + encoded.slice(1).replace(/-/g, '/');
+  try {
+    if (!fs.existsSync(candidate)) return undefined;
+    if (!fs.statSync(candidate).isDirectory()) return undefined;
+    return fs.realpathSync(candidate);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * CodeBuddy / Cursor 的 cwd 解码: 同上，无法精确还原。
  */
 export function decodeCwdGeneric(encoded: string): string {
