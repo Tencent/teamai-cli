@@ -18,6 +18,7 @@ import {
   ForeignCheckoutError,
   createBranchWorktree,
   isPublished,
+  type BranchPushOptions,
   type BranchWrite,
   type BranchWriteContext,
   type EnsureWorktreeOptions,
@@ -130,7 +131,7 @@ export async function commitAndPushReports(
   localConfig: LocalConfig,
   message: string,
   files: string[],
-  options: { pushIfUnchanged?: boolean } = {},
+  options: BranchPushOptions = {},
 ): Promise<boolean> {
   return isPublished(await reportsBranch.commitAndPush(localConfig, message, files, options));
 }
@@ -168,7 +169,7 @@ export async function readReportsOriginFile(
 export async function updateReports(
   localConfig: LocalConfig,
   write: (worktree: string, ctx: ReportsWriteContext) => Promise<ReportsWrite | null>,
-  options: { pushIfUnchanged?: boolean } = {},
+  options: BranchPushOptions = {},
 ): Promise<PublishResult> {
   return reportsBranch.update(localConfig, write, options);
 }

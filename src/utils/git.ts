@@ -564,9 +564,17 @@ export async function getDefaultBranch(localPath: string): Promise<string> {
 /**
  * Push directly to whatever branch is checked out, whether that is `main`,
  * `master` or anything else. Used during init for first-time setup, and by CI.
+ *
+ * `opts.initPush` selects the spawn-level block timeout factory used by init
+ * (see {@link createGitForInitPush}); other callers get the plain factory.
  */
-export async function pushRepoDirectly(localPath: string, message: string, files: string[]): Promise<void> {
-  const git = createGit(localPath);
+export async function pushRepoDirectly(
+  localPath: string,
+  message: string,
+  files: string[],
+  opts: { initPush?: boolean } = {},
+): Promise<void> {
+  const git = opts.initPush ? createGitForInitPush(localPath) : createGit(localPath);
   const existingFiles = [];
   for (const f of files) {
     const fullPath = fs.existsSync(`${localPath}/${f}`);
@@ -647,10 +655,11 @@ export async function autoPushViaMR(
   files: string[],
   teamConfig: { repo: string; provider?: string; reviewers?: string[] },
   localConfig: { repo: { remote: string; localPath: string }; username: string; provider?: string },
+  opts: { initPush?: boolean } = {},
 ): Promise<string | null> {
   try {
     const branchName = generateBranchName(localConfig.username);
-    const pushed = await pushRepoBranch(repoPath, message, files, branchName);
+    const pushed = await pushRepoBranch(repoPath, message, files, branchName, { initPush: opts.initPush });
     if (!pushed) {
       log.debug('[git] autoPushViaMR: nothing to commit');
       return null;
@@ -659,6 +668,7 @@ export async function autoPushViaMR(
     const { createPrWithFallback } = await import('../push.js');
     const prUrl = await createPrWithFallback(
       teamConfig, localConfig, branchName, message, message,
+      opts.initPush ? { spawnTimeoutMs: initPushBlockTimeoutMs() } : {},
     );
 
     await checkoutMaster(repoPath);
@@ -733,15 +743,18 @@ export async function remoteBranchExists(
  * force-pushed, which updates that PR in place instead of opening another one.
  * If the rebuilt tree matches what the remote branch already holds, nothing is
  * pushed and the function returns false.
+ *
+ * `opts.initPush` selects the spawn-level block timeout factory used by init
+ * (see {@link createGitForInitPush}); other callers get the plain factory.
  */
 export async function pushRepoBranch(
   localPath: string,
   message: string,
   files: string[],
   branchName: string,
-  opts: { reuseBranch?: boolean } = {},
+  opts: { reuseBranch?: boolean; initPush?: boolean } = {},
 ): Promise<boolean> {
-  const git = createGit(localPath);
+  const git = opts.initPush ? createGitForInitPush(localPath) : createGit(localPath);
 
   if (opts.reuseBranch) {
     // Fetch so the tree comparison below can see the remote branch's content.

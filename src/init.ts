@@ -1977,8 +1977,8 @@ export async function init(options: GlobalOptions & {
           'docs/.gitkeep',
           'env/.gitkeep',
           'members/.gitkeep',
-        ]),
-        30_000,
+        ], { initPush: true }),
+        initPushBlockTimeoutMs(),
         'Skeleton push',
       );
     } catch (e) {
@@ -2081,8 +2081,9 @@ export async function init(options: GlobalOptions & {
                     ['teamai.yaml'],
                     mrTeamConfig,
                     mrLocalConfig,
+                    { initPush: true },
                   ),
-                  30_000,
+                  initPushBlockTimeoutMs(),
                   'Reviewer config push',
                 );
                 if (prUrl) {
