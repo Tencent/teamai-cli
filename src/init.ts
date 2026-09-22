@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { reconcileTeamHooksForConfig } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, pushRepoDirectly, autoPushViaMR, initPushBlockTimeoutMs } from './utils/git.js';
+import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, pushRepoDirectly, initPushBlockTimeoutMs } from './utils/git.js';
 import { withTimeout } from './utils/async.js';
 import { getProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
 import { parseGenericGitExistingRemote } from './providers/git/repo-url.js';
@@ -1521,30 +1521,24 @@ export async function init(options: GlobalOptions & {
 
           if (!options.dryRun) {
             try {
-              const mrTeamConfig = await loadTeamConfig(localPath);
-              const mrLocalConfig = {
-                repo: { remote: repoInfo.httpsUrl, localPath },
-                username,
-              };
-              if (mrTeamConfig) {
-                const prUrl = await withTimeout(
-                  autoPushViaMR(
-                    localPath,
-                    `[teamai] Configure reviewers: ${reviewers.join(', ')}`,
-                    ['teamai.yaml'],
-                    mrTeamConfig,
-                    mrLocalConfig,
-                    { initPush: true },
-                  ),
-                  initPushBlockTimeoutMs(),
-                  'Reviewer config push',
-                );
-                if (prUrl) {
-                  log.success(`Reviewer config pushed via MR: ${prUrl}`);
-                } else {
-                  log.warn('Reviewer config MR could not be created (you can push manually later)');
-                }
-              }
+              // Reviewer config is part of teamai.yaml — it belongs on the
+              // default branch, not behind an MR. Use pushRepoDirectly with
+              // the init-push timeout guard. (autoPushViaMR is not used here:
+              // it shells out to a provider's `pr create` CLI via spawnSync,
+              // which blocks the event loop so withTimeout's timer can never
+              // fire — and the generic git provider has no PR API anyway, so
+              // MR-only routing would regress it. See PR #677 review.)
+              await withTimeout(
+                pushRepoDirectly(
+                  localPath,
+                  `[teamai] Configure reviewers: ${reviewers.join(', ')}`,
+                  ['teamai.yaml'],
+                  { initPush: true },
+                ),
+                initPushBlockTimeoutMs(),
+                'Reviewer config push',
+              );
+              log.success('Reviewer config pushed to team repo');
             } catch (e) {
               log.warn(`Push failed (you can push manually later): ${(e as Error).message}`);
             }

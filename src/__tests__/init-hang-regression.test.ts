@@ -92,7 +92,7 @@ describe('createGit hang guards (init-hang regression)', () => {
 
     const start = Date.now();
     await expect(
-      pushRepoDirectly(clone, '[teamai] Register member: alice', ['members/alice.yaml']),
+      pushRepoDirectly(clone, '[teamai] Register member: alice', ['members/alice.yaml'], { initPush: true }),
     ).rejects.toThrow();
     const elapsed = Date.now() - start;
 
@@ -125,7 +125,7 @@ describe('createGit hang guards (init-hang regression)', () => {
 
     // No timeout, no throw — the guarded instance completes a normal push.
     await expect(
-      pushRepoDirectly(clone, '[teamai] Register member: bob', ['members/bob.yaml']),
+      pushRepoDirectly(clone, '[teamai] Register member: bob', ['members/bob.yaml'], { initPush: true }),
     ).resolves.toBeUndefined();
   });
 });
