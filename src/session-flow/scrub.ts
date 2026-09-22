@@ -1,17 +1,21 @@
 /**
- * scrub.ts — 迁移前的会话脱敏。
+ * scrub.ts -- redact a session before migration.
  *
- * `session migrate --scrub` 会把整份 IR 过一遍 `utils/redact`：
- * 文本、思考块、工具调用参数、工具结果全部覆盖，密钥形状与当前环境变量里的
- * 疑似密钥都会被替换成 `<REDACTED:...>` 占位符。
+ * `session migrate --scrub` passes the whole IR through `utils/redact`:
+ * text, thinking, tool-call arguments and tool results are all covered.
+ * Secret-shaped values -- and values matching secrets found in the current
+ * environment -- are replaced with `<REDACTED:...>` placeholders.
  *
- * 为什么要放在迁移链路里：
- * - 迁移的目标通常是另一个 agent 的本地存储，那里的内容随时可能被 `session push`
- *   归档到团队可读的仓库；在迁出时就脱敏，敏感内容不会跟着会话扩散。
- * - 复用 `utils/redact`（`session save` 用的就是它），不新造一套规则，行为一致。
+ * Why this lives in the migration path: the target of a migration is another
+ * agent's local store, whose content may later be archived into a
+ * team-readable repo via `session push`. Redacting at migration time keeps
+ * sensitive values from travelling with the session.
  *
- * 注意：redact() 是 best-effort（规则匹配，不保证零漏）。脱敏后仍建议人工过一遍
- * 再归档；这一点与 `session save` 的注释保持一致。
+ * `utils/redact` is reused (the same engine `session save` uses) so the rules
+ * stay consistent instead of forking a second set of patterns.
+ *
+ * Note: redact() is best-effort (pattern matching, not a guarantee). Review
+ * the result before archiving; this matches the caveat on `session save`.
  */
 
 import type { Session, Message, ContentBlock } from './ir.js';
@@ -19,13 +23,13 @@ import { redactWithEnv } from '../utils/redact.js';
 
 export interface ScrubResult {
   session: Session;
-  /** 被替换掉的疑似密钥数量（按替换处计数，用于迁移报告）。 */
+  /** Number of replaced secret-looking values (counted per replacement). */
   redactedCount: number;
 }
 
 const REDACTED_MARKER = '<REDACTED:';
 
-/** 统计一段文本里被替换了多少处（redact 的占位符形如 `<REDACTED:label>`）。 */
+/** Count how many replacements happened between before/after strings. */
 function countRedactions(before: string, after: string): number {
   if (before === after) return 0;
   let count = 0;
@@ -54,7 +58,8 @@ function scrubBlock(block: ContentBlock): { block: ContentBlock; count: number }
       };
     }
     case 'tool_call': {
-      // 参数是结构化对象：序列化后整段脱敏再解析回来，避免只对字符串字段生效
+      // Arguments are structured: serialize, redact as a whole, then parse
+      // back so string fields are covered too, not just top-level strings.
       const raw = JSON.stringify(block.arguments ?? {});
       const next = redactWithEnv(raw);
       const count = countRedactions(raw, next);
@@ -63,7 +68,8 @@ function scrubBlock(block: ContentBlock): { block: ContentBlock; count: number }
       try {
         parsed = JSON.parse(next) as Record<string, unknown>;
       } catch {
-        // 脱敏后不再是合法 JSON（极罕见：占位符插进了 key 名）：退回原参数
+        // Redaction broke the JSON (placeholder landed in a key name): keep
+        // the original arguments rather than writing something unparsable.
         return { block, count: 0 };
       }
       return { block: { ...block, arguments: parsed }, count };
@@ -76,15 +82,17 @@ function scrubBlock(block: ContentBlock): { block: ContentBlock; count: number }
       };
     }
     case 'image':
-      // 图片内容不参与文本脱敏（二进制/URL 形态无密钥文本特征）
+      // Image payloads do not participate in text redaction (binary/URL
+      // shapes carry no secret-shaped text).
       return { block, count: 0 };
   }
 }
 
 /**
- * 对会话做脱敏（纯函数，不修改入参）。
+ * Redact a session (pure function; the input is not mutated).
  *
- * 标题也一起处理：首条提问里常常直接贴着 token，而标题会显示在目标端的列表里。
+ * The title is scrubbed too: the first prompt often carries a token, and the
+ * title is what shows up in the target client's session list.
  */
 export function scrubSession(session: Session): ScrubResult {
   let redactedCount = 0;

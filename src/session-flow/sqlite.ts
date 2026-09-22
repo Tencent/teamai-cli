@@ -1,15 +1,18 @@
 /**
- * sqlite.ts — 客户端本地库（Cursor/Codex/WorkBuddy 的索引库）访问的公共部分。
+ * sqlite.ts -- shared access to the local index DBs of the target clients
+ * (Cursor / Codex / WorkBuddy).
  *
- * 这些库都由各自客户端进程持有，TeamAI 只在迁移/回滚时做极小的 upsert / delete。
- * 统一用 sqlite3 CLI 而不是 node 驱动：无需额外依赖，且能天然复用 macOS 自带的
- * sqlite3（支持 WAL 与 busy_timeout）。
+ * Those DBs are owned by the client processes; TeamAI only performs tiny
+ * upserts/deletes during migration and rollback. We drive the sqlite3 CLI
+ * instead of a node driver: no extra dependency, and macOS ships sqlite3
+ * (WAL and busy_timeout supported).
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-/** 定位 sqlite3 CLI：PATH → 常见安装位置。找不到时调用方应降级为「不写索引」。 */
+/** Locate the sqlite3 CLI: PATH first, then well-known install locations.
+ *  Callers should degrade to "skip the index write" when it is missing. */
 export function findSqlite3(): string | null {
   const candidates = [
     ...(process.env.PATH ?? '')
