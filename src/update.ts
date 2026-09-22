@@ -11,7 +11,7 @@ import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { log } from './utils/logger.js';
 import { expandHome, ensureDir } from './utils/fs.js';
 import { getUpdateLockPath } from './types.js';
-import { askConfirmation } from './utils/prompt.js';
+import { askConfirmation, isInteractive } from './utils/prompt.js';
 
 // `getCurrentVersion` and `getCurrentPackageName` live in `./package-info.ts`
 // so both this module and the provider registry can read package metadata
@@ -471,7 +471,7 @@ export async function doUpdate(): Promise<void> {
   }
 
   if (policy === 'prompt') {
-    if (!process.stdin.isTTY) {
+    if (!isInteractive()) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
       return;
     }

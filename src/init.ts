@@ -20,10 +20,10 @@ import {
   isRecallEnabled,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
-import { describeRoles, loadRolesManifest } from './roles.js';
+import { describeRoles, listRoleIds, loadRolesManifest } from './roles.js';
 import { loadProjectsManifest, listProjectIds } from './projects.js';
 import { getMemberConfig, mergeMemberConfig } from './members.js';
-import { askQuestion, askConfirmation, askSelection, closePrompt } from './utils/prompt.js';
+import { askQuestion, askConfirmation, askSelection, closePrompt, isInteractive } from './utils/prompt.js';
 import {
   normalizeAgentList,
   detectHomeInstalledAgents,
@@ -100,7 +100,12 @@ async function promptForRoleProfile(
     log.info(`  ${index + 1}. ${label}`);
   });
 
-  const primaryAnswer = await askQuestion('Primary role (number): ');
+  const primaryAnswer = await askQuestion('Primary role (number): ').catch(() => {
+    throw new Error(
+      'This team repo has several roles and there is no terminal to pick one. ' +
+        `Pass --role <id> (one of: ${listRoleIds(manifest).join(', ')}).`,
+    );
+  });
   const [primaryIndex] = parseRoleSelection(primaryAnswer, manifest.roles.length);
   if (!primaryIndex) {
     throw new Error('A primary role is required.');
@@ -667,7 +672,7 @@ export async function promptForSelfModeAgents(options: {
   // Non-interactive when there's no TTY, or when the caller opted out of prompts
   // (--silent / --force, matching the convention in init()): mirror HOME-installed
   // tools rather than blocking on the picker.
-  if (options.silent || options.force || !process.stdin.isTTY) {
+  if (options.silent || options.force || !isInteractive()) {
     return detectHomeInstalledAgents();
   }
 
@@ -1146,10 +1151,13 @@ export async function init(options: GlobalOptions & {
     return;
   }
   if (!repoInput) {
-    repoInput = await askQuestion('Team repo (e.g. yourteam/yourproject or https://github.com/org/repo): ');
+    // Without a terminal the prompt rejects; fall through to the error below.
+    repoInput = await askQuestion(
+      'Team repo (e.g. yourteam/yourproject or https://github.com/org/repo): ',
+    ).catch(() => '');
   }
   if (!repoInput) {
-    log.error('Repo is required');
+    log.error('Repo is required. Pass it as the argument (`teamai init <owner/repo | url>`) or with --repo.');
     process.exit(1);
   }
 

@@ -196,6 +196,9 @@ vi.mock('../types.js', async (importOriginal) => {
 // Mock prompt to auto-answer prompts
 let questionAnswers: string[] = [];
 vi.mock('../utils/prompt.js', () => ({
+  // Mirror the real predicate's TTY leg so tests that force `isTTY` keep
+  // driving the interactive branch, independent of CI=true on the runner.
+  isInteractive: () => Boolean(process.stdin.isTTY),
   askQuestion: vi.fn((_prompt: string, defaultValue?: string) => {
     const answer = questionAnswers.shift();
     return Promise.resolve(answer ?? defaultValue ?? '');

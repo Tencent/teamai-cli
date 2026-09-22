@@ -168,8 +168,10 @@ teamai init https://github.com/yourorg/yourrepo
 也可以通过 CLI 参数跳过交互，实现完全非交互式初始化（适合 CI/CD 或 AI agent）：
 
 ```bash
-teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev --force
+GITHUB_TOKEN=ghp_... teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev --force
 ```
+
+没有终端时 `init` 不会等待任何人：所有提示取默认值，需要浏览器登录的 provider 会立即失败并指出应导出的变量（GitHub 用 `GITHUB_TOKEN` / `GH_TOKEN`，TGit 用 `TGIT_TOKEN`，CNB 用 `CNB_TOKEN`，GitLab 用 `GITLAB_TOKEN`，GitCode 用 `GITCODE_TOKEN`）。`git` 同样以 `GIT_TERMINAL_PROMPT=0` 运行。stdin 不是 TTY、或设置了 `CI` / `TEAMAI_NONINTERACTIVE` 时都视为非交互，因此分配了伪终端的 agent 沙箱也能声明自己是无人值守运行。
 
 | 参数 | 说明 |
 |------|------|

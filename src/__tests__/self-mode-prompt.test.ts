@@ -6,6 +6,9 @@ vi.mock('../utils/logger.js', () => ({
 
 // Mock the prompt module so we control the interactive selection deterministically.
 vi.mock('../utils/prompt.js', () => ({
+  // Mirror the real predicate's TTY leg so tests that force `isTTY` keep
+  // driving the interactive branch, independent of CI=true on the runner.
+  isInteractive: () => Boolean(process.stdin.isTTY),
   askQuestion: vi.fn(),
   askConfirmation: vi.fn(),
   askSelection: vi.fn(),

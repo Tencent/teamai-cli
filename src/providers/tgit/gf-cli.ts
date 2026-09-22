@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathExists, ensureDir } from '../../utils/fs.js';
 import { log, spinner } from '../../utils/logger.js';
+import { isInteractive } from '../../utils/prompt.js';
 import { getTeamaiHomeDir } from '../../types.js';
 import { tgitFetch, tgitGitCloneUrl } from './rest-auth.js';
 
@@ -241,6 +242,16 @@ export function ensureAuthenticated(): string {
   const username = gfAuthWhoami();
   if (username) {
     return username;
+  }
+
+  // `gf auth login` inherits stdio and waits for iOA / a browser device flow.
+  // Without a person at a terminal that never completes (issue #711).
+  if (!isInteractive()) {
+    throw new Error(
+      'TGit authentication unavailable without a terminal. ' +
+        'Export TGIT_TOKEN (a TGit Personal Access Token), ' +
+        'or run `gf auth login` in an interactive shell first.',
+    );
   }
 
   // Not authenticated — trigger interactive login

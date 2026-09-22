@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import crossSpawn from 'cross-spawn';
 import { log, spinner } from '../../utils/logger.js';
 import { resolveCliPath } from '../../utils/cli-path.js';
+import { isInteractive } from '../../utils/prompt.js';
 
 // ─── Constants ───────────────────────────────────────────
 
@@ -224,6 +225,17 @@ export function ghAuthLogin(): void {
 export async function ensureGhAuthenticated(): Promise<string> {
   const existing = await ghAuthWhoami();
   if (existing) return existing;
+
+  // `gh auth login --web` inherits stdio and waits for a browser device flow.
+  // Without a person at a terminal that is a job stuck until gh's deadline
+  // (issue #711), so refuse up front and name the credential that would work.
+  if (!isInteractive()) {
+    throw new Error(
+      'GitHub authentication unavailable without a terminal. ' +
+        'Export GITHUB_TOKEN (or GH_TOKEN) with "repo" scope, ' +
+        'or run `gh auth login` in an interactive shell first.',
+    );
+  }
 
   // Need to log in — only possible via gh CLI
   ghAuthLogin();

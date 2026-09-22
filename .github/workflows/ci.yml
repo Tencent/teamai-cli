@@ -72,6 +72,10 @@ jobs:
       - name: OpenCode recall E2E
         run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/opencode-recall.test.ts
 
+      # Needs no network or secrets: a fake `gh` on PATH. Guards #711.
+      - name: Unattended init E2E
+        run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/init-unattended.test.ts
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

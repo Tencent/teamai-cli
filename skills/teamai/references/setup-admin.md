@@ -188,7 +188,9 @@ If the repo does not exist yet, `init` offers to create it — accept the prompt
   `GITLAB_URL` + `GITLAB_TOKEN`, then retry.
 
 If the repo has roles enabled, `init` may ask for a primary role — pick one with
-the user, or pass `--role <id>` for a non-interactive run.
+the user, or pass `--role <id>` for a non-interactive run. Without a terminal
+(or with `CI` / `TEAMAI_NONINTERACTIVE` set) `init` never waits: a provider that
+would need a browser login fails at once and names the token variable to export.
 
 **Which AI tools to set up — all of them by default (global rule 9).** Do not add
 `--agent` to restrict the install unless the user explicitly said to (e.g. "only

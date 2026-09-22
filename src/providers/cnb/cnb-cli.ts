@@ -2,6 +2,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import crossSpawn from 'cross-spawn';
 import { log, spinner } from '../../utils/logger.js';
 import { resolveCliPath } from '../../utils/cli-path.js';
+import { isInteractive } from '../../utils/prompt.js';
 import type { RepoInfo } from '../types.js';
 import { OrganizationNotFoundError, RepoCreatePermissionError } from '../types.js';
 
@@ -174,6 +175,15 @@ export function ensureCnbAuthenticated(): string {
   if (cnbIsAuthenticated()) {
     const u = cnbWhoami();
     if (u) return u;
+  }
+  // `cnb login` inherits stdio and waits for an OAuth2 device flow. Without a
+  // person at a terminal that never completes (issue #711).
+  if (!isInteractive()) {
+    throw new Error(
+      'CNB authentication unavailable without a terminal. ' +
+        'Export CNB_TOKEN (or CNB_ACCESS_TOKEN), ' +
+        'or run `cnb login` in an interactive shell first.',
+    );
   }
   cnbLogin();
   const u = cnbWhoami();

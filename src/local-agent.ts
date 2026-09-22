@@ -951,8 +951,8 @@ async function askViaTty(prompt: string): Promise<string | null> {
   // waiting for input that never comes — hanging the hook until the host's
   // timeout and stalling the IDE. Callers fall back to injecting a stdout
   // binding hint when this returns null, so degrade to that instead.
-  if (process.stdin.isTTY) {
-    const { askQuestion } = await import('./utils/prompt.js');
+  const { askQuestion, isInteractive } = await import('./utils/prompt.js');
+  if (isInteractive()) {
     return askQuestion(prompt, '');
   }
   return null;

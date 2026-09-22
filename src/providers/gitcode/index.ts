@@ -14,7 +14,7 @@ import { fetchGitCodeMR } from './mr-fetch.js';
 import { parseGitCodeRepoInput, GITCODE_HOST } from './repo-url.js';
 import type { MRData } from '../../types.js';
 import { log } from '../../utils/logger.js';
-import { askQuestion } from '../../utils/prompt.js';
+import { askQuestion, isInteractive } from '../../utils/prompt.js';
 
 /**
  * GitCode (gitcode.com) provider.
@@ -54,7 +54,7 @@ export class GitCodeProvider implements GitProvider {
       );
     }
 
-    if (!process.stdin.isTTY) {
+    if (!isInteractive()) {
       throw new Error(
         'GitCode authentication unavailable. Set the GITCODE_TOKEN environment variable ' +
           '(a GitCode Personal Access Token). GC_TOKEN is accepted as an alias.',

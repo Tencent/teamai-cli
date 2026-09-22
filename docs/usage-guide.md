@@ -174,8 +174,10 @@ If the repo has role-based skills enabled (i.e. `manifest/roles.yaml` exists), `
 You can also skip the interactive prompts via CLI flags for a fully non-interactive init (suitable for CI/CD or AI agents):
 
 ```bash
-teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev --force
+GITHUB_TOKEN=ghp_... teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev --force
 ```
+
+Without a terminal `init` never waits on a person: every prompt takes its default, and a provider that would need a browser login fails at once and names the variable to export (`GITHUB_TOKEN` / `GH_TOKEN` for GitHub, `TGIT_TOKEN` for TGit, `CNB_TOKEN` for CNB, `GITLAB_TOKEN` for GitLab, `GITCODE_TOKEN` for GitCode). `git` runs with `GIT_TERMINAL_PROMPT=0` for the same reason. A run counts as non-interactive when stdin is not a TTY, or when `CI` or `TEAMAI_NONINTERACTIVE` is set, so an agent sandbox that allocates a pseudo-terminal can still declare itself unattended.
 
 | Flag | Description |
 |------|------|
