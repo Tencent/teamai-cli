@@ -27,6 +27,7 @@
 - [提交 Co-Author 署名](#提交-co-author-署名)
 - [团队文化](#团队文化)
 - [进阶功能](#进阶功能)
+- [命令参考](#命令参考)
 - [配置文件参考](#配置文件参考)
 - [卸载](#卸载)
 - [常见问题 FAQ](#常见问题-faq)
@@ -1649,6 +1650,40 @@ teamai source remove-http
 ```
 
 HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill 指令。每个安装仅支持一个 HTTP 源。若主仓本身已是 HTTP 模式（`init --http`），则 `add-http` 不可用（主仓已占用 HTTP 配置）。
+
+---
+
+## 命令参考
+
+| 命令 | 说明 |
+|------|------|
+| `teamai init` | 初始化：OAuth 登录、关联仓库、注册成员、注入 hooks |
+| `teamai pull` | 拉取团队资源并注入到本地 AI 工具 |
+| `teamai push` | 推送本地资源到分支并创建合并请求 |
+| `teamai packages [install] [target]` | 安装团队 npm 包和 Claude 插件。裸 `teamai packages` 安装全部；`teamai packages install <target>` 添加单个并更新声明 |
+| `teamai status` | 显示本地与团队仓库的差异及资源数量，包含 namespace 下的技能和子目录中的文档 |
+| `teamai contribute` | 将 session 经验分享到团队仓库的 `teamai-learnings` 分支 |
+| `teamai recall <query>` | 搜索团队知识库（BM25 + 图谱增强） |
+| `teamai recall enable/disable/status` | 开关或查看 recall 状态 |
+| `teamai recall promote [learningId]` | 将高置信度 learning 晋升为正式知识（skills/rules/docs） |
+| `teamai recall maintenance` | 维护知识库健康：清理低置信度 learnings、回写置信度、标记过时条目 |
+| `teamai import` | 导入知识（`--dir`、`--from-repo`、`--from-org`、`--from-repo-list`、`--from-mr`） |
+| `teamai codebase --extract [path]` | 提取代码事实并在 `teamwiki/` 下构建本地图谱 |
+| `teamai codebase --deep-enrich` | 从已提取的 evidence 生成深度知识文档 |
+| `teamai codebase --reconcile` | 将产品文档与提取的代码知识进行对账 |
+| `teamai codebase --lint` | 知识图谱健康检查 |
+| `teamai ci extract-mr --url <url>` | CI：从 MR 提取知识、发评论、合并后写入 |
+| `teamai members` | 查看团队成员 |
+| `teamai projects` | 将工作目录绑定到一个或多个逻辑项目 |
+| `teamai roles` | 管理团队角色和命名空间 |
+| `teamai tags` | 管理基于标签的 skill/rule 过滤 |
+| `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](#排除个人不需要的-skill)） |
+| `teamai source` | 管理 skill 订阅源（其他团队或本团队公共仓库） |
+| `teamai remove <type> <name>` | 删除资源并创建 MR |
+| `teamai session save` | 将脱敏后的 session 摘要记录到月度日志（`--push` 可喂给 `digest`） |
+| `teamai digest` | 生成团队周报 |
+| `teamai doctor` | 诊断配置问题（`--json` 输出 JSON，供 CI、hook 与 agent 消费）|
+| `teamai uninstall` | 移除所有 teamai 资源和 hooks |
 
 ---
 

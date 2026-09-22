@@ -27,6 +27,7 @@
 - [Commit Co-Author Attribution](#commit-co-author-attribution)
 - [Team Culture](#team-culture)
 - [Advanced Features](#advanced-features)
+- [Command Reference](#command-reference)
 - [Configuration Reference](#configuration-reference)
 - [Uninstall](#uninstall)
 - [FAQ](#faq)
@@ -1701,6 +1702,40 @@ teamai source remove-http
 ```
 
 An HTTP source reports status and pulls skill commands via hook dispatch on every session. Only one HTTP source is supported per install. If the main repo is already in HTTP mode (`init --http`), `add-http` is unavailable (the main repo already occupies the HTTP config).
+
+---
+
+## Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `teamai init` | Initialize: OAuth login, link repo, register member, inject hooks |
+| `teamai pull` | Pull team resources and inject into local AI tools |
+| `teamai push` | Push local resources to a branch and open a Merge Request |
+| `teamai packages [install] [target]` | Install declared npm packages and Claude plugins; with a target, also update `teamai.yaml`. Bare `teamai packages` installs everything; `teamai packages install <target>` adds one |
+| `teamai status` | Show local vs team repo diff and resource counts, including namespaced skills and nested docs |
+| `teamai contribute` | Share session experience to the team repo's `teamai-learnings` branch |
+| `teamai recall <query>` | Search the team knowledge base (BM25 + graph-boost) |
+| `teamai recall enable/disable/status` | Toggle or check recall state |
+| `teamai recall promote [learningId]` | Promote a high-confidence learning to formal knowledge (skills/rules/docs) |
+| `teamai recall maintenance` | Maintain knowledge base health: prune low-confidence learnings, writeback confidence scores, flag stale entries |
+| `teamai import` | Import knowledge (`--dir`, `--from-repo`, `--from-org`, `--from-repo-list`, `--from-mr`) |
+| `teamai codebase --extract [path]` | Extract code facts and build the local graph under `teamwiki/` |
+| `teamai codebase --deep-enrich` | Generate deep knowledge docs from extracted evidence |
+| `teamai codebase --reconcile` | Reconcile product documentation with extracted code knowledge |
+| `teamai codebase --lint` | Knowledge graph health check |
+| `teamai ci extract-mr --url <url>` | CI: extract knowledge from MR, post comments, write after merge |
+| `teamai members` | List team members |
+| `teamai projects` | Bind a working directory to one or more logical projects |
+| `teamai roles` | Manage team roles and namespaces |
+| `teamai tags` | Manage tag-based skill/rule filtering |
+| `teamai skill exclude add/remove/list` | Manage skills excluded from local sync ([usage guide](#excluding-skills-you-dont-need)) |
+| `teamai source` | Manage skill subscription sources (other teams or your org's shared repos) |
+| `teamai remove <type> <name>` | Remove a resource and open MR |
+| `teamai session save` | Record a privacy-scrubbed session summary to a monthly log (`--push` feeds `digest`) |
+| `teamai digest` | Generate weekly team usage digest |
+| `teamai doctor` | Diagnose configuration issues (`--json` for CI, hooks and agents) |
+| `teamai uninstall` | Remove all teamai resources and hooks |
 
 ---
 
