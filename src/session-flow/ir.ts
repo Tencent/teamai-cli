@@ -39,7 +39,30 @@ export interface ToolResultBlock {
   isError: boolean;
 }
 
-export type ContentBlock = TextBlock | ThinkingBlock | ToolCallBlock | ToolResultBlock;
+/**
+ * 消息内嵌图片块。
+ *
+ * - `data`：图片内容的 base64（优先使用；claude-code 等原生支持 base64 图片的平台直接写回）
+ * - `filePath`：源端文件绝对路径（codebuddy-ide 的 assets；写回 IDE / 落地到支持文件引用的平台用）
+ * - 两者至少有一个，读取侧保证；都没有时写入侧降级为占位文本
+ */
+export interface ImageBlock {
+  type: 'image';
+  mimeType: string; // image/png | image/jpeg | image/gif | image/webp
+  data?: string; // base64，不带 data: 前缀
+  filePath?: string; // 源端绝对路径
+  /** 展示名（占位符用），如 image.b9f683a0a9.png */
+  label?: string;
+}
+
+/** 目标平台不支持图片时的占位文本（保真度计 degraded，而非静默丢弃）。 */
+export function imagePlaceholderText(block: ImageBlock): string {
+  const sizeKb = block.data ? Math.round((block.data.length * 3) / 4 / 1024) : null;
+  const sizePart = sizeKb !== null ? `, ${sizeKb}KB` : '';
+  return `[image: ${block.label ?? 'image'}${sizePart}]`;
+}
+
+export type ContentBlock = TextBlock | ThinkingBlock | ToolCallBlock | ToolResultBlock | ImageBlock;
 
 export function blockToDict(block: ContentBlock): Record<string, unknown> {
   switch (block.type) {
@@ -51,6 +74,14 @@ export function blockToDict(block: ContentBlock): Record<string, unknown> {
       return { type: 'tool_call', toolName: block.toolName, callId: block.callId, arguments: block.arguments };
     case 'tool_result':
       return { type: 'tool_result', callId: block.callId, content: block.content, isError: block.isError };
+    case 'image':
+      return {
+        type: 'image',
+        mimeType: block.mimeType,
+        ...(block.data ? { data: block.data } : {}),
+        ...(block.filePath ? { filePath: block.filePath } : {}),
+        ...(block.label ? { label: block.label } : {}),
+      };
   }
 }
 
@@ -74,6 +105,14 @@ export function blockFromDict(data: Record<string, unknown>): ContentBlock {
         callId: String(data.callId ?? ''),
         content: String(data.content ?? ''),
         isError: Boolean(data.isError ?? false),
+      };
+    case 'image':
+      return {
+        type: 'image',
+        mimeType: String(data.mimeType ?? 'image/png'),
+        ...(typeof data.data === 'string' ? { data: data.data } : {}),
+        ...(typeof data.filePath === 'string' ? { filePath: data.filePath } : {}),
+        ...(typeof data.label === 'string' ? { label: data.label } : {}),
       };
     default:
       throw new Error(`Unknown content block type: ${t}`);

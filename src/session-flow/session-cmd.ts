@@ -47,6 +47,9 @@ let lineResolver: ((line: string) => void) | null = null;
 let lineReaderStarted = false;
 
 let sharedRl: readline.Interface | null = null;
+/** --all 批量迁移时，超过这个条数先列清单要求确认（-y 跳过）。 */
+const BATCH_CONFIRM_THRESHOLD = 10;
+
 
 function startLineReader(): void {
   if (lineReaderStarted) return;
@@ -258,7 +261,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--target-cwd <path>', 'Override cwd for the target session')
     .option('--push', 'Also push the migrated session to the team repo')
     .option('--repo-root <path>', 'Team repo root (for --push)')
-    .option('--all', 'Migrate all recent sessions from source (top 5)')
+    .option('--all', 'Migrate every session from source (not just the 5 most recent)')
+    .option('--limit <n>', 'Max sessions to migrate (only caps --all; ignored otherwise)')
     .option('-y, --yes', 'Skip confirmation prompt')
     .action(async (sessionId, opts) => {
       try {
@@ -279,17 +283,25 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       let metas = await sourceAdapter.listConversations(workCwd);
 
       // 当前 cwd 无会话时，交互式提示列出全部目录的会话
+      // 展开后这些会话**不属于 workCwd**，源端定位必须传 undefined 让适配器全局按 id 查找
+      // （各适配器 findSessionFile 都有该兜底）。此前仍把 workCwd 传给源适配器，
+      // claude-code 只在 encodeCwdClaude(workCwd) 一个目录里找 → 这条路径 100% 失败。
+      let crossDirExpanded = false;
       if (metas.length === 0 && !opts.cwd && !sessionId) {
         const allMetas = await sourceAdapter.listConversations();
         if (allMetas.length > 0) {
           console.log(`\nNo sessions found in current directory: ${workCwd}`);
           console.log(`But ${allMetas.length} session(s) found across all directories on ${source}.`);
+          console.log(`Tip: pass --cwd <project-dir> to migrate from a specific workspace (non-interactive runs need it).`);
           const ans = await ask('List all? (y/N): ');
           if (ans.toLowerCase() === 'y' || ans.toLowerCase() === 'yes') {
             metas = allMetas;
+            crossDirExpanded = true;
           }
         }
       }
+      /** 源端定位用的工作区：跨目录展开时会话不归属 workCwd，交给适配器全局查找。 */
+      const sourceProjectPath = crossDirExpanded ? undefined : workCwd;
 
       if (metas.length === 0) {
         console.log('No sessions found on source platform.');
@@ -299,7 +311,28 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       // 选择会话
       let targets: typeof metas;
       if (opts.all) {
-        targets = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 5);
+        // --all 名副其实：迁移全部会话，不再静默截断到 5 条。
+        // 此前 slice(0, 5) 且无任何提示，用户会以为「全部迁完了」。
+        // 需要限量时用 --limit（与 session push 的语义一致）。
+        const limitRaw = parseInt(opts.limit, 10);
+        const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 0;
+        const sorted = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        targets = limit > 0 ? sorted.slice(0, limit) : sorted;
+
+        // 大批量确认：--all 现在会迁全部（不再截断到 5 条），会话多时先列清单要求确认，
+        // -y 跳过。避免一次误迁几十上百条、回滚成本高。
+        if (targets.length > BATCH_CONFIRM_THRESHOLD && !opts.yes) {
+          console.log(`\nAbout to migrate ${targets.length} session(s) from ${source}:`);
+          for (const m of targets) {
+            const title = m.title.length > 50 ? m.title.slice(0, 50) + '...' : m.title;
+            console.log(`  ${m.sessionId.slice(0, 8)}  ${title}  (${m.messageCount} msgs)`);
+          }
+          const ans = await ask('\nMigrate all of the above? (y/N): ');
+          if (ans.toLowerCase() !== 'y' && ans.toLowerCase() !== 'yes') {
+            console.log('Cancelled.');
+            return;
+          }
+        }
       } else if (sessionId) {
         targets = metas.filter((m) => m.sessionId === sessionId || m.sessionId.startsWith(sessionId));
         if (targets.length === 0) {
@@ -326,12 +359,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
 
       const engine = new MigrationEngine(source, target);
       let migrated = 0;
+      let failed = 0;
       // 记录每次成功迁移产出的目标会话 ID + 真实保真度，
       // --push 时精确回读这些 ID（而非"目标平台最近 N 条"，避免推错，见 P4/P7）。
-      const migratedTargets: { sessionId: string; fidelityScore: number }[] = [];
+      const migratedTargets: { sessionId: string; fidelityScore: number; cwd?: string }[] = [];
 
       for (const m of targets) {
-        const preview = await engine.preview(m.sessionId, workCwd);
+        const preview = await engine.preview(m.sessionId, sourceProjectPath);
 
         console.log(`\n  Migration Preview`);
         console.log(`  ─────────────────────────────────`);
@@ -339,6 +373,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         console.log(`  Target:    ${preview.targetPlatform}`);
         console.log(`  Session:   ${preview.sessionTitle} (${preview.sessionId.slice(0, 8)}...)`);
         console.log(`  CWD:       ${preview.cwd}`);
+        // 目标工作区默认保持源会话的工作区，只有 --target-cwd 才搬走
+        console.log(`  Target CWD:${opts.targetCwd ? ' ' + opts.targetCwd : ' (same as source)'}`);
         console.log(`  Messages:  ${preview.messageCount}`);
         console.log(`  ─────────────────────────────────`);
         console.log(`  Fidelity:  ${(preview.fidelity.score * 100).toFixed(1)}% (Mode ${preview.fidelity.mode})`);
@@ -364,10 +400,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         // 目标 cwd 默认为当前工作目录（真实绝对路径）。
         // 不传的话 writeSession 会回退到 session.cwd——那可能是源平台存的
         // encoded 形式（如 `-Users-foo-project`），无法还原真实路径。
-        const result = await engine.migrate(m.sessionId, workCwd, opts.targetCwd ?? workCwd);
+        // 目标工作区默认 = 源会话工作区（保持目录一致）；
+        // 只有显式 --target-cwd 才把会话搬到别的工作区。
+        const result = await engine.migrate(m.sessionId, sourceProjectPath, opts.targetCwd);
         if (result.success) {
           console.log(`\n  ✓ Migration successful`);
           console.log(`  Target session ID: ${result.targetSessionId}`);
+          if (result.targetCwd) console.log(`  Target CWD: ${result.targetCwd}`);
           if (result.targetFilePath) {
             console.log(`  Target file: ${result.targetFilePath}`);
           }
@@ -377,23 +416,32 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
             migratedTargets.push({
               sessionId: result.targetSessionId,
               fidelityScore: result.preview.fidelity.score,
+              cwd: result.targetCwd,
             });
           }
         } else {
           console.error(`\n  ✗ Migration failed: ${result.error}`);
+          failed++;
         }
+      }
+
+      // 脚本化语义：任何一条失败都以非 0 退出（--all 批量时不中断其余会话）。
+      if (failed > 0 && !isDryRun()) {
+        process.exitCode = 1;
       }
 
       // --push: 推送到团队仓
       if (opts.push && migrated > 0) {
         const repoRoot = resolveRepoRoot(opts.repoRoot);
-        const author = getGitAuthor(workCwd);
+        // 跨目录展开时会话不属于 workCwd，author 应取自会话真实所在的仓库
+        const authorCwd = migratedTargets.find((t) => t.cwd)?.cwd ?? workCwd;
+        const author = getGitAuthor(authorCwd);
         const targetAdapter = safeGetAdapter(target);
 
         const syncMgr = new SyncManager(repoRoot);
         let saved = 0;
         for (const t of migratedTargets) {
-          const session = await targetAdapter.readSession(t.sessionId, opts.targetCwd ?? workCwd);
+          const session = await targetAdapter.readSession(t.sessionId, t.cwd ?? opts.targetCwd ?? workCwd);
           // P3：归档键按会话原生 cwd 派生，而非 migrate 运行目录（见 deriveArchiveIdentity）
           const meta = defaultSyncMeta(
             {
