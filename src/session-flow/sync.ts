@@ -716,14 +716,16 @@ export class SyncManager {
 
     // Only ever commit the archive paths: `git commit -m` without a pathspec
     // would also commit whatever else the user happened to have staged.
-    const before = this.runGit(['rev-parse', 'HEAD'], false);
-    const commit = this.runGit(['commit', '-m', message, '--', 'sessions/'], false);
-    const after = this.runGit(['rev-parse', 'HEAD'], false);
-
-    // A failed commit (hooks, gpg signing, identity config) must not be
-    // reported as a successful push: no new HEAD means nothing was committed.
-    if (!commit.trim() || (before && after === before)) return null;
-    return after;
+    //
+    // Let a failed commit throw (hooks, gpg signing, missing identity all exit
+    // non-zero) and surface as null: silence here used to be reported as a
+    // successful push with the previous HEAD printed as the new commit.
+    try {
+      this.runGit(['commit', '-m', message, '--', 'sessions/'], true);
+    } catch {
+      return null;
+    }
+    return this.runGit(['rev-parse', 'HEAD']);
   }
 
   gitPush(remote = 'origin', branch?: string): void {
