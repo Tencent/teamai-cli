@@ -176,4 +176,51 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
         expect(shallowFetch).toHaveBeenCalledTimes(2);
         expect(await fs.readFile(lastSyncPath, 'utf8')).toContain(CLONE_SHA);
     });
+
+    it('re-extracts when cleanup fails after publishing the new manifest', async () => {
+        vi.mocked(shallowFetch).mockResolvedValue({ sha: CLONE_SHA });
+        vi.mocked(extractCodebase).mockImplementation(async (opts) => {
+            const wikiRoot = path.join(opts.path ?? '.', 'teamwiki');
+            const manifestPath = path.join(wikiRoot, 'source-manifest.json');
+            if (opts.incremental && await fs.pathExists(manifestPath)
+                && (await fs.readJson(manifestPath)).headSha === CLONE_SHA) {
+                return; // The real extractor skips when the copied manifest matches HEAD.
+            }
+            const evidenceDir = path.join(wikiRoot, 'evidence', 'code', SLUG);
+            await fs.ensureDir(evidenceDir);
+            await fs.writeFile(path.join(evidenceDir, 'overview.md'), DETERMINISTIC_OVERVIEW);
+            await fs.writeJson(manifestPath, { headSha: CLONE_SHA, files: [] });
+        });
+
+        const options = { url: TEST_URL, incremental: true, interactive: false, skipEnrich: true, skipAutoPush: true };
+        const cacheDir = path.join(workdir, 'cache', 'github', 'owner', 'mergetest');
+        const lastSyncPath = path.join(cacheDir, 'LAST_SYNC');
+        const publishedManifest = path.join(workdir, '.teamai', 'team-repo', 'teamwiki', 'source-manifest.json');
+        await fs.ensureDir(path.join(cacheDir, '.git'));
+        await fs.writeFile(lastSyncPath, 'previous-sha\n2024-01-01T00:00:00.000Z\n');
+        await fs.ensureDir(path.dirname(publishedManifest));
+        await fs.writeJson(publishedManifest, { headSha: 'previous-sha', files: [] });
+
+        const remove = fs.remove;
+        let failOnce = true;
+        const removeSpy = vi.spyOn(fs, 'remove').mockImplementation(async (target) => {
+            if (target === path.join(cacheDir, 'teamwiki') && failOnce) {
+                failOnce = false;
+                throw new Error('cache cleanup failed');
+            }
+            return remove(target);
+        });
+        try {
+            await expect(importFromRepo(options)).rejects.toThrow('Knowledge extraction failed: cache cleanup failed');
+        } finally {
+            removeSpy.mockRestore();
+        }
+
+        expect((await fs.readJson(publishedManifest)).headSha).toBe(CLONE_SHA);
+        expect(await fs.readFile(lastSyncPath, 'utf8')).toContain('previous-sha');
+
+        await importFromRepo(options);
+        expect(vi.mocked(extractCodebase).mock.calls.map(([opts]) => opts.incremental)).toEqual([true, false]);
+        expect(await fs.readFile(lastSyncPath, 'utf8')).toContain(CLONE_SHA);
+    });
 });
