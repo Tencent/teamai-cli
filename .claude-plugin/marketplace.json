@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace-manifest.json",
+  "name": "teamai",
+  "description": "TeamAI — sync a team's AI skills, rules, docs, and env across AI coding tools.",
+  "owner": {
+    "name": "Tencent",
+    "url": "https://github.com/Tencent"
+  },
+  "plugins": [
+    {
+      "name": "teamai",
+      "source": "./skills/teamai",
+      "description": "Guide for TeamAI — the CLI that syncs a team's AI skills, rules, docs, and env across AI coding tools (set up, join, manage, contribute, uninstall). Invoke ONLY when the user explicitly runs `/teamai`. Do NOT auto-trigger from ordinary conversation, even if words like \"team\", \"skill\", or \"sync\" appear.",
+      "license": "MIT",
+      "keywords": ["team", "skills", "sync", "ai-coding", "cli"]
+    }
+  ]
+}
