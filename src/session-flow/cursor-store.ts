@@ -1,18 +1,18 @@
 /**
- * cursor-store.ts — 把迁移出来的会话注册进 Cursor 的本地数据库。
+ * cursor-store.ts -- register migrated sessions into Cursor's local database.
  *
- * 背景：Cursor 的 Agents Window **不是**扫 `~/.cursor/projects/<proj>/agent-transcripts/`
- * 列会话的 —— transcript jsonl 是 Cursor 从自己的库单向 `flushTranscriptForConversation`
- * 导出的产物。UI 的列表来自 `state.vscdb` 的 `composerHeaders` 表，正文来自
- * `cursorDiskKV` 的 `composerData:<composerId>` 与 `bubbleId:<composerId>:<bubbleId>`。
- * 因此只写 transcript 文件，会话在 Cursor 里完全不可见（迁移「成功」但看不到）。
+ * Background: Cursor's Agents Window does **not** list sessions by scanning
+ * `~/.cursor/projects/<proj>/agent-transcripts/` -- that transcript jsonl is a
+ * one-way `flushTranscriptForConversation` export from Cursor's own store. The
+ * UI list comes from `composerHeaders` in state.vscdb, the body from
+ * `composerData:<composerId>` and `bubbleId:<composerId>:<bubbleId>` in cursorDiskKV.
  *
- * 这里做三件事（best-effort，任何一步失败都不影响 transcript 已写入）：
- *   1. 从 `User/workspaceStorage/<hash>/workspace.json` 反查 cwd 对应的 workspaceId
- *   2. 按原生结构构造 head / composerData / bubbles
- *   3. 用 sqlite3 以单事务 INSERT OR REPLACE 落库
+ * migration "succeeds" but shows nothing.
+
+ * Three steps here (best-effort; any failure must not lose the transcript):
+ *   1. resolve the cwd to a workspaceId via User/workspaceStorage/<hash>/workspace.json
  *
- * 只新增/覆盖自己这个 composerId 的行，不动其他会话；回滚 = 删掉这三类 key。
+ *   3. write with sqlite3 in a single transaction, INSERT OR REPLACE
  */
 
 import * as crypto from 'node:crypto';
@@ -22,10 +22,10 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
-// 路径与工具
+// Paths and helpers
 // ---------------------------------------------------------------------------
 
-/** Cursor 用户数据目录（macOS / Linux；其他平台返回 null 表示不支持注册）。 */
+ /** Cursor user-data dir (macOS / Linux; other platforms return null = registration unsupported). */
 export function getCursorStateRoot(): string | null {
   const home = os.homedir();
   if (process.platform === 'darwin') {
@@ -34,16 +34,16 @@ export function getCursorStateRoot(): string | null {
   if (process.platform === 'linux') {
     return path.join(home, '.config', 'Cursor');
   }
-  return null; // Windows: %APPDATA%/Cursor —— 暂不支持（sqlite3 CLI 不保证存在）
+   return null; // Windows: %APPDATA%/Cursor -- not supported yet (no guaranteed sqlite3 CLI)
 }
 
-/** Cursor 的 state.vscdb 路径。 */
+ /** Path to Cursor's state.vscdb. */
 export function getCursorStateDbPath(): string | null {
   const root = getCursorStateRoot();
   return root ? path.join(root, 'User', 'globalStorage', 'state.vscdb') : null;
 }
 
-/** 找 sqlite3 CLI：PATH → 常见安装位置。 */
+ /** Locate the sqlite3 CLI: PATH first, then well-known install locations. */
 function findSqlite3(): string | null {
   const candidates = [
     ...(process.env.PATH ?? '').split(path.delimiter).filter(Boolean).map((d) => path.join(d, 'sqlite3')),
@@ -62,7 +62,7 @@ function findSqlite3(): string | null {
   return null;
 }
 
-/** cwd → Cursor workspaceId（由 workspaceStorage/<hash>/workspace.json 的 folder 反查）。 */
+ /** cwd -> Cursor workspaceId (resolved from workspaceStorage/<hash>/workspace.json's folder). */
 export function resolveCursorWorkspaceId(cwd: string): { id: string; uri: CursorUri } | null {
   const root = getCursorStateRoot();
   if (!root) return null;
@@ -119,10 +119,10 @@ function makeUri(external: string, fsPath: string): CursorUri {
 }
 
 // ---------------------------------------------------------------------------
-// 模板（字段集取自 Cursor 0.155 附近版本的原生记录）
+// Templates (field set taken from native records around Cursor 0.155)
 // ---------------------------------------------------------------------------
 
-/** Lexical 富文本：Cursor 的 composer/bubble 用它渲染编辑器内容。 */
+ /** Lexical rich text: Cursor's composer/bubble render editor content with it. */
 function lexical(text: string): string {
   const paragraph = text
     ? [
@@ -145,7 +145,7 @@ interface BubbleTemplate {
   [k: string]: unknown;
 }
 
-/** 工具输出：原生 result 是 JSON 字符串（对象），裸文本要包成对象，否则 UI 解析不出来。 */
+ /** Tool output: the native result is a JSON string (object); bare text must be wrapped, or the UI cannot parse it. */
 function encodeToolResult(raw?: string): string {
   if (!raw) return '';
   const s = raw.trim();
@@ -153,7 +153,7 @@ function encodeToolResult(raw?: string): string {
   return JSON.stringify({ output: raw });
 }
 
-/** 原生 composerData.context / bubble.context 的空形态。 */
+ /** Empty shape of the native composerData.context / bubble.context. */
 function emptyContext(): Record<string, unknown> {
   return {
     composers: [],
@@ -174,7 +174,7 @@ function emptyContext(): Record<string, unknown> {
   };
 }
 
-/** bubble 默认值（原生 bubble 的字段全量铺开，避免 UI 解析时缺字段）。 */
+ /** Bubble defaults (native bubble fields laid out in full so the UI never hits a missing field). */
 function emptyBubble(): BubbleTemplate {
   return {
     _v: 3,
@@ -247,34 +247,34 @@ function emptyBubble(): BubbleTemplate {
 }
 
 // ---------------------------------------------------------------------------
-// 构造 head / composerData / bubbles
+// Build head / composerData / bubbles
 // ---------------------------------------------------------------------------
 
 export interface CursorComposerTool {
   name: string;
   args: Record<string, unknown>;
   /**
-   * 工具输出。原生把它放在 assistant 的 tool 气泡 `toolFormerData.result` 里，
-   * **不会**单独成为一条消息 —— 所以工具结果必须挂在这里，否则 UI 里会冒出一堆
-   * `[tool_result] {json}` 的用户气泡。
+    * Tool output. The native record keeps it on the assistant's tool bubble as
+    * `toolFormerData.result` and does **not** emit a separate message -- so the
+    * result must hang here, otherwise the UI shows a pile of
    */
   result?: string;
-  /** 失败的工具调用（原生 status: failed）。 */
+   /** Failed tool call (native status: failed). */
   isError?: boolean;
 }
 
 export interface CursorComposerMessage {
   role: 'user' | 'assistant';
   /**
-   * 纯文本正文：只放真实叙述文本。
-   * 不要把 thinking 包成 `<thinking>` 塞进来 —— 以 HTML 标签开头的正文会被 Cursor 当
-   * HTML 块处理，markdown（粗体/列表/代码块）与换行全部失效，整段显示成一行。
+    * Plain narrative text only.
+    * Do not wrap thinking as <thinking> in here -- content starting with an HTML
+    * tag is treated as an HTML block by Cursor: markdown (bold/lists/fences) and
    */
   text: string;
-  /** 该消息里的工具调用（含结果）。 */
+   /** Tool calls in this message (with results). */
   tools: CursorComposerTool[];
   createdAt: string; // ISO8601
-  /** assistant 消息的模型名（可选）。 */
+   /** Model name of the assistant message (optional). */
   modelName?: string;
 }
 
@@ -311,15 +311,15 @@ function buildBubbleRecords(
         bubble.richText = lexical(msg.text);
         bubble.requestId = uuid();
         bubble.checkpointId = uuid();
-        // 原生 user bubble 还带这三项，缺失会让 UI 少渲染上下文/模型标签
+         // Native user bubbles carry these three; without them the UI drops the context/model chips
         bubble.context = emptyContext();
         bubble.modelInfo = { modelName: msg.modelName ?? 'default' };
         bubble.isPlanExecution = false;
       } else {
         bubble.modelInfo = { modelName: msg.modelName ?? 'default' };
         bubble.turnDurationMs = 0;
-        // 原生 assistant 气泡带 codeBlocks（哪怕为空）；缺失时正文可能按纯文本渲染，
-        // markdown 不生效
+         // Native assistant bubbles carry codeBlocks even when empty; without it the body may render as plain text
+         // and markdown stops working
         bubble.codeBlocks = [];
       }
       records.push({ key: `bubbleId:${composerId}:${bid}`, value: JSON.stringify(bubble) });
@@ -330,7 +330,7 @@ function buildBubbleRecords(
           ? {
               isRenderable: true,
               hasText: true,
-              // 原生按文本长度决定，写死 true 会让长提问被当短文本渲染
+               // Native decides by text length; hardcoding true makes long prompts render as short text
               isShortPlainText: msg.text.length <= 120,
               textPreview: msg.text.slice(0, 80),
               toolDisplayComputed: true,
@@ -341,9 +341,9 @@ function buildBubbleRecords(
       });
     }
 
-    // 工具调用：原生是「无正文的 type 2 气泡 + toolFormerData」。
-    // tool / toolCallBinary 是 Cursor 内部 protobuf，无法还原，省略（仅影响工具图标的
-    // 精细展示，不影响会话可见性与正文）。
+     // Tool calls: natively a body-less type-2 bubble + toolFormerData.
+     // tool / toolCallBinary are Cursor-internal protobuf and cannot be rebuilt; omitted (only
+     // affects the fine-grained tool icon, not session visibility or the body).
     for (const [i, tool] of msg.tools.entries()) {
       const bid = uuid();
       const callId = `tool_${uuid()}`;
@@ -362,9 +362,9 @@ function buildBubbleRecords(
         name: tool.name,
         rawArgs: argsJson,
         params: argsJson,
-        // 工具输出挂在这里（原生位置），不是一个独立的用户气泡。
-        // 原生 result 是「JSON 字符串（对象）」，UI 会 JSON.parse 后取字段，
-        // 所以裸文本要包成对象，否则工具输出显示不出来。
+         // Tool output hangs here (the native location), not as a separate user bubble.
+         // The native result is a "JSON string (object)"; the UI JSON.parses it and reads fields,
+         // so bare text must be wrapped or the output will not show.
         result: encodeToolResult(tool.result),
       };
       records.push({ key: `bubbleId:${composerId}:${bid}`, value: JSON.stringify(bubble) });
@@ -406,7 +406,7 @@ function buildComposerData(
     lastUpdatedAt: lastMs,
     createdAt: createdMs,
     hasChangedContext: false,
-    // 原生是固定三项能力描述；留空会让部分工具/能力面板 UI 缺内容
+     // Natively a fixed three-item capability list; leaving it empty breaks some tool/capability panels
     capabilities: [
       { type: 15, data: { bubbleDataMap: '{}' } },
       { type: 19, data: {} },
@@ -509,7 +509,7 @@ function buildHead(
 }
 
 function randomBase64Key(): string {
-  // 32 字节随机 key（原生是 base64）。
+   // 32-byte random key (native stores base64).
   return crypto.randomBytes(32).toString('base64');
 }
 
@@ -518,7 +518,7 @@ function cryptoRandomUuid(): string {
 }
 
 // ---------------------------------------------------------------------------
-// 落库
+// Persistence
 // ---------------------------------------------------------------------------
 
 function esc(value: string): string {
@@ -527,16 +527,16 @@ function esc(value: string): string {
 
 export interface RegisterResult {
   ok: boolean;
-  /** 失败原因（ok=false 时给 CLI 记录 debug 用）。 */
+   /** Failure reason (ok=false; for the CLI debug log). */
   reason?: string;
   bubbleCount?: number;
 }
 
 /**
- * 将会话注册进 Cursor 的 Agents 列表。
+ * Register the session into Cursor's Agents list.
  *
- * 失败一律返回 `{ok:false, reason}`，调用方不应把它当迁移失败 —— transcript 已落盘，
- * 注册失败只是「列表里看不到」，不会损坏任何数据。
+ * Failures always return {ok:false, reason}; the caller must not treat it as a
+ * migration failure -- the transcript is on disk, a failed registration only
  */
 export function registerCursorComposer(args: RegisterCursorComposerArgs): RegisterResult {
   const dbPath = getCursorStateDbPath();
@@ -557,9 +557,9 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
     .filter((n) => Number.isFinite(n));
   const createdMs = times.length ? Math.min(...times) : Date.now();
   const lastMs = times.length ? Math.max(...times) : createdMs;
-  // 列表排序字段（lastUpdatedAt/recency）用迁移时刻：保留源时间会把迁移会话
-  // 埋进「N 天前」分组，用户迁完在顶部找不到。会话内容时间轴（composerData
-  // 内的 lastMs）保持源时间不变。
+   // List sort fields (lastUpdatedAt/recency) use the migration time: keeping the
+   // source time would bury the migrated session in an "N days ago" group and the
+   // user would not find it at the top. The in-session timeline (lastMs inside
   const recencyMs = Math.max(lastMs, Date.now());
   const subtitle = args.messages.find((m) => m.role === 'user' && m.text.trim())?.text.slice(0, 30) ?? '';
 
@@ -567,10 +567,10 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
   const head = buildHead(args.composerId, args.title, subtitle, createdMs, lastMs, ws);
 
   const stmts: string[] = [
-    // Cursor 运行时会持有写锁：给一个有限的 busy 超时，避免 CLI 永久挂起
+     // Cursor holds a write lock at runtime: bound the wait so the CLI cannot hang
     'PRAGMA busy_timeout=5000;',
     'BEGIN IMMEDIATE;',
-    // OR REPLACE 依赖唯一索引，先显式删一次，避免重迁移出现重复行
+     // OR REPLACE relies on a unique index; delete first so a re-migration
     `DELETE FROM composerHeaders WHERE composerId='${esc(args.composerId)}';`,
   ];
   stmts.push(
@@ -578,7 +578,7 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
       '(composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent, recency, checkpointAt, value, subagentTypeName) ' +
       `VALUES ('${esc(args.composerId)}','${esc(ws.id)}',${createdMs},${recencyMs},0,0,${recencyMs},NULL,'${esc(JSON.stringify(head))}',NULL);`,
   );
-  // 重迁移同一会话时先清掉旧的 bubble，避免残留
+   // Re-migrating the same session: clear the old bubbles to avoid leftovers
   stmts.push(`DELETE FROM cursorDiskKV WHERE key LIKE 'bubbleId:${esc(args.composerId)}:%';`);
   stmts.push(
     'INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES ' +
@@ -617,8 +617,8 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
 }
 
 /**
- * 从 Cursor 的 Agents 列表里移除该会话（迁移回滚 / 删除会话时调用）。
- * 只删自己这个 composerId 的行，best-effort。
+ * Remove the session from Cursor's Agents list (called on rollback / delete).
+ * Only rows for our own composerId are touched; best-effort.
  */
 export function unregisterCursorComposer(composerId: string): RegisterResult {
   const dbPath = getCursorStateDbPath();
