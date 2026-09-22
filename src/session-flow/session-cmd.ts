@@ -261,6 +261,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--target-cwd <path>', 'Override cwd for the target session')
     .option('--push', 'Also push the migrated session to the team repo')
     .option('--repo-root <path>', 'Team repo root (for --push)')
+    .option('--scrub', 'Redact secrets (tokens/keys/passwords) from the session before writing it')
     .option('--all', 'Migrate every session from source (not just the 5 most recent)')
     .option('--limit <n>', 'Max sessions to migrate (only caps --all; ignored otherwise)')
     .option('-y, --yes', 'Skip confirmation prompt')
@@ -402,11 +403,16 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         // encoded 形式（如 `-Users-foo-project`），无法还原真实路径。
         // 目标工作区默认 = 源会话工作区（保持目录一致）；
         // 只有显式 --target-cwd 才把会话搬到别的工作区。
-        const result = await engine.migrate(m.sessionId, sourceProjectPath, opts.targetCwd);
+        const result = await engine.migrate(m.sessionId, sourceProjectPath, opts.targetCwd, Boolean(opts.scrub));
         if (result.success) {
           console.log(`\n  ✓ Migration successful`);
           console.log(`  Target session ID: ${result.targetSessionId}`);
           if (result.targetCwd) console.log(`  Target CWD: ${result.targetCwd}`);
+          if (opts.scrub) {
+            console.log(
+              `  Redacted: ${result.redactedCount ?? 0} secret-looking value(s) (best-effort; review before archiving)`,
+            );
+          }
           if (result.targetFilePath) {
             console.log(`  Target file: ${result.targetFilePath}`);
           }
