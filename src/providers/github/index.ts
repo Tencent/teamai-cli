@@ -60,6 +60,7 @@ export class GitHubProvider implements GitProvider {
       description: opts.description,
       reviewers: opts.reviewers,
       cwd: opts.cwd,
+      spawnTimeoutMs: opts.spawnTimeoutMs,
     });
   }
 

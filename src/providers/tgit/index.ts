@@ -61,6 +61,7 @@ export class TGitProvider implements GitProvider {
       description: opts.description,
       reviewers: opts.reviewers,
       cwd: opts.cwd,
+      spawnTimeoutMs: opts.spawnTimeoutMs,
     });
   }
 

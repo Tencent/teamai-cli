@@ -37,7 +37,7 @@ function shellQuote(s: string): string {
  */
 export function gfExec(
   args: string[],
-  options?: { inheritStdio?: boolean; cwd?: string },
+  options?: { inheritStdio?: boolean; cwd?: string; timeoutMs?: number },
 ): { stdout: string; stderr: string; status: number } {
   const gfPath = getGfPath();
   // Shell-quote every token (including the binary path) so values such as repo
@@ -52,6 +52,7 @@ export function gfExec(
       stdio: 'inherit',
       env: { ...process.env },
       cwd: options.cwd,
+      ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
     });
     return { stdout: '', stderr: '', status: result.status ?? 1 };
   }
@@ -61,6 +62,7 @@ export function gfExec(
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,
     cwd: options?.cwd,
+    ...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
   });
 
   return {
@@ -397,6 +399,10 @@ export interface GfMrCreateOptions {
   reviewers?: string[];
   /** Working directory for gf CLI (should be the team repo path) */
   cwd?: string;
+  /** Hard timeout (ms) for the `gf mr create` subprocess; kills it at the OS
+   * level once exceeded. spawnSync blocks the event loop, so withTimeout cannot
+   * interrupt it — this bounds a stalled MR creation. */
+  spawnTimeoutMs?: number;
 }
 
 /**
@@ -420,7 +426,7 @@ export function gfMrCreate(opts: GfMrCreateOptions): string {
     args.push('-r', opts.reviewers.join(','));
   }
 
-  const result = gfExec(args, { cwd: opts.cwd });
+  const result = gfExec(args, { cwd: opts.cwd, ...(opts.spawnTimeoutMs ? { timeoutMs: opts.spawnTimeoutMs } : {}) });
   if (result.status !== 0) {
     const errMsg = result.stderr || result.stdout;
     throw new Error(`gf mr create failed: ${errMsg}`);

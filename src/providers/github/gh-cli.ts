@@ -47,7 +47,7 @@ export function isGhInstalled(): boolean {
  */
 export function ghExec(
   args: string[],
-  options?: { inheritStdio?: boolean; cwd?: string; env?: NodeJS.ProcessEnv },
+  options?: { inheritStdio?: boolean; cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
 ): { stdout: string; stderr: string; status: number } {
   const ghPath = getGhPath();
   if (!ghPath) {
@@ -63,6 +63,7 @@ export function ghExec(
       stdio: 'inherit',
       env: { ...process.env, ...(options.env ?? {}) },
       cwd: options.cwd,
+      ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}),
     });
     return { stdout: '', stderr: '', status: result.status ?? 1 };
   }
@@ -72,6 +73,7 @@ export function ghExec(
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,
     cwd: options?.cwd,
+    ...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
   });
 
   return {
@@ -338,6 +340,10 @@ export interface GhPrCreateOptions {
   reviewers?: string[];
   /** Working directory (the team repo local path) */
   cwd?: string;
+  /** Hard timeout (ms) for the `gh pr create` subprocess; kills it at the OS
+   * level once exceeded. spawnSync blocks the event loop, so withTimeout cannot
+   * interrupt it — this is the only way to bound a stalled PR creation. */
+  spawnTimeoutMs?: number;
 }
 
 /**
@@ -384,7 +390,7 @@ function ghPrCreateViaCli(opts: GhPrCreateOptions): string {
     args.push('-r', opts.reviewers.join(','));
   }
 
-  const result = ghExec(args, { cwd: opts.cwd });
+  const result = ghExec(args, { cwd: opts.cwd, ...(opts.spawnTimeoutMs ? { timeoutMs: opts.spawnTimeoutMs } : {}) });
   if (result.status !== 0) {
     const errMsg = result.stderr || result.stdout;
     throw new Error(`gh pr create failed: ${errMsg}`);

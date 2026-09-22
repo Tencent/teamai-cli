@@ -290,6 +290,11 @@ async function writeWorktreeGitignore(wt: string): Promise<void> {
 }
 
 const MAX_PUSH_RETRIES = 5;
+// Init pushes are non-blocking (init completes and writes local config + skills
+// regardless); a failed push is retried on the next init. Bounding retries to 1
+// during init prevents a stuck remote from holding init for 5× the timeout via
+// the push/fetch/rebase retry loop.
+const INIT_PUSH_MAX_RETRIES = 1;
 
 export interface BranchWrite {
   files: string[];
@@ -331,7 +336,8 @@ async function commitAndPushAt(
   // Push with fetch+rebase retry. Each member only writes <user>.yaml, so
   // rebase conflicts are effectively impossible; retries handle the pure
   // non-fast-forward race.
-  for (let attempt = 1; attempt <= MAX_PUSH_RETRIES; attempt++) {
+  const maxRetries = options.initPush ? INIT_PUSH_MAX_RETRIES : MAX_PUSH_RETRIES;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       // A push that resolves is a push the remote accepted: git exits non-zero
       // when it refuses one. Do NOT re-check the remote-tracking ref here — it
@@ -340,7 +346,7 @@ async function commitAndPushAt(
       await git.push(['origin', spec.branch]);
       return { status: 'published' };
     } catch (pushErr) {
-      if (attempt === MAX_PUSH_RETRIES) {
+      if (attempt === maxRetries) {
         log.debug(`[${spec.logTag}] push failed after ${attempt} attempts: ${(pushErr as Error).message}`);
         return { status: 'failed', reason: (pushErr as Error).message };
       }

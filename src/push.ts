@@ -92,6 +92,7 @@ async function createPrWithFallback(
   branchName: string,
   title: string,
   description: string,
+  opts: { spawnTimeoutMs?: number } = {},
 ): Promise<string | null> {
   const provider = getProvider(teamConfig.provider);
   const mrSpin = spinner('Creating Pull Request...').start();
@@ -114,6 +115,7 @@ async function createPrWithFallback(
       description,
       reviewers: teamConfig.reviewers?.length ? teamConfig.reviewers : undefined,
       cwd: localConfig.repo.localPath,
+      spawnTimeoutMs: opts.spawnTimeoutMs,
     });
     mrSpin.succeed(`Pull Request created: ${prUrl}`);
     return prUrl;
