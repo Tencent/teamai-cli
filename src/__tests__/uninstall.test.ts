@@ -461,6 +461,26 @@ describe('uninstall', () => {
     expect(await fse.pathExists(agentHookFile)).toBe(false);
   });
 
+  it('does not delete a same-named agent-hook file without the TeamAI marker', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    const agentHookFile = path.join(homeDir, '.pi', 'agent', 'extensions', 'teamai-agent-scan.ts');
+    await fse.ensureDir(path.dirname(agentHookFile));
+    await fse.writeFile(agentHookFile, '// user-owned extension');
+
+    const teamConfig = makeTeamConfig({
+      toolPaths: { pi: { skills: '.pi/skills', rules: '.pi/rules', claudemd: 'AGENTS.md' } },
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath);
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'pi' });
+
+    expect(await fse.readFile(agentHookFile, 'utf8')).toBe('// user-owned extension');
+  });
+
   it('does not delete a same-named project Pi extension without the TeamAI marker', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');

@@ -47,6 +47,7 @@ import {
   buildPiAgentHookExtensionSource,
   applyPiAgentHook,
   removePiAgentHook,
+  hasPiAgentHook,
   PI_HOOK_FILE,
 } from '../pi-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
@@ -144,6 +145,21 @@ describe('Pi hook extension', () => {
     expect(await fse.pathExists(file)).toBe(false);
     await expect(applyPiAgentHook({ slug: '../escape', event: 'Stop', command: 'echo nope' }))
       .rejects.toThrow('Invalid Pi agent-hook slug');
+  });
+
+  it('does not overwrite or delete a same-named agent-hook file without the TeamAI marker', async () => {
+    const file = path.join(tmp, '.pi', 'agent', 'extensions', 'teamai-agent-scan.ts');
+    await fse.ensureDir(path.dirname(file));
+    await fse.writeFile(file, '// user-owned extension');
+
+    expect(await hasPiAgentHook('scan')).toBe(false);
+
+    await applyPiAgentHook({ slug: 'scan', event: 'PostToolUse', command: 'echo hooked' });
+    expect(await fse.readFile(file, 'utf8')).toBe('// user-owned extension');
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('without the TeamAI marker'));
+
+    await removePiAgentHook('scan');
+    expect(await fse.readFile(file, 'utf8')).toBe('// user-owned extension');
   });
 
   it('injects and removes an idempotent global extension', async () => {

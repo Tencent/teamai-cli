@@ -288,6 +288,7 @@ async function discoverToolResources(
   } else if (tool === 'pi') {
     const {
       hasPiHooks,
+      hasPiAgentHook,
       resolvePiExtensionsDir,
       resolvePiProjectExtensionsDir,
       PI_HOOK_FILE,
@@ -305,8 +306,13 @@ async function discoverToolResources(
     // the global extension dir and can exist without the main lifecycle
     // extension — mirrors OpenCode's discovery, which scans for the same
     // leftover-plugin pattern so a Pi-only agent-hook install isn't missed.
+    // Each match is marker-checked by its own slug so a same-named file a
+    // user authored by hand is never swept up.
     for (const file of await listFiles(resolvePiExtensionsDir())) {
-      if (path.basename(file).startsWith('teamai-agent-')) {
+      const base = path.basename(file);
+      if (!base.startsWith('teamai-agent-') || !base.endsWith('.ts')) continue;
+      const slug = base.slice('teamai-agent-'.length, -'.ts'.length);
+      if (await hasPiAgentHook(slug)) {
         res.piHookFiles.push(path.join(resolvePiExtensionsDir(), file));
       }
     }
