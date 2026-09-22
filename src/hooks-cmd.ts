@@ -55,30 +55,35 @@ function formatHooksList(rows: HookListRow[]): string {
 }
 
 /**
- * Path of the single generated artifact an adapter-driven tool's built-in hooks
- * live in, or null when the tool is reconciled through a settings file (or its
- * target location cannot be resolved, e.g. no OpenClaw workspace on this
- * machine). Presence of that file is the tool's whole install status.
+ * Generated files an adapter-driven tool's built-in hooks live in, or null when
+ * the tool is reconciled through a settings file (or its target location cannot
+ * be resolved, e.g. no OpenClaw workspace on this machine). The tool counts as
+ * installed only when every one of them is present, so a half-written
+ * installation does not read as `installed`.
  */
-async function adapterHookArtifact(tool: string): Promise<string | null> {
+async function adapterHookArtifacts(tool: string): Promise<string[] | null> {
     if (tool === 'omp') {
         const { resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
-        return path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+        return [path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE)];
     }
     if (tool === 'opencode') {
         // reconcileOpencodePlugin always installs the single plugin under the
         // user path, whatever the config scope, so probe there.
         const { resolveOpencodePluginDir, OPENCODE_HOOK_FILE } = await import('./opencode-hooks.js');
-        return path.join(resolveOpencodePluginDir(getUserHome(), 'user'), OPENCODE_HOOK_FILE);
+        return [path.join(resolveOpencodePluginDir(getUserHome(), 'user'), OPENCODE_HOOK_FILE)];
     }
     if (tool === 'hermes') {
         const { getReportScriptPath } = await import('./hermes-hooks.js');
-        return getReportScriptPath();
+        return [getReportScriptPath()];
     }
     if (tool === 'openclaw') {
         const { resolveOpenclawWorkspaceDir, OPENCLAW_HOOK_DIR } = await import('./openclaw-hooks.js');
         const workspace = await resolveOpenclawWorkspaceDir();
-        return workspace ? path.join(workspace, 'hooks', OPENCLAW_HOOK_DIR, 'HOOK.md') : null;
+        if (!workspace) return null;
+        // The engine needs both halves: the HOOK.md descriptor and the handler
+        // it points at.
+        const dir = path.join(workspace, 'hooks', OPENCLAW_HOOK_DIR);
+        return [path.join(dir, 'HOOK.md'), path.join(dir, 'handler.ts')];
     }
     return null;
 }
@@ -159,12 +164,13 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
         // The adapter-driven tools have no settings/hooks file to parse: each
         // installs a single generated artifact, so its presence is the whole
         // status.
-        const artifact = await adapterHookArtifact(tool);
-        if (artifact) {
+        const artifacts = await adapterHookArtifacts(tool);
+        if (artifacts) {
+            const present = await Promise.all(artifacts.map((file) => pathExists(file)));
             rows.push({
                 tool,
-                status: await pathExists(artifact) ? 'installed' : 'missing',
-                settingsPath: formatDisplayPath(artifact),
+                status: present.every(Boolean) ? 'installed' : 'missing',
+                settingsPath: formatDisplayPath(artifacts[0] as string),
                 builtinDefs: installedBuiltinHookDefs(tool, false),
             });
             continue;
