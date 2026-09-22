@@ -283,12 +283,22 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       let workCwd = opts.cwd ?? process.cwd();
       const sourceAdapter = safeGetAdapter(source);
       let metas = await sourceAdapter.listConversations(workCwd);
+      let crossDirExpanded = false;
+      // --all 的语义是"这个源的全部会话"：无 --cwd 时跨所有工作区枚举，
+      // 而不是只看当前目录（那会让 --all 静默变成"当前目录的全部"）。
+      if (opts.all && !opts.cwd && metas.length >= 0 && !sessionId) {
+        const allMetas = await sourceAdapter.listConversations();
+        if (allMetas.length > 0) {
+          metas = allMetas;
+          crossDirExpanded = true;
+        }
+      }
+
 
       // 当前 cwd 无会话时，交互式提示列出全部目录的会话
       // 展开后这些会话**不属于 workCwd**，源端定位必须传 undefined 让适配器全局按 id 查找
       // （各适配器 findSessionFile 都有该兜底）。此前仍把 workCwd 传给源适配器，
       // claude-code 只在 encodeCwdClaude(workCwd) 一个目录里找 → 这条路径 100% 失败。
-      let crossDirExpanded = false;
       if (metas.length === 0 && !opts.cwd && !sessionId) {
         const allMetas = await sourceAdapter.listConversations();
         if (allMetas.length > 0) {
@@ -457,6 +467,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
               cwd: session.cwd || opts.targetCwd || workCwd,
               sessionId: t.sessionId,
               repoIdentity: deriveArchiveIdentity(session, target),
+              title: session.title,
             },
             session.createdAt,
           );
@@ -541,6 +552,16 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         return;
       }
 
+      // dry-run：列出将归档的会话后停止，不写盘、不提交、不推送
+      if (isDryRun()) {
+        console.log(`\nDry-run: would archive ${selected.length} session(s) from ${source}:`);
+        for (const m of selected) {
+          console.log(`  ${m.sessionId.slice(0, 8)}  ${m.title.slice(0, 50)}  (${m.messageCount} msgs)`);
+        }
+        console.log(`  Repo root: ${repoRoot}`);
+        return;
+      }
+
       // 大批量确认：--all 推送超过 5 条时列清单（id/标题/条数）要求确认，-y 跳过
       if (opts.all && selected.length > 5 && !opts.yes) {
         console.log(`\nAbout to push ${selected.length} session(s) from ${source}:`);
@@ -577,6 +598,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
             cwd: session.cwd || workCwd,
             sessionId: m.sessionId,
             repoIdentity: deriveArchiveIdentity(session, source),
+            title: session.title,
           },
           session.createdAt,
         );
@@ -620,6 +642,10 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const repoRoot = resolveRepoRoot(opts.repoRoot);
 
       const syncMgr = new SyncManager(repoRoot);
+      if (isDryRun()) {
+        console.log(`Dry-run: would pull from the team repo remote and rebuild indexes (repo root: ${repoRoot}).`);
+        return;
+      }
       // [已修] gitPull 失败（无 remote / repoRoot 不存在）此前裸堆栈崩溃
       runGitStep(() => {
         syncMgr.gitPull();
@@ -728,6 +754,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const resumeAdapter = safeGetAdapter(opts.platform);
       const resumeCwd = opts.cwd ?? process.cwd();
       session.cwd = resumeCwd;
+
+      if (isDryRun()) {
+        console.log(
+          `Dry-run: would restore "${session.title}" (${session.messages.length} msgs) into ${opts.platform} at ${resumeCwd}.`,
+        );
+        return;
+      }
 
       const newSessionId = await resumeAdapter.writeSession(session, resumeCwd);
 

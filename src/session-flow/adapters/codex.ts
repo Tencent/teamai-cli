@@ -41,6 +41,7 @@ import { imagePlaceholderText } from '../ir.js';
 import { titleFromUserText, visibleUserText } from '../title.js';
 import { deriveTargetSessionId } from '../ids.js';
 import { findSqlite3 } from '../sqlite.js';
+import { log } from '../../utils/logger.js';
 import {
   getCodexSessionsDir,
   resolveRealCwd,
@@ -461,7 +462,33 @@ export class CodexAdapter extends AgentAdapter {
       }
     }
 
-    const title = this.extractTitle(f);
+    // Same content-based extraction as listConversations: the filename fallback
+    // would leak "Session <timestamp>" into push archives and resume targets.
+    let readTitle = '';
+    try {
+      for (const rec of readJsonlHead(f, 200)) {
+        const recPayload = (rec.payload as Record<string, unknown>) ?? {};
+        let text = '';
+        if (rec.type === 'event_msg' && recPayload.type === 'item_completed') {
+          const item = recPayload.item as Record<string, unknown> | undefined;
+          if (item?.type !== 'UserMessage') continue;
+          const content = item.content as Array<Record<string, unknown>> | undefined;
+          text = (content ?? []).map((c) => String(c.text ?? '')).join(' ');
+        } else if (rec.type === 'response_item' && recPayload.type === 'message' && recPayload.role === 'user') {
+          const content = recPayload.content as Array<Record<string, unknown>> | undefined;
+          text = (content ?? []).map((c) => String(c.text ?? '')).join(' ');
+        }
+        if (!text) continue;
+        const cleaned = titleFromUserText(visibleUserText(text));
+        if (cleaned) {
+          readTitle = cleaned;
+          break;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    const title = readTitle || this.extractTitle(f);
 
     return {
       sessionId,
@@ -1020,6 +1047,14 @@ export class CodexAdapter extends AgentAdapter {
    * items/turns/投影水位。best-effort：CLI 缺失或加锁失败都不影响 rollout 删除。
    */
   private async unregisterThread(sessionId: string): Promise<void> {
+    // Defense in depth against SQL injection: the id comes straight from the CLI
+    // argument, so a value like `' OR 1=1; --` would wipe the whole table.
+    // Require the Codex id shape (uuid v7) AND escape quotes anyway.
+    if (!isUuidV7(sessionId)) {
+      log.debug(`codex unregister skipped: not a codex session id: ${sessionId.slice(0, 12)}`);
+      return;
+    }
+    const safeId = sessionId.replace(/'/g, "''");
     const bin = findSqlite3();
     if (!bin) return;
     const home = path.dirname(this.storageRoot); // ~/.codex
@@ -1027,15 +1062,15 @@ export class CodexAdapter extends AgentAdapter {
       [
         path.join(home, 'state_5.sqlite'),
         [
-          `DELETE FROM threads WHERE id='${sessionId}';`,
-          `DELETE FROM thread_history_projection_state WHERE thread_id='${sessionId}';`,
+          `DELETE FROM threads WHERE id='${safeId}';`,
+          `DELETE FROM thread_history_projection_state WHERE thread_id='${safeId}';`,
         ],
       ],
       [
         path.join(home, 'thread_history_1.sqlite'),
         [
-          `DELETE FROM thread_items WHERE thread_id='${sessionId}';`,
-          `DELETE FROM thread_turns WHERE thread_id='${sessionId}';`,
+          `DELETE FROM thread_items WHERE thread_id='${safeId}';`,
+          `DELETE FROM thread_turns WHERE thread_id='${safeId}';`,
         ],
       ],
     ];

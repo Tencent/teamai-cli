@@ -1320,7 +1320,7 @@ Supported platforms: `claude-code` (plus `claude-internal` / `tclaude`), `codex`
 ```bash
 teamai session platforms                                             # supported vs installed
 teamai session migrate <sessionId> -s codebuddy-ide -t claude-code   # one session across tools
-teamai session migrate --all -s codebuddy -t claude-code              # the 5 most recent
+teamai session migrate --all -s codebuddy -t claude-code              # every session of the source
 teamai session rollback <targetSessionId> --platform claude-code     # undo a migration
 teamai session push --source codebuddy            # archive this directory's sessions
 teamai session push --source codebuddy --all      # every workspace of that platform
