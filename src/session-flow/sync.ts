@@ -103,10 +103,39 @@ export function canonicalizeRemote(remote: string): string {
 }
 
 /**
- * 将 canonical remote 编码为目录安全字符串（/ → _）。
+ * Encode a canonical remote into a directory-safe string, reversibly.
+ *
+ * `_` is escaped to `__` first, then every other non-whitelisted char
+ * (including `/`) becomes `_`. Without the escape step, `github.com/org/a_b`
+ * and `github.com/org/a/b` would encode to the same directory and mix two
+ * repositories' sessions together.
+ *
+ * Reversible via decodeRepoIdentity.
  */
 export function encodeRepoIdentity(identity: string): string {
-  return identity.replace(/[^a-zA-Z0-9.-]/g, '_');
+  const escaped = identity.replace(/_/g, '__');
+  return escaped.replace(/[^a-zA-Z0-9.-]/g, '_');
+}
+
+/** Undo encodeRepoIdentity (used for display; the canonical id stays in meta). */
+export function decodeRepoIdentity(encoded: string): string {
+  return encoded.replace(/_(?!_)/g, '/').replace(/__/g, '_');
+}
+
+/**
+ * Sanitize a path segment (git author names are free-form text and may
+ * contain ':', '/', '..', trailing dots, or Windows-invalid characters).
+ * Collisions are acceptable here -- the canonical identity lives in
+ * meta/_index.json, not in the directory name.
+ */
+function sanitizePathSegment(name: string): string {
+  const cleaned = name
+    .replace(/[\u0000-\u001f<>:"|?*]/g, '_')
+    .replace(/\//g, '_')
+    .replace(/^\.+$|^\.\.$/g, '_')
+    .replace(/[. ]+$/g, '_')
+    .trim();
+  return cleaned || 'unknown';
 }
 
 /**
@@ -137,6 +166,8 @@ export interface SessionSyncMeta {
     repoIdentity: string | null;
     createdAt: string;
     sessionId: string;
+    /** Persisted verbatim: the file name is a lossy slug, never a title source. */
+    title?: string;
   };
   migration: {
     migratedAt: string | null;
@@ -167,12 +198,15 @@ export function defaultSyncMeta(
     cwd: string;
     sessionId: string;
     repoIdentity?: string | null;
+    /** Persisted verbatim into origin.title (the file name slug is lossy). */
+    title?: string;
   },
   createdAt?: string,
 ): SessionSyncMeta {
   return {
     origin: {
       platform: partial.platform,
+      title: partial.title,
       author: partial.author,
       cwd: partial.cwd,
       repoIdentity: partial.repoIdentity ?? null,
@@ -262,7 +296,7 @@ export class SyncManager {
   }
 
   private authorDir(repoIdentity: string | null, author: string): string {
-    return path.join(this.repoDir(repoIdentity), author);
+    return path.join(this.repoDir(repoIdentity), sanitizePathSegment(author));
   }
 
   private sessionPaths(repoIdentity: string | null, author: string, sessionName: string) {
@@ -441,11 +475,13 @@ export class SyncManager {
       .map((l) => messageFromDict(JSON.parse(l) as Record<string, unknown>));
 
     // 从 meta + sessionName 提取标题
-    const titleSlug = this.extractTitleFromSessionName(sessionName);
+    // Prefer the persisted title; the file name slug is truncated + lowercased
+    // and would otherwise rewrite every restored session's title.
+    const title = meta.origin.title || this.extractTitleFromSessionName(sessionName);
 
     const session: Session = {
       sessionId: meta.origin.sessionId,
-      title: titleSlug,
+      title,
       cwd: meta.origin.cwd,
       platform: meta.origin.platform,
       createdAt: meta.origin.createdAt,
@@ -677,8 +713,17 @@ export class SyncManager {
     this.runGit(['add', 'sessions/']);
     const staged = this.runGit(['status', '--porcelain', '--', 'sessions/'], false);
     if (!staged.trim()) return null;
-    this.runGit(['commit', '-m', message], false);
-    return this.runGit(['rev-parse', 'HEAD']);
+
+    // Only ever commit the archive paths: `git commit -m` without a pathspec
+    // would also commit whatever else the user happened to have staged.
+    const before = this.runGit(['rev-parse', 'HEAD'], false);
+    const commit = this.runGit(['commit', '-m', message, '--', 'sessions/'], false);
+    const after = this.runGit(['rev-parse', 'HEAD'], false);
+
+    // A failed commit (hooks, gpg signing, identity config) must not be
+    // reported as a successful push: no new HEAD means nothing was committed.
+    if (!commit.trim() || (before && after === before)) return null;
+    return after;
   }
 
   gitPush(remote = 'origin', branch?: string): void {

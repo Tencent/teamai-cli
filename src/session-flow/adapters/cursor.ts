@@ -333,21 +333,23 @@ export class CursorAdapter extends AgentAdapter {
 
     // 提取标题
     let title = '';
+    // Same unwrap strategy as the listing path: slash-command messages are
+    // "injection head + real question", so dropping the whole block loses the
+    // question. titleFromCandidates unwraps <user_query> and strips metadata.
+    const candidates: string[] = [];
     for (const msg of messages) {
       if (msg.role === 'user') {
         for (const block of msg.content) {
           if (block.type === 'text' && block.text) {
             // 写入端把 tool_result 降级为带该前缀的 text 块——工具输出不是标题
             if (block.text.startsWith('[tool_result')) continue;
-            if (isInjectedText(block.text)) continue; // 注入块不当标题
-            title = cleanTitleText(block.text);
-            if (title) break;
+            candidates.push(block.text);
           }
         }
         if (title) break;
       }
     }
-    if (!title) title = `Session ${sessionId.slice(0, 8)}`;
+    if (!title) title = titleFromCandidates(candidates) || fallbackTitle(sessionId);
 
     let createdAt: string;
     let updatedAt: string;
