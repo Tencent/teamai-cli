@@ -237,7 +237,7 @@ export class CursorAdapter extends AgentAdapter {
     }
 
     try {
-      // 50 行常全是注入块，预算不够会让有真实提问的会话也 fallback 成 "Session <id>"
+      // 50 lines are often all injected blocks; a too-small budget makes sessions with real questions fall back to "Session <id>"
       for (const record of readJsonlHead(jsonlPath, 200)) {
         // 消息行没有 type 字段
         if (record.type === 'turn_ended') continue;
@@ -405,7 +405,7 @@ export class CursorAdapter extends AgentAdapter {
   }
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
-    // 确定性 id：同一源会话反复迁移命中同一个 composerId（不再每次生成副本）
+    // Deterministic id: re-migrations of the same source session hit the same composerId (no more per-run copies)
     const sessionId = isUuid(session.sessionId)
       ? session.sessionId
       : deriveCursorId(session.platform || 'unknown', session.sessionId);
@@ -416,8 +416,8 @@ export class CursorAdapter extends AgentAdapter {
     const jsonlPath = path.join(transcriptDir, `${sessionId}.jsonl`);
 
     const records: Record<string, unknown>[] = [];
-    // 原生 transcript 的 turn 语义：1 条 user + N 条连续 assistant + 1 条 turn_ended。
-    // 之前按「每条 assistant 后都写 turn_ended」，把一次工具轮次切成了几十个 turn。
+    // Native transcript turn semantics: 1 user + N consecutive assistant + 1 turn_ended.
+    // Previously we wrote turn_ended after every assistant, splitting one tool round into dozens of turns.
     let lastAssistantRecord: Record<string, unknown> | null = null;
     let lastUserRecord: Record<string, unknown> | null = null;
     let turnHasAssistant = false;
@@ -433,8 +433,8 @@ export class CursorAdapter extends AgentAdapter {
 
     for (const msg of session.messages) {
       if (msg.role === 'user') {
-        // 源平台把工具结果放在 user 消息里：它属于上一个 assistant 的工具调用，
-        // 所以挂回上一条 assistant 记录（作为文本块），而不是变成一条「假 user 消息」。
+        // The source platform puts tool results in user messages: they belong to the previous assistant's tool calls,
+        // so hang it back on the previous assistant record (as a text block) instead of a fake user message.
         const toolResults: string[] = [];
         const cursorContent: Record<string, unknown>[] = [];
         for (const block of msg.content) {
@@ -451,7 +451,7 @@ export class CursorAdapter extends AgentAdapter {
           for (const t of toolResults) content.content.push({ type: 'text', text: t });
         }
 
-        // 真实用户提问：同一 turn 内连续的用户消息合并进同一条（原生不会出现连续 user）
+        // Real user prompts: consecutive user messages in one turn merge into one (natives never emit consecutive user messages)
         if (cursorContent.length > 0) {
           if (lastUserRecord && !turnHasAssistant) {
             const prev = lastUserRecord.message as { content: Record<string, unknown>[] };
@@ -460,7 +460,7 @@ export class CursorAdapter extends AgentAdapter {
             endTurn();
             const rec: Record<string, unknown> = {
               role: 'user',
-              // 写入 cwd 使 readSession 能恢复真实路径（归档键派生依赖它）
+              // write cwd so readSession can recover the real path (archive key depends on it)
               cwd,
               message: { content: cursorContent },
             };
@@ -486,7 +486,7 @@ export class CursorAdapter extends AgentAdapter {
           case 'tool_call':
             cursorContent.push({
               type: 'tool_use',
-              // id 让 readSession 能把 tool_use 与 tool_result 配对（读端就认它）
+              // id lets readSession pair tool_use with tool_result (the reader expects it)
               id: block.callId || `tool_${cursorContent.length}`,
               name: denormalizeToolName(block.toolName),
               input: block.arguments,
@@ -499,7 +499,7 @@ export class CursorAdapter extends AgentAdapter {
             });
             break;
           case 'image':
-            // Cursor 存储不含图片，降级为占位文本（保真度计 degraded）
+            // Cursor storage has no images: degrade to a placeholder (counted degraded)
             cursorContent.push({ type: 'text', text: imagePlaceholderText(block) });
             break;
         }
@@ -517,14 +517,14 @@ export class CursorAdapter extends AgentAdapter {
       }
     }
 
-    // 收尾最后一个 turn
+    // close the final turn
     endTurn();
 
     writeJsonl(jsonlPath, records);
 
-    // transcript 只是 Cursor 的**导出**产物：Agents Window 的列表来自 state.vscdb 的
-    // composerHeaders、正文来自 cursorDiskKV 的 composerData/bubbleId。不注册这一步，
-    // 会话在 Cursor 里「迁移成功但完全看不见」。注册是 best-effort：失败只影响可见性。
+    // The transcript is only Cursor's **export**: the Agents Window list comes from state.vscdb's
+    // composerHeaders, and the body from composerData/bubbleId in cursorDiskKV. Skipping registration
+    // otherwise the session "migrates successfully" yet is invisible in Cursor. Registration is best-effort: failure only affects visibility.
     try {
       const title = this.buildComposerTitle(session, sessionId);
       const reg = registerCursorComposer({
@@ -534,7 +534,7 @@ export class CursorAdapter extends AgentAdapter {
         messages: this.toComposerMessages(session),
       });
       if (!reg.ok) {
-        // 不静默：transcript 已落盘但列表注册失败，用户在 Cursor 里会「看不到」。
+        // Never silent: the transcript is on disk but list registration failed -- the user would not see it in Cursor.
         log.debug(`cursor register failed: composer=${sessionId} reason=${reg.reason ?? 'unknown'}`);
         log.warn(
           `Cursor session list registration failed (transcript written, session may be invisible in Cursor): ${reg.reason ?? 'unknown'}`,
@@ -561,8 +561,8 @@ export class CursorAdapter extends AgentAdapter {
 
   /** IR 消息 → Cursor composer 的 bubble 素材（文本 + 工具调用/结果）。 */
   private toComposerMessages(session: Session): CursorComposerMessage[] {
-    // 先按 callId 收集工具结果：原生的工具结果挂在 assistant 的 tool 气泡里，
-    // 不单独成为用户消息（否则 UI 里会冒出成百上千个 `[tool_result] {json}` 气泡）。
+    // Collect tool results by callId first: natively they hang on the assistant's tool bubble,
+    // never a standalone user message (the UI would sprout hundreds of `[tool_result] {json}` bubbles).
     const toolResults = new Map<string, { content: string; isError: boolean }>();
     for (const msg of session.messages) {
       for (const block of msg.content) {
@@ -590,13 +590,13 @@ export class CursorAdapter extends AgentAdapter {
       const tools: CursorComposerTool[] = [];
       for (const block of msg.content) {
         if (block.type === 'text') {
-          // MigrationEngine 会把 Cursor 不支持的 ThinkingBlock 降级成 `<thinking>…</thinking>`
-          // 包裹的文本块（migrate.ts degradeThinkingBlocks）。这类包裹留在正文里会让 Cursor
-          // 按 HTML 块渲染整段（markdown 失效、换行被吞），所以进 DB 气泡前剥掉；原文仍留在
+          // MigrationEngine degrades Cursor-unsupported ThinkingBlocks into `<thinking>...</thinking>`,
+          // wrapped text blocks (migrate.ts degradeThinkingBlocks). Left in the body they make Cursor
+          // rendered as an HTML block (markdown broken, newlines swallowed) -- strip before the DB bubble; the original stays in the
           // transcript 里。
           const stripped = block.text.replace(THINKING_WRAP_RE, '').trim();
-          // 用户气泡只显示真实提问：注入块（<user_info>/<rules>/<additional_data>/…）与附件
-          // 路径都是噪音（Cursor 原生把它们渲染成 chip，我们渲染不出来）。
+          // user bubbles show the real question only: injected blocks (<user_info>/<rules>/<additional_data>/...) and attachment
+          // paths are noise (Cursor renders them as chips natively; we cannot).
           const visible = msg.role === 'user' ? visibleUserText(stripped) : stripped;
           if (visible && isRenderableText(visible)) textParts.push(visible);
         } else if (block.type === 'tool_call') {
@@ -608,9 +608,9 @@ export class CursorAdapter extends AgentAdapter {
             isError: res?.isError,
           });
         }
-        // thinking：不写进 bubble 正文（原生 Cursor 不存 thinking；一旦以 `<thinking>` 开头，
-        //   整段会被当 HTML 块，markdown 与换行失效）。原文仍保留在 transcript 里。
-        // tool_result：已配对进上面的 tool 气泡，不单独成消息。
+        // thinking: not written into bubble bodies (native Cursor stores no thinking; once a body starts with <thinking>,
+        //   the whole thing renders as an HTML block with broken markdown/newlines). Original kept in the transcript.
+        // tool_result: already paired into the tool bubble above; never a standalone message.
       }
       const text = textParts.join('\n\n');
       if (!text.trim() && tools.length === 0) continue;
@@ -626,11 +626,11 @@ export class CursorAdapter extends AgentAdapter {
   }
 
   async deleteSession(sessionId: string, projectPath?: string): Promise<void> {
-    // 先摘掉 DB 注册（否则删了 transcript，Agents 列表里还留着一条点不开的会话）
+    // Unregister first (otherwise deleting the transcript leaves an unopenable entry in the Agents list)
     try {
       unregisterCursorComposer(sessionId);
     } catch {
-      // best-effort：注册残留只影响列表显示，不影响数据安全
+      // best-effort: leftover registration rows only affect the list display, never data safety
     }
 
     const jsonlPath = this.findSessionFile(sessionId, projectPath);
