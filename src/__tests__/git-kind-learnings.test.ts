@@ -166,7 +166,8 @@ describe('contributing to a repo whose default branch is protected', () => {
     expect(await listPendingLearnings(config)).toEqual([]);
   });
 
-  it('names a queue entry it cannot read, instead of failing forever without a reason', async () => {
+  // chmod 0o000 has no effect when running as root (CI), so skip
+  it.skipIf(process.getuid?.() === 0)('names a queue entry it cannot read, instead of failing forever without a reason', async () => {
     const { origin, clone } = await seedProtectedOrigin();
     const config = gitConfig(clone);
 
@@ -184,7 +185,7 @@ describe('contributing to a repo whose default branch is protected', () => {
       expect(report.remaining).toBe(1);
       expect(report.lastError).toContain('bad-2026-01-01-lll222.md');
     } finally {
-      fs.chmodSync(unreadable, 0o600);
+      if (fs.existsSync(unreadable)) fs.chmodSync(unreadable, 0o600);
     }
   });
 
