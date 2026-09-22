@@ -27,7 +27,7 @@
 import path from 'node:path';
 import fse from 'fs-extra';
 import type { SimpleGit } from 'simple-git';
-import { createGit, isGitRepo, commitSkippingHooks, isDedicatedRepoRoot } from './git.js';
+import { createGit, createGitForInitPush, isGitRepo, commitSkippingHooks, isDedicatedRepoRoot } from './git.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ensureDir, writeFile, pathExists } from './fs.js';
 import { log } from './logger.js';
@@ -293,15 +293,22 @@ export interface BranchWrite {
   message: string;
 }
 
+/** Options threaded through commitAndPushAt and its callers. */
+export interface BranchPushOptions {
+  pushIfUnchanged?: boolean;
+  /** Use the spawn-level block-timeout git factory (init pushes). */
+  initPush?: boolean;
+}
+
 /** Commit `files` in an already-locked worktree and push them. */
 async function commitAndPushAt(
   spec: BranchWorktreeSpec,
   wt: string,
   message: string,
   files: string[],
-  options: { pushIfUnchanged?: boolean } = {},
+  options: BranchPushOptions = {},
 ): Promise<PublishResult> {
-  const git = createGit(wt);
+  const git = options.initPush ? createGitForInitPush(wt) : createGit(wt);
 
   await git.add(files);
   const status = await git.status();
@@ -367,7 +374,7 @@ async function commitAndPushImpl(
   localConfig: LocalConfig,
   message: string,
   files: string[],
-  options: { pushIfUnchanged?: boolean } = {},
+  options: BranchPushOptions = {},
 ): Promise<PublishResult> {
   const lockPath = lockFilePath(spec, localConfig);
   const locked = await acquireLock(lockPath);
@@ -398,7 +405,7 @@ async function updateImpl(
   spec: BranchWorktreeSpec,
   localConfig: LocalConfig,
   write: (worktree: string) => Promise<BranchWrite | null>,
-  options: { pushIfUnchanged?: boolean } = {},
+  options: BranchPushOptions = {},
 ): Promise<PublishResult> {
   if (!usesBranchWorktree(localConfig)) {
     throw new Error(`update() needs a branch-backed repo, and ${spec.branch} has none for kind: 'http'`);
@@ -631,13 +638,13 @@ export interface BranchWorktree {
   update(
     localConfig: LocalConfig,
     write: (worktree: string) => Promise<BranchWrite | null>,
-    options?: { pushIfUnchanged?: boolean },
+    options?: BranchPushOptions,
   ): Promise<PublishResult>;
   commitAndPush(
     localConfig: LocalConfig,
     message: string,
     files: string[],
-    options?: { pushIfUnchanged?: boolean },
+    options?: BranchPushOptions,
   ): Promise<PublishResult>;
   refresh(localConfig: LocalConfig, options?: EnsureWorktreeOptions): Promise<void>;
 }

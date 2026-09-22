@@ -13,6 +13,8 @@ const mockGit = {
   push: vi.fn(),
   revparse: vi.fn().mockResolvedValue('main'),
   raw: vi.fn(),
+  // createGit applies GIT_TERMINAL_PROMPT=0 via simple-git's .env() chainable.
+  env: vi.fn().mockReturnThis(),
 };
 
 vi.mock('simple-git', () => ({

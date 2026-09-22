@@ -1,9 +1,15 @@
 import { createRequire } from 'node:module';
 import { Command, Option } from 'commander';
 import { setVerbose, setSilent, log } from './utils/logger.js';
+import { disableGitTerminalPrompt } from './utils/git.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
 import { registerPackagesCommand } from './pkg/register-command.js';
+
+// Fail fast on a missing git credential instead of hanging on an invisible
+// prompt (teamai runs git with no tty). Set once at module load so every
+// command's git subprocesses inherit it.
+disableGitTerminalPrompt();
 
 // Commands that migrate a legacy `<repo>/.teamai/` into the partition on first
 // run (issue #374 P1-3). Only write commands trigger it; read-only commands rely

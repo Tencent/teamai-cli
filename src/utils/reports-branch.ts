@@ -14,6 +14,7 @@ import { pathExists } from './fs.js';
 import {
   createBranchWorktree,
   isPublished,
+  type BranchPushOptions,
   type BranchWrite,
   type EnsureWorktreeOptions,
 } from './branch-worktree.js';
@@ -64,7 +65,7 @@ export async function commitAndPushReports(
   localConfig: LocalConfig,
   message: string,
   files: string[],
-  options: { pushIfUnchanged?: boolean } = {},
+  options: BranchPushOptions = {},
 ): Promise<boolean> {
   return isPublished(await reportsBranch.commitAndPush(localConfig, message, files, options));
 }
@@ -73,7 +74,7 @@ export async function commitAndPushReports(
 export async function updateReports(
   localConfig: LocalConfig,
   write: (worktree: string) => Promise<ReportsWrite | null>,
-  options: { pushIfUnchanged?: boolean } = {},
+  options: BranchPushOptions = {},
 ): Promise<boolean> {
   return isPublished(await reportsBranch.update(localConfig, write, options));
 }

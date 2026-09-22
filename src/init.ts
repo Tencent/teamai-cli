@@ -995,7 +995,7 @@ export async function initSelfRepo(options: GlobalOptions & {
               ? `[teamai] Register member: ${username}`
               : `[teamai] Update member roster: ${username}`,
           };
-        }),
+        }, { initPush: true }),
         30_000,
         'Member registration push',
       );
@@ -1432,7 +1432,7 @@ export async function init(options: GlobalOptions & {
           'docs/.gitkeep',
           'env/.gitkeep',
           'members/.gitkeep',
-        ]),
+        ], { initPush: true }),
         30_000,
         'Skeleton push',
       );
@@ -1470,7 +1470,7 @@ export async function init(options: GlobalOptions & {
               ? `[teamai] Register member: ${username}`
               : `[teamai] Update member roster: ${username}`,
           };
-        }),
+        }, { initPush: true }),
         30_000,
         'Member registration push',
       );
@@ -1534,6 +1534,7 @@ export async function init(options: GlobalOptions & {
                     ['teamai.yaml'],
                     mrTeamConfig,
                     mrLocalConfig,
+                    { initPush: true },
                   ),
                   30_000,
                   'Reviewer config push',

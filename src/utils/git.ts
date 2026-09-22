@@ -6,24 +6,48 @@ import simpleGit, { type SimpleGit } from 'simple-git';
 import { log } from './logger.js';
 
 /**
- * Per-spawn guard that stops git ever blocking on an interactive credential
- * prompt. With this unset, a missing PAT/SSH key makes `git push` open a
- * username/password prompt on the tty instead of failing — and since teamai
- * runs git as a subprocess with no tty, the push hangs forever, stalling init
- * before the local config is written. `GIT_TERMINAL_PROMPT=0` makes git fail
- * fast with a clear "could not read Username" error instead.
+ * Disables git's interactive credential prompt for the whole teamai process.
+ *
+ * With this unset, a push with missing credentials opens a username/password
+ * prompt on the tty — and since teamai runs git as a subprocess with no tty,
+ * the push hangs forever, stalling init before the local config is written.
+ * `GIT_TERMINAL_PROMPT=0` makes git fail fast with "could not read Username"
+ * instead.
+ *
+ * Set once at process start (see {@link disableGitTerminalPrompt}) so every
+ * spawned git subprocess inherits it. We do NOT use simple-git's `.env()`
+ * chainable for this: both its overloads *replace* the child's entire
+ * environment (`this.env` is used verbatim as the spawn `env`, not merged
+ * with `process.env`), which would drop PATH/HOME and break git itself.
  */
-const NO_PROMPT_ENV = { GIT_TERMINAL_PROMPT: '0' } as const;
+const NO_PROMPT_VAR = 'GIT_TERMINAL_PROMPT' as const;
+const NO_PROMPT_VAL = '0' as const;
 
 /**
- * Hard ceiling for any single git subprocess. simple-git's `timeout.block`
- * actually kills the spawned git process when no data arrives for this long
- * (unlike a Promise.race, which only stops awaiting while the child keeps
- * running and keeps the Node process alive). 30s covers every legitimate git
- * operation teamai issues; a hung push/clone/fetch is killed at the process
- * level, not just the await level.
+ * Set `GIT_TERMINAL_PROMPT=0` process-wide so no git subprocess can block on
+ * an interactive credential prompt. Idempotent; safe to call multiple times.
+ * Preserves an explicit user override if one is already set.
  */
-const GIT_BLOCK_TIMEOUT_MS = 30_000;
+export function disableGitTerminalPrompt(): void {
+  if (process.env[NO_PROMPT_VAR] === undefined) {
+    process.env[NO_PROMPT_VAR] = NO_PROMPT_VAL;
+  }
+}
+
+/**
+ * Block timeout for git subprocesses spawned during `teamai init` pushes.
+ * simple-git's `timeout.block` kills the spawned process when it produces no
+ * output for this long (unlike `withTimeout`, a Promise.race that only stops
+ * awaiting while the child keeps running and holds the Node event loop open).
+ *
+ * Scoped to init's network pushes only: a global ceiling here would also kill
+ * legitimate slow clones/fetches/rebases in unrelated commands. The env var
+ * lets a slow link or a very large team repo raise the ceiling without a new
+ * release. Read at call time (not module load) so tests can override it.
+ */
+function initPushBlockTimeoutMs(): number {
+  return Number.parseInt(process.env.TEAMAI_INIT_PUSH_TIMEOUT_MS ?? '', 10) || 30_000;
+}
 
 /**
  * Create a SimpleGit instance for a given base path.
@@ -31,18 +55,26 @@ const GIT_BLOCK_TIMEOUT_MS = 30_000;
  * Authentication is handled by the provider's remote URL or by normal Git
  * facilities such as credential helpers, SSH config, and SSH agents.
  *
- * Every instance gets a 30s block timeout (kills a hung git subprocess at the
- * spawn level) and `GIT_TERMINAL_PROMPT=0` (so a missing credential fails fast
- * instead of hanging on an invisible prompt). Together these make the old
- * "init hangs forever on push" failure mode structurally impossible.
+ * Every instance inherits the process-wide `GIT_TERMINAL_PROMPT=0` set by
+ * {@link disableGitTerminalPrompt}, so a missing credential fails fast
+ * instead of hanging on a prompt that can never be answered.
  */
 export function createGit(basePath?: string): SimpleGit {
-  const options = {
-    timeout: { block: GIT_BLOCK_TIMEOUT_MS },
-    env: NO_PROMPT_ENV,
-    ...(basePath ? { baseDir: basePath } : {}),
-  };
-  return simpleGit(options);
+  return basePath ? simpleGit({ baseDir: basePath }) : simpleGit();
+}
+
+/**
+ * Like {@link createGit}, but additionally kills any git subprocess that
+ * produces no output for the configured init-push block timeout. Reserved for
+ * `teamai init` pushes: a hung push is killed at the process level (the
+ * `withTimeout` wrapper around the await is only a second layer), while
+ * unrelated commands keep simple-git's default of no spawn timeout.
+ */
+export function createGitForInitPush(basePath?: string): SimpleGit {
+  const block = initPushBlockTimeoutMs();
+  return basePath
+    ? simpleGit({ baseDir: basePath, timeout: { block } })
+    : simpleGit({ timeout: { block } });
 }
 
 /**
@@ -364,9 +396,17 @@ export async function getDefaultBranch(localPath: string): Promise<string> {
 /**
  * Push directly to whatever branch is checked out, whether that is `main`,
  * `master` or anything else. Used during init for first-time setup, and by CI.
+ *
+ * `opts.initPush` selects the spawn-level block timeout factory used by init
+ * (see {@link createGitForInitPush}); other callers get the plain factory.
  */
-export async function pushRepoDirectly(localPath: string, message: string, files: string[]): Promise<void> {
-  const git = createGit(localPath);
+export async function pushRepoDirectly(
+  localPath: string,
+  message: string,
+  files: string[],
+  opts: { initPush?: boolean } = {},
+): Promise<void> {
+  const git = opts.initPush ? createGitForInitPush(localPath) : createGit(localPath);
   const existingFiles = [];
   for (const f of files) {
     const fullPath = fs.existsSync(`${localPath}/${f}`);
@@ -447,10 +487,11 @@ export async function autoPushViaMR(
   files: string[],
   teamConfig: { repo: string; provider?: string; reviewers?: string[] },
   localConfig: { repo: { remote: string; localPath: string }; username: string },
+  opts: { initPush?: boolean } = {},
 ): Promise<string | null> {
   try {
     const branchName = generateBranchName(localConfig.username);
-    const pushed = await pushRepoBranch(repoPath, message, files, branchName);
+    const pushed = await pushRepoBranch(repoPath, message, files, branchName, { initPush: opts.initPush });
     if (!pushed) {
       log.debug('[git] autoPushViaMR: nothing to commit');
       return null;
@@ -532,15 +573,18 @@ export async function remoteBranchExists(
  * force-pushed, which updates that PR in place instead of opening another one.
  * If the rebuilt tree matches what the remote branch already holds, nothing is
  * pushed and the function returns false.
+ *
+ * `opts.initPush` selects the spawn-level block timeout factory used by init
+ * (see {@link createGitForInitPush}); other callers get the plain factory.
  */
 export async function pushRepoBranch(
   localPath: string,
   message: string,
   files: string[],
   branchName: string,
-  opts: { reuseBranch?: boolean } = {},
+  opts: { reuseBranch?: boolean; initPush?: boolean } = {},
 ): Promise<boolean> {
-  const git = createGit(localPath);
+  const git = opts.initPush ? createGitForInitPush(localPath) : createGit(localPath);
 
   if (opts.reuseBranch) {
     // Fetch so the tree comparison below can see the remote branch's content.
