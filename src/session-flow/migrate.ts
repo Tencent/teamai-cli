@@ -10,6 +10,7 @@
 
 import type { Session, ContentBlock } from './ir.js';
 import { getAdapter, listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
+import { scrubSession } from './scrub.js';
 
 // ---------------------------------------------------------------------------
 // 各平台能力矩阵
@@ -232,6 +233,8 @@ export interface MigrationResult {
   targetSessionId?: string;
   /** 实际写入的目标工作区（默认 = 源会话 cwd，显式 --target-cwd 时为其值）。 */
   targetCwd?: string;
+  /** --scrub 时被替换掉的疑似密钥数量（未脱敏时无此字段）。 */
+  redactedCount?: number;
   targetFilePath?: string;
   error?: string;
   startedAt: string;
@@ -288,7 +291,12 @@ export class MigrationEngine {
     };
   }
 
-  async migrate(sessionId: string, projectPath?: string, targetProjectPath?: string): Promise<MigrationResult> {
+  async migrate(
+    sessionId: string,
+    projectPath?: string,
+    targetProjectPath?: string,
+    scrub = false,
+  ): Promise<MigrationResult> {
     const startedAt = new Date().toISOString();
     let targetSid: string | undefined;
 
@@ -309,7 +317,11 @@ export class MigrationEngine {
       const fidelity = fidelityFromSession(session, this.targetPlatform);
 
       // 降级 ThinkingBlock
-      const enhancedSession = degradeThinkingBlocks(session, this.targetPlatform);
+      // 脱敏在 thinking 降级之后、写入之前：--scrub 时整份 IR 过一遍 redact，
+      // 让敏感内容不会随会话扩散到目标端（以及后续可能的团队归档）。
+      const degraded = degradeThinkingBlocks(session, this.targetPlatform);
+      const scrubbed = scrub ? scrubSession(degraded) : null;
+      const enhancedSession = scrubbed ? scrubbed.session : degraded;
 
       // 目标工作区语义：**默认保持源会话的工作区**。
       // 迁移是「把 thpc 的会话搬到 Codex/WorkBuddy」，而不是「搬到我当前所在的目录」；
@@ -344,6 +356,7 @@ export class MigrationEngine {
         success: true,
         targetSessionId: targetSid,
         targetCwd,
+        ...(scrubbed ? { redactedCount: scrubbed.redactedCount } : {}),
         targetFilePath,
         startedAt,
         completedAt,
@@ -390,10 +403,15 @@ export class MigrationEngine {
     }
   }
 
-  async migrateBatch(sessionIds: string[], projectPath?: string, targetProjectPath?: string): Promise<MigrationResult[]> {
+  async migrateBatch(
+    sessionIds: string[],
+    projectPath?: string,
+    targetProjectPath?: string,
+    scrub = false,
+  ): Promise<MigrationResult[]> {
     const results: MigrationResult[] = [];
     for (const sid of sessionIds) {
-      results.push(await this.migrate(sid, projectPath, targetProjectPath));
+      results.push(await this.migrate(sid, projectPath, targetProjectPath, scrub));
     }
     return results;
   }
