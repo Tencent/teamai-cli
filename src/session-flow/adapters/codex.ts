@@ -15,18 +15,23 @@
  * - reasoning 块写入为 response_item:reasoning（而非跳过）
  * - 支持 custom_tool_call / custom_tool_call_output
  *
- * 写入的 rollout 必须能被 Codex 直接索引（否则会话不会出现在 Codex Desktop 历史列表）：
- * - session_meta.payload.model_provider：Codex 按 provider 分桶展示会话，只有与
- *   ~/.codex/config.toml 当前 model_provider 一致的会话才会出现在列表里（见
- *   https://github.com/farion1231/cc-switch/issues/4710）。缺失/写错 → 会话静默消失。
- * - 不声明 history_mode：Codex 0.155+ 把无声明的 rollout 当 legacy，由
- *   `codex migrate-rollouts --apply` 转成分页历史并建立 items 投影；自己声明 'paginated'
- *   会被当成 already-paginated 跳过迁移 → 无投影 → 列表无预览、打开空白。
- * - 每行顶层 ordinal：分页游标依赖它，缺失时 thread/items/list 返回空。
- * - 至少一条 event_msg:item_completed 的 UserMessage：标题与列表预览取自第一条用户
- *   item；元信息块（<user_info>/<user_query>包裹的时间戳头等）会被整条丢弃，
- *   导致没有标题/预览 → 不显示。
- * - 写完后主动调用 codex CLI 建投影（paginateRollout），保证迁移完立刻可见。
+ * The written rollout must be directly indexable by Codex, or the session never
+ * appears in the Codex Desktop history list:
+ * - session_meta.payload.model_provider: Codex buckets the list by provider;
+ *   only sessions matching ~/.codex/config.toml's model_provider are shown (see
+ *   https://github.com/farion1231/cc-switch/issues/4710). Missing/wrong -> silently hidden.
+ * - No history_mode: Codex 0.155+ treats it as legacy and `codex
+ *   migrate-rollouts --apply` converts it to paginated history plus the items
+ *   projection; claiming 'paginated' marks it already-migrated -> no
+ *   projection -> no preview, blank body.
+ * - A top-level ordinal per line: the pagination cursor depends on it; without
+ *   it thread/items/list returns empty.
+ * - At least one event_msg:item_completed UserMessage: title and list preview
+ *   come from the first user item; injected metadata blocks
+ *   (<user_info>/<user_query> timestamp headers etc.) are dropped wholesale,
+ *   which would leave no title/preview -> invisible.
+ * - After writing, run the codex CLI to build the projection (paginateRollout)
+ *   so the session is visible immediately.
  */
 
 import * as crypto from 'node:crypto';
@@ -82,15 +87,15 @@ function denormalizeToolName(irName: string): string {
 
 function generateUuidV7(): string {
   const timestampMs = Date.now();
-  // 前 48 位时间戳左移 80 位。
-  // 注意：必须用 BigInt 按位与（0xffffffffffffn）。
-  // Number 的 `&` 运算符是 32 位有符号按位与，时间戳超过 2^31 会变成负数，
-  // 导致后续 BigInt 为负、toString(16) 输出带负号的非法 UUID，
-  // 使 Codex 端 Uuid 反序列化失败、整个会话被忽略（迁移后 Codex 里看不到）。
+  // 48-bit timestamp shifted left by 80 bits.
+  // Must use BigInt bitwise AND (0xffffffffffffn): Number's `&` is a 32-bit
+  // signed op, timestamps above 2^31 go negative, the subsequent BigInt turns
+  // negative and toString(16) emits a negative hex -- an invalid UUID that
+  // fails Codex's Uuid deserialization and hides the whole session.
   let uuidInt = (BigInt(timestampMs) & 0xffffffffffffn) << 80n;
-  // 版本位 7（位 76-79）
+  // version bits 7 (bits 76-79)
   uuidInt |= 7n << 76n;
-  // 随机位（低 62 位）
+  // random bits (low 62)
   const randBytes = crypto.randomBytes(8);
   let rand = 0n;
   for (let i = 0; i < 8; i++) {
@@ -98,10 +103,10 @@ function generateUuidV7(): string {
   }
   rand &= (1n << 62n) - 1n;
   uuidInt |= rand;
-  // 设置变体位（位 62-63 为 10）
+  // variant bits (62-63 = 10)
   uuidInt = (uuidInt & ~(0x3n << 62n)) | (0x2n << 62n);
 
-  // 转为 UUID 字符串
+  // format as a UUID string
   const hex = uuidInt.toString(16).padStart(32, '0');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
@@ -139,10 +144,11 @@ function formatFilenameTimestamp(isoStr: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * 读取 Codex 当前生效的 model_provider（config.toml 顶层 `model_provider = "..."`）。
+ * Read the effective model_provider (top-level `model_provider = "..."` in config.toml).
  *
- * Codex Desktop 的会话列表按 provider 分桶：只有与当前配置一致的会话才会展示，
- * 切换 provider 后旧会话“消失”就是这个机制。迁移写入的 rollout 必须带上当前值。
+ * Codex Desktop buckets the session list by provider: only sessions matching
+ * the current config are shown -- that is why sessions "disappear" after
+ * switching providers. Migrated rollouts must carry the current value.
  */
 function readCodexModelProvider(configPath: string): string {
   try {
@@ -156,13 +162,17 @@ function readCodexModelProvider(configPath: string): string {
 }
 
 /**
- * 源平台注入的“纯元信息”块。它们不是真实用户输入，而 Codex 用第一条 UserMessage item
- * 生成标题与列表预览，首条消息若是元信息会被整条丢弃 → 会话没有 title/preview →
- * 不出现在历史列表。
+ * "Pure metadata" blocks injected by source platforms. They are not real user
+ * input, and Codex builds title/list preview from the first UserMessage item --
+ * if that first message is metadata it is dropped wholesale -> no
+ * title/preview -> the session never shows up.
  *
- * 注意：1) 只列纯元信息标签，<user_query> 之类包裹真实提问的标签由 extractUserText
- * 单独处理；2) 不锚定行首——前一块剥离后剩余文本常以 \n\n<rules> 开头，行首锚定会导致
- * 后续块匹配失败；3) system_reminder 同时覆盖下划线（CodeBuddy）与连字符（Claude Code）。
+ * Notes: 1) only pure-metadata tags are listed here; <user_query>-style
+ * wrappers around real questions are handled separately by extractUserText;
+ * 2) not line-anchored -- after stripping one block the rest often starts with
+ * \n\n<rules>, and line anchors would miss the following blocks; 3)
+ * system_reminder covers both the underscore (CodeBuddy) and hyphen (Claude
+ * Code) spellings.
  */
 const META_BLOCK_RE =
   /<(user_info|rules|environment_context|system-reminder|system_reminder|system_instructions|available_skills|agent_request|local-command-caveat|uploaded_documents|additional_data|timestamp)[^>]*>[\s\S]*?<\/\1>[ \t]*\r?\n?/gi;
@@ -178,9 +188,10 @@ function stripMetaBlocks(text: string): string {
 }
 
 /**
- * 从一条用户消息里提取真实用户输入。
- * CodeBuddy / Cursor 会把真实提问包在 <user_query>...</user_query> 里（外层还挂着大段
- * <user_info>/<rules> 元信息），直接取包裹内容最干净；没有该包裹的平台走元信息剥离。
+ * Extract the real user input from a user message.
+ * CodeBuddy / Cursor wrap the actual question in <user_query>...</user_query>
+ * (with large <user_info>/<rules> metadata outside), so unwrapping is the
+ * cleanest path; platforms without the wrapper fall back to metadata stripping.
  */
 function extractUserText(text: string): string {
   const qm = text.match(/<user_query[^>]*>([\s\S]*?)<\/user_query>/i);
@@ -381,10 +392,10 @@ export class CodexAdapter extends AgentAdapter {
         // ignore
       }
 
-      // 单次有限扫描：统计消息数 + 提取内容标题。
-      // 标题取首条真实用户文本（item_completed 的 UserMessage 或 response_item 的
-      // user message，后者覆盖无 item_completed 的老 legacy rollout）——此前只从
-      // 文件名生成 `Session <时间戳>`，列表里一整排时间戳没法辨认。
+      // One bounded scan: count messages and extract the content title.
+      // Title = first real user text (item_completed UserMessage, or response_item
+      // user message for legacy rollouts without it). Previously only the
+      // filename fallback produces an unreadable wall of "Session <timestamp>".
       let messageCount = 0;
       let contentTitle = '';
       try {
@@ -609,9 +620,10 @@ export class CodexAdapter extends AgentAdapter {
   }
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
-    // session_id: 已是 UUIDv7 则沿用；否则**确定性派生**而非随机生成——
-    // 随机会让同一源会话每次迁移都产出新的目标 id，Codex 里出现内容完全重复的
-    // 第二个线程（threads 行数翻倍）。派生后重迁移=覆盖，天然幂等。
+    // session_id: reuse if already UUIDv7; otherwise derive deterministically.
+    // Random ids would give every re-migration a fresh target id -- a fully
+    // duplicated second thread in Codex (threads doubled). Derived ids make a
+    // re-migration an overwrite: idempotent by construction.
     const sessionId = isUuidV7(session.sessionId)
       ? session.sessionId
       : deriveTargetSessionId(this.platform, session.sessionId);
@@ -637,14 +649,12 @@ export class CodexAdapter extends AgentAdapter {
     const records: Record<string, unknown>[] = [];
 
     // 1. session_meta
-    // 注意：Codex 端 SessionMeta.payload.timestamp 必须是 RFC3339 字符串（非 epoch 毫秒数字），
-    // source 必须是 SessionSource 合法枚举值（'cli'/'vscode'/...）。
-    // 非交互来源（自定义字符串）会被 INTERACTIVE_SESSION_SOURCES 过滤，
-    // 导致会话不在 Codex 列表中显示。
-    // model_provider 必须跟随 ~/.codex/config.toml（按 provider 分桶展示，见文件头注释）。
-    // 不声明 history_mode：0.155+ 会把 rollout 当 legacy 并由 `codex migrate-rollouts --apply`
-    // 转成分页历史 + 建立 items 投影（标题/预览/内容都来自这次投影）。自己声明 'paginated'
-    // 反而会跳过迁移——线程没有投影，列表无预览、打开空白。
+    // Note: Codex's SessionMeta.payload.timestamp must be an RFC3339 string (not
+    // and would be hidden from the Codex list.
+    // model_provider must follow ~/.codex/config.toml (the list buckets by provider; see header).
+    // No history_mode: 0.155+ treats the rollout as legacy and `codex
+    // migrate-rollouts --apply` converts it to paginated history plus the items
+    // projection. Claiming 'paginated' ourselves skips that: no projection, no preview, blank body.
     const modelProvider = readCodexModelProvider(
       path.join(path.dirname(this.storageRoot), 'config.toml'),
     );
@@ -675,8 +685,8 @@ export class CodexAdapter extends AgentAdapter {
     let itemCount = 0;
     let lastAgentMessage: string | undefined;
     let userItemEmitted = false;
-    // 第一条 UserMessage item 决定会话标题与列表预览。若整个会话里没有一句真实用户输入
-    // （全部是源平台注入的元信息），兜底写一条迁移说明，否则会话没有 preview 而不可见。
+    // The first UserMessage item decides title and list preview. If the session has no real
+    // (all injected metadata), write a fallback note or the session has no preview and stays invisible.
     const fallbackUserText = session.messages.some(
       (m) =>
         m.role === 'user' &&
@@ -684,7 +694,7 @@ export class CodexAdapter extends AgentAdapter {
     )
       ? null
       : `Migrated session from ${session.platform || 'external agent'}`;
-    // 兜底 item 的插入位置（第一个 turn 的 turn_context 之后）
+    // Insert position for the fallback item (after the first turn's turn_context)
     let firstTurnInsertAt = -1;
     let firstTurnId = '';
 
@@ -756,8 +766,8 @@ export class CodexAdapter extends AgentAdapter {
         if (block.type !== 'text') continue;
 
         if (msg.role === 'user') {
-          // 源平台注入的元信息（<user_info>/<rules>/<additional_data>/…）与附件路径
-          // （@image:/path）都不是真实用户输入，剥掉后剩下的才是标题/预览要用的文本。
+          // Injected metadata (<user_info>/<rules>/<additional_data>/...) and attachment paths
+          // (@image:/path) are not real input; what remains becomes the title/preview text.
           // 整块都是元信息则跳过。
           const userText = visibleUserText(block.text);
           if (!isRenderableText(userText)) continue;
@@ -784,7 +794,7 @@ export class CodexAdapter extends AgentAdapter {
       }
     }
 
-    // 没有任何真实用户输入时补一条兜底 UserMessage，保证会话有标题/预览。
+    // With no real user input at all, write a fallback UserMessage so the session has a title/preview.
     if (!userItemEmitted && fallbackUserText && firstTurnInsertAt >= 0) {
       const fallbackRecord = buildItemCompletedRecord({
         timestamp: tsIso,
@@ -811,9 +821,9 @@ export class CodexAdapter extends AgentAdapter {
       });
     }
 
-    // 每行补 ordinal：新版 Codex 用它做 rollout 行序号与 items 游标分页，
-    // 缺失时 thread/items/list 返回空，会话打开后一片空白。
-    // 字段顺序与原生 rollout 保持一致（timestamp, ordinal, type, payload）。
+    // Per-line ordinal: new Codex uses it for rollout ordering and items pagination;
+    // without it thread/items/list returns empty and the session opens blank.
+    // Field order matches native rollouts (timestamp, ordinal, type, payload).
     const ordered = records.map((rec, idx) => ({
       timestamp: rec.timestamp,
       ordinal: idx,
@@ -823,7 +833,7 @@ export class CodexAdapter extends AgentAdapter {
 
     writeJsonl(filePath, ordered);
 
-    // 3. 让 Codex CLI 把 legacy rollout 转成分页历史并建立 items 投影（标题/预览/内容）。
+    // 3. Let the Codex CLI convert the legacy rollout to paginated history + items projection.
     await this.paginateRollout(sessionId, path.dirname(this.storageRoot));
     return sessionId;
   }
@@ -833,12 +843,12 @@ export class CodexAdapter extends AgentAdapter {
    * 分页历史并建立 items 投影。
    *
    * 不跑这一步，会话在 Codex Desktop 里：列表无标题/预览（不可见），打开后内容空白
-   * （items 投影只有在 legacy→paginated 迁移时才会建立）。
+   * (the items projection is only built during the legacy->paginated migration).
    *
-   * 新写入的 rollout 还没进 state_5.sqlite 时，定向迁移会报 missing_sqlite_metadata；
-   * 此时起一个临时 app-server 调一次 thread/list（官方索引入口，会把新 rollout 登记
-   * 进 threads 表并算出标题/预览），再重试定向迁移。所有步骤均为 best-effort：找不到
-   * codex CLI 或仍失败时保持 legacy 原样，由 Codex 自身启动迁移兜底，不算迁移失败。
+   * A freshly written rollout is not in state_5.sqlite yet, so the targeted migration
+   * reports missing_sqlite_metadata; start a temporary app-server, call thread/list once
+   * (the official indexing path: it registers the rollout and computes title/preview),
+   * then retry. Everything is best-effort: keep the legacy rollout as-is when the CLI
    */
   private async paginateRollout(sessionId: string, codexHome: string): Promise<void> {
     const bin = findCodexCli();
@@ -856,8 +866,9 @@ export class CodexAdapter extends AgentAdapter {
         );
         stdout = r.stdout ?? '';
       } catch (e) {
-        // 退出码非 0（如预存损坏 rollout 导致 "one or more rollout migrations failed"）
-        // 时 stdout 仍带完整 JSON 报告，取出来判断本线程的结果。
+        // Non-zero exit (e.g. a corrupted rollout causing "one or more rollout
+        // migrations failed") still carries the full JSON report; parse it to
+        // judge this thread's outcome.
         stdout = (e as { stdout?: string }).stdout ?? '';
       }
       try {
@@ -873,15 +884,15 @@ export class CodexAdapter extends AgentAdapter {
     let status = await runApply();
     if (status === 'migrated' || status === 'already_paginated') return;
 
-    // 未索引（missing_sqlite_metadata 等）→ 让 app-server 的 thread/list 登记新文件，重试
+    // Not indexed (missing_sqlite_metadata etc.) -> register via app-server thread/list, retry
     await this.indexThreadViaAppServer(bin, codexHome);
     await runApply();
   }
 
   /**
-   * 起一个临时 `codex app-server`，initialize + thread/list（官方索引入口：会扫描
-   * sessions 目录、把新 rollout upsert 进 state_5.threads 并计算标题/预览），拿到
-   * thread/list 响应后立即退出。任何异常都静默结束（best-effort）。
+   * Start a temporary `codex app-server`, initialize + thread/list (the official
+   * indexing path: it scans the sessions dir, upserts the new rollout into
+   * state_5.threads and computes title/preview), then exits after the response.
    */
   private indexThreadViaAppServer(bin: string, codexHome: string): Promise<void> {
     return new Promise((resolve) => {
@@ -963,8 +974,8 @@ export class CodexAdapter extends AgentAdapter {
           type: 'response_item',
           payload: {
             type: 'message',
-            // 当前版本 Codex 的 ResponseItem::Message 要求必填 id（msg_<uuid> 格式），
-            // 缺失时整行反序列化失败，resume 重放产出 0 个 item，UI 显示空白
+            // Current Codex ResponseItem::Message requires an id (msg_<uuid> form);
+            // missing it fails the line and resume replays 0 items (blank UI).
             id: `msg_${generateUuidV7()}`,
             role,
             content: [{ type: contentType, text: block.text }],
@@ -972,7 +983,7 @@ export class CodexAdapter extends AgentAdapter {
         };
       }
       case 'image': {
-        // rollout 的消息只支持 text，图片降级为占位文本（保真度计 degraded）
+        // rollout messages only support text: degrade the image to a placeholder (counted degraded)
         const contentType = role === 'user' ? 'input_text' : 'output_text';
         return {
           timestamp: ts,
@@ -1028,8 +1039,8 @@ export class CodexAdapter extends AgentAdapter {
   }
 
   async deleteSession(sessionId: string, projectPath?: string): Promise<void> {
-    // 先摘索引，再删正文。只删 rollout 会让 Codex 列表里留下一条 title/preview 都在
-    // 但点开空白的孤儿会话（threads 行与 items 投影仍在），回滚等于没回滚。
+    // Unregister first, then delete the body. Removing only the rollout leaves an
+    // orphan listed with title/preview but opening blank -- rollback achieved nothing.
     await this.unregisterThread(sessionId);
 
     const f = this.findSessionFile(sessionId);
@@ -1043,8 +1054,8 @@ export class CodexAdapter extends AgentAdapter {
   }
 
   /**
-   * 删除 Codex 两库里的会话痕迹：state_5.threads（列表项）+ thread_history_1 的
-   * items/turns/投影水位。best-effort：CLI 缺失或加锁失败都不影响 rollout 删除。
+   * Remove the session's traces from both Codex stores: state_5.threads (list rows) and
+   * items/turns/projection watermark. Best-effort: a missing CLI or lock contention never blocks the rollout delete.
    */
   private async unregisterThread(sessionId: string): Promise<void> {
     // Defense in depth against SQL injection: the id comes straight from the CLI
@@ -1074,8 +1085,8 @@ export class CodexAdapter extends AgentAdapter {
         ],
       ],
     ];
-    // 逐条执行、不用事务：不同 Codex 版本的表结构不一致（如无 projection_state 表），
-    // 放进同一事务会因一条报错整体回滚，连 threads 都删不掉。
+    // Run statement by statement, no transaction: table shapes differ across Codex
+    // versions (e.g. no projection_state table) and one error in a transaction
     for (const [db, sqls] of stmts) {
       if (!fileExists(db)) continue;
       for (const sql of sqls) {
@@ -1085,7 +1096,7 @@ export class CodexAdapter extends AgentAdapter {
             maxBuffer: 16 * 1024 * 1024,
           });
         } catch {
-          // 表不存在 / 加锁失败：跳过，不影响其它清理
+          // Missing table / lock contention: skip, other cleanup continues
         }
       }
     }
