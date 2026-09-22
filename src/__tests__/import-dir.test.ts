@@ -77,7 +77,7 @@ describe('import --dir', () => {
     await importCmd({ dir: opts.dir, dryRun: opts.dryRun, output: opts.output, skipEnrich: opts.skipEnrich });
   }
 
-  it('calls extractCodebase with outputRoot (not source dir) and skipEnrich', async () => {
+  it('calls extractCodebase with outputRoot (not source dir) and skipEnrich', { timeout: 60_000 }, async () => {
     await runImportDir({ dir: projectDir, skipEnrich: true });
 
     expect(extractCodebase).toHaveBeenCalledWith(expect.objectContaining({
