@@ -1787,6 +1787,13 @@ teamai init --repo https://github.com/yourorg/yourrepo --scope user --role <role
 teamai pull
 ```
 
+### Environment variables
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `TEAMAI_INIT_PUSH_TIMEOUT_MS` | Per-subprocess timeout (ms) for git operations during `teamai init` pushes (member registration, reviewer-config MR, empty-repo skeleton). Kills a hung git child at the process level; also bounds the outer await. Raise it on a slow link or a very large team repo. | `30000` |
+| `GIT_TERMINAL_PROMPT` | Set to `0` by the CLI at startup so a push with missing credentials fails fast instead of hanging on an invisible prompt. Set `1` explicitly to restore interactive prompts. | `0` (set by teamai) |
+
 ---
 
 ## FAQ

@@ -1735,6 +1735,13 @@ teamai init --repo https://github.com/yourorg/yourrepo --scope user --role <role
 teamai pull
 ```
 
+### 环境变量
+
+| 变量 | 用途 | 默认值 |
+|---|---|---|
+| `TEAMAI_INIT_PUSH_TIMEOUT_MS` | `teamai init` 推送期间（成员注册、reviewer 配置 MR、空仓骨架）每个 git 子进程的超时（毫秒）。在进程级杀掉挂起的 git 子进程，同时约束外层 await。网络慢或团队仓很大时调高。 | `30000` |
+| `GIT_TERMINAL_PROMPT` | CLI 启动时置为 `0`，缺凭据的 push 会快速失败，而不是在看不见的提示符上挂起。显式设为 `1` 可恢复交互式提示。 | `0`（由 teamai 设置） |
+
 ---
 
 ## 常见问题 FAQ

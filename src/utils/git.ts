@@ -45,7 +45,7 @@ export function disableGitTerminalPrompt(): void {
  * lets a slow link or a very large team repo raise the ceiling without a new
  * release. Read at call time (not module load) so tests can override it.
  */
-function initPushBlockTimeoutMs(): number {
+export function initPushBlockTimeoutMs(): number {
   return Number.parseInt(process.env.TEAMAI_INIT_PUSH_TIMEOUT_MS ?? '', 10) || 30_000;
 }
 

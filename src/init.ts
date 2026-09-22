@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { reconcileTeamHooksForConfig } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, pushRepoDirectly, autoPushViaMR } from './utils/git.js';
+import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, pushRepoDirectly, autoPushViaMR, initPushBlockTimeoutMs } from './utils/git.js';
 import { withTimeout } from './utils/async.js';
 import { getProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
 import { parseGenericGitExistingRemote } from './providers/git/repo-url.js';
@@ -996,7 +996,7 @@ export async function initSelfRepo(options: GlobalOptions & {
               : `[teamai] Update member roster: ${username}`,
           };
         }, { initPush: true }),
-        30_000,
+        initPushBlockTimeoutMs(),
         'Member registration push',
       );
       if (selfMemberChanged) {
@@ -1433,7 +1433,7 @@ export async function init(options: GlobalOptions & {
           'env/.gitkeep',
           'members/.gitkeep',
         ], { initPush: true }),
-        30_000,
+        initPushBlockTimeoutMs(),
         'Skeleton push',
       );
     } catch (e) {
@@ -1471,7 +1471,7 @@ export async function init(options: GlobalOptions & {
               : `[teamai] Update member roster: ${username}`,
           };
         }, { initPush: true }),
-        30_000,
+        initPushBlockTimeoutMs(),
         'Member registration push',
       );
       if (memberChanged) {
@@ -1536,7 +1536,7 @@ export async function init(options: GlobalOptions & {
                     mrLocalConfig,
                     { initPush: true },
                   ),
-                  30_000,
+                  initPushBlockTimeoutMs(),
                   'Reviewer config push',
                 );
                 if (prUrl) {
