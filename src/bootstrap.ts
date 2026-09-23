@@ -173,8 +173,14 @@ export async function bootstrapSelfRepo(
         localConfig.primaryRole = manifest.roles[0].id;
         localConfig.resourceProfileVersion = manifest.version;
       }
-    } catch {
-      // no roles manifest — leave role unset
+    } catch (error) {
+      // No manifest: leave the role unset, as a repo without roles intends. A
+      // manifest that exists and does not parse is different — swallowing it
+      // would leave the role unset too, and a member with no role and no project
+      // gets an unfiltered sync, which is the opposite of what the broken
+      // manifest asked for.
+      const { RolesManifestNotFoundError } = await import('./roles.js');
+      if (!(error instanceof RolesManifestNotFoundError)) throw error;
     }
 
     await ensureDir(localPath);

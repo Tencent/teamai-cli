@@ -1,6 +1,14 @@
 import type { LocalConfig } from './types.js';
-import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
-import { loadProjectsManifest, resolveProjectResourceNamespaces, mergeNamespaces } from './projects.js';
+import {
+  loadRolesManifest,
+  resolveRoleResourceNamespaces,
+  roleNamespaceEntries,
+  RolesManifestNotFoundError,
+  type ResourceNamespaces,
+  type RolesManifest,
+} from './roles.js';
+import { loadProjectsManifest, resolveProjectResourceNamespaces, mergeNamespaces, projectNamespaceEntries } from './projects.js';
+import { assertNoCaseAliasedNamespaces } from './manifest-schema.js';
 import { log } from './utils/logger.js';
 
 /** Resolve the same role/project activation policy for resource pull and push. */
@@ -14,6 +22,25 @@ export async function resolveResourceNamespaces(localConfig: LocalConfig) {
   // project partitioning, which changes the "no active filter" semantics below.
   const projectsManifest = await loadProjectsManifest(localConfig.repo.localPath);
   const teamHasProjects = !!projectsManifest && projectsManifest.projects.length > 0;
+
+  // roles.yaml is read for every member, before any early return. A member with
+  // a role is filtered by it; a role-less one is still gated by it twice over:
+  // the legacy migration assigns a manifest-declared `hai` role (and skips, with
+  // a warning, when the manifest does not parse), and the manifest shares
+  // skills/, knowledge/ and agents/ with projects.yaml, so a project's `Common`
+  // collides with a role's `common` whether or not this member holds that role.
+  let rolesManifest: RolesManifest | null = null;
+  try {
+    rolesManifest = await loadRolesManifest(localConfig.repo.localPath);
+  } catch (error) {
+    // Only an ABSENT manifest degrades to unfiltered delivery. One that exists
+    // and does not parse must not: every path below this point would treat the
+    // roles as "no filter" and deliver the namespaces the manifest was written
+    // to gate. Let it fail the scope's pull, as an invalid projects manifest
+    // already does.
+    if (!(error instanceof RolesManifestNotFoundError)) throw error;
+    if (primaryRole) log.warn('Roles manifest not found. Skipping role-based filtering.');
+  }
 
   // When there is nothing to filter by AND the team does not use project
   // partitioning, keep the legacy unfiltered behavior (null = sync everything).
@@ -30,14 +57,16 @@ export async function resolveResourceNamespaces(localConfig: LocalConfig) {
   // ── Role namespaces (optional) ──
   let roleNamespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
   let allRoleSkillNamespaces = new Set<string>();
+  if (rolesManifest && projectsManifest) {
+    // Each manifest is checked on its own when it loads; the two together share
+    // the same skills/, knowledge/ and agents/ directories, so a role's
+    // `frontend` and a project's `Frontend` collide just as two roles' would.
+    assertNoCaseAliasedNamespaces(
+      [...roleNamespaceEntries(rolesManifest), ...projectNamespaceEntries(projectsManifest)],
+      'manifests (roles.yaml with projects.yaml)',
+    );
+  }
   if (primaryRole) {
-    let rolesManifest;
-    try {
-      rolesManifest = await loadRolesManifest(localConfig.repo.localPath);
-    } catch {
-      log.warn('Could not load roles manifest. Skipping role-based filtering.');
-      rolesManifest = null;
-    }
     if (rolesManifest) {
       try {
         roleNamespaces = resolveRoleResourceNamespaces({

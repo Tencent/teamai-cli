@@ -31,7 +31,7 @@ export type EntryScope = Partial<Record<Axis, string[]>>;
  * read by the module that owns it, so this adds no third spelling of either.
  */
 export function resolveMembership(
-  localConfig: { primaryRole?: string; additionalRoles?: string[]; projects?: string[] },
+  localConfig: { primaryRole?: string; additionalRoles?: string[]; roleUnresolved?: true; projects?: string[] },
 ): Membership {
   return {
     roles: activeRoleIds(localConfig),

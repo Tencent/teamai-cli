@@ -34,6 +34,14 @@ This is the #1 onboarding issue. In order:
    with `--scope user`.
 5. **Tool has no hook surface** (e.g. Gemini CLI, JoyCode): there is no auto-sync;
    run `teamai pull` manually each time.
+6. **A command reports a broken manifest** (`Invalid roles manifest…`,
+   `Invalid projects manifest…`, `Invalid manifests…`, or `…manifest … could not
+   be read`). `pull` skips that scope on purpose, since syncing without the
+   manifest would deliver every namespace it gates; `push` stops before pushing
+   anything, even with `--role`; `status` lists the other resource types. The fix
+   belongs in the team repo's `manifest/roles.yaml` or `manifest/projects.yaml`,
+   which the error names by entry — tell the user to ask a team admin. Do not
+   delete the manifest or edit the local clone to get past it.
 
 ## Permission / access denied
 

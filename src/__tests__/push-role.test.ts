@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { push } from '../push.js';
 import { RolesManifestNotFoundError } from '../roles.js';
+import { log } from '../utils/logger.js';
 
 const mockAutoDetectInit = vi.fn();
 const mockPullRepo = vi.fn();
@@ -327,6 +328,27 @@ describe('push namespace routing', () => {
     expect(pushedItems[0].relativePath).toBe('skills/hai/skill-a');
   });
 
+  it('refuses a role id that cannot be a namespace in silent mode, even with a valid manifest', async () => {
+    mockLoadRolesManifest.mockResolvedValue({
+      version: 1,
+      roles: [
+        { id: 'CON', description: 'device-named role', resources: { knowledge: ['common'], skills: ['common', 'hai'], agents: [] } },
+      ],
+    });
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig({ primaryRole: 'CON', additionalRoles: [] }),
+      teamConfig: makeTeamConfig(),
+    });
+    mockSkillHandler();
+
+    await push({ all: true, silent: true });
+
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(
+      expect.stringMatching(/Invalid role id used as a skills namespace "CON"/),
+    );
+    expect(mockPushRepoBranch).not.toHaveBeenCalled();
+  });
+
   it('explicit --role flag bypasses namespace resolution', async () => {
     const pushedItems: Array<Record<string, unknown>> = [];
     mockAutoDetectInit.mockResolvedValue({
@@ -390,6 +412,22 @@ describe('push namespace routing', () => {
     } finally {
       process.exitCode = originalExitCode;
     }
+  });
+
+  it('rejects a role id that cannot be a namespace when roles.yaml is absent', async () => {
+    mockLoadRolesManifest.mockRejectedValue(new RolesManifestNotFoundError('/repo/manifest/roles.yaml'));
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig({ primaryRole: '../../outside', additionalRoles: [] }),
+      teamConfig: makeTeamConfig(),
+    });
+    mockSkillHandler();
+
+    await push({ all: true });
+
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(
+      expect.stringMatching(/Invalid role id used as a skills namespace "\.\.\/\.\.\/outside"/),
+    );
+    expect(mockPushRepoBranch).not.toHaveBeenCalled();
   });
 
   it('rejects an unsafe scanned skill name before building the role path', async () => {
@@ -928,6 +966,39 @@ describe('push namespace routing for rules and agents', () => {
     expect(at('rules')).toBe('rules/fe-know/my-rule.md');
     expect(at('skills')).toBe('skills/fe-skills/skill-a');
     expect(at('agents')).toBe('agents/fe-agents/vr.yaml');
+  });
+
+  it('refuses to send a new rule to the shared root when the legacy role could not be resolved', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig({ primaryRole: undefined, roleUnresolved: true }),
+      teamConfig: makeTeamConfig(),
+    });
+    mockHandlers({ rules: [{ ...newRule }] }, pushedItems);
+
+    await push({ all: true });
+
+    expect(process.exitCode).toBe(2);
+    expect(pushedItems).toHaveLength(0);
+    const { log } = await import('../utils/logger.js');
+    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('your role could not be resolved');
+  });
+
+  it('reports a projects manifest that cannot be loaded for --project instead of throwing', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(),
+      teamConfig: makeTeamConfig(),
+    });
+    mockLoadProjectsManifest.mockRejectedValueOnce(new Error('Invalid projects manifest: /tmp/team-repo/manifest/projects.yaml is empty.'));
+    mockHandlers({ rules: [{ ...newRule }] }, pushedItems);
+
+    await expect(push({ all: true, project: 'front-app' })).resolves.toBeUndefined();
+
+    expect(process.exitCode).toBe(2);
+    expect(pushedItems).toHaveLength(0);
+    const { log } = await import('../utils/logger.js');
+    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('Cannot resolve --project destinations');
   });
 
   it('refuses to push to the shared root when the project declares no namespace for the type', async () => {

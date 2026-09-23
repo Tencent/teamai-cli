@@ -23,7 +23,7 @@ import { acquireLock, releaseLock } from './update.js';
 import { assertSafePath, assertSafeResourceName, defaultAllowedRoots } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFoundError } from './roles.js';
 import type { ProjectsManifest } from './projects.js';
-import { isSafeNamespaceSegment } from './projects.js';
+import { isSafeNamespaceSegment, NAMESPACE_RULE, fallbackNamespaceError } from './manifest-schema.js';
 import {
   isAtSharedRoot, isPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, resolveProjectNamespace,
   skillNamespacePath, withNamespace, type PlaceableType,
@@ -80,6 +80,16 @@ async function namespaceCandidates(
   type: PlaceableType,
   localConfig: LocalConfig,
 ): Promise<CandidateResolution> {
+  // A legacy role the manifest could not resolve is not "no role": treating it
+  // as one would send a new rule or agent to the shared root.
+  if (localConfig.roleUnresolved) {
+    return {
+      ok: false,
+      message: `Cannot resolve where new ${type} should go: your role could not be resolved because `
+        + 'manifest/roles.yaml could not be loaded. Fix manifest/roles.yaml, or pass --role <ns> '
+        + 'to name the namespace for this push.',
+    };
+  }
   if (localConfig.primaryRole) {
     try {
       const manifest = await loadRolesManifest(localConfig.repo.localPath);
@@ -98,8 +108,7 @@ async function namespaceCandidates(
       if (unsafe !== undefined) {
         return {
           ok: false,
-          message: `The roles manifest declares an unusable ${axis} namespace "${unsafe}": `
-            + "it must be a single path segment (letters, digits, '.', '_', '-'; no '/', '\\', or '..'). "
+          message: `The roles manifest declares an unusable ${axis} namespace "${unsafe}": ${NAMESPACE_RULE}. `
             + 'Fix manifest/roles.yaml, or pass --role <ns> to name the namespace for this push.',
         };
       }
@@ -114,8 +123,11 @@ async function namespaceCandidates(
         };
       }
       // Legacy fallback: with no manifest at all a role id doubles as its
-      // skills namespace. That convention only ever existed for skills.
-      return { ok: true, candidates: type === 'skills' ? [localConfig.primaryRole] : [] };
+      // skills namespace. That convention only ever existed for skills. No
+      // manifest validated the id as a namespace, so it is checked here.
+      if (type !== 'skills') return { ok: true, candidates: [] };
+      const unsafe = fallbackNamespaceError([localConfig.primaryRole], 'role id used as a skills namespace');
+      return unsafe === null ? { ok: true, candidates: [localConfig.primaryRole] } : { ok: false, message: unsafe };
     }
   }
 
@@ -179,6 +191,9 @@ async function resolveNamespaceForNew(
     // Skills keep their historical silent default (the primary role id); no
     // other axis ever had that convention, so they take the first candidate.
     const skillsDefault = type === 'skills' ? localConfig.primaryRole : undefined;
+    // The role id is not one of the candidates the manifest validated.
+    const unsafe = skillsDefault === undefined ? null : fallbackNamespaceError([skillsDefault], 'role id used as a skills namespace');
+    if (unsafe !== null) return { kind: 'unresolvable', message: unsafe };
     return { kind: 'namespace', namespace: skillsDefault ?? candidates[0] };
   }
   // No terminal to ask on (CI, a hook, TEAMAI_NONINTERACTIVE): say what the
@@ -834,7 +849,13 @@ async function pushCore(
       return;
     }
     const { loadProjectsManifest, findProject, unknownProjectMessage } = await import('./projects.js');
-    projectsManifest = await loadProjectsManifest(localConfig.repo.localPath);
+    try {
+      projectsManifest = await loadProjectsManifest(localConfig.repo.localPath);
+    } catch (e) {
+      log.error(`Cannot resolve --project destinations: ${(e as Error).message}`);
+      process.exitCode = 2;
+      return;
+    }
     if (!projectsManifest) {
       log.error('This team repo defines no projects (no manifest/projects.yaml).');
       process.exitCode = 2;
@@ -938,12 +959,29 @@ async function pushCore(
 
   for (const type of pushableTypes) {
     const handler = getHandler(type);
-    const items = await handler.scanLocalForPush(
-      scanTeamConfig,
-      localConfig,
-      type === 'agents' ? { namespace: requestedAgentsNamespace } : undefined,
-    );
-    fullScan.push(...items);
+    try {
+      const items = await handler.scanLocalForPush(
+        scanTeamConfig,
+        localConfig,
+        type === 'agents' ? { namespace: requestedAgentsNamespace } : undefined,
+      );
+      fullScan.push(...items);
+    } catch (e) {
+      // The skills and agents scans read the roles manifest to learn this
+      // member's namespaces, and one that cannot be read or parsed fails them
+      // rather than guessing — `--role` cannot stand in, since the scan needs
+      // the manifest to tell which namespaces are the member's. Report that
+      // before anything is pushed instead of an uncaught stack trace.
+      spin.stop();
+      const error = e as Error;
+      log.debug(error.stack ?? error.message);
+      log.error(
+        `Could not scan local ${type}: ${error.message.replace(/\.$/, '')}. Nothing was pushed. `
+          + 'Fix the file the error names, then retry.',
+      );
+      process.exitCode = 2;
+      return;
+    }
   }
 
   // A project that cannot answer for agents is reported below for an agent the

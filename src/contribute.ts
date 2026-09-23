@@ -8,7 +8,8 @@ import { markContributed } from './contribute-check.js';
 import { pendingLearningsDir, savePendingLearning } from './utils/pending-learnings.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { learningsRoots } from './utils/learnings-roots.js';
-import { isSafeNamespaceSegment, resolveActiveLearningsNamespaces } from './projects.js';
+import { resolveActiveLearningsNamespaces } from './projects.js';
+import { isSafeNamespaceSegment } from './manifest-schema.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { getDataHome, getReportsDir, isSelfMode } from './types.js';
 

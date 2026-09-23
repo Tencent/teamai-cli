@@ -14,6 +14,7 @@ import {
   type KnowledgeType,
 } from '../types.js';
 import { getUserHome } from './home.js';
+import { isSafeNamespaceSegment } from '../manifest-schema.js';
 
 /** Resolve search index path dynamically (respects HOME changes in tests). */
 function getSearchIndexPath(): string {
@@ -493,9 +494,10 @@ async function collectLearningsEntriesFromDir(
   for (const ns of namespaces ?? []) {
     // Defense-in-depth: a namespace is a path segment (learnings/<ns>/). Skip
     // anything that isn't a safe single segment so a hand-edited config can't
-    // make the index scan outside the learnings directory. (Inlined rather than
-    // importing from ../projects.js to keep this low-level util dependency-free.)
-    if (!/^[A-Za-z0-9._-]+$/.test(ns) || ns === '.' || ns === '..') continue;
+    // make the index scan outside the learnings directory. The rule must be the
+    // one `contribute` writes with, or a learning filed under a valid non-ASCII
+    // namespace would never be indexed.
+    if (!isSafeNamespaceSegment(ns)) continue;
     const nsDir = path.join(dir, ns);
     if (!await pathExists(nsDir)) continue;
     const files = await listFilesRecursive(nsDir);

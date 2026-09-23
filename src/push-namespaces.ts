@@ -12,8 +12,9 @@
  * reached the whole team (issue #649). It lives here so every type answers the
  * same question the same way, and so the answer can be tested without a repo.
  */
+import { isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
 import {
-  isSafeNamespaceSegment, findProject, unknownProjectMessage,
+  findProject, unknownProjectMessage,
   type ProjectResourceType, type ProjectsManifest,
 } from './projects.js';
 import type { ResourceItem, ResourceType } from './types.js';
@@ -116,8 +117,7 @@ export function resolveProjectNamespace(
   if (!isSafeNamespaceSegment(namespace)) {
     return {
       ok: false,
-      message: `Project "${projectId}" declares an unusable ${axis} namespace "${namespace}": `
-        + "it must be a single path segment (letters, digits, '.', '_', '-'; no '/', '\\', or '..').",
+      message: `Project "${projectId}" declares an unusable ${axis} namespace "${namespace}": ${NAMESPACE_RULE}.`,
     };
   }
 

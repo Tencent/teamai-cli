@@ -81,6 +81,27 @@ projects:
       agents:    [hai-inference]   # optional; agents/<namespace>/ scoped to this project
 ```
 
+The id and every namespace are refused at the manifest boundary unless they can
+name a directory without escaping it, since each becomes a directory component. A
+namespace must be a single path segment: no `/`, `\`, `:` or control character,
+no trailing `.` or space, and not a Windows device name (`CON`, `NUL`, `COM1`, …).
+Two namespaces of one resource type may not differ only by case, within a manifest
+or between `roles.yaml` and `projects.yaml`, since case-insensitive filesystems
+would give both the same directory.
+Win32 strips a trailing period or space from every component, so `.. ` would
+arrive as `..` and `frontend.` as `frontend`, escaping the parent in the first
+case and another namespace's directory in the second; `.` and `..` fall out of the
+same rule. A manifest file that exists but cannot be read, or is empty, is an
+error rather than an absent manifest: treating it as absent would drop the
+filtering the manifest exists to apply. Absence means the path is genuinely not
+there — a dangling symlink, on the file or on `manifest/` itself, reads as ENOENT
+but is an error. The id keeps the
+older, narrower rule it has always had — letters, digits, `.`, `_`, `-`, and not
+`.` or `..` — because it is also typed on the command line and split on commas.
+The namespace guard applies to `manifest/roles.yaml`'s active namespaces
+(`knowledge`, `skills`, `agents`); its `learnings:` is kept for backward
+compatibility, ignored at runtime, and therefore unchecked.
+
 Agent push uses the same role/project namespace resolution as pull and skips ambiguous source destinations. Placement follows it: a new agent pushed with `--role`/`--project` lands under `agents/<namespace>/` (the project's `agents` axis), the same way a new rule resolves from `knowledge` and a new skill from `skills` (issue #649). On a role or project change, agent cleanup checks each tool destination independently, including YAML `targets` and legacy format support. Locally edited copies are preserved.
 
 Directory layout reuses the existing namespace convention, adding one learnings layer:

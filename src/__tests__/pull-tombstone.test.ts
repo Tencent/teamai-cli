@@ -93,6 +93,9 @@ vi.mock('../roles.js', () => ({
       agents: [],
     };
   }),
+  // The real class: resource-namespaces distinguishes an absent manifest from a
+  // malformed one by its type, so the mock has to carry the same identity.
+  RolesManifestNotFoundError: class RolesManifestNotFoundError extends Error {},
 }));
 
 // Isolation: pull() takes a real ~/.teamai/.sync-lock. Parallel vitest workers
@@ -524,14 +527,32 @@ describe('pull role-aware sync and cleanup', () => {
     expect(await fse.pathExists(path.join(sk, 'scripts', '.git', 'HEAD'))).toBe(true);
   });
 
-  it('gracefully degrades when the roles manifest is malformed', async () => {
-    const { loadRolesManifest } = await import('../roles.js');
-    vi.mocked(loadRolesManifest).mockRejectedValueOnce(new Error('Invalid roles manifest'));
+  it('gracefully degrades when the roles manifest is absent', async () => {
+    const { loadRolesManifest, RolesManifestNotFoundError } = await import('../roles.js');
+    vi.mocked(loadRolesManifest).mockRejectedValueOnce(
+      new RolesManifestNotFoundError('/repo/manifest/roles.yaml'),
+    );
 
     await pull({});
 
     const { log } = await import('../utils/logger.js');
-    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Could not load roles manifest'));
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Roles manifest not found'));
+  });
+
+  it('fails the scope instead of delivering everything when the roles manifest is malformed', async () => {
+    // A manifest that exists but does not parse cannot degrade to "no filter":
+    // that hands out exactly the namespaces it was written to gate.
+    const { loadRolesManifest } = await import('../roles.js');
+    vi.mocked(loadRolesManifest).mockRejectedValueOnce(
+      new Error("Invalid roles manifest: roles.0.resources.skills.0: resource namespace must be a single path segment"),
+    );
+
+    await pull({});
+
+    // pull logs the manifest error and returns before any resource is written,
+    // which is what an invalid projects manifest already does.
+    const { log } = await import('../utils/logger.js');
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Invalid roles manifest'));
   });
 
   it('aborts pull when the same skill exists in multiple active namespaces', async () => {

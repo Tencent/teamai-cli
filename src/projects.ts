@@ -1,7 +1,8 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { readFileIfExists, ensureDir, writeFile } from './utils/fs.js';
+import { ensureDir, writeFile } from './utils/fs.js';
+import { NamespaceSegmentSchema, parseManifest, readManifestFile, assertNoCaseAliasedNamespaces, type NamespaceEntry } from './manifest-schema.js';
 import type { ResourceNamespaces } from './roles.js';
 
 /**
@@ -13,28 +14,36 @@ const PROJECT_RESOURCE_TYPES = ['knowledge', 'skills', 'learnings', 'agents'] as
 
 export type ProjectResourceType = typeof PROJECT_RESOURCE_TYPES[number];
 
-const ProjectResourceNamespacesSchema = z.object({
-  knowledge: z.array(z.string().min(1)).default([]),
-  skills: z.array(z.string().min(1)).default([]),
-  learnings: z.array(z.string().min(1)).default([]),
-  agents: z.array(z.string().min(1)).default([]),
-});
-
 /**
- * A project id becomes a path component (skills/<id>/, learnings/<id>/), so it
- * must never contain a path separator or `..`. Enforced here at the manifest
- * boundary; use-sites that read ids from other sources (e.g. a hand-edited
- * config.yaml `projects` field) additionally guard via `isSafeNamespaceSegment`.
+ * A project id becomes a path component (`skills/<id>/`, `learnings/<id>/`) just
+ * as a resource namespace does, so it is guarded here too — but by its own older
+ * rule, not the namespace one. An id is also typed on the command line and split
+ * on commas (`teamai projects set a,b`), so its ASCII allowlist already excludes
+ * most of what the namespace guard has to test for, and holding it to the rest
+ * would reject ids that work today (`...` is a directory POSIX accepts).
+ *
+ * Both are enforced here at the manifest boundary, the only place they enter the
+ * process: an id read from elsewhere (a hand-edited config.yaml `projects`
+ * field) is resolved through `getProjectOrThrow`, so it can only ever name a
+ * project this manifest already validated. `contribute.ts` and
+ * `resources/agents.ts` keep their own `isSafeNamespaceSegment` guards on the
+ * resolved namespace as defence in depth.
  */
 const SAFE_ID = /^[A-Za-z0-9._-]+$/;
 
-/** True if `seg` is safe to use as a single path segment (no separators, no `..`). */
-export function isSafeNamespaceSegment(seg: string): boolean {
-  return SAFE_ID.test(seg) && seg !== '.' && seg !== '..';
+function isSafeProjectId(id: string): boolean {
+  return SAFE_ID.test(id) && id !== '.' && id !== '..';
 }
 
+const ProjectResourceNamespacesSchema = z.object({
+  knowledge: z.array(NamespaceSegmentSchema).default([]),
+  skills: z.array(NamespaceSegmentSchema).default([]),
+  learnings: z.array(NamespaceSegmentSchema).default([]),
+  agents: z.array(NamespaceSegmentSchema).default([]),
+});
+
 const ProjectSchema = z.object({
-  id: z.string().min(1).refine((v) => isSafeNamespaceSegment(v), {
+  id: z.string().min(1).refine(isSafeProjectId, {
     message: "project id must be a single path segment (letters, digits, '.', '_', '-'; no '/', '\\\\', or '..')",
   }),
   name: z.string().default(''),
@@ -83,7 +92,7 @@ function validateManifestShape(raw: unknown): ProjectsManifest {
     }
   }
 
-  const manifest = ProjectsManifestSchema.parse(raw);
+  const manifest = parseManifest(ProjectsManifestSchema, raw, 'projects');
   const ids = new Set<string>();
   for (const project of manifest.projects) {
     if (ids.has(project.id)) {
@@ -91,8 +100,18 @@ function validateManifestShape(raw: unknown): ProjectsManifest {
     }
     ids.add(project.id);
   }
+  assertNoCaseAliasedNamespaces(projectNamespaceEntries(manifest), 'projects manifest');
 
   return manifest;
+}
+
+/** Every namespace a projects manifest puts to use, with the project that declares it. */
+export function projectNamespaceEntries(manifest: ProjectsManifest): NamespaceEntry[] {
+  return manifest.projects.flatMap((project) =>
+    PROJECT_RESOURCE_TYPES.flatMap((type) =>
+      project.resources[type].map((namespace) => ({ type, namespace, owner: `project ${project.id}` })),
+    ),
+  );
 }
 
 /**
@@ -104,7 +123,9 @@ function validateManifestShape(raw: unknown): ProjectsManifest {
  */
 export async function loadProjectsManifest(repoPath: string): Promise<ProjectsManifest | null> {
   const manifestPath = path.join(repoPath, 'manifest', 'projects.yaml');
-  const content = await readFileIfExists(manifestPath);
+  // Only an absent file means "this team has no projects": an unreadable or empty
+  // one throws, so the pull fails rather than quietly syncing as if unpartitioned.
+  const content = await readManifestFile(manifestPath, 'projects');
   if (content === null) {
     return null;
   }

@@ -2,7 +2,7 @@ import fse from 'fs-extra';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { log } from './logger.js';
-import { getUserHome } from './home.js';
+import { expandHome } from './home.js';
 
 const IGNORED_NAMES = new Set([
   '__pycache__',
@@ -16,15 +16,7 @@ function isIgnored(name: string): boolean {
   return IGNORED_NAMES.has(name) || name.endsWith('.pyc');
 }
 
-/**
- * Expand ~ to the platform user home directory in paths.
- */
-export function expandHome(p: string): string {
-  if (p.startsWith('~/') || p === '~') {
-    return path.join(getUserHome(), p.slice(1));
-  }
-  return p;
-}
+export { expandHome } from './home.js';
 
 /**
  * Ensure a directory exists

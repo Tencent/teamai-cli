@@ -155,6 +155,80 @@ roles:
     rmSync(repoDir, { recursive: true, force: true });
   });
 
+  it('fails when a resource namespace is not a safe path segment (traversal guard)', async () => {
+    // Role namespaces become directory components (skills/<ns>/, agents/<ns>/)
+    // exactly as project namespaces do, so the same boundary guard applies.
+    for (const badNamespace of [
+      '../../evil', 'a/b', '..', '.', 'x\\y', 'C:evil',
+      'a\u0009b', 'a\u007fb', 'a\u0085b',
+      '.. ', '.. .', '...', '. ', '  ',
+      'frontend.', 'frontend ', 'frontend..',
+      'CON', 'nul', 'COM1', 'CON.txt', 'CONIN$', 'CONOUT$.txt',
+    ]) {
+      const repoDir = writeManifest(`
+version: 1
+roles:
+  - id: hai
+    resources:
+      knowledge: []
+      skills: ['${badNamespace}']
+`);
+
+      await expect(loadRolesManifest(repoDir)).rejects.toThrow(/single path segment/i);
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('quotes the offending namespace, so the admin can find the text to fix', async () => {
+    const repoDir = writeManifest(`version: 1
+roles:
+  - id: hai
+    resources:
+      knowledge: []
+      skills: ['../evil']
+`);
+
+    try {
+      await expect(loadRolesManifest(repoDir)).rejects.toThrow(/; got "\.\.\/evil"/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports an empty manifest as broken rather than missing', async () => {
+    // Only ENOENT may become RolesManifestNotFoundError: that is the one case the
+    // pull is allowed to treat as "this team has no roles" and stop filtering.
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'teamai-rolesempty-'));
+    mkdirSync(path.join(repoDir, 'manifest'), { recursive: true });
+    writeFileSync(path.join(repoDir, 'manifest', 'roles.yaml'), '\n');
+
+    await expect(loadRolesManifest(repoDir)).rejects.toThrow(/is empty/i);
+    await expect(loadRolesManifest(repoDir)).rejects.not.toBeInstanceOf(RolesManifestNotFoundError);
+    rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('reports an absent manifest with the typed missing error', async () => {
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'teamai-rolesnone-'));
+    await expect(loadRolesManifest(repoDir)).rejects.toBeInstanceOf(RolesManifestNotFoundError);
+    rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('names the offending entry instead of dumping a raw ZodError', async () => {
+    const repoDir = writeManifest(`
+version: 1
+roles:
+  - id: hai
+    resources:
+      knowledge: []
+      skills: ['a/b']
+`);
+
+    await expect(loadRolesManifest(repoDir)).rejects.toThrow(
+      /^Invalid roles manifest: roles\.0\.resources\.skills\.0: resource namespace must be a single path segment/,
+    );
+    rmSync(repoDir, { recursive: true, force: true });
+  });
+
   it('fails when duplicate role ids are declared', async () => {
     const repoDir = writeManifest(`
 version: 1
@@ -171,6 +245,94 @@ roles:
 
     await expect(loadRolesManifest(repoDir)).rejects.toThrow(/duplicate role id/i);
     rmSync(repoDir, { recursive: true, force: true });
+  });
+});
+
+describe('loadRolesManifest rejects namespaces that alias each other by case', () => {
+  function writeManifest(content: string): string {
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'teamai-roles-case-'));
+    mkdirSync(path.join(repoDir, 'manifest'), { recursive: true });
+    writeFileSync(path.join(repoDir, 'manifest', 'roles.yaml'), content, 'utf-8');
+    return repoDir;
+  }
+
+  it('across roles, for the same resource type', async () => {
+    const repoDir = writeManifest(`
+version: 1
+roles:
+  - id: fe
+    resources: { knowledge: [], skills: [frontend] }
+  - id: fe2
+    resources: { knowledge: [], skills: [Frontend] }
+`);
+    try {
+      await expect(loadRolesManifest(repoDir)).rejects.toThrow(
+        /Invalid roles manifest: skills namespaces "frontend" \(role fe\) and "Frontend" \(role fe2\) differ only by case/,
+      );
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  // Lowercasing alone keeps these apart; the filesystems' case folding does not.
+  it.each([
+    ['final sigma', 'ας', 'ασ'],
+    ['long s', 'ſkills', 'skills'],
+  ])('across roles, when only Unicode case folding joins them (%s)', async (_label, first, second) => {
+    const repoDir = writeManifest(`
+version: 1
+roles:
+  - id: fe
+    resources: { knowledge: [], skills: [${first}] }
+  - id: fe2
+    resources: { knowledge: [], skills: [${second}] }
+`);
+    try {
+      await expect(loadRolesManifest(repoDir)).rejects.toThrow(
+        `Invalid roles manifest: skills namespaces "${first}" (role fe) and "${second}" (role fe2) differ only by case`,
+      );
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('but not the same spelling used twice, nor the same name under two resource types', async () => {
+    const repoDir = writeManifest(`
+version: 1
+roles:
+  - id: fe
+    resources: { knowledge: [frontend], skills: [frontend], agents: [Frontend] }
+  - id: fe2
+    resources: { knowledge: [frontend], skills: [frontend] }
+`);
+    try {
+      const manifest = await loadRolesManifest(repoDir);
+      expect(manifest.roles).toHaveLength(2);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('loadRolesManifest with a home-relative repo path', () => {
+  it("expands '~' the way the helpers it replaced did, instead of reading under cwd", async () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'teamai-home-'));
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const manifestDir = path.join(home, '.teamai', 'team-repo', 'manifest');
+      mkdirSync(manifestDir, { recursive: true });
+      writeFileSync(path.join(manifestDir, 'roles.yaml'), 'version: 1\nroles:\n  - id: hai\n    resources: { knowledge: [], skills: [common] }\n', 'utf-8');
+
+      const manifest = await loadRolesManifest('~/.teamai/team-repo');
+      expect(manifest.roles[0]?.resources.skills).toEqual(['common']);
+
+      // A missing file under `~` is still reported as absent, not as an error.
+      await expect(loadRolesManifest('~/.teamai/other-repo')).rejects.toBeInstanceOf(RolesManifestNotFoundError);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

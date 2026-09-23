@@ -163,6 +163,9 @@ vi.mock('../roles.js', () => ({
   describeRoles: vi.fn((roles: Array<{ id: string; name: string; description?: string }>) =>
     roles.map((role) => role.description ? `${role.id} - ${role.name}: ${role.description}` : `${role.id} - ${role.name}`),
   ),
+  // The real class: init swallows ONLY this one, so the mock must carry the
+  // same identity for the distinction to be exercised.
+  RolesManifestNotFoundError: class RolesManifestNotFoundError extends Error {},
 }));
 
 // Track pathExists calls to simulate directory states
@@ -756,6 +759,48 @@ describe('init', () => {
         expect.objectContaining({
           repo: expect.objectContaining({ remote: 'http://git.example.com/group/repo.git' }),
         }),
+        'project',
+        process.cwd(),
+      );
+    });
+
+    it('aborts on a malformed roles manifest instead of initializing role-less', async () => {
+      // A role-less config matches every role when hooks are reconciled, so
+      // swallowing the parse failure would install exactly the hooks the manifest
+      // restricts. Only an ABSENT manifest may leave the role unset.
+      pathExistsFn = (p: string) => p.endsWith(`${path.sep}.git`) || p.endsWith('/.git');
+      mockGit.raw.mockResolvedValue('https://git.example.com/group/repo.git\n');
+
+      const { loadRolesManifest } = await import('../roles.js');
+      vi.mocked(loadRolesManifest).mockRejectedValueOnce(
+        new Error('Invalid roles manifest: roles.0.resources.skills.0: resource namespace must be a single path segment'),
+      );
+
+      const { saveLocalConfigForScope } = await import('../config.js');
+      vi.mocked(saveLocalConfigForScope).mockClear();
+
+      // The error leaves init, so the CLI prints it and exits non-zero; nothing
+      // is written for the scope.
+      await expect(init({ repo: '.', dryRun: true })).rejects.toThrow(/Invalid roles manifest/);
+      expect(saveLocalConfigForScope).not.toHaveBeenCalled();
+    });
+
+    it('still initializes with the role unset when there is no roles manifest', async () => {
+      pathExistsFn = (p: string) => p.endsWith(`${path.sep}.git`) || p.endsWith('/.git');
+      mockGit.raw.mockResolvedValue('https://git.example.com/group/repo.git\n');
+
+      const { loadRolesManifest, RolesManifestNotFoundError } = await import('../roles.js');
+      vi.mocked(loadRolesManifest).mockRejectedValueOnce(
+        new RolesManifestNotFoundError('/repo/.teamai/manifest/roles.yaml'),
+      );
+
+      const { saveLocalConfigForScope } = await import('../config.js');
+      vi.mocked(saveLocalConfigForScope).mockClear();
+
+      await init({ repo: '.', dryRun: true });
+
+      expect(saveLocalConfigForScope).toHaveBeenCalledWith(
+        expect.not.objectContaining({ primaryRole: expect.anything() }),
         'project',
         process.cwd(),
       );

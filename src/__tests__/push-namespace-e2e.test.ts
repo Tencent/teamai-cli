@@ -842,9 +842,11 @@ describe('push places new rules and agents in a namespace (issue #649)', () => {
 
     const result = await runCLI(['push', '--all'], fixture.projectRoot, fixture.home);
 
-    // Falling back here would publish the rule to the whole team.
+    // Falling back here would publish the rule to the whole team. The skills
+    // scan reads the manifest first, so that is where the push stops.
     expect(result.code, result.output).toBe(2);
-    expect(result.output).toContain('Cannot resolve where new rules should go');
+    expect(result.output).toContain('Invalid roles manifest YAML');
+    expect(result.output).not.toMatch(/^\s+at /m);
     expect(branchFiles(fixture).branch).toBe('');
   }, 60_000);
 

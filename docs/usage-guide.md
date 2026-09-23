@@ -243,6 +243,32 @@ projects:
       agents:    [hai-inference]   # optional
 ```
 
+The project id and every namespace under `resources:` become a directory name
+(`skills/<namespace>/`, `learnings/<namespace>/`, `agents/<namespace>/`), so
+neither may escape the directory it names.
+
+A **namespace** must be a single path segment: no `/`, `\`, `:` or control
+character, no trailing `.` or space, and not a Windows device name (`CON`, `NUL`,
+`AUX`, `PRN`, `CONIN$`, `CONOUT$`, `COM1`–`COM9`, `LPT1`–`LPT9`, including the
+superscript forms Windows also reads as device numbers, with or without an extension).
+Windows strips a trailing period or space from every path component, so `.. `
+would arrive as `..` and escape the parent while `frontend.` would arrive as
+`frontend` and land in another namespace's directory; the same rule rules out `.`
+and `..`. Anything else a filesystem accepts stays valid — a non-ASCII name, one
+holding a space inside it, or one that merely starts like a device (`console`).
+Two namespaces of the same resource type may not differ only by case (`frontend`
+and `Frontend`, or under Unicode case folding `σ` and `ς`): on the default Windows and macOS filesystems they are one
+directory, so a role or project scoped to one would read the other's resources.
+The check spans both manifests, since `roles.yaml` and `projects.yaml` share the
+same `skills/`, `knowledge/` and `agents/` directories.
+
+A **project id** keeps its own older and narrower rule, because it is also typed
+on the command line and split on commas: letters, digits, `.`, `_` and `-`, and
+not `.` or `..`.
+
+A manifest that breaks either rule fails to parse, and the error names the
+offending entry.
+
 **Commands** (low-frequency correction/query, mirroring `teamai roles …`):
 
 ```bash
@@ -622,7 +648,7 @@ Choose namespace [1-3] (default: 1 = common):
 - A single namespace is auto-selected; use `--role <id>` to choose one explicitly
 - Modifying an existing resource automatically keeps its original namespace
 - The chosen destination is printed for each resource, e.g. `[rules] my-rule → rules/pm/my-rule.md`
-- A roles manifest that exists but cannot answer — unparseable, or missing the configured role — stops the push instead of falling back to the shared root: fix `manifest/roles.yaml`, run `teamai roles set <role>`, or pass `--role <ns>`. A team with no `manifest/roles.yaml` at all keeps the pre-manifest behavior
+- A roles manifest that exists but cannot answer stops the push instead of falling back to the shared root. One that is missing the configured role: fix `manifest/roles.yaml`, run `teamai roles set <role>`, or pass `--role <ns>`. One that cannot be read or parsed, or is empty, stops the push at its scan (exit 2), before `--role` is consulted, because the scan needs the manifest to tell which namespaces are yours: fix `manifest/roles.yaml` first. A team with no `manifest/roles.yaml` at all keeps the pre-manifest behavior
 - `teamai push --dry-run` resolves the same destinations and stops on the same unresolvable namespace, so it never reports a push as viable that the real command refuses
 - When several namespaces could take a new resource and there is no terminal to ask on (CI, a hook, `TEAMAI_NONINTERACTIVE`), push stops with exit 2, lists them, and asks for `--role <ns>`
 - `--role`/`--project` places new resources only. An edit of a shared-root rule or agent stays at the shared root, and push says so
@@ -854,7 +880,7 @@ servers:
 
 `projects` lists project ids from `manifest/projects.yaml` and follows the same rule on the other axis: a server ships to a directory when one of the projects it is bound to (`teamai projects set`) is listed; `projects: []` ships to nobody; a directory bound to no project receives every server. `teamai projects set` to another project removes the ones that no longer match on the next pull. An id that is not in `projects.yaml` produces one warning per pull, and so does a `projects:` key in a team that has no `projects.yaml` at all, where no id can be checked.
 
-One caveat on the empty list, which applies to `roles: []` just as it always has. "Ships to nobody" holds among members who use that axis. A member who has not configured it at all is unfiltered and still receives the entry, because an unconfigured axis filters nothing. Use `tools: []` or remove the entry if you need it to reach no one at all.
+One caveat on the empty list, which applies to `roles: []` just as it always has. "Ships to nobody" holds among members who use that axis. A member who has not configured it at all is unfiltered and still receives the entry, because an unconfigured axis filters nothing. A legacy role that could not be resolved because `manifest/roles.yaml` does not load is not "unconfigured": that member receives no role-scoped entry until the manifest is fixed. Use `tools: []` or remove the entry if you need it to reach no one at all.
 
 A missing `projects.yaml` does not switch the key off. A directory's active projects come from its own `config.yaml`, so a directory bound to `billing` still filters out a `projects: [checkout]` server whether or not the manifest is there. What the manifest gives you is the ability to check the ids.
 
@@ -1525,6 +1551,15 @@ roles:
       skills:    [common, frontend]
       agents:    [common, frontend]   # optional; omitted = root-level agents only
 ```
+
+Every namespace that takes effect — `knowledge`, `skills` and `agents` — becomes a
+directory name, so it must be a single path segment: no `/`, `\`, `:` or control
+character, no trailing `.` or space, and not a Windows device name, and no two
+namespaces of one resource type may differ only by case — in `manifest/roles.yaml`
+exactly as in `manifest/projects.yaml`, and across the two. A role's
+`learnings:` is accepted for backward compatibility and ignored at runtime
+(learnings are namespaced by project, not by role), so it names no directory and
+is not checked.
 
 `teamai pull` copies these into each Tier-1 tool's `agents/` directory (e.g. `~/.claude/agents/`), flattened by file name, so two active namespaces must not define the same agent name (pull reports the collision and skips the scope). `teamai pull` writes `<name>.toml` for Codex tools, `<name>.json` for Kiro, `<name>.agent.md` for Copilot, and `<name>.md` for every other tool. When a member changes role, agents of the namespaces that stopped being active are removed on the next pull, unless the deployed copy was edited locally, in which case it is kept with a warning. Without a configured role, every agent syncs. `teamai push` resolves the source using the same active role and project namespaces as pull. It writes edits to that source and skips ambiguous destinations with a warning; an agent with only inactive sources is also skipped. Skipped agents do not block other resources in the same push. A new agent is placed the way a new skill is: `--role <ns>` or `--project <id>` (that project's `agents` namespace) names the directory, and with neither flag it resolves from the primary role's `agents` namespaces. It only stays at the shared root — where every member receives it — when no namespace resolves, and push warns when that happens (see [Push local resources](#push-local-resources)). Cleanup checks each tool separately, respecting YAML `targets` and legacy format support. An active same-named agent protects a deployed file only when it targets that tool and output file. `teamai remove agents <name>` records a tombstone. A namespaced agent can be named as `<namespace>/<name>`; a bare name that only one namespace has resolves to it, and a bare name found in several places is refused, with the qualified names listed, rather than removed from all of them. The next pull on every other machine deletes `<name>.agent.md`, `<name>.md`, `<name>.toml` and `<name>.json` from each synced tool's agents directory. That cleanup also runs when the pull finds the team repo unchanged. Removing a namespaced agent tombstones `<namespace>/<name>` only, so the same name in another namespace is untouched; a member's flattened `<name>` copy is cleaned, and not pushed again, when it can be that agent's copy (the namespace is active for them, or their machine placed the agent) and their directory does not still receive an agent of that name from another active namespace. A member who never had that namespace keeps their own agent of the same name. The CLI's built-in `teamai-recall` profile is deployed alongside team agents but is not uploaded by `teamai push`.
 
