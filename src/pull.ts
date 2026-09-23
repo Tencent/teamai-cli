@@ -576,33 +576,15 @@ function logSyncDetail(
 }
 
 /**
- * True when at least one enabled tool can receive `field`'s resources.
- *
- * Used to gate a "Synced N" claim: that count describes what the team repo
- * holds, while this describes what could actually land. A tool whose root does
- * not exist yet receives nothing — its handler skips the write by design and
- * only logs at debug — so a fresh member would otherwise be shown a success the
- * disk contradicts (#585).
- */
-async function hasInstalledTargetFor(
-  teamConfig: TeamaiConfig,
-  localConfig: LocalConfig,
-  field: 'skills' | 'rules' | 'agents',
-): Promise<boolean> {
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    if (isAgentExcluded(localConfig, tool)) continue;
-    const resourcePath = toolPath[field];
-    if (!resourcePath) continue;
-    if (await isToolInstalledForConfig(tool, resourcePath, localConfig)) return true;
-  }
-  return false;
-}
-
-/**
  * Return the installed tool targets that can receive team-owned resources.
  *
  * Tools in `disabledAgents`, and tools outside `enabledAgents` when that
  * whitelist is set, are omitted — the same gate resource handlers use.
+ *
+ * Pass `field` to ask about one resource type instead of "any of them": the
+ * generic sync loop needs that to decide whether a "Synced N" claim describes
+ * anything that could land, and a tool whose skills root is absent while its
+ * agents root exists must answer differently for each.
  *
  * The revision cache is shared by a scope, while tool roots can appear later
  * (for example, when Cursor creates `.cursor/` on its first launch). Persisting
@@ -612,13 +594,14 @@ async function hasInstalledTargetFor(
 async function getInstalledResourceTargets(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
+  field?: 'skills' | 'rules' | 'agents',
 ): Promise<string[]> {
   const targets: string[] = [];
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (isAgentExcluded(localConfig, tool)) continue;
 
-    const resourcePaths = [toolPath.skills, toolPath.rules, toolPath.agents]
+    const resourcePaths = (field ? [toolPath[field]] : [toolPath.skills, toolPath.rules, toolPath.agents])
       .filter((resourcePath): resourcePath is string => !!resourcePath);
     for (const resourcePath of resourcePaths) {
       if (await isToolInstalledForConfig(tool, resourcePath, localConfig)) {
@@ -1205,13 +1188,16 @@ async function pullForScope(
         }
       }
     } else {
-      // Skills land in a tool's own directory, which a brand-new member may not
-      // have yet. The handler skips such a tool by design and only logs at
-      // debug, so counting the team repo's items here would report a success the
-      // disk contradicts (#585). Docs need no gate: they are copied to the
-      // team's own docs directory, which the copy creates.
-      const canReceive = type !== 'skills'
-        || await hasInstalledTargetFor(freshConfig, localConfig, 'skills');
+      // Skills and agents land in a tool's own directory, which a brand-new
+      // member may not have yet. The handler skips such a tool by design and
+      // only logs at debug, so counting the team repo's items here would report
+      // a success the disk contradicts (#585). Docs, rules and env are excluded
+      // from this branch entirely — they are written to team-owned locations
+      // that the copy creates. hooks/mcp have no tool-path field to probe, so
+      // they keep reporting unconditionally.
+      const needsToolRoot = type === 'skills' || type === 'agents';
+      const canReceive = !needsToolRoot
+        || (await getInstalledResourceTargets(freshConfig, localConfig, type)).length > 0;
 
       for (const item of items) {
         await handler.pullItem(item, freshConfig, localConfig);

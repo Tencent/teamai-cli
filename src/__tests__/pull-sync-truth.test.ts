@@ -154,4 +154,40 @@ describe('pull reports what reached the tool directory (#585)', () => {
     expect(successLines().filter((msg) => /Synced \d+ skills/.test(msg)).length).toBeGreaterThan(0);
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'skills', 'org-review', 'SKILL.md'))).toBe(true);
   });
+
+  it('claims no agents synced when no tool directory can receive them', async () => {
+    // The same phantom-success shape as skills, on the agents branch: the team
+    // repo holds an agent, the tool root is absent, so the handler skips the
+    // write and the report must not claim otherwise.
+    await fse.ensureDir(path.join(repoPath, 'agents'));
+    await fse.writeFile(
+      path.join(repoPath, 'agents', 'reviewer.md'),
+      '---\nname: reviewer\ndescription: reviews code\n---\nReview things.\n',
+    );
+    teamConfig.toolPaths = {
+      claude: { skills: '.claude/skills', rules: '.claude/rules', agents: '.claude/agents' },
+    };
+
+    await pull({ silent: true });
+
+    expect(successLines().filter((msg) => /Synced \d+ agents/.test(msg))).toEqual([]);
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'agents', 'reviewer.md'))).toBe(false);
+  });
+
+  it('still claims agents synced once the tool directory exists', async () => {
+    await fse.ensureDir(path.join(repoPath, 'agents'));
+    await fse.writeFile(
+      path.join(repoPath, 'agents', 'reviewer.md'),
+      '---\nname: reviewer\ndescription: reviews code\n---\nReview things.\n',
+    );
+    teamConfig.toolPaths = {
+      claude: { skills: '.claude/skills', rules: '.claude/rules', agents: '.claude/agents' },
+    };
+    await fse.ensureDir(path.join(homeDir, '.claude', 'agents'));
+
+    await pull({ silent: true });
+
+    expect(successLines().filter((msg) => /Synced \d+ agents/.test(msg)).length).toBeGreaterThan(0);
+    expect(await fse.pathExists(path.join(homeDir, '.claude', 'agents', 'reviewer.md'))).toBe(true);
+  });
 });
