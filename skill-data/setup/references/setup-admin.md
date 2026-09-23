@@ -187,9 +187,11 @@ If the repo does not exist yet, `init` offers to create it — accept the prompt
 - If `init` detects an unknown GitLab host, it stops and asks you to set
   `GITLAB_URL` + `GITLAB_TOKEN`, then retry.
 
-If the repo has roles enabled, `init` may ask for a primary role — pick one with
-the user, or pass `--role <id>` for a non-interactive run. Without a terminal
-(or with `CI` / `TEAMAI_NONINTERACTIVE` set) `init` never waits: a provider that
+If the repo has roles enabled, `init` asks for one or more comma-separated role
+numbers when running interactively. The first number is the primary role and the
+remaining numbers become additional roles; pass `--role <id>` for a
+non-interactive run when only a primary role is needed. Without a terminal (or
+with `CI` / `TEAMAI_NONINTERACTIVE` set) `init` never waits: a provider that
 would need a browser login fails at once and names the credential to prepare —
 a token for GitHub / CNB / GitLab / GitCode, and for TGit a prior `gf auth
 login` run in an interactive shell (see Step 3).

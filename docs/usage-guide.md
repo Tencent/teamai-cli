@@ -171,6 +171,8 @@ If the repo has role-based skills enabled (i.e. `manifest/roles.yaml` exists), `
 - `primaryRole`: the target namespace for skill sync and push by default
 - `additionalRoles`: additional skill namespaces to sync
 
+At the role prompt, enter one or more comma-separated role numbers. The first number becomes `primaryRole` and the remaining numbers become `additionalRoles` (for example, `1,3`).
+
 You can also skip the interactive prompts via CLI flags for a fully non-interactive init (suitable for CI/CD or AI agents):
 
 ```bash

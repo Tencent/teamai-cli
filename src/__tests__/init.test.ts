@@ -561,6 +561,58 @@ describe('init', () => {
         resourceProfileVersion: 1,
       }));
     });
+
+    it('persists later selections as additional roles', async () => {
+      let cloneDone = false;
+      pathExistsFn = (p: string) => {
+        if (p === localPath) return cloneDone;
+        if (p === path.join(localPath, 'members', 'testuser.yaml')) return false;
+        return false;
+      };
+
+      mockGfRepoClone.mockImplementation(() => {
+        cloneDone = true;
+      });
+
+      const mockedLoadTeamConfig = vi.mocked(await import('../config.js')).loadTeamConfig;
+      mockedLoadTeamConfig
+        .mockResolvedValueOnce({
+          team: 'my-team',
+          repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+          provider: 'tgit',
+          reviewers: [],
+          sharing: {
+            skills: {},
+            rules: { enforced: [] },
+            docs: { localDir: '~/.teamai/docs' },
+            env: { injectShellProfile: true },
+          },
+          toolPaths: {},
+        } as never)
+        .mockResolvedValueOnce({
+          team: 'my-team',
+          repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+          provider: 'tgit',
+          reviewers: [],
+          sharing: {
+            skills: {},
+            rules: { enforced: [] },
+            docs: { localDir: '~/.teamai/docs' },
+            env: { injectShellProfile: true },
+          },
+          toolPaths: {},
+        } as never);
+
+      questionAnswers = ['n', '1,3'];
+
+      await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git', scope: 'user' });
+
+      expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({
+        primaryRole: 'hai',
+        additionalRoles: ['thpc'],
+        resourceProfileVersion: 1,
+      }));
+    });
   });
 
   describe('deploys built-in skills after init', () => {

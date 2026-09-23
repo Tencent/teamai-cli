@@ -108,13 +108,14 @@ async function promptForRoleProfile(
     log.info(`  ${index + 1}. ${label}`);
   });
 
-  const primaryAnswer = await askQuestion('Primary role (number): ').catch(() => {
+  const primaryAnswer = await askQuestion('Primary role (number or comma-separated numbers, primary first): ').catch(() => {
     throw new Error(
       'This team repo has several roles and there is no terminal to pick one. ' +
         `Pass --role <id> (one of: ${listRoleIds(manifest).join(', ')}).`,
     );
   });
-  const [primaryIndex] = parseRoleSelection(primaryAnswer, manifest.roles.length);
+  const selectedIndexes = parseRoleSelection(primaryAnswer, manifest.roles.length);
+  const [primaryIndex, ...additionalIndexes] = selectedIndexes;
   if (!primaryIndex) {
     throw new NoRoleSelectedError('A primary role is required.');
   }
@@ -123,7 +124,7 @@ async function promptForRoleProfile(
 
   return {
     primaryRole: primaryRole.id,
-    additionalRoles: [],
+    additionalRoles: additionalIndexes.map((index) => manifest.roles[index - 1].id),
     resourceProfileVersion: manifest.version,
   };
 }

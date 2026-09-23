@@ -165,6 +165,8 @@ teamai init https://github.com/yourorg/yourrepo
 - `primaryRole`：默认 skill 同步和推送的目标 namespace
 - `additionalRoles`：额外需要同步的 skill namespace
 
+角色提示中可以输入一个或多个用逗号分隔的角色编号。第一个编号会保存为 `primaryRole`，后续编号会保存为 `additionalRoles`（例如 `1,3`）。
+
 也可以通过 CLI 参数跳过交互，实现完全非交互式初始化（适合 CI/CD 或 AI agent）：
 
 ```bash
