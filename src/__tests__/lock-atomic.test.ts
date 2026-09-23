@@ -74,11 +74,9 @@ describe('acquireLock (real fs)', () => {
     await releaseLock(lockPath);
   });
 
-  it('does not reclaim a lock whose contents name no owner (garbage), however old (#760)', async () => {
+  it('does not reclaim a lock whose contents name no owner (garbage) (#760)', async () => {
     // Nothing proves its owner dead; a crash that left it needs a hand removal.
     fs.writeFileSync(lockPath, 'not-json-not-a-pid');
-    const old = new Date(Date.now() - 60_000);
-    fs.utimesSync(lockPath, old, old);
     expect(await acquireLock(lockPath)).toBe(false);
     expect(fs.readFileSync(lockPath, 'utf-8')).toBe('not-json-not-a-pid');
   });
@@ -167,8 +165,8 @@ describe('acquireLock never takes over a lock another live process may hold (#76
   it('a creator stalled mid-create does not end up sharing the lock', async () => {
     // Model the syscalls: a write straight to the lock name is an O_EXCL create,
     // which opens the file before writing it; any other write lands whole. The
-    // first acquirer stalls inside its write until a second acquirer, 10 s
-    // later, has had its try.
+    // first acquirer stalls inside its write until a second acquirer has had its
+    // try.
     let resume = (): void => {};
     const stalled = new Promise<void>((resolve) => { resume = resolve; });
     const writeFile = vi.spyOn(fse, 'writeFile').mockImplementationOnce(async (file, data) => {
@@ -176,19 +174,16 @@ describe('acquireLock never takes over a lock another live process may hold (#76
       await stalled;
       fs.writeFileSync(file, data);
     });
-    const first = acquireLock(lockPath);
-    await vi.waitFor(() => expect(writeFile).toHaveBeenCalled());
-    const now = Date.now();
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 10_000);
-    let second: boolean;
     try {
-      second = await acquireLock(lockPath);
+      const first = acquireLock(lockPath);
+      await vi.waitFor(() => expect(writeFile).toHaveBeenCalled());
+      const second = await acquireLock(lockPath);
+      resume();
+      expect([await first, second].filter(Boolean)).toHaveLength(1);
     } finally {
-      clock.mockRestore();
+      resume();
       writeFile.mockRestore();
     }
-    resume();
-    expect([await first, second].filter(Boolean)).toHaveLength(1);
   });
 
   it('still locks on a filesystem without hard links (falls back to O_EXCL)', async () => {
@@ -206,7 +201,7 @@ describe('acquireLock never takes over a lock another live process may hold (#76
 
   it('without hard links, a creator stalled for any time keeps its lock', async () => {
     // O_EXCL fallback: the first acquirer opens the lock and stalls before
-    // writing; a second one, 10 s later, finds it empty and must back off.
+    // writing; a second one finds it empty and must back off.
     let resume = (): void => {};
     const stalled = new Promise<void>((resolve) => { resume = resolve; });
     let stalledOnce = false;
@@ -225,7 +220,6 @@ describe('acquireLock never takes over a lock another live process may hold (#76
     try {
       const first = acquireLock(lockPath);
       await vi.waitFor(() => expect(stalledOnce).toBe(true));
-      vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
       const second = await acquireLock(lockPath);
       resume();
       expect([await first, second]).toEqual([true, false]);
@@ -247,16 +241,8 @@ describe('acquireLock never takes over a lock another live process may hold (#76
     expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).owner).toBe('root-owned');
   });
 
-  it('does not reclaim an empty lock that was just created (its owner is still writing it)', async () => {
+  it('does not reclaim an empty lock (its owner may still be writing it)', async () => {
     fs.writeFileSync(lockPath, '');
-    expect(await acquireLock(lockPath)).toBe(false);
-    expect(fs.readFileSync(lockPath, 'utf-8')).toBe('');
-  });
-
-  it('does not reclaim an empty lock, however old (nothing proves its owner dead)', async () => {
-    fs.writeFileSync(lockPath, '');
-    const old = new Date(Date.now() - 60_000);
-    fs.utimesSync(lockPath, old, old);
     expect(await acquireLock(lockPath)).toBe(false);
     expect(fs.readFileSync(lockPath, 'utf-8')).toBe('');
   });

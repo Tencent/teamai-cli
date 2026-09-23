@@ -756,7 +756,8 @@ describe('acquireLock', () => {
   });
 
   it('returns false when a live process holds the lock', async () => {
-    mockedFse.writeFile.mockRejectedValue(eexist());
+    mockedFse.link.mockImplementation((_tmp: string, target: string) =>
+      target === '/tmp/test-lock' ? Promise.reject(eexist()) : Promise.resolve(undefined));
     // Our own PID is alive → process.kill(pid, 0) succeeds → not stale.
     mockedFse.readFile.mockResolvedValue(JSON.stringify({ pid: process.pid, owner: 'x' }));
 

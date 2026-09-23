@@ -130,8 +130,8 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
      holder returns "busy". Anything that cannot name a dead owner is held (#760): a
      lock that cannot be read (`EACCES`), an empty or partly written one (the `wx`
      fallback and older teamai open the file before writing), and a pid owned by another
-     user (`EPERM`). Such a lock left by a crash stays until removed by hand, and a
-     warning names it. A lock that vanished before it could be read gets one more
+     user (`EPERM`). A lock that names no owner, or cannot be read, stays until
+     removed by hand if a crash left it, and a warning names it. A lock that vanished before it could be read gets one more
      exclusive create instead (a third process may already have re-created it).
    - Migration skips the locks' transient artifacts (`<lock>.<uuid>.tmp`, `.sentinel`
      and its temps, `.new-<uuid>`) along with the locks themselves.

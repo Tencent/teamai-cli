@@ -240,8 +240,8 @@ function parseLockContent(content: string): { pid: number; owner?: string } | nu
  * another user's 0600 lock), an empty or partly written one (its creator may
  * still be writing it: the O_EXCL fallback and older teamai open the file
  * before writing), and a pid that exists but belongs to another user (EPERM).
- * Such a lock left by a crash stays until removed by hand, so it is named in a
- * warning.
+ * A lock that names no owner, or cannot be read, stays until removed by hand
+ * if a crash left it, so it is named in a warning.
  */
 async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
   let content: string;
@@ -373,11 +373,11 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
  * check-then-write, where two processes could both observe "no lock" and both
  * succeed.
  *
- * Reclaiming a STALE lock (dead owner / unparseable content) is serialized behind
- * a reclaim sentinel and completed with an atomic rename-into-place, so concurrent
- * reclaimers cannot each end up believing they hold the lock. (A residual, benign
- * window exists only if the reclaiming process itself crashes mid-reclaim; the
- * sentinel's dead-pid recovery bounds that.)
+ * Reclaiming a STALE lock (its owner is provably dead; see lockState) is serialized
+ * behind a reclaim sentinel and completed with an atomic rename-into-place, so
+ * concurrent reclaimers cannot each end up believing they hold the lock. (A
+ * residual window exists only if the reclaiming process itself dies mid-reclaim:
+ * stealing its dead-pid sentinel is not yet race-free, see #760.)
  */
 export async function acquireLock(lockPath?: string): Promise<boolean> {
   const resolved = lockPath ?? expandHome(getUpdateLockPath());
