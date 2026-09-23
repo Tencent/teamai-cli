@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -142,6 +142,10 @@ vi.mock('../project-agent-root.js', () => ({
 
 import { buildHandlerRegistry, buildVotesNudge, filterHandlersForConfig, type HandlerRegistration } from '../hook-handlers.js';
 import { createDispatcher } from '../hook-dispatch.js';
+import type { LocalConfig } from '../types.js';
+
+/** The scope hook-dispatch resolved for the hook's cwd, handed to every handler. */
+const scope: LocalConfig = { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user', additionalRoles: [] };
 
 // ── Tests ────────────────────────────────────────────────
 
@@ -197,7 +201,7 @@ describe('hook-handlers registry', () => {
       (r) => r.event === 'session-start' && r.handler.name === 'pull',
     )!.handler;
 
-    await handler.execute({ session_id: 's-pull', cwd: '/tmp/some-project' }, 'claude');
+    await handler.execute({ session_id: 's-pull', cwd: '/tmp/some-project' }, 'claude', null);
 
     expect(mockSeedProjectAgentRoot).toHaveBeenCalledWith('claude', '/tmp/some-project');
     expect(mockPull).toHaveBeenCalledWith({ silent: true });
@@ -217,7 +221,7 @@ describe('hook-handlers registry', () => {
       (r) => r.event === 'session-start' && r.handler.name === 'pull',
     )!.handler;
 
-    await handler.execute({ workspace_roots: ['/tmp/cursor-project'] }, 'cursor');
+    await handler.execute({ workspace_roots: ['/tmp/cursor-project'] }, 'cursor', null);
 
     expect(mockSeedProjectAgentRoot).toHaveBeenCalledWith('cursor', '/tmp/cursor-project');
   });
@@ -230,7 +234,7 @@ describe('hook-handlers registry', () => {
 
     await handler.execute(
       { cwd: '/from-cwd', workspace_roots: ['/from-roots'] },
-      'claude',
+      'claude', null,
     );
 
     expect(mockSeedProjectAgentRoot).toHaveBeenCalledWith('claude', '/from-cwd');
@@ -260,7 +264,7 @@ describe('hook-handlers registry', () => {
     const originalEnv = process.env.CLAUDE_SESSION_ID;
     delete process.env.CLAUDE_SESSION_ID;
     try {
-      const result = await handler.execute({ cwd: '/tmp/some-project' }, 'claude');
+      const result = await handler.execute({ cwd: '/tmp/some-project' }, 'claude', null);
       expect(result).toBeNull();
       expect(mockContributeCheckForSession).toHaveBeenCalledOnce();
       const [sessionId, cwd] = mockContributeCheckForSession.mock.calls[0];
@@ -282,7 +286,7 @@ describe('hook-handlers registry', () => {
 
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: null });
 
-    await handler.execute({ session_id: 'sid-abc', cwd: '/x' }, 'claude');
+    await handler.execute({ session_id: 'sid-abc', cwd: '/x' }, 'claude', null);
     // transcriptPath is the third arg; absent from this stdin so it is undefined.
     expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', undefined, false);
   });
@@ -297,7 +301,7 @@ describe('hook-handlers registry', () => {
 
     await handler.execute(
       { session_id: 'sid-abc', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', null,
     );
     expect(mockContributeCheckForSession).toHaveBeenCalledWith('sid-abc', '/x', '/t/transcript.jsonl', false);
   });
@@ -310,7 +314,7 @@ describe('hook-handlers registry', () => {
 
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: '[teamai] hello' });
 
-    const result = await handler.execute({ session_id: 's', cwd: '/x' }, 'cursor');
+    const result = await handler.execute({ session_id: 's', cwd: '/x' }, 'cursor', null);
     expect(result).not.toBeNull();
     const parsed = JSON.parse(result!);
     expect(parsed.followup_message).toContain('[teamai] hello');
@@ -326,7 +330,7 @@ describe('hook-handlers registry', () => {
 
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: '[teamai] hello' });
 
-    const result = await handler.execute({ session_id: 's', cwd: '/x' }, 'claude');
+    const result = await handler.execute({ session_id: 's', cwd: '/x' }, 'claude', null);
     const parsed = JSON.parse(result!);
     expect(parsed.hookSpecificOutput.additionalContext).toBe('[teamai] hello');
   });
@@ -341,7 +345,7 @@ describe('hook-handlers registry', () => {
     // returns hint:null (it persisted the hint as pendingHint itself).
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: null });
 
-    const result = await handler.execute({ session_id: 's1', cwd: '/x' }, tool);
+    const result = await handler.execute({ session_id: 's1', cwd: '/x' }, tool, null);
     expect(result).toBeNull();
     expect(mockContributeCheckForSession).toHaveBeenCalledWith('s1', '/x', undefined, true);
   });
@@ -354,7 +358,7 @@ describe('hook-handlers registry', () => {
 
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: '[teamai] do share' });
 
-    const result = await handler.execute({ session_id: 's2', cwd: '/x' }, 'claude');
+    const result = await handler.execute({ session_id: 's2', cwd: '/x' }, 'claude', null);
     expect(result).not.toBeNull();
     expect(result).toContain('do share');
     // claude is not a stash tool: called with stash=false.
@@ -372,7 +376,7 @@ describe('hook-handlers registry', () => {
     });
     mockContributeCheckForSession.mockClear();
 
-    const result = await handler.execute({ session_id: 's3', cwd: '/x' }, 'claude');
+    const result = await handler.execute({ session_id: 's3', cwd: '/x' }, 'claude', null);
     expect(result).toBeNull();
     expect(mockContributeCheckForSession).not.toHaveBeenCalled();
   });
@@ -388,7 +392,7 @@ describe('hook-handlers registry', () => {
     });
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: '[teamai] do share' });
 
-    const result = await handler.execute({ session_id: 's4', cwd: '/x' }, 'claude');
+    const result = await handler.execute({ session_id: 's4', cwd: '/x' }, 'claude', null);
     expect(result).toContain('do share');
   });
 
@@ -403,7 +407,7 @@ describe('hook-handlers registry', () => {
     });
     mockContributeCheckForSession.mockClear();
 
-    const result = await handler.execute({ session_id: 's3b', cwd: '/x' }, 'claude');
+    const result = await handler.execute({ session_id: 's3b', cwd: '/x' }, 'claude', null);
     expect(result).toBeNull();
     expect(mockContributeCheckForSession).not.toHaveBeenCalled();
   });
@@ -419,7 +423,7 @@ describe('hook-handlers registry', () => {
     });
     mockContributeCheckForSession.mockClear();
 
-    const result = await handler.execute({ session_id: 's3c', cwd: '/x' }, 'claude');
+    const result = await handler.execute({ session_id: 's3c', cwd: '/x' }, 'claude', null);
     expect(result).toBeNull();
     expect(mockContributeCheckForSession).not.toHaveBeenCalled();
   });
@@ -435,7 +439,7 @@ describe('hook-handlers registry', () => {
     mockAutoDetectInit.mockRejectedValueOnce(new NotInitializedError('teamai is not initialized. Run `teamai init` first.'));
     mockContributeCheckForSession.mockClear();
 
-    const result = await handler.execute({ session_id: 's5', cwd: '/x' }, 'claude');
+    const result = await handler.execute({ session_id: 's5', cwd: '/x' }, 'claude', null);
     expect(result).toBeNull();
     expect(mockContributeCheckForSession).not.toHaveBeenCalled();
   });
@@ -451,7 +455,7 @@ describe('hook-handlers registry', () => {
     mockContributeCheckForSession.mockClear();
 
     // An existing directory: a deleted one holds no project config to be unreadable.
-    const result = await handler.execute({ session_id: 's5c', cwd: process.cwd() }, 'claude');
+    const result = await handler.execute({ session_id: 's5c', cwd: process.cwd() }, 'claude', null);
     expect(result).toBeNull();
     expect(mockContributeCheckForSession).not.toHaveBeenCalled();
   });
@@ -467,7 +471,7 @@ describe('hook-handlers registry', () => {
       cwd === undefined ? '/launcher/.teamai/config.yaml: bad indentation' : null);
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: '[teamai] do share' });
     try {
-      const result = await handler.execute({ session_id: 's5e', cwd: process.cwd() }, 'claude');
+      const result = await handler.execute({ session_id: 's5e', cwd: process.cwd() }, 'claude', null);
       expect(result).toContain('do share');
     } finally {
       mockFindUnreadableProjectConfig.mockReset();
@@ -487,7 +491,7 @@ describe('hook-handlers registry', () => {
     )!.handler;
     mockContributeCheckForSession.mockClear();
     try {
-      const result = await handler.execute({ session_id: 's5f', cwd: path.join(file, 'sub') }, 'claude');
+      const result = await handler.execute({ session_id: 's5f', cwd: path.join(file, 'sub') }, 'claude', null);
       expect(result).toBeNull();
       expect(mockContributeCheckForSession).not.toHaveBeenCalled();
     } finally {
@@ -506,7 +510,7 @@ describe('hook-handlers registry', () => {
     });
     mockContributeCheckForSession.mockClear();
 
-    const result = await handler.execute({ session_id: 's5d', cwd: '/x' }, 'claude');
+    const result = await handler.execute({ session_id: 's5d', cwd: '/x' }, 'claude', null);
     expect(result).toBeNull();
     expect(mockContributeCheckForSession).not.toHaveBeenCalled();
   });
@@ -520,7 +524,7 @@ describe('hook-handlers registry', () => {
     mockAutoDetectInit.mockRejectedValueOnce(new Error('Team config (teamai.yaml) not found. Check your repo path.'));
     mockContributeCheckForSession.mockClear();
 
-    const result = await handler.execute({ session_id: 's5b', cwd: '/x' }, 'claude');
+    const result = await handler.execute({ session_id: 's5b', cwd: '/x' }, 'claude', null);
     expect(result).toBeNull();
     expect(mockContributeCheckForSession).not.toHaveBeenCalled();
   });
@@ -534,7 +538,7 @@ describe('hook-handlers registry', () => {
     process.env.TEAMAI_CONTRIBUTE_HINT_DISABLED = '1';
     mockContributeCheckForSession.mockClear();
     try {
-      const result = await handler.execute({ session_id: 's6', cwd: '/x' }, 'claude');
+      const result = await handler.execute({ session_id: 's6', cwd: '/x' }, 'claude', null);
       expect(result).toBeNull();
       expect(mockContributeCheckForSession).not.toHaveBeenCalled();
     } finally {
@@ -555,7 +559,7 @@ describe('hook-handlers registry', () => {
     mockTakePendingHint.mockResolvedValueOnce('[teamai] stashed');
     mockTakePendingVotesHint.mockResolvedValueOnce('[teamai] votes nudge');
 
-    const result = await handler.execute({ session_id: 's7', cwd: '/x' }, 'codebuddy');
+    const result = await handler.execute({ session_id: 's7', cwd: '/x' }, 'codebuddy', null);
     // The stash is consumed (so it is not delivered later) but not shown.
     expect(mockTakePendingHint).toHaveBeenCalledWith(expect.any(String));
     expect(result).not.toBeNull();
@@ -571,7 +575,7 @@ describe('hook-handlers registry', () => {
 
     mockTakePendingHint.mockResolvedValueOnce('[teamai] stashed');
 
-    const result = await handler.execute({ session_id: 's3', cwd: '/x' }, tool);
+    const result = await handler.execute({ session_id: 's3', cwd: '/x' }, tool, null);
     expect(result).not.toBeNull();
     const parsed = JSON.parse(result!);
     expect(parsed.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
@@ -584,7 +588,7 @@ describe('hook-handlers registry', () => {
       (r) => r.event === 'prompt-submit' && r.handler.name === 'package-pending-hint',
     )!.handler;
 
-    const result = await handler.execute({ session_id: 's4', cwd: '/x' }, 'claude');
+    const result = await handler.execute({ session_id: 's4', cwd: '/x' }, 'claude', null);
     expect(result).toBeNull();
     expect(mockTakePendingHint).not.toHaveBeenCalled();
     expect(mockTakePendingPackageHint).toHaveBeenCalledWith('s4');
@@ -598,7 +602,7 @@ describe('hook-handlers registry', () => {
 
     mockTakePendingHint.mockResolvedValueOnce(null);
 
-    const result = await handler.execute({ session_id: 's5', cwd: '/x' }, 'codebuddy');
+    const result = await handler.execute({ session_id: 's5', cwd: '/x' }, 'codebuddy', null);
     expect(result).toBeNull();
   });
 
@@ -608,7 +612,7 @@ describe('hook-handlers registry', () => {
       (r) => r.event === 'prompt-submit' && r.handler.name === 'package-pending-hint',
     )!.handler;
 
-    const output = await handler.execute({ session_id: 's6', cwd: '/x' }, 'claude');
+    const output = await handler.execute({ session_id: 's6', cwd: '/x' }, 'claude', null);
 
     expect(JSON.parse(output!).hookSpecificOutput.additionalContext)
       .toBe('Run `teamai packages`');
@@ -786,7 +790,7 @@ describe('hook-handlers registry', () => {
   it('TodoWrite gets no recall nudge where teamai is not set up (#748)', async () => {
     const registry = buildHandlerRegistry();
     expect(registry.some((r) => r.matcher === 'TodoWrite' && r.handler.name === 'todowrite-hint')).toBe(true);
-    const dispatcher = createDispatcher({ handlers: filterHandlersForConfig(registry, null) });
+    const dispatcher = createDispatcher({ handlers: filterHandlersForConfig(registry, null), localConfig: null });
 
     const result = await dispatcher.dispatch(
       'post-tool-use', 'TodoWrite', { session_id: 'td-748', tool_name: 'TodoWrite' }, 'claude', 'foreground',
@@ -810,14 +814,14 @@ describe('hook-handlers registry', () => {
 
     const result1 = await handler.execute(
       { session_id: 'sid-votes-1', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', scope,
     );
     expect(result1).not.toBeNull();
 
     // Same session, same conditions — should nudge again (no marker blocks repeat)
     const result2 = await handler.execute(
       { session_id: 'sid-votes-1', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', scope,
     );
     expect(result2).not.toBeNull();
   });
@@ -835,7 +839,7 @@ describe('hook-handlers registry', () => {
 
     const result = await handler.execute(
       { session_id: 'sid-votes-2', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', scope,
     );
     expect(result).toBeNull();
   });
@@ -854,7 +858,7 @@ describe('hook-handlers registry', () => {
 
     const result = await handler.execute(
       { session_id: 'sid-votes-3', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', scope,
     );
     expect(result).toBeNull();
   });
@@ -874,7 +878,7 @@ describe('hook-handlers registry', () => {
 
     await handler.execute(
       { session_id: 'sid-filter-1', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', scope,
     );
 
     expect(mockIncrementUpvoted).toHaveBeenCalledOnce();
@@ -894,7 +898,7 @@ describe('hook-handlers registry', () => {
 
     await handler.execute(
       { session_id: 'sid-filter-2', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', scope,
     );
 
     expect(mockIncrementUpvoted).not.toHaveBeenCalled();
@@ -909,7 +913,7 @@ describe('hook-handlers registry', () => {
     reportsBranchMocks.updateReports.mockClear();
     await handler.execute(
       { session_id: 'sid-skip-reports', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', scope,
     );
     expect(reportsBranchMocks.updateReports).not.toHaveBeenCalled();
   });
@@ -932,7 +936,7 @@ describe('hook-handlers registry', () => {
 
     await handler.execute(
       { session_id: 'sid-write-reports', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', scope,
     );
 
     expect(reportsBranchMocks.updateReports).toHaveBeenCalledOnce();
@@ -952,7 +956,7 @@ describe('hook-handlers registry', () => {
 
     await handler.execute(
       { session_id: 'sid-filter-3', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', scope,
     );
 
     expect(mockIncrementUpvoted).toHaveBeenCalledOnce();
@@ -972,7 +976,7 @@ describe('hook-handlers registry', () => {
 
     await handler.execute(
       { session_id: 'sid-filter-empty-recalled', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', scope,
     );
 
     expect(mockIncrementUpvoted).not.toHaveBeenCalled();
@@ -993,7 +997,7 @@ describe('hook-handlers registry', () => {
 
     const result = await handler.execute(
       { session_id: 'sid-votes-stash', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      tool,
+      tool, scope,
     );
     // Stash path returns null (hint goes to the votes-hint sidecar)
     expect(result).toBeNull();
@@ -1016,7 +1020,7 @@ describe('hook-handlers registry', () => {
 
     const result = await handler.execute(
       { session_id: 'sid-votes-stdout', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
-      'claude',
+      'claude', scope,
     );
     expect(result).not.toBeNull();
     expect(mockStashVotesHint).not.toHaveBeenCalled();
@@ -1036,8 +1040,8 @@ describe('hook-handlers registry', () => {
       .mockResolvedValueOnce(false);
 
     const stdin = { session_id: 'sid-cursor', cwd: '/x', transcript_path: '/t/transcript.jsonl' };
-    expect(await handler.execute(stdin, 'cursor')).not.toBeNull();
-    expect(await handler.execute(stdin, 'cursor')).toBeNull();
+    expect(await handler.execute(stdin, 'cursor', scope)).not.toBeNull();
+    expect(await handler.execute(stdin, 'cursor', scope)).toBeNull();
     expect(mockClaimVotesNudge).toHaveBeenCalledTimes(2);
   });
 
@@ -1047,7 +1051,7 @@ describe('hook-handlers registry', () => {
       recalledDocIds: ['doc-a'],
     });
     mockContributeCheckForSession.mockResolvedValueOnce({ hint: 'CONTRIBUTE-HINT' });
-    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
 
     const result = await dispatcher.dispatch(
       'stop',
@@ -1073,7 +1077,7 @@ describe('hook-handlers registry', () => {
     mockTakePendingHint.mockResolvedValueOnce('[teamai] contribute hint');
     mockTakePendingVotesHint.mockResolvedValueOnce('[teamai] votes hint');
 
-    const result = await handler.execute({ session_id: 'sid-merge', cwd: '/x' }, tool);
+    const result = await handler.execute({ session_id: 'sid-merge', cwd: '/x' }, tool, scope);
     expect(result).not.toBeNull();
     const parsed = JSON.parse(result!);
     const ctx = parsed.hookSpecificOutput.additionalContext;
@@ -1090,7 +1094,7 @@ describe('hook-handlers registry', () => {
     mockTakePendingHint.mockResolvedValueOnce(null);
     mockTakePendingVotesHint.mockResolvedValueOnce('[teamai] votes only');
 
-    const result = await handler.execute({ session_id: 'sid-votes-only', cwd: '/x' }, 'codebuddy');
+    const result = await handler.execute({ session_id: 'sid-votes-only', cwd: '/x' }, 'codebuddy', scope);
     expect(result).not.toBeNull();
     const parsed = JSON.parse(result!);
     expect(parsed.hookSpecificOutput.additionalContext).toBe('[teamai] votes only');
@@ -1105,7 +1109,7 @@ describe('hook-handlers registry', () => {
     mockTakePendingHint.mockResolvedValueOnce(null);
     mockTakePendingVotesHint.mockResolvedValueOnce(null);
 
-    const result = await handler.execute({ session_id: 'sid-both-absent', cwd: '/x' }, 'codebuddy');
+    const result = await handler.execute({ session_id: 'sid-both-absent', cwd: '/x' }, 'codebuddy', scope);
     expect(result).toBeNull();
   });
 });
@@ -1124,24 +1128,24 @@ describe('post-tool-use dispatch — local-agent runs detached, never blocks hos
   const stdin = { tool_name: 'Bash', tool_input: { command: 'ls' }, cwd: '/tmp/proj' };
 
   it('hasBackground is true for the post-tool-use wildcard', () => {
-    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
     expect(dispatcher.hasBackground('post-tool-use', '*')).toBe(true);
   });
 
   it('foreground pass does NOT invoke local-agent-sync (host is not blocked on HTTP)', async () => {
-    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
     await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'foreground');
     expect(mockReportAndSyncFromHook).not.toHaveBeenCalled();
   });
 
   it('background pass DOES invoke local-agent-sync (report/sync still happen)', async () => {
-    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
     await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'background');
     expect(mockReportAndSyncFromHook).toHaveBeenCalledOnce();
   });
 
   it('foreground pass still runs the fast local dashboard-report handler', async () => {
-    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
     await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'foreground');
     // dashboard-report parses the event and appends locally — it must stay inline.
     expect(mockParseHookEvent).toHaveBeenCalled();
@@ -1152,30 +1156,35 @@ describe('dashboard-report team correction keywords', () => {
   const handler = () => buildHandlerRegistry().find(
     (r) => r.event === 'prompt-submit' && r.handler.name === 'dashboard-report',
   )!.handler;
+  let teamRepo: string;
 
   beforeEach(() => {
     mockParseHookEvent.mockClear();
-    mockAutoDetectInit.mockClear();
+    teamRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-keywords-'));
   });
 
-  it('passes sharing.intervention.correctionKeywords to parseHookEvent on prompt hooks', async () => {
-    mockAutoDetectInit.mockResolvedValueOnce({
-      localConfig: { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user' },
-      teamConfig: { team: 'test', repo: '', toolPaths: {}, sharing: { intervention: { correctionKeywords: ['rehazlo'] } } },
-    });
-    await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'rehazlo' }, 'claude');
+  afterEach(() => {
+    fs.rmSync(teamRepo, { recursive: true, force: true });
+  });
+
+  const scopeWithTeam = (): LocalConfig => ({ ...scope, repo: { localPath: teamRepo, remote: '' } });
+
+  it('passes the scope\'s sharing.intervention.correctionKeywords to parseHookEvent on prompt hooks', async () => {
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'),
+      'team: test\nrepo: r\nsharing:\n  intervention:\n    correctionKeywords: [rehazlo]\n');
+    await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'rehazlo' }, 'claude', scopeWithTeam());
     expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: ['rehazlo'] });
   });
 
-  it('falls back to built-in keywords only when team config cannot be read', async () => {
-    mockAutoDetectInit.mockRejectedValueOnce(new Error('not initialized'));
-    await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'wrong' }, 'claude');
+  it('falls back to built-in keywords only when the scope\'s team config cannot be read', async () => {
+    await handler().execute({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'wrong' }, 'claude', scopeWithTeam());
     expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [] });
   });
 
-  it('does not read team config for hooks without a prompt', async () => {
-    await handler().execute({ hook_event_name: 'Stop', session_id: 's' }, 'claude');
-    expect(mockAutoDetectInit).not.toHaveBeenCalled();
+  it('uses no team keywords for hooks without a prompt', async () => {
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'),
+      'team: test\nrepo: r\nsharing:\n  intervention:\n    correctionKeywords: [rehazlo]\n');
+    await handler().execute({ hook_event_name: 'Stop', session_id: 's' }, 'claude', scopeWithTeam());
     expect(mockParseHookEvent).toHaveBeenCalledWith(expect.any(String), 'claude', { correctionKeywords: [] });
   });
 });
@@ -1205,7 +1214,7 @@ describe('webhook-dispatch handler (#701, #702)', () => {
         tool_response: 'SYNTHETIC_PRIVATE_OUTPUT',
         session_id: 'sid',
       },
-      'claude',
+      'claude', scope,
     );
 
     expect(mockSendWebhook).toHaveBeenCalledOnce();
@@ -1219,26 +1228,26 @@ describe('webhook-dispatch handler (#701, #702)', () => {
   });
 
   it('maps SessionStart to session-start (#702)', async () => {
-    await handler().execute({ hook_event_name: 'SessionStart', session_id: 'sid' }, 'claude');
+    await handler().execute({ hook_event_name: 'SessionStart', session_id: 'sid' }, 'claude', scope);
     expect(mockSendWebhook).toHaveBeenCalledOnce();
     expect(mockSendWebhook.mock.calls[0][0]).toBe('session-start');
   });
 
   it('maps Stop to session-stop (#702)', async () => {
-    await handler().execute({ hook_event_name: 'Stop', session_id: 'sid' }, 'claude');
+    await handler().execute({ hook_event_name: 'Stop', session_id: 'sid' }, 'claude', scope);
     expect(mockSendWebhook).toHaveBeenCalledOnce();
     expect(mockSendWebhook.mock.calls[0][0]).toBe('session-stop');
   });
 
   it('never emits an "unknown" event for an unmapped hook (#702)', async () => {
-    await handler().execute({ hook_event_name: 'PreToolUse', session_id: 'sid' }, 'claude');
+    await handler().execute({ hook_event_name: 'PreToolUse', session_id: 'sid' }, 'claude', scope);
     expect(mockSendWebhook).not.toHaveBeenCalled();
   });
 
   // Codex review finding 1: hosts that send camelCase hook names (Cursor/
   // CodeBuddy) were silently dropped by the PascalCase-only lookup.
   it('maps camelCase sessionStart to session-start (#702, camelCase host)', async () => {
-    await handler().execute({ hook_event_name: 'sessionStart', session_id: 'sid' }, 'cursor');
+    await handler().execute({ hook_event_name: 'sessionStart', session_id: 'sid' }, 'cursor', scope);
     expect(mockSendWebhook).toHaveBeenCalledOnce();
     expect(mockSendWebhook.mock.calls[0][0]).toBe('session-start');
   });
@@ -1256,7 +1265,7 @@ describe('webhook-dispatch handler (#701, #702)', () => {
         tool_response: 'SYNTHETIC_PRIVATE_OUTPUT',
         session_id: 'sid',
       },
-      'cursor',
+      'cursor', scope,
     );
     expect(mockSendWebhook).toHaveBeenCalledOnce();
     const [event, payload] = mockSendWebhook.mock.calls[0];
@@ -1276,7 +1285,7 @@ describe('webhook-dispatch handler (#701, #702)', () => {
         tool_response: 'const API_KEY = "SYNTHETIC_SECRET_NOT_REAL";',
         session_id: 'sid',
       },
-      'cursor',
+      'cursor', scope,
     );
     expect(mockSendWebhook).toHaveBeenCalledOnce();
     const [event, payload] = mockSendWebhook.mock.calls[0];
@@ -1297,7 +1306,7 @@ describe('webhook-dispatch handler (#701, #702)', () => {
   });
 
   it('maps SessionEnd to session-stop (#702, Copilot)', async () => {
-    await handler().execute({ hook_event_name: 'SessionEnd', session_id: 'sid' }, 'copilot');
+    await handler().execute({ hook_event_name: 'SessionEnd', session_id: 'sid' }, 'copilot', scope);
     expect(mockSendWebhook).toHaveBeenCalledOnce();
     expect(mockSendWebhook.mock.calls[0][0]).toBe('session-stop');
   });
@@ -1313,7 +1322,7 @@ describe('webhook-dispatch handler (#701, #702)', () => {
         tool_input: { command: '/etc/passwd; rm -rf /' },
         session_id: 'sid',
       },
-      'claude',
+      'claude', scope,
     );
 
     expect(mockSendWebhook).toHaveBeenCalledOnce();
@@ -1349,7 +1358,7 @@ describe('post-tool-use Skill-matcher dispatch routes Cursor SKILL.md Read to th
   });
 
   it('a Cursor Read of SKILL.md dispatched via the Skill matcher produces a skill-use webhook with {skillName}', async () => {
-    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
     await dispatcher.dispatch(
       'post-tool-use',
       'Skill',
@@ -1372,7 +1381,7 @@ describe('post-tool-use Skill-matcher dispatch routes Cursor SKILL.md Read to th
   });
 
   it('a normal Read (non-SKILL.md) dispatched via the Skill matcher produces empty skill-use data', async () => {
-    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry() });
+    const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
     await dispatcher.dispatch(
       'post-tool-use',
       'Skill',
@@ -1408,7 +1417,7 @@ describe('track-slash handler: dotted and colon skill names', () => {
 
     await handler.execute(
       { prompt: '/org.setup some args', hook_event_name: 'UserPromptSubmit' },
-      'claude',
+      'claude', null,
     );
 
     expect(appendUsageEvent).toHaveBeenCalledOnce();
@@ -1428,7 +1437,7 @@ describe('track-slash handler: dotted and colon skill names', () => {
 
     await handler.execute(
       { prompt: '/ns:deploy some args', hook_event_name: 'UserPromptSubmit' },
-      'claude',
+      'claude', null,
     );
 
     expect(appendUsageEvent).toHaveBeenCalledOnce();

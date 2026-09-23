@@ -6,16 +6,25 @@
  * The dispatcher reads STDIN once and fans out to all registered handlers.
  *
  * Design:
- *   - Handlers are pure functions: (stdin, tool) → output | null
+ *   - Handlers are pure functions: (stdin, tool, config) → output | null, where
+ *     config is the scope the dispatcher resolved for the hook's cwd
  *   - Promise.allSettled ensures one handler crash doesn't take down others
  *   - Compatible structured outputs are merged so concurrent hints are preserved
  */
+
+import type { LocalConfig } from './types.js';
 
 // ─── Public types ───────────────────────────────────────
 
 export interface HookHandler {
   name: string;
-  execute(stdin: Record<string, unknown>, tool: string): Promise<string | null>;
+  /**
+   * `config` is the scope the dispatcher resolved for the hook's cwd, or null
+   * when none applies (teamai not set up there, or its config unreadable).
+   * Handlers read their scope from it, never from the process cwd: the
+   * dispatcher's chdir into the hook's cwd can fail (#752).
+   */
+  execute(stdin: Record<string, unknown>, tool: string, config: LocalConfig | null): Promise<string | null>;
 }
 
 export interface HandlerRegistration {
@@ -51,6 +60,8 @@ export interface DispatchResult {
 
 export interface DispatcherConfig {
   handlers: HandlerRegistration[];
+  /** The scope every handler runs in; see HookHandler.execute. */
+  localConfig: LocalConfig | null;
 }
 
 export interface Dispatcher {
@@ -167,7 +178,7 @@ export function createDispatcher(config: DispatcherConfig): Dispatcher {
       const settled = await Promise.allSettled(
         matched.map((reg) => {
           const timeoutMs = reg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-          return withTimeout(reg.handler.execute(stdin, tool), timeoutMs, reg.handler.name);
+          return withTimeout(reg.handler.execute(stdin, tool, config.localConfig), timeoutMs, reg.handler.name);
         }),
       );
 

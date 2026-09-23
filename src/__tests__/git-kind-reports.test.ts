@@ -657,7 +657,7 @@ describe('skill usage stays in the scope that recorded it (#748)', () => {
   async function useSkill(cwd: string, skill: string): Promise<void> {
     const track = buildHandlerRegistry().find((r) => r.handler.name === 'track');
     if (!track) throw new Error('track handler is not registered');
-    await track.handler.execute({ session_id: `s-${skill}`, cwd, tool_name: 'Skill', tool_input: { skill } }, 'claude');
+    await track.handler.execute({ session_id: `s-${skill}`, cwd, tool_name: 'Skill', tool_input: { skill } }, 'claude', null);
   }
 
   async function reportedSkills(origin: string): Promise<string[]> {

@@ -44,18 +44,18 @@ describe('Codex Stop hint handoff with persisted session state', () => {
 
   it('keeps Stop silent, persists the hint, and delivers it only once on the next prompt', async () => {
     await seed(CONTRIBUTE_SMART_THRESHOLD + 1);
-    expect(await stop.execute(stdin, 'codex')).toBeNull();
+    expect(await stop.execute(stdin, 'codex', null)).toBeNull();
     const state = await readContributeState(stdin.session_id);
     expect(state.hinted).toBe(true);
     expect(state.pendingHint).toContain('teamai skill get share');
-    expect(await stop.execute(stdin, 'codex')).toBeNull();
+    expect(await stop.execute(stdin, 'codex', null)).toBeNull();
     expect((await readContributeState(stdin.session_id)).pendingHint).toBe(state.pendingHint);
-    expect(JSON.parse((await prompt.execute(stdin, 'codex'))!)).toEqual({
+    expect(JSON.parse((await prompt.execute(stdin, 'codex', null))!)).toEqual({
       hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: state.pendingHint },
     });
     expect((await readContributeState(stdin.session_id)).pendingHint).toBeUndefined();
-    expect(await prompt.execute(stdin, 'codex')).toBeNull();
-    expect(await stop.execute(stdin, 'codex')).toBeNull();
+    expect(await prompt.execute(stdin, 'codex', null)).toBeNull();
+    expect(await stop.execute(stdin, 'codex', null)).toBeNull();
   });
 
   it.each(['codex', 'codex-internal', 'tcodex'])(
@@ -65,7 +65,7 @@ describe('Codex Stop hint handoff with persisted session state', () => {
       // listed, so they took the Claude branch, Codex rejected it, and the
       // stash that would have recovered the hint never ran.
       await seed(CONTRIBUTE_SMART_THRESHOLD + 1);
-      expect(await stop.execute(stdin, tool)).toBeNull();
+      expect(await stop.execute(stdin, tool, null)).toBeNull();
       expect((await readContributeState(stdin.session_id)).pendingHint).toBeTruthy();
     },
   );
@@ -74,7 +74,7 @@ describe('Codex Stop hint handoff with persisted session state', () => {
     await seed(CONTRIBUTE_SMART_THRESHOLD + 1);
 
     // Hidden path: the host shows nothing, so the model has to pass it on.
-    await stop.execute(stdin, 'codex');
+    await stop.execute(stdin, 'codex', null);
     const stashed = (await readContributeState(stdin.session_id)).pendingHint!;
     expect(stashed).toContain('verbatim');
     expect(stashed).toContain('[teamai]');
@@ -89,25 +89,25 @@ describe('Codex Stop hint handoff with persisted session state', () => {
       lastEvaluated: Date.now(),
       friction: { interrupt: 0, toolReject: 0, correction: 1, toolError: 0 },
     });
-    const payload = JSON.parse((await stop.execute(fresh, 'claude'))!);
+    const payload = JSON.parse((await stop.execute(fresh, 'claude', null))!);
     expect(payload.hookSpecificOutput.additionalContext).toContain('[teamai]');
     expect(payload.hookSpecificOutput.additionalContext).not.toContain('verbatim');
   });
 
   it('does not queue or deliver a hint below threshold', async () => {
     await seed(CONTRIBUTE_SMART_THRESHOLD - 1);
-    expect(await stop.execute(stdin, 'codex')).toBeNull();
+    expect(await stop.execute(stdin, 'codex', null)).toBeNull();
     expect((await readContributeState(stdin.session_id)).hinted).toBeFalsy();
-    expect(await prompt.execute(stdin, 'codex')).toBeNull();
+    expect(await prompt.execute(stdin, 'codex', null)).toBeNull();
   });
 
   it('drops a queued hint if the user contributed before the next prompt', async () => {
     await seed(CONTRIBUTE_SMART_THRESHOLD + 1);
-    await stop.execute(stdin, 'codex');
+    await stop.execute(stdin, 'codex', null);
     await writeContributeState(stdin.session_id, {
       ...await readContributeState(stdin.session_id), contributed: true,
     });
-    expect(await prompt.execute(stdin, 'codex')).toBeNull();
+    expect(await prompt.execute(stdin, 'codex', null)).toBeNull();
     expect((await readContributeState(stdin.session_id)).pendingHint).toBeUndefined();
   });
 });

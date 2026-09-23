@@ -233,7 +233,7 @@ describe('team package distribution flow', () => {
     );
     const hint = await sessionStartHint!.handler.execute(
       { cwd: teammateProject },
-      'claude',
+      'claude', null,
     );
     expect(hint).toContain('teamai packages');
 

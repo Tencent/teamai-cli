@@ -1,8 +1,8 @@
 import { createHmac } from 'node:crypto';
-import { autoDetectInit } from './config.js';
+import { autoDetectInit, loadTeamConfig } from './config.js';
 import { log } from './utils/logger.js';
 import { redactWithEnv } from './utils/redact.js';
-import { getWebhookSharing, type WebhookEndpoint, type WebhookConfig, type WebhookPayload } from './types.js';
+import { getWebhookSharing, type LocalConfig, type WebhookEndpoint, type WebhookConfig, type WebhookPayload } from './types.js';
 import { formatFeishuMessage, formatWecomMessage, formatGenericJson } from './webhook-formatters.js';
 
 /**
@@ -133,10 +133,13 @@ function formatMessage(
 }
 
 /**
- * Load webhook config from team config.
+ * Load webhook config from the team config of `localConfig`'s scope, or of the
+ * scope detected from the process cwd when none is given.
  */
-export async function loadWebhookConfig(): Promise<WebhookConfig> {
-  const { teamConfig } = await autoDetectInit();
+export async function loadWebhookConfig(localConfig?: LocalConfig): Promise<WebhookConfig> {
+  if (!localConfig) return getWebhookSharing((await autoDetectInit()).teamConfig);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  if (!teamConfig) throw new Error(`No usable team config (teamai.yaml) in ${localConfig.repo.localPath}.`);
   return getWebhookSharing(teamConfig);
 }
 

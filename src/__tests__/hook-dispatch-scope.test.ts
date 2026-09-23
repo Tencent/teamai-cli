@@ -17,6 +17,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined) }));
 vi.mock('../update.js', () => ({ doUpdate: vi.fn(async () => undefined) }));
 vi.mock('../local-agent.js', () => ({ reportAndSyncFromHook: vi.fn(async () => null) }));
+vi.mock('../utils/reports-branch.js', () => ({ updateReports: vi.fn(async () => undefined) }));
 
 const { hookDispatchCli } = await import('../hook-dispatch-cli.js');
 const { resolveProjectDataHome, saveLocalConfigForScope } = await import('../config.js');
@@ -102,6 +103,55 @@ describe('hook runs and the scope they belong to (#748)', () => {
     await hook('post-tool-use', 'Skill', { session_id: 'sid-g', cwd: gone, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-g' } });
 
     expect(fs.readFileSync(path.join(teamaiHome(), 'usage.jsonl'), 'utf-8')).toContain('skill-g');
+  });
+
+  it('handlers follow the scope the dispatcher resolved, not the directory the hook process runs in (#752)', async () => {
+    userScope();
+    fs.writeFileSync(path.join(teamaiHome(), 'team-repo', 'teamai.yaml'), 'team: user-team\nrepo: https://example.test/acme/user-team.git\n');
+    const root = gitRepo('project-a');
+    const dataHome = await resolveProjectDataHome(root);
+    const teamRepoA = path.join(dataHome, 'team-repo');
+    fs.mkdirSync(teamRepoA, { recursive: true });
+    fs.writeFileSync(path.join(teamRepoA, 'teamai.yaml'), [
+      'team: team-a',
+      'repo: https://example.test/acme/team-a.git',
+      'sharing:',
+      '  intervention:',
+      '    correctionKeywords: [rehazlo]',
+      '  webhooks:',
+      '    enabled: true',
+      '    endpoints:',
+      '      - { url: "https://hooks.team-a.test/in", type: json, retries: 0 }',
+      '',
+    ].join('\n'));
+    await saveLocalConfigForScope({
+      repo: { localPath: teamRepoA, remote: 'https://example.test/acme/team-a.git' },
+      username: 'alice', scope: 'project', projectRoot: root, additionalRoles: [], dataHome,
+    });
+    const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+    const transcript = path.join(tmp, 'transcript.jsonl');
+    fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: [{
+      type: 'text',
+      text: '<!-- teamai:recalled-doc-ids: [doc-1] --> <!-- teamai:referenced-doc-ids: [doc-1] -->',
+    }] } }) + '\n');
+    // The session's worktree is gone, so chdir fails and the host's launch
+    // directory, project A, stays the process cwd.
+    process.chdir(root);
+    const base = { session_id: 'sid-g', cwd: path.join(tmp, 'deleted-worktree') };
+
+    try {
+      await hook('prompt-submit', '*', { ...base, hook_event_name: 'UserPromptSubmit', prompt: 'rehazlo' });
+      await hook('stop', '*', { ...base, hook_event_name: 'Stop', transcript_path: transcript });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    const events = fs.readFileSync(path.join(teamaiHome(), 'dashboard', 'events.jsonl'), 'utf-8')
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line) as { type: string; correction?: boolean });
+    expect(events.find((e) => e.type === 'prompt_submit')?.correction).toBe(false);
+    expect(fs.readdirSync(path.join(teamaiHome(), 'votes'))).toEqual(['tester.yaml']);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('a project whose config cannot be read records nothing, not even in the user scope', async () => {

@@ -426,7 +426,7 @@ export async function hookDispatchCli(
     }
     const localConfig = await resolveConfigForDir(cwd);
     const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
-    const dispatcher = createDispatcher({ handlers });
+    const dispatcher = createDispatcher({ handlers, localConfig });
 
     // Detached child: run the fire-and-forget handlers, then exit. No output is
     // wired back to the host (the parent already returned).

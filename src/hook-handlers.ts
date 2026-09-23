@@ -134,18 +134,20 @@ const updateHandler: HookHandler = {
 };
 
 /**
- * Team course-correction keywords for the current project. The dispatcher has
- * already chdir'd to the hook payload's cwd (hook-dispatch-cli), so
- * autoDetectInit() resolves the right project. Only prompt hooks pay for the config read; an
- * unreadable config means "built-in keywords only".
+ * Team course-correction keywords of the hook's scope. Only prompt hooks pay for
+ * the team config read; no scope or an unreadable team config means "built-in
+ * keywords only".
  */
-async function teamCorrectionKeywords(stdin: Record<string, unknown>): Promise<readonly string[]> {
-  if (typeof stdin.prompt !== 'string') return [];
+async function teamCorrectionKeywords(
+  stdin: Record<string, unknown>,
+  config: LocalConfig | null,
+): Promise<readonly string[]> {
+  if (typeof stdin.prompt !== 'string' || !config) return [];
   try {
-    const { autoDetectInit } = await import('./config.js');
+    const { loadTeamConfig } = await import('./config.js');
     const { getInterventionSharing } = await import('./types.js');
-    const { teamConfig } = await autoDetectInit();
-    return getInterventionSharing(teamConfig).correctionKeywords;
+    const teamConfig = await loadTeamConfig(config.repo.localPath);
+    return teamConfig ? getInterventionSharing(teamConfig).correctionKeywords : [];
   } catch {
     return [];
   }
@@ -170,11 +172,11 @@ async function userModelAliases(stdin: Record<string, unknown>): Promise<Record<
 
 const dashboardReportHandler: HookHandler = {
   name: 'dashboard-report',
-  async execute(stdin, tool) {
+  async execute(stdin, tool, config) {
     const { parseHookEvent, appendEvent, compactEvents } = await import('./dashboard-collector.js');
     const raw = JSON.stringify(stdin);
     const event = await parseHookEvent(raw, tool, {
-      correctionKeywords: await teamCorrectionKeywords(stdin),
+      correctionKeywords: await teamCorrectionKeywords(stdin, config),
       modelAliases: await userModelAliases(stdin),
     });
     if (event) {
@@ -346,8 +348,8 @@ const packagePendingHintHandler: HookHandler = {
 
 const votesSyncHandler: HookHandler = {
   name: 'votes-sync',
-  async execute(stdin, tool) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
+  async execute(stdin, tool, localConfig) {
+    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !localConfig) return null;
 
     const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : null;
     if (!transcriptPath) return null;
@@ -355,12 +357,8 @@ const votesSyncHandler: HookHandler = {
     try {
       const { parseTranscriptForVotes } = await import('./transcript-parser.js');
       const { incrementUpvoted, syncVotesToTeam } = await import('./votes.js');
-      const { autoDetectInit } = await import('./config.js');
 
       const voteData = await parseTranscriptForVotes(transcriptPath);
-      // autoDetectInit picks project scope when present (so self-mode configs are
-      // honored), falling back to user scope otherwise.
-      const { localConfig } = await autoDetectInit();
       const { getUserVotesDir } = await import('./types.js');
       const votesDir = getUserVotesDir();
       const votePath = path.join(votesDir, `${localConfig.username}.yaml`);
@@ -566,11 +564,12 @@ async function buildWebhookData(
 /** Webhook notification handler — sends events to configured endpoints. */
 const webhookHandler: HookHandler = {
   name: 'webhook-dispatch',
-  async execute(stdin, tool) {
+  async execute(stdin, tool, localConfig) {
+    if (!localConfig) return null;
     const { sendWebhook, loadWebhookConfig } = await import('./webhook.js');
 
     try {
-      const config = await loadWebhookConfig();
+      const config = await loadWebhookConfig(localConfig);
       if (!config.enabled || config.endpoints.length === 0) return null;
 
       const hookEventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name : '';
