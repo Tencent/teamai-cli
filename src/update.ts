@@ -227,28 +227,54 @@ function parseLockContent(content: string): { pid: number; owner?: string } | nu
   }
 }
 
+/** How long an empty lock file is presumed to be mid-write by a live owner. */
+const EMPTY_LOCK_GRACE_MS = 5_000;
+
 /**
- * Inspect the lock at `resolved` and report whether it is stale — its owning
- * process is gone, or its contents are unparseable (so no live owner can be
- * confirmed). A missing file is also "stale" (nothing holds it). This is a pure
- * read; it never mutates the lock.
+ * Inspect the lock at `resolved`: held by a live process, stale (its owning
+ * process is gone, or its contents are unparseable, so no live owner can be
+ * confirmed), or missing. This is a pure read; it never mutates the lock.
+ *
+ * Only a verdict of stale lets a reclaimer rename over the lock, so a doubt
+ * never reads as stale (#760): an empty file is being written by its creator
+ * (`exclusiveCreate` opens the file before writing it), unless it has stayed
+ * empty past the grace period (its owner died in between).
  */
-async function isLockStale(resolved: string): Promise<boolean> {
+async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
   let content: string;
   try {
     content = await fse.readFile(resolved, 'utf-8');
-  } catch {
-    // File vanished between EEXIST and read — treat as reclaimable.
-    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'stale';
+  }
+  if (!content.trim()) {
+    try {
+      return Date.now() - (await fse.stat(resolved)).mtimeMs > EMPTY_LOCK_GRACE_MS ? 'stale' : 'live';
+    } catch {
+      return 'missing';
+    }
   }
   const parsed = parseLockContent(content);
-  if (!parsed) return true; // unparseable → no confirmable live owner
+  if (!parsed) return 'stale'; // unparseable → no confirmable live owner
   try {
     process.kill(parsed.pid, 0);
-    return false; // process alive → lock genuinely held
+    return 'live'; // process alive → lock genuinely held
   } catch {
-    return true; // ESRCH → owning process is gone
+    return 'stale'; // ESRCH → owning process is gone
   }
+}
+
+/**
+ * Create the lock, or report who has it. A lock released between the failed
+ * create and the read gets one more create: renaming over it could replace a
+ * lock a third process just made, and reporting busy would turn a free lock
+ * away (#760).
+ */
+async function createOrInspect(resolved: string, payload: string): Promise<'acquired' | 'live' | 'stale'> {
+  if (await exclusiveCreate(resolved, payload)) return 'acquired';
+  const state = await lockState(resolved);
+  if (state !== 'missing') return state;
+  return (await exclusiveCreate(resolved, payload)) ? 'acquired' : 'live';
 }
 
 /**
@@ -302,7 +328,7 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
   } satisfies LockPayload);
   if (await exclusiveCreate(sentinel, payload)) return true;
   // Sentinel is held. Only reclaim it if its holder is gone.
-  if (!(await isLockStale(sentinel))) return false;
+  if ((await lockState(sentinel)) !== 'stale') return false;
   try {
     await fse.rename(sentinel, `${sentinel}.reclaim-${owner}`);
   } catch {
@@ -342,24 +368,26 @@ export async function acquireLock(lockPath?: string): Promise<boolean> {
   }
 
   try {
-    // Fast path: no lock present.
-    if (await exclusiveCreate(resolved, payload)) {
+    // Fast path: no lock present. A live holder means busy; only a stale lock
+    // may be reclaimed.
+    const first = await createOrInspect(resolved, payload);
+    if (first === 'acquired') {
       heldLockOwners.set(resolved, owner);
       return true;
     }
-    // A lock exists. A live holder means busy; only a stale one may be reclaimed.
-    if (!(await isLockStale(resolved))) return false;
+    if (first === 'live') return false;
 
     // Serialize the reclaim so only one process takes over the stale lock.
     const sentinel = `${resolved}.sentinel`;
     if (!(await acquireReclaimSentinel(sentinel, owner))) return false;
     try {
       // Re-evaluate now that we are the sole reclaimer.
-      if (await exclusiveCreate(resolved, payload)) {
+      const second = await createOrInspect(resolved, payload);
+      if (second === 'acquired') {
         heldLockOwners.set(resolved, owner);
         return true; // stale lock had vanished
       }
-      if (!(await isLockStale(resolved))) return false; // became live under us
+      if (second === 'live') return false; // became live under us
       // Still stale and present, and no other reclaimer can race us: replace it
       // atomically (write to a temp sibling, then rename over the stale file, so
       // the lock is never momentarily absent for a fresh acquirer to slip into).

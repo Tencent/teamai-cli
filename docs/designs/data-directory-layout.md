@@ -125,7 +125,10 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
      or unparseable content). The reclaim is **serialized behind an atomically-created
      reclaim sentinel** and finished with an atomic rename-into-place, so concurrent
      reclaimers cannot each end up believing they hold the lock; a live holder returns
-     "busy".
+     "busy". Only a stale verdict allows that rename, so a doubt never reads as stale
+     (#760): an empty lock is mid-write by its creator until it has stayed empty for
+     5 s, and a lock that vanished before it could be read gets one more exclusive
+     create instead (a third process may already have re-created it).
    - `releaseLock()` returns early when this process holds no owner token for the
      path, and otherwise deletes only when the on-disk `owner` still matches the token
      this process recorded — never another process's lock.

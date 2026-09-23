@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import fse from 'fs-extra';
 import { acquireLock, releaseLock } from '../update.js';
 
 // ─── Real-filesystem tests for the atomic lock (issue #374 P0) ──────────────
@@ -93,6 +94,52 @@ describe('acquireLock (real fs)', () => {
     // After release the winner is gone and the path is re-acquirable.
     expect(fs.existsSync(lockPath)).toBe(false);
     expect(await acquireLock(lockPath)).toBe(true);
+    await releaseLock(lockPath);
+  });
+});
+
+describe('acquireLock never takes over a lock another live process may hold (#760)', () => {
+  it('does not rename over a lock it could not read (released and re-created in between)', async () => {
+    // Another process holds the lock; this one only ever sees it vanish, as when
+    // the previous holder released it and a third process re-created it between
+    // this process's failed create and its read.
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, owner: 'other', startedAt: 'x' }));
+    const readFile = vi.spyOn(fse, 'readFile').mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    try {
+      expect(await acquireLock(lockPath)).toBe(false);
+    } finally {
+      readFile.mockRestore();
+    }
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).owner).toBe('other');
+  });
+
+  it('takes a lock released between its failed create and its read, instead of reporting busy', async () => {
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, owner: 'other', startedAt: 'x' }));
+    const readFile = vi.spyOn(fse, 'readFile').mockImplementationOnce(async () => {
+      fs.rmSync(lockPath); // the holder releases it
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    try {
+      expect(await acquireLock(lockPath)).toBe(true);
+    } finally {
+      readFile.mockRestore();
+    }
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid).toBe(process.pid);
+    await releaseLock(lockPath);
+  });
+
+  it('does not reclaim an empty lock that was just created (its owner is still writing it)', async () => {
+    fs.writeFileSync(lockPath, '');
+    expect(await acquireLock(lockPath)).toBe(false);
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe('');
+  });
+
+  it('reclaims an empty lock left behind long ago (its owner died before writing it)', async () => {
+    fs.writeFileSync(lockPath, '');
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, old, old);
+    expect(await acquireLock(lockPath)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid).toBe(process.pid);
     await releaseLock(lockPath);
   });
 });
