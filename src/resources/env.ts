@@ -450,9 +450,10 @@ export class EnvHandler extends ResourceHandler {
    * a second spelling of this choice would check `.bashrc` while the pull
    * wrote `.zshrc`, and report a correct install as broken. Delegates to the
    * shared `utils/shell-profile.js` so `teamai uninstall` resolves the same
-   * file too (#682), and stays on whichever candidate already carries this
-   * scope's block rather than re-deriving it from scratch every pull (#693
-   * review round 7).
+   * file too (#682), and follows the chain of files the order-based pick
+   * actually `source`s to reuse a candidate that already carries this
+   * scope's block, rather than injecting a duplicate every time a new file
+   * enters that chain (#693 review rounds 7-9).
    */
   detectShellProfile(envShPath: string, platform: NodeJS.Platform = process.platform): Promise<string> {
     return resolveActiveShellProfile(envShPath, platform);

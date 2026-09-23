@@ -610,6 +610,22 @@ export const PendingPushItemSchema = z.object({
   relativePath: z.string(),
   /** Skill namespace chosen at push time, reapplied when the PR is updated. */
   namespace: z.string().optional(),
+  /**
+   * True when this push PLACED the resource: a root-authored rule or agent
+   * written under `<root>/<ns>/`. Once `relativePath` is on the default
+   * branch — the PR merged — it becomes a `placedRules`/`placedAgents` record
+   * (`reconcilePlacementRecords`). Until then nothing records it, so a PR
+   * closed unmerged leaves no record behind, branch deleted or not.
+   */
+  placed: z.boolean().optional(),
+  /**
+   * Git blob id of the file this push wrote at `relativePath`, for a placed
+   * item. Landing is proven by that blob appearing in the default branch's
+   * history for the path after the entry's `base` — not by the path merely
+   * existing, which another
+   * member's unrelated file would also satisfy.
+   */
+  blob: z.string().optional(),
 });
 
 /**
@@ -624,6 +640,12 @@ export const PendingPushSchema = z.object({
   branch: z.string(),
   prUrl: z.string().nullable().default(null),
   createdAt: z.string(),
+  /**
+   * Default-branch commit the branch was built on. A placed item's `blob`
+   * proves landing only in commits after it: the same content may have sat
+   * at that path before this push, and that history proves nothing about it.
+   */
+  base: z.string().optional(),
   items: z.array(PendingPushItemSchema).default([]),
 });
 
@@ -642,6 +664,39 @@ export const StateSchema = z.object({
   /** Tool targets that completed the last inherited user-resource pull. */
   lastInheritedPullTargets: z.array(z.string()).optional(),
   pushedRules: z.array(z.string()).default([]),
+  /**
+   * Where push placed each root-level local rule inside the team repo, by rule
+   * name, e.g. `{ "my-rule": "rules/fe-know/my-rule.md" }`. The author's copy
+   * stays at the tool's rules root after push, so without this record the next
+   * scan would read it as a brand-new rule. Only a rule this machine pushed is
+   * recorded: an unrelated local rule that merely shares a basename with a
+   * namespaced team rule has no entry and is never matched to it. Optional
+   * for the same reason as `coAuthorManaged`; absent reads as an empty map.
+   */
+  placedRules: z.record(z.string(), z.string()).optional(),
+  /**
+   * Where push placed each new agent inside the team repo, by agent name, e.g.
+   * `{ "vr": "agents/fe-agents/vr.yaml" }`. `AgentsHandler.scanLocalForPush`
+   * only accepts a team source whose namespace this directory has ACTIVE, so
+   * without this record an author who published an agent with `--role`/
+   * `--project` could never edit it again: the file they created reads as
+   * inactive and the push is skipped. Same shape and same caveats as
+   * `placedRules`.
+   */
+  placedAgents: z.record(z.string(), z.string()).optional(),
+  /**
+   * Default-branch commit the placement records were last checked against. A
+   * record whose file was deleted after it is dropped even if something is at
+   * that path again: whatever is there now is somebody else's.
+   */
+  placementsCheckedAt: z.string().optional(),
+  /**
+   * `placedAgents` records dropped because the team deleted their file, by
+   * agent name. The author's flattened copy stood for that namespaced agent, so
+   * once it is tombstoned the copy is the removed agent's, even though no
+   * record or active namespace says so any longer (`AgentsHandler.removedStems`).
+   */
+  retiredPlacedAgents: z.record(z.string(), z.string()).optional(),
   pushedSkills: z.array(z.string()).default([]),
   pushedEnvVars: z.array(z.string()).default([]),
   /** Push branches whose PR is still open — see PendingPushSchema. */
@@ -707,6 +762,13 @@ export interface ResourceDiff {
 export interface DeliveryTarget {
   tool: string;
   dest: string;
+  /**
+   * A path this delivery makes redundant, removed once `dest` is written: a
+   * rule this machine placed in a namespace is delivered onto the author's
+   * root copy, and the `<ns>/<name>` copy an earlier pull wrote is the same
+   * rule twice.
+   */
+  supersedes?: string;
   /**
    * The exact bytes `pullItem` writes at `dest`, for a handler that renders
    * its destination rather than copying a tree there. It is what tells a copy
@@ -1666,6 +1728,14 @@ export function isAgentDisabled(localConfig: { disabledAgents?: string[] }, tool
  * the team scoped its opt-in with `--agent` (undefined whitelist = all
  * installed tools).
  */
+/**
+ * Synthetic toolPaths key used only to make `teamai push` scan the active tree's
+ * .teamai/{skills,rules} in single-repo mode (see pushCore). It is never written
+ * to disk and never used by pull — the leading marker keeps it from colliding
+ * with any real agent id. It is not a tool, so tool exclusions never apply to it.
+ */
+export const SELF_KNOWLEDGE_SCAN_KEY = '__teamai_self_knowledge__';
+
 export function isAgentExcluded(
   localConfig: { disabledAgents?: string[]; enabledAgents?: string[] },
   tool: string,

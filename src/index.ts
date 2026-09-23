@@ -99,8 +99,9 @@ program
   .description('Push local resources to team repo')
   .option('--all', 'Push all without confirmation')
   .option('--skill <path>', 'Push a specific skill by path (e.g., ~/.claude/skills/hai/my-skill or skills/hai_dev/my-skill)')
-  .option('--role <id>', 'Target role namespace for pushed project skills')
-  .option('--project <id>', 'Target a project: push skills into the project\'s skills namespace (from manifest/projects.yaml)')
+  .option('--role <id>', 'Namespace for new skills, rules and agents (skills/<id>/, rules/<id>/, agents/<id>/)')
+  .option('--project <id>', "Target a project: each new resource goes to that project's namespace for its own type "
+    + '— skills, knowledge for rules, agents (from manifest/projects.yaml)')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { push } = await import('./push.js');

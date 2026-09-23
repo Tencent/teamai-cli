@@ -91,6 +91,7 @@ vi.mock('../utils/pre-push-sync.js', () => ({
 }));
 
 vi.mock('../utils/prompt.js', () => ({
+  isInteractive: vi.fn(() => true),
   askQuestion: vi.fn(async () => ''),
   askConfirmation: vi.fn(async () => true),
   askSelection: vi.fn(async (_prompt: string, count: number) =>

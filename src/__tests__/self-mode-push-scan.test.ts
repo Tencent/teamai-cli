@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
+import { execFileSync } from 'node:child_process';
 
 vi.mock('../utils/logger.js', () => ({
   log: {
@@ -16,7 +17,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { SkillsHandler } from '../resources/skills.js';
 import { RulesHandler } from '../resources/rules.js';
-import type { TeamaiConfig, LocalConfig } from '../types.js';
+import { getDataHome, type TeamaiConfig, type LocalConfig } from '../types.js';
 
 /**
  * Regression for single-repo mode: users edit team knowledge directly under
@@ -134,5 +135,39 @@ describe('single-repo mode: push scans .teamai knowledge dir', () => {
     const item = items.find((i) => i.name === 'coding-standards');
     expect(item).toBeDefined();
     expect(item!.status).toBe('new');
+  });
+
+  it('does not push an old copy of a placed rule over a newer team version', async () => {
+    // Nothing refreshes .teamai/rules/my-rule.md after it was placed at
+    // rules/fe/my-rule.md, so once a teammate edits that file the root copy is
+    // an older version nobody edited — not a change to push (#649 review).
+    const worktree = path.dirname(worktreeTeamai);
+    const run = (args: string[]) => execFileSync('git', args, { cwd: worktree, encoding: 'utf8', env: {
+      ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t',
+    } });
+    const placed = path.join(worktreeTeamai, 'rules', 'fe', 'my-rule.md');
+    run(['init', '-q', '-b', 'main']);
+    await fse.outputFile(placed, '# Rule as placed\n');
+    run(['add', '-A']); run(['commit', '-q', '-m', 'placement merged']);
+    await fse.outputFile(placed, '# Rule, improved by a teammate\n');
+    run(['add', '-A']); run(['commit', '-q', '-m', 'teammate edit']);
+    await fse.writeFile(path.join(bizRoot, '.teamai', 'rules', 'my-rule.md'), '# Rule as placed\n');
+    await fse.outputJson(path.join(getDataHome(localConfig), 'state.json'), {
+      placedRules: { 'my-rule': 'rules/fe/my-rule.md' },
+    });
+
+    const items = await new RulesHandler().scanLocalForPush(teamConfig, localConfig);
+
+    expect(items.map((i) => i.name)).not.toContain('my-rule');
+  });
+
+  it('still scans .teamai/rules when enabledAgents is set, as single-repo init always writes it', async () => {
+    // The synthetic scan source is not a tool, so the excluded-tool gate must
+    // not read it as one outside `enabledAgents` (#649 review).
+    await fse.writeFile(path.join(bizRoot, '.teamai', 'rules', 'new-rule.md'), '# New rule\n');
+
+    const items = await new RulesHandler().scanLocalForPush(teamConfig, { ...localConfig, enabledAgents: ['claude'] });
+
+    expect(items.map((i) => i.name)).toContain('new-rule');
   });
 });

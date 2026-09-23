@@ -1633,7 +1633,7 @@ export async function init(options: GlobalOptions & {
 
   log.success('teamai initialized successfully!');
   log.info('Built-in skills (e.g. team-wiki-codebase) are ready to use in your IDE now.');
-  log.info('Skills, rules, env and docs will auto-sync on each session start (via hooks).');
+  log.info('Skills, rules, env and docs auto-sync on each session start when the selected agent has active TeamAI hooks.');
   log.info('Run `teamai status` to check current config.');
 
   // Close the readline singleton so the process can exit cleanly.

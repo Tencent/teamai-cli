@@ -8,6 +8,8 @@ vi.mock('../config.js', async (importOriginal) => ({
     loadLocalConfig: vi.fn(),
     loadTeamConfig: vi.fn(),
     detectProjectConfig: vi.fn().mockResolvedValue(null),
+    // resolveDesiredAgents reads placement records to mirror what pull delivers.
+    loadStateForScope: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('../utils/fs.js', () => ({

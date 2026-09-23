@@ -11,6 +11,7 @@ import {
   resolveRoleResourceNamespaces,
   activeRoleIds,
   loadRolesManifestIfPresent,
+  RolesManifestNotFoundError,
 } from '../roles.js';
 import type { RolesManifest } from '../roles.js';
 
@@ -22,6 +23,37 @@ describe('loadRolesManifest', () => {
     writeFileSync(path.join(manifestDir, 'roles.yaml'), content, 'utf-8');
     return repoDir;
   }
+
+  /**
+   * `push` treats a MISSING manifest as the pre-manifest layout, where a role
+   * id doubles as its skills namespace and a new rule or agent stays at the
+   * shared root. `readFileSafe` answers null for every failure, so an
+   * unreadable manifest arrived looking exactly like a missing one — and sent
+   * those resources to the whole team (#649 review).
+   */
+  // chmod 0o000 has no effect when running as root (CI), so skip — same gate
+  // as `src/__tests__/git-kind-learnings.test.ts` (#727).
+  it.skipIf(process.getuid?.() === 0)('reports an existing manifest it cannot read, rather than a missing one', async () => {
+    const repoDir = writeManifest('version: 1\nroles: []\n');
+    const manifestPath = path.join(repoDir, 'manifest', 'roles.yaml');
+    chmodSync(manifestPath, 0o000);
+
+    try {
+      await expect(loadRolesManifest(repoDir)).rejects.toThrow(/could not be read/);
+      await expect(loadRolesManifest(repoDir)).rejects.not.toBeInstanceOf(RolesManifestNotFoundError);
+    } finally {
+      if (existsSync(manifestPath)) chmodSync(manifestPath, 0o600);
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a genuinely missing manifest as not found', async () => {
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'teamai-roles-'));
+
+    await expect(loadRolesManifest(repoDir)).rejects.toBeInstanceOf(RolesManifestNotFoundError);
+
+    rmSync(repoDir, { recursive: true, force: true });
+  });
 
   it('parses a valid manifest (with legacy learnings + shareTarget)', async () => {
     // Old manifests with learnings and shareTarget should still parse without error

@@ -238,8 +238,10 @@ teamai projects members hai-inference # 查看某项目下注册了哪些成员
 
 成员登记是 `init` 的**副作用**：执行 `teamai init --project <id>` 会把 `<id>`
 追加进你的 `members/<user>.yaml` 名册（跨目录 append + 去重），于是团队侧可以回答
-「谁在项目 X」。`teamai push --project <id>` 会把 skill 推送到该项目的 skills
-namespace（从 manifest 解析），对标 `teamai push --role`。
+「谁在项目 X」。`teamai push --project <id>` 会按资源类型各自的维度（从 manifest
+解析）把新资源推送到该项目对应的 namespace：skill 走 `resources.skills`，rule 走
+`resources.knowledge`，agent 走 `resources.agents`。若该项目未为本次推送涉及的类型
+声明 namespace，命令会报错并指明该类型，而不会退回共享根目录（那会发给所有人）。
 
 本地配置示例：
 
@@ -553,10 +555,10 @@ excludedSkills:
 ```bash
 teamai push          # 扫描新增/修改的资源，创建 MR
 teamai push --all    # 跳过确认，直接推送
-teamai push --role pm  # 将本次 skill 推送到 skills/pm/<skill-name>/
+teamai push --role pm  # 推送到 pm namespace（skills/pm/、rules/pm/、agents/pm/）
 ```
 
-**命名空间选择（新 skill）：** 推送新 skill 时，CLI 会自动检测可用的命名空间并提供交互式选择：
+**命名空间选择（新资源）：** 推送新的 skill、rule 或 agent 时，CLI 会自动检测可用的命名空间并提供交互式选择：
 
 ```
 Which namespace should new skills be pushed to?
@@ -566,10 +568,25 @@ Which namespace should new skills be pushed to?
 Choose namespace [1-3] (default: 1 = common):
 ```
 
+- 每种资源类型按各自维度解析：skill 用 `skills`，rule 用 `knowledge`，agent 用 `agents`。一次推送涉及多种类型时，每个维度各询问一次
 - 有 `primaryRole` 时，从 manifest 展开可用 namespace 列表
-- 无 `primaryRole` 时，自动扫描团队仓库目录结构
+- 无 `primaryRole` 时，skill 自动扫描团队仓库目录结构；新的 rule / agent 保留在共享根目录
 - 单一命名空间时自动选中；也可用 `--role <id>` 显式指定
-- 修改已有 skill 时自动保持原 namespace
+- 修改已有资源时自动保持原 namespace
+- 每个资源的落点都会打印出来，例如 `[rules] my-rule → rules/pm/my-rule.md`
+- 若 roles manifest 存在却无法解析（格式错误，或未包含当前配置的角色），命令会报错停止，而不会退回共享根目录：请修复 `manifest/roles.yaml`、执行 `teamai roles set <role>`，或用 `--role <ns>` 显式指定。团队仓库根本没有 `manifest/roles.yaml` 时，保持原有行为
+- `teamai push --dry-run` 会做同样的落点解析，并在同样的无法解析情况下报错，不会把真实命令会拒绝的推送报为可行
+- 当有多个 namespace 可接收新资源、且没有可供询问的终端（CI、hook、`TEAMAI_NONINTERACTIVE`）时，push 会以退出码 2 停止，列出这些 namespace，并要求使用 `--role <ns>`
+- `--role`/`--project` 只放置新资源。对共享根目录 rule 或 agent 的修改仍留在共享根目录，push 会给出提示
+- 已落点的资源在发布它的机器上仍可维护：PR 未合并期间，待评审 PR 记录会把作者对自己副本的修改带回该 PR；文件进入默认分支后，`state.json` 会记录 push 的落点，因此修改仍会写回同一个文件；即使 agent 落在本目录未激活的 namespace，也不会被当作“无活跃源”跳过
+- `teamai remove rules <name>` 同时接受作者副本的简名和发布名 `<namespace>/<name>`：会打印实际解析到的名字，并同时删除带 namespace 的团队文件和作者在 rules 根目录的副本。若无法先刷新团队仓库，或本机的落点记录无法更新并保存，`remove` 会以退出码 1 停止且不删除任何内容，因为两者都可能把名字解析到错误的文件
+- 本地 agent 被视为其来源团队 agent 的编辑：优先是活跃 namespace 或共享根目录中的 agent，其次是本机放置的 agent。只有两者都不存在时，才由 `--role`/`--project` 决定，此时该 agent 在该 namespace 中是新的；若该 namespace 已有同名 agent，则跳过该 agent 而不是覆盖它，与 rule 的处理一致。两个活跃的同名 agent 无论是否指定参数都视为有歧义并跳过。同名 agent 允许存在于多个 namespace，因此你未指定的非活跃 namespace 中的同名副本不会阻止你发布。本机放置的 agent 若在本机上次同步后被团队修改，会暂缓推送，直到你运行 `teamai pull`，因为 agents 没有推送前同步。单仓库模式下，`.teamai/` 中的根目录副本若与其落点文件的某个旧版本相同，也会暂缓推送：没有任何操作会刷新它，因此它是旧副本而不是编辑
+- 新资源绝不会覆盖已存在的资源：若解析出的 namespace 下已有同名文件，命令会报错并指出该文件：请先 pull 并修改已有副本、重命名自己的资源，或用 `--role <ns>` 换一个 namespace
+- 本目录未激活的 namespace 下的 agent 可通过落点记录继续编辑，`pull` 也会基于同一记录下发它，使本地副本与团队文件保持同步；若已激活的 namespace 中已有同名 agent，则以它为准
+- 待评审 PR 中的资源默认沿用该 PR 的落点；但若本次 push 明确指定的 namespace 与记录的落点不同（共享根目录也算一种落点），则以命令行为准，原 PR 保持不动，并提示该冲突
+- push 开始时若无法刷新团队仓库，`--project` 会报错停止，而不会按可能已过期的 `manifest/projects.yaml` 落点；未使用 `--role` 放置的任何新资源同样如此，因为其落点来自该克隆（`manifest/roles.yaml`、它的缺失，或仓库中已有的 namespace）。请先修复 pull 再重试，或用 `--role <ns>` 显式指定 namespace。若本机的落点记录无法更新并保存，`push` 也会停止且不推送任何内容
+- 落点记录只在推送的文件进入默认分支后才写入，因此未合并即关闭的 PR 不会留下记录，无论其分支是否还在。团队删除该文件、或共享根目录出现同名文件时（此时你的根目录副本改为跟随该文件，`pull` 会提示），记录会被清除。`push`、`pull` 和 `remove` 都会在读取记录前先做这一步。`teamai remove` 本身不清除记录：删除要等其 PR 合并才进入默认分支，在此之前重试 `remove` 仍会把简名解析到带 namespace 的团队文件。若该文件进入默认分支时的内容与你推送的不同（例如评审者在 squash 合并前修改了 PR），则不会写入记录，push 会提示一次；此时运行 `teamai pull`，并把该文件当作现在的团队文件来编辑
+- 你自己发布到某个 namespace 的 rule，其本地副本仍留在 rules 根目录。该 namespace 在本目录激活时，`pull` 会直接更新这个副本，而不会在 `rules/<namespace>/` 下再写一份；未激活时 `pull` 不会动它。只有当它对应的团队文件不存在时才会被清理
 
 **更新已存在的 PR 而非重复创建：** 如果某个资源已在一个未合并的 PR 中等待评审，再次对它执行 `teamai push` 会就地更新那个已存在的 PR（通过 force-push 其分支），而不是新开一个重复的 PR。保持该资源被选中即更新其 PR；取消勾选则不动它。同一次运行中选中的其他无关资源会进入各自新开的 PR。一旦该 PR 合并（或其分支从远端删除），记录会被清除，下次 push 照常新开 PR。
 
@@ -742,7 +759,9 @@ variables:
 
 `pull` 时，若启用了 `injectShellProfile`（默认启用），`$SHELL` 为 zsh 时环境变量块会写入 `~/.zshrc`，否则写入 `~/.bashrc`——但 Windows 上例外：`$SHELL` 通常未设置，而 Git Bash 以*登录 shell*方式启动，从不读取 `.bashrc`，因此 teamai 会优先选择已存在的 `~/.bash_profile`、其次 `~/.bash_login`、再次 `~/.profile`，只有三者都不存在时才回退到 `~/.bashrc`（通过 MSYS2/Cygwin 安装、会设置 `$SHELL` 的 zsh 仍会解析到 `.zshrc`）。这与 Git for Windows 自身在 `/etc/profile.d/bash_profile.sh` 中的回退逻辑一致，其判断条件是 `[ -e ~/.bashrc -a ! -e ~/.bash_profile -a ! -e ~/.bash_login -a ! -e ~/.profile ]`——只有在这一种情况下它才会生成一个会 source `.bashrc` 的 `.bash_profile`；这也是为什么哪怕一个只 source 了其他内容（例如 `~/.local/bin/env`）的 `~/.profile` 存在，也足以让 `.bashrc` 单独失效。可通过 `teamai.yaml` 中的 `sharing.env.shellProfilePath` 覆盖目标文件。
 
-这个优先级顺序只决定*第一次* pull 写到哪里。此后的每次 pull 都会沿用已经承载着本作用域代码块的那个候选文件，而不会重新走一遍优先级判断——否则 Git for Windows 自身的引导逻辑会把目标文件从脚下换掉：上面那条 `/etc/profile.d/bash_profile.sh` 判断条件，在第一次 pull 之后同样会成立（`.bashrc` 已存在，其余候选文件都还不存在），于是下一次 Git Bash 登录 shell 启动时就会自动生成一个 source 它的 `~/.bash_profile`。如果不沿用 `.bashrc`，下一次 pull 就会转而偏好这个新出现的文件，在那里注入第二个代码块，而原来那个——依旧在正常工作，只是多绕了一跳——则会被误报为失效的遗留代码块。
+每次 pull 都会重新走一遍这个优先级判断，找到当前环境实际会读取的那个文件，然后沿着它对另外四个候选文件名的引用一路查下去——无论要经过多少跳——寻找一个已经带着代码块的候选文件，而不是重复注入。如果链条中间经过的是这五个候选文件名之外的文件（比如某些环境会改用 `~/.config/shell/profile` 这类自定义文件来 source），这条链就不会被继续跟踪。这正是为了不让 Git for Windows 自身的引导逻辑把目标文件从脚下换掉：上面那条 `/etc/profile.d/bash_profile.sh` 判断条件，在第一次 pull 写入 `.bashrc` 之后同样会成立，于是下一次 Git Bash 登录 shell 启动时就会自动生成一个 source 它的 `~/.bash_profile`；如果不沿着这条转发链去找，下一次 pull 就会转而偏好这个新出现的文件，在那里注入第二个代码块，而原来那个——依旧在正常工作，只是绕得更远了——则会被误报为失效的遗留代码块。同样的道理也适用于一个普通的 `.profile`：它用一条扁平的存在性守卫（`[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"`）为交互式 shell source `.bashrc`——这时登录 shell 最先读到的文件，离实际代码块有两跳之遥。
+
+不过，只有两种字面写法才算真正的引用：单独一行的裸 `source X` / `. X`，或者单独一行、与 Git for Windows 自己生成的写法完全一致的自引用存在性守卫 `test -f X && . X` / `[ -f X ] && . X`（被测试路径与被 source 路径完全相同）——两种情况下 `X` 都必须是不加引号的 `~/name`，或不加引号/用双引号包裹的 `$HOME/name`（绝不是加了引号的 `~`，也绝不是用单引号包裹的 `$HOME`：shell 不会展开这两种写法，看起来对的引用实际会 source 一个不存在的字面路径）。除此之外的写法——source 本身带了重定向或额外参数、`||` 回退、不相关的 `&&` 连接命令、任何这段逻辑无法独立验证的条件——一律不识别，直接回退到按优先级选出的文件，而不是去猜。这是刻意收窄到两种固定写法的封闭集合，而不是尝试解析任意的 shell 条件：真要匹配一个真实 shell 脚本能用来让某一行变成有条件执行（或者把可执行内容伪装成惰性文本）的所有手法，需要一个真正的 shell 解析器，任何固定规模的规则集合都不可能穷尽这件事。嵌在 `if`、`for`/`while`/`until`、`case`、`select`、函数体，或者 `(...)`/`{...}` 分组里的内容一律不算数，不管外层条件写的是什么——这些结构要么不保证一定会执行，要么即使一定会执行（比如子 shell 或大括号分组），它导出的环境变量也传不到调用它的 shell 里，这也意味着 Debian/Ubuntu 标准模板里那种嵌套两层 `if`、沿途还检查 `$BASH_VERSION` 的写法无法被识别，会回退到按优先级选出的文件。位于无条件的顶层 `return` 或 `exit` 之后的内容同样不算数，因为控制流根本不会执行到那里。凡是这套逻辑判断不了的情况，以及当前这条链条根本没触及到的候选文件——哪怕它本身带着代码块——都绝不会因此被优先选中，否则 #682 之前旧版本留下的失效代码块就会永远压过正确的文件，等于在升级后又悄悄把 #682 引入回来。
 
 `doctor`（以及 `pull` 结束后自动运行的检查）还会标记出遗留在*其他*候选文件中的 teamai 环境变量块——例如 #682 之前的旧版本写入 `.bashrc` 的代码块，即便该代码块本身已损坏、从未生效。`teamai uninstall` 会清理它。
 
@@ -1439,7 +1458,7 @@ roles:
       agents:    [common, frontend]   # 可选；省略 = 只同步根目录 agents
 ```
 
-`teamai pull` 会将它们按文件名拍平复制到每个 Tier-1 工具的 `agents/` 目录（如 `~/.claude/agents/`），因此两个活跃 namespace 不能定义同名 agent（pull 会报告冲突并跳过该 scope）。`teamai pull` 为 Codex 系工具写入 `<name>.toml`，为 Kiro 写入 `<name>.json`，为 Copilot 写入 `<name>.agent.md`，其余工具写入 `<name>.md`。成员切换角色后，不再活跃的 namespace 中的 agents 会在下一次 pull 时被移除；若本地副本已被手动修改，则保留并给出警告。未配置角色时同步全部 agents。`teamai push` 使用与 pull 相同的活跃角色和项目 namespace 来确定源文件，并将修改写回该源文件；若存在多个候选目标，则跳过并给出警告。若源文件均不活跃，也会跳过。跳过的 agent 不会阻止同一次 push 中的其他资源。新 agent 落在根目录。清理会逐个工具检查 YAML 的 `targets` 和旧格式支持；只有活跃的同名 agent 会写入该工具的同一输出文件时，才保留该文件。`teamai remove agents <name>` 会记录 tombstone。其他机器下一次 pull 时，会从每个同步中的工具的 agents 目录删除 `<name>.agent.md`、`<name>.md`、`<name>.toml` 和 `<name>.json`。即使该次 pull 发现团队仓库没有变化，也会执行清理。CLI 内置的 `teamai-recall` 配置与团队 agents 并列部署，但不会被 `teamai push` 上传。
+`teamai pull` 会将它们按文件名拍平复制到每个 Tier-1 工具的 `agents/` 目录（如 `~/.claude/agents/`），因此两个活跃 namespace 不能定义同名 agent（pull 会报告冲突并跳过该 scope）。`teamai pull` 为 Codex 系工具写入 `<name>.toml`，为 Kiro 写入 `<name>.json`，为 Copilot 写入 `<name>.agent.md`，其余工具写入 `<name>.md`。成员切换角色后，不再活跃的 namespace 中的 agents 会在下一次 pull 时被移除；若本地副本已被手动修改，则保留并给出警告。未配置角色时同步全部 agents。`teamai push` 使用与 pull 相同的活跃角色和项目 namespace 来确定源文件，并将修改写回该源文件；若存在多个候选目标，则跳过并给出警告。若源文件均不活跃，也会跳过。跳过的 agent 不会阻止同一次 push 中的其他资源。新 agent 与新 skill 一样需要确定落点：`--role <ns>` 或 `--project <id>`（该项目的 `agents` namespace）指定目录；两者都不给时，从主角色的 `agents` namespace 解析。只有在解析不出任何 namespace 时才留在共享根目录（此时全员都会收到），并且 push 会给出警告（见[推送本地资源](#推送本地资源)）。清理会逐个工具检查 YAML 的 `targets` 和旧格式支持；只有活跃的同名 agent 会写入该工具的同一输出文件时，才保留该文件。`teamai remove agents <name>` 会记录 tombstone。带 namespace 的 agent 可写作 `<namespace>/<name>`；只有一个 namespace 拥有的简名会解析到该 agent；若简名出现在多个位置，命令会列出完整名称并拒绝执行，而不是从所有位置删除。其他机器下一次 pull 时，会从每个同步中的工具的 agents 目录删除 `<name>.agent.md`、`<name>.md`、`<name>.toml` 和 `<name>.json`。即使该次 pull 发现团队仓库没有变化，也会执行清理。删除带 namespace 的 agent 只记录 `<namespace>/<name>` 的 tombstone，其他 namespace 中的同名 agent 不受影响；当该副本可能属于这个 agent（该 namespace 对成员活跃，或由其本机放置）且成员的目录没有从另一个活跃 namespace 收到同名 agent 时，其拍平后的 `<name>` 副本会被清理，也不会再被推送。从未启用该 namespace 的成员会保留自己的同名 agent。CLI 内置的 `teamai-recall` 配置与团队 agents 并列部署，但不会被 `teamai push` 上传。
 
 ### GitHub Copilot CLI
 
@@ -1502,6 +1521,12 @@ ZCode 已作为内置目标支持。Skills 下发到 `.zcode/skills/`（ZCode �
 ### Oh My Pi
 
 Oh My Pi（OMP）已作为内置目标支持。TeamAI 将 Skills、Rules 和 Subagents 下发到 OMP 的原生目录——项目级为 `.omp/skills/`、`.omp/rules/` 和 `.omp/agents/`，用户级为 `~/.omp/agent/skills/`、`~/.omp/agent/rules/` 和 `~/.omp/agent/agents/`（用户级资源位于 agent 目录 `~/.omp/agent/` 下，与项目级前缀不同，TeamAI 会随作用域自动切换）。指令（`claudemd`）下发到对应的 `AGENTS.md`；MCP Server 合并进 `~/.omp/agent/mcp.json` / `<project>/.omp/mcp.json`（Claude `mcpServers` 结构，见上文 MCP 章节）。Skills 采用一层 `<name>/SKILL.md` 目录结构，TeamAI 在同步时补全 `description`——OMP 原生 skill 发现要求该字段。以上路径遵循 OMP 官方文档的发现布局（对照 OMP 18.2.5 验证）。Hooks 走 OMP 的 extension runner：`teamai pull` 会生成唯一的 extension 写入 `~/.omp/agent/extensions/teamai-hooks.ts`（绝不写项目副本——OMP 会同时加载两个根并导致每个事件双派发），它把 OMP 的 `session_start` / `session_stop` / `before_agent_start` / `tool_result` 事件转发给所有 agent 共用的 `teamai hook-dispatch` 入口，并按会话 `cwd` 做项目门控。`session_stop` 处理器不返回任何值，分发绝不会强制会话继续；由于 OMP 的工具名是小写（`bash`、`read` 等）且没有 `Skill` / `TodoWrite` 工具，post-tool-use 不做 matcher 定向分发。`teamai uninstall` 会移除该 extension。OMP 的 profile（`OMP_PROFILE` / `PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`，会迁移 agent 目录）暂不支持，使用默认的 `~/.omp/agent/` 布局。
+
+### DeepSeek Harness
+
+DeepSeek Harness（`dsh`）支持 TeamAI Skills 和共享资源。DSH 官方的 Claude Hook Bridge 是通过 profile 插件加载的，并不是设置文件中的 Hooks；因此检测到用户级 `~/.dsh/` 安装后，`teamai init`、`teamai pull` 或 `teamai hooks inject` 会在 `~/.teamai/dsh/` 下生成兼容 Claude 的 Hook 配置和 Cordis patch。
+
+TeamAI 会打印带绝对路径的 patch。将这个 `--patch` 参数加到启动 DSH profile 的命令中，例如 `dsh tui --patch "<打印出的路径>"`。这是一次性的启动器选择；`teamai hooks remove` 和 `teamai uninstall` 会移除 TeamAI patch，同时保留生成配置中的其他 Hook 条目。
 
 ### JoyCode
 
@@ -1859,7 +1884,7 @@ teamai uninstall --agent claude
 
 该排除是持久的：`uninstall --agent <tool>` 会把该工具从 `enabledAgents` 移除并记入 `disabledAgents`，因此之后的 `pull`（或其他工具的 session-start hook）不会再把它的 skills、rules、agents、CLAUDE.md 块或 hooks 重新装回。重新执行 `init --agent <tool>` 会清除该排除、恢复对该工具的同步。
 
-同一套 `enabledAgents` 白名单（来自 `init --agent`）也约束 CLI 内置 skills/rules/agents 以及 CLAUDE.md 类注入：即使工具根目录已经存在，白名单外的已安装工具也不会被写入或删除。`teamai remove` 对 agents、rules 和 skills 同样遵守该白名单，`teamai pull` / `teamai mcp inject` 对 MCP servers 也遵守该白名单。不经过 `init` 直接把工具加进 `enabledAgents` 时，last-pull 跳过缓存会对新加入的工具失效。
+同一套 `enabledAgents` 白名单（来自 `init --agent`）也约束 CLI 内置 skills/rules/agents 以及 CLAUDE.md 类注入：即使工具根目录已经存在，白名单外的已安装工具也不会被写入或删除。`teamai remove` 对 agents、rules 和 skills 同样遵守该白名单，`teamai push` 也不会从白名单外的工具读取 rules 和 agents，`teamai pull` / `teamai mcp inject` 对 MCP servers 也遵守该白名单。不经过 `init` 直接把工具加进 `enabledAgents` 时，last-pull 跳过缓存会对新加入的工具失效。
 
 卸载后如需重新加入：
 

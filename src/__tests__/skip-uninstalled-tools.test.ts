@@ -8,6 +8,9 @@ vi.mock('../config.js', async (importOriginal) => ({
   requireInit: vi.fn(),
   loadState: vi.fn(),
   saveState: vi.fn(),
+  // pullAllRules reads placement records so its stale sweep spares the
+  // author's own copy of a rule published into a namespace.
+  loadStateForScope: vi.fn(async () => ({})),
 }));
 
 vi.mock('../utils/git.js', () => ({

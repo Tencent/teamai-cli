@@ -39,6 +39,7 @@ vi.mock('../read-only.js', () => ({ assertNotReadOnly: vi.fn() }));
 vi.mock('../utils/pre-push-sync.js', () => ({ syncTeamUpdatesToLocal: vi.fn() }));
 
 vi.mock('../utils/prompt.js', () => ({
+  isInteractive: vi.fn(() => true),
   askQuestion: vi.fn(() => Promise.resolve('')),
   askConfirmation: vi.fn(() => Promise.resolve(true)),
   askSelection: vi.fn((_p: string, n: number, all?: boolean) =>

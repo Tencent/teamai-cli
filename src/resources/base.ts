@@ -45,6 +45,18 @@ export async function isToolInstalledForConfig(
  * Abstract base class for resource handlers.
  * Each resource type (skills, rules, docs, env, agents, hooks, mcp) implements this.
  */
+/**
+ * What `push` knows before it scans. Only the destination an explicit
+ * `--role`/`--project` names, and only agents read it: their scan has to
+ * decide which team file a local edit is an edit OF, and that answer changes
+ * when the user has named a namespace (see `AgentsHandler.scanLocalForPush`).
+ * Rules and skills are placed after selection, so their scan needs nothing.
+ */
+export interface ScanForPushOptions {
+  /** The namespace `--role <ns>` / `--project <id>` resolved to, if any. */
+  namespace?: string;
+}
+
 export abstract class ResourceHandler {
   abstract readonly type: ResourceType;
 
@@ -55,6 +67,7 @@ export abstract class ResourceHandler {
   abstract scanLocalForPush(
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
+    options?: ScanForPushOptions,
   ): Promise<ResourceItem[]>;
 
   /**
@@ -93,6 +106,18 @@ export abstract class ResourceHandler {
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<string[]>;
+
+  /**
+   * The name this resource is published under, when the user typed a different
+   * one. `remove` matches what the user types against the team repo, where a
+   * placed resource lives at `<root>/<ns>/<name>`; the author's local copy is
+   * still at the resource root, so they know it by its bare name and `remove`
+   * would answer "not found". Handlers that keep a placement record resolve it
+   * here. Returns null when there is nothing to translate.
+   */
+  async publishedNameFor(_name: string, _localConfig: LocalConfig): Promise<string | null> {
+    return null;
+  }
 
   /**
    * Where `item` lands for each tool that can receive it on this machine.

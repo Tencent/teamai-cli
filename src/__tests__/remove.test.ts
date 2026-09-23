@@ -4,11 +4,15 @@ import os from 'node:os';
 import fse from 'fs-extra';
 
 // Mock external dependencies before importing modules
+const mockState: { placedRules?: Record<string, string> } = {};
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   requireInit: vi.fn(),
   loadState: vi.fn(),
   saveState: vi.fn(),
+  // The rules scanner and `publishedNameFor` read push placements from
+  // state.json; tests set `mockState.placedRules` when they need one.
+  loadStateForScope: vi.fn(async () => mockState),
 }));
 
 vi.mock('../utils/git.js', () => ({
@@ -87,7 +91,118 @@ scope: 'user',
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    delete mockState.placedRules;
     await fse.remove(tmpDir);
+  });
+
+  /**
+   * A rule push placed under rules/<ns>/ is published as `<ns>/<name>`, but the
+   * author's own copy never left the rules root, so the name they type is the
+   * bare one. Answering "not found" about a rule we recorded putting there — or
+   * deleting rules/<name>.md and leaving the namespaced one published — is the
+   * finding this covers (#649 review round 3).
+   */
+  describe('a rule published into a namespace', () => {
+    it('resolves the bare name to the name it was published under', async () => {
+      await fse.outputFile(
+        path.join(localConfig.repo.localPath, 'rules', 'fe-know', 'my-rule.md'), 'team content',
+      );
+      mockState.placedRules = { 'my-rule': 'rules/fe-know/my-rule.md' };
+
+      expect(await handler.publishedNameFor('my-rule', localConfig)).toBe('fe-know/my-rule');
+    });
+
+    it('does not resolve a record whose team file is gone', async () => {
+      mockState.placedRules = { 'my-rule': 'rules/fe-know/my-rule.md' };
+
+      expect(await handler.publishedNameFor('my-rule', localConfig)).toBeNull();
+    });
+
+    it('does not resolve a rule this machine never placed', async () => {
+      await fse.outputFile(
+        path.join(localConfig.repo.localPath, 'rules', 'fe-know', 'my-rule.md'), 'team content',
+      );
+
+      expect(await handler.publishedNameFor('my-rule', localConfig)).toBeNull();
+    });
+
+    it('tombstones only the published name, even when the record makes the root copy ours', async () => {
+      await fse.outputFile(
+        path.join(localConfig.repo.localPath, 'rules', 'fe-know', 'my-rule.md'), 'team content',
+      );
+      mockState.placedRules = { 'my-rule': 'rules/fe-know/my-rule.md' };
+
+      await handler.removeItem('fe-know/my-rule', teamConfig, localConfig);
+
+      // Every member reads the tombstone: a bare `my-rule` would sweep their
+      // own root rule of that name and stop them publishing one. A copy an
+      // excluded tool keeps is instead not a push source at all.
+      const tombstones = await fse.readFile(
+        path.join(localConfig.repo.localPath, 'rules', '.removed'), 'utf-8',
+      );
+      expect(tombstones.split('\n')).toContain('fe-know/my-rule');
+      expect(tombstones.split('\n')).not.toContain('my-rule');
+    });
+
+    it('tombstones only the name given when no record vouches for the bare one', async () => {
+      await fse.outputFile(path.join(localConfig.repo.localPath, 'rules', 'fe', 'foo.md'), 'team');
+
+      await handler.removeItem('fe/foo', teamConfig, localConfig);
+
+      const tombstones = await fse.readFile(
+        path.join(localConfig.repo.localPath, 'rules', '.removed'), 'utf-8',
+      );
+      expect(tombstones.split('\n')).toContain('fe/foo');
+      // Tombstoning `foo` would suppress an unrelated personal rule of that name.
+      expect(tombstones.split('\n')).not.toContain('foo');
+    });
+
+    it('leaves an unrelated root rule that only shares the basename', async () => {
+      // `remove rules fe/foo` must not take a personal .claude/rules/foo.md
+      // with it. Nothing on this machine says the two are the same rule.
+      await fse.outputFile(path.join(localConfig.repo.localPath, 'rules', 'fe', 'foo.md'), 'team');
+      await fse.writeFile(path.join(homeDir, '.claude', 'rules', 'foo.md'), 'my own foo');
+
+      await handler.removeItem('fe/foo', teamConfig, localConfig);
+
+      expect(await fse.pathExists(path.join(localConfig.repo.localPath, 'rules', 'fe', 'foo.md'))).toBe(false);
+      expect(await fse.readFile(path.join(homeDir, '.claude', 'rules', 'foo.md'), 'utf-8'))
+        .toBe('my own foo');
+    });
+
+    it('ignores a record that points somewhere else', async () => {
+      await fse.outputFile(path.join(localConfig.repo.localPath, 'rules', 'fe', 'foo.md'), 'team');
+      await fse.writeFile(path.join(homeDir, '.claude', 'rules', 'foo.md'), 'my own foo');
+      mockState.placedRules = { foo: 'rules/other-ns/foo.md' };
+
+      await handler.removeItem('fe/foo', teamConfig, localConfig);
+
+      expect(await fse.readFile(path.join(homeDir, '.claude', 'rules', 'foo.md'), 'utf-8'))
+        .toBe('my own foo');
+    });
+
+    it('removes the namespaced team file and the author\'s copy at the rules root', async () => {
+      await fse.outputFile(
+        path.join(localConfig.repo.localPath, 'rules', 'fe-know', 'my-rule.md'), 'team content',
+      );
+      // The record is what makes the root copy this rule's, and ours to delete.
+      mockState.placedRules = { 'my-rule': 'rules/fe-know/my-rule.md' };
+      // The author's own copy, and the namespaced one a member would receive.
+      await fse.writeFile(path.join(homeDir, '.claude', 'rules', 'my-rule.md'), 'local');
+      await fse.outputFile(path.join(homeDir, '.claude', 'rules', 'fe-know', 'my-rule.md'), 'local');
+
+      const removed = await handler.removeItem('fe-know/my-rule', teamConfig, localConfig);
+
+      expect(await fse.pathExists(
+        path.join(localConfig.repo.localPath, 'rules', 'fe-know', 'my-rule.md'),
+      )).toBe(false);
+      // Leaving the root copy behind re-publishes the rule on the next push.
+      expect(await fse.pathExists(path.join(homeDir, '.claude', 'rules', 'my-rule.md'))).toBe(false);
+      expect(await fse.pathExists(
+        path.join(homeDir, '.claude', 'rules', 'fe-know', 'my-rule.md'),
+      )).toBe(false);
+      expect(removed.length).toBeGreaterThanOrEqual(3);
+    });
   });
 
   it('should remove rule from team repo and all tool directories', async () => {

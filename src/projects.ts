@@ -147,10 +147,15 @@ export function describeProjects(projects: Array<Pick<TeamProject, 'id' | 'name'
   });
 }
 
+/** What to tell the user when a project id does not exist in the manifest. */
+export function unknownProjectMessage(manifest: ProjectsManifest, projectId: string): string {
+  return `Unknown project "${projectId}". Valid projects: ${listProjectIds(manifest).join(', ')}`;
+}
+
 function getProjectOrThrow(manifest: ProjectsManifest, projectId: string): TeamProject {
   const project = findProject(manifest, projectId);
   if (!project) {
-    throw new Error(`Unknown project "${projectId}". Valid projects: ${listProjectIds(manifest).join(', ')}`);
+    throw new Error(unknownProjectMessage(manifest, projectId));
   }
   return project;
 }

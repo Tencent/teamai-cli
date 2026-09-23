@@ -81,6 +81,10 @@ interface RemovalPlan {
   ompHookFile: string | null;
   /** Pi extension files owned by this scope (global for user, legacy project copy for project). */
   piHookFiles: string[];
+  /** TeamAI-managed DeepSeek Harness patch (~/.teamai/dsh/cordis.patch.yml), if present. */
+  dshHookFile: string | null;
+  /** Manifest used by the primary hook injection scope. */
+  hookManifestPath: string;
   /** CLAUDE.md files with teamai rules blocks. */
   claudeMdFiles: string[];
   /** Skill directories synced from team repo. */
@@ -114,6 +118,7 @@ interface ToolResources {
   opencodeHookScopes: Array<{ baseDir: string; scope: Scope }>;
   ompHookFile: string | null;
   piHookFiles: string[];
+  dshHookFile: string | null;
   claudeMdFiles: string[];
   skillDirs: string[];
   ruleFiles: string[];
@@ -127,6 +132,7 @@ function hasToolResources(r: ToolResources): boolean {
     r.opencodeHookScopes.length > 0 ||
     r.ompHookFile !== null ||
     r.piHookFiles.length > 0 ||
+    r.dshHookFile !== null ||
     r.claudeMdFiles.length > 0 ||
     r.skillDirs.length > 0 ||
     r.ruleFiles.length > 0 ||
@@ -252,8 +258,8 @@ async function discoverToolResources(
   hookSettingsPath?: string,
 ): Promise<ToolResources> {
   const res: ToolResources = {
-    hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], ompHookFile: null, piHookFiles: [], claudeMdFiles: [],
-    skillDirs: [], ruleFiles: [], agentFiles: [],
+    hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], ompHookFile: null, piHookFiles: [], dshHookFile: null,
+    claudeMdFiles: [], skillDirs: [], ruleFiles: [], agentFiles: [],
   };
 
   // (a) Hooks — settings.json / hooks.json
@@ -268,6 +274,10 @@ async function discoverToolResources(
         manifestPath: standaloneHookManifestPath,
       });
     }
+  } else if (tool === 'dsh') {
+    const { resolveDshPatchPath } = await import('./dsh-hooks.js');
+    const patchPath = resolveDshPatchPath();
+    if (await pathExists(patchPath)) res.dshHookFile = patchPath;
   } else if (tool === 'opencode') {
     // OpenCode has no settings file; its teamai hooks are plugin .ts files under
     // <base>/.config/opencode/plugin (where teamai writes them) or
@@ -546,6 +556,8 @@ async function buildRemovalPlan(
     opencodeHookScopes: [],
     ompHookFile: null,
     piHookFiles: [],
+    dshHookFile: null,
+    hookManifestPath: hookTargets[0].manifestPath,
     claudeMdFiles: [],
     skillDirs: [],
     ruleFiles: [],
@@ -581,6 +593,7 @@ async function buildRemovalPlan(
     plan.opencodeHookScopes.push(...res.opencodeHookScopes);
     if (res.ompHookFile) plan.ompHookFile = res.ompHookFile;
     plan.piHookFiles.push(...res.piHookFiles);
+    if (res.dshHookFile) plan.dshHookFile = res.dshHookFile;
     for (const file of res.claudeMdFiles) {
       if (!retainedInstructionFiles.has(file) && !plan.claudeMdFiles.includes(file)) {
         plan.claudeMdFiles.push(file);
@@ -660,6 +673,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.opencodeHookScopes.length === 0 &&
     plan.ompHookFile === null &&
     plan.piHookFiles.length === 0 &&
+    plan.dshHookFile === null &&
     plan.claudeMdFiles.length === 0 &&
     plan.skillDirs.length === 0 &&
     plan.ruleFiles.length === 0 &&
@@ -716,6 +730,12 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
   if (plan.piHookFiles.length > 0) {
     console.log(`   Pi Hooks (${plan.piHookFiles.length} files):`);
     for (const p of plan.piHookFiles) console.log(`     ${p}`);
+    console.log('');
+  }
+
+  if (plan.dshHookFile !== null) {
+    console.log('   DeepSeek Harness hook patch:');
+    console.log(`     ${plan.dshHookFile}`);
     console.log('');
   }
 
@@ -851,6 +871,17 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
       log.success(`Removed Pi hook from ${hookFile}`);
     } catch (e) {
       log.warn(`Failed to remove Pi hook ${hookFile}: ${(e as Error).message}`);
+    }
+  }
+
+  // (a2d) Remove the DSH bridge config and profile patch through the same
+  // adapter used by `teamai hooks remove`, preserving unrelated hook entries.
+  if (plan.dshHookFile !== null) {
+    try {
+      const { reconcileDshHooks } = await import('./dsh-hooks.js');
+      await reconcileDshHooks([], { manifestPath: plan.hookManifestPath, removeAll: true });
+    } catch (e) {
+      log.warn(`Failed to remove DeepSeek Harness hooks: ${(e as Error).message}`);
     }
   }
 

@@ -30,6 +30,7 @@ const mockCreatePullRequest = vi.fn();
 const mockAskSelection = vi.fn();
 
 vi.mock('../utils/prompt.js', () => ({
+  isInteractive: vi.fn(() => true),
   askQuestion: vi.fn(() => Promise.resolve('1')),
   askConfirmation: vi.fn(() => Promise.resolve(true)),
   askSelection: (...args: unknown[]) => mockAskSelection(...args),
@@ -63,6 +64,7 @@ vi.mock('../utils/git.js', () => ({
   isDedicatedRepoRoot: vi.fn().mockResolvedValue(true),
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
   getFileContentAtRev: vi.fn().mockResolvedValue(null),
+  getHeadCommit: vi.fn().mockResolvedValue('base000'),
 }));
 
 vi.mock('../resources/index.js', () => ({

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml } from 'yaml';
-import { isToolInstalledForConfig, ResourceHandler } from './base.js';
+import { isToolInstalledForConfig, ResourceHandler, type ScanForPushOptions } from './base.js';
 import type { ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -10,6 +10,9 @@ import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../projects.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
+import { loadStateForScope } from '../config.js';
+import { placedResourcePath } from '../push-namespaces.js';
+import { getFileContentAtRev, getFileContentWhenAdded, isPastVersionOf } from '../utils/git.js';
 import {
   parseAgentYaml,
   serializeAgentYaml,
@@ -38,8 +41,22 @@ export interface AgentResourceItem extends ResourceItem {
   mergedSpec?: AgentSpec;
   /** Human-readable reason to skip this item during pushItem (merge failed). */
   skipReason?: string;
+  /**
+   * Set when the scan could not find a team source this directory may write to,
+   * so the agent needs a destination named before it can go anywhere. `push`
+   * reads it to decide whether a `--project` whose agents axis is empty is a
+   * problem for THIS run: a modified agent already in a namespace needs no
+   * placement and must not be blocked by it (#649 review).
+   */
+  needsDestination?: boolean;
   /** True when item came from a legacy .md team-repo file (older format). */
   legacy?: boolean;
+  /**
+   * Team-relative path of the file this push retires: the recorded canonical
+   * file when the author renamed their source from `.md` to `.yaml` or back.
+   * `pushItem` deletes it and `push` stages the deletion and moves the record.
+   */
+  supersedes?: string;
 }
 
 /**
@@ -51,8 +68,85 @@ export interface AgentResourceItem extends ResourceItem {
  *
  * Tools without an `agents` path in toolPaths are silently skipped.
  */
+/**
+ * The agents this directory should hold: the ones in an active namespace, plus
+ * any this machine published into a namespace it does not activate — push lets
+ * the author keep editing those through the placement record, so pull has to
+ * deliver them or the local copy never tracks the team file (#649).
+ *
+ * A stem an ACTIVE namespace already claims is left alone: agents deploy
+ * flattened, so two would collide on one filename, and the active one is the
+ * agent deployed here.
+ *
+ * Delivery and revocation both resolve through this. They must agree — when
+ * only delivery knew about the record, `pull` wrote the agent and the
+ * revocation pass deleted it again in the same run.
+ */
+export function selectAgentsForDirectory(
+  agents: ResourceItem[],
+  activeNamespaces: string[] | null,
+  placedAgents?: Record<string, string>,
+): ResourceItem[] {
+  if (activeNamespaces === null) return agents;
+
+  const active = agents.filter(
+    (agent) => !agent.namespace || activeNamespaces.includes(agent.namespace),
+  );
+  if (!placedAgents) return active;
+
+  const claimed = new Set(active.map((agent) => agent.name));
+  const recovered = agents.filter((agent) => agent.namespace
+    && !claimed.has(agent.name)
+    && placedResourcePath(placedAgents, 'agents', agent.name)
+      === `agents/${agent.namespace}/${path.basename(agent.relativePath)}`);
+  return recovered.length > 0 ? [...active, ...recovered] : active;
+}
+
 export class AgentsHandler extends ResourceHandler {
   readonly type = 'agents' as const;
+
+  /**
+   * The tombstones as flattened local copies see them. Removing `fe/vr`
+   * tombstones only `fe/vr`, but every member holds that agent as `<agents>/vr`,
+   * so the tombstone alone never reaches their copy, and the next push reads it
+   * as a new agent and republishes it (#649 review). `vr` counts as removed
+   * here only when both hold:
+   *   - `fe/vr` could have been delivered HERE: `fe` is active, or nothing is
+   *     filtered, or this machine placed `vr` in `fe` (its record, or the one
+   *     reconcile retired when the file was deleted). On a member who never
+   *     had `fe`, a `vr` is their own agent, and deleting it — or refusing to
+   *     push it — takes something that was never the team's.
+   *   - THIS directory is not meant to hold another agent of that stem, by the
+   *     same selection pull delivers with (`selectAgentsForDirectory`): while a
+   *     `be/vr` is delivered here, the copy is be/vr's, and suppressing it is
+   *     what round 8 of the review ruled out.
+   */
+  async removedStems(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<Set<string>> {
+    const tombstones = await this.readTombstones(localConfig);
+    const removed = new Set(tombstones);
+    if (![...tombstones].some((tombstone) => tombstone.includes('/'))) return removed;
+    const activeNamespaces = (await resolveResourceNamespaces(localConfig))?.activeNamespaces.agents ?? null;
+    const { placedAgents, retiredPlacedAgents } = await loadStateForScope(localConfig);
+    // This machine's record — live, or dropped when the team deleted the file —
+    // says its flattened copy stood for the agent in that namespace.
+    const placedIn = (stem: string): string | undefined => (
+      placedResourcePath(placedAgents, 'agents', stem) ?? placedResourcePath(retiredPlacedAgents, 'agents', stem)
+    )?.split('/')[1];
+    const desired = new Set(selectAgentsForDirectory(
+      await this.scanTeamForPull(teamConfig, localConfig),
+      activeNamespaces,
+      placedAgents,
+    ).map((agent) => agent.name));
+    for (const tombstone of tombstones) {
+      const segments = tombstone.split('/');
+      if (segments.length !== 2) continue;
+      const [namespace, stem] = segments as [string, string];
+      const deliveredHere = activeNamespaces === null || activeNamespaces.includes(namespace)
+        || placedIn(stem) === namespace;
+      if (deliveredHere && !desired.has(stem)) removed.add(stem);
+    }
+    return removed;
+  }
 
   /**
    * Scan local AI tool agents/ directories for files that are new or modified
@@ -61,9 +155,14 @@ export class AgentsHandler extends ResourceHandler {
    * New format (.yaml in team repo): attempts multi-tool reverse + merge.
    * Built-in CLI agents are excluded from push.
    */
-  async scanLocalForPush(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<AgentResourceItem[]> {
+  async scanLocalForPush(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    options?: ScanForPushOptions,
+  ): Promise<AgentResourceItem[]> {
+    const requestedNamespace = options?.namespace;
     const teamAgentsDir = path.join(localConfig.repo.localPath, 'agents');
-    const tombstones = await this.readTombstones(localConfig);
+    const tombstones = await this.removedStems(teamConfig, localConfig);
     // Single-repo mode: users drop canonical agent files straight into the repo's
     // own .teamai/agents/ (<name>.yaml, or legacy <name>.md) rather than authoring
     // them in a tool's agents dir. Those are ALREADY in team-repo format, so we
@@ -71,6 +170,17 @@ export class AgentsHandler extends ResourceHandler {
     // origin/<default> checkout so only genuine additions/edits surface. These win
     // over the reverse-parse path below on name conflicts (explicit canonical is
     // authoritative). Active tree = projectRoot (kept intact by withKnowledgeWorktree).
+    // An agent this machine published with --role/--project lives in a
+    // namespace this directory need not have activated. Without the record it
+    // would read as "no active source" and the author could never edit the
+    // agent they just created (#649 review).
+    const { placedAgents, lastPullRev, pendingPushes } = await loadStateForScope(localConfig);
+    // Agents this machine placed in a namespace and has awaiting review: the
+    // open PR is their destination, not "no active source".
+    const pendingPlacedAgents = new Set((pendingPushes ?? []).flatMap((entry) => entry.items)
+      .filter((item) => item.type === 'agents' && item.relativePath.split('/').length === 3)
+      .map((item) => item.name));
+
     const directItems: AgentResourceItem[] = [];
     const directStems = new Set<string>();
     if (isSelfMode(localConfig) && localConfig.projectRoot) {
@@ -87,17 +197,55 @@ export class AgentsHandler extends ResourceHandler {
             if (BUILTIN_AGENT_NAMES.has(stem)) continue;
 
             const activePath = path.join(dir, file);
-            const basePath = path.join(localConfig.repo.localPath, relDir, file);
-            const baseExists = await pathExists(basePath);
-            if (baseExists && await fileContentEqual(activePath, basePath)) continue; // unchanged
+            let teamRelPath = `${relDir}/${file}`;
+            let basePath = path.join(localConfig.repo.localPath, teamRelPath);
+            let baseExists = await pathExists(basePath);
+            let supersedes: string | undefined;
+            // A canonical source authored at .teamai/agents/ root and placed
+            // under agents/<ns>/ has nothing at agents/<stem>.yaml, so without
+            // the record it reads as brand new — and the collision check then
+            // refuses the very agent this machine published (#649 review).
+            if (!baseExists && !namespace) {
+              const placed = placedResourcePath(placedAgents, 'agents', stem);
+              if (placed && await pathExists(path.join(localConfig.repo.localPath, placed))) {
+                // The destination keeps the record's directory but THIS file's
+                // extension: `pushItem` writes by the source's extension, so a
+                // relativePath still naming the recorded `.md` would stage a
+                // path nothing was written to, and leave that `.md` behind.
+                teamRelPath = `${path.posix.dirname(placed)}/${file}`;
+                if (teamRelPath !== placed) supersedes = placed;
+                basePath = path.join(localConfig.repo.localPath, placed);
+                baseExists = true;
+                // Nothing refreshes this root file after placement — pull
+                // deploys to tool dirs, and the pre-push sync covers those only
+                // — so `lastPullRev` says nothing about it. A copy equal to an
+                // OLDER version of the team file is one nobody edited, and
+                // pushing it would revert whoever changed the file since
+                // (#649 review).
+                if (!supersedes && !await fileContentEqual(activePath, basePath)
+                  && await isPastVersionOf(localConfig.repo.localPath, activePath, placed)) {
+                  directItems.push({ name: stem, type: 'agents', sourcePath: activePath,
+                    relativePath: placed, status: 'modified', namespace: placed.split('/')[1],
+                    skipReason: `${path.relative(localConfig.projectRoot, activePath)} is an older version of ${placed}, `
+                      + 'which has changed on the team since. Copy the current file over it (or delete it) before editing.' });
+                  directStems.add(stem);
+                  continue;
+                }
+              }
+            }
+            if (baseExists && !supersedes && await fileContentEqual(activePath, basePath)) continue; // unchanged
 
             directItems.push({
               name: stem,
               type: 'agents',
               sourcePath: activePath,
-              relativePath: `${relDir}/${file}`,
+              relativePath: teamRelPath,
               status: (baseExists ? 'modified' : 'new') as ResourceItemStatus,
               legacy: isMd,
+              ...(baseExists && teamRelPath !== `${relDir}/${file}`
+                ? { namespace: teamRelPath.split('/')[1] }
+                : {}),
+              ...(supersedes ? { supersedes } : {}),
             });
             directStems.add(stem);
           }
@@ -110,6 +258,11 @@ export class AgentsHandler extends ResourceHandler {
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.agents) continue;
+      // An excluded tool is neither written nor cleaned by teamai, so what it
+      // holds is not a source either: `removeItem` leaves its copy behind, and
+      // a namespaced removal tombstones only `<ns>/<stem>`, so reading that
+      // copy republished the agent just removed (#649 review).
+      if (isAgentExcluded(localConfig, tool)) continue;
       const baseDir = resolveToolBaseDir(tool, localConfig);
       const agentsDir = path.join(baseDir, toolPath.agents);
       if (!await pathExists(agentsDir)) continue;
@@ -146,18 +299,56 @@ export class AgentsHandler extends ResourceHandler {
       // A modified agent must be written back where it lives, so its namespace
       // directory is carried into `relativePath` below.
       const sources = await findTeamAgentFiles(teamAgentsDir, stem);
-      const candidates = sources.filter(
-        (file) => activeNamespaces === null || !file.namespace || activeNamespaces.includes(file.namespace),
+      const placedNamespace = placedResourcePath(placedAgents, 'agents', stem)?.split('/')[1];
+      // Which team file this local agent is a copy of, in the order pull
+      // delivers them: an active source (the shared root counts) is what was
+      // deployed here, then the one this machine's record names. Only when
+      // neither exists does an explicit --role/--project decide — the agent
+      // then needs a destination, and a same-stem copy in some other inactive
+      // namespace is a different agent that must not block it (#649 review).
+      // Letting the flag win outright compared an active agent's rendering
+      // with the requested namespace's file and overwrote it without an edit.
+      const active = sources.filter(
+        (file) => activeNamespaces === null || !file.namespace
+          || activeNamespaces.includes(file.namespace),
       );
+      const recorded = placedNamespace ? sources.filter((file) => file.namespace === placedNamespace) : [];
+      // Two active sources stay ambiguous even under a flag: the flattened file
+      // cannot say which one it was delivered from, and picking the requested
+      // one compared the other's untouched copy with it (#649 review).
+      const candidates = active.length > 0 ? active : recorded;
       if (candidates.length > 1) {
         items.push({ name: stem, type: 'agents', sourcePath: teamAgentsDir,
           relativePath: `agents/${stem}.yaml`, status: 'modified',
           skipReason: `Ambiguous agent "${stem}": multiple active sources (${candidates.map((file) => file.path).join(', ')}). Give active agents unique names before pushing.` });
         continue;
       }
-      if (sources.length > 0 && candidates.length === 0) {
+      // A shared-root copy is always active, so it is a candidate above and
+      // this local file is an edit of it: no namespaced second copy is made.
+      //
+      // With a destination named that already holds this stem — never
+      // delivered here, so this local file is not a copy of it — the agent is
+      // new there and would land on somebody else's, which rules already
+      // refuse (#649 review).
+      const inRequested = requestedNamespace
+        ? sources.find((file) => file.namespace === requestedNamespace)
+        : undefined;
+      if (candidates.length === 0 && inRequested) {
+        const taken = `agents/${requestedNamespace}/${stem}${inRequested.ext}`;
+        items.push({ name: stem, type: 'agents', sourcePath: teamAgentsDir,
+          relativePath: taken, status: 'new', namespace: requestedNamespace,
+          skipReason: `Agent "${stem}" cannot be placed: ${taken} already exists in the team repo and was never `
+            + 'delivered here, so this local copy is not an edit of it and pushing would overwrite it. '
+            + 'Activate that namespace and pull to edit the existing one, rename yours, or pick another namespace with --role <ns>.' });
+        continue;
+      }
+      // With no destination named, a stem that exists only in namespaces this
+      // directory has not activated is not ours to edit — unless this machine
+      // has it awaiting review as a placement, whose open PR it goes back to.
+      if (!requestedNamespace && sources.length > 0 && candidates.length === 0 && !pendingPlacedAgents.has(stem)) {
         items.push({ name: stem, type: 'agents', sourcePath: teamAgentsDir,
           relativePath: `agents/${stem}.yaml`, status: 'modified',
+          needsDestination: true,
           skipReason: `Agent "${stem}" has no active source. Activate its role or project before pushing local edits.` });
         continue;
       }
@@ -184,7 +375,7 @@ export class AgentsHandler extends ResourceHandler {
         // Compare like with like: native files against a native rendering of
         // the canonical YAML. Unchanged/untargeted copies must not join a merge.
         for (const [tool, filePath] of toolFiles) {
-          if (!isKnownTool(tool) || isAgentExcluded(localConfig, tool)
+          if (!isKnownTool(tool)
             || (canonicalSpec.targets && !canonicalSpec.targets.includes(tool))) {
             toolFiles.delete(tool);
             continue;
@@ -218,6 +409,18 @@ export class AgentsHandler extends ResourceHandler {
       }
 
       if (!hasChange) continue;
+
+      // Only a copy that differs is worth holding: an unchanged one — the
+      // author's own merged edit included — has nothing to overwrite with.
+      if (located && active.length === 0 && recorded.length > 0) {
+        const recordedPath = `agents/${located.namespace}/${stem}${located.ext}`;
+        if (await recordedAgentMovedOn(localConfig.repo.localPath, recordedPath, lastPullRev)) {
+          items.push({ name: stem, type: 'agents', sourcePath: teamAgentsDir,
+            relativePath: recordedPath, status: 'modified', namespace: located.namespace,
+            skipReason: staleRecordedAgentReason(stem, recordedPath) });
+          continue;
+        }
+      }
 
       const status: ResourceItemStatus = (hasTeamYaml || hasTeamMd) ? 'modified' : 'new';
 
@@ -273,6 +476,10 @@ export class AgentsHandler extends ResourceHandler {
             relativePath: `${teamDir}/${stem}.yaml`,
             status,
             mergedSpec: mergeResult.spec,
+            // Carried explicitly: an open PR records this item, and a record
+            // with no namespace reads as "shared root" to everything that
+            // later compares destinations (#649 review).
+            ...(located?.namespace ? { namespace: located.namespace } : {}),
           });
           continue;
         }
@@ -286,6 +493,7 @@ export class AgentsHandler extends ResourceHandler {
         relativePath: `${teamDir}/${stem}.md`,
         status,
         skipReason,
+        ...(located?.namespace ? { namespace: located.namespace } : {}),
       });
     }
 
@@ -372,6 +580,14 @@ export class AgentsHandler extends ResourceHandler {
       await ensureDir(path.dirname(dest));
       await copyFile(item.sourcePath, dest);
     }
+    // The recorded file under the other extension is the same agent; two
+    // canonical files for one stem is what pull reports as a collision.
+    if (agentItem.supersedes) {
+      const retired = path.resolve(localConfig.repo.localPath, agentItem.supersedes);
+      assertWithinRoot(path.join(localConfig.repo.localPath, 'agents'), retired,
+        `Invalid superseded agent path outside team repo agents directory: ${agentItem.supersedes}`);
+      if (retired !== dest) await remove(retired);
+    }
     log.debug(`Copied agent ${item.name} → team repo (${ext} verbatim)`);
   }
 
@@ -426,18 +642,81 @@ export class AgentsHandler extends ResourceHandler {
    * Tries both .yaml and .md extensions in the team repo.
    * Records a tombstone to prevent re-push.
    */
+  /**
+   * `vr` when push placed it at `agents/fe/vr.yaml`: the author's local copy is
+   * at the tool's agents root, so the name they type is the bare one. Without
+   * this, `remove` matched that bare name and deleted every `vr` in every
+   * namespace — other people's agents included (#649 review).
+   */
+  async publishedNameFor(name: string, localConfig: LocalConfig): Promise<string | null> {
+    const placed = placedResourcePath(
+      (await loadStateForScope(localConfig)).placedAgents, 'agents', name,
+    );
+    if (!placed) return null;
+    if (!await pathExists(path.join(localConfig.repo.localPath, placed))) return null;
+    return placed.slice('agents/'.length).replace(/\.(yaml|md)$/, '');
+  }
+
+  /**
+   * Remove an agent from the team repo and all local AI tool agents/ directories.
+   *
+   * `name` is either a bare stem, which still means "this agent wherever it
+   * lives", or the published `<ns>/<stem>` that `publishedNameFor` resolved —
+   * and that one names exactly one file, so only it is removed. The local sweep
+   * covers both spellings: a placed agent leaves the author's copy at the
+   * agents root while every other member receives it under `<ns>/`.
+   */
   async removeItem(name: string, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
     const removed: string[] = [];
 
     const teamAgentsDir = path.join(localConfig.repo.localPath, 'agents');
+    const stem = path.basename(name);
 
-    // Root or agents/<ns>/, both extensions, every namespace the stem lives in.
+    // Both extensions, and every namespace a BARE stem lives in. A published
+    // `<ns>/<stem>` resolves to exactly one file, because the root directory is
+    // one of the directories probed and `<ns>/<stem>.yaml` sits under it — so
+    // naming a namespace leaves the same stem in other namespaces alone.
     for (const located of await findTeamAgentFiles(teamAgentsDir, name)) {
       await remove(located.path);
       removed.push(located.path);
     }
 
+    // Only the name given. Agents deploy FLATTENED — `~/.claude/agents/<stem>` —
+    // so a bare-stem tombstone is read globally by both the push scan and the
+    // post-pull cleanup: removing `fe/vr` would suppress and delete `be/vr` the
+    // moment that namespace became active (#649 review). Rules can afford the
+    // bare spelling because they keep their namespace directory locally.
     await this.addTombstone(name, localConfig);
+
+    // The author's own copy IS flattened, though, and it is theirs only when
+    // this machine's record says the file just removed is where push put it.
+    const localNames = new Set([name]);
+    if (stem !== name) {
+      const placed = placedResourcePath(
+        (await loadStateForScope(localConfig)).placedAgents, 'agents', stem,
+      );
+      if (placed === `agents/${name}.yaml` || placed === `agents/${name}.md`) {
+        localNames.add(stem);
+      }
+    }
+
+    // Single-repo mode: the canonical source lives in the repo's own
+    // .teamai/agents/, and the scan picks it up directly. Leaving it behind
+    // republishes the agent on the next push, and a bare-stem tombstone cannot
+    // stop that without suppressing the same stem in every other namespace,
+    // because agents deploy flattened (#649 review).
+    if (isSelfMode(localConfig) && localConfig.projectRoot) {
+      const activeAgentsDir = path.join(localConfig.projectRoot, '.teamai', 'agents');
+      for (const localName of localNames) {
+        for (const ext of ['.yaml', '.md'] as const) {
+          const filePath = path.join(activeAgentsDir, `${localName}${ext}`);
+          if (await pathExists(filePath)) {
+            await remove(filePath);
+            removed.push(filePath);
+          }
+        }
+      }
+    }
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.agents) continue;
@@ -446,12 +725,14 @@ export class AgentsHandler extends ResourceHandler {
       if (isAgentExcluded(localConfig, tool)) continue;
       const baseDir = resolveToolBaseDir(tool, localConfig);
       // Try every native agent extension: the render format varies per tool.
-      for (const ext of AGENT_FILE_EXTENSIONS) {
-        const filePath = path.join(baseDir, toolPath.agents, `${name}${ext}`);
-        if (await pathExists(filePath)) {
-          await remove(filePath);
-          removed.push(filePath);
-          log.debug(`Removed agent ${name} from ${tool}`);
+      for (const localName of localNames) {
+        for (const ext of AGENT_FILE_EXTENSIONS) {
+          const filePath = path.join(baseDir, toolPath.agents, `${localName}${ext}`);
+          if (await pathExists(filePath)) {
+            await remove(filePath);
+            removed.push(filePath);
+            log.debug(`Removed agent ${localName} from ${tool}`);
+          }
         }
       }
     }
@@ -474,9 +755,16 @@ export class AgentsHandler extends ResourceHandler {
     activeNamespaces: string[],
   ): Promise<void> {
     const items = await this.scanTeamForPull(teamConfig, localConfig);
-    const isActive = (item: AgentResourceItem): boolean => !item.namespace || activeNamespaces.includes(item.namespace);
-    const active = items.filter(isActive);
-    const inactive = items.filter((item) => !isActive(item) && !BUILTIN_AGENT_NAMES.has(item.name));
+    // The same selection `pull` delivers with, records included: revoking an
+    // agent this machine published would delete the copy pull had just written.
+    const { placedAgents } = await loadStateForScope(localConfig);
+    const kept = new Set(
+      selectAgentsForDirectory(items, activeNamespaces, placedAgents).map((item) => item.relativePath),
+    );
+    const active = items.filter((item) => kept.has(item.relativePath));
+    const inactive = items.filter(
+      (item) => !kept.has(item.relativePath) && !BUILTIN_AGENT_NAMES.has(item.name),
+    );
     if (inactive.length === 0) return;
 
     for (const { tool, dir: destDir } of await this.agentToolDirs(teamConfig, localConfig)) {
@@ -606,6 +894,29 @@ export async function listTeamAgentDirs(teamAgentsDir: string): Promise<TeamAgen
 }
 
 type TeamAgentFile = { path: string; ext: '.yaml' | '.md'; namespace?: string };
+
+/**
+ * Whether a team agent reached through this machine's placement record has
+ * changed since this machine's copy of it was current: the version at the last
+ * pull, or — for a placement that landed after it — the version it was added
+ * with. Agents have no pre-push sync, so a teammate's edit made before the
+ * author's next pull would otherwise be overwritten by the stale local copy
+ * (#649 review). A guard, not a merge: `pull` delivers the recorded agent and
+ * moves the baseline, after which the edit can be pushed.
+ */
+async function recordedAgentMovedOn(repoPath: string, relPath: string, lastPullRev: string | null): Promise<boolean> {
+  const current = await readFileSafe(path.join(repoPath, relPath));
+  if (current === null) return false;
+  const baseline = (lastPullRev ? await getFileContentAtRev(repoPath, lastPullRev, `./${relPath}`) : null)
+    ?? await getFileContentWhenAdded(repoPath, relPath);
+  return baseline !== null && baseline.toString('utf-8') !== current;
+}
+
+function staleRecordedAgentReason(stem: string, relPath: string): string {
+  return `Agent "${stem}" (${relPath}) changed on the team since this machine last synced it, `
+    + 'so pushing your copy would overwrite that change. `teamai pull` replaces your copy with the team version, '
+    + 'so first copy your edit aside, then pull, reapply it, and push again.';
+}
 
 /**
  * Every team file for a stem, root first, then namespaces in directory order,

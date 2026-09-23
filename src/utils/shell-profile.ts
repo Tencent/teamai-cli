@@ -203,33 +203,205 @@ export function envBlockReferencesDataHome(block: string, envShPath: string): bo
 }
 
 /**
+ * `~/name` (never quoted — a shell does not tilde-expand inside any quotes)
+ * or `$HOME/name` / `${HOME}/name` (unquoted or double-quoted — a shell
+ * does not variable-expand inside single quotes) as a token this scanner
+ * accepts as a reference to `name`. `source "~/.bashrc"` and
+ * `source '$HOME/.bashrc'` both source a literal, near-certainly
+ * nonexistent path, not `name` — a reference that "looks right" but would
+ * never actually reach the file must not be trusted (#693 review round 12).
+ */
+function homeRelativeRef(name: string): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const suffix = `${escaped}(?![\\w.-])`;
+  return `(?:~/${suffix}|\\$\\{?HOME\\}?/${suffix}|"\\$\\{?HOME\\}?/${suffix}")`;
+}
+
+/**
+ * Whether `line` opens, or closes, a construct whose body either isn't
+ * guaranteed to run (`if`/`for`/`while`/`until`/`case`/`select`, a function)
+ * or runs in a subshell whose exports never reach the caller even when it
+ * always runs (`(...)`, a brace group) — content inside never counts as
+ * reaching a candidate, no matter how it looks (#693 review rounds 11-15).
+ */
+function opensUnverifiedBlock(line: string): boolean {
+  return /^(?:if|for|while|until|case|select)\b/.test(line)
+    || /^function\s+\S/.test(line)
+    || /^\S+\s*\(\)\s*\{?\s*$/.test(line)
+    || line === '{'
+    || line === '(';
+}
+function closesUnverifiedBlock(line: string): boolean {
+  return /^(?:fi|done|esac)\b/.test(line) || /^\}(?:\s|$)/.test(line) || /^\)(?:\s|$)/.test(line);
+}
+
+/**
+ * Splits `content` into logical lines: joins a line ending in `\`, or in a
+ * dangling `&&`/`||` awaiting its next operand (both are real, unremarkable
+ * shell continuation — a trailing binary operator implicitly continues onto
+ * the next line with no backslash needed, and treating that next line as an
+ * independent, unconditional statement is a real false-"reachable" risk, not
+ * an edge case), joins a lone `{` onto the header line it opens, and drops
+ * heredoc bodies entirely — their text is data, never executed statements.
+ * A `<<<` here-string is not mistaken for a `<<` heredoc, a non-`-` heredoc's
+ * terminator is matched literally (only `<<-` strips leading tabs), and a
+ * heredoc delimiter may contain `-`/`_` as well as alphanumerics — all three
+ * were real detection gaps (#693 review round 15), not narrowed away.
+ */
+function logicalLines(content: string): string[] {
+  const result: string[] = [];
+  const rawLines = content.split('\n');
+  const heredocQueue: { terminator: string; stripTabs: boolean }[] = [];
+
+  for (let i = 0; i < rawLines.length; i += 1) {
+    if (heredocQueue.length > 0) {
+      const { terminator, stripTabs } = heredocQueue[0];
+      const withoutCR = rawLines[i].replace(/\r$/, '');
+      const candidate = stripTabs ? withoutCR.replace(/^\t+/, '') : withoutCR;
+      if (candidate === terminator) heredocQueue.shift();
+      continue;
+    }
+
+    let line = rawLines[i].trim();
+    while (i + 1 < rawLines.length && (
+      (line.endsWith('\\') && !line.endsWith('\\\\')) || line.endsWith('&&') || line.endsWith('||')
+    )) {
+      i += 1;
+      const next = rawLines[i].trim();
+      line = line.endsWith('\\') ? `${line.slice(0, -1).trimEnd()} ${next}`.trim() : `${line} ${next}`.trim();
+    }
+    if (!line) continue;
+
+    // A self-contained one-liner (`if ...; then ...; fi`, `case ... esac`,
+    // `for ...; do ...; done`) opens and closes on the same line — net zero
+    // depth change, not an unclosed open that corrupts tracking for every
+    // real statement after it (#693 review round 13/15).
+    if (/^(?:if|for|while|until|case)\b.*;\s*(?:fi|done|esac)\s*$/.test(line)) continue;
+
+    if (line === '{' && result.length > 0) {
+      result[result.length - 1] += ' {';
+      continue;
+    }
+
+    for (const heredoc of line.matchAll(/(?<!<)<<(-?)(?!<)\s*(['"]?)([\w-]+)\2/g)) {
+      heredocQueue.push({ terminator: heredoc[3], stripTabs: heredoc[1] === '-' });
+    }
+
+    result.push(line);
+  }
+  return result;
+}
+
+/**
+ * Whether `content` runs a `source`/`.` command reaching `name`, restricted
+ * to exactly two forms, each matched as a complete logical line with nothing
+ * else on it:
+ *
+ * - **Bare unconditional**: `. REF` / `source REF`, alone.
+ * - **Self-referential existence guard**: `test -f REF && . REF` /
+ *   `[ -f REF ] && . REF` — the literal line Git for Windows itself
+ *   generates.
+ *
+ * Earlier rounds (#693 review rounds 11-14) grew this into a much larger
+ * ad-hoc grammar chasing one adversarial shell construct at a time —
+ * `;`/`&&`/`||` statement splitting, quote- and escape-aware tokenizing,
+ * N-way `||` fallback chains, trailing arguments and redirections on the
+ * source itself. Round 15 correctly called that out as exactly the kind of
+ * unbounded, speculative parser this repo's engineering guidance rejects:
+ * matching arbitrary shell semantics without a real shell is undecidable in
+ * general, and no amount of one-more-regex ever finishes it. Recognizing
+ * only these two literal, common, machine-generated-or-standard forms keeps
+ * the same safety property — nothing outside them is ever trusted, so the
+ * worst outcome is a harmless duplicate block (the pre-#693-fix behavior),
+ * never a false "reachable" that would reintroduce #682 — without the
+ * unbounded grammar, or the endless stream of parsing bugs that came with
+ * it (quoted/escaped separators, pipes, backgrounding, heredoc edge cases).
+ *
+ * Nothing inside an `if`/`for`/`while`/`until`/`case`/`select`, a function,
+ * or a `(...)`/`{...}` group counts (`logicalLines`/`opensUnverifiedBlock`
+ * skip it), and nothing textually after an unconditional, top-level
+ * `return`/`exit` counts either (tracked below as a single flag — cheap
+ * enough to keep without reopening the general-parser question).
+ */
+async function referencesCandidate(content: string, name: string): Promise<boolean> {
+  const ref = homeRelativeRef(name);
+  const bareSource = new RegExp(`^(?:\\.|source)\\s+${ref}$`);
+  const existenceGuard = new RegExp(
+    `^(?:test\\s+-f\\s+${ref}|\\[\\s+-f\\s+${ref}\\s*\\])\\s*&&\\s*(?:\\.|source)\\s+${ref}$`,
+  );
+
+  let depth = 0;
+  let halted = false;
+  for (const line of logicalLines(content)) {
+    if (opensUnverifiedBlock(line)) { depth += 1; continue; }
+    if (closesUnverifiedBlock(line)) { depth = Math.max(0, depth - 1); continue; }
+    if (depth > 0) continue;
+
+    if (/^(?:return|exit)(?:\s+\S+)?$/.test(line)) { halted = true; continue; }
+    if (halted) continue;
+
+    if (bareSource.test(line) || existenceGuard.test(line)) return true;
+  }
+  return false;
+}
+
+/**
  * Resolve which shell profile file this scope's env block belongs in.
  *
- * Sticky by design: a candidate that already carries a block for this
- * scope's `env.sh` is reused, rather than re-running `detectShellProfile`'s
- * order-based fallback on every pull. Without this, Git for Windows' own
- * `/etc/profile.d/bash_profile.sh` changes which candidate *exists* between
- * two pulls out from under it: the first time a login shell starts with
- * `~/.bashrc` present but none of `~/.bash_profile`, `~/.bash_login` or
- * `~/.profile`, it auto-generates a `~/.bash_profile` that sources both —
- * not a symlink, a plain file containing `test -f ~/.bashrc && . ~/.bashrc`.
- * `detectShellProfile`'s order then prefers that newly-existing file on the
- * *next* pull, injecting a second block there and reporting the still-loading
- * `.bashrc` one (loaded transitively through the generated forwarder) as a
- * stray leftover, even though nothing ever stopped working (#693 review
- * round 7). Only when no candidate already owns a block — a genuinely first
- * pull — does the order-based fallback decide.
+ * Starts from `detectShellProfile`'s order-based pick — the file the current
+ * environment actually reads — and searches every file it actually `source`s
+ * (transitively, breadth-first, with cycle protection) for one that already
+ * carries this scope's block. A candidate the search never reaches is never
+ * preferred, regardless of what it contains: earlier versions matched any
+ * candidate with a block anywhere (#693 review round 8: a stale pre-#682
+ * block in `.bashrc` then outranked a genuinely unwritten, currently-read
+ * `.profile`, reintroducing #682 for exactly the installs upgrading through
+ * this fix), checked only one hop of sourcing (#693 review round 9:
+ * `.bash_profile` sourcing `.profile` sourcing `.bashrc` — the common Debian
+ * `.profile` pattern — would miss a block sitting in `.bashrc` two hops away
+ * and inject a duplicate into `.bash_profile`), and followed only the first
+ * referenced candidate in a fixed priority order rather than every one
+ * (#693 review round 10: `.bash_profile` sourcing both `.bashrc` and
+ * `.profile`, with the block actually sitting in `.profile`, would commit to
+ * the dead-end `.bashrc` branch first — earlier in `SHELL_PROFILE_CANDIDATE_
+ * NAMES` — and give up without ever trying `.profile`).
+ *
+ * The common real case this exists for: Git for Windows'
+ * `/etc/profile.d/bash_profile.sh` auto-generates `~/.bash_profile`
+ * (`test -f ~/.bashrc && . ~/.bashrc`, a plain file, not a symlink) the
+ * first time a login shell starts with `~/.bashrc` present but none of
+ * `~/.bash_profile`, `~/.bash_login` or `~/.profile`. `detectShellProfile`
+ * then prefers that newly-existing file on the *next* pull; without
+ * following the chain it opens, injecting a second block there would leave
+ * the still-loading `.bashrc` one reported as a stray leftover, even though
+ * nothing ever stopped working.
  */
 export async function resolveActiveShellProfile(
   envShPath: string,
   platform: NodeJS.Platform = process.platform,
 ): Promise<string> {
   const home = getUserHome();
-  for (const name of SHELL_PROFILE_CANDIDATE_NAMES) {
-    const candidate = path.join(home, name);
-    const content = await readFileSafe(candidate);
+  const activePick = await detectShellProfile(platform);
+
+  const visited = new Set<string>();
+  const queue: string[] = [activePick];
+  while (queue.length > 0) {
+    const current = queue.shift() as string;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    const content = await readFileSafe(current);
     const block = content ? extractEnvBlock(content) : null;
-    if (block && envBlockReferencesDataHome(block, envShPath)) return candidate;
+    if (block && envBlockReferencesDataHome(block, envShPath)) return current;
+    if (!content) continue;
+
+    for (const name of SHELL_PROFILE_CANDIDATE_NAMES) {
+      const candidate = path.join(home, name);
+      if (candidate !== current && !visited.has(candidate) && await referencesCandidate(content, name)) {
+        queue.push(candidate);
+      }
+    }
   }
-  return detectShellProfile(platform);
+
+  return activePick;
 }

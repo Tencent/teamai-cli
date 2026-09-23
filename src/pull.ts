@@ -1,13 +1,15 @@
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import matter from 'gray-matter';
+import { selectAgentsForDirectory } from './resources/agents.js';
 import { requireInit, loadState, saveState, detectProjectConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
-import { pullRepo, getHeadRev, createGit } from './utils/git.js';
+import { pullRepo, getHeadRev, createGit, getDefaultBranch } from './utils/git.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { pendingLearningsDir } from './utils/pending-learnings.js';
 import { learningsRoots } from './utils/learnings-roots.js';
 import { log, spinner } from './utils/logger.js';
 import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
+import { reconcilePlacementRecords } from './utils/pending-push.js';
 import { injectClaudeMdSection, removeClaudeMdSection } from './utils/claudemd.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
 import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
@@ -272,10 +274,9 @@ export function filterRulesByKnowledgeNamespaces(
 export function filterAgentsByNamespaces(
   agents: ResourceItem[],
   agentNamespaces: string[] | null,
+  placedAgents?: Record<string, string>,
 ): ResourceItem[] {
-  const kept = agentNamespaces
-    ? agents.filter((agent) => !agent.namespace || agentNamespaces.includes(agent.namespace))
-    : agents;
+  const kept = selectAgentsForDirectory(agents, agentNamespaces, placedAgents);
 
   const seen = new Map<string, ResourceItem>();
   for (const agent of kept) {
@@ -422,7 +423,12 @@ export async function resolveDesiredAgents(
   roleContext: RolePullContext | null,
 ): Promise<ResourceItem[]> {
   const items = await getHandler('agents').scanTeamForPull(teamConfig, localConfig);
-  return filterAgentsByNamespaces(items, roleContext ? roleContext.activeNamespaces.agents : null);
+  const { placedAgents } = await loadStateForScope(localConfig);
+  return filterAgentsByNamespaces(
+    items,
+    roleContext ? roleContext.activeNamespaces.agents : null,
+    placedAgents,
+  );
 }
 
 // Deployment adds a CONTRIBUTORS file that the team source may not have; ignore it
@@ -639,7 +645,11 @@ async function cleanupTombstonedResources(
 
   for (const { type, toolPathField } of tombstoneTypes) {
     const handler = getHandler(type);
-    const tombstones = await handler.readTombstones(localConfig);
+    // Agents deploy flattened, so a namespaced agent tombstone has to be read
+    // as the stem the local copy carries (`AgentsHandler.removedStems`).
+    const tombstones = type === 'agents'
+      ? await (handler as AgentsHandler).removedStems(freshConfig, localConfig)
+      : await handler.readTombstones(localConfig);
     if (tombstones.size === 0) continue;
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
@@ -767,6 +777,28 @@ async function pullForScope(
   } catch (e) {
     pullSpin.fail(`[${scopeLabel}] Pull failed: ${(e as Error).message}`);
     return;
+  }
+
+  // Settle the placement records against the tree just refreshed, before
+  // delivery reads them: a placement whose PR has merged becomes a record, one
+  // whose file the team deleted stops being one, and one shadowed by a new
+  // shared-root file of the same name is withdrawn (#649 review).
+  // In single-repo mode the refresh leaves the member's own checkout as it is —
+  // a feature branch, or a main not pulled yet — so the records are settled
+  // against origin/<default> as a ref instead: a record dropped against that
+  // checkout would never come back (#649 review).
+  if (!options.dryRun) {
+    try {
+      const tip = localConfig.repo.kind === 'self'
+        ? `origin/${await getDefaultBranch(localConfig.repo.localPath)}`
+        : undefined;
+      const recordsState = await loadStateForScope(localConfig);
+      if (await reconcilePlacementRecords(localConfig.repo.localPath, recordsState, tip)) {
+        await saveStateForScope(recordsState, localConfig);
+      }
+    } catch (e) {
+      log.debug(`[${scopeLabel}] Placement record cleanup skipped: ${(e as Error).message}`);
+    }
   }
 
   // Publish what contribute queued. Here rather than inside the refresh, which

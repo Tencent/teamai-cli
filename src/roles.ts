@@ -1,7 +1,7 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { readFileSafe, readFileIfExists, ensureDir, writeFile } from './utils/fs.js';
+import { readFileSafe, readFileIfExists, ensureDir, pathExists, writeFile } from './utils/fs.js';
 
 const ROLE_RESOURCE_TYPES = ['knowledge', 'skills', 'agents'] as const;
 
@@ -91,11 +91,34 @@ function validateManifestShape(raw: unknown): RolesManifest {
   return manifest;
 }
 
+/**
+ * The team repo has no `manifest/roles.yaml` at all — a distinct case from one
+ * that exists but cannot be parsed. `push` treats them differently: an absent
+ * manifest is the pre-manifest layout, where a role id doubles as its skills
+ * namespace, while an unreadable one is a failure that must stop the push
+ * rather than let a new rule or agent fall back to the shared root (#649).
+ */
+export class RolesManifestNotFoundError extends Error {
+  constructor(manifestPath: string) {
+    super(`Roles manifest not found: ${manifestPath}`);
+    this.name = 'RolesManifestNotFoundError';
+  }
+}
+
 export async function loadRolesManifest(repoPath: string): Promise<RolesManifest> {
   const manifestPath = path.join(repoPath, 'manifest', 'roles.yaml');
   const content = await readFileSafe(manifestPath);
-  if (!content) {
-    throw new Error(`Roles manifest not found: ${manifestPath}`);
+  if (content === null) {
+    // `readFileSafe` answers null for EVERY failure, so "no such file" and
+    // "cannot read it" arrive identically. Only the first is the pre-manifest
+    // layout; treating a permission error as that one sends new rules and
+    // agents to the shared root, which is the whole team (#649).
+    if (await pathExists(manifestPath)) {
+      throw new Error(
+        `Roles manifest exists but could not be read: ${manifestPath}. Check its permissions.`,
+      );
+    }
+    throw new RolesManifestNotFoundError(manifestPath);
   }
 
   let raw: unknown;

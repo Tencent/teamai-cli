@@ -8,6 +8,9 @@ vi.mock('../config.js', async (importOriginal) => ({
   requireInit: vi.fn(),
   loadState: vi.fn(),
   saveState: vi.fn(),
+  // The rules scanner reads state.json for push placements; an empty state is
+  // the default, and tests that need a record override it for one call.
+  loadStateForScope: vi.fn(async () => ({})),
 }));
 
 vi.mock('../utils/git.js', () => ({
@@ -33,7 +36,8 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { RulesHandler } from '../resources/rules.js';
-import type { TeamaiConfig, LocalConfig } from '../types.js';
+import { loadStateForScope } from '../config.js';
+import type { TeamaiConfig, LocalConfig, State } from '../types.js';
 
 describe('RulesHandler.scanLocalForPush — modified rule detection', () => {
   let tmpDir: string;
@@ -89,6 +93,16 @@ scope: 'user',
     const item = items.find((i) => i.name === 'shared-rule');
     expect(item).toBeDefined();
     expect(item!.status).toBe('modified');
+  });
+
+  it('does not read rules from a tool this member excluded', async () => {
+    // `removeItem` leaves an excluded tool's copy alone; read here, it would
+    // republish a rule the member just removed (#649 review).
+    await fse.writeFile(path.join(homeDir, '.claude/rules', 'kept-by-excluded.md'), 'old rule');
+
+    const items = await handler.scanLocalForPush(teamConfig, { ...localConfig, disabledAgents: ['claude'] });
+
+    expect(items.find((i) => i.name === 'kept-by-excluded')).toBeUndefined();
   });
 
   it('should NOT include an unchanged rule', async () => {
@@ -340,6 +354,127 @@ scope: 'user',
     const names = items.map((i) => i.name);
     expect(names).not.toContain('common/old-rule');
   });
+
+
+  /**
+   * Once push places a new rule under rules/<ns>/, the author's own copy stays
+   * at the tool's rules root. Matching by full path alone would read it as a
+   * brand-new rule on the next push and send a second copy to the shared root,
+   * where it would reach the whole team (issue #649). push records the
+   * placement in state.json, and only that record maps a root-level local rule
+   * to a namespaced team file: a basename match alone proves nothing, because
+   * a namespaced team rule is pulled into a namespaced local directory.
+   */
+  function stateWithPlacedRules(placedRules: Record<string, string>) {
+    const state: State = {
+      lastPush: null, lastPull: null, lastPullRev: null, pushedRules: [], pushedSkills: [],
+      pushedEnvVars: [], pendingPushes: [], lastUpdateCheck: null, availableUpdate: null,
+      placedRules,
+    };
+    vi.mocked(loadStateForScope).mockResolvedValueOnce(state);
+  }
+
+  it('matches a root-level local rule against the namespaced copy push recorded for it', async () => {
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.ensureDir(path.join(teamRulesDir, 'fe-know'));
+    await fse.writeFile(path.join(teamRulesDir, 'fe-know/my-rule.md'), 'team content');
+    stateWithPlacedRules({ 'my-rule': 'rules/fe-know/my-rule.md' });
+
+    await fse.writeFile(path.join(homeDir, '.claude/rules/my-rule.md'), 'edited locally');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const item = items.find((i) => i.name === 'my-rule');
+    expect(item?.status).toBe('modified');
+    expect(item?.relativePath).toBe('rules/fe-know/my-rule.md');
+    // Recorded on the item too, so an open PR can reuse the destination.
+    expect(item?.namespace).toBe('fe-know');
+  });
+
+  it('does not re-push a root-level local rule that equals the namespaced copy it was placed at', async () => {
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.ensureDir(path.join(teamRulesDir, 'fe-know'));
+    await fse.writeFile(path.join(teamRulesDir, 'fe-know/my-rule.md'), 'same content');
+    stateWithPlacedRules({ 'my-rule': 'rules/fe-know/my-rule.md' });
+
+    await fse.writeFile(path.join(homeDir, '.claude/rules/my-rule.md'), 'same content');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    expect(items.map((i) => i.name)).not.toContain('my-rule');
+  });
+
+  it('keeps an unrelated root-level rule new when only its basename matches a namespaced team rule', async () => {
+    // Another member's machine: the team has rules/fe-know/foo.md, and this
+    // user wrote their own foo.md at the rules root. Nothing was pushed from
+    // here, so there is no record — and no grounds to overwrite the team rule.
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.ensureDir(path.join(teamRulesDir, 'fe-know'));
+    await fse.writeFile(path.join(teamRulesDir, 'fe-know/foo.md'), 'team rule');
+    stateWithPlacedRules({});
+
+    await fse.writeFile(path.join(homeDir, '.claude/rules/foo.md'), 'unrelated local rule');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const item = items.find((i) => i.name === 'foo');
+    expect(item?.status).toBe('new');
+    expect(item?.relativePath).toBe('rules/foo.md');
+    expect(item?.namespace).toBeUndefined();
+  });
+
+  it('keeps following the record when a shared-root rule with the same name appears later', async () => {
+    // Another contributor adds rules/my-rule.md after this rule was placed.
+    // Mapping the author's copy onto it would push their content over an
+    // unrelated team rule, so the record wins (#649 review round 3).
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.ensureDir(path.join(teamRulesDir, 'fe-know'));
+    await fse.writeFile(path.join(teamRulesDir, 'fe-know/my-rule.md'), 'the placed rule');
+    await fse.writeFile(path.join(teamRulesDir, 'my-rule.md'), 'somebody else\'s shared rule');
+    stateWithPlacedRules({ 'my-rule': 'rules/fe-know/my-rule.md' });
+
+    await fse.writeFile(path.join(homeDir, '.claude/rules/my-rule.md'), 'edited locally');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const item = items.find((i) => i.name === 'my-rule');
+    expect(item?.relativePath).toBe('rules/fe-know/my-rule.md');
+    expect(item?.namespace).toBe('fe-know');
+  });
+
+  it('treats a root-level rule as new again once its recorded team file is gone', async () => {
+    // The rule was removed from the team repo (or its namespace renamed): the
+    // record no longer points at anything and must not invent a destination.
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.ensureDir(path.join(teamRulesDir, 'other-ns'));
+    await fse.writeFile(path.join(teamRulesDir, 'other-ns/my-rule.md'), 'team content');
+    stateWithPlacedRules({ 'my-rule': 'rules/fe-know/my-rule.md' });
+
+    await fse.writeFile(path.join(homeDir, '.claude/rules/my-rule.md'), 'local');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const item = items.find((i) => i.name === 'my-rule');
+    expect(item?.status).toBe('new');
+    expect(item?.relativePath).toBe('rules/my-rule.md');
+  });
+
+  it('reports a subdirectory rule name as its namespace', async () => {
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.ensureDir(path.join(teamRulesDir, 'common'));
+    await fse.writeFile(path.join(teamRulesDir, 'common/coding-standards.md'), 'team');
+
+    await fse.ensureDir(path.join(homeDir, '.claude/rules/common'));
+    await fse.writeFile(path.join(homeDir, '.claude/rules/common/coding-standards.md'), 'edited');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const item = items.find((i) => i.name === 'common/coding-standards');
+    expect(item?.namespace).toBe('common');
+  });
+
+  it('leaves the namespace unset for a rule at the shared root', async () => {
+    await fse.writeFile(path.join(homeDir, '.claude/rules/shared.md'), 'everyone');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    const item = items.find((i) => i.name === 'shared');
+    expect(item?.relativePath).toBe('rules/shared.md');
+    expect(item?.namespace).toBeUndefined();
+  });
 });
 
 describe('RulesHandler.scanTeamForPull — subdirectory support', () => {
@@ -481,6 +616,154 @@ scope: 'user',
     // Stale files should be removed
     expect(await fse.pathExists(path.join(localRulesDir, 'coding-style.md'))).toBe(false);
     expect(await fse.pathExists(path.join(localRulesDir, 'hooks.md'))).toBe(false);
+  });
+
+  /**
+   * A rule published into a namespace keeps the author's copy at the rules
+   * ROOT under its bare name, while the desired set holds `<ns>/<name>` — or
+   * nothing at all when the namespace is not active here. Sweeping by name
+   * alone therefore deleted the author's own file, local edits included
+   * (#649 review).
+   */
+  it("spares the author's root copy of a rule published into a namespace", async () => {
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.outputFile(path.join(teamRulesDir, 'fe-know/my-rule.md'), 'team content');
+    await fse.writeFile(path.join(teamRulesDir, 'other.md'), 'other');
+    const localRulesDir = path.join(homeDir, '.claude/rules');
+    await fse.writeFile(path.join(localRulesDir, 'my-rule.md'), 'my local edits');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPush: null, lastPull: null, lastPullRev: null, pushedRules: [], pushedSkills: [],
+      pushedEnvVars: [], pendingPushes: [], lastUpdateCheck: null, availableUpdate: null,
+      placedRules: { 'my-rule': 'rules/fe-know/my-rule.md' },
+    } as State);
+
+    await handler.pullAllRules(teamConfig, localConfig, [
+      { name: 'other', type: 'rules', sourcePath: path.join(teamRulesDir, 'other.md'), relativePath: 'rules/other.md', status: 'new' },
+    ]);
+
+    expect(await fse.readFile(path.join(localRulesDir, 'my-rule.md'), 'utf-8'))
+      .toBe('my local edits');
+  });
+
+  /**
+   * When that namespace IS active here, the team file is delivered — and it
+   * used to land at `<tool>/rules/<ns>/<name>` beside the author's root copy,
+   * so a tool that loads rules recursively applied both, and they disagreed as
+   * soon as the team file moved on. The record names the root copy as this
+   * rule's local file, so delivery updates it and takes the duplicate with it
+   * (#649 review).
+   */
+  it("delivers a rule this machine placed onto the author's root copy, not beside it", async () => {
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.outputFile(path.join(teamRulesDir, 'fe-know/my-rule.md'), 'team content');
+    const localRulesDir = path.join(homeDir, '.claude/rules');
+    await fse.writeFile(path.join(localRulesDir, 'my-rule.md'), 'stale root copy');
+    await fse.outputFile(path.join(localRulesDir, 'fe-know/my-rule.md'), 'duplicate from an earlier pull');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPush: null, lastPull: null, lastPullRev: null, pushedRules: [], pushedSkills: [],
+      pushedEnvVars: [], pendingPushes: [], lastUpdateCheck: null, availableUpdate: null,
+      placedRules: { 'my-rule': 'rules/fe-know/my-rule.md' },
+    } as State);
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.readFile(path.join(localRulesDir, 'my-rule.md'), 'utf-8')).toBe('team content');
+    expect(await fse.pathExists(path.join(localRulesDir, 'fe-know/my-rule.md'))).toBe(false);
+  });
+
+  it('does not redirect a placed rule onto a root path a shared-root rule of the same name owns', async () => {
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.outputFile(path.join(teamRulesDir, 'fe-know/my-rule.md'), 'the author\'s namespaced rule');
+    await fse.writeFile(path.join(teamRulesDir, 'my-rule.md'), 'an unrelated rule for everyone');
+    const localRulesDir = path.join(homeDir, '.claude/rules');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPush: null, lastPull: null, lastPullRev: null, pushedRules: [], pushedSkills: [],
+      pushedEnvVars: [], pendingPushes: [], lastUpdateCheck: null, availableUpdate: null,
+      placedRules: { 'my-rule': 'rules/fe-know/my-rule.md' },
+    } as State);
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    // Both would otherwise land on my-rule.md, in whichever order the loop
+    // ran; the shared-root rule owns that path and the namespaced one keeps its own.
+    expect(await fse.readFile(path.join(localRulesDir, 'my-rule.md'), 'utf-8')).toBe('an unrelated rule for everyone');
+    expect(await fse.readFile(path.join(localRulesDir, 'fe-know/my-rule.md'), 'utf-8')).toBe('the author\'s namespaced rule');
+  });
+
+  it('delivers a namespaced rule another member placed to its namespace directory', async () => {
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.outputFile(path.join(teamRulesDir, 'fe-know/my-rule.md'), 'team content');
+    const localRulesDir = path.join(homeDir, '.claude/rules');
+    // A record for a DIFFERENT namespace is not this rule's.
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPush: null, lastPull: null, lastPullRev: null, pushedRules: [], pushedSkills: [],
+      pushedEnvVars: [], pendingPushes: [], lastUpdateCheck: null, availableUpdate: null,
+      placedRules: { 'my-rule': 'rules/be-know/my-rule.md' },
+    } as State);
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.readFile(path.join(localRulesDir, 'fe-know/my-rule.md'), 'utf-8')).toBe('team content');
+    expect(await fse.pathExists(path.join(localRulesDir, 'my-rule.md'))).toBe(false);
+  });
+
+  it("spares the author's root copy while its placement is still awaiting review", async () => {
+    // Pushed, not merged: no team file, no record yet. The pending entry is
+    // what says this copy is ours.
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.writeFile(path.join(teamRulesDir, 'other.md'), 'other');
+    const localRulesDir = path.join(homeDir, '.claude/rules');
+    await fse.writeFile(path.join(localRulesDir, 'my-rule.md'), 'awaiting review');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPush: null, lastPull: null, lastPullRev: null, pushedRules: [], pushedSkills: [],
+      pushedEnvVars: [], lastUpdateCheck: null, availableUpdate: null, placedRules: {},
+      pendingPushes: [{
+        branch: 'teamai/push/me/1', prUrl: null, createdAt: '2026-01-01T00:00:00.000Z',
+        items: [{ type: 'rules', name: 'my-rule', relativePath: 'rules/fe-know/my-rule.md', namespace: 'fe-know', placed: true }],
+      }],
+    } as State);
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.readFile(path.join(localRulesDir, 'my-rule.md'), 'utf-8')).toBe('awaiting review');
+  });
+
+  it("spares the author's root copy while its PR is pending, even once the placement mark is spent", async () => {
+    // Reconcile spends the mark on a placement it cannot prove (no blob, or
+    // the path arrived with other content), while the PR may still be open:
+    // the copy is still the author's work (#649 review).
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.writeFile(path.join(teamRulesDir, 'other.md'), 'other');
+    const localRulesDir = path.join(homeDir, '.claude/rules');
+    await fse.writeFile(path.join(localRulesDir, 'my-rule.md'), 'awaiting review');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPush: null, lastPull: null, lastPullRev: null, pushedRules: [], pushedSkills: [],
+      pushedEnvVars: [], lastUpdateCheck: null, availableUpdate: null, placedRules: {},
+      pendingPushes: [{
+        branch: 'teamai/push/me/1', prUrl: null, createdAt: '2026-01-01T00:00:00.000Z',
+        items: [{ type: 'rules', name: 'my-rule', relativePath: 'rules/fe-know/my-rule.md', namespace: 'fe-know', placed: false }],
+      }],
+    } as State);
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.readFile(path.join(localRulesDir, 'my-rule.md'), 'utf-8')).toBe('awaiting review');
+  });
+
+  it('still sweeps a root rule whose record points at a file that is gone', async () => {
+    const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+    await fse.writeFile(path.join(teamRulesDir, 'other.md'), 'other');
+    const localRulesDir = path.join(homeDir, '.claude/rules');
+    await fse.writeFile(path.join(localRulesDir, 'my-rule.md'), 'orphaned');
+    vi.mocked(loadStateForScope).mockResolvedValue({
+      lastPush: null, lastPull: null, lastPullRev: null, pushedRules: [], pushedSkills: [],
+      pushedEnvVars: [], pendingPushes: [], lastUpdateCheck: null, availableUpdate: null,
+      placedRules: { 'my-rule': 'rules/fe-know/my-rule.md' },
+    } as State);
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.pathExists(path.join(localRulesDir, 'my-rule.md'))).toBe(false);
   });
 
   it('should remove stale files in subdirectories', async () => {
