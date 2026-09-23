@@ -50,6 +50,34 @@ describe('cnbLogin pins the platform host', () => {
     delete process.env.TEAMAI_CNB_HOST;
   });
 
+  // issue #711: `cnb login` waits for an OAuth2 device flow with nobody there.
+  // Without a terminal, ensureCnbAuthenticated must refuse before spawning it.
+  it('ensureCnbAuthenticated refuses without a terminal and names CNB_TOKEN', async () => {
+    const originalIsTTY = process.stdin.isTTY;
+    const savedToken = { CNB_TOKEN: process.env.CNB_TOKEN, CNB_ACCESS_TOKEN: process.env.CNB_ACCESS_TOKEN };
+    delete process.env.CNB_TOKEN;
+    delete process.env.CNB_ACCESS_TOKEN;
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    try {
+      // `cnb status`: not logged in
+      crossSpawnSync.mockReturnValue({ status: 1, stdout: '', stderr: '' });
+      const { ensureCnbAuthenticated } = await import('../providers/cnb/cnb-cli.js');
+
+      expect(() => ensureCnbAuthenticated()).toThrow(/CNB_TOKEN/);
+
+      const loginCalls = crossSpawnSync.mock.calls.filter(
+        ([, args]) => Array.isArray(args) && args[0] === 'login',
+      );
+      expect(loginCalls).toHaveLength(0);
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+      for (const [k, v] of Object.entries(savedToken)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it('passes --host cnb.cool so login ignores the current dir git remote', async () => {
     const { cnbLogin } = await import('../providers/cnb/cnb-cli.js');
     cnbLogin();

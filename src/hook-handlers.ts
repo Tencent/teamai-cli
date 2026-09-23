@@ -183,7 +183,7 @@ const dashboardReportHandler: HookHandler = {
 const trackHandler: HookHandler = {
   name: 'track',
   async execute(stdin, tool) {
-    const { extractSkillName, isValidSkillName, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
+    const { resolveSkillUse, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
 
     const rawToolName = stdin.tool_name;
     if (typeof rawToolName !== 'string') return null;
@@ -192,30 +192,16 @@ const trackHandler: HookHandler = {
     const toolInput = stdin.tool_input;
     if (!toolInput || typeof toolInput !== 'object') return null;
 
-    // Only track Skill (Claude/CodeBuddy) or Read+SKILL.md (Cursor)
-    let skillName: string | null = null;
-    let toolSource = tool;
+    // Shared resolver: Skill (Claude/CodeBuddy) or Read+SKILL.md (Cursor).
+    const resolved = resolveSkillUse(toolName, toolInput as Record<string, unknown>);
+    if (!resolved) return null;
 
-    if (toolName === 'Skill') {
-      skillName = extractSkillName(toolInput as Record<string, unknown>);
-    } else if (toolName === 'Read') {
-      const input = toolInput as Record<string, unknown>;
-      const filePath =
-        (typeof input.file_path === 'string' ? input.file_path : null) ??
-        (typeof input.filePath === 'string' ? input.filePath : null) ??
-        (typeof input.path === 'string' ? input.path : null);
-      if (typeof filePath === 'string' && /\/SKILL\.md$/i.test(filePath)) {
-        skillName = extractSkillName({ skill: filePath });
-        toolSource = 'cursor';
-      }
-    } else {
-      return null;
-    }
-
-    if (!skillName || !isValidSkillName(skillName)) return null;
-
-    await appendUsageEvent({ skill: skillName, timestamp: new Date().toISOString(), tool: toolSource });
-    await updateKnownSkills(skillName);
+    await appendUsageEvent({
+      skill: resolved.skillName,
+      timestamp: new Date().toISOString(),
+      tool: resolved.source ?? tool,
+    });
+    await updateKnownSkills(resolved.skillName);
     return null;
   },
 };
@@ -258,14 +244,30 @@ async function contributeHintAllowed(): Promise<boolean> {
   }
 }
 
+/**
+ * Ask the model to declare which recalled documents it actually used.
+ *
+ * English, like every other user-facing string: Claude Code prints the Stop
+ * payload, so this reaches the terminal of anyone whose team has recall on. It
+ * restates the requirement `compileRecallRulesBlock` already ships (#719).
+ */
+export function buildVotesNudge(recalledDocIds: readonly string[]): string {
+  return (
+    `This session recalled team knowledge through teamai (candidate doc-ids: ${recalledDocIds.join(', ')}). `
+    + 'Before you finish, declare the entries you actually used by appending '
+    + '`<!-- teamai:referenced-doc-ids: [the-doc-ids-you-used] -->` to your final reply. '
+    + 'Declare an empty list `[]` if you used none.'
+  );
+}
+
 const contributeCheckHandler: HookHandler = {
   name: 'contribute-check',
   async execute(stdin, tool) {
     if (!(await contributeHintAllowed())) return null;
 
     const { contributeCheckForSession } = await import('./contribute-check.js');
-    const { formatStopHookOutput } = await import('./utils/hook-output.js');
-    const { STOP_STDOUT_UNSUPPORTED_TOOLS } = await import('./utils/tool-names.js');
+    const { formatStopHookOutput, relayWhenHidden } = await import('./utils/hook-output.js');
+    const { stopStdoutUnsupported } = await import('./utils/tool-names.js');
 
     // Match dashboard-collector's derivation so events and contribute state
     // share the same session id even when stdin.session_id is absent.
@@ -275,10 +277,12 @@ const contributeCheckHandler: HookHandler = {
     // Tools whose Stop hook cannot deliver model context: stash the hint (in the same
     // single state write inside contributeCheckForSession) for delivery on the
     // next UserPromptSubmit, so contributeCheckForSession returns null here.
-    const stash = STOP_STDOUT_UNSUPPORTED_TOOLS.has(tool);
+    const stash = stopStdoutUnsupported(tool);
     const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath, stash);
     if (!hint) return null;
-    return formatStopHookOutput(hint, tool);
+    // The hint is addressed to the user, so a host that hides the payload needs
+    // the model to pass it on. Claude Code prints it and must not be asked (#719).
+    return formatStopHookOutput(relayWhenHidden(hint, tool), tool);
   },
 };
 
@@ -286,8 +290,8 @@ const contributeCheckHandler: HookHandler = {
 const pendingHintHandler: HookHandler = {
   name: 'pending-hint',
   async execute(stdin, tool) {
-    const { STOP_STDOUT_UNSUPPORTED_TOOLS } = await import('./utils/tool-names.js');
-    if (!STOP_STDOUT_UNSUPPORTED_TOOLS.has(tool)) return null;
+    const { stopStdoutUnsupported } = await import('./utils/tool-names.js');
+    if (!stopStdoutUnsupported(tool)) return null;
 
     // Must match contributeCheckHandler's derivation so Stop and UserPromptSubmit
     // resolve to the same session file. This cross-process handoff relies on
@@ -304,7 +308,10 @@ const pendingHintHandler: HookHandler = {
     const hint = (await contributeHintAllowed()) ? stashed : null;
     const votesHint = await pending.takePendingVotesHint(sessionId);
 
-    const combined = [hint, votesHint].filter(Boolean).join('\n');
+    // The votes nudge instructs the model; the contribute hint asks it to relay
+    // a message to the user and so must run to the end of the payload. Reversing
+    // the order would leave "print the following verbatim" with no clear end (#719).
+    const combined = [votesHint, hint].filter(Boolean).join('\n');
     if (!combined) return null;
 
     return JSON.stringify({
@@ -433,13 +440,11 @@ const votesSyncHandler: HookHandler = {
 
       if (nudged) {
         const { formatStopHookOutput } = await import('./utils/hook-output.js');
-        const { STOP_STDOUT_UNSUPPORTED_TOOLS } = await import('./utils/tool-names.js');
-        const msg =
-          `你本次通过 teamai 召回了团队知识（候选 doc-id：${recalled.join(', ')}）。` +
-          `结束前请在回复末尾声明你实际用到的条目：<!-- teamai:referenced-doc-ids: [用到的doc-id] -->；没用到就留空 []。`;
+        const { stopStdoutUnsupported } = await import('./utils/tool-names.js');
+        const msg = buildVotesNudge(recalled);
         // For tools whose Stop stdout is ignored, stash the nudge for delivery
         // on the next UserPromptSubmit (same cross-process mechanism as contribute).
-        if (STOP_STDOUT_UNSUPPORTED_TOOLS.has(tool ?? '')) {
+        if (stopStdoutUnsupported(tool)) {
           const { stashVotesHint } = await import('./contribute-check.js');
           await stashVotesHint(sessionId, msg);
           return null;
@@ -502,6 +507,59 @@ const localAgentHandler: HookHandler = {
   },
 };
 
+/**
+ * Map a host's `hook_event_name` (as normalized by parseStdin) to the canonical
+ * webhook event names teams subscribe to. The handler used to read `stdin.event`,
+ * which hosts never send, so every event was forwarded as `unknown` and no
+ * `skill-use` / `session-start` / `session-stop` subscription ever matched (#702).
+ *
+ * Keyed by the lowercased hook name for a case-insensitive lookup: Claude sends
+ * PascalCase (`SessionStart`) while Cursor/CodeBuddy send camelCase
+ * (`sessionStart`) — see dashboard-collector's mapEventType, which handles both.
+ * A case-sensitive PascalCase-only map silently dropped the camelCase hosts.
+ */
+const WEBHOOK_EVENT_BY_HOOK: Record<string, string> = {
+  sessionstart: 'session-start',
+  stop: 'session-stop',
+  sessionend: 'session-stop',
+  posttooluse: 'skill-use',
+};
+
+/**
+ * Build the minimal, whitelisted data payload for a webhook event.
+ *
+ * Only a fixed set of non-sensitive fields per event is forwarded. Raw
+ * `tool_input` (which can carry API keys in tool args) and `tool_response`
+ * (which can carry private tool output) are never included (#701). The result is
+ * additionally deep-redacted at the send boundary (see sendWebhook).
+ */
+async function buildWebhookData(
+  event: string,
+  stdin: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (event === 'skill-use') {
+    const rawToolName = stdin.tool_name;
+    const toolInput = stdin.tool_input;
+    if (typeof rawToolName !== 'string' || !toolInput || typeof toolInput !== 'object') return {};
+    const { resolveSkillUse } = await import('./usage-tracker.js');
+    // Same resolver trackHandler uses, so the webhook reaches parity: it fires
+    // for Claude/CodeBuddy `Skill` AND Cursor's `Read` of a SKILL.md path, and
+    // never for a normal file Read (#702 follow-up). The resolver already
+    // validates the name with isValidSkillName, so a tool-arg string cannot
+    // escape as skillName (#701).
+    const resolved = resolveSkillUse(
+      normalizeToolName(rawToolName),
+      toolInput as Record<string, unknown>,
+    );
+    return resolved ? { skillName: resolved.skillName } : {};
+  }
+  if (event === 'session-start' || event === 'session-stop') {
+    const sessionId = deriveSessionId(stdin);
+    return sessionId ? { sessionId } : {};
+  }
+  return {};
+}
+
 /** Webhook notification handler — sends events to configured endpoints. */
 const webhookHandler: HookHandler = {
   name: 'webhook-dispatch',
@@ -512,14 +570,19 @@ const webhookHandler: HookHandler = {
       const config = await loadWebhookConfig();
       if (!config.enabled || config.endpoints.length === 0) return null;
 
-      const event = typeof stdin.event === 'string' ? stdin.event : 'unknown';
+      const hookEventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name : '';
+      // Case-insensitive so both PascalCase (Claude) and camelCase (Cursor/
+      // CodeBuddy) hook names resolve (#702).
+      const event = WEBHOOK_EVENT_BY_HOOK[hookEventName.toLowerCase()];
+      // Only forward events we can map to a canonical name — never emit `unknown` (#702).
+      if (!event) return null;
 
       const payload = {
         tool,
         sessionId: deriveSessionId(stdin),
         cwd: resolveHookCwd(stdin),
         username: typeof stdin.username === 'string' ? stdin.username : undefined,
-        data: stdin as Record<string, unknown>,
+        data: await buildWebhookData(event, stdin),
       };
 
       await sendWebhook(event, payload, config);
@@ -550,9 +613,11 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
 
-    // Copilot emits SessionEnd after its final turn. Only the dashboard needs
-    // this lifecycle event; detaching it avoids delaying CLI shutdown.
+    // Copilot emits SessionEnd after its final turn (not Stop), so the webhook
+    // handler must run here too or those sessions emit no session-stop
+    // notification (#702). Detached, mirroring the stop registration.
     { event: 'session-end', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+    { event: 'session-end', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
 
     // ─── Stop ─────────────────────────────────────────
     // votes-sync and contribute-check may return a hint the host injects back

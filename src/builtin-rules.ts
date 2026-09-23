@@ -162,16 +162,19 @@ teamai recall "<关键词1> <关键词2> ..."
 例如专有名词、品牌与产品名、缩写、代码标识符与符号、错误码、版本号、文件路径、命令与 API 名
 （\`AppID\`、\`Kubernetes\`、\`GPU\`、\`RuntimeError\`、\`v2.1.3\`、\`oauth\`）——翻译它们只会损害匹配。
 
-### 检索后要求（用于评估知识被采纳情况，请务必执行）
+### After recall: declare what you used (required, it measures knowledge adoption)
 
-teamai-recall subagent 的返回里已列出本次检索到的候选 doc-id（见其 recalled-doc-ids 列表）。
-你**不需要凭记忆重建列表**——只需在**最终回复末尾**追加下面这行，
-从候选里**保留你实际用到的**（照抄了命令、或概念上参考了，都算用到），删掉没用到的：
+The teamai-recall subagent already lists the candidate doc-ids it retrieved (see
+its recalled-doc-ids list). You do **not** need to rebuild that list from memory.
+Append the line below to your **final reply**, keeping the candidates you actually
+used (copying a command from one counts, so does referring to it conceptually) and
+deleting the rest:
 
 \`\`\`
-<!-- teamai:referenced-doc-ids: [你实际用到的-doc-id] -->
+<!-- teamai:referenced-doc-ids: [the-doc-ids-you-used] -->
 \`\`\`
 
-一个都没用到就留空：\`<!-- teamai:referenced-doc-ids: [] -->\`。
-若直接用 \`teamai recall\` 命令（未走 subagent），从召回结果的 File 路径推出 doc-id 自行填入。
+Declare an empty list if you used none: \`<!-- teamai:referenced-doc-ids: [] -->\`.
+If you ran \`teamai recall\` directly instead of going through the subagent, derive
+each doc-id from the File path in the results and fill them in yourself.
 `;

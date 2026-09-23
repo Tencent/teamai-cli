@@ -702,10 +702,13 @@ describe('remote commands', () => {
 // of the suite depends on.
 //
 // GitHub-only: TGit's `gf` CLI authenticates via ~/.netrc, which we lose
-// when we isolate $HOME to a temp dir. `gf auth login` then triggers an
-// interactive (inheritStdio) login that no amount of stdin piping can
-// satisfy → permanent hang. GitHub provider auths via GITHUB_TOKEN env,
-// so it works fine under HOME isolation.
+// when we isolate $HOME to a temp dir, and `gf auth whoami` reads only that
+// store. The TGIT_TOKEN below cannot stand in for it: the PAT is REST-only,
+// and git.woa.com's git endpoint rejects it too. Since #711 the CLI
+// refuses to start `gf auth login` without a terminal instead of hanging on
+// it, so a TGit run here would fail fast rather than block; it still cannot
+// pass. GitHub provider auths via GITHUB_TOKEN env, so it works fine under
+// HOME isolation.
 
 const PROVIDER_IS_GITHUB =
   (process.env.TEAMAI_TEST_PROVIDER ?? 'tgit').toLowerCase() === 'github';

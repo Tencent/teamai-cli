@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { log } from './utils/logger.js';
+import { RELAY_TO_USER_PREFIX, relayWhenHidden } from './utils/hook-output.js';
 import { readJson, writeJson, writeJsonAtomic, ensureDir } from './utils/fs.js';
 import { readEvents, aggregateSessionMetrics, scanTranscriptStop } from './dashboard-collector.js';
 import { readRecallQuality } from './recall-quality.js';
@@ -494,8 +495,7 @@ function buildHint({ friction, promptSummary, isKnowledgeGap }: HintContext): st
   const action = isKnowledgeGap
     ? 'Consider running /teamai-share-learnings to summarize what you learned, share it with your team, and fill the knowledge gap.'
     : 'Consider running /teamai-share-learnings to summarize what you learned and share it with your team.';
-  const body = `${headline}${task}\n\n${action}`;
-  return `Print the following message verbatim to the user (do NOT paraphrase, summarize, or explain its origin):\n\n${body}`;
+  return `${headline}${task}\n\n${action}`;
 }
 
 /**
@@ -653,7 +653,10 @@ export async function contributeCheckForSession(
     // For tools whose Stop hook ignores stdout, stash the hint in this same
     // write for delivery on the next UserPromptSubmit — no second write.
     if (willHint && stashInsteadOfReturn) {
-      updated.pendingHint = hintText ?? undefined;
+      // The stash is delivered as UserPromptSubmit context, which the host does
+      // not display, so this copy asks the model to relay it. The Stop copy
+      // returned below does not: Claude Code prints that one itself (#719).
+      updated.pendingHint = hintText ? RELAY_TO_USER_PREFIX + hintText : undefined;
     }
     await writeContributeState(sessionId, updated);
   }
@@ -707,17 +710,17 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
     return;
   }
 
-  const { STOP_STDOUT_UNSUPPORTED_TOOLS } = await import('./utils/tool-names.js');
+  const { stopStdoutUnsupported } = await import('./utils/tool-names.js');
   const tool = toolArg?.toLowerCase() ?? 'claude';
   const { hint } = await contributeCheckForSession(
     stdinData.sessionId,
     stdinData.cwd,
     stdinData.transcriptPath,
-    STOP_STDOUT_UNSUPPORTED_TOOLS.has(tool),
+    stopStdoutUnsupported(tool),
   );
   if (hint !== null) {
     const { formatStopHookOutput } = await import('./utils/hook-output.js');
-    process.stdout.write(formatStopHookOutput(hint, tool));
+    process.stdout.write(formatStopHookOutput(relayWhenHidden(hint, tool), tool));
   }
 }
 

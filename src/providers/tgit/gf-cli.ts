@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathExists, ensureDir } from '../../utils/fs.js';
 import { log, spinner } from '../../utils/logger.js';
+import { isInteractive } from '../../utils/prompt.js';
 import { getTeamaiHomeDir } from '../../types.js';
 import { tgitFetch, tgitGitCloneUrl } from './rest-auth.js';
 
@@ -241,6 +242,22 @@ export function ensureAuthenticated(): string {
   const username = gfAuthWhoami();
   if (username) {
     return username;
+  }
+
+  // `gf auth login` inherits stdio and waits for iOA / a browser device flow.
+  // Without a person at a terminal that never completes (issue #711).
+  //
+  // Unlike the other providers there is no token to name here: a `TGIT_TOKEN`
+  // PAT is REST-API-only, and git.woa.com's git endpoint rejects it in every
+  // form (see {@link tgitGitCloneUrl}), so it can neither satisfy this check nor
+  // clone. The only credential that works is the one `gf auth login` stores.
+  if (!isInteractive()) {
+    throw new Error(
+      'TGit authentication unavailable without a terminal. ' +
+        'Run `gf auth login` in an interactive shell first — this machine then ' +
+        'reuses the credential it stores (TGIT_TOKEN is REST-API-only and ' +
+        'cannot clone).',
+    );
   }
 
   // Not authenticated — trigger interactive login

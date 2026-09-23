@@ -70,6 +70,14 @@ export interface DoctorContext {
   teamConfig: TeamaiConfig | null;
   /** Tool paths already narrowed to the enabled, non-excluded agents. */
   toolPaths: TeamaiConfig['toolPaths'];
+  /**
+   * The same tool paths resolved at the scope hooks are injected into, which is
+   * not the config's scope: a non-self project scope injects into HOME (#264).
+   * Hook checks must use these, or a tool whose user-scope prefix differs from
+   * its project-scope one is looked for under the wrong prefix and always
+   * reported missing.
+   */
+  hookToolPaths: TeamaiConfig['toolPaths'];
   /** Where hooks are actually injected — see `resolveHookScope` (#264). */
   baseDir: string;
 }
@@ -250,10 +258,19 @@ export async function resolveDoctorContext(): Promise<DoctorContext | null> {
   // Hook checks must look where hooks are actually injected. resolveHookScope
   // maps a non-self project scope to HOME (#264), matching the injection path in
   // init/pull/hooks-cmd — otherwise doctor checks <projectRoot>/.claude while the
-  // hooks live in ~/.claude and always reports them missing.
-  const baseDir = resolveHookScope(localConfig).baseDir;
+  // hooks live in ~/.claude and always reports them missing. The paths have to
+  // follow the same scope, or a tool whose user-scope prefix differs from its
+  // project-scope one (`qoder-cn`, OpenCode) is probed under the wrong prefix.
+  const hookScope = resolveHookScope(localConfig);
+  const hookToolPaths: TeamaiConfig['toolPaths'] = teamConfig
+    ? Object.fromEntries(
+      Object.entries(scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope.scope }))
+        .filter(([tool]) => !isAgentExcluded(localConfig, tool)),
+    )
+    : {};
+  const baseDir = hookScope.baseDir;
 
-  return { localConfig, teamConfig, toolPaths, baseDir };
+  return { localConfig, teamConfig, toolPaths, hookToolPaths, baseDir };
 }
 
 /**
@@ -276,7 +293,7 @@ export type CheckStage = 'pull' | 'doctor';
  * the same diagnostics and act on the result.
  */
 export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'doctor'): Promise<Check[]> {
-  const { localConfig, teamConfig, toolPaths, baseDir } = ctx;
+  const { localConfig, teamConfig, toolPaths, hookToolPaths, baseDir } = ctx;
   const providerName = teamConfig?.provider;
   const checks: Check[] = [];
 
@@ -370,7 +387,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
         + 'can push to the team repo (run with --verbose to see the push error).',
     },
     ...await buildEnabledToolChecks(ctx),
-    ...await buildHookChecks(toolPaths, baseDir, localConfig),
+    ...await buildHookChecks(hookToolPaths, baseDir, localConfig),
     ...await buildDeliveryChecks(ctx),
     // Built only for `doctor`: the work is in building these, not in running
     // them, so skipping them post-pull is what keeps the budget for the rest.

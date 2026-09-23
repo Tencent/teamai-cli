@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock heavy dependencies before importing the module under test
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: vi.fn().mockResolvedValue({
     localConfig: { repo: { localPath: '/tmp/fake-repo' } },
     teamConfig: {},

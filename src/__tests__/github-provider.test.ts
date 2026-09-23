@@ -41,6 +41,7 @@ import {
   ghRepoClone,
   ghIsAuthenticated,
   getGitHubToken,
+  ensureGhAuthenticated,
   RepoNotFoundError,
 } from '../providers/github/gh-cli.js';
 import { resolveCliPath } from '../utils/cli-path.js';
@@ -370,6 +371,39 @@ describe('ghPrCreate via REST API', () => {
 });
 
 // ─── GitHubProvider surface ─────────────────────────────
+
+// ─── ensureGhAuthenticated without a terminal (issue #711) ──
+
+describe('ensureGhAuthenticated without a terminal', () => {
+  const originalIsTTY = process.stdin.isTTY;
+  const savedToken = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
+
+  beforeEach(() => {
+    mockedSpawnSync.mockReset();
+    mockedResolveCliPath.mockReturnValue('/usr/bin/gh');
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    // `gh api user` fails: no session.
+    mockedSpawnSync.mockReturnValue({ status: 1, stdout: '', stderr: '' });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+    for (const [k, v] of Object.entries(savedToken)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('refuses instead of spawning the browser device flow, and names GITHUB_TOKEN', async () => {
+    await expect(ensureGhAuthenticated()).rejects.toThrow(/GITHUB_TOKEN/);
+    const loginCalls = mockedSpawnSync.mock.calls.filter(
+      ([, args]) => Array.isArray(args) && args[0] === 'auth' && args[1] === 'login',
+    );
+    expect(loginCalls).toHaveLength(0);
+  });
+});
 
 describe('GitHubProvider', () => {
   it('is the default provider returned when name omitted', () => {

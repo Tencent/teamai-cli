@@ -745,6 +745,8 @@ function reverseByTool(tool: ToolName, filePath: string, content: string): Rever
       return reverseFromJoycode(filePath, content);
     case 'qoder':
       return reverseFromClaude(filePath, content);
+    case 'qoder-cn':
+      return reverseFromClaude(filePath, content);
     case 'kiro':
       return reverseFromKiro(filePath, content);
     case 'zcode':

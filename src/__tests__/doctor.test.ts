@@ -3,7 +3,8 @@ import path from 'node:path';
 
 // ── Mocks ────────────────────────────────────────────────
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
     loadLocalConfig: vi.fn(),
     loadTeamConfig: vi.fn(),
     detectProjectConfig: vi.fn().mockResolvedValue(null),
@@ -12,6 +13,8 @@ vi.mock('../config.js', () => ({
 vi.mock('../utils/fs.js', () => ({
     pathExists: vi.fn(),
     readFileSafe: vi.fn(),
+    // Manifest loaders read through this one; no manifest exists on this machine.
+    readFileIfExists: vi.fn().mockResolvedValue(null),
     // The delivery checks walk the team repo through resolveDesiredSkills,
     // resolveDesiredRules, resolveDesiredAgents and DocsHandler. This machine
     // has none of those; delivery on a real disk is covered by

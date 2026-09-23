@@ -4,7 +4,8 @@ import os from 'node:os';
 import fse from 'fs-extra';
 
 // Mock external dependencies
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   requireInit: vi.fn(),
   loadState: vi.fn().mockResolvedValue({ lastPull: null, lastPullRev: null }),
   saveState: vi.fn(),
@@ -40,7 +41,7 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-vi.mock('../roles.js', () => ({
+vi.mock('../roles.js', async () => ({
   loadRolesManifest: vi.fn().mockResolvedValue({
     version: 1,
     roles: [
@@ -65,6 +66,12 @@ vi.mock('../roles.js', () => ({
       agents: [],
     };
   }),
+  // Env delivery resolves the member's role axis (#668), so this partial mock has
+  // to carry activeRoleIds and the loader membership.ts reads. Taken from the real
+  // module rather than restated, so a change to either cannot drift from its stub.
+  activeRoleIds: (await vi.importActual<typeof import('../roles.js')>('../roles.js')).activeRoleIds,
+  listRoleIds: (await vi.importActual<typeof import('../roles.js')>('../roles.js')).listRoleIds,
+  loadRolesManifestIfPresent: vi.fn().mockResolvedValue(null),
 }));
 
 // Isolation: pull() takes a real ~/.teamai/.sync-lock. Parallel vitest workers
@@ -171,6 +178,74 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     );
     // State should NOT be re-saved (no sync happened)
     expect(saveStateForScope).not.toHaveBeenCalled();
+  });
+
+  it('re-delivers env on the revision fast path so a variable scoped away by an upgrade leaves env.sh', async () => {
+    // The machine pulled with a CLI that ignored `roles:` on env variables, so
+    // env.sh holds every declared variable and lastPullRev matches HEAD. The
+    // repo has not moved; only the CLI has. Hooks and MCP reconcile outside the
+    // fast path already; env must not be the one axis a plain `teamai pull`
+    // leaves stale until --force.
+    await fse.ensureDir(path.join(repoPath, 'env'));
+    await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), [
+      'variables:',
+      '  - key: SHARED_URL',
+      '    value: https://shared.example',
+      '  - key: DEVOPS_ONLY',
+      '    value: devops-secret',
+      '    roles: [devops]',
+      '',
+    ].join('\n'));
+    const envShPath = path.join(homeDir, '.teamai', 'env.sh');
+    await fse.ensureDir(path.dirname(envShPath));
+    await fse.writeFile(envShPath, "export SHARED_URL='https://shared.example'\nexport DEVOPS_ONLY='devops-secret'\n");
+
+    vi.mocked(getHeadRev).mockResolvedValue('abc1234');
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['claude'],
+    }));
+
+    await pull({});
+
+    expect(log.success).toHaveBeenCalledWith(expect.stringContaining('Already synced at abc1234, skipping'));
+    const envSh = await fse.readFile(envShPath, 'utf8');
+    expect(envSh).toContain("export SHARED_URL='https://shared.example'");
+    expect(envSh).not.toContain('DEVOPS_ONLY');
+    // Still the fast path: the revision cache is not rewritten.
+    expect(saveStateForScope).not.toHaveBeenCalled();
+  });
+
+  it('warns when the fast-path env delivery cannot write env.sh', async () => {
+    // The one failure that must not be silent: this delivery is what REMOVES a
+    // variable the member is no longer scoped to, and it runs after
+    // "Already synced" has already printed. A debug-only log would leave the
+    // withheld variable exported with nothing on screen to say so.
+    await fse.ensureDir(path.join(repoPath, 'env'));
+    await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), [
+      'variables:',
+      '  - key: SHARED_URL',
+      '    value: https://shared.example',
+      '',
+    ].join('\n'));
+    const envShPath = path.join(homeDir, '.teamai', 'env.sh');
+    // A directory where the file goes: writeFile throws, on every platform and
+    // as root, unlike a permission bit.
+    await fse.ensureDir(envShPath);
+
+    vi.mocked(getHeadRev).mockResolvedValue('abc1234');
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['claude'],
+    }));
+
+    await pull({});
+
+    expect(log.success).toHaveBeenCalledWith(expect.stringContaining('Already synced at abc1234, skipping'));
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Could not refresh env variables'));
+    // Names the file that may still be stale, and the way out.
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(envShPath));
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('teamai pull --force'));
   });
 
   it('stops before the revision fast path when role-scoped resources cannot be resolved', async () => {

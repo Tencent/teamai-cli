@@ -16,7 +16,7 @@ import type { McpServerDef, McpTransport } from '../types.js';
 
 export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot';
 
-const CLAUDE_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'qoder', 'kiro', 'zcode', 'omp']);
+const CLAUDE_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'qoder', 'qoder-cn', 'kiro', 'zcode', 'omp']);
 const CURSOR_TOOLS = new Set(['cursor']);
 const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
 const BUDDY_TOOLS = new Set(['codebuddy', 'workbuddy']);

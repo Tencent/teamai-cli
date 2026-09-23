@@ -78,8 +78,10 @@ sudo apt install gh
 
 ```bash
 teamai init yourorg/yourrepo
-# 检测到未登录时会自动调起 gh auth login --web
+# 检测到未登录时会自动调起 gh auth login --web（仅限交互式终端）
 ```
+
+无人值守运行（stdin 不是 TTY，或设置了 `CI` / `TEAMAI_NONINTERACTIVE`）不会调起该登录：浏览器 device flow 无人完成，只会把任务挂到超时（[#711](https://github.com/Tencent/teamai-cli/issues/711)）。此时 `init` 立即失败并提示导出带 `repo` 权限的 `GITHUB_TOKEN`（或 `GH_TOKEN`）。
 
 **方式 2：`GITHUB_TOKEN` 环境变量**
 
@@ -119,7 +121,9 @@ TeamAI 通过 `getDefaultBranch()` 自动识别默认分支：先看 `origin/HEA
 
 ### 认证
 
-`teamai init` 会自动下载工蜂 CLI `gf` 到 `~/.teamai/gf/`，然后运行 `gf auth login`（支持 iOA SSO / 浏览器 device code / 手动 token）。登录后 token 存在 `~/.netrc`，所有后续 git 操作自动带上。
+`teamai init` 会自动下载工蜂 CLI `gf` 到 `~/.teamai/gf/`，然后在交互式终端里运行 `gf auth login`（支持 iOA SSO / 浏览器 device code / 手动 token）。登录后 token 存在 `~/.netrc`，所有后续 git 操作自动带上。
+
+无人值守运行（stdin 不是 TTY，或设置了 `CI` / `TEAMAI_NONINTERACTIVE`）不会调起该登录，而是立即失败并提示先在交互式终端执行一次 `gf auth login`（[#711](https://github.com/Tencent/teamai-cli/issues/711)）。这里没有可替代的 token：`TGIT_TOKEN` 仅用于 REST API，git.woa.com 的 git 端点不接受它，因此无法用它 clone；登录一次之后，后续无人值守运行会复用它保存的凭据。
 
 ### 多级命名空间
 
@@ -149,7 +153,7 @@ cnb login --host cnb.cool   # OAuth2 device flow，登录后 `cnb git-credential
 teamai init https://cnb.cool/yourorg/yourrepo
 ```
 
-> **为什么要带 `--host`**：`cnb` CLI 在未显式指定 host 时，会从当前目录第一个 git remote 推断平台地址。若在一个 remote 指向非 CNB 平台（如内网 git 服务器）的仓库里直接跑 `cnb login`，请求会被打到那个 host 并返回 `401`。显式 `--host cnb.cool` 可避免此问题（自托管实例改用对应域名）。由 `teamai init` 自动触发登录时，teamai 已按 `TEAMAI_CNB_HOST`（默认 `cnb.cool`）带上 `--host`，无需手动处理。
+> **为什么要带 `--host`**：`cnb` CLI 在未显式指定 host 时，会从当前目录第一个 git remote 推断平台地址。若在一个 remote 指向非 CNB 平台（如内网 git 服务器）的仓库里直接跑 `cnb login`，请求会被打到那个 host 并返回 `401`。显式 `--host cnb.cool` 可避免此问题（自托管实例改用对应域名）。由 `teamai init` 自动触发登录时，teamai 已按 `TEAMAI_CNB_HOST`（默认 `cnb.cool`）带上 `--host`，无需手动处理；该自动登录仅在交互式终端里发生，无人值守运行改为立即失败并提示设置 `CNB_TOKEN`（见方式 2，[#711](https://github.com/Tencent/teamai-cli/issues/711)）。
 
 **方式 2：`CNB_TOKEN` 环境变量（headless / CI）**
 

@@ -83,6 +83,38 @@ hooks:
     expect(defs[1].roles).toBeUndefined();
   });
 
+  it('carries an optional projects list through, and leaves it undefined when omitted', async () => {
+    await writeHooksYaml(`
+hooks:
+  - id: checkout-lint
+    description: checkout only
+    event: Stop
+    command: echo checkout
+    projects: [checkout]
+  - id: everyone
+    description: for all
+    event: Stop
+    command: echo hi
+`);
+    const defs = await parseTeamHooks(repo);
+    expect(defs[0].projects).toEqual(['checkout']);
+    expect(defs[1].projects).toBeUndefined();
+  });
+
+  it('carries both axes on one hook', async () => {
+    await writeHooksYaml(`
+hooks:
+  - id: both
+    description: both axes
+    event: Stop
+    command: echo both
+    roles: [frontend]
+    projects: [checkout]
+`);
+    const defs = await parseTeamHooks(repo);
+    expect(defs[0]).toMatchObject({ roles: ['frontend'], projects: ['checkout'] });
+  });
+
   it('rejects an invalid id and skips the whole file (never writes a broken set)', async () => {
     await writeHooksYaml(`
 hooks:

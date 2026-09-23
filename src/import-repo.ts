@@ -312,6 +312,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     if (!dryRun) {
         const cacheWiki = path.join(cacheDir, 'teamwiki');
         try {
+            let extractIncremental = incremental;
             // Incremental mode: copy existing cache files to cacheDir for extractCodebase to read
             if (incremental) {
                 const destIndices = path.join(teamwikiRoot, '.indices');
@@ -327,9 +328,15 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
                 if (await fs.pathExists(existingManifest)) {
                     await fs.copy(existingManifest, path.join(cacheDir, 'teamwiki', 'source-manifest.json'));
                 }
+                const cacheManifest = path.join(cacheWiki, 'source-manifest.json');
+                if (await fs.pathExists(cacheManifest)) {
+                    const manifest = await fs.readJson(cacheManifest).catch(() => null);
+                    // A previous attempt may have published its manifest without updating LAST_SYNC.
+                    if (!lastSync || manifest?.headSha !== lastSync.sha) extractIncremental = false;
+                }
             }
             await extractCodebase({
-                path: cacheDir, project: slug, json: false, skipEnrich, incremental,
+                path: cacheDir, project: slug, json: false, skipEnrich, incremental: extractIncremental,
                 repoUrl: url,
                 branch: cloneBranch === 'HEAD' ? undefined : cloneBranch,
                 sourceMrUrl,
@@ -406,7 +413,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             }
             log.info(chalk.green(`✓ teamwiki/ knowledge graph updated: ${slug}`));
         } catch (err) {
-            log.debug(`[wiki-engine] Graph generation failed (non-blocking): ${err instanceof Error ? err.message : err}`);
+            throw new Error(`Knowledge extraction failed: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
             await fs.remove(cacheWiki).catch(() => {});
         }

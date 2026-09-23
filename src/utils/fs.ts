@@ -45,6 +45,21 @@ export async function readFileSafe(filePath: string): Promise<string | null> {
 }
 
 /**
+ * Read a file that is allowed to be absent. `null` means the file does not
+ * exist; any other failure (permissions, I/O) is thrown, unlike `readFileSafe`,
+ * which folds every error into `null`. Use this where a caller must tell
+ * "the team has no such file" apart from "the file could not be read".
+ */
+export async function readFileIfExists(filePath: string): Promise<string | null> {
+  try {
+    return await fse.readFile(expandHome(filePath), 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/**
  * Write a file, creating parent dirs as needed.
  */
 export async function writeFile(filePath: string, content: string): Promise<void> {

@@ -33,11 +33,17 @@ export const ToolPathsSchema = z.object({
    * project-scope config lives at `<root>/.opencode/...` but its user-scope config
    * lives at `~/.config/opencode/...`, a different prefix entirely. When set and the
    * active scope is `user`, these values replace the corresponding base paths.
+   *
+   * `settings` is overridable here for the same reason: it is the base-path form of
+   * the hooks/MCP config file, so a tool whose user config lives under a different
+   * prefix than its project config needs it too (Qoder CN: user `~/.qoder-cn/`,
+   * project `<root>/.qoder/`). Tools whose two scopes share a prefix omit it.
    */
   userScope: z
     .object({
       skills: z.string().optional(),
       rules: z.string().optional(),
+      settings: z.string().optional(),
       agents: z.string().optional(),
       hooks: z.string().optional(),
       claudemd: z.string().optional(),
@@ -357,6 +363,35 @@ export const TeamaiConfigSchema = z.object({
       agents: '.qoder/agents',
       mcp: '.qoder/settings.json',
       mcpProject: '.qoder/settings.json',
+    },
+    // Qoder CN is a separate distribution whose *user*-scope directory is
+    // ~/.qoder-cn instead of ~/.qoder, so it needs its own entry rather than
+    // sharing `qoder`. It reads the same Claude-compatible resource formats.
+    //
+    // Only the user scope differs. Top-level fields are PROJECT-scope paths and
+    // the `userScope` block below carries the user-scope overrides, so the
+    // top-level entries stay identical to `qoder`:
+    //   ASSUMPTION: Qoder CN's project-scope layout is assumed shared with Qoder
+    //   (`<root>/.qoder/`), i.e. the CN build differs from the international
+    //   build only in its user directory, not in its per-repo directory. This
+    //   could not be verified from this repository — it is a third-party product
+    //   layout. If a CN project actually keeps its resources in `<root>/.qoder-cn/`,
+    //   the top-level fields below are wrong and must move to `.qoder-cn/`.
+    // MCP stays two distinct fields: `mcp` is the user-scope file, `mcpProject`
+    // the project-scope one.
+    'qoder-cn': {
+      skills: '.qoder/skills',
+      rules: '.qoder/rules',
+      settings: '.qoder/settings.json',
+      agents: '.qoder/agents',
+      mcp: '.qoder-cn/settings.json',
+      mcpProject: '.qoder/settings.json',
+      userScope: {
+        skills: '.qoder-cn/skills',
+        rules: '.qoder-cn/rules',
+        settings: '.qoder-cn/settings.json',
+        agents: '.qoder-cn/agents',
+      },
     },
     // Kiro: skills, steering (rules), and custom agents sync to .kiro/. Kiro CLI
     // 2.x stores lifecycle hooks inside each .kiro/agents/*.json config. The
@@ -713,6 +748,11 @@ export interface HookDef {
    * include one of these ids. Omitted = every member; [] = nobody, like tools.
    */
   roles?: string[];
+  /**
+   * Team hooks only: ship only to directories bound to one of these logical
+   * project ids. Omitted = every directory; [] = nobody. ANDs with `roles`.
+   */
+  projects?: string[];
 }
 
 // ─── MCP server definitions ──────────────────────────────
@@ -750,6 +790,12 @@ export interface McpServerDef {
   tools?: string[];
   /** Restrict to members holding one of these role ids (default = every member; [] = nobody). */
   roles?: string[];
+  /**
+   * Restrict to directories bound to one of these logical project ids (default =
+   * every directory; [] = nobody). ANDs with `roles`: a server scoping both
+   * reaches members who match both.
+   */
+  projects?: string[];
 }
 
 /** One injected MCP server recorded in the manifest. */
@@ -1633,11 +1679,13 @@ export function isAgentExcluded(
  *
  * Almost every tool keeps its user-scope and project-scope resources at the same
  * `.<tool>/<resource>` relative path, so this is the identity map for them. The
- * one exception is OpenCode, whose user-scope config lives under
- * `~/.config/opencode/` (a different prefix from its project `<root>/.opencode/`);
- * its `userScope` block carries those paths and is spliced in only when the active
- * scope is `user`. Callers that iterate `toolPaths` for scoped resources should
- * iterate the result of this function instead, so the correct path is used.
+ * exception is a tool whose user-scope config lives under a different prefix from
+ * its project-scope config; its `userScope` block carries those paths and is
+ * spliced in only when the active scope is `user`. OpenCode is such a tool
+ * (`~/.config/opencode/` vs `<root>/.opencode/`), and so is Qoder CN
+ * (`~/.qoder-cn/` vs `<root>/.qoder/`). Callers that iterate `toolPaths` for
+ * scoped resources should iterate the result of this function instead, so the
+ * correct path is used.
  *
  * MCP is untouched here: its two scopes are already distinct fields
  * (`mcp` / `mcpProject`), resolved separately in the reconcile engine.
@@ -1658,6 +1706,7 @@ export function scopedToolPaths(
       ...paths,
       ...(us.skills !== undefined ? { skills: us.skills } : {}),
       ...(us.rules !== undefined ? { rules: us.rules } : {}),
+      ...(us.settings !== undefined ? { settings: us.settings } : {}),
       ...(us.agents !== undefined ? { agents: us.agents } : {}),
       ...(us.hooks !== undefined ? { hooks: us.hooks } : {}),
       ...(us.claudemd !== undefined ? { claudemd: us.claudemd } : {}),
@@ -1891,14 +1940,20 @@ export function getManagedHooksPath(scope: Scope, projectRoot?: string): string 
  */
 export function resolveHookScope(
   localConfig: LocalConfig,
-): { baseDir: string; manifestPath: string } {
+): { baseDir: string; manifestPath: string; scope: Scope } {
   const selfWithRoot = isSelfMode(localConfig) && !!localConfig.projectRoot;
   if (localConfig.scope === 'project' && !selfWithRoot) {
-    return { baseDir: getUserHome(), manifestPath: getManagedHooksPath('user') };
+    // Hooks resolve to HOME here, so the tool paths must be resolved at *user*
+    // scope too: a tool whose user-scope prefix differs from its project-scope
+    // one (OpenCode, Qoder CN) would otherwise be written under the project
+    // prefix, inside HOME. `scope` is returned so callers resolve paths and
+    // base dir from one decision instead of re-deriving it (#370, #667).
+    return { baseDir: getUserHome(), manifestPath: getManagedHooksPath('user'), scope: 'user' };
   }
   return {
     baseDir: resolveBaseDir(localConfig),
     manifestPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
+    scope: localConfig.scope,
   };
 }
 
@@ -1926,13 +1981,14 @@ export function resolveHookScope(
  */
 export function resolveLegacyProjectHookScope(
   localConfig: LocalConfig,
-): { baseDir: string; manifestPath: string } | null {
+): { baseDir: string; manifestPath: string; scope: Scope } | null {
   if (localConfig.scope !== 'project' || !localConfig.projectRoot) return null;
   if (isSelfMode(localConfig)) return null;
   if (path.resolve(localConfig.projectRoot) === path.resolve(getUserHome())) return null;
   return {
     baseDir: localConfig.projectRoot,
     manifestPath: getManagedHooksPath('project', localConfig.projectRoot),
+    scope: 'project',
   };
 }
 
@@ -2113,17 +2169,34 @@ export interface WebhookPayload {
 
 /** Defaulted view of the optional `sharing.webhooks` config. */
 export function getWebhookSharing(config: {
-  sharing?: { webhooks?: { enabled?: boolean; endpoints?: Array<{ url: string; type: string; events?: string[] }> } };
+  sharing?: {
+    webhooks?: {
+      enabled?: boolean;
+      endpoints?: Array<{
+        url: string;
+        type: string;
+        secret?: string;
+        events?: string[];
+        timeout?: number;
+        retries?: number;
+      }>;
+    };
+  };
 }): WebhookConfig {
   const w = config.sharing?.webhooks;
   return {
     enabled: w?.enabled ?? false,
+    // Preserve every schema-accepted field. Previously `secret` was dropped and
+    // `timeout`/`retries` were force-overridden, so a configured signing secret
+    // never reached the request and receivers with signature verification
+    // rejected the (unsigned) webhook (#703).
     endpoints: (w?.endpoints ?? []).map((ep) => ({
       url: ep.url,
       type: ep.type as 'feishu' | 'wecom' | 'json',
+      secret: ep.secret,
       events: ep.events ?? ['push', 'pull', 'skill-use', 'session-start', 'session-stop'],
-      timeout: 5000,
-      retries: 3,
+      timeout: ep.timeout ?? 5000,
+      retries: ep.retries ?? 3,
     })),
   };
 }

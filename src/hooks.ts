@@ -1,3 +1,4 @@
+import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
@@ -17,8 +18,8 @@ import {
 } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig, Scope } from './types.js';
 import { isSelfMode } from './types.js';
-import { activeRoleIds } from './roles.js';
-import { builtinHookDefs, applyBuiltinOverride, skipToolsWithoutShell } from './builtin-hooks.js';
+import { resolveMembership } from './membership.js';
+import { builtinHookDefs, applyBuiltinOverride, skipToolsWithoutShell, toolUsesCmdShell } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { resolveTeamHooks } from './resources/hooks.js';
 import { getUserHome } from './utils/home.js';
@@ -172,7 +173,7 @@ type ToolFormat = 'claude' | 'cursor' | 'codex' | 'copilot' | 'zcode';
 export type HookStatus = 'installed' | 'missing';
 
 const CURSOR_TOOLS = new Set(['cursor']);
-const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
+const CODEX_TOOLS = new Set<string>(CODEX_TOOL_IDS);
 const ZCODE_TOOLS = new Set(['zcode']);
 
 function detectFormat(tool: string): ToolFormat {
@@ -279,29 +280,93 @@ function canonicalProjectRoot(projectRoot: string): string {
   try { return realpathSync.native(projectRoot); } catch { return path.resolve(projectRoot); }
 }
 
-/** Keep a project-scope team hook from firing in every project on the machine. */
-function gateTeamHookCommand(command: string, projectRoot?: string): string {
-  if (!projectRoot) return command;
-  const root = shellQuote(canonicalProjectRoot(projectRoot));
-  return `if [ "$PWD" = ${root} ] || case "$PWD" in ${root}/*) true;; *) false;; esac; then (${command}); fi`;
+/**
+ * Embed a Windows path in a cmd.exe command line so the child receives it
+ * byte-for-byte.
+ *
+ * A path interpolated into cmd text is re-parsed: `%…%` expands and
+ * `& ^ ( ) | < >` act on the line even inside double quotes, so a project at
+ * `C:\src\x&whoami&` would run part of its own name every time a hook fires.
+ * Caret escapes stop that during cmd's parsing, but cmd consumes them before
+ * CreateProcess and the child then re-splits the line, where a caret cannot
+ * keep a space in one token. Emitting the quotes as `^"` covers both: cmd
+ * consumes the caret and hands over a real quote, so the value reaches the
+ * child literally and spaces stay inside one argument.
+ */
+function cmdLiteral(value: string): string {
+  return `^"${value.replace(/[%^&()<>|,;=]/g, (ch) => `^${ch}`)}^"`;
 }
 
+/**
+ * cmd.exe equivalent of the POSIX project gate, as a prefix that resolves to
+ * true only inside `root`.
+ *
+ * The cwd is read with a bare `cd`, whose output goes straight into the pipe:
+ * unlike `echo %CD%`, the directory name is never part of a parsed command, so
+ * `&`, `%` and `^` in it cannot be re-interpreted. `cd` prints no trailing
+ * separator, so the root itself needs its own end-anchored test. The
+ * separator-suffixed `/b` form covers everything below the root while a
+ * sibling that merely shares the prefix (`C:\a\proj` vs `C:\a\proj-2`) does
+ * not; `/e` accepts the root's own `C:\a\proj`, and a longer line ending in it
+ * is not a valid absolute Windows path. `/l` keeps the pattern literal and
+ * `/i` matches the case-insensitive Windows path. The pattern ends in `\\`
+ * because findstr's CRT argument parser consumes one backslash.
+ */
+function cmdProjectGate(root: string): string {
+  // A root that ends in a separator (a drive root, `C:\`) would end the quoted
+  // literal with a backslash and escape its closing quote, unbalancing the
+  // whole command line. Stripping it also leaves the `/b` form matching the
+  // drive root's own `C:\` cwd.
+  const literal = cmdLiteral(root.replace(/[\\/]+$/, ''));
+  return `cd| findstr /i /b /l /c:${literal}\\\\ >nul || cd| findstr /i /e /l /c:${literal} >nul`;
+}
+
+/**
+ * Keep a project-scope team hook from firing in every project on the machine.
+ * The gate is rendered in the syntax of the shell that will actually run it:
+ * cmd.exe for tools whose Windows hook runner is cmd.exe — a POSIX
+ * `if [ "$PWD" ... ]` there is a syntax error that kills the whole command,
+ * gate and payload alike, before it ever runs — and POSIX sh for every other
+ * tool.
+ *
+ * Exit-status contract, identical for both renderings: outside the project the
+ * gate is a no-op that exits 0, and inside it the command's own status is
+ * passed through. A gate mismatch that returned non-zero would make CodeBuddy
+ * read the hook as `allowed:false` and BLOCK every UserPromptSubmit outside the
+ * project, so the cmd form must not inherit `findstr`'s failure status. That is
+ * also why the cmd form is not `${gate} || exit /b 0 && (…)`: the `||` would
+ * swallow a genuine payload failure along with the mismatch, losing the
+ * pass-through the POSIX `if …; then …; fi` gives for free.
+ */
+function gateTeamHookCommand(command: string, projectRoot: string | undefined, tool: string): string {
+  if (!projectRoot) return command;
+  const root = canonicalProjectRoot(projectRoot);
+  if (toolUsesCmdShell(tool)) {
+    return `${cmdProjectGate(root)} & if not errorlevel 1 (${command}) else exit /b 0`;
+  }
+  const quoted = shellQuote(root);
+  return `if [ "$PWD" = ${quoted} ] || case "$PWD" in ${quoted}/*) true;; *) false;; esac; then (${command}); fi`;
+}
+
+/** Recognise a project gate written by either renderer (entries outlive a platform switch). */
 function isGatedForProject(command: string, projectRoot: string): boolean {
-  return command.startsWith(`if [ "$PWD" = ${shellQuote(canonicalProjectRoot(projectRoot))} ]`);
+  const root = canonicalProjectRoot(projectRoot);
+  return command.startsWith(`if [ "$PWD" = ${shellQuote(root)} ]`)
+    || command.startsWith(cmdProjectGate(root));
 }
 
 function isProjectGatedCommand(command: string): boolean {
-  return command.startsWith('if [ "$PWD" = ');
+  return command.startsWith('if [ "$PWD" = ') || command.startsWith('cd| findstr ');
 }
 
-function scopedTeamDefs(teamDefs: HookDef[], projectRoot?: string): HookDef[] {
+function scopedTeamDefs(teamDefs: HookDef[], projectRoot: string | undefined, tool: string): HookDef[] {
   if (!projectRoot) return teamDefs;
-  return teamDefs.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot) }));
+  return teamDefs.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot, tool) }));
 }
 
 function manifestRecordsForTool(teamDefs: HookDef[], tool: string, removeAll: boolean, projectRoot?: string): ManagedHookRecord[] {
   if (removeAll) return [];
-  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot), tool).map((d) => ({
+  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool), tool).map((d) => ({
     id: d.key,
     event: d.event,
     ...(d.matcher && d.matcher !== '*' ? { matcher: d.matcher } : {}),
@@ -482,6 +547,16 @@ function isTeamClaudeEntry(entry: HookMatcher): boolean {
   return (entry.description ?? '').startsWith(TEAMAI_CUSTOM_HOOK_PREFIX);
 }
 
+/** The hook id carried by a team entry's marker, `[teamai:hook:<id>] …`. */
+function teamHookIdOf(description: string | undefined): string | null {
+  const marker = description ?? '';
+  if (!marker.startsWith(TEAMAI_CUSTOM_HOOK_PREFIX)) return null;
+  const end = marker.indexOf(']');
+  return end > TEAMAI_CUSTOM_HOOK_PREFIX.length
+    ? marker.slice(TEAMAI_CUSTOM_HOOK_PREFIX.length, end)
+    : null;
+}
+
 async function reconcileClaudeFormat(
   settingsPath: string,
   tool: string,
@@ -494,6 +569,11 @@ async function reconcileClaudeFormat(
   // Built-in management never removes team hooks; team hooks are reconciled only
   // when a team pass is active (manifest present). This keeps the builtin-only
   // refresh path (injectHooks / autoMigrate) non-destructive to team hooks (§5).
+  // Hook ids this reconcile declares for the tool, used to recognise our own
+  // entries even when an older CLI rendered them differently.
+  const desiredTeamIds = new Set(
+    teamDefs.filter((d) => !d.tools || d.tools.includes(tool)).map((d) => d.key),
+  );
   const isManaged = (e: HookMatcher): boolean => {
     if (isBuiltinClaudeEntry(e) || (!!opts.removeAll && isAgentClaudeEntry(e))) return true;
     if (!teamActive || !isTeamClaudeEntry(e)) return false;
@@ -502,6 +582,15 @@ async function reconcileClaudeFormat(
     // project B pull must not delete project A's hooks.
     if (opts.teamHookProjectRoot) {
       const command = e.hooks?.[0]?.command ?? '';
+      // An entry gated for this project belongs to this project even when an
+      // older CLI rendered the gate in another syntax (or the payload changed):
+      // replace it instead of leaving a dead duplicate that removal can no
+      // longer match.
+      if (isGatedForProject(command, opts.teamHookProjectRoot)) {
+        if (opts.removeAll) return true;
+        const id = teamHookIdOf(e.description);
+        if (id !== null && desiredTeamIds.has(id)) return true;
+      }
       return desiredTeamCommands.has(command) || priorTeamCommands.has(command);
     }
     return true;
@@ -1010,7 +1099,7 @@ export async function reconcileHooks(
     ? allPriorRecords.filter((r) => isGatedForProject(r.command, opts.teamHookProjectRoot!))
     : allPriorRecords;
   const priorTeamCommands = new Set(priorRecords.map((r) => r.command));
-  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot);
+  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, tool);
   const desiredTeamCommands = new Set(scopedDefs.filter((d) => !d.tools || d.tools.includes(tool)).map((d) => d.command));
 
   const format = detectFormat(tool);
@@ -1069,11 +1158,19 @@ export async function removeHooks(settingsPath: string, tool?: string): Promise<
  * Report whether the current built-in (A) hook set is present in a tool settings
  * file. Computed against the unified HookDef model: every built-in entry for the
  * tool must already exist on disk.
+ *
+ * `builtinOverride` is the team's §4.8 override. Reconciliation applies it when
+ * writing, so the status check must apply it too — otherwise a hook the team
+ * disabled is still expected on disk and every tool reads as `missing`.
  */
-export async function getHookStatus(settingsPath: string, tool?: string): Promise<HookStatus> {
+export async function getHookStatus(
+  settingsPath: string,
+  tool?: string,
+  builtinOverride?: BuiltinHookOverride,
+): Promise<HookStatus> {
   const toolName = tool ?? 'claude';
   const expanded = expandHome(settingsPath);
-  const defs = builtinHookDefs(toolName);
+  const defs = applyBuiltinOverride(builtinHookDefs(toolName), builtinOverride);
 
   const format = detectFormat(toolName);
   if (format === 'cursor') {
@@ -1397,6 +1494,25 @@ export async function reconcileHooksToAllTools(
     : skipToolsWithoutShell(
         Object.keys(toolPaths).filter(t => !opts.filterAgents || opts.filterAgents.includes(t)),
       );
+  // One settings file is one install. Two targets can resolve to the same file —
+  // Qoder CN's project scope IS Qoder's `<root>/.qoder/settings.json` — and this
+  // pass is per tool, so a second pass over the file re-renders every built-in
+  // entry with the *other* tool's dispatch identity (`teamai hook-dispatch …
+  // --tool <tool>`) and drops the team hooks scoped to the first one. Reconcile
+  // each file once, for the first target that reaches it.
+  //
+  // The owner is the first *enabled* target, not the first in the shipped table:
+  // `filterAgents` is applied above, so a tool the user excluded is skipped before
+  // it can claim a file, and an install that enabled Qoder CN without Qoder gets
+  // `--tool qoder-cn` built-ins plus its `tools: [qoder-cn]` team hooks in the
+  // shared project file instead of Qoder's identity (and Qoder's team hooks).
+  //
+  // With both editions enabled (the default: no whitelist) `qoder` comes first in
+  // the table and keeps ownership, so a `tools: [qoder-cn]` team hook has no file
+  // to land in and is dropped silently by the per-tool filter in reconcileHooks.
+  // One physical file can carry only one dispatch identity; this is the documented
+  // limit of sharing a project scope, not a bug this pass can fix.
+  const claimedSettingsFiles = new Set<string>();
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (opts.filterAgents && !opts.filterAgents.includes(tool)) continue;
     if (skipped.has(tool)) continue;
@@ -1417,6 +1533,29 @@ export async function reconcileHooksToAllTools(
         }
       } catch (e) {
         log.warn(`Failed to reconcile Hermes hooks: ${(e as Error).message}`);
+      }
+      continue;
+    }
+    // OpenClaw has no settings hook list either: its hook is a HOOK.md +
+    // handler.ts pair under the resolved workspace dir. Route it to that
+    // adapter, which no-ops when the workspace cannot be resolved, so an
+    // uninstalled OpenClaw never grows a config dir. Only `openclaw` itself:
+    // resolveOpenclawWorkspaceDir resolves the OpenClaw workspace, so routing
+    // the other claw variants here would make them overwrite that one handler
+    // with each other's --tool value.
+    if (tool === 'openclaw') {
+      if (opts.settingsOnly) continue;
+      try {
+        if (opts.removeAll) {
+          const { removeOpenClawHooks, resolveOpenclawWorkspaceDir } = await import('./openclaw-hooks.js');
+          const wsDir = await resolveOpenclawWorkspaceDir();
+          if (wsDir) await removeOpenClawHooks(path.join(wsDir, 'hooks'));
+        } else {
+          const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
+          await injectOpenClawHooks(undefined, tool);
+        }
+      } catch (e) {
+        log.warn(`Failed to reconcile OpenClaw hooks for ${tool}: ${(e as Error).message}`);
       }
       continue;
     }
@@ -1483,6 +1622,9 @@ export async function reconcileHooksToAllTools(
       : toolRoot;
     if (!await pathExists(toolRoot) && !await pathExists(installedRoot)) continue;
     const settingsPath = path.join(baseDir, paths.settings);
+    const settingsFileKey = path.resolve(settingsPath);
+    if (claimedSettingsFiles.has(settingsFileKey)) continue;
+    claimedSettingsFiles.add(settingsFileKey);
     try {
       await reconcileHooks(settingsPath, tool, teamDefs, {
         manifestPath,
@@ -1581,9 +1723,9 @@ export async function reconcileTeamHooksForConfig(
     : await resolveTeamHooks(teamConfig, localConfig.repo.localPath, {
         auto: opts.auto,
         silent: opts.silent,
-        activeRoles: activeRoleIds(localConfig),
+        membership: resolveMembership(localConfig),
       });
-  const { baseDir, manifestPath } = resolveHookScope(localConfig);
+  const { baseDir, manifestPath, scope: hookScope } = resolveHookScope(localConfig);
   const explicitlySelectedAgents = opts.filterAgents ?? localConfig.enabledAgents;
   let filterAgents = explicitlySelectedAgents;
   const disabled = localConfig.disabledAgents;
@@ -1593,7 +1735,10 @@ export async function reconcileTeamHooksForConfig(
     const universe = filterAgents ?? Object.keys(teamConfig.toolPaths);
     filterAgents = universe.filter((t) => !disabled.includes(t));
   }
-  await reconcileHooksToAllTools(teamConfig.toolPaths, baseDir, teamDefs, manifestPath, {
+  // Resolve the tool paths at the scope hooks actually live in, not at the
+  // config's scope: a non-self project scope puts hooks in HOME, so its paths
+  // must be the user-scope ones.
+  await reconcileHooksToAllTools(scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope }), baseDir, teamDefs, manifestPath, {
     removeAll: opts.removeAll,
     builtinOverride: builtin,
     filterAgents,

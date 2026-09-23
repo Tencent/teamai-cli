@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, chmodSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -109,6 +109,20 @@ projects:
     try {
       await expect(loadProjectsManifest(repoDir)).rejects.toThrow(/unknown resource type/i);
     } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  // Root reads a mode-000 file, and Windows has no POSIX mode bits.
+  const cannotRevokeRead = process.platform === 'win32' || process.getuid?.() === 0;
+  it.skipIf(cannotRevokeRead)('throws when the manifest exists but cannot be read, rather than reporting no projects', async () => {
+    const repoDir = writeManifest('version: 1\nprojects:\n  - id: checkout\n    resources: { skills: [checkout] }\n');
+    const manifestPath = path.join(repoDir, 'manifest', 'projects.yaml');
+    chmodSync(manifestPath, 0o000);
+    try {
+      await expect(loadProjectsManifest(repoDir)).rejects.toThrow(/EACCES|permission denied/i);
+    } finally {
+      chmodSync(manifestPath, 0o644);
       rmSync(repoDir, { recursive: true, force: true });
     }
   });

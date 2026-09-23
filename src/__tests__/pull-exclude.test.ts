@@ -3,7 +3,8 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   detectProjectConfig: vi.fn().mockResolvedValue(null),
   loadLocalConfigForScope: vi.fn(),
   loadStateForScope: vi.fn().mockResolvedValue({ lastPull: null, lastPullRev: null }),

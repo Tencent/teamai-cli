@@ -9,6 +9,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { reconcileHooksToAllTools } from '../hooks.js';
+import { _resetShellCache } from '../builtin-hooks.js';
 
 // Verify that reconcileHooksToAllTools (the pull/init main path) creates the
 // teamai wrapper at $HOME/.teamai/bin/teamai when workbuddy or codebuddy is present.
@@ -136,5 +137,58 @@ describe('reconcileHooksToAllTools — wrapper creation on main inject path', ()
     await expect(
       reconcileHooksToAllTools(toolPaths, tmp, [], path.join(tmp, 'managed-hooks.json'), {}),
     ).resolves.not.toThrow();
+  });
+});
+
+describe('reconcileHooksToAllTools — teamai.cmd wrapper (win32)', () => {
+  let tmp: string;
+  let origHome: string | undefined;
+  let stubCreated = false;
+  let platformSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'hooks-wrapper-cmd-'));
+    origHome = process.env.HOME;
+    process.env.HOME = tmp;
+    platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    _resetShellCache();
+
+    // Create stub index.js so resolveTeamaiEntryScript() succeeds in test env
+    if (!await fse.pathExists(stubIndexJs)) {
+      await fse.writeFile(stubIndexJs, '// test stub\n');
+      stubCreated = true;
+    }
+  });
+
+  afterEach(async () => {
+    platformSpy.mockRestore();
+    _resetShellCache();
+    if (origHome !== undefined) process.env.HOME = origHome;
+    else delete process.env.HOME;
+    await fse.remove(tmp);
+    if (stubCreated) {
+      await fse.remove(stubIndexJs);
+      stubCreated = false;
+    }
+  });
+
+  it('writes teamai.cmd next to the POSIX shim so cmd.exe can resolve it', async () => {
+    await fse.ensureDir(path.join(tmp, '.codebuddy'));
+
+    await reconcileHooksToAllTools(
+      { codebuddy: { settings: '.codebuddy/settings.json' } },
+      tmp,
+      [],
+      path.join(tmp, 'managed-hooks.json'),
+      {},
+    );
+
+    const cmdWrapper = path.join(tmp, '.teamai', 'bin', 'teamai.cmd');
+    expect(await fse.pathExists(cmdWrapper)).toBe(true);
+    const content = await fse.readFile(cmdWrapper, 'utf-8');
+    expect(content).toContain('@echo off');
+    expect(content).toContain('index.js');
+    // The POSIX shim stays in place for the tools whose runner is a POSIX shell.
+    expect(await fse.pathExists(path.join(tmp, '.teamai', 'bin', 'teamai'))).toBe(true);
   });
 });

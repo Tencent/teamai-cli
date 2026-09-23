@@ -24,6 +24,7 @@ import { RulesHandler, SkillsHandler } from './resources/index.js';
 import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, OPENCLAW_TOOLS } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
+import { isInteractive } from './utils/prompt.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
@@ -951,11 +952,11 @@ async function askViaTty(prompt: string): Promise<string | null> {
   // waiting for input that never comes — hanging the hook until the host's
   // timeout and stalling the IDE. Callers fall back to injecting a stdout
   // binding hint when this returns null, so degrade to that instead.
-  if (process.stdin.isTTY) {
-    const { askQuestion } = await import('./utils/prompt.js');
-    return askQuestion(prompt, '');
-  }
-  return null;
+  // The decline stays synchronous — this runs on the hook path, where loading
+  // the prompt module only to say no is work nobody asked for.
+  if (!isInteractive()) return null;
+  const { askQuestion } = await import('./utils/prompt.js');
+  return askQuestion(prompt, '');
 }
 
 async function promptForProjectBinding(
@@ -1544,12 +1545,21 @@ export async function buildReportPayload(
   // ones) are reported. `source` is derived from the manifest: slugs recorded
   // there are `enterprise`, the rest `local`.
   const tool = context.tool ?? 'workbuddy';
-  const toolPaths = createLocalAgentTeamConfig(config.endpoint).toolPaths;
-  const toolPath = toolPaths[tool];
+  const teamConfig = createLocalAgentTeamConfig(config.endpoint);
   const manifestSlugs = collectManifestSlugs(manifest);
 
-  const scanScope = async (baseDir: string): Promise<{ skills: ReportedResource[]; rules: ReportedResource[] }> => {
+  // Resolve paths through the same user-scope seam the installers use: tools
+  // that relocate their user customization root (copilot via $COPILOT_HOME) or
+  // lay user scope out differently from project scope declare a `userScope`
+  // block. Reading the raw toolPaths map against $HOME would scan the project
+  // layout under the wrong base — e.g. ~/.github/skills for copilot, a path
+  // teamai never writes to — and silently report nothing.
+  const scanScope = async (workspacePath?: string): Promise<{ skills: ReportedResource[]; rules: ReportedResource[] }> => {
+    const scope: LocalAgentScope = workspacePath ? 'project' : 'user';
+    const localConfig = createResourceLocalConfig(config, scope, workspacePath ?? getUserHome(), workspacePath);
+    const toolPath = scopedToolPaths(teamConfig, localConfig)[tool];
     if (!toolPath) return { skills: [], rules: [] };
+    const baseDir = resolveToolBaseDir(tool, localConfig);
     const skills = toolPath.skills
       ? await scanSkillsFromDisk(path.join(baseDir, toolPath.skills), manifestSlugs.skills)
       : [];
@@ -1559,7 +1569,7 @@ export async function buildReportPayload(
     return { skills, rules };
   };
 
-  const userScope = await scanScope(getUserHome());
+  const userScope = await scanScope();
 
   const userLevel: Record<string, unknown> = { group_id: config.userGroupId };
   if (userScope.skills.length > 0) userLevel.skills = userScope.skills;
@@ -3265,7 +3275,9 @@ export async function initLocalAgentHttp(options: {
   }
 
   const teamConfig = createLocalAgentTeamConfig(endpoint);
-  await injectHooksToAllTools(teamConfig.toolPaths, getUserHome(), options.filterAgents);
+  // The local agent is always user-scope and always rooted at HOME, so resolve
+  // the user-scope paths (Qoder CN's user config lives under ~/.qoder-cn).
+  await injectHooksToAllTools(scopedToolPaths(teamConfig, { scope: 'user' }), getUserHome(), options.filterAgents);
   log.success(`HTTP local agent initialized at ${getConfigPath()}`);
 }
 

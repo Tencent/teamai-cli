@@ -6,7 +6,8 @@ import fse from 'fs-extra';
 // Issue #73 keeps project scope isolated by default. These tests also cover the
 // explicit safe-resource inheritance path without composing control-plane data.
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   requireInit: vi.fn(),
   loadState: vi.fn().mockResolvedValue({ lastPull: null, lastPullRev: null }),
   saveState: vi.fn(),

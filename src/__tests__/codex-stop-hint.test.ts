@@ -50,6 +50,42 @@ describe('Codex Stop hint handoff with persisted session state', () => {
     expect(await stop.execute(stdin, 'codex')).toBeNull();
   });
 
+  it.each(['codex', 'codex-internal', 'tcodex'])(
+    'stashes for %s instead of printing a payload Codex rejects',
+    async (tool) => {
+      // The variants run the same Codex. Before #719 only the bare name was
+      // listed, so they took the Claude branch, Codex rejected it, and the
+      // stash that would have recovered the hint never ran.
+      await seed(CONTRIBUTE_SMART_THRESHOLD + 1);
+      expect(await stop.execute(stdin, tool)).toBeNull();
+      expect((await readContributeState(stdin.session_id)).pendingHint).toBeTruthy();
+    },
+  );
+
+  it('asks the model to relay the stashed copy, and never the copy Claude Code prints', async () => {
+    await seed(CONTRIBUTE_SMART_THRESHOLD + 1);
+
+    // Hidden path: the host shows nothing, so the model has to pass it on.
+    await stop.execute(stdin, 'codex');
+    const stashed = (await readContributeState(stdin.session_id)).pendingHint!;
+    expect(stashed).toContain('verbatim');
+    expect(stashed).toContain('[teamai]');
+
+    // Displayed path: Claude Code prints the payload itself. An order to print
+    // it would reach the user as well, and the nudge would land twice (#719).
+    const fresh = { session_id: 'claude-stop-relay', cwd: stdin.cwd };
+    await writeContributeState(fresh.session_id, {
+      contributed: false,
+      smartScore: CONTRIBUTE_SMART_THRESHOLD + 1,
+      toolCount: CONTRIBUTE_BASE_THRESHOLD,
+      lastEvaluated: Date.now(),
+      friction: { interrupt: 0, toolReject: 0, correction: 1, toolError: 0 },
+    });
+    const payload = JSON.parse((await stop.execute(fresh, 'claude'))!);
+    expect(payload.hookSpecificOutput.additionalContext).toContain('[teamai]');
+    expect(payload.hookSpecificOutput.additionalContext).not.toContain('verbatim');
+  });
+
   it('does not queue or deliver a hint below threshold', async () => {
     await seed(CONTRIBUTE_SMART_THRESHOLD - 1);
     expect(await stop.execute(stdin, 'codex')).toBeNull();

@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 import YAML from 'yaml';
-import { EnvHandler, describeEnvYamlShapeProblem } from '../resources/env.js';
+import { EnvHandler, describeEnvYamlShapeProblem, resolveDeliverableEnvVariables } from '../resources/env.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END } from '../types.js';
 import type { TeamaiConfig, LocalConfig, ResourceItem } from '../types.js';
 
@@ -238,6 +238,82 @@ scope: 'user',
       const count = await handler.countEnvVars(envYamlPath);
       expect(count).toBe(0);
     });
+
+    it('counts the declared total, which the pull summary pairs with the deliverable one', async () => {
+      const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
+      await fse.writeFile(envYamlPath, YAML.stringify({
+        variables: [
+          { key: 'A', value: '1', projects: ['checkout'] },
+          { key: 'B', value: '2', projects: ['billing'] },
+          { key: 'C', value: '3' },
+        ],
+      }));
+
+      // `pullForScope` pairs this with resolveDeliverableEnvVariables to print
+      // "Synced 2 of 3". The count itself stays unfiltered (see #662 above).
+      expect(await handler.countEnvVars(envYamlPath)).toBe(3);
+      const read = await handler.readEnvYaml(envYamlPath);
+      expect(read.ok && resolveDeliverableEnvVariables(read.variables, { roles: null, projects: ['checkout'] }))
+        .toHaveLength(2);
+      expect(read.ok && resolveDeliverableEnvVariables(read.variables, { roles: null, projects: null }))
+        .toHaveLength(3);
+    });
+
+    it('counts what the team declares, not what reaches this member', async () => {
+      // countEnvVars gates the #662 "no variables: key" warning in pull.ts: a
+      // count of 0 means the file may be malformed. Filtering it would fire that
+      // warning at a member scoped out of every variable, on a valid file.
+      const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
+      await fse.writeFile(envYamlPath, YAML.stringify({
+        variables: [
+          { key: 'A', value: '1', projects: ['checkout'] },
+          { key: 'B', value: '2', roles: ['devops'] },
+        ],
+      }));
+
+      expect(await handler.countEnvVars(envYamlPath)).toBe(2);
+    });
+  });
+
+  // ─── membership scoping ──────────────────────────────────
+
+  describe('resolveDeliverableEnvVariables', () => {
+    const variables = [
+      { key: 'CHECKOUT_URL', value: 'c', projects: ['checkout'] },
+      { key: 'BILLING_URL', value: 'b', projects: ['billing'] },
+      { key: 'DEVOPS_TOKEN', value: 'd', roles: ['devops'] },
+      { key: 'FE_CHECKOUT', value: 'f', roles: ['frontend'], projects: ['checkout'] },
+      { key: 'SHARED', value: 's' },
+      { key: 'NOBODY', value: 'n', projects: [] },
+    ];
+    const keys = (m: { roles: string[] | null; projects: string[] | null }) =>
+      resolveDeliverableEnvVariables(variables, m).map((v) => v.key);
+
+    it('delivers every variable to a member who has configured neither axis', () => {
+      expect(keys({ roles: null, projects: null })).toEqual([
+        'CHECKOUT_URL', 'BILLING_URL', 'DEVOPS_TOKEN', 'FE_CHECKOUT', 'SHARED', 'NOBODY',
+      ]);
+    });
+
+    it('delivers a project-scoped variable only to a directory bound to that project', () => {
+      expect(keys({ roles: null, projects: ['checkout'] }))
+        .toEqual(['CHECKOUT_URL', 'DEVOPS_TOKEN', 'FE_CHECKOUT', 'SHARED']);
+    });
+
+    it('delivers a role-scoped variable only to a member holding that role', () => {
+      expect(keys({ roles: ['devops'], projects: null }))
+        .toEqual(['CHECKOUT_URL', 'BILLING_URL', 'DEVOPS_TOKEN', 'SHARED', 'NOBODY']);
+    });
+
+    it('requires both axes when a variable scopes both (AND, not OR)', () => {
+      expect(keys({ roles: ['frontend'], projects: ['checkout'] })).toContain('FE_CHECKOUT');
+      expect(keys({ roles: ['frontend'], projects: ['billing'] })).not.toContain('FE_CHECKOUT');
+      expect(keys({ roles: ['devops'], projects: ['checkout'] })).not.toContain('FE_CHECKOUT');
+    });
+
+    it('can filter every variable away', () => {
+      expect(keys({ roles: ['pm'], projects: ['legacy'] })).toEqual(['SHARED']);
+    });
   });
 
   // ─── generateShellBlock ──────────────────────────────────
@@ -441,6 +517,27 @@ scope: 'user',
     // sticking to wherever the block already lives, the next pull would
     // prefer that newly-existing .bash_profile and inject a second, separate
     // block there instead of updating the one already in .bashrc.
+    // Root writes a read-only file, and Windows has no POSIX mode bits.
+    const cannotRevokeWrite = process.platform === 'win32' || process.getuid?.() === 0;
+    it.skipIf(cannotRevokeWrite)('leaves an unchanged shell profile alone on a repeat pull', async () => {
+      // pullItem runs on every pull, including the revision fast path a
+      // SessionStart hook takes each session. A profile that already carries
+      // the block must not be rewritten: made read-only here, so a write would
+      // throw rather than merely bump a timestamp.
+      const bashrcPath = path.join(homeDir, '.bashrc');
+      await handler.pullItem(item, teamConfig, localConfig);
+      const first = await fse.readFile(bashrcPath, 'utf-8');
+      expect(first).toContain(TEAMAI_ENV_START);
+
+      await fse.chmod(bashrcPath, 0o444);
+      try {
+        await expect(handler.pullItem(item, teamConfig, localConfig)).resolves.toBeUndefined();
+      } finally {
+        await fse.chmod(bashrcPath, 0o644);
+      }
+      expect(await fse.readFile(bashrcPath, 'utf-8')).toBe(first);
+    });
+
     it('keeps updating .bashrc in place after Git for Windows auto-generates a forwarding .bash_profile', async () => {
       vi.stubEnv('SHELL', '');
       vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
@@ -534,6 +631,76 @@ scope: 'user',
 
       const content = await fse.readFile(bashrcPath, 'utf-8');
       expect(content).toBe('# original\n');
+    });
+
+    it('delivers only the variables this member and directory are scoped to', async () => {
+      const scopedPath = path.join(repoPath, 'env', 'scoped.yaml');
+      await fse.writeFile(scopedPath, YAML.stringify({
+        variables: [
+          { key: 'CHECKOUT_URL', value: 'https://checkout.example.com', projects: ['checkout'] },
+          { key: 'BILLING_URL', value: 'https://billing.example.com', projects: ['billing'] },
+          { key: 'SHARED', value: 'everyone' },
+        ],
+      }));
+      const scopedItem: ResourceItem = {
+        name: 'scoped.yaml', type: 'env', sourcePath: scopedPath, relativePath: 'env/scoped.yaml',
+      };
+
+      await handler.pullItem(scopedItem, teamConfig, { ...localConfig, projects: ['checkout'] });
+
+      const envSh = await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf-8');
+      expect(envSh).toContain('export CHECKOUT_URL=');
+      expect(envSh).toContain('export SHARED=');
+      expect(envSh).not.toContain('BILLING_URL');
+
+      // The KEY=value backup mcp-reconcile resolves ${VAR} from must match, or a
+      // server would resolve a variable the member's shell never exported.
+      const backup = await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf-8');
+      expect(backup).toContain('CHECKOUT_URL=');
+      expect(backup).not.toContain('BILLING_URL');
+    });
+
+    it('removes a variable from env.sh once the directory stops being bound to its project', async () => {
+      const scopedPath = path.join(repoPath, 'env', 'scoped.yaml');
+      await fse.writeFile(scopedPath, YAML.stringify({
+        variables: [
+          { key: 'CHECKOUT_URL', value: 'c', projects: ['checkout'] },
+          { key: 'SHARED', value: 's' },
+        ],
+      }));
+      const scopedItem: ResourceItem = {
+        name: 'scoped.yaml', type: 'env', sourcePath: scopedPath, relativePath: 'env/scoped.yaml',
+      };
+      const envShPath = path.join(homeDir, '.teamai', 'env.sh');
+
+      await handler.pullItem(scopedItem, teamConfig, { ...localConfig, projects: ['checkout'] });
+      expect(await fse.readFile(envShPath, 'utf-8')).toContain('CHECKOUT_URL');
+
+      await handler.pullItem(scopedItem, teamConfig, { ...localConfig, projects: ['billing'] });
+      const after = await fse.readFile(envShPath, 'utf-8');
+      expect(after).not.toContain('CHECKOUT_URL');
+      expect(after).toContain('SHARED');
+    });
+
+    it('writes an empty env.sh, and still injects, when every variable is filtered out', async () => {
+      // The team declares variables, so this is not the "nothing declared" skip:
+      // the member must end up with an env.sh that exports nothing, which is what
+      // removes variables a previous pull had given them.
+      const scopedPath = path.join(repoPath, 'env', 'scoped.yaml');
+      await fse.writeFile(scopedPath, YAML.stringify({
+        variables: [{ key: 'CHECKOUT_URL', value: 'c', projects: ['checkout'] }],
+      }));
+      const scopedItem: ResourceItem = {
+        name: 'scoped.yaml', type: 'env', sourcePath: scopedPath, relativePath: 'env/scoped.yaml',
+      };
+      vi.stubEnv('SHELL', '/bin/bash');
+      await fse.writeFile(path.join(homeDir, '.bashrc'), '# original\n');
+
+      await handler.pullItem(scopedItem, teamConfig, { ...localConfig, projects: ['billing'] });
+
+      const envSh = await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf-8');
+      expect(envSh.trim()).toBe('');
+      expect(await fse.readFile(path.join(homeDir, '.bashrc'), 'utf-8')).toContain(TEAMAI_ENV_START);
     });
 
     it('should handle invalid env.yaml gracefully', async () => {

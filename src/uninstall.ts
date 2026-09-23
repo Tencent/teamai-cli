@@ -241,6 +241,15 @@ async function discoverToolResources(
   hookTargets: Array<{ baseDir: string; manifestPath: string }>,
   standaloneHookManifestPath: string,
   scope: Scope,
+  /**
+   * The settings file's path at the scope hooks were injected into
+   * (`resolveHookScope`), which is not the config's scope for a non-self project
+   * scope. Only hook discovery uses it: a tool whose user-scope prefix differs
+   * from its project-scope one (Qoder CN: `~/.qoder-cn` vs `<root>/.qoder`) would
+   * otherwise be searched for in the other build's file, leaving its hooks in
+   * HOME forever.
+   */
+  hookSettingsPath?: string,
 ): Promise<ToolResources> {
   const res: ToolResources = {
     hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], ompHookFile: null, piHookFiles: [], claudeMdFiles: [],
@@ -325,9 +334,11 @@ async function discoverToolResources(
     // Hooks live where resolveHookScope injected them (HOME for a non-self
     // project scope, per #370) — plus any legacy <projectRoot> copy. Scan every
     // target and tag each match with the manifest that recorded its team hooks,
-    // so removal strips the right entries at each location.
+    // so removal strips the right entries at each location. The file name comes
+    // from the same scope decision (`hookSettingsPath`), not from `toolPath`.
+    const settingsRel = hookSettingsPath ?? toolPath.settings;
     for (const { baseDir: hookBaseDir, manifestPath } of hookTargets) {
-      const settingsPath = path.join(hookBaseDir, toolPath.settings);
+      const settingsPath = path.join(hookBaseDir, settingsRel);
       if (await pathExists(settingsPath)
         && (await hasTeamaiHooks(settingsPath, tool, manifestPath)
           || isEmptyHooksResidue(await readJson<Record<string, unknown>>(settingsPath)))) {
@@ -468,6 +479,13 @@ async function buildRemovalPlan(
   const hookTargets = [primaryHookScope];
   const legacyHookScope = resolveLegacyProjectHookScope(localConfig);
   if (legacyHookScope) hookTargets.push(legacyHookScope);
+  // Hook discovery resolves its file name at the same scope as the targets: a
+  // non-self project scope discovers under HOME, so the tool paths there must be
+  // the user-scope ones (previously the project-scope name was used, and a tool
+  // whose two scopes differ kept its hooks in HOME forever). Skills, rules,
+  // agents and CLAUDE.md stay on the config-scope paths below — those are real
+  // project resources.
+  const hookToolPaths = scopedToolPaths(teamConfig, { ...localConfig, scope: primaryHookScope.scope });
   const perTool = new Map<string, ToolResources>();
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     perTool.set(
@@ -482,6 +500,7 @@ async function buildRemovalPlan(
         hookTargets,
         standaloneHookManifestPath,
         localConfig.scope,
+        hookToolPaths[tool]?.settings,
       ),
     );
   }

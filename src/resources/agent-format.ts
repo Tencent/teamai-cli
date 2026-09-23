@@ -6,7 +6,7 @@ import { getDispatchCommand } from '../builtin-hooks.js';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
-export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'kiro' | 'zcode' | 'omp' | 'opencode';
+export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'qoder-cn' | 'kiro' | 'zcode' | 'omp' | 'opencode';
 
 export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'claude',
@@ -20,6 +20,7 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'copilot',
   'joycode',
   'qoder',
+  'qoder-cn',
   'kiro',
   'zcode',
   'omp',
@@ -97,6 +98,7 @@ export interface AgentSpec {
     copilot?: Record<string, unknown>;
     joycode?: Record<string, unknown>;
     qoder?: Record<string, unknown>;
+    'qoder-cn'?: Record<string, unknown>;
     kiro?: Record<string, unknown>;
     zcode?: Record<string, unknown>;
     omp?: Record<string, unknown>;
@@ -842,6 +844,7 @@ export function renderForTool(spec: AgentSpec, tool: ToolName): RenderResult {
     case 'copilot': return renderForCopilot(spec);
     case 'joycode': return renderForJoycode(spec);
     case 'qoder': return renderForClaude(spec);
+    case 'qoder-cn': return renderForClaude(spec);
     case 'kiro': return renderForKiro(spec);
     case 'zcode': return renderForClaude(spec);
     case 'omp': return renderForClaude(spec);

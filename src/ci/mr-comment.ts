@@ -133,7 +133,9 @@ async function findGitHubComment(
     `/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100`,
     'GET',
   );
-  if (!resp.ok) return null;
+  if (!resp.ok) {
+    throw new Error(`GitHub comment list request failed (${resp.status})`);
+  }
   const comments = (await resp.json()) as GitHubComment[];
   return comments.find((c) => c.body.includes(marker)) ?? null;
 }
@@ -224,7 +226,9 @@ async function findTGitComment(
     `/projects/${projectId}/merge_requests/${mrGlobalId}/notes?per_page=100`,
     'GET',
   );
-  if (!resp.ok) return null;
+  if (!resp.ok) {
+    throw new Error(`TGit note list request failed (${resp.status})`);
+  }
   const notes = (await resp.json()) as TGitNote[];
   return notes.find((n) => n.body.includes(marker)) ?? null;
 }

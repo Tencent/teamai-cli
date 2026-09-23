@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, existsSync, chmodSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -10,7 +10,7 @@ import {
   saveRolesManifest,
   resolveRoleResourceNamespaces,
   activeRoleIds,
-  matchesRoles,
+  loadRolesManifestIfPresent,
 } from '../roles.js';
 import type { RolesManifest } from '../roles.js';
 
@@ -139,6 +139,33 @@ roles:
 
     await expect(loadRolesManifest(repoDir)).rejects.toThrow(/duplicate role id/i);
     rmSync(repoDir, { recursive: true, force: true });
+  });
+});
+
+describe('loadRolesManifestIfPresent', () => {
+  it('returns null when the manifest is absent', async () => {
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'teamai-noroles-'));
+    try {
+      expect(await loadRolesManifestIfPresent(repoDir)).toBeNull();
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  // Root reads a mode-000 file, and Windows has no POSIX mode bits.
+  const cannotRevokeRead = process.platform === 'win32' || process.getuid?.() === 0;
+  it.skipIf(cannotRevokeRead)('throws when the manifest exists but cannot be read, rather than reporting no roles', async () => {
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'teamai-roles-eacces-'));
+    const manifestPath = path.join(repoDir, 'manifest', 'roles.yaml');
+    mkdirSync(path.dirname(manifestPath), { recursive: true });
+    writeFileSync(manifestPath, 'version: 1\nroles:\n  - id: hai\n    resources: { knowledge: [], skills: [] }\n', 'utf-8');
+    chmodSync(manifestPath, 0o000);
+    try {
+      await expect(loadRolesManifestIfPresent(repoDir)).rejects.toThrow(/EACCES|permission denied/i);
+    } finally {
+      chmodSync(manifestPath, 0o644);
+      rmSync(repoDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -328,26 +355,5 @@ describe('activeRoleIds', () => {
   it('returns the primary role followed by additional roles, deduped', () => {
     expect(activeRoleIds({ primaryRole: 'frontend', additionalRoles: ['devops', 'frontend'] }))
       .toEqual(['frontend', 'devops']);
-  });
-});
-
-describe('matchesRoles', () => {
-  it('matches everyone when the entry has no roles', () => {
-    expect(matchesRoles(undefined, ['frontend'])).toBe(true);
-    expect(matchesRoles(undefined, null)).toBe(true);
-  });
-
-  it('matches every member when no role is configured locally', () => {
-    expect(matchesRoles(['devops'], null)).toBe(true);
-  });
-
-  it('matches when any active role is listed', () => {
-    expect(matchesRoles(['devops', 'data'], ['frontend', 'data'])).toBe(true);
-    expect(matchesRoles(['devops'], ['frontend'])).toBe(false);
-  });
-
-  it('matches nobody for an empty roles list, like tools: []', () => {
-    expect(matchesRoles([], ['frontend'])).toBe(false);
-    expect(matchesRoles([], null)).toBe(true);
   });
 });

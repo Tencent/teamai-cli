@@ -27,6 +27,7 @@
 - [提交 Co-Author 署名](#提交-co-author-署名)
 - [团队文化](#团队文化)
 - [进阶功能](#进阶功能)
+- [命令参考](#命令参考)
 - [配置文件参考](#配置文件参考)
 - [卸载](#卸载)
 - [常见问题 FAQ](#常见问题-faq)
@@ -167,8 +168,10 @@ teamai init https://github.com/yourorg/yourrepo
 也可以通过 CLI 参数跳过交互，实现完全非交互式初始化（适合 CI/CD 或 AI agent）：
 
 ```bash
-teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev --force
+GITHUB_TOKEN=ghp_... teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev --force
 ```
+
+没有终端时 `init` 不会等待任何人：所有提示取默认值，需要浏览器登录的 provider 会立即失败并指出应准备的凭据（GitHub 用 `GITHUB_TOKEN` / `GH_TOKEN`，CNB 用 `CNB_TOKEN`，GitLab 用 `GITLAB_TOKEN`，GitCode 用 `GITCODE_TOKEN`）。TGit 是例外：它没有可用于无人值守的 token——`TGIT_TOKEN` 仅用于 REST API，git.woa.com 的 git 端点不接受它，因此需要先在该机器的交互式终端执行一次 `gf auth login`，之后无人值守运行会复用它保存的凭据。`git` 本身会关闭自己的提问：`GIT_TERMINAL_PROMPT=0`、`GIT_ASKPASS=echo`（不弹 askpass 对话框）、`GCM_INTERACTIVE=never`，且仅在你自己没有设置该变量时才生效。`ssh` 不在其列：它的批处理选项只能经由 `GIT_SSH_COMMAND` 传入，而该变量会覆盖各仓库自己配置的 `core.sshCommand`，因此 ssh 远端仍可能询问私钥口令或未知主机，需要你自行关闭——在该仓库执行 `git config core.sshCommand 'ssh -o BatchMode=yes'`，或为本次运行导出 `GIT_SSH_COMMAND`。stdin 不是 TTY、或设置了 `CI` / `TEAMAI_NONINTERACTIVE` 时都视为非交互，因此分配了伪终端的 agent 沙箱也能声明自己是无人值守运行。
 
 | 参数 | 说明 |
 |------|------|
@@ -716,6 +719,27 @@ teamai env list
 teamai push
 ```
 
+变量定义在团队仓库的 `env/env.yaml` 中。`teamai env add` 只写入前三个字段；`roles` 与 `projects` 需要手动编辑，与 hooks、MCP server 一致：
+
+```yaml
+variables:
+  - key: API_ENDPOINT
+    value: https://api.example.com
+    description: 团队 API 地址              # 可选
+  - key: CHECKOUT_DB_URL
+    value: https://checkout-db.internal
+    projects: [checkout]                  # 可选；默认所有目录
+  - key: DEPLOY_REGISTRY
+    value: registry.internal
+    roles: [devops]                       # 可选；默认所有成员
+```
+
+`roles` 与 `projects` 的规则与 MCP server、hooks 完全一致：省略时对所有人生效，`[]` 对使用了该维度的成员都不生效，成员未配置的那个维度不产生过滤，两者以 **AND** 组合。不再匹配的变量会在下一次 pull 时从 `env.sh` 中移除，即使这次 pull 因团队仓库未变化而提示 `Already synced` 也一样，因此切换角色、执行 `teamai projects set` 或升级 CLI 都会把它从成员的 shell 中撤掉，无需 `--force`。在那次 pull 之前，`teamai doctor` 会报告 `env.sh` 中仍在导出、但已不再下发的变量，前一个项目的密钥不会悄无声息地继续生效。对已存在的 key 执行 `teamai env add` 会保留它原有的 `roles:`/`projects:`。
+
+`pull` 报告的是实际送达该成员的数量，与声明总数不同时会同时给出总数（`Synced 1 of 3 env variable(s)`），以便区分"被维度过滤掉"和"丢失"。
+
+由于 shell 配置文件中只有一个 teamai 区块、只指向一个 `env.sh`，在多个项目级目录中都执行过 pull 的机器，新开的 shell 里会是最后一次 pull 的那个目录的变量。每个目录自己的 `env.sh` 仍然是正确的；只是 shell 配置文件只能指向其中一个。
+
 `pull` 时，若启用了 `injectShellProfile`（默认启用），`$SHELL` 为 zsh 时环境变量块会写入 `~/.zshrc`，否则写入 `~/.bashrc`——但 Windows 上例外：`$SHELL` 通常未设置，而 Git Bash 以*登录 shell*方式启动，从不读取 `.bashrc`，因此 teamai 会优先选择已存在的 `~/.bash_profile`、其次 `~/.bash_login`、再次 `~/.profile`，只有三者都不存在时才回退到 `~/.bashrc`（通过 MSYS2/Cygwin 安装、会设置 `$SHELL` 的 zsh 仍会解析到 `.zshrc`）。这与 Git for Windows 自身在 `/etc/profile.d/bash_profile.sh` 中的回退逻辑一致，其判断条件是 `[ -e ~/.bashrc -a ! -e ~/.bash_profile -a ! -e ~/.bash_login -a ! -e ~/.profile ]`——只有在这一种情况下它才会生成一个会 source `.bashrc` 的 `.bash_profile`；这也是为什么哪怕一个只 source 了其他内容（例如 `~/.local/bin/env`）的 `~/.profile` 存在，也足以让 `.bashrc` 单独失效。可通过 `teamai.yaml` 中的 `sharing.env.shellProfilePath` 覆盖目标文件。
 
 这个优先级顺序只决定*第一次* pull 写到哪里。此后的每次 pull 都会沿用已经承载着本作用域代码块的那个候选文件，而不会重新走一遍优先级判断——否则 Git for Windows 自身的引导逻辑会把目标文件从脚下换掉：上面那条 `/etc/profile.d/bash_profile.sh` 判断条件，在第一次 pull 之后同样会成立（`.bashrc` 已存在，其余候选文件都还不存在），于是下一次 Git Bash 登录 shell 启动时就会自动生成一个 source 它的 `~/.bash_profile`。如果不沿用 `.bashrc`，下一次 pull 就会转而偏好这个新出现的文件，在那里注入第二个代码块，而原来那个——依旧在正常工作，只是多绕了一跳——则会被误报为失效的遗留代码块。
@@ -749,11 +773,22 @@ servers:
     requires: [npx]                      # PATH 上找不到 npx 时跳过并提示
     tools: [claude, cursor]              # 可选；默认所有支持 MCP 的工具
     roles: [devops]                      # 可选；默认所有成员
+    projects: [checkout]                 # 可选；默认所有目录
 ```
 
 `requires` 从 `PATH` 解析。Windows 上还会匹配 `PATHEXT` 后缀（`uvx` 可匹配 `uvx.exe` / `uvx.cmd`）。
 
 `roles` 填写 `manifest/roles.yaml` 中的角色 id。成员的任一角色（`primaryRole` 或 `additionalRoles`）被列出时才会安装该 server；`roles: []` 对任何人都不安装，与 `tools: []` 一致。未配置角色的成员会收到全部 server，与 skills、rules 的无过滤回退一致。成员切换角色后，不再匹配的 server 会在下一次 pull 时移除，手动添加的 server 不受影响。`roles.yaml` 中不存在的 id 每次 pull 只提示一次。不支持该字段的旧版 teamai 会忽略它并为所有人安装。
+
+`projects` 填写 `manifest/projects.yaml` 中的项目 id，在另一个维度上遵循同一条规则：目录通过 `teamai projects set` 绑定的任一项目被列出时才会安装该 server；`projects: []` 对任何人都不安装；未绑定任何项目的目录会收到全部 server。`teamai projects set` 切换到其他项目后，不再匹配的 server 会在下一次 pull 时移除。`projects.yaml` 中不存在的 id 每次 pull 只提示一次；团队根本没有 `projects.yaml` 时同样会提示，因为此时无法校验任何 id。
+
+空列表有一个需要注意的点，它对 `roles: []` 一直同样适用：“对任何人都不安装”指的是使用了该维度的成员。完全未配置该维度的成员不受过滤，仍会收到该条目。如果需要它对所有人都不生效，请用 `tools: []` 或直接删掉该条目。
+
+缺少 `projects.yaml` 并不会关掉这个 key。目录的活动项目来自它自己的 `config.yaml`，所以无论清单是否存在，绑定到 `billing` 的目录依然会过滤掉 `projects: [checkout]` 的 server。清单提供的是校验 id 的能力。
+
+两个维度互相独立，并以 **AND** 组合：`roles: [frontend]` 与 `projects: [checkout]` 同时出现时，只分发给 checkout 上的 frontend 成员，而不是两者的并集。这与 `tools:` 和 `roles:` 现有的组合方式一致，也有意区别于角色与项目**资源命名空间**取并集的行为——后者回答的是"同步哪些目录"这个不同的问题。
+
+这正是这两个 key 要控制的成本：一个有 5 个项目、每个项目 3 个 server 的团队，会让每位持有该角色的成员启动 15 个 server 进程，并在每次会话的上下文中携带 15 份工具列表。
 
 各工具的落点：
 
@@ -766,6 +801,7 @@ servers:
 | copilot | `$COPILOT_HOME/mcp-config.json` | `<project>/.github/mcp.json` |
 | codex | `~/.codex/config.toml` | 不支持 |
 | qoder | `~/.qoder/settings.json` | `<project>/.qoder/settings.json` |
+| qoder-cn | `~/.qoder-cn/settings.json` | `<project>/.qoder/settings.json` |
 | kiro | `~/.kiro/settings/mcp.json` | `<project>/.kiro/settings/mcp.json` |
 | opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 | omp | `~/.omp/agent/mcp.json` | `<project>/.omp/mcp.json` |
@@ -818,7 +854,7 @@ Consider running /teamai-share-learnings to summarize what you learned and share
 
 提醒会列出实际触发它的非零摩擦信号；如果能取得首个任务，还会附上脱敏、单行化后的任务摘要，便于判断本次 session 是否值得分享。使用内置 skill `/teamai-share-learnings`，AI 会自动总结本次 session 经验并贡献到团队知识库。每个 session 最多提示一次。
 
-在 Codex 中，Stop hook 会暂存贡献和知识引用提醒，在同一会话的下一次 UserPromptSubmit 交付，不会强制开启额外一轮。贡献提醒只交付一次；若下一次输入前已经贡献，则丢弃该提醒。
+在 Codex 系列（`codex`、`codex-internal`、`tcodex`）中，Stop hook 会暂存贡献和知识引用提醒，在同一会话的下一次 UserPromptSubmit 交付，不会强制开启额外一轮。贡献提醒只交付一次；若下一次输入前已经贡献，则丢弃该提醒。
 
 也可以手动指定文件：
 
@@ -1211,6 +1247,8 @@ teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
+如果核心知识图谱提取或写入失败，导入会报错，且不会将该提交标记为已同步。下次增量导入会重试该提交。
+
 需要 AI 的步骤（`--deep-enrich`、知识增强）复用本机已安装的 AI 编码 CLI，而不是直接调用模型 API。teamai 按 `claude` → `claude-internal` → `codex` → `codex-internal` → `codebuddy` → `workbuddy` → `openclaw` 的顺序探测，取第一个可用者。macOS / Linux 上探测经由 login shell，因此装在 `~/.nvm/` 下的 CLI 也能找到；Windows 上改用原生命令 `where`，拿到的是 Windows 真正能启动的 npm shim（`%APPDATA%\npm\claude.cmd`）——Git Bash 或 WSL 的 `bash` 只会返回 `/c/Users/...` 这类 MSYS 路径，Windows 无法启动。
 
 对于 API 网关后的 GitLab，先设置 `GITLAB_URL` 和 `GITLAB_API_PREFIX=api/gitlab`，再运行 `teamai import --from-org https://gitlab.example.com/myorg`。组织仓库列表的每一页请求都会使用配置的前缀；未设置或为空时默认使用 `api/v4`。
@@ -1333,6 +1371,8 @@ teamai hooks inject    # 重新注入
 teamai hooks remove    # 移除
 ```
 
+`hooks list` 按工具分别列出内置 hooks，因为各工具的集合并不相同：Copilot 额外有 `SessionEnd`，OMP 扩展覆盖四个事件且没有 `Skill` / `TodoWrite` matcher，OpenClaw 只映射 `SessionStart` + `UserPromptSubmit`，Hermes 只有 `SessionStart`。hook 注入流程不会为其安装任何内置 hook 的工具（如 JoyCode）不会列出；Kiro 也不列出——它的 `SessionStart` 由 agent 同步以 `hooks.agentSpawn` 形式内嵌，只存在于你实际同步过的 agent 中。
+
 inject 和 remove 只会操作你实际已安装的工具（即 `~/.<tool>/` 根目录已存在的工具）。对于 `toolPaths` 中已配置但未安装的工具，命令不会为其凭空创建根目录。
 
 在 Windows 上，经由 bash 执行的内置 hook 派发命令（如 Claude、Codex、Cursor、Copilot CLI）会以绝对路径引用 Git Bash——先查标准安装位置，再回退到 `HKLM\SOFTWARE\GitForWindows` 注册表——从而避免解析到 WSL 的 `bash.exe`；若找不到 Git Bash，则退回裸 `bash`。
@@ -1353,6 +1393,7 @@ hooks:
     timeout: 15
     tools: [claude, cursor]
     roles: [devops]                      # 可选；默认所有成员
+    projects: [checkout]                 # 可选；默认所有目录
 
 builtin:
   disabled: [Hook dispatch post-tool-use TodoWrite]
@@ -1367,6 +1408,7 @@ builtin:
 | `matcher` | 可选，工具 matcher |
 | `tools` | 可选，目标工具列表（默认 = 所有 hook 支持的工具） |
 | `roles` | 可选，`manifest/roles.yaml` 中的角色 id 列表（默认 = 所有成员；`[]` = 无人）。在下方安全治理之前生效；切换角色后，原角色的 hooks 会在下一次 pull 时移除。旧版 teamai 会忽略该字段。 |
+| `projects` | 可选，`manifest/projects.yaml` 中的项目 id 列表（默认 = 所有目录；`[]` = 无人）。匹配该目录通过 `teamai projects set` 绑定的项目；切换绑定后，原项目的 hooks 会在下一次 pull 时移除。与 `roles` 以 AND 组合。旧版 teamai 会忽略该字段。 |
 | `builtin.disabled` | 禁用的内置 hook 列表 |
 | `builtin.overrides` | 仅可覆盖内置 hook 的 `timeout` |
 
@@ -1440,6 +1482,8 @@ GitHub Copilot CLI 已支持其官方自定义指令、Rules、Skills、自定�
 ### Qoder
 
 Qoder 已作为内置目标支持。TeamAI 会将 Skills、Rules 和 Subagents 分别下发到 `.qoder/skills/`、`.qoder/rules/` 和 `.qoder/agents/`。Hooks 与 MCP Server 会合并进对应作用域的 `.qoder/settings.json`，并保留用户已有的其他设置；这些路径与 Qoder 的用户级和项目级配置约定一致。
+
+Qoder CN 是独立发行的版本，其**用户级**目录为 `~/.qoder-cn` 而非 `~/.qoder`，因此它作为独立的内置目标 `qoder-cn` 支持，而不是并入 `qoder`。两者仅用户作用域不同：用户级的资源写入 `~/.qoder-cn/{skills,rules,agents}`，Hooks 与 MCP 写入 `~/.qoder-cn/settings.json`；项目作用域则沿用 Qoder 的 `<project>/.qoder/` 布局。两者读取相同的 Claude 兼容资源格式，因此下发内容一致，仅用户级根目录不同。同时安装两个版本时，TeamAI 会分别同步到各自的用户目录，无需再建软链接。
 
 ### Kiro
 
@@ -1617,6 +1661,8 @@ teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ./team-repo --indi
 
 如果审核状态 API 返回非 2xx 响应，write 模式会按 fail-closed 处理：任务失败退出，且不会向团队知识仓库写入文件、提交或 push。
 
+评论模式在无法列出已有 marker 评论时也会按 fail-closed 处理，避免临时的 Provider 错误创建重复评论。
+
 开箱即用模板：
 
 - `examples/ci/github-actions-mr-extract.yml`（GitHub Actions）
@@ -1663,6 +1709,40 @@ HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill �
 
 ---
 
+## 命令参考
+
+| 命令 | 说明 |
+|------|------|
+| `teamai init` | 初始化：OAuth 登录、关联仓库、注册成员、注入 hooks |
+| `teamai pull` | 拉取团队资源并注入到本地 AI 工具 |
+| `teamai push` | 推送本地资源到分支并创建合并请求 |
+| `teamai packages [install] [target]` | 安装团队 npm 包和 Claude 插件。裸 `teamai packages` 安装全部；`teamai packages install <target>` 添加单个并更新声明 |
+| `teamai status` | 显示本地与团队仓库的差异及资源数量，包含 namespace 下的技能和子目录中的文档 |
+| `teamai contribute` | 将 session 经验分享到团队仓库的 `teamai-learnings` 分支 |
+| `teamai recall <query>` | 搜索团队知识库（BM25 + 图谱增强） |
+| `teamai recall enable/disable/status` | 开关或查看 recall 状态 |
+| `teamai recall promote [learningId]` | 将高置信度 learning 晋升为正式知识（skills/rules/docs） |
+| `teamai recall maintenance` | 维护知识库健康：清理低置信度 learnings、回写置信度、标记过时条目 |
+| `teamai import` | 导入知识（`--dir`、`--from-repo`、`--from-org`、`--from-repo-list`、`--from-mr`） |
+| `teamai codebase --extract [path]` | 提取代码事实并在 `teamwiki/` 下构建本地图谱 |
+| `teamai codebase --deep-enrich` | 从已提取的 evidence 生成深度知识文档 |
+| `teamai codebase --reconcile` | 将产品文档与提取的代码知识进行对账 |
+| `teamai codebase --lint` | 知识图谱健康检查 |
+| `teamai ci extract-mr --url <url>` | CI：从 MR 提取知识、发评论、合并后写入 |
+| `teamai members` | 查看团队成员 |
+| `teamai projects` | 将工作目录绑定到一个或多个逻辑项目 |
+| `teamai roles` | 管理团队角色和命名空间 |
+| `teamai tags` | 管理基于标签的 skill/rule 过滤 |
+| `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](#排除个人不需要的-skill)） |
+| `teamai source` | 管理 skill 订阅源（其他团队或本团队公共仓库） |
+| `teamai remove <type> <name>` | 删除资源并创建 MR |
+| `teamai session save` | 将脱敏后的 session 摘要记录到月度日志（`--push` 可喂给 `digest`） |
+| `teamai digest` | 生成团队周报 |
+| `teamai doctor` | 诊断配置问题（`--json` 输出 JSON，供 CI、hook 与 agent 消费）|
+| `teamai uninstall` | 移除所有 teamai 资源和 hooks |
+
+---
+
 ## 配置文件参考
 
 ### teamai.yaml（远端团队配置）
@@ -1697,6 +1777,15 @@ sharing:
     enabled: true              # 可选，false = 高摩擦 session 结束后不再提示 /teamai-share-learnings
   intervention:
     correctionKeywords: []     # 可选，额外的纠偏词，与内置中/英/日列表合并
+  webhooks:                    # 可选，在团队事件发生时通知外部端点（见"Webhook 通知"）
+    enabled: true
+    endpoints:
+      - url: https://example.com/hook
+        type: json             # json | feishu | wecom
+        events: ["*"]          # 可取：session-start、session-stop、skill-use、push、pull，或 "*" 表示全部
+        secret: my-signing-key # 可选，设置后启用 X-TeamAI-Signature 头
+        timeout: 5000          # 可选，单次请求超时（毫秒，默认 5000）
+        retries: 3             # 可选，失败重试次数（默认 3）
 ```
 
 ### config.yaml（本地配置）
@@ -1713,6 +1802,25 @@ inheritUserScope: true         # 可选，仅 project scope，默认 false
 coAuthorEnabled: true          # 可选，每机器的 co-author 覆盖
 contributeHintEnabled: false   # 可选，每机器覆盖 sharing.contributeHint.enabled
 ```
+
+### Webhook 通知（`sharing.webhooks`）
+
+在团队事件发生时通知外部端点。每个 endpoint 声明 `url`、`type`（`json`、`feishu` 或 `wecom`）以及订阅的 `events`；`secret`、`timeout`（默认 `5000` 毫秒）、`retries`（默认 `3`）均为可选。
+
+**事件及触发时机：**
+
+| 事件 | 触发时机 |
+| --- | --- |
+| `session-start` | AI session 开始 |
+| `session-stop` | AI session 结束（含 Copilot 的 `SessionEnd`） |
+| `skill-use` | 调用某个 skill |
+| `push` | `teamai push` **真正完成一次推送**——`--dry-run`、取消选择、无变更、或 PR 创建失败都不触发 |
+| `pull` | `teamai pull` 完成一次真实（非 `--dry-run`）同步 |
+| `*` | 通配符——订阅以上全部事件 |
+
+**载荷。** 仅发送白名单内的非敏感字段：`skill-use` 发送 `skillName`，session 事件发送 `sessionId`；`push`/`pull` 只带事件与元数据。原始工具入参与工具输出**绝不**外发，且整个请求体在离开本机前会经过 teamai 的密钥脱敏处理。
+
+**签名。** 设置 `secret` 后，每个请求都会带上 `X-TeamAI-Signature: sha256=<hmac>`——对**实际发送的请求体**计算的 HMAC-SHA256，供接收端校验真实性。`teamai webhook list` 与 `teamai webhook test` 可查看和测试已配置的端点。
 
 ---
 

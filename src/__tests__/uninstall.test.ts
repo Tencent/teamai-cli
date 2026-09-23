@@ -9,7 +9,8 @@ const mockAutoDetectInit = vi.fn();
 const mockSaveLocalConfig = vi.fn();
 const mockSaveLocalConfigForScope = vi.fn();
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: (...args: unknown[]) => mockAutoDetectInit(...args),
   saveLocalConfig: (...args: unknown[]) => mockSaveLocalConfig(...args),
   saveLocalConfigForScope: (...args: unknown[]) => mockSaveLocalConfigForScope(...args),
@@ -1072,6 +1073,54 @@ describe('uninstall', () => {
       (c) => String(c[0]).startsWith(path.join(projectRoot, '.claude')),
     );
     expect(targetedProjectRoot).toBe(false);
+  });
+
+  // #667: hook discovery must resolve the settings *file* at the scope hooks
+  // were injected into, not at the config's scope. Qoder CN reads
+  // `~/.qoder-cn/` for its user scope, so a non-self project scope (which
+  // injects into HOME, #370) has to look for `~/.qoder-cn/settings.json`; the
+  // project-scope name resolved to the *other* build's `~/.qoder/settings.json`
+  // and left the CN hooks in HOME forever.
+  it('non-self project scope discovers Qoder CN hooks in ~/.qoder-cn, not ~/.qoder', async () => {
+    const projectRoot = path.join(tmpDir, 'proj-qcn');
+    const repoPath = path.join(projectRoot, '.teamai', 'team-repo');
+    const homeDir = path.join(tmpDir, 'home');
+    await fse.ensureDir(repoPath);
+    await fse.ensureDir(path.join(projectRoot, '.teamai'));
+    await fse.writeFile(path.join(projectRoot, '.teamai', 'config.yaml'), 'scope: project');
+
+    await fse.ensureDir(path.join(homeDir, '.qoder-cn'));
+    await fse.writeJson(path.join(homeDir, '.qoder-cn', 'settings.json'), {
+      hooks: {
+        SessionStart: [{
+          matcher: '*',
+          hooks: [{ type: 'command', command: 'teamai hook-dispatch session-start --tool qoder-cn' }],
+          description: '[teamai] Hook dispatch session-start',
+        }],
+      },
+    });
+
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/bash');
+
+    // The shipped table, not a fixture: `qoder-cn`'s project scope is Qoder's
+    // `<root>/.qoder/`, which is exactly what made the lookup wrong.
+    const teamConfig = TeamaiConfigSchema.parse({ team: 'test', repo: 'test/repo' });
+    const localConfig = makeLocalConfig(projectRoot, repoPath, { scope: 'project', projectRoot });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    expect(mockReconcileHooks).toHaveBeenCalledWith(
+      path.join(homeDir, '.qoder-cn', 'settings.json'),
+      'qoder-cn',
+      [],
+      expect.objectContaining({ removeAll: true, manifestPath: expect.stringContaining('managed-hooks.json') }),
+    );
+    const targetedIntlFile = mockReconcileHooks.mock.calls.some(
+      (c) => String(c[0]) === path.join(homeDir, '.qoder', 'settings.json'),
+    );
+    expect(targetedIntlFile).toBe(false);
   });
 
   it('命名空间 skills 正确处理', async () => {

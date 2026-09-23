@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { autoDetectInit } from './config.js';
 import { log } from './utils/logger.js';
+import { redactWithEnv } from './utils/redact.js';
 import { getWebhookSharing, type WebhookEndpoint, type WebhookConfig, type WebhookPayload } from './types.js';
 import { formatFeishuMessage, formatWecomMessage, formatGenericJson } from './webhook-formatters.js';
 
@@ -51,14 +52,21 @@ async function sendToEndpoint(
   const { url, type, secret, timeout, retries } = endpoint;
 
   const body = formatMessage(type, payload);
+  const serialized = typeof body === 'string' ? body : JSON.stringify(body);
+  // Defense-in-depth: scrub any secret that slipped through the field whitelist
+  // before the payload leaves the machine (#701). Route the whole outbound string
+  // through the shared redact module rather than hand-masking at the call site.
+  const outbound = redactWithEnv(serialized);
 
   const headers: Record<string, string> = {
     'Content-Type': type === 'json' ? 'application/json' : 'text/plain; charset=utf-8',
   };
 
   if (secret) {
+    // Sign the exact bytes sent so a receiver that verifies the signature over
+    // the request body accepts it (#703).
     const signature = createHmac('sha256', secret)
-      .update(JSON.stringify(body))
+      .update(outbound)
       .digest('hex');
     headers['X-TeamAI-Signature'] = `sha256=${signature}`;
   }
@@ -71,7 +79,7 @@ async function sendToEndpoint(
       const response = await fetch(url, {
         method: 'POST',
         headers,
-        body: typeof body === 'string' ? body : JSON.stringify(body),
+        body: outbound,
         signal: controller.signal,
       });
 

@@ -558,11 +558,20 @@ async function envDeliveryProblems(
   const read = await envHandler.readEnvYaml(envYamlPath);
   if (!read.ok) return { problems: [read.reason], staleProfiles: [] };
 
-  const declared = read.variables;
+  // Only the variables this member and directory are scoped to: the same filter
+  // `pullItem` applies, not a second copy of it. Diffing env.sh against every
+  // DECLARED variable would report a project-scoped one as undelivered on a pull
+  // that correctly withheld it.
+  const { resolveDeliverableEnvVariables } = await import('./resources/env.js');
+  const { resolveMembership } = await import('./membership.js');
+  const declared = resolveDeliverableEnvVariables(read.variables, resolveMembership(localConfig));
+  // The variables the filter withheld. `pull` rewrites env.sh from the
+  // deliverable set, so one of these still exported means the file predates a
+  // rebind (`teamai projects set`) or a role change, and the previous
+  // project's secrets are live in every new shell until the next pull.
+  const deliverable = new Set(declared.map((variable) => variable.key));
+  const withheld = read.variables.filter((variable) => !deliverable.has(variable.key));
   const problems: string[] = [];
-
-  // Nothing declared and nothing malformed: there is nothing to deliver.
-  if (declared.length === 0) return none;
 
   // env.sh lives under teamaiHome, which is <projectRoot>/.teamai in project
   // scope and ~/.teamai in user scope — mirror the path that `teamai pull`
@@ -570,6 +579,9 @@ async function envDeliveryProblems(
   const envShPath = path.join(getDataHome(localConfig), 'env.sh');
   const envSh = await readFileSafe(envShPath);
   if (envSh === null) {
+    // Nothing reaches this member and nothing was ever written: there is
+    // nothing to deliver, so there is nothing to report missing.
+    if (declared.length === 0) return none;
     problems.push(`${envShPath} is missing`);
   } else {
     // Read the file back through the generator's own inverse, value included:
@@ -592,6 +604,16 @@ async function envDeliveryProblems(
         `${envShPath} has a stale value for ${nameList(stale)}: env.yaml declares a different one`,
       );
     }
+    const leftover = withheld.filter((variable) => delivered.has(variable.key)).map((variable) => variable.key);
+    if (leftover.length > 0) {
+      problems.push(
+        `${envShPath} still exports ${nameList(leftover)}, which env.yaml no longer delivers to this `
+        + 'directory (its roles: or projects: do not match)',
+      );
+    }
+    // Nothing is owed, so the profile block has nothing to load: a leftover is
+    // the only thing that can be wrong here.
+    if (declared.length === 0) return { problems, staleProfiles: [] };
   }
 
   // Same resolution the injection runs, not a second copy of it. Expanded

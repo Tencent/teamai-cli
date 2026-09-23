@@ -6,6 +6,7 @@ import type { ResourceItem, TeamaiConfig, LocalConfig } from '../types.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, isSelfMode } from '../types.js';
 import { pathExists, readFileSafe, writeFile, ensureDir, fileContentEqual } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { matchesMembership, resolveMembership, warnUnknownMembershipIds, type Membership } from '../membership.js';
 import {
   resolveActiveShellProfile,
   shellQuoteValue,
@@ -18,6 +19,10 @@ const EnvVariableSchema = z.object({
   key: z.string(),
   value: z.string(),
   description: z.string().optional(),
+  /** Optional restriction to members holding one of these role ids (default = every member; [] = nobody). */
+  roles: z.array(z.string()).optional(),
+  /** Optional restriction to directories bound to one of these logical project ids (default = every directory; [] = nobody). */
+  projects: z.array(z.string()).optional(),
 });
 
 const EnvYamlSchema = z.object({
@@ -26,6 +31,27 @@ const EnvYamlSchema = z.object({
 
 export type EnvVariable = z.infer<typeof EnvVariableSchema>;
 export type EnvYaml = z.infer<typeof EnvYamlSchema>;
+
+/**
+ * The declared variables this member and directory are scoped to, in declaration
+ * order. Omitted `roles:`/`projects:` = everyone, an empty list = nobody, and an
+ * axis the member has not configured filters nothing (see `matchesMembership`).
+ *
+ * The one filter both delivery paths use: `pullItem` writes env.sh from it, and
+ * `doctor` diffs env.sh against it. A second copy is how doctor ends up
+ * reporting a project-scoped variable as undelivered on a pull that correctly
+ * withheld it.
+ *
+ * Note this does NOT gate `countEnvVars`, which answers the different question
+ * of how many variables the team declares — the probe `pull` uses to tell an
+ * empty env.yaml from a malformed one (#662).
+ */
+export function resolveDeliverableEnvVariables(
+  variables: EnvVariable[],
+  membership: Membership,
+): EnvVariable[] {
+  return variables.filter((variable) => matchesMembership(variable, membership));
+}
 
 /** A parsed env.yaml, or the reason it declares nothing. See `readEnvYaml`. */
 export type EnvYamlRead =
@@ -243,17 +269,27 @@ export class EnvHandler extends ResourceHandler {
 
     if (envConfig.variables.length === 0) return;
 
+    // Which of the declared variables this member and directory are scoped to.
+    // Deliberately applied AFTER the "nothing declared" return above: a team that
+    // declares variables none of which reach this member must still get an
+    // env.sh written (an empty one), because that is what REMOVES the variables
+    // an earlier pull had given them.
+    //
+    // The unknown-id warning belongs to `pullForScope`, not here, so that
+    // `--dry-run` reports it as well (this method never runs on that path).
+    const variables = resolveDeliverableEnvVariables(envConfig.variables, resolveMembership(localConfig));
+
     // Write the machine-local KEY=VALUE backup (for loadEnvFile / buildVarTable).
     // getEnvBackupPath returns <teamaiHome>/env normally, but <teamaiHome>/env.local
     // in self mode — where <teamaiHome>/env is a committed DIRECTORY (env/env.yaml)
     // and writing a file there would throw EISDIR.
     const teamaiHome = getDataHome(localConfig);
-    const backupLines = envConfig.variables.map(v => `${v.key}=${v.value}`);
+    const backupLines = variables.map(v => `${v.key}=${v.value}`);
     await ensureDir(teamaiHome);
     await writeFile(getEnvBackupPath(localConfig), backupLines.join('\n') + '\n');
 
     // Write <teamaiHome>/env.sh (sourceable export file)
-    const envShContent = this.generateEnvFile(envConfig.variables);
+    const envShContent = this.generateEnvFile(variables);
     await writeFile(path.join(teamaiHome, 'env.sh'), envShContent);
 
     // Inject source line into shell profile if enabled
@@ -426,7 +462,8 @@ export class EnvHandler extends ResourceHandler {
    * Inject the shell block into the profile file (idempotent).
    */
   private async injectShellProfile(profilePath: string, block: string): Promise<void> {
-    let content = await readFileSafe(profilePath) ?? '';
+    const original = await readFileSafe(profilePath) ?? '';
+    let content = original;
 
     const startIdx = content.indexOf(TEAMAI_ENV_START);
     const endIdx = content.indexOf(TEAMAI_ENV_END);
@@ -444,6 +481,10 @@ export class EnvHandler extends ResourceHandler {
       content += '\n' + block + '\n';
     }
 
+    // Skip the write when nothing changed: this runs on every pull, including
+    // the revision fast path a SessionStart hook takes each session, and the
+    // member's shell profile should not churn for it.
+    if (content === original) return;
     await writeFile(profilePath, content);
   }
 

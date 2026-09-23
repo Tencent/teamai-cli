@@ -3,7 +3,8 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   detectProjectConfig: vi.fn().mockResolvedValue(null),
   loadLocalConfig: vi.fn(),
   loadTeamConfig: vi.fn(),
@@ -320,6 +321,86 @@ describe('doctor — env variables reach a shell', () => {
   it('accepts a quoted path containing whitespace', async () => {
     await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
     await writeProfile(`[ -f "${envShPath}" ] && source "${envShPath}"`);
+
+    expect(await (await envCheck()).check()).toBe(true);
+  });
+
+  it('does not report a variable this directory is scoped out of as undelivered', async () => {
+    // The false failure #668 would otherwise introduce: pull correctly withholds
+    // BILLING_URL from a checkout directory, and doctor must not call that a
+    // delivery problem.
+    await writeEnvYaml(
+      'variables:\n'
+      + '  - key: CHECKOUT_URL\n    value: "c"\n    projects: [checkout]\n'
+      + '  - key: BILLING_URL\n    value: "b"\n    projects: [billing]\n',
+    );
+    vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, projects: ['checkout'] });
+    await writeEnvSh("export CHECKOUT_URL='c'\n");
+    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+
+    expect(await (await envCheck()).check()).toBe(true);
+  });
+
+  it('still reports a scoped-in variable that is missing from env.sh', async () => {
+    await writeEnvYaml(
+      'variables:\n'
+      + '  - key: CHECKOUT_URL\n    value: "c"\n    projects: [checkout]\n'
+      + '  - key: BILLING_URL\n    value: "b"\n    projects: [billing]\n',
+    );
+    vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, projects: ['checkout'] });
+    await writeEnvSh('');
+    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+
+    const check = await envCheck();
+    expect(await check.check()).toBe(false);
+    expect(check.fix).toContain('CHECKOUT_URL');
+    expect(check.fix).not.toContain('BILLING_URL');
+  });
+
+  it('passes when every declared variable is scoped away from this directory', async () => {
+    await writeEnvYaml('variables:\n  - key: BILLING_URL\n    value: "b"\n    projects: [billing]\n');
+    vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, projects: ['checkout'] });
+    await writeEnvSh('');
+    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+
+    expect(await (await envCheck()).check()).toBe(true);
+  });
+
+  // PR #700 review: after `teamai projects set`, the previous project's secrets
+  // sit in env.sh until the next pull rewrites it. A member scoped out of every
+  // variable must not get a pass while env.sh still exports the old ones.
+  it('reports a withheld variable that env.sh still exports when nothing is deliverable', async () => {
+    await writeEnvYaml('variables:\n  - key: BILLING_URL\n    value: "b"\n    projects: [billing]\n');
+    vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, projects: ['checkout'] });
+    await writeEnvSh("export BILLING_URL='b'\n");
+    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+
+    const check = await envCheck();
+    expect(await check.check()).toBe(false);
+    expect(check.fix).toContain('BILLING_URL');
+    expect(check.fix).toContain('no longer delivers');
+    expect(check.fix).not.toContain("'b'");
+  });
+
+  it('reports a withheld variable left in env.sh beside the delivered ones', async () => {
+    await writeEnvYaml(
+      'variables:\n'
+      + '  - key: CHECKOUT_URL\n    value: "c"\n    projects: [checkout]\n'
+      + '  - key: BILLING_URL\n    value: "b"\n    projects: [billing]\n',
+    );
+    vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, projects: ['checkout'] });
+    await writeEnvSh("export CHECKOUT_URL='c'\nexport BILLING_URL='b'\n");
+    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+
+    const check = await envCheck();
+    expect(await check.check()).toBe(false);
+    expect(check.fix).toContain('BILLING_URL');
+    expect(check.fix).not.toContain('CHECKOUT_URL');
+  });
+
+  it('passes when every variable is scoped away and env.sh was never written', async () => {
+    await writeEnvYaml('variables:\n  - key: BILLING_URL\n    value: "b"\n    projects: [billing]\n');
+    vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, projects: ['checkout'] });
 
     expect(await (await envCheck()).check()).toBe(true);
   });

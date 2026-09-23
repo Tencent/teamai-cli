@@ -108,6 +108,49 @@ export function isValidSkillName(name: string): boolean {
   return SKILL_NAME_REGEX.test(name);
 }
 
+/** A resolved, validated skill invocation from a PostToolUse payload. */
+export interface ResolvedSkillUse {
+  /** The validated skill name (passes {@link isValidSkillName}). */
+  skillName: string;
+  /** 'cursor' for a Read of a SKILL.md path, otherwise the caller's tool. */
+  source: 'cursor' | null;
+}
+
+/**
+ * Resolve a skill invocation from a PostToolUse hook payload — the single source
+ * of truth shared by the usage tracker and the webhook handler so they can never
+ * drift. Handles both shapes: Claude/CodeBuddy's `Skill` tool, and Cursor's
+ * `Read` of a `.../SKILL.md` path. Returns null for anything else — including a
+ * normal (non-SKILL.md) `Read`, so a plain file read never counts as skill use.
+ * The returned name is already validated with {@link isValidSkillName}.
+ */
+export function resolveSkillUse(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): ResolvedSkillUse | null {
+  let skillName: string | null = null;
+  let source: 'cursor' | null = null;
+
+  if (toolName === 'Skill') {
+    skillName = extractSkillName(toolInput);
+  } else if (toolName === 'Read') {
+    const filePath =
+      (typeof toolInput.file_path === 'string' ? toolInput.file_path : null) ??
+      (typeof toolInput.filePath === 'string' ? toolInput.filePath : null) ??
+      (typeof toolInput.path === 'string' ? toolInput.path : null);
+    // Only a Read of a SKILL.md file is skill use — a normal file read is not.
+    if (filePath && /\/SKILL\.md$/i.test(filePath)) {
+      skillName = extractSkillName({ skill: filePath });
+      source = 'cursor';
+    }
+  } else {
+    return null;
+  }
+
+  if (!skillName || !isValidSkillName(skillName)) return null;
+  return { skillName, source };
+}
+
 /**
  * Well-known local skill directories to check for skill existence.
  * Ordered by likelihood of being present.

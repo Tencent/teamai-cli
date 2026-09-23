@@ -1,7 +1,7 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { readFileSafe, ensureDir, writeFile } from './utils/fs.js';
+import { readFileIfExists, ensureDir, writeFile } from './utils/fs.js';
 import type { ResourceNamespaces } from './roles.js';
 
 /**
@@ -99,11 +99,13 @@ function validateManifestShape(raw: unknown): ProjectsManifest {
  * Load the projects manifest. Returns `null` when the file is absent — projects
  * are optional (a team without partitioning has no projects.yaml), so every
  * project code path short-circuits on `null` and behaves exactly as before.
+ * A file that exists but cannot be read or parsed throws, so a caller never
+ * mistakes a broken manifest for a team without one.
  */
 export async function loadProjectsManifest(repoPath: string): Promise<ProjectsManifest | null> {
   const manifestPath = path.join(repoPath, 'manifest', 'projects.yaml');
-  const content = await readFileSafe(manifestPath);
-  if (!content) {
+  const content = await readFileIfExists(manifestPath);
+  if (content === null) {
     return null;
   }
 
@@ -188,6 +190,21 @@ export function resolveProjectResourceNamespaces(input: {
   }
 
   return namespaces;
+}
+
+/**
+ * Logical project ids this directory is bound to, or null when it is bound to
+ * none. Null means "no project filter": entries scoped with `projects:` keep
+ * reaching a directory that has selected no project, the same fallback
+ * `activeRoleIds` applies to a member with no role.
+ *
+ * An empty list collapses to null on purpose — `LocalConfig.projects` treats
+ * absent and empty alike ("no project partitioning"), so a directory cannot
+ * express "member of no project" and thereby opt out of every scoped entry.
+ */
+export function activeProjectIds(localConfig: { projects?: string[] }): string[] | null {
+  const ids = [...new Set(localConfig.projects ?? [])];
+  return ids.length > 0 ? ids : null;
 }
 
 /**

@@ -233,6 +233,14 @@ experience) both need it, without affecting the single-project main path.
 
 **Docs:** README (bilingual) + usage-guide (bilingual) per the CLAUDE.md sync rule.
 
+**Extended by [#668](https://github.com/Tencent/teamai-cli/issues/668):** the three
+per-item-scoped resource types this design did not cover. `hooks/hooks.yaml` and
+`mcp/mcp.yaml` entries gain an optional `projects:` key beside their `roles:` one,
+and `env/env.yaml` variables gain both — `src/membership.ts` resolves the two axes
+together and ANDs them, so a delivery path cannot filter on one and forget the
+other. Unlike resource namespaces, which take the role ∪ project union, a
+per-item key is a restriction.
+
 ## Phasing
 
 | Phase | Scope |
@@ -262,6 +270,13 @@ cross-talking — which is exactly the most painful half (P2). P3 is a separate 
 lone project; migrating existing flat learnings into a `shared/` subdirectory;
 `teamai projects set --all` (the `all` selector is limited to `init --project` —
 re-running `init --project all` already re-resolves the current manifest).
+
+Also out of scope here, and delivered later by
+[#668](https://github.com/Tencent/teamai-cli/issues/668): per-item project scoping
+of hooks, MCP servers and env variables. Still unscoped on either axis after it:
+`packages` (whose schema mixes an array with a nested object, so it is not the same
+edit), `docs`, and `culture.md` — which suits a document defining how the whole
+team works.
 
 ## End-to-end test plan (real CLI, per CLAUDE.md — type-check/unit tests don't count)
 

@@ -26,6 +26,12 @@ describe('detectShellProfile', () => {
     homeDir = path.join(tmpDir, 'home');
     await fse.ensureDir(homeDir);
     vi.stubEnv('HOME', homeDir);
+    // Neutralise the host shell. The win32 login-shell cases below assert the
+    // file-order fallback, which only runs when SHELL does not say zsh — on a
+    // developer's zsh machine the unstubbed host value short-circuits it and
+    // they fail, while CI (SHELL unset) stays green. Tests that care about a
+    // particular shell stub it themselves.
+    vi.stubEnv('SHELL', '');
   });
 
   afterEach(async () => {

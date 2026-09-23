@@ -7,7 +7,8 @@ const testRoot = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-pull-queue-'))
 const originalHome = process.env.HOME;
 process.env.HOME = path.join(testRoot, 'home');
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   requireInit: vi.fn(),
   loadState: vi.fn().mockResolvedValue({ lastPull: null, lastPullRev: null }),
   saveState: vi.fn(),

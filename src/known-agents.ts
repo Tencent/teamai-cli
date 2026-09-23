@@ -103,6 +103,7 @@ export const KNOWN_AGENTS: KnownAgent[] = [
   { id: 'omp', displayName: 'Oh My Pi', category: 'coding', skillsPath: '.omp/skills' },
   { id: 'opencode', displayName: 'OpenCode', category: 'coding', skillsPath: '.opencode/skills' },
   { id: 'qoder', displayName: 'Qoder', category: 'coding', skillsPath: '.qoder/skills' },
+  { id: 'qoder-cn', displayName: 'Qoder CN', category: 'coding', skillsPath: '.qoder-cn/skills' },
   { id: 'qwen', displayName: 'Qwen', category: 'coding', skillsPath: '.qwen/skills' },
   { id: 'trae', displayName: 'Trae', category: 'coding', skillsPath: '.trae/skills' },
   { id: 'trae-cn', displayName: 'Trae CN', category: 'coding', skillsPath: '.trae-cn/skills' },

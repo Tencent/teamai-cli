@@ -4,7 +4,8 @@ import os from 'node:os';
 import fse from 'fs-extra';
 
 // Mock external dependencies
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   requireInit: vi.fn(),
   loadState: vi.fn().mockResolvedValue({ lastPull: null }),
   saveState: vi.fn(),

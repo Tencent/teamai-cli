@@ -37,7 +37,8 @@ vi.mock('fs-extra', () => ({
   },
 }));
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   loadState: vi.fn(),
   saveState: vi.fn(),
   loadLocalConfig: vi.fn(),
@@ -70,6 +71,9 @@ vi.mock('../builtin-hooks.js', () => ({
 
 let readlineAnswer = 'n';
 vi.mock('../utils/prompt.js', () => ({
+  // Mirror the real predicate's TTY leg so tests that force `isTTY` keep
+  // driving the interactive branch, independent of CI=true on the runner.
+  isInteractive: () => Boolean(process.stdin.isTTY),
   askQuestion: vi.fn((_prompt: string, defaultValue?: string) => {
     return Promise.resolve(readlineAnswer || defaultValue || '');
   }),

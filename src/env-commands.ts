@@ -40,7 +40,9 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
   console.log('');
   for (const v of envConfig.variables) {
     const displayValue = options.reveal ? v.value : maskEnvValue(v.value);
-    console.log(`  ${v.key}=${displayValue}`);
+    const roles = v.roles ? `  (roles: ${v.roles.length > 0 ? v.roles.join(', ') : 'nobody'})` : '';
+    const projects = v.projects ? `  (projects: ${v.projects.length > 0 ? v.projects.join(', ') : 'nobody'})` : '';
+    console.log(`  ${v.key}=${displayValue}${roles}${projects}`);
     if (v.description && options.verbose) {
       log.dim(`    ${v.description}`);
     }

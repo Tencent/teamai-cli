@@ -1598,7 +1598,9 @@ describe('appendEvent / readEvents', () => {
 // ─── rebuildSessions ────────────────────────────────────
 
 describe('rebuildSessions', () => {
-  const now = new Date().toISOString();
+  // Refresh before each test so timestamps are never stale on slow CI
+  let now: string;
+  beforeEach(() => { now = new Date().toISOString(); });
 
   it('creates session from session_start event', () => {
     const events: DashboardEvent[] = [

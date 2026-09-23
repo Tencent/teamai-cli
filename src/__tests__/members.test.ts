@@ -5,7 +5,8 @@ import fse from 'fs-extra';
 import YAML from 'yaml';
 
 // Mock external dependencies before importing modules
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   requireInit: vi.fn(),
   detectProjectConfig: vi.fn().mockResolvedValue(null),
 }));

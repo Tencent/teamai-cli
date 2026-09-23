@@ -309,6 +309,166 @@ servers:
     });
   });
 
+  describe('projects filter', () => {
+    const PROJECTS_YAML = `
+version: 1
+projects:
+  - id: checkout
+    resources: {}
+  - id: billing
+    resources: {}
+`;
+    const ROLES_YAML = `
+version: 1
+roles:
+  - id: frontend
+    description: Frontend
+    resources: { knowledge: [common], skills: [common] }
+  - id: devops
+    description: DevOps
+    resources: { knowledge: [common], skills: [common] }
+`;
+    const SCOPED_YAML = `
+servers:
+  - name: checkout-db
+    transport: http
+    url: https://example.com/checkout
+    projects: [checkout]
+  - name: billing-db
+    transport: http
+    url: https://example.com/billing
+    projects: [billing, legacy]
+  - name: shared
+    transport: http
+    url: https://example.com/shared
+`;
+    async function writeManifests(): Promise<void> {
+      await fse.ensureDir(path.join(repoPath, 'manifest'));
+      await fse.writeFile(path.join(repoPath, 'manifest', 'projects.yaml'), PROJECTS_YAML);
+      await fse.writeFile(path.join(repoPath, 'manifest', 'roles.yaml'), ROLES_YAML);
+    }
+    async function claudeServers(): Promise<Record<string, unknown>> {
+      return (await fse.readJson(path.join(homeDir, '.claude.json'))).mcpServers ?? {};
+    }
+
+    it('installs a server only for directories bound to a project it lists', async () => {
+      await writeManifests();
+      await writeMcpYaml(SCOPED_YAML);
+
+      await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['checkout'] });
+      expect(Object.keys(await claudeServers()).sort()).toEqual(['checkout-db', 'shared']);
+    });
+
+    it('counts every project the directory is bound to', async () => {
+      await writeManifests();
+      await writeMcpYaml(SCOPED_YAML);
+
+      await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['checkout', 'billing'] });
+      expect(Object.keys(await claudeServers()).sort()).toEqual(['billing-db', 'checkout-db', 'shared']);
+    });
+
+    it('installs every server when the directory is bound to no project (legacy config)', async () => {
+      await writeManifests();
+      await writeMcpYaml(SCOPED_YAML);
+
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      expect(Object.keys(await claudeServers()).sort()).toEqual(['billing-db', 'checkout-db', 'shared']);
+    });
+
+    it('removes a server once the directory stops being bound to its project', async () => {
+      await writeManifests();
+      await writeMcpYaml(SCOPED_YAML);
+      await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['checkout'] });
+      expect(await claudeServers()).toHaveProperty('checkout-db');
+
+      const { changes } = await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['billing'] });
+      expect(Object.keys(await claudeServers()).sort()).toEqual(['billing-db', 'shared']);
+      expect(changes.some((c) => c.server === 'checkout-db' && c.action === 'removed')).toBe(true);
+    });
+
+    it('skips silently, without a change record, like the roles filter', async () => {
+      await writeManifests();
+      await writeMcpYaml(SCOPED_YAML);
+
+      const { changes } = await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['checkout'] });
+      expect(changes.some((c) => c.server === 'billing-db')).toBe(false);
+    });
+
+    it('requires both axes when a server scopes roles and projects (AND, not OR)', async () => {
+      await writeManifests();
+      await writeMcpYaml(`
+servers:
+  - name: fe-checkout
+    transport: http
+    url: https://example.com/fe-checkout
+    roles: [frontend]
+    projects: [checkout]
+`);
+      const base = { ...localConfig, additionalRoles: [] };
+
+      await reconcileMcpForConfig(teamConfig, { ...base, primaryRole: 'frontend', projects: ['checkout'] });
+      expect(Object.keys(await claudeServers())).toEqual(['fe-checkout']);
+
+      await reconcileMcpForConfig(teamConfig, { ...base, primaryRole: 'frontend', projects: ['billing'] });
+      expect(Object.keys(await claudeServers())).toEqual([]);
+
+      await reconcileMcpForConfig(teamConfig, { ...base, primaryRole: 'devops', projects: ['checkout'] });
+      expect(Object.keys(await claudeServers())).toEqual([]);
+    });
+
+    it('warns once about a project id that is not in projects.yaml and still applies the rest', async () => {
+      await writeManifests();
+      await writeMcpYaml(`
+servers:
+  - name: typo
+    transport: http
+    url: https://example.com/typo
+    projects: [chekout]
+  - name: shared
+    transport: http
+    url: https://example.com/shared
+`);
+      const { log } = await import('../utils/logger.js');
+      vi.mocked(log.warn).mockClear();
+
+      await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['checkout'] });
+
+      expect(Object.keys(await claudeServers())).toEqual(['shared']);
+      const warnings = vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).filter((m) => /chekout/.test(m));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/unknown project id "chekout".*mcp\.yaml.*"typo"/);
+    });
+
+    it('reports that project ids cannot be checked when the team has no projects manifest', async () => {
+      await fse.ensureDir(path.join(repoPath, 'manifest'));
+      await fse.writeFile(path.join(repoPath, 'manifest', 'roles.yaml'), ROLES_YAML);
+      await writeMcpYaml(SCOPED_YAML);
+      const { log } = await import('../utils/logger.js');
+      vi.mocked(log.warn).mockClear();
+
+      await reconcileMcpForConfig(teamConfig, localConfig);
+
+      // Inert key: with no manifest every member's projects axis is null, so all ship.
+      expect(Object.keys(await claudeServers()).sort()).toEqual(['billing-db', 'checkout-db', 'shared']);
+      const warnings = vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).filter((m) => /cannot be checked/.test(m));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('manifest/projects.yaml');
+    });
+
+    it('still filters by projects when the manifest is missing, for a directory that is bound to one', async () => {
+      // A directory's active projects come from its own config.yaml, not from the
+      // manifest. So a missing manifest means the ids cannot be VALIDATED — not
+      // that the key stops restricting, which only holds for a directory bound to
+      // no project.
+      await fse.ensureDir(path.join(repoPath, 'manifest'));
+      await fse.writeFile(path.join(repoPath, 'manifest', 'roles.yaml'), ROLES_YAML);
+      await writeMcpYaml(SCOPED_YAML);
+
+      await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['billing'] });
+      expect(Object.keys(await claudeServers()).sort()).toEqual(['billing-db', 'shared']);
+    });
+  });
+
   it('does not prune managed servers in http mode (install_mcp survives second sync)', async () => {
     // First, inject a server as a git-mode team would, so managed-mcp.json and
     // the tool config both record it (stands in for an install_mcp write).

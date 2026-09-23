@@ -27,6 +27,7 @@
 - [Commit Co-Author Attribution](#commit-co-author-attribution)
 - [Team Culture](#team-culture)
 - [Advanced Features](#advanced-features)
+- [Command Reference](#command-reference)
 - [Configuration Reference](#configuration-reference)
 - [Uninstall](#uninstall)
 - [FAQ](#faq)
@@ -173,8 +174,10 @@ If the repo has role-based skills enabled (i.e. `manifest/roles.yaml` exists), `
 You can also skip the interactive prompts via CLI flags for a fully non-interactive init (suitable for CI/CD or AI agents):
 
 ```bash
-teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev --force
+GITHUB_TOKEN=ghp_... teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev --force
 ```
+
+Without a terminal `init` never waits on a person: every prompt takes its default, and a provider that would need a browser login fails at once and names the credential to prepare (`GITHUB_TOKEN` / `GH_TOKEN` for GitHub, `CNB_TOKEN` for CNB, `GITLAB_TOKEN` for GitLab, `GITCODE_TOKEN` for GitCode). TGit is the exception: it has no unattended token — `TGIT_TOKEN` is REST-API-only and git.woa.com rejects it for `git clone` — so run `gf auth login` once in an interactive shell on that machine and unattended runs reuse the credential it stores. `git` itself runs with its prompts closed: `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo` (no askpass dialog) and `GCM_INTERACTIVE=never`, each only when you have not set it yourself. `ssh` is left alone: its batch flag is only reachable through `GIT_SSH_COMMAND`, which would override whatever `core.sshCommand` each repository configured, so an ssh remote that still needs a passphrase or an unknown-host confirmation is yours to close — `git config core.sshCommand 'ssh -o BatchMode=yes'` on that repository, or export `GIT_SSH_COMMAND` for the run. A run counts as non-interactive when stdin is not a TTY, or when `CI` or `TEAMAI_NONINTERACTIVE` is set, so an agent sandbox that allocates a pseudo-terminal can still declare itself unattended.
 
 | Flag | Description |
 |------|------|
@@ -743,6 +746,27 @@ teamai env list
 teamai push
 ```
 
+Variables live in the team repo's `env/env.yaml`. `teamai env add` writes the first three fields; `roles` and `projects` are hand-edited, as they are for hooks and MCP servers:
+
+```yaml
+variables:
+  - key: API_ENDPOINT
+    value: https://api.example.com
+    description: Team API endpoint        # optional
+  - key: CHECKOUT_DB_URL
+    value: https://checkout-db.internal
+    projects: [checkout]                  # optional; default is every directory
+  - key: DEPLOY_REGISTRY
+    value: registry.internal
+    roles: [devops]                       # optional; default is every member
+```
+
+`roles` and `projects` follow the same rule as on MCP servers and hooks: omitted reaches everyone, `[]` reaches nobody among members who use that axis, an axis the member has not configured filters nothing, and the two compose as **AND**. A variable that no longer matches is removed from `env.sh` on the next pull, even one that reports `Already synced` because the team repo has not moved, so changing role, running `teamai projects set` or upgrading the CLI takes it out of the member's shell without `--force`. Until that pull runs, `teamai doctor` reports a withheld variable that `env.sh` still exports, so the previous project's secrets are not left live in silence. `teamai env add` on an existing key keeps whatever `roles:`/`projects:` it already carries.
+
+`pull` reports what reached this member, naming the declared total when the two differ (`Synced 1 of 3 env variable(s)`), so a variable that was scoped away is distinguishable from one that was lost.
+
+Because the shell profile holds a single teamai block pointing at one `env.sh`, a machine that pulls in several project-scoped directories ends up with the last-pulled directory's variables in new shells. Each directory's own `env.sh` stays correct; it is the shell profile that can only point at one of them.
+
 On `pull`, when `injectShellProfile` is enabled (default), the env block goes into `~/.zshrc` if `$SHELL` is zsh, otherwise `~/.bashrc` — except on Windows: `$SHELL` is normally unset there, and Git Bash starts as a *login* shell that never reads `.bashrc`, so teamai instead prefers an existing `~/.bash_profile`, then `~/.bash_login`, then `~/.profile`, falling back to `~/.bashrc` only when none of them exist (a zsh installed via MSYS2/Cygwin, which does set `$SHELL`, still resolves to `.zshrc`). This matches Git for Windows' own fallback in `/etc/profile.d/bash_profile.sh`, whose guard is `[ -e ~/.bashrc -a ! -e ~/.bash_profile -a ! -e ~/.bash_login -a ! -e ~/.profile ]` — it only synthesizes a `.bash_profile` that sources `.bashrc` in that same one case, which is why a stray `~/.profile` (even one that just sources something else, e.g. `~/.local/bin/env`) is enough to make `.bashrc` alone go unread. Override the target file with `sharing.env.shellProfilePath` in `teamai.yaml`.
 
 This preference order only decides where a *first* pull writes. Every pull after that sticks to whichever candidate already carries this scope's block, rather than re-running the order — otherwise Git for Windows' own bootstrap would move the target out from under it: the same `/etc/profile.d/bash_profile.sh` guard above also means that first pull satisfies its condition (`.bashrc` now exists, nothing else does yet), so the next Git Bash login shell auto-generates a `~/.bash_profile` that sources it. Without sticking to `.bashrc`, the next pull would prefer that newly-created file and inject a second block there, leaving the original — still working, just loaded one hop further away — reported as a dead leftover.
@@ -776,11 +800,22 @@ servers:
     requires: [npx]                      # skipped with a hint when npx is absent from PATH
     tools: [claude, cursor]              # optional; default is every capable tool
     roles: [devops]                      # optional; default is every member
+    projects: [checkout]                 # optional; default is every directory
 ```
 
 `requires` is resolved from `PATH`. On Windows a name also matches a `PATHEXT` suffix (`uvx` matches `uvx.exe` / `uvx.cmd`).
 
 `roles` lists role ids from `manifest/roles.yaml`. A server ships to a member when one of their roles (`primaryRole` or `additionalRoles`) is listed; `roles: []` ships to nobody, the same way `tools: []` does. A member with no role configured receives every server, matching the unfiltered fallback skills and rules use. When a member changes role, servers that no longer match are removed on the next pull. Hand-added servers are never touched. An id that is not in `roles.yaml` produces one warning per pull. A teamai release older than this field ignores it and installs the server for everyone.
+
+`projects` lists project ids from `manifest/projects.yaml` and follows the same rule on the other axis: a server ships to a directory when one of the projects it is bound to (`teamai projects set`) is listed; `projects: []` ships to nobody; a directory bound to no project receives every server. `teamai projects set` to another project removes the ones that no longer match on the next pull. An id that is not in `projects.yaml` produces one warning per pull, and so does a `projects:` key in a team that has no `projects.yaml` at all, where no id can be checked.
+
+One caveat on the empty list, which applies to `roles: []` just as it always has. "Ships to nobody" holds among members who use that axis. A member who has not configured it at all is unfiltered and still receives the entry, because an unconfigured axis filters nothing. Use `tools: []` or remove the entry if you need it to reach no one at all.
+
+A missing `projects.yaml` does not switch the key off. A directory's active projects come from its own `config.yaml`, so a directory bound to `billing` still filters out a `projects: [checkout]` server whether or not the manifest is there. What the manifest gives you is the ability to check the ids.
+
+The two axes are independent and compose as **AND**: `roles: [frontend]` with `projects: [checkout]` reaches frontend members of checkout, not everyone on either. That is the same way `tools:` and `roles:` already compose, and deliberately not the union that role and project *resource namespaces* take — which answers the different question of which directories to sync.
+
+This is the cost these keys exist to control: a team with five projects and three servers each gives every member of a role fifteen server processes and fifteen tool lists in the context of every session.
 
 Where each tool's servers land:
 
@@ -793,6 +828,7 @@ Where each tool's servers land:
 | copilot | `$COPILOT_HOME/mcp-config.json` | `<project>/.github/mcp.json` |
 | codex | `~/.codex/config.toml` | not supported |
 | qoder | `~/.qoder/settings.json` | `<project>/.qoder/settings.json` |
+| qoder-cn | `~/.qoder-cn/settings.json` | `<project>/.qoder/settings.json` |
 | kiro | `~/.kiro/settings/mcp.json` | `<project>/.kiro/settings/mcp.json` |
 | opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 | omp | `~/.omp/agent/mcp.json` | `<project>/.omp/mcp.json` |
@@ -845,7 +881,7 @@ Consider running /teamai-share-learnings to summarize what you learned and share
 
 The reminder lists the non-zero friction signals that triggered it. When the first task is available, it also includes a redacted, single-line task summary so you can decide whether the session is worth sharing. Using the built-in `/teamai-share-learnings` skill, the AI will automatically summarize the session's learnings and contribute them to the team knowledge base. Each session is prompted at most once.
 
-For Codex, the Stop hook saves contribution and knowledge-reference reminders for the next UserPromptSubmit in the same session. It does not force an extra agent turn. Contribution reminders are delivered once and discarded if you contribute before the next prompt.
+For the Codex family (`codex`, `codex-internal`, `tcodex`), the Stop hook saves contribution and knowledge-reference reminders for the next UserPromptSubmit in the same session. It does not force an extra agent turn. Contribution reminders are delivered once and discarded if you contribute before the next prompt.
 
 You can also specify a file manually:
 
@@ -1251,6 +1287,8 @@ teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
+If core graph extraction or writing fails, the import reports an error without marking the commit as synced. The next incremental run retries that commit.
+
 AI-backed steps (`--deep-enrich`, knowledge enrichment) shell out to an AI coding CLI already installed on the machine instead of calling a model API directly. teamai probes `claude` → `claude-internal` → `codex` → `codex-internal` → `codebuddy` → `workbuddy` → `openclaw` and uses the first one it finds. On macOS and Linux the probe runs through a login shell, so a CLI installed under `~/.nvm/` is found too. On Windows it uses the native `where`, which returns the npm shim (`%APPDATA%\npm\claude.cmd`) that Windows can actually launch — a Git Bash or WSL `bash` only reports MSYS paths such as `/c/Users/...`, which Windows cannot start.
 
 For GitLab behind an API gateway, set `GITLAB_URL` and `GITLAB_API_PREFIX=api/gitlab` before running `teamai import --from-org https://gitlab.example.com/myorg`. Organization listing uses the configured prefix on every page; an unset or blank prefix defaults to `api/v4`.
@@ -1373,6 +1411,8 @@ teamai hooks inject    # Re-inject
 teamai hooks remove    # Remove
 ```
 
+`hooks list` prints the built-in set per tool, because the set is not universal: Copilot also gets `SessionEnd`, OMP's extension covers four events without the `Skill` / `TodoWrite` matchers, OpenClaw maps only `SessionStart` + `UserPromptSubmit`, and Hermes only `SessionStart`. Tools the hook pipeline installs nothing for (e.g. JoyCode) are omitted, and so is Kiro — its `SessionStart` command is embedded as `hooks.agentSpawn` by the agent sync, so it exists only for the agents you actually synced.
+
 The inject and remove commands only touch tools you actually have installed (i.e. whose `~/.<tool>/` root directory already exists). They never create root directories for tools listed in `toolPaths` but not installed.
 
 On Windows, the built-in hook dispatch commands that shell out through bash (e.g. Claude, Codex, Cursor, Copilot CLI) reference Git Bash by absolute path — standard install locations first, then the `HKLM\SOFTWARE\GitForWindows` registry as fallback — so they never resolve to the WSL `bash.exe` launcher; if Git Bash cannot be found they degrade to bare `bash`.
@@ -1393,6 +1433,7 @@ hooks:
     timeout: 15
     tools: [claude, cursor]
     roles: [devops]                      # optional; default is every member
+    projects: [checkout]                 # optional; default is every directory
 
 builtin:
   disabled: [Hook dispatch post-tool-use TodoWrite]
@@ -1407,6 +1448,7 @@ builtin:
 | `matcher` | Optional tool matcher |
 | `tools` | Optional list of target tools (default = all tools that support hooks) |
 | `roles` | Optional list of role ids from `manifest/roles.yaml` (default = every member; `[]` = nobody). Applied before the security gates below; a role change removes the previous role's hooks on the next pull. Ignored by older teamai releases. |
+| `projects` | Optional list of project ids from `manifest/projects.yaml` (default = every directory; `[]` = nobody). Matches the projects this directory is bound to via `teamai projects set`; a rebind removes the previous project's hooks on the next pull. ANDs with `roles`. Ignored by older teamai releases. |
 | `builtin.disabled` | List of disabled built-in hooks |
 | `builtin.overrides` | Only the `timeout` of a built-in hook can be overridden |
 
@@ -1480,6 +1522,8 @@ Team hooks still come from the team's `hooks/hooks.yaml`: edit that source in th
 ### Qoder
 
 Qoder is available as a built-in target. TeamAI deploys skills, rules, and subagents to `.qoder/skills/`, `.qoder/rules/`, and `.qoder/agents/`. Hooks and MCP servers are merged into the scope-specific `.qoder/settings.json`, preserving unrelated user settings. The paths match Qoder's user and project configuration contracts.
+
+Qoder CN is a separate distribution that keeps its **user** directory at `~/.qoder-cn` instead of `~/.qoder`, so it is a separate built-in target (`qoder-cn`) rather than part of `qoder`. Only the user scope differs: user-scope resources go to `~/.qoder-cn/{skills,rules,agents}` and hooks/MCP to `~/.qoder-cn/settings.json`, while project-scope resources keep Qoder's `<project>/.qoder/` layout. It reads the same Claude-compatible resource formats, so content is identical and only the user-scope root changes. Install both editions and TeamAI syncs each one to its own user directory; neither needs a symlink.
 
 ### Kiro
 
@@ -1669,6 +1713,8 @@ Workflow:
 
 If the review-status API returns a non-2xx response, write mode fails closed: the job exits without writing files, committing, or pushing to the team knowledge repo.
 
+Comment mode also fails closed when it cannot list the existing marker comment, so a transient provider error cannot create a duplicate comment.
+
 Ready-to-use templates:
 
 - `examples/ci/github-actions-mr-extract.yml` (GitHub Actions)
@@ -1715,6 +1761,40 @@ An HTTP source reports status and pulls skill commands via hook dispatch on ever
 
 ---
 
+## Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `teamai init` | Initialize: OAuth login, link repo, register member, inject hooks |
+| `teamai pull` | Pull team resources and inject into local AI tools |
+| `teamai push` | Push local resources to a branch and open a Merge Request |
+| `teamai packages [install] [target]` | Install declared npm packages and Claude plugins; with a target, also update `teamai.yaml`. Bare `teamai packages` installs everything; `teamai packages install <target>` adds one |
+| `teamai status` | Show local vs team repo diff and resource counts, including namespaced skills and nested docs |
+| `teamai contribute` | Share session experience to the team repo's `teamai-learnings` branch |
+| `teamai recall <query>` | Search the team knowledge base (BM25 + graph-boost) |
+| `teamai recall enable/disable/status` | Toggle or check recall state |
+| `teamai recall promote [learningId]` | Promote a high-confidence learning to formal knowledge (skills/rules/docs) |
+| `teamai recall maintenance` | Maintain knowledge base health: prune low-confidence learnings, writeback confidence scores, flag stale entries |
+| `teamai import` | Import knowledge (`--dir`, `--from-repo`, `--from-org`, `--from-repo-list`, `--from-mr`) |
+| `teamai codebase --extract [path]` | Extract code facts and build the local graph under `teamwiki/` |
+| `teamai codebase --deep-enrich` | Generate deep knowledge docs from extracted evidence |
+| `teamai codebase --reconcile` | Reconcile product documentation with extracted code knowledge |
+| `teamai codebase --lint` | Knowledge graph health check |
+| `teamai ci extract-mr --url <url>` | CI: extract knowledge from MR, post comments, write after merge |
+| `teamai members` | List team members |
+| `teamai projects` | Bind a working directory to one or more logical projects |
+| `teamai roles` | Manage team roles and namespaces |
+| `teamai tags` | Manage tag-based skill/rule filtering |
+| `teamai skill exclude add/remove/list` | Manage skills excluded from local sync ([usage guide](#excluding-skills-you-dont-need)) |
+| `teamai source` | Manage skill subscription sources (other teams or your org's shared repos) |
+| `teamai remove <type> <name>` | Remove a resource and open MR |
+| `teamai session save` | Record a privacy-scrubbed session summary to a monthly log (`--push` feeds `digest`) |
+| `teamai digest` | Generate weekly team usage digest |
+| `teamai doctor` | Diagnose configuration issues (`--json` for CI, hooks and agents) |
+| `teamai uninstall` | Remove all teamai resources and hooks |
+
+---
+
 ## Configuration Reference
 
 ### teamai.yaml (remote team config)
@@ -1749,6 +1829,15 @@ sharing:
     enabled: true              # optional; false = no /teamai-share-learnings nudge after high-friction sessions
   intervention:
     correctionKeywords: []     # optional; extra course-correction words merged with the built-in zh/en/ja list
+  webhooks:                    # optional; notify external endpoints on team events (see "Webhook notifications")
+    enabled: true
+    endpoints:
+      - url: https://example.com/hook
+        type: json             # json | feishu | wecom
+        events: ["*"]          # any of: session-start, session-stop, skill-use, push, pull, or "*" for all
+        secret: my-signing-key # optional; enables the X-TeamAI-Signature header
+        timeout: 5000          # optional; per-request timeout in ms (default 5000)
+        retries: 3             # optional; retry attempts on failure (default 3)
 ```
 
 ### config.yaml (local config)
@@ -1765,6 +1854,25 @@ inheritUserScope: true         # optional; project scope only, defaults to false
 coAuthorEnabled: true          # optional; per-machine co-author override
 contributeHintEnabled: false   # optional; per-machine override of sharing.contributeHint.enabled
 ```
+
+### Webhook notifications (`sharing.webhooks`)
+
+Notify external endpoints when team events happen. Each endpoint declares a `url`, a `type` (`json`, `feishu`, or `wecom`), and the `events` it subscribes to; `secret`, `timeout` (default `5000` ms), and `retries` (default `3`) are optional.
+
+**Events and when they fire:**
+
+| Event | Fires when |
+| --- | --- |
+| `session-start` | An AI session starts |
+| `session-stop` | An AI session ends (includes Copilot's `SessionEnd`) |
+| `skill-use` | A skill is invoked |
+| `push` | `teamai push` **actually completes a real push** — not on `--dry-run`, a cancelled selection, a no-change run, or a failed PR creation |
+| `pull` | `teamai pull` completes a real (non-`--dry-run`) sync |
+| `*` | Wildcard — subscribe to every event above |
+
+**Payload.** Only whitelisted, non-sensitive fields are sent: `skillName` for `skill-use`, `sessionId` for session events; `push`/`pull` carry the event and metadata only. Raw tool input and tool output are **never** forwarded, and the whole body is passed through teamai's secret redactor before it leaves the machine.
+
+**Signature.** When `secret` is set, each request carries `X-TeamAI-Signature: sha256=<hmac>`, an HMAC-SHA256 computed over the exact request body — so a receiver can verify authenticity. `teamai webhook list` and `teamai webhook test` inspect and exercise configured endpoints.
 
 ---
 

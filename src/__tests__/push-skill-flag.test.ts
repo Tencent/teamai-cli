@@ -24,7 +24,8 @@ vi.mock('../utils/prompt.js', () => ({
   closePrompt: vi.fn(),
 }));
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: (...args: unknown[]) => mockAutoDetectInit(...args),
   loadStateForScope: (...args: unknown[]) => mockLoadStateForScope(...args),
   saveStateForScope: (...args: unknown[]) => mockSaveStateForScope(...args),
