@@ -37,6 +37,12 @@ TeamAI 将个人的 AI 能力转化为团队共享能力，并在不同 Agent、
 帮我装好 teamai skill : https://github.com/Tencent/teamai-cli/tree/main/skills/teamai , 加载 teamai skill, 然后从零搭建团队的 TeamAI。
 ```
 
+如无法访问 GitHub，改用下面这一句:
+
+```text
+请根据 https://skillhub.cn/install/skillhub.md，安装 @user_7be6e993/teamai。然后加载 teamai skill, 并从零初始化我的团队 teamai。
+```
+
 装好 TeamAI 后,在 AI 工具里直接跟 `/teamai` 对话就行:
 
 **从零搭建团队**
