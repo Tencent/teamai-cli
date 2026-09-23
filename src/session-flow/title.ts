@@ -49,9 +49,14 @@ export function isInjectedText(text: string): boolean {
 export function titleFromCandidates(candidates: string[]): string {
   for (const text of candidates) {
     if (!text) continue;
+    // Prefer titleFromUserText for non-injected text too: it unwraps
+    // <user_query> and skips placeholder segments ([Image]/attachment paths),
+    // so a session whose first message is "[Image] [Image] [Image] <user_query>
+    // the real question </user_query>" gets titled by the question, not by the
+    // attachments. cleanTitleText stays as the fallback.
     const cleaned = isInjectedText(text)
       ? titleFromUserText(text)
-      : cleanTitleText(text) || titleFromUserText(text);
+      : titleFromUserText(text) || cleanTitleText(text);
     if (cleaned) return cleaned;
   }
   return '';
