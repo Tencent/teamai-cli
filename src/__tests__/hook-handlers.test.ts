@@ -860,6 +860,100 @@ describe('hook-handlers registry', () => {
     expect(mockSyncVotesToTeam).toHaveBeenCalledWith('/wt', 'test', expect.any(String));
   });
 
+  it('votes-sync logs the reason when the worktree team-sync fails', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
+    )!.handler;
+
+    voteMocks.hasPendingVoteDeltas.mockResolvedValueOnce(true);
+    // The real #723 shape: deltas are pending, but pushing them to the team
+    // branch fails. That reason must reach debug.log — a swallowed team-sync
+    // failure is indistinguishable from "nobody upvoted".
+    reportsBranchMocks.updateReports.mockClear();
+    reportsBranchMocks.updateReports.mockImplementationOnce(
+      async (_cfg: unknown, write: (wt: string) => Promise<unknown>) => {
+        await write('/wt');
+        throw new Error('push rejected');
+      },
+    );
+
+    mockLogDebug.mockClear();
+    const result = await handler.execute(
+      { session_id: 'sid-votes-worktree-failure', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
+      'claude',
+    );
+
+    // Still non-fatal: a Stop hook must not break the session over votes.
+    expect(result).toBeNull();
+    // But the reason is on the record, tagged as votes-sync.
+    expect(mockLogDebug).toHaveBeenCalledWith(expect.stringContaining('votes-sync'));
+    expect(mockLogDebug).toHaveBeenCalledWith(expect.stringContaining('push rejected'));
+  });
+
+  it('votes-sync logs the reason when the non-worktree team-sync fails', async () => {
+    mockAutoDetectInit.mockResolvedValueOnce({
+      localConfig: { repo: { kind: 'http', localPath: '/tmp', remote: '' }, username: 'test', scope: 'user' },
+      teamConfig: { team: 'test', repo: '', toolPaths: {}, sharing: { recall: { enabled: true } } },
+    });
+
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
+    )!.handler;
+
+    mockParseTranscriptForVotes.mockResolvedValueOnce({
+      referencedDocIds: ['doc-a'],
+      recalledDocIds: ['doc-a'],
+      // Declared: keeps the run off the nudge path so the assertion lands on
+      // the team-sync failure, not on the "you recalled but declared nothing"
+      // reminder.
+      hasReferencedDocIdsDeclaration: true,
+    });
+    mockSyncVotesToTeam.mockRejectedValueOnce(new Error('disk full'));
+
+    mockLogDebug.mockClear();
+    const result = await handler.execute(
+      { session_id: 'sid-votes-noworktree-failure', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
+      'claude',
+    );
+
+    expect(result).toBeNull();
+    expect(mockLogDebug).toHaveBeenCalledWith(expect.stringContaining('votes-sync'));
+    expect(mockLogDebug).toHaveBeenCalledWith(expect.stringContaining('disk full'));
+  });
+
+  it('votes-sync formats a non-Error rejection without throwing', async () => {
+    mockAutoDetectInit.mockResolvedValueOnce({
+      localConfig: { repo: { kind: 'http', localPath: '/tmp', remote: '' }, username: 'test', scope: 'user' },
+      teamConfig: { team: 'test', repo: '', toolPaths: {}, sharing: { recall: { enabled: true } } },
+    });
+
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
+    )!.handler;
+
+    mockParseTranscriptForVotes.mockResolvedValue({
+      referencedDocIds: [],
+      recalledDocIds: [],
+    });
+    // A `throw` of a bare string: `(e as Error).message` would be `undefined`
+    // here, and a `throw null` would make the catch itself throw and mask the
+    // original failure. The reason must still reach the log as text.
+    mockSyncVotesToTeam.mockRejectedValueOnce('socket hang up');
+
+    mockLogDebug.mockClear();
+    const result = await handler.execute(
+      { session_id: 'sid-votes-nonerror', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
+      'claude',
+    );
+
+    expect(result).toBeNull();
+    expect(mockLogDebug).toHaveBeenCalledWith(expect.stringContaining('votes-sync'));
+    expect(mockLogDebug).toHaveBeenCalledWith(expect.stringContaining('socket hang up'));
+  });
+
   it('votes-sync: incrementUpvoted receives all ids when referenced and recalled are identical', async () => {
     const registry = buildHandlerRegistry();
     const handler = registry.find(
