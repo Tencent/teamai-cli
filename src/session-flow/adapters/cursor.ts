@@ -399,9 +399,34 @@ export class CursorAdapter extends AgentAdapter {
           arguments: (it.input as Record<string, unknown>) ?? {},
         });
       }
-      // Cursor 没有 tool_result / thinking
+      // Cursor transcripts carry no tool results and no thinking (the export
+      // stops at tool_use). Every tool_call therefore ends up without a paired
+      // result, and targets that render unpaired calls as "cancelled" (e.g.
+      // CodeBuddy IDE) show the whole session as cancelled. Synthesize an
+      // honest placeholder result so the pairing is complete and the target
+      // UI renders a normal state instead of a wall of cancellations.
     }
-    return blocks;
+
+    // Pair each tool_call that has no tool_result with a placeholder result.
+    const hasResult = new Set(
+      blocks
+        .filter((b): b is Extract<ContentBlock, { type: 'tool_result' }> => b.type === 'tool_result')
+        .map((b) => b.callId),
+    );
+    const withResults: ContentBlock[] = [];
+    for (const block of blocks) {
+      withResults.push(block);
+      if (block.type === 'tool_call' && block.callId && !hasResult.has(block.callId)) {
+        withResults.push({
+          type: 'tool_result',
+          callId: block.callId,
+          content:
+            '[tool output not captured: Cursor transcripts do not record tool results]',
+          isError: false,
+        });
+      }
+    }
+    return withResults;
   }
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
