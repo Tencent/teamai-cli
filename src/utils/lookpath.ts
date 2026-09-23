@@ -65,6 +65,17 @@ function isPresent(candidate: string, requireExecute: boolean): boolean {
 }
 
 /**
+ * PATH split into the directories the presence check scans: unquoted, trimmed,
+ * empties dropped. Windows PATH entries do arrive quoted, so this — not a raw
+ * `split` — is the view to compare directories against.
+ */
+export function pathDirs(options: LookPathOptions = {}): string[] {
+  const delimiter = options.delimiter ?? path.delimiter;
+  const pathEnv = options.pathEnv ?? process.env.PATH ?? process.env.Path ?? '';
+  return pathEnv.split(delimiter).map(stripQuotes).map(dir => dir.trim()).filter(Boolean);
+}
+
+/**
  * True when `bin` names a file on PATH.
  *
  * Empty PATH entries are skipped so a Windows-style implicit cwd search never
@@ -73,14 +84,10 @@ function isPresent(candidate: string, requireExecute: boolean): boolean {
 export function isOnPath(bin: string, options: LookPathOptions = {}): boolean {
   if (!SAFE_BIN_RE.test(bin)) return false;
   const platform = options.platform ?? process.platform;
-  const pathEnv = options.pathEnv ?? process.env.PATH ?? process.env.Path ?? '';
-  const delimiter = options.delimiter ?? path.delimiter;
   const names = candidateNames(bin, platform, options.pathExt ?? process.env.PATHEXT);
   const requireExecute = platform !== 'win32';
 
-  for (const rawDir of pathEnv.split(delimiter)) {
-    const dir = stripQuotes(rawDir).trim();
-    if (!dir) continue;
+  for (const dir of pathDirs(options)) {
     for (const name of names) {
       if (isPresent(path.join(dir, name), requireExecute)) return true;
     }

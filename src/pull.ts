@@ -784,9 +784,13 @@ async function pullForScope(
     currentRev = refresh.version;
     submodulesFailed = refresh.submodulesFailed;
     submodulesChanged = refresh.submodulesChanged;
-    pullSpin.succeed(`[${scopeLabel}] Team repo: ${refresh.label}`);
+    const outcome = `[${scopeLabel}] Team repo: ${refresh.label}`;
+    pullSpin.succeed(outcome);
+    log.debug(outcome);
   } catch (e) {
-    pullSpin.fail(`[${scopeLabel}] Pull failed: ${(e as Error).message}`);
+    const reason = `[${scopeLabel}] Pull failed: ${(e as Error).message}`;
+    pullSpin.fail(reason);
+    log.persist(reason);
     return;
   }
 

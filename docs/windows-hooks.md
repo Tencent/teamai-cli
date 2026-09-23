@@ -195,8 +195,9 @@ dispatch (bare bash/WSL): claude=0 codex=0 zcode=0 codebuddy=0 qoder=0 qoder-cn=
   break again.
 - **Requires WSL for Mechanism B.** On a machine without WSL, only Mechanism A
   (the Git-Bash absolute path currently in the files) works.
-- **Does not patch older TeamAI versions.** The upstream `hasShell()` skip and
-  the bare-`bash` default are fixed in current `teamai-cli`; `npm update
+- **Does not patch older TeamAI versions.** The Windows gaps listed above
+  (the `hasShell()` skip, the bare-`bash` default, and the bundled git missing
+  from a detached pull's PATH) are fixed in current `teamai-cli`; `npm update
   teamai-cli` picks the fixes up and the workaround can then be dropped.
 - **macOS / Linux need no fix.** There, bare `bash` already resolves to the
   system Node and works natively.
@@ -210,7 +211,7 @@ dispatch (bare bash/WSL): claude=0 codex=0 zcode=0 codebuddy=0 qoder=0 qoder-cn=
 
 ## Suggested upstream fix (for maintainers)
 
-Two small changes would make Windows work out of the box — both have since
+Three small changes would make Windows work out of the box — all have since
 shipped in `teamai-cli`, so this section is kept for context:
 
 ### 1. Make `hasShell()` Windows-aware
@@ -255,6 +256,20 @@ PortableGit `sh.exe`) when `process.platform === 'win32'`.
 
 Both changes are backward compatible: macOS/Linux keep `/bin/sh`, and Windows
 users stop needing the manual workaround above.
+
+### 3. Put the host's bundled git on PATH for detached pulls
+
+The session-start pull is spawned through WMI (to escape the host's job
+object), and a WMI-created process inherits the provider's environment — the
+PATH that ran `teamai` (with the GUI host's bundled git on it) never reaches
+the pull. On machines without a system git, every bare-name `git` spawn in the
+pull fails with `spawn git ENOENT` and the clone silently freezes while the
+post-pull deploy keeps running against the stale tree.
+
+Current `teamai` resolves the host's bundled git at CLI startup
+(`ensureBundledRuntimeOnPath`) and puts its `cmd` dir first on PATH — the msys
+dirs are appended, and machines that already resolve `git` are left untouched —
+so detached pulls work with no system git installed.
 
 ---
 

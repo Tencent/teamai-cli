@@ -183,8 +183,9 @@ dispatch (裸 bash/WSL):  claude=0 codex=0 zcode=0 codebuddy=0 qoder=0 qoder-cn=
   覆盖，机制 B 仅在 **WSL 保持安装** 时有效。若移除 WSL，裸 `bash` 钩子会再次失效。
 - **机制 B 需要 WSL.** 在没有 WSL 的机器上，只有机制 A（当前配置文件中的 Git Bash
   绝对路径）可用。
-- **不会修补旧版 TeamAI.** 上游的 `hasShell()` 跳过与裸 `bash` 默认值已在当前
-  `teamai-cli` 中修复；执行 `npm update teamai-cli` 即可获得，之后可移除本绕行方案。
+- **不会修补旧版 TeamAI.** 上文列出的 Windows 缺口（`hasShell()` 跳过、裸 `bash`
+  默认值、分离拉取进程 PATH 里缺少自带 git）均已在当前 `teamai-cli` 中修复；执行
+  `npm update teamai-cli` 即可获得，之后可移除本绕行方案。
 - **macOS / Linux 无需修复.** 在这些系统上，裸 `bash` 已解析到系统 Node，原生可用。
 - **`teamai doctor` 的 `gh` 检查可能是误报.** 它可能在没有 `APPDATA` 的情况下启动
   `gh`，因此即使 `gh auth status` 显示已登录，它也看不到登录状态。若其他检查均通过，
@@ -195,7 +196,7 @@ dispatch (裸 bash/WSL):  claude=0 codex=0 zcode=0 codebuddy=0 qoder=0 qoder-cn=
 
 ## 给维护者的修复建议（上游）
 
-两处小改动即可让 Windows 开箱即用——目前均已在 `teamai-cli` 中落地，本节保留作背景
+三处小改动即可让 Windows 开箱即用——目前均已在 `teamai-cli` 中落地，本节保留作背景
 说明：
 
 ### 1. 让 `hasShell()` 感知 Windows
@@ -239,6 +240,17 @@ Node 18 并崩溃。当 `process.platform === 'win32'` 时，应优先使用 Git
 
 两处改动均向后兼容：macOS/Linux 仍使用 `/bin/sh`，而 Windows 用户将不再需要上面的
 手工绕行方案。
+
+### 3. 把宿主自带的 git 放进分离拉取进程的 PATH
+
+会话启动时的 pull 通过 WMI 派生（以便逃出宿主的 job object），而 WMI 创建的进程
+继承的是服务提供方的环境——运行 `teamai` 时的 PATH（带着 GUI 宿主自带的 git）到不了
+pull 进程。在没有系统 git 的机器上，pull 里所有裸名 `git` 调用都会以
+`spawn git ENOENT` 失败，clone 静默冻结，而 post-pull 部署仍对着旧树继续跑。
+
+现在的 `teamai` 在 CLI 启动时解析宿主自带的 git（`ensureBundledRuntimeOnPath`）并把
+它的 `cmd` 目录放到 PATH 最前——msys 目录追加在后，已能解析 `git` 的机器原样不动——
+因此没有系统 git 也能正常完成分离拉取。
 
 ---
 
