@@ -15,6 +15,7 @@ import {
   resolveLegacyProjectHookScope,
   resolveToolBaseDir,
   scopedToolPaths,
+  toolInstallRoot,
 } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig, Scope } from './types.js';
 import { isSelfMode } from './types.js';
@@ -1429,7 +1430,7 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         log.warn(`Failed to inject Pi hook: ${(e as Error).message}`);
       }
     } else if (paths.settings) {
-      const toolRoot = path.join(resolvedBaseDir, paths.settings.split('/')[0]);
+      const toolRoot = path.join(resolvedBaseDir, toolInstallRoot(paths.settings));
       if (!await pathExists(toolRoot)) continue;
       const settingsPath = path.join(resolvedBaseDir, paths.settings);
       try {
@@ -1636,9 +1637,9 @@ export async function reconcileHooksToAllTools(
     // every configured tool (e.g. ~/.tclaude, ~/.tcodex) via reconcileHooks's
     // ensureDir — making uninstalled tools look installed and pulling skills
     // into them on later `pull`s.
-    const toolRoot = path.join(baseDir, paths.settings.split('/')[0]);
+    const toolRoot = path.join(baseDir, toolInstallRoot(paths.settings));
     const installedRoot = opts.installedBaseDir
-      ? path.join(opts.installedBaseDir, paths.settings.split('/')[0])
+      ? path.join(opts.installedBaseDir, toolInstallRoot(paths.settings))
       : toolRoot;
     if (!await pathExists(toolRoot) && !await pathExists(installedRoot)) continue;
     const settingsPath = path.join(baseDir, paths.settings);
@@ -1674,7 +1675,7 @@ export async function hasInstalledCodexTrustGatedTool(
 ): Promise<boolean> {
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (!isCodexTrustGatedTool(tool) || !paths.settings) continue;
-    const toolRoot = path.join(baseDir, paths.settings.split('/')[0]);
+    const toolRoot = path.join(baseDir, toolInstallRoot(paths.settings));
     if (await pathExists(toolRoot)) return true;
   }
   return false;

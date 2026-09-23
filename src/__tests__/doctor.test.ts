@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import path from 'node:path';
 
 // ── Mocks ────────────────────────────────────────────────
@@ -100,8 +100,15 @@ function buildPartialHooksContent(exclude: string[]): string {
 // Suppress console.log output in tests
 const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
+// The Claude-root check only appears when CLAUDE_CONFIG_DIR is set, and this
+// suite's fixtures record no root — so a developer whose own shell relocates
+// Claude Code would otherwise see every doctor test fail. The describe that
+// covers the check sets the variable itself.
+const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+
 beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.CLAUDE_CONFIG_DIR;
     mockedLoadLocalConfig.mockResolvedValue(mockLocalConfig);
     mockedLoadTeamConfig.mockResolvedValue(mockTeamConfig);
     mockedPathExists.mockResolvedValue(true);
@@ -739,5 +746,82 @@ describe('buildChecks — a tool enabled but not installed', () => {
         expect(codex).toMatchObject({ name: 'codex is installed', ok: false });
         expect(codex?.fix).toBeTruthy();
         expect(allPassed).toBe(false);
+    });
+});
+
+describe('doctor — the recorded Claude Code root', () => {
+    const CHECK_NAME = 'Claude Code root matches CLAUDE_CONFIG_DIR';
+    const home = process.env.HOME ?? '';
+    const relocated = path.join(home, '.claude-work');
+
+    afterEach(() => {
+        if (originalClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
+    });
+
+    async function checkFor(toolRoots?: Record<string, string>) {
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, ...(toolRoots ? { toolRoots } : {}) });
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+        return (await buildChecks(ctx)).find((c) => c.name === CHECK_NAME);
+    }
+
+    it('is not built when the config does not sync Claude Code at all', async () => {
+        process.env.CLAUDE_CONFIG_DIR = relocated;
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, disabledAgents: ['claude'] });
+        const ctx = await resolveDoctorContext();
+        expect((await buildChecks(ctx!)).find((c) => c.name === CHECK_NAME)).toBeUndefined();
+    });
+
+    it('passes when the recorded root is the one Claude Code is told to use', async () => {
+        process.env.CLAUDE_CONFIG_DIR = relocated;
+        const check = await checkFor({ claude: relocated });
+        expect(check).toBeDefined();
+        expect(await check!.check()).toBe(true);
+    });
+
+    it('fails when nothing was recorded, and says how to record it', async () => {
+        process.env.CLAUDE_CONFIG_DIR = relocated;
+        const check = await checkFor();
+        expect(await check!.check()).toBe(false);
+        expect(check!.fix).toContain(relocated);
+        expect(check!.fix).toContain('Re-run `teamai init`');
+    });
+
+    it('fails when the recorded root is a different directory', async () => {
+        process.env.CLAUDE_CONFIG_DIR = relocated;
+        const check = await checkFor({ claude: path.join(home, '.claude-other') });
+        expect(await check!.check()).toBe(false);
+        expect(check!.fix).toContain(path.join(home, '.claude-other'));
+    });
+
+    it('stays out of the report when the variable is unset', async () => {
+        delete process.env.CLAUDE_CONFIG_DIR;
+        expect(await checkFor()).toBeUndefined();
+    });
+
+    it('runs for an explicit default root, which is not the same as no variable', async () => {
+        process.env.CLAUDE_CONFIG_DIR = path.join(home, '.claude');
+        const unrecorded = await checkFor();
+        expect(await unrecorded!.check()).toBe(false);
+        expect(await (await checkFor({ claude: path.join(home, '.claude') }))!.check()).toBe(true);
+    });
+
+    it('reads a root written with ~/ as the directory it expands to', async () => {
+        process.env.CLAUDE_CONFIG_DIR = relocated;
+        const check = await checkFor({ claude: '~/.claude-work' });
+        expect(await check!.check()).toBe(true);
+    });
+
+    it('fails for a recorded root the sync refuses, naming where it actually writes', async () => {
+        // Outside HOME: applyToolRoots drops it, so the sync keeps using
+        // ~/.claude and the check must not call that a match.
+        process.env.CLAUDE_CONFIG_DIR = '/opt/claude-config';
+        const check = await checkFor({ claude: '/opt/claude-config' });
+        expect(await check!.check()).toBe(false);
+        expect(check!.fix).toContain(path.join(home, '.claude'));
+        // Re-running init cannot record this value, so the fix says why instead.
+        expect(check!.fix).toContain('outside the home directory');
+        expect(check!.fix).not.toContain('to record it');
     });
 });

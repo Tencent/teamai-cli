@@ -765,6 +765,49 @@ describe('uninstall', () => {
     expect(await fse.pathExists(path.join(projectPlugin, 'my-own-plugin.ts'))).toBe(true);
   });
 
+  // A relocated Claude Code root (toolRoots) moves the HOME hook file, but the
+  // legacy <projectRoot> copy was written by a CLI that knew nothing about it —
+  // so the two targets must be looked for at different paths.
+  it('removes hooks from a relocated home root and from the legacy project copy', async () => {
+    const projectRoot = path.join(tmpDir, 'relocated-project');
+    const homeDir = path.join(tmpDir, 'home');
+    const repoPath = path.join(projectRoot, '.teamai', 'team-repo');
+    await fse.ensureDir(repoPath);
+
+    const teamaiHooks = {
+      hooks: {
+        SessionStart: [{
+          matcher: '*',
+          hooks: [{ type: 'command', command: 'teamai hook-dispatch session-start' }],
+          description: '[teamai] Auto-pull',
+        }],
+      },
+    };
+    const homeSettings = path.join(homeDir, '.claude-work', 'settings.json');
+    const legacySettings = path.join(projectRoot, '.claude', 'settings.json');
+    await fse.outputJson(homeSettings, teamaiHooks);
+    await fse.outputJson(legacySettings, teamaiHooks);
+
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+
+    const teamConfig = makeTeamConfig();
+    const localConfig = makeLocalConfig(projectRoot, repoPath, {
+      scope: 'project',
+      projectRoot,
+      toolRoots: { claude: path.join(homeDir, '.claude-work') },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    const cleaned = mockReconcileHooks.mock.calls.map((call) => call[0]);
+    expect(cleaned).toContain(homeSettings);
+    expect(cleaned).toContain(legacySettings);
+    // The un-relocated home path is not a target and must not be created.
+    expect(await fse.pathExists(path.join(homeDir, '.claude'))).toBe(false);
+  });
+
   it('保留用户自建的 skills', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

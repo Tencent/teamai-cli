@@ -2,8 +2,7 @@ import path from 'node:path';
 
 import { detectProjectConfig, loadTeamConfig } from './config.js';
 import { KNOWN_AGENTS } from './known-agents.js';
-import { toolInstallRoot } from './resources/base.js';
-import { isAgentDisabled, resolveBaseDir, scopedToolPaths } from './types.js';
+import { isAgentDisabled, resolveBaseDir, scopedToolPaths, toolInstallRoot } from './types.js';
 import { ensureDir } from './utils/fs.js';
 import { log } from './utils/logger.js';
 

@@ -1946,7 +1946,21 @@ projectRoot: /path/to/project  # project scope only
 inheritUserScope: true         # optional; project scope only, defaults to false
 coAuthorEnabled: true          # optional; per-machine co-author override
 contributeHintEnabled: false   # optional; per-machine override of sharing.contributeHint.enabled
+toolRoots:                     # optional; per-machine tool roots (see below)
+  claude: ~/.claude-work
 ```
+
+#### Relocated tool roots (`toolRoots`)
+
+A tool that can be told to keep its configuration somewhere else — Claude Code, through `CLAUDE_CONFIG_DIR` — reads nothing that teamai writes to the team-wide default. `toolRoots` names the directory that tool actually uses, keyed by the same tool id as `toolPaths`, and every path teamai resolves for it (skills, rules, agents, `CLAUDE.md`, settings, and the user-scope MCP config) moves there with it. Other tools are untouched, and so are project-scope paths: those hang off the project root, where a per-machine root has nothing to say. Hooks are the exception that makes this worth recording — they are injected into your home directory even in project scope, so they follow `toolRoots` in both.
+
+`teamai init` fills it in for you: whenever `CLAUDE_CONFIG_DIR` is set, init records the directory it points at and prints it. That includes `CLAUDE_CONFIG_DIR=~/.claude`, which is not the same as leaving the variable unset — Claude Code reads `.claude.json` from inside the configured directory, so teamai writes the MCP config to `~/.claude/.claude.json` rather than `~/.claude.json`. `init` is also the only command that reads the variable, because it lives in one shell profile while teamai also runs from session hooks and other terminals; resolving it per run would make the sync target depend on who started the process. A re-init keeps a root that was recorded earlier, so running `init` from a shell without the variable does not send the sync back to the default. When a re-init does move the root, the hooks teamai injected into the previous root's `settings.json` are removed so that Claude stops syncing into the new one; the skills, rules and `CLAUDE.md` block written there are left in place and named in the output. A project-scope `init` that has no record of its own and no variable to read starts from the user-scope record, since the root is a fact about the machine and project hooks land in your home directory. To end a relocation, run `init` once with the variable set but blank (`CLAUDE_CONFIG_DIR= teamai init …`): the record is cleared and the old root released the same way. Along with the hooks, the old root loses the teamai-managed MCP servers and any gateway credentials the local agent delivered there; they are active configuration, unlike the skills and rules.
+
+A root has to be somewhere teamai can recognize the tool at: a directory in your home other than `~/.config` itself (`~/.claude-work`), or a `~/.config/<name>` directory (a leading `~/` is expanded). Those are the two shapes the "is this tool installed?" check can look for; anything deeper, or outside your home directory, is refused with a warning rather than silently half-applied.
+
+`toolRoots` currently applies to `claude` only, and any other tool id is refused with a warning. A root is only honest for a tool whose every user-scope write goes through `toolPaths`; the other tools still write somewhere teamai resolves separately — OMP's extension directory, the Codex and Cursor co-author files, OpenCode's plugin directory — so moving their `toolPaths` entries would leave the rest behind. Copilot CLI has its own mechanism: set `COPILOT_HOME`.
+
+If you set or change `CLAUDE_CONFIG_DIR` after initializing, `teamai doctor` reports it: the `Claude Code root matches CLAUDE_CONFIG_DIR` check (built only when this config syncs Claude Code) compares the variable against the root this config actually syncs to and tells you to re-run `teamai init` — or, for a value teamai cannot sync to, says why. With the variable unset, the check stays out of the report.
 
 ### Webhook notifications (`sharing.webhooks`)
 

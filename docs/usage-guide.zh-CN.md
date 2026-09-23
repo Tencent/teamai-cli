@@ -1878,7 +1878,21 @@ projectRoot: /path/to/project  # 仅 project scope
 inheritUserScope: true         # 可选，仅 project scope，默认 false
 coAuthorEnabled: true          # 可选，每机器的 co-author 覆盖
 contributeHintEnabled: false   # 可选，每机器覆盖 sharing.contributeHint.enabled
+toolRoots:                     # 可选，每机器的工具根目录（见下）
+  claude: ~/.claude-work
 ```
+
+#### 迁移后的工具根目录（`toolRoots`）
+
+有的工具可以把自己的配置放到别处——Claude Code 就通过 `CLAUDE_CONFIG_DIR` 这样做——此时 teamai 按团队默认位置写入的内容它一概读不到。`toolRoots` 用与 `toolPaths` 相同的工具 id 指明该工具实际使用的目录，teamai 为它解析的所有路径（skills、rules、agents、`CLAUDE.md`、settings，以及用户级 MCP 配置）都会一并迁过去。其他工具不受影响，project scope 的路径也不受影响：那些路径挂在项目根目录下，每机器的根目录对它们没有意义。hook 是个例外，也正是值得记录 `toolRoots` 的原因——即使在 project scope，hook 也注入到 home 目录，因此两种 scope 下都跟随 `toolRoots`。
+
+`teamai init` 会自动写入：只要设置了 `CLAUDE_CONFIG_DIR`，init 就记录它指向的目录并打印出来。`CLAUDE_CONFIG_DIR=~/.claude` 也算——它与不设置该变量并不等价：设置之后 Claude Code 从配置目录内部读取 `.claude.json`，因此 teamai 写的是 `~/.claude/.claude.json` 而不是 `~/.claude.json`。读取这个变量的命令也只有 `init`——它只存在于某一份 shell 配置里，而 teamai 还会从 session hook 和别的终端里运行，每次运行都去读它，同步目标就会取决于是谁启动了进程。重新执行 `init` 会保留之前记录的根目录，所以在没有该变量的 shell 里再跑一次 init，同步目标不会被悄悄改回默认位置。如果重新执行 `init` 确实换了根目录，teamai 会把此前注入到旧根目录 `settings.json` 里的 hook 移除，以免那个 Claude 继续往新目录同步；写在旧目录里的 skills、rules 和 `CLAUDE.md` 片段会原样保留，并在输出中指明位置。project scope 的 `init` 若自身没有记录、也读不到该变量，则沿用 user scope 的记录：根目录是这台机器的事实，而 project scope 的 hook 也注入到 home 目录。要结束迁移，把该变量设为空再执行一次 `init`（`CLAUDE_CONFIG_DIR= teamai init …`）：记录会被清除，旧根目录按同样方式释放。除 hook 之外，旧根目录里 teamai 管理的 MCP server 和本地 agent 下发的网关凭据也会一并移除——它们是生效中的配置，不同于 skills 和 rules。
+
+根目录必须是 teamai 能够识别该工具的位置：home 目录下的一层目录（`~/.claude-work`，但 `~/.config` 本身除外），或者一个 `~/.config/<名称>` 目录（开头的 `~/` 会被展开）。这两种形态正是「该工具是否已安装」这项检查能够查找的范围；更深的层级、或 home 目录之外的路径都会被拒绝并给出警告，而不是只生效一半。
+
+`toolRoots` 目前只对 `claude` 生效，其他工具 id 都会被拒绝并给出警告。只有当一个工具在用户级的所有写入都经过 `toolPaths` 时，为它指定根目录才是可靠的；其余工具都还有 teamai 另行解析的写入位置——OMP 的扩展目录、Codex 与 Cursor 的 co-author 文件、OpenCode 的插件目录——只迁移它们的 `toolPaths` 会把其余部分留在原处。Copilot CLI 有自己的机制：设置 `COPILOT_HOME`。
+
+如果你在初始化之后才设置或修改 `CLAUDE_CONFIG_DIR`，`teamai doctor` 会报出来：`Claude Code root matches CLAUDE_CONFIG_DIR` 这项检查（仅在当前配置会同步 Claude Code 时出现）会比对该变量与当前配置实际同步到的根目录，并提示重新执行 `teamai init`；若该值是 teamai 无法同步到的目录，则说明原因。未设置该变量时，这项检查不会出现在报告里。
 
 ### Webhook 通知（`sharing.webhooks`）
 

@@ -366,9 +366,13 @@ async function discoverToolResources(
     // project scope, per #370) — plus any legacy <projectRoot> copy. Scan every
     // target and tag each match with the manifest that recorded its team hooks,
     // so removal strips the right entries at each location. The file name comes
-    // from the same scope decision (`hookSettingsPath`), not from `toolPath`.
-    const settingsRel = hookSettingsPath ?? toolPath.settings;
+    // from the same scope decision (`hookSettingsPath`), not from `toolPath` —
+    // except for the legacy copy, written into <projectRoot> by a CLI that knew
+    // nothing about a member's relocated root, so it sits at the team path.
     for (const { baseDir: hookBaseDir, manifestPath } of hookTargets) {
+      const settingsRel = path.resolve(hookBaseDir) === path.resolve(getUserHome())
+        ? (hookSettingsPath ?? toolPath.settings)
+        : toolPath.settings;
       const settingsPath = path.join(hookBaseDir, settingsRel);
       if (await pathExists(settingsPath)
         && (await hasTeamaiHooks(settingsPath, tool, manifestPath)

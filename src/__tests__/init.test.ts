@@ -113,9 +113,19 @@ vi.mock('../config.js', async (importOriginal) => ({
   resolveProjectDataHome: vi.fn(async (projectRoot: string) => `${projectRoot}/.teamai`),
 }));
 
+vi.mock('../mcp-reconcile.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../mcp-reconcile.js')>()),
+  reconcileMcpForConfig: vi.fn(async () => ({ changes: [], wrote: false })),
+}));
+vi.mock('../local-agent.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../local-agent.js')>()),
+  releaseClaudeModelConfig: vi.fn(),
+}));
 vi.mock('../hooks.js', () => ({
   injectHooksToAllTools: vi.fn(),
   reconcileTeamHooksForConfig: vi.fn(),
+  hasTeamaiHooks: vi.fn(async () => true),
+  reconcileHooks: vi.fn(),
 }));
 
 const mockDeployBuiltinSkills = vi.fn().mockResolvedValue(0);
@@ -223,7 +233,7 @@ const mockExit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as
 import { init } from '../init.js';
 import { RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from '../providers/types.js';
 import { CnbRepoNotFoundError } from '../providers/cnb/cnb-cli.js';
-import { saveLocalConfig } from '../config.js';
+import { saveLocalConfig, loadLocalConfigForScope } from '../config.js';
 import fse from 'fs-extra';
 
 describe('init', () => {
@@ -828,6 +838,208 @@ describe('init', () => {
         'project',
         process.cwd(),
       );
+    });
+  });
+  describe('CLAUDE_CONFIG_DIR', () => {
+    const relocated = path.join(HOME, '.claude-work');
+    let originalConfigDir: string | undefined;
+
+    beforeEach(() => {
+      originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+      // vi.clearAllMocks() keeps implementations, so the re-init case below
+      // would otherwise hand its saved config to every later test.
+      vi.mocked(loadLocalConfigForScope).mockResolvedValue(null);
+      let cloneDone = false;
+      pathExistsFn = (p: string) => (p === localPath ? cloneDone : false);
+      mockGfRepoClone.mockImplementation(() => {
+        cloneDone = true;
+      });
+      questionAnswers = ['n'];
+    });
+
+    afterEach(() => {
+      if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
+    });
+
+    async function savedConfig(): Promise<Record<string, unknown>> {
+      await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git', scope: 'user' });
+      const call = vi.mocked(saveLocalConfig).mock.calls.at(-1);
+      if (!call) throw new Error('expected the local config to be saved');
+      return call[0] as unknown as Record<string, unknown>;
+    }
+
+    it('records a relocated Claude Code root so later runs target it', async () => {
+      process.env.CLAUDE_CONFIG_DIR = relocated;
+
+      expect(await savedConfig()).toMatchObject({ toolRoots: { claude: relocated } });
+      const { log } = await import('../utils/logger.js');
+      expect(vi.mocked(log.info).mock.calls.map(([m]) => String(m)).join('\n'))
+        .toContain(`Recorded CLAUDE_CONFIG_DIR as the Claude Code root: ${relocated}`);
+    });
+
+    it('records nothing when the variable is unset', async () => {
+      delete process.env.CLAUDE_CONFIG_DIR;
+      expect(await savedConfig()).not.toHaveProperty('toolRoots');
+    });
+
+    it('records an explicit default root, which moves the MCP file into it', async () => {
+      process.env.CLAUDE_CONFIG_DIR = path.join(HOME, '.claude');
+      expect(await savedConfig()).toMatchObject({ toolRoots: { claude: path.join(HOME, '.claude') } });
+    });
+
+    it('keeps the recorded root when a re-init runs without the variable', async () => {
+      vi.mocked(loadLocalConfigForScope).mockResolvedValue({
+        repo: { localPath: localPath, remote: 'https://git.woa.com/HyperAI/teamai-test.git' },
+        username: 'testuser',
+        scope: 'user',
+        additionalRoles: [],
+        toolRoots: { claude: relocated },
+      } as never);
+      delete process.env.CLAUDE_CONFIG_DIR;
+
+      expect(await savedConfig()).toMatchObject({ toolRoots: { claude: relocated } });
+    });
+
+    describe('re-init that moves the root', () => {
+      beforeEach(async () => {
+        // The previous root is derived from the team's toolPaths, so a team
+        // config has to exist for the comparison to happen at all.
+        const { TeamaiConfigSchema } = await import('../types.js');
+        const { loadTeamConfig } = await import('../config.js');
+        vi.mocked(loadTeamConfig).mockResolvedValue(TeamaiConfigSchema.parse({ team: 't', repo: 'r' }));
+      });
+
+      const previousConfig = (toolRoots?: Record<string, string>) => ({
+        repo: { localPath: localPath, remote: 'https://git.woa.com/HyperAI/teamai-test.git' },
+        username: 'testuser',
+        scope: 'user',
+        additionalRoles: [],
+        ...(toolRoots ? { toolRoots } : {}),
+      }) as never;
+
+      async function removedHooksFrom(): Promise<string[]> {
+        const { reconcileHooks } = await import('../hooks.js');
+        return vi.mocked(reconcileHooks).mock.calls.map(([p]) => String(p));
+      }
+
+      function settingsExistsAt(settingsPath: string): void {
+        const cloneProbe = pathExistsFn;
+        pathExistsFn = (p: string) => p === settingsPath || cloneProbe(p);
+      }
+
+      it('removes the hooks left in the previous root, and says what stays', async () => {
+        vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig({ claude: relocated }));
+        const oldSettings = path.join(relocated, 'settings.json');
+        settingsExistsAt(oldSettings);
+        const moved = path.join(HOME, '.claude-other');
+        process.env.CLAUDE_CONFIG_DIR = moved;
+
+        expect(await savedConfig()).toMatchObject({ toolRoots: { claude: moved } });
+        expect(await removedHooksFrom()).toEqual([oldSettings]);
+        // The MCP servers and the delivered gateway credentials in the old root
+        // are active config, not inert copies: both are released as well.
+        const { reconcileMcpForConfig } = await import('../mcp-reconcile.js');
+        expect(vi.mocked(reconcileMcpForConfig)).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ toolRoots: { claude: relocated } }),
+          { removeAll: true },
+        );
+        const { releaseClaudeModelConfig } = await import('../local-agent.js');
+        expect(vi.mocked(releaseClaudeModelConfig)).toHaveBeenCalledWith(relocated);
+        // Team hooks are only stripped on a manifest-aware pass; a plain
+        // removeHooks() would leave them firing in the old root.
+        const { reconcileHooks } = await import('../hooks.js');
+        expect(vi.mocked(reconcileHooks).mock.calls[0]?.[3]).toMatchObject({
+          removeAll: true,
+          manifestPath: expect.stringContaining('managed-hooks'),
+        });
+        const { log } = await import('../utils/logger.js');
+        const warned = vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).join('\n');
+        expect(warned).toContain(`Claude Code now syncs to ${moved}`);
+        expect(warned).toContain(`under ${relocated} were left in place`);
+      });
+
+      it('removes the hooks from the default root when a root is recorded for the first time', async () => {
+        vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig());
+        const oldSettings = path.join(HOME, '.claude', 'settings.json');
+        settingsExistsAt(oldSettings);
+        process.env.CLAUDE_CONFIG_DIR = relocated;
+
+        expect(await savedConfig()).toMatchObject({ toolRoots: { claude: relocated } });
+        expect(await removedHooksFrom()).toEqual([oldSettings]);
+      });
+
+      it('leaves the previous root alone when the root did not move', async () => {
+        vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig({ claude: relocated }));
+        settingsExistsAt(path.join(relocated, 'settings.json'));
+        process.env.CLAUDE_CONFIG_DIR = relocated;
+
+        expect(await savedConfig()).toMatchObject({ toolRoots: { claude: relocated } });
+        expect(await removedHooksFrom()).toEqual([]);
+      });
+
+      it('clears the record when the variable is set but blank, and releases the old root', async () => {
+        vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig({ claude: relocated }));
+        const oldSettings = path.join(relocated, 'settings.json');
+        settingsExistsAt(oldSettings);
+        process.env.CLAUDE_CONFIG_DIR = '';
+
+        expect(await savedConfig()).not.toHaveProperty('toolRoots');
+        expect(await removedHooksFrom()).toEqual([oldSettings]);
+        const { log } = await import('../utils/logger.js');
+        expect(vi.mocked(log.info).mock.calls.map(([m]) => String(m)).join('\n'))
+          .toContain('Cleared the recorded Claude Code root');
+      });
+
+      it('lets a project-scope init without the variable inherit the user-scope record', async () => {
+        vi.mocked(loadLocalConfigForScope).mockImplementation(async (scope) =>
+          scope === 'user' ? previousConfig({ claude: relocated }) : null);
+        delete process.env.CLAUDE_CONFIG_DIR;
+
+        await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git', scope: 'project' });
+        const { saveLocalConfigForScope } = await import('../config.js');
+        expect(saveLocalConfigForScope).toHaveBeenCalledWith(
+          expect.objectContaining({ scope: 'project', toolRoots: { claude: relocated } }),
+          'project',
+          process.cwd(),
+        );
+      });
+
+      it('never creates the previous settings file just to clean it', async () => {
+        vi.mocked(loadLocalConfigForScope).mockResolvedValue(previousConfig({ claude: relocated }));
+        process.env.CLAUDE_CONFIG_DIR = path.join(HOME, '.claude-other');
+
+        await savedConfig();
+        expect(await removedHooksFrom()).toEqual([]);
+      });
+    });
+
+    it('refuses a root outside the home directory and says why', async () => {
+      process.env.CLAUDE_CONFIG_DIR = '/opt/claude-config';
+
+      expect(await savedConfig()).not.toHaveProperty('toolRoots');
+      const { log } = await import('../utils/logger.js');
+      expect(vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).join('\n'))
+        .toContain('outside the home directory');
+    });
+
+    it('refuses a root nested deeper than the installed-tool check can look', async () => {
+      process.env.CLAUDE_CONFIG_DIR = path.join(HOME, 'configs', 'claude');
+
+      expect(await savedConfig()).not.toHaveProperty('toolRoots');
+      const { log } = await import('../utils/logger.js');
+      expect(vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).join('\n'))
+        .toContain('~/.config/<name>');
+    });
+
+    it('refuses ~/.config itself', async () => {
+      process.env.CLAUDE_CONFIG_DIR = path.join(HOME, '.config');
+
+      expect(await savedConfig()).not.toHaveProperty('toolRoots');
+      const { log } = await import('../utils/logger.js');
+      expect(vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).join('\n'))
+        .toContain('~/.config itself');
     });
   });
 });

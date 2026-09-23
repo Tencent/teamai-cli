@@ -1,29 +1,10 @@
 import path from 'node:path';
-import { COPILOT_TOOL_ID, getCopilotHome, resolveToolBaseDir } from '../types.js';
+import { COPILOT_TOOL_ID, getCopilotHome, resolveToolBaseDir, toolInstallRoot } from '../types.js';
 import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
 
 const TOMBSTONE_FILE = '.removed';
-
-/**
- * The directory whose existence marks a tool as "installed" for a given
- * resource path. The tool root is normally the first path segment
- * (`.claude/skills` → `.claude`, `.openclaw/workspace/AGENTS.md` → `.openclaw`).
- *
- * The one exception is OpenCode's user scope, whose paths live under
- * `.config/opencode/...`: there the first segment (`.config`) is a directory
- * nearly every user has, so it would wrongly report OpenCode as installed.
- * For a `.config/<tool>/...` path the root is the first two segments
- * (`.config/opencode`) instead.
- */
-export function toolInstallRoot(toolPath: string): string {
-  const segments = toolPath.split('/');
-  if (segments[0] === '.config' && segments.length > 1) {
-    return `${segments[0]}/${segments[1]}`;
-  }
-  return segments[0] ?? toolPath;
-}
 
 /** Detect an installed tool while respecting tool-specific user roots. */
 export async function isToolInstalledForConfig(

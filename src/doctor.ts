@@ -4,7 +4,12 @@ import { pathExists, readFileSafe } from './utils/fs.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
 import {
+  CLAUDE_TOOL_ID,
   COPILOT_TOOL_ID,
+  DEFAULT_CLAUDE_ROOT,
+  detectClaudeConfigRoot,
+  resolveToolRootDir,
+  toolRootRejection,
   resolveHookScope,
   resolveToolBaseDir,
   isAgentExcluded,
@@ -163,6 +168,50 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
   }
 
   return checks;
+}
+
+/**
+ * Check that a relocated Claude Code root is the one teamai writes to.
+ *
+ * `CLAUDE_CONFIG_DIR` moves everything Claude Code reads — settings, skills,
+ * rules, CLAUDE.md — and teamai learns about it only when `init` records it in
+ * `toolRoots.claude`. Without the check, a member who sets the variable after
+ * initializing (or changes it) keeps getting a green report while every synced
+ * resource lands in a directory their Claude never opens.
+ *
+ * Skipped only when the variable is unset — then there is nothing to relocate
+ * and a member who never used it should not be told about a setting they do not
+ * have. A value equal to the default root is not that case: it still moves
+ * `.claude.json` inside the directory, so it has to be recorded like any other.
+ */
+function buildClaudeRootCheck(localConfig: LocalConfig, toolPaths: TeamaiConfig['toolPaths']): Check[] {
+  // Nothing to compare for a config that never writes to Claude Code.
+  if (!(CLAUDE_TOOL_ID in toolPaths)) return [];
+  const detected = detectClaudeConfigRoot();
+  if (!detected) return [];
+  // The effective root, not the recorded string: `~/.claude-work` written by
+  // hand is the same directory as the expanded one, while a root the sync
+  // refuses (outside HOME, or nested too deep) resolves back to the default —
+  // so the check fails exactly when the sync would write somewhere else.
+  const recorded = localConfig.toolRoots?.[CLAUDE_TOOL_ID];
+  const effective = resolveToolRootDir(CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT, localConfig.toolRoots);
+  // A value init refuses cannot be fixed by re-running init: say why instead.
+  const rejection = toolRootRejection(detected);
+  return [{
+    name: 'Claude Code root matches CLAUDE_CONFIG_DIR',
+    source: 'local',
+    // Recording matters even when the directories agree: an unrecorded root
+    // leaves the MCP config at ~/.claude.json, while a Claude Code told to use
+    // that directory reads .claude.json from inside it.
+    check: async () => recorded !== undefined && effective === detected,
+    fix: rejection
+      ? `CLAUDE_CONFIG_DIR is ${detected}, which teamai cannot sync to (${rejection}); `
+        + `this config syncs Claude Code to ${effective}. Point CLAUDE_CONFIG_DIR at a directory `
+        + 'in your home (or ~/.config/<name>) and re-run `teamai init`.'
+      : `CLAUDE_CONFIG_DIR is ${detected}; this config syncs Claude Code to ${effective}`
+        + `${recorded === undefined ? ' (no root recorded)' : ''}. `
+        + 'Re-run `teamai init` to record it.',
+  }];
 }
 
 /**
@@ -394,6 +443,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
       fix: 'Run `teamai pull` to publish them. If they stay queued, check that you '
         + 'can push to the team repo (run with --verbose to see the push error).',
     },
+    ...buildClaudeRootCheck(localConfig, toolPaths),
     ...await buildEnabledToolChecks(ctx),
     ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, localConfig),
     ...await buildDeliveryChecks(ctx),

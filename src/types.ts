@@ -2,6 +2,7 @@ import { z } from 'zod';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getUserHome, expandHome } from './utils/home.js';
+import { log } from './utils/logger.js';
 
 const DEFAULT_COPILOT_HOME = '.copilot';
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
@@ -569,6 +570,15 @@ export const LocalConfigSchema = z.object({
   coAuthorEnabled: z.boolean().optional(),
   /** When set, only inject hooks into these agents. Additive across multiple init --agent runs. */
   enabledAgents: z.array(z.string()).optional(),
+  /**
+   * Per-machine relocation of a tool's user-scope root, keyed by the same tool
+   * id as `toolPaths` (`claude: ~/.claude-work`). A tool that can be told to
+   * keep its configuration elsewhere — Claude Code's `CLAUDE_CONFIG_DIR` —
+   * reads nothing teamai writes to the team-wide default, and `teamai init`
+   * records that variable here so every later run targets the right root.
+   * The value must resolve inside HOME; `~/` is expanded.
+   */
+  toolRoots: z.record(z.string(), z.string()).optional(),
   /** Tools explicitly excluded from all teamai sync (set by `uninstall --agent`). Removed again by `init --agent`. */
   disabledAgents: z.array(z.string()).optional(),
   /**
@@ -1718,6 +1728,87 @@ export function getCopilotHome(env: NodeJS.ProcessEnv = process.env): string {
   return configured ? path.resolve(configured) : path.join(getUserHome(), DEFAULT_COPILOT_HOME);
 }
 
+export const CLAUDE_TOOL_ID = 'claude';
+
+/** The `toolPaths.claude` root segment Claude Code uses when it is not relocated. */
+export const DEFAULT_CLAUDE_ROOT = '.claude';
+
+/** True when `dir` resolves to something inside the user's home directory. */
+function isUnderUserHome(dir: string): boolean {
+  const rel = path.relative(getUserHome(), path.resolve(dir));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
+ * Root shapes the installed-tool gate can express: a single directory in HOME
+ * (`.claude-work`), or `.config/<name>` — the two forms `toolInstallRoot`
+ * recognises. Anything deeper (`configs/claude`) would leave every gate keying
+ * on the first segment alone, so an unrelated `~/configs` would report the tool
+ * as installed and teamai would write into a directory that does not exist.
+ */
+function isAddressableRootSegment(segment: string): boolean {
+  const segments = segment.split('/');
+  // `.config` alone is not one of them: `toolInstallRoot('.config/settings.json')`
+  // reads it as the two-segment OpenCode-style root, so the gate would look for
+  // the settings FILE as the tool's directory and never find it.
+  if (segments.length === 1) return segments[0] !== '.config';
+  return segments.length === 2 && segments[0] === '.config';
+}
+
+/**
+ * Tools a member may relocate. An allowlist, not a list of known offenders: a
+ * root is only honest for a tool whose every user-scope write goes through
+ * `toolPaths`, and most tools keep at least one path teamai resolves elsewhere
+ * (OMP's extension dir, Codex and Cursor co-author files, Copilot's
+ * `$COPILOT_HOME`, OpenCode's plugin dir), which a partial move would split in
+ * half. Claude Code qualifies today — hooks, skills, rules, agents, CLAUDE.md,
+ * MCP, model sync and co-author all resolve through `toolPaths`, and the one
+ * remaining fixed `.claude` path is `legacyHooksNeedReinject`, a read-only
+ * probe for a pre-dispatch migration. `toolRoots` itself stays a generic record,
+ * so a tool joins this set as soon as its writes have been audited.
+ */
+const TOOL_ROOTS_SUPPORTED: ReadonlySet<string> = new Set([CLAUDE_TOOL_ID]);
+
+/**
+ * Why `dir` cannot serve as a tool root, as a sentence fragment for a warning —
+ * or null when it can. One place decides, so `teamai init` refuses to record
+ * exactly the roots `applyToolRoots` would refuse to apply.
+ */
+export function toolRootRejection(dir: string): string | null {
+  const resolved = path.resolve(expandHome(dir));
+  if (!isUnderUserHome(resolved)) {
+    return `it is outside the home directory ${getUserHome()}, and every tool path is resolved relative to it`;
+  }
+  const segment = path.relative(getUserHome(), resolved).split(path.sep).join('/');
+  if (!isAddressableRootSegment(segment)) {
+    return 'a tool root has to be a directory in the home directory other than '
+      + '~/.config itself (~/.claude-work), or a ~/.config/<name> directory, '
+      + 'because that is what the "is this tool installed?" check can look for';
+  }
+  return null;
+}
+
+/**
+ * The Claude Code configuration root `CLAUDE_CONFIG_DIR` asks for, or null when
+ * the variable is unset or blank.
+ *
+ * A value equal to the default `~/.claude` is still an answer, not an absence:
+ * Claude Code reads `.claude.json` from INSIDE the configured directory
+ * whenever the variable is set, so `~/.claude/.claude.json` rather than
+ * `~/.claude.json` — a different file from the one an unset variable means.
+ *
+ * Read in exactly two commands: `teamai init` records the answer into
+ * `toolRoots.claude`, and `teamai doctor` reports a recorded value that no
+ * longer matches. Everything else reads the recorded value, so a teamai run
+ * from a shell that happens not to export the variable (a hook, a cron, a
+ * different terminal) still writes where that Claude Code reads.
+ */
+export function detectClaudeConfigRoot(env: NodeJS.ProcessEnv = process.env): string | null {
+  const configured = env.CLAUDE_CONFIG_DIR?.trim();
+  if (!configured) return null;
+  return path.resolve(expandHome(configured));
+}
+
 /** Base directory for one tool's resources in the active scope. */
 export function resolveToolBaseDir(tool: string, localConfig: LocalConfig): string {
   if (tool === COPILOT_TOOL_ID && localConfig.scope === 'user') return getCopilotHome();
@@ -1752,6 +1843,153 @@ export function isAgentExcluded(
 }
 
 /**
+ * The directory whose existence marks a tool as "installed" for a given
+ * resource path. The tool root is normally the first path segment
+ * (`.claude/skills` → `.claude`, `.openclaw/workspace/AGENTS.md` → `.openclaw`).
+ *
+ * The one exception is OpenCode's user scope, whose paths live under
+ * `.config/opencode/...`: there the first segment (`.config`) is a directory
+ * nearly every user has, so it would wrongly report OpenCode as installed.
+ * For a `.config/<tool>/...` path the root is the first two segments
+ * (`.config/opencode`) instead.
+ */
+export function toolInstallRoot(toolPath: string): string {
+  const segments = toolPath.split('/');
+  if (segments[0] === '.config' && segments.length > 1) {
+    return `${segments[0]}/${segments[1]}`;
+  }
+  return segments[0] ?? toolPath;
+}
+
+/** Path fields of ToolPathsSchema that live under the tool's own user root. */
+const TOOL_ROOT_FIELDS = ['skills', 'rules', 'settings', 'hooks', 'claudemd', 'agents', 'mcp'] as const;
+
+/** `userScope` path fields, which carry the same resources at a user-scope root. */
+const USER_SCOPE_ROOT_FIELDS = ['skills', 'rules', 'agents', 'hooks', 'claudemd'] as const;
+
+/** Warned roots, so one bad entry does not repeat on every scoped lookup of a pull. */
+const warnedToolRoots = new Set<string>();
+
+/**
+ * A configured root as a HOME-relative segment, or null when it cannot be used.
+ *
+ * An unusable entry is warned about and dropped rather than thrown on: the rest
+ * of the sync is still correct, and failing a whole pull over one member's typo
+ * would be worse than telling them about it.
+ */
+function toolRootSegment(tool: string, configured: string): string | null {
+  if (!TOOL_ROOTS_SUPPORTED.has(tool)) {
+    if (!warnedToolRoots.has(tool)) {
+      warnedToolRoots.add(tool);
+      log.warn(
+        `Ignoring toolRoots.${tool}: toolRoots currently supports ${CLAUDE_TOOL_ID} only — `
+        + `${tool} has writes teamai does not resolve through toolPaths.`
+        + (tool === COPILOT_TOOL_ID ? ' Copilot CLI is relocated with COPILOT_HOME instead.' : ''),
+      );
+    }
+    return null;
+  }
+  const resolved = path.resolve(expandHome(configured));
+  const rejection = toolRootRejection(resolved);
+  if (rejection) {
+    const key = `${tool}:${resolved}`;
+    if (!warnedToolRoots.has(key)) {
+      warnedToolRoots.add(key);
+      log.warn(`Ignoring toolRoots.${tool} (${resolved}): ${rejection}.`);
+    }
+    return null;
+  }
+  return path.relative(getUserHome(), resolved).split(path.sep).join('/');
+}
+
+/**
+ * Move one tool's paths to `newRoot`. `oldRoots` holds every root the tool's
+ * paths hang off, user-scope ones included (OpenCode keeps its user resources
+ * under `.config/opencode`, and its user MCP file with them). A field is moved
+ * when it hangs off one of those roots, so relocating the tool takes its whole
+ * layout along.
+ */
+function relocateToolPaths(
+  paths: z.infer<typeof ToolPathsSchema>,
+  oldRoots: ReadonlySet<string>,
+  newRoot: string,
+): z.infer<typeof ToolPathsSchema> {
+  // A bare file name (`.claude.json` beside `.claude`) has no root to match:
+  // it travels INSIDE the new one. Claude Code reads .claude.json from within
+  // CLAUDE_CONFIG_DIR whenever that variable is set, which is also how it lays
+  // itself out under tclaude's customUserDataDir (`.tclaude/.claude.json`), and
+  // the same holds for any other file the team declares beside the root. This
+  // is why a root EQUAL to the default still changes something and is worth
+  // recording.
+  const moved = (value: string | undefined): string | undefined => {
+    if (value === undefined) return value;
+    if (!value.includes('/')) return `${newRoot}/${value}`;
+    const root = toolInstallRoot(value);
+    return oldRoots.has(root) ? newRoot + value.slice(root.length) : value;
+  };
+
+  // `mcpProject` is absent on purpose: it is only ever read in project scope,
+  // where paths resolve against the project root and a member's HOME-relative
+  // root says nothing.
+  const out: z.infer<typeof ToolPathsSchema> = { ...paths };
+  for (const field of TOOL_ROOT_FIELDS) {
+    if (paths[field] !== undefined) out[field] = moved(paths[field]);
+  }
+  if (paths.userScope) {
+    // Rebuilt field by field, copying only what was there: a consumer that asks
+    // which user-scope paths a tool declares reads the keys, and an explicit
+    // `undefined` would answer "it declares one" for a path that does not exist.
+    const userScope: NonNullable<z.infer<typeof ToolPathsSchema>['userScope']> = {};
+    for (const field of USER_SCOPE_ROOT_FIELDS) {
+      const value = paths.userScope[field];
+      if (value !== undefined) userScope[field] = moved(value);
+    }
+    out.userScope = userScope;
+  }
+  return out;
+}
+
+/**
+ * Apply a member's `toolRoots` to a `toolPaths` map: for each listed tool, every
+ * path under that tool's declared root is re-rooted at the configured one.
+ *
+ * The team's `toolPaths` cannot answer this: it is shared by everyone, while a
+ * relocated root (Claude Code's `CLAUDE_CONFIG_DIR`) is a property of one
+ * machine. Tools the member did not list, and paths outside the tool's own root,
+ * are returned untouched.
+ */
+export function applyToolRoots(
+  toolPaths: Record<string, z.infer<typeof ToolPathsSchema>>,
+  toolRoots?: Record<string, string>,
+): Record<string, z.infer<typeof ToolPathsSchema>> {
+  if (!toolRoots || Object.keys(toolRoots).length === 0) return toolPaths;
+  let out: Record<string, z.infer<typeof ToolPathsSchema>> | undefined;
+  for (const [tool, configured] of Object.entries(toolRoots)) {
+    const paths = toolPaths[tool];
+    if (!paths) continue;
+    const newRoot = toolRootSegment(tool, configured);
+    if (!newRoot) continue;
+    // Every root the tool's paths hang off, not just the first one: a team that
+    // customized `toolPaths.claude` field by field may have spread them over
+    // several. A bare file name (`.claude.json`) is not under a root.
+    const oldRoots = new Set<string>();
+    for (const field of TOOL_ROOT_FIELDS) {
+      const value = paths[field];
+      if (value?.includes('/')) oldRoots.add(toolInstallRoot(value));
+    }
+    for (const field of USER_SCOPE_ROOT_FIELDS) {
+      const value = paths.userScope?.[field];
+      if (value?.includes('/')) oldRoots.add(toolInstallRoot(value));
+    }
+    // Not skipped when the root is unchanged: a bare file name (the MCP
+    // companion) still moves inside it (see relocateToolPaths).
+    out ??= { ...toolPaths };
+    out[tool] = relocateToolPaths(paths, oldRoots, newRoot);
+  }
+  return out ?? toolPaths;
+}
+
+/**
  * Return `teamConfig.toolPaths` with per-scope path overrides applied.
  *
  * Almost every tool keeps its user-scope and project-scope resources at the same
@@ -1766,14 +2004,19 @@ export function isAgentExcluded(
  *
  * MCP is untouched here: its two scopes are already distinct fields
  * (`mcp` / `mcpProject`), resolved separately in the reconcile engine.
+ *
+ * User scope also applies the member's `toolRoots` (applyToolRoots). Project
+ * scope must not: there the paths hang off the project root, which a
+ * HOME-relative member root has nothing to say about.
  */
 export function scopedToolPaths(
   teamConfig: TeamaiConfig,
-  localConfig: { scope?: Scope },
+  localConfig: { scope?: Scope; toolRoots?: Record<string, string> },
 ): Record<string, z.infer<typeof ToolPathsSchema>> {
   if (localConfig.scope !== 'user') return teamConfig.toolPaths;
+  const rooted = applyToolRoots(teamConfig.toolPaths, localConfig.toolRoots);
   const out: Record<string, z.infer<typeof ToolPathsSchema>> = {};
-  for (const [tool, paths] of Object.entries(teamConfig.toolPaths)) {
+  for (const [tool, paths] of Object.entries(rooted)) {
     const us = paths.userScope;
     if (!us) {
       out[tool] = paths;
@@ -2032,6 +2275,21 @@ export function resolveHookScope(
     manifestPath: getManagedHooksPath(localConfig.scope, localConfig.projectRoot),
     scope: localConfig.scope,
   };
+}
+
+/**
+ * Absolute user-scope root directory of a tool (`.claude` → `~/.claude`),
+ * honoring a member's `toolRoots`. For the few writers that address a tool's
+ * root directly instead of through a `toolPaths` entry.
+ */
+export function resolveToolRootDir(
+  tool: string,
+  defaultRoot: string,
+  toolRoots?: Record<string, string>,
+): string {
+  const configured = toolRoots?.[tool];
+  const segment = configured ? toolRootSegment(tool, configured) : null;
+  return path.join(getUserHome(), segment ?? defaultRoot);
 }
 
 /**

@@ -55,6 +55,13 @@ describe('detectHomeInstalledAgents', () => {
     expect(await detectHomeInstalledAgents()).toEqual([]);
   });
 
+  it('counts a Claude Code relocated with CLAUDE_CONFIG_DIR, with no ~/.claude at all', async () => {
+    const relocated = path.join(home, '.claude-work');
+    await fse.ensureDir(relocated);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', relocated);
+    expect(await detectHomeInstalledAgents(['claude', 'codex'])).toEqual(['claude']);
+  });
+
   it('returns only the tools whose root dir exists, in candidate order', async () => {
     await fse.ensureDir(path.join(home, '.codex'));
     await fse.ensureDir(path.join(home, '.claude'));

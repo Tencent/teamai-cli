@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import fs from 'node:fs';
 import path from 'node:path';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, resolveProjectDataHome } from './config.js';
-import { reconcileTeamHooksForConfig } from './hooks.js';
+import { hasTeamaiHooks, reconcileHooks, reconcileTeamHooksForConfig } from './hooks.js';
 import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward } from './utils/git.js';
 import { pushRepoDirectly } from './utils/git.js';
 import { getProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
@@ -10,6 +10,12 @@ import { parseGenericGitExistingRemote } from './providers/git/repo-url.js';
 import { ensureDir, writeFile, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import {
+  CLAUDE_TOOL_ID,
+  detectClaudeConfigRoot,
+  resolveHookScope,
+  scopedToolPaths,
+  toolRootRejection,
+  type TeamaiConfig,
   getTeamaiHomeDir,
   getUserConfigPath,
   REPORTS_BRANCH,
@@ -31,6 +37,78 @@ import {
   SELF_MODE_AGENT_CHOICES,
   KNOWN_AGENTS,
 } from './known-agents.js';
+
+/**
+ * Record a relocated Claude Code configuration root into the config being
+ * written, so every later run targets the directory that Claude Code reads.
+ *
+ * `init` is the only command that reads `CLAUDE_CONFIG_DIR`. The variable lives
+ * in one shell profile, while teamai also runs from session hooks and from
+ * other terminals; resolving it on each run would make the sync target depend
+ * on who started the process. Recorded once, it is the member's own setting
+ * like `enabledAgents` — and `teamai doctor` reports it when the two drift.
+ */
+function recordClaudeConfigRoot(localConfig: LocalConfig): void {
+  // Unset is "not this shell's business"; set-but-blank is the explicit way to
+  // say the relocation is over, since nothing else can tell the two apart.
+  if (process.env.CLAUDE_CONFIG_DIR === '' && localConfig.toolRoots?.[CLAUDE_TOOL_ID]) {
+    delete localConfig.toolRoots[CLAUDE_TOOL_ID];
+    if (Object.keys(localConfig.toolRoots).length === 0) delete localConfig.toolRoots;
+    log.info('Cleared the recorded Claude Code root (CLAUDE_CONFIG_DIR is blank); Claude Code syncs to the default root again');
+    return;
+  }
+  const root = detectClaudeConfigRoot();
+  if (!root) return;
+  const rejection = toolRootRejection(root);
+  if (rejection) {
+    log.warn(`CLAUDE_CONFIG_DIR (${root}) was not recorded: ${rejection}.`);
+    return;
+  }
+  localConfig.toolRoots = { ...localConfig.toolRoots, [CLAUDE_TOOL_ID]: root };
+  log.info(`Recorded CLAUDE_CONFIG_DIR as the Claude Code root: ${root}`);
+}
+
+/**
+ * A re-init that moves the Claude root leaves the previous root's active
+ * config live: hooks keep firing in the Claude that still reads it and sync
+ * into the new root — one install split across two directories — and the
+ * managed MCP servers and the gateway credentials the local agent delivered
+ * stay in files nothing should read any more. Strip all three before the new
+ * root is saved. Skills, rules and CLAUDE.md blocks teamai wrote there are
+ * inert copies, so they are reported, not touched. Nothing happens when the
+ * root did not move, and no file is created just to be cleaned.
+ */
+async function releasePreviousClaudeRoot(
+  teamConfig: TeamaiConfig | null,
+  previous: LocalConfig | null,
+  next: LocalConfig,
+): Promise<void> {
+  if (!previous || !teamConfig) return;
+  const hookScope = resolveHookScope(next);
+  const settingsOf = (config: LocalConfig): string | undefined =>
+    scopedToolPaths(teamConfig, { ...config, scope: hookScope.scope })[CLAUDE_TOOL_ID]?.settings;
+  const before = settingsOf(previous);
+  if (!before || before === settingsOf(next)) return;
+  const oldSettings = path.join(hookScope.baseDir, before);
+  if (await pathExists(oldSettings) && await hasTeamaiHooks(oldSettings, CLAUDE_TOOL_ID, hookScope.manifestPath)) {
+    // With the manifest, so team hooks go too — removeHooks() alone keeps them.
+    await reconcileHooks(oldSettings, CLAUDE_TOOL_ID, [], { removeAll: true, manifestPath: hookScope.manifestPath });
+  }
+  if (next.scope === 'user') {
+    // The user-scope MCP file and the gateway env are addressed through the
+    // previous config, so they resolve to the old root (or ~/.claude.json).
+    const { reconcileMcpForConfig } = await import('./mcp-reconcile.js');
+    const { changes } = await reconcileMcpForConfig(teamConfig, previous, { removeAll: true });
+    const removed = changes.filter((c) => c.action === 'removed').length;
+    if (removed > 0) log.info(`Removed ${removed} teamai-managed MCP server(s) from the previous Claude Code root`);
+    const { releaseClaudeModelConfig } = await import('./local-agent.js');
+    await releaseClaudeModelConfig(path.dirname(oldSettings));
+  }
+  log.warn(
+    `Claude Code now syncs to ${next.toolRoots?.[CLAUDE_TOOL_ID] ?? 'the default root'}; skills, rules and CLAUDE.md `
+    + `that teamai wrote under ${path.dirname(oldSettings)} were left in place.`,
+  );
+}
 
 /** Resolve + realpath so macOS /var → /private/var (and similar) compare equal. */
 function resolveRealPath(p: string): string {
@@ -472,6 +550,19 @@ export async function initHttp(
     localConfig.disabledAgents = (existing?.disabledAgents ?? []).filter((t) => !requestedAgents.includes(t));
   }
 
+  // Carry the member's recorded tool roots across a re-init. `init` is
+  // re-runnable and CLAUDE_CONFIG_DIR lives in one shell profile, so a re-init
+  // from a shell that does not export it must not quietly send every later sync
+  // back to the default root. recordClaudeConfigRoot then overwrites the claude
+  // entry when the variable IS set.
+  // A project-scope config with no record of its own starts from the user-scope
+  // one: the root is a fact about this machine, and project hooks land in HOME.
+  const carriedToolRoots = existingLocalConfig?.toolRoots
+    ?? (scope === 'project' ? (await loadLocalConfigForScope('user'))?.toolRoots : undefined);
+  if (carriedToolRoots) localConfig.toolRoots = { ...carriedToolRoots };
+  recordClaudeConfigRoot(localConfig);
+  await releasePreviousClaudeRoot(teamConfig, existingLocalConfig, localConfig);
+
   await ensureDir(teamaiHome);
   if (scope === 'project') {
     await saveLocalConfigForScope(localConfig, scope, projectRoot);
@@ -911,13 +1002,21 @@ export async function initSelfRepo(options: GlobalOptions & {
   // commit their settings.json). Resolved from --agent, else HOME detection
   // (non-interactive), else an interactive picker. Written to enabledAgents,
   // which drives seedSelfModeToolDirs and hook injection alike.
+  const existingSelfConfig = await loadLocalConfigForScope('project', businessRepoRoot);
   const selectedAgents = await promptForSelfModeAgents(options);
   if (selectedAgents.length > 0) {
-    const existing = await loadLocalConfigForScope('project', businessRepoRoot);
-    const prev = existing?.enabledAgents ?? [];
+    const prev = existingSelfConfig?.enabledAgents ?? [];
     localConfig.enabledAgents = [...new Set([...prev, ...selectedAgents])];
-    localConfig.disabledAgents = (existing?.disabledAgents ?? []).filter((t) => !selectedAgents.includes(t));
+    localConfig.disabledAgents = (existingSelfConfig?.disabledAgents ?? []).filter((t) => !selectedAgents.includes(t));
   }
+
+  // Carry the member's recorded tool roots across a re-init. `init` is
+  // re-runnable and CLAUDE_CONFIG_DIR lives in one shell profile, so a re-init
+  // from a shell that does not export it must not quietly send every later sync
+  // back to the default root. recordClaudeConfigRoot then overwrites the claude
+  // entry when the variable IS set.
+  if (existingSelfConfig?.toolRoots) localConfig.toolRoots = { ...existingSelfConfig.toolRoots };
+  recordClaudeConfigRoot(localConfig);
 
   // Step 5: write local config (into the partition via dataHome) + single-repo
   // gitignore. ensureDir both the knowledge dir (class B, in the repo) and the
@@ -1590,6 +1689,19 @@ export async function init(options: GlobalOptions & {
     localConfig.enabledAgents = [...new Set([...prev, ...requestedAgents])];
     localConfig.disabledAgents = (existing?.disabledAgents ?? []).filter((t) => !requestedAgents.includes(t));
   }
+
+  // Carry the member's recorded tool roots across a re-init. `init` is
+  // re-runnable and CLAUDE_CONFIG_DIR lives in one shell profile, so a re-init
+  // from a shell that does not export it must not quietly send every later sync
+  // back to the default root. recordClaudeConfigRoot then overwrites the claude
+  // entry when the variable IS set.
+  // A project-scope config with no record of its own starts from the user-scope
+  // one: the root is a fact about this machine, and project hooks land in HOME.
+  const carriedToolRoots = existingLocalConfig?.toolRoots
+    ?? (scope === 'project' ? (await loadLocalConfigForScope('user'))?.toolRoots : undefined);
+  if (carriedToolRoots) localConfig.toolRoots = { ...carriedToolRoots };
+  recordClaudeConfigRoot(localConfig);
+  await releasePreviousClaudeRoot(currentConfig, existingLocalConfig, localConfig);
 
   await ensureDir(teamaiHome);
 

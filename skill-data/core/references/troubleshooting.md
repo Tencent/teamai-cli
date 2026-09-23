@@ -34,6 +34,12 @@ This is the #1 onboarding issue. In order:
    with `--scope user`.
 5. **Tool has no hook surface** (e.g. Gemini CLI, JoyCode): there is no auto-sync;
    run `teamai pull` manually each time.
+6. **Claude Code reads a different directory** (`CLAUDE_CONFIG_DIR` is set).
+   `teamai doctor` reports `Claude Code root matches CLAUDE_CONFIG_DIR` when the
+   directory the variable names is not the one this config syncs to. Re-run
+   `teamai init` from a shell that has the variable exported; it records the root
+   and moves the install. If the check says the value cannot be synced to (outside
+   your home, or nested deeper than `~/.config/<name>`), fix the variable first.
 6. **A command reports a broken manifest** (`Invalid roles manifest…`,
    `Invalid projects manifest…`, `Invalid manifests…`, or `…manifest … could not
    be read`). `pull` skips that scope on purpose, since syncing without the
