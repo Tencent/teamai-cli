@@ -31,6 +31,7 @@ vi.mock('fs-extra', () => ({
     pathExists: vi.fn(),
     readFile: vi.fn(),
     stat: vi.fn(),
+    mkdir: vi.fn(),
     writeFile: vi.fn(),
     remove: vi.fn(),
     ensureDir: vi.fn(),
@@ -120,6 +121,7 @@ const mockedFse = fse as unknown as {
   pathExists: Mock;
   readFile: Mock;
   stat: Mock;
+  mkdir: Mock;
   writeFile: Mock;
   link: Mock;
   remove: Mock;
@@ -160,7 +162,8 @@ beforeEach(() => {
   mockedLoadTeamConfig.mockResolvedValue(null);
   mockedFse.pathExists.mockResolvedValue(false);
   mockedFse.readFile.mockResolvedValue('');
-  mockedFse.stat.mockResolvedValue({ mtimeMs: 0 });
+  mockedFse.stat.mockResolvedValue({ mtimeMs: 0, isDirectory: () => false });
+  mockedFse.mkdir.mockResolvedValue(undefined);
   mockedFse.writeFile.mockResolvedValue(undefined);
   mockedFse.link.mockResolvedValue(undefined);
   mockedFse.remove.mockResolvedValue(undefined);
@@ -745,7 +748,7 @@ describe('acquireLock', () => {
     expect(mockedFse.link).toHaveBeenCalledWith(String(tmpPathArg), '/tmp/test-lock');
   });
 
-  it('falls back to wx creation when hard links are unsupported', async () => {
+  it('falls back to an atomic directory lock when hard links are unsupported', async () => {
     const unsupported = new Error('hard links unsupported') as NodeJS.ErrnoException;
     unsupported.code = 'EOPNOTSUPP';
     mockedFse.writeFile.mockResolvedValue(undefined);
@@ -754,10 +757,10 @@ describe('acquireLock', () => {
     const result = await acquireLock('/tmp/test-lock');
 
     expect(result).toBe(true);
+    expect(mockedFse.mkdir).toHaveBeenCalledWith('/tmp/test-lock');
     expect(mockedFse.writeFile).toHaveBeenCalledWith(
-      '/tmp/test-lock',
+      expect.stringMatching(/[\\/]tmp[\\/]test-lock[\\/]\.owner$/),
       expect.any(String),
-      { flag: 'wx' },
     );
   });
 

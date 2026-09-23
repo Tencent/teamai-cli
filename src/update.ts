@@ -237,21 +237,25 @@ function parseLockContent(content: string): { pid: number; owner?: string } | nu
 async function isLockStale(resolved: string): Promise<boolean> {
   let content: string;
   let mtimeMs: number;
+  let ownerPath = resolved;
   try {
-    const [read, stat] = await Promise.all([
-      fse.readFile(resolved, 'utf-8'),
-      fse.stat(resolved),
-    ]);
-    content = read;
+    const stat = await fse.stat(resolved);
     mtimeMs = stat.mtimeMs;
+    if (stat.isDirectory()) ownerPath = path.join(resolved, '.owner');
   } catch {
-    // File vanished between EEXIST and read — treat as reclaimable.
+    // Lock vanished between the existence check and stat — reclaimable.
     return true;
+  }
+  try {
+    content = await fse.readFile(ownerPath, 'utf-8');
+  } catch {
+    // A directory lock can exist briefly before its owner file is published.
+    return Date.now() - mtimeMs > UNPARSEABLE_LOCK_GRACE_MS;
   }
   const parsed = parseLockContent(content);
   if (!parsed) {
-    // A wx fallback can expose an empty/partial file briefly. Do not reclaim
-    // a fresh unparseable lock while its creator may still be writing it.
+    // Do not reclaim a fresh unparseable lock while its creator may still be
+    // writing it (including the directory-lock owner file fallback).
     return Date.now() - mtimeMs > UNPARSEABLE_LOCK_GRACE_MS;
   }
   try {
@@ -269,8 +273,8 @@ async function isLockStale(resolved: string): Promise<boolean> {
  * The payload is written to a unique sibling temp file and then hard-linked
  * into place: `link(2)` is atomic and fails with EEXIST if the target already
  * exists, so readers never observe a partially written lock. Filesystems that
- * do not support hard links fall back to the historical `wx` exclusive create
- * so update locking continues to work there (#760).
+ * do not support hard links fall back to an atomically-created lock directory
+ * with an owner file, so update locking remains race-free there too (#760).
  */
 async function exclusiveCreate(target: string, payload: string): Promise<boolean> {
   const tmp = `${target}.create-${randomUUID()}`;
@@ -281,9 +285,11 @@ async function exclusiveCreate(target: string, payload: string): Promise<boolean
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (!['EOPNOTSUPP', 'ENOTSUP', 'EXDEV', 'EPERM'].includes(code ?? '')) throw err;
-      // FAT/exFAT and some network filesystems reject hard links. Preserve
-      // their historical lock behavior instead of making every update fail.
-      await fse.writeFile(target, payload, { flag: 'wx' });
+      // FAT/exFAT and some network filesystems reject hard links. A directory
+      // create is still atomic on those filesystems, so use the directory as
+      // the lock and write the payload only after ownership is established.
+      await fse.mkdir(target);
+      await fse.writeFile(path.join(target, '.owner'), payload);
     }
     return true;
   } catch (err) {
@@ -301,7 +307,9 @@ async function exclusiveCreate(target: string, payload: string): Promise<boolean
  */
 async function removeIfOwner(target: string, owner: string): Promise<void> {
   try {
-    const content = await fse.readFile(target, 'utf-8').catch(() => null);
+    const targetStat = await fse.stat(target).catch(() => null);
+    const ownerPath = targetStat?.isDirectory() ? path.join(target, '.owner') : target;
+    const content = await fse.readFile(ownerPath, 'utf-8').catch(() => null);
     if (content !== null) {
       const parsed = parseLockContent(content);
       if (parsed?.owner && parsed.owner !== owner) return;
@@ -346,7 +354,7 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
  *
  * The happy path publishes a complete payload with a temp file + hard link, so
  * exactly one racing process wins an uncontended lock. Unsupported filesystems
- * use the historical `writeFile(..., { flag: 'wx' })` fallback.
+ * use an atomically-created lock directory fallback.
  *
  * Reclaiming a STALE lock (dead owner / unparseable content) is serialized behind
  * a reclaim sentinel and completed with an atomic rename-into-place, so concurrent
@@ -370,6 +378,8 @@ export async function acquireLock(lockPath?: string): Promise<boolean> {
   }
 
   try {
+    const sentinel = `${resolved}.sentinel`;
+    if (await fse.pathExists(sentinel) && !(await isLockStale(sentinel))) return false;
     // Fast path: no lock present.
     if (await exclusiveCreate(resolved, payload)) {
       heldLockOwners.set(resolved, owner);
@@ -379,7 +389,6 @@ export async function acquireLock(lockPath?: string): Promise<boolean> {
     if (!(await isLockStale(resolved))) return false;
 
     // Serialize the reclaim so only one process takes over the stale lock.
-    const sentinel = `${resolved}.sentinel`;
     if (!(await acquireReclaimSentinel(sentinel, owner))) return false;
     try {
       // Re-evaluate now that we are the sole reclaimer.
@@ -391,9 +400,15 @@ export async function acquireLock(lockPath?: string): Promise<boolean> {
       // Still stale and present, and no other reclaimer can race us: replace it
       // atomically (write to a temp sibling, then rename over the stale file, so
       // the lock is never momentarily absent for a fresh acquirer to slip into).
-      const tmp = `${resolved}.new-${owner}`;
-      await fse.writeFile(tmp, payload);
-      await fse.rename(tmp, resolved);
+      const resolvedStat = await fse.stat(resolved).catch(() => null);
+      if (resolvedStat?.isDirectory()) {
+        await fse.remove(resolved);
+        if (!(await exclusiveCreate(resolved, payload))) return false;
+      } else {
+        const tmp = `${resolved}.new-${owner}`;
+        await fse.writeFile(tmp, payload);
+        await fse.rename(tmp, resolved);
+      }
       heldLockOwners.set(resolved, owner);
       return true;
     } finally {
@@ -416,13 +431,7 @@ export async function releaseLock(lockPath?: string): Promise<void> {
   const ourOwner = heldLockOwners.get(resolved);
   if (!ourOwner) return;
   try {
-    const content = await fse.readFile(resolved, 'utf-8').catch(() => null);
-    if (content !== null) {
-      const parsed = parseLockContent(content);
-      // A recorded owner mismatch means someone else now holds this lock.
-      if (parsed?.owner && parsed.owner !== ourOwner) return;
-    }
-    await fse.remove(resolved);
+    await removeIfOwner(resolved, ourOwner);
   } catch {
     // Ignore errors on cleanup
   } finally {
