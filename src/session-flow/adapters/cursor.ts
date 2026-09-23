@@ -392,10 +392,16 @@ export class CursorAdapter extends AgentAdapter {
       if (btype === 'text') {
         blocks.push({ type: 'text', text: String(it.text ?? '') });
       } else if (btype === 'tool_use') {
+        // Some Cursor versions export tool_use without an id (observed 173/173
+        // on one transcript). An empty callId then short-circuits the result
+        // pairing downstream and every call lands as "cancelled" in targets
+        // like CodeBuddy IDE. Synthesize a stable per-parse id instead --
+        // same approach as the writeSession fallback below.
+        const rawId = String(it.id ?? '').trim();
         blocks.push({
           type: 'tool_call',
           toolName: normalizeToolName(String(it.name ?? '')),
-          callId: String(it.id ?? ''),
+          callId: rawId || `tool_${blocks.length}`,
           arguments: (it.input as Record<string, unknown>) ?? {},
         });
       }
