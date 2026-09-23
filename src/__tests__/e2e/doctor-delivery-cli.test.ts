@@ -10,7 +10,9 @@ const CLI = path.join(ROOT, 'dist', 'index.js');
 
 /** The `agents/reviewer.yaml` fixture as each tool's renderer writes it. */
 const CLAUDE_AGENT_MD = '---\nname: reviewer\ndescription: reviews\n---\nReview.\n';
-const CODEX_AGENT_TOML = 'name = "reviewer"\ndescription = "reviews"\ndeveloper_instructions = "Review.\\n"\n';
+// A multi-line `instructions` renders as a TOML literal (`'''`), which keeps the
+// real newline instead of smol-toml's `\n` escape.
+const CODEX_AGENT_TOML = 'name = "reviewer"\ndescription = "reviews"\ndeveloper_instructions = \'\'\'\nReview.\n\'\'\'\n';
 
 interface CheckResult { name: string; ok: boolean; fix?: string }
 interface DoctorReport { ok: boolean; checks: CheckResult[] }
