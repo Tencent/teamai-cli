@@ -396,6 +396,35 @@ scope: 'user',
       const content = handler.generateEnvFile([]);
       expect(content).toBe('\n');
     });
+
+    it('should drop keys that are not valid shell identifiers', () => {
+      // A key is interpolated raw into `export <key>=...`, so anything that is
+      // not an identifier either breaks the line or runs as shell code. The
+      // whole variable is dropped, not the line rewritten: `parseEnvFile` skips
+      // such a line anyway, so emitting it would put a variable in env.sh that
+      // the CLI can never read back.
+      const content = handler.generateEnvFile([
+        { key: 'GOOD_KEY', value: 'ok' },
+        { key: 'bad key', value: 'oops' },
+        { key: 'FOO;touch /tmp/pwned', value: 'y' },
+        { key: '$(whoami)', value: 'w' },
+        { key: 'A=B', value: 'z' },
+        { key: '9LEADING', value: 'n' },
+      ]);
+
+      expect(content).toBe("export GOOD_KEY='ok'\n");
+    });
+
+    it('should keep keys that are valid shell identifiers', () => {
+      // The guard must not narrow what a legitimate team repo can express:
+      // digits and underscores after the first character are all valid.
+      const content = handler.generateEnvFile([
+        { key: '_PRIVATE', value: 'a' },
+        { key: 'A1_b2', value: 'b' },
+      ]);
+
+      expect(content).toBe("export _PRIVATE='a'\nexport A1_b2='b'\n");
+    });
   });
 
   // ─── pullItem ────────────────────────────────────────────

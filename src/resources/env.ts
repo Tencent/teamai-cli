@@ -108,6 +108,15 @@ export function maskEnvValue(value: string): string {
 }
 
 /**
+ * A key this module will write into env.sh, and the only shape it reads back.
+ *
+ * Shared by `parseEnvFile` and `generateEnvFile` on purpose: the write side has
+ * to reject exactly what the read side skips, or a variable can exist in env.sh
+ * that the CLI can never see again.
+ */
+export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
  * Read back the assignments `generateEnvFile` writes, as key → value.
  *
  * The inverse of the generator, and it has to be: a YAML block scalar is a
@@ -118,14 +127,13 @@ export function maskEnvValue(value: string): string {
  */
 export function parseEnvFile(content: string): Map<string, string> {
   const PREFIX = 'export ';
-  const KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
   const assignments = new Map<string, string>();
 
   let i = 0;
   while (i < content.length) {
     const eq = content.startsWith(PREFIX, i) ? content.indexOf('=', i + PREFIX.length) : -1;
     const key = eq === -1 ? '' : content.slice(i + PREFIX.length, eq);
-    if (eq === -1 || !KEY.test(key) || content[eq + 1] !== "'") {
+    if (eq === -1 || !ENV_KEY_RE.test(key) || content[eq + 1] !== "'") {
       const nl = content.indexOf('\n', i);
       if (nl === -1) break;
       i = nl + 1;
@@ -437,9 +445,19 @@ export class EnvHandler extends ResourceHandler {
    * the sourced script. An embedded single quote is encoded with the standard
    * `'\''` sequence. env.sh is sourced from every team member's shell profile,
    * so values (which originate from the team repo's env/env.yaml) must be safe.
+   *
+   * Keys are interpolated raw into the export statement, so they are held to
+   * the same identifier rule `parseEnvFile` applies when reading env.sh back. A
+   * key that fails it is dropped rather than emitted: `export bad key='x'` is
+   * not valid shell, and `export FOO;cmd='x'` would run `cmd` in every member's
+   * shell. Dropping keeps the write and read sides in agreement — a line
+   * `parseEnvFile` must skip anyway is better left unwritten. One member's bad
+   * key must not take the whole file down with it, so the rest still ship.
    */
   generateEnvFile(variables: EnvVariable[]): string {
-    const lines = variables.map(v => `export ${v.key}=${shellQuoteValue(v.value)}`);
+    const lines = variables
+      .filter(v => ENV_KEY_RE.test(v.key))
+      .map(v => `export ${v.key}=${shellQuoteValue(v.value)}`);
     return lines.join('\n') + '\n';
   }
 

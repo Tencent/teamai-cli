@@ -191,6 +191,20 @@ scope: 'user',
   // ─── envAdd ──────────────────────────────────────────────
 
   describe('envAdd', () => {
+    it('refuses a key that would not survive the round trip into env.sh', async () => {
+      // `generateEnvFile` drops any key that is not a shell identifier, so
+      // accepting one here would write a variable that never reaches the
+      // member's shell — and `FOO;cmd` would run `cmd` there if it did. Better
+      // to reject it at the point the user can still see the mistake.
+      await envAdd('bad key', 'v', {});
+
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining('bad key'));
+      // Nothing written, and no env.yaml is created just to hold nothing.
+      const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
+      expect(await fse.pathExists(envYamlPath)).toBe(false);
+      expect(log.success).not.toHaveBeenCalled();
+    });
+
     it('should add a new variable locally and show push hint', async () => {
       await envAdd('NEW_VAR', 'new_value', {});
 
