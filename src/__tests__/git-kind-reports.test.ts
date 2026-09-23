@@ -2,7 +2,7 @@
  * Real-git coverage for independent clones writing reports to teamai-reports.
  * No mocks of the units under test.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,7 @@ import { getReportsDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig } from '../ty
 import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
 import { pushRepoDirectly } from '../utils/git.js';
 import { reportUsageToTeam } from '../team-push.js';
+import { listMembers } from '../members.js';
 
 let tmp: string;
 let originalHome: string;
@@ -123,7 +124,7 @@ describe('git-kind reports branch', () => {
     expect(fs.existsSync(path.join(clone, 'stats', 'alice.yaml'))).toBe(false);
   });
 
-  it('ignores leftover default-branch members after the switch and does not copy or delete them', async () => {
+  it('does not copy or delete leftover default-branch members when writing reports', async () => {
     const { origin, clone } = await seedBareOrigin();
     const leftover = path.join(clone, 'members', 'stale.yaml');
     fs.mkdirSync(path.dirname(leftover), { recursive: true });
@@ -427,6 +428,96 @@ describe('git-kind reports: refresh before reading (#557)', () => {
 
     expect(pushed).toBe(true);
     expect(await originReportsFile(origin, 'stats/alice.yaml')).toBe('n: 12\n');
+  });
+});
+
+describe('git-kind reports: inherited member root (#735)', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  /** The machine-local config a `teamai init` wrote; the roster predates the switch. */
+  function writeLocalConfig(clone: string, origin: string, username: string): void {
+    // The seed's bare `team:` line lacks the required `repo` key; give the
+    // clone a teamai.yaml the config loader accepts.
+    fs.writeFileSync(path.join(clone, 'teamai.yaml'), `team: acme\nrepo: ${origin}\nprovider: git\n`);
+    const home = process.env.HOME!;
+    fs.mkdirSync(path.join(home, '.teamai'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.teamai', 'config.yaml'),
+      `repo:\n  localPath: ${clone}\n  remote: ${origin}\n  kind: git\nusername: ${username}\nscope: user\nupdatePolicy: skip\nenabledAgents: [claude]\nadditionalRoles: []\n`,
+    );
+  }
+
+  /** Commit a pre-switch roster file on the clone's default branch. */
+  async function commitLegacyRoster(clone: string, username: string): Promise<void> {
+    const cloneGit = simpleGit(clone);
+    fs.mkdirSync(path.join(clone, 'members'), { recursive: true });
+    fs.writeFileSync(
+      path.join(clone, 'members', `${username}.yaml`),
+      `username: ${username}\nregisteredAt: 2025-01-01T00:00:00.000Z\n`,
+    );
+    await cloneGit.add([`members/${username}.yaml`]);
+    await cloneGit.commit('pre-switch roster');
+  }
+
+  it('lists pre-switch members from the clone without copying or publishing anything', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    await commitLegacyRoster(clone, 'carol');
+    writeLocalConfig(clone, origin, 'carol');
+
+    await listMembers({});
+
+    const allOutput = consoleSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(allOutput).toContain('Team members (1)');
+    expect(allOutput).toContain('carol');
+    // Read-only cold start: the reports branch is not published, the legacy
+    // file is not copied into the worktree, and the clone copy is untouched.
+    expect(await originHasReportsBranch(origin)).toBe(false);
+    const wt = path.join(tmp, REPORTS_WORKTREE_DIRNAME);
+    expect(fs.existsSync(path.join(wt, 'members', 'carol.yaml'))).toBe(false);
+    expect(
+      fs.readFileSync(path.join(clone, 'members', 'carol.yaml'), 'utf-8'),
+    ).toContain('username: carol');
+  });
+
+  it('lists the union of pre-switch and post-switch members', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    await commitLegacyRoster(clone, 'carol');
+    writeLocalConfig(clone, origin, 'carol');
+
+    const cfg = gitConfig(clone, origin);
+    const wt = await ensureReportsWorktree(cfg);
+    fs.mkdirSync(path.join(wt, 'members'), { recursive: true });
+    fs.writeFileSync(
+      path.join(wt, 'members', 'alice.yaml'),
+      'username: alice\nregisteredAt: 2025-06-01T00:00:00.000Z\n',
+    );
+    await commitAndPushReports(cfg, '[teamai] Register member: alice', ['members/']);
+
+    await listMembers({});
+
+    const allOutput = consoleSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(allOutput).toContain('Team members (2)');
+    expect(allOutput).toContain('carol');
+    expect(allOutput).toContain('alice');
+    // Same member on both roots: the reports-branch copy wins.
+    fs.writeFileSync(
+      path.join(wt, 'members', 'carol.yaml'),
+      'username: carol\ndisplayName: Carol (branch)\nregisteredAt: 2025-06-02T00:00:00.000Z\n',
+    );
+    await commitAndPushReports(cfg, '[teamai] Update member roster: carol', ['members/carol.yaml']);
+
+    await listMembers({});
+    const output2 = consoleSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(output2).toContain('Team members (2)');
+    expect(output2).toContain('Carol (branch)');
   });
 });
 

@@ -22,7 +22,7 @@ import {
 import { getUserHome } from './utils/home.js';
 import { describeRoles, listRoleIds, loadRolesManifest } from './roles.js';
 import { loadProjectsManifest, listProjectIds } from './projects.js';
-import { getMemberConfig, mergeMemberConfig } from './members.js';
+import { memberReadRoots, readMemberConfig, mergeMemberConfig } from './members.js';
 import { askQuestion, askConfirmation, askSelection, closePrompt, isInteractive } from './utils/prompt.js';
 import {
   normalizeAgentList,
@@ -985,7 +985,7 @@ export async function initSelfRepo(options: GlobalOptions & {
         await ensureDir(memberDir);
         const memberPath = path.join(memberDir, `${username}.yaml`);
         isNewSelfMember = !await pathExists(memberPath);
-        const existingSelfMember = await getMemberConfig(wt, username);
+        const existingSelfMember = await readMemberConfig(memberReadRoots(wt, localConfig), username);
         const merged = mergeMemberConfig(existingSelfMember, {
           username,
           projects: localConfig.projects,
@@ -1442,7 +1442,8 @@ export async function init(options: GlobalOptions & {
   }
 
   // Step 5: member roster on the teamai-reports orphan branch (never the
-  // default branch). Leftover members/ on the clone is ignored.
+  // default branch). The clone's leftover members/ is a read-only inherited
+  // root: the merge below absorbs the member's pre-switch file.
   let isNewMember = true;
   if (!options.dryRun) {
     try {
@@ -1454,7 +1455,7 @@ export async function init(options: GlobalOptions & {
         await ensureDir(memberDir);
         const memberPath = path.join(memberDir, `${username}.yaml`);
         isNewMember = !await pathExists(memberPath);
-        const existingMember = await getMemberConfig(wt, username);
+        const existingMember = await readMemberConfig(memberReadRoots(wt, reportsConfig), username);
         const merged = mergeMemberConfig(existingMember, {
           username,
           projects: resolvedProjects,

@@ -5,7 +5,7 @@ import { readFileSafe, listFiles } from './utils/fs.js';
 import { pullRepo } from './utils/git.js';
 import { log } from './utils/logger.js';
 import { MemberConfigSchema } from './types.js';
-import type { GlobalOptions, MemberConfig } from './types.js';
+import type { GlobalOptions, LocalConfig, MemberConfig } from './types.js';
 
 /**
  * Read a specific member's config from the repo.
@@ -20,6 +20,31 @@ export async function getMemberConfig(repoPath: string, username: string): Promi
   } catch {
     return null;
   }
+}
+
+/**
+ * Read roots for member files, highest precedence first. The primary root is
+ * the teamai-reports worktree (the clone itself for HTTP repos); the
+ * default-branch clone is an inherited root for members registered before
+ * reports moved to their own branch (#489) — read the way learnings' inherited
+ * root is (#485): forever, with nothing copied out of it or deleted from it.
+ */
+export function memberReadRoots(primary: string, localConfig: LocalConfig): string[] {
+  if (primary === localConfig.repo.localPath) return [primary];
+  return [primary, localConfig.repo.localPath];
+}
+
+/**
+ * Read a member's config across read roots. The first root that yields one
+ * wins, so a copy that moved to the reports branch supersedes its inherited
+ * original.
+ */
+export async function readMemberConfig(roots: string[], username: string): Promise<MemberConfig | null> {
+  for (const root of roots) {
+    const config = await getMemberConfig(root, username);
+    if (config) return config;
+  }
+  return null;
 }
 
 /**
@@ -66,8 +91,9 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
   const localConfig = projectConfig ?? (await requireInit()).localConfig;
 
   // Members live on the teamai-reports orphan branch for non-HTTP repos; read
-  // them from the reports worktree (refreshed from origin). Leftover members/
-  // on the default-branch clone is ignored. HTTP keeps the clone/API path.
+  // them from the reports worktree (refreshed from origin). Members registered
+  // before the switch still live on the default-branch clone, so it stays a
+  // read-only inherited root. HTTP keeps the clone/API path.
   // Listing is read-only: never publish a missing reports branch.
   let repoPath: string;
   const { usesBranchWorktree } = await import('./types.js');
@@ -80,21 +106,30 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
     await pullRepo(repoPath);
   }
 
-  const membersDir = path.join(repoPath, 'members');
-  const files = await listFiles(membersDir);
-  const yamlFiles = files.filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'));
+  // Union across read roots; the first root that has a file supplies its
+  // bytes, so a copy on the reports branch supersedes the inherited one.
+  const memberFiles: Array<{ file: string; root: string }> = [];
+  const listed = new Set<string>();
+  for (const root of memberReadRoots(repoPath, localConfig)) {
+    for (const file of await listFiles(path.join(root, 'members'))) {
+      if (!file.endsWith('.yaml') && !file.endsWith('.yml')) continue;
+      if (listed.has(file)) continue;
+      listed.add(file);
+      memberFiles.push({ file, root });
+    }
+  }
 
-  if (yamlFiles.length === 0) {
+  if (memberFiles.length === 0) {
     log.info('No team members registered');
     return;
   }
 
   console.log('');
-  console.log(`Team members (${yamlFiles.length}):`);
+  console.log(`Team members (${memberFiles.length}):`);
   console.log('');
 
-  for (const file of yamlFiles) {
-    const content = await readFileSafe(path.join(membersDir, file));
+  for (const { file, root } of memberFiles) {
+    const content = await readFileSafe(path.join(root, 'members', file));
     if (!content) continue;
     try {
       const raw = YAML.parse(content);
