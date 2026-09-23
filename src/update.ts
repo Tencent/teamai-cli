@@ -236,10 +236,11 @@ const EMPTY_LOCK_GRACE_MS = 5_000;
  * be confirmed), or missing. This is a pure read; it never mutates the lock.
  *
  * Only a verdict of stale lets a reclaimer rename over the lock, so a live
- * owner must never read as stale (#760): an empty file is being written by its
- * creator (`exclusiveCreate` opens the file before writing it), unless it has
- * stayed empty past the grace period (its owner died in between), and a pid
- * that exists but belongs to another user (EPERM) is alive.
+ * owner must never read as stale (#760): a pid that exists but belongs to
+ * another user (EPERM) is alive. `exclusiveCreate` never leaves a lock empty
+ * except on a filesystem without hard links (or an older teamai); there an
+ * empty file is being written by its creator until it has stayed empty past
+ * the grace period (its owner died in between).
  */
 async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
   let content: string;
@@ -282,8 +283,28 @@ async function createOrInspect(resolved: string, payload: string): Promise<'acqu
 /**
  * Atomic exclusive create. Returns true when this call created the file, false
  * when it already existed (EEXIST). Any other error propagates.
+ *
+ * The payload is written to a private temp file first and hard-linked to
+ * `target`, which fails with EEXIST exactly like O_EXCL, so the lock never
+ * exists without its content: an empty lock whose creator stalls could be
+ * judged stale and taken over (#760). A filesystem without hard links falls
+ * back to O_EXCL, where the file is opened before it is written.
  */
 async function exclusiveCreate(target: string, payload: string): Promise<boolean> {
+  const tmp = `${target}.${randomUUID()}.tmp`;
+  await fse.writeFile(tmp, payload);
+  try {
+    await fs.promises.link(tmp, target);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    return exclusiveCreateInPlace(target, payload);
+  } finally {
+    await fse.remove(tmp).catch(() => {});
+  }
+}
+
+async function exclusiveCreateInPlace(target: string, payload: string): Promise<boolean> {
   try {
     await fse.writeFile(target, payload, { flag: 'wx' });
     return true;

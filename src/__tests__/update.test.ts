@@ -720,14 +720,17 @@ function eexist(): NodeJS.ErrnoException {
 }
 
 describe('acquireLock', () => {
-  it('acquires via an exclusive (wx) create when no lockfile exists', async () => {
+  it('falls back to an exclusive (wx) create when the lock cannot be hard-linked', async () => {
+    // fs-extra is mocked, so the temp file is never written and link() fails:
+    // the path a filesystem without hard links takes.
     mockedFse.writeFile.mockResolvedValue(undefined);
 
     const result = await acquireLock('/tmp/test-lock');
 
     expect(result).toBe(true);
-    const [pathArg, payloadArg, optsArg] = mockedFse.writeFile.mock.calls[0];
-    expect(pathArg).toBe('/tmp/test-lock');
+    const exclusive = mockedFse.writeFile.mock.calls.find(([p]) => p === '/tmp/test-lock');
+    expect(exclusive).toBeDefined();
+    const [, payloadArg, optsArg] = exclusive ?? [];
     expect(optsArg).toEqual({ flag: 'wx' });
     const parsed = JSON.parse(payloadArg as string);
     expect(parsed.pid).toBe(process.pid);
@@ -787,7 +790,7 @@ describe('releaseLock', () => {
 
     await releaseLock('/tmp/taken-lock');
 
-    expect(mockedFse.remove).not.toHaveBeenCalled();
+    expect(mockedFse.remove).not.toHaveBeenCalledWith('/tmp/taken-lock');
   });
 
   it('does NOT delete a lock this process never acquired (no owner token)', async () => {

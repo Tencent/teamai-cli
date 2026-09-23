@@ -118,16 +118,19 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
    processes could both observe "no lock" and both succeed, and `releaseLock()`
    unconditionally deleted the file — including a lock another process later
    acquired. Rewritten to:
-   - Acquire with an atomic exclusive create (`writeFile(path, payload, { flag: 'wx' })`
-     = `O_CREAT|O_EXCL`); payload is JSON `{ pid, startedAt, owner }` with a random
-     `owner` token.
+   - Acquire with an atomic exclusive create: the payload is written to a private
+     temp file and hard-linked to the lock name (`link` fails with `EEXIST` like
+     `O_CREAT|O_EXCL`), so the lock never exists without its content (#760); a
+     filesystem without hard links falls back to `writeFile(path, payload, { flag: 'wx' })`.
+     Payload is JSON `{ pid, startedAt, owner }` with a random `owner` token.
    - On `EEXIST`, reclaim only a **stale** lock (dead pid via `process.kill(pid,0)`,
      or unparseable content). The reclaim is **serialized behind an atomically-created
      reclaim sentinel** and finished with an atomic rename-into-place, so concurrent
      reclaimers cannot each end up believing they hold the lock; a live holder returns
      "busy". Only a stale verdict allows that rename, so a live owner never reads as
-     stale (#760): an empty lock is mid-write by its creator until it has stayed empty
-     for 5 s, a pid owned by another user (`EPERM`) is alive, and a lock that vanished
+     stale (#760): an empty lock (only possible through the `wx` fallback or an older
+     teamai) is mid-write by its creator until it has stayed empty for 5 s, a pid
+     owned by another user (`EPERM`) is alive, and a lock that vanished
      before it could be read gets one more exclusive create instead (a third process
      may already have re-created it). A lock that exists but cannot be read still
      counts as stale.

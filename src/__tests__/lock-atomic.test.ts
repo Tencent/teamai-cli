@@ -160,6 +160,46 @@ describe('acquireLock never takes over a lock another live process may hold (#76
     expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).owner).toBe('root-owned');
   });
 
+  it('a creator stalled past the empty-lock grace does not end up sharing the lock', async () => {
+    // Model the syscalls: a write straight to the lock name is an O_EXCL create,
+    // which opens the file before writing it; any other write lands whole. The
+    // first acquirer stalls inside its write until a second acquirer, 10 s
+    // later, has had its try.
+    let resume = (): void => {};
+    const stalled = new Promise<void>((resolve) => { resume = resolve; });
+    const writeFile = vi.spyOn(fse, 'writeFile').mockImplementationOnce(async (file, data) => {
+      if (file === lockPath) fs.writeFileSync(file, '', { flag: 'wx' });
+      await stalled;
+      fs.writeFileSync(file, data);
+    });
+    const first = acquireLock(lockPath);
+    await vi.waitFor(() => expect(writeFile).toHaveBeenCalled());
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 10_000);
+    let second: boolean;
+    try {
+      second = await acquireLock(lockPath);
+    } finally {
+      clock.mockRestore();
+      writeFile.mockRestore();
+    }
+    resume();
+    expect([await first, second].filter(Boolean)).toHaveLength(1);
+  });
+
+  it('still locks on a filesystem without hard links (falls back to O_EXCL)', async () => {
+    const link = vi.spyOn(fs.promises, 'link').mockRejectedValue(Object.assign(new Error('EPERM'), { code: 'EPERM' }));
+    try {
+      expect(await acquireLock(lockPath)).toBe(true);
+      expect(await acquireLock(lockPath)).toBe(false);
+    } finally {
+      link.mockRestore();
+    }
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid).toBe(process.pid);
+    expect(fs.readdirSync(tmpDir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+    await releaseLock(lockPath);
+  });
+
   it('does not reclaim an empty lock that was just created (its owner is still writing it)', async () => {
     fs.writeFileSync(lockPath, '');
     expect(await acquireLock(lockPath)).toBe(false);
