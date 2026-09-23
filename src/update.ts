@@ -257,16 +257,23 @@ async function isLockStale(resolved: string): Promise<boolean> {
  *
  * The payload is written to a unique sibling temp file and then hard-linked
  * into place: `link(2)` is atomic and fails with EEXIST if the target already
- * exists, so readers never observe a partially written lock. A plain
- * `writeFile(..., { flag: 'wx' })` exposes the empty/partial file between the
- * open and the write, and a concurrent staleness check can misread that as an
- * unparseable (reclaimable) lock and rename over a live holder (#760).
+ * exists, so readers never observe a partially written lock. Filesystems that
+ * do not support hard links fall back to the historical `wx` exclusive create
+ * so update locking continues to work there (#760).
  */
 async function exclusiveCreate(target: string, payload: string): Promise<boolean> {
   const tmp = `${target}.create-${randomUUID()}`;
   try {
     await fse.writeFile(tmp, payload);
-    await fse.link(tmp, target);
+    try {
+      await fse.link(tmp, target);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (!['EOPNOTSUPP', 'ENOTSUP', 'EXDEV', 'EPERM'].includes(code ?? '')) throw err;
+      // FAT/exFAT and some network filesystems reject hard links. Preserve
+      // their historical lock behavior instead of making every update fail.
+      await fse.writeFile(target, payload, { flag: 'wx' });
+    }
     return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
@@ -326,10 +333,9 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
 /**
  * Try to acquire a lock. Returns false if another live process holds it.
  *
- * The happy path is a single atomic exclusive create (`writeFile(..., { flag: 'wx' })`
- * = O_CREAT|O_EXCL), so exactly one racing process wins an uncontended lock — this
- * replaces the previous check-then-write, where two processes could both observe
- * "no lock" and both succeed.
+ * The happy path publishes a complete payload with a temp file + hard link, so
+ * exactly one racing process wins an uncontended lock. Unsupported filesystems
+ * use the historical `writeFile(..., { flag: 'wx' })` fallback.
  *
  * Reclaiming a STALE lock (dead owner / unparseable content) is serialized behind
  * a reclaim sentinel and completed with an atomic rename-into-place, so concurrent

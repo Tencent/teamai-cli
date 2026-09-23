@@ -7,9 +7,8 @@ import { acquireLock, releaseLock } from '../update.js';
 // ─── Real-filesystem tests for the atomic lock (issue #374 P0) ──────────────
 //
 // These exercise acquireLock/releaseLock against a real temp directory (no fs
-// mock), so the OS-level O_CREAT|O_EXCL ('wx') exclusivity and the on-disk owner
-// token are genuinely tested — the thing the previous check-then-write lock got
-// wrong.
+// mock), so the OS-level lock publication and the on-disk owner token are
+// genuinely tested — the thing the previous check-then-write lock got wrong.
 
 let tmpDir: string;
 let lockPath: string;
@@ -42,8 +41,8 @@ describe('acquireLock (real fs)', () => {
   });
 
   it('grants the lock to exactly one of many concurrent acquirers', async () => {
-    // O_EXCL is atomic: even fired together, only one create wins. The losers
-    // read the winner's live-pid lock and back off.
+    // Atomic publication: even fired together, only one create wins. The
+    // losers read the winner's live-pid lock and back off.
     const results = await Promise.all(
       Array.from({ length: 12 }, () => acquireLock(lockPath)),
     );
@@ -136,7 +135,7 @@ describe('releaseLock (real fs)', () => {
     // staleness check could read it as unparseable (reclaimable) and a
     // reclaimer could rename over a live holder. Every on-disk observation of
     // the lock must now be complete, parseable JSON because creation is
-    // published with an atomic temp-write + hard-link.
+    // published with an atomic temp-write + hard-link when supported.
     const readerErrors: string[] = [];
     let stop = false;
     const reader = (async () => {

@@ -119,6 +119,7 @@ const mockedFse = fse as unknown as {
   pathExists: Mock;
   readFile: Mock;
   writeFile: Mock;
+  link: Mock;
   remove: Mock;
   ensureDir: Mock;
   rename: Mock;
@@ -158,6 +159,7 @@ beforeEach(() => {
   mockedFse.pathExists.mockResolvedValue(false);
   mockedFse.readFile.mockResolvedValue('');
   mockedFse.writeFile.mockResolvedValue(undefined);
+  mockedFse.link.mockResolvedValue(undefined);
   mockedFse.remove.mockResolvedValue(undefined);
   mockedFse.rename.mockResolvedValue(undefined);
 });
@@ -737,6 +739,22 @@ describe('acquireLock', () => {
     expect(typeof parsed.owner).toBe('string');
     expect(parsed.owner.length).toBeGreaterThan(0);
     expect(mockedFse.link).toHaveBeenCalledWith(String(tmpPathArg), '/tmp/test-lock');
+  });
+
+  it('falls back to wx creation when hard links are unsupported', async () => {
+    const unsupported = new Error('hard links unsupported') as NodeJS.ErrnoException;
+    unsupported.code = 'EOPNOTSUPP';
+    mockedFse.writeFile.mockResolvedValue(undefined);
+    mockedFse.link.mockRejectedValue(unsupported);
+
+    const result = await acquireLock('/tmp/test-lock');
+
+    expect(result).toBe(true);
+    expect(mockedFse.writeFile).toHaveBeenCalledWith(
+      '/tmp/test-lock',
+      expect.any(String),
+      { flag: 'wx' },
+    );
   });
 
   it('reclaims a stale lock via an atomic rename-into-place', async () => {
