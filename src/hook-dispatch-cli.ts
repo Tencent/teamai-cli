@@ -104,7 +104,10 @@ async function spawnPlainDetached(
       detached: true,
       windowsHide: true,
       stdio: ['pipe', 'ignore', 'ignore'],
-      ...(cwd ? { cwd } : {}),
+      // A cwd that no longer exists (a deleted worktree) fails the spawn, so the
+      // temp dir stands in, as for the WMI launch: the child resolves its scope
+      // from the payload anyway, and the temp dir belongs to no project.
+      ...(cwd ? { cwd: fs.existsSync(cwd) ? cwd : os.tmpdir() } : {}),
     });
     child.on('error', () => {});
     await new Promise<void>((resolve) => {

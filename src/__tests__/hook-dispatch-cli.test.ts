@@ -43,6 +43,33 @@ describe('deriveDispatchSessionId', () => {
 });
 
 describe('hookDispatchCli', () => {
+  it('starts the background pass from the temp dir when the payload cwd no longer exists', async () => {
+    // spawn() fails on a missing cwd, and that error is swallowed: no background
+    // handler (session-start pull, webhook, update check) would run at all.
+    const stdinFile = path.join(os.tmpdir(), `gone-cwd-hook-${process.pid}-${Date.now()}.json`);
+    const gone = path.join(os.tmpdir(), `teamai-deleted-worktree-${process.pid}-${Date.now()}`);
+    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'Stop', session_id: 's', cwd: gone }));
+    const originalCwd = process.cwd();
+    mockSpawn.mockClear();
+    mockSpawn.mockReturnValue({
+      on: vi.fn(),
+      stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) },
+      unref: vi.fn(),
+    });
+
+    try {
+      await hookDispatchCli('stop', 'claude', '*', { stdinFile });
+      expect(mockSpawn).toHaveBeenCalledOnce();
+      // The same fallback the Windows WMI launch uses: a directory that exists
+      // and belongs to no project, so a handler still reading the process cwd
+      // (the session-start pull) cannot land in the launcher's project.
+      expect(mockSpawn.mock.calls[0][2]).toMatchObject({ cwd: os.tmpdir() });
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(stdinFile, { force: true });
+    }
+  });
+
   it('passes a path-free fallback session ID to a Copilot detached handler', async () => {
     const stdinFile = path.join(os.tmpdir(), `copilot-hook-${process.pid}-${Date.now()}.json`);
     const cwd = process.cwd();
