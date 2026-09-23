@@ -1051,12 +1051,25 @@ export interface UsageEvent {
   skill: string;
   timestamp: string;
   tool: string;
+  /**
+   * Working directory the skill was used in, as reported by the AI tool's hook
+   * payload. Optional because events written before this field existed have no
+   * value, and because a hook may legitimately run without one.
+   *
+   * Reports filter on it so a machine holding several projects only ships the
+   * initialized project's usage (#748). A `projectRoot` report therefore drops
+   * an event with no cwd — it cannot be shown to belong to that project — while
+   * `excludeProjectRoots` keeps it, since it cannot be shown to belong to an
+   * excluded one either.
+   */
+  cwd?: string;
 }
 
 export const UsageEventSchema = z.object({
   skill: z.string().regex(SKILL_NAME_REGEX),
   timestamp: z.string(),
   tool: z.string(),
+  cwd: z.string().optional(),
 });
 
 // ─── Stats YAML (team repo: stats/<user>.yaml) ─────────

@@ -279,3 +279,49 @@ describe('reportUsageToTeam — preserve fields across partial reports (Issue #4
     expect(pushRepoDirectly).not.toHaveBeenCalled();
   });
 });
+
+describe('reportUsageToTeam — usage scope isolation (#748)', () => {
+  function seedMixedUsage(): string {
+    const usagePath = path.join(tmpDir, '.teamai', 'usage.jsonl');
+    fs.mkdirSync(path.dirname(usagePath), { recursive: true });
+    const base = { timestamp: new Date().toISOString(), tool: 'claude' };
+    // project-a is the reporting project; project-b never initialized teamai
+    // there, so its skill usage must not reach the team repo.
+    fs.writeFileSync(usagePath, [
+      { ...base, skill: 'team-review', cwd: '/p' },
+      { ...base, skill: 'team-lint', cwd: '/p/src' },
+      { ...base, skill: 'private-repo-skill', cwd: '/other-project' },
+      { ...base, skill: 'legacy-no-cwd' },
+    ].map((e) => JSON.stringify(e)).join('\n') + '\n');
+    return usagePath;
+  }
+
+  it('drops usage events from outside projectRoot', async () => {
+    seedMixedUsage();
+    expect(await reportUsageToTeam(repoDir, 'me', {
+      projectRoot: '/p',
+      selfConfig: { ...gitConfig(), scope: 'project', projectRoot: '/p' } as LocalConfig,
+    })).toBe(true);
+    const stats = YAML.parse(fs.readFileSync(reportsStatsPath(), 'utf-8'));
+    expect(Object.keys(stats.skills).sort()).toEqual(['team-lint', 'team-review']);
+    expect(stats.skills['private-repo-skill']).toBeUndefined();
+  });
+
+  it('excludes project sessions from the user-scope report', async () => {
+    seedMixedUsage();
+    expect(await reportUsageToTeam(repoDir, 'me', {
+      excludeProjectRoots: ['/p'],
+      selfConfig: gitConfig(),
+    })).toBe(true);
+    const stats = YAML.parse(fs.readFileSync(reportsStatsPath(), 'utf-8'));
+    expect(Object.keys(stats.skills).sort()).toEqual(['legacy-no-cwd', 'private-repo-skill']);
+    expect(stats.skills['team-review']).toBeUndefined();
+  });
+
+  it('keeps every event when no scope option is passed (backward compatible)', async () => {
+    seedMixedUsage();
+    expect(await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() })).toBe(true);
+    const stats = YAML.parse(fs.readFileSync(reportsStatsPath(), 'utf-8'));
+    expect(Object.keys(stats.skills).sort()).toEqual(['legacy-no-cwd', 'private-repo-skill', 'team-lint', 'team-review']);
+  });
+});

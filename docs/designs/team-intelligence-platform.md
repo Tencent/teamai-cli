@@ -74,8 +74,14 @@ Transform TeamAI from a simple skill-sharing CLI into a **Team Intelligence Plat
 **Data format (JSONL, one event per line):**
 ```jsonl
 {"skill":"code-review","timestamp":"2026-03-19T10:30:00Z","tool":"claude"}
-{"skill":"tdd","timestamp":"2026-03-19T10:35:00Z","tool":"claude"}
+{"skill":"tdd","timestamp":"2026-03-19T10:35:00Z","tool":"claude","cwd":"/home/dev/project-a"}
 ```
+
+`cwd` records the project the hook ran in and is absent on events written
+before it existed. Reports filter on it: a project-scope report keeps only
+events under its `projectRoot`, and the user-scope report excludes those, so one
+machine holding several projects never ships one project's usage to another
+team's stats.
 
 **Aggregation:** `teamai stats` 命令读取 JSONL 并聚合显示。
 

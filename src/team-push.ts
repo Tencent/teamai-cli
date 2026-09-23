@@ -352,15 +352,27 @@ function isUnderScopeRoot(cwd: string, root: ScopeRoot): boolean {
 }
 
 /**
- * Filter dashboard events by scope:
+ * Any local event that records the working directory it came from.
+ *
+ * Dashboard events and skill-usage events both carry an optional `cwd`; the
+ * scope rules below only ever read that one field, so they apply to both.
+ */
+type ScopedEvent = { cwd?: string };
+
+/**
+ * Filter scope-carrying events by scope:
  * - projectRoot set: keep only events whose cwd is under that root.
  * - excludeProjectRoots set: exclude events whose cwd is under any listed root.
  * - Neither: return all events (backward-compatible).
+ *
+ * The semantics are deliberately shared by dashboard events and skill-usage
+ * events: both are written by hooks that run in whatever directory the AI tool
+ * was started in, and a machine can hold several projects at once (#748).
  */
-export function filterEventsByScope(
-  events: DashboardEvent[],
+export function filterEventsByScope<T extends ScopedEvent>(
+  events: T[],
   opts?: { projectRoot?: string; excludeProjectRoots?: string[] },
-): DashboardEvent[] {
+): T[] {
   if (!opts) return events;
   if (opts.projectRoot) {
     const root = scopeRoot(opts.projectRoot);
@@ -403,7 +415,10 @@ export async function reportUsageToTeam(
   // only for callers that did not pass a config.
 
   try {
-    const events = await readUsageEvents();
+    // Skill usage is scoped exactly like dashboard events: hooks write a cwd for
+    // both, and a machine can hold several projects, so an unfiltered report
+    // would ship one project's usage to another team's stats (#748).
+    const events = filterEventsByScope(await readUsageEvents(), options);
     const filesToPush: string[] = [];
 
     // Fold the local dashboard event log into per-session metrics once, then derive

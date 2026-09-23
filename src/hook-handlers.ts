@@ -200,6 +200,7 @@ const trackHandler: HookHandler = {
       skill: resolved.skillName,
       timestamp: new Date().toISOString(),
       tool: resolved.source ?? tool,
+      cwd: resolveHookCwd(stdin),
     });
     await updateKnownSkills(resolved.skillName);
     return null;
@@ -224,7 +225,7 @@ const trackSlashHandler: HookHandler = {
     const skillName = match[1];
     if (!isValidSkillName(skillName)) return null;
 
-    await appendUsageEvent({ skill: skillName, timestamp: new Date().toISOString(), tool });
+    await appendUsageEvent({ skill: skillName, timestamp: new Date().toISOString(), tool, cwd: resolveHookCwd(stdin) });
     await updateKnownSkills(skillName);
     return null;
   },

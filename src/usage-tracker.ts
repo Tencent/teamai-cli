@@ -9,6 +9,7 @@ import {
 } from './types.js';
 import { ensureDir, readJson, writeJson, pathExists } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
+import { resolveHookCwd } from './utils/hook-cwd.js';
 
 /** Get the usage JSONL path (evaluated at call time to respect HOME changes in tests). */
 function getUsagePath(): string {
@@ -426,6 +427,7 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
     skill: skillName,
     timestamp: new Date().toISOString(),
     tool: toolSource,
+    cwd: resolveHookCwd(hookData),
   };
 
   await appendUsageEvent(event);
@@ -451,7 +453,7 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
     return;
   }
 
-  let hookData: { prompt?: string };
+  let hookData: { prompt?: string; cwd?: unknown; workspace_roots?: unknown };
   try {
     hookData = JSON.parse(raw);
   } catch {
@@ -491,6 +493,7 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
       skill: skillName,
       timestamp: new Date().toISOString(),
       tool: toolArg ?? 'claude',
+      cwd: resolveHookCwd(hookData),
     };
 
     await appendUsageEvent(event);

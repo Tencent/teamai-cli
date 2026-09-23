@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { filterEventsByScope } from '../team-push.js';
-import type { DashboardEvent } from '../types.js';
+import type { DashboardEvent, UsageEvent } from '../types.js';
 
 function makeEvent(cwd: string | undefined, sessionId = 's1'): DashboardEvent {
   return { type: 'prompt_submit', timestamp: new Date().toISOString(), sessionId, tool: 'claude', cwd };
@@ -151,5 +151,46 @@ describe('filterEventsByScope', () => {
       const result = filterEventsByScope(evts, { excludeProjectRoots: ['/work/a/b'] });
       expect(result.map((e) => e.sessionId)).toEqual(['p1']);
     });
+  });
+});
+
+// Skill-usage events carry a cwd for the same reason dashboard events do: a
+// machine can hold several projects, and only the initialized one's usage may
+// reach the team repo (#748). Without it the filter drops every event.
+describe('filterEventsByScope with usage events (#748)', () => {
+  function makeUsage(cwd: string | undefined, skill = 'review'): UsageEvent {
+    return { skill, timestamp: new Date().toISOString(), tool: 'claude', cwd };
+  }
+
+  const usage: UsageEvent[] = [
+    makeUsage('/Users/jeff/project-a', 'a-skill'),
+    makeUsage('/Users/jeff/project-a/src', 'b-skill'),
+    makeUsage('/Users/jeff/other-work', 'c-skill'),
+    makeUsage('/Users/jeff/project-b', 'd-skill'),
+    makeUsage(undefined, 'e-skill'),
+  ];
+
+  it('filters usage to projectRoot', () => {
+    const result = filterEventsByScope(usage, { projectRoot: '/Users/jeff/project-a' });
+    expect(result.map((e) => e.skill)).toEqual(['a-skill', 'b-skill']);
+  });
+
+  it('excludeProjectRoots removes matching usage and keeps the rest', () => {
+    const result = filterEventsByScope(usage, { excludeProjectRoots: ['/Users/jeff/project-a'] });
+    expect(result.map((e) => e.skill)).toEqual(['c-skill', 'd-skill', 'e-skill']);
+  });
+
+  it('applies the same Windows rules as dashboard events', () => {
+    const winUsage: UsageEvent[] = [
+      makeUsage('C:\\Users\\jeff\\project-a', 'w1'),
+      makeUsage('C:\\Users\\jeff\\project-a\\src', 'w2'),
+      makeUsage('C:\\Users\\jeff\\other-work', 'w3'),
+    ];
+    expect(
+      filterEventsByScope(winUsage, { projectRoot: 'c:/users/JEFF/Project-A' }).map((e) => e.skill),
+    ).toEqual(['w1', 'w2']);
+    expect(
+      filterEventsByScope(winUsage, { excludeProjectRoots: ['C:\\Users\\jeff\\project-a'] }).map((e) => e.skill),
+    ).toEqual(['w3']);
   });
 });
