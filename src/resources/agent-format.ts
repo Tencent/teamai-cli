@@ -421,6 +421,40 @@ function renderMarkdownAgent(spec: AgentSpec, extras?: Record<string, unknown>):
 }
 
 /**
+ * smol-toml's `stringify` always emits basic strings, so every newline in a
+ * prompt becomes a literal `\n` escape and a 16-line prompt collapses into one
+ * ~700-character line — unreadable in an editor and unreviewable in `git diff`.
+ *
+ * A multi-line literal string (`'''`) keeps real newlines and does no escape
+ * processing, so the content round-trips byte-for-byte and this needs no
+ * escaping logic. It is only usable when the value cannot terminate it early:
+ * a body containing `'''`, a body ending in `'` (which would close the
+ * delimiter), or control characters such as `\r` that a literal cannot carry.
+ * Those fall back to the basic form, which escapes correctly.
+ */
+function canUseTomlLiteral(value: string): boolean {
+  if (!value.includes('\n')) return false;
+  if (value.includes("'''")) return false;
+  if (value.endsWith("'")) return false;
+  // Control characters a literal string cannot carry (`\r`, NUL, ...).
+  if (/[\r\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value)) return false;
+  return true;
+}
+
+/**
+ * Render one string value as a TOML multi-line literal.
+ *
+ * The newline right after the opening delimiter is trimmed by the TOML spec,
+ * so it is the delimiter's own and must not be doubled: `'''\nvalue'''`
+ * round-trips exactly, while `'''\nvalue\n'''` appends a newline the value
+ * never had (verified against smol-toml for values with and without a
+ * trailing newline).
+ */
+function tomlStringLiteral(value: string): string {
+  return `'''\n${value}'''`;
+}
+
+/**
  * Build a smol-toml TOML file: name/description/developer_instructions/model?/extras.
  * Note: `tools` is intentionally omitted from TOML output — Codex uses mcp_servers instead.
  */
@@ -439,7 +473,16 @@ function renderTomlAgent(spec: AgentSpec, extras?: Record<string, unknown>): str
       tomlData[key] = value;
     }
   }
-  return stringifyToml(tomlData);
+  // Render first, then substitute: a literal string is emitted verbatim, so the
+  // multi-line values have to bypass `stringify` rather than be post-processed.
+  const rendered = stringifyToml(tomlData);
+  return Object.entries(tomlData)
+    .reduce((text, [key, value]) => {
+      if (typeof value !== 'string' || !canUseTomlLiteral(value)) return text;
+      const escaped = `${key} = ${JSON.stringify(value)}\n`;
+      if (!text.includes(escaped)) return text;
+      return text.replace(escaped, `${key} = ${tomlStringLiteral(value)}\n`);
+    }, rendered);
 }
 
 // ─── Reverse: tool-native format → AgentSpec ────────────────────────────────

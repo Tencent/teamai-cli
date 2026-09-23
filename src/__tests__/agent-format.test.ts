@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { parse as parseToml } from 'smol-toml';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -207,6 +208,49 @@ describe('renderForCodex', () => {
     const { ext, content } = renderForCodexInternal(spec);
     expect(ext).toBe('.toml');
     expect(content).toContain('env_override');
+  });
+
+  // ─── #749: multi-line instructions must stay readable ──────────────────────
+
+  it('emits a multi-line literal string for multi-line instructions', () => {
+    const instructions = 'line one\nline two\nline three';
+    const { content } = renderForCodex(makeSpec({ instructions }));
+
+    // The rendered file has to keep real newlines — a single escaped `\n` line
+    // makes `git diff` on a rendered prompt unreadable and forces the operator
+    // to mentally un-escape what the agent will be told.
+    expect(content).toContain("developer_instructions = '''");
+    expect(content).not.toContain('\\n');
+    // Round-trips byte-for-byte: literal strings do no escape processing.
+    expect(parseToml(content).developer_instructions).toBe(instructions);
+  });
+
+  it('keeps a value that cannot be a literal string on the basic form', () => {
+    // A trailing quote closes the literal early, and `'''` inside the body ends
+    // it outright — those must fall back rather than emit broken TOML.
+    for (const instructions of ["ends with a quote'", "contains ''' inside", 'has a CR\rhere']) {
+      const { content } = renderForCodex(makeSpec({ instructions }));
+      expect(parseToml(content).developer_instructions).toBe(instructions);
+    }
+  });
+
+  it('leaves single-line and empty instructions on the basic form', () => {
+    const single = renderForCodex(makeSpec({ instructions: 'one line only' }));
+    expect(single.content).toContain('developer_instructions = "one line only"');
+    expect(single.content).not.toContain("'''");
+
+    const empty = renderForCodex(makeSpec({ instructions: '' }));
+    expect(empty.content).toContain('developer_instructions = ""');
+  });
+
+  it('applies the same treatment to tool_extras.codex strings', () => {
+    const spec = makeSpec({
+      instructions: 'single line',
+      tool_extras: { codex: { custom_prompt: 'first\nsecond\nthird' } },
+    });
+    const { content } = renderForCodex(spec);
+    expect(content).toContain("custom_prompt = '''");
+    expect(parseToml(content).custom_prompt).toBe('first\nsecond\nthird');
   });
 });
 
