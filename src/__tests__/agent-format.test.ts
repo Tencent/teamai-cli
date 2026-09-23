@@ -252,6 +252,26 @@ describe('renderForCodex', () => {
     expect(content).toContain("custom_prompt = '''");
     expect(parseToml(content).custom_prompt).toBe('first\nsecond\nthird');
   });
+
+  it('keeps $-sequences in a multi-line value verbatim', () => {
+    // The substitution must use a function replacement: a string replacement
+    // would expand the $-patterns inside the agent-authored prompt. A shell
+    // instruction carrying $$ would silently lose a dollar and no longer
+    // round-trip.
+    const instructions = 'Run this:\n  echo `"$$HOME" && echo "$&done"`';
+    const { content } = renderForCodex(makeSpec({ instructions }));
+    expect(parseToml(content).developer_instructions).toBe(instructions);
+  });
+
+  it('keeps a U+007F DEL value on a form the document still parses from', () => {
+    // TOML 1.0 bans DEL from literal strings along with C0, so the literal
+    // path must refuse it. smol-toml escapes DEL on the basic form, which is
+    // why the rendered agent file still parses and round-trips.
+    const instructions = 'line one\nline two\x7fwith DEL';
+    const { content } = renderForCodex(makeSpec({ instructions }));
+    expect(content).not.toContain("developer_instructions = '''");
+    expect(parseToml(content).developer_instructions).toBe(instructions);
+  });
 });
 
 // ─── renderForCursor ─────────────────────────────────────────────────────────

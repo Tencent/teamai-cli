@@ -437,7 +437,11 @@ function canUseTomlLiteral(value: string): boolean {
   if (value.includes("'''")) return false;
   if (value.endsWith("'")) return false;
   // Control characters a literal string cannot carry (`\r`, NUL, ...).
-  if (/[\r\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value)) return false;
+  // U+007F DEL is one of them — TOML 1.0 bans it from literal strings
+  // alongside C0, and smol-toml rejects the whole document on it. The range
+  // `\x7f` sits outside the `\x00-\x1f` C0 block, so it needs its own
+  // alternative in the class.
+  if (/[\r\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) return false;
   return true;
 }
 
@@ -481,7 +485,11 @@ function renderTomlAgent(spec: AgentSpec, extras?: Record<string, unknown>): str
       if (typeof value !== 'string' || !canUseTomlLiteral(value)) return text;
       const escaped = `${key} = ${JSON.stringify(value)}\n`;
       if (!text.includes(escaped)) return text;
-      return text.replace(escaped, `${key} = ${tomlStringLiteral(value)}\n`);
+      // A function replacement, not a string: the value is agent-authored
+      // content, and a string replacement would let the $-sequences
+      // ($&, $$, $', $`) expand inside it, silently eating dollars out of
+      // shell instructions. The callback return value is used verbatim.
+      return text.replace(escaped, () => `${key} = ${tomlStringLiteral(value)}\n`);
     }, rendered);
 }
 
