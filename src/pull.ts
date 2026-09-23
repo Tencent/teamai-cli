@@ -576,6 +576,29 @@ function logSyncDetail(
 }
 
 /**
+ * True when at least one enabled tool can receive `field`'s resources.
+ *
+ * Used to gate a "Synced N" claim: that count describes what the team repo
+ * holds, while this describes what could actually land. A tool whose root does
+ * not exist yet receives nothing — its handler skips the write by design and
+ * only logs at debug — so a fresh member would otherwise be shown a success the
+ * disk contradicts (#585).
+ */
+async function hasInstalledTargetFor(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  field: 'skills' | 'rules' | 'agents',
+): Promise<boolean> {
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    if (isAgentExcluded(localConfig, tool)) continue;
+    const resourcePath = toolPath[field];
+    if (!resourcePath) continue;
+    if (await isToolInstalledForConfig(tool, resourcePath, localConfig)) return true;
+  }
+  return false;
+}
+
+/**
  * Return the installed tool targets that can receive team-owned resources.
  *
  * Tools in `disabledAgents`, and tools outside `enabledAgents` when that
@@ -1182,14 +1205,24 @@ async function pullForScope(
         }
       }
     } else {
+      // Skills land in a tool's own directory, which a brand-new member may not
+      // have yet. The handler skips such a tool by design and only logs at
+      // debug, so counting the team repo's items here would report a success the
+      // disk contradicts (#585). Docs need no gate: they are copied to the
+      // team's own docs directory, which the copy creates.
+      const canReceive = type !== 'skills'
+        || await hasInstalledTargetFor(freshConfig, localConfig, 'skills');
+
       for (const item of items) {
         await handler.pullItem(item, freshConfig, localConfig);
       }
 
-      if (type === 'skills') {
-        logSyncDetail(type, items, existingNames, !!options.verbose, scopeLabel, skippedByTags);
-      } else {
-        log.success(`[${scopeLabel}] Synced ${items.length} ${type}`);
+      if (canReceive) {
+        if (type === 'skills') {
+          logSyncDetail(type, items, existingNames, !!options.verbose, scopeLabel, skippedByTags);
+        } else {
+          log.success(`[${scopeLabel}] Synced ${items.length} ${type}`);
+        }
       }
     }
 
