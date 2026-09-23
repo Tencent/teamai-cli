@@ -87,8 +87,9 @@ vi.mock('../config.js', async (importOriginal) => ({
   autoDetectInit: mockAutoDetectInit,
 }));
 
+const { mockLogDebug } = vi.hoisted(() => ({ mockLogDebug: vi.fn() }));
 vi.mock('../utils/logger.js', () => ({
-  log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: mockLogDebug },
 }));
 
 vi.mock('../local-agent.js', () => ({
@@ -799,6 +800,39 @@ describe('hook-handlers registry', () => {
       'claude',
     );
     expect(reportsBranchMocks.updateReports).not.toHaveBeenCalled();
+  });
+
+  // ─── #723(c): a swallowed failure is indistinguishable from "no upvotes" ───
+
+  it('votes-sync logs the reason when it fails instead of swallowing it', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
+    )!.handler;
+
+    // The real failure mode from #723: a session declared 5 doc-ids that
+    // matched its recalled set, the parser confirmed them, and yet both the
+    // local and team votes files showed `upvoted_count: 0` with no trace —
+    // the whole handler was wrapped in `catch {}` with no logging, so a
+    // Stop-time timeout, a path/username mismatch or a parse throw vanished.
+    mockParseTranscriptForVotes.mockResolvedValueOnce({
+      referencedDocIds: ['doc-a', 'doc-b'],
+      recalledDocIds: ['doc-a', 'doc-b'],
+    });
+    mockIncrementUpvoted.mockRejectedValueOnce(new Error('disk full'));
+
+    mockLogDebug.mockClear();
+    const result = await handler.execute(
+      { session_id: 'sid-votes-failure', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
+      'claude',
+    );
+
+    // Still non-fatal: a Stop hook must not break the session over votes.
+    expect(result).toBeNull();
+    // But the reason is now on the record, so "upvoted_count stayed 0" can be
+    // diagnosed instead of guessed at.
+    expect(mockLogDebug).toHaveBeenCalledWith(expect.stringContaining('votes-sync'));
+    expect(mockLogDebug).toHaveBeenCalledWith(expect.stringContaining('disk full'));
   });
 
   it('votes-sync writes votes through updateReports when deltas are pending', async () => {

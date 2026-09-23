@@ -464,8 +464,13 @@ const votesSyncHandler: HookHandler = {
         }
         return formatStopHookOutput(msg, tool ?? 'claude');
       }
-    } catch {
-      // Non-critical — votes will sync on next pull
+    } catch (e) {
+      // Non-critical — votes will sync on next pull. But it must not be silent:
+      // a swallowed failure is indistinguishable from "nobody upvoted", which
+      // is exactly how #723's structurally-zero `upvoted_count` stayed
+      // undiagnosable (a session declared 5 verified doc-ids and both the local
+      // and team votes files still showed 0, with nothing on the record).
+      log.debug(`votes-sync failed: ${(e as Error).message}`);
     }
     return null;
   },
