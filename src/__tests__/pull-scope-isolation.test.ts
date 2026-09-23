@@ -339,6 +339,19 @@ describe('pull scope isolation (issue #73)', () => {
     );
   });
 
+  it('user mode: forwards force option to MCP reconcile', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(null);
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(userConfig);
+
+    await pull({ silent: true, force: true });
+
+    expect(reconcileMcpForConfig).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ force: true }),
+    );
+  });
+
   it('user mode self-repo: reportUsageToTeam receives selfConfig so business repo is never reset', async () => {
     const businessRoot = path.join(tmpDir, 'business-repo');
     const selfRepoPath = path.join(businessRoot, '.teamai');

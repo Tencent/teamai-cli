@@ -2219,7 +2219,7 @@ async function reconcileMcpAllScopes(
       const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
       if (!teamConfig) continue;
       const { reconcileMcpForConfig } = await import('./mcp-reconcile.js');
-      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig, { force: options.force });
 
       const applied = changes.filter((c) => c.action !== 'skipped');
       for (const c of changes) {
