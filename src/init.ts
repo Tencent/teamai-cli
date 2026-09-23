@@ -338,7 +338,7 @@ async function saveUserScopeConfig(localConfig: LocalConfig): Promise<void> {
   const firstUserScope = !(await pathExists(getUserConfigPath()));
   await ensureDir(getTeamaiHomeDir());
   await saveLocalConfig(localConfig);
-  if (firstUserScope) await discardUnattributedUsage();
+  if (firstUserScope) await discardUnattributedUsage(localConfig);
 }
 
 /**

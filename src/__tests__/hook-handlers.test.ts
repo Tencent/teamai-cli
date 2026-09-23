@@ -46,9 +46,6 @@ vi.mock('../usage-tracker.js', async () => {
     resolveSkillUse: actual.resolveSkillUse,
     extractSkillName: actual.extractSkillName,
     isValidSkillName: actual.isValidSkillName,
-    resolveUsageScope: vi.fn().mockResolvedValue({
-      repo: { localPath: '/tmp/team-repo', remote: '' }, username: 'test', scope: 'user', additionalRoles: [],
-    }),
     appendUsageEvent: vi.fn().mockResolvedValue(undefined),
     updateKnownSkills: vi.fn().mockResolvedValue(undefined),
   };
@@ -88,6 +85,9 @@ const mockAutoDetectInit = vi.fn().mockResolvedValue({
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: mockAutoDetectInit,
+  resolveConfigForDir: vi.fn().mockResolvedValue({
+    repo: { localPath: '/tmp/team-repo', remote: '' }, username: 'test', scope: 'user', additionalRoles: [],
+  }),
 }));
 
 vi.mock('../utils/logger.js', () => ({

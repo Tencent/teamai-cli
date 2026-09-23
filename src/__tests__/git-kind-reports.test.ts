@@ -655,13 +655,15 @@ describe('skill usage stays in the scope that recorded it (#748)', () => {
   }
 
   async function useSkill(cwd: string, skill: string): Promise<void> {
-    const track = buildHandlerRegistry().find((r) => r.handler.name === 'track')!.handler;
-    await track.execute({ session_id: `s-${skill}`, cwd, tool_name: 'Skill', tool_input: { skill } }, 'claude');
+    const track = buildHandlerRegistry().find((r) => r.handler.name === 'track');
+    if (!track) throw new Error('track handler is not registered');
+    await track.handler.execute({ session_id: `s-${skill}`, cwd, tool_name: 'Skill', tool_input: { skill } }, 'claude');
   }
 
   async function reportedSkills(origin: string): Promise<string[]> {
-    const stats = await simpleGit(origin).raw(['show', 'teamai-reports:stats/alice.yaml']);
-    return Object.keys((YAML.parse(stats) as { skills?: Record<string, unknown> }).skills ?? {}).sort();
+    const stats: unknown = YAML.parse(await simpleGit(origin).raw(['show', 'teamai-reports:stats/alice.yaml']));
+    const skills = stats && typeof stats === 'object' && 'skills' in stats ? stats.skills : undefined;
+    return skills && typeof skills === 'object' ? Object.keys(skills).sort() : [];
   }
 
   it("each project's report carries only its own skills, and one report does not consume the other's", async () => {

@@ -196,7 +196,7 @@ describe('appendUsageEvent', () => {
     await appendUsageEvent({ skill: 'tdd', timestamp: '2026-03-19T10:00:00Z', tool: 'claude' }, userScope());
     await appendUsageEvent({ skill: 'code-review', timestamp: '2026-03-19T11:00:00Z', tool: 'claude' }, userScope());
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(2);
     expect(events[0].skill).toBe('tdd');
     expect(events[1].skill).toBe('code-review');
@@ -205,7 +205,7 @@ describe('appendUsageEvent', () => {
 
 describe('readUsageEvents', () => {
   it('returns empty array for missing file', async () => {
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -217,7 +217,7 @@ describe('readUsageEvents', () => {
       '{"skill":"good","timestamp":"2026-01-01T00:00:00Z","tool":"claude"}\nNOT_JSON\n{"skill":"also-good","timestamp":"2026-01-02T00:00:00Z","tool":"claude"}\n',
     );
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(2);
     expect(events[0].skill).toBe('good');
     expect(events[1].skill).toBe('also-good');
@@ -228,7 +228,7 @@ describe('readUsageEvents', () => {
     await fse.ensureDir(path.dirname(usagePath));
     await fs.promises.writeFile(usagePath, '');
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 });
@@ -238,9 +238,9 @@ describe('truncateUsageAfterReport', () => {
     await appendUsageEvent({ skill: 'a', timestamp: '2026-01-01T00:00:00Z', tool: 'claude' }, userScope());
     await appendUsageEvent({ skill: 'b', timestamp: '2026-01-02T00:00:00Z', tool: 'claude' }, userScope());
 
-    await truncateUsageAfterReport(2);
+    await truncateUsageAfterReport(2, userScope());
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -249,9 +249,9 @@ describe('truncateUsageAfterReport', () => {
     await appendUsageEvent({ skill: 'b', timestamp: '2026-01-02T00:00:00Z', tool: 'claude' }, userScope());
     await appendUsageEvent({ skill: 'c', timestamp: '2026-01-03T00:00:00Z', tool: 'claude' }, userScope());
 
-    await truncateUsageAfterReport(2);
+    await truncateUsageAfterReport(2, userScope());
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('c');
   });
@@ -261,7 +261,7 @@ describe('track', () => {
   it('tracks Skill tool calls', async () => {
     await track('Skill', JSON.stringify({ skill: 'code-review' }));
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('code-review');
   });
@@ -270,21 +270,21 @@ describe('track', () => {
     await track('Bash', JSON.stringify({ command: 'ls' }));
     await track('Read', JSON.stringify({ path: '/tmp' }));
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
   it('ignores invalid skill names', async () => {
     await track('Skill', JSON.stringify({ skill: '../../etc/passwd' }));
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
   it('handles malformed JSON input', async () => {
     await track('Skill', 'not-json');
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -350,7 +350,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('plan-eng-review');
   });
@@ -367,7 +367,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -379,7 +379,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -391,7 +391,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -407,7 +407,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('tdd');
   });
@@ -441,7 +441,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('tdd');
     expect(events[0].tool).toBe('cursor');
@@ -460,7 +460,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('code-review-expert');
     expect(events[0].tool).toBe('cursor');
@@ -479,7 +479,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -495,7 +495,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('plan-eng-review');
     expect(events[0].tool).toBe('cursor');
@@ -513,7 +513,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude');
   });
@@ -530,7 +530,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude-internal');
   });
@@ -547,7 +547,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('codebuddy');
   });
@@ -564,7 +564,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('codex-internal');
   });
@@ -581,7 +581,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude');
   });
@@ -598,7 +598,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('cursor');
   });
@@ -615,7 +615,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 });
@@ -801,7 +801,7 @@ describe('getRecommendations', () => {
   it('excludes skills after truncation when known-skills.json exists', async () => {
     // Simulate: track a skill, then report+truncate
     await track('Skill', JSON.stringify({ skill: 'tdd' }));
-    await truncateUsageAfterReport(1); // usage.jsonl is now empty
+    await truncateUsageAfterReport(1, userScope()); // usage.jsonl is now empty
 
     // But known-skills.json should still have 'tdd'
     const teamStats: UserStats[] = [
@@ -982,7 +982,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('plan-eng-review');
     expect(events[0].tool).toBe('claude');
@@ -1001,7 +1001,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('gstack:tdd');
   });
@@ -1018,7 +1018,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -1034,7 +1034,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -1046,7 +1046,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -1058,7 +1058,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -1075,7 +1075,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -1107,7 +1107,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude-internal');
   });
@@ -1124,7 +1124,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('codex-internal');
   });
@@ -1141,7 +1141,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude');
   });
@@ -1162,7 +1162,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(3);
     expect(events.map((e: UsageEvent) => e.skill).sort()).toEqual(
       ['code-review', 'plan-eng-review', 'tdd'],
@@ -1183,7 +1183,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(2);
     expect(events.map((e: UsageEvent) => e.skill).sort()).toEqual(
       ['code-review', 'tdd'],
@@ -1204,7 +1204,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     // Only 'tdd' should be tracked (twice — it appears twice in prompt)
     expect(events).toHaveLength(2);
     expect(events.every((e: UsageEvent) => e.skill === 'tdd')).toBe(true);
@@ -1217,7 +1217,7 @@ describe('track with tool parameter', () => {
   it('uses provided tool parameter', async () => {
     await track('Skill', JSON.stringify({ skill: 'code-review' }), 'claude-internal');
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude-internal');
   });
@@ -1225,7 +1225,7 @@ describe('track with tool parameter', () => {
   it('defaults to claude when tool not provided', async () => {
     await track('Skill', JSON.stringify({ skill: 'tdd' }));
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude');
   });

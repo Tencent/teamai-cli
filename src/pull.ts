@@ -1972,7 +1972,7 @@ export async function pull(
       try {
         const { reportUsageToTeam } = await import('./team-push.js');
         const { truncateUsageAfterReport, readUsageEvents } = await import('./usage-tracker.js');
-        const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig?: LocalConfig } }> = [];
+        const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig: LocalConfig } }> = [];
         // Per-target opt-out (teamai.yaml `usageReport: false`): a repo that
         // disables stat commits is dropped from the targets — e.g. teams
         // pulling from a read-only remote never accumulate unpushable commits.

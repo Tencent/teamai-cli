@@ -99,6 +99,7 @@ describe('reportUsageToTeam — intervention reporting', () => {
   it.each(['reports', 'legacy'])('finishes acknowledgement after the caller times out (%s)', async (backend) => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const usagePath = seedReport();
+    const seeded = fs.readFileSync(usagePath, 'utf-8');
     let finish!: (value: boolean) => void;
     let started!: () => void;
     const pushStarted = new Promise<void>((resolve) => { started = resolve; });
@@ -126,7 +127,9 @@ describe('reportUsageToTeam — intervention reporting', () => {
 
     finish(true);
     expect(await operation).toBe(true);
-    expect(fs.readFileSync(usagePath, 'utf-8')).toBe('');
+    // A caller without a scope config has no usage of its own to report (#748),
+    // so it leaves the user-scope file for the scope that owns it.
+    expect(fs.readFileSync(usagePath, 'utf-8')).toBe(backend === 'reports' ? '' : seeded);
     for (const name of ['interventions', 'prompt-tokens', 'daily-sessions']) {
       expect(JSON.parse(fs.readFileSync(path.join(dashboard, `reported-${name}.json`), 'utf-8')).slow).toBeDefined();
     }

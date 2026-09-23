@@ -411,10 +411,11 @@ export async function hookDispatchCli(
 
     // Config gates: a directory without teamai runs no team handlers (#748), and
     // HTTP-only teams must not receive git-provider-only hook prompts
-    // (contribute / mr-hint / votes). Prefer the project-scope
-    // config when the host tells us the working directory (#264), so
-    // filterHandlersForConfig can honour a project-level repo.kind.
-    const { loadLocalConfig, detectProjectConfig } = await import('./config.js');
+    // (contribute / mr-hint / votes). The project-scope config of the host's
+    // working directory wins (#264), so filterHandlersForConfig can honour a
+    // project-level repo.kind; a host that sends no cwd (OpenClaw) runs the
+    // hook in its workspace, so the process cwd stands in.
+    const { resolveConfigForDir } = await import('./config.js');
     const cwd = resolveHookCwd(stdin);
     if (cwd) {
       try {
@@ -423,7 +424,7 @@ export async function hookDispatchCli(
         log.debug(`hook-dispatch: chdir to ${cwd} failed: ${(e as Error).message}`);
       }
     }
-    const localConfig = (cwd ? await detectProjectConfig(cwd) : null) ?? await loadLocalConfig();
+    const localConfig = await resolveConfigForDir(cwd);
     const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
     const dispatcher = createDispatcher({ handlers });
 
