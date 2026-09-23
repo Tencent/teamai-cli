@@ -121,6 +121,8 @@ export async function callClaude(
     const child = spawn(_cliInfo.absPath, buildCliArgs(_cliInfo.cmd, prompt), {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Our own session, not the user's: its hooks would print the share-learnings hint into this stdout, which we return as our answer.
+      env: { ...process.env, TEAMAI_CONTRIBUTE_HINT_DISABLED: '1' },
     });
 
     child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk));
