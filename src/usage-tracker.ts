@@ -5,10 +5,12 @@ import { normalizeToolName } from './utils/tool-names.js';
 import {
   getCopilotHome,
   SKILL_NAME_REGEX,
+  type LocalConfig,
   type UsageEvent,
 } from './types.js';
 import { ensureDir, readJson, writeJson, pathExists } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
+import { resolveHookCwd } from './utils/hook-cwd.js';
 
 /** Get the usage JSONL path (evaluated at call time to respect HOME changes in tests). */
 function getUsagePath(): string {
@@ -198,6 +200,17 @@ export async function skillExistsOnDisk(skillName: string): Promise<boolean> {
 }
 
 /**
+ * The config of the scope a skill use at `cwd` belongs to: the project teamai
+ * is set up for there, else the user scope, else null. Null means teamai is not
+ * set up here, so nothing is recorded (#748). This is the resolution the hook
+ * dispatcher uses to pick which handlers run.
+ */
+export async function resolveUsageScope(cwd?: string): Promise<LocalConfig | null> {
+  const { detectProjectConfig, loadLocalConfig } = await import('./config.js');
+  return (await detectProjectConfig(cwd ?? process.cwd())) ?? await loadLocalConfig();
+}
+
+/**
  * Append a usage event to the local JSONL file.
  * Silently fails on I/O errors (disk full, permission denied, etc.)
  * to avoid disrupting the AI coding session.
@@ -344,6 +357,8 @@ export async function track(rawToolName: string, toolInput: string, tool?: strin
     return;
   }
 
+  if (!(await resolveUsageScope())) return;
+
   const event: UsageEvent = {
     skill: skillName,
     timestamp: new Date().toISOString(),
@@ -374,7 +389,7 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
     return;
   }
 
-  let hookData: { tool_name?: string; tool_input?: Record<string, unknown> };
+  let hookData: { tool_name?: string; tool_input?: Record<string, unknown>; cwd?: unknown };
   try {
     hookData = JSON.parse(raw);
   } catch {
@@ -422,6 +437,8 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
     return;
   }
 
+  if (!(await resolveUsageScope(resolveHookCwd(hookData)))) return;
+
   const event: UsageEvent = {
     skill: skillName,
     timestamp: new Date().toISOString(),
@@ -451,7 +468,7 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
     return;
   }
 
-  let hookData: { prompt?: string };
+  let hookData: { prompt?: string; cwd?: unknown };
   try {
     hookData = JSON.parse(raw);
   } catch {
@@ -471,6 +488,8 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
     log.debug('Could not extract skill name from slash command');
     return;
   }
+
+  if (!(await resolveUsageScope(resolveHookCwd(hookData)))) return;
 
   for (const match of matches) {
     const skillName = match[1];

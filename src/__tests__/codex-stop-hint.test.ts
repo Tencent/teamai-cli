@@ -17,6 +17,14 @@ describe('Codex Stop hint handoff with persisted session state', () => {
   beforeEach(() => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-codex-stop-'));
     process.env.HOME = tmpHome;
+    // The nudge needs a team with recall on; without any config it stays silent (#748).
+    const teamRepo = path.join(tmpHome, '.teamai', 'team-repo');
+    fs.mkdirSync(teamRepo, { recursive: true });
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: acme\nrepo: https://example.test/acme/team.git\nsharing:\n  recall:\n    enabled: true\n');
+    fs.writeFileSync(
+      path.join(tmpHome, '.teamai', 'config.yaml'),
+      `repo:\n  localPath: ${teamRepo}\n  remote: https://example.test/acme/team.git\nusername: tester\nscope: user\n`,
+    );
   });
   afterEach(() => {
     if (originalHome === undefined) delete process.env.HOME;

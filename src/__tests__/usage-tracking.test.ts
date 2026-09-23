@@ -39,9 +39,18 @@ import type { UsageEvent, UserStats } from '../types.js';
 let tmpDir: string;
 const origHome = process.env.HOME;
 
+/** A user-scope install: skill usage is recorded only where teamai is set up. */
+async function seedUserConfig(): Promise<void> {
+  await fse.outputFile(
+    path.join(tmpDir, '.teamai', 'config.yaml'),
+    `repo:\n  localPath: ${path.join(tmpDir, '.teamai', 'team-repo')}\n  remote: https://example.test/acme/team.git\nusername: tester\nscope: user\n`,
+  );
+}
+
 beforeEach(async () => {
   tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-test-'));
   process.env.HOME = tmpDir;
+  await seedUserConfig();
 });
 
 afterEach(async () => {
@@ -274,6 +283,43 @@ describe('track', () => {
 
     const known = await readKnownSkills();
     expect(known.has('code-review')).toBe(true);
+  });
+});
+
+describe('skill tracking where teamai is not set up (#748)', () => {
+  beforeEach(async () => {
+    await fse.remove(path.join(tmpDir, '.teamai', 'config.yaml'));
+  });
+
+  async function expectNothingRecorded(): Promise<void> {
+    expect(fs.existsSync(path.join(tmpDir, '.teamai', 'usage.jsonl'))).toBe(false);
+    expect((await readKnownSkills()).size).toBe(0);
+  }
+
+  it('track records nothing', async () => {
+    await track('Skill', JSON.stringify({ skill: 'code-review' }));
+    await expectNothingRecorded();
+  });
+
+  it('trackFromStdin records nothing', async () => {
+    const restore = mockStdin(JSON.stringify({ tool_name: 'Skill', tool_input: { skill: 'code-review' } }));
+    try {
+      await trackFromStdin();
+    } finally {
+      restore();
+    }
+    await expectNothingRecorded();
+  });
+
+  it('trackSlashCommand records nothing', async () => {
+    await createFakeSkill('code-review');
+    const restore = mockStdin(JSON.stringify({ prompt: '/code-review' }));
+    try {
+      await trackSlashCommand();
+    } finally {
+      restore();
+    }
+    await expectNothingRecorded();
   });
 });
 

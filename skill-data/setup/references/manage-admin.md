@@ -130,7 +130,8 @@ can do it, see `"$(teamai skill path core)/references/contribute-member.md"`.)
 
 ### Turn the sharing prompt on or off (admin)
 
-The auto-share prompt is **on by default once recall is on**. To disable it team-wide, set this in
+The auto-share prompt is **on by default once recall is on**, and only shows in directories set up
+with teamai. To disable it team-wide, set this in
 `teamai.yaml` and `teamai push`:
 
 ```yaml

@@ -94,9 +94,11 @@ path (measured here from a 77-character one).
   blocks instead (`blockedBy: "config"`), since recall and the source are then
   unknown and the workflow would fail at `teamai contribute` — a project config
   too, which detection alone would skip in favour of the user config
-  (`findUnreadableProjectConfig`). The Stop-hook reminder follows the same rule. The Stop-hook share
-  reminder is gated the same way (`contributeHintAllowed`, `src/hook-handlers.ts`),
-  because it points at this command. The gate lives in one place:
+  (`findUnreadableProjectConfig`). The Stop-hook share reminder is gated the same
+  way (`contributeHintAllowed`, `src/hook-handlers.ts`), because it points at this
+  command, with one difference: with no config at all it stays silent. The hook
+  fires in every project on the machine, and a directory without teamai has no
+  team to share with (#748). The gate lives in one place:
   `resolveServableSkill` (`src/skill-content.ts`) is the only way to obtain a
   packaged skill outside that module, and it returns `blocked` instead of the
   skill, so a command cannot print a directory it never received.

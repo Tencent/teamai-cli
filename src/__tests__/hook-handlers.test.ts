@@ -411,17 +411,19 @@ describe('hook-handlers registry', () => {
     expect(mockContributeCheckForSession).not.toHaveBeenCalled();
   });
 
-  it('contribute-check handler keeps hinting when there is no config at all', async () => {
+  it('contribute-check handler stays silent when there is no config at all (#748)', async () => {
     const { NotInitializedError } = await import('../config.js');
     const registry = buildHandlerRegistry();
     const handler = registry.find(
       (r) => r.event === 'stop' && r.handler.name === 'contribute-check',
     )!.handler;
+    // A directory without teamai has no team to share with.
     mockAutoDetectInit.mockRejectedValueOnce(new NotInitializedError('teamai is not initialized. Run `teamai init` first.'));
-    mockContributeCheckForSession.mockResolvedValueOnce({ hint: '[teamai] do share' });
+    mockContributeCheckForSession.mockClear();
 
     const result = await handler.execute({ session_id: 's5', cwd: '/x' }, 'claude');
-    expect(result).toContain('do share');
+    expect(result).toBeNull();
+    expect(mockContributeCheckForSession).not.toHaveBeenCalled();
   });
 
   it('contribute-check handler stays silent when a config exists but cannot be loaded', async () => {
@@ -673,12 +675,38 @@ describe('hook-handlers registry', () => {
     expect(names).toContain('local-agent-sync');
   });
 
-  it('filterHandlersForConfig keeps all handlers for git source and when uninitialized', () => {
+  it('filterHandlersForConfig keeps all handlers for git source', () => {
     const registry = buildHandlerRegistry();
     const full = registry.length;
     expect(filterHandlersForConfig(registry, { repo: { kind: 'git' } } as never).length).toBe(full);
     expect(filterHandlersForConfig(registry, { repo: {} } as never).length).toBe(full);
-    expect(filterHandlersForConfig(registry, null).length).toBe(full);
+  });
+
+  it('filterHandlersForConfig drops the share nudge where teamai is not set up (#748)', () => {
+    const names = filterHandlersForConfig(buildHandlerRegistry(), null).map((r) => r.handler.name);
+    expect(names).not.toContain('contribute-check');
+  });
+
+  it('only machine-level handlers run where teamai is not set up (#748)', () => {
+    // A new handler must decide: team handlers set requiresConfig, the rest join this list.
+    const names = new Set(filterHandlersForConfig(buildHandlerRegistry(), null).map((r) => r.handler.name));
+    expect([...names].sort()).toEqual([
+      'local-agent-sync',
+      'package-pending-hint',
+      'pull',
+      'update',
+    ]);
+  });
+
+  it('TodoWrite gets no recall nudge where teamai is not set up (#748)', async () => {
+    const registry = buildHandlerRegistry();
+    expect(registry.some((r) => r.matcher === 'TodoWrite' && r.handler.name === 'todowrite-hint')).toBe(true);
+    const dispatcher = createDispatcher({ handlers: filterHandlersForConfig(registry, null) });
+
+    const result = await dispatcher.dispatch(
+      'post-tool-use', 'TodoWrite', { session_id: 'td-748', tool_name: 'TodoWrite' }, 'claude', 'foreground',
+    );
+    expect(result.output).toBeNull();
   });
 
   // ── Change 2: votes-sync nudge — marker guard removed, nudge every time declared===0 ──

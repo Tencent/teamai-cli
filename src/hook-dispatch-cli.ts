@@ -409,8 +409,9 @@ export async function hookDispatchCli(
     const raw = stdinFile ? readStdinFile(stdinFile) : await readStdin();
     const stdin = parseStdin(raw, event);
 
-    // Provider-config gate: HTTP-only teams must not receive git-provider-only
-    // hook prompts (contribute / mr-hint / votes). Prefer the project-scope
+    // Config gates: a directory without teamai runs no team handlers (#748), and
+    // HTTP-only teams must not receive git-provider-only hook prompts
+    // (contribute / mr-hint / votes). Prefer the project-scope
     // config when the host tells us the working directory (#264), so
     // filterHandlersForConfig can honour a project-level repo.kind.
     const { loadLocalConfig, detectProjectConfig } = await import('./config.js');

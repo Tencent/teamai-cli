@@ -34,6 +34,13 @@ export interface HandlerRegistration {
    * (contribute / import-from-mr / votes push). See filterHandlersForConfig.
    */
   gitOnly?: boolean;
+  /**
+   * Team handler: it only makes sense where teamai is set up. Hooks live in HOME
+   * even for a project-scope install, so they fire in every project on the
+   * machine; with no config for the hook's cwd these are filtered out at the
+   * dispatch boundary (#748). See filterHandlersForConfig.
+   */
+  requiresConfig?: boolean;
 }
 
 // ─── Timeout constants ──────────────────────────────────
@@ -233,10 +240,10 @@ const trackSlashHandler: HookHandler = {
 /**
  * Whether the share-learnings hint may be emitted at all. Resolved lazily per
  * hook run so a team can switch it off via teamai.yaml (or a member via local
- * config) without re-injecting hooks. Falls back to enabled when there is no
- * config at all, preserving pre-toggle behavior for half-initialized installs,
- * where `teamai skill get share` serves too. A config that exists but cannot be
- * loaded withholds it: `share` refuses there, so the nudge would lead nowhere.
+ * config) without re-injecting hooks. Withheld when there is no config at all:
+ * the hook fires in every project on the machine, and a directory without teamai
+ * has no team to share with (#748). A config that exists but cannot be loaded
+ * withholds it too: `share` refuses there, so the nudge would lead nowhere.
  *
  * Recall and a writable source gate it too: the hint routes to the `share`
  * workflow, and `teamai skill get share` refuses while recall is off or the
@@ -246,14 +253,14 @@ const trackSlashHandler: HookHandler = {
  */
 async function contributeHintAllowed(): Promise<boolean> {
   const { isContributeHintEnabled, isRecallEnabled } = await import('./types.js');
-  const { autoDetectInit, NotInitializedError } = await import('./config.js');
+  const { autoDetectInit } = await import('./config.js');
   try {
     const { localConfig, teamConfig } = await autoDetectInit();
     return localConfig.repo?.kind !== 'http'
       && isContributeHintEnabled(localConfig, teamConfig)
       && isRecallEnabled(localConfig, teamConfig);
-  } catch (e) {
-    return e instanceof NotInitializedError ? isContributeHintEnabled({}, {}) : false;
+  } catch {
+    return false;
   }
 }
 
@@ -620,17 +627,17 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // on a slow network cannot delay session startup. Its own generous budget
     // (PULL_TIMEOUT_MS) — the shared 15s truncated the pull itself.
     { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS, background: true },
-    { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
-    { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
+    { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'session-start', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+    { event: 'session-start', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // Copilot emits SessionEnd after its final turn (not Stop), so the webhook
     // handler must run here too or those sessions emit no session-stop
     // notification (#702). Detached, mirroring the stop registration.
-    { event: 'session-end', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
-    { event: 'session-end', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+    { event: 'session-end', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
+    { event: 'session-end', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── Stop ─────────────────────────────────────────
     // votes-sync and contribute-check may return a hint the host injects back
@@ -640,53 +647,57 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // past the host's hook timeout (CodeBuddy kills hooks at ~10s regardless of
     // the declared timeout).
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS, background: true },
-    { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
-    { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
-    { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
+    { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
+    { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
-    { event: 'stop', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── PostToolUse ──────────────────────────────────
-    { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
+    { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
-    { event: 'post-tool-use', matcher: 'Skill', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+    { event: 'post-tool-use', matcher: 'Skill', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── UserPromptSubmit ─────────────────────────────
-    { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
+    { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'prompt-submit', matcher: '*', handler: packagePendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'prompt-submit', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
   ];
 }
 
 /**
- * Apply the provider-config gate to a handler registry.
+ * Apply the config gates to a handler registry.
+ *
+ * No config (localConfig === null) drops every `requiresConfig` handler. Hooks
+ * live in HOME even for a project-scope install, so they fire in every project
+ * on the machine; a directory without teamai must see no team prompts (#748).
+ * A config that fails to parse also reads as null (loadLocalConfig swallows
+ * parse errors), so a corrupted config withholds team prompts too; `teamai
+ * doctor` reports it.
  *
  * HTTP-only teams (localConfig.repo.kind === 'http') must not receive prompts
- * for git-provider-only features. This drops every `gitOnly` handler when the
- * team source is HTTP. When localConfig is null (teamai not initialized) or the
- * source is git (kind === 'git' or undefined for backward compatibility), the
- * full registry is returned unchanged.
+ * for git-provider-only features, so every `gitOnly` handler is dropped when the
+ * team source is HTTP. A git source (kind === 'git' or undefined for backward
+ * compatibility) keeps the full registry.
  *
  * The gate is keyed on teamai's own configured source, NOT on the current
  * working directory's git remote — an HTTP-only user working inside a
- * github/tgit checkout must still see no git-only prompts.
- *
- * Fail-open by design: a null localConfig means either teamai is not
- * initialized or the config failed to parse (loadLocalConfig swallows parse
- * errors and returns null). In both cases the full registry is kept, so a
- * corrupted config degrades to "all hooks run" rather than silently disabling
- * them. This is intentionally NOT a hard security gate — HTTP write ops are
- * still enforced at execution time by assertNotReadOnly().
+ * github/tgit checkout must still see no git-only prompts. This is
+ * intentionally NOT a hard security gate — HTTP write ops are still enforced
+ * at execution time by assertNotReadOnly().
  */
 export function filterHandlersForConfig(
   registry: HandlerRegistration[],
   localConfig: LocalConfig | null,
 ): HandlerRegistration[] {
-  if (localConfig?.repo.kind === 'http') {
+  if (!localConfig) {
+    return registry.filter((reg) => reg.requiresConfig !== true);
+  }
+  if (localConfig.repo.kind === 'http') {
     return registry.filter((reg) => reg.gitOnly !== true);
   }
   return registry;
