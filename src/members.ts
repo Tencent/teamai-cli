@@ -86,6 +86,22 @@ export async function listMembers(options: GlobalOptions): Promise<void> {
 
   if (yamlFiles.length === 0) {
     log.info('No team members registered');
+    if (usesBranchWorktree(localConfig)) {
+      // 0.25 moved the roster to the teamai-reports branch. A pre-0.25
+      // members/ left on the default-branch clone is ignored by design, so
+      // point upgrading teams at recovery instead of failing silently.
+      const legacyDir = path.join(localConfig.repo.localPath, 'members');
+      const legacy = (await listFiles(legacyDir)).filter(
+        (f) => f.endsWith('.yaml') || f.endsWith('.yml'),
+      );
+      if (legacy.length > 0) {
+        log.warn(
+          `Found ${legacy.length} pre-0.25 member file(s) in ${legacyDir}; ` +
+            `they are ignored on the default branch. Each member should ` +
+            `re-run 'teamai init' once to re-register on teamai-reports.`,
+        );
+      }
+    }
     return;
   }
 

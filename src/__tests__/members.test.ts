@@ -194,6 +194,24 @@ describe('listMembers', () => {
     expect(reportsMocks.ensureReportsWorktree).toHaveBeenCalledWith(expect.anything(), { pushIfCreated: false });
   });
 
+  it('should hint at re-running init when legacy pre-0.25 members exist', async () => {
+    mockRequireInit(cloneDir);
+    await fse.writeFile(
+      path.join(cloneDir, 'members', 'legacy.yaml'),
+      YAML.stringify({
+        username: 'legacy',
+        displayName: 'Pre-0.25 member',
+        registeredAt: '2025-01-01T00:00:00.000Z',
+      }),
+    );
+
+    await listMembers({});
+
+    expect(log.info).toHaveBeenCalledWith('No team members registered');
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('teamai init'));
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
   it('should display members without role tags', async () => {
     await writeReportsMember('alice.yaml', {
       username: 'alice',
