@@ -9,7 +9,8 @@ const { mockDetectProjectConfig, mockLoadLocalConfig } = vi.hoisted(() => ({
   mockLoadLocalConfig: vi.fn(),
 }));
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   detectProjectConfig: mockDetectProjectConfig,
   loadLocalConfig: mockLoadLocalConfig,
 }));

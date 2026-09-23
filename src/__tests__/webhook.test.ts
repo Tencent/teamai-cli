@@ -30,7 +30,8 @@ const mockAutoDetectInit = vi.fn().mockResolvedValue({
   },
 });
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: mockAutoDetectInit,
 }));
 

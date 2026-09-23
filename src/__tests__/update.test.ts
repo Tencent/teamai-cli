@@ -37,7 +37,8 @@ vi.mock('fs-extra', () => ({
   },
 }));
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   loadState: vi.fn(),
   saveState: vi.fn(),
   loadLocalConfig: vi.fn(),

@@ -13,7 +13,8 @@ const mocks = vi.hoisted(() => ({
   createPullRequest: vi.fn().mockResolvedValue('https://example.test/pr/packages'),
 }));
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: vi.fn(async () => mocks.currentInit),
   detectProjectConfig: vi.fn(async () =>
     (mocks.currentInit as { localConfig?: unknown } | null)?.localConfig ?? null),

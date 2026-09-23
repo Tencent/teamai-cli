@@ -102,7 +102,8 @@ vi.mock('../providers/cnb/cnb-cli.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   saveLocalConfig: vi.fn(),
   saveLocalConfigForScope: vi.fn(),
   loadLocalConfigForScope: vi.fn().mockResolvedValue(null),

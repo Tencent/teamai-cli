@@ -7,7 +7,8 @@ import fse from 'fs-extra';
 // (RELEVANT / NOT_RELEVANT + score) and exits before recording quality or
 // formatting full results.
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   detectProjectConfig: vi.fn(),
   requireInit: vi.fn(),
 }));

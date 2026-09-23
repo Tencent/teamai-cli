@@ -2,7 +2,7 @@
 
 CLI for syncing team skills, rules, docs, and env across AI coding tools. Package: [`teamai-cli`](https://www.npmjs.com/package/teamai-cli).
 
-TypeScript, Node 20+, tsup (ESM), Vitest. Commands: `npm run build`, `npx tsc --noEmit`, `npx vitest run`.
+TypeScript, Node 20+, tsup (ESM), Vitest. Commands: `npm run build`, `npx tsc --noEmit`, `npx vitest run`, `npm run test:e2e`.
 
 ## Git
 
@@ -24,11 +24,18 @@ TypeScript, Node 20+, tsup (ESM), Vitest. Commands: `npm run build`, `npx tsc --
 - Agent：Claude、Codex、CodeBuddy、OpenCode
 - Provider：`git`、`gitlab`、`github`
 
+## Self review before push
+
+Review the whole branch diff, not only the last change. For every piece of
+shared state, list every reader and every writer.
+
 ## Code Review Rules
 
 - The PR description must document sufficient testing, including an
   end-to-end / real-CLI verification record — not only unit tests or type
   checks. Flag a PR whose description lacks a test plan or an e2e record.
+  A test record naming an older commit than the head is a note, not a blocking
+  finding; the body may have been edited after the review pass started.
 - Reject over-engineering. Favor the smallest code that solves the problem;
   flag speculative abstractions, unused flexibility or config, error handling
   for cases that cannot occur, and new CLI commands added where an existing

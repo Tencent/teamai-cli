@@ -3,7 +3,8 @@ import path from 'node:path';
 
 // ── Mocks ────────────────────────────────────────────────
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
     loadLocalConfig: vi.fn(),
     loadTeamConfig: vi.fn(),
     detectProjectConfig: vi.fn().mockResolvedValue(null),

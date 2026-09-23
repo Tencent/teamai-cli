@@ -17,7 +17,8 @@ vi.mock('../utils/git.js', () => ({
   autoPushTeamRepo: vi.fn(),
 }));
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: vi.fn(),
 }));
 
