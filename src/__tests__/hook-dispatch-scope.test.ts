@@ -95,6 +95,15 @@ describe('hook runs and the scope they belong to (#748)', () => {
     expect(fs.readFileSync(path.join(dataHome, 'usage.jsonl'), 'utf-8')).toContain('skill-a');
   });
 
+  it('a hook whose cwd no longer exists falls back to the user scope instead of failing', async () => {
+    userScope();
+    const gone = path.join(tmp, 'deleted-worktree');
+
+    await hook('post-tool-use', 'Skill', { session_id: 'sid-g', cwd: gone, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-g' } });
+
+    expect(fs.readFileSync(path.join(teamaiHome(), 'usage.jsonl'), 'utf-8')).toContain('skill-g');
+  });
+
   it('a project whose config cannot be read records nothing, not even in the user scope', async () => {
     userScope();
     const root = gitRepo('project-a');

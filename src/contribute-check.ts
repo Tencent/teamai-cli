@@ -709,6 +709,13 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
     log.debug('contribute-check: no STDIN data or no session ID');
     return;
   }
+  // Hooks of older installs still call this command in every project; a
+  // directory without teamai has no team to share with (#748).
+  const { resolveConfigForDir } = await import('./config.js');
+  if (!(await resolveConfigForDir(stdinData.cwd))) {
+    log.debug('contribute-check: teamai is not set up here, skipping');
+    return;
+  }
 
   const { stopStdoutUnsupported } = await import('./utils/tool-names.js');
   const tool = toolArg?.toLowerCase() ?? 'claude';

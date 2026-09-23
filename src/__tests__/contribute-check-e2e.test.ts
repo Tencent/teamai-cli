@@ -18,8 +18,16 @@ const SESSION_ID = 'e2e-test-session-001';
 const RAW_GITHUB_TOKEN = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const FIRST_TASK = `Fix auth retry for ${RAW_GITHUB_TOKEN}\nthen add regression coverage`;
 
+/** A temp HOME with a user-scope install: the nudge only runs where teamai is set up (#748). */
 function makeTmpHome(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-contribute-e2e-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-contribute-e2e-'));
+  const teamRepo = path.join(home, '.teamai', 'team-repo');
+  fs.mkdirSync(teamRepo, { recursive: true });
+  fs.writeFileSync(
+    path.join(home, '.teamai', 'config.yaml'),
+    `repo:\n  localPath: ${teamRepo}\n  remote: https://example.test/acme/team.git\nusername: tester\nscope: user\n`,
+  );
+  return home;
 }
 
 /** Build a hook STDIN JSON payload with a session_id. */
@@ -153,6 +161,16 @@ describe('contribute-check E2E', () => {
 
   afterEach(() => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it('stays silent where teamai is not set up (#748)', async () => {
+    fs.rmSync(path.join(tmpHome, '.teamai', 'config.yaml'));
+    writeEventsFile(tmpHome, buildRichSessionEvents(SESSION_ID));
+
+    const result = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID));
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(readSessionState(tmpHome, SESSION_ID)).toBeNull();
   });
 
   it('standalone Codex Stop queues the hint without emitting incompatible JSON', async () => {

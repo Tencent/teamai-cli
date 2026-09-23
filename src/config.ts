@@ -298,11 +298,15 @@ export async function resolveDataHomeForScope(scope: Scope, projectRoot?: string
  * set up here. A project config that exists but cannot be read is null too,
  * never the user scope: that project's hooks and usage must not reach the
  * user-scope team (#748). The hook dispatcher and every usage reader and writer
- * resolve through this, so they always agree on the scope.
+ * resolve through this, so they always agree on the scope. A directory that no
+ * longer exists (a hook payload naming a deleted worktree) holds no project
+ * config; git refuses to open it, so it is not asked.
  */
 export async function resolveConfigForDir(dir?: string): Promise<LocalConfig | null> {
+  const target = dir ?? process.cwd();
+  if (!(await pathExists(target))) return loadLocalConfig();
   let unreadable = false;
-  const project = await detectProjectConfig(dir ?? process.cwd(), () => { unreadable = true; });
+  const project = await detectProjectConfig(target, () => { unreadable = true; });
   if (project) return project;
   return unreadable ? null : loadLocalConfig();
 }
