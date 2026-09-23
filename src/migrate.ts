@@ -44,14 +44,20 @@ const SKIP_ENTRIES = new Set<string>([
 ]);
 
 /**
- * Whether a top-level entry stays behind: a SKIP_ENTRIES name, or an artifact of
- * one of those locks (`<lock>.<uuid>.tmp` from its exclusive create, its reclaim
- * `.sentinel` and `.new-*` temp), which a contending process creates and removes
- * while the copy runs (#760).
+ * The transient files `acquireLock` makes next to a lock (src/update.ts): the
+ * `<lock>.<uuid>.tmp` of its exclusive create, the reclaim `.sentinel` (with its
+ * own create temp and `.reclaim-<uuid>`), and the reclaim's `.new-<uuid>`. A
+ * contending process creates and removes them while the copy runs (#760).
  */
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const LOCK_ARTIFACT = new RegExp(
+  `^(?:${[SYNC_LOCK_FILENAME, '.update-lock'].map((l) => l.replace(/\./g, '\\.')).join('|')})` +
+    `(?:\\.sentinel(?:\\.${UUID}\\.tmp|\\.reclaim-${UUID})?|\\.${UUID}\\.tmp|\\.new-${UUID})$`,
+);
+
+/** Whether a top-level entry stays behind: a SKIP_ENTRIES name or a lock artifact. */
 function isSkippedEntry(name: string): boolean {
-  if (SKIP_ENTRIES.has(name)) return true;
-  return [SYNC_LOCK_FILENAME, '.update-lock'].some((lock) => name.startsWith(`${lock}.`));
+  return SKIP_ENTRIES.has(name) || LOCK_ARTIFACT.test(name);
 }
 
 // `pending-learnings/` is deliberately not in that set: it holds contributions

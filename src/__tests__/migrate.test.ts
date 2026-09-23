@@ -284,13 +284,20 @@ describe('runMigration', () => {
     await seedLegacyLayout();
     // A contending pull's temp file for the exclusive create, a reclaim
     // sentinel and a reclaim temp: each can appear or vanish mid-copy.
-    for (const name of ['.sync-lock.3f2a.tmp', '.sync-lock.sentinel', '.update-lock.new-abc']) {
+    const uuid = '3f2a9c1e-7b4d-4e8a-9c6f-0d1e2f3a4b5c';
+    const artifacts = [
+      `.sync-lock.${uuid}.tmp`, '.sync-lock.sentinel', `.sync-lock.sentinel.reclaim-${uuid}`,
+      `.sync-lock.sentinel.${uuid}.tmp`, `.update-lock.new-${uuid}`,
+    ];
+    for (const name of [...artifacts, '.update-lock.backup']) {
       await fse.writeFile(path.join(legacyDir, name), '{}');
     }
     const plan = await planMigration(repoRoot);
     await runMigration(plan!);
     const partition = projectDataHome(repoRoot);
-    expect((await fse.readdir(partition)).filter((n) => n.startsWith('.sync-lock') || n.startsWith('.update-lock'))).toEqual([]);
+    // Only the lock artifacts stay behind; a look-alike entry of the user's travels.
+    expect((await fse.readdir(partition)).filter((n) => n.startsWith('.sync-lock') || n.startsWith('.update-lock')))
+      .toEqual(['.update-lock.backup']);
   });
 
   it('carries contributions that are not published yet', async () => {

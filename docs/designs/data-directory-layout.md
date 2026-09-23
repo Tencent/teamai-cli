@@ -123,21 +123,18 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
      `O_CREAT|O_EXCL`), so the lock never exists without its content (#760); a
      filesystem without hard links falls back to `writeFile(path, payload, { flag: 'wx' })`.
      Payload is JSON `{ pid, startedAt, owner }` with a random `owner` token.
-   - On `EEXIST`, reclaim only a **stale** lock (dead pid via `process.kill(pid,0)`,
-     or unparseable content). The reclaim is **serialized behind an atomically-created
-     reclaim sentinel** and finished with an atomic rename-into-place, so concurrent
-     reclaimers cannot each end up believing they hold the lock; a live holder returns
-     "busy". Only a stale verdict allows that rename, so a live owner never reads as
-     stale (#760): an empty lock (only possible through the `wx` fallback or an older
-     teamai) is mid-write by its creator until it has stayed empty for 5 s, a pid
-     owned by another user (`EPERM`) is alive, and a lock that vanished
-     before it could be read gets one more exclusive create instead (a third process
-     may already have re-created it). A lock that exists but cannot be read
-     (`EACCES`) is held too, with a warning naming the file. A `wx` creator holds its
-     lock only if it wrote it within half the grace (no reclaimer can have judged it
-     stale by then) and its payload is still on disk; otherwise it gives the lock up.
-   - Migration skips the locks' transient artifacts (`<lock>.<uuid>.tmp`, `.sentinel`,
-     `.new-*`) along with the locks themselves.
+   - On `EEXIST`, reclaim only a **stale** lock: one whose owner is provably gone
+     (`process.kill(pid,0)` fails with `ESRCH`). The reclaim is **serialized behind an
+     atomically-created reclaim sentinel** and finished with an atomic rename-into-place,
+     so concurrent reclaimers cannot each end up believing they hold the lock; a live
+     holder returns "busy". Anything that cannot name a dead owner is held (#760): a
+     lock that cannot be read (`EACCES`), an empty or partly written one (the `wx`
+     fallback and older teamai open the file before writing), and a pid owned by another
+     user (`EPERM`). Such a lock left by a crash stays until removed by hand, and a
+     warning names it. A lock that vanished before it could be read gets one more
+     exclusive create instead (a third process may already have re-created it).
+   - Migration skips the locks' transient artifacts (`<lock>.<uuid>.tmp`, `.sentinel`
+     and its temps, `.new-<uuid>`) along with the locks themselves.
    - `releaseLock()` returns early when this process holds no owner token for the
      path, and otherwise deletes only when the on-disk `owner` still matches the token
      this process recorded — never another process's lock.

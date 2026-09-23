@@ -724,10 +724,7 @@ function eexist(): NodeJS.ErrnoException {
 
 describe('acquireLock', () => {
   it('falls back to an exclusive (wx) create when the lock cannot be hard-linked', async () => {
-    const written = new Map<string, string>();
     mockedFse.link.mockRejectedValue(Object.assign(new Error('EPERM'), { code: 'EPERM' }));
-    mockedFse.writeFile.mockImplementation(async (p: string, data: string) => { written.set(p, data); });
-    mockedFse.readFile.mockImplementation(async (p: string) => written.get(p) ?? '');
 
     const result = await acquireLock('/tmp/test-lock');
 

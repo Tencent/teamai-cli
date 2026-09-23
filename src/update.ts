@@ -215,7 +215,10 @@ function parseLockContent(content: string): { pid: number; owner?: string } | nu
   const trimmed = content.trim();
   if (!trimmed) return null;
   try {
-    const parsed = JSON.parse(trimmed) as Partial<LockPayload>;
+    const json: unknown = JSON.parse(trimmed);
+    // Legacy format: a bare PID, which is valid JSON too.
+    if (typeof json === 'number') return Number.isInteger(json) ? { pid: json } : null;
+    const parsed = json as Partial<LockPayload>;
     if (typeof parsed.pid === 'number' && !isNaN(parsed.pid)) {
       return { pid: parsed.pid, owner: typeof parsed.owner === 'string' ? parsed.owner : undefined };
     }
@@ -227,21 +230,18 @@ function parseLockContent(content: string): { pid: number; owner?: string } | nu
   }
 }
 
-/** How long an empty lock file is presumed to be mid-write by a live owner. */
-const EMPTY_LOCK_GRACE_MS = 5_000;
-
 /**
  * Inspect the lock at `resolved`: held by a live process, stale (its owning
- * process is gone, or its contents are unparseable), or missing. This is a
- * pure read; it never mutates the lock.
+ * process is gone), or missing. This is a pure read; it never mutates the lock.
  *
- * Only a verdict of stale lets a reclaimer rename over the lock, so a live
- * owner must never read as stale (#760): a lock that cannot be read, or whose
- * pid exists but belongs to another user (EPERM), is held. `exclusiveCreate`
- * never leaves a lock empty except on a filesystem without hard links (or an
- * older teamai); there an empty file is being written by its creator until it
- * has stayed empty past the grace period (its owner died in between), and a
- * creator that stalled that long yields when it finds its lock replaced.
+ * Only a verdict of stale lets a reclaimer rename over the lock, so only a
+ * lock whose owner is provably gone reads as stale (#760). Anything that
+ * cannot name a dead owner is held: a file that cannot be read (EACCES, e.g.
+ * another user's 0600 lock), an empty or partly written one (its creator may
+ * still be writing it: the O_EXCL fallback and older teamai open the file
+ * before writing), and a pid that exists but belongs to another user (EPERM).
+ * Such a lock left by a crash stays until removed by hand, so it is named in a
+ * warning.
  */
 async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
   let content: string;
@@ -250,19 +250,14 @@ async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') return 'missing';
-    // Unreadable (EACCES: e.g. another user's 0600 lock) cannot be proven dead.
     log.warn(`${resolved} cannot be read (${code}); treating it as held. Remove it if no teamai process is running.`);
     return 'live';
   }
-  if (!content.trim()) {
-    try {
-      return Date.now() - (await fse.stat(resolved)).mtimeMs > EMPTY_LOCK_GRACE_MS ? 'stale' : 'live';
-    } catch {
-      return 'missing';
-    }
-  }
   const parsed = parseLockContent(content);
-  if (!parsed) return 'stale'; // unparseable → no confirmable live owner
+  if (!parsed) {
+    log.warn(`${resolved} names no owner; treating it as held. Remove it if no teamai process is running.`);
+    return 'live';
+  }
   try {
     process.kill(parsed.pid, 0);
     return 'live'; // process alive → lock genuinely held
@@ -286,14 +281,17 @@ async function createOrInspect(resolved: string, payload: string): Promise<'acqu
 }
 
 /**
- * Atomic exclusive create. Returns true when this call created the file and
- * holds it, false when it already existed (EEXIST) or was given up.
+ * Atomic exclusive create. Returns true when this call created the file, false
+ * when it already existed (EEXIST). Any error other than EEXIST from the O_EXCL
+ * create propagates.
  *
  * The payload is written to a private temp file first and hard-linked to
  * `target`, which fails with EEXIST exactly like O_EXCL, so the lock never
- * exists without its content: an empty lock whose creator stalls could be
- * judged stale and taken over (#760). A filesystem without hard links falls
- * back to O_EXCL, where the file is opened before it is written.
+ * exists without its content (#760): a contender never sees a lock that names
+ * no owner, and an older teamai, which reclaims such a lock at once, cannot take
+ * it over mid-create. A filesystem without hard links falls
+ * back to O_EXCL, where the file is opened before it is written; lockState
+ * never reclaims such a file while it names no dead owner.
  */
 async function exclusiveCreate(target: string, payload: string): Promise<boolean> {
   const tmp = `${target}.${randomUUID()}.tmp`;
@@ -310,21 +308,13 @@ async function exclusiveCreate(target: string, payload: string): Promise<boolean
 }
 
 async function exclusiveCreateInPlace(target: string, payload: string): Promise<boolean> {
-  const started = Date.now();
   try {
     await fse.writeFile(target, payload, { flag: 'wx' });
+    return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
     throw err;
   }
-  // The file sat empty between open and write, and lockState lets a reclaimer
-  // take an empty lock that looks older than the grace. Written well inside it
-  // (half, for coarse mtimes such as FAT's 2 s), no reclaimer can have judged it
-  // stale; otherwise give it up and leave the file for its pid to age out. The
-  // read-back also catches a reclaim that already replaced it.
-  if (Date.now() - started >= EMPTY_LOCK_GRACE_MS / 2) return false;
-  const onDisk = await fse.readFile(target, 'utf-8').catch(() => null);
-  return onDisk === payload;
 }
 
 /**
