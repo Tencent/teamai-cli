@@ -26,7 +26,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ContentBlock, Session } from './ir.js';
 import { imagePlaceholderText } from './ir.js';
-import { isInjectedText, titleFromUserText } from './title.js';
+import { isInjectedText, titleFromUserText , visibleUserText } from './title.js';
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -343,7 +343,12 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
       if (b.type === 'thinking') {
         content.push({ type: 'reasoning', text: b.text });
       } else if (b.type === 'text') {
-        content.push({ type: 'text', text: b.text });
+        // IDE messages are the display layer (there is no separate raw copy
+        // like codex's response_item): strip injected wrappers
+        // (<user_query>/<timestamp>/<image_files>...) and attachment paths
+        // from user text so the bubble shows the real question.
+        const text = msg.role === 'user' ? visibleUserText(b.text) : b.text;
+        if (text) content.push({ type: 'text', text });
       } else if (b.type === 'image') {
         const ref = assetRef(b);
         if (ref) {
