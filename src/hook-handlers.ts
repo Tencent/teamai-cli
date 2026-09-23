@@ -214,8 +214,11 @@ const trackSlashHandler: HookHandler = {
     const prompt = stdin.prompt;
     if (typeof prompt !== 'string' || !prompt.startsWith('/')) return null;
 
-    // Extract skill name: first word after "/"
-    const match = prompt.match(/^\/([\w-]+)/);
+    // Extract skill name: first word after "/". Character class must match
+    // SKILL_NAME_REGEX (types.ts) — the CLI path (trackSlashCommand) already
+    // uses the full set; this handler was narrower, silently truncating names
+    // that contain dots or colons (both valid per the schema).
+    const match = prompt.match(/^\/([a-zA-Z0-9_\-:.]+)/);
     if (!match) return null;
 
     const skillName = match[1];
