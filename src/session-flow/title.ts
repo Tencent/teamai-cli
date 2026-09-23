@@ -148,7 +148,7 @@ export function visibleUserText(text: string): string {
 /** 只看「看起来就是路径」的片段：@tag: 开头或绝对路径开头（正文里的 http URL 不算）。 */
 const ATTACH_SEG_RE = /^@[A-Za-z_]+:/;
 const PATH_SEG_RE = /^(?:[A-Za-z]:)?[/\\]/;
-const HYGIENE_RE = /^\[tool_result/i;
+const HYGIENE_RE = /^\[(?:tool_result|image|file|attachment)\b/i;
 
 /**
  * 由首条用户消息得到「像人话」的标题。
