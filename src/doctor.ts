@@ -171,6 +171,7 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
  */
 async function buildHookChecks(
   toolPaths: TeamaiConfig['toolPaths'],
+  hookToolPaths: TeamaiConfig['toolPaths'],
   baseDir: string,
   localConfig: LocalConfig,
 ): Promise<Check[]> {
@@ -187,10 +188,17 @@ async function buildHookChecks(
       });
       continue;
     }
+    // A standalone hooks file (Copilot) is injected at the config's own scope
+    // (`reconcileTeamHooksForConfig` joins resolveToolBaseDir with the
+    // config-scoped `hooks`), so it is probed from `toolPaths`. Settings-based
+    // hooks follow resolveHookScope and are probed from `hookToolPaths`.
+    // Mixing the two — userScope `hooks/teamai.json` under <projectRoot> —
+    // reported Copilot missing right after a successful `hooks inject` (#732).
+    const settings = hookToolPaths[tool]?.settings;
     const hookPath = paths.hooks
       ? path.join(resolveToolBaseDir(tool, localConfig), paths.hooks)
-      : paths.settings
-        ? path.join(baseDir, paths.settings)
+      : settings
+        ? path.join(baseDir, settings)
         : undefined;
     if (!hookPath) continue;
     const settingsPath = hookPath;
@@ -387,7 +395,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
         + 'can push to the team repo (run with --verbose to see the push error).',
     },
     ...await buildEnabledToolChecks(ctx),
-    ...await buildHookChecks(hookToolPaths, baseDir, localConfig),
+    ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, localConfig),
     ...await buildDeliveryChecks(ctx),
     // Built only for `doctor`: the work is in building these, not in running
     // them, so skipping them post-pull is what keeps the budget for the rest.

@@ -289,6 +289,43 @@ describe('doctor — hook checks', () => {
         expect(allPassed).toBe(false);
     });
 
+    // Non-self project scope: `hooks inject` writes copilot at
+    // <projectRoot>/.github/hooks/teamai.json (the config's own scope), so doctor
+    // must probe that file — not userScope.hooks joined onto projectRoot.
+    it('checks project Copilot hooks where inject wrote them when userScope.hooks is set', async () => {
+        const projectRoot = '/tmp/teamai-doctor-copilot-project-userscope';
+        const hookPath = path.join(projectRoot, '.github', 'hooks', 'teamai.json');
+        mockedLoadLocalConfig.mockResolvedValue({
+            ...mockLocalConfig,
+            scope: 'project',
+            projectRoot,
+            enabledAgents: ['copilot'],
+        });
+        mockedLoadTeamConfig.mockResolvedValue({
+            ...mockTeamConfig,
+            sharing: { env: { injectShellProfile: false } },
+            toolPaths: {
+                copilot: {
+                    hooks: '.github/hooks/teamai.json',
+                    userScope: { hooks: 'hooks/teamai.json' },
+                },
+            },
+        });
+        mockedPathExists.mockImplementation(async (filePath: string) => (
+            filePath === hookPath || filePath === path.dirname(hookPath)
+        ));
+        mockedReadFileSafe.mockImplementation(async (filePath: string) => (
+            filePath === hookPath ? buildFullHooksContent() : null
+        ));
+
+        await doctor({});
+        const copilotLine = consoleSpy.mock.calls
+            .map((call) => String(call[0]))
+            .find((message) => message.includes('hooks in copilot'));
+
+        expect(copilotLine).toContain('✔');
+    });
+
     it('does not infer project Copilot installation from .github/hooks alone', async () => {
         const projectRoot = '/tmp/teamai-doctor-unselected-copilot';
         const copilotHome = '/tmp/teamai-doctor-unselected-home';

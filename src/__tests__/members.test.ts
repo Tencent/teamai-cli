@@ -43,7 +43,7 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-import { getMemberConfig, listMembers, mergeMemberConfig } from '../members.js';
+import { getMemberConfig, listMembers, memberReadRoots, mergeMemberConfig, readMemberConfig } from '../members.js';
 import { requireInit } from '../config.js';
 import { log } from '../utils/logger.js';
 
@@ -174,7 +174,19 @@ describe('listMembers', () => {
     await fse.remove(tmpDir);
   });
 
-  it('should show "No team members registered" when members dir is empty', async () => {
+  it('should show "No team members registered" when no root has member files', async () => {
+    mockRequireInit(cloneDir);
+
+    await listMembers({});
+
+    expect(log.info).toHaveBeenCalledWith('No team members registered');
+    expect(consoleSpy).not.toHaveBeenCalled();
+    // Listing is read-only: a cold start must not publish the reports branch.
+    expect(reportsMocks.refreshReportsWorktree).toHaveBeenCalledWith(expect.anything(), { pushIfCreated: false });
+    expect(reportsMocks.ensureReportsWorktree).toHaveBeenCalledWith(expect.anything(), { pushIfCreated: false });
+  });
+
+  it('lists members registered before the reports switch from the default-branch clone', async () => {
     mockRequireInit(cloneDir);
     await fse.writeFile(
       path.join(cloneDir, 'members', 'stale.yaml'),
@@ -187,8 +199,10 @@ describe('listMembers', () => {
 
     await listMembers({});
 
-    expect(log.info).toHaveBeenCalledWith('No team members registered');
-    expect(consoleSpy).not.toHaveBeenCalled();
+    const allOutput = consoleSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(allOutput).toContain('stale');
+    expect(allOutput).toContain('Leftover on clone');
+    expect(allOutput).toContain('Team members (1)');
     // Listing is read-only: a cold start must not publish the reports branch.
     expect(reportsMocks.refreshReportsWorktree).toHaveBeenCalledWith(expect.anything(), { pushIfCreated: false });
     expect(reportsMocks.ensureReportsWorktree).toHaveBeenCalledWith(expect.anything(), { pushIfCreated: false });
@@ -314,7 +328,7 @@ describe('listMembers', () => {
     expect(allOutput).toContain('legacy');
   });
 
-  it('does not list leftover members YAML on the default-branch clone', async () => {
+  it('lists the union of reports-branch and default-branch members', async () => {
     await writeReportsMember('alice.yaml', {
       username: 'alice',
       displayName: 'Alice Chen',
@@ -335,9 +349,98 @@ describe('listMembers', () => {
 
     const allOutput = consoleSpy.mock.calls.map((c) => c[0]).join('\n');
     expect(allOutput).toContain('alice');
+    expect(allOutput).toContain('stale');
+    expect(allOutput).toContain('Team members (2)');
+  });
+
+  it('prefers the reports-branch copy when both roots have the same member file', async () => {
+    await writeReportsMember('alice.yaml', {
+      username: 'alice',
+      displayName: 'Alice (branch)',
+      registeredAt: '2025-06-01T00:00:00.000Z',
+    });
+    await fse.writeFile(
+      path.join(cloneDir, 'members', 'alice.yaml'),
+      YAML.stringify({
+        username: 'alice',
+        displayName: 'Alice (pre-switch clone)',
+        registeredAt: '2025-01-01T00:00:00.000Z',
+      }),
+    );
+
+    mockRequireInit(cloneDir, 'alice');
+
+    await listMembers({ verbose: true });
+
+    const allOutput = consoleSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(allOutput).toContain('Alice (branch)');
+    expect(allOutput).not.toContain('Alice (pre-switch clone)');
     expect(allOutput).toContain('Team members (1)');
-    expect(allOutput).not.toContain('stale');
-    expect(allOutput).not.toContain('Leftover on clone');
+    expect(allOutput).toContain('registered: 2025-06-01T00:00:00.000Z');
+  });
+});
+
+describe('memberReadRoots', () => {
+  it('adds the default-branch clone as an inherited root behind the primary', () => {
+    const localConfig = {
+      repo: { localPath: '/data/team-repo', remote: 'https://git.example.com/team/repo.git' },
+      username: 'alice',
+    } as never;
+    expect(memberReadRoots('/data/reports-wt', localConfig)).toEqual(['/data/reports-wt', '/data/team-repo']);
+  });
+
+  it('returns a single root when the primary is the clone itself (HTTP path)', () => {
+    const localConfig = {
+      repo: { localPath: '/data/team-repo', remote: 'https://git.example.com/team/repo.git', kind: 'http' },
+      username: 'alice',
+    } as never;
+    expect(memberReadRoots('/data/team-repo', localConfig)).toEqual(['/data/team-repo']);
+  });
+});
+
+describe('readMemberConfig', () => {
+  let tmpDir: string;
+  let primaryRoot: string;
+  let inheritedRoot: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-test-'));
+    primaryRoot = path.join(tmpDir, 'reports-wt');
+    inheritedRoot = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(path.join(primaryRoot, 'members'));
+    await fse.ensureDir(path.join(inheritedRoot, 'members'));
+  });
+
+  afterEach(async () => {
+    await fse.remove(tmpDir);
+  });
+
+  it('falls back to the inherited root when the primary has no copy', async () => {
+    await fse.writeFile(
+      path.join(inheritedRoot, 'members', 'bob.yaml'),
+      YAML.stringify({ username: 'bob', registeredAt: '2025-01-01T00:00:00.000Z' }),
+    );
+
+    const result = await readMemberConfig([primaryRoot, inheritedRoot], 'bob');
+    expect(result?.username).toBe('bob');
+  });
+
+  it('prefers the primary root copy on conflict', async () => {
+    await fse.writeFile(
+      path.join(primaryRoot, 'members', 'bob.yaml'),
+      YAML.stringify({ username: 'bob', registeredAt: '2025-06-01T00:00:00.000Z' }),
+    );
+    await fse.writeFile(
+      path.join(inheritedRoot, 'members', 'bob.yaml'),
+      YAML.stringify({ username: 'bob', registeredAt: '2025-01-01T00:00:00.000Z' }),
+    );
+
+    const result = await readMemberConfig([primaryRoot, inheritedRoot], 'bob');
+    expect(result?.registeredAt).toBe('2025-06-01T00:00:00.000Z');
+  });
+
+  it('returns null when no root has the member', async () => {
+    expect(await readMemberConfig([primaryRoot, inheritedRoot], 'nobody')).toBeNull();
   });
 });
 

@@ -44,6 +44,8 @@ vi.mock('../usage-tracker.js', async () => {
     trackFromStdin: mockTrackFromParsed,
     trackSlashCommand: mockTrackSlashFromParsed,
     resolveSkillUse: actual.resolveSkillUse,
+    extractSkillName: actual.extractSkillName,
+    isValidSkillName: actual.isValidSkillName,
     appendUsageEvent: vi.fn().mockResolvedValue(undefined),
     updateKnownSkills: vi.fn().mockResolvedValue(undefined),
   };
@@ -1228,6 +1230,48 @@ describe('post-tool-use Skill-matcher dispatch routes Cursor SKILL.md Read to th
     expect(payload.data).toEqual({});
     expect(JSON.stringify(payload)).not.toContain('SYNTHETIC_SECRET_NOT_REAL');
     expect(JSON.stringify(payload)).not.toContain('secrets.ts');
+  });
+});
+
+describe('track-slash handler: dotted and colon skill names', () => {
+  it('tracks a skill name that contains a dot', async () => {
+    const { appendUsageEvent, updateKnownSkills } = await import('../usage-tracker.js');
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'prompt-submit' && r.handler.name === 'track-slash',
+    )!.handler;
+
+    vi.mocked(appendUsageEvent).mockClear();
+    vi.mocked(updateKnownSkills).mockClear();
+
+    await handler.execute(
+      { prompt: '/org.setup some args', hook_event_name: 'UserPromptSubmit' },
+      'claude',
+    );
+
+    expect(appendUsageEvent).toHaveBeenCalledOnce();
+    expect(vi.mocked(appendUsageEvent).mock.calls[0][0].skill).toBe('org.setup');
+    expect(updateKnownSkills).toHaveBeenCalledWith('org.setup');
+  });
+
+  it('tracks a skill name that contains a colon', async () => {
+    const { appendUsageEvent, updateKnownSkills } = await import('../usage-tracker.js');
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'prompt-submit' && r.handler.name === 'track-slash',
+    )!.handler;
+
+    vi.mocked(appendUsageEvent).mockClear();
+    vi.mocked(updateKnownSkills).mockClear();
+
+    await handler.execute(
+      { prompt: '/ns:deploy some args', hook_event_name: 'UserPromptSubmit' },
+      'claude',
+    );
+
+    expect(appendUsageEvent).toHaveBeenCalledOnce();
+    expect(vi.mocked(appendUsageEvent).mock.calls[0][0].skill).toBe('ns:deploy');
+    expect(updateKnownSkills).toHaveBeenCalledWith('ns:deploy');
   });
 });
 
