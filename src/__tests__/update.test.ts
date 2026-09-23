@@ -720,7 +720,7 @@ describe('hook refresh after update', () => {
 
 // ─── Unit tests: acquireLock / releaseLock ──────────────
 // Behavior-level tests against the fs-extra mock. True filesystem atomicity
-// (the `wx` exclusive-create race) and owner semantics are exercised against a
+// and owner semantics are exercised against a
 // real temp dir in lock-atomic.test.ts.
 
 function eexist(): NodeJS.ErrnoException {
@@ -759,8 +759,12 @@ describe('acquireLock', () => {
     expect(result).toBe(true);
     expect(mockedFse.mkdir).toHaveBeenCalledWith('/tmp/test-lock');
     expect(mockedFse.writeFile).toHaveBeenCalledWith(
-      expect.stringMatching(/[\\/]tmp[\\/]test-lock[\\/]\.owner$/),
+      expect.stringMatching(/[\\/]tmp[\\/]test-lock[\\/]\.owner\.create-/),
       expect.any(String),
+    );
+    expect(mockedFse.rename).toHaveBeenCalledWith(
+      expect.stringMatching(/[\\/]tmp[\\/]test-lock[\\/]\.owner\.create-/),
+      expect.stringMatching(/[\\/]tmp[\\/]test-lock[\\/]\.owner$/),
     );
   });
 

@@ -243,8 +243,9 @@ async function isLockStale(resolved: string): Promise<boolean> {
     mtimeMs = stat.mtimeMs;
     if (stat.isDirectory()) ownerPath = path.join(resolved, '.owner');
   } catch {
-    // Lock vanished between the existence check and stat — reclaimable.
-    return true;
+    // Metadata errors must not turn a live lock into a stale one. A later
+    // acquisition can retry once filesystem metadata is readable again.
+    return false;
   }
   try {
     content = await fse.readFile(ownerPath, 'utf-8');
@@ -289,7 +290,14 @@ async function exclusiveCreate(target: string, payload: string): Promise<boolean
       // create is still atomic on those filesystems, so use the directory as
       // the lock and write the payload only after ownership is established.
       await fse.mkdir(target);
-      await fse.writeFile(path.join(target, '.owner'), payload);
+      const ownerPath = path.join(target, '.owner');
+      const ownerTmp = `${ownerPath}.create-${randomUUID()}`;
+      try {
+        await fse.writeFile(ownerTmp, payload);
+        await fse.rename(ownerTmp, ownerPath);
+      } finally {
+        await fse.remove(ownerTmp).catch(() => {});
+      }
     }
     return true;
   } catch (err) {
