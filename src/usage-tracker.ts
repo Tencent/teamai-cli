@@ -312,7 +312,8 @@ export async function updateKnownSkills(skillName: string): Promise<void> {
 export async function readKnownSkills(): Promise<Set<string>> {
   const skills = new Set<string>();
 
-  // Source 1: this directory's scope usage.jsonl (unreported events since last truncation)
+  // Source 1: unreported events in the usage.jsonl of the scope governing the cwd
+  // (Source 2 below stays machine-wide; neither leaves the machine)
   const config = await resolveConfigForDir();
   const events = config ? await readUsageEvents(config) : [];
   for (const event of events) {
