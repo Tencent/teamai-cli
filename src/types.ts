@@ -584,7 +584,7 @@ export const LocalConfigSchema = z.object({
   /**
    * Per-machine map from a gateway/proxy model alias to a known Claude model
    * name, so cost/cache estimation works when the transcript records an opaque
-   * alias (e.g. `ep-qxst1hw4`) instead of `claude-opus-...`. The value must
+   * alias (e.g. `gateway-model-42`) instead of `claude-opus-...`. The value must
    * contain a token the price table matches (opus / sonnet / haiku / fable /
    * mythos + version). Unset means "match the raw model name only".
    */

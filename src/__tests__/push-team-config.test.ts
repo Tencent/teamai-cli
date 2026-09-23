@@ -173,6 +173,47 @@ describe('push carries teamai.yaml (source add regression)', () => {
     }
   });
 
+  it('rejects an invalid model catalog introduced by the latest pull', async () => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    const seed = path.join(tmpDir, 'seed');
+    fs.mkdirSync(path.join(seed, 'models'));
+    fs.writeFileSync(path.join(seed, 'models', 'models.yaml'), [
+      'profiles:',
+      '  - id: gateway',
+      '    name: Gateway',
+      '    base_url: https://example.test?api_key=sk-secret',
+      '    api_key: ${API_KEY}',
+      '    model_groups:',
+      '      - protocols: [anthropic]',
+      '        models: [claude]',
+      '',
+    ].join('\n'));
+    const seedGit = simpleGit(seed);
+    await seedGit.add('.');
+    await seedGit.commit('add invalid catalog');
+    await seedGit.push('origin', 'main');
+    expect(fs.existsSync(path.join(teamRepo, 'models', 'models.yaml'))).toBe(false);
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: {
+        repo: { localPath: teamRepo, remote: path.join(tmpDir, 'remote.git'), kind: undefined },
+        username: 'alice', scope: 'project', projectRoot: teamRepo,
+      },
+      teamConfig: { repo: 'acme/team', toolPaths: {} },
+    });
+    const previousExitCode = process.exitCode;
+    try {
+      const { push } = await import('../push.js');
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await push({ all: true });
+      errorSpy.mockRestore();
+      expect(process.exitCode).toBe(1);
+      expect(mockCreatePullRequest).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(teamRepo, 'models', 'models.yaml'))).toBe(true);
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
+
   it('config-only: returns a non-zero exit code when PR creation fails', async () => {
     const teamRepo = await initTeamRepos(tmpDir);
     const yamlPath = path.join(teamRepo, 'teamai.yaml');

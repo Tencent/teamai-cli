@@ -70,16 +70,23 @@ export async function writeFile(filePath: string, content: string): Promise<void
  * replaces it in one step, and on any error the temp file is removed and the
  * original left in place. Use this for a single-copy, must-not-be-lost file
  * such as a partition's config.yaml; `writeFile` (a plain overwrite) is fine
- * for regenerable files.
+ * for regenerable files. Pass options.mode to force restrictive permissions
+ * for a file that newly contains credentials.
  */
-export async function writeFileAtomic(filePath: string, content: string): Promise<void> {
+export async function writeFileAtomic(
+  filePath: string,
+  content: string,
+  options?: { mode?: number },
+): Promise<void> {
   const expanded = expandHome(filePath);
   await fse.ensureDir(path.dirname(expanded));
-  let mode = 0o600;
-  try {
-    mode = (await fse.stat(expanded)).mode & 0o777;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  let mode = options?.mode ?? 0o600;
+  if (options?.mode === undefined) {
+    try {
+      mode = (await fse.stat(expanded)).mode & 0o777;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
   const tmp = `${expanded}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   try {

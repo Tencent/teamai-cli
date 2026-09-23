@@ -1985,6 +1985,104 @@ Notify external endpoints when team events happen. Each endpoint declares a `url
 
 ---
 
+## Model profiles
+
+Model profiles point Claude Code, Codex, OpenCode, CodeBuddy, and WorkBuddy at a shared model gateway. Nothing changes an agent until you run `teamai models switch`; after that, `teamai pull` keeps the switched agents on the team's latest catalog.
+
+There are two sources, both in the same format:
+
+- `team:<id>` comes from the team repository's `models/models.yaml`. It holds URLs and model IDs, never a key.
+- `local:<id>` is a personal profile in `~/.teamai/models/models.yaml`, visible only on this machine.
+
+Plain `<id>` works while it is unique; if a team and a personal profile share an ID, write `team:<id>` or `local:<id>`.
+
+### Team catalog
+
+Create `models/models.yaml` in the team repository:
+
+```yaml
+profiles:
+  - id: tokenhub
+    name: Tencent TokenHub
+    base_url: https://tokenhub.tencentmaas.com
+    api_key: ${API_KEY}          # placeholder; each member configures the real key locally
+    model_groups:
+      - protocols: [anthropic, openai-chat-completions]
+        models:
+          - glm-5.3               # the first model is the default
+          - deepseek-v4-flash
+```
+
+- `base_url` is the gateway root. TeamAI calls it directly for `anthropic` and adds `/v1` for the OpenAI protocols, which matches [TokenHub](https://cloud.tencent.com/document/product/1823/130078).
+- `protocols` lists what the models in a group support: `anthropic`, `openai-chat-completions`, `openai-responses`. Put models with different protocol support in separate groups; each model ID appears once.
+- `api_key` must be the literal `${API_KEY}`. Unknown fields, duplicate model IDs, and URLs with credentials, a query, or a fragment are rejected, and `teamai push` refuses an invalid catalog.
+
+Which agents can use a profile follows from its protocols:
+
+| Agent | Needs | What `switch` writes |
+| --- | --- | --- |
+| Claude Code | `anthropic` | `~/.claude/settings.json`: gateway URL and key in `env`, every model in the `/model` picker, `opus`/`sonnet`/`haiku` mapped to matching gateway models (or the default) |
+| Codex | `openai-responses` | `~/.codex/config.toml`: the default model and a `[model_providers.teamai]` block |
+| OpenCode | any | `opencode.json`: one provider per protocol with every model |
+| CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json`: one entry per model |
+
+The example above has no `openai-responses` group, so Codex is left alone; add that protocol once your gateway serves those models over the Responses API.
+
+### Use a team profile
+
+```bash
+teamai models list                     # profiles, compatible agents, and where each is active
+teamai models switch tokenhub          # asks for the key the first time
+```
+
+`switch` updates every installed, compatible agent. Narrow it with `--agent claude` (repeatable), pick the default model with `--model deepseek-v4-flash`, or preview with `--dry-run`.
+
+To avoid storing the key, reference an environment variable instead:
+
+```bash
+teamai models configure tokenhub --from-env TOKENHUB_API_KEY
+printf '%s' "$TOKENHUB_API_KEY" | teamai models configure tokenhub --api-key-stdin
+```
+
+Codex, OpenCode, CodeBuddy, and WorkBuddy then read the variable themselves. Claude Code cannot, so `switch` writes the resolved key into `~/.claude/settings.json`. There is no `--api-key <value>` option, because arguments end up in shell history and process lists. Key files are written with mode `0600`.
+
+When the team edits the catalog, `teamai pull` re-applies it to the agents you switched to it.
+
+### Personal profiles
+
+```bash
+teamai models add my-gateway --name "My gateway" \
+  --protocol anthropic,openai-chat-completions \
+  --base-url https://gateway.example.com \
+  --model glm-5.3,deepseek-v4-flash \
+  --from-env MY_GATEWAY_KEY
+teamai models switch my-gateway
+```
+
+Omit flags to be prompted. Edit a personal profile with `configure`: `--name`, `--base-url`, `--model` (adds models), and `--protocol` (serves the models over another protocol; combine with `--model` to limit it to those models). You can also edit `~/.teamai/models/models.yaml` directly. Personal IDs may not reuse a team profile's ID.
+
+### Switching back
+
+```bash
+teamai models restore                  # every agent TeamAI switched
+teamai models restore --agent codex
+```
+
+TeamAI changes only the fields and entries it manages and records what they were before its first switch; `restore` puts that back. If you change a managed field yourself (for example the gateway URL in Claude's `env`), later switches, pulls, and restores leave that agent alone. Picking another model with Claude's `/model` is not treated as a takeover. Codex's `~/.codex/auth.json` is never touched.
+
+Claude notes: `switch` refuses while `settings.json` enables Bedrock, Vertex, or Foundry. It warns when the current shell exports `ANTHROPIC_*` values that differ from what TeamAI writes, because sessions started from that shell keep those values.
+
+Other commands:
+
+```bash
+teamai models show tokenhub            # key source, gateway, models, agents
+teamai models remove local:my-gateway  # agents keep their settings; restore still works
+```
+
+A full user-scope `teamai uninstall` restores managed model settings first and stops, keeping the record, if one cannot be restored. Project-scope uninstall leaves these machine-wide settings alone.
+
+---
+
 ## Uninstall
 
 `teamai uninstall` intelligently cleans up all teamai-managed resources, **preserving anything you created yourself**.
@@ -2004,6 +2102,7 @@ teamai uninstall --agent claude
 ```
 
 What gets removed:
+- TeamAI-managed model settings are restored first when ownership is still intact
 - teamai hooks in AI tool settings
 - The teamai rules block in CLAUDE.md (your own content is preserved)
 - Team-synced skills, including OpenClaw workspace skills (your own skills are preserved)

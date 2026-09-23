@@ -30,7 +30,7 @@ const RATES: Array<{ match: RegExp; rates: TokenRates }> = [
  * Estimate standard first-party API token cost. Subscription and enterprise
  * discounts are excluded.
  *
- * `aliases` maps a gateway/proxy model alias (e.g. `ep-qxst1hw4`) to a known
+ * `aliases` maps a gateway/proxy model alias (e.g. `gateway-model-42`) to a known
  * Claude model name the price table can match. When the raw `model` is an alias,
  * the mapped name is used for rate lookup; unmapped models fall through to the
  * built-in regexes unchanged.

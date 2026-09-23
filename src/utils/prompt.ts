@@ -99,6 +99,51 @@ export function askQuestion(prompt: string, defaultValue?: string): Promise<stri
   return question(getReadline(), prompt);
 }
 
+/** Ask for a secret without echoing it to the terminal. */
+export function askSecret(prompt: string): Promise<string> {
+  if (!isInteractive() || !process.stdout.isTTY || typeof process.stdin.setRawMode !== 'function') {
+    return Promise.reject(new Error(`Cannot prompt for a secret in non-interactive mode: "${prompt.trim()}"`));
+  }
+
+  // readline also listens to stdin. Close the shared instance before taking
+  // raw-mode ownership so the secret cannot be echoed or consumed twice.
+  closePrompt();
+  process.stdout.write(prompt);
+  process.stdin.setEncoding('utf8');
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.ref();
+
+  return new Promise((resolve, reject) => {
+    let value = '';
+    const finish = (error?: Error) => {
+      process.stdin.off('data', onData);
+      process.stdin.off('end', onEnd);
+      process.stdin.off('error', finish);
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+      process.stdin.unref();
+      process.stdout.write('\n');
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const onData = (chunk: string | Buffer) => {
+      const text = String(chunk);
+      for (const char of text) {
+        if (char === '\r' || char === '\n') return finish();
+        if (char === '\u0003') return finish(new Error('Prompt cancelled'));
+        if (char === '\u0004') return finish(value ? undefined : new Error('Prompt cancelled'));
+        if (char === '\u007f' || char === '\b') value = value.slice(0, -1);
+        else if (char >= ' ') value += char;
+      }
+    };
+    const onEnd = () => finish(new Error('Prompt cancelled'));
+    process.stdin.on('data', onData);
+    process.stdin.once('end', onEnd);
+    process.stdin.once('error', finish);
+  });
+}
+
 /**
  * Ask a yes/no confirmation question.
  *

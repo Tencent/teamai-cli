@@ -1917,6 +1917,104 @@ toolRoots:                     # 可选，每机器的工具根目录（见下�
 
 ---
 
+## 模型配置
+
+模型配置让 Claude Code、Codex、OpenCode、CodeBuddy 和 WorkBuddy 使用同一个模型网关。只有执行 `teamai models switch` 才会修改 Agent 配置；切换之后，`teamai pull` 会让已切换的 Agent 跟随团队目录的最新内容。
+
+配置有两个来源，格式完全相同：
+
+- `team:<id>` 来自团队仓库的 `models/models.yaml`，只包含 URL 和模型 ID，不包含密钥。
+- `local:<id>` 是 `~/.teamai/models/models.yaml` 中的个人配置，只在本机可见。
+
+ID 唯一时可直接写 `<id>`；团队和个人配置同名时，需写成 `team:<id>` 或 `local:<id>`。
+
+### 团队目录
+
+在团队仓库中创建 `models/models.yaml`：
+
+```yaml
+profiles:
+  - id: tokenhub
+    name: Tencent TokenHub
+    base_url: https://tokenhub.tencentmaas.com
+    api_key: ${API_KEY}          # 占位符；每位成员在本地配置真实密钥
+    model_groups:
+      - protocols: [anthropic, openai-chat-completions]
+        models:
+          - glm-5.3               # 第一个模型是默认模型
+          - deepseek-v4-flash
+```
+
+- `base_url` 是网关根地址。`anthropic` 协议直接使用该地址，OpenAI 协议在后面加 `/v1`，与 [TokenHub](https://cloud.tencent.com/document/product/1823/130078) 一致。
+- `protocols` 声明该组模型支持的协议：`anthropic`、`openai-chat-completions`、`openai-responses`。协议支持不同的模型放在不同分组，每个模型 ID 只出现一次。
+- `api_key` 必须写成 `${API_KEY}`。未知字段、重复模型 ID，以及带凭证、查询参数或片段的 URL 都会被拒绝；`teamai push` 会拦截无效目录。
+
+哪些 Agent 可以使用由协议决定：
+
+| Agent | 需要的协议 | `switch` 写入的内容 |
+| --- | --- | --- |
+| Claude Code | `anthropic` | `~/.claude/settings.json`：`env` 中的网关地址和密钥；全部模型进入 `/model` 选择器；`opus`/`sonnet`/`haiku` 映射到网关中名称匹配的模型，否则映射到默认模型 |
+| Codex | `openai-responses` | `~/.codex/config.toml`：默认模型和 `[model_providers.teamai]` 块 |
+| OpenCode | 任意 | `opencode.json`：每种协议一个 provider，包含全部模型 |
+| CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json`：每个模型一个条目 |
+
+上例没有 `openai-responses` 分组，因此不会修改 Codex；确认网关的 Responses 接口支持这些模型后，再加上该协议即可。
+
+### 使用团队配置
+
+```bash
+teamai models list                     # 配置、兼容的 Agent，以及在哪些 Agent 上生效
+teamai models switch tokenhub          # 首次使用时提示输入密钥
+```
+
+`switch` 会更新所有已安装且兼容的 Agent。可以用 `--agent claude`（可重复）缩小范围，用 `--model deepseek-v4-flash` 指定默认模型，用 `--dry-run` 预览。
+
+如果不想保存密钥，可以改为引用环境变量：
+
+```bash
+teamai models configure tokenhub --from-env TOKENHUB_API_KEY
+printf '%s' "$TOKENHUB_API_KEY" | teamai models configure tokenhub --api-key-stdin
+```
+
+Codex、OpenCode、CodeBuddy 和 WorkBuddy 会自行读取该变量。Claude Code 不支持，所以 `switch` 会把解析后的密钥写入 `~/.claude/settings.json`。命令刻意不提供 `--api-key <值>`，因为命令参数会进入 shell 历史和进程列表。密钥文件权限为 `0600`。
+
+团队修改目录后，`teamai pull` 会把新内容重新应用到已切换到该配置的 Agent。
+
+### 个人配置
+
+```bash
+teamai models add my-gateway --name "My gateway" \
+  --protocol anthropic,openai-chat-completions \
+  --base-url https://gateway.example.com \
+  --model glm-5.3,deepseek-v4-flash \
+  --from-env MY_GATEWAY_KEY
+teamai models switch my-gateway
+```
+
+省略参数时会交互输入。用 `configure` 修改个人配置：`--name`、`--base-url`、`--model`（追加模型）和 `--protocol`（让模型额外支持某协议；配合 `--model` 可只作用于这些模型）。也可以直接编辑 `~/.teamai/models/models.yaml`。个人配置的 ID 不能与团队配置重名。
+
+### 恢复
+
+```bash
+teamai models restore                  # 所有被 TeamAI 切换过的 Agent
+teamai models restore --agent codex
+```
+
+TeamAI 只修改自己管理的字段和条目，并记录首次切换前的值，`restore` 会还原这些值。如果你自己改了受管字段（例如 Claude `env` 中的网关地址），之后的切换、pull 和恢复都会跳过该 Agent。在 Claude 中用 `/model` 选择其他模型不算接管。Codex 的 `~/.codex/auth.json` 永远不会被修改。
+
+Claude 注意事项：`settings.json` 启用了 Bedrock、Vertex 或 Foundry 时，`switch` 会拒绝切换。当前 shell 导出的 `ANTHROPIC_*` 与 TeamAI 写入的值不一致时会给出警告，因为从该 shell 启动的会话仍会使用这些值。
+
+其他命令：
+
+```bash
+teamai models show tokenhub            # 密钥来源、网关、模型和 Agent
+teamai models remove local:my-gateway  # Agent 保留当前配置，restore 仍然可用
+```
+
+用户级完整 `teamai uninstall` 会先恢复受管的模型配置；如有无法恢复的配置，会停止卸载并保留恢复记录。项目级卸载不改动这些机器级配置。
+
+---
+
 ## 卸载
 
 `teamai uninstall` 会智能清理所有 teamai 管理的资源，**保留用户自建内容**。
@@ -1936,6 +2034,7 @@ teamai uninstall --agent claude
 ```
 
 移除内容：
+- 如果 ownership 仍有效，先恢复 TeamAI 管理的模型配置
 - AI 工具 settings 中的 teamai hooks
 - CLAUDE.md 中的 teamai rules 块（保留用户自写内容）
 - 团队同步的 skills，包括 OpenClaw workspace skills（保留用户自建 skills）

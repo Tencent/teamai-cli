@@ -1155,6 +1155,32 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
       }
     }
 
+    // Model profiles are machine-global, independent of a project's resources.
+    // Only removal of the user-scope TeamAI home may restore them. Run this
+    // gate before MCP cleanup so a model conflict cannot partially uninstall
+    // integrations in this or another worktree.
+    if (plan.includeShared && localConfig.scope === 'user') {
+      let modelRestoreIncomplete = false;
+      try {
+        const { ALL_MODEL_AGENTS, restoreModelProfiles } = await import('./models/switch.js');
+        const results = await restoreModelProfiles(ALL_MODEL_AGENTS);
+        const restored = results.filter((result) => result.status === 'restored').length;
+        if (restored > 0) log.info(`Restored model settings for ${restored} agent(s)`);
+        for (const result of results.filter((item) => item.status === 'failed' || item.status === 'skipped')) {
+          log.warn(result.message);
+          modelRestoreIncomplete = true;
+        }
+      } catch (e) {
+        log.warn(`Failed to restore TeamAI-managed model settings: ${(e as Error).message}`);
+        modelRestoreIncomplete = true;
+      }
+      if (modelRestoreIncomplete) {
+        log.error('Cannot remove TeamAI home while model restoration is incomplete. Resolve the model conflict or run `teamai models restore` first.');
+        process.exitCode = 1;
+        return;
+      }
+    }
+
     // MCP cleanup must run before executeRemoval deletes ~/.teamai/: ownership is
     // tracked in managed-mcp.json inside that directory. Hooks already do this
     // inside executeRemoval for the same reason. MCP servers are shared
@@ -1252,6 +1278,21 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     }
 
     try {
+      try {
+        const { ALL_MODEL_AGENTS, restoreModelProfiles } = await import('./models/switch.js');
+        const results = await restoreModelProfiles(ALL_MODEL_AGENTS);
+        const incomplete = results.filter((result) => result.status === 'failed' || result.status === 'skipped');
+        if (incomplete.length > 0) {
+          for (const result of incomplete) log.warn(result.message);
+          log.error('Cannot remove TeamAI home while model restoration is incomplete.');
+          process.exitCode = 1;
+          return;
+        }
+      } catch (e) {
+        log.warn(`Failed to restore TeamAI-managed model settings: ${(e as Error).message}`);
+        process.exitCode = 1;
+        return;
+      }
       await teardownPlugins();
       await remove(home);
       log.success(`Removed ${home}/`);

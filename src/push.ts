@@ -30,6 +30,7 @@ import {
 } from './push-namespaces.js';
 import { askQuestion, askSelection, isInteractive } from './utils/prompt.js';
 import { pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.js';
+import { loadTeamProfiles } from './models/profile.js';
 
 /**
  * Filter a list of repo-root-relative paths (e.g. "rules/", "env/") down to
@@ -821,6 +822,16 @@ async function pushCore(
       teamRepoStale = true;
       pullSpin.warn(`Pull failed: ${(e as Error).message}`);
     }
+  }
+
+  // Validate the refreshed checkout, not the stale local clone. A pull can
+  // introduce an invalid catalog even when the pre-pull file was valid.
+  try {
+    await loadTeamProfiles(localConfig.repo.localPath);
+  } catch (error) {
+    log.error(`Cannot push with an invalid model catalog: ${(error as Error).message}`);
+    process.exitCode = 1;
+    return;
   }
 
   // --project is a destination override expressed as a logical project. Each

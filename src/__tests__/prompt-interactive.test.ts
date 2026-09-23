@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { isInteractive, askQuestion, askConfirmation, askSelection } from '../utils/prompt.js';
+import { isInteractive, askQuestion, askConfirmation, askSelection, askSecret } from '../utils/prompt.js';
 
 /**
  * `isInteractive` is the single predicate every prompt and every provider login
@@ -65,5 +65,11 @@ describe('isInteractive', () => {
     await expect(askConfirmation('Overwrite? [y/N] ', true)).resolves.toBe(true);
     await expect(askSelection('Pick: ', 3, true)).resolves.toEqual([0, 1, 2]);
     await expect(askSelection('Pick: ', 3)).resolves.toBeNull();
+  });
+
+  it('rejects secret prompts under a pseudo-terminal in non-interactive mode', async () => {
+    setTTY(true);
+    process.env.TEAMAI_NONINTERACTIVE = '1';
+    await expect(askSecret('API key: ')).rejects.toThrow(/non-interactive/);
   });
 });

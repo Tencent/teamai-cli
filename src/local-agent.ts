@@ -2543,6 +2543,12 @@ async function applyModelConfig(
   if (agentKind === 'claude' && workspacePath) {
     throw new Error('apply_model_config: workspace scope is unsupported for claude');
   }
+  if (!workspacePath) {
+    // An explicit profile switch takes precedence over server delivery. Keep
+    // both the Agent config and delivery manifest intact for a later restore.
+    const { isModelProfileManaged } = await import('./models/switch.js');
+    if (await isModelProfileManaged(agentKind)) return;
+  }
 
   let scopeManifest: BuddyModelManifest = manifest;
   if (workspacePath) {

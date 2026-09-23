@@ -207,6 +207,34 @@ Generated: do not edit by hand. Regenerate with
   - `teamai webhook test` — Send test event to webhook endpoints
     - `--url <url>` — Test specific endpoint URL
 
+## models
+
+- `teamai models` — Share gateway model profiles and switch agents to them
+  - `teamai models list` — List team and personal model profiles and the agents using them
+  - `teamai models show <profile>` — Show a model profile without revealing its API key
+  - `teamai models add <id>` — Add a personal model profile stored only on this machine
+    - `--name <name>` — Display name
+    - `--protocol <protocols>` — Comma-separated: anthropic, openai-chat-completions, openai-responses
+    - `--base-url <url>` — Gateway root URL (without /v1)
+    - `--model <ids>` — Comma-separated model IDs; the first is the default
+    - `--from-env <name>` — Read the API key from this environment variable
+    - `--api-key-stdin` — Read the API key from stdin without placing it in shell history
+  - `teamai models configure <profile>` — Set the API key of a profile, or edit a personal profile
+    - `--from-env <name>` — Read the API key from this environment variable
+    - `--api-key-stdin` — Read the API key from stdin without placing it in shell history
+    - `--name <name>` — Personal profiles: new display name
+    - `--base-url <url>` — Personal profiles: new gateway root URL
+    - `--protocol <protocols>` — Personal profiles: serve models over these protocols too
+    - `--model <ids>` — Personal profiles: add model IDs
+  - `teamai models switch <profile>` — Point agents at a model profile (every compatible agent by default)
+    - `--agent <name>` — Only switch this agent. Repeatable or comma-separated.
+    - `--model <id>` — Default model to select (defaults to the first in the profile)
+    - `--dry-run` — Show what would change without writing
+  - `teamai models restore` — Restore agent model settings captured before the first TeamAI switch
+    - `--agent <name>` — Only restore this agent. Repeatable or comma-separated.
+    - `--dry-run` — Show what would change without writing
+  - `teamai models remove <profile>` — Remove a personal model profile without changing agent settings
+
 ## stats
 
 - `teamai stats` — Show local skill usage statistics

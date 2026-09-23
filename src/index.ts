@@ -713,6 +713,82 @@ webhookCmd
     await testWebhook(cmdOpts.url);
   });
 
+// ─── Model profile commands ─────────────────────────────
+
+/** Model commands fail with one readable line instead of a stack trace. */
+async function runModelsCommand(run: (commands: typeof import('./models-cmd.js')) => Promise<void>): Promise<void> {
+  try {
+    await run(await import('./models-cmd.js'));
+  } catch (error) {
+    log.error((error as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+const collectRepeatable = (val: string, acc: string[]) => acc.concat(val);
+
+const modelsCmd = program
+  .command('models')
+  .description('Share gateway model profiles and switch agents to them');
+
+modelsCmd
+  .command('list')
+  .description('List team and personal model profiles and the agents using them')
+  .action(() => runModelsCommand((m) => m.modelsList()));
+
+modelsCmd
+  .command('show <profile>')
+  .description('Show a model profile without revealing its API key')
+  .action((profile: string) => runModelsCommand((m) => m.modelsShow(profile)));
+
+modelsCmd
+  .command('add <id>')
+  .description('Add a personal model profile stored only on this machine')
+  .option('--name <name>', 'Display name')
+  .option('--protocol <protocols>', 'Comma-separated: anthropic, openai-chat-completions, openai-responses')
+  .option('--base-url <url>', 'Gateway root URL (without /v1)')
+  .option('--model <ids>', 'Comma-separated model IDs; the first is the default')
+  .option('--from-env <name>', 'Read the API key from this environment variable')
+  .option('--api-key-stdin', 'Read the API key from stdin without placing it in shell history')
+  .action((id: string, cmdOpts) => runModelsCommand((m) => m.modelsAdd(id, cmdOpts)));
+
+modelsCmd
+  .command('configure <profile>')
+  .description('Set the API key of a profile, or edit a personal profile')
+  .option('--from-env <name>', 'Read the API key from this environment variable')
+  .option('--api-key-stdin', 'Read the API key from stdin without placing it in shell history')
+  .option('--name <name>', 'Personal profiles: new display name')
+  .option('--base-url <url>', 'Personal profiles: new gateway root URL')
+  .option('--protocol <protocols>', 'Personal profiles: serve models over these protocols too')
+  .option('--model <ids>', 'Personal profiles: add model IDs')
+  .action((profile: string, cmdOpts) => runModelsCommand((m) => m.modelsConfigure(profile, cmdOpts)));
+
+modelsCmd
+  .command('switch <profile>')
+  .description('Point agents at a model profile (every compatible agent by default)')
+  .option('--agent <name>', 'Only switch this agent. Repeatable or comma-separated.', collectRepeatable, [] as string[])
+  .option('--model <id>', 'Default model to select (defaults to the first in the profile)')
+  .option('--dry-run', 'Show what would change without writing')
+  .action((profile: string, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    return runModelsCommand((m) => m.modelsSwitch(profile, { ...globalOpts, ...cmdOpts }));
+  });
+
+modelsCmd
+  .command('restore')
+  .description('Restore agent model settings captured before the first TeamAI switch')
+  .option('--agent <name>', 'Only restore this agent. Repeatable or comma-separated.', collectRepeatable, [] as string[])
+  .option('--dry-run', 'Show what would change without writing')
+  .action((cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    return runModelsCommand((m) => m.modelsRestore({ ...globalOpts, ...cmdOpts }));
+  });
+
+modelsCmd
+  .command('remove <profile>')
+  .description('Remove a personal model profile without changing agent settings')
+  .action((profile: string) => runModelsCommand((m) => m.modelsRemove(profile)));
+
 // ─── Usage tracking commands ────────────────────────────
 
 program

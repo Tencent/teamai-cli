@@ -1012,6 +1012,15 @@ async function pullForScope(
       log.debug(`Learnings/index sync skipped: ${(e as Error).message}`);
     }
   };
+  // Agents the user explicitly switched to one of this team's model profiles
+  // follow catalog updates; other agents are never touched by a pull.
+  let modelCatalogHint: string | undefined;
+  try {
+    const { syncTeamModelProfiles } = await import('./models-cmd.js');
+    modelCatalogHint = await syncTeamModelProfiles(localConfig, { dryRun: options.dryRun });
+  } catch (error) {
+    log.warn(`[${scopeLabel}] Team model profiles were not updated: ${(error as Error).message}`);
+  }
 
   // Step 1b: Skip sync if the repo version hasn't changed since last pull
   let currentTargets: string[] | null = null;
@@ -1071,6 +1080,10 @@ async function pullForScope(
       log.debug(`[${scopeLabel}] Rev check failed, proceeding with full sync`);
     }
   }
+
+  // Mention unused team model profiles only when the repo moved, not on
+  // every already-synced pull.
+  if (modelCatalogHint) log.info(`[${scopeLabel}] ${modelCatalogHint}`);
 
   const excludedSkills = new Set(localConfig.excludedSkills ?? []);
 
