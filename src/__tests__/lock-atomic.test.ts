@@ -128,6 +128,38 @@ describe('acquireLock never takes over a lock another live process may hold (#76
     await releaseLock(lockPath);
   });
 
+  it('under the reclaim sentinel, does not rename over a stale lock that vanished and was re-created', async () => {
+    // The first pass sees a dead owner and takes the sentinel; by the second pass
+    // the dead lock was cleared and another process re-created it.
+    const dead = JSON.stringify({ pid: 999999, owner: 'dead', startedAt: 'x' });
+    fs.writeFileSync(lockPath, dead);
+    const readFile = vi.spyOn(fse, 'readFile')
+      .mockImplementationOnce(async () => dead)
+      .mockImplementationOnce(async () => {
+        fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, owner: 'other', startedAt: 'x' }));
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      });
+    try {
+      expect(await acquireLock(lockPath)).toBe(false);
+    } finally {
+      readFile.mockRestore();
+    }
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).owner).toBe('other');
+  });
+
+  it('does not reclaim a lock whose owner is alive but belongs to another user (EPERM)', async () => {
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 424242, owner: 'root-owned', startedAt: 'x' }));
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+    });
+    try {
+      expect(await acquireLock(lockPath)).toBe(false);
+    } finally {
+      kill.mockRestore();
+    }
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).owner).toBe('root-owned');
+  });
+
   it('does not reclaim an empty lock that was just created (its owner is still writing it)', async () => {
     fs.writeFileSync(lockPath, '');
     expect(await acquireLock(lockPath)).toBe(false);

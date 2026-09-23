@@ -232,13 +232,14 @@ const EMPTY_LOCK_GRACE_MS = 5_000;
 
 /**
  * Inspect the lock at `resolved`: held by a live process, stale (its owning
- * process is gone, or its contents are unparseable, so no live owner can be
- * confirmed), or missing. This is a pure read; it never mutates the lock.
+ * process is gone, or the file cannot be read or parsed, so no live owner can
+ * be confirmed), or missing. This is a pure read; it never mutates the lock.
  *
- * Only a verdict of stale lets a reclaimer rename over the lock, so a doubt
- * never reads as stale (#760): an empty file is being written by its creator
- * (`exclusiveCreate` opens the file before writing it), unless it has stayed
- * empty past the grace period (its owner died in between).
+ * Only a verdict of stale lets a reclaimer rename over the lock, so a live
+ * owner must never read as stale (#760): an empty file is being written by its
+ * creator (`exclusiveCreate` opens the file before writing it), unless it has
+ * stayed empty past the grace period (its owner died in between), and a pid
+ * that exists but belongs to another user (EPERM) is alive.
  */
 async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
   let content: string;
@@ -259,8 +260,9 @@ async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'
   try {
     process.kill(parsed.pid, 0);
     return 'live'; // process alive → lock genuinely held
-  } catch {
-    return 'stale'; // ESRCH → owning process is gone
+  } catch (err) {
+    // EPERM: alive, owned by another user. ESRCH: the owning process is gone.
+    return (err as NodeJS.ErrnoException).code === 'EPERM' ? 'live' : 'stale';
   }
 }
 

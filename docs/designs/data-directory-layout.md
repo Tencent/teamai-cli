@@ -125,10 +125,12 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
      or unparseable content). The reclaim is **serialized behind an atomically-created
      reclaim sentinel** and finished with an atomic rename-into-place, so concurrent
      reclaimers cannot each end up believing they hold the lock; a live holder returns
-     "busy". Only a stale verdict allows that rename, so a doubt never reads as stale
-     (#760): an empty lock is mid-write by its creator until it has stayed empty for
-     5 s, and a lock that vanished before it could be read gets one more exclusive
-     create instead (a third process may already have re-created it).
+     "busy". Only a stale verdict allows that rename, so a live owner never reads as
+     stale (#760): an empty lock is mid-write by its creator until it has stayed empty
+     for 5 s, a pid owned by another user (`EPERM`) is alive, and a lock that vanished
+     before it could be read gets one more exclusive create instead (a third process
+     may already have re-created it). A lock that exists but cannot be read still
+     counts as stale.
    - `releaseLock()` returns early when this process holds no owner token for the
      path, and otherwise deletes only when the on-disk `owner` still matches the token
      this process recorded — never another process's lock.
