@@ -43,6 +43,17 @@ const SKIP_ENTRIES = new Set<string>([
   '.update-lock',
 ]);
 
+/**
+ * Whether a top-level entry stays behind: a SKIP_ENTRIES name, or an artifact of
+ * one of those locks (`<lock>.<uuid>.tmp` from its exclusive create, its reclaim
+ * `.sentinel` and `.new-*` temp), which a contending process creates and removes
+ * while the copy runs (#760).
+ */
+function isSkippedEntry(name: string): boolean {
+  if (SKIP_ENTRIES.has(name)) return true;
+  return [SYNC_LOCK_FILENAME, '.update-lock'].some((lock) => name.startsWith(`${lock}.`));
+}
+
 // `pending-learnings/` is deliberately not in that set: it holds contributions
 // the member has already made, and nothing else has a copy of them, so it has
 // to travel with the partition.
@@ -272,7 +283,7 @@ export async function runMigration(
         const rel = path.relative(legacyDir, src);
         if (!rel) return true; // the root itself
         const top = rel.split(path.sep)[0];
-        return !SKIP_ENTRIES.has(top);
+        return !isSkippedEntry(top);
       },
     });
 
@@ -548,7 +559,7 @@ async function mergeDirIntoPartition(src: string, dest: string): Promise<void> {
 /** Top-level entries under a legacy `.teamai/` that migration will copy. */
 async function listMigratableEntries(legacyDir: string): Promise<string[]> {
   const names = await fse.readdir(legacyDir);
-  return names.filter((n) => !SKIP_ENTRIES.has(n));
+  return names.filter((n) => !isSkippedEntry(n));
 }
 
 /**

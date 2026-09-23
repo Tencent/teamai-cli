@@ -280,6 +280,19 @@ describe('runMigration', () => {
     expect(await fse.pathExists(path.join(partition, '.update-lock'))).toBe(false);
   });
 
+  it('ignores lock artifacts that come and go while it copies (#760)', async () => {
+    await seedLegacyLayout();
+    // A contending pull's temp file for the exclusive create, a reclaim
+    // sentinel and a reclaim temp: each can appear or vanish mid-copy.
+    for (const name of ['.sync-lock.3f2a.tmp', '.sync-lock.sentinel', '.update-lock.new-abc']) {
+      await fse.writeFile(path.join(legacyDir, name), '{}');
+    }
+    const plan = await planMigration(repoRoot);
+    await runMigration(plan!);
+    const partition = projectDataHome(repoRoot);
+    expect((await fse.readdir(partition)).filter((n) => n.startsWith('.sync-lock') || n.startsWith('.update-lock'))).toEqual([]);
+  });
+
   it('carries contributions that are not published yet', async () => {
     await seedLegacyLayout();
     // Unlike a worktree, the queue holds work the member has already done and

@@ -248,8 +248,11 @@ async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'
   try {
     content = await fse.readFile(resolved, 'utf-8');
   } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return 'missing';
     // Unreadable (EACCES: e.g. another user's 0600 lock) cannot be proven dead.
-    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'live';
+    log.warn(`${resolved} cannot be read (${code}); treating it as held. Remove it if no teamai process is running.`);
+    return 'live';
   }
   if (!content.trim()) {
     try {
@@ -283,8 +286,8 @@ async function createOrInspect(resolved: string, payload: string): Promise<'acqu
 }
 
 /**
- * Atomic exclusive create. Returns true when this call created the file, false
- * when it already existed (EEXIST). Any other error propagates.
+ * Atomic exclusive create. Returns true when this call created the file and
+ * holds it, false when it already existed (EEXIST) or was given up.
  *
  * The payload is written to a private temp file first and hard-linked to
  * `target`, which fails with EEXIST exactly like O_EXCL, so the lock never
@@ -307,15 +310,19 @@ async function exclusiveCreate(target: string, payload: string): Promise<boolean
 }
 
 async function exclusiveCreateInPlace(target: string, payload: string): Promise<boolean> {
+  const started = Date.now();
   try {
     await fse.writeFile(target, payload, { flag: 'wx' });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
     throw err;
   }
-  // The file sat empty between open and write. If this process stalled there
-  // past the empty-lock grace, a reclaimer may have replaced it, and this write
-  // went to the replaced file: only our payload at `target` means we hold it.
+  // The file sat empty between open and write, and lockState lets a reclaimer
+  // take an empty lock that looks older than the grace. Written well inside it
+  // (half, for coarse mtimes such as FAT's 2 s), no reclaimer can have judged it
+  // stale; otherwise give it up and leave the file for its pid to age out. The
+  // read-back also catches a reclaim that already replaced it.
+  if (Date.now() - started >= EMPTY_LOCK_GRACE_MS / 2) return false;
   const onDisk = await fse.readFile(target, 'utf-8').catch(() => null);
   return onDisk === payload;
 }
@@ -370,10 +377,11 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
 /**
  * Try to acquire a lock. Returns false if another live process holds it.
  *
- * The happy path is a single atomic exclusive create (`writeFile(..., { flag: 'wx' })`
- * = O_CREAT|O_EXCL), so exactly one racing process wins an uncontended lock — this
- * replaces the previous check-then-write, where two processes could both observe
- * "no lock" and both succeed.
+ * The happy path is a single atomic exclusive create (a fully written temp file
+ * hard-linked to the lock name, or O_CREAT|O_EXCL without hard links), so exactly
+ * one racing process wins an uncontended lock — this replaces the previous
+ * check-then-write, where two processes could both observe "no lock" and both
+ * succeed.
  *
  * Reclaiming a STALE lock (dead owner / unparseable content) is serialized behind
  * a reclaim sentinel and completed with an atomic rename-into-place, so concurrent

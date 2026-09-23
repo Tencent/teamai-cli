@@ -133,8 +133,11 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
      owned by another user (`EPERM`) is alive, and a lock that vanished
      before it could be read gets one more exclusive create instead (a third process
      may already have re-created it). A lock that exists but cannot be read
-     (`EACCES`) is held too. A `wx` creator that stalled past the 5 s grace checks
-     that its own payload is on disk and yields if the lock was replaced.
+     (`EACCES`) is held too, with a warning naming the file. A `wx` creator holds its
+     lock only if it wrote it within half the grace (no reclaimer can have judged it
+     stale by then) and its payload is still on disk; otherwise it gives the lock up.
+   - Migration skips the locks' transient artifacts (`<lock>.<uuid>.tmp`, `.sentinel`,
+     `.new-*`) along with the locks themselves.
    - `releaseLock()` returns early when this process holds no owner token for the
      path, and otherwise deletes only when the on-disk `owner` still matches the token
      this process recorded — never another process's lock.

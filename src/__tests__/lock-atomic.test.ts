@@ -7,10 +7,11 @@ import { acquireLock, releaseLock } from '../update.js';
 
 // ─── Real-filesystem tests for the atomic lock (issue #374 P0) ──────────────
 //
-// These exercise acquireLock/releaseLock against a real temp directory (no fs
-// mock), so the OS-level O_CREAT|O_EXCL ('wx') exclusivity and the on-disk owner
-// token are genuinely tested — the thing the previous check-then-write lock got
-// wrong.
+// These exercise acquireLock/releaseLock against a real temp directory, so the
+// OS-level exclusivity (link's EEXIST, O_CREAT|O_EXCL without hard links) and the
+// on-disk owner token are genuinely tested — the thing the previous
+// check-then-write lock got wrong. Spies on fs-extra only stage the interleavings
+// a single process cannot produce on its own (#760).
 
 let tmpDir: string;
 let lockPath: string;
@@ -200,43 +201,60 @@ describe('acquireLock never takes over a lock another live process may hold (#76
     await releaseLock(lockPath);
   });
 
-  it('without hard links, a creator stalled past the empty-lock grace yields to the reclaimer', async () => {
+  describe('without hard links, a creator stalled past the empty-lock grace', () => {
     // O_EXCL fallback: the first acquirer opens the lock and stalls before
-    // writing; a second one, 10 s later, reclaims it. The stalled write then
-    // lands in the replaced file, and the first acquirer must not report success.
-    const link = vi.spyOn(fse, 'link').mockRejectedValue(Object.assign(new Error('EPERM'), { code: 'EPERM' }));
-    let resume = (): void => {};
-    const stalled = new Promise<void>((resolve) => { resume = resolve; });
-    let stalledOnce = false;
-    const writeFile = vi.spyOn(fse, 'writeFile').mockImplementation(async (file, data) => {
-      const exclusive = file === lockPath || String(file).endsWith('.sentinel');
-      if (file === lockPath && !stalledOnce) {
-        stalledOnce = true;
-        const fd = fs.openSync(file, 'wx');
-        await stalled;
-        fs.writeSync(fd, String(data));
-        fs.closeSync(fd);
-        return;
-      }
-      fs.writeFileSync(file, data, { flag: exclusive ? 'wx' : 'w' });
+    // writing; a second one, 10 s later, finds it empty and old and reclaims it.
+    let resume: () => void;
+    let stalledOnce: boolean;
+    beforeEach(() => {
+      stalledOnce = false;
+      const stalled = new Promise<void>((resolve) => { resume = resolve; });
+      vi.spyOn(fse, 'link').mockRejectedValue(Object.assign(new Error('EPERM'), { code: 'EPERM' }));
+      vi.spyOn(fse, 'writeFile').mockImplementation(async (file, data) => {
+        const exclusive = file === lockPath || String(file).endsWith('.sentinel');
+        if (file === lockPath && !stalledOnce) {
+          stalledOnce = true;
+          const fd = fs.openSync(file, 'wx');
+          await stalled;
+          fs.writeSync(fd, String(data));
+          fs.closeSync(fd);
+          return;
+        }
+        fs.writeFileSync(file, data, { flag: exclusive ? 'wx' : 'w' });
+      });
     });
-    const first = acquireLock(lockPath);
-    await vi.waitFor(() => expect(stalledOnce).toBe(true));
-    const now = Date.now();
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 10_000);
-    let second: boolean;
-    try {
-      second = await acquireLock(lockPath);
-    } finally {
-      clock.mockRestore();
-    }
-    resume();
-    try {
+    afterEach(() => {
+      resume();
+      vi.restoreAllMocks();
+    });
+
+    it('yields when the reclaimer replaced the lock before its write', async () => {
+      const first = acquireLock(lockPath);
+      await vi.waitFor(() => expect(stalledOnce).toBe(true));
+      vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
+      const second = await acquireLock(lockPath);
+      resume();
       expect([await first, second]).toEqual([false, true]);
-    } finally {
-      writeFile.mockRestore();
-      link.mockRestore();
-    }
+    });
+
+    it('yields when the reclaimer replaces the lock after its write', async () => {
+      let renameNow = (): void => {};
+      const renameGate = new Promise<void>((resolve) => { renameNow = resolve; });
+      const rename = vi.spyOn(fse, 'rename').mockImplementationOnce(async (from, to) => {
+        await renameGate;
+        fs.renameSync(String(from), String(to));
+      });
+      const first = acquireLock(lockPath);
+      await vi.waitFor(() => expect(stalledOnce).toBe(true));
+      vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000);
+      // The reclaimer has judged the empty lock stale and is about to rename.
+      const second = acquireLock(lockPath);
+      await vi.waitFor(() => expect(rename).toHaveBeenCalled());
+      resume(); // the stalled creator writes and checks its lock
+      const firstResult = await first;
+      renameNow();
+      expect([firstResult, await second]).toEqual([false, true]);
+    });
   });
 
   it('does not reclaim a lock it cannot read (EACCES: e.g. a root-owned 0600 lock)', async () => {
