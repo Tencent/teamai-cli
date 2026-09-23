@@ -210,7 +210,15 @@ export async function hasPiAgentHook(slug: string): Promise<boolean> {
   return content?.includes(`${TEAMAI_MARKER} agent hook [${slug}]`) ?? false;
 }
 
-/** Install one HTTP-source agent hook as a Pi extension. */
+/**
+ * Install one HTTP-source agent hook as a Pi extension.
+ *
+ * Throws instead of warn-and-skip on both the unsupported-event and
+ * marker-collision cases: the caller (runHookRuleCommand) acks this back to
+ * the server and writes the local manifest only after this resolves, so a
+ * silent no-op here would leave both sides believing the hook is installed
+ * when the file was never touched.
+ */
 export async function applyPiAgentHook(def: {
   slug: string;
   event: string;
@@ -221,13 +229,11 @@ export async function applyPiAgentHook(def: {
   assertSafeSlug(def.slug);
   const source = buildPiAgentHookExtensionSource(def.slug, def.event, def.command, def.matcher, def.timeout);
   if (!source) {
-    log.warn(`Pi does not support event "${def.event}" — skipping hook [${def.slug}]`);
-    return;
+    throw new Error(`Pi does not support event "${def.event}" — skipping hook [${def.slug}]`);
   }
   const file = piAgentHookFile(def.slug);
   if (await pathExists(file) && !await hasPiAgentHook(def.slug)) {
-    log.warn(`Skipping Pi agent hook [${def.slug}]: ${file} exists without the TeamAI marker`);
-    return;
+    throw new Error(`Skipping Pi agent hook [${def.slug}]: ${file} exists without the TeamAI marker`);
   }
   await ensureDir(resolvePiExtensionsDir());
   await writeFile(file, source);

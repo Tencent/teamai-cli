@@ -147,19 +147,26 @@ describe('Pi hook extension', () => {
       .rejects.toThrow('Invalid Pi agent-hook slug');
   });
 
-  it('does not overwrite or delete a same-named agent-hook file without the TeamAI marker', async () => {
+  it('does not overwrite or delete a same-named agent-hook file without the TeamAI marker, and rejects instead of skipping silently', async () => {
     const file = path.join(tmp, '.pi', 'agent', 'extensions', 'teamai-agent-scan.ts');
     await fse.ensureDir(path.dirname(file));
     await fse.writeFile(file, '// user-owned extension');
 
     expect(await hasPiAgentHook('scan')).toBe(false);
 
-    await applyPiAgentHook({ slug: 'scan', event: 'PostToolUse', command: 'echo hooked' });
+    await expect(applyPiAgentHook({ slug: 'scan', event: 'PostToolUse', command: 'echo hooked' }))
+      .rejects.toThrow('without the TeamAI marker');
     expect(await fse.readFile(file, 'utf8')).toBe('// user-owned extension');
-    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('without the TeamAI marker'));
 
     await removePiAgentHook('scan');
     expect(await fse.readFile(file, 'utf8')).toBe('// user-owned extension');
+  });
+
+  it('rejects instead of skipping silently when Pi has no equivalent for the requested event', async () => {
+    await expect(applyPiAgentHook({ slug: 'scan', event: 'UnknownEvent', command: 'echo nope' }))
+      .rejects.toThrow('Pi does not support event "UnknownEvent"');
+    const file = path.join(tmp, '.pi', 'agent', 'extensions', 'teamai-agent-scan.ts');
+    expect(await fse.pathExists(file)).toBe(false);
   });
 
   it('injects and removes an idempotent global extension', async () => {
