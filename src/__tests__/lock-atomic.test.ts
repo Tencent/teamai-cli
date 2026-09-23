@@ -66,6 +66,7 @@ describe('acquireLock (real fs)', () => {
 
   it('reclaims a stale legacy plain-PID lock from an older teamai version', async () => {
     fs.writeFileSync(lockPath, '999999');
+    fs.utimesSync(lockPath, new Date(0), new Date(0));
     expect(await acquireLock(lockPath)).toBe(true);
     expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid).toBe(process.pid);
     await releaseLock(lockPath);
@@ -73,6 +74,7 @@ describe('acquireLock (real fs)', () => {
 
   it('reclaims a lock whose contents are unparseable garbage', async () => {
     fs.writeFileSync(lockPath, 'not-json-not-a-pid');
+    fs.utimesSync(lockPath, new Date(0), new Date(0));
     expect(await acquireLock(lockPath)).toBe(true);
     await releaseLock(lockPath);
   });

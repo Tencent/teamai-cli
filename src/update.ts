@@ -32,6 +32,7 @@ const TNPM_REGISTRY = 'http://r.tnpm.oa.com';
 const VERSION_CHECK_TIMEOUT = 5000;
 const INSTALL_TIMEOUT = 60000;
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+const UNPARSEABLE_LOCK_GRACE_MS = 2000;
 
 // ─── Helpers ────────────────────────────────────────────
 
@@ -235,14 +236,24 @@ function parseLockContent(content: string): { pid: number; owner?: string } | nu
  */
 async function isLockStale(resolved: string): Promise<boolean> {
   let content: string;
+  let mtimeMs: number;
   try {
-    content = await fse.readFile(resolved, 'utf-8');
+    const [read, stat] = await Promise.all([
+      fse.readFile(resolved, 'utf-8'),
+      fse.stat(resolved),
+    ]);
+    content = read;
+    mtimeMs = stat.mtimeMs;
   } catch {
     // File vanished between EEXIST and read — treat as reclaimable.
     return true;
   }
   const parsed = parseLockContent(content);
-  if (!parsed) return true; // unparseable → no confirmable live owner
+  if (!parsed) {
+    // A wx fallback can expose an empty/partial file briefly. Do not reclaim
+    // a fresh unparseable lock while its creator may still be writing it.
+    return Date.now() - mtimeMs > UNPARSEABLE_LOCK_GRACE_MS;
+  }
   try {
     process.kill(parsed.pid, 0);
     return false; // process alive → lock genuinely held

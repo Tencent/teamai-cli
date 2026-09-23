@@ -30,6 +30,7 @@ vi.mock('fs-extra', () => ({
   default: {
     pathExists: vi.fn(),
     readFile: vi.fn(),
+    stat: vi.fn(),
     writeFile: vi.fn(),
     remove: vi.fn(),
     ensureDir: vi.fn(),
@@ -118,6 +119,7 @@ const mockedLoadTeamConfig = loadTeamConfig as Mock;
 const mockedFse = fse as unknown as {
   pathExists: Mock;
   readFile: Mock;
+  stat: Mock;
   writeFile: Mock;
   link: Mock;
   remove: Mock;
@@ -158,6 +160,7 @@ beforeEach(() => {
   mockedLoadTeamConfig.mockResolvedValue(null);
   mockedFse.pathExists.mockResolvedValue(false);
   mockedFse.readFile.mockResolvedValue('');
+  mockedFse.stat.mockResolvedValue({ mtimeMs: 0 });
   mockedFse.writeFile.mockResolvedValue(undefined);
   mockedFse.link.mockResolvedValue(undefined);
   mockedFse.remove.mockResolvedValue(undefined);
@@ -519,7 +522,8 @@ describe('doUpdate', () => {
     // so acquireLock backs off rather than reclaiming.
     const eexist = new Error('EEXIST') as NodeJS.ErrnoException;
     eexist.code = 'EEXIST';
-    mockedFse.writeFile.mockRejectedValue(eexist);
+    mockedFse.writeFile.mockResolvedValue(undefined);
+    mockedFse.link.mockRejectedValue(eexist);
     mockedFse.readFile.mockResolvedValue(
       JSON.stringify({ pid: process.pid, owner: 'held', startedAt: 'x' }),
     );
@@ -778,7 +782,8 @@ describe('acquireLock', () => {
   });
 
   it('returns false when a live process holds the lock', async () => {
-    mockedFse.writeFile.mockRejectedValue(eexist());
+    mockedFse.writeFile.mockResolvedValue(undefined);
+    mockedFse.link.mockRejectedValue(eexist());
     // Our own PID is alive → process.kill(pid, 0) succeeds → not stale.
     mockedFse.readFile.mockResolvedValue(JSON.stringify({ pid: process.pid, owner: 'x' }));
 
