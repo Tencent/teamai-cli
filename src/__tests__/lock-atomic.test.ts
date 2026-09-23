@@ -188,7 +188,7 @@ describe('acquireLock never takes over a lock another live process may hold (#76
   });
 
   it('still locks on a filesystem without hard links (falls back to O_EXCL)', async () => {
-    const link = vi.spyOn(fs.promises, 'link').mockRejectedValue(Object.assign(new Error('EPERM'), { code: 'EPERM' }));
+    const link = vi.spyOn(fse, 'link').mockRejectedValue(Object.assign(new Error('EPERM'), { code: 'EPERM' }));
     try {
       expect(await acquireLock(lockPath)).toBe(true);
       expect(await acquireLock(lockPath)).toBe(false);
@@ -198,6 +198,56 @@ describe('acquireLock never takes over a lock another live process may hold (#76
     expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).pid).toBe(process.pid);
     expect(fs.readdirSync(tmpDir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
     await releaseLock(lockPath);
+  });
+
+  it('without hard links, a creator stalled past the empty-lock grace yields to the reclaimer', async () => {
+    // O_EXCL fallback: the first acquirer opens the lock and stalls before
+    // writing; a second one, 10 s later, reclaims it. The stalled write then
+    // lands in the replaced file, and the first acquirer must not report success.
+    const link = vi.spyOn(fse, 'link').mockRejectedValue(Object.assign(new Error('EPERM'), { code: 'EPERM' }));
+    let resume = (): void => {};
+    const stalled = new Promise<void>((resolve) => { resume = resolve; });
+    let stalledOnce = false;
+    const writeFile = vi.spyOn(fse, 'writeFile').mockImplementation(async (file, data) => {
+      const exclusive = file === lockPath || String(file).endsWith('.sentinel');
+      if (file === lockPath && !stalledOnce) {
+        stalledOnce = true;
+        const fd = fs.openSync(file, 'wx');
+        await stalled;
+        fs.writeSync(fd, String(data));
+        fs.closeSync(fd);
+        return;
+      }
+      fs.writeFileSync(file, data, { flag: exclusive ? 'wx' : 'w' });
+    });
+    const first = acquireLock(lockPath);
+    await vi.waitFor(() => expect(stalledOnce).toBe(true));
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 10_000);
+    let second: boolean;
+    try {
+      second = await acquireLock(lockPath);
+    } finally {
+      clock.mockRestore();
+    }
+    resume();
+    try {
+      expect([await first, second]).toEqual([false, true]);
+    } finally {
+      writeFile.mockRestore();
+      link.mockRestore();
+    }
+  });
+
+  it('does not reclaim a lock it cannot read (EACCES: e.g. a root-owned 0600 lock)', async () => {
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 424242, owner: 'root-owned', startedAt: 'x' }));
+    const readFile = vi.spyOn(fse, 'readFile').mockRejectedValue(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+    try {
+      expect(await acquireLock(lockPath)).toBe(false);
+    } finally {
+      readFile.mockRestore();
+    }
+    expect(JSON.parse(fs.readFileSync(lockPath, 'utf-8')).owner).toBe('root-owned');
   });
 
   it('does not reclaim an empty lock that was just created (its owner is still writing it)', async () => {

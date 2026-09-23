@@ -232,22 +232,24 @@ const EMPTY_LOCK_GRACE_MS = 5_000;
 
 /**
  * Inspect the lock at `resolved`: held by a live process, stale (its owning
- * process is gone, or the file cannot be read or parsed, so no live owner can
- * be confirmed), or missing. This is a pure read; it never mutates the lock.
+ * process is gone, or its contents are unparseable), or missing. This is a
+ * pure read; it never mutates the lock.
  *
  * Only a verdict of stale lets a reclaimer rename over the lock, so a live
- * owner must never read as stale (#760): a pid that exists but belongs to
- * another user (EPERM) is alive. `exclusiveCreate` never leaves a lock empty
- * except on a filesystem without hard links (or an older teamai); there an
- * empty file is being written by its creator until it has stayed empty past
- * the grace period (its owner died in between).
+ * owner must never read as stale (#760): a lock that cannot be read, or whose
+ * pid exists but belongs to another user (EPERM), is held. `exclusiveCreate`
+ * never leaves a lock empty except on a filesystem without hard links (or an
+ * older teamai); there an empty file is being written by its creator until it
+ * has stayed empty past the grace period (its owner died in between), and a
+ * creator that stalled that long yields when it finds its lock replaced.
  */
 async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
   let content: string;
   try {
     content = await fse.readFile(resolved, 'utf-8');
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'stale';
+    // Unreadable (EACCES: e.g. another user's 0600 lock) cannot be proven dead.
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'live';
   }
   if (!content.trim()) {
     try {
@@ -294,7 +296,7 @@ async function exclusiveCreate(target: string, payload: string): Promise<boolean
   const tmp = `${target}.${randomUUID()}.tmp`;
   await fse.writeFile(tmp, payload);
   try {
-    await fs.promises.link(tmp, target);
+    await fse.link(tmp, target);
     return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
@@ -307,11 +309,15 @@ async function exclusiveCreate(target: string, payload: string): Promise<boolean
 async function exclusiveCreateInPlace(target: string, payload: string): Promise<boolean> {
   try {
     await fse.writeFile(target, payload, { flag: 'wx' });
-    return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
     throw err;
   }
+  // The file sat empty between open and write. If this process stalled there
+  // past the empty-lock grace, a reclaimer may have replaced it, and this write
+  // went to the replaced file: only our payload at `target` means we hold it.
+  const onDisk = await fse.readFile(target, 'utf-8').catch(() => null);
+  return onDisk === payload;
 }
 
 /**

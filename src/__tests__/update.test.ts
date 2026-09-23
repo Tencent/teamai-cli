@@ -34,6 +34,7 @@ vi.mock('fs-extra', () => ({
     remove: vi.fn(),
     ensureDir: vi.fn(),
     rename: vi.fn(),
+    link: vi.fn(),
   },
 }));
 
@@ -121,6 +122,7 @@ const mockedFse = fse as unknown as {
   remove: Mock;
   ensureDir: Mock;
   rename: Mock;
+  link: Mock;
 };
 const mockedLog = log as unknown as {
   info: Mock;
@@ -157,6 +159,7 @@ beforeEach(() => {
   mockedFse.pathExists.mockResolvedValue(false);
   mockedFse.readFile.mockResolvedValue('');
   mockedFse.writeFile.mockResolvedValue(undefined);
+  mockedFse.link.mockResolvedValue(undefined);
   mockedFse.remove.mockResolvedValue(undefined);
   mockedFse.rename.mockResolvedValue(undefined);
 });
@@ -498,10 +501,10 @@ describe('doUpdate', () => {
 
     await doUpdate();
 
-    expect(mockedFse.writeFile).toHaveBeenCalledWith(
+    // Created by hard-linking a fully written temp file onto the lock name.
+    expect(mockedFse.link).toHaveBeenCalledWith(
       expect.stringContaining('update-lock'),
-      expect.any(String),
-      { flag: 'wx' },
+      expect.stringMatching(/update-lock$/),
     );
     expect(mockedLog.success).toHaveBeenCalled();
     expect(mockedFse.remove).toHaveBeenCalledWith(
@@ -721,9 +724,10 @@ function eexist(): NodeJS.ErrnoException {
 
 describe('acquireLock', () => {
   it('falls back to an exclusive (wx) create when the lock cannot be hard-linked', async () => {
-    // fs-extra is mocked, so the temp file is never written and link() fails:
-    // the path a filesystem without hard links takes.
-    mockedFse.writeFile.mockResolvedValue(undefined);
+    const written = new Map<string, string>();
+    mockedFse.link.mockRejectedValue(Object.assign(new Error('EPERM'), { code: 'EPERM' }));
+    mockedFse.writeFile.mockImplementation(async (p: string, data: string) => { written.set(p, data); });
+    mockedFse.readFile.mockImplementation(async (p: string) => written.get(p) ?? '');
 
     const result = await acquireLock('/tmp/test-lock');
 
@@ -740,13 +744,11 @@ describe('acquireLock', () => {
 
   it('reclaims a stale lock via an atomic rename-into-place', async () => {
     // The main lock's exclusive create always finds it present (a stale lock);
-    // the sentinel and temp writes succeed. Reclaim completes by renaming the
-    // fresh payload over the stale file. (Concurrency/atomicity is proven for
-    // real in lock-atomic.test.ts.)
-    mockedFse.writeFile.mockImplementation((p: string, _data: string, opts?: { flag?: string }) => {
-      if (p === '/tmp/test-lock' && opts?.flag === 'wx') return Promise.reject(eexist());
-      return Promise.resolve(undefined);
-    });
+    // the sentinel create and temp writes succeed. Reclaim completes by renaming
+    // the fresh payload over the stale file. (Concurrency/atomicity is proven
+    // for real in lock-atomic.test.ts.)
+    mockedFse.link.mockImplementation((_tmp: string, target: string) =>
+      target === '/tmp/test-lock' ? Promise.reject(eexist()) : Promise.resolve(undefined));
     mockedFse.readFile.mockResolvedValue('99999999'); // dead pid → stale
     mockedFse.rename.mockResolvedValue(undefined);
 

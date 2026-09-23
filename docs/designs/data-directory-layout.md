@@ -132,8 +132,9 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
      teamai) is mid-write by its creator until it has stayed empty for 5 s, a pid
      owned by another user (`EPERM`) is alive, and a lock that vanished
      before it could be read gets one more exclusive create instead (a third process
-     may already have re-created it). A lock that exists but cannot be read still
-     counts as stale.
+     may already have re-created it). A lock that exists but cannot be read
+     (`EACCES`) is held too. A `wx` creator that stalled past the 5 s grace checks
+     that its own payload is on disk and yields if the lock was replaced.
    - `releaseLock()` returns early when this process holds no owner token for the
      path, and otherwise deletes only when the on-disk `owner` still matches the token
      this process recorded — never another process's lock.
