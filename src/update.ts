@@ -254,14 +254,25 @@ async function isLockStale(resolved: string): Promise<boolean> {
 /**
  * Atomic exclusive create. Returns true when this call created the file, false
  * when it already existed (EEXIST). Any other error propagates.
+ *
+ * The payload is written to a unique sibling temp file and then hard-linked
+ * into place: `link(2)` is atomic and fails with EEXIST if the target already
+ * exists, so readers never observe a partially written lock. A plain
+ * `writeFile(..., { flag: 'wx' })` exposes the empty/partial file between the
+ * open and the write, and a concurrent staleness check can misread that as an
+ * unparseable (reclaimable) lock and rename over a live holder (#760).
  */
 async function exclusiveCreate(target: string, payload: string): Promise<boolean> {
+  const tmp = `${target}.create-${randomUUID()}`;
   try {
-    await fse.writeFile(target, payload, { flag: 'wx' });
+    await fse.writeFile(tmp, payload);
+    await fse.link(tmp, target);
     return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
     throw err;
+  } finally {
+    await fse.remove(tmp).catch(() => {});
   }
 }
 

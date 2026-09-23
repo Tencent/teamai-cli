@@ -129,4 +129,51 @@ describe('releaseLock (real fs)', () => {
     expect(await acquireLock(lockPath)).toBe(true);
     await releaseLock(lockPath);
   });
+
+  it('never publishes a partially written lock under concurrent creation', async () => {
+    // Regression for #760: with `writeFile(..., { flag: 'wx' })` the lock file
+    // existed empty/partial between the open and the write, so a concurrent
+    // staleness check could read it as unparseable (reclaimable) and a
+    // reclaimer could rename over a live holder. Every on-disk observation of
+    // the lock must now be complete, parseable JSON because creation is
+    // published with an atomic temp-write + hard-link.
+    const readerErrors: string[] = [];
+    let stop = false;
+    const reader = (async () => {
+      while (!stop) {
+        // Yield so the async writers make progress between observations.
+        await new Promise((resolve) => setImmediate(resolve));
+        try {
+          const payload: unknown = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
+          if (
+            typeof payload !== 'object'
+            || payload === null
+            || typeof (payload as { owner?: unknown }).owner !== 'string'
+            || typeof (payload as { pid?: unknown }).pid !== 'number'
+          ) {
+            readerErrors.push(`incomplete lock payload: ${JSON.stringify(payload)}`);
+          }
+        } catch (err) {
+          // ENOENT (released between observations) and Windows EPERM/EBUSY
+          // (delete-pending or rename in flight) are transient states of an
+          // absent or being-replaced lock; anything else — above all an
+          // unparseable partial write — is a violation.
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code !== 'ENOENT' && code !== 'EPERM' && code !== 'EBUSY') {
+            readerErrors.push(String(err));
+          }
+        }
+      }
+    })();
+
+    const writers = Array.from({ length: 4 }, async () => {
+      for (let i = 0; i < 40; i++) {
+        if (await acquireLock(lockPath)) await releaseLock(lockPath);
+      }
+    });
+    await Promise.all(writers);
+    stop = true;
+    await reader;
+    expect(readerErrors).toEqual([]);
+  });
 });
