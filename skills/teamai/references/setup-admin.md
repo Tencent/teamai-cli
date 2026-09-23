@@ -267,9 +267,14 @@ day-to-day work — they can keep letting the AI run things for them:
   `/teamai I already have TeamAI set up, help me manage it` (English) — this loads
   the daily-management flow (`manage-admin.md`): publishing skills, inviting
   members, roles / packages / env.
-- To share something they learned:
-  `/teamai 我想把学到的经验分享给团队` /
-  `/teamai I want to contribute what I learned to my team`.
+- To share a reusable skill with the team, they run:
+  `/teamai 把这个 xxx skill 分享给团队` (Chinese) /
+  `/teamai Share this <skill-name> skill with my team` (English) — see
+  `contribute-member.md`.
+- Sharing a **session's learnings** is **automatic** — do **not** send them to
+  `/teamai` for it. TeamAI prompts on its own at the end of a session worth
+  sharing, and the separate **`teamai-share-learnings`** skill takes over. (Only
+  when the admin left team sharing on — the default.)
 
 Mention the underlying commands (`teamai push`, `teamai roles`, …) only as a note
 for users who *do* want them — the primary path is re-invoking `/teamai`.
