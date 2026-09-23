@@ -32,12 +32,22 @@ import { aggregateUsage } from '../stats.js';
 import { mergeStats } from '../team-push.js';
 import { calculateSkillHealth, scoreToStars, calculateTeamHealth } from '../skill-health.js';
 import { getRecommendations } from '../skill-recommend.js';
-import type { UsageEvent, UserStats } from '../types.js';
+import type { LocalConfig, UsageEvent, UserStats } from '../types.js';
 
 // ─── Test helpers ──────────────────────────────────────
 
 let tmpDir: string;
 const origHome = process.env.HOME;
+
+/** The user scope seeded below; its usage file is `~/.teamai/usage.jsonl`. */
+function userScope(): LocalConfig {
+  return {
+    repo: { localPath: path.join(tmpDir, '.teamai', 'team-repo'), remote: 'https://example.test/acme/team.git' },
+    username: 'tester',
+    scope: 'user',
+    additionalRoles: [],
+  };
+}
 
 /** A user-scope install: skill usage is recorded only where teamai is set up. */
 async function seedUserConfig(): Promise<void> {
@@ -173,7 +183,7 @@ describe('appendUsageEvent', () => {
       timestamp: '2026-03-19T10:30:00Z',
       tool: 'claude',
     };
-    await appendUsageEvent(event);
+    await appendUsageEvent(event, userScope());
 
     const usagePath = path.join(tmpDir, '.teamai', 'usage.jsonl');
     const content = await fs.promises.readFile(usagePath, 'utf-8');
@@ -183,8 +193,8 @@ describe('appendUsageEvent', () => {
   });
 
   it('appends multiple events as separate lines', async () => {
-    await appendUsageEvent({ skill: 'tdd', timestamp: '2026-03-19T10:00:00Z', tool: 'claude' });
-    await appendUsageEvent({ skill: 'code-review', timestamp: '2026-03-19T11:00:00Z', tool: 'claude' });
+    await appendUsageEvent({ skill: 'tdd', timestamp: '2026-03-19T10:00:00Z', tool: 'claude' }, userScope());
+    await appendUsageEvent({ skill: 'code-review', timestamp: '2026-03-19T11:00:00Z', tool: 'claude' }, userScope());
 
     const events = await readUsageEvents();
     expect(events).toHaveLength(2);
@@ -225,8 +235,8 @@ describe('readUsageEvents', () => {
 
 describe('truncateUsageAfterReport', () => {
   it('clears file when all events reported', async () => {
-    await appendUsageEvent({ skill: 'a', timestamp: '2026-01-01T00:00:00Z', tool: 'claude' });
-    await appendUsageEvent({ skill: 'b', timestamp: '2026-01-02T00:00:00Z', tool: 'claude' });
+    await appendUsageEvent({ skill: 'a', timestamp: '2026-01-01T00:00:00Z', tool: 'claude' }, userScope());
+    await appendUsageEvent({ skill: 'b', timestamp: '2026-01-02T00:00:00Z', tool: 'claude' }, userScope());
 
     await truncateUsageAfterReport(2);
 
@@ -235,9 +245,9 @@ describe('truncateUsageAfterReport', () => {
   });
 
   it('keeps unreported events', async () => {
-    await appendUsageEvent({ skill: 'a', timestamp: '2026-01-01T00:00:00Z', tool: 'claude' });
-    await appendUsageEvent({ skill: 'b', timestamp: '2026-01-02T00:00:00Z', tool: 'claude' });
-    await appendUsageEvent({ skill: 'c', timestamp: '2026-01-03T00:00:00Z', tool: 'claude' });
+    await appendUsageEvent({ skill: 'a', timestamp: '2026-01-01T00:00:00Z', tool: 'claude' }, userScope());
+    await appendUsageEvent({ skill: 'b', timestamp: '2026-01-02T00:00:00Z', tool: 'claude' }, userScope());
+    await appendUsageEvent({ skill: 'c', timestamp: '2026-01-03T00:00:00Z', tool: 'claude' }, userScope());
 
     await truncateUsageAfterReport(2);
 
@@ -638,7 +648,7 @@ describe('readKnownSkills', () => {
     await updateKnownSkills('old-skill');
 
     // Add a new event to usage.jsonl
-    await appendUsageEvent({ skill: 'new-skill', timestamp: '2026-03-20T10:00:00Z', tool: 'claude' });
+    await appendUsageEvent({ skill: 'new-skill', timestamp: '2026-03-20T10:00:00Z', tool: 'claude' }, userScope());
 
     const skills = await readKnownSkills();
     expect(skills.has('old-skill')).toBe(true);
@@ -656,7 +666,7 @@ describe('readKnownSkills', () => {
     await fs.promises.writeFile(knownPath, 'NOT_JSON!!!');
 
     // Should still work with just usage.jsonl data
-    await appendUsageEvent({ skill: 'tdd', timestamp: '2026-03-20T10:00:00Z', tool: 'claude' });
+    await appendUsageEvent({ skill: 'tdd', timestamp: '2026-03-20T10:00:00Z', tool: 'claude' }, userScope());
 
     const skills = await readKnownSkills();
     expect(skills.has('tdd')).toBe(true);

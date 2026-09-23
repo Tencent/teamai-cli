@@ -60,6 +60,35 @@ describe('teamai init --http (read-only onboarding)', () => {
   });
 });
 
+describe('user-scope init and leftover skill usage (#748)', () => {
+  const usagePath = () => path.join(tmpDir, '.teamai', 'usage.jsonl');
+  const leftover = '{"skill":"from-another-project","timestamp":"2026-01-01T00:00:00Z","tool":"claude"}\n';
+
+  it('starts with no usage when the machine had no user scope before', async () => {
+    writeApiKey();
+    // Recorded before any user scope existed: nothing says which project it came from.
+    fs.writeFileSync(usagePath(), leftover);
+    server = await startMockServer({ apiKey: API_KEY });
+
+    const { init } = await import('../init.js');
+    await init({ http: server.url, force: true, scope: 'user' });
+
+    expect(fs.existsSync(usagePath()) ? fs.readFileSync(usagePath(), 'utf-8') : '').toBe('');
+  });
+
+  it('keeps the usage of an existing user scope on re-init', async () => {
+    writeApiKey();
+    server = await startMockServer({ apiKey: API_KEY });
+    const { init } = await import('../init.js');
+    await init({ http: server.url, force: true, scope: 'user' });
+    fs.writeFileSync(usagePath(), leftover);
+
+    await init({ http: server.url, force: true, scope: 'user' });
+
+    expect(fs.readFileSync(usagePath(), 'utf-8')).toBe(leftover);
+  });
+});
+
 describe('read-only protection (http kind)', () => {
   it('rejects teamai push', async () => {
     writeApiKey();

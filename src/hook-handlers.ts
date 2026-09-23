@@ -190,7 +190,7 @@ const dashboardReportHandler: HookHandler = {
 const trackHandler: HookHandler = {
   name: 'track',
   async execute(stdin, tool) {
-    const { resolveSkillUse, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
+    const { resolveSkillUse, resolveUsageScope, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
 
     const rawToolName = stdin.tool_name;
     if (typeof rawToolName !== 'string') return null;
@@ -203,11 +203,13 @@ const trackHandler: HookHandler = {
     const resolved = resolveSkillUse(toolName, toolInput as Record<string, unknown>);
     if (!resolved) return null;
 
+    const scope = await resolveUsageScope(resolveHookCwd(stdin));
+    if (!scope) return null;
     await appendUsageEvent({
       skill: resolved.skillName,
       timestamp: new Date().toISOString(),
       tool: resolved.source ?? tool,
-    });
+    }, scope);
     await updateKnownSkills(resolved.skillName);
     return null;
   },
@@ -216,7 +218,7 @@ const trackHandler: HookHandler = {
 const trackSlashHandler: HookHandler = {
   name: 'track-slash',
   async execute(stdin, tool) {
-    const { extractSkillName, isValidSkillName, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
+    const { isValidSkillName, resolveUsageScope, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
 
     const prompt = stdin.prompt;
     if (typeof prompt !== 'string' || !prompt.startsWith('/')) return null;
@@ -231,7 +233,9 @@ const trackSlashHandler: HookHandler = {
     const skillName = match[1];
     if (!isValidSkillName(skillName)) return null;
 
-    await appendUsageEvent({ skill: skillName, timestamp: new Date().toISOString(), tool });
+    const scope = await resolveUsageScope(resolveHookCwd(stdin));
+    if (!scope) return null;
+    await appendUsageEvent({ skill: skillName, timestamp: new Date().toISOString(), tool }, scope);
     await updateKnownSkills(skillName);
     return null;
   },

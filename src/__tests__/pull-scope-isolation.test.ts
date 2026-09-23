@@ -203,7 +203,7 @@ describe('pull scope isolation (issue #73)', () => {
     await pull({ silent: true });
     if (success) {
       expect(truncateUsageAfterReport).toHaveBeenCalledTimes(1);
-      expect(truncateUsageAfterReport).toHaveBeenCalledWith(1);
+      expect(truncateUsageAfterReport).toHaveBeenCalledWith(1, projectConfig);
     }
     else expect(truncateUsageAfterReport).not.toHaveBeenCalled();
   });
@@ -237,7 +237,7 @@ describe('pull scope isolation (issue #73)', () => {
     await vi.advanceTimersByTimeAsync(0);
     if (success) {
       expect(truncateUsageAfterReport).toHaveBeenCalledTimes(1);
-      expect(truncateUsageAfterReport).toHaveBeenCalledWith(1);
+      expect(truncateUsageAfterReport).toHaveBeenCalledWith(1, projectConfig);
     }
     else expect(truncateUsageAfterReport).not.toHaveBeenCalled();
     await pull({ silent: true });

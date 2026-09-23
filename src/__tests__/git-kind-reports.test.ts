@@ -13,6 +13,9 @@ import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree, up
 import { pushRepoDirectly } from '../utils/git.js';
 import { reportUsageToTeam } from '../team-push.js';
 import { listMembers } from '../members.js';
+import { resolveProjectDataHome, saveLocalConfigForScope } from '../config.js';
+import { buildHandlerRegistry } from '../hook-handlers.js';
+import YAML from 'yaml';
 
 let tmp: string;
 let originalHome: string;
@@ -35,8 +38,8 @@ async function configureGit(dir: string): Promise<void> {
   await git.addConfig('user.name', 't');
 }
 
-async function seedBareOrigin(): Promise<{ origin: string; clone: string }> {
-  const seed = path.join(tmp, 'seed');
+async function seedBareOrigin(base = tmp): Promise<{ origin: string; clone: string }> {
+  const seed = path.join(base, 'seed');
   fs.mkdirSync(seed, { recursive: true });
   const seedGit = simpleGit(seed);
   await seedGit.init(['--initial-branch=main']);
@@ -47,7 +50,7 @@ async function seedBareOrigin(): Promise<{ origin: string; clone: string }> {
   await seedGit.add(['.']);
   await seedGit.commit('init knowledge');
 
-  const origin = path.join(tmp, 'origin.git');
+  const origin = path.join(base, 'origin.git');
   await simpleGit().clone(seed, origin, ['--bare']);
   const hook = path.join(origin, 'hooks', 'update');
   fs.writeFileSync(
@@ -63,7 +66,7 @@ exit 0
   );
   fs.chmodSync(hook, 0o755);
 
-  const clone = path.join(tmp, 'team-repo');
+  const clone = path.join(base, 'team-repo');
   await simpleGit().clone(origin, clone);
   await configureGit(clone);
   return { origin, clone };
@@ -627,5 +630,50 @@ describe('self-mode reports: shared stash', () => {
     expect((await wtGit.status()).conflicted).toEqual([]);
     expect((await businessGit.raw(['stash', 'list'])).trim()).toBe(stashDuring);
     expect(fs.readFileSync(path.join(clone, 'app.txt'), 'utf-8')).toBe('committed\n');
+  });
+});
+
+describe('skill usage stays in the scope that recorded it (#748)', () => {
+  /** A project initialized in project scope against its own team repo. */
+  async function initProject(name: string): Promise<{ root: string; origin: string; config: LocalConfig }> {
+    const base = path.join(tmp, name);
+    const { origin, clone } = await seedBareOrigin(base);
+    fs.mkdirSync(path.join(base, 'project'));
+    const root = fs.realpathSync(path.join(base, 'project'));
+    const git = simpleGit(root);
+    await git.init(['--initial-branch=main']);
+    await configureGit(root);
+    await git.commit('init', { '--allow-empty': null });
+    const config: LocalConfig = {
+      ...gitConfig(clone, origin),
+      scope: 'project',
+      projectRoot: root,
+      dataHome: await resolveProjectDataHome(root),
+    };
+    await saveLocalConfigForScope(config);
+    return { root, origin, config };
+  }
+
+  async function useSkill(cwd: string, skill: string): Promise<void> {
+    const track = buildHandlerRegistry().find((r) => r.handler.name === 'track')!.handler;
+    await track.execute({ session_id: `s-${skill}`, cwd, tool_name: 'Skill', tool_input: { skill } }, 'claude');
+  }
+
+  async function reportedSkills(origin: string): Promise<string[]> {
+    const stats = await simpleGit(origin).raw(['show', 'teamai-reports:stats/alice.yaml']);
+    return Object.keys((YAML.parse(stats) as { skills?: Record<string, unknown> }).skills ?? {}).sort();
+  }
+
+  it("each project's report carries only its own skills, and one report does not consume the other's", async () => {
+    const a = await initProject('team-a');
+    const c = await initProject('team-c');
+    await useSkill(a.root, 'skill-a');
+    await useSkill(c.root, 'skill-c');
+
+    await reportUsageToTeam(a.config.repo.localPath, 'alice', { projectRoot: a.root, selfConfig: a.config });
+    expect(await reportedSkills(a.origin)).toEqual(['skill-a']);
+
+    await reportUsageToTeam(c.config.repo.localPath, 'alice', { projectRoot: c.root, selfConfig: c.config });
+    expect(await reportedSkills(c.origin)).toEqual(['skill-c']);
   });
 });

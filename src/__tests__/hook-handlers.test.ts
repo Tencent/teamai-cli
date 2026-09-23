@@ -46,6 +46,9 @@ vi.mock('../usage-tracker.js', async () => {
     resolveSkillUse: actual.resolveSkillUse,
     extractSkillName: actual.extractSkillName,
     isValidSkillName: actual.isValidSkillName,
+    resolveUsageScope: vi.fn().mockResolvedValue({
+      repo: { localPath: '/tmp/team-repo', remote: '' }, username: 'test', scope: 'user', additionalRoles: [],
+    }),
     appendUsageEvent: vi.fn().mockResolvedValue(undefined),
     updateKnownSkills: vi.fn().mockResolvedValue(undefined),
   };

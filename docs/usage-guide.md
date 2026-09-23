@@ -1685,8 +1685,11 @@ On Windows, the update check, installation, and hook refresh run without opening
 By default, `teamai pull` commits session/usage stats into the team repo.
 Pull waits up to 5 seconds for the reporting batch, then continues its other
 work while reporting finishes. A late successful push still updates the local
-reported snapshots. Usage events are removed only after every selected target
-confirms success; failed pushes preserve them. The affected sync locks remain
+reported snapshots. Skill usage is recorded per scope, in the data directory of
+the project teamai is set up for where the session ran (or the user scope), so
+each target reports only its own; a directory without teamai records none. A
+target removes its usage events only after it confirms success; failed pushes
+preserve them. The affected sync locks remain
 held until reporting finishes, preventing another pull from racing the report.
 
 This is best-effort reporting, not crash-safe delivery: termination between a

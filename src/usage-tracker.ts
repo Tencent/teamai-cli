@@ -4,6 +4,7 @@ import { log } from './utils/logger.js';
 import { normalizeToolName } from './utils/tool-names.js';
 import {
   getCopilotHome,
+  getDataHome,
   SKILL_NAME_REGEX,
   type LocalConfig,
   type UsageEvent,
@@ -12,9 +13,14 @@ import { ensureDir, readJson, writeJson, pathExists } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 
-/** Get the usage JSONL path (evaluated at call time to respect HOME changes in tests). */
-function getUsagePath(): string {
-  return path.join(getUserHome(), '.teamai', 'usage.jsonl');
+/**
+ * The usage JSONL of one scope: `<dataHome>/usage.jsonl`, so each scope reports
+ * only the skills used where it is set up (#748). No scope means the user scope
+ * (`~/.teamai`), the path every scope shared before. Evaluated at call time to
+ * respect HOME changes in tests.
+ */
+function getUsagePath(scope?: LocalConfig): string {
+  return path.join(scope ? getDataHome(scope) : path.join(getUserHome(), '.teamai'), 'usage.jsonl');
 }
 
 /** Get the known-skills.json path (evaluated at call time to respect HOME changes in tests). */
@@ -41,7 +47,10 @@ function getKnownSkillsPath(): string {
 //               [toolArg → toolSource; Read+SKILL.md → 'cursor']
 //                       │
 //                       ▼
-//               appendFile(usage.jsonl, JSON line)
+//               [resolveUsageScope(cwd)] ──null──▶ skip (#748)
+//                       │
+//                       ▼
+//               appendFile(<dataHome>/usage.jsonl, JSON line)
 //                       │
 //                       ▼
 //               updateKnownSkills(skill) → known-skills.json
@@ -63,7 +72,7 @@ function getKnownSkillsPath(): string {
 //  [extract & validate skill name after "/"]
 //      │
 //      ▼
-//  appendFile(usage.jsonl) + updateKnownSkills()
+//  appendFile(<dataHome>/usage.jsonl) + updateKnownSkills()
 //
 
 /**
@@ -215,11 +224,12 @@ export async function resolveUsageScope(cwd?: string): Promise<LocalConfig | nul
  * Silently fails on I/O errors (disk full, permission denied, etc.)
  * to avoid disrupting the AI coding session.
  */
-export async function appendUsageEvent(event: UsageEvent): Promise<void> {
+export async function appendUsageEvent(event: UsageEvent, scope: LocalConfig): Promise<void> {
   try {
-    await ensureDir(path.dirname(getUsagePath()));
+    const usagePath = getUsagePath(scope);
+    await ensureDir(path.dirname(usagePath));
     const line = JSON.stringify(event) + '\n';
-    await fs.promises.appendFile(getUsagePath(), line, 'utf-8');
+    await fs.promises.appendFile(usagePath, line, 'utf-8');
     log.debug(`Tracked skill: ${event.skill}`);
   } catch (e) {
     log.error(`Failed to write usage event: ${(e as Error).message}`);
@@ -227,12 +237,22 @@ export async function appendUsageEvent(event: UsageEvent): Promise<void> {
 }
 
 /**
- * Read all usage events from the JSONL file.
+ * Drop the user-scope usage file when a machine first gets a user scope. What
+ * it holds was recorded while every scope shared that file, so nothing says
+ * which project each event came from; the new user scope must not report it
+ * to its team (#748).
+ */
+export async function discardUnattributedUsage(): Promise<void> {
+  await fs.promises.rm(getUsagePath(), { force: true });
+}
+
+/**
+ * Read all usage events from a scope's JSONL file (user scope when omitted).
  * Skips corrupted lines gracefully.
  */
-export async function readUsageEvents(): Promise<UsageEvent[]> {
+export async function readUsageEvents(scope?: LocalConfig): Promise<UsageEvent[]> {
   try {
-    const content = await fs.promises.readFile(getUsagePath(), 'utf-8');
+    const content = await fs.promises.readFile(getUsagePath(scope), 'utf-8');
     const events: UsageEvent[] = [];
     for (const line of content.split('\n')) {
       const trimmed = line.trim();
@@ -256,17 +276,18 @@ export async function readUsageEvents(): Promise<UsageEvent[]> {
  * Truncate the usage JSONL file, keeping only events after `afterTimestamp`.
  * Used after successful auto-report to keep the file small.
  */
-export async function truncateUsageAfterReport(reportedCount: number): Promise<void> {
+export async function truncateUsageAfterReport(reportedCount: number, scope?: LocalConfig): Promise<void> {
   try {
-    const content = await fs.promises.readFile(getUsagePath(), 'utf-8');
+    const usagePath = getUsagePath(scope);
+    const content = await fs.promises.readFile(usagePath, 'utf-8');
     const lines = content.split('\n').filter((l) => l.trim());
     if (reportedCount >= lines.length) {
       // All lines were reported — clear file
-      await fs.promises.writeFile(getUsagePath(), '', 'utf-8');
+      await fs.promises.writeFile(usagePath, '', 'utf-8');
     } else {
       // Keep unreported lines
       const remaining = lines.slice(reportedCount).join('\n') + '\n';
-      await fs.promises.writeFile(getUsagePath(), remaining, 'utf-8');
+      await fs.promises.writeFile(usagePath, remaining, 'utf-8');
     }
     log.debug(`Truncated usage.jsonl: removed ${reportedCount} reported events`);
   } catch (e) {
@@ -357,7 +378,8 @@ export async function track(rawToolName: string, toolInput: string, tool?: strin
     return;
   }
 
-  if (!(await resolveUsageScope())) return;
+  const scope = await resolveUsageScope();
+  if (!scope) return;
 
   const event: UsageEvent = {
     skill: skillName,
@@ -365,7 +387,7 @@ export async function track(rawToolName: string, toolInput: string, tool?: strin
     tool: tool ?? 'claude',
   };
 
-  await appendUsageEvent(event);
+  await appendUsageEvent(event, scope);
   await updateKnownSkills(skillName);
 }
 
@@ -437,7 +459,8 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
     return;
   }
 
-  if (!(await resolveUsageScope(resolveHookCwd(hookData)))) return;
+  const scope = await resolveUsageScope(resolveHookCwd(hookData));
+  if (!scope) return;
 
   const event: UsageEvent = {
     skill: skillName,
@@ -445,7 +468,7 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
     tool: toolSource,
   };
 
-  await appendUsageEvent(event);
+  await appendUsageEvent(event, scope);
   await updateKnownSkills(skillName);
 }
 
@@ -489,7 +512,8 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
     return;
   }
 
-  if (!(await resolveUsageScope(resolveHookCwd(hookData)))) return;
+  const scope = await resolveUsageScope(resolveHookCwd(hookData));
+  if (!scope) return;
 
   for (const match of matches) {
     const skillName = match[1];
@@ -512,7 +536,7 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
       tool: toolArg ?? 'claude',
     };
 
-    await appendUsageEvent(event);
+    await appendUsageEvent(event, scope);
     await updateKnownSkills(skillName);
   }
 }

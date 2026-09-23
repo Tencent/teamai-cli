@@ -1962,11 +1962,11 @@ export async function pull(
   // strips a trailer once the team drops the policy.
   await reconcileCoAuthorAllScopes(reconcileUser, reconcileProject, options);
 
-  // 4. Auto-report usage data to all active scopes. Events live in a single
-  //    shared file (~/.teamai/usage.jsonl), so we report to each repo with
-  //    skipTruncate=true first, then truncate once at the end.
-  //    Scope filtering: project scope only gets sessions whose cwd is under
-  //    projectRoot; user scope excludes those sessions.
+  // 4. Auto-report usage data to all active scopes. Skill usage lives in each
+  //    scope's own `<dataHome>/usage.jsonl`, so each target reports and then
+  //    truncates only its own file. Dashboard sessions live in one shared file
+  //    and are filtered instead: project scope only gets sessions whose cwd is
+  //    under projectRoot; user scope excludes those sessions.
   if (!options.dryRun && !pendingUsageReport) {
     pendingUsageReport = (async () => {
       try {
@@ -2004,21 +2004,18 @@ export async function pull(
           });
         }
 
-        const eventCount = (await readUsageEvents()).length;
-        let allReported = true;
+        // Each scope keeps its own usage file (#748), so each target truncates
+        // only what it reported. Counted before the report: events appended
+        // meanwhile survive. A failed target keeps its events; a late success
+        // still truncates, even if pull has already stopped waiting.
         for (const t of targets) {
+          const eventCount = (await readUsageEvents(t.opts.selfConfig)).length;
           try {
             const reported = await reportUsageToTeam(t.repoPath, t.username, t.opts);
-            if (!reported) allReported = false;
+            if (reported && eventCount > 0) await truncateUsageAfterReport(eventCount, t.opts.selfConfig);
           } catch (e) {
-            allReported = false;
             log.error(`Auto-report to ${t.repoPath} skipped: ${(e as Error).message}`);
           }
-        }
-        // A failed target must not lose its events. This also runs after a late
-        // success, even if pull has already stopped waiting for the report.
-        if (allReported && eventCount > 0 && targets.length > 0) {
-          await truncateUsageAfterReport(eventCount);
         }
       } catch (e) {
         log.debug(`Auto-report skipped: ${(e as Error).message}`);

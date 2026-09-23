@@ -1,6 +1,6 @@
 import YAML from 'yaml';
 import path from 'node:path';
-import { readUsageEvents } from './usage-tracker.js';
+import { readUsageEvents, resolveUsageScope } from './usage-tracker.js';
 import { readFileSafe } from './utils/fs.js';
 import { loadLocalConfig, detectProjectConfig } from './config.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
@@ -171,7 +171,8 @@ export interface ShowStatsOptions {
  * Merges local unreported events with reported team stats for a complete view.
  */
 export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
-  const events = await readUsageEvents();
+  // The same scope loadReportedStats reads, so local and reported totals match.
+  const events = await readUsageEvents((await resolveUsageScope()) ?? undefined);
   const localStats = aggregateUsage(events);
   const reported = await loadReportedStats();
   const stats = mergeLocalAndReported(localStats, reported);
