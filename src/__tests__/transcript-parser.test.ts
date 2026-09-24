@@ -878,3 +878,95 @@ describe('parseTranscriptForVotes — third-review hardening', () => {
     expect(r.recalledDocScopes['user-doc']).toBe('user');
   });
 });
+
+describe('parseTranscriptForVotes — adoption hardening (#6/#7/#8)', () => {
+  function recallLine(filePath: string, docPath: string): void {
+    writeLine(filePath, {
+      type: 'assistant',
+      message: { content: [{ type: 'text',
+        text: `--- [teamai:recall:start] ---\n[1/1] [learning] Title\nFile: ${docPath}\n--- [teamai:recall:end] ---` }] },
+    });
+  }
+
+  it('#6: a .md MENTIONED in a reader result body is NOT harvested (only whole-line paths)', async () => {
+    const filePath = path.join(tmpDir, 't.jsonl');
+    recallLine(filePath, '/repo/learnings/setup.md');
+    // The agent Reads an unrelated notes.md whose BODY prose mentions
+    // "learnings/setup.md" mid-sentence — that must NOT credit setup.md.
+    writeLine(filePath, { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/repo/notes.md' } }] } });
+    writeLine(filePath, { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'r1',
+      content: 'See also learnings/setup.md for details, and check docs/other.md too.' }] } });
+    const r = await parseTranscriptForVotes(filePath);
+    expect(r.adoptedDocIds).toEqual([]);
+  });
+
+  it('#6: a Glob RESULT that lists the recalled file on its own line IS harvested', async () => {
+    const filePath = path.join(tmpDir, 't.jsonl');
+    recallLine(filePath, '/repo/learnings/setup.md');
+    writeLine(filePath, { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'g1', name: 'Glob', input: { path: '/repo/learnings', pattern: '*.md' } }] } });
+    // Each matched file is on its own line — these are real path tokens.
+    writeLine(filePath, { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'g1',
+      content: '/repo/learnings/setup.md\n/repo/learnings/other.md' }] } });
+    const r = await parseTranscriptForVotes(filePath);
+    expect(r.adoptedDocIds).toEqual(['setup']);
+  });
+
+  it('#6: a Grep RESULT with path:line: prefixes harvests the path portion', async () => {
+    const filePath = path.join(tmpDir, 't.jsonl');
+    recallLine(filePath, '/repo/learnings/setup.md');
+    writeLine(filePath, { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'gr1', name: 'Grep', input: { pattern: 'foo', path: '/repo/learnings' } }] } });
+    // Grep emits `path:line:content` per match; the path portion should be harvested.
+    writeLine(filePath, { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'gr1',
+      content: '/repo/learnings/setup.md:12:foo bar\n/repo/learnings/other.md:3:baz' }] } });
+    const r = await parseTranscriptForVotes(filePath);
+    expect(r.adoptedDocIds).toEqual(['setup']);
+  });
+
+  it('#7: a RELATIVE tool path is resolved against entry.cwd and credits when it matches the recalled absolute path', async () => {
+    const filePath = path.join(tmpDir, 't.jsonl');
+    recallLine(filePath, '/repo/learnings/setup.md');
+    // Relative path + cwd=/repo resolves to /repo/learnings/setup.md → matches.
+    writeLine(filePath, {
+      type: 'assistant',
+      cwd: '/repo',
+      message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: 'learnings/setup.md' } }] },
+    });
+    writeLine(filePath, { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: '# setup' }] } });
+    const r = await parseTranscriptForVotes(filePath);
+    expect(r.adoptedDocIds).toEqual(['setup']);
+  });
+
+  it('#7: the SAME relative path from a DIFFERENT cwd does NOT credit a recalled doc under another checkout', async () => {
+    const filePath = path.join(tmpDir, 't.jsonl');
+    recallLine(filePath, '/repo/learnings/setup.md');
+    // cwd=/other resolves to /other/learnings/setup.md, which is NOT the recalled
+    // path — and the basename+suffix fallback is skipped (cwd was available), so
+    // this no longer misattributes the doc across checkouts.
+    writeLine(filePath, {
+      type: 'assistant',
+      cwd: '/other',
+      message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: 'learnings/setup.md' } }] },
+    });
+    writeLine(filePath, { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: '# setup' }] } });
+    const r = await parseTranscriptForVotes(filePath);
+    expect(r.adoptedDocIds).toEqual([]);
+  });
+
+  it('#8: a separator inside a QUOTED string does not synthesize a fake read sub-command', async () => {
+    const filePath = path.join(tmpDir, 't.jsonl');
+    recallLine(filePath, '/repo/learnings/setup.md');
+    // The `|` inside the double-quoted grep pattern must NOT split into a
+    // `cat learnings/setup.md` sub-command that would falsely credit setup.md.
+    writeLine(filePath, { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'grep "x | cat learnings/setup.md" app.log' } }] } });
+    const r = await parseTranscriptForVotes(filePath);
+    expect(r.adoptedDocIds).toEqual([]);
+  });
+
+  it('#8: an unquoted cat of the recalled file still credits (quote-awareness does not regress real reads)', async () => {
+    const filePath = path.join(tmpDir, 't.jsonl');
+    recallLine(filePath, '/repo/learnings/setup.md');
+    writeLine(filePath, { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'cat learnings/setup.md' } }] } });
+    const r = await parseTranscriptForVotes(filePath);
+    expect(r.adoptedDocIds).toEqual(['setup']);
+  });
+});

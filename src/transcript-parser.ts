@@ -3,6 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 
+/**
+ * The fixed start/end sentinels teamai's recall output prints (see recall.ts
+ * `formatResults`). Used by `extractRecalledDocIds` to delimit a recall region
+ * when parsing doc-ids.
+ */
+const RECALL_REGION_START = '--- [teamai:recall:start] ---';
+const RECALL_REGION_END = '--- [teamai:recall:end] ---';
+
 export interface TranscriptVoteData {
   recalledDocIds: string[];
   /**
@@ -70,8 +78,12 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
   // with the tool_use id that produced it, matched against the recalled paths
   // after the full scan (a doc may be recalled and opened in either order across
   // turns). The id lets a FAILED tool_result revoke its refs so a rejected or
-  // errored Read/Grep/Glob never counts as adoption (issue #723 review).
-  const toolFileRefsById: Array<{ ref: string; id?: string }> = [];
+  // errored Read/Grep/Glob never counts as adoption (issue #723 review). The
+  // `cwd` is the transcript entry's working dir, used to resolve a RELATIVE tool
+  // path to absolute before matching — so the same relative path opened from two
+  // different checkouts is not misattributed to a recalled absolute path in only
+  // one of them (issue #723 review, blocking #7).
+  const toolFileRefsById: Array<{ ref: string; id?: string; cwd?: string }> = [];
   // tool_use ids whose tool_result was an error → their refs are not adoption.
   const failedToolUseIds = new Set<string>();
   // tool_use ids of plain file readers (Read/Bash/Grep/Glob…). A recall region
@@ -83,8 +95,10 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
   const readerToolUseIds = new Set<string>();
   // tool_result recall regions buffered until the whole transcript is scanned,
   // so we know which results came from readers (untrusted content) vs teamai's
-  // own recall output (trusted). Each keeps its tool_use_id.
-  const deferredResultRegions: Array<{ id?: string; content: unknown }> = [];
+  // own recall output (trusted). Each keeps its tool_use_id and the entry's cwd
+  // (the latter so a relative path harvested from a reader result can be
+  // resolved to absolute later — issue #723 review, blocking #7).
+  const deferredResultRegions: Array<{ id?: string; cwd?: string; content: unknown }> = [];
   // Recalled doc-id -> original file path (for the optional LLM-judge to read).
   const docIdToPath = new Map<string, string>();
   // Recalled doc-id -> scope it was recalled from ('project'/'user'/'unknown'),
@@ -128,6 +142,13 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
     } catch {
       continue;
     }
+
+    // Working directory of THIS transcript entry (present on user/assistant
+    // entries). Used to resolve RELATIVE tool-call file refs to absolute paths
+    // before matching against recalled absolute paths, so a relative path opened
+    // from one checkout is not misattributed to a recalled doc living under a
+    // different checkout's absolute path (issue #723 review, blocking #7).
+    const entryCwd = typeof entry['cwd'] === 'string' ? (entry['cwd'] as string) : undefined;
 
     // Trusted fallback surfaces for recall markers that live OUTSIDE a structured
     // message.content[] block (host schema variance): teamai's own recall stdout
@@ -182,8 +203,10 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
         // after the whole transcript is scanned; the same buffer also feeds the
         // Glob/Grep matched-file harvest, which must run ONLY for reader results
         // (a Task summary result carries a recall region whose File: paths are
-        // retrieval, not the main agent opening them — issue #723 review).
-        if (!isSidechain) deferredResultRegions.push({ id: tidStr, content: block['content'] });
+        // retrieval, not the main agent opening them — issue #723 review). The
+        // entry's cwd is buffered too so a relative matched-file path can later be
+        // resolved to absolute (issue #723 review, blocking #7).
+        if (!isSidechain) deferredResultRegions.push({ id: tidStr, cwd: entryCwd, content: block['content'] });
       }
 
       // Tool-use evidence: a Read/Grep/Glob/Bash call in the MAIN conversation
@@ -198,7 +221,7 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
         if (!isSidechain) {
           const refs = new Set<string>();
           collectToolFileRefs(block, refs);
-          for (const r of refs) toolFileRefsById.push({ ref: r, id });
+          for (const r of refs) toolFileRefsById.push({ ref: r, id, cwd: entryCwd });
         }
       }
 
@@ -248,7 +271,7 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
   //  - Reader results are the CONTENT of a file the agent opened; a forged recall
   //    region there must NOT manufacture a new doc-id, so we parse them into a
   //    provisional set and keep only ids already recalled from a trusted origin.
-  for (const { id, content } of deferredResultRegions) {
+  for (const { id, cwd, content } of deferredResultRegions) {
     const isReader = id !== undefined && readerToolUseIds.has(id);
     if (isReader) {
       // Reader result = the CONTENT of a file the agent opened. A recall region
@@ -264,8 +287,10 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
       extractRecalledDocIdsFromValue(content, new Set<string>(), sinkMaps, new Map(), new Map());
       //  - Glob/Grep report the files they MATCHED here (the input `path` is
       //    often just a directory), so harvest those .md paths as adoption
-      //    evidence, tied to the tool_use id (a failed call's matches drop).
-      for (const r of collectMdRefsFromValue(content)) toolFileRefsById.push({ ref: r, id });
+      //    evidence, tied to the tool_use id (a failed call's matches drop). The
+      //    result entry's cwd is carried so a relative matched path can later be
+      //    resolved to absolute (issue #723 review, blocking #7).
+      for (const r of collectMdRefsFromValue(content)) toolFileRefsById.push({ ref: r, id, cwd });
     } else {
       // Non-reader result = teamai's own recall output (Task subagent / Bash
       // `teamai recall`): a TRUSTED origin, so doc-ids join recalledSet. We do
@@ -276,10 +301,25 @@ export async function parseTranscriptForVotes(transcriptPath: string): Promise<T
   }
 
   const adoptedSet = new Set<string>();
-  for (const { ref, id } of toolFileRefsById) {
+  for (const { ref, id, cwd } of toolFileRefsById) {
     // A failed/rejected tool call read nothing → its refs are not adoption.
     if (id !== undefined && failedToolUseIds.has(id)) continue;
     const norm = normalizePathKey(ref);
+    // Resolve a RELATIVE ref against the entry's cwd before matching (issue
+    // #723 review, blocking #7): recall injects ABSOLUTE paths, so a relative
+    // tool path only matches the right recalled doc when joined to the checkout
+    // it was opened from. When a cwd is available we resolve to an absolute path
+    // and match ONLY on that exact full path — the basename+suffix fallback is
+    // deliberately skipped, because re-applying it would re-credit the same
+    // relative path opened from a DIFFERENT checkout (defeating the cwd
+    // distinction). The suffix fallback below runs only when no cwd was present
+    // (e.g. older transcripts), preserving the legacy relative-path behavior.
+    if (cwd && !path.isAbsolute(norm)) {
+      const resolved = normalizePathKey(path.resolve(cwd, ref));
+      const byFullResolved = recalledFullPathToDocId.get(resolved);
+      if (byFullResolved) adoptedSet.add(byFullResolved);
+      continue;
+    }
     // Exact full-path hit → credit directly.
     const byFull = recalledFullPathToDocId.get(norm);
     if (byFull) {
@@ -426,18 +466,15 @@ function extractRecalledDocIds(
   docIdToPath?: Map<string, string>,
   docIdToScope?: Map<string, 'project' | 'user' | 'unknown'>,
 ): void {
-  const START = '--- [teamai:recall:start] ---';
-  const END = '--- [teamai:recall:end] ---';
-
   let searchFrom = 0;
   while (true) {
-    const startIdx = text.indexOf(START, searchFrom);
+    const startIdx = text.indexOf(RECALL_REGION_START, searchFrom);
     if (startIdx === -1) break;
 
-    const endIdx = text.indexOf(END, startIdx + START.length);
+    const endIdx = text.indexOf(RECALL_REGION_END, startIdx + RECALL_REGION_START.length);
     if (endIdx === -1) break;
 
-    const region = text.slice(startIdx + START.length, endIdx);
+    const region = text.slice(startIdx + RECALL_REGION_START.length, endIdx);
     // Walk the region line-by-line so each `File:` inherits the scope label
     // from the hit header that precedes it. recall prints a header per hit —
     // `[i/N] [type] Title ★votes [project]` — then a `File:` line. The `[user]`
@@ -465,7 +502,7 @@ function extractRecalledDocIds(
       }
     }
 
-    searchFrom = endIdx + END.length;
+    searchFrom = endIdx + RECALL_REGION_END.length;
   }
 }
 
@@ -489,14 +526,26 @@ const READ_LIKE_TOOLS = new Set([
  * recalled doc would never be credited (issue #723 review). Over-collection is
  * safe: every ref is later intersected with the recalled set and the caller ties
  * it to a tool_use id so a failed call's matches are dropped.
+ *
+ * Tightened (issue #723 review, blocking #6): previously this scanned the WHOLE
+ * reader-result text with a free `*.md` regex, so Reading an unrelated notes.md
+ * whose body merely MENTIONED `learnings/setup.md` credited setup.md. A reader
+ * result's matched files appear as one-per-line path tokens — Glob lists bare
+ * paths, Grep emits `path:line:...` — never as prose substrings. We now accept a
+ * token ONLY when, after stripping surrounding quotes, an entire line is a file
+ * path optionally followed by a grep `:line:` suffix. A `.md` mentioned mid-
+ * sentence in file BODY content no longer matches.
  */
 function collectMdRefsFromValue(value: unknown, out: Set<string> = new Set()): Set<string> {
   if (typeof value === 'string') {
-    const mdPattern = /[\w./~@+-]*\.md\b/g;
-    let m: RegExpExecArray | null;
-    while ((m = mdPattern.exec(value)) !== null) {
-      const token = m[0].replace(/^['"]|['"]$/g, '').trim();
-      if (token) out.add(token);
+    // A line is a file path when, trimmed and quote-stripped, it is wholly a
+    // `*.md` path optionally followed by `:line[:col]` (grep's path:line prefix).
+    // Group 1 = the path; group 2 = the optional `:line...` remainder.
+    const linePattern = /^([\w./~@+-]+\.md)(:\d+.*)?$/;
+    for (const raw of value.split('\n')) {
+      const stripped = raw.trim().replace(/^['"]|['"]$/g, '');
+      const m = stripped.match(linePattern);
+      if (m) out.add(m[1]);
     }
     return out;
   }
@@ -580,9 +629,17 @@ const VALUE_OPTIONS = new Set([
  * drop flags and their consumed values, stop at a `#` comment, and (for
  * pattern-first readers like grep) drop the first bare operand, which is the
  * search pattern rather than a file.
+ *
+ * Quote-aware tokenization (issue #723 review, blocking #8): words are split
+ * with `splitShellWords`, which keeps a quoted string (`"x | cat foo.md"`) as a
+ * SINGLE token, so a separator/path inside quotes never leaks out as a separate
+ * operand. Without this, `grep "x | cat learnings/setup.md" app.log` would
+ * splinter the quoted pattern into bare words and `learnings/setup.md` would be
+ * harvested as a file operand (a false upvote) even though it lives inside the
+ * grep PATTERN.
  */
 function fileOperands(segment: string, cmd: string): string[] {
-  const words = segment.split(/\s+/).filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+  const words = splitShellWords(segment).filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
   const operands: string[] = [];
   let sawVerb = false;
   let patternPending = PATTERN_FIRST_READERS.has(cmd);
@@ -640,15 +697,63 @@ const FILE_READER_COMMANDS = new Set([
  * sub-command can be classified independently — `echo x.md && cat y.md` must
  * count only `y.md`.
  *
- * Limitation: this is a lightweight split, not a shell parser — it does not
- * track quotes, so a separator inside a quoted string (`grep "a || b" f.md`) is
- * treated as a real separator. A full parser is not worth the complexity here;
- * the worst case is an occasional missed `.md` token, and every match is still
- * gated to the recalled set AND to file-operand positions, so it can never
- * credit an unrelated doc nor a doc named only in a pattern/comment.
+ * Quote-aware (issue #723 review, blocking #8): a `|`/`;`/`&&`/`||`/newline that
+ * sits INSIDE a single- or double-quoted string is NOT a separator — e.g.
+ * `grep "x | cat learnings/setup.md" app.log` must stay one segment so the
+ * quoted `|` does not synthesize a fake `cat learnings/setup.md` sub-command and
+ * credit a doc the agent never opened. A small char-walk state machine tracks
+ * single/double quote state and honors backslash escapes inside double quotes.
+ * Returns trimmed non-empty segments.
  */
 function splitShellSegments(command: string): string[] {
-  return command.split(/\s*(?:\|\||&&|[;|\n])\s*/).map((s) => s.trim()).filter(Boolean);
+  const segments: string[] = [];
+  let current = '';
+  let singleQ = false; // inside a single-quoted string
+  let doubleQ = false; // inside a double-quoted string
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (singleQ) {
+      // Inside single quotes: only a closing single-quote ends the region; no
+      // escape processing (POSIX single quotes are literal).
+      if (ch === "'") singleQ = false;
+      current += ch;
+      continue;
+    }
+    if (doubleQ) {
+      // Inside double quotes: backslash escapes the NEXT char (kept literally);
+      // a closing double-quote ends the region. Separators are literal here.
+      if (ch === '\\' && i + 1 < command.length) {
+        current += ch + command[i + 1];
+        i++;
+        continue;
+      }
+      if (ch === '"') doubleQ = false;
+      current += ch;
+      continue;
+    }
+    // Outside any quote: separators cut a segment. Handle two-char operators
+    // (||, &&) by peeking ahead so they don't split twice.
+    if (ch === "'" || ch === '"') {
+      if (ch === "'") singleQ = true; else doubleQ = true;
+      current += ch;
+      continue;
+    }
+    const two = command.slice(i, i + 2);
+    if (two === '||' || two === '&&') {
+      segments.push(current);
+      current = '';
+      i++; // consume the second char
+      continue;
+    }
+    if (ch === ';' || ch === '|' || ch === '\n') {
+      segments.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current);
+  return segments.map((s) => s.trim()).filter(Boolean);
 }
 
 /**
@@ -664,5 +769,54 @@ function readerVerbOf(segment: string): string | null {
   // Strip a leading path (e.g. /usr/bin/cat → cat).
   const cmd = path.basename(words[0]);
   return FILE_READER_COMMANDS.has(cmd) ? cmd : null;
+}
+
+/**
+ * Quote-aware word tokenizer for a SINGLE shell segment (issue #723 review,
+ * blocking #8): splits on unquoted whitespace, keeping a single- or
+ * double-quoted string as ONE token (quote characters retained, so downstream
+ * `.md` extraction strips them with the existing `replace(/^['"]|['"]$/g)`).
+ * This prevents a quoted grep PATTERN like `"x | cat learnings/setup.md"` from
+ * splintering into bare words whose `.md` fragment is then harvested as a file
+ * operand. Backslash escapes the next char inside double quotes (POSIX-ish).
+ */
+function splitShellWords(segment: string): string[] {
+  const words: string[] = [];
+  let current = '';
+  let inWord = false;
+  let singleQ = false;
+  let doubleQ = false;
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (singleQ) {
+      current += ch;
+      if (ch === "'") singleQ = false;
+      continue;
+    }
+    if (doubleQ) {
+      if (ch === '\\' && i + 1 < segment.length) {
+        current += ch + segment[i + 1];
+        i++;
+        continue;
+      }
+      current += ch;
+      if (ch === '"') doubleQ = false;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      inWord = true;
+      if (ch === "'") singleQ = true; else doubleQ = true;
+      current += ch;
+      continue;
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\n') {
+      if (inWord) { words.push(current); current = ''; inWord = false; }
+      continue;
+    }
+    inWord = true;
+    current += ch;
+  }
+  if (inWord) words.push(current);
+  return words;
 }
 
