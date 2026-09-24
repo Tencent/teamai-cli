@@ -426,6 +426,40 @@ describe('showStats scope and idempotency', () => {
     expect(byRepoSessions(out)).toBe(2);
   });
 
+  it('reports the project scope against its own reported totals, excluding another project', async () => {
+    // The end-to-end shape the review asked for: a project scope with reported
+    // team totals, one reported session still in the log, one new session in
+    // this project, and one session belonging to a different project.
+    await seedProjectConfig();
+    await appendEvents([
+      ...session('sess-1', DIRS.project),
+      ...session('sess-2', DIRS.project),
+      ...session('sess-3', DIRS.other),
+    ]);
+
+    await writeReportedStats({
+      username: 'tester',
+      updatedAt: '2026-09-20T11:00:00.000Z',
+      skills: {},
+      prompts: 300,
+      tokens: { input: 1000, output: 500, cacheRead: 0, cacheCreation: 0 },
+      interventions: { sessions: 3, interrupt: 1, toolReject: 1, correction: 1 },
+    });
+    await writeReportedSnapshots(
+      { 'sess-1': { interrupt: 1, toolReject: 1, correction: 1 } },
+      { 'sess-1': { prompts: 100, tokens: { input: 1000, output: 500, cacheRead: 0, cacheCreation: 0 } } },
+    );
+
+    const out = await showStatsFromProject({ byRepo: true });
+
+    // 3 reported + sess-2 (new, this project). sess-3 belongs elsewhere.
+    expect(outputNumber(out, 'Sessions:')).toBe(4);
+    expect(outputNumber(out, 'Conversation turns:')).toBe(301);
+    // Only this project's rows reach the breakdown.
+    expect(byRepoRowCount(out)).toBe(1);
+    expect(byRepoSessions(out)).toBe(2);
+  });
+
   it('keeps another project out of the per-repo breakdown', async () => {
     await seedProjectConfig();
     await appendEvents([
