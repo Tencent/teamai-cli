@@ -297,10 +297,10 @@ describe('showStats scope and idempotency', () => {
     expect(outputNumber(out, 'Conversation turns:')).toBe(1);
   });
 
-  it('applies no project exclusion in the user scope when no project resolves', async () => {
-    // A user-scope run from a plain directory: detectProjectConfig() finds no
-    // project here, exactly as `pull` sees it from the same directory, so the
-    // report path passes no exclusion list either. The display side matches.
+  it('keeps sessions recorded before events carried a data home out of the user scope', async () => {
+    // A user-scope run from a plain directory. These events carry no dataHome,
+    // and the user scope never reports such events (#785), so it does not count
+    // them either: the display side follows the report side.
     await seedUserScopeWithProject();
     await appendEvents([
       ...session('sess-1', DIRS.project),
@@ -321,8 +321,7 @@ describe('showStats scope and idempotency', () => {
     fs.mkdirSync(plainDir, { recursive: true });
     const out = await showStatsFromPlainDir(plainDir);
 
-    expect(outputNumber(out, 'Sessions:')).toBe(2);
-    expect(outputNumber(out, 'Conversation turns:')).toBe(2);
+    expect(out).toContain('No usage data yet.');
   });
 
   it('still shows local sessions when the team stats file is missing', async () => {

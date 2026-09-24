@@ -231,23 +231,10 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   // is shown can agree with what the team holds: this scope's own sessions only,
   // and only the part of them not already reported (reported sessions stay in
   // events.jsonl until compaction, so counting the full local aggregate would
-  // count each one twice and pull in other projects' sessions).
-  //
-  // The project root is resolved on its own, exactly as `pull` does: it reads
-  // `detectProjectConfig()`, never the projectRoot of the scope config, because
-  // a user-scope config carries no projectRoot at all (the field is attached
-  // only when a PROJECT config is detected). Same call, same directory, same
-  // answer as the report path.
-  const { detectProjectConfig } = await import('./config.js');
-  const projectConfig = await detectProjectConfig();
-  const projectRoot = config?.scope === 'project' ? config.projectRoot : projectConfig?.projectRoot;
-  const scopeFilter = projectRoot
-    ? (config?.scope === 'project'
-      ? { projectRoot }
-      : { excludeProjectRoots: [projectRoot] })
-    : undefined;
+  // count each one twice and pull in other projects' sessions). Same filter,
+  // same scope config as the report path (#785).
   const { filterEventsByScope } = await import('./team-push.js');
-  const scopedEvents = filterEventsByScope(await readEvents(), scopeFilter);
+  const scopedEvents = await filterEventsByScope(await readEvents(), config ?? undefined);
   const metricsMap = aggregateSessionMetrics(scopedEvents);
   // Only subtract what the team already holds. Two guards, because the local
   // snapshots are machine-global while the team file is per user:
