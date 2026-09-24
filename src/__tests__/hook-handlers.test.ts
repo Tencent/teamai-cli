@@ -14,8 +14,6 @@ const mockTrackFromParsed = vi.fn().mockResolvedValue(undefined);
 const mockTrackSlashFromParsed = vi.fn().mockResolvedValue(undefined);
 const mockContributeCheckForSession = vi.fn().mockResolvedValue({ hint: null });
 const mockTakePendingHint = vi.fn().mockResolvedValue(null);
-const mockJudgedDocIdsForSession = vi.fn().mockResolvedValue(new Set<string>());
-const mockRecordJudgedDocIds = vi.fn().mockResolvedValue(undefined);
 // Default: no doc has been credited yet this session → every adopted doc is
 // "fresh" (returns its input). Tests that exercise the dedup override this.
 const mockJudgeAdoption = vi.fn().mockResolvedValue([]);
@@ -72,8 +70,6 @@ vi.mock('../contribute-check.js', () => ({
   contributeCheck: vi.fn().mockResolvedValue(undefined),
   contributeCheckForSession: mockContributeCheckForSession,
   takePendingHint: mockTakePendingHint,
-  judgedDocIdsForSession: mockJudgedDocIdsForSession,
-  recordJudgedDocIds: mockRecordJudgedDocIds,
 }));
 
 vi.mock('../votes-judge.js', () => ({
@@ -163,7 +159,6 @@ describe('hook-handlers registry', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockParseTranscriptForVotes.mockResolvedValue({ recalledDocIds: [], adoptedDocIds: [], finalAssistantText: '', recalledDocPaths: {}, recalledDocScopes: {} });
-    mockJudgedDocIdsForSession.mockResolvedValue(new Set<string>());
     mockIncrementUpvoted.mockImplementation(async (_p: string, docIds: string[]) => docIds);
     mockJudgeAdoption.mockResolvedValue([]);
     mockPackageManifestHash.mockResolvedValue('before-hash');
@@ -976,8 +971,8 @@ describe('hook-handlers registry', () => {
       expect.arrayContaining(['/tmp']),
     );
     expect(mockIncrementUpvoted).toHaveBeenCalledWith(expect.any(String), ['doc-a'], expect.any(String));
-    // What was judged is recorded so a later Stop won't re-spend a CLI call on them.
-    expect(mockRecordJudgedDocIds).toHaveBeenCalledWith(expect.any(String), ['doc-a', 'doc-b']);
+    // Ledger-only dedup: nothing is recorded beyond the ledger, so a later Stop
+    // may re-judge a not-yet-credited doc (acceptable; the judge is opt-in).
   });
 
   it('votes-judge does NOT re-judge docs already credited by tool-use', async () => {
@@ -1000,10 +995,12 @@ describe('hook-handlers registry', () => {
     expect(mockJudgeAdoption).toHaveBeenCalledWith('used something', ['doc-b'], { 'doc-b': '/l/doc-b.md' }, expect.arrayContaining(['/tmp']));
   });
 
-  it('votes-judge does NOT re-judge a doc it already judged this session (per-doc, not once-per-session)', async () => {
+  it('votes-judge re-judges a doc not yet in the ledger (no per-session marker blocks it)', async () => {
     process.env.TEAMAI_UPVOTE_JUDGE = '1';
-    // doc-a was judged on an earlier Stop; doc-b is newly recalled this turn.
-    mockJudgedDocIdsForSession.mockResolvedValueOnce(new Set(['doc-a']));
+    // doc-a was judged on an earlier Stop but NOT adopted (so it is NOT in the
+    // ledger); doc-b is newly recalled this turn. With ledger-only dedup there
+    // is no per-session marker, so doc-a is re-sent to the judge along with
+    // doc-b. Only the adopted doc lands in the ledger.
     mockParseTranscriptForVotes.mockResolvedValue({
       recalledDocIds: ['doc-a', 'doc-b'], adoptedDocIds: [],
       finalAssistantText: 'final reply using doc-b', recalledDocPaths: { 'doc-a': '/l/doc-a.md', 'doc-b': '/l/doc-b.md' },
@@ -1018,20 +1015,20 @@ describe('hook-handlers registry', () => {
       'claude', scope,
     );
 
-    // Only the not-yet-judged doc-b is sent to the judge — doc-a is skipped, but
-    // a later-turn doc is STILL judged (not blocked by a once-per-session claim).
-    expect(mockJudgeAdoption).toHaveBeenCalledWith('final reply using doc-b', ['doc-b'], expect.anything(), expect.anything());
+    // Both docs go to the judge (no marker excludes doc-a); only doc-b is credited.
+    expect(mockJudgeAdoption).toHaveBeenCalledWith('final reply using doc-b', ['doc-a', 'doc-b'], expect.anything(), expect.anything());
     expect(mockIncrementUpvoted).toHaveBeenCalledWith(expect.any(String), ['doc-b'], expect.any(String));
   });
 
-  it('votes-judge records judged docs AFTER the CLI call (crash-safe: a killed run records nothing)', async () => {
+  it('votes-judge with an empty verdict upvotes nothing (ledger-only: no marker, no crash residue)', async () => {
     process.env.TEAMAI_UPVOTE_JUDGE = '1';
     mockParseTranscriptForVotes.mockResolvedValue({
       recalledDocIds: ['doc-a'], adoptedDocIds: [],
       finalAssistantText: 'x', recalledDocPaths: { 'doc-a': '/l/doc-a.md' }, recalledDocScopes: {},
     });
-    // Judge throws (e.g. CLI missing) → judgeAdoption soft-fails to [], and we
-    // must NOT have recorded doc-a as judged, so a later Stop retries it.
+    // Judge returns no adoption (e.g. CLI missing → soft-fails to []) — nothing
+    // is credited and, with ledger-only dedup, no marker is written, so a killed
+    // run leaves no stuck state and the next Stop retries doc-a cleanly.
     mockJudgeAdoption.mockResolvedValueOnce([]);
 
     const registry = buildHandlerRegistry();
@@ -1041,9 +1038,8 @@ describe('hook-handlers registry', () => {
       'claude', scope,
     );
 
-    // The judge ran and recorded what it evaluated (empty verdict is still a
-    // completed evaluation — doc-a was judged and found not-adopted).
-    expect(mockRecordJudgedDocIds).toHaveBeenCalledWith('sid-judge-empty', ['doc-a']);
+    // The judge ran but the empty verdict means no ledger increment.
+    expect(mockJudgeAdoption).toHaveBeenCalled();
     expect(mockIncrementUpvoted).not.toHaveBeenCalled();
   });
 

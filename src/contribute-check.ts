@@ -127,17 +127,6 @@ function getSessionPath(sessionId: string): string {
   );
 }
 
-function getVotesJudgeMarkerPath(sessionId: string): string {
-  return path.join(
-    getUserHome(),
-    '.teamai',
-    'sessions',
-    `${sanitizeSessionId(sessionId)}.votes-judged.json`,
-  );
-}
-
-
-
 /** Default empty state for a new session. */
 function defaultState(): ContributeState {
   return {
@@ -205,18 +194,13 @@ const STALE_SESSION_MS = 24 * 60 * 60 * 1000;
 export async function cleanupStaleSessions(dir: string, currentSessionId: string): Promise<void> {
   const now = Date.now();
   // Filenames on disk are sanitized; compare against the sanitized form of the
-  // current sessionId so the "skip current" guard actually matches. The current
-  // session owns TWO files — its state `{s}.json` and its judged marker
-  // `{s}.votes-judged.json` — so guard both stripped forms (the marker is always
-  // fresh in practice, but matching it keeps the guard honest if write ordering
-  // ever changes).
+  // current sessionId so the "skip current" guard actually matches.
   const currentBasename = sanitizeSessionId(currentSessionId);
-  const currentJudged = `${currentBasename}.votes-judged`;
   const entries = await fs.promises.readdir(dir);
   for (const entry of entries) {
     if (!entry.endsWith('.json')) continue;
     const name = entry.replace('.json', '');
-    if (name === currentBasename || name === currentJudged) continue;
+    if (name === currentBasename) continue;
     const filePath = path.join(dir, entry);
     try {
       const stat = await fs.promises.stat(filePath);
@@ -728,53 +712,6 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
   if (hint !== null) {
     const { formatStopHookOutput } = await import('./utils/hook-output.js');
     process.stdout.write(formatStopHookOutput(relayWhenHidden(hint, tool), tool));
-  }
-}
-
-/**
- * The set of recalled doc-ids the background upvote LLM-judge (issue #723) has
- * ALREADY evaluated this session, persisted in a per-session marker file.
- *
- * This replaces the old exclusive once-per-session claim, which had two flaws
- * (issue #723 review):
- *   - it was created BEFORE the external CLI call and only released in `finally`,
- *     so a killed detached process left it stuck and blocked the session's judge
- *     for 24h (crash-unsafe);
- *   - a single successful pass permanently consumed the session, so a doc
- *     recalled or used only in a LATER turn could never be judged.
- * Tracking judged doc-ids instead makes the judge idempotent per doc: each doc
- * is judged at most once per session (whether or not it was adopted), later
- * turns can still judge NEW docs, and a crash mid-call simply leaves the doc
- * unrecorded so the next Stop retries it. Cost stays bounded by the doc set.
- * A missing/corrupt marker reads as an empty set (judge everything once).
- */
-export async function judgedDocIdsForSession(sessionId: string): Promise<Set<string>> {
-  try {
-    const raw = await readJson<{ judged?: unknown }>(getVotesJudgeMarkerPath(sessionId));
-    const judged = raw?.judged;
-    if (!Array.isArray(judged)) return new Set();
-    return new Set(judged.filter((d): d is string => typeof d === 'string'));
-  } catch {
-    return new Set();
-  }
-}
-
-/**
- * Record that `docIds` were judged this session (union with any prior set), so
- * later Stops don't re-spend a local-CLI call on the same docs. Best-effort and
- * write-only after the CLI call returns, so a crash cannot block future judging.
- */
-export async function recordJudgedDocIds(sessionId: string, docIds: readonly string[]): Promise<void> {
-  if (docIds.length === 0) return;
-  try {
-    const markerPath = getVotesJudgeMarkerPath(sessionId);
-    await ensureDir(path.dirname(markerPath));
-    const prev = await judgedDocIdsForSession(sessionId);
-    for (const d of docIds) prev.add(d);
-    await writeJson(markerPath, { judged: [...prev], ts: new Date().toISOString() });
-    await cleanupStaleSessions(path.dirname(markerPath), sessionId).catch(() => undefined);
-  } catch (e) {
-    log.debug(`Failed to record judged docs: ${(e as Error).message}`);
   }
 }
 

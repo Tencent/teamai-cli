@@ -561,17 +561,16 @@ const votesJudgeHandler: HookHandler = {
       const scopeEligible = new Set(
         eligibleUpvotes(voteData.recalledDocIds, voteData.recalledDocScopes, localConfig.scope),
       );
-      // Skip docs already judged this session (whether or not they were adopted)
-      // so we never spend a second local-CLI call on the same doc — but a doc
-      // recalled/used only on a LATER turn is still judged then (issue #723
-      // review: a single successful pass must not permanently consume the
-      // session). This per-doc record replaces the old exclusive once-per-session
-      // marker, which was crash-unsafe (a killed detached run left it stuck) and
-      // blocked judging later docs.
-      const { judgedDocIdsForSession, recordJudgedDocIds } = await import('./contribute-check.js');
-      const alreadyJudged = await judgedDocIdsForSession(sessionId);
+      // Dedup is ledger-only now: a doc credited by the foreground pass, by this
+      // judge's tool-use evidence, or already in the shared per-session upvote
+      // ledger is never sent to the judge again. A recalled doc that was NOT
+      // adopted is re-judged on a later Stop (the judge is opt-in, so this cost
+      // is acceptable). There is no per-session marker to clean up, so a killed
+      // detached run leaves no stuck state; later turns can still judge NEW docs,
+      // and a positive verdict only lands once incrementUpvoted succeeds
+      // atomically (sessionId-scoped) — preventing any double credit.
       const toJudge = voteData.recalledDocIds.filter(
-        (id) => scopeEligible.has(id) && !alreadyCredited.has(id) && !ledgerCredited.has(id) && !alreadyJudged.has(id),
+        (id) => scopeEligible.has(id) && !alreadyCredited.has(id) && !ledgerCredited.has(id),
       );
       if (toJudge.length === 0) return null;
 
@@ -599,9 +598,6 @@ const votesJudgeHandler: HookHandler = {
 
       const { judgeAdoption } = await import('./votes-judge.js');
       const adopted = await judgeAdoption(voteData.finalAssistantText, toJudge, voteData.recalledDocPaths, roots);
-      // Record what we judged AFTER the CLI call returns (write-only, crash-safe:
-      // a killed run records nothing and the next Stop simply retries these docs).
-      await recordJudgedDocIds(sessionId, toJudge);
 
       // Gate again to recalled (defensive; judgeAdoption already restricts to toJudge).
       const verified = adopted.filter((id) => recalledSet.has(id));
