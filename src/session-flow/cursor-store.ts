@@ -592,13 +592,13 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
   }
   stmts.push('COMMIT;');
 
-  const sqlPath = path.join(os.tmpdir(), `teamai-cursor-${process.pid}-${Date.now()}.sql`);
+  // The script holds the full conversation text. Piping it straight to sqlite3
+  // keeps it off the filesystem: a temp file in shared /tmp is world-listed,
+  // predictable (pid + timestamp) and -- even created 0600 -- would be written
+  // through a symlink pre-planted at that exact name.
   try {
-    // The SQL file holds the full conversation text and lives in shared /tmp:
-    // default umask would leave it world-readable until we unlink it.
-    fs.writeFileSync(sqlPath, stmts.join('\n'), { encoding: 'utf-8', mode: 0o600 });
     const r = spawnSync(sqlite3, [dbPath], {
-      input: fs.readFileSync(sqlPath),
+      input: stmts.join('\n'),
       maxBuffer: 32 * 1024 * 1024,
       timeout: 30_000,
     });
@@ -607,12 +607,6 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
     }
   } catch (e) {
     return { ok: false, reason: (e as Error).message };
-  } finally {
-    try {
-      fs.unlinkSync(sqlPath);
-    } catch {
-      // ignore
-    }
   }
 
   return { ok: true, bubbleCount: records.length };
@@ -634,11 +628,9 @@ export function unregisterCursorComposer(composerId: string): RegisterResult {
     `DELETE FROM cursorDiskKV WHERE key='composerData:${esc(composerId)}' OR key LIKE 'bubbleId:${esc(composerId)}:%';\n` +
     'COMMIT;';
 
-  const sqlPath = path.join(os.tmpdir(), `teamai-cursor-del-${process.pid}-${Date.now()}.sql`);
   try {
-    fs.writeFileSync(sqlPath, sql, { encoding: 'utf-8', mode: 0o600 });
     const r = spawnSync(sqlite3, [dbPath], {
-      input: fs.readFileSync(sqlPath),
+      input: sql,
       maxBuffer: 32 * 1024 * 1024,
       timeout: 30_000,
     });
@@ -647,12 +639,6 @@ export function unregisterCursorComposer(composerId: string): RegisterResult {
     }
   } catch (e) {
     return { ok: false, reason: (e as Error).message };
-  } finally {
-    try {
-      fs.unlinkSync(sqlPath);
-    } catch {
-      // ignore
-    }
   }
   return { ok: true };
 }

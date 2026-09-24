@@ -102,12 +102,28 @@ export function canonicalizeRemote(remote: string): string {
   let s = remote.trim().replace(/\.git$/i, '');
   // https://github.com/org/repo → github.com/org/repo
   s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  // Drop userinfo even when the password contains '/' (`user:pw/slash@host/…`):
+  // the "no slash before @" rule below cannot match that shape, so the secret
+  // survived into meta, _index.json and the SOURCE column of `list --all`.
+  // Cut at the first '@' when what precedes it looks like user:password -- a
+  // legitimate '@' in the path (`host/org/@scope/pkg`) has no ':' before it.
+  const at = s.indexOf('@');
+  if (at > 0 && s.slice(0, at).includes(':')) s = s.slice(at + 1);
   // Drop userinfo: oauth2:TOKEN@host/... and git@host (both scp and ssh:// forms).
   s = s.replace(/^[^/@]+@/, '');
   // git@github.com:org/repo → github.com/org/repo (scp-style colon separator)
   s = s.replace(/^([^/:]+):(?!\d+(?:\/|$))/, '$1/');
   // 去前导 /
   s = s.replace(/^\/+/, '');
+  // Hosts are case-insensitive: GitHub.com/Org/Repo and github.com/org/repo are
+  // one repository, and two spellings would mean two archive directories and
+  // two indexes for it. The path keeps its case (git paths are case-sensitive).
+  const slash = s.indexOf('/');
+  if (slash > 0) {
+    s = s.slice(0, slash).toLowerCase() + s.slice(slash);
+  } else {
+    s = s.toLowerCase();
+  }
   return s;
 }
 
@@ -123,17 +139,25 @@ export function canonicalizeRemote(remote: string): string {
  * Reversible via decodeRepoIdentity.
  */
 export function encodeRepoIdentity(identity: string): string {
-  return identity.replace(
-    /[^a-zA-Z0-9._-]/g,
-    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`,
-  );
+  // Per character: charCodeAt().toString(16) emitted %4E2D for '中', which the
+  // 2-hex-digit decoder read back as 'N' + '2D'. encodeURIComponent gives the
+  // UTF-8 bytes (%E4%B8%AD) that decodeURIComponent reverses exactly.
+  let out = '';
+  for (const ch of identity) {
+    out += /^[A-Za-z0-9._-]$/.test(ch) ? ch : encodeURIComponent(ch);
+  }
+  return out;
 }
 
 /** Undo encodeRepoIdentity (used for display; the canonical id stays in meta). */
 export function decodeRepoIdentity(encoded: string): string {
-  return encoded.replace(/%([0-9A-F]{2})/g, (_, hex: string) =>
-    String.fromCharCode(parseInt(hex, 16)),
-  );
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    // A malformed escape (hand-edited index, legacy '_'-folded name): fall back
+    // to the raw string rather than throwing out of a listing command.
+    return encoded;
+  }
 }
 
 /**
@@ -398,12 +422,21 @@ export class SyncManager {
     return { version: 1, repoIdentity, updatedAt: utcNow(), sessions: [] };
   }
 
-  private writeIndex(repoIdentity: string | null, index: RepoIndex): void {
-    const dir = this.repoDir(repoIdentity);
+  /**
+   * `dirOverride` writes the index into an explicit directory (a legacy
+   * `_`-folded one) instead of the directory encoded from `repoIdentity` --
+   * otherwise rebuilding an old directory would write its index into the new
+   * name and leave the old one unindexed forever.
+   */
+  private writeIndex(repoIdentity: string | null, index: RepoIndex, dirOverride?: string): void {
+    const dir = dirOverride ?? this.repoDir(repoIdentity);
+    // Guard before mkdir: `mkdir -p` through a symlinked ancestor would create
+    // the directory outside the archive first, and the guard after it would
+    // then be checking a path that already exists on the wrong side.
+    this.guardWrite(path.join(dir, '_index.json'));
     fs.mkdirSync(dir, { recursive: true });
     index.updatedAt = utcNow();
-    const target = this.indexPath(repoIdentity);
-    this.guardWrite(target);
+    const target = path.join(dir, '_index.json');
     // 原子写：先落临时文件再 rename。直接 writeFileSync 时，两个并发 push 会
     // 互相截断，留下半截（甚至空）的 _index.json——那会让整个仓库的会话
     // 看起来凭空消失。rename 在同一文件系统上是原子的，读者只会看到旧值或新值。
@@ -421,8 +454,34 @@ export class SyncManager {
     }
   }
 
+  /**
+   * 写入路径专用的索引读取：索引损坏时先按磁盘重建，救不回来就报错。
+   *
+   * readIndex() 对解析失败返回空数组，upsert 随即用「本次这 1 条」覆盖写回，
+   * 该仓库其余会话就从索引里整体消失了（并发 push 留下冲突标记时最易触发）。
+   * 会话文件本身还在，所以重建能救回来——重建不了说明问题更大，宁可中止。
+   */
+  private readIndexForWrite(repoIdentity: string | null): RepoIndex {
+    const p = this.indexPath(repoIdentity);
+    if (!fs.existsSync(p)) {
+      return { version: 1, repoIdentity, updatedAt: utcNow(), sessions: [] };
+    }
+    try {
+      return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
+    } catch {
+      this.rebuildIndex(repoIdentity);
+      try {
+        return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
+      } catch {
+        throw new Error(
+          `corrupted session index at ${p}; run 'teamai session pull --all --repo-root <repo-root>' to rebuild it`,
+        );
+      }
+    }
+  }
+
   private upsertIndexEntry(repoIdentity: string | null, entry: IndexEntry): void {
-    const index = this.readIndex(repoIdentity);
+    const index = this.readIndexForWrite(repoIdentity);
     const key = `${entry.sessionName}:${entry.author}`;
     const idx = index.sessions.findIndex((s) => `${s.sessionName}:${s.author}` === key);
     if (idx >= 0) {
@@ -434,7 +493,9 @@ export class SyncManager {
   }
 
   private removeIndexEntry(repoIdentity: string | null, sessionName: string, author: string): void {
-    const index = this.readIndex(repoIdentity);
+    // Same reasoning as upsert: a corrupted index must not be overwritten with
+    // a filtered copy of "nothing".
+    const index = this.readIndexForWrite(repoIdentity);
     index.sessions = index.sessions.filter(
       (s) => !(s.sessionName === sessionName && s.author === author),
     );
@@ -471,7 +532,10 @@ export class SyncManager {
     author?: string,
     platform?: string,
   ): IndexEntry | undefined {
-    const index = this.readIndex(repoIdentity);
+    // Strict read: a corrupted index would come back empty here, so the dedup
+    // lookup misses and the session is written as an extra `_1` copy before
+    // the upsert repairs the index. Repair first, then look.
+    const index = this.readIndexForWrite(repoIdentity);
     return index.sessions.find(
       (s) =>
         s.sessionId === sessionId &&
@@ -544,6 +608,11 @@ export class SyncManager {
     sessionName: string,
     author?: string,
   ): { session: Session; meta: SessionSyncMeta } {
+    // The name reaches the filesystem: reject anything that is not a plain
+    // file name, so `--session ../../x` cannot read outside the archive.
+    if (sessionName !== path.basename(sessionName) || /^\.\.?$/.test(sessionName)) {
+      throw new Error(`Invalid session name: ${sessionName}`);
+    }
     const resolvedAuthor = author ?? this.findAuthor(repoIdentity, sessionName);
     const paths = this.sessionPaths(repoIdentity, resolvedAuthor, sessionName);
 
@@ -751,9 +820,11 @@ export class SyncManager {
 
   /**
    * 扫描 repo 目录，幂等重建 _index.json。
+   *
+   * `dirOverride` 指向实际目录（旧编码目录名的兜底重建用）。
    */
-  rebuildIndex(repoIdentity: string | null): number {
-    const dir = this.repoDir(repoIdentity);
+  rebuildIndex(repoIdentity: string | null, dirOverride?: string): number {
+    const dir = dirOverride ?? this.repoDir(repoIdentity);
     if (!fs.existsSync(dir)) return 0;
 
     const entries: IndexEntry[] = [];
@@ -799,12 +870,16 @@ export class SyncManager {
       }
     }
 
-    this.writeIndex(repoIdentity, {
-      version: 1,
+    this.writeIndex(
       repoIdentity,
-      updatedAt: utcNow(),
-      sessions: entries,
-    });
+      {
+        version: 1,
+        repoIdentity,
+        updatedAt: utcNow(),
+        sessions: entries,
+      },
+      dirOverride,
+    );
 
     return entries.length;
   }
@@ -817,7 +892,8 @@ export class SyncManager {
    * 所以这里按目录遍历：identity 优先取索引原文，取不到再从目录名解码兜底。
    */
   rebuildAllIndexes(): { repos: number; sessions: number } {
-    const identities: Array<string | null> = [];
+    /** identity → 实际目录（旧编码目录名与新编码不一致，必须带目录走）。 */
+    const targets: Array<{ identity: string | null; dir?: string }> = [];
     const seen = new Set<string>();
 
     const reposDir = path.join(this.sessionsDir, 'repos');
@@ -830,21 +906,45 @@ export class SyncManager {
           continue;
         }
         const identity = this.identityOfRepoDir(full) ?? decodeLegacyRepoDirName(dir);
-        const key = identity ?? ' _unattributed';
+        const key = identity ?? '\u0000_unattributed';
         if (seen.has(key)) continue;
         seen.add(key);
-        identities.push(identity);
+        // A legacy `_`-folded directory decodes to the canonical identity, but
+        // every read path resolves the *encoded* name -- so a rebuilt index
+        // under the old name would still list nothing. Move the directory to
+        // the encoded name once, then both sides agree.
+        let dirForIdentity = full;
+        if (identity) {
+          const expected = path.join(reposDir, encodeRepoIdentity(identity));
+          if (expected !== full) {
+            if (fs.existsSync(expected)) {
+              console.warn(
+                `Warning: ${path.basename(full)} and ${path.basename(expected)} both hold ${identity}; keeping ${path.basename(expected)} and leaving ${path.basename(full)} in place.`,
+              );
+            } else {
+              try {
+                fs.renameSync(full, expected);
+                dirForIdentity = expected;
+              } catch (err) {
+                console.warn(
+                  `Warning: could not rename legacy archive directory ${path.basename(full)}: ${(err as Error).message}`,
+                );
+              }
+            }
+          }
+        }
+        targets.push({ identity, dir: dirForIdentity });
       }
     }
 
     const unattrDir = path.join(this.sessionsDir, '_unattributed');
-    if (fs.existsSync(unattrDir) && !seen.has(' _unattributed')) identities.push(null);
+    if (fs.existsSync(unattrDir) && !seen.has('\u0000_unattributed')) targets.push({ identity: null });
 
     let sessions = 0;
-    for (const identity of identities) {
-      sessions += this.rebuildIndex(identity);
+    for (const t of targets) {
+      sessions += this.rebuildIndex(t.identity, t.dir);
     }
-    return { repos: identities.length, sessions };
+    return { repos: targets.length, sessions };
   }
 
   /** 目录索引里的 canonical identity；无索引/损坏时返回 null。 */

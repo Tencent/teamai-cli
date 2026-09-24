@@ -314,14 +314,19 @@ export class MigrationEngine {
       }
 
       const session = await source.readSession(sessionId, projectPath);
-      const fidelity = fidelityFromSession(session, this.targetPlatform);
 
-      // 降级 ThinkingBlock
-      // 脱敏在 thinking 降级之后、写入之前：--scrub 时整份 IR 过一遍 redact，
+      // 脱敏在 thinking 降级**之前**：--scrub 时整份 IR 过一遍 redact，
       // 让敏感内容不会随会话扩散到目标端（以及后续可能的团队归档）。
-      const degraded = degradeThinkingBlocks(session, this.targetPlatform);
-      const scrubbed = scrub ? scrubSession(degraded) : null;
-      const enhancedSession = scrubbed ? scrubbed.session : degraded;
+      // 本地→本地迁移保留图片 filePath：目标端仍能读到该文件，去掉只会把图片
+      // 变成占位文本（归档路径才必须丢——那里会把家目录布局写进团队仓）。
+      const scrubbed = scrub ? scrubSession(session, { dropImagePaths: false }) : null;
+      const base = scrubbed ? scrubbed.session : session;
+      // fidelity 取「脱敏后、降级前」：fidelityFromSession 统计的正是 thinking
+      // 被降级成 text 的块，降级之后再算，它们已经是 text 了——评分虚高、
+      // degradedBlocks 告警消失，还会与 --dry-run 的 preview（用未降级 IR）
+      // 互相打架。此时 scrub 造成的丢块已经计入。
+      const fidelity = fidelityFromSession(base, this.targetPlatform);
+      const enhancedSession = degradeThinkingBlocks(base, this.targetPlatform);
 
       // 目标工作区语义：**默认保持源会话的工作区**。
       // 迁移是「把 thpc 的会话搬到 Codex/WorkBuddy」，而不是「搬到我当前所在的目录」；

@@ -35,6 +35,7 @@ import {
   fileExists,
   dirExists,
   removeDirRecursive,
+  resolveRealCwd,
 } from '../fs.js';
 import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates, titleFromUserText, extractUserText, isRenderableText, visibleUserText } from '../title.js';
 import { registerCursorComposer, unregisterCursorComposer, type CursorComposerMessage, type CursorComposerTool } from '../cursor-store.js';
@@ -136,7 +137,10 @@ function deriveCursorId(sourcePlatform: string, sourceId: string, targetCwd?: st
   // The composerId is a global key in state.vscdb: without the target cwd,
   // migrating one source session into two workspaces reuses one id and the
   // second copy overwrites the first.
-  const scope = targetCwd ? `:${targetCwd}` : '';
+  // Resolved, like the ids.ts derivation: `/tmp/x` and `/private/tmp/x` are
+  // one workspace, and two spellings would register two composerHeaders rows
+  // for one session in Cursor's Agents list.
+  const scope = targetCwd ? `:${resolveRealCwd(targetCwd)}` : '';
   const hex = crypto
     .createHash('sha256')
     .update(`teamai:cursor:${sourcePlatform}${scope}:${sourceId}`)

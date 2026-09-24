@@ -25,6 +25,7 @@ import { scrubSession } from './scrub.js';
 import { MigrationEngine } from './migrate.js';
 import { SyncManager, getRepoIdentity, getGitAuthor, defaultSyncMeta } from './sync.js';
 import { SessionSearchEngine, type LoadedSession } from './search.js';
+import { isInteractive } from '../utils/prompt.js';
 
 // ---------------------------------------------------------------------------
 // 辅助
@@ -319,9 +320,12 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       // 之后的 rollback 再把原件删掉——不可恢复。必须显式指定目标工作区
       // （--target-cwd）或明确 -y 才放行。
       if (source === target && !opts.targetCwd) {
+        // isInteractive() (not process.stdin.isTTY): CI runners and agent
+        // sandboxes hand out a pseudo-terminal with nobody behind it, where
+        // ask() would block forever on a prompt no one can answer.
         const confirmed =
           opts.yes ||
-          (process.stdin.isTTY &&
+          (isInteractive() &&
             /^y(es)?$/i.test(
               (
                 await ask(
@@ -342,7 +346,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       let crossDirExpanded = false;
       // --all 的语义是"这个源的全部会话"：无 --cwd 时跨所有工作区枚举，
       // 而不是只看当前目录（那会让 --all 静默变成"当前目录的全部"）。
-      if (opts.all && !opts.cwd && metas.length >= 0 && !sessionId) {
+      if (opts.all && !opts.cwd && !sessionId) {
         const allMetas = await sourceAdapter.listConversations();
         if (allMetas.length > 0) {
           metas = allMetas;
@@ -394,6 +398,14 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           for (const m of targets) {
             const title = safeText(m.title);
             console.log(`  ${m.sessionId.slice(0, 8)}  ${title.length > 50 ? title.slice(0, 50) + '...' : title}  (${m.messageCount} msgs)`);
+          }
+          // Nobody can answer in a non-interactive run. Cancelling with exit 0
+          // there would tell a script that every session was migrated; refuse
+          // instead and let the caller opt in explicitly.
+          if (!isInteractive()) {
+            console.error(`\nRefusing to migrate ${targets.length} session(s) without confirmation.`);
+            console.error('Pass -y to confirm, or --limit <n> to migrate fewer.');
+            process.exit(1);
           }
           const ans = await ask('\nMigrate all of the above? (y/N): ');
           if (ans.toLowerCase() !== 'y' && ans.toLowerCase() !== 'yes') {
@@ -545,7 +557,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           meta.migration.sourcePlatform = source;
           meta.migration.targetPlatform = target;
           meta.migration.fidelityScore = t.fidelityScore;
-          syncMgr.saveSession(session, meta);
+          try {
+            syncMgr.saveSession(session, meta);
+          } catch (err) {
+            console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+            process.exitCode = 1;
+            return;
+          }
           saved++;
         }
         // [已修] gitCommit 失败（非 git 目录 / index.lock 竞态）此前裸堆栈崩溃
@@ -660,7 +678,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       // 归档的是完整原文、团队可读：交互场景下先征得同意再落盘。
       // 写完之后再提醒等于马后炮——文件已经进仓库、commit 已经建好了。
       // 非交互（脚本/CI）没有 TTY，保持原行为：只警告，不阻断。
-      if (!opts.scrub && !opts.yes && process.stdin.isTTY) {
+      if (!opts.scrub && !opts.yes && isInteractive()) {
         console.log(
           `\n  ⚠ About to archive ${selected.length} unredacted session(s) from ${source}.`,
         );
@@ -702,7 +720,16 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           },
           session.createdAt,
         );
-        syncMgr.saveSession(session, meta);
+        // A corrupted index is repaired from disk, or the save throws: failing
+        // mid-batch must not fall through to a commit that publishes a
+        // half-archive.
+        try {
+          syncMgr.saveSession(session, meta);
+        } catch (err) {
+          console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          process.exitCode = 1;
+          return;
+        }
         saved++;
       }
       if (opts.scrub) {
@@ -957,7 +984,15 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       }
 
       const adapter = safeGetAdapter(opts.platform);
-      const deleted = await adapter.deleteSession(sessionId, opts.cwd);
+      let deleted: boolean;
+      try {
+        deleted = await adapter.deleteSession(sessionId, opts.cwd);
+      } catch (err) {
+        // Same contract as the other subcommands: one English line, no stack.
+        console.error(`\n  ✗ Rollback failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exitCode = 1;
+        return;
+      }
       // 适配器返回 false 表示确认没删到任何东西（会话不存在）。
       // 之前无论是否存在都打印 ✓，静默 no-op 却报成功，脚本无法判断是否生效。
       if (deleted === false) {

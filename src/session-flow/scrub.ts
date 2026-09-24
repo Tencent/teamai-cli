@@ -42,7 +42,10 @@ function countRedactions(before: string, after: string): number {
   return count;
 }
 
-function scrubBlock(block: ContentBlock): { block: ContentBlock; count: number } {
+function scrubBlock(
+  block: ContentBlock,
+  dropImagePaths: boolean,
+): { block: ContentBlock; count: number } {
   switch (block.type) {
     case 'text': {
       const next = redactWithEnv(block.text);
@@ -87,7 +90,10 @@ function scrubBlock(block: ContentBlock): { block: ContentBlock; count: number }
       // `filePath` is an absolute local path (`/Users/alice/...`) and lands in
       // the archive verbatim -- scrub has to drop it, otherwise redacting the
       // transcript still publishes the user's home directory layout.
-      if (!block.filePath) return { block, count: 0 };
+      // A local -> local migration keeps it: the target can still read the
+      // file, and dropping it would silently replace the image with a
+      // placeholder on a machine that never leaves.
+      if (!block.filePath || !dropImagePaths) return { block, count: 0 };
       if (block.data) {
         return { block: { type: 'image', mimeType: block.mimeType, data: block.data, label: block.label }, count: 1 };
       }
@@ -105,14 +111,22 @@ function scrubBlock(block: ContentBlock): { block: ContentBlock; count: number }
  *
  * The title is scrubbed too: the first prompt often carries a token, and the
  * title is what shows up in the target client's session list.
+ *
+ * `dropImagePaths` (default true) removes the absolute local path of image
+ * blocks -- required before archiving to a team repo, unwanted for a local
+ * migration where the target can still read the file.
  */
-export function scrubSession(session: Session): ScrubResult {
+export function scrubSession(
+  session: Session,
+  opts: { dropImagePaths?: boolean } = {},
+): ScrubResult {
+  const dropImagePaths = opts.dropImagePaths !== false;
   let redactedCount = 0;
 
   const messages: Message[] = session.messages.map((msg) => {
     let contentChanged = false;
     const content = msg.content.map((block) => {
-      const { block: next, count } = scrubBlock(block);
+      const { block: next, count } = scrubBlock(block, dropImagePaths);
       redactedCount += count;
       if (next !== block) contentChanged = true;
       return next;
