@@ -1530,11 +1530,15 @@ async function pushCore(
   // ── Step 5: Push each group — one branch/PR per group ──────────────
   // Config edits ride along with the first group normally. With --branch, an
   // existing-PR group must not receive the config because the explicit branch
-  // is intended for the new group; route the config to that new group instead.
+  // is intended for the new group. If there is no new group, use groups.length
+  // as a sentinel and push the config separately after all reuse groups finish.
+  const newGroupIndex = options.branch
+    ? groups.findIndex((group) => !group.reuse)
+    : -1;
   const configGroupIndex = pendingTeamConfig === null
     ? -1
     : options.branch
-      ? Math.max(groups.findIndex((group) => !group.reuse), 0)
+      ? (newGroupIndex >= 0 ? newGroupIndex : groups.length)
       : 0;
   // Track the outcome across groups: a run counts as completed only if at least
   // one group actually pushed AND no group's PR creation failed (#702 follow-up).
@@ -1590,6 +1594,21 @@ async function pushCore(
     }
   }
   await saveStateForScope(state, localConfig);
+
+  // When every selected resource reuses an existing PR, --branch still names a
+  // real destination for the pending config edit. The reuse groups have already
+  // been saved above, so now push teamai.yaml alone on that explicit branch.
+  // Do not report completion if an earlier reuse PR creation failed.
+  if (pendingTeamConfig !== null && options.branch && newGroupIndex < 0) {
+    await pushTeamConfigOnly(
+      localConfig,
+      teamConfig,
+      options,
+      anyPrFailed ? undefined : result,
+    );
+    return;
+  }
+
   // A real push completed only when a group actually pushed and no PR creation
   // failed. Not set on dry-run/cancel (return earlier), a no-change run (every
   // group 'nochange' → anyPushed stays false), or a PR-creation failure

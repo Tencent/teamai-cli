@@ -597,6 +597,52 @@ describe('push branch and dirty-clone e2e (issue #663)', () => {
     }
   }, 60_000);
 
+  it('keeps config off an existing PR when --branch has no new resource group', async () => {
+    const fixture = makePushFixture('git', 'https://git.example.test/team/issue-800-config-only.git', 'claude');
+    try {
+      const first = await pullModifyAndPush(fixture, 'claude');
+      expect(first.output).toContain('Pushed branch teamai/push/issue-331-git/');
+      const existingBranch = git(
+        ['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/issue-331-git/'],
+        fixture.remote,
+      );
+      expect(existingBranch).toMatch(/^teamai\/push\/issue-331-git\//);
+
+      const statePath = path.join(fixture.projectRoot, '.teamai', 'state.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as {
+        pendingPushes: Array<{ branch: string; prUrl: string | null }>;
+      };
+      const pending = state.pendingPushes.find((entry) => entry.branch === existingBranch);
+      expect(pending).toBeDefined();
+      if (!pending) return;
+      pending.prUrl = 'https://github.com/team/issue-800-config-only/pull/800';
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n');
+
+      fs.writeFileSync(
+        path.join(fixture.projectRoot, '.claude', 'skills', 'beta-proof', 'SKILL.md'),
+        '---\nname: beta-proof\ndescription: modified again\n---\n\n# Modified again\n',
+      );
+      const teamRepo = path.join(fixture.projectRoot, '.teamai', 'team-repo');
+      fs.appendFileSync(path.join(teamRepo, 'teamai.yaml'), '\npublicSkills: []\n');
+
+      const second = await runCLI(
+        ['push', '--all', '--branch', 'feature/explicit-config-only'],
+        fixture.projectRoot,
+        fixture.home,
+      );
+      expect(second.code, second.output).not.toBe(0);
+      expect(second.output)
+        .toContain('Existing PR updated: https://github.com/team/issue-800-config-only/pull/800');
+      expect(second.output).toContain('Pushed branch feature/explicit-config-only');
+      expect(git(['show', `${existingBranch}:teamai.yaml`], fixture.remote))
+        .not.toContain('publicSkills: []');
+      expect(git(['show', 'feature/explicit-config-only:teamai.yaml'], fixture.remote))
+        .toContain('publicSkills: []');
+    } finally {
+      fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it('refuses a mode-only teamai.yaml change before reset --hard', async () => {
     const fixture = makePushFixture('git', 'https://git.example.test/team/issue-663-dirty.git', 'claude');
     try {
