@@ -131,13 +131,30 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
       }
       await upsertHttpProviderConfig(config);
     } catch (e) {
+      // Roll back what init wrote. Only delete the provider state when teardown
+      // fully succeeded — if teardown could not remove everything (e.g. an
+      // injected hook is locked), KEEP the state + manifest so the leftover can
+      // be cleaned up on a retry rather than orphaned with its ownership record
+      // destroyed (issue #404, review #5). teardown throws on partial failure.
+      let teardownOk = true;
       try {
         await backend.teardown(config);
       } catch (teardownErr) {
+        teardownOk = false;
         log.warn(`Rollback teardown for "${config.name}" hit an error: ${(teardownErr as Error).message}`);
       }
-      await removeHttpProviderState(config.name);
-      await removeHttpProviderConfig(config.name);
+      if (teardownOk) {
+        await removeHttpProviderState(config.name);
+        await removeHttpProviderConfig(config.name);
+      } else {
+        // Drop only the registry entry so hook dispatch won't load a broken
+        // provider, but keep the state home for a retriable `provider remove`.
+        await removeHttpProviderConfig(config.name);
+        log.warn(
+          `Kept partial state for "${config.name}" (teardown incomplete); `
+          + `run \`teamai provider remove ${config.name}\` after resolving the issue.`,
+        );
+      }
       log.error(`Failed to add provider "${config.name}": ${(e as Error).message}`);
       process.exit(1);
     }

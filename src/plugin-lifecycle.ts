@@ -214,10 +214,14 @@ export async function reconcilePlugins(
  * Tear down all locally-tracked plugins.
  *
  * Called when uninstalling teamai itself. Each plugin is handled independently;
- * a failure only warns and continues.
+ * a failure only warns and continues. Returns true when every plugin was torn
+ * down, false when any uninstall_cmd failed — so a caller removing a provider
+ * can keep its state (plugins.json) for a retry instead of deleting the record
+ * of a plugin still on the system (issue #404, review #4).
  */
-export async function teardownAllPlugins(deps: ReconcileDeps): Promise<void> {
+export async function teardownAllPlugins(deps: ReconcileDeps): Promise<boolean> {
   const plugins = await deps.readPlugins();
+  let allTornDown = true;
   for (const [slug, state] of Object.entries(plugins)) {
     try {
       deps.log.debug(`plugin ${slug}: tearing down`);
@@ -227,9 +231,11 @@ export async function teardownAllPlugins(deps: ReconcileDeps): Promise<void> {
       });
       deps.log.debug(`plugin ${slug}: torn down`);
     } catch (err) {
+      allTornDown = false;
       deps.log.warn(`plugin ${slug} teardown failed: ${(err as Error).message}`);
     }
   }
+  return allTornDown;
 }
 
 const PLUGIN_CMD_FIELDS = new Set([

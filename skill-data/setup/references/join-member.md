@@ -89,9 +89,10 @@ This is a read-only consumer mode — `push` / `contribute` are not available, b
 skills and rules still sync.
 
 **Named HTTP provider (isolated state):** instead of the global `init --http`
-singleton, an HTTP backend can be mounted as a *named* provider whose config,
-credential (0600, outside config) and manifest are isolated under
-`~/.teamai/providers/http/<name>/`:
+singleton, an HTTP backend can be mounted as a *named* provider whose config and
+manifest are isolated under `~/.teamai/providers/http/<name>/`, with its
+credential stored separately (0600) at `~/.teamai/credentials/<name>`, never in a
+config file:
 
 ```bash
 teamai provider add http https://your-team-host/api --name <name> --token <api-key>

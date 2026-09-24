@@ -3655,8 +3655,13 @@ export async function removeLocalAgentHttp(): Promise<void> {
   let uninstallFailed = false;
 
   // Tear down installed plugins before removing teamai's local-agent state.
+  // teardownAllPlugins swallows each plugin's error internally and reports an
+  // aggregate success flag, so check the return value (a thrown error would be
+  // an unexpected failure of the teardown machinery itself).
   try {
-    await teardownAllPlugins(buildReconcileDeps(config, '[local-agent] [uninstall]'));
+    if (!await teardownAllPlugins(buildReconcileDeps(config, '[local-agent] [uninstall]'))) {
+      uninstallFailed = true;
+    }
   } catch (e) {
     uninstallFailed = true;
     log.warn(`[local-agent] plugin teardown failed: ${(e as Error).message}`);

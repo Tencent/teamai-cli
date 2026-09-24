@@ -866,7 +866,8 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
  * teardown() (uninstall all manifest resources + remove agent hooks + stop
  * plugins) inside its own isolated context (issue #404).
  */
-async function teardownPlugins(): Promise<void> {
+async function teardownPlugins(): Promise<{ incompleteProviders: string[] }> {
+  const incompleteProviders: string[] = [];
   try {
     const { teardownLocalAgentPlugins } = await import('./local-agent.js');
     await teardownLocalAgentPlugins();
@@ -884,12 +885,18 @@ async function teardownPlugins(): Promise<void> {
           removeLocalAgentHttp(),
         );
       } catch (e) {
+        // removeLocalAgentHttp throws when it could not fully clean up (locked
+        // file / permission). ~/.teamai is about to be deleted, so its manifest
+        // will be gone — record the provider so we can warn the user that some
+        // external tool hooks/plugins may need manual cleanup (issue #404 #6).
+        incompleteProviders.push(config.name);
         log.warn(`teardown for provider "${config.name}" failed: ${(e as Error).message}`);
       }
     }
   } catch (e) {
     log.warn(`HTTP provider teardown failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+  return { incompleteProviders };
 }
 
 async function executeRemoval(plan: RemovalPlan): Promise<void> {
@@ -1108,7 +1115,19 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
   // (g) Remove ~/.teamai/ directory (last — earlier steps read from it)
   if (plan.teamaiHomeExists) {
     // Tear down plugins first: their manifest/config live under ~/.teamai/local-agent.
-    await teardownPlugins();
+    const { incompleteProviders } = await teardownPlugins();
+    if (incompleteProviders.length > 0) {
+      // We are about to delete ~/.teamai, which holds the ownership manifests
+      // for these providers' resources/hooks/plugins. Their teardown did not
+      // fully complete, so warn the user that some external tool files may
+      // remain and need manual cleanup — deleting the manifest silently would
+      // hide that.
+      log.warn(
+        `These HTTP providers did not fully tear down: ${incompleteProviders.join(', ')}. `
+        + 'Some tool hooks/plugins they installed may remain; their tracking manifests are '
+        + 'about to be removed with ~/.teamai, so any leftovers must be cleaned up manually.',
+      );
+    }
     try {
       await remove(plan.teamaiHome);
       log.success(`Removed ${plan.teamaiHome}/`);

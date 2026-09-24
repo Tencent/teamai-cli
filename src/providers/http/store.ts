@@ -246,36 +246,38 @@ export async function migrateLegacyHttpProvider(options: {
   }
   await remove(home);
 
+  // Extract the credential first. Prefer the legacy inline token, then the
+  // legacy ~/.teamai/token file.
+  const token =
+    legacy.token ??
+    (await readFileSafe(path.join(teamaiHome(), 'token')))?.trim() ??
+    undefined;
+
   // Stage a full copy, then atomically move it into place so an interrupted
   // migration never leaves a half-populated provider home.
   const staging = `${home}.migrating`;
   await remove(staging);
   await ensureDir(path.dirname(home));
   await fse.copy(legacyHome(), staging);
-  // Never carry the migration marker (not present yet) or a raw token into the
-  // named home — the token moves to the isolated credential file below.
+  // Never carry the migration marker (not present yet) into the named home.
   await remove(path.join(staging, MIGRATED_MARKER));
-  await fse.move(staging, home);
-
-  // Extract the credential to the isolated 0600 file. Prefer the legacy inline
-  // token, then the legacy ~/.teamai/token file.
-  const token =
-    legacy.token ??
-    (await readFileSafe(path.join(teamaiHome(), 'token')))?.trim() ??
-    undefined;
+  // Redact the inline token from the staged config.json BEFORE publishing the
+  // directory — the credential belongs only in the isolated 0600 file, and the
+  // published home must never contain it, not even in the crash window between
+  // move and a later cleanup (issue #404, review #3).
+  const stagedConfigPath = path.join(staging, 'config.json');
+  const stagedConfig = await readJson<LegacyConfigShape & Record<string, unknown>>(stagedConfigPath);
+  if (stagedConfig && 'token' in stagedConfig) {
+    delete stagedConfig.token;
+    await writeJsonAtomic(stagedConfigPath, stagedConfig);
+  }
+  // Write the isolated credential before publishing the home, so the credential
+  // exists the moment the provider becomes visible.
   if (token) {
     await ensureDir(path.dirname(httpProviderCredentialPath(options.name)));
     await writeTokenFile(httpProviderCredentialPath(options.name), token);
-    // Strip the inline token from the migrated config.json so the credential
-    // lives only in the isolated file.
-    const migratedConfig = await readJson<LegacyConfigShape & Record<string, unknown>>(
-      path.join(home, 'config.json'),
-    );
-    if (migratedConfig && 'token' in migratedConfig) {
-      delete migratedConfig.token;
-      await writeJsonAtomic(path.join(home, 'config.json'), migratedConfig);
-    }
   }
+  await fse.move(staging, home);
 
   await upsertHttpProviderConfig(config);
 
