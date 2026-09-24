@@ -26,6 +26,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ContentBlock, Session } from './ir.js';
 import { imagePlaceholderText } from './ir.js';
+import { mayReadLocalImageFile, safeFileName } from './fs.js';
 import { isInjectedText, titleFromUserText , visibleUserText } from './title.js';
 
 // ---------------------------------------------------------------------------
@@ -311,13 +312,16 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
 
   // IR 图片块 → assets/<name> + codebuddy-asset:// 引用（与原生存储一致）
   const assetRef = (b: Extract<ContentBlock, { type: 'image' }>): string | null => {
-    const base = b.label || path.basename(b.filePath ?? 'image.png') || 'image.png';
+    // The label is archive-controlled when the session came from the team
+    // repo: `../../evil` would otherwise become a path component and write
+    // outside assets/. Force it down to a bare file name.
+    const base = safeFileName(b.label || path.basename(b.filePath ?? 'image.png') || 'image.png');
     const ext = path.extname(base) || `.${(b.mimeType.split('/')[1] ?? 'png').replace('jpeg', 'jpg')}`;
     const stem = base.slice(0, base.length - ext.length) || 'image';
-    let name = `${stem}${ext}`;
-    for (let i = 1; usedNames.has(name); i++) name = `${stem}-${i}${ext}`;
+    let name = `${safeFileName(stem, 'image')}${ext}`;
+    for (let i = 1; usedNames.has(name); i++) name = `${safeFileName(stem, 'image')}-${i}${ext}`;
     usedNames.add(name);
-    if (b.filePath && fs.existsSync(b.filePath)) {
+    if (mayReadLocalImageFile(session, b.filePath) && b.filePath && fs.existsSync(b.filePath)) {
       assets.push({ name, sourcePath: b.filePath });
     } else if (b.data) {
       assets.push({ name, data: b.data });
@@ -378,7 +382,12 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
       out.push({
         role: msg.role,
         message: JSON.stringify({ role: msg.role, content }),
-        id: msg.messageId ?? stableId([session.sessionId, String(msgIdx), 'message']),
+        // The message id becomes a file name (messages/<id>.json). Ids read
+        // back from an archive are untrusted: accept only the safe shape and
+        // fall back to a locally derived id otherwise.
+        id: /^[A-Za-z0-9_-]{1,128}$/.test(msg.messageId ?? '')
+          ? (msg.messageId as string)
+          : stableId([session.sessionId, String(msgIdx), 'message']),
         extra,
         createdAt: ts,
       });
@@ -640,6 +649,9 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
           let ok = false;
           try {
             const dest = path.join(assetsDir, asset.name);
+            // Belt and braces: never write outside assets/ even if a name
+            // slips past safeFileName.
+            if (path.relative(assetsDir, dest).startsWith('..')) throw new Error('unsafe asset name');
             if (asset.sourcePath && fs.existsSync(asset.sourcePath)) {
               fs.copyFileSync(asset.sourcePath, dest);
               ok = true;
@@ -750,12 +762,17 @@ export function deleteIdeSession(sessionId: string, cwd?: string): number {
   // 同时存在于多个工作区（把同一会话迁移到 A、B 两个项目）。此时按 convId 全局删
   // 会连带删掉另一个工作区的副本——那是不可恢复的数据丢失。
   //
-  // 但 cwd 本身常常不可靠：deleteSession 里的 cwd 是从 CLI 侧 jsonl 目录名反解出来的，
-  // 而目录名编码有损（路径分隔符与连字符无法区分），解出来的往往不是真实绝对路径，
-  // findIdeHistoryDirs 会因此返回空数组。所以限定失败时必须回退到全局搜索——
-  // 宁可多删，也绝不能让清理退化成 no-op 留下永久残留。
-  // 需要精确定界时用 rollback --cwd <真实路径>。
+  // cwd 一旦给出就是**用户的显式界定**（rollback --cwd <真实路径>）：解析不出
+  // 工作区时只能报没删到，绝不能回退成全局删除。全局回退会把别的项目的同名
+  // 副本一起删掉——那是不可恢复的数据丢失，比留下残留严重得多。
+  // 调用方没给 cwd 时（migrate 失败后的自动回滚）才按 convId 全局清理。
   const scoped = cwd ? findIdeHistoryDirs(cwd, false) : [];
+  if (cwd && scoped.length === 0) {
+    console.warn(
+      `  · No CodeBuddy IDE workspace matches ${cwd}; nothing deleted. Pass no --cwd to delete every copy.`,
+    );
+    return 0;
+  }
   const targets: Array<{ historyDir: string; convDir: string }> = scoped.length > 0
     ? scoped.map((historyDir) => ({ historyDir, convDir: path.join(historyDir, convId) }))
     : findIdeConversationDirs(convId);

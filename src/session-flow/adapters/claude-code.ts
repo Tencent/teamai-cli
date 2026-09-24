@@ -37,6 +37,7 @@ import {
   dirExists,
   scanFiles,
   removeDirRecursive,
+  mayReadLocalImageFile,
 } from '../fs.js';
 import {
   cleanTitleText,
@@ -241,7 +242,7 @@ function guessImageLabel(mimeType: string): string {
 // content 块序列化（IR → CC）
 // ---------------------------------------------------------------------------
 
-function irBlockToCc(block: ContentBlock): Record<string, unknown> | null {
+function irBlockToCc(block: ContentBlock, session?: Session): Record<string, unknown> | null {
   switch (block.type) {
     case 'text':
       return { type: 'text', text: block.text };
@@ -269,9 +270,12 @@ function irBlockToCc(block: ContentBlock): Record<string, unknown> | null {
       // CC 原生支持用户消息里的 base64 图片块。data 缺失（源文件读不到）时
       // 从 filePath 现读；再不行降级占位文本，绝不静默丢块。
       let data = block.data;
-      if (!data && block.filePath) {
+      // Untrusted sessions (restored from a team archive) must never read a
+      // local path: an archived image block can point at any readable file,
+      // and its contents would then be embedded into the restored session.
+      if (!data && mayReadLocalImageFile(session, block.filePath)) {
         try {
-          data = fs.readFileSync(block.filePath).toString('base64');
+          data = fs.readFileSync(block.filePath as string).toString('base64');
         } catch {
           data = undefined;
         }
@@ -676,7 +680,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       // 构建 content 块
       const ccBlocks: Record<string, unknown>[] = [];
       for (const block of msg.content) {
-        const ccBlock = irBlockToCc(block);
+        const ccBlock = irBlockToCc(block, session);
         if (ccBlock) ccBlocks.push(ccBlock);
       }
 
@@ -779,14 +783,17 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     return records;
   }
 
-  async deleteSession(sessionId: string, projectPath?: string): Promise<void> {
+  async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
     const jsonlPath = this.findSessionFile(sessionId, projectPath);
-    if (!jsonlPath) return;
+    // Nothing to delete under this project: report it instead of printing ✓.
+    if (!jsonlPath) return false;
 
+    let deleted = false;
     try {
       fs.unlinkSync(jsonlPath);
+      deleted = true;
     } catch {
-      // ignore
+      deleted = false;
     }
 
     // 删除同名子目录
@@ -794,5 +801,6 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     if (dirExists(subdir)) {
       removeDirRecursive(subdir);
     }
+    return deleted;
   }
 }

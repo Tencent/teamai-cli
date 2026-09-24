@@ -594,7 +594,9 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
 
   const sqlPath = path.join(os.tmpdir(), `teamai-cursor-${process.pid}-${Date.now()}.sql`);
   try {
-    fs.writeFileSync(sqlPath, stmts.join('\n'), 'utf-8');
+    // The SQL file holds the full conversation text and lives in shared /tmp:
+    // default umask would leave it world-readable until we unlink it.
+    fs.writeFileSync(sqlPath, stmts.join('\n'), { encoding: 'utf-8', mode: 0o600 });
     const r = spawnSync(sqlite3, [dbPath], {
       input: fs.readFileSync(sqlPath),
       maxBuffer: 32 * 1024 * 1024,
@@ -634,7 +636,7 @@ export function unregisterCursorComposer(composerId: string): RegisterResult {
 
   const sqlPath = path.join(os.tmpdir(), `teamai-cursor-del-${process.pid}-${Date.now()}.sql`);
   try {
-    fs.writeFileSync(sqlPath, sql, 'utf-8');
+    fs.writeFileSync(sqlPath, sql, { encoding: 'utf-8', mode: 0o600 });
     const r = spawnSync(sqlite3, [dbPath], {
       input: fs.readFileSync(sqlPath),
       maxBuffer: 32 * 1024 * 1024,

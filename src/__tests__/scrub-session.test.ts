@@ -75,6 +75,19 @@ describe('scrubSession', () => {
     expect(typeof (call as { arguments: unknown }).arguments).toBe('object');
   });
 
+  it('图片块的本地绝对路径也被去掉（否则脱敏了正文却泄露家目录）', () => {
+    const s = makeSession();
+    s.messages.push({
+      role: 'user',
+      content: [
+        { type: 'image', mimeType: 'image/png', filePath: '/Users/alice/secret/screenshot.png', label: 'shot.png' },
+      ],
+      timestamp: s.createdAt,
+    });
+    const result = scrubSession(s);
+    expect(JSON.stringify(result.session)).not.toContain('/Users/alice/secret');
+  });
+
   it('无敏感内容时原样返回、计数为 0', () => {
     const clean = makeSession();
     clean.title = '普通提问';

@@ -36,14 +36,11 @@ export abstract class AgentAdapter {
   /**
    * 删除目标平台上的会话（用于回滚）。
    *
-   * 返回值用于区分「真的删掉了」和「压根没找到」：
-   * - `false` —— 确认没有任何东西被删除（会话不存在）
-   * - `true` / `undefined` —— 已删除，或该适配器不检测存在性（沿用原有行为）
-   *
-   * 之所以允许返回 void：多数适配器不具备存在性检测能力，
-   * 为回滚的可观测性改动全部适配器不划算，未实现的保持 undefined 即可。
+   * 返回值区分「真的删掉了」和「压根没找到」：`false` 表示确认没有任何东西
+   * 被删除（会话不存在，或 `projectPath` 作用域内没有它）。回滚必须能报出
+   * no-op——否则脚本无法判断回滚是否生效。所有适配器都要给出明确布尔值。
    */
-  abstract deleteSession(sessionId: string, projectPath?: string): Promise<boolean | void>;
+  abstract deleteSession(sessionId: string, projectPath?: string): Promise<boolean>;
 
   /** 检测该平台 CLI 是否已安装且可用（静态，检查基础路径）。 */
   static isAvailable(): boolean {

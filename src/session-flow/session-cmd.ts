@@ -37,6 +37,20 @@ function formatBytes(bytes: number): string {
 }
 
 /**
+ * 去掉终端控制序列后再打印不可信文本。
+ *
+ * 会话标题、作者名、仓库标识、搜索片段都来自团队仓——任何成员推送的内容都
+ * 会进入别人的终端。ANSI/OSC 序列能移动光标、清屏、改标题，甚至把输出伪装成
+ * 别的命令的结果（同源的 `\r` 覆写）。显示前一律剥掉控制字符。
+ */
+// eslint-disable-next-line no-control-regex
+const CONTROL_SEQ_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-9;?]*[ -\/]*[@-~]/g;
+
+function safeText(value: string): string {
+  return String(value ?? '').replace(CONTROL_SEQ_RE, ' ');
+}
+
+/**
  * 预读所有 stdin 行到队列，ask 从队列取。
  *
  * 不能用 rl.question 逐次等待：管道批量输入时多个 question 的回调会竞争
@@ -145,6 +159,23 @@ function safeGetAdapter(platform: string) {
 }
 
 /**
+ * 归档作者：优先取会话自身工作区的 git identity。
+ *
+ * `push --all` 会把多个工作区（可能分属不同仓库、不同本地身份）的会话一起
+ * 归档。用 CLI 运行目录那一套 identity 统一署名，会把别人的会话记到当前用户
+ * 名下，也让 `--author` 过滤失真。取不到时回退到运行目录的 identity。
+ */
+function authorForCwd(cwd: string | undefined, fallback: string): string {
+  if (!cwd || !path.isAbsolute(cwd)) return fallback;
+  try {
+    const author = getGitAuthor(cwd);
+    return author && author !== 'unknown' ? author : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
  * 解析当前 cwd 的 repoIdentity（git remote canonical）。
  * 非 git 目录返回 null（降级到 _unattributed），不报错。
  */
@@ -188,15 +219,19 @@ function resolveRepoRoot(repoRoot?: string): string {
  * 远端失败的原因常常与数据无关（无 upstream、只读 HTTP 模式、网络），
  * 用堆栈炸掉会把一次成功的归档伪装成彻底失败，用户再跑一次还会造出重复提交。
  */
-function pushToRemote(syncMgr: SyncManager): void {
+function pushToRemote(syncMgr: SyncManager): boolean {
   try {
     syncMgr.gitPush();
+    return true;
   } catch (err) {
     // "Command failed: git push origin" 首行没有信息量，git 的 fatal 行才是原因
     const msg = err instanceof Error ? err.message : String(err);
     const fatal = msg.split('\n').find((l) => /^(fatal|error):/i.test(l.trim()));
-    const reason = fatal?.trim() ?? msg.split('\n')[0];
-    console.log(`  · Remote push failed (local commit kept): ${reason}`);
+    const reason = safeText(fatal?.trim() ?? msg.split('\n')[0]);
+    // The local commit is kept, so nothing is lost -- but this is still a
+    // failure and must not be printed as "✓ Pushed".
+    console.error(`  ✗ Remote push failed (local commit kept): ${reason}`);
+    return false;
   }
 }
 
@@ -205,7 +240,7 @@ function pushToRemote(syncMgr: SyncManager): void {
  * 竞态等）给出单行英文错误并 exit 1，而不是让 execFileSync 的异常以裸
  * stack trace 打到用户面（内部路径泄漏 + 伪造的崩溃感）。
  */
-function runGitStep(step: () => string | null, repoRoot: string, what: string): string | null {
+function runGitStep<T>(step: () => T, repoRoot: string, what: string): T {
   try {
     return step();
   } catch (err) {
@@ -280,6 +315,27 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         target = await promptSelect('Select target platform:', others);
       }
 
+      // 同平台迁移会复用原生会话 ID，写回源工作区时直接覆盖原会话，
+      // 之后的 rollback 再把原件删掉——不可恢复。必须显式指定目标工作区
+      // （--target-cwd）或明确 -y 才放行。
+      if (source === target && !opts.targetCwd) {
+        const confirmed =
+          opts.yes ||
+          (process.stdin.isTTY &&
+            /^y(es)?$/i.test(
+              (
+                await ask(
+                  `Migrating ${source} → ${target} reuses the native session id and overwrites the source transcript. Continue? (y/N): `,
+                )
+              ).trim(),
+            ));
+        if (!confirmed) {
+          console.error('Refusing to overwrite the source session.');
+          console.error('Pass --target-cwd <dir> to write a copy elsewhere, or -y to confirm in place.');
+          process.exit(1);
+        }
+      }
+
       let workCwd = opts.cwd ?? process.cwd();
       const sourceAdapter = safeGetAdapter(source);
       let metas = await sourceAdapter.listConversations(workCwd);
@@ -336,8 +392,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         if (targets.length > BATCH_CONFIRM_THRESHOLD && !opts.yes) {
           console.log(`\nAbout to migrate ${targets.length} session(s) from ${source}:`);
           for (const m of targets) {
-            const title = m.title.length > 50 ? m.title.slice(0, 50) + '...' : m.title;
-            console.log(`  ${m.sessionId.slice(0, 8)}  ${title}  (${m.messageCount} msgs)`);
+            const title = safeText(m.title);
+            console.log(`  ${m.sessionId.slice(0, 8)}  ${title.length > 50 ? title.slice(0, 50) + '...' : title}  (${m.messageCount} msgs)`);
           }
           const ans = await ask('\nMigrate all of the above? (y/N): ');
           if (ans.toLowerCase() !== 'y' && ans.toLowerCase() !== 'yes') {
@@ -346,19 +402,33 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           }
         }
       } else if (sessionId) {
-        targets = metas.filter((m) => m.sessionId === sessionId || m.sessionId.startsWith(sessionId));
-        if (targets.length === 0) {
+        const matches = metas.filter(
+          (m) => m.sessionId === sessionId || m.sessionId.startsWith(sessionId),
+        );
+        if (matches.length === 0) {
           console.error(`Session not found: ${sessionId}`);
           process.exit(1);
         }
+        // Ambiguous prefix: taking every match silently migrates sessions the
+        // user never named (and rollback then has to undo all of them).
+        if (matches.length > 1) {
+          console.error(`Ambiguous session id "${sessionId}": matches ${matches.length} sessions.`);
+          for (const m of matches.slice(0, 10)) {
+            console.error(`  ${m.sessionId}  ${safeText(m.title).slice(0, 60)}`);
+          }
+          console.error('Pass more characters of the id, or use --all / no argument to pick from a list.');
+          process.exit(1);
+        }
+        targets = matches;
       } else {
         // 交互式：列出最近的 10 个，让用户选号
         const recent = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 10);
         console.log('\nRecent sessions on ' + source + ':');
         for (let i = 0; i < recent.length; i++) {
           const m = recent[i];
-          const title = m.title.length > 50 ? m.title.slice(0, 50) + '...' : m.title;
-          console.log(`  [${i + 1}] ${m.sessionId.slice(0, 8)}  ${title}  (${m.messageCount} msgs, ${formatBytes(m.sizeBytes)})`);
+          const title = safeText(m.title);
+          const titleShown = title.length > 50 ? title.slice(0, 50) + '...' : title;
+          console.log(`  [${i + 1}] ${m.sessionId.slice(0, 8)}  ${titleShown}  (${m.messageCount} msgs, ${formatBytes(m.sizeBytes)})`);
         }
         const ans = await ask('\nSelect session (number) or Enter to cancel: ');
         const num = parseInt(ans, 10);
@@ -383,7 +453,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         console.log(`  ─────────────────────────────────`);
         console.log(`  Source:    ${preview.sourcePlatform}`);
         console.log(`  Target:    ${preview.targetPlatform}`);
-        console.log(`  Session:   ${preview.sessionTitle} (${preview.sessionId.slice(0, 8)}...)`);
+        console.log(`  Session:   ${safeText(preview.sessionTitle)} (${preview.sessionId.slice(0, 8)}...)`);
         console.log(`  CWD:       ${preview.cwd}`);
         // 目标工作区默认保持源会话的工作区，只有 --target-cwd 才搬走
         console.log(`  Target CWD:${opts.targetCwd ? ' ' + opts.targetCwd : ' (same as source)'}`);
@@ -463,7 +533,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           const meta = defaultSyncMeta(
             {
               platform: target,
-              author,
+              author: authorForCwd(session.cwd ?? t.cwd, author),
               cwd: session.cwd || opts.targetCwd || workCwd,
               sessionId: t.sessionId,
               repoIdentity: deriveArchiveIdentity(session, target),
@@ -479,15 +549,26 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           saved++;
         }
         // [已修] gitCommit 失败（非 git 目录 / index.lock 竞态）此前裸堆栈崩溃
-        const commitHash = runGitStep(
+        const commit = runGitStep(
           () => syncMgr.gitCommit(`sync: migrate ${saved} session(s) ${source}→${target}`),
           repoRoot,
           'git commit',
         );
-        if (commitHash) {
-          pushToRemote(syncMgr);
-          console.log(`\n  ✓ Pushed ${saved} session(s) to team repo`);
-          console.log(`  commit: ${commitHash.slice(0, 8)}`);
+        if (commit.status === 'committed') {
+          const pushed = pushToRemote(syncMgr);
+          if (pushed) {
+            console.log(`\n  ✓ Pushed ${saved} session(s) to team repo`);
+          } else {
+            console.log(`\n  · ${saved} session(s) committed locally but not pushed`);
+            process.exitCode = 1;
+          }
+          console.log(`  commit: ${commit.commit.slice(0, 8)}`);
+        } else if (commit.status === 'failed') {
+          // Hooks / gpg / missing identity: the archive files are still
+          // staged. Say so, and fail -- "No changes to push" here would hide
+          // a broken archive.
+          console.error(`\n  ✗ Commit failed, ${saved} session(s) left staged in ${repoRoot}: ${safeText(commit.reason)}`);
+          process.exitCode = 1;
         } else {
           console.log(`\n  · No changes to push\n`);
         }
@@ -556,7 +637,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       if (isDryRun()) {
         console.log(`\nDry-run: would archive ${selected.length} session(s) from ${source}:`);
         for (const m of selected) {
-          console.log(`  ${m.sessionId.slice(0, 8)}  ${m.title.slice(0, 50)}  (${m.messageCount} msgs)`);
+          console.log(`  ${m.sessionId.slice(0, 8)}  ${safeText(m.title).slice(0, 50)}  (${m.messageCount} msgs)`);
         }
         console.log(`  Repo root: ${repoRoot}`);
         return;
@@ -566,12 +647,30 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       if (opts.all && selected.length > 5 && !opts.yes) {
         console.log(`\nAbout to push ${selected.length} session(s) from ${source}:`);
         for (const m of selected) {
-          const title = m.title.length > 50 ? m.title.slice(0, 50) + '...' : m.title;
-          console.log(`  ${m.sessionId.slice(0, 8)}  ${title}  (${m.messageCount} msgs)`);
+          const title = safeText(m.title);
+          console.log(`  ${m.sessionId.slice(0, 8)}  ${title.length > 50 ? title.slice(0, 50) + '...' : title}  (${m.messageCount} msgs)`);
         }
         const ans = await ask('\nPush all of the above? (y/N): ');
         if (ans.toLowerCase() !== 'y' && ans.toLowerCase() !== 'yes') {
           console.log('Cancelled.');
+          return;
+        }
+      }
+
+      // 归档的是完整原文、团队可读：交互场景下先征得同意再落盘。
+      // 写完之后再提醒等于马后炮——文件已经进仓库、commit 已经建好了。
+      // 非交互（脚本/CI）没有 TTY，保持原行为：只警告，不阻断。
+      if (!opts.scrub && !opts.yes && process.stdin.isTTY) {
+        console.log(
+          `\n  ⚠ About to archive ${selected.length} unredacted session(s) from ${source}.`,
+        );
+        console.log(
+          '    Archived sessions are team-readable: full prompts, tool output, file paths and any secret in them.',
+        );
+        console.log('    Re-run with --scrub to redact secret-shaped values first.');
+        const ans = await ask('Archive as-is? (y/N): ');
+        if (!/^y(es)?$/i.test(ans.trim())) {
+          console.log('Cancelled. Re-run with --scrub to archive a redacted copy.');
           return;
         }
       }
@@ -588,13 +687,14 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         const session = scrubbed ? scrubbed.session : readSession;
         if (scrubbed) redactedTotal += scrubbed.redactedCount;
         if (opts.all) {
-          console.log(`  Source: ${session.cwd || 'unknown directory'}`);
+          console.log(`  Source: ${safeText(session.cwd || 'unknown directory')}`);
         }
         // P3：归档键按会话原生 cwd 派生（见 deriveArchiveIdentity），而非 CLI 运行目录
         const meta = defaultSyncMeta(
           {
             platform: source,
-            author,
+            // 每个会话按自己工作区的 git identity 署名（--all 跨工作区时尤其重要）
+            author: authorForCwd(session.cwd, author),
             cwd: session.cwd || workCwd,
             sessionId: m.sessionId,
             repoIdentity: deriveArchiveIdentity(session, source),
@@ -613,15 +713,25 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         );
       }
       // [已修] gitCommit 失败（非 git 目录 / index.lock 竞态）此前裸堆栈崩溃
-      const commitHash = runGitStep(
+      const commit = runGitStep(
         () => syncMgr.gitCommit(`sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`),
         repoRoot,
         'git commit',
       );
-      if (commitHash) {
-        pushToRemote(syncMgr);
-        console.log(`\n  ✓ Pushed ${saved} session(s) from ${source}`);
-        console.log(`  commit: ${commitHash.slice(0, 8)}\n`);
+      if (commit.status === 'committed') {
+        const pushed = pushToRemote(syncMgr);
+        if (pushed) {
+          console.log(`\n  ✓ Pushed ${saved} session(s) from ${source}`);
+        } else {
+          console.log(`\n  · ${saved} session(s) committed locally but not pushed`);
+          process.exitCode = 1;
+        }
+        console.log(`  commit: ${commit.commit.slice(0, 8)}\n`);
+      } else if (commit.status === 'failed') {
+        console.error(
+          `\n  ✗ Commit failed, ${saved} session(s) left staged in ${repoRoot}: ${safeText(commit.reason)}`,
+        );
+        process.exitCode = 1;
       } else {
         console.log(`\n  · No changes to push\n`);
       }
@@ -652,13 +762,10 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         return null;
       }, repoRoot, 'git pull');
       if (opts.all) {
-        // P2：对所有 identity（含 _unattributed）逐个幂等重建索引
-        const identities = syncMgr.listAllRepoIdentities();
-        let total = 0;
-        for (const identity of identities) {
-          total += syncMgr.rebuildIndex(identity);
-        }
-        console.log(`\n  ✓ Pulled and indexed ${total} session(s) across ${identities.length} repo(s)\n`);
+        // P2：按目录重建（含索引丢失/损坏的仓库——那才是最需要修复的对象），
+        // 而不是只重建能从 _index.json 反查出 identity 的那些。
+        const { repos, sessions } = syncMgr.rebuildAllIndexes();
+        console.log(`\n  ✓ Pulled and indexed ${sessions} session(s) across ${repos} repo(s)\n`);
       } else {
         const repoIdentity = resolveRepoIdentity(workCwd);
         const count = syncMgr.rebuildIndex(repoIdentity);
@@ -695,13 +802,14 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         console.log(`  SESSION                              AUTHOR       PLATFORM        MSGS  UPDATED    SOURCE`);
         console.log(`  ─────────────────────────────────────────────────────────────────────────────────────`);
         for (const s of sessions) {
-          const name = s.sessionName.length > 36 ? s.sessionName.slice(0, 34) + '..' : s.sessionName.padEnd(36);
-          const authorCol = s.author.padEnd(12);
-          const platCol = s.platform.padEnd(16);
+          const name = safeText(s.sessionName);
+          const nameCol = name.length > 36 ? name.slice(0, 34) + '..' : name.padEnd(36);
+          const authorCol = safeText(s.author).slice(0, 12).padEnd(12);
+          const platCol = safeText(s.platform).slice(0, 16).padEnd(16);
           const msgCol = String(s.messageCount).padStart(4);
           const dateCol = s.updatedAt.slice(0, 10);
-          const source = s.repoIdentity ?? '_unattributed';
-          console.log(`  ${name}  ${authorCol}${platCol}${msgCol}  ${dateCol}  ${source}`);
+          const source = safeText(s.repoIdentity ?? '_unattributed');
+          console.log(`  ${nameCol}  ${authorCol}${platCol}${msgCol}  ${dateCol}  ${source}`);
         }
       } else {
         const repoLabel = repoIdentity ?? '_unattributed';
@@ -709,12 +817,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         console.log(`  SESSION                              AUTHOR       PLATFORM        MSGS  UPDATED`);
         console.log(`  ──────────────────────────────────────────────────────────────────────────`);
         for (const s of sessions) {
-          const name = s.sessionName.length > 36 ? s.sessionName.slice(0, 34) + '..' : s.sessionName.padEnd(36);
-          const authorCol = s.author.padEnd(12);
-          const platCol = s.platform.padEnd(16);
+          const name = safeText(s.sessionName);
+          const nameCol = name.length > 36 ? name.slice(0, 34) + '..' : name.padEnd(36);
+          const authorCol = safeText(s.author).slice(0, 12).padEnd(12);
+          const platCol = safeText(s.platform).slice(0, 16).padEnd(16);
           const msgCol = String(s.messageCount).padStart(4);
           const dateCol = s.updatedAt.slice(0, 10);
-          console.log(`  ${name}  ${authorCol}${platCol}${msgCol}  ${dateCol}`);
+          console.log(`  ${nameCol}  ${authorCol}${platCol}${msgCol}  ${dateCol}`);
         }
       }
       console.log(`\n  ${sessions.length} session(s)\n`);
@@ -820,10 +929,11 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       for (let i = 0; i < results.length; i++) {
         const hit = results[i];
         const date = hit.createdAt ? hit.createdAt.slice(0, 10) : 'unknown';
-        const snippet = hit.snippet.length > 150 ? hit.snippet.slice(0, 150) + '...' : hit.snippet;
-        console.log(`  [${i + 1}] ${hit.sessionName} (${hit.author}, ${date})`);
+        const snippet = safeText(hit.snippet);
+        const snippetShown = snippet.length > 150 ? snippet.slice(0, 150) + '...' : snippet;
+        console.log(`  [${i + 1}] ${safeText(hit.sessionName)} (${safeText(hit.author)}, ${date})`);
         console.log(`      Score: ${hit.score.toFixed(1)}`);
-        console.log(`      ${snippet}`);
+        console.log(`      ${snippetShown}`);
         console.log('');
       }
       console.log(`  ${results.length} result(s) found`);

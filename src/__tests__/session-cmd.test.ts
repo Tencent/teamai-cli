@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { encodeRepoIdentity } from '../session-flow/sync.js';
 
 /**
  * session-cmd 子命令测试（M2 消费端）。
@@ -263,7 +264,7 @@ describe('session pull --all', () => {
     seed(null, 'bob', 'b-1', 'plain', 'plain notes');
 
     // 手动清空 alpha 的索引条目，验证 pull --all 会按磁盘内容幂等重建
-    const idxPath = path.join(repoRoot, 'sessions', 'repos', 'github.com_org_alpha', '_index.json');
+    const idxPath = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('github.com/org/alpha'), '_index.json');
     fs.writeFileSync(
       idxPath,
       JSON.stringify({ version: 1, repoIdentity: 'github.com/org/alpha', updatedAt: '2026-01-01T00:00:00.000Z', sessions: [] }),
@@ -335,7 +336,7 @@ describe('session push --all', () => {
     // --all 枚举全部工作区：listConversations 以无参形式调用
     expect(adapter.listConversations).toHaveBeenCalledWith();
 
-    const dir = path.join(repoRoot, 'sessions', 'repos', 'gitlab.com_team_beta', 'tester');
+    const dir = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('gitlab.com/team/beta'), 'tester');
     expect(fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(8);
 
     const text = out.join('\n');
@@ -392,7 +393,7 @@ describe('session push --all', () => {
     const text = out.join('\n');
     expect(text).toContain('No changes to push');
     // 会话文件本身已写入（commit 检测发生在 saveSession 之后）
-    const dir = path.join(repoRoot, 'sessions', 'repos', 'gitlab.com_team_beta', 'tester');
+    const dir = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('gitlab.com/team/beta'), 'tester');
     expect(fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(1);
     expect(mocks.gitCalls.some((c) => c.args[0] === 'push')).toBe(false);
   });
@@ -408,9 +409,9 @@ describe('session push archive key (native cwd, not the run directory)', () => {
 
     await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/other');
 
-    const betaDir = path.join(repoRoot, 'sessions', 'repos', 'gitlab.com_team_beta', 'tester');
+    const betaDir = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('gitlab.com/team/beta'), 'tester');
     expect(fs.readdirSync(betaDir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(1);
-    expect(fs.existsSync(path.join(repoRoot, 'sessions', 'repos', 'github.com_org_other'))).toBe(false);
+    expect(fs.existsSync(path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('github.com/org/other')))).toBe(false);
 
     // 归档键写进 meta，与目录一致
     const metaPath = fs.readdirSync(betaDir).find((f) => f.endsWith('.meta.json'))!;
@@ -469,7 +470,7 @@ describe('session migrate --push archive key', () => {
       '--push', '--repo-root', repoRoot, '--cwd', '/run/dir',
     );
 
-    const dir = path.join(repoRoot, 'sessions', 'repos', 'github.com_org_target', 'tester');
+    const dir = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('github.com/org/target'), 'tester');
     const metaFiles = fs.readdirSync(dir).filter((f) => f.endsWith('.meta.json'));
     expect(metaFiles).toHaveLength(1);
 

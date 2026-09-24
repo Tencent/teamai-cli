@@ -20,6 +20,7 @@
 
 import type { Session, Message, ContentBlock } from './ir.js';
 import { redactWithEnv } from '../utils/redact.js';
+import { imagePlaceholderText } from './ir.js';
 
 export interface ScrubResult {
   session: Session;
@@ -81,10 +82,21 @@ function scrubBlock(block: ContentBlock): { block: ContentBlock; count: number }
         count: countRedactions(block.content, next),
       };
     }
-    case 'image':
-      // Image payloads do not participate in text redaction (binary/URL
-      // shapes carry no secret-shaped text).
-      return { block, count: 0 };
+    case 'image': {
+      // Image payloads do not participate in text redaction, but their
+      // `filePath` is an absolute local path (`/Users/alice/...`) and lands in
+      // the archive verbatim -- scrub has to drop it, otherwise redacting the
+      // transcript still publishes the user's home directory layout.
+      if (!block.filePath) return { block, count: 0 };
+      if (block.data) {
+        return { block: { type: 'image', mimeType: block.mimeType, data: block.data, label: block.label }, count: 1 };
+      }
+      // No inline data: keeping the block would mean keeping the path.
+      return {
+        block: { type: 'text', text: imagePlaceholderText(block) },
+        count: 1,
+      };
+    }
   }
 }
 
