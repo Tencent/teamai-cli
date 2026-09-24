@@ -4,11 +4,10 @@ import { readUsageEvents } from './usage-tracker.js';
 import { readFileSafe } from './utils/fs.js';
 import { resolveConfigForDir } from './config.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
-import { getUserHome } from './utils/home.js';
 import { totalTokens, addTokenUsage, emptyTokenUsage } from './types.js';
 import { attributeByRepo, timeAnalytics, renderHourSparkline } from './session-analytics.js';
 import { formatTokenCount } from './digest.js';
-import type { UsageEvent, UserStats, TokenUsage, SessionMetrics } from './types.js';
+import type { UsageEvent, UserStats, TokenUsage, SessionMetrics, LocalConfig } from './types.js';
 
 interface SkillStats {
   name: string;
@@ -154,17 +153,14 @@ function aggregateDashboardStats(metrics: Map<string, SessionMetrics>): Aggregat
  */
 async function unreportedDashboardStats(
   metrics: Map<string, SessionMetrics>,
+  config: LocalConfig,
 ): Promise<AggregatedDashboardStats> {
-  const { computeInterventionDelta, computePromptTokenDelta } = await import('./team-push.js');
-  const { readJson } = await import('./utils/fs.js');
-  const dashboardDir = path.join(getUserHome(), '.teamai', 'dashboard');
-
-  const interventions = (await readJson<Parameters<typeof computeInterventionDelta>[1]>(
-    path.join(dashboardDir, 'reported-interventions.json'),
-  )) ?? {};
-  const promptTokens = (await readJson<Parameters<typeof computePromptTokenDelta>[1]>(
-    path.join(dashboardDir, 'reported-prompt-tokens.json'),
-  )) ?? {};
+  const {
+    computeInterventionDelta, computePromptTokenDelta, readReportedInterventions, readReportedPromptTokens,
+  } = await import('./team-push.js');
+  // The scope's own snapshots, the ones its report compares against (#786).
+  const interventions = await readReportedInterventions(config);
+  const promptTokens = await readReportedPromptTokens(config);
 
   const interventionDelta = computeInterventionDelta(
     new Map([...metrics].map(([sid, m]) => [sid, { interrupt: m.interrupt, toolReject: m.toolReject, correction: m.correction }])),
@@ -236,8 +232,9 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   const { filterEventsByScope } = await import('./team-push.js');
   const scopedEvents = await filterEventsByScope(await readEvents(), config ?? undefined);
   const metricsMap = aggregateSessionMetrics(scopedEvents);
-  // Only subtract what the team already holds. Two guards, because the local
-  // snapshots are machine-global while the team file is per user:
+  // Only subtract what the team already holds. Two guards, because a scope's
+  // snapshot is first seeded from the machine-wide one, so it can name sessions
+  // this team file never received:
   //
   //  - `reported` null (no stats file, an unreadable one, a reports worktree
   //    that is not there): the snapshot says nothing about what the team
@@ -254,7 +251,7 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
     || totalTokens(reported.tokens ?? emptyTokenUsage()) > 0
   );
   const localDashboard = config && teamHasReported
-    ? await unreportedDashboardStats(metricsMap)
+    ? await unreportedDashboardStats(metricsMap, config)
     : aggregateDashboardStats(metricsMap);
   const dashboard = mergeDashboardAndReported(localDashboard, reported);
   const hasDashboardData =
