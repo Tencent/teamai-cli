@@ -325,6 +325,26 @@ describe('showStats scope and idempotency', () => {
     expect(outputNumber(out, 'Conversation turns:')).toBe(2);
   });
 
+  it('still shows local sessions when the team stats file is missing', async () => {
+    // The team totals could not be read (no stats file, an unreadable one, or a
+    // reports worktree that is not there). The local snapshot then says nothing
+    // about what the team holds, so subtracting it would hide a session the
+    // user can see happening.
+    await seedProjectConfig();
+    await appendEvents(session('sess-1', DIRS.project));
+
+    // No writeReportedStats() — loadReportedStats() returns null.
+    await writeReportedSnapshots(
+      { 'sess-1': { interrupt: 0, toolReject: 0, correction: 0 } },
+      { 'sess-1': { prompts: 1, tokens: SESSION_TOKENS } },
+    );
+
+    const out = await showStatsFromProject();
+
+    expect(outputNumber(out, 'Sessions:')).toBe(1);
+    expect(outputNumber(out, 'Conversation turns:')).toBe(1);
+  });
+
   it('keeps only the project sessions once the project config resolves', async () => {
     // The same machine, run from inside the project: detectProjectConfig() now
     // resolves it, so the project scope keeps only its own sessions and the

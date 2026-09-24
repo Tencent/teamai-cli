@@ -249,7 +249,11 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   const { filterEventsByScope } = await import('./team-push.js');
   const scopedEvents = filterEventsByScope(await readEvents(), scopeFilter);
   const metricsMap = aggregateSessionMetrics(scopedEvents);
-  const localDashboard = config
+  // Only subtract what the team already holds. When the reported totals could
+  // not be read at all (no stats file yet, an unreadable one, a reports worktree
+  // that is not there), the local snapshot says nothing about what the team
+  // has, and subtracting it would hide sessions the user can see happening.
+  const localDashboard = config && reported
     ? await unreportedDashboardStats(metricsMap)
     : aggregateDashboardStats(metricsMap);
   const dashboard = mergeDashboardAndReported(localDashboard, reported);
