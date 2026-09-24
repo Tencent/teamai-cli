@@ -22,7 +22,9 @@ TypeScript, Node 20+, tsup (ESM), Vitest. Commands: `npm run build`, `npx tsc --
 
 ## PR 前测试
 
-`npm run build` 后用真实 CLI 对本次改动做完整端到端验证（不能只跑 type check / unit test）。Test Plan 每一项必须实际通过，测试报告贴进 PR。
+改动运行时行为的 PR（docs-only / tests-only 之外），`npm run build` 后必须用真实 CLI 对本次改动做端到端验证，不能只跑 type check / unit test；**一次代表性的 real-CLI 运行即可**，把实际通过的验证记录贴进 PR。docs-only / tests-only 的改动无需 e2e 记录。
+
+不要求覆盖下面的完整 provider × agent 矩阵——额外 provider / agent 的覆盖交给 CI，或在本地环境不具备时说明即可：
 
 - Agent：Claude、Codex、CodeBuddy、OpenCode
 - Provider：`git`、`gitlab`、`github`
@@ -47,10 +49,14 @@ shared state, list every reader and every writer.
   note, not a blocking finding; the body may have been edited after the review
   pass started.
 - Do not over-review. Report only findings you are confident are real in the
-  current diff, and prefer a few high-signal findings over an exhaustive list.
-  A speculative or theoretical risk that needs an unlikely precondition to
-  trigger is at most `[P3 nit]`, not `[P1 blocking]`; never restate a finding
-  already resolved in the current diff.
+  current diff. Do not cap how many findings you report: every real bug should
+  surface in one pass, not be deferred to a later one. Instead, gate severity
+  by evidence — every `[P1 blocking]` must cite either a concrete failure
+  scenario (the input or state that triggers it and the resulting misbehavior)
+  or the exact `## Code Review Rules` item it breaks. A finding that can cite
+  neither is at most `[P2 non-blocking]`; a speculative or theoretical risk
+  that needs an unlikely precondition to trigger is at most `[P3 nit]`. Never
+  restate a finding already resolved in the current diff.
 - Reject over-engineering. Favor the smallest code that solves the problem;
   flag speculative abstractions, unused flexibility or config, error handling
   for cases that cannot occur, and new CLI commands added where an existing

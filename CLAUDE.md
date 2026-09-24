@@ -22,7 +22,9 @@ TypeScript, Node 20+, tsup (ESM), Vitest. Commands: `npm run build`, `npx tsc --
 
 ## PR 前测试
 
-`npm run build` 后用真实 CLI 对本次改动做完整端到端验证（不能只跑 type check / unit test）。Test Plan 每一项必须实际通过，测试报告贴进 PR。
+改动运行时行为的 PR（docs-only / tests-only 之外），`npm run build` 后必须用真实 CLI 对本次改动做端到端验证，不能只跑 type check / unit test；**一次代表性的 real-CLI 运行即可**，把实际通过的验证记录贴进 PR。docs-only / tests-only 的改动无需 e2e 记录。
+
+不要求覆盖下面的完整 provider × agent 矩阵——额外 provider / agent 的覆盖交给 CI，或在本地环境不具备时说明即可：
 
 - Agent：Claude、Codex、CodeBuddy、OpenCode
 - Provider：`git`、`gitlab`、`github`
