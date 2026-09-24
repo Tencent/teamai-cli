@@ -594,6 +594,60 @@ scope: 'user',
     await fse.remove(tmpDir);
   });
 
+  describe('when no team rule is selected for this directory (#802)', () => {
+    it('reclaims unmodified delivered copies and keeps personal and edited rules', async () => {
+      // The team repo still has these rules; none reaches this directory any more
+      // (e.g. they came from a project the directory no longer has).
+      const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+      await fse.ensureDir(path.join(teamRulesDir, 'alpha'));
+      await fse.writeFile(path.join(teamRulesDir, 'alpha/alpha-rule.md'), '# Alpha rule\n');
+      await fse.writeFile(path.join(teamRulesDir, 'alpha/edited.md'), '# Team version\n');
+
+      const localRulesDir = path.join(homeDir, '.claude/rules');
+      await fse.ensureDir(path.join(localRulesDir, 'alpha'));
+      await fse.writeFile(path.join(localRulesDir, 'alpha/alpha-rule.md'), '# Alpha rule\n');
+      await fse.writeFile(path.join(localRulesDir, 'alpha/edited.md'), '# Edited locally\n');
+      await fse.writeFile(path.join(localRulesDir, 'personal.md'), '# Mine\n');
+
+      await handler.pullAllRules(teamConfig, localConfig, []);
+
+      expect(await fse.pathExists(path.join(localRulesDir, 'alpha/alpha-rule.md'))).toBe(false);
+      expect(await fse.readFile(path.join(localRulesDir, 'alpha/edited.md'), 'utf-8')).toBe('# Edited locally\n');
+      expect(await fse.readFile(path.join(localRulesDir, 'personal.md'), 'utf-8')).toBe('# Mine\n');
+    });
+
+    it('removes a namespace directory it empties', async () => {
+      const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+      await fse.ensureDir(path.join(teamRulesDir, 'alpha'));
+      await fse.writeFile(path.join(teamRulesDir, 'alpha/alpha-rule.md'), '# Alpha rule\n');
+      const localRulesDir = path.join(homeDir, '.claude/rules');
+      await fse.ensureDir(path.join(localRulesDir, 'alpha'));
+      await fse.writeFile(path.join(localRulesDir, 'alpha/alpha-rule.md'), '# Alpha rule\n');
+
+      await handler.pullAllRules(teamConfig, localConfig, []);
+
+      expect(await fse.pathExists(path.join(localRulesDir, 'alpha'))).toBe(false);
+      expect(await fse.pathExists(localRulesDir)).toBe(true);
+    });
+
+    it("keeps the author's own root copy of a rule they published", async () => {
+      const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+      await fse.ensureDir(path.join(teamRulesDir, 'fe-know'));
+      await fse.writeFile(path.join(teamRulesDir, 'fe-know/my-rule.md'), 'team content');
+      const localRulesDir = path.join(homeDir, '.claude/rules');
+      await fse.writeFile(path.join(localRulesDir, 'my-rule.md'), 'team content');
+      vi.mocked(loadStateForScope).mockResolvedValue({
+        lastPush: null, lastPull: null, lastPullRev: null, pushedRules: [], pushedSkills: [],
+        pushedEnvVars: [], pendingPushes: [], lastUpdateCheck: null, availableUpdate: null,
+        placedRules: { 'my-rule': 'rules/fe-know/my-rule.md' },
+      } as State);
+
+      await handler.pullAllRules(teamConfig, localConfig, []);
+
+      expect(await fse.readFile(path.join(localRulesDir, 'my-rule.md'), 'utf-8')).toBe('team content');
+    });
+  });
+
   it('should remove local rule files that no longer exist in team repo', async () => {
     const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
 
