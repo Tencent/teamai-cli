@@ -453,7 +453,7 @@ export async function recallFeedback(opts: { positive?: string; negative?: strin
     process.exitCode = 1;
     return;
   }
-  const { getVotesDir } = await import('./types.js');
+  const { getVotesDir, getReportsDir } = await import('./types.js');
   const votePath = path.join(getVotesDir(localConfig), `${localConfig.username}.yaml`);
 
   if (opts.positive) {
@@ -473,8 +473,19 @@ export async function recallFeedback(opts: { positive?: string; negative?: strin
     // downvote cannot race the detached judge or a sync clearing deltas.
     const { acquired, value } = await withVotesLock(votePath, async () => {
       const data = await loadUserVotes(votePath);
-      if (!data.votes[opts.negative!]) return 'missing' as const;
-      const entry = data.votes[opts.negative!];
+      // The scope's own file starts empty on upgrade (#787), so the upvotes its
+      // team already holds count too: that file plus the deltas not yet pushed.
+      const team = await loadUserVotes(path.join(getReportsDir(localConfig), 'votes', `${localConfig.username}.yaml`));
+      const teamEntry = team.votes[opts.negative!];
+      const known = data.votes[opts.negative!] ?? teamEntry;
+      if (!known) return 'missing' as const;
+      const entry: VoteEntryV2 = {
+        ...known,
+        upvoted_count: Math.max(
+          data.votes[opts.negative!]?.upvoted_count ?? 0,
+          (teamEntry?.upvoted_count ?? 0) + (data.deltas[opts.negative!]?.upvoted_delta ?? 0),
+        ),
+      };
       if (entry.upvoted_count <= 0) return 'none' as const;
 
       const existingDelta = data.deltas[opts.negative!] ?? { recalled_delta: 0, upvoted_delta: 0 };

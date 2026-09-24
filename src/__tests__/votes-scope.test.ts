@@ -17,7 +17,12 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: vi.fn(() => ({ on: vi.fn(), stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) }, unref: vi.fn() })),
 }));
 vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined) }));
-vi.mock('../update.js', () => ({ doUpdate: vi.fn(async () => undefined) }));
+vi.mock('../update.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../update.js')>()),
+  doUpdate: vi.fn(async () => undefined),
+}));
+// The opt-in adoption judge (#723) asks a local CLI; here it adopts every candidate.
+vi.mock('../votes-judge.js', () => ({ judgeAdoption: vi.fn(async (_reply: string, ids: string[]) => ids) }));
 vi.mock('../local-agent.js', () => ({ reportAndSyncFromHook: vi.fn(async () => null) }));
 // Each team's reports checkout sits beside its clone, where getReportsDir puts it;
 // a write lands there instead of being pushed.
@@ -111,13 +116,20 @@ function outsideAnyProject(): string {
   return dir;
 }
 
-/** A Stop hook whose transcript declares `docId` recalled and used. */
-async function stop(cwd: string, docId: string): Promise<void> {
+/** A Stop hook whose transcript recalls `docId` and, unless `opened` is false, opens its file. */
+async function stop(cwd: string, docId: string, opened = true): Promise<void> {
+  const doc = path.join(tmp, `${docId}.md`);
+  fs.writeFileSync(doc, `# ${docId}\n`);
   const transcript = path.join(tmp, `transcript-${docId}.jsonl`);
-  fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: [{
-    type: 'text',
-    text: `<!-- teamai:recalled-doc-ids: [${docId}] --> <!-- teamai:referenced-doc-ids: [${docId}] -->`,
-  }] } }) + '\n');
+  fs.writeFileSync(transcript, [
+    JSON.stringify({ type: 'assistant', message: { content: [{
+      type: 'text',
+      text: `--- [teamai:recall:start] ---\nFile: ${doc}\n--- [teamai:recall:end] ---`,
+    }] } }),
+    ...(opened ? [JSON.stringify({ type: 'assistant', message: { content: [{
+      type: 'tool_use', name: 'Read', input: { file_path: doc },
+    }] } })] : []),
+  ].join('\n') + '\n');
   for (const bgOnly of [false, true]) {
     const stdinFile = path.join(tmp, `stdin-${Date.now()}-${Math.random()}.json`);
     fs.writeFileSync(stdinFile, JSON.stringify({ session_id: `sid-${docId}`, cwd, hook_event_name: 'Stop', transcript_path: transcript }));
@@ -143,6 +155,28 @@ function teamVotes(config: LocalConfig): Record<string, number> {
   if (!fs.existsSync(file)) return {};
   const parsed = YAML.parse(fs.readFileSync(file, 'utf-8')) as UserVotesV2;
   return Object.fromEntries(Object.entries(parsed.votes).map(([doc, entry]) => [doc, entry.upvoted_count]));
+}
+
+async function negativeIn(cwd: string, docId: string): Promise<void> {
+  process.chdir(cwd);
+  try {
+    await recallFeedback({ negative: docId });
+  } finally {
+    process.chdir(originalCwd);
+  }
+}
+
+/** A team's file on its reports checkout, as the last sync left it. */
+function teamFile(config: LocalConfig, upvotes: Record<string, number>): void {
+  fs.mkdirSync(reportsVotesDir(config), { recursive: true });
+  const votes: UserVotesV2 = {
+    version: 2,
+    votes: Object.fromEntries(Object.entries(upvotes).map(([doc, n]) => [doc, {
+      recalled_count: n, upvoted_count: n, last_recalled_at: '2026-01-01T00:00:00.000Z', last_upvoted_at: '2026-01-01T00:00:00.000Z',
+    }])),
+    deltas: {},
+  };
+  fs.writeFileSync(path.join(reportsVotesDir(config), 'tester.yaml'), YAML.stringify(votes));
 }
 
 async function report(config: LocalConfig): Promise<void> {
@@ -188,6 +222,23 @@ describe('votes stay with the scope they were cast in (#787)', () => {
     expect(teamVotes(user)).toEqual({ 'doc-u': 1 });
   });
 
+  it('an upvote the adoption judge records in project A reaches only project A\'s team', async () => {
+    const user = userScope();
+    const a = await projectA();
+    await feedbackIn(outsideAnyProject(), 'doc-u');
+    vi.stubEnv('TEAMAI_UPVOTE_JUDGE', '1');
+    try {
+      await stop(a.root, 'doc-judged', false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    await report(user);
+    await report(a.config);
+
+    expect(teamVotes(user)).toEqual({ 'doc-u': 1 });
+    expect(teamVotes(a.config)).toEqual({ 'doc-judged': 1 });
+  });
+
   it('votes pending in the shared directory before the upgrade are pushed by no scope', async () => {
     const user = userScope();
     const a = await projectA();
@@ -227,6 +278,42 @@ describe('votes stay with the scope they were cast in (#787)', () => {
     expect(upvoted(path.join(a.dataHome, 'votes', 'tester.yaml'))).toEqual(['doc-a']);
     expect(upvoted(path.join(teamaiHome(), 'user-votes', 'tester.yaml'))).toEqual(['doc-u']);
     expect(fs.existsSync(path.join(teamaiHome(), 'votes'))).toBe(false);
+  });
+
+  it('recall feedback --negative lowers the upvotes the scope\'s team already holds from before the upgrade', async () => {
+    userScope();
+    const a = await projectA();
+    // The team's file from before the upgrade; the scope's own file does not hold these docs yet,
+    // or holds only a recall counted after the upgrade.
+    teamFile(a.config, { 'doc-old': 2, 'doc-recalled': 2 });
+    const local: UserVotesV2 = {
+      version: 2,
+      votes: { 'doc-recalled': { recalled_count: 1, upvoted_count: 0, last_recalled_at: '2026-09-01T00:00:00.000Z' } },
+      deltas: { 'doc-recalled': { recalled_delta: 1, upvoted_delta: 0 } },
+    };
+    fs.mkdirSync(path.join(a.dataHome, 'votes'), { recursive: true });
+    fs.writeFileSync(path.join(a.dataHome, 'votes', 'tester.yaml'), YAML.stringify(local));
+
+    await negativeIn(a.root, 'doc-old');
+    await negativeIn(a.root, 'doc-recalled');
+    await report(a.config);
+
+    expect(teamVotes(a.config)).toEqual({ 'doc-old': 1, 'doc-recalled': 1 });
+  });
+
+  it('recall feedback --negative ignores upvotes that only another scope or the shared directory holds', async () => {
+    const user = userScope();
+    const a = await projectA();
+    teamFile(user, { 'doc-u': 2 });
+    sharedPendingVote('doc-shared');
+
+    await negativeIn(a.root, 'doc-u');
+    await negativeIn(a.root, 'doc-shared');
+    await report(a.config);
+    await report(user);
+
+    expect(teamVotes(a.config)).toEqual({});
+    expect(teamVotes(user)).toEqual({ 'doc-u': 2 });
   });
 
   it('recall feedback in a project whose config cannot be read records nothing, not even in the user scope', async () => {

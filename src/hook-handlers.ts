@@ -555,8 +555,8 @@ const votesJudgeHandler: HookHandler = {
       // increment dedups to nothing, could re-trigger a local-CLI judge call on
       // every subsequent Stop (issue #723 review). Filtering here keeps the cost
       // at ~one CLI call per session in the steady state.
-      const { getUserVotesDir, getUserLearningsDir, usesBranchWorktree } = await import('./types.js');
-      const votesDir = getUserVotesDir();
+      const { getVotesDir, getUserLearningsDir, usesBranchWorktree } = await import('./types.js');
+      const votesDir = getVotesDir(localConfig);
       const votePath = path.join(votesDir, `${localConfig.username}.yaml`);
       const { creditedDocIdsForSession } = await import('./votes.js');
       const ledgerCredited = await creditedDocIdsForSession(votePath, sessionId);
