@@ -12,6 +12,7 @@ import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSa
 import { reconcilePlacementRecords } from './utils/pending-push.js';
 import { injectClaudeMdSection, removeClaudeMdSection } from './utils/claudemd.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
+import { resolveDocsDestination } from './resources/docs.js';
 import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { skillsDirForTool } from './resources/skills.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
@@ -1126,6 +1127,7 @@ async function pullForScope(
 
   // Step 2: Sync each resource type
   let totalSynced = 0;
+  let docsSyncFailed = false;
   let desiredSkillNames: Set<string> | null = null;
   let knownRepoSkillNames: Set<string> | null = null;
   // name → team-repo source dir, for the data-safety check in Step 3b cleanup.
@@ -1155,6 +1157,35 @@ async function pullForScope(
       continue;
     }
 
+    if (type === 'docs') {
+      const docsHandler = handler as DocsHandler;
+      // An empty/missing team bundle still needs to remove stale local docs.
+      const item: ResourceItem = {
+        name: 'docs', type: 'docs',
+        sourcePath: path.join(localConfig.repo.localPath, 'docs'), relativePath: 'docs/',
+      };
+      try {
+        const fileCount = await docsHandler.countDocFiles(item.sourcePath);
+        if (fileCount === 0 && await docsHandler.countDocFiles(resolveDocsDestination(freshConfig, localConfig)) === 0) continue;
+        if (options.dryRun) {
+          log.info(`[${scopeLabel}] [dry-run] Would sync ${fileCount} docs and remove stale local docs`);
+        } else {
+          await docsHandler.pullItem(item, freshConfig, localConfig);
+          log.success(`[${scopeLabel}] Synced ${fileCount} docs`);
+        }
+        totalSynced += fileCount;
+      } catch (e) {
+        docsSyncFailed = true;
+        log.warn(`[${scopeLabel}] Failed to sync docs: ${(e as Error).message}`);
+        if (!options.dryRun) {
+          const state = await loadStateForScope(localConfig);
+          state[revisionField] = null;
+          await saveStateForScope(state, localConfig);
+        }
+      }
+      continue;
+    }
+
     // Skills: directory (role namespace) first, then tags, union of both
     let items: ResourceItem[];
     let skippedByTags = 0;
@@ -1171,23 +1202,6 @@ async function pullForScope(
       items = await resolveDesiredAgents(freshConfig, localConfig, roleContext);
     } else {
       items = await handler.scanTeamForPull(freshConfig, localConfig);
-    }
-    if (type === 'docs') {
-      const docsHandler = handler as DocsHandler;
-      // An empty/missing team bundle still needs to remove stale local docs.
-      const item = items[0] ?? {
-        name: 'docs', type: 'docs' as const,
-        sourcePath: path.join(localConfig.repo.localPath, 'docs'), relativePath: 'docs/',
-      };
-      const fileCount = await docsHandler.countDocFiles(item.sourcePath);
-      if (options.dryRun) {
-        log.info(`[${scopeLabel}] [dry-run] Would sync ${fileCount} docs and remove stale local docs`);
-      } else {
-        await docsHandler.pullItem(item, freshConfig, localConfig);
-        log.success(`[${scopeLabel}] Synced ${fileCount} docs`);
-      }
-      totalSynced += fileCount;
-      continue;
     }
     if (items.length === 0) continue;
 
@@ -1353,7 +1367,7 @@ async function pullForScope(
     }
   }
 
-  if (totalSynced === 0) {
+  if (totalSynced === 0 && !docsSyncFailed) {
     log.info(`[${scopeLabel}] No resources to sync`);
   }
 
@@ -1417,7 +1431,8 @@ async function pullForScope(
   // Record the revision only after every resource and knowledge phase has had
   // a chance to run. Inherited pulls use an independent marker so a partial,
   // safe sync can never suppress a later full user-scope pull.
-  if (!options.dryRun) {
+  // A failed docs mirror must be retried even when the team revision is unchanged.
+  if (!options.dryRun && !docsSyncFailed) {
     const state = await loadStateForScope(localConfig);
     if (revisionField === 'lastPullRev') {
       state.lastPull = new Date().toISOString();
@@ -1489,7 +1504,7 @@ async function pullForScope(
   // A real sync ran to completion for this scope. The "Already synced" fast path
   // and every error/skip path return before here, and dry-run is excluded so a
   // preview never reports completion (#702 follow-up).
-  if (result && !options.dryRun) result.completed = true;
+  if (result && !options.dryRun && !docsSyncFailed) result.completed = true;
 }
 
 /**

@@ -39,6 +39,15 @@ vi.mock('../utils/logger.js', () => ({
     setStderrOnly: vi.fn(),
 }));
 
+// This suite isolates hook/config checks from disk delivery. Docs now compare
+// both trees even when the team bundle is empty; real files are covered in
+// doctor-delivery.test.ts, just as for the other resource walkers above.
+vi.mock('../resources/docs.js', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../resources/docs.js')>()),
+    listDocFiles: vi.fn().mockResolvedValue([]),
+    resolveDocsDestination: vi.fn().mockReturnValue('/tmp/team-docs'),
+}));
+
 // Mock the tgit provider to avoid side effects
 vi.mock('../providers/tgit/index.js', () => ({
     isGfInstalled: vi.fn().mockResolvedValue(true),

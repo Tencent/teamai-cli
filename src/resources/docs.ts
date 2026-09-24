@@ -2,7 +2,7 @@ import path from 'node:path';
 import fse from 'fs-extra';
 import { ResourceHandler } from './base.js';
 import { resolveBaseDir, type ResourceItem, type TeamaiConfig, type LocalConfig } from '../types.js';
-import { expandHome, listFilesRecursive } from '../utils/fs.js';
+import { expandHome } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 
 /**
@@ -27,6 +27,21 @@ async function readEntries(dir: string) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
+}
+
+/** Files in the docs mirror, including links themselves but never their targets. */
+export async function listDocFiles(dir: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readEntries(expandHome(dir))) {
+    if (entry.name.startsWith('.')) continue;
+    if (entry.isDirectory()) {
+      const nested = await listDocFiles(path.join(dir, entry.name));
+      files.push(...nested.map(file => `${entry.name}/${file}`));
+    } else {
+      files.push(entry.name);
+    }
+  }
+  return files;
 }
 
 /** Remove stale visible entries without following local symlinks or removing dotfiles. */
@@ -74,8 +89,7 @@ export class DocsHandler extends ResourceHandler {
   }
 
   async countDocFiles(sourcePath: string): Promise<number> {
-    const files = await listFilesRecursive(sourcePath);
-    return files.filter(f => f.split('/').every(segment => !segment.startsWith('.'))).length;
+    return (await listDocFiles(sourcePath)).length;
   }
 
   async pushItem(_item: ResourceItem, _teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<void> {
@@ -87,31 +101,27 @@ export class DocsHandler extends ResourceHandler {
    */
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
     const localDocsDir = resolveDocsDestination(teamConfig, localConfig);
-    try {
-      const src = expandHome(item.sourcePath);
-      // Validate the source before touching the destination, including an empty bundle.
-      const entries = await readEntries(src);
-      await fse.ensureDir(localDocsDir);
-      const destination = await fse.realpath(localDocsDir);
-      const repo = await fse.realpath(localConfig.repo.localPath);
-      const base = await fse.realpath(resolveBaseDir(localConfig));
-      // In single-repo mode the configured docs directory may already be the source.
-      if (destination === path.join(repo, 'docs')) return;
-      if (containsPath(destination, base) || containsPath(destination, repo) || containsPath(repo, destination)) {
-        throw new Error('Docs pruning requires a dedicated localDir that does not overlap the team repo or contain the home or project root.');
-      }
-      if (entries.length > 0) {
-        await fse.copy(src, localDocsDir, {
-          overwrite: true,
-          filter: (srcPath: string) => !path.basename(srcPath).startsWith('.'),
-        });
-      }
-      // Copy first: a failed copy must not trigger deletion of the previous bundle.
-      await pruneDocs(src, localDocsDir);
-      log.debug(`Synced docs → ${localDocsDir}`);
-    } catch (e) {
-      log.warn(`Failed to sync docs: ${(e as Error).message}`);
+    const src = expandHome(item.sourcePath);
+    // Validate the source before touching the destination, including an empty bundle.
+    const entries = await readEntries(src);
+    await fse.ensureDir(localDocsDir);
+    const destination = await fse.realpath(localDocsDir);
+    const repo = await fse.realpath(localConfig.repo.localPath);
+    const base = await fse.realpath(resolveBaseDir(localConfig));
+    // In single-repo mode the configured docs directory may already be the source.
+    if (destination === path.join(repo, 'docs')) return;
+    if (containsPath(destination, base) || containsPath(destination, repo) || containsPath(repo, destination)) {
+      throw new Error('Docs pruning requires a dedicated localDir that does not overlap the team repo or contain the home or project root.');
     }
+    if (entries.length > 0) {
+      await fse.copy(src, localDocsDir, {
+        overwrite: true,
+        filter: (srcPath: string) => !path.basename(srcPath).startsWith('.'),
+      });
+    }
+    // Copy first: a failed copy must not trigger deletion of the previous bundle.
+    await pruneDocs(src, localDocsDir);
+    log.debug(`Synced docs → ${localDocsDir}`);
   }
 
   async removeItem(_name: string, _teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<string[]> {

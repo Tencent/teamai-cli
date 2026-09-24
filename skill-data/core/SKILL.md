@@ -105,12 +105,8 @@ teamai recall <q>  # Search what the team has already learned
 Every other command, every flag, and the flags `--help` hides live in the
 generated reference below. Read it instead of guessing a flag.
 
-`teamai pull` mirrors the team's non-hidden docs into `sharing.docs.localDir`:
-documents deleted by the team are deleted locally too, even when the team bundle
-becomes empty. Use a dedicated docs destination: local-only drafts are also
-removed, while hidden files and directories are preserved. Preview with
-`teamai pull --dry-run`; use `teamai pull --force` to clean residue from a revision
-already synced by an older CLI.
+`teamai pull` mirrors non-hidden docs into `sharing.docs.localDir`, removing stale
+and local-only documents. Use a dedicated directory; preview with `--dry-run`.
 
 ## References
 

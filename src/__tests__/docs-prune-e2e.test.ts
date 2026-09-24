@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
@@ -30,6 +30,15 @@ it('real pull prunes deleted docs from a Git remote, including deletion of the l
   const pull = (...args: string[]) => execFileSync(process.execPath, [cli, 'pull', ...args], {
     cwd: home, env, encoding: 'utf8', stdio: 'pipe', timeout: 30_000,
   });
+  const docsCheck = () => {
+    // Other doctor checks may fail in this deliberately minimal fixture.
+    const result = spawnSync(process.execPath, [cli, 'doctor', '--json'], {
+      cwd: home, env, encoding: 'utf8', timeout: 30_000,
+    });
+    expect(result.error).toBeUndefined();
+    const report = JSON.parse(result.stdout);
+    return report.checks.find((check: { name: string }) => check.name === 'Team docs delivered');
+  };
   const commit = () => {
     git(remote, 'add', '-A');
     git(remote, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Update team docs');
@@ -64,14 +73,20 @@ it('real pull prunes deleted docs from a Git remote, including deletion of the l
   expect(await fse.pathExists(path.join(destination, 'old'))).toBe(false);
   expect(await fse.pathExists(path.join(destination, 'draft.md'))).toBe(false);
   expect(await fse.readFile(path.join(destination, '.keep'), 'utf8')).toBe('local metadata');
+  expect(docsCheck().ok).toBe(true);
 
   await fse.remove(path.join(remote, 'docs'));
   commit();
   // --dry-run deliberately does not fetch; update the cached clone for the preview.
   git(clone, 'pull', '--ff-only');
+  const staleCheck = docsCheck();
+  expect(staleCheck.ok).toBe(false);
+  expect(staleCheck.fix).toContain('Stale docs');
+  expect(staleCheck.fix).toContain('guide.md');
   expect(pull('--dry-run')).toContain('Would sync 0 docs and remove stale local docs');
   expect(await fse.pathExists(path.join(destination, 'guide.md'))).toBe(true);
   expect(pull()).toContain('Synced 0 docs');
   expect(await fse.readdir(destination)).toEqual(['.keep']);
+  expect(docsCheck()).toBeUndefined();
   expect(pull()).toContain('Already synced');
 }, 120_000);

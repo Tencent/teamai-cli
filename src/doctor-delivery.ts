@@ -659,22 +659,29 @@ async function envDeliveryProblems(
 
 /**
  * The docs bundle has one destination rather than one per tool: `DocsHandler`
- * copies the whole `docs/` tree into `sharing.docs.localDir`. So this check
+ * mirrors the visible `docs/` tree into `sharing.docs.localDir`. So this check
  * compares the two trees, file by file, rather than asking each tool.
  */
 export async function buildDocsCheck(ctx: DoctorContext): Promise<Check[]> {
   const { localConfig, teamConfig } = ctx;
   if (!teamConfig) return [];
 
-  const { DocsHandler, resolveDocsDestination } = await import('./resources/docs.js');
-  const handler = new DocsHandler();
-  const [item] = await handler.scanTeamForPull(teamConfig, localConfig);
-  if (!item) return [];
-
+  const { listDocFiles, resolveDocsDestination } = await import('./resources/docs.js');
   const dest = resolveDocsDestination(teamConfig, localConfig);
-  const teamFiles = (await listFilesRecursive(item.sourcePath))
-    // Same filter DocsHandler.pullItem copies with: dotfiles never travel.
-    .filter((file) => file.split('/').every((segment) => !segment.startsWith('.')));
+  let teamFiles: string[];
+  let localFiles: string[];
+  try {
+    teamFiles = await listDocFiles(path.join(localConfig.repo.localPath, 'docs'));
+    localFiles = await listDocFiles(dest);
+  } catch (error) {
+    return [{
+      name: 'Team docs delivered', source: 'local', check: async () => false,
+      fix: `Could not inspect the docs mirror: ${(error as Error).message}. Check directory access, then run \`teamai pull --force\`.`,
+    }];
+  }
+  if (teamFiles.length === 0 && localFiles.length === 0) return [];
+  const expected = new Set(teamFiles);
+  const stale = localFiles.filter(file => !expected.has(file));
 
   // isFile, not merely "something is there": a directory sitting on the
   // expected name, or a symlink with nothing behind it, would satisfy a plain
@@ -687,8 +694,11 @@ export async function buildDocsCheck(ctx: DoctorContext): Promise<Check[]> {
   return [{
     name: 'Team docs delivered',
     source: 'local',
-    check: async () => missing.length === 0,
-    fix: `Missing from ${dest}: ${nameList(missing)}. Run \`teamai pull --force\`: a plain `
-      + 'pull skips a scope whose team repo has not changed, so it cannot restore these.',
+    check: async () => missing.length === 0 && stale.length === 0,
+    fix: [
+      ...(missing.length ? [`Missing from ${dest}: ${nameList(missing)}.`] : []),
+      ...(stale.length ? [`Stale docs in ${dest}: ${nameList(stale)}.`] : []),
+      'Run `teamai pull --force` to restore the docs mirror; a plain pull skips an already-synced revision.',
+    ].join(' '),
   }];
 }
