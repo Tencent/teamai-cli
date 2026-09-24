@@ -195,13 +195,16 @@ describe('http provider: legacy singleton migration', () => {
     expect(await legacySingletonActive()).toBe(false);
   });
 
-  it('extracts the token from the legacy ~/.teamai/token file when config has none', async () => {
+  it('extracts the token from the legacy ~/.teamai/token file and removes the original (review P2)', async () => {
     await seedLegacy();
     await fse.writeFile(path.join(teamai(), 'token'), 'file-token\n');
     const { migrateLegacyHttpProvider, httpProviderCredentialPath } = await import('../providers/http/store.js');
 
     await migrateLegacyHttpProvider({ name: 'company' });
+    // Moved into the isolated 0600 credential …
     expect(fs.readFileSync(httpProviderCredentialPath('company'), 'utf-8').trim()).toBe('file-token');
+    // … and the shared plaintext ~/.teamai/token is deleted, not stranded.
+    expect(fs.existsSync(path.join(teamai(), 'token'))).toBe(false);
   });
 
   it('is idempotent: a second migration is a no-op', async () => {

@@ -526,13 +526,18 @@ const localAgentHandler: HookHandler = {
       for (const r of results) {
         if (r.hookOutput) outputs.push(r.hookOutput);
       }
-    }
-
-    const { legacySingletonActive } = await import('./providers/http/store.js');
-    if (await legacySingletonActive()) {
-      const { reportAndSyncFromHook } = await import('./local-agent.js');
-      const legacyOutput = await reportAndSyncFromHook(stdin, tool);
-      if (legacyOutput) outputs.push(legacyOutput);
+    } else {
+      // Legacy singleton fallback runs ONLY when no named provider is
+      // configured. Once a named provider exists it has taken over delivery, so
+      // running the legacy path too would double-dispatch (duplicate report /
+      // command execution) during the migration window where the registry entry
+      // is published but the legacy dir is not yet deleted (issue #404).
+      const { legacySingletonActive } = await import('./providers/http/store.js');
+      if (await legacySingletonActive()) {
+        const { reportAndSyncFromHook } = await import('./local-agent.js');
+        const legacyOutput = await reportAndSyncFromHook(stdin, tool);
+        if (legacyOutput) outputs.push(legacyOutput);
+      }
     }
 
     return outputs.length > 0 ? outputs.join('\n') : null;

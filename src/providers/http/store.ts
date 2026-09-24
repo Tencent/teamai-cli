@@ -299,5 +299,15 @@ export async function migrateLegacyHttpProvider(options: {
   // exists so there is nothing to revive or double-uninstall.
   await remove(legacyHome());
 
+  // Also remove the shared legacy ~/.teamai/token if it was the credential
+  // source — the token now lives only in the isolated 0600 credential file, so
+  // leaving the old plaintext copy would strand it after `provider remove`
+  // (issue #404, review P2). Only delete when it actually matched what we moved.
+  if (token && !legacy.token) {
+    const legacyTokenPath = path.join(teamaiHome(), 'token');
+    const legacyTokenValue = (await readFileSafe(legacyTokenPath))?.trim();
+    if (legacyTokenValue === token) await remove(legacyTokenPath);
+  }
+
   return config;
 }
