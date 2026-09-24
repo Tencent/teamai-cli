@@ -1870,7 +1870,7 @@ teamai provider remove company
 
 The provider's state lives under `~/.teamai/providers/http/<name>/`; its token is stored `0600` at `~/.teamai/credentials/<name>`, never in a config file. On every session, hook dispatch syncs it, reporting a per-provider result so a failing backend surfaces as a failure rather than a false success.
 
-> **One HTTP provider at a time.** Mounting several HTTP backends concurrently needs cross-provider ownership arbitration (so same-name resources don't overwrite or delete each other) — that is a later phase (issue #404). Until then `provider add http` refuses a second provider. The `--priority` flag is recorded for that future phase and does not yet affect behavior.
+> **One HTTP provider at a time.** Mounting several HTTP backends concurrently needs cross-provider ownership arbitration (so same-name resources don't overwrite or delete each other) — that is a later phase (issue #404). Until then `provider add http` refuses a second provider, so there is no priority to configure yet.
 
 To move an existing single HTTP backend (`init --http` / `source add-http`) onto the named-provider model, run:
 

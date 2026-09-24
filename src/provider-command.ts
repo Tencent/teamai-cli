@@ -28,6 +28,13 @@ import { syncResourceProviders } from './providers/resource-registry.js';
 import type { HttpProviderConfig } from './providers/types.js';
 
 /**
+ * Default priority stamped on a provider's config. Reserved for the later
+ * multi-provider arbitration phase; with a single provider it has no effect and
+ * is deliberately not exposed as a CLI flag (issue #404, review P2).
+ */
+const DEFAULT_PROVIDER_PRIORITY = 50;
+
+/**
  * Run `fn` while holding the machine-level provider lock, so the single-provider
  * check-and-write in `provider add` and `migrate-legacy` cannot interleave and
  * both pass the empty/one-provider gate (review #6/P3). Callers still enforce
@@ -51,10 +58,9 @@ interface AddHttpOptions {
   name: string;
   adapter?: string;
   token?: string;
-  priority?: string;
 }
 
-/** `teamai provider add http <endpoint> --name --adapter --token --priority` */
+/** `teamai provider add http <endpoint> --name --adapter --token` */
 export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): Promise<void> {
   if (!opts.name) {
     log.error('A provider name is required: --name <name>');
@@ -76,12 +82,13 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
     process.exit(1);
   }
 
-  const priority = parsePriority(opts.priority);
   const config: HttpProviderConfig = {
     name: opts.name,
     adapter,
     endpoint: endpoint.trim().replace(/\/+$/, ''),
-    priority,
+    // priority is a data-model field reserved for the later arbitration phase;
+    // with a single provider it has no effect, so it is not user-configurable.
+    priority: DEFAULT_PROVIDER_PRIORITY,
   };
 
   // Serialize the whole check-and-write under a machine-level lock so two
@@ -246,10 +253,9 @@ export async function providerRemove(name: string): Promise<void> {
 
 interface MigrateLegacyOptions {
   name: string;
-  priority?: string;
 }
 
-/** `teamai provider migrate-legacy --name --priority` */
+/** `teamai provider migrate-legacy --name` */
 export async function providerMigrateLegacy(opts: MigrateLegacyOptions): Promise<void> {
   if (!opts.name) {
     log.error('A provider name is required: --name <name>');
@@ -280,10 +286,7 @@ export async function providerMigrateLegacy(opts: MigrateLegacyOptions): Promise
       );
       process.exit(1);
     }
-    return migrateLegacyHttpProvider({
-      name: opts.name,
-      priority: parsePriority(opts.priority),
-    });
+    return migrateLegacyHttpProvider({ name: opts.name });
   });
   if (!config) {
     log.info('No legacy HTTP local agent to migrate (or it was already migrated).');
@@ -293,17 +296,6 @@ export async function providerMigrateLegacy(opts: MigrateLegacyOptions): Promise
     `Migrated legacy HTTP local agent to provider "${config.name}" ` +
       '(the old ~/.teamai/local-agent/ has been removed).',
   );
-}
-
-/** Parse a --priority value, defaulting to 50 and rejecting non-integers. */
-function parsePriority(raw?: string): number {
-  if (raw === undefined) return 50;
-  const n = Number(raw);
-  if (!Number.isInteger(n)) {
-    log.error(`--priority must be an integer, got "${raw}".`);
-    process.exit(1);
-  }
-  return n;
 }
 
 /** Adapter names this build supports, for CLI help. */

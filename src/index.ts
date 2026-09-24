@@ -566,7 +566,6 @@ providerAddCmd
   .requiredOption('--name <name>', 'Unique name for this provider')
   .option('--adapter <adapter>', 'Protocol adapter (default: clawpro)')
   .option('--token <key>', 'API token (stored 0600 outside config, never committed)')
-  .option('--priority <n>', 'Arbitration priority; higher wins (default: 50)')
   .action(async (endpoint: string, cmdOpts) => {
     const { providerAddHttp } = await import('./provider-command.js');
     await providerAddHttp(endpoint, cmdOpts);
@@ -600,7 +599,6 @@ providerCmd
   .command('migrate-legacy')
   .description('Promote the legacy ~/.teamai/local-agent/ singleton to a named provider')
   .requiredOption('--name <name>', 'Name for the migrated provider')
-  .option('--priority <n>', 'Arbitration priority (default: 50)')
   .action(async (cmdOpts) => {
     const { providerMigrateLegacy } = await import('./provider-command.js');
     await providerMigrateLegacy(cmdOpts);

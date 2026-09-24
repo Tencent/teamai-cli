@@ -1802,7 +1802,7 @@ teamai provider remove company
 
 该 provider 的状态存放在 `~/.teamai/providers/http/<name>/`；其 token 以 `0600` 权限单独存于 `~/.teamai/credentials/<name>`，绝不写入任何配置文件。每次 session 中，hook dispatch 会同步它，并返回每个 provider 的结果——后端失败会如实报为失败，而非假成功。
 
-> **目前每台机器只支持一个 HTTP provider。** 同时挂载多个 HTTP 后端需要跨 provider 的归属仲裁（避免同名资源互相覆盖或删除），这是后续阶段（issue #404）。在此之前，`provider add http` 会拒绝添加第二个 provider。`--priority` 参数为该未来阶段预留，目前不影响行为。
+> **目前每台机器只支持一个 HTTP provider。** 同时挂载多个 HTTP 后端需要跨 provider 的归属仲裁（避免同名资源互相覆盖或删除），这是后续阶段（issue #404）。在此之前，`provider add http` 会拒绝添加第二个 provider，因此暂无优先级可配置。
 
 要把已有的单个 HTTP 后端（`init --http` / `source add-http`）迁移到具名 provider 模型，运行：
 
