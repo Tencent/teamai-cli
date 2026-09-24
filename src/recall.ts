@@ -414,13 +414,14 @@ export async function recall(
   const scopeIndexes: Array<{ index: SearchIndex; scope: 'user' | 'project'; config: LocalConfig; learningsBase: string }> = [];
 
   let projectConfig: LocalConfig | null = null;
-  // A project config that cannot be read makes detection fall back to another
-  // scope; searching there is #796's, but its votes must not reach that scope's
-  // team (#787).
+  // A project config that cannot be read (or checked) makes detection fall back
+  // to another scope; searching there is #796's, but its votes must not reach
+  // that scope's team (#787).
   let projectUnreadable = false;
   try {
     projectConfig = await detectProjectConfig(undefined, () => { projectUnreadable = true; });
   } catch {
+    projectUnreadable = true;
     log.debug('recall: project scope detection failed');
   }
 

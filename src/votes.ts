@@ -4,7 +4,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 
 import type { UserVotes, UserVotesV2, VoteEntryV2 } from './types.js';
-import { readFileSafe, writeFile, ensureDir } from './utils/fs.js';
+import { readFileSafe, writeFile, ensureDir, expandHome } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
 /**
@@ -200,23 +200,21 @@ export async function syncVotesToTeam(
  * Record manual feedback for a recalled document.
  */
 export async function recallFeedback(opts: { positive?: string; negative?: string }): Promise<void> {
-  const { resolveConfigForDir, findUnreadableProjectConfig, requireInit, BROKEN_CONFIG_ADVICE } = await import('./config.js');
+  const { resolveConfigForDir, findUnreadableProjectConfig, throwMissingOrInvalid, BROKEN_CONFIG_ADVICE } = await import('./config.js');
   // The votes of the cwd's scope (#787). An unreadable project config falls
   // back to no other scope: the feedback would reach that scope's team.
   const localConfig = await resolveConfigForDir();
   if (!localConfig) {
     const unreadable = await findUnreadableProjectConfig();
-    let reason = 'teamai is not set up here. Run `teamai init` first.';
+    let reason: string;
     if (unreadable) {
       const { firstLine } = await import('./skill-content.js');
       reason = `${firstLine(unreadable)}. ${BROKEN_CONFIG_ADVICE}`;
     } else {
-      // No user config, or one that cannot be read: requireInit says which.
-      try {
-        await requireInit();
-      } catch (e) {
-        reason = e instanceof Error ? e.message : String(e);
-      }
+      // No user config, or one that cannot be read: say which.
+      const { getUserConfigPath } = await import('./types.js');
+      reason = await throwMissingOrInvalid(expandHome(getUserConfigPath()))
+        .catch((e: unknown) => e instanceof Error ? e.message : String(e));
     }
     log.error(`No feedback recorded: ${reason}`);
     process.exitCode = 1;

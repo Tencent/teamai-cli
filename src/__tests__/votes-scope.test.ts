@@ -260,17 +260,21 @@ describe('votes stay with the scope they were cast in (#787)', () => {
     const learnings = path.join(user.repo.localPath, 'learnings');
     fs.mkdirSync(learnings, { recursive: true });
     fs.writeFileSync(path.join(learnings, 'api-timeout.md'), '---\ntitle: "API timeout fix"\nauthor: tester\ndate: 2026-05-01\n---\n\nRaise the API timeout.\n');
-    const { root } = await brokenProject();
+    const { root, dataHome } = await brokenProject();
 
     process.chdir(root);
-    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let out = '';
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => { out += String(chunk); return true; });
     try {
       await recall('api timeout', {});
     } finally {
       stdout.mockRestore();
     }
 
+    expect(out).toContain('API timeout fix');
     expect(fs.existsSync(path.join(teamaiHome(), 'user-votes'))).toBe(false);
+    expect(fs.existsSync(path.join(teamaiHome(), 'votes'))).toBe(false);
+    expect(fs.existsSync(path.join(dataHome, 'votes'))).toBe(false);
   });
 
   it('the vote view reads the votes of the scope of its cwd', async () => {

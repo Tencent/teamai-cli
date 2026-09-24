@@ -165,7 +165,7 @@ export async function requireInit(): Promise<TeamaiInit> {
  * parse or validation error, but not a file that is empty or cannot be opened,
  * so those two are named here.
  */
-async function throwMissingOrInvalid(configPath: string): Promise<never> {
+export async function throwMissingOrInvalid(configPath: string): Promise<never> {
   if (!(await pathExists(configPath))) {
     throw new NotInitializedError('teamai is not initialized. Run `teamai init` first.');
   }
