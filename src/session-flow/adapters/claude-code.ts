@@ -627,6 +627,9 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   async writeSession(session: Session, projectPath?: string): Promise<string> {
     // 确定 session_id（必须是 UUIDv4）：已是 v4 则沿用，否则确定性派生——
     // 随机生成会让重复迁移产生 id 不同、内容相同的重复会话。
+    // 这里**故意不把 cwd 纳入派生**：本平台的会话按项目目录存放
+    // (`<storageRoot>/<encoded cwd>/<id>.jsonl`)，同一 id 落在两个目录就是两份
+    // 独立文件，不存在互相覆盖。加上 cwd 只会让已迁移的会话 id 漂移。
     const sessionId = isUuidV4(session.sessionId)
       ? session.sessionId
       : deriveTargetSessionId(this.platform, session.sessionId);
@@ -783,23 +786,45 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     return records;
   }
 
+  /**
+   * 找出该 sessionId 的**全部**副本（跨工作区）。
+   *
+   * findSessionFile 命中首个即返回，读取没问题；但删除时只删首个会让别的
+   * 工作区里的同名副本变成孤儿——而 rollback 不带 --cwd 的语义正是「全部」。
+   */
+  private findAllSessionFiles(sessionId: string, projectPath?: string): string[] {
+    if (projectPath) {
+      const target = path.join(this.resolveProjectDir(projectPath), `${sessionId}.jsonl`);
+      return fileExists(target) ? [target] : [];
+    }
+    if (!dirExists(this.storageRoot)) return [];
+    const out: string[] = [];
+    for (const projDir of fs.readdirSync(this.storageRoot)) {
+      const candidate = path.join(this.storageRoot, projDir, `${sessionId}.jsonl`);
+      if (fileExists(candidate)) out.push(candidate);
+    }
+    return out;
+  }
+
   async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
-    const jsonlPath = this.findSessionFile(sessionId, projectPath);
+    const jsonlPaths = this.findAllSessionFiles(sessionId, projectPath);
     // Nothing to delete under this project: report it instead of printing ✓.
-    if (!jsonlPath) return false;
+    if (jsonlPaths.length === 0) return false;
 
     let deleted = false;
-    try {
-      fs.unlinkSync(jsonlPath);
-      deleted = true;
-    } catch {
-      deleted = false;
-    }
+    for (const jsonlPath of jsonlPaths) {
+      try {
+        fs.unlinkSync(jsonlPath);
+        deleted = true;
+      } catch {
+        // ignore
+      }
 
-    // 删除同名子目录
-    const subdir = jsonlPath.replace(/\.jsonl$/, '');
-    if (dirExists(subdir)) {
-      removeDirRecursive(subdir);
+      // 删除同名子目录
+      const subdir = jsonlPath.replace(/\.jsonl$/, '');
+      if (dirExists(subdir)) {
+        removeDirRecursive(subdir);
+      }
     }
     return deleted;
   }

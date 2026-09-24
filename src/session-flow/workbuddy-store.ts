@@ -20,7 +20,6 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { getWorkBuddyProjectsDir } from './fs.js';
@@ -39,16 +38,14 @@ function esc(value: string): string {
   return value.replace(/'/g, "''");
 }
 
- /** Run a SQL script through the sqlite3 CLI (temp file, mode 0600, deleted after). */
+/** Run a SQL script through the sqlite3 CLI (piped in; never written to disk). */
 function runSql(dbPath: string, sql: string, timeoutMs = 30_000): { ok: boolean; reason?: string } {
   const sqlite3 = findSqlite3();
   if (!sqlite3) return { ok: false, reason: 'sqlite3 CLI not found' };
 
-  const sqlPath = path.join(os.tmpdir(), `teamai-workbuddy-${process.pid}-${Date.now()}.sql`);
   try {
-    fs.writeFileSync(sqlPath, sql, { encoding: 'utf-8', mode: 0o600 });
     const r = spawnSync(sqlite3, [dbPath], {
-      input: fs.readFileSync(sqlPath),
+      input: sql,
       maxBuffer: 32 * 1024 * 1024,
       timeout: timeoutMs,
     });
@@ -58,12 +55,6 @@ function runSql(dbPath: string, sql: string, timeoutMs = 30_000): { ok: boolean;
     }
   } catch (e) {
     return { ok: false, reason: (e as Error).message };
-  } finally {
-    try {
-      fs.unlinkSync(sqlPath);
-    } catch {
-      // ignore
-    }
   }
   return { ok: true };
 }

@@ -1728,7 +1728,7 @@ Supported platforms: `claude-code` (plus `claude-internal` / `tclaude`), `codex`
 ```bash
 teamai session platforms                                             # supported vs installed
 teamai session migrate <sessionId> -s codebuddy-ide -t claude-code   # one session across tools
-teamai session migrate --all -s codebuddy -t claude-code              # every session of the source
+teamai session migrate --all -s codebuddy -t claude-code              # every session of the source (--limit to cap)
 teamai session rollback <targetSessionId> --platform claude-code     # undo a migration
 teamai session push --source codebuddy            # archive this directory's sessions
 teamai session push --source codebuddy --all      # every workspace of that platform
@@ -1740,6 +1740,8 @@ teamai session resume <sessionName> --platform claude-code   # restore into a lo
 ```
 
 All of these accept `--dry-run` and `-v`. `migrate --push` migrates and archives in one step; `resume` prints the new session id — continue it with your tool's own resume flag.
+
+**Confirmations.** `--all` asks for confirmation once it passes 10 sessions (push: more than 5) and refuses outright in a non-interactive run, so a script cannot silently skip the batch — pass `-y` to confirm. Migrating a platform onto itself reuses the native session id and overwrites the source transcript, so it needs `--target-cwd <dir>` (write a copy elsewhere) or `-y`. `push` also asks before archiving unredacted transcripts; `--scrub` redacts them first.
 
 **Archive layout.** Sessions are archived under the git identity of their working directory: `sessions/repos/<repo>/<author>/` in the team repo. Sessions from non-git directories land under `_unattributed`. The archive key comes from the session's own workspace — not from where you run the command — so migrating from another directory still archives under the right project. CodeBuddy IDE sessions whose workspace cannot be resolved fall back to `_unattributed` with a warning.
 

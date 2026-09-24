@@ -12,21 +12,32 @@
  */
 
 import * as crypto from 'node:crypto';
+import { resolveRealCwd } from './fs.js';
 
 /**
  * Derive a deterministic target session id (UUIDv7 shape) from a source id.
  *
  * `targetCwd` participates when known: Cursor/WorkBuddy/Codex key their
- * records globally, so migrating one source session into two workspaces with
- * the same derived id makes the second copy replace (or redirect) the first.
- * Omitting it keeps the previous id, so already-migrated sessions stay stable.
+ * records globally (one sqlite / threads table for every workspace), so
+ * migrating one source session into two workspaces with the same derived id
+ * makes the second copy replace the first.
+ *
+ * Only claude-code and codebuddy omit it: they store each session under
+ * `<storageRoot>/<encoded cwd>/<id>.jsonl`, so one id in two workspaces is
+ * already two files and nothing is overwritten. Adding cwd there would only
+ * move already-migrated sessions to a new id. Note the consequence: a session
+ * migrated into a global-key platform before this change gets a different id
+ * when re-migrated (the old copy stays, orphaned).
  */
 export function deriveTargetSessionId(
   targetPlatform: string,
   sourceId: string,
   targetCwd?: string,
 ): string {
-  const scope = targetCwd ? `:${targetCwd}` : '';
+  // Resolve before hashing: `/tmp/x` and `/private/tmp/x` are one workspace on
+  // macOS, and two spellings would derive two ids for the same migration --
+  // a re-migration would then add a second copy instead of overwriting.
+  const scope = targetCwd ? `:${resolveRealCwd(targetCwd)}` : '';
   const hex = crypto
     .createHash('sha256')
     .update(`teamai:${targetPlatform}${scope}:${sourceId}`)

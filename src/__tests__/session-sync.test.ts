@@ -311,6 +311,53 @@ describe('rebuildIndex', () => {
     expect(sessions).toBe(1);
     expect(new SyncManager(repoRoot).listAllRepoIdentities()).toEqual(['github.com/org/alpha']);
   });
+
+  it('repairs a corrupted index instead of overwriting it with the new entry', () => {
+    // A corrupted index used to be read as empty, so the next upsert wrote a
+    // one-entry index and every other session of that repo vanished from
+    // `list` -- while their files were still on disk.
+    const mgr = new SyncManager(repoRoot);
+    mgr.saveSession(
+      mkSession({ sessionId: 'first', title: 'first session' }),
+      mkMeta({ sessionId: 'first' }),
+    );
+    fs.writeFileSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'), '{ broken');
+
+    mgr.saveSession(
+      mkSession({ sessionId: 'second', title: 'second session' }),
+      mkMeta({ sessionId: 'second' }),
+    );
+
+    const idx = readRepoIndex('github.com/org/alpha');
+    expect(idx.sessions.map((s) => s.sessionId).sort()).toEqual(['first', 'second']);
+  });
+
+  it('makes a legacy _-folded repository directory readable again', () => {
+    const mgr = new SyncManager(repoRoot);
+    mgr.saveSession(mkSession(), mkMeta());
+
+    // Simulate a directory written by the old '_'-folding encoder.
+    const reposDir = path.join(repoRoot, 'sessions', 'repos');
+    fs.renameSync(
+      path.join(reposDir, encodeRepoIdentity('github.com/org/alpha')),
+      path.join(reposDir, 'github.com_org_alpha'),
+    );
+    fs.unlinkSync(path.join(reposDir, 'github.com_org_alpha', '_index.json'));
+
+    const { repos, sessions } = new SyncManager(repoRoot).rebuildAllIndexes();
+    expect(repos).toBe(1);
+    expect(sessions).toBe(1);
+
+    // Reads resolve the encoded name, so the directory has to move there --
+    // otherwise the rebuilt index is written somewhere nothing ever reads.
+    expect(fs.existsSync(path.join(reposDir, 'github.com_org_alpha'))).toBe(false);
+    expect(
+      fs.existsSync(path.join(reposDir, encodeRepoIdentity('github.com/org/alpha'), '_index.json')),
+    ).toBe(true);
+    const after = new SyncManager(repoRoot);
+    expect(after.listAllRepoIdentities()).toEqual(['github.com/org/alpha']);
+    expect(after.listSessions('github.com/org/alpha')).toHaveLength(1);
+  });
 });
 
 describe('canonicalizeRemote', () => {
@@ -319,6 +366,14 @@ describe('canonicalizeRemote', () => {
     // archive index would leak them to the whole team.
     expect(canonicalizeRemote('https://oauth2:TOKEN@github.com/org/repo.git')).toBe('github.com/org/repo');
     expect(canonicalizeRemote('https://user:pass@gitlab.company.com/g/repo.git')).toBe('gitlab.company.com/g/repo');
+    // A password containing '/' defeats the "no slash before @" shape, and the
+    // secret used to survive into meta, _index.json and the SOURCE column.
+    expect(canonicalizeRemote('https://user:pw/slash@github.com/org/repo.git')).toBe('github.com/org/repo');
+  });
+
+  it('leaves a legitimate @ in the path alone', () => {
+    expect(canonicalizeRemote('https://github.com/org/@scope/pkg.git')).toBe('github.com/org/@scope/pkg');
+    expect(canonicalizeRemote('git@github.com:org/repo.git')).toBe('github.com/org/repo');
   });
 
   it('normalizes https, scp and ssh remote forms to the same identity', () => {

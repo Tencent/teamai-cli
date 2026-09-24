@@ -340,7 +340,12 @@ export class CodexAdapter extends AgentAdapter {
     try {
       const rec = this.readFirstLine(file);
       const payload = (rec?.payload ?? {}) as Record<string, unknown>;
-      return String(payload.cwd ?? '') === projectPath;
+      const cwd = String(payload.cwd ?? '');
+      // Compare resolved paths: listing resolves the cwd the same way, so a
+      // bare string compare made `/tmp/x` and `/private/tmp/x` two different
+      // workspaces -- `rollback --cwd /tmp/x` then reported "not found" and
+      // deleted nothing.
+      return cwd === projectPath || resolveRealCwd(cwd) === resolveRealCwd(projectPath);
     } catch {
       return false;
     }

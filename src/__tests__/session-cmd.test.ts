@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => ({
   remotes: {} as Record<string, string>,
   /** `git status --porcelain -- sessions/` 的返回值；空串 = 无变更可提交 */
   porcelain: 'M  sessions/changed\n',
+  /** 非空时 git commit / git push 抛错，用于验证失败路径 */
+  commitError: '',
+  pushError: '',
   gitCalls: [] as Array<{ args: string[]; cwd?: string }>,
   adaptersByPlatform: {} as Record<string, unknown>,
   /** migrate.js mock 的 preview/migrate 返回值 */
@@ -60,6 +63,8 @@ vi.mock('node:child_process', async (importOriginal) => {
       }
       if (args[0] === 'status') return mocks.porcelain;
       if (args[0] === 'rev-parse') return 'abc123def456\n';
+      if (args[0] === 'commit' && mocks.commitError) throw new Error(mocks.commitError);
+      if (args[0] === 'push' && mocks.pushError) throw new Error(mocks.pushError);
       return ''; // add / commit / push / pull
     },
   };
@@ -123,14 +128,20 @@ let repoRoot: string;
 /** console.log + process.stdout.write 的合并捕获（ask 的提示走 stdout.write） */
 let out: string[] = [];
 let warned: string[] = [];
+/** console.error 的捕获：失败信息（commit/push/门禁）都走这条通道 */
+let errored: string[] = [];
 
 beforeEach(() => {
   repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-cmd-'));
   mocks.home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-cmd-home-'));
   out = [];
   warned = [];
+  errored = [];
   mocks.remotes = {};
   mocks.porcelain = 'M  sessions/changed\n';
+  mocks.commitError = '';
+  mocks.pushError = '';
+  process.exitCode = 0;
   mocks.gitCalls.length = 0;
   mocks.adaptersByPlatform = {};
   mocks.previewResult = null;
@@ -142,7 +153,9 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => {
     warned.push(a.map(String).join(' '));
   });
-  vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+    errored.push(a.map(String).join(' '));
+  });
   vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
     out.push(String(chunk));
     return true;
@@ -396,6 +409,38 @@ describe('session push --all', () => {
     const dir = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('gitlab.com/team/beta'), 'tester');
     expect(fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(1);
     expect(mocks.gitCalls.some((c) => c.args[0] === 'push')).toBe(false);
+  });
+
+  it('reports a failed commit instead of "No changes to push" and exits non-zero', async () => {
+    // A commit hook / gpg / missing identity makes git exit non-zero. It used
+    // to be swallowed as null, so the archive stayed staged while the command
+    // printed a clean-tree message and exited 0.
+    fakeAdapter([mkSession({ sessionId: 'fail-1' })]);
+    mocks.remotes['/proj/beta'] = 'https://gitlab.com/team/beta.git';
+    mocks.commitError = 'Command failed: git commit -m x\nfatal: cannot run hooks/pre-commit: permission denied';
+
+    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/dir');
+
+    const text = [...out, ...warned, ...errored].join('\n');
+    expect(text).not.toContain('No changes to push');
+    expect(text).not.toContain('✓ Pushed');
+    expect(text).toContain('Commit failed');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits non-zero when the remote push fails, after the local commit succeeded', async () => {
+    fakeAdapter([mkSession({ sessionId: 'push-fail-1' })]);
+    mocks.remotes['/proj/beta'] = 'https://gitlab.com/team/beta.git';
+    mocks.pushError = 'Command failed: git push origin\nfatal: The current branch main has no upstream branch.';
+
+    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/dir');
+
+    const text = [...out, ...warned, ...errored].join('\n');
+    // git's own fatal line, not the contentless first line of the error
+    expect(text).toContain('no upstream branch');
+    expect(text).toContain('committed locally but not pushed');
+    expect(text).not.toContain('✓ Pushed');
+    expect(process.exitCode).toBe(1);
   });
 });
 

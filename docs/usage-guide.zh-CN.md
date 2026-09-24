@@ -1631,6 +1631,8 @@ teamai session resume <sessionName> --platform claude-code   # 恢复到本地�
 
 以上命令均支持 `--dry-run` 与 `-v`。`migrate --push` 一步完成迁移 + 归档；`resume` 会打印新的会话 id，用工具自身的 resume 参数继续。
 
+**确认提示。** `--all` 超过 10 条（push 为超过 5 条）会先列清单要求确认；非交互运行（CI / 脚本）直接拒绝并以非 0 退出，避免脚本以为整批都跑完了——用 `-y` 明确确认。同平台迁移会复用原生会话 id 覆盖源会话，必须给 `--target-cwd <dir>`（写到别处）或 `-y`。`push` 在归档未脱敏原文前也会先问一次，`--scrub` 可先脱敏。
+
 **归档布局。** 会话按其工作目录的 git 标识归档到团队仓库的 `sessions/repos/<repo>/<author>/`；非 git 目录的会话落入 `_unattributed`。归档键取自会话自身的工作区——而不是执行命令时所在的目录——从别的目录迁入也会归到正确的项目名下。CodeBuddy IDE 中无法还原工作区的会话会带警告归入 `_unattributed`。
 
 **项目级 vs 用户级仓库。** `list` / `pull` / `resume` 按当前目录的 git remote 过滤，项目级团队仓库因此只显示本项目的会话。传入 `--repo-root <任意 clone>`（例如个人仓库）并配合 `--all`，即可跨全部归档项目读取。

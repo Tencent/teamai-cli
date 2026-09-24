@@ -487,6 +487,8 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
     // 非 UUID 源 id 用确定性派生（同一源会话反复迁移命中同一个 id → 不产生重复会话）
+    // 与 claude-code 同理，故意不纳入 cwd：会话文件按项目目录隔离，
+    // 同 id 不同目录各是一份，不会互相覆盖。
     const sessionId = isUuid(session.sessionId)
       ? session.sessionId
       : deriveTargetSessionId('codebuddy', session.sessionId);

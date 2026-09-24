@@ -88,6 +88,18 @@ describe('scrubSession', () => {
     expect(JSON.stringify(result.session)).not.toContain('/Users/alice/secret');
   });
 
+  it('本地迁移可以保留图片路径（只有归档才必须丢弃）', () => {
+    const s = makeSession();
+    s.messages.push({
+      role: 'user',
+      content: [{ type: 'image', mimeType: 'image/png', filePath: '/Users/alice/shot.png', label: 'shot.png' }],
+      timestamp: s.createdAt,
+    });
+    const kept = scrubSession(s, { dropImagePaths: false }).session;
+    const last = kept.messages[kept.messages.length - 1].content[0];
+    expect(last).toMatchObject({ type: 'image', filePath: '/Users/alice/shot.png' });
+  });
+
   it('无敏感内容时原样返回、计数为 0', () => {
     const clean = makeSession();
     clean.title = '普通提问';
