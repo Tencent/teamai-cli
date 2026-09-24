@@ -34,8 +34,6 @@ const CREDENTIALS_DIR = 'credentials';
 const REGISTRY_FILE = 'settings.json';
 const PROVIDER_CONFIG_FILE = 'provider.json';
 const LEGACY_DIR = 'local-agent';
-/** Marker written into the legacy dir once it has been migrated to a named provider. */
-const MIGRATED_MARKER = 'migrated-to';
 
 function teamaiHome(): string {
   return path.join(getUserHome(), '.teamai');
@@ -201,29 +199,14 @@ function legacyHome(): string {
   return path.join(teamaiHome(), LEGACY_DIR);
 }
 
-function legacyMarkerPath(): string {
-  return path.join(legacyHome(), MIGRATED_MARKER);
-}
-
 /**
- * True when a legacy ~/.teamai/local-agent/ singleton still owns the backend —
- * i.e. it exists and has NOT been migrated to a named provider. The hook
- * dispatcher uses this to keep running the legacy path until migration.
+ * True when a legacy ~/.teamai/local-agent/ singleton owns the backend — i.e.
+ * its config.json exists. Migration DELETES this dir (no marker/snapshot), so
+ * its mere presence is the "active" signal and a re-written config after a
+ * migrate+remove is active again with no extra bookkeeping.
  */
 export async function legacySingletonActive(): Promise<boolean> {
-  if (!(await pathExists(path.join(legacyHome(), 'config.json')))) return false;
-  return !(await pathExists(legacyMarkerPath()));
-}
-
-/**
- * Clear a stale `migrated-to` marker so a freshly (re)written legacy singleton
- * is active again. Needed when a user migrates the singleton to a named
- * provider, removes that provider, then re-runs `source add-http` / `init
- * --http`: that writes a new legacy config, but the leftover marker would keep
- * legacySingletonActive() false forever and the dispatcher would never sync it.
- */
-export async function clearLegacyMigrationMarker(): Promise<void> {
-  await remove(legacyMarkerPath());
+  return pathExists(path.join(legacyHome(), 'config.json'));
 }
 
 interface LegacyConfigShape {
@@ -235,10 +218,14 @@ interface LegacyConfigShape {
 /**
  * Promote the legacy singleton to a named HTTP provider. Copies the legacy
  * state home into the provider's home via a staging directory + atomic rename,
- * moves the credential to the isolated 0600 file, and only then writes the
- * migration marker into the legacy dir — which is kept as a rollback snapshot,
- * not deleted. Idempotent: a second call after a successful migration is a
- * no-op.
+ * moves the credential to the isolated 0600 file, publishes the provider, and
+ * then DELETES the legacy dir. No rollback snapshot is kept: retaining it caused
+ * a whole class of "snapshot revival" / "double uninstall" bugs (a later
+ * `source add-http` reviving stale bindings/manifest, `teamai uninstall`
+ * running a plugin uninstall_cmd twice — issue #404 reviews #6/#7), and the
+ * legacy dir's own disappearance is the migrated signal (no marker needed).
+ *
+ * Idempotent: once the legacy dir is gone, a second call returns null.
  *
  * @returns the provider config it registered, or null when there was no legacy
  *          singleton to migrate.
@@ -251,8 +238,7 @@ export async function migrateLegacyHttpProvider(options: {
   assertValidProviderName(options.name);
   const legacyConfigPath = path.join(legacyHome(), 'config.json');
   const legacy = await readJson<LegacyConfigShape>(legacyConfigPath);
-  if (!legacy?.endpoint) return null;
-  if (await pathExists(legacyMarkerPath())) return null; // already migrated
+  if (!legacy?.endpoint) return null; // nothing (or already migrated → dir gone)
 
   const config: HttpProviderConfig = {
     name: options.name,
@@ -261,15 +247,13 @@ export async function migrateLegacyHttpProvider(options: {
     priority: options.priority ?? legacy.priority ?? 50,
   };
 
-  // Retriability: because the legacy marker is written LAST, reaching this
-  // point means the previous attempt (if any) was interrupted before it
-  // finished — the legacy backend is still authoritative. Any partial state the
-  // previous attempt left (a registry entry, a half-copied home) therefore
-  // carries no unique data and belongs to THIS same migration, so we resume by
-  // discarding and rebuilding it rather than failing with "already exists".
-  //
-  // A registry entry for this name whose endpoint DIFFERS from the legacy one is
-  // a genuine foreign `provider add` conflict, not our leftover — reject that.
+  // Retriability: the legacy dir is deleted LAST, so reaching this point means
+  // any previous attempt was interrupted before it finished — the legacy backend
+  // is still authoritative. Partial state a previous attempt left (a registry
+  // entry, a half-copied home) carries no unique data and belongs to THIS same
+  // migration, so we discard and rebuild it rather than failing. A registry
+  // entry for this name whose endpoint DIFFERS is a foreign `provider add`
+  // conflict — reject that.
   const home = httpProviderHome(options.name);
   const existingEntry = await getHttpProviderConfig(options.name);
   if (existingEntry && existingEntry.endpoint !== config.endpoint) {
@@ -290,8 +274,6 @@ export async function migrateLegacyHttpProvider(options: {
   await remove(staging);
   await ensureDir(path.dirname(home));
   await fse.copy(legacyHome(), staging);
-  // Never carry the migration marker (not present yet) into the named home.
-  await remove(path.join(staging, MIGRATED_MARKER));
   // Redact the inline token from the staged config.json BEFORE publishing the
   // directory — the credential belongs only in the isolated 0600 file, and the
   // published home must never contain it, not even in the crash window between
@@ -312,10 +294,10 @@ export async function migrateLegacyHttpProvider(options: {
 
   await upsertHttpProviderConfig(config);
 
-  // Mark the legacy dir migrated LAST, so a crash before this point re-runs the
-  // migration rather than orphaning the backend. The legacy dir stays on disk
-  // as a rollback snapshot.
-  await writeJsonAtomic(legacyMarkerPath(), { name: options.name, migratedAt: new Date().toISOString() });
+  // Delete the legacy dir LAST. A crash before this re-runs the migration (the
+  // legacy config is still there); after it, the legacy singleton no longer
+  // exists so there is nothing to revive or double-uninstall.
+  await remove(legacyHome());
 
   return config;
 }

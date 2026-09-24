@@ -202,39 +202,46 @@ export async function providerSync(): Promise<void> {
 
 /** `teamai provider remove <name>` */
 export async function providerRemove(name: string): Promise<void> {
-  let config = await getHttpProviderConfig(name);
-  if (!config) {
-    // No registry entry — but a failed `provider add` (or an interrupted one)
-    // may have left a state home whose registry record was dropped so hook
-    // dispatch would not load a broken provider. Recover that provider's config
-    // from its own home so this command can still finish the cleanup (the retry
-    // path review #3 asks for). Only error out when there is truly nothing.
-    config = await readHttpProviderHomeConfig(name);
+  await withProviderLock(async () => {
+    // Resolve case-insensitively and then use the provider's OWN canonical name
+    // for every subsequent op. On a case-insensitive filesystem `Foo` and `foo`
+    // share a state dir, so acting on the raw input would delete one provider's
+    // state while leaving the other's registry record (review #3).
+    const registered = (await listHttpProviderConfigs()).find(
+      (p) => p.name === name || p.name.toLowerCase() === name.toLowerCase(),
+    );
+    // A failed/interrupted `provider add` may have left a state home whose
+    // registry record was dropped so dispatch would not load a broken provider.
+    // Recover its config from its own home so cleanup can still finish.
+    const config = registered ?? (await readHttpProviderHomeConfig(name));
     if (!config) {
       log.error(`No HTTP provider named "${name}".`);
       process.exit(1);
     }
-  }
-  // Tear down the provider's resources first, then drop its config and state so
-  // a failed teardown does not orphan installed resources. teardown throws when
-  // it could not fully clean up, leaving the home for another retry.
-  const provider = createHttpResourceProvider(config);
-  try {
-    await provider.teardown();
-  } catch (e) {
-    // Drop the registry entry (if any) so dispatch won't keep loading it, but
-    // keep the state home so cleanup can be retried once the issue is resolved.
-    await removeHttpProviderConfig(name);
-    log.error(
-      `Could not fully remove provider "${name}": ${(e as Error).message} `
-      + 'Kept its state for a retry — re-run `teamai provider remove '
-      + `${name}\` after resolving the issue.`,
-    );
-    process.exit(1);
-  }
-  await removeHttpProviderConfig(name);
-  await removeHttpProviderState(name);
-  log.success(`Removed HTTP provider "${name}".`);
+    const canonical = config.name;
+
+    // Deactivate FIRST (drop the registry entry) so a concurrent session hook
+    // cannot re-install resources during teardown, and so a later write failure
+    // can never leave the registry pointing at deleted state (review #4). The
+    // state home is preserved until teardown confirms a clean removal.
+    await removeHttpProviderConfig(canonical);
+
+    const provider = createHttpResourceProvider(config);
+    try {
+      await provider.teardown();
+    } catch (e) {
+      // Registry entry is already gone (dispatch won't load it); keep the state
+      // home so cleanup can be retried once the issue is resolved.
+      log.error(
+        `Could not fully remove provider "${canonical}": ${(e as Error).message} `
+        + `Kept its state for a retry — re-run \`teamai provider remove ${canonical}\` `
+        + 'after resolving the issue.',
+      );
+      process.exit(1);
+    }
+    await removeHttpProviderState(canonical);
+    log.success(`Removed HTTP provider "${canonical}".`);
+  });
 }
 
 interface MigrateLegacyOptions {
@@ -284,7 +291,7 @@ export async function providerMigrateLegacy(opts: MigrateLegacyOptions): Promise
   }
   log.success(
     `Migrated legacy HTTP local agent to provider "${config.name}" ` +
-      `(the old ~/.teamai/local-agent/ is kept as a rollback snapshot).`,
+      '(the old ~/.teamai/local-agent/ has been removed).',
   );
 }
 

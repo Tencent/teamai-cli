@@ -1810,7 +1810,7 @@ teamai provider remove company
 teamai provider migrate-legacy --name company
 ```
 
-这会把 `~/.teamai/local-agent/` 提升为具名 provider（复制其状态，并把凭据抽取到隔离的 `0600` 文件），并保留旧目录作为回滚快照。该操作幂等。
+这会把 `~/.teamai/local-agent/` 提升为具名 provider（复制其状态，并把凭据抽取到隔离的 `0600` 文件），随后删除旧目录。该操作幂等——迁移完成后重跑为 no-op。
 
 ---
 

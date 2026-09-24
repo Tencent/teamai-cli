@@ -12,10 +12,8 @@ export type {
   SyncContext,
   HttpBackendAdapter,
   HttpProviderConfig,
-  HttpRoutes,
 } from './types.js';
-export { ResourceProviderRegistry, syncResourceProviders } from './resource-registry.js';
-export { GitResourceProvider } from './git/resource-provider.js';
+export { syncResourceProviders } from './resource-registry.js';
 export { TGitProvider } from './tgit/index.js';
 export { GitHubProvider } from './github/index.js';
 export { GitLabProvider } from './gitlab/index.js';

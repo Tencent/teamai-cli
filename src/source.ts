@@ -338,17 +338,15 @@ export async function sourceRemoveHttp(options: GlobalOptions): Promise<void> {
     log.info('[dry-run] Would remove the HTTP source');
     return;
   }
-  // A migrated legacy singleton is only a rollback snapshot; a named provider
-  // now owns those resources. Removing the snapshot's copied manifest would
-  // uninstall resources the named provider is actively using, so refuse and
-  // point the user at `provider remove` (issue #404, review #4).
+  // When a named HTTP provider is configured and there is no legacy singleton,
+  // `source remove-http` is the wrong tool — the named provider owns delivery.
+  // Point the user at `provider remove` rather than no-op confusingly (#404).
   const { legacySingletonActive, listHttpProviderConfigs } = await import('./providers/http/store.js');
   const namedProviders = await listHttpProviderConfigs();
   if (namedProviders.length > 0 && !(await legacySingletonActive())) {
     log.error(
-      'The legacy HTTP source has been migrated to a named provider; the old '
-      + 'directory is only a rollback snapshot. Remove the provider instead: '
-      + `\`teamai provider remove ${namedProviders[0].name}\`.`,
+      `An HTTP provider ("${namedProviders[0].name}") is configured (not a legacy HTTP source). `
+      + `Remove it with \`teamai provider remove ${namedProviders[0].name}\`.`,
     );
     return;
   }

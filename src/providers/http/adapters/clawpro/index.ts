@@ -10,13 +10,11 @@
 import type {
   HttpBackendAdapter,
   HttpProviderConfig,
-  HttpRoutes,
   ProviderResult,
   ProviderSummary,
   SyncContext,
 } from '../../../types.js';
 import {
-  DEFAULT_ROUTES,
   withHttpProvider,
   initLocalAgentHttp,
   reportAndSyncFromHook,
@@ -29,11 +27,6 @@ import { httpProviderExecutionContext } from '../../store.js';
 
 export class ClawProAdapter implements HttpBackendAdapter {
   readonly name = 'clawpro';
-
-  routes(_config: HttpProviderConfig): HttpRoutes {
-    // ClawPro uses the default /api/local-agent/* layout.
-    return { ...DEFAULT_ROUTES };
-  }
 
   async initialize(config: HttpProviderConfig, token?: string): Promise<void> {
     await withHttpProvider(httpProviderExecutionContext(config.name), () =>

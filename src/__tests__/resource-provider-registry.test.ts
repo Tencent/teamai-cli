@@ -1,16 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import {
-  ResourceProviderRegistry,
-  syncResourceProviders,
-} from '../providers/resource-registry.js';
-import { GitResourceProvider } from '../providers/git/resource-provider.js';
+import { syncResourceProviders } from '../providers/resource-registry.js';
 import type {
   ResourceProvider,
   SyncContext,
   ProviderResult,
 } from '../providers/types.js';
 
-/** A minimal stub ResourceProvider for registry/sync tests. */
+/** A minimal stub ResourceProvider for sync tests. */
 function stubProvider(
   name: string,
   priority: number,
@@ -44,33 +40,6 @@ function stubProvider(
 }
 
 const HOOK: SyncContext = { trigger: 'hook' };
-
-describe('ResourceProviderRegistry', () => {
-  it('rejects a duplicate provider name', () => {
-    const registry = new ResourceProviderRegistry();
-    registry.register(stubProvider('team', 100));
-    expect(() => registry.register(stubProvider('team', 50))).toThrow(
-      /already registered/,
-    );
-  });
-
-  it('looks up a provider by name', () => {
-    const registry = new ResourceProviderRegistry();
-    const p = stubProvider('team', 100);
-    registry.register(p);
-    expect(registry.get('team')).toBe(p);
-    expect(registry.get('missing')).toBeUndefined();
-    expect(registry.size).toBe(1);
-  });
-
-  it('lists providers by descending priority, then name', () => {
-    const registry = new ResourceProviderRegistry();
-    registry.register(stubProvider('bbb', 50));
-    registry.register(stubProvider('aaa', 100));
-    registry.register(stubProvider('ccc', 50));
-    expect(registry.list().map((p) => p.name)).toEqual(['aaa', 'bbb', 'ccc']);
-  });
-});
 
 describe('syncResourceProviders', () => {
   it('isolates a failing provider from the others', async () => {
@@ -124,91 +93,5 @@ describe('syncResourceProviders', () => {
     await syncResourceProviders([high, low], HOOK);
 
     expect(order).toEqual(['low', 'high']);
-  });
-});
-
-describe('GitResourceProvider', () => {
-  it('is a git provider whose push capability tracks writability', () => {
-    const writable = new GitResourceProvider(
-      'core',
-      100,
-      'https://example.com/repo.git',
-      async () => ({ changed: false }),
-      async () => {},
-      true,
-    );
-    expect(writable.type).toBe('git');
-    expect(writable.capabilities).toEqual({
-      pull: true,
-      push: true,
-      report: false,
-      commands: false,
-    });
-
-    const readOnly = new GitResourceProvider(
-      'shared',
-      50,
-      'https://example.com/shared.git',
-      async () => ({ changed: false }),
-      async () => {},
-      false,
-    );
-    expect(readOnly.capabilities.push).toBe(false);
-  });
-
-  it('delegates sync to the injected operation and reports its result', async () => {
-    const syncOp = vi.fn(async () => ({ changed: true, message: 'pulled 3 skills' }));
-    const provider = new GitResourceProvider(
-      'core',
-      100,
-      'https://example.com/repo.git',
-      syncOp,
-      async () => {},
-      true,
-    );
-
-    const result = await provider.sync({ trigger: 'pull', cwd: '/work' });
-
-    expect(syncOp).toHaveBeenCalledWith({ trigger: 'pull', cwd: '/work' });
-    expect(result).toEqual({
-      provider: 'core',
-      ok: true,
-      changed: true,
-      message: 'pulled 3 skills',
-    });
-  });
-
-  it('delegates teardown to the injected operation', async () => {
-    const teardownOp = vi.fn(async () => {});
-    const provider = new GitResourceProvider(
-      'core',
-      100,
-      'https://example.com/repo.git',
-      async () => ({ changed: false }),
-      teardownOp,
-      true,
-    );
-
-    await provider.teardown();
-
-    expect(teardownOp).toHaveBeenCalledOnce();
-  });
-
-  it('describes itself with the repo as endpoint', async () => {
-    const provider = new GitResourceProvider(
-      'core',
-      100,
-      'https://example.com/repo.git',
-      async () => ({ changed: false }),
-      async () => {},
-      true,
-    );
-    expect(await provider.describe()).toEqual({
-      name: 'core',
-      type: 'git',
-      priority: 100,
-      capabilities: { pull: true, push: true, report: false, commands: false },
-      endpoint: 'https://example.com/repo.git',
-    });
   });
 });

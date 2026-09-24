@@ -101,10 +101,10 @@ teamai provider remove <name>
 ```
 
 To move an existing `init --http` singleton onto this model without losing state,
-run `teamai provider migrate-legacy --name <name>` (it keeps the old directory as
-a rollback snapshot; idempotent). Only one HTTP provider is supported per install
-for now — mounting several concurrently needs cross-provider ownership
-arbitration, which is a later phase (issue #404).
+run `teamai provider migrate-legacy --name <name>` (it copies the state, isolates
+the credential, then removes the old directory; idempotent). Only one HTTP
+provider is supported per install for now — mounting several concurrently needs
+cross-provider ownership arbitration, which is a later phase (issue #404).
 
 **Claude Code kept in a different directory (`CLAUDE_CONFIG_DIR`):** `init` records
 that directory (as `toolRoots.claude` in the local config) and syncs every Claude

@@ -203,4 +203,19 @@ describe('provider add http: registry published only after init succeeds (issue 
     await providerRemove('company');
     expect(fse.existsSync(httpProviderHome('company'))).toBe(false);
   });
+
+  it('provider remove resolves the name case-insensitively and clears the registry (review #3)', async () => {
+    const { upsertHttpProviderConfig, listHttpProviderConfigs, httpProviderHome } = await import(
+      '../providers/http/store.js'
+    );
+    await upsertHttpProviderConfig({ name: 'company', adapter: 'clawpro', endpoint: 'https://a/api', priority: 50 });
+
+    const { providerRemove } = await import('../provider-command.js');
+    // Different-case input must resolve to the registered `company` and remove
+    // BOTH its state home and its registry record — never delete state while
+    // leaving a dangling registry entry (case-insensitive FS hazard).
+    await providerRemove('Company');
+    expect(await listHttpProviderConfigs()).toEqual([]);
+    expect(fse.existsSync(httpProviderHome('company'))).toBe(false);
+  });
 });

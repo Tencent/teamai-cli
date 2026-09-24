@@ -3430,14 +3430,9 @@ export async function initLocalAgentHttp(options: {
 
   await ensureDir(getLocalAgentHome());
   await saveLocalAgentConfig(config);
-  // Legacy path only: writing a fresh singleton config must clear any stale
-  // `migrated-to` marker left by an earlier migrate-then-remove, or
-  // legacySingletonActive() would stay false and the dispatcher would never
-  // sync this new config (review #5). Named-provider init has no such marker.
-  if (!httpProviderContext.getStore()) {
-    const { clearLegacyMigrationMarker } = await import('../../store.js');
-    await clearLegacyMigrationMarker();
-  }
+  // Migration now DELETES the legacy dir (no marker), so a freshly (re)written
+  // legacy config here is active again purely by its presence — nothing to
+  // clear. (Named-provider init writes under the provider home, not here.)
   if (options.token) {
     // Named providers keep the credential in their own 0600 file; the legacy
     // singleton keeps its historical ~/.teamai/token location.
@@ -3496,15 +3491,9 @@ export interface LocalAgentSummary {
  * alongside git cross-team sources.
  */
 export async function describeLocalAgent(): Promise<LocalAgentSummary | null> {
-  // A migrated legacy singleton is only a rollback snapshot, not an active
-  // source — the named provider now owns delivery. Don't list it (review P2).
-  // (Only relevant outside a provider context; a named provider never has this
-  // marker in its own home.)
-  if (!httpProviderContext.getStore()) {
-    const { legacySingletonActive } = await import('../../store.js');
-    const legacyExists = await pathExists(getConfigPath());
-    if (legacyExists && !(await legacySingletonActive())) return null;
-  }
+  // Migration deletes the legacy dir outright (no rollback snapshot), so a
+  // migrated singleton simply no longer exists here and loadLocalAgentConfig
+  // returns null — nothing special to filter for `source list`.
   const config = await loadLocalAgentConfig();
   if (!config) return null;
 

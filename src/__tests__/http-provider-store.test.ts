@@ -189,9 +189,9 @@ describe('http provider: legacy singleton migration', () => {
     expect(fs.readFileSync(httpProviderCredentialPath('company'), 'utf-8').trim()).toBe('legacy-token');
     expect((await fse.readJson(path.join(httpProviderHome('company'), 'config.json'))).token).toBeUndefined();
 
-    // The legacy dir is kept as a rollback snapshot, but marked migrated.
-    expect(fs.existsSync(legacyDir)).toBe(true);
-    expect(fs.existsSync(path.join(legacyDir, 'migrated-to'))).toBe(true);
+    // The legacy dir is DELETED (no rollback snapshot) — so it no longer counts
+    // as an active singleton and cannot be revived or double-uninstalled.
+    expect(fs.existsSync(legacyDir)).toBe(false);
     expect(await legacySingletonActive()).toBe(false);
   });
 
@@ -229,8 +229,8 @@ describe('http provider: legacy singleton migration', () => {
     const { migrateLegacyHttpProvider, httpProviderHome, getHttpProviderConfig } = await import(
       '../providers/http/store.js'
     );
-    // Simulate a crash after the state-dir move but before the registry/marker
-    // write: a home dir exists but no registry entry and no marker.
+    // Simulate a crash after the state-dir move but before the registry write:
+    // a home dir exists but no registry entry.
     await fse.ensureDir(httpProviderHome('company'));
     await fse.writeFile(path.join(httpProviderHome('company'), 'stale.txt'), 'leftover');
 
@@ -242,14 +242,14 @@ describe('http provider: legacy singleton migration', () => {
     expect((await getHttpProviderConfig('company'))?.endpoint).toBe('https://legacy/api');
   });
 
-  it('resumes when a prior attempt already wrote the registry entry but no marker', async () => {
+  it('resumes when a prior attempt already wrote the registry entry', async () => {
     await seedLegacy('legacy-token');
     const { migrateLegacyHttpProvider, upsertHttpProviderConfig, legacySingletonActive } = await import(
       '../providers/http/store.js'
     );
     // Simulate a crash AFTER upsert (registry entry with the legacy endpoint)
-    // but BEFORE the marker: legacy is still active. A retry must resume, not
-    // fail with "already exists".
+    // but BEFORE the legacy dir was deleted: legacy is still active. A retry
+    // must resume, not fail with "already exists".
     await upsertHttpProviderConfig({
       name: 'company', adapter: 'clawpro', endpoint: 'https://legacy/api', priority: 50,
     });
@@ -257,23 +257,35 @@ describe('http provider: legacy singleton migration', () => {
 
     const config = await migrateLegacyHttpProvider({ name: 'company' });
     expect(config).not.toBeNull();
-    // Migration now completed: legacy marked migrated.
+    // Migration completed: the legacy dir is deleted, so it is no longer active.
     expect(await legacySingletonActive()).toBe(false);
   });
 
-  it('clearLegacyMigrationMarker reactivates a re-written legacy singleton (review #5)', async () => {
+  it('deletes the legacy dir on migration (no snapshot) and is idempotent', async () => {
     await seedLegacy('t');
-    const { migrateLegacyHttpProvider, legacySingletonActive, clearLegacyMigrationMarker } = await import(
+    const { migrateLegacyHttpProvider, legacySingletonActive } = await import(
+      '../providers/http/store.js'
+    );
+    const first = await migrateLegacyHttpProvider({ name: 'company' });
+    expect(first).not.toBeNull();
+    // No rollback snapshot is kept — the legacy dir is gone, so it is inactive
+    // and a second migration is a no-op (returns null).
+    expect(await legacySingletonActive()).toBe(false);
+    expect(await migrateLegacyHttpProvider({ name: 'company2' })).toBeNull();
+  });
+
+  it('a re-written legacy config after migrate+remove is active again by presence (review #5)', async () => {
+    await seedLegacy('t');
+    const { migrateLegacyHttpProvider, legacySingletonActive } = await import(
       '../providers/http/store.js'
     );
     await migrateLegacyHttpProvider({ name: 'company' });
-    // After migration the legacy dir is a dormant snapshot.
-    expect(await legacySingletonActive()).toBe(false);
+    expect(await legacySingletonActive()).toBe(false); // legacy dir deleted
 
-    // A later `source add-http` / `init --http` clears the marker when it
-    // re-writes the legacy config; the singleton is then active again so the
-    // dispatcher will sync it (without this it would stay dormant forever).
-    await clearLegacyMigrationMarker();
+    // Simulate `source add-http` / `init --http` writing a fresh legacy config
+    // after the provider was removed: presence alone makes it active again, with
+    // no marker bookkeeping to get stuck.
+    await seedLegacy('t2');
     expect(await legacySingletonActive()).toBe(true);
   });
 });

@@ -1878,7 +1878,7 @@ To move an existing single HTTP backend (`init --http` / `source add-http`) onto
 teamai provider migrate-legacy --name company
 ```
 
-This promotes `~/.teamai/local-agent/` to a named provider (copying its state and extracting its credential to the isolated `0600` file) and keeps the old directory as a rollback snapshot. It is idempotent.
+This promotes `~/.teamai/local-agent/` to a named provider (copying its state and extracting its credential to the isolated `0600` file), then removes the old directory. It is idempotent — once migrated, re-running is a no-op.
 
 ---
 

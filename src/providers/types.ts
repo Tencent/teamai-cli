@@ -308,15 +308,6 @@ export interface ResourceProvider {
   teardown(): Promise<void>;
 }
 
-/** Logical route names an HTTP backend exposes, resolved to paths per adapter. */
-export interface HttpRoutes {
-  projects: string;
-  report: string;
-  sync: string;
-  ack: string;
-  getConfig: string;
-}
-
 /** Persisted configuration for one named HTTP provider. */
 export interface HttpProviderConfig {
   /** Unique provider name (also the state-directory segment). */
@@ -332,12 +323,10 @@ export interface HttpProviderConfig {
 /**
  * Translates one HTTP backend's wire format to the common ResourceProvider
  * shape. The HTTP provider owns transport concerns generically; the adapter
- * owns only protocol differences (routes and payload/command shapes).
+ * owns only protocol differences (payload/command shapes).
  */
 export interface HttpBackendAdapter {
   readonly name: string;
-  /** Route table for this backend, given its config (defaults + overrides). */
-  routes(config: HttpProviderConfig): HttpRoutes;
   /** One-time setup for a newly added provider (e.g. persist a token). */
   initialize?(config: HttpProviderConfig, token?: string): Promise<void>;
   /** Run report/sync/command execution for this provider. */
