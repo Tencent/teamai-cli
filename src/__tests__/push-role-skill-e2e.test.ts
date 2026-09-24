@@ -523,6 +523,80 @@ describe('push branch and dirty-clone e2e (issue #663)', () => {
     }
   }, 60_000);
 
+  it('preserves config after a metadata-only existing-PR group before the explicit new branch', async () => {
+    const fixture = makePushFixture('git', 'https://git.example.test/team/issue-800-metadata.git', 'claude');
+    try {
+      const seed = path.join(fixture.sandbox, 'seed');
+      fs.mkdirSync(path.join(seed, 'rules', 'backend'), { recursive: true });
+      fs.writeFileSync(
+        path.join(seed, 'rules', 'backend', 'beta-rule.md'),
+        '---\ntitle: beta-rule\n---\n\n# Original rule\n',
+      );
+      const seedConfigPath = path.join(seed, 'teamai.yaml');
+      fs.writeFileSync(
+        seedConfigPath,
+        fs.readFileSync(seedConfigPath, 'utf8').replace(
+          '    skills: .claude/skills',
+          '    skills: .claude/skills\n    rules: .claude/rules',
+        ),
+      );
+      git(['add', 'teamai.yaml', 'rules/backend/beta-rule.md'], seed);
+      git(['commit', '-q', '-m', 'add rule fixture'], seed);
+      git(['push', '-q', fixture.remote, 'main'], seed);
+
+      const pulled = await runCLI(['pull'], fixture.projectRoot, fixture.home);
+      expect(pulled.code, pulled.output).toBe(0);
+      const rulePath = path.join(fixture.projectRoot, '.claude', 'rules', 'backend', 'beta-rule.md');
+      expect(fs.existsSync(rulePath)).toBe(true);
+      fs.writeFileSync(rulePath, '---\ntitle: beta-rule\n---\n\n# Modified rule\n');
+
+      const first = await runCLI(['push', '--all'], fixture.projectRoot, fixture.home);
+      expect(first.code, first.output).not.toBe(0);
+      expect(first.output).toContain('Pushed branch teamai/push/issue-331-git/');
+      const existingBranch = git(
+        ['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/issue-331-git/'],
+        fixture.remote,
+      );
+      expect(existingBranch).toMatch(/^teamai\/push\/issue-331-git\//);
+
+      const statePath = path.join(fixture.projectRoot, '.teamai', 'state.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as {
+        pendingPushes: Array<{ branch: string; prUrl: string | null }>;
+      };
+      const pending = state.pendingPushes.find((entry) => entry.branch === existingBranch);
+      expect(pending).toBeDefined();
+      if (!pending) return;
+      pending.prUrl = 'https://github.com/team/issue-800-metadata/pull/800';
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n');
+
+      fs.writeFileSync(
+        rulePath,
+        '---\ntitle: beta-rule\nlastUpdated: 2026-09-24T00:00:00.000Z\n---\n\n# Original rule\n',
+      );
+      const newSkillDir = path.join(fixture.projectRoot, '.claude', 'skills', 'gamma-proof');
+      fs.mkdirSync(newSkillDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(newSkillDir, 'SKILL.md'),
+        '---\nname: gamma-proof\ndescription: new\n---\n\n# New skill\n',
+      );
+      fs.appendFileSync(path.join(fixture.projectRoot, '.teamai', 'team-repo', 'teamai.yaml'), '\npublicSkills: []\n');
+
+      const second = await runCLI(
+        ['push', '--all', '--branch', 'feature/explicit-metadata'],
+        fixture.projectRoot,
+        fixture.home,
+      );
+      expect(second.code, second.output).not.toBe(0);
+      expect(second.output).toContain('Pushed branch feature/explicit-metadata');
+      expect(git(['show', 'feature/explicit-metadata:teamai.yaml'], fixture.remote))
+        .toContain('publicSkills: []');
+      expect(git(['show', `${existingBranch}:teamai.yaml`], fixture.remote))
+        .not.toContain('publicSkills: []');
+    } finally {
+      fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it('refuses a mode-only teamai.yaml change before reset --hard', async () => {
     const fixture = makePushFixture('git', 'https://git.example.test/team/issue-663-dirty.git', 'claude');
     try {

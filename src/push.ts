@@ -1549,6 +1549,13 @@ async function pushCore(
       includeTeamConfig: groupIndex === configGroupIndex,
       branch: options.branch,
     });
+    // A preceding reuse group may take the metadata-only path in
+    // pushRepoBranch(), which resets and cleans the clone. Re-apply the
+    // captured config before the new explicit-branch group runs, or that
+    // cleanup would silently discard the user's edit (#800).
+    if (pendingTeamConfig !== null && groupIndex < configGroupIndex) {
+      await writeFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), pendingTeamConfig);
+    }
     if (outcome === 'failed') {
       // The branch/PR for earlier groups is already on the remote, so their
       // records must survive this failure or the next run would duplicate them.
