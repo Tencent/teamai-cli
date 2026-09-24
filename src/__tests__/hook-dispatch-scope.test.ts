@@ -150,7 +150,7 @@ describe('hook runs and the scope they belong to (#748)', () => {
     const events = fs.readFileSync(path.join(teamaiHome(), 'dashboard', 'events.jsonl'), 'utf-8')
       .split('\n').filter(Boolean).map((line) => JSON.parse(line) as { type: string; correction?: boolean });
     expect(events.find((e) => e.type === 'prompt_submit')?.correction).toBe(false);
-    expect(fs.readdirSync(path.join(teamaiHome(), 'votes'))).toEqual(['tester.yaml']);
+    expect(fs.readdirSync(path.join(teamaiHome(), 'user-votes'))).toEqual(['tester.yaml']);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

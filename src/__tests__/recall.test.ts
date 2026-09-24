@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { autoUpvote } from '../recall.js';
 import { buildIndex, loadIndex, search } from '../utils/search-index.js';
 import type { SearchResult } from '../utils/search-index.js';
-import type { SearchIndex, UserVotesV2 } from '../types.js';
+import type { LocalConfig, SearchIndex, UserVotesV2 } from '../types.js';
 
 // ─── Test helpers ──────────────────────────────────────────
 
@@ -45,11 +45,14 @@ describe('autoUpvote', () => {
   let repoPath: string;
   const originalHome = process.env.HOME;
 
+  let config: LocalConfig;
+
   beforeEach(() => {
     tmpDir = makeTmpDir();
     repoPath = path.join(tmpDir, 'repo');
     fs.mkdirSync(path.join(repoPath, 'votes'), { recursive: true });
     process.env.HOME = tmpDir;
+    config = { repo: { localPath: repoPath, remote: '' }, username: 'jeff', scope: 'user', additionalRoles: [] };
   });
 
   afterEach(() => {
@@ -75,10 +78,10 @@ describe('autoUpvote', () => {
 
   it('T12: creates new vote entry on first upvote (V2 format)', async () => {
     const results = [makeResult('api-timeout-2026-03-20-abc.md')];
-    await autoUpvote(results, 'jeff', repoPath);
+    await autoUpvote(results, config);
 
     // Check local votes file
-    const localPath = path.join(tmpDir, '.teamai', 'votes', 'jeff.yaml');
+    const localPath = path.join(tmpDir, '.teamai', 'user-votes', 'jeff.yaml');
     expect(fs.existsSync(localPath)).toBe(true);
 
     const content = fs.readFileSync(localPath, 'utf-8');
@@ -98,24 +101,24 @@ describe('autoUpvote', () => {
     const results = [makeResult('api-timeout-2026-03-20-abc.md')];
 
     // First vote
-    await autoUpvote(results, 'jeff', repoPath);
-    const localPath = path.join(tmpDir, '.teamai', 'votes', 'jeff.yaml');
+    await autoUpvote(results, config);
+    const localPath = path.join(tmpDir, '.teamai', 'user-votes', 'jeff.yaml');
     const firstContent = fs.readFileSync(localPath, 'utf-8');
     const firstParsed = YAML.parse(firstContent) as UserVotesV2;
     expect(firstParsed.votes['api-timeout-2026-03-20-abc'].recalled_count).toBe(1);
 
     // Second vote (same doc) — should increment
-    await autoUpvote(results, 'jeff', repoPath);
+    await autoUpvote(results, config);
     const secondContent = fs.readFileSync(localPath, 'utf-8');
     const secondParsed = YAML.parse(secondContent) as UserVotesV2;
     expect(secondParsed.votes['api-timeout-2026-03-20-abc'].recalled_count).toBe(2);
   });
 
   it('accumulates votes for different docs', async () => {
-    await autoUpvote([makeResult('doc-a.md')], 'jeff', repoPath);
-    await autoUpvote([makeResult('doc-b.md')], 'jeff', repoPath);
+    await autoUpvote([makeResult('doc-a.md')], config);
+    await autoUpvote([makeResult('doc-b.md')], config);
 
-    const localPath = path.join(tmpDir, '.teamai', 'votes', 'jeff.yaml');
+    const localPath = path.join(tmpDir, '.teamai', 'user-votes', 'jeff.yaml');
     const content = fs.readFileSync(localPath, 'utf-8');
     const parsed = YAML.parse(content) as UserVotesV2;
     expect(Object.keys(parsed.votes)).toHaveLength(2);
@@ -123,19 +126,28 @@ describe('autoUpvote', () => {
     expect(parsed.votes['doc-b']).toBeDefined();
   });
 
+  it('records into the votes of the scope it searched, a project\'s under its data home (#787)', async () => {
+    const dataHome = path.join(tmpDir, '.teamai', 'projects', 'project-a');
+    await autoUpvote([makeResult('doc-a.md')], { ...config, scope: 'project', projectRoot: path.join(tmpDir, 'project-a'), dataHome });
+
+    const parsed = YAML.parse(fs.readFileSync(path.join(dataHome, 'votes', 'jeff.yaml'), 'utf-8')) as UserVotesV2;
+    expect(Object.keys(parsed.votes)).toEqual(['doc-a']);
+    expect(fs.existsSync(path.join(tmpDir, '.teamai', 'user-votes'))).toBe(false);
+  });
+
   it('handles empty results gracefully', async () => {
-    await autoUpvote([], 'jeff', repoPath);
-    const localPath = path.join(tmpDir, '.teamai', 'votes', 'jeff.yaml');
+    await autoUpvote([], config);
+    const localPath = path.join(tmpDir, '.teamai', 'user-votes', 'jeff.yaml');
     expect(fs.existsSync(localPath)).toBe(false);
   });
 
   it('recovers from corrupt local votes file', async () => {
-    const localDir = path.join(tmpDir, '.teamai', 'votes');
+    const localDir = path.join(tmpDir, '.teamai', 'user-votes');
     fs.mkdirSync(localDir, { recursive: true });
     fs.writeFileSync(path.join(localDir, 'jeff.yaml'), '{ corrupt yaml !!!', 'utf-8');
 
     const results = [makeResult('new-doc.md')];
-    await autoUpvote(results, 'jeff', repoPath);
+    await autoUpvote(results, config);
 
     const content = fs.readFileSync(path.join(localDir, 'jeff.yaml'), 'utf-8');
     const parsed = YAML.parse(content) as UserVotesV2;

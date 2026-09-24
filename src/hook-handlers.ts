@@ -359,8 +359,8 @@ const votesSyncHandler: HookHandler = {
       const { incrementUpvoted, syncVotesToTeam } = await import('./votes.js');
 
       const voteData = await parseTranscriptForVotes(transcriptPath);
-      const { getUserVotesDir } = await import('./types.js');
-      const votesDir = getUserVotesDir();
+      const { getVotesDir } = await import('./types.js');
+      const votesDir = getVotesDir(localConfig);
       const votePath = path.join(votesDir, `${localConfig.username}.yaml`);
 
       // Only count upvotes for docs actually recalled this session, to avoid crediting hallucinated/distractor doc-ids

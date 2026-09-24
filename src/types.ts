@@ -1665,9 +1665,24 @@ export function getUserLearningsDir(): string {
 export function getUserSearchIndexPath(): string {
   return path.join(getTeamaiHomeDir(), 'search-index.json');
 }
-/** User-scope votes dir, `~/.teamai/votes`. Evaluated at call time. */
+/**
+ * User-scope votes dir, `~/.teamai/user-votes`. Evaluated at call time. Not
+ * `~/.teamai/votes`: every scope used to record there, and an earlier release
+ * still does after a rollback, so what it holds names no project. It is never
+ * read, so no scope can push it to its team (#787).
+ */
 export function getUserVotesDir(): string {
-  return path.join(getTeamaiHomeDir(), 'votes');
+  return path.join(getTeamaiHomeDir(), 'user-votes');
+}
+/**
+ * The local votes dir of one scope: `<dataHome>/votes`, so each scope pushes
+ * only the votes cast where it is set up (#787); the user scope's is
+ * getUserVotesDir().
+ */
+export function getVotesDir(config: LocalConfig): string {
+  const dataHome = getDataHome(config);
+  if (path.resolve(dataHome) !== path.resolve(getTeamaiHomeDir())) return path.join(dataHome, 'votes');
+  return getUserVotesDir();
 }
 
 export const CultureCompanySchema = z.object({

@@ -11,7 +11,7 @@ import os from 'node:os';
 
 import { loadIndex, buildIndex } from './utils/search-index.js';
 import { loadUserVotes } from './votes.js';
-import { detectProjectConfig, loadLocalConfig } from './config.js';
+import { BROKEN_CONFIG_ADVICE, findUnreadableProjectConfig, resolveConfigForDir } from './config.js';
 import {
   getTeamaiHomeDir,
   getUserVotesDir,
@@ -133,7 +133,8 @@ interface VizPaths {
 /**
  * Resolve the data root and derivative directories for the viz pipeline.
  *
- * Precedence: explicit `--repo` flag → project-scope config → user config → ~/.teamai fallback.
+ * Precedence: explicit `--repo` flag → the cwd's scope (resolveConfigForDir: project, else user)
+ * → ~/.teamai fallback. An unreadable project config throws rather than fall back.
  * `config.repo.kind` is 'git' | 'http' | 'self'. In self mode, votes/stats live in the reports
  * worktree (ensureReportsWorktree), while learnings remain in the local ~/.teamai tree.
  */
@@ -156,7 +157,16 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
     };
   }
 
-  const config = opts.config !== undefined ? opts.config : await detectProjectConfig() ?? await loadLocalConfig();
+  const config = opts.config !== undefined ? opts.config : await resolveConfigForDir();
+  if (config === null && opts.config === undefined) {
+    // A broken project config is no scope: the local fallback would show the
+    // user scope's votes and learnings as this project's (#787).
+    const unreadable = await findUnreadableProjectConfig();
+    if (unreadable) {
+      const { firstLine } = await import('./skill-content.js');
+      throw new Error(`${firstLine(unreadable)}. ${BROKEN_CONFIG_ADVICE}`);
+    }
+  }
 
   if (config?.repo?.localPath) {
     const { usesBranchWorktree } = await import('./types.js');

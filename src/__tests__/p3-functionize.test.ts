@@ -47,7 +47,7 @@ describe('P3 path getters honor a runtime HOME change (no vi.resetModules)', () 
     const types = await import('../types.js');
     // HOME was stubbed in beforeEach; the getters must reflect it at CALL time.
     expect(types.getTeamaiHomeDir()).toBe(path.join(home, '.teamai'));
-    expect(types.getUserVotesDir()).toBe(path.join(home, '.teamai', 'votes'));
+    expect(types.getUserVotesDir()).toBe(path.join(home, '.teamai', 'user-votes'));
     expect(types.getSessionLogsDir()).toBe(path.join(home, '.teamai', 'session-logs'));
 
     // Swap HOME again mid-test — a module-load const could never do this.

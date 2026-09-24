@@ -6,12 +6,11 @@ import type { SearchResult } from './utils/search-index.js';
 import { readFileSafe, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, SearchIndex, LocalConfig } from './types.js';
-import { getDataHome, getTeamaiHome } from './types.js';
+import { getDataHome, getTeamaiHome, getVotesDir } from './types.js';
 import { queryCodeKnowledge } from './code-knowledge-recall.js';
 import type { CodeKnowledgeResult, SourceAnchor } from './code-knowledge-recall.js';
 import { recordRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
-import { getUserHome } from './utils/home.js';
 
 /** Relevance threshold for codebase graph hits.
  *  These are log-compressed to a bounded [0,10] range (see `queryCodeKnowledge`
@@ -114,11 +113,6 @@ export function computeIdfBaseline(indexes: SearchIndex[]): number {
   return Math.log((maxEntries + 1) / 2) + 1;
 }
 
-/** Resolve votes dir dynamically (respects HOME changes in tests). */
-function getVotesLocalDir(): string {
-  return path.join(getUserHome(), '.teamai', 'votes');
-}
-
 /** Search result with scope label for merged output. */
 interface ScopedSearchResult extends SearchResult {
   scope?: 'user' | 'project';
@@ -149,10 +143,9 @@ interface ScopedSearchResult extends SearchResult {
 //      │   └─ ~/.teamai/sessions/<sid>-recall-cache.json
 //      │      (read by contribute-check's knowledge-gap detection)
 //      │
-//      └─ autoUpvote(results, username, repoPath)
-//          ├─ write ~/.teamai/votes/<user>.yaml (local)
-//          └─ copy to <repoPath>/votes/<user>.yaml
-//              (pushed on next pull via auto-report)
+//      └─ autoUpvote(results, config)
+//          └─ write getVotesDir(config)/<user>.yaml (local, per scope)
+//              (pushed by that scope's next report)
 //
 
 /**
@@ -250,15 +243,14 @@ export function formatResults(results: ScopedSearchResult[]): string {
  */
 export async function autoUpvote(
   results: SearchResult[],
-  username: string,
-  _repoPath: string,
+  config: LocalConfig,
 ): Promise<void> {
   if (results.length === 0) return;
 
   try {
     const { incrementRecalled } = await import('./votes.js');
-    const votesDir = getVotesLocalDir();
-    const localVotePath = path.join(votesDir, `${username}.yaml`);
+    const votesDir = getVotesDir(config);
+    const localVotePath = path.join(votesDir, `${config.username}.yaml`);
     await ensureDir(votesDir);
 
     const docIds = results.map((r) => r.entry.filename.replace(/\.md$/i, ''));
@@ -575,10 +567,10 @@ export async function recall(
   const output = formatResults(topResults);
   process.stdout.write(output + '\n');
 
-  // Auto-upvote (best-effort, non-blocking for dry-run). Vote deltas currently
-  // share one HOME-level store, so layered project mode records only active
-  // project results. Inherited user hits remain read-only to avoid attributing
-  // their votes to the project team during the next report.
+  // Auto-upvote (best-effort, non-blocking for dry-run). Each scope keeps its
+  // own votes (#787); layered project mode records only active project results,
+  // since the session belongs to the project. Inherited user hits remain
+  // read-only.
   if (!options.dryRun) {
     const voteScopes = projectConfig
       ? scopeIndexes.filter((scopeInfo) => scopeInfo.scope === 'project')
@@ -587,7 +579,7 @@ export async function recall(
       const scopeResults = topResults.filter(r => r.scope === scopeInfo.scope);
       if (scopeResults.length > 0) {
         try {
-          await autoUpvote(scopeResults, scopeInfo.config.username, scopeInfo.config.repo.localPath);
+          await autoUpvote(scopeResults, scopeInfo.config);
         } catch (e) {
           log.error(`autoUpvote skipped for ${scopeInfo.scope}: ${(e as Error).message}`);
         }

@@ -200,11 +200,21 @@ export async function syncVotesToTeam(
  * Record manual feedback for a recalled document.
  */
 export async function recallFeedback(opts: { positive?: string; negative?: string }): Promise<void> {
-  const { autoDetectInit } = await import('./config.js');
-  const { localConfig } = await autoDetectInit();
-  const { username } = localConfig;
-  const { getUserVotesDir } = await import('./types.js');
-  const votePath = path.join(getUserVotesDir(), `${username}.yaml`);
+  const { resolveConfigForDir, findUnreadableProjectConfig, BROKEN_CONFIG_ADVICE } = await import('./config.js');
+  // The votes of the cwd's scope (#787). An unreadable project config falls
+  // back to no other scope: the feedback would reach that scope's team.
+  const localConfig = await resolveConfigForDir();
+  if (!localConfig) {
+    const unreadable = await findUnreadableProjectConfig();
+    const { firstLine } = await import('./skill-content.js');
+    log.error(unreadable
+      ? `No feedback recorded: ${firstLine(unreadable)}. ${BROKEN_CONFIG_ADVICE}`
+      : 'No feedback recorded: teamai is not set up here. Run `teamai init` first.');
+    process.exitCode = 1;
+    return;
+  }
+  const { getVotesDir } = await import('./types.js');
+  const votePath = path.join(getVotesDir(localConfig), `${localConfig.username}.yaml`);
 
   if (opts.positive) {
     await incrementUpvoted(votePath, [opts.positive]);

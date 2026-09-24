@@ -14,7 +14,7 @@ import {
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig } from './types.js';
-import { getUserVotesDir, emptyTokenUsage, addTokenUsage, usesBranchWorktree } from './types.js';
+import { getVotesDir, emptyTokenUsage, addTokenUsage, usesBranchWorktree } from './types.js';
 import { getUserHome } from './utils/home.js';
 import {
   aggregateDailySessions,
@@ -52,7 +52,7 @@ interface PromptTokenDelta {
 //  [read scope usage file] ─has events?─▶ merge stats
 //      │                                           │
 //      ▼                                           ▼
-//  [stage pending votes from ~/.teamai/votes/]  [write stats/<user>.yaml]
+//  [stage pending votes from scope votes dir]   [write stats/<user>.yaml]
 //      │                                           │
 //      ▼  ◄────────────────────────────────────────┘
 //  [anything to push?] ──no──▶ SKIP
@@ -405,6 +405,8 @@ export async function reportUsageToTeam(
   try {
     // This scope's own skill usage (#748); a caller without a scope reports none.
     const events = reportsConfig ? await readUsageEvents(reportsConfig) : [];
+    // This scope's own votes (#787), likewise.
+    const votesDir = reportsConfig ? getVotesDir(reportsConfig) : undefined;
     const filesToPush: string[] = [];
 
     // Fold the local dashboard event log into per-session metrics once, then derive
@@ -483,9 +485,9 @@ export async function reportUsageToTeam(
 
       // Always stage pending local votes (V2 delta-aware merge)
       try {
-        if (await pathExists(getUserVotesDir())) {
+        if (votesDir && await pathExists(votesDir)) {
           const { syncVotesToTeam } = await import('./votes.js');
-          const synced = await syncVotesToTeam(writeRoot, username, getUserVotesDir());
+          const synced = await syncVotesToTeam(writeRoot, username, votesDir);
           if (synced) {
             filesToPush.push(`votes/${username}.yaml`);
           }
@@ -499,9 +501,9 @@ export async function reportUsageToTeam(
     // must not abandon the success bookkeeping below.
     if (useReportsBranch && reportsConfig) {
       let hasVotes = false;
-      if (!hasStats && await pathExists(getUserVotesDir())) {
+      if (!hasStats && votesDir && await pathExists(votesDir)) {
         const { hasPendingVoteDeltas } = await import('./votes.js');
-        hasVotes = await hasPendingVoteDeltas(getUserVotesDir(), username);
+        hasVotes = await hasPendingVoteDeltas(votesDir, username);
       }
       if (!hasStats && !hasVotes) {
         log.debug('No usage events or votes to report');

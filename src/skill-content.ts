@@ -163,7 +163,7 @@ async function gateFor(team: TeamDetection): Promise<ShareGate> {
 }
 
 /** The first line of an error, without the colon that introduces its code frame. */
-function firstLine(text: string): string {
+export function firstLine(text: string): string {
   return text.trim().split('\n')[0].trim().replace(/:$/, '');
 }
 

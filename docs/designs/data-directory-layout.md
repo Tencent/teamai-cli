@@ -312,7 +312,10 @@ already route through `getDataHome()`. Skill usage moved there too (#748):
 project's report carry every project's skills. The user scope records in
 `~/.teamai/user-usage.jsonl`, not that old shared `~/.teamai/usage.jsonl`, which
 an earlier release still writes after a rollback; the shared file is never
-read. The dashboard is likewise an A2 singleton
+read. Local votes followed for the same reason (#787): `<dataHome>/votes/`, and
+`~/.teamai/user-votes/` (`getUserVotesDir()`) for the user scope, so a scope
+pushes only the votes cast where it is set up. The old shared `~/.teamai/votes/`
+is never read, and its pending deltas are not pushed. The dashboard is likewise an A2 singleton
 (events carry `cwd`/`sessionId`); "two projects' events don't mix" is satisfied by
 `getEventsPath()` reading `HOME` at call time, not by per-project dirs.
 
