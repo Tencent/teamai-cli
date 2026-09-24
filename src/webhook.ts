@@ -43,12 +43,14 @@ export async function sendWebhook(
 }
 
 /**
- * Send webhook to a single endpoint with retry logic.
+ * Send webhook to a single endpoint with retry logic. Resolves to whether the
+ * endpoint accepted the event; every failure is logged here and never thrown,
+ * so a webhook can never fail the command that fired it.
  */
 async function sendToEndpoint(
   endpoint: WebhookEndpoint,
   payload: WebhookPayload,
-): Promise<void> {
+): Promise<boolean> {
   const { url, type, secret, timeout, retries } = endpoint;
 
   const body = formatMessage(type, payload);
@@ -72,10 +74,10 @@ async function sendToEndpoint(
   }
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    let failure: string;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
-
       const response = await fetch(url, {
         method: 'POST',
         headers,
@@ -83,35 +85,33 @@ async function sendToEndpoint(
         signal: controller.signal,
       });
 
-      clearTimeout(timeoutId);
-
       if (response.ok) {
         log.debug(`Webhook sent successfully to ${url}`);
-        return;
+        return true;
       }
 
       if (response.status >= 400 && response.status < 500 && response.status !== 429) {
         log.warn(`Webhook to ${url} failed with status ${response.status} (not retrying)`);
-        return;
+        return false;
       }
-
-      if (attempt < retries) {
-        const delay = Math.pow(2, attempt) * 1000;
-        log.debug(`Webhook to ${url} failed, retrying in ${delay}ms...`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
+      failure = `status ${response.status}`;
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        log.warn(`Webhook to ${url} timed out after ${timeout}ms`);
-      } else if (attempt < retries) {
-        const delay = Math.pow(2, attempt) * 1000;
-        log.debug(`Webhook to ${url} failed, retrying in ${delay}ms...`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      } else {
-        log.warn(`Webhook to ${url} failed after ${retries + 1} attempts: ${(error as Error).message}`);
-      }
+      failure = error instanceof Error && error.name === 'AbortError'
+        ? `timed out after ${timeout}ms`
+        : (error as Error).message;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    if (attempt < retries) {
+      const delay = Math.pow(2, attempt) * 1000;
+      log.debug(`Webhook to ${url} failed (${failure}), retrying in ${delay}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    } else {
+      log.warn(`Webhook to ${url} failed after ${retries + 1} attempt(s): ${failure}`);
     }
   }
+  return false;
 }
 
 /**
@@ -177,11 +177,10 @@ export async function testWebhook(url?: string): Promise<void> {
 
   for (const endpoint of endpoints) {
     log.info(`Testing webhook to ${endpoint.url}...`);
-    try {
-      await sendToEndpoint(endpoint, testPayload);
+    if (await sendToEndpoint(endpoint, testPayload)) {
       log.success(`Webhook test successful: ${endpoint.url}`);
-    } catch (error) {
-      log.error(`Webhook test failed: ${endpoint.url} - ${(error as Error).message}`);
+    } else {
+      log.error(`Webhook test failed: ${endpoint.url}`);
     }
   }
 }
