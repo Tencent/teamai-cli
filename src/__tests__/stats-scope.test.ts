@@ -158,11 +158,23 @@ function outputNumber(lines: string[], label: string): number {
 }
 
 /** Extract the session count from the `By Repo:` lines (e.g. `  <path>  2 sess, ...`). */
+/** Total sessions across every `By Repo:` row (e.g. `  <path>  2 sess, 1 turns, ...`). */
 function byRepoSessions(lines: string[]): number {
-  const line = lines.find((l) => /\d+\s+sess,\s*\d+\s+turns/.test(l));
-  if (!line) return Number.NaN;
-  const match = line.match(/(\d+)\s+sess/);
-  return match ? Number(match[1]) : Number.NaN;
+  let total = 0;
+  let matched = false;
+  for (const line of lines) {
+    const match = line.match(/^\s+\S.*\s(\d+)\s+sess,\s*\d+\s+turns/);
+    if (match) {
+      total += Number(match[1]);
+      matched = true;
+    }
+  }
+  return matched ? total : Number.NaN;
+}
+
+/** How many repo rows the breakdown printed. */
+function byRepoRowCount(lines: string[]): number {
+  return lines.filter((l) => /\s\d+\s+sess,\s*\d+\s+turns/.test(l)).length;
 }
 
 /** Run showStats from inside the project workspace. */
@@ -363,10 +375,10 @@ describe('showStats scope and idempotency', () => {
     expect(outputNumber(out, 'Output:')).toBe(50);
   });
 
-  it('reports the same sessions in the headline and the per-repo breakdown', async () => {
-    // Two sessions on disk: sess-1 already reported, sess-2 new. The headline
-    // counts 1 reported + 1 new = 2, and the breakdown must show the same one
-    // unreported session rather than both sessions still in the event log.
+  it('scopes the per-repo breakdown to this project, headline aside', async () => {
+    // Two sessions on disk, one already reported. The breakdown reads the
+    // scope's own event log, so it shows both — it answers "what happened in
+    // which repo on this machine", not "what is still owed to the team".
     await seedProjectConfig();
     await appendEvents([
       ...session('sess-1', DIRS.project),
@@ -388,35 +400,33 @@ describe('showStats scope and idempotency', () => {
 
     const out = await showStatsFromProject({ byRepo: true });
 
+    // Headline: 1 reported + 1 unreported.
     expect(outputNumber(out, 'Sessions:')).toBe(2);
-    expect(byRepoSessions(out)).toBe(1);
+    // Breakdown: both local sessions, all of them this project's.
+    expect(byRepoSessions(out)).toBe(2);
   });
 
-  it('keeps the breakdown from counting sessions the headline already reported', async () => {
-    // The team holds 3 sessions; only 1 is still in the local event log and it
-    // has already been reported. The headline must show 3 (reported) + 0 (new),
-    // and the breakdown must not present the local log as if it were extra.
+  it('keeps another project out of the per-repo breakdown', async () => {
     await seedProjectConfig();
-    await appendEvents(session('sess-1', DIRS.project));
+    await appendEvents([
+      ...session('sess-1', DIRS.project),
+      ...session('sess-2', DIRS.other),
+    ]);
 
     await writeReportedStats({
       username: 'tester',
       updatedAt: '2026-09-20T11:00:00.000Z',
       skills: {},
-      prompts: 100,
-      tokens: { input: 1000, output: 500, cacheRead: 0, cacheCreation: 0 },
-      interventions: { sessions: 3, interrupt: 0, toolReject: 0, correction: 0 },
+      prompts: 0,
+      tokens: ZERO_TOKENS,
+      interventions: { sessions: 0, interrupt: 0, toolReject: 0, correction: 0 },
     });
-    await writeReportedSnapshots(
-      { 'sess-1': { interrupt: 0, toolReject: 0, correction: 0 } },
-      { 'sess-1': { prompts: 100, tokens: { input: 1000, output: 500, cacheRead: 0, cacheCreation: 0 } } },
-    );
 
     const out = await showStatsFromProject({ byRepo: true });
 
-    expect(outputNumber(out, 'Sessions:')).toBe(3);
-    // Not 1: the only session on disk was already reported, so there is no
-    // unreported session for the breakdown to present as extra activity.
-    expect(out.some((l) => l.includes('By Repo:'))).toBe(false);
+    // Only proj-a's session appears; the shared event log must not leak
+    // another project's rows into this scope's breakdown.
+    expect(byRepoRowCount(out)).toBe(1);
+    expect(byRepoSessions(out)).toBe(1);
   });
 });
