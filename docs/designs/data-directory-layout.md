@@ -306,7 +306,8 @@ just works. Seven consts that already had runtime getters and no live consumers
 were removed.
 
 **Functionization ≠ project-scoping.** All of these are class-A2 (machine-level):
-the getters still return `~/.teamai/...`, unchanged. The project-scoped equivalents
+the getters still return `~/.teamai/...`, unchanged, except `getUserVotesDir()`
+(below). The project-scoped equivalents
 already route through `getDataHome()`. Skill usage moved there too (#748):
 `usage.jsonl` lives in each scope's `getDataHome()`, because one shared file let a
 project's report carry every project's skills. The user scope records in
@@ -315,8 +316,8 @@ an earlier release still writes after a rollback; the shared file is never
 read. Local votes followed for the same reason (#787): `<dataHome>/votes/`, and
 `~/.teamai/user-votes/` (`getUserVotesDir()`) for the user scope, so a scope
 pushes only the votes cast where it is set up. The old shared `~/.teamai/votes/`
-is never read, and its pending deltas are not pushed. The dashboard is likewise an A2 singleton
-(events carry `cwd`/`sessionId`); "two projects' events don't mix" is satisfied by
+is never read, and its pending deltas are not pushed. The dashboard is likewise
+an A2 singleton (events carry `cwd`/`sessionId`); "two projects' events don't mix" is satisfied by
 `getEventsPath()` reading `HOME` at call time, not by per-project dirs.
 
 **`anchor` on save.** Previously only migration wrote a partition's `anchor`

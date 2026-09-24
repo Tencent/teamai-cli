@@ -414,8 +414,12 @@ export async function recall(
   const scopeIndexes: Array<{ index: SearchIndex; scope: 'user' | 'project'; config: LocalConfig; learningsBase: string }> = [];
 
   let projectConfig: LocalConfig | null = null;
+  // A project config that cannot be read makes detection fall back to another
+  // scope; searching there is #796's, but its votes must not reach that scope's
+  // team (#787).
+  let projectUnreadable = false;
   try {
-    projectConfig = await detectProjectConfig();
+    projectConfig = await detectProjectConfig(undefined, () => { projectUnreadable = true; });
   } catch {
     log.debug('recall: project scope detection failed');
   }
@@ -571,7 +575,7 @@ export async function recall(
   // own votes (#787); layered project mode records only active project results,
   // since the session belongs to the project. Inherited user hits remain
   // read-only.
-  if (!options.dryRun) {
+  if (!options.dryRun && !projectUnreadable) {
     const voteScopes = projectConfig
       ? scopeIndexes.filter((scopeInfo) => scopeInfo.scope === 'project')
       : scopeIndexes;

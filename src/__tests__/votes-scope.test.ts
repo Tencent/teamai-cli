@@ -40,6 +40,7 @@ const { resolveProjectDataHome, saveLocalConfigForScope } = await import('../con
 const { reportUsageToTeam } = await import('../team-push.js');
 const { recallFeedback } = await import('../votes.js');
 const { resolveVizRoot } = await import('../viz.js');
+const { recall } = await import('../recall.js');
 
 let tmp: string;
 let originalHome: string | undefined;
@@ -237,6 +238,39 @@ describe('votes stay with the scope they were cast in (#787)', () => {
     expect(process.exitCode).toBe(1);
     expect(fs.existsSync(path.join(teamaiHome(), 'user-votes'))).toBe(false);
     expect(fs.existsSync(path.join(dataHome, 'votes'))).toBe(false);
+  });
+
+  it('recall feedback with an empty user config names the file, not "not set up"', async () => {
+    fs.mkdirSync(teamaiHome(), { recursive: true });
+    fs.writeFileSync(path.join(teamaiHome(), 'config.yaml'), '');
+    const printed: unknown[] = [];
+    const errors = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { printed.push(...args); });
+    try {
+      await feedbackIn(outsideAnyProject(), 'doc-u');
+    } finally {
+      errors.mockRestore();
+    }
+
+    expect(process.exitCode).toBe(1);
+    expect(printed.join('\n')).toContain(`${path.join(teamaiHome(), 'config.yaml')} could not be read: it is empty`);
+  });
+
+  it('a recall search in a project whose config cannot be read records no recalled count in the user scope', async () => {
+    const user = userScope();
+    const learnings = path.join(user.repo.localPath, 'learnings');
+    fs.mkdirSync(learnings, { recursive: true });
+    fs.writeFileSync(path.join(learnings, 'api-timeout.md'), '---\ntitle: "API timeout fix"\nauthor: tester\ndate: 2026-05-01\n---\n\nRaise the API timeout.\n');
+    const { root } = await brokenProject();
+
+    process.chdir(root);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await recall('api timeout', {});
+    } finally {
+      stdout.mockRestore();
+    }
+
+    expect(fs.existsSync(path.join(teamaiHome(), 'user-votes'))).toBe(false);
   });
 
   it('the vote view reads the votes of the scope of its cwd', async () => {
