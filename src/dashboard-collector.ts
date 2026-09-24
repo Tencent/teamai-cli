@@ -1932,11 +1932,33 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
 /**
  * Handle `teamai dashboard-report --stdin --tool <name>`.
  * Called by dashboard hooks in Claude Code / other AI tools.
+ *
+ * Legacy entry point: a current install only writes `teamai hook-dispatch`,
+ * whose dashboard-report handler is registered with `requiresConfig`. Hooks
+ * left behind by an earlier install still call this command in every
+ * directory, so it applies the same gate itself — a directory with no teamai
+ * config has no team to report its sessions to (#768).
  */
 export async function dashboardReport(toolArg?: string): Promise<void> {
   const raw = await readStdin();
   if (!raw.trim()) {
     log.debug('dashboard-report: no STDIN data');
+    return;
+  }
+
+  // Asked about the session's cwd, never the directory this process started in.
+  let hookData: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      hookData = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // parseHookEvent reports the malformed payload below; nothing to gate on yet.
+  }
+  const { resolveConfigForDir } = await import('./config.js');
+  if (!(await resolveConfigForDir(resolveHookCwd(hookData)))) {
+    log.debug('dashboard-report: teamai is not set up here, skipping');
     return;
   }
 
