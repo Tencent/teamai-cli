@@ -184,6 +184,17 @@ export async function legacySingletonActive(): Promise<boolean> {
   return !(await pathExists(legacyMarkerPath()));
 }
 
+/**
+ * Clear a stale `migrated-to` marker so a freshly (re)written legacy singleton
+ * is active again. Needed when a user migrates the singleton to a named
+ * provider, removes that provider, then re-runs `source add-http` / `init
+ * --http`: that writes a new legacy config, but the leftover marker would keep
+ * legacySingletonActive() false forever and the dispatcher would never sync it.
+ */
+export async function clearLegacyMigrationMarker(): Promise<void> {
+  await remove(legacyMarkerPath());
+}
+
 interface LegacyConfigShape {
   endpoint?: string;
   token?: string;

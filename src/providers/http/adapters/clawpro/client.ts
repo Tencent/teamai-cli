@@ -3412,6 +3412,14 @@ export async function initLocalAgentHttp(options: {
 
   await ensureDir(getLocalAgentHome());
   await saveLocalAgentConfig(config);
+  // Legacy path only: writing a fresh singleton config must clear any stale
+  // `migrated-to` marker left by an earlier migrate-then-remove, or
+  // legacySingletonActive() would stay false and the dispatcher would never
+  // sync this new config (review #5). Named-provider init has no such marker.
+  if (!httpProviderContext.getStore()) {
+    const { clearLegacyMigrationMarker } = await import('../../store.js');
+    await clearLegacyMigrationMarker();
+  }
   if (options.token) {
     // Named providers keep the credential in their own 0600 file; the legacy
     // singleton keeps its historical ~/.teamai/token location.
@@ -3470,6 +3478,15 @@ export interface LocalAgentSummary {
  * alongside git cross-team sources.
  */
 export async function describeLocalAgent(): Promise<LocalAgentSummary | null> {
+  // A migrated legacy singleton is only a rollback snapshot, not an active
+  // source — the named provider now owns delivery. Don't list it (review P2).
+  // (Only relevant outside a provider context; a named provider never has this
+  // marker in its own home.)
+  if (!httpProviderContext.getStore()) {
+    const { legacySingletonActive } = await import('../../store.js');
+    const legacyExists = await pathExists(getConfigPath());
+    if (legacyExists && !(await legacySingletonActive())) return null;
+  }
   const config = await loadLocalAgentConfig();
   if (!config) return null;
 
@@ -3554,12 +3571,37 @@ export async function removeAllAgentHooks(): Promise<void> {
 }
 
 /**
+ * Whether any OTHER teamai install still relies on the shared built-in hooks:
+ * a user-scope config, OR any project-scope partition config. Used to decide
+ * whether a named provider's teardown may remove the built-in dispatch hooks —
+ * it must not when a git/self install of ANY scope still needs them. Checking
+ * only the user scope would miss a project-only Git TeamAI install.
+ */
+async function hasOtherTeamaiInstall(): Promise<boolean> {
+  const { loadLocalConfig } = await import('../../../../config.js');
+  if (await loadLocalConfig()) return true;
+  // Enumerate project-scope partitions (~/.teamai/projects/<slug>/config.yaml).
+  try {
+    const { projectsRootDir } = await import('../../../../utils/partition.js');
+    const root = projectsRootDir();
+    for (const slug of await listDirs(root)) {
+      if (await pathExists(path.join(root, slug, 'config.yaml'))) return true;
+    }
+  } catch {
+    // No partitions dir / unreadable → treat as no other install.
+  }
+  return false;
+}
+
+/**
  * Tear down the HTTP local-agent bypass: uninstall every resource recorded in the
  * manifest (skills/rules/claudemd, across all scopes) from the AI tool dirs, then
  * remove the whole ~/.teamai/local-agent/ directory (config + manifest).
  *
  * Best-effort per resource: a single failed uninstall is logged and skipped so a
- * stale entry cannot block the teardown.
+ * stale entry cannot block the teardown. If any resource uninstall failed, the
+ * provider home + manifest are KEPT (not deleted) so cleanup can be retried
+ * (review #6) — a destroyed manifest would orphan the leftover resources.
  */
 export async function removeLocalAgentHttp(): Promise<void> {
   const config = await loadLocalAgentConfig();
@@ -3575,6 +3617,7 @@ export async function removeLocalAgentHttp(): Promise<void> {
 
   const kinds: CommandResourceKind[] = ['skill', 'rule', 'claudemd'];
   const manifest = await loadManifest();
+  let uninstallFailed = false;
   for (const [key, scopeManifest] of Object.entries(manifest.scopes)) {
     const { scope, workspacePath } = parseScopeKey(key);
     for (const kind of kinds) {
@@ -3582,7 +3625,8 @@ export async function removeLocalAgentHttp(): Promise<void> {
         try {
           await uninstallResource({ config, kind, slug, scope, workspacePath });
         } catch (e) {
-          log.debug(`local-agent: failed to uninstall ${kind} "${slug}": ${(e as Error).message}`);
+          uninstallFailed = true;
+          log.warn(`local-agent: failed to uninstall ${kind} "${slug}": ${(e as Error).message}`);
         }
       }
     }
@@ -3598,23 +3642,29 @@ export async function removeLocalAgentHttp(): Promise<void> {
   // (git/self/legacy user config) still relies on those shared built-in hooks —
   // otherwise removing them would break a coexisting install.
   const providerCtx = httpProviderContext.getStore();
-  if (providerCtx) {
-    const { loadLocalConfig } = await import('../../../../config.js');
-    const otherInstall = await loadLocalConfig();
-    if (!otherInstall) {
-      try {
-        const teamConfig = createLocalAgentTeamConfig(config.endpoint);
-        await reconcileHooksToAllTools(
-          scopedToolPaths(teamConfig, { scope: 'user', toolRoots: await memberToolRoots() }),
-          getUserHome(),
-          [],
-          getManagedHooksPath('user'),
-          { removeAll: true },
-        );
-      } catch (e) {
-        log.warn(`[local-agent] built-in hook removal failed: ${(e as Error).message}`);
-      }
+  if (providerCtx && !(await hasOtherTeamaiInstall())) {
+    try {
+      const teamConfig = createLocalAgentTeamConfig(config.endpoint);
+      await reconcileHooksToAllTools(
+        scopedToolPaths(teamConfig, { scope: 'user', toolRoots: await memberToolRoots() }),
+        getUserHome(),
+        [],
+        getManagedHooksPath('user'),
+        { removeAll: true },
+      );
+    } catch (e) {
+      log.warn(`[local-agent] built-in hook removal failed: ${(e as Error).message}`);
     }
+  }
+
+  // If any resource uninstall failed (file locked, permission denied), KEEP the
+  // state home and manifest so the leftover resources can be cleaned up on a
+  // retry — deleting the manifest here would orphan them permanently (review #6).
+  if (uninstallFailed) {
+    throw new Error(
+      'Some resources could not be uninstalled; kept the provider state so cleanup '
+      + 'can be retried. Re-run once the underlying issue (locked file / permissions) is resolved.',
+    );
   }
 
   await remove(getLocalAgentHome());

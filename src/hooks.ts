@@ -1443,6 +1443,10 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
     if (filterAgents && !filterAgents.includes(tool)) continue;
     if (skipped.has(tool)) continue;
     if (tool === 'pi') {
+      // Pi's adapter no-ops (returns success) when Pi is not installed, so gate
+      // on its presence — otherwise an uninstalled Pi would count as a
+      // successful injection and mask "no tool actually got a hook".
+      if (!await isPiInstalled(resolvedBaseDir)) continue;
       await attempt(
         () => reconcilePiExtension(resolvedBaseDir),
         (e) => log.warn(`Failed to inject Pi hook: ${e.message}`),
@@ -1456,6 +1460,10 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         (e) => log.warn(`Failed to inject hook into ${tool}: ${e.message}`),
       );
     } else if (OPENCLAW_TOOLS.has(tool)) {
+      // Only count when the OpenClaw workspace actually resolves; otherwise the
+      // adapter no-ops and would inflate the success count.
+      const { resolveOpenclawWorkspaceDir } = await import('./openclaw-hooks.js');
+      if (!await resolveOpenclawWorkspaceDir()) continue;
       await attempt(
         async () => {
           const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
@@ -1464,6 +1472,8 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         (e) => log.warn(`Failed to inject OpenClaw hook into ${tool}: ${e.message}`),
       );
     } else if (tool === 'hermes') {
+      const { getHermesHome } = await import('./hermes-home.js');
+      if (!await pathExists(getHermesHome())) continue;
       await attempt(
         async () => {
           const { injectHermesHooks } = await import('./hermes-hooks.js');
@@ -1472,11 +1482,14 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         (e) => log.warn(`Failed to inject Hermes hook: ${e.message}`),
       );
     } else if (tool === 'opencode') {
+      if (!await pathExists(path.join(resolvedBaseDir, '.config', 'opencode'))
+        && !await pathExists(path.join(resolvedBaseDir, '.opencode'))) continue;
       await attempt(
         () => reconcileOpencodePlugin(resolvedBaseDir),
         (e) => log.warn(`Failed to inject OpenCode hook into ${tool}: ${e.message}`),
       );
     } else if (tool === 'omp') {
+      if (!await pathExists(path.join(resolvedBaseDir, '.omp'))) continue;
       await attempt(
         () => reconcileOmpExtension(),
         (e) => log.warn(`Failed to inject OMP hook into ${tool}: ${e.message}`),

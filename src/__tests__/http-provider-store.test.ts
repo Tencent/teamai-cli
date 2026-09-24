@@ -260,4 +260,20 @@ describe('http provider: legacy singleton migration', () => {
     // Migration now completed: legacy marked migrated.
     expect(await legacySingletonActive()).toBe(false);
   });
+
+  it('clearLegacyMigrationMarker reactivates a re-written legacy singleton (review #5)', async () => {
+    await seedLegacy('t');
+    const { migrateLegacyHttpProvider, legacySingletonActive, clearLegacyMigrationMarker } = await import(
+      '../providers/http/store.js'
+    );
+    await migrateLegacyHttpProvider({ name: 'company' });
+    // After migration the legacy dir is a dormant snapshot.
+    expect(await legacySingletonActive()).toBe(false);
+
+    // A later `source add-http` / `init --http` clears the marker when it
+    // re-writes the legacy config; the singleton is then active again so the
+    // dispatcher will sync it (without this it would stay dormant forever).
+    await clearLegacyMigrationMarker();
+    expect(await legacySingletonActive()).toBe(true);
+  });
 });

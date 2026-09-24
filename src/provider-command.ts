@@ -25,6 +25,26 @@ import {
 import { syncResourceProviders } from './providers/resource-registry.js';
 import type { HttpProviderConfig } from './providers/types.js';
 
+/**
+ * Run `fn` while holding the machine-level provider lock, so the single-provider
+ * check-and-write in `provider add` and `migrate-legacy` cannot interleave and
+ * both pass the empty/one-provider gate (review #6/P3). Callers still enforce
+ * the gate; the lock only makes the check-then-act atomic across processes.
+ */
+async function withProviderLock<T>(fn: () => Promise<T>): Promise<T> {
+  const { acquireLock, releaseLock } = await import('./update.js');
+  const lockPath = path.join(getUserHome(), '.teamai', 'providers', '.add.lock');
+  if (!(await acquireLock(lockPath))) {
+    log.error('Another `teamai provider` operation is in progress. Try again in a moment.');
+    process.exit(1);
+  }
+  try {
+    return await fn();
+  } finally {
+    await releaseLock(lockPath);
+  }
+}
+
 interface AddHttpOptions {
   name: string;
   adapter?: string;
@@ -63,17 +83,11 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
   };
 
   // Serialize the whole check-and-write under a machine-level lock so two
-  // concurrent `provider add` runs cannot both see an empty registry and each
-  // create a provider (the single-provider gate below is otherwise a racy
-  // check-then-act). The lock also covers init + publish so a rollback cannot
-  // interleave with another add.
-  const { acquireLock, releaseLock } = await import('./update.js');
-  const lockPath = path.join(getUserHome(), '.teamai', 'providers', '.add.lock');
-  if (!(await acquireLock(lockPath))) {
-    log.error('Another `teamai provider` operation is in progress. Try again in a moment.');
-    process.exit(1);
-  }
-  try {
+  // concurrent `provider add` / `migrate-legacy` runs cannot both see an empty
+  // registry and each create a provider (the single-provider gate below is
+  // otherwise a racy check-then-act). The lock also covers init + publish so a
+  // rollback cannot interleave with another add.
+  await withProviderLock(async () => {
     if (await getHttpProviderConfig(opts.name)) {
       log.error(`Provider "${opts.name}" already exists. Remove it first or choose another name.`);
       process.exit(1);
@@ -127,9 +141,7 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
       log.error(`Failed to add provider "${config.name}": ${(e as Error).message}`);
       process.exit(1);
     }
-  } finally {
-    await releaseLock(lockPath);
-  }
+  });
 
   log.success(`Added HTTP provider "${config.name}" (${config.adapter}) → ${config.endpoint}`);
 }
@@ -198,25 +210,29 @@ export async function providerMigrateLegacy(opts: MigrateLegacyOptions): Promise
     log.error((e as Error).message);
     process.exit(1);
   }
-  // Single-provider gate (issue #404 phase 2): a legacy migration must not
-  // create a SECOND provider alongside an existing one. Only a provider with a
-  // DIFFERENT name is a foreign second provider — an entry under this same
-  // target name is either an already-finished migration (idempotent re-run) or
-  // one interrupted after the registry write but before the marker, both of
-  // which the store function resolves. Gating on "any entry" here would break
-  // that idempotency/resume (a re-run would error instead of no-op), so only
-  // reject a differently-named provider.
-  const foreign = (await listHttpProviderConfigs()).filter((p) => p.name !== opts.name);
-  if (foreign.length > 0) {
-    log.error(
-      `A named HTTP provider ("${foreign[0].name}") already exists; migrating the legacy `
-      + 'singleton would create a second one, which is not supported yet (issue #404 phase 4).',
-    );
-    process.exit(1);
-  }
-  const config = await migrateLegacyHttpProvider({
-    name: opts.name,
-    priority: parsePriority(opts.priority),
+  // Hold the same lock as `provider add` so the gate below and the migration
+  // cannot interleave with a concurrent add/migrate (review P3).
+  const config = await withProviderLock(async () => {
+    // Single-provider gate (issue #404 phase 2): a legacy migration must not
+    // create a SECOND provider alongside an existing one. Only a provider with a
+    // DIFFERENT name is a foreign second provider — an entry under this same
+    // target name is either an already-finished migration (idempotent re-run) or
+    // one interrupted after the registry write but before the marker, both of
+    // which the store function resolves. Gating on "any entry" here would break
+    // that idempotency/resume (a re-run would error instead of no-op), so only
+    // reject a differently-named provider.
+    const foreign = (await listHttpProviderConfigs()).filter((p) => p.name !== opts.name);
+    if (foreign.length > 0) {
+      log.error(
+        `A named HTTP provider ("${foreign[0].name}") already exists; migrating the legacy `
+        + 'singleton would create a second one, which is not supported yet (issue #404 phase 4).',
+      );
+      process.exit(1);
+    }
+    return migrateLegacyHttpProvider({
+      name: opts.name,
+      priority: parsePriority(opts.priority),
+    });
   });
   if (!config) {
     log.info('No legacy HTTP local agent to migrate (or it was already migrated).');
