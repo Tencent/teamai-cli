@@ -2,7 +2,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import matter from 'gray-matter';
 import { selectAgentsForDirectory } from './resources/agents.js';
-import { requireInit, loadState, saveState, detectProjectConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
+import { requireInit, loadState, saveState, detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
 import { pullRepo, getHeadRev, createGit, getDefaultBranch } from './utils/git.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { pendingLearningsDir } from './utils/pending-learnings.js';
@@ -1896,10 +1896,28 @@ export async function pull(
   // 1. Detect project scope first. Its presence decides whether user scope is
   //    processed at all (issue #73: project install isolates from user).
   let projectConfig: LocalConfig | null = null;
+  const unreadable: string[] = [];
   try {
-    projectConfig = await detectProjectConfig();
+    projectConfig = await detectProjectConfig(undefined, (configPath, error) => { unreadable.push(`${configPath}: ${error}`); });
   } catch (e) {
     log.warn(`Project-scope detection error: ${(e as Error).message}`);
+  }
+  // Detection skips a project config it cannot read and answers with what
+  // loads next — a legacy `.teamai/` that may name another team, or the user
+  // scope — so pulling would sync and report for a team this project may not
+  // belong to (#784). The same rule hooks and usage follow (#748).
+  const [problem] = unreadable;
+  if (problem !== undefined) {
+    const message = `Nothing was synced: ${describeUnreadableConfig(problem)}`;
+    // The SessionStart pull is silent, and a pre-dispatch hook still runs
+    // `teamai pull --silent` in the foreground: debug.log keeps the record.
+    if (options.silent) {
+      log.persist(message);
+      return;
+    }
+    log.error(message);
+    process.exitCode = 1;
+    return;
   }
   const projectMode = projectConfig !== null;
   const inheritUserScope = projectConfig?.inheritUserScope === true;

@@ -7,12 +7,12 @@ const { autoDetectInit, findUnreadableProjectConfig, logDim, logError, NotInitia
   logError: vi.fn(),
   NotInitializedError: class NotInitializedError extends Error {},
 }));
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
   autoDetectInit,
   findUnreadableProjectConfig,
   requireInit: vi.fn(),
   NotInitializedError,
-  BROKEN_CONFIG_ADVICE: 'Fix the file, or move it aside and run `teamai init` to write a new one.',
+  describeUnreadableConfig: (await importOriginal<typeof import('../config.js')>()).describeUnreadableConfig,
 }));
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: logError, debug: vi.fn(), dim: logDim },

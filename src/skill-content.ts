@@ -98,7 +98,7 @@ export type TeamDetection =
   | { kind: 'unusable'; detail: string };
 
 export async function detectTeam(cwd?: string): Promise<TeamDetection> {
-  const { autoDetectInit, findUnreadableProjectConfig, requireInit, NotInitializedError, BROKEN_CONFIG_ADVICE } =
+  const { autoDetectInit, findUnreadableProjectConfig, requireInit, NotInitializedError, describeUnreadableConfig } =
     await import('./config.js');
   // Loading the config can migrate it and say so with `log.info`. That line
   // must not land in the skill content, the JSON these commands print on
@@ -120,11 +120,7 @@ export async function detectTeam(cwd?: string): Promise<TeamDetection> {
       }
     }
     const unreadable = await findUnreadableProjectConfig(cwd);
-    if (unreadable) {
-      // A parse error spans several lines (a code frame); its first names the
-      // file, the line and the column, which is what the member acts on.
-      return { kind: 'unusable', detail: `${firstLine(unreadable)}. ${BROKEN_CONFIG_ADVICE}` };
-    }
+    if (unreadable) return { kind: 'unusable', detail: describeUnreadableConfig(unreadable) };
     return { kind: 'team', init: await autoDetectInit(cwd) };
   } catch (e) {
     if (e instanceof NotInitializedError) return { kind: 'none' };

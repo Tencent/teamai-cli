@@ -27,6 +27,7 @@ vi.mock('../utils/reports-branch.js', () => ({ updateReports: vi.fn(async () => 
 
 const { hookDispatchCli } = await import('../hook-dispatch-cli.js');
 const { resolveProjectDataHome, saveLocalConfigForScope } = await import('../config.js');
+const { pull } = await import('../pull.js');
 
 let tmp: string;
 let originalHome: string | undefined;
@@ -197,5 +198,28 @@ describe('hook runs and the scope they belong to (#748)', () => {
     await hook('post-tool-use', 'Skill', { session_id: 'sid-a', cwd: root, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-a' } });
 
     expect(fs.existsSync(path.join(legacy, 'usage.jsonl'))).toBe(false);
+  });
+
+  it('a session start in a project whose config cannot be read seeds no agent directory and stashes no package hint (#784)', async () => {
+    const root = gitRepo('project-a');
+    const partition = await resolveProjectDataHome(root);
+    fs.mkdirSync(partition, { recursive: true });
+    fs.writeFileSync(path.join(partition, 'config.yaml'), 'repo: [not: a, valid config\n');
+    const legacy = path.join(root, '.teamai');
+    const legacyRepo = path.join(legacy, 'team-repo');
+    fs.mkdirSync(legacyRepo, { recursive: true });
+    fs.writeFileSync(path.join(legacyRepo, 'teamai.yaml'), 'team: other-team\nrepo: https://example.test/acme/other-team.git\n');
+    fs.writeFileSync(path.join(legacy, 'config.yaml'),
+      `repo:\n  localPath: ${legacyRepo}\n  remote: https://example.test/acme/other-team.git\nusername: tester\nscope: project\n`);
+    // Whatever changes the other team's package declarations while the session starts.
+    vi.mocked(pull).mockImplementationOnce(async () => {
+      fs.writeFileSync(path.join(legacyRepo, 'teamai.yaml'),
+        'team: other-team\nrepo: https://example.test/acme/other-team.git\npackages:\n  npm:\n    - { name: typescript, version: "*" }\n');
+    });
+
+    await hook('session-start', '*', { session_id: 'sid-a', cwd: root, hook_event_name: 'SessionStart' });
+
+    expect(fs.existsSync(path.join(root, '.claude'))).toBe(false);
+    expect(fs.existsSync(path.join(teamaiHome(), 'package-hints'))).toBe(false);
   });
 });

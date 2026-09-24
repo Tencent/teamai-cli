@@ -148,6 +148,15 @@ export type TeamaiInit = { localConfig: LocalConfig; teamConfig: TeamaiConfig };
 export const BROKEN_CONFIG_ADVICE = 'Fix the file, or move it aside and run `teamai init` to write a new one.';
 
 /**
+ * A problem `findUnreadableProjectConfig` (or its sink) reported, as a member
+ * reads it: a parse error spans several lines (a code frame), and its first
+ * names the file, the line and the column, which is what the member acts on.
+ */
+export function describeUnreadableConfig(problem: string): string {
+  return `${problem.trim().split('\n')[0].trim().replace(/:$/, '')}. ${BROKEN_CONFIG_ADVICE}`;
+}
+
+/**
  * Require that teamai is initialized (local config exists)
  */
 export async function requireInit(): Promise<TeamaiInit> {
