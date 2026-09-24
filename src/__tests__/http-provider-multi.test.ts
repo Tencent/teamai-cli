@@ -124,4 +124,46 @@ describe('multiple HTTP providers: hook dispatch', () => {
     expect(results[0].ok).toBe(false);
     expect(results[0].message).toBe('sync FAILED: network down');
   });
+
+  it('plugin reconcile worker re-enters the named provider context from env (review #3)', async () => {
+    // The detached worker gets the provider name via env (AsyncLocalStorage does
+    // not cross process boundaries). runPluginReconcileWorker must re-establish
+    // that context so it talks to the provider's OWN endpoint (read from the
+    // provider home), not the legacy dir. We observe the endpoint the worker's
+    // get-config fetch hits to prove the context was re-entered.
+    const { upsertHttpProviderConfig, httpProviderExecutionContext } = await import('../providers/http/store.js');
+    const { withHttpProvider, initLocalAgentHttp, runPluginReconcileWorker } = await import(
+      '../providers/http/adapters/clawpro/client.js'
+    );
+    await upsertHttpProviderConfig({ name: 'company', adapter: 'clawpro', endpoint: 'https://company-be/api', priority: 50 });
+    await withHttpProvider(httpProviderExecutionContext('company'), () =>
+      initLocalAgentHttp({ endpoint: 'https://company-be/api', force: true }),
+    );
+    // A legacy singleton with a DIFFERENT endpoint — if the context were not
+    // re-entered, the worker would read this one instead.
+    const legacy = path.join(tmpDir, '.teamai', 'local-agent');
+    await fse.ensureDir(legacy);
+    await fse.writeJson(path.join(legacy, 'config.json'), {
+      endpoint: 'https://legacy-be/api', workspaceBindings: {}, createdAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    const fetchedUrls: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      fetchedUrls.push(String(url));
+      return new Response(JSON.stringify({ plugins: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.TEAMAI_HTTP_PROVIDER_NAME = 'company';
+    try {
+      await runPluginReconcileWorker();
+    } finally {
+      delete process.env.TEAMAI_HTTP_PROVIDER_NAME;
+      vi.unstubAllGlobals();
+    }
+
+    // The worker fetched get-config against the NAMED provider's endpoint, not
+    // the legacy one — proving the provider context was re-established.
+    expect(fetchedUrls.some((u) => u.includes('company-be'))).toBe(true);
+    expect(fetchedUrls.some((u) => u.includes('legacy-be'))).toBe(false);
+  });
 });

@@ -955,14 +955,32 @@ async function maybeReconcilePlugins(context: LocalAgentContext): Promise<void> 
     const localAgentId = `${tool}-${resolveLocalAgentId(context)}`;
     const { spawn } = await import('node:child_process');
     if (!process.argv[1]) { log.debug('[local-agent] plugin reconcile: no CLI entrypoint (argv[1]), skipping'); return; }
+    // AsyncLocalStorage context does NOT cross the process boundary, so a named
+    // provider's identity must be passed explicitly and re-established in the
+    // worker — otherwise the detached process reads the legacy dir and a named
+    // provider's backend plugins are never installed/updated (issue #404).
+    const providerCtx = httpProviderContext.getStore();
     const child = spawn(process.execPath, [process.argv[1], 'source', 'reconcile-plugins'],
-      { detached: true, windowsHide: true, stdio: 'ignore', env: { ...process.env, TEAMAI_PLUGIN_LOCAL_AGENT_ID: localAgentId } });
+      { detached: true, windowsHide: true, stdio: 'ignore', env: {
+        ...process.env,
+        TEAMAI_PLUGIN_LOCAL_AGENT_ID: localAgentId,
+        ...(providerCtx ? { TEAMAI_HTTP_PROVIDER_NAME: providerCtx.name } : {}),
+      } });
     child.unref();
   } catch (e) { log.debug(`[local-agent] plugin reconcile spawn skipped: ${(e as Error).message}`); }
 }
 
 /** Detached worker: pull get-config and reconcile plugins once, guarded by a reconcile lock. */
 export async function runPluginReconcileWorker(): Promise<void> {
+  // Re-establish the named-provider context the spawning process passed via env
+  // (AsyncLocalStorage does not cross process boundaries). Without this the
+  // worker would read the legacy dir and never reconcile a named provider's
+  // plugins. No env var → legacy singleton, exactly as before.
+  const providerName = process.env.TEAMAI_HTTP_PROVIDER_NAME?.trim();
+  if (providerName && !httpProviderContext.getStore()) {
+    const { httpProviderExecutionContext } = await import('../../store.js');
+    return withHttpProvider(httpProviderExecutionContext(providerName), () => runPluginReconcileWorker());
+  }
   const config = await loadLocalAgentConfig();
   if (!config) return;
   const lockPath = path.join(getLocalAgentHome(), 'plugin-reconcile.lock');
@@ -3537,13 +3555,19 @@ export async function teardownLocalAgentPlugins(): Promise<void> {
  * each tool's settings, then clear the manifest. Best-effort; used by
  * `source remove-http` and `teamai uninstall` teardown (issue #238). Safe to call
  * when no config / no manifest exists.
+ *
+ * Returns true when every recorded hook was removed. When some removals failed
+ * the manifest is KEPT (not cleared) and false is returned, so a caller tearing
+ * a provider down can preserve state for a retry instead of orphaning the hooks
+ * whose ownership record it would otherwise destroy (issue #404, review #5).
  */
-export async function removeAllAgentHooks(): Promise<void> {
+export async function removeAllAgentHooks(): Promise<boolean> {
   const config = await loadLocalAgentConfig();
-  if (!config) return;
+  if (!config) return true;
   const manifest = await loadAgentHookManifest();
   const slugs = Object.keys(manifest);
-  if (slugs.length === 0) return;
+  if (slugs.length === 0) return true;
+  let allRemoved = true;
   for (const slug of slugs) {
     const rec = manifest[slug];
     try {
@@ -3564,10 +3588,14 @@ export async function removeAllAgentHooks(): Promise<void> {
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
       }
     } catch (e) {
-      log.debug(`agent hook [${slug}] teardown failed: ${(e as Error).message}`);
+      allRemoved = false;
+      log.warn(`agent hook [${slug}] teardown failed: ${(e as Error).message}`);
     }
   }
-  await saveAgentHookManifest({});
+  // Only clear the manifest when everything was removed; keeping it on failure
+  // lets a retry find and clean the leftover hooks.
+  if (allRemoved) await saveAgentHookManifest({});
+  return allRemoved;
 }
 
 /**
@@ -3578,9 +3606,18 @@ export async function removeAllAgentHooks(): Promise<void> {
  * only the user scope would miss a project-only Git TeamAI install.
  */
 async function hasOtherTeamaiInstall(): Promise<boolean> {
-  const { loadLocalConfig } = await import('../../../../config.js');
+  const { loadLocalConfig, detectProjectConfig } = await import('../../../../config.js');
   if (await loadLocalConfig()) return true;
-  // Enumerate project-scope partitions (~/.teamai/projects/<slug>/config.yaml).
+  // A project-scope install governing the current directory — covers both the
+  // partitioned form (~/.teamai/projects/<slug>/) and a legacy in-tree
+  // <project>/.teamai/config.yaml, which the partition enumeration below misses.
+  try {
+    if (await detectProjectConfig(process.cwd())) return true;
+  } catch {
+    // unreadable project config → fall through to partition scan
+  }
+  // Enumerate project-scope partitions (~/.teamai/projects/<slug>/config.yaml)
+  // so an install for a DIFFERENT project on this machine is also detected.
   try {
     const { projectsRootDir } = await import('../../../../utils/partition.js');
     const root = projectsRootDir();
@@ -3610,14 +3647,23 @@ export async function removeLocalAgentHttp(): Promise<void> {
     return;
   }
 
+  // Any teardown step that fails to fully clean up sets this — the state home
+  // (config + manifest + plugins.json) is then KEPT so a retry can finish the
+  // job. Deleting it after a partial teardown would orphan the leftover
+  // resources/hooks/plugins and destroy the ownership records needed to find
+  // them (issue #404, reviews #5/#6).
+  let uninstallFailed = false;
+
   // Tear down installed plugins before removing teamai's local-agent state.
   try {
     await teardownAllPlugins(buildReconcileDeps(config, '[local-agent] [uninstall]'));
-  } catch (e) { log.warn(`[local-agent] plugin teardown failed: ${(e as Error).message}`); }
+  } catch (e) {
+    uninstallFailed = true;
+    log.warn(`[local-agent] plugin teardown failed: ${(e as Error).message}`);
+  }
 
   const kinds: CommandResourceKind[] = ['skill', 'rule', 'claudemd'];
   const manifest = await loadManifest();
-  let uninstallFailed = false;
   for (const [key, scopeManifest] of Object.entries(manifest.scopes)) {
     const { scope, workspacePath } = parseScopeKey(key);
     for (const kind of kinds) {
@@ -3632,7 +3678,7 @@ export async function removeLocalAgentHttp(): Promise<void> {
     }
   }
 
-  await removeAllAgentHooks();
+  if (!await removeAllAgentHooks()) uninstallFailed = true;
 
   // Remove the built-in teamai hooks this provider's initLocalAgentHttp injected
   // via injectHooksToAllTools — removeAllAgentHooks only clears backend-delivered
@@ -3653,16 +3699,17 @@ export async function removeLocalAgentHttp(): Promise<void> {
         { removeAll: true },
       );
     } catch (e) {
+      uninstallFailed = true;
       log.warn(`[local-agent] built-in hook removal failed: ${(e as Error).message}`);
     }
   }
 
-  // If any resource uninstall failed (file locked, permission denied), KEEP the
-  // state home and manifest so the leftover resources can be cleaned up on a
-  // retry — deleting the manifest here would orphan them permanently (review #6).
+  // If ANY teardown step failed (locked file, permission denied), KEEP the state
+  // home and manifest so cleanup can be retried — deleting them here would
+  // orphan the leftover resources/hooks/plugins permanently (reviews #5/#6).
   if (uninstallFailed) {
     throw new Error(
-      'Some resources could not be uninstalled; kept the provider state so cleanup '
+      'Some resources/hooks/plugins could not be removed; kept the provider state so cleanup '
       + 'can be retried. Re-run once the underlying issue (locked file / permissions) is resolved.',
     );
   }
