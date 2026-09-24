@@ -3145,6 +3145,7 @@ async function processCommands(
   config: LocalAgentConfig,
   commands: LocalAgentCommand[],
   context: LocalAgentContext,
+  outcome?: SyncOutcome,
 ): Promise<boolean> {
   const tag = localAgentTag(context);
   let modelConfigApplied = false;
@@ -3177,6 +3178,13 @@ async function processCommands(
     } catch (e) {
       const error = (e as Error).message;
       log.error(`${tag} command ${command.id} failed: ${error}`);
+      // A failed command is isolated (the session continues), but the sync as a
+      // whole did not fully succeed — surface it so `provider sync` reports the
+      // failure instead of a false success (does not throw / abort the loop).
+      if (outcome && !outcome.failed) {
+        outcome.failed = true;
+        outcome.error = `command ${command.id} (${command.type ?? ''}) failed: ${error}`;
+      }
       try {
         await ackCommand(config, tag, command, 'failed', undefined, error);
       } catch (ackError) {
@@ -3297,7 +3305,7 @@ export async function reportAndSyncLocalAgent(
     const commands = cmds && cmds.length > 0 ? cmds : (syncResponse.commands ?? []);
     if (commands.length > 0) {
       log.debug(`${tag} sync returned ${commands.length} command(s): ${commands.map((c) => `${c.type}#${c.id}`).join(', ')}`);
-      const modelConfigApplied = await processCommands(config, commands, context);
+      const modelConfigApplied = await processCommands(config, commands, context, outcome);
       if (modelConfigApplied && !skipReport) {
         const reportPayload = await buildReportPayload(config, context);
         await localAgentFetch(config, tag, 'report', {

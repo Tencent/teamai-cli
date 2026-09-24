@@ -35,6 +35,11 @@ describe('http provider store: config registry', () => {
     expect(() => assertValidProviderName('name.')).toThrow(/must not end with/);
     expect(() => assertValidProviderName('CON')).toThrow(/reserved device name/);
     expect(() => assertValidProviderName('com1')).toThrow(/reserved device name/);
+    // Windows also forbids a reserved name with any extension (CON.txt → device).
+    expect(() => assertValidProviderName('CON.txt')).toThrow(/reserved device name/);
+    expect(() => assertValidProviderName('LPT1.foo')).toThrow(/reserved device name/);
+    // A name that merely starts with those letters is fine.
+    expect(() => assertValidProviderName('console')).not.toThrow();
   });
 
   it('rejects a name that collides case-insensitively with an existing provider', async () => {
@@ -235,5 +240,24 @@ describe('http provider: legacy singleton migration', () => {
     expect(fs.existsSync(path.join(httpProviderHome('company'), 'stale.txt'))).toBe(false);
     expect(fs.existsSync(path.join(httpProviderHome('company'), 'manifest.json'))).toBe(true);
     expect((await getHttpProviderConfig('company'))?.endpoint).toBe('https://legacy/api');
+  });
+
+  it('resumes when a prior attempt already wrote the registry entry but no marker', async () => {
+    await seedLegacy('legacy-token');
+    const { migrateLegacyHttpProvider, upsertHttpProviderConfig, legacySingletonActive } = await import(
+      '../providers/http/store.js'
+    );
+    // Simulate a crash AFTER upsert (registry entry with the legacy endpoint)
+    // but BEFORE the marker: legacy is still active. A retry must resume, not
+    // fail with "already exists".
+    await upsertHttpProviderConfig({
+      name: 'company', adapter: 'clawpro', endpoint: 'https://legacy/api', priority: 50,
+    });
+    expect(await legacySingletonActive()).toBe(true);
+
+    const config = await migrateLegacyHttpProvider({ name: 'company' });
+    expect(config).not.toBeNull();
+    // Migration now completed: legacy marked migrated.
+    expect(await legacySingletonActive()).toBe(false);
   });
 });

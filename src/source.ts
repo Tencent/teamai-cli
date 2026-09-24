@@ -302,6 +302,22 @@ export async function sourceAddHttp(
     return;
   }
 
+  // Single-provider gate (issue #404 phase 2): a named HTTP provider and this
+  // legacy singleton would both be dispatched each session, reintroducing the
+  // cross-provider resource-ownership and timeout problems the phase-2 gate
+  // exists to avoid. Refuse rather than create a second active HTTP backend.
+  const { listHttpProviderConfigs } = await import('./providers/http/store.js');
+  const namedProviders = await listHttpProviderConfigs();
+  if (namedProviders.length > 0) {
+    log.error(
+      `A named HTTP provider ("${namedProviders[0].name}") is already configured. `
+      + 'Running it alongside a legacy HTTP source needs cross-provider ownership '
+      + 'arbitration (issue #404 phase 4) and is not supported yet.',
+    );
+    log.info(`Remove it first with \`teamai provider remove ${namedProviders[0].name}\`, or manage this endpoint via \`teamai provider add http\`.`);
+    return;
+  }
+
   if (options.dryRun) {
     log.info(`[dry-run] Would add HTTP source ${trimmed}`);
     return;

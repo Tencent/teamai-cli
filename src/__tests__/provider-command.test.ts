@@ -70,6 +70,39 @@ describe('provider add http: single-provider gate (issue #404 phase 2)', () => {
     const { listHttpProviderConfigs } = await import('../providers/http/store.js');
     expect(await listHttpProviderConfigs()).toEqual([]);
   });
+
+  it('rejects an invalid name with a clean exit, not an uncaught throw', async () => {
+    const { log } = await import('../utils/logger.js');
+    const { providerAddHttp } = await import('../provider-command.js');
+    // A Windows reserved name with an extension must be a clean error + exit(1).
+    await expect(
+      providerAddHttp('https://a/api', { name: 'CON.txt', token: 't' }),
+    ).rejects.toThrow(/process.exit\(1\)/);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('reserved device name'));
+    const { listHttpProviderConfigs } = await import('../providers/http/store.js');
+    expect(await listHttpProviderConfigs()).toEqual([]);
+  });
+});
+
+describe('provider migrate-legacy: single-provider gate (issue #404 phase 2)', () => {
+  it('refuses to migrate while a named provider already exists', async () => {
+    // Seed a legacy singleton AND a named provider.
+    const legacy = path.join(tmpDir, '.teamai', 'local-agent');
+    await fse.ensureDir(legacy);
+    await fse.writeJson(path.join(legacy, 'config.json'), {
+      endpoint: 'https://legacy/api', workspaceBindings: {}, createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    const { upsertHttpProviderConfig, listHttpProviderConfigs } = await import('../providers/http/store.js');
+    await upsertHttpProviderConfig({ name: 'existing', adapter: 'clawpro', endpoint: 'https://a/api', priority: 50 });
+
+    const { providerMigrateLegacy } = await import('../provider-command.js');
+    await expect(
+      providerMigrateLegacy({ name: 'migrated' }),
+    ).rejects.toThrow(/process.exit\(1\)/);
+
+    // Still only the original named provider; no second one was created.
+    expect((await listHttpProviderConfigs()).map((c) => c.name)).toEqual(['existing']);
+  });
 });
 
 describe('provider add http: registry published only after init succeeds (issue #404)', () => {

@@ -36,7 +36,14 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
     log.error('A provider name is required: --name <name>');
     process.exit(1);
   }
-  assertValidProviderName(opts.name);
+  // Validate the name here (not just deep in the store) so an invalid name is a
+  // clean error + exit, never an uncaught stack trace.
+  try {
+    assertValidProviderName(opts.name);
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exit(1);
+  }
 
   const adapter = opts.adapter ?? 'clawpro';
   // Fail early on an unknown adapter rather than after persisting config.
@@ -86,8 +93,9 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
   // Initialize the backend BEFORE publishing the registry record, so a failed
   // init (bad token, unwritable dir, hook injection failure) never leaves a
   // registered-but-broken provider that later hook dispatches keep loading.
-  // Publish the registry record only after init succeeds; on any failure roll
-  // back the partial state so a retry starts clean.
+  // Publish the registry record only after init succeeds; on any failure run a
+  // FULL teardown so nothing init already did — including the hooks it injected
+  // into the tools' settings — is left behind, then start clean on retry.
   const backend = getHttpAdapter(adapter);
   try {
     if (backend.initialize) {
@@ -95,6 +103,11 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
     }
     await upsertHttpProviderConfig(config);
   } catch (e) {
+    try {
+      await backend.teardown(config);
+    } catch (teardownErr) {
+      log.warn(`Rollback teardown for "${config.name}" hit an error: ${(teardownErr as Error).message}`);
+    }
     await removeHttpProviderState(config.name);
     await removeHttpProviderConfig(config.name);
     log.error(`Failed to add provider "${config.name}": ${(e as Error).message}`);
@@ -160,6 +173,23 @@ interface MigrateLegacyOptions {
 export async function providerMigrateLegacy(opts: MigrateLegacyOptions): Promise<void> {
   if (!opts.name) {
     log.error('A provider name is required: --name <name>');
+    process.exit(1);
+  }
+  try {
+    assertValidProviderName(opts.name);
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exit(1);
+  }
+  // Single-provider gate (issue #404 phase 2): migrating a legacy singleton
+  // while a named provider already exists would leave two named HTTP providers,
+  // bypassing the one-provider limit. Refuse until phase 4's arbitration lands.
+  const existing = await listHttpProviderConfigs();
+  if (existing.length > 0) {
+    log.error(
+      `A named HTTP provider ("${existing[0].name}") already exists; migrating the legacy `
+      + 'singleton would create a second one, which is not supported yet (issue #404 phase 4).',
+    );
     process.exit(1);
   }
   const config = await migrateLegacyHttpProvider({

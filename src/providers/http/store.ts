@@ -72,8 +72,12 @@ interface ProviderRegistryFile {
   http?: HttpProviderConfig[];
 }
 
-/** Windows reserved device names (case-insensitive), which cannot be a path segment. */
-const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+/**
+ * Windows reserved device names (case-insensitive). Windows forbids these both
+ * bare and with any extension (`CON`, `CON.txt`, `LPT1.foo` all resolve to the
+ * device), so match an optional `.<ext>` suffix too.
+ */
+const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
 /**
  * A provider name becomes a single path segment for its state dir and
@@ -215,15 +219,18 @@ export async function migrateLegacyHttpProvider(options: {
     priority: options.priority ?? legacy.priority ?? 50,
   };
 
-  // Conflict is decided by the registry, not the home directory: a real
-  // `provider add` records the name in settings.json. A home dir that exists
-  // WITHOUT a registry entry (and with no marker — checked above) is leftover
-  // from a migration that crashed before it finished. Because the legacy dir
-  // stays authoritative until the marker is written, that partial home carries
-  // no unique data and is safe to discard and rebuild — which is what makes
-  // this operation retriable rather than permanently stuck.
+  // Retriability: because the legacy marker is written LAST, reaching this
+  // point means the previous attempt (if any) was interrupted before it
+  // finished — the legacy backend is still authoritative. Any partial state the
+  // previous attempt left (a registry entry, a half-copied home) therefore
+  // carries no unique data and belongs to THIS same migration, so we resume by
+  // discarding and rebuilding it rather than failing with "already exists".
+  //
+  // A registry entry for this name whose endpoint DIFFERS from the legacy one is
+  // a genuine foreign `provider add` conflict, not our leftover — reject that.
   const home = httpProviderHome(options.name);
-  if (await getHttpProviderConfig(options.name)) {
+  const existingEntry = await getHttpProviderConfig(options.name);
+  if (existingEntry && existingEntry.endpoint !== config.endpoint) {
     throw new Error(`Provider "${options.name}" already exists; choose another name.`);
   }
   await remove(home);
