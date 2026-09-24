@@ -249,11 +249,24 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   const { filterEventsByScope } = await import('./team-push.js');
   const scopedEvents = filterEventsByScope(await readEvents(), scopeFilter);
   const metricsMap = aggregateSessionMetrics(scopedEvents);
-  // Only subtract what the team already holds. When the reported totals could
-  // not be read at all (no stats file yet, an unreadable one, a reports worktree
-  // that is not there), the local snapshot says nothing about what the team
-  // has, and subtracting it would hide sessions the user can see happening.
-  const localDashboard = config && reported
+  // Only subtract what the team already holds. Two guards, because the local
+  // snapshots are machine-global while the team file is per user:
+  //
+  //  - `reported` null (no stats file, an unreadable one, a reports worktree
+  //    that is not there): the snapshot says nothing about what the team
+  //    holds, and subtracting it would hide sessions the member can see.
+  //  - `reported` present but empty: the team has received nothing yet, so a
+  //    snapshot entry cannot describe something it holds. Subtracting anyway
+  //    undercounts — down to "No usage data yet." with sessions on disk.
+  //
+  // Snapshots are written under the same lock as the team file, so a non-empty
+  // team total is what licenses trusting the snapshot.
+  const teamHasReported = !!reported && (
+    (reported.interventions?.sessions ?? 0) > 0
+    || (reported.prompts ?? 0) > 0
+    || totalTokens(reported.tokens ?? emptyTokenUsage()) > 0
+  );
+  const localDashboard = config && teamHasReported
     ? await unreportedDashboardStats(metricsMap)
     : aggregateDashboardStats(metricsMap);
   const dashboard = mergeDashboardAndReported(localDashboard, reported);

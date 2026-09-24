@@ -341,6 +341,33 @@ describe('showStats scope and idempotency', () => {
 
     const out = await showStatsFromProject();
 
+
+    expect(outputNumber(out, 'Sessions:')).toBe(1);
+    expect(outputNumber(out, 'Conversation turns:')).toBe(1);
+  });
+
+  it('does not subtract a snapshot the team file never received', async () => {
+    // The local snapshots are machine-global while the team file is per-scope,
+    // so a snapshot can name a session this team never got — an empty team file
+    // with a populated snapshot. Subtracting anyway undercounts to nothing.
+    await seedProjectConfig();
+    await appendEvents(session('sess-1', DIRS.project));
+
+    await writeReportedStats({
+      username: 'tester',
+      updatedAt: '2026-09-20T11:00:00.000Z',
+      skills: {},
+      prompts: 0,
+      tokens: ZERO_TOKENS,
+      interventions: { sessions: 0, interrupt: 0, toolReject: 0, correction: 0 },
+    });
+    await writeReportedSnapshots(
+      { 'sess-1': { interrupt: 0, toolReject: 0, correction: 0 } },
+      { 'sess-1': { prompts: 1, tokens: SESSION_TOKENS } },
+    );
+
+    const out = await showStatsFromProject();
+
     expect(outputNumber(out, 'Sessions:')).toBe(1);
     expect(outputNumber(out, 'Conversation turns:')).toBe(1);
   });
