@@ -46,12 +46,7 @@ async function loadPackageContext(cwd: string): Promise<{
   localConfig: LocalConfig;
   manifest: PackageManifest;
 } | null> {
-  // No hint for a project whose config cannot be read: what loads after it may
-  // be another team's (#784).
-  let unreadable = false;
-  const project = await detectProjectConfig(cwd, () => { unreadable = true; });
-  if (unreadable) return null;
-  const localConfig = project ?? await loadLocalConfig();
+  const localConfig = await detectProjectConfig(cwd) ?? await loadLocalConfig();
   if (!localConfig || localConfig.repo.kind === 'http') return null;
   const manifest = await loadPackageManifest(localConfig.repo.localPath);
   if (!hasPackageDeclarations(manifest)) return null;

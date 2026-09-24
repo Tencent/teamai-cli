@@ -109,7 +109,10 @@ export const PULL_TIMEOUT_MS = 120_000;
 
 const pullHandler: HookHandler = {
   name: 'pull',
-  async execute(stdin, tool) {
+  async execute(stdin, tool, config) {
+    // No scope here, or its project config cannot be read: what detection
+    // loads after that file may be another team's, so nothing runs (#784).
+    if (!config) return null;
     const cwd = resolveHookCwd(stdin);
     const hintCwd = cwd ?? process.cwd();
     const packageHints = await import('./pkg/pkg-hint.js');

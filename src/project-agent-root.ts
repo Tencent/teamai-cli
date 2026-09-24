@@ -38,19 +38,15 @@ function resolveSkillsPath(
  * somewhere to write. Bare `teamai pull` / `teamai init` still do not create
  * agent roots — only the hook that knows which tool just opened does.
  *
- * No-ops when: not project scope or its config cannot be read, the tool is
- * disabled / not in enabledAgents, the tool is unknown, or the resolved root
- * would escape the project.
+ * No-ops when: not project scope, the tool is disabled / not in enabledAgents,
+ * the tool is unknown, or the resolved root would escape the project.
  */
 export async function seedProjectAgentRoot(tool: string, cwd?: string): Promise<void> {
   const id = tool.trim();
   if (!id) return;
 
-  // An unreadable project config is not skipped for what loads after it: a
-  // legacy `.teamai/` may name another team, and pull refuses there (#784).
-  let unreadable = false;
-  const projectConfig = await detectProjectConfig(cwd, () => { unreadable = true; });
-  if (!projectConfig || unreadable) return;
+  const projectConfig = await detectProjectConfig(cwd);
+  if (!projectConfig) return;
 
   if (isAgentDisabled(projectConfig, id)) return;
   const enabled = projectConfig.enabledAgents;

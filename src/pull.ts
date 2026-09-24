@@ -1909,8 +1909,8 @@ export async function pull(
   const [problem] = unreadable;
   if (problem !== undefined) {
     const message = `Nothing was synced: ${describeUnreadableConfig(problem)}`;
-    // The SessionStart pull is silent, and a pre-dispatch hook still runs
-    // `teamai pull --silent` in the foreground: debug.log keeps the record.
+    // A pre-dispatch hook still runs `teamai pull --silent` in the foreground:
+    // debug.log keeps the record.
     if (options.silent) {
       log.persist(message);
       return;

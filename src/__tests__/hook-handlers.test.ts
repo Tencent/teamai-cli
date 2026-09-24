@@ -209,7 +209,7 @@ describe('hook-handlers registry', () => {
       (r) => r.event === 'session-start' && r.handler.name === 'pull',
     )!.handler;
 
-    await handler.execute({ session_id: 's-pull', cwd: '/tmp/some-project' }, 'claude', null);
+    await handler.execute({ session_id: 's-pull', cwd: '/tmp/some-project' }, 'claude', scope);
 
     expect(mockSeedProjectAgentRoot).toHaveBeenCalledWith('claude', '/tmp/some-project');
     expect(mockPull).toHaveBeenCalledWith({ silent: true });
@@ -229,7 +229,7 @@ describe('hook-handlers registry', () => {
       (r) => r.event === 'session-start' && r.handler.name === 'pull',
     )!.handler;
 
-    await handler.execute({ workspace_roots: ['/tmp/cursor-project'] }, 'cursor', null);
+    await handler.execute({ workspace_roots: ['/tmp/cursor-project'] }, 'cursor', scope);
 
     expect(mockSeedProjectAgentRoot).toHaveBeenCalledWith('cursor', '/tmp/cursor-project');
   });
@@ -242,10 +242,23 @@ describe('hook-handlers registry', () => {
 
     await handler.execute(
       { cwd: '/from-cwd', workspace_roots: ['/from-roots'] },
-      'claude', null,
+      'claude', scope,
     );
 
     expect(mockSeedProjectAgentRoot).toHaveBeenCalledWith('claude', '/from-cwd');
+  });
+
+  it('session-start pull runs nothing where no scope resolved, as for an unreadable project config (#784)', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'session-start' && r.handler.name === 'pull',
+    )!.handler;
+
+    await handler.execute({ session_id: 's-pull', cwd: '/tmp/some-project' }, 'claude', null);
+
+    expect(mockSeedProjectAgentRoot).not.toHaveBeenCalled();
+    expect(mockPull).not.toHaveBeenCalled();
+    expect(mockStashPackageHint).not.toHaveBeenCalled();
   });
 
   it('stop has update, contribute-check, and dashboard-report handlers', () => {
