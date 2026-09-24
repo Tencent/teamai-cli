@@ -1,4 +1,5 @@
 import { execSync, spawnSync } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,8 +17,8 @@ function gfBinPath(): string {
   return path.join(gfInstallDir(), 'gf', 'bin', 'gf');
 }
 
-/** Download base URL for gf CLI tarballs */
-const GF_DOWNLOAD_BASE = 'http://mirrors.tencent.com/repository/generic/gongfeng-cli/files/channels/stable';
+/** Download base URL for gf CLI tarballs (HTTPS so the binary is fetched over TLS) */
+const GF_DOWNLOAD_BASE = 'https://mirrors.tencent.com/repository/generic/gongfeng-cli/files/channels/stable';
 
 // ─── Shell helpers ───────────────────────────────────────
 
@@ -142,7 +143,35 @@ export function isGfInstalled(): boolean {
 }
 
 /**
+ * Extract the expected SHA-256 from dumped HTTP response headers.
+ *
+ * The mirror answers a GET with a 302 to a BkRepo/COS backend whose object key
+ * IS the artifact's SHA-256 (e.g. `location: https://…cos…/<sha256>?…`), and
+ * that backend does not echo an `x-checksum-sha256` header. So we read the
+ * digest from the redirect URL first, and fall back to the `x-checksum-sha256`
+ * header for the case where the mirror serves the file directly (no redirect).
+ * Returns null when neither is present.
+ */
+function parseExpectedSha256(headerText: string): string | null {
+  // Content-addressed redirect target: last 64-hex token on any `location:` line.
+  for (const line of headerText.split(/\r?\n/)) {
+    if (/^location:/i.test(line)) {
+      const hashes = line.match(/[0-9a-f]{64}/gi);
+      if (hashes?.length) return hashes[hashes.length - 1].toLowerCase();
+    }
+  }
+  // Direct-serve fallback: explicit checksum header.
+  const header = headerText.match(/^x-checksum-sha256:\s*([0-9a-f]{64})\s*$/im);
+  return header?.[1]?.toLowerCase() ?? null;
+}
+
+/**
  * Ensure gf CLI is installed. Downloads to ~/.teamai/gf/ if not found.
+ *
+ * The tarball is fetched over HTTPS to a temp file first (not piped straight
+ * into tar), its SHA-256 is checked against the mirror's `x-checksum-sha256`
+ * header, and only then is it extracted — so a truncated or corrupted download
+ * is rejected before any bytes reach the archive extractor.
  */
 export async function ensureGfInstalled(): Promise<void> {
   if (isGfInstalled()) {
@@ -151,26 +180,65 @@ export async function ensureGfInstalled(): Promise<void> {
   }
 
   const url = getGfDownloadUrl();
+  const dir = gfInstallDir();
+  // Unique temp names per attempt so concurrent installs cannot overwrite or
+  // delete each other's download before it is hashed and extracted.
+  const tmpId = `${process.pid}-${randomBytes(6).toString('hex')}`;
+  const tarballPath = path.join(dir, `gf-download.${tmpId}.tar.gz`);
+  const headerPath = path.join(dir, `gf-download.${tmpId}.headers`);
   const spin = spinner('Installing gf CLI (工蜂命令行工具)...').start();
 
   try {
-    await ensureDir(gfInstallDir());
+    await ensureDir(dir);
 
-    // Download and extract tarball
+    // Download the tarball to a temp file (over HTTPS), dumping response
+    // headers so we can verify integrity before touching tar.
     execSync(
-      `curl -fsSL "${url}" | tar xz -C "${gfInstallDir()}"`,
+      `curl -fsSL -D "${headerPath}" -o "${tarballPath}" "${url}"`,
       { stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000 },
     );
+
+    // Verify SHA-256 against the mirror's advertised digest (the content-
+    // addressed redirect target, or the x-checksum-sha256 header). Fail closed:
+    // if we cannot obtain an expected digest, we cannot vouch for the binary —
+    // abort rather than extract and execute an unverified archive.
+    const expected = parseExpectedSha256(fs.readFileSync(headerPath, 'utf-8'));
+    if (!expected) {
+      throw new Error(
+        'gf CLI download integrity check failed (mirror advertised no SHA-256 digest)',
+      );
+    }
+    const actual = createHash('sha256')
+      .update(fs.readFileSync(tarballPath))
+      .digest('hex');
+    if (actual !== expected) {
+      throw new Error(
+        `gf CLI download integrity check failed (sha256 mismatch: expected ${expected}, got ${actual})`,
+      );
+    }
+
+    // Extract the verified tarball.
+    execSync(`tar xz -f "${tarballPath}" -C "${dir}"`, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
 
     // Verify installation
     execSync(`test -x "${gfBinPath()}"`, { stdio: ['pipe', 'pipe', 'pipe'] });
 
-    spin.succeed(`gf CLI installed to ${gfInstallDir()}`);
+    spin.succeed(`gf CLI installed to ${dir}`);
   } catch (e) {
     spin.fail(`Failed to install gf CLI: ${(e as Error).message}`);
     log.info(`You can install it manually from: ${url}`);
-    log.info(`Extract to: ${gfInstallDir()}`);
+    log.info(`Extract to: ${dir}`);
     throw e;
+  } finally {
+    // Clean up temp files regardless of success/failure.
+    try {
+      fs.rmSync(tarballPath, { force: true });
+      fs.rmSync(headerPath, { force: true });
+    } catch {
+      // best-effort cleanup
+    }
   }
 }
 

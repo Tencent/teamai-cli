@@ -34,14 +34,17 @@ vi.mock('../utils/fs.js', () => ({
 
 const mockExistsSync = vi.fn();
 const mockReadFileSync = vi.fn();
+const mockRmSync = vi.fn();
 vi.mock('node:fs', () => ({
   default: {
     existsSync: (...args: unknown[]) => mockExistsSync(...args),
     readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
+    rmSync: (...args: unknown[]) => mockRmSync(...args),
   },
 }));
 
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { execSync } from 'node:child_process';
 import {
@@ -51,6 +54,7 @@ import {
   gfIsAuthenticated,
   gfAuthLogin,
   ensureAuthenticated,
+  ensureGfInstalled,
 } from '../providers/tgit/gf-cli.js';
 
 describe('gfGetOAuthToken', () => {
@@ -305,5 +309,133 @@ describe('gf auth commands run from a neutral cwd', () => {
     } finally {
       Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
     }
+  });
+});
+
+describe('ensureGfInstalled', () => {
+  const mockExecSync = vi.mocked(execSync);
+  // A fixed fake tarball and its real sha256, so the code-under-test and the
+  // test agree on the digest without mocking node:crypto.
+  const TARBALL = Buffer.from('fake-gf-tarball-bytes');
+  const REAL_SHA = createHash('sha256').update(TARBALL).digest('hex');
+
+  // Drive getGfPath() to "not installed" (forcing a download), then let
+  // curl / tar / the final `test -x` verification all succeed. onTar records
+  // whether extraction was reached.
+  function primeExecSync(opts: { onTar?: () => void } = {}): void {
+    mockExecSync.mockImplementation((cmd: string) => {
+      if (cmd.includes('&& echo ok')) throw new Error('not installed locally');
+      if (cmd === 'which gf') throw new Error('not in PATH');
+      if (cmd.startsWith('curl')) return '' as any; // download to temp file
+      if (cmd.startsWith('tar ')) {
+        opts.onTar?.();
+        return '' as any; // extract
+      }
+      if (cmd.includes('test -x')) return '' as any; // final verify
+      throw new Error(`unexpected execSync: ${cmd}`);
+    });
+  }
+
+  // Mirror the real download: a 302 whose location path is the content-
+  // addressed sha256, and a backend that does NOT echo x-checksum-sha256.
+  const headersWithRedirect = (sha: string) =>
+    `HTTP/2 302\r\nlocation: https://mirror-backend.example.cos/${sha}?sign=abc\r\n\r\n` +
+    'HTTP/1.1 200 OK\r\ncontent-type: application/x-gzip\r\n';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // header read (utf-8) → redirect headers; tarball read (buffer) → bytes
+    mockReadFileSync.mockImplementation((_p: string, enc?: string) =>
+      enc === 'utf-8' ? headersWithRedirect(REAL_SHA) : TARBALL,
+    );
+  });
+
+  it('downloads over HTTPS, never plaintext http', async () => {
+    primeExecSync();
+    await ensureGfInstalled();
+
+    const curl = mockExecSync.mock.calls
+      .map((c) => c[0] as string)
+      .find((c) => c.startsWith('curl'))!;
+    expect(curl).toContain('https://mirrors.tencent.com/');
+    expect(curl).not.toContain('http://mirrors.tencent.com/');
+  });
+
+  it('does not pipe curl straight into tar (download and extract are separate)', async () => {
+    primeExecSync();
+    await ensureGfInstalled();
+
+    for (const [cmd] of mockExecSync.mock.calls) {
+      expect(cmd as string).not.toMatch(/curl[\s\S]*\|\s*tar/);
+    }
+  });
+
+  it('extracts using the digest from the content-addressed redirect URL', async () => {
+    // The default mock has no x-checksum-sha256 header — only the redirect path
+    // carries the digest, matching the real mirror behavior.
+    let tarCalled = false;
+    primeExecSync({ onTar: () => { tarCalled = true; } });
+
+    await expect(ensureGfInstalled()).resolves.toBeUndefined();
+    expect(tarCalled).toBe(true);
+  });
+
+  it('falls back to the x-checksum-sha256 header when there is no redirect', async () => {
+    let tarCalled = false;
+    primeExecSync({ onTar: () => { tarCalled = true; } });
+    // Direct serve: 200 with an explicit checksum header, no location line.
+    mockReadFileSync.mockImplementation((_p: string, enc?: string) =>
+      enc === 'utf-8' ? `HTTP/1.1 200 OK\r\nx-checksum-sha256: ${REAL_SHA}\r\n` : TARBALL,
+    );
+
+    await expect(ensureGfInstalled()).resolves.toBeUndefined();
+    expect(tarCalled).toBe(true);
+  });
+
+  it('throws and does not extract when the sha256 mismatches', async () => {
+    let tarCalled = false;
+    primeExecSync({ onTar: () => { tarCalled = true; } });
+    // Redirect advertises a different digest than the downloaded bytes.
+    const wrong = 'a'.repeat(64);
+    mockReadFileSync.mockImplementation((_p: string, enc?: string) =>
+      enc === 'utf-8' ? headersWithRedirect(wrong) : TARBALL,
+    );
+
+    await expect(ensureGfInstalled()).rejects.toThrow(/integrity check failed/);
+    expect(tarCalled).toBe(false);
+  });
+
+  it('fails closed (throws, no extract) when no digest is advertised', async () => {
+    let tarCalled = false;
+    primeExecSync({ onTar: () => { tarCalled = true; } });
+    // Neither a redirect digest nor an x-checksum-sha256 header.
+    mockReadFileSync.mockImplementation((_p: string, enc?: string) =>
+      enc === 'utf-8' ? 'HTTP/1.1 200 OK\r\ncontent-type: application/x-gzip\r\n' : TARBALL,
+    );
+
+    await expect(ensureGfInstalled()).rejects.toThrow(/integrity check failed/);
+    expect(tarCalled).toBe(false);
+  });
+
+  it('cleans up the temp tarball and header files afterward', async () => {
+    primeExecSync();
+    await ensureGfInstalled();
+
+    const removed = mockRmSync.mock.calls.map((c) => c[0] as string);
+    expect(removed.some((p) => /gf-download\..+\.tar\.gz$/.test(p))).toBe(true);
+    expect(removed.some((p) => /gf-download\..+\.headers$/.test(p))).toBe(true);
+  });
+
+  it('uses a unique temp filename per attempt (no fixed shared path)', async () => {
+    primeExecSync();
+    await ensureGfInstalled();
+
+    const curl = mockExecSync.mock.calls
+      .map((c) => c[0] as string)
+      .find((c) => c.startsWith('curl'))!;
+    // A per-attempt id sits between the gf-download prefix and the extension,
+    // so concurrent installs cannot collide on one shared tarball path.
+    expect(curl).toMatch(/gf-download\.\d+-[0-9a-f]+\.tar\.gz/);
+    expect(curl).not.toMatch(/gf-download\.tar\.gz/);
   });
 });

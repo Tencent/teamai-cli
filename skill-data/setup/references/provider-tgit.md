@@ -35,17 +35,37 @@ Use the **same source, path, and check teamai uses** — do not invent your own 
 `${TEAMAI_HOME}` is `~/.teamai` unless overridden:
 
 ```bash
+set -eu   # abort on any failure — never fall through to `gf auth login` on a bad install
+
 # pick the tarball for this machine's OS/arch (darwin|linux × x64|arm64)
 os=$(uname -s | tr '[:upper:]' '[:lower:]')          # darwin | linux
 arch=$(uname -m); [ "$arch" = "x86_64" ] && arch=x64; [ "$arch" = "aarch64" ] && arch=arm64
 dir="${TEAMAI_HOME:-$HOME/.teamai}/gf"
+url="https://mirrors.tencent.com/repository/generic/gongfeng-cli/files/channels/stable/gf-${os}-${arch}.tar.gz"
 
-# download + extract from the Tencent-internal mirror (same URL teamai uses)
+# unique temp files per attempt so concurrent/interrupted runs never collide,
+# cleaned up on any exit
 mkdir -p "$dir"
-curl -fsSL "http://mirrors.tencent.com/repository/generic/gongfeng-cli/files/channels/stable/gf-${os}-${arch}.tar.gz" | tar xz -C "$dir"
+tmp="$dir/gf-download.$$-$RANDOM"
+trap 'rm -f "$tmp.tar.gz" "$tmp.headers"' EXIT
 
+# download over HTTPS, verify sha256, THEN extract (the same safe path teamai
+# uses). Fail closed: no advertised digest, or a mismatch, aborts the install.
+curl -fsSL -D "$tmp.headers" -o "$tmp.tar.gz" "$url"
+# The mirror 302-redirects to a content-addressed backend whose URL path is the
+# artifact's sha256; fall back to the x-checksum-sha256 header for direct serves.
+expected=$(grep -i '^location:' "$tmp.headers" | grep -oiE '[0-9a-f]{64}' | tail -1 || true)
+[ -n "$expected" ] || expected=$(grep -i '^x-checksum-sha256:' "$tmp.headers" | tr -d '\r' | awk '{print $2}' || true)
+actual=$( (command -v sha256sum >/dev/null && sha256sum "$tmp.tar.gz" || shasum -a 256 "$tmp.tar.gz") | awk '{print $1}')
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+  echo "gf download integrity check FAILED (expected=$expected actual=$actual)" >&2
+  exit 1
+fi
+
+tar xz -f "$tmp.tar.gz" -C "$dir"
 # verify exactly as teamai does: the binary exists and is executable
-test -x "$dir/gf/bin/gf" && echo "gf installed OK" || echo "gf install FAILED"
+test -x "$dir/gf/bin/gf"
+echo "gf installed OK"
 ```
 
 Only macOS and Linux, on x64 or arm64, are supported.
