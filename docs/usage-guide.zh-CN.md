@@ -256,7 +256,18 @@ Windows 与 macOS 的默认文件系统上它们是同一个目录，限定到�
 teamai projects list                 # 已定义的项目 + 本目录激活的项目
 teamai projects set hai-inference    # 设置本目录激活的项目（覆盖语义；逗号分隔或重复；留空清除）
 teamai projects members hai-inference # 查看某项目下注册了哪些成员
+
+# 管理员：修改 manifest/projects.yaml 并发起 PR（均支持 --dry-run）
+teamai projects add checkout --namespaces common,checkout --name "Checkout"  # 首次 add 会创建 projects.yaml
+teamai projects update checkout --add-namespaces payments --remove-namespaces common
+teamai projects remove checkout
 ```
+
+`--namespaces` 会把同一组 namespace 写入项目的每种资源类型（`knowledge`、`skills`、
+`learnings`、`agents`）；`update` 在每种类型各自的列表上增删，因此手工编辑过的按类型
+布局会被保留。执行 `projects remove` 后，仍激活该项目的目录在下一次 pull 时会提示警告、
+回退为仅按角色过滤，并清理已部署的该项目 skills、rules 和 agents——前提是该项目的内容
+仍在团队仓库中，因为正是靠它识别已部署的副本。请在成员都 pull 过之后，再用单独的变更删除这些内容。
 
 成员登记是 `init` 的**副作用**：执行 `teamai init --project <id>` 会把 `<id>`
 追加进你的 `members/<user>.yaml` 名册（跨目录 append + 去重），于是团队侧可以回答
@@ -1809,7 +1820,7 @@ HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill �
 | `teamai codebase --lint` | 知识图谱健康检查 |
 | `teamai ci extract-mr --url <url>` | CI：从 MR 提取知识、发评论、合并后写入 |
 | `teamai members` | 查看团队成员 |
-| `teamai projects` | 将工作目录绑定到一个或多个逻辑项目 |
+| `teamai projects` | 将工作目录绑定到一个或多个逻辑项目；管理员可增删改项目 |
 | `teamai roles` | 管理团队角色和命名空间 |
 | `teamai tags` | 管理基于标签的 skill/rule 过滤 |
 | `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](#排除个人不需要的-skill)） |

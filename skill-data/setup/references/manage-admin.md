@@ -76,10 +76,16 @@ repo per project:
 teamai projects list         # projects defined + the ones active in this directory
 teamai projects set [ids...]     # set the active project(s) for this directory
 teamai projects members <id> # who is registered on a project
+teamai projects add <id> --namespaces common,<id>   # add a project (creates projects.yaml if needed)
+teamai projects update <id> --add-namespaces <ns>   # or --remove-namespaces / --name / --description
+teamai projects remove <id>  # remove a project
 ```
 
 A member gets the union of their role resources and their active project's
-resources. Admins declare projects in `manifest/projects.yaml`, then `teamai push`.
+resources. Admins declare projects in `manifest/projects.yaml` with the commands
+above, each of which opens a PR (`--dry-run` previews). After `projects remove`,
+keep the project's content in the team repo until members have pulled: that is
+what lets their next pull clean up the copies they deployed.
 
 Every namespace that names a directory — `knowledge`, `skills` and `agents` in
 either manifest, and `learnings` in `projects.yaml` (a role's `learnings:` is

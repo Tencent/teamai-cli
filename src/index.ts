@@ -382,6 +382,40 @@ projectsCmd
   });
 
 projectsCmd
+  .command('add <id>')
+  .description('Add a project to manifest/projects.yaml, creating the file if needed (admin)')
+  .requiredOption('--namespaces <ns>', 'Comma-separated namespaces for every project resource type (e.g. common,checkout)')
+  .option('--name <name>', 'Display name for the project')
+  .option('-d, --description <desc>', 'Description for the project')
+  .action(async (id: string, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { projectsAdd } = await import('./projects-cmd.js');
+    await projectsAdd(id, { ...globalOpts, ...cmdOpts });
+  });
+
+projectsCmd
+  .command('update <id>')
+  .description('Update a project in manifest/projects.yaml (admin)')
+  .option('--add-namespaces <ns>', 'Comma-separated namespaces to add to every resource type')
+  .option('--remove-namespaces <ns>', 'Comma-separated namespaces to remove from every resource type')
+  .option('--name <name>', 'New display name for the project')
+  .option('-d, --description <desc>', 'New description for the project')
+  .action(async (id: string, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { projectsUpdate } = await import('./projects-cmd.js');
+    await projectsUpdate(id, { ...globalOpts, ...cmdOpts });
+  });
+
+projectsCmd
+  .command('remove <id>')
+  .description('Remove a project from manifest/projects.yaml (admin)')
+  .action(async (id: string) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { projectsRemove } = await import('./projects-cmd.js');
+    await projectsRemove(id, globalOpts);
+  });
+
+projectsCmd
   .command('members <id>')
   .description('List members registered for a project')
   .action(async (id: string) => {

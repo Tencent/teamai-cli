@@ -120,6 +120,16 @@ Generated: do not edit by hand. Regenerate with
 - `teamai projects` — Manage multi-project resource distribution (orthogonal to roles)
   - `teamai projects list` — List defined projects and the ones active in this directory
   - `teamai projects set [ids...]` — Set the projects active in this directory (comma-separated or repeated; empty to clear)
+  - `teamai projects add <id>` — Add a project to manifest/projects.yaml, creating the file if needed (admin)
+    - `--namespaces <ns>` — Comma-separated namespaces for every project resource type (e.g. common,checkout)
+    - `--name <name>` — Display name for the project
+    - `-d, --description <desc>` — Description for the project
+  - `teamai projects update <id>` — Update a project in manifest/projects.yaml (admin)
+    - `--add-namespaces <ns>` — Comma-separated namespaces to add to every resource type
+    - `--remove-namespaces <ns>` — Comma-separated namespaces to remove from every resource type
+    - `--name <name>` — New display name for the project
+    - `-d, --description <desc>` — New description for the project
+  - `teamai projects remove <id>` — Remove a project from manifest/projects.yaml (admin)
   - `teamai projects members <id>` — List members registered for a project
 
 ## tags

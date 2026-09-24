@@ -277,7 +277,21 @@ offending entry.
 teamai projects list                 # Defined projects + the ones active in this directory
 teamai projects set hai-inference    # Set active project(s) for this directory (overwrite; comma-separated or repeated; empty to clear)
 teamai projects members hai-inference # Who is registered on a project
+
+# Admin: edit manifest/projects.yaml and open a PR (all support --dry-run)
+teamai projects add checkout --namespaces common,checkout --name "Checkout"  # The first add creates projects.yaml
+teamai projects update checkout --add-namespaces payments --remove-namespaces common
+teamai projects remove checkout
 ```
+
+`--namespaces` sets the same namespaces on every project resource type
+(`knowledge`, `skills`, `learnings`, `agents`); `update` adds or removes them on
+each type's own list, so a hand-edited per-type layout survives. After
+`projects remove`, a directory that still has the project active warns on its
+next pull, falls back to role-only filtering, and has the project's deployed
+skills, rules and agents cleaned up — as long as the project's content is still
+in the team repo, since that is what identifies the deployed copies. Delete the
+content in a later change, after members have pulled.
 
 Member registration is a **side-effect of `init`**: running `teamai init --project <id>`
 appends `<id>` to your `members/<user>.yaml` roster (append + dedupe across
@@ -1877,7 +1891,7 @@ An HTTP source reports status and pulls skill commands via hook dispatch on ever
 | `teamai codebase --lint` | Knowledge graph health check |
 | `teamai ci extract-mr --url <url>` | CI: extract knowledge from MR, post comments, write after merge |
 | `teamai members` | List team members |
-| `teamai projects` | Bind a working directory to one or more logical projects |
+| `teamai projects` | Bind a working directory to one or more logical projects; admins add, update and remove projects |
 | `teamai roles` | Manage team roles and namespaces |
 | `teamai tags` | Manage tag-based skill/rule filtering |
 | `teamai skill exclude add/remove/list` | Manage skills excluded from local sync ([usage guide](#excluding-skills-you-dont-need)) |
