@@ -189,10 +189,15 @@ effect, both of which would mask the raw legacy state). Act iff:
   so moving it would break "knowledge on main".
 
 The plan's **mode** then depends on the partition: a full copy when
-`<partition>/config.yaml` does not exist yet, or **retire-only** when it does (a prior
-run built the partition but was interrupted before retiring the source — see Interrupt
-recovery). retire-only never re-copies onto the authoritative partition; it only cleans
-up the leftover legacy dir.
+`<partition>/config.yaml` does not exist yet, or **retire-only** when it exists and
+detection can read it (a prior run built the partition but was interrupted before
+retiring the source — see Interrupt recovery). retire-only never re-copies onto the
+authoritative partition; it only cleans up the leftover legacy dir. A partition
+`config.yaml` that exists but that detection cannot read (it does not parse, does not
+validate, or is not `scope: project`) plans nothing: the legacy dir holds the only
+config that still loads, so it stays in place until the member fixes the partition
+file, and the next write command then gets the retire-only cleanup. The re-check under
+the lock in `runMigration` applies the same rule.
 
 **Steps** (`runMigration`) — copy → verify → atomic rename, so an interruption never
 leaves data half-in-both-places:
@@ -226,7 +231,7 @@ leaves data half-in-both-places:
 Interrupt recovery: staging is a separate sibling dir, so a crash before step 3 leaves
 the partition absent and the source intact — a rerun discards `.staging/` and starts
 clean. A crash between steps 3 and 5 leaves the partition built with the legacy dir
-still present; the next write command's `planMigration` sees "partition exists AND
+still present; the next write command's `planMigration` sees "readable partition AND
 legacy lingers" and returns a **retire-only** plan that finishes the job — it retires
 the leftover legacy dir to `.teamai.bak/` WITHOUT re-copying onto the now-authoritative
 partition. This closes the gap where the legacy dir (including its plaintext `env`)

@@ -7,6 +7,7 @@ import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
 import { realpath } from 'node:fs/promises';
 import { expandHome, pathExists, readFileSafe, remove, writeFile } from './utils/fs.js';
 import { acquireLock, releaseLock } from './update.js';
+import { readConfigFrom } from './config.js';
 import { log } from './utils/logger.js';
 
 /**
@@ -114,8 +115,9 @@ const SELF_A1_ENTRIES = [
  *  - the legacy config is user scope (user data never lives under `.teamai/`),
  *  - the legacy config is self mode (its `.teamai/` is committed team knowledge).
  *
- * When a partition config already exists AND a legacy dir still lingers, returns
- * a 'retire-only' plan to finish an interrupted migration instead of skipping.
+ * When a readable partition config already exists AND a legacy dir still
+ * lingers, returns a 'retire-only' plan to finish an interrupted migration
+ * instead of skipping. A partition config that exists but cannot be read skips.
  */
 export async function planMigration(cwd?: string): Promise<MigrationPlan | null> {
   const anchors = await resolveAnchors(cwd ?? process.cwd());
@@ -174,10 +176,15 @@ export async function planMigration(cwd?: string): Promise<MigrationPlan | null>
   // run that crashed before retiring the source). Don't re-copy onto the
   // authoritative partition — just finish the job by retiring the leftover
   // legacy dir, so the workspace really does end up residue-free.
-  const mode: MigrationPlan['mode'] =
-    (await pathExists(path.join(partitionDir, 'config.yaml'))) ? 'retire-only' : 'full';
+  if (await readConfigFrom(partitionDir, anchors.workspaceRoot)) {
+    return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode: 'retire-only' };
+  }
+  // A partition config that exists but that detection cannot read is not
+  // "built": the legacy dir holds the only config that still loads. Leave it in
+  // place; once the member fixes the file, the next run retires it (#797).
+  if (await pathExists(path.join(partitionDir, 'config.yaml'))) return null;
 
-  return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode };
+  return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode: 'full' };
 }
 
 /** True if any of `names` exists directly under `dir`. */
@@ -267,14 +274,19 @@ export async function runMigration(
     }
 
     // Re-check under the lock: a sibling worktree may have migrated while we
-    // waited (TOCTOU). If the partition config now exists, retire our leftover
-    // legacy dir rather than copying onto the authoritative partition.
-    if (await pathExists(path.join(partitionDir, 'config.yaml'))) {
+    // waited (TOCTOU). If the partition config now reads, retire our leftover
+    // legacy dir rather than copying onto the authoritative partition; if it
+    // exists but does not read, keep the legacy dir as planMigration does.
+    if (await readConfigFrom(partitionDir, path.dirname(legacyDir))) {
       await releaseLock(lockPath);
       lockReleased = true;
       const backup = await retireLegacy(legacyDir);
       log.debug(`partition built by a concurrent process; retired ${legacyDir} to ${backup}`);
       return 'migrated';
+    }
+    if (await pathExists(path.join(partitionDir, 'config.yaml'))) {
+      log.debug(`migration skipped: ${partitionDir}/config.yaml cannot be read; kept ${legacyDir}`);
+      return 'skipped';
     }
 
     // 1. Copy into a sibling staging dir (NOT the partition itself) so an
