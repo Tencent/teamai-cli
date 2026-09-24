@@ -317,22 +317,50 @@ function collectDirtyPaths(status: PushRepoStatus): string[] {
   return [...paths].sort();
 }
 
-function isTeamaiOwnedDirtyPath(filePath: string, pendingTeamConfig: string | null): boolean {
+async function hasGitModeChange(
+  git: { raw?: (args: string[]) => Promise<string> },
+  filePath: string,
+): Promise<boolean> {
+  // The content snapshot is enough only when the file mode is unchanged. Check
+  // both the index and worktree diffs because a chmod can be staged, unstaged,
+  // or both alongside a content edit (#690 review).
+  if (typeof git.raw !== 'function') return false;
+  try {
+    const [worktreeDiff, indexDiff] = await Promise.all([
+      git.raw(['diff', '--summary', '--', filePath]),
+      git.raw(['diff', '--cached', '--summary', '--', filePath]),
+    ]);
+    return [worktreeDiff, indexDiff].some((diff) => /mode change \d+ => \d+/.test(diff));
+  } catch {
+    // If Git cannot prove that metadata is unchanged, stop before reset rather
+    // than risk discarding a mode change that was not captured.
+    return true;
+  }
+}
+
+function isTeamaiOwnedDirtyPath(
+  filePath: string,
+  pendingTeamConfig: string | null,
+  modeChangedPaths: ReadonlySet<string>,
+): boolean {
   const normalized = filePath.replaceAll('\\', '/');
   // The sync lock is disposable TeamAI state. teamai.yaml is different: it is
-  // safe to restore only when its working-tree content was captured above.
-  // Deletion and mode-only changes leave pendingTeamConfig null and must stop
-  // before reset --hard, or the user's change is silently lost (#690 review).
+  // safe to restore only when its content was captured above and its mode is
+  // unchanged. Deletion, mode-only, and content+mode changes must stop before
+  // reset --hard, or the user's change is silently lost (#690 review).
   if (normalized === '.teamai/.sync-lock') return true;
-  return normalized === 'teamai.yaml' && pendingTeamConfig !== null;
+  return normalized === 'teamai.yaml'
+    && pendingTeamConfig !== null
+    && !modeChangedPaths.has(normalized);
 }
 
 export function collectUnsafeDirtyPaths(
   status: PushRepoStatus,
   pendingTeamConfig: string | null,
+  modeChangedPaths: ReadonlySet<string> = new Set(),
 ): string[] {
   return collectDirtyPaths(status)
-    .filter((filePath) => !isTeamaiOwnedDirtyPath(filePath, pendingTeamConfig));
+    .filter((filePath) => !isTeamaiOwnedDirtyPath(filePath, pendingTeamConfig, modeChangedPaths));
 }
 
 /**
@@ -859,7 +887,15 @@ async function pushCore(
           pendingTeamConfig = workingContent;
         }
       }
-      const unsafeDirtyPaths = collectUnsafeDirtyPaths(await git.status(), pendingTeamConfig);
+      const modeChangedPaths = new Set<string>();
+      if (pendingTeamConfig !== null && await hasGitModeChange(git, 'teamai.yaml')) {
+        modeChangedPaths.add('teamai.yaml');
+      }
+      const unsafeDirtyPaths = collectUnsafeDirtyPaths(
+        await git.status(),
+        pendingTeamConfig,
+        modeChangedPaths,
+      );
       if (unsafeDirtyPaths.length > 0) {
         pullSpin.fail(
           'Cannot push: the team repo has uncommitted changes. Commit or stash them first. '
@@ -1475,12 +1511,6 @@ async function pushCore(
   // can happen in one run, so editing a resource under review updates its PR
   // without dragging unrelated resources into that review.
   const groups = planPushGroups(selectedItems, reusablePending);
-  const newGroupCount = groups.filter((group) => !group.reuse).length;
-  if (options.branch && newGroupCount > 1) {
-    log.error('`--branch` can only target one new push branch at a time; select one resource group or omit it.');
-    process.exitCode = 2;
-    return;
-  }
   reuseRecordedDestinations(groups);
   // The conflicting entries dropped above are deliberately not reused, so they
   // are not "partly selected" either — warning about them would contradict the
@@ -1498,19 +1528,25 @@ async function pushCore(
   })) return;
 
   // ── Step 5: Push each group — one branch/PR per group ──────────────
-  // Config edits ride along with the first group so they land in a single PR.
-  let configRider = pendingTeamConfig !== null;
+  // Config edits ride along with the first group normally. With --branch, an
+  // existing-PR group must not receive the config because the explicit branch
+  // is intended for the new group; route the config to that new group instead.
+  const configGroupIndex = pendingTeamConfig === null
+    ? -1
+    : options.branch
+      ? Math.max(groups.findIndex((group) => !group.reuse), 0)
+      : 0;
   // Track the outcome across groups: a run counts as completed only if at least
   // one group actually pushed AND no group's PR creation failed (#702 follow-up).
   let anyPushed = false;
   let anyPrFailed = false;
-  for (const group of groups) {
+  for (const [groupIndex, group] of groups.entries()) {
     const outcome = await pushGroup({
       group,
       teamConfig,
       localConfig,
       pushState,
-      includeTeamConfig: configRider,
+      includeTeamConfig: groupIndex === configGroupIndex,
       branch: options.branch,
     });
     if (outcome === 'failed') {
@@ -1526,7 +1562,6 @@ async function pushCore(
     // (`reconcilePlacementRecords`).
     if (outcome === 'pushed') anyPushed = true;
     if (outcome === 'pr-failed') anyPrFailed = true;
-    configRider = false;
   }
 
   // Update state (pushState already carries the pendingPushes records above)

@@ -27,8 +27,10 @@ describe('team repo dirty-path guard', () => {
     renamed: [],
   };
 
-  it('allows teamai.yaml only when its content was captured', () => {
+  it('allows teamai.yaml only when its content was captured and its mode is unchanged', () => {
     expect(collectUnsafeDirtyPaths({ ...cleanStatus, modified: ['teamai.yaml'] }, 'edited')).toEqual([]);
+    expect(collectUnsafeDirtyPaths({ ...cleanStatus, modified: ['teamai.yaml'] }, 'edited', new Set(['teamai.yaml'])))
+      .toEqual(['teamai.yaml']);
     expect(collectUnsafeDirtyPaths({ ...cleanStatus, modified: ['teamai.yaml'] }, null)).toEqual(['teamai.yaml']);
   });
 
@@ -81,6 +83,7 @@ const mockGitStatus = vi.fn().mockResolvedValue({
 });
 const mockCreateGit = vi.fn().mockReturnValue({
   status: mockGitStatus,
+  raw: vi.fn().mockResolvedValue(''),
   merge: mockMerge,
   stash: mockStash,
 });
