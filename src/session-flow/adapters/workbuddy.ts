@@ -509,12 +509,12 @@ export class WorkBuddyAdapter extends AgentAdapter {
   }
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
+    const cwd = projectPath ?? session.cwd;
     // 非 UUID 源 id 用确定性派生（同一源会话反复迁移命中同一个 id → 不产生重复会话）
+    // cwd 参与派生：WorkBuddy 的会话记录是全局键，同名 id 迁到两个工作区会互相覆盖。
     const sessionId = isUuidV4(session.sessionId)
       ? session.sessionId
-      : deriveTargetSessionId('workbuddy', session.sessionId);
-
-    const cwd = projectPath ?? session.cwd;
+      : deriveTargetSessionId('workbuddy', session.sessionId, cwd);
     // WorkBuddy 与 CodeBuddy 同构：项目目录名**保留空格**（实测 CodeBuddy 落盘为
     // `Users-caiwenzhe-Desktop-Code-teamai cli`）。用 encodeCwdGeneric 会把空格也换成
     // `-`，目录名与客户端按当前 cwd 算出的不一致 → 会话不出现在该项目列表里。
@@ -706,21 +706,26 @@ export class WorkBuddyAdapter extends AgentAdapter {
     return sessionId;
   }
 
-  async deleteSession(sessionId: string, projectPath?: string): Promise<void> {
-    // 先摘掉 DB 注册（否则删了 jsonl，WorkBuddy 列表里还留着一条点不开的会话）
+  async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
+    // Resolve the scoped transcript first: unregistering is global, so doing
+    // it before the lookup would drop another workspace's copy of the same
+    // session id when `rollback --cwd` matched nothing here.
+    const jsonlPath = this.findSessionFile(sessionId, projectPath);
+    if (!jsonlPath) return false;
+
+    // 摘掉 DB 注册（否则删了 jsonl，WorkBuddy 列表里还留着一条点不开的会话）
     try {
       unregisterWorkBuddySession(sessionId);
     } catch {
       // best-effort
     }
 
-    const jsonlPath = this.findSessionFile(sessionId, projectPath);
-    if (!jsonlPath) return;
-
+    let deleted = false;
     try {
       fs.unlinkSync(jsonlPath);
+      deleted = true;
     } catch {
-      // ignore
+      deleted = false;
     }
 
     const metaPath = jsonlPath.replace(/\.jsonl$/, '.meta.json');
@@ -737,5 +742,6 @@ export class WorkBuddyAdapter extends AgentAdapter {
     if (dirExists(subdir)) {
       removeDirRecursive(subdir);
     }
+    return deleted;
   }
 }

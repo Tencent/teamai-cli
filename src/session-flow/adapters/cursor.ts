@@ -132,8 +132,15 @@ function uuidV4(): string {
  * 同一会话反复迁移会各留一份副本：transcript 与 composerHeaders 都堆积重复条目，
  * 而且无法按源 id 回滚。派生后同一源会话永远命中同一个 composerId（重迁移=覆盖）。
  */
-function deriveCursorId(sourcePlatform: string, sourceId: string): string {
-  const hex = crypto.createHash('sha256').update(`teamai:cursor:${sourcePlatform}:${sourceId}`).digest('hex');
+function deriveCursorId(sourcePlatform: string, sourceId: string, targetCwd?: string): string {
+  // The composerId is a global key in state.vscdb: without the target cwd,
+  // migrating one source session into two workspaces reuses one id and the
+  // second copy overwrites the first.
+  const scope = targetCwd ? `:${targetCwd}` : '';
+  const hex = crypto
+    .createHash('sha256')
+    .update(`teamai:cursor:${sourcePlatform}${scope}:${sourceId}`)
+    .digest('hex');
   const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
   return [
     hex.slice(0, 8),
@@ -436,12 +443,11 @@ export class CursorAdapter extends AgentAdapter {
   }
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
+    const cwd = projectPath ?? session.cwd;
     // Deterministic id: re-migrations of the same source session hit the same composerId (no more per-run copies)
     const sessionId = isUuid(session.sessionId)
       ? session.sessionId
-      : deriveCursorId(session.platform || 'unknown', session.sessionId);
-
-    const cwd = projectPath ?? session.cwd;
+      : deriveCursorId(session.platform || 'unknown', session.sessionId, cwd);
     const projDir = path.join(getCursorProjectsDir(), encodeCwdGeneric(cwd));
     const transcriptDir = path.join(projDir, 'agent-transcripts', sessionId);
     const jsonlPath = path.join(transcriptDir, `${sessionId}.jsonl`);
@@ -656,21 +662,26 @@ export class CursorAdapter extends AgentAdapter {
     return out;
   }
 
-  async deleteSession(sessionId: string, projectPath?: string): Promise<void> {
-    // Unregister first (otherwise deleting the transcript leaves an unopenable entry in the Agents list)
+  async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
+    // Resolve the scoped transcript before touching the global registration:
+    // unregistering first would drop another workspace's copy of the same
+    // session id when `rollback --cwd` matched nothing here.
+    const jsonlPath = this.findSessionFile(sessionId, projectPath);
+    if (!jsonlPath) return false;
+
+    // Unregister (otherwise deleting the transcript leaves an unopenable entry in the Agents list)
     try {
       unregisterCursorComposer(sessionId);
     } catch {
       // best-effort: leftover registration rows only affect the list display, never data safety
     }
 
-    const jsonlPath = this.findSessionFile(sessionId, projectPath);
-    if (!jsonlPath) return;
-
     // 删除整个 session 目录
     const sessionDir = path.dirname(jsonlPath);
     if (dirExists(sessionDir)) {
       removeDirRecursive(sessionDir);
+      return !dirExists(sessionDir);
     }
+    return false;
   }
 }

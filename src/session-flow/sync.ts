@@ -89,14 +89,23 @@ export function getRepoIdentity(cwd?: string): string | null {
 }
 
 /**
- * 归一化 git remote URL → `host/owner/repo`（去协议、去 .git 后缀）。
+ * Normalize a git remote URL to `host/owner/repo` (no scheme, no .git suffix,
+ * no credentials).
+ *
+ * Credentials are stripped deliberately: remotes of the form
+ * `https://oauth2:TOKEN@host/org/repo.git` (CI checkouts, token-authenticated
+ * clones) are common, and keeping the userinfo would write the token into
+ * archive metadata, indexes and `list --all` output -- i.e. publish it to the
+ * whole team.
  */
 export function canonicalizeRemote(remote: string): string {
   let s = remote.trim().replace(/\.git$/i, '');
   // https://github.com/org/repo → github.com/org/repo
   s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
-  // git@github.com:org/repo → github.com/org/repo
-  s = s.replace(/^git@([^:]+):/i, '$1/');
+  // Drop userinfo: oauth2:TOKEN@host/... and git@host (both scp and ssh:// forms).
+  s = s.replace(/^[^/@]+@/, '');
+  // git@github.com:org/repo → github.com/org/repo (scp-style colon separator)
+  s = s.replace(/^([^/:]+):(?!\d+(?:\/|$))/, '$1/');
   // 去前导 /
   s = s.replace(/^\/+/, '');
   return s;
@@ -105,21 +114,26 @@ export function canonicalizeRemote(remote: string): string {
 /**
  * Encode a canonical remote into a directory-safe string, reversibly.
  *
- * `_` is escaped to `__` first, then every other non-whitelisted char
- * (including `/`) becomes `_`. Without the escape step, `github.com/org/a_b`
- * and `github.com/org/a/b` would encode to the same directory and mix two
- * repositories' sessions together.
+ * Every character outside `[A-Za-z0-9._-]` becomes `%XX` (uppercase hex), so
+ * the mapping is injective: `github.com/org/a/b`, `github.com/org/a_b` and
+ * `github.com/org/a:b` all get their own directory. The previous scheme folded
+ * every separator onto `_`, which merged distinct repositories into one
+ * archive directory and one index.
  *
  * Reversible via decodeRepoIdentity.
  */
 export function encodeRepoIdentity(identity: string): string {
-  const escaped = identity.replace(/_/g, '__');
-  return escaped.replace(/[^a-zA-Z0-9.-]/g, '_');
+  return identity.replace(
+    /[^a-zA-Z0-9._-]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`,
+  );
 }
 
 /** Undo encodeRepoIdentity (used for display; the canonical id stays in meta). */
 export function decodeRepoIdentity(encoded: string): string {
-  return encoded.replace(/_(?!_)/g, '/').replace(/__/g, '_');
+  return encoded.replace(/%([0-9A-F]{2})/g, (_, hex: string) =>
+    String.fromCharCode(parseInt(hex, 16)),
+  );
 }
 
 /**
@@ -130,8 +144,11 @@ export function decodeRepoIdentity(encoded: string): string {
  */
 function sanitizePathSegment(name: string): string {
   const cleaned = name
+    // `\` is a separator on Windows: an author name of `..\..\evil` would
+    // otherwise escape the author directory when the archive is checked out
+    // there (git author names are free-form).
     .replace(/[\u0000-\u001f<>:"|?*]/g, '_')
-    .replace(/\//g, '_')
+    .replace(/[/\\]/g, '_')
     .replace(/^\.+$|^\.\.$/g, '_')
     .replace(/[. ]+$/g, '_')
     .trim();
@@ -260,9 +277,51 @@ interface RepoIndex {
   sessions: IndexEntry[];
 }
 
+/** `gitCommit` 的三种结局（成功 / 无变更 / 失败），不可再合并成 null。 */
+export type GitCommitResult =
+  | { status: 'committed'; commit: string }
+  | { status: 'no-changes' }
+  | { status: 'failed'; reason: string };
+
 // ---------------------------------------------------------------------------
 // SyncManager
 // ---------------------------------------------------------------------------
+
+/**
+ * 旧编码（`github.com_org_alpha`）的目录名解码：只用于索引丢失时的兜底，
+ * 因为旧规则把 `_` 一律当分隔符，本身有歧义（`a_b` / `a/b` 同码）。
+ */
+function decodeLegacyRepoDirName(dirName: string): string {
+  return dirName.includes('%') ? decodeRepoIdentity(dirName) : dirName.replace(/_/g, '/');
+}
+
+/**
+ * 拒绝写入路径中经过 symlink 的目标。
+ *
+ * `sessions/` 下的目录来自团队仓 checkout——仓库内容不由本机控制，而 git 会
+ * 原样记录 symlink。若 `sessions/repos/x` 或某个 author 目录被换成指向
+ * `~/.ssh` 的链接，下面的每次 writeFileSync 都会写穿链接落到仓库之外，
+ * 覆盖任意可写文件。写入前逐个祖先 lstat，命中 symlink 直接报错放弃。
+ */
+function assertNoSymlinkedAncestors(target: string, root: string): void {
+  const rel = path.relative(root, target);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`Refusing to write outside the archive root: ${target}`);
+  }
+  let cur = root;
+  for (const part of rel.split(path.sep)) {
+    cur = path.join(cur, part);
+    try {
+      if (fs.lstatSync(cur).isSymbolicLink()) {
+        throw new Error(`Refusing to write through a symlinked archive path: ${cur}`);
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('Refusing')) throw err;
+      // ENOENT: this and every deeper component does not exist yet.
+      return;
+    }
+  }
+}
 
 /**
  * 管理团队仓 `sessions/` 目录下的完整会话存储。
@@ -274,9 +333,22 @@ interface RepoIndex {
  */
 export class SyncManager {
   private readonly sessionsDir: string;
+  /**
+   * 本次进程写入过的归档文件（相对 repoRoot）。
+   *
+   * `gitCommit` 只 `git add` 这些路径——此前是 `git add sessions/`，会把用户在
+   * `sessions/` 下的其它既有改动（甚至删除）一起提交进去。
+   */
+  private readonly writtenPaths = new Set<string>();
 
   constructor(private readonly repoRoot: string) {
     this.sessionsDir = path.join(repoRoot, 'sessions');
+  }
+
+  /** 记录写入路径，并在写入前确认没有 symlink 劫持。 */
+  private guardWrite(target: string): void {
+    assertNoSymlinkedAncestors(target, this.repoRoot);
+    this.writtenPaths.add(path.relative(this.repoRoot, target).split(path.sep).join('/'));
   }
 
   // ------------------------------------------------------------------
@@ -330,7 +402,23 @@ export class SyncManager {
     const dir = this.repoDir(repoIdentity);
     fs.mkdirSync(dir, { recursive: true });
     index.updatedAt = utcNow();
-    fs.writeFileSync(this.indexPath(repoIdentity), JSON.stringify(index, null, 2), 'utf-8');
+    const target = this.indexPath(repoIdentity);
+    this.guardWrite(target);
+    // 原子写：先落临时文件再 rename。直接 writeFileSync 时，两个并发 push 会
+    // 互相截断，留下半截（甚至空）的 _index.json——那会让整个仓库的会话
+    // 看起来凭空消失。rename 在同一文件系统上是原子的，读者只会看到旧值或新值。
+    const tmp = `${target}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(index, null, 2), 'utf-8');
+      fs.renameSync(tmp, target);
+    } catch (err) {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        // ignore
+      }
+      throw err;
+    }
   }
 
   private upsertIndexEntry(repoIdentity: string | null, entry: IndexEntry): void {
@@ -418,6 +506,8 @@ export class SyncManager {
     }
 
     const paths = this.sessionPaths(repoId, author, sessionName);
+    this.guardWrite(paths.jsonl);
+    this.guardWrite(paths.meta);
     fs.mkdirSync(path.dirname(paths.jsonl), { recursive: true });
 
     // 写 JSONL — 每条消息一行
@@ -487,7 +577,15 @@ export class SyncManager {
       createdAt: meta.origin.createdAt,
       updatedAt: utcNow(),
       messages,
-      metadata: { originator: meta.migration.sourcePlatform ?? undefined },
+      metadata: {
+        originator: meta.migration.sourcePlatform ?? undefined,
+        // Archive content is untrusted input: image blocks may carry absolute
+        // `filePath` values planted by whoever pushed the archive. Adapters
+        // must never read a local file for an untrusted session (see
+        // mayReadLocalImageFile) or a crafted archive could pull ~/.ssh keys
+        // into the restored session.
+        untrusted: true,
+      },
     };
 
     return { session, meta };
@@ -497,15 +595,34 @@ export class SyncManager {
   private findAuthor(repoIdentity: string | null, sessionName: string): string {
     const dir = this.repoDir(repoIdentity);
     if (!fs.existsSync(dir)) throw new Error(`Repo directory not found: ${dir}`);
+    const matches: string[] = [];
     for (const entry of fs.readdirSync(dir)) {
       if (entry.startsWith('_')) continue;
       const candidate = path.join(dir, entry);
-      if (!fs.statSync(candidate).isDirectory()) continue;
+      // Skip symlinked author dirs: they come from the team repo checkout and
+      // would make "which author owns this session" resolve outside the archive.
+      let st: fs.Stats;
+      try {
+        st = fs.lstatSync(candidate);
+      } catch {
+        continue;
+      }
+      if (!st.isDirectory() || st.isSymbolicLink()) continue;
       if (fs.existsSync(path.join(candidate, `${sessionName}.jsonl`))) {
-        return entry;
+        matches.push(entry);
       }
     }
-    throw new Error(`Session ${sessionName} not found (searched all author directories)`);
+    if (matches.length === 0) {
+      throw new Error(`Session ${sessionName} not found (searched all author directories)`);
+    }
+    // Ambiguous: picking the first match silently restores/resumes the wrong
+    // author's session. Make the caller disambiguate with --author.
+    if (matches.length > 1) {
+      throw new Error(
+        `Session ${sessionName} is ambiguous (authors: ${matches.join(', ')}). Re-run with --author <name>.`,
+      );
+    }
+    return matches[0];
   }
 
   private extractTitleFromSessionName(sessionName: string): string {
@@ -618,6 +735,9 @@ export class SyncManager {
   deleteSession(repoIdentity: string | null, sessionName: string, author?: string): void {
     const resolvedAuthor = author ?? this.findAuthor(repoIdentity, sessionName);
     const paths = this.sessionPaths(repoIdentity, resolvedAuthor, sessionName);
+    // Same symlink guard as writes: deleting through a checkout-controlled
+    // symlink would remove files outside the repository.
+    assertNoSymlinkedAncestors(paths.jsonl, this.repoRoot);
 
     if (fs.existsSync(paths.jsonl)) fs.unlinkSync(paths.jsonl);
     if (fs.existsSync(paths.meta)) fs.unlinkSync(paths.meta);
@@ -641,7 +761,8 @@ export class SyncManager {
     for (const authorName of fs.readdirSync(dir)) {
       if (authorName.startsWith('_')) continue;
       const authorDir = path.join(dir, authorName);
-      if (!fs.statSync(authorDir).isDirectory()) continue;
+      const authorSt = fs.lstatSync(authorDir);
+      if (!authorSt.isDirectory() || authorSt.isSymbolicLink()) continue;
 
       for (const file of fs.readdirSync(authorDir)) {
         if (!file.endsWith('.meta.json')) continue;
@@ -657,9 +778,13 @@ export class SyncManager {
 
           entries.push({
             sessionName,
-            author: authorName,
+            // The directory name is the sanitized author (`a:b` → `a_b`); the
+            // canonical identity lives in meta. Rebuilding from the directory
+            // name silently rewrote every author and broke --author filtering.
+            author: meta.origin.author || authorName,
             platform: meta.origin.platform,
-            title: this.extractTitleFromSessionName(sessionName),
+            // Same for the title: the file name is a truncated, lowercased slug.
+            title: meta.origin.title || this.extractTitleFromSessionName(sessionName),
             cwd: meta.origin.cwd,
             repoIdentity: meta.origin.repoIdentity,
             messageCount: msgCount,
@@ -684,6 +809,56 @@ export class SyncManager {
     return entries.length;
   }
 
+  /**
+   * 重建团队仓里**所有**仓库目录的索引，包括索引丢失/损坏的目录。
+   *
+   * listAllRepoIdentities() 依赖 `_index.json` 反查 canonical identity，
+   * 索引没了的仓库会被直接跳过——可它们恰恰是最需要 `pull --all` 修复的对象。
+   * 所以这里按目录遍历：identity 优先取索引原文，取不到再从目录名解码兜底。
+   */
+  rebuildAllIndexes(): { repos: number; sessions: number } {
+    const identities: Array<string | null> = [];
+    const seen = new Set<string>();
+
+    const reposDir = path.join(this.sessionsDir, 'repos');
+    if (fs.existsSync(reposDir)) {
+      for (const dir of fs.readdirSync(reposDir)) {
+        const full = path.join(reposDir, dir);
+        try {
+          if (!fs.lstatSync(full).isDirectory()) continue;
+        } catch {
+          continue;
+        }
+        const identity = this.identityOfRepoDir(full) ?? decodeLegacyRepoDirName(dir);
+        const key = identity ?? ' _unattributed';
+        if (seen.has(key)) continue;
+        seen.add(key);
+        identities.push(identity);
+      }
+    }
+
+    const unattrDir = path.join(this.sessionsDir, '_unattributed');
+    if (fs.existsSync(unattrDir) && !seen.has(' _unattributed')) identities.push(null);
+
+    let sessions = 0;
+    for (const identity of identities) {
+      sessions += this.rebuildIndex(identity);
+    }
+    return { repos: identities.length, sessions };
+  }
+
+  /** 目录索引里的 canonical identity；无索引/损坏时返回 null。 */
+  private identityOfRepoDir(dir: string): string | null {
+    try {
+      const idxPath = path.join(dir, '_index.json');
+      if (!fs.existsSync(idxPath)) return null;
+      const index = JSON.parse(fs.readFileSync(idxPath, 'utf-8')) as RepoIndex;
+      return index.repoIdentity ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   // ------------------------------------------------------------------
   // Git 操作
   // ------------------------------------------------------------------
@@ -703,34 +878,40 @@ export class SyncManager {
   }
 
   /**
-   * git add sessions/ && git commit → 返回 commit hash。
+   * 提交本次写入的归档文件。
    *
-   * 无变更时 commit 静默失败，而 `rev-parse HEAD` 仍会返回旧 HEAD——调用方会
-   * 误报 "Pushed N"。因此 commit 前先用 `status --porcelain -- sessions/`
-   * 检测暂存区是否有变更，无变更返回 null，由调用方打印 "No changes to push"。
+   * 三种结果必须区分开：成功提交 / 无变更 / 提交失败。此前三者统一返回 null，
+   * 于是 gpg 签名失败、pre-commit hook 拒绝、git identity 缺失都被当成
+   * “没有要提交的东西”，界面上只显示一行无害的 “No changes to push”，
+   * 而归档文件其实还留在暂存区没人管。
    */
-  gitCommit(message: string): string | null {
-    this.runGit(['add', 'sessions/']);
-    const staged = this.runGit(['status', '--porcelain', '--', 'sessions/'], false);
-    if (!staged.trim()) return null;
+  gitCommit(message: string): GitCommitResult {
+    const paths = [...this.writtenPaths];
+    // 没有本次写入的路径时退回目录级 add（例如索引重建后的提交），
+    // 但仍然只在 sessions/ 内操作。
+    const addArgs = paths.length > 0 ? ['add', '--', ...paths] : ['add', 'sessions/'];
+    this.runGit(addArgs);
+
+    const scopeArgs = paths.length > 0 ? ['--', ...paths] : ['--', 'sessions/'];
+    const staged = this.runGit(['status', '--porcelain', ...scopeArgs], false);
+    if (!staged.trim()) return { status: 'no-changes' };
 
     // Only ever commit the archive paths: `git commit -m` without a pathspec
     // would also commit whatever else the user happened to have staged.
-    //
-    // Let a failed commit throw (hooks, gpg signing, missing identity all exit
-    // non-zero) and surface as null: silence here used to be reported as a
-    // successful push with the previous HEAD printed as the new commit.
     try {
-      this.runGit(['commit', '-m', message, '--', 'sessions/'], true);
-    } catch {
-      return null;
+      this.runGit(['commit', '-m', message, ...scopeArgs], true);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message.split('\n')[0] : String(err);
+      return { status: 'failed', reason };
     }
-    return this.runGit(['rev-parse', 'HEAD']);
+    return { status: 'committed', commit: this.runGit(['rev-parse', 'HEAD']) };
   }
 
   gitPush(remote = 'origin', branch?: string): void {
     const args = ['push', remote];
     if (branch) args.push(branch);
+    // Errors must reach the caller: swallowing them here let `push` print
+    // "✓ Pushed" after a rejected or unreachable remote.
     this.runGit(args);
   }
 

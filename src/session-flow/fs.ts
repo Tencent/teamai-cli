@@ -242,6 +242,49 @@ export function scanFiles(rootDir: string, pattern: RegExp): string[] {
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// 归档内容的安全边界（untrusted input）
+// ---------------------------------------------------------------------------
+
+/** 只有这些后缀才可能是真正的图片，值得按本地文件读取。 */
+const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+
+/**
+ * 是否允许读取图片块里的本地 `filePath`。
+ *
+ * 团队归档里的 `filePath` 是别人写进去的不可信输入：伪造一条指向
+ * `~/.ssh/id_rsa`（或任意可读文件）的图片块，写入侧一旦照读就会把文件内容
+ * base64 塞进恢复出来的会话里——等于用一次 `session resume` 把本机文件
+ * 带出去。因此：
+ *
+ * - 会话来自归档（`metadata.untrusted`）时一律不读本地文件，只用块内 data；
+ * - 其余情形也要求绝对路径 + 图片后缀，避免读到随便什么文件。
+ */
+export function mayReadLocalImageFile(
+  session: { metadata?: Record<string, unknown> | undefined } | undefined,
+  filePath?: string,
+): boolean {
+  if (!filePath) return false;
+  if (!path.isAbsolute(filePath)) return false;
+  if (!IMAGE_FILE_RE.test(filePath)) return false;
+  return session?.metadata?.untrusted !== true;
+}
+
+/**
+ * 把归档里任意字符串压成安全的文件名（用于 assets/、messages/ 等落盘名）。
+ *
+ * 归档里的 label / message id 由推送方控制，`../../foo` 之类的值会直接变成
+ * 路径片段写穿 assets 目录。这里强制只取 basename 并清掉分隔符与控制字符。
+ */
+export function safeFileName(raw: string, fallback = 'image.png'): string {
+  const base = path
+    .basename(String(raw ?? '').replace(/\\/g, '/'))
+    .replace(/[\u0000-\u001f<>:"|?*]/g, '_')
+    .replace(/^\.+/, '_')
+    .trim();
+  return base || fallback;
+}
+
 /**
  * 递归删除目录（用于 delete_session 清理子目录）。
  */

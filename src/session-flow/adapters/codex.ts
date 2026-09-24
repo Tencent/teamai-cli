@@ -321,14 +321,29 @@ export class CodexAdapter extends AgentAdapter {
     return scanFiles(this.storageRoot, /\.jsonl$/);
   }
 
-  private findSessionFile(sessionId: string): string | null {
+  private findSessionFile(sessionId: string, projectPath?: string): string | null {
     for (const f of this.scanJsonlFiles()) {
       // 文件名是 rollout-<时间戳>-<sessionId>，中缀匹配；但前缀只认 ≥8 位，
       // 否则 4 位前缀的子串会读到别人的会话
       const base = path.basename(f, '.jsonl');
-      if (base === sessionId || (sessionId.length >= 8 && base.endsWith(sessionId))) return f;
+      if (!(base === sessionId || (sessionId.length >= 8 && base.endsWith(sessionId)))) continue;
+      // rollback --cwd: only the copy that belongs to this project. Without
+      // this, deleting one session id would remove every workspace's copy.
+      if (projectPath && !this.rolloutMatchesCwd(f, projectPath)) continue;
+      return f;
     }
     return null;
+  }
+
+  /** rollout 首行 session_meta 里带真实 cwd，用它做 --cwd 作用域过滤。 */
+  private rolloutMatchesCwd(file: string, projectPath: string): boolean {
+    try {
+      const rec = this.readFirstLine(file);
+      const payload = (rec?.payload ?? {}) as Record<string, unknown>;
+      return String(payload.cwd ?? '') === projectPath;
+    } catch {
+      return false;
+    }
   }
 
   private readFirstLine(filePath: string): Record<string, unknown> | null {
@@ -624,9 +639,12 @@ export class CodexAdapter extends AgentAdapter {
     // Random ids would give every re-migration a fresh target id -- a fully
     // duplicated second thread in Codex (threads doubled). Derived ids make a
     // re-migration an overwrite: idempotent by construction.
+    // cwd 参与派生：Codex rollout 的 sessionId 是全局键，同一源会话迁到两个
+    // 工作区若共用 id，第二份会把第一份顶掉。
+    const cwd = projectPath ?? session.cwd;
     const sessionId = isUuidV7(session.sessionId)
       ? session.sessionId
-      : deriveTargetSessionId(this.platform, session.sessionId);
+      : deriveTargetSessionId(this.platform, session.sessionId, cwd);
 
     // 损坏输入防御：session.createdAt 非法时 new Date(...) 得到 Invalid Date，
     // 直接 toISOString() 会抛 RangeError 让整个写入崩溃。
@@ -1038,18 +1056,21 @@ export class CodexAdapter extends AgentAdapter {
     }
   }
 
-  async deleteSession(sessionId: string, projectPath?: string): Promise<void> {
-    // Unregister first, then delete the body. Removing only the rollout leaves an
+  async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
+    // Scope first: unregisterThread is global, so running it before the lookup
+    // would drop another workspace's copy when `rollback --cwd` matched nothing.
+    const f = this.findSessionFile(sessionId, projectPath);
+    if (!f || !fileExists(f)) return false;
+
+    // Unregister, then delete the body. Removing only the rollout leaves an
     // orphan listed with title/preview but opening blank -- rollback achieved nothing.
     await this.unregisterThread(sessionId);
 
-    const f = this.findSessionFile(sessionId);
-    if (f && fileExists(f)) {
-      try {
-        fs.unlinkSync(f);
-      } catch {
-        // ignore
-      }
+    try {
+      fs.unlinkSync(f);
+      return true;
+    } catch {
+      return false;
     }
   }
 

@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SyncManager, defaultSyncMeta, generateSessionName } from '../session-flow/sync.js';
+import {
+  SyncManager,
+  defaultSyncMeta,
+  generateSessionName,
+  encodeRepoIdentity,
+  decodeRepoIdentity,
+  canonicalizeRemote,
+} from '../session-flow/sync.js';
 import type { Session } from '../session-flow/ir.js';
 
 /**
@@ -44,13 +51,14 @@ function mkSession(o: Partial<Session> = {}): Session {
   };
 }
 
-function mkMeta(o: { sessionId?: string; author?: string; repoIdentity?: string | null } = {}) {
+function mkMeta(o: { sessionId?: string; author?: string; repoIdentity?: string | null; title?: string } = {}) {
   return defaultSyncMeta(
     {
       platform: 'claude-code',
       author: o.author ?? 'alice',
       cwd: '/proj/alpha',
       sessionId: o.sessionId ?? 's-1',
+      title: o.title,
       // 显式传 null（_unattributed）不能被默认值吞掉
       repoIdentity: o.repoIdentity === undefined ? 'github.com/org/alpha' : o.repoIdentity,
     },
@@ -58,9 +66,9 @@ function mkMeta(o: { sessionId?: string; author?: string; repoIdentity?: string 
   );
 }
 
-/** 与 SyncManager.repoDir 相同的编码规则（/ → _，保留字母数字和 . -）。 */
+/** 与 SyncManager.repoDir 相同的编码规则（非白名单字符 → %XX）。 */
 function repoDirOf(identity: string): string {
-  return path.join(repoRoot, 'sessions', 'repos', identity.replace(/[^a-zA-Z0-9.-]/g, '_'));
+  return path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity(identity));
 }
 
 function writeRepoIndex(identity: string, index: unknown): void {
@@ -271,5 +279,65 @@ describe('rebuildIndex', () => {
     expect(mgr.rebuildIndex('github.com/org/alpha')).toBe(1);
     expect(mgr.rebuildIndex('github.com/org/alpha')).toBe(1);
     expect(readRepoIndex('github.com/org/alpha').sessions).toHaveLength(1);
+  });
+
+  it('keeps the original title and author instead of the sanitized directory name', () => {
+    // The author directory is sanitized (`alice:ci` → `alice_ci`) and the file
+    // name is a truncated slug; rebuilding from those destroyed both fields.
+    const mgr = new SyncManager(repoRoot);
+    mgr.saveSession(
+      mkSession({ title: 'Fix Payment Retry Logic' }),
+      mkMeta({ author: 'alice:ci', repoIdentity: 'github.com/org/alpha', title: 'Fix Payment Retry Logic' }),
+    );
+
+    fs.writeFileSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'), '{ corrupted');
+    mgr.rebuildIndex('github.com/org/alpha');
+
+    const entry = readRepoIndex('github.com/org/alpha').sessions[0];
+    expect(entry.author).toBe('alice:ci');
+    expect(entry.title).toBe('Fix Payment Retry Logic');
+  });
+
+  it('rebuilds repos whose index is missing entirely (pull --all repair path)', () => {
+    const mgr = new SyncManager(repoRoot);
+    mgr.saveSession(mkSession(), mkMeta());
+
+    // 删掉索引后，listAllRepoIdentities 反查不到 → 只有按目录重建才能修回来
+    fs.unlinkSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'));
+    expect(new SyncManager(repoRoot).listAllRepoIdentities()).toEqual([]);
+
+    const { repos, sessions } = new SyncManager(repoRoot).rebuildAllIndexes();
+    expect(repos).toBe(1);
+    expect(sessions).toBe(1);
+    expect(new SyncManager(repoRoot).listAllRepoIdentities()).toEqual(['github.com/org/alpha']);
+  });
+});
+
+describe('canonicalizeRemote', () => {
+  it('strips credentials embedded in the remote URL', () => {
+    // Tokens live in remotes on CI checkouts; publishing them into the
+    // archive index would leak them to the whole team.
+    expect(canonicalizeRemote('https://oauth2:TOKEN@github.com/org/repo.git')).toBe('github.com/org/repo');
+    expect(canonicalizeRemote('https://user:pass@gitlab.company.com/g/repo.git')).toBe('gitlab.company.com/g/repo');
+  });
+
+  it('normalizes https, scp and ssh remote forms to the same identity', () => {
+    expect(canonicalizeRemote('https://github.com/org/repo.git')).toBe('github.com/org/repo');
+    expect(canonicalizeRemote('git@github.com:org/repo.git')).toBe('github.com/org/repo');
+    expect(canonicalizeRemote('ssh://git@github.com/org/repo.git')).toBe('github.com/org/repo');
+  });
+});
+
+describe('encodeRepoIdentity', () => {
+  it('is injective: distinct identities never share a directory', () => {
+    const ids = ['github.com/org/a/b', 'github.com/org/a_b', 'github.com/org/a:b'];
+    const encoded = ids.map(encodeRepoIdentity);
+    expect(new Set(encoded).size).toBe(ids.length);
+  });
+
+  it('round-trips through decodeRepoIdentity', () => {
+    for (const id of ['github.com/org/repo', 'gitlab.company.com/g/a_b']) {
+      expect(decodeRepoIdentity(encodeRepoIdentity(id))).toBe(id);
+    }
   });
 });

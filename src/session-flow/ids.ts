@@ -13,11 +13,23 @@
 
 import * as crypto from 'node:crypto';
 
-/** Derive a deterministic target session id (UUIDv7 shape) from a source id. */
-export function deriveTargetSessionId(targetPlatform: string, sourceId: string): string {
+/**
+ * Derive a deterministic target session id (UUIDv7 shape) from a source id.
+ *
+ * `targetCwd` participates when known: Cursor/WorkBuddy/Codex key their
+ * records globally, so migrating one source session into two workspaces with
+ * the same derived id makes the second copy replace (or redirect) the first.
+ * Omitting it keeps the previous id, so already-migrated sessions stay stable.
+ */
+export function deriveTargetSessionId(
+  targetPlatform: string,
+  sourceId: string,
+  targetCwd?: string,
+): string {
+  const scope = targetCwd ? `:${targetCwd}` : '';
   const hex = crypto
     .createHash('sha256')
-    .update(`teamai:${targetPlatform}:${sourceId}`)
+    .update(`teamai:${targetPlatform}${scope}:${sourceId}`)
     .digest('hex');
   const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
   // version nibble is **7**: targets (e.g. Codex's isUuidV7) treat the id as
