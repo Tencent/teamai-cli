@@ -3,7 +3,15 @@
 Goal: the user turns something they built into team knowledge everyone can pull.
 **Any member can do this — you do not need to be an admin.** The usual entry point
 is the user just asking in plain language, e.g. *"share this xxx skill with my
-team"*, in whatever language they work in — then you run the publish for them.
+team"*, in whatever language they work in.
+
+**Publishing is a team-visible action — confirm before you run it.** A plain
+worded request tells you *what* the user wants, not that they are ready to push
+it to everyone. Before `teamai push` / `teamai contribute`, show exactly what
+will be shared (which skill or file, and that it goes to the whole team) and get
+an explicit go-ahead. Do not publish from an offhand mention of "sharing" in
+ordinary conversation — only when the user has clearly asked to publish *this*
+thing now.
 
 ## Which kind of contribution?
 

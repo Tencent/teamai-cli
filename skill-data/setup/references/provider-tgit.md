@@ -22,12 +22,15 @@ is the Tencent-internal default. Choose by account + reachability only, never by
 region. (A member joining an existing `git.woa.com` URL skips the probe — the URL
 already fixes the platform.)
 
-## Log in: install `gf`, then `gf auth login` — YOU run both
+## Log in: install `gf`, then `gf auth login`
 
-TeamAI drives the TGit CLI (`gf`) on the user's behalf. **Run every command in this
-section yourself — both the install and the login. Never tell the user to run a
-`gf` command.** The user's only action is approving the login in their browser /
-iOA when it opens.
+TeamAI can drive the TGit CLI (`gf`) on the user's behalf. Before the first
+command, **tell the user what this does** — it downloads and installs the `gf`
+binary and, after login, stores an auth credential on their machine — and **get
+their OK to proceed**. Once they agree, you may run the install and login steps
+for them so they don't have to type `gf` commands; their remaining action is
+approving the login in their browser / iOA when it opens. If the user prefers to
+run the commands themselves, show them the exact commands instead.
 
 ### 1. Install `gf` (you run this)
 

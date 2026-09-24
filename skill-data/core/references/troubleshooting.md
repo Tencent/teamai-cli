@@ -62,11 +62,13 @@ default is a common cause.
 
 ## GitLab host not detected
 
-If `init` can't confirm a self-hosted GitLab instance, set both and retry:
+If `init` can't confirm a self-hosted GitLab instance, set both and retry. Use a
+short-lived `api`-scope token via a no-echo prompt (not a literal `export`, which
+lands in shell history), and `unset GITLAB_TOKEN` afterward:
 
 ```bash
 export GITLAB_URL=https://git.example.com
-export GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxx   # api scope
+read -rs GITLAB_TOKEN && export GITLAB_TOKEN   # paste when prompted; api scope
 teamai init https://git.example.com/yourgroup/yourrepo
 ```
 

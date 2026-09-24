@@ -138,12 +138,15 @@ with `repo` scope — instead.)
 
 ### GitLab (gitlab.com)
 
-Set a Personal Access Token with `api` scope:
+Set a Personal Access Token with `api` scope. Prefer a **short-lived** token and
+pull it from a secret manager or a no-echo prompt rather than typing the literal
+value (a pasted `export` lands in shell history and process listings):
 ```bash
-export GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxx
+read -rs GITLAB_TOKEN && export GITLAB_TOKEN   # paste when prompted; not echoed
 ```
 Self-hosted GitLab: also set the instance URL first —
-`export GITLAB_URL=https://git.example.com`.
+`export GITLAB_URL=https://git.example.com`. Run `unset GITLAB_TOKEN` when
+`teamai init` is done.
 
 For GitHub/GitLab, `teamai init` installs any helper CLI it needs automatically.
 
