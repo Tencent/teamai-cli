@@ -255,6 +255,40 @@ describe('votes stay with the scope they were cast in (#787)', () => {
     expect(printed.join('\n')).toContain(`${path.join(teamaiHome(), 'config.yaml')} could not be read: it is empty`);
   });
 
+  it('recall feedback with an invalid user config prints its parse error once and names the file', async () => {
+    fs.mkdirSync(teamaiHome(), { recursive: true });
+    fs.writeFileSync(path.join(teamaiHome(), 'config.yaml'), 'repo: [not: a, valid config\n');
+    const printed: string[] = [];
+    const errors = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { printed.push(args.join(' ')); });
+    try {
+      await feedbackIn(outsideAnyProject(), 'doc-u');
+    } finally {
+      errors.mockRestore();
+    }
+
+    expect(process.exitCode).toBe(1);
+    expect(printed.filter((line) => line.includes('Invalid local config'))).toHaveLength(1);
+    expect(printed.join('\n')).toContain(`${path.join(teamaiHome(), 'config.yaml')} could not be read: it is not a valid teamai config`);
+  });
+
+  it('a recall search from a directory that no longer exists records into the user scope', async () => {
+    const user = userScope();
+    const learnings = path.join(user.repo.localPath, 'learnings');
+    fs.mkdirSync(learnings, { recursive: true });
+    fs.writeFileSync(path.join(learnings, 'api-timeout.md'), '---\ntitle: "API timeout fix"\nauthor: tester\ndate: 2026-05-01\n---\n\nRaise the API timeout.\n');
+    const gone = outsideAnyProject();
+    process.chdir(gone);
+    fs.rmSync(gone, { recursive: true });
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await recall('api timeout', {});
+    } finally {
+      stdout.mockRestore();
+    }
+
+    expect(fs.existsSync(path.join(teamaiHome(), 'user-votes', 'tester.yaml'))).toBe(true);
+  });
+
   it('a recall search in a project whose config cannot be read records no recalled count in the user scope', async () => {
     const user = userScope();
     const learnings = path.join(user.repo.localPath, 'learnings');

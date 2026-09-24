@@ -420,8 +420,11 @@ export async function recall(
   let projectUnreadable = false;
   try {
     projectConfig = await detectProjectConfig(undefined, () => { projectUnreadable = true; });
-  } catch {
-    projectUnreadable = true;
+  } catch (e) {
+    // A cwd that no longer exists holds no project: user scope, as in
+    // resolveConfigForDir.
+    const gone = typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT';
+    if (!gone) projectUnreadable = true;
     log.debug('recall: project scope detection failed');
   }
 
