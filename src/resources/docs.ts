@@ -67,6 +67,72 @@ function containsPath(parent: string, child: string): boolean {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+async function hasHiddenEntries(dir: string): Promise<boolean> {
+  for (const entry of await readEntries(dir)) {
+    if (entry.name.startsWith('.')) return true;
+    if (entry.isDirectory() && await hasHiddenEntries(path.join(dir, entry.name))) return true;
+  }
+  return false;
+}
+
+/** Find replacements without traversing destination links or touching either tree. */
+async function findDocConflicts(source: string, destination: string): Promise<Array<{ source: string; target: string }>> {
+  const conflicts: Array<{ source: string; target: string }> = [];
+  const localEntries = new Map((await readEntries(destination)).map(entry => [entry.name, entry]));
+  for (const entry of await readEntries(source)) {
+    if (entry.name.startsWith('.')) continue;
+    const local = localEntries.get(entry.name);
+    if (!local) continue;
+    const src = path.join(source, entry.name);
+    const target = path.join(destination, entry.name);
+    if (local.isSymbolicLink() || entry.isSymbolicLink() || local.isDirectory() !== entry.isDirectory()) {
+      if (local.isDirectory() && await hasHiddenEntries(target)) {
+        throw new Error(`Cannot replace ${target}: it contains hidden local entries. Move them before retrying.`);
+      }
+      conflicts.push({ source: src, target });
+    } else if (entry.isDirectory()) {
+      conflicts.push(...await findDocConflicts(src, target));
+    }
+  }
+  return conflicts;
+}
+
+async function copyDocs(source: string, destination: string): Promise<void> {
+  const conflicts = await findDocConflicts(source, destination);
+  const staging = conflicts.length ? await fse.mkdtemp(path.join(destination, '.teamai-docs-')) : undefined;
+  const moved: Array<{ target: string; backup: string }> = [];
+  const visible = (src: string) => !path.basename(src).startsWith('.');
+  try {
+    // Prepare replacements while the old entries are still in place. A copy
+    // failure must not remove the directory/file it was meant to replace.
+    for (const [index, conflict] of conflicts.entries()) {
+      await fse.copy(conflict.source, path.join(staging!, `new-${index}`), { filter: visible });
+    }
+    const replacedSources = new Set(conflicts.map(conflict => conflict.source));
+    await fse.copy(source, destination, {
+      overwrite: true,
+      filter: src => visible(src) && !replacedSources.has(src),
+    });
+    // Copying has finished before any rename: no copy worker can write into
+    // a conflicting path while it is being replaced or restored.
+    for (const [index, conflict] of conflicts.entries()) {
+      const backup = path.join(staging!, `old-${index}`);
+      await fse.rename(conflict.target, backup);
+      moved.push({ target: conflict.target, backup });
+      await fse.rename(path.join(staging!, `new-${index}`), conflict.target);
+    }
+  } catch (error) {
+    for (const { target, backup } of moved.reverse()) {
+      await fse.remove(target);
+      await fse.rename(backup, target);
+    }
+    // If restoration itself fails, leave the backup directory for recovery.
+    if (staging) await fse.remove(staging);
+    throw error;
+  }
+  if (staging) await fse.remove(staging);
+}
+
 export class DocsHandler extends ResourceHandler {
   readonly type = 'docs' as const;
 
@@ -114,10 +180,7 @@ export class DocsHandler extends ResourceHandler {
       throw new Error('Docs pruning requires a dedicated localDir that does not overlap the team repo or contain the home or project root.');
     }
     if (entries.length > 0) {
-      await fse.copy(src, localDocsDir, {
-        overwrite: true,
-        filter: (srcPath: string) => !path.basename(srcPath).startsWith('.'),
-      });
+      await copyDocs(src, localDocsDir);
     }
     // Copy first: a failed copy must not trigger deletion of the previous bundle.
     await pruneDocs(src, localDocsDir);

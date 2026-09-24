@@ -111,6 +111,64 @@ describe('DocsHandler pruning (#794)', () => {
     expect((await fse.readdir(destination)).sort()).toEqual(['guide.md', 'renamed']);
   });
 
+  it.each(['guide', 'nested/guide'])('mirrors directory/file transitions at %s', async (name) => {
+    await fse.outputFile(path.join(source, name, 'old.md'), 'old directory');
+    await sync();
+    await fse.remove(path.join(source, name));
+    await fse.outputFile(path.join(source, name), 'new file');
+    await sync();
+    expect(await fse.readFile(path.join(destination, name), 'utf8')).toBe('new file');
+
+    await fse.remove(path.join(source, name));
+    await fse.outputFile(path.join(source, name, 'new.md'), 'new directory');
+    await sync();
+    expect(await fse.readFile(path.join(destination, name, 'new.md'), 'utf8')).toBe('new directory');
+    expect(await fse.readdir(path.join(destination, name))).toEqual(['new.md']);
+    expect((await fse.readdir(destination)).some(entry => entry.startsWith('.teamai-docs-'))).toBe(false);
+  });
+
+  it.each(['copy', 'rename'])('preserves conflicting entries when replacement %s fails', async (failure) => {
+    await fse.outputFile(path.join(destination, 'guide', 'old.md'), 'old directory');
+    await fse.outputFile(path.join(destination, 'api'), 'old file');
+    await fse.outputFile(path.join(destination, 'stale.md'), 'stale');
+    await fse.outputFile(path.join(source, 'guide'), 'new file');
+    await fse.outputFile(path.join(source, 'api', 'new.md'), 'new directory');
+    if (failure === 'copy') {
+      vi.spyOn(fse, 'copy').mockRejectedValueOnce(new Error('copy failed'));
+    } else {
+      const rename = fse.rename.bind(fse);
+      vi.spyOn(fse, 'rename')
+        .mockImplementationOnce((from, to) => rename(from, to))
+        .mockImplementationOnce((from, to) => rename(from, to))
+        .mockImplementationOnce((from, to) => rename(from, to))
+        // The first replacement succeeded; installing the second one fails.
+        .mockRejectedValueOnce(new Error('rename failed'));
+    }
+    await expect(sync()).rejects.toThrow(`${failure} failed`);
+    expect(await fse.readFile(path.join(destination, 'guide', 'old.md'), 'utf8')).toBe('old directory');
+    expect(await fse.readFile(path.join(destination, 'api'), 'utf8')).toBe('old file');
+    expect(await fse.readFile(path.join(destination, 'stale.md'), 'utf8')).toBe('stale');
+    expect((await fse.readdir(destination)).sort()).toEqual(['api', 'guide', 'stale.md']);
+  });
+
+  it('refuses to replace a directory containing hidden local entries', async () => {
+    await fse.outputFile(path.join(destination, 'guide', 'nested', '.keep'), 'private');
+    await fse.outputFile(path.join(source, 'guide'), 'new file');
+    await expect(sync()).rejects.toThrow('hidden local entries');
+    expect(await fse.readFile(path.join(destination, 'guide', 'nested', '.keep'), 'utf8')).toBe('private');
+  });
+
+  it('replaces a directory link without modifying its target', async () => {
+    const outside = path.join(root, 'outside');
+    await fse.outputFile(path.join(outside, 'keep.md'), 'outside');
+    await fse.symlink(outside, path.join(destination, 'guide'), process.platform === 'win32' ? 'junction' : 'dir');
+    await fse.outputFile(path.join(source, 'guide', 'new.md'), 'new directory');
+    await sync();
+    expect((await fse.lstat(path.join(destination, 'guide'))).isSymbolicLink()).toBe(false);
+    expect(await fse.readFile(path.join(destination, 'guide', 'new.md'), 'utf8')).toBe('new directory');
+    expect(await fse.readdir(outside)).toEqual(['keep.md']);
+  });
+
   it.each(['missing', 'empty', 'hidden-only'])('prunes a %s team bundle while retaining hidden local files', async (state) => {
     await fse.outputFile(path.join(destination, 'old', 'guide.md'), 'old');
     await fse.outputFile(path.join(destination, 'old', '.keep'), 'local');

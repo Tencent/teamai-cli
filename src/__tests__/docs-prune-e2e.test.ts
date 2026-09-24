@@ -62,6 +62,22 @@ it('real pull prunes deleted docs from a Git remote, including deletion of the l
 
   expect(pull()).toContain('Synced 2 docs');
   expect(await fse.readFile(path.join(destination, 'old', 'retired.md'), 'utf8')).toBe('retired');
+
+  // The same path changes type in both directions across real Git revisions.
+  await fse.remove(path.join(remote, 'docs', 'old'));
+  await fse.outputFile(path.join(remote, 'docs', 'old'), 'replacement file');
+  commit();
+  expect(pull()).toContain('Synced 2 docs');
+  expect(await fse.readFile(path.join(destination, 'old'), 'utf8')).toBe('replacement file');
+  expect(docsCheck().ok).toBe(true);
+
+  await fse.remove(path.join(remote, 'docs', 'old'));
+  await fse.outputFile(path.join(remote, 'docs', 'old', 'retired.md'), 'replacement directory');
+  commit();
+  expect(pull()).toContain('Synced 2 docs');
+  expect(await fse.readFile(path.join(destination, 'old', 'retired.md'), 'utf8')).toBe('replacement directory');
+  expect(docsCheck().ok).toBe(true);
+
   await fse.outputFile(path.join(destination, '.keep'), 'local metadata');
   await fse.outputFile(path.join(destination, 'draft.md'), 'local-only');
   await fse.remove(path.join(remote, 'docs', 'old'));
