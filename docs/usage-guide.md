@@ -1854,24 +1854,23 @@ teamai source remove-http
 
 An HTTP source reports status and pulls skill commands via hook dispatch on every session. Only one HTTP source is supported per install. If the main repo is already in HTTP mode (`init --http`), `add-http` is unavailable (the main repo already occupies the HTTP config).
 
-#### Multiple HTTP providers
+#### Named HTTP provider
 
-`source add-http` configures a single global HTTP backend. To mount **several** HTTP backends side by side — each with its own credential, resource manifest and cache, fully isolated — use `teamai provider`:
+`source add-http` / `init --http` configure a single global HTTP backend whose state sits in `~/.teamai/local-agent/`. `teamai provider` mounts an HTTP backend as a **named** provider instead, with its credential, resource manifest and cache isolated under its own directory:
 
 ```bash
-# Add named HTTP providers (each is one backend behind a protocol adapter)
-teamai provider add http https://company-host/api   --name company   --adapter clawpro --token <key> --priority 80
-teamai provider add http https://community-host/api  --name community --adapter clawpro                --priority 40
+# Add a named HTTP provider (a backend behind a protocol adapter, e.g. clawpro)
+teamai provider add http https://company-host/api --name company --adapter clawpro --token <key>
 
-# List and sync them
+# List, sync, remove
 teamai provider list
 teamai provider sync
-
-# Remove one — the others (and their resources) are untouched
 teamai provider remove company
 ```
 
-Each provider's state lives under `~/.teamai/providers/http/<name>/`; its token is stored `0600` at `~/.teamai/credentials/<name>`, never in a config file. On every session, hook dispatch syncs each provider once, and one slow or failing backend never blocks the others. A provider's `--priority` is recorded for a later resource-arbitration phase; it does not yet decide same-name conflicts.
+The provider's state lives under `~/.teamai/providers/http/<name>/`; its token is stored `0600` at `~/.teamai/credentials/<name>`, never in a config file. On every session, hook dispatch syncs it, reporting a per-provider result so a failing backend surfaces as a failure rather than a false success.
+
+> **One HTTP provider at a time.** Mounting several HTTP backends concurrently needs cross-provider ownership arbitration (so same-name resources don't overwrite or delete each other) — that is a later phase (issue #404). Until then `provider add http` refuses a second provider. The `--priority` flag is recorded for that future phase and does not yet affect behavior.
 
 To move an existing single HTTP backend (`init --http` / `source add-http`) onto the named-provider model, run:
 

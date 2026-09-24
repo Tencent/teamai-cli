@@ -31,6 +31,23 @@ describe('http provider store: config registry', () => {
     expect(() => assertValidProviderName('../evil')).toThrow(/Invalid provider name/);
     expect(() => assertValidProviderName('bad/name')).toThrow(/Invalid provider name/);
     expect(() => assertValidProviderName('good-name.1')).not.toThrow();
+    // Cross-platform path-segment hazards: trailing dot and Windows reserved names.
+    expect(() => assertValidProviderName('name.')).toThrow(/must not end with/);
+    expect(() => assertValidProviderName('CON')).toThrow(/reserved device name/);
+    expect(() => assertValidProviderName('com1')).toThrow(/reserved device name/);
+  });
+
+  it('rejects a name that collides case-insensitively with an existing provider', async () => {
+    const { upsertHttpProviderConfig } = await import('../providers/http/store.js');
+    await upsertHttpProviderConfig({ name: 'Company', adapter: 'clawpro', endpoint: 'https://a/api', priority: 10 });
+    // Same lowercase form, different spelling → collides on a case-insensitive FS.
+    await expect(
+      upsertHttpProviderConfig({ name: 'company', adapter: 'clawpro', endpoint: 'https://b/api', priority: 20 }),
+    ).rejects.toThrow(/collides with existing/);
+    // Exact-name replacement is still allowed (intentional upsert).
+    await expect(
+      upsertHttpProviderConfig({ name: 'Company', adapter: 'clawpro', endpoint: 'https://c/api', priority: 30 }),
+    ).resolves.toBeUndefined();
   });
 
   it('isolates two providers by name in registry and per-provider home', async () => {
@@ -194,10 +211,29 @@ describe('http provider: legacy singleton migration', () => {
     expect(await migrateLegacyHttpProvider({ name: 'company' })).toBeNull();
   });
 
-  it('refuses to overwrite an existing provider home', async () => {
+  it('refuses to migrate onto a name a real provider already occupies', async () => {
     await seedLegacy('t');
-    const { migrateLegacyHttpProvider, httpProviderHome } = await import('../providers/http/store.js');
+    const { migrateLegacyHttpProvider, upsertHttpProviderConfig } = await import('../providers/http/store.js');
+    // A registered provider is the real conflict.
+    await upsertHttpProviderConfig({ name: 'company', adapter: 'clawpro', endpoint: 'https://x/api', priority: 10 });
+    await expect(migrateLegacyHttpProvider({ name: 'company' })).rejects.toThrow(/already exists/);
+  });
+
+  it('is retriable: a home left by a crashed migration is discarded and rebuilt', async () => {
+    await seedLegacy('legacy-token');
+    const { migrateLegacyHttpProvider, httpProviderHome, getHttpProviderConfig } = await import(
+      '../providers/http/store.js'
+    );
+    // Simulate a crash after the state-dir move but before the registry/marker
+    // write: a home dir exists but no registry entry and no marker.
     await fse.ensureDir(httpProviderHome('company'));
-    await expect(migrateLegacyHttpProvider({ name: 'company' })).rejects.toThrow(/already has state/);
+    await fse.writeFile(path.join(httpProviderHome('company'), 'stale.txt'), 'leftover');
+
+    const config = await migrateLegacyHttpProvider({ name: 'company' });
+    expect(config).not.toBeNull();
+    // The leftover was discarded and the home rebuilt from legacy (manifest copied).
+    expect(fs.existsSync(path.join(httpProviderHome('company'), 'stale.txt'))).toBe(false);
+    expect(fs.existsSync(path.join(httpProviderHome('company'), 'manifest.json'))).toBe(true);
+    expect((await getHttpProviderConfig('company'))?.endpoint).toBe('https://legacy/api');
   });
 });

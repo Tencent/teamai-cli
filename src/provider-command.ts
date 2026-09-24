@@ -12,6 +12,7 @@ import {
   removeHttpProviderConfig,
   removeHttpProviderState,
   migrateLegacyHttpProvider,
+  legacySingletonActive,
   assertValidProviderName,
 } from './providers/http/store.js';
 import {
@@ -49,6 +50,31 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
     process.exit(1);
   }
 
+  // Single-provider gate (issue #404, phase 2). Running two HTTP providers
+  // concurrently is unsafe until the ownership ledger (phase 4) arbitrates
+  // same-name resources across providers — otherwise one provider's uninstall
+  // deletes files another provider installed, and serial hook sync can exceed
+  // the foreground budget. Until then, allow exactly one HTTP provider (plus
+  // the legacy singleton, which double-track dispatch already handles).
+  const existing = await listHttpProviderConfigs();
+  if (existing.length > 0) {
+    log.error(
+      `An HTTP provider ("${existing[0].name}") is already configured. Multiple HTTP `
+      + 'providers need cross-provider ownership arbitration (issue #404 phase 4) and '
+      + 'are not supported yet. Remove the existing one with `teamai provider remove '
+      + `${existing[0].name}\` first.`,
+    );
+    process.exit(1);
+  }
+  if (await legacySingletonActive()) {
+    log.error(
+      'A legacy HTTP local agent is already configured. Migrate it with '
+      + '`teamai provider migrate-legacy --name <name>` instead of adding a second '
+      + 'HTTP provider (multiple providers need issue #404 phase 4).',
+    );
+    process.exit(1);
+  }
+
   const priority = parsePriority(opts.priority);
   const config: HttpProviderConfig = {
     name: opts.name,
@@ -57,12 +83,22 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
     priority,
   };
 
-  await upsertHttpProviderConfig(config);
-  // initialize is optional on the adapter interface; call it when present so the
-  // credential and initial state land in the provider's isolated home.
+  // Initialize the backend BEFORE publishing the registry record, so a failed
+  // init (bad token, unwritable dir, hook injection failure) never leaves a
+  // registered-but-broken provider that later hook dispatches keep loading.
+  // Publish the registry record only after init succeeds; on any failure roll
+  // back the partial state so a retry starts clean.
   const backend = getHttpAdapter(adapter);
-  if (backend.initialize) {
-    await backend.initialize(config, opts.token);
+  try {
+    if (backend.initialize) {
+      await backend.initialize(config, opts.token);
+    }
+    await upsertHttpProviderConfig(config);
+  } catch (e) {
+    await removeHttpProviderState(config.name);
+    await removeHttpProviderConfig(config.name);
+    log.error(`Failed to add provider "${config.name}": ${(e as Error).message}`);
+    process.exit(1);
   }
 
   log.success(`Added HTTP provider "${config.name}" (${config.adapter}) → ${config.endpoint}`);
@@ -82,19 +118,21 @@ export async function providerList(): Promise<void> {
   }
 }
 
-/** `teamai provider sync [--force]` */
-export async function providerSync(opts: { force?: boolean }): Promise<void> {
+/** `teamai provider sync` */
+export async function providerSync(): Promise<void> {
   const configs = await listHttpProviderConfigs();
   if (configs.length === 0) {
     log.info('No HTTP providers configured.');
     return;
   }
   const providers = configs.map(createHttpResourceProvider);
-  const results = await syncResourceProviders(providers, { trigger: 'manual', force: opts.force });
+  const results = await syncResourceProviders(providers, { trigger: 'manual' });
   for (const r of results) {
     if (r.ok) log.success(`  ${r.provider}: ok${r.changed ? ' (changed)' : ''}`);
     else log.error(`  ${r.provider}: ${r.message ?? 'failed'}`);
   }
+  // Exit non-zero if any provider failed, so scripts/CI can detect it.
+  if (results.some((r) => !r.ok)) process.exit(1);
 }
 
 /** `teamai provider remove <name>` */

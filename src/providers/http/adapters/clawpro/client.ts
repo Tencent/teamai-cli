@@ -3187,7 +3187,23 @@ async function processCommands(
   return modelConfigApplied;
 }
 
-export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promise<boolean> {
+/**
+ * Out-parameter for report/sync outcome. The boolean return of
+ * `reportAndSyncLocalAgent` means "config present and ran", not "succeeded"
+ * (many callers/tests rely on that), so a failed report/sync is reported here
+ * instead: `failed` is set true with the error when the network/command phase
+ * throws. Legacy callers omit it and are unaffected; the HTTP provider adapter
+ * passes one so `provider sync` never prints a backend failure as success.
+ */
+export interface SyncOutcome {
+  failed?: boolean;
+  error?: string;
+}
+
+export async function reportAndSyncLocalAgent(
+  context: LocalAgentContext,
+  outcome?: SyncOutcome,
+): Promise<boolean> {
   const config = await loadLocalAgentConfig();
   if (!config) return false;
 
@@ -3296,6 +3312,10 @@ export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promi
     const error = (e as Error).message;
     log.error(`${tag} sync FAILED: ${error}`);
     await appendErrorLog({ error, context });
+    if (outcome) {
+      outcome.failed = true;
+      outcome.error = error;
+    }
   }
 
   return true;
@@ -3315,6 +3335,7 @@ function statusFromEvent(event?: DashboardEvent): string {
 export async function reportAndSyncFromHook(
   stdin: Record<string, unknown>,
   tool: string,
+  outcome?: SyncOutcome,
 ): Promise<string | null> {
   const raw = JSON.stringify(stdin);
   const event = await parseHookEvent(raw, tool);
@@ -3338,7 +3359,7 @@ export async function reportAndSyncFromHook(
       tool,
       status: statusFromEvent(event ?? undefined),
       event: event ?? undefined,
-    });
+    }, outcome);
     return null;
   } finally {
     activeFetchTimeoutMs = LOCAL_AGENT_FETCH_TIMEOUT_MS;
@@ -3406,13 +3427,16 @@ export async function initLocalAgentHttp(options: {
   }
 }
 
-export async function pullLocalAgentForCwd(context?: LocalAgentContext): Promise<boolean> {
+export async function pullLocalAgentForCwd(
+  context?: LocalAgentContext,
+  outcome?: SyncOutcome,
+): Promise<boolean> {
   return reportAndSyncLocalAgent({
     cwd: context?.cwd ?? process.cwd(),
     tool: context?.tool ?? 'workbuddy',
     status: context?.status ?? 'running',
     event: context?.event,
-  });
+  }, outcome);
 }
 
 /** Summary of the configured HTTP local-agent bypass, for `teamai source list`. */

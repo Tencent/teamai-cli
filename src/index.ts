@@ -583,10 +583,9 @@ providerCmd
 providerCmd
   .command('sync')
   .description('Sync all configured HTTP providers now')
-  .option('--force', 'Bypass any freshness cache')
-  .action(async (cmdOpts) => {
+  .action(async () => {
     const { providerSync } = await import('./provider-command.js');
-    await providerSync(cmdOpts);
+    await providerSync();
   });
 
 providerCmd
@@ -992,11 +991,25 @@ program
   .option('--project-id <id>', 'Project ID from /projects/mine')
   .option('--skip', 'Mark current workspace as skipped (never prompt again)')
   .action(async (cmdOpts) => {
-    const { bindCurrentProject } = await import('./local-agent.js');
-    await bindCurrentProject({
+    const { bindCurrentProject, withHttpProvider } = await import('./local-agent.js');
+    const args = {
       projectId: cmdOpts.projectId ? Number.parseInt(cmdOpts.projectId, 10) : undefined,
       skip: !!cmdOpts.skip,
-    });
+    };
+    // Bind inside the named HTTP provider's context so it reads/writes that
+    // provider's own bindings, not the legacy ~/.teamai/local-agent/ singleton.
+    // Falls back to the legacy path when no named provider is configured.
+    const { listHttpProviderConfigs, httpProviderExecutionContext } = await import(
+      './providers/http/store.js'
+    );
+    const [provider] = await listHttpProviderConfigs();
+    if (provider) {
+      await withHttpProvider(httpProviderExecutionContext(provider.name), () =>
+        bindCurrentProject(args),
+      );
+    } else {
+      await bindCurrentProject(args);
+    }
   });
 
 // ─── Contribute commands ──────────────────────────────────

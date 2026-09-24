@@ -23,6 +23,7 @@ import {
   pullLocalAgentForCwd,
   describeLocalAgent,
   removeLocalAgentHttp,
+  type SyncOutcome,
 } from './client.js';
 import { httpProviderExecutionContext } from '../../store.js';
 
@@ -42,16 +43,21 @@ export class ClawProAdapter implements HttpBackendAdapter {
 
   async sync(config: HttpProviderConfig, context: SyncContext): Promise<ProviderResult> {
     return withHttpProvider(httpProviderExecutionContext(config.name), async () => {
+      // reportAndSyncLocalAgent swallows network/command errors (so one bad
+      // backend never crashes a hook); it signals them through this outcome
+      // instead, so we report an honest ok rather than always true.
+      const outcome: SyncOutcome = {};
       let hookOutput: string | null = null;
       if (context.trigger === 'hook' && context.stdin) {
-        hookOutput = await reportAndSyncFromHook(context.stdin, context.tool ?? 'workbuddy');
+        hookOutput = await reportAndSyncFromHook(context.stdin, context.tool ?? 'workbuddy', outcome);
       } else {
-        await pullLocalAgentForCwd({ cwd: context.cwd, tool: context.tool });
+        await pullLocalAgentForCwd({ cwd: context.cwd, tool: context.tool }, outcome);
       }
       return {
         provider: config.name,
-        ok: true,
+        ok: !outcome.failed,
         changed: false,
+        ...(outcome.error ? { message: outcome.error } : {}),
         ...(hookOutput ? { hookOutput } : {}),
       };
     });

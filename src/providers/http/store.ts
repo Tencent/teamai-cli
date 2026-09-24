@@ -72,11 +72,46 @@ interface ProviderRegistryFile {
   http?: HttpProviderConfig[];
 }
 
-/** Provider names must be a safe single path segment (state-dir + credential-file). */
+/** Windows reserved device names (case-insensitive), which cannot be a path segment. */
+const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+/**
+ * A provider name becomes a single path segment for its state dir and
+ * credential file, so it must be safe on every platform. Beyond the character
+ * set, reject anything that could collide with another name on a
+ * case-insensitive filesystem (`Foo` vs `foo`), a name ending in `.` or a
+ * space (Windows strips them, so `name.` and `name` would share a path), and
+ * Windows reserved device names (`CON`, `COM1`, …).
+ */
 export function assertValidProviderName(name: string): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) {
     throw new Error(
       `Invalid provider name "${name}". Use letters, digits, '.', '_' or '-', starting alphanumeric.`,
+    );
+  }
+  if (name.endsWith('.')) {
+    throw new Error(`Invalid provider name "${name}": must not end with '.'.`);
+  }
+  if (WINDOWS_RESERVED_NAME.test(name)) {
+    throw new Error(`Invalid provider name "${name}": reserved device name.`);
+  }
+}
+
+/**
+ * Reject a name that collides with an existing provider on a case-insensitive
+ * filesystem (`Foo` when `foo` exists). Same-name replacement is allowed (that
+ * is an intentional upsert), so only a *different* name with the same lowercase
+ * form is a conflict. Call before writing a NEW provider.
+ */
+async function assertNameNotCaseColliding(name: string): Promise<void> {
+  const lower = name.toLowerCase();
+  const clash = (await listHttpProviderConfigs()).find(
+    (p) => p.name !== name && p.name.toLowerCase() === lower,
+  );
+  if (clash) {
+    throw new Error(
+      `Provider name "${name}" collides with existing "${clash.name}" on a `
+      + 'case-insensitive filesystem. Choose a distinct name.',
     );
   }
 }
@@ -95,6 +130,7 @@ export async function getHttpProviderConfig(name: string): Promise<HttpProviderC
 /** Add or replace an HTTP provider in the registry, persisting its config. */
 export async function upsertHttpProviderConfig(config: HttpProviderConfig): Promise<void> {
   assertValidProviderName(config.name);
+  await assertNameNotCaseColliding(config.name);
   const existing = await listHttpProviderConfigs();
   const next = existing.filter((p) => p.name !== config.name);
   next.push(config);
@@ -179,10 +215,18 @@ export async function migrateLegacyHttpProvider(options: {
     priority: options.priority ?? legacy.priority ?? 50,
   };
 
+  // Conflict is decided by the registry, not the home directory: a real
+  // `provider add` records the name in settings.json. A home dir that exists
+  // WITHOUT a registry entry (and with no marker — checked above) is leftover
+  // from a migration that crashed before it finished. Because the legacy dir
+  // stays authoritative until the marker is written, that partial home carries
+  // no unique data and is safe to discard and rebuild — which is what makes
+  // this operation retriable rather than permanently stuck.
   const home = httpProviderHome(options.name);
-  if (await pathExists(home)) {
-    throw new Error(`Provider "${options.name}" already has state at ${home}; choose another name.`);
+  if (await getHttpProviderConfig(options.name)) {
+    throw new Error(`Provider "${options.name}" already exists; choose another name.`);
   }
+  await remove(home);
 
   // Stage a full copy, then atomically move it into place so an interrupted
   // migration never leaves a half-populated provider home.

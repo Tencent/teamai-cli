@@ -173,7 +173,6 @@ Generated: do not edit by hand. Regenerate with
       - `--priority <n>` — Arbitration priority; higher wins (default: 50)
   - `teamai provider list` — List configured HTTP providers
   - `teamai provider sync` — Sync all configured HTTP providers now
-    - `--force` — Bypass any freshness cache
   - `teamai provider remove <name>` — Remove an HTTP provider and clean up its resources
   - `teamai provider migrate-legacy` — Promote the legacy ~/.teamai/local-agent/ singleton to a named provider
     - `--name <name>` — Name for the migrated provider

@@ -853,10 +853,18 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
 // ─── Execution ─────────────────────────────────────────
 
 /**
- * Stop and uninstall local-agent plugins (best-effort) before ~/.teamai is deleted.
- * Dynamic import mirrors source.ts — keeps local-agent's heavy dependency graph out
- * of uninstall's static import chain. Covers the legacy singleton and every named
- * HTTP provider (issue #404), each torn down in its own isolated context.
+ * Tear down HTTP resource backends before ~/.teamai is deleted (best-effort).
+ * Dynamic import mirrors source.ts — keeps local-agent's heavy dependency graph
+ * out of uninstall's static import chain.
+ *
+ * The legacy singleton only needs its plugins stopped: uninstall's own removal
+ * plan already reads the legacy manifest and strips its resources/hooks. But a
+ * named HTTP provider's resources are recorded in ITS OWN manifest under
+ * ~/.teamai/providers/http/<name>/, which the removal plan never reads — so its
+ * installed skills/rules/CLAUDE.md/agent-hooks would be orphaned in the tool
+ * dirs when ~/.teamai is deleted. Each named provider therefore gets a full
+ * teardown() (uninstall all manifest resources + remove agent hooks + stop
+ * plugins) inside its own isolated context (issue #404).
  */
 async function teardownPlugins(): Promise<void> {
   try {
@@ -869,14 +877,14 @@ async function teardownPlugins(): Promise<void> {
     const { listHttpProviderConfigs, httpProviderExecutionContext } = await import(
       './providers/http/store.js'
     );
-    const { withHttpProvider, teardownLocalAgentPlugins } = await import('./local-agent.js');
+    const { withHttpProvider, removeLocalAgentHttp } = await import('./local-agent.js');
     for (const config of await listHttpProviderConfigs()) {
       try {
         await withHttpProvider(httpProviderExecutionContext(config.name), () =>
-          teardownLocalAgentPlugins(),
+          removeLocalAgentHttp(),
         );
       } catch (e) {
-        log.warn(`plugin teardown for provider "${config.name}" failed: ${(e as Error).message}`);
+        log.warn(`teardown for provider "${config.name}" failed: ${(e as Error).message}`);
       }
     }
   } catch (e) {

@@ -1786,24 +1786,23 @@ teamai source remove-http
 
 HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill 指令。每个安装仅支持一个 HTTP 源。若主仓本身已是 HTTP 模式（`init --http`），则 `add-http` 不可用（主仓已占用 HTTP 配置）。
 
-#### 多个 HTTP provider
+#### 具名 HTTP provider
 
-`source add-http` 只能配置一个全局 HTTP 后端。若要**同时**挂载多个 HTTP 后端——每个都有独立的凭据、资源清单和缓存，彼此完全隔离——请使用 `teamai provider`：
+`source add-http` / `init --http` 只能配置一个全局 HTTP 后端，状态落在 `~/.teamai/local-agent/`。`teamai provider` 则把 HTTP 后端挂成一个**具名 provider**，其凭据、资源清单和缓存隔离在各自目录下：
 
 ```bash
-# 添加具名 HTTP provider（每个 provider 是一个协议 adapter 后的后端）
-teamai provider add http https://company-host/api   --name company   --adapter clawpro --token <key> --priority 80
-teamai provider add http https://community-host/api  --name community --adapter clawpro                --priority 40
+# 添加具名 HTTP provider（一个协议 adapter 后的后端，如 clawpro）
+teamai provider add http https://company-host/api --name company --adapter clawpro --token <key>
 
-# 列出并同步
+# 列出、同步、删除
 teamai provider list
 teamai provider sync
-
-# 删除其中一个——其余 provider 及其资源不受影响
 teamai provider remove company
 ```
 
-每个 provider 的状态存放在 `~/.teamai/providers/http/<name>/`；其 token 以 `0600` 权限单独存于 `~/.teamai/credentials/<name>`，绝不写入任何配置文件。每次 session 中，hook dispatch 会对每个 provider 各同步一次，单个后端缓慢或失败都不会阻塞其他 provider。provider 的 `--priority` 为后续的资源仲裁阶段预留，目前尚不参与同名资源的冲突决策。
+该 provider 的状态存放在 `~/.teamai/providers/http/<name>/`；其 token 以 `0600` 权限单独存于 `~/.teamai/credentials/<name>`，绝不写入任何配置文件。每次 session 中，hook dispatch 会同步它，并返回每个 provider 的结果——后端失败会如实报为失败，而非假成功。
+
+> **目前每台机器只支持一个 HTTP provider。** 同时挂载多个 HTTP 后端需要跨 provider 的归属仲裁（避免同名资源互相覆盖或删除），这是后续阶段（issue #404）。在此之前，`provider add http` 会拒绝添加第二个 provider。`--priority` 参数为该未来阶段预留，目前不影响行为。
 
 要把已有的单个 HTTP 后端（`init --http` / `source add-http`）迁移到具名 provider 模型，运行：
 

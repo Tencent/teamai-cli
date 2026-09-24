@@ -88,6 +88,23 @@ teamai init --http https://your-team-host/api --token <api-key>
 This is a read-only consumer mode — `push` / `contribute` are not available, but
 skills and rules still sync.
 
+**Named HTTP provider (isolated state):** instead of the global `init --http`
+singleton, an HTTP backend can be mounted as a *named* provider whose config,
+credential (0600, outside config) and manifest are isolated under
+`~/.teamai/providers/http/<name>/`:
+
+```bash
+teamai provider add http https://your-team-host/api --name <name> --token <api-key>
+teamai provider list
+teamai provider remove <name>
+```
+
+To move an existing `init --http` singleton onto this model without losing state,
+run `teamai provider migrate-legacy --name <name>` (it keeps the old directory as
+a rollback snapshot; idempotent). Only one HTTP provider is supported per install
+for now — mounting several concurrently needs cross-provider ownership
+arbitration, which is a later phase (issue #404).
+
 **Claude Code kept in a different directory (`CLAUDE_CONFIG_DIR`):** `init` records
 that directory (as `toolRoots.claude` in the local config) and syncs every Claude
 path there, so run `init` from a shell that has the variable exported. Re-running
