@@ -311,6 +311,17 @@ describe('votes stay with the scope they were cast in (#787)', () => {
     expect(fs.existsSync(path.join(dataHome, 'votes'))).toBe(false);
   });
 
+  it('a historical project-scoped ~/.teamai/config.yaml without projectRoot records into the user scope', async () => {
+    const user = userScope();
+    fs.writeFileSync(path.join(teamaiHome(), 'config.yaml'), YAML.stringify({ ...user, scope: 'project' }));
+
+    await feedbackIn(outsideAnyProject(), 'doc-legacy-project');
+    await stop(outsideAnyProject(), 'doc-u');
+
+    const votes = YAML.parse(fs.readFileSync(path.join(teamaiHome(), 'user-votes', 'tester.yaml'), 'utf-8')) as UserVotesV2;
+    expect(Object.keys(votes.votes).sort()).toEqual(['doc-legacy-project', 'doc-u']);
+  });
+
   it('the vote view reads the votes of the scope of its cwd', async () => {
     const user = userScope();
     const a = await projectA();

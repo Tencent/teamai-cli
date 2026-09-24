@@ -39,7 +39,7 @@
     │  ~/.teamai/               │         │
     │    learnings/ (local copy)│◀────────┘
     │    search-index.json      │
-    │    votes/<user>.yaml      │
+    │    user-votes/<user>.yaml │
     └──────────┬───────────────┘
                │
          teamai recall "api timeout"

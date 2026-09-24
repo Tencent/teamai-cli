@@ -1677,9 +1677,12 @@ export function getUserVotesDir(): string {
 /**
  * The local votes dir of one scope: `<dataHome>/votes`, so each scope pushes
  * only the votes cast where it is set up (#787); the user scope's is
- * getUserVotesDir().
+ * getUserVotesDir(). A historical project-scoped `~/.teamai/config.yaml` with
+ * no projectRoot lives in ~/.teamai, as recall and viz treat it, so its votes
+ * are the user scope's.
  */
 export function getVotesDir(config: LocalConfig): string {
+  if (!config.dataHome && config.scope === 'project' && !config.projectRoot) return getUserVotesDir();
   const dataHome = getDataHome(config);
   if (path.resolve(dataHome) !== path.resolve(getTeamaiHomeDir())) return path.join(dataHome, 'votes');
   return getUserVotesDir();
