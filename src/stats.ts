@@ -357,7 +357,7 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
     const ta = timeAnalytics(dashboardEvents);
     if (ta.totalEvents > 0) {
       console.log('');
-      console.log('Activity by Hour (local time):');
+      console.log('Activity by Hour (local event log):');
       console.log('');
       console.log(`  00h ${renderHourSparkline(ta.byHour)} 23h`);
       console.log(`  Peak hour:    ${String(ta.peakHour).padStart(2, '0')}:00`);

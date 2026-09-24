@@ -818,8 +818,8 @@ program
 program
   .command('stats')
   .description('Show local skill usage statistics')
-  .option('--by-repo', 'Break usage down per repository')
-  .option('--by-time', 'Show activity by hour of day')
+  .option('--by-repo', 'Break the local event log down per repository')
+  .option('--by-time', 'Show local event log activity by hour of day')
   .action(async (cmdOpts) => {
     const { showStats } = await import('./stats.js');
     await showStats({ byRepo: cmdOpts.byRepo, byTime: cmdOpts.byTime });

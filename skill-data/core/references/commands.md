@@ -237,8 +237,8 @@ Generated: do not edit by hand. Regenerate with
 ## stats
 
 - `teamai stats` — Show local skill usage statistics
-  - `--by-repo` — Break usage down per repository
-  - `--by-time` — Show activity by hour of day
+  - `--by-repo` — Break the local event log down per repository
+  - `--by-time` — Show local event log activity by hour of day
 
 ## session
 
