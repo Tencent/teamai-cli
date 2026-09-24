@@ -130,6 +130,21 @@ describe('pushRepoBranch', () => {
     expect(mockGit.checkout).not.toHaveBeenCalled();
   });
 
+  it('should push a newly added empty file', async () => {
+    mockGit.status.mockResolvedValue({ staged: ['empty.md'] });
+    mockGit.diff.mockResolvedValue([
+      'diff --git a/empty.md b/empty.md',
+      'new file mode 100644',
+      'index 0000000..e69de29',
+    ].join('\n'));
+
+    const result = await pushRepoBranch('/repo', 'commit msg', ['empty.md'], 'teamai/push/test/empty');
+
+    expect(result).toBe(true);
+    expect(mockGit.commit).toHaveBeenCalledWith('commit msg', { '--no-verify': null });
+    expect(mockGit.push).toHaveBeenCalledWith(['-u', 'origin', 'teamai/push/test/empty']);
+  });
+
   it('should return false and clean up branch when no changes to commit', async () => {
     mockGit.status.mockResolvedValue({ staged: [] });
     // Mock origin/HEAD lookup so default-branch detection resolves to 'master'
@@ -437,6 +452,22 @@ describe('isMetadataOnlyDiff', () => {
   it('should return true for empty diff', () => {
     expect(isMetadataOnlyDiff('')).toBe(true);
     expect(isMetadataOnlyDiff('  \n  ')).toBe(true);
+  });
+
+  it('should return false for file additions and deletions without content lines', () => {
+    const added = [
+      'diff --git a/empty.md b/empty.md',
+      'new file mode 100644',
+      'index 0000000..e69de29',
+    ].join('\n');
+    const deleted = [
+      'diff --git a/empty.md b/empty.md',
+      'deleted file mode 100644',
+      'index e69de29..0000000',
+    ].join('\n');
+
+    expect(isMetadataOnlyDiff(added)).toBe(false);
+    expect(isMetadataOnlyDiff(deleted)).toBe(false);
   });
 
   it('should return true for timestamp-only changes', () => {
