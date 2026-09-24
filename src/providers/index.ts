@@ -1,6 +1,21 @@
 export type { GitProvider, RepoInfo, PrCreateOptions } from './types.js';
 export { RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './types.js';
 export { getProvider, getProviderFromUrl, detectProvider, detectProviderForInit } from './registry.js';
+
+// ─── Resource delivery providers (issue #404) ────────────
+export type {
+  ResourceProvider,
+  ResourceProviderType,
+  ProviderCapabilities,
+  ProviderSummary,
+  ProviderResult,
+  SyncContext,
+  HttpBackendAdapter,
+  HttpProviderConfig,
+  HttpRoutes,
+} from './types.js';
+export { ResourceProviderRegistry, syncResourceProviders } from './resource-registry.js';
+export { GitResourceProvider } from './git/resource-provider.js';
 export { TGitProvider } from './tgit/index.js';
 export { GitHubProvider } from './github/index.js';
 export { GitLabProvider } from './gitlab/index.js';

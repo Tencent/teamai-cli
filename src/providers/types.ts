@@ -206,3 +206,144 @@ export class RepoCreatePermissionError extends Error {
     this.createUrl = createUrl;
   }
 }
+
+// ─── Resource delivery providers ─────────────────────────
+//
+// A higher-level abstraction than GitProvider (above). GitProvider adapts a
+// *git host* (github/tgit/gitlab/…); a ResourceProvider adapts a *resource
+// sync mechanism* — either `git` (clone a team repo, the existing behavior) or
+// `http` (talk to an HTTP backend such as ClawPro). Multiple named providers
+// can be mounted side by side, each syncing independently and isolated from the
+// others' failures.
+//
+//  ResourceProvider
+//  ├── git   (wraps the existing team-repo pull; GitProvider is used inside)
+//  └── http  (HttpResourceProvider → HttpBackendAdapter)
+//                                      └── clawpro adapter
+//
+// See docs/designs/management-backend.md §8 and issue #404. The ownership
+// ledger, priority arbitration and cross-provider failover it describes are a
+// later phase; `priority` is carried here so those phases need no type change,
+// but nothing consumes it for arbitration yet.
+
+/** Whether a provider syncs via a git repo or an HTTP backend. */
+export type ResourceProviderType = 'git' | 'http';
+
+/**
+ * What a provider can do. Callers gate work on these instead of assuming every
+ * provider implements git clone / push / command execution.
+ * - `pull`:     delivers resources into the local tool directories.
+ * - `push`:     can be a write target for `teamai push` (git main only; HTTP
+ *               backends and cross-team git sources are read-only → false).
+ * - `report`:   sends usage/telemetry to a backend on hook dispatch.
+ * - `commands`: executes commands the backend pushes back (install/uninstall/…).
+ */
+export interface ProviderCapabilities {
+  pull: boolean;
+  push: boolean;
+  report: boolean;
+  commands: boolean;
+}
+
+/** Why and where a sync was triggered. */
+export interface SyncContext {
+  /** Working directory the sync runs for (workspace attribution). */
+  cwd?: string;
+  /** Host tool that triggered the sync (e.g. 'claude', 'codebuddy'). */
+  tool?: string;
+  /** What initiated this sync. */
+  trigger: 'hook' | 'pull' | 'manual';
+  /** Raw hook STDIN payload, when trigger === 'hook'. */
+  stdin?: Record<string, unknown>;
+  /** Bypass any pull TTL / freshness cache. */
+  force?: boolean;
+}
+
+/** Outcome of a single provider's sync. */
+export interface ProviderResult {
+  /** Provider name this result is for. */
+  provider: string;
+  /** Whether the sync completed without error. */
+  ok: boolean;
+  /** Whether the sync changed anything on disk. */
+  changed: boolean;
+  /** Human-readable status or error, for logs / CLI output. */
+  message?: string;
+  /** Text a protocol adapter asks the host to emit on its hook stdout. */
+  hookOutput?: string;
+}
+
+/** Static description of a provider, for `teamai provider list` and diagnostics. */
+export interface ProviderSummary {
+  name: string;
+  type: ResourceProviderType;
+  priority: number;
+  capabilities: ProviderCapabilities;
+  /** HTTP backend endpoint, when type === 'http'. */
+  endpoint?: string;
+  /** HTTP protocol adapter name, when type === 'http'. */
+  adapter?: string;
+}
+
+/**
+ * A mounted resource backend. Named uniquely within a registry. `sync` is the
+ * one hot-path method; `describe`/`teardown` support listing and removal.
+ */
+export interface ResourceProvider {
+  readonly name: string;
+  readonly type: ResourceProviderType;
+  /**
+   * Ordering hint for later multi-provider arbitration (higher wins). Carried
+   * now so the arbitration phase needs no interface change; not yet consumed
+   * for same-name resource conflict resolution.
+   */
+  readonly priority: number;
+  readonly capabilities: ProviderCapabilities;
+
+  /** Deliver resources / report usage for this trigger. */
+  sync(context: SyncContext): Promise<ProviderResult>;
+  /** Return a static summary for listing and diagnostics. */
+  describe(): Promise<ProviderSummary>;
+  /** Remove this provider's local state (credentials, manifests, caches). */
+  teardown(): Promise<void>;
+}
+
+/** Logical route names an HTTP backend exposes, resolved to paths per adapter. */
+export interface HttpRoutes {
+  projects: string;
+  report: string;
+  sync: string;
+  ack: string;
+  getConfig: string;
+}
+
+/** Persisted configuration for one named HTTP provider. */
+export interface HttpProviderConfig {
+  /** Unique provider name (also the state-directory segment). */
+  name: string;
+  /** Protocol adapter that speaks this backend's wire format (e.g. 'clawpro'). */
+  adapter: string;
+  /** Backend base URL. */
+  endpoint: string;
+  /** Arbitration hint (see ResourceProvider.priority). */
+  priority: number;
+}
+
+/**
+ * Translates one HTTP backend's wire format to the common ResourceProvider
+ * shape. The HTTP provider owns transport concerns generically; the adapter
+ * owns only protocol differences (routes and payload/command shapes).
+ */
+export interface HttpBackendAdapter {
+  readonly name: string;
+  /** Route table for this backend, given its config (defaults + overrides). */
+  routes(config: HttpProviderConfig): HttpRoutes;
+  /** One-time setup for a newly added provider (e.g. persist a token). */
+  initialize?(config: HttpProviderConfig, token?: string): Promise<void>;
+  /** Run report/sync/command execution for this provider. */
+  sync(config: HttpProviderConfig, context: SyncContext): Promise<ProviderResult>;
+  /** Static summary for listing. */
+  describe(config: HttpProviderConfig): Promise<ProviderSummary>;
+  /** Remove this provider's local state. */
+  teardown(config: HttpProviderConfig): Promise<void>;
+}
