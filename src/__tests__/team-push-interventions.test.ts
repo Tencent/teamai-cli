@@ -54,6 +54,15 @@ function reportsStatsPath(): string {
   return path.join(tmpDir, 'reports-wt', 'stats', 'me.yaml');
 }
 
+/**
+ * A reported snapshot as the report left it, `{}` when it wrote none: the user
+ * scope's own (#786), or the shared one for a caller without a scope config.
+ */
+function reportedSnapshot(name: string, scoped = true): Record<string, unknown> {
+  const p = path.join(tmpDir, '.teamai', 'dashboard', `${scoped ? 'user-' : ''}reported-${name}.json`);
+  return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf-8')) : {};
+}
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-tp-iv-'));
   originalHome = process.env.HOME ?? '';
@@ -75,10 +84,12 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+/** Sessions the user scope recorded (#785), the scope `gitConfig()` reports. */
 function writeDashboardEvents(lines: object[]): void {
   const p = path.join(tmpDir, '.teamai', 'dashboard', 'events.jsonl');
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  const dataHome = path.join(tmpDir, '.teamai');
+  fs.writeFileSync(p, lines.map((l) => JSON.stringify({ ...l, dataHome })).join('\n') + '\n');
 }
 
 describe('reportUsageToTeam — intervention reporting', () => {
@@ -122,8 +133,7 @@ describe('reportUsageToTeam — intervention reporting', () => {
     await vi.advanceTimersByTimeAsync(5000);
     await timeout;
     expect(fs.readFileSync(usagePath, 'utf-8')).toContain('review');
-    const dashboard = path.join(tmpDir, '.teamai', 'dashboard');
-    expect(fs.existsSync(path.join(dashboard, 'reported-prompt-tokens.json'))).toBe(false);
+    expect(reportedSnapshot('prompt-tokens', backend === 'reports').slow).toBeUndefined();
 
     finish(true);
     expect(await operation).toBe(true);
@@ -131,7 +141,7 @@ describe('reportUsageToTeam — intervention reporting', () => {
     // so it leaves the user-scope file for the scope that owns it.
     expect(fs.readFileSync(usagePath, 'utf-8')).toBe(backend === 'reports' ? '' : seeded);
     for (const name of ['interventions', 'prompt-tokens', 'daily-sessions']) {
-      expect(JSON.parse(fs.readFileSync(path.join(dashboard, `reported-${name}.json`), 'utf-8')).slow).toBeDefined();
+      expect(reportedSnapshot(name, backend === 'reports').slow).toBeDefined();
     }
     const statsPath = backend === 'reports' ? reportsStatsPath() : path.join(repoDir, 'stats', 'me.yaml');
     const before = fs.readFileSync(statsPath, 'utf-8');
@@ -147,7 +157,7 @@ describe('reportUsageToTeam — intervention reporting', () => {
     expect(await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() })).toBe(false);
     expect(fs.readFileSync(usagePath, 'utf-8')).toBe(before);
     for (const name of ['interventions', 'prompt-tokens', 'daily-sessions']) {
-      expect(fs.existsSync(path.join(tmpDir, '.teamai', 'dashboard', `reported-${name}.json`))).toBe(false);
+      expect(reportedSnapshot(name).slow).toBeUndefined();
     }
     expect(await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() })).toBe(true);
     const stats = YAML.parse(fs.readFileSync(reportsStatsPath(), 'utf-8'));
@@ -176,12 +186,10 @@ describe('reportUsageToTeam — intervention reporting', () => {
     expect(reportsMocks.updateReports).toHaveBeenCalledTimes(1);
 
     // reported snapshot persisted so a second run reports nothing new
-    const reportedPath = path.join(tmpDir, '.teamai', 'dashboard', 'reported-interventions.json');
-    expect(JSON.parse(fs.readFileSync(reportedPath, 'utf-8'))).toEqual({
+    expect(reportedSnapshot('interventions')).toEqual({
       s1: { interrupt: 2, toolReject: 1, correction: 0 },
     });
-    const dailyPath = path.join(tmpDir, '.teamai', 'dashboard', 'reported-daily-sessions.json');
-    expect(JSON.parse(fs.readFileSync(dailyPath, 'utf-8')).s1.date).toBe(ts.slice(0, 10));
+    expect(reportedSnapshot('daily-sessions').s1).toMatchObject({ date: ts.slice(0, 10) });
 
     reportsMocks.updateReports.mockClear();
     await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() });

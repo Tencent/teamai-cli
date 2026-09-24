@@ -122,6 +122,7 @@ async function pullModifyAndPush(
   fixture: PushFixture,
   agent: PushAgent,
   envOverrides: Record<string, string> = {},
+  extraPushArgs: string[] = [],
 ): Promise<RunResult> {
   const pullResult = await runCLI(
     ['pull'],
@@ -140,7 +141,7 @@ async function pullModifyAndPush(
     '---\nname: beta-proof\ndescription: modified\n---\n\n# Modified locally\n',
   );
   return runCLI(
-    ['push', '--skill', skillPath, '--role', 'backend', '--all'],
+    ['push', '--skill', skillPath, '--role', 'backend', '--all', ...extraPushArgs],
     fixture.projectRoot,
     fixture.home,
     envOverrides,
@@ -278,7 +279,7 @@ describe('role-scoped skill provider PR creation e2e (issue #331)', () => {
       expect(requests.map((request) => request.url)).toEqual(['/users/sign_in?auto_sign_in=false']);
       expect(requests[0].headers['private-token']).toBeUndefined();
       const config = fs.readFileSync(path.join(fixture.projectRoot, '.teamai', 'team-repo', 'teamai.yaml'), 'utf8');
-      expect(config).toContain('provider: git\n');
+      expect(config).toMatch(/provider: git\r?\n/);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       fs.rmSync(fixture.sandbox, { recursive: true, force: true });
@@ -290,21 +291,26 @@ describe('role-scoped skill provider PR creation e2e (issue #331)', () => {
     const binDir = path.join(fixture.sandbox, 'bin');
     const ghLog = path.join(fixture.sandbox, 'gh.log');
     fs.mkdirSync(binDir);
-    fs.writeFileSync(
-      path.join(binDir, 'gh'),
-      '#!/bin/sh\nprintf "%s\\n" "$*" > "$TEAMAI_FAKE_GH_LOG"\nprintf "%s\\n" "https://github.com/team/issue-331/pull/331"\n',
-      { mode: 0o755 },
-    );
+    const ghName = process.platform === 'win32' ? 'gh.cmd' : 'gh';
+    const ghScript = process.platform === 'win32'
+      ? '@echo off\r\n> "%TEAMAI_FAKE_GH_LOG%" echo %*\r\necho https://github.com/team/issue-331/pull/331\r\n'
+      : '#!/bin/sh\nprintf "%s\\n" "$*" > "$TEAMAI_FAKE_GH_LOG"\nprintf "%s\\n" "https://github.com/team/issue-331/pull/331"\n';
+    fs.writeFileSync(path.join(binDir, ghName), ghScript, { mode: 0o755 });
 
     try {
+      const pathWithoutInstalledGh = (process.env.PATH ?? '')
+        .split(path.delimiter)
+        .filter((entry) => !/github\s*cli/i.test(entry))
+        .join(path.delimiter);
       const result = await pullModifyAndPush(fixture, agent, {
-        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        PATH: [binDir, pathWithoutInstalledGh].join(path.delimiter),
         TEAMAI_FAKE_GH_LOG: ghLog,
       });
 
       expect(result.code, result.output).toBe(0);
       expect(result.output).toContain('Pull Request created: https://github.com/team/issue-331/pull/331');
-      expect(fs.readFileSync(ghLog, 'utf8')).toContain('pr create -R team/issue-331');
+      expect(fs.readFileSync(ghLog, 'utf8'))
+        .toMatch(/"?pr"?\s+"?create"?\s+"?-R"?\s+"?team\/issue-331"?/);
 
       const branch = git(
         ['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/issue-331-github/'],
@@ -371,6 +377,117 @@ describe('role-scoped skill provider PR creation e2e (issue #331)', () => {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
       });
+      fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+describe('push branch and dirty-clone e2e (issue #663)', () => {
+  it('uses --branch for a real resource push', async () => {
+    const fixture = makePushFixture('git', 'https://git.example.test/team/issue-663.git', 'claude');
+    try {
+      const result = await pullModifyAndPush(
+        fixture,
+        'claude',
+        {},
+        ['--branch', 'feature/explicit-resource'],
+      );
+      expect(result.code, result.output).not.toBe(0);
+      expect(result.output).toContain('Pushed branch feature/explicit-resource');
+      expect(git(['show', 'feature/explicit-resource:skills/backend/beta-proof/SKILL.md'], fixture.remote))
+        .toContain('# Modified locally');
+    } finally {
+      fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('uses --branch for a teamai.yaml-only push', async () => {
+    const fixture = makePushFixture('git', 'https://git.example.test/team/issue-663-config.git', 'claude');
+    try {
+      const pulled = await runCLI(['pull'], fixture.projectRoot, fixture.home);
+      expect(pulled.code, pulled.output).toBe(0);
+      const yamlPath = path.join(fixture.projectRoot, '.teamai', 'team-repo', 'teamai.yaml');
+      fs.appendFileSync(yamlPath, '\npublicSkills: []\n');
+
+      const result = await runCLI(
+        ['push', '--all', '--branch', 'feature/explicit-config'],
+        fixture.projectRoot,
+        fixture.home,
+      );
+      expect(result.code, result.output).not.toBe(0);
+      expect(result.output).toContain('Pushed branch feature/explicit-config');
+      expect(git(['show', 'feature/explicit-config:teamai.yaml'], fixture.remote))
+        .toContain('publicSkills: []');
+    } finally {
+      fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('updates an existing open-PR branch instead of creating another branch', async () => {
+    const fixture = makePushFixture('git', 'https://git.example.test/team/issue-663-existing.git', 'claude');
+    try {
+      const first = await pullModifyAndPush(fixture, 'claude');
+      expect(first.output).toContain('Pushed branch teamai/push/issue-331-git/');
+      const branch = git(
+        ['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/issue-331-git/'],
+        fixture.remote,
+      );
+      expect(branch).toMatch(/^teamai\/push\/issue-331-git\//);
+
+      const statePath = path.join(fixture.projectRoot, '.teamai', 'state.json');
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as {
+        pendingPushes: Array<{ branch: string; prUrl: string | null }>;
+      };
+      const pending = state.pendingPushes.find((entry) => entry.branch === branch);
+      expect(pending).toBeDefined();
+      if (!pending) return;
+      pending.prUrl = 'https://github.com/team/issue-663-existing/pull/663';
+      fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + '\n');
+
+      fs.writeFileSync(
+        path.join(fixture.projectRoot, '.claude', 'skills', 'beta-proof', 'SKILL.md'),
+        '---\nname: beta-proof\ndescription: modified again\n---\n\n# Modified again\n',
+      );
+      const second = await runCLI(
+        ['push', '--skill', '.claude/skills/beta-proof', '--role', 'backend', '--all'],
+        fixture.projectRoot,
+        fixture.home,
+      );
+      expect(second.code, second.output).toBe(0);
+      expect(second.output)
+        .toContain('Existing PR updated: https://github.com/team/issue-663-existing/pull/663');
+      expect(git(['show', `${branch}:skills/backend/beta-proof/SKILL.md`], fixture.remote))
+        .toContain('# Modified again');
+      expect(git(
+        ['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/issue-331-git/'],
+        fixture.remote,
+      )).toBe(branch);
+    } finally {
+      fs.rmSync(fixture.sandbox, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('refuses a mode-only teamai.yaml change before reset --hard', async () => {
+    const fixture = makePushFixture('git', 'https://git.example.test/team/issue-663-dirty.git', 'claude');
+    try {
+      const teamRepo = path.join(fixture.projectRoot, '.teamai', 'team-repo');
+      git(['config', 'core.autocrlf', 'false'], teamRepo);
+      git(['checkout', '--', 'teamai.yaml'], teamRepo);
+      const pulled = await runCLI(['pull'], fixture.projectRoot, fixture.home);
+      expect(pulled.code, pulled.output).toBe(0);
+      git(['config', 'core.fileMode', 'true'], teamRepo);
+      git(['update-index', '--chmod=+x', 'teamai.yaml'], teamRepo);
+      expect(git(['status', '--short'], teamRepo)).toContain('teamai.yaml');
+
+      const result = await runCLI(['push', '--all'], fixture.projectRoot, fixture.home);
+      expect(result.code, result.output).not.toBe(0);
+      expect(result.output).toContain('Cannot push: the team repo has uncommitted changes');
+      expect(result.output).toContain('teamai.yaml');
+      expect(git(
+        ['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/'],
+        fixture.remote,
+      )).toBe('');
+    } finally {
       fs.rmSync(fixture.sandbox, { recursive: true, force: true });
     }
   }, 60_000);

@@ -31,8 +31,6 @@ describe('compileRecallRulesBlock', () => {
     // Rule 1: must call teamai-recall before tasks
     expect(block).toMatch(/teamai-recall/);
     expect(block).toMatch(/Before/i);
-    // Rule 2: must declare referenced-doc-ids after task
-    expect(block).toContain('teamai:referenced-doc-ids');
   });
 
   it('is idempotent (same input produces same output)', () => {

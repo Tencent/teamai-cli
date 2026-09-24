@@ -95,11 +95,13 @@ describe('E2E self-mode: business repo working tree is never reset', () => {
 
     const ts = new Date().toISOString();
     const eventsDir = path.join(process.env.HOME!, '.teamai', 'dashboard');
+    // A session the user scope recorded (#785).
+    const dataHome = path.join(tmp, 'home', '.teamai');
     fs.mkdirSync(eventsDir, { recursive: true });
     fs.writeFileSync(
       path.join(eventsDir, 'events.jsonl'),
-      `${JSON.stringify({ type: 'session_start', timestamp: ts, sessionId: 's1', tool: 'claude', cwd: '/p' })}\n` +
-      `${JSON.stringify({ type: 'stop', timestamp: ts, sessionId: 's1', tool: 'claude', interventions: { interrupt: 1, toolReject: 0 } })}\n`,
+      `${JSON.stringify({ type: 'session_start', timestamp: ts, sessionId: 's1', tool: 'claude', cwd: '/p', dataHome })}\n` +
+      `${JSON.stringify({ type: 'stop', timestamp: ts, sessionId: 's1', tool: 'claude', dataHome, interventions: { interrupt: 1, toolReject: 0 } })}\n`,
     );
 
     const cfg: LocalConfig = {

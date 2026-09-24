@@ -23,6 +23,7 @@ import {
   TRANSCRIPT_REJECT_MARKERS,
   COPILOT_TOOL_ID,
   getCopilotHome,
+  getDataHome,
   emptyTokenUsage,
   addTokenUsage,
   type DashboardEvent,
@@ -46,7 +47,7 @@ import { estimateClaudeRequest } from './model-pricing.js';
 //      │ extract: session_id / cwd / tool_name / prompt
 //      ▼
 //  DashboardEvent
-//      │
+//      │ dataHome = data home of the scope the hook resolved
 //      ▼
 //  appendEvent(event) → events.jsonl
 //
@@ -1957,7 +1958,8 @@ export async function dashboardReport(toolArg?: string): Promise<void> {
     // parseHookEvent reports the malformed payload below; nothing to gate on yet.
   }
   const { resolveConfigForDir } = await import('./config.js');
-  if (!(await resolveConfigForDir(resolveHookCwd(hookData)))) {
+  const config = await resolveConfigForDir(resolveHookCwd(hookData));
+  if (!config) {
     log.debug('dashboard-report: teamai is not set up here, skipping');
     return;
   }
@@ -1965,6 +1967,7 @@ export async function dashboardReport(toolArg?: string): Promise<void> {
   const event = await parseHookEvent(raw, toolArg ?? 'claude');
   if (!event) return;
 
+  event.dataHome = getDataHome(config);
   await appendEvent(event);
 
   // Trigger compaction check (non-blocking)

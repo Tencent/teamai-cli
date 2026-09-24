@@ -4,6 +4,7 @@ import { readUsageEvents } from './usage-tracker.js';
 import { readFileSafe } from './utils/fs.js';
 import { resolveConfigForDir } from './config.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
+import { getUserHome } from './utils/home.js';
 import { totalTokens, addTokenUsage, emptyTokenUsage } from './types.js';
 import { attributeByRepo, timeAnalytics, renderHourSparkline } from './session-analytics.js';
 import { formatTokenCount } from './digest.js';
@@ -143,6 +144,53 @@ function aggregateDashboardStats(metrics: Map<string, SessionMetrics>): Aggregat
   return { sessions: metrics.size, prompts, tokens, interrupt, toolReject, correction };
 }
 
+/**
+ * The local dashboard metrics this scope has NOT reported yet: the same
+ * per-session delta `teamai pull` pushes, so the displayed total is
+ * reported + unreported rather than reported + everything.
+ *
+ * The caller passes the scope's own metrics, already filtered the way the
+ * report path filters them.
+ */
+async function unreportedDashboardStats(
+  metrics: Map<string, SessionMetrics>,
+): Promise<AggregatedDashboardStats> {
+  const { computeInterventionDelta, computePromptTokenDelta } = await import('./team-push.js');
+  const { readJson } = await import('./utils/fs.js');
+  const dashboardDir = path.join(getUserHome(), '.teamai', 'dashboard');
+
+  const interventions = (await readJson<Parameters<typeof computeInterventionDelta>[1]>(
+    path.join(dashboardDir, 'reported-interventions.json'),
+  )) ?? {};
+  const promptTokens = (await readJson<Parameters<typeof computePromptTokenDelta>[1]>(
+    path.join(dashboardDir, 'reported-prompt-tokens.json'),
+  )) ?? {};
+
+  const interventionDelta = computeInterventionDelta(
+    new Map([...metrics].map(([sid, m]) => [sid, { interrupt: m.interrupt, toolReject: m.toolReject, correction: m.correction }])),
+    interventions,
+  );
+  const promptTokenDelta = computePromptTokenDelta(metrics, promptTokens);
+
+  return {
+    sessions: interventionDelta.delta.sessions,
+    prompts: promptTokenDelta.delta.prompts,
+    tokens: promptTokenDelta.delta.tokens,
+    interrupt: interventionDelta.delta.interrupt,
+    toolReject: interventionDelta.delta.toolReject,
+    correction: interventionDelta.delta.correction,
+  };
+}
+
+/**
+ * Combine the scope's reported team totals with the local sessions it has not
+ * reported yet.
+ *
+ * `local` must already be the UNREPORTED delta for this scope, not the whole
+ * machine's metrics: reported sessions stay in events.jsonl until compaction,
+ * so adding the full local aggregate on top of the reported totals counted
+ * every one of them twice, and mixed in sessions belonging to other projects.
+ */
 function mergeDashboardAndReported(
   local: AggregatedDashboardStats,
   reported: UserStats | null,
@@ -179,12 +227,59 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   const reported = await loadReportedStats();
   const stats = mergeLocalAndReported(localStats, reported);
 
-  const dashboardEvents = await readEvents();
-  const metricsMap = aggregateSessionMetrics(dashboardEvents);
-  const localDashboard = aggregateDashboardStats(metricsMap);
+  // Dashboard metrics follow the same scope rules `pull` reports with, so what
+  // is shown can agree with what the team holds: this scope's own sessions only,
+  // and only the part of them not already reported (reported sessions stay in
+  // events.jsonl until compaction, so counting the full local aggregate would
+  // count each one twice and pull in other projects' sessions).
+  //
+  // The project root is resolved on its own, exactly as `pull` does: it reads
+  // `detectProjectConfig()`, never the projectRoot of the scope config, because
+  // a user-scope config carries no projectRoot at all (the field is attached
+  // only when a PROJECT config is detected). Same call, same directory, same
+  // answer as the report path.
+  const { detectProjectConfig } = await import('./config.js');
+  const projectConfig = await detectProjectConfig();
+  const projectRoot = config?.scope === 'project' ? config.projectRoot : projectConfig?.projectRoot;
+  const scopeFilter = projectRoot
+    ? (config?.scope === 'project'
+      ? { projectRoot }
+      : { excludeProjectRoots: [projectRoot] })
+    : undefined;
+  const { filterEventsByScope } = await import('./team-push.js');
+  const scopedEvents = filterEventsByScope(await readEvents(), scopeFilter);
+  const metricsMap = aggregateSessionMetrics(scopedEvents);
+  // Only subtract what the team already holds. Two guards, because the local
+  // snapshots are machine-global while the team file is per user:
+  //
+  //  - `reported` null (no stats file, an unreadable one, a reports worktree
+  //    that is not there): the snapshot says nothing about what the team
+  //    holds, and subtracting it would hide sessions the member can see.
+  //  - `reported` present but empty: the team has received nothing yet, so a
+  //    snapshot entry cannot describe something it holds. Subtracting anyway
+  //    undercounts — down to "No usage data yet." with sessions on disk.
+  //
+  // Snapshots are written under the same lock as the team file, so a non-empty
+  // team total is what licenses trusting the snapshot.
+  const teamHasReported = !!reported && (
+    (reported.interventions?.sessions ?? 0) > 0
+    || (reported.prompts ?? 0) > 0
+    || totalTokens(reported.tokens ?? emptyTokenUsage()) > 0
+  );
+  const localDashboard = config && teamHasReported
+    ? await unreportedDashboardStats(metricsMap)
+    : aggregateDashboardStats(metricsMap);
   const dashboard = mergeDashboardAndReported(localDashboard, reported);
   const hasDashboardData =
     dashboard.sessions > 0 || dashboard.prompts > 0 || totalTokens(dashboard.tokens) > 0;
+
+  // The optional breakdowns read the scope's own event log, which is a
+  // different question from the headline: the headline adds this machine's
+  // unreported sessions to totals that already include other machines and
+  // sessions compaction has since dropped, so the two are not expected to
+  // match number for number. What must hold is that the breakdown sees the
+  // same SCOPE — hence the shared filter — and never another project's rows.
+  const dashboardEvents = scopedEvents;
 
   if (stats.length === 0 && !hasDashboardData) {
     console.log('No usage data yet.');
@@ -252,7 +347,7 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
     const repos = attributeByRepo(dashboardEvents);
     if (repos.length > 0) {
       console.log('');
-      console.log('By Repo:');
+      console.log('By Repo (local event log):');
       console.log('');
       const TOP_N = 15;
       const maxLen = Math.max(...repos.slice(0, TOP_N).map((r) => r.repo.length), 4);
@@ -275,7 +370,7 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
     const ta = timeAnalytics(dashboardEvents);
     if (ta.totalEvents > 0) {
       console.log('');
-      console.log('Activity by Hour (local time):');
+      console.log('Activity by Hour (local event log):');
       console.log('');
       console.log(`  00h ${renderHourSparkline(ta.byHour)} 23h`);
       console.log(`  Peak hour:    ${String(ta.peakHour).padStart(2, '0')}:00`);

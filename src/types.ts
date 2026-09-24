@@ -1219,6 +1219,12 @@ export interface DashboardEvent {
   tool: string;
   /** Working directory of the session */
   cwd?: string;
+  /**
+   * Data home (`getDataHome`) of the scope that recorded the event, the key its
+   * report filters on (#785). Absent on events written before this field
+   * existed; the report then attributes them by `cwd`.
+   */
+  dataHome?: string;
   /** First user prompt (captured from UserPromptSubmit) */
   promptSummary?: string;
   /**
@@ -1333,7 +1339,9 @@ export interface DashboardSession {
 // code consumed — dashboard read/write go through runtime helpers that inline
 // getUserHome() (dashboard-collector.ts getEventsPath, dashboard.ts), so HOME
 // isolation already works there. Removed (issue #374 P3). The dashboard is an
-// A2 machine-level singleton keyed by event cwd/sessionId, not per-project.
+// A2 machine-level singleton keyed by sessionId, not per-project; each event
+// carries the data home of the scope that recorded it, which is what a scope's
+// report filters on.
 export const DASHBOARD_DEFAULT_PORT = 3721;
 /** Sessions with no activity for this long (ms) are marked idle */
 export const DASHBOARD_IDLE_TIMEOUT_MS = 5 * 60 * 1000;

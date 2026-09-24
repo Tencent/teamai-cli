@@ -37,6 +37,7 @@ Generated: do not edit by hand. Regenerate with
   - `--skill <path>` — Push a specific skill by path (e.g., ~/.claude/skills/hai/my-skill or skills/hai_dev/my-skill)
   - `--role <id>` — Namespace for new skills, rules and agents (skills/<id>/, rules/<id>/, agents/<id>/)
   - `--project <id>` — Target a project: each new resource goes to that project's namespace for its own type — skills, knowledge for rules, agents (from manifest/projects.yaml)
+  - `--branch <name>` — Push to this destination branch instead of a generated teamai/push branch
 
 ## pull
 
@@ -120,6 +121,16 @@ Generated: do not edit by hand. Regenerate with
 - `teamai projects` — Manage multi-project resource distribution (orthogonal to roles)
   - `teamai projects list` — List defined projects and the ones active in this directory
   - `teamai projects set [ids...]` — Set the projects active in this directory (comma-separated or repeated; empty to clear)
+  - `teamai projects add <id>` — Add a project to manifest/projects.yaml, creating the file if needed (admin)
+    - `--namespaces <ns>` — Comma-separated namespaces for every project resource type (e.g. common,checkout)
+    - `--name <name>` — Display name for the project
+    - `-d, --description <desc>` — Description for the project
+  - `teamai projects update <id>` — Update a project in manifest/projects.yaml (admin)
+    - `--add-namespaces <ns>` — Comma-separated namespaces to add to every resource type
+    - `--remove-namespaces <ns>` — Comma-separated namespaces to remove from every resource type
+    - `--name <name>` — New display name for the project
+    - `-d, --description <desc>` — New description for the project
+  - `teamai projects remove <id>` — Remove a project from manifest/projects.yaml (admin)
   - `teamai projects members <id>` — List members registered for a project
 
 ## tags
@@ -237,8 +248,8 @@ Generated: do not edit by hand. Regenerate with
 ## stats
 
 - `teamai stats` — Show local skill usage statistics
-  - `--by-repo` — Break usage down per repository
-  - `--by-time` — Show activity by hour of day
+  - `--by-repo` — Break the local event log down per repository
+  - `--by-time` — Show local event log activity by hour of day
 
 ## session
 

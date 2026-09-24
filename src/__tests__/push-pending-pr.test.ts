@@ -311,7 +311,7 @@ describe('push() with an open PR', () => {
   it('updates the open PR instead of opening a second one', async () => {
     mockLoadStateForScope.mockResolvedValue(makeState([makeEntry()]));
 
-    await push({});
+    await push({ branch: 'feature/should-not-override' });
 
     expect(mockCreatePullRequest).not.toHaveBeenCalled();
     expect(mockPushRepoBranch).toHaveBeenCalledTimes(1);
@@ -371,6 +371,16 @@ describe('push() with an open PR', () => {
       branch: 'teamai/push/testuser/20260827-070000',
       prUrl: 'https://github.com/team/repo/pull/9',
     })]);
+  });
+
+  it('uses --branch for a new push instead of generating a timestamp branch', async () => {
+    mockLoadStateForScope.mockResolvedValue(makeState());
+
+    await push({ all: true, branch: 'feature/gitee-destination' });
+
+    expect(mockPushRepoBranch.mock.calls[0][3]).toBe('feature/gitee-destination');
+    const saved = mockSaveStateForScope.mock.calls.at(-1)?.[0] as State;
+    expect(saved.pendingPushes[0].branch).toBe('feature/gitee-destination');
   });
 
   it('re-pushes as a new PR once the recorded branch is gone from origin', async () => {

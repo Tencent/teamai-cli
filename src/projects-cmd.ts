@@ -10,9 +10,16 @@ import {
 } from './config.js';
 import {
   loadProjectsManifest,
+  saveProjectsManifest,
+  validateProjectsManifest,
+  findProject,
   listProjectIds,
   describeProjects,
+  unknownProjectMessage,
+  PROJECT_RESOURCE_TYPES,
 } from './projects.js';
+import type { ProjectsManifest, TeamProject } from './projects.js';
+import { pullLatest, runManifestEdit, pushManifestChange } from './manifest-edit.js';
 import { readFileSafe, listFiles } from './utils/fs.js';
 import { pullRepo } from './utils/git.js';
 import { log } from './utils/logger.js';
@@ -186,4 +193,183 @@ export async function projectsMembers(
     }
   }
   console.log('');
+}
+
+// ─── projects add / update / remove (admin) ─────────────
+
+type ProjectResources = TeamProject['resources'];
+
+/** `--namespaces` sets one namespace set on every project resource type. */
+function uniformResources(namespaces: string[]): ProjectResources {
+  return { knowledge: [...namespaces], skills: [...namespaces], learnings: [...namespaces], agents: [...namespaces] };
+}
+
+function mapResources(
+  resources: ProjectResources,
+  fn: (namespaces: string[]) => string[],
+): ProjectResources {
+  return Object.fromEntries(PROJECT_RESOURCE_TYPES.map((type) => [type, fn(resources[type])])) as ProjectResources;
+}
+
+function describeResources(resources: ProjectResources): string {
+  return PROJECT_RESOURCE_TYPES.map((type) => `${type}: ${resources[type].join(', ') || '(none)'}`).join('; ');
+}
+
+/**
+ * Load, change and validate the projects manifest, then write it and open a PR
+ * (or only report the change with --dry-run). `change` returns the updated
+ * manifest plus the messages to report, or null after logging why it refused.
+ */
+async function editProjectsManifest(
+  options: GlobalOptions,
+  change: (manifest: ProjectsManifest | null) => {
+    manifest: ProjectsManifest;
+    summary: string;
+    commitMsg: string;
+  } | null,
+  afterWrite?: () => void,
+): Promise<void> {
+  const { localConfig, teamConfig } = await autoDetectInit();
+
+  await runManifestEdit(localConfig, 'Projects', async (repoPath, editConfig) => {
+    if (editConfig.repo.kind !== 'self') await pullLatest(repoPath);
+
+    let current: ProjectsManifest | null;
+    try {
+      current = await loadProjectsManifest(repoPath);
+    } catch (e) {
+      log.error((e as Error).message);
+      return;
+    }
+
+    const result = change(current);
+    if (!result) return;
+
+    try {
+      validateProjectsManifest(result.manifest);
+    } catch (e) {
+      log.error((e as Error).message);
+      return;
+    }
+
+    if (options.dryRun) {
+      log.info(`[dry-run] Would ${result.summary}`);
+      return;
+    }
+
+    const done = result.summary.charAt(0).toUpperCase() + result.summary.slice(1);
+    await saveProjectsManifest(repoPath, result.manifest);
+    log.success(done);
+    afterWrite?.();
+
+    await pushManifestChange({
+      repoPath,
+      teamConfig,
+      localConfig: editConfig,
+      commitMsg: result.commitMsg,
+      prDescription: done,
+    });
+  });
+}
+
+export async function projectsAdd(
+  projectId: string,
+  options: GlobalOptions & { namespaces: string; name?: string; description?: string },
+): Promise<void> {
+  const namespaces = parseIds([options.namespaces]);
+  if (namespaces.length === 0) {
+    log.error(`At least one namespace is required. Use --namespaces common,${projectId}`);
+    return;
+  }
+
+  await editProjectsManifest(options, (manifest) => {
+    const base: ProjectsManifest = manifest ?? { version: 1, projects: [] };
+    if (findProject(base, projectId)) {
+      log.error(`Project "${projectId}" already exists. Use \`teamai projects update ${projectId}\` to modify it.`);
+      return null;
+    }
+
+    const project: TeamProject = {
+      id: projectId,
+      name: options.name ?? '',
+      description: options.description ?? '',
+      resources: uniformResources(namespaces),
+    };
+    return {
+      manifest: { ...base, projects: [...base.projects, project] },
+      summary: `add project "${projectId}" (namespaces: ${namespaces.join(', ')})`,
+      commitMsg: `[teamai] Add project "${projectId}"`,
+    };
+  });
+}
+
+export async function projectsUpdate(
+  projectId: string,
+  options: GlobalOptions & {
+    addNamespaces?: string;
+    removeNamespaces?: string;
+    name?: string;
+    description?: string;
+  },
+): Promise<void> {
+  const toAdd = options.addNamespaces !== undefined ? parseIds([options.addNamespaces]) : [];
+  const toRemove = new Set(options.removeNamespaces !== undefined ? parseIds([options.removeNamespaces]) : []);
+  if (toAdd.length === 0 && toRemove.size === 0 && options.name === undefined && options.description === undefined) {
+    log.error('Nothing to update. Use --add-namespaces, --remove-namespaces, --name, or --description.');
+    return;
+  }
+
+  await editProjectsManifest(options, (manifest) => {
+    const existing = manifest ? findProject(manifest, projectId) : undefined;
+    if (!manifest || !existing) {
+      log.error(manifest ? unknownProjectMessage(manifest, projectId) : 'This team repo defines no projects (no manifest/projects.yaml).');
+      return null;
+    }
+
+    // Each resource type keeps its own list, so a hand-edited per-type layout survives.
+    const resources = mapResources(existing.resources, (namespaces) => {
+      const next = namespaces.filter((ns) => !toRemove.has(ns));
+      for (const ns of toAdd) {
+        if (!next.includes(ns)) next.push(ns);
+      }
+      return next;
+    });
+    if (PROJECT_RESOURCE_TYPES.every((type) => resources[type].length === 0)) {
+      log.error(`Cannot remove every namespace from project "${projectId}". Use \`teamai projects remove ${projectId}\` to delete it.`);
+      return null;
+    }
+
+    const updated: TeamProject = {
+      ...existing,
+      name: options.name ?? existing.name,
+      description: options.description ?? existing.description,
+      resources,
+    };
+    return {
+      manifest: { ...manifest, projects: manifest.projects.map((p) => (p.id === projectId ? updated : p)) },
+      summary: `update project "${projectId}" (${describeResources(resources)})`,
+      commitMsg: `[teamai] Update project "${projectId}"`,
+    };
+  });
+}
+
+export async function projectsRemove(projectId: string, options: GlobalOptions): Promise<void> {
+  await editProjectsManifest(
+    options,
+    (manifest) => {
+      if (!manifest || !findProject(manifest, projectId)) {
+        log.error(manifest ? unknownProjectMessage(manifest, projectId) : 'This team repo defines no projects (no manifest/projects.yaml).');
+        return null;
+      }
+      return {
+        manifest: { ...manifest, projects: manifest.projects.filter((p) => p.id !== projectId) },
+        summary: `remove project "${projectId}"`,
+        commitMsg: `[teamai] Remove project "${projectId}"`,
+      };
+    },
+    () => {
+      log.warn(`Directories with "${projectId}" active will warn on their next pull and fall back to role-only filtering.`);
+      log.warn('The project\'s namespace content stays in the team repo, so the next pull can reclaim the copies members deployed from it; deleting that content in the same change leaves those copies behind.');
+    },
+  );
 }

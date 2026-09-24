@@ -10,7 +10,7 @@ import type { ResourceNamespaces } from './roles.js';
  * projects are the only carrier of learnings-namespace isolation (roles ignore it
  * on purpose — see src/roles.ts). knowledge/skills mirror the role convention.
  */
-const PROJECT_RESOURCE_TYPES = ['knowledge', 'skills', 'learnings', 'agents'] as const;
+export const PROJECT_RESOURCE_TYPES = ['knowledge', 'skills', 'learnings', 'agents'] as const;
 
 export type ProjectResourceType = typeof PROJECT_RESOURCE_TYPES[number];
 
@@ -140,6 +140,11 @@ export async function loadProjectsManifest(repoPath: string): Promise<ProjectsMa
   return validateManifestShape(raw);
 }
 
+/** Validate a manifest built in memory with the same checks a load applies; throws on the first problem. */
+export function validateProjectsManifest(manifest: unknown): ProjectsManifest {
+  return validateManifestShape(manifest);
+}
+
 export async function saveProjectsManifest(repoPath: string, manifest: ProjectsManifest): Promise<void> {
   // Re-validate before writing to prevent persisting invalid manifests
   validateManifestShape(manifest);
@@ -170,7 +175,7 @@ export function describeProjects(projects: Array<Pick<TeamProject, 'id' | 'name'
 
 /** What to tell the user when a project id does not exist in the manifest. */
 export function unknownProjectMessage(manifest: ProjectsManifest, projectId: string): string {
-  return `Unknown project "${projectId}". Valid projects: ${listProjectIds(manifest).join(', ')}`;
+  return `Unknown project "${projectId}". Valid projects: ${listProjectIds(manifest).join(', ') || '(none)'}`;
 }
 
 function getProjectOrThrow(manifest: ProjectsManifest, projectId: string): TeamProject {

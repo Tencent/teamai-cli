@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { simpleGit } from 'simple-git';
 
-import { getReportsDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig } from '../types.js';
+import { getDataHome, getReportsDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig } from '../types.js';
 import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
 import { pushRepoDirectly } from '../utils/git.js';
 import { reportUsageToTeam } from '../team-push.js';
@@ -105,11 +105,13 @@ describe('git-kind reports branch', () => {
 
     const ts = new Date().toISOString();
     const eventsDir = path.join(process.env.HOME!, '.teamai', 'dashboard');
+    // A session the user scope recorded.
+    const dataHome = getDataHome(cfg);
     fs.mkdirSync(eventsDir, { recursive: true });
     fs.writeFileSync(
       path.join(eventsDir, 'events.jsonl'),
-      `${JSON.stringify({ type: 'session_start', timestamp: ts, sessionId: 's1', tool: 'claude', cwd: '/p' })}\n` +
-      `${JSON.stringify({ type: 'stop', timestamp: ts, sessionId: 's1', tool: 'claude', interventions: { interrupt: 1, toolReject: 0 } })}\n`,
+      `${JSON.stringify({ type: 'session_start', timestamp: ts, sessionId: 's1', tool: 'claude', cwd: '/p', dataHome })}\n` +
+      `${JSON.stringify({ type: 'stop', timestamp: ts, sessionId: 's1', tool: 'claude', dataHome, interventions: { interrupt: 1, toolReject: 0 } })}\n`,
     );
     await reportUsageToTeam(clone, 'alice', { skipTruncate: true, selfConfig: cfg });
 
@@ -672,10 +674,10 @@ describe('skill usage stays in the scope that recorded it (#748)', () => {
     await useSkill(a.root, 'skill-a');
     await useSkill(c.root, 'skill-c');
 
-    await reportUsageToTeam(a.config.repo.localPath, 'alice', { projectRoot: a.root, selfConfig: a.config });
+    await reportUsageToTeam(a.config.repo.localPath, 'alice', { selfConfig: a.config });
     expect(await reportedSkills(a.origin)).toEqual(['skill-a']);
 
-    await reportUsageToTeam(c.config.repo.localPath, 'alice', { projectRoot: c.root, selfConfig: c.config });
+    await reportUsageToTeam(c.config.repo.localPath, 'alice', { selfConfig: c.config });
     expect(await reportedSkills(c.origin)).toEqual(['skill-c']);
   });
 });

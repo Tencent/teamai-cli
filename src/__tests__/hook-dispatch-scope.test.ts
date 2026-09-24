@@ -15,7 +15,13 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: vi.fn(() => ({ on: vi.fn(), stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) }, unref: vi.fn() })),
 }));
 vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined) }));
-vi.mock('../update.js', () => ({ doUpdate: vi.fn(async () => undefined) }));
+// votes.ts's withVotesLock imports acquireLock/releaseLock from update.js; a
+// no-op lock (always acquired) is enough in this single-process test.
+vi.mock('../update.js', () => ({
+  doUpdate: vi.fn(async () => undefined),
+  acquireLock: vi.fn(async () => true),
+  releaseLock: vi.fn(async () => undefined),
+}));
 vi.mock('../local-agent.js', () => ({ reportAndSyncFromHook: vi.fn(async () => null) }));
 vi.mock('../utils/reports-branch.js', () => ({ updateReports: vi.fn(async () => undefined) }));
 
@@ -130,11 +136,22 @@ describe('hook runs and the scope they belong to (#748)', () => {
     });
     const fetchSpy = vi.fn(async () => new Response(null, { status: 200 }));
     vi.stubGlobal('fetch', fetchSpy);
+    // Upvote adoption is now collected from tool-use evidence (the main agent
+    // opens a recalled doc's file), not AI self-declaration (#723). Recall a doc
+    // via its File: path and Read that file so an upvote is actually recorded —
+    // this is what proves the handler writes to the dispatcher-resolved scope.
+    const doc1 = path.join(tmp, 'doc-1.md');
+    fs.writeFileSync(doc1, '# doc-1\nteam knowledge');
     const transcript = path.join(tmp, 'transcript.jsonl');
-    fs.writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: [{
-      type: 'text',
-      text: '<!-- teamai:recalled-doc-ids: [doc-1] --> <!-- teamai:referenced-doc-ids: [doc-1] -->',
-    }] } }) + '\n');
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: 'assistant', message: { content: [{
+        type: 'text',
+        text: `--- [teamai:recall:start] ---\nFile: ${doc1}\n--- [teamai:recall:end] ---`,
+      }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{
+        type: 'tool_use', name: 'Read', input: { file_path: doc1 },
+      }] } }),
+    ].join('\n') + '\n');
     // The session's worktree is gone, so chdir fails and the host's launch
     // directory, project A, stays the process cwd.
     process.chdir(root);

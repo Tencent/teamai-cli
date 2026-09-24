@@ -161,20 +161,4 @@ teamai recall "<关键词1> <关键词2> ..."
 只翻译中英确实不同的术语；任何**语言无关的 token**（中英写法相同、或无实际译法者）一律保持原样，
 例如专有名词、品牌与产品名、缩写、代码标识符与符号、错误码、版本号、文件路径、命令与 API 名
 （\`AppID\`、\`Kubernetes\`、\`GPU\`、\`RuntimeError\`、\`v2.1.3\`、\`oauth\`）——翻译它们只会损害匹配。
-
-### After recall: declare what you used (required, it measures knowledge adoption)
-
-The teamai-recall subagent already lists the candidate doc-ids it retrieved (see
-its recalled-doc-ids list). You do **not** need to rebuild that list from memory.
-Append the line below to your **final reply**, keeping the candidates you actually
-used (copying a command from one counts, so does referring to it conceptually) and
-deleting the rest:
-
-\`\`\`
-<!-- teamai:referenced-doc-ids: [the-doc-ids-you-used] -->
-\`\`\`
-
-Declare an empty list if you used none: \`<!-- teamai:referenced-doc-ids: [] -->\`.
-If you ran \`teamai recall\` directly instead of going through the subagent, derive
-each doc-id from the File path in the results and fill them in yourself.
 `;

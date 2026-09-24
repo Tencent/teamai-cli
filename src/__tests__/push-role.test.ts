@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { push } from '../push.js';
+import { collectUnsafeDirtyPaths, push } from '../push.js';
 import { RolesManifestNotFoundError } from '../roles.js';
 import { log } from '../utils/logger.js';
 
@@ -15,6 +15,33 @@ const mockLoadStateForScope = vi.fn();
 const mockSaveStateForScope = vi.fn();
 const mockLoadRolesManifest = vi.fn();
 const mockGetHandler = vi.fn();
+
+describe('team repo dirty-path guard', () => {
+  const cleanStatus = {
+    modified: [],
+    not_added: [],
+    created: [],
+    conflicted: [],
+    staged: [],
+    deleted: [],
+    renamed: [],
+  };
+
+  it('allows teamai.yaml only when its content was captured', () => {
+    expect(collectUnsafeDirtyPaths({ ...cleanStatus, modified: ['teamai.yaml'] }, 'edited')).toEqual([]);
+    expect(collectUnsafeDirtyPaths({ ...cleanStatus, modified: ['teamai.yaml'] }, null)).toEqual(['teamai.yaml']);
+  });
+
+  it('blocks deleted or mode-only teamai.yaml changes while ignoring the sync lock', () => {
+    expect(collectUnsafeDirtyPaths({ ...cleanStatus, deleted: ['teamai.yaml'] }, null)).toEqual(['teamai.yaml']);
+    expect(collectUnsafeDirtyPaths({ ...cleanStatus, modified: ['teamai.yaml', '.teamai/.sync-lock'] }, null))
+      .toEqual(['teamai.yaml']);
+  });
+
+  it('reports ordinary user changes as unsafe', () => {
+    expect(collectUnsafeDirtyPaths({ ...cleanStatus, not_added: ['README.md'] }, null)).toEqual(['README.md']);
+  });
+});
 
 let readlineAnswer = '1';
 vi.mock('../utils/prompt.js', () => ({
@@ -182,6 +209,13 @@ function mockSkillHandler(pushedItems?: Array<Record<string, unknown>>) {
 describe('push namespace routing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGitStatus.mockResolvedValue({
+      modified: [],
+      not_added: [],
+      created: [],
+      conflicted: [],
+      staged: [],
+    });
     mockPullRepo.mockResolvedValue('Already up to date.');
     mockPushRepoBranch.mockResolvedValue(true);
     mockCheckoutMaster.mockResolvedValue(undefined);
@@ -607,7 +641,7 @@ it('blocks skills that exist in non-allowed namespaces', async () => {
     consoleSpy.mockRestore();
   });
 
-  it('resets dirty team repo to clean master before pull', async () => {
+  it('aborts before resetting a dirty team repo', async () => {
     mockAutoDetectInit.mockResolvedValue({
       localConfig: makeLocalConfig({ primaryRole: undefined }),
       teamConfig: makeTeamConfig(),
@@ -615,21 +649,34 @@ it('blocks skills that exist in non-allowed namespaces', async () => {
     mockSkillHandler();
     mockScanTeamRepoNamespaces.mockResolvedValue([]);
 
+    const previousExitCode = process.exitCode;
+    mockGitStatus.mockResolvedValue({
+      modified: ['local-edit.txt'],
+      not_added: [],
+      created: [],
+      conflicted: [],
+      staged: [],
+    });
+
     await push({ all: true });
 
-    // Should have called resetToCleanMaster before pull
-    expect(mockResetToCleanMaster).toHaveBeenCalled();
-    expect(mockPullRepo).toHaveBeenCalled();
-    // resetToCleanMaster must be called before pullRepo
-    const resetOrder = mockResetToCleanMaster.mock.invocationCallOrder[0];
-    const pullOrder = mockPullRepo.mock.invocationCallOrder[0];
-    expect(resetOrder).toBeLessThan(pullOrder);
+    expect(mockResetToCleanMaster).not.toHaveBeenCalled();
+    expect(mockPullRepo).not.toHaveBeenCalled();
+    expect(mockPushRepoBranch).not.toHaveBeenCalled();
+    process.exitCode = previousExitCode;
   });
 });
 
 describe('push item selection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGitStatus.mockResolvedValue({
+      modified: [],
+      not_added: [],
+      created: [],
+      conflicted: [],
+      staged: [],
+    });
     mockPullRepo.mockResolvedValue('Already up to date.');
     mockPushRepoBranch.mockResolvedValue(true);
     mockCheckoutMaster.mockResolvedValue(undefined);

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { log } from './utils/logger.js';
 import { RELAY_TO_USER_PREFIX, relayWhenHidden } from './utils/hook-output.js';
-import { readJson, writeJson, writeJsonAtomic, ensureDir } from './utils/fs.js';
+import { readJson, writeJson, ensureDir } from './utils/fs.js';
 import { readEvents, aggregateSessionMetrics, scanTranscriptStop } from './dashboard-collector.js';
 import { readRecallQuality } from './recall-quality.js';
 import { deriveSessionId } from './utils/session-id.js';
@@ -124,28 +124,6 @@ function getSessionPath(sessionId: string): string {
     '.teamai',
     'sessions',
     `${sanitizeSessionId(sessionId)}.json`,
-  );
-}
-
-/**
- * Get the sidecar used for vote nudges. Keep it separate from the contribute
- * state JSON because the Stop handlers run concurrently and independently.
- */
-function getPendingVotesHintPath(sessionId: string): string {
-  return path.join(
-    getUserHome(),
-    '.teamai',
-    'sessions',
-    `${sanitizeSessionId(sessionId)}.votes-hint.json`,
-  );
-}
-
-function getVotesNudgeMarkerPath(sessionId: string): string {
-  return path.join(
-    getUserHome(),
-    '.teamai',
-    'sessions',
-    `${sanitizeSessionId(sessionId)}.votes-nudged.json`,
   );
 }
 
@@ -734,48 +712,6 @@ export async function contributeCheck(toolArg?: string): Promise<void> {
   if (hint !== null) {
     const { formatStopHookOutput } = await import('./utils/hook-output.js');
     process.stdout.write(formatStopHookOutput(relayWhenHidden(hint, tool), tool));
-  }
-}
-
-/**
- * Stash a votes-nudge hint for delivery on the next UserPromptSubmit.
- * Used for tools (codebuddy/workbuddy) whose Stop hook ignores stdout.
- */
-export async function stashVotesHint(sessionId: string, hintText: string): Promise<void> {
-  try {
-    await writeJsonAtomic(getPendingVotesHintPath(sessionId), { hintText });
-  } catch (e) {
-    log.error(`Failed to write pending votes hint: ${(e as Error).message}`);
-  }
-}
-
-/**
- * Read and clear a pending votes-nudge hint for this session, if any.
- * Returns the hint text or null. The independent sidecar is atomically written
- * so a concurrent prompt-submit never observes a truncated hint.
- */
-export async function takePendingVotesHint(sessionId: string): Promise<string | null> {
-  const sidecarPath = getPendingVotesHintPath(sessionId);
-  const pending = await readJson<{ hintText?: unknown }>(sidecarPath);
-  if (!pending || typeof pending.hintText !== 'string' || !pending.hintText) return null;
-  await fs.promises.unlink(sidecarPath).catch(() => undefined);
-  return pending.hintText;
-}
-
-/** Atomically cap Cursor's Stop follow-up nudge to once per session. */
-export async function claimVotesNudge(sessionId: string): Promise<boolean> {
-  const markerPath = getVotesNudgeMarkerPath(sessionId);
-  try {
-    await ensureDir(path.dirname(markerPath));
-    await fs.promises.writeFile(markerPath, '{}\n', { encoding: 'utf-8', flag: 'wx' });
-    // The claim is complete once the exclusive marker write succeeds. Cleanup
-    // is best-effort and must not swallow Cursor's one allowed nudge.
-    await cleanupStaleSessions(path.dirname(markerPath), sessionId).catch(() => undefined);
-    return true;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    log.error(`Failed to claim votes nudge: ${(e as Error).message}`);
-    return false;
   }
 }
 

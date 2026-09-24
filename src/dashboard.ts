@@ -123,6 +123,8 @@ export async function startDashboard(port?: number): Promise<void> {
             sessionId: session.sessionId,
             tool: session.tool,
             cwd: session.cwd,
+            // The session's own data home, so its scope's report still sees it end.
+            dataHome: events.find((e) => e.sessionId === session.sessionId && e.dataHome)?.dataHome,
           };
           await appendEvent(exitEvent);
           log.info(

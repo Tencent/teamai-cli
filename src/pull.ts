@@ -1726,18 +1726,6 @@ export function compileRecallRulesBlock(): string {
         '     working directory, and web search for external information.',
         '   - Explore agents must never search paths covered by recall.',
         '',
-        '**After** completing the task, in your final reply you **MUST**',
-        'declare which knowledge entries were actually referenced, using an',
-        'HTML comment of the form:',
-        '',
-        '```',
-        '<!-- teamai:referenced-doc-ids: [doc-id-1, doc-id-2] -->',
-        '```',
-        '',
-        'If the recall returned no relevant hits, declare an empty list',
-        '(`<!-- teamai:referenced-doc-ids: [] -->`). Do not skip the',
-        'declaration — downstream tooling parses it to credit knowledge use.',
-        '',
         TEAMAI_RECALL_RULES_END,
     ];
     return lines.join('\n');
@@ -2014,14 +2002,14 @@ export async function pull(
   //    scope's own file (`<dataHome>/usage.jsonl`, the user scope's
   //    `~/.teamai/user-usage.jsonl`), so each target reports and then
   //    truncates only its own file. Dashboard sessions live in one shared file
-  //    and are filtered instead: project scope only gets sessions whose cwd is
-  //    under projectRoot; user scope excludes those sessions.
+  //    and are filtered instead: each target gets the sessions its scope
+  //    recorded (#785).
   if (!options.dryRun && !pendingUsageReport) {
     pendingUsageReport = (async () => {
       try {
         const { reportUsageToTeam } = await import('./team-push.js');
         const { truncateUsageAfterReport, readUsageEvents } = await import('./usage-tracker.js');
-        const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; projectRoot?: string; excludeProjectRoots?: string[]; selfConfig: LocalConfig } }> = [];
+        const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; selfConfig: LocalConfig } }> = [];
         // Per-target opt-out (teamai.yaml `usageReport: false`): a repo that
         // disables stat commits is dropped from the targets — e.g. teams
         // pulling from a read-only remote never accumulate unpushable commits.
@@ -2032,7 +2020,6 @@ export async function pull(
             username: reconcileProject.username,
             opts: {
               skipTruncate: true,
-              projectRoot: reconcileProject.projectRoot,
               // Non-HTTP repos route stats/votes to the teamai-reports orphan branch.
               selfConfig: reconcileProject,
             },
@@ -2045,7 +2032,6 @@ export async function pull(
             username: reconcileUser.username,
             opts: {
               skipTruncate: true,
-              excludeProjectRoots: projectConfig?.projectRoot ? [projectConfig.projectRoot] : [],
               // Non-HTTP repos route stats/votes to the teamai-reports orphan branch —
               // never reset/pull the default branch (or, in self mode, the business tree).
               selfConfig: reconcileUser,

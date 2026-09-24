@@ -102,6 +102,7 @@ program
   .option('--role <id>', 'Namespace for new skills, rules and agents (skills/<id>/, rules/<id>/, agents/<id>/)')
   .option('--project <id>', "Target a project: each new resource goes to that project's namespace for its own type "
     + '— skills, knowledge for rules, agents (from manifest/projects.yaml)')
+  .option('--branch <name>', 'Push to this destination branch instead of a generated teamai/push branch')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { push } = await import('./push.js');
@@ -379,6 +380,40 @@ projectsCmd
     const globalOpts = program.opts() as GlobalOptions;
     const { projectsSet } = await import('./projects-cmd.js');
     await projectsSet(ids, globalOpts);
+  });
+
+projectsCmd
+  .command('add <id>')
+  .description('Add a project to manifest/projects.yaml, creating the file if needed (admin)')
+  .requiredOption('--namespaces <ns>', 'Comma-separated namespaces for every project resource type (e.g. common,checkout)')
+  .option('--name <name>', 'Display name for the project')
+  .option('-d, --description <desc>', 'Description for the project')
+  .action(async (id: string, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { projectsAdd } = await import('./projects-cmd.js');
+    await projectsAdd(id, { ...globalOpts, ...cmdOpts });
+  });
+
+projectsCmd
+  .command('update <id>')
+  .description('Update a project in manifest/projects.yaml (admin)')
+  .option('--add-namespaces <ns>', 'Comma-separated namespaces to add to every resource type')
+  .option('--remove-namespaces <ns>', 'Comma-separated namespaces to remove from every resource type')
+  .option('--name <name>', 'New display name for the project')
+  .option('-d, --description <desc>', 'New description for the project')
+  .action(async (id: string, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { projectsUpdate } = await import('./projects-cmd.js');
+    await projectsUpdate(id, { ...globalOpts, ...cmdOpts });
+  });
+
+projectsCmd
+  .command('remove <id>')
+  .description('Remove a project from manifest/projects.yaml (admin)')
+  .action(async (id: string) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { projectsRemove } = await import('./projects-cmd.js');
+    await projectsRemove(id, globalOpts);
   });
 
 projectsCmd
@@ -818,8 +853,8 @@ program
 program
   .command('stats')
   .description('Show local skill usage statistics')
-  .option('--by-repo', 'Break usage down per repository')
-  .option('--by-time', 'Show activity by hour of day')
+  .option('--by-repo', 'Break the local event log down per repository')
+  .option('--by-time', 'Show local event log activity by hour of day')
   .action(async (cmdOpts) => {
     const { showStats } = await import('./stats.js');
     await showStats({ byRepo: cmdOpts.byRepo, byTime: cmdOpts.byTime });

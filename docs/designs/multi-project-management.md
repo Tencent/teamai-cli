@@ -197,6 +197,9 @@ takes plain ids.
 `teamai projects set/list/members` are kept as low-frequency after-the-fact
 correction/query, mirroring `teamai roles set` relative to `init --role`
 (registered in `src/index.ts` next to the `roles` command at `src/index.ts:206`).
+The admin side, `teamai projects add/update/remove`, mirrors `roles add/update/remove`:
+each edits `manifest/projects.yaml` and opens a PR, and the first `add` creates the
+file, so there is no separate `init`.
 
 ### Two `projects[]`, two deliberately-different semantics
 

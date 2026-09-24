@@ -156,8 +156,10 @@ teamai init https://github.com/yourorg/yourrepo
 
 > **从旧版 teamai 升级？** 升级后首次执行 `teamai init` / `pull` / `push` 会自动把已有的
 > `<repo>/.teamai/` 迁移进分区（复制 → 校验 → 原子切换），并把旧目录保留为
-> `<repo>/.teamai.bak/`，待你确认一切正常后自行删除。只读命令与 `hook-dispatch` 路径
-> 永不触发迁移；`teamai --dry-run pull` 可预演。**迁移后不支持降级**——旧版会把项目判定为
+> `<repo>/.teamai.bak/`，待你确认一切正常后自行删除。若分区已存在但其 `config.yaml`
+> 无法读取或缺失，迁移会保留 `<repo>/.teamai/` 并给出带路径的警告：修复或恢复该文件
+> （或把缺少 config 的分区移开）后，下一次 `init` / `pull` / `push` 会完成迁移。
+> 只读命令与 `hook-dispatch` 路径永不触发迁移；`teamai --dry-run pull` 可预演。**迁移后不支持降级**——旧版会把项目判定为
 > 未初始化；`.teamai.bak/` 是人工回滚路径。
 
 如果仓库启用了角色化 skills（存在 `manifest/roles.yaml`），`teamai init` 还会交互式要求你选择：
@@ -256,7 +258,18 @@ Windows 与 macOS 的默认文件系统上它们是同一个目录，限定到�
 teamai projects list                 # 已定义的项目 + 本目录激活的项目
 teamai projects set hai-inference    # 设置本目录激活的项目（覆盖语义；逗号分隔或重复；留空清除）
 teamai projects members hai-inference # 查看某项目下注册了哪些成员
+
+# 管理员：修改 manifest/projects.yaml 并发起 PR（均支持 --dry-run）
+teamai projects add checkout --namespaces common,checkout --name "Checkout"  # 首次 add 会创建 projects.yaml
+teamai projects update checkout --add-namespaces payments --remove-namespaces common
+teamai projects remove checkout
 ```
+
+`--namespaces` 会把同一组 namespace 写入项目的每种资源类型（`knowledge`、`skills`、
+`learnings`、`agents`）；`update` 在每种类型各自的列表上增删，因此手工编辑过的按类型
+布局会被保留。执行 `projects remove` 后，仍激活该项目的目录在下一次 pull 时会提示警告、
+回退为仅按角色过滤，并清理已部署的该项目 skills、rules 和 agents——前提是该项目的内容
+仍在团队仓库中，因为正是靠它识别已部署的副本。请在成员都 pull 过之后，再用单独的变更删除这些内容。
 
 成员登记是 `init` 的**副作用**：执行 `teamai init --project <id>` 会把 `<id>`
 追加进你的 `members/<user>.yaml` 名册（跨目录 append + 去重），于是团队侧可以回答
@@ -345,6 +358,21 @@ teamai init . --agent claude,codex   # 非交互：启用 Claude Code + Codex
 learnings 迁到独立分支之前团队已经写下的内容，原地留在默认分支上。不复制、不删除、
 不迁移：该目录仍会被读取，所有既有 learning 依然能从 `teamai recall` 中找回。新的
 learning 写入 `teamai-learnings`。
+
+**删除其他项目上报进你 `stats/` 的 skill。** 在 skill 使用按 scope 记录之前，下一个
+执行 pull 的项目会上报所有项目的 skill，因此 `teamai-reports` 上的 `stats/<user>.yaml` 可能
+统计了属于无关仓库的 skill。这些事件没有记录目录，teamai 无法归属，也不会改写该
+文件。请手动删除该条目，在单独的 clone 中操作，不要动 teamai 的 `reports-wt/` 检出：
+
+```bash
+git clone --branch teamai-reports --single-branch <team-repo-url> teamai-reports
+cd teamai-reports
+# 删除 stats/<user>.yaml 中 `skills:` 下该 skill 的条目
+git commit -am "stats: remove <skill> reported from another project"
+git push origin teamai-reports
+```
+
+下一次上报会先读取该分支，所以条目不会再出现。
 
 **默认分支受保护时所需的最小 Git 权限。**
 
@@ -599,7 +627,10 @@ excludedSkills:
 teamai push          # 扫描新增/修改的资源，创建 MR
 teamai push --all    # 跳过确认，直接推送
 teamai push --role pm  # 推送到 pm namespace（skills/pm/、rules/pm/、agents/pm/）
+teamai push --branch feature/gitee-destination  # 使用显式目标分支
 ```
+
+`--branch` 指定新推送使用的分支；已有开放 PR 始终沿用其记录的分支进行更新。如果团队仓库 clone 存在用户修改、暂存、未跟踪或冲突文件，TeamAI 会在 push 前拒绝执行；TeamAI 自己管理的 `teamai.yaml` 和 sync-lock 状态会单独处理。其他本地改动请先提交或 stash。
 
 **命名空间选择（新资源）：** 推送新的 skill、rule 或 agent 时，CLI 会自动检测可用的命名空间并提供交互式选择：
 
@@ -962,6 +993,7 @@ Recall 功能通过两级配置控制——管理员设置团队默认值，成�
 | 团队默认 | `teamai.yaml` | `sharing.recall.enabled` | `true` / `false`（默认 `false`） |
 | 用户覆盖 | `~/.teamai/config.yaml` | `recallEnabled` | `true` / `false`，优先级高于团队默认 |
 | 环境变量 | shell | `TEAMAI_RECALL_DISABLED=1` | 强制禁用所有 recall hooks（应急开关） |
+| 环境变量 | shell | `TEAMAI_UPVOTE_JUDGE=1` | 可选开关：git 团队会话中，后台向本地已登录的 CLI 询问最新回复是否实质性用到了每条「没有其他采纳痕迹」的召回文档，并为该子集补记 upvote。每篇文档每会话最多评判一次（仅在后续轮次才召回/使用的文档届时仍会被评判）；项目激活时不会为继承的 user 作用域文档记 upvote。默认关闭；分离进程运行（不增加延迟），使用你自己的 CLI 订阅 |
 
 ```bash
 teamai recall enable     # 开启 recall，部署 subagent 和 rules
@@ -1536,7 +1568,7 @@ GitHub Copilot CLI 已支持其官方自定义指令、Rules、Skills、自定�
 - **Skills** 落在 `.opencode/skills/`（项目）或 `~/.config/opencode/skills/`（用户）。OpenCode 也原生读取 `.claude/skills`，但 teamai 仍会写 OpenCode 路径，好让只用 OpenCode 的用户也能拿到。
 - **Subagents** 会被渲染成 OpenCode 自己的 `agents/*.md` 格式：frontmatter 带 `description` + `mode: subagent`（以及 `model` 和 `tool_extras.opencode` 中的字段，如 `temperature`）；agent 名取自文件名。OpenCode **不**读取 `.claude/agents`，因此这份原生副本是必需的。
 - **Rules** 会被复制到 `.opencode/rules/`（或 `~/.config/opencode/rules/`），但 OpenCode 不会自动扫描 rules 目录——文件在被引用前是惰性的。因此 teamai 会往 `opencode.json` 的 `instructions` 数组里加一条 `rules/*.md` glob，并在团队最后一条 rule 消失时再把它移除，且只编辑这一个键、不动你自己的 `instructions` 条目。
-- **Hooks** 以 OpenCode *plugin* 形式交付，而非配置文件条目——OpenCode 没有 `hooks` 数组，它会**同时**加载 `~/.config/opencode/plugin/` 和 `<project>/.opencode/plugin/` 下的 JS/TS 插件。两个目录都有插件时会被加载两次，每个事件也就派发两次，因此 teamai 只保留一份：写在用户目录的 `teamai-hooks.ts`，覆盖所有项目；早期布局残留的项目级副本会在下次同步时被删除。这与其他工具一致——它们的 `settings.json` hooks 同样放在 HOME，靠传给 `hook-dispatch` 的 `cwd` 做作用域判断。插件订阅 OpenCode 自己的事件，并 shell 到其他所有工具共用的 `teamai hook-dispatch` 入口。事件映射对齐 Claude 内置集合：`session.created` → session-start、`session.idle` → stop、`chat.message` → prompt-submit、`tool.execute.after` → post-tool-use。插件会转发与其他工具一致的 STDIN 负载（`cwd`、`tool_name`、`tool_input`、`prompt`），并把 OpenCode 的小写工具 id（`skill`、`todowrite`）映射回 handler 注册表期望的 PascalCase matcher。OpenCode 无法把 hook 的 stdout 回注到会话，因此 hooks 只为副作用运行（状态上报 / 同步 / 更新）。注意 OpenCode 会 **await** 它的具名 hook（`chat.message`、`tool.execute.after`），所以这两个事件的派发会短暂等待 `teamai` 子进程后 agent 才继续；错误始终被吞掉，hook 永远不会让会话失败。服务端下发的 agent hook（`teamai-agent-<slug>.ts`）同样装在这个用户级 plugin 目录下。
+- **Hooks** 以 OpenCode *plugin* 形式交付，而非配置文件条目——OpenCode 没有 `hooks` 数组，它会**同时**加载 `~/.config/opencode/plugin/` 和 `<project>/.opencode/plugin/` 下的 JS/TS 插件。两个目录都有插件时会被加载两次，每个事件也就派发两次，因此 teamai 只保留一份：写在用户目录的 `teamai-hooks.ts`，覆盖所有项目；早期布局残留的项目级副本会在下次同步时被删除。这与其他工具一致——它们的 `settings.json` hooks 同样放在 HOME，靠传给 `hook-dispatch` 的 `cwd` 做作用域判断。插件订阅 OpenCode 自己的事件，并 shell 到其他所有工具共用的 `teamai hook-dispatch` 入口。事件映射对齐 Claude 内置集合：`session.created` → session-start、`session.idle` → stop、`chat.message` → prompt-submit、`tool.execute.after` → post-tool-use。插件会转发与其他工具一致的 STDIN 负载（`cwd`、`tool_name`、`tool_input`、`prompt`），并把 OpenCode 的小写工具 id（`skill`、`todowrite`）映射回 handler 注册表期望的 PascalCase matcher。OpenCode 无法把 hook 的 stdout 回注到会话，因此 hooks 只为副作用运行（状态上报 / 同步 / 更新）。注意 OpenCode 会 **await** 它的具名 hook（`chat.message`、`tool.execute.after`），所以这两个事件的派发会短暂等待 `teamai` 子进程后 agent 才继续；错误始终被吞掉，hook 永远不会让会话失败。服务端下发的 agent hook（`teamai-agent-<slug>.ts`）同样装在这个用户级 plugin 目录下。由于 OpenCode 的 `session.idle` 事件不带 Claude 式的 JSONL `transcript_path`，upvote **采纳（adoption）**（工具使用证据、可选的 LLM-judge，以及"本次会话采纳的团队知识"摘要）在 OpenCode 上不会运行——recall 仍会累加 `recalled_count`，但 `upvoted_count` 采集是 Claude 系（带 transcript）工具的特性。
 - **MCP** server 位于共享 `opencode.json` 的 `mcp` 键下（详见上文 MCP 章节）。
 
 ### Pi Coding Agent
@@ -1669,7 +1701,13 @@ teamai remove rules <name> --force   # 跳过确认，用于脚本和 CI
 Pull 对整批统计上报最多等待 5 秒，之后继续其他工作，上报任务仍会完成。
 超时后推送成功，仍会更新本地已上报快照。skill 使用按 scope 记录：写入会话所在
 目录对应的已配置 teamai 项目的数据目录（或 user scope），因此每个目标只上报
-自己的使用；未配置 teamai 的目录不记录。目标确认成功后才清理自己的使用事件，
+自己的使用；未配置 teamai 的目录不记录。Dashboard 会话仍写入整机共用的
+`~/.teamai/dashboard/events.jsonl`，但每条事件都记下所属 scope 的数据目录（data home），因此每个 scope
+只上报在其中记录的会话：user scope 的 pull 不再上报项目的会话，项目会上报自己的
+Copilot 会话以及从软链接路径启动的会话。旧版本记录的事件没有数据目录：项目上报目录
+位于其根目录下的那些，user scope 一条也不上报。每个 scope 还各自保存已上报快照，
+因此会话中途切换到另一个项目时，两个团队各自收到在其中记录的那部分；升级后的首次上报
+从原先各 scope 共用的快照开始，不会重复上报。目标确认成功后才清理自己的使用事件，
 推送失败会保留事件。上报完成前继续持有相关同步锁，
 避免另一次 Pull 与尚未完成的上报竞争。
 
@@ -1809,7 +1847,7 @@ HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill �
 | `teamai codebase --lint` | 知识图谱健康检查 |
 | `teamai ci extract-mr --url <url>` | CI：从 MR 提取知识、发评论、合并后写入 |
 | `teamai members` | 查看团队成员 |
-| `teamai projects` | 将工作目录绑定到一个或多个逻辑项目 |
+| `teamai projects` | 将工作目录绑定到一个或多个逻辑项目；管理员可增删改项目 |
 | `teamai roles` | 管理团队角色和命名空间 |
 | `teamai tags` | 管理基于标签的 skill/rule 过滤 |
 | `teamai skill exclude add/remove/list` | 管理不参与本地同步的 skills（[使用指南](#排除个人不需要的-skill)） |

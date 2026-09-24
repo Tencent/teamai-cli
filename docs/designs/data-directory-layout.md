@@ -189,10 +189,18 @@ effect, both of which would mask the raw legacy state). Act iff:
   so moving it would break "knowledge on main".
 
 The plan's **mode** then depends on the partition: a full copy when
-`<partition>/config.yaml` does not exist yet, or **retire-only** when it does (a prior
-run built the partition but was interrupted before retiring the source — see Interrupt
-recovery). retire-only never re-copies onto the authoritative partition; it only cleans
-up the leftover legacy dir.
+`<partition>/config.yaml` does not exist yet, or **retire-only** when it exists and
+detection can read it (a prior run built the partition but was interrupted before
+retiring the source — see Interrupt recovery). retire-only never re-copies onto the
+authoritative partition; it only cleans up the leftover legacy dir. A partition
+`config.yaml` that exists but that detection cannot read (it is empty or cannot be
+opened, does not parse, does not validate, or is not `scope: project`) plans nothing:
+the legacy dir holds the only config that still loads, so it stays in place (a warning
+names the file) until the member fixes the partition file, and the next write command
+then gets the retire-only cleanup. A partition dir with no `config.yaml` at all (say,
+one moved aside by hand) plans nothing either, with a warning: the full copy replaces
+the whole dir, so it would take that dir's data with it. The full copy's re-check under
+the lock in `runMigration` applies the same rules, warning included.
 
 **Steps** (`runMigration`) — copy → verify → atomic rename, so an interruption never
 leaves data half-in-both-places:
@@ -226,7 +234,7 @@ leaves data half-in-both-places:
 Interrupt recovery: staging is a separate sibling dir, so a crash before step 3 leaves
 the partition absent and the source intact — a rerun discards `.staging/` and starts
 clean. A crash between steps 3 and 5 leaves the partition built with the legacy dir
-still present; the next write command's `planMigration` sees "partition exists AND
+still present; the next write command's `planMigration` sees "readable partition AND
 legacy lingers" and returns a **retire-only** plan that finishes the job — it retires
 the leftover legacy dir to `.teamai.bak/` WITHOUT re-copying onto the now-authoritative
 partition. This closes the gap where the legacy dir (including its plaintext `env`)
@@ -316,10 +324,23 @@ an earlier release still writes after a rollback; the shared file is never
 read. Local votes followed for the same reason (#787): `<dataHome>/votes/`, and
 `~/.teamai/user-votes/` (`getUserVotesDir()`) for the user scope, so a scope
 pushes only the votes cast where it is set up. The old shared `~/.teamai/votes/`
-is never read, and its pending deltas are not pushed. The dashboard is likewise
-an A2 singleton (events carry `cwd`/`sessionId`); "two projects' events don't
-mix" is satisfied by `getEventsPath()` reading `HOME` at call time, not by
-per-project dirs.
+is never read, and its pending deltas are not pushed. The dashboard stays an A2
+singleton: `teamai dashboard`, `stats --by-repo`, `session save` and the
+contribute check read across scopes. Each event instead
+carries `dataHome`, the `getDataHome()` of the scope the hook resolved (#785), and a
+scope's report keeps only its own. An event written before that field existed is
+attributed by its `cwd`, realpath'd, to the project whose root holds it, never to
+the user scope. The snapshots of what was already reported are per scope too
+(#786), because a session can record events in two scopes (a `cd` mid-session):
+`<dataHome>/dashboard/reported-*.json`, and `~/.teamai/dashboard/user-reported-*.json`
+for the user scope. The first time a scope needs one it copies the shared
+`~/.teamai/dashboard/reported-*.json`, so nothing reported before the upgrade is
+sent again; after that it reads only its own. The shared file is no longer
+written, except by an earlier release after a rollback, so every scope seeds from
+what the machine had reported by then, never from another scope's later report.
+The seed holds a session's whole total, so a session still running at the upgrade
+that later records in a second scope reports nothing there until that scope's
+part exceeds it.
 
 **`anchor` on save.** Previously only migration wrote a partition's `anchor`
 reverse-lookup file, so freshly-init'd partitions had none. `saveLocalConfigForScope`
