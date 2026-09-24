@@ -4,6 +4,7 @@ import { readUsageEvents } from './usage-tracker.js';
 import { readFileSafe } from './utils/fs.js';
 import { resolveConfigForDir } from './config.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
+import { getUserHome } from './utils/home.js';
 import { totalTokens, addTokenUsage, emptyTokenUsage } from './types.js';
 import { attributeByRepo, timeAnalytics, renderHourSparkline } from './session-analytics.js';
 import { formatTokenCount } from './digest.js';
@@ -143,6 +144,53 @@ function aggregateDashboardStats(metrics: Map<string, SessionMetrics>): Aggregat
   return { sessions: metrics.size, prompts, tokens, interrupt, toolReject, correction };
 }
 
+/**
+ * The local dashboard metrics this scope has NOT reported yet: the same
+ * per-session delta `teamai pull` pushes, so the displayed total is
+ * reported + unreported rather than reported + everything.
+ *
+ * The caller passes the scope's own metrics, already filtered the way the
+ * report path filters them.
+ */
+async function unreportedDashboardStats(
+  metrics: Map<string, SessionMetrics>,
+): Promise<AggregatedDashboardStats> {
+  const { computeInterventionDelta, computePromptTokenDelta } = await import('./team-push.js');
+  const { readJson } = await import('./utils/fs.js');
+  const dashboardDir = path.join(getUserHome(), '.teamai', 'dashboard');
+
+  const interventions = (await readJson<Parameters<typeof computeInterventionDelta>[1]>(
+    path.join(dashboardDir, 'reported-interventions.json'),
+  )) ?? {};
+  const promptTokens = (await readJson<Parameters<typeof computePromptTokenDelta>[1]>(
+    path.join(dashboardDir, 'reported-prompt-tokens.json'),
+  )) ?? {};
+
+  const interventionDelta = computeInterventionDelta(
+    new Map([...metrics].map(([sid, m]) => [sid, { interrupt: m.interrupt, toolReject: m.toolReject, correction: m.correction }])),
+    interventions,
+  ).delta;
+  const promptTokenDelta = computePromptTokenDelta(metrics, promptTokens).delta;
+
+  return {
+    sessions: interventionDelta.sessions,
+    prompts: promptTokenDelta.prompts,
+    tokens: promptTokenDelta.tokens,
+    interrupt: interventionDelta.interrupt,
+    toolReject: interventionDelta.toolReject,
+    correction: interventionDelta.correction,
+  };
+}
+
+/**
+ * Combine the scope's reported team totals with the local sessions it has not
+ * reported yet.
+ *
+ * `local` must already be the UNREPORTED delta for this scope, not the whole
+ * machine's metrics: reported sessions stay in events.jsonl until compaction,
+ * so adding the full local aggregate on top of the reported totals counted
+ * every one of them twice, and mixed in sessions belonging to other projects.
+ */
 function mergeDashboardAndReported(
   local: AggregatedDashboardStats,
   reported: UserStats | null,
@@ -179,9 +227,23 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   const reported = await loadReportedStats();
   const stats = mergeLocalAndReported(localStats, reported);
 
-  const dashboardEvents = await readEvents();
+  // Dashboard metrics follow the same scope rules `pull` reports with, so what
+  // is shown can agree with what the team holds: this scope's own sessions only,
+  // and only the part of them not already reported (reported sessions stay in
+  // events.jsonl until compaction, so counting the full local aggregate would
+  // count each one twice and pull in other projects' sessions).
+  const scopeFilter = config
+    ? {
+      ...(config.scope === 'project' && config.projectRoot ? { projectRoot: config.projectRoot } : {}),
+      ...(config.scope !== 'project' && config.projectRoot ? { excludeProjectRoots: [config.projectRoot] } : {}),
+    }
+    : undefined;
+  const { filterEventsByScope } = await import('./team-push.js');
+  const dashboardEvents = filterEventsByScope(await readEvents(), scopeFilter);
   const metricsMap = aggregateSessionMetrics(dashboardEvents);
-  const localDashboard = aggregateDashboardStats(metricsMap);
+  const localDashboard = config
+    ? await unreportedDashboardStats(metricsMap)
+    : aggregateDashboardStats(metricsMap);
   const dashboard = mergeDashboardAndReported(localDashboard, reported);
   const hasDashboardData =
     dashboard.sessions > 0 || dashboard.prompts > 0 || totalTokens(dashboard.tokens) > 0;
