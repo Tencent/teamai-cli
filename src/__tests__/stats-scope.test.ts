@@ -124,6 +124,31 @@ function statsOutput(): string[] {
   return consoleLog.mock.calls.map((c) => String(c[0]));
 }
 
+/**
+ * A user-scope config at `~/.teamai/config.yaml`, plus a project scope in
+ * `workspace`'s partition. `loadLocalConfig` never attaches `projectRoot`, so a
+ * user-scope run only sees the project's sessions if showStats resolves the
+ * project config separately.
+ */
+async function seedUserScopeWithProject(): Promise<void> {
+  const userConfigDir = path.join(tmpDir, '.teamai');
+  await ensureDir(userConfigDir);
+  await writeFile(
+    path.join(userConfigDir, 'config.yaml'),
+    [
+      'username: tester',
+      'scope: user',
+      'repo:',
+      '  kind: http',
+      `  localPath: ${path.join(tmpDir, '.teamai', 'team-repo')}`,
+      '  remote: https://example.test/acme/team.git',
+      'additionalRoles: []',
+      '',
+    ].join('\n'),
+  );
+  await seedProjectConfig();
+}
+
 /** Extract the trailing number of the `Sessions:` / `Conversation turns:` line. */
 function outputNumber(lines: string[], label: string): number {
   const line = lines.find((l) => l.includes(label));
@@ -132,10 +157,30 @@ function outputNumber(lines: string[], label: string): number {
   return match ? Number(match[1]) : Number.NaN;
 }
 
+/** Extract the session count from the `By Repo:` lines (e.g. `  <path>  2 sess, ...`). */
+function byRepoSessions(lines: string[]): number {
+  const line = lines.find((l) => /\d+\s+sess,\s*\d+\s+turns/.test(l));
+  if (!line) return Number.NaN;
+  const match = line.match(/(\d+)\s+sess/);
+  return match ? Number(match[1]) : Number.NaN;
+}
+
 /** Run showStats from inside the project workspace. */
-async function showStatsFromProject(): Promise<string[]> {
+async function showStatsFromProject(options: { byRepo?: boolean } = {}): Promise<string[]> {
   const cwd = process.cwd();
   process.chdir(workspace);
+  try {
+    await showStats(options);
+  } finally {
+    process.chdir(cwd);
+  }
+  return statsOutput();
+}
+
+/** Run showStats from a directory with no project config of its own. */
+async function showStatsFromPlainDir(dir: string): Promise<string[]> {
+  const cwd = process.cwd();
+  process.chdir(dir);
   try {
     await showStats();
   } finally {
@@ -238,5 +283,140 @@ describe('showStats scope and idempotency', () => {
     // Only proj-a's session counts for proj-a.
     expect(outputNumber(out, 'Sessions:')).toBe(1);
     expect(outputNumber(out, 'Conversation turns:')).toBe(1);
+  });
+
+  it('applies no project exclusion in the user scope when no project resolves', async () => {
+    // A user-scope run from a plain directory: detectProjectConfig() finds no
+    // project here, exactly as `pull` sees it from the same directory, so the
+    // report path passes no exclusion list either. The display side matches.
+    await seedUserScopeWithProject();
+    await appendEvents([
+      ...session('sess-1', DIRS.project),
+      ...session('sess-2', DIRS.other),
+    ]);
+
+    await writeReportedStats({
+      username: 'tester',
+      updatedAt: '2026-09-20T11:00:00.000Z',
+      skills: {},
+      prompts: 0,
+      tokens: ZERO_TOKENS,
+      interventions: { sessions: 0, interrupt: 0, toolReject: 0, correction: 0 },
+    });
+
+    // Run from a plain directory, so no project config resolves for the cwd.
+    const plainDir = path.join(tmpDir, 'plain');
+    fs.mkdirSync(plainDir, { recursive: true });
+    const out = await showStatsFromPlainDir(plainDir);
+
+    expect(outputNumber(out, 'Sessions:')).toBe(2);
+    expect(outputNumber(out, 'Conversation turns:')).toBe(2);
+  });
+
+  it('keeps only the project sessions once the project config resolves', async () => {
+    // The same machine, run from inside the project: detectProjectConfig() now
+    // resolves it, so the project scope keeps only its own sessions and the
+    // other project's never reach its totals.
+    await seedUserScopeWithProject();
+    await appendEvents([
+      ...session('sess-1', DIRS.project),
+      ...session('sess-2', DIRS.other),
+    ]);
+
+    await writeReportedStats({
+      username: 'tester',
+      updatedAt: '2026-09-20T11:00:00.000Z',
+      skills: {},
+      prompts: 0,
+      tokens: ZERO_TOKENS,
+      interventions: { sessions: 0, interrupt: 0, toolReject: 0, correction: 0 },
+    });
+
+    const out = await showStatsFromProject();
+
+    expect(outputNumber(out, 'Sessions:')).toBe(1);
+    expect(outputNumber(out, 'Conversation turns:')).toBe(1);
+  });
+
+  it('does not count tokens of a session twice', async () => {
+    await seedProjectConfig();
+    await appendEvents(session('sess-1', DIRS.project));
+
+    await writeReportedStats({
+      username: 'tester',
+      updatedAt: '2026-09-20T11:00:00.000Z',
+      skills: {},
+      prompts: 1,
+      tokens: SESSION_TOKENS,
+      interventions: { sessions: 1, interrupt: 0, toolReject: 0, correction: 0 },
+    });
+    await writeReportedSnapshots(
+      { 'sess-1': { interrupt: 0, toolReject: 0, correction: 0 } },
+      { 'sess-1': { prompts: 1, tokens: SESSION_TOKENS } },
+    );
+
+    const out = await showStatsFromProject();
+
+    // 100 input + 50 output, once — not doubled to 200/100.
+    expect(outputNumber(out, 'Tokens (total):')).toBe(150);
+    expect(outputNumber(out, 'Input:')).toBe(100);
+    expect(outputNumber(out, 'Output:')).toBe(50);
+  });
+
+  it('reports the same sessions in the headline and the per-repo breakdown', async () => {
+    // Two sessions on disk: sess-1 already reported, sess-2 new. The headline
+    // counts 1 reported + 1 new = 2, and the breakdown must show the same one
+    // unreported session rather than both sessions still in the event log.
+    await seedProjectConfig();
+    await appendEvents([
+      ...session('sess-1', DIRS.project),
+      ...session('sess-2', DIRS.project),
+    ]);
+
+    await writeReportedStats({
+      username: 'tester',
+      updatedAt: '2026-09-20T11:00:00.000Z',
+      skills: {},
+      prompts: 1,
+      tokens: SESSION_TOKENS,
+      interventions: { sessions: 1, interrupt: 0, toolReject: 0, correction: 0 },
+    });
+    await writeReportedSnapshots(
+      { 'sess-1': { interrupt: 0, toolReject: 0, correction: 0 } },
+      { 'sess-1': { prompts: 1, tokens: SESSION_TOKENS } },
+    );
+
+    const out = await showStatsFromProject({ byRepo: true });
+
+    expect(outputNumber(out, 'Sessions:')).toBe(2);
+    expect(byRepoSessions(out)).toBe(1);
+  });
+
+  it('keeps the breakdown from counting sessions the headline already reported', async () => {
+    // The team holds 3 sessions; only 1 is still in the local event log and it
+    // has already been reported. The headline must show 3 (reported) + 0 (new),
+    // and the breakdown must not present the local log as if it were extra.
+    await seedProjectConfig();
+    await appendEvents(session('sess-1', DIRS.project));
+
+    await writeReportedStats({
+      username: 'tester',
+      updatedAt: '2026-09-20T11:00:00.000Z',
+      skills: {},
+      prompts: 100,
+      tokens: { input: 1000, output: 500, cacheRead: 0, cacheCreation: 0 },
+      interventions: { sessions: 3, interrupt: 0, toolReject: 0, correction: 0 },
+    });
+    await writeReportedSnapshots(
+      { 'sess-1': { interrupt: 0, toolReject: 0, correction: 0 } },
+      { 'sess-1': { prompts: 100, tokens: { input: 1000, output: 500, cacheRead: 0, cacheCreation: 0 } } },
+    );
+
+    const out = await showStatsFromProject({ byRepo: true });
+
+    expect(outputNumber(out, 'Sessions:')).toBe(3);
+    // Not 1: the only session on disk was already reported, so there is no
+    // unreported session for the breakdown to present as extra activity.
+    expect(out.some((l) => l.includes('By Repo:'))).toBe(false);
   });
 });

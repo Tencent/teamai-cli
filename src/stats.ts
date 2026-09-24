@@ -154,7 +154,7 @@ function aggregateDashboardStats(metrics: Map<string, SessionMetrics>): Aggregat
  */
 async function unreportedDashboardStats(
   metrics: Map<string, SessionMetrics>,
-): Promise<AggregatedDashboardStats> {
+): Promise<{ delta: AggregatedDashboardStats; unreportedSessions: Set<string> }> {
   const { computeInterventionDelta, computePromptTokenDelta } = await import('./team-push.js');
   const { readJson } = await import('./utils/fs.js');
   const dashboardDir = path.join(getUserHome(), '.teamai', 'dashboard');
@@ -169,16 +169,33 @@ async function unreportedDashboardStats(
   const interventionDelta = computeInterventionDelta(
     new Map([...metrics].map(([sid, m]) => [sid, { interrupt: m.interrupt, toolReject: m.toolReject, correction: m.correction }])),
     interventions,
-  ).delta;
-  const promptTokenDelta = computePromptTokenDelta(metrics, promptTokens).delta;
+  );
+  const promptTokenDelta = computePromptTokenDelta(metrics, promptTokens);
+
+  // Sessions the scope still owes the team: one the snapshot has never seen, or
+  // one whose counts grew since it was last reported.
+  const unreported = new Set<string>();
+  for (const [sid, cur] of metrics) {
+    const prevIv = interventions[sid];
+    const prevPt = promptTokens[sid];
+    const ivGrew = !prevIv
+      || cur.interrupt > prevIv.interrupt
+      || cur.toolReject > prevIv.toolReject
+      || cur.correction > prevIv.correction;
+    const ptGrew = !prevPt || cur.prompts > prevPt.prompts;
+    if (ivGrew || ptGrew) unreported.add(sid);
+  }
 
   return {
-    sessions: interventionDelta.sessions,
-    prompts: promptTokenDelta.prompts,
-    tokens: promptTokenDelta.tokens,
-    interrupt: interventionDelta.interrupt,
-    toolReject: interventionDelta.toolReject,
-    correction: interventionDelta.correction,
+    delta: {
+      sessions: interventionDelta.delta.sessions,
+      prompts: promptTokenDelta.delta.prompts,
+      tokens: promptTokenDelta.delta.tokens,
+      interrupt: interventionDelta.delta.interrupt,
+      toolReject: interventionDelta.delta.toolReject,
+      correction: interventionDelta.delta.correction,
+    },
+    unreportedSessions: unreported,
   };
 }
 
@@ -232,21 +249,37 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   // and only the part of them not already reported (reported sessions stay in
   // events.jsonl until compaction, so counting the full local aggregate would
   // count each one twice and pull in other projects' sessions).
-  const scopeFilter = config
-    ? {
-      ...(config.scope === 'project' && config.projectRoot ? { projectRoot: config.projectRoot } : {}),
-      ...(config.scope !== 'project' && config.projectRoot ? { excludeProjectRoots: [config.projectRoot] } : {}),
-    }
+  //
+  // The project root is resolved on its own, exactly as `pull` does: it reads
+  // `detectProjectConfig()`, never the projectRoot of the scope config, because
+  // a user-scope config carries no projectRoot at all (the field is attached
+  // only when a PROJECT config is detected). Same call, same directory, same
+  // answer as the report path.
+  const { detectProjectConfig } = await import('./config.js');
+  const projectConfig = await detectProjectConfig();
+  const projectRoot = config?.scope === 'project' ? config.projectRoot : projectConfig?.projectRoot;
+  const scopeFilter = projectRoot
+    ? (config?.scope === 'project'
+      ? { projectRoot }
+      : { excludeProjectRoots: [projectRoot] })
     : undefined;
   const { filterEventsByScope } = await import('./team-push.js');
-  const dashboardEvents = filterEventsByScope(await readEvents(), scopeFilter);
-  const metricsMap = aggregateSessionMetrics(dashboardEvents);
-  const localDashboard = config
-    ? await unreportedDashboardStats(metricsMap)
+  const scopedEvents = filterEventsByScope(await readEvents(), scopeFilter);
+  const metricsMap = aggregateSessionMetrics(scopedEvents);
+  const unreported = config ? await unreportedDashboardStats(metricsMap) : null;
+  const localDashboard = unreported
+    ? unreported.delta
     : aggregateDashboardStats(metricsMap);
   const dashboard = mergeDashboardAndReported(localDashboard, reported);
   const hasDashboardData =
     dashboard.sessions > 0 || dashboard.prompts > 0 || totalTokens(dashboard.tokens) > 0;
+
+  // The breakdowns describe the same local part the headline adds to the team
+  // totals, so they cannot present a session the headline already counted as
+  // reported as extra activity. Without this the headline and `--by-repo`
+  // disagreed whenever the event log still held a reported session.
+  const unreportedSessionIds = unreported ? unreported.unreportedSessions : new Set(metricsMap.keys());
+  const dashboardEvents = scopedEvents.filter((e) => unreportedSessionIds.has(e.sessionId));
 
   if (stats.length === 0 && !hasDashboardData) {
     console.log('No usage data yet.');
