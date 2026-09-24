@@ -1786,6 +1786,33 @@ teamai source remove-http
 
 HTTP 源通过 hook dispatch 在每次 session 中上报状态并拉取 skill 指令。每个安装仅支持一个 HTTP 源。若主仓本身已是 HTTP 模式（`init --http`），则 `add-http` 不可用（主仓已占用 HTTP 配置）。
 
+#### 多个 HTTP provider
+
+`source add-http` 只能配置一个全局 HTTP 后端。若要**同时**挂载多个 HTTP 后端——每个都有独立的凭据、资源清单和缓存，彼此完全隔离——请使用 `teamai provider`：
+
+```bash
+# 添加具名 HTTP provider（每个 provider 是一个协议 adapter 后的后端）
+teamai provider add http https://company-host/api   --name company   --adapter clawpro --token <key> --priority 80
+teamai provider add http https://community-host/api  --name community --adapter clawpro                --priority 40
+
+# 列出并同步
+teamai provider list
+teamai provider sync
+
+# 删除其中一个——其余 provider 及其资源不受影响
+teamai provider remove company
+```
+
+每个 provider 的状态存放在 `~/.teamai/providers/http/<name>/`；其 token 以 `0600` 权限单独存于 `~/.teamai/credentials/<name>`，绝不写入任何配置文件。每次 session 中，hook dispatch 会对每个 provider 各同步一次，单个后端缓慢或失败都不会阻塞其他 provider。provider 的 `--priority` 为后续的资源仲裁阶段预留，目前尚不参与同名资源的冲突决策。
+
+要把已有的单个 HTTP 后端（`init --http` / `source add-http`）迁移到具名 provider 模型，运行：
+
+```bash
+teamai provider migrate-legacy --name company
+```
+
+这会把 `~/.teamai/local-agent/` 提升为具名 provider（复制其状态，并把凭据抽取到隔离的 `0600` 文件），并保留旧目录作为回滚快照。该操作幂等。
+
 ---
 
 ## 命令参考

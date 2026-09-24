@@ -1854,6 +1854,33 @@ teamai source remove-http
 
 An HTTP source reports status and pulls skill commands via hook dispatch on every session. Only one HTTP source is supported per install. If the main repo is already in HTTP mode (`init --http`), `add-http` is unavailable (the main repo already occupies the HTTP config).
 
+#### Multiple HTTP providers
+
+`source add-http` configures a single global HTTP backend. To mount **several** HTTP backends side by side — each with its own credential, resource manifest and cache, fully isolated — use `teamai provider`:
+
+```bash
+# Add named HTTP providers (each is one backend behind a protocol adapter)
+teamai provider add http https://company-host/api   --name company   --adapter clawpro --token <key> --priority 80
+teamai provider add http https://community-host/api  --name community --adapter clawpro                --priority 40
+
+# List and sync them
+teamai provider list
+teamai provider sync
+
+# Remove one — the others (and their resources) are untouched
+teamai provider remove company
+```
+
+Each provider's state lives under `~/.teamai/providers/http/<name>/`; its token is stored `0600` at `~/.teamai/credentials/<name>`, never in a config file. On every session, hook dispatch syncs each provider once, and one slow or failing backend never blocks the others. A provider's `--priority` is recorded for a later resource-arbitration phase; it does not yet decide same-name conflicts.
+
+To move an existing single HTTP backend (`init --http` / `source add-http`) onto the named-provider model, run:
+
+```bash
+teamai provider migrate-legacy --name company
+```
+
+This promotes `~/.teamai/local-agent/` to a named provider (copying its state and extracting its credential to the isolated `0600` file) and keeps the old directory as a rollback snapshot. It is idempotent.
+
 ---
 
 ## Command Reference
