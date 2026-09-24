@@ -1892,6 +1892,8 @@ toolRoots:                     # 可选，每机器的工具根目录（见下�
 
 根目录必须是 teamai 能够识别该工具的位置：home 目录下的一层目录（`~/.claude-work`，但 `~/.config` 本身除外），或者一个 `~/.config/<名称>` 目录（开头的 `~/` 会被展开）。这两种形态正是「该工具是否已安装」这项检查能够查找的范围；更深的层级、或 home 目录之外的路径都会被拒绝并给出警告，而不是只生效一半。
 
+`import --from-claude` 和 skill 使用统计同样读取记录的根目录：迁移后的 Claude Code 的 rules 可以导入，其 skills 也算作已安装。
+
 `toolRoots` 目前只对 `claude` 生效，其他工具 id 都会被拒绝并给出警告。只有当一个工具在用户级的所有写入都经过 `toolPaths` 时，为它指定根目录才是可靠的；其余工具都还有 teamai 另行解析的写入位置——OMP 的扩展目录、Codex 与 Cursor 的 co-author 文件、OpenCode 的插件目录——只迁移它们的 `toolPaths` 会把其余部分留在原处。Copilot CLI 有自己的机制：设置 `COPILOT_HOME`。
 
 如果你在初始化之后才设置或修改 `CLAUDE_CONFIG_DIR`，`teamai doctor` 会报出来：`Claude Code root matches CLAUDE_CONFIG_DIR` 这项检查（仅在当前配置会同步 Claude Code 时出现）会比对该变量与当前配置实际同步到的根目录，并提示重新执行 `teamai init`；若该值是 teamai 无法同步到的目录，则说明原因。未设置该变量时，这项检查不会出现在报告里。

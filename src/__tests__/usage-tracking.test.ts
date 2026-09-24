@@ -137,6 +137,15 @@ describe('isValidSkillName', () => {
   });
 });
 
+describe('skillExistsOnDisk — relocated Claude Code root', () => {
+  it('finds a skill installed only under the root the governing config records', async () => {
+    const relocated = path.join(tmpDir, '.claude-work');
+    await fse.outputFile(path.join(relocated, 'skills', 'relocated-only', 'SKILL.md'), '# s');
+    await expect(skillExistsOnDisk('relocated-only', { claude: relocated })).resolves.toBe(true);
+    await expect(skillExistsOnDisk('relocated-only')).resolves.toBe(false);
+  });
+});
+
 describe('skillExistsOnDisk — Copilot', () => {
   it('finds user skills under a custom COPILOT_HOME', async () => {
     const copilotHome = path.join(tmpDir, 'copilot-home');
@@ -986,6 +995,74 @@ describe('trackSlashCommand', () => {
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('plan-eng-review');
     expect(events[0].tool).toBe('claude');
+  });
+
+  it('tracks a skill installed only under the root recorded by the hook directory\'s config', async () => {
+    // The hook reports its cwd; the project config there records a relocated
+    // Claude root, and the skill lives only under that root.
+    const YAML = (await import('yaml')).default;
+    const workspace = path.join(tmpDir, 'workspace');
+    const relocated = path.join(tmpDir, '.claude-work');
+    await fse.outputFile(path.join(workspace, '.teamai', 'config.yaml'), YAML.stringify({
+      repo: { localPath: path.join(workspace, '.teamai', 'team-repo'), remote: 'https://example.test/acme/team.git' },
+      username: 'tester',
+      scope: 'project',
+      projectRoot: workspace,
+      toolRoots: { claude: relocated },
+    }));
+    await fse.outputFile(path.join(relocated, 'skills', 'relocated-only', 'SKILL.md'), '# s');
+    const hookData = JSON.stringify({
+      prompt: '/relocated-only go',
+      cwd: workspace,
+      session_id: 'sess-reloc',
+      hook_event_name: 'UserPromptSubmit',
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackSlashCommand();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents({ ...userScope(), scope: 'project', projectRoot: workspace, dataHome: path.join(workspace, '.teamai') } as LocalConfig);
+    expect(events.map((e) => e.skill)).toEqual(['relocated-only']);
+  });
+
+  it('follows the user-scope record when the hook directory\'s project config has none', async () => {
+    const YAML = (await import('yaml')).default;
+    const workspace = path.join(tmpDir, 'workspace');
+    const relocated = path.join(tmpDir, '.claude-work');
+    await fse.outputFile(path.join(tmpDir, '.teamai', 'config.yaml'), YAML.stringify({
+      ...userScope(),
+      toolRoots: { claude: relocated },
+    }));
+    await fse.outputFile(path.join(workspace, '.teamai', 'config.yaml'), YAML.stringify({
+      repo: { localPath: path.join(workspace, '.teamai', 'team-repo'), remote: 'https://example.test/acme/team.git' },
+      username: 'tester',
+      scope: 'project',
+      projectRoot: workspace,
+    }));
+    await fse.outputFile(path.join(relocated, 'skills', 'user-rooted', 'SKILL.md'), '# s');
+    const restore = mockStdin(JSON.stringify({ prompt: '/user-rooted', cwd: workspace, session_id: 's', hook_event_name: 'UserPromptSubmit' }));
+    try {
+      await trackSlashCommand();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents({ ...userScope(), scope: 'project', projectRoot: workspace, dataHome: path.join(workspace, '.teamai') } as LocalConfig);
+    expect(events.map((e) => e.skill)).toEqual(['user-rooted']);
+  });
+
+  it('still records when the hook reports a directory that no longer exists', async () => {
+    await createFakeSkill('gone-worktree');
+    const restore = mockStdin(JSON.stringify({ prompt: '/gone-worktree', cwd: path.join(tmpDir, 'deleted-worktree'), session_id: 's', hook_event_name: 'UserPromptSubmit' }));
+    try {
+      await trackSlashCommand();
+    } finally {
+      restore();
+    }
+    expect((await readUsageEvents(userScope())).map((e) => e.skill)).toEqual(['gone-worktree']);
   });
 
   it('tracks slash command with colon-namespaced skill', async () => {

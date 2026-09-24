@@ -113,6 +113,30 @@ servers:
     });
   });
 
+  it('removeAll on a config narrowed to one tool leaves the other tools\' servers and manifest rows alone', async () => {
+    // `teamai init` releases only Claude's MCP file when the Claude root moves;
+    // it hands the reconciler a team config whose toolPaths hold Claude alone.
+    await writeMcpYaml(`
+servers:
+  - name: team-server
+    transport: http
+    url: https://example.com/mcp
+`);
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    const cursorFile = path.join(homeDir, TOOL_PATHS.cursor.mcp!);
+    expect((await fse.readJson(cursorFile)).mcpServers['team-server']).toBeDefined();
+
+    const claudeOnly = { ...teamConfig, toolPaths: { claude: TOOL_PATHS.claude } } as TeamaiConfig;
+    const { changes } = await reconcileMcpForConfig(claudeOnly, localConfig, { removeAll: true });
+
+    expect(changes.map((c) => `${c.tool}:${c.action}`)).toEqual(['claude:removed']);
+    expect((await fse.readJson(path.join(homeDir, '.claude.json'))).mcpServers?.['team-server']).toBeUndefined();
+    expect((await fse.readJson(cursorFile)).mcpServers['team-server']).toBeDefined();
+    const manifest = await fse.readJson(path.join(homeDir, '.teamai', 'managed-mcp.json'));
+    expect(Object.keys(manifest).some((k) => k.startsWith('cursor'))).toBe(true);
+    expect(Object.keys(manifest).some((k) => k.startsWith('claude'))).toBe(false);
+  });
+
   it('is idempotent — a second run does not rewrite the file', async () => {
     await writeMcpYaml(`
 servers:

@@ -300,7 +300,7 @@ Generated: do not edit by hand. Regenerate with
 
 - `teamai import` — Import knowledge from local directories, remote repos, organizations, MRs, or iWiki
   - `--dir <path>` — Extract code knowledge from a local directory (same as --from-repo but no clone)
-  - `--from-claude` (hidden) — Scan Claude/Cursor rule directories (~/.claude/rules, ~/.cursor/rules)
+  - `--from-claude` (hidden) — Scan Claude/Cursor rule directories (the Claude root's rules/ — ~/.claude or the recorded toolRoots.claude — and ~/.cursor/rules)
   - `--from-mr <url>` — Extract learning from merged MR/PR and trigger incremental teamwiki update
   - `--from-iwiki <space-id-or-url>` — Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)
   - `--resume` (hidden) — Resume an interrupted import session

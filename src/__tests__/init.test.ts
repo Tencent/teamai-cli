@@ -993,7 +993,9 @@ describe('init', () => {
         // are active config, not inert copies: both are released as well.
         const { reconcileMcpForConfig } = await import('../mcp-reconcile.js');
         expect(vi.mocked(reconcileMcpForConfig)).toHaveBeenCalledWith(
-          expect.anything(),
+          // Claude's file only: the reconciler walks every tool of the config
+          // it is handed, and the other tools' servers did not move.
+          expect.objectContaining({ toolPaths: { claude: expect.anything() } }),
           expect.objectContaining({ toolRoots: { claude: relocated } }),
           { removeAll: true },
         );

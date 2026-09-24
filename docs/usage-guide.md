@@ -1960,6 +1960,8 @@ A tool that can be told to keep its configuration somewhere else — Claude Code
 
 A root has to be somewhere teamai can recognize the tool at: a directory in your home other than `~/.config` itself (`~/.claude-work`), or a `~/.config/<name>` directory (a leading `~/` is expanded). Those are the two shapes the "is this tool installed?" check can look for; anything deeper, or outside your home directory, is refused with a warning rather than silently half-applied.
 
+`import --from-claude` and skill-use tracking read the recorded root as well, so a relocated Claude Code's rules are importable and its skills count as installed.
+
 `toolRoots` currently applies to `claude` only, and any other tool id is refused with a warning. A root is only honest for a tool whose every user-scope write goes through `toolPaths`; the other tools still write somewhere teamai resolves separately — OMP's extension directory, the Codex and Cursor co-author files, OpenCode's plugin directory — so moving their `toolPaths` entries would leave the rest behind. Copilot CLI has its own mechanism: set `COPILOT_HOME`.
 
 If you set or change `CLAUDE_CONFIG_DIR` after initializing, `teamai doctor` reports it: the `Claude Code root matches CLAUDE_CONFIG_DIR` check (built only when this config syncs Claude Code) compares the variable against the root this config actually syncs to and tells you to re-run `teamai init` — or, for a value teamai cannot sync to, says why. With the variable unset, the check stays out of the report.

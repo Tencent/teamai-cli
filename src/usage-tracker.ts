@@ -8,11 +8,14 @@ import {
   SKILL_NAME_REGEX,
   type LocalConfig,
   type UsageEvent,
+  resolveToolRootDir,
+  CLAUDE_TOOL_ID,
+  DEFAULT_CLAUDE_ROOT,
 } from './types.js';
 import { ensureDir, readJson, writeJson, pathExists } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
-import { resolveConfigForDir } from './config.js';
+import { resolveConfigForDir, resolveMemberToolRoots } from './config.js';
 
 /**
  * The usage JSONL of one scope: `<dataHome>/usage.jsonl`, so each scope reports
@@ -186,9 +189,14 @@ const PROJECT_SKILL_DIRS = [...SKILL_DIRS, '.github/skills'];
  *
  * Performance: Checks a bounded list of user and project directories with one stat() each.
  */
-export async function skillExistsOnDisk(skillName: string): Promise<boolean> {
+export async function skillExistsOnDisk(skillName: string, toolRoots?: Record<string, string>): Promise<boolean> {
   const home = getUserHome();
+  // A Claude Code relocated with CLAUDE_CONFIG_DIR keeps its skills under the
+  // recorded root, which the static list cannot know; the caller resolves it
+  // from the hook's directory (resolveMemberToolRoots).
+  const claudeRoot = resolveToolRootDir(CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT, toolRoots);
   const userSkillDirs = [
+    path.join(claudeRoot, 'skills'),
     ...SKILL_DIRS.map((dir) => path.join(home, dir)),
     path.join(getCopilotHome(), 'skills'),
   ];
@@ -506,8 +514,13 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
     return;
   }
 
-  const config = await resolveConfigForDir(resolveHookCwd(hookData));
+  const hookCwd = resolveHookCwd(hookData);
+  const config = await resolveConfigForDir(hookCwd);
   if (!config) return;
+  // The same root resolution import and the local agent use, from the hook's
+  // directory: a project set up before a user-scope relocation has no record
+  // of its own and follows user scope.
+  const toolRoots = await resolveMemberToolRoots(hookCwd);
 
   for (const match of matches) {
     const skillName = match[1];
@@ -519,7 +532,7 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
 
     // Verify the skill actually exists on disk to avoid tracking phantom skills
     // (e.g. user typing "/data" which is not a real skill)
-    if (!await skillExistsOnDisk(skillName)) {
+    if (!await skillExistsOnDisk(skillName, toolRoots)) {
       log.debug(`Slash command "/${skillName}" is not a known skill — skipping tracking`);
       continue;
     }

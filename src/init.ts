@@ -98,7 +98,10 @@ async function releasePreviousClaudeRoot(
     // The user-scope MCP file and the gateway env are addressed through the
     // previous config, so they resolve to the old root (or ~/.claude.json).
     const { reconcileMcpForConfig } = await import('./mcp-reconcile.js');
-    const { changes } = await reconcileMcpForConfig(teamConfig, previous, { removeAll: true });
+    // Only Claude's file: the reconciler walks every MCP-capable tool of the
+    // config it is handed, and the other tools' servers did not move.
+    const claudeOnly = { ...teamConfig, toolPaths: { [CLAUDE_TOOL_ID]: teamConfig.toolPaths[CLAUDE_TOOL_ID] } };
+    const { changes } = await reconcileMcpForConfig(claudeOnly, previous, { removeAll: true });
     const removed = changes.filter((c) => c.action === 'removed').length;
     if (removed > 0) log.info(`Removed ${removed} teamai-managed MCP server(s) from the previous Claude Code root`);
     const { releaseClaudeModelConfig } = await import('./local-agent.js');

@@ -352,6 +352,22 @@ export async function resolveConfigForDir(dir?: string): Promise<LocalConfig | n
 }
 
 /**
+ * The member's per-machine tool roots as seen from `dir`: the project config
+ * governing it when it records one, else the user-scope record. A project
+ * config without a record follows user scope on purpose — the same rule
+ * `init` applies when it fills a project config in — because the root is a
+ * fact about the machine, and a user-scope `init` may have recorded it after
+ * the project was set up. Readers that hold no resolved config (the local
+ * agent, import, usage tracking) go through here.
+ */
+export async function resolveMemberToolRoots(dir?: string): Promise<Record<string, string> | undefined> {
+  // A hook can report a directory that no longer exists (a deleted worktree);
+  // git probing there throws, so it means user scope — as resolveConfigForDir.
+  const project = dir === undefined || await pathExists(dir) ? await detectProjectConfig(dir) : null;
+  return project?.toolRoots ?? (await loadLocalConfig())?.toolRoots;
+}
+
+/**
  * Told about a project-scope config file that exists but cannot be used, which
  * detection otherwise skips: `null` means "no project config here" to every
  * caller that does not ask.

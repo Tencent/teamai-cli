@@ -473,13 +473,8 @@ async function saveAgentHookManifest(manifest: AgentHookManifest): Promise<void>
  * them too. No config, or no entry, leaves the paths exactly as they were.
  */
 async function memberToolRoots(workspacePath?: string): Promise<Record<string, string> | undefined> {
-  const { detectProjectConfig, loadLocalConfig } = await import('./config.js');
-  // Same resolution order every teamai command uses: the project config that
-  // governs this directory, then the user-scope one. `init --http --scope
-  // project` records the root in the project partition, which a user-scope-only
-  // read would never see.
-  const project = await detectProjectConfig(workspacePath ?? process.cwd());
-  return project?.toolRoots ?? (await loadLocalConfig())?.toolRoots;
+  const { resolveMemberToolRoots } = await import('./config.js');
+  return resolveMemberToolRoots(workspacePath ?? process.cwd());
 }
 
 /** Claude Code's user root on this machine, honoring a relocated CLAUDE_CONFIG_DIR. */
