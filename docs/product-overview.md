@@ -158,5 +158,6 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 |------------|---------|---------------|
 | **Usage** | `teamai digest` | Weekly team digest — 7-day success, prompt, active-time, estimated cost, cache, and correction trends, plus lifetime totals. |
 | **Sessions** | `teamai session save` | Privacy-scrubbed per-session summaries (tool sequence, prompt turns, interventions) that feed the digest's Session Highlights. |
+| **Session Sync** | `teamai session migrate` | Move full transcripts between AI tools; archive, search, and restore team sessions (`push` / `pull` / `list` / `resume` / `search`). |
 | **Dashboard** | `teamai dashboard` | Unified Overview / Team Execution / Team Context / Team Improvement views with local live sessions, 7-day trends, estimated cost per session, English/Chinese, and light/dark/system themes. |
 | **KB Health** | `teamai dashboard` → Team Context / Team Improvement | Coverage by type, top-recalled and silent entries, last-recall month distribution, author contributions, and maintenance; the full `/kb-report` remains available. |
