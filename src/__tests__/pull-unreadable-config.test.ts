@@ -140,7 +140,7 @@ describe('pull in a project whose config cannot be read (#784)', () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it('syncs nothing at session start either, and prints nothing: the reason goes to debug.log', async () => {
+  it('syncs nothing with --silent either and prints nothing: the reason goes to debug.log, the exit code is still 1', async () => {
     userScope();
     const root = gitRepo('project-a');
     await brokenPartition(root);
@@ -154,8 +154,8 @@ describe('pull in a project whose config cannot be read (#784)', () => {
     expect(vi.mocked(log.persist).mock.calls.map(([msg]) => msg)).toEqual([
       expect.stringMatching(/^Nothing was synced: /),
     ]);
-    // A pre-dispatch hook still runs `teamai pull --silent` in the foreground.
-    expect(process.exitCode).toBe(originalExitCode);
+    // A pre-dispatch hook runs it as `teamai pull --silent … || true`.
+    expect(process.exitCode).toBe(1);
   });
 
   it('pulls the project scope of a readable project config as before', async () => {

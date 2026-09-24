@@ -96,7 +96,7 @@ path (measured here from a 77-character one).
   too, which detection alone would skip in favour of the user config
   (`findUnreadableProjectConfig`), including one that is not `scope: project`. The refusal then says what failed (for a file
   that does not parse, which file and where; for one that fails validation,
-  which field and why), since nothing else reports it. The
+  which field and why), as `teamai pull` does there (#784). The
   Stop-hook share reminder asks the same gate (`contributeHintAllowed`, called
   by the hook dispatcher and by the legacy `teamai contribute-check`), because it
   points at this command, with one difference: with no config at all it stays

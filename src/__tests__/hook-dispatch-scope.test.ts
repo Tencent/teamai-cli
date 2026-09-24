@@ -42,6 +42,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Drops a queued pull implementation a test's hook never consumed.
+  vi.mocked(pull).mockReset();
   process.chdir(originalCwd);
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
@@ -217,8 +219,11 @@ describe('hook runs and the scope they belong to (#748)', () => {
         'team: other-team\nrepo: https://example.test/acme/other-team.git\npackages:\n  npm:\n    - { name: typescript, version: "*" }\n');
     });
 
+    vi.mocked(pull).mockClear();
+
     await hook('session-start', '*', { session_id: 'sid-a', cwd: root, hook_event_name: 'SessionStart' });
 
+    expect(pull).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(root, '.claude'))).toBe(false);
     expect(fs.existsSync(path.join(teamaiHome(), 'package-hints'))).toBe(false);
   });

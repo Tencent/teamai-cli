@@ -51,8 +51,9 @@ This is the #1 onboarding issue. In order:
 7. **`pull` says `Nothing was synced: <file>: <reason>`.** The project's teamai
    config exists but cannot be read, so no scope syncs there, not even the user
    scope, and the session-start hook syncs nothing either. Show the user the
-   file and the reason. Moving it aside and re-running `teamai init` replaces
-   their settings for that project: do it only with their consent.
+   file and the reason; `teamai doctor` checks another config and can pass
+   here. Moving it aside and re-running `teamai init` replaces their settings
+   for that project: do it only with their consent.
 
 ## Permission / access denied
 

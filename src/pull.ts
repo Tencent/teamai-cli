@@ -1910,12 +1910,9 @@ export async function pull(
   if (problem !== undefined) {
     const message = `Nothing was synced: ${describeUnreadableConfig(problem)}`;
     // A pre-dispatch hook still runs `teamai pull --silent` in the foreground:
-    // debug.log keeps the record.
-    if (options.silent) {
-      log.persist(message);
-      return;
-    }
-    log.error(message);
+    // debug.log keeps the record, and its `|| true` absorbs the exit code.
+    if (options.silent) log.persist(message);
+    else log.error(message);
     process.exitCode = 1;
     return;
   }
