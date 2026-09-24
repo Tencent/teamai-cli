@@ -181,7 +181,7 @@ async function readSnapshot<T>(name: ReportedSnapshotName, config: LocalConfig |
   return seed;
 }
 
-async function readReportedInterventions(config: LocalConfig | undefined): Promise<ReportedInterventions> {
+export async function readReportedInterventions(config: LocalConfig | undefined): Promise<ReportedInterventions> {
   const parsed = await readSnapshot<ReportedInterventions>('interventions', config);
   return parsed && typeof parsed === 'object' ? parsed : {};
 }
@@ -247,7 +247,7 @@ function hasInterventionDelta(d: UserInterventionStats): boolean {
 //  Separate snapshot from interventions so each metric stays independently idempotent.
 //
 
-async function readReportedPromptTokens(config: LocalConfig | undefined): Promise<ReportedPromptTokens> {
+export async function readReportedPromptTokens(config: LocalConfig | undefined): Promise<ReportedPromptTokens> {
   const parsed = await readSnapshot<ReportedPromptTokens>('prompt-tokens', config);
   return parsed && typeof parsed === 'object' ? parsed : {};
 }
