@@ -183,6 +183,18 @@ export async function planMigration(cwd?: string): Promise<MigrationPlan | null>
   // A partition config that detection cannot read is not "built": the legacy dir
   // holds the only config that still loads. Leave it in place; once the member
   // fixes the file, the next run retires it (#797).
+  // A partition dir without its config (e.g. one moved aside by hand) is no place
+  // for a full copy: the copy replaces the whole dir, and its data with it.
+  if (await pathExists(partitionDir)) {
+    warnKeptLegacy(legacyDir, partitionDir, partition);
+    return null;
+  }
+
+  return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode: 'full' };
+}
+
+/** Tell the member why the legacy dir stays and what lets the next run migrate it (#797). */
+function warnKeptLegacy(legacyDir: string, partitionDir: string, partition: PartitionState): void {
   if (partition.state === 'unreadable') {
     // A YAML error carries a code frame after its first line; keep one line.
     const reason = partition.error.split('\n')[0];
@@ -190,19 +202,12 @@ export async function planMigration(cwd?: string): Promise<MigrationPlan | null>
       `Kept ${legacyDir}: ${partition.configPath} cannot be read (${reason}). ` +
         `If that persists, fix the file; the next init, pull or push then retires ${legacyDir} to a .teamai.bak backup.`,
     );
-    return null;
+    return;
   }
-  // A partition dir without its config (e.g. one moved aside by hand) is no place
-  // for a full copy: the copy replaces the whole dir, and its data with it.
-  if (await pathExists(partitionDir)) {
-    log.warn(
-      `Kept ${legacyDir}: ${partitionDir} exists without a config.yaml. Restore that file, ` +
-        `or move ${partitionDir} aside so the next init, pull or push migrates ${legacyDir} into a fresh one.`,
-    );
-    return null;
-  }
-
-  return { legacyDir, partitionDir, anchor: anchors.projectAnchor, mode: 'full' };
+  log.warn(
+    `Kept ${legacyDir}: ${partitionDir} exists without a config.yaml. Restore that file, ` +
+      `or move ${partitionDir} aside so the next init, pull or push migrates ${legacyDir} into a fresh one.`,
+  );
 }
 
 type PartitionState =
@@ -323,7 +328,7 @@ export async function runMigration(
       return 'migrated';
     }
     if (await pathExists(partitionDir)) {
-      log.debug(`migration skipped: ${partitionDir} has no readable config.yaml; kept ${legacyDir}`);
+      warnKeptLegacy(legacyDir, partitionDir, partition);
       return 'skipped';
     }
 

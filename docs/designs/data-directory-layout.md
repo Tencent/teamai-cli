@@ -200,7 +200,7 @@ names the file) until the member fixes the partition file, and the next write co
 then gets the retire-only cleanup. A partition dir with no `config.yaml` at all (say,
 one moved aside by hand) plans nothing either, with a warning: the full copy replaces
 the whole dir, so it would take that dir's data with it. The full copy's re-check under
-the lock in `runMigration` applies the same rules.
+the lock in `runMigration` applies the same rules, warning included.
 
 **Steps** (`runMigration`) — copy → verify → atomic rename, so an interruption never
 leaves data half-in-both-places:

@@ -161,7 +161,11 @@ for tools you have not opened in this project.
 > **Upgrading from an older teamai?** The first `teamai init` / `pull` / `push` after
 > upgrading automatically migrates an existing `<repo>/.teamai/` into the partition
 > (copy → verify → atomic switch), then leaves the old directory as `<repo>/.teamai.bak/`
-> for you to delete once you've confirmed everything works. Read-only commands and the
+> for you to delete once you've confirmed everything works. If the partition already
+> exists but its `config.yaml` cannot be read, or is missing, the migration keeps
+> `<repo>/.teamai/` and warns with the path: fix or restore that file (or move the
+> config-less partition aside), and the next `init` / `pull` / `push` finishes the job.
+> Read-only commands and the
 > `hook-dispatch` path never migrate; `teamai --dry-run pull` previews the move.
 > **Downgrading afterwards is not supported** — an older teamai would treat the project
 > as uninitialized; `.teamai.bak/` is the manual rollback path.

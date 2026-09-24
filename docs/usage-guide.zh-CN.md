@@ -156,8 +156,10 @@ teamai init https://github.com/yourorg/yourrepo
 
 > **从旧版 teamai 升级？** 升级后首次执行 `teamai init` / `pull` / `push` 会自动把已有的
 > `<repo>/.teamai/` 迁移进分区（复制 → 校验 → 原子切换），并把旧目录保留为
-> `<repo>/.teamai.bak/`，待你确认一切正常后自行删除。只读命令与 `hook-dispatch` 路径
-> 永不触发迁移；`teamai --dry-run pull` 可预演。**迁移后不支持降级**——旧版会把项目判定为
+> `<repo>/.teamai.bak/`，待你确认一切正常后自行删除。若分区已存在但其 `config.yaml`
+> 无法读取或缺失，迁移会保留 `<repo>/.teamai/` 并给出带路径的警告：修复或恢复该文件
+> （或把缺少 config 的分区移开）后，下一次 `init` / `pull` / `push` 会完成迁移。
+> 只读命令与 `hook-dispatch` 路径永不触发迁移；`teamai --dry-run pull` 可预演。**迁移后不支持降级**——旧版会把项目判定为
 > 未初始化；`.teamai.bak/` 是人工回滚路径。
 
 如果仓库启用了角色化 skills（存在 `manifest/roles.yaml`），`teamai init` 还会交互式要求你选择：

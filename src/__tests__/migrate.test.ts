@@ -365,6 +365,20 @@ describe('runMigration', () => {
     expect(await fse.pathExists(path.join(legacyDir, 'env'))).toBe(true);
     expect(await fse.pathExists(`${legacyDir}.bak`)).toBe(false);
     expect(await fse.readFile(path.join(partition, 'config.yaml'), 'utf-8')).toBe(':::not yaml:::\n');
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(path.join(partition, 'config.yaml')));
+  });
+
+  it('keeps the legacy dir when a partition dir without config appears after planning (#797)', async () => {
+    await seedLegacyLayout();
+    const plan = await planMigration(repoRoot);
+    expect(plan?.mode).toBe('full');
+    const partition = projectDataHome(repoRoot);
+    await fse.outputFile(path.join(partition, 'pending-learnings', 'l1.md'), 'queued\n');
+
+    expect(await runMigration(plan!)).toBe('skipped');
+    expect(await fse.pathExists(path.join(legacyDir, 'env'))).toBe(true);
+    expect(await fse.pathExists(path.join(partition, 'pending-learnings', 'l1.md'))).toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(`${partition} exists without a config.yaml`));
   });
 
   it('retires the legacy dir when a readable partition config appears after planning', async () => {
