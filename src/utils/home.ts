@@ -1,4 +1,5 @@
 import os from 'node:os';
+import path from 'node:path';
 
 /**
  * Resolve the current user's home directory across supported platforms.
@@ -26,4 +27,14 @@ export function getUserHome(): string {
     );
   }
   return home;
+}
+
+/**
+ * Expand ~ to the platform user home directory in paths.
+ */
+export function expandHome(p: string): string {
+  if (p.startsWith('~/') || p === '~') {
+    return path.join(getUserHome(), p.slice(1));
+  }
+  return p;
 }

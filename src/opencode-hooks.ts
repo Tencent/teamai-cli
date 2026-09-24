@@ -19,7 +19,7 @@
  * The generated plugin is fire-and-forget: OpenCode's `event` hook has no
  * channel to inject a hook's stdout back into the session, so — like the Hermes
  * and OpenClaw adapters — teamai runs the dispatch for its side effects and
- * never blocks the agent. All shell errors are swallowed.
+ * never blocks the agent. Node's child-process errors are swallowed.
  */
 
 import path from 'node:path';
@@ -56,9 +56,9 @@ export function resolveOpencodePluginDir(baseDir: string, scope: 'project' | 'us
  * The plugin subscribes to OpenCode events and shells out to `teamai
  * hook-dispatch <event> --tool opencode [--matcher <m>]`, feeding the same JSON
  * payload on STDIN that every other agent's hooks send (`cwd`, `tool_name`,
- * `tool_input`, `prompt`). It uses the injected Bun shell (`$`) with
- * `.quiet().nothrow()` so a missing `teamai` binary or a non-zero exit never
- * surfaces as an error inside the agent session.
+ * `tool_input`, `prompt`). It uses Node's `child_process.spawn` with
+ * `windowsHide: true` so a missing `teamai` binary or a non-zero exit never
+ * surfaces as an error inside the agent session or opens a console window.
  *
  * Two OpenCode-specific bridges are required:
  *   - STDIN payload: hook-dispatch's track / track-slash / todowrite-hint
@@ -89,8 +89,8 @@ export function buildPluginSource(): string {
 /** OpenCode lowercase tool ids → Claude PascalCase matcher names. */
 const TOOL_MATCHER = { skill: 'Skill', todowrite: 'TodoWrite' };
 
-/** @param {{ $: any, directory?: string, worktree?: string }} ctx */
-export const TeamaiHooks = async ({ $, directory, worktree }) => {
+/** @param {{ directory?: string, worktree?: string }} ctx */
+export const TeamaiHooks = async ({ directory, worktree }) => {
   const cwd = directory || worktree;
   // Dispatch one hook event, forwarding a JSON payload on STDIN. \`payload\`
   // fields (cwd / tool_name / tool_input / prompt) match what hook-dispatch's
@@ -102,11 +102,23 @@ export const TeamaiHooks = async ({ $, directory, worktree }) => {
         args.push('--matcher', matcher);
       }
       const stdin = JSON.stringify({ cwd, ...(payload || {}) });
-      // Redirect the payload into STDIN via a Response (Bun shell can only
-      // redirect Response/Buffer/Blob, not a bare string). .quiet() suppresses
-      // output; .nothrow() keeps a non-zero exit (e.g. no teamai on PATH) from
-      // throwing into the agent session.
-      await $\`teamai \${args} < \${new Response(stdin)}\`.quiet().nothrow();
+      const { spawn } = await import('node:child_process');
+      await new Promise((resolve) => {
+        const child = spawn('teamai', args, {
+          shell: process.platform === 'win32',
+          windowsHide: true,
+          stdio: ['pipe', 'ignore', 'ignore'],
+        });
+        const finish = () => {
+          child.removeListener('error', finish);
+          child.removeListener('close', finish);
+          resolve();
+        };
+        child.once('error', finish);
+        child.once('close', finish);
+        child.stdin.write(stdin);
+        child.stdin.end();
+      });
     } catch {
       // never block the agent
     }

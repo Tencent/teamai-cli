@@ -13,7 +13,8 @@ const mocks = vi.hoisted(() => ({
   createPullRequest: vi.fn().mockResolvedValue('https://example.test/pr/packages'),
 }));
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: vi.fn(async () => mocks.currentInit),
   detectProjectConfig: vi.fn(async () =>
     (mocks.currentInit as { localConfig?: unknown } | null)?.localConfig ?? null),
@@ -90,6 +91,7 @@ vi.mock('../utils/pre-push-sync.js', () => ({
 }));
 
 vi.mock('../utils/prompt.js', () => ({
+  isInteractive: vi.fn(() => true),
   askQuestion: vi.fn(async () => ''),
   askConfirmation: vi.fn(async () => true),
   askSelection: vi.fn(async (_prompt: string, count: number) =>
@@ -231,7 +233,7 @@ describe('team package distribution flow', () => {
     );
     const hint = await sessionStartHint!.handler.execute(
       { cwd: teammateProject },
-      'claude',
+      'claude', null,
     );
     expect(hint).toContain('teamai packages');
 

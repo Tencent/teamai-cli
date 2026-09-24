@@ -125,8 +125,18 @@ export async function status(options: GlobalOptions): Promise<void> {
   console.log('');
   log.info('Local resources not yet pushed:');
   let anyNew = false;
+  let anyUnscanned = false;
   for (const handler of getAllHandlers()) {
-    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    let items;
+    try {
+      items = await handler.scanLocalForPush(teamConfig, localConfig);
+    } catch (e) {
+      // A manifest that does not parse fails the pull and the push; status is
+      // where the member looks to find out why, so it reports and goes on.
+      log.warn(`  [${handler.type}] could not scan: ${(e as Error).message}`);
+      anyUnscanned = true;
+      continue;
+    }
     if (items.length > 0) {
       anyNew = true;
       console.log(`  [${handler.type}] ${items.length} new`);
@@ -138,7 +148,8 @@ export async function status(options: GlobalOptions): Promise<void> {
     }
   }
   if (!anyNew) {
-    console.log('  (none)');
+    // A bare "(none)" would read as a clean result for the types it never saw.
+    console.log(anyUnscanned ? '  (none in the types that could be scanned)' : '  (none)');
   }
 
   console.log('');

@@ -49,6 +49,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
     if (s.description) console.log(`    ${s.description}`);
     console.log(`    endpoint: ${endpoint}`);
     if (s.roles) console.log(`    roles:    ${s.roles.length > 0 ? s.roles.join(', ') : 'nobody'}`);
+    if (s.projects) console.log(`    projects: ${s.projects.length > 0 ? s.projects.join(', ') : 'nobody'}`);
 
     const needed = referencedVars(s);
     if (needed.length > 0) {

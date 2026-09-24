@@ -24,8 +24,10 @@ import { captureTail } from './utils/exec.js';
 import { createDispatcher, type Dispatcher } from './hook-dispatch.js';
 import { buildHandlerRegistry, filterHandlersForConfig } from './hook-handlers.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
+import { windowsPowerShell } from './utils/powershell.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
+import { COPILOT_TOOL_ID } from './types.js';
 
 /**
  * Max time to wait for STDIN EOF before proceeding with whatever was received.
@@ -102,7 +104,10 @@ async function spawnPlainDetached(
       detached: true,
       windowsHide: true,
       stdio: ['pipe', 'ignore', 'ignore'],
-      ...(cwd ? { cwd } : {}),
+      // A cwd that no longer exists (a deleted worktree) fails the spawn, so the
+      // temp dir stands in, as for the WMI launch: the child resolves its scope
+      // from the payload anyway, and the temp dir belongs to no project.
+      ...(cwd ? { cwd: fs.existsSync(cwd) ? cwd : os.tmpdir() } : {}),
     });
     child.on('error', () => {});
     await new Promise<void>((resolve) => {
@@ -288,30 +293,6 @@ async function runPowerShell(script: string): Promise<{ code: number | null; tai
 /** Output kept from a failed attempt, for its log line. */
 const TAIL_CHARS = 200;
 
-let resolvedPowerShell: string | undefined;
-
-/**
- * Windows PowerShell by absolute path. The hook inherits whatever environment
- * its host hands over, and that environment need not carry a usable PATH (or
- * even `SystemRoot`), so probe the usual roots — once per process — and only
- * fall back to a PATH lookup when none of them holds the binary.
- */
-function windowsPowerShell(): string {
-  if (resolvedPowerShell) return resolvedPowerShell;
-  const roots = [process.env.SystemRoot, 'C:\\Windows', process.env.windir].filter(
-    (r): r is string => !!r,
-  );
-  resolvedPowerShell = 'powershell.exe';
-  for (const root of roots) {
-    const candidate = path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    if (fs.existsSync(candidate)) {
-      resolvedPowerShell = candidate;
-      break;
-    }
-  }
-  return resolvedPowerShell;
-}
-
 /** Encode a value as a PowerShell single-quoted literal. */
 function psLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -348,14 +329,12 @@ export function parseStdin(raw: string, event: string): Record<string, unknown> 
       // Degrade instead of short-circuiting: handlers that depend on stdin
       // fields (votes-sync, contribute-check) self-skip when transcript_path
       // is absent, while background handlers that don't read stdin
-      // (version-check, etc.) still get to run. Include a bounded preview so
-      // concurrent STDIN corruption is diagnosable in debug.log.
-      const preview = raw.length > 160
-        ? `${raw.slice(0, 80)}...${raw.slice(-80)}`
-        : raw;
+      // (version-check, etc.) still get to run. Hook payloads can contain
+      // prompts, credentials, and tool arguments, so diagnostics record only
+      // structural metadata and never any part of the raw body.
       log.debug(
         `hook-dispatch: failed to parse STDIN JSON for event=${event}` +
-          ` (len=${raw.length}, body=${JSON.stringify(preview)})`,
+          ` (len=${raw.length})`,
       );
       stdin = salvageStdinFields(raw);
     }
@@ -377,6 +356,7 @@ export function parseStdin(raw: string, event: string): Record<string, unknown> 
   if (!stdin.hook_event_name) {
     const EVENT_MAP: Record<string, string> = {
       'session-start': 'SessionStart',
+      'session-end': 'SessionEnd',
       'stop': 'Stop',
       'post-tool-use': 'PostToolUse',
       'prompt-submit': 'UserPromptSubmit',
@@ -404,6 +384,14 @@ async function runDispatch(
   return result.output;
 }
 
+/** Keep the detached Copilot fallback stable without persisting a workspace path. */
+export function deriveDispatchSessionId(
+  stdin: Record<string, unknown>,
+  tool: string,
+): string {
+  return deriveSessionId(stdin, { includeCwd: tool.toLowerCase() !== COPILOT_TOOL_ID });
+}
+
 /**
  * Main CLI handler for hook-dispatch.
  *
@@ -424,11 +412,13 @@ export async function hookDispatchCli(
     const raw = stdinFile ? readStdinFile(stdinFile) : await readStdin();
     const stdin = parseStdin(raw, event);
 
-    // Provider-config gate: HTTP-only teams must not receive git-provider-only
-    // hook prompts (contribute / mr-hint / votes). Prefer the project-scope
-    // config when the host tells us the working directory (#264), so
-    // filterHandlersForConfig can honour a project-level repo.kind.
-    const { loadLocalConfig, detectProjectConfig } = await import('./config.js');
+    // Config gates: a directory without teamai runs no team handlers (#748), and
+    // HTTP-only teams must not receive git-provider-only hook prompts
+    // (contribute / mr-hint / votes). The project-scope config of the host's
+    // working directory wins (#264), so filterHandlersForConfig can honour a
+    // project-level repo.kind; a host that sends no cwd (OpenClaw) runs the
+    // hook in its workspace, so the process cwd stands in.
+    const { resolveConfigForDir } = await import('./config.js');
     const cwd = resolveHookCwd(stdin);
     if (cwd) {
       try {
@@ -437,9 +427,9 @@ export async function hookDispatchCli(
         log.debug(`hook-dispatch: chdir to ${cwd} failed: ${(e as Error).message}`);
       }
     }
-    const localConfig = (cwd ? await detectProjectConfig(cwd) : null) ?? await loadLocalConfig();
+    const localConfig = await resolveConfigForDir(cwd);
     const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
-    const dispatcher = createDispatcher({ handlers });
+    const dispatcher = createDispatcher({ handlers, localConfig });
 
     // Detached child: run the fire-and-forget handlers, then exit. No output is
     // wired back to the host (the parent already returned).
@@ -456,7 +446,7 @@ export async function hookDispatchCli(
       // this, hosts that omit session_id produce different PID-based IDs and
       // the foreground and post-pull paths can claim the same hint twice.
       if (typeof stdin.session_id !== 'string' || !stdin.session_id) {
-        stdin.session_id = deriveSessionId(stdin, { includeCwd: true });
+        stdin.session_id = deriveDispatchSessionId(stdin, tool);
       }
       settling = spawnBackground(event, tool, matcher, JSON.stringify(stdin), cwd);
     }

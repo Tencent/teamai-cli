@@ -9,6 +9,9 @@
   "files": [
     "dist/**/*.js",
     "skills",
+    "skill-data",
+    "!**/__pycache__",
+    "!**/*.pyc",
     "agents",
     "README.md",
     "CHANGELOG.md",

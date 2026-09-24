@@ -49,7 +49,7 @@ interface PromptTokenDelta {
 //  [git pull latest] ── get freshest remote state ──
 //      │
 //      ▼
-//  [read ~/.teamai/usage.jsonl] ──has events?──▶ merge stats
+//  [read scope usage file] ─has events?─▶ merge stats
 //      │                                           │
 //      ▼                                           ▼
 //  [stage pending votes from ~/.teamai/votes/]  [write stats/<user>.yaml]
@@ -403,7 +403,8 @@ export async function reportUsageToTeam(
   // only for callers that did not pass a config.
 
   try {
-    const events = await readUsageEvents();
+    // This scope's own skill usage (#748); a caller without a scope reports none.
+    const events = reportsConfig ? await readUsageEvents(reportsConfig) : [];
     const filesToPush: string[] = [];
 
     // Fold the local dashboard event log into per-session metrics once, then derive
@@ -574,8 +575,8 @@ export async function reportUsageToTeam(
     restoreStats = undefined;
 
     // Success — truncate reported usage events (only if caller allows it)
-    if (hasUsage && !options?.skipTruncate) {
-      await truncateUsageAfterReport(events.length);
+    if (hasUsage && reportsConfig && !options?.skipTruncate) {
+      await truncateUsageAfterReport(events.length, reportsConfig);
       log.debug(`Reported ${events.length} usage events to team repo`);
     } else if (hasUsage) {
       log.debug(`Reported ${events.length} usage events to team repo (kept local copy)`);

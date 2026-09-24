@@ -17,6 +17,7 @@ import { readFileSafe, listFiles } from './utils/fs.js';
 import { pullRepo } from './utils/git.js';
 import { log } from './utils/logger.js';
 import { MemberConfigSchema } from './types.js';
+import { memberReadRoots } from './members.js';
 import type { GlobalOptions } from './types.js';
 
 function parseIds(input: string[]): string[] {
@@ -131,8 +132,8 @@ export async function projectsMembers(
   const { localConfig } = await autoDetectInit();
 
   // Members live on the teamai-reports orphan branch for non-HTTP repos; the
-  // projects manifest is knowledge on the default branch. Split the two roots
-  // so leftover clone members/ is ignored and projects.yaml is still found.
+  // projects manifest is knowledge on the default branch. Split the two roots:
+  // the clone's members/ is a read-only inherited root for pre-switch files.
   const knowledgePath = localConfig.repo.localPath;
   let membersRoot = knowledgePath;
   const { usesBranchWorktree } = await import('./types.js');
@@ -151,21 +152,26 @@ export async function projectsMembers(
     // Continue anyway — the roster may still record historical membership.
   }
 
-  const membersDir = path.join(membersRoot, 'members');
-  const files = (await listFiles(membersDir)).filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'));
-
+  // Union across read roots; the first root that has a file supplies its
+  // bytes, so a copy on the reports branch supersedes the inherited one.
   const members: string[] = [];
-  for (const file of files) {
-    const content = await readFileSafe(path.join(membersDir, file));
-    if (!content) continue;
-    try {
-      const member = MemberConfigSchema.parse(YAML.parse(content));
-      if ((member.projects ?? []).includes(projectId)) {
-        const display = member.displayName ? ` — ${member.displayName}` : '';
-        members.push(`${member.username}${display}`);
+  const listed = new Set<string>();
+  for (const root of memberReadRoots(membersRoot, localConfig)) {
+    const files = (await listFiles(path.join(root, 'members'))).filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'));
+    for (const file of files) {
+      if (listed.has(file)) continue;
+      listed.add(file);
+      const content = await readFileSafe(path.join(root, 'members', file));
+      if (!content) continue;
+      try {
+        const member = MemberConfigSchema.parse(YAML.parse(content));
+        if ((member.projects ?? []).includes(projectId)) {
+          const display = member.displayName ? ` — ${member.displayName}` : '';
+          members.push(`${member.username}${display}`);
+        }
+      } catch {
+        // Skip invalid member files silently (listMembers already warns on `members`).
       }
-    } catch {
-      // Skip invalid member files silently (listMembers already warns on `members`).
     }
   }
 

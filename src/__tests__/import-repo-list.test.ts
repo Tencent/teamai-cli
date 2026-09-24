@@ -12,7 +12,8 @@ vi.mock('../import-repo.js', () => ({
     importFromRepo: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
     autoDetectInit: vi.fn().mockRejectedValue(new Error('no config in test')),
 }));
 

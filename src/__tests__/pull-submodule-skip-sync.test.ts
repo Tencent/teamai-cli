@@ -96,7 +96,8 @@ const localConfig = {
   scope: 'user' as const,
 };
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   requireInit: vi.fn(),
   detectProjectConfig: vi.fn().mockResolvedValue(null),
   loadLocalConfigForScope: vi.fn().mockResolvedValue(localConfig),

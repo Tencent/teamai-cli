@@ -48,6 +48,13 @@ describe('builtin-rules', () => {
             const content = fs.readFileSync(deployed, 'utf-8');
             expect(content).toContain('Team Knowledge Recall');
             expect(content).toContain('teamai recall');
+            // The declaration section is CLI-shipped instruction text, so it is
+            // English and matches the wording compileRecallRulesBlock uses (#719).
+            const heading = '### After recall: declare what you used';
+            expect(content).toContain(heading);
+            const declaration = content.slice(content.indexOf(heading));
+            expect(declaration).toContain('teamai:referenced-doc-ids');
+            expect(declaration).not.toMatch(/[\u4e00-\u9fff]/);
         });
 
         it('should deploy the recall rule to cursor as .mdc, not an ignored .md', async () => {

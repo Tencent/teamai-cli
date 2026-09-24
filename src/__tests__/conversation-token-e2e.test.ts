@@ -33,6 +33,23 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-ct-e2e-'));
   originalHome = process.env.HOME ?? '';
   process.env.HOME = tmpDir;
+  // A configured user scope: the payload cwd below is a fixture path that need
+  // not exist, and resolveConfigForDir then falls back to this config — the
+  // installed-team case the legacy dashboard-report gate lets through (#768).
+  fs.mkdirSync(path.join(tmpDir, '.teamai'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmpDir, '.teamai', 'config.yaml'),
+    [
+      'username: jeff',
+      'scope: user',
+      'repo:',
+      '  kind: git',
+      `  localPath: ${path.join(tmpDir, '.teamai', 'team-repo')}`,
+      '  remote: https://example.test/acme/team.git',
+      'additionalRoles: []',
+      '',
+    ].join('\n'),
+  );
 });
 
 afterEach(() => {

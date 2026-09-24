@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { parseMrUrl, formatComment } from '../ci/mr-comment.js';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { parseMrUrl, formatComment, postOrUpdateMrComment } from '../ci/mr-comment.js';
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 
 describe('parseMrUrl', () => {
@@ -60,5 +60,40 @@ describe('formatComment', () => {
     const result = formatComment(learning, [], marker);
     expect(result).toContain('### Learning');
     expect(result).not.toContain('### Codebase.md 更新建议');
+  });
+});
+
+describe('postOrUpdateMrComment API failures', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('fails without creating a duplicate GitHub comment when listing comments fails', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'test-token');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postOrUpdateMrComment(
+      'https://github.com/acme/app/pull/7', undefined, undefined,
+    )).rejects.toThrow('GitHub comment list request failed (503)');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('GET');
+  });
+
+  it('fails without creating a duplicate TGit note when listing notes fails', async () => {
+    vi.stubEnv('TGIT_TOKEN', 'test-token');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 42, iid: 7 }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postOrUpdateMrComment(
+      'https://git.woa.com/acme/app/merge_requests/7', undefined, undefined,
+    )).rejects.toThrow('TGit note list request failed (503)');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 });

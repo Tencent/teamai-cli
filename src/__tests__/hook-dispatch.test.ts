@@ -27,11 +27,30 @@ import {
 
 describe('hook-dispatch', () => {
   describe('routing', () => {
+    it('hands every handler the scope it was created with', async () => {
+      const localConfig = { repo: { localPath: '/team', remote: '' }, username: 'u', scope: 'user' as const, additionalRoles: [] };
+      const a = createHandler('a');
+      const b = createHandler('b');
+      const dispatcher = createDispatcher({
+        localConfig,
+        handlers: [
+          { event: 'stop', matcher: '*', handler: a },
+          { event: 'stop', matcher: '*', handler: b, background: true },
+        ],
+      });
+
+      await dispatcher.dispatch('stop', '*', {}, 'claude');
+
+      expect(a.execute).toHaveBeenCalledWith({}, 'claude', localConfig);
+      expect(b.execute).toHaveBeenCalledWith({}, 'claude', localConfig);
+    });
+
     it('dispatches to all handlers registered for the given event+matcher', async () => {
       const pullHandler = createHandler('pull');
       const dashboardHandler = createHandler('dashboard-report');
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'session-start', matcher: '*', handler: pullHandler },
           { event: 'session-start', matcher: '*', handler: dashboardHandler },
@@ -50,6 +69,7 @@ describe('hook-dispatch', () => {
       const stopHandler = createHandler('update');
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'session-start', matcher: '*', handler: createHandler('pull') },
           { event: 'stop', matcher: '*', handler: stopHandler },
@@ -65,6 +85,7 @@ describe('hook-dispatch', () => {
       const skillHandler = createHandler('track');
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'post-tool-use', matcher: '*', handler: createHandler('dashboard') },
           { event: 'post-tool-use', matcher: 'Skill', handler: skillHandler },
@@ -81,6 +102,7 @@ describe('hook-dispatch', () => {
       const bashHandler = createHandler('auto-recall');
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'post-tool-use', matcher: '*', handler: wildcardHandler },
           { event: 'post-tool-use', matcher: 'Bash', handler: bashHandler },
@@ -101,6 +123,7 @@ describe('hook-dispatch', () => {
       const successHandler = createHandler('success');
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'session-start', matcher: '*', handler: failingHandler },
           { event: 'session-start', matcher: '*', handler: successHandler },
@@ -117,6 +140,7 @@ describe('hook-dispatch', () => {
       failingHandler.execute.mockRejectedValue(new Error('boom'));
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'session-start', matcher: '*', handler: failingHandler },
           { event: 'session-start', matcher: '*', handler: createHandler('ok') },
@@ -137,6 +161,7 @@ describe('hook-dispatch', () => {
       const silentHandler = createHandler('dashboard');
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'post-tool-use', matcher: 'Bash', handler: outputHandler },
           { event: 'post-tool-use', matcher: '*', handler: silentHandler },
@@ -150,6 +175,7 @@ describe('hook-dispatch', () => {
 
     it('returns null output when no handler produces output', async () => {
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'session-start', matcher: '*', handler: createHandler('pull') },
           { event: 'session-start', matcher: '*', handler: createHandler('dashboard') },
@@ -168,7 +194,7 @@ describe('hook-dispatch', () => {
       const second = createHandler('contribute', JSON.stringify({
         hookSpecificOutput: { hookEventName: 'Stop', additionalContext: 'CONTRIBUTE' },
       }));
-      const dispatcher = createDispatcher({ handlers: [
+      const dispatcher = createDispatcher({ localConfig: null, handlers: [
         { event: 'stop', matcher: '*', handler: first },
         { event: 'stop', matcher: '*', handler: second },
       ] });
@@ -181,7 +207,7 @@ describe('hook-dispatch', () => {
     it('merges Cursor followup messages from concurrent handlers', async () => {
       const first = createHandler('votes', JSON.stringify({ followup_message: 'VOTES' }));
       const second = createHandler('contribute', JSON.stringify({ followup_message: 'CONTRIBUTE' }));
-      const dispatcher = createDispatcher({ handlers: [
+      const dispatcher = createDispatcher({ localConfig: null, handlers: [
         { event: 'stop', matcher: '*', handler: first },
         { event: 'stop', matcher: '*', handler: second },
       ] });
@@ -204,6 +230,7 @@ describe('hook-dispatch', () => {
         },
       }));
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'session-start', matcher: '*', handler: mrHint },
           { event: 'session-start', matcher: '*', handler: packageHint },
@@ -222,6 +249,7 @@ describe('hook-dispatch', () => {
       const handler2 = createHandler('h2');
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'stop', matcher: '*', handler: handler1 },
           { event: 'stop', matcher: '*', handler: handler2 },
@@ -231,8 +259,8 @@ describe('hook-dispatch', () => {
       const stdin = { session_id: 'abc', cwd: '/project' };
       await dispatcher.dispatch('stop', '*', stdin, 'claude');
 
-      expect(handler1.execute).toHaveBeenCalledWith(stdin, 'claude');
-      expect(handler2.execute).toHaveBeenCalledWith(stdin, 'claude');
+      expect(handler1.execute).toHaveBeenCalledWith(stdin, 'claude', null);
+      expect(handler2.execute).toHaveBeenCalledWith(stdin, 'claude', null);
     });
   });
 
@@ -247,6 +275,7 @@ describe('hook-dispatch', () => {
       const fastHandler = createHandler('fast', 'quick');
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'session-start', matcher: '*', handler: slowHandler, timeoutMs: 50 },
           { event: 'session-start', matcher: '*', handler: fastHandler },
@@ -268,6 +297,7 @@ describe('hook-dispatch', () => {
       const bg = createHandler('update');
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'stop', matcher: '*', handler: fg },
           { event: 'stop', matcher: '*', handler: bg, background: true },
@@ -286,6 +316,7 @@ describe('hook-dispatch', () => {
       const bg = createHandler('update');
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'stop', matcher: '*', handler: fg },
           { event: 'stop', matcher: '*', handler: bg, background: true },
@@ -305,6 +336,7 @@ describe('hook-dispatch', () => {
       const bg = createHandler('update');
 
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'stop', matcher: '*', handler: fg },
           { event: 'stop', matcher: '*', handler: bg, background: true },
@@ -319,6 +351,7 @@ describe('hook-dispatch', () => {
 
     it('hasBackground reflects whether the event+matcher has a background handler', () => {
       const dispatcher = createDispatcher({
+        localConfig: null,
         handlers: [
           { event: 'stop', matcher: '*', handler: createHandler('contribute-check') },
           { event: 'stop', matcher: '*', handler: createHandler('update'), background: true },

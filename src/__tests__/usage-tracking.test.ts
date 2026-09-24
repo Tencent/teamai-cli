@@ -26,21 +26,41 @@ import {
   updateKnownSkills,
   readKnownSkills,
   extractSkillName,
+  skillExistsOnDisk,
 } from '../usage-tracker.js';
 import { aggregateUsage } from '../stats.js';
 import { mergeStats } from '../team-push.js';
 import { calculateSkillHealth, scoreToStars, calculateTeamHealth } from '../skill-health.js';
 import { getRecommendations } from '../skill-recommend.js';
-import type { UsageEvent, UserStats } from '../types.js';
+import type { LocalConfig, UsageEvent, UserStats } from '../types.js';
 
 // ─── Test helpers ──────────────────────────────────────
 
 let tmpDir: string;
 const origHome = process.env.HOME;
 
+/** The user scope seeded below; its usage file is `~/.teamai/user-usage.jsonl`. */
+function userScope(): LocalConfig {
+  return {
+    repo: { localPath: path.join(tmpDir, '.teamai', 'team-repo'), remote: 'https://example.test/acme/team.git' },
+    username: 'tester',
+    scope: 'user',
+    additionalRoles: [],
+  };
+}
+
+/** A user-scope install: skill usage is recorded only where teamai is set up. */
+async function seedUserConfig(): Promise<void> {
+  await fse.outputFile(
+    path.join(tmpDir, '.teamai', 'config.yaml'),
+    `repo:\n  localPath: ${path.join(tmpDir, '.teamai', 'team-repo')}\n  remote: https://example.test/acme/team.git\nusername: tester\nscope: user\n`,
+  );
+}
+
 beforeEach(async () => {
   tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-test-'));
   process.env.HOME = tmpDir;
+  await seedUserConfig();
 });
 
 afterEach(async () => {
@@ -117,6 +137,54 @@ describe('isValidSkillName', () => {
   });
 });
 
+describe('skillExistsOnDisk — relocated Claude Code root', () => {
+  it('finds a skill installed only under the root the governing config records', async () => {
+    const relocated = path.join(tmpDir, '.claude-work');
+    await fse.outputFile(path.join(relocated, 'skills', 'relocated-only', 'SKILL.md'), '# s');
+    await expect(skillExistsOnDisk('relocated-only', { claude: relocated })).resolves.toBe(true);
+    await expect(skillExistsOnDisk('relocated-only')).resolves.toBe(false);
+  });
+});
+
+describe('skillExistsOnDisk — Copilot', () => {
+  it('finds user skills under a custom COPILOT_HOME', async () => {
+    const copilotHome = path.join(tmpDir, 'copilot-home');
+    const skillDir = path.join(copilotHome, 'skills', 'copilot-review');
+    await fse.ensureDir(skillDir);
+    await fse.writeFile(path.join(skillDir, 'SKILL.md'), '# Copilot review\n');
+    const previous = process.env.COPILOT_HOME;
+    process.env.COPILOT_HOME = copilotHome;
+    try {
+      await expect(skillExistsOnDisk('copilot-review')).resolves.toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = previous;
+    }
+  });
+
+  it('finds project skills under .github/skills', async () => {
+    const project = path.join(tmpDir, 'project');
+    const skillDir = path.join(project, '.github', 'skills', 'copilot-test');
+    await fse.ensureDir(skillDir);
+    await fse.writeFile(path.join(skillDir, 'SKILL.md'), '# Copilot test\n');
+    const previousCwd = process.cwd();
+    process.chdir(project);
+    try {
+      await expect(skillExistsOnDisk('copilot-test')).resolves.toBe(true);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it('does not treat the home .github directory as a user skill scope', async () => {
+    const skillDir = path.join(tmpDir, '.github', 'skills', 'project-only');
+    await fse.ensureDir(skillDir);
+    await fse.writeFile(path.join(skillDir, 'SKILL.md'), '# Project only\n');
+
+    await expect(skillExistsOnDisk('project-only')).resolves.toBe(false);
+  });
+});
+
 describe('appendUsageEvent', () => {
   it('appends a valid event to JSONL', async () => {
     const event: UsageEvent = {
@@ -124,9 +192,9 @@ describe('appendUsageEvent', () => {
       timestamp: '2026-03-19T10:30:00Z',
       tool: 'claude',
     };
-    await appendUsageEvent(event);
+    await appendUsageEvent(event, userScope());
 
-    const usagePath = path.join(tmpDir, '.teamai', 'usage.jsonl');
+    const usagePath = path.join(tmpDir, '.teamai', 'user-usage.jsonl');
     const content = await fs.promises.readFile(usagePath, 'utf-8');
     const parsed = JSON.parse(content.trim());
     expect(parsed.skill).toBe('code-review');
@@ -134,10 +202,10 @@ describe('appendUsageEvent', () => {
   });
 
   it('appends multiple events as separate lines', async () => {
-    await appendUsageEvent({ skill: 'tdd', timestamp: '2026-03-19T10:00:00Z', tool: 'claude' });
-    await appendUsageEvent({ skill: 'code-review', timestamp: '2026-03-19T11:00:00Z', tool: 'claude' });
+    await appendUsageEvent({ skill: 'tdd', timestamp: '2026-03-19T10:00:00Z', tool: 'claude' }, userScope());
+    await appendUsageEvent({ skill: 'code-review', timestamp: '2026-03-19T11:00:00Z', tool: 'claude' }, userScope());
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(2);
     expect(events[0].skill).toBe('tdd');
     expect(events[1].skill).toBe('code-review');
@@ -146,55 +214,77 @@ describe('appendUsageEvent', () => {
 
 describe('readUsageEvents', () => {
   it('returns empty array for missing file', async () => {
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
   it('skips corrupted JSONL lines', async () => {
-    const usagePath = path.join(tmpDir, '.teamai', 'usage.jsonl');
+    const usagePath = path.join(tmpDir, '.teamai', 'user-usage.jsonl');
     await fse.ensureDir(path.dirname(usagePath));
     await fs.promises.writeFile(
       usagePath,
       '{"skill":"good","timestamp":"2026-01-01T00:00:00Z","tool":"claude"}\nNOT_JSON\n{"skill":"also-good","timestamp":"2026-01-02T00:00:00Z","tool":"claude"}\n',
     );
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(2);
     expect(events[0].skill).toBe('good');
     expect(events[1].skill).toBe('also-good');
   });
 
   it('handles empty file', async () => {
-    const usagePath = path.join(tmpDir, '.teamai', 'usage.jsonl');
+    const usagePath = path.join(tmpDir, '.teamai', 'user-usage.jsonl');
     await fse.ensureDir(path.dirname(usagePath));
     await fs.promises.writeFile(usagePath, '');
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 });
 
 describe('truncateUsageAfterReport', () => {
   it('clears file when all events reported', async () => {
-    await appendUsageEvent({ skill: 'a', timestamp: '2026-01-01T00:00:00Z', tool: 'claude' });
-    await appendUsageEvent({ skill: 'b', timestamp: '2026-01-02T00:00:00Z', tool: 'claude' });
+    await appendUsageEvent({ skill: 'a', timestamp: '2026-01-01T00:00:00Z', tool: 'claude' }, userScope());
+    await appendUsageEvent({ skill: 'b', timestamp: '2026-01-02T00:00:00Z', tool: 'claude' }, userScope());
 
-    await truncateUsageAfterReport(2);
+    await truncateUsageAfterReport(2, userScope());
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
   it('keeps unreported events', async () => {
-    await appendUsageEvent({ skill: 'a', timestamp: '2026-01-01T00:00:00Z', tool: 'claude' });
-    await appendUsageEvent({ skill: 'b', timestamp: '2026-01-02T00:00:00Z', tool: 'claude' });
-    await appendUsageEvent({ skill: 'c', timestamp: '2026-01-03T00:00:00Z', tool: 'claude' });
+    await appendUsageEvent({ skill: 'a', timestamp: '2026-01-01T00:00:00Z', tool: 'claude' }, userScope());
+    await appendUsageEvent({ skill: 'b', timestamp: '2026-01-02T00:00:00Z', tool: 'claude' }, userScope());
+    await appendUsageEvent({ skill: 'c', timestamp: '2026-01-03T00:00:00Z', tool: 'claude' }, userScope());
 
-    await truncateUsageAfterReport(2);
+    await truncateUsageAfterReport(2, userScope());
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('c');
+  });
+});
+
+describe('usage recorded while every scope shared ~/.teamai/usage.jsonl (#748)', () => {
+  const sharedPath = () => path.join(tmpDir, '.teamai', 'usage.jsonl');
+  const legacy = '{"skill":"from-another-project","timestamp":"2026-01-01T00:00:00Z","tool":"claude"}\n';
+
+  it('is not read back as the user scope\'s own usage after an upgrade', async () => {
+    // Written by an earlier release on a machine that already had a user scope.
+    await fs.promises.writeFile(sharedPath(), legacy);
+
+    expect(await readUsageEvents(userScope())).toEqual([]);
+    // Reading usage (as `teamai stats` does) leaves the file alone.
+    expect(fs.readFileSync(sharedPath(), 'utf-8')).toBe(legacy);
+  });
+
+  it('is not read back when an earlier release writes it again after a rollback', async () => {
+    await appendUsageEvent({ skill: 'after-upgrade', timestamp: '2026-02-01T00:00:00Z', tool: 'claude' }, userScope());
+    // Rolled back: the earlier release records every project's usage here again.
+    await fs.promises.appendFile(sharedPath(), legacy);
+
+    expect((await readUsageEvents(userScope())).map((e) => e.skill)).toEqual(['after-upgrade']);
   });
 });
 
@@ -202,7 +292,7 @@ describe('track', () => {
   it('tracks Skill tool calls', async () => {
     await track('Skill', JSON.stringify({ skill: 'code-review' }));
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('code-review');
   });
@@ -211,21 +301,21 @@ describe('track', () => {
     await track('Bash', JSON.stringify({ command: 'ls' }));
     await track('Read', JSON.stringify({ path: '/tmp' }));
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
   it('ignores invalid skill names', async () => {
     await track('Skill', JSON.stringify({ skill: '../../etc/passwd' }));
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
   it('handles malformed JSON input', async () => {
     await track('Skill', 'not-json');
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -234,6 +324,43 @@ describe('track', () => {
 
     const known = await readKnownSkills();
     expect(known.has('code-review')).toBe(true);
+  });
+});
+
+describe('skill tracking where teamai is not set up (#748)', () => {
+  beforeEach(async () => {
+    await fse.remove(path.join(tmpDir, '.teamai', 'config.yaml'));
+  });
+
+  async function expectNothingRecorded(): Promise<void> {
+    expect(fs.existsSync(path.join(tmpDir, '.teamai', 'user-usage.jsonl'))).toBe(false);
+    expect((await readKnownSkills()).size).toBe(0);
+  }
+
+  it('track records nothing', async () => {
+    await track('Skill', JSON.stringify({ skill: 'code-review' }));
+    await expectNothingRecorded();
+  });
+
+  it('trackFromStdin records nothing', async () => {
+    const restore = mockStdin(JSON.stringify({ tool_name: 'Skill', tool_input: { skill: 'code-review' } }));
+    try {
+      await trackFromStdin();
+    } finally {
+      restore();
+    }
+    await expectNothingRecorded();
+  });
+
+  it('trackSlashCommand records nothing', async () => {
+    await createFakeSkill('code-review');
+    const restore = mockStdin(JSON.stringify({ prompt: '/code-review' }));
+    try {
+      await trackSlashCommand();
+    } finally {
+      restore();
+    }
+    await expectNothingRecorded();
   });
 });
 
@@ -254,7 +381,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('plan-eng-review');
   });
@@ -271,7 +398,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -283,7 +410,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -295,7 +422,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -311,7 +438,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('tdd');
   });
@@ -345,7 +472,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('tdd');
     expect(events[0].tool).toBe('cursor');
@@ -364,7 +491,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('code-review-expert');
     expect(events[0].tool).toBe('cursor');
@@ -383,7 +510,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -399,7 +526,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('plan-eng-review');
     expect(events[0].tool).toBe('cursor');
@@ -417,7 +544,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude');
   });
@@ -434,7 +561,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude-internal');
   });
@@ -451,7 +578,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('codebuddy');
   });
@@ -468,7 +595,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('codex-internal');
   });
@@ -485,7 +612,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude');
   });
@@ -502,7 +629,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('cursor');
   });
@@ -519,7 +646,7 @@ describe('trackFromStdin', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 });
@@ -552,7 +679,7 @@ describe('readKnownSkills', () => {
     await updateKnownSkills('old-skill');
 
     // Add a new event to usage.jsonl
-    await appendUsageEvent({ skill: 'new-skill', timestamp: '2026-03-20T10:00:00Z', tool: 'claude' });
+    await appendUsageEvent({ skill: 'new-skill', timestamp: '2026-03-20T10:00:00Z', tool: 'claude' }, userScope());
 
     const skills = await readKnownSkills();
     expect(skills.has('old-skill')).toBe(true);
@@ -570,7 +697,7 @@ describe('readKnownSkills', () => {
     await fs.promises.writeFile(knownPath, 'NOT_JSON!!!');
 
     // Should still work with just usage.jsonl data
-    await appendUsageEvent({ skill: 'tdd', timestamp: '2026-03-20T10:00:00Z', tool: 'claude' });
+    await appendUsageEvent({ skill: 'tdd', timestamp: '2026-03-20T10:00:00Z', tool: 'claude' }, userScope());
 
     const skills = await readKnownSkills();
     expect(skills.has('tdd')).toBe(true);
@@ -705,7 +832,7 @@ describe('getRecommendations', () => {
   it('excludes skills after truncation when known-skills.json exists', async () => {
     // Simulate: track a skill, then report+truncate
     await track('Skill', JSON.stringify({ skill: 'tdd' }));
-    await truncateUsageAfterReport(1); // usage.jsonl is now empty
+    await truncateUsageAfterReport(1, userScope()); // usage.jsonl is now empty
 
     // But known-skills.json should still have 'tdd'
     const teamStats: UserStats[] = [
@@ -886,10 +1013,78 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('plan-eng-review');
     expect(events[0].tool).toBe('claude');
+  });
+
+  it('tracks a skill installed only under the root recorded by the hook directory\'s config', async () => {
+    // The hook reports its cwd; the project config there records a relocated
+    // Claude root, and the skill lives only under that root.
+    const YAML = (await import('yaml')).default;
+    const workspace = path.join(tmpDir, 'workspace');
+    const relocated = path.join(tmpDir, '.claude-work');
+    await fse.outputFile(path.join(workspace, '.teamai', 'config.yaml'), YAML.stringify({
+      repo: { localPath: path.join(workspace, '.teamai', 'team-repo'), remote: 'https://example.test/acme/team.git' },
+      username: 'tester',
+      scope: 'project',
+      projectRoot: workspace,
+      toolRoots: { claude: relocated },
+    }));
+    await fse.outputFile(path.join(relocated, 'skills', 'relocated-only', 'SKILL.md'), '# s');
+    const hookData = JSON.stringify({
+      prompt: '/relocated-only go',
+      cwd: workspace,
+      session_id: 'sess-reloc',
+      hook_event_name: 'UserPromptSubmit',
+    });
+    const restore = mockStdin(hookData);
+    try {
+      await trackSlashCommand();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents({ ...userScope(), scope: 'project', projectRoot: workspace, dataHome: path.join(workspace, '.teamai') } as LocalConfig);
+    expect(events.map((e) => e.skill)).toEqual(['relocated-only']);
+  });
+
+  it('follows the user-scope record when the hook directory\'s project config has none', async () => {
+    const YAML = (await import('yaml')).default;
+    const workspace = path.join(tmpDir, 'workspace');
+    const relocated = path.join(tmpDir, '.claude-work');
+    await fse.outputFile(path.join(tmpDir, '.teamai', 'config.yaml'), YAML.stringify({
+      ...userScope(),
+      toolRoots: { claude: relocated },
+    }));
+    await fse.outputFile(path.join(workspace, '.teamai', 'config.yaml'), YAML.stringify({
+      repo: { localPath: path.join(workspace, '.teamai', 'team-repo'), remote: 'https://example.test/acme/team.git' },
+      username: 'tester',
+      scope: 'project',
+      projectRoot: workspace,
+    }));
+    await fse.outputFile(path.join(relocated, 'skills', 'user-rooted', 'SKILL.md'), '# s');
+    const restore = mockStdin(JSON.stringify({ prompt: '/user-rooted', cwd: workspace, session_id: 's', hook_event_name: 'UserPromptSubmit' }));
+    try {
+      await trackSlashCommand();
+    } finally {
+      restore();
+    }
+
+    const events = await readUsageEvents({ ...userScope(), scope: 'project', projectRoot: workspace, dataHome: path.join(workspace, '.teamai') } as LocalConfig);
+    expect(events.map((e) => e.skill)).toEqual(['user-rooted']);
+  });
+
+  it('still records when the hook reports a directory that no longer exists', async () => {
+    await createFakeSkill('gone-worktree');
+    const restore = mockStdin(JSON.stringify({ prompt: '/gone-worktree', cwd: path.join(tmpDir, 'deleted-worktree'), session_id: 's', hook_event_name: 'UserPromptSubmit' }));
+    try {
+      await trackSlashCommand();
+    } finally {
+      restore();
+    }
+    expect((await readUsageEvents(userScope())).map((e) => e.skill)).toEqual(['gone-worktree']);
   });
 
   it('tracks slash command with colon-namespaced skill', async () => {
@@ -905,7 +1100,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].skill).toBe('gstack:tdd');
   });
@@ -922,7 +1117,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -938,7 +1133,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -950,7 +1145,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -962,7 +1157,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -979,7 +1174,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toEqual([]);
   });
 
@@ -1011,7 +1206,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude-internal');
   });
@@ -1028,7 +1223,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('codex-internal');
   });
@@ -1045,7 +1240,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude');
   });
@@ -1066,7 +1261,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(3);
     expect(events.map((e: UsageEvent) => e.skill).sort()).toEqual(
       ['code-review', 'plan-eng-review', 'tdd'],
@@ -1087,7 +1282,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(2);
     expect(events.map((e: UsageEvent) => e.skill).sort()).toEqual(
       ['code-review', 'tdd'],
@@ -1108,7 +1303,7 @@ describe('trackSlashCommand', () => {
       restore();
     }
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     // Only 'tdd' should be tracked (twice — it appears twice in prompt)
     expect(events).toHaveLength(2);
     expect(events.every((e: UsageEvent) => e.skill === 'tdd')).toBe(true);
@@ -1121,7 +1316,7 @@ describe('track with tool parameter', () => {
   it('uses provided tool parameter', async () => {
     await track('Skill', JSON.stringify({ skill: 'code-review' }), 'claude-internal');
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude-internal');
   });
@@ -1129,7 +1324,7 @@ describe('track with tool parameter', () => {
   it('defaults to claude when tool not provided', async () => {
     await track('Skill', JSON.stringify({ skill: 'tdd' }));
 
-    const events = await readUsageEvents();
+    const events = await readUsageEvents(userScope());
     expect(events).toHaveLength(1);
     expect(events[0].tool).toBe('claude');
   });

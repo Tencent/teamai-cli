@@ -86,4 +86,41 @@ describe('filterAgentsByNamespaces', () => {
 
     expect(() => filterAgentsByNamespaces(agents, null)).toThrow(/Duplicate agent "reviewer"/);
   });
+
+  /**
+   * An agent published with --role/--project lives in a namespace this
+   * directory need not activate, and push lets the author keep editing it
+   * through the placement record. Pull has to deliver it for the same reason:
+   * otherwise the local copy never tracks the team file and the next push
+   * writes a stale rendering over whoever changed it (#649 review).
+   */
+  it('delivers an agent this machine published into an inactive namespace', () => {
+    const agents = [makeAgent('vr', 'fe-agents'), makeAgent('other', 'devops')];
+
+    const result = filterAgentsByNamespaces(agents, ['common'], {
+      vr: 'agents/fe-agents/vr.yaml',
+    });
+
+    expect(result.map((a) => a.name)).toEqual(['vr']);
+  });
+
+  it('leaves the record alone when an active namespace claims that stem', () => {
+    // Agents deploy flattened, so two of one stem would collide on the same
+    // filename — and the active one is the agent deployed here.
+    const agents = [makeAgent('vr', 'common'), makeAgent('vr', 'fe-agents')];
+
+    const result = filterAgentsByNamespaces(agents, ['common'], {
+      vr: 'agents/fe-agents/vr.yaml',
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.namespace).toBe('common');
+  });
+
+  it('ignores a record that does not match the agent it names', () => {
+    const agents = [makeAgent('vr', 'fe-agents')];
+
+    expect(filterAgentsByNamespaces(agents, ['common'], { vr: 'agents/other/vr.yaml' }))
+      .toEqual([]);
+  });
 });

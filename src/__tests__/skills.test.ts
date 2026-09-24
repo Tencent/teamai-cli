@@ -217,6 +217,25 @@ scope: 'user',
     expect(names).not.toContain('ignored-skill');
   });
 
+  it('never offers the directories earlier releases deployed as new skills to push', async () => {
+    // A member who runs `teamai push --all` after upgrading but before their
+    // next pull still has the legacy trees on disk; they are the CLI's, not theirs.
+    for (const legacy of ['team-wiki-codebase', 'teamai-share-learnings', 'teamai']) {
+      const dir = path.join(homeDir, '.claude/skills', legacy);
+      await fse.ensureDir(dir);
+      await fse.writeFile(path.join(dir, 'SKILL.md'), '# packaged by an earlier release');
+    }
+    const mine = path.join(homeDir, '.claude/skills', 'teamai-workflow');
+    await fse.ensureDir(mine);
+    await fse.writeFile(path.join(mine, 'SKILL.md'), '# mine');
+
+    const names = (await handler.scanLocalForPush(teamConfig, localConfig)).map((i) => i.name);
+    expect(names).not.toContain('team-wiki-codebase');
+    expect(names).not.toContain('teamai-share-learnings');
+    expect(names).not.toContain('teamai');
+    expect(names).toContain('teamai-workflow');
+  });
+
   it('should detect both new and modified skills together', async () => {
     // Modified
     const teamSkillDir = path.join(localConfig.repo.localPath, 'skills', 'existing');
@@ -332,6 +351,37 @@ scope: 'user',
 
     const items = await handler.scanLocalForPush(teamConfig, localConfig);
     expect(items.find((item) => item.name === 'role-skill')?.status).toBe('modified');
+  });
+
+  it('keeps the role-id fallback when a valid roles.yaml no longer lists the role', async () => {
+    localConfig.primaryRole = 'hai';
+    localConfig.additionalRoles = [];
+    await fse.outputFile(
+      path.join(localConfig.repo.localPath, 'manifest', 'roles.yaml'),
+      'version: 1\nroles:\n  - id: pm\n    resources:\n      knowledge: []\n      skills: [pm]\n',
+    );
+    await fse.outputFile(path.join(localConfig.repo.localPath, 'skills', 'hai', 'role-skill', 'SKILL.md'), '# v1');
+    await fse.outputFile(path.join(homeDir, '.claude/skills', 'role-skill', 'SKILL.md'), '# v2');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    expect(items.find((item) => item.name === 'role-skill')?.status).toBe('modified');
+  });
+
+  it('stops the scan when roles.yaml exists but does not parse, instead of guessing', async () => {
+    localConfig.primaryRole = 'hai';
+    localConfig.additionalRoles = [];
+    await fse.outputFile(path.join(localConfig.repo.localPath, 'manifest', 'roles.yaml'), 'version: 1\nroles: [\n');
+
+    await expect(handler.scanLocalForPush(teamConfig, localConfig)).rejects.toThrow(/Invalid roles manifest YAML/);
+  });
+
+  it('refuses a role id that cannot be a namespace when roles.yaml is absent, instead of joining it onto the repo', async () => {
+    localConfig.primaryRole = '../../outside';
+    localConfig.additionalRoles = [];
+
+    await expect(handler.scanLocalForPush(teamConfig, localConfig)).rejects.toThrow(
+      /Invalid role id used as a skills namespace "\.\.\/\.\.\/outside"/,
+    );
   });
 
   it('blocks skills that exist in non-allowed namespaces', async () => {

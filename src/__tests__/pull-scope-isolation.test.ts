@@ -6,7 +6,8 @@ import fse from 'fs-extra';
 // Issue #73 keeps project scope isolated by default. These tests also cover the
 // explicit safe-resource inheritance path without composing control-plane data.
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   requireInit: vi.fn(),
   loadState: vi.fn().mockResolvedValue({ lastPull: null, lastPullRev: null }),
   saveState: vi.fn(),
@@ -202,7 +203,7 @@ describe('pull scope isolation (issue #73)', () => {
     await pull({ silent: true });
     if (success) {
       expect(truncateUsageAfterReport).toHaveBeenCalledTimes(1);
-      expect(truncateUsageAfterReport).toHaveBeenCalledWith(1);
+      expect(truncateUsageAfterReport).toHaveBeenCalledWith(1, projectConfig);
     }
     else expect(truncateUsageAfterReport).not.toHaveBeenCalled();
   });
@@ -236,7 +237,7 @@ describe('pull scope isolation (issue #73)', () => {
     await vi.advanceTimersByTimeAsync(0);
     if (success) {
       expect(truncateUsageAfterReport).toHaveBeenCalledTimes(1);
-      expect(truncateUsageAfterReport).toHaveBeenCalledWith(1);
+      expect(truncateUsageAfterReport).toHaveBeenCalledWith(1, projectConfig);
     }
     else expect(truncateUsageAfterReport).not.toHaveBeenCalled();
     await pull({ silent: true });
@@ -335,6 +336,19 @@ describe('pull scope isolation (issue #73)', () => {
           repo: expect.objectContaining({ localPath: userRepoPath }),
         }),
       }),
+    );
+  });
+
+  it('user mode: forwards force option to MCP reconcile', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(null);
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(userConfig);
+
+    await pull({ silent: true, force: true });
+
+    expect(reconcileMcpForConfig).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ force: true }),
     );
   });
 

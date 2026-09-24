@@ -132,10 +132,10 @@ describe('enabledAgents whitelist on real CLI pull (#510)', () => {
     expect(first.output).not.toContain('Already synced');
 
     expect(fs.existsSync(path.join(homeDir, '.workbuddy', 'skills', 'team-skill', 'SKILL.md'))).toBe(true);
-    expect(fs.existsSync(path.join(homeDir, '.workbuddy', 'skills', 'team-wiki-codebase', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(homeDir, '.workbuddy', 'skills', 'teamai', 'SKILL.md'))).toBe(true);
 
     expect(fs.existsSync(path.join(homeDir, '.hermes', 'skills', 'team-skill'))).toBe(false);
-    expect(fs.existsSync(path.join(homeDir, '.hermes', 'skills', 'team-wiki-codebase'))).toBe(false);
+    expect(fs.existsSync(path.join(homeDir, '.hermes', 'skills', 'teamai'))).toBe(false);
     expect(fs.existsSync(path.join(homeDir, '.claude', 'skills', 'team-skill'))).toBe(false);
     expect(fs.existsSync(path.join(homeDir, '.codebuddy', 'skills', 'team-skill'))).toBe(false);
 

@@ -26,6 +26,7 @@ const TeamMcpServerSchema = z
     requires: z.array(z.string()).optional(),
     tools: z.array(z.string()).optional(),
     roles: z.array(z.string()).optional(),
+    projects: z.array(z.string()).optional(),
   })
   .refine((s) => (s.transport === 'stdio' ? !!s.command : true), {
     message: 'stdio transport requires `command`',
@@ -94,6 +95,7 @@ export function teamMcpToDef(s: TeamMcpServer): McpServerDef {
     requires: s.requires,
     tools: s.tools,
     roles: s.roles,
+    projects: s.projects,
   };
 }
 

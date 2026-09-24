@@ -37,7 +37,7 @@ function fixture(agent: keyof typeof agents, provider: string) {
     repo: { localPath: clone, remote, kind: 'git' }, username: 'alice', scope: 'user',
     updatePolicy: 'skip', enabledAgents: [agent], additionalRoles: [],
   }));
-  const usage = path.join(home, '.teamai/usage.jsonl');
+  const usage = path.join(home, '.teamai/user-usage.jsonl');
   const dashboard = path.join(home, '.teamai/dashboard');
   const timestamp = new Date().toISOString();
   const usageLine = JSON.stringify({ skill: 'review', tool: agent, timestamp }) + '\n';

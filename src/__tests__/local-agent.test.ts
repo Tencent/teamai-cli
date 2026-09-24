@@ -105,6 +105,40 @@ describe('local-agent: buildReportPayload disk scan', () => {
     expect(userSkills.find((s) => s.slug === 'known-skill')?.version).toBe('1.0.0');
     expect(payload.user_level.rules.map((r) => r.slug)).toEqual(['my-rule']);
   });
+
+  it('scans user-level resources from COPILOT_HOME for copilot, not from HOME/.github', async () => {
+    await setupConfig();
+    const manifestDir = path.join(tmpDir, '.teamai', 'local-agent');
+    await fse.writeJson(path.join(manifestDir, 'manifest.json'), {
+      scopes: { instance: { skills: { 'known-skill': { slug: 'known-skill', installed_at: 'x' } }, rules: {}, claudemd: {} } },
+    });
+
+    // Copilot relocates its whole user customization root when COPILOT_HOME is
+    // set, and its user scope is `skills`/`instructions` under that root — not
+    // the project-scope `.github/...` layout.
+    const copilotHome = path.join(tmpDir, 'copilot-home');
+    process.env.COPILOT_HOME = copilotHome;
+
+    const skillDir = path.join(copilotHome, 'skills', 'known-skill');
+    await fse.ensureDir(skillDir);
+    await fse.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      ['---', 'name: known-skill', 'version: 1.0.0', '---', '', '# skill'].join('\n'),
+    );
+    const rulesDir = path.join(copilotHome, 'instructions');
+    await fse.ensureDir(rulesDir);
+    await fse.writeFile(path.join(rulesDir, 'my-rule.instructions.md'), '# rule');
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'copilot' }) as {
+      user_level: { skills?: Array<{ slug: string; source: string }>; rules?: Array<{ slug: string }> };
+    };
+
+    expect(payload.user_level.skills?.map((s) => s.slug)).toEqual(['known-skill']);
+    expect(payload.user_level.skills?.[0]?.source).toBe('enterprise');
+    expect(payload.user_level.rules?.map((r) => r.slug)).toEqual(['my-rule']);
+  });
 });
 
 describe('local-agent: project MCP report is per-worktree (issue #374 P1-2C)', () => {
@@ -1740,6 +1774,23 @@ describe('local-agent: cmds[] migration', () => {
     expect(mine).toHaveLength(1);
     expect(mine[0].hooks[0].command).toBe('echo b');
     expect(mine[0].hooks[0].timeout).toBe(45);
+  });
+
+  it('passes the configured timeout through to a Pi agent hook extension', async () => {
+    const acks = await runResponse({
+      cmds: [{
+        id: 45, type: 'install_hook_rule', handle_type: 'hook', slug: 'pi-slow',
+        event: 'SessionStart', cmd: 'echo slow', timeout: 45, scope: 'user',
+      }],
+    }, undefined, 'pi');
+    expect(acks.find((a) => a.id === 45)?.status).toBe('success');
+    const extension = await fse.readFile(
+      path.join(tmpDir, '.pi', 'agent', 'extensions', 'teamai-agent-pi-slow.ts'),
+      'utf8',
+    );
+    expect(extension).toContain('}, 45000);');
+    const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'agent-hooks.json'));
+    expect(manifest['pi-slow']).toMatchObject({ tool: 'pi', timeout: 45 });
   });
 
   it('install_hook_rule writes a codex hook (no description, command-matched)', async () => {

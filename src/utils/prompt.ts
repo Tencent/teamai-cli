@@ -5,12 +5,34 @@
  * a new `readline.createInterface(process.stdin)`, causing the first instance
  * to consume all buffered data and leaving nothing for subsequent prompts.
  *
- * Non-TTY behaviour:
+ * Non-interactive behaviour (see `isInteractive`):
  *   - `askQuestion(prompt, defaultValue)` → returns defaultValue if provided
- *   - `askQuestion(prompt)` without default → throws (cannot prompt in non-TTY)
+ *   - `askQuestion(prompt)` without default → throws (cannot prompt without a terminal)
  *   - `askConfirmation(prompt, defaultValue)` → returns defaultValue
  */
 import readline from 'node:readline';
+
+// ─── Interactivity ───────────────────────────────────────
+
+/**
+ * True when a person can answer a prompt in this run.
+ *
+ * `process.stdin.isTTY` alone is not enough: CI runners and cloud agent
+ * sandboxes often allocate a pseudo-terminal with nobody behind it, so a prompt
+ * (or a provider's browser login spawned with inherited stdio) would wait until
+ * its deadline. `CI` is the variable every major CI service exports;
+ * `TEAMAI_NONINTERACTIVE` is the explicit opt-out for everything else.
+ * Any non-empty value other than `0` / `false` counts as set.
+ */
+export function isInteractive(): boolean {
+  if (!process.stdin.isTTY) return false;
+  return !envFlag('CI') && !envFlag('TEAMAI_NONINTERACTIVE');
+}
+
+function envFlag(name: string): boolean {
+  const v = process.env[name]?.trim().toLowerCase();
+  return v !== undefined && v !== '' && v !== '0' && v !== 'false';
+}
 
 // ─── Singleton readline ──────────────────────────────────
 
@@ -60,12 +82,12 @@ function question(rl: readline.Interface, prompt: string): Promise<string> {
 /**
  * Ask a question and return the trimmed answer.
  *
- * In non-TTY mode:
+ * In non-interactive mode:
  *   - If `defaultValue` is provided, return it immediately.
  *   - Otherwise throw an error (cannot prompt without a terminal).
  */
 export function askQuestion(prompt: string, defaultValue?: string): Promise<string> {
-  if (!process.stdin.isTTY) {
+  if (!isInteractive()) {
     if (defaultValue !== undefined) {
       return Promise.resolve(defaultValue);
     }
@@ -77,16 +99,61 @@ export function askQuestion(prompt: string, defaultValue?: string): Promise<stri
   return question(getReadline(), prompt);
 }
 
+/** Ask for a secret without echoing it to the terminal. */
+export function askSecret(prompt: string): Promise<string> {
+  if (!isInteractive() || !process.stdout.isTTY || typeof process.stdin.setRawMode !== 'function') {
+    return Promise.reject(new Error(`Cannot prompt for a secret in non-interactive mode: "${prompt.trim()}"`));
+  }
+
+  // readline also listens to stdin. Close the shared instance before taking
+  // raw-mode ownership so the secret cannot be echoed or consumed twice.
+  closePrompt();
+  process.stdout.write(prompt);
+  process.stdin.setEncoding('utf8');
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.ref();
+
+  return new Promise((resolve, reject) => {
+    let value = '';
+    const finish = (error?: Error) => {
+      process.stdin.off('data', onData);
+      process.stdin.off('end', onEnd);
+      process.stdin.off('error', finish);
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+      process.stdin.unref();
+      process.stdout.write('\n');
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const onData = (chunk: string | Buffer) => {
+      const text = String(chunk);
+      for (const char of text) {
+        if (char === '\r' || char === '\n') return finish();
+        if (char === '\u0003') return finish(new Error('Prompt cancelled'));
+        if (char === '\u0004') return finish(value ? undefined : new Error('Prompt cancelled'));
+        if (char === '\u007f' || char === '\b') value = value.slice(0, -1);
+        else if (char >= ' ') value += char;
+      }
+    };
+    const onEnd = () => finish(new Error('Prompt cancelled'));
+    process.stdin.on('data', onData);
+    process.stdin.once('end', onEnd);
+    process.stdin.once('error', finish);
+  });
+}
+
 /**
  * Ask a yes/no confirmation question.
  *
- * In non-TTY mode, returns `defaultValue` (defaults to `false`).
+ * In non-interactive mode, returns `defaultValue` (defaults to `false`).
  */
 export function askConfirmation(
   prompt: string,
   defaultValue = false,
 ): Promise<boolean> {
-  if (!process.stdin.isTTY) {
+  if (!isInteractive()) {
     return Promise.resolve(defaultValue);
   }
 
@@ -155,7 +222,7 @@ export async function askSelection(
 ): Promise<number[] | null> {
   const allIndices = Array.from({ length: itemCount }, (__, i) => i);
 
-  if (!process.stdin.isTTY) {
+  if (!isInteractive()) {
     return defaultAll ? allIndices : null;
   }
 

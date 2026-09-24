@@ -2,6 +2,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import crossSpawn from 'cross-spawn';
 import { log, spinner } from '../../utils/logger.js';
 import { resolveCliPath } from '../../utils/cli-path.js';
+import { isInteractive } from '../../utils/prompt.js';
 import type { RepoInfo } from '../types.js';
 import { OrganizationNotFoundError, RepoCreatePermissionError } from '../types.js';
 
@@ -175,6 +176,15 @@ export function ensureCnbAuthenticated(): string {
     const u = cnbWhoami();
     if (u) return u;
   }
+  // `cnb login` inherits stdio and waits for an OAuth2 device flow. Without a
+  // person at a terminal that never completes (issue #711).
+  if (!isInteractive()) {
+    throw new Error(
+      'CNB authentication unavailable without a terminal. ' +
+        'Export CNB_TOKEN (or CNB_ACCESS_TOKEN), ' +
+        'or run `cnb login` in an interactive shell first.',
+    );
+  }
   cnbLogin();
   const u = cnbWhoami();
   if (!u) throw new Error('CNB authentication failed. Please run `teamai init` again.');
@@ -235,7 +245,7 @@ export function cnbRepoClone(repo: string, localPath: string): void {
   } else {
     args = ['-c', 'credential.helper=!cnb git-credential', 'clone', `https://${CNB_HOST}/${repo}.git`, localPath];
   }
-  const r = spawnSync('git', args, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000 });
+  const r = spawnSync('git', args, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000, windowsHide: true });
   const out = `${r.stderr ?? ''} ${r.stdout ?? ''}`;
   if (/not found|does not exist|Repository not found|404/i.test(out)) {
     throw new CnbRepoNotFoundError(repo);
@@ -253,6 +263,7 @@ export function cnbRepoClone(repo: string, localPath: string): void {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: localPath,
+      windowsHide: true,
     });
     if (cfg.status !== 0) {
       log.warn(`Could not persist CNB credential helper: ${(cfg.stderr ?? '').trim()}. Push/pull may prompt for credentials.`);

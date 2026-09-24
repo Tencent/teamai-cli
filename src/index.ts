@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { Command, Option } from 'commander';
 import { setVerbose, setSilent, log } from './utils/logger.js';
+import { applyNonInteractiveGitEnv } from './utils/git-env.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
 import { registerPackagesCommand } from './pkg/register-command.js';
@@ -12,6 +13,27 @@ const MIGRATION_TRIGGER_COMMANDS = new Set(['init', 'pull', 'push']);
 
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
+
+/**
+ * Fire a command-lifecycle webhook (`push` / `pull`) best-effort. These are
+ * default subscription events with no other production call site into
+ * sendWebhook (#702). Never let a webhook failure affect the command's result.
+ */
+async function notifyWebhook(event: 'push' | 'pull'): Promise<void> {
+  try {
+    const { sendWebhook } = await import('./webhook.js');
+    await sendWebhook(event, { tool: 'teamai-cli', data: {} });
+  } catch {
+    // Best-effort notification; never surface to the user.
+  }
+}
+
+// Without a person at a terminal, no git child may stop to ask for a
+// credential: a terminal prompt, an askpass dialog or a credential manager
+// window all park the run with no output. A missing credential should fail the
+// clone at once instead (issue #711). See utils/git-env.ts for each door, and
+// for why ssh's own questions are left to the repository's configuration.
+applyNonInteractiveGitEnv();
 
 const program = new Command();
 
@@ -77,13 +99,18 @@ program
   .description('Push local resources to team repo')
   .option('--all', 'Push all without confirmation')
   .option('--skill <path>', 'Push a specific skill by path (e.g., ~/.claude/skills/hai/my-skill or skills/hai_dev/my-skill)')
-  .option('--role <id>', 'Target role namespace for pushed project skills')
-  .option('--project <id>', 'Target a project: push skills into the project\'s skills namespace (from manifest/projects.yaml)')
+  .option('--role <id>', 'Namespace for new skills, rules and agents (skills/<id>/, rules/<id>/, agents/<id>/)')
+  .option('--project <id>', "Target a project: each new resource goes to that project's namespace for its own type "
+    + '— skills, knowledge for rules, agents (from manifest/projects.yaml)')
   .option('--branch <name>', 'Push to this destination branch instead of a generated teamai/push branch')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { push } = await import('./push.js');
-    await push({ ...globalOpts, ...cmdOpts });
+    // Only notify when a real push actually happened — not on dry-run, cancel,
+    // no-change, or a handled failure (#702 follow-up).
+    const outcome = { completed: false };
+    await push({ ...globalOpts, ...cmdOpts }, outcome);
+    if (outcome.completed) await notifyWebhook('push');
   });
 
 program
@@ -95,7 +122,12 @@ program
     const globalOpts = program.opts() as GlobalOptions;
     if (cmdOpts.silent) setSilent(true);
     const { pull } = await import('./pull.js');
-    await pull({ ...globalOpts, ...cmdOpts, interactive: !cmdOpts.silent });
+    // Only notify when a real (non-dry-run) sync completed. The SessionStart hook
+    // drives its own `session-start` webhook, so the silent hook pull never fires
+    // the `pull` command event (#702 follow-up).
+    const outcome = { completed: false };
+    await pull({ ...globalOpts, ...cmdOpts, interactive: !cmdOpts.silent }, outcome);
+    if (!cmdOpts.silent && outcome.completed) await notifyWebhook('pull');
   });
 
 program
@@ -122,20 +154,43 @@ program
 
 const skillCmd = program
   .command('skill')
-  .description('List and inspect skills (default: list all skills across repo + installed agents)')
+  .description('List and inspect skills (default: repo + installed agents, then the CLI-served catalog)')
   .action(async () => {
     const globalOpts = program.opts() as GlobalOptions;
-    const { list } = await import('./status.js');
-    await list('skills', { ...globalOpts, source: 'all' });
+    const { skillList } = await import('./skill-cmd.js');
+    await skillList(globalOpts);
   });
 
 skillCmd
   .command('list')
-  .description('List all skills (alias for: teamai list skills --source all)')
-  .action(async () => {
+  .description('List team and installed skills, then the built-in catalog the CLI serves')
+  .option('--json', 'Output the CLI-served built-in skill catalog as JSON')
+  .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
-    const { list } = await import('./status.js');
-    await list('skills', { ...globalOpts, source: 'all' });
+    const { skillList } = await import('./skill-cmd.js');
+    await skillList({ ...globalOpts, ...cmdOpts });
+  });
+
+skillCmd
+  // Optional so that `--all` needs no name; the action fails when both are missing.
+  .command('get [names...]')
+  .description('Print built-in skill content served by the installed CLI')
+  .option('--full', 'Append the skill\'s references/ and templates/ files')
+  .option('--all', 'Print every skill the CLI serves')
+  // A hallucinated flag should cost a warning, not a failed command: unknown
+  // options fall through to the action, which reports and ignores them.
+  .allowUnknownOption()
+  .action(async (names: string[] | undefined, cmdOpts) => {
+    const { skillGet } = await import('./skill-content.js');
+    await skillGet(names ?? [], { full: cmdOpts.full, all: cmdOpts.all });
+  });
+
+skillCmd
+  .command('path <name>')
+  .description('Print the packaged directory of a built-in skill (for scripts and templates)')
+  .action(async (name: string) => {
+    const { skillPath } = await import('./skill-content.js');
+    await skillPath(name);
   });
 
 skillCmd
@@ -659,6 +714,77 @@ webhookCmd
     await testWebhook(cmdOpts.url);
   });
 
+// ─── Model profile commands ─────────────────────────────
+
+/** Model commands fail with one readable line instead of a stack trace. */
+async function runModelsCommand(run: (commands: typeof import('./models-cmd.js')) => Promise<void>): Promise<void> {
+  try {
+    await run(await import('./models-cmd.js'));
+  } catch (error) {
+    log.error((error as Error).message);
+    process.exitCode = 1;
+  }
+}
+
+const collectRepeatable = (val: string, acc: string[]) => acc.concat(val);
+
+const modelsCmd = program
+  .command('models')
+  .description('Share gateway model profiles and switch agents to them');
+
+modelsCmd
+  .command('list [profile]')
+  .description('Show team and personal model profiles, or one profile, and the agents using them')
+  .action((profile: string | undefined) => runModelsCommand((m) => m.modelsList(profile)));
+
+modelsCmd
+  .command('add <id>')
+  .description('Add a personal model profile stored only on this machine')
+  .option('--name <name>', 'Display name')
+  .option('--protocol <protocols>', 'Comma-separated: anthropic, openai-chat-completions, openai-responses')
+  .option('--base-url <url>', 'Gateway root URL (without /v1)')
+  .option('--model <ids>', 'Comma-separated model IDs; the first is the default')
+  .option('--from-env <name>', 'Read the API key from this environment variable')
+  .option('--api-key-stdin', 'Read the API key from stdin without placing it in shell history')
+  .action((id: string, cmdOpts) => runModelsCommand((m) => m.modelsAdd(id, cmdOpts)));
+
+modelsCmd
+  .command('configure <profile>')
+  .description('Set the API key of a profile, or edit a personal profile')
+  .option('--from-env <name>', 'Read the API key from this environment variable')
+  .option('--api-key-stdin', 'Read the API key from stdin without placing it in shell history')
+  .option('--name <name>', 'Personal profiles: new display name')
+  .option('--base-url <url>', 'Personal profiles: new gateway root URL')
+  .option('--protocol <protocols>', 'Personal profiles: serve models over these protocols too')
+  .option('--model <ids>', 'Personal profiles: add model IDs')
+  .action((profile: string, cmdOpts) => runModelsCommand((m) => m.modelsConfigure(profile, cmdOpts)));
+
+modelsCmd
+  .command('switch <profile>')
+  .description('Point agents at a model profile (every compatible agent by default)')
+  .option('--agent <name>', 'Only switch this agent. Repeatable or comma-separated.', collectRepeatable, [] as string[])
+  .option('--model <id>', 'Default model to select (defaults to the first in the profile)')
+  .option('--dry-run', 'Show what would change without writing')
+  .action((profile: string, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    return runModelsCommand((m) => m.modelsSwitch(profile, { ...globalOpts, ...cmdOpts }));
+  });
+
+modelsCmd
+  .command('restore')
+  .description('Restore agent model settings captured before the first TeamAI switch')
+  .option('--agent <name>', 'Only restore this agent. Repeatable or comma-separated.', collectRepeatable, [] as string[])
+  .option('--dry-run', 'Show what would change without writing')
+  .action((cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    return runModelsCommand((m) => m.modelsRestore({ ...globalOpts, ...cmdOpts }));
+  });
+
+modelsCmd
+  .command('remove <profile>')
+  .description('Remove a personal model profile without changing agent settings')
+  .action((profile: string) => runModelsCommand((m) => m.modelsRemove(profile)));
+
 // ─── Usage tracking commands ────────────────────────────
 
 program
@@ -753,7 +879,7 @@ program
   });
 
 program
-  .command('hook-dispatch <event>')
+  .command('hook-dispatch <event>', { hidden: true })
   .description('Unified hook dispatcher — handles all teamai hooks for a given event in one process')
   .option('--stdin', 'Read hook data from STDIN (accepted for forward compat, always reads STDIN)')
   .option('--tool <name>', 'Tool identifier (e.g. codebuddy, workbuddy, claude)')
@@ -894,7 +1020,7 @@ program
   .command('import')
   .description('Import knowledge from local directories, remote repos, organizations, MRs, or iWiki')
   .option('--dir <path>', 'Extract code knowledge from a local directory (same as --from-repo but no clone)')
-  .addOption(new Option('--from-claude', 'Scan Claude/Cursor rule directories (~/.claude/rules, ~/.cursor/rules)').hideHelp())
+  .addOption(new Option('--from-claude', 'Scan Claude/Cursor rule directories (the Claude root\'s rules/ — ~/.claude or the recorded toolRoots.claude — and ~/.cursor/rules)').hideHelp())
   .option('--from-mr <url>', 'Extract learning from merged MR/PR and trigger incremental teamwiki update')
   .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)')
   .addOption(new Option('--resume', 'Resume an interrupted import session').hideHelp())
@@ -1196,4 +1322,14 @@ async function publishMaintenance(localConfig: LocalConfig, message: string): Pr
   }
 }
 
-program.parse();
+/**
+ * The command table doubles as the source of truth for the generated skill
+ * command reference (skill-data/core/references/commands.md). Importing this
+ * module with TEAMAI_COMMAND_TABLE_ONLY set yields `program` without running
+ * the CLI. Test-only: the two tests that read the table set it.
+ */
+export { program };
+
+if (!process.env.TEAMAI_COMMAND_TABLE_ONLY) {
+  program.parse();
+}

@@ -606,6 +606,41 @@ describe('local-agent: apply_model_config', () => {
     expect((await fse.readJson(target))[0].id).toBe('deepseek-v3-0324');
   });
 
+  // The root is a per-machine setting recorded by `teamai init`, and a member
+  // who initialized in project scope has it in the project config — the local
+  // agent resolves it the way every other command does, project config first.
+  it('writes the Claude gateway into the root recorded by a project-scope config', async () => {
+    const workspace = path.join(home, 'workspace');
+    const relocated = path.join(home, '.claude-work');
+    await fse.ensureDir(relocated);
+    await fse.outputFile(path.join(workspace, '.teamai', 'config.yaml'), [
+      'repo:',
+      `  localPath: ${path.join(workspace, '.teamai', 'team-repo')}`,
+      '  remote: https://git.example.com/team/repo.git',
+      'username: tester',
+      'scope: project',
+      `projectRoot: ${workspace}`,
+      'toolRoots:',
+      `  claude: ${relocated}`,
+      '',
+    ].join('\n'));
+    vi.spyOn(process, 'cwd').mockReturnValue(workspace);
+    const acks = stubSync({
+      id: 33,
+      type: 'apply_model_config',
+      cmd: JSON.stringify(deliveredModel),
+    });
+
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({ tool: 'claude', status: 'running' });
+
+    expect(acks[0]?.status).toBe('success');
+    expect((await fse.readJson(path.join(relocated, 'settings.json'))).env.ANTHROPIC_CUSTOM_MODEL_OPTION)
+      .toBe('deepseek-v3-0324');
+    expect(await fse.pathExists(path.join(relocated, 'teamai-models.json'))).toBe(true);
+    expect(await fse.pathExists(path.join(home, '.claude', 'settings.json'))).toBe(false);
+  });
+
   it('preserves a symlinked Claude settings file', async () => {
     const target = path.join(home, 'dotfiles', 'claude-settings.json');
     const link = path.join(home, '.claude', 'settings.json');
@@ -624,6 +659,54 @@ describe('local-agent: apply_model_config', () => {
     expect(acks[0]?.status).toBe('success');
     expect((await fse.lstat(link)).isSymbolicLink()).toBe(true);
     expect((await fse.readJson(target)).env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBe('deepseek-v3-0324');
+  });
+
+  it('pauses server model sync during an explicit Claude profile and resumes after restore', async () => {
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    const { ModelProfileSchema, resolveProfile } = await import('../models/profile.js');
+    const { switchModelProfile, restoreModelProfiles } = await import('../models/switch.js');
+    const settingsPath = path.join(home, '.claude', 'settings.json');
+    const manifestPath = path.join(home, '.teamai/local-agent/model-manifest.json');
+    stubSync({ id: 61, type: 'apply_model_config', cmd: JSON.stringify(deliveredModel) });
+    await reportAndSyncLocalAgent({ tool: 'claude', status: 'running' });
+    const original = await fse.readJson(settingsPath);
+    const originalManifest = await fse.readJson(manifestPath);
+    const profile = resolveProfile({ source: 'local', profile: ModelProfileSchema.parse({
+      id: 'personal', name: 'Personal', base_url: 'https://personal.example.test', api_key: '${API_KEY}',
+      model_groups: [{ protocols: ['anthropic'], models: ['personal-model'] }],
+    }) }, { 'local:personal': { API_KEY: { value: 'personal-token' } } });
+    expect((await switchModelProfile(profile, ['claude']))[0].status).toBe('switched');
+    stubSync({ id: 62, type: 'apply_model_config', cmd: JSON.stringify({ ...deliveredModel, model_id: 'new-server-model' }) });
+    await reportAndSyncLocalAgent({ tool: 'claude', status: 'running' });
+    const active = await fse.readJson(settingsPath);
+    expect(active.env.ANTHROPIC_BASE_URL).toBe('https://personal.example.test');
+    expect(active.env).not.toHaveProperty('ANTHROPIC_CUSTOM_MODEL_OPTION');
+    expect(await fse.readJson(manifestPath)).toEqual(originalManifest);
+    expect((await restoreModelProfiles(['claude']))[0].status).toBe('restored');
+    expect(await fse.readJson(settingsPath)).toEqual(original);
+  });
+
+  it.each(['codebuddy', 'workbuddy'] as const)('pauses %s server model sync during an explicit profile', async (agent) => {
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    const { ModelProfileSchema, resolveProfile } = await import('../models/profile.js');
+    const { switchModelProfile, restoreModelProfiles } = await import('../models/switch.js');
+    const file = path.join(home, `.${agent}`, 'models.json');
+    const manifestPath = path.join(home, '.teamai/local-agent/model-manifest.json');
+    stubSync({ id: 71, type: 'apply_model_config', cmd: JSON.stringify(deliveredModel) });
+    await reportAndSyncLocalAgent({ tool: agent, status: 'running' });
+    const original = await fse.readJson(file);
+    const originalManifest = await fse.readJson(manifestPath);
+    const profile = resolveProfile({ source: 'local', profile: ModelProfileSchema.parse({
+      id: 'personal', name: 'Personal', base_url: 'https://personal.example.test', api_key: '${API_KEY}',
+      model_groups: [{ protocols: ['openai-chat-completions'], models: [deliveredModel.model_id] }],
+    }) }, { 'local:personal': { API_KEY: { value: 'personal-token' } } });
+    expect((await switchModelProfile(profile, [agent]))[0].status).toBe('switched');
+    stubSync({ id: 72, type: 'apply_model_config', cmd: JSON.stringify({ ...deliveredModel, base_url: 'https://new-server.example.test/v1' }) });
+    await reportAndSyncLocalAgent({ tool: agent, status: 'running' });
+    expect((await fse.readJson(file)).models[0].vendor).toBe('Personal');
+    expect(await fse.readJson(manifestPath)).toEqual(originalManifest);
+    expect((await restoreModelProfiles([agent]))[0].status).toBe('restored');
+    expect(await fse.readJson(file)).toEqual(original);
   });
 
   it('preserves the whole Claude gateway when one managed field was user-edited', async () => {
@@ -651,7 +734,7 @@ describe('local-agent: apply_model_config', () => {
   });
 
   it('does not seize the Claude gateway when the user configures it via shell env', async () => {
-    process.env.ANTHROPIC_BASE_URL = 'https://api.model.haihub.cn';
+    process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.test';
     process.env.ANTHROPIC_AUTH_TOKEN = 'sk-user-shell-token';
     const acks = stubSync({
       id: 32,
@@ -1010,5 +1093,34 @@ describe('local-agent: report local model inventory', () => {
     });
 
     expect(await reportedModels('claude')).toBeUndefined();
+  });
+});
+
+describe('releaseClaudeModelConfig', () => {
+  it('drops the delivered gateway env and profile from the given root and forgets them', async () => {
+    const { releaseClaudeModelConfig } = await import('../local-agent.js');
+    const root = path.join(home, '.claude-old');
+    const env = { ANTHROPIC_BASE_URL: 'https://gw.example.com', ANTHROPIC_AUTH_TOKEN: 'secret', KEEP: 'mine' };
+    await fse.outputJson(path.join(root, 'settings.json'), { env });
+    await fse.outputJson(path.join(root, 'teamai-models.json'), { env });
+    const { entryHash } = await import('../resources/mcp-format.js');
+    await fse.outputJson(path.join(home, '.teamai/local-agent/model-manifest.json'), {
+      claudeEnv: { ANTHROPIC_BASE_URL: entryHash(env.ANTHROPIC_BASE_URL), ANTHROPIC_AUTH_TOKEN: entryHash(env.ANTHROPIC_AUTH_TOKEN) },
+    });
+
+    await releaseClaudeModelConfig(root);
+
+    expect((await fse.readJson(path.join(root, 'settings.json'))).env).toEqual({ KEEP: 'mine' });
+    expect(await fse.pathExists(path.join(root, 'teamai-models.json'))).toBe(false);
+    expect((await fse.readJson(path.join(home, '.teamai/local-agent/model-manifest.json'))).claudeEnv).toEqual({});
+  });
+
+  it('touches nothing when no model was ever delivered', async () => {
+    const { releaseClaudeModelConfig } = await import('../local-agent.js');
+    const root = path.join(home, '.claude-old');
+    await releaseClaudeModelConfig(root);
+    expect(await fse.pathExists(root)).toBe(false);
+    // Nor is an empty manifest written just to record that nothing was there.
+    expect(await fse.pathExists(path.join(home, '.teamai/local-agent/model-manifest.json'))).toBe(false);
   });
 });

@@ -200,7 +200,7 @@ async function persistSession(session: ImportSession, sessionPath: string): Prom
  *
  * 支持两种模式：
  * - dir 模式：扫描指定目录下的 .md/.txt 文件（跳过隐藏文件和 >50KB 文件）
- * - fromClaude 模式：扫描 ~/.claude/rules/ 和 ~/.cursor/rules/ 下的 .md 文件
+ * - fromClaude mode: scans the .md files under the Claude root's rules/ (default ~/.claude, following toolRoots) and ~/.cursor/rules/
  *
  * rawContent 只取前 3000 字符（用于 AI 分类，节省 token）。
  *
@@ -244,8 +244,12 @@ export async function scanCandidates(opts: {
   }
 
   if (opts.fromClaude) {
+    // Claude's rules follow a relocated root (CLAUDE_CONFIG_DIR); Cursor's do not move.
+    const { resolveMemberToolRoots } = await import('./config.js');
+    const { resolveToolRootDir, CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT } = await import('./types.js');
+    const claudeRoot = resolveToolRootDir(CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT, await resolveMemberToolRoots());
     const rulesBaseDirs = [
-      expandHome('~/.claude/rules'),
+      path.join(claudeRoot, 'rules'),
       expandHome('~/.cursor/rules'),
     ];
     for (const baseDir of rulesBaseDirs) {

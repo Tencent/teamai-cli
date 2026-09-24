@@ -20,7 +20,8 @@ vi.mock('../utils/logger.js', () => ({
 let tmp: string;
 const realHome = process.env.HOME;
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   requireInit: vi.fn(async () => ({ localConfig: config() })),
   detectProjectConfig: vi.fn(async () => null),
   loadLocalConfigForScope: vi.fn(async (scope: string) => (scope === 'user' ? config() : null)),

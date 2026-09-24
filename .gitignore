@@ -22,6 +22,13 @@ __pycache__/
 .worktrees/
 .codebuddy/
 .teamai/
+# TeamAI-managed Copilot sync artifacts
+.github/hooks/teamai.json
+.github/skills/
+.github/instructions/*.instructions.md
+.github/agents/
+.github/copilot-instructions.md
+.github/mcp.json
 
 # Local-only drafts and scratch notes (kept out of the open-source repo)
 eval/

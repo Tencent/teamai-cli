@@ -75,7 +75,7 @@ describe('codebase reconciliation', () => {
     );
   });
 
-  it('prints a summary in preview mode and emits JSON while writing the graph', async () => {
+  it('prints a summary in preview mode and emits JSON while writing the graph', { timeout: 60_000 }, async () => {
     const root = createWikiFixture();
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
 

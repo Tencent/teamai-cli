@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { listDirs, pathExists, readFileSafe } from './utils/fs.js';
 import { detectInstalledAgents, type ResolvedAgent } from './known-agents.js';
-import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
+import { isCliOwnedSkillName } from './builtin-skills.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
@@ -107,7 +107,9 @@ async function collectTeamRepoSkills(repoPath: string): Promise<Map<string, { na
 
 /** Resolve a skill name to its source tag using the prebuilt context. */
 export function classifySkill(name: string, ctx: ClassifyContext): SkillSource {
-  if (BUILTIN_SKILL_NAMES.has(name)) return { kind: 'builtin' };
+  // Same rule as the push scan and uninstall: a name a pre-stub release deployed
+  // is ours until the next pull prunes it, not a member's local-only skill.
+  if (isCliOwnedSkillName(name)) return { kind: 'builtin' };
   if (ctx.teamSkills.has(name)) {
     return { kind: 'team', namespace: ctx.teamSkills.get(name)?.namespace };
   }

@@ -4,7 +4,7 @@ import { requireInit, detectProjectConfig } from './config.js';
 import { pullRepo } from './utils/git.js';
 import { ensureDir, readFileSafe, writeFile, pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
-import { EnvHandler, maskEnvValue } from './resources/env.js';
+import { EnvHandler, maskEnvValue, ENV_KEY_RE } from './resources/env.js';
 import type { GlobalOptions } from './types.js';
 import { isSelfMode } from './types.js';
 
@@ -40,7 +40,9 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
   console.log('');
   for (const v of envConfig.variables) {
     const displayValue = options.reveal ? v.value : maskEnvValue(v.value);
-    console.log(`  ${v.key}=${displayValue}`);
+    const roles = v.roles ? `  (roles: ${v.roles.length > 0 ? v.roles.join(', ') : 'nobody'})` : '';
+    const projects = v.projects ? `  (projects: ${v.projects.length > 0 ? v.projects.join(', ') : 'nobody'})` : '';
+    console.log(`  ${v.key}=${displayValue}${roles}${projects}`);
     if (v.description && options.verbose) {
       log.dim(`    ${v.description}`);
     }
@@ -57,6 +59,18 @@ export async function envAdd(
   value: string,
   options: GlobalOptions & { description?: string },
 ): Promise<void> {
+  // env.sh is generated as `export <key>=...` and sourced by every member, so a
+  // key that is not a shell identifier either breaks that line or runs as code.
+  // `generateEnvFile` drops such keys, which would make this command report
+  // success for a variable that never reaches anyone's shell — reject it here,
+  // where the user still sees what they typed.
+  if (!ENV_KEY_RE.test(key)) {
+    log.error(
+      `Invalid env variable name "${key}": use letters, digits and underscores, starting with a letter or underscore.`,
+    );
+    return;
+  }
+
   const projectConfig = await detectProjectConfig();
   const localConfig = projectConfig ?? (await requireInit()).localConfig;
   const repoPath = localConfig.repo.localPath;

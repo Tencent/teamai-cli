@@ -5,7 +5,8 @@ import fse from 'fs-extra';
 
 const mockAutoDetectInit = vi.fn();
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: (...args: unknown[]) => mockAutoDetectInit(...args),
   loadStateForScope: vi.fn(async () => ({})),
 }));

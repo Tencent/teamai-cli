@@ -174,6 +174,13 @@ describe('classifySkill', () => {
     expect(formatSkillSource(cls)).toBe('[source:partner]');
   });
 
+  it('returns [builtin] for the names a pre-stub release deployed, until pull prunes them', async () => {
+    const ctx = await buildClassifyContext(fx.localConfig);
+    for (const legacy of ['team-wiki-codebase', 'teamai-share-learnings']) {
+      expect(classifySkill(legacy, ctx).kind).toBe('builtin');
+    }
+  });
+
   it('returns [local-only] when skill is unknown to repo, sources and builtins', async () => {
     const ctx = await buildClassifyContext(fx.localConfig);
     const cls = classifySkill('only-local', ctx);

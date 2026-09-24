@@ -226,6 +226,42 @@ describe('local-agent: MCP install/uninstall commands', () => {
     );
   });
 
+  // A member who relocated Claude Code's root records it in the local config;
+  // the user-scope MCP file then lives inside that root (~/.claude-work/
+  // .claude.json), where a `teamai pull` would also write it.
+  it('install_mcp follows a relocated Claude Code root', async () => {
+    const relocated = path.join(tmpDir, '.claude-work');
+    await fse.ensureDir(path.join(relocated, 'skills'));
+    await fse.outputFile(path.join(tmpDir, '.teamai', 'config.yaml'), [
+      'repo:',
+      `  localPath: ${path.join(tmpDir, '.teamai', 'team-repo')}`,
+      '  remote: https://git.example.com/team/repo.git',
+      'username: tester',
+      'scope: user',
+      'toolRoots:',
+      `  claude: ${relocated}`,
+      '',
+    ].join('\n'));
+
+    const acks = await runResponse({
+      cmds: [{
+        id: 9002,
+        type: 'install_mcp',
+        scope: 'user',
+        slug: 'clawpro',
+        version: '1.0.0',
+        mcp_config: { transport: 'http', url: 'https://clawpro.example.com/mcp' },
+      }],
+    }, 'claude');
+
+    expect(acks[0].status).toBe('success');
+    const mcpConfig = await fse.readJson(path.join(relocated, '.claude.json'));
+    expect(mcpConfig.mcpServers.clawpro).toEqual(expect.objectContaining({ type: 'http' }));
+    // The default location is where a Claude Code with CLAUDE_CONFIG_DIR set
+    // never looks, so nothing may be written there.
+    expect(await fse.pathExists(path.join(tmpDir, '.claude.json'))).toBe(false);
+  });
+
   // ─── install_mcp: stdio transport ─────────────────────────────────
   it('install_mcp handles stdio transport correctly', async () => {
     const acks = await runResponse({

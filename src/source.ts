@@ -19,7 +19,7 @@ import {
 import { getHandler } from './resources/index.js';
 import { ResourceHandler } from './resources/base.js';
 import { resolveSkillDestination } from './resources/skills.js';
-import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
+import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { getUserHome } from './utils/home.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import type {
@@ -623,8 +623,9 @@ async function getLocalTeamSkillNames(teamConfig: TeamaiConfig, localConfig: Loc
   const handler = getHandler('skills');
   const items = await handler.scanTeamForPull(teamConfig, localConfig);
   const names = new Set(items.map((i) => i.name));
-  // Also include builtin skills
-  for (const name of BUILTIN_SKILL_NAMES) {
+  // Also include builtin skills, legacy ones too: a source-team removal must not
+  // delete a legacy tree wholesale, which only pull's ownership rule may prune.
+  for (const name of [...BUILTIN_SKILL_NAMES, ...LEGACY_BUILTIN_SKILL_NAMES]) {
     names.add(name);
   }
   return names;

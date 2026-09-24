@@ -81,7 +81,28 @@ projects:
       agents:    [hai-inference]   # optional; agents/<namespace>/ scoped to this project
 ```
 
-Agent push uses the same role/project namespace resolution as pull and skips ambiguous source destinations. On a role or project change, agent cleanup checks each tool destination independently, including YAML `targets` and legacy format support. Locally edited copies are preserved.
+The id and every namespace are refused at the manifest boundary unless they can
+name a directory without escaping it, since each becomes a directory component. A
+namespace must be a single path segment: no `/`, `\`, `:` or control character,
+no trailing `.` or space, and not a Windows device name (`CON`, `NUL`, `COM1`, …).
+Two namespaces of one resource type may not differ only by case, within a manifest
+or between `roles.yaml` and `projects.yaml`, since case-insensitive filesystems
+would give both the same directory.
+Win32 strips a trailing period or space from every component, so `.. ` would
+arrive as `..` and `frontend.` as `frontend`, escaping the parent in the first
+case and another namespace's directory in the second; `.` and `..` fall out of the
+same rule. A manifest file that exists but cannot be read, or is empty, is an
+error rather than an absent manifest: treating it as absent would drop the
+filtering the manifest exists to apply. Absence means the path is genuinely not
+there — a dangling symlink, on the file or on `manifest/` itself, reads as ENOENT
+but is an error. The id keeps the
+older, narrower rule it has always had — letters, digits, `.`, `_`, `-`, and not
+`.` or `..` — because it is also typed on the command line and split on commas.
+The namespace guard applies to `manifest/roles.yaml`'s active namespaces
+(`knowledge`, `skills`, `agents`); its `learnings:` is kept for backward
+compatibility, ignored at runtime, and therefore unchecked.
+
+Agent push uses the same role/project namespace resolution as pull and skips ambiguous source destinations. Placement follows it: a new agent pushed with `--role`/`--project` lands under `agents/<namespace>/` (the project's `agents` axis), the same way a new rule resolves from `knowledge` and a new skill from `skills` (issue #649). On a role or project change, agent cleanup checks each tool destination independently, including YAML `targets` and legacy format support. Locally edited copies are preserved.
 
 Directory layout reuses the existing namespace convention, adding one learnings layer:
 
@@ -233,6 +254,14 @@ experience) both need it, without affecting the single-project main path.
 
 **Docs:** README (bilingual) + usage-guide (bilingual) per the CLAUDE.md sync rule.
 
+**Extended by [#668](https://github.com/Tencent/teamai-cli/issues/668):** the three
+per-item-scoped resource types this design did not cover. `hooks/hooks.yaml` and
+`mcp/mcp.yaml` entries gain an optional `projects:` key beside their `roles:` one,
+and `env/env.yaml` variables gain both — `src/membership.ts` resolves the two axes
+together and ANDs them, so a delivery path cannot filter on one and forget the
+other. Unlike resource namespaces, which take the role ∪ project union, a
+per-item key is a restriction.
+
 ## Phasing
 
 | Phase | Scope |
@@ -262,6 +291,13 @@ cross-talking — which is exactly the most painful half (P2). P3 is a separate 
 lone project; migrating existing flat learnings into a `shared/` subdirectory;
 `teamai projects set --all` (the `all` selector is limited to `init --project` —
 re-running `init --project all` already re-resolves the current manifest).
+
+Also out of scope here, and delivered later by
+[#668](https://github.com/Tencent/teamai-cli/issues/668): per-item project scoping
+of hooks, MCP servers and env variables. Still unscoped on either axis after it:
+`packages` (whose schema mixes an array with a nested object, so it is not the same
+edit), `docs`, and `culture.md` — which suits a document defining how the whole
+team works.
 
 ## End-to-end test plan (real CLI, per CLAUDE.md — type-check/unit tests don't count)
 

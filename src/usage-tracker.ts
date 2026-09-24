@@ -3,15 +3,36 @@ import path from 'node:path';
 import { log } from './utils/logger.js';
 import { normalizeToolName } from './utils/tool-names.js';
 import {
+  getCopilotHome,
+  getDataHome,
+  getTeamaiHomeDir,
   SKILL_NAME_REGEX,
+  type LocalConfig,
   type UsageEvent,
+  resolveToolRootDir,
+  CLAUDE_TOOL_ID,
+  DEFAULT_CLAUDE_ROOT,
 } from './types.js';
 import { ensureDir, readJson, writeJson, pathExists } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
+import { resolveHookCwd } from './utils/hook-cwd.js';
+import { resolveConfigForDir, resolveMemberToolRoots } from './config.js';
 
-/** Get the usage JSONL path (evaluated at call time to respect HOME changes in tests). */
-function getUsagePath(): string {
-  return path.join(getUserHome(), '.teamai', 'usage.jsonl');
+/**
+ * The usage JSONL of one scope: `<dataHome>/usage.jsonl`, so each scope reports
+ * only the skills used where it is set up (#748). Evaluated at call time to
+ * respect HOME changes in tests.
+ *
+ * The user scope records in `~/.teamai/user-usage.jsonl` instead: every scope
+ * used to record in `~/.teamai/usage.jsonl`, and an earlier release still does
+ * after a rollback, so what that file holds names no project. It is never
+ * read, so the user scope cannot report it to its team.
+ */
+function getUsagePath(config: LocalConfig): string {
+  const dataHome = getDataHome(config);
+  const sharedDir = getTeamaiHomeDir();
+  if (path.resolve(dataHome) !== path.resolve(sharedDir)) return path.join(dataHome, 'usage.jsonl');
+  return path.join(sharedDir, 'user-usage.jsonl');
 }
 
 /** Get the known-skills.json path (evaluated at call time to respect HOME changes in tests). */
@@ -38,7 +59,10 @@ function getKnownSkillsPath(): string {
 //               [toolArg → toolSource; Read+SKILL.md → 'cursor']
 //                       │
 //                       ▼
-//               appendFile(usage.jsonl, JSON line)
+//               [resolveConfigForDir(cwd)] ─null─▶ skip (#748)
+//                       │
+//                       ▼
+//               appendFile(<scope usage file>, JSON line)
 //                       │
 //                       ▼
 //               updateKnownSkills(skill) → known-skills.json
@@ -60,7 +84,7 @@ function getKnownSkillsPath(): string {
 //  [extract & validate skill name after "/"]
 //      │
 //      ▼
-//  appendFile(usage.jsonl) + updateKnownSkills()
+//  appendFile(<scope usage file>) + updateKnownSkills()
 //
 
 /**
@@ -107,6 +131,49 @@ export function isValidSkillName(name: string): boolean {
   return SKILL_NAME_REGEX.test(name);
 }
 
+/** A resolved, validated skill invocation from a PostToolUse payload. */
+export interface ResolvedSkillUse {
+  /** The validated skill name (passes {@link isValidSkillName}). */
+  skillName: string;
+  /** 'cursor' for a Read of a SKILL.md path, otherwise the caller's tool. */
+  source: 'cursor' | null;
+}
+
+/**
+ * Resolve a skill invocation from a PostToolUse hook payload — the single source
+ * of truth shared by the usage tracker and the webhook handler so they can never
+ * drift. Handles both shapes: Claude/CodeBuddy's `Skill` tool, and Cursor's
+ * `Read` of a `.../SKILL.md` path. Returns null for anything else — including a
+ * normal (non-SKILL.md) `Read`, so a plain file read never counts as skill use.
+ * The returned name is already validated with {@link isValidSkillName}.
+ */
+export function resolveSkillUse(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): ResolvedSkillUse | null {
+  let skillName: string | null = null;
+  let source: 'cursor' | null = null;
+
+  if (toolName === 'Skill') {
+    skillName = extractSkillName(toolInput);
+  } else if (toolName === 'Read') {
+    const filePath =
+      (typeof toolInput.file_path === 'string' ? toolInput.file_path : null) ??
+      (typeof toolInput.filePath === 'string' ? toolInput.filePath : null) ??
+      (typeof toolInput.path === 'string' ? toolInput.path : null);
+    // Only a Read of a SKILL.md file is skill use — a normal file read is not.
+    if (filePath && /\/SKILL\.md$/i.test(filePath)) {
+      skillName = extractSkillName({ skill: filePath });
+      source = 'cursor';
+    }
+  } else {
+    return null;
+  }
+
+  if (!skillName || !isValidSkillName(skillName)) return null;
+  return { skillName, source };
+}
+
 /**
  * Well-known local skill directories to check for skill existence.
  * Ordered by likelihood of being present.
@@ -123,24 +190,34 @@ const SKILL_DIRS = [
   '.openclaw/skills',
   '.hermes/skills',
 ];
+const PROJECT_SKILL_DIRS = [...SKILL_DIRS, '.github/skills'];
 
 /**
  * Check whether a skill actually exists on disk (has a SKILL.md in any tool's skills directory).
  * This prevents tracking phantom skills from typos or path inputs like "/data".
  *
- * Performance: Checks at most 12 directories (6 user + 6 project) with a single stat() each — sub-millisecond.
+ * Performance: Checks a bounded list of user and project directories with one stat() each.
  */
-export async function skillExistsOnDisk(skillName: string): Promise<boolean> {
+export async function skillExistsOnDisk(skillName: string, toolRoots?: Record<string, string>): Promise<boolean> {
   const home = getUserHome();
+  // A Claude Code relocated with CLAUDE_CONFIG_DIR keeps its skills under the
+  // recorded root, which the static list cannot know; the caller resolves it
+  // from the hook's directory (resolveMemberToolRoots).
+  const claudeRoot = resolveToolRootDir(CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT, toolRoots);
+  const userSkillDirs = [
+    path.join(claudeRoot, 'skills'),
+    ...SKILL_DIRS.map((dir) => path.join(home, dir)),
+    path.join(getCopilotHome(), 'skills'),
+  ];
   // Check user-level directories
-  for (const dir of SKILL_DIRS) {
-    const skillMd = path.join(home, dir, skillName, 'SKILL.md');
+  for (const dir of userSkillDirs) {
+    const skillMd = path.join(dir, skillName, 'SKILL.md');
     if (await pathExists(skillMd)) return true;
   }
   // Check project-level directories (cwd)
   const cwd = process.cwd();
   if (path.resolve(cwd) !== path.resolve(home)) {
-    for (const dir of SKILL_DIRS) {
+    for (const dir of PROJECT_SKILL_DIRS) {
       const skillMd = path.join(cwd, dir, skillName, 'SKILL.md');
       if (await pathExists(skillMd)) return true;
     }
@@ -153,11 +230,12 @@ export async function skillExistsOnDisk(skillName: string): Promise<boolean> {
  * Silently fails on I/O errors (disk full, permission denied, etc.)
  * to avoid disrupting the AI coding session.
  */
-export async function appendUsageEvent(event: UsageEvent): Promise<void> {
+export async function appendUsageEvent(event: UsageEvent, config: LocalConfig): Promise<void> {
   try {
-    await ensureDir(path.dirname(getUsagePath()));
+    const usagePath = getUsagePath(config);
+    await ensureDir(path.dirname(usagePath));
     const line = JSON.stringify(event) + '\n';
-    await fs.promises.appendFile(getUsagePath(), line, 'utf-8');
+    await fs.promises.appendFile(usagePath, line, 'utf-8');
     log.debug(`Tracked skill: ${event.skill}`);
   } catch (e) {
     log.error(`Failed to write usage event: ${(e as Error).message}`);
@@ -165,12 +243,12 @@ export async function appendUsageEvent(event: UsageEvent): Promise<void> {
 }
 
 /**
- * Read all usage events from the JSONL file.
+ * Read all usage events from a scope's JSONL file.
  * Skips corrupted lines gracefully.
  */
-export async function readUsageEvents(): Promise<UsageEvent[]> {
+export async function readUsageEvents(config: LocalConfig): Promise<UsageEvent[]> {
   try {
-    const content = await fs.promises.readFile(getUsagePath(), 'utf-8');
+    const content = await fs.promises.readFile(getUsagePath(config), 'utf-8');
     const events: UsageEvent[] = [];
     for (const line of content.split('\n')) {
       const trimmed = line.trim();
@@ -194,17 +272,18 @@ export async function readUsageEvents(): Promise<UsageEvent[]> {
  * Truncate the usage JSONL file, keeping only events after `afterTimestamp`.
  * Used after successful auto-report to keep the file small.
  */
-export async function truncateUsageAfterReport(reportedCount: number): Promise<void> {
+export async function truncateUsageAfterReport(reportedCount: number, config: LocalConfig): Promise<void> {
   try {
-    const content = await fs.promises.readFile(getUsagePath(), 'utf-8');
+    const usagePath = getUsagePath(config);
+    const content = await fs.promises.readFile(usagePath, 'utf-8');
     const lines = content.split('\n').filter((l) => l.trim());
     if (reportedCount >= lines.length) {
       // All lines were reported — clear file
-      await fs.promises.writeFile(getUsagePath(), '', 'utf-8');
+      await fs.promises.writeFile(usagePath, '', 'utf-8');
     } else {
       // Keep unreported lines
       const remaining = lines.slice(reportedCount).join('\n') + '\n';
-      await fs.promises.writeFile(getUsagePath(), remaining, 'utf-8');
+      await fs.promises.writeFile(usagePath, remaining, 'utf-8');
     }
     log.debug(`Truncated usage.jsonl: removed ${reportedCount} reported events`);
   } catch (e) {
@@ -237,8 +316,10 @@ export async function updateKnownSkills(skillName: string): Promise<void> {
 export async function readKnownSkills(): Promise<Set<string>> {
   const skills = new Set<string>();
 
-  // Source 1: local usage.jsonl (unreported events since last truncation)
-  const events = await readUsageEvents();
+  // Source 1: unreported events in the usage.jsonl of the scope governing the cwd
+  // (Source 2 below stays machine-wide; neither leaves the machine)
+  const config = await resolveConfigForDir();
+  const events = config ? await readUsageEvents(config) : [];
   for (const event of events) {
     skills.add(event.skill);
   }
@@ -295,13 +376,16 @@ export async function track(rawToolName: string, toolInput: string, tool?: strin
     return;
   }
 
+  const config = await resolveConfigForDir();
+  if (!config) return;
+
   const event: UsageEvent = {
     skill: skillName,
     timestamp: new Date().toISOString(),
     tool: tool ?? 'claude',
   };
 
-  await appendUsageEvent(event);
+  await appendUsageEvent(event, config);
   await updateKnownSkills(skillName);
 }
 
@@ -325,7 +409,7 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
     return;
   }
 
-  let hookData: { tool_name?: string; tool_input?: Record<string, unknown> };
+  let hookData: { tool_name?: string; tool_input?: Record<string, unknown>; cwd?: unknown };
   try {
     hookData = JSON.parse(raw);
   } catch {
@@ -373,13 +457,16 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
     return;
   }
 
+  const config = await resolveConfigForDir(resolveHookCwd(hookData));
+  if (!config) return;
+
   const event: UsageEvent = {
     skill: skillName,
     timestamp: new Date().toISOString(),
     tool: toolSource,
   };
 
-  await appendUsageEvent(event);
+  await appendUsageEvent(event, config);
   await updateKnownSkills(skillName);
 }
 
@@ -402,7 +489,7 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
     return;
   }
 
-  let hookData: { prompt?: string };
+  let hookData: { prompt?: string; cwd?: unknown };
   try {
     hookData = JSON.parse(raw);
   } catch {
@@ -423,6 +510,14 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
     return;
   }
 
+  const hookCwd = resolveHookCwd(hookData);
+  const config = await resolveConfigForDir(hookCwd);
+  if (!config) return;
+  // The same root resolution import and the local agent use, from the hook's
+  // directory: a project set up before a user-scope relocation has no record
+  // of its own and follows user scope.
+  const toolRoots = await resolveMemberToolRoots(hookCwd);
+
   for (const match of matches) {
     const skillName = match[1];
 
@@ -433,7 +528,7 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
 
     // Verify the skill actually exists on disk to avoid tracking phantom skills
     // (e.g. user typing "/data" which is not a real skill)
-    if (!await skillExistsOnDisk(skillName)) {
+    if (!await skillExistsOnDisk(skillName, toolRoots)) {
       log.debug(`Slash command "/${skillName}" is not a known skill — skipping tracking`);
       continue;
     }
@@ -444,7 +539,7 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
       tool: toolArg ?? 'claude',
     };
 
-    await appendUsageEvent(event);
+    await appendUsageEvent(event, config);
     await updateKnownSkills(skillName);
   }
 }

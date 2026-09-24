@@ -1,8 +1,9 @@
 /**
  * Codebase output manifest schema definitions.
  *
- * The manifest is the contract between AI compilers (e.g. team-wiki-codebase
- * Skill) and the deterministic Node-side compiler (`compileFromManifest`).
+ * The manifest is the contract between AI compilers (e.g. the `wiki` skill,
+ * served by `teamai skill get wiki`) and the deterministic Node-side compiler
+ * (`compileFromManifest`).
  *
  * Two versions are supported:
  *

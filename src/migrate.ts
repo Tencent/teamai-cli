@@ -43,6 +43,23 @@ const SKIP_ENTRIES = new Set<string>([
   '.update-lock',
 ]);
 
+/**
+ * The transient files `acquireLock` makes next to a lock (src/update.ts): the
+ * `<lock>.<uuid>.tmp` of its exclusive create, the reclaim `.sentinel` (with its
+ * own create temp and `.reclaim-<uuid>`), and the reclaim's `.new-<uuid>`. A
+ * contending process creates and removes them while the copy runs (#760).
+ */
+const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const LOCK_ARTIFACT = new RegExp(
+  `^(?:${[SYNC_LOCK_FILENAME, '.update-lock'].map((l) => l.replace(/\./g, '\\.')).join('|')})` +
+    `(?:\\.sentinel(?:\\.${UUID}\\.tmp|\\.reclaim-${UUID})?|\\.${UUID}\\.tmp|\\.new-${UUID})$`,
+);
+
+/** Whether a top-level entry stays behind: a SKIP_ENTRIES name or a lock artifact. */
+function isSkippedEntry(name: string): boolean {
+  return SKIP_ENTRIES.has(name) || LOCK_ARTIFACT.test(name);
+}
+
 // `pending-learnings/` is deliberately not in that set: it holds contributions
 // the member has already made, and nothing else has a copy of them, so it has
 // to travel with the partition.
@@ -272,7 +289,7 @@ export async function runMigration(
         const rel = path.relative(legacyDir, src);
         if (!rel) return true; // the root itself
         const top = rel.split(path.sep)[0];
-        return !SKIP_ENTRIES.has(top);
+        return !isSkippedEntry(top);
       },
     });
 
@@ -548,7 +565,7 @@ async function mergeDirIntoPartition(src: string, dest: string): Promise<void> {
 /** Top-level entries under a legacy `.teamai/` that migration will copy. */
 async function listMigratableEntries(legacyDir: string): Promise<string[]> {
   const names = await fse.readdir(legacyDir);
-  return names.filter((n) => !SKIP_ENTRIES.has(n));
+  return names.filter((n) => !isSkippedEntry(n));
 }
 
 /**

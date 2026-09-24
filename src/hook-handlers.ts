@@ -34,6 +34,13 @@ export interface HandlerRegistration {
    * (contribute / import-from-mr / votes push). See filterHandlersForConfig.
    */
   gitOnly?: boolean;
+  /**
+   * Team handler: it only makes sense where teamai is set up. Hooks live in HOME
+   * even for a project-scope install, so they fire in every project on the
+   * machine; with no config for the hook's cwd these are filtered out at the
+   * dispatch boundary (#748). See filterHandlersForConfig.
+   */
+  requiresConfig?: boolean;
 }
 
 // ─── Timeout constants ──────────────────────────────────
@@ -127,19 +134,20 @@ const updateHandler: HookHandler = {
 };
 
 /**
- * Team course-correction keywords for the current project. The dispatcher has
- * already chdir'd to the hook payload's cwd (hook-dispatch-cli), so
- * autoDetectInit() resolves the right project, as it does for
- * contributeHintAllowed. Only prompt hooks pay for the config read; an
- * unreadable config means "built-in keywords only".
+ * Team course-correction keywords of the hook's scope. Only prompt hooks pay for
+ * the team config read; no scope or an unreadable team config means "built-in
+ * keywords only".
  */
-async function teamCorrectionKeywords(stdin: Record<string, unknown>): Promise<readonly string[]> {
-  if (typeof stdin.prompt !== 'string') return [];
+async function teamCorrectionKeywords(
+  stdin: Record<string, unknown>,
+  config: LocalConfig | null,
+): Promise<readonly string[]> {
+  if (typeof stdin.prompt !== 'string' || !config) return [];
   try {
-    const { autoDetectInit } = await import('./config.js');
+    const { loadTeamConfig } = await import('./config.js');
     const { getInterventionSharing } = await import('./types.js');
-    const { teamConfig } = await autoDetectInit();
-    return getInterventionSharing(teamConfig).correctionKeywords;
+    const teamConfig = await loadTeamConfig(config.repo.localPath);
+    return teamConfig ? getInterventionSharing(teamConfig).correctionKeywords : [];
   } catch {
     return [];
   }
@@ -164,11 +172,11 @@ async function userModelAliases(stdin: Record<string, unknown>): Promise<Record<
 
 const dashboardReportHandler: HookHandler = {
   name: 'dashboard-report',
-  async execute(stdin, tool) {
+  async execute(stdin, tool, config) {
     const { parseHookEvent, appendEvent, compactEvents } = await import('./dashboard-collector.js');
     const raw = JSON.stringify(stdin);
     const event = await parseHookEvent(raw, tool, {
-      correctionKeywords: await teamCorrectionKeywords(stdin),
+      correctionKeywords: await teamCorrectionKeywords(stdin, config),
       modelAliases: await userModelAliases(stdin),
     });
     if (event) {
@@ -183,7 +191,8 @@ const dashboardReportHandler: HookHandler = {
 const trackHandler: HookHandler = {
   name: 'track',
   async execute(stdin, tool) {
-    const { extractSkillName, isValidSkillName, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
+    const { resolveSkillUse, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
+    const { resolveConfigForDir } = await import('./config.js');
 
     const rawToolName = stdin.tool_name;
     if (typeof rawToolName !== 'string') return null;
@@ -192,30 +201,18 @@ const trackHandler: HookHandler = {
     const toolInput = stdin.tool_input;
     if (!toolInput || typeof toolInput !== 'object') return null;
 
-    // Only track Skill (Claude/CodeBuddy) or Read+SKILL.md (Cursor)
-    let skillName: string | null = null;
-    let toolSource = tool;
+    // Shared resolver: Skill (Claude/CodeBuddy) or Read+SKILL.md (Cursor).
+    const resolved = resolveSkillUse(toolName, toolInput as Record<string, unknown>);
+    if (!resolved) return null;
 
-    if (toolName === 'Skill') {
-      skillName = extractSkillName(toolInput as Record<string, unknown>);
-    } else if (toolName === 'Read') {
-      const input = toolInput as Record<string, unknown>;
-      const filePath =
-        (typeof input.file_path === 'string' ? input.file_path : null) ??
-        (typeof input.filePath === 'string' ? input.filePath : null) ??
-        (typeof input.path === 'string' ? input.path : null);
-      if (typeof filePath === 'string' && /\/SKILL\.md$/i.test(filePath)) {
-        skillName = extractSkillName({ skill: filePath });
-        toolSource = 'cursor';
-      }
-    } else {
-      return null;
-    }
-
-    if (!skillName || !isValidSkillName(skillName)) return null;
-
-    await appendUsageEvent({ skill: skillName, timestamp: new Date().toISOString(), tool: toolSource });
-    await updateKnownSkills(skillName);
+    const config = await resolveConfigForDir(resolveHookCwd(stdin));
+    if (!config) return null;
+    await appendUsageEvent({
+      skill: resolved.skillName,
+      timestamp: new Date().toISOString(),
+      tool: resolved.source ?? tool,
+    }, config);
+    await updateKnownSkills(resolved.skillName);
     return null;
   },
 };
@@ -223,49 +220,58 @@ const trackHandler: HookHandler = {
 const trackSlashHandler: HookHandler = {
   name: 'track-slash',
   async execute(stdin, tool) {
-    const { extractSkillName, isValidSkillName, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
+    const { isValidSkillName, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
+    const { resolveConfigForDir } = await import('./config.js');
 
     const prompt = stdin.prompt;
     if (typeof prompt !== 'string' || !prompt.startsWith('/')) return null;
 
-    // Extract skill name: first word after "/"
-    const match = prompt.match(/^\/([\w-]+)/);
+    // Extract skill name: first word after "/". Character class must match
+    // SKILL_NAME_REGEX (types.ts) — the CLI path (trackSlashCommand) already
+    // uses the full set; this handler was narrower, silently truncating names
+    // that contain dots or colons (both valid per the schema).
+    const match = prompt.match(/^\/([a-zA-Z0-9_\-:.]+)/);
     if (!match) return null;
 
     const skillName = match[1];
     if (!isValidSkillName(skillName)) return null;
 
-    await appendUsageEvent({ skill: skillName, timestamp: new Date().toISOString(), tool });
+    const config = await resolveConfigForDir(resolveHookCwd(stdin));
+    if (!config) return null;
+    await appendUsageEvent({ skill: skillName, timestamp: new Date().toISOString(), tool }, config);
     await updateKnownSkills(skillName);
     return null;
   },
 };
 
+
 /**
- * Whether the share-learnings hint may be emitted at all. Resolved lazily per
- * hook run so a team can switch it off via teamai.yaml (or a member via local
- * config) without re-injecting hooks. Falls back to enabled when config can't
- * be read, preserving pre-toggle behavior for half-initialized installs.
+ * Ask the model to declare which recalled documents it actually used.
+ *
+ * English, like every other user-facing string: Claude Code prints the Stop
+ * payload, so this reaches the terminal of anyone whose team has recall on. It
+ * restates the requirement `compileRecallRulesBlock` already ships (#719).
  */
-async function contributeHintAllowed(): Promise<boolean> {
-  const { isContributeHintEnabled } = await import('./types.js');
-  try {
-    const { autoDetectInit } = await import('./config.js');
-    const { localConfig, teamConfig } = await autoDetectInit();
-    return isContributeHintEnabled(localConfig, teamConfig);
-  } catch {
-    return isContributeHintEnabled({}, {});
-  }
+export function buildVotesNudge(recalledDocIds: readonly string[]): string {
+  return (
+    `This session recalled team knowledge through teamai (candidate doc-ids: ${recalledDocIds.join(', ')}). `
+    + 'Before you finish, declare the entries you actually used by appending '
+    + '`<!-- teamai:referenced-doc-ids: [the-doc-ids-you-used] -->` to your final reply. '
+    + 'Declare an empty list `[]` if you used none.'
+  );
 }
 
 const contributeCheckHandler: HookHandler = {
   name: 'contribute-check',
   async execute(stdin, tool) {
-    if (!(await contributeHintAllowed())) return null;
+    // The payload's cwd, not the process's: hook-dispatch changes into it, but
+    // that can fail, and the gate must not then read the launcher's directory.
+    const { contributeHintAllowed } = await import('./skill-content.js');
+    if (!(await contributeHintAllowed(resolveHookCwd(stdin)))) return null;
 
     const { contributeCheckForSession } = await import('./contribute-check.js');
-    const { formatStopHookOutput } = await import('./utils/hook-output.js');
-    const { STOP_STDOUT_UNSUPPORTED_TOOLS } = await import('./utils/tool-names.js');
+    const { formatStopHookOutput, relayWhenHidden } = await import('./utils/hook-output.js');
+    const { stopStdoutUnsupported } = await import('./utils/tool-names.js');
 
     // Match dashboard-collector's derivation so events and contribute state
     // share the same session id even when stdin.session_id is absent.
@@ -275,10 +281,12 @@ const contributeCheckHandler: HookHandler = {
     // Tools whose Stop hook cannot deliver model context: stash the hint (in the same
     // single state write inside contributeCheckForSession) for delivery on the
     // next UserPromptSubmit, so contributeCheckForSession returns null here.
-    const stash = STOP_STDOUT_UNSUPPORTED_TOOLS.has(tool);
+    const stash = stopStdoutUnsupported(tool);
     const { hint } = await contributeCheckForSession(sessionId, cwd, transcriptPath, stash);
     if (!hint) return null;
-    return formatStopHookOutput(hint, tool);
+    // The hint is addressed to the user, so a host that hides the payload needs
+    // the model to pass it on. Claude Code prints it and must not be asked (#719).
+    return formatStopHookOutput(relayWhenHidden(hint, tool), tool);
   },
 };
 
@@ -286,8 +294,8 @@ const contributeCheckHandler: HookHandler = {
 const pendingHintHandler: HookHandler = {
   name: 'pending-hint',
   async execute(stdin, tool) {
-    const { STOP_STDOUT_UNSUPPORTED_TOOLS } = await import('./utils/tool-names.js');
-    if (!STOP_STDOUT_UNSUPPORTED_TOOLS.has(tool)) return null;
+    const { stopStdoutUnsupported } = await import('./utils/tool-names.js');
+    if (!stopStdoutUnsupported(tool)) return null;
 
     // Must match contributeCheckHandler's derivation so Stop and UserPromptSubmit
     // resolve to the same session file. This cross-process handoff relies on
@@ -301,10 +309,14 @@ const pendingHintHandler: HookHandler = {
     // Always consume the stash so a hint stashed before the team turned the
     // feature off is not delivered later when it is turned back on.
     const stashed = await pending.takePendingHint(sessionId);
-    const hint = (await contributeHintAllowed()) ? stashed : null;
+    const { contributeHintAllowed } = await import('./skill-content.js');
+    const hint = (await contributeHintAllowed(resolveHookCwd(stdin))) ? stashed : null;
     const votesHint = await pending.takePendingVotesHint(sessionId);
 
-    const combined = [hint, votesHint].filter(Boolean).join('\n');
+    // The votes nudge instructs the model; the contribute hint asks it to relay
+    // a message to the user and so must run to the end of the payload. Reversing
+    // the order would leave "print the following verbatim" with no clear end (#719).
+    const combined = [votesHint, hint].filter(Boolean).join('\n');
     if (!combined) return null;
 
     return JSON.stringify({
@@ -336,8 +348,8 @@ const packagePendingHintHandler: HookHandler = {
 
 const votesSyncHandler: HookHandler = {
   name: 'votes-sync',
-  async execute(stdin, tool) {
-    if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
+  async execute(stdin, tool, localConfig) {
+    if (process.env.TEAMAI_RECALL_DISABLED === '1' || !localConfig) return null;
 
     const transcriptPath = typeof stdin.transcript_path === 'string' ? stdin.transcript_path : null;
     if (!transcriptPath) return null;
@@ -345,12 +357,8 @@ const votesSyncHandler: HookHandler = {
     try {
       const { parseTranscriptForVotes } = await import('./transcript-parser.js');
       const { incrementUpvoted, syncVotesToTeam } = await import('./votes.js');
-      const { autoDetectInit } = await import('./config.js');
 
       const voteData = await parseTranscriptForVotes(transcriptPath);
-      // autoDetectInit picks project scope when present (so self-mode configs are
-      // honored), falling back to user scope otherwise.
-      const { localConfig } = await autoDetectInit();
       const { getUserVotesDir } = await import('./types.js');
       const votesDir = getUserVotesDir();
       const votePath = path.join(votesDir, `${localConfig.username}.yaml`);
@@ -433,13 +441,11 @@ const votesSyncHandler: HookHandler = {
 
       if (nudged) {
         const { formatStopHookOutput } = await import('./utils/hook-output.js');
-        const { STOP_STDOUT_UNSUPPORTED_TOOLS } = await import('./utils/tool-names.js');
-        const msg =
-          `你本次通过 teamai 召回了团队知识（候选 doc-id：${recalled.join(', ')}）。` +
-          `结束前请在回复末尾声明你实际用到的条目：<!-- teamai:referenced-doc-ids: [用到的doc-id] -->；没用到就留空 []。`;
+        const { stopStdoutUnsupported } = await import('./utils/tool-names.js');
+        const msg = buildVotesNudge(recalled);
         // For tools whose Stop stdout is ignored, stash the nudge for delivery
         // on the next UserPromptSubmit (same cross-process mechanism as contribute).
-        if (STOP_STDOUT_UNSUPPORTED_TOOLS.has(tool ?? '')) {
+        if (stopStdoutUnsupported(tool)) {
           const { stashVotesHint } = await import('./contribute-check.js');
           await stashVotesHint(sessionId, msg);
           return null;
@@ -502,24 +508,83 @@ const localAgentHandler: HookHandler = {
   },
 };
 
+/**
+ * Map a host's `hook_event_name` (as normalized by parseStdin) to the canonical
+ * webhook event names teams subscribe to. The handler used to read `stdin.event`,
+ * which hosts never send, so every event was forwarded as `unknown` and no
+ * `skill-use` / `session-start` / `session-stop` subscription ever matched (#702).
+ *
+ * Keyed by the lowercased hook name for a case-insensitive lookup: Claude sends
+ * PascalCase (`SessionStart`) while Cursor/CodeBuddy send camelCase
+ * (`sessionStart`) — see dashboard-collector's mapEventType, which handles both.
+ * A case-sensitive PascalCase-only map silently dropped the camelCase hosts.
+ */
+const WEBHOOK_EVENT_BY_HOOK: Record<string, string> = {
+  sessionstart: 'session-start',
+  stop: 'session-stop',
+  sessionend: 'session-stop',
+  posttooluse: 'skill-use',
+};
+
+/**
+ * Build the minimal, whitelisted data payload for a webhook event.
+ *
+ * Only a fixed set of non-sensitive fields per event is forwarded. Raw
+ * `tool_input` (which can carry API keys in tool args) and `tool_response`
+ * (which can carry private tool output) are never included (#701). The result is
+ * additionally deep-redacted at the send boundary (see sendWebhook).
+ */
+async function buildWebhookData(
+  event: string,
+  stdin: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (event === 'skill-use') {
+    const rawToolName = stdin.tool_name;
+    const toolInput = stdin.tool_input;
+    if (typeof rawToolName !== 'string' || !toolInput || typeof toolInput !== 'object') return {};
+    const { resolveSkillUse } = await import('./usage-tracker.js');
+    // Same resolver trackHandler uses, so the webhook reaches parity: it fires
+    // for Claude/CodeBuddy `Skill` AND Cursor's `Read` of a SKILL.md path, and
+    // never for a normal file Read (#702 follow-up). The resolver already
+    // validates the name with isValidSkillName, so a tool-arg string cannot
+    // escape as skillName (#701).
+    const resolved = resolveSkillUse(
+      normalizeToolName(rawToolName),
+      toolInput as Record<string, unknown>,
+    );
+    return resolved ? { skillName: resolved.skillName } : {};
+  }
+  if (event === 'session-start' || event === 'session-stop') {
+    const sessionId = deriveSessionId(stdin);
+    return sessionId ? { sessionId } : {};
+  }
+  return {};
+}
+
 /** Webhook notification handler — sends events to configured endpoints. */
 const webhookHandler: HookHandler = {
   name: 'webhook-dispatch',
-  async execute(stdin, tool) {
+  async execute(stdin, tool, localConfig) {
+    if (!localConfig) return null;
     const { sendWebhook, loadWebhookConfig } = await import('./webhook.js');
 
     try {
-      const config = await loadWebhookConfig();
+      const config = await loadWebhookConfig(localConfig);
       if (!config.enabled || config.endpoints.length === 0) return null;
 
-      const event = typeof stdin.event === 'string' ? stdin.event : 'unknown';
+      const hookEventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name : '';
+      // Case-insensitive so both PascalCase (Claude) and camelCase (Cursor/
+      // CodeBuddy) hook names resolve (#702).
+      const event = WEBHOOK_EVENT_BY_HOOK[hookEventName.toLowerCase()];
+      // Only forward events we can map to a canonical name — never emit `unknown` (#702).
+      if (!event) return null;
 
       const payload = {
         tool,
         sessionId: deriveSessionId(stdin),
         cwd: resolveHookCwd(stdin),
         username: typeof stdin.username === 'string' ? stdin.username : undefined,
-        data: stdin as Record<string, unknown>,
+        data: await buildWebhookData(event, stdin),
       };
 
       await sendWebhook(event, payload, config);
@@ -544,11 +609,17 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // on a slow network cannot delay session startup. Its own generous budget
     // (PULL_TIMEOUT_MS) — the shared 15s truncated the pull itself.
     { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS, background: true },
-    { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
-    { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
+    { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'session-start', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+    { event: 'session-start', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
+
+    // Copilot emits SessionEnd after its final turn (not Stop), so the webhook
+    // handler must run here too or those sessions emit no session-stop
+    // notification (#702). Detached, mirroring the stop registration.
+    { event: 'session-end', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
+    { event: 'session-end', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── Stop ─────────────────────────────────────────
     // votes-sync and contribute-check may return a hint the host injects back
@@ -558,53 +629,57 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // past the host's hook timeout (CodeBuddy kills hooks at ~10s regardless of
     // the declared timeout).
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS, background: true },
-    { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
-    { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
-    { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
+    { event: 'stop', matcher: '*', handler: contributeCheckHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
+    { event: 'stop', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
-    { event: 'stop', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── PostToolUse ──────────────────────────────────
-    { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS },
+    { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
-    { event: 'post-tool-use', matcher: 'Skill', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true },
+    { event: 'post-tool-use', matcher: 'Skill', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── UserPromptSubmit ─────────────────────────────
-    { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true },
+    { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'prompt-submit', matcher: '*', handler: packagePendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
+    { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'prompt-submit', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
   ];
 }
 
 /**
- * Apply the provider-config gate to a handler registry.
+ * Apply the config gates to a handler registry.
+ *
+ * No config (localConfig === null) drops every `requiresConfig` handler. Hooks
+ * live in HOME even for a project-scope install, so they fire in every project
+ * on the machine; a directory without teamai must see no team prompts (#748).
+ * A config that fails to parse also reads as null (loadLocalConfig swallows
+ * parse errors), so a corrupted config withholds team prompts too; `teamai
+ * doctor` reports it.
  *
  * HTTP-only teams (localConfig.repo.kind === 'http') must not receive prompts
- * for git-provider-only features. This drops every `gitOnly` handler when the
- * team source is HTTP. When localConfig is null (teamai not initialized) or the
- * source is git (kind === 'git' or undefined for backward compatibility), the
- * full registry is returned unchanged.
+ * for git-provider-only features, so every `gitOnly` handler is dropped when the
+ * team source is HTTP. A git source (kind === 'git' or undefined for backward
+ * compatibility) keeps the full registry.
  *
  * The gate is keyed on teamai's own configured source, NOT on the current
  * working directory's git remote — an HTTP-only user working inside a
- * github/tgit checkout must still see no git-only prompts.
- *
- * Fail-open by design: a null localConfig means either teamai is not
- * initialized or the config failed to parse (loadLocalConfig swallows parse
- * errors and returns null). In both cases the full registry is kept, so a
- * corrupted config degrades to "all hooks run" rather than silently disabling
- * them. This is intentionally NOT a hard security gate — HTTP write ops are
- * still enforced at execution time by assertNotReadOnly().
+ * github/tgit checkout must still see no git-only prompts. This is
+ * intentionally NOT a hard security gate — HTTP write ops are still enforced
+ * at execution time by assertNotReadOnly().
  */
 export function filterHandlersForConfig(
   registry: HandlerRegistration[],
   localConfig: LocalConfig | null,
 ): HandlerRegistration[] {
-  if (localConfig?.repo.kind === 'http') {
+  if (!localConfig) {
+    return registry.filter((reg) => reg.requiresConfig !== true);
+  }
+  if (localConfig.repo.kind === 'http') {
     return registry.filter((reg) => reg.gitOnly !== true);
   }
   return registry;

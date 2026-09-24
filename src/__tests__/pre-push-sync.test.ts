@@ -16,8 +16,11 @@ vi.mock('../utils/logger.js', () => ({
 
 // Mock getFileContentAtRev since test dirs are not real git repos
 const mockGetFileContentAtRev = vi.fn<(repoPath: string, rev: string, filePath: string) => Promise<Buffer | null>>();
+const mockGetFileContentWhenAdded = vi.fn<(repoPath: string, filePath: string) => Promise<Buffer | null>>()
+  .mockResolvedValue(null);
 vi.mock('../utils/git.js', () => ({
   getFileContentAtRev: (...args: [string, string, string]) => mockGetFileContentAtRev(...args),
+  getFileContentWhenAdded: (...args: [string, string]) => mockGetFileContentWhenAdded(...args),
   createGit: vi.fn(),
   pullRepo: vi.fn(),
   pushRepoBranch: vi.fn(),
@@ -95,6 +98,86 @@ describe('syncTeamUpdatesToLocal — rules', () => {
     // Local should now have v2
     const content = await fse.readFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'utf-8');
     expect(content).toBe('v2 content');
+  });
+
+  it('syncs a root-authored rule through its recorded rules/<ns>/ destination', async () => {
+    // push placed this rule under rules/fe-know/; the author's copy stayed at
+    // the tool's rules root, so there is no rules/my-rule.md to compare against.
+    await fse.ensureDir(path.join(repoPath, 'rules', 'fe-know'));
+    await fse.writeFile(path.join(repoPath, 'rules/fe-know', 'my-rule.md'), 'teammate v2');
+    await fse.writeFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'v1 content');
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1 content'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234', {
+      'my-rule': 'rules/fe-know/my-rule.md',
+    });
+
+    // Without the redirect the stale root copy reads as a local modification and
+    // the next push sends it over the teammate's update.
+    const content = await fse.readFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'utf-8');
+    expect(content).toBe('teammate v2');
+    expect(mockGetFileContentAtRev).toHaveBeenCalledWith(repoPath, 'abc1234', 'rules/fe-know/my-rule.md');
+  });
+
+  it('syncs a placement that landed after the last pull from the version it was added with', async () => {
+    // Placed, merged, recorded — and a teammate edits it before the author's
+    // next pull. At lastPullRev the file did not exist yet (#649 review).
+    await fse.outputFile(path.join(repoPath, 'rules/fe-know', 'my-rule.md'), 'teammate v2');
+    await fse.writeFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'as placed');
+    mockGetFileContentAtRev.mockResolvedValue(null);
+    mockGetFileContentWhenAdded.mockResolvedValueOnce(Buffer.from('as placed'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234', {
+      'my-rule': 'rules/fe-know/my-rule.md',
+    });
+
+    expect(await fse.readFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'utf-8')).toBe('teammate v2');
+    expect(mockGetFileContentWhenAdded).toHaveBeenCalledWith(repoPath, 'rules/fe-know/my-rule.md');
+  });
+
+  it('keeps following the record when a shared-root rule with the same name exists', async () => {
+    // Both sides must resolve the same file. If the sync compared against
+    // rules/my-rule.md while the scanner followed the record, the scan would
+    // read the local copy as modified and push it over the placed rule.
+    await fse.ensureDir(path.join(repoPath, 'rules', 'fe-know'));
+    await fse.writeFile(path.join(repoPath, 'rules/fe-know', 'my-rule.md'), 'teammate v2');
+    await fse.writeFile(path.join(repoPath, 'rules', 'my-rule.md'), 'somebody else\'s shared rule');
+    await fse.writeFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'v1 content');
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1 content'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234', {
+      'my-rule': 'rules/fe-know/my-rule.md',
+    });
+
+    expect(await fse.readFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'utf-8'))
+      .toBe('teammate v2');
+    expect(mockGetFileContentAtRev).toHaveBeenCalledWith(repoPath, 'abc1234', 'rules/fe-know/my-rule.md');
+  });
+
+  it('leaves a root rule alone when no record maps it to a namespaced team rule', async () => {
+    await fse.ensureDir(path.join(repoPath, 'rules', 'fe-know'));
+    await fse.writeFile(path.join(repoPath, 'rules/fe-know', 'my-rule.md'), 'someone else v2');
+    await fse.writeFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'my own rule');
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('my own rule'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234', {});
+
+    // A shared basename is not evidence: this machine never pushed that rule.
+    const content = await fse.readFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'utf-8');
+    expect(content).toBe('my own rule');
+  });
+
+  it('ignores a record whose team file is gone', async () => {
+    await fse.writeFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'v1 content');
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1 content'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234', {
+      'my-rule': 'rules/fe-know/my-rule.md',
+    });
+
+    const content = await fse.readFile(path.join(homeDir, '.claude/rules', 'my-rule.md'), 'utf-8');
+    expect(content).toBe('v1 content');
+    expect(mockGetFileContentAtRev).not.toHaveBeenCalled();
   });
 
   it('should NOT sync local rule when user edited it', async () => {

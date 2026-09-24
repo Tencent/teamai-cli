@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import path from 'node:path';
 import { readUsageEvents } from './usage-tracker.js';
 import { readFileSafe } from './utils/fs.js';
-import { loadLocalConfig, detectProjectConfig } from './config.js';
+import { resolveConfigForDir } from './config.js';
 import { readEvents, aggregateSessionMetrics } from './dashboard-collector.js';
 import { totalTokens, addTokenUsage, emptyTokenUsage } from './types.js';
 import { attributeByRepo, timeAnalytics, renderHourSparkline } from './session-analytics.js';
@@ -49,7 +49,7 @@ export function aggregateUsage(events: UsageEvent[]): SkillStats[] {
  */
 async function loadReportedStats(): Promise<UserStats | null> {
   try {
-    const config = await detectProjectConfig() ?? await loadLocalConfig();
+    const config = await resolveConfigForDir();
     if (!config) return null;
     // Non-HTTP: stats live on the teamai-reports orphan branch worktree.
     // Leftover stats/ on the default-branch clone is ignored. Read-only: never
@@ -171,7 +171,10 @@ export interface ShowStatsOptions {
  * Merges local unreported events with reported team stats for a complete view.
  */
 export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
-  const events = await readUsageEvents();
+  // The same scope loadReportedStats reads, so local and reported totals match;
+  // a directory without teamai has no usage of its own (#748).
+  const config = await resolveConfigForDir();
+  const events = config ? await readUsageEvents(config) : [];
   const localStats = aggregateUsage(events);
   const reported = await loadReportedStats();
   const stats = mergeLocalAndReported(localStats, reported);

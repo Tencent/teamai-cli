@@ -13,12 +13,13 @@ import {
   readFileSafe,
   writeFile,
 } from './fs.js';
-import { getFileContentAtRev } from './git.js';
+import { getFileContentAtRev, getFileContentWhenAdded } from './git.js';
 import { ResourceHandler } from '../resources/base.js';
 import { ruleFileExtensionForTool, usesCursorMdcRules } from '../resources/rule-format.js';
 import { teamRuleToCursorMdc, cursorMdcBodyEqualsTeamMd } from '../resources/cursor-mdc.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { log } from './logger.js';
+import { placedResourcePath } from '../push-namespaces.js';
 
 /**
  * Sync team repo updates to local tool directories BEFORE scanning for push.
@@ -35,11 +36,19 @@ import { log } from './logger.js';
  * genuine edits — leave it alone for scanLocalForPush to pick up.
  *
  * This is a no-op when `lastPullRev` is null (first run or after re-init).
+ *
+ * `placedRules` is `state.placedRules`: where push put each root-level local
+ * rule inside the team repo. A rule authored at the tool's rules root and
+ * placed under `rules/<ns>/` has no `rules/<name>.md` to compare against, so
+ * without this map the three-way check below would skip it and the scanner —
+ * which DOES follow the map — would then read the stale root copy as a local
+ * modification and push it over a teammate's newer version.
  */
 export async function syncTeamUpdatesToLocal(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   lastPullRev: string | null,
+  placedRules: Record<string, string> | undefined = undefined,
 ): Promise<void> {
   if (!lastPullRev) {
     log.debug('No lastPullRev — skipping pre-push sync');
@@ -49,7 +58,7 @@ export async function syncTeamUpdatesToLocal(
   const repoPath = localConfig.repo.localPath;
   const baseDir = resolveBaseDir(localConfig);
 
-  await syncRulesToLocal(teamConfig, localConfig, repoPath, baseDir, lastPullRev);
+  await syncRulesToLocal(teamConfig, localConfig, repoPath, baseDir, lastPullRev, placedRules);
   await syncSkillsToLocal(teamConfig, localConfig, repoPath, baseDir, lastPullRev);
 }
 
@@ -63,6 +72,7 @@ async function syncRulesToLocal(
   repoPath: string,
   baseDir: string,
   lastPullRev: string,
+  placedRules: Record<string, string> | undefined,
 ): Promise<void> {
   const teamRulesDir = path.join(repoPath, 'rules');
   if (!await pathExists(teamRulesDir)) return;
@@ -89,8 +99,29 @@ async function syncRulesToLocal(
 
       const localFilePath = path.join(rulesDir, file);
       // The team repo always stores the tool-neutral `.md`.
-      const teamRelPath = `rules/${name}.md`;
-      const teamFilePath = path.join(teamRulesDir, `${name}.md`);
+      let teamRelPath = `rules/${name}.md`;
+      let teamFilePath = path.join(teamRulesDir, `${name}.md`);
+
+      // Same redirect as RulesHandler.scanLocalForPush, through the same
+      // resolver: a root-level rule this machine pushed lives under rules/<ns>/
+      // in the team repo, and both sides must compare against that file or the
+      // scan reverts a teammate's update.
+      const placed = placedResourcePath(placedRules, 'rules', name);
+      let viaRecord = false;
+      if (placed && await pathExists(path.join(repoPath, placed))) {
+        teamRelPath = placed;
+        teamFilePath = path.join(repoPath, placed);
+        viaRecord = true;
+      }
+      // A placement that landed after the last pull did not exist at
+      // `lastPullRev`, yet the author's root copy is exactly what landed. Its
+      // base is the version the file was added with; without it a teammate's
+      // edit before the author's next pull was skipped here, and the stale
+      // copy went back over it (#649 review).
+      const baseVersion = async (): Promise<Buffer | null> => (
+        await getFileContentAtRev(repoPath, lastPullRev, teamRelPath)
+        ?? (viaRecord ? await getFileContentWhenAdded(repoPath, teamRelPath) : null)
+      );
 
       // Only process files that exist in both places but differ
       if (!await pathExists(teamFilePath)) continue;
@@ -100,7 +131,7 @@ async function syncRulesToLocal(
         if (localRaw === null || teamRaw === null) continue;
         if (cursorMdcBodyEqualsTeamMd(localRaw, teamRaw)) continue;
 
-        const oldContent = await getFileContentAtRev(repoPath, lastPullRev, teamRelPath);
+        const oldContent = await baseVersion();
         if (oldContent === null) continue; // Didn't exist at lastPullRev — ambiguous, skip
 
         // Compare bodies: the local `.mdc` never matched the team `.md` byte for byte.
@@ -114,7 +145,7 @@ async function syncRulesToLocal(
       if (await fileContentEqual(localFilePath, teamFilePath)) continue;
 
       // They differ — check if local matches the old team repo version
-      const oldContent = await getFileContentAtRev(repoPath, lastPullRev, teamRelPath);
+      const oldContent = await baseVersion();
       if (oldContent === null) continue; // File didn't exist at lastPullRev — ambiguous, skip
 
       if (await fileContentEqualToBuffer(localFilePath, oldContent)) {

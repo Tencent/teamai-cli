@@ -280,6 +280,26 @@ describe('runMigration', () => {
     expect(await fse.pathExists(path.join(partition, '.update-lock'))).toBe(false);
   });
 
+  it('ignores lock artifacts that come and go while it copies (#760)', async () => {
+    await seedLegacyLayout();
+    // A contending pull's temp file for the exclusive create, a reclaim
+    // sentinel and a reclaim temp: each can appear or vanish mid-copy.
+    const uuid = '3f2a9c1e-7b4d-4e8a-9c6f-0d1e2f3a4b5c';
+    const artifacts = [
+      `.sync-lock.${uuid}.tmp`, '.sync-lock.sentinel', `.sync-lock.sentinel.reclaim-${uuid}`,
+      `.sync-lock.sentinel.${uuid}.tmp`, `.update-lock.new-${uuid}`,
+    ];
+    for (const name of [...artifacts, '.update-lock.backup']) {
+      await fse.writeFile(path.join(legacyDir, name), '{}');
+    }
+    const plan = await planMigration(repoRoot);
+    await runMigration(plan!);
+    const partition = projectDataHome(repoRoot);
+    // Only the lock artifacts stay behind; a look-alike entry of the user's travels.
+    expect((await fse.readdir(partition)).filter((n) => n.startsWith('.sync-lock') || n.startsWith('.update-lock')))
+      .toEqual(['.update-lock.backup']);
+  });
+
   it('carries contributions that are not published yet', async () => {
     await seedLegacyLayout();
     // Unlike a worktree, the queue holds work the member has already done and

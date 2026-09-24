@@ -51,4 +51,37 @@ servers:
     const defs = await parseTeamMcpServers(repo);
     expect(defs[0].roles).toEqual([]);
   });
+
+  it('carries an optional projects list through, and leaves it undefined when omitted', async () => {
+    await writeMcpYaml(`
+servers:
+  - name: checkout-db
+    transport: http
+    url: https://example.com/checkout
+    projects: [checkout]
+  - name: shared
+    transport: http
+    url: https://example.com/api/mcp
+`);
+    const defs = await parseTeamMcpServers(repo);
+    expect(defs.map((d) => d.projects)).toEqual([['checkout'], undefined]);
+  });
+
+  it('accepts an empty projects list (matches nobody) and both axes on one server', async () => {
+    await writeMcpYaml(`
+servers:
+  - name: nobody
+    transport: http
+    url: https://example.com/api/mcp
+    projects: []
+  - name: both
+    transport: http
+    url: https://example.com/both
+    roles: [frontend]
+    projects: [checkout]
+`);
+    const defs = await parseTeamMcpServers(repo);
+    expect(defs[0].projects).toEqual([]);
+    expect(defs[1]).toMatchObject({ roles: ['frontend'], projects: ['checkout'] });
+  });
 });

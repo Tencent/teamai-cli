@@ -4,13 +4,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const SKILL_DIR = path.join(ROOT, 'skills', 'team-wiki-codebase');
+const SKILL_DIR = path.join(ROOT, 'skill-data', 'wiki');
 
 const SKILL_FILES = [
   path.join(SKILL_DIR, 'SKILL.md'),
-  path.join(SKILL_DIR, 'README.md'),
+  path.join(SKILL_DIR, 'references', 'overview.md'),
+  path.join(SKILL_DIR, 'references', 'phases', 'phase0-init.md'),
   path.join(SKILL_DIR, 'references', 'methodology', 'phase0-collection.md'),
 ] as const;
+
+/** Phase 0's procedure moved out of SKILL.md into its own reference (#678). */
+const PHASE0_FILES = SKILL_FILES.filter((f) => !f.endsWith(path.join('wiki', 'SKILL.md')));
 
 const FORBIDDEN_REQUIRED_COMMANDS = [
   'team-wiki compile code',
@@ -20,7 +24,7 @@ const FORBIDDEN_REQUIRED_COMMANDS = [
   'team-wiki refresh',
 ] as const;
 
-describe('team-wiki-codebase builtin skill (issue #360 slice 1)', () => {
+describe('wiki builtin skill content (issue #360 slice 1)', () => {
   it('ships the packaged skill files', () => {
     for (const file of SKILL_FILES) {
       expect(fs.existsSync(file), file).toBe(true);
@@ -28,7 +32,7 @@ describe('team-wiki-codebase builtin skill (issue #360 slice 1)', () => {
   });
 
   it('tells Phase 0 to run teamai codebase --extract', () => {
-    for (const file of SKILL_FILES) {
+    for (const file of PHASE0_FILES) {
       const text = fs.readFileSync(file, 'utf8');
       expect(text, file).toContain('teamai codebase --extract');
     }

@@ -12,6 +12,7 @@ vi.mock('../utils/logger.js', () => ({
     debug: vi.fn(),
     dim: vi.fn(),
   },
+  setStderrOnly: vi.fn(() => false),
 }));
 
 import type { LocalConfig, TeamaiConfig } from '../types.js';
@@ -85,9 +86,19 @@ function captureLogs() {
   };
 }
 
-async function runSkillShow(name: string, fx: Fixture): Promise<string[]> {
-  vi.doMock('../config.js', () => ({
-    autoDetectInit: async () => ({ localConfig: fx.localConfig, teamConfig: fx.teamConfig }),
+async function runSkillShow(
+  name: string,
+  fx: Fixture,
+  config: { unreadableProjectConfig?: string; loadError?: Error; loads?: { count: number } } = {},
+): Promise<string[]> {
+  vi.doMock('../config.js', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../config.js')>()),
+    autoDetectInit: async () => {
+      if (config.loads) config.loads.count += 1;
+      if (config.loadError) throw config.loadError;
+      return { localConfig: fx.localConfig, teamConfig: fx.teamConfig };
+    },
+    findUnreadableProjectConfig: async () => config.unreadableProjectConfig ?? null,
   }));
   const { skillShow } = await import('../skill-cmd.js');
   const cap = captureLogs();
@@ -145,6 +156,118 @@ describe('skillShow locator', () => {
     expect(text).toContain('[local-only]');
     expect(text).toContain('agent-side desc');
     expect(text).toContain('claude');
+  });
+
+  it("prefers a member's own skill over a packaged name or alias", async () => {
+    // `codebase` aliases the wiki skill and `share` is served by the CLI, but a
+    // directory a member created under either name is the skill they mean.
+    const claudeSkillsDir = path.join(fx.homeDir, '.claude', 'skills');
+    await fse.ensureDir(claudeSkillsDir);
+    await makeSkill(claudeSkillsDir, 'codebase', 'my own codebase notes');
+    await makeSkill(claudeSkillsDir, 'share', 'my own sharing helper');
+
+    for (const [name, description] of [['codebase', 'my own codebase notes'], ['share', 'my own sharing helper']]) {
+      const text = (await runSkillShow(name, fx)).join('\n');
+      expect(text, name).toContain(description);
+      expect(text, name).toContain('[local-only]');
+      expect(text, name).not.toContain('skill-data');
+      // `share` is recall-gated in the package; a member's own skill is not.
+      expect(process.exitCode, name).toBe(0);
+    }
+  });
+
+  it('classifies a skill served from the package as builtin', async () => {
+    // Only the deployed stub is in BUILTIN_SKILL_NAMES; the served workflows
+    // are built in by where they were found, not by name.
+    const lines = await runSkillShow('core', fx);
+    const text = lines.join('\n');
+    expect(text).toContain('Source       : [builtin]');
+    expect(text).toContain('Read it with : teamai skill get core');
+    expect(text).not.toContain('[local-only]');
+  });
+
+  it('refuses share while recall is disabled, like skill get and skill path do', async () => {
+    // The fixture's team has no recall setting, so it is off by default.
+    const lines = await runSkillShow('share', fx);
+    expect(process.exitCode).toBe(1);
+    expect(lines.find((l) => l.includes('skill: share'))).toBeUndefined();
+    expect(lines.join('\n')).not.toContain('skill-data');
+    process.exitCode = 0;
+  });
+
+  it('refuses a legacy share directory a pull has not pruned yet, instead of showing its path', async () => {
+    // A pre-stub release wrote this; it is the CLI's stale copy, not the
+    // member's skill, so the name must go through the packaged gate.
+    const claudeSkillsDir = path.join(fx.homeDir, '.claude', 'skills');
+    await makeSkill(claudeSkillsDir, 'teamai-share-learnings', 'old share workflow');
+
+    const lines = await runSkillShow('teamai-share-learnings', fx);
+    expect(process.exitCode).toBe(1);
+    expect(lines.join('\n')).not.toContain(path.join(claudeSkillsDir, 'teamai-share-learnings'));
+    process.exitCode = 0;
+  });
+
+  it('refuses share under a broken project config before searching the user config it falls back to', async () => {
+    // Detection skips the broken project file and answers with the user config:
+    // another team's repo and agents, where a `share` directory is not the one
+    // this project would mean.
+    fx.localConfig.recallEnabled = true;
+    await makeSkill(path.join(fx.repoPath, 'skills'), 'share', 'the other team share skill');
+    await makeSkill(path.join(fx.homeDir, '.claude', 'skills'), 'share', 'a user-scope share skill');
+
+    const stderr: string[] = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      stderr.push(args.join(' '));
+    });
+    let text: string;
+    try {
+      text = (await runSkillShow('share', fx, { unreadableProjectConfig: '/work/proj/.teamai/config.yaml: bad indentation' })).join('\n');
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(process.exitCode).toBe(1);
+    expect(text).not.toContain('skill: share');
+    expect(text).not.toContain(fx.repoPath);
+    expect(stderr.join('\n')).toContain('/work/proj/.teamai/config.yaml: bad indentation');
+    process.exitCode = 0;
+  });
+
+  it('does not search the team the user config names while the project config is unreadable', async () => {
+    await makeSkill(path.join(fx.repoPath, 'skills'), 'other-team-skill', 'belongs to the user-scope team');
+
+    const text = (await runSkillShow('other-team-skill', fx, { unreadableProjectConfig: '/work/proj/.teamai/config.yaml: bad indentation' })).join('\n');
+    const { log } = await import('../utils/logger.js');
+    expect(process.exitCode).toBe(1);
+    expect(text).not.toContain(fx.repoPath);
+    expect(vi.mocked(log.dim)).toHaveBeenCalledWith(expect.stringContaining('/work/proj/.teamai/config.yaml: bad indentation'));
+    process.exitCode = 0;
+  });
+
+  it('shows a packaged skill when the config cannot be loaded, and says what failed instead of throwing', async () => {
+    const loadError = new Error('The teamai config at /h/.teamai/config.yaml could not be read: it is empty.');
+
+    const text = (await runSkillShow('core', fx, { loadError })).join('\n');
+    const { log } = await import('../utils/logger.js');
+    expect(text).toContain('skill: core');
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(expect.stringContaining('could not be read: it is empty'));
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  it('loads the config once for share, so a broken one is reported once', async () => {
+    fx.localConfig.recallEnabled = true;
+    const loads = { count: 0 };
+    await runSkillShow('share', fx, { loads });
+    expect(loads.count).toBe(1);
+  });
+
+  it('shows share once recall is enabled', async () => {
+    fx.localConfig.recallEnabled = true;
+    const lines = await runSkillShow('share', fx);
+    const text = lines.join('\n');
+    expect(process.exitCode).toBe(0);
+    expect(text).toContain('skill: share');
+    expect(text).toContain('Source       : [builtin]');
   });
 
   it('exits with non-zero code when skill not found', async () => {

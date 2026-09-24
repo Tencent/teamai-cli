@@ -82,7 +82,7 @@ describe('teamai codebase extract CLI (issue #360 slice 1)', () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-local-workflow-'));
     const caller = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-caller-'));
     try {
-      const skill = fs.readFileSync(path.join(ROOT, 'skills/team-wiki-codebase/SKILL.md'), 'utf8');
+      const skill = fs.readFileSync(path.join(ROOT, 'skill-data/wiki/SKILL.md'), 'utf8');
       const commands = [...skill.matchAll(/`(teamai codebase [^`]+)`/g)].map(match => match[1]);
       const refresh = commands.find(command => command.includes('--incremental'));
       const lint = commands.find(command => command.includes('--lint'));
@@ -147,7 +147,7 @@ describe('teamai codebase reconcile CLI (issue #360 slice 2)', () => {
       const help = await runCLI(['codebase', '--help']);
       expect(help.code, help.output).toBe(0);
       expect(help.stdout).toContain('--reconcile');
-      const skill = fs.readFileSync(path.join(ROOT, 'skills/team-wiki-codebase/SKILL.md'), 'utf8');
+      const skill = fs.readFileSync(path.join(ROOT, 'skill-data/wiki/SKILL.md'), 'utf8');
       const command = [...skill.matchAll(/`(teamai codebase [^`]+)`/g)]
         .map(match => match[1])
         .find(candidate => candidate.includes('--reconcile'));
@@ -294,7 +294,7 @@ describe('teamai codebase deep-enrich CLI (issue #360 slice 3)', () => {
     expect(help.code, help.output).toBe(0);
     expect(help.stdout).toContain('--deep-enrich');
 
-    const skill = fs.readFileSync(path.join(ROOT, 'skills/team-wiki-codebase/SKILL.md'), 'utf8');
+    const skill = fs.readFileSync(path.join(ROOT, 'skill-data/wiki/SKILL.md'), 'utf8');
     const command = [...skill.matchAll(/`(teamai codebase [^`]+)`/g)]
       .map(match => match[1])
       .find(candidate => candidate.includes('--deep-enrich'));

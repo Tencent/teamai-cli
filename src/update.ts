@@ -11,7 +11,7 @@ import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { log } from './utils/logger.js';
 import { expandHome, ensureDir } from './utils/fs.js';
 import { getUpdateLockPath } from './types.js';
-import { askConfirmation } from './utils/prompt.js';
+import { askConfirmation, isInteractive } from './utils/prompt.js';
 
 // `getCurrentVersion` and `getCurrentPackageName` live in `./package-info.ts`
 // so both this module and the provider registry can read package metadata
@@ -215,7 +215,10 @@ function parseLockContent(content: string): { pid: number; owner?: string } | nu
   const trimmed = content.trim();
   if (!trimmed) return null;
   try {
-    const parsed = JSON.parse(trimmed) as Partial<LockPayload>;
+    const json: unknown = JSON.parse(trimmed);
+    // Legacy format: a bare PID, which is valid JSON too.
+    if (typeof json === 'number') return Number.isInteger(json) ? { pid: json } : null;
+    const parsed = json as Partial<LockPayload>;
     if (typeof parsed.pid === 'number' && !isNaN(parsed.pid)) {
       return { pid: parsed.pid, owner: typeof parsed.owner === 'string' ? parsed.owner : undefined };
     }
@@ -228,34 +231,83 @@ function parseLockContent(content: string): { pid: number; owner?: string } | nu
 }
 
 /**
- * Inspect the lock at `resolved` and report whether it is stale — its owning
- * process is gone, or its contents are unparseable (so no live owner can be
- * confirmed). A missing file is also "stale" (nothing holds it). This is a pure
- * read; it never mutates the lock.
+ * Inspect the lock at `resolved`: held by a live process, stale (its owning
+ * process is gone), or missing. This is a pure read; it never mutates the lock.
+ *
+ * Only a verdict of stale lets a reclaimer rename over the lock, so only a
+ * lock whose owner is provably gone reads as stale (#760). Anything that
+ * cannot name a dead owner is held: a file that cannot be read (EACCES, e.g.
+ * another user's 0600 lock), an empty or partly written one (its creator may
+ * still be writing it: the O_EXCL fallback and older teamai open the file
+ * before writing), and a pid that exists but belongs to another user (EPERM).
+ * A lock that names no owner, or cannot be read, stays until removed by hand
+ * if a crash left it, so it is named in a warning.
  */
-async function isLockStale(resolved: string): Promise<boolean> {
+async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
   let content: string;
   try {
     content = await fse.readFile(resolved, 'utf-8');
-  } catch {
-    // File vanished between EEXIST and read — treat as reclaimable.
-    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return 'missing';
+    log.warn(`${resolved} cannot be read (${code}); treating it as held. Remove it if no teamai process is running.`);
+    return 'live';
   }
   const parsed = parseLockContent(content);
-  if (!parsed) return true; // unparseable → no confirmable live owner
+  if (!parsed) {
+    log.warn(`${resolved} names no owner; treating it as held. Remove it if no teamai process is running.`);
+    return 'live';
+  }
   try {
     process.kill(parsed.pid, 0);
-    return false; // process alive → lock genuinely held
-  } catch {
-    return true; // ESRCH → owning process is gone
+    return 'live'; // process alive → lock genuinely held
+  } catch (err) {
+    // EPERM: alive, owned by another user. ESRCH: the owning process is gone.
+    return (err as NodeJS.ErrnoException).code === 'EPERM' ? 'live' : 'stale';
   }
 }
 
 /**
+ * Create the lock, or report who has it. A lock released between the failed
+ * create and the read gets one more create: renaming over it could replace a
+ * lock a third process just made, and reporting busy would turn a free lock
+ * away (#760).
+ */
+async function createOrInspect(resolved: string, payload: string): Promise<'acquired' | 'live' | 'stale'> {
+  if (await exclusiveCreate(resolved, payload)) return 'acquired';
+  const state = await lockState(resolved);
+  if (state !== 'missing') return state;
+  return (await exclusiveCreate(resolved, payload)) ? 'acquired' : 'live';
+}
+
+/**
  * Atomic exclusive create. Returns true when this call created the file, false
- * when it already existed (EEXIST). Any other error propagates.
+ * when it already existed (EEXIST). Any error other than EEXIST from the O_EXCL
+ * create propagates.
+ *
+ * The payload is written to a private temp file first and hard-linked to
+ * `target`, which fails with EEXIST exactly like O_EXCL, so the lock never
+ * exists without its content (#760): a contender never sees a lock that names
+ * no owner, and an older teamai, which reclaims such a lock at once, cannot take
+ * it over mid-create. A filesystem without hard links falls
+ * back to O_EXCL, where the file is opened before it is written; lockState
+ * never reclaims such a file while it names no dead owner.
  */
 async function exclusiveCreate(target: string, payload: string): Promise<boolean> {
+  const tmp = `${target}.${randomUUID()}.tmp`;
+  await fse.writeFile(tmp, payload);
+  try {
+    await fse.link(tmp, target);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    return exclusiveCreateInPlace(target, payload);
+  } finally {
+    await fse.remove(tmp).catch(() => {});
+  }
+}
+
+async function exclusiveCreateInPlace(target: string, payload: string): Promise<boolean> {
   try {
     await fse.writeFile(target, payload, { flag: 'wx' });
     return true;
@@ -302,7 +354,7 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
   } satisfies LockPayload);
   if (await exclusiveCreate(sentinel, payload)) return true;
   // Sentinel is held. Only reclaim it if its holder is gone.
-  if (!(await isLockStale(sentinel))) return false;
+  if ((await lockState(sentinel)) !== 'stale') return false;
   try {
     await fse.rename(sentinel, `${sentinel}.reclaim-${owner}`);
   } catch {
@@ -315,16 +367,17 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
 /**
  * Try to acquire a lock. Returns false if another live process holds it.
  *
- * The happy path is a single atomic exclusive create (`writeFile(..., { flag: 'wx' })`
- * = O_CREAT|O_EXCL), so exactly one racing process wins an uncontended lock — this
- * replaces the previous check-then-write, where two processes could both observe
- * "no lock" and both succeed.
+ * The happy path is a single atomic exclusive create (a fully written temp file
+ * hard-linked to the lock name, or O_CREAT|O_EXCL without hard links), so exactly
+ * one racing process wins an uncontended lock — this replaces the previous
+ * check-then-write, where two processes could both observe "no lock" and both
+ * succeed.
  *
- * Reclaiming a STALE lock (dead owner / unparseable content) is serialized behind
- * a reclaim sentinel and completed with an atomic rename-into-place, so concurrent
- * reclaimers cannot each end up believing they hold the lock. (A residual, benign
- * window exists only if the reclaiming process itself crashes mid-reclaim; the
- * sentinel's dead-pid recovery bounds that.)
+ * Reclaiming a STALE lock (its owner is provably dead; see lockState) is serialized
+ * behind a reclaim sentinel and completed with an atomic rename-into-place, so
+ * concurrent reclaimers cannot each end up believing they hold the lock. (A
+ * residual window exists only if the reclaiming process itself dies mid-reclaim:
+ * stealing its dead-pid sentinel is not yet race-free, see #760.)
  */
 export async function acquireLock(lockPath?: string): Promise<boolean> {
   const resolved = lockPath ?? expandHome(getUpdateLockPath());
@@ -342,24 +395,26 @@ export async function acquireLock(lockPath?: string): Promise<boolean> {
   }
 
   try {
-    // Fast path: no lock present.
-    if (await exclusiveCreate(resolved, payload)) {
+    // Fast path: no lock present. A live holder means busy; only a stale lock
+    // may be reclaimed.
+    const first = await createOrInspect(resolved, payload);
+    if (first === 'acquired') {
       heldLockOwners.set(resolved, owner);
       return true;
     }
-    // A lock exists. A live holder means busy; only a stale one may be reclaimed.
-    if (!(await isLockStale(resolved))) return false;
+    if (first === 'live') return false;
 
     // Serialize the reclaim so only one process takes over the stale lock.
     const sentinel = `${resolved}.sentinel`;
     if (!(await acquireReclaimSentinel(sentinel, owner))) return false;
     try {
       // Re-evaluate now that we are the sole reclaimer.
-      if (await exclusiveCreate(resolved, payload)) {
+      const second = await createOrInspect(resolved, payload);
+      if (second === 'acquired') {
         heldLockOwners.set(resolved, owner);
         return true; // stale lock had vanished
       }
-      if (!(await isLockStale(resolved))) return false; // became live under us
+      if (second === 'live') return false; // became live under us
       // Still stale and present, and no other reclaimer can race us: replace it
       // atomically (write to a temp sibling, then rename over the stale file, so
       // the lock is never momentarily absent for a fresh acquirer to slip into).
@@ -471,7 +526,7 @@ export async function doUpdate(): Promise<void> {
   }
 
   if (policy === 'prompt') {
-    if (!process.stdin.isTTY) {
+    if (!isInteractive()) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
       return;
     }

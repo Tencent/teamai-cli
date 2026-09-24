@@ -6,7 +6,10 @@ import path from 'node:path';
 import type { TeamaiConfig } from '../types.js';
 
 const mockLoadTeamConfig = vi.fn();
-vi.mock('../config.js', () => ({ loadTeamConfig: mockLoadTeamConfig }));
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  loadTeamConfig: mockLoadTeamConfig,
+}));
 
 // spawn is mocked with a passthrough default, so the awaited-mode tests keep
 // real child processes; the interactive test shadows it for one call. The

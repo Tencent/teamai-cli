@@ -32,7 +32,7 @@ import {
 } from './resources/mcp-format.js';
 import { parseTeamMcpServers } from './resources/mcp.js';
 import { isToolInstalledForConfig } from './resources/base.js';
-import { activeRoleIds, matchesRoles, warnUnknownRoleIds } from './roles.js';
+import { matchesMembership, resolveMembership, warnUnknownMembershipIds, type Membership } from './membership.js';
 import {
   readJson,
   writeJsonAtomic,
@@ -343,8 +343,11 @@ export interface DesiredMcpEntry {
 export interface DesiredMcpContext {
   sharing: ReturnType<typeof getMcpSharing>;
   excluded: Set<string>;
-  /** null when the member has no role: every `roles:` entry then applies. */
-  activeRoles: string[] | null;
+  /**
+   * Both membership axes. A null axis means the member has not configured it,
+   * so every entry scoped on that axis applies — see `resolveMembership`.
+   */
+  membership: Membership;
   vars: Record<string, string>;
   lookPath?: McpReconcileOptions['lookPath'];
 }
@@ -357,7 +360,7 @@ export async function buildDesiredMcpContext(
   return {
     sharing: getMcpSharing(teamConfig),
     excluded: new Set(localConfig.excludedSkills ?? []),
-    activeRoles: activeRoleIds(localConfig),
+    membership: resolveMembership(localConfig),
     vars: await buildVarTable(localConfig),
     lookPath: options.lookPath,
   };
@@ -382,7 +385,7 @@ export function desiredMcpForTarget(
 
   for (const raw of teamDefs) {
     if (raw.tools && !raw.tools.includes(target.tool)) continue;
-    if (!matchesRoles(raw.roles, ctx.activeRoles)) continue;
+    if (!matchesMembership(raw, ctx.membership)) continue;
     if (ctx.excluded.has(raw.name)) {
       skipped.push({ tool: target.tool, server: raw.name, action: 'skipped', reason: 'excluded by user' });
       continue;
@@ -509,10 +512,10 @@ export async function reconcileMcpForConfig(
   }
 
   if (!removeAll) {
-    await warnUnknownRoleIds(
+    await warnUnknownMembershipIds(
       localConfig.repo.localPath,
       'mcp.yaml',
-      teamDefs.map((def) => ({ kind: 'server', name: def.name, roles: def.roles })),
+      teamDefs.map((def) => ({ kind: 'server', name: def.name, roles: def.roles, projects: def.projects })),
     );
   }
   const targets = await resolveMcpTargets(teamConfig, localConfig);

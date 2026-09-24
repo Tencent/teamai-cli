@@ -75,7 +75,7 @@
 1. `src/types.ts` — LearningDoc, SearchIndex types
 2. `src/utils/search-index.ts` — buildIndex(), loadIndex(), search() with Intl.Segmenter
 3. `src/pull.ts` — syncLearnings() step + index rebuild
-4. `skills/teamai-share-learnings/SKILL.md` — frontmatter 标准化
+4. `skill-data/share/SKILL.md` — frontmatter 标准化（由 `teamai skill get share` 提供，不再部署到各 agent）
 5. Tests: index build, search, CJK, edge cases
 
 ### Phase 2: Recall + Voting

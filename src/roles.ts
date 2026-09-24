@@ -1,21 +1,23 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { readFileSafe, ensureDir, writeFile } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { ensureDir, writeFile } from './utils/fs.js';
+import { NamespaceSegmentSchema, parseManifest, readManifestFile, assertNoCaseAliasedNamespaces, type NamespaceEntry } from './manifest-schema.js';
 
 const ROLE_RESOURCE_TYPES = ['knowledge', 'skills', 'agents'] as const;
 
 export type RoleResourceType = typeof ROLE_RESOURCE_TYPES[number];
 
 const RoleResourceNamespacesSchema = z.object({
-  knowledge: z.array(z.string().min(1)),
-  skills: z.array(z.string().min(1)),
+  knowledge: z.array(NamespaceSegmentSchema),
+  skills: z.array(NamespaceSegmentSchema),
   // Optional: a role without `agents` receives root-level agents only, which
   // is what every manifest written before this key existed already got.
-  agents: z.array(z.string().min(1)).default([]),
+  agents: z.array(NamespaceSegmentSchema).default([]),
   // learnings is accepted for backward compatibility but ignored at runtime.
   // All learnings are shared flat across the entire team (no namespace isolation).
+  // It never becomes a directory here, so it stays a plain string: holding an old
+  // manifest to the namespace rule would reject it over a field nothing reads.
   learnings: z.array(z.string()).optional(),
 });
 
@@ -80,7 +82,7 @@ function validateManifestShape(raw: unknown): RolesManifest {
     }
   }
 
-  const manifest = RolesManifestSchema.parse(raw);
+  const manifest = parseManifest(RolesManifestSchema, raw, 'roles');
   const ids = new Set<string>();
   for (const role of manifest.roles) {
     if (ids.has(role.id)) {
@@ -88,15 +90,42 @@ function validateManifestShape(raw: unknown): RolesManifest {
     }
     ids.add(role.id);
   }
+  assertNoCaseAliasedNamespaces(roleNamespaceEntries(manifest), 'roles manifest');
 
   return manifest;
 }
 
+/** Every namespace a roles manifest puts to use, with the role that declares it. */
+export function roleNamespaceEntries(manifest: RolesManifest): NamespaceEntry[] {
+  return manifest.roles.flatMap((role) =>
+    ROLE_RESOURCE_TYPES.flatMap((type) =>
+      role.resources[type].map((namespace) => ({ type, namespace, owner: `role ${role.id}` })),
+    ),
+  );
+}
+
+/**
+ * The team repo has no `manifest/roles.yaml` at all — a team that does not use
+ * roles, not a broken one. Callers that relax filtering must react to this case
+ * ONLY: doing the same for a manifest that exists but cannot be read or parsed
+ * would hand out every namespace the manifest was written to gate on pull, and
+ * send a new rule or agent to the shared root on push (#649).
+ */
+export class RolesManifestNotFoundError extends Error {
+  constructor(manifestPath: string) {
+    super(`Roles manifest not found: ${manifestPath}`);
+    this.name = 'RolesManifestNotFoundError';
+  }
+}
+
 export async function loadRolesManifest(repoPath: string): Promise<RolesManifest> {
   const manifestPath = path.join(repoPath, 'manifest', 'roles.yaml');
-  const content = await readFileSafe(manifestPath);
-  if (!content) {
-    throw new Error(`Roles manifest not found: ${manifestPath}`);
+  // Absence is the only case that may relax filtering downstream, so it is the
+  // only one that becomes RolesManifestNotFoundError: an unreadable or empty file
+  // throws a plain error and fails the pull or push.
+  const content = await readManifestFile(manifestPath, 'roles');
+  if (content === null) {
+    throw new RolesManifestNotFoundError(manifestPath);
   }
 
   let raw: unknown;
@@ -107,6 +136,25 @@ export async function loadRolesManifest(repoPath: string): Promise<RolesManifest
   }
 
   return validateManifestShape(raw);
+}
+
+/**
+ * The roles manifest, or `null` when the team has none.
+ *
+ * Mirrors `loadProjectsManifest`'s contract: absent is a value, invalid is an
+ * error. `loadRolesManifest` throws for both, which callers that must tell them
+ * apart cannot use — a team with no roles.yaml is ordinary, while one whose
+ * roles.yaml does not parse deserves to be told why.
+ */
+export async function loadRolesManifestIfPresent(repoPath: string): Promise<RolesManifest | null> {
+  // Only absence relaxes to null: a manifest that exists but cannot be read or
+  // parsed is a failure to report, not a team without roles.
+  try {
+    return await loadRolesManifest(repoPath);
+  } catch (error) {
+    if (error instanceof RolesManifestNotFoundError) return null;
+    throw error;
+  }
 }
 
 export async function saveRolesManifest(repoPath: string, manifest: RolesManifest): Promise<void> {
@@ -181,49 +229,13 @@ export function resolveRoleResourceNamespaces(input: {
  * Role ids this member holds, primary first, or null when no primary role is
  * configured. Null means "no role filter": a member without a role keeps
  * receiving every resource, the same fallback pull applies to skills and rules.
+ * A config whose role could not be resolved (`roleUnresolved`) holds none:
+ * `[]` matches no role-scoped entry.
  */
-export function activeRoleIds(localConfig: { primaryRole?: string; additionalRoles?: string[] }): string[] | null {
+export function activeRoleIds(
+  localConfig: { primaryRole?: string; additionalRoles?: string[]; roleUnresolved?: true },
+): string[] | null {
+  if (localConfig.roleUnresolved) return [];
   if (!localConfig.primaryRole) return null;
   return [...new Set([localConfig.primaryRole, ...(localConfig.additionalRoles ?? [])])];
-}
-
-/**
- * Does an entry with an optional `roles:` list apply to this member? Mirrors
- * the `tools:` filter: omitted = everyone, an empty list = nobody. A null
- * active set (no role configured) matches everything, see activeRoleIds.
- */
-export function matchesRoles(entryRoles: string[] | undefined, active: string[] | null | undefined): boolean {
-  if (!entryRoles || active == null) return true;
-  return entryRoles.some((role) => active.includes(role));
-}
-
-/** `${file}:${role}` pairs already reported in this process (pull runs each
- *  reconciler once per scope; the member should read the warning once). */
-const reportedUnknownRoles = new Set<string>();
-
-/**
- * Warn once per pull for each role id that an entry's `roles:` names but
- * roles.yaml does not define. A typo would otherwise ship the entry to nobody
- * in silence. Never fails the run: without a readable manifest there is
- * nothing to check against.
- */
-export async function warnUnknownRoleIds(
-  repoPath: string,
-  file: string,
-  entries: Array<{ kind: string; name: string; roles?: string[] }>,
-): Promise<void> {
-  if (!entries.some((entry) => entry.roles && entry.roles.length > 0)) return;
-  let known: Set<string>;
-  try {
-    known = new Set(listRoleIds(await loadRolesManifest(repoPath)));
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    for (const role of entry.roles ?? []) {
-      if (known.has(role) || reportedUnknownRoles.has(`${file}:${role}`)) continue;
-      reportedUnknownRoles.add(`${file}:${role}`);
-      log.warn(`roles: unknown role id "${role}" in ${file} ${entry.kind} "${entry.name}". Valid roles: ${[...known].join(', ')}`);
-    }
-  }
 }

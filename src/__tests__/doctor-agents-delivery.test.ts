@@ -3,10 +3,13 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   detectProjectConfig: vi.fn().mockResolvedValue(null),
   loadLocalConfig: vi.fn(),
   loadTeamConfig: vi.fn(),
+  // resolveDesiredAgents reads placement records to mirror what pull delivers.
+  loadStateForScope: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('../utils/logger.js', () => ({

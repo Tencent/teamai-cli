@@ -1,29 +1,10 @@
 import path from 'node:path';
-import { COPILOT_TOOL_ID, getCopilotHome, resolveToolBaseDir } from '../types.js';
+import { COPILOT_TOOL_ID, getCopilotHome, resolveToolBaseDir, toolInstallRoot } from '../types.js';
 import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
 
 const TOMBSTONE_FILE = '.removed';
-
-/**
- * The directory whose existence marks a tool as "installed" for a given
- * resource path. The tool root is normally the first path segment
- * (`.claude/skills` → `.claude`, `.openclaw/workspace/AGENTS.md` → `.openclaw`).
- *
- * The one exception is OpenCode's user scope, whose paths live under
- * `.config/opencode/...`: there the first segment (`.config`) is a directory
- * nearly every user has, so it would wrongly report OpenCode as installed.
- * For a `.config/<tool>/...` path the root is the first two segments
- * (`.config/opencode`) instead.
- */
-export function toolInstallRoot(toolPath: string): string {
-  const segments = toolPath.split('/');
-  if (segments[0] === '.config' && segments.length > 1) {
-    return `${segments[0]}/${segments[1]}`;
-  }
-  return segments[0] ?? toolPath;
-}
 
 /** Detect an installed tool while respecting tool-specific user roots. */
 export async function isToolInstalledForConfig(
@@ -45,6 +26,18 @@ export async function isToolInstalledForConfig(
  * Abstract base class for resource handlers.
  * Each resource type (skills, rules, docs, env, agents, hooks, mcp) implements this.
  */
+/**
+ * What `push` knows before it scans. Only the destination an explicit
+ * `--role`/`--project` names, and only agents read it: their scan has to
+ * decide which team file a local edit is an edit OF, and that answer changes
+ * when the user has named a namespace (see `AgentsHandler.scanLocalForPush`).
+ * Rules and skills are placed after selection, so their scan needs nothing.
+ */
+export interface ScanForPushOptions {
+  /** The namespace `--role <ns>` / `--project <id>` resolved to, if any. */
+  namespace?: string;
+}
+
 export abstract class ResourceHandler {
   abstract readonly type: ResourceType;
 
@@ -55,6 +48,7 @@ export abstract class ResourceHandler {
   abstract scanLocalForPush(
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
+    options?: ScanForPushOptions,
   ): Promise<ResourceItem[]>;
 
   /**
@@ -93,6 +87,18 @@ export abstract class ResourceHandler {
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<string[]>;
+
+  /**
+   * The name this resource is published under, when the user typed a different
+   * one. `remove` matches what the user types against the team repo, where a
+   * placed resource lives at `<root>/<ns>/<name>`; the author's local copy is
+   * still at the resource root, so they know it by its bare name and `remove`
+   * would answer "not found". Handlers that keep a placement record resolve it
+   * here. Returns null when there is nothing to translate.
+   */
+  async publishedNameFor(_name: string, _localConfig: LocalConfig): Promise<string | null> {
+    return null;
+  }
 
   /**
    * Where `item` lands for each tool that can receive it on this machine.

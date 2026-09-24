@@ -2,11 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
+import { shipped, shippedSkillDigestsMock } from './helpers/shipped-skills.js';
+
+// A CLI-owned file is one whose content a release shipped; `shipped()` is it here.
+vi.mock('../packaged-skill-digests.js', () => shippedSkillDigestsMock());
 
 const mockAutoDetectInit = vi.fn();
 const mockSaveLocalConfigForScope = vi.fn();
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: (...args: unknown[]) => mockAutoDetectInit(...args),
   saveLocalConfigForScope: (...args: unknown[]) => mockSaveLocalConfigForScope(...args),
 }));
@@ -84,6 +89,29 @@ describe('recall toggle native agent cleanup', () => {
     expect(await fse.pathExists(legacyMarkdownAgent)).toBe(false);
   });
 
+  it('disable removes the legacy share skill an earlier release deployed, and nothing beside it', async () => {
+    const { localConfig, teamConfig } = await mockAutoDetectInit();
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig,
+      teamConfig: { ...teamConfig, toolPaths: { codex: { agents: '.codex/agents', skills: '.codex/skills' } } },
+    });
+    const skillsDir = path.join(homeDir, '.codex', 'skills');
+    for (const name of ['teamai-share-learnings', 'team-wiki-codebase', 'teamai', 'my-own']) {
+      await fse.ensureDir(path.join(skillsDir, name));
+      await fse.writeFile(path.join(skillsDir, name, 'SKILL.md'), name === 'my-own' ? '# mine' : shipped(name, 'SKILL.md'));
+    }
+
+    await recallDisable({});
+
+    // Upgrade, then `recall disable` before the first pull: the old share
+    // workflow must not stay discoverable. The stub and the user's skills are
+    // not recall artifacts; the wiki tree is pull's to remove.
+    expect(await fse.pathExists(path.join(skillsDir, 'teamai-share-learnings'))).toBe(false);
+    for (const kept of ['team-wiki-codebase', 'teamai', 'my-own']) {
+      expect(await fse.pathExists(path.join(skillsDir, kept, 'SKILL.md')), kept).toBe(true);
+    }
+  });
+
   it('disable preserves non-agent files that only share the recall stem', async () => {
     const backup = path.join(homeDir, '.codex', 'agents', 'teamai-recall.backup');
     await fse.writeFile(backup, 'user backup');
@@ -138,7 +166,7 @@ describe('recall toggle native agent cleanup', () => {
     await expect(fse.pathExists(path.join(
       copilotHome,
       'skills',
-      'teamai-share-learnings',
+      'teamai',
       'SKILL.md',
     ))).resolves.toBe(true);
 
@@ -155,11 +183,14 @@ describe('recall toggle native agent cleanup', () => {
       'agents',
       'teamai-recall.agent.md',
     ))).resolves.toBe(false);
+    // The deployed stub routes to every workflow, recall-dependent or not, so
+    // disabling recall no longer removes a skill directory.
     await expect(fse.pathExists(path.join(
       copilotHome,
       'skills',
-      'teamai-share-learnings',
-    ))).resolves.toBe(false);
+      'teamai',
+      'SKILL.md',
+    ))).resolves.toBe(true);
   });
 });
 

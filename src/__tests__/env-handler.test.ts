@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 import YAML from 'yaml';
-import { EnvHandler } from '../resources/env.js';
+import { EnvHandler, describeEnvYamlShapeProblem, resolveDeliverableEnvVariables } from '../resources/env.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END } from '../types.js';
 import type { TeamaiConfig, LocalConfig, ResourceItem } from '../types.js';
 
@@ -17,6 +17,23 @@ vi.mock('../utils/logger.js', () => ({
     dim: vi.fn(),
   },
 }));
+
+/**
+ * The source line `generateShellBlock` must emit for a given teamai home.
+ *
+ * Built by mirroring the production transform rather than hard-coding a
+ * separator: the real path is machine-dependent (`C:\Users\...` on Windows,
+ * `/home/...` elsewhere) and the block is asserted from CI runners that are
+ * never Windows, so the expectation has to normalise the same way the source
+ * does. Only Windows-form paths are rewritten — a POSIX home keeps its
+ * backslashes, which are filename characters there, not separators.
+ */
+const expectedSourceLine = (teamaiHome: string): string => {
+  const isWindowsForm = /^[A-Za-z]:[\\/]/.test(teamaiHome) || teamaiHome.startsWith('\\\\');
+  const shellHome = isWindowsForm ? teamaiHome.replace(/\\/g, '/') : teamaiHome;
+  const envShPath = `'${shellHome}/env.sh'`;
+  return `[ -f ${envShPath} ] && source ${envShPath}`;
+};
 
 describe('EnvHandler', () => {
   let handler: EnvHandler;
@@ -37,6 +54,10 @@ describe('EnvHandler', () => {
 
     vi.stubEnv('HOME', homeDir);
     vi.stubEnv('SHELL', '/bin/bash');
+    // These tests exercise the SHELL-based POSIX branch of detectShellProfile;
+    // pin the platform so they assert the same thing on a Windows dev machine
+    // as they do in CI (ubuntu/macos). The win32 branch has its own tests.
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
 
     teamConfig = {
       team: 'test',
@@ -64,6 +85,7 @@ scope: 'user',
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     await fse.remove(tmpDir);
   });
 
@@ -129,6 +151,41 @@ scope: 'user',
 
   // ─── writeEnvYaml ────────────────────────────────────────
 
+  // ─── describeEnvYamlShapeProblem ─────────────────────────
+
+  describe('describeEnvYamlShapeProblem', () => {
+    it('reports a mapping with no variables key but other top-level keys', () => {
+      const warning = describeEnvYamlShapeProblem({ FOO: 'bar', BAZ: 'qux' });
+
+      expect(warning).toContain('no top-level `variables:` key');
+      expect(warning).toContain('`FOO`');
+      expect(warning).toContain('`BAZ`');
+      expect(warning).toContain('`key`/`value`');
+    });
+
+    it('stays silent for a valid variables list', () => {
+      expect(describeEnvYamlShapeProblem({ variables: [{ key: 'A', value: 'b' }] })).toBeNull();
+    });
+
+    it('stays silent when an extra top-level key rides along with variables', () => {
+      // Must stay permissive: a team repo already shipping this shape has to
+      // keep delivering rather than start failing to parse.
+      expect(describeEnvYamlShapeProblem({ variables: [], extra: true })).toBeNull();
+    });
+
+    it('stays silent for an empty or absent mapping', () => {
+      expect(describeEnvYamlShapeProblem({})).toBeNull();
+      expect(describeEnvYamlShapeProblem(null)).toBeNull();
+      expect(describeEnvYamlShapeProblem(undefined)).toBeNull();
+    });
+
+    it('stays silent for documents that are not mappings', () => {
+      expect(describeEnvYamlShapeProblem([])).toBeNull();
+      expect(describeEnvYamlShapeProblem('FOO=bar')).toBeNull();
+      expect(describeEnvYamlShapeProblem(42)).toBeNull();
+    });
+  });
+
   describe('writeEnvYaml', () => {
     it('should write env.yaml correctly', async () => {
       const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
@@ -181,20 +238,127 @@ scope: 'user',
       const count = await handler.countEnvVars(envYamlPath);
       expect(count).toBe(0);
     });
+
+    it('counts the declared total, which the pull summary pairs with the deliverable one', async () => {
+      const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
+      await fse.writeFile(envYamlPath, YAML.stringify({
+        variables: [
+          { key: 'A', value: '1', projects: ['checkout'] },
+          { key: 'B', value: '2', projects: ['billing'] },
+          { key: 'C', value: '3' },
+        ],
+      }));
+
+      // `pullForScope` pairs this with resolveDeliverableEnvVariables to print
+      // "Synced 2 of 3". The count itself stays unfiltered (see #662 above).
+      expect(await handler.countEnvVars(envYamlPath)).toBe(3);
+      const read = await handler.readEnvYaml(envYamlPath);
+      expect(read.ok && resolveDeliverableEnvVariables(read.variables, { roles: null, projects: ['checkout'] }))
+        .toHaveLength(2);
+      expect(read.ok && resolveDeliverableEnvVariables(read.variables, { roles: null, projects: null }))
+        .toHaveLength(3);
+    });
+
+    it('counts what the team declares, not what reaches this member', async () => {
+      // countEnvVars gates the #662 "no variables: key" warning in pull.ts: a
+      // count of 0 means the file may be malformed. Filtering it would fire that
+      // warning at a member scoped out of every variable, on a valid file.
+      const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
+      await fse.writeFile(envYamlPath, YAML.stringify({
+        variables: [
+          { key: 'A', value: '1', projects: ['checkout'] },
+          { key: 'B', value: '2', roles: ['devops'] },
+        ],
+      }));
+
+      expect(await handler.countEnvVars(envYamlPath)).toBe(2);
+    });
+  });
+
+  // ─── membership scoping ──────────────────────────────────
+
+  describe('resolveDeliverableEnvVariables', () => {
+    const variables = [
+      { key: 'CHECKOUT_URL', value: 'c', projects: ['checkout'] },
+      { key: 'BILLING_URL', value: 'b', projects: ['billing'] },
+      { key: 'DEVOPS_TOKEN', value: 'd', roles: ['devops'] },
+      { key: 'FE_CHECKOUT', value: 'f', roles: ['frontend'], projects: ['checkout'] },
+      { key: 'SHARED', value: 's' },
+      { key: 'NOBODY', value: 'n', projects: [] },
+    ];
+    const keys = (m: { roles: string[] | null; projects: string[] | null }) =>
+      resolveDeliverableEnvVariables(variables, m).map((v) => v.key);
+
+    it('delivers every variable to a member who has configured neither axis', () => {
+      expect(keys({ roles: null, projects: null })).toEqual([
+        'CHECKOUT_URL', 'BILLING_URL', 'DEVOPS_TOKEN', 'FE_CHECKOUT', 'SHARED', 'NOBODY',
+      ]);
+    });
+
+    it('delivers a project-scoped variable only to a directory bound to that project', () => {
+      expect(keys({ roles: null, projects: ['checkout'] }))
+        .toEqual(['CHECKOUT_URL', 'DEVOPS_TOKEN', 'FE_CHECKOUT', 'SHARED']);
+    });
+
+    it('delivers a role-scoped variable only to a member holding that role', () => {
+      expect(keys({ roles: ['devops'], projects: null }))
+        .toEqual(['CHECKOUT_URL', 'BILLING_URL', 'DEVOPS_TOKEN', 'SHARED', 'NOBODY']);
+    });
+
+    it('requires both axes when a variable scopes both (AND, not OR)', () => {
+      expect(keys({ roles: ['frontend'], projects: ['checkout'] })).toContain('FE_CHECKOUT');
+      expect(keys({ roles: ['frontend'], projects: ['billing'] })).not.toContain('FE_CHECKOUT');
+      expect(keys({ roles: ['devops'], projects: ['checkout'] })).not.toContain('FE_CHECKOUT');
+    });
+
+    it('can filter every variable away', () => {
+      expect(keys({ roles: ['pm'], projects: ['legacy'] })).toEqual(['SHARED']);
+    });
   });
 
   // ─── generateShellBlock ──────────────────────────────────
 
   describe('generateShellBlock', () => {
     it('should generate source line block with markers', () => {
-      const block = handler.generateShellBlock('~/.teamai');
+      const block = handler.generateShellBlock('/home/dev/.teamai');
 
       expect(block).toContain(TEAMAI_ENV_START);
       expect(block).toContain(TEAMAI_ENV_END);
       expect(block).toContain('# DO NOT EDIT: This section is auto-managed by teamai');
-      expect(block).toContain('[ -f ~/.teamai/env.sh ] && source ~/.teamai/env.sh');
+      expect(block).toContain(expectedSourceLine('/home/dev/.teamai'));
       // Should NOT contain inline export lines
       expect(block).not.toMatch(/^export /m);
+    });
+
+    it('normalises a Windows path so the block still loads from a POSIX shell', () => {
+      // Even on Windows the block is read back by bash/zsh, where the native
+      // form `C:\Users\me\.teamai` is an escape-laden string: `[ -f ... ]`
+      // fails and `source` never runs, with nothing reporting it (#661).
+      const block = handler.generateShellBlock('C:\\Users\\me\\.teamai');
+
+      expect(block).toContain(
+        "[ -f 'C:/Users/me/.teamai/env.sh' ] && source 'C:/Users/me/.teamai/env.sh'",
+      );
+    });
+
+    it('leaves a backslash in a POSIX home alone', () => {
+      // On POSIX a backslash is an ordinary filename character; collapsing it
+      // would point the block at a different directory (bot review on #680).
+      const block = handler.generateShellBlock('/home/a\\b/.teamai');
+
+      expect(block).toContain(expectedSourceLine('/home/a\\b/.teamai'));
+      expect(block).toContain(
+        "[ -f '/home/a\\b/.teamai/env.sh' ] && source '/home/a\\b/.teamai/env.sh'",
+      );
+    });
+
+    it('quotes the path so a home directory containing a space cannot break the block', () => {
+      const block = handler.generateShellBlock('C:\\Users\\John Doe\\.teamai');
+
+      expect(block).toContain(expectedSourceLine('C:\\Users\\John Doe\\.teamai'));
+      expect(block).toContain(
+        "[ -f 'C:/Users/John Doe/.teamai/env.sh' ] && source 'C:/Users/John Doe/.teamai/env.sh'",
+      );
     });
   });
 
@@ -231,6 +395,35 @@ scope: 'user',
     it('should return just a newline for empty variables', () => {
       const content = handler.generateEnvFile([]);
       expect(content).toBe('\n');
+    });
+
+    it('should drop keys that are not valid shell identifiers', () => {
+      // A key is interpolated raw into `export <key>=...`, so anything that is
+      // not an identifier either breaks the line or runs as shell code. The
+      // whole variable is dropped, not the line rewritten: `parseEnvFile` skips
+      // such a line anyway, so emitting it would put a variable in env.sh that
+      // the CLI can never read back.
+      const content = handler.generateEnvFile([
+        { key: 'GOOD_KEY', value: 'ok' },
+        { key: 'bad key', value: 'oops' },
+        { key: 'FOO;touch /tmp/pwned', value: 'y' },
+        { key: '$(whoami)', value: 'w' },
+        { key: 'A=B', value: 'z' },
+        { key: '9LEADING', value: 'n' },
+      ]);
+
+      expect(content).toBe("export GOOD_KEY='ok'\n");
+    });
+
+    it('should keep keys that are valid shell identifiers', () => {
+      // The guard must not narrow what a legitimate team repo can express:
+      // digits and underscores after the first character are all valid.
+      const content = handler.generateEnvFile([
+        { key: '_PRIVATE', value: 'a' },
+        { key: 'A1_b2', value: 'b' },
+      ]);
+
+      expect(content).toBe("export _PRIVATE='a'\nexport A1_b2='b'\n");
     });
   });
 
@@ -287,7 +480,7 @@ scope: 'user',
       const content = await fse.readFile(bashrcPath, 'utf-8');
       expect(content).toContain('# existing config');
       expect(content).toContain(TEAMAI_ENV_START);
-      expect(content).toContain(`[ -f ${homeDir}/.teamai/env.sh ] && source ${homeDir}/.teamai/env.sh`);
+      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai`));
       expect(content).toContain(TEAMAI_ENV_END);
       // Should NOT have inline export lines in the profile
       expect(content).not.toContain('export TGIT_API_BASE');
@@ -302,7 +495,7 @@ scope: 'user',
 
       const content = await fse.readFile(zshrcPath, 'utf-8');
       expect(content).toContain(TEAMAI_ENV_START);
-      expect(content).toContain(`[ -f ${homeDir}/.teamai/env.sh ] && source ${homeDir}/.teamai/env.sh`);
+      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai`));
     });
 
     it('should idempotently replace existing block (including old-style with exports)', async () => {
@@ -326,7 +519,7 @@ scope: 'user',
       // Old inline export should be gone
       expect(content).not.toContain('OLD_VAR');
       // Source line should be present instead
-      expect(content).toContain(`[ -f ${homeDir}/.teamai/env.sh ] && source ${homeDir}/.teamai/env.sh`);
+      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai`));
       expect(content).toContain('# my config');
       expect(content).toContain('# other config');
       // Only one start/end pair
@@ -344,6 +537,62 @@ scope: 'user',
       expect(await fse.pathExists(bashrcPath)).toBe(true);
       const content = await fse.readFile(bashrcPath, 'utf-8');
       expect(content).toContain(TEAMAI_ENV_START);
+    });
+
+    // Regression (#693 review round 7): Git for Windows' own
+    // /etc/profile.d/bash_profile.sh auto-generates ~/.bash_profile (a plain
+    // forwarding file, not a symlink) the first time a login shell starts
+    // with ~/.bashrc present but none of the other candidates. Without
+    // sticking to wherever the block already lives, the next pull would
+    // prefer that newly-existing .bash_profile and inject a second, separate
+    // block there instead of updating the one already in .bashrc.
+    // Root writes a read-only file, and Windows has no POSIX mode bits.
+    const cannotRevokeWrite = process.platform === 'win32' || process.getuid?.() === 0;
+    it.skipIf(cannotRevokeWrite)('leaves an unchanged shell profile alone on a repeat pull', async () => {
+      // pullItem runs on every pull, including the revision fast path a
+      // SessionStart hook takes each session. A profile that already carries
+      // the block must not be rewritten: made read-only here, so a write would
+      // throw rather than merely bump a timestamp.
+      const bashrcPath = path.join(homeDir, '.bashrc');
+      await handler.pullItem(item, teamConfig, localConfig);
+      const first = await fse.readFile(bashrcPath, 'utf-8');
+      expect(first).toContain(TEAMAI_ENV_START);
+
+      await fse.chmod(bashrcPath, 0o444);
+      try {
+        await expect(handler.pullItem(item, teamConfig, localConfig)).resolves.toBeUndefined();
+      } finally {
+        await fse.chmod(bashrcPath, 0o644);
+      }
+      expect(await fse.readFile(bashrcPath, 'utf-8')).toBe(first);
+    });
+
+    it('keeps updating .bashrc in place after Git for Windows auto-generates a forwarding .bash_profile', async () => {
+      vi.stubEnv('SHELL', '');
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+      const bashrcPath = path.join(homeDir, '.bashrc');
+      const bashProfilePath = path.join(homeDir, '.bash_profile');
+
+      // First pull: nothing exists yet, falls back to .bashrc.
+      await handler.pullItem(item, teamConfig, localConfig);
+      expect(await fse.pathExists(bashrcPath)).toBe(true);
+      expect(await fse.pathExists(bashProfilePath)).toBe(false);
+
+      // Git for Windows generates the forwarding .bash_profile on its own,
+      // between the two pulls — teamai never wrote this file.
+      await fse.writeFile(
+        bashProfilePath,
+        '# generated by Git for Windows\ntest -f ~/.profile && . ~/.profile\ntest -f ~/.bashrc && . ~/.bashrc\n',
+      );
+
+      await handler.pullItem(item, teamConfig, localConfig);
+
+      const bashrcContent = await fse.readFile(bashrcPath, 'utf-8');
+      expect(bashrcContent).toContain(TEAMAI_ENV_START);
+      expect(bashrcContent.split(TEAMAI_ENV_START).length).toBe(2);
+
+      const bashProfileContent = await fse.readFile(bashProfilePath, 'utf-8');
+      expect(bashProfileContent).not.toContain(TEAMAI_ENV_START);
     });
 
     it('should skip shell injection when injectShellProfile is false', async () => {
@@ -389,7 +638,7 @@ scope: 'user',
 
       const content = await fse.readFile(customPath, 'utf-8');
       expect(content).toContain(TEAMAI_ENV_START);
-      expect(content).toContain(`[ -f ${homeDir}/.teamai/env.sh ] && source ${homeDir}/.teamai/env.sh`);
+      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai`));
     });
 
     it('should skip when env.yaml has no variables', async () => {
@@ -413,6 +662,76 @@ scope: 'user',
       expect(content).toBe('# original\n');
     });
 
+    it('delivers only the variables this member and directory are scoped to', async () => {
+      const scopedPath = path.join(repoPath, 'env', 'scoped.yaml');
+      await fse.writeFile(scopedPath, YAML.stringify({
+        variables: [
+          { key: 'CHECKOUT_URL', value: 'https://checkout.example.com', projects: ['checkout'] },
+          { key: 'BILLING_URL', value: 'https://billing.example.com', projects: ['billing'] },
+          { key: 'SHARED', value: 'everyone' },
+        ],
+      }));
+      const scopedItem: ResourceItem = {
+        name: 'scoped.yaml', type: 'env', sourcePath: scopedPath, relativePath: 'env/scoped.yaml',
+      };
+
+      await handler.pullItem(scopedItem, teamConfig, { ...localConfig, projects: ['checkout'] });
+
+      const envSh = await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf-8');
+      expect(envSh).toContain('export CHECKOUT_URL=');
+      expect(envSh).toContain('export SHARED=');
+      expect(envSh).not.toContain('BILLING_URL');
+
+      // The KEY=value backup mcp-reconcile resolves ${VAR} from must match, or a
+      // server would resolve a variable the member's shell never exported.
+      const backup = await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf-8');
+      expect(backup).toContain('CHECKOUT_URL=');
+      expect(backup).not.toContain('BILLING_URL');
+    });
+
+    it('removes a variable from env.sh once the directory stops being bound to its project', async () => {
+      const scopedPath = path.join(repoPath, 'env', 'scoped.yaml');
+      await fse.writeFile(scopedPath, YAML.stringify({
+        variables: [
+          { key: 'CHECKOUT_URL', value: 'c', projects: ['checkout'] },
+          { key: 'SHARED', value: 's' },
+        ],
+      }));
+      const scopedItem: ResourceItem = {
+        name: 'scoped.yaml', type: 'env', sourcePath: scopedPath, relativePath: 'env/scoped.yaml',
+      };
+      const envShPath = path.join(homeDir, '.teamai', 'env.sh');
+
+      await handler.pullItem(scopedItem, teamConfig, { ...localConfig, projects: ['checkout'] });
+      expect(await fse.readFile(envShPath, 'utf-8')).toContain('CHECKOUT_URL');
+
+      await handler.pullItem(scopedItem, teamConfig, { ...localConfig, projects: ['billing'] });
+      const after = await fse.readFile(envShPath, 'utf-8');
+      expect(after).not.toContain('CHECKOUT_URL');
+      expect(after).toContain('SHARED');
+    });
+
+    it('writes an empty env.sh, and still injects, when every variable is filtered out', async () => {
+      // The team declares variables, so this is not the "nothing declared" skip:
+      // the member must end up with an env.sh that exports nothing, which is what
+      // removes variables a previous pull had given them.
+      const scopedPath = path.join(repoPath, 'env', 'scoped.yaml');
+      await fse.writeFile(scopedPath, YAML.stringify({
+        variables: [{ key: 'CHECKOUT_URL', value: 'c', projects: ['checkout'] }],
+      }));
+      const scopedItem: ResourceItem = {
+        name: 'scoped.yaml', type: 'env', sourcePath: scopedPath, relativePath: 'env/scoped.yaml',
+      };
+      vi.stubEnv('SHELL', '/bin/bash');
+      await fse.writeFile(path.join(homeDir, '.bashrc'), '# original\n');
+
+      await handler.pullItem(scopedItem, teamConfig, { ...localConfig, projects: ['billing'] });
+
+      const envSh = await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf-8');
+      expect(envSh.trim()).toBe('');
+      expect(await fse.readFile(path.join(homeDir, '.bashrc'), 'utf-8')).toContain(TEAMAI_ENV_START);
+    });
+
     it('should handle invalid env.yaml gracefully', async () => {
       const badYamlPath = path.join(repoPath, 'env', 'bad.yaml');
       await fse.writeFile(badYamlPath, ':::bad yaml');
@@ -433,6 +752,41 @@ scope: 'user',
       // Should not crash and should not modify shell profile
       const content = await fse.readFile(bashrcPath, 'utf-8');
       expect(content).toBe('# original\n');
+    });
+
+    it('reports the missing `variables:` key from a real env.yaml file', async () => {
+      // The shape zod used to swallow: a bare key/value mapping. The file
+      // parses cleanly, so the pull looked successful while nothing shipped
+      // (#662). `pullForScope` reads it through this method, because it skips
+      // the resource before `pullItem` — where the check used to live — runs.
+      const shapeYamlPath = path.join(repoPath, 'env', 'shape.yaml');
+      await fse.writeFile(shapeYamlPath, 'FOO: bar\nBAZ: qux\n');
+
+      const problem = await handler.describeEnvYamlShapeProblemAt(shapeYamlPath);
+
+      expect(problem).toContain('no top-level `variables:` key');
+      expect(problem).toContain('`FOO`');
+      expect(problem).toContain('`BAZ`');
+    });
+
+    it('reports nothing for a usable, empty, malformed or missing env.yaml', async () => {
+      const okPath = path.join(repoPath, 'env', 'ok.yaml');
+      await fse.writeFile(okPath, YAML.stringify({ variables: [{ key: 'A', value: 'b' }] }));
+      expect(await handler.describeEnvYamlShapeProblemAt(okPath)).toBeNull();
+
+      const emptyPath = path.join(repoPath, 'env', 'empty.yaml');
+      await fse.writeFile(emptyPath, YAML.stringify({ variables: [] }));
+      expect(await handler.describeEnvYamlShapeProblemAt(emptyPath)).toBeNull();
+
+      // Malformed YAML is a separate failure and must not be dressed up as a
+      // shape problem.
+      const brokenPath = path.join(repoPath, 'env', 'broken.yaml');
+      await fse.writeFile(brokenPath, 'variables: [unclosed\n');
+      expect(await handler.describeEnvYamlShapeProblemAt(brokenPath)).toBeNull();
+
+      expect(
+        await handler.describeEnvYamlShapeProblemAt(path.join(repoPath, 'env', 'absent.yaml')),
+      ).toBeNull();
     });
   });
 

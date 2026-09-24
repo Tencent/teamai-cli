@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { injectOpenClawHooks, removeOpenClawHooks, OPENCLAW_HOOK_DIR } from '../openclaw-hooks.js';
+import { reconcileHooksToAllTools } from '../hooks.js';
 
 let tmpDir: string;
 let wsDir: string;
@@ -74,4 +75,37 @@ describe('removeOpenClawHooks', () => {
     // second removal does not throw
     await expect(removeOpenClawHooks(hooksDir)).resolves.toBeUndefined();
   });
+});
+
+describe('reconcileHooksToAllTools routes the OpenClaw family to its adapter', () => {
+    // `hooks inject` / `init` / `pull` all go through this path. Without an
+    // OpenClaw branch it skipped the claw variants for lack of a `settings`
+    // path, so their hooks were only ever written by the legacy migration.
+    const toolPaths = { openclaw: { skills: '.openclaw/skills' } } as Record<string, { settings?: string }>;
+
+    it('injects, then removeAll deletes, the workspace hook dir', async () => {
+        const manifest = path.join(tmpDir, 'managed-hooks.json');
+        const hookDir = path.join(wsDir, 'hooks', OPENCLAW_HOOK_DIR);
+
+        await reconcileHooksToAllTools(toolPaths, tmpDir, [], manifest);
+        expect(fs.existsSync(path.join(hookDir, 'handler.ts'))).toBe(true);
+
+        await reconcileHooksToAllTools(toolPaths, tmpDir, [], manifest, { removeAll: true });
+        expect(fs.existsSync(hookDir)).toBe(false);
+    });
+
+    it('does nothing when the workspace cannot be resolved', async () => {
+        delete process.env.OPENCLAW_STATE_DIR;
+        const home = path.join(tmpDir, 'empty-home');
+        fs.mkdirSync(home, { recursive: true });
+        const prevHome = process.env.HOME;
+        process.env.HOME = home;
+        try {
+            await reconcileHooksToAllTools(toolPaths, home, [], path.join(tmpDir, 'managed-hooks.json'));
+        } finally {
+            if (prevHome === undefined) delete process.env.HOME;
+            else process.env.HOME = prevHome;
+        }
+        expect(fs.existsSync(path.join(home, '.openclaw'))).toBe(false);
+    });
 });

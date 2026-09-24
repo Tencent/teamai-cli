@@ -5,7 +5,8 @@ import fse from 'fs-extra';
 import YAML from 'yaml';
 
 // Mock external dependencies before importing modules
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   requireInit: vi.fn(),
   detectProjectConfig: vi.fn().mockResolvedValue(null),
 }));
@@ -129,6 +130,30 @@ scope: 'user',
       expect(allOutput).not.toContain('https://api.example.com');
     });
 
+    it('prints the roles and projects restriction of a variable, and nothing for an unscoped one', async () => {
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [
+            { key: 'CHECKOUT_URL', value: 'c', projects: ['checkout'] },
+            { key: 'BOTH', value: 'b', roles: ['frontend'], projects: ['checkout', 'billing'] },
+            { key: 'NOBODY', value: 'n', projects: [] },
+            { key: 'SHARED', value: 's' },
+          ],
+        }),
+      );
+
+      await envList({});
+
+      const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
+      expect(allOutput).toContain('(projects: checkout)');
+      expect(allOutput).toContain('(roles: frontend)  (projects: checkout, billing)');
+      expect(allOutput).toContain('(projects: nobody)');
+      expect(allOutput).toMatch(/SHARED=\S+$/m);
+      expect(allOutput.match(/projects:/g)).toHaveLength(3);
+      expect(allOutput.match(/roles:/g)).toHaveLength(1);
+    });
+
     it('should reveal plaintext values when reveal=true', async () => {
       await fse.writeFile(
         path.join(repoPath, 'env', 'env.yaml'),
@@ -167,6 +192,20 @@ scope: 'user',
   // ─── envAdd ──────────────────────────────────────────────
 
   describe('envAdd', () => {
+    it('refuses a key that would not survive the round trip into env.sh', async () => {
+      // `generateEnvFile` drops any key that is not a shell identifier, so
+      // accepting one here would write a variable that never reaches the
+      // member's shell — and `FOO;cmd` would run `cmd` there if it did. Better
+      // to reject it at the point the user can still see the mistake.
+      await envAdd('bad key', 'v', {});
+
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining('bad key'));
+      // Nothing written, and no env.yaml is created just to hold nothing.
+      const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
+      expect(await fse.pathExists(envYamlPath)).toBe(false);
+      expect(log.success).not.toHaveBeenCalled();
+    });
+
     it('should add a new variable locally and show push hint', async () => {
       await envAdd('NEW_VAR', 'new_value', {});
 
@@ -215,6 +254,45 @@ scope: 'user',
       // Verify success message uses "Updated"
       expect(log.success).toHaveBeenCalledWith('Updated env variable: EXIST_VAR=new_value');
       expect(log.info).toHaveBeenCalledWith('Run `teamai push` to sync to team repo.');
+    });
+
+    it('preserves the roles and projects of a variable it updates', async () => {
+      // `roles:`/`projects:` are hand-edited in env.yaml — `env add` has no flag
+      // for them — so updating a scoped variable's value must not silently
+      // unscope it and ship it to the whole team.
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [{ key: 'CHECKOUT_URL', value: 'old', roles: ['frontend'], projects: ['checkout'] }],
+        }),
+      );
+
+      await envAdd('CHECKOUT_URL', 'new', {});
+
+      const parsed = YAML.parse(await fse.readFile(path.join(repoPath, 'env', 'env.yaml'), 'utf-8'));
+      expect(parsed.variables[0]).toEqual({
+        key: 'CHECKOUT_URL',
+        value: 'new',
+        roles: ['frontend'],
+        projects: ['checkout'],
+      });
+    });
+
+    it('preserves the scope of other variables when adding a new one', async () => {
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [{ key: 'CHECKOUT_URL', value: 'c', projects: ['checkout'] }],
+        }),
+      );
+
+      await envAdd('SHARED', 's', {});
+
+      const parsed = YAML.parse(await fse.readFile(path.join(repoPath, 'env', 'env.yaml'), 'utf-8'));
+      expect(parsed.variables).toEqual([
+        { key: 'CHECKOUT_URL', value: 'c', projects: ['checkout'] },
+        { key: 'SHARED', value: 's' },
+      ]);
     });
 
     it('should not write in dry-run mode', async () => {

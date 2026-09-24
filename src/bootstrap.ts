@@ -26,6 +26,7 @@ import { readFileSafe, pathExists, ensureDir, writeFile } from './utils/fs.js';
 import { getRemoteUrl } from './utils/git.js';
 import { log } from './utils/logger.js';
 import { acquireLock, releaseLock } from './update.js';
+import { getMemberConfig, mergeMemberConfig } from './members.js';
 
 export type BootstrapResult = 'bootstrapped' | 'already' | 'skip';
 
@@ -172,8 +173,14 @@ export async function bootstrapSelfRepo(
         localConfig.primaryRole = manifest.roles[0].id;
         localConfig.resourceProfileVersion = manifest.version;
       }
-    } catch {
-      // no roles manifest — leave role unset
+    } catch (error) {
+      // No manifest: leave the role unset, as a repo without roles intends. A
+      // manifest that exists and does not parse is different — swallowing it
+      // would leave the role unset too, and a member with no role and no project
+      // gets an unfiltered sync, which is the opposite of what the broken
+      // manifest asked for.
+      const { RolesManifestNotFoundError } = await import('./roles.js');
+      if (!(error instanceof RolesManifestNotFoundError)) throw error;
     }
 
     await ensureDir(localPath);
@@ -214,11 +221,13 @@ export async function bootstrapSelfRepo(
         await ensureDir(memberDir);
         const memberPath = path.join(memberDir, `${username}.yaml`);
         if (await pathExists(memberPath)) return null;
-        await writeFile(memberPath, YAML.stringify({
-          username,
-          displayName: username,
-          registeredAt: new Date().toISOString(),
-        }));
+        // Absorb the member's pre-switch file from the clone (inherited root):
+        // its displayName/registeredAt/projects survive the re-registration.
+        const inherited = await getMemberConfig(localConfig.repo.localPath, username);
+        const config = inherited
+          ? mergeMemberConfig(inherited, { username }).config
+          : { username, displayName: username, registeredAt: new Date().toISOString() };
+        await writeFile(memberPath, YAML.stringify(config));
         return { files: ['members/'], message: `[teamai] Register member: ${username}` };
       });
     } catch (e) {

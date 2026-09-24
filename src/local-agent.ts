@@ -24,6 +24,7 @@ import { RulesHandler, SkillsHandler } from './resources/index.js';
 import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, OPENCLAW_TOOLS } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
+import { isInteractive } from './utils/prompt.js';
 import { getAgentVersion } from './agent-version.js';
 import { getMachineId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
@@ -54,6 +55,10 @@ import {
   resolveBaseDir,
   resolveToolBaseDir,
   scopedToolPaths,
+  applyToolRoots,
+  resolveToolRootDir,
+  CLAUDE_TOOL_ID,
+  DEFAULT_CLAUDE_ROOT,
   COPILOT_TOOL_ID,
   getTokenPath,
   TEAMAI_CLAUDEMD_START,
@@ -458,9 +463,29 @@ async function saveAgentHookManifest(manifest: AgentHookManifest): Promise<void>
   await writeJsonAtomic(getAgentHookManifestPath(), manifest);
 }
 
+/**
+ * The member's per-machine tool roots, from the teamai config that governs this
+ * directory: the project one when there is one, else the user-scope one.
+ *
+ * The local agent carries no LocalConfig — it addresses tool roots under $HOME
+ * directly — but it writes the same files `teamai pull` does, so a root the
+ * member relocated (CLAUDE_CONFIG_DIR, recorded by `teamai init`) has to reach
+ * them too. No config, or no entry, leaves the paths exactly as they were.
+ */
+async function memberToolRoots(workspacePath?: string): Promise<Record<string, string> | undefined> {
+  const { resolveMemberToolRoots } = await import('./config.js');
+  return resolveMemberToolRoots(workspacePath ?? process.cwd());
+}
+
+/** Claude Code's user root on this machine, honoring a relocated CLAUDE_CONFIG_DIR. */
+async function claudeUserRoot(): Promise<string> {
+  return resolveToolRootDir(CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT, await memberToolRoots());
+}
+
 /** Resolve the current tool's settings file absolute path (user scope, $HOME base). */
-function resolveToolSettingsPath(config: LocalAgentConfig, tool: string): string {
-  const toolPath = createLocalAgentTeamConfig(config.endpoint).toolPaths[tool];
+async function resolveToolSettingsPath(config: LocalAgentConfig, tool: string): Promise<string> {
+  const teamConfig = createLocalAgentTeamConfig(config.endpoint);
+  const toolPath = applyToolRoots(teamConfig.toolPaths, await memberToolRoots())[tool];
   if (!toolPath?.settings) {
     throw new Error(`unsupported tool: ${tool} (no settings path)`);
   }
@@ -654,12 +679,12 @@ function createLocalAgentTeamConfig(endpoint: string): TeamaiConfig {
   });
 }
 
-function createResourceLocalConfig(
+async function createResourceLocalConfig(
   config: LocalAgentConfig,
   scope: LocalAgentScope,
   repoPath: string,
   workspacePath?: string,
-): LocalConfig {
+): Promise<LocalConfig> {
   const projectScope = scope === 'project';
   return {
     repo: { localPath: repoPath, remote: config.endpoint },
@@ -667,6 +692,9 @@ function createResourceLocalConfig(
     scope: projectScope ? 'project' : 'user',
     projectRoot: projectScope ? workspacePath : undefined,
     additionalRoles: [],
+    // User-scope paths resolve under $HOME here, so a tool the member relocated
+    // must be addressed at its recorded root — the same one `teamai pull` uses.
+    ...(projectScope ? {} : { toolRoots: await memberToolRoots(workspacePath) }),
   };
 }
 
@@ -951,11 +979,11 @@ async function askViaTty(prompt: string): Promise<string | null> {
   // waiting for input that never comes — hanging the hook until the host's
   // timeout and stalling the IDE. Callers fall back to injecting a stdout
   // binding hint when this returns null, so degrade to that instead.
-  if (process.stdin.isTTY) {
-    const { askQuestion } = await import('./utils/prompt.js');
-    return askQuestion(prompt, '');
-  }
-  return null;
+  // The decline stays synchronous — this runs on the hook path, where loading
+  // the prompt module only to say no is work nobody asked for.
+  if (!isInteractive()) return null;
+  const { askQuestion } = await import('./utils/prompt.js');
+  return askQuestion(prompt, '');
 }
 
 async function promptForProjectBinding(
@@ -1433,7 +1461,7 @@ async function scanModelsFromDisk(tool: string, workspacePath?: string): Promise
   if (agentKind === 'claude' && !workspacePath) {
     const providers = manifest.providersByAgent?.claude ?? manifest.providers ?? {};
     const settings = await readJson<{ env?: unknown }>(
-      path.join(getUserHome(), '.claude', 'settings.json'),
+      path.join(await claudeUserRoot(), 'settings.json'),
     );
     const env = settings?.env;
     if (typeof env !== 'object' || env === null || Array.isArray(env)) return [];
@@ -1544,12 +1572,21 @@ export async function buildReportPayload(
   // ones) are reported. `source` is derived from the manifest: slugs recorded
   // there are `enterprise`, the rest `local`.
   const tool = context.tool ?? 'workbuddy';
-  const toolPaths = createLocalAgentTeamConfig(config.endpoint).toolPaths;
-  const toolPath = toolPaths[tool];
+  const teamConfig = createLocalAgentTeamConfig(config.endpoint);
   const manifestSlugs = collectManifestSlugs(manifest);
 
-  const scanScope = async (baseDir: string): Promise<{ skills: ReportedResource[]; rules: ReportedResource[] }> => {
+  // Resolve paths through the same user-scope seam the installers use: tools
+  // that relocate their user customization root (copilot via $COPILOT_HOME) or
+  // lay user scope out differently from project scope declare a `userScope`
+  // block. Reading the raw toolPaths map against $HOME would scan the project
+  // layout under the wrong base — e.g. ~/.github/skills for copilot, a path
+  // teamai never writes to — and silently report nothing.
+  const scanScope = async (workspacePath?: string): Promise<{ skills: ReportedResource[]; rules: ReportedResource[] }> => {
+    const scope: LocalAgentScope = workspacePath ? 'project' : 'user';
+    const localConfig = await createResourceLocalConfig(config, scope, workspacePath ?? getUserHome(), workspacePath);
+    const toolPath = scopedToolPaths(teamConfig, localConfig)[tool];
     if (!toolPath) return { skills: [], rules: [] };
+    const baseDir = resolveToolBaseDir(tool, localConfig);
     const skills = toolPath.skills
       ? await scanSkillsFromDisk(path.join(baseDir, toolPath.skills), manifestSlugs.skills)
       : [];
@@ -1559,7 +1596,7 @@ export async function buildReportPayload(
     return { skills, rules };
   };
 
-  const userScope = await scanScope(getUserHome());
+  const userScope = await scanScope();
 
   const userLevel: Record<string, unknown> = { group_id: config.userGroupId };
   if (userScope.skills.length > 0) userLevel.skills = userScope.skills;
@@ -1897,7 +1934,7 @@ async function installDownloadedResource(input: {
       throw new Error(`Unknown tool "${tool}": no toolPaths entry found`);
     }
     const teamConfig = { ...fullTeamConfig, toolPaths: { [tool]: toolPath } };
-    const localConfig = createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
+    const localConfig = await createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
     // Ensure the tool root directory exists before dispatch so isToolInstalled
     // gate does not skip the resource when the workspace is freshly bound.
     // Restricted to project scope: user-scope installs use $HOME as baseDir and
@@ -1994,7 +2031,7 @@ async function uninstallResource(input: {
     throw new Error(`Unknown tool "${tool}": no toolPaths entry found`);
   }
   const teamConfig = { ...fullTeamConfig, toolPaths: { [tool]: toolPath } };
-  const localConfig = createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
+  const localConfig = await createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
   const manifest = await loadManifest();
   const scopeManifest = getManifestScope(manifest, input.scope, input.workspacePath);
 
@@ -2358,12 +2395,28 @@ function claudeEnvForModel(model: DeliveredModel): Record<string, string> {
   };
 }
 
+/**
+ * Drop the gateway env and model profile the agent delivered into `claudeRoot`,
+ * and forget them in the manifest. For `teamai init` moving the Claude root:
+ * the credentials would otherwise stay in a profile nothing syncs any more.
+ * No-op when the agent never delivered a model.
+ */
+export async function releaseClaudeModelConfig(claudeRoot: string): Promise<void> {
+  const manifest = (await readJson<ModelConfigManifest>(getModelManifestPath())) ?? {};
+  if (Object.keys(manifest.claudeEnv ?? {}).length === 0) return;
+  await reconcileClaudeModels([], manifest, claudeRoot);
+  await writeJsonAtomic(getModelManifestPath(), manifest);
+  log.info(`Removed the delivered Claude model config from ${claudeRoot}`);
+}
+
 async function reconcileClaudeModels(
   models: DeliveredModel[],
   manifest: ModelConfigManifest,
+  claudeRoot?: string,
 ): Promise<void> {
-  const settingsPath = path.join(getUserHome(), '.claude', 'settings.json');
-  const profilePath = path.join(getUserHome(), '.claude', 'teamai-models.json');
+  claudeRoot ??= await claudeUserRoot();
+  const settingsPath = path.join(claudeRoot, 'settings.json');
+  const profilePath = path.join(claudeRoot, 'teamai-models.json');
   const previousHashes = manifest.claudeEnv ?? {};
   const settings = await readJsonObject(settingsPath);
   const rawEnv = settings.env === undefined ? {} : settings.env;
@@ -2484,6 +2537,12 @@ async function applyModelConfig(
   }
   if (agentKind === 'claude' && workspacePath) {
     throw new Error('apply_model_config: workspace scope is unsupported for claude');
+  }
+  if (!workspacePath) {
+    // An explicit profile switch takes precedence over server delivery. Keep
+    // both the Agent config and delivery manifest intact for a later restore.
+    const { isModelProfileManaged } = await import('./models/switch.js');
+    if (await isModelProfileManaged(agentKind)) return;
   }
 
   let scopeManifest: BuddyModelManifest = manifest;
@@ -2680,8 +2739,11 @@ async function runHookRuleCommand(
       } else if (rec.tool === 'opencode') {
         const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
         await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
+      } else if (rec.tool === 'pi') {
+        const { removePiAgentHook } = await import('./pi-hooks.js');
+        await removePiAgentHook(slug);
       } else {
-        const settingsPath = resolveToolSettingsPath(config, rec.tool);
+        const settingsPath = await resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
       }
       delete manifest[slug];
@@ -2720,8 +2782,11 @@ async function runHookRuleCommand(
       } else if (prior.tool === 'opencode') {
         const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
         await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
+      } else if (prior.tool === 'pi') {
+        const { removePiAgentHook } = await import('./pi-hooks.js');
+        await removePiAgentHook(slug);
       } else {
-        const priorPath = resolveToolSettingsPath(config, prior.tool);
+        const priorPath = await resolveToolSettingsPath(config, prior.tool);
         await removeAgentHook(priorPath, prior.tool, { slug, command: prior.command });
       }
     } catch (e) {
@@ -2739,8 +2804,11 @@ async function runHookRuleCommand(
     // OpenCode loads plugins from ~/.config/opencode/plugin (user scope).
     const { applyOpencodeAgentHook } = await import('./opencode-hooks.js');
     await applyOpencodeAgentHook({ slug, event, command: cmd, baseDir: getUserHome(), scope: 'user', matcher });
+  } else if (tool === 'pi') {
+    const { applyPiAgentHook } = await import('./pi-hooks.js');
+    await applyPiAgentHook({ slug, event, command: cmd, matcher, timeout });
   } else {
-    const settingsPath = resolveToolSettingsPath(config, tool);
+    const settingsPath = await resolveToolSettingsPath(config, tool);
     await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
   }
   manifest[slug] = { tool, event, command: cmd, matcher, timeout };
@@ -2799,7 +2867,11 @@ async function installMcpServer(
 
   const def = mcpConfigToDef(slug, command.mcp_config);
   const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
-  const toolPath = fullTeamConfig.toolPaths[tool];
+  // Resolved through the scope seam, so the user-scope MCP file follows a root
+  // the member relocated (`toolRoots`) the way `teamai pull` writes it. Project
+  // scope returns `mcpProject` unchanged — it belongs to the workspace.
+  const localConfig = await createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
+  const toolPath = scopedToolPaths(fullTeamConfig, localConfig)[tool];
   if (!toolPath) {
     throw new Error(`install_mcp: unknown tool "${tool}"`);
   }
@@ -2818,7 +2890,6 @@ async function installMcpServer(
     throw new Error(`install_mcp: tool "${tool}" does not support ${def.transport} transport`);
   }
 
-  const localConfig = createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
   const baseDir = resolveToolBaseDir(tool, localConfig);
   const targetFile = path.join(baseDir, mcpRel);
 
@@ -2881,7 +2952,9 @@ async function uninstallMcpServer(
   workspacePath?: string,
 ): Promise<void> {
   const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
-  const toolPath = fullTeamConfig.toolPaths[tool];
+  // Removal has to look where the install wrote: same scope seam, same root.
+  const localConfig = await createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
+  const toolPath = scopedToolPaths(fullTeamConfig, localConfig)[tool];
   if (!toolPath) return;
 
   const projectScope = scope === 'project';
@@ -2891,7 +2964,6 @@ async function uninstallMcpServer(
   const format = detectMcpFormat(tool);
   if (!format) return;
 
-  const localConfig = createResourceLocalConfig(config, scope, getUserHome(), workspacePath);
   const baseDir = resolveToolBaseDir(tool, localConfig);
   const targetFile = path.join(baseDir, mcpRel);
 
@@ -3256,7 +3328,13 @@ export async function initLocalAgentHttp(options: {
   }
 
   const teamConfig = createLocalAgentTeamConfig(endpoint);
-  await injectHooksToAllTools(teamConfig.toolPaths, getUserHome(), options.filterAgents);
+  // The local agent is always user-scope and always rooted at HOME, so resolve
+  // the user-scope paths (Qoder CN's user config lives under ~/.qoder-cn).
+  await injectHooksToAllTools(
+    scopedToolPaths(teamConfig, { scope: 'user', toolRoots: await memberToolRoots() }),
+    getUserHome(),
+    options.filterAgents,
+  );
   log.success(`HTTP local agent initialized at ${getConfigPath()}`);
 }
 
@@ -3351,8 +3429,11 @@ export async function removeAllAgentHooks(): Promise<void> {
       } else if (rec.tool === 'opencode') {
         const { removeOpencodeAgentHook } = await import('./opencode-hooks.js');
         await removeOpencodeAgentHook({ slug, baseDir: getUserHome(), scope: 'user' });
+      } else if (rec.tool === 'pi') {
+        const { removePiAgentHook } = await import('./pi-hooks.js');
+        await removePiAgentHook(slug);
       } else {
-        const settingsPath = resolveToolSettingsPath(config, rec.tool);
+        const settingsPath = await resolveToolSettingsPath(config, rec.tool);
         await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
       }
     } catch (e) {

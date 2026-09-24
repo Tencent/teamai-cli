@@ -52,6 +52,14 @@ describe('buildIndex — learnings namespace isolation', () => {
     expect(await titles()).toEqual(['billing invoice note', 'hai deploy note', 'shared root learning']);
   });
 
+  it('indexes a non-ASCII namespace the manifest accepts, and still skips a traversal', async () => {
+    await fse.ensureDir(path.join(learningsDir, '研发'));
+    await fse.writeFile(path.join(learningsDir, '研发', 'note.md'), '---\ntitle: rd note\n---\nrd body');
+
+    await buildIndex({ learningsDir, learningsNamespaces: ['研发', '..'], indexPath });
+    expect(await titles()).toEqual(['rd note', 'shared root learning']);
+  });
+
   it('root-only (undefined namespaces) matches legacy flat behavior', async () => {
     await buildIndex({ learningsDir, indexPath });
     expect(await titles()).toEqual(['shared root learning']);

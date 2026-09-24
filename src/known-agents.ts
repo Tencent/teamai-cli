@@ -7,6 +7,8 @@ import {
   resolveToolBaseDir,
   isAgentDisabled,
   scopedToolPaths,
+  CLAUDE_TOOL_ID,
+  detectClaudeConfigRoot,
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
 import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
@@ -18,7 +20,7 @@ import { getUserHome } from './utils/home.js';
  * against the user's HOME in non-interactive contexts. Order is the display order.
  * Kept small on purpose — the common coding agents, not the full KNOWN_AGENTS list.
  */
-export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'copilot', 'joycode', 'codebuddy', 'workbuddy'] as const;
+export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'copilot', 'pi', 'joycode', 'codebuddy', 'workbuddy'] as const;
 
 /**
  * Normalize the `--agent` option into a deduplicated id list.
@@ -93,6 +95,7 @@ export const KNOWN_AGENTS: KnownAgent[] = [
   { id: 'amp', displayName: 'Amp', category: 'coding', skillsPath: '.amp/skills' },
   { id: 'augment', displayName: 'Augment', category: 'coding', skillsPath: '.augment/skills' },
   { id: 'copilot', displayName: 'Copilot', category: 'coding', skillsPath: '.copilot/skills' },
+  { id: 'pi', displayName: 'Pi Coding Agent', category: 'coding', skillsPath: '.pi/skills' },
   { id: 'factory', displayName: 'Factory Droid', category: 'coding', skillsPath: '.factory/skills' },
   { id: 'hermes', displayName: 'Hermes', category: 'coding', skillsPath: '.hermes/skills' },
   { id: 'junie', displayName: 'Junie', category: 'coding', skillsPath: '.junie/skills' },
@@ -102,6 +105,7 @@ export const KNOWN_AGENTS: KnownAgent[] = [
   { id: 'omp', displayName: 'Oh My Pi', category: 'coding', skillsPath: '.omp/skills' },
   { id: 'opencode', displayName: 'OpenCode', category: 'coding', skillsPath: '.opencode/skills' },
   { id: 'qoder', displayName: 'Qoder', category: 'coding', skillsPath: '.qoder/skills' },
+  { id: 'qoder-cn', displayName: 'Qoder CN', category: 'coding', skillsPath: '.qoder-cn/skills' },
   { id: 'qwen', displayName: 'Qwen', category: 'coding', skillsPath: '.qwen/skills' },
   { id: 'trae', displayName: 'Trae', category: 'coding', skillsPath: '.trae/skills' },
   { id: 'trae-cn', displayName: 'Trae CN', category: 'coding', skillsPath: '.trae-cn/skills' },
@@ -207,7 +211,11 @@ export async function detectHomeInstalledAgents(
     if (!skillsPath) continue;
     const rootSegment = skillsPath.split('/')[0]; // e.g. ".claude"
     if (!rootSegment) continue;
-    if (await pathExists(path.join(home, rootSegment))) {
+    // A Claude Code relocated with CLAUDE_CONFIG_DIR may have no ~/.claude at
+    // all; the developer still uses it. This runs before any config exists, so
+    // the variable is the only signal.
+    const relocated = id === CLAUDE_TOOL_ID ? detectClaudeConfigRoot() : null;
+    if (await pathExists(path.join(home, rootSegment)) || (relocated !== null && await pathExists(relocated))) {
       found.push(id);
     }
   }

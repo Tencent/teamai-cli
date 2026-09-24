@@ -3,7 +3,8 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   detectProjectConfig: vi.fn().mockResolvedValue(null),
   loadLocalConfigForScope: vi.fn(),
   loadStateForScope: vi.fn().mockResolvedValue({ lastPull: null, lastPullRev: null }),
@@ -126,6 +127,7 @@ describe('checks at the end of an interactive pull', () => {
       localConfig,
       teamConfig,
       toolPaths: teamConfig.toolPaths,
+      hookToolPaths: teamConfig.toolPaths,
       baseDir: homeDir,
     };
     vi.mocked(resolveDoctorContext).mockResolvedValue(ctx);
@@ -283,6 +285,55 @@ describe('checks at the end of an interactive pull', () => {
 
     expect(resolveDoctorContext).not.toHaveBeenCalled();
     expect(buildChecks).not.toHaveBeenCalled();
+  });
+
+  it('does not count an informational failure toward "check(s) failed", but still reports it', async () => {
+    // A stray legacy env block is real leftover state worth mentioning, but
+    // it is not a sign that anything this pull just delivered is broken —
+    // the "N check(s) failed" banner must not fire on its account alone
+    // (#693 review round 6).
+    vi.mocked(buildChecks).mockResolvedValue([
+      { name: 'Team repo exists locally', source: 'local', check: async () => true },
+      {
+        name: 'No stale env blocks left behind',
+        source: 'local',
+        informational: true,
+        check: async () => false,
+        fix: '~/.bashrc still carries a teamai env block for this scope from an earlier install',
+      },
+    ]);
+
+    await pull({ force: true });
+
+    const output = printedOutput();
+    expect(output).not.toContain('check(s) failed');
+    expect(output).toContain('No stale env blocks left behind');
+    expect(output).toContain('~/.bashrc still carries a teamai env block');
+  });
+
+  it('counts a blocking failure but not an informational one alongside it', async () => {
+    vi.mocked(buildChecks).mockResolvedValue([
+      {
+        name: 'teamai hooks in claude settings',
+        source: 'local',
+        check: async () => false,
+        fix: 'Run `teamai hooks inject` to inject/update hooks',
+      },
+      {
+        name: 'No stale env blocks left behind',
+        source: 'local',
+        informational: true,
+        check: async () => false,
+        fix: 'stray block',
+      },
+    ]);
+
+    await pull({ force: true });
+
+    const output = printedOutput();
+    expect(output).toContain('Pull finished, but 1 check(s) failed');
+    expect(output).toContain('teamai hooks in claude settings');
+    expect(output).toContain('No stale env blocks left behind');
   });
 
   it('a check that throws does not fail the pull', async () => {

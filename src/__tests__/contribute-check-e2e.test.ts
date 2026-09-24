@@ -18,16 +18,25 @@ const SESSION_ID = 'e2e-test-session-001';
 const RAW_GITHUB_TOKEN = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const FIRST_TASK = `Fix auth retry for ${RAW_GITHUB_TOKEN}\nthen add regression coverage`;
 
+/** A temp HOME with a user-scope install and recall on: the nudge only runs where `share` is served (#748). */
 function makeTmpHome(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-contribute-e2e-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-contribute-e2e-'));
+  const teamRepo = path.join(home, '.teamai', 'team-repo');
+  fs.mkdirSync(teamRepo, { recursive: true });
+  fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: acme\nrepo: https://example.test/acme/team.git\nsharing:\n  recall:\n    enabled: true\n');
+  fs.writeFileSync(
+    path.join(home, '.teamai', 'config.yaml'),
+    `repo:\n  localPath: ${teamRepo}\n  remote: https://example.test/acme/team.git\nusername: tester\nscope: user\n`,
+  );
+  return home;
 }
 
 /** Build a hook STDIN JSON payload with a session_id. */
-function makeStdinPayload(sessionId: string): string {
+function makeStdinPayload(sessionId: string, cwd = '/tmp/fake-project'): string {
   return JSON.stringify({
     session_id: sessionId,
     hook_event_name: 'Stop',
-    cwd: '/tmp/fake-project',
+    cwd,
   });
 }
 
@@ -58,12 +67,15 @@ function runContributeCheck(
   homeDir: string,
   stdinPayload: string,
   tool = 'claude',
+  processCwd = homeDir,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve) => {
     const child = execFile(
       'node',
       [CLI_PATH, 'contribute-check', '--stdin', '--tool', tool],
       {
+        // The directory the hook process starts in, which the gate must not read.
+        cwd: processCwd,
         env: { ...process.env, HOME: homeDir, TEAMAI_LOG_LEVEL: 'silent' },
         timeout: 10000,
       },
@@ -155,6 +167,16 @@ describe('contribute-check E2E', () => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
+  it('stays silent where teamai is not set up (#748)', async () => {
+    fs.rmSync(path.join(tmpHome, '.teamai', 'config.yaml'));
+    writeEventsFile(tmpHome, buildRichSessionEvents(SESSION_ID));
+
+    const result = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID));
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(readSessionState(tmpHome, SESSION_ID)).toBeNull();
+  });
+
   it('standalone Codex Stop queues the hint without emitting incompatible JSON', async () => {
     writeEventsFile(tmpHome, buildRichSessionEvents(SESSION_ID));
     const result = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID), 'codex');
@@ -162,7 +184,7 @@ describe('contribute-check E2E', () => {
     expect(result.stdout).toBe('');
     const state = readSessionState(tmpHome, SESSION_ID)!;
     expect(state.hinted).toBe(true);
-    expect(state.pendingHint).toContain('teamai-share-learnings');
+    expect(state.pendingHint).toContain('teamai skill get share');
     const repeated = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID), 'codex');
     expect(repeated.stdout).toBe('');
     expect(readSessionState(tmpHome, SESSION_ID)!.pendingHint).toBe(state.pendingHint);
@@ -194,13 +216,53 @@ describe('contribute-check E2E', () => {
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain(RAW_GITHUB_TOKEN);
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain('50 tool calls');
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain('7 different tools');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('/teamai-share-learnings');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('/teamai share what this session taught me');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('teamai skill get share');
     expect(parsed.stopReason).toBeUndefined();
 
     // The real CLI persists hinted=true, so a repeated Stop hook is silent.
     const repeated = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID));
     expect(repeated.code).toBe(0);
     expect(repeated.stdout).toBe('');
+  });
+
+  it('withholds the reminder where `teamai skill get share` refuses: a config that cannot be loaded', async () => {
+    // Hooks written before the dispatcher still call this command directly; it
+    // must ask the same gate, or it nudges towards a command that says no.
+    writeEventsFile(tmpHome, buildRichSessionEvents(SESSION_ID));
+    fs.writeFileSync(path.join(tmpHome, '.teamai', 'config.yaml'), '');
+
+    const result = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID));
+
+    expect(result.stdout).toBe('');
+  });
+
+  it('asks the gate about the payload cwd, not the directory the hook process started in', async () => {
+    // The process starts in HOME, where the user config (recall on) would allow
+    // the nudge; the session ran in a project whose config does not parse, where
+    // `teamai skill get share` refuses.
+    const project = path.join(tmpHome, 'project');
+    fs.mkdirSync(path.join(project, '.teamai'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.teamai', 'config.yaml'), 'repo: [unclosed\n');
+    writeEventsFile(tmpHome, buildRichSessionEvents(SESSION_ID));
+
+    const result = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID, project));
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('');
+  });
+
+  it('never asks the gate about the launcher directory, even when the payload cwd no longer exists', async () => {
+    // The hook process starts in a project whose config does not parse; the
+    // session ran in a worktree since deleted, which holds no project config,
+    // so the user config (recall on) decides.
+    const launcher = path.join(tmpHome, 'launcher');
+    fs.mkdirSync(path.join(launcher, '.teamai'), { recursive: true });
+    fs.writeFileSync(path.join(launcher, '.teamai', 'config.yaml'), 'repo: [unclosed\n');
+    writeEventsFile(tmpHome, buildRichSessionEvents(SESSION_ID));
+
+    const result = await runContributeCheck(tmpHome, makeStdinPayload(SESSION_ID, path.join(tmpHome, 'deleted-worktree')), 'claude', launcher);
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toBe('');
   });
 
   it('produces no output for a trivial session below threshold', async () => {

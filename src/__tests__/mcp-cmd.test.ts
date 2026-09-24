@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: vi.fn(),
 }));
 vi.mock('../resources/mcp.js', () => ({
@@ -51,5 +52,27 @@ describe('mcpList', () => {
     expect(text).toContain('roles:    frontend');
     expect(text).toContain('roles:    nobody');
     expect(text.match(/roles:/g)).toHaveLength(2);
+  });
+
+  it('prints the projects restriction the same way, and both when a server scopes both', async () => {
+    mockedParse.mockResolvedValue([
+      { name: 'checkout-db', transport: 'http', url: 'https://example.com/checkout', projects: ['checkout'] },
+      { name: 'shared', transport: 'http', url: 'https://example.com/api/mcp' },
+      { name: 'nobody', transport: 'http', url: 'https://example.com/none', projects: [] },
+      { name: 'both', transport: 'http', url: 'https://example.com/both', roles: ['frontend'], projects: ['checkout', 'billing'] },
+    ]);
+    const out: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
+    try {
+      await mcpList({});
+    } finally {
+      spy.mockRestore();
+    }
+    const text = out.join('\n');
+    expect(text).toContain('projects: checkout');
+    expect(text).toContain('projects: nobody');
+    expect(text).toContain('projects: checkout, billing');
+    expect(text.match(/projects:/g)).toHaveLength(3);
+    expect(text.match(/roles:/g)).toHaveLength(1);
   });
 });

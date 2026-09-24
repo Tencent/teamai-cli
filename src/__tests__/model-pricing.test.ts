@@ -26,14 +26,14 @@ describe('Claude API-equivalent price estimation', () => {
 
   it('prices a gateway alias by mapping it to a known model', () => {
     const usage = { input: 1_000, output: 200, cacheRead: 5_000, cacheCreation: 400 };
-    const aliased = estimateClaudeRequest('ep-qxst1hw4', usage, { 'ep-qxst1hw4': 'claude-sonnet-5' });
+    const aliased = estimateClaudeRequest('gateway-model-42', usage, { 'gateway-model-42': 'claude-sonnet-5' });
     // Identical to pricing 'claude-sonnet-5' directly.
     expect(aliased).toEqual(estimateClaudeRequest('claude-sonnet-5', usage));
     expect(aliased?.costMicros).toBe(6_000);
   });
 
   it('still returns null for an alias that maps to an unknown model', () => {
-    expect(estimateClaudeRequest('ep-qxst1hw4', { input: 100, output: 20, cacheRead: 0, cacheCreation: 0 }, { 'ep-qxst1hw4': 'some-nonexistent-model' })).toBeNull();
+    expect(estimateClaudeRequest('gateway-model-42', { input: 100, output: 20, cacheRead: 0, cacheCreation: 0 }, { 'gateway-model-42': 'some-nonexistent-model' })).toBeNull();
   });
 
   it('ignores the alias map when the raw model already matches', () => {

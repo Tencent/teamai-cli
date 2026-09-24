@@ -56,6 +56,30 @@ describe('MemberConfigSchema', () => {
   });
 });
 
+describe('LocalConfigSchema', () => {
+  it("expands a home-relative repo.localPath so git and the manifest readers see an absolute path", () => {
+    const previousHome = process.env.HOME;
+    process.env.HOME = '/home/e2e';
+    try {
+      const parsed = LocalConfigSchema.parse({
+        repo: { localPath: '~/.teamai/team-repo', remote: 'https://github.com/acme/team.git' },
+        username: 'e2e',
+      });
+      expect(parsed.repo.localPath).toBe('/home/e2e/.teamai/team-repo');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    }
+  });
+
+  it('leaves an absolute repo.localPath untouched', () => {
+    const parsed = LocalConfigSchema.parse({
+      repo: { localPath: '/srv/team-repo', remote: 'https://github.com/acme/team.git' },
+      username: 'e2e',
+    });
+    expect(parsed.repo.localPath).toBe('/srv/team-repo');
+  });
+});
+
 describe('TeamaiConfigSchema', () => {
   it.each(['github', 'tgit', 'cnb', 'git'] as const)(
     'accepts the %s provider',

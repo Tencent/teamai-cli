@@ -6,7 +6,8 @@ import fse from 'fs-extra';
 // Issue #73 keeps recall project-only by default. Layered recall is available
 // only through an explicit project-local inheritance setting.
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
   detectProjectConfig: vi.fn(),
   requireInit: vi.fn(),
   loadLocalConfigForScope: vi.fn(),

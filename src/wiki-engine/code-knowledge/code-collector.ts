@@ -8,6 +8,14 @@ import { safeIgnore, toPosix } from "../core/wiki-protocol.js";
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Every git child below is launched with `windowsHide: true`. A parent with no
+ * console of its own — a GUI or hook host — makes Windows give the child a new
+ * one, which flashes a visible window on every scan. CI has no Windows runner,
+ * so the option is the only guard there is.
+ */
+const GIT_EXEC_OPTIONS = { windowsHide: true } as const;
+
 export interface CodeCollectedFile {
   path: string;
   relativePath: string;
@@ -145,7 +153,7 @@ function languageFor(filePath: string): string {
 
 export async function gitCommit(root: string): Promise<string | undefined> {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"]);
+    const { stdout } = await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"], GIT_EXEC_OPTIONS);
     return stdout.trim() || undefined;
   } catch {
     return undefined;
@@ -159,7 +167,7 @@ export async function gitCommit(root: string): Promise<string | undefined> {
  */
 export async function isWorkingTreeClean(root: string): Promise<boolean> {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", root, "status", "--porcelain"]);
+    const { stdout } = await execFileAsync("git", ["-C", root, "status", "--porcelain"], GIT_EXEC_OPTIONS);
     return stdout.trim().length === 0;
   } catch {
     return false;
@@ -180,7 +188,7 @@ export async function gitDiffNameStatus(
   newSha: string,
 ): Promise<{ added: string[]; changed: string[]; deleted: string[] } | null> {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", root, "-c", "core.quotePath=false", "diff", "--name-status", "-M", "-C", oldSha, newSha]);
+    const { stdout } = await execFileAsync("git", ["-C", root, "-c", "core.quotePath=false", "diff", "--name-status", "-M", "-C", oldSha, newSha], GIT_EXEC_OPTIONS);
     const added: string[] = [];
     const changed: string[] = [];
     const deleted: string[] = [];
