@@ -4,7 +4,9 @@
 // management (`provider add git`, `set-primary`) and cross-provider write-target
 // selection belong to a later phase and are intentionally not exposed here.
 
+import path from 'node:path';
 import { log } from './utils/logger.js';
+import { getUserHome } from './utils/home.js';
 import {
   listHttpProviderConfigs,
   getHttpProviderConfig,
@@ -52,36 +54,6 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
     process.exit(1);
   }
 
-  if (await getHttpProviderConfig(opts.name)) {
-    log.error(`Provider "${opts.name}" already exists. Remove it first or choose another name.`);
-    process.exit(1);
-  }
-
-  // Single-provider gate (issue #404, phase 2). Running two HTTP providers
-  // concurrently is unsafe until the ownership ledger (phase 4) arbitrates
-  // same-name resources across providers — otherwise one provider's uninstall
-  // deletes files another provider installed, and serial hook sync can exceed
-  // the foreground budget. Until then, allow exactly one HTTP provider (plus
-  // the legacy singleton, which double-track dispatch already handles).
-  const existing = await listHttpProviderConfigs();
-  if (existing.length > 0) {
-    log.error(
-      `An HTTP provider ("${existing[0].name}") is already configured. Multiple HTTP `
-      + 'providers need cross-provider ownership arbitration (issue #404 phase 4) and '
-      + 'are not supported yet. Remove the existing one with `teamai provider remove '
-      + `${existing[0].name}\` first.`,
-    );
-    process.exit(1);
-  }
-  if (await legacySingletonActive()) {
-    log.error(
-      'A legacy HTTP local agent is already configured. Migrate it with '
-      + '`teamai provider migrate-legacy --name <name>` instead of adding a second '
-      + 'HTTP provider (multiple providers need issue #404 phase 4).',
-    );
-    process.exit(1);
-  }
-
   const priority = parsePriority(opts.priority);
   const config: HttpProviderConfig = {
     name: opts.name,
@@ -90,28 +62,73 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
     priority,
   };
 
-  // Initialize the backend BEFORE publishing the registry record, so a failed
-  // init (bad token, unwritable dir, hook injection failure) never leaves a
-  // registered-but-broken provider that later hook dispatches keep loading.
-  // Publish the registry record only after init succeeds; on any failure run a
-  // FULL teardown so nothing init already did — including the hooks it injected
-  // into the tools' settings — is left behind, then start clean on retry.
-  const backend = getHttpAdapter(adapter);
-  try {
-    if (backend.initialize) {
-      await backend.initialize(config, opts.token);
-    }
-    await upsertHttpProviderConfig(config);
-  } catch (e) {
-    try {
-      await backend.teardown(config);
-    } catch (teardownErr) {
-      log.warn(`Rollback teardown for "${config.name}" hit an error: ${(teardownErr as Error).message}`);
-    }
-    await removeHttpProviderState(config.name);
-    await removeHttpProviderConfig(config.name);
-    log.error(`Failed to add provider "${config.name}": ${(e as Error).message}`);
+  // Serialize the whole check-and-write under a machine-level lock so two
+  // concurrent `provider add` runs cannot both see an empty registry and each
+  // create a provider (the single-provider gate below is otherwise a racy
+  // check-then-act). The lock also covers init + publish so a rollback cannot
+  // interleave with another add.
+  const { acquireLock, releaseLock } = await import('./update.js');
+  const lockPath = path.join(getUserHome(), '.teamai', 'providers', '.add.lock');
+  if (!(await acquireLock(lockPath))) {
+    log.error('Another `teamai provider` operation is in progress. Try again in a moment.');
     process.exit(1);
+  }
+  try {
+    if (await getHttpProviderConfig(opts.name)) {
+      log.error(`Provider "${opts.name}" already exists. Remove it first or choose another name.`);
+      process.exit(1);
+    }
+
+    // Single-provider gate (issue #404, phase 2). Running two HTTP providers
+    // concurrently is unsafe until the ownership ledger (phase 4) arbitrates
+    // same-name resources across providers — otherwise one provider's uninstall
+    // deletes files another provider installed, and serial hook sync can exceed
+    // the foreground budget. Until then, allow exactly one HTTP provider (plus
+    // the legacy singleton, which double-track dispatch already handles).
+    const existing = await listHttpProviderConfigs();
+    if (existing.length > 0) {
+      log.error(
+        `An HTTP provider ("${existing[0].name}") is already configured. Multiple HTTP `
+        + 'providers need cross-provider ownership arbitration (issue #404 phase 4) and '
+        + 'are not supported yet. Remove the existing one with `teamai provider remove '
+        + `${existing[0].name}\` first.`,
+      );
+      process.exit(1);
+    }
+    if (await legacySingletonActive()) {
+      log.error(
+        'A legacy HTTP local agent is already configured. Migrate it with '
+        + '`teamai provider migrate-legacy --name <name>` instead of adding a second '
+        + 'HTTP provider (multiple providers need issue #404 phase 4).',
+      );
+      process.exit(1);
+    }
+
+    // Initialize the backend BEFORE publishing the registry record, so a failed
+    // init (bad token, unwritable dir, hook injection failure) never leaves a
+    // registered-but-broken provider that later hook dispatches keep loading.
+    // Publish the registry record only after init succeeds; on any failure run a
+    // FULL teardown so nothing init already did — including the hooks it injected
+    // into the tools' settings — is left behind, then start clean on retry.
+    const backend = getHttpAdapter(adapter);
+    try {
+      if (backend.initialize) {
+        await backend.initialize(config, opts.token);
+      }
+      await upsertHttpProviderConfig(config);
+    } catch (e) {
+      try {
+        await backend.teardown(config);
+      } catch (teardownErr) {
+        log.warn(`Rollback teardown for "${config.name}" hit an error: ${(teardownErr as Error).message}`);
+      }
+      await removeHttpProviderState(config.name);
+      await removeHttpProviderConfig(config.name);
+      log.error(`Failed to add provider "${config.name}": ${(e as Error).message}`);
+      process.exit(1);
+    }
+  } finally {
+    await releaseLock(lockPath);
   }
 
   log.success(`Added HTTP provider "${config.name}" (${config.adapter}) → ${config.endpoint}`);
@@ -181,13 +198,18 @@ export async function providerMigrateLegacy(opts: MigrateLegacyOptions): Promise
     log.error((e as Error).message);
     process.exit(1);
   }
-  // Single-provider gate (issue #404 phase 2): migrating a legacy singleton
-  // while a named provider already exists would leave two named HTTP providers,
-  // bypassing the one-provider limit. Refuse until phase 4's arbitration lands.
-  const existing = await listHttpProviderConfigs();
-  if (existing.length > 0) {
+  // Single-provider gate (issue #404 phase 2): a legacy migration must not
+  // create a SECOND provider alongside an existing one. Only a provider with a
+  // DIFFERENT name is a foreign second provider — an entry under this same
+  // target name is either an already-finished migration (idempotent re-run) or
+  // one interrupted after the registry write but before the marker, both of
+  // which the store function resolves. Gating on "any entry" here would break
+  // that idempotency/resume (a re-run would error instead of no-op), so only
+  // reject a differently-named provider.
+  const foreign = (await listHttpProviderConfigs()).filter((p) => p.name !== opts.name);
+  if (foreign.length > 0) {
     log.error(
-      `A named HTTP provider ("${existing[0].name}") already exists; migrating the legacy `
+      `A named HTTP provider ("${foreign[0].name}") already exists; migrating the legacy `
       + 'singleton would create a second one, which is not supported yet (issue #404 phase 4).',
     );
     process.exit(1);

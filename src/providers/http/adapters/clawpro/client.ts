@@ -22,7 +22,7 @@ import {
 } from '../../../../utils/fs.js';
 import { isToolInstalledForConfig, ResourceHandler } from '../../../../resources/base.js';
 import { RulesHandler, SkillsHandler } from '../../../../resources/index.js';
-import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, OPENCLAW_TOOLS } from '../../../../hooks.js';
+import { injectHooksToAllTools, reconcileHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, OPENCLAW_TOOLS } from '../../../../hooks.js';
 import { parseHookEvent } from '../../../../dashboard-collector.js';
 import { resolveHookCwd } from '../../../../utils/hook-cwd.js';
 import { isInteractive } from '../../../../utils/prompt.js';
@@ -62,6 +62,7 @@ import {
   DEFAULT_CLAUDE_ROOT,
   COPILOT_TOOL_ID,
   getTokenPath,
+  getManagedHooksPath,
   TEAMAI_CLAUDEMD_START,
   TEAMAI_CLAUDEMD_END,
   TeamaiConfigSchema,
@@ -3423,14 +3424,23 @@ export async function initLocalAgentHttp(options: {
   const teamConfig = createLocalAgentTeamConfig(endpoint);
   // The local agent is always user-scope and always rooted at HOME, so resolve
   // the user-scope paths (Qoder CN's user config lives under ~/.qoder-cn).
-  await injectHooksToAllTools(
+  const hookResult = await injectHooksToAllTools(
     scopedToolPaths(teamConfig, { scope: 'user', toolRoots: await memberToolRoots() }),
     getUserHome(),
     options.filterAgents,
   );
-  // A named provider prints its own "Added HTTP provider" line; only the legacy
-  // singleton path announces initialization here.
-  if (!httpProviderContext.getStore()) {
+  // injectHooksToAllTools is best-effort (one tool failing warns and continues).
+  // For a named provider that is a fresh, explicit `provider add`, a run where
+  // hooks were attempted but NONE succeeded means the provider would deliver
+  // nothing — surface that as a failure so the caller rolls back instead of
+  // reporting a false success. The legacy singleton keeps its lenient behavior.
+  if (httpProviderContext.getStore()) {
+    if (hookResult.attempted > 0 && hookResult.succeeded === 0) {
+      throw new Error(
+        'Failed to inject the teamai hook into any detected tool; the provider would deliver nothing.',
+      );
+    }
+  } else {
     log.success(`HTTP provider initialized at ${getConfigPath()}`);
   }
 }
@@ -3579,9 +3589,36 @@ export async function removeLocalAgentHttp(): Promise<void> {
   }
 
   await removeAllAgentHooks();
+
+  // Remove the built-in teamai hooks this provider's initLocalAgentHttp injected
+  // via injectHooksToAllTools — removeAllAgentHooks only clears backend-delivered
+  // agent hooks, so without this a standalone `provider add` → `provider remove`
+  // (or a failed-add rollback) would leave the dispatch hooks running in every
+  // tool. Only do this for a named provider AND only when no OTHER teamai install
+  // (git/self/legacy user config) still relies on those shared built-in hooks —
+  // otherwise removing them would break a coexisting install.
+  const providerCtx = httpProviderContext.getStore();
+  if (providerCtx) {
+    const { loadLocalConfig } = await import('../../../../config.js');
+    const otherInstall = await loadLocalConfig();
+    if (!otherInstall) {
+      try {
+        const teamConfig = createLocalAgentTeamConfig(config.endpoint);
+        await reconcileHooksToAllTools(
+          scopedToolPaths(teamConfig, { scope: 'user', toolRoots: await memberToolRoots() }),
+          getUserHome(),
+          [],
+          getManagedHooksPath('user'),
+          { removeAll: true },
+        );
+      } catch (e) {
+        log.warn(`[local-agent] built-in hook removal failed: ${(e as Error).message}`);
+      }
+    }
+  }
+
   await remove(getLocalAgentHome());
   // A named provider's credential lives outside its state home; remove it too.
-  const providerCtx = httpProviderContext.getStore();
   if (providerCtx) await remove(providerCtx.credentialPath);
   log.success('HTTP source removed (resources uninstalled, config cleared).');
 }

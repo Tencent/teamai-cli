@@ -103,6 +103,27 @@ describe('provider migrate-legacy: single-provider gate (issue #404 phase 2)', (
     // Still only the original named provider; no second one was created.
     expect((await listHttpProviderConfigs()).map((c) => c.name)).toEqual(['existing']);
   });
+
+  it('stays idempotent: re-running after a completed migration is a no-op, not an error', async () => {
+    const legacy = path.join(tmpDir, '.teamai', 'local-agent');
+    await fse.ensureDir(legacy);
+    await fse.writeJson(path.join(legacy, 'config.json'), {
+      endpoint: 'https://legacy/api', workspaceBindings: {}, createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    await fse.writeJson(path.join(legacy, 'manifest.json'), { scopes: {} });
+
+    const { providerMigrateLegacy } = await import('../provider-command.js');
+    // First migration succeeds and registers "company".
+    await providerMigrateLegacy({ name: 'company' });
+    const { listHttpProviderConfigs } = await import('../providers/http/store.js');
+    expect((await listHttpProviderConfigs()).map((c) => c.name)).toEqual(['company']);
+
+    // Re-running with the SAME name must NOT error on the single-provider gate
+    // (regression: the gate previously rejected any existing entry, including
+    // this migration's own). It is a clean no-op.
+    await expect(providerMigrateLegacy({ name: 'company' })).resolves.toBeUndefined();
+    expect((await listHttpProviderConfigs()).map((c) => c.name)).toEqual(['company']);
+  });
 });
 
 describe('provider add http: registry published only after init succeeds (issue #404)', () => {
@@ -125,6 +146,27 @@ describe('provider add http: registry published only after init succeeds (issue 
     ).rejects.toThrow(/process.exit\(1\)/);
 
     // No registered provider, no leftover state home.
+    const { listHttpProviderConfigs, httpProviderHome } = await import('../providers/http/store.js');
+    expect(await listHttpProviderConfigs()).toEqual([]);
+    expect(fse.existsSync(httpProviderHome('company'))).toBe(false);
+  });
+
+  it('fails the add when init injected no hooks at all (delivers nothing)', async () => {
+    // Simulate every tool's hook injection failing: attempted > 0, succeeded 0.
+    vi.doMock('../hooks.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../hooks.js')>();
+      return {
+        ...actual,
+        injectHooksToAllTools: vi.fn(async () => ({ attempted: 2, succeeded: 0 })),
+      };
+    });
+
+    const { providerAddHttp } = await import('../provider-command.js');
+    await expect(
+      providerAddHttp('https://a/api', { name: 'company', token: 'x' }),
+    ).rejects.toThrow(/process.exit\(1\)/);
+
+    // Rolled back: no registry entry, no leftover home.
     const { listHttpProviderConfigs, httpProviderHome } = await import('../providers/http/store.js');
     expect(await listHttpProviderConfigs()).toEqual([]);
     expect(fse.existsSync(httpProviderHome('company'))).toBe(false);
