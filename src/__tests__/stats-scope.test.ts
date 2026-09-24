@@ -297,10 +297,10 @@ describe('showStats scope and idempotency', () => {
     expect(outputNumber(out, 'Conversation turns:')).toBe(1);
   });
 
-  it('applies no project exclusion in the user scope when no project resolves', async () => {
-    // A user-scope run from a plain directory: detectProjectConfig() finds no
-    // project here, exactly as `pull` sees it from the same directory, so the
-    // report path passes no exclusion list either. The display side matches.
+  it('keeps sessions recorded before events carried a data home out of the user scope', async () => {
+    // A user-scope run from a plain directory. These events carry no dataHome,
+    // and the user scope never reports such events (#785), so it does not count
+    // them either: the display side follows the report side.
     await seedUserScopeWithProject();
     await appendEvents([
       ...session('sess-1', DIRS.project),
@@ -321,8 +321,42 @@ describe('showStats scope and idempotency', () => {
     fs.mkdirSync(plainDir, { recursive: true });
     const out = await showStatsFromPlainDir(plainDir);
 
-    expect(outputNumber(out, 'Sessions:')).toBe(2);
-    expect(outputNumber(out, 'Conversation turns:')).toBe(2);
+    expect(out).toContain('No usage data yet.');
+  });
+
+  it('subtracts the scope\'s own reported snapshot, not the shared one', async () => {
+    // Each scope keeps its own snapshots since #786, and the shared file is no
+    // longer written. Here the shared one is stale and the project's own says
+    // sess-1 was reported: reading the shared one would count sess-1 twice.
+    await seedProjectConfig();
+    await appendEvents(session('sess-1', DIRS.project));
+
+    await writeReportedStats({
+      username: 'tester',
+      updatedAt: '2026-09-20T11:00:00.000Z',
+      skills: {},
+      prompts: 1,
+      tokens: SESSION_TOKENS,
+      interventions: { sessions: 1, interrupt: 0, toolReject: 0, correction: 0 },
+    });
+    await writeReportedSnapshots({}, {});
+    const anchors = await resolveAnchors(workspace);
+    if (!anchors) throw new Error('expected the seeded workspace to have git anchors');
+    const ownDir = path.join(await resolvePartitionDir(anchors.projectAnchor), 'dashboard');
+    await ensureDir(ownDir);
+    await writeFile(
+      path.join(ownDir, 'reported-interventions.json'),
+      JSON.stringify({ 'sess-1': { interrupt: 0, toolReject: 0, correction: 0 } }),
+    );
+    await writeFile(
+      path.join(ownDir, 'reported-prompt-tokens.json'),
+      JSON.stringify({ 'sess-1': { prompts: 1, tokens: SESSION_TOKENS } }),
+    );
+
+    const out = await showStatsFromProject();
+
+    expect(outputNumber(out, 'Sessions:')).toBe(1);
+    expect(outputNumber(out, 'Conversation turns:')).toBe(1);
   });
 
   it('still shows local sessions when the team stats file is missing', async () => {
@@ -347,8 +381,8 @@ describe('showStats scope and idempotency', () => {
   });
 
   it('does not subtract a snapshot the team file never received', async () => {
-    // The local snapshots are machine-global while the team file is per-scope,
-    // so a snapshot can name a session this team never got — an empty team file
+    // A scope's snapshot is first seeded from the machine-wide one, so it can
+    // name a session this team never got — an empty team file
     // with a populated snapshot. Subtracting anyway undercounts to nothing.
     await seedProjectConfig();
     await appendEvents(session('sess-1', DIRS.project));
