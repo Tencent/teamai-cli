@@ -17,6 +17,7 @@ import { deriveSessionId } from './utils/session-id.js';
 import { log } from './utils/logger.js';
 import { normalizeToolName } from './utils/tool-names.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
+import { pathExists } from './utils/fs.js';
 
 // ─── Public types ───────────────────────────────────────
 
@@ -109,8 +110,16 @@ export const PULL_TIMEOUT_MS = 120_000;
 
 const pullHandler: HookHandler = {
   name: 'pull',
-  async execute(stdin, tool) {
+  async execute(stdin, tool, config) {
     const cwd = resolveHookCwd(stdin);
+    // No config resolved: teamai is not set up here, or the project config
+    // cannot be read. Only the second stops the pull, since what detection
+    // loads after that file may be another team's (#784). A cwd that no longer
+    // exists holds no project config, and git refuses to open it.
+    if (!config && (cwd === undefined || await pathExists(cwd))) {
+      const { findUnreadableProjectConfig } = await import('./config.js');
+      if (await findUnreadableProjectConfig(cwd) !== null) return null;
+    }
     const hintCwd = cwd ?? process.cwd();
     const packageHints = await import('./pkg/pkg-hint.js');
     const packageHashBeforePull = await packageHints.packageManifestHashForCwd(hintCwd);
@@ -785,10 +794,8 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // ─── SessionStart ─────────────────────────────────
     // pull does not produce output the host needs; run detached so git fetch
     // on a slow network cannot delay session startup. Its own generous budget
-    // (PULL_TIMEOUT_MS) — the shared 15s truncated the pull itself. It needs a
-    // config: an unreadable project config resolves to none, and what detection
-    // loads after it may be another team's (#784).
-    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS, background: true, requiresConfig: true },
+    // (PULL_TIMEOUT_MS) — the shared 15s truncated the pull itself.
+    { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS, background: true },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },

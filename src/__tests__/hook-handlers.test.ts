@@ -248,6 +248,21 @@ describe('hook-handlers registry', () => {
     expect(mockSeedProjectAgentRoot).toHaveBeenCalledWith('claude', '/from-cwd');
   });
 
+  it('session-start pull runs nothing where the project config cannot be read (#784)', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'session-start' && r.handler.name === 'pull',
+    )!.handler;
+    mockFindUnreadableProjectConfig.mockResolvedValueOnce('/tmp/p/.teamai/config.yaml: bad indentation');
+
+    await handler.execute({ session_id: 's-pull', cwd: '/tmp' }, 'claude', null);
+
+    expect(mockFindUnreadableProjectConfig).toHaveBeenCalledWith('/tmp');
+    expect(mockSeedProjectAgentRoot).not.toHaveBeenCalled();
+    expect(mockPull).not.toHaveBeenCalled();
+    expect(mockStashPackageHint).not.toHaveBeenCalled();
+  });
+
   it('stop has update, contribute-check, and dashboard-report handlers', () => {
     const registry = buildHandlerRegistry();
     const stopHandlers = registry
@@ -787,6 +802,7 @@ describe('hook-handlers registry', () => {
     expect([...names].sort()).toEqual([
       'local-agent-sync',
       'package-pending-hint',
+      'pull',
       'update',
     ]);
   });
