@@ -19,6 +19,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { planMigration, runMigration, maybeMigrate } from '../migrate.js';
+import { log } from '../utils/logger.js';
 import { projectDataHome } from '../utils/partition.js';
 
 // ─── Real-git migration tests (issue #374 P1-3) ─────────────────────────────
@@ -126,6 +127,7 @@ describe('planMigration', () => {
     await seedLegacyLayout();
     const plan = await planMigration(repoRoot);
     expect(plan).not.toBeNull();
+    expect(plan!.mode).toBe('full');
     expect(plan!.legacyDir).toBe(legacyDir);
     expect(plan!.partitionDir).toBe(projectDataHome(repoRoot));
     expect(plan!.anchor).toBe(repoRoot);
@@ -363,6 +365,20 @@ describe('runMigration', () => {
     expect(await fse.pathExists(path.join(legacyDir, 'env'))).toBe(true);
     expect(await fse.pathExists(`${legacyDir}.bak`)).toBe(false);
     expect(await fse.readFile(path.join(partition, 'config.yaml'), 'utf-8')).toBe(':::not yaml:::\n');
+  });
+
+  it('retires the legacy dir when a readable partition config appears after planning', async () => {
+    await seedLegacyLayout();
+    const plan = await planMigration(repoRoot);
+    expect(plan?.mode).toBe('full');
+    const partition = projectDataHome(repoRoot);
+    await writePartitionConfig(partition);
+    await fse.writeFile(path.join(partition, 'sentinel'), 'authoritative\n');
+
+    expect(await runMigration(plan!)).toBe('migrated');
+    expect(await fse.pathExists(legacyDir)).toBe(false);
+    expect(await fse.pathExists(path.join(`${legacyDir}.bak`, 'env'))).toBe(true);
+    expect(await fse.pathExists(path.join(partition, 'sentinel'))).toBe(true);
   });
 
   it('aborts without touching the source when the staged clone is corrupt', async () => {
@@ -672,9 +688,13 @@ describe('maybeMigrate', () => {
   // #797: the legacy dir holds the only config that still loads while the
   // partition's cannot be read, so it must not be retired until that is fixed.
   it.each([
-    ['does not parse', ':::not yaml:::\n'],
+    ['does not parse', 'repo: "unterminated\n'],
     ['does not validate', 'repo:\n  kind: git\n'],
     ['is empty', ''],
+    [
+      'is not scope: project',
+      YAML.stringify({ repo: { localPath: '/x', remote: 'r', kind: 'git' }, username: 'tester', scope: 'user' }),
+    ],
   ])('keeps the legacy dir while the partition config.yaml %s (#797)', async (_label, content) => {
     await seedLegacyLayout();
     const partition = projectDataHome(repoRoot);
@@ -689,6 +709,8 @@ describe('maybeMigrate', () => {
     expect(await fse.pathExists(`${legacyDir}.bak`)).toBe(false);
     // The broken partition file is left for the member to fix, not overwritten.
     expect(await fse.readFile(path.join(partition, 'config.yaml'), 'utf-8')).toBe(content);
+    // The member is told which file holds the migration back.
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(path.join(partition, 'config.yaml')));
   });
 
   it('retires the legacy dir on the next run once the partition config.yaml is fixed (#797)', async () => {
@@ -704,6 +726,27 @@ describe('maybeMigrate', () => {
 
     expect(await fse.pathExists(legacyDir)).toBe(false);
     expect(await fse.pathExists(path.join(`${legacyDir}.bak`, 'env'))).toBe(true);
+  });
+
+  it('keeps the partition and the legacy dir when the broken partition config is moved aside (#797)', async () => {
+    // Following "move it aside and run `teamai init`" leaves a partition dir with
+    // no config.yaml. A full copy would replace that dir, and its data with it.
+    await seedLegacyLayout();
+    const partition = projectDataHome(repoRoot);
+    await fse.ensureDir(path.join(partition, 'pending-learnings'));
+    await fse.writeFile(path.join(partition, 'pending-learnings', 'l1.md'), 'queued\n');
+    await fse.writeFile(path.join(partition, 'config.yaml'), 'repo: "unterminated\n');
+    await migrateFromRepo();
+    await fse.move(path.join(partition, 'config.yaml'), path.join(partition, 'config.yaml.broken'));
+
+    expect(await planMigration(repoRoot)).toBeNull();
+    await migrateFromRepo();
+
+    expect(await fse.pathExists(path.join(partition, 'pending-learnings', 'l1.md'))).toBe(true);
+    expect(await fse.pathExists(path.join(partition, 'config.yaml.broken'))).toBe(true);
+    expect(await fse.pathExists(path.join(legacyDir, 'config.yaml'))).toBe(true);
+    expect(await fse.pathExists(`${legacyDir}.bak`)).toBe(false);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(`${partition} exists without a config.yaml`));
   });
 
   it('is a no-op when there is nothing to migrate', async () => {

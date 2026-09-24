@@ -193,11 +193,14 @@ The plan's **mode** then depends on the partition: a full copy when
 detection can read it (a prior run built the partition but was interrupted before
 retiring the source — see Interrupt recovery). retire-only never re-copies onto the
 authoritative partition; it only cleans up the leftover legacy dir. A partition
-`config.yaml` that exists but that detection cannot read (it does not parse, does not
-validate, or is not `scope: project`) plans nothing: the legacy dir holds the only
-config that still loads, so it stays in place until the member fixes the partition
-file, and the next write command then gets the retire-only cleanup. The re-check under
-the lock in `runMigration` applies the same rule.
+`config.yaml` that exists but that detection cannot read (it is empty or cannot be
+opened, does not parse, does not validate, or is not `scope: project`) plans nothing:
+the legacy dir holds the only config that still loads, so it stays in place (a warning
+names the file) until the member fixes the partition file, and the next write command
+then gets the retire-only cleanup. A partition dir with no `config.yaml` at all (say,
+one moved aside by hand) plans nothing either, with a warning: the full copy replaces
+the whole dir, so it would take that dir's data with it. The full copy's re-check under
+the lock in `runMigration` applies the same rules.
 
 **Steps** (`runMigration`) — copy → verify → atomic rename, so an interruption never
 leaves data half-in-both-places:
