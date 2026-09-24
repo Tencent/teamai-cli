@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fse from 'fs-extra';
 import { log } from '../../../../utils/logger.js';
 import { detachChild } from '../../../../utils/exec.js';
@@ -297,12 +298,46 @@ interface LocalAgentContext {
   event?: DashboardEvent;
 }
 
+/**
+ * Execution context for a *named* HTTP provider (issue #404). When a provider
+ * runs inside `withHttpProvider`, its state (config, manifests, credentials,
+ * caches) is isolated to the provider's own directory instead of the legacy
+ * global `~/.teamai/local-agent/` singleton. Absent context = legacy singleton,
+ * so every pre-#404 code path (and unmigrated installs) behaves exactly as
+ * before.
+ */
+export interface HttpProviderExecutionContext {
+  /** Provider name (state-directory segment). */
+  name: string;
+  /** Absolute state home for this provider, e.g. ~/.teamai/providers/http/<name>. */
+  home: string;
+  /** Absolute credential-file path, kept outside `home` and out of config. */
+  credentialPath: string;
+}
+
+const httpProviderContext = new AsyncLocalStorage<HttpProviderExecutionContext>();
+
+/** Run `op` with a named HTTP provider's state isolated to its own directory. */
+export function withHttpProvider<T>(
+  ctx: HttpProviderExecutionContext,
+  op: () => Promise<T>,
+): Promise<T> {
+  return httpProviderContext.run(ctx, op);
+}
+
+/** The active named-provider context, or undefined for the legacy singleton. */
+export function currentHttpProvider(): HttpProviderExecutionContext | undefined {
+  return httpProviderContext.getStore();
+}
+
 function getTeamaiHomePath(): string {
   return path.join(getUserHome(), '.teamai');
 }
 
 function getLocalAgentHome(): string {
-  return path.join(getTeamaiHomePath(), LOCAL_AGENT_DIR);
+  // A named provider redirects all state to its own directory; without a
+  // context we fall back to the legacy global singleton location.
+  return httpProviderContext.getStore()?.home ?? path.join(getTeamaiHomePath(), LOCAL_AGENT_DIR);
 }
 
 function getConfigPath(): string {
@@ -318,6 +353,10 @@ function getModelManifestPath(): string {
 }
 
 function getErrorLogPath(): string {
+  // Error log stays under the provider home when named, so a provider's error
+  // stream is isolated too; legacy singleton keeps its historical HOME location.
+  const ctx = httpProviderContext.getStore();
+  if (ctx) return path.join(ctx.home, REPORTER_ERROR_LOG);
   return path.join(getTeamaiHomePath(), REPORTER_ERROR_LOG);
 }
 
@@ -583,10 +622,17 @@ function mergeWorkspaceBindings(
 }
 
 export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
+  const providerCtx = httpProviderContext.getStore();
   const fileConfig = await readJson<LocalAgentConfig>(getConfigPath());
   if (fileConfig?.endpoint) {
+    // Named providers keep the credential in a separate file outside config
+    // (issue #404); fall back to any inline token for the legacy singleton.
+    const token = providerCtx
+      ? (await readCredentialFile(providerCtx.credentialPath)) ?? fileConfig.token
+      : fileConfig.token;
     const config = {
       ...fileConfig,
+      token,
       endpoint: normalizeEndpoint(fileConfig.endpoint),
       workspaceBindings: fileConfig.workspaceBindings ?? {},
     };
@@ -663,12 +709,25 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
   };
 }
 
+/** Read a 0600 credential file's token, trimming the trailing newline. Missing → undefined. */
+async function readCredentialFile(credentialPath: string): Promise<string | undefined> {
+  const raw = await readFileSafe(credentialPath);
+  const token = raw?.trim();
+  return token ? token : undefined;
+}
+
 async function saveLocalAgentConfig(config: LocalAgentConfig): Promise<void> {
-  await writeJsonAtomic(getConfigPath(), {
+  const providerCtx = httpProviderContext.getStore();
+  const persisted = {
     ...config,
     endpoint: normalizeEndpoint(config.endpoint),
     workspaceBindings: config.workspaceBindings ?? {},
-  });
+  };
+  // A named provider stores its credential in a separate 0600 file, never in
+  // config.json — strip any in-memory token before persisting so migration
+  // saves (binding cleanup / key canonicalization) cannot leak it.
+  if (providerCtx) delete persisted.token;
+  await writeJsonAtomic(getConfigPath(), persisted);
 }
 
 function createLocalAgentTeamConfig(endpoint: string): TeamaiConfig {
@@ -3324,7 +3383,12 @@ export async function initLocalAgentHttp(options: {
   await ensureDir(getLocalAgentHome());
   await saveLocalAgentConfig(config);
   if (options.token) {
-    await writeTokenFile(getTokenPath(), options.token);
+    // Named providers keep the credential in their own 0600 file; the legacy
+    // singleton keeps its historical ~/.teamai/token location.
+    const providerCtx = httpProviderContext.getStore();
+    const credentialPath = providerCtx?.credentialPath ?? getTokenPath();
+    await ensureDir(path.dirname(credentialPath));
+    await writeTokenFile(credentialPath, options.token);
   }
 
   const teamConfig = createLocalAgentTeamConfig(endpoint);
@@ -3335,7 +3399,11 @@ export async function initLocalAgentHttp(options: {
     getUserHome(),
     options.filterAgents,
   );
-  log.success(`HTTP local agent initialized at ${getConfigPath()}`);
+  // A named provider prints its own "Added HTTP provider" line; only the legacy
+  // singleton path announces initialization here.
+  if (!httpProviderContext.getStore()) {
+    log.success(`HTTP provider initialized at ${getConfigPath()}`);
+  }
 }
 
 export async function pullLocalAgentForCwd(context?: LocalAgentContext): Promise<boolean> {
@@ -3480,6 +3548,9 @@ export async function removeLocalAgentHttp(): Promise<void> {
 
   await removeAllAgentHooks();
   await remove(getLocalAgentHome());
+  // A named provider's credential lives outside its state home; remove it too.
+  const providerCtx = httpProviderContext.getStore();
+  if (providerCtx) await remove(providerCtx.credentialPath);
   log.success('HTTP source removed (resources uninstalled, config cleared).');
 }
 

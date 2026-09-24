@@ -1,0 +1,203 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import fse from 'fs-extra';
+
+vi.mock('../utils/logger.js', () => ({
+  log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+let tmpDir: string;
+let origHome: string | undefined;
+
+beforeEach(async () => {
+  tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-http-store-'));
+  origHome = process.env.HOME;
+  process.env.HOME = tmpDir;
+});
+
+afterEach(async () => {
+  process.env.HOME = origHome;
+  await fse.remove(tmpDir);
+  vi.restoreAllMocks();
+});
+
+const teamai = () => path.join(tmpDir, '.teamai');
+
+describe('http provider store: config registry', () => {
+  it('rejects an unsafe provider name', async () => {
+    const { assertValidProviderName } = await import('../providers/http/store.js');
+    expect(() => assertValidProviderName('../evil')).toThrow(/Invalid provider name/);
+    expect(() => assertValidProviderName('bad/name')).toThrow(/Invalid provider name/);
+    expect(() => assertValidProviderName('good-name.1')).not.toThrow();
+  });
+
+  it('isolates two providers by name in registry and per-provider home', async () => {
+    const { upsertHttpProviderConfig, listHttpProviderConfigs, getHttpProviderConfig, httpProviderHome } =
+      await import('../providers/http/store.js');
+
+    await upsertHttpProviderConfig({ name: 'company', adapter: 'clawpro', endpoint: 'https://a/api', priority: 80 });
+    await upsertHttpProviderConfig({ name: 'community', adapter: 'clawpro', endpoint: 'https://b/api', priority: 40 });
+
+    const all = await listHttpProviderConfigs();
+    expect(all.map((c) => c.name).sort()).toEqual(['community', 'company']);
+    expect((await getHttpProviderConfig('company'))?.endpoint).toBe('https://a/api');
+
+    // Each provider gets a self-describing config in its own home.
+    const companyConfig = await fse.readJson(path.join(httpProviderHome('company'), 'provider.json'));
+    expect(companyConfig.endpoint).toBe('https://a/api');
+    expect(fs.existsSync(httpProviderHome('community'))).toBe(true);
+  });
+
+  it('removes only the selected provider from the registry', async () => {
+    const { upsertHttpProviderConfig, removeHttpProviderConfig, listHttpProviderConfigs } =
+      await import('../providers/http/store.js');
+    await upsertHttpProviderConfig({ name: 'a', adapter: 'clawpro', endpoint: 'https://a/api', priority: 10 });
+    await upsertHttpProviderConfig({ name: 'b', adapter: 'clawpro', endpoint: 'https://b/api', priority: 20 });
+
+    expect(await removeHttpProviderConfig('a')).toBe(true);
+    expect((await listHttpProviderConfigs()).map((c) => c.name)).toEqual(['b']);
+    expect(await removeHttpProviderConfig('missing')).toBe(false);
+  });
+
+  it('removes a provider state home and credential file', async () => {
+    const { upsertHttpProviderConfig, removeHttpProviderState, httpProviderHome, httpProviderCredentialPath } =
+      await import('../providers/http/store.js');
+    const { writeTokenFile } = await import('../local-agent.js');
+
+    await upsertHttpProviderConfig({ name: 'a', adapter: 'clawpro', endpoint: 'https://a/api', priority: 10 });
+    await fse.ensureDir(path.dirname(httpProviderCredentialPath('a')));
+    await writeTokenFile(httpProviderCredentialPath('a'), 'secret');
+    expect(fs.existsSync(httpProviderHome('a'))).toBe(true);
+    expect(fs.existsSync(httpProviderCredentialPath('a'))).toBe(true);
+
+    await removeHttpProviderState('a');
+    expect(fs.existsSync(httpProviderHome('a'))).toBe(false);
+    expect(fs.existsSync(httpProviderCredentialPath('a'))).toBe(false);
+  });
+});
+
+describe('http provider: named-context credential isolation', () => {
+  it('keeps the token in a 0600 file, never in config.json', async () => {
+    const { withHttpProvider, initLocalAgentHttp, loadLocalAgentConfig } = await import('../local-agent.js');
+    const { httpProviderExecutionContext, httpProviderCredentialPath, httpProviderHome } = await import(
+      '../providers/http/store.js'
+    );
+
+    await withHttpProvider(httpProviderExecutionContext('company'), () =>
+      initLocalAgentHttp({ endpoint: 'https://a/api', token: 'super-secret', force: true }),
+    );
+
+    // config.json under the provider home carries NO token.
+    const cfg = await fse.readJson(path.join(httpProviderHome('company'), 'config.json'));
+    expect(cfg.endpoint).toBe('https://a/api');
+    expect(cfg.token).toBeUndefined();
+
+    // The credential lives in an isolated 0600 file.
+    const credPath = httpProviderCredentialPath('company');
+    expect(fs.existsSync(credPath)).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(credPath).mode & 0o777).toBe(0o600);
+    }
+
+    // Loading inside the context re-reads the token from the credential file.
+    const loaded = await withHttpProvider(httpProviderExecutionContext('company'), () => loadLocalAgentConfig());
+    expect(loaded?.token).toBe('super-secret');
+  });
+
+  it('routes two providers to separate state homes', async () => {
+    const { withHttpProvider, initLocalAgentHttp } = await import('../local-agent.js');
+    const { httpProviderExecutionContext, httpProviderHome } = await import('../providers/http/store.js');
+
+    await withHttpProvider(httpProviderExecutionContext('a'), () =>
+      initLocalAgentHttp({ endpoint: 'https://a/api', token: 'ta', force: true }),
+    );
+    await withHttpProvider(httpProviderExecutionContext('b'), () =>
+      initLocalAgentHttp({ endpoint: 'https://b/api', token: 'tb', force: true }),
+    );
+
+    expect((await fse.readJson(path.join(httpProviderHome('a'), 'config.json'))).endpoint).toBe('https://a/api');
+    expect((await fse.readJson(path.join(httpProviderHome('b'), 'config.json'))).endpoint).toBe('https://b/api');
+    // Neither run wrote to the legacy singleton location.
+    expect(fs.existsSync(path.join(teamai(), 'local-agent', 'config.json'))).toBe(false);
+  });
+});
+
+describe('http provider: legacy singleton migration', () => {
+  async function seedLegacy(token?: string) {
+    const legacyDir = path.join(teamai(), 'local-agent');
+    await fse.ensureDir(legacyDir);
+    await fse.writeJson(path.join(legacyDir, 'config.json'), {
+      endpoint: 'https://legacy/api',
+      ...(token ? { token } : {}),
+      createdAt: '2026-01-01T00:00:00.000Z',
+      workspaceBindings: {},
+    });
+    // A manifest file, to prove the whole state home is copied.
+    await fse.writeJson(path.join(legacyDir, 'manifest.json'), { scopes: {} });
+    return legacyDir;
+  }
+
+  it('reports legacy singleton active until migrated', async () => {
+    const { legacySingletonActive } = await import('../providers/http/store.js');
+    expect(await legacySingletonActive()).toBe(false);
+    await seedLegacy('t');
+    expect(await legacySingletonActive()).toBe(true);
+  });
+
+  it('promotes the legacy singleton to a named provider with an isolated credential', async () => {
+    const legacyDir = await seedLegacy('legacy-token');
+    const {
+      migrateLegacyHttpProvider,
+      legacySingletonActive,
+      httpProviderHome,
+      httpProviderCredentialPath,
+      getHttpProviderConfig,
+    } = await import('../providers/http/store.js');
+
+    const config = await migrateLegacyHttpProvider({ name: 'company', priority: 70 });
+    expect(config).toMatchObject({ name: 'company', adapter: 'clawpro', endpoint: 'https://legacy/api', priority: 70 });
+
+    // Registered and self-describing.
+    expect((await getHttpProviderConfig('company'))?.endpoint).toBe('https://legacy/api');
+    // State copied over.
+    expect(fs.existsSync(path.join(httpProviderHome('company'), 'manifest.json'))).toBe(true);
+    // Token extracted to the isolated 0600 file, stripped from migrated config.json.
+    expect(fs.readFileSync(httpProviderCredentialPath('company'), 'utf-8').trim()).toBe('legacy-token');
+    expect((await fse.readJson(path.join(httpProviderHome('company'), 'config.json'))).token).toBeUndefined();
+
+    // The legacy dir is kept as a rollback snapshot, but marked migrated.
+    expect(fs.existsSync(legacyDir)).toBe(true);
+    expect(fs.existsSync(path.join(legacyDir, 'migrated-to'))).toBe(true);
+    expect(await legacySingletonActive()).toBe(false);
+  });
+
+  it('extracts the token from the legacy ~/.teamai/token file when config has none', async () => {
+    await seedLegacy();
+    await fse.writeFile(path.join(teamai(), 'token'), 'file-token\n');
+    const { migrateLegacyHttpProvider, httpProviderCredentialPath } = await import('../providers/http/store.js');
+
+    await migrateLegacyHttpProvider({ name: 'company' });
+    expect(fs.readFileSync(httpProviderCredentialPath('company'), 'utf-8').trim()).toBe('file-token');
+  });
+
+  it('is idempotent: a second migration is a no-op', async () => {
+    await seedLegacy('t');
+    const { migrateLegacyHttpProvider } = await import('../providers/http/store.js');
+    expect(await migrateLegacyHttpProvider({ name: 'company' })).not.toBeNull();
+    expect(await migrateLegacyHttpProvider({ name: 'company2' })).toBeNull();
+  });
+
+  it('returns null when there is no legacy singleton', async () => {
+    const { migrateLegacyHttpProvider } = await import('../providers/http/store.js');
+    expect(await migrateLegacyHttpProvider({ name: 'company' })).toBeNull();
+  });
+
+  it('refuses to overwrite an existing provider home', async () => {
+    await seedLegacy('t');
+    const { migrateLegacyHttpProvider, httpProviderHome } = await import('../providers/http/store.js');
+    await fse.ensureDir(httpProviderHome('company'));
+    await expect(migrateLegacyHttpProvider({ name: 'company' })).rejects.toThrow(/already has state/);
+  });
+});

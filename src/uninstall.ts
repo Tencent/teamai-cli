@@ -855,7 +855,8 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
 /**
  * Stop and uninstall local-agent plugins (best-effort) before ~/.teamai is deleted.
  * Dynamic import mirrors source.ts — keeps local-agent's heavy dependency graph out
- * of uninstall's static import chain.
+ * of uninstall's static import chain. Covers the legacy singleton and every named
+ * HTTP provider (issue #404), each torn down in its own isolated context.
  */
 async function teardownPlugins(): Promise<void> {
   try {
@@ -863,6 +864,23 @@ async function teardownPlugins(): Promise<void> {
     await teardownLocalAgentPlugins();
   } catch (e) {
     log.warn(`plugin teardown failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  try {
+    const { listHttpProviderConfigs, httpProviderExecutionContext } = await import(
+      './providers/http/store.js'
+    );
+    const { withHttpProvider, teardownLocalAgentPlugins } = await import('./local-agent.js');
+    for (const config of await listHttpProviderConfigs()) {
+      try {
+        await withHttpProvider(httpProviderExecutionContext(config.name), () =>
+          teardownLocalAgentPlugins(),
+        );
+      } catch (e) {
+        log.warn(`plugin teardown for provider "${config.name}" failed: ${(e as Error).message}`);
+      }
+    }
+  } catch (e) {
+    log.warn(`HTTP provider teardown failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

@@ -546,6 +546,67 @@ sourceCmd
     await sourceBrowse(name, globalOpts);
   });
 
+// ─── Provider subcommands (Git/HTTP resource backends, #404) ──
+
+const providerCmd = program
+  .command('provider')
+  .description('Manage named HTTP resource providers')
+  .action(async () => {
+    const { providerList } = await import('./provider-command.js');
+    await providerList();
+  });
+
+const providerAddCmd = providerCmd
+  .command('add')
+  .description('Add a resource provider');
+
+providerAddCmd
+  .command('http <endpoint>')
+  .description('Add a named HTTP provider (e.g. a ClawPro backend)')
+  .requiredOption('--name <name>', 'Unique name for this provider')
+  .option('--adapter <adapter>', 'Protocol adapter (default: clawpro)')
+  .option('--token <key>', 'API token (stored 0600 outside config, never committed)')
+  .option('--priority <n>', 'Arbitration priority; higher wins (default: 50)')
+  .action(async (endpoint: string, cmdOpts) => {
+    const { providerAddHttp } = await import('./provider-command.js');
+    await providerAddHttp(endpoint, cmdOpts);
+  });
+
+providerCmd
+  .command('list')
+  .description('List configured HTTP providers')
+  .action(async () => {
+    const { providerList } = await import('./provider-command.js');
+    await providerList();
+  });
+
+providerCmd
+  .command('sync')
+  .description('Sync all configured HTTP providers now')
+  .option('--force', 'Bypass any freshness cache')
+  .action(async (cmdOpts) => {
+    const { providerSync } = await import('./provider-command.js');
+    await providerSync(cmdOpts);
+  });
+
+providerCmd
+  .command('remove <name>')
+  .description('Remove an HTTP provider and clean up its resources')
+  .action(async (name: string) => {
+    const { providerRemove } = await import('./provider-command.js');
+    await providerRemove(name);
+  });
+
+providerCmd
+  .command('migrate-legacy')
+  .description('Promote the legacy ~/.teamai/local-agent/ singleton to a named provider')
+  .requiredOption('--name <name>', 'Name for the migrated provider')
+  .option('--priority <n>', 'Arbitration priority (default: 50)')
+  .action(async (cmdOpts) => {
+    const { providerMigrateLegacy } = await import('./provider-command.js');
+    await providerMigrateLegacy(cmdOpts);
+  });
+
 // ─── Other subcommands ────────────────────────────────────
 
 program

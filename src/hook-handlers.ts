@@ -499,12 +499,43 @@ const packageHintHandler: HookHandler = {
   },
 };
 
-/** HTTP local-agent report/sync + workspace binding prompts. */
+/**
+ * HTTP provider report/sync + workspace binding prompts (issue #404).
+ *
+ * Dispatches every configured named HTTP provider once, isolating failures so a
+ * slow/unreachable backend cannot block the others or the hook itself. Falls
+ * back to the legacy ~/.teamai/local-agent/ singleton only while it is still
+ * active (not yet migrated to a named provider), so upgraders keep working
+ * until they run `teamai provider migrate-legacy`.
+ */
 const localAgentHandler: HookHandler = {
   name: 'local-agent-sync',
   async execute(stdin, tool) {
-    const { reportAndSyncFromHook } = await import('./local-agent.js');
-    return reportAndSyncFromHook(stdin, tool);
+    const outputs: string[] = [];
+
+    const { loadHttpResourceProviders } = await import('./providers/http/registry.js');
+    const { syncResourceProviders } = await import('./providers/resource-registry.js');
+    const providers = await loadHttpResourceProviders();
+    if (providers.length > 0) {
+      const results = await syncResourceProviders(providers, {
+        trigger: 'hook',
+        tool,
+        stdin,
+        cwd: resolveHookCwd(stdin) ?? process.cwd(),
+      });
+      for (const r of results) {
+        if (r.hookOutput) outputs.push(r.hookOutput);
+      }
+    }
+
+    const { legacySingletonActive } = await import('./providers/http/store.js');
+    if (await legacySingletonActive()) {
+      const { reportAndSyncFromHook } = await import('./local-agent.js');
+      const legacyOutput = await reportAndSyncFromHook(stdin, tool);
+      if (legacyOutput) outputs.push(legacyOutput);
+    }
+
+    return outputs.length > 0 ? outputs.join('\n') : null;
   },
 };
 

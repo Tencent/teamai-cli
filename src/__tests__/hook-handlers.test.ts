@@ -108,6 +108,16 @@ vi.mock('../local-agent.js', () => ({
   reportAndSyncFromHook: mockReportAndSyncFromHook,
 }));
 
+// local-agent-sync now dispatches named HTTP providers first, then falls back
+// to the legacy singleton (issue #404). These tests exercise the legacy path:
+// no named providers configured, singleton active.
+vi.mock('../providers/http/registry.js', () => ({
+  loadHttpResourceProviders: vi.fn().mockResolvedValue([]),
+}));
+vi.mock('../providers/http/store.js', () => ({
+  legacySingletonActive: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('../pkg/pkg-hint.js', () => ({
   packageManifestHashForCwd: mockPackageManifestHash,
   stashPackageHintAfterPull: mockStashPackageHint,
