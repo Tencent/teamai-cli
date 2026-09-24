@@ -34,11 +34,23 @@ shared state, list every reader and every writer.
 
 ## Code Review Rules
 
-- The PR description must document sufficient testing, including an
-  end-to-end / real-CLI verification record — not only unit tests or type
-  checks. Flag a PR whose description lacks a test plan or an e2e record.
-  A test record naming an older commit than the head is a note, not a blocking
-  finding; the body may have been edited after the review pass started.
+- The PR description must document sufficient testing. For a PR that changes
+  runtime behavior (anything beyond a docs-only or tests-only diff), that
+  includes an end-to-end / real-CLI verification record, not only unit tests
+  or type checks — flag such a PR that lacks one as `[P1 blocking]`. A
+  docs-only or tests-only PR needs no e2e record; do not flag it for that.
+  Do NOT require a full provider × agent matrix — one representative real-CLI
+  run is enough. Missing coverage of extra providers (`gitlab`/`github`) or
+  agents (`Codex`/`CodeBuddy`/`OpenCode`) is at most `[P3 nit]` when the author
+  has flagged it as untestable in this environment or deferred to CI, never
+  `[P1 blocking]`. A test record naming an older commit than the head is a
+  note, not a blocking finding; the body may have been edited after the review
+  pass started.
+- Do not over-review. Report only findings you are confident are real in the
+  current diff, and prefer a few high-signal findings over an exhaustive list.
+  A speculative or theoretical risk that needs an unlikely precondition to
+  trigger is at most `[P3 nit]`, not `[P1 blocking]`; never restate a finding
+  already resolved in the current diff.
 - Reject over-engineering. Favor the smallest code that solves the problem;
   flag speculative abstractions, unused flexibility or config, error handling
   for cases that cannot occur, and new CLI commands added where an existing
@@ -46,8 +58,9 @@ shared state, list every reader and every writer.
 - Changes must be surgical. Every changed line should trace directly to the
   PR's stated goal; flag unrelated drive-by edits.
 - Label every finding with an explicit severity a first-time reader can
-  understand — never a bare `P1`/`P2` code. Keep the `P` marker but spell out
-  what it means inline on each finding, using the PR author's language:
-  `[P1 blocking]` for issues that must be fixed before merge, and
-  `[P2 non-blocking]` for suggestions that do not block merge. (In Chinese,
-  `[P1 阻断]` / `[P2 非阻断]`.)
+  understand — never a bare `P1`/`P2`/`P3` code. Keep the `P` marker but spell
+  out what it means inline on each finding, using the PR author's language:
+  `[P1 blocking]` for issues that must be fixed before merge,
+  `[P2 non-blocking]` for suggestions that do not block merge, and `[P3 nit]`
+  for minor or optional polish, theoretical edge cases, and coverage deferred
+  to CI. (In Chinese, `[P1 阻断]` / `[P2 非阻断]` / `[P3 可选]`.)
