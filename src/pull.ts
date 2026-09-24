@@ -1726,18 +1726,6 @@ export function compileRecallRulesBlock(): string {
         '     working directory, and web search for external information.',
         '   - Explore agents must never search paths covered by recall.',
         '',
-        '**After** completing the task, in your final reply you **MUST**',
-        'declare which knowledge entries were actually referenced, using an',
-        'HTML comment of the form:',
-        '',
-        '```',
-        '<!-- teamai:referenced-doc-ids: [doc-id-1, doc-id-2] -->',
-        '```',
-        '',
-        'If the recall returned no relevant hits, declare an empty list',
-        '(`<!-- teamai:referenced-doc-ids: [] -->`). Do not skip the',
-        'declaration — downstream tooling parses it to credit knowledge use.',
-        '',
         TEAMAI_RECALL_RULES_END,
     ];
     return lines.join('\n');

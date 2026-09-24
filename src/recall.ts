@@ -262,8 +262,15 @@ export async function autoUpvote(
     await ensureDir(votesDir);
 
     const docIds = results.map((r) => r.entry.filename.replace(/\.md$/i, ''));
-    await incrementRecalled(localVotePath, docIds);
-    log.debug(`autoUpvote: incremented recalled_count for ${docIds.length} doc(s)`);
+    // Best-effort: a contended lock (rare) simply skips this recall bump. Log
+    // honestly per the actual outcome — the previous message claimed success
+    // even when the locked write was skipped (issue #723 review).
+    const applied = await incrementRecalled(localVotePath, docIds);
+    if (applied) {
+      log.debug(`autoUpvote: incremented recalled_count for ${docIds.length} doc(s)`);
+    } else {
+      log.debug(`autoUpvote: skipped recalled_count bump for ${docIds.length} doc(s) (votes file busy)`);
+    }
   } catch (e) {
     log.error(`autoUpvote failed: ${(e as Error).message}`);
   }
