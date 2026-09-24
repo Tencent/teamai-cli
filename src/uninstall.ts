@@ -879,6 +879,13 @@ async function teardownPlugins(): Promise<{ incompleteProviders: string[] }> {
       './providers/http/store.js'
     );
     const { withHttpProvider, removeLocalAgentHttp } = await import('./local-agent.js');
+    // Signal the provider teardown that this is the full-uninstall path, so it
+    // also removes the shared built-in dispatch hooks (a standalone
+    // `provider remove` deliberately leaves those to avoid breaking a
+    // coexisting install — issue #404 #5/#7).
+    const priorUninstallFlag = process.env.TEAMAI_UNINSTALL;
+    process.env.TEAMAI_UNINSTALL = '1';
+    try {
     for (const config of await listHttpProviderConfigs()) {
       try {
         await withHttpProvider(httpProviderExecutionContext(config.name), () =>
@@ -892,6 +899,10 @@ async function teardownPlugins(): Promise<{ incompleteProviders: string[] }> {
         incompleteProviders.push(config.name);
         log.warn(`teardown for provider "${config.name}" failed: ${(e as Error).message}`);
       }
+    }
+    } finally {
+      if (priorUninstallFlag === undefined) delete process.env.TEAMAI_UNINSTALL;
+      else process.env.TEAMAI_UNINSTALL = priorUninstallFlag;
     }
   } catch (e) {
     log.warn(`HTTP provider teardown failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1117,22 +1128,24 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
     // Tear down plugins first: their manifest/config live under ~/.teamai/local-agent.
     const { incompleteProviders } = await teardownPlugins();
     if (incompleteProviders.length > 0) {
-      // We are about to delete ~/.teamai, which holds the ownership manifests
-      // for these providers' resources/hooks/plugins. Their teardown did not
-      // fully complete, so warn the user that some external tool files may
-      // remain and need manual cleanup — deleting the manifest silently would
-      // hide that.
+      // A provider's teardown could not fully clean up (locked file / perms).
+      // ~/.teamai holds the ownership manifests needed to find and finish that
+      // cleanup, so do NOT delete it — that would strand the external
+      // hooks/plugins with no way to retry. Keep it and tell the user to
+      // resolve the issue and re-run, exactly like `provider remove` does.
       log.warn(
-        `These HTTP providers did not fully tear down: ${incompleteProviders.join(', ')}. `
-        + 'Some tool hooks/plugins they installed may remain; their tracking manifests are '
-        + 'about to be removed with ~/.teamai, so any leftovers must be cleaned up manually.',
+        `Kept ${plan.teamaiHome}/ because these HTTP providers did not fully tear down: `
+        + `${incompleteProviders.join(', ')}. Their tool hooks/plugins may still be installed and `
+        + 'their tracking manifests are needed to remove them. Resolve the underlying issue '
+        + '(locked file / permissions) and run `teamai uninstall` again.',
       );
-    }
-    try {
-      await remove(plan.teamaiHome);
-      log.success(`Removed ${plan.teamaiHome}/`);
-    } catch (e) {
-      log.warn(`Failed to remove ${plan.teamaiHome}: ${(e as Error).message}`);
+    } else {
+      try {
+        await remove(plan.teamaiHome);
+        log.success(`Removed ${plan.teamaiHome}/`);
+      } catch (e) {
+        log.warn(`Failed to remove ${plan.teamaiHome}: ${(e as Error).message}`);
+      }
     }
   }
 

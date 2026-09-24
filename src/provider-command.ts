@@ -10,7 +10,9 @@ import { getUserHome } from './utils/home.js';
 import {
   listHttpProviderConfigs,
   getHttpProviderConfig,
+  readHttpProviderHomeConfig,
   upsertHttpProviderConfig,
+  writeHttpProviderHomeConfig,
   removeHttpProviderConfig,
   removeHttpProviderState,
   migrateLegacyHttpProvider,
@@ -147,9 +149,13 @@ export async function providerAddHttp(endpoint: string, opts: AddHttpOptions): P
         await removeHttpProviderState(config.name);
         await removeHttpProviderConfig(config.name);
       } else {
-        // Drop only the registry entry so hook dispatch won't load a broken
-        // provider, but keep the state home for a retriable `provider remove`.
+        // Drop the registry entry so hook dispatch won't load a broken provider,
+        // but keep the state home for a retriable `provider remove`. Persist the
+        // self-describing provider.json into the home so `provider remove` can
+        // recover this config even without a registry entry (review #3) — init
+        // may have failed before upsert wrote it.
         await removeHttpProviderConfig(config.name);
+        await writeHttpProviderHomeConfig(config);
         log.warn(
           `Kept partial state for "${config.name}" (teardown incomplete); `
           + `run \`teamai provider remove ${config.name}\` after resolving the issue.`,
@@ -196,15 +202,36 @@ export async function providerSync(): Promise<void> {
 
 /** `teamai provider remove <name>` */
 export async function providerRemove(name: string): Promise<void> {
-  const config = await getHttpProviderConfig(name);
+  let config = await getHttpProviderConfig(name);
   if (!config) {
-    log.error(`No HTTP provider named "${name}".`);
-    process.exit(1);
+    // No registry entry — but a failed `provider add` (or an interrupted one)
+    // may have left a state home whose registry record was dropped so hook
+    // dispatch would not load a broken provider. Recover that provider's config
+    // from its own home so this command can still finish the cleanup (the retry
+    // path review #3 asks for). Only error out when there is truly nothing.
+    config = await readHttpProviderHomeConfig(name);
+    if (!config) {
+      log.error(`No HTTP provider named "${name}".`);
+      process.exit(1);
+    }
   }
   // Tear down the provider's resources first, then drop its config and state so
-  // a failed teardown does not orphan installed resources.
+  // a failed teardown does not orphan installed resources. teardown throws when
+  // it could not fully clean up, leaving the home for another retry.
   const provider = createHttpResourceProvider(config);
-  await provider.teardown();
+  try {
+    await provider.teardown();
+  } catch (e) {
+    // Drop the registry entry (if any) so dispatch won't keep loading it, but
+    // keep the state home so cleanup can be retried once the issue is resolved.
+    await removeHttpProviderConfig(name);
+    log.error(
+      `Could not fully remove provider "${name}": ${(e as Error).message} `
+      + 'Kept its state for a retry — re-run `teamai provider remove '
+      + `${name}\` after resolving the issue.`,
+    );
+    process.exit(1);
+  }
   await removeHttpProviderConfig(name);
   await removeHttpProviderState(name);
   log.success(`Removed HTTP provider "${name}".`);

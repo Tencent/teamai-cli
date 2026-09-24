@@ -127,15 +127,19 @@ describe('provider migrate-legacy: single-provider gate (issue #404 phase 2)', (
 });
 
 describe('provider add http: registry published only after init succeeds (issue #404)', () => {
-  it('rolls back and leaves no registry entry when adapter init fails', async () => {
-    // Force the ClawPro adapter's initialize to fail.
+  it('cleanly rolls back (no registry, no home) when init fails and teardown succeeds', async () => {
+    // init fails; teardown succeeds → clean rollback removes everything.
     vi.doMock('../providers/http/registry.js', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../providers/http/registry.js')>();
       return {
         ...actual,
         getHttpAdapter: (name: string) => {
           const backend = actual.getHttpAdapter(name);
-          return { ...backend, initialize: async () => { throw new Error('bad token'); } };
+          return {
+            ...backend,
+            initialize: async () => { throw new Error('bad token'); },
+            teardown: async () => {},
+          };
         },
       };
     });
@@ -151,13 +155,22 @@ describe('provider add http: registry published only after init succeeds (issue 
     expect(fse.existsSync(httpProviderHome('company'))).toBe(false);
   });
 
-  it('fails the add when init injected no hooks at all (delivers nothing)', async () => {
-    // Simulate every tool's hook injection failing: attempted > 0, succeeded 0.
-    vi.doMock('../hooks.js', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../hooks.js')>();
+  it('keeps a retriable state home (no registry) when init AND rollback teardown fail', async () => {
+    // init fails; teardown also fails (e.g. an injected hook is locked) → keep
+    // the home + a self-describing provider.json so `provider remove` can retry,
+    // but drop the registry entry so dispatch won't load a broken provider.
+    vi.doMock('../providers/http/registry.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../providers/http/registry.js')>();
       return {
         ...actual,
-        injectHooksToAllTools: vi.fn(async () => ({ attempted: 2, succeeded: 0 })),
+        getHttpAdapter: (name: string) => {
+          const backend = actual.getHttpAdapter(name);
+          return {
+            ...backend,
+            initialize: async () => { throw new Error('bad token'); },
+            teardown: async () => { throw new Error('hook file locked'); },
+          };
+        },
       };
     });
 
@@ -166,9 +179,28 @@ describe('provider add http: registry published only after init succeeds (issue 
       providerAddHttp('https://a/api', { name: 'company', token: 'x' }),
     ).rejects.toThrow(/process.exit\(1\)/);
 
-    // Rolled back: no registry entry, no leftover home.
-    const { listHttpProviderConfigs, httpProviderHome } = await import('../providers/http/store.js');
+    const { listHttpProviderConfigs, httpProviderHome, readHttpProviderHomeConfig } = await import(
+      '../providers/http/store.js'
+    );
+    // No registry entry (dispatch won't load it) …
     expect(await listHttpProviderConfigs()).toEqual([]);
+    // … but the home + provider.json survive so `provider remove` can recover it.
+    expect(fse.existsSync(httpProviderHome('company'))).toBe(true);
+    expect((await readHttpProviderHomeConfig('company'))?.endpoint).toBe('https://a/api');
+  });
+
+  it('provider remove recovers a home whose registry entry was dropped (review #3)', async () => {
+    // Seed a home with a self-describing provider.json but NO registry entry —
+    // the state a failed add leaves behind.
+    const { writeHttpProviderHomeConfig, httpProviderHome, getHttpProviderConfig } = await import(
+      '../providers/http/store.js'
+    );
+    await writeHttpProviderHomeConfig({ name: 'company', adapter: 'clawpro', endpoint: 'https://a/api', priority: 50 });
+    expect(await getHttpProviderConfig('company')).toBeUndefined();
+
+    const { providerRemove } = await import('../provider-command.js');
+    // teardown for a bare/no-endpoint config no-ops (no manifest); remove succeeds.
+    await providerRemove('company');
     expect(fse.existsSync(httpProviderHome('company'))).toBe(false);
   });
 });

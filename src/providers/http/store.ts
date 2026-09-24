@@ -131,6 +131,37 @@ export async function getHttpProviderConfig(name: string): Promise<HttpProviderC
   return (await listHttpProviderConfigs()).find((p) => p.name === name);
 }
 
+/**
+ * Read a provider's self-describing config from its own state home
+ * (`~/.teamai/providers/http/<name>/provider.json`), independent of the
+ * registry. Used to recover a provider whose registry entry was dropped after a
+ * failed add/remove so `provider remove` can still find and finish its cleanup
+ * (issue #404, review #3). Returns undefined when the home has no config.
+ */
+export async function readHttpProviderHomeConfig(name: string): Promise<HttpProviderConfig | undefined> {
+  try {
+    assertValidProviderName(name);
+  } catch {
+    return undefined;
+  }
+  const cfg = await readJson<HttpProviderConfig>(
+    path.join(httpProviderHome(name), PROVIDER_CONFIG_FILE),
+  );
+  return cfg?.name ? cfg : undefined;
+}
+
+/**
+ * Persist a provider's self-describing config into its own state home WITHOUT
+ * touching the registry. Used by a failed `provider add` that keeps partial
+ * state for a retriable `provider remove`, so the recovery read above can find
+ * the config even though the registry entry was dropped (issue #404, review #3).
+ */
+export async function writeHttpProviderHomeConfig(config: HttpProviderConfig): Promise<void> {
+  assertValidProviderName(config.name);
+  await ensureDir(httpProviderHome(config.name));
+  await writeJsonAtomic(path.join(httpProviderHome(config.name), PROVIDER_CONFIG_FILE), config);
+}
+
 /** Add or replace an HTTP provider in the registry, persisting its config. */
 export async function upsertHttpProviderConfig(config: HttpProviderConfig): Promise<void> {
   assertValidProviderName(config.name);

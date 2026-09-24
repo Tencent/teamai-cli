@@ -3685,15 +3685,21 @@ export async function removeLocalAgentHttp(): Promise<void> {
 
   if (!await removeAllAgentHooks()) uninstallFailed = true;
 
-  // Remove the built-in teamai hooks this provider's initLocalAgentHttp injected
-  // via injectHooksToAllTools — removeAllAgentHooks only clears backend-delivered
-  // agent hooks, so without this a standalone `provider add` → `provider remove`
-  // (or a failed-add rollback) would leave the dispatch hooks running in every
-  // tool. Only do this for a named provider AND only when no OTHER teamai install
-  // (git/self/legacy user config) still relies on those shared built-in hooks —
-  // otherwise removing them would break a coexisting install.
   const providerCtx = httpProviderContext.getStore();
-  if (providerCtx && !(await hasOtherTeamaiInstall())) {
+  // The built-in teamai dispatch hooks are SHARED infrastructure: the same
+  // entries serve every teamai install (git/self/other providers), and with no
+  // config for a tool's cwd every handler no-ops gracefully. Removing them on a
+  // single `provider remove` is therefore asymmetric — a leftover hook is
+  // harmless, but an erroneous removal breaks a coexisting install, and whether
+  // another install exists cannot be determined reliably (a legacy in-tree
+  // <project>/.teamai can live anywhere on disk; review #5/#7). So we do NOT
+  // strip the built-in hooks here. `teamai uninstall` — the "remove everything"
+  // path — owns full built-in-hook removal via its own enumeration.
+  //
+  // Only when this provider is being torn down AS PART OF `teamai uninstall`
+  // (TEAMAI_UNINSTALL=1) and no other install remains do we also clear them, so
+  // a provider added standalone still gets its hooks removed at uninstall time.
+  if (providerCtx && process.env.TEAMAI_UNINSTALL === '1' && !(await hasOtherTeamaiInstall())) {
     try {
       const teamConfig = createLocalAgentTeamConfig(config.endpoint);
       await reconcileHooksToAllTools(
