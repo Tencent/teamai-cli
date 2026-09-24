@@ -63,7 +63,7 @@ vi.mock('../update.js', () => ({
 }));
 
 import { pull } from '../pull.js';
-import { loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from '../config.js';
+import { detectProjectConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from '../config.js';
 import { log } from '../utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
@@ -76,6 +76,7 @@ describe('pull reports what reached the tool directory (#585)', () => {
   let ioSpy: { mockRestore(): void } | undefined;
 
   beforeEach(async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(null);
     vi.mocked(saveStateForScope).mockClear();
     vi.mocked(loadStateForScope).mockResolvedValue({ lastPull: null, lastPullRev: null } as Awaited<ReturnType<typeof loadStateForScope>>);
     vi.mocked(log.success).mockClear();
@@ -186,6 +187,42 @@ describe('pull reports what reached the tool directory (#585)', () => {
       expect(state.lastPullRev).toBe('abc1234');
     },
   );
+
+  it.each(['user', 'project', 'none'])('aggregates inherited scope completion when docs fail in %s', async (failure) => {
+    const projectRoot = path.join(tmpDir, 'project');
+    await fse.ensureDir(projectRoot);
+    vi.mocked(detectProjectConfig).mockResolvedValue({
+      ...localConfig, scope: 'project', projectRoot, inheritUserScope: true,
+    });
+    if (failure !== 'none') {
+      await fse.outputFile(path.join(failure === 'user' ? homeDir : projectRoot, 'docs'), 'blocks docs directory');
+    }
+    const outcome = { completed: false };
+    await pull({ silent: true, force: true }, outcome);
+    expect(outcome.completed).toBe(failure === 'none');
+    for (const scope of ['user', 'project']) {
+      const succeeded = scope !== failure;
+      expect(successLines().includes(`[${scope}] Synced 1 docs`)).toBe(succeeded);
+      if (!succeeded) {
+        expect(vi.mocked(log.warn).mock.calls.flat()).toContainEqual(expect.stringContaining(`[${scope}] Failed to sync docs:`));
+      }
+    }
+  });
+
+  it.each(['empty', 'missing'])('prunes only stale empty directories when the team bundle is %s', async (state) => {
+    await fse.remove(path.join(repoPath, 'docs'));
+    if (state === 'empty') await fse.ensureDir(path.join(repoPath, 'docs'));
+    const destination = path.join(homeDir, 'docs');
+    await fse.ensureDir(path.join(destination, 'old', 'nested'));
+    await fse.outputFile(path.join(destination, 'private', '.keep'), 'hidden');
+    await pull({ silent: true, dryRun: true });
+    expect(await fse.pathExists(path.join(destination, 'old', 'nested'))).toBe(true);
+    expect(vi.mocked(log.info).mock.calls.flat()).toContain('[user] [dry-run] Would sync 0 docs and remove stale local docs');
+    await pull({ silent: true, force: true });
+    expect(await fse.pathExists(path.join(destination, 'old'))).toBe(false);
+    expect(await fse.readFile(path.join(destination, 'private', '.keep'), 'utf8')).toBe('hidden');
+    expect(successLines()).toContain('[user] Synced 0 docs');
+  });
 
   it.each(['empty', 'missing'])('prunes docs through pull when the team bundle is %s (#794)', async (state) => {
     await pull({ silent: true, force: true });

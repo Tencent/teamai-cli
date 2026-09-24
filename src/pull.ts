@@ -12,7 +12,7 @@ import { pathExists, remove, listFiles, listDirs, listFilesRecursive, readFileSa
 import { reconcilePlacementRecords } from './utils/pending-push.js';
 import { injectClaudeMdSection, removeClaudeMdSection } from './utils/claudemd.js';
 import { getHandler, RulesHandler, DocsHandler, EnvHandler, AgentsHandler } from './resources/index.js';
-import { resolveDocsDestination } from './resources/docs.js';
+import { listStaleDocDirectories, resolveDocsDestination } from './resources/docs.js';
 import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { skillsDirForTool } from './resources/skills.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
@@ -785,7 +785,7 @@ async function pullForScope(
     revisionField?: 'lastPullRev' | 'lastInheritedPullRev';
   } = {},
   /** Set to `{ completed: true }` on a real (non-dry-run) sync. See pull(). */
-  result?: { completed: boolean },
+  result?: { completed: boolean; docsSyncFailed: boolean },
 ): Promise<void> {
   const scopeLabel = localConfig.scope;
   const revisionField = policy.revisionField ?? 'lastPullRev';
@@ -1166,7 +1166,9 @@ async function pullForScope(
       };
       try {
         const fileCount = await docsHandler.countDocFiles(item.sourcePath);
-        if (fileCount === 0 && await docsHandler.countDocFiles(resolveDocsDestination(freshConfig, localConfig)) === 0) continue;
+        const destination = resolveDocsDestination(freshConfig, localConfig);
+        if (fileCount === 0 && await docsHandler.countDocFiles(destination) === 0
+          && (await listStaleDocDirectories(item.sourcePath, destination)).length === 0) continue;
         if (options.dryRun) {
           log.info(`[${scopeLabel}] [dry-run] Would sync ${fileCount} docs and remove stale local docs`);
         } else {
@@ -1176,6 +1178,7 @@ async function pullForScope(
         totalSynced += fileCount;
       } catch (e) {
         docsSyncFailed = true;
+        if (result) result.docsSyncFailed = true;
         log.warn(`[${scopeLabel}] Failed to sync docs: ${(e as Error).message}`);
         if (!options.dryRun) {
           const state = await loadStateForScope(localConfig);
@@ -1917,6 +1920,8 @@ export async function pull(
   // not repeat it. Owned here rather than at module scope so nothing survives
   // into another call.
   const reported = new Set<string>();
+  // A later successful scope must not hide an earlier docs failure (or vice versa).
+  const syncResult = { completed: false, docsSyncFailed: false };
 
   // Whether HOME's settings.json still has the pre-dispatch hook format. Read now
   // (HOME-only, no shared clone), but the actual reinject runs later under the
@@ -2004,12 +2009,12 @@ export async function pull(
             await pullForScope(inheritedUserConfig, options, reported, {
               resourceTypes: ['skills', 'rules', 'docs', 'agents'],
               revisionField: 'lastInheritedPullRev',
-            }, result);
+            }, syncResult);
           }
         } else {
           activeUserConfig = loadedUserConfig;
           if (await lockScope(activeUserConfig)) {
-            await pullForScope(activeUserConfig, options, reported, {}, result);
+            await pullForScope(activeUserConfig, options, reported, {}, syncResult);
           }
         }
       } else if (inheritUserScope) {
@@ -2026,7 +2031,7 @@ export async function pull(
   if (projectConfig) {
     try {
       if (await lockScope(projectConfig)) {
-        await pullForScope(projectConfig, options, reported, {}, result);
+        await pullForScope(projectConfig, options, reported, {}, syncResult);
       }
     } catch (e) {
       log.warn(`Project-scope pull error: ${(e as Error).message}`);
@@ -2172,6 +2177,7 @@ export async function pull(
   //    transient branch is how a diagnostic invents a failure.
   await reportPostPullChecks(options, reported, contended.size > 0);
   } finally {
+    if (result) result.completed = syncResult.completed && !syncResult.docsSyncFailed;
     const releaseSyncLocks = async () => {
       for (const lock of heldLocks.values()) await releaseLock(lock);
     };

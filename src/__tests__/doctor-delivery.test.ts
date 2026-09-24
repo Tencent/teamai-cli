@@ -379,6 +379,24 @@ describe('doctor — skills delivered on disk', () => {
       expect(check!.fix).toContain('teamai pull --force');
     });
 
+    it.each(['missing', 'empty'])('reports stale empty directories when the team bundle is %s', async (state) => {
+      if (state === 'empty') await fse.ensureDir(path.join(repoPath, 'docs'));
+      const empty = path.join(homeDir, 'team-docs', 'old', 'nested');
+      await fse.ensureDir(empty);
+      await fse.outputFile(path.join(homeDir, 'team-docs', 'private', '.keep'), 'hidden');
+      const check = await docsCheck();
+      expect(await check!.check()).toBe(false);
+      expect(check!.fix).toContain('old/nested/');
+      expect(check!.fix).not.toContain('private');
+      expect(await fse.pathExists(empty)).toBe(true);
+    });
+
+    it('accepts an empty directory that still exists in the team bundle', async () => {
+      await fse.ensureDir(path.join(repoPath, 'docs', 'empty'));
+      await fse.ensureDir(path.join(homeDir, 'team-docs', 'empty'));
+      expect(await docsCheck()).toBeUndefined();
+    });
+
     it('ignores hidden local docs and hidden subdirectories', async () => {
       await fse.outputFile(path.join(homeDir, 'team-docs', '.draft.md'), 'hidden');
       await fse.outputFile(path.join(homeDir, 'team-docs', 'old', '.private', 'draft.md'), 'hidden');

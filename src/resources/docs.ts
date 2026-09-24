@@ -44,6 +44,25 @@ export async function listDocFiles(dir: string): Promise<string[]> {
   return files;
 }
 
+/** Empty leaf directories that pruning would remove; never follow links or hidden entries. */
+export async function listStaleDocDirectories(source: string | undefined, destination: string): Promise<string[]> {
+  const sourceEntries = new Map((source ? await readEntries(source) : []).map(entry => [entry.name, entry]));
+  const stale: string[] = [];
+  for (const entry of await readEntries(destination)) {
+    if (entry.name.startsWith('.') || !entry.isDirectory()) continue;
+    const sourceEntry = sourceEntries.get(entry.name);
+    if (sourceEntry && !sourceEntry.isDirectory()) continue;
+    const target = path.join(destination, entry.name);
+    if (!sourceEntry && (await readEntries(target)).length === 0) {
+      stale.push(`${entry.name}/`);
+    } else {
+      const nested = await listStaleDocDirectories(sourceEntry ? path.join(source!, entry.name) : undefined, target);
+      stale.push(...nested.map(dir => `${entry.name}/${dir}`));
+    }
+  }
+  return stale;
+}
+
 /** Remove stale visible entries without following local symlinks or removing dotfiles. */
 async function pruneDocs(source: string | undefined, destination: string): Promise<void> {
   const sourceEntries = new Map((source ? await readEntries(source) : []).map(e => [e.name, e]));
