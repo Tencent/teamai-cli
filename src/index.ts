@@ -732,14 +732,9 @@ const modelsCmd = program
   .description('Share gateway model profiles and switch agents to them');
 
 modelsCmd
-  .command('list')
-  .description('List team and personal model profiles and the agents using them')
-  .action(() => runModelsCommand((m) => m.modelsList()));
-
-modelsCmd
-  .command('show <profile>')
-  .description('Show a model profile without revealing its API key')
-  .action((profile: string) => runModelsCommand((m) => m.modelsShow(profile)));
+  .command('list [profile]')
+  .description('Show team and personal model profiles, or one profile, and the agents using them')
+  .action((profile: string | undefined) => runModelsCommand((m) => m.modelsList(profile)));
 
 modelsCmd
   .command('add <id>')

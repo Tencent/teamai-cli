@@ -210,8 +210,7 @@ Generated: do not edit by hand. Regenerate with
 ## models
 
 - `teamai models` — Share gateway model profiles and switch agents to them
-  - `teamai models list` — List team and personal model profiles and the agents using them
-  - `teamai models show <profile>` — Show a model profile without revealing its API key
+  - `teamai models list [profile]` — Show team and personal model profiles, or one profile, and the agents using them
   - `teamai models add <id>` — Add a personal model profile stored only on this machine
     - `--name <name>` — Display name
     - `--protocol <protocols>` — Comma-separated: anthropic, openai-chat-completions, openai-responses

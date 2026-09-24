@@ -1965,7 +1965,8 @@ profiles:
 ### 使用团队配置
 
 ```bash
-teamai models list                     # 配置、兼容的 Agent，以及在哪些 Agent 上生效
+teamai models list                     # 全部配置：密钥来源、网关、模型、Agent 及生效位置
+teamai models list tokenhub            # 只看一个配置
 teamai models switch tokenhub          # 首次使用时提示输入密钥
 ```
 
@@ -2009,7 +2010,6 @@ Claude 注意事项：`settings.json` 启用了 Bedrock、Vertex 或 Foundry 时
 其他命令：
 
 ```bash
-teamai models show tokenhub            # 密钥来源、网关、模型和 Agent
 teamai models remove local:my-gateway  # Agent 保留当前配置，restore 仍然可用
 ```
 

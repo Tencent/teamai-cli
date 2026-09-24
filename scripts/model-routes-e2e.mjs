@@ -70,7 +70,7 @@ for (const provider of ['git', 'gitlab', 'github']) {
     assert.deepEqual(readJson(path.join(home, '.teamai', 'models', 'teams', teamFiles[0])), {
       'team:tokenhub': { API_KEY: { env: 'MODEL_TEST_KEY' } },
     });
-    assert.match(run(home, ['show', 'team:tokenhub']), /environment MODEL_TEST_KEY/);
+    assert.match(run(home, ['list', 'team:tokenhub']), /API key: environment MODEL_TEST_KEY/);
     assert.match(run(home, ['switch', 'tokenhub', '--dry-run']), /would switch/);
     assert.deepEqual([claude, codex, opencode, codebuddy, workbuddy].map((file) => fs.readFileSync(file, 'utf8')), originals);
     // Default: every compatible agent. Codex has no Responses route here.
@@ -87,7 +87,7 @@ for (const provider of ['git', 'gitlab', 'github']) {
     assert.deepEqual(readJson(workbuddy).models.map((row) => row.id), ['personal', 'deepseek-v4-flash', 'glm-5.3']);
     assert.equal(fs.readFileSync(codex, 'utf8'), originals[1]);
     assert.match(run(home, ['switch', 'tokenhub', '--agent', 'codex'], 1), /no protocol codex can use/);
-    assert.match(run(home, ['list']), /active: claude, opencode, codebuddy, workbuddy/);
+    assert.match(run(home, ['list']), /Active: claude, opencode, codebuddy, workbuddy/);
     run(home, ['restore']);
     assert.deepEqual(readJson(claude), JSON.parse(originals[0]));
     assert.deepEqual(readJson(opencode), JSON.parse(originals[2]));

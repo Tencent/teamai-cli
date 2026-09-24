@@ -2033,7 +2033,8 @@ The example above has no `openai-responses` group, so Codex is left alone; add t
 ### Use a team profile
 
 ```bash
-teamai models list                     # profiles, compatible agents, and where each is active
+teamai models list                     # every profile: key source, gateway, models, agents, where it is active
+teamai models list tokenhub            # just one profile
 teamai models switch tokenhub          # asks for the key the first time
 ```
 
@@ -2077,7 +2078,6 @@ Claude notes: `switch` refuses while `settings.json` enables Bedrock, Vertex, or
 Other commands:
 
 ```bash
-teamai models show tokenhub            # key source, gateway, models, agents
 teamai models remove local:my-gateway  # agents keep their settings; restore still works
 ```
 

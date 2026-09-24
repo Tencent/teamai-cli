@@ -27,6 +27,7 @@ import {
   type ModelProfilesFile,
   type ProfileRef,
   type StoredModelInput,
+  type StoredModelInputs,
 } from './models/profile.js';
 import {
   ALL_MODEL_AGENTS,
@@ -129,37 +130,46 @@ function printResults(results: ModelSwitchResult[], explicitAgents: boolean): vo
   if (results.some((result) => failing.includes(result.status))) process.exitCode = 1;
 }
 
-export async function modelsList(): Promise<void> {
+/**
+ * Model catalogs are small, so one command lists every profile in full;
+ * pass a profile to see just that one. API keys are never printed.
+ */
+export async function modelsList(reference?: string): Promise<void> {
   const [context, local, active] = await Promise.all([teamContext(), loadLocalProfiles(), activeModelProfiles()]);
   const team = context.localConfig ? getTeamIdentity(context.localConfig) : undefined;
-  const refs: ProfileRef[] = [
-    ...context.team.profiles.map((profile) => ({ source: 'team' as const, profile, team })),
-    ...local.profiles.map((profile) => ({ source: 'local' as const, profile })),
-  ];
+  let refs: ProfileRef[];
+  if (reference) {
+    const ref = resolveProfileRef(reference, context.team, local);
+    if (ref.source === 'team') ref.team = team;
+    refs = [ref];
+  } else {
+    refs = [
+      ...context.team.profiles.map((profile) => ({ source: 'team' as const, profile, team })),
+      ...local.profiles.map((profile) => ({ source: 'local' as const, profile })),
+    ];
+  }
   if (refs.length === 0) {
     log.info('No model profiles found.');
     return;
   }
-  for (const ref of refs) {
+  const values: Record<ProfileRef['source'], StoredModelInputs> = {
+    team: refs.some((ref) => ref.source === 'team') ? await loadModelInputs(valuesPathFor(refs.find((ref) => ref.source === 'team')!, context)) : {},
+    local: refs.some((ref) => ref.source === 'local') ? await loadModelInputs(getLocalValuesPath()) : {},
+  };
+  refs.forEach((ref, index) => {
+    if (index > 0) console.log('');
+    const secret = values[ref.source][profileRefName(ref)]?.API_KEY;
     const activeAgents = activeAgentsFor(ref, active);
-    console.log(`${profileRefName(ref)}  ${ref.profile.name}  [${profileAgents(ref.profile).join(', ')}]${activeAgents.length ? `  active: ${activeAgents.join(', ')}` : ''}`);
-  }
-}
-
-export async function modelsShow(reference: string): Promise<void> {
-  const { ref, context } = await findProfile(reference);
-  const values = await loadModelInputs(valuesPathFor(ref, context));
-  const secret = values[profileRefName(ref)]?.API_KEY;
-  const activeAgents = activeAgentsFor(ref, await activeModelProfiles());
-  console.log(`${profileRefName(ref)} — ${ref.profile.name}`);
-  console.log(`API key: ${secret?.env ? `environment ${secret.env}` : secret?.value ? 'configured locally' : 'not configured'}`);
-  console.log(`Gateway: ${ref.profile.base_url}`);
-  console.log('Models:');
-  for (const group of ref.profile.model_groups) {
-    console.log(`  ${group.protocols.join(', ')}: ${group.models.join(', ')}`);
-  }
-  console.log(`Agents: ${profileAgents(ref.profile).join(', ')}`);
-  if (activeAgents.length) console.log(`Active: ${activeAgents.join(', ')}`);
+    console.log(`${profileRefName(ref)} — ${ref.profile.name}`);
+    console.log(`  API key: ${secret?.env ? `environment ${secret.env}` : secret?.value ? 'configured locally' : 'not configured'}`);
+    console.log(`  Gateway: ${ref.profile.base_url}`);
+    console.log('  Models:');
+    for (const group of ref.profile.model_groups) {
+      console.log(`    ${group.protocols.join(', ')}: ${group.models.join(', ')}`);
+    }
+    console.log(`  Agents: ${profileAgents(ref.profile).join(', ')}`);
+    console.log(`  Active: ${activeAgents.length ? activeAgents.join(', ') : 'none'}`);
+  });
 }
 
 interface AddOptions extends ApiKeyOptions {

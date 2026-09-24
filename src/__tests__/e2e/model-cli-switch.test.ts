@@ -64,7 +64,7 @@ it('switches and restores a team catalog with the built CLI', async () => {
     for (const agent of ['claude', 'codex', 'opencode', 'codebuddy', 'workbuddy']) {
       expect(switched).toContain(`${agent} switched to team:tokenhub`);
     }
-    expect(run('list')).toContain('active: claude, codex, opencode, codebuddy, workbuddy');
+    expect(run('list', 'tokenhub')).toContain('  Active: claude, codex, opencode, codebuddy, workbuddy');
     const claude = JSON.parse(await fs.readFile(path.join(claudeDir, 'settings.json'), 'utf8'));
     const opencode = JSON.parse(await fs.readFile(path.join(opencodeDir, 'opencode.json'), 'utf8'));
     expect(claude.permissions).toEqual(originalClaude.permissions);

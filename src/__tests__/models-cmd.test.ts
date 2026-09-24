@@ -2,7 +2,7 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { modelsAdd, modelsConfigure, modelsList, modelsRemove, modelsRestore, modelsShow, modelsSwitch } from '../models-cmd.js';
+import { modelsAdd, modelsConfigure, modelsList, modelsRemove, modelsRestore, modelsSwitch } from '../models-cmd.js';
 import { getLocalValuesPath, loadLocalProfiles, loadModelInputs } from '../models/profile.js';
 
 vi.mock('../utils/logger.js', () => ({
@@ -67,17 +67,34 @@ describe('models commands', () => {
       .rejects.toThrow(/Invalid model profile: base_url: must be the gateway root without \/v1/);
   });
 
-  it('shows the key source, gateway, models, and compatible agents', async () => {
+  it('lists every profile in full, or just the one named', async () => {
     await addMine();
-    const output = await captureOutput(() => modelsShow('local:mine'));
-    expect(output).toEqual([
+    await modelsAdd('other', {
+      name: 'Other', protocol: 'openai-responses', baseUrl: 'https://other.example.test',
+      model: 'glm-5.3', apiKeyStdin: false, fromEnv: 'OTHER_KEY',
+    });
+    const mine = [
       'local:mine — Mine',
-      'API key: environment MY_MODEL_KEY',
-      'Gateway: https://gateway.example.test',
-      'Models:',
-      '  anthropic, openai-chat-completions: glm-5.3, deepseek-v4-flash',
-      'Agents: claude, opencode, codebuddy, workbuddy',
+      '  API key: environment MY_MODEL_KEY',
+      '  Gateway: https://gateway.example.test',
+      '  Models:',
+      '    anthropic, openai-chat-completions: glm-5.3, deepseek-v4-flash',
+      '  Agents: claude, opencode, codebuddy, workbuddy',
+      '  Active: none',
+    ];
+    expect(await captureOutput(() => modelsList())).toEqual([
+      ...mine,
+      '',
+      'local:other — Other',
+      '  API key: environment OTHER_KEY',
+      '  Gateway: https://other.example.test',
+      '  Models:',
+      '    openai-responses: glm-5.3',
+      '  Agents: codex, opencode',
+      '  Active: none',
     ]);
+    expect(await captureOutput(() => modelsList('mine'))).toEqual(mine);
+    await expect(modelsList('missing')).rejects.toThrow(/Unknown model profile: missing/);
   });
 
   it('extends a personal profile while keeping the first model as the default', async () => {
@@ -113,7 +130,7 @@ describe('models commands', () => {
     expect(output.some((line) => line.startsWith('not-installed') && line.includes('workbuddy'))).toBe(true);
     expect(process.exitCode).toBeUndefined();
     expect((await fse.readJson(path.join(home, '.claude', 'settings.json'))).model).toBe('deepseek-v4-flash');
-    expect(await captureOutput(() => modelsList())).toEqual(['local:mine  Mine  [claude, opencode, codebuddy, workbuddy]  active: claude, codebuddy']);
+    expect(await captureOutput(() => modelsList('local:mine'))).toContain('  Active: claude, codebuddy');
 
     await captureOutput(() => modelsSwitch('mine', { agent: ['workbuddy'] }));
     expect(process.exitCode).toBe(1);
