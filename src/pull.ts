@@ -1172,6 +1172,23 @@ async function pullForScope(
     } else {
       items = await handler.scanTeamForPull(freshConfig, localConfig);
     }
+    if (type === 'docs') {
+      const docsHandler = handler as DocsHandler;
+      // An empty/missing team bundle still needs to remove stale local docs.
+      const item = items[0] ?? {
+        name: 'docs', type: 'docs' as const,
+        sourcePath: path.join(localConfig.repo.localPath, 'docs'), relativePath: 'docs/',
+      };
+      const fileCount = await docsHandler.countDocFiles(item.sourcePath);
+      if (options.dryRun) {
+        log.info(`[${scopeLabel}] [dry-run] Would sync ${fileCount} docs and remove stale local docs`);
+      } else {
+        await docsHandler.pullItem(item, freshConfig, localConfig);
+        log.success(`[${scopeLabel}] Synced ${fileCount} docs`);
+      }
+      totalSynced += fileCount;
+      continue;
+    }
     if (items.length === 0) continue;
 
     if (type === 'env') {
@@ -1218,20 +1235,6 @@ async function pullForScope(
         log.success(`[${scopeLabel}] Synced ${countLabel} to ${teamaiHome}/env.sh`);
       }
       totalSynced += 1;
-      continue;
-    }
-
-    if (type === 'docs') {
-      const docsHandler = handler as DocsHandler;
-      const fileCount = await docsHandler.countDocFiles(items[0].sourcePath);
-
-      if (options.dryRun) {
-        log.info(`[${scopeLabel}] [dry-run] Would sync ${fileCount} docs`);
-      } else {
-        await docsHandler.pullItem(items[0], freshConfig, localConfig);
-        log.success(`[${scopeLabel}] Synced ${fileCount} docs`);
-      }
-      totalSynced += fileCount;
       continue;
     }
 

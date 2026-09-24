@@ -1987,6 +1987,8 @@ sharing:
         retries: 3             # optional; retry attempts on failure (default 3)
 ```
 
+`teamai pull` mirrors the team's non-hidden `docs/` files into `sharing.docs.localDir`: documents deleted from the team repo are also deleted locally, even when the last document or the entire team directory is removed. Empty stale directories are removed; hidden files and directories are preserved. Use a dedicated docs destination, since local-only drafts are also removed. A destination that overlaps the team repo or contains the home/project root is rejected; if it is already the team's `docs/` directory, no copying or cleanup is needed. A failed copy stops cleanup. `teamai pull --dry-run` previews the sync without changing files; use `teamai pull --force` to clean residue from a revision already synced by an older CLI.
+
 ### config.yaml (local config)
 
 ```yaml

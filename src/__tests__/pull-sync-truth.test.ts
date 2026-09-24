@@ -63,7 +63,7 @@ vi.mock('../update.js', () => ({
 }));
 
 import { pull } from '../pull.js';
-import { loadLocalConfigForScope, loadTeamConfig } from '../config.js';
+import { loadLocalConfigForScope, loadTeamConfig, loadStateForScope } from '../config.js';
 import { log } from '../utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
@@ -75,6 +75,7 @@ describe('pull reports what reached the tool directory (#585)', () => {
   let localConfig: LocalConfig;
 
   beforeEach(async () => {
+    vi.mocked(loadStateForScope).mockResolvedValue({ lastPull: null, lastPullRev: null } as Awaited<ReturnType<typeof loadStateForScope>>);
     vi.mocked(log.success).mockClear();
     vi.mocked(log.warn).mockClear();
     vi.mocked(log.info).mockClear();
@@ -135,6 +136,23 @@ describe('pull reports what reached the tool directory (#585)', () => {
   function successLines(): string[] {
     return vi.mocked(log.success).mock.calls.map(([msg]) => String(msg));
   }
+
+  it.each(['empty', 'missing'])('prunes docs through pull when the team bundle is %s (#794)', async (state) => {
+    await pull({ silent: true, force: true });
+    await fse.remove(path.join(repoPath, 'docs'));
+    if (state === 'empty') await fse.ensureDir(path.join(repoPath, 'docs'));
+    await pull({ silent: true, force: true });
+    expect(await fse.pathExists(path.join(homeDir, 'docs', 'guide.md'))).toBe(false);
+    expect(successLines()).toContain('[user] Synced 0 docs');
+  });
+
+  it('previews pruning without deleting files during a dry run', async () => {
+    await fse.outputFile(path.join(homeDir, 'docs', 'stale.md'), 'local');
+    await fse.remove(path.join(repoPath, 'docs'));
+    await pull({ silent: true, dryRun: true });
+    expect(await fse.readFile(path.join(homeDir, 'docs', 'stale.md'), 'utf8')).toBe('local');
+    expect(vi.mocked(log.info).mock.calls.flat()).toContain('[user] [dry-run] Would sync 0 docs and remove stale local docs');
+  });
 
   it('claims no skills synced when no tool directory exists', async () => {
     await pull({ silent: true });
