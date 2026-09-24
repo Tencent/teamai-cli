@@ -59,6 +59,7 @@ With recall on, an agent searches the team's lessons before a task. When a sessi
 ```bash
 teamai digest                                     # weekly team digest
 teamai session save                               # save a redacted session summary
+teamai session migrate                            # move a full transcript between AI tools; archive, search, and restore team sessions
 teamai dashboard                                  # local dashboard
 teamai recall maintenance --prune --dry-run       # find lessons nobody uses
 ```

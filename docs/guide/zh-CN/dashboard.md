@@ -49,7 +49,7 @@ teamai session save --push --force
 ```bash
 teamai session platforms                                             # 支持 vs 已安装
 teamai session migrate <sessionId> -s codebuddy-ide -t claude-code   # 跨工具迁移单条会话
-teamai session migrate --all -s codebuddy -t claude-code              # 该来源的全部会话
+teamai session migrate --all -s codebuddy -t claude-code              # 该源的全部会话（--limit 可限量）
 teamai session rollback <targetSessionId> --platform claude-code     # 撤销一次迁移
 teamai session push --source codebuddy            # 归档当前目录的会话
 teamai session push --source codebuddy --all      # 该平台的全部工作区

@@ -59,6 +59,7 @@ teamai import --from-repo https://github.com/org/repo # 代码知识图谱
 ```bash
 teamai digest                                     # 团队周报
 teamai session save                               # 保存脱敏的会话摘要
+teamai session migrate                            # 在 AI 工具之间迁移完整会话；归档、检索并恢复团队会话
 teamai dashboard                                  # 本地看板
 teamai recall maintenance --prune --dry-run       # 找出没人用的经验
 ```
