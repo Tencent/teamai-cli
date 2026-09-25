@@ -6,7 +6,7 @@ import { getDispatchCommand } from '../builtin-hooks.js';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
-export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'qoder-cn' | 'kiro' | 'zcode' | 'omp' | 'opencode';
+export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'qoder-cn' | 'kiro' | 'zcode' | 'omp' | 'opencode' | 'workbuddy';
 
 export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'claude',
@@ -25,6 +25,7 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'zcode',
   'omp',
   'opencode',
+  'workbuddy',
 ];
 
 export type AgentFileExtension = '.agent.md' | '.md' | '.toml' | '.json';
@@ -103,6 +104,7 @@ export interface AgentSpec {
     zcode?: Record<string, unknown>;
     omp?: Record<string, unknown>;
     opencode?: Record<string, unknown>;
+    workbuddy?: Record<string, unknown>;
   };
   /**
    * Which tools this agent should be deployed to.
@@ -226,6 +228,17 @@ export function renderForJoycode(spec: AgentSpec): RenderResult {
   return {
     ext: agentFileExtensionForTool('joycode'),
     content: renderMarkdownAgent(spec, spec.tool_extras?.['joycode']),
+  };
+}
+
+/**
+ * Render an AgentSpec for WorkBuddy.
+ * Same format as Claude, but merges tool_extras.workbuddy into frontmatter.
+ */
+export function renderForWorkbuddy(spec: AgentSpec): RenderResult {
+  return {
+    ext: agentFileExtensionForTool('workbuddy'),
+    content: renderMarkdownAgent(spec, spec.tool_extras?.['workbuddy']),
   };
 }
 
@@ -618,6 +631,22 @@ export function reverseFromJoycode(filePath: string, content: string): ReverseRe
 }
 
 /**
+ * Reverse a WorkBuddy-format .md file into an AgentSpec.
+ * Format is identical to Claude, but tool_extras key is 'workbuddy'.
+ */
+export function reverseFromWorkbuddy(filePath: string, content: string): ReverseResult {
+  const result = reverseFromClaude(filePath, content);
+  if (!result.ok) return result;
+
+  const spec = result.spec;
+  // Move extras from 'claude' to 'workbuddy'
+  if (spec.tool_extras?.['claude']) {
+    spec.tool_extras = { workbuddy: spec.tool_extras['claude'] };
+  }
+  return { ok: true, spec };
+}
+
+/**
  * Reverse a Kiro JSON agent config. The TeamAI-managed `agentSpawn` entry is a
  * local delivery detail, so it is removed before remaining private fields are
  * returned under `tool_extras.kiro`.
@@ -900,5 +929,6 @@ export function renderForTool(spec: AgentSpec, tool: ToolName): RenderResult {
     case 'zcode': return renderForClaude(spec);
     case 'omp': return renderForClaude(spec);
     case 'opencode': return renderForOpencode(spec);
+    case 'workbuddy': return renderForWorkbuddy(spec);
   }
 }

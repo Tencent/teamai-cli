@@ -25,6 +25,7 @@ import {
   reverseFromJoycode,
   reverseFromKiro,
   reverseFromOpencode,
+  reverseFromWorkbuddy,
   mergeReverseResults,
   ALL_SUPPORTED_TOOLS,
   AGENT_FILE_EXTENSIONS,
@@ -1066,5 +1067,7 @@ function reverseByTool(tool: ToolName, filePath: string, content: string): Rever
       return reverseFromClaude(filePath, content);
     case 'opencode':
       return reverseFromOpencode(filePath, content);
+    case 'workbuddy':
+      return reverseFromWorkbuddy(filePath, content);
   }
 }
