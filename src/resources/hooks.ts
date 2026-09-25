@@ -154,7 +154,7 @@ function isTeamScriptCommand(command: string): boolean {
 export async function resolveTeamHooks(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-  opts: { auto?: boolean; silent?: boolean } = {},
+  opts: { auto?: boolean; silent?: boolean; preview?: boolean } = {},
 ): Promise<{ ok: true; defs: HookDef[]; builtin: BuiltinOverride | undefined } | { ok: false; builtin: BuiltinOverrideRead }> {
   // Which hooks this member receives: root plus active namespace files, before
   // the security gates so the transparency print below lists only hooks this
@@ -187,7 +187,11 @@ export async function resolveTeamHooks(
   }
 
   if (defs.length > 0 && !opts.silent) {
-    log.info(`Applying ${defs.length} team hook(s):`);
+    // A preview must not claim the hooks were applied: `pull --dry-run` resolves
+    // them only to report what a real pull would write (#822).
+    log.info(opts.preview
+      ? `Would apply ${defs.length} team hook(s):`
+      : `Applying ${defs.length} team hook(s):`);
     for (const d of defs) log.info(`  [${d.key}] ${d.command}`);
   }
 

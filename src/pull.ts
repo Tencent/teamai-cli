@@ -2108,7 +2108,10 @@ async function reconcileHooksAllScopes(
   projectConfig: LocalConfig | null,
   options: GlobalOptions,
 ): Promise<void> {
-  if (options.dryRun) return;
+  // A dry run still resolves the entries, so the warnings a maintainer runs
+  // `--dry-run` to see — an unknown id, a deprecated per-entry `roles:`, a
+  // hooks.yaml that does not parse — are reported; only the writes are skipped,
+  // inside reconcileTeamHooksForConfig (#822).
   const scopes = [userConfig, projectConfig].filter((c): c is LocalConfig => !!c);
   for (const localConfig of scopes) {
     try {
@@ -2119,6 +2122,7 @@ async function reconcileHooksAllScopes(
         auto: true,
         silent: options.silent,
         filterAgents: localConfig.enabledAgents,
+        dryRun: options.dryRun,
       });
       if (reconciled.ok && reconciled.defs.length > 0) {
         log.debug(`[${localConfig.scope}] Reconciled ${reconciled.defs.length} team hook(s)`);
@@ -2139,14 +2143,17 @@ async function reconcileMcpAllScopes(
   projectConfig: LocalConfig | null,
   options: GlobalOptions,
 ): Promise<void> {
-  if (options.dryRun) return;
+  // Same contract as the hooks stage: resolve and report the entry warnings on
+  // a dry run, skip the writes. `reconcileMcpForConfig` already gates every
+  // write on `dryRun` (the `mcp inject --dry-run` path uses it), so this only
+  // forwards it (#822).
   const scopes = [userConfig, projectConfig].filter((c): c is LocalConfig => !!c);
   for (const localConfig of scopes) {
     try {
       const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
       if (!teamConfig) continue;
       const { reconcileMcpForConfig } = await import('./mcp-reconcile.js');
-      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig, { force: options.force });
+      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig, { force: options.force, dryRun: options.dryRun });
 
       const applied = changes.filter((c) => c.action !== 'skipped');
       for (const c of changes) {

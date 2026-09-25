@@ -1791,13 +1791,17 @@ export type TeamHooksReconcile =
 export async function reconcileTeamHooksForConfig(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-  opts: { removeAll?: boolean; auto?: boolean; silent?: boolean; filterAgents?: string[] } = {},
+  opts: { removeAll?: boolean; auto?: boolean; silent?: boolean; filterAgents?: string[]; dryRun?: boolean } = {},
 ): Promise<TeamHooksReconcile> {
   const resolved: Awaited<ReturnType<typeof resolveTeamHooks>> = opts.removeAll
     ? { ok: true, defs: [], builtin: undefined }
     : await resolveTeamHooks(teamConfig, localConfig, {
         auto: opts.auto,
         silent: opts.silent,
+        // Resolve and report, then stop: a dry run must show the entry warnings
+        // and the hooks it would apply without touching any tool's settings
+        // (#822).
+        preview: opts.dryRun,
       });
   // The team's hooks could not be resolved (reported by resolveTeamHooks).
   // Reconciling the team set now would remove every installed team hook, so
@@ -1820,6 +1824,14 @@ export async function reconcileTeamHooksForConfig(
   // Resolve the tool paths at the scope hooks actually live in, not at the
   // config's scope: a non-self project scope puts hooks in HOME, so its paths
   // must be the user-scope ones.
+  //
+  // A dry run stops here. The resolution above already reported the entry
+  // warnings and the hooks it would apply; everything below writes a tool's
+  // settings or the managed-hooks manifest. The result mirrors what a real
+  // reconcile would report, so a caller cannot tell them apart by the shape.
+  if (opts.dryRun) {
+    return resolved.ok ? { ok: true, defs: teamDefs } : { ok: false, builtins: builtinsOnly ?? 'with-overrides' };
+  }
   await reconcileHooksToAllTools(scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope }), baseDir, teamDefs, manifestPath, {
     removeAll: opts.removeAll,
     builtinOverride: builtin,
