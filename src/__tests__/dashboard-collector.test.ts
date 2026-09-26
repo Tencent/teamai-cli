@@ -2237,7 +2237,7 @@ describe('events file lock (#804)', () => {
     expect(await pendingFiles()).toEqual([]);
   });
 
-  it('folds a side file into the compaction and keeps its id out of the file', async () => {
+  it('keeps a folded side file recognizable through a compaction, and its id out of readers', async () => {
     await seedActive();
     await writeLock(process.pid);
     await appendEvent(event('live-b', { monitorPid: process.pid }));
@@ -2246,10 +2246,63 @@ describe('events file lock (#804)', () => {
 
     await compactEvents(eventsPath());
 
+    // The rewrite keeps the folded line's id, so a side file that survived its
+    // fold (its rm failed) is still recognized and never appended twice.
     const content = fs.readFileSync(eventsPath(), 'utf-8');
     expect(content).toContain('live-b');
-    expect(content).not.toContain('pendingId');
+    expect(content).toContain('pendingId');
+    const events = await readEvents(eventsPath());
+    expect(events.some((e) => 'pendingId' in e)).toBe(false);
     expect(await pendingFiles()).toEqual([]);
+  });
+
+  it('does not append a surviving side file twice across a compaction', async () => {
+    await seedActive();
+    await appendEvent(event('a', { monitorPid: process.pid }));
+    await writeLock(process.pid);
+    await appendEvent(event('b', { monitorPid: process.pid }));
+    await fs.promises.rm(`${eventsPath()}.lock`);
+    // The fold appends b but cannot remove its side file; a compaction runs
+    // while it survives.
+    const realRm = fs.promises.rm;
+    const spy = vi.spyOn(fs.promises, 'rm').mockImplementation(async (file, options) => {
+      if (String(file).includes('.pending-')) throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      return realRm(file, options);
+    });
+    try {
+      await appendEvent(event('c', { monitorPid: process.pid }));
+      await compactEvents(eventsPath());
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await pendingFiles()).toHaveLength(1);
+
+    await appendEvent(event('d', { monitorPid: process.pid }));
+
+    expect(await ids()).toEqual([...Array.from({ length: 5_000 }, (_, i) => `filler-${i}`), 'a', 'b', 'c', 'd']);
+    expect(await pendingFiles()).toEqual([]);
+  });
+
+  it('classifies sessions in time order, so a late older event cannot stop a live one', async () => {
+    await seedActive();
+    // A session whose newer prompt sits before an older end in the raw file —
+    // the placement a late-folding side file can produce. Classified in raw
+    // file order the session reads as long stopped and the rewrite would drop
+    // its events; in time order it is still running.
+    const now = new Date().toISOString();
+    const old = new Date(Date.now() - 3_600_000).toISOString();
+    const line = (o: Record<string, unknown>) => JSON.stringify(o);
+    await fs.promises.appendFile(eventsPath(), [
+      line({ type: 'prompt_submit', timestamp: now, sessionId: 'x', tool: 'claude' }),
+      line({ type: 'session_end', timestamp: old, sessionId: 'x', tool: 'claude' }),
+    ].join('\n') + '\n', 'utf-8');
+
+    await compactEvents(eventsPath());
+
+    const kept = fs.readFileSync(eventsPath(), 'utf-8').split('\n').filter(Boolean)
+      .map((l) => JSON.parse(l) as { sessionId: string })
+      .filter((e) => e.sessionId === 'x');
+    expect(kept).toHaveLength(2);
   });
 
   it('folds a side file even when the file is below the compaction threshold', async () => {

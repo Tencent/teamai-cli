@@ -813,11 +813,16 @@ creation. A hook append waits
 up to ~250 ms, inside its foreground budget, and one that gives up records its
 line in an `events.pending-<uuid>.jsonl` side file, with the file's mode, that
 the next lock holder folds into the file before it writes — so an event is
-late, never gone. The line carries a `pendingId`, so a fold never appends a
-side file twice (a holder that died after appending it but before removing it
-leaves it for the next one), two side files of identical events are both kept,
-and no reader and no compacted file keeps the id: `readEventsRaw` drops it, and
-a compaction rewrites the line without it. A side file without its trailing
+late, never gone. Side files fold in their events' own time order, not
+readdir's, and the compaction classifies sessions in time order too (the
+order every reader rebuilds from), so a side file that outlived newer appends
+cannot place an older event after them and re-mark a live session stopped.
+The line carries a `pendingId`, so a fold never appends a side file twice (a
+holder that died after appending it but before removing it leaves it for the
+next one), two side files of identical events are both kept, and the id stays
+in the raw file — a rewrite keeps it, as the usage file's does — until the
+side file itself is gone, while no reader ever sees it: `readEvents` drops it.
+A side file without its trailing
 newline is still being written and waits for the next holder. A compaction
 waits up to ~5 s for a peer's rewrite, and skips — leaving the file as it is
 for the next compaction — when a live holder outlasts the wait; a lock whose

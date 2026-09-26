@@ -1558,23 +1558,35 @@ function eventsPendingPrefix(eventsPath: string): string {
 
 /**
  * Append the side files of appends that gave up on the lock to the events
- * file, then remove them. Each holds one whole line; one without its newline
- * is still being written and waits for the next holder. A side file whose id
- * the file already holds was folded by a holder that died or could not remove
- * it, so it is not appended again; identical events keep their own ids and
- * lines.
+ * file, then remove them — in the events' own time order, not readdir's
+ * arbitrary order, so a side file that outlived several newer appends does
+ * not land after them in the file. Each side file holds one whole line; one
+ * without its newline is still being written and waits for the next holder.
+ * A side file whose id the file already holds was folded by a holder that
+ * died or could not remove it, so it is not appended again; identical events
+ * keep their own ids and lines.
  */
 async function foldPendingEvents(eventsPath: string): Promise<void> {
   const dir = path.dirname(eventsPath);
   const prefix = eventsPendingPrefix(eventsPath);
   const names = await fs.promises.readdir(dir).catch(() => []);
-  let folded: Set<string> | undefined;
+  const pending: Array<{ pendingPath: string; content: string; timestamp: number }> = [];
   for (const name of names) {
     if (!name.startsWith(prefix) || !name.endsWith('.jsonl')) continue;
     const pendingPath = path.join(dir, name);
     try {
       const content = await fs.promises.readFile(pendingPath, 'utf-8');
       if (!content.endsWith('\n')) continue;
+      const timestamp = Date.parse(pendingTimestampOf(content));
+      pending.push({ pendingPath, content, timestamp: Number.isNaN(timestamp) ? 0 : timestamp });
+    } catch (e) {
+      log.debug(`dashboard: could not fold ${pendingPath} into ${eventsPath}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  pending.sort((a, b) => a.timestamp - b.timestamp);
+  let folded: Set<string> | undefined;
+  for (const { pendingPath, content } of pending) {
+    try {
       const id = pendingIdOf(content);
       folded ??= new Set(
         (await fs.promises.readFile(eventsPath, 'utf-8').catch(() => '')).split('\n').map(pendingIdOf).filter((i) => i !== undefined),
@@ -1587,6 +1599,16 @@ async function foldPendingEvents(eventsPath: string): Promise<void> {
     } catch (e) {
       log.debug(`dashboard: could not fold ${pendingPath} into ${eventsPath}: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+}
+
+/** The timestamp of the event a side file holds, for folding side files in time order. */
+function pendingTimestampOf(content: string): string {
+  try {
+    const { timestamp } = JSON.parse(content) as { timestamp?: unknown };
+    return typeof timestamp === 'string' ? timestamp : '';
+  } catch {
+    return '';
   }
 }
 
@@ -1650,7 +1672,14 @@ export async function appendEvent(event: DashboardEvent): Promise<void> {
 /**
  * Read raw events from the JSONL file, in file (append) order. Skips corrupted
  * lines. Callers that must preserve the on-disk stream verbatim (e.g. compaction)
- * use this; everything else goes through {@link readEvents}, which also dedupes.
+ * use this; everything else goes through {@link readEvents}, which also dedupes
+ * and drops a folded side file's `pendingId`.
+ *
+ * A folded side file's id stays in the file (and in every rewrite of it,
+ * compaction included) until the side file itself is gone — a fold that could
+ * not remove its side file must stay recognizable, or the next holder would
+ * append the event a second time. The usage file's rewrite keeps the id the
+ * same way (#788).
  */
 async function readEventsRaw(filePath: string): Promise<DashboardEvent[]> {
   try {
@@ -1660,11 +1689,8 @@ async function readEventsRaw(filePath: string): Promise<DashboardEvent[]> {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const parsed = JSON.parse(trimmed) as DashboardEvent & { pendingId?: unknown };
+        const parsed = JSON.parse(trimmed) as DashboardEvent;
         if (parsed.type && parsed.sessionId && parsed.timestamp) {
-          // A folded side file's id stays in the file (foldPendingEvents) until
-          // a compaction rewrites the line; no reader ever sees it.
-          delete parsed.pendingId;
           events.push(parsed);
         }
       } catch {
@@ -1743,10 +1769,16 @@ export function dedupeEvents(events: DashboardEvent[]): DashboardEvent[] {
 
 /**
  * Read all events from the JSONL file, cross-tool-deduped. Skips corrupted lines.
+ * A folded side file's `pendingId` is machine-local bookkeeping (foldPendingEvents
+ * keeps it in the raw file so a surviving side file is never appended twice) and
+ * never reaches a reader.
  */
 export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]> {
   const filePath = eventsPath ?? getEventsPath();
-  return dedupeEvents(await readEventsRaw(filePath));
+  return dedupeEvents(await readEventsRaw(filePath)).map((event) => {
+    delete (event as DashboardEvent & { pendingId?: unknown }).pendingId;
+    return event;
+  });
 }
 
 // ─── Session state rebuild ──────────────────────────────
@@ -2187,10 +2219,17 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
       // un-deduped) events — dedup is a read-time view, not a disk mutation.
       // Dedup never changes the active-session set, so activeIds is identical.
       const events = await readEventsRaw(target);
-      const activeSessions = rebuildSessions(events);
+      // Classify sessions in time order, not raw file order: a side file that
+      // outlived newer appends can sit after them in the file even though it
+      // folds in time order, and every reader rebuilds sessions from
+      // time-sorted events (dedupeEvents sorts). Classifying from raw order
+      // could re-mark a live session stopped from a late older event past its
+      // stopped-display window, and the rewrite would drop its events.
+      const chronological = [...events].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+      const activeSessions = rebuildSessions(chronological);
       const activeIds = new Set(activeSessions.map(s => s.sessionId));
       const monitored = new Map<string, number>();
-      for (const e of events) {
+      for (const e of chronological) {
         if (e.type === 'session_start' && typeof e.monitorPid === 'number') monitored.set(e.sessionId, e.monitorPid);
       }
       for (const [sessionId, pid] of monitored) {
