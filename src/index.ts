@@ -628,6 +628,64 @@ sourceCmd
     await sourceBrowse(name, globalOpts);
   });
 
+// ─── Provider subcommands (Git/HTTP resource backends, #404) ──
+
+const providerCmd = program
+  .command('provider')
+  .description('Manage named HTTP resource providers')
+  .action(async () => {
+    const { providerList } = await import('./provider-command.js');
+    await providerList();
+  });
+
+const providerAddCmd = providerCmd
+  .command('add')
+  .description('Add a resource provider');
+
+providerAddCmd
+  .command('http <endpoint>')
+  .description('Add a named HTTP provider (e.g. a ClawPro backend)')
+  .requiredOption('--name <name>', 'Unique name for this provider')
+  .option('--adapter <adapter>', 'Protocol adapter (default: clawpro)')
+  .option('--token <key>', 'API token (stored 0600 outside config, never committed)')
+  .action(async (endpoint: string, cmdOpts) => {
+    const { providerAddHttp } = await import('./provider-command.js');
+    await providerAddHttp(endpoint, cmdOpts);
+  });
+
+providerCmd
+  .command('list')
+  .description('List configured HTTP providers')
+  .action(async () => {
+    const { providerList } = await import('./provider-command.js');
+    await providerList();
+  });
+
+providerCmd
+  .command('sync')
+  .description('Sync all configured HTTP providers now')
+  .action(async () => {
+    const { providerSync } = await import('./provider-command.js');
+    await providerSync();
+  });
+
+providerCmd
+  .command('remove <name>')
+  .description('Remove an HTTP provider and clean up its resources')
+  .action(async (name: string) => {
+    const { providerRemove } = await import('./provider-command.js');
+    await providerRemove(name);
+  });
+
+providerCmd
+  .command('migrate-legacy')
+  .description('Promote the legacy ~/.teamai/local-agent/ singleton to a named provider')
+  .requiredOption('--name <name>', 'Name for the migrated provider')
+  .action(async (cmdOpts) => {
+    const { providerMigrateLegacy } = await import('./provider-command.js');
+    await providerMigrateLegacy(cmdOpts);
+  });
+
 // ─── Other subcommands ────────────────────────────────────
 
 program
@@ -1012,11 +1070,25 @@ program
   .option('--project-id <id>', 'Project ID from /projects/mine')
   .option('--skip', 'Mark current workspace as skipped (never prompt again)')
   .action(async (cmdOpts) => {
-    const { bindCurrentProject } = await import('./local-agent.js');
-    await bindCurrentProject({
+    const { bindCurrentProject, withHttpProvider } = await import('./local-agent.js');
+    const args = {
       projectId: cmdOpts.projectId ? Number.parseInt(cmdOpts.projectId, 10) : undefined,
       skip: !!cmdOpts.skip,
-    });
+    };
+    // Bind inside the named HTTP provider's context so it reads/writes that
+    // provider's own bindings, not the legacy ~/.teamai/local-agent/ singleton.
+    // Falls back to the legacy path when no named provider is configured.
+    const { listHttpProviderConfigs, httpProviderExecutionContext } = await import(
+      './providers/http/store.js'
+    );
+    const [provider] = await listHttpProviderConfigs();
+    if (provider) {
+      await withHttpProvider(httpProviderExecutionContext(provider.name), () =>
+        bindCurrentProject(args),
+      );
+    } else {
+      await bindCurrentProject(args);
+    }
   });
 
 // ─── Contribute commands ──────────────────────────────────

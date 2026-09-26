@@ -456,6 +456,21 @@ export async function initHttp(
 ): Promise<void> {
   const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
 
+  // Single-provider gate (issue #404 phase 2): refuse to stand up the legacy
+  // HTTP singleton when a named HTTP provider already exists, so the two are
+  // never dispatched together (cross-provider ownership arbitration is phase 4).
+  const { listHttpProviderConfigs } = await import('./providers/http/store.js');
+  const namedProviders = await listHttpProviderConfigs();
+  if (namedProviders.length > 0) {
+    log.error(
+      `A named HTTP provider ("${namedProviders[0].name}") is already configured; `
+      + 'running it alongside a legacy HTTP init is not supported yet (issue #404 phase 4).',
+    );
+    log.info(`Remove it first with \`teamai provider remove ${namedProviders[0].name}\`, or manage this endpoint via \`teamai provider add http\`.`);
+    process.exit(1);
+    return;
+  }
+
   log.info('Initializing teamai (HTTP read-only consumer)...');
 
   // Step 0: scope (same rules as git init — default project)

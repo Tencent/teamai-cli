@@ -24,14 +24,19 @@ reconciles hooks/MCP, maintains recall indexes and reports activity.
 The backend's wider resource model must not falsely imply every current CLI
 handler already supports every write operation.
 
-The current [local agent](../../src/local-agent.ts) uses
-`/api/projects/mine`, `/api/local-agent/report`, `/api/local-agent/sync`,
-`/api/local-agent/commands/ack` and `/api/local-agent/get-config`. It delivers
-commands/resources and manages workspace bindings, rather than materializing a
-complete versioned team repository. These routes remain a separate compatibility
-adapter; they are not aliases for the new API. The provider abstraction proposed
-in [#469](https://github.com/Tencent/teamai-cli/pull/469) can host a future management
-adapter if accepted; this design does not assume that PR has landed.
+The ClawPro HTTP client (now at
+[providers/http/adapters/clawpro/client.ts](../../src/providers/http/adapters/clawpro/client.ts),
+with [src/local-agent.ts](../../src/local-agent.ts) kept as a deprecated
+re-export) uses `/api/projects/mine`, `/api/local-agent/report`,
+`/api/local-agent/sync`, `/api/local-agent/commands/ack` and
+`/api/local-agent/get-config`. It delivers commands/resources and manages
+workspace bindings, rather than materializing a complete versioned team
+repository. These routes remain a separate compatibility adapter; they are not
+aliases for the new API. The Git/HTTP `ResourceProvider` abstraction (issue
+[#404](https://github.com/Tencent/teamai-cli/issues/404), phases 1–2 landed:
+`ResourceProvider`/`HttpBackendAdapter` with ClawPro as an HTTP adapter) is the
+seam a future management adapter would plug into as another HTTP adapter; the
+ownership-ledger and multi-provider arbitration it needs are later phases.
 
 The [data-directory design](data-directory-layout.md) distinguishes a local
 workspace partition from a logical project. The [multi-project design](multi-project-management.md)

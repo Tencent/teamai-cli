@@ -401,6 +401,31 @@ describe('hooks', () => {
       }
     });
 
+    it('returns an attempted/succeeded tally that excludes uninstalled tools (issue #404)', async () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = '/test-home';
+
+      const { pathExists: mockedPathExists } = await import('../utils/fs.js');
+      // Only .claude is installed; .tclaude's root is absent.
+      (mockedPathExists as ReturnType<typeof vi.fn>).mockImplementation(async (p: string) =>
+        (p as string).includes('.claude') && !(p as string).includes('.tclaude'),
+      );
+
+      try {
+        const result = await injectHooksToAllTools({
+          claude: { settings: '.claude/settings.json' },
+          tclaude: { settings: '.tclaude/settings.json' },
+        });
+        // Only the installed tool is attempted and counted — an uninstalled tool
+        // is neither attempted nor a "success", so a single real injection is
+        // distinguishable from "nothing landed".
+        expect(result).toEqual({ attempted: 1, succeeded: 1 });
+      } finally {
+        (mockedPathExists as ReturnType<typeof vi.fn>).mockImplementation(async () => true);
+        process.env.HOME = originalHome;
+      }
+    });
+
     it('filterAgents limits injection to specified tools only', async () => {
       const originalHome = process.env.HOME;
       process.env.HOME = '/test-home';

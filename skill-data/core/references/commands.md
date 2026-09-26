@@ -175,6 +175,20 @@ Generated: do not edit by hand. Regenerate with
   - `teamai source list` — List all configured sources
   - `teamai source browse <name>` — Browse public skills from a source
 
+## provider
+
+- `teamai provider` — Manage named HTTP resource providers
+  - `teamai provider add` — Add a resource provider
+    - `teamai provider add http <endpoint>` — Add a named HTTP provider (e.g. a ClawPro backend)
+      - `--name <name>` — Unique name for this provider
+      - `--adapter <adapter>` — Protocol adapter (default: clawpro)
+      - `--token <key>` — API token (stored 0600 outside config, never committed)
+  - `teamai provider list` — List configured HTTP providers
+  - `teamai provider sync` — Sync all configured HTTP providers now
+  - `teamai provider remove <name>` — Remove an HTTP provider and clean up its resources
+  - `teamai provider migrate-legacy` — Promote the legacy ~/.teamai/local-agent/ singleton to a named provider
+    - `--name <name>` — Name for the migrated provider
+
 ## update
 
 - `teamai update` — Check for updates and upgrade teamai CLI

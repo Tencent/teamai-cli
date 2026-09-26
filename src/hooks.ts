@@ -1455,57 +1455,88 @@ async function reconcilePiExtension(
  * Only writes to tools whose root directory already exists on disk,
  * preventing creation of config dirs for tools the user hasn't installed.
  */
-export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<void> {
+/** Per-run tally of hook injection: how many tools were attempted vs. succeeded. */
+export interface HookInjectionResult {
+  /** Tools whose hook injection was attempted (installed, not skipped). */
+  attempted: number;
+  /** Tools whose hook injection succeeded. */
+  succeeded: number;
+}
+
+export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<HookInjectionResult> {
   const resolvedBaseDir = baseDir ?? getUserHome();
   const skipped = skipToolsWithoutShell(
     Object.keys(toolPaths).filter(t => !filterAgents || filterAgents.includes(t)),
   );
+  let attempted = 0;
+  let succeeded = 0;
+  const attempt = async (fn: () => Promise<void>, onError: (e: Error) => void): Promise<void> => {
+    attempted += 1;
+    try {
+      await fn();
+      succeeded += 1;
+    } catch (e) {
+      onError(e as Error);
+    }
+  };
   for (const [tool, paths] of Object.entries(toolPaths)) {
     if (filterAgents && !filterAgents.includes(tool)) continue;
     if (skipped.has(tool)) continue;
     if (tool === 'pi') {
-      try {
-        await reconcilePiExtension(resolvedBaseDir);
-      } catch (e) {
-        log.warn(`Failed to inject Pi hook: ${(e as Error).message}`);
-      }
+      // Pi's adapter no-ops (returns success) when Pi is not installed, so gate
+      // on its presence — otherwise an uninstalled Pi would count as a
+      // successful injection and mask "no tool actually got a hook".
+      if (!await isPiInstalled(resolvedBaseDir)) continue;
+      await attempt(
+        () => reconcilePiExtension(resolvedBaseDir),
+        (e) => log.warn(`Failed to inject Pi hook: ${e.message}`),
+      );
     } else if (paths.settings) {
       const toolRoot = path.join(resolvedBaseDir, toolInstallRoot(paths.settings));
       if (!await pathExists(toolRoot)) continue;
       const settingsPath = path.join(resolvedBaseDir, paths.settings);
-      try {
-        await injectHooks(settingsPath, tool);
-      } catch (e) {
-        log.warn(`Failed to inject hook into ${tool}: ${(e as Error).message}`);
-      }
+      await attempt(
+        () => injectHooks(settingsPath, tool),
+        (e) => log.warn(`Failed to inject hook into ${tool}: ${e.message}`),
+      );
     } else if (OPENCLAW_TOOLS.has(tool)) {
-      try {
-        const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
-        await injectOpenClawHooks(undefined, tool);
-      } catch (e) {
-        log.warn(`Failed to inject OpenClaw hook into ${tool}: ${(e as Error).message}`);
-      }
+      // Only count when the OpenClaw workspace actually resolves; otherwise the
+      // adapter no-ops and would inflate the success count.
+      const { resolveOpenclawWorkspaceDir } = await import('./openclaw-hooks.js');
+      if (!await resolveOpenclawWorkspaceDir()) continue;
+      await attempt(
+        async () => {
+          const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
+          await injectOpenClawHooks(undefined, tool);
+        },
+        (e) => log.warn(`Failed to inject OpenClaw hook into ${tool}: ${e.message}`),
+      );
     } else if (tool === 'hermes') {
-      try {
-        const { injectHermesHooks } = await import('./hermes-hooks.js');
-        await injectHermesHooks();
-      } catch (e) {
-        log.warn(`Failed to inject Hermes hook: ${(e as Error).message}`);
-      }
+      const { getHermesHome } = await import('./hermes-home.js');
+      if (!await pathExists(getHermesHome())) continue;
+      await attempt(
+        async () => {
+          const { injectHermesHooks } = await import('./hermes-hooks.js');
+          await injectHermesHooks();
+        },
+        (e) => log.warn(`Failed to inject Hermes hook: ${e.message}`),
+      );
     } else if (tool === 'opencode') {
-      try {
-        await reconcileOpencodePlugin(resolvedBaseDir);
-      } catch (e) {
-        log.warn(`Failed to inject OpenCode hook into ${tool}: ${(e as Error).message}`);
-      }
+      if (!await pathExists(path.join(resolvedBaseDir, '.config', 'opencode'))
+        && !await pathExists(path.join(resolvedBaseDir, '.opencode'))) continue;
+      await attempt(
+        () => reconcileOpencodePlugin(resolvedBaseDir),
+        (e) => log.warn(`Failed to inject OpenCode hook into ${tool}: ${e.message}`),
+      );
     } else if (tool === 'omp') {
-      try {
-        await reconcileOmpExtension();
-      } catch (e) {
-        log.warn(`Failed to inject OMP hook into ${tool}: ${(e as Error).message}`);
-      }
+      if (!await pathExists(path.join(resolvedBaseDir, '.omp'))) continue;
+      await attempt(
+        () => reconcileOmpExtension(),
+        (e) => log.warn(`Failed to inject OMP hook into ${tool}: ${e.message}`),
+      );
     }
   }
+  return { attempted, succeeded };
 }
 
 /**

@@ -20,13 +20,17 @@
 [remove](../../src/remove.ts) 当前只暴露 skills、rules、agents 和 MCP 的删除。
 后端覆盖更多资源，不代表当前每个 CLI 处理器已经支持所有写操作。
 
-现有 [local-agent](../../src/local-agent.ts) 使用
+ClawPro HTTP 客户端（现位于
+[providers/http/adapters/clawpro/client.ts](../../src/providers/http/adapters/clawpro/client.ts)，
+[src/local-agent.ts](../../src/local-agent.ts) 保留为已弃用的 re-export）使用
 `/api/projects/mine`、`/api/local-agent/report`、`/api/local-agent/sync`、
 `/api/local-agent/commands/ack` 和 `/api/local-agent/get-config`，
 负责命令与资源下发及工作区绑定，并不生成完整的版本化团队仓快照。
 这些路由保留为独立兼容适配器，不作为新 API 的别名。
-[#469](https://github.com/Tencent/teamai-cli/pull/469) 提议的 Provider 抽象若获合入，
-可以承载未来的管理后端适配器；本文不假设该 PR 已经落地。
+Git/HTTP `ResourceProvider` 抽象（issue
+[#404](https://github.com/Tencent/teamai-cli/issues/404)，阶段 1–2 已落地：
+`ResourceProvider`/`HttpBackendAdapter`，ClawPro 作为一个 HTTP adapter）即未来管理后端
+适配器可作为又一个 HTTP adapter 接入的接缝；其所需的 ownership ledger 与多 provider 仲裁属后续阶段。
 
 [数据目录设计](data-directory-layout.md) 区分机器上的工作区分区与逻辑项目。
 [多项目设计](multi-project-management.md) 通过项目和角色选择器决定资源命名空间。
