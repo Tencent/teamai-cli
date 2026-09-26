@@ -130,7 +130,12 @@ describe('pull --dry-run reports hooks and MCP entry warnings', () => {
       sharing: {
         skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true },
       },
-      toolPaths: { claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json' } },
+      toolPaths: {
+        claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json' },
+        // Pi ships in every team's default toolPaths, so the dry-run Pi-skip
+        // report has the same reach a real reconcile's per-tool pass has.
+        pi: { skills: '.pi/skills', rules: '.pi/rules', claudemd: 'AGENTS.md' },
+      },
     };
 
     vi.mocked(detectProjectConfig).mockResolvedValue(null);
@@ -208,6 +213,31 @@ describe('pull --dry-run reports hooks and MCP entry warnings', () => {
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(DEPRECATED_ROLES_WARNING));
     const debugLines = vi.mocked(log.debug).mock.calls.map(([m]) => String(m));
     expect(debugLines.some((l) => l.includes('Reconciled 1 team hook(s)'))).toBe(true);
+  });
+
+  it('reports the Pi skip on a dry run, like a real pull would', async () => {
+    // A hook scoped to Pi is never applied — Pi runs built-in lifecycle hooks
+    // only — and a real pull says so during the per-tool pass. The dry run
+    // stops before that pass but must repeat the skip, or its "Would apply"
+    // line promises hooks no tool will run.
+    await fse.ensureDir(path.join(repoPath, 'hooks'));
+    await fse.writeFile(
+      path.join(repoPath, 'hooks', 'hooks.yaml'),
+      [
+        'hooks:',
+        '  - id: pi-note',
+        '    description: Pi only',
+        '    event: PostToolUse',
+        '    command: teamai hook-dispatch post-tool-use',
+        '    tools: [pi]',
+        '',
+      ].join('\n'),
+    );
+    await fse.ensureDir(path.join(homeDir, '.pi'));
+
+    await pull({ dryRun: true, force: true });
+
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Pi supports built-in lifecycle hooks only; skipping 1 custom team hook(s)'));
   });
 
   it('forwards dryRun to the MCP reconcile so its writes are skipped too', async () => {
