@@ -16,6 +16,9 @@ export function parseImportBindings(
   if (variant === "go") {
     return {};
   }
+  if (variant === "swift") {
+    return parseSwiftImportBindings(importText);
+  }
   return parseTsImportBindings(importText);
 }
 
@@ -79,6 +82,20 @@ function parsePythonImportBindings(importText: string): ImportBindingResult {
   return { namedBindings: namedBindings.length > 0 ? namedBindings : undefined, defaultBinding, namespaceBinding };
 }
 
+/**
+ * Swift `import` is module-level (`import Foundation`, `import struct MyLib.Point`,
+ * `@testable import MyLib`). The leading module name is the only part knowable
+ * statically; the optional category keyword (`struct` / `class` / `func` / ...)
+ * narrows the imported symbol but not the module.
+ */
+function parseSwiftImportBindings(importText: string): ImportBindingResult {
+  const match = /^\s*(?:@[\w.]+\s+)*import\s+(?:\w+\s+)?([A-Za-z_]\w*)/u.exec(importText);
+  if (!match) {
+    return {};
+  }
+  return { namespaceBinding: match[1] };
+}
+
 /** Normalize import specifier from tree-sitter capture text. */
 export function normalizeImportSpecifier(specText: string, variant: GrammarVariant): string {
   if (variant === "go") {
@@ -111,7 +128,27 @@ export function isExportedSymbol(
     const decl = source.slice(Math.max(0, startIndex - 20), startIndex);
     return /^func\s+[A-Z]/u.test(decl.trimStart()) || /^type\s+[A-Z]/u.test(decl.trimStart());
   }
+  if (variant === "swift") {
+    return isSwiftExported(startIndex, source);
+  }
   return false;
+}
+
+const SWIFT_DECLARATION_KEYWORD =
+  /\b(?:class|actor|struct|enum|protocol|extension|func|var|let|subscript|init|deinit)\b/u;
+
+/**
+ * Swift declarations are `internal` (module-private) unless marked `public`,
+ * `open` or `package`. Unlike TypeScript, the modifier lives *inside* the
+ * declaration node (`modifiers` precedes the keyword), so only the declaration
+ * head is scanned. Attributes such as `@MainActor` may sit on either side of the
+ * access modifier, so the head is split at the keyword instead of prefix-tested.
+ */
+function isSwiftExported(startIndex: number, source: string): boolean {
+  const head = source.slice(startIndex, startIndex + 200);
+  const keywordIndex = head.search(SWIFT_DECLARATION_KEYWORD);
+  const modifiers = keywordIndex === -1 ? head : head.slice(0, keywordIndex);
+  return /\b(?:public|open|package)\b/u.test(modifiers);
 }
 
 function isTsExportedDeclaration(startIndex: number, source: string): boolean {

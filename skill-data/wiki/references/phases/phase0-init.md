@@ -95,7 +95,7 @@ Write to `_review/metadata.json`:
 
 **Step 0D: CLI structural baseline (per code repository, recommended)**
 
-Before the K1 deep read, use TeamAI to extract evidence-backed import/call structural edges (Python/Go/TS etc., `code-ast`) and merge them with the regex baseline (`code-heuristic`):
+Before the K1 deep read, use TeamAI to extract evidence-backed import/call structural edges (Python/Go/TS/Swift etc., `code-ast`) and merge them with the regex baseline (`code-heuristic`):
 
 ```bash
 # For each repo. Writes <repo>/teamwiki/ (evidence pages + .indices/graph-index.json).

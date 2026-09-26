@@ -101,3 +101,76 @@ export const GO_AST_QUERY_SOURCE = `
   )
 ) @call.member
 `;
+
+/**
+ * Swift notes:
+ * - `class_declaration` covers `class` / `struct` / `enum` / `actor`, but the
+ *   `name:` field of an `extension` is a `user_type`, not a `type_identifier`.
+ *   The symbol pattern therefore matches `type_identifier` only (an extension
+ *   declares no new type), while the `impl` pattern uses `(_)` so that
+ *   `extension Point: Equatable {}` — where Swift usually adds conformances —
+ *   still contributes relationships.
+ * - `import struct MyLib.Point` matches `(identifier)` once; matching the inner
+ *   `simple_identifier` would yield one match per path component.
+ * - `self.foo()` has a `self_expression` target, so it needs its own pattern.
+ * - `protocol Sub: Base` refines a protocol exactly like a type conforms to one,
+ *   and the grammar models both as `inheritance_specifier`, so the `impl`
+ *   pattern is written per declaration kind.
+ */
+export const SWIFT_AST_QUERY_SOURCE = `
+(import_declaration
+  (identifier) @import.spec
+) @import.stmt
+
+(class_declaration
+  name: (type_identifier) @symbol.name
+) @symbol.class
+
+(protocol_declaration
+  name: (type_identifier) @symbol.name
+) @symbol.interface
+
+(function_declaration
+  name: (simple_identifier) @symbol.name
+) @symbol.function
+
+(protocol_function_declaration
+  name: (simple_identifier) @symbol.name
+) @symbol.function
+
+(call_expression
+  (simple_identifier) @call.callee
+) @call.stmt
+
+(call_expression
+  (navigation_expression
+    target: (simple_identifier) @call.receiver
+    suffix: (navigation_suffix
+      suffix: (simple_identifier) @call.member
+    )
+  )
+) @call.member
+
+(call_expression
+  (navigation_expression
+    target: (self_expression)
+    suffix: (navigation_suffix
+      suffix: (simple_identifier) @call.member
+    )
+  )
+) @call.member
+
+(class_declaration
+  name: (_) @impl.class
+  (inheritance_specifier
+    inherits_from: (user_type (type_identifier) @impl.iface)
+  )
+) @impl.stmt
+
+(protocol_declaration
+  name: (_) @impl.class
+  (inheritance_specifier
+    inherits_from: (user_type (type_identifier) @impl.iface)
+  )
+) @impl.stmt
+`;

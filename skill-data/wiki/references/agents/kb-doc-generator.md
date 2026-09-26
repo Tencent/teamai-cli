@@ -130,6 +130,7 @@ Use the `Glob → Grep → Read` three-step method (**adapt to the language of t
    Java:       *Application.java / *Bootstrap.java / src/main/java/**/Main*.java
    TypeScript: app.ts / index.ts / main.ts / server.ts
    Rust:       main.rs / src/main.rs
+   Swift:      main.swift / App.swift
    
 2. Grep: locate the core Handlers/Routers (choose the pattern by language + framework)
    Go:         grep -rn 'func.*Handler\|\.GET\|\.POST\|router\.\|@handler' <dir>

@@ -22,7 +22,7 @@ Architecture reverse-engineering **compresses the huge codebase into a structure
 - Every component relation carries a confidence label (`EXTRACTED` / `INFERRED` / `AMBIGUOUS`)
 - Every generation run produces accuracy statistics, with automatic warnings when thresholds are exceeded
 - AI reads the knowledge base instead of the source and gains global architecture awareness for **about 1/50 of the tokens**
-- In Phase 0, `teamai codebase --extract` can generate evidence-backed structural edges (TS/JS/Python/Go AST + multi-language heuristics)
+- In Phase 0, `teamai codebase --extract` can generate evidence-backed structural edges (TS/JS/Python/Go/Swift AST + multi-language heuristics)
 - After extraction, `teamai codebase --deep-enrich --project <slug> --output <repo>` can generate deterministic graph documents (G1/G2/G3) and deep knowledge; no separate team-wiki CLI is needed
 
 ---

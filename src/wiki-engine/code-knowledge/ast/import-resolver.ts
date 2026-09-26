@@ -94,6 +94,17 @@ export async function resolveImportSpecifier(
     }
   }
 
+  // Swift `import Foo` names a module, not a path, and this resolver has no
+  // directory listing to map a module onto its files. The tsconfig `paths`
+  // mechanism below is TypeScript-only: letting Swift specifiers reach it makes
+  // `import Shared` resolve to an unrelated .ts file whenever a `Shared` alias
+  // happens to exist, which emits a false DEPENDS_ON edge *and* suppresses the
+  // EXTERNAL_IMPORT gap that would have recorded the truth. Report the gap
+  // instead, the way Go's `import "fmt"` already does.
+  if (fromFile.endsWith(".swift")) {
+    return undefined;
+  }
+
   const tsconfig = await loadTsconfigPaths(repoRoot, fromFile);
   if (tsconfig) {
     const mapped = await resolvePathsMapping(repoRoot, tsconfig, specifier, fromFile, fileExists);

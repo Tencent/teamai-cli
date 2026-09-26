@@ -53,7 +53,7 @@ KEY_FILE_PATTERNS = {
 # Language extension map
 LANG_MAP = {
     ".py": "Python", ".go": "Go", ".js": "JavaScript", ".ts": "TypeScript",
-    ".java": "Java", ".rs": "Rust", ".rb": "Ruby", ".php": "PHP",
+    ".java": "Java", ".rs": "Rust", ".swift": "Swift", ".rb": "Ruby", ".php": "PHP",
     ".c": "C", ".cpp": "C++", ".h": "C/C++ Header",
     ".proto": "Protobuf", ".thrift": "Thrift", ".graphql": "GraphQL",
     ".sql": "SQL", ".sh": "Shell", ".bash": "Shell",

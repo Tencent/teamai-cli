@@ -102,7 +102,7 @@ export function detectCrossRepoEdges(
     for (const edge of overlay.edges) {
         if (edge.relation !== 'imports') continue;
         const segments = edge.to.split('/');
-        const fileName = segments[segments.length - 1]?.replace(/\.(ts|tsx|js|jsx|py|go|rs|java)$/, '') ?? '';
+        const fileName = segments[segments.length - 1]?.replace(/\.(ts|tsx|js|jsx|py|go|rs|java|swift)$/, '') ?? '';
         const pascalName = fileName.split(/[-_]/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('');
 
         const match = existingIndex.get(pascalName.toLowerCase());
@@ -123,7 +123,7 @@ export function detectCrossRepoEdges(
     for (const edge of existing.edges) {
         if (edge.relation !== 'imports') continue;
         const segments = edge.to.split('/');
-        const fileName = segments[segments.length - 1]?.replace(/\.(ts|tsx|js|jsx|py|go|rs|java)$/, '') ?? '';
+        const fileName = segments[segments.length - 1]?.replace(/\.(ts|tsx|js|jsx|py|go|rs|java|swift)$/, '') ?? '';
         const pascalName = fileName.split(/[-_]/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('');
 
         const match = overlayIndex.get(pascalName.toLowerCase());

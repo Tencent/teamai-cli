@@ -31,7 +31,7 @@ Before generating documents, build a code knowledge graph as an intermediate rep
 **Edge types**: `[CALLS]` (synchronous RPC/HTTP) / `[PUBLISHES]` (asynchronous MQ) / `[CONSUMES]` (MQ consumption) / `[READS]` (DB read) / `[WRITES]` (DB write) / `[CONFIGURES]` (config-driven) / `[MAPS_TO]` (product → code)
 
 **Construction methods** (ordered by availability):
-1. **`teamai codebase --extract`**: Tree-sitter structural edges (**TS/JS/Python/Go** and more) + multi-language heuristic fact pages (writes `teamwiki/`)
+1. **`teamai codebase --extract`**: Tree-sitter structural edges (**TS/JS/Python/Go/Swift** and more) + multi-language heuristic fact pages (writes `teamwiki/`)
 2. Grep + Read (Agent K1/K2): supplement dynamic routes and config-driven calls
 3. Parse orchestration configs → module → command mapping
 4. Parse Proto/IDL/DDL → data structures and table relationships (structured files, can be parsed precisely)

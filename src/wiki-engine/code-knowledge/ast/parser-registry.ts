@@ -2,9 +2,9 @@ import { createRequire } from "node:module";
 
 import { Language, Parser, Query } from "web-tree-sitter";
 
-import { GO_AST_QUERY_SOURCE, PYTHON_AST_QUERY_SOURCE, TS_AST_QUERY_SOURCE } from "./queries.js";
+import { GO_AST_QUERY_SOURCE, PYTHON_AST_QUERY_SOURCE, SWIFT_AST_QUERY_SOURCE, TS_AST_QUERY_SOURCE } from "./queries.js";
 
-export type GrammarVariant = "typescript" | "tsx" | "python" | "go";
+export type GrammarVariant = "typescript" | "tsx" | "python" | "go" | "swift";
 
 const require = createRequire(import.meta.url);
 
@@ -12,14 +12,16 @@ const GRAMMAR_WASM: Record<GrammarVariant, string> = {
   typescript: "tree-sitter-wasms/out/tree-sitter-typescript.wasm",
   tsx: "tree-sitter-wasms/out/tree-sitter-tsx.wasm",
   python: "tree-sitter-wasms/out/tree-sitter-python.wasm",
-  go: "tree-sitter-wasms/out/tree-sitter-go.wasm"
+  go: "tree-sitter-wasms/out/tree-sitter-go.wasm",
+  swift: "tree-sitter-wasms/out/tree-sitter-swift.wasm"
 };
 
 const QUERY_SOURCE: Record<GrammarVariant, string> = {
   typescript: TS_AST_QUERY_SOURCE,
   tsx: TS_AST_QUERY_SOURCE,
   python: PYTHON_AST_QUERY_SOURCE,
-  go: GO_AST_QUERY_SOURCE
+  go: GO_AST_QUERY_SOURCE,
+  swift: SWIFT_AST_QUERY_SOURCE
 };
 
 let parserInstance: Parser | undefined;
@@ -77,6 +79,8 @@ export function grammarForExtension(ext: string): GrammarVariant | undefined {
       return "python";
     case ".go":
       return "go";
+    case ".swift":
+      return "swift";
     default:
       return undefined;
   }
