@@ -2208,12 +2208,14 @@ describe('events file lock (#804)', () => {
     // append record a side file the next holder folds in, so the rewrite
     // cannot drop it, as it did before the lock (#804). The append lands after
     // compaction's second read — the snapshot the rewrite is built from — so
-    // the old read-all-then-overwrite lost it at the rename.
+    // the old read-all-then-overwrite lost it at the rename. Matched by file
+    // name: compaction reads the realpath'd target, which on macOS prefixes
+    // the temp dir with /private and would never equal eventsPath().
     const realReadFile = fs.promises.readFile;
     let reads = 0;
     const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(async (file, options) => {
       const content = await realReadFile(file, options);
-      if (String(file) === eventsPath() && ++reads === 2) {
+      if (path.basename(String(file)) === 'events.jsonl' && ++reads === 2) {
         await appendEvent(event('live-b', { monitorPid: process.pid }));
       }
       return content;
