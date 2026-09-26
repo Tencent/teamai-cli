@@ -214,4 +214,33 @@ describe('pull --dry-run reports hooks and MCP entry warnings', () => {
       expect.objectContaining({ dryRun: true }),
     );
   });
+
+  it('reports MCP changes on a dry run without claiming they were applied', async () => {
+    // A dry run still returns the changes it *would* make — `wrote: false` is the
+    // only difference — so pull's summary line must not read as a completed
+    // apply. Reporting "Restart your AI tool session to load them" after a run
+    // that wrote nothing is the same class of defect as "Applying" was on the
+    // hooks side before the preview flag.
+    vi.mocked(reconcileMcpForConfig).mockResolvedValueOnce({
+      changes: [{ tool: 'claude', server: 'team-server', action: 'added' }],
+      wrote: false,
+    });
+
+    await pull({ dryRun: true, force: true });
+
+    const lines = vi.mocked(log.info).mock.calls.map(([m]) => String(m));
+    expect(lines.some((l) => l.includes('[dry-run]') && l.includes('Would make'))).toBe(true);
+    expect(lines.some((l) => l.includes('Restart your AI tool session'))).toBe(false);
+  });
+
+  it('keeps the applied wording on a real pull', async () => {
+    vi.mocked(reconcileMcpForConfig).mockResolvedValueOnce({
+      changes: [{ tool: 'claude', server: 'team-server', action: 'added' }],
+      wrote: true,
+    });
+
+    await pull({ force: true });
+
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('Restart your AI tool session to load them'));
+  });
 });

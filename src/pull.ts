@@ -2161,7 +2161,14 @@ async function reconcileMcpAllScopes(
       }
       if (applied.length > 0 && !options.silent) {
         const servers = [...new Set(applied.map((c) => c.server))];
-        log.info(`MCP: ${applied.length} change(s) across ${servers.length} server(s). Restart your AI tool session to load them.`);
+        // A dry run reports the changes it would make (`wrote` stays false), so
+        // the summary must not read as a completed apply, nor tell the member to
+        // restart a session that has nothing new to load.
+        if (options.dryRun) {
+          log.info(`MCP: [dry-run] Would make ${applied.length} change(s) across ${servers.length} server(s)`);
+        } else {
+          log.info(`MCP: ${applied.length} change(s) across ${servers.length} server(s). Restart your AI tool session to load them.`);
+        }
       }
     } catch (e) {
       log.debug(`[${localConfig.scope}] MCP reconcile skipped: ${(e as Error).message}`);

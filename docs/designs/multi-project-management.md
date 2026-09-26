@@ -439,7 +439,10 @@ entry comes from.
 - No pull protects a local edit from being overwritten, override transitions
   included.
 - A mistyped per-entry key (`role:`) is stripped by the schema and the entry
-  reaches everyone; `pull --dry-run` prints no hooks or MCP warnings.
+  reaches everyone. `pull --dry-run` resolves the hooks and MCP entries and
+  reports their warnings (an unknown id, a deprecated per-entry `roles:`, a file
+  that does not parse) without writing, so a maintainer can see them before a
+  real pull applies them.
 
 ## Backward compatibility
 
