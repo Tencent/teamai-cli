@@ -5,13 +5,13 @@ import { assertNotReadOnly } from './read-only.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { markContributed } from './contribute-check.js';
-import { pendingLearningsDir, queueOwner, queueWriteRefusal, savePendingLearning } from './utils/pending-learnings.js';
+import { pendingLearningsDir, queueWriteRefusal, savePendingLearning } from './utils/pending-learnings.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
 import { resolveActiveLearningsNamespaces } from './projects.js';
 import { isSafeNamespaceSegment } from './manifest-schema.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
-import { getBusinessRoot, getDataHome, getProjectSearchIndexPath, isSelfMode } from './types.js';
+import { getProjectSearchIndexPath, isSelfMode } from './types.js';
 
 /**
  * Decide which learnings subdirectory a contribution lands in — resolved from
@@ -101,31 +101,6 @@ export async function rebuildIndexAfterContribute(localConfig: LocalConfig): Pro
 //      │   └── not confirmed → keep it queued, retried by the next pull
 //      └─ done
 //
-
-/**
- * A queue an older teamai kept in this checkout's `.teamai/` is deleted with a
- * linked worktree; move it into the shared queue, so the publish that follows
- * sends it too (#808), or aside when the partition now serves another install
- * (settleCheckoutQueue). The migration before contribute and import --from-mr
- * does it too, and they stop when the queue would stay in the checkout
- * (queueKeptInCheckout); this is a second pass. Best effort: the learning
- * being queued must still be saved, and the old queue stays where it is.
- */
-export async function drainCheckoutQueue(localConfig: LocalConfig): Promise<void> {
-  if (!isSelfMode(localConfig)) return;
-  const legacyDir = path.join(getBusinessRoot(localConfig), '.teamai');
-  const dataHome = getDataHome(localConfig);
-  if (path.resolve(legacyDir) === path.resolve(dataHome)) return;
-  const { settleCheckoutQueue } = await import('./migrate.js');
-  try {
-    await settleCheckoutQueue(legacyDir, dataHome, queueOwner(localConfig));
-  } catch (e) {
-    log.warn(
-      `Could not move the learnings an older teamai queued in ${legacyDir} ` +
-        `(${e instanceof Error ? e.message : String(e)}). They stay there; the next teamai pull moves them.`,
-    );
-  }
-}
 
 /**
  * Where a learning saved for an install that changed before it was published
@@ -227,7 +202,6 @@ export async function contribute(
   if (isSelfMode(localConfig)) {
     const { migrateSelfModeGitignore } = await import('./init.js');
     await migrateSelfModeGitignore(localConfig);
-    await drainCheckoutQueue(localConfig);
   }
 
   try {

@@ -84,15 +84,19 @@ export function refreshReportsWorktree(
  * that copy is another repository's.
  */
 export async function readableReportsWorktree(localConfig: LocalConfig): Promise<string> {
-  const refreshed = await reportsBranch.refresh(localConfig, { pushIfCreated: false });
+  let refreshed = await reportsBranch.refresh(localConfig, { pushIfCreated: false });
+  // Failed: try once more, under the lock like every creation, and throw the
+  // cause if it fails again. An `ensure` here would create the checkout without
+  // the lock, while a writer that took it meanwhile creates it too (#823 item 15).
+  if (refreshed.status === 'failed') refreshed = await reportsBranch.refresh(localConfig, { pushIfCreated: false });
   switch (refreshed.status) {
+    case 'done':
+      return reportsBranch.dir(localConfig);
     case 'busy':
       await reportsBranch.checkOwner(localConfig);
       return reportsBranch.dir(localConfig);
-    // Failed: ensure tries once more, and throws its cause if it fails again.
-    case 'done':
     case 'failed':
-      return reportsBranch.ensure(localConfig, { pushIfCreated: false });
+      throw new Error(refreshed.reason);
     default: {
       const unhandled: never = refreshed;
       throw new Error(`Unhandled refresh result: ${JSON.stringify(unhandled)}`);

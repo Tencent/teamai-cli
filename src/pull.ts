@@ -752,11 +752,13 @@ async function pullForScope(
   // partition sync lock across this scope and the lock is not reentrant, so
   // publishing must not try to take it again. Never let it block the pull.
   try {
-    const queue = await publishQueuedLearnings(localConfig, localConfig.username, { holdsSyncLock: true });
-    if (queue.published.length > 0) {
+    const queue = await publishQueuedLearnings(localConfig, localConfig.username, { holdsSyncLock: true, dryRun: options.dryRun });
+    if (options.dryRun) {
+      if (queue.remaining > 0) log.info(`[${scopeLabel}] [dry-run] Would publish ${queue.remaining} queued learning(s)`);
+    } else if (queue.published.length > 0) {
       log.success(`Published ${queue.published.length} queued learning(s)`);
     }
-    if (queue.remaining > 0) {
+    if (queue.remaining > 0 && !options.dryRun) {
       // Say it out loud. A member whose pushes are rejected would otherwise
       // queue notes forever and never hear about it.
       reported.add('pending-learnings');

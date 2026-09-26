@@ -39,13 +39,13 @@ describe('maintenance across the write root and the inherited root', () => {
   it('writes an inherited learning back into the write root, leaving the clone untouched', async () => {
     fs.writeFileSync(path.join(inherited, 'old.md'), '---\ntitle: old\nconfidence: 0.1\n---\nbody');
 
-    const updated = await writeBackConfidence(
+    const written = await writeBackConfidence(
       [writeRoot, inherited],
       new Map([['old', 0.9]]),
       writeRoot,
     );
 
-    expect(updated).toBe(1);
+    expect(written).toEqual([path.join(writeRoot, 'old.md')]);
     expect(fs.readFileSync(path.join(writeRoot, 'old.md'), 'utf8')).toContain('confidence: 0.9');
     expect(fs.readFileSync(path.join(inherited, 'old.md'), 'utf8')).toContain('confidence: 0.1');
   });
@@ -69,7 +69,7 @@ describe('maintenance across the write root and the inherited root', () => {
       reason: 'test',
     }]);
 
-    expect(result).toEqual({ archived: 0, removed: 0 });
+    expect(result).toEqual({ archived: 0, removed: 0, changed: [] });
     expect(fs.existsSync(path.join(inherited, 'old.md'))).toBe(true);
     expect(vi.mocked(log.warn).mock.calls.join(' ')).toContain('pull request');
   });
@@ -86,6 +86,7 @@ describe('maintenance across the write root and the inherited root', () => {
     }], { archive: true });
 
     expect(result.archived).toBe(1);
+    expect(result.changed).toEqual([path.join(writeRoot, 'stale.md'), path.join(writeRoot, '_archive', 'stale.md')]);
     expect(fs.existsSync(path.join(writeRoot, '_archive', 'stale.md'))).toBe(true);
     expect(fs.existsSync(path.join(writeRoot, 'stale.md'))).toBe(false);
   });

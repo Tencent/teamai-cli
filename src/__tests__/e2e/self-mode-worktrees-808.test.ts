@@ -35,11 +35,11 @@ interface RunResult {
   output: string;
 }
 
-function runCLI(args: string[], cwd: string, home: string): Promise<RunResult> {
+function runCLI(args: string[], cwd: string, home: string, env: NodeJS.ProcessEnv = {}): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn('node', [CLI, ...args], {
       cwd,
-      env: { ...process.env, ...GIT_ENV, HOME: home, FORCE_COLOR: '0' },
+      env: { ...process.env, ...GIT_ENV, HOME: home, FORCE_COLOR: '0', ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
@@ -368,6 +368,55 @@ describe('self mode with a linked worktree (#808)', () => {
     expect(published(project).some((f) => f.includes('unmigrated-note-')), published(project).join('\n')).toBe(true);
   });
 
+  it('moves the queue an older teamai left in a linked worktree before import --from-mr publishes, so removing the worktree loses nothing', async () => {
+    const project = setUpProject();
+    const { home, projectRoot, worktree } = project;
+    // The main checkout migrated; the worktree still holds the queue an older
+    // teamai kept in its own .teamai/, with no config beside it.
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    git(['worktree', 'add', '-q', worktree, '-b', 'wt-808'], projectRoot);
+    const legacy = 'legacy-wt-2026-01-01-bbbbbb.md';
+    fs.mkdirSync(path.join(worktree, '.teamai', 'pending-learnings'), { recursive: true });
+    fs.writeFileSync(path.join(worktree, '.teamai', 'pending-learnings', legacy), '# Queued in the worktree by an older teamai\n');
+    // `gh` (the MR) and `claude` (the extraction) are stand-ins on PATH.
+    const bin = path.join(project.sandbox, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'gh'), [
+      '#!/usr/bin/env bash',
+      'case "$1 $2" in',
+      `  "pr view") echo '{"title":"Retry flaky upload","body":"Retries uploads.","author":{"login":"dev"},"mergedAt":"2026-09-20T10:00:00Z","commits":[]}' ;;`,
+      "  \"pr diff\") printf 'diff --git a/up.ts b/up.ts\\n+retry(3)\\n' ;;",
+      '  *) exit 1 ;;',
+      'esac',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'claude'), [
+      '#!/usr/bin/env bash',
+      "cat <<'MD'",
+      '---',
+      'title: Retry flaky uploads',
+      '---',
+      '# Retry flaky uploads',
+      '',
+      'Wrap uploads in retry(3).',
+      'MD',
+      '',
+    ].join('\n'), { mode: 0o755 });
+
+    const imported = await runCLI(
+      ['import', '--from-mr', 'https://github.com/acme/app/pull/7', '--all'],
+      worktree,
+      home,
+      { PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, CLAUDE_SESSION_ID: '', GITHUB_TOKEN: '', GH_TOKEN: '' },
+    );
+
+    expect(imported.code, imported.output).toBe(0);
+    git(['worktree', 'remove', '--force', worktree], projectRoot);
+    expect(published(project), `${published(project).join('\n')}\n${imported.output}`).toContain(`learnings/${legacy}`);
+    expect(published(project).some((f) => f.includes('retry-flaky-uploads-')), published(project).join('\n')).toBe(true);
+    expect(partitionQueue(project)).toEqual([]);
+  });
+
   it('stops contribute in an unmigrated linked worktree while another command holds its sync lock, saving nothing there', async () => {
     const project = setUpProject();
     const { home, projectRoot, worktree } = project;
@@ -637,6 +686,107 @@ describe('self mode with a linked worktree (#808)', () => {
     git(['worktree', 'remove', '--force', worktree], projectRoot);
     expect(partitionQueue(project)).toEqual([]);
     expect(published(project)).toContain('learnings/legacy-wt-2026-01-01-bbbbbb.md');
+  });
+
+  it("publishes the learning an older import --from-mr left in the old checkout, so git can remove it and contribute publishes both (#823 item 7)", async () => {
+    const project = setUpProject();
+    const { home, remote, projectRoot } = project;
+    const seed = path.join(project.sandbox, 'seed');
+    git(['clone', '-q', remote, seed], project.sandbox);
+    git(['checkout', '-q', '--orphan', 'teamai-learnings'], seed);
+    git(['rm', '-rfq', '.'], seed);
+    fs.mkdirSync(path.join(seed, 'learnings'), { recursive: true });
+    fs.writeFileSync(path.join(seed, '.gitignore'), 'reports-wt/\nlearnings-wt/\nknowledge-wt/\n');
+    fs.writeFileSync(path.join(seed, 'learnings', '.gitkeep'), '');
+    git(['add', '-A'], seed);
+    git(['commit', '-q', '-m', 'learnings branch'], seed);
+    git(['push', '-q', 'origin', 'teamai-learnings'], seed);
+    git(['fetch', '-q', 'origin', 'teamai-learnings:teamai-learnings'], projectRoot);
+    // The checkout an older teamai kept in .teamai/, holding what an older
+    // import --from-mr wrote there and never committed.
+    const oldCheckout = path.join(projectRoot, '.teamai', 'learnings-wt');
+    git(['worktree', 'add', '-q', oldCheckout, 'teamai-learnings'], projectRoot);
+    const remnant = [
+      '---',
+      'title: "Quokka cache warmup before deploy"',
+      'date: 2026-09-20',
+      'source_mr: "https://github.com/acme/app/pull/42"',
+      '---',
+      'Warm the quokka cache in the post-deploy hook.',
+      '',
+    ].join('\n');
+    fs.writeFileSync(path.join(oldCheckout, 'learnings', '2026-09-20-Quokka-cache-warmup-before-deploy.md'), remnant);
+
+    const contribute = await runCLI(
+      ['contribute', '--title', 'self-note', '--file', note(project, 'self', 'Note contributed beside the old checkout')],
+      projectRoot,
+      home,
+    );
+
+    expect(contribute.code, contribute.output).toBe(0);
+    expect(contribute.output).not.toContain('still has teamai-learnings checked out');
+    expect(contribute.output).not.toContain('Saved locally');
+    expect(fs.existsSync(oldCheckout)).toBe(false);
+    expect(published(project).some((f) => f.includes('self-note-')), published(project).join('\n')).toBe(true);
+    const quokka = published(project).filter((f) => /^learnings\/quokka-cache-warmup-before-deploy-[\d-]+-[a-z0-9]+\.md$/.test(f));
+    expect(quokka, published(project).join('\n')).toHaveLength(1);
+    expect(git(['show', `teamai-learnings:${quokka[0]}`], remote)).toBe(remnant);
+    expect(partitionQueue(project)).toEqual([]);
+  });
+
+  it("removes that learning instead when a teammate already published one from the same merge request the old checkout never fetched (#823 item 21)", async () => {
+    const project = setUpProject();
+    const { home, remote, projectRoot } = project;
+    const seed = path.join(project.sandbox, 'seed');
+    git(['clone', '-q', remote, seed], project.sandbox);
+    git(['checkout', '-q', '--orphan', 'teamai-learnings'], seed);
+    git(['rm', '-rfq', '.'], seed);
+    fs.mkdirSync(path.join(seed, 'learnings'), { recursive: true });
+    fs.writeFileSync(path.join(seed, '.gitignore'), 'reports-wt/\nlearnings-wt/\nknowledge-wt/\n');
+    fs.writeFileSync(path.join(seed, 'learnings', '.gitkeep'), '');
+    git(['add', '-A'], seed);
+    git(['commit', '-q', '-m', 'learnings branch'], seed);
+    git(['push', '-q', 'origin', 'teamai-learnings'], seed);
+    git(['fetch', '-q', 'origin', 'teamai-learnings:teamai-learnings'], projectRoot);
+    const oldCheckout = path.join(projectRoot, '.teamai', 'learnings-wt');
+    git(['worktree', 'add', '-q', oldCheckout, 'teamai-learnings'], projectRoot);
+    const remnantFile = path.join(oldCheckout, 'learnings', '2026-09-20-Quokka-cache-warmup-before-deploy.md');
+    fs.writeFileSync(remnantFile, [
+      '---',
+      'title: "Quokka cache warmup before deploy"',
+      'date: 2026-09-20',
+      'source_mr: "https://github.com/acme/app/pull/42"',
+      '---',
+      'Warm the quokka cache in the post-deploy hook.',
+      '',
+    ].join('\n'));
+    // A teammate's later import of the same MR, pushed after this repo last fetched.
+    const teammates = 'learnings/quokka-cache-warmup-2026-09-21-ttt111.md';
+    fs.writeFileSync(path.join(seed, teammates), [
+      '---',
+      'title: "Quokka cache warmup"',
+      'date: 2026-09-21',
+      'source_mr: "https://github.com/acme/app/pull/42"',
+      '---',
+      'Warm the quokka cache before traffic returns.',
+      '',
+    ].join('\n'));
+    git(['add', '-A'], seed);
+    git(['commit', '-q', '-m', 'teammate import'], seed);
+    git(['push', '-q', 'origin', 'teamai-learnings'], seed);
+
+    const contribute = await runCLI(
+      ['contribute', '--title', 'self-note', '--file', note(project, 'self', 'Note contributed beside the old checkout')],
+      projectRoot,
+      home,
+    );
+
+    expect(contribute.code, contribute.output).toBe(0);
+    expect(contribute.output).toContain(`Removed ${remnantFile}, which an older teamai import --from-mr left unpublished: ${teammates} already has it.`);
+    expect(fs.existsSync(oldCheckout)).toBe(false);
+    expect(published(project).filter((f) => f.includes('quokka')), published(project).join('\n')).toEqual([teammates]);
+    expect(published(project).some((f) => f.includes('self-note-')), published(project).join('\n')).toBe(true);
+    expect(partitionQueue(project)).toEqual([]);
   });
 
   it("refuses a learnings checkout another repository left in the partition, and publishes nothing to it", async () => {
@@ -1370,6 +1520,147 @@ describe('a checkout an older git-mode install left (#808)', () => {
     const pull = await runCLI(['pull'], projectRoot, home);
     expect(pull.code, pull.output).toBe(0);
     expect(git(['log', '--all', '--name-only', '--format='], teamB.bare)).not.toContain('team-a-note-');
+  });
+
+  it("leaves no config naming team A beside team B's clone when init stops after recloning, and sets team A's queue aside (#823 item 17)", async () => {
+    const install = setUpGitInstall();
+    const { home, projectRoot } = install;
+    const teamA = serveTeamRepo(install, 'team-a');
+    const teamB = serveTeamRepo(install, 'team-b');
+    // Team B has roles, so an unknown --role stops init after it has recloned.
+    const edit = path.join(install.sandbox, 'team-b-edit');
+    git(['clone', '-q', teamB.bare, edit], install.sandbox);
+    fs.mkdirSync(path.join(edit, 'manifest'));
+    fs.writeFileSync(path.join(edit, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: backend\n    resources:\n      knowledge: []\n      skills: []\n');
+    git(['add', '-A'], edit);
+    git(['commit', '-q', '-m', 'roles'], edit);
+    git(['push', '-q', 'origin', 'main'], edit);
+
+    const initA = await runCLI(['init', teamA.url, '--scope', 'project', '--force'], projectRoot, home);
+    expect(initA.code, initA.output).toBe(0);
+    const queued = await withPushesRejected({ ...install, remote: teamA.bare }, () => runCLI(
+      ['contribute', '--title', 'team-a-note', '--file', note(install, 'team-a', 'Note for team A')],
+      projectRoot,
+      home,
+    ));
+    expect(queued.output).toContain('Saved locally');
+    const [name] = partitionQueue(install).filter((f) => f.startsWith('team-a-note-'));
+    expect(name, partitionQueue(install).join('\n')).toBeDefined();
+
+    const failed = await runCLI(['init', teamB.url, '--scope', 'project', '--force', '--role', 'ghost'], projectRoot, home);
+
+    expect(failed.code, failed.output).toBe(1);
+    expect(failed.output).toContain('Unknown role "ghost"');
+    const partition = partitionOf(install);
+    expect(git(['remote', 'get-url', 'origin'], path.join(partition, 'team-repo')).trim()).toBe(teamB.url);
+    const config = path.join(partition, 'config.yaml');
+    expect(fs.existsSync(config) ? fs.readFileSync(config, 'utf8') : '', failed.output).not.toContain(teamA.url);
+    // Moved aside, not deleted, and the member is told where.
+    expect(fs.readFileSync(`${config}.previous`, 'utf8')).toContain(teamA.url);
+    expect(failed.output).toContain(`Moved ${config} to ${config}.previous`);
+    const aside = path.join(partition, 'pending-learnings.git-git.example.com-team-team-a');
+    expect(fs.readFileSync(path.join(aside, name), 'utf8')).toContain('Note for team A');
+    expect(partitionQueue(install)).not.toContain(name);
+
+    const initB = await runCLI(['init', teamB.url, '--scope', 'project', '--force', '--role', 'backend'], projectRoot, home);
+    expect(initB.code, initB.output).toBe(0);
+    const pull = await runCLI(['pull'], projectRoot, home);
+    expect(pull.code, pull.output).toBe(0);
+    expect(git(['log', '--all', '--name-only', '--format='], teamB.bare)).not.toContain('team-a-note-');
+  });
+
+  it("moves team A's config aside when init reuses a clone of team B an earlier init left beside it and then fails, and carries its settings on the rerun (#823 item 17)", async () => {
+    const install = setUpGitInstall();
+    const { home, projectRoot } = install;
+    const teamA = serveTeamRepo(install, 'team-a');
+    const teamB = serveTeamRepo(install, 'team-b');
+
+    const initA = await runCLI(['init', teamA.url, '--scope', 'project', '--force', '--agent', 'claude'], projectRoot, home);
+    expect(initA.code, initA.output).toBe(0);
+    const partition = partitionOf(install);
+    const config = path.join(partition, 'config.yaml');
+    // What an init that recloned team B and stopped before saving left: team A's config beside team B's clone.
+    const clone = path.join(partition, 'team-repo');
+    fs.rmSync(clone, { recursive: true, force: true });
+    git(['clone', '-q', teamB.bare, clone], install.sandbox);
+    git(['remote', 'set-url', 'origin', teamB.url], clone);
+    // Without team B's rewrite the clone names team B itself, so init reuses it,
+    // and with HTTPS refused its refresh fails.
+    const gitconfig = path.join(home, '.gitconfig');
+    const rewrites = fs.readFileSync(gitconfig, 'utf8');
+    fs.writeFileSync(gitconfig, rewrites.replace(`[url "${teamB.bare}"]\n\tinsteadOf = ${teamB.url}\n`, ''));
+
+    const failed = await runCLI(['init', teamB.url, '--scope', 'project', '--force'], projectRoot, home, { GIT_ALLOW_PROTOCOL: 'file' });
+
+    expect(failed.code, failed.output).toBe(1);
+    expect(failed.output).toContain('using existing clone');
+    expect(failed.output).toContain('Failed to refresh existing clone');
+    expect(fs.existsSync(config) ? fs.readFileSync(config, 'utf8') : '', failed.output).not.toContain(teamA.url);
+    expect(fs.readFileSync(`${config}.previous`, 'utf8')).toContain(teamA.url);
+    fs.writeFileSync(gitconfig, rewrites);
+
+    const initB = await runCLI(['init', teamB.url, '--scope', 'project', '--force'], projectRoot, home);
+
+    expect(initB.code, initB.output).toBe(0);
+    const saved = fs.readFileSync(config, 'utf8');
+    expect(saved).toContain(teamB.url);
+    expect(saved).toMatch(/enabledAgents:\n\s+- claude\n/);
+  });
+
+  it("carries the set-aside config's settings into the init that reruns after the replacement clone failed (#823 item 17)", async () => {
+    const install = setUpGitInstall();
+    const { home, projectRoot } = install;
+    const teamA = serveTeamRepo(install, 'team-a');
+    const teamB = serveTeamRepo(install, 'team-b');
+
+    const initA = await runCLI(['init', teamA.url, '--scope', 'project', '--force', '--agent', 'claude'], projectRoot, home);
+    expect(initA.code, initA.output).toBe(0);
+    const config = path.join(partitionOf(install), 'config.yaml');
+    expect(fs.readFileSync(config, 'utf8')).toMatch(/enabledAgents:\n\s+- claude\n/);
+
+    // Team B is unreachable, so the clone fails after the config was moved aside.
+    fs.renameSync(teamB.bare, `${teamB.bare}.offline`);
+    const failed = await runCLI(['init', teamB.url, '--scope', 'project', '--force'], projectRoot, home);
+    expect(failed.code, failed.output).toBe(1);
+    expect(failed.output).toContain('Clone failed');
+    expect(fs.existsSync(config)).toBe(false);
+    fs.renameSync(`${teamB.bare}.offline`, teamB.bare);
+
+    const initB = await runCLI(['init', teamB.url, '--scope', 'project', '--force', '--agent', 'codex'], projectRoot, home);
+
+    expect(initB.code, initB.output).toBe(0);
+    const saved = fs.readFileSync(config, 'utf8');
+    expect(saved).toContain(teamB.url);
+    expect(saved).toMatch(/enabledAgents:\n\s+- claude\n\s+- codex\n/);
+  });
+
+  it('keeps the agent lists of the set-aside config when the rerun after a failed replacement clone names no --agent (#823 item 17)', async () => {
+    const install = setUpGitInstall();
+    const { home, projectRoot } = install;
+    const teamA = serveTeamRepo(install, 'team-a');
+    const teamB = serveTeamRepo(install, 'team-b');
+
+    const initA = await runCLI(['init', teamA.url, '--scope', 'project', '--force', '--agent', 'claude'], projectRoot, home);
+    expect(initA.code, initA.output).toBe(0);
+    const config = path.join(partitionOf(install), 'config.yaml');
+    // What `uninstall --agent codex` records.
+    const written = fs.readFileSync(config, 'utf8');
+    expect(written).toContain('disabledAgents: []\n');
+    fs.writeFileSync(config, written.replace('disabledAgents: []\n', 'disabledAgents:\n  - codex\n'));
+
+    fs.renameSync(teamB.bare, `${teamB.bare}.offline`);
+    const failed = await runCLI(['init', teamB.url, '--scope', 'project', '--force'], projectRoot, home);
+    expect(failed.code, failed.output).toBe(1);
+    expect(fs.existsSync(config)).toBe(false);
+    fs.renameSync(`${teamB.bare}.offline`, teamB.bare);
+
+    const initB = await runCLI(['init', teamB.url, '--scope', 'project', '--force'], projectRoot, home);
+
+    expect(initB.code, initB.output).toBe(0);
+    const saved = fs.readFileSync(config, 'utf8');
+    expect(saved).toContain(teamB.url);
+    expect(saved).toMatch(/enabledAgents:\n\s+- claude\n/);
+    expect(saved).toMatch(/disabledAgents:\n\s+- codex\n/);
   });
 
   it("sets aside the queue under an unknown owner when init replaces a config it cannot read, and the next pull publishes none of it", async () => {

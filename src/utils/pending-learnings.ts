@@ -189,6 +189,32 @@ export async function listPendingForInstall(
 }
 
 /**
+ * Every queued learning's content, when the queue is still the install's that
+ * `localConfig` was loaded from, as listPendingForInstall decides it. Read under
+ * the queue lock, so no learning another install queued after a switch is read
+ * as this one's. Unreadable entries are left out.
+ */
+export async function readPendingForInstall(
+  localConfig: LocalConfig,
+): Promise<
+  | { status: 'read'; queued: Array<{ relPath: string; content: string }> }
+  | { status: 'busy'; lockPath: string }
+  | { status: 'changed'; configPath: string; cause: string }
+> {
+  const locked = await withQueueLock(queueHome(localConfig), async () => {
+    const changed = await installChanged(localConfig);
+    if (changed) return { status: 'changed' as const, ...changed };
+    const queued: Array<{ relPath: string; content: string }> = [];
+    for (const relPath of await listPendingLearnings(localConfig)) {
+      const content = await readPendingLearning(localConfig, relPath);
+      if (content !== null) queued.push({ relPath, content });
+    }
+    return { status: 'read' as const, queued };
+  });
+  return locked.status === 'done' ? locked.value : locked;
+}
+
+/**
  * Every queued learning, as paths relative to `learnings/`, oldest entries
  * included. Hidden files and anything that is not Markdown are ignored, so a
  * stray editor swap file never reaches the team repo.

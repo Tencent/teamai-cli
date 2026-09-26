@@ -142,6 +142,16 @@ describe('ensureReportsWorktree read-only cold start', () => {
   });
 });
 
+/**
+ * `diff --cached --name-only -z -- <files>` lists `staged`, what the publish commits.
+ * Any other git call is `rev-list --count origin/<branch>..HEAD`, which the publish
+ * checks before reporting success: '0' is "nothing left to deliver".
+ */
+function stageInWorktree(staged: string[]): void {
+  mocks.worktreeGit.raw.mockImplementation(async (args: string[]) =>
+    args.includes('diff') ? staged.map((f) => `${f}\0`).join('') : '0');
+}
+
 describe('commitAndPushReports', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -150,10 +160,7 @@ describe('commitAndPushReports', () => {
     mocks.worktreeGit.commit.mockResolvedValue(undefined);
     mocks.worktreeGit.push.mockResolvedValue(undefined);
     mockCheckoutOfBusinessRepo();
-    // `rev-list --count origin/<branch>..HEAD`: the publish confirms the ref
-    // moved before reporting success. '0' is "nothing left to deliver".
-    mocks.worktreeGit.raw.mockResolvedValue('0');
-    mocks.worktreeGit.status.mockResolvedValue({ staged: ['members/alice.yaml'] });
+    stageInWorktree(['members/alice.yaml']);
     vi.mocked(acquireLock).mockResolvedValue(true);
     vi.mocked(releaseLock).mockResolvedValue(undefined);
   });
@@ -169,7 +176,7 @@ describe('commitAndPushReports', () => {
   });
 
   it('pushes an unchanged report retry without making an empty commit', async () => {
-    mocks.worktreeGit.status.mockResolvedValue({ staged: [] });
+    stageInWorktree([]);
     expect(await commitAndPushReports(config, 'retry stats', ['stats/alice.yaml'], { pushIfUnchanged: true })).toBe(true);
     expect(mocks.worktreeGit.commit).not.toHaveBeenCalled();
     expect(mocks.worktreeGit.push).toHaveBeenCalledWith(['origin', 'teamai-reports']);
@@ -177,7 +184,7 @@ describe('commitAndPushReports', () => {
   });
 
   it('preserves the default no-op when no changes are staged', async () => {
-    mocks.worktreeGit.status.mockResolvedValue({ staged: [] });
+    stageInWorktree([]);
     expect(await commitAndPushReports(config, 'unchanged member', ['members/'])).toBe(false);
     expect(mocks.worktreeGit.push).not.toHaveBeenCalled();
   });
@@ -260,9 +267,12 @@ describe('readableReportsWorktree', () => {
     expect(mocks.worktreeGit.raw).not.toHaveBeenCalled();
   });
 
-  it('refreshes and ensures the checkout, publishing nothing, when the lock is free', async () => {
+  it('refreshes the checkout, publishing nothing, when the lock is free', async () => {
     vi.mocked(acquireLock).mockResolvedValue(true);
     mocks.isGitRepo.mockResolvedValue(true);
+    // A clean checkout, level with origin: the refresh completes.
+    mocks.worktreeGit.status.mockResolvedValue({ staged: [], renamed: [], conflicted: [], isClean: () => true });
+    mocks.worktreeGit.raw.mockResolvedValue('0');
 
     await expect(readableReportsWorktree(config)).resolves.toBe(WT);
 

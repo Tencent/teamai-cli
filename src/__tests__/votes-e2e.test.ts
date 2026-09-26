@@ -224,8 +224,8 @@ describe('Phase 3+4 end-to-end data flow', () => {
     fs.writeFileSync(path.join(votesDir, 'user1.yaml'), YAML.stringify(v2));
 
     const map = await computeAllConfidence(votesDir);
-    const updated = await writeBackConfidence([learningsDir], map);
-    expect(updated).toBe(1);
+    const written = await writeBackConfidence([learningsDir], map);
+    expect(written).toEqual([path.join(learningsDir, 'test-doc.md')]);
 
     // Verify frontmatter has confidence
     const afterContent = fs.readFileSync(path.join(learningsDir, 'test-doc.md'), 'utf-8');

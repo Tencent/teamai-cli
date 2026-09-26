@@ -439,7 +439,9 @@ export async function runMigration(
       await releaseLock(lockPath);
       lockReleased = true;
       const backup = await retireLegacy(legacyDir);
-      log.success(`Finished an interrupted migration: retired ${legacyDir} to ${backup}`);
+      // Not always an interrupted run: a linked worktree lands here once another
+      // checkout of the repo built the partition.
+      log.success(`Retired ${legacyDir} to ${backup}: this project's data already lives in ${partitionDir}`);
       return 'migrated';
     }
 
@@ -881,7 +883,7 @@ async function migrateSelfA1(legacyDir: string, partitionDir: string, legacyOwne
  *  - a config that cannot be read: left in place, since where they would be
  *    published is unknown.
  */
-export async function settleCheckoutQueue(legacyDir: string, partitionDir: string, owner: QueueOwner): Promise<void> {
+async function settleCheckoutQueue(legacyDir: string, partitionDir: string, owner: QueueOwner): Promise<void> {
   const queue = path.join(legacyDir, SELF_LEGACY_QUEUE);
   if (!(await pathExists(queue))) return;
   // The install read below decides where the queue goes; an init switching it

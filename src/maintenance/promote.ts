@@ -148,11 +148,15 @@ Output ONLY the transformed markdown content (including YAML frontmatter with ti
   }
 }
 
+/**
+ * The promoted entry's path, and the learning file it marked as promoted (null
+ * when it marked none), which is what a publish may stage (#823).
+ */
 export async function executePromotion(
   candidate: PromotionCandidate,
   repoPath: string,
   options: PromoteOptions & { learningsWriteDir?: string } = {},
-): Promise<string> {
+): Promise<{ targetPath: string; marked: string | null }> {
   const category = options.category ?? candidate.suggestedCategory;
   const targetDir = path.join(repoPath, category);
   await ensureDir(targetDir);
@@ -161,13 +165,13 @@ export async function executePromotion(
 
   if (options.dryRun) {
     log.info(`[dry-run] Would promote ${candidate.docId} -> ${category}/${candidate.filename}`);
-    return targetPath;
+    return { targetPath, marked: null };
   }
 
   const originalContent = await readFileSafe(candidate.path);
   if (!originalContent) {
     log.error(`Cannot read source file: ${candidate.path}`);
-    return targetPath;
+    return { targetPath, marked: null };
   }
 
   // AI transforms the learning into a generalized format for the target category
@@ -189,7 +193,7 @@ export async function executePromotion(
   await writeFile(markPath, updated);
 
   log.success(`Promoted: ${candidate.docId} -> ${category}/${candidate.filename}`);
-  return targetPath;
+  return { targetPath, marked: markPath };
 }
 
 function inferCategoryByKeywords(content: string, title: string): 'skills' | 'rules' | 'docs' {

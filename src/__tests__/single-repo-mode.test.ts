@@ -14,7 +14,7 @@ import {
   TeamaiConfigSchema,
   type LocalConfig,
 } from '../types.js';
-import { buildSelfModeGitignore, migrateSelfModeGitignore, migrateSelfModeGitignoreContent } from '../init.js';
+import { buildProjectScopeGitignore, buildSelfModeGitignore, migrateSelfModeGitignore, migrateSelfModeGitignoreContent } from '../init.js';
 
 /** The names of `names` that `gitignore`, as `.teamai/.gitignore`, makes git ignore. */
 function ignoredBy(gitignore: string, names: string[]): string[] {
@@ -38,6 +38,8 @@ function ignoredBy(gitignore: string, names: string[]): string[] {
 
 /** The files a usage write leaves beside `usage.jsonl` while it runs or when it gives up on the lock (#788). */
 const USAGE_SIDE_FILES = ['usage.jsonl.lock', 'usage.jsonl.123.0123456789ab.tmp', 'usage.pending-0f8e2c1a-1b2c-4d5e-8f90-123456789abc.jsonl'];
+/** The temp copy an interrupted config save leaves beside config.yaml (writeFileAtomic, #831). */
+const CONFIG_SAVE_TEMP = 'config.yaml.123.0123456789ab.tmp';
 
 function makeConfig(kind: 'git' | 'http' | 'self', localPath = '/repo/.teamai'): LocalConfig {
   return {
@@ -172,11 +174,22 @@ describe('buildSelfModeGitignore', () => {
     expect(ignoredBy(gi, USAGE_SIDE_FILES)).toEqual(USAGE_SIDE_FILES);
   });
 
+  it('ignores the temp copy an interrupted config save leaves (#823)', () => {
+    expect(ignoredBy(gi, [CONFIG_SAVE_TEMP])).toEqual([CONFIG_SAVE_TEMP]);
+  });
+
   it('ignores the learnings worktree, its lock and the queue, so contributing leaves git status clean', () => {
     const lines = gi.split('\n').map((l) => l.trim());
     expect(lines).toContain('learnings-wt/');
     expect(lines).toContain('.learnings-lock');
     expect(lines).toContain('pending-learnings/');
+  });
+});
+
+describe('buildProjectScopeGitignore', () => {
+  it('ignores the local config and the temp copy an interrupted config save leaves (#823)', () => {
+    const names = ['config.yaml', CONFIG_SAVE_TEMP, 'state.json', 'token'];
+    expect(ignoredBy(buildProjectScopeGitignore(), names)).toEqual(names);
   });
 });
 
@@ -221,7 +234,7 @@ describe('migrateSelfModeGitignoreContent (self-heal old gitignore)', () => {
     const old = [
       'env.sh', 'env.local', 'teamai.lock',
       'learnings-wt/', '.learnings-lock', 'pending-learnings/', 'env/',
-      'usage.jsonl.*', 'usage.pending-*.jsonl',
+      'usage.jsonl.*', 'usage.pending-*.jsonl', 'config.yaml.*.tmp',
     ].join('\n');
     const { changed, content } = migrateSelfModeGitignoreContent(old);
     expect(changed).toBe(false); // nothing to remove, env.local already present
@@ -252,7 +265,7 @@ describe('migrateSelfModeGitignoreContent (self-heal old gitignore)', () => {
     const old = [
       '# env is machine-local', 'config.yaml', 'env.local', 'teamai.lock',
       'learnings-wt/', '.learnings-lock', 'pending-learnings/',
-      'usage.jsonl.*', 'usage.pending-*.jsonl',
+      'usage.jsonl.*', 'usage.pending-*.jsonl', 'config.yaml.*.tmp',
     ].join('\n');
     const { changed, content } = migrateSelfModeGitignoreContent(old);
     // No bare `env` line, env.local already present → unchanged.
@@ -273,6 +286,14 @@ describe('migrateSelfModeGitignoreContent (self-heal old gitignore)', () => {
     expect(changed).toBe(true);
     expect(ignoredBy(content, USAGE_SIDE_FILES)).toEqual(USAGE_SIDE_FILES);
     expect(content).toContain('usage.jsonl\nusage.jsonl.*\nusage.pending-*.jsonl\nknown-skills.json');
+  });
+
+  it('adds the temp copy an interrupted config save leaves, after config.yaml (#823)', () => {
+    const old = ['config.yaml', 'state.json', 'token', 'teamai.lock', 'env.local'].join('\n');
+    const { changed, content } = migrateSelfModeGitignoreContent(old);
+    expect(changed).toBe(true);
+    expect(content).toContain('config.yaml\nconfig.yaml.*.tmp\nstate.json');
+    expect(ignoredBy(content, [CONFIG_SAVE_TEMP])).toEqual([CONFIG_SAVE_TEMP]);
   });
 
   it('adds the learnings worktree, its lock and the queue', () => {

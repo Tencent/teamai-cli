@@ -35,6 +35,40 @@ async function settleModeSwitch(previous: LocalConfig | null, next: LocalConfig,
     process.exit(1);
   }
 }
+
+/**
+ * Move a config that names another install out of the way, to a free
+ * `config.yaml.previous` name beside it, before init clones the new team repo
+ * where that install's clone was. If init then stops before it saves the new
+ * config, no command runs the old config against the new clone (#823 item 17):
+ * they all ask for `teamai init` instead. Nothing is deleted.
+ */
+async function moveConfigAside(configPath: string, next: LocalConfig): Promise<void> {
+  let aside = `${configPath}.previous`;
+  for (let n = 1; await pathExists(aside); n++) aside = `${configPath}.previous.${n}`;
+  await fs.promises.rename(configPath, aside);
+  log.warn(
+    `Moved ${configPath} to ${aside}: it is another install's config, and init replaces its team repo with ` +
+      `${redactGitCredentials(next.repo.remote)}. If init stops before it finishes, run it again.`,
+  );
+}
+
+/**
+ * The config {@link moveConfigAside} set aside last. An init that stopped after
+ * it (a failed clone, an unknown --role) saved no config, so the rerun reads
+ * this one for the settings a re-init carries forward instead of dropping them.
+ */
+async function loadConfigSetAside(configPath: string): Promise<LocalConfig | null> {
+  let latest: string | undefined;
+  for (let n = 0, aside = `${configPath}.previous`; await pathExists(aside); aside = `${configPath}.previous.${++n}`) latest = aside;
+  if (!latest) return null;
+  try {
+    return LocalConfigSchema.parse(YAML.parse(await readFileSafe(latest) ?? ''));
+  } catch (e) {
+    log.debug(`Not carrying settings from ${latest}: ${(e as Error).message}`);
+    return null;
+  }
+}
 import { log, spinner } from './utils/logger.js';
 import {
   CLAUDE_TOOL_ID,
@@ -47,6 +81,7 @@ import {
   REPORTS_BRANCH,
   type GlobalOptions,
   type LocalConfig,
+  LocalConfigSchema,
   type Scope,
   getTeamaiHome,
   getConfigPath,
@@ -657,6 +692,8 @@ export function buildSelfModeGitignore(): string {
     '# As of P2 this data lives in ~/.teamai/projects/<slug>/; these entries guard',
     '# pre-P2 installs (pre-migration) and any un-relocated path.',
     'config.yaml',
+    // The temp copy an interrupted config save leaves (writeFileAtomic, #831).
+    'config.yaml.*.tmp',
     'state.json',
     'token',
     'teamai.lock',
@@ -699,6 +736,32 @@ export function buildSelfModeGitignore(): string {
     'pending-review.jsonl',
     '',
     '# Knowledge (skills/, rules/, docs/, learnings/) is intentionally committed to main.',
+    '',
+  ].join('\n');
+}
+
+/** The `.gitignore` project-scope init writes beside its local config, once. */
+export function buildProjectScopeGitignore(): string {
+  return [
+    '# teamai local config (do not commit)',
+    'config.yaml',
+    // The temp copy an interrupted config save leaves (writeFileAtomic, #831).
+    'config.yaml.*.tmp',
+    'state.json',
+    'token',
+    'teamai.lock',
+    '.update-lock',
+    'env',
+    'env.sh',
+    'sessions/',
+    'dashboard/',
+    'usage.jsonl',
+    'usage.jsonl.*',
+    'usage.pending-*.jsonl',
+    'known-skills.json',
+    'learnings/',
+    'search-index.json',
+    'votes/',
     '',
   ].join('\n');
 }
@@ -748,6 +811,8 @@ export function migrateSelfModeGitignoreContent(content: string): { changed: boo
   // The usage lock, rewrite temps and pending events arrived with the usage cap (#788).
   ensure('usage.jsonl.*', 'usage.jsonl');
   ensure('usage.pending-*.jsonl', 'usage.jsonl.*');
+  // config.yaml has been saved atomically, through a temp copy, since #831.
+  ensure('config.yaml.*.tmp', 'config.yaml');
 
   return { changed, content: filtered.join('\n') };
 }
@@ -1270,12 +1335,20 @@ export async function init(options: GlobalOptions & {
     return;
   }
   const existingLocalConfig = await loadLocalConfigForScope(scope, projectRoot);
+  const teamaiHome = scope === 'project' && projectRoot
+    ? (existingLocalConfig?.dataHome ?? await resolveProjectDataHome(projectRoot))
+    : getTeamaiHome(scope, projectRoot);
+  const existingConfigPath = path.join(teamaiHome, 'config.yaml');
+  // The settings this re-init carries forward: the live config's, or, when an
+  // init stopped after moving it aside, the one it set aside (#823 item 17).
+  const carriedConfig = existingLocalConfig
+    ?? (await pathExists(existingConfigPath) ? null : await loadConfigSetAside(existingConfigPath));
   let inheritUserScope: boolean | undefined;
   try {
     inheritUserScope = resolveInheritUserScope(
       scope,
       options.inheritUserScope,
-      existingLocalConfig?.inheritUserScope,
+      carriedConfig?.inheritUserScope,
     );
   } catch (e) {
     log.error((e as Error).message);
@@ -1285,9 +1358,6 @@ export async function init(options: GlobalOptions & {
   if (fallbackReason) {
     log.warn(fallbackReason);
   }
-  const teamaiHome = scope === 'project' && projectRoot
-    ? (existingLocalConfig?.dataHome ?? await resolveProjectDataHome(projectRoot))
-    : getTeamaiHome(scope, projectRoot);
   printScopeSummary(scope, projectRoot, explicit);
 
   if (scope === 'project' && !(await isInsideGitRepo(process.cwd()))) {
@@ -1295,7 +1365,6 @@ export async function init(options: GlobalOptions & {
   }
 
   // Step 0.5: Re-init guard — warn if config already exists
-  const existingConfigPath = path.join(teamaiHome, 'config.yaml');
   if (await pathExists(existingConfigPath)) {
     log.warn(`teamai is already initialized for ${scope} scope at ${existingConfigPath}`);
     if (options.force) {
@@ -1372,6 +1441,24 @@ export async function init(options: GlobalOptions & {
   // Step 3: Clone or link repo
   const defaultLocalPath = path.join(teamaiHome, 'team-repo');
   const localPath = expandHome(defaultLocalPath);
+  // The clone init uses is another install's than the config beside it, whether
+  // it clones it now or reuses one an earlier init left: settle that install
+  // now, as the config save below would, instead of leaving its config to run
+  // against this clone should init stop first.
+  const settleReplacedInstall = async (): Promise<void> => {
+    const next: LocalConfig = {
+      repo: { localPath, remote: repoInfo.httpsUrl },
+      username,
+      scope,
+      projectRoot,
+      additionalRoles: [],
+      ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
+    };
+    const replacesAnother = existingLocalConfig
+      ? !sameQueueOwner(queueOwner(existingLocalConfig), queueOwner(next))
+      : await pathExists(existingConfigPath);
+    if (replacesAnother) await settleModeSwitch(existingLocalConfig, next, () => moveConfigAside(existingConfigPath, next));
+  };
 
   if (await pathExists(localPath)) {
     if (await isGitRepo(localPath)) {
@@ -1405,6 +1492,7 @@ export async function init(options: GlobalOptions & {
         }
       } else {
         log.info(`Repo already exists at ${localPath}, using existing clone`);
+        await settleReplacedInstall();
         // Refresh before resolveActiveProjects so selectors like `--project all`
         // expand against the current remote manifest, not a stale local snapshot
         // (re-running init after a new project is added would otherwise keep the
@@ -1438,6 +1526,8 @@ export async function init(options: GlobalOptions & {
   }
 
   if (!await pathExists(localPath)) {
+    await settleReplacedInstall();
+
     const cloneSpin = spinner('Cloning team repo...').start();
     const cloneTarget = provider.name === 'git'
       ? repoInfo.httpsUrl
@@ -1728,10 +1818,14 @@ export async function init(options: GlobalOptions & {
   // Persist --agent into enabledAgents (additive across runs)
   const requestedAgents = normalizeAgentList(options.agent);
   if (requestedAgents.length > 0) {
-    const existing = await loadLocalConfigForScope(scope, projectRoot);
-    const prev = existing?.enabledAgents ?? [];
+    // As loaded before the clone: that config may have been moved aside since.
+    const prev = carriedConfig?.enabledAgents ?? [];
     localConfig.enabledAgents = [...new Set([...prev, ...requestedAgents])];
-    localConfig.disabledAgents = (existing?.disabledAgents ?? []).filter((t) => !requestedAgents.includes(t));
+    localConfig.disabledAgents = (carriedConfig?.disabledAgents ?? []).filter((t) => !requestedAgents.includes(t));
+  } else {
+    // No --agent: the lists stand as they were, `uninstall --agent`'s exclusion included.
+    if (carriedConfig?.enabledAgents) localConfig.enabledAgents = [...carriedConfig.enabledAgents];
+    if (carriedConfig?.disabledAgents) localConfig.disabledAgents = [...carriedConfig.disabledAgents];
   }
 
   // Carry the member's recorded tool roots across a re-init. `init` is
@@ -1741,11 +1835,11 @@ export async function init(options: GlobalOptions & {
   // entry when the variable IS set.
   // A project-scope config with no record of its own starts from the user-scope
   // one: the root is a fact about this machine, and project hooks land in HOME.
-  const carriedToolRoots = existingLocalConfig?.toolRoots
+  const carriedToolRoots = carriedConfig?.toolRoots
     ?? (scope === 'project' ? (await loadLocalConfigForScope('user'))?.toolRoots : undefined);
   if (carriedToolRoots) localConfig.toolRoots = { ...carriedToolRoots };
   recordClaudeConfigRoot(localConfig);
-  await releasePreviousClaudeRoot(currentConfig, existingLocalConfig, localConfig);
+  await releasePreviousClaudeRoot(currentConfig, carriedConfig, localConfig);
 
   await ensureDir(teamaiHome);
   if (scope !== 'project') await ensureDir(getTeamaiHomeDir());
@@ -1758,27 +1852,7 @@ export async function init(options: GlobalOptions & {
     // Generate .gitignore for project scope to prevent local config from being committed
     const gitignorePath = path.join(teamaiHome, '.gitignore');
     if (!await pathExists(gitignorePath)) {
-      const gitignoreContent = [
-        '# teamai local config (do not commit)',
-        'config.yaml',
-        'state.json',
-        'token',
-        'teamai.lock',
-        '.update-lock',
-        'env',
-        'env.sh',
-        'sessions/',
-        'dashboard/',
-        'usage.jsonl',
-        'usage.jsonl.*',
-        'usage.pending-*.jsonl',
-        'known-skills.json',
-        'learnings/',
-        'search-index.json',
-        'votes/',
-        '',
-      ].join('\n');
-      await writeFile(gitignorePath, gitignoreContent);
+      await writeFile(gitignorePath, buildProjectScopeGitignore());
       log.debug('Generated .teamai/.gitignore for project scope');
     }
   } else {

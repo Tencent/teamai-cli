@@ -26,12 +26,9 @@ const localConfig = {
   dataHome,
 };
 
-/** The config teamai detects: the main checkout unless a test runs in a linked worktree. */
-let detected = localConfig;
-
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
-  autoDetectInit: vi.fn(async () => ({ localConfig: detected, teamConfig: { team: 't', repo: remote } })),
+  autoDetectInit: vi.fn(async () => ({ localConfig, teamConfig: { team: 't', repo: remote } })),
 }));
 
 const IMPORTED = 'mr-note-2026-01-01-aaaaaa.md';
@@ -99,7 +96,6 @@ describe('import --from-mr in self mode (#808)', () => {
   });
 
   afterEach(() => {
-    detected = localConfig;
     fs.rmSync(testRoot, { recursive: true, force: true });
   });
 
@@ -112,26 +108,6 @@ describe('import --from-mr in self mode (#808)', () => {
     expect(pendingLearningsDir(localConfig)).toBe(path.join(dataHome, 'pending-learnings'));
     expect(publishedLearnings()).toContain(`learnings/${IMPORTED}`);
     expect(fs.existsSync(path.join(pendingLearningsDir(localConfig), IMPORTED))).toBe(false);
-  });
-
-  it('publishes what an older teamai queued in a linked worktree, so removing the worktree loses nothing', async () => {
-    const worktree = path.join(testRoot, 'business-wt');
-    git(['worktree', 'add', '-q', worktree, '-b', 'wt-808'], businessRoot);
-    const legacy = 'legacy-wt-2026-01-01-bbbbbb.md';
-    const legacyQueue = path.join(worktree, '.teamai', 'pending-learnings');
-    fs.mkdirSync(legacyQueue, { recursive: true });
-    fs.writeFileSync(path.join(legacyQueue, legacy), '# Queued in the worktree by an older teamai\n');
-    detected = {
-      ...localConfig,
-      repo: { ...localConfig.repo, localPath: path.join(worktree, '.teamai'), businessRepoRoot: worktree },
-      projectRoot: worktree,
-    };
-
-    await importCmd({ fromMr: 'https://github.com/o/r/pull/1' });
-
-    git(['worktree', 'remove', '--force', worktree], businessRoot);
-    expect(publishedLearnings()).toEqual(expect.arrayContaining([`learnings/${legacy}`, `learnings/${IMPORTED}`]));
-    expect(fs.readdirSync(pendingLearningsDir(localConfig))).toEqual([]);
   });
 
   it('leaves the learnings checkout alone when the learning goes to --output', async () => {

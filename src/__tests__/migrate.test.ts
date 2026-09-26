@@ -389,6 +389,22 @@ describe('runMigration', () => {
     expect(await planMigration(repoRoot)).toBeNull();
   });
 
+  it('says where the data already lives when it retires a leftover, without claiming a migration was interrupted (#823)', async () => {
+    // A linked worktree whose checkout never ran teamai lands here too: another
+    // checkout built the partition, nothing was interrupted.
+    await seedLegacyLayout();
+    const partition = projectDataHome(repoRoot);
+    await writePartitionConfig(partition);
+    vi.mocked(log.success).mockClear();
+
+    const plan = await planMigration(repoRoot);
+    if (plan?.mode !== 'retire-only') throw new Error('expected a retire-only plan');
+    expect(await runMigration(plan)).toBe('migrated');
+
+    const said = vi.mocked(log.success).mock.calls.map((c) => String(c[0]));
+    expect(said).toEqual([`Retired ${legacyDir} to ${legacyDir}.bak: this project's data already lives in ${partition}`]);
+  });
+
   it('keeps the legacy dir when an unreadable partition config appears after planning (#797)', async () => {
     // The re-check under the lock must use the same notion of "built" as the plan.
     await seedLegacyLayout();

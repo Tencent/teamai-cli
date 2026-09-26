@@ -88,14 +88,14 @@ export async function computeAllConfidence(votesDir: string): Promise<Map<string
 /**
  * Write confidence scores back into learning document frontmatter.
  * Only updates docs whose confidence changed by > 0.05.
- * Returns count of files updated.
+ * Returns the files it wrote, which are what a publish may stage (#823).
  */
 export async function writeBackConfidence(
   learningsDirs: readonly string[],
   confidenceMap: Map<string, number>,
   writeRoot?: string,
-): Promise<number> {
-  let updated = 0;
+): Promise<string[]> {
+  const written: string[] = [];
   const files = await listLearningFiles(learningsDirs);
 
   for (const { file, absPath } of files) {
@@ -123,14 +123,14 @@ export async function writeBackConfidence(
         : absPath;
       await ensureDir(path.dirname(target));
       await writeFile(target, newContent);
-      updated++;
+      written.push(target);
     } catch {
       log.debug(`confidence: failed to update frontmatter for: ${file}`);
     }
   }
 
-  if (updated > 0) {
-    log.info(`Updated confidence scores for ${updated} learning(s)`);
+  if (written.length > 0) {
+    log.info(`Updated confidence scores for ${written.length} learning(s)`);
   }
-  return updated;
+  return written;
 }

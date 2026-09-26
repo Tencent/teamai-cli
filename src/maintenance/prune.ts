@@ -81,19 +81,21 @@ export async function findPruneCandidates(
 }
 
 /**
- * Execute prune: archive or remove low-confidence documents.
+ * Execute prune: archive or remove low-confidence documents. `changed` is every
+ * file it removed or wrote, which is what a publish may stage (#823).
  */
 export async function executePrune(
   learningsWriteDir: string,
   candidates: PruneCandidate[],
   options: PruneOptions = {},
-): Promise<{ archived: number; removed: number }> {
+): Promise<{ archived: number; removed: number; changed: string[] }> {
   let archived = 0;
   let removed = 0;
+  const changed: string[] = [];
 
   if (options.dryRun) {
     log.info(`[dry-run] Would ${options.archive ? 'archive' : 'remove'} ${candidates.length} file(s)`);
-    return { archived: 0, removed: 0 };
+    return { archived: 0, removed: 0, changed };
   }
 
   const inherited: string[] = [];
@@ -109,11 +111,14 @@ export async function executePrune(
     if (options.archive) {
       const archiveDir = path.join(learningsWriteDir, '_archive');
       await ensureDir(archiveDir);
-      await copyFile(candidate.path, path.join(archiveDir, candidate.filename));
+      const archivedCopy = path.join(archiveDir, candidate.filename);
+      await copyFile(candidate.path, archivedCopy);
       await remove(candidate.path);
+      changed.push(candidate.path, archivedCopy);
       archived++;
     } else {
       await remove(candidate.path);
+      changed.push(candidate.path);
       removed++;
     }
   }
@@ -126,5 +131,5 @@ export async function executePrune(
       + `${inherited.join(', ')}. Remove them with a pull request against the team repo.`,
     );
   }
-  return { archived, removed };
+  return { archived, removed, changed };
 }

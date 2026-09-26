@@ -371,7 +371,10 @@ git 同一分支只能在一个 worktree 中检出，所以仓库的所有检出
 的命令会移除旧检出。旧检出中若有未提交的改动则保留，命令会指出其路径：在你提交、
 移走或删除这些改动之前，不会向该分支发布内容，也不会从该分支召回内容，`recall maintenance` 与
 `recall promote` 会停止。已排队的 learning
-仍留在队列中，仍可被召回。检出无法创建时（例如 `teamai-learnings` 已在别处检出），maintenance 与 promote
+仍留在队列中，仍可被召回。旧版 `import --from-mr`（0.25.0 至 0.26.0-beta.3）写进 learnings 检出却从未提交的 learning
+不算在内：下一次 `pull` 或 `contribute`（或排队了 learning 的 `import --from-mr`）会把它排队并发布（放入项目的命名空间，按 `contribute`
+的方式命名），并指出它原来的位置，旧检出因此可以移除。若分支或队列中已有同一条（按 `source_mr` 或内容判断），
+则删除它，提示中会给出已有的那条 learning。检出无法创建时（例如 `teamai-learnings` 已在别处检出），maintenance 与 promote
 同样会停止，并说明原因。
 同一项目的 git 模式安装把检出放在相同的路径。切换模式后，teamai 会拒绝使用属于另一个
 仓库的检出，并打印清除它的 `git worktree remove` 命令：不会向它发布、不会为它建索引（包括其中的投票）、
@@ -379,7 +382,9 @@ git 同一分支只能在一个 worktree 中检出，所以仓库的所有检出
 learning 会被移到同一数据目录下的 `pending-learnings.<旧类型>`，新安装不会发布它们；`init`
 会说明数量和位置，并删除为旧仓库构建的搜索索引（下一次 `recall` 会重建）。以同一类型对另一个团队仓库重新运行 `init`
 也同样处理，队列移到 `pending-learnings.<类型>-<仓库>`（例如 `pending-learnings.git-github.com-org-team-a`）；
-同一仓库换一种写法（带或不带 `.git`、SSH 或 HTTPS）不会移动队列。若旧安装的 `config.yaml` 存在但无法读取，
+同一仓库换一种写法（带或不带 `.git`、SSH 或 HTTPS）不会移动队列。克隆另一个团队仓库之前（或复用之前某次 `init` 留下的该仓库克隆之前），
+`init` 会把旧的 `config.yaml` 移到旁边的 `config.yaml.previous` 并给出提示：若 `init` 在保存新配置前停止，
+所有命令都会要求先运行 `teamai init`，而不会用旧团队的配置操作新的克隆。重新运行 `init` 即可：它会从 `config.yaml.previous` 沿用该配置的设置（agent、工具根目录）。若旧安装的 `config.yaml` 存在但无法读取，
 就无从得知队列属于谁：`init` 会把它移到 `pending-learnings.unknown`，指出该文件，并删除搜索索引。尚未升级的检出中的旧队列也同样处理：
 在该检出运行的下一个命令会把它移到 `pending-learnings.self` 并给出路径。反过来，当某个检出的 `init --self`
 把 git 模式项目切换为单仓库模式，而另一个仍保留旧安装的检出从 main 取得了知识时，在那里运行的下一个
@@ -1153,6 +1158,8 @@ teamai recall maintenance --update-quality
 运行 `--update-quality` 后，审查生成的 `.draft.md` 文件，将满意的文件重命名为 `.md` 即可应用更新。
 
 另一个 teamai 命令持有 learnings 或 reports checkout 的锁时，`recall maintenance` 与 `recall promote` 会以退出码 1 停止，不写入任何内容（`The learnings checkout is locked: …`）。待该命令结束后再运行。
+
+maintenance 与 promote 只发布它们改动过的 learning。learnings 检出中无人提交的文件不会进入它们的提交。发布无法进行或推送失败时（`Maintenance changes stay local for now: …`），下一次 `teamai pull` 或 `contribute` 会发布这些改动，即使队列中没有 learning。
 
 ### 晋升 Learnings
 

@@ -136,7 +136,7 @@ async function remoteBranchExists(spec: BranchWorktreeSpec, repoRoot: string): P
  * stale. An explicit refspec creates and updates that tracking ref in every
  * clone (#706). Used by both the reports and learnings branches.
  */
-async function fetchTrackingRef(git: SimpleGit, branch: string): Promise<void> {
+export async function fetchTrackingRef(git: SimpleGit, branch: string): Promise<void> {
   await git.fetch(['origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
 }
 
@@ -274,12 +274,7 @@ async function ensureWorktree(
  */
 async function removeOldCheckoutsInDotTeamai(spec: BranchWorktreeSpec, git: SimpleGit, wt: string): Promise<void> {
   const oldSuffix = `${path.sep}${path.join('.teamai', spec.worktreeDirname)}`;
-  const listing = await git.raw(['worktree', 'list', '--porcelain']);
-  for (const entry of listing.split('\n\n')) {
-    const lines = entry.split('\n');
-    const checkout = lines.find((l) => l.startsWith('worktree '))?.slice('worktree '.length);
-    const branch = lines.find((l) => l.startsWith('branch '))?.slice('branch '.length);
-    if (checkout === undefined || branch !== `refs/heads/${spec.branch}`) continue;
+  for (const checkout of await checkoutsOfBranch(spec, git)) {
     // resolve: git prints forward slashes on Windows too.
     if (!path.resolve(checkout).endsWith(oldSuffix) || path.resolve(checkout) === path.resolve(wt)) continue;
     try {
@@ -296,6 +291,31 @@ async function removeOldCheckoutsInDotTeamai(spec: BranchWorktreeSpec, git: Simp
       ));
     }
   }
+}
+
+/** The checkouts of this branch the repository behind `git` registers (git allows one). */
+async function checkoutsOfBranch(spec: BranchWorktreeSpec, git: SimpleGit): Promise<string[]> {
+  const listing = await git.raw(['worktree', 'list', '--porcelain']);
+  const checkouts: string[] = [];
+  for (const entry of listing.split('\n\n')) {
+    const lines = entry.split('\n');
+    const checkout = lines.find((l) => l.startsWith('worktree '))?.slice('worktree '.length);
+    const branch = lines.find((l) => l.startsWith('branch '))?.slice('branch '.length);
+    if (checkout !== undefined && branch === `refs/heads/${spec.branch}`) checkouts.push(checkout);
+  }
+  return checkouts;
+}
+
+/**
+ * Where this repository has the branch checked out, wherever that is: the
+ * shared checkout, or one an older teamai left in a checkout's `.teamai/`.
+ * Null when it has none, or no branch worktrees at all. Never another
+ * repository's checkout, since it is this repository's own registration.
+ */
+async function registeredCheckoutImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig): Promise<string | null> {
+  if (!usesBranchWorktree(localConfig)) return null;
+  const [checkout] = await checkoutsOfBranch(spec, createGit(gitRoot(localConfig)));
+  return checkout ?? null;
 }
 
 /**
@@ -528,9 +548,15 @@ async function commitAndPushAt(
 ): Promise<PublishResult> {
   const git = createGit(wt);
 
-  await git.add(files);
-  const status = await git.status();
-  if (status.staged.length === 0 && !options.pushIfUnchanged && await nothingLeftToPush(git, spec)) {
+  // Literal: a filename with `[` or `*` would otherwise stage whatever it matches as a pattern.
+  await git.raw(['--literal-pathspecs', 'add', '--', ...files]);
+  // Only `files`: the checkout may hold a file someone else staged, and it must
+  // neither count as a change nor ride along in this commit. No paths would be the whole index.
+  const staged = files.length === 0
+    ? 0
+    : (await git.raw(['--literal-pathspecs', 'diff', '--cached', '--no-renames', '--name-only', '-z', '--', ...files]))
+      .split('\0').filter(Boolean).length;
+  if (staged === 0 && !options.pushIfUnchanged && await nothingLeftToPush(git, spec)) {
     // Nothing to commit AND nothing to deliver. Those are two different things:
     // an earlier attempt may have committed exactly this content and failed to
     // push it, and a caller that reads "already present" drops the only durable
@@ -541,7 +567,7 @@ async function commitAndPushAt(
 
   // A retry may reconstruct the same tree as a previously committed
   // but unconfirmed push. It still needs a push, without an empty commit.
-  if (status.staged.length > 0) await commitSkippingHooks(git, message);
+  if (staged > 0) await commitSkippingHooks(git, message, files);
 
   // Push with fetch+rebase retry. Each member only writes <user>.yaml, so
   // rebase conflicts are effectively impossible; retries handle the pure
@@ -559,8 +585,13 @@ async function commitAndPushAt(
         log.debug(`[${spec.logTag}] push failed after ${attempt} attempts: ${(pushErr as Error).message}`);
         return { status: 'failed', reason: (pushErr as Error).message };
       }
+      // The commit took only `files`: anything else staged or modified would
+      // make git refuse to rebase, on this attempt and every later one.
+      let carried: string | null = null;
       try {
         await fetchTrackingRef(git, spec.branch);
+        carried = await snapshotDirtyTree(git);
+        if (carried) await git.raw(['reset', '--hard', 'HEAD']);
         await git.rebase([`origin/${spec.branch}`]);
       } catch (rebaseErr) {
         log.debug(`[${spec.logTag}] rebase failed, retrying: ${(rebaseErr as Error).message}`);
@@ -571,6 +602,7 @@ async function commitAndPushAt(
           // no rebase in progress
         }
       }
+      if (carried) await applyDirtySnapshot(spec, git, carried);
     }
   }
   return { status: 'failed', reason: `push did not land after ${MAX_PUSH_RETRIES} attempts` };
@@ -722,9 +754,15 @@ async function snapshotDirtyTree(git: SimpleGit): Promise<string | null> {
 
 async function applyDirtySnapshot(spec: BranchWorktreeSpec, git: SimpleGit, sha: string): Promise<void> {
   try {
-    await git.raw(['stash', 'apply', sha]);
+    // `--index` keeps what was staged staged. It refuses, touching nothing,
+    // when the staged changes no longer apply; then restore the files alone.
+    await git.raw(['stash', 'apply', '--index', sha]);
   } catch {
-    // apply conflicts leave UU paths; restoreConflictedFiles recovers them
+    try {
+      await git.raw(['stash', 'apply', sha]);
+    } catch {
+      // apply conflicts leave UU paths; restoreConflictedFiles recovers them
+    }
   }
   await restoreConflictedFiles(spec, git);
 }
@@ -890,6 +928,8 @@ export interface BranchWorktree {
   checkOwner(localConfig: LocalConfig): Promise<void>;
   /** True when the checkout there is not provably this repository's; reads git's files, runs no git. */
   isForeignByFiles(localConfig: LocalConfig): Promise<boolean>;
+  /** Where this repository has the branch checked out, the old `.teamai/` place included; creates nothing. */
+  registeredCheckout(localConfig: LocalConfig): Promise<string | null>;
 }
 
 /**
@@ -918,5 +958,6 @@ export function createBranchWorktree(spec: BranchWorktreeSpec): BranchWorktree {
     refresh: (localConfig, options) => refreshImpl(spec, localConfig, options),
     checkOwner: (localConfig) => checkOwnerImpl(spec, localConfig),
     isForeignByFiles: (localConfig) => isForeignByFilesImpl(spec, localConfig),
+    registeredCheckout: (localConfig) => registeredCheckoutImpl(spec, localConfig),
   };
 }

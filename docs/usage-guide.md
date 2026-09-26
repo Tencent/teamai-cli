@@ -407,7 +407,13 @@ a side-branch checkout removes the old one. An old checkout with uncommitted
 changes is kept, and the command names it: nothing is published to or recalled
 from that branch until you commit, move or delete those changes, and
 `recall maintenance` and `recall promote` stop. Queued learnings stay queued
-and recallable. Maintenance and promote also stop, naming the cause, when the
+and recallable. A learning an older `import --from-mr` (0.25.0 to 0.26.0-beta.3) wrote into a
+learnings checkout and never committed does not count: the next `pull` or
+`contribute` (or an `import --from-mr` that queues a learning) queues and publishes it (in the project's
+namespace, named as `contribute` names it) and says where it was, so the old
+checkout can go. If the branch or the queue already has it, by its `source_mr`
+or its content, it is deleted instead, and the message names the learning that
+has it. Maintenance and promote also stop, naming the cause, when the
 checkout cannot be created, such as when `teamai-learnings` is checked out
 somewhere else.
 A git-mode install of the same project keeps its checkouts at the same paths.
@@ -421,7 +427,12 @@ for the old repository (the next `recall` rebuilds them). Re-running `init`
 against another team repository of the same kind does the same, to
 `pending-learnings.<kind>-<repo>` (for example
 `pending-learnings.git-github.com-org-team-a`); the same repository written
-another way (with or without `.git`, SSH or HTTPS) keeps the queue. When the old
+another way (with or without `.git`, SSH or HTTPS) keeps the queue. Before it
+clones the other team repository, or reuses a clone of it an earlier `init` left, `init` moves the old `config.yaml` to
+`config.yaml.previous` beside it and says so: if `init` stops before it saves
+the new config, every command asks for `teamai init` instead of running the old
+team's config against the new clone. Run `init` again: it carries that config's
+settings (agents, tool roots) from `config.yaml.previous`. When the old
 install's `config.yaml` exists but cannot be read, nothing says whose the queue is:
 `init` moves it to `pending-learnings.unknown`, names that file and deletes the search indexes. A checkout that had
 not been upgraded yet keeps its old queue the same way: the next command there
@@ -1244,6 +1255,8 @@ teamai recall maintenance --update-quality
 After `--update-quality`, review the generated `.draft.md` files and rename them to `.md` to apply the updates.
 
 While another teamai command holds the learnings or reports checkout's lock, `recall maintenance` and `recall promote` exit 1 without writing anything (`The learnings checkout is locked: …`). Run them again when that command finishes.
+
+Maintenance and promote publish only the learnings they changed. A file in the learnings checkout that nobody committed stays out of their commit. When the publish cannot run or push (`Maintenance changes stay local for now: …`), the next `teamai pull` or `contribute` publishes the change, even with no learning queued.
 
 ### Promoting Learnings
 

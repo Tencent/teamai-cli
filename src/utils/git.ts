@@ -29,9 +29,14 @@ export function createGit(basePath?: string): SimpleGit {
  *
  * `--no-verify` is scoped to this git process. It does not write
  * `core.hooksPath` and does not change the user's ordinary `git commit`.
+ *
+ * With `paths`, commits those paths alone, taken literally, and leaves anything
+ * else staged in the checkout out of the commit and still staged. Without, it
+ * commits the whole index.
  */
-export function commitSkippingHooks(git: SimpleGit, message: string) {
-  return git.commit(message, { '--no-verify': null });
+export function commitSkippingHooks(git: SimpleGit, message: string, paths?: readonly string[]) {
+  if (paths === undefined) return git.commit(message, { '--no-verify': null });
+  return git.raw(['--literal-pathspecs', 'commit', '--no-verify', '-m', message, '--', ...paths]);
 }
 
 /**
