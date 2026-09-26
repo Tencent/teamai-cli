@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { log } from './utils/logger.js';
 import { deriveDispatchSessionId } from './utils/session-id.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
@@ -10,6 +10,7 @@ import { repoKeys, repoLabel } from './utils/repo-attribution.js';
 import { isProcessAlive, resolveMonitorPid } from './pid-monitor.js';
 import { normalizeToolName } from './utils/tool-names.js';
 import { redactWithEnv } from './utils/redact.js';
+import { acquireLock, releaseLock } from './update.js';
 import {
   DASHBOARD_COMPACTION_THRESHOLD,
   DASHBOARD_IDLE_TIMEOUT_MS,
@@ -1509,6 +1510,130 @@ export async function dataHomeKey(dataHome: string): Promise<string> {
   return createHash('sha256').update(norm.replace(/\/+$/, '')).digest('hex').slice(0, 16);
 }
 
+// ─── Events file lock (#804) ────────────────────────────
+//
+// appendEvent and compactEvents serialize on `<events file>.lock`, the
+// pattern the usage file took for the same lost-update race (#788, #803):
+// compaction's read-modify-write must not drop an append that lands while it
+// runs, and two compactions must not interleave their rewrites. The holder
+// first folds in the side files of appends that gave up waiting. A lock
+// whose owner is gone is reclaimed (acquireLock).
+
+/** A hook append waits at most ~250 ms for the events lock, inside its foreground budget. */
+const EVENTS_APPEND_LOCK_WAIT = { attempts: 10, delayMs: 25 };
+/** A compaction waits up to ~5 s for a peer's compaction to finish. */
+const EVENTS_REWRITE_LOCK_WAIT = { attempts: 100, delayMs: 50 };
+
+/**
+ * Run `fn` holding the lock every writer of the events file takes (#804): a
+ * hook append and the compaction rewrite. A rewrite then cannot drop an
+ * append made while it runs, and two rewrites cannot interleave. Returns
+ * false, without running `fn`, when the lock is still held after the wait.
+ */
+async function withEventsLock(
+  eventsPath: string,
+  wait: { attempts: number; delayMs: number },
+  fn: () => Promise<void>,
+): Promise<boolean> {
+  const lockPath = `${eventsPath}.lock`;
+  for (let i = 0; i < wait.attempts; i++) {
+    if (await acquireLock(lockPath)) {
+      try {
+        await foldPendingEvents(eventsPath);
+        await fn();
+      } finally {
+        await releaseLock(lockPath);
+      }
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, wait.delayMs));
+  }
+  return false;
+}
+
+/** Name prefix of the side files an append writes while the events lock is held. */
+function eventsPendingPrefix(eventsPath: string): string {
+  return `${path.basename(eventsPath, '.jsonl')}.pending-`;
+}
+
+/**
+ * Append the side files of appends that gave up on the lock to the events
+ * file, then remove them — in the events' own time order, not readdir's
+ * arbitrary order, so a side file that outlived several newer appends does
+ * not land after them in the file. Each side file holds one whole line; one
+ * without its newline is still being written and waits for the next holder.
+ * A side file whose id the file already holds was folded by a holder that
+ * died or could not remove it, so it is not appended again; identical events
+ * keep their own ids and lines.
+ */
+async function foldPendingEvents(eventsPath: string): Promise<void> {
+  const dir = path.dirname(eventsPath);
+  const prefix = eventsPendingPrefix(eventsPath);
+  const names = await fs.promises.readdir(dir).catch(() => []);
+  const pending: Array<{ pendingPath: string; content: string; timestamp: number }> = [];
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith('.jsonl')) continue;
+    const pendingPath = path.join(dir, name);
+    try {
+      const content = await fs.promises.readFile(pendingPath, 'utf-8');
+      if (!content.endsWith('\n')) continue;
+      const timestamp = Date.parse(pendingTimestampOf(content));
+      pending.push({ pendingPath, content, timestamp: Number.isNaN(timestamp) ? 0 : timestamp });
+    } catch (e) {
+      log.debug(`dashboard: could not fold ${pendingPath} into ${eventsPath}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  pending.sort((a, b) => a.timestamp - b.timestamp);
+  let folded: Set<string> | undefined;
+  for (const { pendingPath, content } of pending) {
+    try {
+      const id = pendingIdOf(content);
+      folded ??= new Set(
+        (await fs.promises.readFile(eventsPath, 'utf-8').catch(() => '')).split('\n').map(pendingIdOf).filter((i) => i !== undefined),
+      );
+      if (id === undefined || !folded.has(id)) {
+        await fs.promises.appendFile(eventsPath, content, 'utf-8');
+        if (id !== undefined) folded.add(id);
+      }
+      await fs.promises.rm(pendingPath, { force: true });
+    } catch (e) {
+      log.debug(`dashboard: could not fold ${pendingPath} into ${eventsPath}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+}
+
+/** The timestamp of the event a side file holds, for folding side files in time order. */
+function pendingTimestampOf(content: string): string {
+  try {
+    const { timestamp } = JSON.parse(content) as { timestamp?: unknown };
+    return typeof timestamp === 'string' ? timestamp : '';
+  } catch {
+    return '';
+  }
+}
+
+/** The id a side file gave its line, if the line has one. */
+function pendingIdOf(line: string): string | undefined {
+  if (!line.includes('"pendingId"')) return undefined;
+  try {
+    const { pendingId } = JSON.parse(line) as { pendingId?: unknown };
+    return typeof pendingId === 'string' ? pendingId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Remove the temp copies a killed compaction left beside `target`; only the lock holder writes one. */
+async function removeOrphanTemps(target: string): Promise<void> {
+  const dir = path.dirname(target);
+  const prefix = `${path.basename(target)}.`;
+  const names = await fs.promises.readdir(dir).catch(() => []);
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !/^\d+\.[0-9a-f]{12}\.tmp$/.test(name.slice(prefix.length))) continue;
+    await fs.promises.rm(path.join(dir, name), { force: true }).catch(() => undefined);
+  }
+}
+
 /**
  * Append a DashboardEvent to the events JSONL file.
  * Silently fails on I/O errors to avoid disrupting the AI session.
@@ -1518,13 +1643,27 @@ export async function appendEvent(event: DashboardEvent): Promise<void> {
     const eventsPath = getEventsPath();
     await ensureDir(path.dirname(eventsPath));
     const line = JSON.stringify(event) + '\n';
-    await fs.promises.appendFile(eventsPath, line, 'utf-8');
     const detail = event.toolName
       ? ` [tool=${event.toolName}]`
       : event.promptSummary
         ? ` [prompt=${event.promptSummary}]`
         : '';
-    log.debug(`dashboard: recorded ${event.type} for session ${event.sessionId.slice(0, 16)}${detail}`);
+    const summary = `dashboard: recorded ${event.type} for session ${event.sessionId.slice(0, 16)}${detail}`;
+    if (await withEventsLock(eventsPath, EVENTS_APPEND_LOCK_WAIT, () => fs.promises.appendFile(eventsPath, line, 'utf-8'))) {
+      log.debug(summary);
+      return;
+    }
+    // The lock is still held: record the event in a side file of its own for
+    // the next lock holder to fold in, rather than race a rewrite (#804).
+    // It holds what the events file holds, so it gets no wider mode than that
+    // file (the umask can only narrow it); owner-only while there is no file
+    // yet. The id lets a fold tell whether this very line is already in the
+    // file; readers drop it (readEventsRaw), so it never leaves this machine.
+    const pendingId = randomUUID();
+    const pendingPath = path.join(path.dirname(eventsPath), `${eventsPendingPrefix(eventsPath)}${pendingId}.jsonl`);
+    const mode = await fs.promises.stat(eventsPath).then((s) => s.mode & 0o777, () => 0o600);
+    await fs.promises.writeFile(pendingPath, JSON.stringify({ ...event, pendingId }) + '\n', { encoding: 'utf-8', flag: 'wx', mode });
+    log.debug(`${summary} (in ${path.basename(pendingPath)}; ${path.basename(eventsPath)}.lock is held)`);
   } catch (e) {
     log.error(`dashboard: failed to write event: ${(e as Error).message}`);
   }
@@ -1533,7 +1672,14 @@ export async function appendEvent(event: DashboardEvent): Promise<void> {
 /**
  * Read raw events from the JSONL file, in file (append) order. Skips corrupted
  * lines. Callers that must preserve the on-disk stream verbatim (e.g. compaction)
- * use this; everything else goes through {@link readEvents}, which also dedupes.
+ * use this; everything else goes through {@link readEvents}, which also dedupes
+ * and drops a folded side file's `pendingId`.
+ *
+ * A folded side file's id stays in the file (and in every rewrite of it,
+ * compaction included) until the side file itself is gone — a fold that could
+ * not remove its side file must stay recognizable, or the next holder would
+ * append the event a second time. The usage file's rewrite keeps the id the
+ * same way (#788).
  */
 async function readEventsRaw(filePath: string): Promise<DashboardEvent[]> {
   try {
@@ -1623,10 +1769,16 @@ export function dedupeEvents(events: DashboardEvent[]): DashboardEvent[] {
 
 /**
  * Read all events from the JSONL file, cross-tool-deduped. Skips corrupted lines.
+ * A folded side file's `pendingId` is machine-local bookkeeping (foldPendingEvents
+ * keeps it in the raw file so a surviving side file is never appended twice) and
+ * never reaches a reader.
  */
 export async function readEvents(eventsPath?: string): Promise<DashboardEvent[]> {
   const filePath = eventsPath ?? getEventsPath();
-  return dedupeEvents(await readEventsRaw(filePath));
+  return dedupeEvents(await readEventsRaw(filePath)).map((event) => {
+    delete (event as DashboardEvent & { pendingId?: unknown }).pendingId;
+    return event;
+  });
 }
 
 // ─── Session state rebuild ──────────────────────────────
@@ -2040,35 +2192,72 @@ export function aggregateSessionInterventions(
 export async function compactEvents(eventsPath?: string): Promise<void> {
   const filePath = eventsPath ?? getEventsPath();
   try {
-    const content = await fs.promises.readFile(filePath, 'utf-8');
-    const lines = content.split('\n').filter(l => l.trim());
+    // Cheap lock-free pre-check: one of these runs detached after every
+    // append, and nearly always finds nothing to do. Below the threshold with
+    // no side files to fold it must not create the lock at all — the state it
+    // would lock may be a sandbox another test (or a rolling state dir) is
+    // deleting concurrently.
+    const pre = await fs.promises.readFile(filePath, 'utf-8').catch(() => null);
+    if (pre === null) return;
+    const preLines = pre.split('\n').filter(l => l.trim());
+    const hasSideFiles = await fs.promises.readdir(path.dirname(filePath)).then(
+      (names) => names.some((n) => n.startsWith(eventsPendingPrefix(filePath)) && n.endsWith('.jsonl')),
+      () => false,
+    );
+    if (preLines.length < DASHBOARD_COMPACTION_THRESHOLD && !hasSideFiles) return;
 
-    if (lines.length < DASHBOARD_COMPACTION_THRESHOLD) return;
+    const locked = await withEventsLock(filePath, EVENTS_REWRITE_LOCK_WAIT, async () => {
+      // Replace the file itself, not a symlink to it.
+      const target = await fs.promises.realpath(filePath).catch(() => filePath);
+      await removeOrphanTemps(target);
+      const content = await fs.promises.readFile(target, 'utf-8');
+      const lines = content.split('\n').filter(l => l.trim());
 
-    // Compaction rewrites the file, so it must preserve raw (append-order,
-    // un-deduped) events — dedup is a read-time view, not a disk mutation.
-    // Dedup never changes the active-session set, so activeIds is identical.
-    const events = await readEventsRaw(filePath);
-    const activeSessions = rebuildSessions(events);
-    const activeIds = new Set(activeSessions.map(s => s.sessionId));
-    const monitored = new Map<string, number>();
-    for (const e of events) {
-      if (e.type === 'session_start' && typeof e.monitorPid === 'number') monitored.set(e.sessionId, e.monitorPid);
-    }
-    for (const [sessionId, pid] of monitored) {
-      if (isProcessAlive(pid)) activeIds.add(sessionId);
-    }
+      if (lines.length < DASHBOARD_COMPACTION_THRESHOLD) return;
 
-    // Keep only events for active sessions
-    const kept = events.filter(e => activeIds.has(e.sessionId));
-    const compacted = kept.map(e => JSON.stringify(e)).join('\n') + '\n';
+      // Compaction rewrites the file, so it must preserve raw (append-order,
+      // un-deduped) events — dedup is a read-time view, not a disk mutation.
+      // Dedup never changes the active-session set, so activeIds is identical.
+      const events = await readEventsRaw(target);
+      // Classify sessions in time order, not raw file order: a side file that
+      // outlived newer appends can sit after them in the file even though it
+      // folds in time order, and every reader rebuilds sessions from
+      // time-sorted events (dedupeEvents sorts). Classifying from raw order
+      // could re-mark a live session stopped from a late older event past its
+      // stopped-display window, and the rewrite would drop its events.
+      const chronological = [...events].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+      const activeSessions = rebuildSessions(chronological);
+      const activeIds = new Set(activeSessions.map(s => s.sessionId));
+      const monitored = new Map<string, number>();
+      for (const e of chronological) {
+        if (e.type === 'session_start' && typeof e.monitorPid === 'number') monitored.set(e.sessionId, e.monitorPid);
+      }
+      for (const [sessionId, pid] of monitored) {
+        if (isProcessAlive(pid)) activeIds.add(sessionId);
+      }
 
-    // Atomic write: write to temp, then rename
-    const tmpPath = filePath + '.tmp';
-    await fs.promises.writeFile(tmpPath, compacted, 'utf-8');
-    await fs.promises.rename(tmpPath, filePath);
+      // Keep only events for active sessions
+      const kept = events.filter(e => activeIds.has(e.sessionId));
+      const compacted = kept.map(e => JSON.stringify(e)).join('\n') + '\n';
 
-    log.debug(`dashboard: compacted ${lines.length} → ${kept.length} events`);
+      // Atomic write: write to temp with the file's mode, then rename. The
+      // lock makes the temp name ours; a killed compaction's copy is an
+      // orphan a later one removes (removeOrphanTemps).
+      const mode = await fs.promises.stat(target).then((s) => s.mode & 0o7777, () => 0o600);
+      const tmpPath = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+      try {
+        await fs.promises.writeFile(tmpPath, compacted, { encoding: 'utf-8', mode });
+        await fs.promises.rename(tmpPath, target);
+      } catch (e) {
+        await fs.promises.rm(tmpPath, { force: true }).catch(() => undefined);
+        throw e;
+      }
+
+      log.debug(`dashboard: compacted ${lines.length} → ${kept.length} events`);
+    });
+    // An opportunistic cleanup: leave the file as it is and let the next
+    // compaction try again, rather than reporting a lost race as a failure.
+    if (!locked) log.debug(`dashboard: ${path.basename(filePath)}.lock is still held after 5 s, so compaction is skipped`);
   } catch (e) {
     log.error(`dashboard: compaction failed: ${(e as Error).message}`);
   }

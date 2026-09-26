@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -2143,6 +2144,225 @@ describe('compactEvents', () => {
 
     const kept = fs.readFileSync(eventsPath, 'utf-8').split('\n').filter(Boolean).map((line) => JSON.parse(line).sessionId);
     expect(kept).toEqual(['pid-live', 'pid-live']);
+  });
+});
+
+// ─── events file lock (#804) ────────────────────────────
+
+describe('events file lock (#804)', () => {
+  const eventsPath = () => path.join(tmpDir, '.teamai', 'dashboard', 'events.jsonl');
+  const event = (sessionId: string, extra: Partial<DashboardEvent> = {}): DashboardEvent =>
+    ({ type: 'session_start', timestamp: '2026-01-01T00:00:00Z', sessionId, tool: 'claude', ...extra });
+  const ensureEventsDir = async () => fs.promises.mkdir(path.dirname(eventsPath()), { recursive: true });
+  const ids = async () => (await readEvents(eventsPath())).map((e) => e.sessionId);
+  const writeLock = async (pid: number) => {
+    await ensureEventsDir();
+    await fs.promises.writeFile(
+      `${eventsPath()}.lock`,
+      JSON.stringify({ pid, startedAt: '2026-01-01T00:00:00Z', owner: 'other' }),
+      'utf-8',
+    );
+  };
+  const pendingFiles = async () =>
+    (await fs.promises.readdir(path.dirname(eventsPath()))).filter((n) => n.startsWith('events.pending-'));
+  // The seed every compaction test needs: past the threshold, and every
+  // session alive at its own monitor (process.pid), so compaction keeps it.
+  const seedActive = async () => {
+    await ensureEventsDir();
+    const line = (sessionId: string) =>
+      JSON.stringify({ type: 'session_start', timestamp: '2026-01-01T00:00:00Z', sessionId, tool: 'copilot', monitorPid: process.pid });
+    await fs.promises.writeFile(eventsPath(), Array.from({ length: 5_000 }, (_, i) => line(`filler-${i}`)).join('\n') + '\n', 'utf-8');
+  };
+
+  it('reclaims a lock whose owner is gone', async () => {
+    await writeLock(spawnSync(process.execPath, ['-e', '']).pid ?? 0);
+
+    await appendEvent(event('a'));
+
+    expect(await ids()).toEqual(['a']);
+    expect(fs.existsSync(`${eventsPath()}.lock`)).toBe(false);
+  });
+
+  it('records an event beside the file within the hook budget while the lock stays held, and folds it in later', async () => {
+    await appendEvent(event('a'));
+    await writeLock(process.pid);
+
+    const started = Date.now();
+    await appendEvent(event('b'));
+
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(await ids()).toEqual(['a']);
+    expect(await pendingFiles()).toHaveLength(1);
+
+    await fs.promises.rm(`${eventsPath()}.lock`);
+    await appendEvent(event('c'));
+
+    expect(await ids()).toEqual(['a', 'b', 'c']);
+    expect(await pendingFiles()).toEqual([]);
+  });
+
+  it('keeps an append that lands between compaction\'s read and its rename', async () => {
+    await seedActive();
+
+    // While compaction holds its snapshot, an append lands. The lock makes the
+    // append record a side file the next holder folds in, so the rewrite
+    // cannot drop it, as it did before the lock (#804). The append lands after
+    // compaction's second read under the lock — the snapshot the rewrite is
+    // built from — so the old read-all-then-overwrite lost it at the rename.
+    // Reads are counted only while the lock file exists: compaction's
+    // lock-free pre-check read runs before it, and the realpath'd target it
+    // reads under the lock differs from eventsPath() on macOS (/private
+    // prefix), so both are matched by file name.
+    const realReadFile = fs.promises.readFile;
+    let reads = 0;
+    const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(async (file, options) => {
+      const content = await realReadFile(file, options);
+      if (path.basename(String(file)) === 'events.jsonl' && fs.existsSync(`${eventsPath()}.lock`) && ++reads === 2) {
+        await appendEvent(event('live-b', { monitorPid: process.pid }));
+      }
+      return content;
+    });
+    try {
+      await compactEvents(eventsPath());
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The next holder folds the side file in; the event was never lost.
+    await appendEvent(event('live-c', { monitorPid: process.pid }));
+
+    const sessionIds = await ids();
+    expect(sessionIds).toContain('live-b');
+    expect(sessionIds).toContain('live-c');
+    expect(await pendingFiles()).toEqual([]);
+  });
+
+  it('keeps a folded side file recognizable through a compaction, and its id out of readers', async () => {
+    await seedActive();
+    await writeLock(process.pid);
+    await appendEvent(event('live-b', { monitorPid: process.pid }));
+    expect(await pendingFiles()).toHaveLength(1);
+    await fs.promises.rm(`${eventsPath()}.lock`);
+
+    await compactEvents(eventsPath());
+
+    // The rewrite keeps the folded line's id, so a side file that survived its
+    // fold (its rm failed) is still recognized and never appended twice.
+    const content = fs.readFileSync(eventsPath(), 'utf-8');
+    expect(content).toContain('live-b');
+    expect(content).toContain('pendingId');
+    const events = await readEvents(eventsPath());
+    expect(events.some((e) => 'pendingId' in e)).toBe(false);
+    expect(await pendingFiles()).toEqual([]);
+  });
+
+  it('does not append a surviving side file twice across a compaction', async () => {
+    await seedActive();
+    await appendEvent(event('a', { monitorPid: process.pid }));
+    await writeLock(process.pid);
+    await appendEvent(event('b', { monitorPid: process.pid }));
+    await fs.promises.rm(`${eventsPath()}.lock`);
+    // The fold appends b but cannot remove its side file; a compaction runs
+    // while it survives.
+    const realRm = fs.promises.rm;
+    const spy = vi.spyOn(fs.promises, 'rm').mockImplementation(async (file, options) => {
+      if (String(file).includes('.pending-')) throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      return realRm(file, options);
+    });
+    try {
+      await appendEvent(event('c', { monitorPid: process.pid }));
+      await compactEvents(eventsPath());
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await pendingFiles()).toHaveLength(1);
+
+    await appendEvent(event('d', { monitorPid: process.pid }));
+
+    expect(await ids()).toEqual([...Array.from({ length: 5_000 }, (_, i) => `filler-${i}`), 'a', 'b', 'c', 'd']);
+    expect(await pendingFiles()).toEqual([]);
+  });
+
+  it('classifies sessions in time order, so a late older event cannot stop a live one', async () => {
+    await seedActive();
+    // A session whose newer prompt sits before an older end in the raw file —
+    // the placement a late-folding side file can produce. Classified in raw
+    // file order the session reads as long stopped and the rewrite would drop
+    // its events; in time order it is still running.
+    const now = new Date().toISOString();
+    const old = new Date(Date.now() - 3_600_000).toISOString();
+    const line = (o: Record<string, unknown>) => JSON.stringify(o);
+    await fs.promises.appendFile(eventsPath(), [
+      line({ type: 'prompt_submit', timestamp: now, sessionId: 'x', tool: 'claude' }),
+      line({ type: 'session_end', timestamp: old, sessionId: 'x', tool: 'claude' }),
+    ].join('\n') + '\n', 'utf-8');
+
+    await compactEvents(eventsPath());
+
+    const kept = fs.readFileSync(eventsPath(), 'utf-8').split('\n').filter(Boolean)
+      .map((l) => JSON.parse(l) as { sessionId: string })
+      .filter((e) => e.sessionId === 'x');
+    expect(kept).toHaveLength(2);
+  });
+
+  it('folds a side file even when the file is below the compaction threshold', async () => {
+    await appendEvent(event('a'));
+    await writeLock(process.pid);
+    await appendEvent(event('b'));
+    await fs.promises.rm(`${eventsPath()}.lock`);
+
+    await compactEvents(eventsPath());
+
+    expect(await ids()).toEqual(['a', 'b']);
+    expect(await pendingFiles()).toEqual([]);
+    expect(fs.existsSync(`${eventsPath()}.lock`)).toBe(false);
+  });
+
+  it('folds a side file once when it outlives its append', async () => {
+    await appendEvent(event('a'));
+    await writeLock(process.pid);
+    await appendEvent(event('b'));
+    await fs.promises.rm(`${eventsPath()}.lock`);
+    // The side file cannot be removed once its event is in the file (or the holder dies there).
+    const realRm = fs.promises.rm;
+    const spy = vi.spyOn(fs.promises, 'rm').mockImplementation(async (file, options) => {
+      if (String(file).includes('.pending-')) throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      return realRm(file, options);
+    });
+    try {
+      await appendEvent(event('c'));
+    } finally {
+      spy.mockRestore();
+    }
+
+    await appendEvent(event('d'));
+
+    expect(await ids()).toEqual(['a', 'b', 'c', 'd']);
+    expect(await pendingFiles()).toEqual([]);
+  });
+
+  it('keeps two identical events recorded in side files at once', async () => {
+    await writeLock(process.pid);
+    await Promise.all([appendEvent(event('x')), appendEvent(event('x'))]);
+    expect(await pendingFiles()).toHaveLength(2);
+    await fs.promises.rm(`${eventsPath()}.lock`);
+
+    await appendEvent(event('y'));
+
+    expect(await ids()).toEqual(['x', 'x', 'y']);
+    expect(await pendingFiles()).toEqual([]);
+  });
+
+  it('keeps the side file id out of what readers see', async () => {
+    await writeLock(process.pid);
+    await appendEvent(event('a'));
+    await fs.promises.rm(`${eventsPath()}.lock`);
+    await appendEvent(event('b'));
+    expect(await fs.promises.readFile(eventsPath(), 'utf-8')).toContain('"pendingId"');
+
+    const events = await readEvents(eventsPath());
+    expect(events.map((e) => e.sessionId)).toEqual(['a', 'b']);
+    expect(events.some((e) => 'pendingId' in e)).toBe(false);
   });
 });
 
