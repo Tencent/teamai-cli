@@ -58,7 +58,7 @@ export function extractSwift(files: CodeCollectedFile[]): CodeFact[] {
       }
 
       // --- Errors ---
-      if (typeDecl && /Error$/u.test(typeDecl[2])) {
+      if (typeDecl && typeDecl[2].endsWith("Error")) {
         facts.push(makeFact("error", typeDecl[2], file.relativePath, lineNumber, line, "INFERRED"));
       }
 
