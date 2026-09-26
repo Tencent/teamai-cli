@@ -800,6 +800,27 @@ what the machine had reported by then, never from another scope's later report.
 The seed holds a session's whole total, so a session still running at the
 upgrade goes on from the reported total, as before.
 
+Every writer of `events.jsonl` — each hook's append and the periodic
+compaction — takes `events.jsonl.lock` beside it (#804), the pattern the usage
+file took for the same lost update (#803): compaction's
+read → filter → temp-file → rename cannot drop an append that lands while it
+runs, and two compactions cannot interleave their rewrites. A hook append waits
+up to ~250 ms, inside its foreground budget, and one that gives up records its
+line in an `events.pending-<uuid>.jsonl` side file, with the file's mode, that
+the next lock holder folds into the file before it writes — so an event is
+late, never gone. The line carries a `pendingId`, so a fold never appends a
+side file twice (a holder that died after appending it but before removing it
+leaves it for the next one), two side files of identical events are both kept,
+and no reader and no compacted file keeps the id: `readEventsRaw` drops it, and
+a compaction rewrites the line without it. A side file without its trailing
+newline is still being written and waits for the next holder. A compaction
+waits up to ~5 s for a peer's rewrite, and skips — leaving the file as it is
+for the next compaction — when a live holder outlasts the wait; a lock whose
+owner is gone is reclaimed, and a rewrite's temp copy left by a killed
+compaction (`events.jsonl.<pid>.<hex>.tmp`) is removed by the next one. The
+side files and the lock live in `~/.teamai/dashboard/` beside the log, which
+no repository tracks, so nothing needs adding to a workspace `.gitignore`.
+
 **`anchor` on save.** Previously only migration wrote a partition's `anchor`
 reverse-lookup file, so freshly-init'd partitions had none. `saveLocalConfigForScope`
 now writes it whenever the config lands in a partition (via the shared
