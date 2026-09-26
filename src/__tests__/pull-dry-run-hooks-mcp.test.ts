@@ -181,6 +181,11 @@ describe('pull --dry-run reports hooks and MCP entry warnings', () => {
     await pull({ dryRun: true, force: true });
 
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(DEPRECATED_ROLES_WARNING));
+    // The debug trail follows the same preview rule: a dry run must not log a
+    // reconcile that did not happen.
+    const debugLines = vi.mocked(log.debug).mock.calls.map(([m]) => String(m));
+    expect(debugLines.some((l) => l.includes('Would apply 1 team hook(s)'))).toBe(true);
+    expect(debugLines.some((l) => l.includes('Reconciled'))).toBe(false);
   });
 
   it('writes no hook settings or manifest on a dry run', async () => {
@@ -201,6 +206,8 @@ describe('pull --dry-run reports hooks and MCP entry warnings', () => {
     await pull({ force: true });
 
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(DEPRECATED_ROLES_WARNING));
+    const debugLines = vi.mocked(log.debug).mock.calls.map(([m]) => String(m));
+    expect(debugLines.some((l) => l.includes('Reconciled 1 team hook(s)'))).toBe(true);
   });
 
   it('forwards dryRun to the MCP reconcile so its writes are skipped too', async () => {

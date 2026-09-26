@@ -2125,7 +2125,10 @@ async function reconcileHooksAllScopes(
         dryRun: options.dryRun,
       });
       if (reconciled.ok && reconciled.defs.length > 0) {
-        log.debug(`[${localConfig.scope}] Reconciled ${reconciled.defs.length} team hook(s)`);
+        // Same preview rule as the user-facing line: a dry run resolved and
+        // reported the entries but wrote nothing, so the debug trail must not
+        // claim a reconcile that did not happen.
+        log.debug(`[${localConfig.scope}] ${options.dryRun ? 'Would apply' : 'Reconciled'} ${reconciled.defs.length} team hook(s)`);
       }
     } catch (e) {
       log.debug(`[${localConfig.scope}] Hook reconcile skipped: ${(e as Error).message}`);
