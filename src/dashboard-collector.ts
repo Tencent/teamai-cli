@@ -2160,6 +2160,20 @@ export function aggregateSessionInterventions(
 export async function compactEvents(eventsPath?: string): Promise<void> {
   const filePath = eventsPath ?? getEventsPath();
   try {
+    // Cheap lock-free pre-check: one of these runs detached after every
+    // append, and nearly always finds nothing to do. Below the threshold with
+    // no side files to fold it must not create the lock at all — the state it
+    // would lock may be a sandbox another test (or a rolling state dir) is
+    // deleting concurrently.
+    const pre = await fs.promises.readFile(filePath, 'utf-8').catch(() => null);
+    if (pre === null) return;
+    const preLines = pre.split('\n').filter(l => l.trim());
+    const hasSideFiles = await fs.promises.readdir(path.dirname(filePath)).then(
+      (names) => names.some((n) => n.startsWith(eventsPendingPrefix(filePath)) && n.endsWith('.jsonl')),
+      () => false,
+    );
+    if (preLines.length < DASHBOARD_COMPACTION_THRESHOLD && !hasSideFiles) return;
+
     const locked = await withEventsLock(filePath, EVENTS_REWRITE_LOCK_WAIT, async () => {
       // Replace the file itself, not a symlink to it.
       const target = await fs.promises.realpath(filePath).catch(() => filePath);

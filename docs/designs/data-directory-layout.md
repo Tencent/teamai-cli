@@ -800,11 +800,16 @@ what the machine had reported by then, never from another scope's later report.
 The seed holds a session's whole total, so a session still running at the
 upgrade goes on from the reported total, as before.
 
-Every writer of `events.jsonl` — each hook's append and the periodic
-compaction — takes `events.jsonl.lock` beside it (#804), the pattern the usage
+Every writer that may modify `events.jsonl` — each hook's append, and a
+compaction that finds the log past its threshold or side files to fold —
+takes `events.jsonl.lock` beside it (#804), the pattern the usage
 file took for the same lost update (#803): compaction's
 read → filter → temp-file → rename cannot drop an append that lands while it
-runs, and two compactions cannot interleave their rewrites. A hook append waits
+runs, and two compactions cannot interleave their rewrites. A compaction
+whose log is below the threshold and holds no side files does the common
+case lock-free: one read, and it returns without touching the lock, so a
+state directory that is being torn down concurrently never meets a lock
+creation. A hook append waits
 up to ~250 ms, inside its foreground budget, and one that gives up records its
 line in an `events.pending-<uuid>.jsonl` side file, with the file's mode, that
 the next lock holder folds into the file before it writes — so an event is
