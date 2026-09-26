@@ -5,6 +5,7 @@ import { type CodeFact } from "../code-extractors.js";
 import { structuralEdgesToCodeFacts, unresolvedImportsToGaps } from "./adapt-code-facts.js";
 import { buildImportBindingsForFile, callResolutionWeight, resolveCallSites } from "./call-resolver.js";
 import { buildFileExistenceChecker, resolveImportSpecifier } from "./import-resolver.js";
+import { buildSwiftModuleSymbolIndex, findSwiftModuleSymbol } from "./module-scope.js";
 import { ensureAstReady } from "./parser-registry.js";
 import type { AstExtractionGap, AstImplementsSite, StructuralEdge, StructuralGraphResult } from "./types.js";
 import { isAstParseableFile, walkFile } from "./walk.js";
@@ -85,6 +86,11 @@ export async function extractStructuralGraph(
     symbolsByFile.set(sym.file, list);
   }
 
+  // Swift resolves symbols module-wide, not file-wide: two files under the same
+  // SwiftPM target see each other with no import statement. Index the module
+  // scopes once so conformance and call resolution can fall back to them.
+  const swiftModules = buildSwiftModuleSymbolIndex(symbols);
+
   const resolvedImports = new Map<string, Awaited<ReturnType<typeof resolveImportSpecifier>>>();
   const resolvedKeys = new Set<string>();
 
@@ -117,7 +123,7 @@ export async function extractStructuralGraph(
 
   gaps.push(...unresolvedImportsToGaps(imports.filter((i) => !i.isTypeOnly), resolvedKeys));
 
-  const resolvedCalls = resolveCallSites(callSites, imports, resolvedImports, symbolsByFile);
+  const resolvedCalls = resolveCallSites(callSites, imports, resolvedImports, symbolsByFile, swiftModules);
 
   for (const call of resolvedCalls) {
     if (!call.resolvedTargetFile || call.resolvedTargetFile === call.fromFile) {
@@ -143,8 +149,10 @@ export async function extractStructuralGraph(
   }
 
   // IMPLEMENTS edges: resolve each implemented interface name to its defining
-  // file via (a) same-file interface symbols or (b) imported bindings. Names
-  // that resolve to neither (e.g. ambient/global types) are skipped.
+  // file via (a) same-file interface symbols, (b) imported bindings, or (c) for
+  // Swift, a declaration elsewhere in the same module — a conformance to a
+  // protocol of the same module needs no import. Names that resolve to none of
+  // these (e.g. ambient/global types) are skipped.
   for (const site of implementsSites) {
     const bindings = buildImportBindingsForFile(site.fromFile, imports, resolvedImports, symbolsByFile);
     const localInterfaces = symbolsByFile.get(site.fromFile) ?? [];
@@ -154,7 +162,9 @@ export async function extractStructuralGraph(
       if (sameFile) {
         targetFile = site.fromFile;
       } else {
-        targetFile = bindings.localToFile.get(ifaceName);
+        targetFile =
+          bindings.localToFile.get(ifaceName) ??
+          findSwiftModuleSymbol(swiftModules, site.fromFile, ifaceName, ["interface"])?.file;
       }
       if (!targetFile) {
         continue;
