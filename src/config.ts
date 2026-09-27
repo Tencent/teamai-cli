@@ -17,7 +17,7 @@ import {
   getStatePath,
   getDataHome,
 } from './types.js';
-import { readFileSafe, readJson, writeFileAtomic, writeJson, expandHome, pathExists } from './utils/fs.js';
+import { readFileSafe, readJson, writeFileAtomic, writeJsonAtomic, expandHome, pathExists } from './utils/fs.js';
 import { resolveAnchors } from './utils/git.js';
 import { getUserHome } from './utils/home.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
@@ -142,7 +142,10 @@ export async function loadState(): Promise<State> {
  * Save the local state
  */
 export async function saveState(state: State): Promise<void> {
-  await writeJson(expandHome(getUserStatePath()), state);
+  // state.json holds the pull/push bases (lastPullRev, per-checkout targets).
+  // A torn in-place write reads back as parse({}) on the next run, which drops
+  // every base and re-opens the stale-base overwrites #827 closed (#854).
+  await writeJsonAtomic(expandHome(getUserStatePath()), state);
 }
 
 /**
@@ -298,7 +301,7 @@ export async function loadStateForScope(localConfig: LocalConfig): Promise<State
  */
 export async function saveStateForScope(state: State, localConfig: LocalConfig): Promise<void> {
   const statePath = getStatePath(localConfig);
-  await writeJson(expandHome(statePath), state);
+  await writeJsonAtomic(expandHome(statePath), state);
 }
 
 /**

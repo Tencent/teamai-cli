@@ -2,7 +2,7 @@ import path from 'node:path';
 import { readdir, rm } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import matter from 'gray-matter';
-import { readFileSafe, readJson, writeJson, listFiles, listFilesRecursive, listDirs, pathExists } from './fs.js';
+import { readFileSafe, readJson, writeJsonAtomic, listFiles, listFilesRecursive, listDirs, pathExists } from './fs.js';
 import { tokenize, wordSegments, MAX_TOKENIZE_CHARS } from './tokenizer.js';
 import { log } from './logger.js';
 import {
@@ -808,7 +808,9 @@ export async function buildIndex(
     df,
   };
 
-  await writeJson(targetPath, index);
+  // A torn in-place write parses as null on the next loadIndex, which silently
+  // wipes recall until the next rebuild — same shape as the votes file (#854).
+  await writeJsonAtomic(targetPath, index);
 
   if (elapsed > 2000) {
     log.warn(`Search index build took ${elapsed}ms — consider incremental updates for large knowledge bases`);
