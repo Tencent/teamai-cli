@@ -29,6 +29,9 @@ vi.mock('../utils/reports-branch.js', async (importOriginal) => ({
   updateReports: vi.fn(),
 }));
 
+import { contribute } from '../contribute.js';
+import { loadLocalConfigForScope } from '../config.js';
+import { recall } from '../recall.js';
 import { rolesSet } from '../roles-cmd.js';
 import { tagsSubscribe, tagsUnsubscribe } from '../tags.js';
 import { updateReports } from '../utils/reports-branch.js';
@@ -179,5 +182,58 @@ describe.each(FIXTURES)('--dry-run on %s', (_fixture, setup) => {
     expect(snapshotTree(root)).toEqual(before);
     expect(updateReports).not.toHaveBeenCalled();
     expect(log.info).toHaveBeenCalledWith(expect.stringContaining('[dry-run] Would'));
+  });
+});
+
+describe('--dry-run through the loaders the commands share (#850)', () => {
+  const originalCwd = process.cwd();
+  const roots: string[] = [];
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    process.chdir(originalCwd);
+    for (const dir of roots.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function legacyRoot(): { root: string; configPath: string } {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dry-run-loader-'));
+    roots.push(root);
+    const home = path.join(root, 'home');
+    fs.mkdirSync(path.join(home, '.teamai'), { recursive: true });
+    vi.stubEnv('HOME', home);
+    process.chdir(setupLegacyRoleConfig(root));
+    return { root, configPath: path.join(home, '.teamai', 'config.yaml') };
+  }
+
+  it('recall --dry-run writes no file: the user scope loads through the flag (#850)', async () => {
+    const { root } = legacyRoot();
+    const before = snapshotTree(root);
+    await recall('dry run probe', { dryRun: true });
+    expect(snapshotTree(root)).toEqual(before);
+  });
+
+  it('contribute --scope user --dry-run writes no file on a config pending the role migration (#850)', async () => {
+    const { root } = legacyRoot();
+    // In the tree before the snapshot, so the run itself adds nothing.
+    const file = path.join(process.cwd(), 'note.md');
+    fs.writeFileSync(file, 'Learned: a dry run must not migrate the teamai config.\n');
+    const before = snapshotTree(root);
+    await contribute({ file, scope: 'user', dryRun: true });
+    expect(snapshotTree(root)).toEqual(before);
+  });
+
+  it('the loader previews the legacy role migration under --dry-run and writes nothing (#850)', async () => {
+    const { configPath } = legacyRoot();
+    const loaded = await loadLocalConfigForScope('user', undefined, { dryRun: true });
+    expect(loaded?.primaryRole).toBe('hai');
+    expect(fs.readFileSync(configPath, 'utf-8')).not.toContain('primaryRole');
+  });
+
+  it('the loader still migrates in place when the caller passes nothing, as before (#850)', async () => {
+    const { configPath } = legacyRoot();
+    const loaded = await loadLocalConfigForScope('user');
+    expect(loaded?.primaryRole).toBe('hai');
+    expect(fs.readFileSync(configPath, 'utf-8')).toContain('primaryRole: hai');
   });
 });

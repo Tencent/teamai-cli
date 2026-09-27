@@ -459,7 +459,9 @@ export async function recall(
   // not reach that scope's team (#787).
   let projectUnreadable = false;
   try {
-    projectConfig = await detectProjectConfig(undefined, (configPath, error) => { unreadable.push(`${configPath}: ${error}`); });
+    // The flag reaches detection: a bare load migrates the legacy role config
+    // in place, which would write under --dry-run (#850).
+    projectConfig = await detectProjectConfig(undefined, (configPath, error) => { unreadable.push(`${configPath}: ${error}`); }, { dryRun: options.dryRun });
   } catch (e) {
     // A cwd that no longer exists holds no project: user scope, as in
     // resolveConfigForDir.
@@ -510,7 +512,7 @@ export async function recall(
 
     if (projectConfig.inheritUserScope === true) {
       try {
-        const userConfig = await loadLocalConfigForScope('user');
+        const userConfig = await loadLocalConfigForScope('user', undefined, { dryRun: options.dryRun });
         if (userConfig) {
           const result = await loadOrBuildScopeIndex(userConfig, 'user');
           if (result === 'build-failed') indexBuildFailed = true;
@@ -525,7 +527,7 @@ export async function recall(
   } else {
     // User mode: user scope only.
     try {
-      const { localConfig: userConfig } = await requireInit();
+      const { localConfig: userConfig } = await requireInit({ dryRun: options.dryRun });
       const result = await loadOrBuildScopeIndex(userConfig, 'user');
       if (result === 'build-failed') indexBuildFailed = true;
       else if (result && result.index.entries.length > 0) {

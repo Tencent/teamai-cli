@@ -191,19 +191,22 @@ export async function contribute(
     return;
   }
 
-  // Init check — select scope based on --scope flag or auto-detect
+  // Init check — select scope based on --scope flag or auto-detect. The flag
+  // reaches the loaders: a bare load migrates the legacy role config in place,
+  // which would write under --dry-run (#850).
+  const loadOpts = { dryRun: options.dryRun };
   let localConfig: LocalConfig;
   if (options.scope === 'project') {
-    const cfg = await loadLocalConfigForScope('project', process.cwd());
+    const cfg = await loadLocalConfigForScope('project', process.cwd(), loadOpts);
     if (!cfg) { log.error('No project-level teamai config in this directory'); return; }
     localConfig = cfg;
   } else if (options.scope === 'user') {
-    const { localConfig: userCfg } = await requireInit();
+    const { localConfig: userCfg } = await requireInit(loadOpts);
     localConfig = userCfg;
   } else {
     // Auto-detect (unchanged default behavior)
-    const projectConfig = await detectProjectConfig();
-    localConfig = projectConfig ?? (await requireInit()).localConfig;
+    const projectConfig = await detectProjectConfig(undefined, undefined, loadOpts);
+    localConfig = projectConfig ?? (await requireInit(loadOpts)).localConfig;
   }
   assertNotReadOnly(localConfig, 'teamai contribute');
   const username = localConfig.username;

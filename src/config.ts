@@ -229,14 +229,15 @@ async function throwTeamConfigMissingOrInvalid(repoPath: string): Promise<never>
 export async function loadLocalConfigForScope(
   scope: Scope,
   projectRoot?: string,
+  options: LoadOptions = {},
 ): Promise<LocalConfig | null> {
   if (scope === 'project') {
     if (!projectRoot) return null;
     // Reuse the single detection path so config location never drifts between
     // "detect the active project" and "load a named project's config".
-    const detected = await detectProjectConfig(projectRoot);
+    const detected = await detectProjectConfig(projectRoot, undefined, options);
     if (!detected) return null;
-    return migrateLegacyRoleConfig(detected, path.join(getDataHome(detected), 'config.yaml'));
+    return migrateLegacyRoleConfig(detected, path.join(getDataHome(detected), 'config.yaml'), options);
   }
   const configPath = getConfigPath(scope, projectRoot);
   const content = await readFileSafe(expandHome(configPath));
@@ -244,7 +245,7 @@ export async function loadLocalConfigForScope(
   try {
     const raw = YAML.parse(content);
     const parsed = LocalConfigSchema.parse(raw);
-    return await migrateLegacyRoleConfig(parsed, configPath);
+    return await migrateLegacyRoleConfig(parsed, configPath, options);
   } catch (e) {
     log.error(`Invalid ${scope} config at ${configPath}: ${describeConfigError(e)}`);
     return null;
