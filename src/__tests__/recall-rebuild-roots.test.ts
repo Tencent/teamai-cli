@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fse from 'fs-extra';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -279,10 +280,21 @@ describe('recall rebuilding a missing index with a team manifest it cannot read 
   });
 
   it('names the cause when the build fails for another reason, not "No learnings available"', async () => {
-    // The index path is a directory, so writing the index fails.
-    fs.mkdirSync(indexPath(), { recursive: true });
-
-    await recall('retry budget', {});
+    // Fail the index write itself — the atomic writer's staged temp file
+    // included (#854) — so the build fails for a reason the warning must name.
+    const realWriteFile = fse.writeFile;
+    const failIndexWrites = vi.spyOn(fse, 'writeFile').mockImplementation(async (file: unknown, data: unknown) => {
+      if (typeof file !== 'string' || typeof data !== 'string') throw new Error('unexpected writeFile call in test');
+      if (file === indexPath() || file.startsWith(`${indexPath()}.`)) {
+        throw Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${file}'`), { code: 'EISDIR' });
+      }
+      return realWriteFile(file, data, 'utf-8');
+    });
+    try {
+      await recall('retry budget', {});
+    } finally {
+      failIndexWrites.mockRestore();
+    }
 
     expect(warnings()).toContainEqual(expect.stringMatching(/Recall could not build the user search index: .*EISDIR/));
     expect(vi.mocked(log.info).mock.calls.map(([message]) => String(message)))
@@ -351,16 +363,26 @@ describe('recall rebuilding an older-format index with a team manifest it cannot
     expect(warnings()).toContainEqual(expect.stringContaining('Index rebuild skipped'));
   });
 
-  // Root writes through the read-only bit, so the rebuild would succeed.
-  it.skipIf(process.getuid?.() === 0)('searches nothing, not the older index, when the partial index cannot be written', async () => {
-    fs.chmodSync(indexPath(), 0o444);
+  // The atomic index write (#854) stages a temp sibling and renames it into
+  // place, so a read-only index file no longer fails the write — rename needs
+  // only the directory. Fail the writes at the index path itself, the temp file
+  // included, which works for both the staged and the in-place writer.
+  it('searches nothing, not the older index, when the partial index cannot be written', async () => {
     const out: string[] = [];
     const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out.push(String(chunk)); return true; });
+    const realWriteFile = fse.writeFile;
+    const failIndexWrites = vi.spyOn(fse, 'writeFile').mockImplementation(async (file: unknown, data: unknown) => {
+      if (typeof file !== 'string' || typeof data !== 'string') throw new Error('unexpected writeFile call in test');
+      if (file === indexPath() || file.startsWith(`${indexPath()}.`)) {
+        throw Object.assign(new Error(`EACCES: permission denied, open '${file}'`), { code: 'EACCES' });
+      }
+      return realWriteFile(file, data, 'utf-8');
+    });
     try {
       await recall('retry budget', {});
     } finally {
       write.mockRestore();
-      fs.chmodSync(indexPath(), 0o644);
+      failIndexWrites.mockRestore();
     }
 
     expect(out.join('')).not.toContain('stale');
