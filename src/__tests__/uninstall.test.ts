@@ -2036,3 +2036,85 @@ describe('uninstall', () => {
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'CLAUDE.md'))).toBe(false);
   });
 });
+
+
+describe('uninstall — stale --agent config entry', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-uninstall-stale-'));
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+    vi.clearAllMocks();
+  });
+
+  const makeTeamConfigWithCursor = () =>
+    makeTeamConfig({
+      toolPaths: {
+        ...makeTeamConfig().toolPaths,
+        cursor: { skills: '.cursor/skills', settings: '.cursor/hooks.json' },
+      },
+    });
+
+  it('prunes a stale --agent entry when the tool has no files left to remove', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    // No .cursor dir anywhere in the fixture — the tool was deleted by hand,
+    // but the config still whitelists it (doctor keeps flagging this).
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      enabledAgents: ['claude', 'cursor'],
+      disabledAgents: [],
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfigWithCursor() });
+
+    await uninstall({ force: true, agent: 'cursor' });
+
+    // The entry moves out of the whitelist into the exclusion list, so the next
+    // pull cannot resurrect the tool.
+    expect(mockSaveLocalConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enabledAgents: ['claude'],
+        disabledAgents: ['cursor'],
+      }),
+    );
+  });
+
+  it('dry-run previews the stale-entry prune without saving', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      enabledAgents: ['claude', 'cursor'],
+      disabledAgents: [],
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfigWithCursor() });
+
+    await uninstall({ force: true, agent: 'cursor', dryRun: true });
+
+    expect(mockSaveLocalConfig).not.toHaveBeenCalled();
+    const { log } = await import('../utils/logger.js');
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('would remove the stale cursor entry'));
+  });
+
+  it('still reports nothing to uninstall when the config does not reference the tool', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      enabledAgents: ['claude'],
+      disabledAgents: [],
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfigWithCursor() });
+
+    await uninstall({ force: true, agent: 'cursor' });
+
+    expect(mockSaveLocalConfig).not.toHaveBeenCalled();
+    expect(mockSaveLocalConfigForScope).not.toHaveBeenCalled();
+    const { log } = await import('../utils/logger.js');
+    expect(log.info).toHaveBeenCalledWith('Nothing to uninstall');
+  });
+});

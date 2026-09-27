@@ -44,6 +44,7 @@ import {
   scopedToolPaths,
   toolRootRejection,
   type TeamaiConfig,
+  TeamaiConfigSchema,
   getTeamaiHomeDir,
   REPORTS_BRANCH,
   type GlobalOptions,
@@ -964,10 +965,16 @@ export async function initSelfRepo(options: GlobalOptions & {
   // Attaching dataHome routes every getDataHome()-based write into the partition.
   const partitionHome = await resolveProjectDataHome(businessRepoRoot);
 
+  // Read any existing project config BEFORE anything is written. This must
+  // happen before Step 3 creates the `mode: self` marker: once the marker
+  // exists, loadLocalConfigForScope fires the clone-time self-heal bootstrap
+  // (issue #198 path), which conjures enabledAgents from HOME detection,
+  // injects hooks into every HOME tool and writes a config — defeating an
+  // explicit `--agent` selection mid-run (and leaking writes into a --dry-run).
+  const preInitConfig = await loadLocalConfigForScope('project', businessRepoRoot);
   let inheritUserScope: boolean | undefined;
   try {
-    const existing = await loadLocalConfigForScope('project', businessRepoRoot);
-    inheritUserScope = resolveInheritUserScope('project', options.inheritUserScope, existing?.inheritUserScope);
+    inheritUserScope = resolveInheritUserScope('project', options.inheritUserScope, preInitConfig?.inheritUserScope);
   } catch (e) {
     log.error((e as Error).message);
     process.exit(1);
@@ -985,7 +992,9 @@ export async function initSelfRepo(options: GlobalOptions & {
   const legacyConfigPath = getConfigPath('project', businessRepoRoot);
   if ((await pathExists(existingConfigPath)) || (await pathExists(legacyConfigPath))) {
     log.warn(`teamai is already initialized (project scope) at ${existingConfigPath}`);
-    if (options.force) {
+    if (options.dryRun) {
+      log.info('[dry-run] A real run would overwrite it (--force or confirmation)');
+    } else if (options.force) {
       log.info('Overwriting existing config (--force)');
     } else {
       const confirmed = await askConfirmation('Overwrite existing config? [y/N] ');
@@ -1042,17 +1051,21 @@ export async function initSelfRepo(options: GlobalOptions & {
   // Includes hooks/ and mcp/ too: in single-repo mode those are contributed by
   // editing .teamai/{hooks/hooks.yaml,mcp/mcp.yaml} directly and committing (they
   // don't go through `teamai push`), so seeding the dirs makes that path obvious.
-  await ensureDir(localPath);
-  for (const dir of ['skills', 'rules', 'docs', 'learnings', 'env', 'agents', 'hooks', 'mcp']) {
-    await ensureDir(path.join(localPath, dir));
-    const gitkeep = path.join(localPath, dir, '.gitkeep');
-    if (!await pathExists(gitkeep)) {
-      await writeFile(gitkeep, '');
+  // Dry-run: touch nothing — the skeleton is previewed, not written.
+  if (!options.dryRun) {
+    await ensureDir(localPath);
+    for (const dir of ['skills', 'rules', 'docs', 'learnings', 'env', 'agents', 'hooks', 'mcp']) {
+      await ensureDir(path.join(localPath, dir));
+      const gitkeep = path.join(localPath, dir, '.gitkeep');
+      if (!await pathExists(gitkeep)) {
+        await writeFile(gitkeep, '');
+      }
     }
   }
 
   // teamai.yaml carries `mode: self` so teammates auto-bootstrap after clone.
   const teamaiYamlPath = path.join(localPath, 'teamai.yaml');
+  let defaultConfig: string | undefined;
   if (!await pathExists(teamaiYamlPath)) {
     let teamProvider: string;
     try {
@@ -1062,7 +1075,7 @@ export async function initSelfRepo(options: GlobalOptions & {
       process.exit(1);
       return;
     }
-    const defaultConfig = YAML.stringify({
+    defaultConfig = YAML.stringify({
       team: repoInfo.repo,
       mode: 'self',
       description: 'TeamAI single-repo (knowledge on main, reports on teamai-reports)',
@@ -1074,10 +1087,20 @@ export async function initSelfRepo(options: GlobalOptions & {
         env: { injectShellProfile: true },
       },
     });
-    await writeFile(teamaiYamlPath, defaultConfig);
-    log.success('Created .teamai/teamai.yaml (mode: self)');
+    if (options.dryRun) {
+      log.info('[dry-run] Would create .teamai/teamai.yaml (mode: self)');
+      log.debug(`[dry-run] teamai.yaml content:\n${defaultConfig}`);
+    } else {
+      await writeFile(teamaiYamlPath, defaultConfig);
+      log.success('Created .teamai/teamai.yaml (mode: self)');
+    }
   }
-  const teamConfig = await loadTeamConfig(localPath);
+  // Dry-run on a fresh repo has no teamai.yaml on disk (nothing was written), so
+  // parse the config we just built in memory — same schema, same result the real
+  // run would persist.
+  const teamConfig = (await pathExists(teamaiYamlPath))
+    ? await loadTeamConfig(localPath)
+    : TeamaiConfigSchema.parse(YAML.parse(defaultConfig ?? ''));
   if (!teamConfig) {
     log.error('Failed to write a valid .teamai/teamai.yaml. Check filesystem permissions.');
     process.exit(1);
@@ -1112,13 +1135,15 @@ export async function initSelfRepo(options: GlobalOptions & {
   // Which AI tools to set up in this repo (create skills dir + inject hooks +
   // commit their settings.json). Resolved from --agent, else HOME detection
   // (non-interactive), else an interactive picker. Written to enabledAgents,
-  // which drives seedSelfModeToolDirs and hook injection alike.
-  const existingSelfConfig = await loadLocalConfigForScope('project', businessRepoRoot);
+  // which drives seedSelfModeToolDirs and hook injection alike. The previous
+  // config is `preInitConfig`, read before the self-mode marker was written —
+  // re-reading here would trigger the clone-time self-heal bootstrap and
+  // union HOME-detected tools into the explicit selection.
   const selectedAgents = await promptForSelfModeAgents(options);
   if (selectedAgents.length > 0) {
-    const prev = existingSelfConfig?.enabledAgents ?? [];
+    const prev = preInitConfig?.enabledAgents ?? [];
     localConfig.enabledAgents = [...new Set([...prev, ...selectedAgents])];
-    localConfig.disabledAgents = (existingSelfConfig?.disabledAgents ?? []).filter((t) => !selectedAgents.includes(t));
+    localConfig.disabledAgents = (preInitConfig?.disabledAgents ?? []).filter((t) => !selectedAgents.includes(t));
   }
 
   // Carry the member's recorded tool roots across a re-init. `init` is
@@ -1126,44 +1151,66 @@ export async function initSelfRepo(options: GlobalOptions & {
   // from a shell that does not export it must not quietly send every later sync
   // back to the default root. recordClaudeConfigRoot then overwrites the claude
   // entry when the variable IS set.
-  if (existingSelfConfig?.toolRoots) localConfig.toolRoots = { ...existingSelfConfig.toolRoots };
+  if (preInitConfig?.toolRoots) localConfig.toolRoots = { ...preInitConfig.toolRoots };
   recordClaudeConfigRoot(localConfig);
 
   // Step 5: write local config (into the partition via dataHome) + single-repo
   // gitignore. ensureDir both the knowledge dir (class B, in the repo) and the
   // partition (class A1 machine data). saveLocalConfigForScope writes through
-  // getDataHome, which now resolves to the partition.
-  await ensureDir(teamaiHome);
-  await ensureDir(partitionHome);
-  await settleModeSwitch(existingSelfConfig, localConfig, () =>
-    saveLocalConfigForScope(localConfig, 'project', businessRepoRoot));
-  log.success(`Local config saved to ${partitionHome}/config.yaml`);
+  // getDataHome, which now resolves to the partition. Dry-run: keep the config
+  // in memory (later steps read it) and only say where it would land.
+  if (options.dryRun) {
+    log.info(`[dry-run] Would save local config to ${partitionHome}/config.yaml`);
+  } else {
+    await ensureDir(teamaiHome);
+    await ensureDir(partitionHome);
+    await settleModeSwitch(preInitConfig, localConfig, () =>
+      saveLocalConfigForScope(localConfig, 'project', businessRepoRoot));
+    log.success(`Local config saved to ${partitionHome}/config.yaml`);
+  }
   // (Pre-P2 this retired any stale partition config so detection fell back to the
   // in-repo self config. P2 makes self USE the partition, so there is nothing to
   // retire — the config we just wrote there is the authoritative one.)
 
   const gitignorePath = path.join(teamaiHome, '.gitignore');
-  await writeFile(gitignorePath, buildSelfModeGitignore());
-  log.debug('Generated single-repo .teamai/.gitignore');
+  if (options.dryRun) {
+    log.info('[dry-run] Would generate single-repo .teamai/.gitignore');
+  } else {
+    await writeFile(gitignorePath, buildSelfModeGitignore());
+    log.debug('Generated single-repo .teamai/.gitignore');
+  }
 
   // Step 5.3: seed the selected tools' skills dir so first-run hook + skill
   // injection lands. Single-repo mode must inject into the project even on a
   // brand-new clone where no <repo>/.claude exists yet (isToolInstalled would
   // otherwise skip everything).
   const filterAgents = selectedAgents.length > 0 ? selectedAgents : undefined;
-  try {
-    const { seedSelfModeToolDirs } = await import('./known-agents.js');
-    const seeded = await seedSelfModeToolDirs(localConfig, teamConfig);
-    if (seeded.length > 0) log.debug(`Seeded tool dirs for: ${seeded.join(', ')}`);
-  } catch (e) {
-    log.debug(`Tool-dir seeding skipped: ${(e as Error).message}`);
+  if (options.dryRun) {
+    // Print what a real run would seed: enabledAgents (what seedSelfModeToolDirs
+    // reads), not the --agent filter. A value here that the member never asked
+    // for is exactly how the mid-init self-heal leak shows itself.
+    const seedTargets = localConfig.enabledAgents ?? [];
+    if (seedTargets.length > 0) log.info(`[dry-run] Would seed tool dirs for: ${seedTargets.join(', ')}`);
+  } else {
+    try {
+      const { seedSelfModeToolDirs } = await import('./known-agents.js');
+      const seeded = await seedSelfModeToolDirs(localConfig, teamConfig);
+      if (seeded.length > 0) log.debug(`Seeded tool dirs for: ${seeded.join(', ')}`);
+    } catch (e) {
+      log.debug(`Tool-dir seeding skipped: ${(e as Error).message}`);
+    }
   }
 
   // Step 5.4: inject hooks BEFORE the skeleton commit, so each selected tool's
   // settings file exists on disk and can be committed to main below. This is what
   // makes a teammate's fresh clone carry the session-start hook that triggers the
   // self-heal bootstrap — the core of "clone = initialized".
-  await reconcileHooksForInit(teamConfig, localConfig, filterAgents);
+  if (options.dryRun) {
+    const hookTargets = filterAgents ?? localConfig.enabledAgents ?? [];
+    if (hookTargets.length > 0) log.info(`[dry-run] Would inject teamai hooks into: ${hookTargets.join(', ')}`);
+  } else {
+    await reconcileHooksForInit(teamConfig, localConfig, filterAgents);
+  }
 
   // Step 5.5: commit the .teamai/ knowledge skeleton + selected tools' hook
   // settings to the current branch. Single-repo mode keeps knowledge on main, and
@@ -1251,12 +1298,14 @@ export async function initSelfRepo(options: GlobalOptions & {
   }
 
   // Step 6.5: invalidate pull cache so next pull does a full sync.
-  try {
-    const state = await loadStateForScope(localConfig);
-    state.lastPullRev = null;
-    await saveStateForScope(state, localConfig);
-  } catch {
-    // state may not exist yet
+  if (!options.dryRun) {
+    try {
+      const state = await loadStateForScope(localConfig);
+      state.lastPullRev = null;
+      await saveStateForScope(state, localConfig);
+    } catch {
+      // state may not exist yet
+    }
   }
 
   log.success('teamai initialized (single-repo mode)!');

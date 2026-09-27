@@ -1152,7 +1152,36 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     const plan = await buildRemovalPlan(localConfig, teamConfig, agentKey);
 
     if (isPlanEmpty(plan)) {
-      log.info('Nothing to uninstall');
+      // The tool has no files left to remove, but the config may still reference
+      // it — a stale `enabledAgents`/`disabledAgents` entry (e.g. the tool dir
+      // was deleted by hand, or the entry was written by a machine that has
+      // since moved). Prune it so `teamai doctor` stops flagging it and future
+      // syncs do not resurrect the tool; only report "Nothing to uninstall"
+      // when the config does not reference the tool either.
+      const cfg = localConfig!;
+      if (!agentKey) {
+        log.info('Nothing to uninstall');
+        return;
+      }
+      const referenced = cfg.enabledAgents?.includes(agentKey) || cfg.disabledAgents?.includes(agentKey);
+      if (!referenced) {
+        log.info('Nothing to uninstall');
+        return;
+      }
+      if (opts.dryRun) {
+        log.info(`Dry run — would remove the stale ${agentKey} entry from the teamai config`);
+        return;
+      }
+      if (cfg.enabledAgents) {
+        cfg.enabledAgents = cfg.enabledAgents.filter((t) => t !== agentKey);
+      }
+      cfg.disabledAgents = [...new Set([...(cfg.disabledAgents ?? []), agentKey])];
+      if (cfg.scope === 'project') {
+        await saveLocalConfigForScope(cfg, cfg.scope, cfg.projectRoot);
+      } else {
+        await saveLocalConfig(cfg);
+      }
+      log.success(`Removed the stale ${agentKey} entry from the teamai config (no files to uninstall)`);
       return;
     }
 

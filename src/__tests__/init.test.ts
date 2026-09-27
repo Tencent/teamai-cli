@@ -871,13 +871,11 @@ describe('init', () => {
       expect(errorCalls).not.toContainEqual(expect.stringContaining('Could not parse the business repo remote'));
       expect(errorCalls.join('\n')).not.toContain('token-must-not-appear');
       expect(debugCalls.join('\n')).not.toContain('token-must-not-appear');
-      expect(saveLocalConfigForScope).toHaveBeenCalledWith(
-        expect.objectContaining({
-          repo: expect.objectContaining({ remote: 'http://git.example.com/group/repo.git' }),
-        }),
-        'project',
-        process.cwd(),
-      );
+      // Dry-run persists nothing: the assembled config stays in memory, and only
+      // the preview line says where a real run would save it.
+      expect(saveLocalConfigForScope).not.toHaveBeenCalled();
+      const infoCalls = vi.mocked(log.info).mock.calls.map(([message]) => String(message));
+      expect(infoCalls.some((msg) => msg.includes('[dry-run] Would save local config'))).toBe(true);
     });
 
     it('aborts on a malformed roles manifest instead of initializing role-less', async () => {
@@ -915,11 +913,65 @@ describe('init', () => {
 
       await init({ repo: '.', dryRun: true });
 
-      expect(saveLocalConfigForScope).toHaveBeenCalledWith(
-        expect.not.objectContaining({ primaryRole: expect.anything() }),
-        'project',
-        process.cwd(),
-      );
+      // The missing manifest must leave the role unset without aborting: the run
+      // reaches the (previewed) save step. Dry-run persists nothing, so the
+      // would-save line is the observable that the flow completed.
+      expect(saveLocalConfigForScope).not.toHaveBeenCalled();
+      const { log } = await import('../utils/logger.js');
+      const infoCalls = vi.mocked(log.info).mock.calls.map(([message]) => String(message));
+      expect(infoCalls.some((msg) => msg.includes('[dry-run] Would save local config'))).toBe(true);
+    });
+
+    it('dry-run writes nothing — repo, tool dirs and config all stay untouched', async () => {
+      pathExistsFn = (p: string) => p.endsWith(`${path.sep}.git`) || p.endsWith('/.git');
+      mockGit.raw.mockResolvedValue('https://git.example.com/group/repo.git\n');
+
+      const { writeFile, ensureDir } = await import('../utils/fs.js');
+      const { saveLocalConfigForScope, saveStateForScope } = await import('../config.js');
+      vi.mocked(writeFile).mockClear();
+      vi.mocked(ensureDir).mockClear();
+      vi.mocked(saveLocalConfigForScope).mockClear();
+      vi.mocked(saveStateForScope).mockClear();
+
+      await init({ repo: '.', provider: 'git', agent: ['claude', 'codex'], dryRun: true });
+
+      expect(mockExit).not.toHaveBeenCalled();
+      // No skeleton .gitkeep files, no teamai.yaml, no .gitignore.
+      expect(writeFile).not.toHaveBeenCalled();
+      // No .teamai/, no partition, no tool dirs.
+      expect(ensureDir).not.toHaveBeenCalled();
+      // No config or state persisted anywhere.
+      expect(saveLocalConfigForScope).not.toHaveBeenCalled();
+      expect(saveStateForScope).not.toHaveBeenCalled();
+      // The preview still says what a real run would do.
+      const { log } = await import('../utils/logger.js');
+      const infoCalls = vi.mocked(log.info).mock.calls.map(([message]) => String(message));
+      expect(infoCalls.some((msg) => msg.includes('[dry-run] Would create .teamai/teamai.yaml'))).toBe(true);
+      expect(infoCalls.some((msg) => msg.includes('[dry-run] Would save local config'))).toBe(true);
+      expect(infoCalls.some((msg) => msg.includes('[dry-run] Would seed tool dirs for: claude, codex'))).toBe(true);
+      expect(infoCalls.some((msg) => msg.includes('[dry-run] Would inject teamai hooks into: claude, codex'))).toBe(true);
+    });
+
+    it('reads the existing project config once, before the self-mode marker is written', async () => {
+      // Re-reading the config AFTER Step 3 wrote `mode: self` fires the
+      // clone-time self-heal bootstrap mid-init. That path synthesizes
+      // enabledAgents from HOME detection, so an explicit `--agent claude,codex`
+      // came out unioned with whatever tools the developer had under HOME
+      // (a .cursor/ conjured out of a .cursor that init was never told about).
+      pathExistsFn = (p: string) => p.endsWith(`${path.sep}.git`) || p.endsWith('/.git');
+      mockGit.raw.mockResolvedValue('https://git.example.com/group/repo.git\n');
+      vi.mocked(loadLocalConfigForScope).mockClear();
+
+      await init({ repo: '.', provider: 'git', agent: ['claude', 'codex'], dryRun: true });
+
+      expect(loadLocalConfigForScope).toHaveBeenCalledTimes(1);
+      // And the seeded set is exactly the explicit selection — no HOME-mirrored
+      // extras leaked into the preview.
+      const { log } = await import('../utils/logger.js');
+      const infoCalls = vi.mocked(log.info).mock.calls.map(([message]) => String(message));
+      const seedLine = infoCalls.find((msg) => msg.includes('[dry-run] Would seed tool dirs for:'));
+      expect(seedLine).toBeDefined();
+      expect(seedLine).not.toContain('cursor');
     });
   });
   describe('CLAUDE_CONFIG_DIR', () => {
@@ -1337,15 +1389,17 @@ describe('init --provider', () => {
 
     expect(mockExit).not.toHaveBeenCalled();
     expect(GitLabProvider.prototype.authenticate).not.toHaveBeenCalled();
-    // A new committed .teamai/teamai.yaml keeps the host's provider for teammates.
+    // Dry-run writes nothing — the teamai.yaml that WOULD be committed (keeping
+    // the host's provider for teammates) is previewed on the debug channel.
     const { writeFile } = await import('../utils/fs.js');
     const teamYaml = vi.mocked(writeFile).mock.calls.find(([p]) => String(p).endsWith('teamai.yaml'));
-    expect(teamYaml?.[1]).toContain('"provider":"gitlab"');
-    expect(saveLocalConfigForScope).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: 'git', username: 'plain-member' }),
-      'project',
-      process.cwd(),
-    );
+    expect(teamYaml).toBeUndefined();
+    const { log } = await import('../utils/logger.js');
+    const debugCalls = vi.mocked(log.debug).mock.calls.map(([message]) => String(message));
+    const yamlPreview = debugCalls.find((m) => m.includes('teamai.yaml content'));
+    expect(yamlPreview).toBeDefined();
+    expect(yamlPreview).toContain('"provider":"gitlab"');
+    expect(saveLocalConfigForScope).not.toHaveBeenCalled();
   });
   it('refuses to create a single-repo teamai.yaml on an unconfigured self-hosted GitLab', async () => {
     fetchMock.mockResolvedValue(gitlabSignInResponse());
