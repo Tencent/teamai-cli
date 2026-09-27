@@ -34,11 +34,11 @@ interface RunResult {
   output: string;
 }
 
-function runCLI(args: string[], cwd: string, home: string): Promise<RunResult> {
+function runCLI(args: string[], cwd: string, home: string, extraEnv: Record<string, string> = {}): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn('node', [CLI, ...args], {
       cwd,
-      env: { ...process.env, ...GIT_ENV, HOME: home, FORCE_COLOR: '0' },
+      env: { ...process.env, ...GIT_ENV, HOME: home, FORCE_COLOR: '0', ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
@@ -401,18 +401,37 @@ describe('push from a stale linked worktree (#812)', () => {
 
   it.skipIf(process.getuid?.() === 0)('stops the push when the synced revision cannot be recorded', async () => {
     const partial = path.join(sandbox, 'wt-g');
-    teammatePublishes('# Team rule\n\nVersion synced while state.json is read-only.\n');
+    teammatePublishes('# Team rule\n\nVersion synced while the state file refuses writes.\n');
     const stateFile = projectState()?.file;
     expect(stateFile).toBeDefined();
     if (!stateFile) return;
-    fs.chmodSync(stateFile, 0o444);
+    // state.json is saved through writeJsonAtomic, so a chmod on the file
+    // cannot force the failure: the writer stages a temp sibling and renames,
+    // and rename needs only the writable directory (a read-only target is
+    // replaced just fine). Inject the failure at the write call instead, like
+    // the atomic-save unit tests do: a preload hook fails every fs.writeFile
+    // targeting the staged temp of this state file inside the CLI process.
+    const hook = path.join(sandbox, 'fail-state-write.cjs');
+    fs.writeFileSync(hook, [
+      "'use strict';",
+      `const TARGET = ${JSON.stringify(stateFile)};`,
+      "const fs = require('node:fs');",
+      "const hit = (p) => typeof p === 'string' && p.startsWith(TARGET + '.') && p.endsWith('.tmp');",
+      'const fail = (p) => { throw new Error(`simulated state write failure: ${p}`); };',
+      'const writeFile = fs.writeFile.bind(fs);',
+      'fs.writeFile = (p, ...rest) => (hit(p) ? fail(p) : writeFile(p, ...rest));',
+      'const writeFileSync = fs.writeFileSync.bind(fs);',
+      'fs.writeFileSync = (p, ...rest) => (hit(p) ? fail(p) : writeFileSync(p, ...rest));',
+      'const pWriteFile = fs.promises.writeFile.bind(fs.promises);',
+      'fs.promises.writeFile = (p, ...rest) => (hit(p) ? fail(p) : pWriteFile(p, ...rest));',
+    ].join('\n'));
     try {
-      const r = await runCLI(['--dry-run', 'push'], partial, home);
+      const r = await runCLI(['--dry-run', 'push'], partial, home, { NODE_OPTIONS: `--require ${hook}` });
       expect(r.code, r.output).toBe(1);
       expect(r.output).toContain('Nothing was pushed');
       expect(r.output).not.toContain('Scanning local resources');
     } finally {
-      fs.chmodSync(stateFile, 0o644);
+      fs.rmSync(hook, { force: true });
     }
   });
 });
