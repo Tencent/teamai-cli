@@ -170,7 +170,7 @@ export class IWikiClient {
     try {
       response = JSON.parse(rawBody) as JsonRpcResponse;
     } catch (parseErr: unknown) {
-      throw new Error(`iWiki MCP 响应解析失败: ${String(parseErr)}，原始响应: ${rawBody.slice(0, 200)}`);
+      throw new Error(`iWiki MCP response could not be parsed: ${String(parseErr)}; raw response: ${rawBody.slice(0, 200)}`);
     }
 
     if (response.error) {
@@ -223,7 +223,7 @@ export class IWikiClient {
             : Boolean(item['has_children']),
       }));
     } catch (err: unknown) {
-      log.warn(`获取页面树失败 [parentid=${parentid}]: ${String(err)}`);
+      log.warn(`iWiki page tree request failed [parentid=${parentid}]: ${String(err)}`);
       return [];
     }
   }
@@ -291,8 +291,8 @@ export class IWikiClient {
     const maxPages = opts?.maxPages ?? DEFAULT_MAX_PAGES;
 
     const allPages: IWikiPage[] = [];
-    // BFS 队列：待获取子树的 parentid 列表
-    const queue: string[] = [rootId];
+    // BFS 队列：待获取子树的 parentid 列表；rootId 为空则保持为空
+    const queue: string[] = rootId ? [rootId] : [];
     let running = 0;
     let stopped = false;
 
@@ -304,8 +304,8 @@ export class IWikiClient {
           return;
         }
 
-        // 填满并发槽
-        while (queue.length > 0 && running < concurrency && !stopped) {
+        // 填满并发槽（tryDrain 入口已拦截 stopped，同步循环体内它不会变化）
+        while (queue.length > 0 && running < concurrency) {
           const parentid = queue.shift()!;
           running++;
 
@@ -318,7 +318,7 @@ export class IWikiClient {
                   if (!stopped) {
                     stopped = true;
                     log.warn(
-                      `已达到最大页数限制（${maxPages}），停止继续遍历。已收集: ${allPages.length} 页`,
+                      `Reached the max page limit (${maxPages}); stopped traversing. Collected ${allPages.length} page(s).`,
                     );
                   }
                   break;
@@ -334,7 +334,7 @@ export class IWikiClient {
             })
             .catch((err: unknown) => {
               running--;
-              log.warn(`BFS 遍历节点失败 [parentid=${parentid}]: ${String(err)}`);
+              log.warn(`BFS traversal failed for node [parentid=${parentid}]: ${String(err)}`);
               // 单节点失败不中断整体，继续处理其他节点
               tryDrain();
             });
@@ -346,12 +346,15 @@ export class IWikiClient {
         }
       };
 
-      tryDrain();
-
-      // 防止初始队列为空时直接结束
+      // rootId 为空时 BFS 无处可走：必须在 tryDrain 之前判断。tryDrain 会把
+      // 队列里的 rootId 派发出去，此后队列必然为空——晚于此处的判断会让每
+      // 次调用在遍历开始前就以 "rootId 队列为空" 拒绝。
       if (queue.length === 0) {
-        reject(new Error('fetchAllPages: rootId 队列为空'));
+        reject(new Error('fetchAllPages: rootId is empty'));
+        return;
       }
+
+      tryDrain();
     }).catch((err: unknown) => {
       // 仅 rootId 为空时抛出，其他错误已在 tryDrain 内处理
       if (allPages.length === 0) {
