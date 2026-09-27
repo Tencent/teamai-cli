@@ -23,6 +23,7 @@ vi.mock('../utils/logger.js', () => ({
     error: vi.fn(),
     debug: vi.fn(),
     dim: vi.fn(),
+    persist: vi.fn(),
   },
   spinner: vi.fn(() => ({
     start: vi.fn().mockReturnThis(),
@@ -37,6 +38,7 @@ vi.mock('../utils/logger.js', () => ({
 import { envList, envAdd, envRemove } from '../env-commands.js';
 import { requireInit } from '../config.js';
 import { log } from '../utils/logger.js';
+import { resetWarnOnce } from '../utils/warn-once.js';
 import { pullRepo } from '../utils/git.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
@@ -82,6 +84,9 @@ scope: 'user',
     vi.mocked(log.success).mockClear();
     vi.mocked(log.error).mockClear();
     vi.mocked(log.dim).mockClear();
+    vi.mocked(log.warn).mockClear();
+    vi.mocked(log.persist).mockClear();
+    resetWarnOnce();
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
@@ -189,6 +194,40 @@ scope: 'user',
 
       expect(log.dim).toHaveBeenCalledWith(expect.stringContaining('My API endpoint'));
     });
+
+    it('names the variable an unknown key takes out of the delivered set (#822)', async () => {
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [
+            { key: 'GOOD_URL', value: 'https://good.example' },
+            { key: 'CACHE_TTL', value: '60', role: ['frontend'] },
+          ],
+        }),
+      );
+
+      await envList({});
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('env/env.yaml: variable "CACHE_TTL" has unknown key `role:`, so this entry is not delivered.'));
+      const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
+      expect(allOutput).toContain('GOOD_URL');
+      expect(allOutput).not.toContain('CACHE_TTL');
+    });
+
+    it('names the variable a removed per-entry key takes out of the delivered set (#822)', async () => {
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [
+            { key: 'DB_URL', value: 'postgres://db', roles: ['legacy'] },
+          ],
+        }),
+      );
+
+      await envList({});
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('env/env.yaml: variable "DB_URL" is scoped with per-entry `roles:`, which this version no longer reads, so it reaches nobody.'));
+    });
   });
 
   // ─── envAdd ──────────────────────────────────────────────
@@ -278,6 +317,25 @@ scope: 'user',
         roles: ['frontend'],
         projects: ['checkout'],
       });
+    });
+
+    it('says an updated variable it cannot deliver is undelivered (#822)', async () => {
+      // `roles:` on env is no longer read, so this update reaches nobody —
+      // "Updated" alone would read as success.
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [{ key: 'DB_URL', value: 'old', roles: ['legacy'] }],
+        }),
+      );
+
+      await envAdd('DB_URL', 'new', {});
+
+      expect(log.warn).toHaveBeenCalledWith(
+        'env/env.yaml: variable "DB_URL" is scoped with per-entry `roles:`, which this version no longer reads, '
+          + 'so pull does not deliver it. Remove it in env/env.yaml.',
+      );
+      expect(log.success).toHaveBeenCalledWith('Updated env variable: DB_URL=new');
     });
 
     // A variable with a misspelled `roles:` reaches nobody (#822); a rewrite

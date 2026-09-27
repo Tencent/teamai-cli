@@ -3,7 +3,7 @@ import { pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { EnvHandler, maskEnvValue, ENV_KEY_RE, envEntryReader, unknownEnvVariableKeys, type EnvYaml } from './resources/env.js';
-import { describeEntryFailure, describeOrigin, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, resolveEntriesFor } from './namespaced-entries.js';
+import { describeEntryFailure, describeOrigin, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { isSelfMode } from './types.js';
 
@@ -25,6 +25,9 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
     process.exitCode = 1;
     return;
   }
+  // An entry an unknown or removed key takes out of the delivered set never
+  // appears in the list below, so say why it is missing (#822).
+  reportEntryResolution(resolution);
   const variables = resolution.entries;
   if (variables.length === 0) {
     log.info('No env variables defined');
@@ -100,6 +103,20 @@ export async function envAdd(
         `${relativePath}: variable "${key}" has unknown ${one ? 'key' : 'keys'} `
           + `${unknown.map((k) => `\`${k}:\``).join(', ')}, so pull does not deliver it. `
           + `Correct the ${one ? 'key' : 'keys'} or remove ${one ? 'it' : 'them'} in ${relativePath}.`,
+      );
+    }
+    // Same for a removed per-entry key, which the schema keeps so it can be
+    // detected rather than stripped: `roles:` on env and `projects:` reach nobody.
+    const updated = envConfig.variables[existingIdx];
+    const removed: string[] = [];
+    if (updated.projects !== undefined) removed.push('projects');
+    if (updated.roles !== undefined) removed.push('roles');
+    if (removed.length > 0) {
+      const one = removed.length === 1;
+      log.warn(
+        `${relativePath}: variable "${key}" is scoped with per-entry `
+          + `${removed.map((k) => `\`${k}:\``).join(' and ')}, which this version no longer reads, `
+          + `so pull does not deliver it. Remove ${one ? 'it' : 'them'} in ${relativePath}.`,
       );
     }
   } else {

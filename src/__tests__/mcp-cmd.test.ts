@@ -17,13 +17,14 @@ vi.mock('../utils/fs.js', () => ({
   readJson: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('../utils/logger.js', () => ({
-  log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn() },
 }));
 
 import { autoDetectInit } from '../config.js';
 import { resolveEntriesFor } from '../namespaced-entries.js';
 import { mcpInject, mcpList } from '../mcp-cmd.js';
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
+import { resetWarnOnce } from '../utils/warn-once.js';
 
 const mockedAutoDetectInit = autoDetectInit as Mock;
 const mockedResolve = resolveEntriesFor as Mock;
@@ -58,6 +59,7 @@ async function listOutput(): Promise<string> {
 
 describe('mcpList', () => {
   beforeEach(() => {
+    resetWarnOnce();
     mockedAutoDetectInit.mockResolvedValue({
       localConfig: { repo: { localPath: '/repo' }, scope: 'user', additionalRoles: [] },
       teamConfig: { toolPaths: {} },
@@ -97,6 +99,27 @@ describe('mcpList', () => {
     await listOutput();
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining('server "db" is defined in both mcp/checkout/mcp.yaml and mcp/billing/mcp.yaml'));
     process.exitCode = 0;
+  });
+
+  it('names the server a removed per-entry key takes out of the delivered set (#822)', async () => {
+    mockedResolve.mockResolvedValue({
+      ...resolved([
+        [{ name: 'good_server', transport: 'stdio', command: 'echo' }, 'mcp/mcp.yaml', null],
+      ]),
+      notices: [{
+        kind: 'removed-key' as const,
+        message: 'mcp/mcp.yaml: server "scoped_server" is scoped with per-entry `projects:`, '
+          + 'which this version no longer reads, so it reaches nobody. '
+          + 'It lists no id: remove it, or move it to the namespace file it is meant for.',
+      }],
+    });
+    const { log } = await import('../utils/logger.js');
+    const text = await listOutput();
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
+      'server "scoped_server" is scoped with per-entry `projects:`, which this version no longer reads, so it reaches nobody.',
+    ));
+    expect(text).toContain('good_server');
+    expect(text).not.toContain('scoped_server');
   });
 });
 

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
-import { describeEntryFailure, describeOrigin, resolveEntriesFor } from './namespaced-entries.js';
+import { describeEntryFailure, describeOrigin, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import {
   reconcileMcpForConfig,
   resolveMcpTargets,
@@ -31,6 +31,9 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  // A server an unknown or removed key takes out of the delivered set never
+  // appears in the list below, so say why it is missing (#822).
+  reportEntryResolution(resolution);
   const servers = resolution.entries;
 
   if (servers.length === 0) {

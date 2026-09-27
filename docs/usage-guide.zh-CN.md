@@ -897,8 +897,9 @@ projects:
 - **旧模式**（成员没有角色，且团队没有 `projects.yaml`）只读取根目录文件，行为不变；
   `teamai doctor` 会列出根文件中重复的名字。
 - **值从哪里来。** `teamai env list`、`teamai mcp list`、`teamai hooks list` 与
-  `teamai list <env|hooks|mcp> --source repo` 会给出每个条目的 namespace 以及是否覆盖了
-  根条目；`teamai status` 按 namespace 计数；`teamai doctor` 以提示信息列出每一处覆盖。
+  `teamai list <env|hooks|mcp> --source repo` 会给出每个条目的 namespace、是否覆盖了
+  根条目，并指出每个未下发的条目及其原因；`teamai status` 按 namespace 计数并同样
+  指出它们；`teamai doctor` 以提示信息列出每一处覆盖。
 - **先让所有成员升级。** teamai 0.25.0 与 0.26.0 beta 会拒绝不认识的 `resources:` key，
   声明 `env`、`hooks` 或 `mcp` 会让这些版本的 pull 失败。从本版本起，未知的
   `resources:` key 只会给出警告，`teamai roles` 与 `teamai projects` 保存 manifest 时也会保留它。
@@ -907,14 +908,14 @@ projects:
 
 | Key | 适用于 | 现在 |
 |---|---|---|
-| `projects:` | env、hooks、MCP | 已移除：该条目不再下发给任何人，每次 pull 都会警告并给出应迁往的文件 |
+| `projects:` | env、hooks、MCP | 已移除：该条目不再下发给任何人，每次 pull 和各 list 命令都会警告并给出应迁往的文件 |
 | `roles:` | env | 已移除，处理方式相同 |
 | `roles:` | hooks、MCP | 已弃用：在一个次版本内仍像 0.25.0 一样按角色过滤，根文件中以不同 `roles:` 重复的名字也照旧生效；pull 会警告，`teamai doctor` 有一项检查，两者都会列出每个目标文件 |
 
 没有自动迁移：把每个条目移到警告给出的 namespace 文件中，并删掉该 key。
 
 条目若带有其 schema 不认识的其他 key（例如拼错的 `role:`），同样不会下发给任何人；
-pull 与 `teamai doctor` 会指出文件、条目和该 key。请改正或删除这个 key。
+pull、各 list 命令与 `teamai doctor` 会指出文件、条目和该 key。请改正或删除这个 key。
 较新版本 teamai 新增的 key 对旧版本同样是未知 key，因此团队使用新的条目 key 之前，
 请先让所有成员升级。
 

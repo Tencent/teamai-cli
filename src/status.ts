@@ -23,7 +23,7 @@ import { mcpEntryReader } from './resources/mcp.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { envEntryReader } from './resources/env.js';
 import {
-  describeEntryFailure, describeOrigin, describeOrigins, resolveEntriesFor,
+  describeEntryFailure, describeOrigin, describeOrigins, reportEntryResolution, resolveEntriesFor,
   type EntryResolution, type EntryType,
 } from './namespaced-entries.js';
 
@@ -103,6 +103,9 @@ export async function status(options: GlobalOptions): Promise<void> {
     counts[type] = resolution.kind === 'resolved' ? resolution.entries.length : 0;
     if (resolution.kind === 'failed') origins[type] = ' (cannot be resolved; run `teamai doctor`)';
     else if (resolution.entries.some((entry) => entry.namespace !== null)) origins[type] = ` (${describeOrigins(resolution.entries)})`;
+    // An entry an unknown or removed key takes out of the delivered set is
+    // invisible in the count, so name it here too (#822).
+    if (resolution.kind === 'resolved') reportEntryResolution(resolution);
   };
   count('env', await resolveEntriesFor(envEntryReader, localConfig));
 
@@ -321,17 +324,20 @@ async function printRepoSection(
     const env = await resolveEntriesFor(envEntryReader, localConfig);
     if (env.kind === 'failed') {
       console.log(`  ${describeEntryFailure(env.failure)}`);
-    } else if (env.entries.length === 0) {
-      console.log('  (none)');
     } else {
-      if (options.reveal) {
-        process.stderr.write('[warn] Env values will be shown in plaintext\n');
-      }
-      for (const v of env.entries) {
-        const display = options.reveal ? v.entry.value : maskEnvValue(v.entry.value);
-        console.log(`  ${v.name}=${display}  (${describeOrigin(v)})`);
-        if (options.verbose && v.entry.description) {
-          console.log(`    ${v.entry.description}`);
+      reportEntryResolution(env);
+      if (env.entries.length === 0) {
+        console.log('  (none)');
+      } else {
+        if (options.reveal) {
+          process.stderr.write('[warn] Env values will be shown in plaintext\n');
+        }
+        for (const v of env.entries) {
+          const display = options.reveal ? v.entry.value : maskEnvValue(v.entry.value);
+          console.log(`  ${v.name}=${display}  (${describeOrigin(v)})`);
+          if (options.verbose && v.entry.description) {
+            console.log(`    ${v.entry.description}`);
+          }
         }
       }
     }
@@ -344,6 +350,7 @@ async function printRepoSection(
       console.log(`  ${describeEntryFailure(mcp.failure)}`);
       return;
     }
+    reportEntryResolution(mcp);
     if (mcp.entries.length === 0) {
       console.log('  (none)');
       return;
@@ -367,6 +374,7 @@ async function printRepoSection(
       console.log(`  ${describeEntryFailure(hooks.failure)}`);
       return;
     }
+    reportEntryResolution(hooks);
     if (hooks.entries.length === 0) {
       console.log('  (none)');
       return;
