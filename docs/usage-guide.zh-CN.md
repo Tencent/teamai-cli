@@ -677,6 +677,10 @@ excludedSkills:
 
 ### 推送本地资源
 
+扫描前，`push` 会用团队仓库的新版刷新未修改的旧规则副本。对于 Copilot，会单独比较 Markdown 正文，忽略自动生成的 `applyTo` 头，并以 `.instructions.md` 格式写入更新；本地正文编辑会保留。此行为适用于项目规则和 `COPILOT_HOME` 下的用户规则。
+
+团队仅修改 `paths` 时，只要本地文件仍与某个已记录版本的生成副本一致，`push` 也会刷新 Copilot 的 `applyTo`；此时本地手动修改过的头部会保留。
+
 ```bash
 teamai push          # 扫描新增/修改的资源，创建 MR
 teamai push --all    # 跳过确认，直接推送

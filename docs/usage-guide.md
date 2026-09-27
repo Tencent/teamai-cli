@@ -742,6 +742,10 @@ Exclusion rules take effect after role and tag filtering. When running `teamai p
 
 ### Push local resources
 
+Before scanning, `push` refreshes unedited old rule copies from the team repo. For Copilot, it compares Markdown bodies independently of the generated `applyTo` header and renders updates in `.instructions.md` format. Local body edits are preserved. This applies to project rules and user rules under `COPILOT_HOME`.
+
+When only the team's `paths` change, `push` also refreshes Copilot's `applyTo` if the local file still matches a recorded version's generated copy. A locally edited header is preserved in this case.
+
 ```bash
 teamai push          # Scan for new/modified resources, create an MR
 teamai push --all    # Skip confirmation, push directly

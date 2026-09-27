@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
-import { resolveBaseDir, scopedToolPaths } from '../types.js';
+import { resolveBaseDir, resolveToolBaseDir, scopedToolPaths } from '../types.js';
 import {
   listFilesRecursive,
   listDirs,
@@ -16,9 +16,10 @@ import {
   writeFile,
 } from './fs.js';
 import { getFileContentAtRev, getFileContentWhenAdded } from './git.js';
-import { ResourceHandler } from '../resources/base.js';
-import { ruleFileExtensionForTool, usesCursorMdcRules } from '../resources/rule-format.js';
+import { isToolInstalledForConfig, ResourceHandler } from '../resources/base.js';
+import { ruleFileExtensionForTool, usesCopilotInstructions, usesCursorMdcRules } from '../resources/rule-format.js';
 import { teamRuleToCursorMdc, cursorMdcBodyEqualsTeamMd } from '../resources/cursor-mdc.js';
+import { teamRuleToCopilotInstructions, copilotInstructionsBodyEqualsTeamMd } from '../resources/copilot-instructions.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { log } from './logger.js';
 import { placedResourcePath } from '../push-namespaces.js';
@@ -67,7 +68,7 @@ export async function syncTeamUpdatesToLocal(
   const repoPath = localConfig.repo.localPath;
   const baseDir = resolveBaseDir(localConfig);
 
-  await syncRulesToLocal(teamConfig, localConfig, repoPath, baseDir, bases, placedRules);
+  await syncRulesToLocal(teamConfig, localConfig, repoPath, bases, placedRules);
   await syncSkillsToLocal(teamConfig, localConfig, repoPath, baseDir, bases);
 }
 
@@ -79,7 +80,6 @@ async function syncRulesToLocal(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   repoPath: string,
-  baseDir: string,
   bases: readonly string[],
   placedRules: Record<string, string> | undefined,
 ): Promise<void> {
@@ -88,17 +88,17 @@ async function syncRulesToLocal(
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.rules) continue;
-    if (!await ResourceHandler.isToolInstalled(toolPath.rules, baseDir)) continue;
+    if (!await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
 
-    const rulesDir = path.join(baseDir, toolPath.rules);
+    const rulesDir = path.join(resolveToolBaseDir(tool, localConfig), toolPath.rules);
     if (!await pathExists(rulesDir)) continue;
 
-    // Cursor-compatible copies are `.mdc` with derived frontmatter; every other
-    // tool's are verbatim `.md`. Matching only `.md` would skip `.mdc` tools,
-    // leaving a stale copy that push then reports as "modified" and sends
-    // upstream — silently reverting the teammate's update.
+    // Cursor and Copilot copies have native extensions and derived frontmatter.
+    // Compare their bodies with the team Markdown so stale copies are refreshed
+    // rather than offered as edits that revert a teammate's update.
     const ext = ruleFileExtensionForTool(tool);
     const isMdcTool = usesCursorMdcRules(tool);
+    const isCopilotTool = usesCopilotInstructions(tool);
 
     const files = await listFilesRecursive(rulesDir);
     for (const file of files) {
@@ -140,18 +140,25 @@ async function syncRulesToLocal(
 
       // Only process files that exist in both places but differ
       if (!await pathExists(teamFilePath)) continue;
-      if (isMdcTool) {
+      if (isMdcTool || isCopilotTool) {
+        const bodyEquals = isCopilotTool ? copilotInstructionsBodyEqualsTeamMd : cursorMdcBodyEqualsTeamMd;
+        const render = isCopilotTool ? teamRuleToCopilotInstructions : teamRuleToCursorMdc;
         const localRaw = await readFileSafe(localFilePath);
         const teamRaw = await readFileSafe(teamFilePath);
         if (localRaw === null || teamRaw === null) continue;
-        if (cursorMdcBodyEqualsTeamMd(localRaw, teamRaw)) continue;
+        const sameBody = bodyEquals(localRaw, teamRaw);
+        if (sameBody && (!isCopilotTool || localRaw === render(teamRaw))) continue;
 
         const oldContents = await baseVersions();
         if (oldContents.length === 0) continue; // Didn't exist at any base — ambiguous, skip
 
-        // Compare bodies: the local `.mdc` never matched the team `.md` byte for byte.
-        if (oldContents.some((old) => cursorMdcBodyEqualsTeamMd(localRaw, old.toString('utf-8')))) {
-          await writeFile(localFilePath, teamRuleToCursorMdc(teamRaw));
+        // With only a scope change, require the whole old render to match so
+        // a locally edited header is preserved. Body updates keep the existing
+        // body comparison, since the team file has different frontmatter.
+        if (oldContents.some((old) => sameBody
+          ? localRaw === render(old.toString('utf-8'))
+          : bodyEquals(localRaw, old.toString('utf-8')))) {
+          await writeFile(localFilePath, render(teamRaw));
           log.debug(`Pre-push sync: updated ${tool} rule ${name} to match team repo`);
         }
         continue;

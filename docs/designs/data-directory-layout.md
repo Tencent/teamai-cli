@@ -66,7 +66,14 @@ resets nothing, since a checkout recorded at an older revision already misses
 the fast path. `push` needs that entry too: before scanning, it syncs each rule
 and skill the member never edited, and "never edited" means equal to the
 version at a revision *this* checkout synced, not the shared `lastPullRev`
-another checkout may have moved (#812). A placed agent, which push does not
+another checkout may have moved (#812). Cursor and Copilot rules compare bodies
+against those revisions, ignoring derived frontmatter, and render refreshed
+copies in the tool's native format. Rule sync uses the same tool root as the
+scanner, including `COPILOT_HOME` for user-scope Copilot instructions.
+For Copilot updates that only change `paths`, it compares the entire local file
+with the rendered recorded versions before refreshing `applyTo`, preserving
+locally edited headers rather than overwriting them on a body match alone.
+A placed agent, which push does not
 sync, is held when the team file has changed since any of those revisions, or
 since it was added if one of them predates it (#823). That sync brings the
 unedited copies up
