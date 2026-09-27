@@ -343,7 +343,10 @@ describe('project-scoped hooks, MCP servers and env variables via the real CLI (
     const envList = await runCLI(['env', 'list'], projectRoot, home);
     expect(envList.code, envList.output).toBe(0);
     expect(envList.output).toMatch(/BILLING_URL=\S+ {2}\(billing\)/);
-    expect(envList.output).not.toContain('DEVOPS_ONLY');
+    // The delivery notice for the withheld per-entry `roles:` key names
+    // DEVOPS_ONLY in its warning; the variable itself must stay out of the
+    // delivered list, where it would print as `DEVOPS_ONLY=<masked>`.
+    expect(envList.output).not.toMatch(/DEVOPS_ONLY=/);
   }, 60_000);
 
   it('warns about per-entry projects:, naming the namespace file to move the entry to', async () => {
