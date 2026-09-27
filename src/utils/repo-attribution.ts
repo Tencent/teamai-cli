@@ -58,9 +58,12 @@ export function attributeRepo(cwd: string | undefined): string {
     if (c) return c;
   }
 
-  const segs = raw.replace(/\/+$/, '').split('/').filter(Boolean);
+  const segs = raw.replace(/[/\\]+$/, '').split(/[/\\]/).filter(Boolean);
   if (segs.length === 0) return 'no_repo';
   const leaf = segs[segs.length - 1];
+  // A drive root (`C:\`) leaves the bare drive letter as the leaf; it names no
+  // project, like `/` on POSIX.
+  if (/^[a-z]:$/i.test(leaf)) return 'no_repo';
   if (NON_REPO_LEAVES.has(leaf.toLowerCase())) return 'no_repo';
   return leaf;
 }

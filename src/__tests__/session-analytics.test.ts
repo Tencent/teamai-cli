@@ -44,6 +44,16 @@ describe('attributeRepo', () => {
     expect(attributeRepo('')).toBe('no_repo');
     expect(attributeRepo(undefined)).toBe('no_repo');
   });
+  it('splits Windows paths on the backslash too', () => {
+    expect(attributeRepo('C:\\Users\\u\\new-api')).toBe('new-api');
+    expect(attributeRepo('D:\\src\\teamai-cli')).toBe('teamai-cli');
+    expect(attributeRepo('\\\\srv\\share\\new-api')).toBe('new-api');
+  });
+  it('maps a Windows path whose leaf is not a project to no_repo', () => {
+    expect(attributeRepo('C:\\Users')).toBe('no_repo');
+    expect(attributeRepo('C:\\src\\data')).toBe('no_repo');
+    expect(attributeRepo('C:\\')).toBe('no_repo');
+  });
 });
 
 describe('repoKeys (#809)', () => {
@@ -207,6 +217,16 @@ describe('attributeByRepo', () => {
       ev({ type: 'tool_use', timestamp: 't1', sessionId: 'r', cwd: '/root' }),
     ]);
     expect(repos.map((r) => [r.repo, r.sessions]).sort()).toEqual([['no_repo', 2], ['repo', 2]]);
+  });
+
+  it('labels Windows cwds by their project directory and merges non-project dirs into no_repo', () => {
+    const repos = attributeByRepo([
+      ev({ type: 'tool_use', timestamp: 't1', sessionId: 'a', cwd: 'C:\\Users\\dev\\work\\teamai-cli' }),
+      ev({ type: 'tool_use', timestamp: 't2', sessionId: 'b', cwd: 'C:\\Users\\dev\\work\\teamai-cli' }),
+      ev({ type: 'tool_use', timestamp: 't3', sessionId: 'c', cwd: 'C:\\Users\\dev\\home' }),
+      ev({ type: 'tool_use', timestamp: 't4', sessionId: 'd', cwd: 'C:\\src\\data' }),
+    ]);
+    expect(repos.map((r) => [r.repo, r.sessions]).sort()).toEqual([['no_repo', 2], ['teamai-cli', 2]]);
   });
 });
 
