@@ -288,6 +288,24 @@ describe('renderForCursor', () => {
     expect(content).toContain('You are a helpful assistant.');
   });
 
+  it('carries the model into the frontmatter like every other renderer (#830)', () => {
+    const { content } = renderForCursor(makeSpec({ model: 'claude-opus-4' }));
+    expect(content).toContain('model: claude-opus-4');
+  });
+
+  it('omits model when the spec has none', () => {
+    const { content } = renderForCursor(makeSpec());
+    expect(content).not.toContain('model:');
+  });
+
+  it('round-trips the model through reverseFromCursor', () => {
+    const { content } = renderForCursor(makeSpec({ model: 'claude-opus-4' }));
+    const result = reverseFromCursor('/agents/test-agent.md', content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.spec.model).toBe('claude-opus-4');
+  });
+
   it('flattens tool_extras.cursor into frontmatter', () => {
     const spec = makeSpec({ tool_extras: { cursor: { composer_mode: true } } });
     const { content } = renderForCursor(spec);

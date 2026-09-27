@@ -319,6 +319,9 @@ export function renderForCursor(spec: AgentSpec): RenderResult {
     agent_id: spec.name,
     description: spec.description,
   };
+  if (spec.model !== undefined) {
+    frontmatterData['model'] = spec.model;
+  }
   if (spec.tools !== undefined && spec.tools.length > 0) {
     frontmatterData['tools'] = spec.tools;
   }
