@@ -728,7 +728,7 @@ export async function push(
   result?: { completed: boolean },
 ): Promise<void> {
   // Auto-detect scope: project scope if cwd has project config, else user scope
-  const { localConfig, teamConfig } = await autoDetectInit();
+  const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
   assertNotReadOnly(localConfig, 'teamai push');
 
   // --project is a destination override expressed as a logical project. Each
@@ -777,8 +777,11 @@ export async function push(
     // migrateSelfA1 takes (for a pre-migration self install that is
     // <repo>/.teamai/.sync-lock). Like git-mode push, error on contention rather
     // than silently skipping (that would drop the user's changes).
+    // Under a dry run `acquireLock` reads the lock's state instead of creating
+    // it (#866), so the preview contends on exactly what a real push would, and
+    // leaves no partition directory behind.
     const selfSyncLock = path.join(getDataHome(localConfig), SYNC_LOCK_FILENAME);
-    if (!(await acquireLock(selfSyncLock))) {
+    if (!(await acquireLock(selfSyncLock, { dryRun: options.dryRun }))) {
       log.error('Another teamai pull/push/migration is in progress for this project. Re-run once it finishes.');
       process.exitCode = 1;
       return;
@@ -787,24 +790,26 @@ export async function push(
       // Self-heal an older .teamai/.gitignore that still ignores `env` (pre-beta.5).
       // Run against the ACTIVE tree (original localConfig, projectRoot intact) BEFORE
       // swapping into the worktree, so the fixed .gitignore lets env changes surface.
-      try {
-        const { migrateSelfModeGitignore } = await import('./init.js');
-        await migrateSelfModeGitignore(localConfig);
-      } catch { /* best-effort */ }
+      // A dry run skips it: it rewrites a tracked file in the user's active tree,
+      // which outlives the preview (#866), and it is idempotent, so the next real
+      // push performs it.
+      if (!options.dryRun) {
+        try {
+          const { migrateSelfModeGitignore } = await import('./init.js');
+          await migrateSelfModeGitignore(localConfig);
+        } catch { /* best-effort */ }
+      }
 
+      // A dry run runs this too, and must: the worktree is not a side effect of
+      // pushing, it is the only source of the CLEAN BASELINE self-mode scanners
+      // compare the active tree against. `env.ts` diffs `projectRoot/.teamai`
+      // against `repo.localPath`, and outside the worktree those are the same
+      // path in self mode — so skipping it makes the preview silently
+      // under-report every edit, rather than merely report it early (#866). It
+      // is disposable: `withKnowledgeWorktree` removes it in a `finally`.
       const { withKnowledgeWorktree, EmptyRepoError } = await import('./utils/reports-branch.js');
       try {
-        const activeConfigPath = path.join(localConfig.repo.localPath, 'teamai.yaml');
-        const activeConfig = await readFileSafe(activeConfigPath);
-        const businessRoot = localConfig.repo.businessRepoRoot ?? localConfig.projectRoot;
-        let pendingTeamConfig: string | null = null;
-        if (activeConfig !== null && businessRoot) {
-          const relativeConfigPath = path.relative(businessRoot, activeConfigPath).split(path.sep).join('/');
-          const committed = await getFileContentAtRev(businessRoot, 'HEAD', relativeConfigPath);
-          if (committed === null || committed.toString() !== activeConfig) {
-            pendingTeamConfig = activeConfig;
-          }
-        }
+        const pendingTeamConfig = await pendingSelfTeamConfig(localConfig);
         await withKnowledgeWorktree(localConfig, async (wtConfig) => {
           if (pendingTeamConfig !== null) {
             await writeFile(path.join(wtConfig.repo.localPath, 'teamai.yaml'), pendingTeamConfig);
@@ -830,7 +835,8 @@ export async function push(
   // A concurrent pull/push would corrupt it. Unlike pull, push must NOT silently
   // skip (that would drop the user's changes), so on contention we error out.
   const syncLock = path.join(getDataHome(localConfig), SYNC_LOCK_FILENAME);
-  const locked = await acquireLock(syncLock);
+  // Read-only acquisition under a dry run, exactly as the self-mode branch above.
+  const locked = await acquireLock(syncLock, { dryRun: options.dryRun });
   if (!locked) {
     log.error('Another teamai pull/push is in progress for this project. Re-run once it finishes.');
     process.exitCode = 1;
@@ -841,6 +847,24 @@ export async function push(
   } finally {
     await releaseLock(syncLock);
   }
+}
+
+/**
+ * The `teamai.yaml` a self-mode push has to carry, or null when HEAD already
+ * holds it. Read from the ACTIVE tree — the business repo is `businessRepoRoot`,
+ * and the worktree the push swaps into is a detached checkout of the same
+ * commits, so this is the one input `pushCore` cannot rediscover from the
+ * worktree alone. Read-only, which is why the `--dry-run` path calls it too
+ * (#866); writing it into the worktree stays with the real path.
+ */
+async function pendingSelfTeamConfig(localConfig: LocalConfig): Promise<string | null> {
+  const activeConfigPath = path.join(localConfig.repo.localPath, 'teamai.yaml');
+  const activeConfig = await readFileSafe(activeConfigPath);
+  const businessRoot = localConfig.repo.businessRepoRoot ?? localConfig.projectRoot;
+  if (activeConfig === null || !businessRoot) return null;
+  const relativeConfigPath = path.relative(businessRoot, activeConfigPath).split(path.sep).join('/');
+  const committed = await getFileContentAtRev(businessRoot, 'HEAD', relativeConfigPath);
+  return committed === null || committed.toString() !== activeConfig ? activeConfig : null;
 }
 
 async function pushCore(

@@ -146,13 +146,21 @@ async function removeCore(
     }
     if (type === 'mcp' && !name.includes('/')) {
       const target = await mcpRemovalTarget(name, teamItems.filter((item) => item.name === name).map(qualified), localConfig, options);
-      if (target === 'ambiguous') {
-        ambiguous = true;
-      } else if (target === null) {
-        notFound.push(name);
-      } else {
-        if (target !== name) log.info(`${name} is ${target}`);
-        found.push(target);
+      switch (target.kind) {
+        case 'ambiguous':
+          ambiguous = true;
+          break;
+        case 'not-found':
+          notFound.push(name);
+          break;
+        case 'target':
+          if (target.name !== name) log.info(`${name} is ${target.name}`);
+          found.push(target.name);
+          break;
+        default: {
+          const unhandled: never = target;
+          throw new Error(`Unhandled MCP removal target: ${JSON.stringify(unhandled)}`);
+        }
       }
       continue;
     }
@@ -315,6 +323,8 @@ async function removeCore(
   await saveStateForScope(state, localConfig);
 }
 
+type McpRemovalTarget = { kind: 'target'; name: string } | { kind: 'ambiguous' } | { kind: 'not-found' };
+
 /**
  * Which file `remove mcp <name>` edits, by the convention push uses: the root
  * file by default, a flag picks a namespace. Without a flag that is the root
@@ -322,32 +332,33 @@ async function removeCore(
  * that only several namespace files define is refused, since each reaches
  * different members.
  * Returns the qualified name (`<ns>/<name>`, or the bare name for the root
- * file), null when no file defines it, or 'ambiguous' after reporting why.
+ * file), `not-found` when no file defines it, or `ambiguous` after reporting
+ * why. Tagged, so a server literally named `ambiguous` is still a name (#862).
  */
 async function mcpRemovalTarget(
   name: string,
   candidates: string[],
   localConfig: LocalConfig,
   options: RemoveOptions,
-): Promise<string | 'ambiguous' | null> {
+): Promise<McpRemovalTarget> {
   if (options.role !== undefined || options.project !== undefined) {
     const { entryFilePath, entryNamespaceFromFlags } = await import('./namespaced-entries.js');
     const target = await entryNamespaceFromFlags(localConfig.repo.localPath, 'mcp', options);
     if (!target.ok) {
       log.error(target.message);
-      return 'ambiguous';
+      return { kind: 'ambiguous' };
     }
     const wanted = target.namespace === null ? name : `${target.namespace}/${name}`;
-    if (candidates.includes(wanted)) return wanted;
+    if (candidates.includes(wanted)) return { kind: 'target', name: wanted };
     // The team scan skipped the named file, so "not found" would be a guess.
     const file = entryFilePath('mcp', target.namespace);
     if ((await unreadableMcpFiles(localConfig.repo.localPath)).includes(file)) {
       log.error(`${file} does not parse, so "${name}" cannot be found in it. Fix it in the team repo, then retry.`);
-      return 'ambiguous';
+      return { kind: 'ambiguous' };
     }
-    return null;
+    return { kind: 'not-found' };
   }
-  if (candidates.includes(name)) return name;
+  if (candidates.includes(name)) return { kind: 'target', name };
   // The team scan skips a file that does not parse, so the candidates may miss
   // the root server this name removes by default, or a second namespace that
   // makes it ambiguous. Picking from what is left would remove the wrong one.
@@ -357,7 +368,7 @@ async function mcpRemovalTarget(
       `Cannot tell which MCP file defines "${name}": ${unreadable.join(', ')} does not parse. `
       + 'Fix it in the team repo, or pass --role <ns> or --project <id> to name the file.',
     );
-    return 'ambiguous';
+    return { kind: 'ambiguous' };
   }
   if (candidates.length > 1) {
     const files = candidates.map((candidate) => `mcp/${candidate.slice(0, candidate.lastIndexOf('/'))}/mcp.yaml`);
@@ -365,9 +376,10 @@ async function mcpRemovalTarget(
       `MCP server "${name}" is not in mcp/mcp.yaml but is defined in several namespace files (${files.join(', ')}), `
       + 'and each reaches different members. Pass --role <ns> or --project <id> to remove it from one of them.',
     );
-    return 'ambiguous';
+    return { kind: 'ambiguous' };
   }
-  return candidates[0] ?? null;
+  const only = candidates[0];
+  return only === undefined ? { kind: 'not-found' } : { kind: 'target', name: only };
 }
 
 /** The MCP files, root and namespace, that exist and cannot be read or parsed. */

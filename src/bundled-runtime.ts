@@ -181,7 +181,8 @@ const BUNDLED_GIT_RESOLVERS: Array<() => string[]> = [
  * `spawn git ENOENT` and the pull silently does nothing, while the postPull
  * script (spawned by absolute path) keeps deploying the stale tree. Bare-name
  * `git` is not one call site: providers, mr-hint and simple-git all spawn it,
- * which is why this is a PATH fix rather than a resolver inside createGit.
+ * which is why this is a PATH fix rather than a resolver inside createGit
+ * (createGit's gitBinary keeps the bare name on Windows and reads PATH anyway).
  *
  * A machine that already resolves `git` is left alone, helpers included. Else
  * the `<cmd>` dirs go first — exactly what WorkBuddy's own teamai.cmd shim puts

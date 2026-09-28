@@ -379,8 +379,20 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
  * residual window exists only if the reclaiming process itself dies mid-reclaim:
  * stealing its dead-pid sentinel is not yet race-free, see #760.)
  */
-export async function acquireLock(lockPath?: string): Promise<boolean> {
+export async function acquireLock(
+  lockPath?: string,
+  options: { dryRun?: boolean } = {},
+): Promise<boolean> {
   const resolved = lockPath ?? expandHome(getUpdateLockPath());
+  // A preview does not take the lock, because taking one is itself a write:
+  // `ensureDir` below creates the lock's parent directory, which a fresh
+  // self-mode clone has no partition for yet and which `releaseLock` has no
+  // reason to remove — the directory would outlive the command (#866). What the
+  // preview still owes its caller is the ANSWER the real command would get, so
+  // it reads the lock's state instead of creating it: a live holder means the
+  // real run would have reported contention, anything else means it would have
+  // won. No owner is recorded, so `releaseLock` has nothing to undo.
+  if (options.dryRun) return (await lockState(resolved)) !== 'live';
   const owner = randomUUID();
   const payload = JSON.stringify({
     pid: process.pid,

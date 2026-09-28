@@ -117,8 +117,8 @@ describe('teamai remove agents names one agent, not a stem every namespace share
  * refused.
  */
 describe('teamai remove mcp picks one file', () => {
-  const server = (namespace?: string) => ({
-    name: 'db',
+  const server = (namespace?: string, name = 'db') => ({
+    name,
     type: 'mcp',
     ...(namespace ? { namespace } : {}),
     relativePath: namespace ? `mcp/${namespace}/mcp.yaml` : 'mcp/mcp.yaml',
@@ -169,5 +169,36 @@ describe('teamai remove mcp picks one file', () => {
     await remove('mcp', ['db'], { force: true, role: 'checkout' });
 
     expect(handler.removeItem.mock.calls[0]?.[0]).toBe('checkout/db');
+  });
+
+  // A server may be named after any outcome word, and is still just a name (#862).
+  it('removes a root server named "ambiguous"', async () => {
+    handler.scanTeamForPull.mockResolvedValue([server(undefined, 'ambiguous')]);
+
+    await remove('mcp', ['ambiguous'], { force: true });
+
+    expect(handler.removeItem).toHaveBeenCalledTimes(1);
+    expect(handler.removeItem.mock.calls[0]?.[0]).toBe('ambiguous');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('refuses "ambiguous" when only several namespaces define it, saying why', async () => {
+    handler.scanTeamForPull.mockResolvedValue([server('checkout', 'ambiguous'), server('billing', 'ambiguous')]);
+
+    await remove('mcp', ['ambiguous'], { force: true });
+
+    expect(handler.removeItem).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('mcp/checkout/mcp.yaml, mcp/billing/mcp.yaml');
+  });
+
+  it('skips a name no MCP file defines as not found', async () => {
+    handler.scanTeamForPull.mockResolvedValue([server()]);
+
+    await remove('mcp', ['ghost'], { force: true });
+
+    expect(handler.removeItem).not.toHaveBeenCalled();
+    expect(vi.mocked(log.warn).mock.calls.flat().join(' ')).toContain('Not found (skipping): ghost');
+    expect(vi.mocked(log.error).mock.calls.flat().join(' ')).toContain('No matching resources found to remove');
   });
 });

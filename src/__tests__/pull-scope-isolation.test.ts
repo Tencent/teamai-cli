@@ -290,7 +290,11 @@ describe('pull scope isolation (issue #73)', () => {
 
     await pull({ silent: true });
 
-    expect(loadLocalConfigForScope).toHaveBeenCalledWith('user');
+    // The third argument is the LoadOptions the loader now receives so it can
+    // preview instead of migrate (#850). It rides along on every call, so the
+    // assertion has to mention it; `dryRun` is undefined here because this test
+    // drives `pull` without `--dry-run`.
+    expect(loadLocalConfigForScope).toHaveBeenCalledWith('user', undefined, { dryRun: undefined });
     expect(loadStateForScope).toHaveBeenCalledWith(expect.objectContaining({ scope: 'user' }));
     expect(loadStateForScope).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project', projectRoot }));
     expect(log.info).toHaveBeenCalledWith(
@@ -346,7 +350,7 @@ describe('pull scope isolation (issue #73)', () => {
 
     await pull({ silent: true });
 
-    expect(loadLocalConfigForScope).toHaveBeenCalledWith('user');
+    expect(loadLocalConfigForScope).toHaveBeenCalledWith('user', undefined, { dryRun: undefined });
     expect(log.info).not.toHaveBeenCalledWith(SKIP_MSG);
     expect(pullSources).toHaveBeenCalledTimes(1);
     expect(vi.mocked(pullSources).mock.calls[0][0]).toMatchObject({ scope: 'user' });

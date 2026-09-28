@@ -1906,8 +1906,13 @@ export async function pull(
     // needs no lock.
     if (config.repo.kind === 'http') return true;
     const lock = path.join(getDataHome(config), SYNC_LOCK_FILENAME);
-    if (await acquireLock(lock)) {
-      heldLocks.set(config, lock);
+    // `acquireLock` under a dry run reads the lock's state instead of creating
+    // it — taking one is itself a write (#866) — so the preview answers with
+    // what the real run would have found: a live holder reports this scope as
+    // contended and skips it, exactly as a real pull does. Nothing is recorded
+    // for release, because nothing was taken.
+    if (await acquireLock(lock, { dryRun: options.dryRun })) {
+      if (!options.dryRun) heldLocks.set(config, lock);
       return true;
     }
     // User-visible: this scope is skipped wholesale (no fetch/deploy/reconcile),
@@ -1925,7 +1930,11 @@ export async function pull(
   let projectConfig: LocalConfig | null = null;
   const unreadable: string[] = [];
   try {
-    projectConfig = await detectProjectConfig(undefined, (configPath, error) => { unreadable.push(`${configPath}: ${error}`); });
+    projectConfig = await detectProjectConfig(
+      undefined,
+      (configPath, error) => { unreadable.push(`${configPath}: ${error}`); },
+      { dryRun: options.dryRun },
+    );
   } catch (e) {
     log.warn(`Project-scope detection error: ${(e as Error).message}`);
   }
@@ -1954,7 +1963,7 @@ export async function pull(
     log.info('project scope detected, skipped user scope');
   } else {
     try {
-      const loadedUserConfig = await loadLocalConfigForScope('user');
+      const loadedUserConfig = await loadLocalConfigForScope('user', undefined, { dryRun: options.dryRun });
       if (loadedUserConfig) {
         if (inheritUserScope) {
           inheritedUserConfig = loadedUserConfig;

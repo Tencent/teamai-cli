@@ -1,9 +1,86 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import fse from 'fs-extra';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import { log } from './logger.js';
+
+/** What simple-git accepts as a custom binary without its unsafe opt-in. */
+const SIMPLE_GIT_SAFE_BINARY = /^([a-z]:)?([a-z0-9/.\\_~-]+)$/i;
+
+let resolvedGit: { pathEnv: string; binary: string } | undefined;
+
+/**
+ * The git executable createGit spawns: the absolute path of the `git` a
+ * bare-name spawn would run, i.e. the first one on PATH.
+ *
+ * On macOS, Node looks a bare name up by trying a spawn in each PATH directory
+ * in turn, and every miss costs milliseconds. Under npm scripts or a long shell
+ * PATH that adds 30-60 ms to each of the dozens of git calls a pull or push
+ * makes. Resolved once per PATH value, so a PATH the process changes later is
+ * looked up again, as is a resolved `git` that is gone or no longer executable.
+ *
+ * The first `git` found is spawned once (`git --version`) to confirm it
+ * starts. Keeps the bare name, and so today's lookup and errors, when that
+ * cannot pick the same file: git is not on PATH, the first `git` found is not
+ * a file or does not start (no execute permission, a missing interpreter),
+ * PATH has an entry a spawn resolves against its cwd (empty or relative), or
+ * the path has characters simple-git refuses as a binary. Also on Windows,
+ * where the OS lookup is cheap and PATHEXT applies. (lookpath.ts skips empty
+ * entries and non-executables; a spawn does not, hence its own walk.)
+ */
+export function gitBinary(
+  options: { pathEnv?: string; platform?: NodeJS.Platform } = {},
+): string {
+  if ((options.platform ?? process.platform) === 'win32') return 'git';
+  const pathEnv = options.pathEnv ?? process.env.PATH ?? '';
+  if (resolvedGit?.pathEnv !== pathEnv || !stillExecutable(resolvedGit.binary)) {
+    resolvedGit = { pathEnv, binary: lookUpGit(pathEnv) };
+  }
+  return resolvedGit.binary;
+}
+
+/** One access(2) per call, where a bare-name spawn would walk PATH again. */
+function stillExecutable(binary: string): boolean {
+  if (binary === 'git') return true;
+  try {
+    fs.accessSync(binary, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function lookUpGit(pathEnv: string): string {
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (!path.isAbsolute(dir)) return 'git';
+    const candidate = path.join(dir, 'git');
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(candidate);
+    } catch (e) {
+      // A miss moves on, as the spawn's own lookup does; anything else (a
+      // symlink loop, say) is left to that lookup and the error it gives.
+      if (typeof e === 'object' && e !== null && 'code' in e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) continue;
+      return 'git';
+    }
+    if (!stat.isFile() || !SIMPLE_GIT_SAFE_BINARY.test(candidate)) return 'git';
+    return spawnsByPath(candidate) ? candidate : 'git';
+  }
+  return 'git';
+}
+
+/**
+ * Whether spawning `candidate` by its path starts it. A bare-name lookup moves
+ * past a PATH entry whose spawn fails, e.g. a script whose interpreter is gone
+ * (ENOENT) or a file without execute permission, while a spawn by path just
+ * fails. Only a candidate that starts is the one the lookup would run; its exit
+ * status does not matter.
+ */
+function spawnsByPath(candidate: string): boolean {
+  return spawnSync(candidate, ['--version'], { stdio: 'ignore', timeout: 10_000 }).error === undefined;
+}
 
 /**
  * Create a SimpleGit instance for a given base path.
@@ -13,9 +90,9 @@ import { log } from './logger.js';
  */
 export function createGit(basePath?: string): SimpleGit {
   if (basePath) {
-    return simpleGit({ baseDir: basePath });
+    return simpleGit({ baseDir: basePath, binary: gitBinary() });
   }
-  return simpleGit();
+  return simpleGit({ binary: gitBinary() });
 }
 
 /**
@@ -59,7 +136,7 @@ export async function isGitRepo(localPath: string): Promise<boolean> {
  */
 export async function initRepo(remote: string, localPath: string): Promise<void> {
   await fse.ensureDir(localPath);
-  const git = simpleGit({ baseDir: localPath });
+  const git = createGit(localPath);
   await git.init();
   await git.addRemote('origin', remote);
 }

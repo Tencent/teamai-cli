@@ -43,8 +43,14 @@ export async function status(options: GlobalOptions): Promise<void> {
     await statusAll();
     return;
   }
-  // Auto-detect scope
-  const { localConfig, teamConfig } = await autoDetectInit();
+  // Auto-detect scope.
+  // This is a read-only command, so `dryRun` is passed unconditionally rather
+  // than forwarded from `options.dryRun`: the load must never migrate a legacy
+  // role config, adopt a pre-#546 partition, or run the self-heal bootstrap
+  // (#850). The preview path returns what a write would have produced, so the
+  // report below still tells the truth, and the migration then persists on the
+  // next command that writes.
+  const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: true });
   const scopeLabel = localConfig.scope;
 
   // Scope info
@@ -249,8 +255,9 @@ async function statusAll(): Promise<void> {
 }
 
 export async function list(type: string | undefined, options: ListOptions): Promise<void> {
-  // Auto-detect scope
-  const { localConfig, teamConfig } = await autoDetectInit();
+  // Auto-detect scope — read-only, so `dryRun: true` unconditionally, as in
+  // `status` above (#850).
+  const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: true });
   const repoPath = localConfig.repo.localPath;
 
   const source = options.source ?? 'all';
