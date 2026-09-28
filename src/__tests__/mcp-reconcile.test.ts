@@ -1004,6 +1004,60 @@ servers:
     expect(changes.some((c) => c.server === 'volces-search' && c.action === 'added')).toBe(true);
   });
 
+  // #879: a resolved ${VAR} may be a team secret, so the file holding it is the member's alone.
+  describe.skipIf(process.platform === 'win32')('file modes', () => {
+    let previousUmask: number;
+    const mode = async (file: string): Promise<number> => (await fse.stat(file)).mode & 0o777;
+    const SECRET_SERVER = `
+servers:
+  - name: with-secret
+    transport: http
+    url: https://example.com/mcp
+    headers:
+      Authorization: Bearer \${SECRET_TOKEN}
+`;
+    beforeEach(() => {
+      previousUmask = process.umask(0o022);
+      vi.stubEnv('SECRET_TOKEN', 'super-secret-value');
+    });
+    afterEach(() => {
+      process.umask(previousUmask);
+      vi.restoreAllMocks();
+    });
+
+    it('writes an existing 0644 .mcp.json and ~/.claude.json 0600 once they hold a resolved value', async () => {
+      const projectRoot = path.join(tmpDir, 'proj-mode');
+      await fse.ensureDir(path.join(projectRoot, '.claude', 'skills'));
+      const projectFile = path.join(projectRoot, '.mcp.json');
+      const userFile = path.join(homeDir, '.claude.json');
+      for (const file of [projectFile, userFile]) {
+        await fse.writeFile(file, '{}\n');
+        await fse.chmod(file, 0o644);
+      }
+      await writeMcpYaml(SECRET_SERVER);
+
+      await reconcileMcpForConfig(teamConfig, { ...localConfig, scope: 'project', projectRoot } as unknown as LocalConfig);
+      await reconcileMcpForConfig(teamConfig, localConfig);
+
+      for (const file of [projectFile, userFile]) {
+        expect((await fse.readJson(file)).mcpServers['with-secret'].headers.Authorization).toBe('Bearer super-secret-value');
+        expect(await mode(file)).toBe(0o600);
+      }
+    });
+
+    it('keeps the mode of an existing config whose servers hold no resolved value', async () => {
+      const userFile = path.join(homeDir, '.claude.json');
+      await fse.writeFile(userFile, '{}\n');
+      await fse.chmod(userFile, 0o644);
+      await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n');
+
+      await reconcileMcpForConfig(teamConfig, localConfig);
+
+      expect((await fse.readJson(userFile)).mcpServers.open).toBeDefined();
+      expect(await mode(userFile)).toBe(0o644);
+    });
+  });
+
   // Verified against codex-cli 0.142.5: it speaks streamable HTTP. Secrets are
   // resolved to plaintext like every other tool — codex's env-var naming
   // (`bearer_token_env_var`) is not used, so the token is present regardless of

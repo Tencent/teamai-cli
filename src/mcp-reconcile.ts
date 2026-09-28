@@ -308,18 +308,22 @@ export async function readJsonDoc(
   }
 }
 
-/** Write a parsed JSON MCP config while preserving its original container shape. */
+/**
+ * Write a parsed JSON MCP config while preserving its original container
+ * shape, and its mode unless `options.mode` forces one.
+ */
 export async function writeJsonDoc(
   file: string,
   serverKey: string,
   doc: JsonDoc,
+  options?: { mode?: number },
 ): Promise<void> {
   if (doc.bare) {
-    await writeJsonAtomic(file, doc.servers);
+    await writeJsonAtomic(file, doc.servers, options);
     return;
   }
   doc.data[serverKey] = doc.servers;
-  await writeJsonAtomic(file, doc.data);
+  await writeJsonAtomic(file, doc.data, options);
 }
 
 // ─── Codex TOML target I/O ───────────────────────────────────
@@ -386,6 +390,8 @@ export interface DesiredMcpEntry {
   hash: string;
   /** Codex alone stores a TOML block rather than a JSON value. */
   block?: string;
+  /** The entry holds a `${VAR}` value teamai resolved, which may be a team secret. */
+  resolvedValue: boolean;
 }
 
 /** Everything the per-server filters need, resolved once per run. */
@@ -491,12 +497,13 @@ export function desiredMcpForTarget(
       log.debug(`${raw.name}: passing ${referencedVars(raw).join(', ')} through to ${target.tool}`);
     }
 
+    const resolvedValue = !passthrough && referencedVars(raw).length > 0;
     if (target.format === 'codex') {
       const block = renderCodexBlock(def);
-      desired.set(raw.name, { entry: block, hash: entryHash(block), block });
+      desired.set(raw.name, { entry: block, hash: entryHash(block), block, resolvedValue });
     } else {
       const entry = renderJsonEntry(target.format, def);
-      desired.set(raw.name, { entry, hash: entryHash(entry) });
+      desired.set(raw.name, { entry, hash: entryHash(entry), resolvedValue });
     }
   }
 
@@ -683,7 +690,7 @@ export async function reconcileMcpForConfig(
 
 async function applyJson(
   target: McpTarget,
-  desired: Map<string, { entry: unknown; hash: string }>,
+  desired: Map<string, DesiredMcpEntry>,
   keep: Map<string, ManagedMcpRecord>,
   owned: ManagedMcpRecord[],
   ownedNames: Set<string>,
@@ -701,8 +708,10 @@ async function applyJson(
 
   const ownedHash = new Map(owned.map((r) => [r.name, r.hash]));
   let dirty = false;
+  // A kept entry holds the value an earlier pull resolved (desiredMcpForTarget).
+  let holdsResolvedValue = false;
 
-  for (const [name, { entry, hash }] of desired) {
+  for (const [name, { entry, hash, resolvedValue }] of desired) {
     const existing = doc.servers[name];
     if (existing !== undefined && !ownedNames.has(name) && !options.force) {
       changes.push({
@@ -714,6 +723,7 @@ async function applyJson(
       continue;
     }
     nextRecords.push({ name, hash });
+    holdsResolvedValue ||= resolvedValue;
     if (existing !== undefined && ownedHash.get(name) === hash) continue;
     doc.servers[name] = entry;
     dirty = true;
@@ -725,6 +735,7 @@ async function applyJson(
     const kept = keep.get(name);
     if (kept && doc.servers[name] !== undefined) {
       nextRecords.push(kept);
+      holdsResolvedValue = true;
       continue;
     }
     if (doc.servers[name] !== undefined) {
@@ -740,13 +751,14 @@ async function applyJson(
   // Some tools (OpenCode) key the server map under `mcp`, not `mcpServers`;
   // writing the wrong key would strip the servers and, worse, leave a phantom
   // empty `mcpServers` in a file the tool never reads under that name.
-  await writeJsonDoc(target.file, serverKey, doc);
+  // A file that holds a resolved value is the member's alone, an existing one tightened.
+  await writeJsonDoc(target.file, serverKey, doc, holdsResolvedValue ? { mode: 0o600 } : undefined);
   return true;
 }
 
 async function applyCodex(
   target: McpTarget,
-  desired: Map<string, { entry: unknown; hash: string; block?: string }>,
+  desired: Map<string, DesiredMcpEntry>,
   keep: Map<string, ManagedMcpRecord>,
   ownedNames: Set<string>,
   nextRecords: ManagedMcpRecord[],
