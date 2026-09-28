@@ -209,6 +209,7 @@ Generated: do not edit by hand. Regenerate with
     - `--global` — Set it for every team on this machine; a value set for a team still wins
   - `teamai env unset <key>` — Remove your value for a secret, for this directory's team, from this machine
     - `--global` — Remove the value set for every team on this machine instead
+  - `teamai env exec <command...>` — Run a command with this directory's team env variables and secrets (put -- before the command)
 
 ## hooks
 

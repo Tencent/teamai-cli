@@ -1,0 +1,317 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import fse from 'fs-extra';
+import os from 'node:os';
+import path from 'node:path';
+import YAML from 'yaml';
+
+import { envExec } from '../env-exec.js';
+import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore, type SecretStore } from '../secret-store.js';
+import { resolveAnchors } from '../utils/git.js';
+import { _resetState, _setLogFilePath, setStderrOnly } from '../utils/logger.js';
+import { projectDataHome } from '../utils/partition.js';
+import type { LocalConfig } from '../types.js';
+
+/**
+ * `teamai env exec -- <command>` (#875, #879 S8): the command runs with the
+ * inherited environment overlaid with this directory's team env variables and
+ * its secrets in the resolution order. Everything teamai prints goes to stderr.
+ */
+describe('teamai env exec', () => {
+  let tmpDir: string;
+  let home: string;
+  let out: string;
+  let stdout: string[];
+  let stderr: string[];
+
+  const GITHUB_SECRET = 'secrets:\n  - key: GITHUB_TOKEN\n    url: https://github.com/settings/tokens\n';
+  const GITHUB_LINE = 'GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (https://github.com/settings/tokens).';
+  // Writes the child's environment to a file: the child's own stdout is the
+  // terminal the test runs in.
+  const DUMP = 'require("fs").writeFileSync(process.argv[1], JSON.stringify(process.env))';
+
+  const git = (cwd: string, ...args: string[]): void => { execFileSync('git', args, { cwd, stdio: 'pipe' }); };
+  const text = (lines: string[]): string => lines.join('\n');
+
+  /** A team repo clone with these files, and a config for it. */
+  async function team(name: string, files: Record<string, string>): Promise<{ repoPath: string }> {
+    const repoPath = path.join(tmpDir, `${name}-repo`);
+    await fse.outputFile(path.join(repoPath, 'teamai.yaml'), `team: ${name}\nrepo: https://example.com/${name}.git\n`);
+    for (const [file, content] of Object.entries(files)) await fse.outputFile(path.join(repoPath, file), content);
+    return { repoPath };
+  }
+
+  async function userScope(repoPath: string, extra: Partial<LocalConfig> = {}): Promise<LocalConfig> {
+    const config = { repo: { localPath: repoPath, remote: 'https://example.com/user.git' }, username: 't', scope: 'user', additionalRoles: [], ...extra };
+    await fse.outputFile(path.join(home, '.teamai', 'config.yaml'), YAML.stringify(config));
+    return config as LocalConfig;
+  }
+
+  /** A git project with a linked worktree, set up as a teamai project in its partition. */
+  async function project(repoPath: string): Promise<{ root: string; worktree: string; config: LocalConfig; partition: string }> {
+    const root = path.join(tmpDir, 'api');
+    await fse.ensureDir(root);
+    git(root, 'init', '-q');
+    git(root, 'config', 'user.email', 't@example.com');
+    git(root, 'config', 'user.name', 't');
+    git(root, 'commit', '--allow-empty', '-q', '-m', 'init');
+    const worktree = path.join(tmpDir, 'api-feature');
+    git(root, 'worktree', 'add', '-q', worktree, 'HEAD');
+    const anchors = await resolveAnchors(root);
+    if (!anchors) throw new Error('no git anchors for the fixture project');
+    const partition = projectDataHome(anchors.projectAnchor);
+    const config = {
+      repo: { localPath: repoPath, remote: 'https://example.com/work.git' }, username: 't', scope: 'project',
+      projectRoot: root, additionalRoles: [],
+    };
+    await fse.outputFile(path.join(partition, 'config.yaml'), YAML.stringify(config));
+    return { root, worktree, config: config as LocalConfig, partition };
+  }
+
+  async function exec(cwd: string, script = DUMP, args: string[] = [out]): ReturnType<typeof envExec> {
+    return envExec([process.execPath, '-e', script, ...args], {}, cwd);
+  }
+
+  async function childEnv(cwd: string): Promise<Record<string, string>> {
+    const outcome = await exec(cwd);
+    expect(outcome).toEqual({ kind: 'exited', code: 0 });
+    return JSON.parse(await fse.readFile(out, 'utf8')) as Record<string, string>;
+  }
+
+  beforeEach(async () => {
+    tmpDir = fs.realpathSync(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-env-exec-')));
+    home = path.join(tmpDir, 'home');
+    out = path.join(tmpDir, 'child-env.json');
+    await fse.ensureDir(home);
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    for (const key of ['GITHUB_TOKEN', 'API_URL', 'WORK_GITHUB_TOKEN']) vi.stubEnv(key, undefined);
+    _setLogFilePath(path.join(home, '.teamai', 'debug.log'));
+    stdout = [];
+    stderr = [];
+    const record = (sink: string[]) => (...parts: unknown[]) => { sink.push(parts.map(String).join(' ')); };
+    vi.spyOn(console, 'log').mockImplementation(record(stdout));
+    vi.spyOn(console, 'info').mockImplementation(record(stdout));
+    vi.spyOn(console, 'error').mockImplementation(record(stderr));
+    vi.spyOn(console, 'warn').mockImplementation(record(stderr));
+  });
+
+  afterEach(async () => {
+    setStderrOnly(false);
+    _resetState();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  it('overlays the scope variables on the inherited environment, and resolves a secret team > machine > environment', async () => {
+    const { repoPath } = await team('personal', { 'env/env.yaml': 'variables:\n  - key: API_URL\n    value: https://team.example\n', 'env/secrets.yaml': GITHUB_SECRET });
+    const config = await userScope(repoPath);
+    vi.stubEnv('API_URL', 'https://inherited.example');
+    vi.stubEnv('UNRELATED', 'kept');
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-exported');
+
+    let env = await childEnv(home);
+    expect(env.API_URL).toBe('https://team.example');
+    expect(env.UNRELATED).toBe('kept');
+    expect(env.GITHUB_TOKEN).toBe('fixture-exported');
+
+    await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'fixture-machine' } });
+    env = await childEnv(home);
+    expect(env.GITHUB_TOKEN).toBe('fixture-machine');
+
+    await writeSecretStore(getTeamSecretsPath(config), { GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+    vi.stubEnv('WORK_GITHUB_TOKEN', 'fixture-from-env');
+    env = await childEnv(home);
+    expect(env.GITHUB_TOKEN).toBe('fixture-from-env');
+    expect(text(stderr)).not.toContain('is not set');
+  });
+
+  it('resolves the project scope from a linked worktree of the project, and the user scope elsewhere', async () => {
+    const personal = await team('personal', { 'env/secrets.yaml': GITHUB_SECRET });
+    const user = await userScope(personal.repoPath);
+    const work = await team('work', { 'env/secrets.yaml': GITHUB_SECRET, 'env/env.yaml': 'variables:\n  - key: API_URL\n    value: https://work.example\n' });
+    const { root, worktree, config } = await project(work.repoPath);
+    await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'fixture-personal' } });
+    await writeSecretStore(getTeamSecretsPath(config), { GITHUB_TOKEN: { value: 'fixture-work' } });
+    expect(getTeamSecretsPath(config)).not.toBe(getTeamSecretsPath(user));
+    const sub = path.join(worktree, 'src');
+    await fse.ensureDir(sub);
+
+    expect((await childEnv(home)).GITHUB_TOKEN).toBe('fixture-personal');
+    expect((await childEnv(root)).GITHUB_TOKEN).toBe('fixture-work');
+    const fromWorktree = await childEnv(sub);
+    expect(fromWorktree.GITHUB_TOKEN).toBe('fixture-work');
+    expect(fromWorktree.API_URL).toBe('https://work.example');
+  });
+
+  it('prints the missing-secret line on stderr and still runs the command', async () => {
+    const { repoPath } = await team('personal', { 'env/secrets.yaml': GITHUB_SECRET });
+    await userScope(repoPath);
+
+    const env = await childEnv(home);
+
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(text(stderr)).toContain(GITHUB_LINE);
+    expect(stdout).toEqual([]);
+  });
+
+  it('removes a declared key whose only environment value is one teamai exported for another scope', async () => {
+    const { repoPath } = await team('personal', { 'env/secrets.yaml': GITHUB_SECRET });
+    await userScope(repoPath);
+    await fse.outputFile(path.join(home, '.teamai', 'projects', 'other-0123456789', 'env.sh'), "export GITHUB_TOKEN='fixture-other-team'\n");
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-other-team');
+
+    const env = await childEnv(home);
+
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(text(stderr)).toContain(GITHUB_LINE);
+  });
+
+  it('removes a declared key whose team entry names an unset variable, rather than pass the inherited value', async () => {
+    const { repoPath } = await team('personal', { 'env/secrets.yaml': GITHUB_SECRET });
+    const config = await userScope(repoPath);
+    await writeSecretStore(getTeamSecretsPath(config), { GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-personal-export');
+
+    expect((await childEnv(home)).GITHUB_TOKEN).toBeUndefined();
+  });
+
+  it('applies no secrets on a failed declaration, still overlays the variables, and names the failure', async () => {
+    const { repoPath } = await team('personal', {
+      'env/env.yaml': 'variables:\n  - key: API_URL\n    value: https://team.example\n',
+      'env/secrets.yaml': 'secrets:\n  - key: 1BAD\n',
+    });
+    const config = await userScope(repoPath);
+    await writeSecretStore(getTeamSecretsPath(config), { GITHUB_TOKEN: { value: 'fixture-team' } });
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-exported');
+
+    const env = await childEnv(home);
+
+    expect(env.API_URL).toBe('https://team.example');
+    expect(env.GITHUB_TOKEN).toBe('fixture-exported');
+    expect(text(stderr)).toContain('env/secrets.yaml');
+    expect(text(stderr)).toContain('The command runs without team secrets.');
+  });
+
+  it('removes every declared key when the values file cannot be read, and says why', async () => {
+    const { repoPath } = await team('personal', { 'env/secrets.yaml': GITHUB_SECRET });
+    const config = await userScope(repoPath);
+    await fse.outputFile(getTeamSecretsPath(config), '{"GITHUB_TOKEN": {"value": fixture-corrupt}}');
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-exported');
+
+    const env = await childEnv(home);
+
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(text(stderr)).toContain(getTeamSecretsPath(config));
+    expect(text(stderr)).not.toContain('fixture-corrupt');
+  });
+
+  it('names a project config that cannot be read, applies no stored values, and runs the command', async () => {
+    const personal = await team('personal', { 'env/env.yaml': 'variables:\n  - key: API_URL\n    value: https://personal.example\n', 'env/secrets.yaml': GITHUB_SECRET });
+    await userScope(personal.repoPath);
+    await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'fixture-machine' } });
+    const work = await team('work', {});
+    const { root, partition } = await project(work.repoPath);
+    await fse.outputFile(path.join(partition, 'config.yaml'), 'repo: [not a config\n');
+
+    const env = await childEnv(root);
+
+    expect(env.API_URL).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(text(stderr)).toContain(path.join(partition, 'config.yaml'));
+    expect(text(stderr)).not.toContain('No teamai config');
+  });
+
+  it('with no config at all, runs with the inherited environment, applies no machine value, and says so', async () => {
+    await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'fixture-machine' } });
+    vi.stubEnv('UNRELATED', 'kept');
+    const nowhere = path.join(tmpDir, 'nowhere');
+    await fse.ensureDir(nowhere);
+
+    const env = await childEnv(nowhere);
+
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.UNRELATED).toBe('kept');
+    expect(text(stderr)).toContain('No teamai config');
+    expect(stdout).toEqual([]);
+  });
+
+  it('passes the exit code and the signal through', async () => {
+    const nowhere = path.join(tmpDir, 'nowhere');
+    await fse.ensureDir(nowhere);
+
+    expect(await exec(nowhere, 'process.exit(3)', [])).toEqual({ kind: 'exited', code: 3 });
+    expect(await exec(nowhere, 'process.kill(process.pid, "SIGTERM"); setTimeout(() => {}, 5000)', []))
+      .toEqual({ kind: 'signaled', signal: 'SIGTERM' });
+  });
+
+  it('reports a command that cannot be started, with exit code 127', async () => {
+    const nowhere = path.join(tmpDir, 'nowhere');
+    await fse.ensureDir(nowhere);
+
+    expect(await envExec(['teamai-no-such-command-875'], {}, nowhere)).toEqual({ kind: 'exited', code: 127 });
+    expect(text(stderr)).toContain('teamai-no-such-command-875');
+  });
+
+  it('prints nothing on stdout, the scope lookup included', async () => {
+    const { repoPath } = await team('personal', {
+      'env/secrets.yaml': GITHUB_SECRET,
+      'manifest/roles.yaml': 'version: 1\nroles:\n  - id: hai\n    description: default\n    resources:\n      knowledge: []\n      skills: []\n',
+    });
+    await userScope(repoPath);
+
+    await childEnv(home);
+
+    expect(stdout).toEqual([]);
+    expect(text(stderr)).toContain('Migrated legacy teamai config');
+  });
+
+  it('writes no member value to disk or debug.log', async () => {
+    const personal = await team('personal', { 'env/secrets.yaml': GITHUB_SECRET });
+    const user = await userScope(personal.repoPath);
+    const work = await team('work', { 'env/secrets.yaml': GITHUB_SECRET });
+    const { root, config } = await project(work.repoPath);
+    await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'fixture-machine' } });
+    await writeSecretStore(getTeamSecretsPath(user), { GITHUB_TOKEN: { value: 'fixture-team' } } satisfies SecretStore);
+    await writeSecretStore(getTeamSecretsPath(config), { GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+    vi.stubEnv('WORK_GITHUB_TOKEN', 'fixture-parent-env-only');
+    const fixtures = ['fixture-machine', 'fixture-team', 'fixture-parent-env-only'];
+    const holding = async (): Promise<Map<string, string>> => {
+      const found = new Map<string, string>();
+      for (const file of await filesUnder([home, root, personal.repoPath, work.repoPath])) {
+        const content = await fse.readFile(file);
+        if (fixtures.some((fixture) => content.includes(fixture))) {
+          found.set(file, crypto.createHash('sha256').update(content).digest('hex'));
+        }
+      }
+      return found;
+    };
+    const before = await holding();
+
+    expect((await childEnv(home)).GITHUB_TOKEN).toBe('fixture-team');
+    expect((await childEnv(root)).GITHUB_TOKEN).toBe('fixture-parent-env-only');
+    await fse.remove(out);
+
+    expect(await holding()).toEqual(before);
+    for (const log of ['debug.log', 'debug.log.1']) {
+      const content = await fse.readFile(path.join(home, '.teamai', log), 'utf8').catch(() => '');
+      for (const fixture of fixtures) expect(content).not.toContain(fixture);
+    }
+  });
+});
+
+async function filesUnder(roots: string[]): Promise<string[]> {
+  const files: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    for (const entry of await fse.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.isFile()) files.push(full);
+    }
+  };
+  for (const root of roots) await walk(root);
+  return files;
+}
