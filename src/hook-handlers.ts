@@ -699,6 +699,33 @@ const packageHintHandler: HookHandler = {
   },
 };
 
+/**
+ * SessionStart: tell the agent which secrets the scope declares and to run the
+ * CLIs that need them through `teamai env exec` (#875). Nothing when the scope
+ * declares none, or when its secrets files don't parse (doctor and pull say so).
+ */
+const secretsHintHandler: HookHandler = {
+  name: 'secrets-hint',
+  async execute(_stdin, _tool, config) {
+    if (!config) return null;
+    const { resolveSecretDeclarations } = await import('./resources/secrets.js');
+    const declarations = await resolveSecretDeclarations(config);
+    if (declarations.kind !== 'resolved' || declarations.entries.length === 0) return null;
+    const keys = declarations.entries.map(({ name, entry }) => {
+      const description = entry.description?.replace(/\s+/g, ' ').trim();
+      return description ? `${name} (${description})` : name;
+    });
+    return JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: `Team secrets in this scope: ${keys.join(', ')}. `
+          + 'Run the CLIs that need them through `teamai env exec -- <command>` so they get this team\'s values. '
+          + 'Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.',
+      },
+    });
+  },
+};
+
 /** HTTP local-agent report/sync + workspace binding prompts. */
 const localAgentHandler: HookHandler = {
   name: 'local-agent-sync',
@@ -812,6 +839,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'session-start', matcher: '*', handler: secretsHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     { event: 'session-start', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 

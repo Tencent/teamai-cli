@@ -192,7 +192,11 @@ and push it with git. `teamai doctor` lists each override.
   `teamai push` picks it up. Each member sets their own value with `teamai env set KEY`
   in their terminal (`--global` for every team on their machine; a team value still
   wins). `teamai env list` shows each secret as `team`, `global`, `environment` or
-  `missing` and never shows a value, `--reveal` included. A key declared as a secret
+  `missing` and never shows a value, `--reveal` included. The `description` is what
+  agents see: the session-start hook lists each declared key with it and tells the
+  agent to run the CLIs that need them through `teamai env exec --`, so say which
+  tool or server uses the key. As the agent, run `teamai env add <KEY> --secret`
+  yourself and leave the value to each member's own terminal. A key declared as a secret
   and also set in `env.yaml` is a secret: its `env.yaml` value is not delivered. A
   secrets file that does not parse keeps `env.sh` and MCP servers as they were, and
   `teamai doctor` fails a check naming the file.

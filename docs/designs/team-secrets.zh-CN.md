@@ -6,7 +6,7 @@
 
 团队在团队仓库中声明成员需要哪些密钥，但不写值。每个成员在自己的机器上提供值。密钥的值不会写入团队仓库。
 
-本文档随实现逐步补充，只描述当前版本已有的行为。目前包括声明密钥、成员为每个团队或为本机所有团队设置的值、MCP server 中的 `${VAR}`，pull 找不到已声明的密钥时保留 MCP 条目，告诉成员该运行什么命令，以及通过 `teamai env exec` 用团队的 env 和密钥运行 CLI。
+本文档随实现逐步补充，只描述当前版本已有的行为。目前包括声明密钥、成员为每个团队或为本机所有团队设置的值、MCP server 中的 `${VAR}`，pull 找不到已声明的密钥时保留 MCP 条目，告诉成员该运行什么命令，通过 `teamai env exec` 用团队的 env 和密钥运行 CLI，以及告诉 agent 有哪些密钥。
 
 ## 声明密钥
 
@@ -184,6 +184,19 @@ teamai env exec -- glab mr list     GITLAB_HOST 来自 env.yaml，GITLAB_TOKEN �
 - **原样继承，有三个例外。** 没有终端时（所有 agent 都是这种情况），teamai 会在 `GIT_TERMINAL_PROMPT=0`、`GIT_ASKPASS=echo` 和 `GCM_INTERACTIVE=never` 未设置时设置它们，让 git 子进程不会等待凭据提示。命令会继承它们。
 - **不用于启动 agent。** 与模型配置写入的变量同名的变量或密钥（`ANTHROPIC_*`）会为该命令覆盖那个模型配置。`env exec` 用于 CLI，而不是用来启动 agent。
 - 在命令前加 `--`：否则 teamai 会把命令自己的选项当作 teamai 的选项。
+
+## 告诉 agent
+
+不经过 `env exec` 运行 `gh` 的 agent 会悄无声息地使用它环境里恰好有的账号。scope 声明了密钥时，session-start hook 会在 agent 的上下文中加一行（`additionalContext`，与 MR 提示和 package 提示并列）：
+
+```text
+Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the CLIs that need them through `teamai env exec -- <command>` so they get this team's values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.
+```
+
+- 这一行列出每个已声明的 key 及其 `description`，因此 description 应写明哪个工具或 server 使用该 key。它不含任何值，也不含状态。
+- scope 没有声明密钥、密钥文件无法使用（`pull` 和 `doctor` 会报告）或目录中没有 teamai 时，不加这一行。
+- 运行 SessionStart 但丢弃其输出的宿主（Hermes、Pi、OpenCode、OpenClaw），以及没有 hook 的 JoyCode，从 teamai core skill 获得同样的规则。
+- skill 规定 agent 从不在对话中索要密钥值，从不通过 `--stdin` 传入值，从不读取值文件，也从不打印密钥（包括 `teamai env exec -- env`）。缺少密钥时，它请成员在自己的终端运行 `teamai env set KEY`。用 `env add --secret` 声明密钥不带值，因此 agent 可以运行它。
 
 ## 轮换
 
