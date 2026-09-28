@@ -1112,6 +1112,13 @@ stderr, and the exit code is the command's. With no teamai config here, the
 command runs with your environment and a notice. No value is written to disk.
 See [Running a CLI with `env exec`](designs/team-secrets.md#running-a-cli-with-env-exec).
 
+When the scope declares secrets, the session-start hook tells the agent which
+keys exist, with their `description`, and to run the CLIs that need them through
+`teamai env exec --`. Agents whose tool discards hook output get the same rule
+from the teamai core skill. An agent never asks for a secret value: when one is
+missing, it asks you to run `teamai env set KEY` in your own terminal. See
+[Telling the agent](designs/team-secrets.md#telling-the-agent).
+
 A variable that no longer reaches this directory is removed from `env.sh` on
 the next pull, even one that reports `Already synced` because the team repo has
 not moved. Until that pull runs, `teamai doctor` reports a variable that

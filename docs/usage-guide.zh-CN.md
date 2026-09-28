@@ -1011,6 +1011,11 @@ teamai env exec -- glab mr list
 都输出到 stderr，退出码就是命令的退出码。这里没有 teamai 配置时，命令以你的环境运行，并给出提示。
 不会把任何值写入磁盘。见[用 `env exec` 运行 CLI](designs/team-secrets.zh-CN.md#用-env-exec-运行-cli)。
 
+scope 声明了密钥时，session-start hook 会告诉 agent 有哪些 key 及其 `description`，并让它通过
+`teamai env exec --` 运行需要这些 key 的 CLI。工具会丢弃 hook 输出的 agent 从 teamai core skill 获得同样的规则。
+agent 从不索要密钥值：缺少密钥时，它会请你在自己的终端运行 `teamai env set KEY`。见
+[告诉 agent](designs/team-secrets.zh-CN.md#告诉-agent)。
+
 不再下发到该目录的变量会在下一次 pull 时从 `env.sh` 中移除，即使这次 pull 因团队仓库
 未变化而提示 `Already synced` 也一样。在那次 pull 之前，`teamai doctor` 会报告
 `env.sh` 中仍在导出的这类变量，前一个项目的密钥不会悄无声息地继续生效。

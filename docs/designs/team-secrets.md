@@ -6,7 +6,7 @@ Proposal: [#875](https://github.com/Tencent/teamai-cli/issues/875). Plan: [#879]
 
 A team declares which secrets its members need, in the team repo, with no value. Each member supplies the value on their own machine. No secret value is written to the team repo.
 
-This document grows with the implementation and describes only what the current version does. Today that is declaring secrets, a member's value for each team or for every team on the machine, `${VAR}` in MCP servers, keeping an MCP entry when a pull can't find a declared secret, telling the member what to run for it, and running a CLI with the team's env and secrets through `teamai env exec`.
+This document grows with the implementation and describes only what the current version does. Today that is declaring secrets, a member's value for each team or for every team on the machine, `${VAR}` in MCP servers, keeping an MCP entry when a pull can't find a declared secret, telling the member what to run for it, running a CLI with the team's env and secrets through `teamai env exec`, and telling the agent which secrets exist.
 
 ## Declaring secrets
 
@@ -169,6 +169,19 @@ teamai env exec -- glab mr list     GITLAB_HOST from env.yaml and GITLAB_TOKEN f
 - **Inherited as is, with three exceptions.** Without a terminal (every agent), teamai sets `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo` and `GCM_INTERACTIVE=never` where they are unset, so a git child never waits for a credential prompt. The command inherits them.
 - **Not for agents.** A variable or secret named like one a model profile writes (`ANTHROPIC_*`) overrides that profile for the command. `env exec` is for CLIs, not for starting an agent.
 - Put `--` before the command: without it, teamai reads the command's own options as its own.
+
+## Telling the agent
+
+An agent that runs `gh` without `env exec` silently uses whatever account its environment has. When the scope declares secrets, the session-start hook adds one line to the agent's context (`additionalContext`, beside the MR and package hints):
+
+```text
+Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the CLIs that need them through `teamai env exec -- <command>` so they get this team's values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.
+```
+
+- The line lists each declared key with its `description`, so the description should say which tool or server uses the key. It carries no value and no state.
+- No line when the scope declares no secrets, when its secrets files can't be used (`pull` and `doctor` report that), or in a directory without teamai.
+- Hosts that run SessionStart but discard its output (Hermes, Pi, OpenCode, OpenClaw), and JoyCode, which has no hooks, get the same rule from the teamai core skill.
+- The skills say an agent never asks for a secret value in chat, never passes one through `--stdin`, never reads the value files and never prints a secret (`teamai env exec -- env` included). On a missing secret it asks the member to run `teamai env set KEY` in their own terminal. Declaring a secret with `env add --secret` takes no value, so an agent can run it.
 
 ## Rotation
 

@@ -66,13 +66,15 @@ This is the #1 onboarding issue. In order:
 
 ## "KEY is not set. Run `teamai env set KEY`"
 
-`pull`, `teamai mcp list`, `teamai env list` and `teamai doctor` print this for
-a secret the team declares in `env/secrets.yaml` that has no value on this
-machine, naming the MCP servers that need it and where to get one. It is a note,
-not a failure: `doctor` exits as it would without it. The value is the user's:
-ask them to run `teamai env set KEY` in their own terminal (it prompts without
-echo), then `teamai pull` to update the MCP servers. Never ask for the value in
-chat. A note that an entry "may hold an old" value means an earlier pull wrote
+`pull`, `teamai mcp list`, `teamai env list`, `teamai doctor` and
+`teamai env exec` (on stderr) print this for a secret the team declares in
+`env/secrets.yaml` that has no value on this machine, naming the MCP servers
+that need it and where to get one. It is a note, not a failure: `doctor` exits
+as it would without it. The value is the user's: ask them to run
+`teamai env set KEY` in their own terminal (it prompts without echo), then
+`teamai pull` to update the MCP servers; a CLI run through `teamai env exec`
+gets it on its next run. Never ask for the value in chat or pipe one to
+`teamai env set --stdin`. A note that an entry "may hold an old" value means an earlier pull wrote
 it and it stays until a pull finds the value.
 
 ## Permission / access denied
