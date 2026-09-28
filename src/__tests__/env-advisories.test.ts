@@ -160,6 +160,31 @@ describe('a missing declared secret tells the member what to run', () => {
     expect(report.notes ?? []).not.toContain(GITHUB_LINE);
   });
 
+  // `teamai env set KEY` there would replace the reference, which may be what the member wants, or not.
+  it('says to set the variable a --from-env value reads when it is unset, or to replace the reference', async () => {
+    vi.stubEnv('WORK_GITHUB_TOKEN', undefined);
+    vi.stubEnv('MY_GITHUB_TOKEN', undefined);
+    await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+
+    await quietly(() => mcpList({}));
+
+    expect(warned()).toContain(
+      'github: GITHUB_TOKEN reads WORK_GITHUB_TOKEN, which is not set. '
+        + 'Set WORK_GITHUB_TOKEN, or run `teamai env set GITHUB_TOKEN` to replace the reference.',
+    );
+    expect(warned()).not.toContain(GITHUB_LINE);
+
+    vi.mocked(log.warn).mockClear();
+    await writeSecretStore(getTeamSecretsPath(localConfig), {});
+    await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { env: 'MY_GITHUB_TOKEN' } });
+    await quietly(() => envList({}));
+
+    expect(warned()).toContain(
+      'github: GITHUB_TOKEN reads MY_GITHUB_TOKEN, which is not set. '
+        + 'Set MY_GITHUB_TOKEN, or run `teamai env set GITHUB_TOKEN --global` to replace the reference.',
+    );
+  });
+
   it('says nothing when the only value is the machine value', async () => {
     await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'machine-token' } });
 

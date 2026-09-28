@@ -60,10 +60,20 @@ export interface TeamEnv {
    * for the same reason. None when the declarations failed.
    */
   readonly secrets: StoreResolution<SecretValue>;
+  /**
+   * The secrets without a value whose deciding entry reads a variable that is
+   * unset (`--from-env`): the variable, and whether it is the machine's entry.
+   */
+  readonly unsetReferences: ReadonlyMap<string, UnsetReference>;
   /** The value of each variable that isn't a declared secret (each one when the declarations failed). */
   readonly variableValues: StoreResolution<VariableValue>;
   /** The member's own environment (member-env.ts). */
   readonly member: MemberEnvironment;
+}
+
+export interface UnsetReference {
+  readonly variable: string;
+  readonly global: boolean;
 }
 
 const NO_VALUES: SecretStoreRead = { ok: true, values: {} };
@@ -89,10 +99,12 @@ export async function resolveTeamEnv(
   const member = await memberEnvironment(localConfig, { secretKeys, envYaml }, env);
   const team = secretKeys.size > 0 || plain.length > 0 ? await readSecretStore(getTeamSecretsPath(localConfig)) : NO_VALUES;
   const machine = secretKeys.size > 0 ? await readSecretStore(getMachineSecretsPath()) : NO_VALUES;
+  const secrets = secretValues(secretKeys, team, machine, member, env);
   return {
     variables,
     declarations,
-    secrets: secretValues(secretKeys, team, machine, member, env),
+    secrets: secrets.values,
+    unsetReferences: secrets.unsetReferences,
     variableValues: variableValues(plain, team, env),
     member,
   };
@@ -108,20 +120,24 @@ function secretValues(
   machine: SecretStoreRead,
   member: MemberEnvironment,
   env: NodeJS.ProcessEnv,
-): StoreResolution<SecretValue> {
+): { values: StoreResolution<SecretValue>; unsetReferences: ReadonlyMap<string, UnsetReference> } {
   const values = new Map<string, SecretValue>();
-  if (keys.size === 0) return { kind: 'resolved', values };
-  if (!team.ok) return { kind: 'store-unreadable', reason: team.reason };
-  if (!machine.ok) return { kind: 'store-unreadable', reason: machine.reason };
+  const unsetReferences = new Map<string, UnsetReference>();
+  const result = { values: { kind: 'resolved', values }, unsetReferences } as const;
+  if (keys.size === 0) return result;
+  if (!team.ok) return { values: { kind: 'store-unreadable', reason: team.reason }, unsetReferences };
+  if (!machine.ok) return { values: { kind: 'store-unreadable', reason: machine.reason }, unsetReferences };
   for (const key of keys) {
     const teamEntry = storeEntry(team.values, key);
     const machineEntry = storeEntry(machine.values, key);
+    const entry = teamEntry ?? machineEntry;
     const [source, value]: [SecretValue['source'], string | undefined] = teamEntry ? ['team', storedSecretValue(teamEntry, env)]
       : machineEntry ? ['global', storedSecretValue(machineEntry, env)]
       : ['environment', member(key)];
     if (value !== undefined) values.set(key, { source, value });
+    else if (entry && 'env' in entry) unsetReferences.set(key, { variable: entry.env, global: teamEntry === undefined });
   }
-  return { kind: 'resolved', values };
+  return result;
 }
 
 function variableValues(

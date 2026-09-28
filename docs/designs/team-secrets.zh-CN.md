@@ -162,7 +162,7 @@ GITLAB_TOKEN is not set. Run `teamai env set GITLAB_TOKEN`.
 - `doctor` 把它作为备注打印（`doctor --json` 中的 `notes`），退出码与没有这个缺失密钥时相同：只因已声明的密钥没有值而跳过的 server 不会让 `MCP servers delivered to <tool>` 失败。该工具的 server 有其他问题时仍会失败。
 - 会话开始时的静默 pull 不打印任何内容。
 - `pull` 和 `doctor` 还会在条目被保留、可能含有旧值时说明（`github: the entry an earlier pull wrote stays in claude and may hold an old GITHUB_TOKEN until a pull finds its value.`），并在某个 key 既声明为密钥、又在 `env.yaml` 中设置时发出警告：该值被忽略，并指出应从哪个文件删除它。
-- 用 `--from-env` 保存、但对应变量未设置的密钥同样视为缺失。
+- 用 `--from-env` 保存、但对应变量未设置的密钥同样视为缺失，提示行会说明这一点：``GITHUB_TOKEN reads WORK_GITHUB_TOKEN, which is not set. Set WORK_GITHUB_TOKEN, or run `teamai env set GITHUB_TOKEN` to replace the reference.``（机器级的值在命令中带 `--global`）。
 - 声明或成员的值文件无法读取时不打印这一行：命令会改为报告该失败。
 
 ## 用 `env exec` 运行 CLI

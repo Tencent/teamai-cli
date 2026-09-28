@@ -162,7 +162,7 @@ GITLAB_TOKEN is not set. Run `teamai env set GITLAB_TOKEN`.
 - `doctor` prints it as a note (`notes` in `doctor --json`) and exits as it would without it: a server skipped only because a declared secret has no value doesn't fail `MCP servers delivered to <tool>`. Any other problem in that tool's servers still fails it.
 - The silent session-start pull prints nothing.
 - `pull` and `doctor` also say when an entry is kept and may hold an old value (`github: the entry an earlier pull wrote stays in claude and may hold an old GITHUB_TOKEN until a pull finds its value.`), and warn about a key declared as a secret and also set in `env.yaml`, whose value is ignored, naming the file to remove it from.
-- A secret stored with `--from-env` whose variable is unset reads as missing too.
+- A secret stored with `--from-env` whose variable is unset reads as missing too, and its line says so: ``GITHUB_TOKEN reads WORK_GITHUB_TOKEN, which is not set. Set WORK_GITHUB_TOKEN, or run `teamai env set GITHUB_TOKEN` to replace the reference.`` (`--global` in the command for a machine value).
 - When the declarations or the member's value file can't be read, no line is printed: the command reports that failure instead.
 
 ## Running a CLI with `env exec`

@@ -4,7 +4,7 @@
  * each says the same thing. None is a failure; `doctor` reports them as notes.
  */
 import { keptMcpEntries } from './mcp-reconcile.js';
-import { resolveTeamEnv, secretState, type TeamEnv } from './env-resolution.js';
+import { resolveTeamEnv, secretState, type TeamEnv, type UnsetReference } from './env-resolution.js';
 import { referencedVars } from './resources/mcp-format.js';
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
 import { declaredSecretKeys } from './resources/secrets.js';
@@ -14,7 +14,14 @@ import { log } from './utils/logger.js';
 
 export type EnvAdvisory =
   /** A declared secret with no value; `servers` are the team MCP servers that use it. */
-  | { readonly kind: 'missing-secret'; readonly key: string; readonly url?: string; readonly servers: readonly string[] }
+  | {
+    readonly kind: 'missing-secret';
+    readonly key: string;
+    readonly url?: string;
+    readonly servers: readonly string[];
+    /** The member's entry for it reads this variable, which is unset. */
+    readonly reference?: UnsetReference;
+  }
   /** An entry an earlier pull wrote, kept while its secret is missing, so it may hold an old value. */
   | { readonly kind: 'kept-entry'; readonly server: string; readonly tools: readonly string[]; readonly keys: readonly string[] }
   /** A key declared as a secret and also set as a variable in `source`, whose value is ignored. */
@@ -55,7 +62,10 @@ export async function envAdvisories(
     const state = secretState(resolved.secrets, secret.name);
     switch (state) {
       case 'missing':
-        advisories.push({ kind: 'missing-secret', key: secret.name, url: secret.entry.url, servers: usedBy(secret.name) });
+        advisories.push({
+          kind: 'missing-secret', key: secret.name, url: secret.entry.url, servers: usedBy(secret.name),
+          reference: resolved.unsetReferences.get(secret.name),
+        });
         break;
       // Nobody knows while the store can't be read; the command reports that itself.
       case 'unreadable':
@@ -114,6 +124,11 @@ export function describeEnvAdvisory(advisory: EnvAdvisory): string {
   switch (advisory.kind) {
     case 'missing-secret': {
       const servers = advisory.servers.length > 0 ? `${advisory.servers.join(', ')}: ` : '';
+      const { reference } = advisory;
+      if (reference) {
+        return `${servers}${advisory.key} reads ${reference.variable}, which is not set. Set ${reference.variable}, `
+          + `or run \`teamai env set ${advisory.key}${reference.global ? ' --global' : ''}\` to replace the reference.`;
+      }
       const url = advisory.url ? ` (${advisory.url})` : '';
       return `${servers}${advisory.key} is not set. Run \`teamai env set ${advisory.key}\`${url}.`;
     }

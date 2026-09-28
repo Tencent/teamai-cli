@@ -77,6 +77,11 @@ gets it on its next run. Never ask for the value in chat or pipe one to
 `teamai env set --stdin`. A note that an entry "may hold an old" value means an earlier pull wrote
 it and it stays until a pull finds the value.
 
+`KEY reads VAR, which is not set` means the user's value for KEY is a
+reference to VAR (`--from-env`) and VAR is unset in this environment. Ask the
+user whether to set VAR in their shell or replace the reference with the
+command in the line; do not choose for them.
+
 ## Permission / access denied
 
 `init`, `pull`, or `push` failing with a permission error usually means the user
