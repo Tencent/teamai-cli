@@ -157,6 +157,40 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(fs.readFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'utf8')).toContain('value: changed');
   });
 
+  it('still refuses an env.yaml edit staged before a later edit, and keeps both', async () => {
+    const { envAdd } = await import('../env-commands.js');
+    const { push } = await import('../push.js');
+    const git = simpleGit(teamRepo);
+    const envPath = path.join(teamRepo, 'env', 'env.yaml');
+    await envAdd('TEAM_VAR', 'staged', {});
+    await git.add('env/env.yaml');
+    // Edited by hand: a second `env add` would realign the clone first.
+    fs.writeFileSync(envPath, fs.readFileSync(envPath, 'utf8').replace('value: staged', 'value: changed'));
+
+    await push({ all: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(stderrOutput()).toMatch(/Paths: env\/env\.yaml$/m);
+    expect(await pushBranches(remote)).toEqual([]);
+    expect(await git.show([':env/env.yaml'])).toContain('value: staged');
+    expect(fs.readFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'utf8')).toContain('value: changed');
+  });
+
+  it('keeps the env.yaml edit when the push rolls the clone back', async () => {
+    const { envAdd } = await import('../env-commands.js');
+    const { push } = await import('../push.js');
+    await envAdd('TEAM_VAR', 'changed', {});
+    // A local branch of the requested name makes the branch creation throw
+    // after the copy step, so pushGroup resets and cleans the clone.
+    await simpleGit(teamRepo).branch(['teamai/taken']);
+
+    await push({ all: true, branch: 'teamai/taken' });
+
+    expect(process.exitCode).toBe(1);
+    expect(stderrOutput()).toContain('Push failed');
+    expect(fs.readFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'utf8')).toContain('value: changed');
+  });
+
   it('still refuses a deleted env.yaml', async () => {
     const { push } = await import('../push.js');
     fs.rmSync(path.join(teamRepo, 'env', 'env.yaml'));

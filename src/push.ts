@@ -868,6 +868,15 @@ async function pushCore(
   // origin/<default>, so resetToCleanMaster/pullRepo (which assume a normal
   // clone on a branch) are neither needed nor safe — skip them.
   let pendingTeamConfig: string | null = initialPendingTeamConfig;
+  // The env edits captured before the refresh below. Their only copy is the
+  // clone's working tree, so every reset that can run before they are
+  // committed must be followed by this restore (#881).
+  const pendingEnvFiles = new Map<string, string>();
+  const restorePendingEnvFiles = async (): Promise<void> => {
+    for (const [relativePath, content] of pendingEnvFiles) {
+      await writeFile(path.join(localConfig.repo.localPath, ...relativePath.split('/')), content);
+    }
+  };
   // Set when the pull below failed: everything read from the clone after this
   // point is the previous pull's, manifests included.
   let teamRepoStale = false;
@@ -902,16 +911,26 @@ async function pushCore(
       // `env add` edits env files in the clone and leaves the commit to push:
       // capture what the env scan will push, to restore it after the refresh
       // below as teamai.yaml is (#881). A mode change is not captured, so it
-      // stays dirty and stops the push.
-      const pendingEnvFiles = new Map<string, string>();
+      // stays dirty and stops the push. So does any index state: the snapshot
+      // holds only the working copy, and reset --hard would drop a staged,
+      // conflicted, deleted or renamed entry.
+      const status = await git.status();
+      const indexedPaths = new Set(collectDirtyPaths({
+        staged: status.staged,
+        created: status.created,
+        conflicted: status.conflicted,
+        deleted: status.deleted,
+        renamed: status.renamed,
+      }));
       for (const item of await getHandler('env').scanLocalForPush(teamConfig, localConfig)) {
+        if (indexedPaths.has(item.relativePath)) continue;
         const content = await readFileSafe(item.sourcePath);
         if (content !== null && !await hasGitModeChange(git, item.relativePath)) {
           pendingEnvFiles.set(item.relativePath, content);
         }
       }
       const unsafeDirtyPaths = collectUnsafeDirtyPaths(
-        await git.status(),
+        status,
         pendingTeamConfig,
         modeChangedPaths,
         new Set(pendingEnvFiles.keys()),
@@ -930,9 +949,7 @@ async function pushCore(
       } finally {
         // Unlike teamai.yaml, nothing later in the run holds these edits, so
         // they go back even when the refresh fails after reset --hard.
-        for (const [relativePath, content] of pendingEnvFiles) {
-          await writeFile(path.join(repoPath, ...relativePath.split('/')), content);
-        }
+        await restorePendingEnvFiles();
       }
       if (pendingTeamConfig !== null) {
         // Re-apply the TeamAI-owned config edit after refreshing the default branch.
@@ -1658,6 +1675,12 @@ async function pushCore(
     if (pendingTeamConfig !== null && groupIndex < configGroupIndex) {
       await writeFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), pendingTeamConfig);
     }
+    // A group that pushed a branch committed the env edits through the env/
+    // sweeper, so they are no longer pending. Any other group may have reset
+    // and cleaned the clone on the way out (the rollback, or pushRepoBranch's
+    // no-change path), taking them with it.
+    if (outcome === 'pushed' || outcome === 'pr-failed') pendingEnvFiles.clear();
+    else await restorePendingEnvFiles();
     if (outcome === 'failed') {
       // The branch/PR for earlier groups is already on the remote, so their
       // records must survive this failure or the next run would duplicate them.
@@ -1704,6 +1727,8 @@ async function pushCore(
       options,
       anyPrFailed ? undefined : result,
     );
+    // Its no-change path resets the clone too, and it commits teamai.yaml only.
+    await restorePendingEnvFiles();
     return;
   }
 
