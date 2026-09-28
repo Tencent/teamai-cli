@@ -34,7 +34,15 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-import { envList, envAdd, envRemove } from '../env-commands.js';
+vi.mock('../utils/prompt.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/prompt.js')>()),
+  askSecret: vi.fn(),
+  readStdin: vi.fn(),
+}));
+
+import { envList, envAdd, envRemove, envSet, envUnset } from '../env-commands.js';
+import { askSecret, readStdin } from '../utils/prompt.js';
+import { getTeamSecretsPath } from '../secret-store.js';
 import { requireInit } from '../config.js';
 import { resolveSecretDeclarations } from '../resources/secrets.js';
 import { log } from '../utils/logger.js';
@@ -238,10 +246,175 @@ scope: 'user',
       const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
       expect(allOutput).toContain('API_URL=u  (root)');
       expect(log.error).toHaveBeenCalledWith(expect.stringMatching(
-        /^env\/secrets\.yaml is not valid YAML: .*Team secrets were not resolved this run; env variables are not affected\./s,
+        /^env\/secrets\.yaml is not valid YAML: .*Team secrets were not resolved this run; env variables and MCP servers stay as they are\./s,
       ));
       expect(process.exitCode).toBe(1);
       process.exitCode = undefined;
+    });
+  });
+
+  // ─── envSet / envUnset (#875) ────────────────────────────
+
+  describe('envSet / envUnset', () => {
+    const logged = (): string => [log.info, log.success, log.warn, log.error, log.dim]
+      .flatMap((fn) => vi.mocked(fn).mock.calls.map((c) => String(c[0])))
+      .concat(consoleSpy.mock.calls.map((c) => String(c[0])))
+      .join('\n');
+    const storeFile = (): string => getTeamSecretsPath(localConfig);
+    const stored = async (): Promise<unknown> => fse.readJson(storeFile());
+
+    beforeEach(async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GITHUB_TOKEN\n  - key: GITLAB_TOKEN\n');
+      vi.mocked(log.warn).mockClear();
+      vi.mocked(askSecret).mockReset();
+      vi.mocked(readStdin).mockReset();
+      vi.stubEnv('GITHUB_TOKEN', '');
+      process.exitCode = undefined;
+    });
+    afterEach(() => {
+      process.exitCode = undefined;
+    });
+
+    it('keeps a value piped on stdin for this team, 0600, and never prints it', async () => {
+      vi.mocked(readStdin).mockResolvedValue('fixture-token-value');
+
+      await envSet('GITHUB_TOKEN', { stdin: true });
+
+      expect(await stored()).toEqual({ GITHUB_TOKEN: { value: 'fixture-token-value' } });
+      expect(storeFile().startsWith(path.join(tmpDir, 'home', '.teamai', 'secrets', 'teams') + path.sep)).toBe(true);
+      if (process.platform !== 'win32') expect((await fse.stat(storeFile())).mode & 0o777).toBe(0o600);
+      await envList({ reveal: true });
+      expect(logged()).toContain('GITHUB_TOKEN  team  (root)');
+      expect(logged()).not.toContain('fixture-token-value');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('reads the value from the hidden prompt without a flag', async () => {
+      vi.mocked(askSecret).mockResolvedValue('fixture-prompt-value');
+
+      await envSet('GITHUB_TOKEN', {});
+
+      expect(askSecret).toHaveBeenCalledWith('Value for GITHUB_TOKEN: ');
+      expect(await stored()).toEqual({ GITHUB_TOKEN: { value: 'fixture-prompt-value' } });
+    });
+
+    it('says how to pass a value when there is no terminal to prompt on', async () => {
+      vi.mocked(askSecret).mockRejectedValue(new Error('Cannot prompt for a secret in non-interactive mode'));
+
+      await envSet('GITHUB_TOKEN', {});
+
+      expect(log.error).toHaveBeenCalledWith(
+        'Cannot prompt for GITHUB_TOKEN without a terminal. Pipe the value with --stdin, or pass --from-env <VAR>. Nothing was changed.',
+      );
+      expect(process.exitCode).toBe(1);
+      expect(await fse.pathExists(storeFile())).toBe(false);
+    });
+
+    it('refuses --stdin from a terminal', async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+      Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+      try {
+        await envSet('GITHUB_TOKEN', { stdin: true });
+      } finally {
+        if (descriptor) Object.defineProperty(process.stdin, 'isTTY', descriptor);
+        else delete (process.stdin as { isTTY?: boolean }).isTTY;
+      }
+
+      expect(readStdin).not.toHaveBeenCalled();
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining('--stdin expects piped stdin'));
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('stores a --from-env reference, not a copy, and warns when that variable is unset', async () => {
+      vi.stubEnv('WORK_GITHUB_TOKEN', '');
+
+      await envSet('GITHUB_TOKEN', { fromEnv: 'WORK_GITHUB_TOKEN' });
+
+      expect(await stored()).toEqual({ GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+      expect(log.warn).toHaveBeenCalledWith('WORK_GITHUB_TOKEN is not set in this shell; GITHUB_TOKEN has no value until it is.');
+    });
+
+    it('accepts only a key the scope declares as a secret', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+      vi.mocked(readStdin).mockResolvedValue('fixture-token-value');
+
+      await envSet('API_URL', { stdin: true });
+
+      expect(log.error).toHaveBeenCalledWith(
+        "API_URL is not a secret this directory's team declares, so it was not set. It declares: GITHUB_TOKEN, GITLAB_TOKEN. "
+          + 'If the team declared it recently, run `teamai pull` first.',
+      );
+      expect(process.exitCode).toBe(1);
+      expect(readStdin).not.toHaveBeenCalled();
+      expect(await fse.pathExists(storeFile())).toBe(false);
+    });
+
+    it('refuses to set anything when the declarations cannot be read', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets: [\n');
+
+      await envSet('GITHUB_TOKEN', { fromEnv: 'WORK_GITHUB_TOKEN' });
+
+      expect(log.error).toHaveBeenCalledWith('Cannot tell whether GITHUB_TOKEN is a secret this team declares. Nothing was changed.');
+      expect(process.exitCode).toBe(1);
+      expect(await fse.pathExists(storeFile())).toBe(false);
+    });
+
+    it('rejects --stdin with --from-env, and an invalid key', async () => {
+      await envSet('GITHUB_TOKEN', { stdin: true, fromEnv: 'X' });
+      await envSet('bad key', { fromEnv: 'X' });
+
+      expect(vi.mocked(log.error).mock.calls.map((c) => c[0])).toEqual([
+        'Pass either --stdin or --from-env, not both. Nothing was changed.',
+        expect.stringContaining('Invalid env variable name "bad key"'),
+      ]);
+      expect(await fse.pathExists(storeFile())).toBe(false);
+    });
+
+    it('leaves a store it cannot read as it is, and names it without its content', async () => {
+      const corrupt = '{"GITLAB_TOKEN": {"value": ghp_fixture_value}}';
+      await fse.outputFile(storeFile(), corrupt);
+
+      await envSet('GITHUB_TOKEN', { fromEnv: 'WORK_GITHUB_TOKEN' });
+      await envUnset('GITLAB_TOKEN', {});
+
+      expect(await fse.readFile(storeFile(), 'utf8')).toBe(corrupt);
+      expect(vi.mocked(log.error).mock.calls.map((c) => c[0])).toEqual([
+        expect.stringContaining(`${storeFile()} is not valid JSON (line 1, column 28)`),
+        expect.stringContaining(`${storeFile()} is not valid JSON (line 1, column 28)`),
+      ]);
+      expect(logged()).not.toContain('ghp_fixture_value');
+    });
+
+    it('does not write on --dry-run', async () => {
+      await envSet('GITHUB_TOKEN', { fromEnv: 'WORK_GITHUB_TOKEN', dryRun: true });
+      expect(await fse.pathExists(storeFile())).toBe(false);
+    });
+
+    it('unset removes the team value and keeps the others', async () => {
+      vi.mocked(readStdin).mockResolvedValue('fixture-token-value');
+      await envSet('GITHUB_TOKEN', { stdin: true });
+      await envSet('GITLAB_TOKEN', { fromEnv: 'WORK_GITLAB_TOKEN' });
+
+      await envUnset('GITHUB_TOKEN', {});
+      await envUnset('GITHUB_TOKEN', {});
+
+      expect(await stored()).toEqual({ GITLAB_TOKEN: { env: 'WORK_GITLAB_TOKEN' } });
+      expect(log.info).toHaveBeenCalledWith('GITHUB_TOKEN has no value set for this team. Nothing was changed.');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    // #879 Conflict 13: a key declared twice is listed only as a secret.
+    it('env list --reveal leaves out the env.yaml value of a key declared as a secret', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({
+        variables: [{ key: 'GITHUB_TOKEN', value: 'fixture-repo-value' }, { key: 'API_URL', value: 'u' }],
+      }));
+
+      await envList({ reveal: true });
+
+      expect(logged()).toContain('Team env variables (1):');
+      expect(logged()).toContain('API_URL=u  (root)');
+      expect(logged()).toContain('GITHUB_TOKEN  missing  (root)');
+      expect(logged()).not.toContain('fixture-repo-value');
     });
   });
 

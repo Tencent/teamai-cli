@@ -189,10 +189,12 @@ and push it with git. `teamai doctor` lists each override.
   same key): a `secrets:` list of `key`, optional `description` and optional `url`
   (where a member gets one). Never put a value there: `teamai env add <KEY> --secret`
   takes none and rejects one. Declare with it or edit the file in the team repo;
-  `teamai push` picks it up. `teamai env list` shows each secret as `environment` or
-  `missing` and never shows a value, `--reveal` included. A secrets file that does not
-  parse fails the secrets only; env variables are still delivered, and `teamai doctor`
-  fails a check naming the file.
+  `teamai push` picks it up. Each member sets their own value with `teamai env set KEY`
+  in their terminal. `teamai env list` shows each secret as `team`, `environment` or
+  `missing` and never shows a value, `--reveal` included. A key declared as a secret
+  and also set in `env.yaml` is a secret: its `env.yaml` value is not delivered. A
+  secrets file that does not parse keeps `env.sh` and MCP servers as they were, and
+  `teamai doctor` fails a check naming the file.
 - Have every member upgrade before declaring `env`, `hooks`, `mcp`, `models` or `docs` in a
   manifest: teamai 0.25.0 and the 0.26.0 betas reject those keys and their pull stops.
 

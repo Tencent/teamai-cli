@@ -902,3 +902,15 @@ user finds partitions safe to `rm -rf` by hand.
 `teamai migrate` / `gc` / `--revert` commands; cross-project shared team-repo clone.
 Downgrade to an older teamai after
 P1 migration is not supported (`.teamai.bak/` is the manual rollback path).
+
+## Team secret values (#875)
+
+A member's values for their teams' declared secrets live in `~/.teamai/secrets/`,
+a class-A2 (machine-level) directory: `teams/<team>-<hash>.json`, one file per
+team repo, named the way `~/.teamai/models/teams/` names the team model key files.
+Every scope that uses the same team, and every worktree of it, reads the same file.
+It never goes to a partition or to `<dataHome>`, which in single-repo mode is inside
+the business repo, and it is not `~/.teamai/env`, which is already the user scope's
+env backup file. Files are written atomically with mode `0600`. Uninstalling a
+project scope removes only its partition, so the values stay; uninstalling the user
+scope removes `~/.teamai` and them with it. See [Team secrets](team-secrets.md#storage).

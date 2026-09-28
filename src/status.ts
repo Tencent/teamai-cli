@@ -22,7 +22,7 @@ import { maskEnvValue } from './resources/env.js';
 import { mcpEntryReader } from './resources/mcp.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { envEntryReader } from './resources/env.js';
-import { resolveSecretDeclarations, secretState } from './resources/secrets.js';
+import { resolveSecretDeclarations, resolveSecretValues, secretState } from './resources/secrets.js';
 import {
   describeEntryFailure, describeOrigin, describeOrigins, resolveEntriesFor,
   type EntryResolution, type EntryType,
@@ -323,15 +323,19 @@ async function printRepoSection(
     const env = await resolveEntriesFor(envEntryReader, localConfig);
     const secrets = await resolveSecretDeclarations(localConfig);
     const noSecrets = secrets.kind === 'absent' || (secrets.kind === 'resolved' && secrets.entries.length === 0);
+    // A key declared as a secret is listed only as one: its env.yaml value is not delivered.
+    const secretKeys = new Set(secrets.kind === 'resolved' ? secrets.entries.map((s) => s.name) : []);
+    const received = env.kind === 'resolved' ? env.entries : [];
+    const variables = received.filter((v) => !secretKeys.has(v.name));
     if (env.kind === 'failed') {
       console.log(`  ${describeEntryFailure(env.failure)}`);
-    } else if (env.entries.length === 0) {
+    } else if (variables.length === 0) {
       if (noSecrets) console.log('  (none)');
     } else {
       if (options.reveal) {
         process.stderr.write('[warn] Env values will be shown in plaintext\n');
       }
-      for (const v of env.entries) {
+      for (const v of variables) {
         const display = options.reveal ? v.entry.value : maskEnvValue(v.entry.value);
         console.log(`  ${v.name}=${display}  (${describeOrigin(v)})`);
         if (options.verbose && v.entry.description) {
@@ -342,8 +346,10 @@ async function printRepoSection(
     if (secrets.kind === 'failed') {
       console.log(`  ${describeEntryFailure(secrets.failure)}`);
     } else if (secrets.kind === 'resolved') {
+      const values = await resolveSecretValues(localConfig, secretKeys, received);
+      if (values.kind === 'store-unreadable') console.log(`  ${values.reason}`);
       for (const s of secrets.entries) {
-        console.log(`  ${s.name}  secret, ${secretState(s.name)}  (${describeOrigin(s)})`);
+        console.log(`  ${s.name}  secret, ${secretState(values, s.name)}  (${describeOrigin(s)})`);
         if (options.verbose && s.entry.description) {
           console.log(`    ${s.entry.description}`);
         }

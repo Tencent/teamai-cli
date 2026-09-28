@@ -4,8 +4,11 @@ import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { EnvHandler, maskEnvValue, ENV_KEY_RE, envEntryReader, unknownEnvVariableKeys, type EnvYaml } from './resources/env.js';
 import {
-  SECRETS_LAYOUT, readSecretsForEdit, resolveSecretDeclarations, secretState, writeSecretsFile,
+  SECRETS_LAYOUT, declaredSecretKeys, readSecretsForEdit, resolveSecretDeclarations, resolveSecretValues, secretState,
+  writeSecretsFile,
 } from './resources/secrets.js';
+import { getTeamSecretsPath, readSecretStore, writeSecretStore, type StoredSecret } from './secret-store.js';
+import { askSecret, isInteractive, readStdin } from './utils/prompt.js';
 import {
   describeEntryFailure, describeOrigin, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, resolveEntriesFor,
   type EntryLayout, type EntryType,
@@ -19,7 +22,8 @@ const envHandler = new EnvHandler();
  * List the team env variables this directory receives: env/env.yaml plus the
  * active env/<ns>/env.yaml files, each with the namespace it comes from. Then
  * the secrets it declares (env/secrets.yaml and env/<ns>/secrets.yaml), each
- * with where its value comes from, never the value.
+ * with where its value comes from, never the value. A key declared as a
+ * secret is listed only as one: its env.yaml value is not delivered.
  *
  * By default, variable values are masked. Pass `reveal: true` to show plaintext.
  * A file that cannot be used fails its own list only.
@@ -30,8 +34,10 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
 
   const resolution = await resolveEntriesFor(envEntryReader, localConfig);
   const declarations = await resolveSecretDeclarations(localConfig);
-  const variables = resolution.kind === 'resolved' ? resolution.entries : [];
+  const received = resolution.kind === 'resolved' ? resolution.entries : [];
   const secrets = declarations.kind === 'resolved' ? declarations.entries : [];
+  const secretKeys = new Set(secrets.map((s) => s.name));
+  const variables = received.filter((v) => !secretKeys.has(v.name));
 
   if (resolution.kind === 'failed') {
     log.error(describeEntryFailure(resolution.failure));
@@ -44,6 +50,11 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
   if (variables.length === 0 && secrets.length === 0) {
     if (resolution.kind !== 'failed' && declarations.kind !== 'failed') log.info('No env variables defined');
     return;
+  }
+  const values = await resolveSecretValues(localConfig, secretKeys, received);
+  if (values.kind === 'store-unreadable') {
+    log.error(`${values.reason} Every team secret is missing until it is fixed.`);
+    process.exitCode = 1;
   }
 
   if (options.reveal && variables.length > 0) {
@@ -67,7 +78,7 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
     console.log(`Team secrets (${secrets.length}):`);
     console.log('');
     for (const s of secrets) {
-      console.log(`  ${s.name}  ${secretState(s.name)}  (${describeOrigin(s)})`);
+      console.log(`  ${s.name}  ${secretState(values, s.name)}  (${describeOrigin(s)})`);
       if (options.verbose) {
         if (s.entry.description) log.dim(`    ${s.entry.description}`);
         if (s.entry.url) log.dim(`    ${s.entry.url}`);
@@ -75,6 +86,120 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
     }
     console.log('');
   }
+}
+
+/**
+ * Keep this member's value for a secret the scope declares, for this team
+ * repo, on this machine (#875). The value comes from a hidden prompt, from
+ * piped stdin, or is a reference to another variable read each time it is
+ * used; never from an argument, so it stays out of shell history.
+ */
+export async function envSet(
+  key: string,
+  options: GlobalOptions & { stdin?: boolean; fromEnv?: string },
+): Promise<void> {
+  if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
+  if (options.stdin && options.fromEnv !== undefined) return fail('Pass either --stdin or --from-env, not both. Nothing was changed.');
+  if (options.fromEnv !== undefined && !ENV_KEY_RE.test(options.fromEnv)) {
+    return fail(`Invalid --from-env variable name "${options.fromEnv}": use letters, digits and underscores, starting with a letter or underscore.`);
+  }
+
+  const projectConfig = await detectProjectConfig();
+  const localConfig = projectConfig ?? (await requireInit()).localConfig;
+
+  const declarations = await resolveSecretDeclarations(localConfig);
+  if (declarations.kind === 'failed') {
+    log.error(describeEntryFailure(declarations.failure));
+    return fail(`Cannot tell whether ${key} is a secret this team declares. Nothing was changed.`);
+  }
+  const declared = declaredSecretKeys(declarations);
+  if (!declared.has(key)) {
+    const list = declared.size > 0 ? ` It declares: ${[...declared].sort().join(', ')}.` : ' It declares none.';
+    return fail(
+      `${key} is not a secret this directory's team declares, so it was not set.${list} `
+      + 'If the team declared it recently, run `teamai pull` first.',
+    );
+  }
+
+  const file = getTeamSecretsPath(localConfig);
+  const store = await readSecretStore(file);
+  if (!store.ok) return fail(`${store.reason} Nothing was changed.`);
+
+  let entry: StoredSecret;
+  try {
+    entry = await secretInput(key, options);
+  } catch (e) {
+    return fail(`${(e as Error).message} Nothing was changed.`);
+  }
+
+  if (options.dryRun) {
+    log.info(`[dry-run] Would set ${key} for this team in ${file}`);
+    return;
+  }
+  await writeSecretStore(file, { ...store.values, [key]: entry });
+  if ('env' in entry) {
+    log.success(`${key} now reads ${entry.env} from your environment for this team (${file}).`);
+    if (!process.env[entry.env]) log.warn(`${entry.env} is not set in this shell; ${key} has no value until it is.`);
+  } else {
+    log.success(`Set ${key} for this team (${file}).`);
+  }
+  log.info('Run `teamai pull` to update MCP servers.');
+}
+
+/** Remove this member's value for a secret, for this team repo. */
+export async function envUnset(key: string, options: GlobalOptions): Promise<void> {
+  if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
+  const projectConfig = await detectProjectConfig();
+  const localConfig = projectConfig ?? (await requireInit()).localConfig;
+
+  const file = getTeamSecretsPath(localConfig);
+  const store = await readSecretStore(file);
+  if (!store.ok) return fail(`${store.reason} Nothing was changed.`);
+  if (!Object.hasOwn(store.values, key)) {
+    log.info(`${key} has no value set for this team. Nothing was changed.`);
+    return;
+  }
+  if (options.dryRun) {
+    log.info(`[dry-run] Would remove the team value of ${key} from ${file}`);
+    return;
+  }
+  const rest = { ...store.values };
+  delete rest[key];
+  await writeSecretStore(file, rest);
+  log.success(`Removed the team value of ${key} (${file}).`);
+  log.info('Run `teamai pull` to update MCP servers.');
+}
+
+/** The entry `env set` stores: a `--from-env` reference, piped stdin, or the hidden prompt. */
+async function secretInput(key: string, options: { stdin?: boolean; fromEnv?: string }): Promise<StoredSecret> {
+  if (options.fromEnv !== undefined) return { env: options.fromEnv };
+  let value: string;
+  if (options.stdin) {
+    if (process.stdin.isTTY) throw new Error('--stdin expects piped stdin; run without it to be prompted.');
+    process.stdin.setEncoding('utf8');
+    value = await readStdin();
+    if (!value) throw new Error('No value was provided on stdin.');
+    return { value };
+  }
+  try {
+    value = await askSecret(`Value for ${key}: `);
+  } catch (e) {
+    if (!isInteractive()) {
+      throw new Error(`Cannot prompt for ${key} without a terminal. Pipe the value with --stdin, or pass --from-env <VAR>.`);
+    }
+    throw e;
+  }
+  if (!value) throw new Error('No value was entered.');
+  return { value };
+}
+
+function invalidKeyMessage(key: string): string {
+  return `Invalid env variable name "${key}": use letters, digits and underscores, starting with a letter or underscore.`;
+}
+
+function fail(message: string): void {
+  log.error(message);
+  process.exitCode = 1;
 }
 
 /**

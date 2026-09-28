@@ -14,11 +14,13 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import {
   entryLayout, missingTopLevelKeyReason, readEntryFileText, resolveEntries, resolveEntriesFor, unknownEntryKeys,
-  writtenList, type EntryLayout, type EntryReader, type EntryResolution,
+  writtenList, type EntryLayout, type EntryReader, type EntryResolution, type ResolvedEntry,
 } from '../namespaced-entries.js';
 import type { LocalConfig } from '../types.js';
 import { ensureDir, readFileSafe, writeFile } from '../utils/fs.js';
-import { ENV_KEY_RE } from './env.js';
+import { ENV_KEY_RE, type EnvVariable } from './env.js';
+import { memberEnvironment } from '../member-env.js';
+import { getTeamSecretsPath, readSecretStore, storedSecretValue } from '../secret-store.js';
 
 const SecretDeclarationSchema = z.object({
   key: z.string().regex(ENV_KEY_RE, 'must be a shell variable name: letters, digits and underscores, not starting with a digit'),
@@ -39,7 +41,7 @@ export const SECRETS_LAYOUT: EntryLayout = {
   file: 'secrets.yaml',
   label: 'secrets',
   noun: 'secret',
-  kept: 'Team secrets were not resolved this run; env variables are not affected.',
+  kept: 'Team secrets were not resolved this run; env variables and MCP servers stay as they are.',
 };
 
 /**
@@ -132,13 +134,57 @@ export async function resolveSecretDeclarations(
   return resolution.kind === 'resolved' && !found ? { kind: 'absent' } : resolution;
 }
 
-/**
- * Where a declared secret's value comes from for this member. An empty value
- * in the environment is no value.
- */
-export type SecretState = 'environment' | 'missing';
+/** The keys `declarations` declares, or null when they failed: a failed file is never "no secrets". */
+export function declaredSecretKeys(declarations: Exclude<SecretDeclarations, { kind: 'failed' }>): ReadonlySet<string>;
+export function declaredSecretKeys(declarations: SecretDeclarations): ReadonlySet<string> | null;
+export function declaredSecretKeys(declarations: SecretDeclarations): ReadonlySet<string> | null {
+  if (declarations.kind === 'failed') return null;
+  return new Set(declarations.kind === 'resolved' ? declarations.entries.map((entry) => entry.name) : []);
+}
 
-export function secretState(key: string, env: NodeJS.ProcessEnv = process.env): SecretState {
-  const value = env[key];
-  return value !== undefined && value !== '' ? 'environment' : 'missing';
+/** Where a declared secret's value comes from for this member. */
+export type SecretState = SecretValue['source'] | 'missing';
+
+export interface SecretValue {
+  readonly source: 'team' | 'environment';
+  readonly value: string;
+}
+
+/**
+ * The value of each declared secret, in the resolution order: the member's
+ * value for this team (`teamai env set`), then the member's own environment
+ * (see member-env.ts). `variables` are the env.yaml variables this scope
+ * receives. A key without one is absent from `values`. A team
+ * entry decides even when its `--from-env` variable is unset: falling back to
+ * the environment would send another account's token to this team.
+ *
+ * A store file that cannot be read leaves every secret without a value, for
+ * the same reason; `reason` says why, with no value in it.
+ */
+export type SecretValues =
+  | { readonly kind: 'resolved'; readonly values: ReadonlyMap<string, SecretValue> }
+  | { readonly kind: 'store-unreadable'; readonly reason: string };
+
+export async function resolveSecretValues(
+  localConfig: LocalConfig,
+  secretKeys: ReadonlySet<string>,
+  variables: readonly ResolvedEntry<EnvVariable>[],
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<SecretValues> {
+  const values = new Map<string, SecretValue>();
+  if (secretKeys.size === 0) return { kind: 'resolved', values };
+  const envYaml = new Map(variables.map((variable) => [variable.name, variable.entry.value]));
+  const store = await readSecretStore(getTeamSecretsPath(localConfig));
+  if (!store.ok) return { kind: 'store-unreadable', reason: store.reason };
+  const member = await memberEnvironment(localConfig, { secretKeys, envYaml }, env);
+  for (const key of secretKeys) {
+    const stored = Object.hasOwn(store.values, key) ? store.values[key] : undefined;
+    const value = stored ? storedSecretValue(stored, env) : member(key);
+    if (value !== undefined) values.set(key, { source: stored ? 'team' : 'environment', value });
+  }
+  return { kind: 'resolved', values };
+}
+
+export function secretState(values: SecretValues, key: string): SecretState {
+  return values.kind === 'resolved' ? values.values.get(key)?.source ?? 'missing' : 'missing';
 }

@@ -629,7 +629,13 @@ async function envDeliveryProblems(
   const { resolveEntriesFor, describeEntryFailure } = await import('./namespaced-entries.js');
   const resolution = await resolveEntriesFor(envEntryReader, localConfig);
   if (resolution.kind === 'failed') return { problems: [describeEntryFailure(resolution.failure)], staleProfiles: [] };
-  const declared = resolution.entries.map((entry) => entry.entry);
+  // A key the team also declares as a secret is not delivered (#875); declarations
+  // that cannot be read keep env.sh as it is, as a broken env file does.
+  const { declaredSecretKeys, resolveSecretDeclarations } = await import('./resources/secrets.js');
+  const secrets = await resolveSecretDeclarations(localConfig);
+  if (secrets.kind === 'failed') return { problems: [describeEntryFailure(secrets.failure)], staleProfiles: [] };
+  const secretKeys = declaredSecretKeys(secrets);
+  const declared = resolution.entries.filter((entry) => !secretKeys.has(entry.name)).map((entry) => entry.entry);
   const deliverable = new Set(declared.map((variable) => variable.key));
   const problems: string[] = [];
 

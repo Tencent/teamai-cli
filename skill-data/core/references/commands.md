@@ -203,6 +203,10 @@ Generated: do not edit by hand. Regenerate with
     - `--secret` — Remove the declared secret only (env/secrets.yaml), for a key env.yaml also sets
     - `--role <ns>` — Remove from env/<ns>/ instead of env/
     - `--project <id>` — Remove from the project's env namespace (resources.env in manifest/projects.yaml)
+  - `teamai env set <key>` — Set your value for a secret the team declares, for this directory's team, on this machine (prompts without echo)
+    - `--stdin` — Read the value from piped stdin
+    - `--from-env <var>` — Read the value from this environment variable each time it is used; no copy is stored
+  - `teamai env unset <key>` — Remove your value for a secret, for this directory's team, from this machine
 
 ## hooks
 
