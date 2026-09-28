@@ -114,7 +114,8 @@ export async function writeFileAtomic(
   }
   const tmp = `${expanded}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   try {
-    await fse.writeFile(tmp, content, 'utf-8');
+    // Created with the mode, so it is never readable wider than the target; chmod undoes the umask.
+    await fse.writeFile(tmp, content, { encoding: 'utf-8', mode, flag: 'wx' });
     await fse.chmod(tmp, mode);
     await fse.rename(tmp, expanded);
   } catch (error) {
@@ -176,7 +177,8 @@ export async function writeJsonAtomic(
   }
   const tmp = `${expanded}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   try {
-    await fse.writeFile(tmp, content, 'utf-8');
+    // Created with the mode, so it is never readable wider than the target; chmod undoes the umask.
+    await fse.writeFile(tmp, content, { encoding: 'utf-8', mode, flag: 'wx' });
     await fse.chmod(tmp, mode);
     await fse.rename(tmp, expanded);
   } catch (error) {
