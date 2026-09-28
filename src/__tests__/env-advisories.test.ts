@@ -187,6 +187,27 @@ describe('a missing declared secret tells the member what to run', () => {
       .toEqual(without.report.checks.filter((check) => !check.ok).map((check) => check.name));
   });
 
+  // Otherwise the MCP check passes and only a pull warning says why the secrets have no value.
+  it('doctor fails a check when the member\'s values file can\'t be read, naming the file and never a value', async () => {
+    await fse.outputFile(getTeamSecretsPath(localConfig), '{ "GITHUB_TOKEN": { "value": ghp_fixture_value } }');
+
+    const { allPassed, report } = await doctorReport();
+
+    const check = report.checks.find((candidate) => candidate.name === 'Your team secret values can be read');
+    expect(check?.ok).toBe(false);
+    expect(check?.fix).toContain(`${getTeamSecretsPath(localConfig)} is not valid JSON`);
+    expect(allPassed).toBe(false);
+    expect(JSON.stringify(report)).not.toContain('ghp_fixture_value');
+  });
+
+  it('doctor passes that check once the values file can be read', async () => {
+    await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'team-token' } });
+
+    const { report } = await doctorReport();
+
+    expect(report.checks.find((candidate) => candidate.name === 'Your team secret values can be read')?.ok).toBe(true);
+  });
+
   it('doctor still fails an unrelated MCP delivery problem next to it', async () => {
     await write('mcp/mcp.yaml', `${GITHUB_SERVER}\n  - name: docs\n    transport: stdio\n    command: docs-server\n`);
 

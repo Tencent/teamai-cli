@@ -547,6 +547,27 @@ export async function buildEntryResolutionChecks(ctx: DoctorContext): Promise<Ch
 }
 
 /**
+ * The member's values for this team and machine can be read (#875). While one
+ * can't, every secret has no value and MCP keeps what the last pull wrote,
+ * which the MCP check can't see. Only for a scope whose secrets or variables
+ * read those files.
+ */
+export function buildSecretValuesCheck(ctx: DoctorContext): Check[] {
+  const { teamEnv } = ctx;
+  if (!teamEnv) return [];
+  const reads = (teamEnv.declarations.kind === 'resolved' && teamEnv.declarations.entries.length > 0)
+    || (teamEnv.variables.kind === 'resolved' && teamEnv.variables.entries.length > 0);
+  if (!reads) return [];
+  const unreadable = [teamEnv.secrets, teamEnv.variableValues].find((values) => values.kind === 'store-unreadable');
+  return [{
+    name: 'Your team secret values can be read',
+    source: 'local',
+    check: async () => unreadable === undefined,
+    fix: unreadable?.kind === 'store-unreadable' ? unreadable.reason : undefined,
+  }];
+}
+
+/**
  * Info lines for `doctor`: which namespace entry replaces which root entry,
  * and in legacy mode each name the root file repeats. They answer "why do I
  * have this value?" and are not problems, so they are notes, not checks.
