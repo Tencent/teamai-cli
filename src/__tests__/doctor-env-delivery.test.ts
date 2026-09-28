@@ -20,6 +20,7 @@ vi.mock('../utils/logger.js', () => ({
 import { loadLocalConfig, loadTeamConfig } from '../config.js';
 import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 
 /**
  * The env half of the delivery check (#624). The plumbing version asked only
@@ -448,6 +449,22 @@ describe('doctor — env variables reach a shell', () => {
     const check = await envCheck();
     expect(await check.check()).toBe(false);
     expect(check.fix).toContain('still exports JIRA_PASSWORD');
+  });
+
+  // #875 (#879 S9): pull writes the member's value for this team, and leaves a --from-env one out.
+  it("expects the member's value for a variable in env.sh, and no --from-env one", async () => {
+    await writeEnvYaml('variables:\n  - key: GITLAB_HOST\n    value: "gitlab.team.example"\n  - key: API_URL\n    value: "u"\n');
+    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeSecretStore(getTeamSecretsPath(localConfig), { GITLAB_HOST: { value: 'gitlab.mine.example' }, API_URL: { env: 'MY_API_URL' } });
+
+    await writeEnvSh("export GITLAB_HOST='gitlab.mine.example'\n");
+    expect(await (await envCheck()).check()).toBe(true);
+
+    await writeEnvSh("export GITLAB_HOST='gitlab.team.example'\nexport API_URL='u'\n");
+    const check = await envCheck();
+    expect(await check.check()).toBe(false);
+    expect(check.fix).toContain('has a stale value for GITLAB_HOST');
+    expect(check.fix).toContain('still exports API_URL');
   });
 
   // #879 Conflict 14: a failed declaration keeps env.sh as it is, so it cannot be checked against env.yaml.

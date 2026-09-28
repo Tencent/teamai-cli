@@ -43,6 +43,7 @@ describe('MCP servers and declared secrets', () => {
 
   beforeEach(async () => {
     resetWarnOnce();
+    vi.mocked(log.warn).mockClear();
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-mcp-secrets-'));
     homeDir = path.join(tmpDir, 'home');
     repoPath = path.join(tmpDir, 'team-repo');
@@ -114,11 +115,39 @@ describe('MCP servers and declared secrets', () => {
     expect(vars.API_URL).toBe('u');
   });
 
-  it('keeps today\'s order for a variable that is not declared as a secret', async () => {
+  // #875 (#879 S9): one order for a variable, member team value > env.yaml,
+  // with no environment override and no machine value.
+  it("resolves a variable from the member's value for this team, then env.yaml, never the environment", async () => {
     await write('env/env.yaml', 'variables:\n  - key: API_URL\n    value: team-url\n');
     vi.stubEnv('API_URL', 'exported-url');
+    vi.stubEnv('UNRELATED_URL', 'exported-unrelated');
+    vi.stubEnv('MY_API_URL', undefined);
+    await writeSecretStore(getMachineSecretsPath(), { API_URL: { value: 'machine-url' } });
 
-    expect((await buildVarTable(localConfig)).API_URL).toBe('exported-url');
+    let vars = await buildVarTable(localConfig);
+    expect(vars.API_URL).toBe('team-url');
+    expect(vars.UNRELATED_URL).toBe('exported-unrelated');
+
+    await writeSecretStore(getTeamSecretsPath(localConfig), { API_URL: { value: 'member-url' } });
+    expect((await buildVarTable(localConfig)).API_URL).toBe('member-url');
+
+    await writeSecretStore(getTeamSecretsPath(localConfig), { API_URL: { env: 'MY_API_URL' } });
+    expect((await buildVarTable(localConfig)).API_URL).toBe('team-url');
+    vi.stubEnv('MY_API_URL', 'member-env-url');
+    vars = await buildVarTable(localConfig);
+    expect(vars.API_URL).toBe('member-env-url');
+  });
+
+  it('keeps the variables the last pull wrote when the store cannot be read, without the value', async () => {
+    await write('env/env.yaml', 'variables:\n  - key: API_URL\n    value: team-url\n');
+    await fse.outputFile(path.join(homeDir, '.teamai', 'env'), 'API_URL=member-url\n');
+    await fse.outputFile(getTeamSecretsPath(localConfig), '{"API_URL": {"value": fixture_member_url}}');
+    vi.stubEnv('API_URL', 'exported-url');
+
+    expect((await buildVarTable(localConfig)).API_URL).toBe('member-url');
+    const warnings = vi.mocked(log.warn).mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warnings).toContain(`${getTeamSecretsPath(localConfig)} is not valid JSON`);
+    expect(warnings).not.toContain('fixture_member_url');
   });
 
   it('warns without the value when the store cannot be read, and resolves the secret to nothing', async () => {

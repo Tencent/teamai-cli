@@ -94,6 +94,8 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
 /**
  * Keep this member's value for a secret the scope declares, for this team
  * repo, on this machine (#875); with `global`, for every team on the machine.
+ * Without `global`, also for an env variable the scope receives, which then
+ * replaces the team's value for this team (a machine value is for secrets only).
  * The value comes from a hidden prompt, from piped stdin, or is a reference to
  * another variable read each time it is used; never from an argument, so it
  * stays out of shell history.
@@ -109,6 +111,7 @@ export async function envSet(
   }
 
   const localConfig = await scopeHere(options.global);
+  let isVariable = false;
   if (localConfig) {
     const declarations = await resolveSecretDeclarations(localConfig);
     if (declarations.kind === 'failed') {
@@ -117,11 +120,29 @@ export async function envSet(
     }
     const declared = declaredSecretKeys(declarations);
     if (!declared.has(key)) {
-      const list = declared.size > 0 ? ` It declares: ${[...declared].sort().join(', ')}.` : ' It declares none.';
-      return fail(
-        `${key} is not a secret this directory's team declares, so it was not set.${list} `
-        + 'If the team declared it recently, run `teamai pull` first.',
-      );
+      if (options.global) {
+        const list = declared.size > 0 ? ` It declares: ${[...declared].sort().join(', ')}.` : ' It declares none.';
+        return fail(
+          `${key} is not a secret this directory's team declares, so it was not set.${list} `
+          + 'If the team declared it recently, run `teamai pull` first.',
+        );
+      }
+      // #875: without --global, a member may also override a variable the scope receives, for this team.
+      const env = await resolveEntriesFor(envEntryReader, localConfig);
+      if (env.kind === 'failed') {
+        log.error(describeEntryFailure(env.failure));
+        return fail(`Cannot tell whether ${key} is an env variable this team sets. Nothing was changed.`);
+      }
+      const variables = new Set(env.entries.map((variable) => variable.name).filter((name) => !declared.has(name)));
+      if (!variables.has(key)) {
+        const named = (keys: ReadonlySet<string>): string => (keys.size > 0 ? [...keys].sort().join(', ') : 'none');
+        return fail(
+          `${key} is neither a secret nor an env variable this directory's team declares, so it was not set. `
+          + `Its secrets: ${named(declared)}. Its variables: ${named(variables)}. `
+          + 'If the team added it recently, run `teamai pull` first.',
+        );
+      }
+      isVariable = true;
     }
   }
 
@@ -148,13 +169,13 @@ export async function envSet(
     log.success(`Set ${key} ${target} (${file}).`);
   }
   if (localConfig) {
-    log.info('Run `teamai pull` to update MCP servers.');
+    log.info(isVariable ? 'Run `teamai pull` to update MCP servers and env.sh.' : 'Run `teamai pull` to update MCP servers.');
   } else {
     log.info(`No teamai scope here, so no team declares ${key} yet. The value applies to every team on this machine that declares it.`);
   }
 }
 
-/** Remove this member's value for a secret, for this team repo or, with `global`, for the machine. */
+/** Remove this member's value for a secret or variable, for this team repo or, with `global`, for the machine. */
 export async function envUnset(key: string, options: GlobalOptions & { global?: boolean }): Promise<void> {
   if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
   const localConfig = await scopeHere(options.global);
@@ -175,7 +196,10 @@ export async function envUnset(key: string, options: GlobalOptions & { global?: 
   delete rest[key];
   await writeSecretStore(file, rest);
   log.success(`Removed the ${owner} value of ${key} (${file}).`);
-  if (localConfig) log.info('Run `teamai pull` to update MCP servers.');
+  if (!localConfig) return;
+  // env.sh exports a member's value for a variable (#875), not for a secret.
+  const secret = options.global || declaredSecretKeys(await resolveSecretDeclarations(localConfig))?.has(key);
+  log.info(secret ? 'Run `teamai pull` to update MCP servers.' : 'Run `teamai pull` to update MCP servers and env.sh.');
 }
 
 /**

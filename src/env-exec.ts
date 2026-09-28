@@ -15,7 +15,7 @@ import { resolveConfigForDir } from './config.js';
 import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 import { describeEntryFailure, resolveEntriesFor } from './namespaced-entries.js';
 import { envEntryReader } from './resources/env.js';
-import { declaredSecretKeys, resolveSecretDeclarations, resolveSecretValues } from './resources/secrets.js';
+import { declaredSecretKeys, resolveSecretDeclarations, resolveSecretValues, resolveVariableValues } from './resources/secrets.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { log, setStderrOnly } from './utils/logger.js';
 
@@ -85,7 +85,8 @@ async function commandEnvironment(cwd: string): Promise<NodeJS.ProcessEnv> {
  * command never sees a value `teamai env list` doesn't show for this scope:
  * another team's export, or the member's own export when this team's value
  * names another variable. A key that is also an env.yaml variable resolves as
- * a secret.
+ * a secret. A variable takes the member's value for this team, else the
+ * team's, as in MCP; the inherited value never overrides it (#875).
  */
 async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessEnv> {
   const env = { ...process.env };
@@ -99,21 +100,24 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
     log.warn(`${describeEntryFailure(declarations.failure)} The command runs without team secrets.`);
   }
   const received = variables.kind === 'resolved' ? variables.entries : [];
-  for (const variable of received) {
-    if (!secretKeys?.has(variable.name)) env[variable.name] = variable.entry.value;
+  const values = await resolveVariableValues(localConfig, received, secretKeys ?? new Set(), process.env);
+  if (values.kind === 'store-unreadable') {
+    log.warn(`${values.reason} The command runs without the team's env variables.`);
+  } else {
+    for (const [key, variable] of values.values) env[key] = variable.value;
   }
   if (!secretKeys || secretKeys.size === 0) return env;
 
-  const values = await resolveSecretValues(localConfig, secretKeys, received);
-  if (values.kind === 'store-unreadable') {
-    log.warn(`${values.reason} The command runs without team secrets.`);
+  const secrets = await resolveSecretValues(localConfig, secretKeys, received);
+  if (secrets.kind === 'store-unreadable') {
+    log.warn(`${secrets.reason} The command runs without team secrets.`);
   }
   for (const key of secretKeys) {
-    const secret = values.kind === 'resolved' ? values.values.get(key) : undefined;
+    const secret = secrets.kind === 'resolved' ? secrets.values.get(key) : undefined;
     if (secret) env[key] = secret.value;
     else delete env[key];
   }
-  if (values.kind === 'resolved') {
+  if (secrets.kind === 'resolved') {
     for (const advisory of await envAdvisories(localConfig, null)) {
       if (advisory.kind === 'missing-secret') log.warn(describeEnvAdvisory(advisory));
     }

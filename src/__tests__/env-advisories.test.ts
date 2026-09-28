@@ -213,4 +213,22 @@ describe('a missing declared secret tells the member what to run', () => {
     );
     expect(JSON.stringify(report)).not.toContain('repo-token');
   });
+
+  // #879 S9: doctor runs in the member's shell too, so it explains why an MCP
+  // server doesn't use their export; a note, like the rest.
+  it('doctor notes an ignored export for a team with no secrets, and env list and mcp list do not', async () => {
+    await fse.remove(path.join(repoPath, 'env', 'secrets.yaml'));
+    await write('env/env.yaml', 'variables:\n  - key: GITLAB_HOST\n    value: gitlab.team.example\n');
+    vi.stubEnv('GITLAB_HOST', 'gitlab.dave.example');
+
+    await quietly(() => envList({}));
+    await quietly(() => mcpList({}));
+    const { report } = await doctorReport();
+
+    const line = 'GITLAB_HOST in your environment differs from the value in env/env.yaml, which this team uses. '
+      + 'To use yours for this team, run `teamai env set GITLAB_HOST`.';
+    expect(report.notes).toContain(line);
+    expect(warned().some((message) => message.includes('GITLAB_HOST'))).toBe(false);
+    expect(JSON.stringify(report)).not.toContain('gitlab.dave.example');
+  });
 });

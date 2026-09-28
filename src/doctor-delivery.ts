@@ -633,11 +633,18 @@ async function envDeliveryProblems(
   if (resolution.kind === 'failed') return { problems: [describeEntryFailure(resolution.failure)], staleProfiles: [] };
   // A key the team also declares as a secret is not delivered (#875); declarations
   // that cannot be read keep env.sh as it is, as a broken env file does.
-  const { declaredSecretKeys, resolveSecretDeclarations } = await import('./resources/secrets.js');
+  const {
+    declaredSecretKeys, envShVariables, resolveSecretDeclarations, resolveVariableValues,
+  } = await import('./resources/secrets.js');
   const secrets = await resolveSecretDeclarations(localConfig);
   if (secrets.kind === 'failed') return { problems: [describeEntryFailure(secrets.failure)], staleProfiles: [] };
   const secretKeys = declaredSecretKeys(secrets);
-  const declared = resolution.entries.filter((entry) => !secretKeys.has(entry.name)).map((entry) => entry.entry);
+  // A variable the member set for this team is owed their value, and one set
+  // with `--from-env` is not owed at all (#875); a values file that cannot be
+  // read keeps env.sh as it is, as pull does.
+  const values = await resolveVariableValues(localConfig, resolution.entries, secretKeys);
+  if (values.kind === 'store-unreadable') return { problems: [values.reason], staleProfiles: [] };
+  const declared = envShVariables(resolution.entries, values.values);
   const deliverable = new Set(declared.map((variable) => variable.key));
   const problems: string[] = [];
 
@@ -669,7 +676,7 @@ async function envDeliveryProblems(
     if (undelivered.length > 0) problems.push(`${envShPath} is missing ${nameList(undelivered)}`);
     if (stale.length > 0) {
       problems.push(
-        `${envShPath} has a stale value for ${nameList(stale)}: env.yaml declares a different one`,
+        `${envShPath} has a stale value for ${nameList(stale)}: env.yaml or your value for this team is a different one`,
       );
     }
     // env.sh holds only what pull wrote, so a key the resolved set lacks is
