@@ -42,6 +42,7 @@ import {
  */
 export type CheckSource = 'local' | 'provider';
 import { hasPiHooks } from './pi-hooks.js';
+import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 
 export interface Check {
   name: string;
@@ -111,7 +112,10 @@ export interface DoctorReport {
   checks: CheckResult[];
   /** Present only when the team repo declares packages. Human text, not checks. */
   packages?: { ok: boolean; lines: string[] };
-  /** Advisories that are not checks: namespace overrides, the Codex trust-gate reminder. */
+  /**
+   * Advisories that are not checks: namespace overrides, a team secret with no
+   * value (#875), the Codex trust-gate reminder.
+   */
   notes?: string[];
 }
 
@@ -554,6 +558,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   const notes = [
     ...await buildNamespaceNotes(ctx),
     ...await entryNamespaceNotes(ctx),
+    ...(await envAdvisories(localConfig, ctx.teamConfig)).map(describeEnvAdvisory),
     ...(codexNote ? [codexNote] : []),
   ];
 
