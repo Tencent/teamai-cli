@@ -233,8 +233,8 @@ export type EntryFailure = (
   }
   | { readonly kind: 'namespaces-unresolved'; readonly type: EntryType; readonly reason: string }
 ) & {
-  /** How the failed reader's messages name what it reads; its type's when absent. */
-  readonly layout?: EntryLayout;
+  /** How the failed reader's messages name what it reads. */
+  readonly layout: EntryLayout;
 };
 
 /** A warning about an entry that still resolves, worded for the admin who can fix it. */
@@ -262,15 +262,16 @@ export type EntryResolution<E> =
  */
 export async function activeEntryNamespaces(
   localConfig: LocalConfig,
-  type: EntryType,
+  layout: EntryLayout,
 ): Promise<{ ok: true; active: string[] | null } | { ok: false; failure: EntryFailure }> {
+  const type = layout.activation;
   try {
     const resolved = await resolveResourceNamespaces(localConfig);
     return { ok: true, active: resolved ? resolved.activeNamespaces[type] ?? [] : null };
   } catch (error) {
     return {
       ok: false,
-      failure: { kind: 'namespaces-unresolved', type, reason: error instanceof Error ? error.message : String(error) },
+      failure: { kind: 'namespaces-unresolved', type, reason: error instanceof Error ? error.message : String(error), layout },
     };
   }
 }
@@ -406,8 +407,8 @@ export async function resolveEntriesFor<E>(
   localConfig: LocalConfig,
 ): Promise<EntryResolution<E>> {
   const layout = asLayout(reader.layout ?? reader.type);
-  const namespaces = await activeEntryNamespaces(localConfig, layout.activation);
-  if (!namespaces.ok) return { kind: 'failed', failure: { ...namespaces.failure, layout }, notices: [] };
+  const namespaces = await activeEntryNamespaces(localConfig, layout);
+  if (!namespaces.ok) return { kind: 'failed', failure: namespaces.failure, notices: [] };
   return resolveEntries(reader, localConfig, namespaces.active);
 }
 
@@ -541,7 +542,7 @@ async function isDeclaredNamespace(repoPath: string, type: EntryType, namespace:
 
 /** The failure as one actionable line: what happened, what it left alone, what to do. */
 export function describeEntryFailure(failure: EntryFailure): string {
-  const { kept, noun } = failure.layout ?? entryLayout(failure.type);
+  const { kept, noun } = failure.layout;
   switch (failure.kind) {
     case 'broken-file':
       // The reader's reason already names the file.

@@ -23,7 +23,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { autoDetectInit } from '../config.js';
-import { resolveEntriesFor } from '../namespaced-entries.js';
+import { entryLayout, resolveEntriesFor } from '../namespaced-entries.js';
 import { mcpInject, mcpList } from '../mcp-cmd.js';
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 
@@ -93,7 +93,10 @@ describe('mcpList', () => {
     mockedResolve.mockResolvedValue({
       kind: 'failed',
       notices: [],
-      failure: { kind: 'two-namespaces', type: 'mcp', name: 'db', first: 'mcp/checkout/mcp.yaml', second: 'mcp/billing/mcp.yaml' },
+      failure: {
+        kind: 'two-namespaces', type: 'mcp', name: 'db', first: 'mcp/checkout/mcp.yaml', second: 'mcp/billing/mcp.yaml',
+        layout: entryLayout('mcp'),
+      },
     });
     const { log } = await import('../utils/logger.js');
     await listOutput();
